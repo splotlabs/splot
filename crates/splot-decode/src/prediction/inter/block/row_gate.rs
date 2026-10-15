@@ -157,6 +157,26 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
             )
     }
 
+    /// Whether `bounds` hold now: the rows each list needs are published, or
+    /// the frames the unbounded readers need have settled.
+    pub(super) fn is_satisfied(&self, bounds: &RowReferenceBounds) -> bool {
+        if bounds.settle {
+            return self.settle.is_ready();
+        }
+        self.lists
+            .iter()
+            .zip(bounds.needs)
+            .all(|(slot, need)| match slot {
+                Some(slot) if need != 0 => {
+                    slot.is_settled()
+                        || slot
+                            .progress()
+                            .is_some_and(|progress| progress.published_luma_rows() >= need as usize)
+                }
+                _ => true,
+            })
+    }
+
     /// Whether every named reference frame has settled, which admits every row.
     pub(super) fn is_ready(&self) -> bool {
         self.settle.is_ready()

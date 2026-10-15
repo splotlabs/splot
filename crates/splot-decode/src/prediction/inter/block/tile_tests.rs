@@ -65,12 +65,10 @@ fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
         entries: Vec::new(),
         residual_blocks: Vec::new(),
         temporal: Vec::new(),
-        motion_storage: None,
         flag_log: Vec::new(),
         filter_records: TileFilterRecords::default(),
         residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
         motion_folded: false,
-        motion_derived: false,
         failure: ReconRowFailure::Terminal(malformed_tile_error(offset)),
     };
     let mut resolved = false;
@@ -339,12 +337,10 @@ fn failed_frame_rows_left_unclaimed_do_not_pin_the_parse_slot() {
         entries: Vec::new(),
         residual_blocks: Vec::new(),
         temporal: Vec::new(),
-        motion_storage: None,
         flag_log: Vec::new(),
         filter_records: TileFilterRecords::default(),
         residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
         motion_folded: false,
-        motion_derived: false,
         failure: ReconRowFailure::None,
     };
     progress.publish_row(row(&progress, 0));
@@ -572,12 +568,10 @@ fn frame_filter_publication_returns_producer_capacity_before_row_replay() {
             entries: Vec::new(),
             residual_blocks: Vec::new(),
             temporal: Vec::new(),
-            motion_storage: None,
             flag_log: Vec::new(),
             filter_records: records,
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
             motion_folded: false,
-            motion_derived: false,
             failure: ReconRowFailure::None,
         };
         records = progress.publish_row(row);

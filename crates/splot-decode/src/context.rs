@@ -50,10 +50,11 @@ impl DecodeContext {
     pub fn new(runtime: DecodeRuntimeConfig) -> Result<Self> {
         let pool = WorkerPool::new(runtime.thread_count)?;
         let frame_delay = runtime.frame_delay.resolve(pool.threads());
+        let rows = crate::pipeline::row_scheduler(pool.threads())?;
         Ok(Self {
             runtime,
             pool,
-            session: crate::pipeline::DecodeSession::new(frame_delay),
+            session: crate::pipeline::DecodeSession::new(frame_delay, rows),
         })
     }
 

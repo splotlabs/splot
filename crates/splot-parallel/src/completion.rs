@@ -92,6 +92,7 @@ impl<V> CompletionCell<V> {
     pub fn set(&self, value: V) -> Result<(), V> {
         self.value.set(value)?;
         notify_bound_pool_progress(&self.progress);
+        crate::rows::wake_all();
         if self.admission_state.swap(SET, Ordering::AcqRel) == REGISTERED
             && let Some(waiter) = self.first_waiter.get().and_then(WeakWaiter::upgrade)
         {

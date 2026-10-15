@@ -559,10 +559,6 @@ impl<T: ReconSample> PendingInterWalk<'_, T> {
             marker: core::marker::PhantomData,
         })
     }
-    pub(crate) fn run(mut self) -> Result<DeferredInterWalk<T>> {
-        while !self.parse_units(core::num::NonZeroUsize::MAX)? {}
-        self.finish()
-    }
 }
 
 impl<T: ReconSample> DeferredInterWalk<T> {
@@ -583,13 +579,6 @@ impl<T: ReconSample> DeferredInterWalk<T> {
 }
 
 impl<T: ReconSample> InterWalkEarly<T> {
-    /// Shares the reference motion handles that gate this frame's temporal
-    /// prelude.
-    pub(crate) fn motion_dependencies(&self) -> RefSlots<Option<MotionFieldHandle>> {
-        self.reference
-            .motion_dependencies(self.ref_frame_idx.as_slice())
-    }
-
     /// Runs the temporal prelude and builds the admission scheduler, which is
     /// everything the § 8.2 pass does not have to have finished for.
     pub(crate) fn prepare_scheduled(

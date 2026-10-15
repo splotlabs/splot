@@ -44,6 +44,7 @@ pub(crate) use frame_store::DecodeSession;
 use frame_store::FrameStore;
 pub(crate) mod frame_pipeline;
 pub(crate) mod frame_progress;
+pub(crate) mod frame_tasks;
 pub(crate) mod inflight;
 pub(crate) mod output_effects;
 mod output_schedule;
@@ -96,7 +97,7 @@ pub(crate) fn decode_frames_from_plan(
     decode_frames_from_plan_impl(
         &mut source,
         options,
-        &DecodeSession::new(NonZeroUsize::MIN),
+        &DecodeSession::new(NonZeroUsize::MIN, None),
         |_| Ok(()),
         true,
         |_| Ok(()),
@@ -546,11 +547,6 @@ fn decode_frames_from_plan_impl<'job>(
         .min(NonZeroUsize::new(splot_parallel::current_pool_width()).unwrap_or(NonZeroUsize::MIN));
     let mut retained = session.take(pipeline_capacity);
     retained.begin(retain_decoded_frames);
-    let depth = pipeline_capacity.get();
-    let mut entropy_eight =
-        frame_pipeline::EntropyContexts::new(depth, core::mem::take(&mut retained.entropy_eight));
-    let mut entropy_ten =
-        frame_pipeline::EntropyContexts::new(depth, core::mem::take(&mut retained.entropy_ten));
     let admission: splot_parallel::AdmissionScheduler<'job, frame_pipeline::FrameTask<'job>> =
         splot_parallel::AdmissionScheduler::new();
     let decoded = splot_parallel::ready_task_scope(|scope| {
@@ -559,7 +555,7 @@ fn decode_frames_from_plan_impl<'job>(
                 source,
                 options,
                 &mut retained,
-                (&mut entropy_eight, &mut entropy_ten),
+                session.rows(),
                 preflight,
                 retain_decoded_frames,
                 emit,
@@ -569,15 +565,26 @@ fn decode_frames_from_plan_impl<'job>(
         })
     })??;
     admission.finish()?;
-    retained.entropy_eight = entropy_eight.into_retained();
-    retained.entropy_ten = entropy_ten.into_retained();
     session.keep(retained);
     Ok(decoded)
 }
 
-type EntropyPair<'a, 'job> = (
-    &'a mut frame_pipeline::EntropyContexts<'job, u8>,
-    &'a mut frame_pipeline::EntropyContexts<'job, u16>,
+/// Starts the row scheduler of a context with more than one worker thread.
+///
+/// # Errors
+/// Returns [`crate::DecodeError::Pool`] when a worker thread cannot start.
+pub(crate) fn row_scheduler(
+    threads: NonZeroUsize,
+) -> Result<Option<Arc<splot_parallel::RowScheduler>>> {
+    if threads.get() <= 1 {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(splot_parallel::RowScheduler::new(threads)?)))
+}
+
+type SplitPair<'a> = (
+    &'a mut frame_tasks::SplitFrames<u8>,
+    &'a mut frame_tasks::SplitFrames<u16>,
 );
 
 /// Runs one decode over its retained storage, and resolves the run's outcome
@@ -591,7 +598,7 @@ fn drive_frames<'job, 'scope>(
     source: &mut dyn UnitSource,
     options: &'job DecodeOptions,
     retained: &mut frame_store::RetainedDecode,
-    entropy: EntropyPair<'_, 'job>,
+    rows: Option<&splot_parallel::RowScheduler>,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
     retain_decoded_frames: bool,
     emit: impl FnMut(&PipelineFrame) -> Result<()>,
@@ -608,6 +615,8 @@ where
         lane,
         frames,
         input_scratch,
+        split_eight,
+        split_ten,
         ..
     } = retained;
     let decoded = decode_frames_in_order(
@@ -618,10 +627,11 @@ where
         emit,
         scope,
         admission,
+        rows,
         ring,
         lane,
         frames,
-        entropy,
+        (split_eight, split_ten),
         scratch_eight,
         scratch_ten,
         input_scratch,
@@ -629,10 +639,79 @@ where
     ring.harvest_all(scratch_eight, scratch_ten, &|| {
         admission.assist_ready(scope)
     });
+    if let Some(rows) = rows {
+        split_eight.drain(rows);
+        split_ten.drain(rows);
+    }
     match ring.take_failure() {
         Some(failure) => Err(failure),
         None => decoded,
     }
+}
+
+/// Hands one single-tile inter frame to the row scheduler and returns the
+/// handles the driver records for it before its samples exist.
+#[allow(clippy::too_many_arguments)]
+fn push_split_inter<T: frame_tasks::SplitSample>(
+    split: &mut frame_tasks::SplitFrames<T>,
+    rows: &splot_parallel::RowScheduler,
+    ring: &mut inflight::InflightRing,
+    frames: &mut FrameStore,
+    decode_scratch: &mut inter::InterDecodeScratch<T>,
+    options: &DecodeOptions,
+    sequence: &SequenceHeader,
+    shared_sequence: &mut Option<Arc<SequenceHeader>>,
+    candidate: &DecodePlannedObu,
+    unit: &crate::bitstream::byte_stream::UnitBytes,
+    core: Arc<FrameHeaderCore>,
+    reference: inter::InterReferenceState<T>,
+    frame_index: usize,
+) -> Result<(
+    inflight::PipelineFrameSlot,
+    Arc<FrameHeaderCore>,
+    inter::FrameProducts,
+    inter::MotionFieldHandle,
+)> {
+    let slot_index = split.reserve(rows, *options);
+    let parse_progress = ring.claim_parse_slot();
+    let records = decode_scratch.take_frame_filter_records();
+    let quantizer = crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
+    let shared = frame_pipeline::shared_sequence(shared_sequence, sequence);
+    let geometry = inter::FrameDecodeGeometry::new(&core, sequence, T::BIT_DEPTH, false)?;
+    let motion = frames.reserve_motion(geometry.motion_layout())?;
+    let (slot, finish) =
+        inflight::reserve_pending_slot(geometry.info(), T::erase, ring, frames, frame_index)?;
+    let entropy = inter::entropy_dependencies(&core, sequence, &reference);
+    let motion_deps = core
+        .inter
+        .as_ref()
+        .map_or_else(reference_buffer::RefSlots::default, |inter| {
+            reference.motion_dependencies(&inter.ref_frame_idx)
+        });
+    let writers = frames.reserve_products()?;
+    let publications = writers.handles();
+    split.push(
+        rows,
+        slot_index,
+        frame_tasks::SplitFrameInputs {
+            records,
+            candidate: candidate.clone(),
+            core: Arc::clone(&core),
+            sequence: shared,
+            reference,
+            bit_depth: T::BIT_DEPTH,
+            geometry,
+            motion: motion.clone(),
+            parse_progress,
+            quantizer,
+            products: writers,
+            unit: unit.clone(),
+            entropy,
+            motion_deps,
+            finish,
+        },
+    );
+    Ok((slot, core, publications, motion))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -644,10 +723,11 @@ fn decode_frames_in_order<'job, 'scope>(
     mut emit: impl FnMut(&PipelineFrame) -> Result<()>,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
     admission: &'scope splot_parallel::AdmissionScheduler<'job, frame_pipeline::FrameTask<'job>>,
+    rows: Option<&splot_parallel::RowScheduler>,
     ring: &mut inflight::InflightRing,
     recon_lane: &mut frame_pipeline::ReconAdmissionLane,
     frames: &mut FrameStore,
-    (entropy_eight, entropy_ten): EntropyPair<'_, 'job>,
+    (split_eight, split_ten): SplitPair<'_>,
     decode_scratch_eight: &mut inter::InterDecodeScratch<u8>,
     decode_scratch_ten: &mut inter::InterDecodeScratch<u16>,
     input_scratch: &mut InputScratch,
@@ -1001,27 +1081,16 @@ where
 
     *obu_storage = recycle(leading_buffer);
     let mut decoding_initial_tu = true;
-    let mut pending_entropy = frame_pipeline::PendingEntropyQueue::default();
     let mut shared_sequence = None;
     let mut tip_eight = Vec::new();
     let mut tip_ten = Vec::new();
     loop {
-        entropy_eight.retire_completed();
-        entropy_ten.retire_completed();
         if !frames.has_space() {
-            frame_pipeline::drain_entropy_before_barrier(
-                &mut pending_entropy,
-                scope,
-                admission,
-                recon_lane,
-            );
             ring.harvest_all(decode_scratch_eight, decode_scratch_ten, &|| {
                 admission.assist_ready(scope)
             });
             emission_queue.flush(frames, &mut emit)?;
             loop {
-                entropy_eight.retire_completed();
-                entropy_ten.retire_completed();
                 reclaim_unowned_frames(
                     frames,
                     &reference,
@@ -1045,12 +1114,6 @@ where
         let next_candidate = &next_candidate;
         match next_candidate.obu_type() {
             ObuType::LeadingSef | ObuType::RegularSef => {
-                frame_pipeline::drain_entropy_before_barrier(
-                    &mut pending_entropy,
-                    scope,
-                    admission,
-                    recon_lane,
-                );
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
                 let obus = RuntimeStream::obus(&unit, &mut obu_buffer)?;
                 let (sef_prefix_obus, sef_envelope) =
@@ -1331,91 +1394,34 @@ where
                             &sequence,
                             inter_envelope.offset,
                         )?;
-                        let parse_progress = if splot_parallel::current_pool_width() > 1
-                            && inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
-                        {
-                            frame_pipeline::prepare_entropy_submission(
-                                &mut pending_entropy,
-                                ring.capacity(),
-                                scope,
-                                admission,
-                                recon_lane,
-                            );
-                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                                admission.assist_ready(scope)
-                            });
-                            let entropy_context = entropy_eight.claim();
-                            Some((ring.claim_parse_slot(), entropy_context))
-                        } else {
-                            None
-                        };
+                        let split = rows.filter(|_| {
+                            inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
+                        });
                         let _user_qm_scope =
                             crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
                         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
-                        if let Some((parse_progress, entropy_context)) = parse_progress {
-                            let records = decode_scratch_eight.take_frame_filter_records();
-                            let quantizer =
-                                crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
-                            let shared =
-                                frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
-                            let geometry = inter::FrameDecodeGeometry::new(
-                                &inter_core,
-                                &sequence,
-                                BitDepth::Eight,
-                                false,
-                            )?;
-                            let motion = frames.reserve_motion(geometry.motion_layout())?;
-                            let (slot, finish) = inflight::reserve_pending_slot(
-                                geometry.info(),
-                                inflight::PipelineFrameSlot::Eight,
+                        if let Some(rows) = split {
+                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
+                                admission.assist_ready(scope)
+                            });
+                            push_split_inter::<u8>(
+                                split_eight,
+                                rows,
                                 ring,
                                 frames,
+                                decode_scratch_eight,
+                                options,
+                                &sequence,
+                                &mut shared_sequence,
+                                next_candidate,
+                                &unit,
+                                inter_core,
+                                inter_state,
                                 frame_index,
-                            )?;
-                            let dependencies =
-                                inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
-                            let writers = frames.reserve_products()?;
-                            let publications = writers.handles();
-                            let products =
-                                (slot, Arc::clone(&inter_core), publications, motion.clone());
-                            let result = frame_pipeline::schedule_entropy(
-                                inter::InterFrameStart {
-                                    records,
-                                    candidate: next_candidate.clone(),
-                                    core: inter_core,
-                                    sequence: shared,
-                                    options,
-                                    reference: inter_state,
-                                    bit_depth: BitDepth::Eight,
-                                    geometry,
-                                    motion,
-                                    parse_progress,
-                                    quantizer,
-                                    products: writers,
-                                },
-                                unit.clone(),
-                                entropy_context,
-                                frame_index,
-                                products.3.clone(),
-                                &dependencies,
-                                admission,
-                                scope,
-                            );
-                            pending_entropy.push_back(frame_pipeline::PendingEntropy::Eight {
-                                frame_index,
-                                result,
-                                finish,
-                            });
-                            products
+                            )?
                         } else if inter_envelope.header.obu_type.is_tip_frame() {
-                            frame_pipeline::drain_entropy_before_barrier(
-                                &mut pending_entropy,
-                                scope,
-                                admission,
-                                recon_lane,
-                            );
                             ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
                                 admission.assist_ready(scope)
                             });
@@ -1460,12 +1466,6 @@ where
                             );
                             (slot, core, publications, motion)
                         } else {
-                            frame_pipeline::drain_entropy_before_barrier(
-                                &mut pending_entropy,
-                                scope,
-                                admission,
-                                recon_lane,
-                            );
                             ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
                                 admission.assist_ready(scope)
                             });
@@ -1549,91 +1549,34 @@ where
                             &sequence,
                             inter_envelope.offset,
                         )?;
-                        let parse_progress = if splot_parallel::current_pool_width() > 1
-                            && inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
-                        {
-                            frame_pipeline::prepare_entropy_submission(
-                                &mut pending_entropy,
-                                ring.capacity(),
-                                scope,
-                                admission,
-                                recon_lane,
-                            );
-                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                                admission.assist_ready(scope)
-                            });
-                            let entropy_context = entropy_ten.claim();
-                            Some((ring.claim_parse_slot(), entropy_context))
-                        } else {
-                            None
-                        };
+                        let split = rows.filter(|_| {
+                            inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
+                        });
                         let _user_qm_scope =
                             crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
                         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
-                        if let Some((parse_progress, entropy_context)) = parse_progress {
-                            let records = decode_scratch_ten.take_frame_filter_records();
-                            let quantizer =
-                                crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
-                            let shared =
-                                frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
-                            let geometry = inter::FrameDecodeGeometry::new(
-                                &inter_core,
-                                &sequence,
-                                BitDepth::Ten,
-                                false,
-                            )?;
-                            let motion = frames.reserve_motion(geometry.motion_layout())?;
-                            let (slot, finish) = inflight::reserve_pending_slot(
-                                geometry.info(),
-                                inflight::PipelineFrameSlot::Ten,
+                        if let Some(rows) = split {
+                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
+                                admission.assist_ready(scope)
+                            });
+                            push_split_inter::<u16>(
+                                split_ten,
+                                rows,
                                 ring,
                                 frames,
+                                decode_scratch_ten,
+                                options,
+                                &sequence,
+                                &mut shared_sequence,
+                                next_candidate,
+                                &unit,
+                                inter_core,
+                                inter_state,
                                 frame_index,
-                            )?;
-                            let dependencies =
-                                inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
-                            let writers = frames.reserve_products()?;
-                            let publications = writers.handles();
-                            let products =
-                                (slot, Arc::clone(&inter_core), publications, motion.clone());
-                            let result = frame_pipeline::schedule_entropy(
-                                inter::InterFrameStart {
-                                    records,
-                                    candidate: next_candidate.clone(),
-                                    core: inter_core,
-                                    sequence: shared,
-                                    options,
-                                    reference: inter_state,
-                                    bit_depth: BitDepth::Ten,
-                                    geometry,
-                                    motion,
-                                    parse_progress,
-                                    quantizer,
-                                    products: writers,
-                                },
-                                unit.clone(),
-                                entropy_context,
-                                frame_index,
-                                products.3.clone(),
-                                &dependencies,
-                                admission,
-                                scope,
-                            );
-                            pending_entropy.push_back(frame_pipeline::PendingEntropy::Ten {
-                                frame_index,
-                                result,
-                                finish,
-                            });
-                            products
+                            )?
                         } else if inter_envelope.header.obu_type.is_tip_frame() {
-                            frame_pipeline::drain_entropy_before_barrier(
-                                &mut pending_entropy,
-                                scope,
-                                admission,
-                                recon_lane,
-                            );
                             ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
                                 admission.assist_ready(scope)
                             });
@@ -1678,12 +1621,6 @@ where
                             );
                             (slot, core, publications, motion)
                         } else {
-                            frame_pipeline::drain_entropy_before_barrier(
-                                &mut pending_entropy,
-                                scope,
-                                admission,
-                                recon_lane,
-                            );
                             ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
                                 admission.assist_ready(scope)
                             });
@@ -1824,12 +1761,6 @@ where
                 }
             }
             ObuType::ClosedLoopKey | ObuType::OpenLoopKey => {
-                frame_pipeline::drain_entropy_before_barrier(
-                    &mut pending_entropy,
-                    scope,
-                    admission,
-                    recon_lane,
-                );
                 let starts_new_sequence = next_candidate.obu_type() == ObuType::ClosedLoopKey;
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
                 let obus = RuntimeStream::obus(&unit, &mut obu_buffer)?;
@@ -2087,12 +2018,6 @@ where
         }
     }
 
-    frame_pipeline::drain_entropy_before_barrier(
-        &mut pending_entropy,
-        scope,
-        admission,
-        recon_lane,
-    );
     if !output_frame_limit_reached(options, scheduler.emitted_count) {
         let flushed = scheduler.flush_all();
         charge_emitted_outputs(

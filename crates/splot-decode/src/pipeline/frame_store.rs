@@ -21,7 +21,8 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::frame_pipeline::{ReconAdmissionLane, RetainedEntropy};
+use super::frame_pipeline::ReconAdmissionLane;
+use super::frame_tasks::SplitFrames;
 use super::inflight::InflightRing;
 use crate::prediction::inter::InterDecodeScratch;
 use crate::support::decode_buffers::DecodeBuffers;
@@ -30,6 +31,9 @@ use crate::support::decode_buffers::DecodeBuffers;
 /// between decode calls, as dav2d keeps its frame contexts.
 pub(crate) struct DecodeSession {
     frame_delay: NonZeroUsize,
+    /// The row scheduler of a multi-threaded context, which the split inter
+    /// frames run on.
+    rows: Option<Arc<splot_parallel::RowScheduler>>,
     retained: Mutex<Option<RetainedDecode>>,
     /// Whether frames that an outside owner still holds leave the store.
     detach_held: bool,
@@ -47,9 +51,13 @@ impl core::fmt::Debug for DecodeSession {
 }
 
 impl DecodeSession {
-    pub(crate) fn new(frame_delay: NonZeroUsize) -> Self {
+    pub(crate) fn new(
+        frame_delay: NonZeroUsize,
+        rows: Option<Arc<splot_parallel::RowScheduler>>,
+    ) -> Self {
         Self {
             frame_delay,
+            rows,
             retained: Mutex::new(None),
             detach_held: false,
             planes: Mutex::new(None),
@@ -58,11 +66,19 @@ impl DecodeSession {
 
     /// A session whose frames leave the store while an outside owner, such
     /// as a caller's picture, still holds their samples.
-    pub(crate) fn detaching_held(frame_delay: NonZeroUsize) -> Self {
+    pub(crate) fn detaching_held(
+        frame_delay: NonZeroUsize,
+        rows: Option<Arc<splot_parallel::RowScheduler>>,
+    ) -> Self {
         Self {
             detach_held: true,
-            ..Self::new(frame_delay)
+            ..Self::new(frame_delay, rows)
         }
+    }
+
+    /// The row scheduler, or `None` when the decode runs on one thread.
+    pub(crate) fn rows(&self) -> Option<&splot_parallel::RowScheduler> {
+        self.rows.as_deref()
     }
 
     /// The plane pool of the last decode that started on this session.
@@ -106,8 +122,8 @@ pub(super) struct RetainedDecode {
     pub(super) ring: InflightRing,
     pub(super) lane: ReconAdmissionLane,
     pub(super) frames: FrameStore,
-    pub(super) entropy_eight: RetainedEntropy<u8>,
-    pub(super) entropy_ten: RetainedEntropy<u16>,
+    pub(super) split_eight: SplitFrames<u8>,
+    pub(super) split_ten: SplitFrames<u16>,
     pub(super) input_scratch: crate::bitstream::byte_stream::InputScratch,
 }
 
@@ -125,8 +141,8 @@ impl RetainedDecode {
             ring: InflightRing::new(depth, buffers),
             lane: ReconAdmissionLane::new(depth.get()),
             frames: FrameStore::new(false, depth.get()),
-            entropy_eight: RetainedEntropy::default(),
-            entropy_ten: RetainedEntropy::default(),
+            split_eight: SplitFrames::new(depth.get(), width),
+            split_ten: SplitFrames::new(depth.get(), width),
             input_scratch: crate::bitstream::byte_stream::InputScratch::default(),
         }
     }

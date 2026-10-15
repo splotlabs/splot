@@ -31,6 +31,11 @@ impl<T> EntropyProductHandle<T> {
         self.0.get().and_then(Option::as_ref)
     }
 
+    /// Whether the producer published or failed.
+    pub(crate) fn is_settled(&self) -> bool {
+        self.0.is_set()
+    }
+
     pub(crate) fn condition(&self) -> Condition<'_> {
         Condition::completion(self.0.as_ref())
     }
@@ -78,6 +83,11 @@ impl CcsoGridHandle {
 
     pub(crate) fn fail(&self) {
         let _ = self.0.set(None);
+    }
+
+    /// Whether the producer published or failed.
+    pub(crate) fn is_settled(&self) -> bool {
+        self.0.is_set()
     }
 
     pub(crate) fn product(&self) -> Option<&Option<Arc<CcsoUnitGrid>>> {

@@ -12,13 +12,14 @@
 //! older frames are claimed first, so the oldest frame always has a row that
 //! can run or is running: the pipeline cannot stall.
 //!
-//! A [`RowProgress::publish`] takes the scheduler lock to signal, so a worker
-//! that scanned the counters before the publication is woken after it.
+//! A publication raises a generation counter before it signals, and a worker
+//! reads that counter before it scans, so a scan that missed the publication
+//! never parks on it.
 
 use core::num::NonZeroUsize;
 use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
 
 use parking_lot::{Condvar, Mutex};
@@ -94,7 +95,7 @@ impl RowProgress {
 pub struct Stage {
     next: AtomicUsize,
     running: AtomicBool,
-    rows: usize,
+    rows: AtomicUsize,
 }
 
 impl Stage {
@@ -104,7 +105,7 @@ impl Stage {
         Self {
             next: AtomicUsize::new(0),
             running: AtomicBool::new(false),
-            rows,
+            rows: AtomicUsize::new(rows),
         }
     }
 
@@ -112,7 +113,13 @@ impl Stage {
     pub fn reset(&mut self, rows: usize) {
         *self.next.get_mut() = 0;
         *self.running.get_mut() = false;
-        self.rows = rows;
+        *self.rows.get_mut() = rows;
+    }
+
+    /// Sets the row count once the frame's geometry is known, before any
+    /// row of this stage is claimed.
+    pub fn set_rows(&self, rows: usize) {
+        self.rows.store(rows, Ordering::Release);
     }
 
     /// Claims the next row when no row is running and `ready(row)` holds.
@@ -121,7 +128,7 @@ impl Stage {
             return None;
         }
         let row = self.next.load(Ordering::Acquire);
-        if row >= self.rows || !ready(row) {
+        if row >= self.rows() || !ready(row) {
             return None;
         }
         self.running.store(true, Ordering::Release);
@@ -134,6 +141,13 @@ impl Stage {
         self.running.store(false, Ordering::Release);
     }
 
+    /// Releases the claimed `row` unrun, so it can be claimed again once its
+    /// inputs are published.
+    pub fn retry(&self, row: usize) {
+        self.next.store(row, Ordering::Release);
+        self.running.store(false, Ordering::Release);
+    }
+
     /// The next row to run.
     #[must_use]
     pub fn next(&self) -> usize {
@@ -142,14 +156,94 @@ impl Stage {
 
     /// The rows this stage runs.
     #[must_use]
-    pub const fn rows(&self) -> usize {
-        self.rows
+    pub fn rows(&self) -> usize {
+        self.rows.load(Ordering::Acquire)
     }
 
     /// Whether every row has run.
     #[must_use]
     pub fn is_finished(&self) -> bool {
-        !self.running.load(Ordering::Acquire) && self.next() >= self.rows
+        !self.running.load(Ordering::Acquire) && self.next() >= self.rows()
+    }
+}
+
+const PENDING: u8 = 0;
+const READY: u8 = 1;
+const RUNNING: u8 = 2;
+const DONE: u8 = 3;
+
+/// A stage whose rows are independent: any ready row runs, in any order,
+/// several at a time.
+#[derive(Debug, Default)]
+pub struct ParallelStage {
+    rows: Mutex<Vec<u8>>,
+}
+
+impl ParallelStage {
+    /// A stage with no rows yet.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            rows: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Sets the row count once the frame's geometry is known. Every row
+    /// starts pending.
+    pub fn set_rows(&self, rows: usize) {
+        let mut states = self.rows.lock();
+        states.clear();
+        states.resize(rows, PENDING);
+    }
+
+    /// Claims the first pending row for which `ready(row)` holds.
+    pub fn claim(&self, mut ready: impl FnMut(usize) -> bool) -> Option<usize> {
+        let mut states = self.rows.lock();
+        let row = states
+            .iter()
+            .enumerate()
+            .position(|(row, state)| *state == PENDING && ready(row))?;
+        states[row] = RUNNING;
+        Some(row)
+    }
+
+    /// Marks `row` as runnable, for a producer that knows when its input lands.
+    pub fn ready(&self, row: usize) {
+        if let Some(state) = self.rows.lock().get_mut(row)
+            && *state == PENDING
+        {
+            *state = READY;
+        }
+    }
+
+    /// Claims the first row a producer marked [`ready`](Self::ready).
+    pub fn claim_ready(&self) -> Option<usize> {
+        let mut states = self.rows.lock();
+        let row = states.iter().position(|state| *state == READY)?;
+        states[row] = RUNNING;
+        Some(row)
+    }
+
+    /// Marks the claimed `row` as run.
+    pub fn finish(&self, row: usize) {
+        if let Some(state) = self.rows.lock().get_mut(row) {
+            *state = DONE;
+        }
+    }
+
+    /// Whether `row` has run.
+    #[must_use]
+    pub fn is_done(&self, row: usize) -> bool {
+        self.rows
+            .lock()
+            .get(row)
+            .is_some_and(|state| *state == DONE)
+    }
+
+    /// Whether every row has run.
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.rows.lock().iter().all(|state| *state == DONE)
     }
 }
 
@@ -159,10 +253,64 @@ struct Frames {
     shutdown: bool,
 }
 
+/// The scheduler's shared state and its wake-up event.
+///
+/// A worker reads `generation` before it scans the frames. A publisher raises
+/// `generation` and signals only when a waiter is registered, so a scan that
+/// missed the publication sees the raised generation and does not park. A
+/// worker drops its handle on a frame before it pops the finished frame, so
+/// the pop's signal is the last change a driver waiting for the frame's sole
+/// owner needs to see.
 #[derive(Default)]
 struct Core {
     frames: Mutex<Frames>,
+    generation: AtomicU64,
+    waiters: AtomicUsize,
+    parked: AtomicUsize,
+    /// Set while a single-worker signal is pending, so a burst of
+    /// publications wakes one worker once; that worker clears it before it
+    /// parks again.
+    signaled: AtomicBool,
+    park: Mutex<()>,
     changed: Condvar,
+}
+
+/// Every live scheduler, so publications made through other primitives can
+/// wake row workers while both scheduler families coexist.
+static SCHEDULERS: Mutex<Vec<Weak<Core>>> = Mutex::new(Vec::new());
+
+/// Wakes one worker of every live scheduler.
+pub(crate) fn wake_all() {
+    let schedulers = SCHEDULERS.lock();
+    for core in schedulers.iter().filter_map(Weak::upgrade) {
+        core.notify(false);
+    }
+}
+
+/// A handle that makes [`RowProgress`] counters for one scheduler.
+#[derive(Clone, Debug)]
+pub struct RowWake(Arc<Core>);
+
+impl RowWake {
+    /// A wake with no workers, for a decode that runs on one thread.
+    #[must_use]
+    pub fn detached() -> Self {
+        Self(Arc::new(Core::default()))
+    }
+
+    /// A row counter whose publications wake this scheduler.
+    #[must_use]
+    pub fn progress(&self) -> RowProgress {
+        RowProgress {
+            value: Arc::new(AtomicUsize::new(0)),
+            core: Arc::clone(&self.0),
+        }
+    }
+
+    /// Wakes one worker after a frame advanced a counter of its own.
+    pub fn notify(&self) {
+        self.0.notify(false);
+    }
 }
 
 impl core::fmt::Debug for Core {
@@ -172,43 +320,85 @@ impl core::fmt::Debug for Core {
 }
 
 impl Core {
-    /// Signals after a publication. Taking the lock orders the signal after
-    /// any scan that missed the publication, so that scanner wakes.
+    /// Raises the generation and signals one waiter, or all of them.
+    ///
+    /// A single-worker signal is skipped while one is already pending; a
+    /// worker that found work signals through [`Self::pass_on`] instead, so
+    /// the next idle worker still looks for more.
     fn notify(&self, all: bool) {
-        let frames = self.frames.lock();
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        if self.waiters.load(Ordering::SeqCst) == 0 {
+            return;
+        }
+        if !all && self.signaled.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.signal(all);
+    }
+
+    /// Signals one idle worker after a claim, whether or not a signal is
+    /// pending, so a burst of ready rows spreads across the workers.
+    fn pass_on(&self) {
+        self.signaled.store(true, Ordering::SeqCst);
+        if self.waiters.load(Ordering::SeqCst) != 0 {
+            self.signal(false);
+        }
+    }
+
+    fn signal(&self, all: bool) {
+        let park = self.park.lock();
         if all {
             self.changed.notify_all();
         } else {
             self.changed.notify_one();
         }
-        drop(frames);
+        drop(park);
+    }
+
+    /// Parks until the generation moves past `observed`.
+    fn wait_if_unchanged(&self, observed: u64) {
+        let mut park = self.park.lock();
+        self.waiters.fetch_add(1, Ordering::SeqCst);
+        self.signaled.store(false, Ordering::SeqCst);
+        if self.generation.load(Ordering::SeqCst) == observed {
+            self.parked.fetch_add(1, Ordering::Relaxed);
+            self.changed.wait(&mut park);
+            self.parked.fetch_sub(1, Ordering::Relaxed);
+        }
+        self.waiters.fetch_sub(1, Ordering::SeqCst);
+        drop(park);
     }
 
     fn worker(&self) {
-        let mut frames = self.frames.lock();
         loop {
+            let observed = self.generation.load(Ordering::SeqCst);
+            let frames = self.frames.lock();
             let claimed = frames
                 .live
                 .iter()
                 .find_map(|frame| frame.claim().map(|claim| (Arc::clone(frame), claim)));
             let Some((frame, claim)) = claimed else {
-                if frames.shutdown {
+                let shutdown = frames.shutdown;
+                drop(frames);
+                if shutdown {
                     return;
                 }
-                self.changed.wait(&mut frames);
+                self.wait_if_unchanged(observed);
                 continue;
             };
-            self.changed.notify_one();
             drop(frames);
+            self.pass_on();
             frame.run(claim);
-            frames = self.frames.lock();
+            drop(frame);
+            let mut frames = self.frames.lock();
             let mut finished = false;
             while frames.live.front().is_some_and(|front| front.done()) {
                 frames.live.pop_front();
                 finished = true;
             }
+            drop(frames);
             if finished {
-                self.changed.notify_all();
+                self.notify(true);
             }
         }
     }
@@ -228,6 +418,11 @@ impl RowScheduler {
     /// Returns [`ParallelError::PoolBuild`] when a thread cannot start.
     pub fn new(threads: NonZeroUsize) -> Result<Self, ParallelError> {
         let core = Arc::new(Core::default());
+        {
+            let mut schedulers = SCHEDULERS.lock();
+            schedulers.retain(|weak| weak.strong_count() != 0);
+            schedulers.push(Arc::downgrade(&core));
+        }
         let mut workers = Vec::with_capacity(threads.get());
         for index in 0..threads.get() {
             let core = Arc::clone(&core);
@@ -246,18 +441,27 @@ impl RowScheduler {
     /// A row counter whose publications wake this scheduler.
     #[must_use]
     pub fn progress(&self) -> RowProgress {
-        RowProgress {
-            value: Arc::new(AtomicUsize::new(0)),
-            core: Arc::clone(&self.core),
-        }
+        self.wake().progress()
+    }
+
+    /// The handle frames use to make counters bound to this scheduler.
+    #[must_use]
+    pub fn wake(&self) -> RowWake {
+        RowWake(Arc::clone(&self.core))
     }
 
     /// Adds the newest frame. Its rows run after every older frame's ready rows.
     pub fn push(&self, frame: Arc<dyn FrameWork>) {
         let mut frames = self.core.frames.lock();
         frames.live.push_back(frame);
-        self.core.changed.notify_one();
         drop(frames);
+        self.core.notify(false);
+    }
+
+    /// Workers parked with nothing to run, for tests.
+    #[cfg(test)]
+    pub(crate) fn parked_workers(&self) -> usize {
+        self.core.parked.load(Ordering::Relaxed)
     }
 
     /// Frames pushed and not yet done.
@@ -269,11 +473,16 @@ impl RowScheduler {
     /// Blocks the driver until `ready()` holds. `ready` runs under the
     /// scheduler lock and is re-checked after every publication.
     pub fn wait(&self, mut ready: impl FnMut() -> bool) {
-        let mut frames = self.core.frames.lock();
-        while !ready() {
-            self.core.changed.wait(&mut frames);
+        loop {
+            let observed = self.core.generation.load(Ordering::SeqCst);
+            let frames = self.core.frames.lock();
+            let done = ready();
+            drop(frames);
+            if done {
+                return;
+            }
+            self.core.wait_if_unchanged(observed);
         }
-        drop(frames);
     }
 
     /// The number of worker threads.
@@ -285,11 +494,8 @@ impl RowScheduler {
 
 impl Drop for RowScheduler {
     fn drop(&mut self) {
-        {
-            let mut frames = self.core.frames.lock();
-            frames.shutdown = true;
-            self.core.changed.notify_all();
-        }
+        self.core.frames.lock().shutdown = true;
+        self.core.notify(true);
         for worker in self.workers.drain(..) {
             let _ = worker.join();
         }
@@ -387,6 +593,74 @@ mod tests {
         stage.finish(1);
         assert!(stage.is_finished());
         assert_eq!(stage.claim(|_| true), None);
+    }
+
+    #[test]
+    fn a_retried_row_stays_claimable_and_set_rows_resizes_a_stage() {
+        let stage = Stage::new(0);
+        assert_eq!(stage.claim(|_| true), None, "no rows yet");
+        stage.set_rows(2);
+        assert_eq!(stage.claim(|_| true), Some(0));
+        stage.retry(0);
+        assert_eq!(stage.claim(|_| true), Some(0), "a retried row runs again");
+        stage.finish(0);
+        assert_eq!(stage.claim(|_| true), Some(1));
+        stage.finish(1);
+        assert!(stage.is_finished());
+    }
+
+    #[test]
+    fn a_parallel_stage_claims_any_ready_row_once_and_finishes_when_all_ran() {
+        let stage = ParallelStage::new();
+        assert!(stage.is_finished(), "no rows is finished");
+        stage.set_rows(3);
+        assert!(!stage.is_finished());
+        assert_eq!(stage.claim(|row| row != 0), Some(1));
+        assert_eq!(stage.claim(|row| row != 0), Some(2), "row 1 is running");
+        assert_eq!(stage.claim(|row| row != 0), None, "row 0 is not ready");
+        stage.finish(2);
+        stage.finish(1);
+        assert_eq!(stage.claim(|_| true), Some(0));
+        assert!(!stage.is_finished(), "row 0 is still running");
+        stage.finish(0);
+        assert!(stage.is_finished());
+        assert_eq!(stage.claim(|_| true), None);
+    }
+
+    #[test]
+    fn a_parallel_stage_hands_out_rows_marked_ready_without_a_predicate() {
+        let stage = ParallelStage::new();
+        stage.set_rows(3);
+        assert_eq!(stage.claim_ready(), None);
+        stage.ready(2);
+        stage.ready(0);
+        assert_eq!(stage.claim_ready(), Some(0));
+        assert_eq!(stage.claim_ready(), Some(2));
+        assert_eq!(stage.claim_ready(), None, "row 1 was never marked ready");
+        stage.finish(0);
+        stage.finish(2);
+        stage.ready(1);
+        assert_eq!(stage.claim_ready(), Some(1));
+        stage.finish(1);
+        assert!(stage.is_finished());
+    }
+
+    #[test]
+    fn a_publication_between_scan_and_park_is_not_lost() {
+        let scheduler = RowScheduler::new(threads(1)).unwrap();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let gate = scheduler.progress();
+        let frame = chain(&scheduler, 0, 1, Some(gate.clone()), |_| 1, &log);
+        scheduler.push(Arc::clone(&frame) as Arc<dyn FrameWork>);
+        for _ in 0..200 {
+            gate.publish(1);
+        }
+        wait_done(&scheduler, &[frame]);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while scheduler.parked_workers() == 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(scheduler.parked_workers(), 1, "the idle worker parks again");
     }
 
     #[test]

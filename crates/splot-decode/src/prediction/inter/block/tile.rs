@@ -12,9 +12,7 @@ use splot_recon::{PlaneId, ReconError};
 use super::*;
 
 mod admission;
-mod mvres;
 
-pub(crate) use admission::ScheduledFrameProgress;
 use admission::TileCommit;
 pub(super) use admission::prepare_scheduled_tile;
 pub(crate) use admission::{ScheduledTileRecon, ScheduledTileWorkspace};
@@ -373,7 +371,6 @@ impl<'payload> TileParser<'payload> {
             entries,
             residual_blocks,
             temporal,
-            motion_storage,
             mut flag_log,
             filter_records,
             residual_planes,
@@ -389,12 +386,10 @@ impl<'payload> TileParser<'payload> {
             entries,
             residual_blocks,
             temporal,
-            motion_storage,
             flag_log,
             filter_records: TileFilterRecords::default(),
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
             motion_folded: false,
-            motion_derived: false,
             failure: ReconRowFailure::None,
         };
         if let Err(error) = reservation {
@@ -482,7 +477,6 @@ impl<'payload> TileParser<'payload> {
                     ReconRowEntry {
                         publication,
                         state: Some(ReconEntryState::Resolve(resolve)),
-                        motion: None,
                         temporal: 0..0,
                     },
                 );
@@ -637,9 +631,6 @@ fn resolve_parser_step(
 pub(super) struct ReconRowEntry {
     pub(super) publication: DecodedLeafPublication,
     state: Option<ReconEntryState>,
-    /// The refinement grid the motion pass derived, which is the only grid the
-    /// entry's prediction may sample through.
-    motion: Option<super::super::mc::StoredMotionGrid>,
     pub(super) temporal: Range<usize>,
 }
 
@@ -712,21 +703,6 @@ impl ReconRowEntry {
             [Mv::ZERO; 2],
             [None, None],
         ))
-    }
-
-    pub(super) fn store_motion(&mut self, grid: Option<super::super::mc::StoredMotionGrid>) {
-        self.motion = grid;
-    }
-
-    pub(super) fn take_motion(
-        &mut self,
-        storage: Option<&std::sync::Arc<super::super::mc::MotionRowStorage>>,
-    ) -> Result<Option<super::super::mc::CompoundMotionGrid>> {
-        let Some(grid) = self.motion.take() else {
-            return Ok(None);
-        };
-        let storage = storage.ok_or_else(invalid_inter_tile_scheduling_state)?;
-        Ok(Some(grid.view(storage)))
     }
 }
 
@@ -884,7 +860,6 @@ pub(super) struct ReconRow {
     pub(super) entries: Vec<ReconRowEntry>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
-    pub(super) motion_storage: Option<std::sync::Arc<super::super::mc::MotionRowStorage>>,
     /// The unit's flag-plane publications, replayed by a resolve pass that runs
     /// on a grid of its own. Empty unless the parser was logging.
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
@@ -893,9 +868,6 @@ pub(super) struct ReconRow {
     /// Whether the prepass already folded this unit's records into the frame's
     /// motion field, which it does for a unit it reconstructed in full.
     pub(super) motion_folded: bool,
-    /// Whether the motion pass already derived every entry's grid and records,
-    /// so no later pass may derive either again.
-    pub(super) motion_derived: bool,
     failure: ReconRowFailure,
 }
 
@@ -1013,7 +985,6 @@ pub(crate) struct ReconRowBuffers {
     pub(super) entries: Vec<ReconRowEntry>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
-    pub(super) motion_storage: Option<std::sync::Arc<super::super::mc::MotionRowStorage>>,
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) filter_records: TileFilterRecords,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
@@ -1112,15 +1083,11 @@ struct ReadyReconRow<T: ReconSample> {
 
 pub(crate) struct InterReconScratchPool<T: ReconSample> {
     available: Mutex<(usize, Vec<deferred_recon::InterReconScratch<T>>)>,
-    /// Refinement-grid storage between a unit's motion pass and its commit.
-    /// Only the units in that window hold one, so a few stay warm for every
-    /// unit of every frame instead of one growing per unit per parse slot.
-    motion_storage: Mutex<Vec<std::sync::Arc<super::mc::MotionRowStorage>>>,
     surfaces: std::sync::OnceLock<admission::SpareSurfaces<T>>,
 }
 
 impl<T: ReconSample> InterReconScratchPool<T> {
-    fn ensure_workers(&self, workers: usize) {
+    pub(crate) fn ensure_workers(&self, workers: usize) {
         let mut pool = self.available.lock();
         let (allocated, available) = &mut *pool;
         while *allocated < workers {
@@ -1147,25 +1114,12 @@ impl<T: ReconSample> InterReconScratchPool<T> {
     fn spare_surfaces(&self) -> admission::SpareSurfaces<T> {
         std::sync::Arc::clone(self.surfaces.get_or_init(std::sync::Arc::default))
     }
-
-    fn take_motion_storage(&self) -> Option<std::sync::Arc<super::mc::MotionRowStorage>> {
-        self.motion_storage.lock().pop()
-    }
-
-    fn recycle_motion_storage(&self, storage: Option<std::sync::Arc<super::mc::MotionRowStorage>>) {
-        if let Some(mut storage) = storage
-            && std::sync::Arc::get_mut(&mut storage).is_some()
-        {
-            self.motion_storage.lock().push(storage);
-        }
-    }
 }
 
 impl<T: ReconSample> Default for InterReconScratchPool<T> {
     fn default() -> Self {
         Self {
             available: Mutex::new((0, Vec::new())),
-            motion_storage: Mutex::new(Vec::new()),
             surfaces: std::sync::OnceLock::new(),
         }
     }
@@ -1331,16 +1285,14 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
         let mut coefficients_loaded = false;
         let _quantizer_scopes = quantizer.install_frame();
         let info = surface.info();
-        if !row.motion_derived {
-            let temporal_capacity = row.entries.iter().fold(0usize, |capacity, entry| {
-                capacity.saturating_add(
-                    entry
-                        .command()
-                        .map_or(0, ReconCommand::temporal_record_capacity),
-                )
-            });
-            let _ = row.temporal.try_reserve(temporal_capacity);
-        }
+        let temporal_capacity = row.entries.iter().fold(0usize, |capacity, entry| {
+            capacity.saturating_add(
+                entry
+                    .command()
+                    .map_or(0, ReconCommand::temporal_record_capacity),
+            )
+        });
+        let _ = row.temporal.try_reserve(temporal_capacity);
         'superblocks: for superblock in &row.superblocks {
             let entry_start = superblock.entries.start;
             let Some(entries) = row.entries.get_mut(superblock.entries.clone()) else {
@@ -1378,38 +1330,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                     coefficients_loaded = true;
                 }
                 let start = row.temporal.len();
-                let result = if row.motion_derived {
-                    entry
-                        .take_motion(row.motion_storage.as_ref())
-                        .and_then(|grid| {
-                            scratch.reconstruct_from_motion(
-                                &command,
-                                surface,
-                                block_decoded,
-                                grid,
-                                &row.residual_blocks,
-                                if shared_coefficients {
-                                    &coefficient_scratch
-                                } else {
-                                    &row.residual_coeffs
-                                },
-                                &deferred_recon::ReconShared {
-                                    reference,
-                                    ref_frame_idx,
-                                    temporal_context,
-                                    sequence,
-                                    core,
-                                    luma_use_tcq,
-                                    residual_use_ddt,
-                                    bit_depth,
-                                    mi_rows,
-                                    mi_cols,
-                                    current_order_hint,
-                                },
-                            )
-                        })
-                        .map(drop)
-                } else {
+                let result = {
                     scratch.reconstruct_logged(
                         &command,
                         surface,
@@ -1436,9 +1357,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                 };
                 match result {
                     Ok(()) => {
-                        if !row.motion_derived {
-                            entry.temporal = start..row.temporal.len();
-                        }
+                        entry.temporal = start..row.temporal.len();
                     }
                     Err(error) => {
                         row.temporal.truncate(start);
@@ -1447,9 +1366,6 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                     }
                 }
             }
-        }
-        if row.motion_derived {
-            return row;
         }
         row.motion_folded = row
             .entries
@@ -2031,7 +1947,7 @@ fn no_decoded_block_error() -> crate::DecodeError {
     crate::DecodeHeaderStateError::InvalidInterTileTraversalState.into()
 }
 
-pub(super) fn invalid_inter_tile_scheduling_state() -> crate::DecodeError {
+pub(crate) fn invalid_inter_tile_scheduling_state() -> crate::DecodeError {
     crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into()
 }
 

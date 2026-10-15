@@ -1120,13 +1120,6 @@ fn resize_output_samples<T: ReconSample>(samples: &mut Vec<T>, len: usize) -> Re
     Ok(())
 }
 
-pub(super) fn keep_motion_candidates<T: ReconSample>(
-    scratch: &mut TipReconstructScratch<T>,
-    candidates: Vec<[Mv; 2]>,
-) {
-    keep_candidates(&mut scratch.grid_candidates, candidates);
-}
-
 pub(super) fn retire_motion_grid<T: ReconSample>(
     scratch: &mut TipReconstructScratch<T>,
     mut grid: Option<mc::CompoundMotionGrid>,

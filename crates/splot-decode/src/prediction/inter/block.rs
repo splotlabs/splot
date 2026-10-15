@@ -5,7 +5,7 @@ use crate::reference::buffer::RefSlots;
 use std::sync::Arc;
 pub(crate) use tile::TileWalkParams;
 pub(crate) use tile::publish_tile_geometry;
-pub(crate) use tile::{InterReconScratchPool, ParseProgress};
+pub(crate) use tile::{InterReconScratchPool, ParseProgress, invalid_inter_tile_scheduling_state};
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
@@ -2135,7 +2135,6 @@ mod filter_records;
 mod frame_parse;
 pub(in crate::prediction::inter) use frame_parse::prepare_scheduled_recon;
 pub(crate) use frame_parse::{InterFrameParse, InterFrameParser, PendingFilterAttach};
-pub(crate) use tile::ScheduledFrameProgress;
 pub(crate) use tile::{ScheduledTileRecon, ScheduledTileWorkspace};
 mod interintra;
 mod intrabc;

@@ -31,8 +31,8 @@ mod compound_average;
 mod optflow;
 mod refinemv;
 use blend::{blend_compound_average, diff_weighted_mask_into, store_clamped_samples};
+pub(crate) use optflow::CompoundMotionGrid;
 use optflow::{CompoundAverageOutput, MotionCell};
-pub(crate) use optflow::{CompoundMotionGrid, MotionRowStorage, StoredMotionGrid};
 pub(crate) use splot_recon::CurrentFrameSurface as WorkspaceSink;
 
 pub(crate) const fn mc_planes(pixel_format: PixelFormat) -> [(PlaneId, u32, u32); 3] {

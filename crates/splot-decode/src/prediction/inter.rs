@@ -469,6 +469,7 @@ fn resolve_initial_frame_cdfs_reusing(
 }
 
 /// Exact pending entropy products one frame's tile parse may consume.
+#[derive(Default)]
 pub(crate) struct EntropyDependencies {
     /// The primary and optional blend CDF slots.
     cdfs: [Option<FrameCdfHandle>; 2],
@@ -477,6 +478,17 @@ pub(crate) struct EntropyDependencies {
 }
 
 impl EntropyDependencies {
+    /// Whether every product this parse reads has been published or failed.
+    pub(crate) fn is_settled(&self) -> bool {
+        self.cdfs.iter().flatten().all(FrameCdfHandle::is_settled)
+            && self
+                .ccso_grids
+                .iter()
+                .flatten()
+                .all(CcsoGridHandle::is_settled)
+            && self.segment_ids.iter().all(SegmentIdMapHandle::is_settled)
+    }
+
     pub(crate) fn conditions(&self) -> impl Iterator<Item = splot_parallel::Condition<'_>> {
         self.cdfs
             .iter()
@@ -2228,7 +2240,8 @@ mod single_ref;
 pub(crate) use block::{
     InterBlockDecodeOutput, InterBlockFacts, InterDecodeScratch, InterFilterInputs,
     InterFrameParse, InterFrameParser, InterReconScratchPool, PendingFilterAttach,
-    ScheduledFrameProgress, ScheduledTileRecon, ScheduledTileWorkspace, decode_inter_blocks,
+    ScheduledTileRecon, ScheduledTileWorkspace, decode_inter_blocks,
+    invalid_inter_tile_scheduling_state,
 };
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{

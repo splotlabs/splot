@@ -83,6 +83,7 @@ impl WatermarkCell {
             return self.current();
         }
         notify_bound_pool_progress(&self.progress);
+        crate::rows::wake_all();
         let mut waiters = self.waiters.lock();
         while waiters
             .peek()

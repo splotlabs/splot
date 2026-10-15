@@ -385,9 +385,10 @@ impl Decoder {
         });
         let driver = Arc::clone(&shared);
         let options = DecodeOptions::new(settings.limits);
+        let rows = crate::pipeline::row_scheduler(pool.threads())?;
         pool.spawn(move || {
             let guard = DriverGuard(driver);
-            let session = DecodeSession::detaching_held(frame_delay);
+            let session = DecodeSession::detaching_held(frame_delay, rows);
             let mut units = ChannelUnits(Arc::clone(&guard.0));
             let result = crate::pipeline::emit_frames(
                 &mut units,

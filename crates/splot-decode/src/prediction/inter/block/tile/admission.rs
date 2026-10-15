@@ -474,36 +474,6 @@ impl<T: ReconSample> TileRecon<T> {
         Ok(())
     }
 
-    fn conditions(
-        &self,
-        index: usize,
-        info: splot_recon::DecodedFrameInfo,
-    ) -> impl Iterator<Item = Condition<'_>> {
-        let rows = self.slots.rows.lock();
-        let mut bounds = row_gate::RowReferenceBounds::default();
-        for ready in self
-            .batch_range(index)
-            .and_then(|range| rows.get(range))
-            .into_iter()
-            .flatten()
-            .filter_map(|row| match row {
-                TileReconRow::Ready(ready) => Some(ready),
-                TileReconRow::Unresolved { .. } | TileReconRow::Taken => None,
-            })
-        {
-            bounds.merge(ready.bounds);
-        }
-        drop(rows);
-        RowReferenceGate::new(
-            &self.reference,
-            &self.core,
-            self.ref_frame_idx.as_slice(),
-            info,
-            &self.temporal,
-        )
-        .conditions(&bounds)
-    }
-
     fn precompute(&self, index: usize, surfaces: &Mutex<SurfaceSource<T>>) -> Result<()> {
         let range = self
             .batch_range(index)
@@ -544,19 +514,6 @@ impl<T: ReconSample> TileRecon<T> {
         };
         let batch = self.workers.with_scratch(|scratch| {
             let _quantizer_scopes = self.quantizer.install_frame();
-            let shared = deferred_recon::ReconShared {
-                reference: &self.reference,
-                ref_frame_idx: self.ref_frame_idx.as_slice(),
-                temporal_context: &self.temporal,
-                sequence: &self.sequence,
-                core: &self.core,
-                luma_use_tcq: self.params.luma_use_tcq,
-                residual_use_ddt: self.params.residual_use_ddt,
-                bit_depth: self.params.bit_depth,
-                mi_rows: self.params.mi_rows,
-                mi_cols: self.params.mi_cols,
-                current_order_hint: self.params.current_order_hint,
-            };
             ready
                 .into_iter()
                 .map(|mut ready| {
@@ -571,18 +528,6 @@ impl<T: ReconSample> TileRecon<T> {
                     scratch.with_installed(|scratch| {
                         let mut lists = core::mem::take(&mut scratch.lists);
                         ready.row.load_parsed(&mut lists);
-                        if !ready.row.has_terminal_error() && !ready.row.motion_derived {
-                            if ready.row.motion_storage.is_none() {
-                                ready.row.motion_storage = self.workers.take_motion_storage();
-                            }
-                            mvres::derive_unit_motion(
-                                &mut ready.row,
-                                ready.surface.as_mut(),
-                                scratch,
-                                &self.motion,
-                                &shared,
-                            );
-                        }
                         let mut ready = precompute_recon_row(
                             ready,
                             scratch,
@@ -643,15 +588,13 @@ impl<T: ReconSample> TileRecon<T> {
         let mut batch = batch;
         for ready in batch.drain(..) {
             let ordinal = ready.row.ordinal;
-            let mut spent = commit.replay(
+            let spent = commit.replay(
                 ready,
                 &self.quantizer,
                 &self.motion,
                 &self.temporal,
                 &context,
             )?;
-            self.workers
-                .recycle_motion_storage(spent.motion_storage.take());
             parse_progress.return_row_buffers(ordinal, spent)?;
         }
         *self
@@ -1196,17 +1139,53 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         self.temporal_plan.len()
     }
 
-    pub(crate) fn resolve_conditions(&self, index: usize) -> impl Iterator<Item = Condition<'_>> {
-        self.temporal_plan
-            .requirements(index)
-            .filter_map(|(slot, band)| {
-                self.recon
-                    .reference
-                    .ref_motion_fields
-                    .get(slot)
-                    .and_then(Option::as_ref)
-                    .and_then(|field| field.band_condition(band))
-            })
+    /// Whether every reference motion band step `index` projects has settled.
+    pub(crate) fn resolve_ready(&self, index: usize) -> bool {
+        self.temporal_plan.requirements(index).all(|(slot, band)| {
+            self.recon
+                .reference
+                .ref_motion_fields
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_none_or(|field| field.band_settled(band))
+        })
+    }
+
+    /// Precomputes one admitted batch without entering the ordered commit spine.
+    pub(crate) fn precompute(&self, index: usize) -> Result<()> {
+        self.recon.precompute(index, &self.pending_surfaces)
+    }
+
+    /// Whether batch `index` is parsed, resolved, and admitted by its
+    /// references' published rows.
+    pub(crate) fn batch_ready(&self, index: usize) -> bool {
+        let Some(range) = self.recon.batch_range(index) else {
+            return false;
+        };
+        if self.parse_progress.cell().current() < range.end {
+            return false;
+        }
+        let mut bounds = row_gate::RowReferenceBounds::default();
+        {
+            let rows = self.recon.slots.rows.lock();
+            let Some(rows) = rows.get(range) else {
+                return false;
+            };
+            for row in rows {
+                match row {
+                    TileReconRow::Ready(ready) => bounds.merge(ready.bounds),
+                    TileReconRow::Unresolved { .. } | TileReconRow::Taken => return false,
+                }
+            }
+        }
+        RowReferenceGate::new(
+            &self.recon.reference,
+            &self.recon.core,
+            self.recon.ref_frame_idx.as_slice(),
+            self.info,
+            &self.recon.temporal,
+        )
+        .is_satisfied(&bounds)
     }
 
     /// Whether the § 8.2 pass failed.
@@ -1215,11 +1194,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// step that waited on it again would spin until the failure settles.
     fn parse_failed(&self) -> bool {
         self.parse_progress.cell().current() == splot_parallel::WatermarkCell::FAILED
-    }
-
-    /// The § 8.2 watermark a stalled resolve step waits on.
-    pub(crate) fn parse_watermark(&self) -> &splot_parallel::WatermarkCell {
-        self.parse_progress.cell()
     }
 
     pub(crate) fn resolve(&self, index: usize) -> Result<(core::ops::Range<usize>, Option<usize>)> {
@@ -1386,22 +1360,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             };
             rows.push(TileReconRow::Unresolved { row, surface: None });
         }
-    }
-
-    pub(crate) fn conditions(&self, index: usize) -> impl Iterator<Item = Condition<'_>> {
-        let range = self.recon.batch_range(index);
-        if let Some(range) = &range {
-            self.materialize_rows(range.end);
-        }
-        range
-            .map(|range| Condition::watermark(self.parse_progress.cell(), range.end))
-            .into_iter()
-            .chain(self.recon.conditions(index, self.info))
-    }
-
-    /// Precomputes one admitted unit without entering the ordered commit spine.
-    pub(crate) fn precompute(&self, index: usize) -> Result<()> {
-        self.recon.precompute(index, &self.pending_surfaces)
     }
 
     /// Seals the spine's completed rows, then moves its band to the next row.
