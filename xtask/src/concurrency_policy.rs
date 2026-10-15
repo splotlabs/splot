@@ -127,6 +127,10 @@ const STD_MPSC_NEEDLES: &[&str] = &[
 /// alias forms (`use std::thread as t;`, `use std::thread::{self as t};`) that would
 /// otherwise hide an aliased `t::spawn`. Scoped to full paths / import declarations
 /// so numeric casts such as `worker_thread as u32` are never matched.
+/// The one file allowed to spawn OS threads: the row scheduler that owns the
+/// decoder's dedicated worker threads.
+const THREAD_OWNER_FILE: &str = "crates/splot-parallel/src/rows.rs";
+
 const THREAD_SPAWN_NEEDLES: &[&str] = &[
     "thread::spawn",
     "thread::Builder",
@@ -387,6 +391,7 @@ pub(crate) fn evaluate_concurrency_policy(
         }
 
         if !line.in_test
+            && line.path != THREAD_OWNER_FILE
             && let Some(needle) = thread_spawn_needle(&line.text)
         {
             violations.push(format!(
@@ -1047,6 +1052,25 @@ mod tests {
         assert!(
             evaluate_concurrency_policy(&[], &inside).is_empty(),
             "thread-spawn inside tests must be exempt"
+        );
+    }
+
+    #[test]
+    fn the_row_scheduler_file_may_spawn_its_worker_threads() {
+        let code = "    std::thread::Builder::new().spawn(work)?;";
+        let exempt = SourceLine {
+            path: THREAD_OWNER_FILE.to_owned(),
+            line_no: 1,
+            text: code.to_owned(),
+            in_test: false,
+        };
+        assert!(
+            evaluate_concurrency_policy(&[], &[exempt]).is_empty(),
+            "the row scheduler owns the decoder's worker threads"
+        );
+        assert!(
+            !evaluate_concurrency_policy(&[], &[line(code, false)]).is_empty(),
+            "other files stay banned"
         );
     }
 

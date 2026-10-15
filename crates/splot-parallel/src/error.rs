@@ -14,6 +14,12 @@ pub enum ParallelError {
         #[from]
         source: rayon::ThreadPoolBuildError,
     },
+    /// A dedicated row worker thread could not start.
+    #[error("failed to start a splot row worker: {message}")]
+    ThreadSpawn {
+        /// The OS error text.
+        message: String,
+    },
     /// A ready-task scope was started outside a splot worker.
     #[error("ready-task scope requires a splot worker pool")]
     NotOnWorkerPool,

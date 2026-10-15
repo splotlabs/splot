@@ -31,6 +31,7 @@ pub mod frame_delay;
 pub mod pool;
 pub mod prelude;
 mod progress;
+pub mod rows;
 pub mod thread_count;
 pub mod watermark;
 
@@ -43,5 +44,6 @@ pub use pool::{
     current_pool_width, join_each, on_worker_pool, pool_progress_snapshot, ready_task_scope,
     wake_idle_worker,
 };
+pub use rows::{Claim, FrameWork, RowProgress, RowScheduler, Stage};
 pub use thread_count::ThreadCount;
 pub use watermark::WatermarkCell;
