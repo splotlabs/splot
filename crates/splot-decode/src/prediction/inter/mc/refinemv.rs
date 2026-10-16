@@ -57,9 +57,25 @@ pub(super) fn reference_area_bounds(
     sub_y: u32,
     scaling: &PlaneScaling,
 ) -> ReferenceAreaBounds {
-    let scaling = scaling.with_mv(plane_x, plane_y, candidate.row, candidate.col, sub_x, sub_y);
     let x_padding = if width == 4 { (1, 2) } else { (3, 4) };
     let y_padding = if height == 4 { (1, 2) } else { (3, 4) };
+    if !scaling.is_scaled() {
+        // The unscaled start is `((pos << 4) + mv_offset) << 6 | 32`, so its
+        // integer sample is the 1/16 position shifted down by four.
+        let first = |pos: i32, mv: i32, sub: u32| ((pos << 4) + ((2 * mv) >> sub)) >> 4;
+        let (x, y) = (
+            first(plane_x, candidate.col, sub_x),
+            first(plane_y, candidate.row, sub_y),
+        );
+        let clamp = |value: i32, last: i32| value.max(0).min(last);
+        return ReferenceAreaBounds {
+            first_x: clamp(x - x_padding.0, scaling.last_x),
+            first_y: clamp(y - y_padding.0, scaling.last_y),
+            last_x: clamp(x + width as i32 - 1 + x_padding.1, scaling.last_x),
+            last_y: clamp(y + height as i32 - 1 + y_padding.1, scaling.last_y),
+        };
+    }
+    let scaling = scaling.with_mv(plane_x, plane_y, candidate.row, candidate.col, sub_x, sub_y);
     let last_x = scaling.start_x + scaling.step_x * width.saturating_sub(1) as i32;
     let last_y = scaling.start_y + scaling.step_y * height.saturating_sub(1) as i32;
     ReferenceAreaBounds {
