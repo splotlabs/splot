@@ -640,7 +640,7 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
         )?;
     }
     let bit_depth = luma[0].bit_depth();
-    let center = tip_refinemv_sad(pred0, pred1, 0, 0, bit_depth);
+    let center = tip_refinemv_sad(pred0, pred1, 0, 0, bit_depth, u32::MAX);
     let center_sad = center - (center >> 3);
     let (dx, dy) = if center_sad < 12 * 12 * 2 {
         (0, 0)
@@ -706,7 +706,7 @@ fn search_tip_refinemv_offset(
 ) -> (i32, i32) {
     let mut best = (0, 0);
     for &(dy, dx) in &SEARCH_NEIGHBORS {
-        let sad = tip_refinemv_sad(pred0, pred1, dx, dy, bit_depth);
+        let sad = tip_refinemv_sad(pred0, pred1, dx, dy, bit_depth, best_sad);
         if sad < best_sad {
             best_sad = sad;
             best = (dx, dy);
@@ -723,6 +723,7 @@ fn tip_refinemv_sad(
     dx: i32,
     dy: i32,
     bit_depth: splot_recon::BitDepth,
+    limit: u32,
 ) -> u32 {
     const SPAN: usize = 10 * TIP_PREDICTION_SIZE + 12;
     let start = |dx: i32, dy: i32| ((2 + dy) * TIP_PREDICTION_SIZE as i32 + 2 + dx) as usize;
@@ -738,6 +739,7 @@ fn tip_refinemv_sad(
     };
     // Four-lane widening abs-diff sums lower to one `uabal` each.
     let mut sums = [Simd::<u32, 4>::splat(0); 3];
+    let shift = bit_depth.bits().saturating_sub(8);
     for row in (0..12).step_by(2) {
         for (column, sum) in sums.iter_mut().enumerate() {
             let at = row * TIP_PREDICTION_SIZE + 4 * column;
@@ -745,8 +747,13 @@ fn tip_refinemv_sad(
                 .abs_diff(Simd::from_slice(&right[at..]))
                 .cast::<u32>();
         }
+        // The remaining rows only add, so a partial sum at the limit already
+        // loses the strict comparison.
+        if row == 4 && (sums[0] + sums[1] + sums[2]).reduce_sum() >> shift >= limit {
+            return limit;
+        }
     }
-    (sums[0] + sums[1] + sums[2]).reduce_sum() >> bit_depth.bits().saturating_sub(8)
+    (sums[0] + sums[1] + sums[2]).reduce_sum() >> shift
 }
 
 fn search_range_allowed(candidates: [Mv; 2]) -> bool {
