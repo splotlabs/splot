@@ -1327,7 +1327,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
                     width,
                     height,
                 );
-                (params, uniform, scalings, [col, row, width, height])
+                (params, uniform, [col, row, width, height])
             }
         }};
     }
@@ -1352,11 +1352,10 @@ pub(super) fn predict_motion_grid_compound_average_into<
             if skip {
                 continue;
             }
-            let (params, uniform, scalings, rect) =
-                cell_inputs!(cell_row, cell_col, [col, row, height]);
+            let (params, uniform, rect) = cell_inputs!(cell_row, cell_col, [col, row, height]);
             predict_grid_cell(
                 &prediction.views,
-                (&params, uniform, &scalings, rect),
+                (&params, uniform, rect),
                 &grid_block,
                 pred_scratch,
                 intermediate_scratch,
@@ -1407,9 +1406,8 @@ pub(super) fn predict_motion_grid_compound_average_into<
             if skip == [true; 2] {
                 continue;
             }
-            let (params, uniform, scalings, rect) =
-                cell_inputs!(cell_row, cell_col, [col, row, height]);
-            let cell = (&params, uniform, &scalings, rect);
+            let (params, uniform, rect) = cell_inputs!(cell_row, cell_col, [col, row, height]);
+            let cell = (&params, uniform, rect);
             let written = if uniform && skip == [false; 2] {
                 splot_recon::subpel_predict_block_compound_average_fast_pair_into(
                     &prediction.views[0],
@@ -1473,67 +1471,70 @@ fn unscaled_cell_inputs<T: ReconSample>(
     cell: MotionCell,
     candidates: [Mv; 2],
     [col, row, width, height]: [usize; 4],
-    (sub_x, sub_y): (u32, u32),
-    (bit_depth, interp): (splot_recon::BitDepth, InterpolationFilter),
+    sub: (u32, u32),
+    filter: (splot_recon::BitDepth, InterpolationFilter),
     check_uniform: bool,
     (frame_w, frame_h): (usize, usize),
-) -> (
-    [SubpelPredictParams; 2],
-    bool,
-    [PlaneScaling; 2],
-    [usize; 4],
-) {
-    let x16 = ((prediction.plane_x + col) as i32) << 4;
-    let y16 = ((prediction.plane_y + row) as i32) << 4;
-    let (w, h) = (width as i32, height as i32);
-    let scaling = |reference: usize| {
-        let [mv_row, mv_col] = cell.mvs[reference];
-        PlaneScaling {
-            start_x: ((x16 + round2_signed_i32(mv_col, sub_x)) << 6) + 32,
-            start_y: ((y16 + round2_signed_i32(mv_row, sub_y)) << 6) + 32,
-            step_x: 1 << 10,
-            step_y: 1 << 10,
-            first_x: 0,
-            first_y: 0,
-            ..prediction.scalings[reference]
-        }
+) -> ([SubpelPredictParams; 2], bool, [usize; 4]) {
+    let origin = [
+        ((prediction.plane_x + col) as i32) << 4,
+        ((prediction.plane_y + row) as i32) << 4,
+    ];
+    let unit = (origin, [width, height], sub, filter);
+    let params = [
+        unscaled_cell_params(&prediction.scalings[0], cell.mvs[0], candidates[0], unit),
+        unscaled_cell_params(&prediction.scalings[1], cell.mvs[1], candidates[1], unit),
+    ];
+    let inside = |params: &SubpelPredictParams| {
+        let (x, y) = (params.start_x >> 10, params.start_y >> 10);
+        x >= 0
+            && y >= 0
+            && x + width as i32 <= frame_w as i32
+            && y + height as i32 <= frame_h as i32
     };
-    let scalings = [scaling(0), scaling(1)];
-    let inside = |scaling: &PlaneScaling| {
-        let (x, y) = (scaling.start_x >> 10, scaling.start_y >> 10);
-        x >= 0 && y >= 0 && x + w <= frame_w as i32 && y + h <= frame_h as i32
-    };
-    let uniform = !check_uniform || (inside(&scalings[0]) && inside(&scalings[1]));
-    let params = |reference: usize| {
-        let scaling = scalings[reference];
-        let bounds = super::refinemv::unscaled_area_bounds(
-            [x16, y16],
-            [width, height],
-            candidates[reference],
-            [sub_x, sub_y],
-            &scaling,
-        );
-        SubpelPredictParams {
-            interp,
-            w: width,
-            h: height,
-            start_x: scaling.start_x,
-            start_y: scaling.start_y,
-            step_x: scaling.step_x,
-            step_y: scaling.step_y,
-            first_x: bounds.first_x,
-            first_y: bounds.first_y,
-            last_x: bounds.last_x,
-            last_y: bounds.last_y,
-            bit_depth,
-        }
-    };
-    (
-        [params(0), params(1)],
-        uniform,
-        scalings,
-        [col, row, width, height],
-    )
+    let uniform = !check_uniform || (inside(&params[0]) && inside(&params[1]));
+    (params, uniform, [col, row, width, height])
+}
+
+/// A cell's 1/16-sample origin, size, subsampling, bit depth and filter.
+type CellUnit = (
+    [i32; 2],
+    [usize; 2],
+    (u32, u32),
+    (splot_recon::BitDepth, InterpolationFilter),
+);
+
+/// One reference's parameters of [`unscaled_cell_inputs`] for the cell at
+/// 1/16-sample `[x16, y16]`.
+#[allow(clippy::inline_always, reason = "per-cell grid hot path")]
+#[inline(always)]
+fn unscaled_cell_params(
+    scaling: &PlaneScaling,
+    [mv_row, mv_col]: [i32; 2],
+    candidate: Mv,
+    ([x16, y16], [width, height], (sub_x, sub_y), (bit_depth, interp)): CellUnit,
+) -> SubpelPredictParams {
+    let bounds = super::refinemv::unscaled_area_bounds(
+        [x16, y16],
+        [width, height],
+        candidate,
+        [sub_x, sub_y],
+        scaling,
+    );
+    SubpelPredictParams {
+        interp,
+        w: width,
+        h: height,
+        start_x: ((x16 + round2_signed_i32(mv_col, sub_x)) << 6) + 32,
+        start_y: ((y16 + round2_signed_i32(mv_row, sub_y)) << 6) + 32,
+        step_x: 1 << 10,
+        step_y: 1 << 10,
+        first_x: bounds.first_x,
+        first_y: bounds.first_y,
+        last_x: bounds.last_x,
+        last_y: bounds.last_y,
+        bit_depth,
+    }
 }
 
 /// Predicts the V plane into a packed `chroma_v` output that the shared U pass
@@ -1567,14 +1568,9 @@ fn predict_chroma_v_separately<T: ReconSample, O: CompoundAverageOutput + Send>(
     Ok(true)
 }
 
-/// One grid cell's derived parameters, uniform-weight flag, scalings and
+/// One grid cell's derived parameters, uniform-weight flag and
 /// `[col, row, width, height]`.
-type GridCell<'a> = (
-    &'a [SubpelPredictParams; 2],
-    bool,
-    &'a [PlaneScaling; 2],
-    [usize; 4],
-);
+type GridCell<'a> = (&'a [SubpelPredictParams; 2], bool, [usize; 4]);
 
 /// The block-level inputs every cell of one grid plane shares.
 struct GridBlock<'a, 'b, T: ReconSample> {
@@ -1591,7 +1587,7 @@ struct GridBlock<'a, 'b, T: ReconSample> {
 #[inline(always)]
 fn predict_grid_cell<T: ReconSample, O: CompoundAverageOutput>(
     views: &[ReferencePlaneView<'_, T>; 2],
-    (params, uniform, scalings, [col, row, width, height]): GridCell<'_>,
+    (params, uniform, [col, row, width, height]): GridCell<'_>,
     block: &GridBlock<'_, '_, T>,
     pred_scratch: &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
     intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
@@ -1643,7 +1639,7 @@ fn predict_grid_cell<T: ReconSample, O: CompoundAverageOutput>(
         plane_y: prediction.plane_y + row,
         block_w: width,
         block_h: height,
-        scalings: *scalings,
+        scalings: prediction.scalings,
     };
     Ok(super::predict_compound_average_into(
         &subplane,
