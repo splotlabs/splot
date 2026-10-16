@@ -641,6 +641,8 @@ fn search_tip_refinemv_offset(
     best
 }
 
+#[allow(clippy::inline_always, reason = "25 calls per refined TIP unit")]
+#[inline(always)]
 fn tip_refinemv_sad(
     pred0: &[u16; TIP_PREDICTION_AREA],
     pred1: &[u16; TIP_PREDICTION_AREA],
@@ -660,17 +662,17 @@ fn tip_refinemv_sad(
     ) else {
         return u32::MAX;
     };
-    // Six rows of samples within the 10-bit range cannot carry a u16 lane.
-    let mut sad8 = Simd::<u16, 8>::splat(0);
-    let mut sad4 = Simd::<u16, 4>::splat(0);
+    // Four-lane widening abs-diff sums lower to one `uabal` each.
+    let mut sums = [Simd::<u32, 4>::splat(0); 3];
     for row in (0..12).step_by(2) {
-        let at = row * TIP_PREDICTION_SIZE;
-        sad8 += Simd::<u16, 8>::from_slice(&left[at..]).abs_diff(Simd::from_slice(&right[at..]));
-        sad4 += Simd::<u16, 4>::from_slice(&left[at + 8..])
-            .abs_diff(Simd::from_slice(&right[at + 8..]));
+        for (column, sum) in sums.iter_mut().enumerate() {
+            let at = row * TIP_PREDICTION_SIZE + 4 * column;
+            *sum += Simd::<u16, 4>::from_slice(&left[at..])
+                .abs_diff(Simd::from_slice(&right[at..]))
+                .cast::<u32>();
+        }
     }
-    (sad8.cast::<u32>().reduce_sum() + sad4.cast::<u32>().reduce_sum())
-        >> bit_depth.bits().saturating_sub(8)
+    (sums[0] + sums[1] + sums[2]).reduce_sum() >> bit_depth.bits().saturating_sub(8)
 }
 
 fn search_range_allowed(candidates: [Mv; 2]) -> bool {
