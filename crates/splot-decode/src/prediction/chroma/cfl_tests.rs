@@ -194,58 +194,72 @@ fn invalid_mhccp_filter_preserves_prediction_scratch() {
 }
 
 #[test]
-fn cfl_420_filter1_simd_matches_scalar_at_block_and_frame_edges() {
+fn cfl_420_simd_matches_scalar_at_block_and_frame_edges() {
     let plane_width = 130;
     let plane_height = 9;
     let luma: Vec<u16> = (0..plane_width * plane_height)
         .map(|index| ((index * 17 + 11) & 1023) as u16)
         .collect();
     let average_q3 = 37;
-    for (x, y, width, height) in [(0, 0, 32, 4), (1, 1, 64, 3), (31, 2, 32, 3), (50, 4, 16, 2)] {
-        let mut actual = Vec::new();
-        assert!(fill_cfl_luma_ac_420_filter1_u16(
-            &luma,
-            0,
-            plane_width,
-            plane_width,
-            plane_height,
-            x,
-            y,
-            width,
-            height,
-            average_q3,
-            &mut actual,
-        ));
-        let mut expected = Vec::with_capacity(width * height);
-        for row in 0..height {
-            let luma_y = 2 * (y + row).min((plane_height - 1) >> 1);
-            let next_y = (luma_y + 1).min(plane_height - 1);
-            for col in 0..width {
-                let luma_x = 2 * (x + col).min((plane_width - 1) >> 1);
-                let center = luma_x.min(plane_width - 1);
-                let left = if col == 0 || luma_x.is_multiple_of(64) {
-                    center
-                } else {
-                    luma_x.saturating_sub(1).min(plane_width - 1)
-                };
-                let right = (luma_x + 1).min(plane_width - 1);
-                expected.push(
-                    i32::from(luma[luma_y * plane_width + left])
-                        + 2 * i32::from(luma[luma_y * plane_width + center])
-                        + i32::from(luma[luma_y * plane_width + right])
-                        + i32::from(luma[next_y * plane_width + left])
-                        + 2 * i32::from(luma[next_y * plane_width + center])
-                        + i32::from(luma[next_y * plane_width + right])
-                        - average_q3,
-                );
+    let fills: [(usize, FillLumaAc); 3] = [
+        (0, fill_cfl_luma_ac_420_u16::<0>),
+        (1, fill_cfl_luma_ac_420_u16::<1>),
+        (2, fill_cfl_luma_ac_420_u16::<2>),
+    ];
+    for (filter, fill) in fills {
+        for (x, y, width, height) in [(0, 0, 32, 4), (1, 1, 64, 3), (31, 2, 32, 3), (50, 4, 16, 2)]
+        {
+            let mut actual = Vec::new();
+            assert!(fill(
+                &luma,
+                0,
+                plane_width,
+                plane_width,
+                plane_height,
+                x,
+                y,
+                width,
+                height,
+                average_q3,
+                &mut actual,
+            ));
+            let mut expected = Vec::with_capacity(width * height);
+            for row in 0..height {
+                let luma_y = 2 * (y + row).min((plane_height - 1) >> 1);
+                let clamp_y = row == 0 || luma_y.is_multiple_of(64);
+                let rows = [
+                    if clamp_y { luma_y } else { luma_y - 1 },
+                    luma_y,
+                    (luma_y + 1).min(plane_height - 1),
+                ];
+                for col in 0..width {
+                    let luma_x = 2 * (x + col).min((plane_width - 1) >> 1);
+                    let center = luma_x.min(plane_width - 1);
+                    let left = if col == 0 || luma_x.is_multiple_of(64) {
+                        center
+                    } else {
+                        luma_x.saturating_sub(1).min(plane_width - 1)
+                    };
+                    let right = (luma_x + 1).min(plane_width - 1);
+                    let mut total = -average_q3;
+                    for (tap_row, weights) in rows.iter().zip(CFL_FILTERS_420[filter]) {
+                        for (tap_col, weight) in [left, center, right].iter().zip(weights) {
+                            total += weight * i32::from(luma[tap_row * plane_width + tap_col]);
+                        }
+                    }
+                    expected.push(total);
+                }
             }
+            assert_eq!(
+                actual, expected,
+                "filter={filter} x={x} y={y} width={width} height={height}"
+            );
         }
-        assert_eq!(
-            actual, expected,
-            "x={x} y={y} width={width} height={height}"
-        );
     }
 }
+
+type FillLumaAc =
+    fn(&[u16], usize, usize, usize, usize, usize, usize, usize, usize, i32, &mut Vec<i32>) -> bool;
 
 #[test]
 fn cfl_luma_sample_repeats_last_downsampled_row_at_frame_edge() {
