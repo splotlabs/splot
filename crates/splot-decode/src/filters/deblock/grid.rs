@@ -158,6 +158,8 @@ impl MiGrid<'_> {
         })
     }
 
+    #[allow(clippy::inline_always, reason = "measured chroma deblock hot path")]
+    #[inline(always)]
     pub(super) fn get_edge(&self, row: usize, col: usize) -> Option<EdgeBlock<'_>> {
         let base = self.base.cells.get(self.index(row, col))?;
         let chroma = self.chroma.and_then(|grid| {
