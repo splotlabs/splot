@@ -86,21 +86,79 @@ pub(super) fn reference_area_bounds(
     }
 }
 
-/// The `N`x`N` bilinear prediction (`N` 16 or 24) of a § 7.13.3.6 search
-/// window whose clip bounds are its inner `N - 1` reference samples on each
-/// axis, written at stride `N`, or `false` without writing for any other
-/// block. The clamped outer column and row read their inner neighbour twice,
-/// so every row is filtered horizontally once and serves two output rows.
+/// A refine-MV bilinear prediction that a one-pass kernel covers, written
+/// at stride `params.w`, or `false` without writing for any other block: an
+/// 8x8 block with no clamped tap, or the `N`x`N` § 7.13.3.6 search window
+/// (`N` 16 or 24) whose clip bounds are its inner `N - 1` samples on each
+/// axis, where the clamped outer column and row read their inner neighbour
+/// twice. Every source row is filtered horizontally once and serves two
+/// output rows.
 pub(super) fn bilinear_search_window<T: ReconSample>(
     view: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u16],
 ) -> bool {
     match params.w {
+        8 => unclamped_8x8(view, params, output),
         16 => search_window::<T, 16, 2, 15>(view, params, output),
         24 => search_window::<T, 24, 3, 23>(view, params, output),
         _ => false,
     }
+}
+
+/// An 8x8 bilinear block whose taps all lie inside its clip bounds and the
+/// published plane: one horizontal pass per source row, shared by two
+/// output rows.
+#[inline(never)]
+fn unclamped_8x8<T: ReconSample>(
+    view: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+) -> bool {
+    let (x0, y0) = (params.start_x >> 10, params.start_y >> 10);
+    if params.interp != InterpolationFilter::Bilinear
+        || (params.step_x, params.step_y, params.h) != (1 << 10, 1 << 10, 8)
+        || x0 < params.first_x.max(0)
+        || y0 < params.first_y.max(0)
+        || x0 + 8 > params.last_x
+        || y0 + 8 > params.last_y
+    {
+        return false;
+    }
+    let (Some(output), Some(spans)) = (
+        output.first_chunk_mut::<64>(),
+        view.readable_spans::<9>(
+            core::array::from_fn(|row| y0 as usize + row),
+            x0 as usize,
+            9,
+        ),
+    ) else {
+        return false;
+    };
+    let lanes = |samples: &[T]| -> Simd<u16, 8> {
+        match (T::u8_slice(samples), T::u16_slice(samples)) {
+            (Some(samples), _) => Simd::<u8, 8>::from_slice(samples).cast(),
+            (_, Some(samples)) => Simd::from_slice(samples),
+            _ => Simd::from_array(core::array::from_fn(|lane| samples[lane].to_u16())),
+        }
+    };
+    let h = ((params.start_x >> 6) & 15) as u16;
+    let v = ((params.start_y >> 6) & 15) as u16;
+    let horizontal =
+        |span: &[T]| lanes(span) * Simd::splat(16 - h) + lanes(&span[1..]) * Simd::splat(h);
+    let max_sample = Simd::splat(params.bit_depth.max_sample());
+    let weight = |weight: u16| Simd::<u16, 8>::splat(weight).cast::<u32>();
+    let mut top = horizontal(spans[0]);
+    for (row, span) in spans.iter().skip(1).enumerate() {
+        let bottom = horizontal(span);
+        let sum = top.cast::<u32>() * weight(16 - v) + bottom.cast::<u32>() * weight(v);
+        ((sum + Simd::splat(128)) >> 8)
+            .cast::<u16>()
+            .simd_min(max_sample)
+            .copy_to_slice(&mut output[row * 8..]);
+        top = bottom;
+    }
+    true
 }
 
 /// [`bilinear_search_window`] of an `N`-sample window: `G = N / 8` lane
