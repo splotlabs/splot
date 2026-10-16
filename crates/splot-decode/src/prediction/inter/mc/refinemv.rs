@@ -632,21 +632,29 @@ fn tip_refinemv_sad(
     dy: i32,
     bit_depth: splot_recon::BitDepth,
 ) -> u32 {
-    let start0 = ((2 + dy) * TIP_PREDICTION_SIZE as i32 + 2 + dx) as usize;
-    let start1 = ((2 - dy) * TIP_PREDICTION_SIZE as i32 + 2 - dx) as usize;
-    let mut sad8 = Simd::<u32, 8>::splat(0);
-    let mut sad4 = Simd::<u32, 4>::splat(0);
+    const SPAN: usize = 10 * TIP_PREDICTION_SIZE + 12;
+    let start = |dx: i32, dy: i32| ((2 + dy) * TIP_PREDICTION_SIZE as i32 + 2 + dx) as usize;
+    let (Some(left), Some(right)) = (
+        pred0
+            .get(start(dx, dy)..)
+            .and_then(<[u16]>::first_chunk::<SPAN>),
+        pred1
+            .get(start(-dx, -dy)..)
+            .and_then(<[u16]>::first_chunk::<SPAN>),
+    ) else {
+        return u32::MAX;
+    };
+    // Six rows of samples within the 10-bit range cannot carry a u16 lane.
+    let mut sad8 = Simd::<u16, 8>::splat(0);
+    let mut sad4 = Simd::<u16, 4>::splat(0);
     for row in (0..12).step_by(2) {
-        let left = &pred0[start0 + row * TIP_PREDICTION_SIZE..];
-        let right = &pred1[start1 + row * TIP_PREDICTION_SIZE..];
-        let left8 = Simd::<u16, 8>::from_slice(left);
-        let right8 = Simd::<u16, 8>::from_slice(right);
-        sad8 += (left8.simd_max(right8) - left8.simd_min(right8)).cast::<u32>();
-        let left4 = Simd::<u16, 4>::from_slice(&left[8..]);
-        let right4 = Simd::<u16, 4>::from_slice(&right[8..]);
-        sad4 += (left4.simd_max(right4) - left4.simd_min(right4)).cast::<u32>();
+        let at = row * TIP_PREDICTION_SIZE;
+        sad8 += Simd::<u16, 8>::from_slice(&left[at..]).abs_diff(Simd::from_slice(&right[at..]));
+        sad4 += Simd::<u16, 4>::from_slice(&left[at + 8..])
+            .abs_diff(Simd::from_slice(&right[at + 8..]));
     }
-    (sad8.reduce_sum() + sad4.reduce_sum()) >> bit_depth.bits().saturating_sub(8)
+    (sad8.cast::<u32>().reduce_sum() + sad4.cast::<u32>().reduce_sum())
+        >> bit_depth.bits().saturating_sub(8)
 }
 
 fn search_range_allowed(candidates: [Mv; 2]) -> bool {
