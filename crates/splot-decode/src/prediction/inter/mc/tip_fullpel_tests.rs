@@ -408,43 +408,42 @@ fn refinemv_centre_predictions_match_the_whole_prediction() {
 /// and declines a window whose bounds or published rows differ.
 #[test]
 fn search_window_matches_the_general_bilinear_prediction() {
-    fn check<T: ReconSample>(samples: &[T], bit_depth: BitDepth) {
+    fn check<T: ReconSample>(samples: &[T], bit_depth: BitDepth, size: usize) {
         let (width, height) = (40, 36);
         let view = ReferencePlaneView::new(samples, width, height).expect("view");
+        let inner = size as i32 - 1;
         let params = |x0: i32, y0: i32, h: i32, v: i32| SubpelPredictParams {
             interp: InterpolationFilter::Bilinear,
-            w: 16,
-            h: 16,
+            w: size,
+            h: size,
             start_x: (x0 << 10) + (h << 6),
             start_y: (y0 << 10) + (v << 6),
             step_x: 1 << 10,
             step_y: 1 << 10,
             first_x: x0 + 1,
             first_y: y0 + 1,
-            last_x: x0 + 15,
-            last_y: y0 + 15,
+            last_x: x0 + inner,
+            last_y: y0 + inner,
             bit_depth,
         };
-        for (x0, y0) in [(-1, -1), (5, 3), (24, 20)] {
+        let edge = (width as i32 - 1 - inner, height as i32 - 1 - inner);
+        for (x0, y0) in [(-1, -1), (5, 3), edge] {
             for (h, v) in (0..16).flat_map(|h| (0..16).map(move |v| (h, v))) {
                 let params = params(x0, y0, h, v);
-                let mut want = [0u16; 256];
-                splot_recon::subpel_predict_block_strided_into(&view, &params, &mut want, 16)
+                let mut want = vec![0u16; size * size];
+                splot_recon::subpel_predict_block_strided_into(&view, &params, &mut want, size)
                     .expect("general prediction");
-                let mut got = [0x5a5au16; 256];
+                let mut got = vec![0x5a5au16; size * size];
                 assert!(bilinear_search_window(&view, &params, &mut got));
-                assert_eq!(got, want, "{x0},{y0} phases {h},{v}");
+                assert_eq!(got, want, "{size}: {x0},{y0} phases {h},{v}");
             }
         }
-        let mut output = [0u16; 256];
+        let mut output = vec![0u16; size * size];
         let mut wide = params(5, 3, 3, 5);
         wide.last_x += 1;
         assert!(!bilinear_search_window(&view, &wide, &mut output));
-        assert!(!bilinear_search_window(
-            &view,
-            &params(25, 20, 3, 5),
-            &mut output
-        ));
+        let outside = params(edge.0 + 1, edge.1, 3, 5);
+        assert!(!bilinear_search_window(&view, &outside, &mut output));
         assert!(!bilinear_search_window(
             &view,
             &params(-2, 3, 3, 5),
@@ -455,6 +454,8 @@ fn search_window_matches_the_general_bilinear_prediction() {
         .map(|index| ((index * 7919 + index / 40 * 104_729) % 1024) as u16)
         .collect();
     let narrow: Vec<u8> = wide.iter().map(|&sample| (sample >> 2) as u8).collect();
-    check(&wide, BitDepth::Ten);
-    check(&narrow, BitDepth::Eight);
+    for size in [16, 24] {
+        check(&wide, BitDepth::Ten, size);
+        check(&narrow, BitDepth::Eight, size);
+    }
 }

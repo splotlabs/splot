@@ -974,10 +974,7 @@ pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
     {
         return Ok(());
     }
-    if INSET == 0
-        && rect.luma_w == 16
-        && super::refinemv::bilinear_search_window(&view, &params, output)
-    {
+    if INSET == 0 && super::refinemv::bilinear_search_window(&view, &params, output) {
         return Ok(());
     }
     subpel_predict_block_strided_into(&view, &params, output, rect.luma_w).map_err(Into::into)

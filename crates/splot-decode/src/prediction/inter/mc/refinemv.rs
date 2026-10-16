@@ -86,34 +86,48 @@ pub(super) fn reference_area_bounds(
     }
 }
 
-/// The 16x16 bilinear prediction of a § 7.13.3.6 search window whose clip
-/// bounds are its inner 15x15 reference samples, written at stride 16, or
-/// `false` without writing for any other block. The clamped outer column and
-/// row read their inner neighbour twice, so every row is filtered
-/// horizontally once and serves two output rows.
-#[inline(never)]
+/// The `N`x`N` bilinear prediction (`N` 16 or 24) of a § 7.13.3.6 search
+/// window whose clip bounds are its inner `N - 1` reference samples on each
+/// axis, written at stride `N`, or `false` without writing for any other
+/// block. The clamped outer column and row read their inner neighbour twice,
+/// so every row is filtered horizontally once and serves two output rows.
 pub(super) fn bilinear_search_window<T: ReconSample>(
     view: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     output: &mut [u16],
 ) -> bool {
-    const SIZE: usize = 16;
+    match params.w {
+        16 => search_window::<T, 16, 2, 15>(view, params, output),
+        24 => search_window::<T, 24, 3, 23>(view, params, output),
+        _ => false,
+    }
+}
+
+/// [`bilinear_search_window`] of an `N`-sample window: `G = N / 8` lane
+/// groups per row over the `M = N - 1` inner samples.
+#[inline(never)]
+fn search_window<T: ReconSample, const N: usize, const G: usize, const M: usize>(
+    view: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+) -> bool {
     let (x0, y0) = (params.start_x >> 10, params.start_y >> 10);
+    let last = M as i32;
     if params.interp != InterpolationFilter::Bilinear
-        || (params.step_x, params.step_y, params.w, params.h) != (1 << 10, 1 << 10, SIZE, SIZE)
+        || (params.step_x, params.step_y, params.w, params.h) != (1 << 10, 1 << 10, N, N)
         || [params.first_x, params.last_x, params.first_y, params.last_y]
-            != [x0 + 1, x0 + 15, y0 + 1, y0 + 15]
+            != [x0 + 1, x0 + last, y0 + 1, y0 + last]
         || x0 + 1 < 0
         || y0 + 1 < 0
     {
         return false;
     }
     let (Some(output), Some(spans)) = (
-        output.first_chunk_mut::<{ SIZE * SIZE }>(),
-        view.readable_spans::<15>(
+        output.get_mut(..N * N),
+        view.readable_spans::<M>(
             core::array::from_fn(|row| (y0 + 1) as usize + row),
             (x0 + 1) as usize,
-            15,
+            M,
         ),
     ) else {
         return false;
@@ -127,26 +141,34 @@ pub(super) fn bilinear_search_window<T: ReconSample>(
     };
     let h = ((params.start_x >> 6) & 15) as u16;
     let v = ((params.start_y >> 6) & 15) as u16;
-    let horizontal = |span: &[T]| -> [Simd<u16, 8>; 2] {
-        let (low, high) = (lanes(&span[..8]), lanes(&span[7..]));
-        let (left, right) = (
-            simd_swizzle!(low, [0, 0, 1, 2, 3, 4, 5, 6]),
-            simd_swizzle!(high, [1, 2, 3, 4, 5, 6, 7, 7]),
-        );
+    let horizontal = |span: &[T]| -> [Simd<u16, 8>; G] {
         let (h0, h1) = (Simd::splat(16 - h), Simd::splat(h));
-        [left * h0 + low * h1, high * h0 + right * h1]
+        let mut groups = [Simd::splat(0); G];
+        for (group, filtered) in groups.iter_mut().enumerate() {
+            let (left, right) = if group == 0 {
+                let samples = lanes(&span[..8]);
+                (simd_swizzle!(samples, [0, 0, 1, 2, 3, 4, 5, 6]), samples)
+            } else if group == G - 1 {
+                let samples = lanes(&span[8 * group - 1..]);
+                (samples, simd_swizzle!(samples, [1, 2, 3, 4, 5, 6, 7, 7]))
+            } else {
+                (lanes(&span[8 * group - 1..]), lanes(&span[8 * group..]))
+            };
+            *filtered = left * h0 + right * h1;
+        }
+        groups
     };
     let max_sample = Simd::splat(params.bit_depth.max_sample());
-    let mut write = |row: usize, top: [Simd<u16, 8>; 2], bottom: [Simd<u16, 8>; 2]| {
-        for half in 0..2 {
+    let mut write = |row: usize, top: [Simd<u16, 8>; G], bottom: [Simd<u16, 8>; G]| {
+        for group in 0..G {
             // Both factors widened from u16 lanes lower to `umull`/`umlal`.
             let weight = |weight: u16| Simd::<u16, 8>::splat(weight).cast::<u32>();
             let sum =
-                top[half].cast::<u32>() * weight(16 - v) + bottom[half].cast::<u32>() * weight(v);
+                top[group].cast::<u32>() * weight(16 - v) + bottom[group].cast::<u32>() * weight(v);
             ((sum + Simd::splat(128)) >> 8)
                 .cast::<u16>()
                 .simd_min(max_sample)
-                .copy_to_slice(&mut output[row * SIZE + 8 * half..]);
+                .copy_to_slice(&mut output[row * N + 8 * group..]);
         }
     };
     let mut top = horizontal(spans[0]);
@@ -156,7 +178,7 @@ pub(super) fn bilinear_search_window<T: ReconSample>(
         write(row, top, bottom);
         top = bottom;
     }
-    write(SIZE - 1, top, top);
+    write(N - 1, top, top);
     true
 }
 
