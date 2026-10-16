@@ -10,7 +10,7 @@ use crate::test_support::{
     copy_rows_to_workspace, frontier_rows, yuv420_workspace, yuv420_workspace_with,
 };
 
-static EMPTY_CHROMA_RECORDS: ChromaDeblockRecords = ChromaDeblockRecords::new();
+pub(super) static EMPTY_CHROMA_RECORDS: ChromaDeblockRecords = ChromaDeblockRecords::new();
 
 fn build_mi_grid(
     blocks: &[DeblockBlock],
@@ -43,7 +43,7 @@ fn overlay_mi_grid(
     Ok(grid)
 }
 
-const fn prediction(r: usize, c: usize, tx: usize) -> DeblockPredictionUnit {
+pub(super) const fn prediction(r: usize, c: usize, tx: usize) -> DeblockPredictionUnit {
     DeblockPredictionUnit::new(r, c, tx)
 }
 
@@ -896,7 +896,7 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
     MiGrid::new(storage, None, blocks, &EMPTY_CHROMA_RECORDS)
 }
 
-fn assert_candidate_mask_superset(
+pub(super) fn assert_candidate_mask_superset(
     grid: &MiGrid,
     mi_rows: usize,
     mi_cols: usize,
@@ -976,47 +976,6 @@ fn candidate_mask_is_a_superset_for_mixed_transform_and_sub_pu_edges() {
     }
     assert!(!grid.is_candidate(3, 5, 0, false, 0, 0));
     assert!(!grid.is_candidate(3, 5, 1, false, 0, 0));
-}
-
-#[test]
-fn candidate_mask_covers_sub_pu_lines_of_offset_prediction_units() {
-    let block =
-        |(r, c, n4w, n4h), luma: (usize, usize), chroma: (usize, usize), (w, h)| DeblockBlock {
-            r,
-            c,
-            luma_prediction: prediction(luma.0, luma.1, 3),
-            chroma_prediction: prediction(chroma.0, chroma.1, 2),
-            chroma_base_r: r,
-            chroma_base_c: c,
-            n4w,
-            n4h,
-            luma_tx: 3,
-            chroma_tx: Some(2),
-            sub_pu_size: Some(DeblockSubPuSize::new(w, h)),
-            chroma_transform_only: false,
-            qindex: 100,
-            skip: false,
-            lossless: false,
-        };
-    let blocks = [
-        block((0, 0, 7, 5), (0, 0), (0, 0), (8, 16)),
-        block((0, 7, 9, 3), (0, 6), (0, 5), (16, 4)),
-        block((3, 7, 9, 5), (1, 5), (2, 6), (4, 8)),
-        block((5, 0, 7, 3), (4, 1), (3, 0), (8, 8)),
-    ];
-    for subsampling in [(1, 1), (1, 0), (0, 0)] {
-        let mut storage = DeblockGridStorage::default();
-        let mut order = RowOrder::default();
-        order.sort(blocks.iter(), 8).unwrap();
-        let mut base = MiGridStorage::new(16, subsampling, &mut storage);
-        base.fill(&blocks, &order, 8, &(0..8)).unwrap();
-        let grid = MiGrid::new(&base, None, &blocks, &EMPTY_CHROMA_RECORDS);
-        for (plane, (sub_x, sub_y)) in [(0, (0, 0)), (1, subsampling)] {
-            for pass in 0..2 {
-                assert_candidate_mask_superset(&grid, 8, 16, plane, pass, sub_x, sub_y);
-            }
-        }
-    }
 }
 
 #[test]

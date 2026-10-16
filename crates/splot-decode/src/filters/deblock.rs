@@ -1905,6 +1905,12 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
     let plane = PLANE;
     let pass = PASS;
     let (dx, dy) = if pass == 0 { (1usize, 0usize) } else { (0, 1) };
+    if curr.same(prev) {
+        return (
+            same_record_decision::<PLANE, PASS>(curr, x_p, y_p, ctx, strengths),
+            true,
+        );
+    }
 
     let (tx_row_base, tx_col_base) = curr.tx_base(plane);
     let (prev_tx_row_base, prev_tx_col_base) = prev.tx_base(plane);
@@ -1995,6 +2001,59 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
         }),
         uniform,
     )
+}
+
+/// [`edge_decision`] for an edge whose two sides are the same record. Their
+/// transform and prediction bases match, so the edge filters only where the
+/// sub-PU base changes along the pass: on a multiple of the sub-PU size past
+/// the prediction base, which is never the block edge.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn same_record_decision<const PLANE: usize, const PASS: usize>(
+    record: EdgeBlock<'_>,
+    x_p: usize,
+    y_p: usize,
+    ctx: EdgeContext,
+    strengths: &StrengthCache,
+) -> Option<EdgeDecision> {
+    let size = record.block.sub_pu_size.filter(|_| ctx.allow_df_sub_pu)?;
+    let prediction = record.prediction(PLANE);
+    let (at, base, sub, size) = if PASS == 0 {
+        (x_p, prediction.base_c, ctx.plane_sub_x, size.width)
+    } else {
+        (y_p, prediction.base_r, ctx.plane_sub_y, size.height)
+    };
+    let base = (base as usize * MI_SIZE) >> sub;
+    let sub_pu_size = (usize::from(size) >> sub).max(1);
+    if at <= base || !(at - base).is_multiple_of(sub_pu_size) {
+        return None;
+    }
+    let tx = record.tx(PLANE);
+    let tx_size = usize::try_from(if PASS == 0 {
+        TX_WIDTH[tx]
+    } else {
+        TX_HEIGHT[tx]
+    })
+    .unwrap_or(0);
+    let (filter_size, sub_pu_edge) = sub_pu_filter_dimension(tx_size, sub_pu_size, false);
+    let strength = strengths.get(record.block.qindex);
+    if !sub_pu_edge || strength.0 == 0 || strength.1 == 0 {
+        return None;
+    }
+    let key = StrengthKey {
+        curr_qindex: record.block.qindex,
+        prev_qindex: record.block.qindex,
+        sub_pu_only: true,
+    };
+    let (q_thr, side) = key.combine(strength, strength);
+    Some(EdgeDecision {
+        filter_size,
+        q_thr,
+        side,
+        prev_lossless: record.block.lossless,
+        curr_lossless: record.block.lossless,
+        key,
+    })
 }
 
 /// Chooses and filters a run of `edges` contiguous edges that start at
@@ -2368,6 +2427,9 @@ pub(crate) enum DeblockError {
 #[cfg(test)]
 #[path = "deblock_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod sub_pu_tests;
 
 #[cfg(test)]
 mod tip_tests;
