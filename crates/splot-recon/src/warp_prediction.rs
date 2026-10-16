@@ -120,6 +120,24 @@ impl PreparedWarpPrediction {
         })
     }
 
+    /// Returns `None` when the § 7.13.3.21 setup-shear process rejects the
+    /// model (the [`warp_shear_is_valid`] test, which selects § 7.13.3.15
+    /// `skipPred`), else the setup of [`Self::new`], deriving the shear once.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for invalid bounds, scaling, or subsampling of a
+    /// model whose shear is valid.
+    pub fn with_valid_shear(params: &WarpPredictBlockParams) -> Result<Option<Self>> {
+        let Ok(shear) = setup_shear(params.warp_params) else {
+            return Ok(None);
+        };
+        validate_params(params)?;
+        Ok(Some(Self {
+            params: *params,
+            shear,
+        }))
+    }
+
     /// Writes one 8x8 section using the prepared affine-warp setup.
     ///
     /// # Errors
@@ -2020,6 +2038,22 @@ mod tests {
         assert!(matches!(
             warp_predict_block(&view, &params, false),
             Err(ReconError::WarpInvalidShear { .. })
+        ));
+        assert!(matches!(
+            PreparedWarpPrediction::with_valid_shear(&params),
+            Ok(None)
+        ));
+        params.subsampling_x = 2;
+        assert!(matches!(
+            PreparedWarpPrediction::with_valid_shear(&params),
+            Ok(None)
+        ));
+        params.warp_params = IDENTITY_WARP_PARAMS;
+        assert!(PreparedWarpPrediction::with_valid_shear(&params).is_err());
+        params.subsampling_x = 0;
+        assert!(matches!(
+            PreparedWarpPrediction::with_valid_shear(&params),
+            Ok(Some(_))
         ));
     }
 

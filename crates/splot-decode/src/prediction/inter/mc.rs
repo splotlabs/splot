@@ -887,11 +887,27 @@ fn predict_warp_plane<T: ReconSample>(
     );
     let (view, ref_mi_cols, ref_mi_rows) = reference.plane_view(plane, last_row, offset)?;
     let (ref_width, ref_height) = (view.width(), view.height());
-    let skip_pred = !splot_recon::warp_shear_is_valid(warp_params)
-        || block_w < WARPED_BLOCK_SIZE
-        || block_h < WARPED_BLOCK_SIZE
-        || scaling.is_scaled();
-    if skip_pred {
+    let params = WarpPredictBlockParams {
+        warp_params,
+        block_x: plane_x as i32,
+        block_y: plane_y as i32,
+        subsampling_x: sub_x as u8,
+        subsampling_y: sub_y as u8,
+        reference_scale_x: scaling.scale_x,
+        reference_scale_y: scaling.scale_y,
+        first_x: 0,
+        first_y: 0,
+        last_x: ref_width as i32 - 1,
+        last_y: ref_height as i32 - 1,
+        bit_depth,
+    };
+    let prepared =
+        if block_w < WARPED_BLOCK_SIZE || block_h < WARPED_BLOCK_SIZE || scaling.is_scaled() {
+            None
+        } else {
+            PreparedWarpPrediction::with_valid_shear(&params)?
+        };
+    let Some(prepared) = prepared else {
         let unit = |i4: usize, j4: usize| {
             let (first_x, first_y, last_x, last_y) = ext_warp_unit_bounds(
                 rect,
@@ -954,23 +970,7 @@ fn predict_warp_plane<T: ReconSample>(
             }
         }
         return Ok(());
-    }
-
-    let params = WarpPredictBlockParams {
-        warp_params,
-        block_x: plane_x as i32,
-        block_y: plane_y as i32,
-        subsampling_x: sub_x as u8,
-        subsampling_y: sub_y as u8,
-        reference_scale_x: scaling.scale_x,
-        reference_scale_y: scaling.scale_y,
-        first_x: 0,
-        first_y: 0,
-        last_x: ref_width as i32 - 1,
-        last_y: ref_height as i32 - 1,
-        bit_depth,
     };
-    let prepared = PreparedWarpPrediction::new(&params)?;
     let visible_w = block_w.min(destination_width.saturating_sub(plane_x));
     let visible_h = block_h.min(destination_height.saturating_sub(plane_y));
     let (block_w, block_h) = if visible_w > 0 && visible_h > 0 {
@@ -1795,11 +1795,52 @@ fn compound_ref_intermediate<T: ReconSample>(
     };
     let (ref_width, ref_height) = (view.width(), view.height());
     samples.fill(0);
-    let skip_pred = !splot_recon::warp_shear_is_valid(warp_params)
-        || block_w < WARPED_BLOCK_SIZE
-        || block_h < WARPED_BLOCK_SIZE
-        || scaling.is_scaled();
-    if skip_pred {
+    let params = WarpPredictBlockParams {
+        warp_params,
+        block_x: plane_x as i32,
+        block_y: plane_y as i32,
+        subsampling_x: sub_x as u8,
+        subsampling_y: sub_y as u8,
+        reference_scale_x: scaling.scale_x,
+        reference_scale_y: scaling.scale_y,
+        first_x: 0,
+        first_y: 0,
+        last_x: ref_width as i32 - 1,
+        last_y: ref_height as i32 - 1,
+        bit_depth,
+    };
+    let prepared =
+        if block_w < WARPED_BLOCK_SIZE || block_h < WARPED_BLOCK_SIZE || scaling.is_scaled() {
+            None
+        } else {
+            PreparedWarpPrediction::with_valid_shear(&params)?
+        };
+    if let Some(prepared) = prepared {
+        for local_y in (0..block_h).step_by(WARPED_BLOCK_SIZE) {
+            for local_x in (0..block_w).step_by(WARPED_BLOCK_SIZE) {
+                let mut predicted = [0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
+                prepared.predict_block_into(
+                    &view,
+                    (plane_x + local_x) as i32,
+                    (plane_y + local_y) as i32,
+                    true,
+                    &mut predicted,
+                )?;
+                let write_w = (block_w - local_x).min(WARPED_BLOCK_SIZE);
+                let write_h = (block_h - local_y).min(WARPED_BLOCK_SIZE);
+                write_compound_section(
+                    samples,
+                    block_w,
+                    local_x,
+                    local_y,
+                    &predicted,
+                    WARPED_BLOCK_SIZE,
+                    write_w,
+                    write_h,
+                );
+            }
+        }
+    } else {
         for i4 in 0..block_h.div_euclid(4) {
             for j4 in 0..block_w.div_euclid(4) {
                 let (first_x, first_y, last_x, last_y) = ext_warp_unit_bounds(
@@ -1832,46 +1873,6 @@ fn compound_ref_intermediate<T: ReconSample>(
                 };
                 let predicted = ext_warp_predict_unit(&view, &params, i4, j4, true)?;
                 write_compound_section(samples, block_w, j4 * 4, i4 * 4, &predicted, 4, 4, 4);
-            }
-        }
-    } else {
-        let params = WarpPredictBlockParams {
-            warp_params,
-            block_x: plane_x as i32,
-            block_y: plane_y as i32,
-            subsampling_x: sub_x as u8,
-            subsampling_y: sub_y as u8,
-            reference_scale_x: scaling.scale_x,
-            reference_scale_y: scaling.scale_y,
-            first_x: 0,
-            first_y: 0,
-            last_x: ref_width as i32 - 1,
-            last_y: ref_height as i32 - 1,
-            bit_depth,
-        };
-        let prepared = PreparedWarpPrediction::new(&params)?;
-        for local_y in (0..block_h).step_by(WARPED_BLOCK_SIZE) {
-            for local_x in (0..block_w).step_by(WARPED_BLOCK_SIZE) {
-                let mut predicted = [0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
-                prepared.predict_block_into(
-                    &view,
-                    (plane_x + local_x) as i32,
-                    (plane_y + local_y) as i32,
-                    true,
-                    &mut predicted,
-                )?;
-                let write_w = (block_w - local_x).min(WARPED_BLOCK_SIZE);
-                let write_h = (block_h - local_y).min(WARPED_BLOCK_SIZE);
-                write_compound_section(
-                    samples,
-                    block_w,
-                    local_x,
-                    local_y,
-                    &predicted,
-                    WARPED_BLOCK_SIZE,
-                    write_w,
-                    write_h,
-                );
             }
         }
     }
