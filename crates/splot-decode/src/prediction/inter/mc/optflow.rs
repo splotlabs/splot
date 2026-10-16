@@ -1525,8 +1525,8 @@ fn unscaled_cell_params(
         interp,
         w: width,
         h: height,
-        start_x: ((x16 + round2_signed_i32(mv_col, sub_x)) << 6) + 32,
-        start_y: ((y16 + round2_signed_i32(mv_row, sub_y)) << 6) + 32,
+        start_x: ((x16 + round2_signed_sub(mv_col, sub_x)) << 6) + 32,
+        start_y: ((y16 + round2_signed_sub(mv_row, sub_y)) << 6) + 32,
         step_x: 1 << 10,
         step_y: 1 << 10,
         first_x: bounds.first_x,
@@ -1535,6 +1535,14 @@ fn unscaled_cell_params(
         last_y: bounds.last_y,
         bit_depth,
     }
+}
+
+/// `Round2Signed(mv, sub)` of a chroma subsampling shift `sub` (0 or 1):
+/// adding half before the shift equals adding the rounding bit after it.
+#[inline]
+fn round2_signed_sub(mv: i32, sub: u32) -> i32 {
+    let rounded = ((mv.unsigned_abs() + ((1 << sub) >> 1)) >> sub) as i32;
+    if mv < 0 { -rounded } else { rounded }
 }
 
 /// Predicts the V plane into a packed `chroma_v` output that the shared U pass
@@ -2128,6 +2136,15 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn subsampling_rounding_matches_round2_signed() {
+        for mv in -(1 << 17)..=(1 << 17) {
+            for sub in 0..=1 {
+                assert_eq!(round2_signed_sub(mv, sub), round2_signed_i32(mv, sub));
+            }
+        }
+    }
 
     #[test]
     fn stored_mvs_round_refined_sixteenth_pel_values_to_eighth_pel() {
