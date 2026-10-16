@@ -257,11 +257,10 @@ struct Frames {
 ///
 /// A worker reads `generation` before it scans the frames. A publisher raises
 /// `generation` and signals only when a waiter is registered, so a scan that
-/// missed the publication sees the raised generation and does not park. A
-/// worker drops its handle on a frame before it pops the finished frame, so
-/// the signal after the worker's own clone is dropped is the last change a
-/// driver waiting for the frame's sole owner needs to see, whichever worker
-/// popped the frame.
+/// missed the publication sees the raised generation and does not park. Every
+/// worker raises the generation after it drops its handle on a frame, so a
+/// driver waiting for the frame's sole owner sees the last drop whichever
+/// worker made it and whichever worker popped the finished frame.
 #[derive(Default)]
 struct Core {
     frames: Mutex<Frames>,
@@ -418,9 +417,7 @@ impl Core {
                 frames.live.pop_front();
             }
             drop(frames);
-            if done {
-                self.notify(true);
-            }
+            self.notify(done);
         }
     }
 }
@@ -583,6 +580,9 @@ mod tests {
         done_rows: RowProgress,
         log: Arc<Mutex<Vec<(usize, usize)>>>,
         fail_at: Option<usize>,
+        /// Holds an unfinished `done` answer, which widens the gap between a
+        /// worker's `done` read and its handle drop.
+        slow_done: bool,
     }
 
     impl FrameWork for Chain {
@@ -607,7 +607,11 @@ mod tests {
         }
 
         fn done(&self) -> bool {
-            self.stage.is_finished()
+            let finished = self.stage.is_finished();
+            if self.slow_done && !finished {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            finished
         }
     }
 
@@ -627,6 +631,7 @@ mod tests {
             done_rows: scheduler.progress(),
             log: Arc::clone(log),
             fail_at: None,
+            slow_done: false,
         })
     }
 
@@ -721,6 +726,33 @@ mod tests {
     }
 
     #[test]
+    fn the_last_handle_drop_wakes_a_driver_waiting_for_the_sole_owner() {
+        let scheduler = RowScheduler::new(threads(2)).unwrap();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        for _ in 0..50 {
+            let frame = Arc::new(Chain {
+                slow_done: true,
+                ..Arc::into_inner(chain(&scheduler, 0, 8, None, |_| 0, &log)).unwrap()
+            });
+            scheduler.push(Arc::clone(&frame) as Arc<dyn FrameWork>);
+            let rescue = scheduler.progress();
+            let watchdog = spawn_thread("watchdog", move || {
+                std::thread::sleep(Duration::from_secs(3));
+                rescue.publish(1);
+            })
+            .unwrap();
+            let started = Instant::now();
+            scheduler.wait(|| Arc::strong_count(&frame) == 1);
+            assert!(frame.done());
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "the driver waited for the watchdog"
+            );
+            drop(watchdog);
+        }
+    }
+
+    #[test]
     fn dependent_frame_rows_run_after_the_rows_they_need() {
         let scheduler = RowScheduler::new(threads(2)).unwrap();
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -782,6 +814,7 @@ mod tests {
             done_rows: scheduler.progress(),
             log: Arc::clone(&log),
             fail_at: Some(1),
+            slow_done: false,
         };
         first.fail_at = Some(1);
         let first = Arc::new(first);
