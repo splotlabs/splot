@@ -1083,6 +1083,26 @@ fn bilinear_unclipped<T: ReconSample, O: BilinearOutput>(
     let max_sample = params.bit_depth.max_sample();
     let source = (block, reference.stride);
     let mut column = 0;
+    while column + 16 <= params.w {
+        let Some(target) = output.get_mut(column..) else {
+            return false;
+        };
+        let strip = bilinear_strip::<16, T, O>;
+        if strip(
+            source,
+            column,
+            params.h,
+            phases,
+            max_sample,
+            target,
+            output_stride,
+        )
+        .is_none()
+        {
+            return false;
+        }
+        column += 16;
+    }
     while column + 8 <= params.w {
         let Some(target) = output.get_mut(column..) else {
             return false;
