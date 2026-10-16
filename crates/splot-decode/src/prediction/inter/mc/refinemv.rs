@@ -837,9 +837,9 @@ fn refinemv_center_sad(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn refinemv_sad(
-    pred0: &[u16],
-    pred1: &[u16],
+fn refinemv_sad<'a>(
+    pred0: &'a [u16],
+    pred1: &'a [u16],
     stride: usize,
     width: usize,
     height: usize,
@@ -859,39 +859,55 @@ fn refinemv_sad(
     let start1_y = usize::try_from(2 - dy).map_err(|_| ReconError::ArithmeticOverflow {
         context: "refine-MV SAD bottom offset",
     })?;
-    // Four-lane widening abs-diff sums lower to one `uabal` each.
-    let mut sums = Simd::<u32, 4>::splat(0);
-    let mut sad_tail = 0u32;
     let downshift = u32::from(bit_depth.bits().saturating_sub(8));
-    for row in (0..height).step_by(2) {
-        let row_range = |start_y: usize, start_x: usize| {
-            (start_y + row)
-                .checked_mul(stride)
-                .and_then(|row| row.checked_add(start_x))
-                .and_then(|start| start.checked_add(width).map(|end| start..end))
+    // One bounds check per predictor covers every compared row.
+    let span = |pred: &'a [u16], start_y: usize, start_x: usize| {
+        let last_row = height.saturating_sub(1) & !1;
+        let start = start_y.checked_mul(stride)?.checked_add(start_x)?;
+        let end = last_row.checked_mul(stride)?.checked_add(width)?;
+        pred.get(start..start.checked_add(end)?)
+    };
+    let left = span(pred0, start0_y, start0_x).ok_or(ReconError::ArithmeticOverflow {
+        context: "refine-MV SAD first lookup",
+    })?;
+    let right = span(pred1, start1_y, start1_x).ok_or(ReconError::ArithmeticOverflow {
+        context: "refine-MV SAD second lookup",
+    })?;
+    let rows = left.chunks(2 * stride).zip(right.chunks(2 * stride));
+    let sad = match width {
+        12 => sad_rows::<12>(rows),
+        20 => sad_rows::<20>(rows),
+        _ => rows
+            .map(
+                |(left, right)| match (left.get(..width), right.get(..width)) {
+                    (Some(left), Some(right)) => left
+                        .iter()
+                        .zip(right)
+                        .map(|(&left, &right)| u32::from(left.abs_diff(right)))
+                        .sum::<u32>(),
+                    _ => u32::MAX,
+                },
+            )
+            .fold(0, u32::saturating_add),
+    };
+    Ok(sad >> downshift)
+}
+
+/// `Σ |left - right|` over the first `W` samples of each row pair, in
+/// four-lane widening steps that lower to one `uabal` each.
+fn sad_rows<'a, const W: usize>(rows: impl Iterator<Item = (&'a [u16], &'a [u16])>) -> u32 {
+    let mut sums = Simd::<u32, 4>::splat(0);
+    for (left, right) in rows {
+        let (Some(left), Some(right)) = (left.first_chunk::<W>(), right.first_chunk::<W>()) else {
+            return u32::MAX;
         };
-        let left = row_range(start0_y, start0_x)
-            .and_then(|range| pred0.get(range))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "refine-MV SAD first lookup",
-            })?;
-        let right = row_range(start1_y, start1_x)
-            .and_then(|range| pred1.get(range))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "refine-MV SAD second lookup",
-            })?;
-        let ((left, left_tail), (right, right_tail)) =
-            (left.as_chunks::<4>(), right.as_chunks::<4>());
-        for (left, right) in left.iter().zip(right) {
+        for (left, right) in left.as_chunks::<4>().0.iter().zip(right.as_chunks::<4>().0) {
             sums += Simd::from_array(*left)
                 .abs_diff(Simd::from_array(*right))
                 .cast::<u32>();
         }
-        for (&left, &right) in left_tail.iter().zip(right_tail) {
-            sad_tail += u32::from(left.abs_diff(right));
-        }
     }
-    Ok((sums.reduce_sum() + sad_tail) >> downshift)
+    sums.reduce_sum()
 }
 
 #[cfg(test)]
