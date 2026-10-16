@@ -387,6 +387,7 @@ pub(crate) fn decode_key_frame(
         &mut pools,
         &mut ring,
         &mut frames,
+        None,
         0,
         bytes.into(),
         options,
@@ -407,6 +408,19 @@ pub(crate) fn decode_key_frame(
     }
 }
 
+/// The null reference set of a key / intra-only frame walk.
+fn empty_key_reference<T: splot_recon::ReconSample>(
+    offset: ByteOffset,
+) -> Result<inter::InterReferenceState<T>> {
+    inter::InterReferenceState::empty().map_err(|_| {
+        unsupported_at(
+            "frame_engine_intra_reference_store",
+            offset,
+            "intra frame decode requires a reference store",
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn decode_key_frame_with_effects(
     scratch_eight: &mut inter::InterDecodeScratch<u8>,
@@ -415,6 +429,11 @@ fn decode_key_frame_with_effects(
     pools: &mut frame_tasks::RowPools,
     ring: &mut inflight::InflightRing,
     frames: &mut FrameStore,
+    split: Option<(
+        SplitPair<'_>,
+        &crate::bitstream::byte_stream::UnitBytes,
+        &mut Option<Arc<SequenceHeader>>,
+    )>,
     frame_index: usize,
     bytes: SourceBytes<'_>,
     options: &DecodeOptions,
@@ -431,6 +450,59 @@ fn decode_key_frame_with_effects(
     ring.reserve(scratch_eight, scratch_ten);
     let _user_qm_scope = crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
     let core = frames.share_core(core)?;
+    if let (Some(rows), Some(((split_eight, split_ten), unit, shared_sequence))) = (rows, split)
+        && inter::splittable_inter_frame(frame_envelope.header.obu_type, &core)
+    {
+        let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
+            frame_engine::intra::build_frame_qm_levels(&core),
+        );
+        let (slot, core, products, motion_field) = match sequence.general.bit_depth_idc {
+            BitDepthIdc::Eight => push_split_inter::<u8>(
+                split_eight,
+                rows,
+                ring,
+                frames,
+                scratch_eight,
+                options,
+                sequence,
+                shared_sequence,
+                candidate,
+                unit,
+                core,
+                empty_key_reference(frame_envelope.offset)?,
+                frame_index,
+            )?,
+            BitDepthIdc::Ten => push_split_inter::<u16>(
+                split_ten,
+                rows,
+                ring,
+                frames,
+                scratch_ten,
+                options,
+                sequence,
+                shared_sequence,
+                candidate,
+                unit,
+                core,
+                empty_key_reference(frame_envelope.offset)?,
+                frame_index,
+            )?,
+        };
+        let frame_rate = output_effects.frame_rate(frame_rate);
+        return Ok(PipelineFrame {
+            frame: slot,
+            display_grain,
+            output_effects,
+            frame_cdfs: products.frame_cdfs,
+            motion_field,
+            ccso_params: core.ccso_params.clone(),
+            ccso_grid: products.ccso_grid,
+            segment_ids: products.segment_ids,
+            frame_rate_numerator: frame_rate.numerator,
+            frame_rate_denominator: frame_rate.denominator,
+            props,
+        });
+    }
     let mut product_writers = frames.reserve_products()?;
     let (frame, frame_cdfs, ccso_params, ccso_grid, segment_ids, motion_field) =
         match sequence.general.bit_depth_idc {
@@ -1041,6 +1113,11 @@ fn decode_frames_in_order(
             pools,
             ring,
             frames,
+            Some((
+                (&mut *split_eight, &mut *split_ten),
+                &leading_unit,
+                &mut shared_sequence,
+            )),
             0,
             leading_unit.view(),
             options,
@@ -1957,6 +2034,11 @@ fn decode_frames_in_order(
                     pools,
                     ring,
                     frames,
+                    Some((
+                        (&mut *split_eight, &mut *split_ten),
+                        &unit,
+                        &mut shared_sequence,
+                    )),
                     frame_index,
                     unit.view(),
                     options,

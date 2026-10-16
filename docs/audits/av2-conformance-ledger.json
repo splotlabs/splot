@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "4682c159f9c80e440c1628daa2be541ddcf0588c",
+  "audited_commit": "29eabe24b6a907ce93ed3271b5838bcd4b7f52e6",
   "outcome": "success",
   "files": [
     {
@@ -3104,7 +3104,7 @@
     },
     {
       "path": "crates/splot-decode/src/pipeline/mod.rs",
-      "sha256": "842de469b24e92a652ad73ea4f3ea9e963332abdae5b9454f7c520881641e4e9",
+      "sha256": "a4b99a543cd08cb09191a31921519900ae4479ce4ae9272ebbf3140bc078528a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-10BIT-SEQUENCE-FRONTIER",
@@ -3308,7 +3308,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block.rs",
-      "sha256": "a3255ffaf7e96331b1ef9e75cf71729bb6012b18b06fe133b105c21be69d9dda",
+      "sha256": "7dbf9f5d35a9452f9b02fa7108af7c13795fcda7b2cce2710fb368c49bb65fd9",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-RESIDUAL-DCT",
@@ -3677,7 +3677,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/frame_walk.rs",
-      "sha256": "5ae7feea9888fa69049198c4053d26d38502c11ab15dd89f47b4537a343dc9d0",
+      "sha256": "50c69c1679c1b36d6984818cb0df7861eea5868ab1900bdcbaf0c3c54d4e9252",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-ZERO-REFERENCE-INTRA-BLOCKS"
@@ -4928,7 +4928,7 @@
     },
     {
       "path": "crates/splot-recon/src/workspace_rows.rs",
-      "sha256": "e3a9d0b050e88a7ac4bb20ce10fdd3df6b42602124b03ae428409e48d2d85df4",
+      "sha256": "5cc2c941cd0a4fbccfc5b9f29c956b7c73cba201a9d69e8c0573de1660997c0a",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "INFRA-DECODE-PARALLEL-STAGES",

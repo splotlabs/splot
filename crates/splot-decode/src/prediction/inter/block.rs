@@ -681,20 +681,22 @@ impl TemporalPrelude {
     ) -> Result<super::find_mv_stack::TemporalBandPlan> {
         let (metadata, layouts) =
             scheduled_motion_field_inputs(&reference.ref_motion_fields, ref_frame_idx)?;
-        let inter = core
-            .inter
-            .as_ref()
-            .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
-        let tip_mode = inter
-            .tip_frame_mode
-            .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?;
-        let tip_active = tip_mode != TipFrameMode::Disabled;
-        let fill_tip_holes = if tip_active {
+        let inter = match core.inter.as_ref() {
+            None if self.geometry.frame_is_intra() => None,
+            None => return Err(DecodeHeaderStateError::MissingInterControlRegion.into()),
+            inter => inter,
+        };
+        let tip_mode = inter.map_or(Ok(TipFrameMode::Disabled), |inter| {
             inter
+                .tip_frame_mode
+                .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)
+        })?;
+        let tip_active = tip_mode != TipFrameMode::Disabled;
+        let fill_tip_holes = match inter {
+            Some(inter) if tip_active => inter
                 .allow_tip_hole_fill
-                .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?
-        } else {
-            false
+                .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?,
+            _ => false,
         };
         if tip_active && self.expected_tip_pair.is_none() {
             return Err(DecodeHeaderStateError::InvalidInterTemporalMotionState.into());

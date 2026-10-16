@@ -145,7 +145,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 /// AV2 § 7.11.2 reads at most one row above a superblock: `sbBoundary` forces
 /// `aboveMrlIndex` to zero, and the CfL and MHCCP luma reads clamp to
 /// `sbTop - 1`. Local IntraBC reads only the current superblock row (§ 5.20.2.1
-/// resets `IBCBufferValid` per row); global IntraBC never takes this path.
+/// resets `IBCBufferValid` per row); a global IntraBC frame takes a band that
+/// stores every row.
 const BAND_EDGE_ROWS: usize = 1;
 
 impl<T: ReconSample> CurrentFramePlane<T> {

@@ -176,30 +176,50 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     let frame_size = geometry.frame_size();
     let frame_width = frame_size.width;
     let frame_height = frame_size.height;
-    let inter = core
-        .inter
-        .as_ref()
-        .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
-    let tail = core
-        .inter_tail
-        .as_ref()
-        .ok_or(DecodeHeaderStateError::MissingInterTail)?;
-    let num_total_refs = inter
-        .num_total_refs
-        .filter(|count| *count <= 7)
-        .ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
-    let ref_frame_idx = &inter.ref_frame_idx;
-    if ref_frame_idx.len() != num_total_refs as usize {
-        return Err(DecodeHeaderStateError::InvalidInterReferenceMap.into());
-    }
-    let block_reference_select = tail.reference_select;
+    let intra_header = core.inter.is_none() && geometry.frame_is_intra();
+    let (num_total_refs, ref_frame_idx, interpolation_filter, block_reference_select, kind) =
+        if intra_header {
+            (
+                0,
+                RefIdxBuf::default(),
+                splot_core::headers::frame::InterpolationFilter::Eighttap,
+                false,
+                crate::pipeline::TileFactsKind::Intra,
+            )
+        } else {
+            let inter = core
+                .inter
+                .as_ref()
+                .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
+            let tail = core
+                .inter_tail
+                .as_ref()
+                .ok_or(DecodeHeaderStateError::MissingInterTail)?;
+            let num_total_refs = inter
+                .num_total_refs
+                .filter(|count| *count <= 7)
+                .ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
+            if inter.ref_frame_idx.len() != num_total_refs as usize {
+                return Err(DecodeHeaderStateError::InvalidInterReferenceMap.into());
+            }
+            let interpolation_filter = inter
+                .interpolation_filter
+                .ok_or(DecodeHeaderStateError::MissingInterpolationFilter)?;
+            (
+                num_total_refs,
+                inter.ref_frame_idx.clone(),
+                interpolation_filter,
+                tail.reference_select,
+                crate::pipeline::TileFactsKind::Inter,
+            )
+        };
     let tile_plan = crate::pipeline::derive_tile_plan_with(
         candidate,
         bytes,
         sequence,
         core,
         options,
-        crate::pipeline::TileFactsKind::Inter,
+        kind,
         Some(&initial_cdfs),
         payload_scratch,
     )?;
@@ -216,9 +236,6 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
         bit_depth,
         sequence.general.chroma_format_idc,
     )?;
-    let interpolation_filter = inter
-        .interpolation_filter
-        .ok_or(DecodeHeaderStateError::MissingInterpolationFilter)?;
     let workspace = workspace(geometry.info())?; // the last frame's buffers keep its samples: restore the fill if § 7.11/§ 7.13 ever leave a coded sample unwritten
     let quantization = core.quantization_params.as_ref().ok_or_else(|| {
         unsupported_at(
@@ -233,13 +250,13 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
         luma_width: frame_width as usize,
         luma_height: frame_height as usize,
         bit_depth,
-        gdf_reference: Some(
+        gdf_reference: (!intra_header).then(|| {
             crate::filters::gdf::GdfReferenceContext::from_reference_list(
                 core.display_order_hint().unwrap_or(0),
                 ref_frame_idx.as_slice(),
                 &reference.ref_order_hint,
-            ),
-        ),
+            )
+        }),
         cfl_ds_filter_index: sequence
             .intra
             .as_ref()
@@ -267,12 +284,13 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
                 .lossless_info
                 .as_ref()
                 .is_some_and(|lossless| lossless.allow_tcq),
-            residual_use_ddt: sequence
-                .transform_quant_entropy
-                .as_ref()
-                .is_some_and(|tq| tq.enable_inter_ddt),
+            residual_use_ddt: !intra_header
+                && sequence
+                    .transform_quant_entropy
+                    .as_ref()
+                    .is_some_and(|tq| tq.enable_inter_ddt),
         },
-        ref_frame_idx: ref_frame_idx.clone(),
+        ref_frame_idx,
         quantizer_deltas,
     })
 }
@@ -289,21 +307,26 @@ pub(super) fn required_inter_quantizer_deltas(
 /// reconstruction later.
 ///
 /// The split serves exactly one tile — a multi-tile frame already parses its
-/// tiles independently — and rules out frame-level intra block copy, whose
-/// reconstruction the walk order feeds back into. Every other frame keeps the
+/// tiles independently. A frame that allows global intra block copy keeps
+/// every reconstructed row in its workspace instead of one superblock row, so
+/// a copy from any row above reads raw samples. Every other frame keeps the
 /// fused walk.
 #[must_use]
 pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) -> bool {
-    core.status == splot_core::headers::frame::FrameHeaderParseStatus::InterHeaderComplete
-        && core.frame_is_intra.is_some()
-        && matches!(
+    use splot_core::headers::frame::FrameHeaderParseStatus;
+    (match core.status {
+        FrameHeaderParseStatus::InterHeaderComplete => matches!(
             obu_type,
             ObuType::LeadingTileGroup
                 | ObuType::RegularTileGroup
                 | ObuType::Switch
                 | ObuType::RasFrame
-        )
-        && !block::global_intrabc_enabled(core.intrabc)
+        ),
+        FrameHeaderParseStatus::IntraHeaderComplete => {
+            matches!(obu_type, ObuType::ClosedLoopKey | ObuType::OpenLoopKey)
+        }
+        _ => false,
+    }) && core.frame_is_intra.is_some()
         && core
             .tile_info
             .as_ref()
@@ -378,6 +401,11 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
         let _scopes = quantizer.install_frame();
         let mut payload_scratch = core::mem::take(&mut reusable.payload);
         let spare_band = reusable.recon_band.take();
+        let band_rows = if block::global_intrabc_enabled(core.intrabc) {
+            geometry.info().storage_luma_size().height()
+        } else {
+            geometry.sb_h4() * 4
+        };
         let prologue = derive_inter_walk_prologue(
             &candidate,
             bytes,
@@ -387,7 +415,7 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             &reference,
             bit_depth,
             geometry,
-            |info| CurrentFrameWorkspace::new_band(info, geometry.sb_h4() * 4, spare_band),
+            |info| CurrentFrameWorkspace::new_band(info, band_rows, spare_band),
             Some(reusable.initial_cdfs()),
             &mut payload_scratch,
         );
