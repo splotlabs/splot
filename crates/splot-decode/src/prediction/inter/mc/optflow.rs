@@ -1257,6 +1257,13 @@ pub(super) fn predict_motion_grid_compound_average_into<
             second,
         )
     };
+    // Unscaled cells whose refine-MV unit is the cell itself (TIP): their
+    // scalings and bounds reduce to integer positions.
+    let per_cell_refine = !prediction.scalings.into_iter().any(PlaneScaling::is_scaled)
+        && refine.1 == 1
+        && refine.2 >> sub_x == subblock_w
+        && refine.2 >> sub_y == subblock_h;
+    let check_uniform = !uniform_everywhere && implicit_mask && cwp_weight == CWP_EQUAL;
     macro_rules! cell_inputs {
         ($cell_row:expr, $cell_col:expr, [$col:expr, $row:expr, $height:expr]) => {{
             let (col, row, height) = ($col, $row, $height);
@@ -1267,43 +1274,56 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "compound motion-grid lookup",
                 })?;
-            let scalings = core::array::from_fn(|reference| {
-                prediction.scalings[reference].with_prescaled_mv(
-                    (prediction.plane_x + col) as i32,
-                    (prediction.plane_y + row) as i32,
-                    cell.mvs[reference][0],
-                    cell.mvs[reference][1],
+            if per_cell_refine && let Some(candidates) = refine.0.get(cell_index) {
+                unscaled_cell_inputs(
+                    &prediction,
+                    cell,
+                    *candidates,
+                    [col, row, width, height],
+                    (sub_x, sub_y),
+                    (bit_depth, block.interp),
+                    check_uniform,
+                    (frame_w, frame_h),
+                )
+            } else {
+                let scalings = core::array::from_fn(|reference| {
+                    prediction.scalings[reference].with_prescaled_mv(
+                        (prediction.plane_x + col) as i32,
+                        (prediction.plane_y + row) as i32,
+                        cell.mvs[reference][0],
+                        cell.mvs[reference][1],
+                        sub_x,
+                        sub_y,
+                    )
+                });
+                let uniform = uniform_everywhere
+                    || super::compound_average_weights_are_uniform(
+                        implicit_mask,
+                        cwp_weight,
+                        width,
+                        height,
+                        prediction.scalings,
+                        Some(scalings),
+                        (frame_w, frame_h),
+                    );
+                let params = compound_optflow_subpel_params(
+                    bit_depth,
+                    block.interp,
+                    subblock_area,
                     sub_x,
                     sub_y,
-                )
-            });
-            let uniform = uniform_everywhere
-                || super::compound_average_weights_are_uniform(
-                    implicit_mask,
-                    cwp_weight,
+                    refine,
+                    &prediction,
+                    cell,
+                    scalings,
+                    cell_index,
+                    row,
+                    col,
                     width,
                     height,
-                    prediction.scalings,
-                    Some(scalings),
-                    (frame_w, frame_h),
                 );
-            let params = compound_optflow_subpel_params(
-                bit_depth,
-                block.interp,
-                subblock_area,
-                sub_x,
-                sub_y,
-                refine,
-                &prediction,
-                cell,
-                scalings,
-                cell_index,
-                row,
-                col,
-                width,
-                height,
-            );
-            (params, uniform, scalings, [col, row, width, height])
+                (params, uniform, scalings, [col, row, width, height])
+            }
         }};
     }
     let process_row = |cell_row: usize,
@@ -1417,6 +1437,78 @@ pub(super) fn predict_motion_grid_compound_average_into<
         (implicit_mask, cwp_weight),
         offset,
         chroma_v,
+    )
+}
+
+/// The cell inputs of an unscaled cell whose refine-MV unit is the cell:
+/// each start is its 1/16-sample position, and each refine-MV area starts at
+/// the candidate's integer sample (as in `reference_area_bounds`).
+#[allow(clippy::too_many_arguments, clippy::inline_always)]
+#[inline(always)]
+fn unscaled_cell_inputs<T: ReconSample>(
+    prediction: &CompoundSubpelPlane<'_, T>,
+    cell: MotionCell,
+    candidates: [Mv; 2],
+    [col, row, width, height]: [usize; 4],
+    (sub_x, sub_y): (u32, u32),
+    (bit_depth, interp): (splot_recon::BitDepth, InterpolationFilter),
+    check_uniform: bool,
+    (frame_w, frame_h): (usize, usize),
+) -> (
+    [SubpelPredictParams; 2],
+    bool,
+    [PlaneScaling; 2],
+    [usize; 4],
+) {
+    let x16 = ((prediction.plane_x + col) as i32) << 4;
+    let y16 = ((prediction.plane_y + row) as i32) << 4;
+    let (w, h) = (width as i32, height as i32);
+    let x_padding = if width == 4 { (1, 2) } else { (3, 4) };
+    let y_padding = if height == 4 { (1, 2) } else { (3, 4) };
+    let scaling = |reference: usize| {
+        let [mv_row, mv_col] = cell.mvs[reference];
+        PlaneScaling {
+            start_x: ((x16 + round2_signed_i32(mv_col, sub_x)) << 6) + 32,
+            start_y: ((y16 + round2_signed_i32(mv_row, sub_y)) << 6) + 32,
+            step_x: 1 << 10,
+            step_y: 1 << 10,
+            first_x: 0,
+            first_y: 0,
+            ..prediction.scalings[reference]
+        }
+    };
+    let scalings = [scaling(0), scaling(1)];
+    let inside = |scaling: &PlaneScaling| {
+        let (x, y) = (scaling.start_x >> 10, scaling.start_y >> 10);
+        x >= 0 && y >= 0 && x + w <= frame_w as i32 && y + h <= frame_h as i32
+    };
+    let uniform = !check_uniform || (inside(&scalings[0]) && inside(&scalings[1]));
+    let params = |reference: usize| {
+        let scaling = scalings[reference];
+        let candidate = candidates[reference];
+        let x = (x16 + ((2 * candidate.col) >> sub_x)) >> 4;
+        let y = (y16 + ((2 * candidate.row) >> sub_y)) >> 4;
+        let clamp = |value: i32, last: i32| value.max(0).min(last);
+        SubpelPredictParams {
+            interp,
+            w: width,
+            h: height,
+            start_x: scaling.start_x,
+            start_y: scaling.start_y,
+            step_x: scaling.step_x,
+            step_y: scaling.step_y,
+            first_x: clamp(x - x_padding.0, scaling.last_x),
+            first_y: clamp(y - y_padding.0, scaling.last_y),
+            last_x: clamp(x + w - 1 + x_padding.1, scaling.last_x),
+            last_y: clamp(y + h - 1 + y_padding.1, scaling.last_y),
+            bit_depth,
+        }
+    };
+    (
+        [params(0), params(1)],
+        uniform,
+        scalings,
+        [col, row, width, height],
     )
 }
 
