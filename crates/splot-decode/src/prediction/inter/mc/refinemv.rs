@@ -778,8 +778,8 @@ fn refinemv_sad(
     let start1_y = usize::try_from(2 - dy).map_err(|_| ReconError::ArithmeticOverflow {
         context: "refine-MV SAD bottom offset",
     })?;
-    let mut sad8 = Simd::<u32, 8>::splat(0);
-    let mut sad4 = Simd::<u32, 4>::splat(0);
+    // Four-lane widening abs-diff sums lower to one `uabal` each.
+    let mut sums = Simd::<u32, 4>::splat(0);
     let mut sad_tail = 0u32;
     let downshift = u32::from(bit_depth.bits().saturating_sub(8));
     for row in (0..height).step_by(2) {
@@ -799,25 +799,18 @@ fn refinemv_sad(
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "refine-MV SAD second lookup",
             })?;
-        let mut index = 0;
-        while index + 8 <= width {
-            let left = Simd::<u16, 8>::from_slice(&left[index..]);
-            let right = Simd::<u16, 8>::from_slice(&right[index..]);
-            sad8 += (left.simd_max(right) - left.simd_min(right)).cast::<u32>();
-            index += 8;
+        let ((left, left_tail), (right, right_tail)) =
+            (left.as_chunks::<4>(), right.as_chunks::<4>());
+        for (left, right) in left.iter().zip(right) {
+            sums += Simd::from_array(*left)
+                .abs_diff(Simd::from_array(*right))
+                .cast::<u32>();
         }
-        if index + 4 <= width {
-            let left = Simd::<u16, 4>::from_slice(&left[index..]);
-            let right = Simd::<u16, 4>::from_slice(&right[index..]);
-            sad4 += (left.simd_max(right) - left.simd_min(right)).cast::<u32>();
-            index += 4;
-        }
-        for (&left, &right) in left[index..].iter().zip(&right[index..]) {
+        for (&left, &right) in left_tail.iter().zip(right_tail) {
             sad_tail += u32::from(left.abs_diff(right));
         }
     }
-    let sad = (sad8.reduce_sum() + sad4.reduce_sum() + sad_tail) >> downshift;
-    Ok(sad)
+    Ok((sums.reduce_sum() + sad_tail) >> downshift)
 }
 
 #[cfg(test)]
