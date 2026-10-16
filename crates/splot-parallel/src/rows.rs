@@ -5,10 +5,11 @@
 //!
 //! A [`FrameWork`] is one in-flight frame. Its stages (parse, resolve,
 //! reconstruct, filter) each advance one superblock row at a time, in order.
-//! Workers hold one lock, scan the frames oldest first, and ask each frame to
-//! [`claim`](FrameWork::claim) a row whose inputs are published. Readiness is
-//! read from [`RowProgress`] counters, so nothing registers a waiter and a
-//! worker never blocks inside a row. A frame depends only on older frames, and
+//! Workers scan the frames oldest first, concurrently under a read lock, and
+//! ask each frame to [`claim`](FrameWork::claim) a row whose inputs are
+//! published; a claim is an atomic exchange on the stage, so two scanners
+//! never run the same row. Readiness is read from [`RowProgress`] counters,
+//! so nothing registers a waiter and a worker never blocks inside a row. A frame depends only on older frames, and
 //! older frames are claimed first, so the oldest frame always has a row that
 //! can run or is running: the pipeline cannot stall.
 //!
@@ -22,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::thread::JoinHandle;
 
-use parking_lot::{Condvar, Mutex};
+use parking_lot::{Condvar, Mutex, RwLock};
 
 use crate::error::ParallelError;
 
@@ -41,8 +42,8 @@ pub struct Claim {
 /// One in-flight frame whose stages advance row by row.
 pub trait FrameWork: Send + Sync {
     /// Picks a row whose inputs are published, or `None` when nothing in this
-    /// frame can run now. Called under the scheduler lock, so it must only
-    /// read atomics and [`Stage`] cursors.
+    /// frame can run now. Several workers call it concurrently, so it must
+    /// only read atomics and claim through [`Stage`] or [`ParallelStage`].
     fn claim(&self) -> Option<Claim>;
     /// Runs the claimed row off the lock, publishes its progress, and calls
     /// [`Stage::finish`] for it.
@@ -90,7 +91,8 @@ impl RowProgress {
     }
 }
 
-/// The ordered row cursor of one stage: at most one row runs at a time.
+/// The ordered row cursor of one stage: at most one row runs at a time, and
+/// concurrent claimers race on the running flag.
 #[derive(Debug)]
 pub struct Stage {
     next: AtomicUsize,
@@ -131,7 +133,17 @@ impl Stage {
         if row >= self.rows() || !ready(row) {
             return None;
         }
-        self.running.store(true, Ordering::Release);
+        if self
+            .running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return None;
+        }
+        if self.next.load(Ordering::Acquire) != row {
+            self.running.store(false, Ordering::Release);
+            return None;
+        }
         Some(row)
     }
 
@@ -172,8 +184,8 @@ const READY: u8 = 1;
 const RUNNING: u8 = 2;
 const DONE: u8 = 3;
 
-/// A stage whose rows are independent: any ready row runs, in any order,
-/// several at a time.
+/// A stage whose rows are independent: any ready row runs, several at a
+/// time.
 #[derive(Debug, Default)]
 pub struct ParallelStage {
     rows: Mutex<Vec<u8>>,
@@ -196,13 +208,15 @@ impl ParallelStage {
         states.resize(rows, PENDING);
     }
 
-    /// Claims the first pending row for which `ready(row)` holds.
-    pub fn claim(&self, mut ready: impl FnMut(usize) -> bool) -> Option<usize> {
+    /// Claims the first pending row when `ready(row)` holds. Rows are
+    /// admitted in order: a later row never runs ahead of an earlier pending
+    /// one, so a scan evaluates one predicate per stage.
+    pub fn claim(&self, ready: impl FnOnce(usize) -> bool) -> Option<usize> {
         let mut states = self.rows.lock();
-        let row = states
-            .iter()
-            .enumerate()
-            .position(|(row, state)| *state == PENDING && ready(row))?;
+        let row = states.iter().position(|state| *state == PENDING)?;
+        if !ready(row) {
+            return None;
+        }
         states[row] = RUNNING;
         Some(row)
     }
@@ -263,7 +277,7 @@ struct Frames {
 /// worker made it and whichever worker popped the finished frame.
 #[derive(Default)]
 struct Core {
-    frames: Mutex<Frames>,
+    frames: RwLock<Frames>,
     generation: AtomicU64,
     waiters: AtomicUsize,
     parked: AtomicUsize,
@@ -346,8 +360,11 @@ impl Core {
         self.signal(all);
     }
 
-    /// Signals one idle worker after a claim, whether or not a signal is
-    /// pending, so a burst of ready rows spreads across the workers.
+    /// Signals one more idle worker after a woken worker claims, whether or
+    /// not a signal is pending, so a burst of ready rows spreads across the
+    /// parked workers. A busy worker's claim does not pass on: it was about
+    /// to scan anyway, and the parked worker it would wake usually finds the
+    /// row already taken by the next busy worker to finish.
     fn pass_on(&self) {
         self.signaled.store(true, Ordering::SeqCst);
         if self.waiters.load(Ordering::SeqCst) != 0 {
@@ -391,9 +408,10 @@ impl Core {
     }
 
     fn worker(&self) {
+        let mut woken = false;
         loop {
             let observed = self.generation.load(Ordering::SeqCst);
-            let frames = self.frames.lock();
+            let frames = self.frames.read();
             let claimed = frames
                 .live
                 .iter()
@@ -405,18 +423,24 @@ impl Core {
                     return;
                 }
                 self.wait_if_unchanged(observed);
+                woken = true;
                 continue;
             };
             drop(frames);
-            self.pass_on();
+            if woken {
+                woken = false;
+                self.pass_on();
+            }
             frame.run(claim);
             let done = frame.done();
             drop(frame);
-            let mut frames = self.frames.lock();
-            while frames.live.front().is_some_and(|front| front.done()) {
-                frames.live.pop_front();
+            if done {
+                let mut frames = self.frames.write();
+                while frames.live.front().is_some_and(|front| front.done()) {
+                    frames.live.pop_front();
+                }
+                drop(frames);
             }
-            drop(frames);
             self.notify(done);
         }
     }
@@ -506,7 +530,7 @@ impl RowScheduler {
 
     /// Adds the newest frame. Its rows run after every older frame's ready rows.
     pub fn push(&self, frame: Arc<dyn FrameWork>) {
-        let mut frames = self.core.frames.lock();
+        let mut frames = self.core.frames.write();
         frames.live.push_back(frame);
         drop(frames);
         self.core.notify(false);
@@ -521,15 +545,15 @@ impl RowScheduler {
     /// Frames pushed and not yet done.
     #[must_use]
     pub fn in_flight(&self) -> usize {
-        self.core.frames.lock().live.len()
+        self.core.frames.read().live.len()
     }
 
     /// Blocks the driver until `ready()` holds. `ready` runs under the
-    /// scheduler lock and is re-checked after every publication.
+    /// frames lock and is re-checked after every publication.
     pub fn wait(&self, mut ready: impl FnMut() -> bool) {
         loop {
             let observed = self.core.generation.load(Ordering::SeqCst);
-            let frames = self.core.frames.lock();
+            let frames = self.core.frames.read();
             let done = ready();
             drop(frames);
             if done {
@@ -548,7 +572,7 @@ impl RowScheduler {
 
 impl Drop for RowScheduler {
     fn drop(&mut self) {
-        self.core.frames.lock().shutdown = true;
+        self.core.frames.write().shutdown = true;
         self.core.notify(true);
         for worker in self.workers.drain(..) {
             let _ = worker.join();
@@ -672,17 +696,22 @@ mod tests {
     }
 
     #[test]
-    fn a_parallel_stage_claims_any_ready_row_once_and_finishes_when_all_ran() {
+    fn a_parallel_stage_admits_ready_rows_in_order_and_finishes_when_all_ran() {
         let stage = ParallelStage::new();
         assert!(stage.is_finished(), "no rows is finished");
         stage.set_rows(3);
         assert!(!stage.is_finished());
-        assert_eq!(stage.claim(|row| row != 0), Some(1));
-        assert_eq!(stage.claim(|row| row != 0), Some(2), "row 1 is running");
         assert_eq!(stage.claim(|row| row != 0), None, "row 0 is not ready");
-        stage.finish(2);
-        stage.finish(1);
         assert_eq!(stage.claim(|_| true), Some(0));
+        assert_eq!(
+            stage.claim(|_| true),
+            Some(1),
+            "row 0 running does not block row 1"
+        );
+        stage.finish(1);
+        assert_eq!(stage.claim(|row| row != 2), None, "row 2 is not ready");
+        assert_eq!(stage.claim(|_| true), Some(2));
+        stage.finish(2);
         assert!(!stage.is_finished(), "row 0 is still running");
         stage.finish(0);
         assert!(stage.is_finished());
