@@ -610,17 +610,6 @@ fn bilinear_sample(left: u16, right: u16, phase: i32) -> u16 {
     round2_i32((16 - phase) * left + phase * right, SUBPEL_BITS) as u16
 }
 
-fn fixed_16x16_window_in_bounds<T: ReconSample>(
-    reference: &ReferencePlaneView<'_, T>,
-    x0: i32,
-    y0: i32,
-) -> bool {
-    x0 + 1 >= 0
-        && x0 + 15 < reference.width as i32
-        && y0 + 1 >= 0
-        && y0 + 15 < reference.readable_rows as i32
-}
-
 /// One AV2 § 7.13.3.18 `BILINEAR` tap pair, entirely in 16-bit lanes.
 ///
 /// `(16 - phase) * left + phase * right` is at most `16 * 1023` at the § 6
@@ -675,19 +664,6 @@ fn subpel_bilinear_horizontal_into<T: ReconSample, O: BilinearOutput>(
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
     let phase = (params.start_x >> 6) & SUBPEL_MASK;
     if bilinear_unclipped(reference, params, [phase as u16, 0], output, output_stride) {
-        return Ok(());
-    }
-    if params.w == 16
-        && params.h == 16
-        && params.first_x == x0 + 1
-        && params.last_x == x0 + 15
-        && params.first_y == y0 + 1
-        && params.last_y == y0 + 15
-        && fixed_16x16_window_in_bounds(reference, x0, y0)
-    {
-        let origin = [(x0 + 1) as usize, (y0 + 1) as usize];
-        let kernel = tip_overlap::bilinear_16x16_clipped_one_axis::<T, O, false>;
-        kernel(reference, origin, phase, output, output_stride);
         return Ok(());
     }
     let direct_x = usize::try_from(x0).ok().filter(|&x| {
@@ -766,19 +742,6 @@ fn subpel_bilinear_vertical_into<T: ReconSample, O: BilinearOutput>(
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
     let phase = (params.start_y >> 6) & SUBPEL_MASK;
     if bilinear_unclipped(reference, params, [0, phase as u16], output, output_stride) {
-        return Ok(());
-    }
-    if params.w == 16
-        && params.h == 16
-        && params.first_x == x0 + 1
-        && params.last_x == x0 + 15
-        && params.first_y == y0 + 1
-        && params.last_y == y0 + 15
-        && fixed_16x16_window_in_bounds(reference, x0, y0)
-    {
-        let origin = [(x0 + 1) as usize, (y0 + 1) as usize];
-        let kernel = tip_overlap::bilinear_16x16_clipped_one_axis::<T, O, true>;
-        kernel(reference, origin, phase, output, output_stride);
         return Ok(());
     }
     let direct_x = subpel_direct_copy_x(reference, params);
@@ -864,24 +827,6 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
     ];
     let phases = [h_phase as u16, v_phase as u16];
     if bilinear_unclipped(reference, params, phases, output, output_stride) {
-        return Ok(());
-    }
-    if params.w == 16
-        && params.h == 16
-        && params.first_x == x0 + 1
-        && params.last_x == x0 + 15
-        && params.first_y == y0 + 1
-        && params.last_y == y0 + 15
-        && fixed_16x16_window_in_bounds(reference, x0, y0)
-    {
-        tip_overlap::bilinear_16x16_clipped(
-            reference,
-            [(x0 + 1) as usize, (y0 + 1) as usize],
-            [h_phase as u16, v_phase as u16],
-            params.bit_depth.max_sample(),
-            output,
-            output_stride,
-        );
         return Ok(());
     }
     let direct_x = usize::try_from(x0).ok().filter(|&x| {
