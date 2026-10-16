@@ -426,6 +426,9 @@ impl MiGridStorage {
         let base = self.window.row_base;
         for &index in order.reaching(&new) {
             let block = blocks.get(index as usize).ok_or(DeblockError::Workspace)?;
+            if ends_above(block, new.start) {
+                continue;
+            }
             for (start, end) in block_row_spans(block, mi_rows, self.mi_cols, &new, base) {
                 if let Some(cells) = self.cells.get_mut(start..end) {
                     for cell in cells {
@@ -533,7 +536,7 @@ impl ChromaMiGridStorage {
                 .blocks
                 .get(index as usize)
                 .ok_or(DeblockError::Workspace)?;
-            if record.planes & mask == 0 {
+            if record.planes & mask == 0 || ends_above(&record.block, new.start) {
                 continue;
             }
             let block = &record.block;
@@ -632,6 +635,13 @@ impl ChromaMiGridStorage {
         }
         Ok(())
     }
+}
+
+/// Whether `block` ends above mode-info row `row`: a window built from `row`
+/// on holds neither its cells nor its bottom edge. [`RowOrder::reaching`]
+/// finds such records when a taller record of the frame widens its reach.
+fn ends_above(block: &DeblockBlock, row: usize) -> bool {
+    (block.r as usize).saturating_add(block.n4h as usize) < row
 }
 
 /// The chroma-resolution cell spans one block covers in chroma `cell_rows`,
