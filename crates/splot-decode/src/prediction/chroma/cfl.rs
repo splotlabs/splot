@@ -88,6 +88,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
         workspace,
         cfl_prediction,
         mhccp_refs,
+        false,
         plane_id,
         x,
         y,
@@ -169,11 +170,12 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
         0,
         T::default(),
     )?;
-    let mut predict = |plane_id, neighbours, prediction: &mut Vec<T>| {
+    let mut predict = |plane_id, neighbours, luma_ready, prediction: &mut Vec<T>| {
         chroma_cfl_prediction_into(
             workspace,
             prediction,
             mhccp_refs,
+            luma_ready,
             plane_id,
             x,
             y,
@@ -187,8 +189,16 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
             luma_ac,
         )
     };
-    let result = predict(PlaneId::U, u_neighbours, &mut u_prediction)
-        .and_then(|()| predict(PlaneId::V, v_neighbours, cfl_prediction))
+    // U and V capture the same MHCCP luma references when their neighbours match.
+    let result = predict(PlaneId::U, u_neighbours, false, &mut u_prediction)
+        .and_then(|()| {
+            predict(
+                PlaneId::V,
+                v_neighbours,
+                u_neighbours == v_neighbours,
+                cfl_prediction,
+            )
+        })
         .and_then(|()| {
             commit_intra_prediction(
                 workspace,
@@ -232,6 +242,7 @@ fn chroma_cfl_prediction_into<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     prediction: &mut Vec<T>,
     reference_scratch: &mut [Vec<u16>; 2],
+    luma_ready: bool,
     plane_id: PlaneId,
     x: usize,
     y: usize,
@@ -259,6 +270,7 @@ fn chroma_cfl_prediction_into<T: ReconSample>(
             bit_depth,
             prediction,
             reference_scratch,
+            luma_ready,
         )
     } else {
         cfl_prediction_into(
@@ -579,6 +591,7 @@ fn mhccp_prediction_into<T: ReconSample>(
     bit_depth: BitDepth,
     prediction: &mut Vec<T>,
     reference_scratch: &mut [Vec<u16>; 2],
+    luma_ready: bool,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     if cfl_filter_index(cfl_ds_filter_index).is_none() {
         return Err(GeneralIntraResidualError::InvalidReconstructionState {
@@ -598,6 +611,7 @@ fn mhccp_prediction_into<T: ReconSample>(
         neighbours,
         mh_dir,
         reference_scratch,
+        luma_ready,
     )?;
     let result = (|| {
         let predictor =
@@ -837,6 +851,7 @@ fn mhccp_references<T: ReconSample>(
     neighbours: NeighbourAvailability,
     mh_dir: u8,
     reference_scratch: &mut [Vec<u16>; 2],
+    luma_ready: bool,
 ) -> core::result::Result<MhccpRefs, GeneralIntraResidualError> {
     let pixel_format = workspace.info().pixel_format();
     let sub_x = usize::from(pixel_format.subsampling_x());
@@ -898,8 +913,13 @@ fn mhccp_references<T: ReconSample>(
     let chroma_plane = PlaneSamples::new(workspace, plane_id)?;
     let sample_count = ref_width.saturating_mul(ref_height);
     let [luma, chroma] = reference_scratch;
-    luma.clear();
-    luma.resize(sample_count, 0);
+    // `luma_ready`: the other chroma plane of this block captured the same
+    // luma references into `luma` already.
+    let luma_ready = luma_ready && luma.len() == sample_count;
+    if !luma_ready {
+        luma.clear();
+        luma.resize(sample_count, 0);
+    }
     chroma.clear();
     chroma.resize(sample_count, 0);
     // § 7.13.7 reads neither row 0 nor column 0 of the edge as a centre:
@@ -921,7 +941,7 @@ fn mhccp_references<T: ReconSample>(
         for col in 1..chroma_cols {
             chroma[row * ref_width + col] = chroma_plane.clamped(x + col - left, ref_chroma_y)?;
         }
-        if row < first_luma_row {
+        if luma_ready || row < first_luma_row {
             continue;
         }
         let luma_cols = if row < above {
@@ -931,10 +951,10 @@ fn mhccp_references<T: ReconSample>(
         } else {
             left.min(reference_width)
         };
-        let luma_row = luma_plane.row(chroma_y, row == 0, min_luma_ref_y);
         if luma_cols <= first_luma_col {
             continue;
         }
+        let luma_row = luma_plane.row(chroma_y, row == 0, min_luma_ref_y);
         let q3 = &mut q3[first_luma_col..luma_cols];
         luma_row.q3_run(x - left + first_luma_col, first_luma_col == 0, q3)?;
         let start = row * ref_width + first_luma_col;

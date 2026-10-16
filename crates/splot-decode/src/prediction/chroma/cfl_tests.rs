@@ -547,6 +547,7 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
         NeighbourAvailability::new(false, true, 0, 1),
         0,
         &mut Default::default(),
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -571,6 +572,7 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
         NeighbourAvailability::new(true, false, 1, 0),
         0,
         &mut Default::default(),
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -595,6 +597,7 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
         NeighbourAvailability::new(false, true, 0, 1),
         0,
         &mut Default::default(),
+        false,
     )
     .unwrap();
     assert_eq!(threshold_not_extended.height, 2);
@@ -616,6 +619,7 @@ fn mhccp_reference_extensions_use_non_420_subsampling() {
             NeighbourAvailability::new(false, true, 0, 1),
             0,
             &mut Default::default(),
+            false,
         )
         .unwrap();
 
@@ -646,6 +650,7 @@ fn mhccp_bottom_edge_keeps_full_prediction_with_clipped_reference_extent() {
         BitDepth::Eight,
         &mut prediction,
         &mut references,
+        false,
     )
     .unwrap();
 
@@ -670,6 +675,7 @@ fn mhccp_rejects_reference_origin_outside_frame() {
         NeighbourAvailability::new(false, true, 0, 0),
         0,
         &mut references,
+        false,
     );
 
     assert!(matches!(
@@ -679,4 +685,34 @@ fn mhccp_rejects_reference_origin_outside_frame() {
         })
     ));
     assert_eq!(references, before);
+}
+
+#[test]
+fn mhccp_v_plane_reuses_u_plane_luma_references() {
+    let mut frame = workspace_10bit_420(64, 64);
+    for (plane, rect, value) in [
+        (PlaneId::Y, PlaneRect::new(0, 0, 64, 64).unwrap(), 300),
+        (PlaneId::Y, PlaneRect::new(10, 0, 7, 64).unwrap(), 700),
+        (PlaneId::Y, PlaneRect::new(0, 13, 64, 5).unwrap(), 90),
+        (PlaneId::U, PlaneRect::new(0, 0, 32, 32).unwrap(), 400),
+        (PlaneId::V, PlaneRect::new(0, 0, 32, 32).unwrap(), 600),
+        (PlaneId::V, PlaneRect::new(5, 0, 3, 32).unwrap(), 650),
+    ] {
+        frame.fill_rect(plane, rect, value).unwrap();
+    }
+    let neighbours = NeighbourAvailability::new(true, true, 1, 1);
+    for mh_dir in 0..3 {
+        let refs = |plane, scratch: &mut [Vec<u16>; 2], luma_ready| {
+            mhccp_references(
+                &frame, plane, 8, 8, 8, 8, 2, 16, neighbours, mh_dir, scratch, luma_ready,
+            )
+            .unwrap()
+        };
+        let mut scratch = Default::default();
+        let u = refs(PlaneId::U, &mut scratch, false);
+        scratch = [u.luma, u.chroma];
+        let reused = refs(PlaneId::V, &mut scratch, true);
+        let fresh = refs(PlaneId::V, &mut Default::default(), false);
+        assert_eq!((reused.luma, reused.chroma), (fresh.luma, fresh.chroma));
+    }
 }
