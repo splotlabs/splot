@@ -92,7 +92,7 @@ impl FilterSinkSetup {
         core: Arc<FrameHeaderCore>,
         progress: Arc<FrameProgress<T>>,
     ) -> Result<(
-        crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>,
+        crate::filters::wienerns_lr::recon::OwnedFilterSetup<T>,
         DeblockQuantDeltas,
     )> {
         let sink = WienerNsLrReconSink::for_deferred_filtering(
@@ -246,12 +246,9 @@ impl<T: ReconSample> WalkedFrame<T> {
 ///
 /// Returns the filter chain's own diagnostic when a filter stage or the freeze
 /// fails.
-pub(crate) fn finish_walked_frame<'job, T: ReconSample>(
+pub(crate) fn finish_walked_frame<T: ReconSample>(
     walked: WalkedFrame<T>,
     progress: Option<Arc<FrameProgress<T>>>,
-    admit: Option<
-        &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
-    >,
     publish: impl FnOnce(DecodedFrame<T>),
 ) -> Result<FrameFilterRecords> {
     let WalkedFrame {
@@ -265,7 +262,6 @@ pub(crate) fn finish_walked_frame<'job, T: ReconSample>(
         disable_loopfilters_across_tiles,
         deblock_quant_deltas,
         progress,
-        admit,
         publish,
     )?;
     Ok(filter_records)

@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use splot_parallel::{CompletionCell, Condition};
+use splot_parallel::CompletionCell;
 
 use crate::bitstream::tile_payload::{FrameCdfSubset, FrameSegmentIdMap};
 use crate::filters::ccso::CcsoUnitGrid;
@@ -34,10 +34,6 @@ impl<T> EntropyProductHandle<T> {
     /// Whether the producer published or failed.
     pub(crate) fn is_settled(&self) -> bool {
         self.0.is_set()
-    }
-
-    pub(crate) fn condition(&self) -> Condition<'_> {
-        Condition::completion(self.0.as_ref())
     }
 
     fn can_reuse(&self) -> bool {
@@ -95,10 +91,6 @@ impl CcsoGridHandle {
             .get()
             .and_then(Option::as_ref)
             .map(|value| &value.visible)
-    }
-
-    pub(crate) fn condition(&self) -> Condition<'_> {
-        Condition::completion(self.0.as_ref())
     }
 
     fn can_reuse(&self) -> bool {

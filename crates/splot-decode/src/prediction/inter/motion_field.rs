@@ -6,7 +6,7 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-use splot_parallel::{CompletionCell, Condition};
+use splot_parallel::CompletionCell;
 
 use super::find_mv_stack::{
     MotionFieldLayout, TemporalMotionBand, TemporalMotionBlock, TemporalMotionField,
@@ -284,6 +284,11 @@ impl MotionFieldHandle {
         self.0.bands.get(index)?.ready.get()
     }
 
+    /// Whether the whole field was published or failed.
+    pub(crate) fn field_settled(&self) -> bool {
+        self.0.field.is_set()
+    }
+
     /// Whether the metadata was published or the field failed.
     pub(crate) fn metadata_settled(&self) -> bool {
         self.0.metadata.is_set()
@@ -298,10 +303,6 @@ impl MotionFieldHandle {
                 .bands
                 .get(index)
                 .is_none_or(|slot| slot.ready.is_set())
-    }
-
-    pub(crate) fn field_condition(&self) -> Condition<'_> {
-        Condition::completion(&self.0.field)
     }
 }
 

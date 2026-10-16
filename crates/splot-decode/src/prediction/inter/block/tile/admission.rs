@@ -1301,7 +1301,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// already admitting precompute work.
     pub(in crate::prediction::inter::block) fn attach_filters(
         &self,
-        filter_setup: crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>,
+        filter_setup: crate::filters::wienerns_lr::recon::OwnedFilterSetup<T>,
         mut filter_shell: crate::filters::wienerns_lr::recon::OwnedFilterShell<T>,
         deblock_records: Option<crate::filters::deblock::OwnedDeblockRecords>,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,

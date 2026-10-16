@@ -351,12 +351,12 @@ fn ring_admission_harvests_the_oldest_entry_first() {
     drop((first_report, second_report, third_report));
     assert_eq!(ring.entries.len(), 3);
 
-    ring.reserve(&mut eight, &mut ten, &|| false);
+    ring.reserve(&mut eight, &mut ten);
 
     assert_eq!(ring.entries.len(), 2);
     assert_eq!(ring.entries.front().map(|entry| entry.frame_index), Some(1));
 
-    ring.harvest_all(&mut eight, &mut ten, &|| false);
+    ring.harvest_all(&mut eight, &mut ten);
 
     assert!(ring.entries.is_empty());
 }
@@ -370,7 +370,7 @@ fn a_depth_of_two_walks_one_frame_beside_one_uncollected_finish() {
     let (first, first_report) = pending_entry(&mut ring, 0);
     first.complete(decoded_frame(4, 4));
     drop(first_report);
-    ring.reserve(&mut eight, &mut ten, &|| false);
+    ring.reserve(&mut eight, &mut ten);
 
     assert!(
         ring.holds(0),
@@ -382,13 +382,13 @@ fn a_depth_of_two_walks_one_frame_beside_one_uncollected_finish() {
     drop(second_report);
     assert_eq!(ring.entries.len(), 2);
 
-    ring.reserve(&mut eight, &mut ten, &|| false);
+    ring.reserve(&mut eight, &mut ten);
 
     assert!(!ring.holds(0), "frame 0 must be harvested to admit frame 2");
     assert!(ring.holds(1));
     assert_eq!(ring.entries.len(), 1);
 
-    ring.harvest_all(&mut eight, &mut ten, &|| false);
+    ring.harvest_all(&mut eight, &mut ten);
 
     assert!(!ring.holds(1));
 }
@@ -399,7 +399,7 @@ fn a_depth_of_one_never_keeps_a_frame_in_flight() {
     let mut ten = InterDecodeScratch::<u16>::default();
     let mut ring = InflightRing::new(NonZeroUsize::MIN, test_plane_pool());
 
-    ring.reserve(&mut eight, &mut ten, &|| false);
+    ring.reserve(&mut eight, &mut ten);
 
     assert!(ring.entries.is_empty());
     assert!(ring.take_failure().is_none());
@@ -418,7 +418,7 @@ fn the_lowest_indexed_filter_failure_outranks_later_ones() {
         drop(report);
     }
 
-    ring.harvest_all(&mut eight, &mut ten, &|| false);
+    ring.harvest_all(&mut eight, &mut ten);
 
     let failure = ring.take_failure().expect("a collected failure");
     assert!(
@@ -462,7 +462,7 @@ fn harvesting_recycles_filter_records_into_the_matching_scratch() {
             .is_some_and(|entry| entry.report.is_set())
     );
 
-    ring.harvest_all(&mut eight, &mut ten, &|| false);
+    ring.harvest_all(&mut eight, &mut ten);
 
     assert!(eight.frame_filter_records_capacity() >= 64);
     let (cdef_grid, cdef_strengths, tx_skip, ccso) = eight.derived_filter_record_capacities();
@@ -499,7 +499,7 @@ fn failed_finish_reports_its_error_before_harvest() {
             .is_some_and(|entry| entry.report.is_set())
     );
 
-    ring.harvest_all(&mut eight, &mut ten, &|| false);
+    ring.harvest_all(&mut eight, &mut ten);
 
     let failure = ring.take_failure().expect("reported failure");
     assert!(format!("{failure:?}").contains("reported_finish_failure"));

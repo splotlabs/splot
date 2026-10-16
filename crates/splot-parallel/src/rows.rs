@@ -259,8 +259,9 @@ struct Frames {
 /// `generation` and signals only when a waiter is registered, so a scan that
 /// missed the publication sees the raised generation and does not park. A
 /// worker drops its handle on a frame before it pops the finished frame, so
-/// the pop's signal is the last change a driver waiting for the frame's sole
-/// owner needs to see.
+/// the signal after the worker's own clone is dropped is the last change a
+/// driver waiting for the frame's sole owner needs to see, whichever worker
+/// popped the frame.
 #[derive(Default)]
 struct Core {
     frames: Mutex<Frames>,
@@ -273,6 +274,11 @@ struct Core {
     signaled: AtomicBool,
     park: Mutex<()>,
     changed: Condvar,
+    /// The driver parks apart from the workers: a single-worker signal may
+    /// wake a worker that finds nothing, so every publication wakes the
+    /// driver on its own condvar.
+    driver_parked: AtomicBool,
+    driver_changed: Condvar,
 }
 
 /// Every live scheduler, so publications made through other primitives can
@@ -327,6 +333,11 @@ impl Core {
     /// the next idle worker still looks for more.
     fn notify(&self, all: bool) {
         self.generation.fetch_add(1, Ordering::SeqCst);
+        if self.driver_parked.load(Ordering::SeqCst) {
+            let park = self.park.lock();
+            self.driver_changed.notify_all();
+            drop(park);
+        }
         if self.waiters.load(Ordering::SeqCst) == 0 {
             return;
         }
@@ -352,6 +363,17 @@ impl Core {
         } else {
             self.changed.notify_one();
         }
+        drop(park);
+    }
+
+    /// Parks the driver until the generation moves past `observed`.
+    fn wait_driver_if_unchanged(&self, observed: u64) {
+        let mut park = self.park.lock();
+        self.driver_parked.store(true, Ordering::SeqCst);
+        if self.generation.load(Ordering::SeqCst) == observed {
+            self.driver_changed.wait(&mut park);
+        }
+        self.driver_parked.store(false, Ordering::SeqCst);
         drop(park);
     }
 
@@ -389,15 +411,14 @@ impl Core {
             drop(frames);
             self.pass_on();
             frame.run(claim);
+            let done = frame.done();
             drop(frame);
             let mut frames = self.frames.lock();
-            let mut finished = false;
             while frames.live.front().is_some_and(|front| front.done()) {
                 frames.live.pop_front();
-                finished = true;
             }
             drop(frames);
-            if finished {
+            if done {
                 self.notify(true);
             }
         }
@@ -481,7 +502,7 @@ impl RowScheduler {
             if done {
                 return;
             }
-            self.core.wait_if_unchanged(observed);
+            self.core.wait_driver_if_unchanged(observed);
         }
     }
 

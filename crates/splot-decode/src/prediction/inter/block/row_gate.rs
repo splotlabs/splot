@@ -86,7 +86,7 @@ struct ListReach {
 /// have published before the row's reconstruction may run, and zero when the
 /// row reads nothing through that list.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct RowReferenceBounds {
+pub(crate) struct RowReferenceBounds {
     needs: [u32; MAX_LISTS],
     settle: bool,
 }
@@ -252,6 +252,14 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         }
     }
 
+    /// The reference rows one § 7.13.5 TIP block reads, as a bound a
+    /// scheduler can check later through [`bounds_satisfied`].
+    pub(super) fn tip_bounds(&self, placed: &PlacedInterBlock) -> RowReferenceBounds {
+        let mut bounds = RowReferenceBounds::default();
+        self.note_tip(placed, &mut bounds);
+        bounds
+    }
+
     /// Bounds one § 7.13.5 TIP block against the frame's TIP reference pair.
     ///
     /// The block's prediction units read the projected motion field at
@@ -354,6 +362,33 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
             *entry = (*entry).max(rows);
         }
     }
+}
+
+/// Whether `bounds` hold now for a frame whose reference lists are
+/// `ref_frame_idx`, without the temporal state the gate itself carries.
+pub(crate) fn bounds_satisfied<T: ReconSample>(
+    reference: &InterReferenceState<T>,
+    core: &FrameHeaderCore,
+    ref_frame_idx: &[u32],
+    bounds: &RowReferenceBounds,
+) -> bool {
+    if bounds.settle {
+        return reference
+            .pixel_reference_gate(named_pixel_reference_slots(core))
+            .is_ready();
+    }
+    ref_frame_idx.iter().zip(bounds.needs).all(|(slot, need)| {
+        need == 0
+            || ReferenceSlot::new(*slot as usize)
+                .ok()
+                .and_then(|slot| reference.store.get(slot).ok().flatten())
+                .is_none_or(|slot| {
+                    slot.is_settled()
+                        || slot
+                            .progress()
+                            .is_some_and(|progress| progress.published_luma_rows() >= need as usize)
+                })
+    })
 }
 
 /// The luma rows one list's reference must have published for one block

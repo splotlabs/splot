@@ -27,20 +27,14 @@ const MI_SIZE: usize = 4;
 /// keeping one in-place filter path.
 ///
 /// [`FrameProgress`]: crate::pipeline::frame_progress::FrameProgress
-struct FilteredFrameSink<'a, 'job, T: ReconSample> {
+struct FilteredFrameSink<T: ReconSample> {
     progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
-    admit: Option<
-        &'a dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
-    >,
 }
 
-impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
+impl<T: ReconSample> FilteredFrameSink<T> {
     fn open(
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
         workspace: Option<CurrentFrameWorkspace<T>>,
-        admit: Option<
-            &'a dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
-        >,
         ranges: &[(usize, usize)],
     ) -> Result<Self> {
         let progress = match (progress, workspace) {
@@ -51,7 +45,7 @@ impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
             _ => return Err(lr_pipeline_state_error()),
         };
         progress.begin(ranges)?;
-        Ok(Self { progress, admit })
+        Ok(Self { progress })
     }
 
     /// Lends one stripe's exact output region.
@@ -65,7 +59,6 @@ impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
     }
 
     fn publish_stripe(
-        &self,
         mut samples: final_filters::FilteredStripe,
         direct: crate::pipeline::frame_progress::DirectStripeLease<T>,
     ) -> Result<()> {
@@ -92,9 +85,6 @@ impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
         drop(samples);
         if !direct.submit() {
             return Err(lr_pipeline_state_error());
-        }
-        if let Some(admit) = self.admit {
-            admit.admit_ready();
         }
         Ok(())
     }
@@ -133,7 +123,7 @@ pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
 /// private input window can run on any worker.
 /// The output sink and pending stripe list stay frame-owned until the single
 /// terminal freeze consumes this value.
-pub(crate) struct OwnedFilterSetup<'progress, 'job, T: ReconSample> {
+pub(crate) struct OwnedFilterSetup<T: ReconSample> {
     core: Arc<splot_core::headers::frame::FrameHeaderCore>,
     disable_loopfilters_across_tiles: bool,
     mi_rows: usize,
@@ -160,7 +150,7 @@ pub(crate) struct OwnedFilterSetup<'progress, 'job, T: ReconSample> {
     lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
     ranges: Vec<(usize, usize)>,
     filter_records: super::FrameFilterRecords,
-    sink: FilteredFrameSink<'progress, 'job, T>,
+    sink: FilteredFrameSink<T>,
     stripe_state: Mutex<Vec<StripeLifecycle>>,
     /// Each stripe's filter outcome, borrowed from the records with the rest.
     stripe_outcomes: Vec<Option<crate::Result<()>>>,
@@ -169,7 +159,7 @@ pub(crate) struct OwnedFilterSetup<'progress, 'job, T: ReconSample> {
     windows: Mutex<Vec<splot_recon::RetiredFramePlanes>>,
 }
 
-pub(crate) type OwnedFilterShell<T> = Arc<Option<OwnedFilterSetup<'static, 'static, T>>>;
+pub(crate) type OwnedFilterShell<T> = Arc<Option<OwnedFilterSetup<T>>>;
 
 /// One completed stripe whose index and samples move together into publication.
 pub(crate) struct OwnedFilteredStripe<T: ReconSample> {
@@ -362,22 +352,16 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
-    ) -> Result<OwnedFilterSetup<'static, 'static, T>> {
-        self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, Some(progress), None)
+    ) -> Result<OwnedFilterSetup<T>> {
+        self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, Some(progress))
     }
 
-    pub(crate) fn into_owned_filter_setup<'progress, 'job>(
+    pub(crate) fn into_owned_filter_setup(
         mut self,
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        admit: Option<
-            &'progress dyn splot_parallel::Admit<
-                'job,
-                crate::pipeline::frame_pipeline::FrameTask<'job>,
-            >,
-        >,
-    ) -> Result<OwnedFilterSetup<'progress, 'job, T>> {
+    ) -> Result<OwnedFilterSetup<T>> {
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
         if core
@@ -443,7 +427,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             })
             .transpose()
             .map_err(|error| ccso_filter_error(&error))?;
-        let sink = FilteredFrameSink::open(progress, self.workspace.take(), admit, &ranges)?;
+        let sink = FilteredFrameSink::open(progress, self.workspace.take(), &ranges)?;
         let stripe_count = ranges.len();
         let plane_sizes = self.plane_sizes;
 
@@ -504,20 +488,17 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn into_filtered_frame<'job, R>(
+    pub(crate) fn into_filtered_frame<R>(
         self,
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
-        admit: Option<
-            &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
-        >,
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> Result<(R, super::FrameFilterRecords)> {
         let pixel_format = self.info.pixel_format();
         let mut setup =
-            self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, progress, admit)?;
+            self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, progress)?;
         let mut rows = setup
             .sink
             .progress
@@ -632,7 +613,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     }
 }
 
-impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
+impl<T: ReconSample> OwnedFilterSetup<T> {
     /// Transfers deblock geometry to the incremental deblock owner after every
     /// setup grid that reads it has been derived.
     pub(crate) fn detach_deblock_records(
@@ -858,7 +839,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             }
             *lifecycle = StripeLifecycle::Submitted;
         }
-        self.sink.publish_stripe(stripe.frame, stripe.direct)
+        FilteredFrameSink::<T>::publish_stripe(stripe.frame, stripe.direct)
     }
 
     fn claim(&self, stripe: usize) -> Result<&(usize, usize)> {
@@ -1163,7 +1144,7 @@ impl<T: ReconSample> OwnedFilterFinish<T> {
     }
 }
 
-impl<T: ReconSample> OwnedFilterSetup<'static, 'static, T> {
+impl<T: ReconSample> OwnedFilterSetup<T> {
     /// Copies one stripe's input window out of the frame once its rows are
     /// final, and wraps it in the stripe's job; `None` while they are not.
     pub(crate) fn window_job(

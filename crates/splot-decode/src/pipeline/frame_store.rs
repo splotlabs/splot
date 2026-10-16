@@ -21,8 +21,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::frame_pipeline::ReconAdmissionLane;
-use super::frame_tasks::SplitFrames;
+use super::frame_tasks::{RowPools, SplitFrames};
 use super::inflight::InflightRing;
 use crate::prediction::inter::InterDecodeScratch;
 use crate::support::decode_buffers::DecodeBuffers;
@@ -120,7 +119,7 @@ pub(super) struct RetainedDecode {
     pub(super) scratch_eight: InterDecodeScratch<u8>,
     pub(super) scratch_ten: InterDecodeScratch<u16>,
     pub(super) ring: InflightRing,
-    pub(super) lane: ReconAdmissionLane,
+    pub(super) pools: RowPools,
     pub(super) frames: FrameStore,
     pub(super) split_eight: SplitFrames<u8>,
     pub(super) split_ten: SplitFrames<u16>,
@@ -139,7 +138,7 @@ impl RetainedDecode {
             scratch_eight,
             scratch_ten,
             ring: InflightRing::new(depth, buffers),
-            lane: ReconAdmissionLane::new(depth.get()),
+            pools: RowPools::default(),
             frames: FrameStore::new(false, depth.get()),
             split_eight: SplitFrames::new(depth.get(), width),
             split_ten: SplitFrames::new(depth.get(), width),
@@ -148,7 +147,7 @@ impl RetainedDecode {
     }
 
     /// Opens the state for a new decode: the last decode's frames retire into
-    /// their slots, and a lane still gated on unsettled work starts over.
+    /// their slots.
     pub(super) fn begin(&mut self, retain: bool) {
         let depth = self.ring.capacity();
         if retain || self.frames.retain {
@@ -161,9 +160,6 @@ impl RetainedDecode {
         }
         self.frames.count = 0;
         self.frames.reserved = None;
-        if !self.lane.is_settled() {
-            self.lane = ReconAdmissionLane::new(depth);
-        }
     }
 }
 

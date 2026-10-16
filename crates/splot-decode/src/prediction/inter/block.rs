@@ -218,7 +218,6 @@ impl<T: ReconSample> InterDecodeScratch<T> {
         records
     }
 
-    /// Plane buffers for a new workspace, taken from the decode's pool.
     pub(crate) fn pooled_planes(&self) -> splot_recon::FramePlaneSamples<T> {
         splot_recon::FramePlaneSamples::default()
             .with_pool(self.buffers.as_ref().map(|buffers| buffers.planes()))
@@ -2144,10 +2143,12 @@ mod prediction;
 mod residual;
 mod resolve;
 mod row_gate;
+pub(crate) use row_gate::{RowReferenceBounds, bounds_satisfied};
 mod syntax;
 mod temporal;
 mod tile;
 pub(super) mod tip;
+pub(crate) use tip::{TipOutputStages, TipSpares};
 mod warp;
 
 use self::filter_records::record_inter_deblock_geometry;

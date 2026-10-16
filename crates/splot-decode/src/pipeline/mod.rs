@@ -4,8 +4,9 @@
 //! Decode pipeline orchestration for the supported decode runtime.
 //!
 //! The driver updates output and reference state in decode order. Entropy,
-//! reconstruction and filters run through admission; frame delay bounds their
-//! overlap, and retired publications stay with bounded physical frame entries.
+//! reconstruction and filters run on the row scheduler; frame delay bounds
+//! their overlap, and retired publications stay with bounded physical frame
+//! entries.
 
 use core::num::NonZeroUsize;
 use std::sync::Arc;
@@ -42,7 +43,6 @@ mod frame_lifecycle;
 pub(crate) mod frame_store;
 pub(crate) use frame_store::DecodeSession;
 use frame_store::FrameStore;
-pub(crate) mod frame_pipeline;
 pub(crate) mod frame_progress;
 pub(crate) mod frame_tasks;
 pub(crate) mod inflight;
@@ -364,61 +364,47 @@ pub(crate) fn decode_key_frame(
     display_grain: Option<ActiveFilmGrain>,
 ) -> Result<PipelineFrame> {
     let core = parse_frame_core(frame_envelope, sequence)?;
-    let admission = splot_parallel::AdmissionScheduler::new();
-    let decoded = splot_parallel::ready_task_scope(|scope| {
-        let buffers = crate::support::decode_buffers::DecodeBuffers::new();
-        let mut scratch_eight = inter::InterDecodeScratch::default();
-        let mut scratch_ten = inter::InterDecodeScratch::default();
-        scratch_eight.set_decode_buffers(&buffers);
-        scratch_ten.set_decode_buffers(&buffers);
-        let mut ring = inflight::InflightRing::new(NonZeroUsize::MIN, buffers);
-        let mut lane = frame_pipeline::ReconAdmissionLane::new(ring.capacity());
-        let mut frames = FrameStore::new(false, ring.capacity());
-        let decoded = decode_key_frame_with_effects(
-            &mut scratch_eight,
-            &mut scratch_ten,
-            scope,
-            &admission,
-            &mut lane,
-            &mut ring,
-            &mut frames,
-            0,
-            bytes.into(),
-            options,
-            candidate,
-            frame_envelope,
-            core,
-            sequence,
-            frame_rate,
-            display_grain,
-            None,
-            FrameOutputEffects::empty(),
-            crate::DataProps::default(),
-        );
-        ring.harvest_all(&mut scratch_eight, &mut scratch_ten, &|| {
-            admission.assist_ready(scope)
-        });
-        match ring.take_failure() {
-            Some(failure) => Err(failure),
-            None => decoded,
-        }
-    })?;
-    match decoded {
-        Err(error) => Err(error),
-        Ok(frame) => {
-            admission.finish()?;
-            Ok(frame)
-        }
+    let buffers = crate::support::decode_buffers::DecodeBuffers::new();
+    let mut scratch_eight = inter::InterDecodeScratch::default();
+    let mut scratch_ten = inter::InterDecodeScratch::default();
+    scratch_eight.set_decode_buffers(&buffers);
+    scratch_ten.set_decode_buffers(&buffers);
+    let mut ring = inflight::InflightRing::new(NonZeroUsize::MIN, buffers);
+    let mut pools = frame_tasks::RowPools::default();
+    let mut frames = FrameStore::new(false, ring.capacity());
+    let decoded = decode_key_frame_with_effects(
+        &mut scratch_eight,
+        &mut scratch_ten,
+        None,
+        &mut pools,
+        &mut ring,
+        &mut frames,
+        0,
+        bytes.into(),
+        options,
+        candidate,
+        frame_envelope,
+        core,
+        sequence,
+        frame_rate,
+        display_grain,
+        None,
+        FrameOutputEffects::empty(),
+        crate::DataProps::default(),
+    );
+    ring.harvest_all(&mut scratch_eight, &mut scratch_ten);
+    match ring.take_failure() {
+        Some(failure) => Err(failure),
+        None => decoded,
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn decode_key_frame_with_effects<'job, 'scope>(
+fn decode_key_frame_with_effects(
     scratch_eight: &mut inter::InterDecodeScratch<u8>,
     scratch_ten: &mut inter::InterDecodeScratch<u16>,
-    scope: &splot_parallel::TaskScope<'_, 'scope>,
-    scheduler: &'scope splot_parallel::AdmissionScheduler<'job, frame_pipeline::FrameTask<'job>>,
-    lane: &mut frame_pipeline::ReconAdmissionLane,
+    rows: Option<&splot_parallel::RowScheduler>,
+    pools: &mut frame_tasks::RowPools,
     ring: &mut inflight::InflightRing,
     frames: &mut FrameStore,
     frame_index: usize,
@@ -433,13 +419,8 @@ fn decode_key_frame_with_effects<'job, 'scope>(
     user_qm: Option<crate::bitstream::tile_payload::FrameUserQmLevels>,
     output_effects: FrameOutputEffects,
     props: crate::DataProps,
-) -> Result<PipelineFrame>
-where
-    'job: 'scope,
-{
-    ring.reserve(scratch_eight, scratch_ten, &|| {
-        scheduler.assist_ready(scope)
-    });
+) -> Result<PipelineFrame> {
+    ring.reserve(scratch_eight, scratch_ten);
     let _user_qm_scope = crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
     let core = frames.share_core(core)?;
     let mut product_writers = frames.reserve_products()?;
@@ -462,9 +443,8 @@ where
                 let frame = inflight::settle_walk_stage(
                     walk.stage,
                     inflight::PipelineFrameSlot::Eight,
-                    scope,
-                    scheduler,
-                    lane,
+                    rows,
+                    pools,
                     ring,
                     frames,
                     frame_index,
@@ -495,9 +475,8 @@ where
                 let frame = inflight::settle_walk_stage(
                     walk.stage,
                     inflight::PipelineFrameSlot::Ten,
-                    scope,
-                    scheduler,
-                    lane,
+                    rows,
+                    pools,
                     ring,
                     frames,
                     frame_index,
@@ -531,12 +510,12 @@ where
     })
 }
 
-/// Runs the frame loop through the admission scheduler. The resolved frame
+/// Runs the frame loop over the retained decode state. The resolved frame
 /// delay bounds in-flight storage at every worker count.
 #[allow(clippy::too_many_arguments)]
-fn decode_frames_from_plan_impl<'job>(
+fn decode_frames_from_plan_impl(
     source: &mut dyn UnitSource,
-    options: &'job DecodeOptions,
+    options: &DecodeOptions,
     session: &DecodeSession,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()> + Send,
     retain_decoded_frames: bool,
@@ -547,25 +526,17 @@ fn decode_frames_from_plan_impl<'job>(
         .min(NonZeroUsize::new(splot_parallel::current_pool_width()).unwrap_or(NonZeroUsize::MIN));
     let mut retained = session.take(pipeline_capacity);
     retained.begin(retain_decoded_frames);
-    let admission: splot_parallel::AdmissionScheduler<'job, frame_pipeline::FrameTask<'job>> =
-        splot_parallel::AdmissionScheduler::new();
-    let decoded = splot_parallel::ready_task_scope(|scope| {
-        admission.run_with_runners(scope, || {
-            drive_frames(
-                source,
-                options,
-                &mut retained,
-                session.rows(),
-                preflight,
-                retain_decoded_frames,
-                emit,
-                scope,
-                &admission,
-            )
-        })
-    })??;
-    admission.finish()?;
+    let decoded = drive_frames(
+        source,
+        options,
+        &mut retained,
+        session.rows(),
+        preflight,
+        retain_decoded_frames,
+        emit,
+    );
     session.keep(retained);
+    let decoded = decoded?;
     Ok(decoded)
 }
 
@@ -594,25 +565,20 @@ type SplitPair<'a> = (
 /// would have run that frame's filters before reaching the later error, so the
 /// lowest-indexed collected failure is the one the caller sees.
 #[allow(clippy::too_many_arguments)]
-fn drive_frames<'job, 'scope>(
+fn drive_frames(
     source: &mut dyn UnitSource,
-    options: &'job DecodeOptions,
+    options: &DecodeOptions,
     retained: &mut frame_store::RetainedDecode,
     rows: Option<&splot_parallel::RowScheduler>,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
     retain_decoded_frames: bool,
     emit: impl FnMut(&PipelineFrame) -> Result<()>,
-    scope: &splot_parallel::TaskScope<'_, 'scope>,
-    admission: &'scope splot_parallel::AdmissionScheduler<'job, frame_pipeline::FrameTask<'job>>,
-) -> Result<Vec<PipelineFrame>>
-where
-    'job: 'scope,
-{
+) -> Result<Vec<PipelineFrame>> {
     let frame_store::RetainedDecode {
         scratch_eight,
         scratch_ten,
         ring,
-        lane,
+        pools,
         frames,
         input_scratch,
         split_eight,
@@ -625,23 +591,20 @@ where
         preflight,
         retain_decoded_frames,
         emit,
-        scope,
-        admission,
         rows,
         ring,
-        lane,
+        pools,
         frames,
         (split_eight, split_ten),
         scratch_eight,
         scratch_ten,
         input_scratch,
     );
-    ring.harvest_all(scratch_eight, scratch_ten, &|| {
-        admission.assist_ready(scope)
-    });
+    ring.harvest_all(scratch_eight, scratch_ten);
     if let Some(rows) = rows {
         split_eight.drain(rows);
         split_ten.drain(rows);
+        pools.drain(rows);
     }
     match ring.take_failure() {
         Some(failure) => Err(failure),
@@ -651,6 +614,18 @@ where
 
 /// Hands one single-tile inter frame to the row scheduler and returns the
 /// handles the driver records for it before its samples exist.
+/// Shares the driver's active sequence header with the frames it defers.
+///
+/// A deferred frame's reconstruction outlives the driver's borrow of the
+/// header, and the header only ever changes at a frame the driver flushes
+/// before, so the shared copy is made once per activation.
+fn share_sequence(
+    cached: &mut Option<Arc<SequenceHeader>>,
+    sequence: &SequenceHeader,
+) -> Arc<SequenceHeader> {
+    Arc::clone(cached.get_or_insert_with(|| Arc::new(sequence.clone())))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn push_split_inter<T: frame_tasks::SplitSample>(
     split: &mut frame_tasks::SplitFrames<T>,
@@ -676,7 +651,7 @@ fn push_split_inter<T: frame_tasks::SplitSample>(
     let parse_progress = ring.claim_parse_slot();
     let records = decode_scratch.take_frame_filter_records();
     let quantizer = crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
-    let shared = frame_pipeline::shared_sequence(shared_sequence, sequence);
+    let shared = share_sequence(shared_sequence, sequence);
     let geometry = inter::FrameDecodeGeometry::new(&core, sequence, T::BIT_DEPTH, false)?;
     let motion = frames.reserve_motion(geometry.motion_layout())?;
     let (slot, finish) =
@@ -715,26 +690,21 @@ fn push_split_inter<T: frame_tasks::SplitSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn decode_frames_in_order<'job, 'scope>(
+fn decode_frames_in_order(
     source: &mut dyn UnitSource,
-    options: &'job DecodeOptions,
+    options: &DecodeOptions,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
     retain_decoded_frames: bool,
     mut emit: impl FnMut(&PipelineFrame) -> Result<()>,
-    scope: &splot_parallel::TaskScope<'_, 'scope>,
-    admission: &'scope splot_parallel::AdmissionScheduler<'job, frame_pipeline::FrameTask<'job>>,
     rows: Option<&splot_parallel::RowScheduler>,
     ring: &mut inflight::InflightRing,
-    recon_lane: &mut frame_pipeline::ReconAdmissionLane,
+    pools: &mut frame_tasks::RowPools,
     frames: &mut FrameStore,
     (split_eight, split_ten): SplitPair<'_>,
     decode_scratch_eight: &mut inter::InterDecodeScratch<u8>,
     decode_scratch_ten: &mut inter::InterDecodeScratch<u16>,
     input_scratch: &mut InputScratch,
-) -> Result<Vec<PipelineFrame>>
-where
-    'job: 'scope,
-{
+) -> Result<Vec<PipelineFrame>> {
     let InputScratch {
         records,
         obus: obu_storage,
@@ -882,9 +852,7 @@ where
         match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
                 let state = reference.state_eight(frames)?;
-                ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                    admission.assist_ready(scope)
-                });
+                ring.reserve(decode_scratch_eight, decode_scratch_ten);
                 let _user_qm_scope =
                     crate::bitstream::tile_payload::FrameUserQmScope::install(key_user_qm);
                 let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
@@ -907,9 +875,8 @@ where
                 let frame = inflight::settle_walk_stage(
                     walk.stage,
                     inflight::PipelineFrameSlot::Eight,
-                    scope,
-                    admission,
-                    recon_lane,
+                    rows,
+                    pools,
                     ring,
                     frames,
                     0,
@@ -934,9 +901,7 @@ where
             }
             BitDepthIdc::Ten => {
                 let state = reference.state_ten(frames)?;
-                ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                    admission.assist_ready(scope)
-                });
+                ring.reserve(decode_scratch_eight, decode_scratch_ten);
                 let _user_qm_scope =
                     crate::bitstream::tile_payload::FrameUserQmScope::install(key_user_qm);
                 let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
@@ -959,9 +924,8 @@ where
                 let frame = inflight::settle_walk_stage(
                     walk.stage,
                     inflight::PipelineFrameSlot::Ten,
-                    scope,
-                    admission,
-                    recon_lane,
+                    rows,
+                    pools,
                     ring,
                     frames,
                     0,
@@ -989,9 +953,8 @@ where
         decode_key_frame_with_effects(
             decode_scratch_eight,
             decode_scratch_ten,
-            scope,
-            admission,
-            recon_lane,
+            rows,
+            pools,
             ring,
             frames,
             0,
@@ -1082,15 +1045,11 @@ where
     *obu_storage = recycle(leading_buffer);
     let mut decoding_initial_tu = true;
     let mut shared_sequence = None;
-    let mut tip_eight = Vec::new();
-    let mut tip_ten = Vec::new();
     loop {
         if !frames.has_space() {
-            ring.harvest_all(decode_scratch_eight, decode_scratch_ten, &|| {
-                admission.assist_ready(scope)
-            });
+            ring.harvest_all(decode_scratch_eight, decode_scratch_ten);
             emission_queue.flush(frames, &mut emit)?;
-            loop {
+            let mut reclaim = || {
                 reclaim_unowned_frames(
                     frames,
                     &reference,
@@ -1098,12 +1057,22 @@ where
                     &emission_queue,
                     ring,
                     &mut retained_frame_bytes,
-                )?;
-                if frames.has_space() {
-                    break;
+                )
+                .map(|()| frames.has_space())
+            };
+            match rows {
+                Some(rows) => {
+                    let mut outcome = Ok(false);
+                    rows.wait(|| {
+                        outcome = reclaim();
+                        !matches!(outcome, Ok(false))
+                    });
+                    outcome?;
                 }
-                if !splot_parallel::assist_pool_once() {
-                    std::thread::yield_now();
+                None => {
+                    while !reclaim()? {
+                        std::thread::yield_now();
+                    }
                 }
             }
         }
@@ -1403,9 +1372,7 @@ where
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
                         if let Some(rows) = split {
-                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                                admission.assist_ready(scope)
-                            });
+                            ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             push_split_inter::<u8>(
                                 split_eight,
                                 rows,
@@ -1422,11 +1389,9 @@ where
                                 frame_index,
                             )?
                         } else if inter_envelope.header.obu_type.is_tip_frame() {
-                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                                admission.assist_ready(scope)
-                            });
+                            ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             let (slot, finish, geometry, products, motion) =
-                                frame_pipeline::reserve_tip_output(
+                                frame_tasks::reserve_tip_output(
                                     &inter_core,
                                     &sequence,
                                     BitDepth::Eight,
@@ -1436,39 +1401,35 @@ where
                                     frame_index,
                                 )?;
                             let publications = products.handles();
-                            let dependencies = inter::tip_output_dependencies(
-                                &inter_core,
-                                &sequence,
-                                &inter_state,
-                            );
-                            let task_core = Arc::clone(&inter_core);
-                            let core = inter_core;
-                            let shared =
-                                frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
-                            frame_pipeline::schedule_tip_output(
-                                frame_pipeline::TipOutputJob {
+                            let entropy =
+                                inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
+                            let motion_deps = inter_core
+                                .inter
+                                .as_ref()
+                                .map_or_else(reference_buffer::RefSlots::default, |inter| {
+                                    inter_state.motion_dependencies(&inter.ref_frame_idx)
+                                });
+                            let core = Arc::clone(&inter_core);
+                            pools.push_tip::<u8>(
+                                rows,
+                                *options,
+                                frame_tasks::TipFrameInputs {
                                     candidate: next_candidate.clone(),
-                                    core: task_core,
-                                    sequence: shared,
-                                    options,
+                                    core: inter_core,
+                                    sequence: share_sequence(&mut shared_sequence, &sequence),
                                     reference: inter_state,
                                     geometry,
+                                    products,
+                                    motion: motion.clone(),
+                                    finish,
+                                    entropy,
+                                    motion_deps,
+                                    offset: next_candidate.offset(),
                                 },
-                                frame_pipeline::claim_tip_output_cell(&mut tip_eight),
-                                frame_index,
-                                &dependencies,
-                                products,
-                                motion.clone(),
-                                finish,
-                                admission,
-                                scope,
-                                recon_lane,
-                            );
+                            )?;
                             (slot, core, publications, motion)
                         } else {
-                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                                admission.assist_ready(scope)
-                            });
+                            ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             let setup = if inter_core.status
                                 == splot_core::headers::frame::FrameHeaderParseStatus::IntraHeaderComplete
                             {
@@ -1493,9 +1454,8 @@ where
                             let slot = inflight::settle_walk_stage(
                                 walk.stage,
                                 inflight::PipelineFrameSlot::Eight,
-                                scope,
-                                admission,
-                                recon_lane,
+                                rows,
+                                pools,
                                 ring,
                                 frames,
                                 frame_index,
@@ -1558,9 +1518,7 @@ where
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
                         if let Some(rows) = split {
-                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                                admission.assist_ready(scope)
-                            });
+                            ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             push_split_inter::<u16>(
                                 split_ten,
                                 rows,
@@ -1577,11 +1535,9 @@ where
                                 frame_index,
                             )?
                         } else if inter_envelope.header.obu_type.is_tip_frame() {
-                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                                admission.assist_ready(scope)
-                            });
+                            ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             let (slot, finish, geometry, products, motion) =
-                                frame_pipeline::reserve_tip_output(
+                                frame_tasks::reserve_tip_output(
                                     &inter_core,
                                     &sequence,
                                     BitDepth::Ten,
@@ -1591,39 +1547,35 @@ where
                                     frame_index,
                                 )?;
                             let publications = products.handles();
-                            let dependencies = inter::tip_output_dependencies(
-                                &inter_core,
-                                &sequence,
-                                &inter_state,
-                            );
-                            let task_core = Arc::clone(&inter_core);
-                            let core = inter_core;
-                            let shared =
-                                frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
-                            frame_pipeline::schedule_tip_output(
-                                frame_pipeline::TipOutputJob {
+                            let entropy =
+                                inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
+                            let motion_deps = inter_core
+                                .inter
+                                .as_ref()
+                                .map_or_else(reference_buffer::RefSlots::default, |inter| {
+                                    inter_state.motion_dependencies(&inter.ref_frame_idx)
+                                });
+                            let core = Arc::clone(&inter_core);
+                            pools.push_tip::<u16>(
+                                rows,
+                                *options,
+                                frame_tasks::TipFrameInputs {
                                     candidate: next_candidate.clone(),
-                                    core: task_core,
-                                    sequence: shared,
-                                    options,
+                                    core: inter_core,
+                                    sequence: share_sequence(&mut shared_sequence, &sequence),
                                     reference: inter_state,
                                     geometry,
+                                    products,
+                                    motion: motion.clone(),
+                                    finish,
+                                    entropy,
+                                    motion_deps,
+                                    offset: next_candidate.offset(),
                                 },
-                                frame_pipeline::claim_tip_output_cell(&mut tip_ten),
-                                frame_index,
-                                &dependencies,
-                                products,
-                                motion.clone(),
-                                finish,
-                                admission,
-                                scope,
-                                recon_lane,
-                            );
+                            )?;
                             (slot, core, publications, motion)
                         } else {
-                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                                admission.assist_ready(scope)
-                            });
+                            ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             let setup = if inter_core.status
                                 == splot_core::headers::frame::FrameHeaderParseStatus::IntraHeaderComplete
                             {
@@ -1648,9 +1600,8 @@ where
                             let slot = inflight::settle_walk_stage(
                                 walk.stage,
                                 inflight::PipelineFrameSlot::Ten,
-                                scope,
-                                admission,
-                                recon_lane,
+                                rows,
+                                pools,
                                 ring,
                                 frames,
                                 frame_index,
@@ -1919,9 +1870,8 @@ where
                 let key_frame = decode_key_frame_with_effects(
                     decode_scratch_eight,
                     decode_scratch_ten,
-                    scope,
-                    admission,
-                    recon_lane,
+                    rows,
+                    pools,
                     ring,
                     frames,
                     frame_index,
@@ -2030,9 +1980,7 @@ where
         )?;
         emission_queue.flush(frames, &mut emit)?;
         if !retain_decoded_frames {
-            ring.harvest_all(decode_scratch_eight, decode_scratch_ten, &|| {
-                admission.assist_ready(scope)
-            });
+            ring.harvest_all(decode_scratch_eight, decode_scratch_ten);
             reclaim_unowned_frames(
                 frames,
                 &reference,
