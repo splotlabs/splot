@@ -6,4 +6,4 @@
 # Calibrated against dupehound 0.1.2, pinned in CI; scores vary by version.
 # Never raise this ceiling to accommodate new duplication.
 
-max_deletable_lines = 2146
+max_deletable_lines = 1922
