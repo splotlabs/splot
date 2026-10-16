@@ -1890,11 +1890,18 @@ fn write_compound_section(
     h: usize,
 ) {
     for row in 0..h {
+        let start = (y + row) * dst_w + x;
+        if let (Some(src), Some(dst)) = (
+            src.get(row * src_stride..).and_then(|src| src.get(..w)),
+            dst.get_mut(start..).and_then(|dst| dst.get_mut(..w)),
+        ) {
+            dst.copy_from_slice(src); // splot-copy-ok: publish one predicted section row into the compound intermediate
+            continue;
+        }
         for col in 0..w {
-            if let (Some(&value), Some(slot)) = (
-                src.get(row * src_stride + col),
-                dst.get_mut((y + row) * dst_w + (x + col)),
-            ) {
+            if let (Some(&value), Some(slot)) =
+                (src.get(row * src_stride + col), dst.get_mut(start + col))
+            {
                 *slot = value;
             }
         }
