@@ -3,16 +3,14 @@
 
 use splot_recon::math::round2_signed_i32;
 
-use super::{Mv, REFMVS_LIMIT, allocate_temporal_grid, project_no_constraint, temporal_grid_index};
+#[cfg(test)]
+use super::temporal_grid_index;
+use super::{Mv, REFMVS_LIMIT, allocate_temporal_grid, project_no_constraint};
 
 type Position = (usize, usize);
 type PhasePositions = [PackedPosition; 3];
 
 const MAX_TRAJECTORY_REFERENCES: usize = 7;
-pub(super) const INVALID_TRAJECTORY_MV: Mv = Mv {
-    row: i32::MIN,
-    col: 0,
-};
 
 /// Word-aligned, so the walk writes both components with one store.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -190,11 +188,18 @@ impl TrajectoryState {
         if reference >= self.reference_count {
             return None;
         }
-        let index = temporal_grid_index(self.width8, self.height8, y8, x8)?;
-        self.cells
-            .get(index * self.reference_count + reference)
-            .copied()
-            .and_then(PackedTrajectoryMv::unpack)
+        self.rows().cell(&self.cells, reference, y8, x8)
+    }
+
+    fn rows(&self) -> GridRows {
+        GridRows {
+            width8: self.width8,
+            row_base: 0,
+            row_end: self.height8,
+            reference_count: self.reference_count,
+            step: self.step,
+            unit_size8: self.unit_size8,
+        }
     }
 
     pub(super) fn reset(
@@ -312,23 +317,6 @@ impl TrajectoryState {
         }
         let fields = grids.fields.next().unwrap_or_default();
         Some(grids.band(fields, scratch, 0, cells))
-    }
-
-    pub(super) fn fill_gaps(&mut self) {
-        if self.step != 2 {
-            return;
-        }
-        for reference in 0..self.reference_count {
-            fill_band_field_gaps(
-                &mut self.cells,
-                reference,
-                self.reference_count,
-                self.width8,
-                0,
-                self.height8,
-                self.unit_size8,
-            );
-        }
     }
 }
 
@@ -450,26 +438,91 @@ impl OwnedTrajectoryScratch {
 #[derive(Debug)]
 pub(super) struct OwnedTrajectoryFields {
     cells: Vec<PackedTrajectoryMv>,
-    reference_count: usize,
+    rows: GridRows,
 }
 
 impl OwnedTrajectoryFields {
     pub(super) fn clear(&mut self) {
-        self.reference_count = 0;
+        self.rows.reference_count = 0;
     }
 
-    pub(super) fn cell(&self, reference: usize, index: usize) -> Option<Mv> {
-        if reference >= self.reference_count {
+    /// One reference's trajectory vector at a whole-field cell of this band.
+    pub(super) fn cell(&self, reference: usize, y8: usize, x8: usize) -> Option<Mv> {
+        self.rows.cell(&self.cells, reference, y8, x8)
+    }
+}
+
+/// The rows `row_base..row_end` of a reference-interleaved trajectory grid.
+#[derive(Clone, Copy, Debug)]
+struct GridRows {
+    width8: usize,
+    row_base: usize,
+    row_end: usize,
+    reference_count: usize,
+    step: usize,
+    unit_size8: usize,
+}
+
+impl GridRows {
+    fn stored(
+        self,
+        cells: &[PackedTrajectoryMv],
+        reference: usize,
+        y8: usize,
+        x8: usize,
+    ) -> Option<Mv> {
+        if reference >= self.reference_count || x8 >= self.width8 || y8 >= self.row_end {
             return None;
         }
-        self.cells
-            .get(
-                index
-                    .checked_mul(self.reference_count)?
-                    .checked_add(reference)?,
-            )
+        let row = y8.checked_sub(self.row_base)?;
+        cells
+            .get((row * self.width8 + x8) * self.reference_count + reference)
             .copied()
             .and_then(PackedTrajectoryMv::unpack)
+    }
+
+    /// One reference's vector at `(y8, x8)`. A step-2 projection writes only
+    /// the even cells of a row pair; any other cell reads as the average of its
+    /// anchor and the anchor's written neighbours in the same TMVP unit, so the
+    /// gap fill costs nothing until a block asks for that cell.
+    fn cell(
+        self,
+        cells: &[PackedTrajectoryMv],
+        reference: usize,
+        y8: usize,
+        x8: usize,
+    ) -> Option<Mv> {
+        let dy = y8.checked_sub(self.row_base)? & 1;
+        let dx = x8 & 1;
+        if self.step != 2 || dy | dx == 0 {
+            return self.stored(cells, reference, y8, x8);
+        }
+        if y8 >= self.row_end || x8 >= self.width8 {
+            return None;
+        }
+        let (y8, x8) = (y8 - dy, x8 - dx);
+        let mut sum = self.stored(cells, reference, y8, x8)?;
+        let mut count = 1;
+        let unit = self.unit_size8;
+        for (source_y, source_x, enabled) in [
+            (y8, x8 + 2, dx > 0),
+            (y8 + 2, x8, dy > 0),
+            (y8 + 2, x8 + 2, dy & dx > 0),
+        ] {
+            if enabled
+                && source_y / unit == y8 / unit
+                && source_x / unit == x8 / unit
+                && let Some(mv) = self.stored(cells, reference, source_y, source_x)
+            {
+                sum = add_mv(sum, mv);
+                count += 1;
+            }
+        }
+        PackedTrajectoryMv::new(Mv {
+            row: average(sum.row, count),
+            col: average(sum.col, count),
+        })
+        .unpack()
     }
 }
 
@@ -547,23 +600,17 @@ impl OwnedTrajectoryBand {
     }
 
     pub(super) fn finish(mut self, scratch: &mut OwnedTrajectoryScratch) -> OwnedTrajectoryFields {
-        if self.step == 2 {
-            for reference in 0..self.reference_count {
-                fill_band_field_gaps(
-                    &mut self.fields,
-                    reference,
-                    self.reference_count,
-                    self.width8,
-                    self.row_base,
-                    self.row_count,
-                    self.unit_size8,
-                );
-            }
-        }
         scratch.positions = core::mem::take(&mut self.positions);
         OwnedTrajectoryFields {
             cells: core::mem::take(&mut self.fields),
-            reference_count: self.reference_count,
+            rows: GridRows {
+                width8: self.width8,
+                row_base: self.row_base,
+                row_end: self.row_base + self.row_count,
+                reference_count: self.reference_count,
+                step: self.step,
+                unit_size8: self.unit_size8,
+            },
         }
     }
 }
@@ -920,72 +967,6 @@ impl TrajectoryBand<'_> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn fill_band_field_gaps(
-    cells: &mut [PackedTrajectoryMv],
-    reference: usize,
-    reference_count: usize,
-    width8: usize,
-    row_base: usize,
-    row_count: usize,
-    unit_size8: usize,
-) {
-    let slot = |y8: usize, x8: usize| {
-        let row = y8.checked_sub(row_base)?;
-        row.checked_mul(width8)?
-            .checked_add(x8)?
-            .checked_mul(reference_count)?
-            .checked_add(reference)
-    };
-    let get = |cells: &[PackedTrajectoryMv], y8: usize, x8: usize| {
-        cells
-            .get(slot(y8, x8)?)
-            .copied()
-            .and_then(PackedTrajectoryMv::unpack)
-    };
-    for y8 in (row_base..row_base.saturating_add(row_count)).step_by(2) {
-        for x8 in (0..width8).step_by(2) {
-            let Some(anchor) = get(cells, y8, x8) else {
-                continue;
-            };
-            for (dy, dx) in [(0usize, 1usize), (1, 0), (1, 1)] {
-                if y8 + dy >= row_base + row_count || x8 + dx >= width8 {
-                    continue;
-                }
-                let mut sum = anchor;
-                let mut count = 1;
-                for (source_y, source_x, enabled) in [
-                    (y8, x8 + 2, dx > 0),
-                    (y8 + 2, x8, dy > 0),
-                    (y8 + 2, x8 + 2, dy > 0 && dx > 0),
-                ] {
-                    if !enabled
-                        || source_y >= row_base + row_count
-                        || source_x >= width8
-                        || source_y / unit_size8 != y8 / unit_size8
-                        || source_x / unit_size8 != x8 / unit_size8
-                    {
-                        continue;
-                    }
-                    if let Some(mv) = get(cells, source_y, source_x) {
-                        sum = add_mv(sum, mv);
-                        count += 1;
-                    }
-                }
-                let Some(index) = slot(y8 + dy, x8 + dx) else {
-                    continue;
-                };
-                if let Some(cell) = cells.get_mut(index) {
-                    *cell = PackedTrajectoryMv::new(Mv {
-                        row: average(sum.row, count),
-                        col: average(sum.col, count),
-                    });
-                }
-            }
-        }
-    }
-}
-
 /// Operands are stored (`REFMVS_LIMIT`) or decompressed (at most 2048) vectors.
 fn add_mv(a: Mv, b: Mv) -> Mv {
     Mv {
@@ -1184,8 +1165,6 @@ mod tests {
         state.set_trajectory_cell(0, 0, 14, Mv { row: 8, col: 16 });
         state.set_trajectory_cell(0, 0, 16, Mv { row: 24, col: 80 });
 
-        state.fill_gaps();
-
         assert_eq!(
             state.trajectory_cell(0, 0, 15),
             state.trajectory_cell(0, 0, 14)
@@ -1202,8 +1181,6 @@ mod tests {
         state.set_trajectory_cell(0, 0, 6, Mv { row: 8, col: 16 });
         state.set_trajectory_cell(0, 0, 8, Mv { row: 24, col: 80 });
 
-        state.fill_gaps();
-
         assert_eq!(
             state.trajectory_cell(0, 0, 7),
             state.trajectory_cell(0, 0, 6)
@@ -1212,6 +1189,28 @@ mod tests {
             state.trajectory_cell(0, 0, 9),
             state.trajectory_cell(0, 0, 8)
         );
+    }
+
+    #[test]
+    fn gap_cells_average_their_anchor_with_written_unit_neighbours() {
+        let mut state = TrajectoryState::new((8, 36), 1, 2, 16).unwrap();
+        state.set_trajectory_cell(0, 0, 12, Mv { row: 8, col: 16 });
+        state.set_trajectory_cell(0, 0, 14, Mv { row: 24, col: 80 });
+        state.set_trajectory_cell(0, 2, 12, Mv { row: 40, col: 0 });
+
+        assert_eq!(
+            state.trajectory_cell(0, 0, 13),
+            Some(Mv { row: 16, col: 48 })
+        );
+        assert_eq!(
+            state.trajectory_cell(0, 1, 12),
+            Some(Mv { row: 24, col: 8 })
+        );
+        assert_eq!(
+            state.trajectory_cell(0, 1, 13),
+            Some(Mv { row: 24, col: 32 })
+        );
+        assert_eq!(state.trajectory_cell(0, 1, 11), None);
     }
 }
 

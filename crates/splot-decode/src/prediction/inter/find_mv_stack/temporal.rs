@@ -966,14 +966,7 @@ impl BandedTemporalContext {
             .published
             .get()?
             .as_ref()?;
-        let row = y8.checked_sub(band.row_base8)?;
-        band.trajectories
-            .as_ref()?
-            .cell(
-                reference,
-                row.checked_mul(self.layout.width8())?.checked_add(x8)?,
-            )
-            .filter(|mv| *mv != trajectory::INVALID_TRAJECTORY_MV)
+        band.trajectories.as_ref()?.cell(reference, y8, x8)
     }
 
     fn fail(&self) {
@@ -1389,9 +1382,6 @@ impl TemporalMvContext {
                 .ok_or(crate::DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
         }
         run_band_projections(&prepared, config, trajectories.as_mut(), &mut self.field)?;
-        if let Some(trajectories) = trajectories.as_mut() {
-            trajectories.fill_gaps();
-        }
         self.current_order_hint = current_order_hint;
         self.trajectories = trajectories;
         self.tip = None;
