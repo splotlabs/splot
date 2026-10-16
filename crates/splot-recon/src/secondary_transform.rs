@@ -161,16 +161,13 @@ pub fn secondary_inverse_transform(
     } else {
         (2u32, 4usize)
     };
-    for i in 0..kernel_width {
-        let mut t = 0i32;
-        for (j, &coef) in coefs[..n].iter().enumerate() {
-            let weight = if large {
-                IST_8X8_KERNEL[kernel][stx][j][i]
-            } else {
-                IST_4X4_KERNEL[kernel][stx][j][i]
-            };
-            t += coef * weight;
-        }
+    let mut sums = [0i32; IST_8X8_WIDTH];
+    if large {
+        accumulate_kernel_rows(&IST_8X8_KERNEL[kernel][stx][..n], &coefs[..n], &mut sums);
+    } else if let Some(sums) = sums.first_chunk_mut::<IST_4X4_WIDTH>() {
+        accumulate_kernel_rows(&IST_4X4_KERNEL[kernel][stx][..n], &coefs[..n], sums);
+    }
+    for (i, &t) in sums[..kernel_width].iter().enumerate() {
         let v = round2_signed_i32(t, 7).clamp(-bound, bound - 1);
 
         let pos = if large {
@@ -191,6 +188,17 @@ pub fn secondary_inverse_transform(
         dequant[out_index] = v;
     }
     Ok(())
+}
+
+/// Adds `coef * row` over the kernel rows of the nonzero input coefficients.
+fn accumulate_kernel_rows<const W: usize>(rows: &[[i32; W]], coefs: &[i32], sums: &mut [i32; W]) {
+    for (row, &coef) in rows.iter().zip(coefs) {
+        if coef != 0 {
+            for (sum, &weight) in sums.iter_mut().zip(row) {
+                *sum += coef * weight;
+            }
+        }
+    }
 }
 
 /// Whether `side` is a valid § 7.15.3 operating side: a power of two in `4..=32`.
