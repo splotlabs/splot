@@ -50,22 +50,6 @@ const MAX_MC_BLOCK_SAMPLES: usize = MAX_MC_BLOCK_DIM * MAX_MC_BLOCK_DIM;
 const MAX_OPTICAL_FLOW_CELLS: usize = (MAX_MC_BLOCK_DIM / 4) * (MAX_MC_BLOCK_DIM / 4);
 const MAX_REFINEMV_PREDICTION_DIM: usize = MAX_MC_BLOCK_DIM + 8;
 
-fn copy_u16_samples<T: ReconSample>(samples: &[u16], output: &mut [T]) -> splot_recon::Result<()> {
-    if samples.len() != output.len() {
-        return Err(ReconError::BufferLengthMismatch {
-            expected: output.len(),
-            actual: samples.len(),
-        });
-    }
-    for &sample in samples {
-        T::try_from_u16(sample)?;
-    }
-    for (output, &sample) in output.iter_mut().zip(samples) {
-        *output = T::try_from_u16(sample)?;
-    }
-    Ok(())
-}
-
 fn clip_and_pack_warp_samples<T: ReconSample, const N: usize>(
     samples: &[i32; N],
     max_sample: i32,
@@ -407,23 +391,6 @@ impl CompoundBlockMetadata {
             .unwrap_or_default()
     }
 
-    /// The block's luma rectangle, which publication scatters into.
-    pub(super) const fn luma_rect(&self) -> (usize, usize, usize, usize) {
-        (
-            self.rect.luma_x,
-            self.rect.luma_y,
-            self.rect.luma_w,
-            self.rect.luma_h,
-        )
-    }
-
-    pub(super) fn stored_mvs_at_origin(&self) -> splot_recon::Result<Option<[Mv; 2]>> {
-        self.motion
-            .as_ref()
-            .map(|motion| motion.stored_mvs_at_luma_offset(0, 0))
-            .transpose()
-    }
-
     pub(super) fn publish<T: ReconSample>(
         &self,
         samples: &[T],
@@ -651,80 +618,6 @@ pub(super) fn predict_tip_batch_from_grid<T: ReconSample>(
     predict_compound_into(sink, block, Some(motion), offset)
 }
 
-fn compound_output_samples<'a, T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
-    samples: &'a mut [T],
-) -> Result<&'a mut [T]> {
-    let sample_count =
-        compound_output_sample_count(block.rect, block.has_chroma, sink.info().pixel_format())?;
-    let available_samples = samples.len();
-    samples.get_mut(..sample_count).ok_or_else(|| {
-        ReconError::BufferLengthMismatch {
-            expected: sample_count,
-            actual: available_samples,
-        }
-        .into()
-    })
-}
-
-pub(super) fn predict_compound_from_grid<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
-    block: CompoundMcBlock<'_, T>,
-    motion: Option<CompoundMotionGrid>,
-    offset: ByteOffset,
-    samples: &mut [T],
-) -> Result<CompoundBlockMetadata> {
-    let info = sink.info();
-    let mut samples = compound_output_samples(sink, block, samples)?;
-    let mut luma_diff_weighted_mask = None;
-    for (plane, sub_x, sub_y) in mc_planes(info.pixel_format()) {
-        if plane != PlaneId::Y && !block.has_chroma {
-            continue;
-        }
-        let plane_sample_count = compound_plane_sample_count(block.rect, plane, sub_x, sub_y)?;
-        let (plane_samples, remaining_samples) = samples.split_at_mut(plane_sample_count);
-        samples = remaining_samples;
-        if plane != PlaneId::Y && block.sub8x8_chroma {
-            with_plane_prediction(
-                info,
-                block.reference0,
-                plane,
-                block.rect,
-                block.mv0,
-                block.interp,
-                sub_x,
-                sub_y,
-                offset,
-                |_, predicted, _| {
-                    copy_u16_samples(predicted, plane_samples)?;
-                    Ok(())
-                },
-            )?;
-        } else {
-            let (_, _, block_w, _) = block.rect.plane_rect(plane, sub_x, sub_y);
-            predict_compound_plane_output(
-                info,
-                block,
-                plane,
-                sub_x,
-                sub_y,
-                &mut luma_diff_weighted_mask,
-                motion.as_ref(),
-                offset,
-                plane_samples,
-                block_w,
-                None,
-            )?;
-        }
-    }
-    Ok(CompoundBlockMetadata {
-        rect: block.rect,
-        has_chroma: block.has_chroma,
-        motion,
-    })
-}
-
 /// Predicts a compound block straight into `sink`. Only a plane that the
 /// frame edge clips goes through a temporary first.
 pub(super) fn predict_compound_into<T: ReconSample>(
@@ -810,43 +703,6 @@ pub(super) fn predict_compound_into<T: ReconSample>(
         has_chroma: block.has_chroma,
         motion,
     })
-}
-
-/// The samples one plane of a compound block's packed output holds.
-fn compound_plane_sample_count(
-    rect: McBlockRect,
-    plane: PlaneId,
-    sub_x: u32,
-    sub_y: u32,
-) -> Result<usize> {
-    let (_, _, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
-    block_w.checked_mul(block_h).ok_or_else(|| {
-        ReconError::ArithmeticOverflow {
-            context: "compound output plane sample count",
-        }
-        .into()
-    })
-}
-
-fn compound_output_sample_count(
-    rect: McBlockRect,
-    has_chroma: bool,
-    pixel_format: PixelFormat,
-) -> Result<usize> {
-    let mut sample_count = 0usize;
-    for (plane, sub_x, sub_y) in mc_planes(pixel_format) {
-        if plane != PlaneId::Y && !has_chroma {
-            continue;
-        }
-        let plane_samples = compound_plane_sample_count(rect, plane, sub_x, sub_y)?;
-        sample_count =
-            sample_count
-                .checked_add(plane_samples)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "compound output sample count",
-                })?;
-    }
-    Ok(sample_count)
 }
 
 fn motion_compensate_single_warp_block_into<T: ReconSample>(
@@ -935,40 +791,6 @@ fn predict_plane<T: ReconSample>(
             subpel_predict_block_into(&view, &params, &mut predicted)?;
             sink.write_u16_rect(plane, target, &predicted, params.w)?;
             Ok(())
-        })();
-        slot.set(Some(predicted));
-        result
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-fn with_plane_prediction<T: ReconSample>(
-    info: DecodedFrameInfo,
-    reference: ReferenceSamples<'_, T>,
-    plane: PlaneId,
-    rect: McBlockRect,
-    mv: Mv,
-    interp: InterpolationFilter,
-    sub_x: u32,
-    sub_y: u32,
-    offset: ByteOffset,
-    consume: impl FnOnce(PlaneRect, &[u16], usize) -> Result<()>,
-) -> Result<()> {
-    let (view, rect, params) = plane_prediction(
-        info, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
-    )?;
-    let len = params
-        .w
-        .checked_mul(params.h)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "single-reference prediction sample count",
-        })?;
-    SUBPEL_PREDICTION_BUFFER.with(|slot| {
-        let mut predicted = slot.take().unwrap_or_default();
-        predicted.resize(len, 0);
-        let result: Result<()> = (|| {
-            subpel_predict_block_into(&view, &params, &mut predicted)?;
-            consume(rect, &predicted, params.w)
         })();
         slot.set(Some(predicted));
         result

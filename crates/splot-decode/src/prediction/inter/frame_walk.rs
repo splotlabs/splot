@@ -295,7 +295,7 @@ pub(super) fn required_inter_quantizer_deltas(
 #[must_use]
 pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) -> bool {
     core.status == splot_core::headers::frame::FrameHeaderParseStatus::InterHeaderComplete
-        && core.frame_is_intra == Some(false)
+        && core.frame_is_intra.is_some()
         && matches!(
             obu_type,
             ObuType::LeadingTileGroup
@@ -324,7 +324,7 @@ pub(crate) struct DeferredInterWalk<T: ReconSample> {
 }
 
 /// The half of an inter walk that is settled before the § 8.2 pass reads its
-/// first unit, so the admission scheduler can be built while the pass runs.
+/// first unit, so the scheduled reconstruction can be built while the pass runs.
 pub(crate) struct InterWalkEarly<T: ReconSample> {
     pub(crate) core: Arc<FrameHeaderCore>,
     pub(crate) motion: MotionFieldHandle,
@@ -477,10 +477,10 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
     }
 }
 
-/// Splitting the walk here lets the driver build the frame's admission
-/// batches from the published prologue before the pass reads its first unit,
-/// so the batches exist -- and can claim units -- while the pass runs. The
-/// pass owns everything it reads, so it runs as its own job on any worker.
+/// Splitting the walk here lets the frame build its reconstruction batches
+/// from the published prologue before the pass reads its first unit, so the
+/// batches exist -- and can claim units -- while the pass runs. The pass owns
+/// everything it reads, so it runs as its own row on any worker.
 pub(crate) struct PendingInterWalk<'payload, T: ReconSample> {
     tile_plan: DecodeTilePayloadPlan<'payload>,
     records: FrameFilterRecords,
@@ -579,8 +579,8 @@ impl<T: ReconSample> DeferredInterWalk<T> {
 }
 
 impl<T: ReconSample> InterWalkEarly<T> {
-    /// Runs the temporal prelude and builds the admission scheduler, which is
-    /// everything the § 8.2 pass does not have to have finished for.
+    /// Runs the temporal prelude and builds the scheduled reconstruction,
+    /// which is everything the § 8.2 pass does not have to have finished for.
     pub(crate) fn prepare_scheduled(
         self,
         decode_scratch: InterDecodeScratch<T>,

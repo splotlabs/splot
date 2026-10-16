@@ -134,29 +134,6 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         }
     }
 
-    /// Returns the scheduler conditions that replace waiting for `bounds`.
-    pub(super) fn conditions(
-        &self,
-        bounds: &RowReferenceBounds,
-    ) -> impl Iterator<Item = splot_parallel::Condition<'a>> + use<'a, T> {
-        let bounds = *bounds;
-        bounds
-            .settle
-            .then(|| self.settle.conditions())
-            .into_iter()
-            .flatten()
-            .chain(
-                self.lists
-                    .into_iter()
-                    .zip(bounds.needs)
-                    .filter_map(move |(slot, need)| {
-                        (!bounds.settle && need != 0)
-                            .then(|| slot.map(|slot| slot.row_condition(need as usize)))
-                            .flatten()
-                    }),
-            )
-    }
-
     /// Whether `bounds` hold now: the rows each list needs are published, or
     /// the frames the unbounded readers need have settled.
     pub(super) fn is_satisfied(&self, bounds: &RowReferenceBounds) -> bool {

@@ -71,10 +71,8 @@ fn frame_decode_geometry_maps_impossible_inputs_to_typed_state_errors() {
 
 #[test]
 fn inter_frame_validation_requires_compound_tool_facts() {
-    let context = decode_context();
-    context
-        .pool()
-        .install(|| -> Result<()> {
+    {
+        let run = || -> Result<()> {
             let (mut sequence, mut core, _) =
                 parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
             core.inter
@@ -104,8 +102,10 @@ fn inter_frame_validation_requires_compound_tool_facts() {
                 }
             ));
             Ok(())
-        })
-        .unwrap();
+        };
+        run()
+    }
+    .unwrap();
 }
 
 #[test]
@@ -481,13 +481,9 @@ fn contradictory_intra_only_tile_group_state_is_typed() {
 
 #[test]
 fn intra_only_tile_group_never_enters_split_inter_walk() {
-    use splot_parallel::{ThreadCount, WorkerPool};
-    use std::num::NonZeroUsize;
-
     let (_, mut core, _) =
         parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
-    let pool = WorkerPool::new(ThreadCount::Fixed(NonZeroUsize::new(2).unwrap())).unwrap();
-    pool.install(|| {
+    {
         assert!(super::super::splittable_inter_frame(
             splot_core::types::ObuType::RegularTileGroup,
             &core,
@@ -499,7 +495,7 @@ fn intra_only_tile_group_never_enters_split_inter_walk() {
             splot_core::types::ObuType::RegularTileGroup,
             &core,
         ));
-    });
+    }
 }
 
 #[test]
@@ -834,11 +830,8 @@ fn missing_tile_group_prefix_is_a_malformed_source_diagnostic() {
 fn malformed_sef_frame_header_is_a_malformed_source_diagnostic() {
     let (bytes, frame_index) = repack_first_sef_payload(&[]);
     let options = DecodeOptions::default();
-    let context = decode_context();
 
-    let result = context
-        .pool()
-        .install(|| decode_frames_from_plan(&bytes, &options));
+    let result = decode_frames_from_plan(&bytes, &options);
     let Err(error) = result else {
         panic!("malformed SEF frame header decoded successfully");
     };
@@ -961,11 +954,8 @@ fn malformed_sef_trailing_bits_are_a_malformed_source_diagnostic() {
     payload.write_bit(1).expect("nonzero trailing_zero_bit");
     let (bytes, frame_index) = repack_first_sef_payload(&payload.into_bytes());
     let options = DecodeOptions::default();
-    let context = decode_context();
 
-    let result = context
-        .pool()
-        .install(|| decode_frames_from_plan(&bytes, &options));
+    let result = decode_frames_from_plan(&bytes, &options);
     let Err(error) = result else {
         panic!("SEF with malformed trailing bits decoded successfully");
     };

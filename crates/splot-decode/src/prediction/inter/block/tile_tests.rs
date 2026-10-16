@@ -8,7 +8,6 @@
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::symbol_encoder::SymbolEncoder;
-use splot_parallel::ThreadCount;
 
 use super::*;
 
@@ -196,12 +195,7 @@ const TWO_TILE_INTER_FIXTURE: &[u8] = include_bytes!(
 
 fn decode_hashes(bytes: &[u8], threads: usize) -> Vec<String> {
     let options = crate::DecodeOptions::default();
-    let context =
-        crate::DecodeContext::new(crate::DecodeRuntimeConfig::new(ThreadCount::from(threads)))
-            .expect("context");
-    context
-        .pool()
-        .install(|| crate::pipeline::decode_frames_from_plan(bytes, &options))
+    crate::pipeline::decode_frames_from_plan_on_threads(bytes, &options, threads)
         .expect("decode")
         .iter()
         .map(|output| match output.ready_frame().expect("ready") {
@@ -263,12 +257,7 @@ fn corrupted_tile_payload_error(bytes: &[u8], threads: usize) -> crate::DecodeEr
     let last = corrupted.len() - 1;
     corrupted[last] ^= u8::MAX;
     let options = crate::DecodeOptions::default();
-    let context =
-        crate::DecodeContext::new(crate::DecodeRuntimeConfig::new(ThreadCount::from(threads)))
-            .expect("context");
-    context
-        .pool()
-        .install(|| crate::pipeline::decode_frames_from_plan(&corrupted, &options))
+    crate::pipeline::decode_frames_from_plan_on_threads(&corrupted, &options, threads)
         .err()
         .expect("planner-valid tile payload corruption must fail during decode")
 }

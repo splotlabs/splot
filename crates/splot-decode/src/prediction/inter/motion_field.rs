@@ -260,7 +260,7 @@ impl MotionFieldHandle {
 
     /// Waits for terminal field publication while assisting the installed pool.
     pub(crate) fn wait_field(&self) {
-        let _ = self.0.field.wait_with_pool_assist();
+        let _ = self.0.field.wait();
     }
 
     pub(crate) fn layout(&self) -> MotionFieldLayout {

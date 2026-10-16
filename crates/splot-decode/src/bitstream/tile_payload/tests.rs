@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::cdf::{TileCdfError, TileCdfPolicyInput, TileCdfSelector};
 use super::*;
-use crate::{DecodeContext, DecodeLimitThreshold, DecodeRuntimeConfig};
+use crate::DecodeLimitThreshold;
 use splot_core::headers::tile_group::{TileGroupFraming, parse_tile_group_framing};
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderConfig};
 use splot_core::types::ObuType;
@@ -545,12 +545,7 @@ fn frame_tile_count_limit_uses_grid_not_current_group_len() {
 
 #[test]
 fn minimal_tier_admission_and_rejections_are_structured() {
-    let ctx = DecodeContext::new(DecodeRuntimeConfig::new(splot_parallel::ThreadCount::from(
-        1,
-    )))
-    .unwrap();
-    ctx.pool()
-        .install(minimal_tier_admission_and_rejections_are_structured_inner);
+    (minimal_tier_admission_and_rejections_are_structured_inner)();
 }
 
 fn minimal_tier_admission_and_rejections_are_structured_inner() {

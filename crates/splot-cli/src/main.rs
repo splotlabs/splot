@@ -53,11 +53,17 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     commands::init_tracing(cli.verbose, cli.quiet);
 
-    let result = match cli.command {
+    // The decode driver recurses through the partition walk; the main thread's
+    // stack is platform-sized, so the command runs on a worker-sized one.
+    let result = splot_parallel::run_on_thread("splot-main", || match cli.command {
         Command::Validate(args) => commands::validate::run(&args),
         Command::Inspect(args) => commands::inspect::run(&args),
         Command::Decode(args) => commands::decode::run(&args),
         Command::Explain(args) => commands::explain::run(&args),
+    });
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => Err(error.into()),
     };
 
     match result {

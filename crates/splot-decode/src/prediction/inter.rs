@@ -1321,24 +1321,14 @@ pub(crate) fn named_pixel_reference_slots(core: &FrameHeaderCore) -> impl Iterat
         .chain(core.bridge_frame_ref_idx)
 }
 
-impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
+impl<T: ReconSample> PixelReferenceGate<'_, T> {
     /// Whether every named reference frame has settled.
     pub(crate) fn is_ready(&self) -> bool {
         self.slots.iter().flatten().all(|slot| slot.is_settled())
     }
 
-    /// Returns the admission conditions for every named reference settling.
-    pub(crate) fn conditions(
-        &self,
-    ) -> impl Iterator<Item = splot_parallel::Condition<'a>> + use<'a, T> {
-        self.slots
-            .into_iter()
-            .flatten()
-            .map(RefFrameSlot::settled_condition)
-    }
-
     /// Blocks the calling driver thread until every named reference frame has
-    /// settled, running pool jobs instead of parking idle.
+    /// settled.
     ///
     /// # Errors
     ///

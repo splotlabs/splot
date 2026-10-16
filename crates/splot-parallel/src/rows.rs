@@ -425,6 +425,47 @@ impl Core {
     }
 }
 
+/// Starts one named thread with the worker stack size.
+///
+/// # Errors
+/// Returns [`ParallelError::ThreadSpawn`] when the thread cannot start.
+pub fn spawn_thread(
+    name: &str,
+    body: impl FnOnce() + Send + 'static,
+) -> Result<JoinHandle<()>, ParallelError> {
+    std::thread::Builder::new()
+        .name(name.to_owned())
+        .stack_size(WORKER_STACK_SIZE_BYTES)
+        .spawn(body)
+        .map_err(|error| ParallelError::ThreadSpawn {
+            message: error.to_string(),
+        })
+}
+
+/// Runs `body` to completion on a thread with the worker stack size and
+/// returns its result, for a decode driver whose recursion needs more stack
+/// than the caller's thread has.
+///
+/// # Errors
+/// Returns [`ParallelError::ThreadSpawn`] when the thread cannot start.
+pub fn run_on_thread<R: Send>(
+    name: &str,
+    body: impl FnOnce() -> R + Send,
+) -> Result<R, ParallelError> {
+    std::thread::scope(|scope| {
+        let thread = std::thread::Builder::new()
+            .name(name.to_owned())
+            .stack_size(WORKER_STACK_SIZE_BYTES)
+            .spawn_scoped(scope, body)
+            .map_err(|error| ParallelError::ThreadSpawn {
+                message: error.to_string(),
+            })?;
+        thread.join().map_err(|_| ParallelError::ThreadSpawn {
+            message: "the thread panicked".to_owned(),
+        })
+    })
+}
+
 /// Dedicated worker threads that run [`FrameWork`] rows oldest frame first.
 #[derive(Debug)]
 pub struct RowScheduler {
@@ -447,14 +488,9 @@ impl RowScheduler {
         let mut workers = Vec::with_capacity(threads.get());
         for index in 0..threads.get() {
             let core = Arc::clone(&core);
-            let worker = std::thread::Builder::new()
-                .name(format!("splot-row-{index}"))
-                .stack_size(WORKER_STACK_SIZE_BYTES)
-                .spawn(move || core.worker())
-                .map_err(|error| ParallelError::ThreadSpawn {
-                    message: error.to_string(),
-                })?;
-            workers.push(worker);
+            workers.push(spawn_thread(&format!("splot-row-{index}"), move || {
+                core.worker();
+            })?);
         }
         Ok(Self { core, workers })
     }
@@ -714,7 +750,11 @@ mod tests {
             let consumer = log.iter().position(|e| *e == (1, row)).unwrap();
             assert!(producer < consumer, "row {row} consumed before produced");
         }
-        assert_eq!(scheduler.in_flight(), 0);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while scheduler.in_flight() != 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(scheduler.in_flight(), 0, "finished frames leave the queue");
     }
 
     #[test]

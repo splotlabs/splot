@@ -236,7 +236,6 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
     deblock
         .advance_source(&mut source, 8, BitDepth::Eight)
         .unwrap();
-    assert!(deblock.finish().is_none());
     let mut staged_workspace = CurrentFrameWorkspace::new(source.info(), 0).unwrap();
     crate::test_support::copy_rows_to_workspace(&mut source, &mut staged_workspace);
     let mut staged_core = core.clone();
@@ -341,8 +340,6 @@ fn a_filtered_frame_keeps_its_reconstruction_buffer() {
 
 #[test]
 fn multi_stripe_pool_path_matches_off_pool_at_one_and_four_workers() {
-    use splot_parallel::{ThreadCount, WorkerPool};
-
     let mut core = switchable_core();
     core.deblocking_filter_params = None;
     assert_eq!(
@@ -365,56 +362,46 @@ fn multi_stripe_pool_path_matches_off_pool_at_one_and_four_workers() {
         .unwrap();
     let expected = splot_recon::DecodedFrameHashInput::new(&expected).compute_hash();
 
-    for threads in [1, 4] {
-        let pool = WorkerPool::new(ThreadCount::Fixed(threads.try_into().unwrap())).unwrap();
+    {
         let publishes = AtomicUsize::new(0);
-        let (actual, _) = pool
-            .install(|| {
-                assert!(splot_parallel::on_worker_pool());
-                final_filter_sink_10bit().into_filtered_frame(
-                    Arc::clone(&core),
-                    false,
-                    crate::filters::deblock::DeblockQuantDeltas::ZERO,
-                    None,
-                    |frame| {
-                        publishes.fetch_add(1, Ordering::SeqCst);
-                        frame
-                    },
-                )
-            })
+        let (actual, _) = final_filter_sink_10bit()
+            .into_filtered_frame(
+                Arc::clone(&core),
+                false,
+                crate::filters::deblock::DeblockQuantDeltas::ZERO,
+                None,
+                |frame| {
+                    publishes.fetch_add(1, Ordering::SeqCst);
+                    frame
+                },
+            )
             .unwrap();
         assert_eq!(publishes.load(Ordering::SeqCst), 1);
         assert_eq!(
             splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
             expected,
-            "{threads}-worker stripe task path must match direct filtering"
+            "stripe task path must match direct filtering"
         );
     }
 }
 
 #[test]
 fn one_worker_multi_stripe_task_failure_returns_without_publishing() {
-    use splot_parallel::{ThreadCount, WorkerPool};
-
     let mut core = switchable_core();
     core.deblocking_filter_params = None;
     let mut sink = final_filter_sink_10bit();
     sink.plane_sizes[PlaneId::Y.index()] = None;
     let publishes = AtomicUsize::new(0);
-    let pool = WorkerPool::new(ThreadCount::Fixed(1.try_into().unwrap())).unwrap();
-    let result = pool.install(|| {
-        assert!(splot_parallel::on_worker_pool());
-        sink.into_filtered_frame(
-            Arc::new(core),
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-            |frame| {
-                publishes.fetch_add(1, Ordering::SeqCst);
-                frame
-            },
-        )
-    });
+    let result = sink.into_filtered_frame(
+        Arc::new(core),
+        false,
+        crate::filters::deblock::DeblockQuantDeltas::ZERO,
+        None,
+        |frame| {
+            publishes.fetch_add(1, Ordering::SeqCst);
+            frame
+        },
+    );
 
     assert!(result.is_err());
     assert_eq!(publishes.load(Ordering::SeqCst), 0);

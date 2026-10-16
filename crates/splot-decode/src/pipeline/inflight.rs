@@ -19,19 +19,20 @@
 //! overlap more frames than that depth, and before reading a frame's pixels it
 //! waits for that frame. A frame's own pixel references are gated inside its
 //! walk instead ([`crate::prediction::inter::PixelReferenceGate`]), so the
-//! walk's parse work overlaps a reference frame's filter phase. Worker tasks
-//! never wait on any slot.
+//! walk's parse work overlaps a reference frame's filter phase. Row works
+//! never wait on any slot; the driver parks until the work it waits for
+//! publishes.
 
 use core::num::NonZeroUsize;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use splot_parallel::{CompletionCell, Condition, RowScheduler};
+use splot_parallel::{CompletionCell, RowScheduler};
 use splot_recon::{
     CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame,
 };
 
-use super::frame_engine::finish::{WalkStage, WalkedFrame, finish_walked_frame};
+use super::frame_engine::finish::WalkStage;
 use super::frame_progress::FrameProgress;
 use super::{PipelineDecodedFrame, unsupported};
 use crate::error::{DecodeError, Result};
@@ -219,20 +220,6 @@ impl<T: ReconSample> RefFrameSlot<T> {
             .flatten()
     }
 
-    /// Returns the scheduler condition for this slot settling.
-    pub(crate) fn settled_condition(&self) -> Condition<'_> {
-        Condition::completion(self.cell.as_ref())
-    }
-
-    /// Returns the scheduler condition for a readable luma-row prefix, or for
-    /// the whole slot settling when this slot has no progressive publisher.
-    pub(crate) fn row_condition(&self, rows: usize) -> Condition<'_> {
-        self.progress().map_or_else(
-            || self.settled_condition(),
-            |progress| progress.row_condition(rows),
-        )
-    }
-
     /// Borrows this slot's samples for one reader's block.
     ///
     /// A settled slot lends its decoded frame directly; a slot whose filter
@@ -290,7 +277,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
     /// Blocks the driver thread until the slot settles, then shares the
     /// published frame storage.
     pub(crate) fn wait_ready(&self) -> Result<SharedFrame<T>> {
-        match self.cell.wait_with_pool_assist() {
+        match self.cell.wait() {
             SlotValue::Ready(frame) => Ok(frame.share()),
             SlotValue::Failed => Err(failed_slot()),
         }
@@ -298,7 +285,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
 
     /// Blocks the driver thread until the slot settles.
     pub(crate) fn wait_settled(&self) -> Result<()> {
-        let result = match self.cell.wait_with_pool_assist() {
+        let result = match self.cell.wait() {
             SlotValue::Ready(_) => Ok(()),
             SlotValue::Failed => Err(failed_slot()),
         };
@@ -511,18 +498,17 @@ struct InflightEntry {
     report: FinishReport,
 }
 
-/// The bounded set of frames whose filter phase runs on the pool.
+/// The bounded set of frames whose filter phase runs on the row scheduler.
 ///
 /// An effective capacity of `D` overlaps `D` frames: the frame the driver walks
 /// plus the `D - 1` filter phases it has not collected. The ring therefore keeps
-/// up to `D - 1` entries across an admission, and reaches `D` only between a
-/// frame's own push and the next admission, which harvests back down. The
-/// pipeline derives `D` as the smaller of the resolved requested frame delay and
-/// the pool width. Capacity one still uses the same scheduler and task graph.
+/// up to `D - 1` entries across a push, and reaches `D` only between a frame's
+/// own push and the next one, which harvests back down. The pipeline derives
+/// `D` as the smaller of the resolved requested frame delay and the thread
+/// count. Capacity one runs the same works inline on the driver.
 ///
-/// Filter tasks never block on a slot, and every driver wait runs pool jobs
-/// ([`CompletionCell::wait_with_pool_assist`]) instead of parking, so a
-/// one-worker driver can execute the task it is waiting for.
+/// Filter works never block on a slot; the driver parks until the work it
+/// waits for publishes.
 pub(crate) struct InflightRing {
     capacity: usize,
     entries: VecDeque<InflightEntry>,
@@ -561,15 +547,13 @@ impl InflightRing {
     pub(crate) fn new(
         depth: NonZeroUsize,
         buffers: Arc<crate::support::decode_buffers::DecodeBuffers>,
+        threads: usize,
     ) -> Self {
         Self {
             buffers,
             capacity: depth.get(),
             entries: VecDeque::with_capacity(depth.get()),
-            reports: (0..depth
-                .get()
-                .saturating_add(splot_parallel::current_pool_width())
-                .saturating_add(1))
+            reports: (0..depth.get().saturating_add(threads).saturating_add(1))
                 .map(|_| Arc::new(CompletionCell::new()))
                 .collect(),
             failure: None,
@@ -601,9 +585,7 @@ impl InflightRing {
             {
                 return Arc::clone(&self.parse_slots[index]);
             }
-            if !splot_parallel::assist_pool_once() {
-                std::thread::yield_now();
-            }
+            std::thread::yield_now();
         }
     }
 
@@ -683,7 +665,7 @@ impl InflightRing {
         let Some(entry) = self.entries.pop_front() else {
             return false;
         };
-        let report = entry.report.wait_with_pool_assist();
+        let report = entry.report.wait();
         let _ = entry.slot.wait_settled();
         let mut outcome = report.lock();
         if let Some(records) = outcome.records.take() {
@@ -848,25 +830,6 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
         } = self;
         writer.complete(frame);
         drop(report);
-    }
-
-    /// Runs the owed filter phase on the calling thread.
-    pub(crate) fn run_finish(self, walked: WalkedFrame<T>) {
-        let Self {
-            writer,
-            progress,
-            mut report,
-        } = self;
-        match finish_walked_frame(walked, Some(progress), |frame| {
-            writer.complete(frame);
-        }) {
-            Ok(filter_records) => {
-                report.outcome.records = Some(filter_records);
-            }
-            Err(error) => {
-                report.outcome.error = Some(error);
-            }
-        }
     }
 
     /// Freezes one scheduler-owned setup after every stripe job has settled.

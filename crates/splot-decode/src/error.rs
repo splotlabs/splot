@@ -15,8 +15,8 @@ use crate::limits::DecodeLimitError;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeError {
-    /// The decode worker pool could not be constructed.
-    #[error("failed to construct the decode worker pool: {source}")]
+    /// A decode thread could not start.
+    #[error("failed to start the decode threads: {source}")]
     Pool {
         /// The underlying parallel-runtime error.
         #[from]

@@ -487,7 +487,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(crate) fn into_filtered_frame<R>(
         self,
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
@@ -496,120 +496,141 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         progress: Option<Arc<crate::pipeline::frame_progress::FrameProgress<T>>>,
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> Result<(R, super::FrameFilterRecords)> {
-        let pixel_format = self.info.pixel_format();
-        let mut setup =
+        let setup =
             self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, progress)?;
+        let mut frontier = OwnedFilterFrontier::start(setup, deblock_quant_deltas, None)?;
+        while let Some(job) = frontier.advance()? {
+            job.run()?;
+        }
+        let (frame, _shell) = frontier.finish()?.finish(publish);
+        frame
+    }
+}
+
+/// Deblocks a reconstructed frame stripe by stripe and hands each stripe's
+/// filter job out as soon as its input window is final, so a scheduler runs
+/// the stripes concurrently while the deblock continues below them.
+pub(crate) struct OwnedFilterFrontier<T: ReconSample> {
+    setup: OwnedFilterShell<T>,
+    rows: crate::pipeline::frame_progress::FrontierRows<T>,
+    deblock: Option<crate::filters::deblock::FrameDeblock>,
+    carry: crate::filters::source::DeblockedWindow<T>,
+    next: usize,
+}
+
+impl<T: ReconSample> OwnedFilterFrontier<T> {
+    /// Opens the frontier over the frame's rows, with the deblock owning the
+    /// records it reads.
+    ///
+    /// # Errors
+    /// Returns the deblock preparation's own diagnostic, or the state error
+    /// of a frame whose frontier is already claimed.
+    pub(crate) fn start(
+        mut setup: OwnedFilterSetup<T>,
+        deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
+        shell: Option<OwnedFilterShell<T>>,
+    ) -> Result<Self> {
         let mut rows = setup
             .sink
             .progress
             .frontier_rows()
             .ok_or_else(lr_pipeline_state_error)?;
-        let mut carry = setup.take_window();
-        let mi_rows = setup.mi_rows;
-        let mi_cols = setup.mi_cols;
-        let bit_depth = setup.bit_depth;
-        let mut sections = match setup.core.deblocking_filter_params {
-            Some(filter) => crate::filters::deblock::FrameDeblock::prepare(
-                &setup.filter_records.deblock_blocks,
-                &setup.filter_records.chroma_deblock_blocks,
-                mi_rows,
-                mi_cols,
+        let deblock = match setup.core.deblocking_filter_params {
+            Some(filter) if filter.apply_deblocking_filter == [false; 4] => None,
+            Some(filter) => crate::filters::deblock::FrameDeblock::prepare_owned(
+                setup.detach_deblock_records(),
+                setup.mi_rows,
+                setup.mi_cols,
                 filter,
-                setup.core.tile_info.as_ref(),
-                disable_loopfilters_across_tiles,
+                setup.core.tile_info.clone(),
+                setup.disable_loopfilters_across_tiles,
                 deblock_quant_deltas,
-                (
-                    usize::from(pixel_format.subsampling_x()),
-                    usize::from(pixel_format.subsampling_y()),
-                ),
-                &mut setup.filter_records.deblock_grids,
+                setup.subsampling,
             )
             .map_err(|error| deblock_prepare_error(&error))?,
             None => None,
         };
-        if sections.is_none() && !rows.publish_final_rows(setup.luma_height) {
+        if deblock.is_none() && !rows.publish_final_rows(setup.luma_height) {
             return Err(lr_pipeline_state_error());
         }
-        if setup.stripe_ranges().len() > 1 && splot_parallel::on_worker_pool() {
-            if let Some(sections) = sections.as_mut() {
-                sections
-                    .prime_vertical_pass(&mut rows, bit_depth)
-                    .map_err(|_| lr_pipeline_state_error())?;
-            }
-            let mut slots = core::mem::take(&mut setup.stripe_outcomes);
-            slots.clear();
-            slots.resize_with(setup.stripe_ranges().len(), || None);
-            let mut owed: Option<crate::error::DecodeError> = None;
-            let alone = splot_parallel::current_pool_width() <= 1;
-            let scheduled = splot_parallel::ready_task_scope(|scope| {
-                for ((stripe, range), slot) in
-                    setup.stripe_ranges().iter().enumerate().zip(&mut slots)
-                {
-                    let window = advance_deblock_for_stripe(
-                        sections.as_mut(),
-                        &mut rows,
-                        range,
-                        setup.window_margin(),
-                        setup.subsampling.1,
-                        bit_depth,
-                    )
-                    .and_then(|()| {
-                        if alone {
-                            setup
-                                .slide_window(stripe, &mut rows, &mut carry)
-                                .map(|()| None)
-                        } else {
-                            setup.fill_window(stripe, &mut rows, &mut carry).map(Some)
-                        }
-                    });
-                    let setup = &setup;
-                    match window {
-                        Ok(None) => *slot = Some(setup.run_filled(stripe, &carry)),
-                        Ok(Some(window)) => scope.spawn(move |_| {
-                            *slot = Some(setup.run_window(stripe, window));
-                        }),
-                        Err(error) => {
-                            owed = Some(error);
-                            return;
-                        }
-                    }
-                }
-            });
-            if let Some(error) = owed {
-                return Err(error);
-            }
-            let missing = lr_pipeline_state_error;
-            scheduled.map_err(|_| missing())?;
-            let mut failure = None;
-            for slot in slots.drain(..) {
-                if let Err(error) = slot.unwrap_or_else(|| Err(missing())) {
-                    failure = Some(error);
-                    break;
-                }
-            }
-            setup.stripe_outcomes = slots;
-            if let Some(error) = failure {
-                return Err(error);
-            }
+        let carry = setup.take_window();
+        let setup = if let Some(mut shell) = shell
+            && let Some(slot) = Arc::get_mut(&mut shell)
+        {
+            *slot = Some(setup);
+            shell
         } else {
-            if let Some(sections) = sections.as_mut() {
-                sections
-                    .advance_source(&mut rows, mi_rows, bit_depth)
-                    .map_err(|_| lr_pipeline_state_error())?;
-            }
-            for stripe in 0..setup.stripe_ranges().len() {
-                setup.slide_window(stripe, &mut rows, &mut carry)?;
-                setup.run_filled(stripe, &carry)?;
-            }
+            Arc::new(Some(setup))
+        };
+        Ok(Self {
+            setup,
+            rows,
+            deblock,
+            carry,
+            next: 0,
+        })
+    }
+
+    /// The stripes the frame owes.
+    pub(crate) fn stripes(&self) -> usize {
+        self.setup
+            .as_ref()
+            .as_ref()
+            .map_or(0, |setup| setup.ranges.len())
+    }
+
+    /// Deblocks up to the next stripe's window and returns that stripe's job,
+    /// or `None` once every stripe is out.
+    ///
+    /// # Errors
+    /// Returns the deblock's or the window copy's own diagnostic.
+    pub(crate) fn advance(&mut self) -> Result<Option<OwnedFilterJob<T>>> {
+        let setup = self
+            .setup
+            .as_ref()
+            .as_ref()
+            .ok_or_else(lr_pipeline_state_error)?;
+        let Some(range) = setup.ranges.get(self.next) else {
+            return Ok(None);
+        };
+        advance_deblock_for_stripe(
+            self.deblock.as_mut(),
+            &mut self.rows,
+            range,
+            setup.window_margin(),
+            setup.subsampling.1,
+            setup.bit_depth,
+        )?;
+        let job =
+            OwnedFilterSetup::window_job(&self.setup, self.next, &mut self.rows, &mut self.carry)?
+                .ok_or_else(lr_pipeline_state_error)?;
+        self.next += 1;
+        Ok(Some(job))
+    }
+
+    /// Hands the deblock records back and transfers the setup to the freeze,
+    /// once every stripe job ran.
+    ///
+    /// # Errors
+    /// Returns the state error of a deblock that did not finish.
+    pub(crate) fn finish(self) -> Result<OwnedFilterFinish<T>> {
+        let Self {
+            setup,
+            rows,
+            deblock,
+            carry,
+            next: _,
+        } = self;
+        let owner = setup
+            .as_ref()
+            .as_ref()
+            .ok_or_else(lr_pipeline_state_error)?;
+        owner.give_window(carry);
+        if let Some(deblock) = deblock {
+            owner.restore_deblock_records(deblock.finish())?;
         }
         drop(rows);
-        setup.give_window(carry);
-        if let Some(mut sections) = sections {
-            sections.release_grids(&mut setup.filter_records.deblock_grids);
-            sections.finish();
-        }
-        let frame = setup.finish(publish)?;
-        Ok(frame)
+        Ok(OwnedFilterSetup::owned_finish(setup))
     }
 }
 
@@ -737,26 +758,6 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
             return Err(error);
         }
         Ok(window)
-    }
-
-    /// Moves `window` down to one stripe's input once that stripe's rows are
-    /// final; the stripe it held must have run.
-    fn slide_window(
-        &self,
-        stripe: usize,
-        frame: &mut crate::pipeline::frame_progress::FrontierRows<T>,
-        window: &mut crate::filters::source::DeblockedWindow<T>,
-    ) -> Result<()> {
-        let range = self
-            .ready_stripe(stripe, frame.final_luma_rows())?
-            .ok_or_else(lr_pipeline_state_error)?;
-        window.copy_window(
-            frame,
-            None,
-            range,
-            self.window_margin(),
-            self.window_reads()?,
-        )
     }
 
     /// Claims, filters and publishes one stripe, then keeps its window.
@@ -1192,7 +1193,7 @@ const TILE_ROW_FRINGE_MARGIN: usize = 8;
 /// The private window lets the stripe chain run while deblock continues in
 /// place below it.
 fn advance_deblock_for_stripe<T: ReconSample>(
-    sections: Option<&mut crate::filters::deblock::FrameDeblock<'_>>,
+    sections: Option<&mut crate::filters::deblock::FrameDeblock>,
     source: &mut crate::pipeline::frame_progress::FrontierRows<T>,
     range: &(usize, usize),
     margin: usize,

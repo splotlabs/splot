@@ -80,6 +80,11 @@ impl DecodeSession {
         self.rows.as_deref()
     }
 
+    /// The threads this session decodes on: the row workers, or one.
+    pub(crate) fn threads(&self) -> usize {
+        self.rows.as_ref().map_or(1, |rows| rows.threads())
+    }
+
     /// The plane pool of the last decode that started on this session.
     pub(crate) fn planes(&self) -> Option<Arc<splot_recon::PlanePool>> {
         self.planes.lock().clone()
@@ -90,10 +95,10 @@ impl DecodeSession {
     }
 
     /// Takes the last decode's state when it was built for `depth` and the
-    /// current pool width, which size its cell pools. A concurrent decode on
+    /// session's thread count, which size its cell pools. A concurrent decode on
     /// the same context gets new state instead.
     pub(super) fn take(&self, depth: NonZeroUsize) -> RetainedDecode {
-        let width = splot_parallel::current_pool_width();
+        let width = self.threads();
         let mut retained = match self.retained.lock().take() {
             Some(retained)
                 if retained.ring.capacity() == depth.get() && retained.width == width =>
@@ -137,7 +142,7 @@ impl RetainedDecode {
             width,
             scratch_eight,
             scratch_ten,
-            ring: InflightRing::new(depth, buffers),
+            ring: InflightRing::new(depth, buffers, width),
             pools: RowPools::default(),
             frames: FrameStore::new(false, depth.get()),
             split_eight: SplitFrames::new(depth.get(), width),

@@ -1457,7 +1457,7 @@ fn tile_unit_capacity(
 }
 
 /// The tile geometry the § 8.2 parser settles before it reads its first
-/// unit, which is everything the admission scheduler needs to lay out
+/// unit, which is everything the scheduled reconstruction needs to lay out
 /// batches and surfaces.
 pub(crate) struct TileGeometry {
     pub(super) tile_offset: ByteOffset,
@@ -1675,8 +1675,8 @@ impl ParseProgress {
 
 /// Settles the tile geometry and publishes it, before anything reads a unit.
 ///
-/// The admission scheduler is built from this alone, and it is promoted while
-/// the § 8.2 pass still runs, so this must be called before the walk is
+/// The scheduled reconstruction is built from this alone, and it is promoted
+/// while the § 8.2 pass still runs, so this must be called before the walk is
 /// promoted -- not as the pass's first act, which would race it.
 pub(crate) fn publish_tile_geometry(
     tile: &DecodeTileWorkUnit,
@@ -2001,7 +2001,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
         workspace.info(),
         temporal_context,
     );
-    let global_intrabc = super::intrabc::global_intrabc_enabled(core.intrabc);
     for tile in work_units.iter_mut() {
         let source = if tile.payload_index() == 0 {
             Some(payload)
@@ -2023,7 +2022,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             .commit_block_decoded
             .clone_from(&parse_state.block_decoded);
         let commit_block_decoded = core::mem::take(&mut parse_state.commit_block_decoded);
-        workers.ensure_workers(splot_parallel::current_pool_width().max(1));
+        workers.ensure_workers(1);
         let reusable_surface_source = spent_surface_source.take();
         let block_decoded = core::mem::take(&mut parse_state.block_decoded);
         let quantizer = FrameQuantizerSnapshot::capture();
@@ -2037,11 +2036,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             .div_ceil(sb_h4);
         let tile_mi_rows = rows;
         let tile_mi_cols = cols;
-        parse_state.row_buffers.reset(
-            splot_parallel::current_pool_width()
-                .saturating_mul(3)
-                .max(1),
-        );
+        parse_state.row_buffers.reset(3);
         let row_buffers = core::mem::take(&mut parse_state.row_buffers);
         let (spent_cdef, spent_gdf, spent_ccso) = match parse_state.spent_filters.take() {
             Some((cdef, gdf, ccso)) => (Some(cdef), Some(gdf), Some(ccso)),
@@ -2072,9 +2067,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
         };
         let rects = source.get_mut().reset(info, workers.spare_surfaces());
         rects.clear();
-        if !global_intrabc && splot_parallel::current_pool_width() > 1 {
-            superblock_luma_rects_into(&tile_mi_rows, &tile_mi_cols, &workspace, sb_h4, rects)?;
-        }
         let commit = TileCommit::direct(
             ordered,
             workspace,

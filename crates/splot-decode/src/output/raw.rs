@@ -7,9 +7,7 @@
 
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
 
-use splot_parallel::CompletionCell;
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
 
 use crate::DecodeOptions;
@@ -26,52 +24,16 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
     writer: W,
 ) -> Result<()> {
     let writer = Mutex::new(writer);
-    let output_error = Mutex::new(None);
-    let decode_result = splot_parallel::ready_task_scope(|scope| {
-        let mut outstanding: Option<Arc<CompletionCell<()>>> = None;
-        let decode_result = crate::pipeline::emit_frames(
-            source,
-            options,
-            session,
-            |_| Ok(()),
-            |output| {
-                if let Some(done) = outstanding.take() {
-                    let () = done.wait_with_pool_assist();
-                    if let Some(error) = output_error.lock().take() {
-                        return Err(error);
-                    }
-                }
-                let frame = output.ready_frame()?;
-                let display_grain = output.display_grain.clone();
-                if splot_parallel::current_pool_width() <= 1 {
-                    return write_display_frame(&frame, display_grain.as_ref(), &writer);
-                }
-                let writer = &writer;
-                let output_error = &output_error;
-                let done = Arc::new(CompletionCell::new());
-                outstanding = Some(Arc::clone(&done));
-                scope.spawn(move |_| {
-                    let result = write_display_frame(&frame, display_grain.as_ref(), writer);
-                    if let Err(error) = result {
-                        let mut failure = output_error.lock();
-                        if failure.is_none() {
-                            *failure = Some(error);
-                        }
-                    }
-                    let _ = done.set(());
-                });
-                Ok(())
-            },
-        );
-        if let Some(done) = outstanding {
-            let () = done.wait_with_pool_assist();
-        }
-        decode_result
-    })?;
-    if let Some(error) = output_error.into_inner() {
-        return Err(error);
-    }
-    decode_result?;
+    crate::pipeline::emit_frames(
+        source,
+        options,
+        session,
+        |_| Ok(()),
+        |output| {
+            let frame = output.ready_frame()?;
+            write_display_frame(&frame, output.display_grain.as_ref(), &writer)
+        },
+    )?;
     Ok(())
 }
 

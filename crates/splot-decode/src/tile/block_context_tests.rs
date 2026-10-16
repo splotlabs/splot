@@ -139,16 +139,10 @@ fn large_chroma_smooth_repeats_top_edge_instead_of_decoded_above_right() {
 
 #[test]
 fn large_chroma_smooth_corner_cap_fixture_decodes_to_oracle() {
-    use splot_parallel::ThreadCount;
     use splot_recon::DecodedFrameHashInput;
 
     let options = crate::DecodeOptions::default();
-    let context =
-        crate::DecodeContext::new(crate::DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
-            .expect("decode context");
-    let decoded = context
-        .pool()
-        .install(|| crate::pipeline::decode_frame_from_plan(CHROMA_CORNER_CAP_FIXTURE, &options))
+    let decoded = crate::pipeline::decode_frame_from_plan(CHROMA_CORNER_CAP_FIXTURE, &options)
         .expect("decode fixture");
     let ready = decoded.ready_frame().expect("ready frame");
     assert!(

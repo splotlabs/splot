@@ -270,7 +270,7 @@ impl InterBlockSetup {
     }
 
     /// Splits the derivation into the half the entropy pass consumes and the
-    /// half the admission scheduler needs, which it can use straight away.
+    /// half the scheduled reconstruction needs, which it can use straight away.
     pub(crate) fn split(
         self,
     ) -> (

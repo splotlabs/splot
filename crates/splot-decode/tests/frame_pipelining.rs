@@ -252,10 +252,7 @@ fn a_planner_valid_corrupt_stream_fails_identically_at_every_width_and_capacity(
     for offset in (MULTIREF.len() - 24)..MULTIREF.len() {
         let mut bytes = MULTIREF.to_vec();
         bytes[offset] ^= 0xff;
-        if depth_one
-            .plan_bytes(&bytes, DecodeOptions::default())
-            .is_err()
-        {
+        if DecodeContext::plan_bytes(&bytes, DecodeOptions::default()).is_err() {
             continue;
         }
         let Err(expected) = collect_raw(&depth_one, &bytes, DecodeOptions::default()) else {

@@ -663,6 +663,7 @@ mod tests {
         let mut ring = crate::pipeline::inflight::InflightRing::new(
             core::num::NonZeroUsize::MIN,
             crate::support::decode_buffers::DecodeBuffers::new(),
+            1,
         );
         for _ in 0..128 {
             let mut alias = settled_frame(8, FrameOutputEffects::empty()).unwrap();

@@ -19,3 +19,9 @@ ci = "run --package xtask -- ci"
 cov = "run --package xtask -- coverage"
 fmt-check = "fmt --all -- --check"
 lint = "clippy --workspace --all-targets --all-features --locked -- -D warnings"
+
+# Debug test binaries decode on their own threads, whose default stack is too
+# small for the partition walk; release builds and the CLI's worker-sized
+# thread do not need this.
+[env]
+RUST_MIN_STACK = "16777216"

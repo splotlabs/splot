@@ -3,7 +3,6 @@
 
 use std::simd::{Simd, num::SimdUint};
 
-use splot_parallel::prelude::*;
 use splot_recon::math::round2_signed_i32;
 use splot_recon::{
     BilinearOverlapCarry, OptflowScratch, derive_optflow_mv_delta_8x8_strided_into,
@@ -792,69 +791,6 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         fullpel |= super::refinemv::fullpel_candidates(mvs);
         mvs
     }));
-    if unit_count >= 1024
-        && splot_parallel::current_pool_width() > 1
-        && splot_parallel::on_worker_pool()
-    {
-        let mut cells = take_motion_cells(
-            unit_count,
-            MotionCell::uninitialized([block.mv0, block.mv1]),
-        );
-        let candidates = &refinemv_candidates;
-        cells
-            .par_chunks_mut(columns)
-            .enumerate()
-            .try_for_each(|(row, cells)| {
-                splot_parallel::wake_idle_worker();
-                let fast = fullpel
-                    && super::refinemv::tip_fullpel_cells(
-                        sink,
-                        &block,
-                        &unit_at,
-                        candidates,
-                        (unit_size, offset),
-                        row * columns,
-                        cells,
-                    )?;
-                let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
-                let mut luma = LumaReference::pair(sink.info(), &block, offset);
-                let mut carries: [BilinearOverlapCarry<'_, T>; 2] = Default::default();
-                for (column, destination) in cells.iter_mut().enumerate() {
-                    if fast && destination.is_initialized() {
-                        continue;
-                    }
-                    let (rect, mvs) = unit_at(row * columns + column);
-                    let mut unit = block;
-                    unit.rect = rect;
-                    unit.mv0 = mvs[0];
-                    unit.mv1 = mvs[1];
-                    unit.has_chroma = false;
-                    unit.sub8x8_chroma = false;
-                    let refined = super::refinemv::tip_refinemv_optflow_motion_cell(
-                        unit,
-                        &mut initial_predictions,
-                        &mut luma,
-                        &mut carries,
-                    )?;
-                    *destination = match refined {
-                        Some(cell) => cell,
-                        None => tip_unit_motion_cell(sink, unit, unit_size, offset, &mut luma)?,
-                    };
-                }
-                Ok::<_, crate::error::DecodeError>(())
-            })?;
-        let fullpel_runs = fullpel && fullpel_run_pairs(&cells, columns);
-        return Ok(CompoundMotionGrid {
-            unit_size,
-            columns,
-            cells: MotionCells::from_vec(cells),
-            fullpel_runs,
-            refinemv_candidates: RefinemvCandidates::PerCell {
-                candidates: refinemv_candidates,
-                unit_size,
-            },
-        });
-    }
     let mut cells = take_motion_cells(
         unit_count,
         MotionCell::uninitialized([block.mv0, block.mv1]),
@@ -1220,14 +1156,9 @@ pub(super) fn predict_motion_grid_compound_average_into<
         return Ok(false);
     }
     let prediction = super::compound_subpel_plane(info, block, plane, sub_x, sub_y, offset)?;
-    let parallel = prediction
-        .block_w
-        .checked_mul(prediction.block_h)
-        .is_some_and(|samples| samples >= 256 * 256)
-        && splot_parallel::on_worker_pool();
     let mut chroma_v = chroma_v;
     let mut second = None;
-    if let Some(v_output) = chroma_v.take_if(|_| plane == PlaneId::U && !parallel) {
+    if let Some(v_output) = chroma_v.take_if(|_| plane == PlaneId::U) {
         if v_output.len() >= prediction.block_w * prediction.block_h {
             let views = super::compound_plane_views(
                 block,
@@ -1400,33 +1331,6 @@ pub(super) fn predict_motion_grid_compound_average_into<
         }
         Ok(())
     };
-    if parallel {
-        let row_samples = output_stride * subblock_h;
-        output
-            .par_chunks_mut(row_samples)
-            .enumerate()
-            .try_for_each(|(cell_row, output)| {
-                splot_parallel::wake_idle_worker();
-                let mut pred_scratch = [[0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
-                let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
-                process_row(
-                    cell_row,
-                    cell_row * subblock_h,
-                    output,
-                    &mut pred_scratch,
-                    &mut intermediate_scratch,
-                )
-            })?;
-        return predict_chroma_v_separately(
-            info,
-            block,
-            (sub_x, sub_y),
-            motion,
-            (implicit_mask, cwp_weight),
-            offset,
-            chroma_v,
-        );
-    }
     let mut pred_scratch = [[0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
     let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
     let Some((second, second_output)) = second else {

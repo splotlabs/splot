@@ -5,7 +5,7 @@
 
 use splot_core::headers::frame::GmType;
 
-use super::tests::{decode_context, decode_fixture, frame_hashes, parse_inter_core_for_validation};
+use super::tests::{decode_fixture, frame_hashes, parse_inter_core_for_validation};
 use crate::DecodeOptions;
 use crate::error::DecodeError;
 
@@ -24,9 +24,7 @@ const GLOBAL_AFFINE_FIXTURE: &[u8] = include_bytes!(
 
 #[test]
 fn same_ref_global_global_fixture_decodes_bit_exact() {
-    let (sequence, core, _) = decode_context()
-        .pool()
-        .install(|| parse_inter_core_for_validation(SAME_REF_GLOBAL_GLOBAL_FIXTURE))
+    let (sequence, core, _) = parse_inter_core_for_validation(SAME_REF_GLOBAL_GLOBAL_FIXTURE)
         .expect("same-reference GLOBAL_GLOBALMV fixture inter header parses");
     assert_eq!(
         sequence
@@ -58,8 +56,7 @@ fn same_ref_global_global_fixture_decodes_bit_exact() {
 #[test]
 fn same_ref_global_global_fixture_rejects_truncated_payload() {
     let truncated = &SAME_REF_GLOBAL_GLOBAL_FIXTURE[..SAME_REF_GLOBAL_GLOBAL_FIXTURE.len() - 1];
-    let error = decode_context()
-        .plan_bytes(truncated, DecodeOptions::default())
+    let error = crate::DecodeContext::plan_bytes(truncated, DecodeOptions::default())
         .expect_err("truncating the coded compound block must fail closed");
     assert!(matches!(error, DecodeError::MalformedSource { .. }));
 }
@@ -86,9 +83,7 @@ fn global_motion_fixtures_match_reference_hashes() {
             [131_072, 65_536, 65_600, 256, -128, 65_728],
         ),
     ] {
-        let (_, core, _) = decode_context()
-            .pool()
-            .install(|| parse_inter_core_for_validation(fixture))
+        let (_, core, _) = parse_inter_core_for_validation(fixture)
             .unwrap_or_else(|error| panic!("{name} header parse failed: {error}"));
         let global_motion = &core
             .inter_tail
@@ -115,9 +110,7 @@ fn global_motion_fixtures_match_reference_hashes() {
 
 #[test]
 fn global_candidate_fact_survives_force_integer_reconstruction_gating() {
-    let (_, core, _) = decode_context()
-        .pool()
-        .install(|| parse_inter_core_for_validation(GLOBAL_AFFINE_FIXTURE))
+    let (_, core, _) = parse_inter_core_for_validation(GLOBAL_AFFINE_FIXTURE)
         .expect("global-affine fixture inter header parses");
 
     assert!(super::block::is_global_mv_candidate(&core, 0, 2, 2));

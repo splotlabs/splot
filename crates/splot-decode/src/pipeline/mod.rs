@@ -93,15 +93,23 @@ pub(crate) fn decode_frames_from_plan(
     bytes: &[u8],
     options: &DecodeOptions,
 ) -> Result<Vec<PipelineFrame>> {
-    let mut source = crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
-    decode_frames_from_plan_impl(
-        &mut source,
-        options,
-        &DecodeSession::new(NonZeroUsize::MIN, None),
-        |_| Ok(()),
-        true,
-        |_| Ok(()),
-    )
+    decode_frames_from_plan_on_threads(bytes, options, 1)
+}
+
+/// [`decode_frames_from_plan`] on a row scheduler of `threads` workers, with
+/// one frame in flight.
+#[cfg(test)]
+pub(crate) fn decode_frames_from_plan_on_threads(
+    bytes: &[u8],
+    options: &DecodeOptions,
+    threads: usize,
+) -> Result<Vec<PipelineFrame>> {
+    let threads = NonZeroUsize::new(threads).unwrap_or(NonZeroUsize::MIN);
+    let session = DecodeSession::new(NonZeroUsize::MIN, row_scheduler(threads)?);
+    splot_parallel::run_on_thread("splot-driver", || {
+        let mut source = crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
+        decode_frames_from_plan_impl(&mut source, options, &session, |_| Ok(()), true, |_| Ok(()))
+    })?
 }
 
 /// Decodes every temporal unit of `source` and passes each displayed frame
@@ -369,7 +377,7 @@ pub(crate) fn decode_key_frame(
     let mut scratch_ten = inter::InterDecodeScratch::default();
     scratch_eight.set_decode_buffers(&buffers);
     scratch_ten.set_decode_buffers(&buffers);
-    let mut ring = inflight::InflightRing::new(NonZeroUsize::MIN, buffers);
+    let mut ring = inflight::InflightRing::new(NonZeroUsize::MIN, buffers, 1);
     let mut pools = frame_tasks::RowPools::default();
     let mut frames = FrameStore::new(false, ring.capacity());
     let decoded = decode_key_frame_with_effects(
@@ -523,7 +531,7 @@ fn decode_frames_from_plan_impl(
 ) -> Result<Vec<PipelineFrame>> {
     let pipeline_capacity = session
         .frame_delay()
-        .min(NonZeroUsize::new(splot_parallel::current_pool_width()).unwrap_or(NonZeroUsize::MIN));
+        .min(NonZeroUsize::new(session.threads()).unwrap_or(NonZeroUsize::MIN));
     let mut retained = session.take(pipeline_capacity);
     retained.begin(retain_decoded_frames);
     let decoded = drive_frames(
@@ -652,7 +660,12 @@ fn push_split_inter<T: frame_tasks::SplitSample>(
     let records = decode_scratch.take_frame_filter_records();
     let quantizer = crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
     let shared = share_sequence(shared_sequence, sequence);
-    let geometry = inter::FrameDecodeGeometry::new(&core, sequence, T::BIT_DEPTH, false)?;
+    let geometry = inter::FrameDecodeGeometry::new(
+        &core,
+        sequence,
+        T::BIT_DEPTH,
+        core.frame_is_intra == Some(true),
+    )?;
     let motion = frames.reserve_motion(geometry.motion_layout())?;
     let (slot, finish) =
         inflight::reserve_pending_slot(geometry.info(), T::erase, ring, frames, frame_index)?;
@@ -848,6 +861,7 @@ fn decode_frames_in_order(
         key_envelope.offset,
     )?;
     frames.reserve()?;
+    let mut shared_sequence = None;
     let key_frame = if key_envelope.header.obu_type == ObuType::RasFrame {
         match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
@@ -858,45 +872,80 @@ fn decode_frames_in_order(
                 let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                     frame_engine::intra::build_frame_qm_levels(&key_core),
                 );
-                let mut product_writers = frames.reserve_products()?;
-                let walk = frame_engine::walk_frame::<u8>(
-                    decode_scratch_eight,
-                    key_candidate,
-                    leading_unit.view(),
-                    key_envelope,
-                    frames.share_core(key_core.clone())?,
-                    &sequence,
-                    options,
-                    &frame_engine::FrameSetup::Inter(&state),
-                    BitDepth::Eight,
-                    &mut product_writers,
-                )?;
-                let ccso_params = walk.core.ccso_params.clone();
-                let frame = inflight::settle_walk_stage(
-                    walk.stage,
-                    inflight::PipelineFrameSlot::Eight,
-                    rows,
-                    pools,
-                    ring,
-                    frames,
-                    0,
-                )?;
-                let rate = key_output_effects.frame_rate(frame_rate);
-                let (frame_cdfs, ccso_grid, segment_ids) = product_writers
-                    .settle(walk.frame_cdfs, walk.ccso_grid, walk.segment_ids)
-                    .into_parts();
-                PipelineFrame {
-                    frame,
-                    display_grain: key_display_grain,
-                    output_effects: key_output_effects,
-                    frame_cdfs,
-                    motion_field: frames.settle_motion(walk.motion_field)?,
-                    ccso_params,
-                    ccso_grid,
-                    segment_ids,
-                    frame_rate_numerator: rate.numerator,
-                    frame_rate_denominator: rate.denominator,
-                    props: stream.props(),
+                if let Some(rows) =
+                    rows.filter(|_| inter::splittable_inter_frame(ObuType::RasFrame, &key_core))
+                {
+                    let core = frames.share_core(key_core.clone())?;
+                    let (slot, core, products, motion_field) = push_split_inter::<u8>(
+                        split_eight,
+                        rows,
+                        ring,
+                        frames,
+                        decode_scratch_eight,
+                        options,
+                        &sequence,
+                        &mut shared_sequence,
+                        key_candidate,
+                        &leading_unit,
+                        core,
+                        state,
+                        0,
+                    )?;
+                    let rate = key_output_effects.frame_rate(frame_rate);
+                    PipelineFrame {
+                        frame: slot,
+                        display_grain: key_display_grain,
+                        output_effects: key_output_effects,
+                        frame_cdfs: products.frame_cdfs,
+                        motion_field,
+                        ccso_params: core.ccso_params.clone(),
+                        ccso_grid: products.ccso_grid,
+                        segment_ids: products.segment_ids,
+                        frame_rate_numerator: rate.numerator,
+                        frame_rate_denominator: rate.denominator,
+                        props: stream.props(),
+                    }
+                } else {
+                    let mut product_writers = frames.reserve_products()?;
+                    let walk = frame_engine::walk_frame::<u8>(
+                        decode_scratch_eight,
+                        key_candidate,
+                        leading_unit.view(),
+                        key_envelope,
+                        frames.share_core(key_core.clone())?,
+                        &sequence,
+                        options,
+                        &frame_engine::FrameSetup::Inter(&state),
+                        BitDepth::Eight,
+                        &mut product_writers,
+                    )?;
+                    let ccso_params = walk.core.ccso_params.clone();
+                    let frame = inflight::settle_walk_stage(
+                        walk.stage,
+                        inflight::PipelineFrameSlot::Eight,
+                        rows,
+                        pools,
+                        ring,
+                        frames,
+                        0,
+                    )?;
+                    let rate = key_output_effects.frame_rate(frame_rate);
+                    let (frame_cdfs, ccso_grid, segment_ids) = product_writers
+                        .settle(walk.frame_cdfs, walk.ccso_grid, walk.segment_ids)
+                        .into_parts();
+                    PipelineFrame {
+                        frame,
+                        display_grain: key_display_grain,
+                        output_effects: key_output_effects,
+                        frame_cdfs,
+                        motion_field: frames.settle_motion(walk.motion_field)?,
+                        ccso_params,
+                        ccso_grid,
+                        segment_ids,
+                        frame_rate_numerator: rate.numerator,
+                        frame_rate_denominator: rate.denominator,
+                        props: stream.props(),
+                    }
                 }
             }
             BitDepthIdc::Ten => {
@@ -907,45 +956,80 @@ fn decode_frames_in_order(
                 let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                     frame_engine::intra::build_frame_qm_levels(&key_core),
                 );
-                let mut product_writers = frames.reserve_products()?;
-                let walk = frame_engine::walk_frame::<u16>(
-                    decode_scratch_ten,
-                    key_candidate,
-                    leading_unit.view(),
-                    key_envelope,
-                    frames.share_core(key_core.clone())?,
-                    &sequence,
-                    options,
-                    &frame_engine::FrameSetup::Inter(&state),
-                    BitDepth::Ten,
-                    &mut product_writers,
-                )?;
-                let ccso_params = walk.core.ccso_params.clone();
-                let frame = inflight::settle_walk_stage(
-                    walk.stage,
-                    inflight::PipelineFrameSlot::Ten,
-                    rows,
-                    pools,
-                    ring,
-                    frames,
-                    0,
-                )?;
-                let rate = key_output_effects.frame_rate(frame_rate);
-                let (frame_cdfs, ccso_grid, segment_ids) = product_writers
-                    .settle(walk.frame_cdfs, walk.ccso_grid, walk.segment_ids)
-                    .into_parts();
-                PipelineFrame {
-                    frame,
-                    display_grain: key_display_grain,
-                    output_effects: key_output_effects,
-                    frame_cdfs,
-                    motion_field: frames.settle_motion(walk.motion_field)?,
-                    ccso_params,
-                    ccso_grid,
-                    segment_ids,
-                    frame_rate_numerator: rate.numerator,
-                    frame_rate_denominator: rate.denominator,
-                    props: stream.props(),
+                if let Some(rows) =
+                    rows.filter(|_| inter::splittable_inter_frame(ObuType::RasFrame, &key_core))
+                {
+                    let core = frames.share_core(key_core.clone())?;
+                    let (slot, core, products, motion_field) = push_split_inter::<u16>(
+                        split_ten,
+                        rows,
+                        ring,
+                        frames,
+                        decode_scratch_ten,
+                        options,
+                        &sequence,
+                        &mut shared_sequence,
+                        key_candidate,
+                        &leading_unit,
+                        core,
+                        state,
+                        0,
+                    )?;
+                    let rate = key_output_effects.frame_rate(frame_rate);
+                    PipelineFrame {
+                        frame: slot,
+                        display_grain: key_display_grain,
+                        output_effects: key_output_effects,
+                        frame_cdfs: products.frame_cdfs,
+                        motion_field,
+                        ccso_params: core.ccso_params.clone(),
+                        ccso_grid: products.ccso_grid,
+                        segment_ids: products.segment_ids,
+                        frame_rate_numerator: rate.numerator,
+                        frame_rate_denominator: rate.denominator,
+                        props: stream.props(),
+                    }
+                } else {
+                    let mut product_writers = frames.reserve_products()?;
+                    let walk = frame_engine::walk_frame::<u16>(
+                        decode_scratch_ten,
+                        key_candidate,
+                        leading_unit.view(),
+                        key_envelope,
+                        frames.share_core(key_core.clone())?,
+                        &sequence,
+                        options,
+                        &frame_engine::FrameSetup::Inter(&state),
+                        BitDepth::Ten,
+                        &mut product_writers,
+                    )?;
+                    let ccso_params = walk.core.ccso_params.clone();
+                    let frame = inflight::settle_walk_stage(
+                        walk.stage,
+                        inflight::PipelineFrameSlot::Ten,
+                        rows,
+                        pools,
+                        ring,
+                        frames,
+                        0,
+                    )?;
+                    let rate = key_output_effects.frame_rate(frame_rate);
+                    let (frame_cdfs, ccso_grid, segment_ids) = product_writers
+                        .settle(walk.frame_cdfs, walk.ccso_grid, walk.segment_ids)
+                        .into_parts();
+                    PipelineFrame {
+                        frame,
+                        display_grain: key_display_grain,
+                        output_effects: key_output_effects,
+                        frame_cdfs,
+                        motion_field: frames.settle_motion(walk.motion_field)?,
+                        ccso_params,
+                        ccso_grid,
+                        segment_ids,
+                        frame_rate_numerator: rate.numerator,
+                        frame_rate_denominator: rate.denominator,
+                        props: stream.props(),
+                    }
                 }
             }
         }
@@ -1044,7 +1128,6 @@ fn decode_frames_in_order(
 
     *obu_storage = recycle(leading_buffer);
     let mut decoding_initial_tu = true;
-    let mut shared_sequence = None;
     loop {
         if !frames.has_space() {
             ring.harvest_all(decode_scratch_eight, decode_scratch_ten);

@@ -1928,7 +1928,7 @@ fn run_band_projections(
             );
         }
     };
-    let width = splot_parallel::current_pool_width().clamp(1, BAND_FAN_OUT);
+    let width = 1;
     let mut trajectory = trajectories.and_then(|state| state.grids(band_rows, width));
     let mut field_bands = field.bands(band_rows);
     loop {
@@ -1960,13 +1960,9 @@ fn run_band_projections(
         if filled == 0 {
             return Ok(());
         }
-        let Ok(()) =
-            splot_parallel::join_each(&mut slots[..filled], &|slot: &mut BandSlot<'_, '_>| {
-                if let Some((band, rows)) = slot {
-                    run(band, rows.as_mut());
-                }
-                Ok::<(), core::convert::Infallible>(())
-            });
+        for (band, rows) in slots[..filled].iter_mut().flatten() {
+            run(band, rows.as_mut());
+        }
     }
 }
 

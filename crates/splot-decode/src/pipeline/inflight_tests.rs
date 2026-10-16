@@ -7,58 +7,30 @@
 
 use super::*;
 
-use splot_parallel::{ThreadCount, WorkerPool, ready_task_scope};
 use splot_recon::{ReferenceFrameStore, ReferenceSlot};
 
 use crate::prediction::inter::InterReferenceState;
 use crate::test_support::decoded_frame;
 
 #[test]
-fn saturated_parse_slot_drivers_execute_queued_last_readers() {
-    let barrier = std::sync::Barrier::new(2);
-    WorkerPool::new(ThreadCount::from(2usize))
-        .unwrap()
-        .install(|| {
-            ready_task_scope(|scope| {
-                for _ in 0..2 {
-                    let barrier = &barrier;
-                    scope.spawn(move |scope| {
-                        let mut ring = InflightRing::new(nz(1), test_plane_pool());
-                        let first = ring.claim_parse_slot();
-                        first.cell().publish(1);
-                        scope.spawn(move |_| drop(first));
-                        barrier.wait();
-                        assert_eq!(ring.claim_parse_slot().cell().current(), 0);
-                    });
-                }
-            })
-            .unwrap();
-        });
-}
-
-#[test]
 fn parse_slots_are_bounded_and_reset_only_after_readers_release() {
-    let mut ring = InflightRing::new(nz(2), test_plane_pool());
+    let mut ring = InflightRing::new(nz(2), test_plane_pool(), 1);
     let first = ring.claim_parse_slot();
     let pointer = Arc::as_ptr(&first) as usize;
     first.cell().publish(1);
     let second = ring.claim_parse_slot();
-    WorkerPool::new(ThreadCount::from(2usize))
-        .unwrap()
-        .install(|| {
-            ready_task_scope(|scope| {
-                scope.spawn(move |_| {
-                    for _ in 0..1024 {
-                        assert_eq!(first.cell().current(), 1);
-                        std::thread::yield_now();
-                    }
-                });
-                let reused = ring.claim_parse_slot();
-                assert_eq!(Arc::as_ptr(&reused) as usize, pointer);
-                assert_eq!(reused.cell().current(), 0);
-            })
-            .unwrap();
-        });
+    let reader = splot_parallel::spawn_thread("reader", move || {
+        for _ in 0..1024 {
+            assert_eq!(first.cell().current(), 1);
+            std::thread::yield_now();
+        }
+    })
+    .expect("reader thread");
+    let reused = ring.claim_parse_slot();
+    assert_eq!(Arc::as_ptr(&reused) as usize, pointer);
+    assert_eq!(reused.cell().current(), 0);
+    reader.join().expect("reader joins");
+    drop(reused);
     drop(second);
     for _ in 0..128 {
         drop(ring.claim_parse_slot());
@@ -79,7 +51,7 @@ fn next_luma(ring: &InflightRing, info: DecodedFrameInfo) -> *const u8 {
 
 #[test]
 fn a_retired_frame_leaves_its_sample_buffers_in_the_pool() {
-    let mut ring = InflightRing::new(nz(1), test_plane_pool());
+    let mut ring = InflightRing::new(nz(1), test_plane_pool(), 1);
     let frame = decoded_frame(128, 128);
     let info = frame.info();
     let samples = frame
@@ -116,7 +88,7 @@ fn a_slot_another_owner_still_holds_is_not_the_driver_s_to_retire() {
 
 #[test]
 fn a_frame_a_reader_still_holds_keeps_its_own_sample_buffers() {
-    let mut ring = InflightRing::new(nz(1), test_plane_pool());
+    let mut ring = InflightRing::new(nz(1), test_plane_pool(), 1);
     let frame = SharedFrame::new(decoded_frame(128, 128));
     let info = frame.get().info();
     let reader = frame.share();
@@ -183,7 +155,6 @@ fn settled_samples_do_not_finish_the_wait_before_terminal_publication() {
     let frame = decoded_frame(8, 4);
     let (slot, writer) = RefFrameSlot::pending(frame.info()).expect("pending slot");
     let progress = slot.progress().expect("pending progress");
-    let pool = WorkerPool::new(ThreadCount::Fixed(nz(1))).expect("one-worker pool");
 
     assert!(
         slot.cell
@@ -192,14 +163,13 @@ fn settled_samples_do_not_finish_the_wait_before_terminal_publication() {
     );
     assert!(slot.is_settled());
 
-    pool.install(|| {
-        ready_task_scope(|scope| {
-            scope.spawn(move |_| progress.publish_terminal(true));
-            assert!(slot.wait_settled().is_ok());
-            assert_eq!(progress.published_luma_rows(), 4);
-        })
-        .expect("ready task scope");
-    });
+    let publisher = Arc::clone(&writer.progress);
+    let thread =
+        splot_parallel::spawn_thread("publisher", move || publisher.publish_terminal(true))
+            .expect("publisher thread");
+    assert!(slot.wait_settled().is_ok());
+    assert_eq!(progress.published_luma_rows(), 4);
+    thread.join().expect("publisher joins");
 
     drop(writer);
 }
@@ -209,7 +179,6 @@ fn settled_failure_does_not_finish_the_wait_before_terminal_publication() {
     let (slot, writer) =
         RefFrameSlot::<u8>::pending(decoded_frame(8, 4).info()).expect("pending slot");
     let progress = slot.progress().expect("pending progress");
-    let pool = WorkerPool::new(ThreadCount::Fixed(nz(1))).expect("one-worker pool");
 
     progress.begin(&[(0, 2), (2, 4)]).expect("stripe geometry");
     progress.publish(0);
@@ -218,14 +187,13 @@ fn settled_failure_does_not_finish_the_wait_before_terminal_publication() {
     assert!(slot.cell.set(SlotValue::Failed).is_ok());
     assert!(slot.is_settled());
 
-    pool.install(|| {
-        ready_task_scope(|scope| {
-            scope.spawn(move |_| progress.publish_terminal(false));
-            assert!(slot.wait_settled().is_err());
-            assert_eq!(progress.published_luma_rows(), 0);
-        })
-        .expect("ready task scope");
-    });
+    let publisher = Arc::clone(&writer.progress);
+    let thread =
+        splot_parallel::spawn_thread("publisher", move || publisher.publish_terminal(false))
+            .expect("publisher thread");
+    assert!(slot.wait_settled().is_err());
+    assert_eq!(progress.published_luma_rows(), 0);
+    thread.join().expect("publisher joins");
 
     drop(writer);
 }
@@ -253,17 +221,15 @@ fn pixel_reference_wait_drains_later_slots_after_the_first_failure() {
         .put(ReferenceSlot::new(1).expect("second slot"), late.share())
         .expect("store late slot");
     let gate = references.pixel_reference_gate([0, 1]);
-    let pool = WorkerPool::new(ThreadCount::Fixed(nz(1))).expect("one-worker pool");
 
-    pool.install(|| {
-        ready_task_scope(|scope| {
-            let late_progress = late.progress().expect("late progress");
-            scope.spawn(move |_| late_progress.publish_terminal(true));
-            assert!(gate.wait().is_err());
-            assert_eq!(late_progress.published_luma_rows(), 4);
-        })
-        .expect("ready task scope");
-    });
+    let late_progress = late.progress().expect("late progress");
+    let publisher = Arc::clone(&late_writer.progress);
+    let thread =
+        splot_parallel::spawn_thread("publisher", move || publisher.publish_terminal(true))
+            .expect("publisher thread");
+    assert!(gate.wait().is_err());
+    assert_eq!(late_progress.published_luma_rows(), 4);
+    thread.join().expect("publisher joins");
 
     drop(late_writer);
 }
@@ -340,7 +306,7 @@ fn pending_slot_geometry_matches_the_published_frame() {
 fn ring_admission_harvests_the_oldest_entry_first() {
     let mut eight = InterDecodeScratch::<u8>::default();
     let mut ten = InterDecodeScratch::<u16>::default();
-    let mut ring = InflightRing::new(nz(3), test_plane_pool());
+    let mut ring = InflightRing::new(nz(3), test_plane_pool(), 1);
 
     let (first, first_report) = pending_entry(&mut ring, 0);
     let (second, second_report) = pending_entry(&mut ring, 1);
@@ -365,7 +331,7 @@ fn ring_admission_harvests_the_oldest_entry_first() {
 fn a_depth_of_two_walks_one_frame_beside_one_uncollected_finish() {
     let mut eight = InterDecodeScratch::<u8>::default();
     let mut ten = InterDecodeScratch::<u16>::default();
-    let mut ring = InflightRing::new(nz(2), test_plane_pool());
+    let mut ring = InflightRing::new(nz(2), test_plane_pool(), 1);
 
     let (first, first_report) = pending_entry(&mut ring, 0);
     first.complete(decoded_frame(4, 4));
@@ -397,7 +363,7 @@ fn a_depth_of_two_walks_one_frame_beside_one_uncollected_finish() {
 fn a_depth_of_one_never_keeps_a_frame_in_flight() {
     let mut eight = InterDecodeScratch::<u8>::default();
     let mut ten = InterDecodeScratch::<u16>::default();
-    let mut ring = InflightRing::new(NonZeroUsize::MIN, test_plane_pool());
+    let mut ring = InflightRing::new(NonZeroUsize::MIN, test_plane_pool(), 1);
 
     ring.reserve(&mut eight, &mut ten);
 
@@ -409,7 +375,7 @@ fn a_depth_of_one_never_keeps_a_frame_in_flight() {
 fn the_lowest_indexed_filter_failure_outranks_later_ones() {
     let mut eight = InterDecodeScratch::<u8>::default();
     let mut ten = InterDecodeScratch::<u16>::default();
-    let mut ring = InflightRing::new(nz(4), test_plane_pool());
+    let mut ring = InflightRing::new(nz(4), test_plane_pool(), 1);
 
     for (frame_index, reason) in [(2usize, "later_failure"), (1usize, "earlier_failure")] {
         let (writer, mut report) = pending_entry(&mut ring, frame_index);
@@ -432,7 +398,7 @@ fn the_lowest_indexed_filter_failure_outranks_later_ones() {
 fn harvesting_recycles_filter_records_into_the_matching_scratch() {
     let mut eight = InterDecodeScratch::<u8>::default();
     let mut ten = InterDecodeScratch::<u16>::default();
-    let mut ring = InflightRing::new(nz(2), test_plane_pool());
+    let mut ring = InflightRing::new(nz(2), test_plane_pool(), 1);
 
     let (writer, mut report) = pending_entry(&mut ring, 0);
     let mut records = FrameFilterRecords::default();
@@ -477,7 +443,7 @@ fn harvesting_recycles_filter_records_into_the_matching_scratch() {
 fn failed_finish_reports_its_error_before_harvest() {
     let mut eight = InterDecodeScratch::<u8>::default();
     let mut ten = InterDecodeScratch::<u16>::default();
-    let mut ring = InflightRing::new(nz(2), test_plane_pool());
+    let mut ring = InflightRing::new(nz(2), test_plane_pool(), 1);
     let frame = decoded_frame(4, 4);
     let (_slot, finish) = reserve_pending_slot(
         frame.info(),
@@ -510,6 +476,7 @@ fn finish_reports_reuse_cells_after_writer_and_reader_retirement() {
     let mut ring = InflightRing::new(
         NonZeroUsize::MIN,
         crate::support::decode_buffers::DecodeBuffers::new(),
+        1,
     );
     let addresses = ring.reports.iter().map(Arc::as_ptr).collect::<Vec<_>>();
     let mut previous: Option<FinishReport> = None;

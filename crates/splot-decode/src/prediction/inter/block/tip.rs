@@ -5,7 +5,6 @@ use super::*;
 use crate::DecodeHeaderStateError;
 use crate::prediction::inter::InterResidualReconScratch;
 use splot_core::headers::sequence::ChromaFormatIdc;
-use splot_parallel::prelude::*;
 use splot_recon::{CurrentFrameWorkspace, DecodedFrame, ReconError};
 
 use super::super::reference::{HeldFrameSamples, ReferenceSamples};
@@ -171,8 +170,6 @@ pub(super) struct TipReconstructScratch<T: ReconSample> {
     /// comes back here as each unit is published.
     grid_candidates: Vec<[Mv; 2]>,
     output_samples: Vec<T>,
-    bands: Vec<PublishedBand>,
-    band_rects: Vec<splot_recon::PlaneRect>,
 }
 
 /// The TIP output walk's reusable state: one entry per full-width row band.
@@ -231,35 +228,8 @@ struct TipOutputBand<T: ReconSample> {
     surface: Option<splot_recon::OwnedFrameRect<T>>,
 }
 
-/// One published row band and the run of units that fill it.
-///
-/// A band collects the units that share its top row, and those are consecutive
-/// by construction, so the run is a range rather than a list of its own.
-#[derive(Clone, Copy, Debug)]
-struct PublishedBand {
-    top: usize,
-    bottom: usize,
-    first_unit: usize,
-    units: usize,
-}
-
 const fn tip_uses_two_references(weight: i16) -> bool {
     weight != TIP_SINGLE_WEIGHT
-}
-
-const fn tip_temporal_mvs(
-    use_optflow: bool,
-    candidate: [Mv; 2],
-    refined: Option<[Mv; 2]>,
-) -> [Mv; 2] {
-    if use_optflow {
-        match refined {
-            Some(refined) => refined,
-            None => candidate,
-        }
-    } else {
-        candidate
-    }
 }
 
 const fn tip_uses_refinemv(
@@ -371,59 +341,6 @@ const fn prediction_unit_size(width: usize, height: usize, enable_tip_refinemv: 
     } else {
         8
     }
-}
-
-fn compute_parallel_outputs<T: ReconSample>(
-    sink: &mc::WorkspaceSink<'_, '_, T>,
-    units: &mut [TipUnit],
-    output_samples: &mut [T],
-    output_stride: usize,
-    prediction: &TipPrediction<'_, T>,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    if output_stride == 0 {
-        return Err(ReconError::ZeroDimension {
-            field: "TIP compound output stride",
-        }
-        .into());
-    }
-    let expected =
-        units
-            .len()
-            .checked_mul(output_stride)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "TIP compound output arena length",
-            })?;
-    if output_samples.len() != expected {
-        return Err(ReconError::BufferLengthMismatch {
-            expected,
-            actual: output_samples.len(),
-        }
-        .into());
-    }
-    output_samples
-        .par_chunks_mut(output_stride)
-        .zip(units.par_iter_mut())
-        .try_for_each(|(samples, unit)| {
-            splot_parallel::wake_idle_worker();
-            let compound = prediction
-                .block_params(unit)
-                .into_compound()
-                .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-            let motion = mc::compound_block_motion_grid(
-                sink,
-                compound,
-                prediction.optflow_distances.is_some().then_some(8),
-                tile_offset,
-            )?;
-            let metadata =
-                mc::predict_compound_from_grid(sink, compound, motion, tile_offset, samples)?;
-            if prediction.optflow_distances.is_some() {
-                unit.mvs = tip_temporal_mvs(true, unit.mvs, metadata.stored_mvs_at_origin()?);
-            }
-            unit.metadata = Some(metadata);
-            Ok(())
-        })
 }
 
 fn compute_batched_output<T: ReconSample>(
@@ -954,121 +871,6 @@ fn tip_motion_grid<T: ReconSample>(
     )
 }
 
-/// Counts completed metadata row bands, or returns zero while any unit is pending.
-fn published_band_count<T: ReconSample>(scratch: &TipReconstructScratch<T>) -> usize {
-    let mut bands = 0;
-    let mut last = None;
-    for unit in &scratch.units {
-        let Some(metadata) = unit.metadata.as_ref() else {
-            return 0;
-        };
-        let (_, y, _, _) = metadata.luma_rect();
-        if last != Some(y) {
-            bands += 1;
-            last = Some(y);
-        }
-    }
-    bands
-}
-
-fn publish_units_by_band<T: ReconSample>(
-    scratch: &mut TipReconstructScratch<T>,
-    workspace: &mut splot_recon::CurrentFrameWorkspace<T>,
-    output_stride: usize,
-) -> Result<()> {
-    let height = workspace.info().storage_luma_size().height();
-    let width = workspace.info().storage_luma_size().width();
-    let TipReconstructScratch {
-        units,
-        output_samples,
-        bands,
-        band_rects,
-        grid_candidates: _,
-    } = scratch;
-    bands.clear();
-    band_rects.clear();
-    for (index, unit) in units.iter().enumerate() {
-        let Some(metadata) = unit.metadata.as_ref() else {
-            return Err(DecodeHeaderStateError::InvalidInterTipPredictionState.into());
-        };
-        let (_, y, _, h) = metadata.luma_rect();
-        let end = y.saturating_add(h).min(height);
-        if let Some(last) = bands.last_mut()
-            && last.top == y
-        {
-            last.bottom = last.bottom.max(end);
-            last.units = last.units.saturating_add(1);
-            continue;
-        }
-        bands.push(PublishedBand {
-            top: y,
-            bottom: end,
-            first_unit: index,
-            units: 1,
-        });
-    }
-    if bands.is_empty() {
-        return Ok(());
-    }
-    for band in bands.iter() {
-        band_rects.push(splot_recon::PlaneRect::new(
-            0,
-            band.top,
-            width,
-            band.bottom - band.top,
-        )?);
-    }
-    let publish_band =
-        |surface: &mut splot_recon::CurrentFrameRect<'_, T>, band: &PublishedBand| -> Result<()> {
-            let mut sink = mc::WorkspaceSink::Rect(surface);
-            let members = units
-                .get(band.first_unit..band.first_unit.saturating_add(band.units))
-                .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-            for (offset, unit) in members.iter().enumerate() {
-                let metadata = unit
-                    .metadata
-                    .as_ref()
-                    .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-                let start = band
-                    .first_unit
-                    .saturating_add(offset)
-                    .saturating_mul(output_stride);
-                let samples = output_samples
-                    .get(start..start.saturating_add(output_stride))
-                    .ok_or(ReconError::BufferLengthMismatch {
-                        expected: output_stride,
-                        actual: 0,
-                    })?;
-                metadata.publish(samples, &mut sink)?;
-            }
-            Ok(())
-        };
-    let publish_slot =
-        |slot: &mut Option<(splot_recon::CurrentFrameRect<'_, T>, &PublishedBand)>| {
-            slot.as_mut()
-                .map_or(Ok(()), |(surface, band)| publish_band(surface, band))
-        };
-    let mut slots: [Option<_>; 32] = core::array::from_fn(|_| None);
-    let mut filled = 0;
-    let mut next_band = bands.iter();
-    workspace.for_each_rect_surface(band_rects, |surface| {
-        let band = next_band
-            .next()
-            .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-        slots[filled] = Some((surface, band));
-        filled += 1;
-        if filled == slots.len() {
-            splot_parallel::join_each(&mut slots, &publish_slot)?;
-            slots.fill_with(|| None);
-            filled = 0;
-        }
-        Ok::<(), crate::DecodeError>(())
-    })?;
-    splot_parallel::join_each(&mut slots[..filled], &publish_slot)?;
-    release_unit_metadata(scratch);
-    Ok(())
-}
-
 /// Keeps the largest candidate list a published unit hands back.
 ///
 /// The list came from the scratch and returns to it, so the next batch's motion
@@ -1077,17 +879,6 @@ fn keep_candidates(best: &mut Vec<[Mv; 2]>, candidates: Vec<[Mv; 2]>) {
     if candidates.capacity() > best.capacity() {
         *best = candidates;
     }
-}
-
-/// Clears every unit's metadata, keeping the batch grid's candidate list.
-fn release_unit_metadata<T: ReconSample>(scratch: &mut TipReconstructScratch<T>) {
-    let mut best = core::mem::take(&mut scratch.grid_candidates);
-    for unit in &mut scratch.units {
-        if let Some(mut metadata) = unit.metadata.take() {
-            keep_candidates(&mut best, metadata.take_grid_candidates());
-        }
-    }
-    scratch.grid_candidates = best;
 }
 
 fn publish_unit_outputs<T: ReconSample>(
@@ -1099,13 +890,6 @@ fn publish_unit_outputs<T: ReconSample>(
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
-    if splot_parallel::on_worker_pool()
-        && published_band_count(scratch) > 1
-        && let mc::WorkspaceSink::Frame(workspace) = sink
-    {
-        publish_units_by_band(scratch, workspace, output_stride)?;
-        return Ok(grid);
-    }
     let mut best_candidates = core::mem::take(&mut scratch.grid_candidates);
     let mut output_chunks = scratch.output_samples.chunks_exact(output_stride);
     let mut units_per_hold = scratch.units.len().max(1);
@@ -1152,14 +936,6 @@ fn publish_unit_outputs<T: ReconSample>(
     }
     scratch.grid_candidates = best_candidates;
     Ok(grid)
-}
-
-fn resize_output_samples<T: ReconSample>(samples: &mut Vec<T>, len: usize) -> Result<()> {
-    samples
-        .try_reserve(len.saturating_sub(samples.len()))
-        .map_err(|_| inter_allocation!("TIP compound output samples"))?;
-    samples.resize(len, T::default());
-    Ok(())
 }
 
 pub(super) fn retire_motion_grid<T: ReconSample>(
@@ -1210,23 +986,10 @@ pub(super) fn predict<T: ReconSample>(
     )?;
     let batched_output = plan.use_optflow && plan.unit_count > 1;
     build_units(scratch, &plan, placed, temporal, batched_output)?;
-    let parallel_output = !plan.use_optflow
-        && matches!(sink, mc::WorkspaceSink::Frame(_))
-        && plan.two_references
-        && splot_parallel::current_pool_width() > 1;
     let output_stride = mc::mc_planes(sink.info().pixel_format())
         .into_iter()
         .map(|(_, sub_x, sub_y)| (plan.unit_size >> sub_x) * (plan.unit_size >> sub_y))
         .sum::<usize>();
-    if parallel_output {
-        let arena_len =
-            plan.unit_count
-                .checked_mul(output_stride)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "TIP compound output arena length",
-                })?;
-        resize_output_samples(&mut scratch.output_samples, arena_len)?;
-    }
     let mut grid = grid;
     let mut batch_metadata = if batched_output {
         let held = plan.hold(reference)?;
@@ -1242,17 +1005,6 @@ pub(super) fn predict<T: ReconSample>(
     } else {
         None
     };
-    if parallel_output {
-        let held = plan.plan.hold(reference)?;
-        compute_parallel_outputs(
-            sink,
-            &mut scratch.units,
-            &mut scratch.output_samples,
-            output_stride,
-            &held.prediction(&plan.plan)?,
-            tile_offset,
-        )?;
-    }
     if let Some(metadata) = batch_metadata.as_mut() {
         grid = metadata.take_motion();
     } else {
@@ -1750,21 +1502,20 @@ impl<T: ReconSample> TipOutputStages<T> {
 #[cfg(test)]
 mod tests {
     use super::{
-        TipHeldReferences, TipPrediction, TipReferencePlan, TipUnit, compute_parallel_outputs,
-        output_interpolation_filter, output_prediction_unit_size, prediction_unit_extent,
-        prediction_unit_size, resize_output_samples, tip_optflow_references_allowed,
-        tip_prediction_controls, tip_refinemv_offsets_allowed, tip_refinemv_references_allowed,
-        tip_temporal_mvs, tip_uses_refinemv, tip_uses_two_references, tmvp_unit_size8,
+        TipHeldReferences, TipReferencePlan, output_interpolation_filter,
+        output_prediction_unit_size, prediction_unit_extent, prediction_unit_size,
+        tip_optflow_references_allowed, tip_prediction_controls, tip_refinemv_offsets_allowed,
+        tip_refinemv_references_allowed, tip_uses_refinemv, tip_uses_two_references,
+        tmvp_unit_size8,
     };
-    use crate::prediction::inter::reference::{HeldFrameSamples, ReferenceSamples};
-    use crate::prediction::inter::{Mv, mc};
+    use crate::prediction::inter::mc;
+    use crate::prediction::inter::reference::HeldFrameSamples;
     use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
     use splot_core::headers::frame::{
         FrameSize, FrameType, InterControl, InterpolationFilter as FrameInterpolationFilter,
         TipFrameMode,
     };
-    use splot_core::span::ByteOffset;
-    use splot_parallel::{ThreadCount, WorkerPool};
+    use splot_parallel::ThreadCount;
     use splot_recon::{
         BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, InterpolationFilter, OutputIndex,
         PixelFormat, PlaneId, PlaneRect, PlaneSize,
@@ -1859,21 +1610,6 @@ mod tests {
     }
 
     #[test]
-    fn tip_output_sample_allocation_failure_is_typed() {
-        let mut samples = Vec::<u8>::new();
-        assert!(matches!(
-            resize_output_samples(&mut samples, usize::MAX),
-            Err(crate::DecodeError::Reconstruction {
-                source: splot_recon::ReconError::WorkspaceAllocationFailed {
-                    plane: PlaneId::Y,
-                    context: "TIP compound output samples"
-                }
-            })
-        ));
-        assert!(samples.is_empty());
-    }
-
-    #[test]
     fn logical_compound_pair_survives_a_deduplicated_reference_borrow()
     -> Result<(), Box<dyn std::error::Error>> {
         let reference = tip_workspace()?.freeze()?;
@@ -1893,48 +1629,6 @@ mod tests {
         };
 
         assert!(held.prediction(&plan)?.reference1.is_some());
-        Ok(())
-    }
-
-    #[test]
-    fn tip_parallel_output_error_precedes_publication() -> Result<(), Box<dyn std::error::Error>> {
-        let reference = tip_workspace()?.freeze()?;
-        let mut workspace = tip_workspace()?;
-        let mut units = [TipUnit {
-            rect: mc::McBlockRect::from_luma_rect(0, 0, 8, 8),
-            has_chroma: true,
-            mvs: [Mv::ZERO; 2],
-            metadata: None,
-        }];
-        let prediction = TipPrediction {
-            reference0: ReferenceSamples::settled(&reference),
-            reference1: None,
-            interpolation_filter: InterpolationFilter::EightTap,
-            blend: mc::CompoundBlend::default(),
-            optflow_distances: None,
-            use_refinemv: false,
-            search_refinemv: false,
-            optflow_sad_threshold: None,
-        };
-        let mut output = [7u8; 96];
-        let pool = WorkerPool::new(ThreadCount::Fixed(2.try_into()?))?;
-        let result = {
-            let sink = mc::WorkspaceSink::Frame(&mut workspace);
-            pool.install(|| {
-                compute_parallel_outputs(
-                    &sink,
-                    &mut units,
-                    &mut output,
-                    96,
-                    &prediction,
-                    ByteOffset::new(0),
-                )
-            })
-        };
-
-        assert!(result.is_err());
-        assert!(units[0].metadata.is_none());
-        assert_eq!(output, [7; 96]);
         Ok(())
     }
 
@@ -2035,16 +1729,6 @@ mod tests {
             &[64, 64],
             [(0, 1), (1, -2)],
         ));
-    }
-
-    #[test]
-    fn tip_temporal_storage_uses_refined_mvs_only_with_optflow() {
-        let candidate = [Mv { row: 1, col: 2 }, Mv { row: 3, col: 4 }];
-        let refined = [Mv { row: 5, col: 6 }, Mv { row: 7, col: 8 }];
-
-        assert_eq!(tip_temporal_mvs(false, candidate, Some(refined)), candidate);
-        assert_eq!(tip_temporal_mvs(true, candidate, Some(refined)), refined);
-        assert_eq!(tip_temporal_mvs(true, candidate, None), candidate);
     }
 
     #[test]

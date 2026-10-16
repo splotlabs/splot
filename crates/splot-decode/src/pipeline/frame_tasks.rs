@@ -328,11 +328,8 @@ impl<T: SplitSample> SplitFrame<T> {
             progress,
         )?;
         if scheduled.resolve_len() == 0 {
-            return Err(super::unsupported(
-                "inter_admission_temporal_band_count",
-                None,
-                "scheduled temporal projection has no row bands",
-            ));
+            self.resolved_batches
+                .store(scheduled.len(), Ordering::Release);
         }
         self.stages[RESOLVE].set_rows(scheduled.resolve_len());
         self.precompute.set_rows(scheduled.len());
@@ -954,28 +951,63 @@ pub(crate) fn reserve_tip_output<T: SpareFramePlanes>(
     Ok((slot, finish, geometry, products, motion))
 }
 
-/// The filter phase of a frame the driver walked itself, as one row stage.
+const FINISH_INIT: usize = 0;
+const FINISH_ADVANCE: usize = 1;
+const FINISH_OUTPUT: usize = 2;
+const FINISH_FILTER: usize = 3;
+
+/// The filter phase of a frame the driver walked itself: the setup, the
+/// deblock advancing one stripe at a time and releasing that stripe's filter
+/// job, the filter stripes (any order, concurrently), and the freeze.
 pub(crate) struct FinishFrame<T: SplitSample> {
-    stage: Stage,
+    wake: RowWake,
+    stages: [Stage; 3],
+    filter: ParallelStage,
+    started: AtomicBool,
+    failed: AtomicBool,
     job: Mutex<
         Option<(
             PendingFinish<T>,
             super::frame_engine::finish::WalkedFrame<T>,
         )>,
     >,
+    finish: Mutex<Option<PendingFinish<T>>>,
+    frontier: Mutex<Option<crate::filters::wienerns_lr::recon::OwnedFilterFrontier<T>>>,
+    filter_jobs: Mutex<Vec<Option<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>>>,
+    filter_error: Mutex<Option<DecodeError>>,
+    /// The emptied setup shell of the last frame, reused by the next.
+    filter_shell: Mutex<Option<crate::filters::wienerns_lr::recon::OwnedFilterShell<T>>>,
 }
 
 impl<T: SplitSample> FinishFrame<T> {
-    fn new() -> Self {
+    fn new(wake: RowWake) -> Self {
         Self {
-            stage: Stage::new(0),
+            wake,
+            stages: core::array::from_fn(|_| Stage::new(0)),
+            filter: ParallelStage::new(),
+            started: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
             job: Mutex::new(None),
+            finish: Mutex::new(None),
+            frontier: Mutex::new(None),
+            filter_jobs: Mutex::new(Vec::new()),
+            filter_error: Mutex::new(None),
+            filter_shell: Mutex::new(None),
         }
     }
 
     fn reset(&mut self) -> bool {
-        self.stage.reset(0);
+        for stage in &mut self.stages {
+            stage.reset(0);
+        }
+        self.filter.set_rows(0);
+        *self.started.get_mut() = false;
+        *self.failed.get_mut() = false;
         self.job.get_mut().take();
+        self.finish.get_mut().take();
+        self.frontier.get_mut().take();
+        self.filter_jobs.get_mut().clear();
+        self.filter_error.get_mut().take();
         true
     }
 
@@ -985,26 +1017,138 @@ impl<T: SplitSample> FinishFrame<T> {
         walked: super::frame_engine::finish::WalkedFrame<T>,
     ) {
         *self.job.get_mut() = Some((finish, walked));
-        self.stage.reset(1);
+        self.stages[FINISH_INIT].reset(1);
+        self.stages[FINISH_OUTPUT].reset(1);
+    }
+
+    fn init(&self) -> Result<()> {
+        let (finish, walked) = self
+            .job
+            .lock()
+            .take()
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
+        let progress = finish.progress_handle();
+        *self.finish.lock() = Some(finish);
+        let frontier = walked.into_frontier(progress, self.filter_shell.lock().take())?;
+        let stripes = frontier.stripes();
+        self.filter_jobs.lock().resize_with(stripes, || None);
+        self.filter.set_rows(stripes);
+        self.stages[FINISH_ADVANCE].set_rows(stripes);
+        *self.frontier.lock() = Some(frontier);
+        self.started.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn advance(&self, stripe: usize) -> Result<()> {
+        let job = self
+            .frontier
+            .lock()
+            .as_mut()
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?
+            .advance()?
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
+        *self
+            .filter_jobs
+            .lock()
+            .get_mut(stripe)
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)? = Some(job);
+        self.filter.ready(stripe);
+        Ok(())
+    }
+
+    fn filter_stripe(&self, stripe: usize) -> Result<()> {
+        let job = self
+            .filter_jobs
+            .lock()
+            .get_mut(stripe)
+            .and_then(Option::take)
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
+        if let Err(error) = job.run() {
+            let mut owed = self.filter_error.lock();
+            if owed.is_none() {
+                *owed = Some(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn output(&self) -> Result<()> {
+        if let Some(error) = self.filter_error.lock().take() {
+            return Err(error);
+        }
+        let finish = self
+            .finish
+            .lock()
+            .take()
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
+        let frontier = self
+            .frontier
+            .lock()
+            .take()
+            .ok_or_else(inter::invalid_inter_tile_scheduling_state)?;
+        let filter = frontier.finish()?;
+        *self.filter_shell.lock() = Some(finish.run_owned_finish(filter));
+        Ok(())
+    }
+
+    fn fail(&self, error: DecodeError) {
+        if self.failed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.job.lock().take();
+        self.frontier.lock().take();
+        if let Some(finish) = self.finish.lock().take() {
+            finish.fail(error);
+        }
+        self.wake.notify();
     }
 }
 
 impl<T: SplitSample> FrameWork for FinishFrame<T> {
     fn claim(&self) -> Option<Claim> {
-        self.stage
-            .claim(|_| true)
-            .map(|row| Claim { stage: 0, row })
+        if self.failed.load(Ordering::Acquire) {
+            return None;
+        }
+        let claim = |stage: usize, row: usize| Claim { stage, row };
+        if let Some(row) = self.stages[FINISH_INIT].claim(|_| true) {
+            return Some(claim(FINISH_INIT, row));
+        }
+        if let Some(row) = self.stages[FINISH_ADVANCE].claim(|_| true) {
+            return Some(claim(FINISH_ADVANCE, row));
+        }
+        if let Some(stripe) = self.filter.claim_ready() {
+            return Some(claim(FINISH_FILTER, stripe));
+        }
+        if let Some(row) = self.stages[FINISH_OUTPUT].claim(|_| {
+            self.started.load(Ordering::Acquire)
+                && self.stages[FINISH_ADVANCE].is_finished()
+                && self.filter.is_finished()
+        }) {
+            return Some(claim(FINISH_OUTPUT, row));
+        }
+        None
     }
 
     fn run(&self, claim: Claim) {
-        if let Some((finish, walked)) = self.job.lock().take() {
-            finish.run_finish(walked);
+        let outcome = match claim.stage {
+            FINISH_INIT => self.init(),
+            FINISH_ADVANCE => self.advance(claim.row),
+            FINISH_FILTER => self.filter_stripe(claim.row),
+            _ => self.output(),
+        };
+        if claim.stage == FINISH_FILTER {
+            self.filter.finish(claim.row);
+        } else {
+            self.stages[claim.stage].finish(claim.row);
         }
-        self.stage.finish(claim.row);
+        if let Err(error) = outcome {
+            self.fail(error);
+        }
+        self.wake.notify();
     }
 
     fn done(&self) -> bool {
-        self.stage.is_finished()
+        self.failed.load(Ordering::Acquire) || self.stages[FINISH_OUTPUT].is_finished()
     }
 }
 
@@ -1086,8 +1230,16 @@ impl RowPools {
     ) -> Result<()> {
         let spares = Arc::clone(T::tip_spares(self));
         let pool = T::tip_pool(self);
-        let wake = rows.map_or_else(RowWake::detached, RowScheduler::wake);
-        let index = pool.reserve(|| TipFrame::new(wake, options, spares), TipFrame::reset);
+        let index = pool.reserve(
+            || {
+                TipFrame::new(
+                    rows.map_or_else(RowWake::detached, RowScheduler::wake),
+                    options,
+                    spares,
+                )
+            },
+            TipFrame::reset,
+        );
         pool.push_slot(rows, index, |work| {
             work.options = options;
             work.inline = rows.is_none();
@@ -1103,7 +1255,10 @@ impl RowPools {
         walked: super::frame_engine::finish::WalkedFrame<T>,
     ) -> Result<()> {
         let pool = T::finish_pool(self);
-        let index = pool.reserve(FinishFrame::new, FinishFrame::reset);
+        let index = pool.reserve(
+            || FinishFrame::new(rows.map_or_else(RowWake::detached, RowScheduler::wake)),
+            FinishFrame::reset,
+        );
         pool.push_slot(rows, index, |work| work.arm(finish, walked))
     }
 
