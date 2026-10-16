@@ -4,7 +4,7 @@
 use super::*;
 use crate::prediction::inter::mv_scaling::PlaneScaling;
 use crate::prediction::inter::read_mv::{MV_LOW, MV_UPP};
-use std::simd::{Simd, cmp::SimdOrd, num::SimdUint};
+use std::simd::{Simd, cmp::SimdOrd, num::SimdUint, simd_swizzle};
 
 const REFINEMV_UNIT_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_SIZE: usize = 16;
@@ -84,6 +84,80 @@ pub(super) fn reference_area_bounds(
         last_x: ((last_x >> 10) + x_padding.1).clamp(0, scaling.last_x),
         last_y: ((last_y >> 10) + y_padding.1).clamp(0, scaling.last_y),
     }
+}
+
+/// The 16x16 bilinear prediction of a § 7.13.3.6 search window whose clip
+/// bounds are its inner 15x15 reference samples, written at stride 16, or
+/// `false` without writing for any other block. The clamped outer column and
+/// row read their inner neighbour twice, so every row is filtered
+/// horizontally once and serves two output rows.
+#[inline(never)]
+pub(super) fn bilinear_search_window<T: ReconSample>(
+    view: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+) -> bool {
+    const SIZE: usize = 16;
+    let (x0, y0) = (params.start_x >> 10, params.start_y >> 10);
+    if params.interp != InterpolationFilter::Bilinear
+        || (params.step_x, params.step_y, params.w, params.h) != (1 << 10, 1 << 10, SIZE, SIZE)
+        || [params.first_x, params.last_x, params.first_y, params.last_y]
+            != [x0 + 1, x0 + 15, y0 + 1, y0 + 15]
+        || x0 + 1 < 0
+        || y0 + 1 < 0
+    {
+        return false;
+    }
+    let (Some(output), Some(spans)) = (
+        output.first_chunk_mut::<{ SIZE * SIZE }>(),
+        view.readable_spans::<15>(
+            core::array::from_fn(|row| (y0 + 1) as usize + row),
+            (x0 + 1) as usize,
+            15,
+        ),
+    ) else {
+        return false;
+    };
+    let lanes = |samples: &[T]| -> Simd<u16, 8> {
+        match (T::u8_slice(samples), T::u16_slice(samples)) {
+            (Some(samples), _) => Simd::<u8, 8>::from_slice(samples).cast(),
+            (_, Some(samples)) => Simd::from_slice(samples),
+            _ => Simd::from_array(core::array::from_fn(|lane| samples[lane].to_u16())),
+        }
+    };
+    let h = ((params.start_x >> 6) & 15) as u16;
+    let v = ((params.start_y >> 6) & 15) as u16;
+    let horizontal = |span: &[T]| -> [Simd<u16, 8>; 2] {
+        let (low, high) = (lanes(&span[..8]), lanes(&span[7..]));
+        let (left, right) = (
+            simd_swizzle!(low, [0, 0, 1, 2, 3, 4, 5, 6]),
+            simd_swizzle!(high, [1, 2, 3, 4, 5, 6, 7, 7]),
+        );
+        let (h0, h1) = (Simd::splat(16 - h), Simd::splat(h));
+        [left * h0 + low * h1, high * h0 + right * h1]
+    };
+    let max_sample = Simd::splat(params.bit_depth.max_sample());
+    let mut write = |row: usize, top: [Simd<u16, 8>; 2], bottom: [Simd<u16, 8>; 2]| {
+        for half in 0..2 {
+            // Both factors widened from u16 lanes lower to `umull`/`umlal`.
+            let weight = |weight: u16| Simd::<u16, 8>::splat(weight).cast::<u32>();
+            let sum =
+                top[half].cast::<u32>() * weight(16 - v) + bottom[half].cast::<u32>() * weight(v);
+            ((sum + Simd::splat(128)) >> 8)
+                .cast::<u16>()
+                .simd_min(max_sample)
+                .copy_to_slice(&mut output[row * SIZE + 8 * half..]);
+        }
+    };
+    let mut top = horizontal(spans[0]);
+    write(0, top, top);
+    for (row, span) in spans.iter().enumerate().skip(1) {
+        let bottom = horizontal(span);
+        write(row, top, bottom);
+        top = bottom;
+    }
+    write(SIZE - 1, top, top);
+    true
 }
 
 pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
