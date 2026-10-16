@@ -46,14 +46,6 @@ impl MhccpRefs {
     fn has_edge_refs(&self) -> bool {
         self.above != 0 || self.left != 0
     }
-
-    fn luma_at(&self, row: usize, col: usize) -> u16 {
-        self.luma[row * self.width + col]
-    }
-
-    fn chroma_at(&self, row: usize, col: usize) -> u16 {
-        self.chroma[row * self.width + col]
-    }
 }
 
 const UPPER_TRIANGLE: [(usize, usize); 6] = [(0, 0), (0, 1), (0, 2), (1, 1), (1, 2), (2, 2)];
@@ -66,15 +58,20 @@ struct NormalEquations {
 }
 
 impl NormalEquations {
-    fn add(&mut self, basis: [i16; MHCCP_PARAM_COUNT], target: u16) {
-        for (row, col) in UPPER_TRIANGLE {
-            self.ata[row][col] = self.ata[row][col]
-                .saturating_add(i32::from(basis[row]).saturating_mul(i32::from(basis[col])));
+    /// The § 7.13.7 statistics with `v[2]` fixed at `mid`. Each product of
+    /// two `BitDepth`-bit samples is below `2^(2 * BitDepth)`, so the sums of
+    /// at most `2^(31 - 2 * BitDepth)` samples are exact in `i32`.
+    fn from_sums(sums: &EdgeSums, mid: i32) -> Self {
+        let count = sums.count as i32;
+        Self {
+            ata: [
+                [sums.s00, sums.s01, sums.s0.wrapping_mul(mid)],
+                [0, sums.s11, sums.s1.wrapping_mul(mid)],
+                [0, 0, count.wrapping_mul(mid).wrapping_mul(mid)],
+            ],
+            b: [sums.s0t, sums.s1t, sums.st.wrapping_mul(mid)],
+            samples: sums.count,
         }
-        for (dst, value) in self.b.iter_mut().zip(basis) {
-            *dst = dst.saturating_add(i32::from(value).saturating_mul(i32::from(target)));
-        }
-        self.samples = self.samples.saturating_add(1);
     }
 
     fn apply_matrix_shift(&mut self, matrix_shift: i32) {
@@ -106,10 +103,10 @@ pub fn derive_mhccp_params(
     mh_dir: u8,
     bit_depth: BitDepth,
 ) -> [i32; MHCCP_PARAM_COUNT] {
-    let mut equations = NormalEquations::default();
+    let bits = u32::from(bit_depth.bits());
+    let mut sums = EdgeSums::default();
     if refs.has_edge_refs() {
-        let square_shift = u32::from(bit_depth.bits());
-        let midpoint = 1i16 << (square_shift - 1);
+        let stride = refs.width;
         let reference_width = refs.reference_width.min(refs.width);
         let reference_height = refs.reference_height.min(refs.height);
         for row in 1..reference_height.saturating_sub(1) {
@@ -118,13 +115,28 @@ pub fn derive_mhccp_params(
             } else {
                 refs.left.min(reference_width.saturating_sub(1))
             };
-            for col in 1..cols {
-                let center = refs.luma_at(row, col);
-                let basis = mhccp_basis(refs, row, col, mh_dir, center, square_shift, midpoint);
-                equations.add(basis, refs.chroma_at(row, col));
+            if cols <= 1 {
+                continue;
+            }
+            let start = row * stride;
+            let linear_start = match mh_dir {
+                0 => start + 1,
+                1 => start - stride + 1,
+                _ => start,
+            };
+            let linear = &refs.luma[linear_start..linear_start + cols - 1];
+            let center = &refs.luma[start + 1..start + cols];
+            let target = &refs.chroma[start + 1..start + cols];
+            if cols > 8 {
+                sums.add_run(linear, center, target, bits);
+            } else {
+                for ((&linear, &center), &target) in linear.iter().zip(center).zip(target) {
+                    sums.add(linear, center, target, bits);
+                }
             }
         }
     }
+    let mut equations = NormalEquations::from_sums(&sums, 1i32 << (bits - 1));
     if equations.samples == 0 {
         return [0, 0, 1i32 << MHCCP_BITS];
     }
@@ -135,28 +147,79 @@ pub fn derive_mhccp_params(
     solve_mhccp(equations, bit_depth)
 }
 
-fn mhccp_basis(
-    refs: &MhccpRefs,
-    row: usize,
-    col: usize,
-    mh_dir: u8,
-    center: u16,
-    square_shift: u32,
-    midpoint: i16,
-) -> [i16; MHCCP_PARAM_COUNT] {
-    let center_i32 = i32::from(center);
-    [
-        mhccp_linear_ref(refs, row, col, mh_dir, center) as i16,
-        round2_i32(center_i32.saturating_mul(center_i32), square_shift) as i16,
-        midpoint,
-    ]
+/// Wrapping sums of the § 7.13.7 products over the edge samples.
+#[derive(Debug, Default)]
+struct EdgeSums {
+    s00: i32,
+    s01: i32,
+    s11: i32,
+    s0: i32,
+    s1: i32,
+    s0t: i32,
+    s1t: i32,
+    st: i32,
+    count: usize,
 }
 
-fn mhccp_linear_ref(refs: &MhccpRefs, row: usize, col: usize, mh_dir: u8, center: u16) -> u16 {
-    match mh_dir {
-        0 => center,
-        1 => refs.luma_at(row - 1, col),
-        _ => refs.luma_at(row, col - 1),
+impl EdgeSums {
+    /// Adds one row run of `v[0]` (`linear`), centre luma and target chroma.
+    fn add_run(&mut self, linear: &[u16], center: &[u16], target: &[u16], bits: u32) {
+        const LANES: usize = 8;
+        type V = Simd<i32, LANES>;
+        let half = V::splat(1 << (bits - 1));
+        let shift = V::splat(bits as i32);
+        let mut acc = [V::splat(0); 8];
+        let mut done = 0;
+        for ((linear, center), target) in linear
+            .chunks_exact(LANES)
+            .zip(center.chunks_exact(LANES))
+            .zip(target.chunks_exact(LANES))
+        {
+            let v0 = Simd::<u16, LANES>::from_slice(linear).cast::<i32>();
+            let c = Simd::<u16, LANES>::from_slice(center).cast::<i32>();
+            let t = Simd::<u16, LANES>::from_slice(target).cast::<i32>();
+            let v1 = (c * c + half) >> shift;
+            for (acc, term) in
+                acc.iter_mut()
+                    .zip([v0 * v0, v0 * v1, v1 * v1, v0, v1, v0 * t, v1 * t, t])
+            {
+                *acc += term;
+            }
+            done += LANES;
+        }
+        let [s00, s01, s11, s0, s1, s0t, s1t, st] = acc.map(SimdInt::reduce_sum);
+        for ((&linear, &center), &target) in linear[done..]
+            .iter()
+            .zip(&center[done..])
+            .zip(&target[done..])
+        {
+            self.add(linear, center, target, bits);
+        }
+        self.count += done;
+        self.s00 = self.s00.wrapping_add(s00);
+        self.s01 = self.s01.wrapping_add(s01);
+        self.s11 = self.s11.wrapping_add(s11);
+        self.s0 = self.s0.wrapping_add(s0);
+        self.s1 = self.s1.wrapping_add(s1);
+        self.s0t = self.s0t.wrapping_add(s0t);
+        self.s1t = self.s1t.wrapping_add(s1t);
+        self.st = self.st.wrapping_add(st);
+    }
+
+    /// Adds one sample's `v[0]` (`linear`), centre luma and target chroma.
+    fn add(&mut self, linear: u16, center: u16, target: u16, bits: u32) {
+        let (v0, t) = (i32::from(linear), i32::from(target));
+        let center = i32::from(center);
+        let v1 = round2_i32(center.wrapping_mul(center), bits);
+        self.s00 = self.s00.wrapping_add(v0.wrapping_mul(v0));
+        self.s01 = self.s01.wrapping_add(v0.wrapping_mul(v1));
+        self.s11 = self.s11.wrapping_add(v1.wrapping_mul(v1));
+        self.s0 = self.s0.wrapping_add(v0);
+        self.s1 = self.s1.wrapping_add(v1);
+        self.s0t = self.s0t.wrapping_add(v0.wrapping_mul(t));
+        self.s1t = self.s1t.wrapping_add(v1.wrapping_mul(t));
+        self.st = self.st.wrapping_add(t);
+        self.count += 1;
     }
 }
 
