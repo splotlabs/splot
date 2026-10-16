@@ -940,13 +940,19 @@ struct ScheduledTemporalProjection {
 }
 
 impl BandedTemporalContext {
+    /// The band of row `y8`; band heights are powers of two, so a shift
+    /// replaces the division on this per-block read.
+    fn band_index(&self, y8: usize) -> usize {
+        y8 >> self.layout.band_rows8().trailing_zeros()
+    }
+
     fn cell(&self, y8: usize, x8: usize) -> Option<ProjectedTemporalMotionCell> {
         if y8 >= self.layout.height8() || x8 >= self.layout.width8() {
             return None;
         }
         let band = self
             .bands
-            .get(y8 / self.layout.band_rows8())?
+            .get(self.band_index(y8))?
             .published
             .get()?
             .as_ref()?;
@@ -962,7 +968,7 @@ impl BandedTemporalContext {
         }
         let band = self
             .bands
-            .get(y8 / self.layout.band_rows8())?
+            .get(self.band_index(y8))?
             .published
             .get()?
             .as_ref()?;
