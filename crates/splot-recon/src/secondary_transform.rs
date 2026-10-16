@@ -13,6 +13,8 @@
 //!
 //! Feature tracking: `RECON-SECONDARY-INVERSE-TRANSFORM`.
 
+use std::simd::Simd;
+
 use splot_tables::tables::secondary_transform::{IST_4X4_KERNEL, IST_8X8_KERNEL, STX_SCAN_MAP};
 
 use crate::coefficient_scan::TransformClass;
@@ -190,14 +192,20 @@ pub fn secondary_inverse_transform(
     Ok(())
 }
 
-/// Adds `coef * row` over the kernel rows of the nonzero input coefficients.
+/// Adds `coef * row` over the kernel rows of the nonzero input coefficients,
+/// keeping the `W <= 48` sums in vector registers.
 fn accumulate_kernel_rows<const W: usize>(rows: &[[i32; W]], coefs: &[i32], sums: &mut [i32; W]) {
+    let mut acc = [Simd::<i32, 4>::splat(0); IST_8X8_WIDTH / 4];
     for (row, &coef) in rows.iter().zip(coefs) {
         if coef != 0 {
-            for (sum, &weight) in sums.iter_mut().zip(row) {
-                *sum += coef * weight;
+            let coef = Simd::splat(coef);
+            for (acc, weights) in acc.iter_mut().zip(row.chunks_exact(4)) {
+                *acc += Simd::from_slice(weights) * coef;
             }
         }
+    }
+    for (sums, acc) in sums.chunks_exact_mut(4).zip(acc) {
+        sums.copy_from_slice(&acc.to_array()); // splot-copy-ok: publish four IST sums
     }
 }
 
