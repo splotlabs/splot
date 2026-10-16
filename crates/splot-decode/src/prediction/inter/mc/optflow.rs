@@ -1003,7 +1003,7 @@ fn compound_optflow_subpel_params<T: ReconSample>(
         let refine_row = row & !(refine_unit_h - 1);
         let refine_w = refine_unit_w.min(prediction.block_w - refine_col);
         let refine_h = refine_unit_h.min(prediction.block_h - refine_row);
-        core::array::from_fn(|reference| {
+        let bounds = |reference: usize| {
             Some(super::refinemv::reference_area_bounds(
                 (prediction.plane_x + refine_col) as i32,
                 (prediction.plane_y + refine_row) as i32,
@@ -1014,9 +1014,10 @@ fn compound_optflow_subpel_params<T: ReconSample>(
                 sub_y,
                 &prediction.scalings[reference],
             ))
-        })
+        };
+        [bounds(0), bounds(1)]
     } else if let Some((area_width, area_height)) = subblock_area {
-        core::array::from_fn(|reference| {
+        let bounds = |reference: usize| {
             Some(super::refinemv::reference_area_bounds(
                 (prediction.plane_x + col) as i32,
                 (prediction.plane_y + row) as i32,
@@ -1027,11 +1028,13 @@ fn compound_optflow_subpel_params<T: ReconSample>(
                 sub_y,
                 &prediction.scalings[reference],
             ))
-        })
+        };
+        [bounds(0), bounds(1)]
     } else {
         [None; 2]
     };
-    core::array::from_fn(|reference| {
+    // Explicit pairs: `array::from_fn` stays an out-of-line call per cell.
+    let params = |reference: usize| {
         let scaling = scalings[reference];
         SubpelPredictParams {
             interp,
@@ -1047,7 +1050,8 @@ fn compound_optflow_subpel_params<T: ReconSample>(
             last_y: bounds[reference].map_or(scaling.last_y, |bounds| bounds.last_y),
             bit_depth,
         }
-    })
+    };
+    [params(0), params(1)]
 }
 
 #[allow(clippy::too_many_arguments)]
