@@ -531,6 +531,7 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
         0,
         16,
         NeighbourAvailability::new(false, true, 0, 1),
+        0,
         &mut Default::default(),
     )
     .unwrap();
@@ -554,6 +555,7 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
         0,
         16,
         NeighbourAvailability::new(true, false, 1, 0),
+        0,
         &mut Default::default(),
     )
     .unwrap();
@@ -577,6 +579,7 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
         0,
         16,
         NeighbourAvailability::new(false, true, 0, 1),
+        0,
         &mut Default::default(),
     )
     .unwrap();
@@ -597,6 +600,7 @@ fn mhccp_reference_extensions_use_non_420_subsampling() {
             0,
             16,
             NeighbourAvailability::new(false, true, 0, 1),
+            0,
             &mut Default::default(),
         )
         .unwrap();
@@ -650,6 +654,7 @@ fn mhccp_rejects_reference_origin_outside_frame() {
         0,
         32,
         NeighbourAvailability::new(false, true, 0, 0),
+        0,
         &mut references,
     );
 

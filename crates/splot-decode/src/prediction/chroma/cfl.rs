@@ -593,6 +593,7 @@ fn mhccp_prediction_into<T: ReconSample>(
         cfl_ds_filter_index,
         sb_mib,
         neighbours,
+        mh_dir,
         reference_scratch,
     )?;
     let result = (|| {
@@ -831,6 +832,7 @@ fn mhccp_references<T: ReconSample>(
     cfl_ds_filter_index: u8,
     sb_mib: usize,
     neighbours: NeighbourAvailability,
+    mh_dir: u8,
     reference_scratch: &mut [Vec<u16>; 2],
 ) -> core::result::Result<MhccpRefs, GeneralIntraResidualError> {
     let pixel_format = workspace.info().pixel_format();
@@ -897,13 +899,27 @@ fn mhccp_references<T: ReconSample>(
     luma.resize(sample_count, 0);
     chroma.clear();
     chroma.resize(sample_count, 0);
+    // § 7.13.7 reads neither row 0 nor column 0 of the edge as a centre:
+    // chroma never, and luma only as `v[0]` of direction 1 (row 0) or 2
+    // (column 0), or as block samples when the edge is absent.
+    let first_luma_row = usize::from(above > 0 && mh_dir != 1);
+    let first_luma_col = usize::from(left > 0 && mh_dir != 2);
     let mut q3 = [0i32; 128];
     for row in 0..reference_height {
         let chroma_y = y + row - above;
         let ref_chroma_y = chroma_y.max(min_chroma_ref_y);
-        let chroma_cols = if row < above { reference_width } else { left };
-        for col in 0..chroma_cols.min(reference_width) {
+        let chroma_cols = if row == 0 {
+            0
+        } else if row < above {
+            reference_width
+        } else {
+            left.min(reference_width)
+        };
+        for col in 1..chroma_cols {
             chroma[row * ref_width + col] = chroma_plane.clamped(x + col - left, ref_chroma_y)?;
+        }
+        if row < first_luma_row {
+            continue;
         }
         let luma_cols = if row < above {
             reference_width
@@ -913,9 +929,13 @@ fn mhccp_references<T: ReconSample>(
             left.min(reference_width)
         };
         let luma_row = luma_plane.row(chroma_y, row == 0, min_luma_ref_y);
-        let q3 = &mut q3[..luma_cols];
-        luma_row.q3_run(x - left, true, q3)?;
-        for (dst, &sample) in luma[row * ref_width..].iter_mut().zip(q3.iter()) {
+        if luma_cols <= first_luma_col {
+            continue;
+        }
+        let q3 = &mut q3[first_luma_col..luma_cols];
+        luma_row.q3_run(x - left + first_luma_col, first_luma_col == 0, q3)?;
+        let start = row * ref_width + first_luma_col;
+        for (dst, &sample) in luma[start..].iter_mut().zip(q3.iter()) {
             *dst = (sample >> 3) as u16;
         }
     }
