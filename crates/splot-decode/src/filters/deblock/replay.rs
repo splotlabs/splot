@@ -6,8 +6,11 @@
 
 use core::cell::Cell;
 
-use splot_core::tables::conversion::{Q_THRESH_MULTS, W_MULT};
-use splot_recon::{BitDepth, DeblockSampleFilter, ReconSample};
+use splot_core::tables::conversion::{Q_FIRST, Q_THRESH_MULTS, W_MULT};
+use splot_recon::{
+    BitDepth, DeblockFilterChoice, DeblockSampleFilter, ReconSample, deblock_edge_columns,
+    deblock_edge_rows,
+};
 
 use super::{
     ContiguousEdge, DeblockError, FrameDeblock, GATHER_HALF, MI_SIZE, PerpLine, PlaneBand,
@@ -55,9 +58,37 @@ pub(super) struct LoneEdge {
     pub(super) key: StrengthKey,
 }
 
+/// Samples a lone edge's window holds: its four lines of `2 * GATHER_HALF`.
+const WINDOW: usize = MI_SIZE * 2 * GATHER_HALF;
+
+/// [`deblock_edge_rows`] and [`deblock_edge_columns`].
+type EdgeKernel<T> = fn(
+    &mut [T],
+    usize,
+    &DeblockFilterChoice,
+    usize,
+    &[i32; 8],
+    &[i32; 8],
+    bool,
+    bool,
+    BitDepth,
+) -> splot_recon::Result<()>;
+
 impl LoneEdge {
     /// Chooses the filter width from the plane's own samples, then filters.
     pub(super) fn filter<T: ReconSample, const PASS: usize>(
+        self,
+        plane_ctx: &mut PlaneCtx<'_, '_, T>,
+        bit_depth: BitDepth,
+    ) -> Result<(), DeblockError> {
+        if self.filter_window::<T, PASS>(plane_ctx, bit_depth)? {
+            return Ok(());
+        }
+        self.filter_lines::<T, PASS>(plane_ctx, bit_depth)
+    }
+
+    /// Chooses and filters the edge line by line on clamped gathers.
+    fn filter_lines<T: ReconSample, const PASS: usize>(
         self,
         plane_ctx: &mut PlaneCtx<'_, '_, T>,
         bit_depth: BitDepth,
@@ -98,6 +129,136 @@ impl LoneEdge {
             MI_SIZE,
             sample_params,
         )
+    }
+
+    /// Filters the edge with the contiguous kernel on a copy of its four
+    /// lines whose samples past the plane or band repeat its last ones, as
+    /// the per-line path gathers them, then writes the copy back. Returns
+    /// `false`, having written nothing, when the edge has fewer than four
+    /// lines in the plane or a line outside the band. A changed sample
+    /// outside the plane or band is the error the per-line path gives.
+    fn filter_window<T: ReconSample, const PASS: usize>(
+        self,
+        ctx: &mut PlaneCtx<'_, '_, T>,
+        bit_depth: BitDepth,
+    ) -> Result<bool, DeblockError> {
+        let (x, y) = (self.x_p, self.y_p);
+        let band_end = ctx.y_origin + ctx.band_rows;
+        let fits = if PASS == 0 {
+            y >= ctx.y_origin && y + MI_SIZE <= ctx.height.min(band_end)
+        } else {
+            x + MI_SIZE <= ctx.width && ctx.band_rows > 0
+        };
+        if !fits || ctx.width == 0 {
+            return Ok(false);
+        }
+        let mut window = [T::default(); WINDOW];
+        let line = 2 * GATHER_HALF;
+        let across = |i: usize, base: usize, low: usize, high: usize| {
+            (base + i).saturating_sub(GATHER_HALF).clamp(low, high - 1)
+        };
+        if PASS == 0 {
+            for (lane, samples) in window.chunks_exact_mut(line).enumerate() {
+                let row = ctx
+                    .rows
+                    .row(y + lane - ctx.y_origin)
+                    .ok_or(DeblockError::Workspace)?;
+                for (i, sample) in samples.iter_mut().enumerate() {
+                    *sample = *row
+                        .get(across(i, x, 0, ctx.width))
+                        .ok_or(DeblockError::Workspace)?;
+                }
+            }
+        } else {
+            for (i, samples) in window.chunks_exact_mut(MI_SIZE).enumerate() {
+                let row = across(i, y, ctx.y_origin, band_end) - ctx.y_origin;
+                let row = ctx.rows.row(row).ok_or(DeblockError::Workspace)?;
+                samples.copy_from_slice(row.get(x..x + MI_SIZE).ok_or(DeblockError::Workspace)?);
+            }
+        }
+        let original = window;
+        let choice = DeblockFilterChoice {
+            boundary: if PASS == 0 {
+                GATHER_HALF
+            } else {
+                GATHER_HALF * MI_SIZE
+            },
+            q_thr: self.q_thr,
+            side_thr: self.side,
+            max_width_pos: self.max_width_pos.into(),
+            max_width_neg: self.max_width_neg.into(),
+            q_first: Q_FIRST,
+        };
+        let (filter, stride) = if PASS == 0 {
+            (deblock_edge_rows::<T> as EdgeKernel<T>, line)
+        } else {
+            (deblock_edge_columns::<T> as EdgeKernel<T>, MI_SIZE)
+        };
+        filter(
+            &mut window,
+            stride,
+            &choice,
+            1,
+            &Q_THRESH_MULTS,
+            &W_MULT,
+            self.prev_lossless,
+            self.curr_lossless,
+            bit_depth,
+        )
+        .map_err(|_| DeblockError::SampleFilter)?;
+        let (low, high) = if PASS == 0 {
+            (0, ctx.width)
+        } else {
+            (ctx.y_origin, band_end.min(ctx.height))
+        };
+        let base = if PASS == 0 { x } else { y };
+        let first = (low + GATHER_HALF).saturating_sub(base).min(line);
+        let end = (high + GATHER_HALF).saturating_sub(base).clamp(first, line);
+        let outside = |i: usize| i < first || i >= end;
+        let changed_outside = if PASS == 0 {
+            window
+                .iter()
+                .zip(&original)
+                .enumerate()
+                .any(|(k, (new, old))| outside(k % line) && new.to_u16() != old.to_u16())
+        } else {
+            window
+                .iter()
+                .zip(&original)
+                .enumerate()
+                .any(|(k, (new, old))| outside(k / MI_SIZE) && new.to_u16() != old.to_u16())
+        };
+        if changed_outside {
+            return Err(DeblockError::Workspace);
+        }
+        if PASS == 0 {
+            for (lane, samples) in window.chunks_exact(line).enumerate() {
+                let row = ctx
+                    .rows
+                    .row_mut(y + lane - ctx.y_origin)
+                    .ok_or(DeblockError::Workspace)?;
+                let start = base + first - GATHER_HALF;
+                row.get_mut(start..start + end - first)
+                    .ok_or(DeblockError::Workspace)?
+                    .copy_from_slice(&samples[first..end]);
+            }
+        } else {
+            for (i, samples) in window
+                .chunks_exact(MI_SIZE)
+                .enumerate()
+                .take(end)
+                .skip(first)
+            {
+                let row = ctx
+                    .rows
+                    .row_mut(base + i - GATHER_HALF - ctx.y_origin)
+                    .ok_or(DeblockError::Workspace)?;
+                row.get_mut(x..x + MI_SIZE)
+                    .ok_or(DeblockError::Workspace)?
+                    .copy_from_slice(samples);
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -334,6 +495,59 @@ mod tests {
         let ([walked_q, walked_p], _) = deblock_chroma([1, 1], [Q, P]);
         assert_eq!(v, walked_q, "V replayed over Q matches U walked over Q");
         assert_eq!(u, walked_p);
+    }
+
+    /// Filters the lone edge at plane (`x_p`, `y_p`) of a noisy 10-bit plane
+    /// through `filter`.
+    fn lone_edge<const PASS: usize>(
+        (x_p, y_p): (usize, usize),
+        filter: fn(LoneEdge, &mut PlaneCtx<'_, '_, u16>) -> Result<(), DeblockError>,
+    ) -> Vec<u16> {
+        let (width, height) = (24, 24);
+        let mut samples: Vec<u16> = (0..width * height)
+            .map(|i| (512 + 37 * (i % 7) + 11 * (i % 5) + 90 * (i % 24 / 12)) as u16)
+            .collect();
+        let mut band = PlaneBand::plane(&mut samples, width, width, height);
+        let mut ctx = PlaneCtx::new(&mut band).unwrap();
+        let edge = LoneEdge {
+            x_p,
+            y_p,
+            q_thr: 60,
+            side: 400,
+            max_width_neg: 2,
+            max_width_pos: 3,
+            prev_lossless: false,
+            curr_lossless: false,
+            key: StrengthKey::default(),
+        };
+        filter(edge, &mut ctx).unwrap();
+        samples
+    }
+
+    #[test]
+    fn a_lone_edge_window_filters_as_its_lines() {
+        let window = |edge: LoneEdge, ctx: &mut PlaneCtx<'_, '_, u16>| {
+            assert!(edge.filter_window::<u16, 0>(ctx, BitDepth::Ten)?);
+            Ok(())
+        };
+        let lines = |edge: LoneEdge, ctx: &mut PlaneCtx<'_, '_, u16>| {
+            edge.filter_lines::<u16, 0>(ctx, BitDepth::Ten)
+        };
+        for at in [(4, 8), (20, 0), (12, 20)] {
+            assert_eq!(lone_edge::<0>(at, window), lone_edge::<0>(at, lines));
+        }
+        let window = |edge: LoneEdge, ctx: &mut PlaneCtx<'_, '_, u16>| {
+            assert!(edge.filter_window::<u16, 1>(ctx, BitDepth::Ten)?);
+            Ok(())
+        };
+        let lines = |edge: LoneEdge, ctx: &mut PlaneCtx<'_, '_, u16>| {
+            edge.filter_lines::<u16, 1>(ctx, BitDepth::Ten)
+        };
+        for at in [(8, 4), (0, 20), (20, 12)] {
+            assert_eq!(lone_edge::<1>(at, window), lone_edge::<1>(at, lines));
+        }
+        let unfiltered = lone_edge::<1>((8, 4), |_, _| Ok(()));
+        assert_ne!(lone_edge::<1>((8, 4), window), unfiltered);
     }
 
     #[test]
