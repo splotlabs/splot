@@ -11,7 +11,8 @@ use splot_recon::{BitDepth, DeblockSampleFilter, ReconSample};
 
 use super::{
     ContiguousEdge, DeblockError, FrameDeblock, GATHER_HALF, MI_SIZE, PerpLine, PlaneBand,
-    PlaneCtx, PlanePass, apply_edge_samples, choose_filter_width, filter_contiguous_run,
+    PlaneCtx, PlanePass, StrengthCache, StrengthKey, apply_edge_samples, choose_filter_width,
+    filter_contiguous_run,
 };
 
 /// One kernel call of a chroma pass: a run of contiguous edges, or an edge the
@@ -51,6 +52,7 @@ pub(super) struct LoneEdge {
     pub(super) max_width_pos: u8,
     pub(super) prev_lossless: bool,
     pub(super) curr_lossless: bool,
+    pub(super) key: StrengthKey,
 }
 
 impl LoneEdge {
@@ -120,14 +122,42 @@ impl FrameDeblock {
     /// Whether V repeats U's steps. V reads U's grid (see
     /// [`super::ChromaDeblockRecords::uv_twins`]), and the only plane inputs
     /// of the § 7.17.6 strength level are the AC delta and `DfDeltaQ[plane +
-    /// 1]` (docs/spec/av2/1.0.0/07-decoding-process.md#s-7-17-6). When they
-    /// match, the two walks make the same decisions; only the filter widths
-    /// depend on samples, and each step chooses them on its own plane.
+    /// 1]` (docs/spec/av2/1.0.0/07-decoding-process.md#s-7-17-6). Each step
+    /// derives its strengths from its records on its own plane, as the
+    /// filter widths from its samples, so the walks differ only in the edges
+    /// they skip for want of strength: V must skip each one U skips.
     pub(super) fn replays_u_on_v(&self) -> bool {
-        self.filter.apply_deblocking_filter[3]
-            && self.chroma[1].is_none()
-            && self.filter.df_delta_q[2] == self.filter.df_delta_q[3]
-            && self.quant_deltas.u_ac == self.quant_deltas.v_ac
+        self.filter.apply_deblocking_filter[3] && self.chroma[1].is_none() && self.v_strong_in_u
+    }
+
+    /// Whether every record `qindex` of the frame that V filters with is one U
+    /// filters with too.
+    pub(super) fn v_strong_in_u(&self, bit_depth: BitDepth) -> bool {
+        let qindexes = self.records.blocks.iter().chain(
+            self.records
+                .chroma
+                .iter_plane(0)
+                .chain(self.records.chroma.iter_plane(1))
+                .map(|(_, block)| block),
+        );
+        let Some((low, high)) =
+            qindexes
+                .map(|block| block.qindex)
+                .fold(None, |range: Option<(u32, u32)>, q| {
+                    Some(range.map_or((q, q), |(low, high)| (low.min(q), high.max(q))))
+                })
+        else {
+            return true;
+        };
+        let cache = |plane: usize| {
+            StrengthCache::new(
+                self.quant_deltas.ac_delta(plane),
+                self.filter.df_delta_q[plane + 1],
+                bit_depth,
+            )
+        };
+        let (u, v) = (cache(1), cache(2));
+        (low..=high).all(|qindex| !v.strong(qindex) || u.strong(qindex))
     }
 }
 
@@ -142,10 +172,15 @@ pub(super) fn replay<T: ReconSample>(
     for plane_pass in passes.into_iter().flatten() {
         let mut ctx = PlaneCtx::new(&mut band)?;
         let steps = log.get(plane_pass.pass).map_or(&[][..], Vec::as_slice);
+        let strengths = StrengthCache::new(
+            plane_pass.quant_delta,
+            plane_pass.df_delta_q,
+            plane_pass.bit_depth,
+        );
         if plane_pass.pass == 0 {
-            replay_pass::<T, 0>(&mut ctx, steps, plane_pass.bit_depth)?;
+            replay_pass::<T, 0>(&mut ctx, steps, &strengths, plane_pass.bit_depth)?;
         } else {
-            replay_pass::<T, 1>(&mut ctx, steps, plane_pass.bit_depth)?;
+            replay_pass::<T, 1>(&mut ctx, steps, &strengths, plane_pass.bit_depth)?;
         }
     }
     Ok(())
@@ -154,14 +189,29 @@ pub(super) fn replay<T: ReconSample>(
 fn replay_pass<T: ReconSample, const PASS: usize>(
     ctx: &mut PlaneCtx<'_, '_, T>,
     steps: &[ReplayStep],
+    strengths: &StrengthCache,
     bit_depth: BitDepth,
 ) -> Result<(), DeblockError> {
     for &step in steps {
         match step {
             ReplayStep::Run(first, edges) => {
+                let (q_thr, side) = first.key.strengths(strengths);
+                let first = ContiguousEdge {
+                    q_thr,
+                    side,
+                    ..first
+                };
                 filter_contiguous_run::<T, PASS>(ctx, first, edges, bit_depth)?;
             }
-            ReplayStep::Lone(edge) => edge.filter::<T, PASS>(ctx, bit_depth)?,
+            ReplayStep::Lone(edge) => {
+                let (q_thr, side) = edge.key.strengths(strengths);
+                LoneEdge {
+                    q_thr,
+                    side,
+                    ..edge
+                }
+                .filter::<T, PASS>(ctx, bit_depth)?;
+            }
         }
     }
     Ok(())
@@ -185,6 +235,9 @@ mod tests {
 
     const P: Pattern = |x, y| (100 + 6 * ((x / 4 + y / 4) % 2) + (x * y) % 3) as u8;
     const Q: Pattern = |x, y| (96 + 5 * ((x / 4 + 2 * (y / 4)) % 3) + (x + 2 * y) % 4) as u8;
+
+    /// A `DfDeltaQ` that drops every record's § 7.17.6 level to zero.
+    const WEAK_DF_DELTA_Q: i32 = -40;
 
     /// Deblocks a 128x128 4:2:0 frame in two advances, with U and V filled from
     /// `patterns` and twin chroma records whose edges reach the plane borders.
@@ -262,11 +315,13 @@ mod tests {
         }
         copy_rows_to_workspace(&mut source, &mut workspace);
         let after = chroma_samples(&workspace);
+        let weak = df_delta_q.map(|delta| delta <= WEAK_DF_DELTA_Q);
         assert!(
             after
                 .iter()
                 .zip(&before)
-                .all(|(after, before)| after != before)
+                .zip(weak)
+                .all(|((after, before), weak)| (after != before) != weak)
         );
         (after, take_log().concat())
     }
@@ -282,9 +337,9 @@ mod tests {
     }
 
     #[test]
-    fn v_walks_its_own_edges_when_the_chroma_df_delta_q_differ() {
+    fn v_replays_u_steps_at_its_own_strengths_when_the_chroma_df_delta_q_differ() {
         let ([u, v], steps) = deblock_chroma([1, 4], [P, Q]);
-        assert!(steps.is_empty());
+        assert!(!steps.is_empty());
         let ([walked_q, walked_p], _) = deblock_chroma([4, 1], [Q, P]);
         assert_eq!(
             v, walked_q,
@@ -296,5 +351,13 @@ mod tests {
             deblock_chroma([1, 1], [P, Q]).0[1],
             "the delta changes V"
         );
+    }
+
+    #[test]
+    fn v_walks_its_own_edges_when_it_filters_a_record_u_does_not() {
+        let ([_, v], steps) = deblock_chroma([WEAK_DF_DELTA_Q, 1], [P, Q]);
+        assert!(steps.is_empty());
+        let ([walked_q, _], _) = deblock_chroma([1, WEAK_DF_DELTA_Q], [Q, P]);
+        assert_eq!(v, walked_q);
     }
 }

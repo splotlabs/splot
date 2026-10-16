@@ -270,6 +270,9 @@ pub(crate) struct FrameDeblock {
     quant_deltas: DeblockQuantDeltas,
     next_pass_0_mi_row: usize,
     next_pass_1_mi_row: usize,
+    /// [`FrameDeblock::v_strong_in_u`], derived on the first advance.
+    v_strong_in_u: bool,
+    bit_depth: Option<BitDepth>,
 }
 
 /// One plane band's share of a deblock section: the rows it owns and the passes
@@ -352,6 +355,8 @@ impl FrameDeblock {
             quant_deltas,
             next_pass_0_mi_row: 0,
             next_pass_1_mi_row: 0,
+            v_strong_in_u: false,
+            bit_depth: None,
         }))
     }
 
@@ -363,6 +368,10 @@ impl FrameDeblock {
         mi_row_end: usize,
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
+        if self.bit_depth != Some(bit_depth) {
+            self.v_strong_in_u = self.v_strong_in_u(bit_depth);
+            self.bit_depth = Some(bit_depth);
+        }
         let (ranges, pass_0_end, pass_1_end) = self.next_ranges(mi_row_end);
         let reach = |rows: &Range<usize>, back: usize| {
             (!rows.is_empty()).then(|| rows.start.saturating_sub(back)..rows.end)
@@ -758,6 +767,7 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
                     max_width_pos: max_width_pos as u8,
                     prev_lossless: false,
                     curr_lossless: false,
+                    key: StrengthKey::default(),
                 };
             let full_rows = height / MI_SIZE;
             for x in (unit_width..width).step_by(unit_width) {
@@ -1368,6 +1378,14 @@ impl StrengthCache {
         entry.set((q_thr + 1, side));
         (q_thr, side)
     }
+
+    /// Whether a record of `qindex` filters its edges on its own.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn strong(&self, qindex: u32) -> bool {
+        let (q_thr, side) = self.get(qindex);
+        q_thr != 0 && side != 0
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1576,6 +1594,34 @@ struct EdgeDecision {
     side: i32,
     prev_lossless: bool,
     curr_lossless: bool,
+    key: StrengthKey,
+}
+
+/// The § 7.17.6 strength inputs an edge's records give it: their `qindex`
+/// values and whether the edge is a sub-PU edge only, which scales the
+/// strengths down. A plane with other strength deltas derives its own
+/// strengths from it.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct StrengthKey {
+    curr_qindex: u32,
+    prev_qindex: u32,
+    sub_pu_only: bool,
+}
+
+impl StrengthKey {
+    /// The edge's `qThr` and `side` under `strengths`.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn strengths(self, strengths: &StrengthCache) -> (i32, i32) {
+        let (curr_q, curr_side) = strengths.get(self.curr_qindex);
+        let (prev_q, prev_side) = strengths.get(self.prev_qindex);
+        let (q_thr, side) = combine_strengths(curr_q, prev_q, curr_side, prev_side);
+        if self.sub_pu_only {
+            (q_thr >> 3, side >> 3)
+        } else {
+            (q_thr, side)
+        }
+    }
 }
 
 /// What a pass walk may do with the next edge of the same two records on the
@@ -1604,6 +1650,7 @@ struct ContiguousEdge {
     max_width_pos: u8,
     prev_lossless: bool,
     curr_lossless: bool,
+    key: StrengthKey,
 }
 
 /// The run of contiguous edges a pass walk holds back, with its edge count.
@@ -1748,6 +1795,7 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
         side,
         prev_lossless,
         curr_lossless,
+        key,
     }) = decision
     else {
         return Ok(repeat(Repeat::Skip));
@@ -1791,6 +1839,7 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
             max_width_pos: max_width_pos as u8,
             prev_lossless,
             curr_lossless,
+            key,
         };
         queue_edge::<T, PASS>(run, plane_ctx, edge, bit_depth)?;
         return Ok(repeat(Repeat::Join));
@@ -1805,6 +1854,7 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
         max_width_pos: max_width_pos as u8,
         prev_lossless,
         curr_lossless,
+        key,
     };
     plane_ctx.record::<PASS>(ReplayStep::Lone(edge))?;
     edge.filter::<T, PASS>(plane_ctx, bit_depth)?;
@@ -1900,11 +1950,8 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
     };
     let is_sub_pu_edge = curr_sub_pu_edge && !is_block_edge;
 
-    let (curr_q, curr_side) = strengths.get(curr.block.qindex);
-    let (prev_q, prev_side) = strengths.get(prev.block.qindex);
-
-    let curr_strong = curr_q != 0 && curr_side != 0;
-    let prev_strong = prev_q != 0 && prev_side != 0;
+    let curr_strong = strengths.strong(curr.block.qindex);
+    let prev_strong = strengths.strong(prev.block.qindex);
     let apply_filter = (is_tx_edge || is_sub_pu_edge)
         && (curr_strong || prev_strong)
         && (is_block_edge || !skip || is_sub_pu_edge);
@@ -1912,11 +1959,12 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
         return (None, uniform);
     }
 
-    let (mut q_thr, mut side) = combine_strengths(curr_q, prev_q, curr_side, prev_side);
-    if is_sub_pu_edge && !is_tx_edge {
-        q_thr >>= 3;
-        side >>= 3;
-    }
+    let key = StrengthKey {
+        curr_qindex: curr.block.qindex,
+        prev_qindex: prev.block.qindex,
+        sub_pu_only: is_sub_pu_edge && !is_tx_edge,
+    };
+    let (q_thr, side) = key.strengths(strengths);
     (
         Some(EdgeDecision {
             filter_size: curr_filter_size.min(prev_filter_size),
@@ -1924,6 +1972,7 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
             side,
             prev_lossless: prev.block.lossless,
             curr_lossless: curr.block.lossless,
+            key,
         }),
         uniform,
     )
