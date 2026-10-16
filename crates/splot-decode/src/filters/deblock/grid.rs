@@ -3,16 +3,17 @@
 
 use core::ops::Range;
 
-use super::{ChromaDeblockRecords, DeblockBlock, DeblockError, EdgeBlock};
+use super::{ChromaDeblockRecords, DeblockBlock, DeblockError, EdgeBlock, MI_SIZE};
 
 /// Edge-flag bit planes of one window row, `flag_words(mi_cols)` words each:
-/// vertical and horizontal transform edges, sub-PU edges, and coverage. Bits
-/// past `mi_cols` are padding that readers clip.
+/// vertical and horizontal transform edges, vertical and horizontal sub-PU
+/// edges, and coverage. Bits past `mi_cols` are padding that readers clip.
 pub(super) const VERTICAL_PLANE: usize = 0;
 pub(super) const HORIZONTAL_PLANE: usize = 1;
 pub(super) const SUB_PU_PLANE: usize = 2;
 pub(super) const COVERED_PLANE: usize = 3;
-const FLAG_PLANES: usize = 4;
+pub(super) const SUB_PU_ROW_PLANE: usize = 4;
+pub(super) const FLAG_PLANES: usize = 5;
 
 /// The `u64` words one flag plane spends on a row of `mi_cols` cells.
 pub(super) const fn flag_words(mi_cols: usize) -> usize {
@@ -73,6 +74,8 @@ const fn record(cell: u32) -> usize {
 /// them find no cell.
 pub(super) struct MiGridStorage {
     pub(super) mi_cols: usize,
+    /// The chroma subsampling whose sub-PU lines the flags also mark.
+    pub(super) chroma_subsampling: (usize, usize),
     pub(super) window: Window,
     pub(super) fully_covered: bool,
     pub(super) cells: Vec<MiCell>,
@@ -209,7 +212,7 @@ impl MiGrid<'_> {
             return true;
         }
         if flag(row, candidate, col) == Some(true)
-            || allow_sub_pu && flag(row, SUB_PU_PLANE, col) == Some(true)
+            || allow_sub_pu && flag(row, [SUB_PU_PLANE, SUB_PU_ROW_PLANE][pass], col) == Some(true)
         {
             return true;
         }
@@ -384,9 +387,14 @@ fn all_covered(candidates: &[u64], mi_cols: usize) -> bool {
 }
 
 impl MiGridStorage {
-    pub(super) fn new(mi_cols: usize, storage: &mut DeblockGridStorage) -> Self {
+    pub(super) fn new(
+        mi_cols: usize,
+        chroma_subsampling: (usize, usize),
+        storage: &mut DeblockGridStorage,
+    ) -> Self {
         Self {
             mi_cols,
+            chroma_subsampling,
             window: Window::default(),
             fully_covered: true,
             cells: core::mem::take(&mut storage.cells),
@@ -426,10 +434,10 @@ impl MiGridStorage {
             mark_block_candidates(
                 &mut self.candidates,
                 block,
-                mi_rows,
-                self.mi_cols,
+                (mi_rows, self.mi_cols),
                 &new,
                 base,
+                self.chroma_subsampling,
             );
         }
         let built = (new.start - base) * self.mi_cols;
@@ -552,10 +560,10 @@ impl ChromaMiGridStorage {
             mark_block_candidates(
                 &mut self.candidates,
                 block,
-                mi_rows,
-                mi_cols,
+                (mi_rows, mi_cols),
                 &new,
                 row_base,
+                (sub_x, sub_y),
             );
         }
         if !base.fully_covered {
@@ -675,14 +683,30 @@ fn mi_block_index(index: usize) -> Result<u32, DeblockError> {
     Ok(index)
 }
 
-/// Marks one block's edges in `rows`, offset from row `first`.
+/// Whether mode-info position `mi` along one axis lies past a prediction
+/// unit's luma or chroma base (`bases`, in mode-info units) on a multiple of
+/// its sub-PU `size` in luma samples, in luma or `sub`-subsampled chroma
+/// samples: the positions where § 7.17.2 finds the sub-PU base of the edge's
+/// two sides different when both sides are the same record.
+fn on_sub_pu_line(mi: usize, (luma_base, chroma_base): (u32, u32), size: u16, sub: usize) -> bool {
+    let line = |base: u32, sub: usize| {
+        let at = (mi * MI_SIZE) >> sub;
+        let base = (base as usize * MI_SIZE) >> sub;
+        at > base && (at - base).is_multiple_of((usize::from(size) >> sub).max(1))
+    };
+    line(luma_base, 0) || line(chroma_base, sub)
+}
+
+/// Marks one block's edges in `rows`, offset from row `first`. An edge
+/// between two cells of the same record filters only on a sub-PU line of
+/// its luma or chroma plane, so the sub-PU planes mark only those.
 fn mark_block_candidates(
     candidates: &mut [u64],
     block: &DeblockBlock,
-    mi_rows: usize,
-    mi_cols: usize,
+    (mi_rows, mi_cols): (usize, usize),
     rows: &Range<usize>,
     first: usize,
+    (sub_x, sub_y): (usize, usize),
 ) {
     let (r, c) = (block.r as usize, block.c as usize);
     let row_end = r.saturating_add(block.n4h as usize).min(mi_rows);
@@ -690,6 +714,16 @@ fn mark_block_candidates(
     let row_start = r.min(row_end);
     let col_start = c.min(col_end);
     let words = flag_words(mi_cols);
+    let (luma, chroma) = (block.luma_prediction, block.chroma_prediction);
+    let first_word = col_start & !63;
+    let column_lines = block.sub_pu_size.map(|size| {
+        (col_start + 1..col_end)
+            .filter(|&col| on_sub_pu_line(col, (luma.base_c, chroma.base_c), size.width, sub_x))
+            .fold(0u128, |lines, col| {
+                lines | 1u128.checked_shl((col - first_word) as u32).unwrap_or(0)
+            })
+    });
+    let wide = col_end - first_word > 128;
     for row in row_start.max(rows.start)..row_end.min(rows.end) {
         if let Some(vertical) = candidates.get_mut(flag_range(row - first, VERTICAL_PLANE, words)) {
             set_flag(vertical, col_start);
@@ -697,8 +731,22 @@ fn mark_block_candidates(
                 set_flag(vertical, col_end);
             }
         }
-        if block.sub_pu_size.is_some()
+        if let Some(lines) = column_lines
             && let Some(sub_pu) = candidates.get_mut(flag_range(row - first, SUB_PU_PLANE, words))
+        {
+            if wide {
+                set_flags(sub_pu, col_start, col_end);
+            }
+            let halves = [lines as u64, (lines >> 64) as u64];
+            for (word, lines) in sub_pu.iter_mut().skip(first_word >> 6).zip(halves) {
+                *word |= lines;
+            }
+        }
+        if let Some(size) = block.sub_pu_size
+            && row > row_start
+            && on_sub_pu_line(row, (luma.base_r, chroma.base_r), size.height, sub_y)
+            && let Some(sub_pu) =
+                candidates.get_mut(flag_range(row - first, SUB_PU_ROW_PLANE, words))
         {
             set_flags(sub_pu, col_start, col_end);
         }

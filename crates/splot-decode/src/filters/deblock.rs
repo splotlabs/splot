@@ -25,7 +25,7 @@ const HORIZONTAL_EDGE_REACH_MI: usize = 2;
 use grid::MiCell;
 use grid::{
     COVERED_PLANE, ChromaMiGridStorage, HORIZONTAL_PLANE, MiGrid, MiGridStorage, RowOrder,
-    SUB_PU_PLANE, VERTICAL_PLANE, flag_word,
+    SUB_PU_PLANE, SUB_PU_ROW_PLANE, VERTICAL_PLANE, flag_word,
 };
 
 use replay::{LoneEdge, ReplayLog, ReplayStep};
@@ -687,7 +687,11 @@ fn take_grids(
             mi_rows,
         )?;
     }
-    Ok((MiGridStorage::new(mi_cols, storage), chroma, order))
+    Ok((
+        MiGridStorage::new(mi_cols, chroma_subsampling, storage),
+        chroma,
+        order,
+    ))
 }
 
 /// Deblocks the TIP unit edges of a `TIP_FRAME_AS_OUTPUT` frame. Each unit
@@ -1122,7 +1126,12 @@ fn candidate_mask<const PASS: usize>(
     };
     let mut mask = flag_word(flags, edge, word);
     if plane_pass.allow_df_sub_pu {
-        mask |= flag_word(flags, SUB_PU_PLANE, word);
+        let sub_pu = if PASS == 0 {
+            SUB_PU_PLANE
+        } else {
+            SUB_PU_ROW_PLANE
+        };
+        mask |= flag_word(flags, sub_pu, word);
     }
     if !grid.fully_covered {
         mask |= !flag_word(flags, COVERED_PLANE, word);
