@@ -902,41 +902,14 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
         && params.last_y == y0 + 15
         && fixed_16x16_window_in_bounds(reference, x0, y0)
     {
-        let samples = reference.samples;
-        let first = (x0 + 1) as usize;
-        let second = (x0 + 8) as usize;
-        let max_sample = params.bit_depth.max_sample();
-        for row in 0..params.h {
-            let top = (y0 + (row as i32).clamp(1, 15)) as usize;
-            let bottom = (y0 + (row as i32 + 1).clamp(1, 15)) as usize;
-            let top = &samples[top * reference.stride..];
-            let bottom = &samples[bottom * reference.stride..];
-            let destination = &mut output[row * output_stride..][..params.w];
-            let low = tip_overlap::overlap_bilinear_u16x8(
-                top,
-                bottom,
-                first,
-                Some(first + 1),
-                h_phase as i32,
-                v_phase as i32,
-            )
-            .simd_min(Simd::splat(max_sample));
-            O::store(low, &mut destination[1..9]);
-            let high = tip_overlap::overlap_bilinear_u16x8(
-                top,
-                bottom,
-                second,
-                None,
-                h_phase as i32,
-                v_phase as i32,
-            )
-            .simd_min(Simd::splat(max_sample));
-            O::store(high, &mut destination[8..]);
-            destination[0] = O::from_sample(
-                bilinear_sample(top[first].to_u16(), bottom[first].to_u16(), v_phase as i32)
-                    .min(max_sample),
-            );
-        }
+        bilinear_16x16_clipped(
+            reference,
+            [(x0 + 1) as usize, (y0 + 1) as usize],
+            [h_phase as u16, v_phase as u16],
+            params.bit_depth.max_sample(),
+            output,
+            output_stride,
+        );
         return Ok(());
     }
     let direct_x = usize::try_from(x0).ok().filter(|&x| {
@@ -1062,6 +1035,61 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
         top_is_first = !top_is_first;
     }
     Ok(())
+}
+
+/// A two-axis 16x16 `BILINEAR` block at `(x0, y0)` whose clip bounds are
+/// `[x0 + 1, x0 + 15] x [y0 + 1, y0 + 15]`, from `[x0 + 1, y0 + 1]`.
+///
+/// Its clipped columns read `[1, 1, 2, .., 15]` and `[1, 2, .., 15, 15]`, so
+/// two loads and one lane slide per half form both tap windows of a row. Each
+/// source row is filtered horizontally once: row `r` blends the rows
+/// `clamp(r, 1, 15)` and `clamp(r + 1, 1, 15)`.
+fn bilinear_16x16_clipped<T: ReconSample, O: BilinearOutput>(
+    reference: &ReferencePlaneView<'_, T>,
+    [x, y]: [usize; 2],
+    [h_phase, v_phase]: [u16; 2],
+    max_sample: u16,
+    output: &mut [O],
+    output_stride: usize,
+) {
+    let horizontal = |row: usize| {
+        let source = reference.row(y + row);
+        let (low, high) = (
+            reference_lanes::<8, T>(source, x),
+            reference_lanes::<8, T>(source, x + 7),
+        );
+        let left = [
+            std::simd::simd_swizzle!(low, [0, 0, 1, 2, 3, 4, 5, 6]),
+            high,
+        ];
+        let right = [
+            low,
+            std::simd::simd_swizzle!(high, [1, 2, 3, 4, 5, 6, 7, 7]),
+        ];
+        [0, 1]
+            .map(|half| left[half] * Simd::splat(16 - h_phase) + right[half] * Simd::splat(h_phase))
+    };
+    let mut top = horizontal(0);
+    for row in 0..16 {
+        let bottom = if (1..15).contains(&row) {
+            horizontal(row)
+        } else {
+            top
+        };
+        let destination = &mut output[row * output_stride..][..16];
+        for (half, lanes) in destination.chunks_exact_mut(8).enumerate() {
+            let blended = tap_mac(
+                tap_mac(Simd::splat(0), top[half].cast(), i32::from(16 - v_phase)),
+                bottom[half].cast(),
+                i32::from(v_phase),
+            );
+            let filtered = round2_simd(blended, 8)
+                .cast::<u16>()
+                .simd_min(Simd::splat(max_sample));
+            O::store(filtered, lanes);
+        }
+        top = bottom;
+    }
 }
 
 /// The plane-bounded `firstX` and `lastX` of an unscaled `BILINEAR` block,
