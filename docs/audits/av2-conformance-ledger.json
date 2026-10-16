@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "98a47c5df77bd9b29a8e9f22ff74471905966478",
+  "audited_commit": "365506aa02107188b568cae77cc2745d8bf5871d",
   "outcome": "success",
   "files": [
     {
@@ -2968,7 +2968,7 @@
     },
     {
       "path": "crates/splot-decode/src/pipeline/frame_tasks.rs",
-      "sha256": "346521825218fe3ded80c699649926c7e40c04693718f99ffd3b28de4137e40a",
+      "sha256": "e9759f69724d54a8af555893787617eca42e66356e10f3e446a5e1aa201e22f5",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-FRAME-PIPELINING"
@@ -4330,7 +4330,7 @@
     },
     {
       "path": "crates/splot-parallel/src/rows.rs",
-      "sha256": "925bba7b217c8503607e25597c1a04f67e84b8caed0b6f8268c837a3b8427105",
+      "sha256": "eeb947132eeacf463e9e3c904d1b817180c4559ae3e11e3f54812ab145b08af4",
       "scope_kind": "workspace:splot-parallel",
       "feature_ids": [],
       "outcome": "success"
