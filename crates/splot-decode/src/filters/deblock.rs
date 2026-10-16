@@ -1659,7 +1659,7 @@ enum Repeat {
 
 /// One contiguous edge's sample-filter inputs, with `boundary` the band index
 /// of its first line's `q0`.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Eq)]
 struct ContiguousEdge {
     boundary: usize,
     q_thr: i32,
@@ -1669,6 +1669,26 @@ struct ContiguousEdge {
     prev_lossless: bool,
     curr_lossless: bool,
     key: StrengthKey,
+}
+
+impl PartialEq for ContiguousEdge {
+    /// Compares every field without branching, as the walk does for each
+    /// edge it queues.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[allow(clippy::needless_bitwise_bool, reason = "branch-free on purpose")]
+    #[inline(always)]
+    fn eq(&self, other: &Self) -> bool {
+        (self.boundary == other.boundary)
+            & (self.q_thr == other.q_thr)
+            & (self.side == other.side)
+            & (self.max_width_neg == other.max_width_neg)
+            & (self.max_width_pos == other.max_width_pos)
+            & (self.prev_lossless == other.prev_lossless)
+            & (self.curr_lossless == other.curr_lossless)
+            & (self.key.curr_qindex == other.key.curr_qindex)
+            & (self.key.prev_qindex == other.key.prev_qindex)
+            & (self.key.sub_pu_only == other.key.sub_pu_only)
+    }
 }
 
 /// The run of contiguous edges a pass walk holds back, with its edge count.
