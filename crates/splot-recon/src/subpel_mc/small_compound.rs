@@ -152,6 +152,10 @@ trait CellReference<'a, T: ReconSample>: Sized {
 
     fn new(reference: &ReferencePlaneView<'a, T>, params: &SubpelPredictParams) -> Option<Self>;
 
+    /// This cell read from `reference`, a view of the same width and
+    /// readable rows, so every bound-derived field carries over.
+    fn rebind(&self, reference: &ReferencePlaneView<'a, T>) -> Self;
+
     fn predict(&self) -> Option<Self::Rows>;
 }
 
@@ -232,6 +236,16 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell<'a, T> {
         })
     }
 
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    fn rebind(&self, reference: &ReferencePlaneView<'a, T>) -> Self {
+        Cell {
+            samples: reference.samples,
+            stride: reference.stride,
+            ..*self
+        }
+    }
+
     /// The cell's compound predictor rows, `Round2(.., InterRound1)` of the
     /// two-pass convolution.
     #[allow(clippy::inline_always, reason = "measured subpel hot path")]
@@ -272,8 +286,14 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell<'a, T> {
     }
 }
 
-/// Predicts both references of a cell, then blends and stores it; returns
-/// `false` without writing when either reference declines. With
+/// The reference views, output and output stride of a second plane that
+/// shares a cell's parameters (V beside U).
+pub(super) type SecondPlane<'s, 'a, T, O> =
+    ([&'s ReferencePlaneView<'a, T>; 2], &'s mut [O], usize);
+
+/// Predicts both references of a cell, then blends and stores it, and with
+/// `second` the same cell of that plane; returns the number of planes written,
+/// stopping at the first whose reference declines. With
 /// `cwp_weight` in `0..=16` a blended value is a weighted mean of predictor
 /// values over 16, so it fits `i16` before its clamp.
 #[inline(never)]
@@ -282,27 +302,56 @@ fn fused<'a, T: ReconSample, O: ReconSample, C, const LANES: usize, const ROWS: 
     cwp_weight: i16,
     output: &mut [O],
     output_stride: usize,
-) -> bool
+    second: Option<SecondPlane<'_, 'a, T, O>>,
+) -> usize
 where
     C: CellReference<'a, T, Rows = [Simd<i32, LANES>; ROWS]>,
 {
     let [(reference0, params0), (reference1, params1)] = references;
     let (Some(cell0), Some(cell1)) = (C::new(reference0, params0), C::new(reference1, params1))
     else {
+        return 0;
+    };
+    if !store::<T, O, C, LANES, ROWS>([&cell0, &cell1], params0, cwp_weight, output, output_stride)
+    {
+        return 0;
+    }
+    let Some(([view0, view1], output, output_stride)) = second else {
+        return 1;
+    };
+    let cells = [cell0.rebind(view0), cell1.rebind(view1)];
+    1 + usize::from(store::<T, O, C, LANES, ROWS>(
+        [&cells[0], &cells[1]],
+        params0,
+        cwp_weight,
+        output,
+        output_stride,
+    ))
+}
+
+/// Predicts both references of one cell, then blends and stores it; returns
+/// `false` without writing when either reference declines.
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn store<'a, T: ReconSample, O: ReconSample, C, const LANES: usize, const ROWS: usize>(
+    cells: [&C; 2],
+    params: &SubpelPredictParams,
+    cwp_weight: i16,
+    output: &mut [O],
+    output_stride: usize,
+) -> bool
+where
+    C: CellReference<'a, T, Rows = [Simd<i32, LANES>; ROWS]>,
+{
+    let (Some(pred0), Some(pred1)) = (cells[0].predict(), cells[1].predict()) else {
         return false;
     };
-    let (Some(pred0), Some(pred1)) = (cell0.predict(), cell1.predict()) else {
-        return false;
-    };
-    let pred = [pred0, pred1];
-    let bit_depth = params0.bit_depth;
     let forward = Simd::splat(i32::from(cwp_weight));
     let backward = Simd::splat(16 - i32::from(cwp_weight));
-    let max_sample = Simd::splat(bit_depth.max_sample().min(O::MAX_VALUE) as i16);
+    let max_sample = Simd::splat(params.bit_depth.max_sample().min(O::MAX_VALUE) as i16);
     let shift = 4 + compound_inter_post_round();
     let blend = |i: usize| {
-        ((pred[0][i] * forward + pred[1][i] * backward + Simd::splat(1 << (shift - 1)))
-            >> shift as i32)
+        ((pred0[i] * forward + pred1[i] * backward + Simd::splat(1 << (shift - 1))) >> shift as i32)
             .cast::<i16>()
             .simd_max(Simd::splat(0))
             .simd_min(max_sample)
@@ -530,6 +579,19 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
 
     #[allow(clippy::inline_always, reason = "measured subpel hot path")]
     #[inline(always)]
+    fn rebind(&self, reference: &ReferencePlaneView<'a, T>) -> Self {
+        Cell8 {
+            samples: reference.samples,
+            stride: reference.stride,
+            unclamped: self
+                .unclamped
+                .map(|_| self.top as usize * reference.stride + self.column),
+            ..*self
+        }
+    }
+
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
     fn predict(&self) -> Option<[Row8; 8]> {
         match (self.horizontal, self.vertical) {
             (true, true) => two_pass8::<T, true>(self),
@@ -550,12 +612,14 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
     }
 }
 
-/// Writes a blended 4x4 or 8x8 cell and returns `true`, or returns `false`
-/// without writing for other sizes, for a `cwp_weight` outside `0..=16`, or
-/// when a window of either reference leaves the plane storage.
+/// Writes a blended 4x4 or 8x8 cell, then the same cell of `second`, and
+/// returns the number of planes written: none for other sizes or a
+/// `cwp_weight` outside `0..=16`, and none past a plane whose window leaves
+/// the plane storage.
 ///
-/// The parameters are plane-bounded and validated by the caller, and `output`
-/// holds the strided cell rectangle.
+/// The parameters are plane-bounded and validated by the caller, each output
+/// holds the strided cell rectangle, and the `second` views match the first
+/// in width and readable rows.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
@@ -567,15 +631,20 @@ pub(super) fn predict<T: ReconSample, O: ReconSample>(
     cwp_weight: i16,
     output: &mut [O],
     output_stride: usize,
-) -> bool {
+    second: Option<SecondPlane<'_, '_, T, O>>,
+) -> usize {
     if !(0..=16).contains(&cwp_weight) {
-        return false;
+        return 0;
     }
     let references = [(reference0, params0), (reference1, params1)];
     match (params0.w, params0.h) {
-        (4, 4) => fused::<T, O, Cell<'_, T>, 4, 4>(references, cwp_weight, output, output_stride),
-        (8, 8) => fused::<T, O, Cell8<'_, T>, 8, 8>(references, cwp_weight, output, output_stride),
-        _ => false,
+        (4, 4) => {
+            fused::<T, O, Cell<'_, T>, 4, 4>(references, cwp_weight, output, output_stride, second)
+        }
+        (8, 8) => {
+            fused::<T, O, Cell8<'_, T>, 8, 8>(references, cwp_weight, output, output_stride, second)
+        }
+        _ => 0,
     }
 }
 
@@ -760,8 +829,35 @@ mod tests {
                 weight,
                 &mut direct,
                 stride,
-            );
+                None,
+            ) != 0;
             assert!(!accepted || weight <= 16);
+            let mut pair = [vec![sentinel; stride * size], vec![sentinel; stride * size]];
+            let [first, second] = &mut pair;
+            let written = subpel_predict_block_compound_average_fast_pair_into(
+                &views[0],
+                &params[0],
+                &views[1],
+                &params[1],
+                weight,
+                first,
+                stride,
+                ([&views[1], &views[0]], second, stride),
+            )
+            .unwrap();
+            assert_eq!(written, 2 * usize::from(accepted));
+            let crossed = [(1, 0), (0, 1)].map(|(view, index)| {
+                subpel_predict_block_compound_intermediate(&views[view], &params[index]).unwrap()
+            });
+            let crossed =
+                blend_compound_average_weighted(&crossed[0], &crossed[1], bit_depth, weight)
+                    .unwrap();
+            for (results, expected) in [(&pair[0], &expected), (&pair[1], &crossed)] {
+                for row in 0..size {
+                    let actual = results[row * stride..][..size].iter().map(|s| s.to_u16());
+                    assert!(!accepted || actual.eq(expected[row * size..][..size].iter().copied()));
+                }
+            }
             if accepted {
                 fused += 1;
             } else {

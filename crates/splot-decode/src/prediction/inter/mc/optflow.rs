@@ -1410,7 +1410,25 @@ pub(super) fn predict_motion_grid_compound_average_into<
             let (params, uniform, scalings, rect) =
                 cell_inputs!(cell_row, cell_col, [col, row, height]);
             let cell = (&params, uniform, &scalings, rect);
-            if !skip[0] {
+            let written = if uniform && skip == [false; 2] {
+                splot_recon::subpel_predict_block_compound_average_fast_pair_into(
+                    &prediction.views[0],
+                    &params[0],
+                    &prediction.views[1],
+                    &params[1],
+                    cwp_weight,
+                    &mut output[col..],
+                    output_stride,
+                    (
+                        [&second.views[0], &second.views[1]],
+                        &mut second_output[col..],
+                        second.block_w,
+                    ),
+                )?
+            } else {
+                0
+            };
+            if !skip[0] && written == 0 {
                 predict_grid_cell(
                     &prediction.views,
                     cell,
@@ -1421,7 +1439,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
                     output_stride,
                 )?;
             }
-            if !skip[1] {
+            if !skip[1] && written < 2 {
                 predict_grid_cell(
                     &second.views,
                     cell,

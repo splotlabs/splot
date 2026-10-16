@@ -1856,25 +1856,7 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
     output_stride: usize,
 ) -> Result<bool> {
     crate::intra_dc_math::validate_sample_type::<O>(params0.bit_depth)?;
-    let unscaled = |params: &SubpelPredictParams| {
-        params.step_x == 1 << SCALE_SUBPEL_BITS
-            && params.step_y == 1 << SCALE_SUBPEL_BITS
-            && params
-                .start_x
-                .checked_add((params.w as i32 - 1) << SCALE_SUBPEL_BITS)
-                .is_some()
-    };
-    let span = |params: &SubpelPredictParams| {
-        (i64::from(params.last_x) - i64::from(params.first_x))
-            | (i64::from(params.last_y) - i64::from(params.first_y))
-    };
-    if span(params0) | span(params1) < 0
-        || !(1..=MAX_BLOCK_DIM).contains(&params0.w)
-        || !(1..=MAX_BLOCK_DIM).contains(&params0.h)
-        || (params0.w, params0.h, params0.bit_depth) != (params1.w, params1.h, params1.bit_depth)
-        || !unscaled(params0)
-        || !unscaled(params1)
-    {
+    if !fast_admitted(params0, params1) {
         return Ok(false);
     }
     validate_compound_output(params0, output, output_stride)?;
@@ -1890,7 +1872,9 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
         cwp_weight,
         output,
         output_stride,
-    ) {
+        None,
+    ) != 0
+    {
         return Ok(true);
     }
     if O::u16_slice(&[]).is_some()
@@ -1971,6 +1955,82 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
         return Ok(false);
     }
     Ok(true)
+}
+
+/// The fast compound dispatch of
+/// [`subpel_predict_block_compound_average_fast_validated_strided_into`] for
+/// a 4x4 or 8x8 cell of two planes that share its parameters (U and V): it
+/// writes the cell of `output`, then of `second`, and returns the number of
+/// planes written. It writes none when that function would decline or for
+/// another size, none when the `second` views differ from the first in width
+/// or readable rows, and only the first when a `second` window leaves the
+/// plane storage; the caller predicts the rest.
+///
+/// # Errors
+/// Returns the errors of
+/// [`subpel_predict_block_compound_average_fast_validated_strided_into`] for
+/// either output.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::inline_always, reason = "measured TIP compound hot path")]
+#[inline(always)]
+pub fn subpel_predict_block_compound_average_fast_pair_into<T: ReconSample, O: ReconSample>(
+    reference0: &ReferencePlaneView<'_, T>,
+    params0: &SubpelPredictParams,
+    reference1: &ReferencePlaneView<'_, T>,
+    params1: &SubpelPredictParams,
+    cwp_weight: i16,
+    output: &mut [O],
+    output_stride: usize,
+    (second, second_output, second_stride): ([&ReferencePlaneView<'_, T>; 2], &mut [O], usize),
+) -> Result<usize> {
+    crate::intra_dc_math::validate_sample_type::<O>(params0.bit_depth)?;
+    let same = |a: &ReferencePlaneView<'_, T>, b: &ReferencePlaneView<'_, T>| {
+        (a.width, a.readable_rows) == (b.width, b.readable_rows)
+    };
+    if !fast_admitted(params0, params1)
+        || !same(reference0, second[0])
+        || !same(reference1, second[1])
+    {
+        return Ok(0);
+    }
+    validate_compound_output(params0, output, output_stride)?;
+    validate_compound_output(params0, second_output, second_stride)?;
+    Ok(small_compound::predict(
+        reference0,
+        &plane_bounded(reference0, params0),
+        reference1,
+        &plane_bounded(reference1, params1),
+        cwp_weight,
+        output,
+        output_stride,
+        Some((second, second_output, second_stride)),
+    ))
+}
+
+/// Whether both blocks have one unscaled shape in `1..=MAX_BLOCK_DIM`, one
+/// bit depth, uninverted clipping ranges and a last column that fits.
+#[allow(clippy::inline_always, reason = "measured TIP compound hot path")]
+#[inline(always)]
+fn fast_admitted(params0: &SubpelPredictParams, params1: &SubpelPredictParams) -> bool {
+    let unscaled = |params: &SubpelPredictParams| {
+        params.step_x == 1 << SCALE_SUBPEL_BITS
+            && params.step_y == 1 << SCALE_SUBPEL_BITS
+            && params
+                .start_x
+                .checked_add((params.w as i32 - 1) << SCALE_SUBPEL_BITS)
+                .is_some()
+    };
+    let span = |params: &SubpelPredictParams| {
+        (i64::from(params.last_x) - i64::from(params.first_x))
+            | (i64::from(params.last_y) - i64::from(params.first_y))
+    };
+    span(params0) | span(params1) >= 0
+        && (1..=MAX_BLOCK_DIM).contains(&params0.w)
+        && (1..=MAX_BLOCK_DIM).contains(&params0.h)
+        && (params0.w, params0.h, params0.bit_depth) == (params1.w, params1.h, params1.bit_depth)
+        && unscaled(params0)
+        && unscaled(params1)
 }
 
 /// Clamps the § 7.13.3.18 clipping bounds into the plane's readable area.
