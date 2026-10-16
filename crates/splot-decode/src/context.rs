@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! A decode-driver context that owns a worker pool plus byte-consuming and
-//! parsed-stream planning entry points.
+//! A decode-driver context that owns the decode threads plus byte-consuming
+//! and parsed-stream planning entry points.
 
 use core::num::NonZeroUsize;
 use std::io::Read;
-
-use splot_parallel::WorkerPool;
 
 use crate::DecodeHashReport;
 use crate::DecodeOptions;
@@ -23,7 +21,7 @@ impl<R: Read + Send + ?Sized> ReadSend for R {}
 
 /// A decode context.
 ///
-/// Owns exactly one [`WorkerPool`], plans bounded stream metadata from raw Annex
+/// Owns the decode threads, plans bounded stream metadata from raw Annex
 /// B/IVF or parsed streams, and exposes the runtime hash, raw, Y4M, and
 /// discard-output paths for the supported decode envelope (tracked in
 /// `docs/DECODER-SUPPORT-MATRIX.toml`). It does not touch the filesystem or
@@ -35,25 +33,26 @@ impl<R: Read + Send + ?Sized> ReadSend for R {}
 #[derive(Debug)]
 pub struct DecodeContext {
     runtime: DecodeRuntimeConfig,
-    pool: WorkerPool,
+    threads: NonZeroUsize,
     session: crate::pipeline::DecodeSession,
 }
 
 impl DecodeContext {
-    /// Creates a decode context and its single owned worker pool.
+    /// Creates a decode context and starts its row scheduler.
     ///
     /// The configured frame-pipelining depth is resolved once here against the
-    /// pool's worker-thread count, so no decode path re-resolves it.
+    /// thread count, so no decode path re-resolves it.
     ///
     /// # Errors
-    /// Returns [`crate::DecodeError::Pool`] if the worker pool cannot be built.
+    /// Returns [`crate::DecodeError::Pool`] if a worker thread cannot start.
     pub fn new(runtime: DecodeRuntimeConfig) -> Result<Self> {
-        let pool = WorkerPool::new(runtime.thread_count)?;
-        let frame_delay = runtime.frame_delay.resolve(pool.threads());
+        let threads = runtime.thread_count.resolve();
+        let frame_delay = runtime.frame_delay.resolve(threads);
+        let rows = crate::pipeline::row_scheduler(threads)?;
         Ok(Self {
             runtime,
-            pool,
-            session: crate::pipeline::DecodeSession::new(frame_delay),
+            threads,
+            session: crate::pipeline::DecodeSession::new(frame_delay, rows),
         })
     }
 
@@ -72,40 +71,34 @@ impl DecodeContext {
         &self.runtime
     }
 
-    /// The resolved, non-zero worker-thread count.
+    /// The resolved, non-zero thread count.
     #[must_use]
     pub fn threads(&self) -> NonZeroUsize {
-        self.pool.threads()
-    }
-
-    /// The context's single owned worker pool.
-    #[must_use]
-    pub fn pool(&self) -> &WorkerPool {
-        &self.pool
+        self.threads
     }
 
     /// Builds a deterministic plan over raw AV2 Annex B or IVF bytes.
     ///
-    /// Runs inside the context-owned worker pool. Plan-only: bounds byte
+    /// Plan-only: bounds byte
     /// traversal, decodes no tile payloads, reconstructs no pixels, writes no
     /// output, and invokes no external decoder.
     ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for malformed sources, unsupported
     /// structures, local decode resource-limit failures, or pool failures.
-    pub fn plan_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<DecodeStreamPlan> {
-        self.pool.install(|| plan_byte_stream(bytes, &options))
+    pub fn plan_bytes(bytes: &[u8], options: DecodeOptions) -> Result<DecodeStreamPlan> {
+        plan_byte_stream(bytes, &options)
     }
 
-    /// Runs `decode` inside the pool over the temporal units of `reader`.
+    /// Runs `decode` over the temporal units of `reader` on the calling
+    /// thread, which drives the row workers.
     fn run<T: Send>(
-        &self,
         reader: &mut dyn ReadSend,
         options: &DecodeOptions,
         decode: impl FnOnce(&mut dyn UnitSource) -> Result<T> + Send,
     ) -> Result<T> {
         let mut source = ReaderUnits::new(reader, options.limits());
-        self.pool.install(|| decode(&mut source))
+        decode(&mut source)
     }
 
     /// [`Self::decode_hash_report_reader`] over in-memory bytes.
@@ -131,7 +124,7 @@ impl DecodeContext {
     /// # Errors
     /// Returns [`crate::DecodeError`] for read failures, malformed sources,
     /// unsupported structures, runtime-tier rejections, resource-limit
-    /// failures, worker-pool failures, or reconstruction model errors.
+    /// failures, thread failures, or reconstruction model errors.
     pub fn decode_hash_report_reader<R: Read + Send>(
         &self,
         mut reader: R,
@@ -145,7 +138,7 @@ impl DecodeContext {
         reader: &mut dyn ReadSend,
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
-        self.run(reader, &options, |source| {
+        Self::run(reader, &options, |source| {
             crate::output::hash::decode_hash_report_from_plan(
                 source,
                 &options,
@@ -172,7 +165,7 @@ impl DecodeContext {
     /// # Errors
     /// Returns [`crate::DecodeError`] for read failures, malformed sources,
     /// unsupported structures, runtime-tier rejections, resource-limit
-    /// failures, worker-pool failures, or reconstruction model errors.
+    /// failures, thread failures, or reconstruction model errors.
     pub fn decode_discard_reader<R: Read + Send>(
         &self,
         mut reader: R,
@@ -182,7 +175,7 @@ impl DecodeContext {
     }
 
     fn decode_discard(&self, reader: &mut dyn ReadSend, options: DecodeOptions) -> Result<()> {
-        self.run(reader, &options, |source| {
+        Self::run(reader, &options, |source| {
             crate::pipeline::emit_frames(source, &options, &self.session, |_| Ok(()), |_| Ok(()))
         })
     }
@@ -209,7 +202,7 @@ impl DecodeContext {
     /// # Errors
     /// Returns [`crate::DecodeError`] for read failures, malformed sources,
     /// unsupported structures, runtime-tier rejections, resource-limit
-    /// failures, worker-pool failures, reconstruction model errors, raw
+    /// failures, thread failures, reconstruction model errors, raw
     /// serialization errors, or caller-writer I/O errors.
     pub fn decode_raw_reader<R: Read + Send, W: std::io::Write + Send>(
         &self,
@@ -217,7 +210,7 @@ impl DecodeContext {
         options: DecodeOptions,
         writer: W,
     ) -> Result<()> {
-        self.run(&mut reader, &options, |source| {
+        Self::run(&mut reader, &options, |source| {
             crate::output::raw::write_raw_stream_from_plan(source, &options, &self.session, writer)
         })
     }
@@ -232,7 +225,7 @@ impl DecodeContext {
     /// # Errors
     /// Returns [`crate::DecodeError`] for read failures, malformed sources,
     /// unsupported structures, runtime-tier rejections, resource-limit
-    /// failures, worker-pool failures, reconstruction model errors, or
+    /// failures, thread failures, reconstruction model errors, or
     /// output-effect errors.
     pub fn decode_raw_discard_reader<R: Read + Send>(
         &self,
@@ -243,7 +236,7 @@ impl DecodeContext {
     }
 
     fn decode_raw_discard(&self, reader: &mut dyn ReadSend, options: DecodeOptions) -> Result<()> {
-        self.run(reader, &options, |source| {
+        Self::run(reader, &options, |source| {
             crate::output::raw::discard_raw_stream_from_plan(source, &options, &self.session)
         })
     }
@@ -270,7 +263,7 @@ impl DecodeContext {
     /// # Errors
     /// Returns [`crate::DecodeError`] for read failures, malformed sources,
     /// unsupported structures, runtime-tier rejections, resource-limit
-    /// failures, worker-pool failures, reconstruction model errors, Y4M
+    /// failures, thread failures, reconstruction model errors, Y4M
     /// serialization errors, or caller-writer I/O errors.
     pub fn decode_y4m_reader<R: Read + Send, W: std::io::Write + Send>(
         &self,
@@ -278,7 +271,7 @@ impl DecodeContext {
         options: DecodeOptions,
         writer: W,
     ) -> Result<()> {
-        self.run(&mut reader, &options, |source| {
+        Self::run(&mut reader, &options, |source| {
             crate::output::y4m::write_y4m_stream_to_writer(source, &options, &self.session, writer)
                 .map(drop)
         })
@@ -286,7 +279,7 @@ impl DecodeContext {
 
     /// Builds a deterministic plan over an already parsed AV2 stream.
     ///
-    /// Runs inside the context-owned worker pool. Serial and plan-only: consumes
+    /// Serial and plan-only: consumes
     /// no raw bytes, decodes no tile payloads, reconstructs no pixels, and
     /// invokes no external decoder.
     ///
@@ -294,11 +287,10 @@ impl DecodeContext {
     /// Returns [`crate::DecodeError`] for malformed parsed sources,
     /// unsupported structures, or local decode resource-limit failures.
     pub fn plan_stream(
-        &self,
         input: DecodeStreamInput<'_>,
         options: DecodeOptions,
     ) -> Result<DecodeStreamPlan> {
-        self.pool.install(|| plan_stream(input, &options))
+        plan_stream(input, &options)
     }
 }
 

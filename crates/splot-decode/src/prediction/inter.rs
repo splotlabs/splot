@@ -469,6 +469,7 @@ fn resolve_initial_frame_cdfs_reusing(
 }
 
 /// Exact pending entropy products one frame's tile parse may consume.
+#[derive(Default)]
 pub(crate) struct EntropyDependencies {
     /// The primary and optional blend CDF slots.
     cdfs: [Option<FrameCdfHandle>; 2],
@@ -477,41 +478,15 @@ pub(crate) struct EntropyDependencies {
 }
 
 impl EntropyDependencies {
-    pub(crate) fn conditions(&self) -> impl Iterator<Item = splot_parallel::Condition<'_>> {
-        self.cdfs
-            .iter()
-            .flatten()
-            .map(FrameCdfHandle::condition)
-            .chain(
-                self.ccso_grids
-                    .iter()
-                    .flatten()
-                    .map(CcsoGridHandle::condition),
-            )
-            .chain(self.segment_ids.iter().map(SegmentIdMapHandle::condition))
-    }
-}
-
-/// Owned product handles that gate one asynchronous TIP output frame.
-pub(crate) struct TipOutputDependencies<T: ReconSample> {
-    samples: RefSlots<Option<RefFrameSlot<T>>>,
-    entropy: EntropyDependencies,
-    motion: RefSlots<Option<MotionFieldHandle>>,
-}
-
-impl<T: ReconSample> TipOutputDependencies<T> {
-    pub(crate) fn conditions(&self) -> impl Iterator<Item = splot_parallel::Condition<'_>> {
-        self.samples
-            .iter()
-            .flatten()
-            .map(RefFrameSlot::settled_condition)
-            .chain(self.entropy.conditions())
-            .chain(
-                self.motion
-                    .iter()
-                    .flatten()
-                    .map(MotionFieldHandle::field_condition),
-            )
+    /// Whether every product this parse reads has been published or failed.
+    pub(crate) fn is_settled(&self) -> bool {
+        self.cdfs.iter().flatten().all(FrameCdfHandle::is_settled)
+            && self
+                .ccso_grids
+                .iter()
+                .flatten()
+                .all(CcsoGridHandle::is_settled)
+            && self.segment_ids.iter().all(SegmentIdMapHandle::is_settled)
     }
 }
 
@@ -628,54 +603,6 @@ fn previous_segment_ids<'a>(
         .as_ref()?
         .product()
         .filter(|map| map.dimensions() == (mi_rows, mi_cols))
-}
-
-/// The reference slots a TIP output frame actually reads samples from.
-///
-/// § 7.10.6 interpolates between exactly the two frames
-/// [`find_mv_stack::tip_reference_pair_from_hints`] names, so gating admission
-/// on every named slot made the frame wait on up to five references it never
-/// reads. The pair derives from the same helper and the same inputs the
-/// reconstruction uses, so the two cannot disagree; an underived pair falls
-/// back to the full set, and the § 7.13.3.18 published-row check still fails
-/// closed either way.
-fn tip_pixel_reference_slots(
-    core: &FrameHeaderCore,
-    ref_order_hint: &[u32],
-    ref_valid: &[bool],
-) -> Option<[u32; 2]> {
-    let inter = core.inter.as_ref()?;
-    let hints =
-        find_mv_stack::reference_order_hints(&inter.ref_frame_idx, ref_valid, ref_order_hint);
-    let pair = find_mv_stack::tip_reference_pair_from_hints(core.display_order_hint()?, &hints)?;
-    Some([
-        block_reference_slot(&inter.ref_frame_idx, pair.past_ref).ok()?,
-        block_reference_slot(&inter.ref_frame_idx, pair.future_ref).ok()?,
-    ])
-}
-
-/// Resolves every sample, entropy, and motion product a TIP output may read.
-pub(crate) fn tip_output_dependencies<T: ReconSample>(
-    core: &FrameHeaderCore,
-    sequence: &SequenceHeader,
-    reference: &InterReferenceState<T>,
-) -> TipOutputDependencies<T> {
-    let samples =
-        match tip_pixel_reference_slots(core, &reference.ref_order_hint, &reference.ref_valid) {
-            Some(pair) => reference.pixel_reference_gate(pair).shared_slots(),
-            None => reference
-                .pixel_reference_gate(named_pixel_reference_slots(core))
-                .shared_slots(),
-        };
-    let entropy = entropy_dependencies(core, sequence, reference);
-    let motion = core.inter.as_ref().map_or_else(RefSlots::default, |inter| {
-        reference.motion_dependencies(&inter.ref_frame_idx)
-    });
-    TipOutputDependencies {
-        samples,
-        entropy,
-        motion,
-    }
 }
 
 const fn cdf_blending_enabled(enable_avg_cdf: bool, tip_frame_mode: Option<TipFrameMode>) -> bool {
@@ -1394,32 +1321,14 @@ pub(crate) fn named_pixel_reference_slots(core: &FrameHeaderCore) -> impl Iterat
         .chain(core.bridge_frame_ref_idx)
 }
 
-impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
+impl<T: ReconSample> PixelReferenceGate<'_, T> {
     /// Whether every named reference frame has settled.
     pub(crate) fn is_ready(&self) -> bool {
         self.slots.iter().flatten().all(|slot| slot.is_settled())
     }
 
-    /// Returns the admission conditions for every named reference settling.
-    pub(crate) fn conditions(
-        &self,
-    ) -> impl Iterator<Item = splot_parallel::Condition<'a>> + use<'a, T> {
-        self.slots
-            .into_iter()
-            .flatten()
-            .map(RefFrameSlot::settled_condition)
-    }
-
-    /// Shares the named slots so a scheduler can register their conditions
-    /// before moving the complete reference state into the admitted job.
-    pub(crate) fn shared_slots(&self) -> RefSlots<Option<RefFrameSlot<T>>> {
-        let mut shared = RefSlots::default();
-        shared.extend_within(self.slots.iter().flatten().map(|slot| Some(slot.share())));
-        shared
-    }
-
     /// Blocks the calling driver thread until every named reference frame has
-    /// settled, running pool jobs instead of parking idle.
+    /// settled.
     ///
     /// # Errors
     ///
@@ -2228,7 +2137,8 @@ mod single_ref;
 pub(crate) use block::{
     InterBlockDecodeOutput, InterBlockFacts, InterDecodeScratch, InterFilterInputs,
     InterFrameParse, InterFrameParser, InterReconScratchPool, PendingFilterAttach,
-    ScheduledFrameProgress, ScheduledTileRecon, ScheduledTileWorkspace, decode_inter_blocks,
+    RowReferenceBounds, ScheduledTileRecon, ScheduledTileWorkspace, TipOutputStages, TipSpares,
+    bounds_satisfied, decode_inter_blocks, invalid_inter_tile_scheduling_state,
 };
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{

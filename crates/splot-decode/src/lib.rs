@@ -9,8 +9,8 @@
 //! reconstruction and output state from `splot-recon`. It owns the structured
 //! `decode/unsupported-feature` diagnostic API, local resource-limit policy
 //! types, and a bounded raw byte stream planner. It also exposes a
-//! [`DecodeContext`]/[`DecodeRuntimeConfig`] pair that owns a
-//! [`splot_parallel::WorkerPool`]. The stream planners consume either bounded
+//! [`DecodeContext`]/[`DecodeRuntimeConfig`] pair that owns the decode
+//! threads. The stream planners consume either bounded
 //! raw bytes or already parsed `splot-core` stream facts; the runtime decodes
 //! planned streams to hash, raw, or Y4M byte output, or discards decoded output.
 //!

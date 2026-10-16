@@ -38,10 +38,6 @@ impl ParsedFrameHeaderFixture {
     }
 }
 
-fn single_thread_context() -> DecodeContext {
-    DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap()
-}
-
 fn annex_b_tile_group_obu() -> Vec<u8> {
     annex_b_tile_group_obu_with_payload(&[0x00, 0x80, 0x00])
 }
@@ -151,14 +147,13 @@ fn base_coeff_facts() -> FrameCandidateCoeffFacts {
 }
 
 fn derive_tile_payload_plan<'a>(
-    ctx: &DecodeContext,
     bytes: &'a [u8],
     envelope: ObuEnvelope<'a>,
     position: TileGroupPositionFacts,
     facts: FrameCandidateTileFacts<'_>,
     limits: DecodeLimits,
 ) -> Result<DecodeTilePayloadPlan<'a>, FrameCandidateTileBoundaryError> {
-    let stream_plan = ctx.plan_bytes(bytes, DecodeOptions::default()).unwrap();
+    let stream_plan = DecodeContext::plan_bytes(bytes, DecodeOptions::default()).unwrap();
     let candidate = stream_plan.frame_candidates_all().next().unwrap();
     let input = FrameCandidateTileBoundaryInput::new(
         candidate,
@@ -169,18 +164,15 @@ fn derive_tile_payload_plan<'a>(
         base_cdf_facts(),
         limits,
     );
-    ctx.pool()
-        .install(|| plan_derived_tile_payload_boundary(&input))
+    plan_derived_tile_payload_boundary(&input)
 }
 
 fn derive_annex_b_tile_payload_plan<'a>(
-    ctx: &DecodeContext,
     bytes: &'a [u8],
     facts: FrameCandidateTileFacts<'_>,
     limits: DecodeLimits,
 ) -> Result<DecodeTilePayloadPlan<'a>, FrameCandidateTileBoundaryError> {
     derive_tile_payload_plan(
-        ctx,
         bytes,
         annex_b_envelope(bytes),
         base_position(),
@@ -284,9 +276,7 @@ fn assert_boundary_limit_error(
 #[test]
 fn derived_annex_b_tile_payload_preserves_tile_offsets_and_boundary() {
     let bytes = annex_b_tile_group_obu();
-    let ctx = single_thread_context();
     let plan = derive_annex_b_tile_payload_plan(
-        &ctx,
         &bytes,
         base_candidate_facts(false),
         DecodeLimits::unlimited(),
@@ -305,11 +295,9 @@ fn derived_annex_b_tile_payload_preserves_tile_offsets_and_boundary() {
 
 #[test]
 fn derived_boundary_admits_intra_only_regular_and_leading_tile_groups() {
-    let ctx = single_thread_context();
     for obu_type in [ObuType::RegularTileGroup, ObuType::LeadingTileGroup] {
         let bytes = annex_b_tile_group_obu_for_type(obu_type);
         let plan = derive_annex_b_tile_payload_plan(
-            &ctx,
             &bytes,
             intra_only_tile_group_facts(obu_type),
             DecodeLimits::unlimited(),
@@ -322,9 +310,7 @@ fn derived_boundary_admits_intra_only_regular_and_leading_tile_groups() {
 #[test]
 fn derived_annex_b_multi_tile_payload_retains_tile_work_units() {
     let bytes = annex_b_tile_group_obu_with_payload(&[0x00, 0x00, 0x00, 0x80, 0x00]);
-    let ctx = single_thread_context();
     let plan = derive_annex_b_tile_payload_plan(
-        &ctx,
         &bytes,
         multi_tile_candidate_facts(),
         DecodeLimits::unlimited(),
@@ -359,10 +345,8 @@ fn derived_annex_b_multi_tile_payload_retains_tile_work_units() {
 fn derived_ivf_tile_payload_preserves_tile_offsets() {
     let frame_payload = annex_b_tile_group_obu();
     let bytes = ivf_with_payload(&frame_payload);
-    let ctx = single_thread_context();
     let envelope = ivf_envelope(&bytes);
     let plan = derive_tile_payload_plan(
-        &ctx,
         &bytes,
         envelope,
         base_position(),
@@ -381,9 +365,7 @@ fn derived_ivf_tile_payload_preserves_tile_offsets() {
 #[test]
 fn derived_boundary_honors_disable_cdf_update_fact() {
     let bytes = annex_b_tile_group_obu();
-    let ctx = single_thread_context();
     let plan = derive_annex_b_tile_payload_plan(
-        &ctx,
         &bytes,
         base_candidate_facts(true),
         DecodeLimits::unlimited(),
@@ -397,9 +379,7 @@ fn derived_boundary_honors_disable_cdf_update_fact() {
 fn derived_boundary_honors_parser_derived_disable_cdf_update_fact() {
     let fixture = parsed_frame_header_fixture();
     assert_eq!(fixture.core.disable_cdf_update, Some(false));
-    let ctx = single_thread_context();
     let plan = derive_tile_payload_plan(
-        &ctx,
         fixture.bytes,
         fixture.frame_envelope,
         base_position(),
@@ -416,9 +396,7 @@ fn derived_boundary_honors_parser_derived_disable_cdf_update_fact() {
 fn derived_boundary_threads_parser_coeff_frame_facts() {
     let fixture = parsed_frame_header_fixture();
     let tq = fixture.sequence.transform_quant_entropy.as_ref().unwrap();
-    let ctx = single_thread_context();
     let plan = derive_tile_payload_plan(
-        &ctx,
         fixture.bytes,
         fixture.frame_envelope,
         base_position(),
@@ -459,12 +437,10 @@ fn derived_boundary_threads_parser_coeff_frame_facts() {
 #[test]
 fn derived_boundary_rejects_candidate_envelope_mismatch_before_slicing() {
     let bytes = annex_b_tile_group_obu();
-    let ctx = single_thread_context();
     let mut envelope = annex_b_envelope(&bytes);
     envelope.size = envelope.size.saturating_add(1);
 
     let error = derive_tile_payload_plan(
-        &ctx,
         &bytes,
         envelope,
         base_position(),
@@ -483,11 +459,9 @@ fn derived_boundary_rejects_candidate_envelope_mismatch_before_slicing() {
 fn derived_boundary_rejects_envelope_payload_from_different_input_buffer() {
     let bytes = annex_b_tile_group_obu();
     let forged_bytes = annex_b_tile_group_obu();
-    let ctx = single_thread_context();
     let envelope = annex_b_envelope(&forged_bytes);
 
     let error = derive_tile_payload_plan(
-        &ctx,
         &bytes,
         envelope,
         base_position(),
@@ -518,10 +492,9 @@ fn derived_boundary_rejects_absent_frame_header_facts_without_guessing() {
 #[test]
 fn derived_boundary_rejects_incomplete_tile_group_structure() {
     let bytes = annex_b_tile_group_obu();
-    let ctx = single_thread_context();
     let facts = base_candidate_facts(false).with_tile_group_structure_start_bits(25);
-    let error = derive_annex_b_tile_payload_plan(&ctx, &bytes, facts, DecodeLimits::unlimited())
-        .unwrap_err();
+    let error =
+        derive_annex_b_tile_payload_plan(&bytes, facts, DecodeLimits::unlimited()).unwrap_err();
 
     assert_malformed_error(
         &error,
@@ -532,10 +505,9 @@ fn derived_boundary_rejects_incomplete_tile_group_structure() {
 #[test]
 fn derived_boundary_rejects_invalid_locally_parsed_tile_group_structure() {
     let bytes = annex_b_tile_group_obu_with_payload(&[0x00, 0x40, 0x00]);
-    let ctx = single_thread_context();
     let facts = base_candidate_facts(false).with_tile_group_structure_start_bits(9);
-    let error = derive_annex_b_tile_payload_plan(&ctx, &bytes, facts, DecodeLimits::unlimited())
-        .unwrap_err();
+    let error =
+        derive_annex_b_tile_payload_plan(&bytes, facts, DecodeLimits::unlimited()).unwrap_err();
 
     assert_malformed_error(
         &error,
@@ -546,23 +518,17 @@ fn derived_boundary_rejects_invalid_locally_parsed_tile_group_structure() {
 #[test]
 fn derived_boundary_enforces_tile_count_and_payload_limits() {
     let bytes = annex_b_tile_group_obu();
-    let ctx = single_thread_context();
     let tile_count_limited =
         DecodeLimits::unlimited().with_max_tile_count(DecodeLimitThreshold::Max(0));
-    let error = derive_annex_b_tile_payload_plan(
-        &ctx,
-        &bytes,
-        base_candidate_facts(false),
-        tile_count_limited,
-    )
-    .unwrap_err();
+    let error =
+        derive_annex_b_tile_payload_plan(&bytes, base_candidate_facts(false), tile_count_limited)
+            .unwrap_err();
 
     assert_limit_error(&error, DecodeLimitName::MaxTileCount, Some(1));
 
     let multi_tile_count_limited =
         DecodeLimits::unlimited().with_max_tile_count(DecodeLimitThreshold::Max(1));
     let error = derive_annex_b_tile_payload_plan(
-        &ctx,
         &bytes,
         multi_tile_candidate_facts(),
         multi_tile_count_limited,
@@ -573,13 +539,9 @@ fn derived_boundary_enforces_tile_count_and_payload_limits() {
 
     let payload_limited =
         DecodeLimits::unlimited().with_max_tile_payload_bytes(DecodeLimitThreshold::Max(1));
-    let error = derive_annex_b_tile_payload_plan(
-        &ctx,
-        &bytes,
-        base_candidate_facts(false),
-        payload_limited,
-    )
-    .unwrap_err();
+    let error =
+        derive_annex_b_tile_payload_plan(&bytes, base_candidate_facts(false), payload_limited)
+            .unwrap_err();
 
     assert_boundary_limit_error(&error, DecodeLimitName::MaxTilePayloadBytes, Some(2));
 }
@@ -587,13 +549,11 @@ fn derived_boundary_enforces_tile_count_and_payload_limits() {
 #[test]
 fn derived_boundary_rejects_unsupported_position_and_frame_paths() {
     let bytes = annex_b_tile_group_obu();
-    let ctx = single_thread_context();
     for (position, is_first, is_last) in [
         (TileGroupPositionFacts::new(false, true), false, true),
         (TileGroupPositionFacts::new(true, false), true, false),
     ] {
         let error = derive_tile_payload_plan(
-            &ctx,
             &bytes,
             annex_b_envelope(&bytes),
             position,
@@ -627,7 +587,6 @@ fn derived_boundary_rejects_unsupported_position_and_frame_paths() {
 
     for (position, facts, reason) in cases {
         let error = derive_tile_payload_plan(
-            &ctx,
             &bytes,
             annex_b_envelope(&bytes),
             position,
@@ -648,10 +607,8 @@ fn derived_boundary_is_deterministic_across_decode_context_thread_policies() {
         DecodeRuntimeConfig::new(ThreadCount::from(3usize)),
     ];
 
-    let plans = runtimes.map(|runtime| {
-        let ctx = DecodeContext::new(runtime).unwrap();
+    let plans = runtimes.map(|_| {
         derive_tile_payload_plan(
-            &ctx,
             &bytes,
             annex_b_envelope(&bytes),
             base_position(),

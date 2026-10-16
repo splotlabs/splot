@@ -303,9 +303,9 @@ fn raw_annex_b_payload_decodes_to_exact_raw_bytes() {
 #[test]
 fn higher_declared_temporal_layer_decodes_selected_base_layer_to_reference_output() {
     let context = context(ThreadCount::from(1usize));
-    let plan = context
-        .plan_bytes(TEMPORAL_LAYER_DECLARATION_FIXTURE, DecodeOptions::default())
-        .unwrap();
+    let plan =
+        DecodeContext::plan_bytes(TEMPORAL_LAYER_DECLARATION_FIXTURE, DecodeOptions::default())
+            .unwrap();
     assert_eq!(plan.selected_layer(), DecodeLayerSelection::base());
     assert_eq!(plan.obu_count(), 3);
     assert_eq!(plan.frame_candidate_count(), 1);
@@ -354,9 +354,8 @@ fn higher_declared_temporal_layer_decodes_selected_base_layer_to_reference_outpu
 #[test]
 fn non_base_temporal_layer_is_retained_without_runtime_output() {
     let context = context(ThreadCount::from(1usize));
-    let plan = context
-        .plan_bytes(TEMPORAL_LAYER_STREAM_FIXTURE, DecodeOptions::default())
-        .unwrap();
+    let plan =
+        DecodeContext::plan_bytes(TEMPORAL_LAYER_STREAM_FIXTURE, DecodeOptions::default()).unwrap();
     let unselected: Vec<_> = plan
         .obus()
         .filter(|obu| obu.role() == DecodePlannedObuRole::UnselectedLayer)
@@ -392,9 +391,7 @@ fn higher_declared_temporal_layer_fixture_eof_fails_closed() {
     let truncated =
         &TEMPORAL_LAYER_DECLARATION_FIXTURE[..TEMPORAL_LAYER_DECLARATION_FIXTURE.len() - 1];
 
-    let error = context(ThreadCount::from(1usize))
-        .plan_bytes(truncated, DecodeOptions::default())
-        .unwrap_err();
+    let error = DecodeContext::plan_bytes(truncated, DecodeOptions::default()).unwrap_err();
 
     assert!(matches!(error, DecodeError::MalformedSource { .. }));
 }

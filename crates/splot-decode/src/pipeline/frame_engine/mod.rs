@@ -5,7 +5,7 @@
 //!
 //! [`walk_frame`] is the single entry for every frame: it runs the entropy walk
 //! and reconstruction and leaves the filter phase owed as a
-//! [`finish::WalkedFrame`], which the driver hands to the admission scheduler
+//! [`finish::WalkedFrame`], which the driver hands to the row scheduler
 //! (see [`crate::pipeline::inflight`]). [`FrameSetup`] carries
 //! the frame-level branch between key (intra) and inter frames — the genuinely
 //! frame-level divergence (references, CDF load, order-hint history, warp /

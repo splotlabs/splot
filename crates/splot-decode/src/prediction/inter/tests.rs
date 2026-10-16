@@ -4,7 +4,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use crate::reference::buffer::RefSlots;
-use splot_parallel::ThreadCount;
 
 use splot_core::headers::frame::{
     FrameHeaderCore, FrameHeaderParseStatus, QuantizationParams, RefIdxBuf, TipFrameMode,
@@ -37,7 +36,7 @@ use crate::pipeline::frame_engine::finish::finish_walked_frame;
 use crate::pipeline::{PipelineDecodedFrame, PipelineFrame, decode_frames_from_plan};
 use crate::{
     DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
-    DecodeRuntimeConfig, DecodeStreamPlan,
+    DecodeStreamPlan,
 };
 
 mod header_state;
@@ -173,12 +172,8 @@ const FLAT_LUMA: u8 = 100;
 const FLAT_CHROMA_U: u8 = 120;
 const FLAT_CHROMA_V: u8 = 130;
 
-pub(super) fn decode_context() -> DecodeContext {
-    DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context")
-}
-
 fn plan_fixture(bytes: &[u8], options: &DecodeOptions) -> DecodeStreamPlan {
-    decode_context().plan_bytes(bytes, *options).expect("plan")
+    DecodeContext::plan_bytes(bytes, *options).expect("plan")
 }
 
 pub(super) fn decode_fixture(bytes: &[u8]) -> Vec<PipelineFrame> {
@@ -195,20 +190,14 @@ fn decode_fixture_with_options(
     options: &DecodeOptions,
     threads: usize,
 ) -> Result<Vec<PipelineFrame>> {
-    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads)))?;
-    context
-        .pool()
-        .install(|| decode_frames_from_plan(bytes, options))
+    crate::pipeline::decode_frames_from_plan_on_threads(bytes, options, threads)
 }
 
 fn decode_frames_from_plan_on_pool(
     bytes: &[u8],
     options: &DecodeOptions,
 ) -> Result<Vec<PipelineFrame>> {
-    let context = decode_context();
-    context
-        .pool()
-        .install(|| decode_frames_from_plan(bytes, options))
+    decode_frames_from_plan(bytes, options)
 }
 
 fn decode_frames() -> Vec<PipelineFrame> {
@@ -293,10 +282,7 @@ fn decode_inter_frame_after_core_mutation(
     bytes: &[u8],
     mutate: impl FnOnce(&mut FrameHeaderCore) + Send,
 ) -> Result<SharedFrame<u8>> {
-    let context = decode_context();
-    context
-        .pool()
-        .install(move || decode_inter_frame_after_core_mutation_inner(bytes, mutate))
+    decode_inter_frame_after_core_mutation_inner(bytes, mutate)
 }
 
 fn decode_inter_frame_after_core_mutation_inner(
@@ -354,7 +340,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         .expect("fixture carries the inter frame record");
     let (prefix, inter_envelope) =
         crate::pipeline::ivf_inter_envelope(&inter_frame.obus, record, inter_candidate)?;
-    let (store, meta) = reference.build_store_eight(&frames.into())?;
+    let (store, meta) = reference.build_store::<u8>(&frames.into())?;
     let inter_state = std::sync::Arc::new(super::InterReferenceState::from_metadata(store, meta));
     let first_picture_in_tu = prefix
         .iter()
@@ -386,17 +372,14 @@ fn decode_inter_frame_after_core_mutation_inner(
         panic!("inter fixture unexpectedly completed without its filter phase");
     };
     let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::pending(walked.info())?;
-    finish_walked_frame(walked, None, None, |frame| writer.complete(frame))?;
+    finish_walked_frame(walked, None, |frame| writer.complete(frame))?;
     slot.ready()
 }
 
 pub(super) fn parse_inter_core_for_validation(
     bytes: &[u8],
 ) -> Result<(SequenceHeader, FrameHeaderCore, ByteOffset)> {
-    let context = decode_context();
-    context
-        .pool()
-        .install(|| parse_inter_core_for_validation_inner(bytes))
+    parse_inter_core_for_validation_inner(bytes)
 }
 
 fn parse_inter_core_for_validation_inner(
@@ -453,7 +436,7 @@ fn parse_inter_core_for_validation_inner(
         .expect("fixture carries the inter frame record");
     let (prefix, inter_envelope) =
         crate::pipeline::ivf_inter_envelope(&inter_frame.obus, record, inter_candidate)?;
-    let (store, meta) = reference.build_store_eight(&frames.into())?;
+    let (store, meta) = reference.build_store::<u8>(&frames.into())?;
     let inter_state = super::InterReferenceState::from_metadata(store, meta);
     let first_picture_in_tu = prefix
         .iter()
@@ -675,10 +658,8 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
 
 #[test]
 fn inter_frame_validation_admits_lossless_header_tools() {
-    let context = decode_context();
-    context
-        .pool()
-        .install(|| -> Result<()> {
+    {
+        let run = || -> Result<()> {
             let (mut sequence, mut core, _) =
                 parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
             sequence
@@ -707,16 +688,16 @@ fn inter_frame_validation_admits_lossless_header_tools() {
             lossless.allow_parity_hiding = false;
 
             super::validate_inter_frame_core(&core, &sequence)
-        })
-        .expect("lossless inter headers should reach block-specific gates");
+        };
+        run()
+    }
+    .expect("lossless inter headers should reach block-specific gates");
 }
 
 #[test]
 fn inter_frame_validation_admits_active_gdf_header_tool() {
-    let context = decode_context();
-    context
-        .pool()
-        .install(|| -> Result<()> {
+    {
+        let run = || -> Result<()> {
             let (sequence, mut core, _) = parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
             let gdf = core
                 .gdf_params
@@ -728,16 +709,16 @@ fn inter_frame_validation_admits_active_gdf_header_tool() {
             gdf.gdf_pic_scale_idx = Some(0);
 
             super::validate_inter_frame_core(&core, &sequence)
-        })
-        .expect("active inter GDF headers should reach block-specific gates");
+        };
+        run()
+    }
+    .expect("active inter GDF headers should reach block-specific gates");
 }
 
 #[test]
 fn inter_frame_validation_admits_delta_q_and_rejects_missing_params() {
-    let context = decode_context();
-    context
-        .pool()
-        .install(|| -> Result<()> {
+    {
+        let run = || -> Result<()> {
             let (sequence, mut core, _) = parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE)?;
             let delta_q = core
                 .delta_q_params
@@ -759,8 +740,10 @@ fn inter_frame_validation_admits_delta_q_and_rejects_missing_params() {
                 }
             ));
             Ok(())
-        })
-        .unwrap();
+        };
+        run()
+    }
+    .unwrap();
 }
 
 #[test]
@@ -1139,9 +1122,7 @@ fn residual_fixture_per_frame_hash_is_stable() {
 
 #[test]
 fn nonzero_y_dc_quantizer_delta_fixture_is_bit_exact() {
-    let (_, core, _) = decode_context()
-        .pool()
-        .install(|| parse_inter_core_for_validation(TWO_FRAME_Y_DC_DELTA_FIXTURE))
+    let (_, core, _) = parse_inter_core_for_validation(TWO_FRAME_Y_DC_DELTA_FIXTURE)
         .expect("quantizer-delta fixture inter header parses");
     let quantization = core
         .quantization_params
@@ -1828,8 +1809,7 @@ fn opfl_refine_all_fixture_decodes_eight_frames_bit_exact() {
 #[test]
 fn opfl_refine_all_fixture_rejects_truncated_payload() {
     let truncated = &OPFL_REFINE_ALL_FIXTURE[..OPFL_REFINE_ALL_FIXTURE.len() - 1];
-    let error = decode_context()
-        .plan_bytes(truncated, DecodeOptions::default())
+    let error = DecodeContext::plan_bytes(truncated, DecodeOptions::default())
         .expect_err("truncating the final coded frame must fail closed");
     assert!(matches!(error, DecodeError::MalformedSource { .. }));
 }
@@ -2309,7 +2289,7 @@ fn tip_output_disables_saved_cdf_blending() {
 
 #[test]
 fn tip_output_validation_accepts_leading_and_regular_obus() {
-    decode_context().pool().install(|| {
+    {
         let (_, mut core, _) = parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).unwrap();
         core.status = FrameHeaderParseStatus::InterHeaderComplete;
         core.frame_is_intra = Some(false);
@@ -2325,12 +2305,12 @@ fn tip_output_validation_accepts_leading_and_regular_obus() {
             core.obu_type = obu_type;
             super::validate_tip_output_frame_core(&core).unwrap();
         }
-    });
+    };
 }
 
 #[test]
 fn tip_output_quantization_uses_nearest_valid_reference_slots() {
-    decode_context().pool().install(|| {
+    {
         let (mut sequence, mut core, offset) =
             parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).unwrap();
         sequence
@@ -2363,7 +2343,7 @@ fn tip_output_quantization_uses_nearest_valid_reference_slots() {
             core.quantization_params,
             Some(QuantizationParams::inferred_tip(103, 1, -3))
         );
-    });
+    };
 }
 
 #[test]

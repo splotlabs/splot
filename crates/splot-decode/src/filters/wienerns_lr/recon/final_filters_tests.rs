@@ -12,50 +12,6 @@ use splot_recon::{BitDepth, CurrentFrameWorkspace};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[derive(Default)]
-struct AdmitCounter(AtomicUsize);
-
-impl<'job> splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>
-    for AdmitCounter
-{
-    fn admit_ready(&self) -> usize {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        0
-    }
-
-    fn submit_iter(
-        &self,
-        _order_key: u64,
-        _conditions: &mut dyn Iterator<Item = splot_parallel::Condition<'_>>,
-        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
-    ) {
-        drop(job);
-    }
-
-    fn spawn_ready(
-        &self,
-        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
-    ) {
-        drop(job);
-    }
-
-    fn submit_ready_batch(
-        &self,
-        _order_key: u64,
-        jobs: Vec<splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>>,
-    ) {
-        drop(jobs);
-    }
-
-    fn continue_ready(
-        &self,
-        _order_key: u64,
-        job: splot_parallel::Job<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
-    ) {
-        drop(job);
-    }
-}
-
 fn block(plane: usize, x: usize, y: usize) -> WienerNsLrSourceBlock {
     WienerNsLrSourceBlock {
         restoration_type: crate::bitstream::tile_payload::LrUnitRestorationType::WienerNonsep,
@@ -223,7 +179,7 @@ fn progress_of<T: splot_recon::ReconSample>(
 
 /// Copies every stripe's window out of the frame `setup` filters, in order.
 fn stripe_windows<T: splot_recon::ReconSample>(
-    setup: &OwnedFilterSetup<'_, '_, T>,
+    setup: &OwnedFilterSetup<T>,
 ) -> Vec<Option<DeblockedWindow<T>>> {
     let mut rows = setup.sink.progress.frontier_rows().unwrap();
     assert!(rows.publish_final_rows(setup.luma_height));
@@ -257,7 +213,6 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            None,
             core::convert::identity,
         )
         .unwrap();
@@ -281,7 +236,6 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
     deblock
         .advance_source(&mut source, 8, BitDepth::Eight)
         .unwrap();
-    assert!(deblock.finish().is_none());
     let mut staged_workspace = CurrentFrameWorkspace::new(source.info(), 0).unwrap();
     crate::test_support::copy_rows_to_workspace(&mut source, &mut staged_workspace);
     let mut staged_core = core.clone();
@@ -294,7 +248,6 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
             std::sync::Arc::new(staged_core),
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
             None,
             core::convert::identity,
         )
@@ -374,7 +327,6 @@ fn a_filtered_frame_keeps_its_reconstruction_buffer() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            None,
             core::convert::identity,
         )
         .unwrap();
@@ -388,8 +340,6 @@ fn a_filtered_frame_keeps_its_reconstruction_buffer() {
 
 #[test]
 fn multi_stripe_pool_path_matches_off_pool_at_one_and_four_workers() {
-    use splot_parallel::{ThreadCount, WorkerPool};
-
     let mut core = switchable_core();
     core.deblocking_filter_params = None;
     assert_eq!(
@@ -407,64 +357,51 @@ fn multi_stripe_pool_path_matches_off_pool_at_one_and_four_workers() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            None,
             core::convert::identity,
         )
         .unwrap();
     let expected = splot_recon::DecodedFrameHashInput::new(&expected).compute_hash();
 
-    for threads in [1, 4] {
-        let pool = WorkerPool::new(ThreadCount::Fixed(threads.try_into().unwrap())).unwrap();
+    {
         let publishes = AtomicUsize::new(0);
-        let (actual, _) = pool
-            .install(|| {
-                assert!(splot_parallel::on_worker_pool());
-                final_filter_sink_10bit().into_filtered_frame(
-                    Arc::clone(&core),
-                    false,
-                    crate::filters::deblock::DeblockQuantDeltas::ZERO,
-                    None,
-                    None,
-                    |frame| {
-                        publishes.fetch_add(1, Ordering::SeqCst);
-                        frame
-                    },
-                )
-            })
+        let (actual, _) = final_filter_sink_10bit()
+            .into_filtered_frame(
+                Arc::clone(&core),
+                false,
+                crate::filters::deblock::DeblockQuantDeltas::ZERO,
+                None,
+                |frame| {
+                    publishes.fetch_add(1, Ordering::SeqCst);
+                    frame
+                },
+            )
             .unwrap();
         assert_eq!(publishes.load(Ordering::SeqCst), 1);
         assert_eq!(
             splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
             expected,
-            "{threads}-worker stripe task path must match direct filtering"
+            "stripe task path must match direct filtering"
         );
     }
 }
 
 #[test]
 fn one_worker_multi_stripe_task_failure_returns_without_publishing() {
-    use splot_parallel::{ThreadCount, WorkerPool};
-
     let mut core = switchable_core();
     core.deblocking_filter_params = None;
     let mut sink = final_filter_sink_10bit();
     sink.plane_sizes[PlaneId::Y.index()] = None;
     let publishes = AtomicUsize::new(0);
-    let pool = WorkerPool::new(ThreadCount::Fixed(1.try_into().unwrap())).unwrap();
-    let result = pool.install(|| {
-        assert!(splot_parallel::on_worker_pool());
-        sink.into_filtered_frame(
-            Arc::new(core),
-            false,
-            crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
-            None,
-            |frame| {
-                publishes.fetch_add(1, Ordering::SeqCst);
-                frame
-            },
-        )
-    });
+    let result = sink.into_filtered_frame(
+        Arc::new(core),
+        false,
+        crate::filters::deblock::DeblockQuantDeltas::ZERO,
+        None,
+        |frame| {
+            publishes.fetch_add(1, Ordering::SeqCst);
+            frame
+        },
+    );
 
     assert!(result.is_err());
     assert_eq!(publishes.load(Ordering::SeqCst), 0);
@@ -481,21 +418,14 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            None,
             core::convert::identity,
         )
         .unwrap();
 
     let mut sink = final_filter_sink_8bit::<u8>();
     let progress = progress_of(&mut sink);
-    let admit = AdmitCounter::default();
     let setup = sink
-        .into_owned_filter_setup(
-            Arc::clone(&core),
-            false,
-            Some(Arc::clone(&progress)),
-            Some(&admit),
-        )
+        .into_owned_filter_setup(Arc::clone(&core), false, Some(Arc::clone(&progress)))
         .unwrap();
     let mut windows = stripe_windows(&setup);
     let ranges = setup.stripe_ranges().to_vec();
@@ -506,11 +436,6 @@ fn owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly() {
             .run_window(stripe, windows[stripe].take().unwrap())
             .unwrap();
     }
-    assert_eq!(
-        admit.0.load(Ordering::SeqCst),
-        ranges.len(),
-        "every direct publication must wake row-gated dependents"
-    );
     let (actual, _) = setup.finish(core::convert::identity).unwrap();
     assert_eq!(
         splot_recon::DecodedFrameHashInput::new(&actual).compute_hash(),
@@ -529,7 +454,6 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
-            None,
             core::convert::identity,
         )
         .unwrap();
@@ -537,7 +461,7 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
     let mut sink = final_filter_sink_10bit();
     let progress = progress_of(&mut sink);
     let setup = sink
-        .into_owned_filter_setup(Arc::clone(&core), false, Some(Arc::clone(&progress)), None)
+        .into_owned_filter_setup(Arc::clone(&core), false, Some(Arc::clone(&progress)))
         .unwrap();
     let mut windows = stripe_windows(&setup);
     let ranges = setup.stripe_ranges().to_vec();
@@ -576,7 +500,7 @@ fn owned_filter_failure_never_freezes_and_settles_the_pending_slot_once() {
     let info = sink.frame_info();
     let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::<u16>::pending(info).unwrap();
     let setup = sink
-        .into_owned_filter_setup(Arc::clone(&core), false, None, None)
+        .into_owned_filter_setup(Arc::clone(&core), false, None)
         .unwrap();
     let mut windows = stripe_windows(&setup);
     let ranges = setup.stripe_ranges().to_vec();
@@ -620,7 +544,7 @@ fn arc_owned_filter_setup() -> (OwnedFilterShell<u16>, Arc<FrameProgress<u16>>) 
     (Arc::new(Some(setup)), progress)
 }
 
-fn owned_setup(setup: &OwnedFilterShell<u16>) -> &OwnedFilterSetup<'static, 'static, u16> {
+fn owned_setup(setup: &OwnedFilterShell<u16>) -> &OwnedFilterSetup<u16> {
     setup.as_ref().as_ref().unwrap()
 }
 
@@ -641,7 +565,7 @@ fn owned_setup_derives_lossless_grid_before_deblock_records_move()
     sink.filter_records.deblock_blocks = records;
     let progress = progress_of(&mut sink);
     let mut setup = sink
-        .into_owned_filter_setup(Arc::new(core), false, Some(progress), None)
+        .into_owned_filter_setup(Arc::new(core), false, Some(progress))
         .unwrap();
 
     assert!(
@@ -694,7 +618,6 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
             core,
             false,
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
-            None,
             None,
             core::convert::identity,
         )
@@ -889,7 +812,7 @@ fn owned_filter_task_values_are_send_and_shared_setup_is_sync() {
     assert_send::<super::super::OwnedFilteredStripe<u16>>();
     assert_send::<super::super::OwnedFilterJob<u16>>();
     assert_send::<super::super::OwnedFilterFinish<u16>>();
-    assert_sync::<super::super::OwnedFilterSetup<'static, 'static, u16>>();
+    assert_sync::<super::super::OwnedFilterSetup<u16>>();
 }
 
 fn luma_rect(samples: &[u8], x: usize) -> Vec<u8> {

@@ -4,8 +4,9 @@
 //! Decode pipeline orchestration for the supported decode runtime.
 //!
 //! The driver updates output and reference state in decode order. Entropy,
-//! reconstruction and filters run through admission; frame delay bounds their
-//! overlap, and retired publications stay with bounded physical frame entries.
+//! reconstruction and filters run on the row scheduler; frame delay bounds
+//! their overlap, and retired publications stay with bounded physical frame
+//! entries.
 
 use core::num::NonZeroUsize;
 use std::sync::Arc;
@@ -21,7 +22,6 @@ use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::types::ObuType;
-use splot_recon::BitDepth;
 #[cfg(test)]
 use splot_recon::DecodedFrame;
 
@@ -42,8 +42,9 @@ mod frame_lifecycle;
 pub(crate) mod frame_store;
 pub(crate) use frame_store::DecodeSession;
 use frame_store::FrameStore;
-pub(crate) mod frame_pipeline;
 pub(crate) mod frame_progress;
+pub(crate) mod frame_tasks;
+use frame_tasks::SplitSample;
 pub(crate) mod inflight;
 pub(crate) mod output_effects;
 mod output_schedule;
@@ -92,15 +93,23 @@ pub(crate) fn decode_frames_from_plan(
     bytes: &[u8],
     options: &DecodeOptions,
 ) -> Result<Vec<PipelineFrame>> {
-    let mut source = crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
-    decode_frames_from_plan_impl(
-        &mut source,
-        options,
-        &DecodeSession::new(NonZeroUsize::MIN),
-        |_| Ok(()),
-        true,
-        |_| Ok(()),
-    )
+    decode_frames_from_plan_on_threads(bytes, options, 1)
+}
+
+/// [`decode_frames_from_plan`] on a row scheduler of `threads` workers, with
+/// one frame in flight.
+#[cfg(test)]
+pub(crate) fn decode_frames_from_plan_on_threads(
+    bytes: &[u8],
+    options: &DecodeOptions,
+    threads: usize,
+) -> Result<Vec<PipelineFrame>> {
+    let threads = NonZeroUsize::new(threads).unwrap_or(NonZeroUsize::MIN);
+    let session = DecodeSession::new(NonZeroUsize::MIN, row_scheduler(threads)?);
+    splot_parallel::run_on_thread("splot-driver", || {
+        let mut source = crate::bitstream::byte_stream::ReaderUnits::new(bytes, options.limits());
+        decode_frames_from_plan_impl(&mut source, options, &session, |_| Ok(()), true, |_| Ok(()))
+    })?
 }
 
 /// Decodes every temporal unit of `source` and passes each displayed frame
@@ -351,6 +360,23 @@ fn parse_inter_core_with_effects(
         frame_index,
     )
 }
+/// Runs `$body` with `$t` bound to the sample type of `$sequence`: the one
+/// place the driver picks a bit depth.
+macro_rules! with_sample {
+    ($sequence:expr, $t:ident, $body:expr) => {
+        match $sequence.general.bit_depth_idc {
+            BitDepthIdc::Eight => {
+                type $t = u8;
+                $body
+            }
+            BitDepthIdc::Ten => {
+                type $t = u16;
+                $body
+            }
+        }
+    };
+}
+
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_key_frame(
@@ -363,63 +389,59 @@ pub(crate) fn decode_key_frame(
     display_grain: Option<ActiveFilmGrain>,
 ) -> Result<PipelineFrame> {
     let core = parse_frame_core(frame_envelope, sequence)?;
-    let admission = splot_parallel::AdmissionScheduler::new();
-    let decoded = splot_parallel::ready_task_scope(|scope| {
-        let buffers = crate::support::decode_buffers::DecodeBuffers::new();
-        let mut scratch_eight = inter::InterDecodeScratch::default();
-        let mut scratch_ten = inter::InterDecodeScratch::default();
-        scratch_eight.set_decode_buffers(&buffers);
-        scratch_ten.set_decode_buffers(&buffers);
-        let mut ring = inflight::InflightRing::new(NonZeroUsize::MIN, buffers);
-        let mut lane = frame_pipeline::ReconAdmissionLane::new(ring.capacity());
-        let mut frames = FrameStore::new(false, ring.capacity());
-        let decoded = decode_key_frame_with_effects(
-            &mut scratch_eight,
-            &mut scratch_ten,
-            scope,
-            &admission,
-            &mut lane,
-            &mut ring,
-            &mut frames,
-            0,
-            bytes.into(),
-            options,
-            candidate,
-            frame_envelope,
-            core,
-            sequence,
-            frame_rate,
-            display_grain,
-            None,
-            FrameOutputEffects::empty(),
-            crate::DataProps::default(),
-        );
-        ring.harvest_all(&mut scratch_eight, &mut scratch_ten, &|| {
-            admission.assist_ready(scope)
-        });
-        match ring.take_failure() {
-            Some(failure) => Err(failure),
-            None => decoded,
-        }
-    })?;
-    match decoded {
-        Err(error) => Err(error),
-        Ok(frame) => {
-            admission.finish()?;
-            Ok(frame)
-        }
+    let buffers = crate::support::decode_buffers::DecodeBuffers::new();
+    let mut pools = frame_tasks::RowPools::new(1, 1, &buffers);
+    let mut ring = inflight::InflightRing::new(NonZeroUsize::MIN, buffers, 1);
+    let mut frames = FrameStore::new(false, ring.capacity());
+    let decoded = decode_key_frame_with_effects(
+        None,
+        &mut pools,
+        &mut ring,
+        &mut frames,
+        None,
+        0,
+        bytes.into(),
+        options,
+        candidate,
+        frame_envelope,
+        core,
+        sequence,
+        frame_rate,
+        display_grain,
+        None,
+        FrameOutputEffects::empty(),
+        crate::DataProps::default(),
+    );
+    ring.harvest_all(&mut pools);
+    match ring.take_failure() {
+        Some(failure) => Err(failure),
+        None => decoded,
     }
 }
 
+/// The null reference set of a key / intra-only frame walk.
+fn empty_key_reference<T: splot_recon::ReconSample>(
+    offset: ByteOffset,
+) -> Result<inter::InterReferenceState<T>> {
+    inter::InterReferenceState::empty().map_err(|_| {
+        unsupported_at(
+            "frame_engine_intra_reference_store",
+            offset,
+            "intra frame decode requires a reference store",
+        )
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
-fn decode_key_frame_with_effects<'job, 'scope>(
-    scratch_eight: &mut inter::InterDecodeScratch<u8>,
-    scratch_ten: &mut inter::InterDecodeScratch<u16>,
-    scope: &splot_parallel::TaskScope<'_, 'scope>,
-    scheduler: &'scope splot_parallel::AdmissionScheduler<'job, frame_pipeline::FrameTask<'job>>,
-    lane: &mut frame_pipeline::ReconAdmissionLane,
+fn decode_key_frame_with_effects(
+    rows: Option<&splot_parallel::RowScheduler>,
+    pools: &mut frame_tasks::RowPools,
     ring: &mut inflight::InflightRing,
     frames: &mut FrameStore,
+    split: Option<(
+        &crate::bitstream::byte_stream::UnitBytes,
+        &mut Option<Arc<SequenceHeader>>,
+    )>,
     frame_index: usize,
     bytes: SourceBytes<'_>,
     options: &DecodeOptions,
@@ -432,85 +454,81 @@ fn decode_key_frame_with_effects<'job, 'scope>(
     user_qm: Option<crate::bitstream::tile_payload::FrameUserQmLevels>,
     output_effects: FrameOutputEffects,
     props: crate::DataProps,
-) -> Result<PipelineFrame>
-where
-    'job: 'scope,
-{
-    ring.reserve(scratch_eight, scratch_ten, &|| {
-        scheduler.assist_ready(scope)
-    });
+) -> Result<PipelineFrame> {
+    ring.reserve(pools);
     let _user_qm_scope = crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
     let core = frames.share_core(core)?;
+    if let (Some(rows), Some((unit, shared_sequence))) = (rows, split)
+        && inter::splittable_inter_frame(frame_envelope.header.obu_type, &core)
+    {
+        let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
+            frame_engine::intra::build_frame_qm_levels(&core),
+        );
+        let (slot, core, products, motion_field) = with_sample!(sequence, T, {
+            push_split_inter::<T>(
+                pools,
+                rows,
+                ring,
+                frames,
+                options,
+                sequence,
+                shared_sequence,
+                candidate,
+                unit,
+                core,
+                empty_key_reference(frame_envelope.offset)?,
+                frame_index,
+            )?
+        });
+        let frame_rate = output_effects.frame_rate(frame_rate);
+        return Ok(PipelineFrame {
+            frame: slot,
+            display_grain,
+            output_effects,
+            frame_cdfs: products.frame_cdfs,
+            motion_field,
+            ccso_params: core.ccso_params.clone(),
+            ccso_grid: products.ccso_grid,
+            segment_ids: products.segment_ids,
+            frame_rate_numerator: frame_rate.numerator,
+            frame_rate_denominator: frame_rate.denominator,
+            props,
+        });
+    }
     let mut product_writers = frames.reserve_products()?;
     let (frame, frame_cdfs, ccso_params, ccso_grid, segment_ids, motion_field) =
-        match sequence.general.bit_depth_idc {
-            BitDepthIdc::Eight => {
-                let walk = frame_engine::walk_frame::<u8>(
-                    scratch_eight,
-                    candidate,
-                    bytes,
-                    frame_envelope,
-                    core,
-                    sequence,
-                    options,
-                    &frame_engine::FrameSetup::Intra,
-                    BitDepth::Eight,
-                    &mut product_writers,
-                )?;
-                let ccso_params = walk.core.ccso_params.clone();
-                let frame = inflight::settle_walk_stage(
-                    walk.stage,
-                    inflight::PipelineFrameSlot::Eight,
-                    scope,
-                    scheduler,
-                    lane,
-                    ring,
-                    frames,
-                    frame_index,
-                )?;
-                (
-                    frame,
-                    walk.frame_cdfs,
-                    ccso_params,
-                    walk.ccso_grid,
-                    walk.segment_ids,
-                    walk.motion_field,
-                )
-            }
-            BitDepthIdc::Ten => {
-                let walk = frame_engine::walk_frame::<u16>(
-                    scratch_ten,
-                    candidate,
-                    bytes,
-                    frame_envelope,
-                    core,
-                    sequence,
-                    options,
-                    &frame_engine::FrameSetup::Intra,
-                    BitDepth::Ten,
-                    &mut product_writers,
-                )?;
-                let ccso_params = walk.core.ccso_params.clone();
-                let frame = inflight::settle_walk_stage(
-                    walk.stage,
-                    inflight::PipelineFrameSlot::Ten,
-                    scope,
-                    scheduler,
-                    lane,
-                    ring,
-                    frames,
-                    frame_index,
-                )?;
-                (
-                    frame,
-                    walk.frame_cdfs,
-                    ccso_params,
-                    walk.ccso_grid,
-                    walk.segment_ids,
-                    walk.motion_field,
-                )
-            }
-        };
+        with_sample!(sequence, T, {
+            let walk = frame_engine::walk_frame::<T>(
+                &mut T::pools(pools).scratch,
+                candidate,
+                bytes,
+                frame_envelope,
+                core,
+                sequence,
+                options,
+                &frame_engine::FrameSetup::Intra,
+                T::BIT_DEPTH,
+                &mut product_writers,
+            )?;
+            let ccso_params = walk.core.ccso_params.clone();
+            let frame = inflight::settle_walk_stage(
+                walk.stage,
+                T::erase,
+                rows,
+                pools,
+                ring,
+                frames,
+                frame_index,
+            )?;
+            (
+                frame,
+                walk.frame_cdfs,
+                ccso_params,
+                walk.ccso_grid,
+                walk.segment_ids,
+                walk.motion_field,
+            )
+        });
     let (frame_cdfs, ccso_grid, segment_ids) = product_writers
         .settle(frame_cdfs, ccso_grid, segment_ids)
         .into_parts();
@@ -530,12 +548,12 @@ where
     })
 }
 
-/// Runs the frame loop through the admission scheduler. The resolved frame
+/// Runs the frame loop over the retained decode state. The resolved frame
 /// delay bounds in-flight storage at every worker count.
 #[allow(clippy::too_many_arguments)]
-fn decode_frames_from_plan_impl<'job>(
+fn decode_frames_from_plan_impl(
     source: &mut dyn UnitSource,
-    options: &'job DecodeOptions,
+    options: &DecodeOptions,
     session: &DecodeSession,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()> + Send,
     retain_decoded_frames: bool,
@@ -543,42 +561,35 @@ fn decode_frames_from_plan_impl<'job>(
 ) -> Result<Vec<PipelineFrame>> {
     let pipeline_capacity = session
         .frame_delay()
-        .min(NonZeroUsize::new(splot_parallel::current_pool_width()).unwrap_or(NonZeroUsize::MIN));
+        .min(NonZeroUsize::new(session.threads()).unwrap_or(NonZeroUsize::MIN));
     let mut retained = session.take(pipeline_capacity);
     retained.begin(retain_decoded_frames);
-    let depth = pipeline_capacity.get();
-    let mut entropy_eight =
-        frame_pipeline::EntropyContexts::new(depth, core::mem::take(&mut retained.entropy_eight));
-    let mut entropy_ten =
-        frame_pipeline::EntropyContexts::new(depth, core::mem::take(&mut retained.entropy_ten));
-    let admission: splot_parallel::AdmissionScheduler<'job, frame_pipeline::FrameTask<'job>> =
-        splot_parallel::AdmissionScheduler::new();
-    let decoded = splot_parallel::ready_task_scope(|scope| {
-        admission.run_with_runners(scope, || {
-            drive_frames(
-                source,
-                options,
-                &mut retained,
-                (&mut entropy_eight, &mut entropy_ten),
-                preflight,
-                retain_decoded_frames,
-                emit,
-                scope,
-                &admission,
-            )
-        })
-    })??;
-    admission.finish()?;
-    retained.entropy_eight = entropy_eight.into_retained();
-    retained.entropy_ten = entropy_ten.into_retained();
+    let decoded = drive_frames(
+        source,
+        options,
+        &mut retained,
+        session.rows(),
+        preflight,
+        retain_decoded_frames,
+        emit,
+    );
     session.keep(retained);
+    let decoded = decoded?;
     Ok(decoded)
 }
 
-type EntropyPair<'a, 'job> = (
-    &'a mut frame_pipeline::EntropyContexts<'job, u8>,
-    &'a mut frame_pipeline::EntropyContexts<'job, u16>,
-);
+/// Starts the row scheduler of a context with more than one worker thread.
+///
+/// # Errors
+/// Returns [`crate::DecodeError::Pool`] when a worker thread cannot start.
+pub(crate) fn row_scheduler(
+    threads: NonZeroUsize,
+) -> Result<Option<Arc<splot_parallel::RowScheduler>>> {
+    if threads.get() <= 1 {
+        return Ok(None);
+    }
+    Ok(Some(Arc::new(splot_parallel::RowScheduler::new(threads)?)))
+}
 
 /// Runs one decode over its retained storage, and resolves the run's outcome
 /// against the filter phases the ring collected.
@@ -587,25 +598,18 @@ type EntropyPair<'a, 'job> = (
 /// would have run that frame's filters before reaching the later error, so the
 /// lowest-indexed collected failure is the one the caller sees.
 #[allow(clippy::too_many_arguments)]
-fn drive_frames<'job, 'scope>(
+fn drive_frames(
     source: &mut dyn UnitSource,
-    options: &'job DecodeOptions,
+    options: &DecodeOptions,
     retained: &mut frame_store::RetainedDecode,
-    entropy: EntropyPair<'_, 'job>,
+    rows: Option<&splot_parallel::RowScheduler>,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
     retain_decoded_frames: bool,
     emit: impl FnMut(&PipelineFrame) -> Result<()>,
-    scope: &splot_parallel::TaskScope<'_, 'scope>,
-    admission: &'scope splot_parallel::AdmissionScheduler<'job, frame_pipeline::FrameTask<'job>>,
-) -> Result<Vec<PipelineFrame>>
-where
-    'job: 'scope,
-{
+) -> Result<Vec<PipelineFrame>> {
     let frame_store::RetainedDecode {
-        scratch_eight,
-        scratch_ten,
         ring,
-        lane,
+        pools,
         frames,
         input_scratch,
         ..
@@ -616,45 +620,117 @@ where
         preflight,
         retain_decoded_frames,
         emit,
-        scope,
-        admission,
+        rows,
         ring,
-        lane,
+        pools,
         frames,
-        entropy,
-        scratch_eight,
-        scratch_ten,
         input_scratch,
     );
-    ring.harvest_all(scratch_eight, scratch_ten, &|| {
-        admission.assist_ready(scope)
-    });
+    ring.harvest_all(pools);
+    if let Some(rows) = rows {
+        pools.drain(rows);
+    }
     match ring.take_failure() {
         Some(failure) => Err(failure),
         None => decoded,
     }
 }
 
+/// Hands one single-tile inter frame to the row scheduler and returns the
+/// handles the driver records for it before its samples exist.
+/// Shares the driver's active sequence header with the frames it defers.
+///
+/// A deferred frame's reconstruction outlives the driver's borrow of the
+/// header, and the header only ever changes at a frame the driver flushes
+/// before, so the shared copy is made once per activation.
+fn share_sequence(
+    cached: &mut Option<Arc<SequenceHeader>>,
+    sequence: &SequenceHeader,
+) -> Arc<SequenceHeader> {
+    Arc::clone(cached.get_or_insert_with(|| Arc::new(sequence.clone())))
+}
+
 #[allow(clippy::too_many_arguments)]
-fn decode_frames_in_order<'job, 'scope>(
+fn push_split_inter<T: SplitSample>(
+    pools: &mut frame_tasks::RowPools,
+    rows: &splot_parallel::RowScheduler,
+    ring: &mut inflight::InflightRing,
+    frames: &mut FrameStore,
+    options: &DecodeOptions,
+    sequence: &SequenceHeader,
+    shared_sequence: &mut Option<Arc<SequenceHeader>>,
+    candidate: &DecodePlannedObu,
+    unit: &crate::bitstream::byte_stream::UnitBytes,
+    core: Arc<FrameHeaderCore>,
+    reference: inter::InterReferenceState<T>,
+    frame_index: usize,
+) -> Result<(
+    inflight::PipelineFrameSlot,
+    Arc<FrameHeaderCore>,
+    inter::FrameProducts,
+    inter::MotionFieldHandle,
+)> {
+    let frame_tasks::SamplePools { scratch, split, .. } = T::pools(pools);
+    let slot_index = split.reserve(rows, *options);
+    let parse_progress = ring.claim_parse_slot();
+    let records = scratch.take_frame_filter_records();
+    let quantizer = crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
+    let shared = share_sequence(shared_sequence, sequence);
+    let geometry = inter::FrameDecodeGeometry::new(
+        &core,
+        sequence,
+        T::BIT_DEPTH,
+        core.frame_is_intra == Some(true),
+    )?;
+    let motion = frames.reserve_motion(geometry.motion_layout())?;
+    let (slot, finish) =
+        inflight::reserve_pending_slot(geometry.info(), T::erase, ring, frames, frame_index)?;
+    let entropy = inter::entropy_dependencies(&core, sequence, &reference);
+    let motion_deps = core
+        .inter
+        .as_ref()
+        .map_or_else(reference_buffer::RefSlots::default, |inter| {
+            reference.motion_dependencies(&inter.ref_frame_idx)
+        });
+    let writers = frames.reserve_products()?;
+    let publications = writers.handles();
+    split.push(
+        rows,
+        slot_index,
+        frame_tasks::SplitFrameInputs {
+            records,
+            candidate: candidate.clone(),
+            core: Arc::clone(&core),
+            sequence: shared,
+            reference,
+            bit_depth: T::BIT_DEPTH,
+            geometry,
+            motion: motion.clone(),
+            parse_progress,
+            quantizer,
+            products: writers,
+            unit: unit.clone(),
+            entropy,
+            motion_deps,
+            finish,
+        },
+    );
+    Ok((slot, core, publications, motion))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_frames_in_order(
     source: &mut dyn UnitSource,
-    options: &'job DecodeOptions,
+    options: &DecodeOptions,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
     retain_decoded_frames: bool,
     mut emit: impl FnMut(&PipelineFrame) -> Result<()>,
-    scope: &splot_parallel::TaskScope<'_, 'scope>,
-    admission: &'scope splot_parallel::AdmissionScheduler<'job, frame_pipeline::FrameTask<'job>>,
+    rows: Option<&splot_parallel::RowScheduler>,
     ring: &mut inflight::InflightRing,
-    recon_lane: &mut frame_pipeline::ReconAdmissionLane,
+    pools: &mut frame_tasks::RowPools,
     frames: &mut FrameStore,
-    (entropy_eight, entropy_ten): EntropyPair<'_, 'job>,
-    decode_scratch_eight: &mut inter::InterDecodeScratch<u8>,
-    decode_scratch_ten: &mut inter::InterDecodeScratch<u16>,
     input_scratch: &mut InputScratch,
-) -> Result<Vec<PipelineFrame>>
-where
-    'job: 'scope,
-{
+) -> Result<Vec<PipelineFrame>> {
     let InputScratch {
         records,
         obus: obu_storage,
@@ -697,76 +773,39 @@ where
         ObuType::ClosedLoopKey => {
             parse_key_core_with_effects(key_envelope, &sequence, &output_effect_state)?
         }
-        ObuType::OpenLoopKey => match sequence.general.bit_depth_idc {
-            BitDepthIdc::Eight => {
-                let state = reference.state_eight(frames)?;
-                parse_olk_core_with_effects(
-                    key_envelope,
-                    &sequence,
-                    &state,
-                    &output_effect_state,
-                    true,
-                )?
-            }
-            BitDepthIdc::Ten => {
-                let state = reference.state_ten(frames)?;
-                parse_olk_core_with_effects(
-                    key_envelope,
-                    &sequence,
-                    &state,
-                    &output_effect_state,
-                    true,
-                )?
-            }
-        },
-        ObuType::RasFrame => match sequence.general.bit_depth_idc {
-            BitDepthIdc::Eight => {
-                let state = reference.state_eight(frames)?;
-                let activation = inter::parse_inter_frame_activation(
-                    key_envelope,
-                    &sequence,
-                    &state,
-                    true,
-                    key_frame_index,
-                )?;
-                in_band_long_term_prelude.validate_required(
-                    &activation,
-                    &reference,
-                    key_envelope.offset,
-                )?;
-                parse_inter_core_with_effects(
-                    key_envelope,
-                    &sequence,
-                    &state,
-                    &output_effect_state,
-                    true,
-                    key_frame_index,
-                )?
-            }
-            BitDepthIdc::Ten => {
-                let state = reference.state_ten(frames)?;
-                let activation = inter::parse_inter_frame_activation(
-                    key_envelope,
-                    &sequence,
-                    &state,
-                    true,
-                    key_frame_index,
-                )?;
-                in_band_long_term_prelude.validate_required(
-                    &activation,
-                    &reference,
-                    key_envelope.offset,
-                )?;
-                parse_inter_core_with_effects(
-                    key_envelope,
-                    &sequence,
-                    &state,
-                    &output_effect_state,
-                    true,
-                    key_frame_index,
-                )?
-            }
-        },
+        ObuType::OpenLoopKey => with_sample!(sequence, T, {
+            let state = reference.state::<T>(frames)?;
+            parse_olk_core_with_effects(
+                key_envelope,
+                &sequence,
+                &state,
+                &output_effect_state,
+                true,
+            )?
+        }),
+        ObuType::RasFrame => with_sample!(sequence, T, {
+            let state = reference.state::<T>(frames)?;
+            let activation = inter::parse_inter_frame_activation(
+                key_envelope,
+                &sequence,
+                &state,
+                true,
+                key_frame_index,
+            )?;
+            in_band_long_term_prelude.validate_required(
+                &activation,
+                &reference,
+                key_envelope.offset,
+            )?;
+            parse_inter_core_with_effects(
+                key_envelope,
+                &sequence,
+                &state,
+                &output_effect_state,
+                true,
+                key_frame_index,
+            )?
+        }),
         _ => {
             return Err(unsupported_at(
                 "missing_random_access_frame",
@@ -798,21 +837,52 @@ where
         key_envelope.offset,
     )?;
     frames.reserve()?;
+    let mut shared_sequence = None;
     let key_frame = if key_envelope.header.obu_type == ObuType::RasFrame {
-        match sequence.general.bit_depth_idc {
-            BitDepthIdc::Eight => {
-                let state = reference.state_eight(frames)?;
-                ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                    admission.assist_ready(scope)
-                });
-                let _user_qm_scope =
-                    crate::bitstream::tile_payload::FrameUserQmScope::install(key_user_qm);
-                let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
-                    frame_engine::intra::build_frame_qm_levels(&key_core),
-                );
+        with_sample!(sequence, T, {
+            let state = reference.state::<T>(frames)?;
+            ring.reserve(pools);
+            let _user_qm_scope =
+                crate::bitstream::tile_payload::FrameUserQmScope::install(key_user_qm);
+            let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
+                frame_engine::intra::build_frame_qm_levels(&key_core),
+            );
+            if let Some(rows) =
+                rows.filter(|_| inter::splittable_inter_frame(ObuType::RasFrame, &key_core))
+            {
+                let core = frames.share_core(key_core.clone())?;
+                let (slot, core, products, motion_field) = push_split_inter::<T>(
+                    pools,
+                    rows,
+                    ring,
+                    frames,
+                    options,
+                    &sequence,
+                    &mut shared_sequence,
+                    key_candidate,
+                    &leading_unit,
+                    core,
+                    state,
+                    0,
+                )?;
+                let rate = key_output_effects.frame_rate(frame_rate);
+                PipelineFrame {
+                    frame: slot,
+                    display_grain: key_display_grain,
+                    output_effects: key_output_effects,
+                    frame_cdfs: products.frame_cdfs,
+                    motion_field,
+                    ccso_params: core.ccso_params.clone(),
+                    ccso_grid: products.ccso_grid,
+                    segment_ids: products.segment_ids,
+                    frame_rate_numerator: rate.numerator,
+                    frame_rate_denominator: rate.denominator,
+                    props: stream.props(),
+                }
+            } else {
                 let mut product_writers = frames.reserve_products()?;
-                let walk = frame_engine::walk_frame::<u8>(
-                    decode_scratch_eight,
+                let walk = frame_engine::walk_frame::<T>(
+                    &mut T::pools(pools).scratch,
                     key_candidate,
                     leading_unit.view(),
                     key_envelope,
@@ -820,16 +890,15 @@ where
                     &sequence,
                     options,
                     &frame_engine::FrameSetup::Inter(&state),
-                    BitDepth::Eight,
+                    T::BIT_DEPTH,
                     &mut product_writers,
                 )?;
                 let ccso_params = walk.core.ccso_params.clone();
                 let frame = inflight::settle_walk_stage(
                     walk.stage,
-                    inflight::PipelineFrameSlot::Eight,
-                    scope,
-                    admission,
-                    recon_lane,
+                    T::erase,
+                    rows,
+                    pools,
                     ring,
                     frames,
                     0,
@@ -852,68 +921,14 @@ where
                     props: stream.props(),
                 }
             }
-            BitDepthIdc::Ten => {
-                let state = reference.state_ten(frames)?;
-                ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                    admission.assist_ready(scope)
-                });
-                let _user_qm_scope =
-                    crate::bitstream::tile_payload::FrameUserQmScope::install(key_user_qm);
-                let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
-                    frame_engine::intra::build_frame_qm_levels(&key_core),
-                );
-                let mut product_writers = frames.reserve_products()?;
-                let walk = frame_engine::walk_frame::<u16>(
-                    decode_scratch_ten,
-                    key_candidate,
-                    leading_unit.view(),
-                    key_envelope,
-                    frames.share_core(key_core.clone())?,
-                    &sequence,
-                    options,
-                    &frame_engine::FrameSetup::Inter(&state),
-                    BitDepth::Ten,
-                    &mut product_writers,
-                )?;
-                let ccso_params = walk.core.ccso_params.clone();
-                let frame = inflight::settle_walk_stage(
-                    walk.stage,
-                    inflight::PipelineFrameSlot::Ten,
-                    scope,
-                    admission,
-                    recon_lane,
-                    ring,
-                    frames,
-                    0,
-                )?;
-                let rate = key_output_effects.frame_rate(frame_rate);
-                let (frame_cdfs, ccso_grid, segment_ids) = product_writers
-                    .settle(walk.frame_cdfs, walk.ccso_grid, walk.segment_ids)
-                    .into_parts();
-                PipelineFrame {
-                    frame,
-                    display_grain: key_display_grain,
-                    output_effects: key_output_effects,
-                    frame_cdfs,
-                    motion_field: frames.settle_motion(walk.motion_field)?,
-                    ccso_params,
-                    ccso_grid,
-                    segment_ids,
-                    frame_rate_numerator: rate.numerator,
-                    frame_rate_denominator: rate.denominator,
-                    props: stream.props(),
-                }
-            }
-        }
+        })
     } else {
         decode_key_frame_with_effects(
-            decode_scratch_eight,
-            decode_scratch_ten,
-            scope,
-            admission,
-            recon_lane,
+            rows,
+            pools,
             ring,
             frames,
+            Some((&leading_unit, &mut shared_sequence)),
             0,
             leading_unit.view(),
             options,
@@ -1001,27 +1016,11 @@ where
 
     *obu_storage = recycle(leading_buffer);
     let mut decoding_initial_tu = true;
-    let mut pending_entropy = frame_pipeline::PendingEntropyQueue::default();
-    let mut shared_sequence = None;
-    let mut tip_eight = Vec::new();
-    let mut tip_ten = Vec::new();
     loop {
-        entropy_eight.retire_completed();
-        entropy_ten.retire_completed();
         if !frames.has_space() {
-            frame_pipeline::drain_entropy_before_barrier(
-                &mut pending_entropy,
-                scope,
-                admission,
-                recon_lane,
-            );
-            ring.harvest_all(decode_scratch_eight, decode_scratch_ten, &|| {
-                admission.assist_ready(scope)
-            });
+            ring.harvest_all(pools);
             emission_queue.flush(frames, &mut emit)?;
-            loop {
-                entropy_eight.retire_completed();
-                entropy_ten.retire_completed();
+            let mut reclaim = || {
                 reclaim_unowned_frames(
                     frames,
                     &reference,
@@ -1029,12 +1028,22 @@ where
                     &emission_queue,
                     ring,
                     &mut retained_frame_bytes,
-                )?;
-                if frames.has_space() {
-                    break;
+                )
+                .map(|()| frames.has_space())
+            };
+            match rows {
+                Some(rows) => {
+                    let mut outcome = Ok(false);
+                    rows.wait(|| {
+                        outcome = reclaim();
+                        !matches!(outcome, Ok(false))
+                    });
+                    outcome?;
                 }
-                if !splot_parallel::assist_pool_once() {
-                    std::thread::yield_now();
+                None => {
+                    while !reclaim()? {
+                        std::thread::yield_now();
+                    }
                 }
             }
         }
@@ -1045,12 +1054,6 @@ where
         let next_candidate = &next_candidate;
         match next_candidate.obu_type() {
             ObuType::LeadingSef | ObuType::RegularSef => {
-                frame_pipeline::drain_entropy_before_barrier(
-                    &mut pending_entropy,
-                    scope,
-                    admission,
-                    recon_lane,
-                );
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
                 let obus = RuntimeStream::obus(&unit, &mut obu_buffer)?;
                 let (sef_prefix_obus, sef_envelope) =
@@ -1079,30 +1082,17 @@ where
                     break;
                 }
                 reference.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
-                let sef_core = match sequence.general.bit_depth_idc {
-                    BitDepthIdc::Eight => {
-                        let state = reference.state_eight(frames)?;
-                        parse_inter_core_with_effects(
-                            sef_envelope,
-                            &sequence,
-                            &state,
-                            &output_effect_state,
-                            first_picture_in_tu,
-                            ivf_frame_index,
-                        )?
-                    }
-                    BitDepthIdc::Ten => {
-                        let state = reference.state_ten(frames)?;
-                        parse_inter_core_with_effects(
-                            sef_envelope,
-                            &sequence,
-                            &state,
-                            &output_effect_state,
-                            first_picture_in_tu,
-                            ivf_frame_index,
-                        )?
-                    }
-                };
+                let sef_core = with_sample!(sequence, T, {
+                    let state = reference.state::<T>(frames)?;
+                    parse_inter_core_with_effects(
+                        sef_envelope,
+                        &sequence,
+                        &state,
+                        &output_effect_state,
+                        first_picture_in_tu,
+                        ivf_frame_index,
+                    )?
+                });
                 let next_output_frame_count = checked_add(
                     DecodeLimitName::MaxOutputFrames,
                     scheduler.emitted_count as u64,
@@ -1243,28 +1233,16 @@ where
                     next_candidate.obu_type(),
                     ObuType::Switch | ObuType::RasFrame
                 ) {
-                    let activation = match sequence.general.bit_depth_idc {
-                        BitDepthIdc::Eight => {
-                            let state = reference.state_eight(frames)?;
-                            inter::parse_inter_frame_activation(
-                                inter_envelope,
-                                &sequence,
-                                &state,
-                                first_picture_in_tu,
-                                ivf_frame_index,
-                            )?
-                        }
-                        BitDepthIdc::Ten => {
-                            let state = reference.state_ten(frames)?;
-                            inter::parse_inter_frame_activation(
-                                inter_envelope,
-                                &sequence,
-                                &state,
-                                first_picture_in_tu,
-                                ivf_frame_index,
-                            )?
-                        }
-                    };
+                    let activation = with_sample!(sequence, T, {
+                        let state = reference.state::<T>(frames)?;
+                        inter::parse_inter_frame_activation(
+                            inter_envelope,
+                            &sequence,
+                            &state,
+                            first_picture_in_tu,
+                            ivf_frame_index,
+                        )?
+                    });
                     if next_candidate.obu_type() == ObuType::RasFrame && decoding_initial_tu {
                         in_band_long_term_prelude.validate_required(
                             &activation,
@@ -1294,444 +1272,148 @@ where
                     }
                 }
                 let frame_index = frames.len();
-                let decoded = match sequence.general.bit_depth_idc {
-                    BitDepthIdc::Eight => {
-                        let inter_state = reference.state_eight(frames)?;
-                        let inter_core = parse_inter_core_with_effects(
-                            inter_envelope,
-                            &sequence,
-                            &inter_state,
-                            &output_effect_state,
-                            first_picture_in_tu,
-                            ivf_frame_index,
+                let decoded = with_sample!(sequence, T, {
+                    let inter_state = reference.state::<T>(frames)?;
+                    let inter_core = parse_inter_core_with_effects(
+                        inter_envelope,
+                        &sequence,
+                        &inter_state,
+                        &output_effect_state,
+                        first_picture_in_tu,
+                        ivf_frame_index,
+                    )?;
+                    let inter_core = frames.share_core(inter_core)?;
+                    let user_qm = output_effect_state.prepare_frame(
+                        inter_envelope,
+                        &inter_core,
+                        &sequence,
+                        first_picture_in_tu,
+                        ivf_frame_index,
+                    )?;
+                    if frame_is_output(&inter_core) {
+                        let next_output_frame_count = checked_add(
+                            DecodeLimitName::MaxOutputFrames,
+                            scheduler.emitted_count as u64,
+                            1,
                         )?;
-                        let inter_core = frames.share_core(inter_core)?;
-                        let user_qm = output_effect_state.prepare_frame(
-                            inter_envelope,
-                            &inter_core,
+                        ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
+                    }
+                    ensure_retained_frame_byte_limits_for_core(
+                        options.limits(),
+                        retained_frame_bytes,
+                        &inter_core,
+                        &sequence,
+                        inter_envelope.offset,
+                    )?;
+                    let split = rows.filter(|_| {
+                        inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
+                    });
+                    let _user_qm_scope =
+                        crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
+                    let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
+                        frame_engine::intra::build_frame_qm_levels(&inter_core),
+                    );
+                    if let Some(rows) = split {
+                        ring.reserve(pools);
+                        push_split_inter::<T>(
+                            pools,
+                            rows,
+                            ring,
+                            frames,
+                            options,
                             &sequence,
-                            first_picture_in_tu,
-                            ivf_frame_index,
-                        )?;
-                        if frame_is_output(&inter_core) {
-                            let next_output_frame_count = checked_add(
-                                DecodeLimitName::MaxOutputFrames,
-                                scheduler.emitted_count as u64,
-                                1,
-                            )?;
-                            ensure_output_frame_count_limit(
-                                options.limits(),
-                                next_output_frame_count,
-                            )?;
-                        }
-                        ensure_retained_frame_byte_limits_for_core(
-                            options.limits(),
-                            retained_frame_bytes,
-                            &inter_core,
-                            &sequence,
-                            inter_envelope.offset,
-                        )?;
-                        let parse_progress = if splot_parallel::current_pool_width() > 1
-                            && inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
-                        {
-                            frame_pipeline::prepare_entropy_submission(
-                                &mut pending_entropy,
-                                ring.capacity(),
-                                scope,
-                                admission,
-                                recon_lane,
-                            );
-                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                                admission.assist_ready(scope)
-                            });
-                            let entropy_context = entropy_eight.claim();
-                            Some((ring.claim_parse_slot(), entropy_context))
-                        } else {
-                            None
-                        };
-                        let _user_qm_scope =
-                            crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
-                        let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
-                            frame_engine::intra::build_frame_qm_levels(&inter_core),
-                        );
-                        if let Some((parse_progress, entropy_context)) = parse_progress {
-                            let records = decode_scratch_eight.take_frame_filter_records();
-                            let quantizer =
-                                crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
-                            let shared =
-                                frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
-                            let geometry = inter::FrameDecodeGeometry::new(
+                            &mut shared_sequence,
+                            next_candidate,
+                            &unit,
+                            inter_core,
+                            inter_state,
+                            frame_index,
+                        )?
+                    } else if inter_envelope.header.obu_type.is_tip_frame() {
+                        ring.reserve(pools);
+                        let (slot, finish, geometry, products, motion) =
+                            frame_tasks::reserve_tip_output(
                                 &inter_core,
                                 &sequence,
-                                BitDepth::Eight,
-                                false,
-                            )?;
-                            let motion = frames.reserve_motion(geometry.motion_layout())?;
-                            let (slot, finish) = inflight::reserve_pending_slot(
-                                geometry.info(),
-                                inflight::PipelineFrameSlot::Eight,
-                                ring,
+                                T::BIT_DEPTH,
+                                T::erase,
                                 frames,
+                                ring,
                                 frame_index,
                             )?;
-                            let dependencies =
-                                inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
-                            let writers = frames.reserve_products()?;
-                            let publications = writers.handles();
-                            let products =
-                                (slot, Arc::clone(&inter_core), publications, motion.clone());
-                            let result = frame_pipeline::schedule_entropy(
-                                inter::InterFrameStart {
-                                    records,
-                                    candidate: next_candidate.clone(),
-                                    core: inter_core,
-                                    sequence: shared,
-                                    options,
-                                    reference: inter_state,
-                                    bit_depth: BitDepth::Eight,
-                                    geometry,
-                                    motion,
-                                    parse_progress,
-                                    quantizer,
-                                    products: writers,
-                                },
-                                unit.clone(),
-                                entropy_context,
-                                frame_index,
-                                products.3.clone(),
-                                &dependencies,
-                                admission,
-                                scope,
-                            );
-                            pending_entropy.push_back(frame_pipeline::PendingEntropy::Eight {
-                                frame_index,
-                                result,
-                                finish,
+                        let publications = products.handles();
+                        let entropy =
+                            inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
+                        let motion_deps = inter_core
+                            .inter
+                            .as_ref()
+                            .map_or_else(reference_buffer::RefSlots::default, |inter| {
+                                inter_state.motion_dependencies(&inter.ref_frame_idx)
                             });
-                            products
-                        } else if inter_envelope.header.obu_type.is_tip_frame() {
-                            frame_pipeline::drain_entropy_before_barrier(
-                                &mut pending_entropy,
-                                scope,
-                                admission,
-                                recon_lane,
-                            );
-                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                                admission.assist_ready(scope)
-                            });
-                            let (slot, finish, geometry, products, motion) =
-                                frame_pipeline::reserve_tip_output(
-                                    &inter_core,
-                                    &sequence,
-                                    BitDepth::Eight,
-                                    inflight::PipelineFrameSlot::Eight,
-                                    frames,
-                                    ring,
-                                    frame_index,
-                                )?;
-                            let publications = products.handles();
-                            let dependencies = inter::tip_output_dependencies(
-                                &inter_core,
-                                &sequence,
-                                &inter_state,
-                            );
-                            let task_core = Arc::clone(&inter_core);
-                            let core = inter_core;
-                            let shared =
-                                frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
-                            frame_pipeline::schedule_tip_output(
-                                frame_pipeline::TipOutputJob {
-                                    candidate: next_candidate.clone(),
-                                    core: task_core,
-                                    sequence: shared,
-                                    options,
-                                    reference: inter_state,
-                                    geometry,
-                                },
-                                frame_pipeline::claim_tip_output_cell(&mut tip_eight),
-                                frame_index,
-                                &dependencies,
+                        let core = Arc::clone(&inter_core);
+                        pools.push_tip::<T>(
+                            rows,
+                            *options,
+                            frame_tasks::TipFrameInputs {
+                                candidate: next_candidate.clone(),
+                                core: inter_core,
+                                sequence: share_sequence(&mut shared_sequence, &sequence),
+                                reference: inter_state,
+                                geometry,
                                 products,
-                                motion.clone(),
+                                motion: motion.clone(),
                                 finish,
-                                admission,
-                                scope,
-                                recon_lane,
-                            );
-                            (slot, core, publications, motion)
-                        } else {
-                            frame_pipeline::drain_entropy_before_barrier(
-                                &mut pending_entropy,
-                                scope,
-                                admission,
-                                recon_lane,
-                            );
-                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                                admission.assist_ready(scope)
-                            });
-                            let setup = if inter_core.status
+                                entropy,
+                                motion_deps,
+                                offset: next_candidate.offset(),
+                            },
+                        )?;
+                        (slot, core, publications, motion)
+                    } else {
+                        ring.reserve(pools);
+                        let setup = if inter_core.status
                                 == splot_core::headers::frame::FrameHeaderParseStatus::IntraHeaderComplete
                             {
                                 frame_engine::FrameSetup::Intra
                             } else {
                                 frame_engine::FrameSetup::Inter(&inter_state)
                             };
-                            let mut product_writers = frames.reserve_products()?;
-                            let walk = frame_engine::walk_frame(
-                                decode_scratch_eight,
-                                next_candidate,
-                                unit.view(),
-                                inter_envelope,
-                                inter_core,
-                                &sequence,
-                                options,
-                                &setup,
-                                BitDepth::Eight,
-                                &mut product_writers,
-                            )?;
-                            let inter_core = Arc::clone(&walk.core);
-                            let slot = inflight::settle_walk_stage(
-                                walk.stage,
-                                inflight::PipelineFrameSlot::Eight,
-                                scope,
-                                admission,
-                                recon_lane,
-                                ring,
-                                frames,
-                                frame_index,
-                            )?;
-                            let products = product_writers.settle(
-                                walk.frame_cdfs,
-                                walk.ccso_grid,
-                                walk.segment_ids,
-                            );
-                            (
-                                slot,
-                                inter_core,
-                                products,
-                                frames.settle_motion(walk.motion_field)?,
-                            )
-                        }
-                    }
-                    BitDepthIdc::Ten => {
-                        let inter_state = reference.state_ten(frames)?;
-                        let inter_core = parse_inter_core_with_effects(
+                        let mut product_writers = frames.reserve_products()?;
+                        let walk = frame_engine::walk_frame(
+                            &mut T::pools(pools).scratch,
+                            next_candidate,
+                            unit.view(),
                             inter_envelope,
+                            inter_core,
                             &sequence,
-                            &inter_state,
-                            &output_effect_state,
-                            first_picture_in_tu,
-                            ivf_frame_index,
+                            options,
+                            &setup,
+                            T::BIT_DEPTH,
+                            &mut product_writers,
                         )?;
-                        let inter_core = frames.share_core(inter_core)?;
-                        let user_qm = output_effect_state.prepare_frame(
-                            inter_envelope,
-                            &inter_core,
-                            &sequence,
-                            first_picture_in_tu,
-                            ivf_frame_index,
+                        let inter_core = Arc::clone(&walk.core);
+                        let slot = inflight::settle_walk_stage(
+                            walk.stage,
+                            T::erase,
+                            rows,
+                            pools,
+                            ring,
+                            frames,
+                            frame_index,
                         )?;
-                        if frame_is_output(&inter_core) {
-                            let next_output_frame_count = checked_add(
-                                DecodeLimitName::MaxOutputFrames,
-                                scheduler.emitted_count as u64,
-                                1,
-                            )?;
-                            ensure_output_frame_count_limit(
-                                options.limits(),
-                                next_output_frame_count,
-                            )?;
-                        }
-                        ensure_retained_frame_byte_limits_for_core(
-                            options.limits(),
-                            retained_frame_bytes,
-                            &inter_core,
-                            &sequence,
-                            inter_envelope.offset,
-                        )?;
-                        let parse_progress = if splot_parallel::current_pool_width() > 1
-                            && inter::splittable_inter_frame(next_candidate.obu_type(), &inter_core)
-                        {
-                            frame_pipeline::prepare_entropy_submission(
-                                &mut pending_entropy,
-                                ring.capacity(),
-                                scope,
-                                admission,
-                                recon_lane,
-                            );
-                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                                admission.assist_ready(scope)
-                            });
-                            let entropy_context = entropy_ten.claim();
-                            Some((ring.claim_parse_slot(), entropy_context))
-                        } else {
-                            None
-                        };
-                        let _user_qm_scope =
-                            crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
-                        let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
-                            frame_engine::intra::build_frame_qm_levels(&inter_core),
+                        let products = product_writers.settle(
+                            walk.frame_cdfs,
+                            walk.ccso_grid,
+                            walk.segment_ids,
                         );
-                        if let Some((parse_progress, entropy_context)) = parse_progress {
-                            let records = decode_scratch_ten.take_frame_filter_records();
-                            let quantizer =
-                                crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
-                            let shared =
-                                frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
-                            let geometry = inter::FrameDecodeGeometry::new(
-                                &inter_core,
-                                &sequence,
-                                BitDepth::Ten,
-                                false,
-                            )?;
-                            let motion = frames.reserve_motion(geometry.motion_layout())?;
-                            let (slot, finish) = inflight::reserve_pending_slot(
-                                geometry.info(),
-                                inflight::PipelineFrameSlot::Ten,
-                                ring,
-                                frames,
-                                frame_index,
-                            )?;
-                            let dependencies =
-                                inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
-                            let writers = frames.reserve_products()?;
-                            let publications = writers.handles();
-                            let products =
-                                (slot, Arc::clone(&inter_core), publications, motion.clone());
-                            let result = frame_pipeline::schedule_entropy(
-                                inter::InterFrameStart {
-                                    records,
-                                    candidate: next_candidate.clone(),
-                                    core: inter_core,
-                                    sequence: shared,
-                                    options,
-                                    reference: inter_state,
-                                    bit_depth: BitDepth::Ten,
-                                    geometry,
-                                    motion,
-                                    parse_progress,
-                                    quantizer,
-                                    products: writers,
-                                },
-                                unit.clone(),
-                                entropy_context,
-                                frame_index,
-                                products.3.clone(),
-                                &dependencies,
-                                admission,
-                                scope,
-                            );
-                            pending_entropy.push_back(frame_pipeline::PendingEntropy::Ten {
-                                frame_index,
-                                result,
-                                finish,
-                            });
-                            products
-                        } else if inter_envelope.header.obu_type.is_tip_frame() {
-                            frame_pipeline::drain_entropy_before_barrier(
-                                &mut pending_entropy,
-                                scope,
-                                admission,
-                                recon_lane,
-                            );
-                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                                admission.assist_ready(scope)
-                            });
-                            let (slot, finish, geometry, products, motion) =
-                                frame_pipeline::reserve_tip_output(
-                                    &inter_core,
-                                    &sequence,
-                                    BitDepth::Ten,
-                                    inflight::PipelineFrameSlot::Ten,
-                                    frames,
-                                    ring,
-                                    frame_index,
-                                )?;
-                            let publications = products.handles();
-                            let dependencies = inter::tip_output_dependencies(
-                                &inter_core,
-                                &sequence,
-                                &inter_state,
-                            );
-                            let task_core = Arc::clone(&inter_core);
-                            let core = inter_core;
-                            let shared =
-                                frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
-                            frame_pipeline::schedule_tip_output(
-                                frame_pipeline::TipOutputJob {
-                                    candidate: next_candidate.clone(),
-                                    core: task_core,
-                                    sequence: shared,
-                                    options,
-                                    reference: inter_state,
-                                    geometry,
-                                },
-                                frame_pipeline::claim_tip_output_cell(&mut tip_ten),
-                                frame_index,
-                                &dependencies,
-                                products,
-                                motion.clone(),
-                                finish,
-                                admission,
-                                scope,
-                                recon_lane,
-                            );
-                            (slot, core, publications, motion)
-                        } else {
-                            frame_pipeline::drain_entropy_before_barrier(
-                                &mut pending_entropy,
-                                scope,
-                                admission,
-                                recon_lane,
-                            );
-                            ring.reserve(decode_scratch_eight, decode_scratch_ten, &|| {
-                                admission.assist_ready(scope)
-                            });
-                            let setup = if inter_core.status
-                                == splot_core::headers::frame::FrameHeaderParseStatus::IntraHeaderComplete
-                            {
-                                frame_engine::FrameSetup::Intra
-                            } else {
-                                frame_engine::FrameSetup::Inter(&inter_state)
-                            };
-                            let mut product_writers = frames.reserve_products()?;
-                            let walk = frame_engine::walk_frame(
-                                decode_scratch_ten,
-                                next_candidate,
-                                unit.view(),
-                                inter_envelope,
-                                inter_core,
-                                &sequence,
-                                options,
-                                &setup,
-                                BitDepth::Ten,
-                                &mut product_writers,
-                            )?;
-                            let inter_core = Arc::clone(&walk.core);
-                            let slot = inflight::settle_walk_stage(
-                                walk.stage,
-                                inflight::PipelineFrameSlot::Ten,
-                                scope,
-                                admission,
-                                recon_lane,
-                                ring,
-                                frames,
-                                frame_index,
-                            )?;
-                            let products = product_writers.settle(
-                                walk.frame_cdfs,
-                                walk.ccso_grid,
-                                walk.segment_ids,
-                            );
-                            (
-                                slot,
-                                inter_core,
-                                products,
-                                frames.settle_motion(walk.motion_field)?,
-                            )
-                        }
+                        (
+                            slot,
+                            inter_core,
+                            products,
+                            frames.settle_motion(walk.motion_field)?,
+                        )
                     }
-                };
+                });
                 let (inter_slot, inter_core, products, motion_field) = decoded;
                 let inter_display_grain =
                     film_grain_slots.active_for_core(&inter_core, inter_envelope.offset)?;
@@ -1824,12 +1506,6 @@ where
                 }
             }
             ObuType::ClosedLoopKey | ObuType::OpenLoopKey => {
-                frame_pipeline::drain_entropy_before_barrier(
-                    &mut pending_entropy,
-                    scope,
-                    admission,
-                    recon_lane,
-                );
                 let starts_new_sequence = next_candidate.obu_type() == ObuType::ClosedLoopKey;
                 let mut obu_buffer = recycle(core::mem::take(obu_storage));
                 let obus = RuntimeStream::obus(&unit, &mut obu_buffer)?;
@@ -1903,28 +1579,16 @@ where
                 let key_core = if starts_new_sequence {
                     parse_key_core_with_effects(key_envelope, &key_sequence, &output_effect_state)?
                 } else {
-                    match key_sequence.general.bit_depth_idc {
-                        BitDepthIdc::Eight => {
-                            let state = reference.state_eight(frames)?;
-                            parse_olk_core_with_effects(
-                                key_envelope,
-                                &key_sequence,
-                                &state,
-                                &output_effect_state,
-                                first_picture_in_tu,
-                            )?
-                        }
-                        BitDepthIdc::Ten => {
-                            let state = reference.state_ten(frames)?;
-                            parse_olk_core_with_effects(
-                                key_envelope,
-                                &key_sequence,
-                                &state,
-                                &output_effect_state,
-                                first_picture_in_tu,
-                            )?
-                        }
-                    }
+                    with_sample!(key_sequence, T, {
+                        let state = reference.state::<T>(frames)?;
+                        parse_olk_core_with_effects(
+                            key_envelope,
+                            &key_sequence,
+                            &state,
+                            &output_effect_state,
+                            first_picture_in_tu,
+                        )?
+                    })
                 };
                 if decoding_initial_tu {
                     in_band_long_term_prelude.validate_required(
@@ -1986,13 +1650,11 @@ where
                 )?;
                 let frame_index = frames.len();
                 let key_frame = decode_key_frame_with_effects(
-                    decode_scratch_eight,
-                    decode_scratch_ten,
-                    scope,
-                    admission,
-                    recon_lane,
+                    rows,
+                    pools,
                     ring,
                     frames,
+                    Some((&unit, &mut shared_sequence)),
                     frame_index,
                     unit.view(),
                     options,
@@ -2087,12 +1749,6 @@ where
         }
     }
 
-    frame_pipeline::drain_entropy_before_barrier(
-        &mut pending_entropy,
-        scope,
-        admission,
-        recon_lane,
-    );
     if !output_frame_limit_reached(options, scheduler.emitted_count) {
         let flushed = scheduler.flush_all();
         charge_emitted_outputs(
@@ -2105,9 +1761,7 @@ where
         )?;
         emission_queue.flush(frames, &mut emit)?;
         if !retain_decoded_frames {
-            ring.harvest_all(decode_scratch_eight, decode_scratch_ten, &|| {
-                admission.assist_ready(scope)
-            });
+            ring.harvest_all(pools);
             reclaim_unowned_frames(
                 frames,
                 &reference,

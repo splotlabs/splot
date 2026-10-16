@@ -13,7 +13,7 @@ use parking_lot::{Condvar, Mutex};
 use splot_core::headers::content_interpretation::ContentInterpretation;
 use splot_core::headers::metadata::MetadataUnit;
 use splot_core::ivf::IvfHeader;
-use splot_parallel::{FrameDelay, ThreadCount, WatermarkCell, WorkerPool};
+use splot_parallel::{FrameDelay, ThreadCount};
 use splot_recon::{
     BitDepth, DecodedFrameInfo, PixelFormat, PlaneId, PlanePool, PlaneRef, ReconSample, SharedFrame,
 };
@@ -28,7 +28,7 @@ use crate::{DecodeLimitName, DecodeLimits, DecodeOptions};
 #[derive(Clone, Copy, Debug, Default)]
 #[non_exhaustive]
 pub struct DecoderSettings {
-    /// Worker threads the decoder's own pool runs.
+    /// The threads the decoder runs.
     pub threads: ThreadCount,
     /// Frames the decoder may decode in parallel; also how many temporal
     /// units it holds before [`Decoder::send_data`] reports
@@ -258,7 +258,7 @@ fn recycle<T: ReconSample>(frame: SharedFrame<T>, pool: &Arc<PlanePool>) {
 /// Send one temporal unit (the OBUs of one IVF frame record, MP4 sample or
 /// Matroska block) with [`Self::send_data`], take the pictures it produced
 /// with [`Self::get_picture`], and call [`Self::drain`] at end of stream to
-/// take the rest. The decoder runs on its own worker pool.
+/// take the rest. The decoder runs on its own threads.
 ///
 /// An error ends the session: the call that sees it returns it, and later
 /// calls return [`DecoderStateError::Failed`].
@@ -289,8 +289,8 @@ fn recycle<T: ReconSample>(frame: SharedFrame<T>, pool: &Arc<PlanePool>) {
 pub struct Decoder {
     shared: Arc<Shared>,
     limits: DecodeLimits,
-    /// Dropped after [`Decoder::drop`] has waited for the driver.
-    _pool: WorkerPool,
+    /// Joined after [`Decoder::drop`] has waited for the driver's outcome.
+    driver: Option<std::thread::JoinHandle<()>>,
 }
 
 #[derive(Debug)]
@@ -298,8 +298,9 @@ struct Shared {
     state: Mutex<State>,
     /// Wakes a caller that waits for a picture or for the driver to stop.
     caller: Condvar,
-    /// Counts caller events; the driver waits for it to change.
-    events: WatermarkCell,
+    /// Wakes the driver when the caller sent a unit, took a picture, drained
+    /// or closed.
+    driver: Condvar,
 }
 
 #[derive(Debug)]
@@ -310,7 +311,6 @@ struct State {
     output: VecDeque<Picture>,
     output_capacity: usize,
     sent_bytes: u64,
-    events: usize,
     draining: bool,
     closing: bool,
     outcome: Outcome,
@@ -324,12 +324,10 @@ enum Outcome {
 }
 
 impl Shared {
-    /// Counts one caller event, so a waiting driver looks at the state again.
-    fn bump(&self, mut state: parking_lot::MutexGuard<'_, State>) {
-        state.events += 1;
-        let events = state.events;
+    /// Wakes a waiting driver so it looks at the state again.
+    fn bump(&self, state: parking_lot::MutexGuard<'_, State>) {
         drop(state);
-        self.events.publish(events);
+        self.driver.notify_all();
     }
 
     /// Records the driver's outcome and wakes the caller.
@@ -359,13 +357,13 @@ impl Drop for DriverGuard {
 }
 
 impl Decoder {
-    /// Opens a decoder and starts its worker pool.
+    /// Opens a decoder and starts its driver and row workers.
     ///
     /// # Errors
-    /// Returns [`DecodeError::Pool`] if the worker pool cannot be built.
+    /// Returns [`DecodeError::Pool`] if a thread cannot start.
     pub fn new(settings: DecoderSettings) -> Result<Self> {
-        let pool = WorkerPool::new(settings.threads)?;
-        let frame_delay = settings.frame_delay.resolve(pool.threads());
+        let threads = settings.threads.resolve();
+        let frame_delay = settings.frame_delay.resolve(threads);
         let capacity = frame_delay.get().max(2);
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
@@ -375,19 +373,19 @@ impl Decoder {
                 output: VecDeque::with_capacity(capacity + MAX_OUTPUTS_PER_UNIT),
                 output_capacity: capacity,
                 sent_bytes: 0,
-                events: 0,
                 draining: false,
                 closing: false,
                 outcome: Outcome::Running,
             }),
             caller: Condvar::new(),
-            events: WatermarkCell::new(),
+            driver: Condvar::new(),
         });
         let driver = Arc::clone(&shared);
         let options = DecodeOptions::new(settings.limits);
-        pool.spawn(move || {
+        let rows = crate::pipeline::row_scheduler(threads)?;
+        let driver = splot_parallel::spawn_thread("splot-driver", move || {
             let guard = DriverGuard(driver);
-            let session = DecodeSession::detaching_held(frame_delay);
+            let session = DecodeSession::detaching_held(frame_delay, rows);
             let mut units = ChannelUnits(Arc::clone(&guard.0));
             let result = crate::pipeline::emit_frames(
                 &mut units,
@@ -400,11 +398,11 @@ impl Decoder {
                 },
             );
             guard.0.finish(result);
-        });
+        })?;
         Ok(Self {
             shared,
             limits: settings.limits,
-            _pool: pool,
+            driver: Some(driver),
         })
     }
 
@@ -481,8 +479,8 @@ impl Decoder {
 }
 
 impl Drop for Decoder {
-    /// Stops the driver and waits for it, so no decoder code runs on the
-    /// pool after the decoder is gone.
+    /// Stops the driver and joins it, so no decoder code runs after the
+    /// decoder is gone.
     fn drop(&mut self) {
         let mut state = self.shared.state.lock();
         state.closing = true;
@@ -491,6 +489,10 @@ impl Drop for Decoder {
         let mut state = self.shared.state.lock();
         while matches!(state.outcome, Outcome::Running) {
             self.shared.caller.wait(&mut state);
+        }
+        drop(state);
+        if let Some(driver) = self.driver.take() {
+            let _ = driver.join();
         }
     }
 }
@@ -526,10 +528,8 @@ struct ChannelUnits(Arc<Shared>);
 impl UnitSource for ChannelUnits {
     fn next_unit(&mut self, _: &mut Vec<Arc<Vec<u8>>>) -> Result<Option<SourceUnit>> {
         let shared = &self.0;
+        let mut state = shared.state.lock();
         loop {
-            let snapshot = splot_parallel::pool_progress_snapshot();
-            let _ = shared.events.current();
-            let mut state = shared.state.lock();
             if state.closing {
                 return Ok(None);
             }
@@ -543,8 +543,7 @@ impl UnitSource for ChannelUnits {
                     return Ok(None);
                 }
             }
-            drop(state);
-            splot_parallel::assist_pool_or_park(&snapshot);
+            shared.driver.wait(&mut state);
         }
     }
 

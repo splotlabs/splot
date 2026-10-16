@@ -18,7 +18,6 @@ use splot_recon::{BitDepth, CurrentFrameWorkspace, ReconSample};
 
 use super::super::InterReferenceState;
 use super::super::find_mv_stack::TemporalMvContext;
-use super::super::mc::WorkspaceSink;
 use super::ReconCommand;
 use super::deferred_recon;
 use super::temporal::MotionFieldUnits;
@@ -92,7 +91,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         *expected_ordinal = expected_ordinal.saturating_add(1);
         let row_has_entries = !row.superblocks.is_empty();
         let motion_owed = !row.motion_folded;
-        let motion_derived = row.motion_derived;
         let mut precompute_error = row.take_precompute_error();
         let _quantizer_scopes = quantizer.install_frame();
         let ReconRow {
@@ -102,7 +100,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             mut entries,
             mut residual_blocks,
             mut temporal,
-            motion_storage,
             mut flag_log,
             filter_records: mut row_filter_records,
             mut residual_planes,
@@ -175,59 +172,30 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                             )?;
                         }
                         ReconCommand::Inter(command) => {
-                            if motion_derived {
-                                let grid = scratch.reconstruct_from_motion(
-                                    &command,
-                                    &mut WorkspaceSink::Frame(workspace),
-                                    block_decoded,
-                                    entry.take_motion(motion_storage.as_ref())?,
-                                    &residual_blocks,
-                                    if shared_coefficients {
-                                        &coefficient_scratch
-                                    } else {
-                                        &residual_coeffs
-                                    },
-                                    &deferred_recon::ReconShared {
-                                        reference,
-                                        ref_frame_idx,
-                                        temporal_context,
-                                        sequence,
-                                        core,
-                                        luma_use_tcq,
-                                        residual_use_ddt,
-                                        bit_depth,
-                                        mi_rows,
-                                        mi_cols,
-                                        current_order_hint,
-                                    },
-                                )?;
-                                drop(grid);
-                            } else {
-                                scratch.reconstruct(
-                                    &command,
-                                    workspace,
-                                    block_decoded,
-                                    motion,
-                                    ordinal,
-                                    &residual_blocks,
-                                    if shared_coefficients {
-                                        &coefficient_scratch
-                                    } else {
-                                        &residual_coeffs
-                                    },
-                                    temporal_context,
-                                    reference,
-                                    ref_frame_idx,
-                                    sequence,
-                                    core,
-                                    mi_rows,
-                                    mi_cols,
-                                    current_order_hint,
-                                    luma_use_tcq,
-                                    residual_use_ddt,
-                                    bit_depth,
-                                )?;
-                            }
+                            scratch.reconstruct(
+                                &command,
+                                workspace,
+                                block_decoded,
+                                motion,
+                                ordinal,
+                                &residual_blocks,
+                                if shared_coefficients {
+                                    &coefficient_scratch
+                                } else {
+                                    &residual_coeffs
+                                },
+                                temporal_context,
+                                reference,
+                                ref_frame_idx,
+                                sequence,
+                                core,
+                                mi_rows,
+                                mi_cols,
+                                current_order_hint,
+                                luma_use_tcq,
+                                residual_use_ddt,
+                                bit_depth,
+                            )?;
                         }
                     }
                 } else {
@@ -265,7 +233,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             entries,
             residual_blocks,
             temporal,
-            motion_storage,
             flag_log,
             filter_records: row_filter_records,
             residual_planes,

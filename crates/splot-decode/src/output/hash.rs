@@ -7,10 +7,7 @@
 
 use core::num::NonZeroUsize;
 
-use splot_parallel::CompletionCell;
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, PixelFormat, ReconSample};
-use std::collections::VecDeque;
-use std::sync::Arc;
 
 use crate::DecodeOptions;
 use crate::bitstream::byte_stream::UnitSource;
@@ -19,7 +16,6 @@ use crate::hash_report::{
     DecodeHashEntry, DecodeHashFrame, DecodeHashPixelFormat, DecodeHashReport,
 };
 use crate::pipeline::PipelineDecodedFrame;
-use parking_lot::Mutex;
 
 pub(crate) fn decode_hash_report_from_plan(
     source: &mut dyn UnitSource,
@@ -27,7 +23,7 @@ pub(crate) fn decode_hash_report_from_plan(
     resolved_threads: NonZeroUsize,
     session: &crate::pipeline::DecodeSession,
 ) -> Result<DecodeHashReport> {
-    let report_frames = decode_hash_frames_pipelined(source, options, resolved_threads, session)?;
+    let report_frames = decode_hash_frames(source, options, session)?;
 
     Ok(DecodeHashReport::raw_intermediate_output(
         resolved_threads.to_string(),
@@ -35,65 +31,26 @@ pub(crate) fn decode_hash_report_from_plan(
     ))
 }
 
-/// How many emitted frames may have an unfinished hash task at once.
-///
-/// A hash task holds a second handle on its frame's sample storage, and the
-/// driver retires a decoded frame only once its storage has a single handle, so
-/// every unfinished hash task keeps one more decoded frame charged against
-/// [`crate::DecodeLimitName::MaxReferenceStoreBytes`]. Unbounded, that term is
-/// set by how far the pool trails the driver rather than by the decoder, which
-/// makes a documented memory limit fail or hold by scheduling luck. Four keeps
-/// the handoff off the driver's critical path at larger pipeline depths; the
-/// active capacity is also capped at one less than the effective pipeline
-/// depth so hashing cannot extend the live-frame peak when the pipeline depth
-/// is one.
-const MAX_OUTSTANDING_HASH_FRAMES: usize = 4;
-
-fn hash_backlog_capacity(resolved_threads: NonZeroUsize, frame_delay: NonZeroUsize) -> usize {
-    MAX_OUTSTANDING_HASH_FRAMES.min(frame_delay.min(resolved_threads).get().saturating_sub(1))
-}
-
-/// Hashes decoded frames on short worker tasks while the driver decodes.
-fn decode_hash_frames_pipelined(
+/// Hashes each decoded frame as the driver emits it.
+fn decode_hash_frames(
     source: &mut dyn UnitSource,
     options: &DecodeOptions,
-    resolved_threads: NonZeroUsize,
     session: &crate::pipeline::DecodeSession,
 ) -> Result<Vec<DecodeHashFrame>> {
-    let completed = Mutex::new(Vec::new());
-    let outstanding_capacity = hash_backlog_capacity(resolved_threads, session.frame_delay());
-    splot_parallel::ready_task_scope(|scope| {
-        let mut emitted = 0u64;
-        let mut outstanding: VecDeque<Arc<CompletionCell<()>>> = VecDeque::new();
-        crate::pipeline::emit_frames(
-            source,
-            options,
-            session,
-            |_| Ok(()),
-            |output| {
-                let ready = output.ready_frame()?;
-                let index = emitted;
-                emitted += 1;
-                let completed = &completed;
-                let hashed_done = Arc::new(CompletionCell::new());
-                outstanding.push_back(Arc::clone(&hashed_done));
-                scope.spawn(move |_| {
-                    let hashed = hash_pipeline_frame(&ready, index);
-                    completed.lock().push(hashed);
-                    let _ = hashed_done.set(());
-                });
-                while outstanding.len() > outstanding_capacity
-                    && let Some(oldest) = outstanding.pop_front()
-                {
-                    let () = oldest.wait_with_pool_assist();
-                }
-                Ok(())
-            },
-        )
-    })??;
-
-    let mut completed = completed.into_inner();
-    completed.sort_unstable_by_key(|frame| frame.output_index);
+    let mut completed = Vec::new();
+    let mut emitted = 0u64;
+    crate::pipeline::emit_frames(
+        source,
+        options,
+        session,
+        |_| Ok(()),
+        |output| {
+            let ready = output.ready_frame()?;
+            completed.push(hash_pipeline_frame(&ready, emitted));
+            emitted += 1;
+            Ok(())
+        },
+    )?;
     Ok(completed)
 }
 

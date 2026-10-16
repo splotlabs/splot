@@ -2,15 +2,12 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 #![no_main]
 
-use std::sync::OnceLock;
 
 use libfuzzer_sys::fuzz_target;
 use splot_decode::{
-    DecodeContext, DecodeLimitThreshold, DecodeLimits, DecodeOptions, DecodeRuntimeConfig,
+    DecodeContext, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
 };
-use splot_parallel::ThreadCount;
 
-static CONTEXT: OnceLock<Option<DecodeContext>> = OnceLock::new();
 
 fuzz_target!(|data: &[u8]| {
     let (flags, bitstream) = match data.split_first() {
@@ -27,13 +24,5 @@ fuzz_target!(|data: &[u8]| {
         .with_max_frames_to_decode(DecodeLimitThreshold::Max(8));
     let options = DecodeOptions::new(limits);
 
-    let Some(context) = CONTEXT
-        .get_or_init(|| {
-            DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).ok()
-        })
-        .as_ref()
-    else {
-        return;
-    };
-    let _ = context.plan_bytes(bitstream, options);
+    let _ = DecodeContext::plan_bytes(bitstream, options);
 });

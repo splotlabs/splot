@@ -116,7 +116,7 @@ impl<T: ReconSample> PlaneCtx<'_, '_, T> {
     }
 }
 
-impl FrameDeblock<'_> {
+impl FrameDeblock {
     /// Whether V repeats U's steps. V reads U's grid (see
     /// [`super::ChromaDeblockRecords::uv_twins`]), and the only plane inputs
     /// of the § 7.17.6 strength level are the AC delta and `DfDeltaQ[plane +

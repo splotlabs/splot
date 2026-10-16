@@ -224,8 +224,8 @@ pub(crate) struct PendingFilterAttach<T: ReconSample> {
     progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
 }
 
-/// Runs the temporal prelude and builds the admission scheduler from the half
-/// of the walk that is settled before the entropy pass reads a unit.
+/// Runs the temporal prelude and builds the scheduled reconstruction from the
+/// half of the walk that is settled before the entropy pass reads a unit.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::prediction::inter) fn prepare_scheduled_recon<T: ReconSample>(
     scratch: InterDecodeScratch<T>,

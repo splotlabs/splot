@@ -10,8 +10,8 @@
 //! through a [`CompletionCell`], so the handle can be stored in a reference
 //! store and size-accounted independently of when the pixels land.
 //!
-//! Each frame's § 7.2 filter phase is handed to the admission scheduler and its
-//! handle starts [pending](RefFrameSlot::pending); the task publishes samples through a
+//! Each frame's § 7.2 filter phase is handed to the row scheduler and its
+//! handle starts [pending](RefFrameSlot::pending); the work publishes samples through a
 //! single-use [`FrameSlotWriter`]. The driver tracks the frames whose filter
 //! phase it has not collected in an [`InflightRing`] bounded by the resolved
 //! frame-delay depth, and is the only thread that ever blocks on a slot: it
@@ -19,26 +19,27 @@
 //! overlap more frames than that depth, and before reading a frame's pixels it
 //! waits for that frame. A frame's own pixel references are gated inside its
 //! walk instead ([`crate::prediction::inter::PixelReferenceGate`]), so the
-//! walk's parse work overlaps a reference frame's filter phase. Worker tasks
-//! never wait on any slot. Those driver waits run pool jobs instead of parking
-//! idle, so a blocked driver still finishes frames.
+//! walk's parse work overlaps a reference frame's filter phase. Row works
+//! never wait on any slot; the driver parks until the work it waits for
+//! publishes.
 
 use core::num::NonZeroUsize;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use splot_parallel::{CompletionCell, Condition, TaskScope};
+use splot_parallel::{CompletionCell, RowScheduler};
 use splot_recon::{
     CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame,
 };
 
-use super::frame_engine::finish::{WalkStage, WalkedFrame, finish_walked_frame};
+use super::frame_engine::finish::WalkStage;
 use super::frame_progress::FrameProgress;
+use super::frame_tasks::RowPools;
 use super::{PipelineDecodedFrame, unsupported};
 use crate::error::{DecodeError, Result};
 use crate::filters::wienerns_lr::FrameFilterRecords;
+use crate::prediction::inter::ParseProgress;
 use crate::prediction::inter::reference::HeldFrameSamples;
-use crate::prediction::inter::{InterDecodeScratch, ParseProgress};
 use parking_lot::Mutex;
 
 /// The one-shot value a decoded-frame slot publishes.
@@ -220,20 +221,6 @@ impl<T: ReconSample> RefFrameSlot<T> {
             .flatten()
     }
 
-    /// Returns the scheduler condition for this slot settling.
-    pub(crate) fn settled_condition(&self) -> Condition<'_> {
-        Condition::completion(self.cell.as_ref())
-    }
-
-    /// Returns the scheduler condition for a readable luma-row prefix, or for
-    /// the whole slot settling when this slot has no progressive publisher.
-    pub(crate) fn row_condition(&self, rows: usize) -> Condition<'_> {
-        self.progress().map_or_else(
-            || self.settled_condition(),
-            |progress| progress.row_condition(rows),
-        )
-    }
-
     /// Borrows this slot's samples for one reader's block.
     ///
     /// A settled slot lends its decoded frame directly; a slot whose filter
@@ -291,7 +278,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
     /// Blocks the driver thread until the slot settles, then shares the
     /// published frame storage.
     pub(crate) fn wait_ready(&self) -> Result<SharedFrame<T>> {
-        match self.cell.wait_with_pool_assist() {
+        match self.cell.wait() {
             SlotValue::Ready(frame) => Ok(frame.share()),
             SlotValue::Failed => Err(failed_slot()),
         }
@@ -299,7 +286,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
 
     /// Blocks the driver thread until the slot settles.
     pub(crate) fn wait_settled(&self) -> Result<()> {
-        let result = match self.cell.wait_with_pool_assist() {
+        let result = match self.cell.wait() {
             SlotValue::Ready(_) => Ok(()),
             SlotValue::Failed => Err(failed_slot()),
         };
@@ -512,67 +499,30 @@ struct InflightEntry {
     report: FinishReport,
 }
 
-/// The bounded set of frames whose filter phase runs on the pool.
+/// The bounded set of frames whose filter phase runs on the row scheduler.
 ///
 /// An effective capacity of `D` overlaps `D` frames: the frame the driver walks
 /// plus the `D - 1` filter phases it has not collected. The ring therefore keeps
-/// up to `D - 1` entries across an admission, and reaches `D` only between a
-/// frame's own push and the next admission, which harvests back down. The
-/// pipeline derives `D` as the smaller of the resolved requested frame delay and
-/// the pool width. Capacity one still uses the same scheduler and task graph.
+/// up to `D - 1` entries across a push, and reaches `D` only between a frame's
+/// own push and the next one, which harvests back down. The pipeline derives
+/// `D` as the smaller of the resolved requested frame delay and the thread
+/// count. Capacity one runs the same works inline on the driver.
 ///
-/// Filter tasks never block on a slot, and every driver wait runs pool jobs
-/// ([`CompletionCell::wait_with_pool_assist`]) instead of parking, so a
-/// one-worker driver can execute the task it is waiting for.
+/// Filter works never block on a slot; the driver parks until the work it
+/// waits for publishes.
 pub(crate) struct InflightRing {
     capacity: usize,
     entries: VecDeque<InflightEntry>,
     reports: Vec<FinishReport>,
     failure: Option<(usize, DecodeError)>,
-    finish_eight: Vec<Arc<FinishCell<u8>>>,
-    finish_ten: Vec<Arc<FinishCell<u16>>>,
     parse_slots: Vec<Arc<ParseProgress>>,
     next_parse_slot: usize,
     buffers: Arc<crate::support::decode_buffers::DecodeBuffers>,
 }
 
-/// Routes a frame's slot and owed filter phase to the ring state of its
-/// sample type.
+/// Routes a frame's slot to the ring state of its sample type.
 pub(crate) trait SpareFramePlanes: ReconSample {
     fn take_slot(slot: PipelineFrameSlot) -> Option<RefFrameSlot<Self>>;
-    fn finish_cells(ring: &mut InflightRing) -> &mut Vec<Arc<FinishCell<Self>>>;
-    fn finish_task<'job>(finish: ParkedFinish<Self>) -> super::frame_pipeline::FrameTask<'job>;
-}
-
-/// One frame's owed filter phase, parked in a ring-owned cell until its
-/// scheduler task takes it.
-pub(crate) type FinishCell<T> = Mutex<Option<(PendingFinish<T>, WalkedFrame<T>)>>;
-
-/// The scheduler task for one parked filter phase.
-///
-/// A task dropped unrun drops the parked phase, which settles the frame's
-/// slot as failed instead of leaving it pending in the ring.
-pub(crate) struct ParkedFinish<T: ReconSample> {
-    cell: Arc<FinishCell<T>>,
-    done: Arc<CompletionCell<()>>,
-}
-
-impl<T: ReconSample> ParkedFinish<T> {
-    pub(crate) fn run<'job>(
-        self,
-        admit: &dyn splot_parallel::Admit<'job, super::frame_pipeline::FrameTask<'job>>,
-    ) {
-        if let Some((finish, walked)) = self.cell.lock().take() {
-            finish.run_finish(walked, Some(admit));
-        }
-        let _ = self.done.set(());
-    }
-}
-
-impl<T: ReconSample> Drop for ParkedFinish<T> {
-    fn drop(&mut self) {
-        drop(self.cell.lock().take());
-    }
 }
 
 impl SpareFramePlanes for u8 {
@@ -581,12 +531,6 @@ impl SpareFramePlanes for u8 {
             PipelineFrameSlot::Eight(slot) => Some(slot),
             PipelineFrameSlot::Ten(_) => None,
         }
-    }
-    fn finish_cells(ring: &mut InflightRing) -> &mut Vec<Arc<FinishCell<Self>>> {
-        &mut ring.finish_eight
-    }
-    fn finish_task<'job>(finish: ParkedFinish<Self>) -> super::frame_pipeline::FrameTask<'job> {
-        super::frame_pipeline::FrameTask::FinishEight(finish)
     }
 }
 
@@ -597,12 +541,6 @@ impl SpareFramePlanes for u16 {
             PipelineFrameSlot::Eight(_) => None,
         }
     }
-    fn finish_cells(ring: &mut InflightRing) -> &mut Vec<Arc<FinishCell<Self>>> {
-        &mut ring.finish_ten
-    }
-    fn finish_task<'job>(finish: ParkedFinish<Self>) -> super::frame_pipeline::FrameTask<'job> {
-        super::frame_pipeline::FrameTask::FinishTen(finish)
-    }
 }
 
 impl InflightRing {
@@ -610,20 +548,16 @@ impl InflightRing {
     pub(crate) fn new(
         depth: NonZeroUsize,
         buffers: Arc<crate::support::decode_buffers::DecodeBuffers>,
+        threads: usize,
     ) -> Self {
         Self {
             buffers,
             capacity: depth.get(),
             entries: VecDeque::with_capacity(depth.get()),
-            reports: (0..depth
-                .get()
-                .saturating_add(splot_parallel::current_pool_width())
-                .saturating_add(1))
+            reports: (0..depth.get().saturating_add(threads).saturating_add(1))
                 .map(|_| Arc::new(CompletionCell::new()))
                 .collect(),
             failure: None,
-            finish_eight: Vec::new(),
-            finish_ten: Vec::new(),
             parse_slots: Vec::new(),
             next_parse_slot: 0,
         }
@@ -639,29 +573,6 @@ impl InflightRing {
             .ok_or_else(|| crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into())
     }
 
-    /// Parks one frame's owed filter phase in a free cell of its sample type.
-    pub(crate) fn park_finish<T: SpareFramePlanes>(
-        &mut self,
-        finish: PendingFinish<T>,
-        walked: WalkedFrame<T>,
-        done: Arc<CompletionCell<()>>,
-    ) -> ParkedFinish<T> {
-        let cells = T::finish_cells(self);
-        let parked = Some((finish, walked));
-        for cell in cells.iter_mut() {
-            if let Some(free) = Arc::get_mut(cell) {
-                *free.get_mut() = parked;
-                return ParkedFinish {
-                    cell: Arc::clone(cell),
-                    done,
-                };
-            }
-        }
-        let cell = Arc::new(Mutex::new(parked));
-        cells.push(Arc::clone(&cell));
-        ParkedFinish { cell, done }
-    }
-
     /// Claims a parse slot after the ring has harvested its preceding frame.
     pub(crate) fn claim_parse_slot(&mut self) -> Arc<ParseProgress> {
         let index = self.next_parse_slot;
@@ -675,9 +586,7 @@ impl InflightRing {
             {
                 return Arc::clone(&self.parse_slots[index]);
             }
-            if !splot_parallel::assist_pool_once() {
-                std::thread::yield_now();
-            }
+            std::thread::yield_now();
         }
     }
 
@@ -723,23 +632,13 @@ impl InflightRing {
 
     /// Admits one more frame, harvesting the oldest entries until the frame
     /// about to be walked plus the uncollected filter phases fit the depth.
-    pub(crate) fn reserve(
-        &mut self,
-        eight: &mut InterDecodeScratch<u8>,
-        ten: &mut InterDecodeScratch<u16>,
-        assist: &impl Fn() -> bool,
-    ) {
-        while self.entries.len() >= self.capacity && self.harvest_oldest(eight, ten, assist) {}
+    pub(crate) fn reserve(&mut self, pools: &mut RowPools) {
+        while self.entries.len() >= self.capacity && self.harvest_oldest(pools) {}
     }
 
     /// Collects every outstanding filter phase.
-    pub(crate) fn harvest_all(
-        &mut self,
-        eight: &mut InterDecodeScratch<u8>,
-        ten: &mut InterDecodeScratch<u16>,
-        assist: &impl Fn() -> bool,
-    ) {
-        while self.harvest_oldest(eight, ten, assist) {}
+    pub(crate) fn harvest_all(&mut self, pools: &mut RowPools) {
+        while self.harvest_oldest(pools) {}
     }
 
     /// Takes the lowest-indexed filter-phase failure the ring collected.
@@ -751,23 +650,15 @@ impl InflightRing {
         self.entries.push_back(entry);
     }
 
-    fn harvest_oldest(
-        &mut self,
-        eight: &mut InterDecodeScratch<u8>,
-        ten: &mut InterDecodeScratch<u16>,
-        assist: &impl Fn() -> bool,
-    ) -> bool {
+    fn harvest_oldest(&mut self, pools: &mut RowPools) -> bool {
         let Some(entry) = self.entries.pop_front() else {
             return false;
         };
-        let report = entry.report.wait_with_assist(assist);
+        let report = entry.report.wait();
         let _ = entry.slot.wait_settled();
         let mut outcome = report.lock();
         if let Some(records) = outcome.records.take() {
-            match entry.slot {
-                PipelineFrameSlot::Eight(_) => eight.recycle_frame_filter_records(records),
-                PipelineFrameSlot::Ten(_) => ten.recycle_frame_filter_records(records),
-            }
+            pools.recycle_frame_filter_records(&entry.slot, records);
         }
         let error = outcome.error.take();
         drop(outcome);
@@ -791,31 +682,23 @@ impl InflightRing {
 /// Settles one frame's walk into a decoded-frame handle.
 ///
 /// A frame that left the walk final settles immediately. Otherwise the filter
-/// phase is handed to the admission scheduler and the frame's handle is
-/// returned pending and recorded on the in-flight ring.
+/// phase is handed to the row scheduler (or run inline without one) and the
+/// frame's handle is returned pending and recorded on the in-flight ring.
 ///
 /// # Errors
 ///
 /// A deferred phase hands its single-use writer to the freeze, so the slot
 /// settles before the frame's published row prefix closes; a freeze the phase
 /// never reaches drops the writer instead, settling the slot as failed.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn settle_walk_stage<'job, 'scope, T: SpareFramePlanes + Send + 'static>(
+pub(super) fn settle_walk_stage<T: super::frame_tasks::SplitSample>(
     stage: WalkStage<T>,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
-    scope: &TaskScope<'_, 'scope>,
-    scheduler: &'scope splot_parallel::AdmissionScheduler<
-        'job,
-        crate::pipeline::frame_pipeline::FrameTask<'job>,
-    >,
-    lane: &mut super::frame_pipeline::ReconAdmissionLane,
+    rows: Option<&RowScheduler>,
+    pools: &mut super::frame_tasks::RowPools,
     ring: &mut InflightRing,
     frames: &mut super::FrameStore,
     frame_index: usize,
-) -> Result<PipelineFrameSlot>
-where
-    'job: 'scope,
-{
+) -> Result<PipelineFrameSlot> {
     let walked = match stage {
         WalkStage::Complete(frame) => {
             let slot = match frames.take_retired()?.and_then(T::take_slot) {
@@ -841,15 +724,7 @@ where
         frames,
         frame_index,
     )?;
-    super::frame_pipeline::schedule_finish(
-        pending,
-        walked,
-        frame_index,
-        scope,
-        scheduler,
-        lane,
-        ring,
-    );
+    pools.push_finish(rows, pending, walked)?;
     Ok(slot)
 }
 
@@ -941,31 +816,6 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
         } = self;
         writer.complete(frame);
         drop(report);
-    }
-
-    /// Runs the owed filter phase in the calling scheduler job.
-    pub(crate) fn run_finish<'job>(
-        self,
-        walked: WalkedFrame<T>,
-        admit: Option<
-            &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
-        >,
-    ) {
-        let Self {
-            writer,
-            progress,
-            mut report,
-        } = self;
-        match finish_walked_frame(walked, Some(progress), admit, |frame| {
-            writer.complete(frame);
-        }) {
-            Ok(filter_records) => {
-                report.outcome.records = Some(filter_records);
-            }
-            Err(error) => {
-                report.outcome.error = Some(error);
-            }
-        }
     }
 
     /// Freezes one scheduler-owned setup after every stripe job has settled.

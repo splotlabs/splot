@@ -2,10 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
-use crate::{DecodeContext, DecodeLimitThreshold, DecodeLimits, DecodeRuntimeConfig};
+use crate::{DecodeContext, DecodeLimitThreshold, DecodeLimits};
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
 use splot_core::stream::parse_bitstream_partial;
-use splot_parallel::ThreadCount;
 
 const OBU_SEQUENCE_HEADER: u8 = 0x04;
 const OBU_TEMPORAL_DELIMITER: u8 = 0x08;
@@ -39,24 +38,17 @@ fn extended_obu(header: u8, extension: u8) -> [u8; 3] {
     [0x02, header, extension]
 }
 
-fn context(threads: ThreadCount) -> DecodeContext {
-    DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
-}
-
 fn plan(bytes: &[u8]) -> DecodeStreamPlan {
     let parsed = parse_bitstream_partial(bytes);
-    context(ThreadCount::from(1usize))
-        .plan_stream(
-            DecodeStreamInput::new(&parsed, bytes.len() as u64),
-            DecodeOptions::default(),
-        )
-        .unwrap()
+    DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed, bytes.len() as u64),
+        DecodeOptions::default(),
+    )
+    .unwrap()
 }
 
 fn plan_bytes(bytes: &[u8]) -> DecodeStreamPlan {
-    context(ThreadCount::from(1usize))
-        .plan_bytes(bytes, DecodeOptions::default())
-        .unwrap()
+    DecodeContext::plan_bytes(bytes, DecodeOptions::default()).unwrap()
 }
 
 fn ivf_with_payloads(payloads: &[&[u8]]) -> Vec<u8> {
@@ -147,42 +139,33 @@ fn non_base_temporal_obus_consume_obu_but_not_frame_limits() {
             .with_max_frames_to_decode(DecodeLimitThreshold::Max(1)),
     );
 
-    let byte_plan = context(ThreadCount::from(1usize))
-        .plan_bytes(&bytes, frame_options)
-        .unwrap();
+    let byte_plan = DecodeContext::plan_bytes(&bytes, frame_options).unwrap();
     let parsed = parse_bitstream_partial(&bytes);
-    let parsed_plan = context(ThreadCount::from(1usize))
-        .plan_stream(
-            DecodeStreamInput::new(&parsed, bytes.len() as u64),
-            frame_options,
-        )
-        .unwrap();
+    let parsed_plan = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed, bytes.len() as u64),
+        frame_options,
+    )
+    .unwrap();
     for plan in [byte_plan, parsed_plan] {
         assert_eq!(plan.frame_candidate_count(), 1);
     }
 
-    let error = context(ThreadCount::from(1usize))
-        .plan_bytes(
-            &bytes,
-            DecodeOptions::new(
-                DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(1)),
-            ),
-        )
-        .unwrap_err();
+    let error = DecodeContext::plan_bytes(
+        &bytes,
+        DecodeOptions::new(DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(1))),
+    )
+    .unwrap_err();
     assert!(matches!(
         error,
         DecodeError::Limit { source } if source.name() == DecodeLimitName::MaxObus
     ));
 
     let parsed = parse_bitstream_partial(&bytes);
-    let error = context(ThreadCount::from(1usize))
-        .plan_stream(
-            DecodeStreamInput::new(&parsed, bytes.len() as u64),
-            DecodeOptions::new(
-                DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(1)),
-            ),
-        )
-        .unwrap_err();
+    let error = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed, bytes.len() as u64),
+        DecodeOptions::new(DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(1))),
+    )
+    .unwrap_err();
     assert!(matches!(
         error,
         DecodeError::Limit { source } if source.name() == DecodeLimitName::MaxObus
@@ -197,18 +180,15 @@ fn non_base_temporal_obu_does_not_hide_later_eof() {
     ]
     .concat();
 
-    let byte_error = context(ThreadCount::from(1usize))
-        .plan_bytes(&bytes, DecodeOptions::default())
-        .unwrap_err();
+    let byte_error = DecodeContext::plan_bytes(&bytes, DecodeOptions::default()).unwrap_err();
     assert!(matches!(byte_error, DecodeError::MalformedSource { .. }));
 
     let parsed = parse_bitstream_partial(&bytes);
-    let parsed_error = context(ThreadCount::from(1usize))
-        .plan_stream(
-            DecodeStreamInput::new(&parsed, bytes.len() as u64),
-            DecodeOptions::default(),
-        )
-        .unwrap_err();
+    let parsed_error = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed, bytes.len() as u64),
+        DecodeOptions::default(),
+    )
+    .unwrap_err();
     assert!(matches!(parsed_error, DecodeError::MalformedSource { .. }));
 }
 
@@ -241,14 +221,11 @@ fn reserved_obus_are_retained_without_layer_selection() {
     assert!(obus[2].header().obu_type.is_reserved());
     assert!(obus[4].header().obu_type.is_reserved());
 
-    let error = context(ThreadCount::from(1usize))
-        .plan_bytes(
-            &bytes,
-            DecodeOptions::new(
-                DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(5)),
-            ),
-        )
-        .unwrap_err();
+    let error = DecodeContext::plan_bytes(
+        &bytes,
+        DecodeOptions::new(DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(5))),
+    )
+    .unwrap_err();
     assert!(matches!(
         error,
         DecodeError::Limit { source } if source.name() == DecodeLimitName::MaxObus
@@ -450,12 +427,11 @@ fn ivf_plan_preserves_frame_context_and_warning_metadata() {
 
     let parsed_plan = {
         let parsed = parse_bitstream_partial(&bytes);
-        context(ThreadCount::from(1usize))
-            .plan_stream(
-                DecodeStreamInput::new(&parsed, bytes.len() as u64),
-                DecodeOptions::default(),
-            )
-            .unwrap()
+        DecodeContext::plan_stream(
+            DecodeStreamInput::new(&parsed, bytes.len() as u64),
+            DecodeOptions::default(),
+        )
+        .unwrap()
     };
     assert_eq!(plan, parsed_plan);
 }
@@ -465,12 +441,11 @@ fn malformed_raw_source_is_transactional() {
     let bytes = [0x01, OBU_TEMPORAL_DELIMITER, 0x05, OBU_CLOSED_LOOP_KEY];
     let parsed = parse_bitstream_partial(&bytes);
 
-    let error = context(ThreadCount::from(1usize))
-        .plan_stream(
-            DecodeStreamInput::new(&parsed, bytes.len() as u64),
-            DecodeOptions::default(),
-        )
-        .unwrap_err();
+    let error = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed, bytes.len() as u64),
+        DecodeOptions::default(),
+    )
+    .unwrap_err();
 
     assert!(matches!(
         error,
@@ -484,9 +459,7 @@ fn malformed_raw_source_is_transactional() {
 #[test]
 fn byte_planner_malformed_sources_are_transactional() {
     let raw = [0x01, OBU_TEMPORAL_DELIMITER, 0x05, OBU_CLOSED_LOOP_KEY];
-    let raw_error = context(ThreadCount::from(1usize))
-        .plan_bytes(&raw, DecodeOptions::default())
-        .unwrap_err();
+    let raw_error = DecodeContext::plan_bytes(&raw, DecodeOptions::default()).unwrap_err();
 
     assert!(matches!(
         raw_error,
@@ -497,9 +470,8 @@ fn byte_planner_malformed_sources_are_transactional() {
     ));
 
     let truncated_header = b"DKIF";
-    let container_error = context(ThreadCount::from(1usize))
-        .plan_bytes(truncated_header, DecodeOptions::default())
-        .unwrap_err();
+    let container_error =
+        DecodeContext::plan_bytes(truncated_header, DecodeOptions::default()).unwrap_err();
     assert!(matches!(
         container_error,
         DecodeError::MalformedSource {
@@ -508,9 +480,7 @@ fn byte_planner_malformed_sources_are_transactional() {
     ));
 
     let ivf = ivf_with_payloads(&[&[0x05, OBU_CLOSED_LOOP_KEY]]);
-    let frame_error = context(ThreadCount::from(1usize))
-        .plan_bytes(&ivf, DecodeOptions::default())
-        .unwrap_err();
+    let frame_error = DecodeContext::plan_bytes(&ivf, DecodeOptions::default()).unwrap_err();
     assert!(matches!(
         frame_error,
         DecodeError::MalformedSource {
@@ -529,9 +499,8 @@ fn byte_planner_ivf_eof_branches_are_transactional() {
     )
     .unwrap();
     truncated_frame_header.push(0xAA);
-    let frame_header_error = context(ThreadCount::from(1usize))
-        .plan_bytes(&truncated_frame_header, DecodeOptions::default())
-        .unwrap_err();
+    let frame_header_error =
+        DecodeContext::plan_bytes(&truncated_frame_header, DecodeOptions::default()).unwrap_err();
 
     assert!(matches!(
         frame_header_error,
@@ -551,9 +520,8 @@ fn byte_planner_ivf_eof_branches_are_transactional() {
     truncated_payload.extend_from_slice(&0u64.to_le_bytes());
     truncated_payload.push(0x01);
 
-    let payload_error = context(ThreadCount::from(1usize))
-        .plan_bytes(&truncated_payload, DecodeOptions::default())
-        .unwrap_err();
+    let payload_error =
+        DecodeContext::plan_bytes(&truncated_payload, DecodeOptions::default()).unwrap_err();
     assert!(matches!(
         payload_error,
         DecodeError::MalformedSource {
@@ -567,12 +535,11 @@ fn byte_planner_ivf_eof_branches_are_transactional() {
 fn malformed_ivf_container_and_frame_payload_are_transactional() {
     let truncated_header = b"DKIF";
     let parsed_container = parse_bitstream_partial(truncated_header);
-    let container_error = context(ThreadCount::from(1usize))
-        .plan_stream(
-            DecodeStreamInput::new(&parsed_container, truncated_header.len() as u64),
-            DecodeOptions::default(),
-        )
-        .unwrap_err();
+    let container_error = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed_container, truncated_header.len() as u64),
+        DecodeOptions::default(),
+    )
+    .unwrap_err();
     assert!(matches!(
         container_error,
         DecodeError::MalformedSource {
@@ -582,12 +549,11 @@ fn malformed_ivf_container_and_frame_payload_are_transactional() {
 
     let bytes = ivf_with_payloads(&[&[0x05, OBU_CLOSED_LOOP_KEY]]);
     let parsed_frame = parse_bitstream_partial(&bytes);
-    let frame_error = context(ThreadCount::from(1usize))
-        .plan_stream(
-            DecodeStreamInput::new(&parsed_frame, bytes.len() as u64),
-            DecodeOptions::default(),
-        )
-        .unwrap_err();
+    let frame_error = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed_frame, bytes.len() as u64),
+        DecodeOptions::default(),
+    )
+    .unwrap_err();
     assert!(matches!(
         frame_error,
         DecodeError::MalformedSource {
@@ -604,12 +570,11 @@ fn malformed_later_ivf_payload_wins_over_earlier_unsupported_obu() {
     let bytes = ivf_with_payloads(&[&unsupported, &malformed]);
 
     let parsed = parse_bitstream_partial(&bytes);
-    let parsed_error = context(ThreadCount::from(1usize))
-        .plan_stream(
-            DecodeStreamInput::new(&parsed, bytes.len() as u64),
-            DecodeOptions::default(),
-        )
-        .unwrap_err();
+    let parsed_error = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed, bytes.len() as u64),
+        DecodeOptions::default(),
+    )
+    .unwrap_err();
     assert!(matches!(
         parsed_error,
         DecodeError::MalformedSource {
@@ -618,9 +583,7 @@ fn malformed_later_ivf_payload_wins_over_earlier_unsupported_obu() {
             && issue.frame_index() == Some(1)
     ));
 
-    let error = context(ThreadCount::from(1usize))
-        .plan_bytes(&bytes, DecodeOptions::default())
-        .unwrap_err();
+    let error = DecodeContext::plan_bytes(&bytes, DecodeOptions::default()).unwrap_err();
 
     assert!(matches!(
         error,
@@ -642,14 +605,11 @@ fn parsed_ivf_obu_limits_win_before_later_payload_errors() {
     let bytes = ivf_with_payloads(&[&accepted, &malformed]);
     let parsed = parse_bitstream_partial(&bytes);
 
-    let obu_error = context(ThreadCount::from(1usize))
-        .plan_stream(
-            DecodeStreamInput::new(&parsed, bytes.len() as u64),
-            DecodeOptions::new(
-                DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(1)),
-            ),
-        )
-        .unwrap_err();
+    let obu_error = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed, bytes.len() as u64),
+        DecodeOptions::new(DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(1))),
+    )
+    .unwrap_err();
     assert!(matches!(
         obu_error,
         DecodeError::Limit {
@@ -664,14 +624,13 @@ fn parsed_ivf_obu_limits_win_before_later_payload_errors() {
     .concat();
     let bytes = ivf_with_payloads(&[&frame_candidates, &malformed]);
     let parsed = parse_bitstream_partial(&bytes);
-    let frame_error = context(ThreadCount::from(1usize))
-        .plan_stream(
-            DecodeStreamInput::new(&parsed, bytes.len() as u64),
-            DecodeOptions::new(
-                DecodeLimits::unlimited().with_max_frames_to_decode(DecodeLimitThreshold::Max(1)),
-            ),
-        )
-        .unwrap_err();
+    let frame_error = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed, bytes.len() as u64),
+        DecodeOptions::new(
+            DecodeLimits::unlimited().with_max_frames_to_decode(DecodeLimitThreshold::Max(1)),
+        ),
+    )
+    .unwrap_err();
     assert!(matches!(
         frame_error,
         DecodeError::Limit {
@@ -686,14 +645,13 @@ fn byte_ivf_record_limit_wins_over_earlier_unsupported_obu() {
     let second = obu(OBU_TEMPORAL_DELIMITER);
     let bytes = ivf_with_payloads(&[&unsupported, &second]);
 
-    let error = context(ThreadCount::from(1usize))
-        .plan_bytes(
-            &bytes,
-            DecodeOptions::new(
-                DecodeLimits::unlimited().with_max_ivf_frame_records(DecodeLimitThreshold::Max(1)),
-            ),
-        )
-        .unwrap_err();
+    let error = DecodeContext::plan_bytes(
+        &bytes,
+        DecodeOptions::new(
+            DecodeLimits::unlimited().with_max_ivf_frame_records(DecodeLimitThreshold::Max(1)),
+        ),
+    )
+    .unwrap_err();
 
     assert!(matches!(
         error,
@@ -712,16 +670,14 @@ fn local_limits_reject_input_obus_ivf_records_and_frame_candidates() {
     ]
     .concat();
     let parsed = parse_bitstream_partial(&bytes);
-    let ctx = context(ThreadCount::from(1usize));
 
-    let input_error = ctx
-        .plan_stream(
-            DecodeStreamInput::new(&parsed, bytes.len() as u64),
-            DecodeOptions::new(
-                DecodeLimits::unlimited().with_max_input_bytes(DecodeLimitThreshold::Max(1)),
-            ),
-        )
-        .unwrap_err();
+    let input_error = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed, bytes.len() as u64),
+        DecodeOptions::new(
+            DecodeLimits::unlimited().with_max_input_bytes(DecodeLimitThreshold::Max(1)),
+        ),
+    )
+    .unwrap_err();
     assert!(matches!(
         input_error,
         DecodeError::Limit {
@@ -729,14 +685,11 @@ fn local_limits_reject_input_obus_ivf_records_and_frame_candidates() {
         } if source.name() == DecodeLimitName::MaxInputBytes
     ));
 
-    let obu_error = ctx
-        .plan_stream(
-            DecodeStreamInput::new(&parsed, bytes.len() as u64),
-            DecodeOptions::new(
-                DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(2)),
-            ),
-        )
-        .unwrap_err();
+    let obu_error = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed, bytes.len() as u64),
+        DecodeOptions::new(DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(2))),
+    )
+    .unwrap_err();
     assert!(matches!(
         obu_error,
         DecodeError::Limit {
@@ -746,14 +699,13 @@ fn local_limits_reject_input_obus_ivf_records_and_frame_candidates() {
 
     let ivf_bytes = ivf_with_payloads(&[&[], &[]]);
     let parsed_ivf = parse_bitstream_partial(&ivf_bytes);
-    let ivf_record_error = ctx
-        .plan_stream(
-            DecodeStreamInput::new(&parsed_ivf, ivf_bytes.len() as u64),
-            DecodeOptions::new(
-                DecodeLimits::unlimited().with_max_ivf_frame_records(DecodeLimitThreshold::Max(1)),
-            ),
-        )
-        .unwrap_err();
+    let ivf_record_error = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed_ivf, ivf_bytes.len() as u64),
+        DecodeOptions::new(
+            DecodeLimits::unlimited().with_max_ivf_frame_records(DecodeLimitThreshold::Max(1)),
+        ),
+    )
+    .unwrap_err();
     assert!(matches!(
         ivf_record_error,
         DecodeError::Limit {
@@ -761,14 +713,13 @@ fn local_limits_reject_input_obus_ivf_records_and_frame_candidates() {
         } if source.name() == DecodeLimitName::MaxIvfFrameRecords
     ));
 
-    let frame_error = ctx
-        .plan_stream(
-            DecodeStreamInput::new(&parsed, bytes.len() as u64),
-            DecodeOptions::new(
-                DecodeLimits::unlimited().with_max_frames_to_decode(DecodeLimitThreshold::Max(1)),
-            ),
-        )
-        .unwrap_err();
+    let frame_error = DecodeContext::plan_stream(
+        DecodeStreamInput::new(&parsed, bytes.len() as u64),
+        DecodeOptions::new(
+            DecodeLimits::unlimited().with_max_frames_to_decode(DecodeLimitThreshold::Max(1)),
+        ),
+    )
+    .unwrap_err();
     assert!(matches!(
         frame_error,
         DecodeError::Limit {
@@ -779,17 +730,15 @@ fn local_limits_reject_input_obus_ivf_records_and_frame_candidates() {
 
 #[test]
 fn byte_planner_limits_reject_before_unbounded_traversal() {
-    let ctx = context(ThreadCount::from(1usize));
     let malformed_second_obu = [0x01, OBU_TEMPORAL_DELIMITER, 0x05, OBU_CLOSED_LOOP_KEY];
 
-    let input_error = ctx
-        .plan_bytes(
-            &malformed_second_obu,
-            DecodeOptions::new(
-                DecodeLimits::unlimited().with_max_input_bytes(DecodeLimitThreshold::Max(1)),
-            ),
-        )
-        .unwrap_err();
+    let input_error = DecodeContext::plan_bytes(
+        &malformed_second_obu,
+        DecodeOptions::new(
+            DecodeLimits::unlimited().with_max_input_bytes(DecodeLimitThreshold::Max(1)),
+        ),
+    )
+    .unwrap_err();
     assert!(matches!(
         input_error,
         DecodeError::Limit {
@@ -797,14 +746,11 @@ fn byte_planner_limits_reject_before_unbounded_traversal() {
         } if source.name() == DecodeLimitName::MaxInputBytes
     ));
 
-    let obu_error = ctx
-        .plan_bytes(
-            &malformed_second_obu,
-            DecodeOptions::new(
-                DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(1)),
-            ),
-        )
-        .unwrap_err();
+    let obu_error = DecodeContext::plan_bytes(
+        &malformed_second_obu,
+        DecodeOptions::new(DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(1))),
+    )
+    .unwrap_err();
     assert!(matches!(
         obu_error,
         DecodeError::Limit {
@@ -813,14 +759,13 @@ fn byte_planner_limits_reject_before_unbounded_traversal() {
     ));
 
     let ivf = ivf_with_payloads(&[&[], &[0x05, OBU_CLOSED_LOOP_KEY]]);
-    let ivf_record_error = ctx
-        .plan_bytes(
-            &ivf,
-            DecodeOptions::new(
-                DecodeLimits::unlimited().with_max_ivf_frame_records(DecodeLimitThreshold::Max(1)),
-            ),
-        )
-        .unwrap_err();
+    let ivf_record_error = DecodeContext::plan_bytes(
+        &ivf,
+        DecodeOptions::new(
+            DecodeLimits::unlimited().with_max_ivf_frame_records(DecodeLimitThreshold::Max(1)),
+        ),
+    )
+    .unwrap_err();
     assert!(matches!(
         ivf_record_error,
         DecodeError::Limit {
@@ -834,14 +779,13 @@ fn byte_planner_limits_reject_before_unbounded_traversal() {
         &[0x05, OBU_CLOSED_LOOP_KEY][..],
     ]
     .concat();
-    let frame_error = ctx
-        .plan_bytes(
-            &frames,
-            DecodeOptions::new(
-                DecodeLimits::unlimited().with_max_frames_to_decode(DecodeLimitThreshold::Max(1)),
-            ),
-        )
-        .unwrap_err();
+    let frame_error = DecodeContext::plan_bytes(
+        &frames,
+        DecodeOptions::new(
+            DecodeLimits::unlimited().with_max_frames_to_decode(DecodeLimitThreshold::Max(1)),
+        ),
+    )
+    .unwrap_err();
     assert!(matches!(
         frame_error,
         DecodeError::Limit {
@@ -889,16 +833,13 @@ fn unsupported_layers_and_obu_types_are_typed() {
 
     for (bytes, reason) in cases {
         let parsed = parse_bitstream_partial(&bytes);
-        let parsed_error = context(ThreadCount::from(1usize))
-            .plan_stream(
-                DecodeStreamInput::new(&parsed, bytes.len() as u64),
-                DecodeOptions::default(),
-            )
-            .unwrap_err();
+        let parsed_error = DecodeContext::plan_stream(
+            DecodeStreamInput::new(&parsed, bytes.len() as u64),
+            DecodeOptions::default(),
+        )
+        .unwrap_err();
 
-        let byte_error = context(ThreadCount::from(1usize))
-            .plan_bytes(&bytes, DecodeOptions::default())
-            .unwrap_err();
+        let byte_error = DecodeContext::plan_bytes(&bytes, DecodeOptions::default()).unwrap_err();
         for error in [parsed_error, byte_error] {
             assert!(matches!(
                 error,
@@ -910,124 +851,6 @@ fn unsupported_layers_and_obu_types_are_typed() {
                     && unsupported.feature_id() == DECODE_STREAM_STATE_FEATURE_ID
             ));
         }
-    }
-}
-
-#[test]
-fn planning_is_deterministic_across_thread_policies() {
-    let bytes = [
-        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
-        obu(OBU_SEQUENCE_HEADER).as_slice(),
-        obu(OBU_CLOSED_LOOP_KEY).as_slice(),
-    ]
-    .concat();
-    let parsed = parse_bitstream_partial(&bytes);
-    let input = DecodeStreamInput::new(&parsed, bytes.len() as u64);
-
-    let one = context(ThreadCount::from(1usize))
-        .plan_stream(input, DecodeOptions::default())
-        .unwrap();
-    let auto = context(ThreadCount::Auto)
-        .plan_stream(input, DecodeOptions::default())
-        .unwrap();
-    let fixed = context(ThreadCount::from(4usize))
-        .plan_stream(input, DecodeOptions::default())
-        .unwrap();
-
-    assert_eq!(one, auto);
-    assert_eq!(one, fixed);
-}
-
-#[test]
-fn byte_planning_is_deterministic_across_thread_policies() {
-    let bytes = [
-        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
-        obu(OBU_SEQUENCE_HEADER).as_slice(),
-        obu(OBU_CLOSED_LOOP_KEY).as_slice(),
-    ]
-    .concat();
-
-    let one = context(ThreadCount::from(1usize))
-        .plan_bytes(&bytes, DecodeOptions::default())
-        .unwrap();
-    let auto = context(ThreadCount::Auto)
-        .plan_bytes(&bytes, DecodeOptions::default())
-        .unwrap();
-    let fixed = context(ThreadCount::from(4usize))
-        .plan_bytes(&bytes, DecodeOptions::default())
-        .unwrap();
-
-    assert_eq!(one, auto);
-    assert_eq!(one, fixed);
-}
-
-fn error_signature(error: DecodeError) -> String {
-    match error {
-        DecodeError::Pool { source } => format!("pool:{source}"),
-        DecodeError::Limit { source } => format!("limit:{}:{source}", source.name()),
-        DecodeError::MalformedSource { issue } => format!(
-            "malformed:{:?}:{:?}:{:?}:{}",
-            issue.kind(),
-            issue.offset(),
-            issue.frame_index(),
-            issue.message()
-        ),
-        DecodeError::UnsupportedStructure { unsupported } => format!(
-            "unsupported:{}:{}:{}",
-            unsupported.reason(),
-            unsupported.obu_type().spec_name(),
-            unsupported.offset()
-        ),
-        DecodeError::UnsupportedFeature { unsupported } => format!(
-            "unsupported-feature:{}:{:?}",
-            unsupported.reason(),
-            unsupported.byte_offset()
-        ),
-        DecodeError::HeaderState { source } => format!("header-state:{source}"),
-        DecodeError::Reconstruction { source } => format!("reconstruction:{source}"),
-        DecodeError::ReferenceState { source } => format!("reference-state:{source}"),
-        DecodeError::Input { source } => format!("input:{source}"),
-        DecodeError::State { source } => format!("state:{source}"),
-        DecodeError::Output { source } => format!(
-            "output:{}:{}:{}",
-            source.operation(),
-            source.source_kind(),
-            source.source_message()
-        ),
-    }
-}
-
-fn plan_bytes_error_signature(
-    threads: ThreadCount,
-    bytes: &[u8],
-    options: &DecodeOptions,
-) -> String {
-    error_signature(context(threads).plan_bytes(bytes, *options).unwrap_err())
-}
-
-#[test]
-fn byte_planning_errors_are_deterministic_across_thread_policies() {
-    let malformed = [0x01, OBU_TEMPORAL_DELIMITER, 0x05, OBU_CLOSED_LOOP_KEY];
-    let unsupported = obu(OBU_MSDO);
-    let limit_options =
-        DecodeOptions::new(DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(1)));
-    let limit = [
-        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
-        obu(OBU_SEQUENCE_HEADER).as_slice(),
-    ]
-    .concat();
-
-    for (bytes, options) in [
-        (&malformed[..], DecodeOptions::default()),
-        (&unsupported[..], DecodeOptions::default()),
-        (&limit[..], limit_options),
-    ] {
-        let one = plan_bytes_error_signature(ThreadCount::from(1usize), bytes, &options);
-        let auto = plan_bytes_error_signature(ThreadCount::Auto, bytes, &options);
-        let fixed = plan_bytes_error_signature(ThreadCount::from(4usize), bytes, &options);
-
-        assert_eq!(one, auto);
-        assert_eq!(one, fixed);
     }
 }
 

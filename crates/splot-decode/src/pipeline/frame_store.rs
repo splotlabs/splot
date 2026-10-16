@@ -21,15 +21,17 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::frame_pipeline::{ReconAdmissionLane, RetainedEntropy};
+use super::frame_tasks::RowPools;
 use super::inflight::InflightRing;
-use crate::prediction::inter::InterDecodeScratch;
 use crate::support::decode_buffers::DecodeBuffers;
 
 /// The frame-pipelining depth of one context and the decoder state it keeps
 /// between decode calls, as dav2d keeps its frame contexts.
 pub(crate) struct DecodeSession {
     frame_delay: NonZeroUsize,
+    /// The row scheduler of a multi-threaded context, which the split inter
+    /// frames run on.
+    rows: Option<Arc<splot_parallel::RowScheduler>>,
     retained: Mutex<Option<RetainedDecode>>,
     /// Whether frames that an outside owner still holds leave the store.
     detach_held: bool,
@@ -47,9 +49,13 @@ impl core::fmt::Debug for DecodeSession {
 }
 
 impl DecodeSession {
-    pub(crate) fn new(frame_delay: NonZeroUsize) -> Self {
+    pub(crate) fn new(
+        frame_delay: NonZeroUsize,
+        rows: Option<Arc<splot_parallel::RowScheduler>>,
+    ) -> Self {
         Self {
             frame_delay,
+            rows,
             retained: Mutex::new(None),
             detach_held: false,
             planes: Mutex::new(None),
@@ -58,11 +64,24 @@ impl DecodeSession {
 
     /// A session whose frames leave the store while an outside owner, such
     /// as a caller's picture, still holds their samples.
-    pub(crate) fn detaching_held(frame_delay: NonZeroUsize) -> Self {
+    pub(crate) fn detaching_held(
+        frame_delay: NonZeroUsize,
+        rows: Option<Arc<splot_parallel::RowScheduler>>,
+    ) -> Self {
         Self {
             detach_held: true,
-            ..Self::new(frame_delay)
+            ..Self::new(frame_delay, rows)
         }
+    }
+
+    /// The row scheduler, or `None` when the decode runs on one thread.
+    pub(crate) fn rows(&self) -> Option<&splot_parallel::RowScheduler> {
+        self.rows.as_deref()
+    }
+
+    /// The threads this session decodes on: the row workers, or one.
+    pub(crate) fn threads(&self) -> usize {
+        self.rows.as_ref().map_or(1, |rows| rows.threads())
     }
 
     /// The plane pool of the last decode that started on this session.
@@ -75,10 +94,10 @@ impl DecodeSession {
     }
 
     /// Takes the last decode's state when it was built for `depth` and the
-    /// current pool width, which size its cell pools. A concurrent decode on
+    /// session's thread count, which size its cell pools. A concurrent decode on
     /// the same context gets new state instead.
     pub(super) fn take(&self, depth: NonZeroUsize) -> RetainedDecode {
-        let width = splot_parallel::current_pool_width();
+        let width = self.threads();
         let mut retained = match self.retained.lock().take() {
             Some(retained)
                 if retained.ring.capacity() == depth.get() && retained.width == width =>
@@ -101,38 +120,26 @@ impl DecodeSession {
 /// The storage one decode leaves for the next decode on its context.
 pub(super) struct RetainedDecode {
     width: usize,
-    pub(super) scratch_eight: InterDecodeScratch<u8>,
-    pub(super) scratch_ten: InterDecodeScratch<u16>,
     pub(super) ring: InflightRing,
-    pub(super) lane: ReconAdmissionLane,
+    pub(super) pools: RowPools,
     pub(super) frames: FrameStore,
-    pub(super) entropy_eight: RetainedEntropy<u8>,
-    pub(super) entropy_ten: RetainedEntropy<u16>,
     pub(super) input_scratch: crate::bitstream::byte_stream::InputScratch,
 }
 
 impl RetainedDecode {
     fn new(depth: NonZeroUsize, width: usize) -> Self {
         let buffers = DecodeBuffers::new();
-        let mut scratch_eight = InterDecodeScratch::default();
-        let mut scratch_ten = InterDecodeScratch::default();
-        scratch_eight.set_decode_buffers(&buffers);
-        scratch_ten.set_decode_buffers(&buffers);
         Self {
             width,
-            scratch_eight,
-            scratch_ten,
-            ring: InflightRing::new(depth, buffers),
-            lane: ReconAdmissionLane::new(depth.get()),
+            pools: RowPools::new(depth.get(), width, &buffers),
+            ring: InflightRing::new(depth, buffers, width),
             frames: FrameStore::new(false, depth.get()),
-            entropy_eight: RetainedEntropy::default(),
-            entropy_ten: RetainedEntropy::default(),
             input_scratch: crate::bitstream::byte_stream::InputScratch::default(),
         }
     }
 
     /// Opens the state for a new decode: the last decode's frames retire into
-    /// their slots, and a lane still gated on unsettled work starts over.
+    /// their slots.
     pub(super) fn begin(&mut self, retain: bool) {
         let depth = self.ring.capacity();
         if retain || self.frames.retain {
@@ -145,9 +152,6 @@ impl RetainedDecode {
         }
         self.frames.count = 0;
         self.frames.reserved = None;
-        if !self.lane.is_settled() {
-            self.lane = ReconAdmissionLane::new(depth);
-        }
     }
 }
 

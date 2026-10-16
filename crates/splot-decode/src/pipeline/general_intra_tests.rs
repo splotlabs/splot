@@ -3,15 +3,12 @@
 
 //! General intra decode tests for the minimal-tier.
 
-use std::{collections::BTreeSet, fmt::Debug};
-
-use splot_parallel::ThreadCount;
 use splot_recon::{
     BitDepth, DecodedFrameHashInput, PixelFormat, PlaneSize, ReconSample, SharedFrame,
 };
+use std::{collections::BTreeSet, fmt::Debug};
 
 use super::*;
-use crate::{DecodeContext, DecodeRuntimeConfig};
 
 const Q80_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf");
@@ -179,16 +176,9 @@ const LOSSLESS_SDP_DPCM_UV_H_FIXTURE: &[u8] = include_bytes!(
 );
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
-fn decode_context() -> DecodeContext {
-    DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context")
-}
-
 fn decode_fixture(fixture: &[u8]) -> PipelineDecodedFrame {
     let options = DecodeOptions::default();
-    let context = decode_context();
-    context
-        .pool()
-        .install(|| decode_frame_from_plan(fixture, &options))
+    decode_frame_from_plan(fixture, &options)
         .expect("decode")
         .ready_frame()
         .expect("ready")

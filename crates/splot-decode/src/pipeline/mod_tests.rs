@@ -228,12 +228,9 @@ fn continuation_prefix_rejects_mismatch_and_eof_in_header_copy()
 #[test]
 fn multiple_tile_groups_decode_bit_exact() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let options = DecodeOptions::default();
-    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))?;
-    let plan = context.plan_bytes(MULTIPLE_TILE_GROUP_FIXTURE, options)?;
+    let plan = DecodeContext::plan_bytes(MULTIPLE_TILE_GROUP_FIXTURE, options)?;
     assert_eq!(plan.frame_candidate_count(), 1);
-    let decoded = context
-        .pool()
-        .install(|| decode_frame_from_plan(MULTIPLE_TILE_GROUP_FIXTURE, &options))?;
+    let decoded = decode_frame_from_plan(MULTIPLE_TILE_GROUP_FIXTURE, &options)?;
     let PipelineDecodedFrame::Eight(frame) = decoded.ready_frame()? else {
         return Err("fixture decoded as 10-bit".into());
     };
@@ -265,14 +262,11 @@ fn absent_user_qm_data_uses_built_in_matrix() -> std::result::Result<(), Box<dyn
 fn empty_ivf_decodes_to_empty_frame_set() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let bytes = empty_avmenc_ivf();
     let options = DecodeOptions::default();
-    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))?;
-    let plan = context.plan_bytes(&bytes, options)?;
+    let plan = DecodeContext::plan_bytes(&bytes, options)?;
 
     assert_eq!(plan.obu_count(), 0);
     assert_eq!(plan.frame_candidate_count(), 0);
-    let frames = context
-        .pool()
-        .install(|| decode_frames_from_plan(&bytes, &options))?;
+    let frames = decode_frames_from_plan(&bytes, &options)?;
     assert!(frames.is_empty());
     Ok(())
 }

@@ -5,7 +5,7 @@ use crate::reference::buffer::RefSlots;
 use std::sync::Arc;
 pub(crate) use tile::TileWalkParams;
 pub(crate) use tile::publish_tile_geometry;
-pub(crate) use tile::{InterReconScratchPool, ParseProgress};
+pub(crate) use tile::{InterReconScratchPool, ParseProgress, invalid_inter_tile_scheduling_state};
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
@@ -218,7 +218,6 @@ impl<T: ReconSample> InterDecodeScratch<T> {
         records
     }
 
-    /// Plane buffers for a new workspace, taken from the decode's pool.
     pub(crate) fn pooled_planes(&self) -> splot_recon::FramePlaneSamples<T> {
         splot_recon::FramePlaneSamples::default()
             .with_pool(self.buffers.as_ref().map(|buffers| buffers.planes()))
@@ -271,7 +270,7 @@ impl InterBlockSetup {
     }
 
     /// Splits the derivation into the half the entropy pass consumes and the
-    /// half the admission scheduler needs, which it can use straight away.
+    /// half the scheduled reconstruction needs, which it can use straight away.
     pub(crate) fn split(
         self,
     ) -> (
@@ -682,20 +681,22 @@ impl TemporalPrelude {
     ) -> Result<super::find_mv_stack::TemporalBandPlan> {
         let (metadata, layouts) =
             scheduled_motion_field_inputs(&reference.ref_motion_fields, ref_frame_idx)?;
-        let inter = core
-            .inter
-            .as_ref()
-            .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
-        let tip_mode = inter
-            .tip_frame_mode
-            .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?;
-        let tip_active = tip_mode != TipFrameMode::Disabled;
-        let fill_tip_holes = if tip_active {
+        let inter = match core.inter.as_ref() {
+            None if self.geometry.frame_is_intra() => None,
+            None => return Err(DecodeHeaderStateError::MissingInterControlRegion.into()),
+            inter => inter,
+        };
+        let tip_mode = inter.map_or(Ok(TipFrameMode::Disabled), |inter| {
             inter
+                .tip_frame_mode
+                .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)
+        })?;
+        let tip_active = tip_mode != TipFrameMode::Disabled;
+        let fill_tip_holes = match inter {
+            Some(inter) if tip_active => inter
                 .allow_tip_hole_fill
-                .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?
-        } else {
-            false
+                .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?,
+            _ => false,
         };
         if tip_active && self.expected_tip_pair.is_none() {
             return Err(DecodeHeaderStateError::InvalidInterTemporalMotionState.into());
@@ -2135,7 +2136,6 @@ mod filter_records;
 mod frame_parse;
 pub(in crate::prediction::inter) use frame_parse::prepare_scheduled_recon;
 pub(crate) use frame_parse::{InterFrameParse, InterFrameParser, PendingFilterAttach};
-pub(crate) use tile::ScheduledFrameProgress;
 pub(crate) use tile::{ScheduledTileRecon, ScheduledTileWorkspace};
 mod interintra;
 mod intrabc;
@@ -2145,10 +2145,12 @@ mod prediction;
 mod residual;
 mod resolve;
 mod row_gate;
+pub(crate) use row_gate::{RowReferenceBounds, bounds_satisfied};
 mod syntax;
 mod temporal;
 mod tile;
 pub(super) mod tip;
+pub(crate) use tip::{TipOutputStages, TipSpares};
 mod warp;
 
 use self::filter_records::record_inter_deblock_geometry;

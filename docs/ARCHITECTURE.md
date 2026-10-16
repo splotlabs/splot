@@ -47,9 +47,9 @@ Gate: `cargo xtask check-dependency-direction`.
 
 ## Concurrency
 
-Only `splot-parallel` may depend on Rayon or `crossbeam-channel`. Work runs
-through an owned local `WorkerPool`; the Rayon global pool and `build_global`
-are banned. `splot-core` and `splot-validate` stay runtime-free.
+Only `splot-parallel` may depend on Rayon or spawn threads. The decoder runs
+its frames on the `RowScheduler` (dedicated threads claiming frame rows); the
+encoder uses the owned `WorkerPool`. The Rayon global pool is banned.
 
 Gate: `cargo xtask check-concurrency-policy`.
 

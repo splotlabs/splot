@@ -6,7 +6,7 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-use splot_parallel::{CompletionCell, Condition};
+use splot_parallel::CompletionCell;
 
 use super::find_mv_stack::{
     MotionFieldLayout, TemporalMotionBand, TemporalMotionBlock, TemporalMotionField,
@@ -260,7 +260,7 @@ impl MotionFieldHandle {
 
     /// Waits for terminal field publication while assisting the installed pool.
     pub(crate) fn wait_field(&self) {
-        let _ = self.0.field.wait_with_pool_assist();
+        let _ = self.0.field.wait();
     }
 
     pub(crate) fn layout(&self) -> MotionFieldLayout {
@@ -284,20 +284,25 @@ impl MotionFieldHandle {
         self.0.bands.get(index)?.ready.get()
     }
 
-    pub(crate) fn metadata_condition(&self) -> Condition<'_> {
-        Condition::completion(&self.0.metadata)
+    /// Whether the whole field was published or failed.
+    pub(crate) fn field_settled(&self) -> bool {
+        self.0.field.is_set()
     }
 
-    pub(crate) fn field_condition(&self) -> Condition<'_> {
-        Condition::completion(&self.0.field)
+    /// Whether the metadata was published or the field failed.
+    pub(crate) fn metadata_settled(&self) -> bool {
+        self.0.metadata.is_set()
     }
 
-    pub(crate) fn band_condition(&self, index: usize) -> Option<Condition<'_>> {
-        self.0
-            .bands
-            .get(index)
-            .filter(|_| index < self.0.layout.band_count())
-            .map(|slot| Condition::completion(&slot.ready))
+    /// Whether band `index` was published or the field failed; a band outside
+    /// the layout needs nothing.
+    pub(crate) fn band_settled(&self, index: usize) -> bool {
+        index >= self.0.layout.band_count()
+            || self
+                .0
+                .bands
+                .get(index)
+                .is_none_or(|slot| slot.ready.is_set())
     }
 }
 
@@ -346,7 +351,7 @@ mod tests {
         }
         handle.publish_whole_from_bands();
         assert_eq!(handle.field().ok_or("smaller field")?.layout(), smaller);
-        assert!(handle.band_condition(smaller.band_count()).is_none());
+        assert!(handle.band_settled(smaller.band_count()));
         assert!(handle.try_retire());
         handle.reset_layout(layout)?;
         handle.begin_bands(&metadata)?;

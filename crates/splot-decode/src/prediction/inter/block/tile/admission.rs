@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use splot_core::headers::frame::RefIdxBuf;
-use splot_parallel::{AdmissionScheduler, CompletionCell, Condition};
+use splot_parallel::CompletionCell;
 
 use super::*;
 use crate::prediction::inter::block::row_gate::RowReferenceGate;
@@ -131,7 +131,7 @@ struct ScheduledFrontier<T: ReconSample> {
     carry: crate::filters::source::DeblockedWindow<T>,
     /// The spine's band once reconstruction is complete, for the next frame.
     recon_band: Option<CurrentFrameWorkspace<T>>,
-    deblock: Option<crate::filters::deblock::FrameDeblock<'static>>,
+    deblock: Option<crate::filters::deblock::FrameDeblock>,
     filter: Option<crate::filters::wienerns_lr::recon::OwnedFilterShell<T>>,
     next_filter_stripe: usize,
     /// The job list a published link handed back, for the next link to fill.
@@ -474,36 +474,6 @@ impl<T: ReconSample> TileRecon<T> {
         Ok(())
     }
 
-    fn conditions(
-        &self,
-        index: usize,
-        info: splot_recon::DecodedFrameInfo,
-    ) -> impl Iterator<Item = Condition<'_>> {
-        let rows = self.slots.rows.lock();
-        let mut bounds = row_gate::RowReferenceBounds::default();
-        for ready in self
-            .batch_range(index)
-            .and_then(|range| rows.get(range))
-            .into_iter()
-            .flatten()
-            .filter_map(|row| match row {
-                TileReconRow::Ready(ready) => Some(ready),
-                TileReconRow::Unresolved { .. } | TileReconRow::Taken => None,
-            })
-        {
-            bounds.merge(ready.bounds);
-        }
-        drop(rows);
-        RowReferenceGate::new(
-            &self.reference,
-            &self.core,
-            self.ref_frame_idx.as_slice(),
-            info,
-            &self.temporal,
-        )
-        .conditions(&bounds)
-    }
-
     fn precompute(&self, index: usize, surfaces: &Mutex<SurfaceSource<T>>) -> Result<()> {
         let range = self
             .batch_range(index)
@@ -544,19 +514,6 @@ impl<T: ReconSample> TileRecon<T> {
         };
         let batch = self.workers.with_scratch(|scratch| {
             let _quantizer_scopes = self.quantizer.install_frame();
-            let shared = deferred_recon::ReconShared {
-                reference: &self.reference,
-                ref_frame_idx: self.ref_frame_idx.as_slice(),
-                temporal_context: &self.temporal,
-                sequence: &self.sequence,
-                core: &self.core,
-                luma_use_tcq: self.params.luma_use_tcq,
-                residual_use_ddt: self.params.residual_use_ddt,
-                bit_depth: self.params.bit_depth,
-                mi_rows: self.params.mi_rows,
-                mi_cols: self.params.mi_cols,
-                current_order_hint: self.params.current_order_hint,
-            };
             ready
                 .into_iter()
                 .map(|mut ready| {
@@ -571,18 +528,6 @@ impl<T: ReconSample> TileRecon<T> {
                     scratch.with_installed(|scratch| {
                         let mut lists = core::mem::take(&mut scratch.lists);
                         ready.row.load_parsed(&mut lists);
-                        if !ready.row.has_terminal_error() && !ready.row.motion_derived {
-                            if ready.row.motion_storage.is_none() {
-                                ready.row.motion_storage = self.workers.take_motion_storage();
-                            }
-                            mvres::derive_unit_motion(
-                                &mut ready.row,
-                                ready.surface.as_mut(),
-                                scratch,
-                                &self.motion,
-                                &shared,
-                            );
-                        }
                         let mut ready = precompute_recon_row(
                             ready,
                             scratch,
@@ -643,15 +588,13 @@ impl<T: ReconSample> TileRecon<T> {
         let mut batch = batch;
         for ready in batch.drain(..) {
             let ordinal = ready.row.ordinal;
-            let mut spent = commit.replay(
+            let spent = commit.replay(
                 ready,
                 &self.quantizer,
                 &self.motion,
                 &self.temporal,
                 &context,
             )?;
-            self.workers
-                .recycle_motion_storage(spent.motion_storage.take());
             parse_progress.return_row_buffers(ordinal, spent)?;
         }
         *self
@@ -777,18 +720,10 @@ fn empty_row_slots<T: ReconSample>(slots: &mut Vec<Option<Vec<ReadyReconRow<T>>>
     }
 }
 
-/// Which half of a batch's work a [`BatchJob`] runs.
-#[derive(Clone, Copy)]
-enum BatchStage {
-    Precompute,
-    Commit,
-}
-
 /// One batch's work at one stage.
 struct BatchJob<'a, 'c, T: ReconSample> {
     shared: &'a BatchContext<'a, 'c, T>,
     index: usize,
-    stage: BatchStage,
 }
 
 impl<T: ReconSample> BatchJob<'_, '_, T> {
@@ -904,19 +839,8 @@ impl<T: ReconSample> BatchJob<'_, '_, T> {
     }
 }
 
-impl<'a, 'c: 'a, T: ReconSample> splot_parallel::Task<'a> for BatchJob<'a, 'c, T> {
-    fn run(self, _admit: &dyn splot_parallel::Admit<'a, Self>) {
-        match self.stage {
-            BatchStage::Precompute => self.precompute(),
-            BatchStage::Commit => self.commit(),
-        }
-    }
-}
-
-/// Parses one tile and reconstructs its batches.
-///
-/// A lone worker runs each admitted batch job at once and in order, so once
-/// every reference row is settled it runs them directly and builds no scheduler.
+/// Parses one tile and reconstructs its batches in order, once every
+/// reference row is settled.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_ordinary_tile<T: ReconSample>(
     parser: &mut TileParser<'_>,
@@ -963,187 +887,67 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
         context,
         row_buffers,
     };
-    let pool_width = splot_parallel::current_pool_width();
-    let inline = pool_width <= 1 && row_gate.is_ready();
-    let scheduler: Option<AdmissionScheduler<'_, BatchJob<'_, '_, T>>> =
-        (!inline).then(AdmissionScheduler::new);
-    let admission_window = if pool_width > 1 {
-        pool_width.saturating_sub(1).saturating_mul(3)
-    } else {
-        1
-    };
-    let mut references_settled = inline;
-    if inline && let Err(value) = row_gate.wait() {
+    if let Err(value) = row_gate.wait() {
         record_first_error(&error, value);
     }
-    let mut submitted_batches = 0usize;
     let mut reached_last = false;
-    let parse_result = splot_parallel::ready_task_scope(|scope| {
-        for (batch_index, range) in batches.iter().enumerate() {
-            let mut ready = shared
-                .pending
-                .lock()
-                .get_mut(batch_index)
-                .and_then(Option::take)
-                .unwrap_or_default();
-            ready.clear();
-            let mut bounds = row_gate::RowReferenceBounds::default();
-            let mut batch_last = false;
-            for _ in range.clone() {
-                let step = {
-                    let _quantizer_scopes = quantizer.install_frame();
-                    let step = parser.next_unit(tile, context, Some(row_buffers.take()));
-                    resolve_parser_step(step, |row| {
-                        resolve.resolve_unit(
-                            &mut parser.mv_grid,
-                            context,
-                            temporal,
-                            row,
-                            tile_offset,
-                        )
-                    })
-                };
-                let (row, last) = match step {
-                    ParserStep::More(row) => (row, false),
-                    ParserStep::Last(row) => (row, true),
-                };
-                let row_bounds = row_gate.bounds_for_row(&row);
-                bounds.merge(row_bounds);
-                let surface = surfaces.lock().take(row.ordinal).transpose().ok().flatten();
-                ready.push(ReadyReconRow {
-                    bounds: row_bounds,
-                    row,
-                    surface,
-                });
-                if last {
-                    reached_last = true;
-                    batch_last = true;
-                    break;
-                }
-            }
-
-            if let Some(slot) = shared.pending.lock().get_mut(batch_index) {
-                *slot = Some(ready);
-            }
-            let Some(scheduler) = scheduler.as_ref() else {
-                for stage in [BatchStage::Precompute, BatchStage::Commit] {
-                    let job = BatchJob {
-                        shared: &shared,
-                        index: batch_index,
-                        stage,
-                    };
-                    match stage {
-                        BatchStage::Precompute => job.precompute(),
-                        BatchStage::Commit => job.commit(),
-                    }
-                }
-                submitted_batches = batch_index.saturating_add(1);
-                if batch_last {
-                    break;
-                }
-                continue;
+    for (batch_index, range) in batches.iter().enumerate() {
+        let mut ready = shared
+            .pending
+            .lock()
+            .get_mut(batch_index)
+            .and_then(Option::take)
+            .unwrap_or_default();
+        ready.clear();
+        let mut batch_last = false;
+        for _ in range.clone() {
+            let step = {
+                let _quantizer_scopes = quantizer.install_frame();
+                let step = parser.next_unit(tile, context, Some(row_buffers.take()));
+                resolve_parser_step(step, |row| {
+                    resolve.resolve_unit(&mut parser.mv_grid, context, temporal, row, tile_offset)
+                })
             };
-            scheduler.submit_iter(
-                scope,
-                (batch_index as u64).saturating_mul(4).saturating_add(1),
-                &mut row_gate.conditions(&bounds),
-                splot_parallel::Job::Inline(BatchJob {
-                    shared: &shared,
-                    index: batch_index,
-                    stage: BatchStage::Precompute,
-                }),
-            );
-
-            let pair;
-            let single;
-            let conditions: &[Condition<'_>] = if let Some(previous) = batch_index.checked_sub(1) {
-                pair = [
-                    Condition::completion(&precomputed[batch_index]),
-                    Condition::completion(&committed[previous]),
-                ];
-                &pair
-            } else {
-                single = [Condition::completion(&precomputed[batch_index])];
-                &single
+            let (row, last) = match step {
+                ParserStep::More(row) => (row, false),
+                ParserStep::Last(row) => (row, true),
             };
-            scheduler.submit(
-                scope,
-                (batch_index as u64).saturating_mul(4).saturating_add(2),
-                conditions,
-                splot_parallel::Job::Inline(BatchJob {
-                    shared: &shared,
-                    index: batch_index,
-                    stage: BatchStage::Commit,
-                }),
-            );
-            submitted_batches = batch_index.saturating_add(1);
-            if let Some(target) = batch_index.checked_sub(admission_window) {
-                while !committed[target].is_set() {
-                    let progress = splot_parallel::pool_progress_snapshot();
-                    if !references_settled && row_gate.is_ready() {
-                        references_settled = true;
-                        if let Err(value) = row_gate.wait() {
-                            record_first_error(&error, value);
-                        }
-                    }
-                    scheduler.admit_ready(scope);
-                    if committed[target].is_set() {
-                        break;
-                    }
-                    if !references_settled {
-                        if row_gate.is_ready() {
-                            continue;
-                        }
-                        break;
-                    }
-                    splot_parallel::assist_pool_or_park(&progress);
-                }
-            }
-            if batch_last {
+            let bounds = row_gate.bounds_for_row(&row);
+            let surface = surfaces.lock().take(row.ordinal).transpose().ok().flatten();
+            ready.push(ReadyReconRow {
+                row,
+                surface,
+                bounds,
+            });
+            if last {
+                reached_last = true;
+                batch_last = true;
                 break;
             }
         }
-    });
-    parse_result?;
+        if let Some(slot) = shared.pending.lock().get_mut(batch_index) {
+            *slot = Some(ready);
+        }
+        BatchJob {
+            shared: &shared,
+            index: batch_index,
+        }
+        .precompute();
+        BatchJob {
+            shared: &shared,
+            index: batch_index,
+        }
+        .commit();
+        if batch_last {
+            break;
+        }
+    }
     if !reached_last {
         record_first_error(&error, invalid_inter_tile_scheduling_state());
     }
-
-    let terminal = submitted_batches
-        .checked_sub(1)
-        .and_then(|last| committed.get(last));
-    splot_parallel::ready_task_scope(|scope| {
-        while terminal.is_some_and(|done| !done.is_set()) {
-            let progress = splot_parallel::pool_progress_snapshot();
-            if !references_settled && row_gate.is_ready() {
-                references_settled = true;
-                if let Err(value) = row_gate.wait() {
-                    record_first_error(&error, value);
-                }
-            }
-            if let Some(scheduler) = scheduler.as_ref() {
-                scheduler.admit_ready(scope);
-            }
-            if terminal.is_none_or(CompletionCell::is_set) {
-                break;
-            }
-            if !references_settled && row_gate.is_ready() {
-                continue;
-            }
-            if references_settled {
-                break;
-            }
-            splot_parallel::assist_pool_or_park(&progress);
-        }
-    })?;
-    let scheduler_result = scheduler
-        .as_ref()
-        .map_or(Ok(()), AdmissionScheduler::finish);
-    drop(scheduler);
     if let Some(error) = error.into_inner() {
         return Err(error);
     }
-    scheduler_result?;
     commit
         .into_inner()
         .ok_or_else(invalid_inter_tile_scheduling_state)
@@ -1196,17 +1000,53 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         self.temporal_plan.len()
     }
 
-    pub(crate) fn resolve_conditions(&self, index: usize) -> impl Iterator<Item = Condition<'_>> {
-        self.temporal_plan
-            .requirements(index)
-            .filter_map(|(slot, band)| {
-                self.recon
-                    .reference
-                    .ref_motion_fields
-                    .get(slot)
-                    .and_then(Option::as_ref)
-                    .and_then(|field| field.band_condition(band))
-            })
+    /// Whether every reference motion band step `index` projects has settled.
+    pub(crate) fn resolve_ready(&self, index: usize) -> bool {
+        self.temporal_plan.requirements(index).all(|(slot, band)| {
+            self.recon
+                .reference
+                .ref_motion_fields
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_none_or(|field| field.band_settled(band))
+        })
+    }
+
+    /// Precomputes one admitted batch without entering the ordered commit spine.
+    pub(crate) fn precompute(&self, index: usize) -> Result<()> {
+        self.recon.precompute(index, &self.pending_surfaces)
+    }
+
+    /// Whether batch `index` is parsed, resolved, and admitted by its
+    /// references' published rows.
+    pub(crate) fn batch_ready(&self, index: usize) -> bool {
+        let Some(range) = self.recon.batch_range(index) else {
+            return false;
+        };
+        if self.parse_progress.cell().current() < range.end {
+            return false;
+        }
+        let mut bounds = row_gate::RowReferenceBounds::default();
+        {
+            let rows = self.recon.slots.rows.lock();
+            let Some(rows) = rows.get(range) else {
+                return false;
+            };
+            for row in rows {
+                match row {
+                    TileReconRow::Ready(ready) => bounds.merge(ready.bounds),
+                    TileReconRow::Unresolved { .. } | TileReconRow::Taken => return false,
+                }
+            }
+        }
+        RowReferenceGate::new(
+            &self.recon.reference,
+            &self.recon.core,
+            self.recon.ref_frame_idx.as_slice(),
+            self.info,
+            &self.recon.temporal,
+        )
+        .is_satisfied(&bounds)
     }
 
     /// Whether the § 8.2 pass failed.
@@ -1215,11 +1055,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// step that waited on it again would spin until the failure settles.
     fn parse_failed(&self) -> bool {
         self.parse_progress.cell().current() == splot_parallel::WatermarkCell::FAILED
-    }
-
-    /// The § 8.2 watermark a stalled resolve step waits on.
-    pub(crate) fn parse_watermark(&self) -> &splot_parallel::WatermarkCell {
-        self.parse_progress.cell()
     }
 
     pub(crate) fn resolve(&self, index: usize) -> Result<(core::ops::Range<usize>, Option<usize>)> {
@@ -1327,7 +1162,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// already admitting precompute work.
     pub(in crate::prediction::inter::block) fn attach_filters(
         &self,
-        filter_setup: crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>,
+        filter_setup: crate::filters::wienerns_lr::recon::OwnedFilterSetup<T>,
         mut filter_shell: crate::filters::wienerns_lr::recon::OwnedFilterShell<T>,
         deblock_records: Option<crate::filters::deblock::OwnedDeblockRecords>,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
@@ -1343,7 +1178,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     self.recon.params.mi_rows,
                     self.recon.params.mi_cols,
                     filter,
-                    Arc::clone(&self.recon.core),
+                    self.recon.core.tile_info.clone(),
                     self.recon
                         .sequence
                         .filter
@@ -1386,22 +1221,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             };
             rows.push(TileReconRow::Unresolved { row, surface: None });
         }
-    }
-
-    pub(crate) fn conditions(&self, index: usize) -> impl Iterator<Item = Condition<'_>> {
-        let range = self.recon.batch_range(index);
-        if let Some(range) = &range {
-            self.materialize_rows(range.end);
-        }
-        range
-            .map(|range| Condition::watermark(self.parse_progress.cell(), range.end))
-            .into_iter()
-            .chain(self.recon.conditions(index, self.info))
-    }
-
-    /// Precomputes one admitted unit without entering the ordered commit spine.
-    pub(crate) fn precompute(&self, index: usize) -> Result<()> {
-        self.recon.precompute(index, &self.pending_surfaces)
     }
 
     /// Seals the spine's completed rows, then moves its band to the next row.
@@ -1543,10 +1362,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .as_ref()
             .ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)?;
         if let Some(deblock) = frontier.deblock.take() {
-            let records = deblock
-                .finish()
-                .ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)?;
-            setup.restore_deblock_records(records)?;
+            setup.restore_deblock_records(deblock.finish())?;
         }
         let rows = frontier
             .sealed
@@ -1767,7 +1583,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     parse_progress: Arc<super::ParseProgress>,
 ) -> Result<ScheduledTileRecon<T>> {
     let buffers = scratch.buffers.clone();
-    workers.ensure_workers(splot_parallel::current_pool_width().max(1));
+    workers.ensure_workers(1);
     let info = workspace.info();
     let geometry = parse_progress
         .geometry()

@@ -1,13 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_core::headers::frame::{
-    DeblockingFilterParams, FrameHeaderCore, QuantizationParams, TileInfo,
-};
+use splot_core::headers::frame::{DeblockingFilterParams, QuantizationParams, TileInfo};
 use splot_core::tables::conversion::{
     Q_FIRST, Q_THRESH_MULTS, SIDE_THRESHOLDS, TX_HEIGHT, TX_WIDTH, W_MULT,
 };
-use splot_parallel::prelude::*;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DeblockFilterChoice, DeblockSampleFilter, PixelFormat,
     PlaneId, ReconSample, deblock_adaptive_filter_strength, deblock_edge_columns,
@@ -15,7 +12,7 @@ use splot_recon::{
     deblock_filter_max_width, deblock_sample_filter, deblock_sample_filter_strided,
     deblock_sample_filter_strided_4, deblock_side_threshold_index, max_quantizer_index,
 };
-use std::{cell::Cell, num::NonZeroUsize, ops::Range, sync::Arc};
+use std::{cell::Cell, num::NonZeroUsize, ops::Range};
 
 mod grid;
 mod replay;
@@ -103,6 +100,7 @@ struct ChromaDeblockBlock {
     planes: u8,
 }
 
+#[derive(Clone)]
 pub(crate) struct ChromaDeblockRecords {
     blocks: Vec<ChromaDeblockBlock>,
 }
@@ -258,8 +256,8 @@ impl EdgeBlock<'_> {
 /// reach [`DEBLOCK_PASS_1_REACH`] plane rows back, which is what
 /// [`FrameDeblock::final_luma_rows`] subtracts from the section frontier before
 /// a row counts as final.
-pub(crate) struct FrameDeblock<'a> {
-    records: DeblockRecords<'a>,
+pub(crate) struct FrameDeblock {
+    records: OwnedDeblockRecords,
     grid: MiGridStorage,
     chroma: [Option<ChromaMiGridStorage>; 2],
     /// Luma and chroma record orders the per-advance grid windows are laid
@@ -267,19 +265,11 @@ pub(crate) struct FrameDeblock<'a> {
     order: [RowOrder; 2],
     mi_rows: usize,
     filter: DeblockingFilterParams,
-    tile_info: TileInfoSource<'a>,
+    tile_info: Option<TileInfo>,
     disable_loopfilters_across_tiles: bool,
     quant_deltas: DeblockQuantDeltas,
     next_pass_0_mi_row: usize,
     next_pass_1_mi_row: usize,
-    /// Whether one advance may filter its planes beside each other.
-    ///
-    /// The scheduled frontier chain advances this plan while holding the
-    /// frame's filter storage, and a nested parallel section can execute
-    /// another queued job on the same worker — including the commit that wants
-    /// that storage. The chain therefore filters its three planes in sequence
-    /// and takes its parallelism from the frames and stripes beside it.
-    plane_parallel: bool,
 }
 
 /// One plane band's share of a deblock section: the rows it owns and the passes
@@ -294,46 +284,6 @@ pub(crate) struct OwnedDeblockRecords {
     pub(crate) grids: DeblockGridStorage,
     pub(crate) blocks: Vec<DeblockBlock>,
     pub(crate) chroma: ChromaDeblockRecords,
-}
-
-#[allow(clippy::large_enum_variant)]
-enum DeblockRecords<'a> {
-    Borrowed {
-        blocks: &'a [DeblockBlock],
-        chroma: &'a ChromaDeblockRecords,
-    },
-    Owned(OwnedDeblockRecords),
-}
-
-enum TileInfoSource<'a> {
-    Borrowed(Option<&'a TileInfo>),
-    Owned(Arc<FrameHeaderCore>),
-}
-
-impl TileInfoSource<'_> {
-    fn get(&self) -> Option<&TileInfo> {
-        match self {
-            Self::Borrowed(tile_info) => *tile_info,
-            Self::Owned(core) => core.tile_info.as_ref(),
-        }
-        .filter(|info| info.mi_col_starts.len() > 2 || info.mi_row_starts.len() > 2)
-    }
-}
-
-impl DeblockRecords<'_> {
-    fn blocks(&self) -> &[DeblockBlock] {
-        match self {
-            Self::Borrowed { blocks, .. } => blocks,
-            Self::Owned(records) => &records.blocks,
-        }
-    }
-
-    fn chroma(&self) -> &ChromaDeblockRecords {
-        match self {
-            Self::Borrowed { chroma, .. } => chroma,
-            Self::Owned(records) => &records.chroma,
-        }
-    }
 }
 
 /// The interior tile starts one pass filters across, or `None` when the frame
@@ -365,58 +315,7 @@ pub(crate) const DEBLOCK_PASS_1_REACH: usize = 8;
 /// never reaches back into a row the horizontal pass has already rewritten.
 const PASS_0_LEAD_MI_ROWS: usize = 4;
 
-/// How many mode-info rows one primed vertical band covers.
-///
-/// Wide enough that a band a worker steals pays for the steal, and a multiple of
-/// the chroma row step so a band's plane rows split on a mode-info boundary.
-const VERTICAL_BAND_MI_ROWS: usize = 32;
-
-impl<'a> FrameDeblock<'a> {
-    /// Builds the frame's mode-info grids, or reports that the frame has no
-    /// deblocking to do.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn prepare(
-        blocks: &'a [DeblockBlock],
-        chroma_blocks: &'a ChromaDeblockRecords,
-        mi_rows: usize,
-        mi_cols: usize,
-        filter: DeblockingFilterParams,
-        tile_info: Option<&'a TileInfo>,
-        disable_loopfilters_across_tiles: bool,
-        quant_deltas: DeblockQuantDeltas,
-        chroma_subsampling: (usize, usize),
-        storage: &mut DeblockGridStorage,
-    ) -> Result<Option<Self>, DeblockError> {
-        if filter.apply_deblocking_filter == [false; 4] {
-            return Ok(None);
-        }
-        let (grid, chroma, order) = take_grids(
-            blocks,
-            chroma_blocks,
-            (mi_rows, mi_cols),
-            filter,
-            chroma_subsampling,
-            storage,
-        )?;
-        Ok(Some(Self {
-            records: DeblockRecords::Borrowed {
-                blocks,
-                chroma: chroma_blocks,
-            },
-            grid,
-            chroma,
-            order,
-            mi_rows,
-            filter,
-            tile_info: TileInfoSource::Borrowed(tile_info),
-            disable_loopfilters_across_tiles,
-            quant_deltas,
-            next_pass_0_mi_row: 0,
-            next_pass_1_mi_row: 0,
-            plane_parallel: true,
-        }))
-    }
-
+impl FrameDeblock {
     /// Builds the frame's mode-info grids while taking ownership of detached
     /// deblock records.
     #[allow(clippy::too_many_arguments)]
@@ -425,7 +324,7 @@ impl<'a> FrameDeblock<'a> {
         mi_rows: usize,
         mi_cols: usize,
         filter: DeblockingFilterParams,
-        core: Arc<FrameHeaderCore>,
+        tile_info: Option<TileInfo>,
         disable_loopfilters_across_tiles: bool,
         quant_deltas: DeblockQuantDeltas,
         chroma_subsampling: (usize, usize),
@@ -442,124 +341,18 @@ impl<'a> FrameDeblock<'a> {
             &mut records.grids,
         )?;
         Ok(Some(Self {
-            records: DeblockRecords::Owned(records),
+            records,
             grid,
             chroma,
             order,
             mi_rows,
             filter,
-            tile_info: TileInfoSource::Owned(core),
+            tile_info,
             disable_loopfilters_across_tiles,
             quant_deltas,
             next_pass_0_mi_row: 0,
             next_pass_1_mi_row: 0,
-            plane_parallel: false,
         }))
-    }
-
-    /// Runs the whole frame's vertical pass in parallel row bands.
-    ///
-    /// A vertical edge stays inside its own mode-info row, so contiguous row
-    /// bands filter exactly the samples one ascending walk does, and running
-    /// them all up front leaves only the horizontal pass — which no row band can
-    /// split, since consecutive horizontal edges overlap — pacing how early
-    /// [`Self::advance_source`] can call a stripe's rows final. Off a parallel
-    /// pool it leaves the pass to the advances, which keeps the grids windowed.
-    pub(crate) fn prime_vertical_pass<T: ReconSample>(
-        &mut self,
-        frame: &mut FrontierRows<T>,
-        bit_depth: BitDepth,
-    ) -> Result<(), DeblockError> {
-        let range = self.next_pass_0_mi_row..self.mi_rows;
-        let parallel = self.plane_parallel
-            && splot_parallel::on_worker_pool()
-            && splot_parallel::current_pool_width() > 1;
-        if range.is_empty() || !parallel {
-            return Ok(());
-        }
-        self.fill_grids(range.clone())?;
-        let pixel_format = frame.info().pixel_format();
-        let dimensions = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| frame.plane_size(plane));
-        let [Some(y), u, v] = frame.planes_mut() else {
-            return Err(DeblockError::Workspace);
-        };
-        let luma_bands = dimensions[0].map_or(0, |(_, height)| {
-            height.div_ceil(VERTICAL_BAND_MI_ROWS * MI_SIZE)
-        });
-        let mut jobs = Vec::new();
-        jobs.try_reserve(luma_bands.saturating_mul(3).saturating_add(3))
-            .map_err(|_| DeblockError::Workspace)?;
-        let mut submit = |job| -> Result<(), DeblockError> {
-            jobs.push(job);
-            Ok(())
-        };
-        for (plane, samples) in [Some(y), u, v].into_iter().enumerate() {
-            let (Some((samples, stride)), Some((width, height))) = (samples, dimensions[plane])
-            else {
-                continue;
-            };
-            if plane != 0 && !self.filter.apply_deblocking_filter[plane + 1] {
-                continue;
-            }
-            let Some(plane_pass) = PlanePass::active(
-                plane,
-                0,
-                self.filter,
-                self.quant_deltas,
-                bit_depth,
-                pixel_format,
-                &range,
-            ) else {
-                continue;
-            };
-            let band_rows = (VERTICAL_BAND_MI_ROWS * MI_SIZE) >> plane_pass.plane_sub_y;
-            let plane_samples = samples
-                .get_mut(..stride.checked_mul(height).ok_or(DeblockError::Workspace)?)
-                .ok_or(DeblockError::Workspace)?;
-            let band_samples = band_rows
-                .checked_mul(stride)
-                .ok_or(DeblockError::Workspace)?;
-            for (band, samples) in plane_samples.chunks_mut(band_samples).enumerate() {
-                let mi_start = range.start.max(band * VERTICAL_BAND_MI_ROWS);
-                let mi_end = band
-                    .saturating_add(1)
-                    .saturating_mul(VERTICAL_BAND_MI_ROWS)
-                    .min(range.end);
-                if mi_start >= mi_end {
-                    continue;
-                }
-                let y_origin = band * band_rows;
-                submit(PlaneJob {
-                    band: PlaneBand {
-                        row_count: samples.len() / stride,
-                        storage: PlaneRows { samples, stride },
-                        width,
-                        height,
-                        y_origin,
-                        log: None,
-                    },
-                    grid: self.plane_grid(plane),
-                    passes: [
-                        Some(PlanePass {
-                            mi_row_range: (mi_start, mi_end),
-                            ..plane_pass
-                        }),
-                        None,
-                    ],
-                })?;
-            }
-        }
-        let run = |job: PlaneJob<'_, T>| self.run_plane_job(job);
-        if jobs.len() > 1 {
-            jobs.into_par_iter().try_for_each(|job| {
-                splot_parallel::wake_idle_worker();
-                run(job)
-            })?;
-        } else {
-            jobs.into_iter().try_for_each(run)?;
-        }
-        self.next_pass_0_mi_row = self.mi_rows;
-        Ok(())
     }
 
     /// Deblocks the frame rows past its final prefix in place, then publishes
@@ -709,7 +502,7 @@ impl<'a> FrameDeblock<'a> {
                 plane_pass,
                 self.mi_rows,
                 self.grid.mi_cols,
-                pass_tile_starts(self.tile_info.get(), plane_pass.pass),
+                pass_tile_starts(self.tile_info(), plane_pass.pass),
                 self.disable_loopfilters_across_tiles,
             )?;
         }
@@ -726,8 +519,8 @@ impl<'a> FrameDeblock<'a> {
         MiGrid::new(
             &self.grid,
             chroma,
-            self.records.blocks(),
-            self.records.chroma(),
+            &self.records.blocks,
+            &self.records.chroma,
         )
     }
 
@@ -769,14 +562,14 @@ impl<'a> FrameDeblock<'a> {
     /// whole chroma cell rows.
     fn fill_grids(&mut self, rows: Range<usize>) -> Result<(), DeblockError> {
         let rows = (rows.start & !1)..rows.end.saturating_add(rows.end & 1).min(self.mi_rows);
-        let blocks = self.records.blocks();
+        let blocks = &self.records.blocks;
         self.grid
             .fill(blocks, &self.order[0], self.mi_rows, &rows)?;
         for (plane, slot) in self.chroma.iter_mut().enumerate() {
             if let Some(chroma) = slot {
                 chroma.fill(
                     &self.grid,
-                    self.records.chroma(),
+                    &self.records.chroma,
                     &self.order[1],
                     plane,
                     self.mi_rows,
@@ -800,19 +593,53 @@ impl<'a> FrameDeblock<'a> {
         }
     }
 
-    pub(crate) fn finish(mut self) -> Option<OwnedDeblockRecords> {
-        let mut grids = match &mut self.records {
-            DeblockRecords::Borrowed { .. } => return None,
-            DeblockRecords::Owned(records) => core::mem::take(&mut records.grids),
-        };
+    pub(crate) fn finish(mut self) -> OwnedDeblockRecords {
+        let mut grids = core::mem::take(&mut self.records.grids);
         self.release_grids(&mut grids);
-        match self.records {
-            DeblockRecords::Borrowed { .. } => None,
-            DeblockRecords::Owned(mut records) => {
-                records.grids = grids;
-                Some(records)
-            }
-        }
+        let mut records = self.records;
+        records.grids = grids;
+        records
+    }
+
+    /// The interior tile boundaries, when the frame has more than one tile.
+    fn tile_info(&self) -> Option<&TileInfo> {
+        self.tile_info
+            .as_ref()
+            .filter(|info| info.mi_col_starts.len() > 2 || info.mi_row_starts.len() > 2)
+    }
+}
+
+#[cfg(test)]
+impl FrameDeblock {
+    /// Builds a plan over copies of borrowed records, for tests that keep
+    /// their records.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare(
+        blocks: &[DeblockBlock],
+        chroma_blocks: &ChromaDeblockRecords,
+        mi_rows: usize,
+        mi_cols: usize,
+        filter: DeblockingFilterParams,
+        tile_info: Option<&TileInfo>,
+        disable_loopfilters_across_tiles: bool,
+        quant_deltas: DeblockQuantDeltas,
+        chroma_subsampling: (usize, usize),
+        grids: &mut DeblockGridStorage,
+    ) -> Result<Option<Self>, DeblockError> {
+        Self::prepare_owned(
+            OwnedDeblockRecords {
+                grids: core::mem::take(grids),
+                blocks: blocks.to_vec(),
+                chroma: chroma_blocks.clone(),
+            },
+            mi_rows,
+            mi_cols,
+            filter,
+            tile_info.cloned(),
+            disable_loopfilters_across_tiles,
+            quant_deltas,
+            chroma_subsampling,
+        )
     }
 }
 
@@ -994,7 +821,7 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
             }
             Ok(())
         };
-    splot_parallel::join_each(&mut slots, &deblock_plane)
+    slots.iter_mut().try_for_each(deblock_plane)
 }
 
 fn tip_tile_edge(starts: Option<&[u32]>, coordinate: usize, subsampling: usize) -> bool {

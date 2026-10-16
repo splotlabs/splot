@@ -121,9 +121,14 @@ const STD_MPSC_NEEDLES: &[&str] = &[
     "mpsc as ",
 ];
 
-/// Ad-hoc OS-thread-spawn needles — banned outside tests (the local `WorkerPool`
-/// owns every worker thread). Covers direct and imported `spawn`, the
-/// `thread::Builder` form (`Builder::new().spawn(...)`), and the `std::thread`
+/// The one file allowed to spawn OS threads: the row scheduler that owns the
+/// decoder's dedicated worker threads.
+const THREAD_OWNER_FILE: &str = "crates/splot-parallel/src/rows.rs";
+
+/// Ad-hoc OS-thread-spawn needles — banned outside tests and
+/// [`THREAD_OWNER_FILE`], since every worker thread belongs to the row
+/// scheduler or the encoder's `WorkerPool`. Covers direct and imported `spawn`,
+/// the `thread::Builder` form (`Builder::new().spawn(...)`), and the `std::thread`
 /// alias forms (`use std::thread as t;`, `use std::thread::{self as t};`) that would
 /// otherwise hide an aliased `t::spawn`. Scoped to full paths / import declarations
 /// so numeric casts such as `worker_thread as u32` are never matched.
@@ -131,8 +136,8 @@ const THREAD_SPAWN_NEEDLES: &[&str] = &[
     "thread::spawn",
     "thread::Builder",
     // Scoped threads (`std::thread::scope(|s| s.spawn(...))`) also spawn OS threads
-    // the WorkerPool does not own; flagging the `thread::scope` entry point catches
-    // the whole scoped-spawn form.
+    // nobody owns; flagging the `thread::scope` entry point catches the whole
+    // scoped-spawn form.
     "thread::scope",
     "std::thread as ",
     "std::thread::{self",
@@ -194,16 +199,7 @@ const PARALLEL_CRATE_PREFIX: &str = "crates/splot-parallel/";
 /// Files exempt from the par-iter-outside-`install` rule (Rule 10) — for the rare
 /// legitimate case where the `install` scoping lives in a different file. Empty by
 /// default; add a path with a documented reason rather than weakening the rule.
-///
-/// The decode stages below run inside `DecodeContext`'s
-/// `WorkerPool::install` (crates/splot-decode/src/context.rs) and gate their
-/// parallel path with `on_worker_pool`, so direct callers and unrelated Rayon
-/// pools take the serial path instead of Rayon's global pool.
-const PAR_ITER_RULE_ALLOWLIST: &[&str] = &[
-    "crates/splot-decode/src/filters/deblock.rs",
-    "crates/splot-decode/src/prediction/inter/block/tip.rs",
-    "crates/splot-decode/src/prediction/inter/mc/optflow.rs",
-];
+const PAR_ITER_RULE_ALLOWLIST: &[&str] = &[];
 
 /// Returns the unbounded-channel source needle matched in `text`, including braced
 /// import forms such as `use crossbeam_channel::{bounded, unbounded};`.
@@ -387,6 +383,7 @@ pub(crate) fn evaluate_concurrency_policy(
         }
 
         if !line.in_test
+            && line.path != THREAD_OWNER_FILE
             && let Some(needle) = thread_spawn_needle(&line.text)
         {
             violations.push(format!(
@@ -1047,6 +1044,25 @@ mod tests {
         assert!(
             evaluate_concurrency_policy(&[], &inside).is_empty(),
             "thread-spawn inside tests must be exempt"
+        );
+    }
+
+    #[test]
+    fn the_row_scheduler_file_may_spawn_its_worker_threads() {
+        let code = "    std::thread::Builder::new().spawn(work)?;";
+        let exempt = SourceLine {
+            path: THREAD_OWNER_FILE.to_owned(),
+            line_no: 1,
+            text: code.to_owned(),
+            in_test: false,
+        };
+        assert!(
+            evaluate_concurrency_policy(&[], &[exempt]).is_empty(),
+            "the row scheduler owns the decoder's worker threads"
+        );
+        assert!(
+            !evaluate_concurrency_policy(&[], &[line(code, false)]).is_empty(),
+            "other files stay banned"
         );
     }
 

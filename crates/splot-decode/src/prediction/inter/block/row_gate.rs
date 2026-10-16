@@ -86,7 +86,7 @@ struct ListReach {
 /// have published before the row's reconstruction may run, and zero when the
 /// row reads nothing through that list.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct RowReferenceBounds {
+pub(crate) struct RowReferenceBounds {
     needs: [u32; MAX_LISTS],
     settle: bool,
 }
@@ -134,27 +134,24 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         }
     }
 
-    /// Returns the scheduler conditions that replace waiting for `bounds`.
-    pub(super) fn conditions(
-        &self,
-        bounds: &RowReferenceBounds,
-    ) -> impl Iterator<Item = splot_parallel::Condition<'a>> + use<'a, T> {
-        let bounds = *bounds;
-        bounds
-            .settle
-            .then(|| self.settle.conditions())
-            .into_iter()
-            .flatten()
-            .chain(
-                self.lists
-                    .into_iter()
-                    .zip(bounds.needs)
-                    .filter_map(move |(slot, need)| {
-                        (!bounds.settle && need != 0)
-                            .then(|| slot.map(|slot| slot.row_condition(need as usize)))
-                            .flatten()
-                    }),
-            )
+    /// Whether `bounds` hold now: the rows each list needs are published, or
+    /// the frames the unbounded readers need have settled.
+    pub(super) fn is_satisfied(&self, bounds: &RowReferenceBounds) -> bool {
+        if bounds.settle {
+            return self.settle.is_ready();
+        }
+        self.lists
+            .iter()
+            .zip(bounds.needs)
+            .all(|(slot, need)| match slot {
+                Some(slot) if need != 0 => {
+                    slot.is_settled()
+                        || slot
+                            .progress()
+                            .is_some_and(|progress| progress.published_luma_rows() >= need as usize)
+                }
+                _ => true,
+            })
     }
 
     /// Whether every named reference frame has settled, which admits every row.
@@ -230,6 +227,14 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
                 },
             );
         }
+    }
+
+    /// The reference rows one § 7.13.5 TIP block reads, as a bound a
+    /// scheduler can check later through [`bounds_satisfied`].
+    pub(super) fn tip_bounds(&self, placed: &PlacedInterBlock) -> RowReferenceBounds {
+        let mut bounds = RowReferenceBounds::default();
+        self.note_tip(placed, &mut bounds);
+        bounds
     }
 
     /// Bounds one § 7.13.5 TIP block against the frame's TIP reference pair.
@@ -334,6 +339,33 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
             *entry = (*entry).max(rows);
         }
     }
+}
+
+/// Whether `bounds` hold now for a frame whose reference lists are
+/// `ref_frame_idx`, without the temporal state the gate itself carries.
+pub(crate) fn bounds_satisfied<T: ReconSample>(
+    reference: &InterReferenceState<T>,
+    core: &FrameHeaderCore,
+    ref_frame_idx: &[u32],
+    bounds: &RowReferenceBounds,
+) -> bool {
+    if bounds.settle {
+        return reference
+            .pixel_reference_gate(named_pixel_reference_slots(core))
+            .is_ready();
+    }
+    ref_frame_idx.iter().zip(bounds.needs).all(|(slot, need)| {
+        need == 0
+            || ReferenceSlot::new(*slot as usize)
+                .ok()
+                .and_then(|slot| reference.store.get(slot).ok().flatten())
+                .is_none_or(|slot| {
+                    slot.is_settled()
+                        || slot
+                            .progress()
+                            .is_some_and(|progress| progress.published_luma_rows() >= need as usize)
+                })
+    })
 }
 
 /// The luma rows one list's reference must have published for one block

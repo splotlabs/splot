@@ -13,35 +13,29 @@
 //! work runs on the configured pool rather than Rayon's global pool. See the
 //! [`prelude`] docs and `docs/ARCHITECTURE.md` for the required pattern.
 //!
-//! Pipelined stages whose work depends on another stage's progress use
-//! [`AdmissionScheduler`] rather than blocking: a pool task must never wait,
-//! because work stealing can resume it only from below its own stack. Such a
-//! task is submitted with the [`WatermarkCell`] / [`CompletionCell`] conditions
-//! it needs. A publication satisfying the last unmet condition queues the task
-//! as ready. Each scheduler job drains newly ready work after its body returns;
-//! an external publisher must call [`AdmissionScheduler::admit_ready`] after
-//! publishing.
+//! The decoder runs its frames on the [`RowScheduler`]: dedicated worker
+//! threads that claim rows of in-flight frames oldest first, reading readiness
+//! from the frames' own counters and the [`WatermarkCell`] /
+//! [`CompletionCell`] values their references publish.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
-pub mod admission;
 pub mod completion;
 pub mod error;
 pub mod frame_delay;
 pub mod pool;
 pub mod prelude;
-mod progress;
+pub mod rows;
 pub mod thread_count;
 pub mod watermark;
 
-pub use admission::{AdmissionScheduler, Admit, Condition, Job, NoTask, Task};
 pub use completion::CompletionCell;
 pub use error::{FrameDelayParseError, ParallelError, ThreadCountParseError};
 pub use frame_delay::FrameDelay;
-pub use pool::{
-    PoolProgressSnapshot, TaskScope, WorkerPool, assist_pool_once, assist_pool_or_park,
-    current_pool_width, join_each, on_worker_pool, pool_progress_snapshot, ready_task_scope,
-    wake_idle_worker,
+pub use pool::WorkerPool;
+pub use rows::{
+    Claim, FrameWork, ParallelStage, RowProgress, RowScheduler, RowWake, Stage, run_on_thread,
+    spawn_thread,
 };
 pub use thread_count::ThreadCount;
 pub use watermark::WatermarkCell;

@@ -415,67 +415,6 @@ impl<T: ReconSample> InterReconScratch<T> {
         })
     }
 
-    /// Lends the worker's temporary record storage to one motion pass.
-    pub(super) fn swap_temporal_records(&mut self, records: &mut Vec<TemporalMotionBlock>) {
-        core::mem::swap(&mut self.temporal, records);
-    }
-
-    /// Derives one command's motion into `temporal_records`, writing no sample.
-    pub(super) fn motion(
-        &mut self,
-        command: &InterReconCommand,
-        sink: &WorkspaceSink<'_, '_, T>,
-        temporal_records: &mut Vec<TemporalMotionBlock>,
-        shared: &ReconShared<'_, T>,
-        storage: &mut mc::MotionRowStorage,
-    ) -> Result<Option<mc::StoredMotionGrid>> {
-        let Self { tip, mc, .. } = self;
-        mc.with_installed(|| {
-            command
-                .derive_motion(sink, temporal_records, shared, tip)?
-                .map(|grid| {
-                    let (stored, candidates) = grid.store(storage)?;
-                    tip::keep_motion_candidates(tip, candidates);
-                    Ok(stored)
-                })
-                .transpose()
-        })
-    }
-
-    /// Reconstructs one command from the grid its motion half derived.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn reconstruct_from_motion(
-        &mut self,
-        command: &InterReconCommand,
-        sink: &mut WorkspaceSink<'_, '_, T>,
-        block_decoded: &TileBlockDecodedState,
-        motion: Option<mc::CompoundMotionGrid>,
-        residual_blocks: &[InterResidualBlock],
-        residual_coeffs: &[i32],
-        shared: &ReconShared<'_, T>,
-    ) -> Result<Option<mc::CompoundMotionGrid>> {
-        let Self {
-            tip,
-            interintra,
-            residual,
-            mc,
-            ..
-        } = self;
-        mc.with_installed(|| {
-            command.reconstruct_from_motion(
-                sink,
-                block_decoded,
-                motion,
-                residual_blocks,
-                residual_coeffs,
-                shared,
-                tip,
-                interintra,
-                residual,
-            )
-        })
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reconstruct_logged(
         &mut self,

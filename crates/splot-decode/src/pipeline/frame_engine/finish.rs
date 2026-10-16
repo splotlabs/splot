@@ -25,7 +25,6 @@ use crate::bitstream::tile_payload::FrameCdfSubset;
 use crate::bitstream::tile_payload::FrameSegmentIdMap;
 use crate::filters::ccso::CcsoUnitGrid;
 use crate::filters::deblock::DeblockQuantDeltas;
-use crate::filters::wienerns_lr::FrameFilterRecords;
 use crate::filters::wienerns_lr::recon::WienerNsLrReconSink;
 use crate::pipeline::frame_progress::FrameProgress;
 use crate::prediction::inter::{InterFilterInputs, TemporalMotionField};
@@ -92,7 +91,7 @@ impl FilterSinkSetup {
         core: Arc<FrameHeaderCore>,
         progress: Arc<FrameProgress<T>>,
     ) -> Result<(
-        crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>,
+        crate::filters::wienerns_lr::recon::OwnedFilterSetup<T>,
         DeblockQuantDeltas,
     )> {
         let sink = WienerNsLrReconSink::for_deferred_filtering(
@@ -206,6 +205,27 @@ pub(crate) struct WalkedFrame<T: ReconSample> {
 }
 
 impl<T: ReconSample> WalkedFrame<T> {
+    /// Opens the frame's filter frontier over its shared progress owner.
+    ///
+    /// # Errors
+    /// Returns the filter setup's or the deblock preparation's diagnostic.
+    pub(crate) fn into_frontier(
+        self,
+        progress: Arc<FrameProgress<T>>,
+        shell: Option<crate::filters::wienerns_lr::recon::OwnedFilterShell<T>>,
+    ) -> Result<crate::filters::wienerns_lr::recon::OwnedFilterFrontier<T>> {
+        let setup = self.sink.into_owned_filter_setup(
+            self.core,
+            self.disable_loopfilters_across_tiles,
+            Some(progress),
+        )?;
+        crate::filters::wienerns_lr::recon::OwnedFilterFrontier::start(
+            setup,
+            self.deblock_quant_deltas,
+            shell,
+        )
+    }
+
     /// Captures one frame's end-of-walk filter state.
     pub(crate) const fn new(
         sink: WienerNsLrReconSink<T>,
@@ -246,14 +266,12 @@ impl<T: ReconSample> WalkedFrame<T> {
 ///
 /// Returns the filter chain's own diagnostic when a filter stage or the freeze
 /// fails.
-pub(crate) fn finish_walked_frame<'job, T: ReconSample>(
+#[cfg(test)]
+pub(crate) fn finish_walked_frame<T: ReconSample>(
     walked: WalkedFrame<T>,
     progress: Option<Arc<FrameProgress<T>>>,
-    admit: Option<
-        &dyn splot_parallel::Admit<'job, crate::pipeline::frame_pipeline::FrameTask<'job>>,
-    >,
     publish: impl FnOnce(DecodedFrame<T>),
-) -> Result<FrameFilterRecords> {
+) -> Result<crate::filters::wienerns_lr::FrameFilterRecords> {
     let WalkedFrame {
         sink,
         core,
@@ -265,7 +283,6 @@ pub(crate) fn finish_walked_frame<'job, T: ReconSample>(
         disable_loopfilters_across_tiles,
         deblock_quant_deltas,
         progress,
-        admit,
         publish,
     )?;
     Ok(filter_records)

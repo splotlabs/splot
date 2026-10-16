@@ -32,7 +32,7 @@ use core::slice;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use splot_parallel::{CompletionCell, Condition, WatermarkCell};
+use splot_parallel::{CompletionCell, WatermarkCell};
 use splot_recon::{CurrentFrameWorkspace, DecodedFrameInfo, PlaneId, PlaneSize, ReconSample};
 
 use crate::error::{DecodeError, Result};
@@ -503,7 +503,7 @@ impl<T: ReconSample> FrameProgress<T> {
     }
 
     pub(crate) fn wait_terminal(&self) {
-        let () = self.terminal_published.wait_with_pool_assist();
+        let () = self.terminal_published.wait();
     }
 
     /// Installs the stripe geometry the filter phase will publish through.
@@ -678,12 +678,6 @@ impl<T: ReconSample> FrameProgress<T> {
         published.min(self.luma_height)
     }
 
-    /// Returns the scheduler condition that admits a reader once `rows` final
-    /// luma rows have been published.
-    pub(crate) fn row_condition(&self, rows: usize) -> Condition<'_> {
-        Condition::watermark(&self.published_luma_rows, rows)
-    }
-
     /// Borrows the published prefix of the frame's filtered samples.
     ///
     /// Returns `None` once the filter phase has taken the workspace to freeze
@@ -841,22 +835,6 @@ impl<T: ReconSample> FrontierRows<T> {
         let (samples, len) = self.span(plane, start, end)?; // SAFETY: rows at or past `final_luma_rows` (never below `released_luma_rows`) are this unique frontier's alone: `direct_stripe` refuses a stripe ending past the release and the published prefix is made of such stripes; freeze and plane take refuse while this handle lives, so the storage stays allocated.
         let samples = unsafe { slice::from_raw_parts_mut(samples, len) };
         Some(f(samples, stride, width, height, start))
-    }
-
-    /// Lends every whole plane and its row stride while no row is final, for a
-    /// pass that filters them all before the frontier advances.
-    pub(crate) fn planes_mut(&mut self) -> [Option<(&mut [T], usize)>; 3] {
-        let final_rows = self.final_luma_rows;
-        [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
-            let storage = self.progress.planes[plane.index()]?;
-            let (samples, len) = self
-                .span(plane, 0, storage.height)
-                .filter(|_| final_rows == 0)?; // SAFETY: with no final row every row is this frontier's, as in `with_plane_rows_mut`, and the three planes are disjoint allocations.
-            Some((
-                unsafe { slice::from_raw_parts_mut(samples, len) },
-                storage.stride,
-            ))
-        })
     }
 
     /// Seals reconstructed luma rows and their chroma rows into the frame.
