@@ -465,20 +465,48 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
     };
     let taps_x = phase(sx4)?;
     let taps_y = phase(sy4)?;
-    let cols: [usize; 9] = core::array::from_fn(|col| {
-        ((ix4 - 4 + col as i32).clamp(params.first_x, params.last_x) as usize)
-            .min(reference.width() - 1)
-    });
     let mut intermediate = [Simd::<i32, 4>::splat(0); 9];
-    for (k, intermediate) in intermediate.iter_mut().enumerate() {
-        let row = (iy4 + k as i32 - 4).clamp(params.first_y, params.last_y) as usize;
-        let row = reference.row(row);
-        let window: [i32; 9] = core::array::from_fn(|col| i32::from(row[cols[col]].to_u16()));
-        let mut sum = Simd::splat(0);
-        for (m, &tap) in taps_x.iter().enumerate() {
-            sum += Simd::splat(tap) * Simd::from_slice(&window[m..]);
+    let (x, y) = (i64::from(ix4), i64::from(iy4));
+    let interior = x - 4 >= i64::from(params.first_x.max(0))
+        && x + 4 <= i64::from(params.last_x)
+        && x + 5 <= reference.width() as i64
+        && y - 4 >= i64::from(params.first_y.max(0))
+        && y + 4 <= i64::from(params.last_y);
+    if interior {
+        let col = (ix4 - 4) as usize;
+        for (k, intermediate) in intermediate.iter_mut().enumerate() {
+            let row = reference.row((iy4 + k as i32 - 4) as usize);
+            let lo = warp_source_lanes::<T, 8>(row, col);
+            let hi = warp_source_lanes::<T, 8>(row, col + 1);
+            let windows = [
+                simd_swizzle!(lo, [0, 1, 2, 3]),
+                simd_swizzle!(lo, [1, 2, 3, 4]),
+                simd_swizzle!(lo, [2, 3, 4, 5]),
+                simd_swizzle!(lo, [3, 4, 5, 6]),
+                simd_swizzle!(lo, [4, 5, 6, 7]),
+                simd_swizzle!(lo, hi, [5, 6, 7, 15]),
+            ];
+            let mut sum = Simd::splat(0);
+            for (&tap, window) in taps_x.iter().zip(windows) {
+                sum += Simd::splat(tap) * window.cast::<i32>();
+            }
+            *intermediate = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
         }
-        *intermediate = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
+    } else {
+        let cols: [usize; 9] = core::array::from_fn(|col| {
+            ((ix4 - 4 + col as i32).clamp(params.first_x, params.last_x) as usize)
+                .min(reference.width() - 1)
+        });
+        for (k, intermediate) in intermediate.iter_mut().enumerate() {
+            let row = (iy4 + k as i32 - 4).clamp(params.first_y, params.last_y) as usize;
+            let row = reference.row(row);
+            let window: [i32; 9] = core::array::from_fn(|col| i32::from(row[cols[col]].to_u16()));
+            let mut sum = Simd::splat(0);
+            for (m, &tap) in taps_x.iter().enumerate() {
+                sum += Simd::splat(tap) * Simd::from_slice(&window[m..]);
+            }
+            *intermediate = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
+        }
     }
     let mut output = [0i32; 16];
     for (k, output) in output.as_chunks_mut::<4>().0.iter_mut().enumerate() {
@@ -2053,12 +2081,17 @@ mod tests {
             );
             i32::from(samples[row as usize * ref_w + col as usize])
         };
-        let cases = [
+        let mut cases = vec![
             (0, 0, -150_000, -90_000, 0usize, 0usize),
             (16, 12, 170_000, 140_000, 1, 1),
             (8, 4, 12_345, 54_321, 0, 1),
             (4, 8, -7_777, 33_000, 1, 0),
         ];
+        for block in 0..20i32 {
+            let (tx, ty) = (block * 9_973 - 90_000, 70_000 - block * 7_919);
+            let (i4, j4) = (block as usize % 2, block as usize / 2 % 2);
+            cases.push((block % 5 * 4, block / 5 * 4, tx, ty, i4, j4));
+        }
         for (block_x, block_y, tx, ty, i4, j4) in cases {
             let mut params = default_params(block_x, block_y, ref_w as i32, ref_h as i32);
             params.bit_depth = BitDepth::Ten;
