@@ -685,23 +685,9 @@ fn subpel_bilinear_horizontal_into<T: ReconSample, O: BilinearOutput>(
         && params.last_y == y0 + 15
         && fixed_16x16_window_in_bounds(reference, x0, y0)
     {
-        let samples = reference.samples;
-        let first = (x0 + 1) as usize;
-        let second = (x0 + 8) as usize;
-        for row in 0..params.h {
-            let source_row = (y0 + (row as i32).clamp(1, 15)) as usize;
-            let source = &samples[source_row * reference.stride..];
-            let destination = &mut output[row * output_stride..][..params.w];
-            let low = bilinear_u16(
-                reference_lanes::<8, T>(source, first),
-                reference_lanes::<8, T>(source, first + 1),
-                phase,
-            );
-            O::store(low, &mut destination[1..9]);
-            let high = tip_overlap::overlap_bilinear_u16x8(source, source, second, None, phase, 0);
-            O::store(high, &mut destination[8..]);
-            destination[0] = O::from_sample(source[first].to_u16());
-        }
+        let origin = [(x0 + 1) as usize, (y0 + 1) as usize];
+        let kernel = tip_overlap::bilinear_16x16_clipped_one_axis::<T, O, false>;
+        kernel(reference, origin, phase, output, output_stride);
         return Ok(());
     }
     let direct_x = usize::try_from(x0).ok().filter(|&x| {
@@ -790,33 +776,9 @@ fn subpel_bilinear_vertical_into<T: ReconSample, O: BilinearOutput>(
         && params.last_y == y0 + 15
         && fixed_16x16_window_in_bounds(reference, x0, y0)
     {
-        let samples = reference.samples;
-        let first = (x0 + 1) as usize;
-        let second = (x0 + 8) as usize;
-        for row in 0..params.h {
-            let top = (y0 + (row as i32).clamp(1, 15)) as usize;
-            let bottom = (y0 + (row as i32 + 1).clamp(1, 15)) as usize;
-            let top = &samples[top * reference.stride..];
-            let bottom = &samples[bottom * reference.stride..];
-            let destination = &mut output[row * output_stride..][..params.w];
-            let low = bilinear_u16(
-                reference_lanes::<8, T>(top, first),
-                reference_lanes::<8, T>(bottom, first),
-                phase,
-            );
-            O::store(low, &mut destination[1..9]);
-            let high = bilinear_u16(
-                reference_lanes::<8, T>(top, second),
-                reference_lanes::<8, T>(bottom, second),
-                phase,
-            );
-            O::store(high, &mut destination[8..]);
-            destination[0] = O::from_sample(bilinear_sample(
-                top[first].to_u16(),
-                bottom[first].to_u16(),
-                phase,
-            ));
-        }
+        let origin = [(x0 + 1) as usize, (y0 + 1) as usize];
+        let kernel = tip_overlap::bilinear_16x16_clipped_one_axis::<T, O, true>;
+        kernel(reference, origin, phase, output, output_stride);
         return Ok(());
     }
     let direct_x = subpel_direct_copy_x(reference, params);

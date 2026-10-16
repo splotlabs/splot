@@ -3,67 +3,6 @@
 
 use super::*;
 
-#[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
-#[inline(always)]
-pub(super) fn overlap_bilinear_u16x8<T: ReconSample>(
-    top: &[T],
-    bottom: &[T],
-    start: usize,
-    right_start: Option<usize>,
-    h_phase: i32,
-    v_phase: i32,
-) -> Simd<u16, 8> {
-    let top_left_samples = reference_lanes::<8, T>(top, start);
-    match (h_phase, v_phase) {
-        (0, v_phase) => {
-            let v_phase = v_phase as u16;
-            (top_left_samples * Simd::splat(16 - v_phase)
-                + reference_lanes::<8, T>(bottom, start) * Simd::splat(v_phase)
-                + Simd::splat(8))
-                >> 4
-        }
-        (h_phase, 0) => {
-            let h_phase = h_phase as u16;
-            let top_right = right_start.map_or_else(
-                || top_left_samples.shift_elements_left::<1>(top_left_samples[7]),
-                |right_start| reference_lanes::<8, T>(top, right_start),
-            );
-            (top_left_samples * Simd::splat(16 - h_phase)
-                + top_right * Simd::splat(h_phase)
-                + Simd::splat(8))
-                >> 4
-        }
-        (h_phase, v_phase) => {
-            let h_phase = h_phase as u16;
-            let bottom_left_samples = reference_lanes::<8, T>(bottom, start);
-            let (top_right, bottom_right) = right_start.map_or_else(
-                || {
-                    (
-                        top_left_samples.shift_elements_left::<1>(top_left_samples[7]),
-                        bottom_left_samples.shift_elements_left::<1>(bottom_left_samples[7]),
-                    )
-                },
-                |right_start| {
-                    (
-                        reference_lanes::<8, T>(top, right_start),
-                        reference_lanes::<8, T>(bottom, right_start),
-                    )
-                },
-            );
-            let top =
-                top_left_samples * Simd::splat(16 - h_phase) + top_right * Simd::splat(h_phase);
-            let bottom = bottom_left_samples * Simd::splat(16 - h_phase)
-                + bottom_right * Simd::splat(h_phase);
-            let blended = tap_mac(
-                tap_mac(Simd::splat(0), top.cast(), 16 - v_phase),
-                bottom.cast(),
-                v_phase,
-            );
-            round2_simd(blended, 8).cast::<u16>()
-        }
-    }
-}
-
 /// A two-axis 16x16 `BILINEAR` block at `(x0, y0)` whose clip bounds are
 /// `[x0 + 1, x0 + 15] x [y0 + 1, y0 + 15]`, from `[x0 + 1, y0 + 1]`.
 ///
@@ -116,6 +55,67 @@ pub(super) fn bilinear_16x16_clipped<T: ReconSample, O: BilinearOutput>(
             O::store(filtered, lanes);
         }
         top = bottom;
+    }
+}
+
+/// The clipped column windows `[1, 1, 2, .., 15]` (`left`) and
+/// `[1, 2, .., 15, 15]` (`right`) of [`bilinear_16x16_clipped`] row `row`.
+#[allow(clippy::inline_always, reason = "measured bilinear subpel hot path")]
+#[inline(always)]
+fn clipped_windows<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    [x, y]: [usize; 2],
+    row: usize,
+) -> [[Simd<u16, 8>; 2]; 2] {
+    let source = reference.row(y + row);
+    let (low, high) = (
+        reference_lanes::<8, T>(source, x),
+        reference_lanes::<8, T>(source, x + 7),
+    );
+    [
+        [
+            std::simd::simd_swizzle!(low, [0, 0, 1, 2, 3, 4, 5, 6]),
+            high,
+        ],
+        [
+            low,
+            std::simd::simd_swizzle!(high, [1, 2, 3, 4, 5, 6, 7, 7]),
+        ],
+    ]
+}
+
+/// The one-axis kernels of [`bilinear_16x16_clipped`]: each row blends its
+/// two column windows, or with `VERTICAL` the `left` windows of rows
+/// `clamp(r, 1, 15)` and `clamp(r + 1, 1, 15)`.
+pub(super) fn bilinear_16x16_clipped_one_axis<
+    T: ReconSample,
+    O: BilinearOutput,
+    const VERTICAL: bool,
+>(
+    reference: &ReferencePlaneView<'_, T>,
+    origin: [usize; 2],
+    phase: i32,
+    output: &mut [O],
+    output_stride: usize,
+) {
+    let mut top = clipped_windows(reference, origin, 0)[0];
+    for row in 0..16 {
+        let destination = &mut output[row * output_stride..][..16];
+        let [left, right] = if VERTICAL {
+            let bottom = if (1..15).contains(&row) {
+                clipped_windows(reference, origin, row)[0]
+            } else {
+                top
+            };
+            let pair = [top, bottom];
+            top = bottom;
+            pair
+        } else {
+            clipped_windows(reference, origin, row.max(1) - 1)
+        };
+        for (half, lanes) in destination.chunks_exact_mut(8).enumerate() {
+            O::store(bilinear_u16(left[half], right[half], phase), lanes);
+        }
     }
 }
 
