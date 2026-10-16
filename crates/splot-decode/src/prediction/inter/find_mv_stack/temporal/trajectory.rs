@@ -74,7 +74,9 @@ impl PackedPosition {
     }
 }
 
+/// Aligned to 16 bytes so a record never straddles two cache lines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(C, align(16))]
 pub(super) struct TrajectoryPositions {
     phases: PhasePositions,
     mask: u8,
@@ -1003,7 +1005,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<PackedTrajectoryMv>(), 4);
         assert_eq!(std::mem::size_of::<PackedPosition>(), 4);
         assert_eq!(std::mem::size_of::<PhasePositions>(), 12);
-        assert_eq!(std::mem::size_of::<TrajectoryPositions>(), 14);
+        assert_eq!(std::mem::size_of::<TrajectoryPositions>(), 16);
         assert_eq!(
             PackedPosition::new((8191, 8191)).and_then(PackedPosition::unpack),
             Some((8191, 8191))
