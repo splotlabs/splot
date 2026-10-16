@@ -189,7 +189,6 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
             luma_ac,
         )
     };
-    // U and V capture the same MHCCP luma references when their neighbours match.
     let result = predict(PlaneId::U, u_neighbours, false, &mut u_prediction)
         .and_then(|()| {
             predict(
@@ -838,6 +837,11 @@ fn cfl_above_min_luma_ref_y(
         .and_then(|sb_y| sb_y.checked_sub(1))
 }
 
+/// Captures the § 7.13.6 `CflRef` samples. § 7.13.7 reads neither row 0 nor
+/// column 0 of the edge as a centre: chroma never, and luma only as `v[0]` of
+/// direction 1 (row 0) or 2 (column 0), or as block samples when the edge is
+/// absent. With `luma_ready`, the other chroma plane of the block (same
+/// neighbours) already captured the luma references into the scratch.
 #[allow(clippy::too_many_arguments)]
 fn mhccp_references<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
@@ -913,8 +917,6 @@ fn mhccp_references<T: ReconSample>(
     let chroma_plane = PlaneSamples::new(workspace, plane_id)?;
     let sample_count = ref_width.saturating_mul(ref_height);
     let [luma, chroma] = reference_scratch;
-    // `luma_ready`: the other chroma plane of this block captured the same
-    // luma references into `luma` already.
     let luma_ready = luma_ready && luma.len() == sample_count;
     if !luma_ready {
         luma.clear();
@@ -922,9 +924,6 @@ fn mhccp_references<T: ReconSample>(
     }
     chroma.clear();
     chroma.resize(sample_count, 0);
-    // § 7.13.7 reads neither row 0 nor column 0 of the edge as a centre:
-    // chroma never, and luma only as `v[0]` of direction 1 (row 0) or 2
-    // (column 0), or as block samples when the edge is absent.
     let first_luma_row = usize::from(above > 0 && mh_dir != 1);
     let first_luma_col = usize::from(left > 0 && mh_dir != 2);
     let mut q3 = [0i32; 128];

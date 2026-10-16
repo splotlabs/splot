@@ -328,6 +328,8 @@ pub struct MhccpPredictor {
     offset: i32,
     bits: u32,
     max: i32,
+    /// `vec[0]` and `vec[1]` are at most `bits` wide, so `mul_fixed32_adapt`
+    /// never down-shifts when each data parameter fits in `29 - bits` bits.
     narrow: bool,
 }
 
@@ -337,8 +339,6 @@ impl MhccpPredictor {
     pub fn new(params: [i32; MHCCP_PARAM_COUNT], bit_depth: BitDepth) -> Self {
         let bits = u32::from(bit_depth.bits());
         let mid = 1i32 << (bits - 1);
-        // `vec[0]` and `vec[1]` are at most `bits` wide, so `mul_fixed32_adapt`
-        // never down-shifts when each parameter fits in `29 - bits` bits.
         let narrow = params[..2].iter().all(|&p| bit_width_abs(p) + bits <= 29);
         Self {
             params,
