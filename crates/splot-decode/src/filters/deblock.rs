@@ -1848,7 +1848,9 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
         filter_size = filter_size.min(8);
     }
 
-    let (max_width_neg, max_width_pos) = deblock_filter_max_width(filter_size, plane != 0, sb_edge);
+    let (max_width_neg, max_width_pos) =
+        MAX_WIDTHS[usize::from(plane != 0)][usize::from(sb_edge)][filter_size.min(64)];
+    let (max_width_neg, max_width_pos) = (usize::from(max_width_neg), usize::from(max_width_pos));
     if max_width_neg == 0 || max_width_pos == 0 {
         return Ok(Repeat::Derive);
     }
@@ -1898,6 +1900,20 @@ fn deblock_filter_edge_specialized<'g, T: ReconSample, const PLANE: usize, const
     edge.filter::<T, PASS>(plane_ctx, bit_depth)?;
     Ok(Repeat::Derive)
 }
+
+/// [`deblock_filter_max_width`] by chroma plane, super-block edge and filter
+/// size up to 64, which every larger size maps as.
+const MAX_WIDTHS: [[[(u8, u8); 65]; 2]; 2] = {
+    let mut table = [[[(0, 0); 65]; 2]; 2];
+    let mut entry = 0;
+    while entry < 4 * 65 {
+        let (chroma, sb_edge, size) = (entry / 130, entry / 65 % 2, entry % 65);
+        let (neg, pos) = deblock_filter_max_width(size, chroma == 1, sb_edge == 1);
+        table[chroma][sb_edge][size] = (neg as u8, pos as u8);
+        entry += 1;
+    }
+    table
+};
 
 /// Derives § 7.17.2 `applyFilter`, `filterSize`, `qThr` and `side` from the
 /// two records of one edge, and whether that holds for every edge of the same
