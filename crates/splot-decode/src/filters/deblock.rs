@@ -1032,8 +1032,7 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
     }
     let block_rows = if PASS == 0 { VERTICAL_WALK_ROWS } else { 1 };
     let subsampling = if PLANE == 0 { (0, 0) } else { (sub_x, sub_y) };
-    let mut masks = [0u64; VERTICAL_WALK_ROWS];
-    let mut follows = [0u64; VERTICAL_WALK_ROWS];
+    let mut rows_masks = [0u64; 2 * VERTICAL_WALK_ROWS];
     for block_start in (first..end).step_by(row_step * block_rows) {
         let rows = (block_start..end).step_by(row_step).take(block_rows);
         let live_rows = (1u32 << rows.len()) - 1;
@@ -1041,6 +1040,7 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
         let mut carry = 0;
         for start in (0..mi_cols).step_by(CANDIDATE_CHUNK) {
             let mut any = 0;
+            let (masks, follows) = rows_masks.split_at_mut(VERTICAL_WALK_ROWS);
             for (mask, r) in masks.iter_mut().zip(rows.clone()) {
                 *mask = candidate_mask::<PASS>(grid, r, start, &plane_pass)?;
                 any |= *mask;
@@ -1059,6 +1059,7 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
                 }
             }
             carry = masks[0] >> (CANDIDATE_CHUNK - step);
+            let follows = &rows_masks[VERTICAL_WALK_ROWS..];
             if PASS == 0 && start == 0 {
                 any &= !1;
             }
@@ -1079,15 +1080,11 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
                     any &= !(((1u64 << (repeated * step)) - 1) << bit << 1);
                     continue;
                 }
-                let (mut present, column) =
-                    (0..VERTICAL_WALK_ROWS).fold((0u32, 0u32), |(present, column), i| {
-                        (
-                            present | ((masks[i] >> bit & 1) as u32) << i,
-                            column | ((follows[i] >> bit & 1) as u32) << i,
-                        )
-                    });
-                present &= live_rows;
-                let column = column & live_rows;
+                let both = rows_masks.iter().enumerate().fold(0u32, |both, (i, mask)| {
+                    both | ((mask >> bit & 1) as u32) << i
+                });
+                let mut present = both & live_rows;
+                let column = (both >> VERTICAL_WALK_ROWS) & live_rows;
                 while present != 0 {
                     let i = present.trailing_zeros() as usize;
                     let chain = (!(column >> (i + 1))).trailing_zeros() as usize;
