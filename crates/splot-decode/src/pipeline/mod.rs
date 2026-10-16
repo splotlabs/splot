@@ -439,7 +439,6 @@ fn decode_key_frame_with_effects(
     ring: &mut inflight::InflightRing,
     frames: &mut FrameStore,
     split: Option<(
-        SplitPair<'_>,
         &crate::bitstream::byte_stream::UnitBytes,
         &mut Option<Arc<SequenceHeader>>,
     )>,
@@ -459,19 +458,18 @@ fn decode_key_frame_with_effects(
     ring.reserve(pools);
     let _user_qm_scope = crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
     let core = frames.share_core(core)?;
-    if let (Some(rows), Some(((split_eight, split_ten), unit, shared_sequence))) = (rows, split)
+    if let (Some(rows), Some((unit, shared_sequence))) = (rows, split)
         && inter::splittable_inter_frame(frame_envelope.header.obu_type, &core)
     {
         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
             frame_engine::intra::build_frame_qm_levels(&core),
         );
-        let (slot, core, products, motion_field) = match sequence.general.bit_depth_idc {
-            BitDepthIdc::Eight => push_split_inter::<u8>(
-                split_eight,
+        let (slot, core, products, motion_field) = with_sample!(sequence, T, {
+            push_split_inter::<T>(
+                pools,
                 rows,
                 ring,
                 frames,
-                scratch_eight,
                 options,
                 sequence,
                 shared_sequence,
@@ -480,23 +478,8 @@ fn decode_key_frame_with_effects(
                 core,
                 empty_key_reference(frame_envelope.offset)?,
                 frame_index,
-            )?,
-            BitDepthIdc::Ten => push_split_inter::<u16>(
-                split_ten,
-                rows,
-                ring,
-                frames,
-                scratch_ten,
-                options,
-                sequence,
-                shared_sequence,
-                candidate,
-                unit,
-                core,
-                empty_key_reference(frame_envelope.offset)?,
-                frame_index,
-            )?,
-        };
+            )?
+        });
         let frame_rate = output_effects.frame_rate(frame_rate);
         return Ok(PipelineFrame {
             frame: slot,
@@ -945,11 +928,7 @@ fn decode_frames_in_order(
             pools,
             ring,
             frames,
-            Some((
-                (&mut *split_eight, &mut *split_ten),
-                &leading_unit,
-                &mut shared_sequence,
-            )),
+            Some((&leading_unit, &mut shared_sequence)),
             0,
             leading_unit.view(),
             options,
@@ -1675,11 +1654,7 @@ fn decode_frames_in_order(
                     pools,
                     ring,
                     frames,
-                    Some((
-                        (&mut *split_eight, &mut *split_ten),
-                        &unit,
-                        &mut shared_sequence,
-                    )),
+                    Some((&unit, &mut shared_sequence)),
                     frame_index,
                     unit.view(),
                     options,

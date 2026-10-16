@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "29eabe24b6a907ce93ed3271b5838bcd4b7f52e6",
+  "audited_commit": "84727735a889465de0b47fc1332bc379c13440f9",
   "outcome": "success",
   "files": [
     {
@@ -2959,7 +2959,7 @@
     },
     {
       "path": "crates/splot-decode/src/pipeline/frame_store.rs",
-      "sha256": "dca2a3c03352a0a78a42c2a6469432d27e3ae22b88c236ba09d9564789e138bb",
+      "sha256": "f1a2999954c477bf6737cfb9bb4c004e66e0240d5fe18cf02f934ea62d7dc363",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-FRAME-PIPELINING"
@@ -2968,7 +2968,7 @@
     },
     {
       "path": "crates/splot-decode/src/pipeline/frame_tasks.rs",
-      "sha256": "84126360d45fd47d0edd6fee434b3090715b57969ea73149d187839bae30c8e1",
+      "sha256": "346521825218fe3ded80c699649926c7e40c04693718f99ffd3b28de4137e40a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-FRAME-PIPELINING"
@@ -3088,7 +3088,7 @@
     },
     {
       "path": "crates/splot-decode/src/pipeline/inflight.rs",
-      "sha256": "2b26bb7f12aedd3be2a3c12cb5e12793cc4c3e50f6e0da7257457ec5903fe7e1",
+      "sha256": "604d5b2d5861bbb366a98c79763373ce28d0605b33764d6d5150d86e86a11a81",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-FRAME-PIPELINING"
@@ -3097,14 +3097,14 @@
     },
     {
       "path": "crates/splot-decode/src/pipeline/inflight_tests.rs",
-      "sha256": "ad262611a25163296e0991ba777e9e105037ea3c66049977b40f33e7a7e3f0c1",
+      "sha256": "d91e49be2d9dad8e00efef61e7f5eac2a475fc5bd65660be9d3ef590b1eac6e1",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/pipeline/mod.rs",
-      "sha256": "a4b99a543cd08cb09191a31921519900ae4479ce4ae9272ebbf3140bc078528a",
+      "sha256": "5dafd0322b2a9a37866b635f97ce86da1f8b918ab6d17b82bf021494d226982f",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-10BIT-SEQUENCE-FRONTIER",
@@ -3831,7 +3831,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/tests.rs",
-      "sha256": "74daa908c99396523acbb1f09a3a564095ffb405d4a7201c736762b7d49a1faa",
+      "sha256": "47eae647c6395b932ee238d221019ebcba68823da4d380e62a4876ac90881d6c",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -3882,7 +3882,7 @@
     },
     {
       "path": "crates/splot-decode/src/reference/buffer.rs",
-      "sha256": "c4e28177e326c80d78848980b4f047ace514c1d39ef7e552668d707daf72aba2",
+      "sha256": "00bbbe360daf3ef578bc7d475afe1cf5f5f26b48a9b511e489c701d17816321a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-MULTIREF-RUNTIME"
@@ -3891,7 +3891,7 @@
     },
     {
       "path": "crates/splot-decode/src/reference/buffer_tests.rs",
-      "sha256": "a1dad1254f05fc7b47003a623a5dec4e936e07656250ea0ac5e277cfaa402fe6",
+      "sha256": "f71bbe15424e65d1992e2abd77b451a01c93ec939f94897ae880768d42084e63",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
