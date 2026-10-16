@@ -27,7 +27,7 @@ use crate::format::{BitDepth, ReconSample};
 use crate::intra_dc_math::resolve_divisor_32;
 use crate::math::round2;
 use crate::math::{round2_i32, round2_signed, round2_signed_i32};
-use crate::subpel_mc::ReferencePlaneView;
+use crate::subpel_mc::{ReferencePlaneView, reference_lanes};
 
 /// AV2 § 7.13.3.19 block-warp predictor side length in samples.
 pub const WARPED_BLOCK_SIZE: usize = 8;
@@ -511,14 +511,17 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
             *intermediate = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
         }
     } else {
-        let cols: [usize; 9] = core::array::from_fn(|col| {
-            ((ix4 - 4 + col as i32).clamp(params.first_x, params.last_x) as usize)
-                .min(reference.width() - 1)
-        });
+        let mut cols = [0usize; 9];
+        for (offset, col) in cols.iter_mut().enumerate() {
+            let x = (ix4 - 4 + offset as i32).clamp(params.first_x, params.last_x);
+            *col = (x as usize).min(reference.width() - 1);
+        }
         for (k, intermediate) in intermediate.iter_mut().enumerate() {
             let row = (iy4 + k as i32 - 4).clamp(params.first_y, params.last_y) as usize;
-            let row = reference.row(row);
-            let window: [i32; 9] = core::array::from_fn(|col| i32::from(row[cols[col]].to_u16()));
+            let (row, mut window) = (reference.row(row), [0i32; 9]);
+            for (sample, &col) in window.iter_mut().zip(&cols) {
+                *sample = i32::from(row[col].to_u16());
+            }
             let mut sum = Simd::splat(0);
             for (m, &tap) in taps_x.iter().enumerate() {
                 sum += Simd::splat(tap) * Simd::from_slice(&window[m..]);
@@ -1347,15 +1350,7 @@ fn warp_source_lanes<T: ReconSample, const LANES: usize>(
     source: &[T],
     start: usize,
 ) -> Simd<i16, LANES> {
-    if let Some(source) = T::u16_slice(source) {
-        return Simd::<u16, LANES>::from_slice(&source[start..]).cast();
-    }
-    if let Some(source) = T::u8_slice(source) {
-        return Simd::<u8, LANES>::from_slice(&source[start..]).cast();
-    }
-    Simd::from_array(core::array::from_fn(|lane| {
-        source[start + lane].to_u16().cast_signed()
-    }))
+    reference_lanes::<LANES, T>(source, start).cast()
 }
 
 /// Builds the eight overlapping tap windows from two loads instead of eight.

@@ -634,7 +634,7 @@ fn bilinear_u16<const LANES: usize>(
 /// eight-bit plane the § 7.13.3.18 `u8` entry point serves.
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
-fn reference_lanes<const LANES: usize, T: ReconSample>(
+pub(crate) fn reference_lanes<const LANES: usize, T: ReconSample>(
     source: &[T],
     start: usize,
 ) -> Simd<u16, LANES> {
