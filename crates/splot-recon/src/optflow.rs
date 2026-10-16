@@ -681,6 +681,7 @@ fn rows_8x8_sums(weighted: &[Simd<i16, 8>; 8], difference: &[Simd<i16, 8>; 8]) -
     reduce_unit_sums(sums)
 }
 
+/// A doubled edge tap rounds by 6 bits instead of doubling before 7.
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
 fn row_8x8_sums<const ROW: usize>(
@@ -690,7 +691,6 @@ fn row_8x8_sums<const ROW: usize>(
 ) {
     let samples = rows[ROW];
     let (first, last) = (Simd::splat(samples[0]), Simd::splat(samples[7]));
-    // A doubled edge tap rounds by 6 bits instead of doubling before 7.
     let u = gradient_i16(
         [
             simd_swizzle!(samples, last, [1, 2, 3, 4, 5, 6, 7, 8]),

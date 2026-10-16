@@ -237,7 +237,6 @@ fn search_window<T: ReconSample, const N: usize, const G: usize, const M: usize>
     let max_sample = Simd::splat(params.bit_depth.max_sample());
     let mut write = |row: usize, top: [Simd<u16, 8>; G], bottom: [Simd<u16, 8>; G]| {
         for group in 0..G {
-            // Both factors widened from u16 lanes lower to `umull`/`umlal`.
             let weight = |weight: u16| Simd::<u16, 8>::splat(weight).cast::<u32>();
             let sum =
                 top[group].cast::<u32>() * weight(16 - v) + bottom[group].cast::<u32>() * weight(v);
@@ -813,6 +812,8 @@ fn search_tip_refinemv_offset(
     best
 }
 
+/// Returns `limit` early once a partial sum reaches it: later rows only add, so
+/// such a sum already loses the strict comparison.
 #[allow(clippy::inline_always, reason = "25 calls per refined TIP unit")]
 #[inline(always)]
 fn tip_refinemv_sad(
@@ -835,7 +836,6 @@ fn tip_refinemv_sad(
     ) else {
         return u32::MAX;
     };
-    // Four-lane widening abs-diff sums lower to one `uabal` each.
     let mut sums = [Simd::<u32, 4>::splat(0); 3];
     let shift = bit_depth.bits().saturating_sub(8);
     for row in (0..12).step_by(2) {
@@ -845,8 +845,6 @@ fn tip_refinemv_sad(
                 .abs_diff(Simd::from_slice(&right[at..]))
                 .cast::<u32>();
         }
-        // The remaining rows only add, so a partial sum at the limit already
-        // loses the strict comparison.
         if row == 4 && (sums[0] + sums[1] + sums[2]).reduce_sum() >> shift >= limit {
             return limit;
         }
@@ -958,7 +956,6 @@ fn refinemv_sad<'a>(
         context: "refine-MV SAD bottom offset",
     })?;
     let downshift = u32::from(bit_depth.bits().saturating_sub(8));
-    // One bounds check per predictor covers every compared row.
     let span = |pred: &'a [u16], start_y: usize, start_x: usize| {
         let last_row = height.saturating_sub(1) & !1;
         let start = start_y.checked_mul(stride)?.checked_add(start_x)?;

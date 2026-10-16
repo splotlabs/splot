@@ -1045,7 +1045,6 @@ fn compound_optflow_subpel_params<T: ReconSample>(
     } else {
         [None; 2]
     };
-    // Explicit pairs: `array::from_fn` stays an out-of-line call per cell.
     let params = |reference: usize| {
         let scaling = scalings[reference];
         SubpelPredictParams {
@@ -1150,6 +1149,8 @@ pub(super) fn predict_uniform_motion_compound_average_into<
 /// `chroma_v` while `plane` is U, the V plane goes into that packed
 /// `block_w`-stride output too, from the same per-cell parameters: U and V share
 /// the plane geometry, scalings and motion, and only the reference views differ.
+/// Unscaled cells whose refine-MV unit is the cell itself (TIP) derive their
+/// scalings and bounds from integer positions.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn predict_motion_grid_compound_average_into<
     T: ReconSample,
@@ -1263,8 +1264,6 @@ pub(super) fn predict_motion_grid_compound_average_into<
             second,
         )
     };
-    // Unscaled cells whose refine-MV unit is the cell itself (TIP): their
-    // scalings and bounds reduce to integer positions.
     let per_cell_refine = !prediction.scalings.into_iter().any(PlaneScaling::is_scaled)
         && refine.1 == 1
         && refine.2 >> sub_x == subblock_w
