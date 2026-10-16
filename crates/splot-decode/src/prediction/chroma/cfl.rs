@@ -12,10 +12,8 @@
 
 use std::simd::{Simd, num::SimdUint, simd_swizzle};
 
-use splot_recon::math::{approx_divide, resolve_division, round2_i32, round2_signed_i32};
-use splot_recon::mhccp::{
-    MHCCP_BITS, MHCCP_PARAM_COUNT, MhccpRefs, derive_mhccp_params, mul_fixed32_adapt,
-};
+use splot_recon::math::{approx_divide, resolve_division, round2_signed_i32};
+use splot_recon::mhccp::{MhccpPredictor, MhccpRefs, derive_mhccp_params};
 use splot_recon::{
     BitDepth, CurrentFramePlane, CurrentFrameWorkspace, IntraDcEdges, IntraPredictionScratchBuffer,
     IntraRectBlockSize, PixelFormat, PlaneId, ReconSample, predict_intra_dc_rect_value,
@@ -598,37 +596,37 @@ fn mhccp_prediction_into<T: ReconSample>(
         reference_scratch,
     )?;
     let result = (|| {
-        let params = derive_mhccp_params(&refs, mh_dir, bit_depth);
-        let max = i32::from(bit_depth.max_sample());
-        let mid = 1i32 << (u32::from(bit_depth.bits()) - 1);
+        let predictor =
+            MhccpPredictor::new(derive_mhccp_params(&refs, mh_dir, bit_depth), bit_depth);
         prediction.clear();
-        prediction.reserve(width.saturating_mul(height));
-        for row in 0..height {
-            for col in 0..width {
-                let center_index = (refs.above + row) * refs.width + refs.left + col;
-                let center = i32::from(refs.luma[center_index]);
-                let linear = match mh_dir {
-                    0 => center,
-                    1 => {
-                        let top_row = refs.above.saturating_add(row).saturating_sub(1);
-                        i32::from(refs.luma[top_row * refs.width + refs.left + col])
-                    }
-                    _ => {
-                        let left_col = refs.left.saturating_add(col).saturating_sub(1);
-                        i32::from(refs.luma[(refs.above + row) * refs.width + left_col])
-                    }
-                };
-                let vector = [
-                    linear,
-                    round2_i32(center.saturating_mul(center), u32::from(bit_depth.bits())),
-                    mid,
-                ];
-                let mut predicted = 0i32;
-                for k in 0..MHCCP_PARAM_COUNT {
-                    predicted = predicted
-                        .saturating_add(mul_fixed32_adapt(params[k], vector[k], MHCCP_BITS));
+        prediction.resize(width.saturating_mul(height), T::default());
+        let mut row_buf = [0u16; 128];
+        for (row, out) in prediction.chunks_exact_mut(width).enumerate() {
+            let center_start = (refs.above + row) * refs.width + refs.left;
+            let center = &refs.luma[center_start..center_start + width];
+            let samples = match T::u16_slice_mut(out) {
+                Some(out) => out,
+                None => &mut row_buf[..width],
+            };
+            match mh_dir {
+                0 => predictor.row(center, center, samples),
+                1 => {
+                    let top = (refs.above + row).saturating_sub(1) * refs.width + refs.left;
+                    predictor.row(&refs.luma[top..top + width], center, samples);
                 }
-                prediction.push(T::try_from_u16(predicted.clamp(0, max) as u16)?);
+                _ if refs.left == 0 => {
+                    samples[0] = predictor.sample(center[0], center[0]);
+                    predictor.row(&center[..width - 1], &center[1..], &mut samples[1..]);
+                }
+                _ => {
+                    let left = center_start - 1;
+                    predictor.row(&refs.luma[left..left + width], center, samples);
+                }
+            }
+            if T::u16_slice(out).is_none() {
+                for (slot, &sample) in out.iter_mut().zip(&row_buf[..width]) {
+                    *slot = T::try_from_u16(sample)?;
+                }
             }
         }
         Ok(())
@@ -899,18 +897,26 @@ fn mhccp_references<T: ReconSample>(
     luma.resize(sample_count, 0);
     chroma.clear();
     chroma.resize(sample_count, 0);
+    let mut q3 = [0i32; 128];
     for row in 0..reference_height {
         let chroma_y = y + row - above;
+        let ref_chroma_y = chroma_y.max(min_chroma_ref_y);
+        let chroma_cols = if row < above { reference_width } else { left };
+        for col in 0..chroma_cols.min(reference_width) {
+            chroma[row * ref_width + col] = chroma_plane.clamped(x + col - left, ref_chroma_y)?;
+        }
+        let luma_cols = if row < above {
+            reference_width
+        } else if row < above + height {
+            (left + width).min(reference_width)
+        } else {
+            left.min(reference_width)
+        };
         let luma_row = luma_plane.row(chroma_y, row == 0, min_luma_ref_y);
-        for col in 0..reference_width {
-            let chroma_x = x + col - left;
-            if row < above || col < left {
-                let ref_chroma_y = chroma_y.max(min_chroma_ref_y);
-                chroma[row * ref_width + col] = chroma_plane.clamped(chroma_x, ref_chroma_y)?;
-            }
-            if mhccp_luma_ref_available(row, col, above, left, width, height) {
-                luma[row * ref_width + col] = (luma_row.q3(chroma_x, col == 0)? >> 3) as u16;
-            }
+        let q3 = &mut q3[..luma_cols];
+        luma_row.q3_run(x - left, true, q3)?;
+        for (dst, &sample) in luma[row * ref_width..].iter_mut().zip(q3.iter()) {
+            *dst = (sample >> 3) as u16;
         }
     }
     Ok(MhccpRefs {
@@ -1111,6 +1117,47 @@ impl<T: ReconSample> CflLumaRow<'_, '_, T> {
         }
         Ok(total)
     }
+
+    /// [`Self::q3`] at `chroma_x0 + i` for each `out[i]`; only the first
+    /// sample clamps when `clamp_first`.
+    fn q3_run(
+        &self,
+        chroma_x0: usize,
+        clamp_first: bool,
+        out: &mut [i32],
+    ) -> splot_recon::Result<()> {
+        const LANES: usize = 8;
+        let luma = self.luma;
+        let mut done = 0;
+        if luma.sub_x == 1
+            && let Some(rows) = &self.rows
+            && let [Some(r0), Some(r1), Some(r2)] = (*rows).map(T::u16_slice)
+        {
+            let rows = [r0, r1, r2];
+            let width = luma.plane.width;
+            done = usize::from(clamp_first || chroma_x0 == 0).min(out.len());
+            for (i, slot) in out[..done].iter_mut().enumerate() {
+                *slot = self.q3(chroma_x0 + i, clamp_first)?;
+            }
+            while done + LANES <= out.len() && 2 * (chroma_x0 + done) + 2 * LANES < width {
+                let luma_x = 2 * (chroma_x0 + done);
+                let mut acc = Simd::<i32, LANES>::splat(0);
+                for &(dx, dy, weight) in &luma.taps[..luma.tap_count] {
+                    let start = luma_x.wrapping_add_signed(dx);
+                    let row = rows[(dy + 1) as usize];
+                    let v = Simd::<u16, 16>::from_slice(&row[start..start + 16]);
+                    let even = simd_swizzle!(v, [0, 2, 4, 6, 8, 10, 12, 14]).cast::<i32>();
+                    acc += even * Simd::splat(weight);
+                }
+                out[done..done + LANES].copy_from_slice(&acc.to_array()); // splot-copy-ok: publish eight CfL luma samples
+                done += LANES;
+            }
+        }
+        for (i, slot) in out.iter_mut().enumerate().skip(done) {
+            *slot = self.q3(chroma_x0 + i, clamp_first && i == 0)?;
+        }
+        Ok(())
+    }
 }
 
 fn clamped_cfl_luma_coordinate(
@@ -1128,18 +1175,6 @@ const fn cfl_filter_index(cfl_ds_filter_index: u8) -> Option<usize> {
         2 => Some(2),
         _ => None,
     }
-}
-
-fn mhccp_luma_ref_available(
-    row: usize,
-    col: usize,
-    above: usize,
-    left: usize,
-    width: usize,
-    height: usize,
-) -> bool {
-    (row < above || col < left.saturating_add(width))
-        && (row < above.saturating_add(height) || col < left)
 }
 
 #[cfg(test)]

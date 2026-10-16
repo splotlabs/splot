@@ -3,6 +3,10 @@
 
 //! AV2 § 7.13.6 MHCCP parameter derivation helpers.
 
+use std::simd::cmp::{SimdOrd, SimdPartialOrd};
+use std::simd::num::{SimdInt, SimdUint};
+use std::simd::{Select, Simd};
+
 use crate::BitDepth;
 use crate::math::{round2_i32, round2_signed_i32};
 
@@ -41,10 +45,6 @@ pub struct MhccpRefs {
 impl MhccpRefs {
     fn has_edge_refs(&self) -> bool {
         self.above != 0 || self.left != 0
-    }
-
-    fn is_edge_ref_sample(&self, row: usize, col: usize) -> bool {
-        row < self.above || col < self.left
     }
 
     fn luma_at(&self, row: usize, col: usize) -> u16 {
@@ -112,8 +112,13 @@ pub fn derive_mhccp_params(
         let midpoint = 1i16 << (square_shift - 1);
         let reference_width = refs.reference_width.min(refs.width);
         let reference_height = refs.reference_height.min(refs.height);
-        for (row, col) in mhccp_interior_positions(reference_width, reference_height) {
-            if refs.is_edge_ref_sample(row, col) {
+        for row in 1..reference_height.saturating_sub(1) {
+            let cols = if row < refs.above {
+                reference_width.saturating_sub(1)
+            } else {
+                refs.left.min(reference_width.saturating_sub(1))
+            };
+            for col in 1..cols {
                 let center = refs.luma_at(row, col);
                 let basis = mhccp_basis(refs, row, col, mh_dir, center, square_shift, midpoint);
                 equations.add(basis, refs.chroma_at(row, col));
@@ -128,11 +133,6 @@ pub fn derive_mhccp_params(
         MHCCP_BITS as i32 + 6 - 2 * bit_depth_bits - ceil_log2_usize(equations.samples) as i32;
     equations.apply_matrix_shift(matrix_shift);
     solve_mhccp(equations, bit_depth)
-}
-
-fn mhccp_interior_positions(width: usize, height: usize) -> impl Iterator<Item = (usize, usize)> {
-    (1..height.saturating_sub(1))
-        .flat_map(move |row| (1..width.saturating_sub(1)).map(move |col| (row, col)))
 }
 
 fn mhccp_basis(
@@ -258,6 +258,84 @@ fn division_scale(norm_diff: i32) -> i32 {
     scale
 }
 
+/// The § 7.13.6 per-sample MHCCP prediction for one block's parameters.
+#[derive(Clone, Copy, Debug)]
+pub struct MhccpPredictor {
+    params: [i32; MHCCP_PARAM_COUNT],
+    offset: i32,
+    bits: u32,
+    max: i32,
+    narrow: bool,
+}
+
+impl MhccpPredictor {
+    /// Resolves the constant `vec[2]` term of § 7.13.6 once per block.
+    #[must_use]
+    pub fn new(params: [i32; MHCCP_PARAM_COUNT], bit_depth: BitDepth) -> Self {
+        let bits = u32::from(bit_depth.bits());
+        let mid = 1i32 << (bits - 1);
+        // `vec[0]` and `vec[1]` are at most `bits` wide, so `mul_fixed32_adapt`
+        // never down-shifts when each parameter fits in `29 - bits` bits.
+        let narrow = params[..2].iter().all(|&p| bit_width_abs(p) + bits <= 29);
+        Self {
+            params,
+            offset: mul_fixed32_adapt(params[2], mid, MHCCP_BITS),
+            bits,
+            max: i32::from(bit_depth.max_sample()),
+            narrow,
+        }
+    }
+
+    /// Predicts one sample from its linear and centre luma references.
+    #[must_use]
+    pub fn sample(&self, linear: u16, center: u16) -> u16 {
+        let center = i32::from(center);
+        let square = round2_i32(center * center, self.bits);
+        mul_fixed32_adapt(self.params[0], i32::from(linear), MHCCP_BITS)
+            .saturating_add(mul_fixed32_adapt(self.params[1], square, MHCCP_BITS))
+            .saturating_add(self.offset)
+            .clamp(0, self.max) as u16
+    }
+
+    /// Predicts `out.len()` samples; `linear` and `center` must be as long.
+    pub fn row(&self, linear: &[u16], center: &[u16], out: &mut [u16]) {
+        const LANES: usize = 8;
+        let mut done = 0;
+        if self.narrow {
+            let p0 = Simd::<i32, LANES>::splat(self.params[0]);
+            let p1 = Simd::<i32, LANES>::splat(self.params[1]);
+            let half = Simd::splat(1i32 << (MHCCP_BITS - 1));
+            let square_half = Simd::splat(1i32 << (self.bits - 1));
+            let bits = Simd::splat(self.bits as i32);
+            let shift = Simd::splat(MHCCP_BITS as i32);
+            let round = |x: Simd<i32, LANES>| {
+                let r = (x.abs() + half) >> shift;
+                x.simd_lt(Simd::splat(0)).select(-r, r)
+            };
+            for ((out, linear), center) in out
+                .chunks_exact_mut(LANES)
+                .zip(linear.chunks_exact(LANES))
+                .zip(center.chunks_exact(LANES))
+            {
+                let linear = Simd::<u16, LANES>::from_slice(linear).cast::<i32>();
+                let center = Simd::<u16, LANES>::from_slice(center).cast::<i32>();
+                let square = (center * center + square_half) >> bits;
+                let t = round(p0 * linear) + round(p1 * square) + Simd::splat(self.offset);
+                let t = t.simd_clamp(Simd::splat(0), Simd::splat(self.max));
+                out.copy_from_slice(&t.cast::<u16>().to_array()); // splot-copy-ok: publish eight MHCCP samples
+                done += LANES;
+            }
+        }
+        for ((out, &linear), &center) in out[done..]
+            .iter_mut()
+            .zip(&linear[done..])
+            .zip(&center[done..])
+        {
+            *out = self.sample(linear, center);
+        }
+    }
+}
+
 /// Multiplies fixed-point values with adaptive down-shifting to avoid overflow.
 #[must_use]
 pub fn mul_fixed32_adapt(a: i32, b: i32, shift: u32) -> i32 {
@@ -319,6 +397,33 @@ mod tests {
 
         let params = derive_mhccp_params(&refs, 0, BitDepth::Ten);
         assert_eq!(params, [-162, 64_418, 2_689]);
+    }
+
+    #[test]
+    fn vector_row_matches_spec_formula() {
+        let bit_depth = BitDepth::Ten;
+        let luma: Vec<u16> = (0..37u16).map(|i| (i * 211 + 7) % 1024).collect();
+        for params in [
+            [70_000, -3_000, 40_000],
+            [-262_143, 262_143, -1],
+            [1 << 22, -(1 << 21), 1 << 20],
+        ] {
+            let predictor = MhccpPredictor::new(params, bit_depth);
+            let mut out = vec![0; 36];
+            predictor.row(&luma[1..], &luma[..36], &mut out);
+            for (i, &got) in out.iter().enumerate() {
+                let center = i32::from(luma[i]);
+                let vector = [i32::from(luma[i + 1]), round2_i32(center * center, 10), 512];
+                let t = (0..3).fold(0i32, |t, k| {
+                    t.saturating_add(mul_fixed32_adapt(params[k], vector[k], MHCCP_BITS))
+                });
+                assert_eq!(
+                    i32::from(got),
+                    t.clamp(0, 1023),
+                    "params {params:?} sample {i}"
+                );
+            }
+        }
     }
 
     #[test]
