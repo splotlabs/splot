@@ -936,14 +936,23 @@ pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
         luma.scaling
             .with_mv(rect.luma_x as i32, rect.luma_y as i32, mv.row, mv.col, 0, 0);
     let bounds = refinemv_area.map(|(candidate, width, height)| {
-        super::refinemv::reference_area_bounds(
-            rect.luma_x as i32,
-            rect.luma_y as i32,
-            width,
-            height,
+        if scaling.is_scaled() {
+            return super::refinemv::reference_area_bounds(
+                rect.luma_x as i32,
+                rect.luma_y as i32,
+                width,
+                height,
+                candidate,
+                0,
+                0,
+                &scaling,
+            );
+        }
+        super::refinemv::unscaled_area_bounds(
+            [(rect.luma_x as i32) << 4, (rect.luma_y as i32) << 4],
+            [width, height],
             candidate,
-            0,
-            0,
+            [0, 0],
             &scaling,
         )
     });
@@ -1460,8 +1469,6 @@ fn unscaled_cell_inputs<T: ReconSample>(
     let x16 = ((prediction.plane_x + col) as i32) << 4;
     let y16 = ((prediction.plane_y + row) as i32) << 4;
     let (w, h) = (width as i32, height as i32);
-    let x_padding = if width == 4 { (1, 2) } else { (3, 4) };
-    let y_padding = if height == 4 { (1, 2) } else { (3, 4) };
     let scaling = |reference: usize| {
         let [mv_row, mv_col] = cell.mvs[reference];
         PlaneScaling {
@@ -1482,10 +1489,13 @@ fn unscaled_cell_inputs<T: ReconSample>(
     let uniform = !check_uniform || (inside(&scalings[0]) && inside(&scalings[1]));
     let params = |reference: usize| {
         let scaling = scalings[reference];
-        let candidate = candidates[reference];
-        let x = (x16 + ((2 * candidate.col) >> sub_x)) >> 4;
-        let y = (y16 + ((2 * candidate.row) >> sub_y)) >> 4;
-        let clamp = |value: i32, last: i32| value.max(0).min(last);
+        let bounds = super::refinemv::unscaled_area_bounds(
+            [x16, y16],
+            [width, height],
+            candidates[reference],
+            [sub_x, sub_y],
+            &scaling,
+        );
         SubpelPredictParams {
             interp,
             w: width,
@@ -1494,10 +1504,10 @@ fn unscaled_cell_inputs<T: ReconSample>(
             start_y: scaling.start_y,
             step_x: scaling.step_x,
             step_y: scaling.step_y,
-            first_x: clamp(x - x_padding.0, scaling.last_x),
-            first_y: clamp(y - y_padding.0, scaling.last_y),
-            last_x: clamp(x + w - 1 + x_padding.1, scaling.last_x),
-            last_y: clamp(y + h - 1 + y_padding.1, scaling.last_y),
+            first_x: bounds.first_x,
+            first_y: bounds.first_y,
+            last_x: bounds.last_x,
+            last_y: bounds.last_y,
             bit_depth,
         }
     };

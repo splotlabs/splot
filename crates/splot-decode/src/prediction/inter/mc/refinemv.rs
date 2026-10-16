@@ -57,24 +57,17 @@ pub(super) fn reference_area_bounds(
     sub_y: u32,
     scaling: &PlaneScaling,
 ) -> ReferenceAreaBounds {
+    if !scaling.is_scaled() {
+        return unscaled_area_bounds(
+            [plane_x << 4, plane_y << 4],
+            [width, height],
+            candidate,
+            [sub_x, sub_y],
+            scaling,
+        );
+    }
     let x_padding = if width == 4 { (1, 2) } else { (3, 4) };
     let y_padding = if height == 4 { (1, 2) } else { (3, 4) };
-    if !scaling.is_scaled() {
-        // The unscaled start is `((pos << 4) + mv_offset) << 6 | 32`, so its
-        // integer sample is the 1/16 position shifted down by four.
-        let first = |pos: i32, mv: i32, sub: u32| ((pos << 4) + ((2 * mv) >> sub)) >> 4;
-        let (x, y) = (
-            first(plane_x, candidate.col, sub_x),
-            first(plane_y, candidate.row, sub_y),
-        );
-        let clamp = |value: i32, last: i32| value.max(0).min(last);
-        return ReferenceAreaBounds {
-            first_x: clamp(x - x_padding.0, scaling.last_x),
-            first_y: clamp(y - y_padding.0, scaling.last_y),
-            last_x: clamp(x + width as i32 - 1 + x_padding.1, scaling.last_x),
-            last_y: clamp(y + height as i32 - 1 + y_padding.1, scaling.last_y),
-        };
-    }
     let scaling = scaling.with_mv(plane_x, plane_y, candidate.row, candidate.col, sub_x, sub_y);
     let last_x = scaling.start_x + scaling.step_x * width.saturating_sub(1) as i32;
     let last_y = scaling.start_y + scaling.step_y * height.saturating_sub(1) as i32;
@@ -83,6 +76,31 @@ pub(super) fn reference_area_bounds(
         first_y: ((scaling.start_y >> 10) - y_padding.0).clamp(0, scaling.last_y),
         last_x: ((last_x >> 10) + x_padding.1).clamp(0, scaling.last_x),
         last_y: ((last_y >> 10) + y_padding.1).clamp(0, scaling.last_y),
+    }
+}
+
+/// [`reference_area_bounds`] of an unscaled reference, from the area's
+/// 1/16-sample origin: the unscaled start is `((pos << 4) + mv_offset) << 6
+/// | 32`, so its integer sample is the 1/16 position shifted down by four.
+#[allow(clippy::inline_always, reason = "called per unit and grid cell")]
+#[inline(always)]
+pub(super) fn unscaled_area_bounds(
+    [x16, y16]: [i32; 2],
+    [width, height]: [usize; 2],
+    candidate: Mv,
+    [sub_x, sub_y]: [u32; 2],
+    scaling: &PlaneScaling,
+) -> ReferenceAreaBounds {
+    let padding = |size: usize| if size == 4 { (1, 2) } else { (3, 4) };
+    let (x_padding, y_padding) = (padding(width), padding(height));
+    let x = (x16 + ((2 * candidate.col) >> sub_x)) >> 4;
+    let y = (y16 + ((2 * candidate.row) >> sub_y)) >> 4;
+    let clamp = |value: i32, last: i32| value.max(0).min(last);
+    ReferenceAreaBounds {
+        first_x: clamp(x - x_padding.0, scaling.last_x),
+        first_y: clamp(y - y_padding.0, scaling.last_y),
+        last_x: clamp(x + width as i32 - 1 + x_padding.1, scaling.last_x),
+        last_y: clamp(y + height as i32 - 1 + y_padding.1, scaling.last_y),
     }
 }
 
