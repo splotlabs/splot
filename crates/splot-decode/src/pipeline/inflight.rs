@@ -34,11 +34,12 @@ use splot_recon::{
 
 use super::frame_engine::finish::WalkStage;
 use super::frame_progress::FrameProgress;
+use super::frame_tasks::RowPools;
 use super::{PipelineDecodedFrame, unsupported};
 use crate::error::{DecodeError, Result};
 use crate::filters::wienerns_lr::FrameFilterRecords;
+use crate::prediction::inter::ParseProgress;
 use crate::prediction::inter::reference::HeldFrameSamples;
-use crate::prediction::inter::{InterDecodeScratch, ParseProgress};
 use parking_lot::Mutex;
 
 /// The one-shot value a decoded-frame slot publishes.
@@ -631,21 +632,13 @@ impl InflightRing {
 
     /// Admits one more frame, harvesting the oldest entries until the frame
     /// about to be walked plus the uncollected filter phases fit the depth.
-    pub(crate) fn reserve(
-        &mut self,
-        eight: &mut InterDecodeScratch<u8>,
-        ten: &mut InterDecodeScratch<u16>,
-    ) {
-        while self.entries.len() >= self.capacity && self.harvest_oldest(eight, ten) {}
+    pub(crate) fn reserve(&mut self, pools: &mut RowPools) {
+        while self.entries.len() >= self.capacity && self.harvest_oldest(pools) {}
     }
 
     /// Collects every outstanding filter phase.
-    pub(crate) fn harvest_all(
-        &mut self,
-        eight: &mut InterDecodeScratch<u8>,
-        ten: &mut InterDecodeScratch<u16>,
-    ) {
-        while self.harvest_oldest(eight, ten) {}
+    pub(crate) fn harvest_all(&mut self, pools: &mut RowPools) {
+        while self.harvest_oldest(pools) {}
     }
 
     /// Takes the lowest-indexed filter-phase failure the ring collected.
@@ -657,11 +650,7 @@ impl InflightRing {
         self.entries.push_back(entry);
     }
 
-    fn harvest_oldest(
-        &mut self,
-        eight: &mut InterDecodeScratch<u8>,
-        ten: &mut InterDecodeScratch<u16>,
-    ) -> bool {
+    fn harvest_oldest(&mut self, pools: &mut RowPools) -> bool {
         let Some(entry) = self.entries.pop_front() else {
             return false;
         };
@@ -669,10 +658,7 @@ impl InflightRing {
         let _ = entry.slot.wait_settled();
         let mut outcome = report.lock();
         if let Some(records) = outcome.records.take() {
-            match entry.slot {
-                PipelineFrameSlot::Eight(_) => eight.recycle_frame_filter_records(records),
-                PipelineFrameSlot::Ten(_) => ten.recycle_frame_filter_records(records),
-            }
+            pools.recycle_frame_filter_records(&entry.slot, records);
         }
         let error = outcome.error.take();
         drop(outcome);

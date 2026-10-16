@@ -21,6 +21,7 @@ use std::sync::Arc;
 use crate::error::{DecodeReferenceStateError, Result};
 use crate::pipeline::PipelineFrame;
 use crate::pipeline::frame_store::FrameStore;
+use crate::pipeline::frame_tasks::SplitSample;
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::prediction::inter::{
     CcsoGridHandle, FrameCdfHandle, InterReferenceState, MotionFieldHandle, SegmentIdMapHandle,
@@ -278,37 +279,19 @@ impl RuntimeReferenceBuffer {
         })
     }
 
-    pub(crate) fn build_store_eight(
-        &self,
-        frames: &FrameStore,
-    ) -> Result<(ReferenceFrameStore<RefFrameSlot<u8>>, ReferenceMetadata)> {
-        self.build_store(frames, PipelineFrame::slot_eight)
-    }
-
-    pub(crate) fn build_store_ten(
-        &self,
-        frames: &FrameStore,
-    ) -> Result<(ReferenceFrameStore<RefFrameSlot<u16>>, ReferenceMetadata)> {
-        self.build_store(frames, PipelineFrame::slot_ten)
-    }
-
     /// Out of line, so a caller's frame holds only the built state.
     #[inline(never)]
-    pub(crate) fn state_eight(&self, frames: &FrameStore) -> Result<InterReferenceState<u8>> {
-        let (store, meta) = self.build_store_eight(frames)?;
-        Ok(InterReferenceState::from_metadata(store, meta))
-    }
-
-    #[inline(never)]
-    pub(crate) fn state_ten(&self, frames: &FrameStore) -> Result<InterReferenceState<u16>> {
-        let (store, meta) = self.build_store_ten(frames)?;
-        Ok(InterReferenceState::from_metadata(store, meta))
-    }
-
-    fn build_store<T: splot_recon::ReconSample>(
+    pub(crate) fn state<T: SplitSample>(
         &self,
         frames: &FrameStore,
-        frame_slot: impl Fn(&PipelineFrame) -> Result<RefFrameSlot<T>>,
+    ) -> Result<InterReferenceState<T>> {
+        let (store, meta) = self.build_store::<T>(frames)?;
+        Ok(InterReferenceState::from_metadata(store, meta))
+    }
+
+    pub(crate) fn build_store<T: SplitSample>(
+        &self,
+        frames: &FrameStore,
     ) -> Result<(ReferenceFrameStore<RefFrameSlot<T>>, ReferenceMetadata)> {
         let num = self.slots.len();
         let mut store: ReferenceFrameStore<RefFrameSlot<T>> =
@@ -336,7 +319,7 @@ impl RuntimeReferenceBuffer {
                 .get(frame_index)
                 .ok_or(DecodeReferenceStateError::MissingFrame { slot: i })?;
             let reference_slot = ReferenceSlot::new(i)?;
-            let reference_frame = frame_slot(frame)?;
+            let reference_frame = T::slot(frame)?;
             ensure_slot_matches_frame(i, slot, frame_index, reference_frame.info())?;
             meta.push_slot(slot, Some(frame));
             store.put(reference_slot, reference_frame)?;

@@ -21,9 +21,8 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use super::frame_tasks::{RowPools, SplitFrames};
+use super::frame_tasks::RowPools;
 use super::inflight::InflightRing;
-use crate::prediction::inter::InterDecodeScratch;
 use crate::support::decode_buffers::DecodeBuffers;
 
 /// The frame-pipelining depth of one context and the decoder state it keeps
@@ -121,32 +120,20 @@ impl DecodeSession {
 /// The storage one decode leaves for the next decode on its context.
 pub(super) struct RetainedDecode {
     width: usize,
-    pub(super) scratch_eight: InterDecodeScratch<u8>,
-    pub(super) scratch_ten: InterDecodeScratch<u16>,
     pub(super) ring: InflightRing,
     pub(super) pools: RowPools,
     pub(super) frames: FrameStore,
-    pub(super) split_eight: SplitFrames<u8>,
-    pub(super) split_ten: SplitFrames<u16>,
     pub(super) input_scratch: crate::bitstream::byte_stream::InputScratch,
 }
 
 impl RetainedDecode {
     fn new(depth: NonZeroUsize, width: usize) -> Self {
         let buffers = DecodeBuffers::new();
-        let mut scratch_eight = InterDecodeScratch::default();
-        let mut scratch_ten = InterDecodeScratch::default();
-        scratch_eight.set_decode_buffers(&buffers);
-        scratch_ten.set_decode_buffers(&buffers);
         Self {
             width,
-            scratch_eight,
-            scratch_ten,
+            pools: RowPools::new(depth.get(), width, &buffers),
             ring: InflightRing::new(depth, buffers, width),
-            pools: RowPools::default(),
             frames: FrameStore::new(false, depth.get()),
-            split_eight: SplitFrames::new(depth.get(), width),
-            split_ten: SplitFrames::new(depth.get(), width),
             input_scratch: crate::bitstream::byte_stream::InputScratch::default(),
         }
     }

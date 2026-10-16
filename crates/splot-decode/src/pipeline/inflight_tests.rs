@@ -9,6 +9,7 @@ use super::*;
 
 use splot_recon::{ReferenceFrameStore, ReferenceSlot};
 
+use crate::pipeline::frame_tasks::SplitSample;
 use crate::prediction::inter::InterReferenceState;
 use crate::test_support::decoded_frame;
 
@@ -304,8 +305,7 @@ fn pending_slot_geometry_matches_the_published_frame() {
 
 #[test]
 fn ring_admission_harvests_the_oldest_entry_first() {
-    let mut eight = InterDecodeScratch::<u8>::default();
-    let mut ten = InterDecodeScratch::<u16>::default();
+    let mut pools = RowPools::new(1, 1, &test_plane_pool());
     let mut ring = InflightRing::new(nz(3), test_plane_pool(), 1);
 
     let (first, first_report) = pending_entry(&mut ring, 0);
@@ -317,26 +317,25 @@ fn ring_admission_harvests_the_oldest_entry_first() {
     drop((first_report, second_report, third_report));
     assert_eq!(ring.entries.len(), 3);
 
-    ring.reserve(&mut eight, &mut ten);
+    ring.reserve(&mut pools);
 
     assert_eq!(ring.entries.len(), 2);
     assert_eq!(ring.entries.front().map(|entry| entry.frame_index), Some(1));
 
-    ring.harvest_all(&mut eight, &mut ten);
+    ring.harvest_all(&mut pools);
 
     assert!(ring.entries.is_empty());
 }
 
 #[test]
 fn a_depth_of_two_walks_one_frame_beside_one_uncollected_finish() {
-    let mut eight = InterDecodeScratch::<u8>::default();
-    let mut ten = InterDecodeScratch::<u16>::default();
+    let mut pools = RowPools::new(1, 1, &test_plane_pool());
     let mut ring = InflightRing::new(nz(2), test_plane_pool(), 1);
 
     let (first, first_report) = pending_entry(&mut ring, 0);
     first.complete(decoded_frame(4, 4));
     drop(first_report);
-    ring.reserve(&mut eight, &mut ten);
+    ring.reserve(&mut pools);
 
     assert!(
         ring.holds(0),
@@ -348,24 +347,23 @@ fn a_depth_of_two_walks_one_frame_beside_one_uncollected_finish() {
     drop(second_report);
     assert_eq!(ring.entries.len(), 2);
 
-    ring.reserve(&mut eight, &mut ten);
+    ring.reserve(&mut pools);
 
     assert!(!ring.holds(0), "frame 0 must be harvested to admit frame 2");
     assert!(ring.holds(1));
     assert_eq!(ring.entries.len(), 1);
 
-    ring.harvest_all(&mut eight, &mut ten);
+    ring.harvest_all(&mut pools);
 
     assert!(!ring.holds(1));
 }
 
 #[test]
 fn a_depth_of_one_never_keeps_a_frame_in_flight() {
-    let mut eight = InterDecodeScratch::<u8>::default();
-    let mut ten = InterDecodeScratch::<u16>::default();
+    let mut pools = RowPools::new(1, 1, &test_plane_pool());
     let mut ring = InflightRing::new(NonZeroUsize::MIN, test_plane_pool(), 1);
 
-    ring.reserve(&mut eight, &mut ten);
+    ring.reserve(&mut pools);
 
     assert!(ring.entries.is_empty());
     assert!(ring.take_failure().is_none());
@@ -373,8 +371,7 @@ fn a_depth_of_one_never_keeps_a_frame_in_flight() {
 
 #[test]
 fn the_lowest_indexed_filter_failure_outranks_later_ones() {
-    let mut eight = InterDecodeScratch::<u8>::default();
-    let mut ten = InterDecodeScratch::<u16>::default();
+    let mut pools = RowPools::new(1, 1, &test_plane_pool());
     let mut ring = InflightRing::new(nz(4), test_plane_pool(), 1);
 
     for (frame_index, reason) in [(2usize, "later_failure"), (1usize, "earlier_failure")] {
@@ -384,7 +381,7 @@ fn the_lowest_indexed_filter_failure_outranks_later_ones() {
         drop(report);
     }
 
-    ring.harvest_all(&mut eight, &mut ten);
+    ring.harvest_all(&mut pools);
 
     let failure = ring.take_failure().expect("a collected failure");
     assert!(
@@ -396,8 +393,7 @@ fn the_lowest_indexed_filter_failure_outranks_later_ones() {
 
 #[test]
 fn harvesting_recycles_filter_records_into_the_matching_scratch() {
-    let mut eight = InterDecodeScratch::<u8>::default();
-    let mut ten = InterDecodeScratch::<u16>::default();
+    let mut pools = RowPools::new(1, 1, &test_plane_pool());
     let mut ring = InflightRing::new(nz(2), test_plane_pool(), 1);
 
     let (writer, mut report) = pending_entry(&mut ring, 0);
@@ -428,21 +424,26 @@ fn harvesting_recycles_filter_records_into_the_matching_scratch() {
             .is_some_and(|entry| entry.report.is_set())
     );
 
-    ring.harvest_all(&mut eight, &mut ten);
+    ring.harvest_all(&mut pools);
 
+    let eight = &u8::pools(&mut pools).scratch;
     assert!(eight.frame_filter_records_capacity() >= 64);
     let (cdef_grid, cdef_strengths, tx_skip, ccso) = eight.derived_filter_record_capacities();
     assert!(cdef_grid >= 32);
     assert!(cdef_strengths >= 8);
     assert!(tx_skip >= 128);
     assert!(ccso.into_iter().all(|capacity| capacity >= 16));
-    assert_eq!(ten.frame_filter_records_capacity(), 0);
+    assert_eq!(
+        u16::pools(&mut pools)
+            .scratch
+            .frame_filter_records_capacity(),
+        0
+    );
 }
 
 #[test]
 fn failed_finish_reports_its_error_before_harvest() {
-    let mut eight = InterDecodeScratch::<u8>::default();
-    let mut ten = InterDecodeScratch::<u16>::default();
+    let mut pools = RowPools::new(1, 1, &test_plane_pool());
     let mut ring = InflightRing::new(nz(2), test_plane_pool(), 1);
     let frame = decoded_frame(4, 4);
     let (_slot, finish) = reserve_pending_slot(
@@ -465,7 +466,7 @@ fn failed_finish_reports_its_error_before_harvest() {
             .is_some_and(|entry| entry.report.is_set())
     );
 
-    ring.harvest_all(&mut eight, &mut ten);
+    ring.harvest_all(&mut pools);
 
     let failure = ring.take_failure().expect("reported failure");
     assert!(format!("{failure:?}").contains("reported_finish_failure"));

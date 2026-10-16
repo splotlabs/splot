@@ -26,6 +26,7 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_parallel::{Claim, FrameWork, ParallelStage, RowScheduler, RowWake, Stage};
 use splot_recon::BitDepth;
 
+use super::PipelineFrame;
 use super::inflight::{PendingFinish, PipelineFrameSlot, RefFrameSlot, SpareFramePlanes};
 use crate::bitstream::byte_stream::UnitBytes;
 use crate::bitstream::tile_payload::FrameQuantizerSnapshot;
@@ -33,6 +34,7 @@ use crate::error::DecodeError;
 use crate::filters::wienerns_lr::FrameFilterRecords;
 use crate::prediction::inter::{self, ScheduledTileRecon, ScheduledTileWorkspace};
 use crate::reference::buffer::RefSlots;
+use crate::support::decode_buffers::DecodeBuffers;
 use crate::{DecodeOptions, DecodePlannedObu, Result};
 use splot_core::span::ByteOffset;
 
@@ -46,13 +48,12 @@ const OUTPUT: usize = 6;
 const PRECOMPUTE: usize = 7;
 const FILTER: usize = 8;
 
-/// A sample type the row-scheduled frame works are typed for.
+/// A sample type the decode driver is typed for below its bit-depth boundary.
 pub(crate) trait SplitSample: SpareFramePlanes + Send + 'static {
     const BIT_DEPTH: BitDepth;
     fn erase(slot: RefFrameSlot<Self>) -> PipelineFrameSlot;
-    fn tip_pool(pools: &mut RowPools) -> &mut WorkPool<TipFrame<Self>>;
-    fn tip_spares(pools: &RowPools) -> &Arc<inter::TipSpares<Self>>;
-    fn finish_pool(pools: &mut RowPools) -> &mut WorkPool<FinishFrame<Self>>;
+    fn slot(frame: &PipelineFrame) -> Result<RefFrameSlot<Self>>;
+    fn pools(pools: &mut RowPools) -> &mut SamplePools<Self>;
 }
 
 impl SplitSample for u8 {
@@ -60,14 +61,11 @@ impl SplitSample for u8 {
     fn erase(slot: RefFrameSlot<Self>) -> PipelineFrameSlot {
         PipelineFrameSlot::Eight(slot)
     }
-    fn tip_pool(pools: &mut RowPools) -> &mut WorkPool<TipFrame<Self>> {
-        &mut pools.tip_eight
+    fn slot(frame: &PipelineFrame) -> Result<RefFrameSlot<Self>> {
+        frame.slot_eight()
     }
-    fn tip_spares(pools: &RowPools) -> &Arc<inter::TipSpares<Self>> {
-        &pools.tip_spares_eight
-    }
-    fn finish_pool(pools: &mut RowPools) -> &mut WorkPool<FinishFrame<Self>> {
-        &mut pools.finish_eight
+    fn pools(pools: &mut RowPools) -> &mut SamplePools<Self> {
+        &mut pools.eight
     }
 }
 
@@ -76,14 +74,11 @@ impl SplitSample for u16 {
     fn erase(slot: RefFrameSlot<Self>) -> PipelineFrameSlot {
         PipelineFrameSlot::Ten(slot)
     }
-    fn tip_pool(pools: &mut RowPools) -> &mut WorkPool<TipFrame<Self>> {
-        &mut pools.tip_ten
+    fn slot(frame: &PipelineFrame) -> Result<RefFrameSlot<Self>> {
+        frame.slot_ten()
     }
-    fn tip_spares(pools: &RowPools) -> &Arc<inter::TipSpares<Self>> {
-        &pools.tip_spares_ten
-    }
-    fn finish_pool(pools: &mut RowPools) -> &mut WorkPool<FinishFrame<Self>> {
-        &mut pools.finish_ten
+    fn pools(pools: &mut RowPools) -> &mut SamplePools<Self> {
+        &mut pools.ten
     }
 }
 
@@ -1209,18 +1204,63 @@ impl<W: FrameWork + 'static> WorkPool<W> {
     }
 }
 
-/// The reusable TIP output and finish works of one decode.
-#[derive(Default)]
+/// The decode state of one sample type: the driver's inter scratch, the split
+/// inter frames, and the reusable TIP output and finish works.
+pub(crate) struct SamplePools<T: SplitSample> {
+    pub(super) scratch: inter::InterDecodeScratch<T>,
+    pub(super) split: SplitFrames<T>,
+    tip: WorkPool<TipFrame<T>>,
+    tip_spares: Arc<inter::TipSpares<T>>,
+    finish: WorkPool<FinishFrame<T>>,
+}
+
+impl<T: SplitSample> SamplePools<T> {
+    fn new(depth: usize, threads: usize, buffers: &Arc<DecodeBuffers>) -> Self {
+        let mut scratch = inter::InterDecodeScratch::default();
+        scratch.set_decode_buffers(buffers);
+        Self {
+            scratch,
+            split: SplitFrames::new(depth, threads),
+            tip: WorkPool::default(),
+            tip_spares: Arc::default(),
+            finish: WorkPool::default(),
+        }
+    }
+
+    fn drain(&mut self, rows: &RowScheduler) {
+        self.split.drain(rows);
+        self.tip.drain(rows);
+        self.finish.drain(rows);
+    }
+}
+
+/// The per-sample-type decode state of one decode, for both sample types.
 pub(crate) struct RowPools {
-    tip_eight: WorkPool<TipFrame<u8>>,
-    tip_ten: WorkPool<TipFrame<u16>>,
-    tip_spares_eight: Arc<inter::TipSpares<u8>>,
-    tip_spares_ten: Arc<inter::TipSpares<u16>>,
-    finish_eight: WorkPool<FinishFrame<u8>>,
-    finish_ten: WorkPool<FinishFrame<u16>>,
+    eight: SamplePools<u8>,
+    ten: SamplePools<u16>,
 }
 
 impl RowPools {
+    pub(crate) fn new(depth: usize, threads: usize, buffers: &Arc<DecodeBuffers>) -> Self {
+        Self {
+            eight: SamplePools::new(depth, threads, buffers),
+            ten: SamplePools::new(depth, threads, buffers),
+        }
+    }
+
+    /// Returns a harvested frame's filter records to the scratch of its
+    /// sample type.
+    pub(crate) fn recycle_frame_filter_records(
+        &mut self,
+        slot: &PipelineFrameSlot,
+        records: FrameFilterRecords,
+    ) {
+        match slot {
+            PipelineFrameSlot::Eight(_) => self.eight.scratch.recycle_frame_filter_records(records),
+            PipelineFrameSlot::Ten(_) => self.ten.scratch.recycle_frame_filter_records(records),
+        }
+    }
+
     /// Hands one TIP output frame to the scheduler, or decodes it inline.
     pub(crate) fn push_tip<T: SplitSample>(
         &mut self,
@@ -1228,9 +1268,11 @@ impl RowPools {
         options: DecodeOptions,
         inputs: TipFrameInputs<T>,
     ) -> Result<()> {
-        let spares = Arc::clone(T::tip_spares(self));
-        let pool = T::tip_pool(self);
-        let index = pool.reserve(
+        let SamplePools {
+            tip, tip_spares, ..
+        } = T::pools(self);
+        let spares = Arc::clone(tip_spares);
+        let index = tip.reserve(
             || {
                 TipFrame::new(
                     rows.map_or_else(RowWake::detached, RowScheduler::wake),
@@ -1240,7 +1282,7 @@ impl RowPools {
             },
             TipFrame::reset,
         );
-        pool.push_slot(rows, index, |work| {
+        tip.push_slot(rows, index, |work| {
             work.options = options;
             work.inline = rows.is_none();
             work.arm(inputs);
@@ -1254,7 +1296,7 @@ impl RowPools {
         finish: PendingFinish<T>,
         walked: super::frame_engine::finish::WalkedFrame<T>,
     ) -> Result<()> {
-        let pool = T::finish_pool(self);
+        let pool = &mut T::pools(self).finish;
         let index = pool.reserve(
             || FinishFrame::new(rows.map_or_else(RowWake::detached, RowScheduler::wake)),
             FinishFrame::reset,
@@ -1264,9 +1306,7 @@ impl RowPools {
 
     /// Waits for every work in every pool to finish.
     pub(crate) fn drain(&mut self, rows: &RowScheduler) {
-        self.tip_eight.drain(rows);
-        self.tip_ten.drain(rows);
-        self.finish_eight.drain(rows);
-        self.finish_ten.drain(rows);
+        self.eight.drain(rows);
+        self.ten.drain(rows);
     }
 }
