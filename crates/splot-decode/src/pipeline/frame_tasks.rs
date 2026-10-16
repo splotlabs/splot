@@ -538,30 +538,54 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
         None
     }
 
-    fn run(&self, claim: Claim) {
-        let outcome = match claim.stage {
-            PARSE => self.parse().map(|()| true),
-            PREPARE => self.prepare().map(|()| true),
-            ATTACH => self.attach().map(|()| true),
-            RESOLVE => self.resolve(claim.row),
-            COMMIT => self.commit(claim.row).map(|()| true),
-            FRONTIER => self.frontier(claim.row).map(|()| true),
-            PRECOMPUTE => self.precompute(claim.row).map(|()| true),
-            FILTER => self.filter_stripe(claim.row).map(|()| true),
-            _ => self.output().map(|()| true),
-        };
-        match claim.stage {
-            PRECOMPUTE => self.precompute.finish(claim.row),
-            FILTER => self.filter.finish(claim.row),
-            stage => match outcome {
-                Ok(false) => self.stages[stage].retry(claim.row),
-                Ok(true) | Err(_) => self.stages[stage].finish(claim.row),
-            },
+    /// Runs the claimed row, then the row it released when that one is next
+    /// (a batch's commit, a commit's frontier row), without a scan or a wake.
+    fn run(&self, mut claim: Claim) {
+        loop {
+            let outcome = match claim.stage {
+                PARSE => self.parse().map(|()| true),
+                PREPARE => self.prepare().map(|()| true),
+                ATTACH => self.attach().map(|()| true),
+                RESOLVE => self.resolve(claim.row),
+                COMMIT => self.commit(claim.row).map(|()| true),
+                FRONTIER => self.frontier(claim.row).map(|()| true),
+                PRECOMPUTE => self.precompute(claim.row).map(|()| true),
+                FILTER => self.filter_stripe(claim.row).map(|()| true),
+                _ => self.output().map(|()| true),
+            };
+            match claim.stage {
+                PRECOMPUTE => self.precompute.finish(claim.row),
+                FILTER => self.filter.finish(claim.row),
+                stage => match outcome {
+                    Ok(false) => self.stages[stage].retry(claim.row),
+                    Ok(true) | Err(_) => self.stages[stage].finish(claim.row),
+                },
+            }
+            if let Err(error) = outcome {
+                self.fail(error);
+                break;
+            }
+            self.notify();
+            let next = match claim.stage {
+                PRECOMPUTE => self.stages[COMMIT]
+                    .claim(|batch| batch == claim.row)
+                    .map(|row| Claim { stage: COMMIT, row }),
+                COMMIT => self.stages[FRONTIER]
+                    .claim(|row| {
+                        self.attached.load(Ordering::Acquire)
+                            && row < self.closed_rows.load(Ordering::Acquire)
+                    })
+                    .map(|row| Claim {
+                        stage: FRONTIER,
+                        row,
+                    }),
+                _ => None,
+            };
+            match next {
+                Some(next) => claim = next,
+                None => break,
+            }
         }
-        if let Err(error) = outcome {
-            self.fail(error);
-        }
-        self.notify();
     }
 
     fn done(&self) -> bool {
