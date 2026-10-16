@@ -1613,8 +1613,20 @@ impl StrengthKey {
     #[allow(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
     fn strengths(self, strengths: &StrengthCache) -> (i32, i32) {
-        let (curr_q, curr_side) = strengths.get(self.curr_qindex);
-        let (prev_q, prev_side) = strengths.get(self.prev_qindex);
+        self.combine(
+            strengths.get(self.curr_qindex),
+            strengths.get(self.prev_qindex),
+        )
+    }
+
+    /// The edge's `qThr` and `side` from its records' own.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn combine(
+        self,
+        (curr_q, curr_side): (i32, i32),
+        (prev_q, prev_side): (i32, i32),
+    ) -> (i32, i32) {
         let (q_thr, side) = combine_strengths(curr_q, prev_q, curr_side, prev_side);
         if self.sub_pu_only {
             (q_thr >> 3, side >> 3)
@@ -1950,10 +1962,11 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
     };
     let is_sub_pu_edge = curr_sub_pu_edge && !is_block_edge;
 
-    let curr_strong = strengths.strong(curr.block.qindex);
-    let prev_strong = strengths.strong(prev.block.qindex);
+    let curr_strength = strengths.get(curr.block.qindex);
+    let prev_strength = strengths.get(prev.block.qindex);
+    let strong = |(q_thr, side): (i32, i32)| q_thr != 0 && side != 0;
     let apply_filter = (is_tx_edge || is_sub_pu_edge)
-        && (curr_strong || prev_strong)
+        && (strong(curr_strength) || strong(prev_strength))
         && (is_block_edge || !skip || is_sub_pu_edge);
     if !apply_filter {
         return (None, uniform);
@@ -1964,7 +1977,7 @@ fn edge_decision<const PLANE: usize, const PASS: usize>(
         prev_qindex: prev.block.qindex,
         sub_pu_only: is_sub_pu_edge && !is_tx_edge,
     };
-    let (q_thr, side) = key.strengths(strengths);
+    let (q_thr, side) = key.combine(curr_strength, prev_strength);
     (
         Some(EdgeDecision {
             filter_size: curr_filter_size.min(prev_filter_size),
