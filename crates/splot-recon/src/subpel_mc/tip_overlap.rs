@@ -64,6 +64,61 @@ pub(super) fn overlap_bilinear_u16x8<T: ReconSample>(
     }
 }
 
+/// A two-axis 16x16 `BILINEAR` block at `(x0, y0)` whose clip bounds are
+/// `[x0 + 1, x0 + 15] x [y0 + 1, y0 + 15]`, from `[x0 + 1, y0 + 1]`.
+///
+/// Its clipped columns read `[1, 1, 2, .., 15]` and `[1, 2, .., 15, 15]`, so
+/// two loads and one lane slide per half form both tap windows of a row. Each
+/// source row is filtered horizontally once: row `r` blends the rows
+/// `clamp(r, 1, 15)` and `clamp(r + 1, 1, 15)`.
+pub(super) fn bilinear_16x16_clipped<T: ReconSample, O: BilinearOutput>(
+    reference: &ReferencePlaneView<'_, T>,
+    [x, y]: [usize; 2],
+    [h_phase, v_phase]: [u16; 2],
+    max_sample: u16,
+    output: &mut [O],
+    output_stride: usize,
+) {
+    let horizontal = |row: usize| {
+        let source = reference.row(y + row);
+        let (low, high) = (
+            reference_lanes::<8, T>(source, x),
+            reference_lanes::<8, T>(source, x + 7),
+        );
+        let left = [
+            std::simd::simd_swizzle!(low, [0, 0, 1, 2, 3, 4, 5, 6]),
+            high,
+        ];
+        let right = [
+            low,
+            std::simd::simd_swizzle!(high, [1, 2, 3, 4, 5, 6, 7, 7]),
+        ];
+        [0, 1]
+            .map(|half| left[half] * Simd::splat(16 - h_phase) + right[half] * Simd::splat(h_phase))
+    };
+    let mut top = horizontal(0);
+    for row in 0..16 {
+        let bottom = if (1..15).contains(&row) {
+            horizontal(row)
+        } else {
+            top
+        };
+        let destination = &mut output[row * output_stride..][..16];
+        for (half, lanes) in destination.chunks_exact_mut(8).enumerate() {
+            let blended = tap_mac(
+                tap_mac(Simd::splat(0), top[half].cast(), i32::from(16 - v_phase)),
+                bottom[half].cast(),
+                i32::from(v_phase),
+            );
+            let filtered = round2_simd(blended, 8)
+                .cast::<u16>()
+                .simd_min(Simd::splat(max_sample));
+            O::store(filtered, lanes);
+        }
+        top = bottom;
+    }
+}
+
 /// Output columns 4..12 of the last block that
 /// [`subpel_predict_12x12_bilinear_overlap_into`] predicted, with the reference
 /// and geometry it read them at. Only that function writes it; the held

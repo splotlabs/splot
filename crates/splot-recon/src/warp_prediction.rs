@@ -2039,22 +2039,16 @@ mod tests {
             warp_predict_block(&view, &params, false),
             Err(ReconError::WarpInvalidShear { .. })
         ));
-        assert!(matches!(
-            PreparedWarpPrediction::with_valid_shear(&params),
-            Ok(None)
-        ));
+        let prepare = |params: &WarpPredictBlockParams| {
+            PreparedWarpPrediction::with_valid_shear(params).map(|prepared| prepared.is_some())
+        };
+        assert!(matches!(prepare(&params), Ok(false)));
         params.subsampling_x = 2;
-        assert!(matches!(
-            PreparedWarpPrediction::with_valid_shear(&params),
-            Ok(None)
-        ));
+        assert!(matches!(prepare(&params), Ok(false)));
         params.warp_params = IDENTITY_WARP_PARAMS;
-        assert!(PreparedWarpPrediction::with_valid_shear(&params).is_err());
+        assert!(prepare(&params).is_err());
         params.subsampling_x = 0;
-        assert!(matches!(
-            PreparedWarpPrediction::with_valid_shear(&params),
-            Ok(Some(_))
-        ));
+        assert!(matches!(prepare(&params), Ok(true)));
     }
 
     #[test]
