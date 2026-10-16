@@ -121,22 +121,23 @@ const STD_MPSC_NEEDLES: &[&str] = &[
     "mpsc as ",
 ];
 
-/// Ad-hoc OS-thread-spawn needles — banned outside tests (the local `WorkerPool`
-/// owns every worker thread). Covers direct and imported `spawn`, the
-/// `thread::Builder` form (`Builder::new().spawn(...)`), and the `std::thread`
-/// alias forms (`use std::thread as t;`, `use std::thread::{self as t};`) that would
-/// otherwise hide an aliased `t::spawn`. Scoped to full paths / import declarations
-/// so numeric casts such as `worker_thread as u32` are never matched.
 /// The one file allowed to spawn OS threads: the row scheduler that owns the
 /// decoder's dedicated worker threads.
 const THREAD_OWNER_FILE: &str = "crates/splot-parallel/src/rows.rs";
 
+/// Ad-hoc OS-thread-spawn needles — banned outside tests and
+/// [`THREAD_OWNER_FILE`], since every worker thread belongs to the row
+/// scheduler or the encoder's `WorkerPool`. Covers direct and imported `spawn`,
+/// the `thread::Builder` form (`Builder::new().spawn(...)`), and the `std::thread`
+/// alias forms (`use std::thread as t;`, `use std::thread::{self as t};`) that would
+/// otherwise hide an aliased `t::spawn`. Scoped to full paths / import declarations
+/// so numeric casts such as `worker_thread as u32` are never matched.
 const THREAD_SPAWN_NEEDLES: &[&str] = &[
     "thread::spawn",
     "thread::Builder",
     // Scoped threads (`std::thread::scope(|s| s.spawn(...))`) also spawn OS threads
-    // the WorkerPool does not own; flagging the `thread::scope` entry point catches
-    // the whole scoped-spawn form.
+    // nobody owns; flagging the `thread::scope` entry point catches the whole
+    // scoped-spawn form.
     "thread::scope",
     "std::thread as ",
     "std::thread::{self",
