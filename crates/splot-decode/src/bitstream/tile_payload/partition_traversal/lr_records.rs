@@ -64,27 +64,23 @@ impl WienerNsLrSourceBlock {
         .flatten()
     }
 
+    /// Field-wise so the merge test needs no 14-word key arrays or `memcmp`.
     fn same_filter_domain(&self, next: &Self) -> bool {
-        self.filter_domain_key() == next.filter_domain_key()
-    }
-
-    fn filter_domain_key(&self) -> [usize; 14] {
-        [
-            self.restoration_type as usize,
-            self.plane,
-            self.unit_row,
-            self.unit_col,
-            self.unit_filter_index.unwrap_or(usize::MAX),
-            self.tile_mi_row_start,
-            self.tile_mi_row_end,
-            self.tile_mi_col_end,
-            self.luma_start_x,
-            self.luma_end_x,
-            self.luma_start_y,
-            self.luma_end_y,
-            self.luma_stripe_start_y,
-            self.luma_stripe_end_y,
-        ]
+        self.unit_col == next.unit_col
+            && self.unit_row == next.unit_row
+            && self.plane == next.plane
+            && self.restoration_type == next.restoration_type
+            && self.unit_filter_index.unwrap_or(usize::MAX)
+                == next.unit_filter_index.unwrap_or(usize::MAX)
+            && self.tile_mi_row_start == next.tile_mi_row_start
+            && self.tile_mi_row_end == next.tile_mi_row_end
+            && self.tile_mi_col_end == next.tile_mi_col_end
+            && self.luma_start_x == next.luma_start_x
+            && self.luma_end_x == next.luma_end_x
+            && self.luma_start_y == next.luma_start_y
+            && self.luma_end_y == next.luma_end_y
+            && self.luma_stripe_start_y == next.luma_stripe_start_y
+            && self.luma_stripe_end_y == next.luma_stripe_end_y
     }
 }
 
