@@ -660,7 +660,11 @@ impl BlockCdfRows {
         }
     }
 
-    #[inline]
+    #[allow(
+        clippy::inline_always,
+        reason = "constant selectors fold into a direct row read"
+    )]
+    #[inline(always)]
     pub(crate) fn row_mut(
         &mut self,
         selector: TileCdfSelector,

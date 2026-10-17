@@ -463,6 +463,11 @@ fn read_ns(symbols: &mut SymbolDecoder<'_>, n: i32, tile_offset: ByteOffset) -> 
     i32::try_from(result).map_err(|_| mv_overflow(tile_offset))
 }
 
+#[allow(
+    clippy::inline_always,
+    reason = "constant selectors fold into a direct row read"
+)]
+#[inline(always)]
 fn read_symbol(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,

@@ -299,7 +299,11 @@ impl TileCdfSubset {
         self.rows.clone_from(&frame.rows);
     }
 
-    #[inline]
+    #[allow(
+        clippy::inline_always,
+        reason = "constant selectors fold into a direct row read"
+    )]
+    #[inline(always)]
     pub(crate) fn with_row_mut<R>(
         &mut self,
         selector: TileCdfSelector,
@@ -1112,7 +1116,11 @@ impl TileCdfRows {
         }
     }
 
-    #[inline]
+    #[allow(
+        clippy::inline_always,
+        reason = "constant selectors fold into a direct row read"
+    )]
+    #[inline(always)]
     fn row_mut(&mut self, selector: TileCdfSelector) -> Result<&mut [u16], TileCdfError> {
         match selector {
             TileCdfSelector::DoSplit { plane_start, ctx } => {
