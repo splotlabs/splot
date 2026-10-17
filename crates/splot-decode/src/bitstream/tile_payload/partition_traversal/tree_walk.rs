@@ -254,15 +254,17 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                 if forced_extended_sdp_chroma_block {
                     (call, call.b_size, false, true)
                 } else {
-                    read_loop_restoration_for_call(
-                        self.frame,
-                        call,
-                        self.tile_bounds,
-                        work_unit.cdf_mut().tile_cdfs_mut(),
-                        &mut self.symbols,
-                        &mut self.lr_activity,
-                        self.limits,
-                    )?;
+                    if call.b_size == self.frame.sb_size {
+                        read_loop_restoration_for_call(
+                            self.frame,
+                            call,
+                            self.tile_bounds,
+                            work_unit.cdf_mut().tile_cdfs_mut(),
+                            &mut self.symbols,
+                            &mut self.lr_activity,
+                            self.limits,
+                        )?;
+                    }
 
                     let (call, partition, using_extended_sdp) = read_frontier_partition_step(
                         call,
