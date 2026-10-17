@@ -119,6 +119,7 @@ pub(crate) struct TileWalkParams {
     pub(super) allow_warpmv_mode: bool,
     pub(super) frame_is_switch: bool,
     pub(super) current_order_hint: u32,
+    pub(super) temporal_first_frame: bool,
     /// AV2 § 7.12.2 TIP reference pair, derived from the reference order hints
     /// alone so the entropy pass never reads the projected temporal field.
     pub(super) tip_ref_pair: Option<(i8, i8)>,
@@ -464,6 +465,7 @@ impl<'payload> TileParser<'payload> {
                         context.params.allow_warpmv_mode,
                         context.params.frame_is_switch,
                         context.params.current_order_hint,
+                        context.params.temporal_first_frame,
                         tile_offset,
                     )
                 };
