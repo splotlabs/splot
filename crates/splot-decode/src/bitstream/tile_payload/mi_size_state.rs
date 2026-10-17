@@ -188,17 +188,27 @@ impl TileMiSizeState {
         let stride = self.mi_size_stride;
         let left_base = self.left_base(plane);
         let above_base = self.above_base(plane);
-        for row in region.r..region.row_end {
-            if plane == LUMA_PLANE
-                && let Some(plane_row) = self.window.plane_row(row)
-            {
-                let row_start = plane_row * stride;
-                crate::support::fill_mi_run(
-                    &mut self.storage[row_start + col_start..row_start + col_end],
-                    mi_size_value,
-                );
+        self.storage[left_base + region.r..left_base + region.row_end].fill(left_partition_context);
+        if plane == LUMA_PLANE {
+            let last = region.row_end - 1;
+            let first_plane_row = self.window.plane_row(region.r);
+            let contiguous = first_plane_row
+                .zip(self.window.plane_row(last))
+                .is_some_and(|(first, end)| end.checked_sub(first) == Some(last - region.r));
+            for row in region.r..region.row_end {
+                let plane_row = if contiguous {
+                    first_plane_row.map(|first| first + (row - region.r))
+                } else {
+                    self.window.plane_row(row)
+                };
+                if let Some(plane_row) = plane_row {
+                    let row_start = plane_row * stride;
+                    crate::support::fill_mi_run(
+                        &mut self.storage[row_start + col_start..row_start + col_end],
+                        mi_size_value,
+                    );
+                }
             }
-            self.storage[left_base + row] = left_partition_context;
         }
         crate::support::fill_mi_run(
             &mut self.storage[above_base + col_start..above_base + col_end],

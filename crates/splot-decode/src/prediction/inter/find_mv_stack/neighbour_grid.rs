@@ -478,8 +478,18 @@ impl NeighbourMvGrid {
             model_bits: 0,
             resolved: false,
         });
-        for rr in rows {
-            let Some(span) = self.row_span(rr, &cols) else {
+        let last = rows.end - 1;
+        let first_row = self.plane_row(rows.start);
+        let contiguous = first_row
+            .zip(self.plane_row(last))
+            .is_some_and(|(first, end)| end.checked_sub(first) == Some(last - rows.start));
+        for rr in rows.clone() {
+            let span = if contiguous {
+                first_row.and_then(|first| self.plane_span(first + (rr - rows.start), &cols))
+            } else {
+                self.row_span(rr, &cols)
+            };
+            let Some(span) = span else {
                 continue;
             };
             if let Some(cells) = self.planes.cells.get_mut(span) {
@@ -817,7 +827,12 @@ impl NeighbourMvGrid {
 
     /// Plane index range covering `cols` on grid row `rr`.
     fn row_span(&self, rr: usize, cols: &Range<usize>) -> Option<Range<usize>> {
-        let row_base = self.plane_row(rr)?.checked_mul(self.mi_cols)?;
+        self.plane_span(self.plane_row(rr)?, cols)
+    }
+
+    /// Plane index range covering `cols` on plane row `plane_row`.
+    fn plane_span(&self, plane_row: usize, cols: &Range<usize>) -> Option<Range<usize>> {
+        let row_base = plane_row.checked_mul(self.mi_cols)?;
         let start = row_base.checked_add(cols.start.checked_sub(self.origin_col)?)?;
         let end = row_base.checked_add(cols.end.checked_sub(self.origin_col)?)?;
         Some(start..end)
