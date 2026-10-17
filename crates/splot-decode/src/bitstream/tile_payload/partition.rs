@@ -340,6 +340,11 @@ fn resolve_rect_type(
     })
 }
 
+#[allow(
+    clippy::inline_always,
+    reason = "constant selectors fold into a direct row read"
+)]
+#[inline(always)]
 fn read_partition_bool(
     syntax: &'static str,
     selector: super::cdf::TileCdfSelector,
