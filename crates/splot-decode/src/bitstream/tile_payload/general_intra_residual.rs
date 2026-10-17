@@ -1762,6 +1762,11 @@ fn inter_tx_type_long_ctx(tx_size: usize, eob: usize) -> Result<usize, GeneralIn
     })
 }
 
+#[allow(
+    clippy::inline_always,
+    reason = "constant selectors fold into a direct row read"
+)]
+#[inline(always)]
 fn read_transform_symbol(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
