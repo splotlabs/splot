@@ -402,3 +402,110 @@ fn refinemv_centre_predictions_match_the_whole_prediction() {
     centre_predictions_match_the_whole_prediction::<u8>(BitDepth::Eight);
     centre_predictions_match_the_whole_prediction::<u16>(BitDepth::Ten);
 }
+
+/// The search-window kernel matches the general bilinear prediction for
+/// every phase pair, both sample widths and windows at the plane edges,
+/// and declines a window whose bounds or published rows differ.
+#[test]
+fn search_window_matches_the_general_bilinear_prediction() {
+    fn check<T: ReconSample>(samples: &[T], bit_depth: BitDepth, size: usize) {
+        let (width, height) = (40, 36);
+        let view = ReferencePlaneView::new(samples, width, height).expect("view");
+        let inner = size as i32 - 1;
+        let params = |x0: i32, y0: i32, h: i32, v: i32| SubpelPredictParams {
+            interp: InterpolationFilter::Bilinear,
+            w: size,
+            h: size,
+            start_x: (x0 << 10) + (h << 6),
+            start_y: (y0 << 10) + (v << 6),
+            step_x: 1 << 10,
+            step_y: 1 << 10,
+            first_x: x0 + 1,
+            first_y: y0 + 1,
+            last_x: x0 + inner,
+            last_y: y0 + inner,
+            bit_depth,
+        };
+        let edge = (width as i32 - 1 - inner, height as i32 - 1 - inner);
+        for (x0, y0) in [(-1, -1), (5, 3), edge] {
+            for (h, v) in (0..16).flat_map(|h| (0..16).map(move |v| (h, v))) {
+                let params = params(x0, y0, h, v);
+                let mut want = vec![0u16; size * size];
+                splot_recon::subpel_predict_block_strided_into(&view, &params, &mut want, size)
+                    .expect("general prediction");
+                let mut got = vec![0x5a5au16; size * size];
+                assert!(bilinear_search_window(&view, &params, &mut got));
+                assert_eq!(got, want, "{size}: {x0},{y0} phases {h},{v}");
+            }
+        }
+        let mut output = vec![0u16; size * size];
+        let mut wide = params(5, 3, 3, 5);
+        wide.last_x += 1;
+        assert!(!bilinear_search_window(&view, &wide, &mut output));
+        let outside = params(edge.0 + 1, edge.1, 3, 5);
+        assert!(!bilinear_search_window(&view, &outside, &mut output));
+        assert!(!bilinear_search_window(
+            &view,
+            &params(-2, 3, 3, 5),
+            &mut output
+        ));
+    }
+    let wide: Vec<u16> = (0..40 * 36)
+        .map(|index| ((index * 7919 + index / 40 * 104_729) % 1024) as u16)
+        .collect();
+    let narrow: Vec<u8> = wide.iter().map(|&sample| (sample >> 2) as u8).collect();
+    for size in [16, 24] {
+        check(&wide, BitDepth::Ten, size);
+        check(&narrow, BitDepth::Eight, size);
+    }
+}
+
+/// The unclamped 8x8 kernel matches the general bilinear prediction for every
+/// phase pair inside the plane and declines blocks whose taps would clamp.
+#[test]
+fn unclamped_8x8_matches_the_general_bilinear_prediction() {
+    let (width, height) = (40usize, 36usize);
+    let samples: Vec<u16> = (0..width * height)
+        .map(|index| ((index * 7919 + index / width * 104_729) % 1024) as u16)
+        .collect();
+    let view = ReferencePlaneView::new(&samples, width, height).expect("view");
+    let params = |x0: i32, y0: i32, h: i32, v: i32| SubpelPredictParams {
+        interp: InterpolationFilter::Bilinear,
+        w: 8,
+        h: 8,
+        start_x: (x0 << 10) + (h << 6),
+        start_y: (y0 << 10) + (v << 6),
+        step_x: 1 << 10,
+        step_y: 1 << 10,
+        first_x: x0 - 3,
+        first_y: y0 - 3,
+        last_x: x0 + 11,
+        last_y: y0 + 11,
+        bit_depth: BitDepth::Ten,
+    };
+    for (x0, y0) in [(0, 0), (9, 4), (31, 27)] {
+        for (h, v) in (0..16).flat_map(|h| (0..16).map(move |v| (h, v))) {
+            let params = params(x0, y0, h, v);
+            let mut want = [0u16; 64];
+            splot_recon::subpel_predict_block_strided_into(&view, &params, &mut want, 8)
+                .expect("general prediction");
+            let mut got = [0x5a5au16; 64];
+            assert!(bilinear_search_window(&view, &params, &mut got));
+            assert_eq!(got, want, "{x0},{y0} phases {h},{v}");
+        }
+    }
+    let mut output = [0u16; 64];
+    let mut tight = params(9, 4, 3, 5);
+    tight.last_x = 9 + 7;
+    assert!(!bilinear_search_window(&view, &tight, &mut output));
+    assert!(!bilinear_search_window(
+        &view,
+        &params(32, 4, 3, 5),
+        &mut output
+    ));
+    assert!(!bilinear_search_window(
+        &view,
+        &params(-1, 4, 3, 5),
+        &mut output
+    ));
+}

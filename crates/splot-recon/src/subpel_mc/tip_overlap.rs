@@ -3,67 +3,6 @@
 
 use super::*;
 
-#[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
-#[inline(always)]
-pub(super) fn overlap_bilinear_u16x8<T: ReconSample>(
-    top: &[T],
-    bottom: &[T],
-    start: usize,
-    right_start: Option<usize>,
-    h_phase: i32,
-    v_phase: i32,
-) -> Simd<u16, 8> {
-    let top_left_samples = reference_lanes::<8, T>(top, start);
-    match (h_phase, v_phase) {
-        (0, v_phase) => {
-            let v_phase = v_phase as u16;
-            (top_left_samples * Simd::splat(16 - v_phase)
-                + reference_lanes::<8, T>(bottom, start) * Simd::splat(v_phase)
-                + Simd::splat(8))
-                >> 4
-        }
-        (h_phase, 0) => {
-            let h_phase = h_phase as u16;
-            let top_right = right_start.map_or_else(
-                || top_left_samples.shift_elements_left::<1>(top_left_samples[7]),
-                |right_start| reference_lanes::<8, T>(top, right_start),
-            );
-            (top_left_samples * Simd::splat(16 - h_phase)
-                + top_right * Simd::splat(h_phase)
-                + Simd::splat(8))
-                >> 4
-        }
-        (h_phase, v_phase) => {
-            let h_phase = h_phase as u16;
-            let bottom_left_samples = reference_lanes::<8, T>(bottom, start);
-            let (top_right, bottom_right) = right_start.map_or_else(
-                || {
-                    (
-                        top_left_samples.shift_elements_left::<1>(top_left_samples[7]),
-                        bottom_left_samples.shift_elements_left::<1>(bottom_left_samples[7]),
-                    )
-                },
-                |right_start| {
-                    (
-                        reference_lanes::<8, T>(top, right_start),
-                        reference_lanes::<8, T>(bottom, right_start),
-                    )
-                },
-            );
-            let top =
-                top_left_samples * Simd::splat(16 - h_phase) + top_right * Simd::splat(h_phase);
-            let bottom = bottom_left_samples * Simd::splat(16 - h_phase)
-                + bottom_right * Simd::splat(h_phase);
-            let blended = tap_mac(
-                tap_mac(Simd::splat(0), top.cast(), 16 - v_phase),
-                bottom.cast(),
-                v_phase,
-            );
-            round2_simd(blended, 8).cast::<u16>()
-        }
-    }
-}
-
 /// Output columns 4..12 of the last block that
 /// [`subpel_predict_12x12_bilinear_overlap_into`] predicted, with the reference
 /// and geometry it read them at. Only that function writes it; the held

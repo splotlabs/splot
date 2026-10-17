@@ -194,58 +194,72 @@ fn invalid_mhccp_filter_preserves_prediction_scratch() {
 }
 
 #[test]
-fn cfl_420_filter1_simd_matches_scalar_at_block_and_frame_edges() {
+fn cfl_420_simd_matches_scalar_at_block_and_frame_edges() {
     let plane_width = 130;
     let plane_height = 9;
     let luma: Vec<u16> = (0..plane_width * plane_height)
         .map(|index| ((index * 17 + 11) & 1023) as u16)
         .collect();
     let average_q3 = 37;
-    for (x, y, width, height) in [(0, 0, 32, 4), (1, 1, 64, 3), (31, 2, 32, 3), (50, 4, 16, 2)] {
-        let mut actual = Vec::new();
-        assert!(fill_cfl_luma_ac_420_filter1_u16(
-            &luma,
-            0,
-            plane_width,
-            plane_width,
-            plane_height,
-            x,
-            y,
-            width,
-            height,
-            average_q3,
-            &mut actual,
-        ));
-        let mut expected = Vec::with_capacity(width * height);
-        for row in 0..height {
-            let luma_y = 2 * (y + row).min((plane_height - 1) >> 1);
-            let next_y = (luma_y + 1).min(plane_height - 1);
-            for col in 0..width {
-                let luma_x = 2 * (x + col).min((plane_width - 1) >> 1);
-                let center = luma_x.min(plane_width - 1);
-                let left = if col == 0 || luma_x.is_multiple_of(64) {
-                    center
-                } else {
-                    luma_x.saturating_sub(1).min(plane_width - 1)
-                };
-                let right = (luma_x + 1).min(plane_width - 1);
-                expected.push(
-                    i32::from(luma[luma_y * plane_width + left])
-                        + 2 * i32::from(luma[luma_y * plane_width + center])
-                        + i32::from(luma[luma_y * plane_width + right])
-                        + i32::from(luma[next_y * plane_width + left])
-                        + 2 * i32::from(luma[next_y * plane_width + center])
-                        + i32::from(luma[next_y * plane_width + right])
-                        - average_q3,
-                );
+    let fills: [(usize, FillLumaAc); 3] = [
+        (0, fill_cfl_luma_ac_420_u16::<0>),
+        (1, fill_cfl_luma_ac_420_u16::<1>),
+        (2, fill_cfl_luma_ac_420_u16::<2>),
+    ];
+    for (filter, fill) in fills {
+        for (x, y, width, height) in [(0, 0, 32, 4), (1, 1, 64, 3), (31, 2, 32, 3), (50, 4, 16, 2)]
+        {
+            let mut actual = Vec::new();
+            assert!(fill(
+                &luma,
+                0,
+                plane_width,
+                plane_width,
+                plane_height,
+                x,
+                y,
+                width,
+                height,
+                average_q3,
+                &mut actual,
+            ));
+            let mut expected = Vec::with_capacity(width * height);
+            for row in 0..height {
+                let luma_y = 2 * (y + row).min((plane_height - 1) >> 1);
+                let clamp_y = row == 0 || luma_y.is_multiple_of(64);
+                let rows = [
+                    if clamp_y { luma_y } else { luma_y - 1 },
+                    luma_y,
+                    (luma_y + 1).min(plane_height - 1),
+                ];
+                for col in 0..width {
+                    let luma_x = 2 * (x + col).min((plane_width - 1) >> 1);
+                    let center = luma_x.min(plane_width - 1);
+                    let left = if col == 0 || luma_x.is_multiple_of(64) {
+                        center
+                    } else {
+                        luma_x.saturating_sub(1).min(plane_width - 1)
+                    };
+                    let right = (luma_x + 1).min(plane_width - 1);
+                    let mut total = -average_q3;
+                    for (tap_row, weights) in rows.iter().zip(CFL_FILTERS_420[filter]) {
+                        for (tap_col, weight) in [left, center, right].iter().zip(weights) {
+                            total += weight * i32::from(luma[tap_row * plane_width + tap_col]);
+                        }
+                    }
+                    expected.push(total);
+                }
             }
+            assert_eq!(
+                actual, expected,
+                "filter={filter} x={x} y={y} width={width} height={height}"
+            );
         }
-        assert_eq!(
-            actual, expected,
-            "x={x} y={y} width={width} height={height}"
-        );
     }
 }
+
+type FillLumaAc =
+    fn(&[u16], usize, usize, usize, usize, usize, usize, usize, usize, i32, &mut Vec<i32>) -> bool;
 
 #[test]
 fn cfl_luma_sample_repeats_last_downsampled_row_at_frame_edge() {
@@ -531,7 +545,9 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
         0,
         16,
         NeighbourAvailability::new(false, true, 0, 1),
+        0,
         &mut Default::default(),
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -554,7 +570,9 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
         0,
         16,
         NeighbourAvailability::new(true, false, 1, 0),
+        0,
         &mut Default::default(),
+        false,
     )
     .unwrap();
     assert_eq!(
@@ -577,7 +595,9 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
         0,
         16,
         NeighbourAvailability::new(false, true, 0, 1),
+        0,
         &mut Default::default(),
+        false,
     )
     .unwrap();
     assert_eq!(threshold_not_extended.height, 2);
@@ -597,7 +617,9 @@ fn mhccp_reference_extensions_use_non_420_subsampling() {
             0,
             16,
             NeighbourAvailability::new(false, true, 0, 1),
+            0,
             &mut Default::default(),
+            false,
         )
         .unwrap();
 
@@ -628,6 +650,7 @@ fn mhccp_bottom_edge_keeps_full_prediction_with_clipped_reference_extent() {
         BitDepth::Eight,
         &mut prediction,
         &mut references,
+        false,
     )
     .unwrap();
 
@@ -650,7 +673,9 @@ fn mhccp_rejects_reference_origin_outside_frame() {
         0,
         32,
         NeighbourAvailability::new(false, true, 0, 0),
+        0,
         &mut references,
+        false,
     );
 
     assert!(matches!(
@@ -660,4 +685,34 @@ fn mhccp_rejects_reference_origin_outside_frame() {
         })
     ));
     assert_eq!(references, before);
+}
+
+#[test]
+fn mhccp_v_plane_reuses_u_plane_luma_references() {
+    let mut frame = workspace_10bit_420(64, 64);
+    for (plane, rect, value) in [
+        (PlaneId::Y, PlaneRect::new(0, 0, 64, 64).unwrap(), 300),
+        (PlaneId::Y, PlaneRect::new(10, 0, 7, 64).unwrap(), 700),
+        (PlaneId::Y, PlaneRect::new(0, 13, 64, 5).unwrap(), 90),
+        (PlaneId::U, PlaneRect::new(0, 0, 32, 32).unwrap(), 400),
+        (PlaneId::V, PlaneRect::new(0, 0, 32, 32).unwrap(), 600),
+        (PlaneId::V, PlaneRect::new(5, 0, 3, 32).unwrap(), 650),
+    ] {
+        frame.fill_rect(plane, rect, value).unwrap();
+    }
+    let neighbours = NeighbourAvailability::new(true, true, 1, 1);
+    for mh_dir in 0..3 {
+        let refs = |plane, scratch: &mut [Vec<u16>; 2], luma_ready| {
+            mhccp_references(
+                &frame, plane, 8, 8, 8, 8, 2, 16, neighbours, mh_dir, scratch, luma_ready,
+            )
+            .unwrap()
+        };
+        let mut scratch = Default::default();
+        let u = refs(PlaneId::U, &mut scratch, false);
+        scratch = [u.luma, u.chroma];
+        let reused = refs(PlaneId::V, &mut scratch, true);
+        let fresh = refs(PlaneId::V, &mut Default::default(), false);
+        assert_eq!((reused.luma, reused.chroma), (fresh.luma, fresh.chroma));
+    }
 }

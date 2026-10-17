@@ -4,7 +4,7 @@
 use super::*;
 use crate::prediction::inter::mv_scaling::PlaneScaling;
 use crate::prediction::inter::read_mv::{MV_LOW, MV_UPP};
-use std::simd::{Simd, cmp::SimdOrd, num::SimdUint};
+use std::simd::{Simd, cmp::SimdOrd, num::SimdUint, simd_swizzle};
 
 const REFINEMV_UNIT_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_SIZE: usize = 16;
@@ -57,9 +57,18 @@ pub(super) fn reference_area_bounds(
     sub_y: u32,
     scaling: &PlaneScaling,
 ) -> ReferenceAreaBounds {
-    let scaling = scaling.with_mv(plane_x, plane_y, candidate.row, candidate.col, sub_x, sub_y);
+    if !scaling.is_scaled() {
+        return unscaled_area_bounds(
+            [plane_x << 4, plane_y << 4],
+            [width, height],
+            candidate,
+            [sub_x, sub_y],
+            scaling,
+        );
+    }
     let x_padding = if width == 4 { (1, 2) } else { (3, 4) };
     let y_padding = if height == 4 { (1, 2) } else { (3, 4) };
+    let scaling = scaling.with_mv(plane_x, plane_y, candidate.row, candidate.col, sub_x, sub_y);
     let last_x = scaling.start_x + scaling.step_x * width.saturating_sub(1) as i32;
     let last_y = scaling.start_y + scaling.step_y * height.saturating_sub(1) as i32;
     ReferenceAreaBounds {
@@ -68,6 +77,184 @@ pub(super) fn reference_area_bounds(
         last_x: ((last_x >> 10) + x_padding.1).clamp(0, scaling.last_x),
         last_y: ((last_y >> 10) + y_padding.1).clamp(0, scaling.last_y),
     }
+}
+
+/// [`reference_area_bounds`] of an unscaled reference, from the area's
+/// 1/16-sample origin: the unscaled start is `((pos << 4) + mv_offset) << 6
+/// | 32`, so its integer sample is the 1/16 position shifted down by four.
+#[allow(clippy::inline_always, reason = "called per unit and grid cell")]
+#[inline(always)]
+pub(super) fn unscaled_area_bounds(
+    [x16, y16]: [i32; 2],
+    [width, height]: [usize; 2],
+    candidate: Mv,
+    [sub_x, sub_y]: [u32; 2],
+    scaling: &PlaneScaling,
+) -> ReferenceAreaBounds {
+    let padding = |size: usize| if size == 4 { (1, 2) } else { (3, 4) };
+    let (x_padding, y_padding) = (padding(width), padding(height));
+    let x = (x16 + ((2 * candidate.col) >> sub_x)) >> 4;
+    let y = (y16 + ((2 * candidate.row) >> sub_y)) >> 4;
+    let clamp = |value: i32, last: i32| value.max(0).min(last);
+    ReferenceAreaBounds {
+        first_x: clamp(x - x_padding.0, scaling.last_x),
+        first_y: clamp(y - y_padding.0, scaling.last_y),
+        last_x: clamp(x + width as i32 - 1 + x_padding.1, scaling.last_x),
+        last_y: clamp(y + height as i32 - 1 + y_padding.1, scaling.last_y),
+    }
+}
+
+/// A refine-MV bilinear prediction that a one-pass kernel covers, written
+/// at stride `params.w`, or `false` without writing for any other block: an
+/// 8x8 block with no clamped tap, or the `N`x`N` § 7.13.3.6 search window
+/// (`N` 16 or 24) whose clip bounds are its inner `N - 1` samples on each
+/// axis, where the clamped outer column and row read their inner neighbour
+/// twice. Every source row is filtered horizontally once and serves two
+/// output rows.
+pub(super) fn bilinear_search_window<T: ReconSample>(
+    view: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+) -> bool {
+    match params.w {
+        8 => unclamped_8x8(view, params, output),
+        16 => search_window::<T, 16, 2, 15>(view, params, output),
+        24 => search_window::<T, 24, 3, 23>(view, params, output),
+        _ => false,
+    }
+}
+
+/// An 8x8 bilinear block whose taps all lie inside its clip bounds and the
+/// published plane: one horizontal pass per source row, shared by two
+/// output rows.
+#[inline(never)]
+fn unclamped_8x8<T: ReconSample>(
+    view: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+) -> bool {
+    let (x0, y0) = (params.start_x >> 10, params.start_y >> 10);
+    if params.interp != InterpolationFilter::Bilinear
+        || (params.step_x, params.step_y, params.h) != (1 << 10, 1 << 10, 8)
+        || x0 < params.first_x.max(0)
+        || y0 < params.first_y.max(0)
+        || x0 + 8 > params.last_x
+        || y0 + 8 > params.last_y
+    {
+        return false;
+    }
+    let (Some(output), Some(spans)) = (
+        output.first_chunk_mut::<64>(),
+        view.readable_spans::<9>(
+            core::array::from_fn(|row| y0 as usize + row),
+            x0 as usize,
+            9,
+        ),
+    ) else {
+        return false;
+    };
+    let lanes = |samples: &[T]| -> Simd<u16, 8> {
+        match (T::u8_slice(samples), T::u16_slice(samples)) {
+            (Some(samples), _) => Simd::<u8, 8>::from_slice(samples).cast(),
+            (_, Some(samples)) => Simd::from_slice(samples),
+            _ => Simd::from_array(core::array::from_fn(|lane| samples[lane].to_u16())),
+        }
+    };
+    let h = ((params.start_x >> 6) & 15) as u16;
+    let v = ((params.start_y >> 6) & 15) as u16;
+    let horizontal =
+        |span: &[T]| lanes(span) * Simd::splat(16 - h) + lanes(&span[1..]) * Simd::splat(h);
+    let max_sample = Simd::splat(params.bit_depth.max_sample());
+    let weight = |weight: u16| Simd::<u16, 8>::splat(weight).cast::<u32>();
+    let mut top = horizontal(spans[0]);
+    for (row, span) in spans.iter().skip(1).enumerate() {
+        let bottom = horizontal(span);
+        let sum = top.cast::<u32>() * weight(16 - v) + bottom.cast::<u32>() * weight(v);
+        ((sum + Simd::splat(128)) >> 8)
+            .cast::<u16>()
+            .simd_min(max_sample)
+            .copy_to_slice(&mut output[row * 8..]);
+        top = bottom;
+    }
+    true
+}
+
+/// [`bilinear_search_window`] of an `N`-sample window: `G = N / 8` lane
+/// groups per row over the `M = N - 1` inner samples.
+#[inline(never)]
+fn search_window<T: ReconSample, const N: usize, const G: usize, const M: usize>(
+    view: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+) -> bool {
+    let (x0, y0) = (params.start_x >> 10, params.start_y >> 10);
+    let last = M as i32;
+    if params.interp != InterpolationFilter::Bilinear
+        || (params.step_x, params.step_y, params.w, params.h) != (1 << 10, 1 << 10, N, N)
+        || [params.first_x, params.last_x, params.first_y, params.last_y]
+            != [x0 + 1, x0 + last, y0 + 1, y0 + last]
+        || x0 + 1 < 0
+        || y0 + 1 < 0
+    {
+        return false;
+    }
+    let (Some(output), Some(spans)) = (
+        output.get_mut(..N * N),
+        view.readable_spans::<M>(
+            core::array::from_fn(|row| (y0 + 1) as usize + row),
+            (x0 + 1) as usize,
+            M,
+        ),
+    ) else {
+        return false;
+    };
+    let lanes = |samples: &[T]| -> Simd<u16, 8> {
+        match (T::u8_slice(samples), T::u16_slice(samples)) {
+            (Some(samples), _) => Simd::<u8, 8>::from_slice(samples).cast(),
+            (_, Some(samples)) => Simd::from_slice(samples),
+            _ => Simd::from_array(core::array::from_fn(|lane| samples[lane].to_u16())),
+        }
+    };
+    let h = ((params.start_x >> 6) & 15) as u16;
+    let v = ((params.start_y >> 6) & 15) as u16;
+    let horizontal = |span: &[T]| -> [Simd<u16, 8>; G] {
+        let (h0, h1) = (Simd::splat(16 - h), Simd::splat(h));
+        let mut groups = [Simd::splat(0); G];
+        for (group, filtered) in groups.iter_mut().enumerate() {
+            let (left, right) = if group == 0 {
+                let samples = lanes(&span[..8]);
+                (simd_swizzle!(samples, [0, 0, 1, 2, 3, 4, 5, 6]), samples)
+            } else if group == G - 1 {
+                let samples = lanes(&span[8 * group - 1..]);
+                (samples, simd_swizzle!(samples, [1, 2, 3, 4, 5, 6, 7, 7]))
+            } else {
+                (lanes(&span[8 * group - 1..]), lanes(&span[8 * group..]))
+            };
+            *filtered = left * h0 + right * h1;
+        }
+        groups
+    };
+    let max_sample = Simd::splat(params.bit_depth.max_sample());
+    let mut write = |row: usize, top: [Simd<u16, 8>; G], bottom: [Simd<u16, 8>; G]| {
+        for group in 0..G {
+            let weight = |weight: u16| Simd::<u16, 8>::splat(weight).cast::<u32>();
+            let sum =
+                top[group].cast::<u32>() * weight(16 - v) + bottom[group].cast::<u32>() * weight(v);
+            ((sum + Simd::splat(128)) >> 8)
+                .cast::<u16>()
+                .simd_min(max_sample)
+                .copy_to_slice(&mut output[row * N + 8 * group..]);
+        }
+    };
+    let mut top = horizontal(spans[0]);
+    write(0, top, top);
+    for (row, span) in spans.iter().enumerate().skip(1) {
+        let bottom = horizontal(span);
+        write(row, top, bottom);
+        top = bottom;
+    }
+    write(N - 1, top, top);
+    true
 }
 
 pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
@@ -550,7 +737,7 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
         )?;
     }
     let bit_depth = luma[0].bit_depth();
-    let center = tip_refinemv_sad(pred0, pred1, 0, 0, bit_depth);
+    let center = tip_refinemv_sad(pred0, pred1, 0, 0, bit_depth, u32::MAX);
     let center_sad = center - (center >> 3);
     let (dx, dy) = if center_sad < 12 * 12 * 2 {
         (0, 0)
@@ -616,7 +803,7 @@ fn search_tip_refinemv_offset(
 ) -> (i32, i32) {
     let mut best = (0, 0);
     for &(dy, dx) in &SEARCH_NEIGHBORS {
-        let sad = tip_refinemv_sad(pred0, pred1, dx, dy, bit_depth);
+        let sad = tip_refinemv_sad(pred0, pred1, dx, dy, bit_depth, best_sad);
         if sad < best_sad {
             best_sad = sad;
             best = (dx, dy);
@@ -625,28 +812,44 @@ fn search_tip_refinemv_offset(
     best
 }
 
+/// Returns `limit` early once a partial sum reaches it: later rows only add, so
+/// such a sum already loses the strict comparison.
+#[allow(clippy::inline_always, reason = "25 calls per refined TIP unit")]
+#[inline(always)]
 fn tip_refinemv_sad(
     pred0: &[u16; TIP_PREDICTION_AREA],
     pred1: &[u16; TIP_PREDICTION_AREA],
     dx: i32,
     dy: i32,
     bit_depth: splot_recon::BitDepth,
+    limit: u32,
 ) -> u32 {
-    let start0 = ((2 + dy) * TIP_PREDICTION_SIZE as i32 + 2 + dx) as usize;
-    let start1 = ((2 - dy) * TIP_PREDICTION_SIZE as i32 + 2 - dx) as usize;
-    let mut sad8 = Simd::<u32, 8>::splat(0);
-    let mut sad4 = Simd::<u32, 4>::splat(0);
+    const SPAN: usize = 10 * TIP_PREDICTION_SIZE + 12;
+    let start = |dx: i32, dy: i32| ((2 + dy) * TIP_PREDICTION_SIZE as i32 + 2 + dx) as usize;
+    let (Some(left), Some(right)) = (
+        pred0
+            .get(start(dx, dy)..)
+            .and_then(<[u16]>::first_chunk::<SPAN>),
+        pred1
+            .get(start(-dx, -dy)..)
+            .and_then(<[u16]>::first_chunk::<SPAN>),
+    ) else {
+        return u32::MAX;
+    };
+    let mut sums = [Simd::<u32, 4>::splat(0); 3];
+    let shift = bit_depth.bits().saturating_sub(8);
     for row in (0..12).step_by(2) {
-        let left = &pred0[start0 + row * TIP_PREDICTION_SIZE..];
-        let right = &pred1[start1 + row * TIP_PREDICTION_SIZE..];
-        let left8 = Simd::<u16, 8>::from_slice(left);
-        let right8 = Simd::<u16, 8>::from_slice(right);
-        sad8 += (left8.simd_max(right8) - left8.simd_min(right8)).cast::<u32>();
-        let left4 = Simd::<u16, 4>::from_slice(&left[8..]);
-        let right4 = Simd::<u16, 4>::from_slice(&right[8..]);
-        sad4 += (left4.simd_max(right4) - left4.simd_min(right4)).cast::<u32>();
+        for (column, sum) in sums.iter_mut().enumerate() {
+            let at = row * TIP_PREDICTION_SIZE + 4 * column;
+            *sum += Simd::<u16, 4>::from_slice(&left[at..])
+                .abs_diff(Simd::from_slice(&right[at..]))
+                .cast::<u32>();
+        }
+        if row == 4 && (sums[0] + sums[1] + sums[2]).reduce_sum() >> shift >= limit {
+            return limit;
+        }
     }
-    (sad8.reduce_sum() + sad4.reduce_sum()) >> bit_depth.bits().saturating_sub(8)
+    (sums[0] + sums[1] + sums[2]).reduce_sum() >> shift
 }
 
 fn search_range_allowed(candidates: [Mv; 2]) -> bool {
@@ -730,9 +933,9 @@ fn refinemv_center_sad(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn refinemv_sad(
-    pred0: &[u16],
-    pred1: &[u16],
+fn refinemv_sad<'a>(
+    pred0: &'a [u16],
+    pred1: &'a [u16],
     stride: usize,
     width: usize,
     height: usize,
@@ -752,46 +955,54 @@ fn refinemv_sad(
     let start1_y = usize::try_from(2 - dy).map_err(|_| ReconError::ArithmeticOverflow {
         context: "refine-MV SAD bottom offset",
     })?;
-    let mut sad8 = Simd::<u32, 8>::splat(0);
-    let mut sad4 = Simd::<u32, 4>::splat(0);
-    let mut sad_tail = 0u32;
     let downshift = u32::from(bit_depth.bits().saturating_sub(8));
-    for row in (0..height).step_by(2) {
-        let row_range = |start_y: usize, start_x: usize| {
-            (start_y + row)
-                .checked_mul(stride)
-                .and_then(|row| row.checked_add(start_x))
-                .and_then(|start| start.checked_add(width).map(|end| start..end))
+    let span = |pred: &'a [u16], start_y: usize, start_x: usize| {
+        let last_row = height.saturating_sub(1) & !1;
+        let start = start_y.checked_mul(stride)?.checked_add(start_x)?;
+        let end = last_row.checked_mul(stride)?.checked_add(width)?;
+        pred.get(start..start.checked_add(end)?)
+    };
+    let left = span(pred0, start0_y, start0_x).ok_or(ReconError::ArithmeticOverflow {
+        context: "refine-MV SAD first lookup",
+    })?;
+    let right = span(pred1, start1_y, start1_x).ok_or(ReconError::ArithmeticOverflow {
+        context: "refine-MV SAD second lookup",
+    })?;
+    let rows = left.chunks(2 * stride).zip(right.chunks(2 * stride));
+    let sad = match width {
+        12 => sad_rows::<12>(rows),
+        20 => sad_rows::<20>(rows),
+        _ => rows
+            .map(
+                |(left, right)| match (left.get(..width), right.get(..width)) {
+                    (Some(left), Some(right)) => left
+                        .iter()
+                        .zip(right)
+                        .map(|(&left, &right)| u32::from(left.abs_diff(right)))
+                        .sum::<u32>(),
+                    _ => u32::MAX,
+                },
+            )
+            .fold(0, u32::saturating_add),
+    };
+    Ok(sad >> downshift)
+}
+
+/// `Σ |left - right|` over the first `W` samples of each row pair, in
+/// four-lane widening steps that lower to one `uabal` each.
+fn sad_rows<'a, const W: usize>(rows: impl Iterator<Item = (&'a [u16], &'a [u16])>) -> u32 {
+    let mut sums = Simd::<u32, 4>::splat(0);
+    for (left, right) in rows {
+        let (Some(left), Some(right)) = (left.first_chunk::<W>(), right.first_chunk::<W>()) else {
+            return u32::MAX;
         };
-        let left = row_range(start0_y, start0_x)
-            .and_then(|range| pred0.get(range))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "refine-MV SAD first lookup",
-            })?;
-        let right = row_range(start1_y, start1_x)
-            .and_then(|range| pred1.get(range))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "refine-MV SAD second lookup",
-            })?;
-        let mut index = 0;
-        while index + 8 <= width {
-            let left = Simd::<u16, 8>::from_slice(&left[index..]);
-            let right = Simd::<u16, 8>::from_slice(&right[index..]);
-            sad8 += (left.simd_max(right) - left.simd_min(right)).cast::<u32>();
-            index += 8;
-        }
-        if index + 4 <= width {
-            let left = Simd::<u16, 4>::from_slice(&left[index..]);
-            let right = Simd::<u16, 4>::from_slice(&right[index..]);
-            sad4 += (left.simd_max(right) - left.simd_min(right)).cast::<u32>();
-            index += 4;
-        }
-        for (&left, &right) in left[index..].iter().zip(&right[index..]) {
-            sad_tail += u32::from(left.abs_diff(right));
+        for (left, right) in left.as_chunks::<4>().0.iter().zip(right.as_chunks::<4>().0) {
+            sums += Simd::from_array(*left)
+                .abs_diff(Simd::from_array(*right))
+                .cast::<u32>();
         }
     }
-    let sad = (sad8.reduce_sum() + sad4.reduce_sum() + sad_tail) >> downshift;
-    Ok(sad)
+    sums.reduce_sum()
 }
 
 #[cfg(test)]

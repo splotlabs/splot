@@ -28,14 +28,18 @@ pub(crate) fn samples_exceed<T: ReconSample>(samples: &[T], max_sample: u16) -> 
 /// instead of a compare, a cross-lane reduction and a branch. The comparison is
 /// against the same peak either way, so the answer is unchanged; only the error
 /// path loses an early exit it does not need, because it already rescans sample
-/// by sample to name the offender.
+/// by sample to name the offender. A ragged tail rereads the last full lane
+/// group instead of walking sample by sample.
 pub(crate) fn u16_samples_exceed(samples: &[u16], max_sample: u16) -> bool {
     const LANES: usize = 16;
     let (chunks, remainder) = samples.as_chunks::<LANES>();
+    let Some(&tail) = samples.last_chunk::<LANES>() else {
+        return remainder.iter().any(|&sample| sample > max_sample);
+    };
     let peak = chunks
         .iter()
-        .fold(Simd::<u16, LANES>::splat(0), |peak, chunk| {
+        .fold(Simd::<u16, LANES>::from_array(tail), |peak, chunk| {
             peak.simd_max(Simd::from_array(*chunk))
         });
-    peak.reduce_max() > max_sample || remainder.iter().any(|&sample| sample > max_sample)
+    peak.reduce_max() > max_sample
 }
