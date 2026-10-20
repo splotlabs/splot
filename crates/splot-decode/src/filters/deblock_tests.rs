@@ -10,7 +10,7 @@ use crate::test_support::{
     copy_rows_to_workspace, frontier_rows, yuv420_workspace, yuv420_workspace_with,
 };
 
-static EMPTY_CHROMA_RECORDS: ChromaDeblockRecords = ChromaDeblockRecords::new();
+pub(super) static EMPTY_CHROMA_RECORDS: ChromaDeblockRecords = ChromaDeblockRecords::new();
 
 fn build_mi_grid(
     blocks: &[DeblockBlock],
@@ -20,7 +20,7 @@ fn build_mi_grid(
 ) -> Result<MiGridStorage, DeblockError> {
     let mut order = RowOrder::default();
     order.sort(blocks.iter(), mi_rows)?;
-    let mut grid = MiGridStorage::new(mi_cols, storage);
+    let mut grid = MiGridStorage::new(mi_cols, (1, 1), storage);
     grid.fill(blocks, &order, mi_rows, &(0..mi_rows))?;
     Ok(grid)
 }
@@ -43,7 +43,7 @@ fn overlay_mi_grid(
     Ok(grid)
 }
 
-const fn prediction(r: usize, c: usize, tx: usize) -> DeblockPredictionUnit {
+pub(super) const fn prediction(r: usize, c: usize, tx: usize) -> DeblockPredictionUnit {
     DeblockPredictionUnit::new(r, c, tx)
 }
 
@@ -890,12 +890,13 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
         window: Window::default(),
         fully_covered: false,
         cells,
-        candidates: vec![0; 4 * 4 * grid::flag_words(16)],
+        chroma_subsampling: (1, 1),
+        candidates: vec![0; 4 * grid::FLAG_PLANES * grid::flag_words(16)],
     }));
     MiGrid::new(storage, None, blocks, &EMPTY_CHROMA_RECORDS)
 }
 
-fn assert_candidate_mask_superset(
+pub(super) fn assert_candidate_mask_superset(
     grid: &MiGrid,
     mi_rows: usize,
     mi_cols: usize,
@@ -1062,13 +1063,14 @@ fn sliding_grid_windows_match_the_whole_frame_grid() {
         .sort(chroma.blocks.iter().map(|record| &record.block), mi_rows)
         .unwrap();
     let mut storage = DeblockGridStorage::default();
-    let mut base = MiGridStorage::new(mi_cols, &mut storage);
+    let mut base = MiGridStorage::new(mi_cols, (1, 1), &mut storage);
     let mut overlays =
         [0, 1].map(|plane| ChromaMiGridStorage::new(mi_cols, (1, 1), &mut storage.chroma[plane]));
     let words = grid::flag_words(mi_cols);
     let covered = |flags: &[u64], index: usize| {
         let (at, col) = (index / mi_cols, index % mi_cols);
-        flags[(at * 4 + grid::COVERED_PLANE) * words + col / 64] >> (col % 64) & 1 != 0
+        flags[(at * grid::FLAG_PLANES + grid::COVERED_PLANE) * words + col / 64] >> (col % 64) & 1
+            != 0
     };
     for window in [0..4, 2..6, 4..8, 6..9, 2..6, 4..9] {
         base.fill(&luma, &order[0], mi_rows, &window).unwrap();

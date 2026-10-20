@@ -377,8 +377,16 @@ fn bilinear_fixed_window_clips_physical_plane_borders() {
         .collect::<Vec<u16>>();
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
 
-    for (h_phase, v_phase) in [(8, 0), (0, 8), (8, 8)] {
-        for (x0, y0) in [(-2, 4), (18, 4), (4, -2), (4, 18)] {
+    for (h_phase, v_phase) in [(8, 0), (0, 8), (8, 8), (3, 13), (15, 1)] {
+        for (x0, y0) in [
+            (-2, 4),
+            (18, 4),
+            (4, -2),
+            (4, 18),
+            (-1, -1),
+            (4, 4),
+            (16, 16),
+        ] {
             let params = SubpelPredictParams {
                 interp: InterpolationFilter::Bilinear,
                 w: 16,

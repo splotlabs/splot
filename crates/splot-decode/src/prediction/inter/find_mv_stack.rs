@@ -2085,6 +2085,8 @@ pub(crate) fn reduce_warp_model(params: &mut [i32; 6]) {
     }
 }
 
+/// Uses max then min, not `clamp`: `clamp` carries a min > max panic path
+/// that keeps this out of line, and these bounds are always ordered.
 fn clamp_mv(block: &MvBlockContext, mv: Mv) -> Mv {
     let bw4 = block.bw4 as i32;
     let bh4 = block.bh4 as i32;
@@ -2099,8 +2101,8 @@ fn clamp_mv(block: &MvBlockContext, mv: Mv) -> Mv {
     let col_high = (mi_cols - mi_col) * MI_SIZE * 8 + MV_BORDER;
 
     Mv {
-        row: mv.row.clamp(row_low, row_high),
-        col: mv.col.clamp(col_low, col_high),
+        row: mv.row.max(row_low).min(row_high),
+        col: mv.col.max(col_low).min(col_high),
     }
 }
 

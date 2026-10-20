@@ -20,6 +20,11 @@ pub(crate) enum PartitionEntrySymbolReadError {
 }
 
 impl TileCdfSubset {
+    #[allow(
+        clippy::inline_always,
+        reason = "constant selectors fold into a direct row read"
+    )]
+    #[inline(always)]
     pub(crate) fn read_partition_entry_symbol(
         &mut self,
         selector: TileCdfSelector,

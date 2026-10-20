@@ -162,6 +162,11 @@ impl MvCdfRows {
         }
     }
 
+    #[allow(
+        clippy::inline_always,
+        reason = "constant selectors fold into a direct row read"
+    )]
+    #[inline(always)]
     pub(crate) fn row_mut(&mut self, selector: MvCdfSelector) -> Result<&mut [u16], TileCdfError> {
         match selector {
             MvCdfSelector::JointShellSet { mv_ctx } => checked_cdf_row_mut(

@@ -27,7 +27,7 @@ use crate::format::{BitDepth, ReconSample};
 use crate::intra_dc_math::resolve_divisor_32;
 use crate::math::round2;
 use crate::math::{round2_i32, round2_signed, round2_signed_i32};
-use crate::subpel_mc::ReferencePlaneView;
+use crate::subpel_mc::{ReferencePlaneView, reference_lanes};
 
 /// AV2 § 7.13.3.19 block-warp predictor side length in samples.
 pub const WARPED_BLOCK_SIZE: usize = 8;
@@ -118,6 +118,24 @@ impl PreparedWarpPrediction {
             params: *params,
             shear: setup_shear(params.warp_params)?,
         })
+    }
+
+    /// Returns `None` when the § 7.13.3.21 setup-shear process rejects the
+    /// model (the [`warp_shear_is_valid`] test, which selects § 7.13.3.15
+    /// `skipPred`), else the setup of [`Self::new`], deriving the shear once.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for invalid bounds, scaling, or subsampling of a
+    /// model whose shear is valid.
+    pub fn with_valid_shear(params: &WarpPredictBlockParams) -> Result<Option<Self>> {
+        let Ok(shear) = setup_shear(params.warp_params) else {
+            return Ok(None);
+        };
+        validate_params(params)?;
+        Ok(Some(Self {
+            params: *params,
+            shear,
+        }))
     }
 
     /// Writes one 8x8 section using the prepared affine-warp setup.
@@ -465,20 +483,51 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
     };
     let taps_x = phase(sx4)?;
     let taps_y = phase(sy4)?;
-    let cols: [usize; 9] = core::array::from_fn(|col| {
-        ((ix4 - 4 + col as i32).clamp(params.first_x, params.last_x) as usize)
-            .min(reference.width() - 1)
-    });
     let mut intermediate = [Simd::<i32, 4>::splat(0); 9];
-    for (k, intermediate) in intermediate.iter_mut().enumerate() {
-        let row = (iy4 + k as i32 - 4).clamp(params.first_y, params.last_y) as usize;
-        let row = reference.row(row);
-        let window: [i32; 9] = core::array::from_fn(|col| i32::from(row[cols[col]].to_u16()));
-        let mut sum = Simd::splat(0);
-        for (m, &tap) in taps_x.iter().enumerate() {
-            sum += Simd::splat(tap) * Simd::from_slice(&window[m..]);
+    let (x, y) = (i64::from(ix4), i64::from(iy4));
+    let interior = x - 4 >= i64::from(params.first_x.max(0))
+        && x + 4 <= i64::from(params.last_x)
+        && x + 5 <= reference.width() as i64
+        && y - 4 >= i64::from(params.first_y.max(0))
+        && y + 4 <= i64::from(params.last_y);
+    if interior {
+        let col = (ix4 - 4) as usize;
+        for (k, intermediate) in intermediate.iter_mut().enumerate() {
+            let row = reference.row((iy4 + k as i32 - 4) as usize);
+            let lo = warp_source_lanes::<T, 8>(row, col);
+            let hi = warp_source_lanes::<T, 8>(row, col + 1);
+            let windows = [
+                simd_swizzle!(lo, [0, 1, 2, 3]),
+                simd_swizzle!(lo, [1, 2, 3, 4]),
+                simd_swizzle!(lo, [2, 3, 4, 5]),
+                simd_swizzle!(lo, [3, 4, 5, 6]),
+                simd_swizzle!(lo, [4, 5, 6, 7]),
+                simd_swizzle!(lo, hi, [5, 6, 7, 15]),
+            ];
+            let mut sum = Simd::splat(0);
+            for (&tap, window) in taps_x.iter().zip(windows) {
+                sum += Simd::splat(tap) * window.cast::<i32>();
+            }
+            *intermediate = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
         }
-        *intermediate = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
+    } else {
+        let mut cols = [0usize; 9];
+        for (offset, col) in cols.iter_mut().enumerate() {
+            let x = (ix4 - 4 + offset as i32).clamp(params.first_x, params.last_x);
+            *col = (x as usize).min(reference.width() - 1);
+        }
+        for (k, intermediate) in intermediate.iter_mut().enumerate() {
+            let row = (iy4 + k as i32 - 4).clamp(params.first_y, params.last_y) as usize;
+            let (row, mut window) = (reference.row(row), [0i32; 9]);
+            for (sample, &col) in window.iter_mut().zip(&cols) {
+                *sample = i32::from(row[col].to_u16());
+            }
+            let mut sum = Simd::splat(0);
+            for (m, &tap) in taps_x.iter().enumerate() {
+                sum += Simd::splat(tap) * Simd::from_slice(&window[m..]);
+            }
+            *intermediate = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
+        }
     }
     let mut output = [0i32; 16];
     for (k, output) in output.as_chunks_mut::<4>().0.iter_mut().enumerate() {
@@ -1301,15 +1350,7 @@ fn warp_source_lanes<T: ReconSample, const LANES: usize>(
     source: &[T],
     start: usize,
 ) -> Simd<i16, LANES> {
-    if let Some(source) = T::u16_slice(source) {
-        return Simd::<u16, LANES>::from_slice(&source[start..]).cast();
-    }
-    if let Some(source) = T::u8_slice(source) {
-        return Simd::<u8, LANES>::from_slice(&source[start..]).cast();
-    }
-    Simd::from_array(core::array::from_fn(|lane| {
-        source[start + lane].to_u16().cast_signed()
-    }))
+    reference_lanes::<LANES, T>(source, start).cast()
 }
 
 /// Builds the eight overlapping tap windows from two loads instead of eight.
@@ -1993,6 +2034,16 @@ mod tests {
             warp_predict_block(&view, &params, false),
             Err(ReconError::WarpInvalidShear { .. })
         ));
+        let prepare = |params: &WarpPredictBlockParams| {
+            PreparedWarpPrediction::with_valid_shear(params).map(|prepared| prepared.is_some())
+        };
+        assert!(matches!(prepare(&params), Ok(false)));
+        params.subsampling_x = 2;
+        assert!(matches!(prepare(&params), Ok(false)));
+        params.warp_params = IDENTITY_WARP_PARAMS;
+        assert!(prepare(&params).is_err());
+        params.subsampling_x = 0;
+        assert!(matches!(prepare(&params), Ok(true)));
     }
 
     #[test]
@@ -2053,12 +2104,17 @@ mod tests {
             );
             i32::from(samples[row as usize * ref_w + col as usize])
         };
-        let cases = [
+        let mut cases = vec![
             (0, 0, -150_000, -90_000, 0usize, 0usize),
             (16, 12, 170_000, 140_000, 1, 1),
             (8, 4, 12_345, 54_321, 0, 1),
             (4, 8, -7_777, 33_000, 1, 0),
         ];
+        for block in 0..20i32 {
+            let (tx, ty) = (block * 9_973 - 90_000, 70_000 - block * 7_919);
+            let (i4, j4) = (block as usize % 2, block as usize / 2 % 2);
+            cases.push((block % 5 * 4, block / 5 * 4, tx, ty, i4, j4));
+        }
         for (block_x, block_y, tx, ty, i4, j4) in cases {
             let mut params = default_params(block_x, block_y, ref_w as i32, ref_h as i32);
             params.bit_depth = BitDepth::Ten;

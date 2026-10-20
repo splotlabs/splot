@@ -273,68 +273,54 @@ pub fn derive_optflow_mv_delta_8x8_strided_into(
 
     let distances = reduce_distances(distances);
     let downshift = u32::from(bit_depth.bits().saturating_sub(8));
-    let (mut weighted, mut difference) = ([0i16; 64], [0i16; 64]);
-    prepare_optflow_strided_rows(
-        pred0,
-        pred1,
-        stride,
-        bit_depth.max_sample(),
-        distances,
-        downshift,
-        &mut weighted,
-        &mut difference,
-    )?;
-    solve_sums(unit_8x8_sums(&weighted, &difference), distances)
+    let max_sample = bit_depth.max_sample();
+    let mut peak = Simd::<u16, 8>::splat(0);
+    let mut weighted = [Simd::splat(0); 8];
+    let mut difference = [Simd::splat(0); 8];
+    for row in 0..8 {
+        let source = row * stride;
+        let left = Simd::<u16, 8>::from_slice(&pred0[source..]);
+        let right = Simd::<u16, 8>::from_slice(&pred1[source..]);
+        peak = peak.simd_max(left).simd_max(right);
+        (weighted[row], difference[row]) =
+            weighted_difference_row(left, right, distances, downshift);
+    }
+    if peak.reduce_max() > max_sample {
+        return Err(strided_sample_out_of_range(
+            pred0, pred1, stride, max_sample,
+        ));
+    }
+    solve_sums(rows_8x8_sums(&weighted, &difference), distances)
 }
 
+/// The error for the first strided 8x8 predictor sample above `max_sample`,
+/// in logical sample order.
+#[cold]
 #[inline(never)]
-#[allow(clippy::too_many_arguments)]
-fn prepare_optflow_strided_rows(
+fn strided_sample_out_of_range(
     pred0: &[u16],
     pred1: &[u16],
     stride: usize,
     max_sample: u16,
-    distances: [i32; 2],
-    downshift: u32,
-    weighted: &mut [i16],
-    difference: &mut [i16],
-) -> Result<()> {
-    let (weighted_rows, weighted_remainder) = weighted.as_chunks_mut::<8>();
-    let (difference_rows, difference_remainder) = difference.as_chunks_mut::<8>();
-    debug_assert!(weighted_remainder.is_empty());
-    debug_assert!(difference_remainder.is_empty());
-    let mut peak = Simd::<u16, 8>::splat(0);
-    for (row, (weighted, difference)) in weighted_rows
-        .iter_mut()
-        .zip(difference_rows.iter_mut())
-        .enumerate()
-    {
-        let source = row * stride;
-        let left_samples = Simd::<u16, 8>::from_slice(&pred0[source..]);
-        let right_samples = Simd::<u16, 8>::from_slice(&pred1[source..]);
-        peak = peak.simd_max(left_samples).simd_max(right_samples);
-        let rows = weighted_difference_row(left_samples, right_samples, distances, downshift);
-        (*weighted, *difference) = (rows.0.to_array(), rows.1.to_array());
-    }
-    if peak.reduce_max() > max_sample {
-        for row in 0..weighted_rows.len() {
-            let source = row * stride;
-            let sample_index = row * 8;
-            for lane in 0..8 {
-                for (predictor, value) in [(0, pred0[source + lane]), (1, pred1[source + lane])] {
-                    if value > max_sample {
-                        return Err(ReconError::OptflowPredictorSampleOutOfRange {
-                            predictor,
-                            sample_index: sample_index + lane,
-                            value,
-                            max: max_sample,
-                        });
-                    }
+) -> ReconError {
+    for row in 0..8 {
+        for lane in 0..8 {
+            let source = row * stride + lane;
+            for (predictor, value) in [(0, pred0[source]), (1, pred1[source])] {
+                if value > max_sample {
+                    return ReconError::OptflowPredictorSampleOutOfRange {
+                        predictor,
+                        sample_index: row * 8 + lane,
+                        value,
+                        max: max_sample,
+                    };
                 }
             }
         }
     }
-    Ok(())
+    ReconError::ArithmeticOverflow {
+        context: "strided optical-flow predictor range",
+    }
 }
 
 /// The § 7.13.3.9 `weighted` and `difference` rows of eight predictor sample
@@ -666,16 +652,79 @@ fn solve_unit_sums<const N: usize>(
 /// [`solve_unit_sums`] of an 8x8 predictor pair, which is one gradient unit,
 /// with both gradients computed in registers instead of stored planes.
 ///
-/// `weighted` comes from validated samples, so it stays within about
-/// `±1024` and every gradient fits the `i16` the planes would hold.
+/// `weighted` comes from validated samples: `Round2Signed(d0 * s0 - d1 * s1,
+/// BitDepth - 8)` with `|d| <= 2` keeps one row's values within a span of 768
+/// whatever the signs of the distances, so both `42 * Δ` and `5 * Δ` fit `i16`
+/// lanes and only their difference needs the separate sign of
+/// [`gradient_i16`].
 fn unit_8x8_sums(weighted: &[i16; 64], difference: &[i16; 64]) -> [i32; 5] {
-    let (rows, _) = weighted.as_chunks::<8>();
+    let rows = |plane: &[i16; 64]| -> [Simd<i16, 8>; 8] {
+        core::array::from_fn(|row| Simd::from_slice(&plane[row * 8..]))
+    };
+    rows_8x8_sums(&rows(weighted), &rows(difference))
+}
+
+/// [`unit_8x8_sums`] of rows held in lanes, one row per call so that every
+/// row's clamped neighbours are constants.
+#[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
+#[inline(always)]
+fn rows_8x8_sums(weighted: &[Simd<i16, 8>; 8], difference: &[Simd<i16, 8>; 8]) -> [i32; 5] {
     let mut sums = [Simd::<i32, 8>::splat(0); 5];
-    for (row, w) in difference.as_chunks::<8>().0.iter().enumerate() {
-        let (u, v) = gradient_row(rows, row);
-        accumulate_unit_sums(&mut sums, u, v, Simd::from_array(*w).cast());
-    }
+    row_8x8_sums::<0>(&mut sums, weighted, difference);
+    row_8x8_sums::<1>(&mut sums, weighted, difference);
+    row_8x8_sums::<2>(&mut sums, weighted, difference);
+    row_8x8_sums::<3>(&mut sums, weighted, difference);
+    row_8x8_sums::<4>(&mut sums, weighted, difference);
+    row_8x8_sums::<5>(&mut sums, weighted, difference);
+    row_8x8_sums::<6>(&mut sums, weighted, difference);
+    row_8x8_sums::<7>(&mut sums, weighted, difference);
     reduce_unit_sums(sums)
+}
+
+/// A doubled edge tap rounds by 6 bits instead of doubling before 7.
+#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[inline(always)]
+fn row_8x8_sums<const ROW: usize>(
+    sums: &mut [Simd<i32, 8>; 5],
+    rows: &[Simd<i16, 8>; 8],
+    difference: &[Simd<i16, 8>; 8],
+) {
+    let samples = rows[ROW];
+    let (first, last) = (Simd::splat(samples[0]), Simd::splat(samples[7]));
+    let u = gradient_i16(
+        [
+            simd_swizzle!(samples, last, [1, 2, 3, 4, 5, 6, 7, 8]),
+            simd_swizzle!(first, samples, [0, 8, 9, 10, 11, 12, 13, 14]),
+        ],
+        [
+            simd_swizzle!(samples, last, [2, 3, 4, 5, 6, 7, 8, 8]),
+            simd_swizzle!(first, samples, [0, 0, 8, 9, 10, 11, 12, 13]),
+        ],
+        Simd::from_array([6, 7, 7, 7, 7, 7, 7, 6]),
+    );
+    let v = gradient_i16(
+        [rows[(ROW + 1).min(7)], rows[ROW.saturating_sub(1)]],
+        [rows[(ROW + 2).min(7)], rows[ROW.saturating_sub(2)]],
+        Simd::splat(if ROW == 0 || ROW == 7 { 6 } else { 7 }),
+    );
+    accumulate_unit_sums(sums, u.cast(), v.cast(), difference[ROW].cast());
+}
+
+/// `Round2Signed(42 * (near[0] - near[1]) - 5 * (far[0] - far[1]), shift)` in
+/// `i16` lanes: the magnitude of the difference fits `u16`, so it rounds
+/// unsigned and takes its sign back afterwards.
+#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[inline(always)]
+fn gradient_i16(
+    near: [Simd<i16, 8>; 2],
+    far: [Simd<i16, 8>; 2],
+    shift: Simd<u16, 8>,
+) -> Simd<i16, 8> {
+    let near = (near[0] - near[1]) * Simd::splat(42);
+    let far = (far[0] - far[1]) * Simd::splat(5);
+    let magnitude = (near.abs_diff(far) + (Simd::splat(1) << (shift - Simd::splat(1)))) >> shift;
+    let sign = far.simd_gt(near).select(Simd::splat(-1), Simd::splat(0));
+    (magnitude.cast::<i16>() ^ sign) - sign
 }
 
 /// [`solve_unit_sums`] of the four 8x8 units of a 16x16 predictor pair, which
@@ -785,19 +834,58 @@ mod tests {
 
     use super::*;
 
+    /// The `i16` lane sums match the stored `i32`-rounded gradient planes for
+    /// every reduced distance pair over in-range samples, including the
+    /// extreme steps that bound the lane arithmetic.
     #[test]
     fn fused_8x8_sums_match_the_stored_gradient_planes() {
-        for seed in [1usize, 7, 9973] {
-            let plane = |scale: usize| -> [i16; 64] {
-                core::array::from_fn(|i| ((i * scale * seed + 31) % 2049) as i16 - 1024)
-            };
-            let (weighted, difference) = (plane(7919), plane(104_729));
-            let (mut gradient_x, mut gradient_y) = ([0i16; 64], [0i16; 64]);
-            gradients(&weighted, 8, 8, &mut gradient_x, &mut gradient_y);
-            assert_eq!(
-                unit_8x8_sums(&weighted, &difference),
-                solve_unit_sums::<8>(&gradient_x, &gradient_y, &difference, 8, 0, 0)
-            );
+        let distance_pairs = [1i32, -1, 2, -2]
+            .into_iter()
+            .flat_map(|near| [1, -1, 2, -2].map(|far| [near, far]))
+            .filter(|[near, far]| near.abs() + far.abs() <= 3);
+        for distances in distance_pairs {
+            for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+                let max = u32::from(bit_depth.max_sample());
+                let patterns: [&dyn Fn(usize, usize) -> u32; 4] = [
+                    &|i, seed| ((i * 7919 * seed + 31) % (max as usize + 1)) as u32,
+                    &|i, seed| if (i + seed) % 3 == 0 { max } else { 0 },
+                    &|i, seed| {
+                        if (i / 8 + i % 8 + seed) % 2 == 0 {
+                            max
+                        } else {
+                            0
+                        }
+                    },
+                    &|i, seed| max * u32::from((i * 104_729 * seed) % 5 < 2),
+                ];
+                for pattern in patterns {
+                    for seed in [1usize, 2, 7] {
+                        let plane = |seed: usize| -> [u16; 64] {
+                            core::array::from_fn(|i| pattern(i, seed) as u16)
+                        };
+                        let (left, right) = (plane(seed), plane(seed + 3));
+                        let downshift = u32::from(bit_depth.bits() - 8);
+                        let (mut weighted, mut difference) = ([0i16; 64], [0i16; 64]);
+                        for row in 0..8 {
+                            let (w, d) = weighted_difference_row(
+                                Simd::from_slice(&left[row * 8..]),
+                                Simd::from_slice(&right[row * 8..]),
+                                distances,
+                                downshift,
+                            );
+                            w.copy_to_slice(&mut weighted[row * 8..]);
+                            d.copy_to_slice(&mut difference[row * 8..]);
+                        }
+                        let (mut gradient_x, mut gradient_y) = ([0i16; 64], [0i16; 64]);
+                        gradients(&weighted, 8, 8, &mut gradient_x, &mut gradient_y);
+                        assert_eq!(
+                            unit_8x8_sums(&weighted, &difference),
+                            solve_unit_sums::<8>(&gradient_x, &gradient_y, &difference, 8, 0, 0),
+                            "{distances:?} {bit_depth:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 

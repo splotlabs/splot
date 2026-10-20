@@ -642,6 +642,14 @@ fn downsample_luma<T: ReconSample>(
         return Ok(());
     }
 
+    let step = scale_x as usize;
+    let middle = usize::try_from(context.luma_last_x - luma_origin_x)
+        .ok()
+        .map(|last| {
+            let start = usize::try_from(context.luma_start_x - luma_origin_x).unwrap_or(0);
+            start.div_ceil(step)..(last / step + 1).min(output_stride)
+        })
+        .filter(|middle| !middle.is_empty());
     for (row, output) in output.chunks_exact_mut(output_stride).enumerate() {
         let luma_y = luma_origin_y
             .checked_add(
@@ -660,7 +668,39 @@ fn downsample_luma<T: ReconSample>(
                 context: "Wiener NS chroma padded luma source y",
             }
         })?;
-        for (col, slot) in output.iter_mut().enumerate() {
+        let mut skip = 0..0;
+        if let Some(middle) = middle.clone() {
+            let span =
+                |start: usize| source.get(start + step * middle.start..start + step * middle.end);
+            let top = source_y.saturating_mul(source_stride);
+            let output = &mut output[middle.clone()];
+            match (
+                filter_420,
+                span(top),
+                span(top.saturating_add(source_stride)),
+            ) {
+                (Some(filter_index), Some(top), Some(bottom))
+                    if downsample_luma_420_row(output, top, bottom, filter_index) =>
+                {
+                    skip = middle;
+                }
+                (None, Some(top), _) => {
+                    for (slot, sample) in output.iter_mut().zip(top.iter().step_by(step)) {
+                        *slot = sample.to_u16();
+                    }
+                    skip = middle;
+                }
+                _ => {}
+            }
+        }
+        let (head, rest) = output.split_at_mut(skip.start);
+        let edges = head.iter_mut().enumerate().chain(
+            rest.iter_mut()
+                .enumerate()
+                .skip(skip.len())
+                .map(|(col, slot)| (skip.start + col, slot)),
+        );
+        for (col, slot) in edges {
             let luma_x = luma_origin_x
                 .checked_add(
                     isize::try_from(col)
@@ -784,9 +824,8 @@ fn downsample_luma_unclipped<T: ReconSample>(
     }
 }
 
-/// [`downsample_luma_unclipped`] for 4:2:0 `Wiener_Filters_420`, eight
-/// outputs per step: the two luma rows add lane-wise, then even and odd
-/// columns add pairwise (or the even column doubles for `filterIdx` 1).
+/// [`downsample_luma_unclipped`] for 4:2:0 `Wiener_Filters_420`, one output
+/// row at a time.
 fn downsample_luma_420<T: ReconSample>(
     output: &mut [u16],
     output_stride: usize,
@@ -795,42 +834,78 @@ fn downsample_luma_420<T: ReconSample>(
     filter_index: usize,
     load: impl Fn(&[T], usize) -> Simd<u16, 16>,
 ) {
-    const EVEN: [usize; 8] = [0, 2, 4, 6, 8, 10, 12, 14];
-    const ODD: [usize; 8] = [1, 3, 5, 7, 9, 11, 13, 15];
     for (row, output) in output.chunks_exact_mut(output_stride).enumerate() {
         let top = &source[2 * row * source_stride..];
         let bottom = &source[(2 * row + 1) * source_stride..];
-        let mut col = 0;
-        while col + 8 <= output.len() {
-            let rows = load(top, 2 * col) + load(bottom, 2 * col);
-            let even = simd_swizzle!(rows, EVEN);
-            let pair = if filter_index == 1 {
-                even
-            } else {
-                simd_swizzle!(rows, ODD)
-            };
-            for (slot, value) in output[col..col + 8]
-                .iter_mut()
-                .zip(((even + pair) >> 2).to_array())
-            {
-                *slot = value;
-            }
-            col += 8;
-        }
-        for (x, slot) in output
+        downsample_420_lanes(output, top, bottom, filter_index, &load);
+    }
+}
+
+/// One 4:2:0 output row from luma rows `top` and `bottom` that start at its
+/// first sample's luma column and reach `2 * output.len()` samples, or `false`
+/// when the storage has no lane load.
+fn downsample_luma_420_row<T: ReconSample>(
+    output: &mut [u16],
+    top: &[T],
+    bottom: &[T],
+    filter_index: usize,
+) -> bool {
+    if let (Some(top), Some(bottom)) = (T::u16_slice(top), T::u16_slice(bottom)) {
+        downsample_420_lanes(output, top, bottom, filter_index, &|row: &[u16], start| {
+            Simd::from_slice(&row[start..])
+        });
+        return true;
+    }
+    if let (Some(top), Some(bottom)) = (T::u8_slice(top), T::u8_slice(bottom)) {
+        downsample_420_lanes(output, top, bottom, filter_index, &|row: &[u8], start| {
+            Simd::<u8, 16>::from_slice(&row[start..]).cast()
+        });
+        return true;
+    }
+    false
+}
+
+/// Eight outputs per step: the two luma rows add lane-wise, then even and odd
+/// columns add pairwise (or the even column doubles for `filterIdx` 1).
+fn downsample_420_lanes<S: ReconSample>(
+    output: &mut [u16],
+    top: &[S],
+    bottom: &[S],
+    filter_index: usize,
+    load: &impl Fn(&[S], usize) -> Simd<u16, 16>,
+) {
+    const EVEN: [usize; 8] = [0, 2, 4, 6, 8, 10, 12, 14];
+    const ODD: [usize; 8] = [1, 3, 5, 7, 9, 11, 13, 15];
+    let mut col = 0;
+    while col + 8 <= output.len() {
+        let rows = load(top, 2 * col) + load(bottom, 2 * col);
+        let even = simd_swizzle!(rows, EVEN);
+        let pair = if filter_index == 1 {
+            even
+        } else {
+            simd_swizzle!(rows, ODD)
+        };
+        for (slot, value) in output[col..col + 8]
             .iter_mut()
-            .enumerate()
-            .skip(col)
-            .map(|(col, slot)| (2 * col, slot))
+            .zip(((even + pair) >> 2).to_array())
         {
-            let left = u32::from(top[x].to_u16()) + u32::from(bottom[x].to_u16());
-            let sum = if filter_index == 1 {
-                left * 2
-            } else {
-                left + u32::from(top[x + 1].to_u16()) + u32::from(bottom[x + 1].to_u16())
-            };
-            *slot = (sum >> 2) as u16;
+            *slot = value;
         }
+        col += 8;
+    }
+    for (x, slot) in output
+        .iter_mut()
+        .enumerate()
+        .skip(col)
+        .map(|(col, slot)| (2 * col, slot))
+    {
+        let left = u32::from(top[x].to_u16()) + u32::from(bottom[x].to_u16());
+        let sum = if filter_index == 1 {
+            left * 2
+        } else {
+            left + u32::from(top[x + 1].to_u16()) + u32::from(bottom[x + 1].to_u16())
+        };
+        *slot = (sum >> 2) as u16;
     }
 }
 
@@ -1639,117 +1714,118 @@ mod tests {
     /// unclipped downsample paths, and every `cfl_ds_filter_index`.
     #[test]
     fn padded_filter_matches_callback_path() {
-        let width = 9;
         let height = 5;
-        let mut coeffs = ZERO_CHROMA;
-        for (index, coeff) in coeffs.iter_mut().enumerate() {
-            *coeff = (index as i16 * 7 % 23) - 11;
-        }
-        let chroma_at =
-            |x: isize, y: isize| -> u16 { ((x * 31 + y * 17 + 512).rem_euclid(1024)) as u16 };
-        let luma_at =
-            |x: isize, y: isize| -> u16 { ((x * 13 + y * 41 + 700).rem_euclid(1024)) as u16 };
-        for (sub_x, sub_y) in [(1u8, 1u8), (1, 0), (0, 0)] {
-            for (block_x, block_y) in [(0usize, 0usize), (8, 8)] {
-                let mut params = chroma_params(width, height, width, BitDepth::Ten, &coeffs);
-                params.x = block_x;
-                params.y = block_y;
-                params.subsampling_x = sub_x;
-                params.subsampling_y = sub_y;
-                params.luma_start_x = 0;
-                params.luma_end_x = 64;
-                params.mi_rows = 16;
+        for width in [9, 21] {
+            let mut coeffs = ZERO_CHROMA;
+            for (index, coeff) in coeffs.iter_mut().enumerate() {
+                *coeff = (index as i16 * 7 % 23) - 11;
+            }
+            let chroma_at =
+                |x: isize, y: isize| -> u16 { ((x * 31 + y * 17 + 512).rem_euclid(1024)) as u16 };
+            let luma_at =
+                |x: isize, y: isize| -> u16 { ((x * 13 + y * 41 + 700).rem_euclid(1024)) as u16 };
+            for (sub_x, sub_y) in [(1u8, 1u8), (1, 0), (0, 0)] {
+                for (block_x, block_y) in [(0usize, 0usize), (8, 8)] {
+                    let mut params = chroma_params(width, height, width, BitDepth::Ten, &coeffs);
+                    params.x = block_x;
+                    params.y = block_y;
+                    params.subsampling_x = sub_x;
+                    params.subsampling_y = sub_y;
+                    params.luma_start_x = 0;
+                    params.luma_end_x = 64;
+                    params.mi_rows = 16;
 
-                let chroma_stride = width + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
-                let chroma_height = height + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
-                let chroma_origin_x = params.x as isize - WIENER_NS_CHROMA_TAP_RADIUS as isize;
-                let chroma_origin_y = params.y as isize - WIENER_NS_CHROMA_TAP_RADIUS as isize;
-                let chroma: Vec<u16> = (0..chroma_height)
-                    .flat_map(|row| {
-                        (0..chroma_stride).map(move |col| {
-                            chroma_at(
-                                chroma_origin_x + col as isize,
-                                chroma_origin_y + row as isize,
+                    let chroma_stride = width + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
+                    let chroma_height = height + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
+                    let chroma_origin_x = params.x as isize - WIENER_NS_CHROMA_TAP_RADIUS as isize;
+                    let chroma_origin_y = params.y as isize - WIENER_NS_CHROMA_TAP_RADIUS as isize;
+                    let chroma: Vec<u16> = (0..chroma_height)
+                        .flat_map(|row| {
+                            (0..chroma_stride).map(move |col| {
+                                chroma_at(
+                                    chroma_origin_x + col as isize,
+                                    chroma_origin_y + row as isize,
+                                )
+                            })
+                        })
+                        .collect();
+                    let luma_stride = chroma_stride << sub_x;
+                    let luma_height = chroma_height << sub_y;
+                    let luma_origin_x = chroma_origin_x << sub_x;
+                    let luma_origin_y = chroma_origin_y << sub_y;
+                    let luma: Vec<u16> = (0..luma_height)
+                        .flat_map(|row| {
+                            (0..luma_stride).map(move |col| {
+                                luma_at(luma_origin_x + col as isize, luma_origin_y + row as isize)
+                            })
+                        })
+                        .collect();
+                    let geometry = (width, height, (sub_x, sub_y));
+                    let sources = [WienerNsChromaPaddedSource::new(
+                        &chroma,
+                        chroma_stride,
+                        &luma,
+                        luma_stride,
+                        geometry.0,
+                        geometry.1,
+                        geometry.2,
+                    )
+                    .unwrap()];
+                    let chroma8: Vec<u8> = chroma.iter().map(|&value| value as u8).collect();
+                    let luma8: Vec<u8> = luma.iter().map(|&value| value as u8).collect();
+                    let source8 = WienerNsChromaPaddedSource::new(
+                        &chroma8,
+                        chroma_stride,
+                        &luma8,
+                        luma_stride,
+                        geometry.0,
+                        geometry.1,
+                        geometry.2,
+                    )
+                    .unwrap();
+                    let mut scratch = WienerNsChromaScratch::default();
+                    let mut scratch8 = WienerNsChromaScratch::default();
+
+                    for filter_index in [0, 1, 2, 3] {
+                        params.cfl_ds_filter_index = filter_index;
+                        let mut callback = vec![0u16; width * height];
+                        wiener_ns_filter_chroma_block(&mut callback, &params, chroma_at, luma_at)
+                            .unwrap();
+                        for source in &sources {
+                            let mut padded = vec![0u16; width * height];
+                            wiener_ns_filter_chroma_block_padded_into(
+                                &mut padded,
+                                &params,
+                                source,
+                                &mut scratch,
                             )
-                        })
-                    })
-                    .collect();
-                let luma_stride = chroma_stride << sub_x;
-                let luma_height = chroma_height << sub_y;
-                let luma_origin_x = chroma_origin_x << sub_x;
-                let luma_origin_y = chroma_origin_y << sub_y;
-                let luma: Vec<u16> = (0..luma_height)
-                    .flat_map(|row| {
-                        (0..luma_stride).map(move |col| {
-                            luma_at(luma_origin_x + col as isize, luma_origin_y + row as isize)
-                        })
-                    })
-                    .collect();
-                let geometry = (width, height, (sub_x, sub_y));
-                let sources = [WienerNsChromaPaddedSource::new(
-                    &chroma,
-                    chroma_stride,
-                    &luma,
-                    luma_stride,
-                    geometry.0,
-                    geometry.1,
-                    geometry.2,
-                )
-                .unwrap()];
-                let chroma8: Vec<u8> = chroma.iter().map(|&value| value as u8).collect();
-                let luma8: Vec<u8> = luma.iter().map(|&value| value as u8).collect();
-                let source8 = WienerNsChromaPaddedSource::new(
-                    &chroma8,
-                    chroma_stride,
-                    &luma8,
-                    luma_stride,
-                    geometry.0,
-                    geometry.1,
-                    geometry.2,
-                )
-                .unwrap();
-                let mut scratch = WienerNsChromaScratch::default();
-                let mut scratch8 = WienerNsChromaScratch::default();
-
-                for filter_index in [0, 1, 2, 3] {
-                    params.cfl_ds_filter_index = filter_index;
-                    let mut callback = vec![0u16; width * height];
-                    wiener_ns_filter_chroma_block(&mut callback, &params, chroma_at, luma_at)
-                        .unwrap();
-                    for source in &sources {
-                        let mut padded = vec![0u16; width * height];
-                        wiener_ns_filter_chroma_block_padded_into(
-                            &mut padded,
-                            &params,
-                            source,
-                            &mut scratch,
+                            .unwrap();
+                            assert_eq!(
+                                padded, callback,
+                                "sub=({sub_x},{sub_y}) block=({block_x},{block_y}) \
+                             cfl_ds_filter_index={filter_index}"
+                            );
+                        }
+                        let mut params8 = params;
+                        params8.bit_depth = BitDepth::Eight;
+                        let mut callback8 = vec![0u8; width * height];
+                        wiener_ns_filter_chroma_block(
+                            &mut callback8,
+                            &params8,
+                            |x, y| chroma_at(x, y) as u8,
+                            |x, y| luma_at(x, y) as u8,
                         )
                         .unwrap();
-                        assert_eq!(
-                            padded, callback,
-                            "sub=({sub_x},{sub_y}) block=({block_x},{block_y}) \
-                             cfl_ds_filter_index={filter_index}"
-                        );
+                        let mut padded8 = vec![0u8; width * height];
+                        wiener_ns_filter_chroma_block_padded_into(
+                            &mut padded8,
+                            &params8,
+                            &source8,
+                            &mut scratch8,
+                        )
+                        .unwrap();
+                        assert_eq!(padded8, callback8, "u8 cfl_ds_filter_index={filter_index}");
                     }
-                    let mut params8 = params;
-                    params8.bit_depth = BitDepth::Eight;
-                    let mut callback8 = vec![0u8; width * height];
-                    wiener_ns_filter_chroma_block(
-                        &mut callback8,
-                        &params8,
-                        |x, y| chroma_at(x, y) as u8,
-                        |x, y| luma_at(x, y) as u8,
-                    )
-                    .unwrap();
-                    let mut padded8 = vec![0u8; width * height];
-                    wiener_ns_filter_chroma_block_padded_into(
-                        &mut padded8,
-                        &params8,
-                        &source8,
-                        &mut scratch8,
-                    )
-                    .unwrap();
-                    assert_eq!(padded8, callback8, "u8 cfl_ds_filter_index={filter_index}");
                 }
             }
         }

@@ -17,13 +17,18 @@ pub(crate) enum BlockSymbolTraceReadError {
 }
 
 impl TileCdfSubset {
-    #[inline]
+    #[allow(
+        clippy::inline_always,
+        reason = "constant selectors fold into a direct row read"
+    )]
+    #[inline(always)]
     pub(crate) fn read_block_symbol_trace(
         &mut self,
         selector: TileCdfSelector,
         symbol_decoder: &mut SymbolDecoder<'_>,
     ) -> Result<Symbol, BlockSymbolTraceReadError> {
-        Ok(self.with_row_mut(selector, |row| symbol_decoder.read_symbol_u16(row))??)
+        let row = self.rows.row_mut(selector)?;
+        Ok(symbol_decoder.read_symbol_u16(row)?)
     }
 
     /// Reads a coefficient symbol from the coefficient rows directly,

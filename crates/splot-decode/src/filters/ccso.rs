@@ -386,20 +386,34 @@ fn ccso_apply<L: ReconSample>(
         Some((rows, cols)) => (Some(rows), Some(cols)),
         None => (None, None),
     };
+    let width = destination.width();
     for y in (first_unit_y..destination_end_y).step_by(config.blk_h) {
-        for x in (0..destination.width()).step_by(config.blk_w) {
-            let (min_luma_y, max_luma_y) =
-                luma_tile_clamp(tile_rows, (y << config.sub_y) / MI_SIZE, frame_max_luma_y);
-            let (min_luma_x, max_luma_x) =
-                luma_tile_clamp(tile_cols, (x << config.sub_x) / MI_SIZE, frame_max_luma_x);
-            let unit_row = (y << config.sub_y) >> config.ccso_luma_log2;
-            let unit_col = (x << config.sub_x) >> config.ccso_luma_log2;
-            if grid.block_value(plane, unit_row, unit_col) == 0 {
+        let (min_luma_y, max_luma_y) =
+            luma_tile_clamp(tile_rows, (y << config.sub_y) / MI_SIZE, frame_max_luma_y);
+        let unit_row = (y << config.sub_y) >> config.ccso_luma_log2;
+        let unit = |x: usize| {
+            let enabled = grid.block_value(
+                plane,
+                unit_row,
+                (x << config.sub_x) >> config.ccso_luma_log2,
+            );
+            let clamp = luma_tile_clamp(tile_cols, (x << config.sub_x) / MI_SIZE, frame_max_luma_x);
+            (enabled != 0, clamp)
+        };
+        let mut next = 0;
+        while next < width {
+            let x = next;
+            let (enabled, (min_luma_x, max_luma_x)) = unit(x);
+            next = x.saturating_add(config.blk_w);
+            if !enabled {
                 continue;
+            }
+            while next < width && unit(next) == (true, (min_luma_x, max_luma_x)) {
+                next = next.saturating_add(config.blk_w);
             }
             let y_start = destination.origin_y().max(y);
             let y_end = destination_end_y.min(y.saturating_add(config.blk_h));
-            let x_end = destination.width().min(x.saturating_add(config.blk_w));
+            let x_end = width.min(next);
             for y3 in y_start..y_end {
                 let y_luma = y3 << config.sub_y;
                 let center_row =

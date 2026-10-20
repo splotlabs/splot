@@ -459,6 +459,14 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
         allow_warpmv_mode,
         frame_is_switch,
         current_order_hint,
+        temporal_first_frame: frame_temporal_first(
+            sequence,
+            core,
+            ref_frame_idx,
+            reference,
+            current_order_hint,
+            num_total_refs,
+        ),
         tip_ref_pair: expected_tip_pair.map(|pair| (pair.past_ref, pair.future_ref)),
     };
     Ok(InterBlockSetup {
@@ -1079,6 +1087,40 @@ fn current_residual_lossless(work_unit: &DecodeTileWorkUnit) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether the frame orders temporal candidates first: DRL reordering is not
+/// `Always`, temporal MVs are on and every reference lies on one side.
+fn frame_temporal_first<T: ReconSample>(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    ref_frame_idx: &[u32],
+    reference: &InterReferenceState<T>,
+    current_order_hint: u32,
+    num_total_refs: usize,
+) -> bool {
+    let mut has_past = false;
+    let mut has_future = false;
+    for list_ref in 0..num_total_refs {
+        let Some(hint) = ref_frame_idx
+            .get(list_ref)
+            .and_then(|&slot| reference.ref_order_hint.get(slot as usize))
+        else {
+            continue;
+        };
+        let dist = super::get_relative_dist(
+            current_order_hint as i32,
+            i32::try_from(*hint).unwrap_or(i32::MAX),
+        );
+        if dist > 0 {
+            has_past = true;
+        } else if dist < 0 {
+            has_future = true;
+        }
+    }
+    sequence_drl_reorder(sequence) != DrlReorder::Always
+        && frame_uses_temporal_mvs(core)
+        && (!has_past || !has_future)
+}
+
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn decode_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit,
@@ -1129,6 +1171,7 @@ fn decode_block<T: ReconSample>(
     allow_warpmv_mode: bool,
     frame_is_switch: bool,
     current_order_hint: u32,
+    temporal_first_frame: bool,
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
     let (avail_up, avail_left) = tile_neighbour_availability(
@@ -1166,31 +1209,6 @@ fn decode_block<T: ReconSample>(
     };
 
     let comp_ref_allowed = is_comp_ref_allowed(n4w, n4h);
-    let drl_reorder = sequence_drl_reorder(sequence);
-    let refs_one_sided = {
-        let mut has_past = false;
-        let mut has_future = false;
-        for list_ref in 0..num_total_refs {
-            let Some(hint) = ref_frame_idx
-                .get(list_ref)
-                .and_then(|&slot| reference.ref_order_hint.get(slot as usize))
-            else {
-                continue;
-            };
-            let dist = super::get_relative_dist(
-                current_order_hint as i32,
-                i32::try_from(*hint).unwrap_or(i32::MAX),
-            );
-            if dist > 0 {
-                has_past = true;
-            } else if dist < 0 {
-                has_future = true;
-            }
-        }
-        !has_past || !has_future
-    };
-    let use_temporal = frame_uses_temporal_mvs(core);
-    let temporal_first_frame = drl_reorder != DrlReorder::Always && use_temporal && refs_one_sided;
     let neighbour_ctx = block_neighbour_ctx(mv_grid, &block_ctx);
     let seg_pre_skip = core
         .segmentation_params

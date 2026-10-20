@@ -1143,6 +1143,11 @@ const fn cfl_alpha_v_ctx(sign_u: u8, sign_v: u8) -> usize {
     ((sign_v - 1) * 3 + sign_u) as usize
 }
 
+#[allow(
+    clippy::inline_always,
+    reason = "constant selectors fold into a direct row read"
+)]
+#[inline(always)]
 fn read_symbol(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,

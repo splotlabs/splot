@@ -610,17 +610,6 @@ fn bilinear_sample(left: u16, right: u16, phase: i32) -> u16 {
     round2_i32((16 - phase) * left + phase * right, SUBPEL_BITS) as u16
 }
 
-fn fixed_16x16_window_in_bounds<T: ReconSample>(
-    reference: &ReferencePlaneView<'_, T>,
-    x0: i32,
-    y0: i32,
-) -> bool {
-    x0 + 1 >= 0
-        && x0 + 15 < reference.width as i32
-        && y0 + 1 >= 0
-        && y0 + 15 < reference.readable_rows as i32
-}
-
 /// One AV2 § 7.13.3.18 `BILINEAR` tap pair, entirely in 16-bit lanes.
 ///
 /// `(16 - phase) * left + phase * right` is at most `16 * 1023` at the § 6
@@ -645,7 +634,7 @@ fn bilinear_u16<const LANES: usize>(
 /// eight-bit plane the § 7.13.3.18 `u8` entry point serves.
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
-fn reference_lanes<const LANES: usize, T: ReconSample>(
+pub(crate) fn reference_lanes<const LANES: usize, T: ReconSample>(
     source: &[T],
     start: usize,
 ) -> Simd<u16, LANES> {
@@ -674,31 +663,7 @@ fn subpel_bilinear_horizontal_into<T: ReconSample, O: BilinearOutput>(
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
     let phase = (params.start_x >> 6) & SUBPEL_MASK;
-    if params.w == 16
-        && params.h == 16
-        && params.first_x == x0 + 1
-        && params.last_x == x0 + 15
-        && params.first_y == y0 + 1
-        && params.last_y == y0 + 15
-        && fixed_16x16_window_in_bounds(reference, x0, y0)
-    {
-        let samples = reference.samples;
-        let first = (x0 + 1) as usize;
-        let second = (x0 + 8) as usize;
-        for row in 0..params.h {
-            let source_row = (y0 + (row as i32).clamp(1, 15)) as usize;
-            let source = &samples[source_row * reference.stride..];
-            let destination = &mut output[row * output_stride..][..params.w];
-            let low = bilinear_u16(
-                reference_lanes::<8, T>(source, first),
-                reference_lanes::<8, T>(source, first + 1),
-                phase,
-            );
-            O::store(low, &mut destination[1..9]);
-            let high = tip_overlap::overlap_bilinear_u16x8(source, source, second, None, phase, 0);
-            O::store(high, &mut destination[8..]);
-            destination[0] = O::from_sample(source[first].to_u16());
-        }
+    if bilinear_unclipped(reference, params, [phase as u16, 0], output, output_stride) {
         return Ok(());
     }
     let direct_x = usize::try_from(x0).ok().filter(|&x| {
@@ -776,41 +741,7 @@ fn subpel_bilinear_vertical_into<T: ReconSample, O: BilinearOutput>(
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
     let phase = (params.start_y >> 6) & SUBPEL_MASK;
-    if params.w == 16
-        && params.h == 16
-        && params.first_x == x0 + 1
-        && params.last_x == x0 + 15
-        && params.first_y == y0 + 1
-        && params.last_y == y0 + 15
-        && fixed_16x16_window_in_bounds(reference, x0, y0)
-    {
-        let samples = reference.samples;
-        let first = (x0 + 1) as usize;
-        let second = (x0 + 8) as usize;
-        for row in 0..params.h {
-            let top = (y0 + (row as i32).clamp(1, 15)) as usize;
-            let bottom = (y0 + (row as i32 + 1).clamp(1, 15)) as usize;
-            let top = &samples[top * reference.stride..];
-            let bottom = &samples[bottom * reference.stride..];
-            let destination = &mut output[row * output_stride..][..params.w];
-            let low = bilinear_u16(
-                reference_lanes::<8, T>(top, first),
-                reference_lanes::<8, T>(bottom, first),
-                phase,
-            );
-            O::store(low, &mut destination[1..9]);
-            let high = bilinear_u16(
-                reference_lanes::<8, T>(top, second),
-                reference_lanes::<8, T>(bottom, second),
-                phase,
-            );
-            O::store(high, &mut destination[8..]);
-            destination[0] = O::from_sample(bilinear_sample(
-                top[first].to_u16(),
-                bottom[first].to_u16(),
-                phase,
-            ));
-        }
+    if bilinear_unclipped(reference, params, [0, phase as u16], output, output_stride) {
         return Ok(());
     }
     let direct_x = subpel_direct_copy_x(reference, params);
@@ -894,49 +825,8 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
         SUBPEL_FILTERS[BILINEAR as usize][v_phase][3],
         SUBPEL_FILTERS[BILINEAR as usize][v_phase][4],
     ];
-    if params.w == 16
-        && params.h == 16
-        && params.first_x == x0 + 1
-        && params.last_x == x0 + 15
-        && params.first_y == y0 + 1
-        && params.last_y == y0 + 15
-        && fixed_16x16_window_in_bounds(reference, x0, y0)
-    {
-        let samples = reference.samples;
-        let first = (x0 + 1) as usize;
-        let second = (x0 + 8) as usize;
-        let max_sample = params.bit_depth.max_sample();
-        for row in 0..params.h {
-            let top = (y0 + (row as i32).clamp(1, 15)) as usize;
-            let bottom = (y0 + (row as i32 + 1).clamp(1, 15)) as usize;
-            let top = &samples[top * reference.stride..];
-            let bottom = &samples[bottom * reference.stride..];
-            let destination = &mut output[row * output_stride..][..params.w];
-            let low = tip_overlap::overlap_bilinear_u16x8(
-                top,
-                bottom,
-                first,
-                Some(first + 1),
-                h_phase as i32,
-                v_phase as i32,
-            )
-            .simd_min(Simd::splat(max_sample));
-            O::store(low, &mut destination[1..9]);
-            let high = tip_overlap::overlap_bilinear_u16x8(
-                top,
-                bottom,
-                second,
-                None,
-                h_phase as i32,
-                v_phase as i32,
-            )
-            .simd_min(Simd::splat(max_sample));
-            O::store(high, &mut destination[8..]);
-            destination[0] = O::from_sample(
-                bilinear_sample(top[first].to_u16(), bottom[first].to_u16(), v_phase as i32)
-                    .min(max_sample),
-            );
-        }
+    let phases = [h_phase as u16, v_phase as u16];
+    if bilinear_unclipped(reference, params, phases, output, output_stride) {
         return Ok(());
     }
     let direct_x = usize::try_from(x0).ok().filter(|&x| {
@@ -1062,6 +952,166 @@ fn subpel_bilinear_2d_into<T: ReconSample, O: BilinearOutput>(
         top_is_first = !top_is_first;
     }
     Ok(())
+}
+
+/// Predicts an unscaled `BILINEAR` block whose every read lies inside its clip
+/// bounds and the readable plane, so no sample is clamped; returns `false`
+/// without writing for any other block or a width that is not a multiple of
+/// four. `[h_phase, v_phase]` are the block's phases, not both zero. A block
+/// that turns out not to fit may leave rows written; the caller's general
+/// kernel then rewrites the whole block.
+fn bilinear_unclipped<T: ReconSample, O: BilinearOutput>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    phases: [u16; 2],
+    output: &mut [O],
+    output_stride: usize,
+) -> bool {
+    let x0 = i64::from(params.start_x >> SCALE_SUBPEL_BITS);
+    let y0 = i64::from(params.start_y >> SCALE_SUBPEL_BITS);
+    let [reach_x, reach_y] = phases.map(|phase| i64::from(phase != 0));
+    let last_x = i64::from(params.last_x).min(reference.width as i64 - 1);
+    let last_y = i64::from(params.last_y).min(reference.readable_rows as i64 - 1);
+    if !params.w.is_multiple_of(4)
+        || output_stride < params.w
+        || x0 < i64::from(params.first_x.max(0))
+        || y0 < i64::from(params.first_y.max(0))
+        || x0 + params.w as i64 - 1 + reach_x > last_x
+        || y0 + params.h as i64 - 1 + reach_y > last_y
+    {
+        return false;
+    }
+    let Some(block) = reference
+        .samples
+        .get(y0 as usize * reference.stride + x0 as usize..)
+    else {
+        return false;
+    };
+    let max_sample = params.bit_depth.max_sample();
+    let source = (block, reference.stride);
+    let mut column = 0;
+    while column + 16 <= params.w {
+        let Some(target) = output.get_mut(column..) else {
+            return false;
+        };
+        let strip = bilinear_strip::<16, T, O>;
+        if strip(
+            source,
+            column,
+            params.h,
+            phases,
+            max_sample,
+            target,
+            output_stride,
+        )
+        .is_none()
+        {
+            return false;
+        }
+        column += 16;
+    }
+    while column + 8 <= params.w {
+        let Some(target) = output.get_mut(column..) else {
+            return false;
+        };
+        let strip = bilinear_strip::<8, T, O>;
+        if strip(
+            source,
+            column,
+            params.h,
+            phases,
+            max_sample,
+            target,
+            output_stride,
+        )
+        .is_none()
+        {
+            return false;
+        }
+        column += 8;
+    }
+    if column < params.w {
+        let Some(target) = output.get_mut(column..) else {
+            return false;
+        };
+        let strip = bilinear_strip::<4, T, O>;
+        return strip(
+            source,
+            column,
+            params.h,
+            phases,
+            max_sample,
+            target,
+            output_stride,
+        )
+        .is_some();
+    }
+    true
+}
+
+/// One `LANES`-wide column strip of [`bilinear_unclipped`]: the one-axis
+/// kernels blend two samples per output, and the two-axis kernel keeps each
+/// source row's unrounded horizontal sums for the next output row.
+#[allow(clippy::inline_always, reason = "measured bilinear subpel hot path")]
+#[inline(always)]
+fn bilinear_strip<const LANES: usize, T: ReconSample, O: BilinearOutput>(
+    (block, stride): (&[T], usize),
+    column: usize,
+    height: usize,
+    [h_phase, v_phase]: [u16; 2],
+    max_sample: u16,
+    output: &mut [O],
+    output_stride: usize,
+) -> Option<()> {
+    let mut source = block.get(column..)?;
+    let mut next_row = |reach: usize| {
+        let row = source.get(..LANES + reach)?;
+        source = source.get(stride..).unwrap_or_default();
+        Some(row)
+    };
+    let mut rows = output.chunks_mut(output_stride);
+    let mut store = |lanes| {
+        O::store(lanes, rows.next()?.get_mut(..LANES)?);
+        Some(())
+    };
+    let pair = |row: &[T]| {
+        (
+            reference_lanes::<LANES, T>(row, 0),
+            reference_lanes::<LANES, T>(row, 1),
+        )
+    };
+    if v_phase == 0 {
+        for _ in 0..height {
+            let (left, right) = pair(next_row(1)?);
+            store(bilinear_u16(left, right, i32::from(h_phase)))?;
+        }
+    } else if h_phase == 0 {
+        let mut top = reference_lanes::<LANES, T>(next_row(0)?, 0);
+        for _ in 0..height {
+            let bottom = reference_lanes::<LANES, T>(next_row(0)?, 0);
+            store(bilinear_u16(top, bottom, i32::from(v_phase)))?;
+            top = bottom;
+        }
+    } else {
+        let horizontal = |(left, right): (Simd<u16, LANES>, Simd<u16, LANES>)| {
+            left * Simd::splat(16 - h_phase) + right * Simd::splat(h_phase)
+        };
+        let mut top = horizontal(pair(next_row(1)?));
+        for _ in 0..height {
+            let bottom = horizontal(pair(next_row(1)?));
+            let blended = tap_mac(
+                tap_mac(Simd::splat(0), top.cast(), i32::from(16 - v_phase)),
+                bottom.cast(),
+                i32::from(v_phase),
+            );
+            let filtered = round2_simd(blended, 8)
+                .cast::<u16>()
+                .simd_min(Simd::splat(max_sample));
+            store(filtered)?;
+            top = bottom;
+        }
+    }
+    Some(())
 }
 
 /// The plane-bounded `firstX` and `lastX` of an unscaled `BILINEAR` block,
@@ -1751,25 +1801,7 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
     output_stride: usize,
 ) -> Result<bool> {
     crate::intra_dc_math::validate_sample_type::<O>(params0.bit_depth)?;
-    let unscaled = |params: &SubpelPredictParams| {
-        params.step_x == 1 << SCALE_SUBPEL_BITS
-            && params.step_y == 1 << SCALE_SUBPEL_BITS
-            && params
-                .start_x
-                .checked_add((params.w as i32 - 1) << SCALE_SUBPEL_BITS)
-                .is_some()
-    };
-    let span = |params: &SubpelPredictParams| {
-        (i64::from(params.last_x) - i64::from(params.first_x))
-            | (i64::from(params.last_y) - i64::from(params.first_y))
-    };
-    if span(params0) | span(params1) < 0
-        || !(1..=MAX_BLOCK_DIM).contains(&params0.w)
-        || !(1..=MAX_BLOCK_DIM).contains(&params0.h)
-        || (params0.w, params0.h, params0.bit_depth) != (params1.w, params1.h, params1.bit_depth)
-        || !unscaled(params0)
-        || !unscaled(params1)
-    {
+    if !fast_admitted(params0, params1) {
         return Ok(false);
     }
     validate_compound_output(params0, output, output_stride)?;
@@ -1785,7 +1817,9 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
         cwp_weight,
         output,
         output_stride,
-    ) {
+        None,
+    ) != 0
+    {
         return Ok(true);
     }
     if O::u16_slice(&[]).is_some()
@@ -1866,6 +1900,82 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<
         return Ok(false);
     }
     Ok(true)
+}
+
+/// The fast compound dispatch of
+/// [`subpel_predict_block_compound_average_fast_validated_strided_into`] for
+/// a 4x4 or 8x8 cell of two planes that share its parameters (U and V): it
+/// writes the cell of `output`, then of `second`, and returns the number of
+/// planes written. It writes none when that function would decline or for
+/// another size, none when the `second` views differ from the first in width
+/// or readable rows, and only the first when a `second` window leaves the
+/// plane storage; the caller predicts the rest.
+///
+/// # Errors
+/// Returns the errors of
+/// [`subpel_predict_block_compound_average_fast_validated_strided_into`] for
+/// either output.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::inline_always, reason = "measured TIP compound hot path")]
+#[inline(always)]
+pub fn subpel_predict_block_compound_average_fast_pair_into<T: ReconSample, O: ReconSample>(
+    reference0: &ReferencePlaneView<'_, T>,
+    params0: &SubpelPredictParams,
+    reference1: &ReferencePlaneView<'_, T>,
+    params1: &SubpelPredictParams,
+    cwp_weight: i16,
+    output: &mut [O],
+    output_stride: usize,
+    (second, second_output, second_stride): ([&ReferencePlaneView<'_, T>; 2], &mut [O], usize),
+) -> Result<usize> {
+    crate::intra_dc_math::validate_sample_type::<O>(params0.bit_depth)?;
+    let same = |a: &ReferencePlaneView<'_, T>, b: &ReferencePlaneView<'_, T>| {
+        (a.width, a.readable_rows) == (b.width, b.readable_rows)
+    };
+    if !fast_admitted(params0, params1)
+        || !same(reference0, second[0])
+        || !same(reference1, second[1])
+    {
+        return Ok(0);
+    }
+    validate_compound_output(params0, output, output_stride)?;
+    validate_compound_output(params0, second_output, second_stride)?;
+    Ok(small_compound::predict(
+        reference0,
+        &plane_bounded(reference0, params0),
+        reference1,
+        &plane_bounded(reference1, params1),
+        cwp_weight,
+        output,
+        output_stride,
+        Some((second, second_output, second_stride)),
+    ))
+}
+
+/// Whether both blocks have one unscaled shape in `1..=MAX_BLOCK_DIM`, one
+/// bit depth, uninverted clipping ranges and a last column that fits.
+#[allow(clippy::inline_always, reason = "measured TIP compound hot path")]
+#[inline(always)]
+fn fast_admitted(params0: &SubpelPredictParams, params1: &SubpelPredictParams) -> bool {
+    let unscaled = |params: &SubpelPredictParams| {
+        params.step_x == 1 << SCALE_SUBPEL_BITS
+            && params.step_y == 1 << SCALE_SUBPEL_BITS
+            && params
+                .start_x
+                .checked_add((params.w as i32 - 1) << SCALE_SUBPEL_BITS)
+                .is_some()
+    };
+    let span = |params: &SubpelPredictParams| {
+        (i64::from(params.last_x) - i64::from(params.first_x))
+            | (i64::from(params.last_y) - i64::from(params.first_y))
+    };
+    span(params0) | span(params1) >= 0
+        && (1..=MAX_BLOCK_DIM).contains(&params0.w)
+        && (1..=MAX_BLOCK_DIM).contains(&params0.h)
+        && (params0.w, params0.h, params0.bit_depth) == (params1.w, params1.h, params1.bit_depth)
+        && unscaled(params0)
+        && unscaled(params1)
 }
 
 /// Clamps the § 7.13.3.18 clipping bounds into the plane's readable area.
