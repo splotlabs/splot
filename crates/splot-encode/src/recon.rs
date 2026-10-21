@@ -49,39 +49,45 @@ impl ReconFrame {
         })
     }
 
-    /// Predicts `tx` with `DC_PRED` and adds the residual of its adjusted `levels`.
-    pub(crate) fn reconstruct_dc(
-        &mut self,
-        tx: &TransformBlock,
-        levels: &[i32],
-        eob: usize,
-    ) -> Result<()> {
-        let plane = plane_id(tx.plane)?;
-        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
-        let size = IntraRectBlockSize::new(log2_w as u8, log2_h as u8)?;
-        let edges = self
-            .workspace
-            .intra_dc_edges_for_rect(plane, tx.x, tx.y, size)?;
+    /// The row-major `DC_PRED` prediction of `tx`.
+    pub(crate) fn predict_dc(&self, tx: &TransformBlock) -> Result<Vec<u16>> {
+        let size = rect_size(tx)?;
+        let edges =
+            self.workspace
+                .intra_dc_edges_for_rect(plane_id(tx.plane)?, tx.x, tx.y, size)?;
         let dc_edges = IntraDcEdges::new(
             (tx.x > 0).then(|| edges.left_samples()).flatten(),
             (tx.y > 0).then(|| edges.above_samples()).flatten(),
         );
         let dc = predict_intra_dc_rect_value(self.bit_depth, size, dc_edges)?;
-        let samples = size.sample_count();
-        let prediction = vec![dc; samples];
+        Ok(vec![dc; size.sample_count()])
+    }
+
+    /// Writes `prediction` plus the residual of the adjusted `levels` of `tx`.
+    pub(crate) fn reconstruct(
+        &mut self,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        levels: &[i32],
+        eob: usize,
+    ) -> Result<()> {
+        let plane = plane_id(tx.plane)?;
+        let size = rect_size(tx)?;
         if eob == 0 {
             self.workspace
-                .write_rect_block(plane, tx.x, tx.y, size, &prediction)?;
+                .write_rect_block(plane, tx.x, tx.y, size, prediction)?;
             return Ok(());
         }
+        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let (params, transform) =
             dct_recon_params(self.qindex, plane, log2_w, log2_h, self.bit_depth)?;
         let (adj_w, adj_h) = adjusted_log2(tx.tx_size)?;
+        let samples = size.sample_count();
         let mut dequant = vec![0; 1 << (adj_w + adj_h)];
         let mut residual = vec![0; samples];
         let mut out = vec![0; samples];
         reconstruct_transform_block_residual(
-            &prediction,
+            prediction,
             levels,
             &params,
             &transform,
@@ -100,7 +106,12 @@ impl ReconFrame {
     }
 }
 
-fn plane_id(plane: usize) -> Result<PlaneId> {
+fn rect_size(tx: &TransformBlock) -> Result<IntraRectBlockSize> {
+    let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
+    Ok(IntraRectBlockSize::new(log2_w as u8, log2_h as u8)?)
+}
+
+pub(crate) fn plane_id(plane: usize) -> Result<PlaneId> {
     match plane {
         0 => Ok(PlaneId::Y),
         1 => Ok(PlaneId::U),

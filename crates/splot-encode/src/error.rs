@@ -3,7 +3,6 @@
 
 //! Error and result types for the splot encoder API.
 
-use splot_core::write::WriteError;
 use splot_recon::{BitDepth, PixelFormat};
 
 /// An error from the splot encoder API.
@@ -107,58 +106,20 @@ pub enum Error {
     #[error("the frame coder returned reconstruction planes of the wrong size")]
     ReconSizeMismatch,
 
+    /// A frame-coding stage failed.
+    #[error("frame coding failed at {stage}: {source}")]
+    Coding {
+        /// The failing stage.
+        stage: &'static str,
+        /// The stage error.
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+
     /// The requested feature is not implemented.
     #[error("{what} is not supported yet")]
     Unsupported {
         /// The missing feature.
         what: &'static str,
-    },
-
-    /// Coefficient-tokenization allocation failed.
-    #[error("failed to allocate encoder coefficient tokenization storage for {context}")]
-    CoefficientTokenizationAllocationFailed {
-        /// Short description of the failed allocation.
-        context: &'static str,
-    },
-
-    /// Intra-mode emission allocation failed.
-    #[error("failed to allocate encoder intra-mode emission storage for {context}")]
-    IntraModeEmissionAllocationFailed {
-        /// Short description of the failed allocation.
-        context: &'static str,
-    },
-
-    /// Block-symbol trace allocation failed.
-    #[error("failed to allocate encoder block-symbol trace storage for {context}")]
-    BlockSymbolTraceAllocationFailed {
-        /// Short description of the failed allocation.
-        context: &'static str,
-    },
-
-    /// Writing a block-symbol trace token through the symbol encoder failed.
-    #[error("encoder block-symbol trace symbol write failed for token {index}: {source}")]
-    BlockSymbolTraceSymbolWrite {
-        /// Zero-based index of the failing token in the trace.
-        index: usize,
-        /// Source symbol-encoder error.
-        #[source]
-        source: WriteError,
-    },
-
-    /// Finalizing block-symbol trace symbol bytes failed.
-    #[error("encoder block-symbol trace symbol encoder finalization failed: {source}")]
-    BlockSymbolTraceSymbolEncodeFinish {
-        /// Source symbol-encoder error.
-        #[source]
-        source: WriteError,
-    },
-
-    /// Assembling the minimal intra skip IVF container failed.
-    #[error("encoder minimal intra skip IVF assembly failed: {source}")]
-    MinimalIntraSkipIvf {
-        /// Source container-assembly error from the `splot-core` writer bridge.
-        #[source]
-        source: splot_core::headers::frame::MinimalIntraIvfError,
     },
 }
 

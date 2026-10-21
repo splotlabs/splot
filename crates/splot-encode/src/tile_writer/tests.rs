@@ -8,12 +8,11 @@ use splot_core::headers::frame::{
     build_key_frame_header, encode_key_frame_temporal_unit,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize};
-use splot_decode::encoder_syntax::{IntraTileSyntax, PartitionNode};
-use splot_decode::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
-use splot_parallel::ThreadCount;
+use splot_decode::encoder_syntax::{IntraTileSyntax, PartitionNode, TransformBlock};
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
 use super::*;
+use crate::test_support::{assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes};
 
 /// A small deterministic generator (xorshift64*).
 struct Rng(u64);
@@ -111,32 +110,24 @@ fn random_levels(rng: &mut Rng, tx_size: usize, max_level: i32) -> Vec<i32> {
     levels
 }
 
-fn random_block(
-    syntax: &IntraTileSyntax,
-    node: PartitionNode,
-    rng: &mut Rng,
-    case: Case,
-) -> BlockDecision {
-    let leaf = syntax.leaf(node).unwrap();
-    let mut transforms: [Vec<TransformDecision>; 3] = Default::default();
-    for tx in syntax.transform_blocks(&leaf, case.bit_depth()).unwrap() {
-        transforms[tx.plane].push(TransformDecision {
-            tx_size: tx.tx_size,
-            tx_type: TxType::DctDct,
-            levels: random_levels(rng, tx.tx_size, case.max_level),
-        });
-    }
-    BlockDecision::dc(transforms)
+/// Codes every transform block with random levels.
+struct RandomLevels {
+    rng: Rng,
+    max_level: i32,
 }
 
-fn random_tree(
-    syntax: &IntraTileSyntax,
-    node: PartitionNode,
-    rng: &mut Rng,
-    case: Case,
-) -> PartitionTree {
+impl ResidualCoder for RandomLevels {
+    fn code(&mut self, tx: &TransformBlock, _: &[u16]) -> Result<TransformDecision> {
+        Ok(TransformDecision {
+            tx_type: TxType::DctDct,
+            levels: random_levels(&mut self.rng, tx.tx_size, self.max_level),
+        })
+    }
+}
+
+fn random_tree(syntax: &IntraTileSyntax, node: PartitionNode, rng: &mut Rng) -> PartitionTree {
     if !syntax.in_frame(node) {
-        return PartitionTree::Leaf(BlockDecision::dc(Default::default()));
+        return PartitionTree::Leaf(BlockDecision::DC);
     }
     let options = syntax.partition_options(node).unwrap();
     let allowed: Vec<Partition> = PARTITIONS
@@ -152,13 +143,13 @@ fn random_tree(
         None => allowed[rng.below(allowed.len() as u64) as usize],
     };
     if partition == Partition::None {
-        return PartitionTree::Leaf(random_block(syntax, node, rng, case));
+        return PartitionTree::Leaf(BlockDecision::DC);
     }
     let children = syntax
         .children(node, partition)
         .unwrap()
         .into_iter()
-        .map(|child| random_tree(syntax, child, rng, case))
+        .map(|child| random_tree(syntax, child, rng))
         .collect();
     PartitionTree::Split {
         kind: partition,
@@ -181,10 +172,14 @@ fn encode_case(case: Case, seed: u64) -> (Vec<u8>, DecodedFrame<u16>) {
     let core = build_key_frame_header(&view, case.base_q_idx, 0).unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core).unwrap();
     let mut rng = Rng(seed | 1);
+    let mut coder = RandomLevels {
+        rng: Rng(seed.rotate_left(17) | 1),
+        max_level: case.max_level,
+    };
     while let Some(root) = writer.next_superblock_root() {
-        let tree = random_tree(writer.syntax(), root, &mut rng, case);
+        let tree = random_tree(writer.syntax(), root, &mut rng);
         writer
-            .write_superblock(&SuperblockDecision { tree })
+            .write_superblock(&SuperblockDecision { tree }, &mut coder)
             .unwrap();
     }
     let (tile, recon) = writer.finish().unwrap();
@@ -192,47 +187,20 @@ fn encode_case(case: Case, seed: u64) -> (Vec<u8>, DecodedFrame<u16>) {
     (unit, recon)
 }
 
-fn raw_bytes(frame: &DecodedFrame<u16>, bit_depth: BitDepth) -> Vec<u8> {
-    let mut out = Vec::new();
-    let view = frame.as_frame_ref();
-    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-        for row in view.plane(plane).unwrap().visible_rows() {
-            for &sample in row {
-                match bit_depth {
-                    BitDepth::Eight => out.push(sample as u8),
-                    BitDepth::Ten => out.extend_from_slice(&sample.to_le_bytes()),
-                }
-            }
-        }
-    }
-    out
-}
-
-fn decode(bytes: &[u8]) -> Vec<u8> {
-    let ctx = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1))).unwrap();
-    let mut out = Vec::new();
-    ctx.decode_raw_bytes(bytes, DecodeOptions::default(), &mut out)
-        .unwrap();
-    out
-}
-
 fn assert_round_trip(case: Case, seed: u64) -> Vec<u8> {
     let (unit, recon) = encode_case(case, seed);
-    let expected = raw_bytes(&recon, case.bit_depth());
-    let decoded = decode(&unit);
-    assert_eq!(
-        decoded.len(),
-        expected.len(),
-        "{}x{} seed {seed}",
-        case.width,
-        case.height
+    let view = recon.as_frame_ref();
+    let expected = raw_bytes(
+        [PlaneId::Y, PlaneId::U, PlaneId::V]
+            .into_iter()
+            .flat_map(|plane| view.plane(plane).unwrap().visible_rows()),
+        case.bit_depth(),
     );
-    if let Some(at) = decoded.iter().zip(&expected).position(|(a, b)| a != b) {
-        panic!(
-            "{}x{} {:?} sb {:?} seed {seed}: first sample mismatch at byte {at}",
-            case.width, case.height, case.bit_depth, case.sb_size
-        );
-    }
+    let name = format!(
+        "{}x{} {:?} sb {:?} seed {seed}",
+        case.width, case.height, case.bit_depth, case.sb_size
+    );
+    assert_same_samples(&decode(&unit), &expected, &name);
     unit
 }
 
@@ -292,9 +260,15 @@ fn rejects_unsupported_decisions() {
     .unwrap();
     let core = build_key_frame_header(&CoreSeqView::from_sequence(&seq).unwrap(), 50, 0).unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core).unwrap();
-    let tree = PartitionTree::Leaf(BlockDecision::dc(Default::default()));
+    let tree = PartitionTree::Leaf(BlockDecision::DC);
     assert!(matches!(
-        writer.write_superblock(&SuperblockDecision { tree }),
+        writer.write_superblock(
+            &SuperblockDecision { tree },
+            &mut RandomLevels {
+                rng: Rng(1),
+                max_level: 1
+            }
+        ),
         Err(TileWriterError::Partition { .. })
     ));
 
@@ -320,12 +294,9 @@ fn rejects_unsupported_decisions() {
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
 fn avm_decodes_random_key_frames_like_splot() {
-    let Some(avmdec) = std::env::var_os("SPLOT_AVM_DECODER").map(std::path::PathBuf::from) else {
-        eprintln!("skip: SPLOT_AVM_DECODER is not set");
+    let Some(avmdec) = avm_decoder() else {
         return;
     };
-    let work = std::env::temp_dir().join(format!("splot-encode-avm-{}", std::process::id()));
-    std::fs::create_dir_all(&work).unwrap();
     let mut cases: Vec<Case> = Vec::new();
     for (width, height) in SIZES.into_iter().chain([(200, 136), (352, 288)]) {
         for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
@@ -346,41 +317,15 @@ fn avm_decodes_random_key_frames_like_splot() {
     }
     for (index, case) in cases.into_iter().enumerate() {
         let unit = assert_round_trip(case, 0xa0 + index as u64);
-        let splot = decode(&unit);
-        let mut ivf = Vec::new();
-        splot_core::ivf::write_ivf_header(
-            &mut ivf,
-            &splot_core::ivf::IvfHeader::new(
-                *b"AV02",
-                case.width as u16,
-                case.height as u16,
-                30,
-                1,
-                1,
-            ),
-        )
-        .unwrap();
-        splot_core::ivf::write_ivf_frame(&mut ivf, 0, &unit).unwrap();
-        let input = work.join(format!("case{index}.ivf"));
-        let output = work.join(format!("case{index}.yuv"));
-        std::fs::write(&input, &ivf).unwrap();
-        let status = std::process::Command::new(&avmdec)
-            .arg(&input)
-            .arg("--rawvideo")
-            .arg(match case.bit_depth {
-                BitDepthIdc::Eight => "--output-bit-depth=8",
-                BitDepthIdc::Ten => "--output-bit-depth=10",
-            })
-            .arg("-o")
-            .arg(&output)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .unwrap();
-        assert!(status.success(), "avmdec failed on case {index}");
-        let avm = std::fs::read(&output).unwrap();
+        let avm = avm_decode(
+            &avmdec,
+            std::slice::from_ref(&unit),
+            (case.width, case.height),
+            case.bit_depth(),
+            &format!("writer{index}"),
+        );
         assert!(
-            avm == splot,
+            avm == decode(&unit),
             "case {index} ({}x{} {:?} {:?}): AVM output differs",
             case.width,
             case.height,

@@ -95,6 +95,18 @@ impl PartitionNode {
     pub const fn block_size(self) -> usize {
         self.0.b_size.index()
     }
+
+    /// Luma `(width, height)` in samples.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] for an invalid block size.
+    pub fn dimensions(self) -> Result<(usize, usize)> {
+        let size = self.0.b_size;
+        Ok((
+            size.width_samples().map_err(rule("block width"))?,
+            size.height_samples().map_err(rule("block height"))?,
+        ))
+    }
 }
 
 /// The § 5.20.3.2 partitions a node allows and the one its position implies.

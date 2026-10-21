@@ -4,6 +4,9 @@
 //! Coding decisions of one superblock, the input of the key-frame tile writer.
 
 pub(crate) use splot_decode::encoder_syntax::Partition;
+use splot_decode::encoder_syntax::TransformBlock;
+
+use super::Result;
 
 /// The partition tree of one superblock (§ 5.20.3.1).
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -92,40 +95,37 @@ pub(crate) enum TxType {
     HFlipadst,
 }
 
-/// One transform block of a plane.
+/// The coded form of one transform block.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TransformDecision {
-    /// § 9.3 transform-size index.
-    pub(crate) tx_size: usize,
     pub(crate) tx_type: TxType,
-    /// Signed quantized levels (`Quant[]`) in raster order over the adjusted
-    /// `Min(32, w) x Min(32, h)` block; 64-point transforms zero the rest.
+    /// Quantized levels in the row-major adjusted (at most 32x32) layout.
     pub(crate) levels: Vec<i32>,
 }
 
-/// The decisions of one `PARTITION_NONE` block.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Codes each transform block once the writer knows its prediction, because
+/// intra prediction reads the reconstruction of the blocks before it.
+pub(crate) trait ResidualCoder {
+    /// Codes `tx`, whose row-major prediction is `prediction`.
+    fn code(&mut self, tx: &TransformBlock, prediction: &[u16]) -> Result<TransformDecision>;
+}
+
+/// Block-level choices of one leaf; its transform blocks come from a [`ResidualCoder`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockDecision {
     pub(crate) y_mode: LumaMode,
     pub(crate) uv_mode: ChromaMode,
-    /// The transform blocks of planes Y, U, V in § 5.20.7.23 order; chroma is
-    /// empty when the block codes no chroma.
-    pub(crate) transforms: [Vec<TransformDecision>; 3],
 }
 
 impl BlockDecision {
-    /// A `DC_PRED` block with the given transform blocks.
-    pub(crate) const fn dc(transforms: [Vec<TransformDecision>; 3]) -> Self {
-        Self {
-            y_mode: LumaMode {
-                mode: IntraMode::Dc,
-                angle_delta: 0,
-            },
-            uv_mode: ChromaMode::Intra {
-                mode: IntraMode::Dc,
-                angle_delta: 0,
-            },
-            transforms,
-        }
-    }
+    pub(crate) const DC: Self = Self {
+        y_mode: LumaMode {
+            mode: IntraMode::Dc,
+            angle_delta: 0,
+        },
+        uv_mode: ChromaMode::Intra {
+            mode: IntraMode::Dc,
+            angle_delta: 0,
+        },
+    };
 }

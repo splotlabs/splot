@@ -10,6 +10,7 @@ use std::fmt;
 use crate::config::{Config, RateControlMode};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
+use crate::intra_frame::IntraFrameCoder;
 use crate::rate_control::{ConstantQp, FramePlanInfo, FrameType, RateController};
 use crate::stats::{FrameStats, psnr, ssim};
 
@@ -33,6 +34,8 @@ pub(crate) struct CodedFrame {
     pub(crate) temporal_unit: Vec<u8>,
     /// Reconstructed Y, U and V planes, packed like the source planes.
     pub(crate) recon: [Vec<u16>; 3],
+    /// The frame type the coder used, which can differ from the planned one.
+    pub(crate) frame_type: FrameType,
 }
 
 /// Codes one frame at the quantizer and frame type the encoder picked.
@@ -211,18 +214,14 @@ impl Encoder {
         Ok(Packet {
             data: coded.temporal_unit,
             pts: frame.pts(),
-            frame_type,
+            frame_type: coded.frame_type,
             stats,
         })
     }
 }
 
-/// shortcut: no frame coder is wired yet, so every encoder construction fails;
-/// replace this with the key-frame coder once it lands.
-fn frame_coder(_config: &Config) -> Result<Box<dyn FrameCoder + Send>> {
-    Err(Error::Unsupported {
-        what: "frame coding",
-    })
+fn frame_coder(config: &Config) -> Result<Box<dyn FrameCoder + Send>> {
+    Ok(Box::new(IntraFrameCoder::new(config)?))
 }
 
 #[cfg(test)]
@@ -254,6 +253,7 @@ mod tests {
             Ok(CodedFrame {
                 temporal_unit: vec![plan.frame_index as u8, qp],
                 recon,
+                frame_type: plan.frame_type,
             })
         }
     }
@@ -274,15 +274,29 @@ mod tests {
     }
 
     #[test]
-    fn new_reports_the_missing_frame_coder() {
-        assert!(matches!(
-            Encoder::new(Config::new(64, 64)),
-            Err(Error::Unsupported { .. })
-        ));
+    fn encodes_flat_frames_through_the_public_api() -> Result<()> {
         assert!(matches!(
             Encoder::new(Config::new(0, 64)),
             Err(Error::InvalidDimensions { .. })
         ));
+        let config = Config::new(40, 24);
+        let mut encoder = Encoder::new(config.clone())?;
+        for pts in 0..2 {
+            let planes = [vec![90; 40 * 24], vec![128; 20 * 12], vec![160; 20 * 12]];
+            encoder.send_frame(SourceFrame::new(&config, pts, planes)?)?;
+        }
+        encoder.flush()?;
+        let mut packets = Vec::new();
+        while let Some(packet) = encoder.receive_packet()? {
+            packets.push(packet);
+        }
+        assert_eq!(packets.len(), 2);
+        for (pts, packet) in packets.iter().enumerate() {
+            assert_eq!(packet.pts, pts as u64);
+            assert_eq!(packet.frame_type, FrameType::Key);
+            assert!(packet.stats.psnr_y > 40.0, "{:?}", packet.stats);
+        }
+        Ok(())
     }
 
     #[test]

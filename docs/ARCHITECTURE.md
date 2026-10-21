@@ -46,6 +46,24 @@ Gate: `cargo xtask check-dependency-direction`.
 - `splot-cli`: argument parsing, logging, file IO, and presentation.
 - `xtask`: repository automation and gates.
 
+## Encoder
+
+`splot-encode` is a staged pipeline; each stage is a module with its own tests:
+source input (`SourceFrame`, `u16` samples at every bit depth, or `y4m`) ->
+GOP and reference structure -> rate control (`RateController`) -> frame
+coding (partition choice, mode decision, transform and quantization, tile
+writer) -> temporal unit and IVF output.
+
+- The tile writer takes CDF rows, contexts, neighbour state and partition rules
+  from `splot_decode::encoder_syntax`. The encoder never copies decoder syntax.
+- Reconstruction calls `splot-recon` kernels. Tests compare every coded frame
+  with `splot-decode` output sample for sample, and an env-gated test
+  (`SPLOT_AVM_DECODER`) does the same with AVM.
+- Speed presets are rows of one data table; code reads fields, never preset
+  numbers. Hot kernels implement one trait twice (scalar and `std::simd`), and
+  property tests compare the two bit for bit.
+- Output depends only on input, configuration and thread count.
+
 ## Concurrency
 
 Only `splot-parallel` may depend on Rayon or spawn threads. The decoder runs

@@ -21,11 +21,9 @@ use splot_decode::encoder_syntax::{
 };
 use splot_recon::{BitDepth, DecodedFrame, PixelFormat, ReconError};
 
-#[cfg(test)]
-pub(crate) use decision::TransformDecision;
 pub(crate) use decision::{
-    BlockDecision, ChromaMode, IntraMode, LumaMode, Partition, PartitionTree, SuperblockDecision,
-    TxType,
+    BlockDecision, ChromaMode, IntraMode, LumaMode, Partition, PartitionTree, ResidualCoder,
+    SuperblockDecision, TransformDecision, TxType,
 };
 
 use crate::recon::ReconFrame;
@@ -36,7 +34,7 @@ const MAX_TILE_BYTES: usize = 1 << 28;
 const MAX_TILE_OPERATIONS: usize = 1 << 30;
 
 /// Every partition type, in `PartitionType` index order.
-const PARTITIONS: [Partition; 10] = [
+pub(crate) const PARTITIONS: [Partition; 10] = [
     Partition::None,
     Partition::Horz,
     Partition::Vert,
@@ -77,6 +75,8 @@ pub(crate) enum TileWriterError {
     Symbol(#[from] WriteError),
     #[error(transparent)]
     Recon(#[from] ReconError),
+    #[error(transparent)]
+    Kernel(#[from] crate::kernels::KernelError),
 }
 
 pub(crate) type Result<T> = core::result::Result<T, TileWriterError>;
@@ -149,12 +149,16 @@ impl KeyFrameTileWriter {
     }
 
     /// Writes the next superblock. After an error the writer state is partial; drop it.
-    pub(crate) fn write_superblock(&mut self, decision: &SuperblockDecision) -> Result<()> {
+    pub(crate) fn write_superblock(
+        &mut self,
+        decision: &SuperblockDecision,
+        coder: &mut impl ResidualCoder,
+    ) -> Result<()> {
         let root = self
             .next_superblock_root()
             .ok_or(TileWriterError::TileComplete)?;
         self.syntax.begin_superblock(root);
-        self.write_node(root, &decision.tree)?;
+        self.write_node(root, &decision.tree, coder)?;
         self.written += 1;
         Ok(())
     }
@@ -173,7 +177,12 @@ impl KeyFrameTileWriter {
         ))
     }
 
-    fn write_node(&mut self, node: PartitionNode, tree: &PartitionTree) -> Result<()> {
+    fn write_node(
+        &mut self,
+        node: PartitionNode,
+        tree: &PartitionTree,
+        coder: &mut impl ResidualCoder,
+    ) -> Result<()> {
         if !self.syntax.in_frame(node) {
             return Ok(());
         }
@@ -183,14 +192,14 @@ impl KeyFrameTileWriter {
         };
         self.write_partition(node, partition)?;
         match tree {
-            PartitionTree::Leaf(block) => self.write_leaf(&self.syntax.leaf(node)?, block),
+            PartitionTree::Leaf(block) => self.write_leaf(&self.syntax.leaf(node)?, *block, coder),
             PartitionTree::Split { kind, children } => {
                 let calls = self.syntax.children(node, *kind)?;
                 if calls.len() != children.len() {
                     return Err(TileWriterError::Shape("child count"));
                 }
                 for (call, child) in calls.into_iter().zip(children) {
-                    self.write_node(call, child)?;
+                    self.write_node(call, child, coder)?;
                 }
                 Ok(())
             }
@@ -278,7 +287,12 @@ impl KeyFrameTileWriter {
         Ok(())
     }
 
-    fn write_leaf(&mut self, leaf: &LeafBlock, block: &BlockDecision) -> Result<()> {
+    fn write_leaf(
+        &mut self,
+        leaf: &LeafBlock,
+        block: BlockDecision,
+        coder: &mut impl ResidualCoder,
+    ) -> Result<()> {
         if block.y_mode
             != (LumaMode {
                 mode: IntraMode::Dc,
@@ -306,25 +320,16 @@ impl KeyFrameTileWriter {
             self.symbols
                 .write_symbol_u16(self.syntax.uv_mode_cdf(false)?, symbol)?;
         }
-        self.write_residual(leaf, block)?;
+        self.write_residual(leaf, coder)?;
         self.syntax.publish_dc_leaf(leaf)?;
         Ok(())
     }
 
-    fn write_residual(&mut self, leaf: &LeafBlock, block: &BlockDecision) -> Result<()> {
-        let planned = self.syntax.transform_blocks(leaf, self.bit_depth)?;
-        let mut next = [0usize; 3];
+    fn write_residual(&mut self, leaf: &LeafBlock, coder: &mut impl ResidualCoder) -> Result<()> {
         let mut eob_u = 0;
-        for tx in &planned {
-            let decision = block.transforms[tx.plane]
-                .get(next[tx.plane])
-                .ok_or(TileWriterError::Shape("missing transform block"))?;
-            next[tx.plane] += 1;
-            if decision.tx_size != tx.tx_size {
-                return Err(TileWriterError::Shape(
-                    "transform size differs from TX_MODE_LARGEST",
-                ));
-            }
+        for tx in &self.syntax.transform_blocks(leaf, self.bit_depth)? {
+            let prediction = self.recon.predict_dc(tx)?;
+            let decision = coder.code(tx, &prediction)?;
             if decision.tx_type != TxType::DctDct {
                 return Err(TileWriterError::Unsupported(
                     "transform type other than DCT_DCT",
@@ -340,14 +345,8 @@ impl KeyFrameTileWriter {
             if tx.plane == 1 {
                 eob_u = eob;
             }
-            self.recon.reconstruct_dc(tx, &decision.levels, eob)?;
-        }
-        if next
-            .iter()
-            .zip(&block.transforms)
-            .any(|(&used, given)| used != given.len())
-        {
-            return Err(TileWriterError::Shape("extra transform blocks"));
+            self.recon
+                .reconstruct(tx, &prediction, &decision.levels, eob)?;
         }
         Ok(())
     }
