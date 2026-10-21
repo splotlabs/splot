@@ -25,6 +25,7 @@ pub mod ivf;
 mod kernels;
 pub mod preset;
 pub mod rate_control;
+mod rd;
 mod recon;
 pub mod stats;
 #[cfg(test)]

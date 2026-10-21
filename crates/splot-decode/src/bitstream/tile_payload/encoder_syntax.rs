@@ -248,6 +248,7 @@ pub fn dct_recon_params(
 }
 
 /// One key-frame tile's CDF rows and neighbour state.
+#[derive(Clone)]
 pub struct IntraTileSyntax {
     frame: TilePartitionFrameFacts,
     bounds: TilePartitionBounds,
