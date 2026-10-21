@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Key-frame coding: partition choice, `DC_PRED` residual coding, and the
-//! temporal unit of one intra frame.
+//! Key-frame coding: partition choice, SATD intra mode choice, residual
+//! coding, and the temporal unit of one intra frame.
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, build_encoder_sequence_header,
@@ -10,7 +10,8 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    IntraTileSyntax, PartitionNode, TransformBlock, dct_recon_params, tx_log2,
+    IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA, PartitionNode, TransformBlock, dct_recon_params,
+    recon_params, tx_log2,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -18,17 +19,18 @@ use crate::config::Config;
 use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
-use crate::kernels::{ForwardTransform2d, Quantizer, kernels};
+use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
 use crate::preset::PresetParams;
 use crate::rate_control::{FramePlanInfo, FrameType};
-use crate::recon::plane_id;
 use crate::tile_writer::{
-    BlockDecision, KeyFrameTileWriter, PARTITIONS, Partition, PartitionTree, ResidualCoder,
-    SuperblockDecision, TileWriterError, TransformDecision, TxType,
+    ChromaMode, INTRA_MODES, IntraModes, KeyFrameTileWriter, PARTITIONS, Partition, PartitionTree,
+    ResidualCoder, SuperblockDecision, TileWriterError, TransformDecision,
 };
 
 /// Quantizer deadzone in Q8 (`128` rounds to nearest).
 const DEADZONE_ROUNDING_Q8: u32 = 96;
+/// The largest `|AngleDeltaY|` (§ 5.20.5.5).
+const MAX_ANGLE_DELTA: i8 = 3;
 
 /// Codes every frame as a closed-loop key frame.
 pub(crate) struct IntraFrameCoder {
@@ -54,7 +56,12 @@ impl IntraFrameCoder {
             } else {
                 SuperblockSize::Block64x64
             },
-            tools: EncoderToolFlags::default(),
+            tools: EncoderToolFlags {
+                cfl: true,
+                ibp: true,
+                intra_edge_filter: true,
+                ..EncoderToolFlags::default()
+            },
         })
         .map_err(coding("sequence header"))?;
         let view = CoreSeqView::from_sequence(&sequence).ok_or(Error::Unsupported {
@@ -178,7 +185,7 @@ fn choose_tree(
     split_variance: u64,
 ) -> core::result::Result<PartitionTree, TileWriterError> {
     if !syntax.in_frame(node) {
-        return Ok(PartitionTree::Leaf(BlockDecision::DC));
+        return Ok(PartitionTree::Leaf(IntraModes::DC));
     }
     let options = syntax.partition_options(node)?;
     let allowed: Vec<Partition> = PARTITIONS
@@ -205,7 +212,7 @@ fn choose_tree(
         }
     };
     if partition == Partition::None {
-        return Ok(PartitionTree::Leaf(BlockDecision::DC));
+        return Ok(PartitionTree::Leaf(IntraModes::DC));
     }
     let children = syntax
         .children(node, partition)?
@@ -284,11 +291,11 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                     .map(|(&s, &p)| i32::from(s) - i32::from(p))
             })
             .collect();
-        let (params, transform) = dct_recon_params(
+        let (params, transform) = recon_params(
             self.qindex,
             plane_id(tx.plane)?,
-            log2_w,
-            log2_h,
+            (log2_w, log2_h),
+            tx.tx_type,
             self.bit_depth,
         )?;
         let forward = ForwardTransform2d::new(
@@ -318,10 +325,116 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             .quantize(&quantizer, &coeffs, &mut levels, &mut dequant)
             .map_err(kernel)?;
         Ok(TransformDecision {
-            tx_type: TxType::DctDct,
+            tx_type: tx.tx_type,
             levels,
         })
     }
+
+    /// The luma modes with the lowest prediction SATD.
+    fn luma_modes(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        leaf: &LeafBlock,
+        planned: IntraModes,
+    ) -> core::result::Result<IntraModes, TileWriterError> {
+        let mut best = (u64::MAX, planned);
+        for y_mode in INTRA_MODES {
+            let deltas = if y_mode.is_directional() {
+                -MAX_ANGLE_DELTA..=MAX_ANGLE_DELTA
+            } else {
+                0..=0
+            };
+            for angle_delta in deltas {
+                let modes = IntraModes {
+                    y_mode,
+                    angle_delta,
+                    ..planned
+                };
+                let cost = self.prediction_satd(syntax, leaf, modes, false)?[0];
+                if cost < best.0 {
+                    best = (cost, modes);
+                }
+            }
+        }
+        Ok(best.1)
+    }
+
+    /// The chroma mode with the lowest prediction SATD; explicit CFL alphas are
+    /// chosen per plane.
+    fn chroma_mode(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+    ) -> core::result::Result<ChromaMode, TileWriterError> {
+        let mut candidates: Vec<ChromaMode> = INTRA_MODES.map(ChromaMode::Intra).to_vec();
+        let mut alpha_u = (u64::MAX, 0);
+        let mut alpha_v = (u64::MAX, 0);
+        if syntax.cfl_allowed(leaf) {
+            candidates.push(ChromaMode::CflDerived);
+            for alpha in (-MAX_CFL_ALPHA..=MAX_CFL_ALPHA).filter(|&alpha| alpha != 0) {
+                let uv_mode = ChromaMode::Cfl {
+                    alpha_u: alpha,
+                    alpha_v: alpha,
+                };
+                let cost =
+                    self.prediction_satd(syntax, leaf, IntraModes { uv_mode, ..modes }, true)?;
+                alpha_u = alpha_u.min((cost[1], alpha));
+                alpha_v = alpha_v.min((cost[2], alpha));
+            }
+        }
+        let mut best = (
+            alpha_u.0.saturating_add(alpha_v.0),
+            ChromaMode::Cfl {
+                alpha_u: alpha_u.1,
+                alpha_v: alpha_v.1,
+            },
+        );
+        for uv_mode in candidates {
+            let cost = self.prediction_satd(syntax, leaf, IntraModes { uv_mode, ..modes }, true)?;
+            if cost[1] + cost[2] < best.0 {
+                best = (cost[1] + cost[2], uv_mode);
+            }
+        }
+        Ok(best.1)
+    }
+}
+
+impl SourceResidualCoder<'_> {
+    /// The per-plane SATD between the source and the prediction of the luma or
+    /// the chroma blocks of `leaf` under `modes`.
+    fn prediction_satd(
+        &self,
+        syntax: &mut IntraTileSyntax,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+        chroma: bool,
+    ) -> core::result::Result<[u64; 3], TileWriterError> {
+        let mut cost = [0; 3];
+        for (index, tx) in syntax.plan_leaf(leaf, modes)?.iter().enumerate() {
+            if (tx.plane > 0) != chroma {
+                continue;
+            }
+            let prediction = syntax.predict(index)?;
+            let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
+            let stride = self.source.strides[tx.plane];
+            cost[tx.plane] += kernels().satd(
+                &self.source.planes[tx.plane][tx.y * stride + tx.x..],
+                stride,
+                &prediction,
+                1 << log2_w,
+                BlockDims::new(1 << log2_w, 1 << log2_h).map_err(kernel)?,
+            );
+        }
+        Ok(cost)
+    }
+}
+
+fn plane_id(plane: usize) -> core::result::Result<PlaneId, TileWriterError> {
+    [PlaneId::Y, PlaneId::U, PlaneId::V]
+        .get(plane)
+        .copied()
+        .ok_or(TileWriterError::Unsupported("plane index"))
 }
 
 fn kernel(error: crate::kernels::KernelError) -> TileWriterError {

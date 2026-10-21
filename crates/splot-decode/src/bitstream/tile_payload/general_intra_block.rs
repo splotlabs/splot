@@ -21,13 +21,13 @@ use super::intra_joint_modes::{
 };
 use super::{DecodeTileWorkUnit, partition_size::BlockSize};
 
-const CHROMA_MODE_COUNT: u8 = 8;
+pub(crate) const CHROMA_MODE_COUNT: u8 = 8;
 const UV_INTRA_MODES_CFL_NOT_ALLOWED: u8 = 13;
 const UV_CFL_PRED_MODE: u8 = 13;
-const UV_MODE_IDX_BITS: u32 = 3;
-const Y_SECOND_MODE_BITS: u32 = 4;
-const FIRST_MODE_COUNT: usize = 13;
-const SECOND_MODE_COUNT: usize = 16;
+pub(crate) const UV_MODE_IDX_BITS: u32 = 3;
+pub(crate) const Y_SECOND_MODE_BITS: u32 = 4;
+pub(crate) const FIRST_MODE_COUNT: usize = 13;
+pub(crate) const SECOND_MODE_COUNT: usize = 16;
 
 const Y_MODE_SET_REASON: &str = "intra_y_mode_set";
 const USE_DPCM_Y_REASON: &str = "intra_use_dpcm_y";
@@ -71,7 +71,7 @@ const INTER_FSC_MODE_CONTEXT: usize = 3;
 const FSC_BSIZE_GROUPS: [usize; 29] = [
     0, 1, 1, 2, 3, 3, 4, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 3, 3, 4, 4, 6, 6, 4, 4, 6, 6,
 ];
-const CFL_EXPLICIT: u8 = 0;
+pub(crate) const CFL_EXPLICIT: u8 = 0;
 const CFL_MULTI: u8 = 2;
 const CFL_SIGN_ZERO: u8 = 0;
 const BLOCK_4X4: usize = 0;
@@ -1042,7 +1042,7 @@ fn chroma_plane_dimensions(
     (width.max(4), height.max(4))
 }
 
-fn cfl_allowed_for_chroma_mode(
+pub(crate) fn cfl_allowed_for_chroma_mode(
     chroma_tools: GeneralIntraChromaToolConfig,
     block_n4w: usize,
     block_n4h: usize,
@@ -1135,11 +1135,11 @@ fn cfl_mh_dir_size_group(block_size: BlockSize) -> usize {
     SIZE_GROUP[block_size.index()] as usize
 }
 
-const fn cfl_alpha_u_ctx(sign_u: u8, sign_v: u8) -> usize {
+pub(crate) const fn cfl_alpha_u_ctx(sign_u: u8, sign_v: u8) -> usize {
     ((sign_u - 1) * 3 + sign_v) as usize
 }
 
-const fn cfl_alpha_v_ctx(sign_u: u8, sign_v: u8) -> usize {
+pub(crate) const fn cfl_alpha_v_ctx(sign_u: u8, sign_v: u8) -> usize {
     ((sign_v - 1) * 3 + sign_u) as usize
 }
 

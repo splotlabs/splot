@@ -4,15 +4,81 @@
 //! Per-transform-unit residual replanning.
 
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
-use splot_recon::PlaneId;
+use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 
 use crate::bitstream::tile_payload::{
-    DecodeTileWorkUnit, GeneralIntraResidualError, PositionedLumaCoeffBlock,
+    CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock,
+    LumaTransformTypeContext, PositionedLumaCoeffBlock, TileBlockDecodedState,
     current_frame_qm_segment_id,
 };
 use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
 
-use super::{RectLumaPlan, ResidualPlanePlan, ResidualReconstructionPlan, TX_4X4};
+use super::{
+    GeneralIntraResidualPlan, RectLumaPlan, ResidualPlanePlan, ResidualReconstructionPlan, TX_4X4,
+};
+
+impl GeneralIntraResidualPlan {
+    /// Reconstructs planned transform block `index` from its row-major adjusted
+    /// `quant` and `eob`, through the decoder's own kernel dispatch.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reconstruct_unit<T: ReconSample>(
+        &self,
+        index: usize,
+        quant: &[i32],
+        eob: usize,
+        plane_tx_type: usize,
+        scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
+        workspace: &mut CurrentFrameWorkspace<T>,
+        block_decoded: &TileBlockDecodedState,
+        qindex: u32,
+        intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
+        luma_context: LumaTransformTypeContext,
+    ) -> core::result::Result<(), GeneralIntraResidualError> {
+        let plane = self.unit(index)?;
+        let nonzero = quant
+            .iter()
+            .rposition(|&q| q != 0)
+            .map_or(0, |last| last + 1);
+        let mut coeffs = LumaCoeffBlock {
+            eob,
+            quant_range: 0..nonzero,
+            zero_tail: quant.len() - nonzero,
+            ..LumaCoeffBlock::empty(plane_tx_type, false)
+        };
+        plane.apply_reconstruction_tx_type(&mut coeffs);
+        plane.reconstruct(
+            scratch,
+            workspace,
+            CoeffBlock::new(&coeffs, quant)?,
+            block_decoded,
+            None,
+            qindex,
+            intra_edge,
+            luma_context,
+        )
+    }
+
+    /// Marks a reconstructed luma transform block `index` as decoded.
+    pub(crate) fn publish_unit(
+        &self,
+        index: usize,
+        block_decoded: &mut TileBlockDecodedState,
+    ) -> core::result::Result<(), GeneralIntraResidualError> {
+        self.unit(index)?.publish_luma_transform(block_decoded);
+        Ok(())
+    }
+
+    fn unit(
+        &self,
+        index: usize,
+    ) -> core::result::Result<ResidualPlanePlan, GeneralIntraResidualError> {
+        self.planes.get(index).copied().ok_or(
+            GeneralIntraResidualError::InvalidReconstructionState {
+                context: "planned transform block index",
+            },
+        )
+    }
+}
 
 impl ResidualReconstructionPlan {
     pub(super) fn for_luma_transform_row(mut self, is_parent_row: bool) -> Self {

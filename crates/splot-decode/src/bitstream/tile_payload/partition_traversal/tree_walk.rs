@@ -23,7 +23,7 @@ const INTER_SDP_MAX_BLOCK_SIZE: usize = 64;
 const INTRA_REGION: u8 = 0;
 pub(super) const MIXED_REGION: u8 = 1;
 
-pub(super) fn is_cfl_context_for_chroma_ref(
+pub(crate) fn is_cfl_context_for_chroma_ref(
     uv_cfls: &TileUvCflState,
     tile_bounds: TilePartitionBounds,
     chroma_ref: ChromaRefGeometry,

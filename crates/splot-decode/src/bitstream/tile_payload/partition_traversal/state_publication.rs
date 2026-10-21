@@ -21,7 +21,7 @@ pub(crate) struct DecodedLeafPublication {
 }
 
 impl DecodedLeafPublication {
-    pub(super) fn new(call: TilePartitionCall, sub_size: BlockSize, sb_mask: usize) -> Self {
+    pub(crate) fn new(call: TilePartitionCall, sub_size: BlockSize, sb_mask: usize) -> Self {
         let sub_block_origin = [call.r & sb_mask, call.c & sb_mask];
         Self {
             superblock_origin: [

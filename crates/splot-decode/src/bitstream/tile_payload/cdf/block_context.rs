@@ -5,21 +5,35 @@
 
 pub(crate) const NON_DIRECTIONAL_MODES_COUNT: usize = 5;
 
+/// An intra prediction mode: a § 6.19.5.5 `YMode` or non-CFL `UVMode` value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
-pub(crate) enum IntraYMode {
+pub enum IntraYMode {
+    /// `DC_PRED`.
     Dc = 0,
+    /// `V_PRED`.
     Vertical = 1,
+    /// `H_PRED`.
     Horizontal = 2,
+    /// `D45_PRED`.
     D45 = 3,
+    /// `D135_PRED`.
     D135 = 4,
+    /// `D113_PRED`.
     D113 = 5,
+    /// `D157_PRED`.
     D157 = 6,
+    /// `D203_PRED`.
     D203 = 7,
+    /// `D67_PRED`.
     D67 = 8,
+    /// `SMOOTH_PRED`.
     Smooth = 9,
+    /// `SMOOTH_V_PRED`.
     SmoothVertical = 10,
+    /// `SMOOTH_H_PRED`.
     SmoothHorizontal = 11,
+    /// `PAETH_PRED`.
     Paeth = 12,
 }
 
@@ -32,7 +46,9 @@ pub(crate) enum IntraYModeClass {
 }
 
 impl IntraYMode {
-    pub(crate) const fn is_directional(self) -> bool {
+    /// Whether the mode is directional (§ 5.20.7.31 `is_directional_mode`).
+    #[must_use]
+    pub const fn is_directional(self) -> bool {
         matches!(self.class(), IntraYModeClass::Directional { .. })
     }
 

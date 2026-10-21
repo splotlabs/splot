@@ -8,7 +8,11 @@ use splot_core::headers::frame::{
     build_key_frame_header, encode_key_frame_temporal_unit,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize};
-use splot_decode::encoder_syntax::{IntraTileSyntax, PartitionNode, TransformBlock};
+use std::collections::HashSet;
+
+use splot_decode::encoder_syntax::{
+    IntraMode, IntraTileSyntax, MAX_CFL_ALPHA, PartitionNode, TransformBlock,
+};
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
 use super::*;
@@ -58,15 +62,15 @@ impl Case {
                 extended_sdp: false,
                 ext_partitions: false,
                 uneven_4way_partitions: false,
-                cfl: false,
+                cfl: true,
                 mhccp: false,
                 screen_content: false,
-                ibp: false,
+                ibp: true,
                 mrls: false,
                 fsc: false,
                 dip: false,
                 idtx_intra: false,
-                intra_edge_filter: false,
+                intra_edge_filter: true,
                 intra_ist: false,
                 cctx: false,
                 tcq: false,
@@ -119,15 +123,83 @@ struct RandomLevels {
 impl ResidualCoder for RandomLevels {
     fn code(&mut self, tx: &TransformBlock, _: &[u16]) -> Result<TransformDecision> {
         Ok(TransformDecision {
-            tx_type: TxType::DctDct,
+            tx_type: tx.tx_type,
             levels: random_levels(&mut self.rng, tx.tx_size, self.max_level),
         })
     }
 }
 
-fn random_tree(syntax: &IntraTileSyntax, node: PartitionNode, rng: &mut Rng) -> PartitionTree {
+/// Every `(YMode, AngleDeltaY)` pair: the 61 § 5.20.5.5 joint modes.
+fn luma_modes() -> Vec<(IntraMode, i8)> {
+    INTRA_MODES
+        .into_iter()
+        .flat_map(|mode| {
+            let deltas = if mode.is_directional() { -3..=3 } else { 0..=0 };
+            deltas.map(move |delta| (mode, delta))
+        })
+        .collect()
+}
+
+/// Cycles through every luma mode and every chroma mode; CFL alphas are random.
+struct ModePicker {
+    rng: Rng,
+    next: usize,
+    luma: Vec<(IntraMode, i8)>,
+    coded_luma: HashSet<(u8, i8)>,
+    coded_chroma: HashSet<u8>,
+}
+
+impl ModePicker {
+    fn new(seed: u64) -> Self {
+        let luma = luma_modes();
+        Self {
+            next: seed as usize * 23 % luma.len(),
+            rng: Rng(seed.rotate_left(31) | 1),
+            luma,
+            coded_luma: HashSet::new(),
+            coded_chroma: HashSet::new(),
+        }
+    }
+
+    fn pick(&mut self, cfl_allowed: bool) -> IntraModes {
+        let (y_mode, angle_delta) = self.luma[self.next % self.luma.len()];
+        let uv = self.next % (INTRA_MODES.len() + 2);
+        self.next += 1;
+        let uv_mode = match uv {
+            _ if uv < INTRA_MODES.len() => ChromaMode::Intra(INTRA_MODES[uv]),
+            _ if !cfl_allowed => ChromaMode::Intra(INTRA_MODES[self.rng.below(13) as usize]),
+            13 => loop {
+                let span = 2 * MAX_CFL_ALPHA as u64 + 1;
+                let alpha_u = self.rng.below(span) as i8 - MAX_CFL_ALPHA;
+                let alpha_v = self.rng.below(span) as i8 - MAX_CFL_ALPHA;
+                if alpha_u != 0 || alpha_v != 0 {
+                    break ChromaMode::Cfl { alpha_u, alpha_v };
+                }
+            },
+            _ => ChromaMode::CflDerived,
+        };
+        self.coded_luma.insert((y_mode as u8, angle_delta));
+        self.coded_chroma.insert(match uv_mode {
+            ChromaMode::Intra(mode) => mode as u8,
+            ChromaMode::Cfl { .. } => 13,
+            ChromaMode::CflDerived => 14,
+        });
+        IntraModes {
+            y_mode,
+            angle_delta,
+            uv_mode,
+        }
+    }
+}
+
+fn random_tree(
+    syntax: &IntraTileSyntax,
+    node: PartitionNode,
+    rng: &mut Rng,
+    modes: &mut ModePicker,
+) -> PartitionTree {
     if !syntax.in_frame(node) {
-        return PartitionTree::Leaf(BlockDecision::DC);
+        return PartitionTree::Leaf(IntraModes::DC);
     }
     let options = syntax.partition_options(node).unwrap();
     let allowed: Vec<Partition> = PARTITIONS
@@ -143,13 +215,15 @@ fn random_tree(syntax: &IntraTileSyntax, node: PartitionNode, rng: &mut Rng) -> 
         None => allowed[rng.below(allowed.len() as u64) as usize],
     };
     if partition == Partition::None {
-        return PartitionTree::Leaf(BlockDecision::DC);
+        let leaf = syntax.leaf(node).unwrap();
+        let cfl_allowed = syntax.cfl_allowed(&leaf);
+        return PartitionTree::Leaf(modes.pick(cfl_allowed));
     }
     let children = syntax
         .children(node, partition)
         .unwrap()
         .into_iter()
-        .map(|child| random_tree(syntax, child, rng))
+        .map(|child| random_tree(syntax, child, rng, modes))
         .collect();
     PartitionTree::Split {
         kind: partition,
@@ -157,8 +231,9 @@ fn random_tree(syntax: &IntraTileSyntax, node: PartitionNode, rng: &mut Rng) -> 
     }
 }
 
-/// Encodes one random key frame; returns the Annex B temporal unit and the recon frame.
-fn encode_case(case: Case, seed: u64) -> (Vec<u8>, DecodedFrame<u16>) {
+/// Encodes one random key frame; returns the Annex B temporal unit, the recon
+/// frame, and the modes it coded.
+fn encode_case(case: Case, seed: u64) -> (Vec<u8>, DecodedFrame<u16>, ModePicker) {
     let seq = build_encoder_sequence_header(&EncoderStreamParams {
         width: case.width,
         height: case.height,
@@ -172,23 +247,28 @@ fn encode_case(case: Case, seed: u64) -> (Vec<u8>, DecodedFrame<u16>) {
     let core = build_key_frame_header(&view, case.base_q_idx, 0).unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core).unwrap();
     let mut rng = Rng(seed | 1);
+    let mut modes = ModePicker::new(seed);
     let mut coder = RandomLevels {
         rng: Rng(seed.rotate_left(17) | 1),
         max_level: case.max_level,
     };
     while let Some(root) = writer.next_superblock_root() {
-        let tree = random_tree(writer.syntax(), root, &mut rng);
+        let tree = random_tree(writer.syntax(), root, &mut rng, &mut modes);
         writer
             .write_superblock(&SuperblockDecision { tree }, &mut coder)
             .unwrap();
     }
     let (tile, recon) = writer.finish().unwrap();
     let unit = encode_key_frame_temporal_unit(&seq, &core, true, &tile).unwrap();
-    (unit, recon)
+    (unit, recon, modes)
 }
 
 fn assert_round_trip(case: Case, seed: u64) -> Vec<u8> {
-    let (unit, recon) = encode_case(case, seed);
+    assert_round_trip_modes(case, seed).0
+}
+
+fn assert_round_trip_modes(case: Case, seed: u64) -> (Vec<u8>, ModePicker) {
+    let (unit, recon, modes) = encode_case(case, seed);
     let view = recon.as_frame_ref();
     let expected = raw_bytes(
         [PlaneId::Y, PlaneId::U, PlaneId::V]
@@ -201,7 +281,7 @@ fn assert_round_trip(case: Case, seed: u64) -> Vec<u8> {
         case.width, case.height, case.bit_depth, case.sb_size
     );
     assert_same_samples(&decode(&unit), &expected, &name);
-    unit
+    (unit, modes)
 }
 
 const SIZES: [(u32, u32); 5] = [(1, 1), (17, 9), (64, 64), (65, 65), (130, 66)];
@@ -216,6 +296,33 @@ fn random_key_frames_decode_to_the_encoder_recon() {
             }
         }
     }
+}
+
+#[test]
+fn every_intra_mode_round_trips() {
+    for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+        for sb_size in [SuperblockSize::Block64x64, SuperblockSize::Block128x128] {
+            let mut luma = HashSet::new();
+            let mut chroma = HashSet::new();
+            for seed in 0..4 {
+                let case = Case::new(136, 72, bit_depth, sb_size);
+                let (_, modes) = assert_round_trip_modes(case, seed);
+                luma.extend(modes.coded_luma);
+                chroma.extend(modes.coded_chroma);
+            }
+            assert_eq!(luma.len(), 61, "{bit_depth:?} {sb_size:?}");
+            assert_eq!(chroma.len(), 15, "{bit_depth:?} {sb_size:?}");
+        }
+    }
+}
+
+#[test]
+fn intra_prediction_tools_off_round_trip() {
+    let mut case = Case::new(130, 66, BitDepthIdc::Ten, SuperblockSize::Block128x128);
+    case.tools.cfl = false;
+    case.tools.ibp = false;
+    case.tools.intra_edge_filter = false;
+    assert_round_trip(case, 11);
 }
 
 #[test]
@@ -260,7 +367,7 @@ fn rejects_unsupported_decisions() {
     .unwrap();
     let core = build_key_frame_header(&CoreSeqView::from_sequence(&seq).unwrap(), 50, 0).unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core).unwrap();
-    let tree = PartitionTree::Leaf(BlockDecision::DC);
+    let tree = PartitionTree::Leaf(IntraModes::DC);
     assert!(matches!(
         writer.write_superblock(
             &SuperblockDecision { tree },
@@ -273,7 +380,7 @@ fn rejects_unsupported_decisions() {
     ));
 
     let mut tools = case.tools;
-    tools.cfl = true;
+    tools.mhccp = true;
     let seq = build_encoder_sequence_header(&EncoderStreamParams {
         width: 16,
         height: 16,
