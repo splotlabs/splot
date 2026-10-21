@@ -7,13 +7,13 @@
 //! then predicts and reconstructs through the decoder's per-unit kernel
 //! dispatch, so the encoder never assembles edges or prediction itself.
 
-use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::frame::{FrameHeaderCore, TxMode};
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolEncoder;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, OutputIndex, PixelFormat,
-    PlaneId, PlaneRect, PlaneSize, TransformClass, coefficient_scan_slice,
+    PlaneId, PlaneRect, PlaneSize,
 };
 
 use super::super::block_decoded_state::TileBlockDecodedState;
@@ -35,8 +35,8 @@ use super::super::partition_traversal::{
     is_cfl_context_for_chroma_ref, publish_intra_leaf_state,
 };
 use super::{
-    EncoderSyntaxError, IntraMode, IntraTileSyntax, LeafBlock, Result, TransformBlock, rule,
-    tx_log2,
+    EncoderSyntaxError, IntraMode, IntraTileSyntax, LeafBlock, Result, TransformBlock, TxPartition,
+    coefficient_scan, rule, tx_log2,
 };
 use crate::pipeline::general_intra::{
     GeneralIntraReconScratch, chroma_edge_smoothness, general_intra_block_ctx,
@@ -148,7 +148,7 @@ impl TxType {
         Self::HFlipadst,
     ];
 
-    fn from_value(value: usize) -> Result<Self> {
+    pub(super) fn from_value(value: usize) -> Result<Self> {
         Self::ALL
             .get(value)
             .copied()
@@ -165,6 +165,9 @@ pub(super) struct IntraTools {
     enable_chroma_dctonly: bool,
     bit_depth: BitDepth,
     qindex: u32,
+    pub(super) tx_mode: Option<TxMode>,
+    pub(super) reduced_tx_set: usize,
+    pub(super) reduced_tx_part_set: bool,
 }
 
 impl IntraTools {
@@ -196,6 +199,12 @@ impl IntraTools {
                 BitDepthIdc::Ten => BitDepth::Ten,
             },
             qindex,
+            tx_mode: core.intra_tail.as_ref().map(|tail| tail.tx_mode),
+            reduced_tx_set: core
+                .intra_tail
+                .as_ref()
+                .map_or(0, |tail| usize::from(tail.reduced_tx_set)),
+            reduced_tx_part_set: tq.reduced_tx_part_set,
         })
     }
 }
@@ -438,14 +447,32 @@ impl IntraTileSyntax {
         leaf: &LeafBlock,
         modes: IntraModes,
     ) -> Result<Vec<TransformBlock>> {
+        self.plan_leaf_partitioned(leaf, modes, TxPartition::None)
+    }
+
+    /// [`Self::plan_leaf`] with the luma transform split by `partition`, one of
+    /// [`Self::luma_tx_partitions`].
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for a mode or a partition the leaf cannot code.
+    pub fn plan_leaf_partitioned(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+        partition: TxPartition,
+    ) -> Result<Vec<TransformBlock>> {
         let (block_ctx, _) = self.block_ctx(leaf);
         let (_, joint) = self.y_mode_index(leaf, modes)?;
         let block_modes = block_modes(leaf, modes, joint)?;
         let luma = rect_luma_plan(&block_modes, block_ctx, false, self.sb_size4)
             .map_err(rule("luma plan"))?;
         let chroma = rect_chroma_plan(&block_modes, self.tools.cfl_ds_filter_index, self.sb_size4);
-        let plan = GeneralIntraResidualPlan::rect(block_ctx, luma, chroma, false, None, false)
+        let mut plan = GeneralIntraResidualPlan::rect(block_ctx, luma, chroma, false, None, false)
             .map_err(rule("residual plan"))?;
+        if let Some(tx_size) = self.partitioned_tx_size(leaf, partition)? {
+            plan.partition_luma(tx_size, partition)
+                .map_err(rule("transform partition"))?;
+        }
         let uv_mode = block_modes.coeff_uv_mode();
         let angle_delta_uv = inherited_chroma_angle_delta(uv_mode, modes.y_mode, modes.angle_delta);
         let units = plan
@@ -509,7 +536,7 @@ impl IntraTileSyntax {
         let tx = self.unit(index)?;
         let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let zeros = vec![0; 1 << (log2_w.min(5) + log2_h.min(5))];
-        self.reconstruct_with(index, &zeros, 0)?;
+        self.reconstruct_with(index, &zeros, 0, tx.tx_type)?;
         let (width, height) = (1usize << log2_w, 1usize << log2_h);
         let plane = plane_id(tx.plane)?;
         let storage = self
@@ -549,6 +576,17 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError`] for a level count that does not match the
     /// block, or without a planned block `index`.
     pub fn reconstruct(&mut self, index: usize, levels: &[i32]) -> Result<()> {
+        let tx_type = self.unit(index)?.tx_type;
+        self.reconstruct_as(index, tx_type, levels)
+    }
+
+    /// [`Self::reconstruct`] with transform type `tx_type`, which must be the type
+    /// the decoder reads or infers for these levels.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for a level count that does not match the
+    /// block, or without a planned block `index`.
+    pub fn reconstruct_as(&mut self, index: usize, tx_type: TxType, levels: &[i32]) -> Result<()> {
         let tx = self.unit(index)?;
         let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let (width, height) = (1usize << log2_w.min(5), 1usize << log2_h.min(5));
@@ -557,13 +595,12 @@ impl IntraTileSyntax {
                 "level count of a transform block",
             ));
         }
-        let scan = coefficient_scan_slice(width, height, TransformClass::TwoD)
-            .map_err(rule("coefficient scan"))?;
+        let scan = coefficient_scan(&TransformBlock { tx_type, ..tx })?;
         let eob = scan
             .iter()
             .rposition(|&pos| levels[usize::from(pos)] != 0)
             .map_or(0, |last| last + 1);
-        self.reconstruct_with(index, levels, eob)?;
+        self.reconstruct_with(index, levels, eob, tx_type)?;
         if let Some(leaf) = &self.recon.leaf
             && tx.plane == 0
         {
@@ -682,7 +719,13 @@ impl IntraTileSyntax {
         self.recon.workspace.freeze().map_err(rule("frame"))
     }
 
-    fn reconstruct_with(&mut self, index: usize, quant: &[i32], eob: usize) -> Result<()> {
+    fn reconstruct_with(
+        &mut self,
+        index: usize,
+        quant: &[i32],
+        eob: usize,
+        tx_type: TxType,
+    ) -> Result<()> {
         let Recon {
             workspace,
             scratch,
@@ -691,13 +734,12 @@ impl IntraTileSyntax {
             ..
         } = &mut self.recon;
         let leaf = leaf.as_ref().ok_or(NO_LEAF)?;
-        let tx = leaf.units.get(index).ok_or(NO_LEAF)?;
         leaf.plan
             .reconstruct_unit(
                 index,
                 quant,
                 eob,
-                tx.tx_type as usize,
+                tx_type as usize,
                 scratch,
                 workspace,
                 block_decoded,
@@ -706,6 +748,15 @@ impl IntraTileSyntax {
                 leaf.luma_context,
             )
             .map_err(rule("reconstruction"))
+    }
+
+    /// The luma transform-type context of the planned leaf.
+    pub(super) fn planned_luma_context(&self) -> Result<LumaTransformTypeContext> {
+        self.recon
+            .leaf
+            .as_ref()
+            .map(|leaf| leaf.luma_context)
+            .ok_or(NO_LEAF)
     }
 
     fn unit(&self, index: usize) -> Result<TransformBlock> {

@@ -23,7 +23,7 @@ pub(crate) struct CoeffDcSignSelector {
 }
 
 impl CoeffDcSignSelector {
-    fn tile_selector(self) -> TileCdfSelector {
+    pub(crate) fn tile_selector(self) -> TileCdfSelector {
         TileCdfSelector::DcSign {
             plane_type: self.plane_type,
             group: self.group,

@@ -761,7 +761,7 @@ pub(crate) fn luma_transform_type_context(
     )
 }
 
-fn luma_tx_partition_context(
+pub(crate) fn luma_tx_partition_context(
     tx_mode: Option<TxMode>,
     block_size: BlockSize,
     lossless: bool,

@@ -8,8 +8,9 @@ use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 
 use crate::bitstream::tile_payload::{
     CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock,
-    LumaTransformTypeContext, PositionedLumaCoeffBlock, TileBlockDecodedState,
-    current_frame_qm_segment_id,
+    LumaTransformTypeContext, LumaTxPartition, PositionedLumaCoeffBlock, TileBlockDecodedState,
+    current_frame_qm_segment_id, luma_partition_record_fills_block,
+    luma_transform_record_starts_in_frame, luma_transform_records_for_partition,
 };
 use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
 
@@ -56,6 +57,59 @@ impl GeneralIntraResidualPlan {
             intra_edge,
             luma_context,
         )
+    }
+
+    /// Replaces the first plan, the luma plane of a block of at most 64x64, with
+    /// the in-frame units of the § 5.20.6.3 `partition` of its `tx_size`, planned
+    /// as the decoder plans parsed partition units.
+    pub(crate) fn partition_luma(
+        &mut self,
+        tx_size: usize,
+        partition: LumaTxPartition,
+    ) -> core::result::Result<(), GeneralIntraResidualError> {
+        let luma = self.unit(0)?;
+        if luma.plane_id != PlaneId::Y {
+            return Err(GeneralIntraResidualError::InvalidReconstructionState {
+                context: "luma transform partition plane",
+            });
+        }
+        let records = luma_transform_records_for_partition(luma.x, luma.y, tx_size, partition)?;
+        let count = records.len();
+        let (frame_width, frame_height) = (
+            luma.block_ctx.frame_mi_cols() * 4,
+            luma.block_ctx.frame_mi_rows() * 4,
+        );
+        let mut units = Vec::with_capacity(count);
+        for record in records {
+            if !luma_transform_record_starts_in_frame(&record, frame_width, frame_height) {
+                continue;
+            }
+            let unit = luma.transform_unit_plan(&PositionedLumaCoeffBlock {
+                x: record.x,
+                y: record.y,
+                tx_size: record.tx_size,
+                middle: record.middle,
+                coeffs: LumaCoeffBlock::empty(0, false),
+            })?;
+            let fills = luma_partition_record_fills_block(
+                luma.tx_fills_residual_block(),
+                count,
+                record,
+                luma.x,
+                luma.y,
+            );
+            units.push(if fills {
+                unit
+            } else {
+                ResidualPlanePlan {
+                    residual_width4: luma.residual_width4,
+                    residual_height4: luma.residual_height4,
+                    ..unit
+                }
+            });
+        }
+        self.planes.splice(0..1, units);
+        Ok(())
     }
 
     /// Marks a reconstructed luma transform block `index` as decoded.
