@@ -18,9 +18,13 @@ use crate::write::{WriteError, WriteResult};
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 1 << 20;
 const DEFAULT_MAX_OPERATIONS: usize = 1 << 20;
 const SYMBOL_VALUE_BITS: u32 = 15;
-const EXIT_Y_WINDOW: u32 = (1 << (SYMBOL_VALUE_BITS - 1)) - 1;
-const INITIAL_CODE_BITS: u64 = SYMBOL_VALUE_BITS as u64;
+/// Low 15 bits of the final interval base whose inversion is the § 8.2.4
+/// trailing one bit followed by fourteen zero padding bits.
+const EXIT_Y_WINDOW: u64 = (1 << (SYMBOL_VALUE_BITS - 1)) - 1;
 const BYPASS_LITERAL_CHUNK_BITS: u32 = 8;
+/// `low` settles whole bytes once it holds this many bits and keeps at least
+/// 24, so a 16-bit range and its carry always stay inside the register.
+const SETTLE_BITS: u32 = 32;
 
 macro_rules! write_symbol_to_cdf {
     ($encoder:expr, $cdf:expr, $symbol:expr) => {{
@@ -36,16 +40,12 @@ macro_rules! write_symbol_to_cdf {
             });
         }
 
-        let step = encoder.symbol_step(cdf, shape.n, symbol)?;
-        encoder.ensure_projected_steps(u64::from(step.bits), 1)?;
-        encoder.range = step.range_after;
-        encoder.value_limit = step.range_after;
-        encoder.step_bits = encoder.step_bits.saturating_add(u64::from(step.bits));
-        encoder.steps.push(RangeStep::Symbol {
-            low: step.low,
-            bits: step.bits,
-            residual_limit: step.range_after >> step.bits,
-        });
+        let (cur, width) = encoder.symbol_interval(cdf, shape.n, symbol)?;
+        let bits = SYMBOL_VALUE_BITS - floor_log2(width);
+        encoder.reserve(u64::from(bits), 1)?;
+        encoder.low = (encoder.low + u64::from(cur)) << bits;
+        encoder.range = width << bits;
+        encoder.advance(bits);
         encoder.symbol_count = encoder.symbol_count.saturating_add(1);
 
         if encoder.config.cdf_update == CdfUpdateMode::Enabled {
@@ -150,14 +150,26 @@ impl SymbolEncoderOutput {
 }
 
 /// I/O-free AV2 § 8.2 symbol encoder.
+///
+/// The decoder keeps `SymbolValue = X - low`, where `X` is the inverted
+/// payload read so far and `low` is the base of the coded interval. Each
+/// write runs the matching decoder step backwards on `low` and `SymbolRange`,
+/// and the high bytes of `low` settle into the output as soon as no carry
+/// can reach past them, so each write costs O(1) amortized time.
 #[derive(Debug, Clone)]
 pub struct SymbolEncoder {
     config: SymbolEncoderConfig,
     range: u32,
-    value_limit: u32,
-    step_bits: u64,
+    /// Unsettled low bits of the interval base, plus at most one carry bit.
+    low: u64,
+    /// Width of `low` in bits, without the carry bit.
+    low_bits: u32,
+    /// Settled high bytes of the interval base, before inversion.
+    settled: Vec<u8>,
+    /// Bits the decoder consumes after its 15-bit `init_symbol()` read.
+    coded_bits: u64,
     symbol_count: u64,
-    steps: Vec<RangeStep>,
+    operation_count: usize,
 }
 
 impl SymbolEncoder {
@@ -173,10 +185,12 @@ impl SymbolEncoder {
         Self {
             config,
             range: SYMBOL_RANGE_INIT,
-            value_limit: SYMBOL_RANGE_INIT,
-            step_bits: 0,
+            low: 0,
+            low_bits: SYMBOL_VALUE_BITS,
+            settled: Vec::new(),
+            coded_bits: 0,
             symbol_count: 0,
-            steps: Vec::new(),
+            operation_count: 0,
         }
     }
 
@@ -194,8 +208,8 @@ impl SymbolEncoder {
 
     /// Returns the number of primitive range steps committed so far.
     #[must_use]
-    pub fn operation_count(&self) -> usize {
-        self.steps.len()
+    pub const fn operation_count(&self) -> usize {
+        self.operation_count
     }
 
     /// Writes a pseudo-raw bit with equal probability, inverse to AV2 § 8.2.3.
@@ -206,8 +220,8 @@ impl SymbolEncoder {
     /// [`WriteError::SymbolOperationLimit`] if it would exceed the configured
     /// primitive operation count.
     pub fn write_bool(&mut self, value: bool) -> WriteResult<()> {
-        self.ensure_projected_steps(1, 1)?;
-        self.push_bypass_chunk(u32::from(value), 1);
+        self.reserve(1, 1)?;
+        self.write_bypass(u32::from(value), 1);
         Ok(())
     }
 
@@ -233,14 +247,14 @@ impl SymbolEncoder {
         }
 
         let chunk_count = n.div_ceil(BYPASS_LITERAL_CHUNK_BITS) as usize;
-        self.ensure_projected_steps(u64::from(n), chunk_count)?;
+        self.reserve(u64::from(n), chunk_count)?;
         let mut remaining = n;
         while remaining > 0 {
             let chunk_bits = remaining.min(BYPASS_LITERAL_CHUNK_BITS);
             remaining -= chunk_bits;
             let chunk_mask = (1u32 << chunk_bits) - 1;
             let chunk_value = (value >> remaining) & chunk_mask;
-            self.push_bypass_chunk(chunk_value, chunk_bits);
+            self.write_bypass(chunk_value, chunk_bits);
         }
         self.symbol_count = self.symbol_count.saturating_add(u64::from(n));
         Ok(())
@@ -278,14 +292,14 @@ impl SymbolEncoder {
         };
 
         let chunk_count = bits.div_ceil(BYPASS_LITERAL_CHUNK_BITS) as usize;
-        self.ensure_projected_steps(u64::from(bits), chunk_count)?;
+        self.reserve(u64::from(bits), chunk_count)?;
         let has_terminator = value < max_bits;
         let mut remaining = bits;
         while remaining > 0 {
             let chunk_bits = remaining.min(BYPASS_LITERAL_CHUNK_BITS);
             remaining -= chunk_bits;
             let chunk_value = u32::from(has_terminator && remaining == 0);
-            self.push_bypass_chunk(chunk_value, chunk_bits);
+            self.write_bypass(chunk_value, chunk_bits);
         }
         self.symbol_count = self.symbol_count.saturating_add(u64::from(bits));
         Ok(())
@@ -315,210 +329,160 @@ impl SymbolEncoder {
 
     /// Finalizes the symbol payload and returns owned tile-payload bytes.
     ///
+    /// The payload is the shortest one § 8.2.4 `exit_symbol()` accepts: the
+    /// coded bits, the trailing one bit, and zero bits up to the byte boundary.
+    ///
     /// # Errors
-    /// Returns [`WriteError::SymbolOutputTooLarge`] if even the finalized payload
-    /// cannot fit in the configured output limit, or
-    /// [`WriteError::SymbolFinalizationFailed`] if no valid `exit_symbol()` tail
-    /// can be constructed for the committed operation stream.
-    pub fn finish(self) -> WriteResult<SymbolEncoderOutput> {
-        let requested = bytes_for_bits(
-            INITIAL_CODE_BITS + self.step_bits,
-            self.config.max_output_bytes,
-        )?;
-        if requested > self.config.max_output_bytes {
+    /// Returns [`WriteError::SymbolOutputTooLarge`] if the finalized payload
+    /// cannot fit in the configured output limit.
+    pub fn finish(mut self) -> WriteResult<SymbolEncoderOutput> {
+        let len = self.payload_len(self.coded_bits)?;
+        if len > self.config.max_output_bytes {
             return Err(WriteError::SymbolOutputTooLarge {
-                requested,
+                requested: len,
                 limit: self.config.max_output_bytes,
             });
         }
 
-        let bytes = self.finalize_bytes()?;
+        // `range >= 2^15`, so `[low, low + range)` holds a base ending in the exit window.
+        self.low += EXIT_Y_WINDOW.wrapping_sub(self.low) & ((1 << SYMBOL_VALUE_BITS) - 1);
+        // One bits pad `low` to whole bytes; they invert to zero padding.
+        let pad = (8 - self.low_bits % 8) % 8;
+        self.low = (self.low << pad) | ((1 << pad) - 1);
+        self.low_bits += pad;
+        self.settled
+            .try_reserve_exact(self.low_bits as usize / 8)
+            .map_err(|_| WriteError::SymbolOutputTooLarge {
+                requested: len,
+                limit: self.config.max_output_bytes,
+            })?;
+        while self.low_bits > 0 {
+            self.settle_byte();
+        }
+
+        let mut bytes = self.settled;
+        bytes.truncate(len);
+        for byte in &mut bytes {
+            *byte = !*byte;
+        }
         Ok(SymbolEncoderOutput {
             bytes,
             symbol_count: self.symbol_count,
-            operation_count: self.steps.len(),
+            operation_count: self.operation_count,
         })
     }
 
-    fn push_bypass_chunk(&mut self, value: u32, bits: u32) {
+    /// Writes `bits <= 8` bypass bits, MSB-first. The decoder takes the upper
+    /// half of the range for a zero bit (§ 8.2.3), so every zero bit adds the
+    /// range at its scale to the base.
+    fn write_bypass(&mut self, value: u32, bits: u32) {
         debug_assert!(bits <= BYPASS_LITERAL_CHUNK_BITS);
-
-        let mut split = u64::from(self.range) << bits;
-        let mut low = 0u64;
-        let mut high = u64::from(self.value_limit) << bits;
-        for bit in (0..bits).rev() {
-            split >>= 1;
-            if ((value >> bit) & 1) == 0 {
-                low += split;
-            } else {
-                high = high.min(low + split);
-            }
-        }
-        let residual_limit = high - low;
-        self.steps.push(RangeStep::Bypass {
-            low,
-            bits,
-            residual_limit,
-        });
-        self.value_limit = residual_limit as u32;
-        self.step_bits = self.step_bits.saturating_add(u64::from(bits));
+        let zeros = !value & ((1 << bits) - 1);
+        self.low = (self.low << bits) + u64::from(self.range) * u64::from(zeros);
+        self.advance(bits);
     }
 
-    fn symbol_step<T: CdfStorage>(
+    fn advance(&mut self, bits: u32) {
+        self.low_bits += bits;
+        self.coded_bits += u64::from(bits);
+        while self.low_bits >= SETTLE_BITS {
+            self.settle_byte();
+        }
+    }
+
+    /// Moves the top byte of `low` into `settled`, carrying into the bytes
+    /// already settled. The interval never leaves `[0, 2^(15 + K))`, so the
+    /// carry always stops inside `settled`.
+    fn settle_byte(&mut self) {
+        let shift = self.low_bits - 8;
+        let byte = self.low >> shift;
+        if byte > 0xff {
+            for settled in self.settled.iter_mut().rev() {
+                let (sum, overflow) = settled.overflowing_add(1);
+                *settled = sum;
+                if !overflow {
+                    break;
+                }
+            }
+        }
+        self.settled.push(byte as u8);
+        self.low &= (1 << shift) - 1;
+        self.low_bits = shift;
+    }
+
+    /// Returns the base offset `cur` and width of `target`'s interval, as the
+    /// decoder search in § 8.2.6 derives them from the current range.
+    fn symbol_interval<T: CdfStorage>(
         &self,
         cdf: &[T],
         n: usize,
         target: usize,
-    ) -> WriteResult<SymbolStep> {
+    ) -> WriteResult<(u32, u32)> {
+        let mut prev = self.range;
         let mut cur = self.range;
-        for symbol in 0..=target {
-            let prev = cur;
+        for (symbol, prob_inc) in PROB_INC[n - 2].iter().enumerate().take(target + 1) {
             let f = if symbol == n - 1 {
                 0
             } else {
                 CDF_PROB_SCALE - cdf[symbol].to_i32() as u32
             };
-            let prob_inc = PROB_INC[n - 2][symbol] as u32;
-            let pp = ((f >> EC_PROB_SHIFT) << 4) + prob_inc;
+            let pp = ((f >> EC_PROB_SHIFT) << 4) + *prob_inc as u32;
+            prev = cur;
             cur = (((self.range >> 8) * pp) >> 7) << 3;
-
-            if symbol == target {
-                let width = prev
-                    .checked_sub(cur)
-                    .filter(|width| *width != 0)
-                    .ok_or(WriteError::SymbolArithmeticRange)?;
-                let bits = SYMBOL_VALUE_BITS - floor_log2(width);
-                return Ok(SymbolStep {
-                    low: cur,
-                    bits,
-                    range_after: width << bits,
-                });
-            }
         }
-
-        Err(WriteError::SymbolArithmeticRange)
+        let width = prev
+            .checked_sub(cur)
+            .filter(|width| *width != 0)
+            .ok_or(WriteError::SymbolArithmeticRange)?;
+        Ok((cur, width))
     }
 
-    fn ensure_projected_steps(
-        &mut self,
-        additional_bits: u64,
-        additional_steps: usize,
-    ) -> WriteResult<()> {
-        let requested_operations = self.steps.len().checked_add(additional_steps).ok_or(
-            WriteError::SymbolOperationLimit {
+    /// Checks the limits for one more write and reserves its settled bytes,
+    /// so the write itself cannot fail.
+    fn reserve(&mut self, additional_bits: u64, additional_operations: usize) -> WriteResult<()> {
+        let limit = self.config.max_operations;
+        let operations = self
+            .operation_count
+            .checked_add(additional_operations)
+            .ok_or(WriteError::SymbolOperationLimit {
                 requested: usize::MAX,
-                limit: self.config.max_operations,
-            },
-        )?;
-        if requested_operations > self.config.max_operations {
+                limit,
+            })?;
+        if operations > limit {
             return Err(WriteError::SymbolOperationLimit {
-                requested: requested_operations,
-                limit: self.config.max_operations,
+                requested: operations,
+                limit,
             });
         }
 
-        let total_bits = INITIAL_CODE_BITS
-            .checked_add(self.step_bits)
-            .and_then(|bits| bits.checked_add(additional_bits))
-            .ok_or(WriteError::SymbolOutputTooLarge {
+        let limit = self.config.max_output_bytes;
+        let coded_bits = self.coded_bits.checked_add(additional_bits).ok_or(
+            WriteError::SymbolOutputTooLarge {
                 requested: usize::MAX,
-                limit: self.config.max_output_bytes,
-            })?;
-        let requested = bytes_for_bits(total_bits, self.config.max_output_bytes)?;
-        if requested > self.config.max_output_bytes {
-            return Err(WriteError::SymbolOutputTooLarge {
-                requested,
-                limit: self.config.max_output_bytes,
-            });
+                limit,
+            },
+        )?;
+        let requested = self.payload_len(coded_bits)?;
+        if requested > limit {
+            return Err(WriteError::SymbolOutputTooLarge { requested, limit });
         }
-        self.steps
-            .try_reserve(additional_steps)
-            .map_err(|_| WriteError::SymbolOutputTooLarge {
-                requested,
-                limit: self.config.max_output_bytes,
-            })?;
+        // Settled bytes stay at least 24 bits behind the payload end.
+        self.settled
+            .try_reserve(requested.saturating_sub(self.settled.len()))
+            .map_err(|_| WriteError::SymbolOutputTooLarge { requested, limit })?;
+        self.operation_count = operations;
         Ok(())
     }
 
-    fn finalize_bytes(&self) -> WriteResult<Vec<u8>> {
-        let mut suffixes = Vec::new();
-        suffixes.try_reserve_exact(self.steps.len()).map_err(|_| {
-            WriteError::SymbolOutputTooLarge {
-                requested: self.config.max_output_bytes.saturating_add(1),
+    /// Returns the payload length for `coded_bits` plus the trailing one bit.
+    fn payload_len(&self, coded_bits: u64) -> WriteResult<usize> {
+        coded_bits
+            .checked_add(8)
+            .and_then(|bits| usize::try_from(bits / 8).ok())
+            .ok_or(WriteError::SymbolOutputTooLarge {
+                requested: usize::MAX,
                 limit: self.config.max_output_bytes,
-            }
-        })?;
-        // TODO(spec: ENC-BITSTREAM-WRITER): Replace this correctness-first
-        for candidate in 0..self.value_limit {
-            suffixes.clear();
-            let Some(initial) = self.backward_candidate(candidate, &mut suffixes) else {
-                continue;
-            };
-            if !exit_window_matches(initial, &suffixes) {
-                continue;
-            }
-
-            let requested = bytes_for_bits(
-                INITIAL_CODE_BITS + self.step_bits,
-                self.config.max_output_bytes,
-            )?;
-            let mut writer = PayloadWriter::with_capacity(requested, self.config.max_output_bytes)?;
-            write_inverted_bits(&mut writer, initial, SYMBOL_VALUE_BITS)?;
-            for chunk in suffixes.iter().rev() {
-                write_inverted_bits(&mut writer, chunk.value, chunk.bits)?;
-            }
-            let bytes = writer.into_bytes()?;
-            if bytes.len() > self.config.max_output_bytes {
-                return Err(WriteError::SymbolOutputTooLarge {
-                    requested: bytes.len(),
-                    limit: self.config.max_output_bytes,
-                });
-            }
-            return Ok(bytes);
-        }
-
-        Err(WriteError::SymbolFinalizationFailed)
-    }
-
-    fn backward_candidate(&self, candidate: u32, suffixes: &mut Vec<BitChunk>) -> Option<u32> {
-        let mut next = candidate;
-        for step in self.steps.iter().rev() {
-            match *step {
-                RangeStep::Symbol {
-                    low,
-                    bits,
-                    residual_limit,
-                } => {
-                    let mask = mask_for_bits(bits);
-                    suffixes.push(BitChunk {
-                        value: next & mask,
-                        bits,
-                    });
-                    let residual = next >> bits;
-                    if residual >= residual_limit {
-                        return None;
-                    }
-                    next = low + residual;
-                }
-                RangeStep::Bypass {
-                    low,
-                    bits,
-                    residual_limit,
-                } => {
-                    if u64::from(next) >= residual_limit {
-                        return None;
-                    }
-                    let scaled = low + u64::from(next);
-                    let mask = u64::from(mask_for_bits(bits));
-                    suffixes.push(BitChunk {
-                        value: (scaled & mask) as u32,
-                        bits,
-                    });
-                    next = u32::try_from(scaled >> bits).ok()?;
-                }
-            }
-        }
-        Some(next)
+            })
     }
 }
 
@@ -526,141 +490,6 @@ impl Default for SymbolEncoder {
     fn default() -> Self {
         Self::new()
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum RangeStep {
-    Symbol {
-        low: u32,
-        bits: u32,
-        residual_limit: u32,
-    },
-    Bypass {
-        low: u64,
-        bits: u32,
-        residual_limit: u64,
-    },
-}
-
-#[derive(Debug, Clone, Copy)]
-struct SymbolStep {
-    low: u32,
-    bits: u32,
-    range_after: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct BitChunk {
-    value: u32,
-    bits: u32,
-}
-
-struct PayloadWriter {
-    bytes: Vec<u8>,
-    current: u8,
-    nbits: u8,
-    limit: usize,
-}
-
-impl PayloadWriter {
-    fn with_capacity(capacity: usize, limit: usize) -> WriteResult<Self> {
-        if capacity > limit {
-            return Err(WriteError::SymbolOutputTooLarge {
-                requested: capacity,
-                limit,
-            });
-        }
-
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(capacity)
-            .map_err(|_| WriteError::SymbolOutputTooLarge {
-                requested: capacity,
-                limit,
-            })?;
-        Ok(Self {
-            bytes,
-            current: 0,
-            nbits: 0,
-            limit,
-        })
-    }
-
-    fn write_bit(&mut self, bit: u8) -> WriteResult<()> {
-        if bit > 1 {
-            return Err(WriteError::ValueTooWide {
-                value: u64::from(bit),
-                width_bits: 1,
-            });
-        }
-
-        self.current = (self.current << 1) | bit;
-        self.nbits += 1;
-        if self.nbits == 8 {
-            self.push_byte(self.current)?;
-            self.current = 0;
-            self.nbits = 0;
-        }
-        Ok(())
-    }
-
-    fn into_bytes(mut self) -> WriteResult<Vec<u8>> {
-        if self.nbits != 0 {
-            let pad = 8 - u32::from(self.nbits);
-            self.push_byte(self.current << pad)?;
-        }
-        Ok(self.bytes)
-    }
-
-    fn push_byte(&mut self, byte: u8) -> WriteResult<()> {
-        if self.bytes.len() >= self.limit {
-            return Err(WriteError::SymbolOutputTooLarge {
-                requested: self.bytes.len().saturating_add(1),
-                limit: self.limit,
-            });
-        }
-        self.bytes.push(byte);
-        Ok(())
-    }
-}
-
-fn bytes_for_bits(bits: u64, limit: usize) -> WriteResult<usize> {
-    let bytes = bits
-        .checked_add(7)
-        .map(|bits| bits / 8)
-        .and_then(|bytes| usize::try_from(bytes).ok())
-        .ok_or(WriteError::SymbolOutputTooLarge {
-            requested: usize::MAX,
-            limit,
-        })?;
-    Ok(bytes)
-}
-
-fn mask_for_bits(bits: u32) -> u32 {
-    (1u32 << bits) - 1
-}
-
-fn exit_window_matches(initial: u32, suffixes: &[BitChunk]) -> bool {
-    let mut tail = 0u32;
-    append_tail_bits(&mut tail, initial, SYMBOL_VALUE_BITS);
-    for chunk in suffixes.iter().rev() {
-        append_tail_bits(&mut tail, chunk.value, chunk.bits);
-    }
-    tail == EXIT_Y_WINDOW
-}
-
-fn append_tail_bits(tail: &mut u32, value: u32, bits: u32) {
-    for bit in (0..bits).rev() {
-        *tail = ((*tail << 1) | ((value >> bit) & 1)) & ((1 << SYMBOL_VALUE_BITS) - 1);
-    }
-}
-
-fn write_inverted_bits(writer: &mut PayloadWriter, value: u32, bits: u32) -> WriteResult<()> {
-    for bit in (0..bits).rev() {
-        let y = ((value >> bit) & 1) as u8;
-        writer.write_bit(y ^ 1)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
