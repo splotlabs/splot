@@ -3,16 +3,18 @@
 
 //! Encoder-facing syntax facade; not a stable API.
 //!
-//! [`IntraTileSyntax`] owns one key-frame tile's CDF rows and neighbour state and
-//! hands an encoder the same partition rules, § 8.3.2 contexts, and CDF rows the
-//! tile parser uses. The encoder writes each symbol into the returned row, then
-//! publishes the coded facts back, so both sides stay in step.
+//! [`IntraTileSyntax`] owns one key-frame tile's CDF rows, neighbour state, and
+//! reconstruction, and hands an encoder the same partition rules, § 8.3.2
+//! contexts, CDF rows, and prediction kernels the tile decoder uses. The encoder
+//! writes each symbol into the returned row, reconstructs each transform block
+//! through the facade, then publishes the coded facts back, so both sides stay
+//! in step.
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_recon::{BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId};
 
-use super::cdf::block_context::{IntraJointMode, IntraYMode, MrlSelection, uv_mode_ctx};
+use super::cdf::block_context::{IntraYMode, uv_mode_ctx};
 use super::cdf::coeff_context::{
     CoeffBaseContext, CoeffBrContext, coeff_base_eob_ctx, dc_sign_ctx,
 };
@@ -22,9 +24,7 @@ use super::coeff_loop::max_level::{CoeffTransformClass, coeff_is_low_frequency};
 use super::coeff_loop::scan_walk::CoeffScanEntry;
 use super::coeff_loop::{NonZeroCoeffEobContextInput, nonzero_coeff_eob_symbol_input};
 use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TransformCoeffBlockState};
-use super::general_intra_residual::{
-    dct_block_recon_params, txb_skip_selector, txb_skip_tx_size_ctx,
-};
+use super::general_intra_residual::{block_recon_params, txb_skip_selector, txb_skip_tx_size_ctx};
 use super::intra_joint_modes::{
     TileFscModeState, TileIntraJointModeState, TileIntraYModeState, TileLumaPaletteState,
     TileUseDipState, TileUsesMrlsState, TileUvCflState,
@@ -34,13 +34,16 @@ pub use super::partition::PartitionType as Partition;
 use super::partition_allowed::{PartitionDecisionFacts, partition_decision_facts};
 use super::partition_size::BlockSize;
 use super::partition_traversal::{
-    DecodeBlockFrontier, DecodeBlockPart, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
-    ROOT_HAS_CHROMA, TilePartitionBounds, TilePartitionCall, TilePartitionFrameFacts,
-    call_in_frame, child_calls, decode_block_frontier, partition_allowed_input,
-    partition_context_inputs, publish_intra_leaf_state, updated_chroma_offset, valid_subsize,
+    DecodeBlockFrontier, DecodeBlockPart, ROOT_HAS_CHROMA, TilePartitionBounds, TilePartitionCall,
+    TilePartitionFrameFacts, call_in_frame, child_calls, decode_block_frontier,
+    partition_allowed_input, partition_context_inputs, updated_chroma_offset, valid_subsize,
 };
 use super::tile_frontier::{frame_mi_dimensions, minimal_partition_frame_facts};
-use crate::residual::pipeline::{GeneralIntraResidualPlan, RectChromaPlan, RectLumaPlan};
+
+mod intra;
+
+pub use super::cdf::block_context::IntraYMode as IntraMode;
+pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, TxType};
 
 #[path = "encoder_filters.rs"]
 mod filters;
@@ -190,6 +193,9 @@ impl LeafBlock {
 /// One § 5.20.7.24 transform block, in plane samples.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TransformBlock {
+    /// The type the decoder infers: `Mode_To_Txfm` for chroma (§ 5.20.7.29), and
+    /// for luma `DCT_DCT`, which `reduced_tx_set == 2` infers.
+    pub tx_type: TxType,
     /// Plane index (`0` luma).
     pub plane: usize,
     /// Left sample in the plane.
@@ -249,17 +255,62 @@ pub fn dct_recon_params(
     log2_height: u32,
     bit_depth: BitDepth,
 ) -> Result<(DequantBlockParams, InverseTransform2dOuter)> {
-    dct_block_recon_params(qindex, plane, log2_width, log2_height, bit_depth)
-        .map_err(rule("recon parameters"))
+    recon_params(
+        qindex,
+        plane,
+        (log2_width, log2_height),
+        TxType::DctDct,
+        bit_depth,
+    )
 }
 
-/// One key-frame tile's CDF rows and neighbour state.
-#[derive(Clone)]
+/// The decoder's dequantization and inverse-transform parameters of a
+/// `(log2 width, log2 height)` block of type `tx_type`.
+///
+/// # Errors
+/// Returns [`EncoderSyntaxError::Rule`] for an invalid shape.
+pub fn recon_params(
+    qindex: u32,
+    plane: PlaneId,
+    (log2_width, log2_height): (u32, u32),
+    tx_type: TxType,
+    bit_depth: BitDepth,
+) -> Result<(DequantBlockParams, InverseTransform2dOuter)> {
+    block_recon_params(
+        qindex,
+        plane,
+        log2_width,
+        log2_height,
+        tx_type as usize,
+        bit_depth,
+    )
+    .map_err(rule("recon parameters"))
+}
+
+/// A saved [`IntraTileSyntax`] context plus the reconstruction of one region, so
+/// a search can code a trial and roll it back without copying the frame.
+pub struct SyntaxSnapshot {
+    cdfs: TileCdfSubset,
+    coeff: TileCoeffContextState,
+    mi_sizes: TileMiSizeState,
+    joint_modes: TileIntraJointModeState,
+    uses_mrls: TileUsesMrlsState,
+    use_dip: TileUseDipState,
+    fsc_modes: TileFscModeState,
+    palette_y: TileLumaPaletteState,
+    uv_cfls: TileUvCflState,
+    y_modes: TileIntraYModeState,
+    recon: intra::ReconSnapshot,
+}
+
+/// One key-frame tile's CDF rows, neighbour state, and reconstruction.
 pub struct IntraTileSyntax {
     frame: TilePartitionFrameFacts,
     bounds: TilePartitionBounds,
     chroma: ChromaFormatIdc,
     sb_size4: usize,
+    tools: intra::IntraTools,
+    recon: intra::Recon,
     cdfs: TileCdfSubset,
     coeff: TileCoeffContextState,
     mi_sizes: TileMiSizeState,
@@ -302,6 +353,7 @@ impl IntraTileSyntax {
             .num_4x4_wide()
             .map_err(rule("superblock size"))?;
         let chroma = seq.general.chroma_format_idc;
+        let tools = intra::IntraTools::new(seq, core, base_q_idx)?;
         let mut coeff = TileCoeffContextState::default();
         coeff
             .reset_for_tile_chroma(rows.clone(), cols.clone(), chroma)
@@ -311,6 +363,8 @@ impl IntraTileSyntax {
             bounds: TilePartitionBounds::new(rows.clone(), cols.clone()),
             chroma,
             sb_size4,
+            recon: intra::Recon::new(seq, core, &tools, (mi_rows, mi_cols), sb_size4)?,
+            tools,
             cdfs: FrameCdfSubset::default_for_base_q(base_q_idx).tile_copy(),
             coeff,
             mi_sizes: TileMiSizeState::new_for_tile(rows.clone(), cols.clone(), frame.sb_size())
@@ -373,6 +427,9 @@ impl IntraTileSyntax {
         if root.0.c == 0 {
             self.mi_sizes.enter_sb_row(root.0.r);
         }
+        self.recon
+            .block_decoded
+            .clear_superblock(root.0.r, root.0.c);
     }
 
     /// Whether `node` starts inside the frame; nodes outside code nothing.
@@ -490,48 +547,6 @@ impl IntraTileSyntax {
         self.tile_row(TileCdfSelector::UvModeCflNotAllowed {
             ctx: uv_mode_ctx(y_mode),
         })
-    }
-
-    /// The transform blocks of a DC-predicted `leaf` coded with `TX_MODE_LARGEST`,
-    /// in § 5.20.7.23 order.
-    ///
-    /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] for an invalid geometry.
-    pub fn transform_blocks(
-        &self,
-        leaf: &LeafBlock,
-        bit_depth: BitDepth,
-    ) -> Result<Vec<TransformBlock>> {
-        let (block_ctx, _) = crate::pipeline::general_intra::general_intra_block_ctx(
-            &leaf.frontier,
-            self.chroma,
-            (0, 0..self.frame.mi_cols()),
-            self.mi_dimensions(),
-            bit_depth,
-        );
-        let chroma = leaf
-            .frontier
-            .has_chroma
-            .then_some(RectChromaPlan::Mode(super::SupportedChromaMode::Dc, None));
-        let plan = GeneralIntraResidualPlan::rect(
-            block_ctx,
-            RectLumaPlan::Dc { use_tcq: false },
-            chroma,
-            false,
-            None,
-            false,
-        )
-        .map_err(rule("residual plan"))?;
-        Ok(plan
-            .transform_blocks()
-            .map(|(plane, x, y, tx_size, fills_block)| TransformBlock {
-                plane,
-                x,
-                y,
-                tx_size,
-                fills_block,
-            })
-            .collect())
     }
 
     /// The `all_zero` CDF row of `tx`; `eob_u_nonzero` is `EobU != 0` for the V block.
@@ -718,43 +733,6 @@ impl IntraTileSyntax {
                 dc_category,
             })
             .map_err(rule("coefficient contexts"))
-    }
-
-    /// Publishes a coded `DC_PRED` leaf into the neighbour state.
-    ///
-    /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] for an invalid geometry.
-    pub fn publish_dc_leaf(&mut self, leaf: &LeafBlock) -> Result<()> {
-        let mut mode = GeneralIntraLeafMode::luma(
-            IntraJointMode::DC,
-            IntraYMode::Dc,
-            0,
-            0,
-            MrlSelection::Disabled,
-        );
-        if leaf.frontier.has_chroma {
-            mode = mode.with_uv_cfl(false);
-        }
-        publish_intra_leaf_state::<core::convert::Infallible>(
-            self.frame,
-            leaf.call,
-            &leaf.frontier,
-            mode,
-            leaf.call.b_size,
-            &mut self.joint_modes,
-            &mut self.fsc_modes,
-            &mut self.use_dip,
-            &mut self.uses_mrls,
-            &mut self.palette_y,
-            &mut self.uv_cfls,
-            &mut self.y_modes,
-            &mut self.mi_sizes,
-        )
-        .map_err(|error| match error {
-            GeneralIntraTreeWalkError::Traversal(source) => rule("leaf publication")(source),
-            GeneralIntraTreeWalkError::MiSize(source) => rule("leaf publication")(source),
-            GeneralIntraTreeWalkError::Leaf(never) => match never {},
-        })
     }
 
     fn y_mode_ctx(&self, leaf: &LeafBlock) -> Result<usize> {

@@ -77,10 +77,10 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
         Ok((w, h))
     }
 
-    fn evaluate_leaf(&mut self, node: Rect) -> Result<(RdCost, BlockDecision), Self::Error> {
+    fn evaluate_leaf(&mut self, node: Rect) -> Result<(RdCost, IntraModes), Self::Error> {
         self.coded.push(node);
         self.leaf_evaluations += 1;
-        Ok(((self.leaf_cost)(node), BlockDecision::DC))
+        Ok(((self.leaf_cost)(node), IntraModes::DC))
     }
 
     fn partition_rate(&mut self, _: Rect, partition: Partition) -> Result<Bits, Self::Error> {

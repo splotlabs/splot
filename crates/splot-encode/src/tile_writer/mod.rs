@@ -5,8 +5,8 @@
 //!
 //! [`KeyFrameTileWriter`] walks each [`SuperblockDecision`] in § 5.20.3.1 syntax
 //! order, writes every symbol through [`SymbolEncoder`] with the CDF rows and
-//! contexts of the decoder's `encoder_syntax` facade, publishes the coded facts
-//! back to the facade, and reconstructs each transform block.
+//! contexts of the decoder's `encoder_syntax` facade, reconstructs each transform
+//! block through the facade, and publishes the coded facts back to it.
 
 pub(crate) mod coeffs;
 mod decision;
@@ -19,15 +19,14 @@ use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
     EncoderSyntaxError, IntraTileSyntax, LeafBlock, PartitionCdf, PartitionNode, RectKind,
+    TransformBlock,
 };
-use splot_recon::{BitDepth, DecodedFrame, PixelFormat, ReconError};
+use splot_recon::{DecodedFrame, ReconError};
 
 pub(crate) use decision::{
-    BlockDecision, ChromaMode, IntraMode, LumaMode, Partition, PartitionTree, ResidualCoder,
-    SuperblockDecision, TransformDecision, TxType,
+    ChromaMode, INTRA_MODES, IntraModes, Partition, PartitionTree, ResidualCoder,
+    SuperblockDecision, TransformDecision,
 };
-
-use crate::recon::ReconFrame;
 
 /// Output byte cap of one tile; larger than any 4096x2160 tile of 10-bit levels needs.
 const MAX_TILE_BYTES: usize = 1 << 28;
@@ -86,8 +85,6 @@ pub(crate) type Result<T> = core::result::Result<T, TileWriterError>;
 pub(crate) struct KeyFrameTileWriter {
     syntax: IntraTileSyntax,
     symbols: SymbolEncoder,
-    recon: ReconFrame,
-    bit_depth: BitDepth,
     sb_cols: usize,
     superblocks: usize,
     written: usize,
@@ -98,36 +95,15 @@ impl KeyFrameTileWriter {
     /// A writer for the frame `core` coded with `seq`.
     pub(crate) fn new(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<Self> {
         check_supported(seq, core)?;
-        let base_q_idx = core
-            .quantization_params
-            .ok_or(TileWriterError::Unsupported("missing quantization params"))?
-            .base_q_idx;
-        let size = core
-            .frame_size
-            .ok_or(TileWriterError::Unsupported("missing frame size"))?;
         let syntax = IntraTileSyntax::new(seq, core)?;
         let (mi_rows, mi_cols) = syntax.mi_dimensions();
         let sb4 = syntax.superblock_size4();
-        let bit_depth = if seq.general.bit_depth_idc.get() == 1 {
-            BitDepth::Eight
-        } else {
-            BitDepth::Ten
-        };
-        let recon = ReconFrame::new(
-            (size.width, size.height),
-            (mi_cols, mi_rows),
-            bit_depth,
-            PixelFormat::Yuv420,
-            base_q_idx,
-        )?;
         let config = SymbolEncoderConfig::new()
             .with_max_output_bytes(MAX_TILE_BYTES)
             .with_max_operations(MAX_TILE_OPERATIONS);
         Ok(Self {
             syntax,
             symbols: SymbolEncoder::with_config(config),
-            recon,
-            bit_depth,
             sb_cols: mi_cols.div_ceil(sb4),
             superblocks: mi_cols.div_ceil(sb4) * mi_rows.div_ceil(sb4),
             written: 0,
@@ -192,7 +168,7 @@ impl KeyFrameTileWriter {
         }
         Ok((
             self.symbols.finish()?.into_bytes(),
-            self.recon.into_frame()?,
+            self.syntax.finish()?,
             self.filters.finish()?,
         ))
     }
@@ -310,70 +286,65 @@ impl KeyFrameTileWriter {
     fn write_leaf(
         &mut self,
         leaf: &LeafBlock,
-        block: BlockDecision,
+        planned: IntraModes,
         coder: &mut impl ResidualCoder,
     ) -> Result<()> {
+        let mut modes = coder.luma_modes(&mut self.syntax, leaf, planned)?;
+        let mut blocks = self.syntax.plan_leaf(leaf, modes)?;
+        let mut levels = vec![Vec::new(); blocks.len()];
+        self.code_blocks(&blocks, false, &mut levels, coder)?;
+        if leaf.has_chroma() {
+            modes.uv_mode = coder.chroma_mode(&mut self.syntax, leaf, modes)?;
+            blocks = self.syntax.plan_leaf(leaf, modes)?;
+            self.code_blocks(&blocks, true, &mut levels, coder)?;
+        }
         self.filters
             .write_cdef_index(&mut self.syntax, &mut self.symbols, leaf)?;
-        if block.y_mode
-            != (LumaMode {
-                mode: IntraMode::Dc,
-                angle_delta: 0,
-            })
-        {
-            return Err(TileWriterError::Unsupported("luma mode other than DC_PRED"));
-        }
-        let symbol = Symbol::new(0);
-        self.symbols
-            .write_symbol_u16(self.syntax.y_mode_set_cdf()?, symbol)?;
-        self.symbols
-            .write_symbol_u16(self.syntax.y_mode_index_cdf(leaf)?, symbol)?;
-        if leaf.has_chroma() {
-            if block.uv_mode
-                != (ChromaMode::Intra {
-                    mode: IntraMode::Dc,
-                    angle_delta: 0,
-                })
-            {
-                return Err(TileWriterError::Unsupported(
-                    "chroma mode other than DC_PRED",
-                ));
-            }
-            self.symbols
-                .write_symbol_u16(self.syntax.uv_mode_cdf(false)?, symbol)?;
-        }
-        self.write_residual(leaf, coder)?;
-        self.syntax.publish_dc_leaf(leaf)?;
-        Ok(())
-    }
-
-    fn write_residual(&mut self, leaf: &LeafBlock, coder: &mut impl ResidualCoder) -> Result<()> {
+        self.syntax
+            .write_intra_modes(leaf, modes, &mut self.symbols)?;
         let mut eob_u = 0;
-        let transforms = self.syntax.transform_blocks(leaf, self.bit_depth)?;
-        let mut eobs = Vec::with_capacity(transforms.len());
-        for tx in &transforms {
-            let prediction = self.recon.predict_dc(tx)?;
-            let decision = coder.code(tx, &prediction)?;
-            if decision.tx_type != TxType::DctDct {
-                return Err(TileWriterError::Unsupported(
-                    "transform type other than DCT_DCT",
-                ));
-            }
+        let mut eobs = Vec::with_capacity(blocks.len());
+        for (tx, levels) in blocks.iter().zip(&levels) {
             let eob = coeffs::write_coeffs(
                 &mut self.syntax,
                 &mut self.symbols,
                 tx,
-                &decision.levels,
+                levels,
                 tx.plane == 2 && eob_u != 0,
             )?;
             if tx.plane == 1 {
                 eob_u = eob;
             }
-            self.recon
-                .reconstruct(tx, &prediction, &decision.levels, eob)?;
             eobs.push(eob);
         }
-        self.filters.record_leaf(leaf, &transforms, &eobs)
+        self.syntax.publish_intra_leaf(leaf, modes)?;
+        self.filters.record_leaf(leaf, &blocks, &eobs)
+    }
+
+    /// Codes and reconstructs the luma or the chroma blocks of the planned leaf.
+    /// Planes predict independently except CFL, which reads the finished luma.
+    fn code_blocks(
+        &mut self,
+        blocks: &[TransformBlock],
+        chroma: bool,
+        levels: &mut [Vec<i32>],
+        coder: &mut impl ResidualCoder,
+    ) -> Result<()> {
+        for (index, tx) in blocks.iter().enumerate() {
+            if (tx.plane > 0) != chroma {
+                continue;
+            }
+            let prediction = self.syntax.predict(index)?;
+            let decision = coder.code(tx, &prediction)?;
+            if decision.tx_type != tx.tx_type {
+                return Err(TileWriterError::Unsupported(
+                    "transform type other than the inferred one",
+                ));
+            }
+            self.syntax.reconstruct(index, &decision.levels)?;
+            levels[index] = decision.levels;
+        }
+        Ok(())
     }
 }
 
@@ -422,8 +393,8 @@ fn check_supported(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<()> {
     if partition.enable_sdp {
         return unsupported("semi-decoupled partitioning");
     }
-    if intra.enable_cfl_intra || intra.enable_mhccp || intra.enable_dip || intra.enable_ibp {
-        return unsupported("CFL, MHCCP, DIP, or IBP");
+    if intra.enable_mhccp || intra.enable_dip || intra.enable_mrls {
+        return unsupported("MHCCP, DIP, or MRL");
     }
     if tq.enable_idtx_intra || tq.enable_intra_ist || tq.enable_cctx || tq.enable_tcq {
         return unsupported("IDTX/FSC, intra IST, CCTX, or TCQ");

@@ -216,6 +216,7 @@ fn facade_rows_back_the_rate_model() {
     for tx_size in 0..4 {
         let log2 = tx_size as u32 + 2;
         let tx = TransformBlock {
+            tx_type: splot_decode::encoder_syntax::TxType::DctDct,
             plane: 0,
             x: 0,
             y: 0,

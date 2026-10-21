@@ -2101,12 +2101,14 @@ fn intra_secondary_transform_kernel(
 }
 
 /// The § 7.14.4 dequantization and § 7.15.4 inverse-transform parameters the
-/// decoder uses for a DCT block without quantizer matrices, TCQ, or secondary transforms.
-pub(crate) fn dct_block_recon_params(
+/// decoder uses for a `plane_tx_type` block without quantizer matrices, TCQ, or
+/// secondary transforms.
+pub(crate) fn block_recon_params(
     qindex: u32,
     plane_id: PlaneId,
     log2_width: u32,
     log2_height: u32,
+    plane_tx_type: usize,
     bit_depth: BitDepth,
 ) -> Result<(DequantBlockParams, InverseTransform2dOuter), GeneralIntraResidualError> {
     let samples = (1usize << log2_width) << log2_height;
@@ -2118,7 +2120,7 @@ pub(crate) fn dct_block_recon_params(
         plane_id,
         log2_width,
         log2_height,
-        DCT_DCT,
+        plane_tx_type,
         false,
         false,
         false,
@@ -2126,6 +2128,37 @@ pub(crate) fn dct_block_recon_params(
         bit_depth,
     )?;
     Ok((setup.params, setup.transform))
+}
+
+/// The § 5.20.7.29 transform type of a lossy intra chroma block, which codes no
+/// transform-type symbol: `Mode_To_Txfm` of `uv_mode`, or `DCT_DCT` outside the set.
+pub(crate) fn intra_chroma_plane_tx_type(
+    plane: usize,
+    tx_size: usize,
+    uv_mode: usize,
+    angle_delta_uv: i32,
+    enable_chroma_dctonly: bool,
+) -> Result<usize, GeneralIntraResidualError> {
+    staged_transform_tool_plane_tx_type(
+        CoeffOrdinaryTxSizeGeometryConfig {
+            plane,
+            start_x: 0,
+            start_y: 0,
+            tx_size,
+        },
+        false,
+        false,
+        CoeffOrdinaryBranchTxSetBaseConfig {
+            reduced_tx_set: 0,
+            enable_chroma_dctonly,
+            uv_mode,
+            angle_delta_uv,
+            luma_tx_type: DCT_DCT,
+            chroma_inter_tx_type: DCT_DCT,
+            parity_hiding: false,
+            use_tcq: false,
+        },
+    )
 }
 
 pub(crate) fn txb_skip_tx_size_ctx(tx_size: usize) -> usize {

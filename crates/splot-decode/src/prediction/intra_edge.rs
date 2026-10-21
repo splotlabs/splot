@@ -16,7 +16,7 @@ use crate::bitstream::tile_payload::{GeneralIntraResidualError, MiGrid};
 use crate::pipeline::reconstruct::{OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters};
 use crate::prediction::{TileGridConstructionError, tile_grid_dimensions};
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct TileSmoothGrid {
     grid: MiGrid<bool>,
 }

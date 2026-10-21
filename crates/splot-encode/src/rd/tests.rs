@@ -12,20 +12,17 @@ use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolEncoder;
 use splot_decode::encoder_syntax::{
-    IntraTileSyntax, PartitionCdf, TransformBlock, dct_recon_params,
+    IntraTileSyntax, PartitionCdf, TransformBlock, TxType, dct_recon_params,
 };
-use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneId,
-    PlaneRect, PlaneSize, reconstruct_transform_block_residual,
-};
+use splot_recon::{BitDepth, PlaneId, reconstruct_transform_block_residual};
 
 use super::checkpoint::Checkpoint;
 use super::coeff_rate::{RateSink, block_rate};
 use super::*;
 use crate::tile_writer::coeffs::adjusted_log2;
 use crate::tile_writer::{
-    BlockDecision, KeyFrameTileWriter, PARTITIONS, Partition, PartitionTree, ResidualCoder,
-    SuperblockDecision, TransformDecision, TxType,
+    IntraModes, KeyFrameTileWriter, PARTITIONS, Partition, PartitionTree, ResidualCoder,
+    SuperblockDecision, TransformDecision,
 };
 
 /// A deterministic generator (xorshift64*).
@@ -236,7 +233,7 @@ fn leaf_frame_rates(bit_depth: BitDepthIdc, qindex: u32, seed: u64) -> (f64, f64
         max_level: 1 + seed % 300,
         coded: Vec::new(),
     };
-    let tree = PartitionTree::Leaf(BlockDecision::DC);
+    let tree = PartitionTree::Leaf(IntraModes::DC);
     writer
         .write_superblock(&SuperblockDecision { tree }, &mut coder)
         .unwrap();
@@ -292,20 +289,19 @@ fn frozen_rates_leave_rows_unchanged_and_track_adapting_rates() {
     let root = syntax.superblock_root(0, 0);
     syntax.begin_superblock(root);
     let leaf = syntax.leaf(root).unwrap();
-    let tx = syntax.transform_blocks(&leaf, BitDepth::Eight).unwrap()[0];
+    let tx = syntax.plan_leaf(&leaf, IntraModes::DC).unwrap()[0];
     let mut coder = RecordedLevels {
         rng: Rng(9),
         max_level: 40,
         coded: Vec::new(),
     };
     let levels = coder.code(&tx, &[]).unwrap().levels;
-    let pristine = syntax.clone();
+    let pristine = syntax.snapshot((0, 0, 64, 64)).unwrap();
     let frozen = block_rate(&mut syntax, &mut RateSink::frozen(), &tx, &levels, false).unwrap();
     let again = block_rate(&mut syntax, &mut RateSink::frozen(), &tx, &levels, false).unwrap();
     assert_eq!(frozen, again, "frozen pricing must not adapt rows");
-    let mut adapted = pristine.clone();
-    let adapting =
-        block_rate(&mut adapted, &mut RateSink::adapting(), &tx, &levels, false).unwrap();
+    syntax.restore(&pristine).unwrap();
+    let adapting = block_rate(&mut syntax, &mut RateSink::adapting(), &tx, &levels, false).unwrap();
     assert_ne!(frozen, adapting);
     let ratio = bits_f64(frozen) / bits_f64(adapting);
     assert!(
@@ -314,150 +310,71 @@ fn frozen_rates_leave_rows_unchanged_and_track_adapting_rates() {
     );
 }
 
-fn workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u16> {
-    let info = DecodedFrameInfo::new(
-        OutputIndex::new(0),
-        BitDepth::Eight,
-        PixelFormat::Yuv420,
-        PlaneSize::new(width, height).unwrap(),
-        PlaneRect::new(0, 0, width, height).unwrap(),
-    )
-    .unwrap();
-    CurrentFrameWorkspace::new(info, 0).unwrap()
-}
-
-fn plane_bytes(recon: &CurrentFrameWorkspace<u16>) -> Vec<u16> {
-    [PlaneId::Y, PlaneId::U, PlaneId::V]
-        .into_iter()
-        .flat_map(|plane| recon.samples(plane).unwrap().to_vec())
-        .collect()
+/// Codes one random leaf at the root and returns its symbol bytes and frame.
+fn code_trial(
+    syntax: &mut IntraTileSyntax,
+    symbols: &mut SymbolEncoder,
+    root: splot_decode::encoder_syntax::PartitionNode,
+    seed: u64,
+) {
+    let leaf = syntax.leaf(root).unwrap();
+    let blocks = syntax.plan_leaf(&leaf, IntraModes::DC).unwrap();
+    let mut coder = RecordedLevels {
+        rng: Rng(seed),
+        max_level: 30,
+        coded: Vec::new(),
+    };
+    for (index, tx) in blocks.iter().enumerate() {
+        let levels = coder.code(tx, &[]).unwrap().levels;
+        syntax.predict(index).unwrap();
+        syntax.reconstruct(index, &levels).unwrap();
+        block_rate(syntax, &mut RateSink::adapting(), tx, &levels, false).unwrap();
+    }
+    symbols
+        .write_symbol_u16(syntax.y_mode_set_cdf().unwrap(), Symbol::new(1))
+        .unwrap();
+    syntax.publish_intra_leaf(&leaf, IntraModes::DC).unwrap();
 }
 
 #[test]
-fn checkpoint_restores_facade_encoder_and_recon() {
+fn checkpoint_restores_the_facade_and_the_encoder() {
     let (seq, core) = headers(64, 64, BitDepthIdc::Eight, 90);
-    let mut syntax = IntraTileSyntax::new(&seq, &core).unwrap();
-    let mut symbols = SymbolEncoder::new();
-    let mut recon = workspace(64, 64);
-    let root = syntax.superblock_root(0, 0);
-    syntax.begin_superblock(root);
-    symbols.write_literal(0x2b, 7).unwrap();
-    recon
-        .fill_rect(PlaneId::Y, PlaneRect::new(0, 0, 8, 8).unwrap(), 77)
-        .unwrap();
-    let before = plane_bytes(&recon);
-    let saved = Checkpoint::save(&syntax, &symbols, &recon, (0, 0, 64, 64)).unwrap();
-    let mut pristine = (syntax.clone(), symbols.clone());
+    let fresh = || {
+        let mut syntax = IntraTileSyntax::new(&seq, &core).unwrap();
+        let root = syntax.superblock_root(0, 0);
+        syntax.begin_superblock(root);
+        let mut symbols = SymbolEncoder::new();
+        symbols.write_literal(0x2b, 7).unwrap();
+        (syntax, symbols, root)
+    };
+    let (mut syntax, mut symbols, root) = fresh();
+    let saved = Checkpoint::save(&syntax, &symbols, (0, 0, 64, 64)).unwrap();
+    code_trial(&mut syntax, &mut symbols, root, 3);
+    saved.restore(&mut syntax, &mut symbols).unwrap();
+    code_trial(&mut syntax, &mut symbols, root, 5);
 
-    let leaf = syntax.leaf(root).unwrap();
-    for _ in 0..20 {
-        symbols
-            .write_symbol_u16(syntax.y_mode_set_cdf().unwrap(), Symbol::new(1))
-            .unwrap();
-    }
-    syntax.publish_dc_leaf(&leaf).unwrap();
-    recon
-        .fill_rect(PlaneId::U, PlaneRect::new(4, 4, 16, 16).unwrap(), 200)
-        .unwrap();
-    recon
-        .fill_rect(PlaneId::Y, PlaneRect::new(0, 0, 64, 64).unwrap(), 9)
-        .unwrap();
-    assert_ne!(plane_bytes(&recon), before);
-
-    saved
-        .restore(&mut syntax, &mut symbols, &mut recon)
-        .unwrap();
-    assert_eq!(plane_bytes(&recon), before);
-    assert_eq!(
-        syntax.y_mode_set_cdf().unwrap(),
-        pristine.0.y_mode_set_cdf().unwrap()
-    );
-    for (syntax, symbols) in [
-        (&mut syntax, &mut symbols),
-        (&mut pristine.0, &mut pristine.1),
-    ] {
-        let leaf = syntax.leaf(root).unwrap();
-        symbols
-            .write_symbol_u16(syntax.y_mode_index_cdf(&leaf).unwrap(), Symbol::new(0))
-            .unwrap();
-    }
+    let (mut once, mut once_symbols, _) = fresh();
+    code_trial(&mut once, &mut once_symbols, root, 5);
     assert_eq!(
         symbols.finish().unwrap().bytes(),
-        pristine.1.finish().unwrap().bytes()
+        once_symbols.finish().unwrap().bytes()
     );
-}
-
-/// Prints what a checkpoint costs at 1920x1080; run with `--release --ignored --nocapture`.
-#[test]
-#[ignore = "timing report"]
-fn checkpoint_cost_at_1080p() {
-    use std::time::Instant;
-    const ROUNDS: u32 = 200;
-    for sb_size in [SuperblockSize::Block64x64, SuperblockSize::Block128x128] {
-        let seq = build_encoder_sequence_header(&EncoderStreamParams {
-            width: 1920,
-            height: 1080,
-            bit_depth: BitDepthIdc::Eight,
-            chroma: ChromaFormatIdc::Yuv420,
-            sb_size,
-            tools: EncoderToolFlags::default(),
-        })
-        .unwrap();
-        let core = build_key_frame_header(
-            &CoreSeqView::from_sequence(&seq).unwrap(),
-            90,
-            0,
-            &FrameFilterParams::default(),
-        )
-        .unwrap();
-        let mut syntax = IntraTileSyntax::new(&seq, &core).unwrap();
-        let copy = syntax.clone();
-        let start = Instant::now();
-        for _ in 0..ROUNDS {
-            syntax.clone_from(std::hint::black_box(&copy));
-        }
-        let facade = start.elapsed() / ROUNDS;
-
-        let mut symbols = SymbolEncoder::with_config(
-            splot_core::symbol_encoder::SymbolEncoderConfig::new()
-                .with_max_output_bytes(1 << 24)
-                .with_max_operations(1 << 26),
-        );
-        for value in 0..(300_000u32 / 4) {
-            symbols.write_literal(value, 32).unwrap();
-        }
-        let start = Instant::now();
-        for _ in 0..ROUNDS {
-            std::hint::black_box(symbols.clone());
-        }
-        let encoder = start.elapsed() / ROUNDS;
-
-        let mut recon = workspace(1920, 1088);
-        let sb = if sb_size == SuperblockSize::Block64x64 {
-            64
-        } else {
-            128
-        };
-        let start = Instant::now();
-        let mut saved = None;
-        for _ in 0..ROUNDS {
-            saved = Some(
-                Checkpoint::save(&syntax, &SymbolEncoder::new(), &recon, (sb, sb, sb, sb)).unwrap(),
-            );
-        }
-        let save = start.elapsed() / ROUNDS;
-        let saved = saved.unwrap();
-        let mut empty = SymbolEncoder::new();
-        let start = Instant::now();
-        for _ in 0..ROUNDS {
-            saved.restore(&mut syntax, &mut empty, &mut recon).unwrap();
-        }
-        let restore = start.elapsed() / ROUNDS;
-        eprintln!(
-            "{sb}x{sb} SB: facade clone {facade:?}, encoder clone at 300 KB {encoder:?}, \
-             save (facade + empty encoder + SB recon) {save:?}, restore {restore:?}"
-        );
-    }
+    let frame = |s: IntraTileSyntax| {
+        let frame = s.finish().unwrap();
+        let view = frame.as_frame_ref();
+        [PlaneId::Y, PlaneId::U, PlaneId::V]
+            .into_iter()
+            .flat_map(|p| {
+                view.plane(p)
+                    .unwrap()
+                    .visible_rows()
+                    .flatten()
+                    .copied()
+                    .collect::<Vec<u16>>()
+            })
+            .collect::<Vec<u16>>()
+    };
+    assert_eq!(frame(syntax), frame(once));
 }
 
 #[path = "partition_tests.rs"]

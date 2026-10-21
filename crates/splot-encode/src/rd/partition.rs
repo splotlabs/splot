@@ -5,7 +5,7 @@
 
 use super::{Bits, Lambda, RdCost};
 use crate::preset::PresetParams;
-use crate::tile_writer::{BlockDecision, Partition, PartitionTree};
+use crate::tile_writer::{IntraModes, Partition, PartitionTree};
 
 /// What the partition search needs from a coder. Trials code into live state:
 /// [`Self::evaluate_leaf`] leaves its leaf coded, and the search rolls back
@@ -32,7 +32,7 @@ pub(crate) trait PartitionSearch {
     /// Luma `(log2 width, log2 height)` of `node`.
     fn block_log2(&self, node: Self::Node) -> Result<(u32, u32), Self::Error>;
     /// Codes `node` as a leaf into the live state; returns its cost and decision.
-    fn evaluate_leaf(&mut self, node: Self::Node) -> Result<(RdCost, BlockDecision), Self::Error>;
+    fn evaluate_leaf(&mut self, node: Self::Node) -> Result<(RdCost, IntraModes), Self::Error>;
     /// The rate of the partition symbols that select `partition` at `node`.
     fn partition_rate(
         &mut self,
@@ -63,7 +63,7 @@ pub(crate) fn search_partition<S: PartitionSearch>(
     lambda: Lambda,
 ) -> Result<(PartitionTree, RdCost), S::Error> {
     if !coder.in_frame(node) {
-        return Ok((PartitionTree::Leaf(BlockDecision::DC), RdCost::default()));
+        return Ok((PartitionTree::Leaf(IntraModes::DC), RdCost::default()));
     }
     let candidates = candidates(coder, node, preset)?;
     let start = if candidates.len() > 1 {
@@ -120,7 +120,7 @@ pub(crate) fn search_partition<S: PartitionSearch>(
         }
     }
     let Some((_, tree, cost, end)) = best else {
-        return Ok((PartitionTree::Leaf(BlockDecision::DC), RdCost::default()));
+        return Ok((PartitionTree::Leaf(IntraModes::DC), RdCost::default()));
     };
     if let Some(end) = &end {
         coder.restore(end)?;
