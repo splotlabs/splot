@@ -20,7 +20,7 @@ use splot_recon::{
 };
 
 use super::checkpoint::Checkpoint;
-use super::coeff_rate::{FacadeRates, block_rate};
+use super::coeff_rate::{RateSink, block_rate};
 use super::*;
 use crate::tile_writer::coeffs::adjusted_log2;
 use crate::tile_writer::{
@@ -259,8 +259,8 @@ fn leaf_frame_rates(bit_depth: BitDepthIdc, qindex: u32, seed: u64) -> (f64, f64
     bits += symbol_cost(syntax.uv_mode_cdf(false).unwrap(), 0);
     let mut eob_u = false;
     for (tx, levels) in &coder.coded {
-        let mut model = FacadeRates::adapting(&mut syntax);
-        bits += block_rate(&mut model, tx, levels, tx.plane == 2 && eob_u).unwrap();
+        let mut sink = RateSink::adapting();
+        bits += block_rate(&mut syntax, &mut sink, tx, levels, tx.plane == 2 && eob_u).unwrap();
         if tx.plane == 1 {
             eob_u = levels.iter().any(|&level| level != 0);
         }
@@ -300,17 +300,12 @@ fn frozen_rates_leave_rows_unchanged_and_track_adapting_rates() {
     };
     let levels = coder.code(&tx, &[]).unwrap().levels;
     let pristine = syntax.clone();
-    let frozen = block_rate(&mut FacadeRates::frozen(&mut syntax), &tx, &levels, false).unwrap();
-    let again = block_rate(&mut FacadeRates::frozen(&mut syntax), &tx, &levels, false).unwrap();
+    let frozen = block_rate(&mut syntax, &mut RateSink::frozen(), &tx, &levels, false).unwrap();
+    let again = block_rate(&mut syntax, &mut RateSink::frozen(), &tx, &levels, false).unwrap();
     assert_eq!(frozen, again, "frozen pricing must not adapt rows");
     let mut adapted = pristine.clone();
-    let adapting = block_rate(
-        &mut FacadeRates::adapting(&mut adapted),
-        &tx,
-        &levels,
-        false,
-    )
-    .unwrap();
+    let adapting =
+        block_rate(&mut adapted, &mut RateSink::adapting(), &tx, &levels, false).unwrap();
     assert_ne!(frozen, adapting);
     let ratio = bits_f64(frozen) / bits_f64(adapting);
     assert!(

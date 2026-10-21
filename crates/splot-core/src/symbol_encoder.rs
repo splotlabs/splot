@@ -56,6 +56,26 @@ macro_rules! write_symbol_to_cdf {
     }};
 }
 
+/// Adapts `cdf` after `symbol` exactly as [`SymbolEncoder::write_symbol_u16`]
+/// does with CDF updates enabled, without coding it; rate models price a
+/// symbol with the row, then adapt it.
+///
+/// # Errors
+/// Returns [`WriteError::InvalidSymbolCdf`] for a malformed row and
+/// [`WriteError::SymbolOutOfRange`] for a symbol outside it.
+pub fn adapt_cdf_u16(cdf: &mut [u16], symbol: Symbol) -> WriteResult<()> {
+    let shape = validate_cdf_shape(cdf).map_err(|kind| WriteError::InvalidSymbolCdf { kind })?;
+    let index = usize::from(symbol.get());
+    if index >= shape.n {
+        return Err(WriteError::SymbolOutOfRange {
+            symbol: symbol.get(),
+            symbols: shape.n,
+        });
+    }
+    update_cdf(cdf, shape, index);
+    Ok(())
+}
+
 /// Configuration for [`SymbolEncoder`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SymbolEncoderConfig {

@@ -7,6 +7,7 @@
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolEncoder;
+use splot_core::write::WriteResult;
 use splot_decode::encoder_syntax::{
     CoeffLevels, IntraTileSyntax, TransformBlock, is_low_frequency, tx_log2,
 };
@@ -26,6 +27,31 @@ pub(crate) fn adjusted_log2(tx_size: usize) -> Result<(u32, u32)> {
     Ok(tx_log2(tx_size).map(|(w, h)| (w.min(5), h.min(5)))?)
 }
 
+/// Receives the coefficient syntax: [`SymbolEncoder`] codes it, and the RD
+/// rate sink prices it, so both walk the one syntax order below.
+pub(crate) trait SymbolSink {
+    /// An `S()` symbol coded with `cdf`, which adapts when coding adapts.
+    fn symbol(&mut self, cdf: &mut [u16], value: Symbol) -> WriteResult<()>;
+    /// An `L(n)` literal.
+    fn literal(&mut self, value: u32, bits: u32) -> WriteResult<()>;
+    /// A unary prefix of at most `max_bits` bits.
+    fn unary(&mut self, value: u32, max_bits: u32) -> WriteResult<()>;
+}
+
+impl SymbolSink for SymbolEncoder {
+    fn symbol(&mut self, cdf: &mut [u16], value: Symbol) -> WriteResult<()> {
+        self.write_symbol_u16(cdf, value)
+    }
+
+    fn literal(&mut self, value: u32, bits: u32) -> WriteResult<()> {
+        self.write_literal(value, bits)
+    }
+
+    fn unary(&mut self, value: u32, max_bits: u32) -> WriteResult<()> {
+        self.write_unary(value, max_bits)
+    }
+}
+
 /// Writes the coefficients of `tx` and records its contexts; returns `eob`.
 pub(super) fn write_coeffs(
     syntax: &mut IntraTileSyntax,
@@ -34,6 +60,27 @@ pub(super) fn write_coeffs(
     levels: &[i32],
     eob_u_nonzero: bool,
 ) -> Result<usize> {
+    let coded = code_coeffs(syntax, symbols, tx, levels, eob_u_nonzero)?;
+    syntax.record_coefficients(tx, coded.cul_level, coded.dc_category)?;
+    Ok(coded.eob)
+}
+
+/// What the § 5.20.7.27 walk leaves for the neighbour contexts.
+pub(crate) struct CodedCoeffs {
+    pub(crate) eob: usize,
+    cul_level: u8,
+    dc_category: u8,
+}
+
+/// Sends the coefficient syntax of `tx` with row-major adjusted `levels` to
+/// `sink`, without recording contexts.
+pub(crate) fn code_coeffs(
+    syntax: &mut IntraTileSyntax,
+    symbols: &mut impl SymbolSink,
+    tx: &TransformBlock,
+    levels: &[i32],
+    eob_u_nonzero: bool,
+) -> Result<CodedCoeffs> {
     let (log2_w, log2_h) = adjusted_log2(tx.tx_size)?;
     let (width, height) = (1usize << log2_w, 1usize << log2_h);
     if levels.len() != width * height {
@@ -59,8 +106,11 @@ pub(super) fn write_coeffs(
         usize::from(eob == 0),
     )?;
     if eob == 0 {
-        syntax.record_coefficients(tx, 0, 0)?;
-        return Ok(0);
+        return Ok(CodedCoeffs {
+            eob,
+            cul_level: 0,
+            dc_category: 0,
+        });
     }
     write_eob(syntax, symbols, tx, eob)?;
 
@@ -108,7 +158,7 @@ pub(super) fn write_coeffs(
             if pos == 0 && plane == 0 {
                 write_symbol(symbols, syntax.dc_sign_cdf(tx)?, usize::from(negative))?;
             } else {
-                symbols.write_literal(u32::from(negative), 1)?;
+                symbols.literal(u32::from(negative), 1)?;
             }
         }
         let max = max_level(is_low_frequency(row, col, plane), plane);
@@ -120,12 +170,15 @@ pub(super) fn write_coeffs(
         }
         cul_level = (cul_level + quant).min(4);
     }
-    syntax.record_coefficients(tx, cul_level as u8, dc_category)?;
-    Ok(eob)
+    Ok(CodedCoeffs {
+        eob,
+        cul_level: cul_level as u8,
+        dc_category,
+    })
 }
 
 /// `maxLevel` of § 5.20.7.27 without parity hiding.
-const fn max_level(is_lf: bool, plane: usize) -> u32 {
+pub(crate) const fn max_level(is_lf: bool, plane: usize) -> u32 {
     match (is_lf, plane == 0) {
         (true, true) => LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1,
         (true, false) => LF_NUM_BASE_LEVELS + 1,
@@ -136,7 +189,7 @@ const fn max_level(is_lf: bool, plane: usize) -> u32 {
 /// Writes `eob_pt_*`, `eob_pt_*_extra`, `eob_extra`, and `eob_extra_bit` for `eob >= 1`.
 fn write_eob(
     syntax: &mut IntraTileSyntax,
-    symbols: &mut SymbolEncoder,
+    symbols: &mut impl SymbolSink,
     tx: &TransformBlock,
     eob: usize,
 ) -> Result<()> {
@@ -151,39 +204,39 @@ fn write_eob(
     write_symbol(symbols, syntax.eob_pt_cdf(tx.plane, tx.tx_size)?, symbol)?;
     if eob_multisize >= 4 && symbol == LAST_PLAIN_EOB_PT_SYMBOL {
         let extra_bits = if eob_multisize == 4 { 1 } else { 2 };
-        symbols.write_literal((eob_pt - 8) as u32, extra_bits)?;
+        symbols.literal((eob_pt - 8) as u32, extra_bits)?;
     }
     if eob_pt >= 3 {
         let offset = eob - ((1 << (eob_pt - 2)) + 1);
         let high = eob_pt - 3;
         write_symbol(symbols, syntax.eob_extra_cdf()?, (offset >> high) & 1)?;
         let low = offset & ((1 << high) - 1);
-        symbols.write_literal(low as u32, high as u32)?;
+        symbols.literal(low as u32, high as u32)?;
     }
     Ok(())
 }
 
 /// Writes the § 5.20.7.28 remainder `x` and returns the next `hrLevelAvg`.
-fn write_golomb(symbols: &mut SymbolEncoder, x: u32, hr_level_avg: u32) -> Result<u32> {
+fn write_golomb(symbols: &mut impl SymbolSink, x: u32, hr_level_avg: u32) -> Result<u32> {
     let m = hr_level_avg.checked_ilog2().unwrap_or(0).clamp(1, 6);
     let k = m + 1;
     let c_max = (m + 4).min(6);
     let q = x >> m;
     if q < c_max {
-        symbols.write_unary(q, c_max)?;
-        symbols.write_literal(x & ((1 << m) - 1), m)?;
+        symbols.unary(q, c_max)?;
+        symbols.literal(x & ((1 << m) - 1), m)?;
     } else {
-        symbols.write_unary(c_max, c_max)?;
+        symbols.unary(c_max, c_max)?;
         let shifted = x - (c_max << m) + (1 << k);
         let length = shifted.ilog2();
-        symbols.write_unary(length - k, MAX_GOLOMB_PREFIX_BITS)?;
-        symbols.write_literal(shifted - (1 << length), length)?;
+        symbols.unary(length - k, MAX_GOLOMB_PREFIX_BITS)?;
+        symbols.literal(shifted - (1 << length), length)?;
     }
     Ok((x + hr_level_avg) >> 1)
 }
 
-fn write_symbol(symbols: &mut SymbolEncoder, cdf: &mut [u16], value: usize) -> Result<()> {
+fn write_symbol(symbols: &mut impl SymbolSink, cdf: &mut [u16], value: usize) -> Result<()> {
     let value = u8::try_from(value).map_err(|_| TileWriterError::Unsupported("symbol value"))?;
-    symbols.write_symbol_u16(cdf, Symbol::new(value))?;
+    symbols.symbol(cdf, Symbol::new(value))?;
     Ok(())
 }
