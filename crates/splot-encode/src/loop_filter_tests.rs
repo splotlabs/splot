@@ -93,9 +93,10 @@ fn frame_header(unit: &[u8]) -> FrameHeaderCore {
     };
     let seq_payload = obu(ObuType::SequenceHeader);
     let seq = parse_sequence_header(&mut BitReader::new(seq_payload, ByteOffset::new(0))).unwrap();
-    let frame_payload = obu(ObuType::ClosedLoopKey);
+    let mut reader = BitReader::new(obu(ObuType::ClosedLoopKey), ByteOffset::new(0));
+    assert_eq!(reader.read_bit().unwrap(), 1, "is_first_tile_group");
     parse_frame_header_core(
-        &mut BitReader::new(frame_payload, ByteOffset::new(0)),
+        &mut reader,
         &FrameHeaderParseInput {
             obu_type: ObuType::ClosedLoopKey,
             first_picture_in_tu: true,

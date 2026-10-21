@@ -12,10 +12,12 @@ pub(crate) mod coeffs;
 mod decision;
 pub(crate) mod filters;
 
+use core::ops::Range;
 use splot_core::headers::frame::{FrameHeaderCore, KEY_FRAME_REDUCED_TX_SET, TxMode};
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::symbol::Symbol;
-use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
+
+use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink};
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
     EncoderSyntaxError, IntraTileSyntax, LeafBlock, PartitionCdf, PartitionNode, RectKind,
@@ -24,8 +26,8 @@ use splot_decode::encoder_syntax::{
 use splot_recon::{DecodedFrame, ReconError};
 
 pub(crate) use decision::{
-    ChromaMode, INTRA_MODES, IntraModes, Partition, PartitionTree, ResidualCoder,
-    SuperblockDecision, TransformDecision,
+    INTRA_MODES, IntraModes, Partition, PartitionTree, ResidualCoder, SuperblockDecision,
+    TransformDecision,
 };
 
 /// Output byte cap of one tile; larger than any 4096x2160 tile of 10-bit levels needs.
@@ -139,9 +141,33 @@ impl KeyFrameTileWriter {
         self.syntax.begin_superblock(root);
         self.filters
             .write_lr_units(&mut self.syntax, &mut self.symbols, root)?;
-        self.write_node(root, &decision.tree, coder)?;
+        Walk {
+            syntax: &mut self.syntax,
+            sink: &mut self.symbols,
+            filters: Some(&mut self.filters),
+        }
+        .write_node(root, &decision.tree, coder)?;
         self.written += 1;
         Ok(())
+    }
+
+    /// Runs `search` on the facade at the start of the next superblock, then
+    /// rolls the facade back, so the superblock is still to be written.
+    pub(crate) fn search_superblock<T>(
+        &mut self,
+        search: impl FnOnce(&mut IntraTileSyntax, PartitionNode) -> Result<T>,
+    ) -> Result<T> {
+        let root = self
+            .next_superblock_root()
+            .ok_or(TileWriterError::TileComplete)?;
+        let side = self.syntax.superblock_size4() * 4;
+        let saved = self
+            .syntax
+            .snapshot((root.col4() * 4, root.row4() * 4, side, side))?;
+        self.syntax.begin_superblock(root);
+        let found = search(&mut self.syntax, root);
+        self.syntax.restore(&saved)?;
+        found
     }
 
     /// Sets the loop-filter choices the following superblocks code.
@@ -172,6 +198,27 @@ impl KeyFrameTileWriter {
             self.filters.finish()?,
         ))
     }
+}
+
+/// One syntax pass over a tile: the facade, a symbol sink, and the filter
+/// state. The final pass codes into the [`SymbolEncoder`] with the filters; an
+/// RD trial prices into a rate sink without them, because the filter syntax
+/// does not depend on the trial and the filter state does not roll back.
+pub(crate) struct Walk<'a, S> {
+    pub(crate) syntax: &'a mut IntraTileSyntax,
+    pub(crate) sink: &'a mut S,
+    filters: Option<&'a mut filters::TileFilters>,
+}
+
+impl<'a, S: SymbolSink> Walk<'a, S> {
+    /// A trial pass that skips the filter syntax.
+    pub(crate) const fn trial(syntax: &'a mut IntraTileSyntax, sink: &'a mut S) -> Self {
+        Self {
+            syntax,
+            sink,
+            filters: None,
+        }
+    }
 
     fn write_node(
         &mut self,
@@ -188,7 +235,10 @@ impl KeyFrameTileWriter {
         };
         self.write_partition(node, partition)?;
         match tree {
-            PartitionTree::Leaf(block) => self.write_leaf(&self.syntax.leaf(node)?, *block, coder),
+            PartitionTree::Leaf(modes) => {
+                let leaf = self.syntax.leaf(node)?;
+                self.write_leaf(&leaf, *modes, coder, 0..3).map(drop)
+            }
             PartitionTree::Split { kind, children } => {
                 let calls = self.syntax.children(node, *kind)?;
                 if calls.len() != children.len() {
@@ -203,7 +253,11 @@ impl KeyFrameTileWriter {
     }
 
     /// The § 5.20.3.2 `read_partition` symbols that select `partition`.
-    fn write_partition(&mut self, node: PartitionNode, partition: Partition) -> Result<()> {
+    pub(crate) fn write_partition(
+        &mut self,
+        node: PartitionNode,
+        partition: Partition,
+    ) -> Result<()> {
         let options = self.syntax.partition_options(node)?;
         let refuse = |reason| TileWriterError::Partition {
             partition,
@@ -265,8 +319,7 @@ impl KeyFrameTileWriter {
             self.partition_bool(node, PartitionCdf::DoUneven4Way(kind), uneven)?;
         }
         if uneven {
-            self.symbols
-                .write_literal(u32::from(partition == four_b), 1)?;
+            self.sink.literal(u32::from(partition == four_b), 1)?;
         }
         Ok(())
     }
@@ -278,64 +331,29 @@ impl KeyFrameTileWriter {
         value: bool,
     ) -> Result<()> {
         let row = self.syntax.partition_cdf(node, cdf)?;
-        self.symbols
-            .write_symbol_u16(row, Symbol::new(u8::from(value)))?;
+        self.sink.symbol(row, Symbol::new(u8::from(value)))?;
         Ok(())
     }
 
-    fn write_leaf(
+    /// Codes the blocks of `planes` of `leaf` under `modes`, then writes the
+    /// leaf syntax in order: `cdef_idx`, the modes, and the coefficients of
+    /// `planes`. Only a pass over all planes publishes the leaf. Returns the
+    /// leaf's transform blocks.
+    pub(crate) fn write_leaf(
         &mut self,
         leaf: &LeafBlock,
-        planned: IntraModes,
+        modes: IntraModes,
         coder: &mut impl ResidualCoder,
-    ) -> Result<()> {
-        let mut modes = coder.luma_modes(&mut self.syntax, leaf, planned)?;
-        let mut blocks = self.syntax.plan_leaf(leaf, modes)?;
+        planes: Range<usize>,
+    ) -> Result<Vec<TransformBlock>> {
+        let blocks = self.syntax.plan_leaf(leaf, modes)?;
         let mut levels = vec![Vec::new(); blocks.len()];
-        self.code_blocks(&blocks, false, &mut levels, coder)?;
-        if leaf.has_chroma() {
-            modes.uv_mode = coder.chroma_mode(&mut self.syntax, leaf, modes)?;
-            blocks = self.syntax.plan_leaf(leaf, modes)?;
-            self.code_blocks(&blocks, true, &mut levels, coder)?;
-        }
-        self.filters
-            .write_cdef_index(&mut self.syntax, &mut self.symbols, leaf)?;
-        self.syntax
-            .write_intra_modes(leaf, modes, &mut self.symbols)?;
-        let mut eob_u = 0;
-        let mut eobs = Vec::with_capacity(blocks.len());
-        for (tx, levels) in blocks.iter().zip(&levels) {
-            let eob = coeffs::write_coeffs(
-                &mut self.syntax,
-                &mut self.symbols,
-                tx,
-                levels,
-                tx.plane == 2 && eob_u != 0,
-            )?;
-            if tx.plane == 1 {
-                eob_u = eob;
-            }
-            eobs.push(eob);
-        }
-        self.syntax.publish_intra_leaf(leaf, modes)?;
-        self.filters.record_leaf(leaf, &blocks, &eobs)
-    }
-
-    /// Codes and reconstructs the luma or the chroma blocks of the planned leaf.
-    /// Planes predict independently except CFL, which reads the finished luma.
-    fn code_blocks(
-        &mut self,
-        blocks: &[TransformBlock],
-        chroma: bool,
-        levels: &mut [Vec<i32>],
-        coder: &mut impl ResidualCoder,
-    ) -> Result<()> {
         for (index, tx) in blocks.iter().enumerate() {
-            if (tx.plane > 0) != chroma {
+            if !planes.contains(&tx.plane) {
                 continue;
             }
             let prediction = self.syntax.predict(index)?;
-            let decision = coder.code(tx, &prediction)?;
+            let decision = coder.code(self.syntax, tx, &prediction)?;
             if decision.tx_type != tx.tx_type {
                 return Err(TileWriterError::Unsupported(
                     "transform type other than the inferred one",
@@ -344,7 +362,34 @@ impl KeyFrameTileWriter {
             self.syntax.reconstruct(index, &decision.levels)?;
             levels[index] = decision.levels;
         }
-        Ok(())
+        if let Some(filters) = self.filters.as_deref_mut() {
+            filters.write_cdef_index(self.syntax, self.sink, leaf)?;
+        }
+        self.syntax.write_intra_modes(leaf, modes, self.sink)?;
+        let mut eob_u = 0;
+        let mut eobs = vec![0; blocks.len()];
+        for ((tx, levels), eob) in blocks.iter().zip(&levels).zip(&mut eobs) {
+            if !planes.contains(&tx.plane) {
+                continue;
+            }
+            *eob = coeffs::write_coeffs(
+                self.syntax,
+                self.sink,
+                tx,
+                levels,
+                tx.plane == 2 && eob_u != 0,
+            )?;
+            if tx.plane == 1 {
+                eob_u = *eob;
+            }
+        }
+        if planes == (0..3) {
+            self.syntax.publish_intra_leaf(leaf, modes)?;
+            if let Some(filters) = self.filters.as_deref_mut() {
+                filters.record_leaf(leaf, &blocks, &eobs)?;
+            }
+        }
+        Ok(blocks)
     }
 }
 

@@ -16,7 +16,6 @@ use splot_decode::encoder_syntax::{
 };
 use splot_recon::{BitDepth, PlaneId, reconstruct_transform_block_residual};
 
-use super::checkpoint::Checkpoint;
 use super::coeff_rate::{RateSink, block_rate};
 use super::*;
 use crate::tile_writer::coeffs::adjusted_log2;
@@ -193,6 +192,7 @@ struct RecordedLevels {
 impl ResidualCoder for RecordedLevels {
     fn code(
         &mut self,
+        _: &mut IntraTileSyntax,
         tx: &TransformBlock,
         _: &[u16],
     ) -> crate::tile_writer::Result<TransformDecision> {
@@ -295,7 +295,7 @@ fn frozen_rates_leave_rows_unchanged_and_track_adapting_rates() {
         max_level: 40,
         coded: Vec::new(),
     };
-    let levels = coder.code(&tx, &[]).unwrap().levels;
+    let levels = coder.code(&mut syntax, &tx, &[]).unwrap().levels;
     let pristine = syntax.snapshot((0, 0, 64, 64)).unwrap();
     let frozen = block_rate(&mut syntax, &mut RateSink::frozen(), &tx, &levels, false).unwrap();
     let again = block_rate(&mut syntax, &mut RateSink::frozen(), &tx, &levels, false).unwrap();
@@ -325,7 +325,7 @@ fn code_trial(
         coded: Vec::new(),
     };
     for (index, tx) in blocks.iter().enumerate() {
-        let levels = coder.code(tx, &[]).unwrap().levels;
+        let levels = coder.code(syntax, tx, &[]).unwrap().levels;
         syntax.predict(index).unwrap();
         syntax.reconstruct(index, &levels).unwrap();
         block_rate(syntax, &mut RateSink::adapting(), tx, &levels, false).unwrap();
@@ -337,7 +337,7 @@ fn code_trial(
 }
 
 #[test]
-fn checkpoint_restores_the_facade_and_the_encoder() {
+fn snapshot_restores_the_facade() {
     let (seq, core) = headers(64, 64, BitDepthIdc::Eight, 90);
     let fresh = || {
         let mut syntax = IntraTileSyntax::new(&seq, &core).unwrap();
@@ -348,9 +348,10 @@ fn checkpoint_restores_the_facade_and_the_encoder() {
         (syntax, symbols, root)
     };
     let (mut syntax, mut symbols, root) = fresh();
-    let saved = Checkpoint::save(&syntax, &symbols, (0, 0, 64, 64)).unwrap();
+    let saved = (syntax.snapshot((0, 0, 64, 64)).unwrap(), symbols.clone());
     code_trial(&mut syntax, &mut symbols, root, 3);
-    saved.restore(&mut syntax, &mut symbols).unwrap();
+    syntax.restore(&saved.0).unwrap();
+    symbols = saved.1;
     code_trial(&mut syntax, &mut symbols, root, 5);
 
     let (mut once, mut once_symbols, _) = fresh();

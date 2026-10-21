@@ -161,7 +161,7 @@ pub(crate) const fn max_level(is_lf: bool, plane: usize) -> u32 {
 }
 
 /// Writes `eob_pt_*`, `eob_pt_*_extra`, `eob_extra`, and `eob_extra_bit` for `eob >= 1`.
-fn write_eob(
+pub(crate) fn write_eob(
     syntax: &mut IntraTileSyntax,
     symbols: &mut impl SymbolSink,
     tx: &TransformBlock,
@@ -209,7 +209,11 @@ fn write_golomb(symbols: &mut impl SymbolSink, x: u32, hr_level_avg: u32) -> Res
     Ok((x + hr_level_avg) >> 1)
 }
 
-fn write_symbol(symbols: &mut impl SymbolSink, cdf: &mut [u16], value: usize) -> Result<()> {
+pub(crate) fn write_symbol(
+    symbols: &mut impl SymbolSink,
+    cdf: &mut [u16],
+    value: usize,
+) -> Result<()> {
     let value = u8::try_from(value).map_err(|_| TileWriterError::Unsupported("symbol value"))?;
     symbols.symbol(cdf, Symbol::new(value))?;
     Ok(())

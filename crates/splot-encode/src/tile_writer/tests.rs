@@ -11,7 +11,7 @@ use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize
 use std::collections::HashSet;
 
 use splot_decode::encoder_syntax::{
-    IntraMode, IntraTileSyntax, MAX_CFL_ALPHA, PartitionNode, TransformBlock,
+    ChromaMode, IntraMode, IntraTileSyntax, MAX_CFL_ALPHA, PartitionNode, TransformBlock,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -121,7 +121,12 @@ struct RandomLevels {
 }
 
 impl ResidualCoder for RandomLevels {
-    fn code(&mut self, tx: &TransformBlock, _: &[u16]) -> Result<TransformDecision> {
+    fn code(
+        &mut self,
+        _: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        _: &[u16],
+    ) -> Result<TransformDecision> {
         Ok(TransformDecision {
             tx_type: tx.tx_type,
             levels: random_levels(&mut self.rng, tx.tx_size, self.max_level),

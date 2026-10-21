@@ -510,27 +510,37 @@ impl IntraTileSyntax {
         let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let zeros = vec![0; 1 << (log2_w.min(5) + log2_h.min(5))];
         self.reconstruct_with(index, &zeros, 0)?;
+        self.reconstruction(&tx)
+    }
+
+    /// The row-major samples the frame holds over `tx`; samples past the frame
+    /// storage repeat its edge.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for a block outside the planes.
+    pub fn reconstruction(&self, tx: &TransformBlock) -> Result<Vec<u16>> {
+        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let (width, height) = (1usize << log2_w, 1usize << log2_h);
         let plane = plane_id(tx.plane)?;
         let storage = self
             .recon
             .workspace
             .plane(plane)
-            .map_err(rule("prediction readback"))?
+            .map_err(rule("sample readback"))?
             .storage_size();
         let visible_w = width.min(storage.width().saturating_sub(tx.x));
         let visible_h = height.min(storage.height().saturating_sub(tx.y));
         if visible_w == 0 || visible_h == 0 {
             return Ok(vec![0; width * height]);
         }
-        let rect = PlaneRect::new(tx.x, tx.y, visible_w, visible_h)
-            .map_err(rule("prediction readback"))?;
+        let rect =
+            PlaneRect::new(tx.x, tx.y, visible_w, visible_h).map_err(rule("sample readback"))?;
         let mut out = Vec::with_capacity(width * height);
         for row in self
             .recon
             .workspace
             .rect_rows(plane, rect)
-            .map_err(rule("prediction readback"))?
+            .map_err(rule("sample readback"))?
         {
             out.extend_from_slice(row);
             out.resize(out.len() + width - visible_w, row[visible_w - 1]);

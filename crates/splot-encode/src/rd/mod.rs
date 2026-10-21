@@ -2,19 +2,10 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Rate-distortion framework: symbol rates from CDF rows, the Lagrange
-//! multiplier, search-state checkpoints, and the recursive partition search.
+//! multiplier, and the recursive partition search.
 //!
 //! Every quantity is an integer, so a decision never depends on float rounding.
 
-#![cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "wired into intra_frame by the milestone-2 integration"
-    )
-)]
-
-pub(crate) mod checkpoint;
 pub(crate) mod coeff_rate;
 pub(crate) mod partition;
 
@@ -164,6 +155,14 @@ impl Lambda {
             scale_q16: Self::DEFAULT_SCALE_Q16,
             step_sq_q12: ac * ac,
         })
+    }
+
+    /// The RDOQ multiplier of a transform with `dq_denom`: `lambda` per 1/256
+    /// bit in the squared error of its coefficients, Q16. Coefficient energy is
+    /// `64 / dq_denom^2` times sample energy.
+    #[must_use]
+    pub(crate) const fn coefficient_q8(self, dq_denom: u32) -> u64 {
+        self.sse_per_bit_q16() / (4 * dq_denom as u64 * dq_denom as u64)
     }
 
     /// `lambda` in squared-error units per bit, Q16.

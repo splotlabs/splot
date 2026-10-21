@@ -3,10 +3,8 @@
 
 //! Coding decisions of one superblock, the input of the key-frame tile writer.
 
-pub(crate) use splot_decode::encoder_syntax::{
-    ChromaMode, IntraMode, IntraModes, Partition, TxType,
-};
-use splot_decode::encoder_syntax::{IntraTileSyntax, LeafBlock, TransformBlock};
+pub(crate) use splot_decode::encoder_syntax::{IntraMode, IntraModes, Partition, TxType};
+use splot_decode::encoder_syntax::{IntraTileSyntax, TransformBlock};
 
 use super::Result;
 
@@ -36,7 +34,7 @@ pub(crate) struct SuperblockDecision {
 /// One `decode_partition` call: a coded leaf or a split into child calls.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PartitionTree {
-    /// `PARTITION_NONE` with its planned modes.
+    /// `PARTITION_NONE` with its modes.
     Leaf(IntraModes),
     /// Any other partition, with one entry per § 5.20.3.1 child call in syntax
     /// order. Entries of children that start outside the frame are not coded.
@@ -55,35 +53,15 @@ pub(crate) struct TransformDecision {
     pub(crate) levels: Vec<i32>,
 }
 
-/// Chooses each leaf's modes and codes each transform block once the writer
-/// knows its prediction, because intra prediction reads the reconstruction of
-/// the blocks before it.
-///
-/// The writer codes a leaf's luma blocks, then its chroma blocks, then writes
-/// the leaf's symbols in syntax order. The mode hooks may plan and predict
-/// candidates through `syntax`; the writer replans the leaf afterwards.
+/// Codes each transform block once the writer knows its prediction, because
+/// intra prediction reads the reconstruction of the blocks before it.
 pub(crate) trait ResidualCoder {
-    /// The luma modes of `leaf`; the default keeps `planned`.
-    fn luma_modes(
+    /// Codes `tx`, whose row-major prediction is `prediction`; `syntax` holds
+    /// the CDF rows the block's coefficients will be coded with.
+    fn code(
         &mut self,
-        _syntax: &mut IntraTileSyntax,
-        _leaf: &LeafBlock,
-        planned: IntraModes,
-    ) -> Result<IntraModes> {
-        Ok(planned)
-    }
-
-    /// The chroma mode of `leaf`, chosen after its luma is reconstructed; the
-    /// default keeps the one in `modes`.
-    fn chroma_mode(
-        &mut self,
-        _syntax: &mut IntraTileSyntax,
-        _leaf: &LeafBlock,
-        modes: IntraModes,
-    ) -> Result<ChromaMode> {
-        Ok(modes.uv_mode)
-    }
-
-    /// Codes `tx`, whose row-major prediction is `prediction`.
-    fn code(&mut self, tx: &TransformBlock, prediction: &[u16]) -> Result<TransformDecision>;
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        prediction: &[u16],
+    ) -> Result<TransformDecision>;
 }
