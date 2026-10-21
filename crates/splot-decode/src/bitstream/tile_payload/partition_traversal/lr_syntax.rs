@@ -232,6 +232,7 @@ fn read_lr_units_for_plane(
 
 /// The frame unit rows and columns of `plane` that `read_lr` codes at superblock
 /// `call` of `w x h` 4x4 units (§ 5.20.10.4).
+#[inline]
 fn lr_unit_ranges(
     plane: usize,
     unit_size: usize,
@@ -347,6 +348,7 @@ pub(crate) fn superblock_lr_units(
 type LrUnitSlot = (usize, usize, usize, TilePartitionLoopRestorationPlaneTool);
 
 /// The source blocks the walk records for an active `RESTORE_PC_WIENER` unit.
+#[inline]
 pub(crate) fn pc_wiener_unit_source_blocks(
     frame: TilePartitionFrameFacts,
     tile_bounds: TilePartitionBounds,

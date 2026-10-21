@@ -378,6 +378,7 @@ pub(crate) struct YModeEscapeResult {
     pub(crate) intra_joint_mode: IntraJointMode,
 }
 
+#[inline]
 pub(crate) fn reconstruct_y_mode_with_neighbours(
     mode_idx: ModeIndex,
     neighbour_joint_modes: [IntraJointMode; 2],

@@ -154,6 +154,7 @@ pub(super) struct LrSourceBlockDerivation {
     pub(super) sub_y: usize,
 }
 
+#[inline]
 pub(super) fn record_active_wiener_ns_source_blocks_for_unit(
     input: LrSourceBlockDerivation,
     limits: DecodeLimits,

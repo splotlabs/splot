@@ -780,6 +780,7 @@ fn frame_tx_mode(core: &FrameHeaderCore) -> Option<TxMode> {
         .or_else(|| core.inter_tail.as_ref().map(|tail| tail.tx_mode))
 }
 
+#[inline]
 pub(crate) fn rect_luma_plan(
     modes: &GeneralIntraBlockModes,
     block_ctx: BlockCtx,
