@@ -19,6 +19,8 @@
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 
+#![feature(portable_simd)]
+
 mod block_symbol_trace;
 mod coefficient_tokenization;
 pub mod config;
@@ -27,6 +29,7 @@ pub mod error;
 pub mod frame;
 mod general_intra_trace;
 mod intra_mode_emission;
+mod kernels;
 mod partition_emission;
 pub mod runtime;
 
