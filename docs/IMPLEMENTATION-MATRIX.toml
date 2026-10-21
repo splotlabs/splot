@@ -4363,7 +4363,7 @@ module = "crates/splot-core/src/write/mod.rs"
 change_id = "bit-writer-primitives"
 owner = "encoder"
 risk = "high"
-notes = "BitWriter implements every BitReader descriptor with read/write property tests. OBU headers, Annex B and IVF framing, sequence headers, frame-header slices, tile-group framing, metadata, and all fourteen ParsedObu body writers are implemented with round-trip and fuzz coverage. The complete OBU dispatch is exhaustive, so any future ParsedObu variant must add a writer. SymbolEncoder provides bounded deterministic § 8.2 primitives; finalization still uses a bounded O(range * operations) search. Remaining writer work is the inter first-group tile-group composer, § 8.3 CDF selection for encoder-owned streams, and § 5.20 coded tile bodies. The CLI does not expose an encode command."
+notes = "BitWriter implements every BitReader descriptor with read/write property tests. OBU headers, Annex B and IVF framing, sequence headers, frame-header slices, tile-group framing, metadata, and all fourteen ParsedObu body writers are implemented with round-trip and fuzz coverage. The complete OBU dispatch is exhaustive, so any future ParsedObu variant must add a writer. SymbolEncoder provides bounded deterministic § 8.2 primitives as a streaming range coder with O(1) amortized work per write and the shortest exit_symbol()-valid payload. Remaining writer work is the inter first-group tile-group composer, § 8.3 CDF selection for encoder-owned streams, and § 5.20 coded tile bodies. The CLI does not expose an encode command."
 
 [feature.status]
 mapped = "partial"

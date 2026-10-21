@@ -1122,7 +1122,7 @@
     },
     {
       "path": "crates/splot-core/src/symbol_encoder.rs",
-      "sha256": "db133e4435e3144bd2dec52f87f528b4bee2fb8667a5c71b40eb5a4fd91525c0",
+      "sha256": "91d8aaebf235b9c0f088bde10f77f3c3979ced6ca9dc4c64c4755104fc101679",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "ENC-BITSTREAM-WRITER"
@@ -1131,14 +1131,14 @@
     },
     {
       "path": "crates/splot-core/src/symbol_encoder_proptests.rs",
-      "sha256": "bd0eeedb0383c2bdb7d98c36dd664040f321827374dc722d779cd9a16f32c16d",
+      "sha256": "4faf9abf9b6029554e91bb2bed4d4fc933e3609aa6002b3db0d453717c639855",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-core/src/symbol_encoder_tests.rs",
-      "sha256": "bac69c2d2685358545e5451302345819c0d784ffd7b95e6109c343b0f050f1d9",
+      "sha256": "d04fe5874b196219580f016b22e0673b067e1247d041ed2938326a016cc68db5",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"
@@ -1305,7 +1305,7 @@
     },
     {
       "path": "crates/splot-core/src/write/error.rs",
-      "sha256": "5579ec137100572b47809affcc381a87daaf924926ebacf859e31b17aa787f56",
+      "sha256": "f9d3127355305b6f72b3cd48f312da3cc6e44c018e1c0ba5542f81c942773fcf",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "AV2-5.4.2-SEQUENCE-TILE-CONFIG",
@@ -3534,7 +3534,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/compound_tests.rs",
-      "sha256": "2185e09513ee36aa87a125566dddc0219ed875ccaa8e6a22db46a42582aa0aa4",
+      "sha256": "643d6378e1f8e508c3d551acde449c07cd1778fcbd87446dd978628ed3fd92a5",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -6440,7 +6440,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "5442ef2984b0f0e13176a6faf19dca16e6cec3ec3fe50475441245f3a1f0bffe",
+      "sha256": "8ea052ad47b061d477ce7ad22bfdfb307abd3fccd2c65bc2e7f6fdd6abd8ab91",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",

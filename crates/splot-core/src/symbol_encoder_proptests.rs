@@ -146,3 +146,22 @@ proptest! {
         prop_assert_eq!(summary.symbol_count, output.symbol_count());
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(8))]
+
+    #[test]
+    fn symbol_encoder_roundtrips_long_mixed_streams(
+        seed in any::<u64>(),
+        updates_enabled in any::<bool>(),
+    ) {
+        let mode = if updates_enabled {
+            CdfUpdateMode::Enabled
+        } else {
+            CdfUpdateMode::Disabled
+        };
+        let stream = super::tests::mixed_stream(seed, 100_000, false);
+        let output = super::tests::encode_mixed(&stream, mode);
+        super::tests::assert_mixed_roundtrip(&stream, mode, &output);
+    }
+}
