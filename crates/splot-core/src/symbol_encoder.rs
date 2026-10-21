@@ -331,6 +331,9 @@ impl SymbolEncoder {
     ///
     /// The payload is the shortest one § 8.2.4 `exit_symbol()` accepts: the
     /// coded bits, the trailing one bit, and zero bits up to the byte boundary.
+    /// The final base is the smallest one in `[low, low + range)` that ends in
+    /// the exit window; `range >= 2^15` makes it exist. One bits pad the base
+    /// to whole bytes, and they invert to zero padding.
     ///
     /// # Errors
     /// Returns [`WriteError::SymbolOutputTooLarge`] if the finalized payload
@@ -344,9 +347,7 @@ impl SymbolEncoder {
             });
         }
 
-        // `range >= 2^15`, so `[low, low + range)` holds a base ending in the exit window.
         self.low += EXIT_Y_WINDOW.wrapping_sub(self.low) & ((1 << SYMBOL_VALUE_BITS) - 1);
-        // One bits pad `low` to whole bytes; they invert to zero padding.
         let pad = (8 - self.low_bits % 8) % 8;
         self.low = (self.low << pad) | ((1 << pad) - 1);
         self.low_bits += pad;
@@ -438,7 +439,8 @@ impl SymbolEncoder {
     }
 
     /// Checks the limits for one more write and reserves its settled bytes,
-    /// so the write itself cannot fail.
+    /// so the write itself cannot fail. Settled bytes stay at least 24 bits
+    /// behind the payload end, so the payload length bounds them.
     fn reserve(&mut self, additional_bits: u64, additional_operations: usize) -> WriteResult<()> {
         let limit = self.config.max_operations;
         let operations = self
@@ -466,7 +468,6 @@ impl SymbolEncoder {
         if requested > limit {
             return Err(WriteError::SymbolOutputTooLarge { requested, limit });
         }
-        // Settled bytes stay at least 24 bits behind the payload end.
         self.settled
             .try_reserve(requested.saturating_sub(self.settled.len()))
             .map_err(|_| WriteError::SymbolOutputTooLarge { requested, limit })?;

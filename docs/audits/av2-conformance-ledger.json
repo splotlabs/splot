@@ -1122,7 +1122,7 @@
     },
     {
       "path": "crates/splot-core/src/symbol_encoder.rs",
-      "sha256": "d9e49482c8b5b3445c292a4fff202334a6f624f4a717cf498fd238cabd5e419a",
+      "sha256": "91d8aaebf235b9c0f088bde10f77f3c3979ced6ca9dc4c64c4755104fc101679",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [
         "ENC-BITSTREAM-WRITER"
@@ -1138,7 +1138,7 @@
     },
     {
       "path": "crates/splot-core/src/symbol_encoder_tests.rs",
-      "sha256": "0bcdc28518bef4b84c730a7292776fb92a7b8b8f5fbf600a88323bc5877e58e5",
+      "sha256": "d04fe5874b196219580f016b22e0673b067e1247d041ed2938326a016cc68db5",
       "scope_kind": "workspace:splot-core",
       "feature_ids": [],
       "outcome": "success"

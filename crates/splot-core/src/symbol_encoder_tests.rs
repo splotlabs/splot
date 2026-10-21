@@ -485,10 +485,10 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 /// The brute-force encoder this one replaced always wrote 15 + K bits for K
 /// coded bits and picked the smallest valid final value. The streaming
 /// encoder picks the same value but stops after the trailing one bit, so its
-/// output is the old output without the old all-zero tail bytes.
+/// output is the old output without the old all-zero tail bytes. Goldens are
+/// (seed, update mode, old length, FNV-1a of the old bytes).
 #[test]
 fn output_is_old_brute_force_output_without_zero_tail() {
-    // (seed, update mode, old length, FNV-1a of the old bytes)
     let goldens = [
         (1, CdfUpdateMode::Enabled, 206, 0xf484_344c_971a_b475),
         (1, CdfUpdateMode::Disabled, 206, 0x0a75_ee69_940b_914e),
