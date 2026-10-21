@@ -631,7 +631,7 @@ impl IntraTileSyntax {
             .publish_block_decoded(&mut self.recon.block_decoded)
             .map_err(rule("BlockDecoded update"))?;
         self.recon.leaf = None;
-        Ok(())
+        self.publish_inter_neighbours(leaf)
     }
 
     /// Saves the coding context and the reconstruction of the luma rectangle
@@ -783,7 +783,7 @@ impl IntraTileSyntax {
         )
     }
 
-    fn put(
+    pub(super) fn put(
         &mut self,
         symbols: &mut SymbolEncoder,
         selector: TileCdfSelector,

@@ -199,7 +199,7 @@ pub(super) fn effective_force_integer_mv(core: &FrameHeaderCore) -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn frame_mv_precision(core: &FrameHeaderCore) -> Result<u8> {
+pub(crate) fn frame_mv_precision(core: &FrameHeaderCore) -> Result<u8> {
     if core.frame_is_intra == Some(true) {
         return Ok(0);
     }

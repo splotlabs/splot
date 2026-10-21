@@ -2140,9 +2140,12 @@ pub(crate) use block::{
     RowReferenceBounds, ScheduledTileRecon, ScheduledTileWorkspace, TipOutputStages, TipSpares,
     bounds_satisfied, decode_inter_blocks, invalid_inter_tile_scheduling_state,
 };
+pub(crate) use block::{frame_mv_precision, interp_filter_no_neighbour_ctx};
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{
-    FixedStack, MotionFieldLayout, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
+    BlockPrecisionRecord, FixedStack, MotionFieldLayout, MvBlockContext, NON_INTER_FLAG_SYNTAX,
+    NeighbourFlagSyntax, NeighbourMvGrid, TemporalMotionBlock, TemporalMotionField,
+    TemporalMvContext, is_inter_ctx,
 };
 pub(crate) use frame_products::{
     CcsoGridHandle, FrameCdfHandle, FrameProductWriters, FrameProducts, SegmentIdMapHandle,

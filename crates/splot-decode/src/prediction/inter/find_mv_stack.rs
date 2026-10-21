@@ -644,6 +644,11 @@ pub(crate) fn block_neighbour_ctx(
     }
 }
 
+/// The § 8.3.2 `is_inter` context of `block` alone.
+pub(crate) fn is_inter_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> usize {
+    block_neighbour_ctx(grid, block).is_inter_ctx
+}
+
 fn is_backward_ref_frame(
     cell: NeighbourFlags,
     ref_frame_idx: &[u32],
