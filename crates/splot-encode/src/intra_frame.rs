@@ -5,13 +5,13 @@
 //! coding, and the temporal unit of one intra frame.
 
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, KeyFrameTxParams,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams,
     build_encoder_sequence_header, build_key_frame_header, encode_key_frame_temporal_unit,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA, PartitionNode, TransformBlock, dct_recon_params,
-    recon_params, tx_log2,
+    IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA, PartitionNode, TransformBlock, TxPartition, TxType,
+    dct_recon_params, recon_params, tx_log2,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -23,10 +23,12 @@ use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
 use crate::loop_filter::{FilteredFrame, FirstPass, FrameDecisions, finish_key_frame};
 use crate::preset::PresetParams;
 use crate::rate_control::{FramePlanInfo, FrameType};
+use crate::rd::Lambda;
 use crate::tile_writer::{
     ChromaMode, INTRA_MODES, IntraModes, KeyFrameTileWriter, PARTITIONS, Partition, PartitionTree,
     ResidualCoder, SuperblockDecision, TileWriterError, TransformDecision,
 };
+use crate::tx_choice;
 
 /// Quantizer deadzone in Q8 (`128` rounds to nearest).
 const DEADZONE_ROUNDING_Q8: u32 = 96;
@@ -92,7 +94,7 @@ impl FrameCoder for IntraFrameCoder {
             qindex,
             0,
             &FrameFilterParams::default(),
-            KeyFrameTxParams::default(),
+            tx_choice::key_frame_tx_params(self.preset),
         )
         .map_err(coding("frame header"))?;
         let mut writer =
@@ -105,6 +107,10 @@ impl FrameCoder for IntraFrameCoder {
             source: &padded,
             qindex,
             bit_depth: self.bit_depth,
+            preset: self.preset,
+            lambda_q16: Lambda::from_qindex(qindex, self.bit_depth)
+                .map_err(coding("lambda"))?
+                .sse_per_bit_q16(),
         };
         let mut decisions = FrameDecisions::default();
         while let Some(root) = writer.next_superblock_root() {
@@ -291,9 +297,34 @@ struct SourceResidualCoder<'a> {
     source: &'a PaddedSource,
     qindex: u32,
     bit_depth: BitDepth,
+    preset: &'static PresetParams,
+    lambda_q16: u64,
 }
 
 impl ResidualCoder for SourceResidualCoder<'_> {
+    fn tx_partition(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+    ) -> core::result::Result<TxPartition, TileWriterError> {
+        if !self.preset.tx_partition_search {
+            return Ok(TxPartition::None);
+        }
+        tx_choice::cheapest_partition(syntax, leaf, modes, |tx, prediction, tx_types| {
+            self.cheapest_luma(tx, prediction, tx_types)
+        })
+    }
+
+    fn code_luma(
+        &mut self,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        tx_types: &[TxType],
+    ) -> core::result::Result<TransformDecision, TileWriterError> {
+        Ok(self.cheapest_luma(tx, prediction, tx_types)?.1)
+    }
+
     fn code(
         &mut self,
         tx: &TransformBlock,
@@ -423,6 +454,27 @@ impl ResidualCoder for SourceResidualCoder<'_> {
 }
 
 impl SourceResidualCoder<'_> {
+    /// The cheapest [`tx_choice::decision_cost`] decision of luma block `tx`
+    /// over the preset's leading `tx_types`.
+    fn cheapest_luma(
+        &mut self,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        tx_types: &[TxType],
+    ) -> core::result::Result<(u64, TransformDecision), TileWriterError> {
+        let source = self.source;
+        let stride = source.strides[0];
+        let block = (&source.planes[0][tx.y * stride + tx.x..], stride);
+        let quant = (self.qindex, self.bit_depth, self.lambda_q16);
+        let count = tx_choice::tx_type_candidates(self.preset);
+        tx_choice::cheapest(tx_types.iter().take(count), |tx_type| {
+            let tx = TransformBlock { tx_type, ..*tx };
+            let decision = self.code(&tx, prediction)?;
+            let cost = tx_choice::decision_cost(block, prediction, &tx, &decision.levels, quant)?;
+            Ok((cost, decision))
+        })
+    }
+
     /// The per-plane SATD between the source and the prediction of the luma or
     /// the chroma blocks of `leaf` under `modes`.
     fn prediction_satd(

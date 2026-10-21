@@ -23,8 +23,13 @@ pub struct PresetParams {
     pub partition_early_exit_pct: u8,
     /// Rate-distortion optimized quantization.
     pub rdoq: bool,
-    /// Transform-type search depth; `0` tries only the default type.
+    /// Luma transform-type search depth: depth `d` tries the first `2 * d + 1`
+    /// types a block offers, most probable first. `0` codes every intra luma
+    /// block with `DCT_DCT` and signals no type (`reduced_tx_set = 2`).
     pub tx_type_depth: u8,
+    /// Luma transform-partition search (`TX_MODE_SELECT`); off codes every
+    /// block with its largest transform (`TX_MODE_LARGEST`).
+    pub tx_partition_search: bool,
     /// Full-pel motion search radius in luma samples.
     pub motion_range: u16,
     /// Sub-pel refinement depth: `0` full-pel, `1` half, `2` quarter, `3` eighth.
@@ -38,7 +43,7 @@ const fn row(
     intra_modes: u8,
     partition_early_exit_pct: u8,
     rdoq: bool,
-    tx_type_depth: u8,
+    (tx_type_depth, tx_partition_search): (u8, bool),
     motion: (u16, u8),
     loop_filter_search: u8,
 ) -> PresetParams {
@@ -49,6 +54,7 @@ const fn row(
         partition_early_exit_pct,
         rdoq,
         tx_type_depth,
+        tx_partition_search,
         motion_range: motion.0,
         subpel_depth: motion.1,
         loop_filter_search,
@@ -57,17 +63,17 @@ const fn row(
 
 /// Search limits indexed by preset: `0` is the slowest and best, `10` the fastest.
 pub const PRESETS: [PresetParams; 11] = [
-    row((2, 7), 13, 0, true, 3, (256, 3), 3),
-    row((2, 7), 13, 0, true, 3, (192, 3), 3),
-    row((2, 7), 12, 2, true, 3, (128, 3), 2),
-    row((2, 7), 10, 4, true, 2, (96, 2), 2),
-    row((2, 7), 9, 6, true, 2, (64, 2), 2),
-    row((2, 7), 8, 8, true, 2, (64, 2), 1),
-    row((3, 7), 6, 10, true, 1, (48, 2), 1),
-    row((3, 6), 5, 12, false, 1, (32, 1), 1),
-    row((3, 6), 4, 15, false, 1, (24, 1), 0),
-    row((3, 6), 3, 20, false, 0, (16, 1), 0),
-    row((4, 6), 2, 25, false, 0, (16, 0), 0),
+    row((2, 7), 13, 0, true, (3, true), (256, 3), 3),
+    row((2, 7), 13, 0, true, (3, true), (192, 3), 3),
+    row((2, 7), 12, 2, true, (3, true), (128, 3), 2),
+    row((2, 7), 10, 4, true, (2, true), (96, 2), 2),
+    row((2, 7), 9, 6, true, (2, true), (64, 2), 2),
+    row((2, 7), 8, 8, true, (2, true), (64, 2), 1),
+    row((3, 7), 6, 10, true, (1, true), (48, 2), 1),
+    row((3, 6), 5, 12, false, (1, false), (32, 1), 1),
+    row((3, 6), 4, 15, false, (1, false), (24, 1), 0),
+    row((3, 6), 3, 20, false, (0, false), (16, 1), 0),
+    row((4, 6), 2, 25, false, (0, false), (16, 0), 0),
 ];
 
 /// A speed preset, `0..=10`.
@@ -124,6 +130,7 @@ mod tests {
             assert!(fast.partition_early_exit_pct >= slow.partition_early_exit_pct);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.tx_type_depth <= slow.tx_type_depth);
+            assert!(fast.tx_partition_search <= slow.tx_partition_search);
             assert!(fast.motion_range <= slow.motion_range);
             assert!(fast.subpel_depth <= slow.subpel_depth);
             assert!(fast.loop_filter_search <= slow.loop_filter_search);
