@@ -4,8 +4,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, build_encoder_sequence_header,
-    build_key_frame_header, encode_key_frame_temporal_unit,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams,
+    build_encoder_sequence_header, build_key_frame_header, encode_key_frame_temporal_unit,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize};
 use splot_decode::encoder_syntax::{IntraTileSyntax, PartitionNode, TransformBlock};
@@ -169,7 +169,8 @@ fn encode_case(case: Case, seed: u64) -> (Vec<u8>, DecodedFrame<u16>) {
     })
     .unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let core = build_key_frame_header(&view, case.base_q_idx, 0).unwrap();
+    let core =
+        build_key_frame_header(&view, case.base_q_idx, 0, &FrameFilterParams::default()).unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core).unwrap();
     let mut rng = Rng(seed | 1);
     let mut coder = RandomLevels {
@@ -258,7 +259,13 @@ fn rejects_unsupported_decisions() {
         tools: case.tools,
     })
     .unwrap();
-    let core = build_key_frame_header(&CoreSeqView::from_sequence(&seq).unwrap(), 50, 0).unwrap();
+    let core = build_key_frame_header(
+        &CoreSeqView::from_sequence(&seq).unwrap(),
+        50,
+        0,
+        &FrameFilterParams::default(),
+    )
+    .unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core).unwrap();
     let tree = PartitionTree::Leaf(BlockDecision::DC);
     assert!(matches!(
@@ -283,7 +290,13 @@ fn rejects_unsupported_decisions() {
         tools,
     })
     .unwrap();
-    let core = build_key_frame_header(&CoreSeqView::from_sequence(&seq).unwrap(), 50, 0).unwrap();
+    let core = build_key_frame_header(
+        &CoreSeqView::from_sequence(&seq).unwrap(),
+        50,
+        0,
+        &FrameFilterParams::default(),
+    )
+    .unwrap();
     assert!(matches!(
         KeyFrameTileWriter::new(&seq, &core),
         Err(TileWriterError::Unsupported(_))
