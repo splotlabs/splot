@@ -217,7 +217,7 @@ fn parse_stream_header(line: &[u8]) -> Result<Y4mHeader, Y4mError> {
                 frame_rate = Some(rate.ok_or_else(invalid)?);
             }
             'A' => aspect = parse_ratio(value).ok_or_else(invalid)?,
-            'I' if matches!(value, "p" | "t" | "b" | "m" | "?") => {
+            'I' if matches!(value, "p" | "?") => {
                 interlace = value.chars().next().unwrap_or('p');
             }
             'I' => return Err(invalid()),

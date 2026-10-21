@@ -8,7 +8,8 @@ use crate::annexb::parse_annex_b_obus_partial;
 use crate::headers::frame::{FrameSize, FrameType, TxMode};
 use crate::write::write_frame_header_core;
 
-const SIZES: [(u32, u32); 8] = [
+const SIZES: [(u32, u32); 9] = [
+    (200, 136),
     (1, 1),
     (2, 2),
     (17, 9),
@@ -72,7 +73,11 @@ fn reparse_core(core: &FrameHeaderCore, view: &CoreSeqView) -> FrameHeaderCore {
 fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
     for (width, height) in SIZES {
         for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
-            for sb in [SuperblockSize::Block64x64, SuperblockSize::Block128x128] {
+            for sb in [
+                SuperblockSize::Block64x64,
+                SuperblockSize::Block128x128,
+                SuperblockSize::Block256x256,
+            ] {
                 let seq =
                     build_encoder_sequence_header(&params(width, height, bit_depth, sb)).unwrap();
                 assert_eq!(seq.general.max_frame_width.get(), width);

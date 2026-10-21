@@ -425,10 +425,7 @@ fn key_frame_header_bits(
 
 /// § 5.18.7.3 uniform tile spacing with one tile at level 31 (`minLog2TileCols == 0`).
 fn write_single_tile_info(w: &mut BitWriter, seq: &CoreSeqView) -> Result<(), WriteError> {
-    let sb_log2 = match seq.tile.seq_sb_size {
-        SuperblockSize::Block64x64 => 4,
-        SuperblockSize::Block128x128 | SuperblockSize::Block256x256 => 5,
-    };
+    let sb_log2 = crate::tile::mi_width_log2(seq.tile.frame_sb_size(true));
     let sbs = |frame: u32| {
         let mi = 2 * frame.div_ceil(8);
         mi.div_ceil(1 << sb_log2)

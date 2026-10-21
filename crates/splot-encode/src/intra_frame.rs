@@ -248,7 +248,13 @@ fn flattest_split(
             best = Some((cost, partition));
         }
     }
-    Ok(best.map_or(allowed[0], |(_, partition)| partition))
+    match best {
+        Some((_, partition)) => Ok(partition),
+        None => allowed
+            .first()
+            .copied()
+            .ok_or(TileWriterError::Shape("no allowed partition")),
+    }
 }
 
 /// Transforms and quantizes the source residual of each transform block.

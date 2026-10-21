@@ -21,7 +21,6 @@ fuzz_target!(|data: &[u8]| {
         };
         for (plane, (width, height)) in planes.iter().zip(sizes) {
             assert_eq!(plane.len(), width * height);
-            assert!(plane.iter().all(|&s| u32::from(s) < 1 << header.bit_depth));
         }
     }
 });

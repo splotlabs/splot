@@ -72,18 +72,28 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.preset = Preset::new(args.preset)?;
     config.threads = args.threads;
     config.keyint = args.keyint;
+    if u16::try_from(header.width).is_err() || u16::try_from(header.height).is_err() {
+        bail!("IVF output supports at most 65535 samples per side");
+    }
     let mut encoder = Encoder::new(config.clone()).context("failed to create the encoder")?;
 
-    let output = File::create(&args.output)
-        .with_context(|| format!("failed to create output file: {}", args.output.display()))?;
-    let mut writer = IvfWriter::new(BufWriter::new(output), &config)?;
+    // The output file is created at the first packet, so bad input never truncates it.
+    let mut writer = None;
     let mut stdout = io::stdout().lock();
     if args.stats {
         writeln!(stdout, "frame,qp,bits,psnr_y,psnr_u,psnr_v")?;
     }
     let mut drain = |encoder: &mut Encoder| -> Result<()> {
         while let Some(packet) = encoder.receive_packet()? {
-            writer.write_packet(&packet)?;
+            if writer.is_none() {
+                let output = File::create(&args.output).with_context(|| {
+                    format!("failed to create output file: {}", args.output.display())
+                })?;
+                writer = Some(IvfWriter::new(BufWriter::new(output), &config)?);
+            }
+            if let Some(writer) = &mut writer {
+                writer.write_packet(&packet)?;
+            }
             if args.stats {
                 let s = packet.stats;
                 writeln!(
@@ -106,6 +116,11 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     }
     encoder.flush()?;
     drain(&mut encoder)?;
-    writer.finish()?;
+    match writer {
+        Some(writer) => {
+            writer.finish()?;
+        }
+        None => bail!("the input has no frames"),
+    }
     Ok(ExitCode::SUCCESS)
 }
