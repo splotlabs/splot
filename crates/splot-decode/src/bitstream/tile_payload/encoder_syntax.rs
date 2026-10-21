@@ -42,6 +42,12 @@ use super::partition_traversal::{
 use super::tile_frontier::{frame_mi_dimensions, minimal_partition_frame_facts};
 use crate::residual::pipeline::{GeneralIntraResidualPlan, RectChromaPlan, RectLumaPlan};
 
+#[path = "encoder_filters.rs"]
+mod filters;
+pub use filters::{
+    CdefIndexMap, CdefSlot, FilterRecorder, LrLayout, LrUnit, apply_loop_filters, cdef_unit_grid,
+};
+
 type BoxedSource = Box<dyn std::error::Error + Send + Sync + 'static>;
 
 /// Error from the encoder syntax facade.

@@ -487,7 +487,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         })
     }
 
-    #[cfg(test)]
     pub(crate) fn into_filtered_frame<R>(
         self,
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
