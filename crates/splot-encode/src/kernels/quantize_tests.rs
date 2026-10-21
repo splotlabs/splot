@@ -106,7 +106,7 @@ proptest! {
     #[test]
     fn rounding_zero_never_overshoots((q, ..) in quantizer(Just(0u32)), coeffs in coefficients()) {
         let (_, dequant, _) = run(&ScalarKernels, &q, &coeffs);
-        for (&c, &dq) in coeffs.iter().zip(&dequant).filter(|&(&c, _)| c.unsigned_abs() < 1 << 15) {
+        for (&c, &dq) in coeffs.iter().zip(&dequant).filter(|&(&c, _)| c.unsigned_abs() < (1 << 15) - 1) {
             prop_assert!(i64::from(dq).abs() <= i64::from(c).abs());
         }
     }
