@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 
 use splot_core::headers::frame::{
     CdefStrengthSet, CdefStrengthSets, CoreSeqView, FrameFilterParams, FrameHeaderCore,
-    MAX_CDEF_STRENGTH_SETS, build_key_frame_header,
+    KeyFrameTxParams, MAX_CDEF_STRENGTH_SETS, build_key_frame_header,
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -34,6 +34,7 @@ use crate::preset::PresetParams;
 use crate::tile_writer::filters::FilterSyntax;
 use crate::tile_writer::{
     KeyFrameTileWriter, ResidualCoder, SuperblockDecision, TileWriterError, TransformDecision,
+    TxType,
 };
 
 /// `(pri, sec)` CDEF strengths in the order the search tries them.
@@ -95,6 +96,18 @@ struct Recording<'a, C> {
 }
 
 impl<C: ResidualCoder> ResidualCoder for Recording<'_, C> {
+    fn code_luma(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        tx_types: &[TxType],
+    ) -> core::result::Result<TransformDecision, TileWriterError> {
+        let decision = self.coder.code_luma(syntax, tx, prediction, tx_types)?;
+        self.transforms.push(decision.clone());
+        Ok(decision)
+    }
+
     fn code(
         &mut self,
         syntax: &mut IntraTileSyntax,
@@ -154,10 +167,17 @@ pub(crate) fn finish_key_frame(
             what: "a frame without quantization params",
         })?
         .base_q_idx;
+    let tail = pass.core.intra_tail.as_ref().ok_or(Error::Unsupported {
+        what: "a key frame without its header tail",
+    })?;
     let search = Search {
         seq,
         view,
         qindex,
+        tx: KeyFrameTxParams {
+            tx_mode: tail.tx_mode,
+            reduced_tx_set: tail.reduced_tx_set,
+        },
         source,
         recorder: &pass.recorder,
         recon: &pass.recon,
@@ -216,6 +236,7 @@ struct Search<'a> {
     seq: &'a SequenceHeader,
     view: &'a CoreSeqView,
     qindex: u32,
+    tx: KeyFrameTxParams,
     source: &'a SourceFrame,
     recorder: &'a FilterRecorder,
     recon: &'a DecodedFrame<u16>,
@@ -260,7 +281,8 @@ impl Search<'_> {
     }
 
     fn header(&self, params: &FrameFilterParams) -> Result<FrameHeaderCore> {
-        build_key_frame_header(self.view, self.qindex, 0, params).map_err(coding("frame header"))
+        build_key_frame_header(self.view, self.qindex, 0, params, self.tx)
+            .map_err(coding("frame header"))
     }
 
     /// `frame` filtered with `params`, every `cdef_idx` `0`, and `lr_on` units on.

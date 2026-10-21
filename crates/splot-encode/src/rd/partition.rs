@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use super::{Bits, Lambda, RdCost};
 use crate::preset::PresetParams;
-use crate::tile_writer::{IntraModes, Partition, PartitionTree};
+use crate::tile_writer::{LeafChoice, Partition, PartitionTree};
 
 /// What the partition search needs from a coder. Trials code into live state:
 /// [`Self::evaluate_leaf`] leaves its leaf coded, and the search rolls back
@@ -36,9 +36,9 @@ pub(crate) trait PartitionSearch {
     /// Luma `(log2 width, log2 height)` of `node`.
     fn block_log2(&self, node: Self::Node) -> Result<(u32, u32), Self::Error>;
     /// Codes `node` as a leaf into the live state; returns its cost and decision.
-    fn evaluate_leaf(&mut self, node: Self::Node) -> Result<(RdCost, IntraModes), Self::Error>;
-    /// Codes `node` as a leaf with `modes` into the live state; returns its cost.
-    fn code_leaf(&mut self, node: Self::Node, modes: IntraModes) -> Result<RdCost, Self::Error>;
+    fn evaluate_leaf(&mut self, node: Self::Node) -> Result<(RdCost, LeafChoice), Self::Error>;
+    /// Codes `node` as a leaf with `choice` into the live state; returns its cost.
+    fn code_leaf(&mut self, node: Self::Node, choice: LeafChoice) -> Result<RdCost, Self::Error>;
     /// The rate of the partition symbols that select `partition` at `node`.
     fn partition_rate(
         &mut self,
@@ -88,7 +88,7 @@ fn search<S: PartitionSearch>(
     memo: &mut Memo<S::Node>,
 ) -> Result<(PartitionTree, RdCost), S::Error> {
     if !coder.in_frame(node) {
-        return Ok((PartitionTree::Leaf(IntraModes::DC), RdCost::default()));
+        return Ok((PartitionTree::Leaf(LeafChoice::DC), RdCost::default()));
     }
     let key = coder.key(node);
     if let Some((_, tree)) = memo
@@ -153,7 +153,7 @@ fn search<S: PartitionSearch>(
         }
     }
     let Some((_, tree, cost, end)) = best else {
-        return Ok((PartitionTree::Leaf(IntraModes::DC), RdCost::default()));
+        return Ok((PartitionTree::Leaf(LeafChoice::DC), RdCost::default()));
     };
     if let Some(end) = &end {
         coder.restore(end)?;
@@ -172,7 +172,7 @@ fn recode<S: PartitionSearch>(
         return Ok(RdCost::default());
     }
     let (partition, mut cost) = match tree {
-        PartitionTree::Leaf(modes) => (Partition::None, coder.code_leaf(node, *modes)?),
+        PartitionTree::Leaf(choice) => (Partition::None, coder.code_leaf(node, *choice)?),
         PartitionTree::Split { kind, children } => {
             let mut cost = RdCost::default();
             for (child, tree) in coder.children(node, *kind)?.into_iter().zip(children) {

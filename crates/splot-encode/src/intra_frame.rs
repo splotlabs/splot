@@ -9,7 +9,9 @@ use splot_core::headers::frame::{
     build_encoder_sequence_header, build_key_frame_header, encode_key_frame_temporal_unit,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
-use splot_decode::encoder_syntax::{IntraTileSyntax, TransformBlock, recon_params, tx_log2};
+use splot_decode::encoder_syntax::{
+    IntraTileSyntax, TransformBlock, TxType, recon_params, tx_log2,
+};
 use splot_recon::{BitDepth, DecodedFrame, PlaneId, PlaneSize};
 
 use crate::config::Config;
@@ -22,12 +24,14 @@ use crate::loop_filter::{FilteredFrame, FirstPass, FrameDecisions, finish_key_fr
 use crate::mode_decision::TrialCoder;
 use crate::preset::PresetParams;
 use crate::rate_control::{FramePlanInfo, FrameType};
-use crate::rd::Lambda;
-use crate::rd::coeff_rate::CdfCoeffRates;
+use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, block_rate};
 use crate::rd::partition::search_partition;
+use crate::rd::{Lambda, RdCost};
+use crate::tile_writer::coeffs::eob;
 use crate::tile_writer::{
     KeyFrameTileWriter, ResidualCoder, SuperblockDecision, TileWriterError, TransformDecision,
 };
+use crate::tx_choice;
 
 /// Quantizer deadzone in Q8 (`128` rounds to nearest).
 const DEADZONE_ROUNDING_Q8: u32 = 96;
@@ -86,8 +90,14 @@ impl FrameCoder for IntraFrameCoder {
         qp: u8,
     ) -> Result<CodedFrame> {
         let qindex = u32::from(qp);
-        let core = build_key_frame_header(&self.view, qindex, 0, &FrameFilterParams::default())
-            .map_err(coding("frame header"))?;
+        let core = build_key_frame_header(
+            &self.view,
+            qindex,
+            0,
+            &FrameFilterParams::default(),
+            tx_choice::key_frame_tx_params(self.preset),
+        )
+        .map_err(coding("frame header"))?;
         let mut writer =
             KeyFrameTileWriter::new(&self.sequence, &core).map_err(coding("tile setup"))?;
         let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
@@ -98,7 +108,8 @@ impl FrameCoder for IntraFrameCoder {
             source: &padded,
             qindex,
             bit_depth: self.bit_depth,
-            rdoq: self.preset.rdoq.then_some(lambda),
+            preset: self.preset,
+            lambda,
         };
         let mut decisions = FrameDecisions::default();
         let preset = self.preset;
@@ -234,15 +245,44 @@ impl PaddedSource {
 }
 
 /// Transforms and quantizes the source residual of each transform block, by
-/// RDOQ when it has a multiplier, else by a deadzone quantizer.
+/// RDOQ when the preset asks for it, else by a deadzone quantizer, and picks
+/// each luma transform type by rate and distortion.
 pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) source: &'a PaddedSource,
     qindex: u32,
     bit_depth: BitDepth,
-    rdoq: Option<Lambda>,
+    preset: &'static PresetParams,
+    lambda: Lambda,
 }
 
 impl ResidualCoder for SourceResidualCoder<'_> {
+    /// The offered type of the preset's leading `tx_types` with the lowest
+    /// `D + lambda * R`, with the exact coefficient and type rate.
+    fn code_luma(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        tx_types: &[TxType],
+    ) -> core::result::Result<TransformDecision, TileWriterError> {
+        let count = tx_choice::tx_type_candidates(self.preset).min(tx_types.len());
+        let mut best: Option<(u128, TransformDecision)> = None;
+        for &tx_type in &tx_types[..count] {
+            let tx = TransformBlock { tx_type, ..*tx };
+            let decision = self.code(syntax, &tx, prediction)?;
+            if count == 1 {
+                return Ok(decision);
+            }
+            if let Some(cost) = self.luma_cost(syntax, &tx, prediction, &decision.levels)?
+                && best.as_ref().is_none_or(|(best_cost, _)| cost < *best_cost)
+            {
+                best = Some((cost, decision));
+            }
+        }
+        best.map(|(_, decision)| decision)
+            .ok_or(TileWriterError::Shape("no luma transform type"))
+    }
+
     fn code(
         &mut self,
         syntax: &mut IntraTileSyntax,
@@ -284,7 +324,8 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             .map_err(kernel)?;
         let mut levels = vec![0; len];
         let mut dequant = vec![0; len];
-        if let Some(lambda) = self.rdoq {
+        // shortcut: RDOQ walks the 2D-class scan only; IDTX and 1D types take the deadzone.
+        if self.preset.rdoq && (tx.tx_type as u8) < TxType::Idtx as u8 {
             let block = RdoqBlock {
                 dc_q2: params.dc_quant,
                 ac_q2: params.ac_quant,
@@ -294,7 +335,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                 log2_height: forward.coeff_height().ilog2(),
                 plane: tx.plane,
             };
-            let lambda_q8 = lambda.coefficient_q8(params.dq_denom);
+            let lambda_q8 = self.lambda.coefficient_q8(params.dq_denom);
             let mut rates = CdfCoeffRates { syntax, tx };
             rdoq(
                 kernels(),
@@ -323,6 +364,34 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             tx_type: tx.tx_type,
             levels,
         })
+    }
+}
+
+impl SourceResidualCoder<'_> {
+    /// `D + lambda * R` of luma block `tx` coded as `levels`, from its exact
+    /// reconstruction and the frozen CDF rows; `None` when the decoder would
+    /// infer another type for the levels.
+    fn luma_cost(
+        &self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        levels: &[i32],
+    ) -> core::result::Result<Option<u128>, TileWriterError> {
+        let eob = eob(tx, levels)?;
+        if eob > 0
+            && syntax
+                .inferred_luma_tx_type(tx, eob)?
+                .is_some_and(|t| t != tx.tx_type)
+        {
+            return Ok(None);
+        }
+        let recon = tx_choice::reconstruct(prediction, tx, levels, (self.qindex, self.bit_depth))?;
+        let cost = RdCost {
+            distortion: self.source.sse(tx, &recon)?,
+            rate: block_rate(syntax, &mut RateSink::frozen(), tx, levels, false)?,
+        };
+        Ok(Some(cost.cost(self.lambda)))
     }
 }
 

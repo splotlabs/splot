@@ -63,7 +63,6 @@ impl SymbolSink for RateSink {
     }
 }
 
-#[cfg(test)]
 /// The rate of the coefficient syntax of `tx` with row-major adjusted `levels`;
 /// [`Bits::IMPOSSIBLE`] for a level the writer cannot code.
 ///

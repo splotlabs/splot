@@ -3,7 +3,9 @@
 
 //! Coding decisions of one superblock, the input of the key-frame tile writer.
 
-pub(crate) use splot_decode::encoder_syntax::{IntraMode, IntraModes, Partition, TxType};
+pub(crate) use splot_decode::encoder_syntax::{
+    IntraMode, IntraModes, Partition, TxPartition, TxType,
+};
 use splot_decode::encoder_syntax::{IntraTileSyntax, TransformBlock};
 
 use super::Result;
@@ -34,8 +36,8 @@ pub(crate) struct SuperblockDecision {
 /// One `decode_partition` call: a coded leaf or a split into child calls.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PartitionTree {
-    /// `PARTITION_NONE` with its modes.
-    Leaf(IntraModes),
+    /// `PARTITION_NONE` with its choices.
+    Leaf(LeafChoice),
     /// Any other partition, with one entry per § 5.20.3.1 child call in syntax
     /// order. Entries of children that start outside the frame are not coded.
     Split {
@@ -44,10 +46,33 @@ pub(crate) enum PartitionTree {
     },
 }
 
+/// The modes and the luma transform partition of one leaf.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LeafChoice {
+    pub(crate) modes: IntraModes,
+    /// One of the leaf's `luma_tx_partitions`.
+    pub(crate) tx_partition: TxPartition,
+}
+
+impl LeafChoice {
+    /// `DC_PRED` with the largest transform.
+    pub(crate) const DC: Self = Self::largest(IntraModes::DC);
+
+    /// `modes` with the largest transform.
+    pub(crate) const fn largest(modes: IntraModes) -> Self {
+        Self {
+            modes,
+            tx_partition: TxPartition::None,
+        }
+    }
+}
+
 /// The coded form of one transform block.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TransformDecision {
-    /// Must equal the block's `tx_type`: the writer codes no transform type.
+    /// The type the levels use: the block's `tx_type` from
+    /// [`ResidualCoder::code`], or one of the offered types from
+    /// [`ResidualCoder::code_luma`].
     pub(crate) tx_type: TxType,
     /// Quantized levels in the row-major adjusted (at most 32x32) layout.
     pub(crate) levels: Vec<i32>,
@@ -55,13 +80,30 @@ pub(crate) struct TransformDecision {
 
 /// Codes each transform block once the writer knows its prediction, because
 /// intra prediction reads the reconstruction of the blocks before it.
+///
+/// The decoder infers `DCT_DCT` for a luma block with one coded coefficient
+/// (§ 5.20.8.2). When a [`Self::code_luma`] decision has `eob == 1` with
+/// another type, the writer codes the block again through [`Self::code`] with
+/// `DCT_DCT`; all-zero levels simply take `DCT_DCT`.
 pub(crate) trait ResidualCoder {
-    /// Codes `tx`, whose row-major prediction is `prediction`; `syntax` holds
-    /// the CDF rows the block's coefficients will be coded with.
+    /// Codes `tx` with `tx.tx_type`, whose row-major prediction is
+    /// `prediction`; `syntax` holds the CDF rows its coefficients will use.
     fn code(
         &mut self,
         syntax: &mut IntraTileSyntax,
         tx: &TransformBlock,
         prediction: &[u16],
     ) -> Result<TransformDecision>;
+
+    /// Codes luma block `tx` with one of `tx_types`, the types the block may
+    /// code (`DCT_DCT` first); the default codes `tx.tx_type` through [`Self::code`].
+    fn code_luma(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        _tx_types: &[TxType],
+    ) -> Result<TransformDecision> {
+        self.code(syntax, tx, prediction)
+    }
 }

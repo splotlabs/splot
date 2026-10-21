@@ -40,9 +40,8 @@ pub use encoder_input::{
     encode_temporal_delimiter_obu,
 };
 pub use encoder_stream::{
-    EncoderHeaderError, EncoderStreamParams, EncoderToolFlags, FrameFilterParams,
-    KEY_FRAME_REDUCED_TX_SET, build_encoder_sequence_header, build_key_frame_header,
-    encode_key_frame_temporal_unit,
+    EncoderHeaderError, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, KeyFrameTxParams,
+    build_encoder_sequence_header, build_key_frame_header, encode_key_frame_temporal_unit,
 };
 pub(crate) use filtering::gdf_per_block_is_coded;
 pub use filtering::{

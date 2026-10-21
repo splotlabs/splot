@@ -405,7 +405,7 @@ fn read_error(error: impl Into<BlockSymbolTraceReadError>) -> CoeffBaseDerivedLe
     CoeffBaseSymbolReadError::from(error.into()).into()
 }
 
-const fn tx_class_index(tx_class: CoeffTransformClass) -> usize {
+pub(crate) const fn tx_class_index(tx_class: CoeffTransformClass) -> usize {
     match tx_class {
         CoeffTransformClass::TwoD => 0,
         CoeffTransformClass::Horizontal => 1,

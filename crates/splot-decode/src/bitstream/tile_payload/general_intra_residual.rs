@@ -255,12 +255,12 @@ const D203_PRED: usize = 7;
 const D67_PRED: usize = 8;
 const SMOOTH_H_PRED: usize = 11;
 const TX_SET_DCTONLY: usize = 0;
-const TX_SET_WIDE_64: usize = 1;
-const TX_SET_HIGH_64: usize = 2;
-const TX_SET_WIDE_32: usize = 3;
-const TX_SET_HIGH_32: usize = 4;
+pub(crate) const TX_SET_WIDE_64: usize = 1;
+pub(crate) const TX_SET_HIGH_64: usize = 2;
+pub(crate) const TX_SET_WIDE_32: usize = 3;
+pub(crate) const TX_SET_HIGH_32: usize = 4;
 const TX_SET_INTRA_1: usize = 5;
-const TX_SET_INTRA_2: usize = 6;
+pub(crate) const TX_SET_INTRA_2: usize = 6;
 const TX_SET_INTER_1: usize = 5;
 const TX_SET_INTER_2: usize = 6;
 const TX_SET_DCT_IDTX: usize = 7;
@@ -270,14 +270,22 @@ const MI_SIZE: usize = 4;
 /// AV2 § 6.19.6.3 Table 6.23 `TX_PARTITION_*`, in `txPartition` value order;
 /// read per § 5.20.6.3.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum LumaTxPartition {
+pub enum LumaTxPartition {
+    /// `TX_PARTITION_NONE`.
     None,
+    /// `TX_PARTITION_SPLIT`: four quarter transforms.
     Split,
+    /// `TX_PARTITION_HORZ`: two half-height transforms.
     Horz,
+    /// `TX_PARTITION_VERT`: two half-width transforms.
     Vert,
+    /// `TX_PARTITION_HORZ4`: four quarter-height transforms.
     Horz4,
+    /// `TX_PARTITION_VERT4`: four quarter-width transforms.
     Vert4,
+    /// `TX_PARTITION_HORZ5`: two quarter rows around a half-height middle.
     Horz5,
+    /// `TX_PARTITION_VERT5`: two quarter columns around a half-width middle.
     Vert5,
 }
 
@@ -286,7 +294,7 @@ impl LumaTxPartition {
     ///
     /// The `TxPartitionType` rows are `TX_PARTITION_TYPE_ROW_LEN` wide, so the
     /// symbol decoder cannot return above `Vert5`.
-    const fn from_partition_type_symbol(symbol: u8) -> Self {
+    pub(crate) const fn from_partition_type_symbol(symbol: u8) -> Self {
         match symbol {
             0 => Self::Split,
             1 => Self::Horz,
@@ -684,7 +692,7 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
     })
 }
 
-fn luma_partition_record_fills_block(
+pub(crate) fn luma_partition_record_fills_block(
     block_fills_residual: bool,
     record_count: usize,
     record: LumaTransformPartitionRecord,
@@ -694,7 +702,7 @@ fn luma_partition_record_fills_block(
     block_fills_residual && record_count == 1 && record.x == start_x && record.y == start_y
 }
 
-fn luma_transform_record_starts_in_frame(
+pub(crate) fn luma_transform_record_starts_in_frame(
     record: &LumaTransformPartitionRecord,
     frame_width: usize,
     frame_height: usize,
@@ -703,11 +711,11 @@ fn luma_transform_record_starts_in_frame(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct LumaTransformPartitionRecord {
-    x: usize,
-    y: usize,
-    tx_size: usize,
-    middle: bool,
+pub(crate) struct LumaTransformPartitionRecord {
+    pub(crate) x: usize,
+    pub(crate) y: usize,
+    pub(crate) tx_size: usize,
+    pub(crate) middle: bool,
 }
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
@@ -721,33 +729,13 @@ fn read_luma_transform_partition_records(
     is_inter: bool,
     reduced_tx_part_set: bool,
 ) -> Result<LumaTransformPartitionUnits<LumaTransformPartitionRecord>, GeneralIntraResidualError> {
-    let block_size = context.block_size();
-    let mi_size = block_size.index();
+    let mi_size = context.block_size().index();
     let tx_size = context.max_tx_size();
-    if mi_size == BLOCK_4X4 {
+    let Some((allow_horz, allow_vert)) = luma_tx_partition_allows(context)? else {
         return Ok(LumaTransformPartitionUnits::one(luma_transform_record(
             start_x, start_y, tx_size,
         )));
-    }
-    let block_width =
-        block_size_table_usize(&NUM_4X4_BLOCKS_WIDE, "Num_4x4_Blocks_Wide", mi_size)? * MI_SIZE;
-    let block_height =
-        block_size_table_usize(&NUM_4X4_BLOCKS_HIGH, "Num_4x4_Blocks_High", mi_size)? * MI_SIZE;
-    if (block_width >> 6) > 1 || (block_height >> 6) > 1 {
-        return Ok(LumaTransformPartitionUnits::one(luma_transform_record(
-            start_x, start_y, tx_size,
-        )));
-    }
-
-    let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
-    let allow_horz = tx_size_from_dimensions(tx_width, tx_height >> 1).is_some();
-    let allow_vert = tx_size_from_dimensions(tx_width >> 1, tx_height).is_some();
-    if !allow_horz && !allow_vert {
-        return Ok(LumaTransformPartitionUnits::one(luma_transform_record(
-            start_x, start_y, tx_size,
-        )));
-    }
-
+    };
     let tx_partition = read_luma_tx_partition_type(
         cdfs,
         symbols,
@@ -759,6 +747,29 @@ fn read_luma_transform_partition_records(
         reduced_tx_part_set,
     )?;
     luma_transform_records_for_partition(start_x, start_y, tx_size, tx_partition)
+}
+
+/// The § 5.20.6.3 `(allowHorz, allowVert)` of a block that reads
+/// `tx_do_partition`, or `None` when the block codes no partition symbol.
+#[inline]
+pub(crate) fn luma_tx_partition_allows(
+    context: LumaTransformPartitionContext,
+) -> Result<Option<(bool, bool)>, GeneralIntraResidualError> {
+    let mi_size = context.block_size().index();
+    if mi_size == BLOCK_4X4 {
+        return Ok(None);
+    }
+    let block_width =
+        block_size_table_usize(&NUM_4X4_BLOCKS_WIDE, "Num_4x4_Blocks_Wide", mi_size)? * MI_SIZE;
+    let block_height =
+        block_size_table_usize(&NUM_4X4_BLOCKS_HIGH, "Num_4x4_Blocks_High", mi_size)? * MI_SIZE;
+    if (block_width >> 6) > 1 || (block_height >> 6) > 1 {
+        return Ok(None);
+    }
+    let (tx_width, tx_height) = tx_size_dimensions(context.max_tx_size())?;
+    let allow_horz = tx_size_from_dimensions(tx_width, tx_height >> 1).is_some();
+    let allow_vert = tx_size_from_dimensions(tx_width >> 1, tx_height).is_some();
+    Ok((allow_horz || allow_vert).then_some((allow_horz, allow_vert)))
 }
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
@@ -853,7 +864,7 @@ fn read_luma_tx_partition_type(
     })
 }
 
-fn luma_transform_records_for_partition(
+pub(crate) fn luma_transform_records_for_partition(
     start_x: usize,
     start_y: usize,
     tx_size: usize,
@@ -966,7 +977,7 @@ const fn luma_transform_record(x: usize, y: usize, tx_size: usize) -> LumaTransf
     }
 }
 
-fn block_size_table_usize(
+pub(crate) fn block_size_table_usize(
     table: &[i32],
     table_name: &'static str,
     index: usize,
@@ -1368,10 +1379,14 @@ fn ensure_transform_tool_residual_handoff(
         return Ok(metadata);
     }
     let tx_set = transform_set(frame_facts, plane, tx_size, is_inter)?;
-    let dct_forced = (!is_inter && plane == 0 && eob == 1)
-        || (plane > 0 && frame_facts.enable_chroma_dctonly())
-        || tx_set == TX_SET_DCTONLY
-        || (!is_inter && plane == 0 && frame_facts.reduced_tx_set() == 2);
+    let dct_forced = dct_forced(
+        is_inter,
+        plane,
+        eob,
+        frame_facts.enable_chroma_dctonly(),
+        frame_facts.reduced_tx_set(),
+        tx_set,
+    );
     if !is_inter && plane == 0 && input.fsc_mode {
         metadata.luma_tx_type = IDTX;
     } else if !(dct_forced || plane > 0) {
@@ -1429,6 +1444,27 @@ fn ensure_transform_tool_residual_handoff(
         )?;
     }
     Ok(metadata)
+}
+
+/// Whether § 5.20.8.2 infers `DCT_DCT` instead of reading a transform type.
+#[allow(
+    clippy::inline_always,
+    clippy::fn_params_excessive_bools,
+    reason = "a predicate on the per-block coefficient path"
+)]
+#[inline(always)]
+pub(crate) const fn dct_forced(
+    is_inter: bool,
+    plane: usize,
+    eob: usize,
+    enable_chroma_dctonly: bool,
+    reduced_tx_set: usize,
+    tx_set: usize,
+) -> bool {
+    (!is_inter && plane == 0 && eob == 1)
+        || (plane > 0 && enable_chroma_dctonly)
+        || tx_set == TX_SET_DCTONLY
+        || (!is_inter && plane == 0 && reduced_tx_set == 2)
 }
 
 fn read_intra_ist_sec_tx(
@@ -1638,16 +1674,16 @@ fn read_active_inter_long_tx_type(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct LongTxSetShape {
+pub(crate) struct LongTxSetShape {
     wide_or_high: usize,
-    long_side_dct_is_forced: bool,
+    pub(crate) long_side_dct_is_forced: bool,
 }
 
 /// Splits a long transform set into its two independent bits.
 ///
 /// Only the four long sets reach here, and for those both bits are predicates
 /// over `tx_set`, so neither needs a fallible lookup.
-const fn long_tx_set_shape(tx_set: usize) -> LongTxSetShape {
+pub(crate) const fn long_tx_set_shape(tx_set: usize) -> LongTxSetShape {
     LongTxSetShape {
         wide_or_high: matches!(tx_set, TX_SET_HIGH_64 | TX_SET_HIGH_32) as usize,
         long_side_dct_is_forced: matches!(tx_set, TX_SET_WIDE_64 | TX_SET_HIGH_64),
@@ -1672,7 +1708,7 @@ fn read_long_side_dct_symbol(
 /// `is_long_side_dct` and `wide_or_high` are binary, and the `IntraTxTypeLong`
 /// and `InterTxTypeLong` rows are five wide, so `tx_type` is 0..=3. Every index
 /// is therefore a literal and the lookup is total.
-const fn long_tx_type_from_index(
+pub(crate) const fn long_tx_type_from_index(
     shape: LongTxSetShape,
     is_long_side_dct: usize,
     tx_type: usize,
@@ -1789,7 +1825,7 @@ fn read_transform_symbol(
 ///
 /// Every `Md_Idx_To_Type` entry is a transform type in 0..=14, so widening the
 /// table's `i32` to `usize` is total.
-fn md_idx_luma_tx_type(
+pub(crate) fn md_idx_luma_tx_type(
     tx_size: usize,
     luma_context: LumaTransformTypeContext,
     intra_tx_type: usize,
@@ -1863,7 +1899,7 @@ fn transform_set(
     )
 }
 
-fn transform_set_from_flags(
+pub(crate) fn transform_set_from_flags(
     reduced_tx_set: usize,
     enable_chroma_dctonly: bool,
     plane: usize,

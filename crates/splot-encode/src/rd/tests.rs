@@ -6,13 +6,13 @@
 use proptest::prelude::*;
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
-    build_encoder_sequence_header, build_key_frame_header,
+    KeyFrameTxParams, build_encoder_sequence_header, build_key_frame_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolEncoder;
 use splot_decode::encoder_syntax::{
-    IntraTileSyntax, PartitionCdf, TransformBlock, TxType, dct_recon_params,
+    IntraModes, IntraTileSyntax, PartitionCdf, TransformBlock, TxType, dct_recon_params,
 };
 use splot_recon::{BitDepth, PlaneId, reconstruct_transform_block_residual};
 
@@ -20,7 +20,7 @@ use super::coeff_rate::{RateSink, block_rate};
 use super::*;
 use crate::tile_writer::coeffs::adjusted_log2;
 use crate::tile_writer::{
-    IntraModes, KeyFrameTileWriter, PARTITIONS, Partition, PartitionTree, ResidualCoder,
+    KeyFrameTileWriter, LeafChoice, PARTITIONS, Partition, PartitionTree, ResidualCoder,
     SuperblockDecision, TransformDecision,
 };
 
@@ -178,7 +178,14 @@ fn headers(
     })
     .unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let core = build_key_frame_header(&view, qindex, 0, &FrameFilterParams::default()).unwrap();
+    let core = build_key_frame_header(
+        &view,
+        qindex,
+        0,
+        &FrameFilterParams::default(),
+        KeyFrameTxParams::default(),
+    )
+    .unwrap();
     (seq, core)
 }
 
@@ -233,7 +240,7 @@ fn leaf_frame_rates(bit_depth: BitDepthIdc, qindex: u32, seed: u64) -> (f64, f64
         max_level: 1 + seed % 300,
         coded: Vec::new(),
     };
-    let tree = PartitionTree::Leaf(IntraModes::DC);
+    let tree = PartitionTree::Leaf(LeafChoice::DC);
     writer
         .write_superblock(&SuperblockDecision { tree }, &mut coder)
         .unwrap();

@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! § 5.20.7.27 `coeffs()` writer for 2D-class transform blocks without TCQ,
-//! parity hiding, or forward skip coding.
+//! § 5.20.7.27 `coeffs()` writer for transform blocks of every class without
+//! TCQ, parity hiding, or forward skip coding, including the § 5.20.8.2 luma
+//! transform type.
 
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_decode::encoder_syntax::{
-    CoeffLevels, IntraTileSyntax, TransformBlock, is_low_frequency, tx_log2,
+    CoeffLevels, IntraTileSyntax, TransformBlock, coefficient_scan, tx_log2,
 };
-use splot_recon::{TransformClass, coefficient_scan_slice};
 
 use super::{Result, TileWriterError};
 
@@ -46,8 +46,20 @@ pub(crate) struct CodedCoeffs {
     dc_category: u8,
 }
 
-/// Sends the coefficient syntax of `tx` with row-major adjusted `levels` to
-/// `sink`, without recording contexts.
+/// The `eob` of the row-major adjusted `levels` in the scan of `tx.tx_type`.
+pub(crate) fn eob(tx: &TransformBlock, levels: &[i32]) -> Result<usize> {
+    Ok(coefficient_scan(tx)?
+        .iter()
+        .rposition(|&pos| {
+            levels
+                .get(usize::from(pos))
+                .is_some_and(|&level| level != 0)
+        })
+        .map_or(0, |last| last + 1))
+}
+
+/// Sends the coefficient syntax of `tx` with row-major adjusted `levels`, coded
+/// with `tx.tx_type`, to `sink`, without recording contexts.
 pub(crate) fn code_coeffs(
     syntax: &mut IntraTileSyntax,
     symbols: &mut impl SymbolSink,
@@ -69,11 +81,8 @@ pub(crate) fn code_coeffs(
     {
         return Err(TileWriterError::LevelOutOfRange(bad));
     }
-    let scan = coefficient_scan_slice(width, height, TransformClass::TwoD)?;
-    let eob = scan
-        .iter()
-        .rposition(|&pos| levels[usize::from(pos)] != 0)
-        .map_or(0, |last| last + 1);
+    let scan = coefficient_scan(tx)?;
+    let eob = eob(tx, levels)?;
     write_symbol(
         symbols,
         syntax.txb_skip_cdf(tx, eob_u_nonzero)?,
@@ -87,16 +96,19 @@ pub(crate) fn code_coeffs(
         });
     }
     write_eob(syntax, symbols, tx, eob)?;
+    if tx.plane == 0 {
+        syntax.code_luma_tx_type(tx, eob, |cdf, value| write_symbol(symbols, cdf, value))?;
+    }
 
     let plane = tx.plane;
     let position = |c: usize| {
         let pos = usize::from(scan[c]);
         (pos, pos >> log2_w, pos & (width - 1))
     };
-    let mut grid = CoeffLevels::new(width, height)?;
+    let mut grid = CoeffLevels::for_block(tx)?;
     for c in (0..eob).rev() {
         let (pos, row, col) = position(c);
-        let is_lf = is_low_frequency(row, col, plane);
+        let is_lf = grid.is_low_frequency(row, col, plane);
         let level = levels[pos].unsigned_abs().min(max_level(is_lf, plane));
         let base_levels = if is_lf {
             LF_NUM_BASE_LEVELS
@@ -129,13 +141,12 @@ pub(crate) fn code_coeffs(
         let quant = levels[pos].unsigned_abs();
         if quant != 0 {
             let negative = u8::from(levels[pos] < 0);
-            if pos == 0 && plane == 0 {
-                write_symbol(symbols, syntax.dc_sign_cdf(tx)?, usize::from(negative))?;
-            } else {
-                symbols.literal(u32::from(negative), 1)?;
+            match syntax.sign_cdf(tx, row, col)? {
+                Some(cdf) => write_symbol(symbols, cdf, usize::from(negative))?,
+                None => symbols.literal(u32::from(negative), 1)?,
             }
         }
-        let max = max_level(is_low_frequency(row, col, plane), plane);
+        let max = max_level(grid.is_low_frequency(row, col, plane), plane);
         if quant >= max {
             hr_level_avg = write_golomb(symbols, quant - max, hr_level_avg)?;
         }

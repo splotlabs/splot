@@ -12,7 +12,10 @@
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
-use splot_recon::{BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId};
+use splot_recon::{
+    BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId, coefficient_scan_slice,
+    tx_class,
+};
 
 use super::cdf::block_context::{IntraYMode, uv_mode_ctx};
 use super::cdf::coeff_context::{
@@ -20,8 +23,12 @@ use super::cdf::coeff_context::{
 };
 pub use super::cdf::context::RectPartitionType as RectKind;
 use super::cdf::{CoeffBaseRow, CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
+use super::coeff_loop::base_level_pass::tx_class_index;
 use super::coeff_loop::max_level::{CoeffTransformClass, coeff_is_low_frequency};
 use super::coeff_loop::scan_walk::CoeffScanEntry;
+use super::coeff_loop::sign_symbol::{
+    CoeffSignReadSource, CoeffSignSourceDeriveConfig, derive_nonzero_coeff_sign_input,
+};
 use super::coeff_loop::{NonZeroCoeffEobContextInput, nonzero_coeff_eob_symbol_input};
 use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TransformCoeffBlockState};
 use super::general_intra_residual::{block_recon_params, txb_skip_selector, txb_skip_tx_size_ctx};
@@ -41,9 +48,11 @@ use super::partition_traversal::{
 use super::tile_frontier::{frame_mi_dimensions, minimal_partition_frame_facts};
 
 mod intra;
+mod transform;
 
 pub use super::cdf::block_context::IntraYMode as IntraMode;
 pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, TxType};
+pub use transform::{TX_PARTITIONS, TxPartition};
 
 #[path = "encoder_filters.rs"]
 mod filters;
@@ -188,13 +197,23 @@ impl LeafBlock {
     pub const fn has_chroma(&self) -> bool {
         self.frontier.has_chroma
     }
+
+    /// Luma `(width, height)` in samples.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] for an invalid block size.
+    pub fn dimensions(&self) -> Result<(usize, usize)> {
+        PartitionNode(self.call).dimensions()
+    }
 }
 
 /// One § 5.20.7.24 transform block, in plane samples.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TransformBlock {
-    /// The type the decoder infers: `Mode_To_Txfm` for chroma (§ 5.20.7.29), and
-    /// for luma `DCT_DCT`, which `reduced_tx_set == 2` infers.
+    /// A planned block holds the type the decoder infers: `Mode_To_Txfm` for
+    /// chroma (§ 5.20.7.29), and `DCT_DCT` for luma, which may code another of
+    /// [`IntraTileSyntax::allowed_luma_tx_types`]. The coefficient syntax reads
+    /// the scan and the contexts of this type.
     pub tx_type: TxType,
     /// Plane index (`0` luma).
     pub plane: usize,
@@ -208,19 +227,37 @@ pub struct TransformBlock {
     pub fills_block: bool,
 }
 
-/// The `Level` grid of one transform block (§ 5.20.7.27), in adjusted coordinates.
+/// The `Level` grid of one transform block (§ 5.20.7.27), in adjusted
+/// coordinates, with the transform class its contexts read.
 #[derive(Debug)]
-pub struct CoeffLevels(TransformCoeffBlockState);
+pub struct CoeffLevels {
+    state: TransformCoeffBlockState,
+    class: CoeffTransformClass,
+}
 
 impl CoeffLevels {
-    /// A zero grid of `width x height` adjusted coefficients (each `4..=32`).
+    /// A zero 2D-class grid of `width x height` adjusted coefficients (each `4..=32`).
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError::Rule`] for an invalid extent.
     pub fn new(width: usize, height: usize) -> Result<Self> {
         TransformCoeffBlockState::new(width, height)
-            .map(Self)
+            .map(|state| Self {
+                state,
+                class: CoeffTransformClass::TwoD,
+            })
             .map_err(rule("coefficient grid"))
+    }
+
+    /// A zero grid of the adjusted size and the transform class of `tx`.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for an invalid transform size.
+    pub fn for_block(tx: &TransformBlock) -> Result<Self> {
+        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
+        let mut grid = Self::new(1 << log2_w.min(5), 1 << log2_h.min(5))?;
+        grid.class = CoeffTransformClass::from_plane_tx_type(tx.tx_type as usize);
+        Ok(grid)
     }
 
     /// Stores `Level[row][col]`.
@@ -228,9 +265,16 @@ impl CoeffLevels {
     /// # Errors
     /// Returns [`EncoderSyntaxError::Rule`] outside the grid.
     pub fn set(&mut self, row: usize, col: usize, level: u32) -> Result<()> {
-        self.0
+        self.state
             .set_level(row, col, level.min(u32::from(u8::MAX)))
             .map_err(rule("coefficient grid"))
+    }
+
+    /// Whether the coefficient at `(row, col)` is low frequency for this grid's
+    /// class (`get_lf_limits`, § 5.20.7.27).
+    #[must_use]
+    pub fn is_low_frequency(&self, row: usize, col: usize, plane: usize) -> bool {
+        coeff_is_low_frequency(CoeffScanEntry::new(0, 0, row, col), plane, self.class)
     }
 }
 
@@ -242,6 +286,20 @@ pub fn is_low_frequency(row: usize, col: usize, plane: usize) -> bool {
         plane,
         CoeffTransformClass::TwoD,
     )
+}
+
+/// The § 5.20.7.30 coefficient scan of `tx` for its type, as row-major adjusted positions.
+///
+/// # Errors
+/// Returns [`EncoderSyntaxError`] for an invalid transform size.
+pub fn coefficient_scan(tx: &TransformBlock) -> Result<&'static [u16]> {
+    let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
+    coefficient_scan_slice(
+        1 << log2_w.min(5),
+        1 << log2_h.min(5),
+        tx_class(tx.tx_type as usize),
+    )
+    .map_err(rule("coefficient scan"))
 }
 
 /// The decoder's dequantization and inverse-transform parameters of a DCT block.
@@ -637,14 +695,14 @@ impl IntraTileSyntax {
         let selection = CoeffBaseContext {
             row,
             col,
-            stride: levels.0.level_stride(),
+            stride: levels.state.level_stride(),
             plane,
             is_lf,
             is_hidden: false,
             c,
-            tx_class: 0,
+            tx_class: tx_class_index(levels.class),
         }
-        .select(levels.0.level());
+        .select(levels.state.level());
         let row = self
             .cdfs
             .coeff_rows_mut()
@@ -670,12 +728,12 @@ impl IntraTileSyntax {
         let ctx = CoeffBrContext {
             row,
             col,
-            stride: levels.0.level_stride(),
+            stride: levels.state.level_stride(),
             plane,
             is_lf,
-            tx_class: 0,
+            tx_class: tx_class_index(levels.class),
         }
-        .ctx(levels.0.level());
+        .ctx(levels.state.level());
         self.cdfs
             .coeff_rows_mut()
             .br_row(plane, is_lf, ctx)
@@ -709,6 +767,48 @@ impl IntraTileSyntax {
             group: 0,
             ctx,
         })
+    }
+
+    /// The CDF row of the sign of the nonzero coefficient at adjusted `(row, col)`
+    /// of `tx`, or `None` when the sign is an `L(1)` literal.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] outside the tile.
+    pub fn sign_cdf(
+        &mut self,
+        tx: &TransformBlock,
+        row: usize,
+        col: usize,
+    ) -> Result<Option<&mut [u16]>> {
+        let [x4, y4, w4, h4] = tx_area4(tx)?;
+        let plane = tx.plane;
+        let input = derive_nonzero_coeff_sign_input(
+            CoeffScanEntry::new(0, 0, row, col),
+            1,
+            CoeffSignSourceDeriveConfig {
+                plane,
+                plane_type: usize::from(plane > 0),
+                tx_class: CoeffTransformClass::from_plane_tx_type(tx.tx_type as usize),
+                is_hidden: false,
+                sum_abs1: 0,
+                above_dc: self.coeff.above_dc(plane).map_err(rule("sign context"))?,
+                left_dc: self.coeff.left_dc(plane).map_err(rule("sign context"))?,
+                x4: self
+                    .coeff
+                    .local_x4(plane, x4)
+                    .map_err(rule("sign context"))?,
+                y4: self
+                    .coeff
+                    .local_y4(plane, y4)
+                    .map_err(rule("sign context"))?,
+                w4,
+                h4,
+            },
+        );
+        match input.source {
+            CoeffSignReadSource::Cdf(selector) => self.tile_row(selector.tile_selector()).map(Some),
+            CoeffSignReadSource::None | CoeffSignReadSource::SignBit => Ok(None),
+        }
     }
 
     /// Records `culLevel` and `dcCategory` of `tx` in the coefficient contexts.

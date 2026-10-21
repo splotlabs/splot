@@ -8,6 +8,7 @@ use core::result::Result;
 use super::*;
 use crate::preset::{PRESETS, PresetParams};
 use crate::rd::partition::{PartitionSearch, search_partition};
+use crate::tile_writer::LeafChoice;
 
 /// A block: left, top, log2 width, log2 height.
 type Rect = (u32, u32, u32, u32);
@@ -83,14 +84,14 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
         Ok((w, h))
     }
 
-    fn evaluate_leaf(&mut self, node: Rect) -> Result<(RdCost, IntraModes), Self::Error> {
+    fn evaluate_leaf(&mut self, node: Rect) -> Result<(RdCost, LeafChoice), Self::Error> {
         self.coded.push(node);
         self.leaf_evaluations += 1;
         assert!(self.evaluated.insert(node), "{node:?} searched twice");
-        Ok(((self.leaf_cost)(node), IntraModes::DC))
+        Ok(((self.leaf_cost)(node), LeafChoice::DC))
     }
 
-    fn code_leaf(&mut self, node: Rect, _: IntraModes) -> Result<RdCost, Self::Error> {
+    fn code_leaf(&mut self, node: Rect, _: LeafChoice) -> Result<RdCost, Self::Error> {
         self.coded.push(node);
         Ok((self.leaf_cost)(node))
     }

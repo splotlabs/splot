@@ -21,7 +21,9 @@ use crate::preset::PresetParams;
 use crate::rd::coeff_rate::RateSink;
 use crate::rd::partition::PartitionSearch;
 use crate::rd::{Bits, Lambda, RdCost};
-use crate::tile_writer::{INTRA_MODES, PARTITIONS, Partition, Result, TileWriterError, Walk};
+use crate::tile_writer::{
+    INTRA_MODES, LeafChoice, PARTITIONS, Partition, Result, TileWriterError, Walk,
+};
 
 /// The largest `|AngleDeltaY|` (§ 5.20.5.5).
 const MAX_ANGLE_DELTA: i8 = 3;
@@ -53,17 +55,17 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         }
     }
 
-    /// Codes the `planes` of `leaf` under `modes` into the live state.
+    /// Codes the `planes` of `leaf` under `choice` into the live state.
     fn trial(
         &mut self,
         leaf: &LeafBlock,
-        modes: IntraModes,
+        choice: LeafChoice,
         planes: Range<usize>,
     ) -> Result<RdCost> {
         let mut sink = RateSink::adapting();
         let blocks = Walk::trial(self.syntax, &mut sink).write_leaf(
             leaf,
-            modes,
+            choice,
             self.coder,
             planes.clone(),
         )?;
@@ -98,37 +100,42 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         leaf: &LeafBlock,
         candidates: Vec<IntraModes>,
         planes: Range<usize>,
-    ) -> Result<Vec<IntraModes>> {
+    ) -> Result<Vec<LeafChoice>> {
         let mut ranked = Vec::with_capacity(candidates.len());
         for modes in candidates {
             ranked.push((self.satd(leaf, modes, planes.clone())?, modes));
         }
         ranked.sort_by_key(|&(satd, _)| satd);
         ranked.truncate(usize::from(self.preset.intra_modes.max(1)));
-        Ok(ranked.into_iter().map(|(_, modes)| modes).collect())
+        Ok(ranked
+            .into_iter()
+            .map(|(_, modes)| LeafChoice::largest(modes))
+            .collect())
     }
 
-    /// The shortlisted candidate with the lowest `D + lambda * R` over
-    /// `planes`; each trial starts from `start`, and the state is `start` after.
+    /// The candidate with the lowest `D + lambda * R` over `planes`; each
+    /// trial starts from `start`, and the state is `start` after.
     fn best(
         &mut self,
         leaf: &LeafBlock,
-        candidates: Vec<IntraModes>,
+        candidates: Vec<LeafChoice>,
         planes: Range<usize>,
         start: &SyntaxSnapshot,
-    ) -> Result<IntraModes> {
-        let shortlist = self.shortlist(leaf, candidates, planes.clone())?;
-        let mut best: Option<(u128, IntraModes)> = None;
-        for modes in shortlist {
+    ) -> Result<LeafChoice> {
+        if let [only] = candidates.as_slice() {
+            return Ok(*only);
+        }
+        let mut best: Option<(u128, LeafChoice)> = None;
+        for choice in candidates {
             self.syntax.restore(start)?;
-            let j = self.trial(leaf, modes, planes.clone())?.cost(self.lambda);
+            let j = self.trial(leaf, choice, planes.clone())?.cost(self.lambda);
             if best.is_none_or(|(best_j, _)| j < best_j) {
-                best = Some((j, modes));
+                best = Some((j, choice));
             }
         }
         self.syntax.restore(start)?;
-        best.map(|(_, modes)| modes)
-            .ok_or(TileWriterError::Shape("no intra mode candidate"))
+        best.map(|(_, choice)| choice)
+            .ok_or(TileWriterError::Shape("no leaf candidate"))
     }
 
     /// Every luma mode and angle delta, with the chroma mode of `planned`.
@@ -217,25 +224,46 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         Ok((w.ilog2(), h.ilog2()))
     }
 
-    /// RD-chooses the luma modes on luma alone, then the chroma mode over the
-    /// coded luma, then codes the whole leaf.
-    fn evaluate_leaf(&mut self, node: PartitionNode) -> Result<(RdCost, IntraModes)> {
+    /// RD-chooses the luma modes on luma alone, then the luma transform
+    /// partition, then the chroma mode over the coded luma, then codes the
+    /// whole leaf.
+    fn evaluate_leaf(&mut self, node: PartitionNode) -> Result<(RdCost, LeafChoice)> {
         let leaf = self.syntax.leaf(node)?;
         let start = self.save(node)?;
-        let mut modes = self.best(&leaf, Self::luma_candidates(IntraModes::DC), LUMA, &start)?;
+        let luma = self.shortlist(&leaf, Self::luma_candidates(IntraModes::DC), LUMA)?;
+        let mut choice = self.best(&leaf, luma, LUMA, &start)?;
+        if self.preset.tx_partition_search {
+            let partitions = self.syntax.luma_tx_partitions(&leaf)?;
+            let candidates = partitions
+                .into_iter()
+                .map(|tx_partition| LeafChoice {
+                    tx_partition,
+                    ..choice
+                })
+                .collect();
+            choice = self.best(&leaf, candidates, LUMA, &start)?;
+        }
         if leaf.has_chroma() {
-            self.trial(&leaf, modes, LUMA)?;
+            self.trial(&leaf, choice, LUMA)?;
             let luma = self.save(node)?;
-            let candidates = self.chroma_candidates(&leaf, modes)?;
-            modes = self.best(&leaf, candidates, CHROMA, &luma)?;
+            let modes = self.chroma_candidates(&leaf, choice.modes)?;
+            let candidates = self.shortlist(&leaf, modes, CHROMA)?;
+            let chroma = candidates
+                .into_iter()
+                .map(|candidate| LeafChoice {
+                    tx_partition: choice.tx_partition,
+                    ..candidate
+                })
+                .collect();
+            choice = self.best(&leaf, chroma, CHROMA, &luma)?;
             self.syntax.restore(&start)?;
         }
-        Ok((self.trial(&leaf, modes, ALL)?, modes))
+        Ok((self.trial(&leaf, choice, ALL)?, choice))
     }
 
-    fn code_leaf(&mut self, node: PartitionNode, modes: IntraModes) -> Result<RdCost> {
+    fn code_leaf(&mut self, node: PartitionNode, choice: LeafChoice) -> Result<RdCost> {
         let leaf = self.syntax.leaf(node)?;
-        self.trial(&leaf, modes, ALL)
+        self.trial(&leaf, choice, ALL)
     }
 
     fn partition_rate(&mut self, node: PartitionNode, partition: Partition) -> Result<Bits> {

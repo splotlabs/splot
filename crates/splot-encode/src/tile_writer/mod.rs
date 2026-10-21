@@ -13,7 +13,8 @@ mod decision;
 pub(crate) mod filters;
 
 use core::ops::Range;
-use splot_core::headers::frame::{FrameHeaderCore, KEY_FRAME_REDUCED_TX_SET, TxMode};
+
+use splot_core::headers::frame::{FrameHeaderCore, TxMode};
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::symbol::Symbol;
 
@@ -26,8 +27,8 @@ use splot_decode::encoder_syntax::{
 use splot_recon::{DecodedFrame, ReconError};
 
 pub(crate) use decision::{
-    INTRA_MODES, IntraModes, Partition, PartitionTree, ResidualCoder, SuperblockDecision,
-    TransformDecision,
+    INTRA_MODES, LeafChoice, Partition, PartitionTree, ResidualCoder, SuperblockDecision,
+    TransformDecision, TxType,
 };
 
 /// Output byte cap of one tile; larger than any 4096x2160 tile of 10-bit levels needs.
@@ -235,9 +236,9 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         };
         self.write_partition(node, partition)?;
         match tree {
-            PartitionTree::Leaf(modes) => {
+            PartitionTree::Leaf(choice) => {
                 let leaf = self.syntax.leaf(node)?;
-                self.write_leaf(&leaf, *modes, coder, 0..3).map(drop)
+                self.write_leaf(&leaf, *choice, coder, 0..3).map(drop)
             }
             PartitionTree::Split { kind, children } => {
                 let calls = self.syntax.children(node, *kind)?;
@@ -335,37 +336,49 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         Ok(())
     }
 
-    /// Codes the blocks of `planes` of `leaf` under `modes`, then writes the
-    /// leaf syntax in order: `cdef_idx`, the modes, and the coefficients of
-    /// `planes`. Only a pass over all planes publishes the leaf. Returns the
+    /// Codes the blocks of `planes` of `leaf` under `choice`, then writes the
+    /// leaf syntax in order: `cdef_idx`, the modes, the luma transform
+    /// partition, and the coefficients of `planes`. Only a pass over all planes publishes the leaf. Returns the
     /// leaf's transform blocks.
     pub(crate) fn write_leaf(
         &mut self,
         leaf: &LeafBlock,
-        modes: IntraModes,
+        choice: LeafChoice,
         coder: &mut impl ResidualCoder,
         planes: Range<usize>,
     ) -> Result<Vec<TransformBlock>> {
-        let blocks = self.syntax.plan_leaf(leaf, modes)?;
+        let LeafChoice {
+            modes,
+            tx_partition,
+        } = choice;
+        let mut blocks = self
+            .syntax
+            .plan_leaf_partitioned(leaf, modes, tx_partition)?;
         let mut levels = vec![Vec::new(); blocks.len()];
-        for (index, tx) in blocks.iter().enumerate() {
+        for (index, tx) in blocks.iter_mut().enumerate() {
             if !planes.contains(&tx.plane) {
                 continue;
             }
             let prediction = self.syntax.predict(index)?;
-            let decision = coder.code(self.syntax, tx, &prediction)?;
-            if decision.tx_type != tx.tx_type {
-                return Err(TileWriterError::Unsupported(
-                    "transform type other than the inferred one",
-                ));
-            }
-            self.syntax.reconstruct(index, &decision.levels)?;
+            let decision = if tx.plane == 0 {
+                self.code_luma(coder, tx, &prediction)?
+            } else {
+                code_as(self.syntax, coder, tx, &prediction)?
+            };
+            self.syntax
+                .reconstruct_as(index, decision.tx_type, &decision.levels)?;
+            tx.tx_type = decision.tx_type;
             levels[index] = decision.levels;
         }
         if let Some(filters) = self.filters.as_deref_mut() {
             filters.write_cdef_index(self.syntax, self.sink, leaf)?;
         }
         self.syntax.write_intra_modes(leaf, modes, self.sink)?;
+        let sink = &mut *self.sink;
+        self.syntax
+            .code_luma_tx_partition(leaf, tx_partition, |cdf, value| {
+                coeffs::write_symbol(sink, cdf, value)
+            })?;
         let mut eob_u = 0;
         let mut eobs = vec![0; blocks.len()];
         for ((tx, levels), eob) in blocks.iter().zip(&levels).zip(&mut eobs) {
@@ -391,6 +404,60 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         }
         Ok(blocks)
     }
+
+    /// The decision of luma block `tx` in a type the decoder reads or infers
+    /// for its levels.
+    fn code_luma(
+        &mut self,
+        coder: &mut impl ResidualCoder,
+        tx: &TransformBlock,
+        prediction: &[u16],
+    ) -> Result<TransformDecision> {
+        let tx_types = self.syntax.allowed_luma_tx_types(tx)?;
+        let mut decision = coder.code_luma(self.syntax, tx, prediction, &tx_types)?;
+        if !tx_types.contains(&decision.tx_type) {
+            return Err(TileWriterError::Unsupported(
+                "luma transform type outside the offered types",
+            ));
+        }
+        let coded = TransformBlock {
+            tx_type: decision.tx_type,
+            ..*tx
+        };
+        let eob = coeffs::eob(&coded, &decision.levels)?;
+        let inferred = if eob == 0 {
+            Some(tx.tx_type)
+        } else {
+            self.syntax.inferred_luma_tx_type(&coded, eob)?
+        };
+        match inferred {
+            Some(tx_type) if tx_type != decision.tx_type && eob == 0 => {
+                decision.tx_type = tx_type;
+            }
+            Some(tx_type) if tx_type != decision.tx_type => {
+                let tx = TransformBlock { tx_type, ..*tx };
+                decision = code_as(self.syntax, coder, &tx, prediction)?;
+            }
+            _ => {}
+        }
+        Ok(decision)
+    }
+}
+
+/// `coder.code(tx)`, checked to use `tx.tx_type`.
+fn code_as(
+    syntax: &mut IntraTileSyntax,
+    coder: &mut impl ResidualCoder,
+    tx: &TransformBlock,
+    prediction: &[u16],
+) -> Result<TransformDecision> {
+    let decision = coder.code(syntax, tx, prediction)?;
+    if decision.tx_type != tx.tx_type {
+        return Err(TileWriterError::Unsupported(
+            "transform type other than the requested one",
+        ));
+    }
+    Ok(decision)
 }
 
 /// The rectangle direction of `partition` and its family `[non-ext, 3-way, 4A, 4B]`.
@@ -448,9 +515,8 @@ fn check_supported(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<()> {
         .intra_tail
         .as_ref()
         .ok_or(TileWriterError::Unsupported("incomplete key-frame header"))?;
-    if tail.tx_mode != TxMode::Largest || u32::from(tail.reduced_tx_set) != KEY_FRAME_REDUCED_TX_SET
-    {
-        return unsupported("transform mode other than TX_MODE_LARGEST with reduced_tx_set 2");
+    if tail.tx_mode == TxMode::Only4x4 {
+        return unsupported("TX_MODE_ONLY_4X4");
     }
     if core.allow_screen_content_tools == Some(true) || core.allow_intrabc == Some(true) {
         return unsupported("screen content tools");

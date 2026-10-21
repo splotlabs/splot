@@ -21,11 +21,11 @@ impl LumaTransformPartitionContext {
         Self { block_size }
     }
 
-    pub(super) const fn block_size(self) -> BlockSize {
+    pub(crate) const fn block_size(self) -> BlockSize {
         self.block_size
     }
 
-    pub(super) fn max_tx_size(self) -> usize {
+    pub(crate) fn max_tx_size(self) -> usize {
         MAX_TX_SIZE_RECT[self.block_size.index()] as usize
     }
 }
