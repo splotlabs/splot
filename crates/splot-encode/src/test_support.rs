@@ -47,13 +47,19 @@ pub(crate) fn assert_same_samples(decoded: &[u8], expected: &[u8], case: &str) {
     }
 }
 
-/// The AVM decoder named by `SPLOT_AVM_DECODER`, if set.
+/// The AVM decoder named by `SPLOT_AVM_DECODER`, if set. A set path that
+/// is not a file fails the test.
 pub(crate) fn avm_decoder() -> Option<PathBuf> {
-    let path = std::env::var_os("SPLOT_AVM_DECODER").map(PathBuf::from);
-    if path.is_none() {
+    let Some(path) = std::env::var_os("SPLOT_AVM_DECODER").map(PathBuf::from) else {
         eprintln!("skip: SPLOT_AVM_DECODER is not set");
-    }
-    path
+        return None;
+    };
+    assert!(
+        path.is_file(),
+        "SPLOT_AVM_DECODER={} is not a file",
+        path.display()
+    );
+    Some(path)
 }
 
 /// Decodes the Annex B temporal units `units` of a `width x height` stream
