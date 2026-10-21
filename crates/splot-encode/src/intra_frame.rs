@@ -19,6 +19,7 @@ use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::kernels::{ForwardTransform2d, Quantizer, kernels};
+use crate::loop_filter::{FilteredFrame, FirstPass, FrameDecisions, finish_key_frame};
 use crate::preset::PresetParams;
 use crate::rate_control::{FramePlanInfo, FrameType};
 use crate::recon::plane_id;
@@ -54,7 +55,11 @@ impl IntraFrameCoder {
             } else {
                 SuperblockSize::Block64x64
             },
-            tools: EncoderToolFlags::default(),
+            tools: EncoderToolFlags {
+                cdef: true,
+                loop_restoration: true,
+                ..EncoderToolFlags::default()
+            },
         })
         .map_err(coding("sequence header"))?;
         let view = CoreSeqView::from_sequence(&sequence).ok_or(Error::Unsupported {
@@ -90,14 +95,26 @@ impl FrameCoder for IntraFrameCoder {
             qindex,
             bit_depth: self.bit_depth,
         };
+        let mut decisions = FrameDecisions::default();
         while let Some(root) = writer.next_superblock_root() {
             let tree = choose_tree(writer.syntax(), root, &padded, self.preset, split_variance)
                 .map_err(coding("partition choice"))?;
-            writer
-                .write_superblock(&SuperblockDecision { tree }, &mut coder)
+            decisions
+                .write_superblock(&mut writer, SuperblockDecision { tree }, &mut coder)
                 .map_err(coding("superblock"))?;
         }
-        let (tile, recon) = writer.finish().map_err(coding("tile finish"))?;
+        let (tile, recon, (recorder, _)) = writer
+            .finish_with_filters()
+            .map_err(coding("tile finish"))?;
+        let pass = FirstPass {
+            core,
+            tile,
+            recon,
+            recorder,
+            decisions,
+        };
+        let FilteredFrame { core, tile, recon } =
+            finish_key_frame(&self.sequence, &self.view, self.preset, source, pass)?;
         let temporal_unit = encode_key_frame_temporal_unit(&self.sequence, &core, true, &tile)
             .map_err(coding("temporal unit"))?;
         Ok(CodedFrame {

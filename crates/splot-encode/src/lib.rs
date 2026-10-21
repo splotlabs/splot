@@ -23,6 +23,7 @@ pub mod frame;
 mod intra_frame;
 pub mod ivf;
 mod kernels;
+mod loop_filter;
 pub mod preset;
 pub mod rate_control;
 mod recon;

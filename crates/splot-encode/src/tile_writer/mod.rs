@@ -10,6 +10,7 @@
 
 pub(crate) mod coeffs;
 mod decision;
+pub(crate) mod filters;
 
 use splot_core::headers::frame::{FrameHeaderCore, KEY_FRAME_REDUCED_TX_SET, TxMode};
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
@@ -90,6 +91,7 @@ pub(crate) struct KeyFrameTileWriter {
     sb_cols: usize,
     superblocks: usize,
     written: usize,
+    filters: filters::TileFilters,
 }
 
 impl KeyFrameTileWriter {
@@ -129,6 +131,7 @@ impl KeyFrameTileWriter {
             sb_cols: mi_cols.div_ceil(sb4),
             superblocks: mi_cols.div_ceil(sb4) * mi_rows.div_ceil(sb4),
             written: 0,
+            filters: filters::TileFilters::new(seq, core)?,
         })
     }
 
@@ -158,13 +161,29 @@ impl KeyFrameTileWriter {
             .next_superblock_root()
             .ok_or(TileWriterError::TileComplete)?;
         self.syntax.begin_superblock(root);
+        self.filters
+            .write_lr_units(&mut self.syntax, &mut self.symbols, root)?;
         self.write_node(root, &decision.tree, coder)?;
         self.written += 1;
         Ok(())
     }
 
+    /// Sets the loop-filter choices the following superblocks code.
+    pub(crate) fn set_filter_syntax(&mut self, syntax: filters::FilterSyntax) {
+        self.filters.set_syntax(syntax);
+    }
+
     /// The `tile_data` bytes and the reconstructed frame.
+    #[cfg(test)]
     pub(crate) fn finish(self) -> Result<(Vec<u8>, DecodedFrame<u16>)> {
+        let (tile, recon, _) = self.finish_with_filters()?;
+        Ok((tile, recon))
+    }
+
+    /// [`Self::finish`] plus the filter records and the coded filter choices.
+    pub(crate) fn finish_with_filters(
+        self,
+    ) -> Result<(Vec<u8>, DecodedFrame<u16>, filters::CodedFilters)> {
         if self.written != self.superblocks {
             return Err(TileWriterError::TileIncomplete {
                 written: self.written,
@@ -174,6 +193,7 @@ impl KeyFrameTileWriter {
         Ok((
             self.symbols.finish()?.into_bytes(),
             self.recon.into_frame()?,
+            self.filters.finish()?,
         ))
     }
 
@@ -293,6 +313,8 @@ impl KeyFrameTileWriter {
         block: BlockDecision,
         coder: &mut impl ResidualCoder,
     ) -> Result<()> {
+        self.filters
+            .write_cdef_index(&mut self.syntax, &mut self.symbols, leaf)?;
         if block.y_mode
             != (LumaMode {
                 mode: IntraMode::Dc,
@@ -327,7 +349,9 @@ impl KeyFrameTileWriter {
 
     fn write_residual(&mut self, leaf: &LeafBlock, coder: &mut impl ResidualCoder) -> Result<()> {
         let mut eob_u = 0;
-        for tx in &self.syntax.transform_blocks(leaf, self.bit_depth)? {
+        let transforms = self.syntax.transform_blocks(leaf, self.bit_depth)?;
+        let mut eobs = Vec::with_capacity(transforms.len());
+        for tx in &transforms {
             let prediction = self.recon.predict_dc(tx)?;
             let decision = coder.code(tx, &prediction)?;
             if decision.tx_type != TxType::DctDct {
@@ -347,8 +371,9 @@ impl KeyFrameTileWriter {
             }
             self.recon
                 .reconstruct(tx, &prediction, &decision.levels, eob)?;
+            eobs.push(eob);
         }
-        Ok(())
+        self.filters.record_leaf(leaf, &transforms, &eobs)
     }
 }
 
