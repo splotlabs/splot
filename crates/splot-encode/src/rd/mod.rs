@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Rate-distortion framework: symbol rates from CDF rows, the Lagrange
-//! multiplier, and search-state checkpoints.
+//! multiplier, search-state checkpoints, and the recursive partition search.
 //!
 //! Every quantity is an integer, so a decision never depends on float rounding.
 
@@ -16,6 +16,7 @@
 
 pub(crate) mod checkpoint;
 pub(crate) mod coeff_rate;
+pub(crate) mod partition;
 
 use core::ops::{Add, AddAssign};
 

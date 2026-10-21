@@ -459,3 +459,6 @@ fn checkpoint_cost_at_1080p() {
         );
     }
 }
+
+#[path = "partition_tests.rs"]
+mod partition_tests;
