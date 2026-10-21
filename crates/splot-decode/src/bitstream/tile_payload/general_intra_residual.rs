@@ -14,9 +14,9 @@ use splot_core::tables::conversion::{
     TX_WIDTH, TX_WIDTH_LOG2,
 };
 use splot_recon::{
-    BitDepth, DpcmDirection, PlaneId, QM_OFFSET, QmDequant, QmFrameLevels, QmUserPlane,
-    QuantizerDeltas, ReconError, ReconSample, SecondaryInverseTransform,
-    reconstruct_transform_block_residual_with_secondary, tx_size_index,
+    BitDepth, DequantBlockParams, DpcmDirection, InverseTransform2dOuter, PlaneId, QM_OFFSET,
+    QmDequant, QmFrameLevels, QmUserPlane, QuantizerDeltas, ReconError, ReconSample,
+    SecondaryInverseTransform, reconstruct_transform_block_residual_with_secondary, tx_size_index,
 };
 
 use super::cdf::TileCdfSelector;
@@ -1017,54 +1017,17 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     let y4 = start_y >> 2;
     let w4 = usize::try_from(TX_WIDTH.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
     let h4 = usize::try_from(TX_HEIGHT.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
-    let tx_size_ctx = txb_skip_tx_size_ctx(tx_size);
-
-    let local_x4 = context.local_x4(plane, x4).map_err(coeff_ctx_err)?;
-    let local_y4 = context.local_y4(plane, y4).map_err(coeff_ctx_err)?;
-    let above_level_or = u32::from(or_u8(
-        context.above_level(plane).map_err(coeff_ctx_err)?,
-        local_x4,
-        w4,
-    ));
-    let left_level_or = u32::from(or_u8(
-        context.left_level(plane).map_err(coeff_ctx_err)?,
-        local_y4,
-        h4,
-    ));
-    let txb_skip_intra_inter = usize::from(is_inter || txb_skip_fsc_mode);
-    let selector = match plane {
-        1 | 2 => {
-            let above_nz = above_level_or != 0
-                || or_u8(
-                    context.above_dc(plane).map_err(coeff_ctx_err)?,
-                    local_x4,
-                    w4,
-                ) != 0;
-            let left_nz = left_level_or != 0
-                || or_u8(context.left_dc(plane).map_err(coeff_ctx_err)?, local_y4, h4) != 0;
-            if plane == 2 {
-                TileCdfSelector::VTxbSkip {
-                    ctx: v_txb_skip_ctx(above_nz, left_nz, !tx_fills_block, eob_u_nonzero),
-                }
-            } else {
-                TileCdfSelector::TxbSkip {
-                    plane_type: txb_skip_intra_inter,
-                    tx_size: tx_size_ctx,
-                    ctx: usize::from(above_nz) + usize::from(left_nz) + 6,
-                }
-            }
-        }
-        _ => TileCdfSelector::TxbSkip {
-            plane_type: txb_skip_intra_inter,
-            tx_size: tx_size_ctx,
-            ctx: txb_skip_ctx_luma(
-                above_level_or,
-                left_level_or,
-                tx_fills_block,
-                fsc_mode && frame_facts.enable_fsc(),
-            ),
-        },
-    };
+    let selector = txb_skip_selector(
+        context,
+        plane,
+        tx_size,
+        [x4, y4, w4, h4],
+        tx_fills_block,
+        eob_u_nonzero,
+        usize::from(is_inter || txb_skip_fsc_mode),
+        fsc_mode && frame_facts.enable_fsc(),
+    )
+    .map_err(coeff_ctx_err)?;
 
     let all_zero = work_unit
         .cdf_mut()
@@ -1111,6 +1074,49 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         cctx_allowed,
         luma,
     )
+}
+
+/// The § 8.3.2 `all_zero` CDF of the transform block at `[x4, y4, w4, h4]` (plane 4x4 units).
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+#[inline]
+pub(crate) fn txb_skip_selector(
+    context: &TileCoeffContextState,
+    plane: usize,
+    tx_size: usize,
+    [x4, y4, w4, h4]: [usize; 4],
+    tx_fills_block: bool,
+    eob_u_nonzero: bool,
+    txb_skip_intra_inter: usize,
+    fsc_active: bool,
+) -> Result<TileCdfSelector, TileCoeffStateError> {
+    let tx_size_ctx = txb_skip_tx_size_ctx(tx_size);
+    let local_x4 = context.local_x4(plane, x4)?;
+    let local_y4 = context.local_y4(plane, y4)?;
+    let above_level_or = u32::from(or_u8(context.above_level(plane)?, local_x4, w4));
+    let left_level_or = u32::from(or_u8(context.left_level(plane)?, local_y4, h4));
+    Ok(match plane {
+        1 | 2 => {
+            let above_nz =
+                above_level_or != 0 || or_u8(context.above_dc(plane)?, local_x4, w4) != 0;
+            let left_nz = left_level_or != 0 || or_u8(context.left_dc(plane)?, local_y4, h4) != 0;
+            if plane == 2 {
+                TileCdfSelector::VTxbSkip {
+                    ctx: v_txb_skip_ctx(above_nz, left_nz, !tx_fills_block, eob_u_nonzero),
+                }
+            } else {
+                TileCdfSelector::TxbSkip {
+                    plane_type: txb_skip_intra_inter,
+                    tx_size: tx_size_ctx,
+                    ctx: usize::from(above_nz) + usize::from(left_nz) + 6,
+                }
+            }
+        }
+        _ => TileCdfSelector::TxbSkip {
+            plane_type: txb_skip_intra_inter,
+            tx_size: tx_size_ctx,
+            ctx: txb_skip_ctx_luma(above_level_or, left_level_or, tx_fills_block, fsc_active),
+        },
+    })
 }
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
@@ -2094,7 +2100,35 @@ fn intra_secondary_transform_kernel(
     }
 }
 
-fn txb_skip_tx_size_ctx(tx_size: usize) -> usize {
+/// The § 7.14.4 dequantization and § 7.15.4 inverse-transform parameters the
+/// decoder uses for a DCT block without quantizer matrices, TCQ, or secondary transforms.
+pub(crate) fn dct_block_recon_params(
+    qindex: u32,
+    plane_id: PlaneId,
+    log2_width: u32,
+    log2_height: u32,
+    bit_depth: BitDepth,
+) -> Result<(DequantBlockParams, InverseTransform2dOuter), GeneralIntraResidualError> {
+    let samples = (1usize << log2_width) << log2_height;
+    let _deltas = FrameQuantizerDeltasScope::install(ZERO_QUANTIZER_DELTAS);
+    let _qm = FrameQmScope::install(None);
+    let setup = reconstruct::reconstruct_block_setup(
+        samples,
+        qindex,
+        plane_id,
+        log2_width,
+        log2_height,
+        DCT_DCT,
+        false,
+        false,
+        false,
+        None,
+        bit_depth,
+    )?;
+    Ok((setup.params, setup.transform))
+}
+
+pub(crate) fn txb_skip_tx_size_ctx(tx_size: usize) -> usize {
     let sqr = TX_SIZE_SQR.get(tx_size).copied().unwrap_or(0);
     let sqr_up = TX_SIZE_SQR_UP.get(tx_size).copied().unwrap_or(0);
     (((sqr + sqr_up + 1) >> 1).max(0)) as usize

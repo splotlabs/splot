@@ -9,6 +9,7 @@ mod block_decoded_state;
 mod cdf;
 mod coeff_loop;
 mod coeff_state;
+pub mod encoder_syntax;
 mod general_intra_block;
 mod general_intra_residual;
 mod input;

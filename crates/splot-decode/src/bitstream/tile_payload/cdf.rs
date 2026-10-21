@@ -295,6 +295,13 @@ pub(crate) struct TileCdfSubset {
 }
 
 impl TileCdfSubset {
+    pub(crate) fn row_mut(
+        &mut self,
+        selector: TileCdfSelector,
+    ) -> Result<&mut [u16], TileCdfError> {
+        self.rows.row_mut(selector)
+    }
+
     pub(crate) fn reset_from_frame(&mut self, frame: &FrameCdfSubset) {
         self.rows.clone_from(&frame.rows);
     }

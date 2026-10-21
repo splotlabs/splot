@@ -38,7 +38,7 @@ pub(super) fn is_cfl_context_for_chroma_ref(
     ))
 }
 
-pub(super) fn decode_block_frontier(
+pub(crate) fn decode_block_frontier(
     call: TilePartitionCall,
     frame: TilePartitionFrameFacts,
     sub_size: BlockSize,
@@ -454,8 +454,30 @@ fn read_memoized_partition_decision(
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<PartitionType, TilePartitionTraversalError> {
+    let facts = memo.facts(partition_allowed_input(
+        call,
+        frame,
+        forced_chroma_partition,
+    )?)?;
+    let (partition_context, square_context) = partition_context_inputs(call, tile_bounds, context)?;
+    let decision_input =
+        facts.read_partition_decision_input(true, partition_context, square_context);
+    Ok(super::partition::read_partition_decision(
+        decision_input,
+        cdfs,
+        symbols,
+    )?)
+}
+
+/// The § 5.20.3.2 `is_partition_allowed` inputs of `call`.
+#[inline]
+pub(crate) fn partition_allowed_input(
+    call: TilePartitionCall,
+    frame: TilePartitionFrameFacts,
+    forced_chroma_partition: Option<PartitionType>,
+) -> Result<PartitionAllowedInput, TilePartitionTraversalError> {
     let mixed_region = !frame.frame_is_intra && call.parent_size.is_some() && !call.intra_region;
-    let allowed = PartitionAllowedInput::new(
+    Ok(PartitionAllowedInput::new(
         call.r,
         call.c,
         frame.mi_rows,
@@ -472,8 +494,16 @@ fn read_memoized_partition_decision(
         call.chroma_offset,
         frame.num_planes,
         forced_chroma_partition,
-    )?;
-    let facts = memo.facts(allowed)?;
+    )?)
+}
+
+/// The § 8.3.2 partition CDF context inputs of `call`.
+#[inline]
+pub(crate) fn partition_context_inputs(
+    call: TilePartitionCall,
+    tile_bounds: TilePartitionBounds,
+    context: TilePartitionContextState<'_>,
+) -> Result<(PartitionContextInput<'_>, SquareSplitContextInput<'_>), TilePartitionTraversalError> {
     let partition_plane = partition_cdf_plane(call.tree_type);
     let Some(local_r) = call.r.checked_sub(context.origin_row) else {
         return Err(TilePartitionTraversalError::CoordinateUnderflow {
@@ -513,13 +543,7 @@ fn read_memoized_partition_decision(
         context.mi_sizes,
         context.mi_size_stride,
     )?;
-    let decision_input =
-        facts.read_partition_decision_input(true, partition_context, square_context);
-    Ok(super::partition::read_partition_decision(
-        decision_input,
-        cdfs,
-        symbols,
-    )?)
+    Ok((partition_context, square_context))
 }
 
 pub(super) const fn partition_cdf_plane(tree_type: PartitionTreeType) -> usize {
@@ -1118,7 +1142,7 @@ impl SdpPartitionState {
     }
 }
 
-fn updated_chroma_offset(
+pub(crate) fn updated_chroma_offset(
     call: TilePartitionCall,
     partition: PartitionType,
     sub_size: BlockSize,

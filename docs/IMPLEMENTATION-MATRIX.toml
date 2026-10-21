@@ -5473,7 +5473,7 @@ module = "crates/splot-encode/src/config.rs"
 change_id = "encoder-recon-dependency"
 owner = "encoder"
 risk = "medium"
-notes = "Non-normative encoder infrastructure. The encoder crate has the approved direct `splot-recon` dependency edge and reuses its BitDepth, PixelFormat and PlaneSize types for configuration and source-frame geometry. `splot-cli` depends on `splot-encode` for the encode command. This row claims only the dependency boundary."
+notes = "Non-normative encoder infrastructure. The encoder crate has the approved direct `splot-recon` dependency edge and reuses its BitDepth, PixelFormat and PlaneSize types for configuration and source-frame geometry, and the `splot-decode` edge for the `encoder_syntax` facade (decoder CDF rows, contexts and partition rules). `splot-cli` depends on `splot-encode` for the encode command. This row claims only the dependency boundary."
 
 [feature.status]
 mapped = "done"

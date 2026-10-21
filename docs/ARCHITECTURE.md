@@ -8,7 +8,7 @@ and CLI presentation stay independently reviewable.
 ```text
 splot-cli ───────┬──> splot-validate ───> splot-core
                  ├──> splot-decode   ───> splot-core, splot-parallel, splot-recon
-                 ├──> splot-encode   ───> splot-core, splot-parallel, splot-recon
+                 ├──> splot-encode   ───> splot-core, splot-parallel, splot-recon, splot-decode
                  ├──> splot-parallel
                  └──> splot-core
 ```
@@ -22,7 +22,8 @@ Rules:
 - `splot-decode` depends only on `splot-core`, `splot-parallel`, and
   `splot-recon`.
 - `splot-validate` depends only on `splot-core`.
-- `splot-encode` depends only on `splot-core`, `splot-parallel`, and `splot-recon`.
+- `splot-encode` depends only on `splot-core`, `splot-parallel`, `splot-recon`,
+  and `splot-decode` (its `encoder_syntax` facade).
 - `splot-cli` has normal edges to core, parallel, decode, validate, and encode.
 - Nothing depends on `splot-cli`; the out-of-workspace fuzz crate has a normal
   encoder dependency.

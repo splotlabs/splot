@@ -1182,7 +1182,12 @@ const INTERNAL_DEP_RULES: &[(&str, &[&str])] = &[
     ("splot-validate", &["splot-core"]),
     (
         "splot-encode",
-        &["splot-core", "splot-parallel", "splot-recon"],
+        &[
+            "splot-core",
+            "splot-parallel",
+            "splot-recon",
+            "splot-decode",
+        ],
     ),
     (
         "splot-cli",
@@ -1389,13 +1394,18 @@ mod tests {
     }
 
     #[test]
-    fn dependency_direction_allows_encoder_core_parallel_and_recon_edges() -> Result<()> {
+    fn dependency_direction_allows_encoder_core_parallel_recon_and_decode_edges() -> Result<()> {
         let Some(encoder_deps) = allowed_internal_deps("splot-encode") else {
             bail!("splot-encode should have dependency policy");
         };
         assert_eq!(
             encoder_deps,
-            ["splot-core", "splot-parallel", "splot-recon"]
+            [
+                "splot-core",
+                "splot-parallel",
+                "splot-recon",
+                "splot-decode"
+            ]
         );
         Ok(())
     }

@@ -72,7 +72,7 @@ crates/splot-tables    dependency-free generated AV2 § 9 tables
 crates/splot-recon     reconstruction primitives -> splot-core, splot-tables
 crates/splot-decode    decode planning/runtime -> splot-core, splot-parallel, splot-recon
 crates/splot-validate  parser-driven diagnostics -> splot-core
-crates/splot-encode    encoder API/tools -> splot-core, splot-parallel, splot-recon
+crates/splot-encode    encoder API/tools -> splot-core, splot-parallel, splot-recon, splot-decode
 crates/splot-cli       thin binary -> core, parallel, decode, validate, encode
 crates/splot-capi      C ABI of the streaming decoder -> core, decode
 xtask                  standalone automation

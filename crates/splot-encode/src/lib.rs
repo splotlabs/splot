@@ -7,7 +7,8 @@
 //! and returns one [`Packet`] (an AV2 Annex B temporal unit) per frame, with
 //! [`FrameStats`]. [`y4m::Y4mReader`] reads input and [`ivf::IvfWriter`] writes
 //! output. Speed presets are rows of [`PRESETS`]; rate control goes through
-//! [`RateController`]. The fixture emitters cover named undivided 64x64 intra
+//! [`RateController`]. The key-frame tile writer takes CDF rows, contexts and
+//! partition rules from `splot_decode::encoder_syntax`. The fixture emitters cover named undivided 64x64 intra
 //! traces used by decoder-backed oracles.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
@@ -28,7 +29,9 @@ mod kernels;
 mod partition_emission;
 pub mod preset;
 pub mod rate_control;
+mod recon;
 pub mod stats;
+mod tile_writer;
 pub mod y4m;
 
 pub use config::{Config, MAX_FRAME_DIMENSION, RateControlMode};

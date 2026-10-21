@@ -36,19 +36,22 @@ pub(crate) use lr_records::LrUnitRestorationType;
 pub(crate) use lr_records::{WienerNsLrSourceBlock, WienerNsLrUnitFilter};
 #[cfg(test)]
 use lr_syntax::{WienerNsUnitFilterState, read_wiener_ns_unit_filter};
-use partition_children::child_calls;
+pub(crate) use partition_children::child_calls;
 pub(crate) use state_publication::DecodedLeafPublication;
+pub(crate) use state_publication::publish_intra_leaf_state;
+use tree_walk::extended_sdp_allowed_for_child;
+pub(crate) use tree_walk::valid_subsize;
 pub(crate) use tree_walk::{
     GeneralIntraPartitionTreeCursor, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError,
-    TileTraversalStorage,
+    TileTraversalStorage, decode_block_frontier, partition_allowed_input, partition_context_inputs,
+    updated_chroma_offset,
 };
 #[cfg(test)]
 use tree_walk::{
-    MIXED_REGION, SdpPartitionState, decode_block_frontier, is_cfl_context_for_chroma_ref,
-    is_intra_sdp_shared_root, partition_cdf_plane, read_extended_sdp_region_type,
-    read_frontier_partition_decision, should_read_extended_sdp_region_type,
+    MIXED_REGION, SdpPartitionState, is_cfl_context_for_chroma_ref, is_intra_sdp_shared_root,
+    partition_cdf_plane, read_extended_sdp_region_type, read_frontier_partition_decision,
+    should_read_extended_sdp_region_type,
 };
-use tree_walk::{extended_sdp_allowed_for_child, valid_subsize};
 
 pub(crate) const BLOCK_8X32: usize = 21;
 pub(crate) const BLOCK_32X8: usize = 22;
@@ -180,6 +183,16 @@ impl TilePartitionFrameFacts {
     pub(crate) const fn sb_size(&self) -> BlockSize {
         self.sb_size
     }
+
+    #[must_use]
+    pub(crate) const fn mi_rows(&self) -> usize {
+        self.mi_rows
+    }
+
+    #[must_use]
+    pub(crate) const fn mi_cols(&self) -> usize {
+        self.mi_cols
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -223,7 +236,7 @@ pub(crate) struct TilePartitionCall {
 }
 
 impl TilePartitionCall {
-    const fn root(r: usize, c: usize, b_size: BlockSize, has_chroma: bool) -> Self {
+    pub(crate) const fn root(r: usize, c: usize, b_size: BlockSize, has_chroma: bool) -> Self {
         Self {
             r,
             c,
@@ -315,7 +328,7 @@ impl TilePartitionCall {
 
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct TilePartitionBounds {
+pub(crate) struct TilePartitionBounds {
     mi_row_start: usize,
     mi_row_end: usize,
     mi_col_start: usize,
@@ -326,11 +339,18 @@ impl TilePartitionBounds {
     fn from_work_unit(work_unit: &DecodeTileWorkUnit) -> Self {
         let row_range = work_unit.mi_row_range();
         let col_range = work_unit.mi_col_range();
+        Self::new(
+            row_range.start as usize..row_range.end as usize,
+            col_range.start as usize..col_range.end as usize,
+        )
+    }
+
+    pub(crate) const fn new(rows: core::ops::Range<usize>, cols: core::ops::Range<usize>) -> Self {
         Self {
-            mi_row_start: row_range.start as usize,
-            mi_row_end: row_range.end as usize,
-            mi_col_start: col_range.start as usize,
-            mi_col_end: col_range.end as usize,
+            mi_row_start: rows.start,
+            mi_row_end: rows.end,
+            mi_col_start: cols.start,
+            mi_col_end: cols.end,
         }
     }
 
@@ -629,7 +649,7 @@ fn symbol_decoder_for_work_unit<'payload>(
 /// still derives `ChromaMiRow` / `ChromaMiCol` / `ChromaMiSize`.
 pub(super) const ROOT_HAS_CHROMA: bool = true;
 
-const fn call_in_frame(frame: TilePartitionFrameFacts, call: TilePartitionCall) -> bool {
+pub(crate) const fn call_in_frame(frame: TilePartitionFrameFacts, call: TilePartitionCall) -> bool {
     call.r < frame.mi_rows && call.c < frame.mi_cols
 }
 
