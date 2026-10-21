@@ -10,8 +10,11 @@ use splot_core::headers::frame::{
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize};
 use std::collections::HashSet;
 
+use splot_core::headers::frame::TxMode;
+use splot_core::tables::conversion::TX_WIDTH;
 use splot_decode::encoder_syntax::{
-    IntraMode, IntraTileSyntax, MAX_CFL_ALPHA, PartitionNode, TransformBlock,
+    IntraMode, IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA, PartitionNode, TX_PARTITIONS,
+    TransformBlock,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -43,6 +46,7 @@ struct Case {
     base_q_idx: u32,
     tools: EncoderToolFlags,
     max_level: i32,
+    tx: KeyFrameTxParams,
 }
 
 impl Case {
@@ -77,7 +81,22 @@ impl Case {
                 parity_hiding: false,
             },
             max_level: 12,
+            tx: KeyFrameTxParams {
+                tx_mode: TxMode::Largest,
+                reduced_tx_set: 2,
+            },
         }
+    }
+
+    /// `TX_MODE_SELECT` with every intra luma type, over every block shape.
+    const fn with_tx_search(mut self) -> Self {
+        self.tx = KeyFrameTxParams {
+            tx_mode: TxMode::Select,
+            reduced_tx_set: 0,
+        };
+        self.tools.ext_partitions = true;
+        self.tools.uneven_4way_partitions = true;
+        self
     }
 
     fn bit_depth(self) -> BitDepth {
@@ -114,14 +133,129 @@ fn random_levels(rng: &mut Rng, tx_size: usize, max_level: i32) -> Vec<i32> {
     levels
 }
 
-/// Codes every transform block with random levels.
+/// The luma transform choices one frame offered and coded.
+#[derive(Default)]
+struct TxCoverage {
+    /// `(tx_size, offered types)`.
+    offered: HashSet<(usize, Vec<u8>)>,
+    /// `(tx_size, type)` coded with at least two nonzero levels, and how often.
+    coded: std::collections::HashMap<(usize, u8), usize>,
+    partitions: HashSet<u8>,
+    /// `code` calls for luma: the writer's `eob == 1` recodes.
+    recodes: usize,
+    /// Pick luma modes that offer uncoded types.
+    steer: bool,
+}
+
+/// Codes every transform block with random levels, the least-coded luma type,
+/// and a random transform partition. When `coverage.steer` is set, it also
+/// replaces the planned luma mode with one that offers uncoded luma types.
 struct RandomLevels {
     rng: Rng,
     max_level: i32,
+    coverage: TxCoverage,
+}
+
+impl RandomLevels {
+    /// The number of luma types `tx` offers that this frame has not coded.
+    fn uncoded(&self, syntax: &mut IntraTileSyntax, tx: &TransformBlock) -> Result<usize> {
+        Ok(syntax
+            .allowed_luma_tx_types(tx)?
+            .into_iter()
+            .filter(|&t| !self.coverage.coded.contains_key(&(tx.tx_size, t as u8)))
+            .count())
+    }
 }
 
 impl ResidualCoder for RandomLevels {
+    fn luma_modes(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        leaf: &LeafBlock,
+        planned: IntraModes,
+    ) -> Result<IntraModes> {
+        let mut best = (0, planned);
+        if !self.coverage.steer {
+            return Ok(best.1);
+        }
+        for (y_mode, angle_delta) in luma_modes() {
+            let modes = IntraModes {
+                y_mode,
+                angle_delta,
+                ..planned
+            };
+            let tx = syntax.plan_leaf(leaf, modes)?[0];
+            let uncoded = self.uncoded(syntax, &tx)?;
+            if uncoded > best.0 {
+                best = (uncoded, modes);
+            }
+        }
+        Ok(best.1)
+    }
+
+    fn tx_partition(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+    ) -> Result<TxPartition> {
+        let options = syntax.luma_tx_partitions(leaf)?;
+        let mut partition = options[self.rng.below(options.len() as u64) as usize];
+        if self.coverage.steer && self.rng.below(2) == 0 {
+            let mut best = 0;
+            for &option in &options {
+                let tx = syntax.plan_leaf_partitioned(leaf, modes, option)?[0];
+                let uncoded = self.uncoded(syntax, &tx)?;
+                if uncoded > best {
+                    (best, partition) = (uncoded, option);
+                }
+            }
+        }
+        self.coverage.partitions.insert(partition as u8);
+        Ok(partition)
+    }
+
+    fn code_luma(
+        &mut self,
+        tx: &TransformBlock,
+        _: &[u16],
+        tx_types: &[TxType],
+    ) -> Result<TransformDecision> {
+        let coded = &self.coverage.coded;
+        let start = self.rng.below(tx_types.len() as u64) as usize;
+        let tx_type = *tx_types
+            .iter()
+            .cycle()
+            .skip(start)
+            .take(tx_types.len())
+            .min_by_key(|&&t| coded.get(&(tx.tx_size, t as u8)).copied().unwrap_or(0))
+            .unwrap();
+        let mut levels = random_levels(&mut self.rng, tx.tx_size, self.max_level);
+        match self.rng.below(4) {
+            0 => {
+                levels.fill(0);
+                levels[0] = 1;
+            }
+            1 | 2 => {
+                levels[0] = levels[0].max(1);
+                levels[1] = levels[1].min(-1);
+            }
+            _ => {}
+        }
+        let types = tx_types.iter().map(|&t| t as u8).collect();
+        self.coverage.offered.insert((tx.tx_size, types));
+        if levels.iter().filter(|&&level| level != 0).count() >= 2 {
+            *self
+                .coverage
+                .coded
+                .entry((tx.tx_size, tx_type as u8))
+                .or_default() += 1;
+        }
+        Ok(TransformDecision { tx_type, levels })
+    }
+
     fn code(&mut self, tx: &TransformBlock, _: &[u16]) -> Result<TransformDecision> {
+        self.coverage.recodes += usize::from(tx.plane == 0);
         Ok(TransformDecision {
             tx_type: tx.tx_type,
             levels: random_levels(&mut self.rng, tx.tx_size, self.max_level),
@@ -233,7 +367,13 @@ fn random_tree(
 
 /// Encodes one random key frame; returns the Annex B temporal unit, the recon
 /// frame, and the modes it coded.
-fn encode_case(case: Case, seed: u64) -> (Vec<u8>, DecodedFrame<u16>, ModePicker) {
+/// Encodes one random key frame; `coverage` carries the luma type coverage
+/// across frames.
+fn encode_case(
+    case: Case,
+    seed: u64,
+    coverage: TxCoverage,
+) -> (Vec<u8>, DecodedFrame<u16>, ModePicker, TxCoverage) {
     let seq = build_encoder_sequence_header(&EncoderStreamParams {
         width: case.width,
         height: case.height,
@@ -249,7 +389,7 @@ fn encode_case(case: Case, seed: u64) -> (Vec<u8>, DecodedFrame<u16>, ModePicker
         case.base_q_idx,
         0,
         &FrameFilterParams::default(),
-        KeyFrameTxParams::default(),
+        case.tx,
     )
     .unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core).unwrap();
@@ -258,6 +398,10 @@ fn encode_case(case: Case, seed: u64) -> (Vec<u8>, DecodedFrame<u16>, ModePicker
     let mut coder = RandomLevels {
         rng: Rng(seed.rotate_left(17) | 1),
         max_level: case.max_level,
+        coverage: TxCoverage {
+            steer: case.tx.tx_mode == TxMode::Select,
+            ..coverage
+        },
     };
     while let Some(root) = writer.next_superblock_root() {
         let tree = random_tree(writer.syntax(), root, &mut rng, &mut modes);
@@ -267,15 +411,19 @@ fn encode_case(case: Case, seed: u64) -> (Vec<u8>, DecodedFrame<u16>, ModePicker
     }
     let (tile, recon) = writer.finish().unwrap();
     let unit = encode_key_frame_temporal_unit(&seq, &core, true, &tile).unwrap();
-    (unit, recon, modes)
+    (unit, recon, modes, coder.coverage)
 }
 
 fn assert_round_trip(case: Case, seed: u64) -> Vec<u8> {
-    assert_round_trip_modes(case, seed).0
+    assert_round_trip_modes(case, seed, TxCoverage::default()).0
 }
 
-fn assert_round_trip_modes(case: Case, seed: u64) -> (Vec<u8>, ModePicker) {
-    let (unit, recon, modes) = encode_case(case, seed);
+fn assert_round_trip_modes(
+    case: Case,
+    seed: u64,
+    coverage: TxCoverage,
+) -> (Vec<u8>, ModePicker, TxCoverage) {
+    let (unit, recon, modes, coverage) = encode_case(case, seed, coverage);
     let view = recon.as_frame_ref();
     let expected = raw_bytes(
         [PlaneId::Y, PlaneId::U, PlaneId::V]
@@ -288,7 +436,7 @@ fn assert_round_trip_modes(case: Case, seed: u64) -> (Vec<u8>, ModePicker) {
         case.width, case.height, case.bit_depth, case.sb_size
     );
     assert_same_samples(&decode(&unit), &expected, &name);
-    (unit, modes)
+    (unit, modes, coverage)
 }
 
 const SIZES: [(u32, u32); 5] = [(1, 1), (17, 9), (64, 64), (65, 65), (130, 66)];
@@ -313,13 +461,58 @@ fn every_intra_mode_round_trips() {
             let mut chroma = HashSet::new();
             for seed in 0..4 {
                 let case = Case::new(136, 72, bit_depth, sb_size);
-                let (_, modes) = assert_round_trip_modes(case, seed);
+                let (_, modes, _) = assert_round_trip_modes(case, seed, TxCoverage::default());
                 luma.extend(modes.coded_luma);
                 chroma.extend(modes.coded_chroma);
             }
             assert_eq!(luma.len(), 61, "{bit_depth:?} {sb_size:?}");
             assert_eq!(chroma.len(), 15, "{bit_depth:?} {sb_size:?}");
         }
+    }
+}
+
+/// Every luma type each transform size offers, every transform partition, and
+/// the `eob == 1` recode round-trip at both bit depths.
+#[test]
+fn every_luma_tx_type_and_partition_round_trips() {
+    for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+        let mut coverage = TxCoverage::default();
+        for seed in 0..8 {
+            let sb_size = if seed % 2 == 0 {
+                SuperblockSize::Block64x64
+            } else {
+                SuperblockSize::Block128x128
+            };
+            let case = Case::new(264, 200, bit_depth, sb_size).with_tx_search();
+            coverage = assert_round_trip_modes(case, 0x7e00 + seed, coverage).2;
+        }
+        let sizes: HashSet<usize> = coverage.offered.iter().map(|(size, _)| *size).collect();
+        assert_eq!(sizes.len(), TX_WIDTH.len(), "{bit_depth:?}: {sizes:?}");
+        for (size, types) in &coverage.offered {
+            for &tx_type in types {
+                assert!(
+                    coverage.coded.contains_key(&(*size, tx_type)),
+                    "{bit_depth:?}: tx size {size} type {tx_type} never coded"
+                );
+            }
+        }
+        assert!(coverage.offered.iter().any(|(_, types)| types.len() == 7));
+        assert_eq!(
+            coverage.partitions.len(),
+            TX_PARTITIONS.len(),
+            "{bit_depth:?}"
+        );
+        assert!(coverage.recodes > 0, "{bit_depth:?}: no eob == 1 recode");
+    }
+}
+
+#[test]
+fn reduced_transform_sets_round_trip() {
+    for reduced_tx_set in 0..=3 {
+        let mut case = Case::new(130, 66, BitDepthIdc::Ten, SuperblockSize::Block64x64);
+        case.tx.reduced_tx_set = reduced_tx_set;
+        case.tx.tx_mode = TxMode::Select;
+        assert_round_trip(case, u64::from(reduced_tx_set) + 40);
     }
 }
 
@@ -387,7 +580,8 @@ fn rejects_unsupported_decisions() {
             &SuperblockDecision { tree },
             &mut RandomLevels {
                 rng: Rng(1),
-                max_level: 1
+                max_level: 1,
+                coverage: TxCoverage::default(),
             }
         ),
         Err(TileWriterError::Partition { .. })
@@ -437,6 +631,17 @@ fn avm_decodes_random_key_frames_like_splot() {
     extended.tools.ext_partitions = true;
     extended.tools.uneven_4way_partitions = true;
     cases.push(extended);
+    for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+        for sb_size in [SuperblockSize::Block64x64, SuperblockSize::Block128x128] {
+            cases.push(Case::new(200, 136, bit_depth, sb_size).with_tx_search());
+        }
+        for reduced_tx_set in [1, 3] {
+            let mut case = Case::new(130, 66, bit_depth, SuperblockSize::Block64x64);
+            case.tx.tx_mode = TxMode::Select;
+            case.tx.reduced_tx_set = reduced_tx_set;
+            cases.push(case);
+        }
+    }
     for (base_q_idx, max_level) in [(1, 3000), (40, 400), (200, 20), (255, 6)] {
         let mut case = Case::new(40, 24, BitDepthIdc::Eight, SuperblockSize::Block64x64);
         case.base_q_idx = base_q_idx;

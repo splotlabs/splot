@@ -4,7 +4,7 @@
 //! Coding decisions of one superblock, the input of the key-frame tile writer.
 
 pub(crate) use splot_decode::encoder_syntax::{
-    ChromaMode, IntraMode, IntraModes, Partition, TxType,
+    ChromaMode, IntraMode, IntraModes, Partition, TxPartition, TxType,
 };
 use splot_decode::encoder_syntax::{IntraTileSyntax, LeafBlock, TransformBlock};
 
@@ -49,7 +49,9 @@ pub(crate) enum PartitionTree {
 /// The coded form of one transform block.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TransformDecision {
-    /// Must equal the block's `tx_type`: the writer codes no transform type.
+    /// The type the levels use: the block's `tx_type` from
+    /// [`ResidualCoder::code`], or one of the offered types from
+    /// [`ResidualCoder::code_luma`].
     pub(crate) tx_type: TxType,
     /// Quantized levels in the row-major adjusted (at most 32x32) layout.
     pub(crate) levels: Vec<i32>,
@@ -60,8 +62,14 @@ pub(crate) struct TransformDecision {
 /// the blocks before it.
 ///
 /// The writer codes a leaf's luma blocks, then its chroma blocks, then writes
-/// the leaf's symbols in syntax order. The mode hooks may plan and predict
-/// candidates through `syntax`; the writer replans the leaf afterwards.
+/// the leaf's symbols in syntax order. The mode and partition hooks may plan,
+/// predict, and reconstruct candidates through `syntax` if they restore it; the
+/// writer replans the leaf afterwards.
+///
+/// The decoder infers `DCT_DCT` for a luma block with one coded coefficient
+/// (§ 5.20.8.2). When a [`Self::code_luma`] decision has `eob == 1` with
+/// another type, the writer codes the block again through [`Self::code`] with
+/// `DCT_DCT`; all-zero levels simply take `DCT_DCT`.
 pub(crate) trait ResidualCoder {
     /// The luma modes of `leaf`; the default keeps `planned`.
     fn luma_modes(
@@ -84,6 +92,28 @@ pub(crate) trait ResidualCoder {
         Ok(modes.uv_mode)
     }
 
-    /// Codes `tx`, whose row-major prediction is `prediction`.
+    /// The luma transform partition of `leaf` under `modes`, one of
+    /// `syntax.luma_tx_partitions(leaf)`; the default splits nothing.
+    fn tx_partition(
+        &mut self,
+        _syntax: &mut IntraTileSyntax,
+        _leaf: &LeafBlock,
+        _modes: IntraModes,
+    ) -> Result<TxPartition> {
+        Ok(TxPartition::None)
+    }
+
+    /// Codes luma block `tx` with one of `tx_types`, the types the block may
+    /// code (`DCT_DCT` first); the default codes `tx.tx_type` through [`Self::code`].
+    fn code_luma(
+        &mut self,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        _tx_types: &[TxType],
+    ) -> Result<TransformDecision> {
+        self.code(tx, prediction)
+    }
+
+    /// Codes `tx` with `tx.tx_type`; its row-major prediction is `prediction`.
     fn code(&mut self, tx: &TransformBlock, prediction: &[u16]) -> Result<TransformDecision>;
 }

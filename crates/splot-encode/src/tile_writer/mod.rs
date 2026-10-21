@@ -25,7 +25,7 @@ use splot_recon::{DecodedFrame, ReconError};
 
 pub(crate) use decision::{
     ChromaMode, INTRA_MODES, IntraModes, Partition, PartitionTree, ResidualCoder,
-    SuperblockDecision, TransformDecision,
+    SuperblockDecision, TransformDecision, TxPartition, TxType,
 };
 
 /// Output byte cap of one tile; larger than any 4096x2160 tile of 10-bit levels needs.
@@ -290,18 +290,30 @@ impl KeyFrameTileWriter {
         coder: &mut impl ResidualCoder,
     ) -> Result<()> {
         let mut modes = coder.luma_modes(&mut self.syntax, leaf, planned)?;
-        let mut blocks = self.syntax.plan_leaf(leaf, modes)?;
+        let partition = coder.tx_partition(&mut self.syntax, leaf, modes)?;
+        let mut blocks = self.syntax.plan_leaf_partitioned(leaf, modes, partition)?;
         let mut levels = vec![Vec::new(); blocks.len()];
-        self.code_blocks(&blocks, false, &mut levels, coder)?;
+        self.code_blocks(&mut blocks, false, &mut levels, coder)?;
         if leaf.has_chroma() {
             modes.uv_mode = coder.chroma_mode(&mut self.syntax, leaf, modes)?;
-            blocks = self.syntax.plan_leaf(leaf, modes)?;
-            self.code_blocks(&blocks, true, &mut levels, coder)?;
+            let luma = blocks;
+            blocks = self.syntax.plan_leaf_partitioned(leaf, modes, partition)?;
+            for (block, coded) in blocks.iter_mut().zip(&luma) {
+                if block.plane == 0 {
+                    block.tx_type = coded.tx_type;
+                }
+            }
+            self.code_blocks(&mut blocks, true, &mut levels, coder)?;
         }
         self.filters
             .write_cdef_index(&mut self.syntax, &mut self.symbols, leaf)?;
         self.syntax
             .write_intra_modes(leaf, modes, &mut self.symbols)?;
+        let symbols = &mut self.symbols;
+        self.syntax
+            .code_luma_tx_partition(leaf, partition, |cdf, value| {
+                coeffs::write_symbol(symbols, cdf, value)
+            })?;
         let mut eob_u = 0;
         let mut eobs = Vec::with_capacity(blocks.len());
         for (tx, levels) in blocks.iter().zip(&levels) {
@@ -321,31 +333,85 @@ impl KeyFrameTileWriter {
         self.filters.record_leaf(leaf, &blocks, &eobs)
     }
 
-    /// Codes and reconstructs the luma or the chroma blocks of the planned leaf.
-    /// Planes predict independently except CFL, which reads the finished luma.
+    /// Codes and reconstructs the luma or the chroma blocks of the planned leaf,
+    /// and stores each coded type in `blocks`. Planes predict independently
+    /// except CFL, which reads the finished luma.
     fn code_blocks(
         &mut self,
-        blocks: &[TransformBlock],
+        blocks: &mut [TransformBlock],
         chroma: bool,
         levels: &mut [Vec<i32>],
         coder: &mut impl ResidualCoder,
     ) -> Result<()> {
-        for (index, tx) in blocks.iter().enumerate() {
+        for (index, tx) in blocks.iter_mut().enumerate() {
             if (tx.plane > 0) != chroma {
                 continue;
             }
             let prediction = self.syntax.predict(index)?;
-            let decision = coder.code(tx, &prediction)?;
-            if decision.tx_type != tx.tx_type {
-                return Err(TileWriterError::Unsupported(
-                    "transform type other than the inferred one",
-                ));
-            }
-            self.syntax.reconstruct(index, &decision.levels)?;
+            let decision = if chroma {
+                code_as(coder, tx, &prediction)?
+            } else {
+                self.code_luma(coder, tx, &prediction)?
+            };
+            self.syntax
+                .reconstruct_as(index, decision.tx_type, &decision.levels)?;
+            tx.tx_type = decision.tx_type;
             levels[index] = decision.levels;
         }
         Ok(())
     }
+
+    /// The decision of luma block `tx` in a type the decoder reads or infers
+    /// for its levels.
+    fn code_luma(
+        &mut self,
+        coder: &mut impl ResidualCoder,
+        tx: &TransformBlock,
+        prediction: &[u16],
+    ) -> Result<TransformDecision> {
+        let tx_types = self.syntax.allowed_luma_tx_types(tx)?;
+        let mut decision = coder.code_luma(tx, prediction, &tx_types)?;
+        if !tx_types.contains(&decision.tx_type) {
+            return Err(TileWriterError::Unsupported(
+                "luma transform type outside the offered types",
+            ));
+        }
+        let coded = TransformBlock {
+            tx_type: decision.tx_type,
+            ..*tx
+        };
+        let eob = coeffs::eob(&coded, &decision.levels)?;
+        let inferred = if eob == 0 {
+            Some(tx.tx_type)
+        } else {
+            self.syntax.inferred_luma_tx_type(&coded, eob)?
+        };
+        match inferred {
+            Some(tx_type) if tx_type != decision.tx_type && eob == 0 => {
+                decision.tx_type = tx_type;
+            }
+            Some(tx_type) if tx_type != decision.tx_type => {
+                decision = code_as(coder, &TransformBlock { tx_type, ..*tx }, prediction)?;
+            }
+            _ => {}
+        }
+        Ok(decision)
+    }
+}
+
+/// `coder.code(tx)`, checked to use `tx.tx_type`.
+fn code_as(
+    coder: &mut impl ResidualCoder,
+    tx: &TransformBlock,
+    prediction: &[u16],
+) -> Result<TransformDecision> {
+    let decision = coder.code(tx, prediction)?;
+    if decision.tx_type != tx.tx_type {
+        return Err(TileWriterError::Unsupported(
+            "transform type other than the requested one",
+        ));
+    }
+    Ok(decision)
 }
 
 /// The rectangle direction of `partition` and its family `[non-ext, 3-way, 4A, 4B]`.

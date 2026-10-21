@@ -34,6 +34,7 @@ use crate::preset::PresetParams;
 use crate::tile_writer::filters::FilterSyntax;
 use crate::tile_writer::{
     KeyFrameTileWriter, ResidualCoder, SuperblockDecision, TileWriterError, TransformDecision,
+    TxPartition, TxType,
 };
 
 /// `(pri, sec)` CDEF strengths in the order the search tries them.
@@ -67,6 +68,7 @@ pub(crate) struct FrameDecisions {
     transforms: Vec<TransformDecision>,
     luma_modes: Vec<IntraModes>,
     chroma_modes: Vec<ChromaMode>,
+    tx_partitions: Vec<TxPartition>,
 }
 
 impl FrameDecisions {
@@ -119,6 +121,28 @@ impl<C: ResidualCoder> ResidualCoder for Recording<'_, C> {
         Ok(mode)
     }
 
+    fn tx_partition(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+    ) -> core::result::Result<TxPartition, TileWriterError> {
+        let partition = self.coder.tx_partition(syntax, leaf, modes)?;
+        self.decisions.tx_partitions.push(partition);
+        Ok(partition)
+    }
+
+    fn code_luma(
+        &mut self,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        tx_types: &[TxType],
+    ) -> core::result::Result<TransformDecision, TileWriterError> {
+        let decision = self.coder.code_luma(tx, prediction, tx_types)?;
+        self.decisions.transforms.push(decision.clone());
+        Ok(decision)
+    }
+
     fn code(
         &mut self,
         tx: &TransformBlock,
@@ -135,6 +159,7 @@ struct Replay {
     transforms: std::vec::IntoIter<TransformDecision>,
     luma_modes: std::vec::IntoIter<IntraModes>,
     chroma_modes: std::vec::IntoIter<ChromaMode>,
+    tx_partitions: std::vec::IntoIter<TxPartition>,
 }
 
 impl ResidualCoder for Replay {
@@ -158,6 +183,17 @@ impl ResidualCoder for Replay {
         self.chroma_modes
             .next()
             .ok_or(TileWriterError::Shape("replayed chroma mode count"))
+    }
+
+    fn tx_partition(
+        &mut self,
+        _syntax: &mut IntraTileSyntax,
+        _leaf: &LeafBlock,
+        _modes: IntraModes,
+    ) -> core::result::Result<TxPartition, TileWriterError> {
+        self.tx_partitions
+            .next()
+            .ok_or(TileWriterError::Shape("replayed transform partition count"))
     }
 
     fn code(
@@ -233,6 +269,7 @@ pub(crate) fn finish_key_frame(
         transforms: pass.decisions.transforms.into_iter(),
         luma_modes: pass.decisions.luma_modes.into_iter(),
         chroma_modes: pass.decisions.chroma_modes.into_iter(),
+        tx_partitions: pass.decisions.tx_partitions.into_iter(),
     };
     for decision in &pass.decisions.superblocks {
         writer
@@ -242,6 +279,7 @@ pub(crate) fn finish_key_frame(
     if replay.transforms.next().is_some()
         || replay.luma_modes.next().is_some()
         || replay.chroma_modes.next().is_some()
+        || replay.tx_partitions.next().is_some()
     {
         return Err(coding("filter pass")(TileWriterError::Shape(
             "replayed transform count",
