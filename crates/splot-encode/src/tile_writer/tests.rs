@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, KeyFrameTxParams,
     build_encoder_sequence_header, build_key_frame_header, encode_key_frame_temporal_unit,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize};
@@ -244,8 +244,14 @@ fn encode_case(case: Case, seed: u64) -> (Vec<u8>, DecodedFrame<u16>, ModePicker
     })
     .unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let core =
-        build_key_frame_header(&view, case.base_q_idx, 0, &FrameFilterParams::default()).unwrap();
+    let core = build_key_frame_header(
+        &view,
+        case.base_q_idx,
+        0,
+        &FrameFilterParams::default(),
+        KeyFrameTxParams::default(),
+    )
+    .unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core).unwrap();
     let mut rng = Rng(seed | 1);
     let mut modes = ModePicker::new(seed);
@@ -371,6 +377,7 @@ fn rejects_unsupported_decisions() {
         50,
         0,
         &FrameFilterParams::default(),
+        KeyFrameTxParams::default(),
     )
     .unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core).unwrap();
@@ -402,6 +409,7 @@ fn rejects_unsupported_decisions() {
         50,
         0,
         &FrameFilterParams::default(),
+        KeyFrameTxParams::default(),
     )
     .unwrap();
     assert!(matches!(

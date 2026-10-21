@@ -5,7 +5,7 @@
 
 use proptest::prelude::*;
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, KeyFrameTxParams,
     build_encoder_sequence_header, build_key_frame_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize};
@@ -210,6 +210,7 @@ fn facade_rows_back_the_rate_model() {
         90,
         0,
         &FrameFilterParams::default(),
+        KeyFrameTxParams::default(),
     )
     .unwrap();
     let mut rng = Residuals(7);

@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 
 use splot_core::headers::frame::{
     CdefStrengthSet, CdefStrengthSets, CoreSeqView, FrameFilterParams, FrameHeaderCore,
-    MAX_CDEF_STRENGTH_SETS, build_key_frame_header,
+    KeyFrameTxParams, MAX_CDEF_STRENGTH_SETS, build_key_frame_header,
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -202,10 +202,17 @@ pub(crate) fn finish_key_frame(
             what: "a frame without quantization params",
         })?
         .base_q_idx;
+    let tail = pass.core.intra_tail.as_ref().ok_or(Error::Unsupported {
+        what: "a key frame without its header tail",
+    })?;
     let search = Search {
         seq,
         view,
         qindex,
+        tx: KeyFrameTxParams {
+            tx_mode: tail.tx_mode,
+            reduced_tx_set: tail.reduced_tx_set,
+        },
         source,
         recorder: &pass.recorder,
         recon: &pass.recon,
@@ -271,6 +278,7 @@ struct Search<'a> {
     seq: &'a SequenceHeader,
     view: &'a CoreSeqView,
     qindex: u32,
+    tx: KeyFrameTxParams,
     source: &'a SourceFrame,
     recorder: &'a FilterRecorder,
     recon: &'a DecodedFrame<u16>,
@@ -315,7 +323,8 @@ impl Search<'_> {
     }
 
     fn header(&self, params: &FrameFilterParams) -> Result<FrameHeaderCore> {
-        build_key_frame_header(self.view, self.qindex, 0, params).map_err(coding("frame header"))
+        build_key_frame_header(self.view, self.qindex, 0, params, self.tx)
+            .map_err(coding("frame header"))
     }
 
     /// `frame` filtered with `params`, every `cdef_idx` `0`, and `lr_on` units on.

@@ -12,7 +12,7 @@ pub(crate) mod coeffs;
 mod decision;
 pub(crate) mod filters;
 
-use splot_core::headers::frame::{FrameHeaderCore, KEY_FRAME_REDUCED_TX_SET, TxMode};
+use splot_core::headers::frame::{FrameHeaderCore, TxMode};
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
@@ -403,9 +403,8 @@ fn check_supported(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<()> {
         .intra_tail
         .as_ref()
         .ok_or(TileWriterError::Unsupported("incomplete key-frame header"))?;
-    if tail.tx_mode != TxMode::Largest || u32::from(tail.reduced_tx_set) != KEY_FRAME_REDUCED_TX_SET
-    {
-        return unsupported("transform mode other than TX_MODE_LARGEST with reduced_tx_set 2");
+    if tail.tx_mode == TxMode::Only4x4 {
+        return unsupported("TX_MODE_ONLY_4X4");
     }
     if core.allow_screen_content_tools == Some(true) || core.allow_intrabc == Some(true) {
         return unsupported("screen content tools");

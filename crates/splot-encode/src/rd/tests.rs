@@ -6,7 +6,7 @@
 use proptest::prelude::*;
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
-    build_encoder_sequence_header, build_key_frame_header,
+    KeyFrameTxParams, build_encoder_sequence_header, build_key_frame_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_core::symbol::Symbol;
@@ -179,7 +179,14 @@ fn headers(
     })
     .unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let core = build_key_frame_header(&view, qindex, 0, &FrameFilterParams::default()).unwrap();
+    let core = build_key_frame_header(
+        &view,
+        qindex,
+        0,
+        &FrameFilterParams::default(),
+        KeyFrameTxParams::default(),
+    )
+    .unwrap();
     (seq, core)
 }
 

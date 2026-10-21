@@ -14,7 +14,7 @@ use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CdefParams, CdefStrengthSets, CoreSeqView, DeblockingFilterParams, FrameHeaderCore,
     FrameHeaderParseStatus, FrameReferenceStateView, FrameRestorationType, LrGeometry, LrParams,
-    LrPlaneParams, encode_temporal_delimiter_obu, init_core_from_prefix, parse_core_body,
+    LrPlaneParams, TxMode, encode_temporal_delimiter_obu, init_core_from_prefix, parse_core_body,
     parse_frame_header_prefix,
 };
 use crate::headers::sequence::{
@@ -37,8 +37,8 @@ const ORDER_HINT_BITS_MINUS_1: u32 = 7;
 const ZERO_BASE_DELTA_Q: u32 = 23;
 /// `df_par_bits_minus_2`: `DfDeltaQ` spans `-4..=3` (§ 5.18.5.2).
 const DF_PAR_BITS_MINUS_2: u32 = 1;
-/// `reduced_tx_set == 2`: intra transform blocks infer `DCT_DCT` (§ 5.20.8.2).
-pub const KEY_FRAME_REDUCED_TX_SET: u32 = 2;
+/// The largest `reduced_tx_set` (`f(2)`, § 5.18.2).
+const MAX_REDUCED_TX_SET: u8 = 3;
 
 /// One bit per optional AV2 coding tool that `sequence_header_obu()` can enable.
 ///
@@ -127,6 +127,27 @@ pub struct FrameFilterParams {
     pub lr_luma_unit_size: Option<u32>,
 }
 
+/// Transform choices of [`build_key_frame_header`].
+///
+/// `Default` is `TX_MODE_LARGEST` with `reduced_tx_set = 2`, under which every
+/// intra luma block infers `DCT_DCT` (§ 5.20.8.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyFrameTxParams {
+    /// `TX_MODE_LARGEST` or `TX_MODE_SELECT`; a lossy key frame cannot code `ONLY_4X4`.
+    pub tx_mode: TxMode,
+    /// `reduced_tx_set`, `0..=3`: the § 5.20.8.3 `get_tx_set` restriction.
+    pub reduced_tx_set: u8,
+}
+
+impl Default for KeyFrameTxParams {
+    fn default() -> Self {
+        Self {
+            tx_mode: TxMode::Largest,
+            reduced_tx_set: 2,
+        }
+    }
+}
+
 /// Error from the encoder header builders.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -144,6 +165,14 @@ pub enum EncoderHeaderError {
         base_q_idx: u32,
         /// One past the largest accepted value.
         limit: u32,
+    },
+    /// The transform choices are not codable: `ONLY_4X4` or `reduced_tx_set > 3`.
+    #[error("transform mode {tx_mode:?} with reduced_tx_set {reduced_tx_set} is not codable")]
+    InvalidTxParams {
+        /// The rejected transform mode.
+        tx_mode: TxMode,
+        /// The rejected `reduced_tx_set`.
+        reduced_tx_set: u8,
     },
     /// The sequence view is a single-picture view; the key-frame builder needs a stream view.
     #[error("single-picture sequence views are not supported")]
@@ -355,20 +384,20 @@ fn write_transform_quant_entropy_config(
 /// The frame has the maximum frame size, `show_frame` semantics through
 /// `immediate_output_frame = 1`, one uniform tile, no segmentation, no delta-q,
 /// no quantizer matrices, the deblocking, CDEF, and loop-restoration choices of
-/// `filters`, GDF and CCSO off, `TX_MODE_LARGEST`, `reduced_tx_set = 2`, and no
-/// film grain.
+/// `filters`, GDF and CCSO off, the transform choices of `tx`, and no film grain.
 ///
 /// # Errors
 /// Returns [`EncoderHeaderError`] for a zero or too-wide `base_q_idx`, a
 /// single-picture view, `filters` that the sequence or the syntax cannot carry,
-/// or canonical bits that do not parse completely.
+/// `tx` that is not codable, or canonical bits that do not parse completely.
 pub fn build_key_frame_header(
     seq: &CoreSeqView,
     base_q_idx: u32,
     order_hint: u32,
     filters: &FrameFilterParams,
+    tx: KeyFrameTxParams,
 ) -> Result<FrameHeaderCore, EncoderHeaderError> {
-    let bytes = key_frame_header_bits(seq, base_q_idx, order_hint, filters)?;
+    let bytes = key_frame_header_bits(seq, base_q_idx, order_hint, filters, tx)?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::ClosedLoopKey, true);
@@ -391,9 +420,16 @@ fn key_frame_header_bits(
     base_q_idx: u32,
     order_hint: u32,
     filters: &FrameFilterParams,
+    tx: KeyFrameTxParams,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
+    }
+    if tx.tx_mode == TxMode::Only4x4 || tx.reduced_tx_set > MAX_REDUCED_TX_SET {
+        return Err(EncoderHeaderError::InvalidTxParams {
+            tx_mode: tx.tx_mode,
+            reduced_tx_set: tx.reduced_tx_set,
+        });
     }
     let q_bits = if seq.quant.bit_depth == 8 { 8 } else { 9 };
     if base_q_idx == 0 || base_q_idx >= 1 << q_bits {
@@ -431,8 +467,8 @@ fn key_frame_header_bits(
     if seq.ccso.enable_ccso {
         w.write_flag(false)?; // ccso_frame_flag
     }
-    w.write_flag(false)?; // tx_mode_select
-    w.write_bits(KEY_FRAME_REDUCED_TX_SET, 2)?;
+    w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
+    w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
     w.align_to_byte();
     Ok(w.into_bytes())
 }
