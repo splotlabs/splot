@@ -3,11 +3,7 @@
 
 //! The general intra DC **skip**-block composer, tile-data encoder, and IVF emitter.
 
-#[cfg(test)]
-use super::SKIP_FRAME_BASE_Q_IDX;
-use crate::block_symbol_trace::{
-    BlockSymbolToken, compose_minimal_intra_dc_block_mode_trace, encode_block_symbol_trace,
-};
+use crate::block_symbol_trace::{BlockSymbolToken, compose_minimal_intra_dc_block_mode_trace};
 use crate::coefficient_tokenization::{
     chroma_v_all_zero_token, general_intra_32x32_chroma_u_all_zero_token,
     general_intra_64x64_luma_all_zero_token,
@@ -47,9 +43,10 @@ pub(crate) fn compose_general_intra_dc_skip_block_trace() -> Result<Vec<BlockSym
 /// consumes from byte 0 via § 8.2.2 `init_symbol` (a single last tile has no `tile_size_minus_1`
 /// prefix). The supported muxing headers select coefficient CDF q-context `0` and leave CDF
 /// updates enabled, matching these fixed rows.
-pub(crate) fn encode_general_intra_dc_skip_tile_data() -> Result<Vec<u8>> {
+#[cfg(test)]
+fn encode_general_intra_dc_skip_tile_data() -> Result<Vec<u8>> {
     let trace = compose_general_intra_dc_skip_block_trace()?;
-    encode_block_symbol_trace(&trace)
+    crate::block_symbol_trace::encode_block_symbol_trace(&trace)
 }
 
 /// Emits a complete, decodable AV2 IVF stream: one 64x64 all-intra `OBU_CLOSED_LOOP_KEY` frame
@@ -77,45 +74,10 @@ pub fn emit_minimal_intra_skip_ivf() -> Result<Vec<u8>> {
     super::emit_minimal_intra_ivf(&compose_general_intra_dc_skip_block_trace()?)
 }
 
-/// Emits the minimal intra skip frame as a single coded **access unit** — the AV2 Annex B
-/// temporal unit (`OBU_TEMPORAL_DELIMITER` + `OBU_SEQUENCE_HEADER` + the `OBU_CLOSED_LOOP_KEY`
-/// frame OBU), without the IVF file wrapper, muxed at a caller-chosen `base_q_idx` (AV2 § 5.18.6.1;
-/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6-1`). The DC skip block has an all-zero
-/// residual, so its flat reconstruction is independent of `base_q_idx`; only the frame-header
-/// quantizer field changes. This is the access-unit form `Context::receive_packet` returns in a
-/// `Packet`: it is self-delimiting (the decoder auto-detects it as Annex B) and concatenating
-/// packets yields a valid stream, unlike emitting a full IVF file per packet. The tile's
-/// coefficient CDF q-context stays `0`, matching the supported `base_q_idx` range enforced by
-/// [`crate::Context`].
-// TODO(spec: ENC-CONFIG-QP-FIELD): derive the coefficient CDF q-context from `base_q_idx`
-pub(crate) fn emit_minimal_intra_skip_temporal_unit_with_base_q_idx(
-    base_q_idx: u8,
-) -> Result<Vec<u8>> {
-    let tile_data = encode_general_intra_dc_skip_tile_data()?;
-    splot_core::headers::frame::encode_minimal_intra_clk_temporal_unit_with_base_q_idx(
-        base_q_idx, &tile_data,
-    )
-    .map_err(|source| Error::MinimalIntraSkipIvf { source })
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn skip_temporal_unit_is_the_skip_ivf_frame_payload() {
-        let temporal_unit =
-            emit_minimal_intra_skip_temporal_unit_with_base_q_idx(SKIP_FRAME_BASE_Q_IDX).unwrap();
-        let mut ivf = Vec::new();
-        splot_core::ivf::write_ivf_header(
-            &mut ivf,
-            &splot_core::ivf::IvfHeader::new(*b"AV02", 64, 64, 30, 1, 1),
-        )
-        .unwrap();
-        splot_core::ivf::write_ivf_frame(&mut ivf, 0, &temporal_unit).unwrap();
-        assert_eq!(ivf, emit_minimal_intra_skip_ivf().unwrap());
-    }
 
     #[test]
     fn composes_general_skip_block_trace_in_order() {

@@ -73,14 +73,14 @@ crates/splot-recon     reconstruction primitives -> splot-core, splot-tables
 crates/splot-decode    decode planning/runtime -> splot-core, splot-parallel, splot-recon
 crates/splot-validate  parser-driven diagnostics -> splot-core
 crates/splot-encode    encoder API/tools -> splot-core, splot-parallel, splot-recon
-crates/splot-cli       thin binary -> core, parallel, decode, validate
+crates/splot-cli       thin binary -> core, parallel, decode, validate, encode
 crates/splot-capi      C ABI of the streaming decoder -> core, decode
 xtask                  standalone automation
 fuzz                   cargo-fuzz target outside the workspace
 ```
 
-Nothing depends on `splot-cli` or `splot-capi`. No workspace production crate depends on `splot-encode`;
-`splot-cli` uses it only for dev oracles, and the out-of-workspace fuzz crate tests its APIs.
+Nothing depends on `splot-cli` or `splot-capi`. `splot-cli` uses `splot-encode` for the
+`encode` command, and the out-of-workspace fuzz crate tests its APIs.
 
 Decoder modules must be named by AV2/decoder domain: bitstream, entropy, tile,
 prediction, residual, reference, filters, output, pipeline, support, diagnostic.
