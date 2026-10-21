@@ -312,6 +312,7 @@ fn sequence_sb_mib(sequence: &SequenceHeader) -> usize {
     splot_core::tile::num_4x4_blocks_wide(sb_size) as usize
 }
 
+#[inline]
 pub(crate) fn chroma_edge_smoothness(
     grid: Option<&crate::prediction::intra_edge::TileChromaSmoothGrid>,
     block_ctx: BlockCtx,
