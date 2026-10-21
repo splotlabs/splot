@@ -32,7 +32,7 @@ pub(crate) mod ordinary_pass;
 pub(crate) mod quant_pass;
 pub(crate) mod quant_state;
 pub(crate) mod read_quant;
-mod scan_walk;
+pub(crate) mod scan_walk;
 pub(crate) mod sign_symbol;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

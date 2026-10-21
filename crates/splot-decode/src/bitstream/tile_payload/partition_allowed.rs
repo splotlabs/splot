@@ -164,6 +164,18 @@ pub(crate) struct PartitionDecisionFacts {
 }
 
 impl PartitionDecisionFacts {
+    pub(crate) const fn allowed(self) -> AllowedPartitions {
+        self.allowed
+    }
+
+    pub(crate) const fn implied(self) -> Option<PartitionType> {
+        self.implied_partition
+    }
+
+    pub(crate) const fn rect_type(self) -> Option<RectPartitionType> {
+        self.rect_type
+    }
+
     pub(crate) fn read_partition_decision_input<'a>(
         self,
         bru_active: bool,

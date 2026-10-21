@@ -5477,7 +5477,7 @@ module = "crates/splot-encode/src/frame.rs"
 change_id = "encoder-recon-dependency"
 owner = "encoder"
 risk = "medium"
-notes = "Non-normative encoder infrastructure. The encoder crate has the approved direct `splot-recon` dependency edge, used by validated frame-plane views and the owned input-copy path; it does not expose a public reconstruction API or implement a general closed-loop encoder. The dependency-direction gate also enforces that `splot-cli` may use `splot-encode` only as a dev dependency for decoder-backed oracles, never as a normal or build dependency. Public frame ingestion and the limited 64x64 all-128 Packet success path are tracked by ENC-Y4M-INPUT and ENC-CONTEXT-RECEIVE-PACKET; this row claims only the dependency boundary."
+notes = "Non-normative encoder infrastructure. The encoder crate has the approved direct `splot-recon` dependency edge, used by validated frame-plane views and the owned input-copy path, and the approved `splot-decode` edge for the `encoder_syntax` facade (decoder CDF rows, contexts, and partition rules); it does not expose a public reconstruction API or implement a general closed-loop encoder. The dependency-direction gate also enforces that `splot-cli` may use `splot-encode` only as a dev dependency for decoder-backed oracles, never as a normal or build dependency. Public frame ingestion and the limited 64x64 all-128 Packet success path are tracked by ENC-Y4M-INPUT and ENC-CONTEXT-RECEIVE-PACKET; this row claims only the dependency boundary."
 
 [feature.status]
 mapped = "done"

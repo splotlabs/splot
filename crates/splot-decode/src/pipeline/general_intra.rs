@@ -372,39 +372,20 @@ pub(crate) fn decode_one_general_intra_block(
 ) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
     let _qm_segment_scope =
         crate::bitstream::tile_payload::FrameQmSegmentScope::install(usize::from(segment_id));
-    let block_tx_shape = TxShape::from_av2_block_size(frontier.b_size);
-    let n4w = block_tx_shape.width4();
-    let n4h = block_tx_shape.height4();
-    let chroma_sampling =
-        ChromaSampling::from_chroma_format_idc(sequence.general.chroma_format_idc);
     let mi_row_range = work_unit.mi_row_range();
     let mi_col_range = work_unit.mi_col_range();
-    let mut block_ctx = BlockCtx::new(
-        BlockRect::new(frontier.r, frontier.c, n4w, n4h),
-        block_tx_shape,
-        mi_cols,
-        mi_rows,
+    let (block_ctx, chroma_mode_geometry) = general_intra_block_ctx(
+        frontier,
+        sequence.general.chroma_format_idc,
+        (
+            mi_row_range.start as usize,
+            mi_col_range.start as usize..mi_col_range.end as usize,
+        ),
+        (mi_rows, mi_cols),
         bit_depth,
-        chroma_sampling,
-    )
-    .with_tile_bounds(
-        mi_row_range.start as usize,
-        mi_col_range.start as usize,
-        mi_col_range.end as usize,
     );
-    let chroma_mode_geometry = if frontier.has_chroma {
-        let chroma_ref = frontier.chroma_ref_geometry();
-        let chroma_tx_shape = TxShape::from_av2_block_size(chroma_ref.size());
-        let chroma_n4w = chroma_tx_shape.width4();
-        let chroma_n4h = chroma_tx_shape.height4();
-        block_ctx = block_ctx.with_chroma_ref(
-            BlockRect::new(chroma_ref.row(), chroma_ref.col(), chroma_n4w, chroma_n4h),
-            chroma_tx_shape,
-        );
-        Some((chroma_n4w, chroma_n4h))
-    } else {
-        None
-    };
+    let n4w = block_ctx.block().width4();
+    let n4h = block_ctx.block().height4();
     let (above_smooth, left_smooth) = y_smooth.map_or((false, false), |grid| {
         grid.block_smoothness(frontier.c, frontier.r)
     });
@@ -578,6 +559,44 @@ pub(crate) fn decode_one_general_intra_block(
         record_chroma_smooth(chroma_smooth, block_ctx, modes.supported_chroma_mode());
     }
     Ok((leaf, command))
+}
+
+/// The block context of `frontier` and, with chroma, its chroma 4x4 extent.
+#[inline]
+pub(crate) fn general_intra_block_ctx(
+    frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
+    chroma_format: splot_core::headers::sequence::ChromaFormatIdc,
+    (tile_row_start, tile_cols): (usize, core::ops::Range<usize>),
+    (mi_rows, mi_cols): (usize, usize),
+    bit_depth: BitDepth,
+) -> (BlockCtx, Option<(usize, usize)>) {
+    let block_tx_shape = TxShape::from_av2_block_size(frontier.b_size);
+    let mut block_ctx = BlockCtx::new(
+        BlockRect::new(
+            frontier.r,
+            frontier.c,
+            block_tx_shape.width4(),
+            block_tx_shape.height4(),
+        ),
+        block_tx_shape,
+        mi_cols,
+        mi_rows,
+        bit_depth,
+        ChromaSampling::from_chroma_format_idc(chroma_format),
+    )
+    .with_tile_bounds(tile_row_start, tile_cols.start, tile_cols.end);
+    if !frontier.has_chroma {
+        return (block_ctx, None);
+    }
+    let chroma_ref = frontier.chroma_ref_geometry();
+    let chroma_tx_shape = TxShape::from_av2_block_size(chroma_ref.size());
+    let chroma_n4w = chroma_tx_shape.width4();
+    let chroma_n4h = chroma_tx_shape.height4();
+    block_ctx = block_ctx.with_chroma_ref(
+        BlockRect::new(chroma_ref.row(), chroma_ref.col(), chroma_n4w, chroma_n4h),
+        chroma_tx_shape,
+    );
+    (block_ctx, Some((chroma_n4w, chroma_n4h)))
 }
 
 #[allow(clippy::too_many_arguments)]

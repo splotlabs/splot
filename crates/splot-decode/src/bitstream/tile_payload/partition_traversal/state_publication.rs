@@ -96,7 +96,7 @@ impl DecodedLeafPublication {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn publish_intra_leaf_state<E>(
+pub(crate) fn publish_intra_leaf_state<E>(
     frame: TilePartitionFrameFacts,
     call: TilePartitionCall,
     frontier: &DecodeBlockFrontier,
