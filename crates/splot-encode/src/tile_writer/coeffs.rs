@@ -6,8 +6,7 @@
 
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
 use splot_core::symbol::Symbol;
-use splot_core::symbol_encoder::SymbolEncoder;
-use splot_core::write::WriteResult;
+use splot_core::symbol_encoder::SymbolSink;
 use splot_decode::encoder_syntax::{
     CoeffLevels, IntraTileSyntax, TransformBlock, is_low_frequency, tx_log2,
 };
@@ -27,35 +26,10 @@ pub(crate) fn adjusted_log2(tx_size: usize) -> Result<(u32, u32)> {
     Ok(tx_log2(tx_size).map(|(w, h)| (w.min(5), h.min(5)))?)
 }
 
-/// Receives the coefficient syntax: [`SymbolEncoder`] codes it, and the RD
-/// rate sink prices it, so both walk the one syntax order below.
-pub(crate) trait SymbolSink {
-    /// An `S()` symbol coded with `cdf`, which adapts when coding adapts.
-    fn symbol(&mut self, cdf: &mut [u16], value: Symbol) -> WriteResult<()>;
-    /// An `L(n)` literal.
-    fn literal(&mut self, value: u32, bits: u32) -> WriteResult<()>;
-    /// A unary prefix of at most `max_bits` bits.
-    fn unary(&mut self, value: u32, max_bits: u32) -> WriteResult<()>;
-}
-
-impl SymbolSink for SymbolEncoder {
-    fn symbol(&mut self, cdf: &mut [u16], value: Symbol) -> WriteResult<()> {
-        self.write_symbol_u16(cdf, value)
-    }
-
-    fn literal(&mut self, value: u32, bits: u32) -> WriteResult<()> {
-        self.write_literal(value, bits)
-    }
-
-    fn unary(&mut self, value: u32, max_bits: u32) -> WriteResult<()> {
-        self.write_unary(value, max_bits)
-    }
-}
-
 /// Writes the coefficients of `tx` and records its contexts; returns `eob`.
 pub(super) fn write_coeffs(
     syntax: &mut IntraTileSyntax,
-    symbols: &mut SymbolEncoder,
+    symbols: &mut impl SymbolSink,
     tx: &TransformBlock,
     levels: &[i32],
     eob_u_nonzero: bool,

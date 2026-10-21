@@ -10,7 +10,7 @@
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
 use splot_core::symbol::Symbol;
-use splot_core::symbol_encoder::SymbolEncoder;
+use splot_core::symbol_encoder::SymbolSink;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, OutputIndex, PixelFormat,
     PlaneId, PlaneRect, PlaneSize, TransformClass, coefficient_scan_slice,
@@ -356,7 +356,7 @@ impl IntraTileSyntax {
         &mut self,
         leaf: &LeafBlock,
         modes: IntraModes,
-        symbols: &mut SymbolEncoder,
+        symbols: &mut impl SymbolSink,
     ) -> Result<()> {
         let (mode_idx, _) = self.y_mode_index(leaf, modes)?;
         let ctx = self.y_mode_ctx(leaf)?;
@@ -719,7 +719,7 @@ impl IntraTileSyntax {
 
     fn write_cfl_alphas(
         &mut self,
-        symbols: &mut SymbolEncoder,
+        symbols: &mut impl SymbolSink,
         alpha_u: i8,
         alpha_v: i8,
     ) -> Result<()> {
@@ -785,7 +785,7 @@ impl IntraTileSyntax {
 
     fn put(
         &mut self,
-        symbols: &mut SymbolEncoder,
+        symbols: &mut impl SymbolSink,
         selector: TileCdfSelector,
         value: usize,
     ) -> Result<()> {
@@ -793,7 +793,7 @@ impl IntraTileSyntax {
             u8::try_from(value).map_err(|_| EncoderSyntaxError::Unsupported("symbol value"))?;
         let row = self.tile_row(selector)?;
         symbols
-            .write_symbol_u16(row, Symbol::new(value))
+            .symbol(row, Symbol::new(value))
             .map_err(rule("symbol write"))
     }
 }
@@ -858,9 +858,9 @@ fn leaf_size4(leaf: &LeafBlock) -> Result<(usize, usize)> {
     ))
 }
 
-fn literal(symbols: &mut SymbolEncoder, value: usize, bits: u32) -> Result<()> {
+fn literal(symbols: &mut impl SymbolSink, value: usize, bits: u32) -> Result<()> {
     symbols
-        .write_literal(value as u32, bits)
+        .literal(value as u32, bits)
         .map_err(rule("symbol write"))
 }
 

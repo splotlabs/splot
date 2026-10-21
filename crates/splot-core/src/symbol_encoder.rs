@@ -507,6 +507,40 @@ impl SymbolEncoder {
     }
 }
 
+/// Receives § 8.2 symbol syntax. [`SymbolEncoder`] codes it; a rate model can
+/// price it instead, so a search and the final stream share one syntax walk.
+pub trait SymbolSink {
+    /// An `S()` symbol coded with `cdf`, which adapts when coding adapts.
+    ///
+    /// # Errors
+    /// Returns [`WriteError`] when the sink cannot take the symbol.
+    fn symbol(&mut self, cdf: &mut [u16], value: Symbol) -> WriteResult<()>;
+    /// An `L(n)` literal of `bits` bits.
+    ///
+    /// # Errors
+    /// Returns [`WriteError`] when the sink cannot take the literal.
+    fn literal(&mut self, value: u32, bits: u32) -> WriteResult<()>;
+    /// A unary prefix of at most `max_bits` bits.
+    ///
+    /// # Errors
+    /// Returns [`WriteError`] when the sink cannot take the prefix.
+    fn unary(&mut self, value: u32, max_bits: u32) -> WriteResult<()>;
+}
+
+impl SymbolSink for SymbolEncoder {
+    fn symbol(&mut self, cdf: &mut [u16], value: Symbol) -> WriteResult<()> {
+        self.write_symbol_u16(cdf, value)
+    }
+
+    fn literal(&mut self, value: u32, bits: u32) -> WriteResult<()> {
+        self.write_literal(value, bits)
+    }
+
+    fn unary(&mut self, value: u32, max_bits: u32) -> WriteResult<()> {
+        self.write_unary(value, max_bits)
+    }
+}
+
 impl Default for SymbolEncoder {
     fn default() -> Self {
         Self::new()

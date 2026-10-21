@@ -5,12 +5,12 @@
 //! own walk ([`code_coeffs`]) into a [`RateSink`].
 
 use splot_core::symbol::Symbol;
-use splot_core::symbol_encoder::adapt_cdf_u16;
+use splot_core::symbol_encoder::{SymbolSink, adapt_cdf_u16};
 use splot_core::write::WriteResult;
 use splot_decode::encoder_syntax::{IntraTileSyntax, TransformBlock};
 
 use super::{Bits, symbol_cost, unary_cost};
-use crate::tile_writer::coeffs::{SymbolSink, code_coeffs};
+use crate::tile_writer::coeffs::code_coeffs;
 use crate::tile_writer::{Result, TileWriterError};
 
 /// A [`SymbolSink`] that sums the rate of the syntax it receives.
