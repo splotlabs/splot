@@ -17,8 +17,10 @@
 
 mod distortion;
 mod forward_transform;
+mod quantize;
 
 pub(crate) use forward_transform::ForwardTransform2d;
+pub(crate) use quantize::Quantizer;
 
 /// An invalid kernel argument.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -48,6 +50,21 @@ pub(crate) enum KernelError {
         expected: usize,
         /// The supplied length.
         actual: usize,
+    },
+    /// The quantizer step is below one reconstruction unit, or the
+    /// denominator is not a power of two in `1..=8`.
+    #[error("invalid quantizer q2={q2} dq_denom={dq_denom}")]
+    InvalidQuantizer {
+        /// The per-coefficient quantizer.
+        q2: u32,
+        /// The § 7.14.4 `dqDenom`.
+        dq_denom: u32,
+    },
+    /// The deadzone rounding is above one half (`128` in Q8).
+    #[error("invalid quantizer rounding {rounding_q8}/256")]
+    InvalidRounding {
+        /// The requested rounding in Q8.
+        rounding_q8: u32,
     },
 }
 
@@ -136,6 +153,22 @@ pub(crate) trait EncoderKernels: Sync {
         residual: &[i32],
         coeffs: &mut [i32],
     ) -> Result<(), KernelError>;
+
+    /// Quantizes `coeffs` into `levels` and writes the exact § 7.14.4
+    /// reconstruction of each level into `dequant`. Index 0 uses the DC
+    /// quantizer and every other index the AC quantizer. Returns the number of
+    /// non-zero levels.
+    ///
+    /// # Errors
+    /// Returns [`KernelError::BufferLength`] if the three buffers differ in
+    /// length.
+    fn quantize(
+        &self,
+        quantizer: &Quantizer,
+        coeffs: &[i32],
+        levels: &mut [i32],
+        dequant: &mut [i32],
+    ) -> Result<usize, KernelError>;
 }
 
 /// The scalar reference kernels.
@@ -191,6 +224,16 @@ impl EncoderKernels for ScalarKernels {
     ) -> Result<(), KernelError> {
         forward_transform::forward_scalar(tx, residual, coeffs)
     }
+
+    fn quantize(
+        &self,
+        quantizer: &Quantizer,
+        coeffs: &[i32],
+        levels: &mut [i32],
+        dequant: &mut [i32],
+    ) -> Result<usize, KernelError> {
+        quantize::quantize_scalar(quantizer, coeffs, levels, dequant)
+    }
 }
 
 impl EncoderKernels for SimdKernels {
@@ -234,5 +277,15 @@ impl EncoderKernels for SimdKernels {
         coeffs: &mut [i32],
     ) -> Result<(), KernelError> {
         forward_transform::forward_simd(tx, residual, coeffs)
+    }
+
+    fn quantize(
+        &self,
+        quantizer: &Quantizer,
+        coeffs: &[i32],
+        levels: &mut [i32],
+        dequant: &mut [i32],
+    ) -> Result<usize, KernelError> {
+        quantize::quantize_simd(quantizer, coeffs, levels, dequant)
     }
 }
