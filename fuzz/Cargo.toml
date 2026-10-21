@@ -141,15 +141,15 @@ doc = false
 bench = false
 
 [[bin]]
-name = "encoder_frame_input_views_bytes"
-path = "fuzz_targets/encoder_frame_input_views_bytes.rs"
+name = "encoder_source_frame_bytes"
+path = "fuzz_targets/encoder_source_frame_bytes.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "encoder_context_state_machine_bytes"
-path = "fuzz_targets/encoder_context_state_machine_bytes.rs"
+name = "encoder_y4m_reader_bytes"
+path = "fuzz_targets/encoder_y4m_reader_bytes.rs"
 test = false
 doc = false
 bench = false

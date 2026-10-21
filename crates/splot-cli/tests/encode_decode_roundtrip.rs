@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Cross-crate end-to-end oracle: `splot-encode` emits a decodable minimal intra skip
-//! frame, and `splot decode` reconstructs it to a flat frame. `splot-cli` keeps
-//! `splot-encode` as a dev-only dependency so these integration tests can prove the
-//! encoder's supported output against the decoder without a production CLI edge.
+//! Cross-crate end-to-end oracle: the `splot-encode` fixture emitters produce
+//! decodable minimal intra frames, and `splot decode` reconstructs the expected
+//! samples.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -262,75 +261,5 @@ fn encoder_2d_ivf_decodes_to_a_diagonal_gradient_luma() {
     assert!(
         raw[4096..].iter().all(|&s| s == 128),
         "expected flat 128 chroma"
-    );
-}
-
-/// The public Context API emits a packet whose decoded samples equal the input.
-#[test]
-fn context_encodes_all_128_frame_to_a_packet_that_decodes_to_all_128() {
-    assert_all_128_roundtrips_at_qp(splot_encode::DEFAULT_QP);
-}
-
-/// A non-default qp=40 reaches base_q_idx while zero residual still decodes to 128.
-#[test]
-fn context_encodes_all_128_frame_at_non_default_qp_that_decodes_to_all_128() {
-    assert_all_128_roundtrips_at_qp(40);
-}
-
-/// Encodes an all-128 64x64 frame through the public Context at the given fixed `qp`, muxes the
-/// packet into an IVF, decodes it with the `splot` binary, and asserts the reconstruction is the
-/// all-128 input. Shared by the default-qp and non-default-qp oracles.
-fn assert_all_128_roundtrips_at_qp(qp: u8) {
-    use splot_encode::{
-        Context, EncoderConfig, EncoderRuntimeConfig, FlushStatus, Frame, FrameId, FrameInfo,
-        FramePlaneInput, FramePlanesInput, PlaneRect, PlaneSize, ReceivePacketStatus,
-        SendFrameStatus,
-    };
-
-    let y = vec![128_u8; 64 * 64];
-    let u = vec![128_u8; 32 * 32];
-    let v = vec![128_u8; 32 * 32];
-    let info = FrameInfo::yuv420_8bit(FrameId::new(0), PlaneSize::new(64, 64).unwrap());
-    let frame = Frame::from_planes(
-        info,
-        FramePlanesInput::yuv(
-            FramePlaneInput::new(&y, 64, PlaneRect::new(0, 0, 64, 64).unwrap()),
-            FramePlaneInput::new(&u, 32, PlaneRect::new(0, 0, 32, 32).unwrap()),
-            FramePlaneInput::new(&v, 32, PlaneRect::new(0, 0, 32, 32).unwrap()),
-        ),
-    )
-    .expect("build the all-128 input frame");
-
-    let mut config = EncoderConfig::new(64, 64);
-    config.qp = qp;
-    let mut ctx =
-        Context::new(config, EncoderRuntimeConfig::default()).expect("build the encoder context");
-    assert!(matches!(
-        ctx.send_frame(&frame).expect("send_frame"),
-        SendFrameStatus::Accepted { .. }
-    ));
-    assert!(matches!(
-        ctx.flush().expect("flush"),
-        FlushStatus::Draining { .. }
-    ));
-    let packet_data = match ctx.receive_packet().expect("receive_packet") {
-        ReceivePacketStatus::Packet(packet) => Ok(packet.data),
-        status => Err(status),
-    }
-    .expect("expected a packet from the public Context");
-    assert!(!packet_data.is_empty(), "the packet must carry coded bytes");
-
-    let mut ivf = Vec::new();
-    splot_core::ivf::write_ivf_header(
-        &mut ivf,
-        &splot_core::ivf::IvfHeader::new(*b"AV02", 64, 64, 30, 1, 1),
-    )
-    .expect("write the IVF header");
-    splot_core::ivf::write_ivf_frame(&mut ivf, 0, &packet_data).expect("mux the packet into IVF");
-
-    let raw = decode_raw_64x64(&ivf, "context");
-    assert!(
-        raw.iter().all(|&s| s == 128),
-        "the decoded frame must equal the all-128 encoder input",
     );
 }

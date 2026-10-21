@@ -11,8 +11,6 @@ mod coded_dc;
 mod multi_coeff;
 mod skip;
 
-pub(crate) use skip::emit_minimal_intra_skip_temporal_unit_with_base_q_idx;
-
 pub use chroma::{
     emit_minimal_intra_all_planes_coded_ivf, emit_minimal_intra_coded_chroma_ivf,
     emit_minimal_intra_coded_chroma_v_ivf,
