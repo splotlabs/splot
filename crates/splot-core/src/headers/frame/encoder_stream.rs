@@ -1,0 +1,510 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+//! Parse-backed sequence-header and key-frame-header builders for any frame size.
+//!
+//! Each builder writes the canonical AV2 bits for its restricted choice set (§ 5.4,
+//! § 5.18.2) and parses them with the decoder parsers, so the returned models are the
+//! exact models a decoder derives. [`encode_key_frame_temporal_unit`] wraps one coded
+//! tile in an Annex B temporal unit.
+
+use crate::bitio::BitReader;
+use crate::headers::frame::restoration::lr_plane_tool_table;
+use crate::headers::frame::size::ceil_log2;
+use crate::headers::frame::{
+    CoreSeqView, FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView,
+    encode_temporal_delimiter_obu, init_core_from_prefix, parse_core_body,
+    parse_frame_header_prefix,
+};
+use crate::headers::sequence::{
+    BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize, parse_sequence_header,
+};
+use crate::headers::tile_group::{TileGroupFraming, TileGroupStructure};
+use crate::obu::{ObuHeader, ParsedObu};
+use crate::span::ByteOffset;
+use crate::types::{EmbeddedLayerId, ExtendedLayerId, ObuType, TemporalLayerId};
+use crate::write::{
+    BitWriter, WriteError, write_annexb_obu, write_obu_payload, write_tile_group_obu,
+};
+
+/// `seq_level_idx == 31`: the level without tile-size limits (§ 5.18.7.3).
+const UNCONSTRAINED_LEVEL_IDX: u32 = 31;
+/// `order_hint_bits_minus_1` written by [`build_encoder_sequence_header`].
+const ORDER_HINT_BITS_MINUS_1: u32 = 7;
+/// `base_*_delta_q` value that gives a zero `Base*DeltaQ` (`-DELTA_DCQUANT_MIN`, § 3).
+const ZERO_BASE_DELTA_Q: u32 = 23;
+/// `reduced_tx_set == 2`: intra transform blocks infer `DCT_DCT` (§ 5.20.8.2).
+pub const KEY_FRAME_REDUCED_TX_SET: u32 = 2;
+
+/// One bit per optional AV2 coding tool that `sequence_header_obu()` can enable.
+///
+/// `Default` disables every tool. TX64 and quantizer matrices have no sequence-level
+/// enable flag in § 5.4, so they are not listed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct EncoderToolFlags {
+    /// `enable_cdef`.
+    pub cdef: bool,
+    /// `enable_restoration`.
+    pub loop_restoration: bool,
+    /// `enable_ccso`.
+    pub ccso: bool,
+    /// `enable_gdf`.
+    pub gdf: bool,
+    /// `enable_sdp`.
+    pub sdp: bool,
+    /// `enable_extended_sdp` (needs `sdp`).
+    pub extended_sdp: bool,
+    /// `enable_ext_partitions`.
+    pub ext_partitions: bool,
+    /// `enable_uneven_4way_partitions` (needs `ext_partitions`).
+    pub uneven_4way_partitions: bool,
+    /// `enable_cfl_intra`.
+    pub cfl: bool,
+    /// `enable_mhccp`.
+    pub mhccp: bool,
+    /// `seq_choose_screen_content_tools`: frames may use palette and intra block copy.
+    pub screen_content: bool,
+    /// `enable_ibp`.
+    pub ibp: bool,
+    /// `enable_mrls`.
+    pub mrls: bool,
+    /// `enable_fsc` (infers `enable_idtx_intra`).
+    pub fsc: bool,
+    /// `enable_dip`.
+    pub dip: bool,
+    /// `enable_idtx_intra`.
+    pub idtx_intra: bool,
+    /// `enable_intra_edge_filter`.
+    pub intra_edge_filter: bool,
+    /// `enable_intra_ist`.
+    pub intra_ist: bool,
+    /// `enable_cctx`.
+    pub cctx: bool,
+    /// `enable_tcq`.
+    pub tcq: bool,
+    /// `enable_parity_hiding`.
+    pub parity_hiding: bool,
+}
+
+/// Stream-level inputs of [`build_encoder_sequence_header`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EncoderStreamParams {
+    /// Luma width in samples, `1..=65536`.
+    pub width: u32,
+    /// Luma height in samples, `1..=65536`.
+    pub height: u32,
+    /// `bit_depth_idc`.
+    pub bit_depth: BitDepthIdc,
+    /// `chroma_format_idc`.
+    pub chroma: ChromaFormatIdc,
+    /// Sequence superblock size.
+    pub sb_size: SuperblockSize,
+    /// Optional coding tools.
+    pub tools: EncoderToolFlags,
+}
+
+/// Error from the encoder header builders.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum EncoderHeaderError {
+    /// A frame dimension is outside `1..=65536` (§ 5.4.1).
+    #[error("frame dimension {value} is outside 1..=65536")]
+    InvalidDimension {
+        /// The rejected dimension.
+        value: u32,
+    },
+    /// `base_q_idx` is zero (coded lossless) or does not fit the § 5.18.6.1 field.
+    #[error("base_q_idx {base_q_idx} is outside 1..{limit}")]
+    InvalidBaseQIdx {
+        /// The rejected value.
+        base_q_idx: u32,
+        /// One past the largest accepted value.
+        limit: u32,
+    },
+    /// The sequence view is a single-picture view; the key-frame builder needs a stream view.
+    #[error("single-picture sequence views are not supported")]
+    SinglePictureView,
+    /// The canonical bits did not serialize.
+    #[error("header serialization failed: {0}")]
+    Write(#[from] WriteError),
+    /// The canonical bits did not parse.
+    #[error("header parse failed: {0}")]
+    Parse(#[from] crate::error::Error),
+    /// The parse stopped before the whole header.
+    #[error("canonical header parsed only partially")]
+    Incomplete,
+}
+
+/// Builds a non-single-picture, non-still sequence header for `params`.
+///
+/// Every tool outside `params.tools` is off, the level is `31`, the frame size is
+/// the maximum frame size, and quantizer offsets are zero.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] for an out-of-range dimension, or if the
+/// canonical bits do not parse completely.
+pub fn build_encoder_sequence_header(
+    params: &EncoderStreamParams,
+) -> Result<SequenceHeader, EncoderHeaderError> {
+    let bytes = sequence_header_bits(params)?;
+    let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
+    let header = parse_sequence_header(&mut reader)?;
+    if !header.is_fully_parsed() {
+        return Err(EncoderHeaderError::Incomplete);
+    }
+    Ok(header)
+}
+
+fn dimension_bits(value: u32) -> Result<u32, EncoderHeaderError> {
+    if !(1..=(1 << 16)).contains(&value) {
+        return Err(EncoderHeaderError::InvalidDimension { value });
+    }
+    Ok(ceil_log2(value).max(1))
+}
+
+fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, EncoderHeaderError> {
+    let tools = params.tools;
+    let monochrome = params.chroma.is_monochrome();
+    let width_bits = dimension_bits(params.width)?;
+    let height_bits = dimension_bits(params.height)?;
+    let mut w = BitWriter::new();
+    w.write_uvlc(0)?; // seq_header_id
+    w.write_bits(profile_idc(params.chroma), 5)?;
+    w.write_flag(false)?; // single_picture_header_flag
+    w.write_bits(UNCONSTRAINED_LEVEL_IDX, 5)?;
+    w.write_flag(false)?; // seq_tier
+    w.write_uvlc(u32::from(params.chroma.get()))?;
+    w.write_uvlc(u32::from(params.bit_depth.get()))?;
+    w.write_bits(0, 3)?; // seq_lcr_id
+    w.write_flag(false)?; // still_picture
+    w.write_bits(0, 2)?; // max_tlayer_id
+    w.write_bits(0, 3)?; // max_mlayer_id
+    w.write_flag(true)?; // monotonic_output_order_flag
+    w.write_bits(width_bits - 1, 4)?;
+    w.write_bits(height_bits - 1, 4)?;
+    w.write_bits(params.width - 1, width_bits)?;
+    w.write_bits(params.height - 1, height_bits)?;
+    w.write_flag(false)?; // seq_cropping_window_present_flag
+    w.write_flag(false)?; // seq_initial_display_delay_present_flag
+    w.write_flag(false)?; // decoder_model_info_present_flag
+
+    w.write_flag(params.sb_size == SuperblockSize::Block256x256)?;
+    if params.sb_size != SuperblockSize::Block256x256 {
+        w.write_flag(params.sb_size == SuperblockSize::Block128x128)?;
+    }
+    if !monochrome {
+        w.write_flag(tools.sdp)?;
+    }
+    if tools.sdp && !monochrome {
+        w.write_flag(tools.extended_sdp)?;
+    }
+    w.write_flag(tools.ext_partitions)?;
+    if tools.ext_partitions {
+        w.write_flag(tools.uneven_4way_partitions)?;
+    }
+    w.write_flag(false)?; // reduce_pb_aspect_ratio
+
+    w.write_flag(false)?; // enable_ext_seg
+    w.write_flag(false)?; // seq_seg_info_present_flag
+
+    w.write_flag(tools.dip)?;
+    w.write_flag(tools.intra_edge_filter)?;
+    w.write_flag(tools.mrls)?;
+    w.write_flag(tools.cfl)?;
+    if !monochrome {
+        w.write_bits(0, 2)?; // cfl_ds_filter_index
+    }
+    w.write_flag(tools.mhccp)?;
+    w.write_flag(tools.ibp)?;
+
+    write_minimal_inter_config(&mut w)?;
+
+    w.write_flag(tools.screen_content)?; // seq_choose_screen_content_tools
+    if tools.screen_content {
+        w.write_flag(true)?; // seq_choose_integer_mv
+    } else {
+        w.write_flag(false)?; // seq_force_screen_content_tools
+    }
+
+    write_transform_quant_entropy_config(&mut w, tools, monochrome)?;
+
+    w.write_flag(false)?; // disable_loopfilters_across_tiles
+    w.write_flag(tools.cdef)?;
+    w.write_flag(tools.gdf)?;
+    if tools.gdf && params.sb_size == SuperblockSize::Block64x64 {
+        w.write_flag(false)?; // gdf_unit_matches_sb_size
+    }
+    w.write_flag(tools.loop_restoration)?;
+    if tools.loop_restoration {
+        w.write_flag(false)?; // lr_tools_disable[0][RESTORE_PC_WIENER]
+        w.write_flag(false)?; // lr_tools_disable[0][RESTORE_WIENER_NONSEP]
+        w.write_flag(false)?; // lr_tools_uv_present
+    }
+    w.write_flag(tools.ccso)?;
+    if tools.ccso {
+        w.write_flag(false)?; // ccso_unit_matches_sb_size
+    }
+    w.write_flag(false)?; // cdef_on_skip_txfm_always_on
+    w.write_flag(false)?; // cdef_on_skip_txfm_disabled
+    w.write_bits(0, 2)?; // df_par_bits_minus_2
+
+    w.write_flag(false)?; // seq_tile_info_present_flag
+    w.write_flag(false)?; // film_grain_params_present
+    w.align_to_byte();
+    Ok(w.into_bytes())
+}
+
+const fn profile_idc(chroma: ChromaFormatIdc) -> u32 {
+    match chroma {
+        ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => 0,
+        ChromaFormatIdc::Yuv422 => 3,
+        ChromaFormatIdc::Yuv444 => 4,
+    }
+}
+
+/// § 5.4.6 for a non-single-picture header with every inter tool off.
+fn write_minimal_inter_config(w: &mut BitWriter) -> Result<(), WriteError> {
+    w.write_bits(0, 4)?; // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
+    w.write_flag(false)?; // enable_masked_compound
+    w.write_flag(false)?; // enable_ref_frame_mvs
+    w.write_bits(ORDER_HINT_BITS_MINUS_1, 4)?;
+    w.write_flag(false)?; // enable_refmvbank
+    w.write_flag(true)?; // disable_drl_reorder
+    w.write_flag(false)?; // explicit_ref_frame_map
+    w.write_flag(false)?; // explicit_num_ref_frames
+    w.write_bits(0, 3)?; // long_term_frame_id_bits
+    w.write_ns(0, 5)?; // seq_max_drl_bits_minus_1, ns(MAX_REF_MV_STACK_SIZE - 1)
+    w.write_flag(false)?; // allow_frame_max_drl_bits
+    w.write_ns(0, 3)?; // seq_max_bvp_drl_bits_minus_1, ns(MAX_REF_BV_STACK_SIZE - 1)
+    w.write_flag(false)?; // allow_frame_max_bvp_drl_bits
+    w.write_bits(0, 2)?; // num_same_ref_compound
+    for _ in 0..6 {
+        w.write_flag(false)?; // enable_tip, mv_traj, bawp, cwp, imp_msk_bld, df_sub_pu
+    }
+    w.write_bits(0, 2)?; // enable_opfl_refine
+    for _ in 0..6 {
+        w.write_flag(false)?; // refinemv, bru, adaptive_mvd, mvd_sign_derive, flex_mvres, global_motion
+    }
+    w.write_flag(false) // enable_short_refresh_frame_flags
+}
+
+/// § 5.4.8 with zero quantizer offsets.
+fn write_transform_quant_entropy_config(
+    w: &mut BitWriter,
+    tools: EncoderToolFlags,
+    monochrome: bool,
+) -> Result<(), WriteError> {
+    w.write_flag(tools.fsc)?;
+    if !tools.fsc {
+        w.write_flag(tools.idtx_intra)?;
+    }
+    w.write_flag(tools.intra_ist)?;
+    w.write_flag(false)?; // enable_inter_ist
+    if !monochrome {
+        w.write_flag(false)?; // enable_chroma_dctonly
+    }
+    w.write_flag(false)?; // enable_inter_ddt
+    w.write_flag(false)?; // reduced_tx_part_set
+    if !monochrome {
+        w.write_flag(tools.cctx)?;
+    }
+    w.write_flag(tools.tcq)?;
+    if tools.tcq {
+        w.write_flag(false)?; // choose_tcq_per_frame
+    } else {
+        w.write_flag(tools.parity_hiding)?;
+    }
+    w.write_flag(false)?; // enable_avg_cdf
+    if !monochrome {
+        w.write_flag(false)?; // separate_uv_delta_q
+    }
+    w.write_flag(true)?; // equal_ac_dc_q
+    if !monochrome {
+        w.write_bits(ZERO_BASE_DELTA_Q, 5)?; // base_uv_ac_delta_q
+        w.write_flag(false)?; // uv_ac_delta_q_enabled
+    }
+    Ok(())
+}
+
+/// Builds the `OBU_CLOSED_LOOP_KEY` frame header for `seq` at `base_q_idx`.
+///
+/// The frame has the maximum frame size, `show_frame` semantics through
+/// `immediate_output_frame = 1`, one uniform tile, no segmentation, no delta-q,
+/// no quantizer matrices, deblocking and every other frame filter off,
+/// `TX_MODE_LARGEST`, `reduced_tx_set = 2`, and no film grain.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] for a zero or too-wide `base_q_idx`, a
+/// single-picture view, or canonical bits that do not parse completely.
+pub fn build_key_frame_header(
+    seq: &CoreSeqView,
+    base_q_idx: u32,
+    order_hint: u32,
+) -> Result<FrameHeaderCore, EncoderHeaderError> {
+    let bytes = key_frame_header_bits(seq, base_q_idx, order_hint)?;
+    let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
+    let prefix = parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true))?;
+    let mut core = init_core_from_prefix(&prefix, ObuType::ClosedLoopKey, true);
+    parse_core_body(
+        &mut reader,
+        &mut core,
+        seq,
+        None,
+        &FrameReferenceStateView::unknown(),
+    )?;
+    core.consumed_bits = reader.consumed_bits();
+    if core.status != FrameHeaderParseStatus::IntraHeaderComplete {
+        return Err(EncoderHeaderError::Incomplete);
+    }
+    Ok(core)
+}
+
+fn key_frame_header_bits(
+    seq: &CoreSeqView,
+    base_q_idx: u32,
+    order_hint: u32,
+) -> Result<Vec<u8>, EncoderHeaderError> {
+    if seq.single_picture_header_flag {
+        return Err(EncoderHeaderError::SinglePictureView);
+    }
+    let q_bits = if seq.quant.bit_depth == 8 { 8 } else { 9 };
+    if base_q_idx == 0 || base_q_idx >= 1 << q_bits {
+        return Err(EncoderHeaderError::InvalidBaseQIdx {
+            base_q_idx,
+            limit: 1 << q_bits,
+        });
+    }
+    let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
+    let mut w = BitWriter::new();
+    w.write_uvlc(0)?; // cur_mfh_id
+    w.write_uvlc(0)?; // seq_header_id_in_frame_header
+    w.write_bits(0, seq.long_term_frame_id_bits)?; // long_term_id_plus_1
+    w.write_flag(true)?; // immediate_output_frame
+    w.write_flag(false)?; // frame_size_override_flag
+    w.write_bits(order_hint & order_hint_mask, seq.order_hint_bits)?;
+    if seq.seq_force_screen_content_tools == 2 {
+        w.write_flag(false)?; // allow_screen_content_tools
+    }
+    w.write_flag(false)?; // allow_intrabc
+    w.write_flag(false)?; // disable_cdf_update
+    write_single_tile_info(&mut w, seq)?;
+    w.write_bits(base_q_idx, q_bits)?;
+    w.write_flag(false)?; // segmentation_enabled
+    w.write_flag(false)?; // using_qmatrix
+    w.write_flag(false)?; // delta_q_present
+    if seq.quant.choose_tcq_per_frame {
+        w.write_flag(false)?; // allow_tcq
+    }
+    let allow_tcq = seq.quant.enable_tcq && !seq.quant.choose_tcq_per_frame;
+    if seq.quant.enable_parity_hiding && !allow_tcq {
+        w.write_flag(false)?; // allow_parity_hiding
+    }
+    w.write_flag(false)?; // apply_deblocking_filter[0]
+    w.write_flag(false)?; // apply_deblocking_filter[1]
+    if seq.filter.enable_gdf {
+        w.write_flag(false)?; // gdf_frame_enable
+    }
+    if seq.filter.enable_cdef {
+        w.write_flag(false)?; // cdef_frame_enable
+    }
+    if seq.restoration.enable_restoration {
+        for plane in 0..seq.quant.num_planes {
+            let (_, n) = lr_plane_tool_table(seq.restoration, plane > 0);
+            w.write_ns(0, n)?; // tool_index = RESTORE_NONE
+        }
+    }
+    if seq.ccso.enable_ccso {
+        w.write_flag(false)?; // ccso_frame_flag
+    }
+    w.write_flag(false)?; // tx_mode_select
+    w.write_bits(KEY_FRAME_REDUCED_TX_SET, 2)?;
+    w.align_to_byte();
+    Ok(w.into_bytes())
+}
+
+/// § 5.18.7.3 uniform tile spacing with one tile at level 31 (`minLog2TileCols == 0`).
+fn write_single_tile_info(w: &mut BitWriter, seq: &CoreSeqView) -> Result<(), WriteError> {
+    let sb_log2 = match seq.tile.seq_sb_size {
+        SuperblockSize::Block64x64 => 4,
+        SuperblockSize::Block128x128 | SuperblockSize::Block256x256 => 5,
+    };
+    let sbs = |frame: u32| {
+        let mi = 2 * frame.div_ceil(8);
+        mi.div_ceil(1 << sb_log2)
+    };
+    w.write_flag(true)?; // uniform_tile_spacing_flag
+    if sbs(seq.max_frame_width) > 1 {
+        w.write_flag(false)?; // increment_tile_cols_log2
+    }
+    if sbs(seq.max_frame_height) > 1 {
+        w.write_flag(false)?; // increment_tile_rows_log2
+    }
+    Ok(())
+}
+
+/// Serializes one Annex B temporal unit: a temporal delimiter, then `seq` when
+/// `with_sequence_header`, then the `OBU_CLOSED_LOOP_KEY` frame OBU whose single tile
+/// carries `tile_data`.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] if `seq` has no complete view, `tile_data` is empty,
+/// or an OBU does not serialize.
+pub fn encode_key_frame_temporal_unit(
+    seq: &SequenceHeader,
+    core: &FrameHeaderCore,
+    with_sequence_header: bool,
+    tile_data: &[u8],
+) -> Result<Vec<u8>, EncoderHeaderError> {
+    let view = CoreSeqView::from_sequence(seq).ok_or(EncoderHeaderError::Incomplete)?;
+    let mut unit = encode_temporal_delimiter_obu()?;
+    let mut w = BitWriter::new();
+    if with_sequence_header {
+        let mut payload = BitWriter::new();
+        write_obu_payload(
+            &mut payload,
+            &ParsedObu::SequenceHeader(Box::new(seq.clone())),
+            ObuType::SequenceHeader.is_extensible_obu(),
+            &[],
+        )?;
+        write_annexb_obu(
+            &mut w,
+            &obu_header(ObuType::SequenceHeader),
+            &payload.into_bytes(),
+        )?;
+    }
+    let mut payload = BitWriter::new();
+    write_tile_group_obu(
+        &mut payload,
+        core,
+        &view,
+        None,
+        true,
+        &TileGroupStructure::single_tile_first_group(),
+        &TileGroupFraming::single_tile(tile_data.len() as u64),
+        &[tile_data],
+        true,
+    )?;
+    write_annexb_obu(
+        &mut w,
+        &obu_header(ObuType::ClosedLoopKey),
+        &payload.into_bytes(),
+    )?;
+    unit.extend_from_slice(&w.into_bytes());
+    Ok(unit)
+}
+
+const fn obu_header(obu_type: ObuType) -> ObuHeader {
+    ObuHeader {
+        has_header_extension: false,
+        obu_type,
+        temporal_layer_id: TemporalLayerId::from_bits(0),
+        embedded_layer_id: EmbeddedLayerId::from_bits(0),
+        extended_layer_id: ExtendedLayerId::from_bits(0),
+        header_size_bytes: 1,
+    }
+}
+
+#[cfg(test)]
+#[path = "encoder_stream_tests.rs"]
+mod tests;
