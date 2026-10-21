@@ -10,6 +10,7 @@ use std::fmt;
 use crate::config::{Config, RateControlMode};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
+use crate::gop::{self, GopFrame};
 use crate::intra_frame::IntraFrameCoder;
 use crate::rate_control::{ConstantQp, FramePlanInfo, FrameType, RateController};
 use crate::stats::{FrameStats, psnr, ssim};
@@ -38,14 +39,10 @@ pub(crate) struct CodedFrame {
     pub(crate) frame_type: FrameType,
 }
 
-/// Codes one frame at the quantizer and frame type the encoder picked.
+/// Codes one frame at the quantizer and plan the encoder picked.
 pub(crate) trait FrameCoder {
-    fn encode_frame(
-        &mut self,
-        source: &SourceFrame,
-        plan: &FramePlanInfo,
-        qp: u8,
-    ) -> Result<CodedFrame>;
+    fn encode_frame(&mut self, source: &SourceFrame, plan: &GopFrame, qp: u8)
+    -> Result<CodedFrame>;
 }
 
 /// Callback that receives the statistics of every coded frame.
@@ -176,17 +173,13 @@ impl Encoder {
 
     fn code(&mut self, frame: &SourceFrame) -> Result<Packet> {
         let frame_index = self.next_frame_index;
-        let frame_type = if frame_index.is_multiple_of(u64::from(self.config.keyint.get())) {
-            FrameType::Key
-        } else {
-            FrameType::Inter
-        };
+        let gop_frame = gop::plan(frame_index, self.config.keyint);
         let plan = FramePlanInfo {
             frame_index,
-            frame_type,
+            frame_type: gop_frame.frame_type,
         };
         let qp = self.rate_control.frame_qp(&plan);
-        let coded = self.coder.encode_frame(frame, &plan, qp)?;
+        let coded = self.coder.encode_frame(frame, &gop_frame, qp)?;
 
         let bit_depth = frame.bit_depth();
         let [source_y, source_u, source_v] = frame.planes();
@@ -240,7 +233,7 @@ mod tests {
         fn encode_frame(
             &mut self,
             source: &SourceFrame,
-            plan: &FramePlanInfo,
+            plan: &GopFrame,
             qp: u8,
         ) -> Result<CodedFrame> {
             if self.fail_at == Some(plan.frame_index) {
@@ -293,9 +286,10 @@ mod tests {
         assert_eq!(packets.len(), 2);
         for (pts, packet) in packets.iter().enumerate() {
             assert_eq!(packet.pts, pts as u64);
-            assert_eq!(packet.frame_type, FrameType::Key);
             assert!(packet.stats.psnr_y > 40.0, "{:?}", packet.stats);
         }
+        let types: Vec<_> = packets.iter().map(|packet| packet.frame_type).collect();
+        assert_eq!(types, [FrameType::Key, FrameType::Inter]);
         Ok(())
     }
 

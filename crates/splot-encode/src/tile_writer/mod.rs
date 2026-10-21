@@ -298,6 +298,7 @@ impl KeyFrameTileWriter {
             blocks = self.syntax.plan_leaf(leaf, modes)?;
             self.code_blocks(&blocks, true, &mut levels, coder)?;
         }
+        self.syntax.write_is_inter(leaf, &mut self.symbols)?;
         self.filters
             .write_cdef_index(&mut self.syntax, &mut self.symbols, leaf)?;
         self.syntax
@@ -399,12 +400,12 @@ fn check_supported(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<()> {
     if tq.enable_idtx_intra || tq.enable_intra_ist || tq.enable_cctx || tq.enable_tcq {
         return unsupported("IDTX/FSC, intra IST, CCTX, or TCQ");
     }
-    let tail = core
-        .intra_tail
-        .as_ref()
-        .ok_or(TileWriterError::Unsupported("incomplete key-frame header"))?;
-    if tail.tx_mode != TxMode::Largest || u32::from(tail.reduced_tx_set) != KEY_FRAME_REDUCED_TX_SET
-    {
+    let (tx_mode, reduced_tx_set) = match (&core.intra_tail, &core.inter_tail) {
+        (Some(tail), _) => (tail.tx_mode, tail.reduced_tx_set),
+        (None, Some(tail)) => (tail.tx_mode, tail.reduced_tx_set),
+        (None, None) => return unsupported("incomplete frame header"),
+    };
+    if tx_mode != TxMode::Largest || u32::from(reduced_tx_set) != KEY_FRAME_REDUCED_TX_SET {
         return unsupported("transform mode other than TX_MODE_LARGEST with reduced_tx_set 2");
     }
     if core.allow_screen_content_tools == Some(true) || core.allow_intrabc == Some(true) {

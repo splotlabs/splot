@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Key-frame coding: partition choice, SATD intra mode choice, residual
-//! coding, and the temporal unit of one intra frame.
+//! Frame coding with intra blocks only: partition choice, SATD intra mode
+//! choice, residual coding, and the temporal unit of a key or inter frame.
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams,
-    build_encoder_sequence_header, build_key_frame_header, encode_key_frame_temporal_unit,
+    build_encoder_sequence_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA, PartitionNode, TransformBlock, dct_recon_params,
-    recon_params, tx_log2,
+    EncoderReferences, IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA, PartitionNode, TransformBlock,
+    dct_recon_params, recon_params, tx_log2,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -19,10 +19,10 @@ use crate::config::Config;
 use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
+use crate::gop::GopFrame;
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
-use crate::loop_filter::{FilteredFrame, FirstPass, FrameDecisions, finish_key_frame};
+use crate::loop_filter::{FilteredFrame, FirstPass, FrameDecisions, finish_frame};
 use crate::preset::PresetParams;
-use crate::rate_control::{FramePlanInfo, FrameType};
 use crate::tile_writer::{
     ChromaMode, INTRA_MODES, IntraModes, KeyFrameTileWriter, PARTITIONS, Partition, PartitionTree,
     ResidualCoder, SuperblockDecision, TileWriterError, TransformDecision,
@@ -33,12 +33,13 @@ const DEADZONE_ROUNDING_Q8: u32 = 96;
 /// The largest `|AngleDeltaY|` (§ 5.20.5.5).
 const MAX_ANGLE_DELTA: i8 = 3;
 
-/// Codes every frame as a closed-loop key frame.
+/// Codes key frames and inter frames whose blocks are all intra.
 pub(crate) struct IntraFrameCoder {
     sequence: SequenceHeader,
     view: CoreSeqView,
     bit_depth: BitDepth,
     preset: &'static PresetParams,
+    references: EncoderReferences,
 }
 
 impl IntraFrameCoder {
@@ -71,6 +72,7 @@ impl IntraFrameCoder {
             what: "an incomplete sequence header",
         })?;
         Ok(Self {
+            references: EncoderReferences::new(&sequence).map_err(coding("reference buffer"))?,
             sequence,
             view,
             bit_depth: config.bit_depth,
@@ -83,12 +85,14 @@ impl FrameCoder for IntraFrameCoder {
     fn encode_frame(
         &mut self,
         source: &SourceFrame,
-        _plan: &FramePlanInfo,
+        plan: &GopFrame,
         qp: u8,
     ) -> Result<CodedFrame> {
         let qindex = u32::from(qp);
-        let core = build_key_frame_header(&self.view, qindex, 0, &FrameFilterParams::default())
-            .map_err(coding("frame header"))?;
+        let header = |filters: &FrameFilterParams| {
+            plan.header(&self.view, &self.references, qindex, filters)
+        };
+        let core = header(&FrameFilterParams::default())?;
         let mut writer =
             KeyFrameTileWriter::new(&self.sequence, &core).map_err(coding("tile setup"))?;
         let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
@@ -118,14 +122,28 @@ impl FrameCoder for IntraFrameCoder {
             recorder,
             decisions,
         };
-        let FilteredFrame { core, tile, recon } =
-            finish_key_frame(&self.sequence, &self.view, self.preset, source, pass)?;
-        let temporal_unit = encode_key_frame_temporal_unit(&self.sequence, &core, true, &tile)
-            .map_err(coding("temporal unit"))?;
+        let FilteredFrame {
+            core,
+            filters,
+            tile,
+            recon,
+        } = finish_frame(&self.sequence, &header, self.preset, source, pass)?;
+        let temporal_unit = plan.temporal_unit(
+            &self.sequence,
+            &self.view,
+            &self.references,
+            (qindex, &filters),
+            &core,
+            &tile,
+        )?;
+        let planes = visible_planes(&recon)?;
+        self.references
+            .update(&core, recon)
+            .map_err(coding("reference update"))?;
         Ok(CodedFrame {
             temporal_unit,
-            recon: visible_planes(&recon)?,
-            frame_type: FrameType::Key,
+            recon: planes,
+            frame_type: plan.frame_type,
         })
     }
 }
@@ -256,7 +274,8 @@ fn flattest_split(
         if !matches!(
             partition,
             Partition::Split | Partition::Horz | Partition::Vert
-        ) {
+        ) || !intra_children(syntax, node, partition)?
+        {
             continue;
         }
         let mut cost = (0, 0);
@@ -278,6 +297,20 @@ fn flattest_split(
             .copied()
             .ok_or(TileWriterError::Shape("no allowed partition")),
     }
+}
+
+/// Whether every in-frame child of `partition` may code an intra block.
+fn intra_children(
+    syntax: &IntraTileSyntax,
+    node: PartitionNode,
+    partition: Partition,
+) -> core::result::Result<bool, TileWriterError> {
+    for child in syntax.children(node, partition)? {
+        if syntax.in_frame(child) && !syntax.intra_allowed(&syntax.leaf(child)?) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Transforms and quantizes the source residual of each transform block.

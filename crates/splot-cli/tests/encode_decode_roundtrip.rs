@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! End-to-end encoder oracle: `splot encode` codes a Y4M clip, `splot validate`
-//! finds the stream conformant, and `splot decode` returns frames whose PSNR
-//! against the source equals the encoder's own statistics.
+//! End-to-end encoder oracle: `splot encode` codes a Y4M clip as key and inter
+//! frames, `splot validate` finds the stream conformant, and `splot decode`
+//! returns frames whose PSNR against the source equals the encoder's own
+//! statistics.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -74,7 +75,9 @@ fn round_trip(bits: u32) {
         raw.to_str().unwrap(),
     );
 
-    let encode = splot(&["encode", input_s, "-o", ivf_s, "--qp", "90", "--stats"]);
+    let encode = splot(&[
+        "encode", input_s, "-o", ivf_s, "--qp", "90", "--keyint", "2", "--stats",
+    ]);
     assert!(encode.status.success(), "{encode:?}");
     let stats = String::from_utf8(encode.stdout).unwrap();
     let psnr_y: Vec<f64> = stats

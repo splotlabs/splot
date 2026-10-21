@@ -5,7 +5,9 @@
 
 use super::*;
 use crate::config::RateControlMode;
+use crate::gop::GopFrame;
 use crate::preset::Preset;
+use crate::rate_control::FrameType;
 use crate::test_support::{assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes};
 
 /// Gradients, a ripple, and seeded noise, so blocks of every size split.
@@ -45,15 +47,23 @@ fn config(width: u32, height: u32, bit_depth: BitDepth, preset: u8, qp: u8) -> C
 }
 
 fn code(config: &Config, seed: u32) -> CodedFrame {
-    let plan = FramePlanInfo {
-        frame_index: 0,
-        frame_type: FrameType::Key,
-    };
+    code_stream(config, &[seed]).pop().unwrap()
+}
+
+/// Codes one frame per seed in order, with key frames every `config.keyint`.
+fn code_stream(config: &Config, seeds: &[u32]) -> Vec<CodedFrame> {
     let RateControlMode::ConstantQp { qp } = config.rate_control;
-    IntraFrameCoder::new(config)
-        .unwrap()
-        .encode_frame(&synthetic_frame(config, seed), &plan, qp)
-        .unwrap()
+    let mut coder = IntraFrameCoder::new(config).unwrap();
+    seeds
+        .iter()
+        .enumerate()
+        .map(|(index, &seed)| {
+            let plan = crate::gop::plan(index as u64, config.keyint);
+            coder
+                .encode_frame(&synthetic_frame(config, seed), &plan, qp)
+                .unwrap()
+        })
+        .collect()
 }
 
 fn recon_bytes(coded: &CodedFrame, bit_depth: BitDepth) -> Vec<u8> {
@@ -87,6 +97,37 @@ fn coded_frames_decode_to_the_encoder_recon() {
     }
 }
 
+/// Key frames every third frame; the inter frames between them code intra blocks.
+#[test]
+fn inter_frames_decode_to_the_encoder_recon_over_several_gops() {
+    for (index, (width, height, bit_depth, preset, qp)) in CASES.into_iter().enumerate() {
+        let mut config = config(width, height, bit_depth, preset, qp);
+        config.keyint = core::num::NonZeroU32::new(3).unwrap();
+        let seeds: Vec<u32> = (0..5).map(|frame| index as u32 * 5 + frame).collect();
+        let coded = code_stream(&config, &seeds);
+        let types: Vec<_> = coded.iter().map(|frame| frame.frame_type).collect();
+        assert_eq!(
+            types[..4],
+            [
+                FrameType::Key,
+                FrameType::Inter,
+                FrameType::Inter,
+                FrameType::Key
+            ]
+        );
+        let stream: Vec<u8> = coded
+            .iter()
+            .flat_map(|frame| frame.temporal_unit.clone())
+            .collect();
+        let expected: Vec<u8> = coded
+            .iter()
+            .flat_map(|frame| recon_bytes(frame, bit_depth))
+            .collect();
+        let name = format!("{width}x{height} {bit_depth:?} preset {preset} qp {qp}");
+        assert_same_samples(&decode(&stream), &expected, &name);
+    }
+}
+
 #[test]
 fn coding_is_deterministic_and_lower_qp_costs_more_bits() {
     let fine = code(&config(96, 80, BitDepth::Eight, 6, 40), 7);
@@ -104,9 +145,12 @@ fn avm_decodes_coded_frames_like_splot() {
         return;
     };
     for (index, (width, height, bit_depth, preset, qp)) in CASES.into_iter().enumerate() {
-        let config = config(width, height, bit_depth, preset, qp);
-        let units: Vec<Vec<u8>> = (0..2)
-            .map(|seed| code(&config, index as u32 * 2 + seed).temporal_unit)
+        let mut config = config(width, height, bit_depth, preset, qp);
+        config.keyint = core::num::NonZeroU32::new(3).unwrap();
+        let seeds: Vec<u32> = (0..4).map(|seed| index as u32 * 4 + seed).collect();
+        let units: Vec<Vec<u8>> = code_stream(&config, &seeds)
+            .into_iter()
+            .map(|frame| frame.temporal_unit)
             .collect();
         let avm = avm_decode(
             &avmdec,
@@ -120,4 +164,60 @@ fn avm_decodes_coded_frames_like_splot() {
             "case {index}: AVM output differs"
         );
     }
+}
+
+/// A key frame, a hidden inter frame, and a show-existing frame of it, with
+/// the samples a decoder outputs.
+fn hidden_frame_stream(config: &Config) -> (Vec<Vec<u8>>, Vec<u8>) {
+    use splot_core::headers::frame::{
+        encode_show_existing_frame_obu, encode_temporal_delimiter_obu,
+    };
+    let RateControlMode::ConstantQp { qp } = config.rate_control;
+    let mut coder = IntraFrameCoder::new(config).unwrap();
+    let key_plan = crate::gop::plan(0, config.keyint);
+    let key = coder
+        .encode_frame(&synthetic_frame(config, 1), &key_plan, qp)
+        .unwrap();
+    let hidden_plan = GopFrame {
+        show_frame: false,
+        ..crate::gop::plan(1, config.keyint)
+    };
+    let hidden = coder
+        .encode_frame(&synthetic_frame(config, 2), &hidden_plan, qp)
+        .unwrap();
+    let mut show = encode_temporal_delimiter_obu().unwrap();
+    show.extend(encode_show_existing_frame_obu(&coder.view, 0).unwrap());
+    coder.references.show_existing(0).unwrap();
+    assert!(coder.references.show_existing(0).is_err(), "shown twice");
+    let expected = [
+        recon_bytes(&key, config.bit_depth),
+        recon_bytes(&hidden, config.bit_depth),
+    ]
+    .concat();
+    (
+        vec![key.temporal_unit, hidden.temporal_unit, show],
+        expected,
+    )
+}
+
+#[test]
+fn hidden_frames_decode_through_show_existing_frames() {
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        let config = config(72, 40, bit_depth, 6, 90);
+        let (units, expected) = hidden_frame_stream(&config);
+        assert_same_samples(&decode(&units.concat()), &expected, "hidden frame");
+    }
+}
+
+/// AVM shows the hidden frame like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_shows_hidden_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let config = config(72, 40, BitDepth::Ten, 6, 90);
+    let (units, expected) = hidden_frame_stream(&config);
+    let avm = avm_decode(&avmdec, &units, (72, 40), BitDepth::Ten, "hidden");
+    assert!(avm == expected, "AVM output differs");
 }

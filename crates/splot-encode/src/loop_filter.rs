@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Loop-filter decisions of a key frame: deblocking, CDEF and luma PC-Wiener
+//! Loop-filter decisions of a frame: deblocking, CDEF and luma PC-Wiener
 //! loop restoration. CCSO and GDF stay off.
 //!
 //! A tile codes `cdef_idx` and `use_pc_wiener` before the frame is reconstructed,
@@ -9,7 +9,7 @@
 //!
 //! 1. The tile is coded with every filter off. [`FrameDecisions`] keeps each
 //!    superblock decision and each transform decision.
-//! 2. [`finish_key_frame`] searches the filter parameters on the pass-1
+//! 2. [`finish_frame`] searches the filter parameters on the pass-1
 //!    reconstruction with the decoder's own filter chain. If any filter is on,
 //!    it replays the kept decisions through a new tile writer whose header
 //!    enables the filters, so the tile also codes the filter syntax. The
@@ -18,8 +18,7 @@
 use std::collections::BTreeSet;
 
 use splot_core::headers::frame::{
-    CdefStrengthSet, CdefStrengthSets, CoreSeqView, FrameFilterParams, FrameHeaderCore,
-    MAX_CDEF_STRENGTH_SETS, build_key_frame_header,
+    CdefStrengthSet, CdefStrengthSets, FrameFilterParams, FrameHeaderCore, MAX_CDEF_STRENGTH_SETS,
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -171,7 +170,7 @@ impl ResidualCoder for Replay {
     }
 }
 
-/// The first pass of a key frame.
+/// The first pass of a frame.
 pub(crate) struct FirstPass {
     pub(crate) core: FrameHeaderCore,
     pub(crate) tile: Vec<u8>,
@@ -180,17 +179,22 @@ pub(crate) struct FirstPass {
     pub(crate) decisions: FrameDecisions,
 }
 
-/// A coded key frame: its header, its tile, and its filtered reconstruction.
+/// A coded frame: its header, its filters, its tile, and its filtered
+/// reconstruction.
 pub(crate) struct FilteredFrame {
     pub(crate) core: FrameHeaderCore,
+    pub(crate) filters: FrameFilterParams,
     pub(crate) tile: Vec<u8>,
     pub(crate) recon: DecodedFrame<u16>,
 }
 
+/// Builds the frame header with the given loop filters.
+pub(crate) type HeaderBuilder<'a> = &'a dyn Fn(&FrameFilterParams) -> Result<FrameHeaderCore>;
+
 /// Picks the frame's loop filters and, when any is on, codes the second pass.
-pub(crate) fn finish_key_frame(
+pub(crate) fn finish_frame(
     seq: &SequenceHeader,
-    view: &CoreSeqView,
+    header: HeaderBuilder<'_>,
     preset: &PresetParams,
     source: &SourceFrame,
     pass: FirstPass,
@@ -204,7 +208,7 @@ pub(crate) fn finish_key_frame(
         .base_q_idx;
     let search = Search {
         seq,
-        view,
+        header,
         qindex,
         source,
         recorder: &pass.recorder,
@@ -215,6 +219,7 @@ pub(crate) fn finish_key_frame(
     if params == FrameFilterParams::default() {
         return Ok(FilteredFrame {
             core: pass.core,
+            filters: params,
             tile: pass.tile,
             recon: pass.recon,
         });
@@ -246,7 +251,12 @@ pub(crate) fn finish_key_frame(
     let lr_on: Vec<LrUnit> = coded.lr_on.into_iter().collect();
     let recon = apply_loop_filters(seq, &core, &recorder, &recon, &coded.cdef_indices, &lr_on)
         .map_err(coding("loop filters"))?;
-    Ok(FilteredFrame { core, tile, recon })
+    Ok(FilteredFrame {
+        core,
+        filters: params,
+        tile,
+        recon,
+    })
 }
 
 /// Lagrange multiplier for SSE per bit: `0.09 * qstep^2`, `qstep` the luma AC
@@ -269,7 +279,7 @@ fn coding<E: std::error::Error + Send + Sync + 'static>(
 
 struct Search<'a> {
     seq: &'a SequenceHeader,
-    view: &'a CoreSeqView,
+    header: HeaderBuilder<'a>,
     qindex: u32,
     source: &'a SourceFrame,
     recorder: &'a FilterRecorder,
@@ -315,7 +325,7 @@ impl Search<'_> {
     }
 
     fn header(&self, params: &FrameFilterParams) -> Result<FrameHeaderCore> {
-        build_key_frame_header(self.view, self.qindex, 0, params).map_err(coding("frame header"))
+        (self.header)(params)
     }
 
     /// `frame` filtered with `params`, every `cdef_idx` `0`, and `lr_on` units on.
