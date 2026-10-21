@@ -349,7 +349,11 @@ fn forward_lanes<const W: usize>(tx: &ForwardTransform2d, input: &[i32], coeffs:
         }
         *slot = (acc + row_round) >> Simd::splat(tx.row_shift as i32);
     }
-    let col_round = Simd::splat(1 << (tx.col_shift - 1));
+    let col_round = Simd::splat(if tx.col_shift == 0 {
+        0
+    } else {
+        1 << (tx.col_shift - 1)
+    });
     for (i, out) in coeffs.as_chunks_mut::<W>().0.iter_mut().enumerate() {
         let mut acc = Simd::splat(0);
         for (y, &row) in tmp.iter().take(h).enumerate() {
