@@ -13,7 +13,8 @@
 //! [`EncoderRuntimeConfig`] thread-count policy; thread count is a runtime knob
 //! and never affects bitstream output.
 //! The crate uses `splot-recon`'s validated plane/view geometry for its borrowed
-//! input API. Its repository roots are `splot-cli`'s decoder-oracle dev tests and
+//! input API, and `splot-decode`'s `encoder_syntax` facade for the CDF rows,
+//! contexts, and partition rules of its key-frame tile writer. Its repository roots are `splot-cli`'s decoder-oracle dev tests and
 //! the out-of-workspace fuzz crate; no workspace production crate depends on it.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
@@ -28,7 +29,23 @@ pub mod frame;
 mod general_intra_trace;
 mod intra_mode_emission;
 mod partition_emission;
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the encoder API does not call the key-frame writer yet"
+    )
+)]
+mod recon;
 pub mod runtime;
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the encoder API does not call the key-frame writer yet"
+    )
+)]
+mod tile_writer;
 
 pub use config::{BitDepth, ChromaSubsampling, DEFAULT_QP, EncoderConfig};
 pub use context::{
