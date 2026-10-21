@@ -76,6 +76,7 @@ impl TransformCoeffBlockState {
         checked_mul_usize("width * height", width, height)
     }
 
+    #[inline]
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, TileCoeffStateError> {
         let allocation = Self::allocation(width, height)?;
         let stride = width + LEVEL_GRID_PAD;

@@ -207,6 +207,7 @@ impl PartitionDecisionError {
     }
 }
 
+#[inline]
 pub(crate) fn read_partition_decision(
     input: ReadPartitionDecisionInput<'_>,
     cdfs: &mut TileCdfSubset,

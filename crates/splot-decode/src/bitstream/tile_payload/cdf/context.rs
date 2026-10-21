@@ -252,6 +252,7 @@ impl<'a> SquareSplitContextInput<'a> {
         })
     }
 
+    #[inline]
     pub(crate) fn do_square_split_selector(self) -> Result<TileCdfSelector, TileCdfError> {
         let plane_start = checked_square_split_plane(self.plane_start)?;
         let bsw = self.b_size.width_log2()?;
