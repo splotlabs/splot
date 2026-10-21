@@ -106,6 +106,22 @@ impl GeneralIntraResidualPlan {
         Ok(plan)
     }
 
+    /// The planned transform blocks in syntax order as
+    /// `(plane, x, y, tx_size, tx_fills_residual_block)`, positions in plane samples.
+    pub(crate) fn transform_blocks(
+        &self,
+    ) -> impl Iterator<Item = (usize, usize, usize, usize, bool)> + '_ {
+        self.planes.iter().map(|plane| {
+            (
+                plane.coeff_plane,
+                plane.x,
+                plane.y,
+                plane.tx_size,
+                plane.tx_fills_residual_block(),
+            )
+        })
+    }
+
     pub(crate) fn chroma_tx(&self) -> Option<usize> {
         self.planes
             .iter()

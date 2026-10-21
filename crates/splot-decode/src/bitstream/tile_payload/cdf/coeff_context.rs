@@ -166,7 +166,11 @@ pub(crate) struct CoeffBaseContext {
 }
 
 impl CoeffBaseContext {
-    #[inline]
+    #[allow(
+        clippy::inline_always,
+        reason = "the coefficient loop calls this per coefficient; keep it inlined beside the encoder facade"
+    )]
+    #[inline(always)]
     pub(crate) fn select(&self, level: &[u8]) -> CoeffBaseSelection {
         let class_idx = tx_class_idx(self.tx_class);
         let mag = match class_idx {

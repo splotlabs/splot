@@ -1154,19 +1154,6 @@ fn check_dependency_direction(root: &Path) -> Result<()> {
                 ));
             }
         }
-        if name == "splot-cli"
-            && concurrency_policy::direct_dependency_names(
-                &manifest,
-                &workspace_deps,
-                &["dependencies", "build-dependencies"],
-            )
-            .iter()
-            .any(|dependency| dependency == "splot-encode")
-        {
-            violations.push(
-                "splot-cli may depend on splot-encode only through dev-dependencies".to_owned(),
-            );
-        }
     }
 
     if violations.is_empty() {
@@ -1195,7 +1182,12 @@ const INTERNAL_DEP_RULES: &[(&str, &[&str])] = &[
     ("splot-validate", &["splot-core"]),
     (
         "splot-encode",
-        &["splot-core", "splot-parallel", "splot-recon"],
+        &[
+            "splot-core",
+            "splot-parallel",
+            "splot-recon",
+            "splot-decode",
+        ],
     ),
     (
         "splot-cli",
@@ -1402,41 +1394,18 @@ mod tests {
     }
 
     #[test]
-    fn dependency_direction_allows_encoder_core_parallel_and_recon_edges() -> Result<()> {
+    fn dependency_direction_allows_encoder_core_parallel_recon_and_decode_edges() -> Result<()> {
         let Some(encoder_deps) = allowed_internal_deps("splot-encode") else {
             bail!("splot-encode should have dependency policy");
         };
         assert_eq!(
             encoder_deps,
-            ["splot-core", "splot-parallel", "splot-recon"]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn dependency_direction_keeps_cli_encoder_edge_dev_only() -> Result<()> {
-        let workspace_deps =
-            HashMap::from([("splot-encode".to_owned(), "splot-encode".to_owned())]);
-        let dev_manifest: toml::Table =
-            toml::from_str("[dev-dependencies]\nsplot-encode.workspace = true\n")?;
-        let normal_manifest: toml::Table =
-            toml::from_str("[dependencies]\nsplot-encode.workspace = true\n")?;
-
-        assert!(
-            concurrency_policy::direct_dependency_names(
-                &dev_manifest,
-                &workspace_deps,
-                &["dependencies", "build-dependencies"],
-            )
-            .is_empty()
-        );
-        assert_eq!(
-            concurrency_policy::direct_dependency_names(
-                &normal_manifest,
-                &workspace_deps,
-                &["dependencies", "build-dependencies"],
-            ),
-            ["splot-encode"]
+            [
+                "splot-core",
+                "splot-parallel",
+                "splot-recon",
+                "splot-decode"
+            ]
         );
         Ok(())
     }

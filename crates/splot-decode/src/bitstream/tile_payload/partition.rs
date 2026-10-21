@@ -14,18 +14,29 @@ use super::cdf::{TileCdfError, TileCdfSubset};
 
 const EXT_PARTITION_TYPES: usize = 10;
 
+/// § 5.20.3.2 partition type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(usize)]
-pub(crate) enum PartitionType {
+pub enum PartitionType {
+    /// `PARTITION_NONE`.
     None = 0,
+    /// `PARTITION_HORZ`.
     Horz = 1,
+    /// `PARTITION_VERT`.
     Vert = 2,
+    /// `PARTITION_HORZ_3`.
     Horz3 = 3,
+    /// `PARTITION_VERT_3`.
     Vert3 = 4,
+    /// `PARTITION_HORZ_4A`.
     Horz4A = 5,
+    /// `PARTITION_HORZ_4B`.
     Horz4B = 6,
+    /// `PARTITION_VERT_4A`.
     Vert4A = 7,
+    /// `PARTITION_VERT_4B`.
     Vert4B = 8,
+    /// `PARTITION_SPLIT`.
     Split = 9,
 }
 
@@ -196,6 +207,7 @@ impl PartitionDecisionError {
     }
 }
 
+#[inline]
 pub(crate) fn read_partition_decision(
     input: ReadPartitionDecisionInput<'_>,
     cdfs: &mut TileCdfSubset,

@@ -1,86 +1,179 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Encoder configuration: bitstream-affecting settings only.
-//!
-//! Runtime knobs such as thread count are passed to [`crate::Context::new`]
-//! instead of living here, so that this type describes *what* is encoded rather
-//! than *how fast*.
+//! Encoder configuration and its validation.
 
-/// Configured sample bit depth; the current frame-input path accepts only [`Self::Eight`].
-// TODO(spec: AV2-5.4-SEQUENCE-HEADER): confirm the exact set of permitted bit depths.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+use core::num::NonZeroU32;
+
+use splot_parallel::ThreadCount;
+use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+
+use crate::error::{Error, Result};
+use crate::preset::Preset;
+
+/// Largest frame dimension AV2 can signal: `max_frame_width_minus_1` has at most
+/// 16 bits (§ 5.4.1, `docs/spec/av2/1.0.0/05-syntax-structures.md`).
+pub const MAX_FRAME_DIMENSION: u32 = 1 << 16;
+
+/// How the encoder picks the quantizer of each frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum BitDepth {
-    /// 8 bits per sample.
-    #[default]
-    Eight,
-    /// 10 bits per sample.
-    Ten,
-    /// 12 bits per sample.
-    Twelve,
+pub enum RateControlMode {
+    /// Every frame uses the same `base_q_idx`.
+    ConstantQp {
+        /// The frame-header `base_q_idx`, `1..=255`.
+        qp: u8,
+    },
 }
 
-/// Configured chroma subsampling; the current frame-input path accepts only [`Self::Yuv420`].
-// TODO(spec: AV2-5.4-SEQUENCE-HEADER): map to the sequence-header color configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[non_exhaustive]
-pub enum ChromaSubsampling {
-    /// Monochrome (no chroma planes).
-    Monochrome,
-    /// 4:2:0.
-    #[default]
-    Yuv420,
-    /// 4:2:2.
-    Yuv422,
-    /// 4:4:4.
-    Yuv444,
-}
-
-/// The default fixed quantizer index (`base_q_idx`): 80, the value the AVM- and
-/// dav2d-validated `syn-flat-intra-64x64-q80` fixture muxes at, which the minimal
-/// intra path has always emitted.
-pub const DEFAULT_QP: u8 = 80;
-
-/// Bitstream-affecting encoder configuration.
+/// The encoder configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub struct EncoderConfig {
+pub struct Config {
     /// Frame width in luma samples.
     pub width: u32,
     /// Frame height in luma samples.
     pub height: u32,
-    /// Sample bit depth; the current frame-input path supports 8-bit samples.
+    /// Sample bit depth.
     pub bit_depth: BitDepth,
-    /// Chroma subsampling; the current frame-input path supports YUV 4:2:0.
-    pub chroma_subsampling: ChromaSubsampling,
-    /// The fixed quantizer index used for every frame: the frame-header `base_q_idx`
-    /// (AV2 § 5.18.6.1; `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6-1`) and — once
-    /// the lossy coefficient path is wired into
-    /// `receive_packet` — the quantizer's qindex, both read from this single field so
-    /// the two cannot diverge. The supported packet path reads this value directly;
-    /// rate control is not implemented.
-    pub qp: u8,
-    // TODO(spec: AV2-5.4-SEQUENCE-HEADER): profile, level, color/transfer characteristics, and more.
+    /// Chroma format; only [`PixelFormat::Yuv420`] is supported.
+    pub chroma: PixelFormat,
+    /// Frame rate as `(numerator, denominator)` frames per second.
+    pub frame_rate: (u32, u32),
+    /// Rate-control mode.
+    pub rate_control: RateControlMode,
+    /// Speed preset.
+    pub preset: Preset,
+    /// Worker-thread policy. It never changes the output bytes.
+    pub threads: ThreadCount,
+    /// Distance between key frames, in frames.
+    pub keyint: NonZeroU32,
 }
 
-impl EncoderConfig {
-    /// Creates a configuration with the given dimensions, default color format, and the
-    /// [`DEFAULT_QP`] fixed quantizer.
+impl Config {
+    /// Default `base_q_idx` for [`RateControlMode::ConstantQp`].
+    pub const DEFAULT_QP: u8 = 80;
+    /// Default key-frame interval.
+    pub const DEFAULT_KEYINT: NonZeroU32 = match NonZeroU32::new(120) {
+        Some(keyint) => keyint,
+        None => NonZeroU32::MIN,
+    };
+
+    /// Creates an 8-bit 4:2:0 configuration at 30 fps with default settings.
     #[must_use]
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             width,
             height,
-            bit_depth: BitDepth::default(),
-            chroma_subsampling: ChromaSubsampling::default(),
-            qp: DEFAULT_QP,
+            bit_depth: BitDepth::Eight,
+            chroma: PixelFormat::Yuv420,
+            frame_rate: (30, 1),
+            rate_control: RateControlMode::ConstantQp {
+                qp: Self::DEFAULT_QP,
+            },
+            preset: Preset::default(),
+            threads: ThreadCount::Auto,
+            keyint: Self::DEFAULT_KEYINT,
         }
+    }
+
+    /// Checks that the encoder supports this configuration.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidDimensions`], [`Error::UnsupportedChroma`],
+    /// [`Error::InvalidFrameRate`] or [`Error::InvalidQp`].
+    pub fn validate(&self) -> Result<()> {
+        let dimension_ok = |value| (1..=MAX_FRAME_DIMENSION).contains(&value);
+        if !dimension_ok(self.width) || !dimension_ok(self.height) {
+            return Err(Error::InvalidDimensions {
+                width: self.width,
+                height: self.height,
+            });
+        }
+        if self.chroma != PixelFormat::Yuv420 {
+            return Err(Error::UnsupportedChroma {
+                chroma: self.chroma,
+            });
+        }
+        if self.frame_rate.0 == 0 || self.frame_rate.1 == 0 {
+            return Err(Error::InvalidFrameRate {
+                numerator: self.frame_rate.0,
+                denominator: self.frame_rate.1,
+            });
+        }
+        match self.rate_control {
+            RateControlMode::ConstantQp { qp: 0 } => Err(Error::InvalidQp { qp: 0 }),
+            RateControlMode::ConstantQp { .. } => Ok(()),
+        }
+    }
+
+    /// Returns the Y, U and V plane sizes of one frame.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidDimensions`] for a zero dimension and
+    /// [`Error::UnsupportedChroma`] for monochrome.
+    pub fn plane_sizes(&self) -> Result<[PlaneSize; 3]> {
+        let invalid = || Error::InvalidDimensions {
+            width: self.width,
+            height: self.height,
+        };
+        let luma =
+            PlaneSize::new(self.width as usize, self.height as usize).map_err(|_| invalid())?;
+        let chroma = self
+            .chroma
+            .chroma_size(luma)
+            .map_err(|_| invalid())?
+            .ok_or(Error::UnsupportedChroma {
+                chroma: self.chroma,
+            })?;
+        Ok([luma, chroma, chroma])
     }
 }
 
-impl Default for EncoderConfig {
-    fn default() -> Self {
-        Self::new(0, 0)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_is_valid() {
+        assert!(Config::new(64, 64).validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_unsupported_settings() {
+        let mut config = Config::new(0, 64);
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidDimensions { .. })
+        ));
+        config.width = MAX_FRAME_DIMENSION + 1;
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidDimensions { .. })
+        ));
+        config = Config::new(64, 64);
+        config.chroma = PixelFormat::Yuv444;
+        assert!(matches!(
+            config.validate(),
+            Err(Error::UnsupportedChroma { .. })
+        ));
+        config = Config::new(64, 64);
+        config.frame_rate = (30, 0);
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidFrameRate { .. })
+        ));
+        config = Config::new(64, 64);
+        config.rate_control = RateControlMode::ConstantQp { qp: 0 };
+        assert!(matches!(config.validate(), Err(Error::InvalidQp { qp: 0 })));
+    }
+
+    #[test]
+    fn odd_sizes_round_chroma_up() -> Result<()> {
+        let [y, u, v] = Config::new(5, 3).plane_sizes()?;
+        assert_eq!((y.width(), y.height()), (5, 3));
+        assert_eq!((u.width(), u.height()), (3, 2));
+        assert_eq!(u, v);
+        Ok(())
     }
 }

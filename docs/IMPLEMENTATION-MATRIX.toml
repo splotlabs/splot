@@ -4363,7 +4363,7 @@ module = "crates/splot-core/src/write/mod.rs"
 change_id = "bit-writer-primitives"
 owner = "encoder"
 risk = "high"
-notes = "BitWriter implements every BitReader descriptor with read/write property tests. OBU headers, Annex B and IVF framing, sequence headers, frame-header slices, tile-group framing, metadata, and all fourteen ParsedObu body writers are implemented with round-trip and fuzz coverage. The complete OBU dispatch is exhaustive, so any future ParsedObu variant must add a writer. SymbolEncoder provides bounded deterministic § 8.2 primitives; finalization still uses a bounded O(range * operations) search. Remaining writer work is the inter first-group tile-group composer, § 8.3 CDF selection for encoder-owned streams, and § 5.20 coded tile bodies. The CLI does not expose an encode command."
+notes = "BitWriter implements every BitReader descriptor with read/write property tests. OBU headers, Annex B and IVF framing, sequence headers, frame-header slices, tile-group framing, metadata, and all fourteen ParsedObu body writers are implemented with round-trip and fuzz coverage. The complete OBU dispatch is exhaustive, so any future ParsedObu variant must add a writer. SymbolEncoder provides bounded deterministic § 8.2 primitives as a streaming range coder with O(1) amortized work per write and the shortest exit_symbol()-valid payload. Remaining writer work is the inter first-group tile-group composer, § 8.3 CDF selection for encoder-owned streams, and § 5.20 coded tile bodies. The CLI does not expose an encode command."
 
 [feature.status]
 mapped = "partial"
@@ -4391,43 +4391,42 @@ kind = "encoder-api"
 spec_sections = []
 sources = []
 crate = "splot-encode"
-module = "crates/splot-encode/src/frame.rs"
-change_id = "encoder-frame-input-views"
+module = "crates/splot-encode/src/y4m.rs"
+change_id = "encoder-y4m-input"
 owner = "encoder"
 risk = "medium"
-notes = "Input format plumbing; not normative AV2 syntax. The encoder has validated borrowed 8-bit YUV420 frame input views over splot-recon PlaneRef, typed frame id/timestamp metadata, explicit RetainedFrame sharing over SharedFrame, and Context::send_frame copies the visible pixels and metadata into its bounded queue. Context::receive_packet returns a coded Packet for the supported 64x64 all-128 8-bit 4:2:0 input; unit/property, fuzz, and decoder-backed CLI coverage exercise the input boundary and successful packet path. Residual: no Y4M reader, no 10-bit input view, and no lookahead or motion-analysis pipeline."
+notes = "Input format plumbing; not normative AV2 syntax. Y4mReader streams YUV4MPEG2 over any Read: W/H/F/I/A/C tags, XYSCSS fallback, 420jpeg/420mpeg2/420paldv/420/422/444/mono and pN high-bit-depth layouts, 8-bit and 2-byte little-endian samples. Malformed headers, oversized dimensions and truncated frames are typed errors, and frame buffers grow only with bytes read. SourceFrame owns u16 planes sized from Config and rejects short planes, bad strides and out-of-range samples. Residual: no lookahead or motion-analysis pipeline."
 
 [feature.status]
-mapped = "partial"
-types = "partial"
+mapped = "done"
+types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "not-applicable"
-encode = "todo"
+encode = "not-applicable"
 decode_check = "not-applicable"
-tests = "partial"
+tests = "done"
 avm_diff = "not-applicable"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/frame.rs::tests", "fuzz/fuzz_targets/encoder_frame_input_views_bytes.rs"]
-commands = ["cargo test -p splot-encode --locked", "cargo check --manifest-path fuzz/Cargo.toml --bins", "cargo +nightly fuzz run encoder_frame_input_views_bytes"]
+tests = ["crates/splot-encode/src/y4m.rs::tests", "crates/splot-encode/src/frame.rs::tests", "fuzz/fuzz_targets/encoder_y4m_reader_bytes.rs", "fuzz/fuzz_targets/encoder_source_frame_bytes.rs"]
+commands = ["cargo test -p splot-encode y4m --locked", "cargo test -p splot-encode frame --locked", "cargo check --manifest-path fuzz/Cargo.toml --bins --locked", "cargo +nightly fuzz run encoder_y4m_reader_bytes -- -runs=20000", "cargo +nightly fuzz run encoder_source_frame_bytes -- -runs=20000"]
 fixtures = []
 diagnostics = []
-
 [[feature]]
 id = "ENC-CONTEXT-STATE-MACHINE"
-name = "Encoder context state machine"
+name = "Encoder push/pull state machine"
 category = "encoder"
 kind = "encoder-api"
 spec_sections = []
 sources = []
 crate = "splot-encode"
-module = "crates/splot-encode/src/context.rs"
+module = "crates/splot-encode/src/encoder.rs"
 change_id = "encoder-context-state-machine"
 owner = "encoder"
 risk = "medium"
-notes = "Non-normative encoder API lifecycle plumbing. Context exposes accepting/draining/finished/failed state, operation-specific send/receive/flush statuses, typed invalid-state errors, retryable queue-full backpressure without consuming the caller's borrowed frame, validation before queueing, and fixed bounded accounting over owned visible-pixel copies plus metadata. receive_packet returns a real AV2 Annex B coded Packet for the supported 64x64 all-128 8-bit 4:2:0 input; unsupported frames are retired without a packet, and broader encoding remains out of scope."
+notes = "Non-normative encoder API lifecycle. Encoder has accepting, flushed and failed states: send_frame queues owned SourceFrames checked against Config, receive_packet codes the oldest frame through the crate-private FrameCoder seam and returns one Packet with FrameStats, flush ends input, and a coding error is terminal. Encoder::new returns Error::Unsupported until a frame coder is wired; the state machine is tested through a test-double coder."
 
 [feature.status]
 mapped = "done"
@@ -4442,171 +4441,10 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/context.rs::tests", "fuzz/fuzz_targets/encoder_context_state_machine_bytes.rs", "crates/splot-cli/tests/encode_decode_roundtrip.rs::context_encodes_all_128_frame_to_a_packet_that_decodes_to_all_128"]
-commands = ["cargo test -p splot-encode --locked", "cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo check --manifest-path fuzz/Cargo.toml --bins --locked", "cargo +nightly fuzz run encoder_context_state_machine_bytes -- -runs=128", "cargo xtask check-fuzz-targets"]
+tests = ["crates/splot-encode/src/encoder.rs::tests"]
+commands = ["cargo test -p splot-encode encoder --locked"]
 fixtures = []
 diagnostics = []
-
-[[feature]]
-id = "ENC-INTRA-MODE-SYMBOL-EMISSION"
-name = "Encoder intra-mode symbol emission"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20.5.5", "8.3.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/intra_mode_emission.rs"
-change_id = "encoder-intra-mode-symbol-emission"
-owner = "encoder"
-risk = "medium"
-notes = "The production DC general-intra path emits y_mode_set=0 and y_mode_index=0 at the tile-origin context through direct IntraModeToken values. The mode tokens are composed into every supported packet trace and are protected by token-construction tests plus decoder-backed packet oracles."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "not-applicable"
-encode = "done"
-decode_check = "not-applicable"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/intra_mode_emission.rs::tests::emits_dc_pred_luma_tokens", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_skip_ivf_decodes_to_a_flat_128_frame"]
-commands = ["cargo test -p splot-encode intra_mode_emission --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-UV-MODE-SYMBOL-EMISSION"
-name = "Encoder chroma uv_mode symbol emission"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20.5.6", "8.3.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/intra_mode_emission.rs"
-change_id = "encoder-uv-mode-emission"
-owner = "encoder"
-risk = "medium"
-notes = "The production DC general-intra path emits uv_mode=0 at the non-directional context through a direct IntraModeToken. It is composed before residual tokens in every supported packet and protected by the constructor test plus decoder-backed packet oracles."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "not-applicable"
-encode = "done"
-decode_check = "not-applicable"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/intra_mode_emission.rs::tests::emits_dc_pred_chroma_token", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_skip_ivf_decodes_to_a_flat_128_frame"]
-commands = ["cargo test -p splot-encode intra_mode_emission --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-INTRA-BLOCK-MODE-TRACE"
-name = "Encoder intra-block mode trace composition"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20.5.3", "8.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/block_symbol_trace"
-change_id = "encoder-intra-block-mode-trace"
-owner = "encoder"
-risk = "low"
-notes = "compose_minimal_intra_dc_block_mode_trace directly combines the live luma and chroma DC mode tokens in y_mode_set, y_mode_index, uv_mode order. Every supported general-intra trace consumes this prefix; composition tests and decoder-backed packet oracles protect its order."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "not-applicable"
-encode = "done"
-decode_check = "not-applicable"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace/skip.rs::tests::composes_general_skip_block_trace_in_order", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_skip_ivf_decodes_to_a_flat_128_frame"]
-commands = ["cargo test -p splot-encode general_intra_trace::skip::tests::composes_general_skip_block_trace_in_order --locked", "cargo test -p splot-cli --test encode_decode_roundtrip encoder_skip_ivf_decodes_to_a_flat_128_frame --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-INTRA-BLOCK-TRACE-BYPASS-LITERAL"
-name = "Encoder block-symbol bypass-literal token"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["8.2", "5.20.7.27", "5.20.7.28"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/block_symbol_trace"
-change_id = "encoder-block-trace-bypass-literal"
-owner = "encoder"
-risk = "low"
-notes = "BlockSymbolToken::Bypass remains production syntax for chroma and non-DC coefficient sign bits. encode_block_symbol_trace writes these values with SymbolEncoder::write_literal; asymmetric decoder-backed U, V, two-nonzero, and 2-D packet oracles protect value and ordering."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "not-applicable"
-encode = "done"
-decode_check = "not-applicable"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_coded_chroma_ivf_decodes_to_a_flat_127_u_frame", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_2d_ivf_decodes_to_a_diagonal_gradient_luma"]
-commands = ["cargo test -p splot-encode general_intra_trace::chroma::tests::composes_general_coded_chroma_block_trace_in_order --locked", "cargo test -p splot-cli --test encode_decode_roundtrip encoder_coded_chroma_ivf_decodes_to_a_flat_127_u_frame --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-BLOCK-SYMBOL-ENCODE"
-name = "Encoder block-symbol entropy-coding entry point"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["8.2", "5.20.1"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/block_symbol_trace"
-change_id = "encoder-block-symbol-encode"
-owner = "encoder"
-risk = "low"
-notes = "encode_block_symbol_trace is the production entropy-coding entry point for the supported general-intra tile body. It routes partition, mode, coefficient, and bypass tokens to the live default CDF rows or literal writer, finalizes the SymbolEncoder, and feeds every emitted IVF and Context packet."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "not-applicable"
-encode = "done"
-decode_check = "not-applicable"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace/skip.rs::tests::skip_tile_data_is_deterministic", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_skip_ivf_decodes_to_a_flat_128_frame"]
-commands = ["cargo test -p splot-encode general_intra_trace::skip::tests::skip_tile_data_is_deterministic --locked", "cargo test -p splot-cli --test encode_decode_roundtrip encoder_skip_ivf_decodes_to_a_flat_128_frame --locked"]
-fixtures = []
-diagnostics = []
-
 [[feature]]
 id = "ENC-WRITER-INPUT-FRAMING"
 name = "Encoder writer-input single-tile framing constructor"
@@ -4954,102 +4792,6 @@ fixtures = ["tests/conformance/vectors/valid/syn-cos-intra-64x64-q180.ivf"]
 diagnostics = []
 
 [[feature]]
-id = "ENC-DO-SPLIT-PARTITION-SYMBOL"
-name = "Encoder root do_split partition symbol"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20.3.2", "8.3.2", "8.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/partition_emission.rs"
-change_id = "encoder-do-split-partition-symbol"
-owner = "encoder"
-risk = "low"
-notes = "emit_root_do_split_none produces the live root 64x64 do_split=0 token at PlaneStart 0, context 12. It is the first token in every supported general-intra trace and is protected by production composition assertions plus decoder-backed packet oracles."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "not-applicable"
-encode = "done"
-decode_check = "not-applicable"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace/skip.rs::tests::composes_general_skip_block_trace_in_order", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_skip_ivf_decodes_to_a_flat_128_frame"]
-commands = ["cargo test -p splot-encode general_intra_trace::skip::tests::composes_general_skip_block_trace_in_order --locked", "cargo test -p splot-cli --test encode_decode_roundtrip encoder_skip_ivf_decodes_to_a_flat_128_frame --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-GENERAL-INTRA-SKIP-BLOCK-TRACE"
-name = "Encoder general-intra DC skip-block trace"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20.3.2", "5.20.5.3", "5.20.7.27", "8.3.2", "8.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace/skip.rs"
-change_id = "encoder-general-intra-skip-block-trace"
-owner = "encoder"
-risk = "low"
-notes = "compose_general_intra_dc_skip_block_trace builds the live seven-token root-partition, DC-mode, and Y/U/V txb_skip trace at TX_64X64 and TX_32X32 contexts. Its order is asserted locally and its actual encoded bytes are verified by the decoder-backed flat-128 CLI oracle."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "not-applicable"
-encode = "done"
-decode_check = "not-applicable"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace/skip.rs::tests::composes_general_skip_block_trace_in_order", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_skip_ivf_decodes_to_a_flat_128_frame"]
-commands = ["cargo test -p splot-encode general_intra_trace::skip::tests::composes_general_skip_block_trace_in_order --locked", "cargo test -p splot-cli --test encode_decode_roundtrip encoder_skip_ivf_decodes_to_a_flat_128_frame --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-GENERAL-INTRA-SKIP-TILE-DATA"
-name = "Encoder general-intra DC skip tile_data bytes"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20", "8.2.4", "8.2.2", "8.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace/skip.rs"
-change_id = "encoder-general-intra-skip-tile-data"
-owner = "encoder"
-risk = "low"
-notes = "encode_general_intra_dc_skip_tile_data feeds the live skip trace to encode_block_symbol_trace and returns the finalized single-tile payload. Determinism is checked locally and decodability is protected by the flat-128 CLI oracle."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "not-applicable"
-encode = "done"
-decode_check = "not-applicable"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace/skip.rs::tests::skip_tile_data_is_deterministic", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_skip_ivf_decodes_to_a_flat_128_frame"]
-commands = ["cargo test -p splot-encode general_intra_trace --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
 id = "ENC-MINIMAL-CLK-BASE-Q-IDX"
 name = "base_q_idx-parameterized minimal CLK container"
 category = "encoder"
@@ -5082,338 +4824,18 @@ fixtures = ["tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf"]
 diagnostics = []
 
 [[feature]]
-id = "ENC-MINIMAL-INTRA-SKIP-IVF"
-name = "First decodable minimal intra skip IVF"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.18.2", "5.20", "7.13.2", "8.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace/skip.rs"
-change_id = "encoder-minimal-intra-skip-ivf"
-owner = "encoder"
-risk = "low"
-notes = "emit_minimal_intra_skip_ivf composes the DC skip tile with the QP-80 minimal container. The CLI decoder oracle requires exactly 6144 all-128 output bytes for the 64x64 8-bit 4:2:0 frame. Determinism and IVF structure are checked separately. This row's exact emitted stream has no direct AVM comparison; public Context packet production is tracked by ENC-CONTEXT-RECEIVE-PACKET."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "done"
-encode = "done"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_skip_ivf_decodes_to_a_flat_128_frame", "crates/splot-encode/src/general_intra_trace/skip.rs::tests::emit_minimal_intra_skip_ivf_is_a_parseable_one_frame_av02_ivf"]
-commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode general_intra_trace --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-GENERAL-INTRA-CODED-LUMA-DC"
-name = "First decodable coded-DC intra frame"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20.7.27", "5.20.7.28", "7.13.2", "8.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace/coded_dc.rs"
-change_id = "encoder-general-intra-coded-luma-dc"
-owner = "encoder"
-risk = "low"
-notes = "emit_minimal_intra_coded_dc_ivf emits the supported TX_64X64 luma DC residual with eob_pt_1024, low-frequency base and range symbols, and dc_sign while chroma is skipped. The production composition test protects token order and the decoder-backed CLI oracle proves flat luma 127 with flat chroma 128."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "done"
-encode = "done"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace/coded_dc.rs::tests::composes_general_coded_block_trace_in_order", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_coded_dc_ivf_decodes_to_a_flat_127_luma_frame"]
-commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode coded --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-GENERAL-INTRA-CODED-CHROMA-DC"
-name = "First decodable coded-chroma intra frame"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20.7.27", "8.2.5", "7.13.2", "8.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace/chroma.rs"
-change_id = "encoder-general-intra-coded-chroma-dc"
-owner = "encoder"
-risk = "low"
-notes = "emit_minimal_intra_coded_chroma_ivf emits the supported TX_32X32 U-plane DC residual, including its bypass sign, while luma and V are skipped. Production composition assertions protect token order and the decoder-backed CLI oracle proves flat U 127 with the other planes 128."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "done"
-encode = "done"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace/chroma.rs::tests::composes_general_coded_chroma_block_trace_in_order", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_coded_chroma_ivf_decodes_to_a_flat_127_u_frame"]
-commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode chroma --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-GENERAL-INTRA-CODED-CHROMA-V-DC"
-name = "Decodable coded-V intra frame"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20.7.27", "8.2.5", "7.13.2", "8.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace/chroma.rs"
-change_id = "encoder-general-intra-coded-chroma-v-dc"
-owner = "encoder"
-risk = "low"
-notes = "emit_minimal_intra_coded_chroma_v_ivf emits the supported TX_32X32 V-plane DC residual through the dedicated V txb_skip row and a bypass sign while luma and U are skipped. Composition assertions and the decoder-backed CLI oracle protect the live behavior."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "done"
-encode = "done"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace/chroma.rs::tests::composes_general_coded_chroma_v_and_all_planes_traces_in_order", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_coded_chroma_v_ivf_decodes_to_a_flat_127_v_frame"]
-commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode chroma_v --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-GENERAL-INTRA-ALL-PLANES-CODED"
-name = "All-planes-coded intra frame"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20.7.27", "8.2.5", "8.3.2", "8.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace/chroma.rs"
-change_id = "encoder-general-intra-all-planes-coded"
-owner = "encoder"
-risk = "low"
-notes = "emit_minimal_intra_all_planes_coded_ivf composes the live coded luma, U, and V DC paths in one block, including both chroma bypass signs and the EobU-dependent V context. Composition assertions and the decoder-backed all-planes 127 CLI oracle protect the interaction."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "done"
-encode = "done"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace/chroma.rs::tests::composes_general_coded_chroma_v_and_all_planes_traces_in_order", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_all_planes_coded_ivf_decodes_to_a_flat_127_frame"]
-commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode all_planes --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-GENERAL-INTRA-TWO-COEFF"
-name = "First multi-coefficient intra frame"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20.7.27", "8.3.2", "8.2.5", "8.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace/multi_coeff.rs"
-change_id = "encoder-general-intra-two-coeff"
-owner = "encoder"
-risk = "low"
-notes = "emit_minimal_intra_two_coeff_ivf emits the live TX_64X64 eob=2 luma trace with one AC and a zero DC. Production composition assertions protect the base-pass and sign order; the decoder-backed CLI oracle proves the emitted stream decodes successfully."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "done"
-encode = "done"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace/multi_coeff.rs::tests::composes_general_two_coeff_block_trace_in_order", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_two_coeff_ivf_decodes_successfully"]
-commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode two_coeff --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-GENERAL-INTRA-VISIBLE-AC"
-name = "First visibly non-flat intra reconstruction"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20.7.27", "8.3.2", "8.2.5", "8.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace/multi_coeff.rs"
-change_id = "encoder-general-intra-visible-ac"
-owner = "encoder"
-risk = "low"
-notes = "emit_minimal_intra_visible_ac_ivf emits the live eob=2 level-4 AC trace using the level-derived DC context 2. Composition assertions and the decoder-backed vertical-cosine CLI oracle protect the production token selection and output."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "done"
-encode = "done"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace/multi_coeff.rs::tests::composes_general_visible_ac_block_trace_in_order", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_visible_ac_ivf_decodes_to_a_vertical_cosine_luma"]
-commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode visible_ac --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-GENERAL-INTRA-TWO-NONZERO"
-name = "First two-nonzero-coefficient intra block"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20.7.27", "8.3.2", "8.2.5", "8.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace/multi_coeff.rs"
-change_id = "encoder-general-intra-two-nonzero"
-owner = "encoder"
-risk = "low"
-notes = "emit_minimal_intra_two_nonzero_ivf emits the live eob=2 base pass for a level-4 AC and negative level-1 DC, followed by signs in reverse-scan order. Composition assertions and the asymmetric decoder-backed CLI oracle protect that order."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "done"
-encode = "done"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace/multi_coeff.rs::tests::composes_general_two_nonzero_block_trace_in_order", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_two_nonzero_ivf_decodes_to_a_cosine_plus_dc_offset"]
-commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode two_nonzero --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-GENERAL-INTRA-EOB3"
-name = "First eob>2 intra frame (eob_extra)"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20.7.27", "8.3.2", "8.2.5", "8.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace/multi_coeff.rs"
-change_id = "encoder-general-intra-eob3"
-owner = "encoder"
-risk = "low"
-notes = "emit_minimal_intra_eob3_ivf emits the live eob_pt_1024 and eob_extra sequence for a level-4 AC at scan index 2, with the supported low-frequency base contexts. Composition assertions and the decoder-backed horizontal-cosine CLI oracle protect the production path."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "done"
-encode = "done"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace/multi_coeff.rs::tests::composes_general_eob3_block_trace_in_order", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_eob3_ivf_decodes_to_a_horizontal_cosine_luma"]
-commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode eob3 --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
-id = "ENC-GENERAL-INTRA-2D"
-name = "First 2-D intra reconstruction"
-category = "encoder"
-kind = "encoder-tool"
-spec_sections = ["5.20.7.27", "8.3.2", "8.2.5", "8.2"]
-sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
-crate = "splot-encode"
-module = "crates/splot-encode/src/general_intra_trace/multi_coeff.rs"
-change_id = "encoder-general-intra-2d"
-owner = "encoder"
-risk = "low"
-notes = "emit_minimal_intra_2d_ivf emits the live eob=3 base pass with two nonzero AC coefficients and asymmetric bypass signs. Composition assertions and the decoder-backed diagonal-gradient CLI oracle protect CDF selection and reverse-scan sign order."
-
-[feature.status]
-mapped = "done"
-types = "done"
-parse = "not-applicable"
-validate = "not-applicable"
-write = "done"
-encode = "done"
-decode_check = "done"
-tests = "done"
-avm_diff = "not-applicable"
-perf = "not-applicable"
-
-[feature.proof]
-tests = ["crates/splot-encode/src/general_intra_trace/multi_coeff.rs::tests::composes_general_2d_block_trace_in_order", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encoder_2d_ivf_decodes_to_a_diagonal_gradient_luma"]
-commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode _2d_ --locked"]
-fixtures = []
-diagnostics = []
-
-[[feature]]
 id = "ENC-CONTEXT-RECEIVE-PACKET"
-name = "Public Context emits a real packet (Milestone A keystone)"
+name = "Public Encoder emits a real packet (Milestone A keystone)"
 category = "encoder"
 kind = "encoder-tool"
 spec_sections = ["7.13.2", "5.20", "8.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
-module = "crates/splot-encode/src/context.rs"
+module = "crates/splot-encode/src/encoder.rs"
 change_id = "encoder-context-receive-packet"
 owner = "encoder"
 risk = "low"
-notes = "Context::receive_packet emits one Annex B coded access unit for supported 64x64 all-128 8-bit 4:2:0 input, preserving input pixels through the DC skip path. send_frame owns visible-pixel copies; unsupported frames are retired without a packet and emitter failure is terminal. The public-API oracle sends, flushes, receives, muxes to IVF, and verifies exact decoded pixels. General image encoding, transform/mode decisions, rate control, and a CLI encode command remain unsupported."
+notes = "Encoder::receive_packet returns one Annex B temporal unit per frame with pts, the coded frame type and FrameStats (bits, PSNR, SSIM). The frame coder is ENC-INTRA-KEYFRAME-DC."
 
 [feature.status]
 mapped = "done"
@@ -5428,14 +4850,46 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::context_encodes_all_128_frame_to_a_packet_that_decodes_to_all_128", "crates/splot-encode/src/context.rs::tests::receive_packet_encodes_a_64x64_all_128_frame_to_the_skip_packet"]
-commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode context:: --locked"]
+tests = ["crates/splot-encode/src/encoder.rs::tests::encodes_flat_frames_through_the_public_api", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+commands = ["cargo test -p splot-encode encoder --locked", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-INTRA-KEYFRAME-DC"
+name = "Key-frame encoder: DC_PRED, DCT_DCT, any frame size, 8/10-bit 4:2:0"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4", "5.9", "5.20.3", "5.20.5.5", "5.20.7.27", "7.13.2", "7.14.4", "7.15", "8.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_frame.rs"
+change_id = "encoder-m1-intra-dc"
+owner = "encoder"
+risk = "medium"
+notes = "Every frame is a closed-loop key frame with one uniform tile. Partitions split by a preset-gated source-variance test; each transform block is DC-predicted from the reconstruction, forward-transformed and deadzone-quantized by SIMD kernels, and written by the key-frame tile writer, whose CDF rows, contexts and partition rules come from splot_decode::encoder_syntax. The encoder reconstruction equals splot-decode output sample for sample; the env-gated AVM test decodes the same samples. No RDO, other intra modes, transform types or loop filters yet."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "todo"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_tests.rs::coded_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_coded_frames_like_splot", "crates/splot-encode/src/tile_writer/tests.rs::random_key_frames_decode_to_the_encoder_recon", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+commands = ["cargo test -p splot-encode --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
 
 [[feature]]
 id = "ENC-CONFIG-QP-FIELD"
-name = "Encoder config single fixed-quantizer (qp) source"
+name = "Encoder config constant-quantizer source"
 category = "encoder"
 kind = "encoder-tool"
 spec_sections = ["5.18.6.1"]
@@ -5445,26 +4899,25 @@ module = "crates/splot-encode/src/config.rs"
 change_id = "encoder-config-qp-field"
 owner = "encoder"
 risk = "low"
-notes = "EncoderConfig owns the single fixed `qp: u8` value (DEFAULT_QP=80, matching the AVM/dav2d-validated syn-flat-intra-64x64-q80 fixture). Context reads `config.qp` directly when constructing the supported packet and threads it into the frame-header `base_q_idx` (§5.18.6.1); no wrapper or rate-controller abstraction sits between the configuration and writer. The supported range is 1..=90, whose coefficient CDF q-context is 0; values outside that range retire the frame without a packet until the q-context mapping is widened. Decoder-backed CLI tests prove both default QP 80 and non-default QP 40 reconstruct the all-128 input exactly. No forward quantization, per-frame adaptation, per-block deltas, or rate control is claimed."
+notes = "Config.rate_control = RateControlMode::ConstantQp { qp } holds the base_q_idx (default 80, valid 1..=255); Config::validate rejects 0. The ConstantQp rate controller returns it for every frame and FrameStats records it. No frame coder writes it to a frame header yet."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
-write = "done"
-encode = "done"
-decode_check = "done"
-tests = "done"
+write = "todo"
+encode = "todo"
+decode_check = "todo"
+tests = "partial"
 avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-cli/tests/encode_decode_roundtrip.rs::context_encodes_all_128_frame_at_non_default_qp_that_decodes_to_all_128", "crates/splot-encode/src/context.rs::tests::receive_packet_encodes_a_64x64_all_128_frame_to_the_skip_packet"]
-commands = ["cargo test -p splot-cli --test encode_decode_roundtrip --locked", "cargo test -p splot-encode context:: --locked"]
+tests = ["crates/splot-encode/src/config.rs::tests::rejects_unsupported_settings", "crates/splot-encode/src/encoder.rs::tests::codes_frames_in_order_with_stats"]
+commands = ["cargo test -p splot-encode config --locked", "cargo test -p splot-encode encoder --locked"]
 fixtures = []
 diagnostics = []
-
 [[feature]]
 id = "ENC-RECON-DEPENDENCY"
 name = "Encoder reconstruction dependency boundary"
@@ -5473,11 +4926,11 @@ kind = "infrastructure"
 spec_sections = []
 sources = []
 crate = "splot-encode"
-module = "crates/splot-encode/src/frame.rs"
+module = "crates/splot-encode/src/config.rs"
 change_id = "encoder-recon-dependency"
 owner = "encoder"
 risk = "medium"
-notes = "Non-normative encoder infrastructure. The encoder crate has the approved direct `splot-recon` dependency edge, used by validated frame-plane views and the owned input-copy path; it does not expose a public reconstruction API or implement a general closed-loop encoder. The dependency-direction gate also enforces that `splot-cli` may use `splot-encode` only as a dev dependency for decoder-backed oracles, never as a normal or build dependency. Public frame ingestion and the limited 64x64 all-128 Packet success path are tracked by ENC-Y4M-INPUT and ENC-CONTEXT-RECEIVE-PACKET; this row claims only the dependency boundary."
+notes = "Non-normative encoder infrastructure. The encoder crate has the approved direct `splot-recon` dependency edge and reuses its BitDepth, PixelFormat and PlaneSize types for configuration and source-frame geometry, and the `splot-decode` edge for the `encoder_syntax` facade (decoder CDF rows, contexts and partition rules). `splot-cli` depends on `splot-encode` for the encode command. This row claims only the dependency boundary."
 
 [feature.status]
 mapped = "done"
@@ -5492,11 +4945,10 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/frame.rs::tests::borrowed_yuv420_frame_accepts_odd_visible_size_without_copying", "xtask/src/main.rs::tests::dependency_direction_allows_encoder_core_parallel_and_recon_edges", "xtask/src/main.rs::tests::dependency_direction_keeps_cli_encoder_edge_dev_only"]
-commands = ["cargo test -p splot-encode frame::tests::borrowed_yuv420_frame_accepts_odd_visible_size_without_copying --locked", "cargo test -p xtask dependency_direction --locked", "cargo xtask check-dependency-direction"]
+tests = ["crates/splot-encode/src/config.rs::tests::odd_sizes_round_chroma_up", "xtask/src/main.rs::tests::dependency_direction_allows_encoder_core_parallel_and_recon_edges"]
+commands = ["cargo test -p splot-encode config --locked", "cargo test -p xtask dependency_direction --locked", "cargo xtask check-dependency-direction"]
 fixtures = []
 diagnostics = []
-
 [[feature]]
 id = "ENC-INTRA-TOY-V0"
 name = "Minimal toy intra encoder path"
@@ -5505,7 +4957,7 @@ kind = "encoder-tool"
 spec_sections = []
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
-module = "crates/splot-encode/src/context.rs"
+module = "crates/splot-encode/src/encoder.rs"
 change_id = "toy-intra-encoder-v0"
 owner = "encoder"
 risk = "high"
@@ -5537,15 +4989,15 @@ kind = "encoder-tool"
 spec_sections = []
 sources = []
 crate = "splot-encode"
-module = "crates/splot-encode/src/context.rs"
+module = "crates/splot-encode/src/rate_control.rs"
 change_id = "rate-control-v0"
 owner = "encoder"
 risk = "medium"
-notes = "Encoder strategy, not direct spec implementation. Requires design before code."
+notes = "Encoder strategy, not direct spec implementation. The RateController trait (frame_qp before coding, update after) is the seam; ConstantQp is the only controller. CRF, VBR and CBR need design before code."
 
 [feature.status]
 mapped = "partial"
-types = "todo"
+types = "partial"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "not-applicable"
@@ -5556,8 +5008,8 @@ avm_diff = "not-applicable"
 perf = "todo"
 
 [feature.proof]
-tests = []
-commands = []
+tests = ["crates/splot-encode/src/encoder.rs::tests::codes_frames_in_order_with_stats"]
+commands = ["cargo test -p splot-encode encoder --locked"]
 fixtures = []
 diagnostics = []
 
@@ -5569,11 +5021,11 @@ kind = "encoder-api"
 spec_sections = []
 sources = []
 crate = "splot-encode"
-module = "crates/splot-encode/src/runtime.rs"
+module = "crates/splot-encode/src/preset.rs"
 change_id = "encoder-speed-presets"
 owner = "encoder"
 risk = "medium"
-notes = "SpeedPreset accepts 0..=10, defaults to 6, and is stored in EncoderRuntimeConfig beside thread policy. Context exposes it, but it does not alter the currently supported packet path."
+notes = "Preset accepts 0..=10 (default 6) and maps to one row of the PRESETS table: block-size range, intra modes tried, partition early-exit margin, RDOQ, transform-type depth, motion range, sub-pel depth and loop-filter search. Every field is monotone from slow to fast. No coding stage reads the table yet."
 
 [feature.status]
 mapped = "done"
@@ -5588,11 +5040,10 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/runtime.rs::tests", "crates/splot-encode/src/context.rs::tests::context_exposes_config_and_threads"]
-commands = ["cargo test -p splot-encode speed_preset --locked", "cargo test -p splot-encode context_exposes_config_and_threads --locked"]
+tests = ["crates/splot-encode/src/preset.rs::tests"]
+commands = ["cargo test -p splot-encode preset --locked"]
 fixtures = []
 diagnostics = []
-
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------
@@ -19120,6 +18571,38 @@ commands = [
     "cargo xtask check-diagnostic-registry",
 ]
 fixtures = ["docs/DIAGNOSTICS.md"]
+diagnostics = []
+
+[[feature]]
+id = "CLI-ENCODE"
+name = "splot encode command"
+category = "cli"
+kind = "cli"
+spec_sections = []
+sources = []
+crate = "splot-cli"
+module = "crates/splot-cli/src/commands/encode.rs"
+change_id = "encode-cli-y4m-to-ivf"
+owner = "cli"
+risk = "medium"
+notes = "splot encode reads Y4M (file or stdin), builds Config from the stream header and --qp/--preset/--threads/--keyint, sends frames up to --limit, and writes AV02 IVF; --stats prints frame,qp,bits,psnr_y,psnr_u,psnr_v CSV lines. Unsupported input (bit depth other than 8/10, non-4:2:0) fails before the output file is created. Encoding fails with Unsupported until the frame coder is wired."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "todo"
+decode_check = "not-applicable"
+tests = "partial"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-cli/tests/cli.rs::encode_rejects_malformed_and_unsupported_y4m_without_writing_output", "crates/splot-cli/tests/help_snapshots.rs::encode_help"]
+commands = ["cargo test -p splot-cli --test cli encode --locked", "cargo test -p splot-cli --test help_snapshots --locked"]
+fixtures = []
 diagnostics = []
 
 [[feature]]

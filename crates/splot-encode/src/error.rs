@@ -3,170 +3,125 @@
 
 //! Error and result types for the splot encoder API.
 
-use splot_core::write::WriteError;
-use splot_recon::{PlaneId, PlaneSize, ReconError};
-
-use crate::config::{BitDepth, ChromaSubsampling};
-use crate::context::{EncoderOperation, EncoderState};
+use splot_recon::{BitDepth, PixelFormat};
 
 /// An error from the splot encoder API.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// The encoder worker pool could not be constructed.
-    #[error("failed to construct the encoder worker pool: {source}")]
-    Pool {
-        /// The underlying parallel-runtime error.
-        #[from]
-        source: splot_parallel::ParallelError,
+    /// Frame dimensions are zero or larger than AV2 can signal.
+    #[error("frame size {width}x{height} is outside 1..={max} per dimension", max = crate::config::MAX_FRAME_DIMENSION)]
+    InvalidDimensions {
+        /// Configured width.
+        width: u32,
+        /// Configured height.
+        height: u32,
     },
 
-    /// Input frame bit depth is outside the current supported subset.
-    #[error("unsupported encoder input bit depth {bit_depth:?}; only 8-bit input is supported")]
-    UnsupportedInputBitDepth {
-        /// Requested input bit depth.
-        bit_depth: BitDepth,
+    /// The chroma format is not supported.
+    #[error("chroma format {chroma:?} is not supported; only 4:2:0 is")]
+    UnsupportedChroma {
+        /// Configured chroma format.
+        chroma: PixelFormat,
     },
 
-    /// Input frame chroma layout is outside the current supported subset.
-    #[error(
-        "unsupported encoder input chroma layout {chroma_subsampling:?}; only YUV420 input is supported"
-    )]
-    UnsupportedInputChromaSubsampling {
-        /// Requested input chroma layout.
-        chroma_subsampling: ChromaSubsampling,
+    /// A frame-rate term is zero.
+    #[error("frame rate {numerator}:{denominator} must have nonzero terms")]
+    InvalidFrameRate {
+        /// Numerator.
+        numerator: u32,
+        /// Denominator.
+        denominator: u32,
     },
 
-    /// A required input plane is absent.
-    #[error("missing required encoder input plane {plane:?}")]
-    MissingInputPlane {
-        /// Missing plane.
-        plane: PlaneId,
+    /// The constant quantizer is outside `1..=255`.
+    #[error("qp {qp} is outside 1..=255")]
+    InvalidQp {
+        /// Requested `base_q_idx`.
+        qp: u8,
     },
 
-    /// A plane was supplied where the current format has no plane.
-    #[error("unexpected encoder input plane {plane:?}")]
-    UnexpectedInputPlane {
-        /// Unexpected plane.
-        plane: PlaneId,
+    /// The speed preset is outside `0..=10`.
+    #[error("preset {preset} is outside 0..={max}", max = crate::preset::Preset::MAX)]
+    InvalidPreset {
+        /// Requested preset.
+        preset: u8,
     },
 
-    /// A borrowed input plane failed geometry validation.
-    #[error("invalid encoder input plane {plane:?}: {source}")]
-    InputPlane {
-        /// Failing plane.
-        plane: PlaneId,
-        /// Underlying reconstruction view validation error.
-        #[source]
-        source: ReconError,
-    },
-
-    /// A borrowed input plane's visible size does not match frame metadata.
-    #[error("encoder input plane {plane:?} has visible size {actual:?}; expected {expected:?}")]
-    InputPlaneSizeMismatch {
-        /// Failing plane.
-        plane: PlaneId,
-        /// Expected visible size.
-        expected: PlaneSize,
-        /// Actual visible size.
-        actual: PlaneSize,
-    },
-
-    /// Input frame dimensions do not match the encoder configuration.
-    #[error(
-        "encoder input frame has visible luma size {actual:?}; expected {expected_width}x{expected_height}"
-    )]
-    InputFrameSizeMismatch {
-        /// Configured frame width in luma samples.
-        expected_width: u32,
-        /// Configured frame height in luma samples.
-        expected_height: u32,
-        /// Actual input frame visible luma size.
-        actual: PlaneSize,
-    },
-
-    /// Input frame bit depth does not match the encoder configuration.
-    #[error("encoder input frame bit depth {actual:?} does not match configured {expected:?}")]
-    InputFrameBitDepthMismatch {
+    /// Input samples have a different bit depth than the configuration.
+    #[error("input bit depth {actual:?} does not match the configured {expected:?}")]
+    BitDepthMismatch {
         /// Configured bit depth.
         expected: BitDepth,
-        /// Actual input frame bit depth.
+        /// Input bit depth.
         actual: BitDepth,
     },
 
-    /// Input frame chroma layout does not match the encoder configuration.
-    #[error("encoder input frame chroma layout {actual:?} does not match configured {expected:?}")]
-    InputFrameChromaSubsamplingMismatch {
-        /// Configured chroma layout.
-        expected: ChromaSubsampling,
-        /// Actual input frame chroma layout.
-        actual: ChromaSubsampling,
+    /// An input plane has the wrong number of samples.
+    #[error("input plane {plane} needs {expected} samples, got {actual}")]
+    PlaneSizeMismatch {
+        /// Plane index: 0 = Y, 1 = U, 2 = V.
+        plane: usize,
+        /// Samples needed.
+        expected: usize,
+        /// Samples given.
+        actual: usize,
     },
 
-    /// Chroma-size derivation failed for the input metadata.
-    #[error("failed to derive encoder input chroma geometry: {source}")]
-    InputChromaGeometry {
-        /// Underlying chroma geometry error.
-        #[source]
-        source: ReconError,
+    /// An input plane stride is smaller than its width.
+    #[error("input plane {plane} stride {stride} is smaller than its width {width}")]
+    InvalidStride {
+        /// Plane index: 0 = Y, 1 = U, 2 = V.
+        plane: usize,
+        /// Given stride.
+        stride: usize,
+        /// Plane width.
+        width: usize,
     },
 
-    /// Coefficient-tokenization allocation failed.
-    #[error("failed to allocate encoder coefficient tokenization storage for {context}")]
-    CoefficientTokenizationAllocationFailed {
-        /// Short description of the failed allocation.
-        context: &'static str,
+    /// An input sample exceeds the configured bit depth.
+    #[error("input plane {plane} has sample {sample} above the maximum {max}")]
+    SampleOutOfRange {
+        /// Plane index: 0 = Y, 1 = U, 2 = V.
+        plane: usize,
+        /// Offending sample.
+        sample: u16,
+        /// Largest allowed sample.
+        max: u16,
     },
 
-    /// Intra-mode emission allocation failed.
-    #[error("failed to allocate encoder intra-mode emission storage for {context}")]
-    IntraModeEmissionAllocationFailed {
-        /// Short description of the failed allocation.
-        context: &'static str,
+    /// A frame was built for a different configuration than the encoder's.
+    #[error("frame plane sizes or bit depth do not match the encoder configuration")]
+    FrameConfigMismatch,
+
+    /// A frame was sent after `flush`.
+    #[error("send_frame was called after flush")]
+    SendAfterFlush,
+
+    /// An earlier coding error stopped the encoder.
+    #[error("the encoder stopped after an earlier error")]
+    Failed,
+
+    /// A frame coder returned reconstruction planes of the wrong size.
+    #[error("the frame coder returned reconstruction planes of the wrong size")]
+    ReconSizeMismatch,
+
+    /// A frame-coding stage failed.
+    #[error("frame coding failed at {stage}: {source}")]
+    Coding {
+        /// The failing stage.
+        stage: &'static str,
+        /// The stage error.
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
-    /// Block-symbol trace allocation failed.
-    #[error("failed to allocate encoder block-symbol trace storage for {context}")]
-    BlockSymbolTraceAllocationFailed {
-        /// Short description of the failed allocation.
-        context: &'static str,
-    },
-
-    /// Writing a block-symbol trace token through the symbol encoder failed.
-    #[error("encoder block-symbol trace symbol write failed for token {index}: {source}")]
-    BlockSymbolTraceSymbolWrite {
-        /// Zero-based index of the failing token in the trace.
-        index: usize,
-        /// Source symbol-encoder error.
-        #[source]
-        source: WriteError,
-    },
-
-    /// Finalizing block-symbol trace symbol bytes failed.
-    #[error("encoder block-symbol trace symbol encoder finalization failed: {source}")]
-    BlockSymbolTraceSymbolEncodeFinish {
-        /// Source symbol-encoder error.
-        #[source]
-        source: WriteError,
-    },
-
-    /// An encoder lifecycle operation is invalid in the current context state.
-    #[error("encoder operation {operation:?} is invalid while the context is {state:?}")]
-    State {
-        /// Requested operation.
-        operation: EncoderOperation,
-        /// Current context state.
-        state: EncoderState,
-    },
-
-    /// Assembling the minimal intra skip IVF container failed.
-    #[error("encoder minimal intra skip IVF assembly failed: {source}")]
-    MinimalIntraSkipIvf {
-        /// Source container-assembly error from the `splot-core` writer bridge.
-        #[source]
-        source: splot_core::headers::frame::MinimalIntraIvfError,
+    /// The requested feature is not implemented.
+    #[error("{what} is not supported yet")]
+    Unsupported {
+        /// The missing feature.
+        what: &'static str,
     },
 }
 
-/// A specialized [`Result`](core::result::Result) for encoder context operations.
+/// A specialized [`Result`](core::result::Result) for encoder operations.
 pub type Result<T> = core::result::Result<T, Error>;

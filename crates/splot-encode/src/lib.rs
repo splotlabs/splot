@@ -1,50 +1,43 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! `splot-encode` — experimental AV2 encoder API and supported packet emitters.
+//! `splot-encode` — AV2 encoder API.
 //!
-//! The typed push/pull [`Context`] accepts borrowed 8-bit YUV420 input and emits
-//! an AV2 Annex B temporal unit for the supported 64x64 all-128 skip-frame subset.
-//! Other accepted frames are retired without a packet. Public fixture emitters
-//! cover the explicitly named undivided 64x64 intra traces used by decoder-backed
-//! oracles.
-//!
-//! The [`Context`] owns a [`splot_parallel::WorkerPool`] configured by an
-//! [`EncoderRuntimeConfig`] thread-count policy; thread count is a runtime knob
-//! and never affects bitstream output.
-//! The crate uses `splot-recon`'s validated plane/view geometry for its borrowed
-//! input API. Its repository roots are `splot-cli`'s decoder-oracle dev tests and
-//! the out-of-workspace fuzz crate; no workspace production crate depends on it.
+//! [`Encoder`] takes owned [`SourceFrame`]s built for a validated [`Config`]
+//! and returns one [`Packet`] (an AV2 Annex B temporal unit) per frame, with
+//! [`FrameStats`]. [`y4m::Y4mReader`] reads input and [`ivf::IvfWriter`] writes
+//! output. Speed presets are rows of [`PRESETS`]; rate control goes through
+//! [`RateController`]. The key-frame tile writer takes CDF rows, contexts and
+//! partition rules from `splot_decode::encoder_syntax`; every coded frame is
+//! tested against the decoders' output.
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 
-mod block_symbol_trace;
-mod coefficient_tokenization;
+#![feature(portable_simd)]
+
 pub mod config;
-pub mod context;
+pub mod encoder;
 pub mod error;
 pub mod frame;
-mod general_intra_trace;
-mod intra_mode_emission;
-mod partition_emission;
-pub mod runtime;
+mod intra_frame;
+pub mod ivf;
+mod kernels;
+pub mod preset;
+pub mod rate_control;
+mod recon;
+pub mod stats;
+#[cfg(test)]
+mod test_support;
+mod tile_writer;
+pub mod y4m;
 
-pub use config::{BitDepth, ChromaSubsampling, DEFAULT_QP, EncoderConfig};
-pub use context::{
-    Context, EncoderOperation, EncoderState, FlushStatus, Packet, ReceivePacketStatus,
-    SendFrameStatus,
-};
+pub use config::{Config, MAX_FRAME_DIMENSION, RateControlMode};
+pub use encoder::{Encoder, Packet, StatsSink};
 pub use error::{Error, Result};
-pub use frame::{
-    Frame, FrameId, FrameInfo, FramePlaneInput, FramePlanesInput, FrameTimestamp, RetainedFrame,
-};
-pub use general_intra_trace::{
-    emit_minimal_intra_2d_ivf, emit_minimal_intra_all_planes_coded_ivf,
-    emit_minimal_intra_coded_chroma_ivf, emit_minimal_intra_coded_chroma_v_ivf,
-    emit_minimal_intra_coded_dc_ivf, emit_minimal_intra_eob3_ivf, emit_minimal_intra_skip_ivf,
-    emit_minimal_intra_two_coeff_ivf, emit_minimal_intra_two_nonzero_ivf,
-    emit_minimal_intra_visible_ac_ivf,
-};
-pub use runtime::{EncoderRuntimeConfig, SpeedPreset, SpeedPresetError};
-pub use splot_recon::{PlaneRect, PlaneSize};
+pub use frame::SourceFrame;
+pub use preset::{PRESETS, Preset, PresetParams};
+pub use rate_control::{ConstantQp, FramePlanInfo, FrameType, RateController};
+pub use splot_parallel::ThreadCount;
+pub use splot_recon::{BitDepth, PixelFormat, PlaneSize};
+pub use stats::FrameStats;

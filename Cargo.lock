@@ -741,7 +741,9 @@ dependencies = [
 name = "splot-encode"
 version = "0.0.0"
 dependencies = [
+ "proptest",
  "splot-core",
+ "splot-decode",
  "splot-parallel",
  "splot-recon",
  "thiserror",

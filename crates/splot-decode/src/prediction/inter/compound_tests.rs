@@ -562,7 +562,7 @@ fn compound_average_does_not_gate_residual_geometry_before_reading_symbols() {
 
     let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&bytes);
-    let before = symbols.consumed_bits();
+    let before = symbols.symbol_count();
     let result = read_compound_average_syntax(
         &mut dec_tile,
         &mut symbols,
@@ -572,5 +572,5 @@ fn compound_average_does_not_gate_residual_geometry_before_reading_symbols() {
     );
 
     assert!(result.is_ok());
-    assert!(symbols.consumed_bits() > before);
+    assert!(symbols.symbol_count() > before);
 }

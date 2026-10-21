@@ -13,6 +13,7 @@
 //! threads. The stream planners consume either bounded
 //! raw bytes or already parsed `splot-core` stream facts; the runtime decodes
 //! planned streams to hash, raw, or Y4M byte output, or discards decoded output.
+//! [`encoder_syntax`] lends the tile parser's contexts and CDF rows to `splot-encode`.
 //!
 //! Feature tracking: `INFRA-DECODER-CRATE-SCAFFOLDING`,
 //! `DECODE-UNSUPPORTED-DIAGNOSTIC-API`, `DECODE-LIMITS-RUNTIME-API`,
@@ -32,6 +33,7 @@ mod bitstream;
 pub mod context;
 mod decoder;
 pub mod diagnostic;
+pub use bitstream::tile_payload::encoder_syntax;
 pub mod error;
 mod filters;
 #[cfg(feature = "fuzzing")]

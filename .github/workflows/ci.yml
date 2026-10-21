@@ -138,6 +138,48 @@ jobs:
           TEST_DATA_DIR: ${{ runner.temp }}/ewouth-av2
         run: python3 scripts/check-external-vectors.py ewouth-av2 "$TEST_DATA_DIR"
 
+  encoder-avm-oracle:
+    runs-on: ubuntu-latest
+    env:
+      AVM_REV: 01803db6afa5a0616702a3814fc5934ab9e99adf
+      # Decoder-only portable C build: no encoder, TFLite, tests or assembler.
+      AVM_CMAKE_FLAGS: -DCMAKE_BUILD_TYPE=Release -DAVM_TARGET_CPU=generic -DCONFIG_AV2_ENCODER=0 -DENABLE_DOCS=0 -DENABLE_EXAMPLES=0 -DENABLE_TESTS=0 -DENABLE_TOOLS=0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - id: avm-flags
+        name: Hash AVM build flags
+        run: echo "hash=$(printf '%s' "$AVM_CMAKE_FLAGS" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - id: avm-cache
+        name: Cache avmdec
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/avmdec
+          key: ${{ runner.os }}-avmdec-${{ env.AVM_REV }}-${{ steps.avm-flags.outputs.hash }}
+
+      - name: Build pinned avmdec
+        if: steps.avm-cache.outputs.cache-hit != 'true'
+        env:
+          AVM_SRC: ${{ runner.temp }}/avm
+          AVM_BUILD: ${{ runner.temp }}/avm-build
+        run: |
+          git init -q "$AVM_SRC"
+          git -C "$AVM_SRC" fetch -q --depth 1 https://github.com/AOMediaCodec/avm.git "$AVM_REV"
+          git -C "$AVM_SRC" checkout -q --detach FETCH_HEAD
+          # shellcheck disable=SC2086
+          cmake -S "$AVM_SRC" -B "$AVM_BUILD" $AVM_CMAKE_FLAGS
+          cmake --build "$AVM_BUILD" --target avmdec -j "$(nproc)"
+          cp "$AVM_BUILD/avmdec" "$HOME/avmdec"
+
+      - name: Decode encoder output with AVM
+        run: SPLOT_AVM_DECODER="$HOME/avmdec" cargo test --release -p splot-encode --lib avm --locked -- --ignored
+
   # Advisories are informational because the database changes independently of PRs.
   supply-chain:
     runs-on: ubuntu-latest

@@ -25,9 +25,12 @@ const PARTITION_SIZE_ADJUST_RECT_TYPE: [usize; BLOCK_SIZES] = [
     0, 0, 0, 0, 1, 2, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 13, 14, 13, 14, 0, 0, 0, 0,
 ];
 
+/// § 5.20.3.2 `rect_type` direction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RectPartitionType {
+pub enum RectPartitionType {
+    /// `RECT_HORZ`.
     Horz,
+    /// `RECT_VERT`.
     Vert,
 }
 
@@ -249,6 +252,7 @@ impl<'a> SquareSplitContextInput<'a> {
         })
     }
 
+    #[inline]
     pub(crate) fn do_square_split_selector(self) -> Result<TileCdfSelector, TileCdfError> {
         let plane_start = checked_square_split_plane(self.plane_start)?;
         let bsw = self.b_size.width_log2()?;

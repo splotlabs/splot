@@ -317,10 +317,6 @@ pub enum WriteError {
         limit: usize,
     },
 
-    /// A valid final symbol payload could not be constructed for the committed operations.
-    #[error("symbol encoder could not construct a valid finalized payload")]
-    SymbolFinalizationFailed,
-
     /// An [`ObuHeader`](crate::obu::ObuHeader)'s `obu_type` does not select the
     /// [`ParsedObu`](crate::obu::ParsedObu) payload variant it was paired with in the complete-OBU
     /// writer (e.g. a `SequenceHeader` header with a `Padding` payload). The § 5.2.1 OBU dispatch

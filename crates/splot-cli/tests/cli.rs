@@ -726,3 +726,26 @@ fn validate_rejects_non_numeric_max_diagnostics() {
     );
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[test]
+fn encode_rejects_malformed_and_unsupported_y4m_without_writing_output() {
+    let cases: [(&[u8], &str); 2] = [
+        (b"YUV4MPEG2 W16 F30:1\n", "no H tag"),
+        (b"YUV4MPEG2 W16 H16 F30:1 C422\n", "Yuv422"),
+    ];
+    for (input, expected) in cases {
+        let input = temp_input("y4m", input);
+        let output = common::temp_path("encode", "ivf");
+        let out = splot(&[
+            "encode",
+            input.to_str().expect("utf-8 input path"),
+            "-o",
+            output.to_str().expect("utf-8 output path"),
+        ]);
+        let _ = std::fs::remove_file(&input);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "stderr was: {stderr}");
+        assert!(stderr.contains(expected), "stderr was: {stderr}");
+        assert!(!output.exists(), "no output file is created on failure");
+    }
+}

@@ -17,6 +17,10 @@ workspace = true
 
 [dependencies]
 splot-core.workspace = true
+splot-decode.workspace = true
 splot-parallel.workspace = true
 splot-recon.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
