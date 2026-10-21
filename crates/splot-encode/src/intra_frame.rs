@@ -5,8 +5,8 @@
 //! temporal unit of one intra frame.
 
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, build_encoder_sequence_header,
-    build_key_frame_header, encode_key_frame_temporal_unit,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams,
+    build_encoder_sequence_header, build_key_frame_header, encode_key_frame_temporal_unit,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -77,7 +77,8 @@ impl FrameCoder for IntraFrameCoder {
         qp: u8,
     ) -> Result<CodedFrame> {
         let qindex = u32::from(qp);
-        let core = build_key_frame_header(&self.view, qindex, 0).map_err(coding("frame header"))?;
+        let core = build_key_frame_header(&self.view, qindex, 0, &FrameFilterParams::default())
+            .map_err(coding("frame header"))?;
         let mut writer =
             KeyFrameTileWriter::new(&self.sequence, &core).map_err(coding("tile setup"))?;
         let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();

@@ -9,11 +9,12 @@
 //! tile in an Annex B temporal unit.
 
 use crate::bitio::BitReader;
-use crate::headers::frame::restoration::lr_plane_tool_table;
+use crate::headers::frame::restoration::default_restoration_size;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
-    CoreSeqView, FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView,
-    encode_temporal_delimiter_obu, init_core_from_prefix, parse_core_body,
+    CdefParams, CdefStrengthSets, CoreSeqView, DeblockingFilterParams, FrameHeaderCore,
+    FrameHeaderParseStatus, FrameReferenceStateView, FrameRestorationType, LrGeometry, LrParams,
+    LrPlaneParams, encode_temporal_delimiter_obu, init_core_from_prefix, parse_core_body,
     parse_frame_header_prefix,
 };
 use crate::headers::sequence::{
@@ -24,7 +25,8 @@ use crate::obu::{ObuHeader, ParsedObu};
 use crate::span::ByteOffset;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, ObuType, TemporalLayerId};
 use crate::write::{
-    BitWriter, WriteError, write_annexb_obu, write_obu_payload, write_tile_group_obu,
+    BitWriter, WriteError, write_annexb_obu, write_cdef_params, write_deblocking_filter_params,
+    write_lr_params, write_obu_payload, write_tile_group_obu,
 };
 
 /// `seq_level_idx == 31`: the level without tile-size limits (§ 5.18.7.3).
@@ -33,6 +35,8 @@ const UNCONSTRAINED_LEVEL_IDX: u32 = 31;
 const ORDER_HINT_BITS_MINUS_1: u32 = 7;
 /// `base_*_delta_q` value that gives a zero `Base*DeltaQ` (`-DELTA_DCQUANT_MIN`, § 3).
 const ZERO_BASE_DELTA_Q: u32 = 23;
+/// `df_par_bits_minus_2`: `DfDeltaQ` spans `-4..=3` (§ 5.18.5.2).
+const DF_PAR_BITS_MINUS_2: u32 = 1;
 /// `reduced_tx_set == 2`: intra transform blocks infer `DCT_DCT` (§ 5.20.8.2).
 pub const KEY_FRAME_REDUCED_TX_SET: u32 = 2;
 
@@ -102,6 +106,25 @@ pub struct EncoderStreamParams {
     pub sb_size: SuperblockSize,
     /// Optional coding tools.
     pub tools: EncoderToolFlags,
+}
+
+/// Frame-level loop-filter choices of [`build_key_frame_header`].
+///
+/// `Default` turns every filter off. GDF and CCSO are always off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameFilterParams {
+    /// `apply_deblocking_filter[0..4]` (§ 5.18.5.2). Flags 2 and 3 need flag 0 or 1.
+    pub deblocking: [bool; 4],
+    /// `DfDeltaQ[0..4]` (§ 5.18.5.2), `0` for a plane that is not filtered. Each
+    /// offset must fit `f(dfParBits)` after the `1 << (dfParBits - 1)` bias.
+    pub deblocking_delta_q: [i32; 4],
+    /// `CdefDamping`, `3..=6` (§ 5.18.7.10). Ignored when CDEF is off.
+    pub cdef_damping: u8,
+    /// The CDEF strength sets (§ 5.18.7.10); empty turns CDEF off.
+    pub cdef_strengths: CdefStrengthSets,
+    /// `LoopRestorationSize[0]` of luma `RESTORE_PC_WIENER` (§ 5.18.7.11); `None`
+    /// turns loop restoration off. Chroma restoration is always off.
+    pub lr_luma_unit_size: Option<u32>,
 }
 
 /// Error from the encoder header builders.
@@ -247,7 +270,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     }
     w.write_flag(false)?; // cdef_on_skip_txfm_always_on
     w.write_flag(false)?; // cdef_on_skip_txfm_disabled
-    w.write_bits(0, 2)?; // df_par_bits_minus_2
+    w.write_bits(DF_PAR_BITS_MINUS_2, 2)?;
 
     w.write_flag(false)?; // seq_tile_info_present_flag
     w.write_flag(false)?; // film_grain_params_present
@@ -331,18 +354,21 @@ fn write_transform_quant_entropy_config(
 ///
 /// The frame has the maximum frame size, `show_frame` semantics through
 /// `immediate_output_frame = 1`, one uniform tile, no segmentation, no delta-q,
-/// no quantizer matrices, deblocking and every other frame filter off,
-/// `TX_MODE_LARGEST`, `reduced_tx_set = 2`, and no film grain.
+/// no quantizer matrices, the deblocking, CDEF, and loop-restoration choices of
+/// `filters`, GDF and CCSO off, `TX_MODE_LARGEST`, `reduced_tx_set = 2`, and no
+/// film grain.
 ///
 /// # Errors
 /// Returns [`EncoderHeaderError`] for a zero or too-wide `base_q_idx`, a
-/// single-picture view, or canonical bits that do not parse completely.
+/// single-picture view, `filters` that the sequence or the syntax cannot carry,
+/// or canonical bits that do not parse completely.
 pub fn build_key_frame_header(
     seq: &CoreSeqView,
     base_q_idx: u32,
     order_hint: u32,
+    filters: &FrameFilterParams,
 ) -> Result<FrameHeaderCore, EncoderHeaderError> {
-    let bytes = key_frame_header_bits(seq, base_q_idx, order_hint)?;
+    let bytes = key_frame_header_bits(seq, base_q_idx, order_hint, filters)?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::ClosedLoopKey, true);
@@ -364,6 +390,7 @@ fn key_frame_header_bits(
     seq: &CoreSeqView,
     base_q_idx: u32,
     order_hint: u32,
+    filters: &FrameFilterParams,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
@@ -400,20 +427,7 @@ fn key_frame_header_bits(
     if seq.quant.enable_parity_hiding && !allow_tcq {
         w.write_flag(false)?; // allow_parity_hiding
     }
-    w.write_flag(false)?; // apply_deblocking_filter[0]
-    w.write_flag(false)?; // apply_deblocking_filter[1]
-    if seq.filter.enable_gdf {
-        w.write_flag(false)?; // gdf_frame_enable
-    }
-    if seq.filter.enable_cdef {
-        w.write_flag(false)?; // cdef_frame_enable
-    }
-    if seq.restoration.enable_restoration {
-        for plane in 0..seq.quant.num_planes {
-            let (_, n) = lr_plane_tool_table(seq.restoration, plane > 0);
-            w.write_ns(0, n)?; // tool_index = RESTORE_NONE
-        }
-    }
+    write_filter_params(&mut w, seq, filters)?;
     if seq.ccso.enable_ccso {
         w.write_flag(false)?; // ccso_frame_flag
     }
@@ -421,6 +435,62 @@ fn key_frame_header_bits(
     w.write_bits(KEY_FRAME_REDUCED_TX_SET, 2)?;
     w.align_to_byte();
     Ok(w.into_bytes())
+}
+
+/// § 5.18.5.2 `deblocking_filter_params()`, § 5.18.7.9 `gdf_params()` (off),
+/// § 5.18.7.10 `cdef_params()`, and § 5.18.7.11 `lr_params()` of `filters`.
+fn write_filter_params(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    filters: &FrameFilterParams,
+) -> Result<(), WriteError> {
+    let num_planes = seq.quant.num_planes;
+    let delta = filters.deblocking_delta_q;
+    let present = core::array::from_fn(|i| {
+        filters.deblocking[i] && delta[i] != if i == 1 { delta[0] } else { 0 }
+    });
+    let deblocking = DeblockingFilterParams::new(filters.deblocking, present, delta);
+    let df_par_bits_minus_2 = seq.filter.df_par_bits_minus_2;
+    write_deblocking_filter_params(w, &deblocking, false, num_planes, df_par_bits_minus_2, None)?;
+    if seq.filter.enable_gdf {
+        w.write_flag(false)?; // gdf_frame_enable
+    }
+    let cdef_on = !filters.cdef_strengths.is_empty();
+    let cdef = CdefParams {
+        cdef_frame_enable: cdef_on,
+        cdef_damping: cdef_on.then_some(filters.cdef_damping),
+        cdef_strengths: cdef_on.then_some(filters.cdef_strengths.len() as u8),
+        cdef_on_skip_txfm_frame_enable: cdef_on.then_some(false),
+        strengths: filters.cdef_strengths,
+    };
+    write_cdef_params(w, &cdef, false, num_planes, &seq.filter)?;
+    let geometry = LrGeometry::new(seq.tile.frame_sb_size(true), seq.chroma_format_idc);
+    let mut lr = LrParams {
+        uses_lr: filters.lr_luma_unit_size.is_some(),
+        planes: crate::tile::InlineVec::default(),
+        loop_restoration_size: default_restoration_size(geometry),
+    };
+    if seq.restoration.enable_restoration {
+        for plane in 0..num_planes {
+            let restoration_type = if plane == 0 && filters.lr_luma_unit_size.is_some() {
+                FrameRestorationType::PcWiener
+            } else {
+                FrameRestorationType::None
+            };
+            lr.planes
+                .push(LrPlaneParams {
+                    restoration_type,
+                    ..LrPlaneParams::default()
+                })
+                .ok_or(WriteError::NonCanonicalFrameHeader {
+                    what: "lr_num_planes",
+                })?;
+        }
+    }
+    if let Some(size) = filters.lr_luma_unit_size {
+        lr.loop_restoration_size[0] = size;
+    }
+    write_lr_params(w, &lr, false, num_planes, &seq.restoration, geometry)
 }
 
 /// § 5.18.7.3 uniform tile spacing with one tile at level 31 (`minLog2TileCols == 0`).
