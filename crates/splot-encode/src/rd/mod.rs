@@ -92,26 +92,45 @@ static COST_Q8: [u16; 4097] = {
 /// and the symbol takes `pp(s - 1) - pp(s)` of a 4096 scale. A malformed row or an
 /// out-of-range symbol costs [`Bits::IMPOSSIBLE`].
 pub(crate) fn symbol_cost(row: &[u16], symbol: usize) -> Bits {
+    let Some(low) = interval_base(row, symbol) else {
+        return Bits::IMPOSSIBLE;
+    };
+    let high = match symbol.checked_sub(1) {
+        Some(previous) => interval_base(row, previous).unwrap_or(0),
+        None => 1 << INTERVAL_LOG2,
+    };
+    interval_cost(high, low)
+}
+
+/// [`symbol_cost`] of every symbol of `row` in symbol order, in one pass.
+pub(crate) fn row_costs(row: &[u16]) -> impl Iterator<Item = Bits> + '_ {
+    (0..)
+        .map_while(|s| interval_base(row, s))
+        .scan(1u32 << INTERVAL_LOG2, |high, low| {
+            let cost = interval_cost(*high, low);
+            *high = low;
+            Some(cost)
+        })
+}
+
+/// `pp(s)` of the § 8.2.6 split on a 4096 scale; `None` for a malformed row
+/// or a symbol past its end.
+fn interval_base(row: &[u16], s: usize) -> Option<u32> {
     let n = row.len().wrapping_sub(1);
-    let Some(inc) = PROB_INC.get(n.wrapping_sub(2)) else {
-        return Bits::IMPOSSIBLE;
-    };
-    if symbol >= n {
-        return Bits::IMPOSSIBLE;
-    }
-    let pp = |s: usize| -> u32 {
-        if s == n - 1 {
-            return 0;
+    let inc = PROB_INC.get(n.wrapping_sub(2))?;
+    match s.cmp(&(n - 1)) {
+        core::cmp::Ordering::Less => {
+            let f = 32768u32.saturating_sub(u32::from(row[s]));
+            Some(((f >> 7) << 4) + inc[s].unsigned_abs())
         }
-        let f = 32768u32.saturating_sub(u32::from(row[s]));
-        ((f >> 7) << 4) + inc[s].unsigned_abs()
-    };
-    let high = if symbol == 0 {
-        1 << INTERVAL_LOG2
-    } else {
-        pp(symbol - 1)
-    };
-    let width = high.saturating_sub(pp(symbol));
+        core::cmp::Ordering::Equal => Some(0),
+        core::cmp::Ordering::Greater => None,
+    }
+}
+
+/// The cost of the interval `high - low` of a 4096 scale.
+fn interval_cost(high: u32, low: u32) -> Bits {
+    let width = high.saturating_sub(low);
     match COST_Q8.get(width as usize) {
         Some(&cost) if width > 0 => Bits(u64::from(cost)),
         _ => Bits::IMPOSSIBLE,

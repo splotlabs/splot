@@ -7,6 +7,7 @@ use super::*;
 use crate::config::RateControlMode;
 use crate::preset::Preset;
 use crate::test_support::{assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes};
+use crate::tile_writer::PartitionTree;
 
 /// Gradients, a ripple, and seeded noise, so blocks of every size split.
 fn synthetic_frame(config: &Config, seed: u32) -> SourceFrame {
@@ -94,6 +95,47 @@ fn coding_is_deterministic_and_lower_qp_costs_more_bits() {
     let coarse = code(&config(96, 80, BitDepth::Eight, 6, 200), 7);
     assert_eq!(fine.temporal_unit, again.temporal_unit);
     assert!(fine.temporal_unit.len() > coarse.temporal_unit.len());
+}
+
+/// A superblock search from one state finds the same tree and cost twice:
+/// trials roll back completely and no decision depends on hidden state.
+#[test]
+fn superblock_search_is_deterministic_and_rolls_back() {
+    for preset in [0, 10] {
+        let config = config(80, 72, BitDepth::Ten, preset, 90);
+        let source = synthetic_frame(&config, 5);
+        let frame = IntraFrameCoder::new(&config).unwrap();
+        let tx = tx_choice::key_frame_tx_params(frame.preset);
+        let header = FrameFilterParams::default();
+        let core = build_key_frame_header(&frame.view, 90, 0, &header, tx).unwrap();
+        let mut writer = KeyFrameTileWriter::new(&frame.sequence, &core).unwrap();
+        let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
+        let sb = writer.syntax().superblock_size4() * 4;
+        let padded = PaddedSource::new(&source, mi_cols * 4 + sb, mi_rows * 4 + sb);
+        let lambda = Lambda::from_qindex(90, config.bit_depth).unwrap();
+        let mut coder = SourceResidualCoder {
+            source: &padded,
+            qindex: 90,
+            bit_depth: config.bit_depth,
+            preset: frame.preset,
+            lambda,
+            candidate: false,
+        };
+        let mut search = || {
+            writer
+                .search_superblock(|syntax, root| {
+                    let mut trial = TrialCoder::new(syntax, &mut coder, frame.preset, lambda);
+                    search_partition(&mut trial, root, frame.preset, lambda)
+                })
+                .unwrap()
+        };
+        let first = search();
+        assert_eq!(first, search(), "preset {preset}");
+        assert!(
+            matches!(first.0, PartitionTree::Split { .. }),
+            "preset {preset}"
+        );
+    }
 }
 
 /// AVM decodes every coded frame to the splot output.

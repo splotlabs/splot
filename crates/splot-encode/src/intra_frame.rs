@@ -110,6 +110,7 @@ impl FrameCoder for IntraFrameCoder {
             bit_depth: self.bit_depth,
             preset: self.preset,
             lambda,
+            candidate: false,
         };
         let mut decisions = FrameDecisions::default();
         let preset = self.preset;
@@ -253,6 +254,10 @@ pub(crate) struct SourceResidualCoder<'a> {
     bit_depth: BitDepth,
     preset: &'static PresetParams,
     lambda: Lambda,
+    /// Quantizes with the deadzone even when the preset asks for RDOQ: a
+    /// candidate trial only ranks choices; RDOQ runs in a leaf's final trial
+    /// and in the stream.
+    pub(crate) candidate: bool,
 }
 
 impl ResidualCoder for SourceResidualCoder<'_> {
@@ -325,7 +330,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let mut levels = vec![0; len];
         let mut dequant = vec![0; len];
         // shortcut: RDOQ walks the 2D-class scan only; IDTX and 1D types take the deadzone.
-        if self.preset.rdoq && (tx.tx_type as u8) < TxType::Idtx as u8 {
+        if self.preset.rdoq && !self.candidate && (tx.tx_type as u8) < TxType::Idtx as u8 {
             let block = RdoqBlock {
                 dc_q2: params.dc_quant,
                 ac_q2: params.ac_quant,

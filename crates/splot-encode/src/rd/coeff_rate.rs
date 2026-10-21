@@ -9,7 +9,7 @@ use splot_core::symbol_encoder::{SymbolSink, adapt_cdf_u16};
 use splot_core::write::WriteResult;
 use splot_decode::encoder_syntax::{IntraTileSyntax, TransformBlock};
 
-use super::{Bits, symbol_cost, unary_cost};
+use super::{Bits, row_costs, symbol_cost, unary_cost};
 use crate::kernels::rdoq::{BASE_SYMBOLS, BIT, BR_SYMBOLS, CoeffRates, LevelContext, RdoqBlock};
 use crate::tile_writer::coeffs::{adjusted_log2, write_eob, write_symbol};
 use crate::tile_writer::{Result, TileWriterError};
@@ -98,8 +98,8 @@ impl CdfCoeffRates<'_> {
     fn priced(row: Result<&mut [u16]>, symbols: usize, first: usize) -> [u32; BASE_SYMBOLS] {
         let mut out = [MAX_QUERY_RATE as u32; BASE_SYMBOLS];
         if let Ok(row) = row {
-            for (symbol, cost) in out.iter_mut().enumerate().take(symbols).skip(first) {
-                *cost = clamp(symbol_cost(row, symbol - first));
+            for (cost, bits) in out[first..symbols].iter_mut().zip(row_costs(row)) {
+                *cost = clamp(bits);
             }
         }
         out
@@ -155,10 +155,13 @@ impl CoeffRates for CdfCoeffRates<'_> {
         let row =
             self.syntax
                 .coeff_br_cdf(ctx.levels, self.tx.plane, (ctx.row, ctx.col), ctx.is_lf);
-        core::array::from_fn(|symbol| match &row {
-            Ok(row) => clamp(symbol_cost(row, symbol)),
-            Err(_) => MAX_QUERY_RATE as u32,
-        })
+        let mut out = [MAX_QUERY_RATE as u32; BR_SYMBOLS];
+        if let Ok(row) = row {
+            for (cost, bits) in out.iter_mut().zip(row_costs(row)) {
+                *cost = clamp(bits);
+            }
+        }
+        out
     }
 
     fn dc_sign(&mut self) -> u32 {

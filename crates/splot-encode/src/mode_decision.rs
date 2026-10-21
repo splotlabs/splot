@@ -93,24 +93,55 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         Ok(cost)
     }
 
-    /// The `preset.intra_modes` candidates with the lowest SATD, best first;
-    /// ties keep candidate order, so the ranking is deterministic.
-    fn shortlist(
+    /// `candidates` with their SATD over `planes`, appended to `ranked`.
+    fn rank(
         &mut self,
         leaf: &LeafBlock,
-        candidates: Vec<IntraModes>,
+        candidates: impl IntoIterator<Item = IntraModes>,
         planes: Range<usize>,
-    ) -> Result<Vec<LeafChoice>> {
-        let mut ranked = Vec::with_capacity(candidates.len());
+        ranked: &mut Vec<(u64, IntraModes)>,
+    ) -> Result<()> {
         for modes in candidates {
             ranked.push((self.satd(leaf, modes, planes.clone())?, modes));
         }
+        Ok(())
+    }
+
+    /// The `preset.intra_modes` entries of `ranked` with the lowest SATD, best
+    /// first; ties keep candidate order, so the ranking is deterministic.
+    fn shortlist(&self, mut ranked: Vec<(u64, IntraModes)>) -> Vec<LeafChoice> {
         ranked.sort_by_key(|&(satd, _)| satd);
         ranked.truncate(usize::from(self.preset.intra_modes.max(1)));
-        Ok(ranked
+        ranked
             .into_iter()
             .map(|(_, modes)| LeafChoice::largest(modes))
-            .collect())
+            .collect()
+    }
+
+    /// The luma shortlist: every mode without an angle delta, then the angle
+    /// deltas of the shortlisted directional modes.
+    fn luma_shortlist(&mut self, leaf: &LeafBlock) -> Result<Vec<LeafChoice>> {
+        let base = INTRA_MODES.map(|y_mode| IntraModes {
+            y_mode,
+            ..IntraModes::DC
+        });
+        let mut ranked = Vec::new();
+        self.rank(leaf, base, LUMA, &mut ranked)?;
+        let deltas: Vec<IntraModes> = self
+            .shortlist(ranked.clone())
+            .into_iter()
+            .filter(|choice| choice.modes.y_mode.is_directional())
+            .flat_map(|choice| {
+                (-MAX_ANGLE_DELTA..=MAX_ANGLE_DELTA)
+                    .filter(|&delta| delta != 0)
+                    .map(move |angle_delta| IntraModes {
+                        angle_delta,
+                        ..choice.modes
+                    })
+            })
+            .collect();
+        self.rank(leaf, deltas, LUMA, &mut ranked)?;
+        Ok(self.shortlist(ranked))
     }
 
     /// The candidate with the lowest `D + lambda * R` over `planes`; each
@@ -128,7 +159,10 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         let mut best: Option<(u128, LeafChoice)> = None;
         for choice in candidates {
             self.syntax.restore(start)?;
-            let j = self.trial(leaf, choice, planes.clone())?.cost(self.lambda);
+            self.coder.candidate = true;
+            let cost = self.trial(leaf, choice, planes.clone());
+            self.coder.candidate = false;
+            let j = cost?.cost(self.lambda);
             if best.is_none_or(|(best_j, _)| j < best_j) {
                 best = Some((j, choice));
             }
@@ -136,25 +170,6 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         self.syntax.restore(start)?;
         best.map(|(_, choice)| choice)
             .ok_or(TileWriterError::Shape("no leaf candidate"))
-    }
-
-    /// Every luma mode and angle delta, with the chroma mode of `planned`.
-    fn luma_candidates(planned: IntraModes) -> Vec<IntraModes> {
-        INTRA_MODES
-            .into_iter()
-            .flat_map(|y_mode| {
-                let deltas = if y_mode.is_directional() {
-                    -MAX_ANGLE_DELTA..=MAX_ANGLE_DELTA
-                } else {
-                    0..=0
-                };
-                deltas.map(move |angle_delta| IntraModes {
-                    y_mode,
-                    angle_delta,
-                    ..planned
-                })
-            })
-            .collect()
     }
 
     /// Every chroma mode, CFL with derived alphas, and CFL with the explicit
@@ -230,7 +245,7 @@ impl PartitionSearch for TrialCoder<'_, '_> {
     fn evaluate_leaf(&mut self, node: PartitionNode) -> Result<(RdCost, LeafChoice)> {
         let leaf = self.syntax.leaf(node)?;
         let start = self.save(node)?;
-        let luma = self.shortlist(&leaf, Self::luma_candidates(IntraModes::DC), LUMA)?;
+        let luma = self.luma_shortlist(&leaf)?;
         let mut choice = self.best(&leaf, luma, LUMA, &start)?;
         if self.preset.tx_partition_search {
             let partitions = self.syntax.luma_tx_partitions(&leaf)?;
@@ -247,7 +262,9 @@ impl PartitionSearch for TrialCoder<'_, '_> {
             self.trial(&leaf, choice, LUMA)?;
             let luma = self.save(node)?;
             let modes = self.chroma_candidates(&leaf, choice.modes)?;
-            let candidates = self.shortlist(&leaf, modes, CHROMA)?;
+            let mut ranked = Vec::new();
+            self.rank(&leaf, modes, CHROMA, &mut ranked)?;
+            let candidates = self.shortlist(ranked);
             let chroma = candidates
                 .into_iter()
                 .map(|candidate| LeafChoice {

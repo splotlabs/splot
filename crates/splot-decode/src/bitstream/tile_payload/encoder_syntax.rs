@@ -379,6 +379,7 @@ pub struct IntraTileSyntax {
     palette_y: TileLumaPaletteState,
     uv_cfls: TileUvCflState,
     y_modes: TileIntraYModeState,
+    y_mode_table: intra::YModeTable,
 }
 
 impl IntraTileSyntax {
@@ -454,6 +455,7 @@ impl IntraTileSyntax {
             ))?,
             uv_cfls: neighbour(TileUvCflState::new(mi_rows, mi_cols, sb_size4))?,
             y_modes: neighbour(TileIntraYModeState::new(mi_rows, mi_cols, sb_size4))?,
+            y_mode_table: intra::YModeTable::default(),
         })
     }
 

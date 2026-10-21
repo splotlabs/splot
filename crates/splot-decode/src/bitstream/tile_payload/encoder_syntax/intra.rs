@@ -209,6 +209,14 @@ impl IntraTools {
     }
 }
 
+/// The luma modes of every § 5.20.5.5 mode index under one neighbour context:
+/// `(top-left, neighbour joint modes, n4w, n4h)`.
+#[derive(Default)]
+pub(super) struct YModeTable {
+    key: Option<(bool, [IntraJointMode; 2], usize, usize)>,
+    entries: Vec<(IntraMode, i8, usize, IntraJointMode)>,
+}
+
 /// One leaf planned for prediction and reconstruction.
 pub(super) struct PlannedLeaf {
     plan: GeneralIntraResidualPlan,
@@ -813,24 +821,43 @@ impl IntraTileSyntax {
     }
 
     /// The § 5.20.5.5 mode index that codes the luma modes of `modes` in `leaf`,
-    /// found by running the decoder's list derivation over every index.
-    fn y_mode_index(&self, leaf: &LeafBlock, modes: IntraModes) -> Result<(usize, IntraJointMode)> {
+    /// found by running the decoder's list derivation over every index once
+    /// per neighbour context.
+    fn y_mode_index(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+    ) -> Result<(usize, IntraJointMode)> {
         let (n4w, n4h) = leaf_size4(leaf)?;
         let (r, c) = (leaf.frontier.r, leaf.frontier.c);
-        let ctx = self.y_mode_ctx(leaf)?;
+        let top_left = self.y_mode_ctx(leaf)? == 0;
         let neighbours = self.joint_modes.neighbour_joint_modes(r, c, n4w, n4h);
-        (0..)
-            .map_while(|value| ModeIndex::try_new(value).ok())
-            .find_map(|index| {
-                let decoded = if ctx == 0 {
+        let key = (top_left, neighbours, n4w, n4h);
+        let table = &mut self.y_mode_table;
+        if table.key != Some(key) {
+            table.entries.clear();
+            for index in (0..).map_while(|value| ModeIndex::try_new(value).ok()) {
+                let decoded = if top_left {
                     reconstruct_y_mode_top_left(index)
                 } else {
                     reconstruct_y_mode_with_neighbours(index, neighbours, n4w, n4h)
+                };
+                if let Ok(decoded) = decoded {
+                    table.entries.push((
+                        decoded.y_mode,
+                        decoded.angle_delta_y,
+                        index.value(),
+                        decoded.intra_joint_mode,
+                    ));
                 }
-                .ok()?;
-                (decoded.y_mode == modes.y_mode && decoded.angle_delta_y == modes.angle_delta)
-                    .then_some((index.value(), decoded.intra_joint_mode))
-            })
+            }
+            table.key = Some(key);
+        }
+        table
+            .entries
+            .iter()
+            .find(|&&(y_mode, delta, ..)| y_mode == modes.y_mode && delta == modes.angle_delta)
+            .map(|&(.., index, joint)| (index, joint))
             .ok_or(EncoderSyntaxError::Unsupported("luma mode and angle delta"))
     }
 
