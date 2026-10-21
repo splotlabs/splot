@@ -5,8 +5,8 @@
 
 use proptest::prelude::*;
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, build_encoder_sequence_header,
-    build_key_frame_header,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams,
+    build_encoder_sequence_header, build_key_frame_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -205,7 +205,13 @@ fn facade_rows_back_the_rate_model() {
         tools: EncoderToolFlags::default(),
     })
     .unwrap();
-    let core = build_key_frame_header(&CoreSeqView::from_sequence(&seq).unwrap(), 90, 0).unwrap();
+    let core = build_key_frame_header(
+        &CoreSeqView::from_sequence(&seq).unwrap(),
+        90,
+        0,
+        &FrameFilterParams::default(),
+    )
+    .unwrap();
     let mut rng = Residuals(7);
     for tx_size in 0..4 {
         let log2 = tx_size as u32 + 2;

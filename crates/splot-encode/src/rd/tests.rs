@@ -5,7 +5,7 @@
 
 use proptest::prelude::*;
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameHeaderCore,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
     build_encoder_sequence_header, build_key_frame_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
@@ -182,7 +182,7 @@ fn headers(
     })
     .unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let core = build_key_frame_header(&view, qindex, 0).unwrap();
+    let core = build_key_frame_header(&view, qindex, 0, &FrameFilterParams::default()).unwrap();
     (seq, core)
 }
 
@@ -408,8 +408,13 @@ fn checkpoint_cost_at_1080p() {
             tools: EncoderToolFlags::default(),
         })
         .unwrap();
-        let core =
-            build_key_frame_header(&CoreSeqView::from_sequence(&seq).unwrap(), 90, 0).unwrap();
+        let core = build_key_frame_header(
+            &CoreSeqView::from_sequence(&seq).unwrap(),
+            90,
+            0,
+            &FrameFilterParams::default(),
+        )
+        .unwrap();
         let mut syntax = IntraTileSyntax::new(&seq, &core).unwrap();
         let copy = syntax.clone();
         let start = Instant::now();
