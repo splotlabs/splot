@@ -395,13 +395,6 @@ fn key_frame_header_bits(
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
     }
-    let q_bits = if seq.quant.bit_depth == 8 { 8 } else { 9 };
-    if base_q_idx == 0 || base_q_idx >= 1 << q_bits {
-        return Err(EncoderHeaderError::InvalidBaseQIdx {
-            base_q_idx,
-            limit: 1 << q_bits,
-        });
-    }
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     let mut w = BitWriter::new();
     w.write_uvlc(0)?; // cur_mfh_id
@@ -415,7 +408,30 @@ fn key_frame_header_bits(
     }
     w.write_flag(false)?; // allow_intrabc
     w.write_flag(false)?; // disable_cdf_update
-    write_single_tile_info(&mut w, seq)?;
+    write_quant_and_filters(&mut w, seq, base_q_idx, filters)?;
+    w.write_flag(false)?; // tx_mode_select
+    w.write_bits(KEY_FRAME_REDUCED_TX_SET, 2)?;
+    w.align_to_byte();
+    Ok(w.into_bytes())
+}
+
+/// § 5.18.2 from `tile_info()` through `ccso_params()`: one tile, `base_q_idx`, no
+/// segmentation, quantizer matrices, delta-q, TCQ or parity hiding, the filters of
+/// `filters`, and CCSO off.
+pub(super) fn write_quant_and_filters(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    base_q_idx: u32,
+    filters: &FrameFilterParams,
+) -> Result<(), EncoderHeaderError> {
+    let q_bits = if seq.quant.bit_depth == 8 { 8 } else { 9 };
+    if base_q_idx == 0 || base_q_idx >= 1 << q_bits {
+        return Err(EncoderHeaderError::InvalidBaseQIdx {
+            base_q_idx,
+            limit: 1 << q_bits,
+        });
+    }
+    write_single_tile_info(w, seq)?;
     w.write_bits(base_q_idx, q_bits)?;
     w.write_flag(false)?; // segmentation_enabled
     w.write_flag(false)?; // using_qmatrix
@@ -427,14 +443,11 @@ fn key_frame_header_bits(
     if seq.quant.enable_parity_hiding && !allow_tcq {
         w.write_flag(false)?; // allow_parity_hiding
     }
-    write_filter_params(&mut w, seq, filters)?;
+    write_filter_params(w, seq, filters)?;
     if seq.ccso.enable_ccso {
         w.write_flag(false)?; // ccso_frame_flag
     }
-    w.write_flag(false)?; // tx_mode_select
-    w.write_bits(KEY_FRAME_REDUCED_TX_SET, 2)?;
-    w.align_to_byte();
-    Ok(w.into_bytes())
+    Ok(())
 }
 
 /// § 5.18.5.2 `deblocking_filter_params()`, § 5.18.7.9 `gdf_params()` (off),
@@ -561,7 +574,7 @@ pub fn encode_key_frame_temporal_unit(
     Ok(unit)
 }
 
-const fn obu_header(obu_type: ObuType) -> ObuHeader {
+pub(super) const fn obu_header(obu_type: ObuType) -> ObuHeader {
     ObuHeader {
         has_header_extension: false,
         obu_type,
