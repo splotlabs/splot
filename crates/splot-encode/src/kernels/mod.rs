@@ -16,6 +16,9 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 mod distortion;
+mod forward_transform;
+
+pub(crate) use forward_transform::ForwardTransform2d;
 
 /// An invalid kernel argument.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -27,6 +30,24 @@ pub(crate) enum KernelError {
         width: usize,
         /// Requested height in samples.
         height: usize,
+    },
+    /// The transform shape is not one of the AV2 `TX_SIZES_ALL` shapes.
+    #[error("invalid transform shape log2 {log2_width}x{log2_height}")]
+    InvalidTransformShape {
+        /// Requested width base-2 logarithm.
+        log2_width: u32,
+        /// Requested height base-2 logarithm.
+        log2_height: u32,
+    },
+    /// A caller buffer has the wrong length.
+    #[error("{buffer} holds {actual} values, expected {expected}")]
+    BufferLength {
+        /// The buffer name.
+        buffer: &'static str,
+        /// The required length.
+        expected: usize,
+        /// The supplied length.
+        actual: usize,
     },
 }
 
@@ -102,6 +123,19 @@ pub(crate) trait EncoderKernels: Sync {
         pred_stride: usize,
         dims: BlockDims,
     ) -> u64;
+
+    /// Forward 2D transform of a row-major `residual` block of the original
+    /// transform size into `coeffs` (the adjusted size of at most 32x32).
+    ///
+    /// # Errors
+    /// Returns [`KernelError::BufferLength`] if a buffer length does not match
+    /// `tx`.
+    fn forward_transform_2d(
+        &self,
+        tx: &ForwardTransform2d,
+        residual: &[i32],
+        coeffs: &mut [i32],
+    ) -> Result<(), KernelError>;
 }
 
 /// The scalar reference kernels.
@@ -148,6 +182,15 @@ impl EncoderKernels for ScalarKernels {
     ) -> u64 {
         distortion::satd_scalar(src, src_stride, pred, pred_stride, dims)
     }
+
+    fn forward_transform_2d(
+        &self,
+        tx: &ForwardTransform2d,
+        residual: &[i32],
+        coeffs: &mut [i32],
+    ) -> Result<(), KernelError> {
+        forward_transform::forward_scalar(tx, residual, coeffs)
+    }
 }
 
 impl EncoderKernels for SimdKernels {
@@ -182,5 +225,14 @@ impl EncoderKernels for SimdKernels {
         dims: BlockDims,
     ) -> u64 {
         distortion::satd_simd(src, src_stride, pred, pred_stride, dims)
+    }
+
+    fn forward_transform_2d(
+        &self,
+        tx: &ForwardTransform2d,
+        residual: &[i32],
+        coeffs: &mut [i32],
+    ) -> Result<(), KernelError> {
+        forward_transform::forward_simd(tx, residual, coeffs)
     }
 }
