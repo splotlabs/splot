@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Snapshots of validate, inspect and explain help (CONF-CLI-SNAPSHOT-COVERAGE).
+//! Snapshots of validate, inspect, encode and explain help (CONF-CLI-SNAPSHOT-COVERAGE).
 //! Top-level help is excluded because decoder wording changes independently.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -36,4 +36,9 @@ fn inspect_help() {
 #[test]
 fn explain_help() {
     insta::assert_snapshot!("explain_help", help("explain"));
+}
+
+#[test]
+fn encode_help() {
+    insta::assert_snapshot!("encode_help", help("encode"));
 }

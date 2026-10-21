@@ -45,6 +45,9 @@ enum Command {
     /// Decode the currently supported experimental AV2 subset.
     #[command(visible_alias = "dec")]
     Decode(commands::decode::DecodeArgs),
+    /// Encode a Y4M file to an AV2 IVF stream.
+    #[command(visible_alias = "enc")]
+    Encode(commands::encode::EncodeArgs),
     /// Describe a validator diagnostic rule id (or list them all).
     Explain(commands::explain::ExplainArgs),
 }
@@ -59,6 +62,7 @@ fn main() -> ExitCode {
         Command::Validate(args) => commands::validate::run(&args),
         Command::Inspect(args) => commands::inspect::run(&args),
         Command::Decode(args) => commands::decode::run(&args),
+        Command::Encode(args) => commands::encode::run(&args),
         Command::Explain(args) => commands::explain::run(&args),
     });
     let result = match result {

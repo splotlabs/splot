@@ -1,0 +1,23 @@
+---
+source: crates/splot-cli/tests/help_snapshots.rs
+expression: "help(\"encode\")"
+---
+Encode a Y4M file to an AV2 IVF stream
+
+Usage: splot encode [OPTIONS] --output <OUTPUT> <INPUT>
+
+Arguments:
+  <INPUT>  Input Y4M file, or `-` for standard input
+
+Options:
+  -o, --output <OUTPUT>    Output IVF file
+  -v, --verbose...         Increase logging verbosity (repeatable: -v, -vv, -vvv)
+      --qp <QP>            Constant quantizer (`base_q_idx`), 1..=255 [default: 80]
+      --quiet              Silence all logging except errors
+      --preset <PRESET>    Speed preset: 0 is the slowest and best, 10 the fastest [default: 6]
+      --threads <THREADS>  Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto) [default: auto]
+      --limit <LIMIT>      Stop after this many input frames
+      --keyint <KEYINT>    Distance between key frames, in frames [default: 120]
+      --stats              Print `frame,qp,bits,psnr_y,psnr_u,psnr_v` CSV lines to stdout
+  -h, --help               Print help
+  -V, --version            Print version

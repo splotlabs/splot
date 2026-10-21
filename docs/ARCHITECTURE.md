@@ -8,9 +8,9 @@ and CLI presentation stay independently reviewable.
 ```text
 splot-cli ───────┬──> splot-validate ───> splot-core
                  ├──> splot-decode   ───> splot-core, splot-parallel, splot-recon
+                 ├──> splot-encode   ───> splot-core, splot-parallel, splot-recon
                  ├──> splot-parallel
                  └──> splot-core
-splot-encode ────────> splot-core, splot-parallel, splot-recon
 ```
 
 Rules:
@@ -23,9 +23,9 @@ Rules:
   `splot-recon`.
 - `splot-validate` depends only on `splot-core`.
 - `splot-encode` depends only on `splot-core`, `splot-parallel`, and `splot-recon`.
-- `splot-cli` has normal edges to core, parallel, decode, and validate.
-- Nothing depends on `splot-cli`; its tests use an encoder dev edge, while the
-  out-of-workspace fuzz crate has a normal encoder dependency.
+- `splot-cli` has normal edges to core, parallel, decode, validate, and encode.
+- Nothing depends on `splot-cli`; the out-of-workspace fuzz crate has a normal
+  encoder dependency.
 - `xtask` is standalone.
 
 Gate: `cargo xtask check-dependency-direction`.
@@ -41,7 +41,7 @@ Gate: `cargo xtask check-dependency-direction`.
   serializers, and reconstruction primitives.
 - `splot-decode`: byte planning, pipeline orchestration, decode diagnostics, and
   narrow supported-tier hash/raw/Y4M output.
-- `splot-encode`: limited packet emitters; no general input pipeline or CLI command.
+- `splot-encode`: encoder API, Y4M input, IVF output; backs `splot encode`.
 - `splot-cli`: argument parsing, logging, file IO, and presentation.
 - `xtask`: repository automation and gates.
 
