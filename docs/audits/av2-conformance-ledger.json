@@ -3534,7 +3534,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/compound_tests.rs",
-      "sha256": "2185e09513ee36aa87a125566dddc0219ed875ccaa8e6a22db46a42582aa0aa4",
+      "sha256": "643d6378e1f8e508c3d551acde449c07cd1778fcbd87446dd978628ed3fd92a5",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
