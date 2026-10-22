@@ -106,6 +106,42 @@ fn compact_temporal_motion_preserves_every_warp_shape() {
     }
 }
 
+#[test]
+fn odd_origin_warp_block_stores_round2_cells_sampled_at_its_own_rows() {
+    let params = [1 << 16, 0, 2 << 16, 3 << 10, 5 << 10, (1 << 16) - (7 << 10)];
+    let block = TemporalMotionBlock::new(
+        3,
+        5,
+        4,
+        4,
+        32,
+        32,
+        4,
+        [Some(2), None],
+        [Mv::ZERO; 2],
+        [Some(params), None],
+    );
+    let refs = BlockRefs {
+        slots: [0, 0],
+        swap: false,
+    };
+    let mut cells = Vec::new();
+    visit_temporal_block_cells(block, refs, 16, 16, |y8, x8, cell, _| {
+        cells.push((y8, x8, cell.mvs[0]));
+    });
+    let expected: Vec<_> = [(1, 2, 3, 5), (1, 3, 3, 7), (2, 2, 5, 5), (2, 3, 5, 7)]
+        .map(|(y8, x8, row, col)| {
+            (
+                y8,
+                x8,
+                compress_tmvp_mv(warp_sub_mv_at(params, 3, 5, row, col)),
+            )
+        })
+        .to_vec();
+    assert_eq!(cells, expected);
+    assert_ne!(expected[0].2, expected[2].2);
+}
+
 fn tip_context(
     current_order_hint: u32,
     ref_order_hints: Vec<Option<u32>>,

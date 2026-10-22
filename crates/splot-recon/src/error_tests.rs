@@ -480,7 +480,7 @@ const EXPECTED: [&str; 89] = [
     "dequantization block buffer mismatch: expected 64, quant 60, out 62",
     "quantization-matrix index out of range: seg_level 3, qm_offset 5, position 7",
     "subpel reference plane buffer mismatch: expected 64 samples, got 60",
-    "unsupported subpel block dimension 130x140; each side must be at most 128",
+    "unsupported subpel block dimension 130x140; each side must be at most 256",
     "subpel motion-compensation step must be non-negative: step_x -3, step_y -5",
     "subpel vertical-pass base row 9 exceeds intermediate height 8",
     "compound blend predictor length mismatch: left 16 samples, right 17 samples",

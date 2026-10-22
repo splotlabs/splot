@@ -979,8 +979,8 @@ pub enum ReconError {
         last_y: i32,
     },
     /// A § 7.13.3.18 sub-pel motion-compensation block dimension exceeded the
-    /// supported maximum (a 128-sample super-block side).
-    #[error("unsupported subpel block dimension {w}x{h}; each side must be at most 128")]
+    /// supported maximum (a 256-sample super-block side).
+    #[error("unsupported subpel block dimension {w}x{h}; each side must be at most 256")]
     SubpelBlockDimensionUnsupported {
         /// Supplied block width (`w`).
         w: usize,
