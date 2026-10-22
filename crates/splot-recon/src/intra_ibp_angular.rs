@@ -213,6 +213,7 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
 /// The lane form of the blend: each row's weights expand once per weight row
 /// and the samples blend in `u32` lanes. Every `(row, column) >> shift` index
 /// is below `IBP_WEIGHT_SIZE` because the shifts scale a side of at most 64.
+#[inline(never)]
 fn blend_rows_lanes<O: IntraLaneSample>(
     weights: &IbpWeights,
     zone1: bool,

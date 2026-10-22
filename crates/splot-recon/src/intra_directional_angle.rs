@@ -86,9 +86,9 @@ const MAX_ONE_SIDED_SIDE: usize = 64;
 /// The longest one-sided IDIF edge, `w + h + 4 + (mrlIndex << 1)` for a 64x64
 /// block at `mrlIndex == 3`.
 const MAX_ONE_SIDED_IDIF_EDGE: usize = 2 * MAX_ONE_SIDED_SIDE + 10;
-/// The longest zone-2 IDIF above edge, `w + mrlIndex + 4` for a 64-wide block
-/// at `mrlIndex == 3`.
-const MAX_MIDDLE_IDIF_ABOVE_EDGE: usize = MAX_ONE_SIDED_SIDE + 7;
+/// The longest zone-2 IDIF edge, `w + mrlIndex + 4` (or `h + mrlIndex + 4`)
+/// for a 64-sample side at `mrlIndex == 3`.
+const MAX_MIDDLE_IDIF_EDGE: usize = MAX_ONE_SIDED_SIDE + 7;
 
 /// AV2 v1.0.0 §7.13.2.8 `Dr_Interp_Filter[32][4]` interpolation filter taps,
 /// used when `enableIdif == 1` (luma): `s = Σ(t=0..3) Dr_Interp_Filter[shift][t]
@@ -1071,6 +1071,29 @@ fn write_prediction<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
+    let mut wide = [0u16; 2 * MAX_ONE_SIDED_SIDE];
+    if let Some(edge) = widen_edge(edge, &mut wide) {
+        if let Some(output) = T::u16_slice_mut(output) {
+            write_bilinear_lanes(size, angle, edge, output, stride_samples);
+            return Ok(());
+        }
+        if let Some(output) = T::u8_slice_mut(output) {
+            write_bilinear_lanes(size, angle, edge, output, stride_samples);
+            return Ok(());
+        }
+    }
+    write_prediction_samples(size, angle, edge, output, stride_samples)
+}
+
+/// The per-sample form of [`write_prediction`], and the reference its lane
+/// form is proven against.
+fn write_prediction_samples<T: ReconSample>(
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    edge: &[T],
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
     let max_base = size.width() + size.height() - 1;
     match angle.branch() {
         DirectionalAngleBranch::Above { derivative } => {
@@ -1109,6 +1132,88 @@ fn write_prediction<T: ReconSample>(
     }
 
     Ok(())
+}
+
+/// The lane form of [`write_prediction`] over a `u16` edge: zone-1 rows and
+/// zone-3 columns are each one bilinear line whose `shift` is fixed and whose
+/// `base` steps by one.
+#[inline(never)]
+fn write_bilinear_lanes<O: IntraLaneSample>(
+    size: IntraRectBlockSize,
+    angle: IntraDirectionalAngle,
+    edge: &[u16],
+    output: &mut [O],
+    stride_samples: usize,
+) {
+    let max_base = size.width() + size.height() - 1;
+    match angle.branch() {
+        DirectionalAngleBranch::Above { derivative } => {
+            for row in 0..size.height() {
+                let idx = (row + 1) * usize::from(derivative);
+                let start = row * stride_samples;
+                write_bilinear_line::<O, true>(
+                    edge,
+                    (idx >> 6, directional_shift(idx as i32), max_base),
+                    &mut output[start..start + size.width()],
+                    1,
+                    size.width(),
+                );
+            }
+        }
+        DirectionalAngleBranch::Left { derivative } => {
+            for column in 0..size.width() {
+                let idx = (column + 1) * usize::from(derivative);
+                write_bilinear_line::<O, false>(
+                    edge,
+                    (idx >> 6, directional_shift(idx as i32), max_base),
+                    &mut output[column..],
+                    stride_samples,
+                    size.height(),
+                );
+            }
+        }
+    }
+}
+
+/// Writes `count` bilinear samples from `edge[base..]` at `shift`, `step`
+/// samples apart in `output`; positions at or past `max_base` take
+/// `edge[max_base]`.
+#[inline]
+fn write_bilinear_line<O: IntraLaneSample, const CONTIGUOUS: bool>(
+    edge: &[u16],
+    (base, shift, max_base): (usize, u16, usize),
+    output: &mut [O],
+    step: usize,
+    count: usize,
+) {
+    let active = max_base.saturating_sub(base).min(count);
+    let mut at = 0;
+    while active - at >= 8 {
+        let values = bilinear_lanes::<8>(&edge[base + at..], shift);
+        store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, values.as_array());
+        at += 8;
+    }
+    while active - at >= 4 {
+        let values = bilinear_lanes::<4>(&edge[base + at..], shift);
+        store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, values.as_array());
+        at += 4;
+    }
+    while at < active {
+        let value = bilinear(edge[base + at], edge[base + at + 1], shift);
+        store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, &[value]);
+        at += 1;
+    }
+    fill_one_sided_idif_line::<O, CONTIGUOUS>(output, step, active, count, edge[max_base]);
+}
+
+/// `LANES` adjacent bilinear samples over `edge[..=LANES]`. Every caller
+/// validates the edge to the bit depth (at most 10 bits), so each weighted
+/// sum stays below `1024 * 32` and fits `u16` lanes.
+#[inline]
+fn bilinear_lanes<const LANES: usize>(edge: &[u16], shift: u16) -> Simd<u16, LANES> {
+    let near = Simd::<u16, LANES>::from_slice(&edge[..LANES]);
+    let far = Simd::<u16, LANES>::from_slice(&edge[1..=LANES]);
+    (near * Simd::splat(INTERP_SCALE - shift) + far * Simd::splat(shift) + Simd::splat(16)) >> 5
 }
 
 /// Validates one-sided IDIF inputs and returns the angle's prepared edge.
@@ -1226,6 +1331,7 @@ fn one_sided_max_base(size: IntraRectBlockSize, mrl_index: usize) -> Result<i32>
 /// `base = (idx >> 6) + i`. `shift = (idx >> 1) & 0x1F` in both. The §5.20.5.5
 /// `mrlIndex` shifts the projection out by `mrlIndex` reference lines (`mrlIndex ==
 /// 0` is the immediate edge).
+#[inline]
 fn one_sided_idif_reference(
     branch: DirectionalAngleBranch,
     row: usize,
@@ -1640,6 +1746,131 @@ fn write_middle_prediction<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
+    let mut wide = [[0u16; MAX_ONE_SIDED_SIDE + 1]; 2];
+    let [wide_left, wide_above] = &mut wide;
+    if let (Some(left), Some(above)) = (widen_edge(left, wide_left), widen_edge(above, wide_above))
+    {
+        if let Some(output) = T::u16_slice_mut(output) {
+            return write_middle_lanes(size, angle, left, above, output, stride_samples);
+        }
+        if let Some(output) = T::u8_slice_mut(output) {
+            return write_middle_lanes(size, angle, left, above, output, stride_samples);
+        }
+    }
+    write_middle_prediction_samples(size, angle, left, above, output, stride_samples)
+}
+
+/// The lane form of [`write_middle_prediction`] over `u16` edges whose
+/// § 7.13.2.8 references the caller validated. Each row's above run and each
+/// column's left run is one bilinear line, as in
+/// [`write_middle_idif_mrl_prediction`].
+#[inline(never)]
+fn write_middle_lanes<O: IntraLaneSample>(
+    size: IntraRectBlockSize,
+    angle: IntraMiddleDirectionalAngle,
+    left: &[u16],
+    above: &[u16],
+    output: &mut [O],
+    stride_samples: usize,
+) -> Result<()> {
+    let branch = angle.branch();
+    let (width, height) = (size.width(), size.height());
+    let offset = |idx: i32| {
+        usize::try_from((idx >> 6) + 1).map_err(|_| ReconError::ArithmeticOverflow {
+            context: "middle directional angle logical edge coverage",
+        })
+    };
+    let mut left_runs = [0u8; MAX_ONE_SIDED_SIDE];
+    for (row, run) in left_runs.iter_mut().enumerate().take(height) {
+        let walk = MiddleRowWalk::new(row, width, branch, 0)?;
+        let left_run = usize::try_from(walk.min_base - (walk.above_idx >> 6))
+            .unwrap_or(0)
+            .min(width);
+        *run = left_run as u8;
+        if left_run < width {
+            let above_idx = walk.above_idx + 64 * left_run as i32;
+            let start = row * stride_samples + left_run;
+            write_bilinear_line::<O, true>(
+                above,
+                (
+                    offset(above_idx)?,
+                    directional_shift(above_idx),
+                    above.len() - 1,
+                ),
+                &mut output[start..start + width - left_run],
+                1,
+                width - left_run,
+            );
+        }
+    }
+    let dy = i32::from(branch.dy);
+    for_each_middle_left_run(
+        &left_runs[..height],
+        dy,
+        0,
+        |column, first, rows, left_idx| {
+            write_bilinear_line::<O, false>(
+                left,
+                (
+                    offset(left_idx)?,
+                    directional_shift(left_idx),
+                    left.len() - 1,
+                ),
+                &mut output[first * stride_samples + column..],
+                stride_samples,
+                rows,
+            );
+            Ok(())
+        },
+    )
+}
+
+/// Calls `write(column, first, rows, left_idx)` for each zone-2 left run down
+/// a column: rows `first..first + rows` whose leading left run
+/// (`left_runs[row]` columns) covers `column`, with `left_idx` the § 7.13.2.8
+/// `leftIdx = first * 64 - (column + 1 + mrlIndex) * dy` of the first of them.
+fn for_each_middle_left_run(
+    left_runs: &[u8],
+    dy: i32,
+    mrl_index: usize,
+    mut write: impl FnMut(usize, usize, usize, i32) -> Result<()>,
+) -> Result<()> {
+    let columns = usize::from(left_runs.iter().copied().max().unwrap_or(0));
+    for column in 0..columns {
+        let mut row = 0;
+        while row < left_runs.len() {
+            let first = row;
+            while left_runs
+                .get(row)
+                .is_some_and(|&run| usize::from(run) > column)
+            {
+                row += 1;
+            }
+            if row == first {
+                row += 1;
+                continue;
+            }
+            write(
+                column,
+                first,
+                row - first,
+                first as i32 * 64 - (column + 1 + mrl_index) as i32 * dy,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The per-sample form of [`write_middle_prediction`], and the reference its
+/// lane form is proven against.
+fn write_middle_prediction_samples<T: ReconSample>(
+    size: IntraRectBlockSize,
+    angle: IntraMiddleDirectionalAngle,
+    left: &[T],
+    above: &[T],
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
     let branch = angle.branch();
     for row in 0..size.height() {
         let row_start = row * stride_samples;
@@ -1672,55 +1903,41 @@ fn write_middle_prediction<T: ReconSample>(
 /// Writes the § 7.13.2.8 zone-2 IDIF rows. Each row reads the left edge for a
 /// leading run of columns and the above edge after it; along the above run
 /// `aboveIdx` grows by 64 per column, so `base` grows by one and `shift` is
-/// fixed, and the run is one contiguous 4-tap window.
+/// fixed, and the run is one contiguous 4-tap window. Down a column `leftIdx`
+/// grows by 64 per row in the same way, so the left samples are written as
+/// column runs after the rows.
 fn write_middle_idif_mrl_prediction<T: ReconSample>(
     params: MiddleIdifMrlPrediction<'_, T>,
     output: &mut [T],
 ) -> Result<()> {
-    let wide_above: [u16; MAX_MIDDLE_IDIF_ABOVE_EDGE];
-    let above = match (T::u16_slice(params.above), T::u8_slice(params.above)) {
-        (Some(above), _) => Some(above),
-        (None, Some(narrow)) if narrow.len() <= MAX_MIDDLE_IDIF_ABOVE_EDGE => {
-            let mut wide = [0u16; MAX_MIDDLE_IDIF_ABOVE_EDGE];
-            for (slot, &sample) in wide.iter_mut().zip(narrow) {
-                *slot = u16::from(sample);
-            }
-            wide_above = wide;
-            Some(&wide_above[..narrow.len()])
-        }
-        _ => None,
-    };
+    let mut wide = [[0u16; MAX_MIDDLE_IDIF_EDGE]; 2];
+    let [wide_left, wide_above] = &mut wide;
+    let left = widen_edge(params.left, wide_left);
+    let above = widen_edge(params.above, wide_above);
     let branch = params.angle.branch();
     let width = params.size.width();
-    for row in 0..params.size.height() {
+    let height = params.size.height();
+    let mut left_runs = [0u8; MAX_ONE_SIDED_SIDE];
+    for (row, run) in left_runs.iter_mut().enumerate().take(height) {
         let row_start = row * params.stride_samples;
         let mut walk = MiddleRowWalk::new(row, width, branch, params.mrl_index)?;
         let left_run = usize::try_from(walk.min_base - (walk.above_idx >> 6))
             .unwrap_or(0)
             .min(width);
-        for column in 0..left_run {
-            let reference = walk.next();
-            let value = idif_tap_with_mrl(
-                params.left,
-                reference.base,
-                reference.shift,
-                params.bit_depth,
-                params.mrl_index,
-            )?;
-            output[row_start + column] = T::try_from_u16(value)?;
-        }
+        *run = left_run as u8;
         if left_run == width {
             continue;
         }
+        walk.above_idx += 64 * left_run as i32;
         let reference = walk.next();
         let out = &mut output[row_start + left_run..row_start + width];
         if let Some(edge) = above {
             if let Some(out) = T::u16_slice_mut(out) {
-                write_middle_idif_above_run(edge, reference, &params, out)?;
+                write_middle_idif_run(edge, reference, &params, out)?;
                 continue;
             }
             if let Some(out) = T::u8_slice_mut(out) {
-                write_middle_idif_above_run(edge, reference, &params, out)?;
+                write_middle_idif_run(edge, reference, &params, out)?;
                 continue;
             }
         }
@@ -1734,13 +1951,58 @@ fn write_middle_idif_mrl_prediction<T: ReconSample>(
             )?)?;
         }
     }
-
-    Ok(())
+    let mut lanes = [0u16; MAX_ONE_SIDED_SIDE];
+    let dy = i32::from(branch.dy);
+    for_each_middle_left_run(
+        &left_runs[..height],
+        dy,
+        params.mrl_index,
+        |column, first, rows, left_idx| {
+            let reference = MiddleSampleReference {
+                edge: IntraDirectionalAngleEdge::Left,
+                base: left_idx >> 6,
+                shift: directional_shift(left_idx),
+            };
+            let lanes = &mut lanes[..rows];
+            let lanes = left
+                .filter(|_| lanes.len() >= 4)
+                .and_then(|edge| write_middle_idif_run(edge, reference, &params, lanes).ok())
+                .map(|()| &*lanes);
+            for (k, out_row) in (first..first + rows).enumerate() {
+                let value = match lanes {
+                    Some(lanes) => lanes[k],
+                    None => idif_tap_with_mrl(
+                        params.left,
+                        reference.base + k as i32,
+                        reference.shift,
+                        params.bit_depth,
+                        params.mrl_index,
+                    )?,
+                };
+                output[out_row * params.stride_samples + column] = T::try_from_u16(value)?;
+            }
+            Ok(())
+        },
+    )
 }
 
-/// Writes one zone-2 above run of `out.len()` samples from `reference` over
-/// the `u16` form of the above edge.
-fn write_middle_idif_above_run<T: ReconSample, O: IntraLaneSample>(
+/// `edge` as `u16` samples, widening `u8` storage into `wide`; `None` when it
+/// does not fit.
+fn widen_edge<'a, T: ReconSample>(edge: &'a [T], wide: &'a mut [u16]) -> Option<&'a [u16]> {
+    if let Some(edge) = T::u16_slice(edge) {
+        return Some(edge);
+    }
+    let narrow = T::u8_slice(edge)?;
+    let wide = wide.get_mut(..narrow.len())?;
+    for (slot, &sample) in wide.iter_mut().zip(narrow) {
+        *slot = u16::from(sample);
+    }
+    Some(wide)
+}
+
+/// Writes one zone-2 run of `out.len()` samples from `reference` over the
+/// `u16` form of its edge.
+fn write_middle_idif_run<T: ReconSample, O: IntraLaneSample>(
     edge: &[u16],
     reference: MiddleSampleReference,
     params: &MiddleIdifMrlPrediction<'_, T>,
@@ -1850,10 +2112,12 @@ fn logical_idif_edge_sample<T: ReconSample>(samples: &[T], logical_index: i32) -
 
 /// Maps an IDIF logical edge index (`-2 ..= side + 1`) to a slice offset:
 /// `slice[0]` is logical `-2`, so `offset = logical_index + 2`.
+#[inline]
 fn logical_idif_edge_offset(logical_index: i32, len: usize) -> Result<usize> {
     logical_idif_edge_offset_mrl(logical_index, len, 0)
 }
 
+#[inline]
 fn logical_idif_edge_offset_mrl(logical_index: i32, len: usize, mrl_index: usize) -> Result<usize> {
     let mrl = i32::try_from(mrl_index).map_err(|_| ReconError::ArithmeticOverflow {
         context: "middle directional angle IDIF MRL index",
