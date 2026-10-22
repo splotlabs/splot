@@ -228,3 +228,63 @@ fn two_tile_clip_encodes_validates_and_decodes_to_the_encoder_stats() {
         ],
     );
 }
+
+/// Ten frames at preset 6 code a key frame, two mini-GOPs of 4 with waves of
+/// leaf frames, and a short one; one tile and two tiles give the same IVF at
+/// every thread count.
+#[test]
+fn encode_output_is_byte_identical_across_thread_counts() {
+    let (y4m, _) = synthetic_y4m(8, 10);
+    let input = temp_input("y4m", &y4m);
+    let input_s = input.to_str().unwrap();
+    for tiles in ["1x1", "2x1"] {
+        let mut streams = Vec::new();
+        for threads in ["1", "2", "8"] {
+            let ivf = temp_output("ivf");
+            let ivf_s = ivf.to_str().unwrap();
+            let encode = splot(&[
+                "encode",
+                input_s,
+                "-o",
+                ivf_s,
+                "--keyint",
+                "16",
+                "--preset",
+                "6",
+                "--qp",
+                "90",
+                "--tiles",
+                tiles,
+                "--threads",
+                threads,
+            ]);
+            assert!(encode.status.success(), "{encode:?}");
+            streams.push((threads, std::fs::read(&ivf).unwrap()));
+            let _ = std::fs::remove_file(ivf);
+        }
+        for (threads, bytes) in &streams[1..] {
+            assert!(
+                *bytes == streams[0].1,
+                "--tiles {tiles} --threads {threads} changed the IVF"
+            );
+        }
+    }
+    let _ = std::fs::remove_file(input);
+}
+
+#[test]
+fn two_tile_clip_encodes_validates_and_decodes_to_the_encoder_stats() {
+    round_trip(
+        8,
+        &[
+            "--qp",
+            "90",
+            "--preset",
+            "10",
+            "--tiles",
+            "2x1",
+            "--threads",
+            "2",
+        ],
+    );
+}
