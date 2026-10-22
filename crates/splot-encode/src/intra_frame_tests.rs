@@ -209,10 +209,11 @@ fn avm_decodes_coded_frames_like_splot() {
     }
 }
 
-/// Records the reconstruction of every coded frame by display index.
+/// Records the raw decoder output of every coded frame by display index.
 struct Recording {
     coder: IntraFrameCoder,
-    recons: Arc<Mutex<BTreeMap<u64, [Vec<u16>; 3]>>>,
+    bit_depth: BitDepth,
+    recons: Arc<Mutex<BTreeMap<u64, Vec<u8>>>>,
 }
 
 impl FrameCoder for Recording {
@@ -223,7 +224,7 @@ impl FrameCoder for Recording {
         qp: u8,
     ) -> Result<CodedFrame> {
         let coded = self.coder.encode_frame(source, plan, qp)?;
-        let recon = coded.recon.clone();
+        let recon = recon_bytes(&coded, self.bit_depth);
         self.recons
             .lock()
             .unwrap()
@@ -242,6 +243,7 @@ fn encode_stream(config: &Config, frames: u32) -> (Vec<Vec<u8>>, Vec<u8>) {
     let recons = Arc::default();
     let coder = Recording {
         coder: IntraFrameCoder::new(config).unwrap(),
+        bit_depth: config.bit_depth,
         recons: Arc::clone(&recons),
     };
     let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder));
@@ -260,12 +262,7 @@ fn encode_stream(config: &Config, frames: u32) -> (Vec<Vec<u8>>, Vec<u8>) {
     assert_eq!(pts, (0..u64::from(frames)).collect::<Vec<_>>());
     let coded: usize = packets.iter().map(|packet| packet.stats.len()).sum();
     assert_eq!(coded, frames as usize);
-    let expected = recons
-        .lock()
-        .unwrap()
-        .values()
-        .flat_map(|recon| raw_bytes(recon.iter().map(Vec::as_slice), config.bit_depth))
-        .collect();
+    let expected = recons.lock().unwrap().values().flatten().copied().collect();
     let units = packets.into_iter().map(|packet| packet.data).collect();
     (units, expected)
 }
