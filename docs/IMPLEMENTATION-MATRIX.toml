@@ -4931,7 +4931,7 @@ module = "crates/splot-encode/src/gop.rs"
 change_id = "encoder-m3-mini-gop"
 owner = "encoder"
 risk = "medium"
-notes = "GopPlanner splits the frames between key frames into mini-GOPs of the preset's mini_gop_size (1 = IPPP, 2, 4 or 8; the last one before a key frame or the stream end is shorter). A mini-GOP codes its last frame first, then the middle frame of each open span; a frame coded before earlier display frames is hidden and an OBU_REGULAR_SEF outputs it later. Key frames refresh all slots; other frames refresh an empty slot, else the oldest frame no show-existing frame waits for, so the § 7.7 implicit map finds the closest past and future frames. Each Packet is one temporal unit in coding order: the hidden frames since the last output plus one shown frame or show-existing frame, with the pts of the output frame and the stats of each coded frame; IVF frames carry one packet each. Blocks are still all intra."
+notes = "GopPlanner splits the frames between key frames into mini-GOPs of the preset's mini_gop_size (1 = IPPP, 2, 4 or 8; the last one before a key frame or the stream end is shorter). A mini-GOP codes its last frame first, then the middle frame of each open span; a frame coded before earlier display frames is hidden and an OBU_REGULAR_SEF outputs it later. Key frames refresh all slots; other frames refresh an empty slot, else the oldest frame no show-existing frame waits for, so the § 7.7 implicit map finds the closest past and future frames. Each Packet is one temporal unit in coding order: the hidden frames since the last output plus one shown frame or show-existing frame, with the pts of the output frame and the stats of each coded frame; IVF frames carry one packet each. Shown leaf frames below layer 0 are non-reference frames (refresh_frame_flags = 0), except the last leaf of each mini-GOP: § 5.18.2 get_disp_order_hint counts only shown references, so that leaf keeps a shown reference within 128 order hints of every frame. See ENC-FRAME-WAVES."
 
 [feature.status]
 mapped = "done"
@@ -5270,6 +5270,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-FRAME-WAVES"
+name = "Frame-parallel mini-GOP waves"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "7.20", "7.21"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/encoder.rs"
+change_id = "encoder-m5-frame-waves"
+owner = "encoder"
+risk = "medium"
+notes = "Encoder strategy. gop::waves splits the coding order into waves: a wave ends after a frame that refreshes a slot, and a show-existing frame does not end one (it changes only its slot's output flag and the § 7.20 frame counter, which coding a frame does not read). The frames of a wave read the same references, so FrameCoder::encode_wave codes them on the WorkerPool through &self; commit stores each frame in the references in coding order. The rate controller gives every frame of a wave its qindex before the wave and takes the coded sizes in coding order after it. Waves come from the GOP plan only, so the stream does not depend on the thread count. Mini-GOP 4 codes waves [4] [2] [1 3]; mini-GOP 8 codes [8] [4] [2] [1 3 6] [5 7]. Paris CIF, 17 frames, preset 6: the non-reference leaf policy is BD-rate -0.31%; 4 and 8 threads encode about 1.2x faster than 1 thread with one tile."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "done"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/gop_tests.rs::leaf_frames_refresh_no_slot_and_code_in_waves", "crates/splot-cli/tests/encode_decode_roundtrip.rs::encode_output_is_byte_identical_across_thread_counts", "crates/splot-encode/src/intra_frame_tests.rs::mini_gops_decode_to_the_encoder_recon_in_display_order", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_mini_gops_like_splot"]
+commands = ["cargo test -p splot-encode gop --locked", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-SIMD-KERNELS"
 name = "Encoder SIMD kernels"
 category = "encoder"
@@ -5281,7 +5313,7 @@ module = "crates/splot-encode/src/kernels/mod.rs"
 change_id = "encoder-m5-simd-kernels"
 owner = "encoder"
 risk = "low"
-notes = "Encoder strategy. Every encoder-side hot kernel has a scalar reference and a std::simd implementation, and property tests compare the two bit for bit (distortion kernels also on short slices): SAD, SSE, SATD and the residual (EncoderKernels: ScalarKernels and SimdKernels), the forward DCT/ADST/identity transforms, quantization and the RDOQ level costs. Prediction, interpolation, inverse transforms, CDEF and loop restoration are the decoder's own splot-recon kernels through encoder_syntax. cargo xtask encode-perf --coverage samples a release encode: 94.1% of the samples in the hot-kernel symbol set are in SIMD code."
+notes = "Encoder strategy. Every encoder-side hot kernel has a scalar reference and a std::simd implementation, and property tests compare the two bit for bit (distortion kernels also on short slices): SAD, SSE, SATD and the residual (EncoderKernels: ScalarKernels and SimdKernels), the forward DCT/ADST/identity transforms, quantization and the RDOQ level costs. Prediction, interpolation, inverse transforms, CDEF and loop restoration are the decoder's own splot-recon kernels through encoder_syntax. cargo xtask encode-perf --coverage samples a release encode: 93.6% of the samples in the hot-kernel symbol set are in SIMD code."
 
 [feature.status]
 mapped = "done"

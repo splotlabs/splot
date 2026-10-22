@@ -68,7 +68,12 @@ writer) -> temporal unit and IVF output.
 - Speed presets are rows of one data table; code reads fields, never preset
   numbers. Hot kernels implement one trait twice (scalar and `std::simd`), and
   property tests compare the two bit for bit.
-- Output depends only on input, configuration and thread count.
+- Tiles of a frame, and frames of a wave (frames that read the same
+  references), code in parallel on the encoder's `WorkerPool`; references
+  update in coding order. Tile layouts and waves come from the configuration
+  and the GOP plan, so the thread count never changes the output.
+- A trial must leave the facade exactly as the final write sees it: a
+  snapshot restores all facade state, including append-only records.
 
 ## Concurrency
 
