@@ -56,6 +56,31 @@ macro_rules! write_symbol_to_cdf {
     }};
 }
 
+/// `pp(symbol)`, the § 8.2.6 split point of `symbol` in the CDF row `cdf`
+/// (layout of [`SymbolEncoder::write_symbol_u16`]) on a 4096 scale: before
+/// range rounding, `symbol` takes `pp(symbol - 1) - pp(symbol)` of the scale,
+/// with `pp(-1) = 4096`. Rate models price symbols with it.
+///
+/// Returns `None` for a row of fewer than two symbols or more than
+/// [`PROB_INC`] covers, and for a symbol past the end of the row.
+#[must_use]
+pub fn symbol_split_q12(cdf: &[u16], symbol: usize) -> Option<u32> {
+    let n = cdf.len().checked_sub(1)?;
+    PROB_INC.get(n.checked_sub(2)?)?;
+    (symbol < n).then(|| split_q12(cdf, n, symbol))
+}
+
+/// `pp(symbol)` of a row of `n` symbols; `n` must be in `2..=PROB_INC.len() + 1`.
+#[inline]
+fn split_q12<T: CdfStorage>(cdf: &[T], n: usize, symbol: usize) -> u32 {
+    let f = if symbol == n - 1 {
+        0
+    } else {
+        CDF_PROB_SCALE.saturating_sub(cdf[symbol].to_i32() as u32)
+    };
+    ((f >> EC_PROB_SHIFT) << 4) + PROB_INC[n - 2][symbol] as u32
+}
+
 /// Adapts `cdf` after `symbol` exactly as [`SymbolEncoder::write_symbol_u16`]
 /// does with CDF updates enabled, without coding it; rate models price a
 /// symbol with the row, then adapt it.
@@ -441,13 +466,8 @@ impl SymbolEncoder {
     ) -> WriteResult<(u32, u32)> {
         let mut prev = self.range;
         let mut cur = self.range;
-        for (symbol, prob_inc) in PROB_INC[n - 2].iter().enumerate().take(target + 1) {
-            let f = if symbol == n - 1 {
-                0
-            } else {
-                CDF_PROB_SCALE - cdf[symbol].to_i32() as u32
-            };
-            let pp = ((f >> EC_PROB_SHIFT) << 4) + *prob_inc as u32;
+        for symbol in 0..=target {
+            let pp = split_q12(cdf, n, symbol);
             prev = cur;
             cur = (((self.range >> 8) * pp) >> 7) << 3;
         }
