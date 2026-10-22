@@ -276,7 +276,9 @@ pub(super) struct ReconSnapshot {
 
 impl Recon {
     /// Saves the edge state and the samples of the luma rectangle
-    /// `(x, y, width, height)`, clipped to storage.
+    /// `(x, y, width, height)`, clipped to storage. The chroma rectangle starts
+    /// at the 8x8 luma origin, which a has-chroma leaf at an odd 4x4 position
+    /// codes.
     pub(super) fn snapshot(
         &self,
         (x, y, w, h): (usize, usize, usize, usize),
@@ -288,7 +290,7 @@ impl Recon {
                 .plane(plane)
                 .map_err(rule("snapshot plane"))?
                 .storage_size();
-            let (px, py) = (x >> shift, y >> shift);
+            let (px, py) = ((x & !(4 * shift)) >> shift, (y & !(4 * shift)) >> shift);
             let pw = (x + w)
                 .div_ceil(1 << shift)
                 .min(size.width())
