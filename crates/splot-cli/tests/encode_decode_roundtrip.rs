@@ -4,7 +4,8 @@
 //! End-to-end encoder oracle: `splot encode` codes a Y4M clip as key frames
 //! and a mini-GOP with a hidden frame, `splot validate` finds the stream
 //! conformant, and `splot decode` returns the frames in input order with the
-//! PSNR against the source that the encoder reported.
+//! PSNR against the source that the encoder reported. The IVF bytes do not
+//! depend on `--threads`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -132,4 +133,38 @@ fn ten_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats() {
 fn crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats() {
     round_trip(8, &["--crf", "25"]);
     round_trip(10, &["--bitrate", "200", "--rc", "cbr"]);
+}
+
+#[test]
+fn encode_output_is_byte_identical_across_thread_counts() {
+    let (y4m, _) = synthetic_y4m(8);
+    let input = temp_input("y4m", &y4m);
+    let input_s = input.to_str().unwrap();
+    let mut streams = Vec::new();
+    for threads in ["1", "2", "8"] {
+        let ivf = temp_output("ivf");
+        let ivf_s = ivf.to_str().unwrap();
+        let encode = splot(&[
+            "encode",
+            input_s,
+            "-o",
+            ivf_s,
+            "--keyint",
+            "4",
+            "--qp",
+            "90",
+            "--threads",
+            threads,
+        ]);
+        assert!(encode.status.success(), "{encode:?}");
+        streams.push((threads, std::fs::read(&ivf).unwrap()));
+        let _ = std::fs::remove_file(ivf);
+    }
+    let _ = std::fs::remove_file(input);
+    for (threads, bytes) in &streams[1..] {
+        assert!(
+            *bytes == streams[0].1,
+            "--threads {threads} changed the IVF"
+        );
+    }
 }
