@@ -331,6 +331,9 @@ mod tests {
             ("420", PixelFormat::Yuv420, 8),
             ("420p10", PixelFormat::Yuv420, 10),
             ("422", PixelFormat::Yuv422, 8),
+            ("422p10", PixelFormat::Yuv422, 10),
+            ("444", PixelFormat::Yuv444, 8),
+            ("444p10", PixelFormat::Yuv444, 10),
             ("444p16", PixelFormat::Yuv444, 16),
             ("mono", PixelFormat::Monochrome, 8),
             ("mono12", PixelFormat::Monochrome, 12),
@@ -338,9 +341,46 @@ mod tests {
         for (tag, format, depth) in cases {
             assert_eq!(parse_colorspace(tag), Some((format, depth)), "{tag}");
         }
-        for tag in ["411", "444alpha", "420p7", "420p17", "422jpeg", ""] {
+        for tag in [
+            "411", "444alpha", "420p7", "420p17", "422jpeg", "444mpeg2", "422p", "",
+        ] {
             assert_eq!(parse_colorspace(tag), None, "{tag}");
         }
+    }
+
+    /// 4:2:2 halves the chroma width only; 4:4:4 keeps full-size chroma.
+    #[test]
+    fn reads_422_and_444_frames() -> Result<(), Y4mError> {
+        let mut input = b"YUV4MPEG2 W3 H2 F25:1 C422\nFRAME\n".to_vec();
+        input.extend(1..=14);
+        let mut reader = read(&input)?;
+        assert_eq!(reader.header().plane_sizes(), [(3, 2), (2, 2), (2, 2)]);
+        let planes = [(1..=6).collect(), (7..=10).collect(), (11..=14).collect()];
+        assert_eq!(reader.read_frame()?, Some(planes));
+        assert_eq!(reader.read_frame()?, None);
+
+        let mut input = b"YUV4MPEG2 W2 H1 F25:1 C444p10\nFRAME\n".to_vec();
+        input.extend([1, 0, 2, 0, 3, 0, 4, 0, 0xff, 0x03, 6, 0]);
+        let mut reader = read(&input)?;
+        assert_eq!(
+            (reader.header().format, reader.header().bit_depth),
+            (PixelFormat::Yuv444, 10)
+        );
+        assert_eq!(
+            reader.read_frame()?,
+            Some([vec![1, 2], vec![3, 4], vec![1023, 6]])
+        );
+
+        let mut reader = read(b"YUV4MPEG2 W3 H2 F25:1 C422p10\nFRAME\n\x01")?;
+        assert!(matches!(
+            reader.read_frame(),
+            Err(Y4mError::Truncated {
+                frame: 0,
+                expected: 28,
+                actual: 1
+            })
+        ));
+        Ok(())
     }
 
     #[test]
@@ -389,9 +429,13 @@ mod tests {
             return Ok(());
         };
         let dir = std::path::Path::new(&home).join("Devel/avm/build");
-        for (name, depth) in [
-            ("park_joy_90p_8_420.y4m", 8),
-            ("park_joy_90p_10_420.y4m", 10),
+        for (name, depth, chroma) in [
+            ("park_joy_90p_8_420.y4m", 8, 80 * 45),
+            ("park_joy_90p_10_420.y4m", 10, 80 * 45),
+            ("park_joy_90p_8_422.y4m", 8, 80 * 90),
+            ("park_joy_90p_10_422.y4m", 10, 80 * 90),
+            ("park_joy_90p_8_444.y4m", 8, 160 * 90),
+            ("park_joy_90p_10_444.y4m", 10, 160 * 90),
         ] {
             let Ok(file) = std::fs::File::open(dir.join(name)) else {
                 continue;
@@ -401,7 +445,7 @@ mod tests {
             assert_eq!((reader.header().width, reader.header().height), (160, 90));
             let mut frames = 0;
             while let Some([y, u, v]) = reader.read_frame()? {
-                assert_eq!((y.len(), u.len(), v.len()), (160 * 90, 80 * 45, 80 * 45));
+                assert_eq!((y.len(), u.len(), v.len()), (160 * 90, chroma, chroma));
                 assert!(y.iter().all(|&s| s < 1 << depth));
                 frames += 1;
             }

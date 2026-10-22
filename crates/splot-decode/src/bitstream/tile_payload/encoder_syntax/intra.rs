@@ -10,7 +10,7 @@
 use core::ops::Range;
 
 use splot_core::headers::frame::{FrameHeaderCore, TxMode};
-use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
+use splot_core::headers::sequence::{BitDepthIdc, SequenceHeader};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_recon::{
@@ -36,6 +36,7 @@ use super::super::partition_traversal::{
     DecodedLeafPublication, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
     is_cfl_context_for_chroma_ref, publish_intra_leaf_state,
 };
+use super::super::tile_frontier::chroma_subsampling;
 use super::{
     EncoderSyntaxError, IntraMode, IntraTileSyntax, LeafBlock, Result, TransformBlock, TxPartition,
     coefficient_scan, rule, tx_log2,
@@ -275,7 +276,7 @@ pub(super) struct Recon {
 }
 
 impl Recon {
-    /// A 4:2:0 frame of the decoder's geometry: `FrameWidth x FrameHeight`
+    /// A frame of the decoder's geometry: `FrameWidth x FrameHeight`
     /// samples over `MiCols * 4 x MiRows * 4` storage, with the prediction
     /// state of the tile over luma 4x4 `rows` and `cols`.
     pub(super) fn new(
@@ -285,11 +286,11 @@ impl Recon {
         (rows, cols): (Range<usize>, Range<usize>),
         sb_size4: usize,
     ) -> Result<Self> {
-        if seq.general.chroma_format_idc != ChromaFormatIdc::Yuv420 {
-            return Err(EncoderSyntaxError::Unsupported(
-                "chroma format other than 4:2:0",
-            ));
+        let chroma = seq.general.chroma_format_idc;
+        if chroma.is_monochrome() {
+            return Err(EncoderSyntaxError::Unsupported("monochrome"));
         }
+        let (sub_x, sub_y) = chroma_subsampling(chroma);
         let size = core
             .frame_size
             .ok_or(EncoderSyntaxError::Unsupported("missing frame size"))?;
@@ -300,7 +301,7 @@ impl Recon {
                 DecodedFrameInfo::new(
                     OutputIndex::new(0),
                     tools.bit_depth,
-                    PixelFormat::Yuv420,
+                    PixelFormat::from_av2_chroma_format_idc(chroma.get())?,
                     size,
                     PlaneRect::new(0, 0, width, height)?,
                 )
@@ -310,7 +311,7 @@ impl Recon {
             .map_err(rule("frame workspace"))?;
         let mut block_decoded = TileBlockDecodedState::default();
         block_decoded
-            .reset(3, 1, 1, sb_size4, cols.end, rows.end)
+            .reset(3, sub_x.into(), sub_y.into(), sb_size4, cols.end, rows.end)
             .map_err(rule("BlockDecoded state"))?;
         let grid = |(rows, cols): (Range<usize>, Range<usize>), sb_h4: usize| {
             let mut grid = TileSmoothGrid::default();
@@ -324,8 +325,8 @@ impl Recon {
             block_decoded,
             y_smooth: grid((rows.clone(), cols.clone()), sb_size4)?,
             chroma_smooth: grid(
-                chroma_smooth_tile_ranges(rows, cols, ChromaFormatIdc::Yuv420),
-                sb_size4 >> 1,
+                chroma_smooth_tile_ranges(rows, cols, chroma),
+                sb_size4 >> usize::from(sub_y),
             )?,
             leaf: None,
         })

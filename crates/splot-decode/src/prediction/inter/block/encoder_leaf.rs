@@ -580,7 +580,7 @@ impl EncoderInterTile {
                 splot_recon::DecodedFrameInfo::new(
                     splot_recon::OutputIndex::new(0),
                     self.bit_depth,
-                    splot_recon::PixelFormat::Yuv420,
+                    splot_recon::PixelFormat::from_av2_chroma_format_idc(self.chroma.get())?,
                     plane,
                     splot_recon::PlaneRect::new(0, 0, width, height)?,
                 )

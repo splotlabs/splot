@@ -16,7 +16,7 @@ use splot_decode::encoder_syntax::{
 };
 use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
-use splot_recon::{BitDepth, DecodedFrame, PlaneId, PlaneSize};
+use splot_recon::{BitDepth, DecodedFrame, PixelFormat, PlaneId, PlaneSize};
 
 use crate::config::Config;
 use crate::encoder::{CodedFrame, FrameCoder};
@@ -46,6 +46,7 @@ pub(crate) struct IntraFrameCoder {
     sequence: SequenceHeader,
     view: CoreSeqView,
     bit_depth: BitDepth,
+    chroma: PixelFormat,
     preset: &'static PresetParams,
     references: EncoderReferences,
     tiles: UniformTiles,
@@ -63,7 +64,11 @@ impl IntraFrameCoder {
                 BitDepth::Eight => BitDepthIdc::Eight,
                 BitDepth::Ten => BitDepthIdc::Ten,
             },
-            chroma: ChromaFormatIdc::Yuv420,
+            chroma: ChromaFormatIdc::try_new(u32::from(config.chroma.chroma_format_idc())).ok_or(
+                Error::UnsupportedChroma {
+                    chroma: config.chroma,
+                },
+            )?,
             sb_size: if preset.max_block_log2 >= 7 {
                 SuperblockSize::Block128x128
             } else {
@@ -87,6 +92,7 @@ impl IntraFrameCoder {
             sequence,
             view,
             bit_depth: config.bit_depth,
+            chroma: config.chroma,
             preset,
             tiles: UniformTiles {
                 cols_log2: config.tiles.cols_log2,
@@ -144,7 +150,7 @@ impl IntraFrameCoder {
         })?;
         let (mi_rows, mi_cols) = first.syntax().mi_dimensions();
         let sb = first.syntax().superblock_size4() * 4;
-        let padded = PaddedSource::new(source, mi_cols * 4 + sb, mi_rows * 4 + sb);
+        let padded = PaddedSource::new(source, self.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
         let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
         let motion = MotionSearch::new(first.syntax(), &padded, self.preset, lambda)
             .map_err(coding("motion search"))?;
@@ -229,14 +235,23 @@ pub(crate) struct PaddedSource {
 }
 
 impl PaddedSource {
-    fn new(source: &SourceFrame, width: usize, height: usize) -> Self {
+    fn new(source: &SourceFrame, format: PixelFormat, width: usize, height: usize) -> Self {
         let sizes = source.plane_sizes();
+        let (sub_x, sub_y) = (
+            usize::from(format.subsampling_x()),
+            usize::from(format.subsampling_y()),
+        );
+        let strides = [
+            width,
+            width.div_ceil(1 << sub_x),
+            width.div_ceil(1 << sub_x),
+        ];
         let planes = core::array::from_fn(|plane| {
             let size = sizes[plane];
             let (w, h) = if plane == 0 {
                 (width, height)
             } else {
-                (width.div_ceil(2), height.div_ceil(2))
+                (strides[plane], height.div_ceil(1 << sub_y))
             };
             let src = &source.planes()[plane];
             let mut out = Vec::with_capacity(w * h);
@@ -247,7 +262,6 @@ impl PaddedSource {
             }
             out
         });
-        let strides = [width, width.div_ceil(2), width.div_ceil(2)];
         Self {
             planes,
             strides,
