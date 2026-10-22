@@ -637,7 +637,10 @@ pub(super) fn compound_inter_block(
     }
 }
 
-fn resolve_single(
+/// The § 7.12 motion of a single-reference block; the encoder facade calls
+/// it too.
+#[inline]
+pub(super) fn resolve_single(
     syntax: &InterBlockSyntax,
     single: &SingleMotionSyntax,
     state: &MvResolutionState<'_>,
@@ -658,10 +661,9 @@ fn resolve_single(
     }
 }
 
-/// The § 7.12 stack of a single-reference block; the encoder facade calls it
-/// too, so its candidates are the ones the decoder resolves.
+/// The § 7.12 stack of a single-reference block.
 #[inline]
-pub(super) fn single_mv_stack(
+fn single_mv_stack(
     block: &MvBlockContext,
     tip_ref: bool,
     use_temporal_first: bool,
@@ -689,7 +691,7 @@ pub(super) fn single_mv_stack(
 
 /// The motion vector `single` codes over `stack`.
 #[inline]
-pub(super) fn single_mode_mv(
+fn single_mode_mv(
     single: &SingleMotionSyntax,
     stack: &MvStack,
     (precision, use_amvd): (BlockPrecisionRecord, bool),
@@ -820,6 +822,27 @@ fn resolve_compound(
     compound: &CompoundMotionSyntax,
     state: &mut MvResolutionState<'_>,
 ) -> Result<ResolvedInterBlock> {
+    let resolved = compound_motion(syntax, compound, state)?;
+    if let Some(params) = resolved.warp_params[0] {
+        state
+            .warp_param_bank
+            .update(syntax.block_ctx.ref_frame0, params);
+    }
+    if let Some(params) = resolved.warp_params[1] {
+        state.warp_param_bank.update(compound.ref_frame1, params);
+    }
+    Ok(resolved)
+}
+
+/// The § 7.12 motion of a compound or skip-mode block, before the warp bank
+/// update; the encoder facade calls it too, so its vectors are the ones the
+/// decoder resolves.
+#[inline]
+pub(super) fn compound_motion(
+    syntax: &InterBlockSyntax,
+    compound: &CompoundMotionSyntax,
+    state: &MvResolutionState<'_>,
+) -> Result<ResolvedInterBlock> {
     let block = &syntax.block_ctx;
     let precision = syntax.precision.mv_precision;
     let global_mvs = [
@@ -892,12 +915,6 @@ fn resolve_compound(
     } else {
         [None, None]
     };
-    if let Some(params) = warp_params[0] {
-        state.warp_param_bank.update(block.ref_frame0, params);
-    }
-    if let Some(params) = warp_params[1] {
-        state.warp_param_bank.update(compound.ref_frame1, params);
-    }
     Ok(ResolvedInterBlock {
         mv,
         warp_params,

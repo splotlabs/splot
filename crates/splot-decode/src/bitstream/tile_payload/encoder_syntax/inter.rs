@@ -2,15 +2,15 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Inter-frame state of the encoder facade: the decoder's § 7.23 reference
-//! buffer over the encoder's reconstructed frames, and the single-reference
-//! inter leaves of § 5.20.7.
+//! buffer over the encoder's reconstructed frames, and the single-reference,
+//! compound and skip-mode inter leaves of § 5.20.7.
 //!
 //! An inter leaf is planned with [`IntraTileSyntax::plan_inter_leaf`], which
 //! runs the decoder's § 7.12 stack and § 7.11.3 motion compensation into the
 //! frame. The encoder codes the residual of the planned transform blocks, adds
 //! it with [`IntraTileSyntax::reconstruct_inter`], writes the leaf syntax, and
 //! publishes the leaf; publication runs the decoder's § 7.12 resolution and
-//! fails when it derives another motion vector than the plan.
+//! fails when it derives other motion vectors than the plan.
 
 use splot_core::headers::frame::{FrameHeaderCore, FrameReferenceStateView, TxMode};
 use splot_core::headers::sequence::SequenceHeader;
@@ -23,13 +23,14 @@ use splot_recon::{BitDepth, DecodedFrame, ReferencePlaneView, SharedFrame, Subpe
 use super::super::cdf::{MvCdfSelector, TileCdfSelector};
 use super::super::general_intra_residual::inter_chroma_plane_tx_type;
 use super::super::partition_traversal::{DecodedLeafPublication, GeneralIntraTreeWalkError};
+use super::compound::InterPrediction;
 use super::{EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, TransformBlock, TxType, rule};
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{frame_ref_update_from_core, is_key_or_switch};
 use crate::prediction::inter::{
-    EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderSingleMotion,
-    InterReferenceState, Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV,
-    chroma_inter_tx_type, non_intra_leaf_mode, single_transform_residual,
+    EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderMotion,
+    EncoderSingleMotion, InterReferenceState, Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV,
+    SINGLE_MODE_NEWMV, chroma_inter_tx_type, non_intra_leaf_mode, single_transform_residual,
 };
 use crate::reference::buffer::RuntimeReferenceBuffer;
 
@@ -196,15 +197,15 @@ pub struct InterModes {
 
 /// The inter state of one tile, `None` in an intra frame.
 pub(super) struct InterLeafState {
-    tile: EncoderInterTile,
+    pub(super) tile: EncoderInterTile,
     planned: Option<PlannedInter>,
 }
 
 /// The inter leaf being coded.
 struct PlannedInter {
     leaf: LeafBlock,
-    motion: EncoderSingleMotion,
-    mv: Mv,
+    motion: EncoderMotion,
+    mvs: [Mv; 2],
     residual: EncoderInterResidual,
 }
 
@@ -330,27 +331,27 @@ impl IntraTileSyntax {
             .map_err(rule("motion vector"))
     }
 
-    /// Plans the inter leaf `leaf` under `modes`: predicts it into the frame
-    /// and returns its transform blocks, luma then chroma. Chroma blocks hold
-    /// the type a `DCT_DCT` luma block implies; see
+    /// Plans the inter leaf `leaf` under `prediction`: predicts it into the
+    /// frame and returns its transform blocks, luma then chroma. Chroma blocks
+    /// hold the type a `DCT_DCT` luma block implies; see
     /// [`Self::inter_chroma_tx_type`].
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code.
+    /// Returns [`EncoderSyntaxError`] for a prediction `leaf` cannot code.
     pub fn plan_inter_leaf(
         &mut self,
         leaf: &LeafBlock,
-        modes: InterModes,
+        prediction: InterPrediction,
     ) -> Result<Vec<TransformBlock>> {
         if !self.inter_allowed(leaf) {
             return Err(EncoderSyntaxError::Unsupported("an inter block here"));
         }
-        let motion = self.single_motion(leaf, modes)?;
+        let motion = self.motion(leaf, prediction)?;
         self.recon.leaf = None;
         let chroma = self.chroma;
         let state = self.inter.as_mut().ok_or(INTRA_FRAME)?;
         state.planned = None;
-        let mv = state
+        let mvs = state
             .tile
             .predict(&leaf.frontier, motion, &mut self.recon.workspace)
             .map_err(rule("inter prediction"))?;
@@ -371,7 +372,7 @@ impl IntraTileSyntax {
         state.planned = Some(PlannedInter {
             leaf: *leaf,
             motion,
-            mv,
+            mvs,
             residual: EncoderInterResidual::default(),
         });
         if let Some(&luma) = blocks.first() {
@@ -446,8 +447,10 @@ impl IntraTileSyntax {
             .map_err(rule("inter residual"))
     }
 
-    /// Writes `is_inter` of `leaf` (§ 5.20.7.3); an intra frame codes none, and
-    /// an inter frame infers `1` for a block whose chroma another block codes.
+    /// Writes `skip_mode` (§ 5.20.5.9) and `is_inter` (§ 5.20.7.3) of `leaf`;
+    /// an intra frame codes neither, an inter frame infers `is_inter = 1` for
+    /// a skip-mode block and for a block whose chroma another block codes, and
+    /// only a planned skip-mode leaf codes `skip_mode = 1`.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError::Unsupported`] when `leaf` cannot code the
@@ -472,17 +475,36 @@ impl IntraTileSyntax {
             return Ok(());
         };
         let frontier = &leaf.frontier;
-        if frontier.is_luma_part()
-            || frontier.is_chroma_part()
-            || frontier.shared_mixed_chroma_ref_forces_inter()
-        {
+        if frontier.is_luma_part() || frontier.is_chroma_part() {
             return Ok(());
         }
-        let ctx = inter
+        let skip_mode = is_inter
+            && inter
+                .planned
+                .as_ref()
+                .is_some_and(|planned| planned.motion.skip_mode());
+        let contexts = inter
             .tile
-            .contexts(frontier, 0)
-            .map_err(rule("is_inter context"))?
-            .is_inter;
+            .contexts(frontier, false)
+            .map_err(rule("is_inter context"))?;
+        let (_, reads_skip_mode) = inter
+            .tile
+            .reads_compound_syntax(frontier)
+            .map_err(rule("skip_mode context"))?;
+        if reads_skip_mode {
+            let ctx = contexts.skip_mode;
+            self.put(
+                symbols,
+                TileCdfSelector::SkipMode { ctx },
+                usize::from(skip_mode),
+            )?;
+        } else if skip_mode {
+            return Err(EncoderSyntaxError::Unsupported("skip mode here"));
+        }
+        if skip_mode || frontier.shared_mixed_chroma_ref_forces_inter() {
+            return Ok(());
+        }
+        let ctx = contexts.is_inter;
         self.put(
             symbols,
             TileCdfSelector::IsInter { ctx },
@@ -490,28 +512,37 @@ impl IntraTileSyntax {
         )
     }
 
-    /// Writes `skip_txfm` of the inter leaf `leaf` (§ 5.20.7.4).
+    /// Writes `skip_txfm` of the planned inter leaf `leaf` (§ 5.20.7.4).
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError`] in an intra frame or for a write failure.
+    /// Returns [`EncoderSyntaxError`] without a planned inter leaf or for a
+    /// write failure.
     pub fn write_skip_txfm(
         &mut self,
         leaf: &LeafBlock,
         skip: bool,
         symbols: &mut impl SymbolSink,
     ) -> Result<()> {
-        let ctx = self
-            .inter_ref()?
+        let state = self.inter_ref()?;
+        let skip_mode = state
+            .planned
+            .as_ref()
+            .ok_or(NO_INTER_LEAF)?
+            .motion
+            .skip_mode();
+        let ctx = state
             .tile
-            .contexts(&leaf.frontier, 0)
+            .contexts(&leaf.frontier, skip_mode)
             .map_err(rule("skip_txfm context"))?
             .skip;
         self.put(symbols, TileCdfSelector::Skip { ctx }, usize::from(skip))
     }
 
-    /// Writes the single-reference syntax of the planned inter leaf `leaf`:
-    /// `single_ref`, `single_mode` and `drl_mode` (§ 5.20.7.11). Returns the
-    /// `NEWMV` difference the caller writes next (§ 5.20.7.20).
+    /// Writes the mode syntax of the planned inter leaf `leaf`: `comp_mode`,
+    /// the references, the mode, `jmvd_scale_mode` and the DRL indices
+    /// (§ 5.20.7.6, § 5.20.7.11), or the skip-mode DRL index. Returns the
+    /// motion vector differences the caller writes next, in coding order
+    /// (§ 5.20.7.7, § 5.20.7.20).
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] without a planned inter leaf.
@@ -519,62 +550,21 @@ impl IntraTileSyntax {
         &mut self,
         leaf: &LeafBlock,
         symbols: &mut impl SymbolSink,
-    ) -> Result<Option<MotionVector>> {
+    ) -> Result<Vec<MotionVector>> {
         let state = self.inter_ref()?;
         let motion = state.planned.as_ref().ok_or(NO_INTER_LEAF)?.motion;
-        let frontier = leaf.frontier;
-        let refs = state.tile.num_total_refs();
-        let ref_contexts = if refs >= 2 {
-            state
-                .tile
-                .single_ref_contexts(&frontier)
-                .map_err(rule("single_ref context"))?
-        } else {
-            Vec::new()
-        };
-        let ctx = state
+        let coded = state
             .tile
-            .contexts(&frontier, motion.ref_frame)
-            .map_err(rule("single_mode context"))?
-            .new_mv;
-        let max_drl = state.tile.max_drl_bits_minus_1() as usize + 1;
-        let chosen = usize::try_from(motion.ref_frame).unwrap_or(usize::MAX);
-        for (ref_idx, &ref_ctx) in ref_contexts.iter().enumerate() {
-            let value = ref_idx == chosen;
-            self.put(
-                symbols,
-                TileCdfSelector::SingleRef {
-                    ctx: ref_ctx,
-                    ref_idx,
-                },
-                usize::from(value),
-            )?;
-            if value {
-                break;
-            }
+            .mode_symbols(&leaf.frontier, motion)
+            .map_err(rule("inter mode syntax"))?;
+        for (selector, value) in coded {
+            self.put(symbols, selector, usize::from(value))?;
         }
-        self.put(
-            symbols,
-            TileCdfSelector::SingleMode { ctx },
-            usize::from(motion.mode),
-        )?;
-        if motion.mode != SINGLE_MODE_GLOBALMV {
-            for idx in 0..max_drl {
-                let more = motion.ref_mv_idx > idx;
-                self.put(
-                    symbols,
-                    TileCdfSelector::DrlMode {
-                        idx: idx.min(2),
-                        ctx,
-                    },
-                    usize::from(more),
-                )?;
-                if !more {
-                    break;
-                }
-            }
-        }
-        Ok((motion.mode == SINGLE_MODE_NEWMV).then(|| motion.mvd.into()))
+        Ok(motion
+            .coded_mvds()
+            .into_iter()
+            .map(MotionVector::from)
+            .collect())
     }
 
     /// The `read_mv` CDF row `selector` (§ 5.20.7.20).
@@ -636,7 +626,7 @@ impl IntraTileSyntax {
             .tile
             .publish(&leaf.frontier, planned.motion, skip)
             .map_err(rule("motion resolution"))?;
-        if resolved != planned.mv {
+        if resolved != planned.mvs {
             return Err(EncoderSyntaxError::Unsupported(
                 "a motion vector the decoder resolves differently",
             ));
@@ -765,7 +755,7 @@ impl IntraTileSyntax {
     }
 
     /// The decoder's single-reference syntax of `modes` at `leaf`.
-    fn single_motion(
+    pub(super) fn single_motion(
         &mut self,
         leaf: &LeafBlock,
         modes: InterModes,
@@ -812,11 +802,11 @@ impl IntraTileSyntax {
         Ok(motion)
     }
 
-    fn inter_ref(&self) -> Result<&InterLeafState> {
+    pub(super) fn inter_ref(&self) -> Result<&InterLeafState> {
         self.inter.as_ref().ok_or(INTRA_FRAME)
     }
 
-    fn inter_state(&mut self) -> Result<&mut InterLeafState> {
+    pub(super) fn inter_state(&mut self) -> Result<&mut InterLeafState> {
         self.inter.as_mut().ok_or(INTRA_FRAME)
     }
 }
