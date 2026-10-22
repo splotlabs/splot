@@ -24,8 +24,8 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
   8 threads, 30 s at 8 threads with 2x2 tiles.
 - SIMD: every encoder kernel has a scalar twin under bit-exact property tests;
   93.6% of hot-kernel samples are in SIMD code (`encode-perf --coverage`).
-- Harness: `cargo xtask encode-perf` (instruction counts, CI perf job) and
-  `cargo xtask bd-rate`.
+- Harness: `cargo xtask encode-perf` (instruction counts, CI perf job; the
+  baseline holds the Linux CI DynamoRIO counts) and `cargo xtask bd-rate`.
 - Against AVM `--cpu-used=6`, base_q_idx 85..190, luma BD-rate:
 
   | Clip | Coding | splot preset | BD-rate |
