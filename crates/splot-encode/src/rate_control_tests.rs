@@ -387,3 +387,31 @@ fn a_black_first_frame_keeps_key_frame_qindex_sane() {
         );
     }
 }
+
+/// The frames of one wave take their qindex before any of them is coded.
+/// After an underspend each frame alone could fill the buffer; CBR counts
+/// the predicted size of each for the next, so the predicted level stays
+/// inside the buffer after every frame of the wave.
+#[test]
+fn cbr_keeps_a_whole_wave_inside_the_buffer() {
+    let buffer = 200 * 500;
+    for step in 0..64 {
+        let frame = FramePlanInfo {
+            complexity: (1 << 16) + step * (1 << 18),
+            ..plan(1, FrameType::Inter, 0)
+        };
+        let mut cbr = Cbr::new(200, 500, (30, 1)).unwrap();
+        for index in 0..30 {
+            cbr.update(&stats(index, 100, 0));
+        }
+        cbr.plan_window(&[frame; 4]);
+        for _ in 0..4 {
+            let qindex = cbr.frame_qp(&frame);
+            let level = buffer / 2 + cbr.vbr.drift + cbr.pending;
+            assert!(
+                qindex == 255 || level <= buffer,
+                "step {step}: qindex {qindex}, level {level}"
+            );
+        }
+    }
+}

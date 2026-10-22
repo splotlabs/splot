@@ -197,13 +197,17 @@ impl IntraFrameCoder {
 }
 
 /// `f` of each item, in order: on `pool` when there is one, else in turn.
+/// The error is the first in item order, whatever the thread count.
 pub(crate) fn map_tiles<T: Send, R: Send>(
     pool: Option<&WorkerPool>,
     items: Vec<T>,
     f: impl Fn(T) -> Result<R> + Send + Sync,
 ) -> Result<Vec<R>> {
     match pool {
-        Some(pool) => pool.install(|| items.into_par_iter().map(f).collect()),
+        Some(pool) => pool
+            .install(|| items.into_par_iter().map(f).collect::<Vec<_>>())
+            .into_iter()
+            .collect(),
         None => items.into_iter().map(f).collect(),
     }
 }
