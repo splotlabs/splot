@@ -389,6 +389,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::config::TileLayout;
     use crate::preset::Preset;
 
     /// Emits the frame index and qp as the frame's OBUs (after `0xd0` when
@@ -622,15 +623,17 @@ mod tests {
         Ok(())
     }
 
-    /// Encodes 20 panning frames with a cut at 11, sending them `sends` at a
-    /// time and then receiving up to `receives` packets, until the input ends.
+    /// Encodes 20 panning frames `width` wide in `tiles` with a cut at 11,
+    /// sending them `sends` at a time and then receiving up to `receives`
+    /// packets, until the input ends.
     fn interleaved(
-        rate_control: RateControlMode,
+        (rate_control, width, tiles): (RateControlMode, u32, TileLayout),
         mut sends: impl FnMut() -> usize,
         mut receives: impl FnMut() -> usize,
     ) -> Result<Vec<u8>> {
-        let mut config = Config::new(48, 32);
+        let mut config = Config::new(width, 32);
         config.rate_control = rate_control;
+        config.tiles = tiles;
         config.preset = Preset::new(9).unwrap_or_default();
         let mut encoder = Encoder::new(config.clone())?;
         let mut bytes = Vec::new();
@@ -670,16 +673,23 @@ mod tests {
     }
 
     /// One send and a full drain per frame, every send before the flush, and
-    /// random interleavings all give the same bytes.
+    /// random interleavings all give the same bytes; the VBR case codes two
+    /// tiles in parallel.
     #[test]
     fn output_does_not_depend_on_the_call_pattern() -> Result<()> {
+        let one = TileLayout::default();
+        let two = TileLayout {
+            cols_log2: 1,
+            rows_log2: 0,
+        };
+        let cbr = RateControlMode::Cbr {
+            bitrate_kbps: 60,
+            buffer_ms: 1000,
+        };
         for mode in [
-            RateControlMode::Crf { crf: 30 },
-            RateControlMode::Vbr { bitrate_kbps: 60 },
-            RateControlMode::Cbr {
-                bitrate_kbps: 60,
-                buffer_ms: 1000,
-            },
+            (RateControlMode::Crf { crf: 30 }, 48, one),
+            (RateControlMode::Vbr { bitrate_kbps: 90 }, 72, two),
+            (cbr, 48, one),
         ] {
             let per_frame = interleaved(mode, || 1, || usize::MAX)?;
             assert!(!per_frame.is_empty());
