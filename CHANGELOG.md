@@ -5,6 +5,23 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
 
 ## Unreleased
 
+### Encoder milestone 4: lookahead, temporal model and rate control
+
+- A lookahead holds the preset's `lookahead_frames` frames as downscaled
+  luma with per-block intra and inter SATD costs. A frame whose best costs
+  against the previous frame reach 70% of its intra costs is a scene cut and
+  starts a key frame; `keyint` stays the maximum interval.
+- A temporal model propagates block costs back through the planned mini-GOP
+  references. Frames that later frames reuse get up to 32 lower qindex, and
+  deeper mini-GOP layers get 3 more per layer.
+- Rate control: `--crf N` (base qindex `4 * N` plus the model offsets),
+  `--bitrate KBPS` with `--rc vbr|cbr`. VBR and CBR pick a base qindex per
+  lookahead window from a frame-size model learnt from the coded bits.
+- Rate points, preset 6, 8 threads, keyint 120, luma, CRF 22/30/37/45
+  against constant qp 80/110/140/170 at matched average bitrate: park_joy
+  160x90 10 frames BD-rate -7.2%; niklas 720p 10 frames BD-rate -8.1%.
+  Bitrate accuracy, park_joy 300 kbps: VBR +8.8%, CBR +1.7%.
+
 ### Encoder milestone 3: single-reference inter blocks
 
 - Inter-frame leaves RD-compare intra coding with GLOBALMV, NEARMV over the
