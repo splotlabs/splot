@@ -128,6 +128,55 @@ fn sse_lanes<const L: usize>(
     acc.reduce_sum()
 }
 
+pub(super) fn residual_scalar(
+    src: &[u16],
+    src_stride: usize,
+    pred: &[u16],
+    pred_stride: usize,
+    dims: BlockDims,
+    out: &mut [i32],
+) {
+    let rows = row_pairs(src, src_stride, pred, pred_stride, dims);
+    for (out, (a, b)) in out.chunks_exact_mut(dims.width()).zip(rows) {
+        for (slot, (&a, &b)) in out.iter_mut().zip(a.iter().zip(b)) {
+            *slot = i32::from(a) - i32::from(b);
+        }
+    }
+}
+
+pub(super) fn residual_simd(
+    src: &[u16],
+    src_stride: usize,
+    pred: &[u16],
+    pred_stride: usize,
+    dims: BlockDims,
+    out: &mut [i32],
+) {
+    match dims.width() {
+        4 => residual_lanes::<4>(src, src_stride, pred, pred_stride, dims, out),
+        8 => residual_lanes::<8>(src, src_stride, pred, pred_stride, dims, out),
+        _ => residual_lanes::<16>(src, src_stride, pred, pred_stride, dims, out),
+    }
+}
+
+fn residual_lanes<const L: usize>(
+    src: &[u16],
+    src_stride: usize,
+    pred: &[u16],
+    pred_stride: usize,
+    dims: BlockDims,
+    out: &mut [i32],
+) {
+    let rows = row_pairs(src, src_stride, pred, pred_stride, dims);
+    for (out, (a, b)) in out.chunks_exact_mut(dims.width()).zip(rows) {
+        let lanes = out.as_chunks_mut::<L>().0.iter_mut();
+        for (slot, (a, b)) in lanes.zip(a.as_chunks::<L>().0.iter().zip(b.as_chunks::<L>().0)) {
+            let (a, b) = (Simd::from_array(*a), Simd::from_array(*b));
+            *slot = (a.cast::<i32>() - b.cast::<i32>()).to_array();
+        }
+    }
+}
+
 /// The SATD tile side for `dims`: 8 when both sides allow it, else 4.
 fn satd_tile(dims: BlockDims) -> usize {
     if dims.width() >= 8 && dims.height() >= 8 {
@@ -308,6 +357,11 @@ mod tests {
             prop_assert_eq!(SimdKernels.sad(&a, sa, &b, sb, dims), ScalarKernels.sad(&a, sa, &b, sb, dims));
             prop_assert_eq!(SimdKernels.sse(&a, sa, &b, sb, dims), ScalarKernels.sse(&a, sa, &b, sb, dims));
             prop_assert_eq!(SimdKernels.satd(&a, sa, &b, sb, dims), ScalarKernels.satd(&a, sa, &b, sb, dims));
+            let len = dims.width() * dims.height();
+            let (mut simd, mut scalar) = (vec![0; len], vec![1; len]);
+            SimdKernels.residual(&a, sa, &b, sb, dims, &mut simd);
+            ScalarKernels.residual(&a, sa, &b, sb, dims, &mut scalar);
+            prop_assert_eq!(simd, scalar);
         }
     }
 

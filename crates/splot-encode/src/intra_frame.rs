@@ -385,14 +385,9 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let (source, stride) = self.source.at(tx);
         let mut scratch = core::mem::take(&mut self.scratch);
         let [residual, coeffs, dequant] = &mut scratch;
-        residual.clear();
-        for (src, pred) in source.chunks(stride).zip(prediction.chunks(w)).take(h) {
-            residual.extend(
-                src.iter()
-                    .zip(pred)
-                    .map(|(&s, &p)| i32::from(s) - i32::from(p)),
-            );
-        }
+        let dims = BlockDims::new(w, h).map_err(kernel)?;
+        residual.resize(w * h, 0);
+        kernels().residual(source, stride, prediction, w, dims, residual);
         let (params, transform) = recon_params(
             self.qindex,
             plane_id(tx.plane)?,

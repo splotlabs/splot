@@ -18,6 +18,7 @@
 //! kernels, over the allow-listed kernel symbols in [`KERNELS`].
 
 use std::ffi::OsString;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -85,35 +86,80 @@ const COVERAGE_CLIP: Clip = Clip {
     presets: &[6],
 };
 
-/// Whether a kernel symbol is vectorized.
+/// Whether a kernel symbol runs in vector lanes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Simd,
     Scalar,
 }
 
-/// Allow-listed kernel symbols (substring match on the demangled name).
+/// Allow-listed kernel symbols and whether they run in vector lanes
+/// (`std::simd`, or an inner loop the compiler vectorizes, checked in the
+/// disassembly), first match wins. A key is a `::` path suffix (a trailing `::` names a module); it
+/// matches the demangled name or the length-prefixed identifiers that legacy
+/// and v0 mangling both write (`17forward_transform12forward_simd`). The set
+/// is the sample kernels a preset-6 encode spends time in: encoder distortion,
+/// transform and quantizer kernels, and the `splot-recon` / prediction kernels
+/// the encoder reconstructs with. RD logic (RDOQ walk, rate models) is not a
+/// kernel.
 const KERNELS: &[(&str, Kind)] = &[
     ("distortion::sad_simd", Kind::Simd),
+    ("distortion::sad_lanes", Kind::Simd),
     ("distortion::sse_simd", Kind::Simd),
+    ("distortion::sse_lanes", Kind::Simd),
     ("distortion::satd_simd", Kind::Simd),
+    ("distortion::residual_simd", Kind::Simd),
+    ("distortion::residual_lanes", Kind::Simd),
+    ("distortion::", Kind::Scalar),
     ("forward_transform::forward_simd", Kind::Simd),
+    ("forward_transform::forward_lanes", Kind::Simd),
     ("forward_transform::", Kind::Scalar),
+    ("ForwardTransform2d::input", Kind::Scalar),
     ("quantize::quantize_simd", Kind::Simd),
     ("quantize::", Kind::Scalar),
-    ("distortion::", Kind::Scalar),
-    ("kernels::residual_simd", Kind::Simd),
-    ("kernels::compound_average_simd", Kind::Simd),
-    ("motion_search::", Kind::Scalar),
-    ("inverse_transform::row_pass_simd", Kind::Simd),
-    ("inverse_transform::col_pass_simd", Kind::Simd),
-    ("inverse_transform", Kind::Scalar),
-    ("intra_directional_angle::", Kind::Scalar),
-    ("intra_directional", Kind::Scalar),
-    ("intra_smooth", Kind::Scalar),
-    ("intra_cfl", Kind::Scalar),
+    ("inverse_transform::kernel_row_quad", Kind::Simd),
+    (
+        "inverse_transform::inverse_transform_1d_row_quad",
+        Kind::Simd,
+    ),
+    (
+        "inverse_transform::inverse_transform_1d_columns",
+        Kind::Simd,
+    ),
+    ("inverse_transform::inverse_transform_1d", Kind::Simd),
+    ("inverse_transform::", Kind::Scalar),
+    ("subpel_mc::", Kind::Simd),
+    ("dequant_process::dequantize_block", Kind::Simd),
+    ("cfl::fill_cfl_luma_ac_420_u16", Kind::Simd),
+    ("sample_range::u16_samples_exceed", Kind::Simd),
     ("cfl::", Kind::Scalar),
+    (
+        "intra_directional_angle::predict_intra_directional_angle_rect_one_sided_idif_mrl_into",
+        Kind::Simd,
+    ),
+    (
+        "intra_directional_angle::predict_intra_directional_angle_rect_one_sided_idif_into",
+        Kind::Simd,
+    ),
+    ("intra_directional_angle::", Kind::Scalar),
+    ("intra_directional::", Kind::Scalar),
+    ("intra_ibp_angular::", Kind::Scalar),
+    ("intra_ibp_dc::", Kind::Scalar),
+    (
+        "smooth::predict_intra_smooth_over_available_edges_into",
+        Kind::Scalar,
+    ),
+    ("reconstruct::add_residual_u16", Kind::Simd),
 ];
+
+/// Whether `symbol` (demangled or mangled) names the allow-listed `key`.
+fn kernel_matches(symbol: &str, key: &str) -> bool {
+    let mut mangled = String::new();
+    for segment in key.split("::").filter(|segment| !segment.is_empty()) {
+        let _ = write!(mangled, "{}{segment}", segment.len());
+    }
+    symbol.contains(key) || symbol.contains(&mangled)
+}
 
 /// The `tests/perf/encode-baseline.toml` document.
 #[derive(Debug, Deserialize, Serialize)]
@@ -336,7 +382,7 @@ fn run_coverage(splot: &Path, work: &Path) -> Result<()> {
     let mut scalar = 0.0;
     let mut rows: Vec<(String, f64, Kind)> = Vec::new();
     for (symbol, weight) in &profile {
-        if let Some(&(_, kind)) = KERNELS.iter().find(|(key, _)| symbol.contains(key)) {
+        if let Some(&(_, kind)) = KERNELS.iter().find(|(key, _)| kernel_matches(symbol, key)) {
             match kind {
                 Kind::Simd => simd += weight,
                 Kind::Scalar => scalar += weight,
@@ -435,7 +481,22 @@ fn sample_perf(splot: &Path, args: &[OsString], data: &Path) -> Result<Vec<(Stri
 
 #[cfg(test)]
 mod tests {
-    use super::synthetic_y4m;
+    use super::{kernel_matches, synthetic_y4m};
+
+    #[test]
+    fn kernel_keys_match_demangled_and_mangled_names() {
+        let v0 = "_RNvNtNtCs1_12splot_encode7kernels17forward_transform12forward_simd";
+        assert!(kernel_matches(v0, "forward_transform::forward_simd"));
+        assert!(kernel_matches(v0, "forward_transform::"));
+        assert!(!kernel_matches(v0, "forward_transform::forward_lanes"));
+        let demangled = "splot_recon::intra_directional_angle::write_middle";
+        assert!(kernel_matches(demangled, "intra_directional_angle::"));
+        assert!(!kernel_matches(demangled, "intra_directional::"));
+        assert!(!kernel_matches(
+            "_RNvCs1_11splot_recon23intra_directional_angle",
+            "intra_directional::"
+        ));
+    }
 
     #[test]
     fn synthetic_clip_has_header_and_full_frames() {
