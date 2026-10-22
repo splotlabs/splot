@@ -438,9 +438,10 @@ fn temporal_unit_carries_delimiter_sequence_and_frame() {
     assert!(encode_key_frame_temporal_unit(&seq, &core, true, &[&[]]).is_err());
 }
 
+/// A 200x136 frame with 64x64 superblocks has 4 superblock columns and 3 rows,
+/// so the last layout is capped at 4x3 tiles.
 #[test]
 fn uniform_tiles_round_trip_through_header_and_tile_group() {
-    // 200x136 with 64x64 superblocks: 4 superblock columns, 3 rows.
     let seq = build_encoder_sequence_header(&params(
         200,
         136,
