@@ -315,6 +315,10 @@ const fn profile_idc(chroma: ChromaFormatIdc) -> u32 {
     }
 }
 
+/// `num_same_ref_compound`: the first two ranked references may pair with
+/// themselves in a compound block (§ 5.20.7.11).
+const NUM_SAME_REF_COMPOUND: u32 = 2;
+
 /// § 5.4.6 for a non-single-picture header with every inter tool off.
 fn write_minimal_inter_config(w: &mut BitWriter) -> Result<(), WriteError> {
     w.write_bits(0, 4)?; // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
@@ -330,7 +334,7 @@ fn write_minimal_inter_config(w: &mut BitWriter) -> Result<(), WriteError> {
     w.write_flag(false)?; // allow_frame_max_drl_bits
     w.write_ns(0, 3)?; // seq_max_bvp_drl_bits_minus_1, ns(MAX_REF_BV_STACK_SIZE - 1)
     w.write_flag(false)?; // allow_frame_max_bvp_drl_bits
-    w.write_bits(0, 2)?; // num_same_ref_compound
+    w.write_bits(NUM_SAME_REF_COMPOUND, 2)?;
     for _ in 0..6 {
         w.write_flag(false)?; // enable_tip, mv_traj, bawp, cwp, imp_msk_bld, df_sub_pu
     }

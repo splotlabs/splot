@@ -49,6 +49,11 @@ pub struct InterFrameParams {
     pub filters: FrameFilterParams,
     /// Transform mode and `reduced_tx_set`, as for key frames.
     pub tx: KeyFrameTxParams,
+    /// `reference_select` (§ 5.18.8.3): blocks may code compound prediction.
+    pub reference_select: bool,
+    /// `skip_mode_present` (§ 5.18.8.2): blocks may code skip mode; the
+    /// parser derives `SkipModeFrame`.
+    pub skip_mode_present: bool,
 }
 
 /// A parsed frame header and the exact bits it was parsed from.
@@ -66,7 +71,7 @@ pub struct EncodedFrameHeader {
 /// The frame has the maximum frame size, `primary_ref_frame = PRIMARY_REF_NONE`
 /// with `disable_cross_frame_cdf_init = 1`, the § 7.7 implicit reference map,
 /// quarter-pel motion vectors, the frame-level `EIGHTTAP` filter,
-/// `reference_select = 0`, `skip_mode_present = 0`, and the key-frame tail
+/// `reference_select` and `skip_mode_present` of `params`, and the key-frame tail
 /// (`TX_MODE_LARGEST`, `reduced_tx_set = 2`) with the filters of `params`.
 ///
 /// # Errors
@@ -143,8 +148,8 @@ fn inter_frame_header_bits(
     }
     write_quant_and_filters(&mut w, seq, params.base_q_idx, &params.filters)?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
-    w.write_flag(false)?; // reference_select
-    w.write_flag(false)?; // skip_mode_present
+    w.write_flag(params.reference_select)?;
+    w.write_flag(params.skip_mode_present)?;
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
     let bit_len = w.bit_len();
     w.align_to_byte();
