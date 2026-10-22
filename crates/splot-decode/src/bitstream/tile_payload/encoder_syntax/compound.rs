@@ -13,6 +13,9 @@ use crate::prediction::inter::{CompoundYMode, EncoderCompoundMotion, EncoderMoti
 /// `JOINT_NEWMV` block codes.
 pub const JMVD_SCALE_MODES: u8 = crate::prediction::inter::JMVD_SCALE_MODES;
 
+/// The candidate failure of a prediction whose vectors the decoder cannot derive.
+const UNDERIVED: &str = "a prediction whose vectors the decoder cannot derive";
+
 /// A compound `YMode` (§ 5.20.7.6).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum CompoundMode {
@@ -105,7 +108,8 @@ impl IntraTileSyntax {
     /// the second is zero for a single-reference block.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError`] for a prediction `leaf` cannot code.
+    /// Returns [`EncoderSyntaxError::Unsupported`] for a prediction `leaf`
+    /// cannot code, including one whose vectors the decoder cannot derive.
     pub fn inter_mvs(
         &mut self,
         leaf: &LeafBlock,
@@ -115,7 +119,7 @@ impl IntraTileSyntax {
         let tile = &mut self.inter_state()?.tile;
         Ok(tile
             .motion_vectors(&leaf.frontier, motion)
-            .map_err(rule("motion vector"))?
+            .map_err(|_| EncoderSyntaxError::Unsupported(UNDERIVED))?
             .map(MotionVector::from))
     }
 
@@ -124,7 +128,8 @@ impl IntraTileSyntax {
     /// component. `JOINT_NEWMV` codes the difference of one list only.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code.
+    /// Returns [`EncoderSyntaxError::Unsupported`] for modes `leaf` cannot
+    /// code, including modes whose vectors the decoder cannot derive.
     pub fn compound_bases(
         &mut self,
         leaf: &LeafBlock,
@@ -132,10 +137,11 @@ impl IntraTileSyntax {
     ) -> Result<[Option<MotionVector>; 2]> {
         let motion = self.compound_choice(leaf, modes)?;
         let tile = &mut self.inter_state()?.tile;
-        let lists = tile.coded_lists(&motion).map_err(rule("compound lists"))?;
+        let underived = |_| EncoderSyntaxError::Unsupported(UNDERIVED);
+        let lists = tile.coded_lists(&motion).map_err(underived)?;
         let base = tile
             .motion_vectors(&leaf.frontier, EncoderMotion::Compound(motion))
-            .map_err(rule("motion vector"))?;
+            .map_err(underived)?;
         Ok([0, 1].map(|list| lists[list].then(|| base[list].into())))
     }
 
