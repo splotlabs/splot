@@ -113,6 +113,7 @@ const KERNELS: &[(&str, Kind)] = &[
     ("distortion::", Kind::Scalar),
     ("forward_transform::forward_simd", Kind::Simd),
     ("forward_transform::forward_lanes", Kind::Simd),
+    ("forward_transform::pair_sum_simd", Kind::Simd),
     ("forward_transform::", Kind::Scalar),
     ("ForwardTransform2d::input", Kind::Scalar),
     ("quantize::quantize_simd", Kind::Simd),
