@@ -1068,6 +1068,10 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
 
 /// The § 5.20.7.10 `skip_mode_frames` reference pair of a skip-mode block
 /// whose neighbours give `neighbour_ctx`; the encoder facade calls it too.
+#[allow(
+    clippy::inline_always,
+    reason = "keeps the parse path of the parent with the facade as second caller"
+)]
 #[inline(always)]
 pub(super) fn skip_mode_reference_pair<T: ReconSample>(
     core: &FrameHeaderCore,
@@ -1415,6 +1419,10 @@ pub(super) fn compound_ref_contexts(
     Ok(contexts)
 }
 
+#[allow(
+    clippy::inline_always,
+    reason = "keeps the parse path of the parent with the facade as second caller"
+)]
 #[inline(always)]
 pub(super) fn compound_ref_distance_signs<T: ReconSample>(
     ref_frame_idx: &[u32],

@@ -639,6 +639,10 @@ pub(super) fn compound_inter_block(
 
 /// The § 7.12 motion of a single-reference block; the encoder facade calls
 /// it too.
+#[allow(
+    clippy::inline_always,
+    reason = "keeps the resolve path of the parent with the facade as second caller"
+)]
 #[inline(always)]
 pub(super) fn resolve_single(
     syntax: &InterBlockSyntax,
@@ -837,6 +841,10 @@ fn resolve_compound(
 /// The § 7.12 motion of a compound or skip-mode block, before the warp bank
 /// update; the encoder facade calls it too, so its vectors are the ones the
 /// decoder resolves.
+#[allow(
+    clippy::inline_always,
+    reason = "keeps the resolve path of the parent with the facade as second caller"
+)]
 #[inline(always)]
 pub(super) fn compound_motion(
     syntax: &InterBlockSyntax,
@@ -950,6 +958,10 @@ fn single_list_candidate(
 }
 
 /// AV2 § 7.12.2 compound predictors combined with the parsed MVD pair.
+#[allow(
+    clippy::inline_always,
+    reason = "keeps the resolve path of the parent with the facade as second caller"
+)]
 #[inline(always)]
 fn compound_mvs(
     syntax: &InterBlockSyntax,
