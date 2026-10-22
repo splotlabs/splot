@@ -331,6 +331,9 @@ impl Drop for NeighbourMvGrid {
 pub(crate) struct GridCheckpoint {
     leaves: usize,
     models: usize,
+    /// Leaf and model records appended after `leaves` and `models`, which
+    /// a rollback puts back: a later rollback to an older checkpoint drops them.
+    appended: (Vec<LeafRecord>, Vec<[i32; 6]>),
     footprint: Option<(Range<usize>, Range<usize>)>,
     cells: Vec<Option<NonZeroU32>>,
 }
@@ -801,8 +804,14 @@ impl NeighbourMvGrid {
 
     /// The leaf and model counts and the cells of the leaf footprint
     /// `(r, c, n4w, n4h)`, for [`Self::rollback`]. Publications after it must
-    /// stay inside the footprint and the current superblock row.
-    pub(crate) fn checkpoint(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> GridCheckpoint {
+    /// stay inside the footprint and the current superblock row. With `since`,
+    /// an older live checkpoint, it also keeps the records published after
+    /// `since`, so it stays valid after a rollback to `since`.
+    pub(crate) fn checkpoint(
+        &self,
+        (r, c, n4w, n4h): (usize, usize, usize, usize),
+        since: Option<&GridCheckpoint>,
+    ) -> GridCheckpoint {
         let mut cells = Vec::new();
         let footprint = self.footprint(r, c, n4w, n4h);
         if let Some((rows, cols)) = &footprint {
@@ -815,9 +824,25 @@ impl NeighbourMvGrid {
                 }
             }
         }
+        let (leaves, models) = since.map_or(
+            (self.planes.leaves.len(), self.planes.models.len()),
+            |since| (since.leaves, since.models),
+        );
         GridCheckpoint {
-            leaves: self.planes.leaves.len(),
-            models: self.planes.models.len(),
+            leaves,
+            models,
+            appended: (
+                self.planes
+                    .leaves
+                    .get(leaves..)
+                    .unwrap_or_default()
+                    .to_vec(),
+                self.planes
+                    .models
+                    .get(models..)
+                    .unwrap_or_default()
+                    .to_vec(),
+            ),
             footprint,
             cells,
         }
@@ -827,6 +852,8 @@ impl NeighbourMvGrid {
     pub(crate) fn rollback(&mut self, checkpoint: &GridCheckpoint) {
         self.planes.leaves.truncate(checkpoint.leaves);
         self.planes.models.truncate(checkpoint.models);
+        self.planes.leaves.extend_from_slice(&checkpoint.appended.0);
+        self.planes.models.extend_from_slice(&checkpoint.appended.1);
         let Some((rows, cols)) = &checkpoint.footprint else {
             return;
         };

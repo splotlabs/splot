@@ -183,3 +183,46 @@ fn the_window_drops_superblock_rows_two_above_the_current_one() {
         "the dropped row is a fail-closed defect"
     );
 }
+
+/// A checkpoint taken since an older one keeps its leaf records after a
+/// rollback to the older one and another leaf's publication, as an encoder
+/// search does when it restores the best of several trials.
+#[test]
+fn a_checkpoint_since_an_older_one_restores_its_own_leaf() {
+    let publish = |grid: &mut NeighbourMvGrid, mv: Mv| {
+        grid.record_flags(
+            0,
+            0,
+            4,
+            4,
+            NeighbourFlagSyntax {
+                is_inter: true,
+                ref_frame0: 0,
+                ..NON_INTER_FLAG_SYNTAX
+            },
+        );
+        grid.record_motion(
+            0,
+            0,
+            4,
+            4,
+            NeighbourMotionValues {
+                mv: [mv, Mv::ZERO],
+                cwp_weight: CWP_EQUAL,
+                stored_warp: None,
+                global_mv: [false, false],
+                splat_warp: [None, None],
+            },
+        );
+    };
+    let (best, other) = (Mv { row: -20, col: 36 }, Mv { row: 8, col: -12 });
+    let mut grid = NeighbourMvGrid::new(16, 16).unwrap();
+    let start = grid.checkpoint((0, 0, 4, 4), None);
+    publish(&mut grid, best);
+    let end = grid.checkpoint((0, 0, 4, 4), Some(&start));
+    grid.rollback(&start);
+    assert!(grid.get(0, 0).is_none());
+    publish(&mut grid, other);
+    grid.rollback(&end);
+    assert_eq!(grid.get(3, 3).unwrap().motion.sub_mv, best);
+}

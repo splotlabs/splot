@@ -285,7 +285,7 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError::Rule`] for a node outside the frame.
     pub fn snapshot(&mut self, node: PartitionNode) -> Result<SyntaxSnapshot> {
         let mark = self.journal.mark();
-        self.save(node, mark, (Vec::new(), Vec::new()))
+        self.save(node, mark, (Vec::new(), Vec::new()), None)
     }
 
     /// [`Self::snapshot`] of the state a trial reached from `start`, a live
@@ -300,7 +300,7 @@ impl IntraTileSyntax {
     ) -> Result<SyntaxSnapshot> {
         self.check_live(start)?;
         let forward = self.journal.rows_since(&mut self.cdfs, start.mark)?;
-        self.save(node, start.mark, forward)
+        self.save(node, start.mark, forward, Some(&start.inter))
     }
 
     /// Puts a [`Self::snapshot`] back.
@@ -350,6 +350,7 @@ impl IntraTileSyntax {
         node: PartitionNode,
         mark: usize,
         forward: (Vec<CdfRow>, Vec<u16>),
+        since: Option<&super::inter::InterSnapshot>,
     ) -> Result<SyntaxSnapshot> {
         let (w, h) = node.dimensions()?;
         let (x, y) = (node.col4() * 4, node.row4() * 4);
@@ -376,7 +377,7 @@ impl IntraTileSyntax {
             palettes: self.palette_y.palettes_mut().clone(),
             block_decoded: self.recon.block_decoded.clone(),
             samples: self.recon.save_samples((x, y, w, h))?,
-            inter: self.inter_snapshot((x, y, w, h)),
+            inter: self.inter_snapshot((x, y, w, h), since),
             #[cfg(debug_assertions)]
             check: self.journal.sample().then(|| Box::new(self.whole_state())),
         })

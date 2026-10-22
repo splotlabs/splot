@@ -263,13 +263,17 @@ impl EncoderInterTile {
         self.grid.enter_sb_row(row);
     }
 
-    /// Saves the state a leaf inside `(r, c, n4w, n4h)` can change.
+    /// Saves the state a leaf inside `footprint` can change; with `since`, an
+    /// older live checkpoint, it stays valid after a rollback to `since`.
     pub(crate) fn checkpoint(
         &self,
-        (r, c, n4w, n4h): (usize, usize, usize, usize),
+        footprint: (usize, usize, usize, usize),
+        since: Option<&EncoderInterCheckpoint>,
     ) -> EncoderInterCheckpoint {
         EncoderInterCheckpoint {
-            grid: self.grid.checkpoint(r, c, n4w, n4h),
+            grid: self
+                .grid
+                .checkpoint(footprint, since.map(|since| &since.grid)),
             warp_bank: self.warp_bank.clone(),
         }
     }
