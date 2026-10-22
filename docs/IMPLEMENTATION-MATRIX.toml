@@ -4857,17 +4857,17 @@ diagnostics = []
 
 [[feature]]
 id = "ENC-INTRA-KEYFRAME-DC"
-name = "Key-frame encoder: every intra mode and CFL, any frame size, 8/10-bit 4:2:0"
+name = "Key-frame encoder: RD-searched intra coding, any frame size, 8/10-bit 4:2:0"
 category = "encoder"
 kind = "encoder-tool"
 spec_sections = ["5.4", "5.9", "5.20.3", "5.20.5.5", "5.20.5.6", "5.20.7.27", "5.20.7.29", "5.20.7.32", "7.13.2", "7.14.4", "7.15", "8.2"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/intra_frame.rs"
-change_id = "encoder-m1-intra-dc"
+change_id = "encoder-m2-full-intra"
 owner = "encoder"
 risk = "medium"
-notes = "Every frame is a closed-loop key frame with one uniform tile. Partitions split by a preset-gated source-variance test; each leaf takes the luma mode (all 61 YMode/AngleDeltaY pairs) and the chroma mode (13 UVModes, explicit and derived-alpha CFL) of lowest prediction SATD, with intra edge filter and IBP on. splot_decode::encoder_syntax supplies the CDF rows, contexts, partition rules, mode-list derivation, inferred chroma transform type and the per-transform-block prediction and reconstruction of the decoder itself. The encoder reconstruction equals splot-decode output sample for sample; the env-gated AVM test decodes the same samples. No RDO, luma transform types or loop filters yet."
+notes = "Every frame is a closed-loop key frame with one uniform tile. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
 
 [feature.status]
 mapped = "done"

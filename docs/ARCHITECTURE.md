@@ -59,6 +59,9 @@ writer) -> temporal unit and IVF output.
 - Reconstruction calls `splot-recon` kernels. Tests compare every coded frame
   with `splot-decode` output sample for sample, and an env-gated test
   (`SPLOT_AVM_DECODER`) does the same with AVM.
+- Decisions are RD searches: a trial codes a leaf through the tile writer's own
+  syntax walk into a rate sink and rolls back with a facade snapshot, so the
+  rate is exact and no second syntax walk exists.
 - Speed presets are rows of one data table; code reads fields, never preset
   numbers. Hot kernels implement one trait twice (scalar and `std::simd`), and
   property tests compare the two bit for bit.

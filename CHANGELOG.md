@@ -5,6 +5,25 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
 
 ## Unreleased
 
+### Encoder milestone 2: full intra coding
+
+- Every AV2 intra mode: all 61 luma mode and angle-delta pairs, every chroma
+  mode, explicit and derived CFL. Prediction and reconstruction run the
+  decoder's own per-transform-block code through `encoder_syntax`.
+- RD search: a recursive partition search, luma mode shortlist by SATD then
+  full RD trials, chroma and CFL, transform partitions (TX_MODE_SELECT) and
+  luma transform types of the selected set, RDOQ with CDF-backed rates.
+  Trials run the tile writer's own syntax walk into a rate sink and roll
+  back with a facade snapshot; no second syntax walk exists.
+- Loop filters: deblocking, CDEF strength sets and luma PC-Wiener are searched
+  on the reconstruction and coded in a second pass.
+- Presets gate mode shortlists, transform-type depth, full trials, partition
+  early exit and filter search from the preset table.
+- Rate points (paris CIF, 5 frames, all-intra, base_q_idx 85..185, AVM
+  `--cpu-used=6`), luma BD-rate: preset 0 -1.9%, preset 6 +10.3%, preset 10
+  +54.1% (milestone 1: +66.9%). Speed, CIF, one thread: preset 0 0.03 fps,
+  preset 6 0.27 fps, preset 10 2.3 fps; speed is milestone 5 work.
+
 ### Encoder milestone 1: intra-only DC stream
 
 - `splot encode <in.y4m> -o <out.ivf>` with `--qp`, `--preset`, `--limit`,
