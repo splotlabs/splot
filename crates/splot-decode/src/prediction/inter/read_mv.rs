@@ -52,6 +52,66 @@ impl MvReadConfig {
     }
 }
 
+/// The source of the § 5.20.7.20 `read_mv` symbols: the decoder reads them,
+/// and the encoder facade answers them for a target difference, so both run
+/// the one `read_mv` branching.
+pub(crate) trait MvSymbols {
+    /// An `S()` symbol coded with the `read_mv` row of `selector`.
+    fn symbol(
+        &mut self,
+        cdfs: &mut TileCdfSubset,
+        selector: MvCdfSelector,
+        tile_offset: ByteOffset,
+    ) -> Result<u8>;
+
+    /// The `L(1)` bit at step `i` of a class-2 `shell_class_offset`.
+    fn class2_bit(&mut self, i: i32, tile_offset: ByteOffset) -> Result<u8>;
+
+    /// The `ns(n)` column remainder.
+    fn ns(&mut self, n: i32, tile_offset: ByteOffset) -> Result<i32>;
+
+    /// The sign bit of the nonzero `component` (`0` row, `1` column) of
+    /// difference `vector`.
+    fn sign(&mut self, vector: usize, component: usize, tile_offset: ByteOffset) -> Result<u8>;
+}
+
+impl MvSymbols for SymbolDecoder<'_> {
+    #[allow(
+        clippy::inline_always,
+        reason = "constant selectors fold into a direct row read"
+    )]
+    #[inline(always)]
+    fn symbol(
+        &mut self,
+        cdfs: &mut TileCdfSubset,
+        selector: MvCdfSelector,
+        tile_offset: ByteOffset,
+    ) -> Result<u8> {
+        read_symbol(cdfs, self, selector, tile_offset)
+    }
+
+    #[inline]
+    fn class2_bit(&mut self, _i: i32, tile_offset: ByteOffset) -> Result<u8> {
+        read_bypass_bit(self, tile_offset)
+    }
+
+    #[inline]
+    fn ns(&mut self, n: i32, tile_offset: ByteOffset) -> Result<i32> {
+        read_ns(self, n, tile_offset)
+    }
+
+    #[inline]
+    fn sign(&mut self, _vector: usize, _component: usize, tile_offset: ByteOffset) -> Result<u8> {
+        read_bypass_bit(self, tile_offset)
+    }
+}
+
+/// The joint shell classes of shell set `0` at `precision`; set `1` codes
+/// the classes from this one on.
+pub(crate) const fn shell_set0_classes(precision: u8) -> i32 {
+    ((11 + precision) >> 1) as i32
+}
+
 pub(crate) const fn mv_clamp_to_integer(v: i32) -> i32 {
     if v < MV_LOW + 1 {
         MV_LOW + 8
@@ -116,9 +176,9 @@ pub(crate) fn read_newmv_block_mvd_with_config(
     apply_inter_mvd_signs(diff, symbols, tile_offset, config, false, 1)
 }
 
-pub(crate) fn read_newmv_block_mvd_magnitude_with_config(
+pub(crate) fn read_newmv_block_mvd_magnitude_with_config<S: MvSymbols + ?Sized>(
     cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
+    symbols: &mut S,
     tile_offset: ByteOffset,
     config: MvReadConfig,
 ) -> Result<Mv> {
@@ -130,9 +190,9 @@ pub(crate) fn read_newmv_block_mvd_magnitude_with_config(
     })
 }
 
-pub(crate) fn apply_inter_mvd_signs(
+pub(crate) fn apply_inter_mvd_signs<S: MvSymbols + ?Sized>(
     magnitude: Mv,
-    symbols: &mut SymbolDecoder<'_>,
+    symbols: &mut S,
     tile_offset: ByteOffset,
     config: MvReadConfig,
     derive_last_sign: bool,
@@ -149,10 +209,10 @@ pub(crate) fn apply_inter_mvd_signs(
     Ok(signed)
 }
 
-pub(crate) fn apply_inter_mvd_sign_pair(
+pub(crate) fn apply_inter_mvd_sign_pair<S: MvSymbols + ?Sized>(
     first: Mv,
     second: Mv,
-    symbols: &mut SymbolDecoder<'_>,
+    symbols: &mut S,
     tile_offset: ByteOffset,
     config: MvReadConfig,
     derive_last_sign: bool,
@@ -169,9 +229,9 @@ pub(crate) fn apply_inter_mvd_sign_pair(
     Ok((first, second))
 }
 
-fn apply_inter_mvd_sign_vector_set<const N: usize>(
+fn apply_inter_mvd_sign_vector_set<S: MvSymbols + ?Sized, const N: usize>(
     mut vectors: [Mv; N],
-    symbols: &mut SymbolDecoder<'_>,
+    symbols: &mut S,
     tile_offset: ByteOffset,
     config: MvReadConfig,
     derive_last_sign: bool,
@@ -213,7 +273,7 @@ fn apply_inter_mvd_sign_vector_set<const N: usize>(
             let sign = if derive && last_nonzero == Some((vector_idx, component_idx)) {
                 u8::try_from(sum & 1).map_err(|_| mv_overflow(tile_offset))?
             } else {
-                read_bypass_bit(symbols, tile_offset)?
+                symbols.sign(vector_idx, component_idx, tile_offset)?
             };
             if sign != 0 {
                 if component_idx == 0 {
@@ -227,24 +287,18 @@ fn apply_inter_mvd_sign_vector_set<const N: usize>(
     Ok(vectors)
 }
 
-fn read_shell_diff(
+fn read_shell_diff<S: MvSymbols + ?Sized>(
     cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
+    symbols: &mut S,
     tile_offset: ByteOffset,
     config: MvReadConfig,
 ) -> Result<(i32, i32)> {
     let mv_ctx = config.mv_ctx;
     let precision = config.precision;
-    let shell_set = read_symbol(
-        cdfs,
-        symbols,
-        MvCdfSelector::JointShellSet { mv_ctx },
-        tile_offset,
-    )?;
+    let shell_set = symbols.symbol(cdfs, MvCdfSelector::JointShellSet { mv_ctx }, tile_offset)?;
 
-    let raw_shell_class = read_symbol(
+    let raw_shell_class = symbols.symbol(
         cdfs,
-        symbols,
         MvCdfSelector::JointShellClass {
             precision: usize::from(precision),
             shell_set: usize::from(shell_set),
@@ -254,11 +308,10 @@ fn read_shell_diff(
     )?;
     let mut shell_class = i32::from(raw_shell_class);
     if shell_set != 0 {
-        shell_class += i32::from((11 + precision) >> 1);
+        shell_class += shell_set0_classes(precision);
         if precision == MV_PRECISION_EIGHTH_PEL && raw_shell_class == 7 {
-            let last_two = read_symbol(
+            let last_two = symbols.symbol(
                 cdfs,
-                symbols,
                 MvCdfSelector::JointShellLastTwo { mv_ctx },
                 tile_offset,
             )?;
@@ -317,18 +370,17 @@ fn amvd_index_to_mvd(index: usize, tile_offset: ByteOffset) -> Result<i32> {
         .ok_or_else(|| mv_symbol_error(tile_offset))
 }
 
-fn read_shell_class_offset(
+fn read_shell_class_offset<S: MvSymbols + ?Sized>(
     cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
+    symbols: &mut S,
     shell_class: i32,
     tile_offset: ByteOffset,
     config: MvReadConfig,
 ) -> Result<i32> {
     let mv_ctx = config.mv_ctx;
     if shell_class < 2 {
-        let offset = read_symbol(
+        let offset = symbols.symbol(
             cdfs,
-            symbols,
             MvCdfSelector::ShellOffsetLowClass {
                 mv_ctx,
                 shell_class: shell_class as usize,
@@ -341,14 +393,13 @@ fn read_shell_class_offset(
         let mut shell_class_offset = 0i32;
         for i in 0..3 {
             if i == 0 {
-                shell_class_offset = i32::from(read_symbol(
+                shell_class_offset = i32::from(symbols.symbol(
                     cdfs,
-                    symbols,
                     MvCdfSelector::ShellOffsetClass2 { mv_ctx },
                     tile_offset,
                 )?);
             } else {
-                let high = read_bypass_bit(symbols, tile_offset)?;
+                let high = symbols.class2_bit(i, tile_offset)?;
                 shell_class_offset = i32::from(high) + i;
             }
             if shell_class_offset == i {
@@ -359,9 +410,8 @@ fn read_shell_class_offset(
     }
     let mut shell_class_offset = 0i32;
     for i in 0..shell_class {
-        let bit = read_symbol(
+        let bit = symbols.symbol(
             cdfs,
-            symbols,
             MvCdfSelector::ShellOffsetOtherClass {
                 mv_ctx,
                 i: i as usize,
@@ -375,9 +425,9 @@ fn read_shell_class_offset(
     Ok(shell_class_offset)
 }
 
-fn read_col_split(
+fn read_col_split<S: MvSymbols + ?Sized>(
     cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
+    symbols: &mut S,
     shell_index: i32,
     shell_class: i32,
     tile_offset: ByteOffset,
@@ -389,9 +439,8 @@ fn read_col_split(
     if maximum_pair_index > 0 {
         let max_idx_bits = maximum_pair_index.min(MAX_COL_TRUNCATED_UNARY_VAL as i32);
         for i in 0..max_idx_bits {
-            let greater = read_symbol(
+            let greater = symbols.symbol(
                 cdfs,
-                symbols,
                 MvCdfSelector::ColMvGreater {
                     mv_ctx,
                     i: i as usize,
@@ -407,7 +456,7 @@ fn read_col_split(
             && col == MAX_COL_TRUNCATED_UNARY_VAL as i32
         {
             let n = maximum_pair_index - 1;
-            let remainder = read_ns(symbols, n, tile_offset)?;
+            let remainder = symbols.ns(n, tile_offset)?;
             col = remainder + MAX_COL_TRUNCATED_UNARY_VAL as i32;
         }
     }
@@ -418,12 +467,8 @@ fn read_col_split(
     }
 
     let ctx = (shell_class as usize).min(NUM_CTX_COL_MV_INDEX - 1);
-    let col_mv_index = read_symbol(
-        cdfs,
-        symbols,
-        MvCdfSelector::ColMvIndex { mv_ctx, ctx },
-        tile_offset,
-    )?;
+    let col_mv_index =
+        symbols.symbol(cdfs, MvCdfSelector::ColMvIndex { mv_ctx, ctx }, tile_offset)?;
     if col_mv_index == 0 {
         Ok(col)
     } else {

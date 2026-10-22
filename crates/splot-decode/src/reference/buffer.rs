@@ -15,7 +15,7 @@ use splot_core::headers::frame::{
 use splot_core::headers::sequence::MAX_REF_FRAMES;
 use splot_core::tile::InlineVec;
 use splot_core::types::{EmbeddedLayerId, ObuType};
-use splot_recon::{DecodedFrameInfo, ReferenceFrameStore, ReferenceSlot};
+use splot_recon::{DecodedFrameInfo, ReconSample, ReferenceFrameStore, ReferenceSlot};
 use std::sync::Arc;
 
 use crate::error::{DecodeReferenceStateError, Result};
@@ -293,6 +293,27 @@ impl RuntimeReferenceBuffer {
         &self,
         frames: &FrameStore,
     ) -> Result<(ReferenceFrameStore<RefFrameSlot<T>>, ReferenceMetadata)> {
+        self.build_store_from(|slot, frame_index| {
+            if frame_index >= frames.len() {
+                return Err(DecodeReferenceStateError::FrameIndexOutOfRange {
+                    slot,
+                    frame_index,
+                    frame_count: frames.len(),
+                }
+                .into());
+            }
+            let frame = frames
+                .get(frame_index)
+                .ok_or(DecodeReferenceStateError::MissingFrame { slot })?;
+            Ok((T::slot(frame)?, Some(frame)))
+        })
+    }
+
+    /// [`Self::build_store`] over frames that `lookup(slot, frame_index)` returns.
+    pub(crate) fn build_store_from<'a, T: ReconSample>(
+        &self,
+        mut lookup: impl FnMut(usize, usize) -> Result<(RefFrameSlot<T>, Option<&'a PipelineFrame>)>,
+    ) -> Result<(ReferenceFrameStore<RefFrameSlot<T>>, ReferenceMetadata)> {
         let num = self.slots.len();
         let mut store: ReferenceFrameStore<RefFrameSlot<T>> =
             ReferenceFrameStore::with_capacity(num)?;
@@ -307,21 +328,10 @@ impl RuntimeReferenceBuffer {
             let frame_index = slot
                 .frame_index
                 .ok_or(DecodeReferenceStateError::MissingFrame { slot: i })?;
-            if frame_index >= frames.len() {
-                return Err(DecodeReferenceStateError::FrameIndexOutOfRange {
-                    slot: i,
-                    frame_index,
-                    frame_count: frames.len(),
-                }
-                .into());
-            }
-            let frame = frames
-                .get(frame_index)
-                .ok_or(DecodeReferenceStateError::MissingFrame { slot: i })?;
+            let (reference_frame, frame) = lookup(i, frame_index)?;
             let reference_slot = ReferenceSlot::new(i)?;
-            let reference_frame = T::slot(frame)?;
             ensure_slot_matches_frame(i, slot, frame_index, reference_frame.info())?;
-            meta.push_slot(slot, Some(frame));
+            meta.push_slot(slot, frame);
             store.put(reference_slot, reference_frame)?;
         }
         Ok((store, meta))

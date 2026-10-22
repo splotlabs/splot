@@ -20,6 +20,27 @@ pub(super) struct PlacedInterGeometry {
     pub(super) interintra_edges: [IntraEdgeAvailability; 2],
 }
 
+impl PlacedInterGeometry {
+    /// `block` placed at this geometry.
+    pub(super) const fn place(self, block: InterBlock) -> PlacedInterBlock {
+        PlacedInterBlock {
+            luma_x: self.luma_x,
+            luma_y: self.luma_y,
+            luma_w: self.luma_w,
+            luma_h: self.luma_h,
+            chroma_luma_x: self.chroma_luma_x,
+            chroma_luma_y: self.chroma_luma_y,
+            chroma_luma_w: self.chroma_luma_w,
+            chroma_luma_h: self.chroma_luma_h,
+            predict_chroma: self.predict_chroma,
+            sub8x8_chroma: self.sub8x8_chroma,
+            interintra_chroma: self.interintra_chroma,
+            interintra_edges: self.interintra_edges,
+            block,
+        }
+    }
+}
+
 pub(super) const fn leaf_predicts_chroma(chroma_planes: bool, luma_part: bool) -> bool {
     chroma_planes && !luma_part
 }
@@ -47,6 +68,21 @@ fn is_thin_4xn_nx4_block(size: BlockSize) -> bool {
 pub(super) fn placed_inter_geometry(
     frontier: &DecodeBlockFrontier,
     work_unit: &DecodeTileWorkUnit,
+    size4: (usize, usize),
+    chroma_planes: bool,
+) -> Result<PlacedInterGeometry> {
+    let tile_start = (
+        work_unit.mi_row_range().start as usize,
+        work_unit.mi_col_range().start as usize,
+    );
+    placed_inter_geometry_at(frontier, tile_start, size4, chroma_planes)
+}
+
+/// [`placed_inter_geometry`] in a tile that starts at 4x4 position `(row, col)`.
+#[inline]
+pub(super) fn placed_inter_geometry_at(
+    frontier: &DecodeBlockFrontier,
+    (tile_row_start, tile_col_start): (usize, usize),
     (n4w, n4h): (usize, usize),
     chroma_planes: bool,
 ) -> Result<PlacedInterGeometry> {
@@ -78,8 +114,6 @@ pub(super) fn placed_inter_geometry(
         && frontier.is_mixed_region()
         && frontier.chroma_offset;
     let predict_chroma = leaf_predicts_chroma(chroma_planes, frontier.is_luma_part());
-    let tile_row_start = work_unit.mi_row_range().start as usize;
-    let tile_col_start = work_unit.mi_col_range().start as usize;
     let interintra_edges = [
         IntraEdgeAvailability::new(frontier.r > tile_row_start, frontier.c > tile_col_start),
         IntraEdgeAvailability::new(

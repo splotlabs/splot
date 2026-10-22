@@ -40,6 +40,14 @@ pub struct PresetParams {
     pub subpel_depth: u8,
     /// Loop-filter levels tried per frame; `0` derives the level from the qp.
     pub loop_filter_search: u8,
+    /// Frames per mini-GOP, `1..=8`: `1` codes every frame shown (IPPP);
+    /// larger sizes code the last frame first as a hidden alt-ref and the
+    /// frames between hierarchically.
+    pub mini_gop_size: u8,
+    /// Compound candidates of an inter leaf that get a full RD trial, best
+    /// prediction SATD first; skip-mode candidates are tried besides them.
+    /// `0` codes neither compound nor skip-mode blocks.
+    pub compound_candidates: u8,
 }
 
 const fn row(
@@ -49,7 +57,7 @@ const fn row(
     (rdoq, full_trials): (bool, bool),
     (tx_type_depth, tx_partition_search): (u8, bool),
     motion: (u16, u8),
-    loop_filter_search: u8,
+    (loop_filter_search, mini_gop_size, compound_candidates): (u8, u8, u8),
 ) -> PresetParams {
     PresetParams {
         min_block_log2: blocks.0,
@@ -63,22 +71,25 @@ const fn row(
         motion_range: motion.0,
         subpel_depth: motion.1,
         loop_filter_search,
+        mini_gop_size,
+        compound_candidates,
     }
 }
 
 /// Search limits indexed by preset: `0` is the slowest and best, `10` the fastest.
+#[rustfmt::skip]
 pub const PRESETS: [PresetParams; 11] = [
-    row((2, 7), 13, false, (true, true), (3, true), (256, 3), 3),
-    row((2, 7), 13, false, (true, true), (3, true), (192, 3), 3),
-    row((2, 7), 12, true, (true, true), (3, true), (128, 3), 2),
-    row((2, 7), 10, true, (true, true), (2, true), (96, 2), 2),
-    row((2, 7), 9, true, (true, false), (2, true), (64, 2), 2),
-    row((2, 7), 8, true, (true, false), (2, true), (64, 2), 1),
-    row((3, 7), 6, true, (true, false), (1, true), (48, 2), 1),
-    row((3, 6), 5, true, (false, false), (1, false), (32, 1), 1),
-    row((3, 6), 4, true, (false, false), (1, false), (24, 1), 0),
-    row((3, 6), 3, true, (false, false), (0, false), (16, 1), 0),
-    row((4, 6), 2, true, (false, false), (0, false), (16, 0), 0),
+    row((2, 7), 13, false, (true, true), (3, true), (256, 3), (3, 8, 8)),
+    row((2, 7), 13, false, (true, true), (3, true), (192, 3), (3, 8, 8)),
+    row((2, 7), 12, true, (true, true), (3, true), (128, 3), (2, 8, 6)),
+    row((2, 7), 10, true, (true, true), (2, true), (96, 2), (2, 8, 6)),
+    row((2, 7), 9, true, (true, false), (2, true), (64, 2), (2, 4, 4)),
+    row((2, 7), 8, true, (true, false), (2, true), (64, 2), (1, 4, 4)),
+    row((3, 7), 6, true, (true, false), (1, true), (48, 2), (1, 4, 3)),
+    row((3, 6), 5, true, (false, false), (1, false), (32, 1), (1, 4, 2)),
+    row((3, 6), 4, true, (false, false), (1, false), (24, 1), (0, 2, 1)),
+    row((3, 6), 3, true, (false, false), (0, false), (16, 1), (0, 2, 0)),
+    row((4, 6), 2, true, (false, false), (0, false), (16, 0), (0, 1, 0)),
 ];
 
 /// A speed preset, `0..=10`.
@@ -140,6 +151,11 @@ mod tests {
             assert!(fast.motion_range <= slow.motion_range);
             assert!(fast.subpel_depth <= slow.subpel_depth);
             assert!(fast.loop_filter_search <= slow.loop_filter_search);
+            assert!(fast.mini_gop_size <= slow.mini_gop_size);
+            assert!(fast.compound_candidates <= slow.compound_candidates);
+        }
+        for params in PRESETS {
+            assert!((1..=8).contains(&params.mini_gop_size));
         }
     }
 

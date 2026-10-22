@@ -20,7 +20,6 @@ use crate::encoder::{CodedFrame, FrameCoder};
 use crate::frame::SourceFrame;
 use crate::intra_frame::IntraFrameCoder;
 use crate::preset::Preset;
-use crate::rate_control::{FramePlanInfo, FrameType};
 use crate::test_support::{assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes};
 
 /// `(width, height, bit depth, preset, qp)`: both superblock sizes (presets 0
@@ -70,13 +69,13 @@ fn code(case: (u32, u32, BitDepth, u8, u8), seed: u32) -> (Config, CodedFrame) {
     config.bit_depth = bit_depth;
     config.preset = Preset::new(preset).unwrap();
     config.rate_control = RateControlMode::ConstantQp { qp };
-    let plan = FramePlanInfo {
-        frame_index: 0,
-        frame_type: FrameType::Key,
-    };
     let coded = IntraFrameCoder::new(&config)
         .unwrap()
-        .encode_frame(&source(&config, seed), &plan, qp)
+        .encode_frame(
+            &source(&config, seed),
+            &crate::gop::plan(0, config.keyint),
+            qp,
+        )
         .unwrap();
     (config, coded)
 }

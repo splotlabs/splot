@@ -54,9 +54,9 @@ const SPEC_MC: &str = "7.13.3.18";
 
 const _: () = assert!(ReferenceSlot::MAX_SLOTS <= u16::BITS as usize);
 const SPEC_TIP_TEMPORAL_SCALE: &str = "7.10.1";
-const SINGLE_MODE_NEARMV: u8 = 0;
-const SINGLE_MODE_GLOBALMV: u8 = 1;
-const SINGLE_MODE_NEWMV: u8 = 2;
+pub(crate) const SINGLE_MODE_NEARMV: u8 = 0;
+pub(crate) const SINGLE_MODE_GLOBALMV: u8 = 1;
+pub(crate) const SINGLE_MODE_NEWMV: u8 = 2;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Mv {
     pub(crate) row: i32,
@@ -811,6 +811,7 @@ impl CompoundOrderHint {
     }
 }
 
+#[inline]
 fn compound_is_joint_context(
     ref_frame_idx: &[u32],
     ref_order_hint: &[u32],
@@ -2134,12 +2135,19 @@ pub(crate) mod read_mv;
 pub(crate) mod reference;
 mod single_ref;
 
+pub(crate) use block::encoder_leaf::{
+    EncoderCompoundMotion, EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile,
+    EncoderMotion, EncoderSingleMotion, JMVD_SCALE_MODES, chroma_inter_tx_type,
+    single_transform_residual,
+};
+pub(crate) use block::non_intra_leaf_mode;
 pub(crate) use block::{
     InterBlockDecodeOutput, InterBlockFacts, InterDecodeScratch, InterFilterInputs,
     InterFrameParse, InterFrameParser, InterReconScratchPool, PendingFilterAttach,
     RowReferenceBounds, ScheduledTileRecon, ScheduledTileWorkspace, TipOutputStages, TipSpares,
     bounds_satisfied, decode_inter_blocks, invalid_inter_tile_scheduling_state,
 };
+pub(crate) use compound::CompoundYMode;
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{
     FixedStack, MotionFieldLayout, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,

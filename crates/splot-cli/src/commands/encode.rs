@@ -38,7 +38,7 @@ pub(crate) struct EncodeArgs {
     /// Distance between key frames, in frames.
     #[arg(long, default_value_t = Config::DEFAULT_KEYINT)]
     keyint: NonZeroU32,
-    /// Print `frame,qp,bits,psnr_y,psnr_u,psnr_v` CSV lines to stdout.
+    /// Print `frame,pts,qp,bits,psnr_y,psnr_u,psnr_v` CSV lines to stdout.
     #[arg(long)]
     stats: bool,
 }
@@ -81,7 +81,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     let mut writer = None;
     let mut stdout = io::stdout().lock();
     if args.stats {
-        writeln!(stdout, "frame,qp,bits,psnr_y,psnr_u,psnr_v")?;
+        writeln!(stdout, "frame,pts,qp,bits,psnr_y,psnr_u,psnr_v")?;
     }
     let mut drain = |encoder: &mut Encoder| -> Result<()> {
         while let Some(packet) = encoder.receive_packet()? {
@@ -95,12 +95,13 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
                 writer.write_packet(&packet)?;
             }
             if args.stats {
-                let s = packet.stats;
-                writeln!(
-                    stdout,
-                    "{},{},{},{:.4},{:.4},{:.4}",
-                    s.frame_index, s.qp, s.bits, s.psnr_y, s.psnr_u, s.psnr_v
-                )?;
+                for s in &packet.stats {
+                    writeln!(
+                        stdout,
+                        "{},{},{},{},{:.4},{:.4},{:.4}",
+                        s.frame_index, s.pts, s.qp, s.bits, s.psnr_y, s.psnr_u, s.psnr_v
+                    )?;
+                }
             }
         }
         Ok(())

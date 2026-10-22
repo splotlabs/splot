@@ -2121,7 +2121,7 @@ const fn inter_skip_txfm_ctx(neighbour_skip_ctx: usize, skip_mode: bool) -> usiz
     neighbour_skip_ctx + if skip_mode { 3 } else { 0 }
 }
 
-fn non_intra_leaf_mode(frontier: &DecodeBlockFrontier) -> GeneralIntraLeafMode {
+pub(crate) fn non_intra_leaf_mode(frontier: &DecodeBlockFrontier) -> GeneralIntraLeafMode {
     let leaf = GeneralIntraLeafMode::no_luma_mode();
     if frontier.has_chroma {
         return leaf.with_uv_cfl(false);
@@ -2150,6 +2150,7 @@ fn sequence_enables_ibp(sequence: &SequenceHeader) -> bool {
 
 mod compound_path;
 mod deferred_recon;
+pub(super) mod encoder_leaf;
 mod filter_records;
 mod frame_parse;
 pub(in crate::prediction::inter) use frame_parse::prepare_scheduled_recon;
@@ -2180,12 +2181,12 @@ use self::resolve::{
     WarpModelSource, WarpMotionSyntax, pending_inter_leaf, pending_intrabc_leaf,
     resolve_parsed_leaves,
 };
-pub(crate) use self::syntax::interp_filter_no_neighbour_ctx;
 use self::syntax::{
-    effective_force_integer_mv, frame_mv_precision, interp_filter_symbol, lowered_pred_mv,
+    effective_force_integer_mv, interp_filter_symbol, lowered_pred_mv,
     read_block_mv_precision_syntax, read_drl_idx, read_drl_idx_from, read_skip_drl_idx,
     read_skip_mode_syntax, read_tip_drl_idx, read_use_amvd_syntax, resolve_interp_filter,
 };
+pub(crate) use self::syntax::{frame_mv_precision, interp_filter_no_neighbour_ctx};
 use self::temporal::block_ref_within_temporal_distance;
 #[cfg(test)]
 pub(super) use self::tip::tip_allowed_for_block_indices;

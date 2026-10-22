@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Key-frame coding: the RD partition and mode search of each superblock,
-//! residual coding, and the temporal unit of one intra frame.
+//! Frame coding: the RD partition and mode search of each superblock, with
+//! intra and single-reference inter leaves, residual coding, and the temporal
+//! unit of a key or inter frame.
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams,
-    build_encoder_sequence_header, build_key_frame_header, encode_key_frame_temporal_unit,
+    build_encoder_sequence_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    IntraTileSyntax, TransformBlock, TxType, recon_params, tx_log2,
+    EncoderReferences, IntraTileSyntax, Partition, PartitionNode, TransformBlock, TxType,
+    recon_params, tx_log2,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId, PlaneSize};
 
@@ -18,12 +20,13 @@ use crate::config::Config;
 use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
+use crate::gop::{self, GopFrame};
 use crate::kernels::rdoq::{RdoqBlock, rdoq};
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
-use crate::loop_filter::{FilteredFrame, FirstPass, FrameDecisions, finish_key_frame};
+use crate::loop_filter::{FilteredFrame, FirstPass, FrameDecisions, finish_frame};
 use crate::mode_decision::TrialCoder;
+use crate::motion_search::MotionSearch;
 use crate::preset::PresetParams;
-use crate::rate_control::{FramePlanInfo, FrameType};
 use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, block_rate};
 use crate::rd::partition::search_partition;
 use crate::rd::{Lambda, RdCost};
@@ -36,12 +39,13 @@ use crate::tx_choice;
 /// Quantizer deadzone in Q8 (`128` rounds to nearest).
 const DEADZONE_ROUNDING_Q8: u32 = 96;
 
-/// Codes every frame as a closed-loop key frame.
+/// Codes key frames and inter frames.
 pub(crate) struct IntraFrameCoder {
     sequence: SequenceHeader,
     view: CoreSeqView,
     bit_depth: BitDepth,
     preset: &'static PresetParams,
+    references: EncoderReferences,
 }
 
 impl IntraFrameCoder {
@@ -74,6 +78,7 @@ impl IntraFrameCoder {
             what: "an incomplete sequence header",
         })?;
         Ok(Self {
+            references: EncoderReferences::new(&sequence).map_err(coding("reference buffer"))?,
             sequence,
             view,
             bit_depth: config.bit_depth,
@@ -86,24 +91,23 @@ impl FrameCoder for IntraFrameCoder {
     fn encode_frame(
         &mut self,
         source: &SourceFrame,
-        _plan: &FramePlanInfo,
+        plan: &GopFrame,
         qp: u8,
     ) -> Result<CodedFrame> {
         let qindex = u32::from(qp);
-        let core = build_key_frame_header(
-            &self.view,
-            qindex,
-            0,
-            &FrameFilterParams::default(),
-            tx_choice::key_frame_tx_params(self.preset),
-        )
-        .map_err(coding("frame header"))?;
-        let mut writer =
-            KeyFrameTileWriter::new(&self.sequence, &core).map_err(coding("tile setup"))?;
+        let tools = gop::frame_tools(self.preset);
+        let header = |filters: &FrameFilterParams| {
+            plan.header(&self.view, &self.references, qindex, filters, tools)
+        };
+        let core = header(&FrameFilterParams::default())?;
+        let mut writer = KeyFrameTileWriter::new(&self.sequence, &core, &self.references)
+            .map_err(coding("tile setup"))?;
         let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
         let sb = writer.syntax().superblock_size4() * 4;
         let padded = PaddedSource::new(source, mi_cols * 4 + sb, mi_rows * 4 + sb);
         let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
+        let motion = MotionSearch::new(writer.syntax(), &padded, self.preset, lambda)
+            .map_err(coding("motion search"))?;
         let mut coder =
             SourceResidualCoder::new(&padded, qindex, self.bit_depth, self.preset, lambda);
         let mut decisions = FrameDecisions::default();
@@ -111,7 +115,8 @@ impl FrameCoder for IntraFrameCoder {
         while writer.next_superblock_root().is_some() {
             let tree = writer
                 .search_superblock(|syntax, root| {
-                    let mut trial = TrialCoder::new(syntax, &mut coder, preset, lambda);
+                    let mut trial =
+                        TrialCoder::new(syntax, &mut coder, preset, lambda, motion.as_ref());
                     Ok(search_partition(&mut trial, root, preset, lambda)?.0)
                 })
                 .map_err(coding("superblock search"))?;
@@ -129,15 +134,43 @@ impl FrameCoder for IntraFrameCoder {
             recorder,
             decisions,
         };
-        let FilteredFrame { core, tile, recon } =
-            finish_key_frame(&self.sequence, &self.view, self.preset, source, pass)?;
-        let temporal_unit = encode_key_frame_temporal_unit(&self.sequence, &core, true, &tile)
-            .map_err(coding("temporal unit"))?;
+        let FilteredFrame {
+            core,
+            filters,
+            tile,
+            recon,
+        } = finish_frame(
+            &self.sequence,
+            &header,
+            self.preset,
+            (source, &self.references),
+            pass,
+        )?;
+        let temporal_unit = plan.temporal_unit(
+            &self.sequence,
+            &self.view,
+            &self.references,
+            (qindex, &filters, tools),
+            &core,
+            &tile,
+        )?;
+        let planes = visible_planes(&recon)?;
+        self.references
+            .update(&core, recon)
+            .map_err(coding("reference update"))?;
         Ok(CodedFrame {
             temporal_unit,
-            recon: visible_planes(&recon)?,
-            frame_type: FrameType::Key,
+            recon: planes,
+            frame_type: plan.frame_type,
         })
+    }
+
+    fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
+        let unit = gop::show_existing_unit(&self.view, slot)?;
+        self.references
+            .show_existing(slot)
+            .map_err(coding("show-existing frame"))?;
+        Ok(unit)
     }
 }
 
@@ -182,6 +215,17 @@ impl PaddedSource {
             strides,
             visible: sizes,
         }
+    }
+
+    /// The luma plane, its stride, and its padded `(width, height)`.
+    pub(crate) fn luma(&self) -> (&[u16], usize, usize, usize) {
+        let stride = self.strides[0];
+        (
+            &self.planes[0],
+            stride,
+            stride,
+            self.planes[0].len() / stride,
+        )
     }
 
     /// The source samples at the top-left of `tx` and their stride.
@@ -237,6 +281,29 @@ impl PaddedSource {
             .map(|(&s, &r)| u64::from(s.abs_diff(r)).pow(2))
             .sum())
     }
+}
+
+/// Whether every in-frame leaf of `partition` of `node` (`node` itself for
+/// `NONE`) may code an intra or an inter block.
+pub(crate) fn codable_children(
+    syntax: &IntraTileSyntax,
+    node: PartitionNode,
+    partition: Partition,
+) -> core::result::Result<bool, TileWriterError> {
+    let leaves = if partition == Partition::None {
+        vec![node]
+    } else {
+        syntax.children(node, partition)?
+    };
+    for child in leaves {
+        if syntax.in_frame(child) {
+            let leaf = syntax.leaf(child)?;
+            if !syntax.intra_allowed(&leaf) && !syntax.inter_allowed(&leaf) {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 /// Transforms and quantizes the source residual of each transform block, by

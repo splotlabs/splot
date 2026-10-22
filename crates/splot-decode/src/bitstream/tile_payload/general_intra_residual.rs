@@ -2197,6 +2197,117 @@ pub(crate) fn intra_chroma_plane_tx_type(
     )
 }
 
+/// The chroma plane type the decoder derives for an inter block of
+/// `tx_size` whose collocated luma type is `chroma_inter_tx_type`.
+pub(crate) fn inter_chroma_plane_tx_type(
+    plane: usize,
+    tx_size: usize,
+    chroma_inter_tx_type: usize,
+    enable_chroma_dctonly: bool,
+) -> Result<usize, GeneralIntraResidualError> {
+    staged_transform_tool_plane_tx_type(
+        CoeffOrdinaryTxSizeGeometryConfig {
+            plane,
+            start_x: 0,
+            start_y: 0,
+            tx_size,
+        },
+        true,
+        false,
+        CoeffOrdinaryBranchTxSetBaseConfig {
+            reduced_tx_set: 0,
+            enable_chroma_dctonly,
+            uv_mode: 0,
+            angle_delta_uv: 0,
+            luma_tx_type: DCT_DCT,
+            chroma_inter_tx_type,
+            parity_hiding: false,
+            use_tcq: false,
+        },
+    )
+}
+
+/// One way to code a transform type: its `(CDF row, value)` symbols.
+pub(crate) type TxTypeSymbols = Vec<(TileCdfSelector, usize)>;
+
+/// Every type [`read_active_inter_transform_type`] returns for luma block
+/// `tx_size` of set `tx_set` with `eob`, and the symbols that select it, in
+/// symbol order; `arity` gives the symbol count of a row.
+pub(crate) fn inter_tx_type_symbols(
+    tx_size: usize,
+    tx_set: usize,
+    eob: usize,
+    mut arity: impl FnMut(TileCdfSelector) -> usize,
+) -> Result<Vec<(usize, TxTypeSymbols)>, GeneralIntraResidualError> {
+    let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
+    let ctx = inter_tx_type_long_ctx(tx_size, eob)?;
+    let mut out = Vec::new();
+    match tx_set {
+        TX_SET_WIDE_64 | TX_SET_WIDE_32 | TX_SET_HIGH_64 | TX_SET_HIGH_32 => {
+            let shape = long_tx_set_shape(tx_set);
+            let row = TileCdfSelector::InterTxTypeLong { ctx, tx_size_sqr };
+            for long_side in [1, 0] {
+                if shape.long_side_dct_is_forced && long_side == 0 {
+                    continue;
+                }
+                for index in 0..arity(row) {
+                    let mut steps = Vec::with_capacity(2);
+                    if !shape.long_side_dct_is_forced {
+                        steps.push((TileCdfSelector::IsLongSideDct { is_inter: 1 }, long_side));
+                    }
+                    steps.push((row, index));
+                    out.push((long_tx_type_from_index(shape, long_side, index), steps));
+                }
+            }
+        }
+        TX_SET_INTER_1 | TX_SET_INTER_2 => {
+            let (set, index, offset, inversion): (_, _, _, &[usize]) = if tx_set == TX_SET_INTER_1 {
+                (
+                    TileCdfSelector::InterTxTypeSet1 { ctx, tx_size_sqr },
+                    TileCdfSelector::InterTxTypeIndexSet1 { ctx },
+                    TileCdfSelector::InterTxTypeOffsetSet1 { ctx },
+                    &TX_TYPE_INTER_INV_SET1,
+                )
+            } else {
+                (
+                    TileCdfSelector::InterTxTypeSet2 { ctx },
+                    TileCdfSelector::InterTxTypeIndexSet2 { ctx },
+                    TileCdfSelector::InterTxTypeOffsetSet2 { ctx },
+                    &TX_TYPE_INTER_INV_SET2,
+                )
+            };
+            for first in 0..arity(set) {
+                let second = if first == 0 { index } else { offset };
+                for value in 0..arity(second) {
+                    if let Some(&tx_type) = inversion.get(first * INTER_TX_TYPE_INDEX_COUNT + value)
+                    {
+                        out.push((tx_type, vec![(set, first), (second, value)]));
+                    }
+                }
+            }
+        }
+        _ => {
+            let (row, inversion): (_, &[usize]) = if tx_set == TX_SET_DCT_IDTX {
+                (
+                    TileCdfSelector::InterTxTypeSet3 { ctx, tx_size_sqr },
+                    &TX_TYPE_INTER_INV_SET3,
+                )
+            } else {
+                (
+                    TileCdfSelector::InterTxTypeSet4 { ctx, tx_size_sqr },
+                    &TX_TYPE_INTER_INV_SET4,
+                )
+            };
+            for value in 0..arity(row) {
+                if let Some(&tx_type) = inversion.get(value) {
+                    out.push((tx_type, vec![(row, value)]));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub(crate) fn txb_skip_tx_size_ctx(tx_size: usize) -> usize {
     let sqr = TX_SIZE_SQR.get(tx_size).copied().unwrap_or(0);
     let sqr_up = TX_SIZE_SQR_UP.get(tx_size).copied().unwrap_or(0);

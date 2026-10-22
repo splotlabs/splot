@@ -328,21 +328,7 @@ fn resolve_pending_inter(
             )
         }
     };
-    let placed = PlacedInterBlock {
-        luma_x: geometry.luma_x,
-        luma_y: geometry.luma_y,
-        luma_w: geometry.luma_w,
-        luma_h: geometry.luma_h,
-        chroma_luma_x: geometry.chroma_luma_x,
-        chroma_luma_y: geometry.chroma_luma_y,
-        chroma_luma_w: geometry.chroma_luma_w,
-        chroma_luma_h: geometry.chroma_luma_h,
-        predict_chroma: geometry.predict_chroma,
-        sub8x8_chroma: geometry.sub8x8_chroma,
-        interintra_chroma: geometry.interintra_chroma,
-        interintra_edges: geometry.interintra_edges,
-        block,
-    };
+    let placed = geometry.place(block);
     Ok(deferred_recon::InterReconCommand::new(
         placed,
         kind,
@@ -651,18 +637,48 @@ pub(super) fn compound_inter_block(
     }
 }
 
-fn resolve_single(
+/// The § 7.12 motion of a single-reference block; the encoder facade calls
+/// it too.
+#[allow(
+    clippy::inline_always,
+    reason = "keeps the resolve path of the parent with the facade as second caller"
+)]
+#[inline(always)]
+pub(super) fn resolve_single(
     syntax: &InterBlockSyntax,
     single: &SingleMotionSyntax,
     state: &MvResolutionState<'_>,
 ) -> ResolvedInterBlock {
     let block = &syntax.block_ctx;
-    let global_mv = if single.tip_ref {
+    let stack = single_mv_stack(block, single.tip_ref, single.use_temporal_first, state);
+    let mv = single_mode_mv(
+        single,
+        &stack,
+        (syntax.precision, syntax.use_amvd),
+        block,
+        state,
+    );
+    ResolvedInterBlock {
+        mv: [mv, Mv::ZERO],
+        warp_params: [single.global_warp, None],
+        blend: syntax.blend,
+    }
+}
+
+/// The § 7.12 stack of a single-reference block.
+#[inline]
+fn single_mv_stack(
+    block: &MvBlockContext,
+    tip_ref: bool,
+    use_temporal_first: bool,
+    state: &MvResolutionState<'_>,
+) -> MvStack {
+    let global_mv = if tip_ref {
         Mv::ZERO
     } else {
         global_motion_mv(state.core, block.ref_frame0, block, state.frame_precision)
     };
-    let stack = find_mv_stack_with_temporal(
+    find_mv_stack_with_temporal(
         state.grid,
         block,
         global_mv,
@@ -673,30 +689,33 @@ fn resolve_single(
         state.drl_reorder,
         state.temporal,
         Some(state.order_hints),
-        single.use_temporal_first,
-    );
+        use_temporal_first,
+    )
+}
+
+/// The motion vector `single` codes over `stack`.
+#[inline]
+fn single_mode_mv(
+    single: &SingleMotionSyntax,
+    stack: &MvStack,
+    (precision, use_amvd): (BlockPrecisionRecord, bool),
+    block: &MvBlockContext,
+    state: &MvResolutionState<'_>,
+) -> Mv {
     let pred_mv = stack.candidate(single.ref_mv_idx);
-    let mv = match single.mode {
-        SINGLE_MODE_GLOBALMV => global_motion_mv(
-            state.core,
-            block.ref_frame0,
-            block,
-            syntax.precision.mv_precision,
-        ),
+    match single.mode {
+        SINGLE_MODE_GLOBALMV => {
+            global_motion_mv(state.core, block.ref_frame0, block, precision.mv_precision)
+        }
         SINGLE_MODE_NEARMV => pred_mv,
         _ => {
-            let pred_mv = if syntax.use_amvd {
+            let pred_mv = if use_amvd {
                 pred_mv
             } else {
-                lowered_pred_mv(syntax.precision, pred_mv)
+                lowered_pred_mv(precision, pred_mv)
             };
             add_mv_clamped(pred_mv, single.mvd)
         }
-    };
-    ResolvedInterBlock {
-        mv: [mv, Mv::ZERO],
-        warp_params: [single.global_warp, None],
-        blend: syntax.blend,
     }
 }
 
@@ -807,6 +826,31 @@ fn resolve_compound(
     compound: &CompoundMotionSyntax,
     state: &mut MvResolutionState<'_>,
 ) -> Result<ResolvedInterBlock> {
+    let resolved = compound_motion(syntax, compound, state)?;
+    if let Some(params) = resolved.warp_params[0] {
+        state
+            .warp_param_bank
+            .update(syntax.block_ctx.ref_frame0, params);
+    }
+    if let Some(params) = resolved.warp_params[1] {
+        state.warp_param_bank.update(compound.ref_frame1, params);
+    }
+    Ok(resolved)
+}
+
+/// The § 7.12 motion of a compound or skip-mode block, before the warp bank
+/// update; the encoder facade calls it too, so its vectors are the ones the
+/// decoder resolves.
+#[allow(
+    clippy::inline_always,
+    reason = "keeps the resolve path of the parent with the facade as second caller"
+)]
+#[inline(always)]
+pub(super) fn compound_motion(
+    syntax: &InterBlockSyntax,
+    compound: &CompoundMotionSyntax,
+    state: &MvResolutionState<'_>,
+) -> Result<ResolvedInterBlock> {
     let block = &syntax.block_ctx;
     let precision = syntax.precision.mv_precision;
     let global_mvs = [
@@ -879,12 +923,6 @@ fn resolve_compound(
     } else {
         [None, None]
     };
-    if let Some(params) = warp_params[0] {
-        state.warp_param_bank.update(block.ref_frame0, params);
-    }
-    if let Some(params) = warp_params[1] {
-        state.warp_param_bank.update(compound.ref_frame1, params);
-    }
     Ok(ResolvedInterBlock {
         mv,
         warp_params,
@@ -920,6 +958,11 @@ fn single_list_candidate(
 }
 
 /// AV2 § 7.12.2 compound predictors combined with the parsed MVD pair.
+#[allow(
+    clippy::inline_always,
+    reason = "keeps the resolve path of the parent with the facade as second caller"
+)]
+#[inline(always)]
 fn compound_mvs(
     syntax: &InterBlockSyntax,
     compound: &CompoundMotionSyntax,

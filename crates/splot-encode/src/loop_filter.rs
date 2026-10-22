@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Loop-filter decisions of a key frame: deblocking, CDEF and luma PC-Wiener
+//! Loop-filter decisions of a frame: deblocking, CDEF and luma PC-Wiener
 //! loop restoration. CCSO and GDF stay off.
 //!
 //! A tile codes `cdef_idx` and `use_pc_wiener` before the frame is reconstructed,
@@ -9,7 +9,7 @@
 //!
 //! 1. The tile is coded with every filter off. [`FrameDecisions`] keeps each
 //!    superblock decision and each transform decision.
-//! 2. [`finish_key_frame`] searches the filter parameters on the pass-1
+//! 2. [`finish_frame`] searches the filter parameters on the pass-1
 //!    reconstruction with the decoder's own filter chain. If any filter is on,
 //!    it replays the kept decisions through a new tile writer whose header
 //!    enables the filters, so the tile also codes the filter syntax. The
@@ -18,13 +18,12 @@
 use std::collections::BTreeSet;
 
 use splot_core::headers::frame::{
-    CdefStrengthSet, CdefStrengthSets, CoreSeqView, FrameFilterParams, FrameHeaderCore,
-    KeyFrameTxParams, MAX_CDEF_STRENGTH_SETS, build_key_frame_header,
+    CdefStrengthSet, CdefStrengthSets, FrameFilterParams, FrameHeaderCore, MAX_CDEF_STRENGTH_SETS,
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    FilterRecorder, IntraTileSyntax, LrLayout, LrUnit, TransformBlock, apply_loop_filters,
-    cdef_unit_grid,
+    EncoderReferences, FilterRecorder, IntraTileSyntax, LrLayout, LrUnit, TransformBlock,
+    apply_loop_filters, cdef_unit_grid,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -137,7 +136,7 @@ impl ResidualCoder for Replay {
     }
 }
 
-/// The first pass of a key frame.
+/// The first pass of a frame.
 pub(crate) struct FirstPass {
     pub(crate) core: FrameHeaderCore,
     pub(crate) tile: Vec<u8>,
@@ -146,19 +145,24 @@ pub(crate) struct FirstPass {
     pub(crate) decisions: FrameDecisions,
 }
 
-/// A coded key frame: its header, its tile, and its filtered reconstruction.
+/// A coded frame: its header, its filters, its tile, and its filtered
+/// reconstruction.
 pub(crate) struct FilteredFrame {
     pub(crate) core: FrameHeaderCore,
+    pub(crate) filters: FrameFilterParams,
     pub(crate) tile: Vec<u8>,
     pub(crate) recon: DecodedFrame<u16>,
 }
 
+/// Builds the frame header with the given loop filters.
+pub(crate) type HeaderBuilder<'a> = &'a dyn Fn(&FrameFilterParams) -> Result<FrameHeaderCore>;
+
 /// Picks the frame's loop filters and, when any is on, codes the second pass.
-pub(crate) fn finish_key_frame(
+pub(crate) fn finish_frame(
     seq: &SequenceHeader,
-    view: &CoreSeqView,
+    header: HeaderBuilder<'_>,
     preset: &PresetParams,
-    source: &SourceFrame,
+    (source, refs): (&SourceFrame, &EncoderReferences),
     pass: FirstPass,
 ) -> Result<FilteredFrame> {
     let qindex = pass
@@ -168,17 +172,10 @@ pub(crate) fn finish_key_frame(
             what: "a frame without quantization params",
         })?
         .base_q_idx;
-    let tail = pass.core.intra_tail.as_ref().ok_or(Error::Unsupported {
-        what: "a key frame without its header tail",
-    })?;
     let search = Search {
         seq,
-        view,
+        header,
         qindex,
-        tx: KeyFrameTxParams {
-            tx_mode: tail.tx_mode,
-            reduced_tx_set: tail.reduced_tx_set,
-        },
         source,
         recorder: &pass.recorder,
         recon: &pass.recon,
@@ -188,12 +185,13 @@ pub(crate) fn finish_key_frame(
     if params == FrameFilterParams::default() {
         return Ok(FilteredFrame {
             core: pass.core,
+            filters: params,
             tile: pass.tile,
             recon: pass.recon,
         });
     }
     let core = search.header(&params)?;
-    let mut writer = KeyFrameTileWriter::new(seq, &core).map_err(coding("filter pass"))?;
+    let mut writer = KeyFrameTileWriter::new(seq, &core, refs).map_err(coding("filter pass"))?;
     writer.set_filter_syntax(syntax);
     let mut replay = Replay(pass.decisions.transforms.into_iter());
     for decision in &pass.decisions.superblocks {
@@ -212,7 +210,12 @@ pub(crate) fn finish_key_frame(
     let lr_on: Vec<LrUnit> = coded.lr_on.into_iter().collect();
     let recon = apply_loop_filters(seq, &core, &recorder, &recon, &coded.cdef_indices, &lr_on)
         .map_err(coding("loop filters"))?;
-    Ok(FilteredFrame { core, tile, recon })
+    Ok(FilteredFrame {
+        core,
+        filters: params,
+        tile,
+        recon,
+    })
 }
 
 fn coding<E: std::error::Error + Send + Sync + 'static>(
@@ -226,9 +229,8 @@ fn coding<E: std::error::Error + Send + Sync + 'static>(
 
 struct Search<'a> {
     seq: &'a SequenceHeader,
-    view: &'a CoreSeqView,
+    header: HeaderBuilder<'a>,
     qindex: u32,
-    tx: KeyFrameTxParams,
     source: &'a SourceFrame,
     recorder: &'a FilterRecorder,
     recon: &'a DecodedFrame<u16>,
@@ -273,8 +275,7 @@ impl Search<'_> {
     }
 
     fn header(&self, params: &FrameFilterParams) -> Result<FrameHeaderCore> {
-        build_key_frame_header(self.view, self.qindex, 0, params, self.tx)
-            .map_err(coding("frame header"))
+        (self.header)(params)
     }
 
     /// `frame` filtered with `params`, every `cdef_idx` `0`, and `lr_on` units on.
@@ -364,7 +365,7 @@ impl Search<'_> {
             };
             let params = FrameFilterParams {
                 cdef_damping: damping,
-                cdef_strengths: cdef_sets(&[set]),
+                cdef_strengths: cdef_sets(&[set])?,
                 ..FrameFilterParams::default()
             };
             let frame = self.filtered(&params, deblocked, &[])?;
@@ -430,7 +431,7 @@ impl Search<'_> {
                 uv_sec_strength: candidates[uv].1,
             })
             .collect();
-        Ok((damping, cdef_sets(&strengths), indices))
+        Ok((damping, cdef_sets(&strengths)?, indices))
     }
 
     /// `(luma, chroma)` SSE of one 64x64 CDEF unit.
@@ -523,9 +524,10 @@ impl Search<'_> {
     }
 }
 
-fn cdef_sets(sets: &[CdefStrengthSet]) -> CdefStrengthSets {
-    CdefStrengthSets::from_slice(&sets[..sets.len().min(MAX_CDEF_STRENGTH_SETS)])
-        .unwrap_or_default()
+fn cdef_sets(sets: &[CdefStrengthSet]) -> Result<CdefStrengthSets> {
+    CdefStrengthSets::from_slice(sets).ok_or(Error::Unsupported {
+        what: "more CDEF strength sets than a frame header codes",
+    })
 }
 
 /// Approximate bits of `sets` strength sets: header bits plus the `cdef_idx`

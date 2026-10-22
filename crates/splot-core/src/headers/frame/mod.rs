@@ -13,6 +13,7 @@ use crate::types::ObuType;
 
 mod config;
 mod encoder_input;
+mod encoder_inter_stream;
 mod encoder_stream;
 mod filtering;
 mod get_ref_frames;
@@ -38,6 +39,10 @@ pub use encoder_input::{
     encode_minimal_intra_clk_temporal_unit_with_base_q_idx,
     encode_minimal_intra_clk_tile_group_obu, encode_minimal_intra_sequence_header_obu,
     encode_temporal_delimiter_obu,
+};
+pub use encoder_inter_stream::{
+    EncodedFrameHeader, InterFrameParams, build_inter_frame_header, encode_inter_frame_obu,
+    encode_show_existing_frame_obu,
 };
 pub use encoder_stream::{
     EncoderHeaderError, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, KeyFrameTxParams,

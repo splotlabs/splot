@@ -72,40 +72,66 @@ macro_rules! visit_mv_cdf_rows {
     };
 }
 
+/// A § 5.20.7.20 `read_mv` CDF row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MvCdfSelector {
+pub enum MvCdfSelector {
+    /// `joint_shell_set`.
     JointShellSet {
+        /// `MvCtx`.
         mv_ctx: usize,
     },
+    /// `joint_shell_class` of a `shell_set` at `precision`.
     JointShellClass {
+        /// `MvPrecision`.
         precision: usize,
+        /// `shell_set`.
         shell_set: usize,
+        /// `MvCtx`.
         mv_ctx: usize,
     },
+    /// `joint_shell_last_two_classes`.
     JointShellLastTwo {
+        /// `MvCtx`.
         mv_ctx: usize,
     },
+    /// `shell_offset_low_class` of class `0` or `1`.
     ShellOffsetLowClass {
+        /// `MvCtx`.
         mv_ctx: usize,
+        /// `shellClass`.
         shell_class: usize,
     },
+    /// The first `shell_offset_class2` symbol.
     ShellOffsetClass2 {
+        /// `MvCtx`.
         mv_ctx: usize,
     },
+    /// `shell_offset_other_class` bit `i`.
     ShellOffsetOtherClass {
+        /// `MvCtx`.
         mv_ctx: usize,
+        /// The bit index.
         i: usize,
     },
+    /// `col_mv_greater_flags` step `i`.
     ColMvGreater {
+        /// `MvCtx`.
         mv_ctx: usize,
+        /// The step index.
         i: usize,
     },
+    /// `col_mv_index`.
     ColMvIndex {
+        /// `MvCtx`.
         mv_ctx: usize,
+        /// The class context.
         ctx: usize,
     },
+    /// `amvd_joint`.
     AmvdJoint,
+    /// `amvd_index` of component `comp`.
     AmvdIndex {
+        /// `0` row, `1` column.
         comp: usize,
     },
 }

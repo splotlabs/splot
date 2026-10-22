@@ -1144,7 +1144,16 @@ pub(crate) struct OrderHintMvContext<'a> {
     ref_order_hints: &'a [Option<u32>],
 }
 
-impl OrderHintMvContext<'_> {
+impl<'a> OrderHintMvContext<'a> {
+    /// The context of a frame at `current_order_hint` over the per-list
+    /// `ref_order_hints`.
+    pub(crate) const fn new(current_order_hint: u32, ref_order_hints: &'a [Option<u32>]) -> Self {
+        Self {
+            current_order_hint,
+            ref_order_hints,
+        }
+    }
+
     pub(super) fn derive_spatial_mv(
         self,
         dst_ref: i8,

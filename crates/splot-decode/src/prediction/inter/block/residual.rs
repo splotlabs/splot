@@ -22,7 +22,7 @@ const V_DCT: usize = 10;
 const TX_TYPE_MAP_UNIT_4X4: usize = 4;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-struct InterLumaTxTypeMap {
+pub(super) struct InterLumaTxTypeMap {
     row: usize,
     col: usize,
     rows: usize,
@@ -65,7 +65,7 @@ impl InterLumaTxTypeMap {
         Ok(map)
     }
 
-    fn reset(&mut self, row: usize, col: usize, rows: usize, cols: usize) -> Result<()> {
+    pub(super) fn reset(&mut self, row: usize, col: usize, rows: usize, cols: usize) -> Result<()> {
         let len = rows.checked_mul(cols).ok_or_else(residual_geometry_error)?;
         self.values
             .try_reserve_exact(len.saturating_sub(self.values.len()))
@@ -79,7 +79,13 @@ impl InterLumaTxTypeMap {
         Ok(())
     }
 
-    fn update(&mut self, row: usize, col: usize, tx_size: usize, tx_type: usize) -> Result<()> {
+    pub(super) fn update(
+        &mut self,
+        row: usize,
+        col: usize,
+        tx_size: usize,
+        tx_type: usize,
+    ) -> Result<()> {
         let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
         let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
         for dy in (0..tx_h4).step_by(TX_TYPE_MAP_UNIT_4X4) {
@@ -94,7 +100,7 @@ impl InterLumaTxTypeMap {
         Ok(())
     }
 
-    fn chroma_inter_tx_type(
+    pub(super) fn chroma_inter_tx_type(
         &self,
         mi_row: usize,
         mi_col: usize,
@@ -623,7 +629,7 @@ fn record_inter_residual_chroma_pair(
     Ok(())
 }
 
-fn push_inter_residual_block(
+pub(super) fn push_inter_residual_block(
     blocks: &mut Vec<InterResidualBlock>,
     plane: ReconPlaneId,
     x4: usize,

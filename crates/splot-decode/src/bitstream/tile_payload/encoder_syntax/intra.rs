@@ -159,8 +159,8 @@ pub(super) struct IntraTools {
     cfl_ds_filter_index: u8,
     enable_ibp: bool,
     enable_intra_edge_filter: bool,
-    enable_chroma_dctonly: bool,
-    bit_depth: BitDepth,
+    pub(super) enable_chroma_dctonly: bool,
+    pub(super) bit_depth: BitDepth,
     qindex: u32,
     pub(super) tx_mode: Option<TxMode>,
     pub(super) reduced_tx_set: usize,
@@ -170,10 +170,15 @@ pub(super) struct IntraTools {
 impl IntraTools {
     /// Rejects every tool whose syntax or reconstruction the facade does not model.
     pub(super) fn new(seq: &SequenceHeader, core: &FrameHeaderCore, qindex: u32) -> Result<Self> {
-        let (Some(intra), Some(tq), Some(tail), true) = (
+        let tail = match (&core.intra_tail, &core.inter_tail) {
+            (Some(tail), _) => Some((tail.tx_mode, tail.reduced_tx_set)),
+            (None, Some(tail)) => Some((tail.tx_mode, tail.reduced_tx_set)),
+            (None, None) => None,
+        };
+        let (Some(intra), Some(tq), Some((tx_mode, reduced_tx_set)), true) = (
             seq.intra,
             seq.transform_quant_entropy,
-            core.intra_tail.as_ref(),
+            tail,
             seq.partition.is_some(),
         ) else {
             return Err(EncoderSyntaxError::Unsupported("incomplete header"));
@@ -217,7 +222,7 @@ impl IntraTools {
                         .is_some_and(|qm| qm.using_qmatrix),
                 "segmentation, delta-q, or quantizer matrices",
             ),
-            (tail.tx_mode == TxMode::Only4x4, "TX_MODE_ONLY_4X4"),
+            (tx_mode == TxMode::Only4x4, "TX_MODE_ONLY_4X4"),
         ];
         if let Some(&(_, what)) = refused.iter().find(|&&(on, _)| on) {
             return Err(EncoderSyntaxError::Unsupported(what));
@@ -233,8 +238,8 @@ impl IntraTools {
                 BitDepthIdc::Ten => BitDepth::Ten,
             },
             qindex,
-            tx_mode: Some(tail.tx_mode),
-            reduced_tx_set: usize::from(tail.reduced_tx_set),
+            tx_mode: Some(tx_mode),
+            reduced_tx_set: usize::from(reduced_tx_set),
             reduced_tx_part_set: tq.reduced_tx_part_set,
         })
     }
@@ -258,12 +263,12 @@ pub(super) struct PlannedLeaf {
 
 /// The reconstructed frame and the state its prediction reads.
 pub(super) struct Recon {
-    workspace: CurrentFrameWorkspace<u16>,
+    pub(super) workspace: CurrentFrameWorkspace<u16>,
     scratch: GeneralIntraReconScratch<u16>,
     pub(super) block_decoded: TileBlockDecodedState,
     y_smooth: TileSmoothGrid,
     chroma_smooth: TileSmoothGrid,
-    leaf: Option<PlannedLeaf>,
+    pub(super) leaf: Option<PlannedLeaf>,
 }
 
 /// The edge state and the saved samples of one 4:2:0 luma rectangle.
@@ -506,6 +511,7 @@ impl IntraTileSyntax {
         modes: IntraModes,
         partition: TxPartition,
     ) -> Result<Vec<TransformBlock>> {
+        self.clear_inter_plan();
         let (block_ctx, _) = self.block_ctx(leaf);
         let (_, joint) = self.y_mode_index(leaf, modes)?;
         let block_modes = block_modes(leaf, modes, joint)?;
@@ -723,7 +729,7 @@ impl IntraTileSyntax {
             .publish_block_decoded(&mut self.recon.block_decoded)
             .map_err(rule("BlockDecoded update"))?;
         self.recon.leaf = None;
-        Ok(())
+        self.publish_inter_neighbours(leaf)
     }
 
     /// Saves the coding context and the reconstruction of the luma rectangle
@@ -745,6 +751,7 @@ impl IntraTileSyntax {
             uv_cfls: self.uv_cfls.clone(),
             y_modes: self.y_modes.clone(),
             recon: self.recon.snapshot(luma)?,
+            inter: self.inter_snapshot(luma),
         })
     }
 
@@ -763,6 +770,7 @@ impl IntraTileSyntax {
         self.palette_y.clone_from(&snapshot.palette_y);
         self.uv_cfls.clone_from(&snapshot.uv_cfls);
         self.y_modes.clone_from(&snapshot.y_modes);
+        self.inter_restore(&snapshot.inter);
         self.recon.restore(&snapshot.recon)
     }
 
@@ -909,7 +917,7 @@ impl IntraTileSyntax {
         )
     }
 
-    fn put(
+    pub(super) fn put(
         &mut self,
         symbols: &mut impl SymbolSink,
         selector: TileCdfSelector,

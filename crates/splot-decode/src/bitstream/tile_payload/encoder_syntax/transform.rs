@@ -16,9 +16,9 @@ use splot_core::tables::conversion::{
 use super::super::cdf::TileCdfSelector;
 use super::super::general_intra_residual::{
     LumaTransformPartitionContext, TX_SET_HIGH_32, TX_SET_HIGH_64, TX_SET_INTRA_2, TX_SET_WIDE_32,
-    TX_SET_WIDE_64, block_size_table_usize, dct_forced, long_tx_set_shape, long_tx_type_from_index,
-    luma_transform_records_for_partition, luma_tx_partition_allows, md_idx_luma_tx_type,
-    transform_set_from_flags,
+    TX_SET_WIDE_64, block_size_table_usize, dct_forced, inter_tx_type_symbols, long_tx_set_shape,
+    long_tx_type_from_index, luma_transform_records_for_partition, luma_tx_partition_allows,
+    md_idx_luma_tx_type, transform_set_from_flags,
 };
 use super::{EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, TransformBlock, TxType, rule};
 use crate::pipeline::general_intra::luma_tx_partition_context;
@@ -81,8 +81,8 @@ impl IntraTileSyntax {
         Ok(())
     }
 
-    /// The intra luma types `tx` can code when its `eob` is above one, in symbol
-    /// order with `DCT_DCT` first; only `DCT_DCT` when the type is inferred.
+    /// The luma types `tx` of the planned leaf can code when its `eob` is above
+    /// one, in symbol order; only `DCT_DCT` when the type is inferred.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for a chroma block or without a planned leaf.
@@ -265,10 +265,38 @@ impl IntraTileSyntax {
             ));
         }
         let reduced = self.tools.reduced_tx_set;
-        let tx_set = transform_set_from_flags(reduced, false, 0, tx.tx_size, false)
+        let is_inter = self.leaf_is_inter();
+        let tx_set = transform_set_from_flags(reduced, false, 0, tx.tx_size, is_inter)
             .map_err(rule("transform set"))?;
-        if dct_forced(false, 0, eob, false, reduced, tx_set) {
+        if dct_forced(is_inter, 0, eob, false, reduced, tx_set) {
             return Ok(vec![(TxType::DctDct, Vec::new())]);
+        }
+        if is_inter {
+            let mut row_error = None;
+            let paths = inter_tx_type_symbols(tx.tx_size, tx_set, eob, |row| {
+                self.arity(row).unwrap_or_else(|error| {
+                    row_error.get_or_insert(error);
+                    0
+                })
+            })
+            .map_err(rule("transform type"))?;
+            if let Some(error) = row_error {
+                return Err(error);
+            }
+            let mut out: Vec<(TxType, Vec<Step>)> = Vec::new();
+            for (tx_type, steps) in paths {
+                let tx_type = TxType::from_value(tx_type)?;
+                if out.iter().all(|&(seen, _)| seen != tx_type) {
+                    out.push((tx_type, steps));
+                }
+            }
+            if let Some(dct) = out
+                .iter()
+                .position(|&(tx_type, _)| tx_type == TxType::DctDct)
+            {
+                out[..=dct].rotate_right(1);
+            }
+            return Ok(out);
         }
         let tx_size_sqr = TX_SIZE_SQR
             .get(tx.tx_size)
