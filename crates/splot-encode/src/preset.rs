@@ -18,11 +18,15 @@ pub struct PresetParams {
     pub max_block_log2: u8,
     /// Number of luma intra modes tried per block, best-ranked first.
     pub intra_modes: u8,
-    /// Partition search stops early when the unsplit cost is within this
-    /// percentage of the best split cost; `0` never stops early.
-    pub partition_early_exit_pct: u8,
+    /// Partition search skips a block's remaining partitions once its unsplit
+    /// cost does not exceed the best split cost so far.
+    pub partition_early_exit: bool,
     /// Rate-distortion optimized quantization.
     pub rdoq: bool,
+    /// Candidate trials of the mode and transform-partition search run RDOQ
+    /// and the transform-type search too; off, they quantize with a deadzone
+    /// and code `DCT_DCT`, and only a leaf's final trial runs both.
+    pub full_trials: bool,
     /// Luma transform-type search depth: depth `d` tries the first `2 * d + 1`
     /// types a block offers, most probable first. `0` codes every intra luma
     /// block with `DCT_DCT` and signals no type (`reduced_tx_set = 2`).
@@ -41,8 +45,8 @@ pub struct PresetParams {
 const fn row(
     blocks: (u8, u8),
     intra_modes: u8,
-    partition_early_exit_pct: u8,
-    rdoq: bool,
+    partition_early_exit: bool,
+    (rdoq, full_trials): (bool, bool),
     (tx_type_depth, tx_partition_search): (u8, bool),
     motion: (u16, u8),
     loop_filter_search: u8,
@@ -51,8 +55,9 @@ const fn row(
         min_block_log2: blocks.0,
         max_block_log2: blocks.1,
         intra_modes,
-        partition_early_exit_pct,
+        partition_early_exit,
         rdoq,
+        full_trials,
         tx_type_depth,
         tx_partition_search,
         motion_range: motion.0,
@@ -63,17 +68,17 @@ const fn row(
 
 /// Search limits indexed by preset: `0` is the slowest and best, `10` the fastest.
 pub const PRESETS: [PresetParams; 11] = [
-    row((2, 7), 13, 0, true, (3, true), (256, 3), 3),
-    row((2, 7), 13, 0, true, (3, true), (192, 3), 3),
-    row((2, 7), 12, 2, true, (3, true), (128, 3), 2),
-    row((2, 7), 10, 4, true, (2, true), (96, 2), 2),
-    row((2, 7), 9, 6, true, (2, true), (64, 2), 2),
-    row((2, 7), 8, 8, true, (2, true), (64, 2), 1),
-    row((3, 7), 6, 10, true, (1, true), (48, 2), 1),
-    row((3, 6), 5, 12, false, (1, false), (32, 1), 1),
-    row((3, 6), 4, 15, false, (1, false), (24, 1), 0),
-    row((3, 6), 3, 20, false, (0, false), (16, 1), 0),
-    row((4, 6), 2, 25, false, (0, false), (16, 0), 0),
+    row((2, 7), 13, false, (true, true), (3, true), (256, 3), 3),
+    row((2, 7), 13, false, (true, true), (3, true), (192, 3), 3),
+    row((2, 7), 12, true, (true, true), (3, true), (128, 3), 2),
+    row((2, 7), 10, true, (true, true), (2, true), (96, 2), 2),
+    row((2, 7), 9, true, (true, false), (2, true), (64, 2), 2),
+    row((2, 7), 8, true, (true, false), (2, true), (64, 2), 1),
+    row((3, 7), 6, true, (true, false), (1, true), (48, 2), 1),
+    row((3, 6), 5, true, (false, false), (1, false), (32, 1), 1),
+    row((3, 6), 4, true, (false, false), (1, false), (24, 1), 0),
+    row((3, 6), 3, true, (false, false), (0, false), (16, 1), 0),
+    row((4, 6), 2, true, (false, false), (0, false), (16, 0), 0),
 ];
 
 /// A speed preset, `0..=10`.
@@ -127,8 +132,9 @@ mod tests {
             assert!(fast.max_block_log2 <= slow.max_block_log2);
             assert!(fast.min_block_log2 <= fast.max_block_log2);
             assert!(fast.intra_modes <= slow.intra_modes);
-            assert!(fast.partition_early_exit_pct >= slow.partition_early_exit_pct);
+            assert!(fast.partition_early_exit >= slow.partition_early_exit);
             assert!(fast.rdoq <= slow.rdoq);
+            assert!(fast.full_trials <= slow.full_trials);
             assert!(fast.tx_type_depth <= slow.tx_type_depth);
             assert!(fast.tx_partition_search <= slow.tx_partition_search);
             assert!(fast.motion_range <= slow.motion_range);

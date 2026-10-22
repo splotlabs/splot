@@ -23,8 +23,8 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    ChromaMode, FilterRecorder, IntraModes, IntraTileSyntax, LeafBlock, LrLayout, LrUnit,
-    TransformBlock, apply_loop_filters, cdef_unit_grid, dct_recon_params,
+    FilterRecorder, IntraTileSyntax, LrLayout, LrUnit, TransformBlock, apply_loop_filters,
+    cdef_unit_grid, dct_recon_params,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -34,7 +34,7 @@ use crate::preset::PresetParams;
 use crate::tile_writer::filters::FilterSyntax;
 use crate::tile_writer::{
     KeyFrameTileWriter, ResidualCoder, SuperblockDecision, TileWriterError, TransformDecision,
-    TxPartition, TxType,
+    TxType,
 };
 
 /// `(pri, sec)` CDEF strengths in the order the search tries them.
@@ -66,9 +66,6 @@ const CDEF_SET_HEADER_BITS: f64 = 12.0;
 pub(crate) struct FrameDecisions {
     superblocks: Vec<SuperblockDecision>,
     transforms: Vec<TransformDecision>,
-    luma_modes: Vec<IntraModes>,
-    chroma_modes: Vec<ChromaMode>,
-    tx_partitions: Vec<TxPartition>,
 }
 
 impl FrameDecisions {
@@ -84,7 +81,7 @@ impl FrameDecisions {
             &decision,
             &mut Recording {
                 coder,
-                decisions: self,
+                transforms: &mut self.transforms,
             },
         )?;
         self.superblocks.push(decision);
@@ -92,116 +89,48 @@ impl FrameDecisions {
     }
 }
 
-/// Forwards every choice to `coder` and keeps it for the second pass.
+/// Forwards every transform to `coder` and keeps it for the second pass.
 struct Recording<'a, C> {
     coder: &'a mut C,
-    decisions: &'a mut FrameDecisions,
+    transforms: &'a mut Vec<TransformDecision>,
 }
 
 impl<C: ResidualCoder> ResidualCoder for Recording<'_, C> {
-    fn luma_modes(
-        &mut self,
-        syntax: &mut IntraTileSyntax,
-        leaf: &LeafBlock,
-        planned: IntraModes,
-    ) -> core::result::Result<IntraModes, TileWriterError> {
-        let modes = self.coder.luma_modes(syntax, leaf, planned)?;
-        self.decisions.luma_modes.push(modes);
-        Ok(modes)
-    }
-
-    fn chroma_mode(
-        &mut self,
-        syntax: &mut IntraTileSyntax,
-        leaf: &LeafBlock,
-        modes: IntraModes,
-    ) -> core::result::Result<ChromaMode, TileWriterError> {
-        let mode = self.coder.chroma_mode(syntax, leaf, modes)?;
-        self.decisions.chroma_modes.push(mode);
-        Ok(mode)
-    }
-
-    fn tx_partition(
-        &mut self,
-        syntax: &mut IntraTileSyntax,
-        leaf: &LeafBlock,
-        modes: IntraModes,
-    ) -> core::result::Result<TxPartition, TileWriterError> {
-        let partition = self.coder.tx_partition(syntax, leaf, modes)?;
-        self.decisions.tx_partitions.push(partition);
-        Ok(partition)
-    }
-
     fn code_luma(
         &mut self,
+        syntax: &mut IntraTileSyntax,
         tx: &TransformBlock,
         prediction: &[u16],
         tx_types: &[TxType],
     ) -> core::result::Result<TransformDecision, TileWriterError> {
-        let decision = self.coder.code_luma(tx, prediction, tx_types)?;
-        self.decisions.transforms.push(decision.clone());
+        let decision = self.coder.code_luma(syntax, tx, prediction, tx_types)?;
+        self.transforms.push(decision.clone());
         Ok(decision)
     }
 
     fn code(
         &mut self,
+        syntax: &mut IntraTileSyntax,
         tx: &TransformBlock,
         prediction: &[u16],
     ) -> core::result::Result<TransformDecision, TileWriterError> {
-        let decision = self.coder.code(tx, prediction)?;
-        self.decisions.transforms.push(decision.clone());
+        let decision = self.coder.code(syntax, tx, prediction)?;
+        self.transforms.push(decision.clone());
         Ok(decision)
     }
 }
 
-/// Replays the kept mode and transform decisions in coding order.
-struct Replay {
-    transforms: std::vec::IntoIter<TransformDecision>,
-    luma_modes: std::vec::IntoIter<IntraModes>,
-    chroma_modes: std::vec::IntoIter<ChromaMode>,
-    tx_partitions: std::vec::IntoIter<TxPartition>,
-}
+/// Replays the kept transform decisions in coding order.
+struct Replay(std::vec::IntoIter<TransformDecision>);
 
 impl ResidualCoder for Replay {
-    fn luma_modes(
-        &mut self,
-        _syntax: &mut IntraTileSyntax,
-        _leaf: &LeafBlock,
-        _planned: IntraModes,
-    ) -> core::result::Result<IntraModes, TileWriterError> {
-        self.luma_modes
-            .next()
-            .ok_or(TileWriterError::Shape("replayed luma mode count"))
-    }
-
-    fn chroma_mode(
-        &mut self,
-        _syntax: &mut IntraTileSyntax,
-        _leaf: &LeafBlock,
-        _modes: IntraModes,
-    ) -> core::result::Result<ChromaMode, TileWriterError> {
-        self.chroma_modes
-            .next()
-            .ok_or(TileWriterError::Shape("replayed chroma mode count"))
-    }
-
-    fn tx_partition(
-        &mut self,
-        _syntax: &mut IntraTileSyntax,
-        _leaf: &LeafBlock,
-        _modes: IntraModes,
-    ) -> core::result::Result<TxPartition, TileWriterError> {
-        self.tx_partitions
-            .next()
-            .ok_or(TileWriterError::Shape("replayed transform partition count"))
-    }
-
     fn code(
         &mut self,
+        _syntax: &mut IntraTileSyntax,
         _tx: &TransformBlock,
         _prediction: &[u16],
     ) -> core::result::Result<TransformDecision, TileWriterError> {
-        self.transforms
+        self.0
             .next()
             .ok_or(TileWriterError::Shape("replayed transform count"))
     }
@@ -265,22 +194,13 @@ pub(crate) fn finish_key_frame(
     let core = search.header(&params)?;
     let mut writer = KeyFrameTileWriter::new(seq, &core).map_err(coding("filter pass"))?;
     writer.set_filter_syntax(syntax);
-    let mut replay = Replay {
-        transforms: pass.decisions.transforms.into_iter(),
-        luma_modes: pass.decisions.luma_modes.into_iter(),
-        chroma_modes: pass.decisions.chroma_modes.into_iter(),
-        tx_partitions: pass.decisions.tx_partitions.into_iter(),
-    };
+    let mut replay = Replay(pass.decisions.transforms.into_iter());
     for decision in &pass.decisions.superblocks {
         writer
             .write_superblock(decision, &mut replay)
             .map_err(coding("filter pass"))?;
     }
-    if replay.transforms.next().is_some()
-        || replay.luma_modes.next().is_some()
-        || replay.chroma_modes.next().is_some()
-        || replay.tx_partitions.next().is_some()
-    {
+    if replay.0.next().is_some() {
         return Err(coding("filter pass")(TileWriterError::Shape(
             "replayed transform count",
         )));

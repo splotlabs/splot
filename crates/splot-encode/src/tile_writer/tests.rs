@@ -13,8 +13,8 @@ use std::collections::HashSet;
 use splot_core::headers::frame::TxMode;
 use splot_core::tables::conversion::TX_WIDTH;
 use splot_decode::encoder_syntax::{
-    IntraMode, IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA, PartitionNode, TX_PARTITIONS,
-    TransformBlock,
+    ChromaMode, IntraMode, IntraModes, IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA, PartitionNode,
+    TX_PARTITIONS, TransformBlock,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -165,40 +165,31 @@ impl RandomLevels {
             .filter(|&t| !self.coverage.coded.contains_key(&(tx.tx_size, t as u8)))
             .count())
     }
-}
 
-impl ResidualCoder for RandomLevels {
-    fn luma_modes(
+    /// `planned`, steered to a luma mode that offers uncoded types, with a
+    /// random or steered transform partition.
+    fn leaf_choice(
         &mut self,
         syntax: &mut IntraTileSyntax,
         leaf: &LeafBlock,
         planned: IntraModes,
-    ) -> Result<IntraModes> {
+    ) -> Result<LeafChoice> {
         let mut best = (0, planned);
-        if !self.coverage.steer {
-            return Ok(best.1);
-        }
-        for (y_mode, angle_delta) in luma_modes() {
-            let modes = IntraModes {
-                y_mode,
-                angle_delta,
-                ..planned
-            };
-            let tx = syntax.plan_leaf(leaf, modes)?[0];
-            let uncoded = self.uncoded(syntax, &tx)?;
-            if uncoded > best.0 {
-                best = (uncoded, modes);
+        if self.coverage.steer {
+            for (y_mode, angle_delta) in luma_modes() {
+                let modes = IntraModes {
+                    y_mode,
+                    angle_delta,
+                    ..planned
+                };
+                let tx = syntax.plan_leaf(leaf, modes)?[0];
+                let uncoded = self.uncoded(syntax, &tx)?;
+                if uncoded > best.0 {
+                    best = (uncoded, modes);
+                }
             }
         }
-        Ok(best.1)
-    }
-
-    fn tx_partition(
-        &mut self,
-        syntax: &mut IntraTileSyntax,
-        leaf: &LeafBlock,
-        modes: IntraModes,
-    ) -> Result<TxPartition> {
+        let modes = best.1;
         let options = syntax.luma_tx_partitions(leaf)?;
         let mut partition = options[self.rng.below(options.len() as u64) as usize];
         if self.coverage.steer && self.rng.below(2) == 0 {
@@ -212,11 +203,17 @@ impl ResidualCoder for RandomLevels {
             }
         }
         self.coverage.partitions.insert(partition as u8);
-        Ok(partition)
+        Ok(LeafChoice {
+            modes,
+            tx_partition: partition,
+        })
     }
+}
 
+impl ResidualCoder for RandomLevels {
     fn code_luma(
         &mut self,
+        _: &mut IntraTileSyntax,
         tx: &TransformBlock,
         _: &[u16],
         tx_types: &[TxType],
@@ -254,7 +251,12 @@ impl ResidualCoder for RandomLevels {
         Ok(TransformDecision { tx_type, levels })
     }
 
-    fn code(&mut self, tx: &TransformBlock, _: &[u16]) -> Result<TransformDecision> {
+    fn code(
+        &mut self,
+        _: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        _: &[u16],
+    ) -> Result<TransformDecision> {
         self.coverage.recodes += usize::from(tx.plane == 0);
         Ok(TransformDecision {
             tx_type: tx.tx_type,
@@ -327,13 +329,14 @@ impl ModePicker {
 }
 
 fn random_tree(
-    syntax: &IntraTileSyntax,
+    syntax: &mut IntraTileSyntax,
     node: PartitionNode,
     rng: &mut Rng,
     modes: &mut ModePicker,
+    coder: &mut RandomLevels,
 ) -> PartitionTree {
     if !syntax.in_frame(node) {
-        return PartitionTree::Leaf(IntraModes::DC);
+        return PartitionTree::Leaf(LeafChoice::DC);
     }
     let options = syntax.partition_options(node).unwrap();
     let allowed: Vec<Partition> = PARTITIONS
@@ -351,13 +354,14 @@ fn random_tree(
     if partition == Partition::None {
         let leaf = syntax.leaf(node).unwrap();
         let cfl_allowed = syntax.cfl_allowed(&leaf);
-        return PartitionTree::Leaf(modes.pick(cfl_allowed));
+        let planned = modes.pick(cfl_allowed);
+        return PartitionTree::Leaf(coder.leaf_choice(syntax, &leaf, planned).unwrap());
     }
     let children = syntax
         .children(node, partition)
         .unwrap()
         .into_iter()
-        .map(|child| random_tree(syntax, child, rng, modes))
+        .map(|child| random_tree(syntax, child, rng, modes, coder))
         .collect();
     PartitionTree::Split {
         kind: partition,
@@ -403,8 +407,12 @@ fn encode_case(
             ..coverage
         },
     };
-    while let Some(root) = writer.next_superblock_root() {
-        let tree = random_tree(writer.syntax(), root, &mut rng, &mut modes);
+    while writer.next_superblock_root().is_some() {
+        let tree = writer
+            .search_superblock(|syntax, root| {
+                Ok(random_tree(syntax, root, &mut rng, &mut modes, &mut coder))
+            })
+            .unwrap();
         writer
             .write_superblock(&SuperblockDecision { tree }, &mut coder)
             .unwrap();
@@ -574,7 +582,7 @@ fn rejects_unsupported_decisions() {
     )
     .unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core).unwrap();
-    let tree = PartitionTree::Leaf(IntraModes::DC);
+    let tree = PartitionTree::Leaf(LeafChoice::DC);
     assert!(matches!(
         writer.write_superblock(
             &SuperblockDecision { tree },

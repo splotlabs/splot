@@ -10,7 +10,7 @@
 use splot_core::headers::frame::{FrameHeaderCore, TxMode};
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
 use splot_core::symbol::Symbol;
-use splot_core::symbol_encoder::SymbolEncoder;
+use splot_core::symbol_encoder::SymbolSink;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, OutputIndex, PixelFormat,
     PlaneId, PlaneRect, PlaneSize,
@@ -209,6 +209,14 @@ impl IntraTools {
     }
 }
 
+/// The luma modes of every § 5.20.5.5 mode index under one neighbour context:
+/// `(top-left, neighbour joint modes, n4w, n4h)`.
+#[derive(Default)]
+pub(super) struct YModeTable {
+    key: Option<(bool, [IntraJointMode; 2], usize, usize)>,
+    entries: Vec<(IntraMode, i8, usize, IntraJointMode)>,
+}
+
 /// One leaf planned for prediction and reconstruction.
 pub(super) struct PlannedLeaf {
     plan: GeneralIntraResidualPlan,
@@ -365,7 +373,7 @@ impl IntraTileSyntax {
         &mut self,
         leaf: &LeafBlock,
         modes: IntraModes,
-        symbols: &mut SymbolEncoder,
+        symbols: &mut impl SymbolSink,
     ) -> Result<()> {
         let (mode_idx, _) = self.y_mode_index(leaf, modes)?;
         let ctx = self.y_mode_ctx(leaf)?;
@@ -535,29 +543,39 @@ impl IntraTileSyntax {
     pub fn predict(&mut self, index: usize) -> Result<Vec<u16>> {
         let tx = self.unit(index)?;
         let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
-        let zeros = vec![0; 1 << (log2_w.min(5) + log2_h.min(5))];
-        self.reconstruct_with(index, &zeros, 0, tx.tx_type)?;
+        let zeros = &ZERO_LEVELS[..1 << (log2_w.min(5) + log2_h.min(5))];
+        self.reconstruct_with(index, zeros, 0, tx.tx_type)?;
+        self.reconstruction(&tx)
+    }
+
+    /// The row-major samples the frame holds over `tx`; samples past the frame
+    /// storage repeat its edge.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for a block outside the planes.
+    pub fn reconstruction(&self, tx: &TransformBlock) -> Result<Vec<u16>> {
+        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let (width, height) = (1usize << log2_w, 1usize << log2_h);
         let plane = plane_id(tx.plane)?;
         let storage = self
             .recon
             .workspace
             .plane(plane)
-            .map_err(rule("prediction readback"))?
+            .map_err(rule("sample readback"))?
             .storage_size();
         let visible_w = width.min(storage.width().saturating_sub(tx.x));
         let visible_h = height.min(storage.height().saturating_sub(tx.y));
         if visible_w == 0 || visible_h == 0 {
             return Ok(vec![0; width * height]);
         }
-        let rect = PlaneRect::new(tx.x, tx.y, visible_w, visible_h)
-            .map_err(rule("prediction readback"))?;
+        let rect =
+            PlaneRect::new(tx.x, tx.y, visible_w, visible_h).map_err(rule("sample readback"))?;
         let mut out = Vec::with_capacity(width * height);
         for row in self
             .recon
             .workspace
             .rect_rows(plane, rect)
-            .map_err(rule("prediction readback"))?
+            .map_err(rule("sample readback"))?
         {
             out.extend_from_slice(row);
             out.resize(out.len() + width - visible_w, row[visible_w - 1]);
@@ -770,7 +788,7 @@ impl IntraTileSyntax {
 
     fn write_cfl_alphas(
         &mut self,
-        symbols: &mut SymbolEncoder,
+        symbols: &mut impl SymbolSink,
         alpha_u: i8,
         alpha_v: i8,
     ) -> Result<()> {
@@ -803,24 +821,43 @@ impl IntraTileSyntax {
     }
 
     /// The § 5.20.5.5 mode index that codes the luma modes of `modes` in `leaf`,
-    /// found by running the decoder's list derivation over every index.
-    fn y_mode_index(&self, leaf: &LeafBlock, modes: IntraModes) -> Result<(usize, IntraJointMode)> {
+    /// found by running the decoder's list derivation over every index once
+    /// per neighbour context.
+    fn y_mode_index(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+    ) -> Result<(usize, IntraJointMode)> {
         let (n4w, n4h) = leaf_size4(leaf)?;
         let (r, c) = (leaf.frontier.r, leaf.frontier.c);
-        let ctx = self.y_mode_ctx(leaf)?;
+        let top_left = self.y_mode_ctx(leaf)? == 0;
         let neighbours = self.joint_modes.neighbour_joint_modes(r, c, n4w, n4h);
-        (0..)
-            .map_while(|value| ModeIndex::try_new(value).ok())
-            .find_map(|index| {
-                let decoded = if ctx == 0 {
+        let key = (top_left, neighbours, n4w, n4h);
+        let table = &mut self.y_mode_table;
+        if table.key != Some(key) {
+            table.entries.clear();
+            for index in (0..).map_while(|value| ModeIndex::try_new(value).ok()) {
+                let decoded = if top_left {
                     reconstruct_y_mode_top_left(index)
                 } else {
                     reconstruct_y_mode_with_neighbours(index, neighbours, n4w, n4h)
+                };
+                if let Ok(decoded) = decoded {
+                    table.entries.push((
+                        decoded.y_mode,
+                        decoded.angle_delta_y,
+                        index.value(),
+                        decoded.intra_joint_mode,
+                    ));
                 }
-                .ok()?;
-                (decoded.y_mode == modes.y_mode && decoded.angle_delta_y == modes.angle_delta)
-                    .then_some((index.value(), decoded.intra_joint_mode))
-            })
+            }
+            table.key = Some(key);
+        }
+        table
+            .entries
+            .iter()
+            .find(|&&(y_mode, delta, ..)| y_mode == modes.y_mode && delta == modes.angle_delta)
+            .map(|&(.., index, joint)| (index, joint))
             .ok_or(EncoderSyntaxError::Unsupported("luma mode and angle delta"))
     }
 
@@ -836,7 +873,7 @@ impl IntraTileSyntax {
 
     fn put(
         &mut self,
-        symbols: &mut SymbolEncoder,
+        symbols: &mut impl SymbolSink,
         selector: TileCdfSelector,
         value: usize,
     ) -> Result<()> {
@@ -844,10 +881,13 @@ impl IntraTileSyntax {
             u8::try_from(value).map_err(|_| EncoderSyntaxError::Unsupported("symbol value"))?;
         let row = self.tile_row(selector)?;
         symbols
-            .write_symbol_u16(row, Symbol::new(value))
+            .symbol(row, Symbol::new(value))
             .map_err(rule("symbol write"))
     }
 }
+
+/// The levels of a predicted block: every adjusted (at most 32x32) level zero.
+static ZERO_LEVELS: [i32; 1024] = [0; 1024];
 
 const NO_LEAF: EncoderSyntaxError = EncoderSyntaxError::Unsupported("unplanned transform block");
 
@@ -909,9 +949,9 @@ fn leaf_size4(leaf: &LeafBlock) -> Result<(usize, usize)> {
     ))
 }
 
-fn literal(symbols: &mut SymbolEncoder, value: usize, bits: u32) -> Result<()> {
+fn literal(symbols: &mut impl SymbolSink, value: usize, bits: u32) -> Result<()> {
     symbols
-        .write_literal(value as u32, bits)
+        .literal(value as u32, bits)
         .map_err(rule("symbol write"))
 }
 

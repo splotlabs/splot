@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Key-frame coding: partition choice, SATD intra mode choice, residual
-//! coding, and the temporal unit of one intra frame.
+//! Key-frame coding: the RD partition and mode search of each superblock,
+//! residual coding, and the temporal unit of one intra frame.
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams,
@@ -10,30 +10,31 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA, PartitionNode, TransformBlock, TxPartition, TxType,
-    dct_recon_params, recon_params, tx_log2,
+    IntraTileSyntax, TransformBlock, TxType, recon_params, tx_log2,
 };
-use splot_recon::{BitDepth, DecodedFrame, PlaneId};
+use splot_recon::{BitDepth, DecodedFrame, PlaneId, PlaneSize};
 
 use crate::config::Config;
 use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
+use crate::kernels::rdoq::{RdoqBlock, rdoq};
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
 use crate::loop_filter::{FilteredFrame, FirstPass, FrameDecisions, finish_key_frame};
+use crate::mode_decision::TrialCoder;
 use crate::preset::PresetParams;
 use crate::rate_control::{FramePlanInfo, FrameType};
-use crate::rd::Lambda;
+use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, block_rate};
+use crate::rd::partition::search_partition;
+use crate::rd::{Lambda, RdCost};
+use crate::tile_writer::coeffs::eob;
 use crate::tile_writer::{
-    ChromaMode, INTRA_MODES, IntraModes, KeyFrameTileWriter, PARTITIONS, Partition, PartitionTree,
-    ResidualCoder, SuperblockDecision, TileWriterError, TransformDecision,
+    KeyFrameTileWriter, ResidualCoder, SuperblockDecision, TileWriterError, TransformDecision,
 };
 use crate::tx_choice;
 
 /// Quantizer deadzone in Q8 (`128` rounds to nearest).
 const DEADZONE_ROUNDING_Q8: u32 = 96;
-/// The largest `|AngleDeltaY|` (§ 5.20.5.5).
-const MAX_ANGLE_DELTA: i8 = 3;
 
 /// Codes every frame as a closed-loop key frame.
 pub(crate) struct IntraFrameCoder {
@@ -102,20 +103,18 @@ impl FrameCoder for IntraFrameCoder {
         let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
         let sb = writer.syntax().superblock_size4() * 4;
         let padded = PaddedSource::new(source, mi_cols * 4 + sb, mi_rows * 4 + sb);
-        let split_variance = split_variance(qindex, self.bit_depth)?;
-        let mut coder = SourceResidualCoder {
-            source: &padded,
-            qindex,
-            bit_depth: self.bit_depth,
-            preset: self.preset,
-            lambda_q16: Lambda::from_qindex(qindex, self.bit_depth)
-                .map_err(coding("lambda"))?
-                .sse_per_bit_q16(),
-        };
+        let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
+        let mut coder =
+            SourceResidualCoder::new(&padded, qindex, self.bit_depth, self.preset, lambda);
         let mut decisions = FrameDecisions::default();
-        while let Some(root) = writer.next_superblock_root() {
-            let tree = choose_tree(writer.syntax(), root, &padded, self.preset, split_variance)
-                .map_err(coding("partition choice"))?;
+        let preset = self.preset;
+        while writer.next_superblock_root().is_some() {
+            let tree = writer
+                .search_superblock(|syntax, root| {
+                    let mut trial = TrialCoder::new(syntax, &mut coder, preset, lambda);
+                    Ok(search_partition(&mut trial, root, preset, lambda)?.0)
+                })
+                .map_err(coding("superblock search"))?;
             decisions
                 .write_superblock(&mut writer, SuperblockDecision { tree }, &mut coder)
                 .map_err(coding("superblock"))?;
@@ -152,9 +151,10 @@ fn coding<E: std::error::Error + Send + Sync + 'static>(
 }
 
 /// Source planes extended by edge replication to cover every coded block.
-struct PaddedSource {
+pub(crate) struct PaddedSource {
     planes: [Vec<u16>; 3],
     strides: [usize; 3],
+    visible: [PlaneSize; 3],
 }
 
 impl PaddedSource {
@@ -177,173 +177,155 @@ impl PaddedSource {
             out
         });
         let strides = [width, width.div_ceil(2), width.div_ceil(2)];
-        Self { planes, strides }
+        Self {
+            planes,
+            strides,
+            visible: sizes,
+        }
     }
 
-    /// Variance times area of the luma block at `(x, y)` of `w x h` samples.
-    fn luma_variance_sum(&self, x: usize, y: usize, w: usize, h: usize) -> u64 {
-        let stride = self.strides[0];
-        let (mut sum, mut sum_sq) = (0u64, 0u64);
-        for row in self.planes[0][y * stride + x..].chunks(stride).take(h) {
-            for &sample in &row[..w] {
-                sum += u64::from(sample);
-                sum_sq += u64::from(sample) * u64::from(sample);
-            }
+    /// The source samples at the top-left of `tx` and their stride.
+    fn at(&self, tx: &TransformBlock) -> (&[u16], usize) {
+        let stride = self.strides[tx.plane];
+        (&self.planes[tx.plane][tx.y * stride + tx.x..], stride)
+    }
+
+    /// SATD between the source and the row-major `prediction` of `tx`.
+    pub(crate) fn satd(
+        &self,
+        tx: &TransformBlock,
+        prediction: &[u16],
+    ) -> core::result::Result<u64, TileWriterError> {
+        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
+        let (source, stride) = self.at(tx);
+        Ok(kernels().satd(
+            source,
+            stride,
+            prediction,
+            1 << log2_w,
+            BlockDims::new(1 << log2_w, 1 << log2_h).map_err(kernel)?,
+        ))
+    }
+
+    /// Squared error between the source and the row-major `recon` of `tx`
+    /// over the visible samples.
+    pub(crate) fn sse(
+        &self,
+        tx: &TransformBlock,
+        recon: &[u16],
+    ) -> core::result::Result<u64, TileWriterError> {
+        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
+        let (w, h) = (1usize << log2_w, 1usize << log2_h);
+        let size = self.visible[tx.plane];
+        let visible_w = w.min(size.width().saturating_sub(tx.x));
+        let visible_h = h.min(size.height().saturating_sub(tx.y));
+        let (source, stride) = self.at(tx);
+        if visible_w == w && visible_h == h {
+            return Ok(kernels().sse(
+                source,
+                stride,
+                recon,
+                w,
+                BlockDims::new(w, h).map_err(kernel)?,
+            ));
         }
-        sum_sq - sum * sum / (w * h) as u64
+        Ok(source
+            .chunks(stride)
+            .zip(recon.chunks(w))
+            .take(visible_h)
+            .flat_map(|(src, rec)| src[..visible_w].iter().zip(&rec[..visible_w]))
+            .map(|(&s, &r)| u64::from(s.abs_diff(r)).pow(2))
+            .sum())
     }
 }
 
-/// The per-sample variance above which a block splits: a quarter of the luma
-/// AC step in sample units, squared (tuned for BD-rate on CIF content).
-fn split_variance(qindex: u32, bit_depth: BitDepth) -> Result<u64> {
-    let (params, _) =
-        dct_recon_params(qindex, PlaneId::Y, 3, 3, bit_depth).map_err(coding("quantizer step"))?;
-    let step = u64::from(params.ac_quant) / 64;
-    Ok((step * step / 16).max(1))
-}
-
-/// Splits a block while it is above the preset's largest size, or while its
-/// source variance exceeds `split_variance` and it is above the smallest size.
-fn choose_tree(
-    syntax: &IntraTileSyntax,
-    node: PartitionNode,
-    source: &PaddedSource,
-    preset: &PresetParams,
-    split_variance: u64,
-) -> core::result::Result<PartitionTree, TileWriterError> {
-    if !syntax.in_frame(node) {
-        return Ok(PartitionTree::Leaf(IntraModes::DC));
-    }
-    let options = syntax.partition_options(node)?;
-    let allowed: Vec<Partition> = PARTITIONS
-        .into_iter()
-        .filter(|&p| options.allows(p))
-        .collect();
-    let partition = match options.implied().filter(|&p| options.allows(p)) {
-        Some(implied) => implied,
-        None if allowed.len() == 1 => allowed[0],
-        None => {
-            let (w, h) = node.dimensions()?;
-            let log2 = w.max(h).ilog2();
-            let detailed = || {
-                let (x, y) = (node.col4() * 4, node.row4() * 4);
-                source.luma_variance_sum(x, y, w, h) > split_variance * (w * h) as u64
-            };
-            let split = log2 > u32::from(preset.max_block_log2)
-                || (log2 > u32::from(preset.min_block_log2) && detailed());
-            if !split && options.allows(Partition::None) {
-                Partition::None
-            } else {
-                flattest_split(syntax, node, source, &allowed)?
-            }
-        }
-    };
-    if partition == Partition::None {
-        return Ok(PartitionTree::Leaf(IntraModes::DC));
-    }
-    let children = syntax
-        .children(node, partition)?
-        .into_iter()
-        .map(|child| choose_tree(syntax, child, source, preset, split_variance))
-        .collect::<core::result::Result<_, _>>()?;
-    Ok(PartitionTree::Split {
-        kind: partition,
-        children,
-    })
-}
-
-/// The allowed quad or binary split with the smallest largest child side, then
-/// the lowest total child luma variance. Below the root AV2 often allows only
-/// binary splits; preferring short sides avoids 64-point transforms, which drop
-/// the upper half of the frequencies.
-fn flattest_split(
-    syntax: &IntraTileSyntax,
-    node: PartitionNode,
-    source: &PaddedSource,
-    allowed: &[Partition],
-) -> core::result::Result<Partition, TileWriterError> {
-    let mut best: Option<((usize, u64), Partition)> = None;
-    for &partition in allowed {
-        if !matches!(
-            partition,
-            Partition::Split | Partition::Horz | Partition::Vert
-        ) {
-            continue;
-        }
-        let mut cost = (0, 0);
-        for child in syntax.children(node, partition)? {
-            if syntax.in_frame(child) {
-                let (w, h) = child.dimensions()?;
-                cost.0 = cost.0.max(w.max(h));
-                cost.1 += source.luma_variance_sum(child.col4() * 4, child.row4() * 4, w, h);
-            }
-        }
-        if best.is_none_or(|(best_cost, _)| cost < best_cost) {
-            best = Some((cost, partition));
-        }
-    }
-    match best {
-        Some((_, partition)) => Ok(partition),
-        None => allowed
-            .first()
-            .copied()
-            .ok_or(TileWriterError::Shape("no allowed partition")),
-    }
-}
-
-/// Transforms and quantizes the source residual of each transform block.
-struct SourceResidualCoder<'a> {
-    source: &'a PaddedSource,
+/// Transforms and quantizes the source residual of each transform block, by
+/// RDOQ when the preset asks for it, else by a deadzone quantizer, and picks
+/// each luma transform type by rate and distortion.
+pub(crate) struct SourceResidualCoder<'a> {
+    pub(crate) source: &'a PaddedSource,
     qindex: u32,
     bit_depth: BitDepth,
     preset: &'static PresetParams,
-    lambda_q16: u64,
+    lambda: Lambda,
+    /// A candidate trial without `full_trials`: quantize with the deadzone and
+    /// code `DCT_DCT`.
+    pub(crate) candidate: bool,
+    /// Residual, coefficient, and dequantized buffers reused across blocks.
+    scratch: [Vec<i32>; 3],
+}
+
+impl<'a> SourceResidualCoder<'a> {
+    pub(crate) fn new(
+        source: &'a PaddedSource,
+        qindex: u32,
+        bit_depth: BitDepth,
+        preset: &'static PresetParams,
+        lambda: Lambda,
+    ) -> Self {
+        Self {
+            source,
+            qindex,
+            bit_depth,
+            preset,
+            lambda,
+            candidate: false,
+            scratch: Default::default(),
+        }
+    }
 }
 
 impl ResidualCoder for SourceResidualCoder<'_> {
-    fn tx_partition(
-        &mut self,
-        syntax: &mut IntraTileSyntax,
-        leaf: &LeafBlock,
-        modes: IntraModes,
-    ) -> core::result::Result<TxPartition, TileWriterError> {
-        if !self.preset.tx_partition_search {
-            return Ok(TxPartition::None);
-        }
-        tx_choice::cheapest_partition(syntax, leaf, modes, |tx, prediction, tx_types| {
-            self.cheapest_luma(tx, prediction, tx_types)
-        })
-    }
-
+    /// The offered type of the preset's leading `tx_types` with the lowest
+    /// `D + lambda * R`, with the exact coefficient and type rate.
     fn code_luma(
         &mut self,
+        syntax: &mut IntraTileSyntax,
         tx: &TransformBlock,
         prediction: &[u16],
         tx_types: &[TxType],
     ) -> core::result::Result<TransformDecision, TileWriterError> {
-        Ok(self.cheapest_luma(tx, prediction, tx_types)?.1)
+        let count = if self.candidate {
+            1
+        } else {
+            tx_choice::tx_type_candidates(self.preset).min(tx_types.len())
+        };
+        let mut best: Option<(u128, TransformDecision)> = None;
+        for &tx_type in &tx_types[..count] {
+            let tx = TransformBlock { tx_type, ..*tx };
+            let decision = self.code(syntax, &tx, prediction)?;
+            if count == 1 {
+                return Ok(decision);
+            }
+            if let Some(cost) = self.luma_cost(syntax, &tx, prediction, &decision.levels)?
+                && best.as_ref().is_none_or(|(best_cost, _)| cost < *best_cost)
+            {
+                best = Some((cost, decision));
+            }
+        }
+        best.map(|(_, decision)| decision)
+            .ok_or(TileWriterError::Shape("no luma transform type"))
     }
 
     fn code(
         &mut self,
+        syntax: &mut IntraTileSyntax,
         tx: &TransformBlock,
         prediction: &[u16],
     ) -> core::result::Result<TransformDecision, TileWriterError> {
         let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let (w, h) = (1usize << log2_w, 1usize << log2_h);
-        let stride = self.source.strides[tx.plane];
-        let source = &self.source.planes[tx.plane][tx.y * stride + tx.x..];
-        let residual: Vec<i32> = source
-            .chunks(stride)
-            .zip(prediction.chunks(w))
-            .take(h)
-            .flat_map(|(src, pred)| {
+        let (source, stride) = self.source.at(tx);
+        let mut scratch = core::mem::take(&mut self.scratch);
+        let [residual, coeffs, dequant] = &mut scratch;
+        residual.clear();
+        for (src, pred) in source.chunks(stride).zip(prediction.chunks(w)).take(h) {
+            residual.extend(
                 src.iter()
                     .zip(pred)
-                    .map(|(&s, &p)| i32::from(s) - i32::from(p))
-            })
-            .collect();
+                    .map(|(&s, &p)| i32::from(s) - i32::from(p)),
+            );
+        }
         let (params, transform) = recon_params(
             self.qindex,
             plane_id(tx.plane)?,
@@ -360,147 +342,81 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         )
         .map_err(kernel)?;
         let len = forward.coeff_width() * forward.coeff_height();
-        let mut coeffs = vec![0; len];
+        coeffs.resize(len, 0);
+        dequant.resize(len, 0);
         kernels()
-            .forward_transform_2d(&forward, &residual, &mut coeffs)
+            .forward_transform_2d(&forward, residual, coeffs)
             .map_err(kernel)?;
-        let quantizer = Quantizer::new(
-            params.dc_quant,
-            params.ac_quant,
-            params.dq_denom,
-            self.bit_depth,
-            DEADZONE_ROUNDING_Q8,
-        )
-        .map_err(kernel)?;
         let mut levels = vec![0; len];
-        let mut dequant = vec![0; len];
-        kernels()
-            .quantize(&quantizer, &coeffs, &mut levels, &mut dequant)
+        // shortcut: RDOQ walks the 2D-class scan only; IDTX and 1D types take the deadzone.
+        if self.preset.rdoq && !self.candidate && (tx.tx_type as u8) < TxType::Idtx as u8 {
+            let block = RdoqBlock {
+                dc_q2: params.dc_quant,
+                ac_q2: params.ac_quant,
+                dq_denom: params.dq_denom,
+                bit_depth: self.bit_depth,
+                log2_width: forward.coeff_width().ilog2(),
+                log2_height: forward.coeff_height().ilog2(),
+                plane: tx.plane,
+            };
+            let lambda_q8 = self.lambda.coefficient_q8(params.dq_denom);
+            let mut rates = CdfCoeffRates { syntax, tx };
+            rdoq(
+                kernels(),
+                &block,
+                coeffs,
+                &mut rates,
+                lambda_q8,
+                &mut levels,
+                dequant,
+            )
             .map_err(kernel)?;
+        } else {
+            let quantizer = Quantizer::new(
+                params.dc_quant,
+                params.ac_quant,
+                params.dq_denom,
+                self.bit_depth,
+                DEADZONE_ROUNDING_Q8,
+            )
+            .map_err(kernel)?;
+            kernels()
+                .quantize(&quantizer, coeffs, &mut levels, dequant)
+                .map_err(kernel)?;
+        }
+        self.scratch = scratch;
         Ok(TransformDecision {
             tx_type: tx.tx_type,
             levels,
         })
     }
-
-    /// The luma modes with the lowest prediction SATD.
-    fn luma_modes(
-        &mut self,
-        syntax: &mut IntraTileSyntax,
-        leaf: &LeafBlock,
-        planned: IntraModes,
-    ) -> core::result::Result<IntraModes, TileWriterError> {
-        let mut best = (u64::MAX, planned);
-        for y_mode in INTRA_MODES {
-            let deltas = if y_mode.is_directional() {
-                -MAX_ANGLE_DELTA..=MAX_ANGLE_DELTA
-            } else {
-                0..=0
-            };
-            for angle_delta in deltas {
-                let modes = IntraModes {
-                    y_mode,
-                    angle_delta,
-                    ..planned
-                };
-                let cost = self.prediction_satd(syntax, leaf, modes, false)?[0];
-                if cost < best.0 {
-                    best = (cost, modes);
-                }
-            }
-        }
-        Ok(best.1)
-    }
-
-    /// The chroma mode with the lowest prediction SATD; explicit CFL alphas are
-    /// chosen per plane.
-    fn chroma_mode(
-        &mut self,
-        syntax: &mut IntraTileSyntax,
-        leaf: &LeafBlock,
-        modes: IntraModes,
-    ) -> core::result::Result<ChromaMode, TileWriterError> {
-        let mut candidates: Vec<ChromaMode> = INTRA_MODES.map(ChromaMode::Intra).to_vec();
-        let mut alpha_u = (u64::MAX, 0);
-        let mut alpha_v = (u64::MAX, 0);
-        if syntax.cfl_allowed(leaf) {
-            candidates.push(ChromaMode::CflDerived);
-            for alpha in (-MAX_CFL_ALPHA..=MAX_CFL_ALPHA).filter(|&alpha| alpha != 0) {
-                let uv_mode = ChromaMode::Cfl {
-                    alpha_u: alpha,
-                    alpha_v: alpha,
-                };
-                let cost =
-                    self.prediction_satd(syntax, leaf, IntraModes { uv_mode, ..modes }, true)?;
-                alpha_u = alpha_u.min((cost[1], alpha));
-                alpha_v = alpha_v.min((cost[2], alpha));
-            }
-        }
-        let mut best = (
-            alpha_u.0.saturating_add(alpha_v.0),
-            ChromaMode::Cfl {
-                alpha_u: alpha_u.1,
-                alpha_v: alpha_v.1,
-            },
-        );
-        for uv_mode in candidates {
-            let cost = self.prediction_satd(syntax, leaf, IntraModes { uv_mode, ..modes }, true)?;
-            if cost[1] + cost[2] < best.0 {
-                best = (cost[1] + cost[2], uv_mode);
-            }
-        }
-        Ok(best.1)
-    }
 }
 
 impl SourceResidualCoder<'_> {
-    /// The cheapest [`tx_choice::decision_cost`] decision of luma block `tx`
-    /// over the preset's leading `tx_types`.
-    fn cheapest_luma(
-        &mut self,
-        tx: &TransformBlock,
-        prediction: &[u16],
-        tx_types: &[TxType],
-    ) -> core::result::Result<(u64, TransformDecision), TileWriterError> {
-        let source = self.source;
-        let stride = source.strides[0];
-        let block = (&source.planes[0][tx.y * stride + tx.x..], stride);
-        let quant = (self.qindex, self.bit_depth, self.lambda_q16);
-        let count = tx_choice::tx_type_candidates(self.preset);
-        tx_choice::cheapest(tx_types.iter().take(count), |tx_type| {
-            let tx = TransformBlock { tx_type, ..*tx };
-            let decision = self.code(&tx, prediction)?;
-            let cost = tx_choice::decision_cost(block, prediction, &tx, &decision.levels, quant)?;
-            Ok((cost, decision))
-        })
-    }
-
-    /// The per-plane SATD between the source and the prediction of the luma or
-    /// the chroma blocks of `leaf` under `modes`.
-    fn prediction_satd(
+    /// `D + lambda * R` of luma block `tx` coded as `levels`, from its exact
+    /// reconstruction and the frozen CDF rows; `None` when the decoder would
+    /// infer another type for the levels.
+    fn luma_cost(
         &self,
         syntax: &mut IntraTileSyntax,
-        leaf: &LeafBlock,
-        modes: IntraModes,
-        chroma: bool,
-    ) -> core::result::Result<[u64; 3], TileWriterError> {
-        let mut cost = [0; 3];
-        for (index, tx) in syntax.plan_leaf(leaf, modes)?.iter().enumerate() {
-            if (tx.plane > 0) != chroma {
-                continue;
-            }
-            let prediction = syntax.predict(index)?;
-            let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
-            let stride = self.source.strides[tx.plane];
-            cost[tx.plane] += kernels().satd(
-                &self.source.planes[tx.plane][tx.y * stride + tx.x..],
-                stride,
-                &prediction,
-                1 << log2_w,
-                BlockDims::new(1 << log2_w, 1 << log2_h).map_err(kernel)?,
-            );
+        tx: &TransformBlock,
+        prediction: &[u16],
+        levels: &[i32],
+    ) -> core::result::Result<Option<u128>, TileWriterError> {
+        let eob = eob(tx, levels)?;
+        if eob > 0
+            && syntax
+                .inferred_luma_tx_type(tx, eob)?
+                .is_some_and(|t| t != tx.tx_type)
+        {
+            return Ok(None);
         }
-        Ok(cost)
+        let recon = tx_choice::reconstruct(prediction, tx, levels, (self.qindex, self.bit_depth))?;
+        let cost = RdCost {
+            distortion: self.source.sse(tx, &recon)?,
+            rate: block_rate(syntax, &mut RateSink::frozen(), tx, levels, false)?,
+        };
+        Ok(Some(cost.cost(self.lambda)))
     }
 }
 

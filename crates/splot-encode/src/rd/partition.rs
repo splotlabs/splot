@@ -3,16 +3,18 @@
 
 //! Recursive rate-distortion partition search, independent of leaf coding.
 
+use std::collections::HashMap;
+
 use super::{Bits, Lambda, RdCost};
 use crate::preset::PresetParams;
-use crate::tile_writer::{IntraModes, Partition, PartitionTree};
+use crate::tile_writer::{LeafChoice, Partition, PartitionTree};
 
 /// What the partition search needs from a coder. Trials code into live state:
 /// [`Self::evaluate_leaf`] leaves its leaf coded, and the search rolls back
 /// through [`Self::save`] and [`Self::restore`].
 pub(crate) trait PartitionSearch {
     /// One `decode_partition` call.
-    type Node: Copy;
+    type Node: Copy + PartialEq;
     /// A saved coder state.
     type Saved;
     /// The coder's error.
@@ -29,10 +31,14 @@ pub(crate) trait PartitionSearch {
         node: Self::Node,
         partition: Partition,
     ) -> Result<Vec<Self::Node>, Self::Error>;
+    /// A key of `node`'s block; equal nodes have equal keys.
+    fn key(&self, node: Self::Node) -> u64;
     /// Luma `(log2 width, log2 height)` of `node`.
     fn block_log2(&self, node: Self::Node) -> Result<(u32, u32), Self::Error>;
     /// Codes `node` as a leaf into the live state; returns its cost and decision.
-    fn evaluate_leaf(&mut self, node: Self::Node) -> Result<(RdCost, IntraModes), Self::Error>;
+    fn evaluate_leaf(&mut self, node: Self::Node) -> Result<(RdCost, LeafChoice), Self::Error>;
+    /// Codes `node` as a leaf with `choice` into the live state; returns its cost.
+    fn code_leaf(&mut self, node: Self::Node, choice: LeafChoice) -> Result<RdCost, Self::Error>;
     /// The rate of the partition symbols that select `partition` at `node`.
     fn partition_rate(
         &mut self,
@@ -51,8 +57,14 @@ pub(crate) trait PartitionSearch {
 /// A leaf is tried only up to `max_block_log2` per side, a split only when every
 /// child keeps both sides at least `min_block_log2`; when the limits leave no
 /// candidate, every codable partition is tried. `NONE` is tried first and
-/// `SPLIT` second; once a split candidate is coded, the search stops when the
-/// unsplit cost is within `partition_early_exit_pct` percent of the best split.
+/// `SPLIT` second; with `partition_early_exit`, the search stops once a split
+/// is coded and the unsplit cost does not exceed the best split cost. A
+/// tolerance that also stops when the split wins by a margin compounds over the
+/// levels of the tree: 10% cost 20 points of BD-rate on CIF content.
+///
+/// Partition paths reach many nodes more than once. A node keeps the tree its
+/// first search chose, and a later visit codes that tree again in the new
+/// context instead of searching it again.
 ///
 /// # Errors
 /// Returns the coder's errors.
@@ -62,8 +74,30 @@ pub(crate) fn search_partition<S: PartitionSearch>(
     preset: &PresetParams,
     lambda: Lambda,
 ) -> Result<(PartitionTree, RdCost), S::Error> {
+    search(coder, node, preset, lambda, &mut Memo::new())
+}
+
+/// The tree each searched node chose, by node key.
+type Memo<N> = HashMap<u64, Vec<(N, PartitionTree)>>;
+
+fn search<S: PartitionSearch>(
+    coder: &mut S,
+    node: S::Node,
+    preset: &PresetParams,
+    lambda: Lambda,
+    memo: &mut Memo<S::Node>,
+) -> Result<(PartitionTree, RdCost), S::Error> {
     if !coder.in_frame(node) {
-        return Ok((PartitionTree::Leaf(IntraModes::DC), RdCost::default()));
+        return Ok((PartitionTree::Leaf(LeafChoice::DC), RdCost::default()));
+    }
+    let key = coder.key(node);
+    if let Some((_, tree)) = memo
+        .get(&key)
+        .and_then(|seen| seen.iter().find(|(seen, _)| *seen == node))
+    {
+        let tree = tree.clone();
+        let cost = recode(coder, node, &tree)?;
+        return Ok((tree, cost));
     }
     let candidates = candidates(coder, node, preset)?;
     let start = if candidates.len() > 1 {
@@ -88,7 +122,7 @@ pub(crate) fn search_partition<S: PartitionSearch>(
             let mut trees = Vec::with_capacity(children.len());
             let mut cost = RdCost::default();
             for &child in children {
-                let (tree, child_cost) = search_partition(coder, child, preset, lambda)?;
+                let (tree, child_cost) = search(coder, child, preset, lambda, memo)?;
                 trees.push(tree);
                 cost = cost + child_cost;
             }
@@ -114,18 +148,41 @@ pub(crate) fn search_partition<S: PartitionSearch>(
         }
         let split = best_split.map_or(j, |b: u128| b.min(j));
         best_split = Some(split);
-        let pct = u128::from(preset.partition_early_exit_pct);
-        if pct > 0 && unsplit.is_some_and(|none| none * 100 <= split * (100 + pct)) {
+        if preset.partition_early_exit && unsplit.is_some_and(|none| none <= split) {
             break;
         }
     }
     let Some((_, tree, cost, end)) = best else {
-        return Ok((PartitionTree::Leaf(IntraModes::DC), RdCost::default()));
+        return Ok((PartitionTree::Leaf(LeafChoice::DC), RdCost::default()));
     };
     if let Some(end) = &end {
         coder.restore(end)?;
     }
+    memo.entry(key).or_default().push((node, tree.clone()));
     Ok((tree, cost))
+}
+
+/// Codes `tree` at `node` into the live state; returns its cost.
+fn recode<S: PartitionSearch>(
+    coder: &mut S,
+    node: S::Node,
+    tree: &PartitionTree,
+) -> Result<RdCost, S::Error> {
+    if !coder.in_frame(node) {
+        return Ok(RdCost::default());
+    }
+    let (partition, mut cost) = match tree {
+        PartitionTree::Leaf(choice) => (Partition::None, coder.code_leaf(node, *choice)?),
+        PartitionTree::Split { kind, children } => {
+            let mut cost = RdCost::default();
+            for (child, tree) in coder.children(node, *kind)?.into_iter().zip(children) {
+                cost = cost + recode(coder, child, tree)?;
+            }
+            (*kind, cost)
+        }
+    };
+    cost.rate += coder.partition_rate(node, partition)?;
+    Ok(cost)
 }
 
 type Candidates<N> = Vec<(Partition, Vec<N>)>;

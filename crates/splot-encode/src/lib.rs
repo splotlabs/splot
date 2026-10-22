@@ -24,6 +24,7 @@ mod intra_frame;
 pub mod ivf;
 mod kernels;
 mod loop_filter;
+mod mode_decision;
 pub mod preset;
 pub mod rate_control;
 mod rd;

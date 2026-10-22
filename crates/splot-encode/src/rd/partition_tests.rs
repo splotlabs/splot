@@ -8,6 +8,7 @@ use core::result::Result;
 use super::*;
 use crate::preset::{PRESETS, PresetParams};
 use crate::rd::partition::{PartitionSearch, search_partition};
+use crate::tile_writer::LeafChoice;
 
 /// A block: left, top, log2 width, log2 height.
 type Rect = (u32, u32, u32, u32);
@@ -19,6 +20,7 @@ struct Synthetic<F> {
     leaf_cost: F,
     coded: Vec<Rect>,
     leaf_evaluations: usize,
+    evaluated: std::collections::HashSet<Rect>,
 }
 
 impl<F: Fn(Rect) -> RdCost> Synthetic<F> {
@@ -28,6 +30,7 @@ impl<F: Fn(Rect) -> RdCost> Synthetic<F> {
             leaf_cost,
             coded: Vec::new(),
             leaf_evaluations: 0,
+            evaluated: std::collections::HashSet::new(),
         }
     }
 }
@@ -73,14 +76,24 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
         })
     }
 
+    fn key(&self, (x, y, w, h): Rect) -> u64 {
+        u64::from(x) << 48 | u64::from(y) << 32 | u64::from(w) << 16 | u64::from(h)
+    }
+
     fn block_log2(&self, (_, _, w, h): Rect) -> Result<(u32, u32), Self::Error> {
         Ok((w, h))
     }
 
-    fn evaluate_leaf(&mut self, node: Rect) -> Result<(RdCost, IntraModes), Self::Error> {
+    fn evaluate_leaf(&mut self, node: Rect) -> Result<(RdCost, LeafChoice), Self::Error> {
         self.coded.push(node);
         self.leaf_evaluations += 1;
-        Ok(((self.leaf_cost)(node), IntraModes::DC))
+        assert!(self.evaluated.insert(node), "{node:?} searched twice");
+        Ok(((self.leaf_cost)(node), LeafChoice::DC))
+    }
+
+    fn code_leaf(&mut self, node: Rect, _: LeafChoice) -> Result<RdCost, Self::Error> {
+        self.coded.push(node);
+        Ok((self.leaf_cost)(node))
     }
 
     fn partition_rate(&mut self, _: Rect, partition: Partition) -> Result<Bits, Self::Error> {
@@ -112,7 +125,7 @@ fn full_search() -> PresetParams {
     PresetParams {
         min_block_log2: 2,
         max_block_log2: 7,
-        partition_early_exit_pct: 0,
+        partition_early_exit: false,
         ..PRESETS[0]
     }
 }
@@ -276,7 +289,7 @@ fn early_exit_skips_rectangles_when_unsplit_is_close() {
     let root = (0, 0, 5, 5);
     let (_, full) = search_partition(&mut exhaustive, root, &full_search(), unit_lambda()).unwrap();
     let preset = PresetParams {
-        partition_early_exit_pct: 25,
+        partition_early_exit: true,
         ..full_search()
     };
     let mut fast = Synthetic::new(32, near_flat);

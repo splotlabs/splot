@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::symbol::Symbol;
-use splot_core::symbol_encoder::SymbolEncoder;
+use splot_core::symbol_encoder::SymbolSink;
 use splot_decode::encoder_syntax::{
     CdefIndexMap, FilterRecorder, IntraTileSyntax, LeafBlock, LrLayout, LrUnit, PartitionNode,
     TransformBlock,
@@ -64,12 +64,12 @@ impl TileFilters {
     pub(crate) fn write_lr_units(
         &self,
         syntax: &mut IntraTileSyntax,
-        symbols: &mut SymbolEncoder,
+        symbols: &mut impl SymbolSink,
         root: PartitionNode,
     ) -> Result<()> {
         for unit in self.lr.units(root)? {
             let on = self.syntax.lr_on.contains(&unit);
-            symbols.write_symbol_u16(syntax.use_pc_wiener_cdf()?, Symbol::new(u8::from(on)))?;
+            symbols.symbol(syntax.use_pc_wiener_cdf()?, Symbol::new(u8::from(on)))?;
         }
         Ok(())
     }
@@ -78,7 +78,7 @@ impl TileFilters {
     pub(crate) fn write_cdef_index(
         &mut self,
         syntax: &mut IntraTileSyntax,
-        symbols: &mut SymbolEncoder,
+        symbols: &mut impl SymbolSink,
         leaf: &LeafBlock,
     ) -> Result<()> {
         let Some(slot) = self.cdef.slot(leaf)? else {
@@ -96,12 +96,12 @@ impl TileFilters {
             return Err(TileWriterError::Shape("cdef_idx outside the strength sets"));
         }
         if slot.strengths > 1 {
-            symbols.write_symbol_u16(
+            symbols.symbol(
                 syntax.cdef_index0_cdf(slot.ctx)?,
                 Symbol::new(u8::from(index == 0)),
             )?;
             if index > 0 && slot.strengths > 2 {
-                symbols.write_symbol_u16(
+                symbols.symbol(
                     syntax.cdef_index_minus1_cdf(slot.strengths)?,
                     Symbol::new((index - 1) as u8),
                 )?;
