@@ -13,7 +13,7 @@ use super::super::compound::CompoundYMode;
 use super::super::find_mv_stack::{
     GridCheckpoint, OrderHintMvContext, RefMvBank, WarpParamBank, reference_order_hints,
 };
-use splot_core::headers::sequence::SequencePartitionConfig;
+use splot_core::headers::sequence::{SequencePartitionConfig, SuperblockSize};
 
 use super::filter_records::record_inter_deblock_geometry;
 use super::residual::{InterLumaTxTypeMap, push_inter_residual_block};

@@ -304,21 +304,6 @@ pub(crate) fn sequence_cfl_ds_filter_index(sequence: &SequenceHeader) -> u8 {
         .map_or(0, |intra| intra.cfl_ds_filter_index)
 }
 
-/// The frame `SbSize` in 4x4 units (§ 5.18.2): intra frames cap 256x256 at 128x128.
-fn frame_sb_mib(sequence: &SequenceHeader, frame_is_intra: bool) -> usize {
-    use splot_core::headers::sequence::{SequencePartitionConfig, SuperblockSize};
-    let sb_size = match sequence
-        .partition
-        .as_ref()
-        .map(SequencePartitionConfig::seq_sb_size)
-    {
-        Some(SuperblockSize::Block256x256) if frame_is_intra => SuperblockSize::Block128x128,
-        Some(sb_size) => sb_size,
-        None => SuperblockSize::Block64x64,
-    };
-    splot_core::tile::num_4x4_blocks_wide(sb_size) as usize
-}
-
 #[inline]
 pub(crate) fn chroma_edge_smoothness(
     grid: Option<&crate::prediction::intra_edge::TileChromaSmoothGrid>,
@@ -419,7 +404,9 @@ pub(crate) fn decode_one_general_intra_block(
         .unwrap_or(false);
     let chroma_tools = general_intra_chroma_tools(sequence, core).with_lossless(lossless);
     let cfl_ds_filter_index = sequence_cfl_ds_filter_index(sequence);
-    let sb_mib = frame_sb_mib(sequence, core.frame_is_intra == Some(true));
+    let sb_mib = sequence.partition.as_ref().map_or(16, |partition| {
+        crate::tile::frame_superblock_h4(partition.seq_sb_size(), core.frame_is_intra == Some(true))
+    });
 
     if let crate::bitstream::tile_payload::DecodeBlockPart::ChromaPart {
         y_mode,

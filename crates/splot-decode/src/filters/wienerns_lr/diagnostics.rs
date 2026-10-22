@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
+use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
 
 use crate::error::{DecodeError, Result};
@@ -27,10 +27,8 @@ pub(crate) fn frame_sb_size4(sequence: &SequenceHeader, frame_is_intra: bool) ->
         .partition
         .as_ref()
         .ok_or(crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords)?;
-    Ok(match partition.seq_sb_size() {
-        SuperblockSize::Block64x64 => 16,
-        SuperblockSize::Block128x128 => 32,
-        SuperblockSize::Block256x256 if frame_is_intra => 32,
-        SuperblockSize::Block256x256 => 64,
-    })
+    Ok(crate::tile::frame_superblock_h4(
+        partition.seq_sb_size(),
+        frame_is_intra,
+    ))
 }
