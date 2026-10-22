@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use splot_core::headers::frame::build_key_frame_header;
+use splot_core::headers::frame::{UniformTiles, build_key_frame_header};
 use splot_decode::encoder_syntax::LeafBlock;
 
 use crate::config::RateControlMode;
@@ -162,7 +162,8 @@ fn superblock_search_is_deterministic_and_rolls_back() {
         let frame = IntraFrameCoder::new(&config).unwrap();
         let tx = tx_choice::key_frame_tx_params(frame.preset);
         let header = FrameFilterParams::default();
-        let core = build_key_frame_header(&frame.view, 90, 0, &header, tx).unwrap();
+        let core = build_key_frame_header(&frame.view, 90, 0, &header, tx, UniformTiles::default())
+            .unwrap();
         let mut writer =
             KeyFrameTileWriter::new(&frame.sequence, &core, &refs_for(&frame.sequence)).unwrap();
         let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
@@ -501,7 +502,13 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
     let tx = tx_choice::key_frame_tx_params(coder.preset);
     let filters = FrameFilterParams::default();
     let core = plan
-        .header(&coder.view, &coder.references, qindex, &filters, tx)
+        .header(
+            &coder.view,
+            &coder.references,
+            qindex,
+            &filters,
+            (tx, coder.tiles),
+        )
         .unwrap();
     let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references).unwrap();
     let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
@@ -527,9 +534,9 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
             &coder.sequence,
             &coder.view,
             &coder.references,
-            (qindex, &filters, tx),
+            (qindex, &filters, (tx, coder.tiles)),
             &core,
-            &tile,
+            &[&tile],
         )
         .unwrap();
     let planes = visible_planes(&recon).unwrap();
@@ -633,7 +640,7 @@ fn inter_superblock_search_is_deterministic_and_rolls_back() {
             &coder.references,
             90,
             &FrameFilterParams::default(),
-            tx,
+            (tx, coder.tiles),
         )
         .unwrap();
     let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references).unwrap();

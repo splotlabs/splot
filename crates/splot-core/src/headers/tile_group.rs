@@ -179,10 +179,17 @@ impl TileGroupStructure {
     /// lengths stay unknown; the writer computes them from the emitted bytes.
     #[must_use]
     pub fn single_tile_first_group() -> Self {
+        Self::whole_frame(1)
+    }
+
+    /// Builds the structure of one tile group that carries all `num_tiles` tiles of
+    /// the frame (§ 5.19), with `tile_start_and_end_present_flag = 0`.
+    #[must_use]
+    pub fn whole_frame(num_tiles: u32) -> Self {
         Self {
             tile_start_and_end_present_flag: false,
             tg_start: 0,
-            tg_end: 0,
+            tg_end: num_tiles.saturating_sub(1),
             outcome: TileGroupStructureOutcome::Complete,
             header_bytes: None,
             payload_size: None,
@@ -449,19 +456,43 @@ impl TileGroupFraming {
     /// A zero-length tile has [`TileFramingDefect::ZeroSizeTile`], matching the parser.
     #[must_use]
     pub fn single_tile(tile_size: u64) -> Self {
-        let defect = (tile_size == 0).then_some(TileFramingDefect::ZeroSizeTile {
-            tile_num: 0,
-            tile_data_offset: 0,
-        });
-        Self {
-            tiles: vec![TileFraming {
-                tile_num: 0,
-                size_field_offset: None,
-                tile_data_offset: 0,
-                tile_size,
-            }],
-            defect,
-        }
+        Self::tiles(&[tile_size], 1)
+    }
+
+    /// Builds the framing of tiles of `tile_sizes` bytes laid out in order, each but
+    /// the last after a `TileSizeBytes`-byte size field (§ 5.20.1). The first
+    /// zero-length tile has [`TileFramingDefect::ZeroSizeTile`], matching the parser.
+    #[must_use]
+    pub fn tiles(tile_sizes: &[u64], tile_size_bytes: u32) -> Self {
+        let mut offset = 0u64;
+        let mut defect = None;
+        let last = tile_sizes.len().saturating_sub(1);
+        let tiles = tile_sizes
+            .iter()
+            .enumerate()
+            .map(|(index, &tile_size)| {
+                let size_field_offset = (index != last).then_some(offset);
+                if index != last {
+                    offset += u64::from(tile_size_bytes);
+                }
+                let tile_num = index as u32;
+                if tile_size == 0 && defect.is_none() {
+                    defect = Some(TileFramingDefect::ZeroSizeTile {
+                        tile_num,
+                        tile_data_offset: offset,
+                    });
+                }
+                let tile = TileFraming {
+                    tile_num,
+                    size_field_offset,
+                    tile_data_offset: offset,
+                    tile_size,
+                };
+                offset += tile_size;
+                tile
+            })
+            .collect();
+        Self { tiles, defect }
     }
 }
 

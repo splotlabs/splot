@@ -6,7 +6,7 @@
 //! unit of a key or inter frame.
 
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, UniformTiles,
     build_encoder_sequence_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
@@ -46,6 +46,7 @@ pub(crate) struct IntraFrameCoder {
     bit_depth: BitDepth,
     preset: &'static PresetParams,
     references: EncoderReferences,
+    tiles: UniformTiles,
 }
 
 impl IntraFrameCoder {
@@ -83,6 +84,7 @@ impl IntraFrameCoder {
             view,
             bit_depth: config.bit_depth,
             preset,
+            tiles: UniformTiles::default(),
         })
     }
 }
@@ -97,7 +99,13 @@ impl FrameCoder for IntraFrameCoder {
         let qindex = u32::from(qp);
         let tx = tx_choice::key_frame_tx_params(self.preset);
         let header = |filters: &FrameFilterParams| {
-            plan.header(&self.view, &self.references, qindex, filters, tx)
+            plan.header(
+                &self.view,
+                &self.references,
+                qindex,
+                filters,
+                (tx, self.tiles),
+            )
         };
         let core = header(&FrameFilterParams::default())?;
         let mut writer = KeyFrameTileWriter::new(&self.sequence, &core, &self.references)
@@ -150,9 +158,9 @@ impl FrameCoder for IntraFrameCoder {
             &self.sequence,
             &self.view,
             &self.references,
-            (qindex, &filters, tx),
+            (qindex, &filters, (tx, self.tiles)),
             &core,
-            &tile,
+            &[&tile],
         )?;
         let planes = visible_planes(&recon)?;
         self.references

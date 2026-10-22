@@ -7,7 +7,7 @@ use crate::test_support::refs_for;
 use proptest::prelude::*;
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
-    KeyFrameTxParams, build_encoder_sequence_header, build_key_frame_header,
+    KeyFrameTxParams, UniformTiles, build_encoder_sequence_header, build_key_frame_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_core::symbol::Symbol;
@@ -185,6 +185,7 @@ fn headers(
         0,
         &FrameFilterParams::default(),
         KeyFrameTxParams::default(),
+        UniformTiles::default(),
     )
     .unwrap();
     (seq, core)

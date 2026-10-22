@@ -6,7 +6,8 @@
 use crate::test_support::refs_for;
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, KeyFrameTxParams,
-    build_encoder_sequence_header, build_key_frame_header, encode_key_frame_temporal_unit,
+    UniformTiles, build_encoder_sequence_header, build_key_frame_header,
+    encode_key_frame_temporal_unit,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize};
 use std::collections::HashSet;
@@ -396,6 +397,7 @@ fn encode_case(
         0,
         &FrameFilterParams::default(),
         case.tx,
+        UniformTiles::default(),
     )
     .unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq)).unwrap();
@@ -420,7 +422,7 @@ fn encode_case(
             .unwrap();
     }
     let (tile, recon) = writer.finish().unwrap();
-    let unit = encode_key_frame_temporal_unit(&seq, &core, true, &tile).unwrap();
+    let unit = encode_key_frame_temporal_unit(&seq, &core, true, &[&tile]).unwrap();
     (unit, recon, modes, coder.coverage)
 }
 
@@ -581,6 +583,7 @@ fn rejects_unsupported_decisions() {
         0,
         &FrameFilterParams::default(),
         KeyFrameTxParams::default(),
+        UniformTiles::default(),
     )
     .unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq)).unwrap();
@@ -614,6 +617,7 @@ fn headers(tools: EncoderToolFlags) -> (SequenceHeader, FrameHeaderCore) {
         0,
         &FrameFilterParams::default(),
         KeyFrameTxParams::default(),
+        UniformTiles::default(),
     )
     .unwrap();
     (seq, core)

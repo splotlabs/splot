@@ -33,7 +33,7 @@ use core::num::NonZeroU32;
 
 use splot_core::headers::frame::{
     CoreSeqView, FrameFilterParams, FrameHeaderCore, InterFrameParams, KeyFrameTxParams,
-    build_inter_frame_header, build_key_frame_header, encode_inter_frame_obu,
+    UniformTiles, build_inter_frame_header, build_key_frame_header, encode_inter_frame_obu,
     encode_key_frame_temporal_unit, encode_show_existing_frame_obu, encode_temporal_delimiter_obu,
 };
 use splot_core::headers::sequence::SequenceHeader;
@@ -317,14 +317,16 @@ impl GopFrame {
         refs: &EncoderReferences,
         qindex: u32,
         filters: &FrameFilterParams,
-        tx: KeyFrameTxParams,
+        (tx, tiles): (KeyFrameTxParams, UniformTiles),
     ) -> Result<FrameHeaderCore> {
         match self.frame_type {
-            FrameType::Key => build_key_frame_header(view, qindex, self.order_hint, filters, tx),
+            FrameType::Key => {
+                build_key_frame_header(view, qindex, self.order_hint, filters, tx, tiles)
+            }
             FrameType::Inter => build_inter_frame_header(
                 view,
                 &refs.header_view(),
-                &self.inter_params(qindex, filters, tx),
+                &self.inter_params(qindex, filters, (tx, tiles)),
             )
             .map(|header| header.core),
         }
@@ -332,32 +334,54 @@ impl GopFrame {
     }
 
     /// The OBUs of the frame `core` built by [`Self::header`] with
-    /// `(qindex, filters, tx)`, after a temporal delimiter when the frame opens
-    /// its temporal unit; a key frame repeats the sequence header.
+    /// `(qindex, filters, tx)`, whose tile group carries `tiles`, after a
+    /// temporal delimiter when the frame opens its temporal unit; a key frame
+    /// repeats the sequence header. The header codes the smallest
+    /// `TileSizeBytes` that fits the tiles.
     pub(crate) fn temporal_unit(
         &self,
         seq: &SequenceHeader,
         view: &CoreSeqView,
         refs: &EncoderReferences,
-        (qindex, filters, tx): (u32, &FrameFilterParams, KeyFrameTxParams),
+        (qindex, filters, (tx, layout)): (
+            u32,
+            &FrameFilterParams,
+            (KeyFrameTxParams, UniformTiles),
+        ),
         core: &FrameHeaderCore,
-        tile: &[u8],
+        tiles: &[&[u8]],
     ) -> Result<Vec<u8>> {
+        let longest = tiles.split_last().map_or(0, |(_, rest)| {
+            rest.iter()
+                .map(|tile| tile.len().saturating_sub(1))
+                .max()
+                .unwrap_or(0)
+        });
+        let size_bytes = (1..4u8).find(|&n| longest >> (8 * n) == 0).unwrap_or(4);
+        let layout = UniformTiles {
+            size_bytes,
+            ..layout
+        };
+        let mut expected = core.clone();
+        if let Some(info) = expected.tile_info.as_mut() {
+            info.tile_size_bytes = info.tile_size_bytes.map(|_| u32::from(size_bytes));
+        }
         if self.frame_type == FrameType::Key {
             if !self.opens_temporal_unit {
                 return Err(Error::Unsupported {
                     what: "a key frame after another frame of its temporal unit",
                 });
             }
-            return encode_key_frame_temporal_unit(seq, core, true, tile).map_err(header_error);
+            let core = self.header(view, refs, qindex, filters, (tx, layout))?;
+            return encode_key_frame_temporal_unit(seq, &core, true, tiles).map_err(header_error);
         }
         let header = build_inter_frame_header(
             view,
             &refs.header_view(),
-            &self.inter_params(qindex, filters, tx),
+            &self.inter_params(qindex, filters, (tx, layout)),
         )
         .map_err(header_error)?;
-        if header.core != *core {
+        if header.core != expected {
             return Err(Error::Unsupported {
                 what: "an inter frame header that changed after coding",
             });
@@ -367,7 +391,7 @@ impl GopFrame {
         } else {
             Vec::new()
         };
-        unit.extend(encode_inter_frame_obu(&header, tile).map_err(header_error)?);
+        unit.extend(encode_inter_frame_obu(&header, tiles).map_err(header_error)?);
         Ok(unit)
     }
 
@@ -375,7 +399,7 @@ impl GopFrame {
         &self,
         qindex: u32,
         filters: &FrameFilterParams,
-        tx: KeyFrameTxParams,
+        (tx, tiles): (KeyFrameTxParams, UniformTiles),
     ) -> InterFrameParams {
         InterFrameParams {
             base_q_idx: qindex,
@@ -384,6 +408,7 @@ impl GopFrame {
             show_frame: self.show_frame,
             filters: *filters,
             tx,
+            tiles,
         }
     }
 }
