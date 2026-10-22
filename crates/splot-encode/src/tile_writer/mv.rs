@@ -21,14 +21,14 @@ const MAX_COL_UNARY: u32 = 2;
 const COL_MV_INDEX_CONTEXTS: u32 = 4;
 
 /// Writes the `NEWMV` difference `mvd` (in `1/8` samples, a multiple of the
-/// precision step) with the rows of `syntax`.
+/// precision step) with the rows of `syntax`. Eighth-sample precision, which
+/// codes `joint_shell_last_two_classes`, is not supported.
 pub(crate) fn write_mvd(
     syntax: &mut IntraTileSyntax,
     sink: &mut impl SymbolSink,
     mvd: MotionVector,
 ) -> Result<()> {
     let precision = syntax.mv_precision();
-    // Eighth-pel codes a `joint_shell_last_two_classes` symbol this writer does not.
     if precision >= MV_PRECISION_EIGHTH_PEL {
         return Err(TileWriterError::Unsupported("eighth-pel motion vectors"));
     }
