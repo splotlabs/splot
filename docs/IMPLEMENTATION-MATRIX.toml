@@ -5238,6 +5238,102 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-TILES"
+name = "Uniform tiles coded in parallel"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.7.2", "5.18.7.3", "5.19", "5.20"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_frame.rs"
+change_id = "encoder-m5-tiles"
+owner = "encoder"
+risk = "medium"
+notes = "Config::tiles (CLI --tiles COLSxROWS) sets uniform TileColsLog2 and TileRowsLog2 (splot-core UniformTiles, capped at maxLog2TileCols/Rows, context_update_tile_id = 0, TileSizeBytes 4). Each tile owns its own encoder_syntax facade, search state and rate sink; the tiles of a frame are coded on the encoder's WorkerPool and joined in tile order, so the tile count, never the thread count, shapes the stream. Rate points, niklas 720p, 5 frames, preset 8, base_q_idx 85..190, luma: BD-rate +1.3/+2.5/+3.7% at 2/4/8 tiles against 1 tile; at 8 threads 8 tiles encode 4.5x faster than 1 tile."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "done"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_tests.rs::multi_tile_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_tests.rs::multi_tile_output_does_not_depend_on_the_thread_count", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_multi_tile_frames_like_splot"]
+commands = ["cargo test -p splot-encode multi_tile --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-SIMD-KERNELS"
+name = "Encoder SIMD kernels"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/kernels/mod.rs"
+change_id = "encoder-m5-simd-kernels"
+owner = "encoder"
+risk = "low"
+notes = "Encoder strategy. Every encoder-side hot kernel has a scalar reference and a std::simd implementation, and property tests compare the two bit for bit (distortion kernels also on short slices): SAD, SSE, SATD and the residual (EncoderKernels: ScalarKernels and SimdKernels), the forward DCT/ADST/identity transforms, quantization and the RDOQ level costs. Prediction, interpolation, inverse transforms, CDEF and loop restoration are the decoder's own splot-recon kernels through encoder_syntax. cargo xtask encode-perf --coverage samples a release encode: 94.1% of the samples in the hot-kernel symbol set are in SIMD code."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "done"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/kernels/distortion.rs::tests::simd_matches_scalar", "crates/splot-encode/src/kernels/distortion.rs::tests::simd_matches_scalar_on_short_slices", "crates/splot-encode/src/kernels/forward_transform_tests.rs::simd_matches_scalar", "crates/splot-encode/src/kernels/quantize_tests.rs::simd_matches_scalar_exhaustively", "crates/splot-encode/src/kernels/rdoq_tests.rs::simd_matches_scalar"]
+commands = ["cargo test -p splot-encode kernels --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-PERF-HARNESS"
+name = "Encoder speed and BD-rate harness"
+category = "encoder"
+kind = "automation"
+spec_sections = []
+sources = []
+crate = "xtask"
+module = "xtask/src/encode_perf.rs"
+change_id = "encoder-m5-perf-harness"
+owner = "encoder"
+risk = "low"
+notes = "cargo xtask encode-perf encodes synthetic clips at fixed presets and compares retired instructions with tests/perf/encode-baseline.toml (a zero row prints without a gate; --bless records); --coverage reports the SIMD share of hot-kernel samples. cargo xtask bd-rate encodes four quantizer points with two encoders and prints the luma BD-rate. The CI perf job runs encode-perf."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "done"
+
+[feature.proof]
+tests = ["xtask/src/encode_perf.rs::tests::kernel_keys_match_demangled_and_mangled_names", "xtask/src/encode_perf.rs::tests::synthetic_clip_has_header_and_full_frames", "xtask/src/bd_rate.rs::tests::bd_rate_of_a_scaled_curve_is_the_scale"]
+commands = ["cargo test -p xtask encode_perf --locked", "cargo test -p xtask bd_rate --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-SPEED-PRESETS"
 name = "Encoder speed preset framework"
 category = "encoder"
