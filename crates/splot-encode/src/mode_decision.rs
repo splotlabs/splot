@@ -215,13 +215,13 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         self.syntax.in_frame(node)
     }
 
+    /// The allowed partitions of `node`, without those that need an intra block
+    /// where an inter frame infers `is_inter`.
     fn partitions(&self, node: PartitionNode) -> Result<Vec<Partition>> {
         let options = self.syntax.partition_options(node)?;
         if let Some(implied) = options.implied().filter(|&p| options.allows(p)) {
             return Ok(vec![implied]);
         }
-        // Inter frames infer is_inter for some block shapes, so drop the
-        // partitions that would need an intra block there.
         let mut allowed = Vec::with_capacity(PARTITIONS.len());
         for partition in PARTITIONS.into_iter().filter(|&p| options.allows(p)) {
             let intra = if partition == Partition::None {
