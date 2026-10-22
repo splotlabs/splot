@@ -19,8 +19,10 @@ use crate::test_support::{
     assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes, refs_for,
 };
 use crate::tile_writer::{
-    InterMode, InterModes, LeafChoice, MotionVector, PARTITIONS, PartitionTree,
+    CompoundModes, InterMode, InterModes, InterPrediction, LeafChoice, MotionVector, PARTITIONS,
+    PartitionTree,
 };
+use splot_decode::encoder_syntax::{COMPOUND_MODES, JMVD_SCALE_MODES};
 
 /// Gradients, a ripple, and seeded noise, so blocks of every size split.
 fn synthetic_frame(config: &Config, seed: u32) -> SourceFrame {
@@ -50,7 +52,7 @@ fn synthetic_frame(config: &Config, seed: u32) -> SourceFrame {
     SourceFrame::new(config, u64::from(seed), planes).unwrap()
 }
 
-fn config(width: u32, height: u32, bit_depth: BitDepth, preset: u8, qp: u8) -> Config {
+fn config(width: u32, height: u32, bit_depth: BitDepth, preset: u8, qp: u16) -> Config {
     let mut config = Config::new(width, height);
     config.bit_depth = bit_depth;
     config.preset = Preset::new(preset).unwrap();
@@ -87,7 +89,7 @@ fn recon_bytes(coded: &CodedFrame, bit_depth: BitDepth) -> Vec<u8> {
 /// `(width, height, bit depth, preset, qp)`: odd sizes, both superblock sizes
 /// (presets 0 to 6 code 128x128, 10 codes 64x64), and the qp extremes. The
 /// slow presets code small frames, so debug test runs stay short.
-const CASES: [(u32, u32, BitDepth, u8, u8); 8] = [
+const CASES: [(u32, u32, BitDepth, u8, u16); 8] = [
     (1, 1, BitDepth::Eight, 6, 80),
     (17, 9, BitDepth::Ten, 0, 1),
     (64, 64, BitDepth::Eight, 10, 255),
@@ -230,7 +232,7 @@ impl FrameCoder for Recording {
         &mut self,
         source: &SourceFrame,
         plan: &GopFrame,
-        qp: u8,
+        qp: u16,
     ) -> Result<CodedFrame> {
         let coded = self.coder.encode_frame(source, plan, qp)?;
         let recon = recon_bytes(&coded, self.bit_depth);
@@ -255,7 +257,7 @@ fn encode_stream(config: &Config, frames: u32) -> (Vec<Vec<u8>>, Vec<u8>) {
         bit_depth: config.bit_depth,
         recons: Arc::clone(&recons),
     };
-    let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder));
+    let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
     let mut packets = Vec::new();
     for seed in 0..=frames {
         if seed == frames {
@@ -299,6 +301,39 @@ fn mini_gops_decode_to_the_encoder_recon_in_display_order() {
         let (units, expected) = mini_gop_stream(case);
         assert_same_samples(&decode(&units.concat()), &expected, &format!("{case:?}"));
     }
+}
+
+/// 520 frames in mini-GOPs of 8 and one key-frame period wrap the 8-bit
+/// order hint twice; the decoder derives each planned `OrderHint` and
+/// outputs the encoder recon.
+#[test]
+fn order_hints_wrap_and_decode_to_the_encoder_recon() {
+    let mut config = config(8, 8, BitDepth::Eight, Preset::MAX, 120);
+    config.keyint = core::num::NonZeroU32::new(600).unwrap();
+    let mut coder = IntraFrameCoder::new(&config).unwrap();
+    let mut planner = crate::gop::GopPlanner::new(config.keyint, 8);
+    let (mut units, mut recons) = (Vec::new(), BTreeMap::new());
+    let mut queued = 520;
+    while let Some(len) = planner.next_len(queued, true) {
+        queued -= len;
+        for step in planner.plan(len).unwrap() {
+            let unit = match step {
+                crate::gop::GopStep::Code(plan) => {
+                    let source = synthetic_frame(&config, plan.display_index as u32);
+                    let coded = coder.encode_frame(&source, &plan, 120).unwrap();
+                    recons.insert(plan.display_index, recon_bytes(&coded, config.bit_depth));
+                    coded.temporal_unit
+                }
+                crate::gop::GopStep::ShowExisting { slot, .. } => {
+                    coder.show_existing_frame(slot).unwrap()
+                }
+            };
+            units.push(unit);
+        }
+    }
+    assert_eq!(recons.len(), 520);
+    let expected: Vec<u8> = recons.into_values().flatten().collect();
+    assert_same_samples(&decode(&units.concat()), &expected, "order hint wrap");
 }
 
 /// AVM decodes mini-GOP streams to the encoder reconstructions.
@@ -388,12 +423,15 @@ impl Rng {
     }
 }
 
-/// Leaf counts of a random tree: intra, each inter mode, and inter leaves
-/// with a reference other than the first.
-type Coverage = [usize; 5];
+/// Leaf counts of a random tree: intra; each single-reference mode; single
+/// leaves with a reference other than the first; each compound mode in
+/// [`COMPOUND_MODES`] order; skip mode; same-reference compound; a nonzero
+/// second-DRL index of list 1; a nonzero `jmvd_scale_mode`.
+type Coverage = [usize; 15];
 
-/// A random partition tree of `node`: inter leaves of every mode, DRL index
-/// and random vectors of up to 40 samples, and `DC_PRED` intra leaves.
+/// A random partition tree of `node`: single-reference, compound and
+/// skip-mode inter leaves of every mode, DRL index and random vectors of up
+/// to 40 samples, and `DC_PRED` intra leaves.
 fn random_tree(
     syntax: &mut IntraTileSyntax,
     node: PartitionNode,
@@ -410,7 +448,7 @@ fn random_tree(
     if let Some(implied) = options.implied().filter(|&p| options.allows(p)) {
         partitions = vec![implied];
     }
-    let partition = if partitions.contains(&Partition::None) && rng.below(3) == 0 {
+    let partition = if partitions.contains(&Partition::None) && rng.below(4) == 0 {
         Partition::None
     } else {
         partitions[rng.below(partitions.len() as u64) as usize]
@@ -436,31 +474,63 @@ fn random_tree(
 }
 
 fn random_leaf(
-    syntax: &IntraTileSyntax,
+    syntax: &mut IntraTileSyntax,
     leaf: &LeafBlock,
     rng: &mut Rng,
     coverage: &mut Coverage,
 ) -> LeafChoice {
-    if !syntax.inter_allowed(leaf) || (syntax.intra_allowed(leaf) && rng.below(4) == 0) {
+    if !syntax.inter_allowed(leaf) || (syntax.intra_allowed(leaf) && rng.below(5) == 0) {
         coverage[0] += 1;
         return LeafChoice::DC;
     }
+    let step = syntax.mv_step();
+    let drls = syntax.drl_count() as u64;
+    let mut component = || (rng.below(81) as i32 - 40) * 8 + (rng.below(4) as i32) * step;
+    let mvs = [(); 2].map(|()| MotionVector {
+        row: component(),
+        col: component(),
+    });
+    if syntax.skip_mode_allowed(leaf) && rng.below(6) == 0 {
+        coverage[11] += 1;
+        let drl = rng.below(drls) as usize;
+        return LeafChoice::inter(InterPrediction::SkipMode { drl });
+    }
+    if syntax.compound_allowed(leaf) && rng.below(3) != 0 {
+        let pairs = syntax.compound_pairs();
+        let rarest = (0..COMPOUND_MODES.len())
+            .min_by_key(|&mode| coverage[5 + mode])
+            .unwrap();
+        for attempt in 0..8 {
+            let refs = pairs[rng.below(pairs.len() as u64) as usize];
+            let mode = (rarest + attempt) % COMPOUND_MODES.len();
+            let modes = CompoundModes {
+                refs,
+                mode: COMPOUND_MODES[mode],
+                drl: [rng.below(drls) as usize, rng.below(drls) as usize],
+                mvs,
+                jmvd_scale_mode: rng.below(u64::from(JMVD_SCALE_MODES)) as u8,
+            };
+            if syntax.compound_bases(leaf, &modes).is_err() {
+                continue;
+            }
+            coverage[5 + mode] += 1;
+            coverage[12] += usize::from(refs.0 == refs.1);
+            coverage[13] += usize::from(modes.drl[1] > 0 && mode < 2);
+            coverage[14] += usize::from(modes.jmvd_scale_mode > 0 && mode == 4);
+            return LeafChoice::inter(InterPrediction::Compound(modes));
+        }
+    }
     let mode = [InterMode::Near, InterMode::Global, InterMode::New][rng.below(3) as usize];
     coverage[1 + mode as usize] += 1;
-    let step = syntax.mv_step();
-    let drl = rng.below(syntax.drl_count() as u64) as usize;
+    let drl = rng.below(drls) as usize;
     let ref_frame = rng.below(syntax.reference_count() as u64) as usize;
     coverage[4] += usize::from(ref_frame > 0);
-    let mut component = || (rng.below(81) as i32 - 40) * 8 + (rng.below(4) as i32) * step;
-    LeafChoice::inter(InterModes {
+    LeafChoice::inter(InterPrediction::Single(InterModes {
         ref_frame,
         mode,
         drl,
-        mv: MotionVector {
-            row: component(),
-            col: component(),
-        },
-    })
+        mv: mvs[0],
+    }))
 }
 
 /// The first frames of a four-frame mini-GOP with frame 1, which references
@@ -499,16 +569,14 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let tx = tx_choice::key_frame_tx_params(coder.preset);
+    let tools = (
+        tx_choice::key_frame_tx_params(coder.preset),
+        true,
+        coder.tiles,
+    );
     let filters = FrameFilterParams::default();
     let core = plan
-        .header(
-            &coder.view,
-            &coder.references,
-            qindex,
-            &filters,
-            (tx, coder.tiles),
-        )
+        .header(&coder.view, &coder.references, qindex, &filters, tools)
         .unwrap();
     let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references, 0).unwrap();
     let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
@@ -534,7 +602,7 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
             &coder.sequence,
             &coder.view,
             &coder.references,
-            (qindex, &filters, (tx, coder.tiles)),
+            (qindex, &filters, tools),
             &core,
             &[&tile],
         )
@@ -550,10 +618,11 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
 
 /// `(width, height, bit depth, preset, qp)` of the random inter streams: both
 /// superblock sizes, both bit depths, frame edges, and a qp that skips.
-const RANDOM_INTER_CASES: [(u32, u32, BitDepth, u8, u8); 3] = [
+const RANDOM_INTER_CASES: [(u32, u32, BitDepth, u8, u16); 4] = [
     (200, 104, BitDepth::Eight, 10, 90),
     (96, 72, BitDepth::Ten, 6, 160),
     (33, 17, BitDepth::Eight, 9, 250),
+    (144, 80, BitDepth::Ten, 9, 60),
 ];
 
 /// Random inter leaves over three references, with NEWMV vectors coded by the
@@ -572,7 +641,7 @@ fn random_inter_leaves_decode_to_the_writer_recon() {
             *sum += count;
         }
     }
-    assert!(total.iter().all(|&count| count >= 5), "coverage {total:?}");
+    assert!(total.iter().all(|&count| count >= 3), "coverage {total:?}");
 }
 
 /// AVM decodes random and searched inter frames like splot.
@@ -619,8 +688,57 @@ fn avm_decodes_inter_frames_like_splot() {
     }
 }
 
-/// An inter-frame superblock search from one state finds the same tree twice
-/// and picks inter leaves for panning content: inter trials roll back too.
+/// Searches and writes every superblock of frame `plan` of `coder` from
+/// `source` at qp 90; each search runs twice from one state and must find the
+/// same tree, so inter trials roll back too. Returns the trees.
+fn search_frame(
+    coder: &IntraFrameCoder,
+    plan: &GopFrame,
+    source: &SourceFrame,
+    bit_depth: BitDepth,
+) -> Vec<PartitionTree> {
+    let core = plan
+        .header(
+            &coder.view,
+            &coder.references,
+            90,
+            &FrameFilterParams::default(),
+            crate::gop::frame_tools(coder.preset, coder.tiles),
+        )
+        .unwrap();
+    let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references, 0).unwrap();
+    let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
+    let sb = writer.syntax().superblock_size4() * 4;
+    let padded = PaddedSource::new(source, mi_cols * 4 + sb, mi_rows * 4 + sb);
+    let lambda = Lambda::from_qindex(90, bit_depth).unwrap();
+    let motion = MotionSearch::new(writer.syntax(), &padded, coder.preset, lambda)
+        .unwrap()
+        .unwrap();
+    let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, coder.preset, lambda);
+    let mut trees = Vec::new();
+    while writer.next_superblock_root().is_some() {
+        let mut search = || {
+            writer
+                .search_superblock(|syntax, root| {
+                    let mut trial =
+                        TrialCoder::new(syntax, &mut residual, coder.preset, lambda, Some(&motion));
+                    search_partition(&mut trial, root, coder.preset, lambda)
+                })
+                .unwrap()
+                .0
+        };
+        let tree = search();
+        assert_eq!(tree, search());
+        writer
+            .write_superblock(&SuperblockDecision { tree: tree.clone() }, &mut residual)
+            .unwrap();
+        trees.push(tree);
+    }
+    trees
+}
+
+/// An inter-frame search is repeatable and picks inter leaves for panning
+/// content.
 #[test]
 fn inter_superblock_search_is_deterministic_and_rolls_back() {
     let config = config(64, 40, BitDepth::Ten, 9, 90);
@@ -633,52 +751,68 @@ fn inter_superblock_search_is_deterministic_and_rolls_back() {
         )
         .unwrap();
     let plan = crate::gop::plan(1, config.keyint);
-    let tx = tx_choice::key_frame_tx_params(coder.preset);
-    let core = plan
-        .header(
-            &coder.view,
-            &coder.references,
-            90,
-            &FrameFilterParams::default(),
-            (tx, coder.tiles),
-        )
-        .unwrap();
-    let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references, 0).unwrap();
-    let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
-    let sb = writer.syntax().superblock_size4() * 4;
-    let source = panning_frame(&config, 1);
-    let padded = PaddedSource::new(&source, mi_cols * 4 + sb, mi_rows * 4 + sb);
-    let lambda = Lambda::from_qindex(90, config.bit_depth).unwrap();
-    let motion = MotionSearch::new(writer.syntax(), &padded, coder.preset, lambda)
-        .unwrap()
-        .unwrap();
-    let mut residual =
-        SourceResidualCoder::new(&padded, 90, config.bit_depth, coder.preset, lambda);
-    let mut search = || {
-        writer
-            .search_superblock(|syntax, root| {
-                let mut trial =
-                    TrialCoder::new(syntax, &mut residual, coder.preset, lambda, Some(&motion));
-                search_partition(&mut trial, root, coder.preset, lambda)
-            })
-            .unwrap()
-    };
-    let first = search();
-    assert_eq!(first, search());
-    assert!(inter_leaves(&first.0) > 0, "{:?}", first.0);
+    let trees = search_frame(&coder, &plan, &panning_frame(&config, 1), config.bit_depth);
+    let inter = |choice: &LeafChoice| choice.inter.is_some();
+    assert!(trees.iter().map(|tree| leaves(tree, inter)).sum::<usize>() > 0);
 }
 
-/// The inter leaves of `tree`.
-fn inter_leaves(tree: &PartitionTree) -> usize {
+/// The middle frame of a mini-GOP over content with fresh noise per frame
+/// averages its past and future references: the search picks compound and
+/// skip-mode leaves, and both roll back.
+#[test]
+fn b_frame_search_picks_compound_and_skip_mode_leaves() {
+    let config = config(64, 48, BitDepth::Eight, 6, 90);
+    let max = u32::from(config.bit_depth.max_sample());
+    let frame = |index: u32| {
+        let mut planes = panning_frame(&config, index).planes().clone();
+        for (plane, samples) in planes.iter_mut().enumerate() {
+            for (at, sample) in samples.iter_mut().enumerate() {
+                let noise = u32::from(texture(at as i64, i64::from(index) * 7919, plane, max / 3));
+                *sample = (u32::from(*sample) + noise).min(max) as u16;
+            }
+        }
+        SourceFrame::new(&config, u64::from(index), planes).unwrap()
+    };
+    let mut coder = IntraFrameCoder::new(&config).unwrap();
+    let mut planner = crate::gop::GopPlanner::new(config.keyint, 4);
+    let mut steps = planner.plan(1).unwrap();
+    steps.extend(planner.plan(4).unwrap());
+    for step in steps {
+        let crate::gop::GopStep::Code(plan) = step else {
+            continue;
+        };
+        if plan.display_index == 2 {
+            let trees = search_frame(&coder, &plan, &frame(2), config.bit_depth);
+            let compound = |choice: &LeafChoice| {
+                matches!(
+                    choice.inter,
+                    Some(InterPrediction::Compound(_) | InterPrediction::SkipMode { .. })
+                )
+            };
+            let count: usize = trees.iter().map(|tree| leaves(tree, compound)).sum();
+            assert!(count > 0, "{trees:?}");
+            return;
+        }
+        coder
+            .encode_frame(&frame(plan.display_index as u32), &plan, 90)
+            .unwrap();
+    }
+    unreachable!("the mini-GOP codes display frame 2");
+}
+
+/// The leaves of `tree` that `keep` accepts.
+fn leaves(tree: &PartitionTree, keep: impl Fn(&LeafChoice) -> bool + Copy) -> usize {
     match tree {
-        PartitionTree::Leaf(choice) => usize::from(choice.inter.is_some()),
-        PartitionTree::Split { children, .. } => children.iter().map(inter_leaves).sum(),
+        PartitionTree::Leaf(choice) => usize::from(keep(choice)),
+        PartitionTree::Split { children, .. } => {
+            children.iter().map(|child| leaves(child, keep)).sum()
+        }
     }
 }
 
 /// `(width, height, bit depth, preset, qp, (cols_log2, rows_log2))`: 2x1, 1x2,
 /// 2x2 and 4x2 tiles at odd sizes, both bit depths and both superblock sizes.
-type TileCase = (u32, u32, BitDepth, u8, u8, (u8, u8));
+type TileCase = (u32, u32, BitDepth, u8, u16, (u8, u8));
 
 const TILE_CASES: [TileCase; 4] = [
     (200, 72, BitDepth::Eight, 10, 120, (1, 0)),

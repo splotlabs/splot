@@ -19,7 +19,6 @@
 //! sequential.
 
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
-use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
 use splot_decode::encoder_syntax::{
     CoeffLevels, MAX_GOLOMB_PREFIX_BITS, is_low_frequency, max_level,
 };
@@ -68,8 +67,10 @@ pub(crate) struct LevelContext<'a> {
     /// The coefficient is the last one (`c == eob - 1`), coded by `coeff_base_eob`.
     pub(crate) is_last: bool,
     /// `(mag + 1) >> 1` capped at 4 over the base-level neighbour template.
+    #[cfg(test)]
     pub(crate) base_class: usize,
     /// `(mag + 1) >> 1` capped at 6 over the `coeff_br` neighbour template.
+    #[cfg(test)]
     pub(crate) br_class: usize,
 }
 
@@ -100,9 +101,11 @@ pub(crate) trait CoeffRates {
 }
 
 /// A static rate model that needs no CDF state.
+#[cfg(test)]
 pub(crate) struct ApproxCoeffRates;
 
 /// Cost of base level 0 by neighbour class: more neighbour energy makes zero rarer.
+#[cfg(test)]
 const ZERO_COST: [u32; 5] = [
     BIT / 5,
     BIT * 7 / 10,
@@ -111,10 +114,13 @@ const ZERO_COST: [u32; 5] = [
     BIT * 12 / 5,
 ];
 /// Cost of base level 1 by neighbour class.
+#[cfg(test)]
 const ONE_COST: [u32; 5] = [BIT * 3, BIT * 2, BIT * 3 / 2, BIT * 11 / 10, BIT * 4 / 5];
 /// Cost of each base level above 1.
+#[cfg(test)]
 const LEVEL_STEP_COST: u32 = BIT * 6 / 5;
 
+#[cfg(test)]
 impl CoeffRates for ApproxCoeffRates {
     fn eob(&mut self, block: &RdoqBlock, eob: usize) -> u32 {
         if eob == 0 {
@@ -341,6 +347,7 @@ impl<'b> Walk<'b> {
         let (row, col) = (pos >> self.block.log2_width, pos & (self.width - 1));
         let plane = self.block.plane;
         let is_lf = is_low_frequency(row, col, plane);
+        #[cfg(test)]
         let (base_class, br_class) = if empty.is_some() {
             (0, 0)
         } else {
@@ -353,7 +360,9 @@ impl<'b> Walk<'b> {
             col,
             is_lf,
             is_last,
+            #[cfg(test)]
             base_class,
+            #[cfg(test)]
             br_class,
         };
         let has_br = |level: u32| {
@@ -377,6 +386,7 @@ impl<'b> Walk<'b> {
     }
 
     /// The approximate neighbour classes of [`LevelContext`].
+    #[cfg(test)]
     fn classes(&self, row: usize, col: usize) -> (usize, usize) {
         let at = |&[dr, dc]: &[i32; 2], cap: u8| {
             let (r, c) = (row + dr as usize, col + dc as usize);
@@ -386,7 +396,7 @@ impl<'b> Walk<'b> {
                 0
             }
         };
-        let template = &SIG_REF_DIFF_OFFSET[0];
+        let template = &splot_core::tables::conversion::SIG_REF_DIFF_OFFSET[0];
         let near = if self.block.plane == 0 { 5 } else { 3 };
         let base: u32 = template[..near].iter().map(|o| at(o, 3)).sum();
         let br: u32 = template[..3].iter().map(|o| at(o, 5)).sum();

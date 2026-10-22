@@ -40,6 +40,7 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_decode::encoder_syntax::EncoderReferences;
 
 use crate::error::{Error, Result};
+use crate::preset::PresetParams;
 use crate::rate_control::FrameType;
 
 /// `NumRefFrames` of the encoder's sequence header (`explicit_num_ref_frames = 0`).
@@ -135,9 +136,19 @@ impl GopPlanner {
         self.next_display
     }
 
-    /// Makes `display_index` a key frame, unless it is already planned.
+    /// Makes the scene cut `display_index` a key frame, unless it is already
+    /// planned or it is less than `mini_gop_size` frames after the key frame
+    /// before it. Cuts come in display order.
     pub(crate) fn force_key(&mut self, display_index: u64) {
-        if display_index >= self.next_display && !self.cuts.contains(&display_index) {
+        let last = self
+            .cuts
+            .last()
+            .map_or(self.key_display, |&cut| cut.max(self.key_display));
+        let last = display_index.saturating_sub(last) / self.keyint * self.keyint + last;
+        if display_index >= self.next_display
+            && display_index.saturating_sub(last) >= self.mini_gop_size
+            && !self.cuts.contains(&display_index)
+        {
             self.cuts.push(display_index);
             self.cuts.sort_unstable();
         }
@@ -302,6 +313,19 @@ pub(crate) fn plan(frame_index: u64, keyint: NonZeroU32) -> GopFrame {
     frame.unwrap_or_else(|| unreachable!("IPPP codes every input frame"))
 }
 
+/// The frame-level tool choices of `preset`: the transform parameters,
+/// whether inter frames code compound and skip-mode blocks, and the `tiles`.
+pub(crate) fn frame_tools(
+    preset: &PresetParams,
+    tiles: UniformTiles,
+) -> (KeyFrameTxParams, bool, UniformTiles) {
+    (
+        crate::tx_choice::key_frame_tx_params(preset),
+        preset.compound_candidates > 0,
+        tiles,
+    )
+}
+
 /// A temporal delimiter and the `OBU_REGULAR_SEF` that outputs `slot`.
 pub(crate) fn show_existing_unit(view: &CoreSeqView, slot: u32) -> Result<Vec<u8>> {
     let mut unit = encode_temporal_delimiter_obu().map_err(header_error)?;
@@ -310,43 +334,53 @@ pub(crate) fn show_existing_unit(view: &CoreSeqView, slot: u32) -> Result<Vec<u8
 }
 
 impl GopFrame {
-    /// The frame header at `qindex` with `filters`, parsed with `refs`.
+    /// The frame header at `qindex` with `filters`, parsed with `refs`; an
+    /// inter frame with `compound` sets `reference_select` and
+    /// `skip_mode_present`. The header codes the low bits of the planned
+    /// `OrderHint`, so the `OrderHint` the decoder derives must equal it.
     pub(crate) fn header(
         &self,
         view: &CoreSeqView,
         refs: &EncoderReferences,
         qindex: u32,
         filters: &FrameFilterParams,
-        (tx, tiles): (KeyFrameTxParams, UniformTiles),
+        (tx, compound, tiles): (KeyFrameTxParams, bool, UniformTiles),
     ) -> Result<FrameHeaderCore> {
-        match self.frame_type {
+        let core = match self.frame_type {
             FrameType::Key => {
                 build_key_frame_header(view, qindex, self.order_hint, filters, tx, tiles)
             }
             FrameType::Inter => build_inter_frame_header(
                 view,
                 &refs.header_view(),
-                &self.inter_params(qindex, filters, (tx, tiles)),
+                &self.inter_params(qindex, filters, (tx, compound, tiles)),
             )
             .map(|header| header.core),
         }
-        .map_err(header_error)
+        .map_err(header_error)?;
+        match core.display_order_hint() {
+            Some(derived) if derived == self.order_hint => Ok(core),
+            derived => Err(Error::OrderHintMismatch {
+                planned: self.order_hint,
+                derived,
+            }),
+        }
     }
 
     /// The OBUs of the frame `core` built by [`Self::header`] with
-    /// `(qindex, filters, tx)`, whose tile group carries `tiles`, after a
-    /// temporal delimiter when the frame opens its temporal unit; a key frame
-    /// repeats the sequence header. The header codes the smallest
-    /// `TileSizeBytes` that fits the tiles.
+    /// `(qindex, filters, (tx, compound, tiles))`, whose tile group carries
+    /// `tiles`, after a temporal delimiter when the frame opens its temporal
+    /// unit; a key frame repeats the sequence header. The header codes the
+    /// smallest `TileSizeBytes` that fits the tiles.
     pub(crate) fn temporal_unit(
         &self,
         seq: &SequenceHeader,
         view: &CoreSeqView,
         refs: &EncoderReferences,
-        (qindex, filters, (tx, layout)): (
+        (qindex, filters, (tx, compound, layout)): (
             u32,
             &FrameFilterParams,
-            (KeyFrameTxParams, UniformTiles),
+            (KeyFrameTxParams, bool, UniformTiles),
         ),
         core: &FrameHeaderCore,
         tiles: &[&[u8]],
@@ -372,13 +406,13 @@ impl GopFrame {
                     what: "a key frame after another frame of its temporal unit",
                 });
             }
-            let core = self.header(view, refs, qindex, filters, (tx, layout))?;
+            let core = self.header(view, refs, qindex, filters, (tx, compound, layout))?;
             return encode_key_frame_temporal_unit(seq, &core, true, tiles).map_err(header_error);
         }
         let header = build_inter_frame_header(
             view,
             &refs.header_view(),
-            &self.inter_params(qindex, filters, (tx, layout)),
+            &self.inter_params(qindex, filters, (tx, compound, layout)),
         )
         .map_err(header_error)?;
         if header.core != expected {
@@ -399,7 +433,7 @@ impl GopFrame {
         &self,
         qindex: u32,
         filters: &FrameFilterParams,
-        (tx, tiles): (KeyFrameTxParams, UniformTiles),
+        (tx, compound, tiles): (KeyFrameTxParams, bool, UniformTiles),
     ) -> InterFrameParams {
         InterFrameParams {
             base_q_idx: qindex,
@@ -409,6 +443,8 @@ impl GopFrame {
             filters: *filters,
             tx,
             tiles,
+            reference_select: compound,
+            skip_mode_present: compound,
         }
     }
 }

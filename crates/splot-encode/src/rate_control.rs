@@ -5,17 +5,18 @@
 //!
 //! [`ConstantQp`] codes every frame at one `base_q_idx`. [`Crf`] starts from a
 //! quality level and adds each frame's lookahead offset, so frames that later
-//! frames predict from get a finer quantizer. [`BitrateController`] (VBR and
-//! CBR) picks a base qindex per lookahead window so that the predicted bits of
-//! the window meet the budget, and adds the same offsets. Its frame-size model
-//! is `bits = k * complexity / step(qindex)` with one `k` for key frames and
-//! one per mini-GOP layer (the deepest shared), learnt from the coded bits. All decisions are integer
-//! arithmetic.
+//! frames predict from get a finer quantizer. [`Vbr`] and [`Cbr`] pick a base
+//! qindex per lookahead window so that the predicted bits of the window meet
+//! the budget, and add the same offsets. Their frame-size model is
+//! `bits = k * complexity / step(qindex)` with one `k` for key frames and one
+//! per mini-GOP layer (the deepest shared), learnt from the coded bits. All
+//! decisions are integer arithmetic.
 
 use std::collections::VecDeque;
 
-use splot_recon::{BitDepth, quantizer_value};
+use splot_recon::{BitDepth, max_quantizer_index, quantizer_value};
 
+use crate::error::{Error, Result};
 use crate::stats::FrameStats;
 
 /// The kind of frame the encoder will code.
@@ -42,45 +43,77 @@ pub struct FramePlanInfo {
     /// of each mini-GOP.
     pub layer: u8,
     /// Lookahead estimate of the frame's coding cost: the sum of its blocks'
-    /// best SATD on the downscaled luma.
+    /// best SATD on the downscaled luma, each at least a floor.
     pub complexity: u64,
+    /// The complexity of a frame whose blocks all cost the floor. A frame
+    /// below twice this is flat: its size is mostly headers and says little
+    /// about the size of detailed frames.
+    pub min_complexity: u64,
     /// The lookahead's suggested change to the base qindex: negative for
     /// frames that later frames predict from.
     pub qindex_offset: i16,
+    /// Sample bit depth; it sets the qindex range `1..=`[`max_qindex`].
+    pub bit_depth: BitDepth,
 }
 
 /// Picks per-frame quantizers and learns from the coded result.
+///
+/// The encoder codes the input as a sequence of steps: a key frame alone, or
+/// a mini-GOP. Before each step it calls [`Self::plan_window`] once. Then it
+/// codes only the frames of that step, in coding order: [`Self::frame_qp`]
+/// and then [`Self::update`] for each frame, and
+/// [`Self::update_show_existing`] for each show-existing frame. Then the next
+/// step starts with the next `plan_window` call.
 pub trait RateController {
-    /// Receives the planned frames of the lookahead window in coding order
-    /// before the encoder codes the first of them. The default ignores them.
+    /// Receives the planned frames of the lookahead window in coding order:
+    /// the frames of the next step first, then the frames planned after them,
+    /// up to the preset's `lookahead_frames` input frames (fewer at the end of
+    /// the input). The default ignores them.
     fn plan_window(&mut self, _window: &[FramePlanInfo]) {}
-    /// Returns the `base_q_idx` for the planned frame, `1..=255`.
-    fn frame_qp(&mut self, info: &FramePlanInfo) -> u8;
+    /// Returns the `base_q_idx` for the planned frame. The encoder clamps it
+    /// to `1..=`[`max_qindex`] of the bit depth.
+    fn frame_qp(&mut self, info: &FramePlanInfo) -> u16;
     /// Records the statistics of the frame just coded.
     fn update(&mut self, stats: &FrameStats);
+    /// Records the size in bits of a show-existing temporal unit, which codes
+    /// no frame. The default ignores it.
+    fn update_show_existing(&mut self, _bits: u64) {}
 }
 
 /// Uses the same quantizer for every frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConstantQp {
     /// The `base_q_idx` of every frame.
-    pub qp: u8,
+    pub qp: u16,
 }
 
 impl RateController for ConstantQp {
-    fn frame_qp(&mut self, _info: &FramePlanInfo) -> u8 {
+    fn frame_qp(&mut self, _info: &FramePlanInfo) -> u16 {
         self.qp
     }
 
     fn update(&mut self, _stats: &FrameStats) {}
 }
 
-/// `base` moved by `offset`, clamped to `1..=255`.
-fn with_offset(base: u8, offset: i16) -> u8 {
-    (i32::from(base) + i32::from(offset)).clamp(1, 255) as u8
+/// The largest `base_q_idx` at `bit_depth`: `MaxQ` of § 6.4.1 Table 6.3, 255
+/// at 8 bits and 303 at 10 bits.
+#[must_use]
+pub fn max_qindex(bit_depth: BitDepth) -> u16 {
+    max_quantizer_index(bit_depth) as u16
 }
 
-/// Constant quality: the base qindex is `4 * crf`, plus each frame's offset.
+/// `base` moved by `offset`, clamped to `1..=max_qindex(bit_depth)`.
+pub(crate) fn with_offset(base: u16, offset: i16, bit_depth: BitDepth) -> u16 {
+    (i32::from(base) + i32::from(offset)).clamp(1, i32::from(max_qindex(bit_depth))) as u16
+}
+
+/// Constant quality: the base qindex is `4 * crf` at 8 bits, plus each
+/// frame's offset.
+///
+/// The § 7.14.2 quantizer step doubles every 24 qindex, and 10-bit samples
+/// are 4 times 8-bit ones, so 10 bits adds 48 (`MaxQ` 303 - 255): the same
+/// `crf` gives the same step relative to the sample range, and about the same
+/// quality, at both bit depths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Crf {
     /// The rate factor, `1..=Crf::MAX`; higher means fewer bits.
@@ -91,23 +124,35 @@ impl Crf {
     /// The largest rate factor.
     pub const MAX: u8 = 63;
 
-    /// The base qindex of `crf`.
+    /// The base qindex of `crf` at `bit_depth`.
     #[must_use]
-    pub const fn base_qindex(self) -> u8 {
-        self.crf.saturating_mul(4)
+    pub fn base_qindex(self, bit_depth: BitDepth) -> u16 {
+        let extra = max_qindex(bit_depth) - max_qindex(BitDepth::Eight);
+        (4 * u16::from(self.crf) + extra).min(max_qindex(bit_depth))
     }
 }
 
 impl RateController for Crf {
-    fn frame_qp(&mut self, info: &FramePlanInfo) -> u8 {
-        with_offset(self.base_qindex(), info.qindex_offset)
+    fn frame_qp(&mut self, info: &FramePlanInfo) -> u16 {
+        with_offset(
+            self.base_qindex(info.bit_depth),
+            info.qindex_offset,
+            info.bit_depth,
+        )
     }
 
     fn update(&mut self, _stats: &FrameStats) {}
 }
 
-/// Frames over which VBR spreads its overspend or underspend.
+/// Frames over which VBR spreads its overspend or underspend; VBR remembers
+/// at most this many frame budgets of either.
 const VBR_HORIZON_FRAMES: i64 = 8;
+/// Largest frame budget in bits; it keeps the window sums far from overflow.
+const MAX_FRAME_BITS: u64 = 1 << 40;
+/// Largest bitrate of [`Vbr`] and [`Cbr`]: 1 Gbit/s.
+pub const MAX_BITRATE_KBPS: u32 = 1_000_000;
+/// Largest [`Cbr`] buffer: ten minutes.
+pub const MAX_BUFFER_MS: u32 = 600_000;
 /// Initial `k` of key and inter frames in Q8, from 160x90 and 720p encodes.
 const INITIAL_MODEL_Q8: [u64; CLASSES] = [40 << 8, 40 << 8, 32 << 8, 24 << 8];
 /// Model classes: key frames, then inter layers `0`, `1` and `2` or deeper.
@@ -122,43 +167,82 @@ fn class(info: &FramePlanInfo) -> usize {
 }
 
 /// The § 7.14.2 luma AC quantizer step of `qindex`.
-fn step(qindex: u8) -> u64 {
-    u64::from(quantizer_value(u32::from(qindex), 0, BitDepth::Eight))
+fn step(qindex: u16, bit_depth: BitDepth) -> u64 {
+    u64::from(quantizer_value(u32::from(qindex), 0, bit_depth))
 }
 
-/// Variable or constant bitrate.
+/// Checks the settings of a bitrate mode; `buffer_ms` only for CBR.
+pub(crate) fn check_bitrate(
+    bitrate_kbps: u32,
+    buffer_ms: Option<u32>,
+    (numerator, denominator): (u32, u32),
+) -> Result<()> {
+    if numerator == 0 || denominator == 0 {
+        return Err(Error::InvalidFrameRate {
+            numerator,
+            denominator,
+        });
+    }
+    let limits = [
+        ("bitrate_kbps", Some(bitrate_kbps), MAX_BITRATE_KBPS),
+        ("buffer_ms", buffer_ms, MAX_BUFFER_MS),
+    ];
+    for (what, value, max) in limits {
+        if let Some(value) = value.filter(|value| !(1..=max).contains(value)) {
+            return Err(Error::InvalidBitrate { what, value, max });
+        }
+    }
+    Ok(())
+}
+
+/// The budget of one frame: `bitrate_kbps * 1000 / frame_rate` bits.
+fn frame_bits(bitrate_kbps: u32, (numerator, denominator): (u32, u32)) -> u64 {
+    let bits =
+        u128::from(bitrate_kbps) * 1000 * u128::from(denominator) / u128::from(numerator.max(1));
+    bits.clamp(1, u128::from(MAX_FRAME_BITS)) as u64
+}
+
+/// Variable bitrate: the average bitrate meets the target over a few
+/// windows. [`Cbr`] uses the same model.
 #[derive(Debug, Clone)]
-pub struct BitrateController {
+pub struct Vbr {
     frame_bits: u64,
-    buffer_bits: Option<u64>,
+    /// Smallest number of frames that repay the drift.
+    horizon: i64,
+    /// Largest drift magnitude.
+    drift_limit: i64,
     model_q8: [u64; CLASSES],
     learnt: [bool; CLASSES],
-    /// Bits spent minus bits budgeted so far.
+    /// Bits spent minus bits budgeted so far, within `drift_limit`.
     drift: i64,
-    base: u8,
-    planned: VecDeque<(u64, usize, u64)>,
+    base: u16,
+    /// Frame index, model class, complexity (`0` for a flat frame) and bit
+    /// depth of the planned frames.
+    planned: VecDeque<(u64, usize, u64, BitDepth)>,
 }
 
-impl BitrateController {
-    /// VBR: the average bitrate meets `bitrate_kbps` over a few seconds.
-    #[must_use]
-    pub fn vbr(bitrate_kbps: u32, frame_rate: (u32, u32)) -> Self {
-        Self::new(bitrate_kbps, frame_rate, None)
+impl Vbr {
+    /// A VBR controller for `bitrate_kbps` at `frame_rate` frames per second.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidBitrate`] for a bitrate outside
+    /// `1..=`[`MAX_BITRATE_KBPS`] and [`Error::InvalidFrameRate`] for a zero
+    /// frame-rate term.
+    pub fn new(bitrate_kbps: u32, frame_rate: (u32, u32)) -> Result<Self> {
+        check_bitrate(bitrate_kbps, None, frame_rate)?;
+        let frame_bits = frame_bits(bitrate_kbps, frame_rate);
+        Ok(Self::with_limits(
+            frame_bits,
+            VBR_HORIZON_FRAMES,
+            VBR_HORIZON_FRAMES * frame_bits as i64,
+        ))
     }
 
-    /// CBR: every window meets `bitrate_kbps`, and no frame overflows a
-    /// buffer of `buffer_ms` that starts half full.
-    #[must_use]
-    pub fn cbr(bitrate_kbps: u32, buffer_ms: u32, frame_rate: (u32, u32)) -> Self {
-        let buffer = u64::from(bitrate_kbps) * u64::from(buffer_ms);
-        Self::new(bitrate_kbps, frame_rate, Some(buffer))
-    }
-
-    fn new(bitrate_kbps: u32, (num, den): (u32, u32), buffer_bits: Option<u64>) -> Self {
+    fn with_limits(frame_bits: u64, horizon: i64, drift_limit: i64) -> Self {
         Self {
-            frame_bits: (u64::from(bitrate_kbps) * 1000 * u64::from(den) / u64::from(num.max(1)))
-                .max(1),
-            buffer_bits,
+            frame_bits,
+            horizon,
+            drift_limit,
             model_q8: INITIAL_MODEL_Q8,
             learnt: [false; CLASSES],
             drift: 0,
@@ -167,66 +251,147 @@ impl BitrateController {
         }
     }
 
-    fn predict(&self, info: &FramePlanInfo, qindex: u8) -> u64 {
-        let model = self.model_q8[class(info)];
-        (model * info.complexity.max(1) / step(qindex)) >> 8
+    fn predict(&self, info: &FramePlanInfo, qindex: u16) -> u64 {
+        let model = u128::from(self.model_q8[class(info)]);
+        let bits = (model * u128::from(info.complexity.max(1))
+            / u128::from(step(qindex, info.bit_depth)))
+            >> 8;
+        u64::try_from(bits).unwrap_or(u64::MAX)
+    }
+
+    /// Adds `bits` spent against `budget` to the drift.
+    fn spend(&mut self, bits: u64, budget: u64) {
+        let bits = i64::try_from(bits).unwrap_or(i64::MAX);
+        self.drift = self
+            .drift
+            .saturating_add(bits)
+            .saturating_sub(budget as i64)
+            .clamp(-self.drift_limit, self.drift_limit);
     }
 }
 
-impl RateController for BitrateController {
+impl RateController for Vbr {
+    /// Picks the smallest base qindex whose predicted window bits fit the
+    /// budget: the window's target minus the drift spread over at least
+    /// `horizon` frames, within a quarter and twice the target.
     fn plan_window(&mut self, window: &[FramePlanInfo]) {
-        let frames = window.len() as i64;
-        let horizon = if self.buffer_bits.is_some() {
-            frames
-        } else {
-            frames.max(VBR_HORIZON_FRAMES)
+        let frames = i64::try_from(window.len()).unwrap_or(i64::MAX);
+        let target = (self.frame_bits as i64).saturating_mul(frames);
+        let repaid = i128::from(self.drift) * i128::from(frames)
+            / i128::from(frames.max(self.horizon).max(1));
+        let budget = (target - repaid as i64).clamp(target / 4, target.saturating_mul(2));
+        let predicted = |base: u16| {
+            window.iter().fold(0u64, |sum, info| {
+                let qindex = with_offset(base, info.qindex_offset, info.bit_depth);
+                sum.saturating_add(self.predict(info, qindex))
+            })
         };
-        let target = self.frame_bits as i64 * frames;
-        let budget = (target - self.drift * frames / horizon.max(1)).max(target / 4);
-        let predicted = |base: u8| {
-            window
-                .iter()
-                .map(|info| self.predict(info, with_offset(base, info.qindex_offset)))
-                .sum::<u64>()
-        };
-        self.base = (1..=255)
-            .find(|&base| predicted(base) as i64 <= budget)
-            .unwrap_or(255);
+        let max = window
+            .first()
+            .map_or(u16::MAX, |info| max_qindex(info.bit_depth));
+        self.base = (1..=max)
+            .find(|&base| predicted(base) <= budget as u64)
+            .unwrap_or(max);
     }
 
-    fn frame_qp(&mut self, info: &FramePlanInfo) -> u8 {
-        let mut qindex = with_offset(self.base, info.qindex_offset);
-        if let Some(buffer) = self.buffer_bits {
-            let level = (buffer as i64 / 2 + self.drift).max(0) as u64;
-            let room = (buffer + self.frame_bits).saturating_sub(level);
-            while qindex < 255 && self.predict(info, qindex) > room {
-                qindex += 1;
-            }
-        }
+    fn frame_qp(&mut self, info: &FramePlanInfo) -> u16 {
         if self.planned.len() >= 64 {
             self.planned.pop_front();
         }
-        self.planned
-            .push_back((info.frame_index, class(info), info.complexity));
-        qindex
+        let flat = info.complexity < info.min_complexity.saturating_mul(2);
+        self.planned.push_back((
+            info.frame_index,
+            class(info),
+            if flat { 0 } else { info.complexity },
+            info.bit_depth,
+        ));
+        with_offset(self.base, info.qindex_offset, info.bit_depth)
     }
 
+    /// Adds the frame to the drift, and learns its class's `k` unless the
+    /// frame is flat.
     fn update(&mut self, stats: &FrameStats) {
-        self.drift += stats.bits as i64 - self.frame_bits as i64;
-        let Some(&(_, class, complexity)) = self
+        self.spend(stats.bits, self.frame_bits);
+        let Some(&(_, class, complexity, bit_depth)) = self
             .planned
             .iter()
             .find(|planned| planned.0 == stats.frame_index)
         else {
             return;
         };
-        let observed = ((stats.bits * step(stats.qp)) << 8) / complexity.max(1);
-        self.model_q8[class] = if self.learnt[class] {
-            (3 * self.model_q8[class] + observed) / 4
+        if complexity == 0 {
+            return;
+        }
+        let observed = ((u128::from(stats.bits) * u128::from(step(stats.qp, bit_depth))) << 8)
+            / u128::from(complexity.max(1));
+        let model = u128::from(self.model_q8[class]);
+        let blended = if self.learnt[class] {
+            (3 * model + observed) / 4
         } else {
             observed
         };
+        self.model_q8[class] = u64::try_from(blended).unwrap_or(u64::MAX);
         self.learnt[class] = true;
+    }
+
+    fn update_show_existing(&mut self, bits: u64) {
+        self.spend(bits, 0);
+    }
+}
+
+/// Constant bitrate: every window meets the target, and no frame overflows a
+/// buffer that starts half full. The drift is the buffer level minus half the
+/// buffer, so it stays within half the buffer either way.
+#[derive(Debug, Clone)]
+pub struct Cbr {
+    vbr: Vbr,
+    buffer_bits: u64,
+}
+
+impl Cbr {
+    /// A CBR controller for `bitrate_kbps` with a buffer of `buffer_ms` at
+    /// that bitrate, at `frame_rate` frames per second.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidBitrate`] for a bitrate outside
+    /// `1..=`[`MAX_BITRATE_KBPS`] or a buffer outside `1..=`[`MAX_BUFFER_MS`],
+    /// and [`Error::InvalidFrameRate`] for a zero frame-rate term.
+    pub fn new(bitrate_kbps: u32, buffer_ms: u32, frame_rate: (u32, u32)) -> Result<Self> {
+        check_bitrate(bitrate_kbps, Some(buffer_ms), frame_rate)?;
+        let buffer_bits = u64::from(bitrate_kbps) * u64::from(buffer_ms);
+        let frame_bits = frame_bits(bitrate_kbps, frame_rate);
+        Ok(Self {
+            vbr: Vbr::with_limits(frame_bits, 1, buffer_bits as i64 / 2),
+            buffer_bits,
+        })
+    }
+}
+
+impl RateController for Cbr {
+    fn plan_window(&mut self, window: &[FramePlanInfo]) {
+        self.vbr.plan_window(window);
+    }
+
+    /// The VBR qindex, raised until the predicted frame fits the buffer and
+    /// the room left after one frame budget drains.
+    fn frame_qp(&mut self, info: &FramePlanInfo) -> u16 {
+        let mut qindex = self.vbr.frame_qp(info);
+        let level = (self.buffer_bits as i64 / 2 + self.vbr.drift).max(0) as u64;
+        let room = (self.buffer_bits + self.vbr.frame_bits)
+            .saturating_sub(level)
+            .min(self.buffer_bits);
+        while qindex < max_qindex(info.bit_depth) && self.vbr.predict(info, qindex) > room {
+            qindex += 1;
+        }
+        qindex
+    }
+
+    fn update(&mut self, stats: &FrameStats) {
+        self.vbr.update(stats);
+    }
+
+    fn update_show_existing(&mut self, bits: u64) {
+        self.vbr.update_show_existing(bits);
     }
 }
 

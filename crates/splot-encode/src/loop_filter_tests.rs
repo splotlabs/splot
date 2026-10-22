@@ -25,7 +25,7 @@ use crate::test_support::{assert_same_samples, avm_decode, avm_decoder, decode, 
 /// `(width, height, bit depth, preset, qp)`: both superblock sizes (presets 0
 /// to 6 code 128x128, 10 codes 64x64), odd sizes, and qps where filters pay.
 /// The slow presets code small frames, so debug test runs stay short.
-const CASES: [(u32, u32, BitDepth, u8, u8); 8] = [
+const CASES: [(u32, u32, BitDepth, u8, u16); 8] = [
     (64, 64, BitDepth::Eight, 6, 160),
     (130, 34, BitDepth::Ten, 6, 220),
     (200, 136, BitDepth::Eight, 10, 180),
@@ -63,7 +63,7 @@ fn source(config: &Config, seed: u32) -> SourceFrame {
     SourceFrame::new(config, u64::from(seed), planes).unwrap()
 }
 
-fn code(case: (u32, u32, BitDepth, u8, u8), seed: u32) -> (Config, CodedFrame) {
+fn code(case: (u32, u32, BitDepth, u8, u16), seed: u32) -> (Config, CodedFrame) {
     let (width, height, bit_depth, preset, qp) = case;
     let mut config = Config::new(width, height);
     config.bit_depth = bit_depth;

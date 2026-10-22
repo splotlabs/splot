@@ -12,7 +12,7 @@ Arguments:
 Options:
   -o, --output <OUTPUT>    Output IVF file
   -v, --verbose...         Increase logging verbosity (repeatable: -v, -vv, -vvv)
-      --qp <QP>            Constant quantizer (`base_q_idx`), 1..=255; the default mode, at 80
+      --qp <QP>            Constant quantizer (`base_q_idx`): 1..=255 at 8 bits, 1..=303 at 10 bits; the default mode, at 80
       --quiet              Silence all logging except errors
       --crf <CRF>          Constant quality with lookahead offsets: rate factor 1..=63, higher is smaller
       --bitrate <BITRATE>  Target bitrate in kilobits per second

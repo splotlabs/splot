@@ -292,9 +292,17 @@ impl IntraTileSyntax {
             return Ok(vec![(TxType::DctDct, NO_STEPS)]);
         }
         if is_inter {
-            let paths =
-                inter_tx_type_symbols(tx.tx_size, tx_set, eob, |row| self.arity(row).unwrap_or(0))
-                    .map_err(rule("transform type"))?;
+            let mut row_error = None;
+            let paths = inter_tx_type_symbols(tx.tx_size, tx_set, eob, |row| {
+                self.arity(row).unwrap_or_else(|error| {
+                    row_error.get_or_insert(error);
+                    0
+                })
+            })
+            .map_err(rule("transform type"))?;
+            if let Some(error) = row_error {
+                return Err(error);
+            }
             let mut out: Vec<(TxType, Steps)> = Vec::new();
             for (tx_type, steps) in paths {
                 let tx_type = TxType::from_value(tx_type)?;

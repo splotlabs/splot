@@ -124,12 +124,21 @@ pub(crate) fn read_compound_reference_pair(
     input: CompoundParseInput,
     tile_offset: ByteOffset,
 ) -> Result<(i8, i8)> {
-    let mut read_symbol = |selector| {
+    compound_reference_pair(input, |selector| {
         cdfs.read_block_symbol_trace(selector, symbols)
             .map(splot_core::symbol::Symbol::get)
             .map_err(|error| compound_symbol_read_error(error, tile_offset))
-    };
+    })
+}
 
+/// § 5.20.7.11 `read_compound_ref`: `read_symbol` answers each `comp_ref`
+/// symbol, so a writer that answers for a target pair codes exactly the
+/// symbols the decoder reads.
+#[inline]
+pub(crate) fn compound_reference_pair(
+    input: CompoundParseInput,
+    mut read_symbol: impl FnMut(TileCdfSelector) -> Result<u8>,
+) -> Result<(i8, i8)> {
     let n_refs = input.num_total_refs;
     let same_ref_compound = usize::from(input.num_same_ref_compound).min(n_refs);
     let mut ref_frames = [n_refs.saturating_sub(1); 2];
@@ -202,39 +211,11 @@ pub(crate) fn read_compound_mode_syntax(
     is_joint_ctx: usize,
     tile_offset: ByteOffset,
 ) -> Result<CompoundBlockSyntax> {
-    let mut read_symbol = |selector| {
+    let y_mode = compound_y_mode(pair, (new_mv_context, is_joint_ctx), |selector| {
         cdfs.read_block_symbol_trace(selector, symbols)
             .map(splot_core::symbol::Symbol::get)
             .map_err(|error| compound_symbol_read_error(error, tile_offset))
-    };
-
-    let y_mode = if pair.0 == pair.1 {
-        let compound_mode = read_symbol(TileCdfSelector::CompoundModeSameRefs {
-            ctx: new_mv_context,
-        })?;
-        match compound_mode {
-            COMPOUND_MODE_NEAR_NEARMV => CompoundYMode::NearNear,
-            1 => CompoundYMode::NearNew,
-            COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV => CompoundYMode::GlobalGlobal,
-            // The four-symbol § 5.20.7.6 alphabet leaves only NewNew (3).
-            _ => CompoundYMode::NewNew,
-        }
-    } else if read_symbol(TileCdfSelector::IsJoint { ctx: is_joint_ctx })? != 0 {
-        CompoundYMode::JointNew
-    } else {
-        let compound_mode = read_symbol(TileCdfSelector::CompoundModeNonJoint {
-            ctx: new_mv_context,
-        })?;
-        match compound_mode {
-            COMPOUND_MODE_NEAR_NEARMV => CompoundYMode::NearNear,
-            COMPOUND_MODE_NEAR_NEWMV => CompoundYMode::NearNew,
-            COMPOUND_MODE_NEW_NEARMV => CompoundYMode::NewNear,
-            COMPOUND_MODE_NEW_NEWMV => CompoundYMode::NewNew,
-            // The five-symbol § 5.20.7.6 alphabet leaves only GlobalGlobal (3).
-            _ => CompoundYMode::GlobalGlobal,
-        }
-    };
-
+    })?;
     Ok(CompoundBlockSyntax {
         y_mode,
         use_optflow: false,
@@ -243,6 +224,50 @@ pub(crate) fn read_compound_mode_syntax(
         mv0: Mv::ZERO,
         mv1: Mv::ZERO,
     })
+}
+
+/// § 5.20.7.6 compound `YMode` of the reference `pair` with the
+/// `(NewMvContext, is_joint)` contexts; `read_symbol` answers each symbol.
+#[inline]
+pub(crate) fn compound_y_mode(
+    pair: (i8, i8),
+    (new_mv_context, is_joint_ctx): (usize, usize),
+    mut read_symbol: impl FnMut(TileCdfSelector) -> Result<u8>,
+) -> Result<CompoundYMode> {
+    Ok(if pair.0 == pair.1 {
+        same_refs_compound_mode(read_symbol(TileCdfSelector::CompoundModeSameRefs {
+            ctx: new_mv_context,
+        })?)
+    } else if read_symbol(TileCdfSelector::IsJoint { ctx: is_joint_ctx })? != 0 {
+        CompoundYMode::JointNew
+    } else {
+        non_joint_compound_mode(read_symbol(TileCdfSelector::CompoundModeNonJoint {
+            ctx: new_mv_context,
+        })?)
+    })
+}
+
+/// The `YMode` of `compound_mode` over the same-reference alphabet.
+pub(crate) const fn same_refs_compound_mode(compound_mode: u8) -> CompoundYMode {
+    match compound_mode {
+        COMPOUND_MODE_NEAR_NEARMV => CompoundYMode::NearNear,
+        1 => CompoundYMode::NearNew,
+        COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV => CompoundYMode::GlobalGlobal,
+        // The four-symbol § 5.20.7.6 alphabet leaves only NewNew (3).
+        _ => CompoundYMode::NewNew,
+    }
+}
+
+/// The `YMode` of `compound_mode` over the non-joint alphabet.
+pub(crate) const fn non_joint_compound_mode(compound_mode: u8) -> CompoundYMode {
+    match compound_mode {
+        COMPOUND_MODE_NEAR_NEARMV => CompoundYMode::NearNear,
+        COMPOUND_MODE_NEAR_NEWMV => CompoundYMode::NearNew,
+        COMPOUND_MODE_NEW_NEARMV => CompoundYMode::NewNear,
+        COMPOUND_MODE_NEW_NEWMV => CompoundYMode::NewNew,
+        // The five-symbol § 5.20.7.6 alphabet leaves only GlobalGlobal (3).
+        _ => CompoundYMode::GlobalGlobal,
+    }
 }
 
 fn compound_ref_loop_has_more(ref_idx: usize, n_refs: usize, n_bits: usize) -> bool {

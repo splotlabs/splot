@@ -13,14 +13,6 @@
 //! `splot-recon` § 7.15.4 inverse transform and § 7.14.4 dequantizer: their
 //! outputs use the scale that those decoder processes expect.
 
-#![cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "SAD, SSE and SATD feed mode decision from milestone 2"
-    )
-)]
-
 mod distortion;
 mod forward_transform;
 mod quantize;
@@ -197,6 +189,7 @@ pub(crate) trait EncoderKernels: Sync {
 }
 
 /// The scalar reference kernels.
+#[cfg(test)]
 pub(crate) struct ScalarKernels;
 
 /// The `std::simd` kernels, bit-identical to [`ScalarKernels`].
@@ -207,6 +200,7 @@ pub(crate) fn kernels() -> &'static dyn EncoderKernels {
     &SimdKernels
 }
 
+#[cfg(test)]
 impl EncoderKernels for ScalarKernels {
     fn sad(
         &self,
