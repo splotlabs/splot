@@ -677,10 +677,7 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
     )?;
     let placed_geometry = placed_inter_geometry(
         frontier,
-        (
-            work_unit.mi_row_range().start as usize,
-            work_unit.mi_col_range().start as usize,
-        ),
+        work_unit,
         (n4w, n4h),
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
     )?;

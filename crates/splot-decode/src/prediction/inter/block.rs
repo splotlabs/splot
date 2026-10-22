@@ -1192,10 +1192,7 @@ fn decode_block<T: ReconSample>(
     let mi_col = frontier.c;
     let placed_geometry = placed_inter_geometry(
         frontier,
-        (
-            work_unit.mi_row_range().start as usize,
-            work_unit.mi_col_range().start as usize,
-        ),
+        work_unit,
         (n4w, n4h),
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
     )?;
@@ -2153,11 +2150,7 @@ fn sequence_enables_ibp(sequence: &SequenceHeader) -> bool {
 
 mod compound_path;
 mod deferred_recon;
-mod encoder_leaf;
-pub(crate) use encoder_leaf::{
-    EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderSingleMotion,
-    chroma_inter_tx_type, single_transform_residual,
-};
+pub(super) mod encoder_leaf;
 mod filter_records;
 mod frame_parse;
 pub(in crate::prediction::inter) use frame_parse::prepare_scheduled_recon;

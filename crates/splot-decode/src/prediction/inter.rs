@@ -2134,10 +2134,11 @@ pub(crate) mod read_mv;
 pub(crate) mod reference;
 mod single_ref;
 
-pub(crate) use block::{
+pub(crate) use block::encoder_leaf::{
     EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderSingleMotion,
-    chroma_inter_tx_type, non_intra_leaf_mode, single_transform_residual,
+    chroma_inter_tx_type, single_transform_residual,
 };
+pub(crate) use block::non_intra_leaf_mode;
 pub(crate) use block::{
     InterBlockDecodeOutput, InterBlockFacts, InterDecodeScratch, InterFilterInputs,
     InterFrameParse, InterFrameParser, InterReconScratchPool, PendingFilterAttach,

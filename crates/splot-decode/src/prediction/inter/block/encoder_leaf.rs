@@ -568,7 +568,7 @@ impl EncoderInterTile {
     ) -> Result<PlacedInterBlock> {
         let block = self.block(frontier, motion.ref_frame)?;
         let single = self.single_syntax(&block, motion);
-        let geometry = placed_inter_geometry(
+        let geometry = prediction::placed_inter_geometry_at(
             frontier,
             (0, 0),
             (block.bw4, block.bh4),
