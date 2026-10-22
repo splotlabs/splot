@@ -5153,7 +5153,7 @@ module = "crates/splot-encode/src/rate_control.rs"
 change_id = "encoder-m4-rate-control"
 owner = "encoder"
 risk = "medium"
-notes = "Encoder strategy. Config::rate_control selects ConstantQp, Crf { crf } (base qindex 4 * crf plus the ENC-LOOKAHEAD-TPL offset), Vbr { bitrate_kbps } or Cbr { bitrate_kbps, buffer_ms }. BitrateController picks one base qindex per lookahead window so that the predicted bits of the window meet the budget, with the model bits = k * complexity / step(qindex) per key frame and mini-GOP layer class; k is learnt from coded bits. The step is the § 7.14.2 qlookup, which doubles every 24 qindex. VBR spreads its drift over 8 frames, CBR over each window and raises a frame's qindex until it fits the buffer. Integer arithmetic only. CLI: --crf, --bitrate, --rc vbr|cbr. Frame-level only: no delta-q."
+notes = "Encoder strategy. Config::rate_control selects ConstantQp, Crf { crf } (base qindex 4 * crf plus the ENC-LOOKAHEAD-TPL offset), Vbr { bitrate_kbps } or Cbr { bitrate_kbps, buffer_ms }. Vbr and Cbr pick one base qindex per lookahead window so that the predicted bits of the window meet the budget, with the model bits = k * complexity / step(qindex) per key frame and mini-GOP layer class; k is learnt from coded bits. The step is the § 7.14.2 qlookup, which doubles every 24 qindex. VBR bounds its drift to 8 frame budgets; CBR wraps the VBR model, bounds drift to half the buffer and raises a frame's qindex until it fits the buffer. Encoder::with_rate_controller plugs in a custom RateController. Integer arithmetic only. CLI: --crf, --bitrate, --rc vbr|cbr. Frame-level only: no delta-q."
 
 [feature.status]
 mapped = "done"
