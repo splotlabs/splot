@@ -70,7 +70,29 @@ pub(super) fn sad_simd(
     pred_stride: usize,
     dims: BlockDims,
 ) -> u32 {
-    diff_sum_simd(src, src_stride, pred, pred_stride, dims, false) as u32
+    match dims.width() {
+        4 => sad_lanes::<4>(src, src_stride, pred, pred_stride, dims),
+        8 => sad_lanes::<8>(src, src_stride, pred, pred_stride, dims),
+        _ => sad_lanes::<16>(src, src_stride, pred, pred_stride, dims),
+    }
+}
+
+/// The sum of `|d|` in `L` `u32` lanes.
+fn sad_lanes<const L: usize>(
+    src: &[u16],
+    src_stride: usize,
+    pred: &[u16],
+    pred_stride: usize,
+    dims: BlockDims,
+) -> u32 {
+    let mut acc = Simd::<u32, L>::splat(0);
+    for (a, b) in row_pairs(src, src_stride, pred, pred_stride, dims) {
+        for (a, b) in a.as_chunks::<L>().0.iter().zip(b.as_chunks::<L>().0) {
+            let (a, b) = (Simd::from_array(*a), Simd::from_array(*b));
+            acc += (a.simd_max(b) - a.simd_min(b)).cast::<u32>();
+        }
+    }
+    acc.reduce_sum()
 }
 
 pub(super) fn sse_simd(
@@ -80,39 +102,27 @@ pub(super) fn sse_simd(
     pred_stride: usize,
     dims: BlockDims,
 ) -> u64 {
-    diff_sum_simd(src, src_stride, pred, pred_stride, dims, true)
-}
-
-/// The sum of `|d|` or of `d * d` over the block, in `min(width, 16)` lanes.
-fn diff_sum_simd(
-    src: &[u16],
-    src_stride: usize,
-    pred: &[u16],
-    pred_stride: usize,
-    dims: BlockDims,
-    square: bool,
-) -> u64 {
     match dims.width() {
-        4 => diff_sum_lanes::<4>(src, src_stride, pred, pred_stride, dims, square),
-        8 => diff_sum_lanes::<8>(src, src_stride, pred, pred_stride, dims, square),
-        _ => diff_sum_lanes::<16>(src, src_stride, pred, pred_stride, dims, square),
+        4 => sse_lanes::<4>(src, src_stride, pred, pred_stride, dims),
+        8 => sse_lanes::<8>(src, src_stride, pred, pred_stride, dims),
+        _ => sse_lanes::<16>(src, src_stride, pred, pred_stride, dims),
     }
 }
 
-fn diff_sum_lanes<const L: usize>(
+/// The sum of `d * d` in `L` `u64` lanes.
+fn sse_lanes<const L: usize>(
     src: &[u16],
     src_stride: usize,
     pred: &[u16],
     pred_stride: usize,
     dims: BlockDims,
-    square: bool,
 ) -> u64 {
     let mut acc = Simd::<u64, L>::splat(0);
     for (a, b) in row_pairs(src, src_stride, pred, pred_stride, dims) {
         for (a, b) in a.as_chunks::<L>().0.iter().zip(b.as_chunks::<L>().0) {
             let (a, b) = (Simd::from_array(*a), Simd::from_array(*b));
             let d = (a.simd_max(b) - a.simd_min(b)).cast::<u32>();
-            acc += if square { d * d } else { d }.cast::<u64>();
+            acc += (d * d).cast::<u64>();
         }
     }
     acc.reduce_sum()

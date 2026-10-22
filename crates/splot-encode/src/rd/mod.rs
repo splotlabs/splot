@@ -74,10 +74,23 @@ const fn log2_q10(x: u32) -> u32 {
     (int << 10) | frac
 }
 
-/// `256 * log2(x)` in Q8, for `x >= 1`.
-pub(crate) const fn log2_q8(x: u32) -> u32 {
-    (log2_q10(x) + 2) >> 2
+/// `256 * log2(x)` in Q8, for `x >= 1` (0 for `x = 0`).
+pub(crate) fn log2_q8(x: u32) -> u32 {
+    LOG2_Q8
+        .get(x as usize)
+        .map_or_else(|| (log2_q10(x) + 2) >> 2, |&value| u32::from(value))
 }
+
+/// `LOG2_Q8[x]`: [`log2_q8`] of the small arguments motion and filter rates use.
+static LOG2_Q8: [u16; 4096] = {
+    let mut table = [0u16; 4096];
+    let mut x = 1;
+    while x < table.len() {
+        table[x] = ((log2_q10(x as u32) + 2) >> 2) as u16;
+        x += 1;
+    }
+    table
+};
 
 /// `COST_Q8[d]`: `round(256 * log2(4096 / d))`, the cost of an interval of `d / 4096`.
 static COST_Q8: [u16; 4097] = {
