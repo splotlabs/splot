@@ -27,6 +27,7 @@ fn plan(frame_index: u64, frame_type: FrameType, offset: i16) -> FramePlanInfo {
         layer: 0,
         complexity: 50_000,
         qindex_offset: offset,
+        bit_depth: BitDepth::Eight,
     }
 }
 
@@ -36,6 +37,19 @@ fn crf_adds_the_offset_and_clamps() {
     assert_eq!(crf.frame_qp(&plan(0, FrameType::Inter, -20)), 100);
     assert_eq!(crf.frame_qp(&plan(0, FrameType::Inter, 200)), 255);
     assert_eq!(Crf { crf: 1 }.frame_qp(&plan(0, FrameType::Key, -20)), 1);
+    let ten = FramePlanInfo {
+        bit_depth: BitDepth::Ten,
+        ..plan(0, FrameType::Inter, -20)
+    };
+    assert_eq!(crf.frame_qp(&ten), 148);
+    assert_eq!(Crf { crf: Crf::MAX }.base_qindex(BitDepth::Ten), 300);
+    assert_eq!(
+        crf.frame_qp(&FramePlanInfo {
+            qindex_offset: 200,
+            ..ten
+        }),
+        303
+    );
 }
 
 /// A coder whose frames cost `k * complexity / step` bits, with `k` far from
@@ -69,7 +83,7 @@ fn bitrate_controllers_meet_a_simulated_target() {
                 } else {
                     20
                 };
-                let bits = k * info.complexity / step(qp);
+                let bits = k * info.complexity / step(qp, info.bit_depth);
                 control.update(&FrameStats {
                     frame_index: info.frame_index,
                     pts: info.frame_index,
@@ -107,7 +121,7 @@ impl FrameCoder for Recording {
         &mut self,
         source: &SourceFrame,
         plan: &GopFrame,
-        qp: u8,
+        qp: u16,
     ) -> Result<CodedFrame> {
         let coded = self.coder.encode_frame(source, plan, qp)?;
         let recon = raw_bytes(coded.recon.iter().map(Vec::as_slice), self.bit_depth);
@@ -209,7 +223,7 @@ fn rate_controlled_streams_meet_targets_and_decode_to_the_recon() {
             .filter(|&i| stream.types[i] == FrameType::Key)
             .collect();
         assert_eq!(keys, [0, 17], "{mode:?}");
-        let qps: std::collections::BTreeSet<u8> = stream.stats.iter().map(|s| s.qp).collect();
+        let qps: std::collections::BTreeSet<u16> = stream.stats.iter().map(|s| s.qp).collect();
         assert!(qps.len() > 1, "{mode:?}: one qindex {qps:?}");
         if let RateControlMode::Vbr { bitrate_kbps } | RateControlMode::Cbr { bitrate_kbps, .. } =
             mode

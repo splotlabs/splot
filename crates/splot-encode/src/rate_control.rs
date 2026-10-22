@@ -14,7 +14,7 @@
 
 use std::collections::VecDeque;
 
-use splot_recon::{BitDepth, quantizer_value};
+use splot_recon::{BitDepth, max_quantizer_index, quantizer_value};
 
 use crate::stats::FrameStats;
 
@@ -47,6 +47,8 @@ pub struct FramePlanInfo {
     /// The lookahead's suggested change to the base qindex: negative for
     /// frames that later frames predict from.
     pub qindex_offset: i16,
+    /// Sample bit depth; it sets the qindex range `1..=`[`max_qindex`].
+    pub bit_depth: BitDepth,
 }
 
 /// Picks per-frame quantizers and learns from the coded result.
@@ -54,8 +56,9 @@ pub trait RateController {
     /// Receives the planned frames of the lookahead window in coding order
     /// before the encoder codes the first of them. The default ignores them.
     fn plan_window(&mut self, _window: &[FramePlanInfo]) {}
-    /// Returns the `base_q_idx` for the planned frame, `1..=255`.
-    fn frame_qp(&mut self, info: &FramePlanInfo) -> u8;
+    /// Returns the `base_q_idx` for the planned frame. The encoder clamps it
+    /// to `1..=`[`max_qindex`] of the bit depth.
+    fn frame_qp(&mut self, info: &FramePlanInfo) -> u16;
     /// Records the statistics of the frame just coded.
     fn update(&mut self, stats: &FrameStats);
 }
@@ -64,23 +67,36 @@ pub trait RateController {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConstantQp {
     /// The `base_q_idx` of every frame.
-    pub qp: u8,
+    pub qp: u16,
 }
 
 impl RateController for ConstantQp {
-    fn frame_qp(&mut self, _info: &FramePlanInfo) -> u8 {
+    fn frame_qp(&mut self, _info: &FramePlanInfo) -> u16 {
         self.qp
     }
 
     fn update(&mut self, _stats: &FrameStats) {}
 }
 
-/// `base` moved by `offset`, clamped to `1..=255`.
-fn with_offset(base: u8, offset: i16) -> u8 {
-    (i32::from(base) + i32::from(offset)).clamp(1, 255) as u8
+/// The largest `base_q_idx` at `bit_depth`: `MaxQ` of § 6.4.1 Table 6.3, 255
+/// at 8 bits and 303 at 10 bits.
+#[must_use]
+pub fn max_qindex(bit_depth: BitDepth) -> u16 {
+    max_quantizer_index(bit_depth) as u16
 }
 
-/// Constant quality: the base qindex is `4 * crf`, plus each frame's offset.
+/// `base` moved by `offset`, clamped to `1..=max_qindex(bit_depth)`.
+pub(crate) fn with_offset(base: u16, offset: i16, bit_depth: BitDepth) -> u16 {
+    (i32::from(base) + i32::from(offset)).clamp(1, i32::from(max_qindex(bit_depth))) as u16
+}
+
+/// Constant quality: the base qindex is `4 * crf` at 8 bits, plus each
+/// frame's offset.
+///
+/// The § 7.14.2 quantizer step doubles every 24 qindex, and 10-bit samples
+/// are 4 times 8-bit ones, so 10 bits adds 48 (`MaxQ` 303 - 255): the same
+/// `crf` gives the same step relative to the sample range, and about the same
+/// quality, at both bit depths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Crf {
     /// The rate factor, `1..=Crf::MAX`; higher means fewer bits.
@@ -91,16 +107,21 @@ impl Crf {
     /// The largest rate factor.
     pub const MAX: u8 = 63;
 
-    /// The base qindex of `crf`.
+    /// The base qindex of `crf` at `bit_depth`.
     #[must_use]
-    pub const fn base_qindex(self) -> u8 {
-        self.crf.saturating_mul(4)
+    pub fn base_qindex(self, bit_depth: BitDepth) -> u16 {
+        let extra = max_qindex(bit_depth) - max_qindex(BitDepth::Eight);
+        (4 * u16::from(self.crf) + extra).min(max_qindex(bit_depth))
     }
 }
 
 impl RateController for Crf {
-    fn frame_qp(&mut self, info: &FramePlanInfo) -> u8 {
-        with_offset(self.base_qindex(), info.qindex_offset)
+    fn frame_qp(&mut self, info: &FramePlanInfo) -> u16 {
+        with_offset(
+            self.base_qindex(info.bit_depth),
+            info.qindex_offset,
+            info.bit_depth,
+        )
     }
 
     fn update(&mut self, _stats: &FrameStats) {}
@@ -122,8 +143,8 @@ fn class(info: &FramePlanInfo) -> usize {
 }
 
 /// The § 7.14.2 luma AC quantizer step of `qindex`.
-fn step(qindex: u8) -> u64 {
-    u64::from(quantizer_value(u32::from(qindex), 0, BitDepth::Eight))
+fn step(qindex: u16, bit_depth: BitDepth) -> u64 {
+    u64::from(quantizer_value(u32::from(qindex), 0, bit_depth))
 }
 
 /// Variable or constant bitrate.
@@ -135,8 +156,9 @@ pub struct BitrateController {
     learnt: [bool; CLASSES],
     /// Bits spent minus bits budgeted so far.
     drift: i64,
-    base: u8,
-    planned: VecDeque<(u64, usize, u64)>,
+    base: u16,
+    /// Frame index, model class, complexity and bit depth of the planned frames.
+    planned: VecDeque<(u64, usize, u64, BitDepth)>,
 }
 
 impl BitrateController {
@@ -167,9 +189,9 @@ impl BitrateController {
         }
     }
 
-    fn predict(&self, info: &FramePlanInfo, qindex: u8) -> u64 {
+    fn predict(&self, info: &FramePlanInfo, qindex: u16) -> u64 {
         let model = self.model_q8[class(info)];
-        (model * info.complexity.max(1) / step(qindex)) >> 8
+        (model * info.complexity.max(1) / step(qindex, info.bit_depth)) >> 8
     }
 }
 
@@ -183,44 +205,54 @@ impl RateController for BitrateController {
         };
         let target = self.frame_bits as i64 * frames;
         let budget = (target - self.drift * frames / horizon.max(1)).max(target / 4);
-        let predicted = |base: u8| {
+        let predicted = |base: u16| {
             window
                 .iter()
-                .map(|info| self.predict(info, with_offset(base, info.qindex_offset)))
+                .map(|info| {
+                    let qindex = with_offset(base, info.qindex_offset, info.bit_depth);
+                    self.predict(info, qindex)
+                })
                 .sum::<u64>()
         };
-        self.base = (1..=255)
+        let max = window
+            .first()
+            .map_or(u16::MAX, |info| max_qindex(info.bit_depth));
+        self.base = (1..=max)
             .find(|&base| predicted(base) as i64 <= budget)
-            .unwrap_or(255);
+            .unwrap_or(max);
     }
 
-    fn frame_qp(&mut self, info: &FramePlanInfo) -> u8 {
-        let mut qindex = with_offset(self.base, info.qindex_offset);
+    fn frame_qp(&mut self, info: &FramePlanInfo) -> u16 {
+        let mut qindex = with_offset(self.base, info.qindex_offset, info.bit_depth);
         if let Some(buffer) = self.buffer_bits {
             let level = (buffer as i64 / 2 + self.drift).max(0) as u64;
             let room = (buffer + self.frame_bits).saturating_sub(level);
-            while qindex < 255 && self.predict(info, qindex) > room {
+            while qindex < max_qindex(info.bit_depth) && self.predict(info, qindex) > room {
                 qindex += 1;
             }
         }
         if self.planned.len() >= 64 {
             self.planned.pop_front();
         }
-        self.planned
-            .push_back((info.frame_index, class(info), info.complexity));
+        self.planned.push_back((
+            info.frame_index,
+            class(info),
+            info.complexity,
+            info.bit_depth,
+        ));
         qindex
     }
 
     fn update(&mut self, stats: &FrameStats) {
         self.drift += stats.bits as i64 - self.frame_bits as i64;
-        let Some(&(_, class, complexity)) = self
+        let Some(&(_, class, complexity, bit_depth)) = self
             .planned
             .iter()
             .find(|planned| planned.0 == stats.frame_index)
         else {
             return;
         };
-        let observed = ((stats.bits * step(stats.qp)) << 8) / complexity.max(1);
+        let observed = ((stats.bits * step(stats.qp, bit_depth)) << 8) / complexity.max(1);
         self.model_q8[class] = if self.learnt[class] {
             (3 * self.model_q8[class] + observed) / 4
         } else {

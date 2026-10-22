@@ -15,7 +15,7 @@ use crate::gop::{GopFrame, GopPlanner, GopStep};
 use crate::intra_frame::IntraFrameCoder;
 use crate::lookahead::Lookahead;
 use crate::rate_control::{
-    BitrateController, ConstantQp, Crf, FramePlanInfo, FrameType, RateController,
+    BitrateController, ConstantQp, Crf, FramePlanInfo, FrameType, RateController, max_qindex,
 };
 use crate::stats::{FrameStats, psnr, ssim};
 use crate::tpl;
@@ -50,8 +50,12 @@ pub(crate) struct CodedFrame {
 /// Codes the frames and show-existing frames of the plan, in coding order.
 pub(crate) trait FrameCoder {
     /// Codes `source` as `plan` at quantizer `qp`.
-    fn encode_frame(&mut self, source: &SourceFrame, plan: &GopFrame, qp: u8)
-    -> Result<CodedFrame>;
+    fn encode_frame(
+        &mut self,
+        source: &SourceFrame,
+        plan: &GopFrame,
+        qp: u16,
+    ) -> Result<CodedFrame>;
     /// A temporal delimiter and the show-existing frame that outputs the
     /// hidden frame in `slot`.
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>>;
@@ -249,6 +253,7 @@ impl Encoder {
                 layer: frame.layer,
                 complexity: model.complexity,
                 qindex_offset: model.qindex_offset,
+                bit_depth: self.config.bit_depth,
             })
             .collect();
         self.rate_control.plan_window(&self.window);
@@ -311,7 +316,10 @@ impl Encoder {
             .ok_or(Error::Unsupported {
                 what: "a frame outside its lookahead window",
             })?;
-        let qp = self.rate_control.frame_qp(&plan);
+        let qp = self
+            .rate_control
+            .frame_qp(&plan)
+            .clamp(1, max_qindex(frame.bit_depth()));
         let coded = self.coder.encode_frame(frame, gop_frame, qp)?;
 
         let bit_depth = frame.bit_depth();
@@ -365,7 +373,7 @@ mod tests {
             &mut self,
             source: &SourceFrame,
             plan: &GopFrame,
-            qp: u8,
+            qp: u16,
         ) -> Result<CodedFrame> {
             if self.fail_at == Some(plan.frame_index) {
                 return Err(Error::Unsupported { what: "test" });
@@ -379,7 +387,7 @@ mod tests {
             } else {
                 Vec::new()
             };
-            temporal_unit.extend([plan.frame_index as u8, qp]);
+            temporal_unit.extend([plan.frame_index as u8, qp as u8]);
             Ok(CodedFrame {
                 temporal_unit,
                 recon,
@@ -545,7 +553,7 @@ mod tests {
     #[test]
     fn crf_gives_referenced_frames_lower_qindex_on_static_content() -> Result<()> {
         let packets = textured(RateControlMode::Crf { crf: 30 }, 0, u64::MAX)?;
-        let qp: BTreeMap<u64, u8> = packets
+        let qp: BTreeMap<u64, u16> = packets
             .iter()
             .flat_map(|packet| &packet.stats)
             .map(|stats| (stats.pts, stats.qp))
