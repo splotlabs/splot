@@ -12,6 +12,8 @@
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
+use splot_core::symbol::Symbol;
+use splot_core::symbol_encoder::SymbolSink;
 use splot_recon::{
     BitDepth, DequantBlockParams, InverseTransform2dOuter, PlaneId, coefficient_scan_slice,
     tx_class,
@@ -21,7 +23,6 @@ use super::cdf::block_context::{IntraYMode, uv_mode_ctx};
 use super::cdf::coeff_context::{
     CoeffBaseContext, CoeffBrContext, coeff_base_eob_ctx, dc_sign_ctx,
 };
-pub use super::cdf::context::RectPartitionType as RectKind;
 use super::cdf::{CoeffBaseRow, CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
 use super::coeff_loop::base_level_pass::tx_class_index;
 use super::coeff_loop::max_level::{
@@ -40,6 +41,7 @@ use super::intra_joint_modes::{
 };
 use super::mi_size_state::TileMiSizeState;
 pub use super::partition::PartitionType as Partition;
+use super::partition::{PartitionDecisionError, PartitionSymbols, read_partition_decision};
 use super::partition_allowed::{PartitionDecisionFacts, partition_decision_facts};
 use super::partition_size::BlockSize;
 use super::partition_traversal::{
@@ -145,27 +147,46 @@ impl PartitionOptions {
     pub const fn implied(self) -> Option<Partition> {
         self.0.implied()
     }
-
-    /// The rectangle direction the block size implies.
-    #[must_use]
-    pub const fn rect_type(self) -> Option<RectKind> {
-        self.0.rect_type()
-    }
 }
 
-/// A partition CDF of § 5.20.3.2.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PartitionCdf {
-    /// `do_split`.
-    DoSplit,
-    /// `do_square_split`.
-    DoSquareSplit,
-    /// `rect_type`.
-    RectType,
-    /// `do_ext_partition` for a direction.
-    DoExtPartition(RectKind),
-    /// `do_uneven_4way_partition` for a direction.
-    DoUneven4Way(RectKind),
+/// Answers each § 5.20.3.2 partition symbol for `target` and writes it, so
+/// the decoder's `read_partition` decides which symbols the target needs.
+struct PartitionWriter<'a, S> {
+    target: Partition,
+    sink: &'a mut S,
+}
+
+impl<S: SymbolSink> PartitionSymbols for PartitionWriter<'_, S> {
+    fn flag(
+        &mut self,
+        _syntax: &'static str,
+        selector: TileCdfSelector,
+        cdfs: &mut TileCdfSubset,
+    ) -> core::result::Result<bool, PartitionDecisionError> {
+        use Partition as P;
+        let target = self.target;
+        let value = match selector {
+            TileCdfSelector::DoSplit { .. } => target != P::None,
+            TileCdfSelector::DoSquareSplit { .. } => target == P::Split,
+            TileCdfSelector::RectType { .. } => {
+                matches!(target, P::Vert | P::Vert3 | P::Vert4A | P::Vert4B)
+            }
+            TileCdfSelector::DoExtPartition { .. } => !matches!(target, P::Horz | P::Vert),
+            _ => matches!(target, P::Horz4A | P::Horz4B | P::Vert4A | P::Vert4B),
+        };
+        self.sink
+            .symbol(cdfs.row_mut(selector)?, Symbol::new(u8::from(value)))
+            .map_err(PartitionDecisionError::Write)?;
+        Ok(value)
+    }
+
+    fn bit(&mut self) -> core::result::Result<bool, PartitionDecisionError> {
+        let value = matches!(self.target, Partition::Horz4B | Partition::Vert4B);
+        self.sink
+            .literal(u32::from(value), 1)
+            .map_err(PartitionDecisionError::Write)?;
+        Ok(value)
+    }
 }
 
 /// A `PARTITION_NONE` leaf (§ 5.20.4.1 `decode_block`).
@@ -524,23 +545,44 @@ impl IntraTileSyntax {
             .map_err(rule("partition"))
     }
 
-    /// The CDF row of one partition symbol of `node`.
+    /// Writes the § 5.20.3.2 `read_partition` symbols that select `partition`
+    /// for `node`: the decoder's own read runs with each symbol answered for
+    /// `partition`.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] when the context is invalid.
-    pub fn partition_cdf(&mut self, node: PartitionNode, cdf: PartitionCdf) -> Result<&mut [u16]> {
-        let (partition, square) =
+    /// Returns [`EncoderSyntaxError::Unsupported`] when `node` cannot code
+    /// `partition`, after any symbols the read took, and
+    /// [`EncoderSyntaxError::Rule`] for a context or write failure.
+    pub fn write_partition(
+        &mut self,
+        node: PartitionNode,
+        partition: Partition,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
+        let options = self.partition_options(node)?;
+        if !options.allows(partition) {
+            return Err(EncoderSyntaxError::Unsupported("partition not allowed"));
+        }
+        let (partition_context, square_context) =
             partition_context_inputs(node.0, self.bounds, self.mi_sizes.context_state())
                 .map_err(rule("partition context"))?;
-        let selector = match cdf {
-            PartitionCdf::DoSplit => partition.do_split_selector(),
-            PartitionCdf::DoSquareSplit => square.do_square_split_selector(),
-            PartitionCdf::RectType => partition.rect_type_selector(),
-            PartitionCdf::DoExtPartition(kind) => partition.do_ext_partition_selector(kind),
-            PartitionCdf::DoUneven4Way(kind) => partition.do_uneven_4way_partition_selector(kind),
+        let input =
+            options
+                .0
+                .read_partition_decision_input(true, partition_context, square_context);
+        let mut writer = PartitionWriter {
+            target: partition,
+            sink: symbols,
+        };
+        let coded = read_partition_decision(input, &mut self.cdfs, &mut writer)
+            .map_err(rule("partition"))?;
+        if coded == partition {
+            Ok(())
+        } else {
+            Err(EncoderSyntaxError::Unsupported(
+                "the node codes another partition",
+            ))
         }
-        .map_err(rule("partition context"))?;
-        self.tile_row(selector)
     }
 
     /// The child nodes of a non-`NONE` partition of `node`, in syntax order.

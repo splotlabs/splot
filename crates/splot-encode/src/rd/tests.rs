@@ -12,7 +12,7 @@ use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolEncoder;
 use splot_decode::encoder_syntax::{
-    IntraModes, IntraTileSyntax, PartitionCdf, TransformBlock, TxType, dct_recon_params,
+    IntraModes, IntraTileSyntax, TransformBlock, TxType, dct_recon_params,
 };
 use splot_recon::{BitDepth, PlaneId, reconstruct_transform_block_residual};
 
@@ -254,10 +254,11 @@ fn leaf_frame_rates(bit_depth: BitDepthIdc, qindex: u32, seed: u64) -> (f64, f64
     assert!(PARTITIONS.iter().filter(|&&p| options.allows(p)).count() > 1);
     let leaf = syntax.leaf(root).unwrap();
     assert!(leaf.has_chroma());
-    let mut bits = symbol_cost(
-        syntax.partition_cdf(root, PartitionCdf::DoSplit).unwrap(),
-        0,
-    );
+    let mut sink = RateSink::adapting();
+    syntax
+        .write_partition(root, Partition::None, &mut sink)
+        .unwrap();
+    let mut bits = sink.bits;
     bits += symbol_cost(syntax.y_mode_set_cdf().unwrap(), 0);
     bits += symbol_cost(syntax.y_mode_index_cdf(&leaf).unwrap(), 0);
     bits += symbol_cost(syntax.uv_mode_cdf(false).unwrap(), 0);

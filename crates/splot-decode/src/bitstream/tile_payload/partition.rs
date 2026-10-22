@@ -10,7 +10,7 @@ use splot_core::symbol::{Symbol, SymbolDecoder};
 
 use super::cdf::context::{PartitionContextInput, RectPartitionType, SquareSplitContextInput};
 use super::cdf::partition_read::PartitionEntrySymbolReadError;
-use super::cdf::{TileCdfError, TileCdfSubset};
+use super::cdf::{TileCdfError, TileCdfSelector, TileCdfSubset};
 
 const EXT_PARTITION_TYPES: usize = 10;
 
@@ -193,6 +193,49 @@ pub(crate) enum PartitionDecisionError {
     BooleanSymbolOutOfRange { syntax: &'static str, symbol: u8 },
     #[error("partition decision selected disallowed partition {partition:?}")]
     FinalPartitionDisallowed { partition: PartitionType },
+    #[error("partition decision symbol write failed: {0}")]
+    Write(#[source] splot_core::write::WriteError),
+}
+
+/// The source of the § 5.20.3.2 partition symbols: the decoder reads them,
+/// and the encoder facade answers and writes them for a chosen partition, so
+/// both run the one `read_partition` branching.
+pub(crate) trait PartitionSymbols {
+    /// A boolean `S()` symbol coded with the row of `selector`.
+    fn flag(
+        &mut self,
+        syntax: &'static str,
+        selector: TileCdfSelector,
+        cdfs: &mut TileCdfSubset,
+    ) -> Result<bool, PartitionDecisionError>;
+
+    /// The `uneven_4way_partition_type` `L(1)` literal.
+    fn bit(&mut self) -> Result<bool, PartitionDecisionError>;
+}
+
+impl PartitionSymbols for SymbolDecoder<'_> {
+    #[allow(
+        clippy::inline_always,
+        reason = "constant selectors fold into a direct row read"
+    )]
+    #[inline(always)]
+    fn flag(
+        &mut self,
+        syntax: &'static str,
+        selector: TileCdfSelector,
+        cdfs: &mut TileCdfSubset,
+    ) -> Result<bool, PartitionDecisionError> {
+        let symbol = cdfs.read_partition_entry_symbol(selector, self)?;
+        symbol_to_bool(syntax, symbol)
+    }
+
+    #[inline]
+    fn bit(&mut self) -> Result<bool, PartitionDecisionError> {
+        Ok(self
+            .read_literal(1)
+            .map_err(PartitionDecisionError::Literal)?
+            != 0)
+    }
 }
 
 impl PartitionDecisionError {
@@ -208,10 +251,10 @@ impl PartitionDecisionError {
 }
 
 #[inline]
-pub(crate) fn read_partition_decision(
+pub(crate) fn read_partition_decision<S: PartitionSymbols + ?Sized>(
     input: ReadPartitionDecisionInput<'_>,
     cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
+    symbols: &mut S,
 ) -> Result<PartitionType, PartitionDecisionError> {
     if input.allowed.count() == 0 {
         return Err(PartitionDecisionError::EmptyAllowedSet);
@@ -232,11 +275,10 @@ pub(crate) fn read_partition_decision(
     }
 
     if input.allowed.contains(PartitionType::None) {
-        let do_split = read_partition_bool(
+        let do_split = symbols.flag(
             "do_split",
             input.partition_context.do_split_selector()?,
             cdfs,
-            symbols,
         )?;
         if !do_split {
             return Ok(PartitionType::None);
@@ -244,11 +286,10 @@ pub(crate) fn read_partition_decision(
     }
 
     if input.allowed.contains(PartitionType::Split) {
-        let do_square_split = read_partition_bool(
+        let do_square_split = symbols.flag(
             "do_square_split",
             input.square_split_context.do_square_split_selector()?,
             cdfs,
-            symbols,
         )?;
         if do_square_split {
             return Ok(PartitionType::Split);
@@ -264,11 +305,11 @@ pub(crate) fn read_partition_decision(
     Ok(partition)
 }
 
-fn read_rect_partition(
+fn read_rect_partition<S: PartitionSymbols + ?Sized>(
     input: ReadPartitionDecisionInput<'_>,
     rect_type: RectPartitionType,
     cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
+    symbols: &mut S,
 ) -> Result<PartitionType, PartitionDecisionError> {
     let family = RectPartitionFamily::for_rect_type(rect_type);
     let non_ext_allowed = input.allowed.contains(family.non_ext);
@@ -278,13 +319,12 @@ fn read_rect_partition(
     let ext_allowed = ext_allowed3 || ext_allowed4;
 
     let do_ext_partition = if non_ext_allowed && ext_allowed {
-        read_partition_bool(
+        symbols.flag(
             "do_ext_partition",
             input
                 .partition_context
                 .do_ext_partition_selector(rect_type)?,
             cdfs,
-            symbols,
         )?
     } else {
         ext_allowed
@@ -293,23 +333,19 @@ fn read_rect_partition(
     let do_uneven_4way_partition = if !do_ext_partition {
         false
     } else if ext_allowed3 && ext_allowed4 {
-        read_partition_bool(
+        symbols.flag(
             "do_uneven_4way_partition",
             input
                 .partition_context
                 .do_uneven_4way_partition_selector(rect_type)?,
             cdfs,
-            symbols,
         )?
     } else {
         ext_allowed4
     };
 
     let uneven_4way_partition_type = if do_uneven_4way_partition {
-        symbols
-            .read_literal(1)
-            .map_err(PartitionDecisionError::Literal)?
-            != 0
+        symbols.bit()?
     } else {
         false
     };
@@ -321,10 +357,10 @@ fn read_rect_partition(
     ))
 }
 
-fn resolve_rect_type(
+fn resolve_rect_type<S: PartitionSymbols + ?Sized>(
     input: ReadPartitionDecisionInput<'_>,
     cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
+    symbols: &mut S,
 ) -> Result<RectPartitionType, PartitionDecisionError> {
     if let Some(rect_type) = input.rect_type {
         return Ok(rect_type);
@@ -339,32 +375,16 @@ fn resolve_rect_type(
         return Ok(RectPartitionType::Horz);
     }
 
-    let rect_type = read_partition_bool(
+    let rect_type = symbols.flag(
         "rect_type",
         input.partition_context.rect_type_selector()?,
         cdfs,
-        symbols,
     )?;
     Ok(if rect_type {
         RectPartitionType::Vert
     } else {
         RectPartitionType::Horz
     })
-}
-
-#[allow(
-    clippy::inline_always,
-    reason = "constant selectors fold into a direct row read"
-)]
-#[inline(always)]
-fn read_partition_bool(
-    syntax: &'static str,
-    selector: super::cdf::TileCdfSelector,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-) -> Result<bool, PartitionDecisionError> {
-    let symbol = cdfs.read_partition_entry_symbol(selector, symbols)?;
-    symbol_to_bool(syntax, symbol)
 }
 
 fn symbol_to_bool(syntax: &'static str, symbol: Symbol) -> Result<bool, PartitionDecisionError> {

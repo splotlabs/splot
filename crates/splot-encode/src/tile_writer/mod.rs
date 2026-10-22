@@ -16,13 +16,10 @@ use core::ops::Range;
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
-use splot_core::symbol::Symbol;
-
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink};
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
-    EncoderSyntaxError, IntraTileSyntax, LeafBlock, PartitionCdf, PartitionNode, RectKind,
-    TransformBlock,
+    EncoderSyntaxError, IntraTileSyntax, LeafBlock, PartitionNode, TransformBlock,
 };
 use splot_recon::{DecodedFrame, ReconError};
 
@@ -258,81 +255,17 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         node: PartitionNode,
         partition: Partition,
     ) -> Result<()> {
-        let options = self.syntax.partition_options(node)?;
-        let refuse = |reason| TileWriterError::Partition {
-            partition,
-            row4: node.row4(),
-            col4: node.col4(),
-            reason,
-        };
-        if !options.allows(partition) {
-            return Err(refuse("not allowed"));
-        }
-        if let Some(implied) = options.implied().filter(|&p| options.allows(p)) {
-            return if implied == partition {
-                Ok(())
-            } else {
-                Err(refuse("position implies another partition"))
-            };
-        }
-        if PARTITIONS.iter().filter(|&&p| options.allows(p)).count() == 1 {
-            return Ok(());
-        }
-        if options.allows(Partition::None) {
-            self.partition_bool(node, PartitionCdf::DoSplit, partition != Partition::None)?;
-            if partition == Partition::None {
-                return Ok(());
-            }
-        }
-        if options.allows(Partition::Split) {
-            self.partition_bool(
-                node,
-                PartitionCdf::DoSquareSplit,
-                partition == Partition::Split,
-            )?;
-            if partition == Partition::Split {
-                return Ok(());
-            }
-        }
-        let (kind, family) = rect_family(partition).ok_or_else(|| refuse("not a rectangle"))?;
-        let allow = |kind| family_of(kind).iter().any(|&p| options.allows(p));
-        match options.rect_type() {
-            Some(implied) if implied != kind => {
-                return Err(refuse("block size implies the other rectangle"));
-            }
-            Some(_) => {}
-            None if !allow(RectKind::Horz) || !allow(RectKind::Vert) => {}
-            None => self.partition_bool(node, PartitionCdf::RectType, kind == RectKind::Vert)?,
-        }
-        let [non_ext, three, four_a, four_b] = family;
-        let ext3 = options.allows(three);
-        let ext4 = options.allows(four_a) || options.allows(four_b);
-        let do_ext = partition != non_ext;
-        if options.allows(non_ext) && (ext3 || ext4) {
-            self.partition_bool(node, PartitionCdf::DoExtPartition(kind), do_ext)?;
-        }
-        if !do_ext {
-            return Ok(());
-        }
-        let uneven = partition == four_a || partition == four_b;
-        if ext3 && ext4 {
-            self.partition_bool(node, PartitionCdf::DoUneven4Way(kind), uneven)?;
-        }
-        if uneven {
-            self.sink.literal(u32::from(partition == four_b), 1)?;
-        }
-        Ok(())
-    }
-
-    fn partition_bool(
-        &mut self,
-        node: PartitionNode,
-        cdf: PartitionCdf,
-        value: bool,
-    ) -> Result<()> {
-        let row = self.syntax.partition_cdf(node, cdf)?;
-        self.sink.symbol(row, Symbol::new(u8::from(value)))?;
-        Ok(())
+        self.syntax
+            .write_partition(node, partition, self.sink)
+            .map_err(|error| match error {
+                EncoderSyntaxError::Unsupported(reason) => TileWriterError::Partition {
+                    partition,
+                    row4: node.row4(),
+                    col4: node.col4(),
+                    reason,
+                },
+                error => error.into(),
+            })
     }
 
     /// Codes the blocks of `planes` of `leaf` under `choice`, then writes the
@@ -457,37 +390,6 @@ fn code_as(
         ));
     }
     Ok(decision)
-}
-
-/// The rectangle direction of `partition` and its family `[non-ext, 3-way, 4A, 4B]`.
-fn rect_family(partition: Partition) -> Option<(RectKind, [Partition; 4])> {
-    let kind = match partition {
-        Partition::Horz | Partition::Horz3 | Partition::Horz4A | Partition::Horz4B => {
-            RectKind::Horz
-        }
-        Partition::Vert | Partition::Vert3 | Partition::Vert4A | Partition::Vert4B => {
-            RectKind::Vert
-        }
-        Partition::None | Partition::Split => return None,
-    };
-    Some((kind, family_of(kind)))
-}
-
-const fn family_of(kind: RectKind) -> [Partition; 4] {
-    match kind {
-        RectKind::Horz => [
-            Partition::Horz,
-            Partition::Horz3,
-            Partition::Horz4A,
-            Partition::Horz4B,
-        ],
-        RectKind::Vert => [
-            Partition::Vert,
-            Partition::Vert3,
-            Partition::Vert4A,
-            Partition::Vert4B,
-        ],
-    }
 }
 
 #[cfg(test)]
