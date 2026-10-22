@@ -5121,7 +5121,7 @@ module = "crates/splot-encode/src/rate_control.rs"
 change_id = "rate-control-v0"
 owner = "encoder"
 risk = "medium"
-notes = "Encoder strategy, not direct spec implementation. The RateController trait (frame_qp before coding, update after) is the seam; ConstantQp is the only controller. CRF, VBR and CBR need design before code."
+notes = "Encoder strategy, not direct spec implementation. The RateController trait (frame_qp before coding, update after) is the seam. Superseded by ENC-RATE-CONTROL, which adds CRF, VBR and CBR."
 
 [feature.status]
 mapped = "partial"
@@ -5142,6 +5142,102 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-RATE-CONTROL"
+name = "CRF, VBR and CBR rate control"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["7.14.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/rate_control.rs"
+change_id = "encoder-m4-rate-control"
+owner = "encoder"
+risk = "medium"
+notes = "Encoder strategy. Config::rate_control selects ConstantQp, Crf { crf } (base qindex 4 * crf plus the ENC-LOOKAHEAD-TPL offset), Vbr { bitrate_kbps } or Cbr { bitrate_kbps, buffer_ms }. Vbr and Cbr pick one base qindex per lookahead window so that the predicted bits of the window meet the budget, with the model bits = k * complexity / step(qindex) per key frame and mini-GOP layer class; k is learnt from coded bits. The step is the § 7.14.2 qlookup, which doubles every 24 qindex. VBR bounds its drift to 8 frame budgets; CBR wraps the VBR model, bounds drift to half the buffer and raises a frame's qindex until it fits the buffer. Encoder::with_rate_controller plugs in a custom RateController. Integer arithmetic only. CLI: --crf, --bitrate, --rc vbr|cbr. Frame-level only: no delta-q."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "todo"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/rate_control_tests.rs::bitrate_controllers_meet_a_simulated_target", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_meet_targets_and_decode_to_the_recon", "crates/splot-encode/src/rate_control_tests.rs::avm_decodes_rate_controlled_streams_like_splot", "crates/splot-cli/tests/encode_decode_roundtrip.rs::crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats", "crates/splot-cli/tests/cli.rs::encode_rejects_conflicting_rate_control_flags"]
+commands = ["cargo test -p splot-encode rate_control --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-LOOKAHEAD-TPL"
+name = "Lookahead analysis and temporal dependency model"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["7.7", "7.14.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/tpl.rs"
+change_id = "encoder-m4-lookahead-tpl"
+owner = "encoder"
+risk = "medium"
+notes = "Encoder strategy. The lookahead (lookahead.rs) holds the preset's lookahead_frames frames as luma downscaled by 2 (by 4 above 1080p) in 8-bit, with per-8x8-block intra SATD (best of DC, V, H) and inter SATD from a full-sample search (exhaustive radius 4, then logarithmic). The model (tpl.rs) plans the window with a copy of the GOP planner, takes each block's best of intra and the closest past and future coded frames, and propagates (intra + received) * (intra - best) / intra to the reference blocks under the vector, split on ties. Frame importance (intra + received) / intra gives a qindex offset of -12 * log2(importance), at most -32, plus 3 per mini-GOP layer. The rate controller gets the window and the offsets."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "todo"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/lookahead.rs::tests::finds_motion_and_scene_cuts", "crates/splot-encode/src/tpl.rs::tests::referenced_frames_get_lower_qindex_on_static_and_moving_content", "crates/splot-encode/src/encoder.rs::tests::crf_gives_referenced_frames_lower_qindex_on_static_content"]
+commands = ["cargo test -p splot-encode tpl --locked", "cargo test -p splot-encode lookahead --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-SCENE-CUT"
+name = "Scene-cut key frames"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/lookahead.rs"
+change_id = "encoder-m4-scene-cut"
+owner = "encoder"
+risk = "low"
+notes = "Encoder strategy. A frame is a scene cut when the sum of its blocks' best of intra and inter cost against the previous frame is at least SCENE_CUT_PERCENT (70) percent of the intra sum, and the frame is not flat. The GOP planner (ENC-MINI-GOP) then ends the mini-GOP before it and codes it as a key frame; keyint counts from the last key frame and stays the maximum interval."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/gop_tests.rs::scene_cuts_start_key_frames_and_restart_the_keyint_count", "crates/splot-encode/src/encoder.rs::tests::a_scene_cut_starts_a_key_frame", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_meet_targets_and_decode_to_the_recon", "crates/splot-encode/src/rate_control_tests.rs::avm_decodes_rate_controlled_streams_like_splot"]
+commands = ["cargo test -p splot-encode gop --locked", "cargo test -p splot-encode encoder --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-SPEED-PRESETS"
 name = "Encoder speed preset framework"
 category = "encoder"
@@ -5153,7 +5249,7 @@ module = "crates/splot-encode/src/preset.rs"
 change_id = "encoder-speed-presets"
 owner = "encoder"
 risk = "medium"
-notes = "Preset accepts 0..=10 (default 6) and maps to one row of the PRESETS table: block-size range, intra modes tried, partition early-exit margin, RDOQ, transform-type depth, motion range, sub-pel depth and loop-filter search. Every field is monotone from slow to fast. No coding stage reads the table yet."
+notes = "Preset accepts 0..=10 (default 6) and maps to one row of the PRESETS table: block-size range, intra modes tried, partition early-exit margin, RDOQ, transform-type depth, motion range, sub-pel depth and loop-filter search, mini-GOP size and lookahead depth. Every field is monotone from slow to fast."
 
 [feature.status]
 mapped = "done"

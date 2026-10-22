@@ -34,11 +34,31 @@ pub enum Error {
         denominator: u32,
     },
 
-    /// The constant quantizer is outside `1..=255`.
-    #[error("qp {qp} is outside 1..=255")]
+    /// The constant quantizer is outside `1..=MaxQ` of the bit depth.
+    #[error("qp {qp} is outside 1..={max}")]
     InvalidQp {
         /// Requested `base_q_idx`.
-        qp: u8,
+        qp: u16,
+        /// `MaxQ` of the configured bit depth (§ 6.4.1 Table 6.3).
+        max: u16,
+    },
+
+    /// The rate factor is outside `1..=63`.
+    #[error("crf {crf} is outside 1..={max}", max = crate::rate_control::Crf::MAX)]
+    InvalidCrf {
+        /// Requested rate factor.
+        crf: u8,
+    },
+
+    /// A bitrate setting is zero or too large.
+    #[error("{what} {value} is outside 1..={max}")]
+    InvalidBitrate {
+        /// The setting.
+        what: &'static str,
+        /// Its value.
+        value: u32,
+        /// Its largest value.
+        max: u32,
     },
 
     /// The speed preset is outside `0..=10`.

@@ -12,8 +12,11 @@ Arguments:
 Options:
   -o, --output <OUTPUT>    Output IVF file
   -v, --verbose...         Increase logging verbosity (repeatable: -v, -vv, -vvv)
-      --qp <QP>            Constant quantizer (`base_q_idx`), 1..=255 [default: 80]
+      --qp <QP>            Constant quantizer (`base_q_idx`): 1..=255 at 8 bits, 1..=303 at 10 bits; the default mode, at 80
       --quiet              Silence all logging except errors
+      --crf <CRF>          Constant quality with lookahead offsets: rate factor 1..=63, higher is smaller
+      --bitrate <BITRATE>  Target bitrate in kilobits per second
+      --rc <RC>            Bitrate mode for `--bitrate`: `vbr` (default) or `cbr` (one-second buffer) [possible values: vbr, cbr]
       --preset <PRESET>    Speed preset: 0 is the slowest and best, 10 the fastest [default: 6]
       --threads <THREADS>  Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto) [default: auto]
       --limit <LIMIT>      Stop after this many input frames

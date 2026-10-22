@@ -92,7 +92,7 @@ impl FrameCoder for IntraFrameCoder {
         &mut self,
         source: &SourceFrame,
         plan: &GopFrame,
-        qp: u8,
+        qp: u16,
     ) -> Result<CodedFrame> {
         let qindex = u32::from(qp);
         let tools = gop::frame_tools(self.preset);

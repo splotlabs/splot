@@ -52,7 +52,7 @@ fn synthetic_frame(config: &Config, seed: u32) -> SourceFrame {
     SourceFrame::new(config, u64::from(seed), planes).unwrap()
 }
 
-fn config(width: u32, height: u32, bit_depth: BitDepth, preset: u8, qp: u8) -> Config {
+fn config(width: u32, height: u32, bit_depth: BitDepth, preset: u8, qp: u16) -> Config {
     let mut config = Config::new(width, height);
     config.bit_depth = bit_depth;
     config.preset = Preset::new(preset).unwrap();
@@ -66,7 +66,9 @@ fn code(config: &Config, seed: u32) -> CodedFrame {
 
 /// Codes one frame per seed in order, with key frames every `config.keyint`.
 fn code_stream(config: &Config, seeds: &[u32]) -> Vec<CodedFrame> {
-    let RateControlMode::ConstantQp { qp } = config.rate_control;
+    let RateControlMode::ConstantQp { qp } = config.rate_control else {
+        unreachable!("these tests code at a constant qp")
+    };
     let mut coder = IntraFrameCoder::new(config).unwrap();
     seeds
         .iter()
@@ -87,7 +89,7 @@ fn recon_bytes(coded: &CodedFrame, bit_depth: BitDepth) -> Vec<u8> {
 /// `(width, height, bit depth, preset, qp)`: odd sizes, both superblock sizes
 /// (presets 0 to 6 code 128x128, 10 codes 64x64), and the qp extremes. The
 /// slow presets code small frames, so debug test runs stay short.
-const CASES: [(u32, u32, BitDepth, u8, u8); 8] = [
+const CASES: [(u32, u32, BitDepth, u8, u16); 8] = [
     (1, 1, BitDepth::Eight, 6, 80),
     (17, 9, BitDepth::Ten, 0, 1),
     (64, 64, BitDepth::Eight, 10, 255),
@@ -229,7 +231,7 @@ impl FrameCoder for Recording {
         &mut self,
         source: &SourceFrame,
         plan: &GopFrame,
-        qp: u8,
+        qp: u16,
     ) -> Result<CodedFrame> {
         let coded = self.coder.encode_frame(source, plan, qp)?;
         let recon = recon_bytes(&coded, self.bit_depth);
@@ -254,7 +256,7 @@ fn encode_stream(config: &Config, frames: u32) -> (Vec<Vec<u8>>, Vec<u8>) {
         bit_depth: config.bit_depth,
         recons: Arc::clone(&recons),
     };
-    let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder));
+    let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
     let mut packets = Vec::new();
     for seed in 0..=frames {
         if seed == frames {
@@ -534,7 +536,9 @@ fn random_leaf(
 /// frames 0, 2 and 4, coded from random partitions, modes, references and
 /// vectors: the temporal units and the samples a decoder outputs.
 fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Coverage) {
-    let RateControlMode::ConstantQp { qp } = config.rate_control;
+    let RateControlMode::ConstantQp { qp } = config.rate_control else {
+        unreachable!("these tests code at a constant qp")
+    };
     let qindex = u32::from(qp);
     let mut coder = IntraFrameCoder::new(config).unwrap();
     let mut planner = crate::gop::GopPlanner::new(config.keyint, 4);
@@ -609,7 +613,7 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
 
 /// `(width, height, bit depth, preset, qp)` of the random inter streams: both
 /// superblock sizes, both bit depths, frame edges, and a qp that skips.
-const RANDOM_INTER_CASES: [(u32, u32, BitDepth, u8, u8); 4] = [
+const RANDOM_INTER_CASES: [(u32, u32, BitDepth, u8, u16); 4] = [
     (200, 104, BitDepth::Eight, 10, 90),
     (96, 72, BitDepth::Ten, 6, 160),
     (33, 17, BitDepth::Eight, 9, 250),
