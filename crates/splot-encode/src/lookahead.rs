@@ -121,8 +121,13 @@ impl Lookahead {
 
     /// Drops the frames before `display_index`.
     pub(crate) fn retain_from(&mut self, display_index: u64) {
-        self.frames
-            .retain(|frame| frame.display_index >= display_index);
+        while self
+            .frames
+            .front()
+            .is_some_and(|frame| frame.display_index < display_index)
+        {
+            self.frames.pop_front();
+        }
         self.motion
             .retain(|&(current, reference), _| current.min(reference) >= display_index);
     }
@@ -144,10 +149,13 @@ impl Lookahead {
         self.motion.get(&(current, reference)).map(Vec::as_slice)
     }
 
+    /// Frame `display_index`; the held frames have consecutive indices.
     fn frame(&self, display_index: u64) -> Option<&Analysis> {
+        let first = self.frames.front()?.display_index;
+        let index = usize::try_from(display_index.checked_sub(first)?).ok()?;
         self.frames
-            .iter()
-            .find(|frame| frame.display_index == display_index)
+            .get(index)
+            .filter(|frame| frame.display_index == display_index)
     }
 
     /// The padded, downscaled, 8-bit luma of `frame`.

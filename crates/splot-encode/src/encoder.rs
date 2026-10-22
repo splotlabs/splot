@@ -217,11 +217,13 @@ impl Encoder {
         Ok(self.ready.pop_front())
     }
 
-    /// Plans every queued frame, runs the temporal model over the plan, and
-    /// hands the window to the rate controller.
+    /// Plans the first `lookahead_frames` queued frames, runs the temporal
+    /// model over the plan, and hands the window to the rate controller. Coding
+    /// starts only with a full window or after the flush, so the window does not
+    /// depend on how the caller interleaves sends and receives.
     fn plan_window(&mut self) -> Result<()> {
         let mut planner = self.planner.clone();
-        let mut remaining = self.pending.len();
+        let mut remaining = self.pending.len().min(self.lookahead_frames);
         let mut plan = Vec::new();
         while let Some(len) = planner.next_len(remaining, true) {
             plan.extend(
@@ -554,6 +556,76 @@ mod tests {
             assert!(alt_ref < middle && middle < leaf, "{qp:?}");
         }
         assert!(qp[&0] < qp[&2], "{qp:?}");
+        Ok(())
+    }
+
+    /// Encodes 20 panning frames with a cut at 11, sending them `sends` at a
+    /// time and then receiving up to `receives` packets, until the input ends.
+    fn interleaved(
+        rate_control: RateControlMode,
+        mut sends: impl FnMut() -> usize,
+        mut receives: impl FnMut() -> usize,
+    ) -> Result<Vec<u8>> {
+        let mut config = Config::new(48, 32);
+        config.rate_control = rate_control;
+        config.preset = Preset::new(9).unwrap_or_default();
+        let mut encoder = Encoder::new(config.clone())?;
+        let mut bytes = Vec::new();
+        let mut next = 0;
+        while next < 20 {
+            for _ in 0..sends() {
+                if next < 20 {
+                    let scene = u32::from(next >= 11);
+                    let frame =
+                        crate::lookahead::tests::frame(&config, next, 2 * next as usize, scene);
+                    encoder.send_frame(frame)?;
+                    next += 1;
+                }
+            }
+            for _ in 0..receives() {
+                let Some(packet) = encoder.receive_packet()? else {
+                    break;
+                };
+                bytes.extend(packet.data);
+            }
+        }
+        encoder.flush()?;
+        for packet in drain(&mut encoder)? {
+            bytes.extend(packet.data);
+        }
+        Ok(bytes)
+    }
+
+    /// Pseudo-random counts in `0..6`.
+    fn xorshift(mut state: u32) -> impl FnMut() -> usize {
+        move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state % 6) as usize
+        }
+    }
+
+    /// One send and a full drain per frame, every send before the flush, and
+    /// random interleavings all give the same bytes.
+    #[test]
+    fn output_does_not_depend_on_the_call_pattern() -> Result<()> {
+        for mode in [
+            RateControlMode::Crf { crf: 30 },
+            RateControlMode::Vbr { bitrate_kbps: 60 },
+            RateControlMode::Cbr {
+                bitrate_kbps: 60,
+                buffer_ms: 1000,
+            },
+        ] {
+            let per_frame = interleaved(mode, || 1, || usize::MAX)?;
+            assert!(!per_frame.is_empty());
+            assert!(per_frame == interleaved(mode, || 20, || 0)?, "{mode:?}");
+            for seed in [1, 7, 12_345] {
+                let random = interleaved(mode, xorshift(seed), xorshift(seed + 99))?;
+                assert!(per_frame == random, "{mode:?} seed {seed}");
+            }
+        }
         Ok(())
     }
 
