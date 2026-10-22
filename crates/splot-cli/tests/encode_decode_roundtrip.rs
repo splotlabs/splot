@@ -16,13 +16,14 @@ const WIDTH: usize = 72;
 const HEIGHT: usize = 40;
 const FRAMES: usize = 6;
 
-/// A Y4M clip with moving gradients and texture at `bits` per sample.
-fn synthetic_y4m(bits: u32) -> (Vec<u8>, Vec<Vec<u16>>) {
+/// A Y4M clip of `count` frames with moving gradients and texture at `bits`
+/// per sample.
+fn synthetic_y4m(bits: u32, count: usize) -> (Vec<u8>, Vec<Vec<u16>>) {
     let tag = if bits == 8 { "C420jpeg" } else { "C420p10" };
     let mut y4m = format!("YUV4MPEG2 W{WIDTH} H{HEIGHT} F30:1 Ip A1:1 {tag}\n").into_bytes();
     let max = (1u32 << bits) - 1;
     let mut frames = Vec::new();
-    for frame in 0..FRAMES {
+    for frame in 0..count {
         y4m.extend_from_slice(b"FRAME\n");
         let mut samples = Vec::new();
         for (plane, (w, h)) in [
@@ -66,7 +67,7 @@ fn psnr(source: &[u16], decoded: &[u16], bits: u32) -> f64 {
 }
 
 fn round_trip(bits: u32, rate_control: &[&str]) {
-    let (y4m, source) = synthetic_y4m(bits);
+    let (y4m, source) = synthetic_y4m(bits, FRAMES);
     let input = temp_input("y4m", &y4m);
     let ivf = temp_output("ivf");
     let raw = temp_output("yuv");
@@ -135,40 +136,47 @@ fn crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats() {
     round_trip(10, &["--bitrate", "200", "--rc", "cbr"]);
 }
 
+/// Ten frames at preset 6 code a key frame, two mini-GOPs of 4 with waves of
+/// leaf frames, and a short one; one tile and two tiles give the same IVF at
+/// every thread count.
 #[test]
 fn encode_output_is_byte_identical_across_thread_counts() {
-    let (y4m, _) = synthetic_y4m(8);
+    let (y4m, _) = synthetic_y4m(8, 10);
     let input = temp_input("y4m", &y4m);
     let input_s = input.to_str().unwrap();
-    let mut streams = Vec::new();
-    for threads in ["1", "2", "8"] {
-        let ivf = temp_output("ivf");
-        let ivf_s = ivf.to_str().unwrap();
-        let encode = splot(&[
-            "encode",
-            input_s,
-            "-o",
-            ivf_s,
-            "--keyint",
-            "4",
-            "--qp",
-            "90",
-            "--tiles",
-            "2x1",
-            "--threads",
-            threads,
-        ]);
-        assert!(encode.status.success(), "{encode:?}");
-        streams.push((threads, std::fs::read(&ivf).unwrap()));
-        let _ = std::fs::remove_file(ivf);
+    for tiles in ["1x1", "2x1"] {
+        let mut streams = Vec::new();
+        for threads in ["1", "2", "8"] {
+            let ivf = temp_output("ivf");
+            let ivf_s = ivf.to_str().unwrap();
+            let encode = splot(&[
+                "encode",
+                input_s,
+                "-o",
+                ivf_s,
+                "--keyint",
+                "16",
+                "--preset",
+                "6",
+                "--qp",
+                "90",
+                "--tiles",
+                tiles,
+                "--threads",
+                threads,
+            ]);
+            assert!(encode.status.success(), "{encode:?}");
+            streams.push((threads, std::fs::read(&ivf).unwrap()));
+            let _ = std::fs::remove_file(ivf);
+        }
+        for (threads, bytes) in &streams[1..] {
+            assert!(
+                *bytes == streams[0].1,
+                "--tiles {tiles} --threads {threads} changed the IVF"
+            );
+        }
     }
     let _ = std::fs::remove_file(input);
-    for (threads, bytes) in &streams[1..] {
-        assert!(
-            *bytes == streams[0].1,
-            "--threads {threads} changed the IVF"
-        );
-    }
 }
 
 #[test]

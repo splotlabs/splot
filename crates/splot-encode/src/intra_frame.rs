@@ -18,7 +18,7 @@ use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
 use splot_recon::{BitDepth, DecodedFrame, PlaneId, PlaneSize};
 
-use crate::config::{Config, TileLayout};
+use crate::config::Config;
 use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
@@ -49,7 +49,7 @@ pub(crate) struct IntraFrameCoder {
     preset: &'static PresetParams,
     references: EncoderReferences,
     tiles: UniformTiles,
-    /// Codes the tiles of a frame; `None` for a one-tile layout.
+    /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
     pool: Option<WorkerPool>,
 }
 
@@ -93,7 +93,7 @@ impl IntraFrameCoder {
                 rows_log2: config.tiles.rows_log2,
                 ..UniformTiles::default()
             },
-            pool: (config.tiles != TileLayout::default())
+            pool: (config.threads.resolve().get() > 1)
                 .then(|| WorkerPool::new(config.threads))
                 .transpose()
                 .map_err(coding("worker pool"))?,
@@ -102,12 +102,33 @@ impl IntraFrameCoder {
 }
 
 impl FrameCoder for IntraFrameCoder {
-    fn encode_frame(
-        &mut self,
-        source: &SourceFrame,
-        plan: &GopFrame,
-        qp: u16,
-    ) -> Result<CodedFrame> {
+    fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>> {
+        map_tiles(self.pool.as_ref(), wave.to_vec(), |(source, plan, qp)| {
+            self.code_frame(source, &plan, qp)
+        })
+    }
+
+    fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
+        let (core, recon) = frame.reference.take().ok_or(Error::Unsupported {
+            what: "a frame committed twice",
+        })?;
+        self.references
+            .update(&core, recon)
+            .map_err(coding("reference update"))
+    }
+
+    fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
+        let unit = gop::show_existing_unit(&self.view, slot)?;
+        self.references
+            .show_existing(slot)
+            .map_err(coding("show-existing frame"))?;
+        Ok(unit)
+    }
+}
+
+impl IntraFrameCoder {
+    /// Codes `source` as `plan` at quantizer `qp` against the committed references.
+    fn code_frame(&self, source: &SourceFrame, plan: &GopFrame, qp: u16) -> Result<CodedFrame> {
         let qindex = u32::from(qp);
         let tools = gop::frame_tools(self.preset, self.tiles);
         let header = |filters: &FrameFilterParams| {
@@ -166,23 +187,12 @@ impl FrameCoder for IntraFrameCoder {
             &core,
             &tiles,
         )?;
-        let planes = visible_planes(&recon)?;
-        self.references
-            .update(&core, recon)
-            .map_err(coding("reference update"))?;
         Ok(CodedFrame {
             temporal_unit,
-            recon: planes,
+            recon: visible_planes(&recon)?,
             frame_type: plan.frame_type,
+            reference: Some((core, recon)),
         })
-    }
-
-    fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
-        let unit = gop::show_existing_unit(&self.view, slot)?;
-        self.references
-            .show_existing(slot)
-            .map_err(coding("show-existing frame"))?;
-        Ok(unit)
     }
 }
 

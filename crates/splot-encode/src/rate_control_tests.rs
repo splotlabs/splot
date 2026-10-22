@@ -94,19 +94,20 @@ struct Recording {
 }
 
 impl FrameCoder for Recording {
-    fn encode_frame(
-        &mut self,
-        source: &SourceFrame,
-        plan: &GopFrame,
-        qp: u16,
-    ) -> Result<CodedFrame> {
-        let coded = self.coder.encode_frame(source, plan, qp)?;
-        let recon = raw_bytes(coded.recon.iter().map(Vec::as_slice), self.bit_depth);
-        self.recons
-            .lock()
-            .unwrap()
-            .insert(plan.display_index, recon);
+    fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>> {
+        let coded = self.coder.encode_wave(wave)?;
+        for ((_, plan, _), frame) in wave.iter().zip(&coded) {
+            let recon = raw_bytes(frame.recon.iter().map(Vec::as_slice), self.bit_depth);
+            self.recons
+                .lock()
+                .unwrap()
+                .insert(plan.display_index, recon);
+        }
         Ok(coded)
+    }
+
+    fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
+        self.coder.commit(frame)
     }
 
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {

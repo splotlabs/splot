@@ -16,7 +16,7 @@ use splot_recon::BitDepth;
 
 use super::cdef_rate;
 use crate::config::{Config, RateControlMode};
-use crate::encoder::{CodedFrame, FrameCoder};
+use crate::encoder::CodedFrame;
 use crate::frame::SourceFrame;
 use crate::intra_frame::IntraFrameCoder;
 use crate::preset::Preset;
