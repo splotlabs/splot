@@ -137,6 +137,35 @@ impl TileMiSizeState {
         }
     }
 
+    /// Calls `visit` with the block sizes and both planes' partition contexts
+    /// over tile rows `rows` x columns `cols`, for the encoder facade's
+    /// rollback. A chroma block is keyed by luma 4x4 position, so it lies there too.
+    pub(crate) fn visit_region(
+        &mut self,
+        rows: Range<usize>,
+        cols: &Range<usize>,
+        mut visit: impl FnMut(&mut [u8]),
+    ) {
+        let local = |range: &Range<usize>, origin: usize, len: usize| {
+            range.start.saturating_sub(origin).min(len)..range.end.saturating_sub(origin).min(len)
+        };
+        let (r, c) = (
+            local(&rows, self.origin_row, self.left_len),
+            local(cols, self.origin_col, self.mi_size_stride),
+        );
+        for row in r.clone() {
+            if let Some(plane_row) = self.window.plane_row(row) {
+                let base = plane_row * self.mi_size_stride;
+                visit(&mut self.storage[base + c.start..base + c.end]);
+            }
+        }
+        for plane in [LUMA_PLANE, CHROMA_PLANE] {
+            let (left, above) = (self.left_base(plane), self.above_base(plane));
+            visit(&mut self.storage[left + r.start..left + r.end]);
+            visit(&mut self.storage[above + c.start..above + c.end]);
+        }
+    }
+
     pub(crate) fn update_luma_block(
         &mut self,
         r: usize,

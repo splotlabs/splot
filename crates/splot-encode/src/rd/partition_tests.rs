@@ -104,7 +104,7 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
         }))
     }
 
-    fn save(&mut self, _: Rect) -> Result<Vec<Rect>, Self::Error> {
+    fn save(&mut self, _: Rect, _: Option<&Vec<Rect>>) -> Result<Vec<Rect>, Self::Error> {
         Ok(self.coded.clone())
     }
 

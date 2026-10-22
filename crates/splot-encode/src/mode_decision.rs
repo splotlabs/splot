@@ -294,7 +294,7 @@ impl TrialCoder<'_, '_> {
         }
         if leaf.has_chroma() {
             self.trial(leaf, choice, LUMA)?;
-            let luma = self.save(node)?;
+            let luma = self.save(node, None)?;
             let modes = self.chroma_candidates(leaf, choice.modes)?;
             let mut ranked = Vec::new();
             self.rank(leaf, modes, CHROMA, &mut ranked)?;
@@ -356,7 +356,7 @@ impl PartitionSearch for TrialCoder<'_, '_> {
     /// inter candidates over all planes, then codes the whole leaf.
     fn evaluate_leaf(&mut self, node: PartitionNode) -> Result<(RdCost, LeafChoice)> {
         let leaf = self.syntax.leaf(node)?;
-        let start = self.save(node)?;
+        let start = self.save(node, None)?;
         let mut candidates = Vec::new();
         if self.syntax.intra_allowed(&leaf) {
             candidates.push(self.intra_choice(node, &leaf, &start)?);
@@ -379,11 +379,15 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         Ok(sink.bits)
     }
 
-    fn save(&mut self, node: PartitionNode) -> Result<SyntaxSnapshot> {
-        let (w, h) = node.dimensions()?;
-        Ok(self
-            .syntax
-            .snapshot((node.col4() * 4, node.row4() * 4, w, h))?)
+    fn save(
+        &mut self,
+        node: PartitionNode,
+        start: Option<&SyntaxSnapshot>,
+    ) -> Result<SyntaxSnapshot> {
+        Ok(match start {
+            Some(start) => self.syntax.snapshot_since(start, node)?,
+            None => self.syntax.snapshot(node)?,
+        })
     }
 
     fn restore(&mut self, saved: &SyntaxSnapshot) -> Result<()> {

@@ -164,6 +164,35 @@ impl<T: Copy> MiGrid<T> {
         }
     }
 
+    /// Moves the window down to the superblock row holding tile row `row`.
+    pub(crate) fn enter_row(&mut self, row: usize) {
+        self.enter_block((row, self.origin_col));
+    }
+
+    /// Calls `visit` with the cells of each tile row in `rows` the window
+    /// holds, over the tile columns `cols`.
+    pub(crate) fn visit_cells(
+        &mut self,
+        rows: Range<usize>,
+        cols: &Range<usize>,
+        mut visit: impl FnMut(&mut [T]),
+    ) {
+        let start = cols.start.saturating_sub(self.origin_col).min(self.cols);
+        let end = cols.end.saturating_sub(self.origin_col).min(self.cols);
+        for row in rows {
+            let Some(plane_row) = row
+                .checked_sub(self.origin_row)
+                .and_then(|row| self.window.plane_row(row))
+            else {
+                continue;
+            };
+            let base = plane_row * self.cols;
+            if let Some(cells) = self.cells.get_mut(base + start..base + end) {
+                visit(cells);
+            }
+        }
+    }
+
     /// Moves the window to a block at tile position `pos` and returns it
     /// tile-relative, or `None` outside the tile.
     fn enter_block(&mut self, (r, c): (usize, usize)) -> Option<(usize, usize)> {
@@ -257,6 +286,19 @@ macro_rules! impl_grid_window_violated {
     };
 }
 
+macro_rules! impl_grid_mut {
+    ($($state:ty: $cell:ty),+ $(,)?) => {
+        $(
+            impl $state {
+                /// The neighbour grid, for the encoder facade's rollback.
+                pub(crate) fn grid_mut(&mut self) -> &mut MiGrid<$cell> {
+                    &mut self.grid
+                }
+            }
+        )+
+    };
+}
+
 macro_rules! impl_grid_recycle {
     ($($state:ty),+ $(,)?) => {
         $(
@@ -312,6 +354,11 @@ pub(crate) struct TileLumaPaletteState {
 }
 
 impl TileLumaPaletteState {
+    /// The palette list the grid indexes, for the encoder facade's rollback.
+    pub(crate) fn palettes_mut(&mut self) -> &mut Vec<LumaPalette> {
+        &mut self.palettes
+    }
+
     pub(crate) fn new_for_tile(
         row_range: Range<usize>,
         col_range: Range<usize>,
@@ -1214,6 +1261,15 @@ impl_grid_window_violated!(
     TileLumaPaletteState,
     TileUvCflState,
     TileIntraYModeState,
+);
+impl_grid_mut!(
+    TileIntraJointModeState: IntraJointMode,
+    TileUsesMrlsState: MrlSelection,
+    TileUseDipState: u8,
+    TileFscModeState: u8,
+    TileLumaPaletteState: Option<NonZeroU32>,
+    TileUvCflState: u8,
+    TileIntraYModeState: Option<TileIntraYModeFacts>,
 );
 impl_grid_recycle!(
     TileIntraJointModeState,

@@ -266,80 +266,12 @@ pub(super) struct Recon {
     pub(super) workspace: CurrentFrameWorkspace<u16>,
     scratch: GeneralIntraReconScratch<u16>,
     pub(super) block_decoded: TileBlockDecodedState,
-    y_smooth: TileSmoothGrid,
-    chroma_smooth: TileSmoothGrid,
+    pub(super) y_smooth: TileSmoothGrid,
+    pub(super) chroma_smooth: TileSmoothGrid,
     pub(super) leaf: Option<PlannedLeaf>,
 }
 
-/// The edge state and the saved samples of one 4:2:0 luma rectangle.
-pub(super) struct ReconSnapshot {
-    block_decoded: TileBlockDecodedState,
-    y_smooth: TileSmoothGrid,
-    chroma_smooth: TileSmoothGrid,
-    samples: Vec<(PlaneId, PlaneRect, Vec<u16>)>,
-}
-
 impl Recon {
-    /// Saves the edge state and the samples of the luma rectangle
-    /// `(x, y, width, height)`, clipped to storage. The chroma rectangle starts
-    /// at the 8x8 luma origin, which a has-chroma leaf at an odd 4x4 position
-    /// codes.
-    pub(super) fn snapshot(
-        &self,
-        (x, y, w, h): (usize, usize, usize, usize),
-    ) -> Result<ReconSnapshot> {
-        let mut samples = Vec::with_capacity(3);
-        for (plane, shift) in [(PlaneId::Y, 0), (PlaneId::U, 1), (PlaneId::V, 1)] {
-            let size = self
-                .workspace
-                .plane(plane)
-                .map_err(rule("snapshot plane"))?
-                .storage_size();
-            let (px, py) = ((x & !(4 * shift)) >> shift, (y & !(4 * shift)) >> shift);
-            let pw = (x + w)
-                .div_ceil(1 << shift)
-                .min(size.width())
-                .saturating_sub(px);
-            let ph = (y + h)
-                .div_ceil(1 << shift)
-                .min(size.height())
-                .saturating_sub(py);
-            if pw == 0 || ph == 0 {
-                continue;
-            }
-            let rect = PlaneRect::new(px, py, pw, ph).map_err(rule("snapshot rect"))?;
-            let mut saved = Vec::with_capacity(pw * ph);
-            for row in self
-                .workspace
-                .rect_rows(plane, rect)
-                .map_err(rule("snapshot rows"))?
-            {
-                saved.extend_from_slice(row);
-            }
-            samples.push((plane, rect, saved));
-        }
-        Ok(ReconSnapshot {
-            block_decoded: self.block_decoded.clone(),
-            y_smooth: self.y_smooth.clone(),
-            chroma_smooth: self.chroma_smooth.clone(),
-            samples,
-        })
-    }
-
-    /// Puts a [`Self::snapshot`] back.
-    pub(super) fn restore(&mut self, snapshot: &ReconSnapshot) -> Result<()> {
-        self.block_decoded.clone_from(&snapshot.block_decoded);
-        self.y_smooth.clone_from(&snapshot.y_smooth);
-        self.chroma_smooth.clone_from(&snapshot.chroma_smooth);
-        self.leaf = None;
-        for (plane, rect, samples) in &snapshot.samples {
-            self.workspace
-                .write_rect(*plane, *rect, samples, rect.width())
-                .map_err(rule("restore rows"))?;
-        }
-        Ok(())
-    }
-
     /// A 4:2:0 frame of the decoder's geometry: `FrameWidth x FrameHeight`
     /// samples over `MiCols * 4 x MiRows * 4` storage.
     pub(super) fn new(
@@ -730,48 +662,6 @@ impl IntraTileSyntax {
             .map_err(rule("BlockDecoded update"))?;
         self.recon.leaf = None;
         self.publish_inter_neighbours(leaf)
-    }
-
-    /// Saves the coding context and the reconstruction of the luma rectangle
-    /// `(x, y, width, height)`; a trial that writes only inside it can roll back
-    /// with [`Self::restore`].
-    ///
-    /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] for a rectangle outside the frame.
-    pub fn snapshot(&self, luma: (usize, usize, usize, usize)) -> Result<super::SyntaxSnapshot> {
-        Ok(super::SyntaxSnapshot {
-            cdfs: self.cdfs.clone(),
-            coeff: self.coeff.clone(),
-            mi_sizes: self.mi_sizes.clone(),
-            joint_modes: self.joint_modes.clone(),
-            uses_mrls: self.uses_mrls.clone(),
-            use_dip: self.use_dip.clone(),
-            fsc_modes: self.fsc_modes.clone(),
-            palette_y: self.palette_y.clone(),
-            uv_cfls: self.uv_cfls.clone(),
-            y_modes: self.y_modes.clone(),
-            recon: self.recon.snapshot(luma)?,
-            inter: self.inter_snapshot(luma),
-        })
-    }
-
-    /// Puts a [`Self::snapshot`] back.
-    ///
-    /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] if the saved samples no longer fit.
-    pub fn restore(&mut self, snapshot: &super::SyntaxSnapshot) -> Result<()> {
-        self.cdfs.clone_from(&snapshot.cdfs);
-        self.coeff.clone_from(&snapshot.coeff);
-        self.mi_sizes.clone_from(&snapshot.mi_sizes);
-        self.joint_modes.clone_from(&snapshot.joint_modes);
-        self.uses_mrls.clone_from(&snapshot.uses_mrls);
-        self.use_dip.clone_from(&snapshot.use_dip);
-        self.fsc_modes.clone_from(&snapshot.fsc_modes);
-        self.palette_y.clone_from(&snapshot.palette_y);
-        self.uv_cfls.clone_from(&snapshot.uv_cfls);
-        self.y_modes.clone_from(&snapshot.y_modes);
-        self.inter_restore(&snapshot.inter);
-        self.recon.restore(&snapshot.recon)
     }
 
     /// The reconstructed frame.

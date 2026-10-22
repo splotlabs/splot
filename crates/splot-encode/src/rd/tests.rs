@@ -305,7 +305,7 @@ fn frozen_rates_leave_rows_unchanged_and_track_adapting_rates() {
         coded: Vec::new(),
     };
     let levels = coder.code(&mut syntax, &tx, &[]).unwrap().levels;
-    let pristine = syntax.snapshot((0, 0, 64, 64)).unwrap();
+    let pristine = syntax.snapshot(root).unwrap();
     let frozen = block_rate(&mut syntax, &mut RateSink::frozen(), &tx, &levels, false).unwrap();
     let again = block_rate(&mut syntax, &mut RateSink::frozen(), &tx, &levels, false).unwrap();
     assert_eq!(frozen, again, "frozen pricing must not adapt rows");
@@ -357,7 +357,7 @@ fn snapshot_restores_the_facade() {
         (syntax, symbols, root)
     };
     let (mut syntax, mut symbols, root) = fresh();
-    let saved = (syntax.snapshot((0, 0, 64, 64)).unwrap(), symbols.clone());
+    let saved = (syntax.snapshot(root).unwrap(), symbols.clone());
     code_trial(&mut syntax, &mut symbols, root, 3);
     syntax.restore(&saved.0).unwrap();
     symbols = saved.1;

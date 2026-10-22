@@ -163,11 +163,8 @@ impl KeyFrameTileWriter {
         let root = self
             .next_superblock_root()
             .ok_or(TileWriterError::TileComplete)?;
-        let side = self.syntax.superblock_size4() * 4;
         self.syntax.begin_superblock(root);
-        let saved = self
-            .syntax
-            .snapshot((root.col4() * 4, root.row4() * 4, side, side))?;
+        let saved = self.syntax.snapshot(root)?;
         let found = search(&mut self.syntax, root);
         self.syntax.restore(&saved)?;
         found

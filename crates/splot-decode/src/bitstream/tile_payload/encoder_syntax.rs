@@ -54,12 +54,15 @@ use super::tile_frontier::{frame_mi_dimensions, minimal_partition_frame_facts};
 
 mod inter;
 mod intra;
+mod rollback;
 mod transform;
 
 pub use super::cdf::MvCdfSelector;
 pub use super::cdf::block_context::IntraYMode as IntraMode;
 pub use inter::{EncoderReferences, InterMode, InterModes, MV_PRECISION_EIGHTH_PEL, MotionVector};
 pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, TxType};
+pub use rollback::SyntaxSnapshot;
+use rollback::{CdfJournal, CdfRow};
 pub use transform::{TX_PARTITIONS, TxPartition};
 
 #[path = "encoder_filters.rs"]
@@ -158,6 +161,7 @@ impl PartitionOptions {
 struct PartitionWriter<'a, S> {
     target: Partition,
     sink: &'a mut S,
+    journal: &'a mut CdfJournal,
 }
 
 impl<S: SymbolSink> PartitionSymbols for PartitionWriter<'_, S> {
@@ -178,8 +182,11 @@ impl<S: SymbolSink> PartitionSymbols for PartitionWriter<'_, S> {
             TileCdfSelector::DoExtPartition { .. } => !matches!(target, P::Horz | P::Vert),
             _ => matches!(target, P::Horz4A | P::Horz4B | P::Vert4A | P::Vert4B),
         };
+        let (base, _) = cdfs.rows_span();
+        let row = cdfs.row_mut(selector)?;
+        self.journal.log(base, CdfRow::Tile(selector), row);
         self.sink
-            .symbol(cdfs.row_mut(selector)?, Symbol::new(u8::from(value)))
+            .symbol(row, Symbol::new(u8::from(value)))
             .map_err(PartitionDecisionError::Write)?;
         Ok(value)
     }
@@ -384,23 +391,6 @@ pub fn recon_params(
     .map_err(rule("recon parameters"))
 }
 
-/// A saved [`IntraTileSyntax`] context plus the reconstruction of one region, so
-/// a search can code a trial and roll it back without copying the frame.
-pub struct SyntaxSnapshot {
-    cdfs: TileCdfSubset,
-    coeff: TileCoeffContextState,
-    mi_sizes: TileMiSizeState,
-    joint_modes: TileIntraJointModeState,
-    uses_mrls: TileUsesMrlsState,
-    use_dip: TileUseDipState,
-    fsc_modes: TileFscModeState,
-    palette_y: TileLumaPaletteState,
-    uv_cfls: TileUvCflState,
-    y_modes: TileIntraYModeState,
-    recon: intra::ReconSnapshot,
-    inter: inter::InterSnapshot,
-}
-
 /// One tile's CDF rows, neighbour state, and reconstruction, all blocks intra.
 pub struct IntraTileSyntax {
     frame: TilePartitionFrameFacts,
@@ -421,6 +411,7 @@ pub struct IntraTileSyntax {
     y_modes: TileIntraYModeState,
     y_mode_table: intra::YModeTable,
     inter: Option<inter::InterLeafState>,
+    journal: CdfJournal,
 }
 
 impl IntraTileSyntax {
@@ -457,6 +448,8 @@ impl IntraTileSyntax {
             .map_err(rule("superblock size"))?;
         let chroma = seq.general.chroma_format_idc;
         let tools = intra::IntraTools::new(seq, core, base_q_idx)?;
+        let cdfs = FrameCdfSubset::default_for_base_q(base_q_idx).tile_copy();
+        let journal = CdfJournal::new(&cdfs);
         let inter = inter::InterLeafState::new(
             seq,
             core,
@@ -475,7 +468,7 @@ impl IntraTileSyntax {
             sb_size4,
             recon: intra::Recon::new(seq, core, &tools, (mi_rows, mi_cols), sb_size4)?,
             tools,
-            cdfs: FrameCdfSubset::default_for_base_q(base_q_idx).tile_copy(),
+            cdfs,
             coeff,
             mi_sizes: TileMiSizeState::new_for_tile(rows.clone(), cols.clone(), frame.sb_size())
                 .map_err(rule("MI-size state"))?,
@@ -508,6 +501,7 @@ impl IntraTileSyntax {
             y_modes: neighbour(TileIntraYModeState::new(mi_rows, mi_cols, sb_size4))?,
             y_mode_table: intra::YModeTable::default(),
             inter,
+            journal,
         })
     }
 
@@ -536,6 +530,7 @@ impl IntraTileSyntax {
 
     /// Starts coding the superblock of `root`; call once per superblock in raster order.
     pub fn begin_superblock(&mut self, root: PartitionNode) {
+        self.journal.clear();
         if root.0.c == 0 {
             self.mi_sizes.enter_sb_row(root.0.r);
         }
@@ -590,6 +585,7 @@ impl IntraTileSyntax {
         let mut writer = PartitionWriter {
             target: partition,
             sink: symbols,
+            journal: &mut self.journal,
         };
         let coded = read_partition_decision(input, &mut self.cdfs, &mut writer)
             .map_err(rule("partition"))?;
@@ -750,10 +746,14 @@ impl IntraTileSyntax {
             (false, true) => CoeffCdfSelector::BaseLfEob { tx_size, ctx },
             (false, false) => CoeffCdfSelector::BaseEob { tx_size, ctx },
         };
-        self.cdfs
+        let (base, _) = self.cdfs.rows_span();
+        let row = self
+            .cdfs
             .coeff_rows_mut()
             .row_mut(selector)
-            .map_err(rule("coeff_base_eob row"))
+            .map_err(rule("coeff_base_eob row"))?;
+        self.journal.log(base, CdfRow::Coeff(selector), row);
+        Ok(row)
     }
 
     /// The `coeff_base` CDF row for the coefficient at adjusted `(row, col)`, scan index `c`.
@@ -779,15 +779,20 @@ impl IntraTileSyntax {
             tx_class: tx_class_index(levels.class),
         }
         .select(levels.state.level());
-        let row = self
+        let (base, _) = self.cdfs.rows_span();
+        let tx_size = txb_skip_tx_size_ctx(tx_size);
+        let row = match self
             .cdfs
             .coeff_rows_mut()
-            .base_row(selection, txb_skip_tx_size_ctx(tx_size), 0)
-            .map_err(rule("coeff_base row"))?;
-        Ok(match row {
+            .base_row(selection, tx_size, 0)
+            .map_err(rule("coeff_base row"))?
+        {
             CoeffBaseRow::Base(row) => row.as_mut_slice(),
             CoeffBaseRow::Lf(row) => row.as_mut_slice(),
-        })
+        };
+        self.journal
+            .log(base, CdfRow::Base(selection, tx_size), row);
+        Ok(row)
     }
 
     /// The `coeff_br` CDF row for the coefficient at adjusted `(row, col)`.
@@ -810,11 +815,14 @@ impl IntraTileSyntax {
             tx_class: tx_class_index(levels.class),
         }
         .ctx(levels.state.level());
-        self.cdfs
+        let (base, _) = self.cdfs.rows_span();
+        let row = self
+            .cdfs
             .coeff_rows_mut()
             .br_row(plane, is_lf, ctx)
-            .map(<[u16; _]>::as_mut_slice)
-            .map_err(rule("coeff_br row"))
+            .map_err(rule("coeff_br row"))?;
+        self.journal.log(base, CdfRow::Br(plane, is_lf, ctx), row);
+        Ok(row)
     }
 
     /// The luma `dc_sign` CDF row of `tx`.
@@ -921,7 +929,10 @@ impl IntraTileSyntax {
     }
 
     fn tile_row(&mut self, selector: TileCdfSelector) -> Result<&mut [u16]> {
-        self.cdfs.row_mut(selector).map_err(rule("CDF row"))
+        let (base, _) = self.cdfs.rows_span();
+        let row = self.cdfs.row_mut(selector).map_err(rule("CDF row"))?;
+        self.journal.log(base, CdfRow::Tile(selector), row);
+        Ok(row)
     }
 }
 
