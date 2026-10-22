@@ -13,8 +13,12 @@ use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::gop::{GopFrame, GopPlanner, GopStep};
 use crate::intra_frame::IntraFrameCoder;
-use crate::rate_control::{ConstantQp, FramePlanInfo, FrameType, RateController};
+use crate::lookahead::Lookahead;
+use crate::rate_control::{
+    BitrateController, ConstantQp, Crf, FramePlanInfo, FrameType, RateController,
+};
 use crate::stats::{FrameStats, psnr, ssim};
+use crate::tpl;
 
 /// One AV2 temporal unit.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +76,10 @@ pub struct Encoder {
     stats_sink: Option<StatsSink>,
     pending: VecDeque<SourceFrame>,
     planner: GopPlanner,
+    lookahead: Lookahead,
+    lookahead_frames: usize,
+    /// The planned frames of the current lookahead window.
+    window: Vec<FramePlanInfo>,
     ready: VecDeque<Packet>,
     state: State,
 }
@@ -101,17 +109,33 @@ impl Encoder {
     }
 
     pub(crate) fn with_coder(config: Config, coder: Box<dyn FrameCoder + Send>) -> Self {
-        let rate_control = match config.rate_control {
+        let rate_control: Box<dyn RateController + Send> = match config.rate_control {
             RateControlMode::ConstantQp { qp } => Box::new(ConstantQp { qp }),
+            RateControlMode::Crf { crf } => Box::new(Crf { crf }),
+            RateControlMode::Vbr { bitrate_kbps } => {
+                Box::new(BitrateController::vbr(bitrate_kbps, config.frame_rate))
+            }
+            RateControlMode::Cbr {
+                bitrate_kbps,
+                buffer_ms,
+            } => Box::new(BitrateController::cbr(
+                bitrate_kbps,
+                buffer_ms,
+                config.frame_rate,
+            )),
         };
-        let planner = GopPlanner::new(config.keyint, config.preset.params().mini_gop_size);
+        let params = config.preset.params();
+        let planner = GopPlanner::new(config.keyint, params.mini_gop_size);
         Self {
-            config,
-            coder,
             rate_control,
             stats_sink: None,
             pending: VecDeque::new(),
             planner,
+            lookahead: Lookahead::new(&config),
+            lookahead_frames: usize::from(params.lookahead_frames),
+            window: Vec::new(),
+            config,
+            coder,
             ready: VecDeque::new(),
             state: State::Accepting,
         }
@@ -128,7 +152,8 @@ impl Encoder {
         self.stats_sink = Some(sink);
     }
 
-    /// Queues a frame for coding. The encoder keeps every queued frame until
+    /// Queues a frame for coding and analyses it in the lookahead; a scene cut
+    /// makes it a key frame. The encoder keeps every queued frame until
     /// [`Self::receive_packet`] codes it.
     ///
     /// # Errors
@@ -147,6 +172,10 @@ impl Encoder {
         {
             return Err(Error::FrameConfigMismatch);
         }
+        let display_index = self.planner.next_display() + self.pending.len() as u64;
+        if self.lookahead.push(&frame, display_index) {
+            self.planner.force_key(display_index);
+        }
         self.pending.push_back(frame);
         Ok(())
     }
@@ -164,7 +193,7 @@ impl Encoder {
     }
 
     /// Returns the next temporal unit. A mini-GOP is coded once the preset's
-    /// `mini_gop_size` frames are queued, or after [`Self::flush`]. Returns
+    /// `lookahead_frames` frames are queued, or after [`Self::flush`]. Returns
     /// `None` when no unit is ready: send more frames, or after
     /// [`Self::flush`] the stream is complete.
     ///
@@ -175,22 +204,60 @@ impl Encoder {
         if self.state == State::Failed {
             return Err(Error::Failed);
         }
+        let ended = self.state == State::Flushed;
+        let queued = self.pending.len();
         if self.ready.is_empty()
-            && let Some(len) = self
-                .planner
-                .next_len(self.pending.len(), self.state == State::Flushed)
+            && (ended || queued >= self.lookahead_frames)
+            && let Some(len) = self.planner.next_len(queued, ended)
+            && let Err(error) = self.code_mini_gop(len)
         {
-            let frames: Vec<SourceFrame> = self.pending.drain(..len).collect();
-            if let Err(error) = self.code_mini_gop(&frames) {
-                self.state = State::Failed;
-                return Err(error);
-            }
+            self.state = State::Failed;
+            return Err(error);
         }
         Ok(self.ready.pop_front())
     }
 
-    /// Codes `frames`, the next frames of the plan, into ready packets.
-    fn code_mini_gop(&mut self, frames: &[SourceFrame]) -> Result<()> {
+    /// Plans every queued frame, runs the temporal model over the plan, and
+    /// hands the window to the rate controller.
+    fn plan_window(&mut self) -> Result<()> {
+        let mut planner = self.planner.clone();
+        let mut remaining = self.pending.len();
+        let mut plan = Vec::new();
+        while let Some(len) = planner.next_len(remaining, true) {
+            plan.extend(
+                planner
+                    .plan(len)?
+                    .into_iter()
+                    .filter_map(|step| match step {
+                        GopStep::Code(frame) => Some(frame),
+                        GopStep::ShowExisting { .. } => None,
+                    }),
+            );
+            remaining -= len;
+        }
+        let coded_before = self.planner.next_display().checked_sub(1);
+        let model = tpl::analyze(&mut self.lookahead, &plan, coded_before);
+        self.window = plan
+            .iter()
+            .zip(model)
+            .map(|(frame, model)| FramePlanInfo {
+                frame_index: frame.frame_index,
+                display_index: frame.display_index,
+                frame_type: frame.frame_type,
+                layer: frame.layer,
+                complexity: model.complexity,
+                qindex_offset: model.qindex_offset,
+            })
+            .collect();
+        self.rate_control.plan_window(&self.window);
+        Ok(())
+    }
+
+    /// Codes the next `len` queued frames, the next frames of the plan, into
+    /// ready packets.
+    fn code_mini_gop(&mut self, len: usize) -> Result<()> {
+        self.plan_window()?;
+        let frames: Vec<SourceFrame> = self.pending.drain(..len).collect();
         let first = self.planner.next_display();
         let source = |display_index: u64| {
             usize::try_from(display_index - first)
@@ -224,6 +291,8 @@ impl Encoder {
                 });
             }
         }
+        self.lookahead
+            .retain_from(self.planner.next_display().saturating_sub(1));
         Ok(())
     }
 
@@ -232,10 +301,14 @@ impl Encoder {
         frame: &SourceFrame,
         gop_frame: &GopFrame,
     ) -> Result<(CodedFrame, FrameStats)> {
-        let plan = FramePlanInfo {
-            frame_index: gop_frame.frame_index,
-            frame_type: gop_frame.frame_type,
-        };
+        let plan = self
+            .window
+            .iter()
+            .find(|info| info.display_index == gop_frame.display_index)
+            .copied()
+            .ok_or(Error::Unsupported {
+                what: "a frame outside its lookahead window",
+            })?;
         let qp = self.rate_control.frame_qp(&plan);
         let coded = self.coder.encode_frame(frame, gop_frame, qp)?;
 
@@ -272,6 +345,7 @@ fn frame_coder(config: &Config) -> Result<Box<dyn FrameCoder + Send>> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -406,6 +480,7 @@ mod tests {
         let mut encoder = encoder(None, 6);
         encoder.config.keyint = core::num::NonZeroU32::new(10).unwrap_or(encoder.config.keyint);
         encoder.planner = GopPlanner::new(encoder.config.keyint, 4);
+        encoder.lookahead_frames = 4;
         for pts in 0..4 {
             let frame = frame(&encoder, pts)?;
             encoder.send_frame(frame)?;
@@ -432,6 +507,53 @@ mod tests {
             .map(|p| p.stats.iter().map(|s| s.pts).collect())
             .collect();
         assert_eq!(stats, [vec![4, 2, 1], vec![], vec![3], vec![]]);
+        Ok(())
+    }
+
+    /// Codes `frames` frames of a 64x64 texture panning by `shift` samples a
+    /// frame, with a new texture from frame `cut`, through the fake coder.
+    fn textured(rate_control: RateControlMode, shift: usize, cut: u64) -> Result<Vec<Packet>> {
+        let mut config = Config::new(64, 64);
+        config.rate_control = rate_control;
+        let mut encoder =
+            Encoder::with_coder(config.clone(), Box::new(FakeCoder { fail_at: None }));
+        for pts in 0..12 {
+            let scene = u32::from(pts >= cut);
+            let frame = crate::lookahead::tests::frame(&config, pts, shift * pts as usize, scene);
+            encoder.send_frame(frame)?;
+        }
+        encoder.flush()?;
+        drain(&mut encoder)
+    }
+
+    #[test]
+    fn a_scene_cut_starts_a_key_frame() -> Result<()> {
+        let packets = textured(RateControlMode::ConstantQp { qp: 40 }, 2, 7)?;
+        let keys: Vec<u64> = packets
+            .iter()
+            .filter(|packet| packet.frame_type == FrameType::Key)
+            .map(|packet| packet.pts)
+            .collect();
+        assert_eq!(keys, [0, 7]);
+        Ok(())
+    }
+
+    /// On static content the alt-ref of each mini-GOP of 4 gets a finer
+    /// quantizer than its middle frame, and that one than the leaves.
+    #[test]
+    fn crf_gives_referenced_frames_lower_qindex_on_static_content() -> Result<()> {
+        let packets = textured(RateControlMode::Crf { crf: 30 }, 0, u64::MAX)?;
+        let qp: BTreeMap<u64, u8> = packets
+            .iter()
+            .flat_map(|packet| &packet.stats)
+            .map(|stats| (stats.pts, stats.qp))
+            .collect();
+        for base in [0, 4] {
+            let (leaf, middle, alt_ref) = (qp[&(base + 1)], qp[&(base + 2)], qp[&(base + 4)]);
+            assert_eq!(leaf, qp[&(base + 3)], "{qp:?}");
+            assert!(alt_ref < middle && middle < leaf, "{qp:?}");
+        }
+        assert!(qp[&0] < qp[&2], "{qp:?}");
         Ok(())
     }
 

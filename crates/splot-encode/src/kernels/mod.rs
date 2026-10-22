@@ -84,6 +84,12 @@ pub(crate) struct BlockDims {
 }
 
 impl BlockDims {
+    /// The 8x8 block.
+    pub(crate) const SQUARE_8: Self = Self {
+        width: 8,
+        height: 8,
+    };
+
     /// Validates a `width x height` block size.
     ///
     /// # Errors

@@ -41,6 +41,22 @@ pub enum Error {
         qp: u8,
     },
 
+    /// The rate factor is outside `1..=63`.
+    #[error("crf {crf} is outside 1..={max}", max = crate::rate_control::Crf::MAX)]
+    InvalidCrf {
+        /// Requested rate factor.
+        crf: u8,
+    },
+
+    /// A bitrate setting is zero.
+    #[error("{what} must be positive, got {value}")]
+    InvalidBitrate {
+        /// The setting.
+        what: &'static str,
+        /// Its value.
+        value: u32,
+    },
+
     /// The speed preset is outside `0..=10`.
     #[error("preset {preset} is outside 0..={max}", max = crate::preset::Preset::MAX)]
     InvalidPreset {

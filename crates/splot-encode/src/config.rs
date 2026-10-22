@@ -10,6 +10,7 @@ use splot_recon::{BitDepth, PixelFormat, PlaneSize};
 
 use crate::error::{Error, Result};
 use crate::preset::Preset;
+use crate::rate_control::Crf;
 
 /// Largest frame dimension AV2 can signal: `max_frame_width_minus_1` has at most
 /// 16 bits (§ 5.4.1, `docs/spec/av2/1.0.0/05-syntax-structures.md`).
@@ -23,6 +24,23 @@ pub enum RateControlMode {
     ConstantQp {
         /// The frame-header `base_q_idx`, `1..=255`.
         qp: u8,
+    },
+    /// Constant quality with lookahead offsets; see [`crate::Crf`].
+    Crf {
+        /// The rate factor, `1..=63`; higher means fewer bits.
+        crf: u8,
+    },
+    /// Variable bitrate around a target average.
+    Vbr {
+        /// The target bitrate in kilobits per second.
+        bitrate_kbps: u32,
+    },
+    /// Constant bitrate with a buffer that no frame may overflow.
+    Cbr {
+        /// The target bitrate in kilobits per second.
+        bitrate_kbps: u32,
+        /// The buffer size in milliseconds at the target bitrate.
+        buffer_ms: u32,
     },
 }
 
@@ -81,7 +99,8 @@ impl Config {
     ///
     /// # Errors
     /// Returns [`Error::InvalidDimensions`], [`Error::UnsupportedChroma`],
-    /// [`Error::InvalidFrameRate`] or [`Error::InvalidQp`].
+    /// [`Error::InvalidFrameRate`], [`Error::InvalidQp`], [`Error::InvalidCrf`]
+    /// or [`Error::InvalidBitrate`].
     pub fn validate(&self) -> Result<()> {
         let dimension_ok = |value| (1..=MAX_FRAME_DIMENSION).contains(&value);
         if !dimension_ok(self.width) || !dimension_ok(self.height) {
@@ -103,7 +122,21 @@ impl Config {
         }
         match self.rate_control {
             RateControlMode::ConstantQp { qp: 0 } => Err(Error::InvalidQp { qp: 0 }),
-            RateControlMode::ConstantQp { .. } => Ok(()),
+            RateControlMode::Crf { crf } if crf == 0 || crf > Crf::MAX => {
+                Err(Error::InvalidCrf { crf })
+            }
+            RateControlMode::Vbr { bitrate_kbps: 0 }
+            | RateControlMode::Cbr {
+                bitrate_kbps: 0, ..
+            } => Err(Error::InvalidBitrate {
+                what: "bitrate_kbps",
+                value: 0,
+            }),
+            RateControlMode::Cbr { buffer_ms: 0, .. } => Err(Error::InvalidBitrate {
+                what: "buffer_ms",
+                value: 0,
+            }),
+            _ => Ok(()),
         }
     }
 
@@ -166,6 +199,29 @@ mod tests {
         config = Config::new(64, 64);
         config.rate_control = RateControlMode::ConstantQp { qp: 0 };
         assert!(matches!(config.validate(), Err(Error::InvalidQp { qp: 0 })));
+        config.rate_control = RateControlMode::Crf { crf: 64 };
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidCrf { crf: 64 })
+        ));
+        config.rate_control = RateControlMode::Cbr {
+            bitrate_kbps: 100,
+            buffer_ms: 0,
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidBitrate {
+                what: "buffer_ms",
+                ..
+            })
+        ));
+        config.rate_control = RateControlMode::Vbr { bitrate_kbps: 0 };
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidBitrate { .. })
+        ));
+        config.rate_control = RateControlMode::Crf { crf: 63 };
+        assert!(config.validate().is_ok());
     }
 
     #[test]

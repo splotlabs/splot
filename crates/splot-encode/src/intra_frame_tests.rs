@@ -64,7 +64,9 @@ fn code(config: &Config, seed: u32) -> CodedFrame {
 
 /// Codes one frame per seed in order, with key frames every `config.keyint`.
 fn code_stream(config: &Config, seeds: &[u32]) -> Vec<CodedFrame> {
-    let RateControlMode::ConstantQp { qp } = config.rate_control;
+    let RateControlMode::ConstantQp { qp } = config.rate_control else {
+        unreachable!("these tests code at a constant qp")
+    };
     let mut coder = IntraFrameCoder::new(config).unwrap();
     seeds
         .iter()
@@ -464,7 +466,9 @@ fn random_leaf(
 /// frames 0, 2 and 4, coded from random partitions, modes, references and
 /// vectors: the temporal units and the samples a decoder outputs.
 fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Coverage) {
-    let RateControlMode::ConstantQp { qp } = config.rate_control;
+    let RateControlMode::ConstantQp { qp } = config.rate_control else {
+        unreachable!("these tests code at a constant qp")
+    };
     let qindex = u32::from(qp);
     let mut coder = IntraFrameCoder::new(config).unwrap();
     let mut planner = crate::gop::GopPlanner::new(config.keyint, 4);
