@@ -644,12 +644,18 @@ fn tip_block_plan<T: ReconSample>(
                     offsets,
                 ));
     let frame_size = info.storage_luma_size();
-    let block_w = placed
-        .luma_w
-        .min(frame_size.width().saturating_sub(placed.luma_x));
-    let block_h = placed
-        .luma_h
-        .min(frame_size.height().saturating_sub(placed.luma_y));
+    let block_w = placed.luma_w.min(
+        frame_size
+            .width()
+            .saturating_sub(placed.luma_x)
+            .next_multiple_of(unit_size),
+    );
+    let block_h = placed.luma_h.min(
+        frame_size
+            .height()
+            .saturating_sub(placed.luma_y)
+            .next_multiple_of(unit_size),
+    );
     if block_w == 0 || block_h == 0 {
         return Err(DecodeHeaderStateError::InvalidBlockGeometry.into());
     }
@@ -783,9 +789,10 @@ fn build_units<T: ReconSample>(
 /// share, and every unit's § 7.22 temporal record.
 ///
 /// This reads reference samples but writes none, so it is the half a motion
-/// resolution pass runs. Only the optical-flow shape refines a unit's stored
-/// motion vectors; every other shape stores the § 7.11.3 candidate the unit was
-/// built with, and derives no grid at all.
+/// resolution pass runs. The optical-flow shape stores its grid's refined
+/// motion vectors, a refine-MV unit its own § 7.13.3.3 refinement (the § 5.20.4
+/// `store_refined_mvs` `RefineMvs`), and every other shape the § 7.11.3
+/// candidate the unit was built with.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn motion<T: ReconSample>(
     scratch: &mut TipReconstructScratch<T>,
@@ -819,10 +826,24 @@ pub(super) fn motion<T: ReconSample>(
     let current_order_hint = core
         .display_order_hint()
         .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
+    let held = (grid.is_none() && plan.plan.use_refinemv)
+        .then(|| plan.hold(reference))
+        .transpose()?;
+    let refining = held
+        .as_ref()
+        .map(|held| held.prediction(&plan.plan))
+        .transpose()?;
     for (index, unit) in scratch.units.iter().enumerate() {
-        let stored_mvs = match grid.as_ref() {
-            Some(grid) => grid.stored_mvs_at_index(index)?,
-            None => unit.mvs,
+        let stored_mvs = match (grid.as_ref(), refining.as_ref()) {
+            (Some(grid), _) => grid.stored_mvs_at_index(index)?,
+            (None, Some(prediction)) => match prediction.block_params(unit).into_compound() {
+                Some(compound) => {
+                    mc::compound_block_motion_grid(sink, compound, None, tile_offset)?
+                        .map_or(Ok(unit.mvs), |refined| refined.stored_mvs_at_index(0))?
+                }
+                None => unit.mvs,
+            },
+            (None, None) => unit.mvs,
         };
         temporal_records.push(plan.temporal_record(
             reference,

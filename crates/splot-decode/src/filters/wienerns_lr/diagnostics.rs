@@ -21,10 +21,16 @@ pub(crate) fn selectable_symbol_read_error(
     )
 }
 
-pub(crate) fn intra_capped_seq_sb_size(sequence: &SequenceHeader) -> Result<SuperblockSize> {
+/// The frame `SbSize` in 4x4 units (§ 5.18.2): intra frames cap 256x256 at 128x128.
+pub(crate) fn frame_sb_size4(sequence: &SequenceHeader, frame_is_intra: bool) -> Result<usize> {
     let partition = sequence
         .partition
         .as_ref()
         .ok_or(crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords)?;
-    Ok(partition.seq_sb_size())
+    Ok(match partition.seq_sb_size() {
+        SuperblockSize::Block64x64 => 16,
+        SuperblockSize::Block128x128 => 32,
+        SuperblockSize::Block256x256 if frame_is_intra => 32,
+        SuperblockSize::Block256x256 => 64,
+    })
 }

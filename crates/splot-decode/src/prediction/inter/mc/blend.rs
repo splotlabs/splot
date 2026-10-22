@@ -173,12 +173,12 @@ fn blend_compound_diff_weighted<T: ReconSample>(
         .transpose()?;
     let max_sample = i32::from(bit_depth.max_sample().min(T::MAX_VALUE));
     let diff_round = u32::from(bit_depth.bits().saturating_sub(8)) + compound_inter_post_round();
-    let mut mask_row = [0i32; MAX_MC_BLOCK_DIM];
+    let mut mask_row = [0i32; 2 * MAX_MC_BLOCK_DIM];
     let mask_row = mask_row
         .get_mut(..w)
         .ok_or(ReconError::BufferLengthMismatch {
             expected: w,
-            actual: MAX_MC_BLOCK_DIM,
+            actual: 2 * MAX_MC_BLOCK_DIM,
         })?;
     let rows = output
         .chunks_mut(stride.max(1))

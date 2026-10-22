@@ -399,7 +399,8 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
             .ok_or(inter_allocation!("inter temporal motion field"))?
     };
     let motion_layout = motion_field.layout();
-    let cdef_state = CdefState::new_reusing(mi_rows, mi_cols, sequence, cdef_grid_values)?;
+    let cdef_state =
+        CdefState::new_reusing(mi_rows, mi_cols, sequence, frame_is_intra, cdef_grid_values)?;
     let gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core)?;
     let mut ref_ccso_unit_grids = RefSlots::default();
     ref_ccso_unit_grids.extend_within(reference.ref_ccso_unit_grids.iter().map(|handle| {

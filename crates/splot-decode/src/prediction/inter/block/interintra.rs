@@ -241,6 +241,14 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                 let h4 = (h / MI_SIZE).max(1);
                 let (available_left_samples, available_above_samples) =
                     availability.available_sample_limits();
+                let (num4_above_right, num4_below_left) =
+                    crate::tile::block_context::normalize_intra_corner_counts(
+                        plane,
+                        u32::from(log2_w),
+                        u32::from(log2_h),
+                        block_decoded.count_top_right_avail(plane.index(), x4, y4, w4),
+                        block_decoded.count_bottom_left_avail(plane.index(), x4, y4, h4),
+                    );
                 predict_intra_smooth_over_available_edges_into(
                     workspace,
                     SmoothIntraPredictionRequest {
@@ -251,18 +259,8 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                         mode: IntraSmoothMode::Smooth,
                         available_left_samples,
                         available_above_samples,
-                        num4_above_right: block_decoded.count_top_right_avail(
-                            plane.index(),
-                            x4,
-                            y4,
-                            w4,
-                        ),
-                        num4_below_left: block_decoded.count_bottom_left_avail(
-                            plane.index(),
-                            x4,
-                            y4,
-                            h4,
-                        ),
+                        num4_above_right,
+                        num4_below_left,
                         bit_depth,
                     },
                     samples,

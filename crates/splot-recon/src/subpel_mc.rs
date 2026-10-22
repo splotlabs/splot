@@ -450,9 +450,9 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
 pub struct SubpelPredictParams {
     /// The § 6 interpolation filter (`interp`).
     pub interp: InterpolationFilter,
-    /// The block width in samples (`w`), `1..=128`.
+    /// The block width in samples (`w`), `1..=256`.
     pub w: usize,
-    /// The block height in samples (`h`), `1..=128`.
+    /// The block height in samples (`h`), `1..=256`.
     pub h: usize,
     /// The § 7.13.3.17 `startX`: the reference block left edge in 1/1024-sample
     /// units (the `x` input to § 7.13.3.18).
@@ -480,8 +480,8 @@ pub struct SubpelPredictParams {
     pub bit_depth: BitDepth,
 }
 
-/// The maximum supported block dimension (AV2 super-block transform block side).
-const MAX_BLOCK_DIM: usize = 128;
+/// The maximum supported block dimension (the AV2 256x256 super-block side).
+const MAX_BLOCK_DIM: usize = 256;
 
 /// Runs the AV2 § 7.13.3.18 separable interpolation-filter convolution for a
 /// single-reference (non-compound) inter block and returns the row-major
@@ -500,7 +500,7 @@ const MAX_BLOCK_DIM: usize = 128;
 ///
 /// Returns [`ReconError::ZeroDimension`] for a zero dimension,
 /// [`ReconError::SubpelBlockDimensionUnsupported`] for `w`/`h` above the
-/// 128-sample super-block side, [`ReconError::SubpelNegativeStep`] for a negative
+/// 256-sample super-block side, [`ReconError::SubpelNegativeStep`] for a negative
 /// step, [`ReconError::SubpelReferenceBoundsInvalid`] for an inverted clipping
 /// range, and [`ReconError::ArithmeticOverflow`] if the intermediate height
 /// cannot be derived.

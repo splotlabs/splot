@@ -4,7 +4,7 @@
 use std::ops::Range;
 
 use splot_core::headers::frame::{FrameHeaderCore, MvPrecision};
-use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
+use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_recon::{PlaneRect, PlaneSize};
@@ -26,7 +26,7 @@ use crate::tile::SbRowWindow;
 use super::intrabc_ref_mv_stack::{
     SpatialIntrabcProbes, SpatialScanGeometry, capture_spatial_intrabc_probes,
 };
-use super::{intra_capped_seq_sb_size, selectable_symbol_read_error};
+use super::{frame_sb_size4, selectable_symbol_read_error};
 
 const BLOCK_64X64: usize = 12;
 const MI_SIZE: usize = 4;
@@ -412,7 +412,7 @@ impl TileIntrabcPreludeState {
         let (mi_rows, mi_cols) = frame_mi_size;
         let rows = tile_rows.end.saturating_sub(tile_rows.start);
         let cols = tile_cols.end.saturating_sub(tile_cols.start);
-        let sb_size4 = intrabc_sb_size4(sequence, frame_is_intra_only)?;
+        let sb_size4 = frame_sb_size4(sequence, frame_is_intra_only)?;
         let window = SbRowWindow::new(rows, sb_size4);
         let values_len = if enabled {
             window
@@ -1168,16 +1168,6 @@ fn max_bvp_drl_bits_minus_1(sequence: &SequenceHeader, core: &FrameHeaderCore) -
     }
     let inter = sequence.inter.as_ref().ok_or_else(intrabc_state_error)?;
     Ok(inter.seq_max_bvp_drl_bits_minus_1)
-}
-
-fn intrabc_sb_size4(sequence: &SequenceHeader, frame_is_intra_only: bool) -> Result<usize> {
-    let seq_sb_size = intra_capped_seq_sb_size(sequence)?;
-    Ok(match seq_sb_size {
-        SuperblockSize::Block64x64 => 16,
-        SuperblockSize::Block128x128 => 32,
-        SuperblockSize::Block256x256 if frame_is_intra_only => 32,
-        SuperblockSize::Block256x256 => 64,
-    })
 }
 
 #[cfg(test)]
