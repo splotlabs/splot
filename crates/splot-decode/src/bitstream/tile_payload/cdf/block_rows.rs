@@ -46,7 +46,7 @@ use splot_core::tables::cdf::{
 mod mv;
 
 use self::mv::MvCdfRows;
-pub(crate) use self::mv::MvCdfSelector;
+pub use self::mv::MvCdfSelector;
 use super::coeff_rows::CoeffCdfRows;
 use super::{
     CDF_ROW_LEN, CoeffCdfQContext, TileCdfArray, TileCdfError, TileCdfSelector, avg_cdf_row,

@@ -1192,7 +1192,10 @@ fn decode_block<T: ReconSample>(
     let mi_col = frontier.c;
     let placed_geometry = placed_inter_geometry(
         frontier,
-        work_unit,
+        (
+            work_unit.mi_row_range().start as usize,
+            work_unit.mi_col_range().start as usize,
+        ),
         (n4w, n4h),
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
     )?;
@@ -2121,7 +2124,7 @@ const fn inter_skip_txfm_ctx(neighbour_skip_ctx: usize, skip_mode: bool) -> usiz
     neighbour_skip_ctx + if skip_mode { 3 } else { 0 }
 }
 
-fn non_intra_leaf_mode(frontier: &DecodeBlockFrontier) -> GeneralIntraLeafMode {
+pub(crate) fn non_intra_leaf_mode(frontier: &DecodeBlockFrontier) -> GeneralIntraLeafMode {
     let leaf = GeneralIntraLeafMode::no_luma_mode();
     if frontier.has_chroma {
         return leaf.with_uv_cfl(false);
@@ -2150,6 +2153,11 @@ fn sequence_enables_ibp(sequence: &SequenceHeader) -> bool {
 
 mod compound_path;
 mod deferred_recon;
+mod encoder_leaf;
+pub(crate) use encoder_leaf::{
+    EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderSingleMotion,
+    chroma_inter_tx_type, single_transform_residual,
+};
 mod filter_records;
 mod frame_parse;
 pub(in crate::prediction::inter) use frame_parse::prepare_scheduled_recon;

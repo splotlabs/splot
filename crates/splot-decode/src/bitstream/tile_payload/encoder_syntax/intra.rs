@@ -159,8 +159,8 @@ pub(super) struct IntraTools {
     cfl_ds_filter_index: u8,
     enable_ibp: bool,
     enable_intra_edge_filter: bool,
-    enable_chroma_dctonly: bool,
-    bit_depth: BitDepth,
+    pub(super) enable_chroma_dctonly: bool,
+    pub(super) bit_depth: BitDepth,
     qindex: u32,
     pub(super) tx_mode: Option<TxMode>,
     pub(super) reduced_tx_set: usize,
@@ -263,12 +263,12 @@ pub(super) struct PlannedLeaf {
 
 /// The reconstructed frame and the state its prediction reads.
 pub(super) struct Recon {
-    workspace: CurrentFrameWorkspace<u16>,
+    pub(super) workspace: CurrentFrameWorkspace<u16>,
     scratch: GeneralIntraReconScratch<u16>,
     pub(super) block_decoded: TileBlockDecodedState,
     y_smooth: TileSmoothGrid,
     chroma_smooth: TileSmoothGrid,
-    leaf: Option<PlannedLeaf>,
+    pub(super) leaf: Option<PlannedLeaf>,
 }
 
 /// The edge state and the saved samples of one 4:2:0 luma rectangle.
@@ -511,6 +511,7 @@ impl IntraTileSyntax {
         modes: IntraModes,
         partition: TxPartition,
     ) -> Result<Vec<TransformBlock>> {
+        self.clear_inter_plan();
         let (block_ctx, _) = self.block_ctx(leaf);
         let (_, joint) = self.y_mode_index(leaf, modes)?;
         let block_modes = block_modes(leaf, modes, joint)?;
@@ -750,6 +751,7 @@ impl IntraTileSyntax {
             uv_cfls: self.uv_cfls.clone(),
             y_modes: self.y_modes.clone(),
             recon: self.recon.snapshot(luma)?,
+            inter: self.inter_snapshot(luma),
         })
     }
 
@@ -768,6 +770,7 @@ impl IntraTileSyntax {
         self.palette_y.clone_from(&snapshot.palette_y);
         self.uv_cfls.clone_from(&snapshot.uv_cfls);
         self.y_modes.clone_from(&snapshot.y_modes);
+        self.inter_restore(&snapshot.inter);
         self.recon.restore(&snapshot.recon)
     }
 

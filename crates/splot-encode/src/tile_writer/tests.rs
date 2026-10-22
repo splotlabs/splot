@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use crate::test_support::refs_for;
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, KeyFrameTxParams,
     build_encoder_sequence_header, build_key_frame_header, encode_key_frame_temporal_unit,
@@ -396,7 +397,7 @@ fn encode_case(
         case.tx,
     )
     .unwrap();
-    let mut writer = KeyFrameTileWriter::new(&seq, &core).unwrap();
+    let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq)).unwrap();
     let mut rng = Rng(seed | 1);
     let mut modes = ModePicker::new(seed);
     let mut coder = RandomLevels {
@@ -581,7 +582,7 @@ fn rejects_unsupported_decisions() {
         KeyFrameTxParams::default(),
     )
     .unwrap();
-    let mut writer = KeyFrameTileWriter::new(&seq, &core).unwrap();
+    let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq)).unwrap();
     let tree = PartitionTree::Leaf(LeafChoice::DC);
     assert!(matches!(
         writer.write_superblock(
@@ -624,15 +625,15 @@ fn facade_rejects_unmodelled_tools() {
     let base = Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64).tools;
     let rejects = |seq: &SequenceHeader, core: &FrameHeaderCore| {
         matches!(
-            IntraTileSyntax::new(seq, core),
+            IntraTileSyntax::new(seq, core, &refs_for(seq)),
             Err(EncoderSyntaxError::Unsupported(_))
         ) && matches!(
-            KeyFrameTileWriter::new(seq, core),
+            KeyFrameTileWriter::new(seq, core, &refs_for(seq)),
             Err(TileWriterError::Syntax(EncoderSyntaxError::Unsupported(_)))
         )
     };
     let (seq, core) = headers(base);
-    assert!(IntraTileSyntax::new(&seq, &core).is_ok());
+    assert!(IntraTileSyntax::new(&seq, &core, &refs_for(&seq)).is_ok());
     let tool_cases: [fn(&mut EncoderToolFlags); 5] = [
         |t| t.mhccp = true,
         |t| t.intra_ist = true,
@@ -670,7 +671,7 @@ fn facade_rejects_unmodelled_tools() {
 fn rejects_out_of_range_cfl_alphas() {
     let (seq, core) =
         headers(Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64).tools);
-    let mut syntax = IntraTileSyntax::new(&seq, &core).unwrap();
+    let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq)).unwrap();
     let root = syntax.superblock_root(0, 0);
     syntax.begin_superblock(root);
     let node = syntax.children(root, Partition::Horz).unwrap()[0];

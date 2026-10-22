@@ -22,8 +22,8 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    FilterRecorder, IntraTileSyntax, LrLayout, LrUnit, TransformBlock, apply_loop_filters,
-    cdef_unit_grid,
+    EncoderReferences, FilterRecorder, IntraTileSyntax, LrLayout, LrUnit, TransformBlock,
+    apply_loop_filters, cdef_unit_grid,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -162,7 +162,7 @@ pub(crate) fn finish_frame(
     seq: &SequenceHeader,
     header: HeaderBuilder<'_>,
     preset: &PresetParams,
-    source: &SourceFrame,
+    (source, refs): (&SourceFrame, &EncoderReferences),
     pass: FirstPass,
 ) -> Result<FilteredFrame> {
     let qindex = pass
@@ -191,7 +191,7 @@ pub(crate) fn finish_frame(
         });
     }
     let core = search.header(&params)?;
-    let mut writer = KeyFrameTileWriter::new(seq, &core).map_err(coding("filter pass"))?;
+    let mut writer = KeyFrameTileWriter::new(seq, &core, refs).map_err(coding("filter pass"))?;
     writer.set_filter_syntax(syntax);
     let mut replay = Replay(pass.decisions.transforms.into_iter());
     for decision in &pass.decisions.superblocks {

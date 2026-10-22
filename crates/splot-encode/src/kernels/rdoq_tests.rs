@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use crate::test_support::refs_for;
 use proptest::prelude::*;
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, KeyFrameTxParams,
@@ -225,7 +226,7 @@ fn facade_rows_back_the_rate_model() {
             fills_block: true,
         };
         let mut rates = FacadeRates {
-            syntax: IntraTileSyntax::new(&seq, &core).unwrap(),
+            syntax: IntraTileSyntax::new(&seq, &core, &refs_for(&seq)).unwrap(),
             tx,
         };
         let b = RdoqBlock {

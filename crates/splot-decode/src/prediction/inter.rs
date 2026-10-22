@@ -54,9 +54,9 @@ const SPEC_MC: &str = "7.13.3.18";
 
 const _: () = assert!(ReferenceSlot::MAX_SLOTS <= u16::BITS as usize);
 const SPEC_TIP_TEMPORAL_SCALE: &str = "7.10.1";
-const SINGLE_MODE_NEARMV: u8 = 0;
-const SINGLE_MODE_GLOBALMV: u8 = 1;
-const SINGLE_MODE_NEWMV: u8 = 2;
+pub(crate) const SINGLE_MODE_NEARMV: u8 = 0;
+pub(crate) const SINGLE_MODE_GLOBALMV: u8 = 1;
+pub(crate) const SINGLE_MODE_NEWMV: u8 = 2;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Mv {
     pub(crate) row: i32,
@@ -2135,17 +2135,18 @@ pub(crate) mod reference;
 mod single_ref;
 
 pub(crate) use block::{
+    EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderSingleMotion,
+    chroma_inter_tx_type, non_intra_leaf_mode, single_transform_residual,
+};
+pub(crate) use block::{
     InterBlockDecodeOutput, InterBlockFacts, InterDecodeScratch, InterFilterInputs,
     InterFrameParse, InterFrameParser, InterReconScratchPool, PendingFilterAttach,
     RowReferenceBounds, ScheduledTileRecon, ScheduledTileWorkspace, TipOutputStages, TipSpares,
     bounds_satisfied, decode_inter_blocks, invalid_inter_tile_scheduling_state,
 };
-pub(crate) use block::{frame_mv_precision, interp_filter_no_neighbour_ctx};
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{
-    BlockPrecisionRecord, FixedStack, MotionFieldLayout, MvBlockContext, NON_INTER_FLAG_SYNTAX,
-    NeighbourFlagSyntax, NeighbourMvGrid, TemporalMotionBlock, TemporalMotionField,
-    TemporalMvContext, is_inter_ctx,
+    FixedStack, MotionFieldLayout, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
 };
 pub(crate) use frame_products::{
     CcsoGridHandle, FrameCdfHandle, FrameProductWriters, FrameProducts, SegmentIdMapHandle,

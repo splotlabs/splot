@@ -19,7 +19,8 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink};
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
-    EncoderSyntaxError, IntraTileSyntax, LeafBlock, PartitionNode, TransformBlock,
+    EncoderReferences, EncoderSyntaxError, IntraTileSyntax, LeafBlock, PartitionNode,
+    TransformBlock,
 };
 use splot_recon::{DecodedFrame, ReconError};
 
@@ -92,9 +93,13 @@ pub(crate) struct KeyFrameTileWriter {
 }
 
 impl KeyFrameTileWriter {
-    /// A writer for the frame `core` coded with `seq`.
-    pub(crate) fn new(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<Self> {
-        let syntax = IntraTileSyntax::new(seq, core)?;
+    /// A writer for the frame `core` coded with `seq`, predicting from `refs`.
+    pub(crate) fn new(
+        seq: &SequenceHeader,
+        core: &FrameHeaderCore,
+        refs: &EncoderReferences,
+    ) -> Result<Self> {
+        let syntax = IntraTileSyntax::new(seq, core, refs)?;
         let (mi_rows, mi_cols) = syntax.mi_dimensions();
         let sb4 = syntax.superblock_size4();
         let config = SymbolEncoderConfig::new()
@@ -158,10 +163,10 @@ impl KeyFrameTileWriter {
             .next_superblock_root()
             .ok_or(TileWriterError::TileComplete)?;
         let side = self.syntax.superblock_size4() * 4;
+        self.syntax.begin_superblock(root);
         let saved = self
             .syntax
             .snapshot((root.col4() * 4, root.row4() * 4, side, side))?;
-        self.syntax.begin_superblock(root);
         let found = search(&mut self.syntax, root);
         self.syntax.restore(&saved)?;
         found
@@ -302,9 +307,9 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             tx.tx_type = decision.tx_type;
             levels[index] = decision.levels;
         }
-        self.syntax.write_is_inter(leaf, self.sink)?;
+        self.syntax.write_is_inter(leaf, false, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
-            filters.write_cdef_index(self.syntax, self.sink, leaf)?;
+            filters.write_cdef_index(self.syntax, self.sink, leaf, false)?;
         }
         self.syntax.write_intra_modes(leaf, modes, self.sink)?;
         let sink = &mut *self.sink;

@@ -74,14 +74,16 @@ impl TileFilters {
         Ok(())
     }
 
-    /// Writes `cdef_idx` when `leaf` is the first coded leaf of its 64x64 unit.
+    /// Writes `cdef_idx` when `leaf`, coded with `skip_txfm = skip`, is the
+    /// first leaf of its 64x64 unit that codes one.
     pub(crate) fn write_cdef_index(
         &mut self,
         syntax: &mut IntraTileSyntax,
         symbols: &mut impl SymbolSink,
         leaf: &LeafBlock,
+        skip: bool,
     ) -> Result<()> {
-        let Some(slot) = self.cdef.slot(leaf)? else {
+        let Some(slot) = self.cdef.slot(leaf, skip)? else {
             return Ok(());
         };
         let cols = self.cdef.grid().1;

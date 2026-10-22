@@ -84,8 +84,9 @@ mod warp_bank;
 use derived::{CompoundScanState, DerivedMvState};
 use extra_search::{compound_extra_search, extra_search};
 pub(crate) use neighbour_grid::{
-    BlockPrecisionRecord, NON_INTER_FLAG_SYNTAX, NeighbourFlagRecord, NeighbourFlagSyntax,
-    NeighbourMotionValues, NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES, compound_motion_mode,
+    BlockPrecisionRecord, GridCheckpoint, NON_INTER_FLAG_SYNTAX, NeighbourFlagRecord,
+    NeighbourFlagSyntax, NeighbourMotionValues, NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES,
+    compound_motion_mode,
 };
 use neighbour_grid::{EMPTY_NEIGHBOUR_FLAGS, NeighbourCell, NeighbourFlags};
 pub(crate) use temporal::{
@@ -642,11 +643,6 @@ pub(crate) fn block_neighbour_ctx(
         npos_cells: lists.npos,
         npos_count: lists.npos_len,
     }
-}
-
-/// The § 8.3.2 `is_inter` context of `block` alone.
-pub(crate) fn is_inter_ctx(grid: &NeighbourMvGrid, block: &MvBlockContext) -> usize {
-    block_neighbour_ctx(grid, block).is_inter_ctx
 }
 
 fn is_backward_ref_frame(

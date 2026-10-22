@@ -4,6 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
+use crate::test_support::refs_for;
 use splot_core::headers::frame::build_key_frame_header;
 
 use crate::config::RateControlMode;
@@ -152,7 +153,8 @@ fn superblock_search_is_deterministic_and_rolls_back() {
         let tx = tx_choice::key_frame_tx_params(frame.preset);
         let header = FrameFilterParams::default();
         let core = build_key_frame_header(&frame.view, 90, 0, &header, tx).unwrap();
-        let mut writer = KeyFrameTileWriter::new(&frame.sequence, &core).unwrap();
+        let mut writer =
+            KeyFrameTileWriter::new(&frame.sequence, &core, &refs_for(&frame.sequence)).unwrap();
         let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
         let sb = writer.syntax().superblock_size4() * 4;
         let padded = PaddedSource::new(&source, mi_cols * 4 + sb, mi_rows * 4 + sb);

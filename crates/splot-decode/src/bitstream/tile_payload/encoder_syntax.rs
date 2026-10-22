@@ -3,13 +3,13 @@
 
 //! Encoder-facing syntax facade; not a stable API.
 //!
-//! [`IntraTileSyntax`] owns one intra-coded tile's CDF rows, neighbour state, and
+//! [`IntraTileSyntax`] owns one tile's CDF rows, neighbour state, and
 //! reconstruction, and hands an encoder the same partition rules, § 8.3.2
 //! contexts, CDF rows, and prediction kernels the tile decoder uses. The encoder
 //! writes each symbol into the returned row, reconstructs each transform block
 //! through the facade, then publishes the coded facts back, so both sides stay
-//! in step. In an inter frame every block is intra and codes `is_inter = 0`;
-//! [`EncoderReferences`] keeps the decoder's reference buffer for the next header.
+//! in step. An inter frame codes intra and single-reference inter leaves;
+//! [`EncoderReferences`] keeps the decoder's reference buffer they predict from.
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
@@ -56,8 +56,9 @@ mod inter;
 mod intra;
 mod transform;
 
+pub use super::cdf::MvCdfSelector;
 pub use super::cdf::block_context::IntraYMode as IntraMode;
-pub use inter::EncoderReferences;
+pub use inter::{EncoderReferences, InterMode, InterModes, MV_PRECISION_EIGHTH_PEL, MotionVector};
 pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, TxType};
 pub use transform::{TX_PARTITIONS, TxPartition};
 
@@ -397,6 +398,7 @@ pub struct SyntaxSnapshot {
     uv_cfls: TileUvCflState,
     y_modes: TileIntraYModeState,
     recon: intra::ReconSnapshot,
+    inter: inter::InterSnapshot,
 }
 
 /// One tile's CDF rows, neighbour state, and reconstruction, all blocks intra.
@@ -422,13 +424,18 @@ pub struct IntraTileSyntax {
 }
 
 impl IntraTileSyntax {
-    /// State for the single tile of a key or inter frame coded with `seq` and `core`.
+    /// State for the single tile of a key or inter frame coded with `seq` and
+    /// `core`; an inter frame predicts from the frames in `refs`.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError::Unsupported`] for SDP, skip mode, missing
     /// header facts, or another tool the facade does not model, and
     /// [`EncoderSyntaxError::Rule`] for state setup failures.
-    pub fn new(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<Self> {
+    pub fn new(
+        seq: &SequenceHeader,
+        core: &FrameHeaderCore,
+        refs: &EncoderReferences,
+    ) -> Result<Self> {
         if seq.partition.is_some_and(|partition| partition.enable_sdp) {
             return Err(EncoderSyntaxError::Unsupported(
                 "semi-decoupled partitioning",
@@ -442,7 +449,6 @@ impl IntraTileSyntax {
             .base_q_idx;
         let frame = minimal_partition_frame_facts(seq, core).map_err(rule("frame facts"))?;
         let (mi_rows, mi_cols) = frame_mi_dimensions(core).map_err(rule("frame size"))?;
-        let inter = inter::InterLeafState::new(core, (mi_rows, mi_cols))?;
         let rows = 0..mi_rows;
         let cols = 0..mi_cols;
         let sb_size4 = frame
@@ -451,6 +457,13 @@ impl IntraTileSyntax {
             .map_err(rule("superblock size"))?;
         let chroma = seq.general.chroma_format_idc;
         let tools = intra::IntraTools::new(seq, core, base_q_idx)?;
+        let inter = inter::InterLeafState::new(
+            seq,
+            core,
+            refs,
+            (mi_rows, mi_cols),
+            (base_q_idx, tools.bit_depth),
+        )?;
         let mut coeff = TileCoeffContextState::default();
         coeff
             .reset_for_tile_chroma(rows.clone(), cols.clone(), chroma)
@@ -529,6 +542,7 @@ impl IntraTileSyntax {
         self.recon
             .block_decoded
             .clear_superblock(root.0.r, root.0.c);
+        self.enter_inter_superblock(root.0.r);
     }
 
     /// Whether `node` starts inside the frame; nodes outside code nothing.
@@ -681,14 +695,14 @@ impl IntraTileSyntax {
             tx_area4(tx)?,
             tx.fills_block,
             eob_u_nonzero,
-            0,
+            usize::from(self.leaf_is_inter()),
             false,
         )
         .map_err(rule("all_zero context"))?;
         self.tile_row(selector)
     }
 
-    /// The `eob_pt_*` CDF row of an intra transform block.
+    /// The `eob_pt_*` CDF row of a transform block of the planned leaf.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError::Rule`] for an invalid transform size.
@@ -696,7 +710,7 @@ impl IntraTileSyntax {
         let (log2_w, log2_h) = tx_log2(tx_size)?;
         let input = nonzero_coeff_eob_symbol_input(NonZeroCoeffEobContextInput {
             plane,
-            is_inter: false,
+            is_inter: self.leaf_is_inter(),
             tx_width_log2: log2_w as usize,
             tx_height_log2: log2_h as usize,
         })

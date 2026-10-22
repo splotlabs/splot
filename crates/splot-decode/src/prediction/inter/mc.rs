@@ -798,7 +798,8 @@ fn predict_plane<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn plane_prediction<T: ReconSample>(
+#[inline]
+pub(crate) fn plane_prediction<T: ReconSample>(
     info: DecodedFrameInfo,
     reference: ReferenceSamples<'_, T>,
     plane: PlaneId,

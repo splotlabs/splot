@@ -98,8 +98,8 @@ impl FrameCoder for IntraFrameCoder {
             plan.header(&self.view, &self.references, qindex, filters, tx)
         };
         let core = header(&FrameFilterParams::default())?;
-        let mut writer =
-            KeyFrameTileWriter::new(&self.sequence, &core).map_err(coding("tile setup"))?;
+        let mut writer = KeyFrameTileWriter::new(&self.sequence, &core, &self.references)
+            .map_err(coding("tile setup"))?;
         let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
         let sb = writer.syntax().superblock_size4() * 4;
         let padded = PaddedSource::new(source, mi_cols * 4 + sb, mi_rows * 4 + sb);
@@ -134,7 +134,13 @@ impl FrameCoder for IntraFrameCoder {
             filters,
             tile,
             recon,
-        } = finish_frame(&self.sequence, &header, self.preset, source, pass)?;
+        } = finish_frame(
+            &self.sequence,
+            &header,
+            self.preset,
+            (source, &self.references),
+            pass,
+        )?;
         let temporal_unit = plan.temporal_unit(
             &self.sequence,
             &self.view,

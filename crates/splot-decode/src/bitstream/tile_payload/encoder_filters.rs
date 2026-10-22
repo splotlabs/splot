@@ -151,6 +151,28 @@ impl FilterRecorder {
         }
         Ok(())
     }
+
+    /// Records the planned inter leaf `leaf` of `syntax`, coded with `skip_txfm
+    /// = skip`; call it before [`IntraTileSyntax::publish_inter_leaf`].
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] without a planned inter leaf.
+    pub fn record_inter_leaf(
+        &mut self,
+        syntax: &IntraTileSyntax,
+        leaf: &LeafBlock,
+        skip: bool,
+    ) -> Result<()> {
+        syntax.record_inter_filters(
+            leaf,
+            skip,
+            (
+                &mut self.deblock_blocks,
+                &mut self.chroma_blocks,
+                &mut self.tx_skip,
+            ),
+        )
+    }
 }
 
 /// A leaf that codes `cdef_idx` (§ 5.20.10.1).
@@ -170,6 +192,7 @@ pub struct CdefSlot {
 pub struct CdefIndexMap {
     state: CdefState,
     strengths: usize,
+    skip_codes_index: bool,
     rows: usize,
     cols: usize,
 }
@@ -192,17 +215,22 @@ impl CdefIndexMap {
             state: CdefState::new_reusing(frame.mi_rows(), frame.mi_cols(), seq, Vec::new())
                 .map_err(rule("cdef state"))?,
             strengths,
+            skip_codes_index: core
+                .cdef_params
+                .as_ref()
+                .is_none_or(|cdef| cdef.cdef_on_skip_txfm_frame_enable != Some(false)),
             rows,
             cols,
         })
     }
 
-    /// The slot `leaf` codes, or `None` when CDEF is off or its unit has an index.
+    /// The slot `leaf` codes with `skip_txfm = skip`, or `None` when CDEF is
+    /// off, the frame codes no index for a skipped block, or its unit has an index.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError::Rule`] for a leaf outside the frame.
-    pub fn slot(&self, leaf: &LeafBlock) -> Result<Option<CdefSlot>> {
-        if self.strengths == 0 {
+    pub fn slot(&self, leaf: &LeafBlock, skip: bool) -> Result<Option<CdefSlot>> {
+        if self.strengths == 0 || (skip && !self.skip_codes_index) {
             return Ok(None);
         }
         let (r, c) = (leaf.row4(), leaf.col4());

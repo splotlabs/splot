@@ -327,6 +327,14 @@ impl Drop for NeighbourMvGrid {
     }
 }
 
+/// A [`NeighbourMvGrid::checkpoint`].
+pub(crate) struct GridCheckpoint {
+    leaves: usize,
+    models: usize,
+    footprint: Option<(Range<usize>, Range<usize>)>,
+    cells: Vec<Option<NonZeroU32>>,
+}
+
 /// One leaf's flag-plane publication, replayable onto a second grid.
 ///
 /// A parse pass that hands its units to a resolve pass running later, or
@@ -791,8 +799,49 @@ impl NeighbourMvGrid {
         );
     }
 
+    /// The leaf and model counts and the cells of the leaf footprint
+    /// `(r, c, n4w, n4h)`, for [`Self::rollback`]. Publications after it must
+    /// stay inside the footprint and the current superblock row.
+    pub(crate) fn checkpoint(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> GridCheckpoint {
+        let mut cells = Vec::new();
+        let footprint = self.footprint(r, c, n4w, n4h);
+        if let Some((rows, cols)) = &footprint {
+            for row in rows.clone() {
+                if let Some(saved) = self
+                    .row_span(row, cols)
+                    .and_then(|span| self.planes.cells.get(span))
+                {
+                    cells.extend_from_slice(saved);
+                }
+            }
+        }
+        GridCheckpoint {
+            leaves: self.planes.leaves.len(),
+            models: self.planes.models.len(),
+            footprint,
+            cells,
+        }
+    }
+
+    /// Puts a [`Self::checkpoint`] back.
+    pub(crate) fn rollback(&mut self, checkpoint: &GridCheckpoint) {
+        self.planes.leaves.truncate(checkpoint.leaves);
+        self.planes.models.truncate(checkpoint.models);
+        let Some((rows, cols)) = &checkpoint.footprint else {
+            return;
+        };
+        let mut saved = checkpoint.cells.chunks(cols.len());
+        for row in rows.clone() {
+            if let Some(span) = self.row_span(row, cols)
+                && let (Some(cells), Some(saved)) = (self.planes.cells.get_mut(span), saved.next())
+            {
+                cells.copy_from_slice(saved);
+            }
+        }
+    }
+
     /// Moves the window down to the superblock row holding tile row `row`.
-    fn enter_sb_row(&mut self, row: usize) {
+    pub(crate) fn enter_sb_row(&mut self, row: usize) {
         let Some(slide) = self.window.enter(row.saturating_sub(self.origin_row)) else {
             return;
         };

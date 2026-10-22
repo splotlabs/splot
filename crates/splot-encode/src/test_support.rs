@@ -105,3 +105,10 @@ pub(crate) fn avm_decode(
     assert!(status.success(), "avmdec failed on {name}");
     std::fs::read(&output).unwrap()
 }
+
+/// An empty reference buffer for the key frames of `seq`.
+pub(crate) fn refs_for(
+    seq: &splot_core::headers::sequence::SequenceHeader,
+) -> splot_decode::encoder_syntax::EncoderReferences {
+    splot_decode::encoder_syntax::EncoderReferences::new(seq).unwrap()
+}
