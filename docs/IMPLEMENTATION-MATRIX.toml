@@ -4963,7 +4963,7 @@ module = "crates/splot-encode/src/mode_decision.rs"
 change_id = "encoder-m3-inter-blocks"
 owner = "encoder"
 risk = "medium"
-notes = "Leaves of inter frames RD-compare intra coding with GLOBALMV, NEARMV over the DRL, and NEWMV from every valid reference (single_ref per block); NEWMV takes a pyramid full-sample search plus half- and quarter-sample refinement through the decoder's interpolation. splot_decode::encoder_syntax runs the decoder's own MV stack, resolution, motion compensation, inter residual reconstruction and filter records, and publication fails when the decoder resolves another vector. The MV writer inverts the joint shell syntax with the facade's rows. skip_txfm is 1 when every level is 0; inter transform types use the inter sets. Only leaves of at most 64x64 are inter; no compound, warped or OBMC motion, TIP, optical flow, temporal MVs or MV banks."
+notes = "Leaves of inter frames RD-compare intra coding with GLOBALMV, NEARMV over the DRL, and NEWMV from every valid reference (single_ref per block); NEWMV takes a pyramid full-sample search plus half- and quarter-sample refinement through the decoder's interpolation. splot_decode::encoder_syntax runs the decoder's own MV stack, resolution, motion compensation, inter residual reconstruction and filter records, and publication fails when the decoder resolves another vector. The MV writer inverts the joint shell syntax with the facade's rows. skip_txfm is 1 when every level is 0; inter transform types use the inter sets. Only leaves of at most 64x64 are inter; compound and skip-mode blocks are ENC-INTER-COMPOUND; no warped or OBMC motion, TIP, optical flow, temporal MVs or MV banks."
 
 [feature.status]
 mapped = "done"
@@ -4979,6 +4979,38 @@ perf = "todo"
 
 [feature.proof]
 tests = ["crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_tests.rs::panning_content_codes_cheap_inter_frames", "crates/splot-encode/src/intra_frame_tests.rs::inter_superblock_search_is_deterministic_and_rolls_back", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot"]
+commands = ["cargo test -p splot-encode --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-INTER-COMPOUND"
+name = "Compound (COMPOUND_AVERAGE) and skip-mode inter blocks"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.8.2", "5.18.8.3", "5.20.5.9", "5.20.7.6", "5.20.7.7", "5.20.7.10", "5.20.7.11", "5.20.7.12", "7.11.3", "7.12.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/mode_decision.rs"
+change_id = "encoder-m3-compound"
+owner = "encoder"
+risk = "medium"
+notes = "Inter frames set reference_select and skip_mode_present when the preset's compound_candidates is nonzero; the sequence sets num_same_ref_compound = 2. Leaves RD-compare single-reference candidates with skip-mode blocks (each skip-DRL index) and a SATD-ranked shortlist of compound candidates over the pairs of the three closest references: NEAR_NEARMV over both DRLs, and for distinct references GLOBAL_GLOBALMV, NEW_NEWMV, NEAR_NEWMV, NEW_NEARMV and JOINT_NEWMV seeded by the single-reference search results (no joint refinement; jmvd_scale_mode 0). splot_decode::encoder_syntax writes comp_mode, comp_ref, the compound mode, jmvd_scale_mode and both DRLs by answering the decoder's own reads, resolves motion with the decoder's compound stack and resolution, predicts with its COMPOUND_AVERAGE motion compensation, and derives the skip_mode_frames pair from the decoder. Masked, wedge, CWP, optical-flow and refined compound stay off at sequence level."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "todo"
+
+[feature.proof]
+tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::inter_headers_parse_with_the_reference_state", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_tests.rs::b_frame_search_picks_compound_and_skip_mode_leaves", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_mini_gops_like_splot"]
 commands = ["cargo test -p splot-encode --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored"]
 fixtures = []
 diagnostics = []

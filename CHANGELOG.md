@@ -18,6 +18,16 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
   thread, base_q_idx 80/120/160, luma: park_joy 160x90 preset 6 BD-rate
   -34%, encode time +64..93%; niklas 720p preset 10 BD-rate -43%, encode
   time +26..71%.
+- Compound and skip-mode blocks: inter frames set `reference_select` and
+  `skip_mode_present` when the preset's `compound_candidates` is nonzero.
+  Leaves add skip-mode trials and a SATD-ranked compound shortlist
+  (COMPOUND_AVERAGE; NEAR_NEARMV over both DRLs, GLOBAL_GLOBALMV, NEW_NEWMV,
+  NEAR_NEWMV, NEW_NEARMV, JOINT_NEWMV) over the pairs of the three closest
+  references, seeded by the single-reference search. The facade writes
+  `comp_ref`, the modes and the DRLs by answering the decoder's own reads.
+- Rate points against single-reference only, preset 6, 10 frames, keyint 30,
+  mini-GOP 4, base_q_idx 80/120/160/200, luma: niklas 720p BD-rate -4.5%,
+  encode time +8..17%; park_joy 160x90 BD-rate -0.2%, encode time +1..22%.
 
 ### Encoder milestone 2: full intra coding
 
