@@ -7,20 +7,20 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
 
 ### Encoder milestone 4: lookahead, temporal model and rate control
 
-- A lookahead holds the preset's `lookahead_frames` frames as downscaled
-  luma with per-block intra and inter SATD costs. A frame whose best costs
-  against the previous frame reach 70% of its intra costs is a scene cut and
-  starts a key frame; `keyint` stays the maximum interval.
+- A lookahead plans exactly `lookahead_frames` frames, so output ignores the
+  call pattern. A frame whose best costs against the previous frame reach 70%
+  of its intra costs, 20 points above the previous frame's, and that is a
+  mini-GOP past the last key frame, starts a key frame (noise makes none).
 - A temporal model propagates block costs back through the planned mini-GOP
   references. Frames that later frames reuse get up to 32 lower qindex, and
   deeper mini-GOP layers get 3 more per layer.
-- Rate control: `--crf N` (base qindex `4 * N` plus the model offsets),
-  `--bitrate KBPS` with `--rc vbr|cbr`. VBR and CBR pick a base qindex per
-  lookahead window from a frame-size model learnt from the coded bits.
+- Rate control: `--crf N` (base qindex `4 * N`, plus 48 at 10 bits, plus the
+  offsets), `--bitrate KBPS` with `--rc vbr|cbr`, or a caller's controller.
+  VBR and CBR fit a base qindex per window to a learnt model; drift is bounded.
 - Rate points, preset 6, 8 threads, keyint 120, luma, CRF 22/30/37/45
   against constant qp 80/110/140/170 at matched average bitrate: park_joy
   160x90 10 frames BD-rate -7.2%; niklas 720p 10 frames BD-rate -8.1%.
-  Bitrate accuracy, park_joy 300 kbps: VBR +8.8%, CBR +1.7%.
+  Bitrate accuracy, park_joy 300 kbps: VBR +9.0%, CBR +0.3%.
 
 ### Encoder milestone 3: inter coding
 
