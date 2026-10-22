@@ -21,8 +21,10 @@
 //! (§ 7.23). A frame shown when coded above layer 0 is a non-reference frame
 //! (`refresh_frame_flags = 0`), except the last one of its mini-GOP: the
 //! § 5.18.2 `OrderHint` derivation needs a shown reference within half the
-//! order-hint window, and the other references of a mini-GOP are hidden. Any
-//! other frame refreshes one slot: an empty one, else the one
+//! order-hint window, and the other references of a mini-GOP are hidden. The
+//! frames coded after a non-reference frame up to the next reference frame
+//! read the same references: they form one wave and can code at the same
+//! time. Any other frame refreshes one slot: an empty one, else the one
 //! with the oldest display index that no show-existing frame waits for. The
 //! § 7.7 implicit reference map ranks the valid slots by display distance and
 //! `base_q_idx`, so at one quantizer the closest frames rank first.
@@ -310,6 +312,16 @@ impl GopPlanner {
                 what: "more hidden frames than reference slots",
             })
     }
+}
+
+/// Splits `steps` into waves: a wave ends after a frame that refreshes a slot.
+/// A show-existing frame does not end a wave: it changes only the output flag
+/// of its slot and the frame counter of the § 7.20 buffer, and coding a frame
+/// reads neither.
+pub(crate) fn waves(steps: &[GopStep]) -> impl Iterator<Item = &[GopStep]> {
+    steps.split_inclusive(
+        |step| matches!(step, GopStep::Code(frame) if frame.refresh_frame_flags != 0),
+    )
 }
 
 /// Frame `frame_index` of an IPPP stream with key frames every `keyint` frames.

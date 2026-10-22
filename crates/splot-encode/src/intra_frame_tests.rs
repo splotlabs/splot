@@ -227,20 +227,35 @@ struct Recording {
     recons: Arc<Mutex<BTreeMap<u64, Vec<u8>>>>,
 }
 
-impl FrameCoder for Recording {
-    fn encode_frame(
+impl IntraFrameCoder {
+    /// Codes one frame and commits it.
+    pub(crate) fn encode_frame(
         &mut self,
         source: &SourceFrame,
         plan: &GopFrame,
         qp: u16,
     ) -> Result<CodedFrame> {
-        let coded = self.coder.encode_frame(source, plan, qp)?;
-        let recon = recon_bytes(&coded, self.bit_depth);
-        self.recons
-            .lock()
-            .unwrap()
-            .insert(plan.display_index, recon);
+        let mut coded = self.code_frame(source, plan, qp)?;
+        self.commit(&mut coded)?;
         Ok(coded)
+    }
+}
+
+impl FrameCoder for Recording {
+    fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>> {
+        let coded = self.coder.encode_wave(wave)?;
+        for ((_, plan, _), frame) in wave.iter().zip(&coded) {
+            let recon = recon_bytes(frame, self.bit_depth);
+            self.recons
+                .lock()
+                .unwrap()
+                .insert(plan.display_index, recon);
+        }
+        Ok(coded)
+    }
+
+    fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
+        self.coder.commit(frame)
     }
 
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {

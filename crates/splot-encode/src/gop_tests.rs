@@ -234,3 +234,48 @@ fn scene_cuts_start_key_frames_and_restart_the_keyint_count() {
     planner.force_key(52);
     assert_eq!(planner.cuts, [34, 41], "a cut 1 after the scheduled key 51");
 }
+
+/// The display indices of the coded frames of each wave with coded frames of
+/// the mini-GOP after the key frame, and the display indices of its non-reference frames.
+fn mini_gop_waves(mini_gop_size: u8) -> (Vec<Vec<u64>>, Vec<u64>) {
+    let mut planner = GopPlanner::new(NonZeroU32::new(100).unwrap(), mini_gop_size);
+    planner.plan(1).unwrap();
+    let steps = planner.plan(usize::from(mini_gop_size)).unwrap();
+    let frames = |wave: &[GopStep]| -> Vec<GopFrame> {
+        wave.iter()
+            .filter_map(|step| match *step {
+                GopStep::Code(frame) => Some(frame),
+                GopStep::ShowExisting { .. } => None,
+            })
+            .collect()
+    };
+    let leaves = frames(&steps)
+        .into_iter()
+        .filter(|frame| frame.refresh_frame_flags == 0)
+        .map(|frame| {
+            assert!(frame.show_frame && frame.layer > 0, "{frame:?}");
+            frame.display_index
+        })
+        .collect();
+    let waves = waves(&steps)
+        .map(|wave| frames(wave).iter().map(|f| f.display_index).collect())
+        .filter(|wave: &Vec<u64>| !wave.is_empty())
+        .collect();
+    (waves, leaves)
+}
+
+#[test]
+fn leaf_frames_refresh_no_slot_and_code_in_waves() {
+    let (waves, leaves) = mini_gop_waves(4);
+    assert_eq!(waves, [vec![4], vec![2], vec![1, 3]]);
+    assert_eq!(leaves, [1]);
+    let (waves, leaves) = mini_gop_waves(8);
+    assert_eq!(
+        waves,
+        [vec![8], vec![4], vec![2], vec![1, 3, 6], vec![5, 7]]
+    );
+    assert_eq!(leaves, [1, 3, 5]);
+    let (waves, leaves) = mini_gop_waves(1);
+    assert_eq!(waves, [vec![1]]);
+    assert!(leaves.is_empty());
+}
