@@ -64,7 +64,7 @@ fn psnr(source: &[u16], decoded: &[u16], bits: u32) -> f64 {
     10.0 * (peak * peak * source.len() as f64 / sse).log10()
 }
 
-fn round_trip(bits: u32) {
+fn round_trip(bits: u32, rate_control: &[&str]) {
     let (y4m, source) = synthetic_y4m(bits);
     let input = temp_input("y4m", &y4m);
     let ivf = temp_output("ivf");
@@ -75,9 +75,9 @@ fn round_trip(bits: u32) {
         raw.to_str().unwrap(),
     );
 
-    let encode = splot(&[
-        "encode", input_s, "-o", ivf_s, "--qp", "90", "--keyint", "4", "--stats",
-    ]);
+    let mut args = vec!["encode", input_s, "-o", ivf_s, "--keyint", "4", "--stats"];
+    args.extend(rate_control);
+    let encode = splot(&args);
     assert!(encode.status.success(), "{encode:?}");
     let stats = String::from_utf8(encode.stdout).unwrap();
     let mut psnr_y = [f64::NAN; FRAMES];
@@ -120,10 +120,16 @@ fn round_trip(bits: u32) {
 
 #[test]
 fn eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats() {
-    round_trip(8);
+    round_trip(8, &["--qp", "90"]);
 }
 
 #[test]
 fn ten_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats() {
-    round_trip(10);
+    round_trip(10, &["--qp", "90"]);
+}
+
+#[test]
+fn crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats() {
+    round_trip(8, &["--crf", "25"]);
+    round_trip(10, &["--bitrate", "200", "--rc", "cbr"]);
 }

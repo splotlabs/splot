@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Context as _, Result, bail};
-use clap::Args;
+use clap::{Args, ValueEnum};
 use splot_encode::ivf::IvfWriter;
 use splot_encode::y4m::Y4mReader;
 use splot_encode::{BitDepth, Config, Encoder, Preset, RateControlMode, SourceFrame, ThreadCount};
@@ -23,9 +23,18 @@ pub(crate) struct EncodeArgs {
     /// Output IVF file.
     #[arg(short = 'o', long)]
     output: PathBuf,
-    /// Constant quantizer (`base_q_idx`), 1..=255.
-    #[arg(long, default_value_t = Config::DEFAULT_QP)]
-    qp: u8,
+    /// Constant quantizer (`base_q_idx`), 1..=255; the default mode, at 80.
+    #[arg(long, conflicts_with_all = ["crf", "bitrate"])]
+    qp: Option<u8>,
+    /// Constant quality with lookahead offsets: rate factor 1..=63, higher is smaller.
+    #[arg(long, conflicts_with = "bitrate")]
+    crf: Option<u8>,
+    /// Target bitrate in kilobits per second.
+    #[arg(long)]
+    bitrate: Option<u32>,
+    /// Bitrate mode for `--bitrate`: `vbr` (default) or `cbr` (one-second buffer).
+    #[arg(long, value_enum, requires = "bitrate")]
+    rc: Option<RcMode>,
     /// Speed preset: 0 is the slowest and best, 10 the fastest.
     #[arg(long, default_value_t = Preset::default().get())]
     preset: u8,
@@ -41,6 +50,32 @@ pub(crate) struct EncodeArgs {
     /// Print `frame,pts,qp,bits,psnr_y,psnr_u,psnr_v` CSV lines to stdout.
     #[arg(long)]
     stats: bool,
+}
+
+/// Bitrate modes of `splot encode --bitrate`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum RcMode {
+    Vbr,
+    Cbr,
+}
+
+/// Buffer of `--rc cbr`, in milliseconds.
+const CBR_BUFFER_MS: u32 = 1000;
+
+impl EncodeArgs {
+    fn rate_control(&self) -> RateControlMode {
+        match (self.qp, self.crf, self.bitrate) {
+            (_, Some(crf), _) => RateControlMode::Crf { crf },
+            (_, _, Some(bitrate_kbps)) if self.rc == Some(RcMode::Cbr) => RateControlMode::Cbr {
+                bitrate_kbps,
+                buffer_ms: CBR_BUFFER_MS,
+            },
+            (_, _, Some(bitrate_kbps)) => RateControlMode::Vbr { bitrate_kbps },
+            (qp, None, None) => RateControlMode::ConstantQp {
+                qp: qp.unwrap_or(Config::DEFAULT_QP),
+            },
+        }
+    }
 }
 
 /// Runs `splot encode`.
@@ -68,7 +103,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     };
     config.chroma = header.format;
     config.frame_rate = header.frame_rate;
-    config.rate_control = RateControlMode::ConstantQp { qp: args.qp };
+    config.rate_control = args.rate_control();
     config.preset = Preset::new(args.preset)?;
     config.threads = args.threads;
     config.keyint = args.keyint;

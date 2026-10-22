@@ -728,6 +728,30 @@ fn validate_rejects_non_numeric_max_diagnostics() {
 }
 
 #[test]
+fn encode_rejects_conflicting_rate_control_flags() {
+    let input = temp_input("y4m", b"YUV4MPEG2 W16 H16 F30:1\n");
+    for (flags, expected) in [
+        (&["--qp", "10", "--crf", "20"][..], "cannot be used with"),
+        (&["--crf", "20", "--bitrate", "100"], "cannot be used with"),
+        (&["--rc", "cbr"], "--bitrate <BITRATE>"),
+        (&["--crf", "64"], "crf 64 is outside 1..=63"),
+    ] {
+        let mut args = vec![
+            "encode",
+            input.to_str().expect("utf-8 input path"),
+            "-o",
+            "-",
+        ];
+        args.extend(flags);
+        let out = splot(&args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{flags:?}: {stderr}");
+        assert!(stderr.contains(expected), "{flags:?}: {stderr}");
+    }
+    let _ = std::fs::remove_file(&input);
+}
+
+#[test]
 fn encode_rejects_malformed_and_unsupported_y4m_without_writing_output() {
     let cases: [(&[u8], &str); 2] = [
         (b"YUV4MPEG2 W16 F30:1\n", "no H tag"),
