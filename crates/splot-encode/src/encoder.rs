@@ -400,7 +400,7 @@ mod tests {
     }
 
     /// A mini-GOP of 4 waits for its frames and packs hidden frames with the
-    /// next output.
+    /// next output: coding order 4 2 1 [2] 3 [4], with 4 and 2 hidden in slots 1 and 2.
     #[test]
     fn packs_hidden_frames_into_the_next_output_unit() -> Result<()> {
         let mut encoder = encoder(None, 6);
@@ -416,7 +416,6 @@ mod tests {
         encoder.send_frame(frame)?;
         let packets = drain(&mut encoder)?;
         let data: Vec<_> = packets.iter().map(|p| p.data.clone()).collect();
-        // Coding order 4 2 1 [2] 3 [4]: 4 and 2 are hidden in slots 1 and 2.
         assert_eq!(
             data,
             [

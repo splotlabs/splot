@@ -83,7 +83,6 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     if args.stats {
         writeln!(stdout, "frame,pts,qp,bits,psnr_y,psnr_u,psnr_v")?;
     }
-    // Packets come in coding order, so stats lines are in coding order too.
     let mut drain = |encoder: &mut Encoder| -> Result<()> {
         while let Some(packet) = encoder.receive_packet()? {
             if writer.is_none() {

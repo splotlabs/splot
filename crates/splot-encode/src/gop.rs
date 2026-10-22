@@ -141,6 +141,7 @@ impl GopPlanner {
     }
 
     /// Plans the next `len` input frames, as [`Self::next_len`] returned.
+    /// Display index 0 is a key frame, so a mini-GOP always follows a coded frame.
     ///
     /// # Errors
     /// Returns [`Error::Unsupported`] when a frame finds no slot to refresh:
@@ -152,7 +153,6 @@ impl GopPlanner {
         }
         let first = self.next_display;
         let last = first + len as u64 - 1;
-        // Display index 0 is a key frame, so a mini-GOP always follows a coded frame.
         let mut anchor = first.saturating_sub(1);
         if first.is_multiple_of(self.keyint) {
             steps.push(self.code(first, FrameType::Key, true)?);
@@ -229,7 +229,6 @@ impl GopPlanner {
             frame_index: self.next_frame,
             display_index,
             frame_type,
-            // keyint is a u32, so the distance from the key frame fits.
             order_hint: (display_index - self.key_display) as u32,
             show_frame,
             refresh_frame_flags,
