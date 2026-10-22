@@ -4,15 +4,19 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
-use crate::test_support::refs_for;
 use splot_core::headers::frame::build_key_frame_header;
+use splot_decode::encoder_syntax::LeafBlock;
 
 use crate::config::RateControlMode;
 use crate::gop::GopFrame;
 use crate::preset::Preset;
 use crate::rate_control::FrameType;
-use crate::test_support::{assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes};
-use crate::tile_writer::PartitionTree;
+use crate::test_support::{
+    assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes, refs_for,
+};
+use crate::tile_writer::{
+    InterMode, InterModes, LeafChoice, MotionVector, PARTITIONS, PartitionTree,
+};
 
 /// Gradients, a ripple, and seeded noise, so blocks of every size split.
 fn synthetic_frame(config: &Config, seed: u32) -> SourceFrame {
@@ -102,13 +106,13 @@ fn coded_frames_decode_to_the_encoder_recon() {
     }
 }
 
-/// Key frames every third frame; the inter frames between them code intra blocks.
+/// Key frames every third frame, with inter frames of unrelated content between them.
 #[test]
 fn inter_frames_decode_to_the_encoder_recon_over_several_gops() {
     for (index, (width, height, bit_depth, preset, qp)) in CASES.into_iter().enumerate() {
         let mut config = config(width, height, bit_depth, preset, qp);
         config.keyint = core::num::NonZeroU32::new(3).unwrap();
-        let seeds: Vec<u32> = (0..5).map(|frame| index as u32 * 5 + frame).collect();
+        let seeds: Vec<u32> = (0..4).map(|frame| index as u32 * 4 + frame).collect();
         let coded = code_stream(&config, &seeds);
         let types: Vec<_> = coded.iter().map(|frame| frame.frame_type).collect();
         assert_eq!(
@@ -164,7 +168,7 @@ fn superblock_search_is_deterministic_and_rolls_back() {
         let mut search = || {
             writer
                 .search_superblock(|syntax, root| {
-                    let mut trial = TrialCoder::new(syntax, &mut coder, frame.preset, lambda);
+                    let mut trial = TrialCoder::new(syntax, &mut coder, frame.preset, lambda, None);
                     search_partition(&mut trial, root, frame.preset, lambda)
                 })
                 .unwrap()
@@ -261,4 +265,332 @@ fn avm_shows_hidden_frames_like_splot() {
     let (units, expected) = hidden_frame_stream(&config);
     let avm = avm_decode(&avmdec, &units, (72, 40), BitDepth::Ten, "hidden");
     assert!(avm == expected, "AVM output differs");
+}
+
+/// A stateless texture: a ripple, a ramp, and hashed noise at `(x, y)`.
+fn texture(x: i64, y: i64, plane: usize, max: u32) -> u16 {
+    let hash = (x.wrapping_mul(0x9E37_79B9) ^ y.wrapping_mul(0x85EB_CA6B)) as u32;
+    let ripple = ((x * x / 7 + y * 5).rem_euclid(61)) as u32 * max / 160;
+    let ramp = ((x + 2 * y + plane as i64 * 17).rem_euclid(300)) as u32 * max / 600;
+    ((ripple + ramp + (hash >> 7) % (max / 10 + 1)) % (max + 1)) as u16
+}
+
+/// Frame `index` of a texture panning by `(4, 2)` luma samples per frame.
+fn panning_frame(config: &Config, index: u32) -> SourceFrame {
+    let max = u32::from(config.bit_depth.max_sample());
+    let sizes = config.plane_sizes().unwrap();
+    let planes = core::array::from_fn(|plane| {
+        let size = sizes[plane];
+        let shift = if plane == 0 { 1 } else { 2 };
+        let (dx, dy) = (i64::from(4 * index) / shift, i64::from(2 * index) / shift);
+        (0..size.height() as i64)
+            .flat_map(|y| (0..size.width() as i64).map(move |x| (x, y)))
+            .map(|(x, y)| texture(x + dx, y + dy, plane, max))
+            .collect()
+    });
+    SourceFrame::new(config, u64::from(index), planes).unwrap()
+}
+
+/// A panning texture codes inter frames far below the key frame, and the
+/// stream decodes to the encoder recon at both bit depths and superblock sizes.
+#[test]
+fn panning_content_codes_cheap_inter_frames() {
+    for (width, height, bit_depth, preset) in
+        [(96, 64, BitDepth::Eight, 8), (72, 40, BitDepth::Ten, 6)]
+    {
+        let config = config(width, height, bit_depth, preset, 100);
+        let mut coder = IntraFrameCoder::new(&config).unwrap();
+        let coded: Vec<CodedFrame> = (0..3)
+            .map(|index| {
+                let plan = crate::gop::plan(u64::from(index), config.keyint);
+                coder
+                    .encode_frame(&panning_frame(&config, index), &plan, 100)
+                    .unwrap()
+            })
+            .collect();
+        let name = format!("{width}x{height} {bit_depth:?} preset {preset}");
+        let key = coded[0].temporal_unit.len();
+        for frame in &coded[1..] {
+            assert!(
+                frame.temporal_unit.len() * 3 < key,
+                "{name}: inter frame of {} bytes, key frame {key}",
+                frame.temporal_unit.len()
+            );
+        }
+        let stream: Vec<u8> = coded.iter().flat_map(|f| f.temporal_unit.clone()).collect();
+        let expected: Vec<u8> = coded
+            .iter()
+            .flat_map(|f| recon_bytes(f, bit_depth))
+            .collect();
+        assert_same_samples(&decode(&stream), &expected, &name);
+    }
+}
+
+/// A small deterministic generator (xorshift64*).
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, n: u64) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D) % n
+    }
+}
+
+/// Leaf counts of a random tree: intra, then each inter mode.
+type Coverage = [usize; 4];
+
+/// A random partition tree of `node`: inter leaves of every mode, DRL index
+/// and random vectors of up to 40 samples, and `DC_PRED` intra leaves.
+fn random_tree(
+    syntax: &mut IntraTileSyntax,
+    node: PartitionNode,
+    rng: &mut Rng,
+    coverage: &mut Coverage,
+) -> core::result::Result<PartitionTree, TileWriterError> {
+    let options = syntax.partition_options(node)?;
+    let mut partitions = Vec::new();
+    for partition in PARTITIONS {
+        if options.allows(partition) && codable_children(syntax, node, partition)? {
+            partitions.push(partition);
+        }
+    }
+    if let Some(implied) = options.implied().filter(|&p| options.allows(p)) {
+        partitions = vec![implied];
+    }
+    let partition = if partitions.contains(&Partition::None) && rng.below(3) == 0 {
+        Partition::None
+    } else {
+        partitions[rng.below(partitions.len() as u64) as usize]
+    };
+    if partition == Partition::None {
+        let leaf = syntax.leaf(node)?;
+        return Ok(PartitionTree::Leaf(random_leaf(
+            syntax, &leaf, rng, coverage,
+        )));
+    }
+    let mut children = Vec::new();
+    for child in syntax.children(node, partition)? {
+        children.push(if syntax.in_frame(child) {
+            random_tree(syntax, child, rng, coverage)?
+        } else {
+            PartitionTree::Leaf(LeafChoice::DC)
+        });
+    }
+    Ok(PartitionTree::Split {
+        kind: partition,
+        children,
+    })
+}
+
+fn random_leaf(
+    syntax: &IntraTileSyntax,
+    leaf: &LeafBlock,
+    rng: &mut Rng,
+    coverage: &mut Coverage,
+) -> LeafChoice {
+    if !syntax.inter_allowed(leaf) || (syntax.intra_allowed(leaf) && rng.below(4) == 0) {
+        coverage[0] += 1;
+        return LeafChoice::DC;
+    }
+    let mode = [InterMode::Near, InterMode::Global, InterMode::New][rng.below(3) as usize];
+    coverage[1 + mode as usize] += 1;
+    let step = syntax.mv_step();
+    let drl = rng.below(syntax.drl_count() as u64) as usize;
+    let mut component = || (rng.below(81) as i32 - 40) * 8 + (rng.below(4) as i32) * step;
+    LeafChoice::inter(InterModes {
+        ref_frame: 0,
+        mode,
+        drl,
+        mv: MotionVector {
+            row: component(),
+            col: component(),
+        },
+    })
+}
+
+/// An inter frame of random partitions, modes and vectors after a key frame:
+/// the temporal units and the samples a decoder outputs.
+fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Coverage) {
+    let RateControlMode::ConstantQp { qp } = config.rate_control;
+    let qindex = u32::from(qp);
+    let mut coder = IntraFrameCoder::new(config).unwrap();
+    let key = coder
+        .encode_frame(
+            &panning_frame(config, 0),
+            &crate::gop::plan(0, config.keyint),
+            qp,
+        )
+        .unwrap();
+    let plan = crate::gop::plan(1, config.keyint);
+    let tx = tx_choice::key_frame_tx_params(coder.preset);
+    let filters = FrameFilterParams::default();
+    let core = plan
+        .header(&coder.view, &coder.references, qindex, &filters, tx)
+        .unwrap();
+    let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references).unwrap();
+    let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
+    let sb = writer.syntax().superblock_size4() * 4;
+    let source = panning_frame(config, 1);
+    let padded = PaddedSource::new(&source, mi_cols * 4 + sb, mi_rows * 4 + sb);
+    let lambda = Lambda::from_qindex(qindex, config.bit_depth).unwrap();
+    let mut residual =
+        SourceResidualCoder::new(&padded, qindex, config.bit_depth, coder.preset, lambda);
+    let mut rng = Rng(seed);
+    let mut coverage = Coverage::default();
+    while writer.next_superblock_root().is_some() {
+        let tree = writer
+            .search_superblock(|syntax, root| random_tree(syntax, root, &mut rng, &mut coverage))
+            .unwrap();
+        writer
+            .write_superblock(&SuperblockDecision { tree }, &mut residual)
+            .unwrap();
+    }
+    let (tile, recon) = writer.finish().unwrap();
+    let unit = plan
+        .temporal_unit(
+            &coder.sequence,
+            &coder.view,
+            &coder.references,
+            (qindex, &filters, tx),
+            &core,
+            &tile,
+        )
+        .unwrap();
+    let planes = visible_planes(&recon).unwrap();
+    let expected = [
+        recon_bytes(&key, config.bit_depth),
+        raw_bytes(planes.iter().map(Vec::as_slice), config.bit_depth),
+    ]
+    .concat();
+    (vec![key.temporal_unit, unit], expected, coverage)
+}
+
+/// `(width, height, bit depth, preset, qp)` of the random inter streams: both
+/// superblock sizes, both bit depths, frame edges, and a qp that skips.
+const RANDOM_INTER_CASES: [(u32, u32, BitDepth, u8, u8); 3] = [
+    (200, 104, BitDepth::Eight, 10, 90),
+    (96, 72, BitDepth::Ten, 6, 160),
+    (33, 17, BitDepth::Eight, 9, 250),
+];
+
+/// Random inter leaves, with NEWMV vectors coded by the MV writer, decode to
+/// the writer's reconstruction.
+#[test]
+fn random_inter_leaves_decode_to_the_writer_recon() {
+    let mut total = Coverage::default();
+    for (index, (width, height, bit_depth, preset, qp)) in
+        RANDOM_INTER_CASES.into_iter().enumerate()
+    {
+        let config = config(width, height, bit_depth, preset, qp);
+        let (units, expected, coverage) = random_inter_stream(&config, 0x5EED + index as u64);
+        let name = format!("{width}x{height} {bit_depth:?} preset {preset} qp {qp}");
+        assert_same_samples(&decode(&units.concat()), &expected, &name);
+        for (sum, count) in total.iter_mut().zip(coverage) {
+            *sum += count;
+        }
+    }
+    assert!(total.iter().all(|&count| count >= 5), "coverage {total:?}");
+}
+
+/// AVM decodes random and searched inter frames like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_inter_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for (index, (width, height, bit_depth, preset, qp)) in
+        RANDOM_INTER_CASES.into_iter().enumerate()
+    {
+        let config = config(width, height, bit_depth, preset, qp);
+        let (units, expected, _) = random_inter_stream(&config, 0x5EED + index as u64);
+        let avm = avm_decode(
+            &avmdec,
+            &units,
+            (width, height),
+            bit_depth,
+            &format!("random{index}"),
+        );
+        assert!(avm == expected, "random case {index}: AVM output differs");
+        let mut coder = IntraFrameCoder::new(&config).unwrap();
+        let units: Vec<Vec<u8>> = (0..4)
+            .map(|frame| {
+                let plan = crate::gop::plan(u64::from(frame), config.keyint);
+                coder
+                    .encode_frame(&panning_frame(&config, frame), &plan, qp)
+                    .unwrap()
+                    .temporal_unit
+            })
+            .collect();
+        let avm = avm_decode(
+            &avmdec,
+            &units,
+            (width, height),
+            bit_depth,
+            &format!("pan{index}"),
+        );
+        assert!(
+            avm == decode(&units.concat()),
+            "panning case {index}: AVM output differs"
+        );
+    }
+}
+
+/// An inter-frame superblock search from one state finds the same tree twice
+/// and picks inter leaves for panning content: inter trials roll back too.
+#[test]
+fn inter_superblock_search_is_deterministic_and_rolls_back() {
+    let config = config(64, 40, BitDepth::Ten, 9, 90);
+    let mut coder = IntraFrameCoder::new(&config).unwrap();
+    coder
+        .encode_frame(
+            &panning_frame(&config, 0),
+            &crate::gop::plan(0, config.keyint),
+            90,
+        )
+        .unwrap();
+    let plan = crate::gop::plan(1, config.keyint);
+    let tx = tx_choice::key_frame_tx_params(coder.preset);
+    let core = plan
+        .header(
+            &coder.view,
+            &coder.references,
+            90,
+            &FrameFilterParams::default(),
+            tx,
+        )
+        .unwrap();
+    let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references).unwrap();
+    let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
+    let sb = writer.syntax().superblock_size4() * 4;
+    let source = panning_frame(&config, 1);
+    let padded = PaddedSource::new(&source, mi_cols * 4 + sb, mi_rows * 4 + sb);
+    let lambda = Lambda::from_qindex(90, config.bit_depth).unwrap();
+    let motion = MotionSearch::new(writer.syntax(), &padded, coder.preset, lambda)
+        .unwrap()
+        .unwrap();
+    let mut residual =
+        SourceResidualCoder::new(&padded, 90, config.bit_depth, coder.preset, lambda);
+    let mut search = || {
+        writer
+            .search_superblock(|syntax, root| {
+                let mut trial =
+                    TrialCoder::new(syntax, &mut residual, coder.preset, lambda, Some(&motion));
+                search_partition(&mut trial, root, coder.preset, lambda)
+            })
+            .unwrap()
+    };
+    let first = search();
+    assert_eq!(first, search());
+    assert!(inter_leaves(&first.0) > 0, "{:?}", first.0);
+}
+
+/// The inter leaves of `tree`.
+fn inter_leaves(tree: &PartitionTree) -> usize {
+    match tree {
+        PartitionTree::Leaf(choice) => usize::from(choice.inter.is_some()),
+        PartitionTree::Split { children, .. } => children.iter().map(inter_leaves).sum(),
+    }
 }

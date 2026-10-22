@@ -4,7 +4,7 @@
 //! Coding decisions of one superblock, the input of the key-frame tile writer.
 
 pub(crate) use splot_decode::encoder_syntax::{
-    IntraMode, IntraModes, Partition, TxPartition, TxType,
+    InterMode, InterModes, IntraMode, IntraModes, MotionVector, Partition, TxPartition, TxType,
 };
 use splot_decode::encoder_syntax::{IntraTileSyntax, TransformBlock};
 
@@ -49,9 +49,12 @@ pub(crate) enum PartitionTree {
 /// The modes and the luma transform partition of one leaf.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LeafChoice {
+    /// The intra modes; an inter leaf ignores them.
     pub(crate) modes: IntraModes,
-    /// One of the leaf's `luma_tx_partitions`.
+    /// One of the leaf's `luma_tx_partitions`; an inter leaf codes `None`.
     pub(crate) tx_partition: TxPartition,
+    /// `Some` for an inter leaf.
+    pub(crate) inter: Option<InterModes>,
 }
 
 impl LeafChoice {
@@ -63,6 +66,15 @@ impl LeafChoice {
         Self {
             modes,
             tx_partition: TxPartition::None,
+            inter: None,
+        }
+    }
+
+    /// The inter leaf of `modes`.
+    pub(crate) const fn inter(modes: InterModes) -> Self {
+        Self {
+            inter: Some(modes),
+            ..Self::DC
         }
     }
 }

@@ -7,8 +7,9 @@
 //!
 //! The writer calls three hooks: [`TileFilters::write_lr_units`] at each
 //! superblock root before its partition symbols, [`TileFilters::write_cdef_index`]
-//! at the start of each leaf (before `y_mode`), and [`TileFilters::record_leaf`]
-//! after each leaf's residual.
+//! at the start of each leaf (after `skip_txfm` of an inter leaf), and
+//! [`TileFilters::record_leaf`] or [`TileFilters::record_inter_leaf`] after
+//! each leaf's residual.
 
 use std::collections::BTreeSet;
 
@@ -121,6 +122,16 @@ impl TileFilters {
         eobs: &[usize],
     ) -> Result<()> {
         Ok(self.recorder.record_leaf(leaf, transforms, eobs)?)
+    }
+
+    /// Records the planned inter leaf of `syntax` before it is published.
+    pub(crate) fn record_inter_leaf(
+        &mut self,
+        syntax: &IntraTileSyntax,
+        leaf: &LeafBlock,
+        skip: bool,
+    ) -> Result<()> {
+        Ok(self.recorder.record_inter_leaf(syntax, leaf, skip)?)
     }
 
     /// The records and the coded choices.

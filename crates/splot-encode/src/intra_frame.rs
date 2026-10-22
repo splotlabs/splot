@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Frame coding with intra blocks: the RD partition and mode search of each
-//! superblock, residual coding, and the temporal unit of a key or inter frame.
+//! Frame coding: the RD partition and mode search of each superblock, with
+//! intra and single-reference inter leaves, residual coding, and the temporal
+//! unit of a key or inter frame.
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams,
@@ -24,6 +25,7 @@ use crate::kernels::rdoq::{RdoqBlock, rdoq};
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
 use crate::loop_filter::{FilteredFrame, FirstPass, FrameDecisions, finish_frame};
 use crate::mode_decision::TrialCoder;
+use crate::motion_search::MotionSearch;
 use crate::preset::PresetParams;
 use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, block_rate};
 use crate::rd::partition::search_partition;
@@ -37,7 +39,7 @@ use crate::tx_choice;
 /// Quantizer deadzone in Q8 (`128` rounds to nearest).
 const DEADZONE_ROUNDING_Q8: u32 = 96;
 
-/// Codes key frames and inter frames whose blocks are all intra.
+/// Codes key frames and inter frames.
 pub(crate) struct IntraFrameCoder {
     sequence: SequenceHeader,
     view: CoreSeqView,
@@ -104,6 +106,8 @@ impl FrameCoder for IntraFrameCoder {
         let sb = writer.syntax().superblock_size4() * 4;
         let padded = PaddedSource::new(source, mi_cols * 4 + sb, mi_rows * 4 + sb);
         let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
+        let motion = MotionSearch::new(writer.syntax(), &padded, self.preset, lambda)
+            .map_err(coding("motion search"))?;
         let mut coder =
             SourceResidualCoder::new(&padded, qindex, self.bit_depth, self.preset, lambda);
         let mut decisions = FrameDecisions::default();
@@ -111,7 +115,8 @@ impl FrameCoder for IntraFrameCoder {
         while writer.next_superblock_root().is_some() {
             let tree = writer
                 .search_superblock(|syntax, root| {
-                    let mut trial = TrialCoder::new(syntax, &mut coder, preset, lambda);
+                    let mut trial =
+                        TrialCoder::new(syntax, &mut coder, preset, lambda, motion.as_ref());
                     Ok(search_partition(&mut trial, root, preset, lambda)?.0)
                 })
                 .map_err(coding("superblock search"))?;
@@ -204,6 +209,17 @@ impl PaddedSource {
         }
     }
 
+    /// The luma plane, its stride, and its padded `(width, height)`.
+    pub(crate) fn luma(&self) -> (&[u16], usize, usize, usize) {
+        let stride = self.strides[0];
+        (
+            &self.planes[0],
+            stride,
+            stride,
+            self.planes[0].len() / stride,
+        )
+    }
+
     /// The source samples at the top-left of `tx` and their stride.
     fn at(&self, tx: &TransformBlock) -> (&[u16], usize) {
         let stride = self.strides[tx.plane];
@@ -259,15 +275,24 @@ impl PaddedSource {
     }
 }
 
-/// Whether every in-frame child of `partition` may code an intra block.
-pub(crate) fn intra_children(
+/// Whether every in-frame leaf of `partition` of `node` (`node` itself for
+/// `NONE`) may code an intra or an inter block.
+pub(crate) fn codable_children(
     syntax: &IntraTileSyntax,
     node: PartitionNode,
     partition: Partition,
 ) -> core::result::Result<bool, TileWriterError> {
-    for child in syntax.children(node, partition)? {
-        if syntax.in_frame(child) && !syntax.intra_allowed(&syntax.leaf(child)?) {
-            return Ok(false);
+    let leaves = if partition == Partition::None {
+        vec![node]
+    } else {
+        syntax.children(node, partition)?
+    };
+    for child in leaves {
+        if syntax.in_frame(child) {
+            let leaf = syntax.leaf(child)?;
+            if !syntax.intra_allowed(&leaf) && !syntax.inter_allowed(&leaf) {
+                return Ok(false);
+            }
         }
     }
     Ok(true)

@@ -207,6 +207,7 @@ impl RandomLevels {
         Ok(LeafChoice {
             modes,
             tx_partition: partition,
+            inter: None,
         })
     }
 }

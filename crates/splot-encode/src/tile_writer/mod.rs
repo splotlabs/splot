@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Key-frame tile writer.
+//! Tile writer of key and inter frames.
 //!
 //! [`KeyFrameTileWriter`] walks each [`SuperblockDecision`] in § 5.20.3.1 syntax
 //! order, writes every symbol through [`SymbolEncoder`] with the CDF rows and
@@ -11,6 +11,7 @@
 pub(crate) mod coeffs;
 mod decision;
 pub(crate) mod filters;
+mod mv;
 
 use core::ops::Range;
 
@@ -25,8 +26,8 @@ use splot_decode::encoder_syntax::{
 use splot_recon::{DecodedFrame, ReconError};
 
 pub(crate) use decision::{
-    INTRA_MODES, LeafChoice, Partition, PartitionTree, ResidualCoder, SuperblockDecision,
-    TransformDecision, TxType,
+    INTRA_MODES, InterMode, InterModes, LeafChoice, MotionVector, Partition, PartitionTree,
+    ResidualCoder, SuperblockDecision, TransformDecision, TxType,
 };
 
 /// Output byte cap of one tile; larger than any 4096x2160 tile of 10-bit levels needs.
@@ -274,9 +275,10 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
     }
 
     /// Codes the blocks of `planes` of `leaf` under `choice`, then writes the
-    /// leaf syntax in order: `cdef_idx`, the modes, the luma transform
-    /// partition, and the coefficients of `planes`. Only a pass over all planes publishes the leaf. Returns the
-    /// leaf's transform blocks.
+    /// leaf syntax in order: `is_inter`, `cdef_idx`, the modes, the luma
+    /// transform partition, and the coefficients of `planes`. Only a pass over
+    /// all planes publishes the leaf. An inter leaf codes every plane. Returns
+    /// the leaf's transform blocks.
     pub(crate) fn write_leaf(
         &mut self,
         leaf: &LeafBlock,
@@ -284,9 +286,13 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         coder: &mut impl ResidualCoder,
         planes: Range<usize>,
     ) -> Result<Vec<TransformBlock>> {
+        if let Some(modes) = choice.inter {
+            return self.write_inter_leaf(leaf, modes, coder);
+        }
         let LeafChoice {
             modes,
             tx_partition,
+            ..
         } = choice;
         let mut blocks = self
             .syntax
@@ -317,9 +323,82 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             .code_luma_tx_partition(leaf, tx_partition, |cdf, value| {
                 coeffs::write_symbol(sink, cdf, value)
             })?;
+        let eobs = self.write_residual(&blocks, &levels, &planes)?;
+        if planes == (0..3) {
+            self.syntax.publish_intra_leaf(leaf, modes)?;
+            if let Some(filters) = self.filters.as_deref_mut() {
+                filters.record_leaf(leaf, &blocks, &eobs)?;
+            }
+        }
+        Ok(blocks)
+    }
+
+    /// Codes the inter leaf `leaf` under `modes`: its residual over the motion
+    /// compensated prediction, then `is_inter`, `skip_txfm`, `cdef_idx`, the
+    /// reference and mode syntax, the motion vector difference, and the
+    /// residual. A leaf whose levels are all zero codes `skip_txfm = 1`.
+    fn write_inter_leaf(
+        &mut self,
+        leaf: &LeafBlock,
+        mut modes: InterModes,
+        coder: &mut impl ResidualCoder,
+    ) -> Result<Vec<TransformBlock>> {
+        if modes.mode == InterMode::New {
+            let base = self.syntax.newmv_base(leaf, modes.ref_frame, modes.drl)?;
+            modes.mv = snap_mv(modes.mv, base, self.syntax.mv_step());
+        }
+        let mut blocks = self.syntax.plan_inter_leaf(leaf, modes)?;
+        let mut levels = vec![Vec::new(); blocks.len()];
+        let mut luma = None;
+        for (index, tx) in blocks.iter_mut().enumerate() {
+            if let (true, Some(luma)) = (tx.plane > 0, luma.as_ref()) {
+                tx.tx_type = self.syntax.inter_chroma_tx_type(leaf, luma, tx)?;
+            }
+            let prediction = self.syntax.reconstruction(tx)?;
+            let decision = if tx.plane == 0 {
+                self.code_luma(coder, tx, &prediction)?
+            } else {
+                code_as(self.syntax, coder, tx, &prediction)?
+            };
+            tx.tx_type = decision.tx_type;
+            levels[index] = decision.levels;
+            if tx.plane == 0 {
+                luma = Some(*tx);
+            }
+        }
+        let skip = levels.iter().flatten().all(|&level| level == 0);
+        if !skip {
+            self.syntax.reconstruct_inter(&blocks, &levels)?;
+        }
+        self.syntax.write_is_inter(leaf, true, self.sink)?;
+        self.syntax.write_skip_txfm(leaf, skip, self.sink)?;
+        if let Some(filters) = self.filters.as_deref_mut() {
+            filters.write_cdef_index(self.syntax, self.sink, leaf, skip)?;
+        }
+        if let Some(mvd) = self.syntax.write_inter_modes(leaf, self.sink)? {
+            mv::write_mvd(self.syntax, self.sink, mvd)?;
+        }
+        if !skip {
+            self.syntax.write_inter_tx_partition(leaf, self.sink)?;
+            self.write_residual(&blocks, &levels, &(0..3))?;
+        }
+        if let Some(filters) = self.filters.as_deref_mut() {
+            filters.record_inter_leaf(self.syntax, leaf, skip)?;
+        }
+        self.syntax.publish_inter_leaf(leaf, skip)?;
+        Ok(blocks)
+    }
+
+    /// Writes the coefficients of the blocks of `planes`; returns each `eob`.
+    fn write_residual(
+        &mut self,
+        blocks: &[TransformBlock],
+        levels: &[Vec<i32>],
+        planes: &Range<usize>,
+    ) -> Result<Vec<usize>> {
         let mut eob_u = 0;
         let mut eobs = vec![0; blocks.len()];
-        for ((tx, levels), eob) in blocks.iter().zip(&levels).zip(&mut eobs) {
+        for ((tx, levels), eob) in blocks.iter().zip(levels).zip(&mut eobs) {
             if !planes.contains(&tx.plane) {
                 continue;
             }
@@ -334,13 +413,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                 eob_u = *eob;
             }
         }
-        if planes == (0..3) {
-            self.syntax.publish_intra_leaf(leaf, modes)?;
-            if let Some(filters) = self.filters.as_deref_mut() {
-                filters.record_leaf(leaf, &blocks, &eobs)?;
-            }
-        }
-        Ok(blocks)
+        Ok(eobs)
     }
 
     /// The decision of luma block `tx` in a type the decoder reads or infers
@@ -379,6 +452,16 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             _ => {}
         }
         Ok(decision)
+    }
+}
+
+/// `mv` moved to the nearest vector `base` plus a multiple of `step` per
+/// component, which a `NEWMV` over `base` can code.
+pub(crate) fn snap_mv(mv: MotionVector, base: MotionVector, step: i32) -> MotionVector {
+    let round = |v: i32, b: i32| b + (v - b + step / 2).div_euclid(step) * step;
+    MotionVector {
+        row: round(mv.row, base.row),
+        col: round(mv.col, base.col),
     }
 }
 

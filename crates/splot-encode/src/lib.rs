@@ -26,6 +26,7 @@ pub mod ivf;
 mod kernels;
 mod loop_filter;
 mod mode_decision;
+mod motion_search;
 pub mod preset;
 pub mod rate_control;
 mod rd;

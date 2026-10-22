@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! RD intra mode decision and the trial coder of the partition search.
+//! RD mode decision, intra and single-reference inter, and the trial coder of
+//! the partition search.
 //!
 //! A trial codes through the tile writer's own [`Walk`] into a [`RateSink`],
 //! so its rate is the exact symbol cost of the final stream, and its
@@ -17,13 +18,15 @@ use splot_decode::encoder_syntax::{
 };
 
 use crate::intra_frame::SourceResidualCoder;
-use crate::intra_frame::intra_children;
+use crate::intra_frame::codable_children;
+use crate::motion_search::MotionSearch;
 use crate::preset::PresetParams;
 use crate::rd::coeff_rate::RateSink;
 use crate::rd::partition::PartitionSearch;
 use crate::rd::{Bits, Lambda, RdCost};
 use crate::tile_writer::{
-    INTRA_MODES, LeafChoice, PARTITIONS, Partition, Result, TileWriterError, Walk,
+    INTRA_MODES, InterMode, InterModes, LeafChoice, MotionVector, PARTITIONS, Partition, Result,
+    TileWriterError, Walk, snap_mv,
 };
 
 /// The largest `|AngleDeltaY|` (§ 5.20.5.5).
@@ -39,6 +42,7 @@ pub(crate) struct TrialCoder<'a, 'b> {
     coder: &'a mut SourceResidualCoder<'b>,
     preset: &'a PresetParams,
     lambda: Lambda,
+    motion: Option<&'a MotionSearch>,
 }
 
 impl<'a, 'b> TrialCoder<'a, 'b> {
@@ -47,12 +51,14 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         coder: &'a mut SourceResidualCoder<'b>,
         preset: &'a PresetParams,
         lambda: Lambda,
+        motion: Option<&'a MotionSearch>,
     ) -> Self {
         Self {
             syntax,
             coder,
             preset,
             lambda,
+            motion,
         }
     }
 
@@ -206,6 +212,107 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
     }
 }
 
+impl TrialCoder<'_, '_> {
+    /// The inter candidates of `leaf` for every reference: `GLOBALMV`, `NEARMV`
+    /// of each DRL index, and `NEWMV` with the searched vector over the DRL
+    /// base nearest to it; candidates with a vector already listed are dropped.
+    fn inter_candidates(&mut self, leaf: &LeafBlock) -> Result<Vec<LeafChoice>> {
+        let mut out: Vec<(MotionVector, LeafChoice)> = Vec::new();
+        let mut push = |mv: MotionVector, modes: InterModes| {
+            if out.iter().all(|&(seen, _)| seen != mv) {
+                out.push((mv, LeafChoice::inter(modes)));
+            }
+        };
+        for ref_frame in 0..self.syntax.reference_count() {
+            let mode = |mode, drl| InterModes {
+                ref_frame,
+                mode,
+                drl,
+                mv: MotionVector::default(),
+            };
+            push(
+                self.syntax.inter_mv(leaf, mode(InterMode::Global, 0))?,
+                mode(InterMode::Global, 0),
+            );
+            let mut seeds = Vec::new();
+            for drl in 0..self.syntax.drl_count() {
+                let mv = self.syntax.inter_mv(leaf, mode(InterMode::Near, drl))?;
+                seeds.push(mv);
+                push(mv, mode(InterMode::Near, drl));
+            }
+            let Some(motion) = self.motion else {
+                continue;
+            };
+            let bases = (0..self.syntax.drl_count())
+                .map(|drl| self.syntax.newmv_base(leaf, ref_frame, drl))
+                .collect::<core::result::Result<Vec<_>, _>>()?;
+            let pred = bases.first().copied().unwrap_or_default();
+            let (w, h) = leaf.dimensions()?;
+            let rect = (leaf.col4() * 4, leaf.row4() * 4, w, h);
+            let found = motion.search(self.syntax, ref_frame, rect, &seeds, pred)?;
+            let distance = |base: MotionVector| {
+                (found.row - base.row).unsigned_abs() + (found.col - base.col).unsigned_abs()
+            };
+            let (drl, base) = bases
+                .iter()
+                .copied()
+                .enumerate()
+                .min_by_key(|&(_, base)| distance(base))
+                .unwrap_or((0, pred));
+            let mv = snap_mv(found, base, self.syntax.mv_step());
+            push(
+                mv,
+                InterModes {
+                    mv,
+                    ..mode(InterMode::New, drl)
+                },
+            );
+        }
+        Ok(out.into_iter().map(|(_, choice)| choice).collect())
+    }
+
+    /// The best intra choice of `leaf`: luma modes on luma alone, then the
+    /// luma transform partition, then the chroma mode over the coded luma.
+    fn intra_choice(
+        &mut self,
+        node: PartitionNode,
+        leaf: &LeafBlock,
+        start: &SyntaxSnapshot,
+    ) -> Result<LeafChoice> {
+        let luma = self.luma_shortlist(leaf)?;
+        let mut choice = self.best(leaf, luma, LUMA, start)?;
+        if self.preset.tx_partition_search {
+            let partitions = self.syntax.luma_tx_partitions(leaf)?;
+            let candidates = partitions
+                .into_iter()
+                .map(|tx_partition| LeafChoice {
+                    tx_partition,
+                    ..choice
+                })
+                .collect();
+            choice = self.best(leaf, candidates, LUMA, start)?;
+        }
+        if leaf.has_chroma() {
+            self.trial(leaf, choice, LUMA)?;
+            let luma = self.save(node)?;
+            let modes = self.chroma_candidates(leaf, choice.modes)?;
+            let mut ranked = Vec::new();
+            self.rank(leaf, modes, CHROMA, &mut ranked)?;
+            let candidates = self.shortlist(ranked);
+            let chroma = candidates
+                .into_iter()
+                .map(|candidate| LeafChoice {
+                    tx_partition: choice.tx_partition,
+                    ..candidate
+                })
+                .collect();
+            choice = self.best(leaf, chroma, CHROMA, &luma)?;
+            self.syntax.restore(start)?;
+        }
+        Ok(choice)
+    }
+}
+
 impl PartitionSearch for TrialCoder<'_, '_> {
     type Node = PartitionNode;
     type Saved = SyntaxSnapshot;
@@ -220,16 +327,11 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         if let Some(implied) = options.implied().filter(|&p| options.allows(p)) {
             return Ok(vec![implied]);
         }
-        // Inter frames infer is_inter for some block shapes, so drop the
-        // partitions that would need an intra block there.
+        // Drop the partitions with a leaf that can code neither an intra block
+        // nor an inter block.
         let mut allowed = Vec::with_capacity(PARTITIONS.len());
         for partition in PARTITIONS.into_iter().filter(|&p| options.allows(p)) {
-            let intra = if partition == Partition::None {
-                self.syntax.intra_allowed(&self.syntax.leaf(node)?)
-            } else {
-                intra_children(self.syntax, node, partition)?
-            };
-            if intra {
+            if codable_children(self.syntax, node, partition)? {
                 allowed.push(partition);
             }
         }
@@ -250,42 +352,19 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         Ok((w.ilog2(), h.ilog2()))
     }
 
-    /// RD-chooses the luma modes on luma alone, then the luma transform
-    /// partition, then the chroma mode over the coded luma, then codes the
-    /// whole leaf.
+    /// RD-chooses the intra choice of the leaf, then compares it with the
+    /// inter candidates over all planes, then codes the whole leaf.
     fn evaluate_leaf(&mut self, node: PartitionNode) -> Result<(RdCost, LeafChoice)> {
         let leaf = self.syntax.leaf(node)?;
         let start = self.save(node)?;
-        let luma = self.luma_shortlist(&leaf)?;
-        let mut choice = self.best(&leaf, luma, LUMA, &start)?;
-        if self.preset.tx_partition_search {
-            let partitions = self.syntax.luma_tx_partitions(&leaf)?;
-            let candidates = partitions
-                .into_iter()
-                .map(|tx_partition| LeafChoice {
-                    tx_partition,
-                    ..choice
-                })
-                .collect();
-            choice = self.best(&leaf, candidates, LUMA, &start)?;
+        let mut candidates = Vec::new();
+        if self.syntax.intra_allowed(&leaf) {
+            candidates.push(self.intra_choice(node, &leaf, &start)?);
         }
-        if leaf.has_chroma() {
-            self.trial(&leaf, choice, LUMA)?;
-            let luma = self.save(node)?;
-            let modes = self.chroma_candidates(&leaf, choice.modes)?;
-            let mut ranked = Vec::new();
-            self.rank(&leaf, modes, CHROMA, &mut ranked)?;
-            let candidates = self.shortlist(ranked);
-            let chroma = candidates
-                .into_iter()
-                .map(|candidate| LeafChoice {
-                    tx_partition: choice.tx_partition,
-                    ..candidate
-                })
-                .collect();
-            choice = self.best(&leaf, chroma, CHROMA, &luma)?;
-            self.syntax.restore(&start)?;
+        if self.syntax.inter_allowed(&leaf) {
+            candidates.extend(self.inter_candidates(&leaf)?);
         }
+        let choice = self.best(&leaf, candidates, ALL, &start)?;
         Ok((self.trial(&leaf, choice, ALL)?, choice))
     }
 
