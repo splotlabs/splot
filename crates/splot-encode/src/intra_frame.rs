@@ -95,9 +95,9 @@ impl FrameCoder for IntraFrameCoder {
         qp: u8,
     ) -> Result<CodedFrame> {
         let qindex = u32::from(qp);
-        let tx = tx_choice::key_frame_tx_params(self.preset);
+        let tools = gop::frame_tools(self.preset);
         let header = |filters: &FrameFilterParams| {
-            plan.header(&self.view, &self.references, qindex, filters, tx)
+            plan.header(&self.view, &self.references, qindex, filters, tools)
         };
         let core = header(&FrameFilterParams::default())?;
         let mut writer = KeyFrameTileWriter::new(&self.sequence, &core, &self.references)
@@ -150,7 +150,7 @@ impl FrameCoder for IntraFrameCoder {
             &self.sequence,
             &self.view,
             &self.references,
-            (qindex, &filters, tx),
+            (qindex, &filters, tools),
             &core,
             &tile,
         )?;

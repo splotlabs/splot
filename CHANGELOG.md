@@ -22,8 +22,15 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
   160x90 10 frames BD-rate -7.2%; niklas 720p 10 frames BD-rate -8.1%.
   Bitrate accuracy, park_joy 300 kbps: VBR +8.8%, CBR +1.7%.
 
-### Encoder milestone 3: single-reference inter blocks
+### Encoder milestone 3: inter coding
 
+- Inter frame headers are parse-backed like key frames; `EncoderReferences`
+  wraps the decoder's own reference buffer, so the encoder never re-derives
+  § 7.7/§ 7.23 reference state.
+- Hierarchical mini-GOPs (preset `mini_gop_size` 8/4/2/1): each mini-GOP codes
+  its last frame first as a hidden frame, then the middle frames, and shows
+  hidden frames with show-existing frames; each packet is one § 7.3.6
+  temporal unit in coding order, and `--keyint` starts key frames.
 - Inter-frame leaves RD-compare intra coding with GLOBALMV, NEARMV over the
   DRL, and NEWMV, from every valid reference. NEWMV takes a pyramid
   full-sample search with half- and quarter-sample refinement through the
@@ -35,6 +42,20 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
   thread, base_q_idx 80/120/160, luma: park_joy 160x90 preset 6 BD-rate
   -34%, encode time +64..93%; niklas 720p preset 10 BD-rate -43%, encode
   time +26..71%.
+- Compound and skip-mode blocks: inter frames set `reference_select` and
+  `skip_mode_present` when the preset's `compound_candidates` is nonzero.
+  Leaves add skip-mode trials and a SATD-ranked compound shortlist
+  (COMPOUND_AVERAGE; NEAR_NEARMV over both DRLs, GLOBAL_GLOBALMV, NEW_NEWMV,
+  NEAR_NEWMV, NEW_NEARMV, JOINT_NEWMV) over the pairs of the three closest
+  references, seeded by the single-reference search. The facade writes
+  `comp_ref`, the modes and the DRLs by answering the decoder's own reads.
+- Rate points against single-reference only, preset 6, 10 frames, keyint 30,
+  mini-GOP 4, base_q_idx 80/120/160/200, luma: niklas 720p BD-rate -4.5%,
+  encode time +8..17%; park_joy 160x90 BD-rate -0.2%, encode time +1..22%.
+- Against AVM `--cpu-used=6 --kf-max-dist=30 --lag-in-frames=16`, park_joy
+  160x90, 10 frames, base_q_idx 85..190, preset 6: luma BD-rate +37.7%;
+  splot 0.6-3.8 fps, AVM 0.12-0.23 fps. AVM also uses temporal MVs, warped
+  and overlapped motion, optical flow and TIP, which splot does not code yet.
 
 ### Encoder milestone 2: full intra coding
 

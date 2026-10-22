@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Single-reference inter leaves of the encoder syntax facade.
+//! Single-reference, compound and skip-mode inter leaves of the encoder
+//! syntax facade.
 //!
 //! [`EncoderInterTile`] keeps the decoder's neighbour grid and banks for one
 //! tile and runs the decoder's own § 7.12 stack, § 7.12 resolution, § 7.11.3
 //! motion compensation, inter residual reconstruction and filter records, so
 //! the facade never derives motion, prediction or residual geometry itself.
 
+use super::super::compound::CompoundYMode;
 use super::super::find_mv_stack::{
     GridCheckpoint, OrderHintMvContext, RefMvBank, WarpParamBank, reference_order_hints,
 };
@@ -16,10 +18,45 @@ use splot_core::headers::sequence::SequencePartitionConfig;
 use super::filter_records::record_inter_deblock_geometry;
 use super::residual::{InterLumaTxTypeMap, push_inter_residual_block};
 use super::resolve::{
-    ResolvedInterBlock, resolve_inter_block, single_inter_block, single_mode_mv, single_mv_stack,
+    InterBlockSyntax, InterMotionSyntax, MvResolutionState, ResolvedInterBlock,
+    compound_inter_block, compound_motion, resolve_inter_block, resolve_single, single_inter_block,
 };
 #[allow(clippy::wildcard_imports)]
 use super::*;
+
+mod compound;
+
+pub(crate) use compound::{EncoderCompoundMotion, JMVD_SCALE_MODES};
+
+/// The motion of one inter leaf.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EncoderMotion {
+    /// A single-reference block (§ 5.20.7.11).
+    Single(EncoderSingleMotion),
+    /// A compound or skip-mode block (§ 5.20.7.10, § 5.20.7.12).
+    Compound(EncoderCompoundMotion),
+}
+
+impl EncoderMotion {
+    /// `(RefFrame[0], RefFrame[1])` as list indices.
+    pub(crate) const fn refs(self) -> (i8, Option<i8>) {
+        match self {
+            Self::Single(single) => (single.ref_frame, None),
+            Self::Compound(compound) => (compound.ref_frames.0, Some(compound.ref_frames.1)),
+        }
+    }
+
+    /// Whether the block is a skip-mode block.
+    pub(crate) const fn skip_mode(self) -> bool {
+        matches!(
+            self,
+            Self::Compound(EncoderCompoundMotion {
+                skip_mode: true,
+                ..
+            })
+        )
+    }
+}
 
 /// The single-reference choice of one leaf (§ 5.20.7.11).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,9 +75,8 @@ pub(crate) struct EncoderSingleMotion {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct EncoderInterContexts {
     pub(crate) is_inter: usize,
+    pub(crate) skip_mode: usize,
     pub(crate) skip: usize,
-    /// `NewMvContext` of the leaf with `ref_frame0 = 0`.
-    pub(crate) new_mv: usize,
 }
 
 /// A saved [`EncoderInterTile`] region.
@@ -70,6 +106,9 @@ pub(crate) struct EncoderInterTile {
     precision: u8,
     max_drl_bits_minus_1: u32,
     drl_reorder: DrlReorder,
+    /// `reference_select` and `skip_mode_present`.
+    compound_tools: (bool, bool),
+    num_same_ref_compound: u8,
     sb_h4: usize,
     mi_rows: usize,
     mi_cols: usize,
@@ -98,8 +137,13 @@ impl EncoderInterTile {
         };
         let refused = [
             (
-                tail.reference_select || tail.skip_mode_present,
-                "compound or skip mode",
+                (tail.reference_select || tail.skip_mode_present)
+                    && (seq_inter.enable_masked_compound
+                        || seq_inter.enable_cwp
+                        || seq_inter.enable_imp_msk_bld
+                        || seq_inter.enable_refinemv
+                        || seq_inter.enable_opfl_refine != 0),
+                "masked, weighted, refined or optical-flow compound prediction",
             ),
             (
                 tail.allow_warpmv_mode || tail.allow_bawp,
@@ -181,6 +225,8 @@ impl EncoderInterTile {
                 .max_drl_bits_minus_1
                 .ok_or("incomplete inter frame tools")?,
             drl_reorder: sequence_drl_reorder(sequence),
+            compound_tools: (tail.reference_select, tail.skip_mode_present),
+            num_same_ref_compound: seq_inter.num_same_ref_compound,
             sb_h4,
             mi_rows,
             mi_cols,
@@ -228,33 +274,20 @@ impl EncoderInterTile {
         self.warp_bank.clone_from(&checkpoint.warp_bank);
     }
 
-    /// The `is_inter`, `skip_txfm` and `single_mode` contexts of `frontier`.
+    /// The `is_inter`, `skip_mode` and `skip_txfm` contexts of `frontier`,
+    /// whose block codes `skip_mode`.
     pub(crate) fn contexts(
         &self,
         frontier: &DecodeBlockFrontier,
-        ref_frame: i8,
+        skip_mode: bool,
     ) -> Result<EncoderInterContexts> {
-        let block = self.block(frontier, ref_frame)?;
+        let block = self.block(frontier, (SINGLE_REF_FRAME0, None))?;
         let neighbour = block_neighbour_ctx(&self.grid, &block);
         Ok(EncoderInterContexts {
             is_inter: neighbour.is_inter_ctx,
-            skip: inter_skip_txfm_ctx(neighbour.skip_ctx, false),
-            new_mv: find_mode_ctx(&self.grid, &block).new_mv_context,
+            skip_mode: neighbour.skip_mode_ctx,
+            skip: inter_skip_txfm_ctx(neighbour.skip_ctx, skip_mode),
         })
-    }
-
-    /// The `single_ref` contexts of `frontier`, one per decision.
-    pub(crate) fn single_ref_contexts(&self, frontier: &DecodeBlockFrontier) -> Result<Vec<usize>> {
-        let block = self.block(frontier, SINGLE_REF_FRAME0)?;
-        let neighbour = block_neighbour_ctx(&self.grid, &block);
-        let refs = self.num_total_refs();
-        (0..refs.saturating_sub(1))
-            .map(|index| {
-                neighbour
-                    .single_ref_ctx(index, refs)
-                    .ok_or_else(|| DecodeHeaderStateError::InvalidInterReferenceMap.into())
-            })
-            .collect()
     }
 
     /// The motion vector the decoder resolves for `motion` at `frontier`.
@@ -263,42 +296,31 @@ impl EncoderInterTile {
         frontier: &DecodeBlockFrontier,
         motion: EncoderSingleMotion,
     ) -> Result<Mv> {
-        let block = self.block(frontier, motion.ref_frame)?;
-        let single = self.single_syntax(&block, motion);
-        self.warp_bank
-            .reset_for_leaf(&self.grid, block.mi_row, block.mi_col, self.sb_h4);
-        let state = MvResolutionState {
-            grid: &mut self.grid,
-            ref_mv_bank: &mut self.ref_mv_bank,
-            warp_param_bank: &mut self.warp_bank,
-            core: &self.core,
-            temporal: None,
-            order_hints: OrderHintMvContext::new(self.current_order_hint, &self.order_hints),
-            drl_reorder: self.drl_reorder,
-            max_drl_bits_minus_1: self.max_drl_bits_minus_1,
-            frame_precision: self.precision,
-            tile_offset: ByteOffset::new(0),
-        };
-        let stack = single_mv_stack(&block, false, single.use_temporal_first, &state);
-        Ok(single_mode_mv(
-            &single,
-            &stack,
-            (BlockPrecisionRecord::most_probable(self.precision), false),
-            &block,
-            &state,
-        ))
+        Ok(self.motion_vectors(frontier, EncoderMotion::Single(motion))?[0])
+    }
+
+    /// The motion vectors the decoder resolves for `motion` at `frontier`.
+    pub(crate) fn motion_vectors(
+        &mut self,
+        frontier: &DecodeBlockFrontier,
+        motion: EncoderMotion,
+    ) -> Result<[Mv; 2]> {
+        let syntax = self.inter_syntax(frontier, motion, true)?;
+        Ok(self.resolve_motion(&syntax)?.mv)
     }
 
     /// Predicts `frontier` with `motion` into `workspace` (§ 7.11.3) and
-    /// returns its motion vector.
+    /// returns its motion vectors.
     pub(crate) fn predict(
         &mut self,
         frontier: &DecodeBlockFrontier,
-        motion: EncoderSingleMotion,
+        motion: EncoderMotion,
         workspace: &mut CurrentFrameWorkspace<u16>,
-    ) -> Result<Mv> {
-        let mv = self.motion_vector(frontier, motion)?;
-        let placed = self.placed(frontier, motion, mv, None)?;
+    ) -> Result<[Mv; 2]> {
+        let syntax = self.inter_syntax(frontier, motion, true)?;
+        let resolved = self.resolve_motion(&syntax)?;
+        let mvs = resolved.mv;
+        let placed = self.placed(frontier, syntax, &resolved)?;
         prediction::reconstruct_pure_inter_block(
             &mut mc::WorkspaceSink::Frame(workspace),
             &mut self.residual_scratch,
@@ -316,7 +338,7 @@ impl EncoderInterTile {
             self.bit_depth,
             ByteOffset::new(0),
         )?;
-        Ok(mv)
+        Ok(mvs)
     }
 
     /// Adds `residual` to the predicted samples of `frontier` in `workspace`.
@@ -340,28 +362,15 @@ impl EncoderInterTile {
     }
 
     /// Publishes a coded inter leaf: its flags, then its § 7.12 resolution.
-    /// Returns the motion vector the decoder resolves.
+    /// Returns the motion vectors the decoder resolves.
     pub(crate) fn publish(
         &mut self,
         frontier: &DecodeBlockFrontier,
-        motion: EncoderSingleMotion,
+        motion: EncoderMotion,
         skip: bool,
-    ) -> Result<Mv> {
-        let block = self.block(frontier, motion.ref_frame)?;
-        let syntax = InterBlockSyntax {
-            block_ctx: block,
-            motion: InterMotionSyntax::Single(self.single_syntax(&block, motion)),
-            interp: ReconInterpolationFilter::EightTap,
-            precision: BlockPrecisionRecord::most_probable(self.precision),
-            skip,
-            use_amvd: false,
-            tip_size_16x16: false,
-            blend: mc::CompoundBlend::default(),
-            bawp: BawpSyntax::default(),
-            interintra: None,
-            optflow_distances: None,
-            residual: None,
-        };
+    ) -> Result<[Mv; 2]> {
+        let syntax = self.inter_syntax(frontier, motion, skip)?;
+        let block = syntax.block_ctx;
         self.grid.record_flags(
             block.mi_row,
             block.mi_col,
@@ -369,9 +378,28 @@ impl EncoderInterTile {
             block.bh4,
             syntax.flag_syntax(),
         );
+        let mut state = self.resolution_state(&block);
+        Ok(resolve_inter_block(&syntax, &mut state)?.mv)
+    }
+
+    /// The decoder's § 7.12 motion of `syntax`, not published.
+    fn resolve_motion(&mut self, syntax: &InterBlockSyntax) -> Result<ResolvedInterBlock> {
+        let state = self.resolution_state(&syntax.block_ctx);
+        match &syntax.motion {
+            InterMotionSyntax::Single(single) => Ok(resolve_single(syntax, single, &state)),
+            InterMotionSyntax::Compound(compound) => compound_motion(syntax, compound, &state),
+            InterMotionSyntax::Warp(_) => {
+                Err(DecodeHeaderStateError::InvalidInterBlockModeState.into())
+            }
+        }
+    }
+
+    /// The resolution state of a leaf at `block`, with the warp bank reset
+    /// for it as the resolve pass does.
+    fn resolution_state(&mut self, block: &MvBlockContext) -> MvResolutionState<'_> {
         self.warp_bank
             .reset_for_leaf(&self.grid, block.mi_row, block.mi_col, self.sb_h4);
-        let mut state = MvResolutionState {
+        MvResolutionState {
             grid: &mut self.grid,
             ref_mv_bank: &mut self.ref_mv_bank,
             warp_param_bank: &mut self.warp_bank,
@@ -382,8 +410,45 @@ impl EncoderInterTile {
             max_drl_bits_minus_1: self.max_drl_bits_minus_1,
             frame_precision: self.precision,
             tile_offset: ByteOffset::new(0),
+        }
+    }
+
+    /// The parse record of `motion` at `frontier` coded with `skip_txfm = skip`.
+    fn inter_syntax(
+        &self,
+        frontier: &DecodeBlockFrontier,
+        motion: EncoderMotion,
+        skip: bool,
+    ) -> Result<InterBlockSyntax> {
+        let block = self.block(frontier, motion.refs())?;
+        let (syntax, interp) = match motion {
+            EncoderMotion::Single(single) => (
+                InterMotionSyntax::Single(self.single_syntax(&block, single)),
+                ReconInterpolationFilter::EightTap,
+            ),
+            EncoderMotion::Compound(compound) => (
+                InterMotionSyntax::Compound(self.compound_syntax(&block, compound)?),
+                if compound.skip_mode {
+                    ReconInterpolationFilter::EightTapSharp
+                } else {
+                    ReconInterpolationFilter::EightTap
+                },
+            ),
         };
-        Ok(resolve_inter_block(&syntax, &mut state)?.mv[0])
+        Ok(InterBlockSyntax {
+            block_ctx: block,
+            motion: syntax,
+            interp,
+            precision: BlockPrecisionRecord::most_probable(self.precision),
+            skip,
+            use_amvd: false,
+            tip_size_16x16: false,
+            blend: mc::CompoundBlend::default(),
+            bawp: BawpSyntax::default(),
+            interintra: None,
+            optflow_distances: None,
+            residual: None,
+        })
     }
 
     /// Publishes an intra leaf of an inter frame as the parse and resolve
@@ -392,7 +457,7 @@ impl EncoderInterTile {
         if frontier.is_chroma_part() {
             return Ok(());
         }
-        let block = self.block(frontier, SINGLE_REF_FRAME0)?;
+        let block = self.block(frontier, (SINGLE_REF_FRAME0, None))?;
         self.grid.record_flags(
             block.mi_row,
             block.mi_col,
@@ -519,7 +584,11 @@ impl EncoderInterTile {
         Ok(info)
     }
 
-    fn block(&self, frontier: &DecodeBlockFrontier, ref_frame: i8) -> Result<MvBlockContext> {
+    fn block(
+        &self,
+        frontier: &DecodeBlockFrontier,
+        (ref_frame0, ref_frame1): (i8, Option<i8>),
+    ) -> Result<MvBlockContext> {
         let (bw4, bh4) = block_size4(frontier)?;
         Ok(MvBlockContext {
             mi_row: frontier.r,
@@ -527,8 +596,8 @@ impl EncoderInterTile {
             bw4,
             bh4,
             sb_h4: self.sb_h4,
-            ref_frame0: ref_frame,
-            ref_frame1: None,
+            ref_frame0,
+            ref_frame1,
             mi_rows: self.mi_rows,
             mi_cols: self.mi_cols,
         })
@@ -544,13 +613,7 @@ impl EncoderInterTile {
             tip_ref: false,
             ref_mv_idx: motion.ref_mv_idx,
             mvd: motion.mvd,
-            use_temporal_first: self.temporal_first
-                && block_ref_within_temporal_distance(
-                    &self.reference,
-                    &self.ref_frame_idx,
-                    self.current_order_hint,
-                    motion.ref_frame,
-                ),
+            use_temporal_first: self.temporal_first(motion.ref_frame),
             global_warp: (motion.mode == SINGLE_MODE_GLOBALMV)
                 .then(|| {
                     global_motion_warp(&self.core, motion.ref_frame, false, block.bw4, block.bh4)
@@ -559,45 +622,38 @@ impl EncoderInterTile {
         }
     }
 
+    /// The single-reference temporal-first priority of list reference `ref_frame`.
+    fn temporal_first(&self, ref_frame: i8) -> bool {
+        self.temporal_first
+            && block_ref_within_temporal_distance(
+                &self.reference,
+                &self.ref_frame_idx,
+                self.current_order_hint,
+                ref_frame,
+            )
+    }
+
+    /// The block of `syntax`, resolved to `resolved`, placed at `frontier`.
     fn placed(
         &self,
         frontier: &DecodeBlockFrontier,
-        motion: EncoderSingleMotion,
-        mv: Mv,
-        residual: Option<InterResidual>,
+        syntax: InterBlockSyntax,
+        resolved: &ResolvedInterBlock,
     ) -> Result<PlacedInterBlock> {
-        let block = self.block(frontier, motion.ref_frame)?;
-        let single = self.single_syntax(&block, motion);
         let geometry = prediction::placed_inter_geometry_at(
             frontier,
             (0, 0),
-            (block.bw4, block.bh4),
+            (syntax.block_ctx.bw4, syntax.block_ctx.bh4),
             self.chroma != ChromaFormatIdc::Monochrome,
         )?;
-        let syntax = InterBlockSyntax {
-            block_ctx: block,
-            motion: InterMotionSyntax::Single(single),
-            interp: ReconInterpolationFilter::EightTap,
-            precision: BlockPrecisionRecord::most_probable(self.precision),
-            skip: residual.is_none(),
-            use_amvd: false,
-            tip_size_16x16: false,
-            blend: mc::CompoundBlend::default(),
-            bawp: BawpSyntax::default(),
-            interintra: None,
-            optflow_distances: None,
-            residual,
-        };
-        let global_warp = match &syntax.motion {
-            InterMotionSyntax::Single(single) => single.global_warp,
-            _ => None,
-        };
-        let resolved = ResolvedInterBlock {
-            mv: [mv, Mv::ZERO],
-            warp_params: [global_warp, None],
-            blend: syntax.blend,
-        };
-        Ok(geometry.place(single_inter_block(syntax, &resolved)))
+        Ok(match &syntax.motion {
+            &InterMotionSyntax::Compound(compound) => prediction::PlacedInterGeometry {
+                interintra_chroma: false,
+                ..geometry
+            }
+            .place(compound_inter_block(syntax, &compound, resolved)),
+            _ => geometry.place(single_inter_block(syntax, resolved)),
+        })
     }
 }
 

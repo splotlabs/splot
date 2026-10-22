@@ -131,6 +131,15 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
 
+    /// A frame header decodes to another `OrderHint` than the planned one.
+    #[error("the decoder derives OrderHint {derived:?}, not the planned {planned}")]
+    OrderHintMismatch {
+        /// The planned `OrderHint`.
+        planned: u32,
+        /// The `OrderHint` the parsed header derives.
+        derived: Option<u32>,
+    },
+
     /// The requested feature is not implemented.
     #[error("{what} is not supported yet")]
     Unsupported {

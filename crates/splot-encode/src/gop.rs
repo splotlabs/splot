@@ -40,6 +40,7 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_decode::encoder_syntax::EncoderReferences;
 
 use crate::error::{Error, Result};
+use crate::preset::PresetParams;
 use crate::rate_control::FrameType;
 
 /// `NumRefFrames` of the encoder's sequence header (`explicit_num_ref_frames = 0`).
@@ -302,6 +303,15 @@ pub(crate) fn plan(frame_index: u64, keyint: NonZeroU32) -> GopFrame {
     frame.unwrap_or_else(|| unreachable!("IPPP codes every input frame"))
 }
 
+/// The frame-level tool choices of `preset`: the transform parameters, and
+/// whether inter frames code compound and skip-mode blocks.
+pub(crate) fn frame_tools(preset: &PresetParams) -> (KeyFrameTxParams, bool) {
+    (
+        crate::tx_choice::key_frame_tx_params(preset),
+        preset.compound_candidates > 0,
+    )
+}
+
 /// A temporal delimiter and the `OBU_REGULAR_SEF` that outputs `slot`.
 pub(crate) fn show_existing_unit(view: &CoreSeqView, slot: u32) -> Result<Vec<u8>> {
     let mut unit = encode_temporal_delimiter_obu().map_err(header_error)?;
@@ -310,36 +320,46 @@ pub(crate) fn show_existing_unit(view: &CoreSeqView, slot: u32) -> Result<Vec<u8
 }
 
 impl GopFrame {
-    /// The frame header at `qindex` with `filters`, parsed with `refs`.
+    /// The frame header at `qindex` with `filters`, parsed with `refs`; an
+    /// inter frame with `compound` sets `reference_select` and
+    /// `skip_mode_present`. The header codes the low bits of the planned
+    /// `OrderHint`, so the `OrderHint` the decoder derives must equal it.
     pub(crate) fn header(
         &self,
         view: &CoreSeqView,
         refs: &EncoderReferences,
         qindex: u32,
         filters: &FrameFilterParams,
-        tx: KeyFrameTxParams,
+        (tx, compound): (KeyFrameTxParams, bool),
     ) -> Result<FrameHeaderCore> {
-        match self.frame_type {
+        let core = match self.frame_type {
             FrameType::Key => build_key_frame_header(view, qindex, self.order_hint, filters, tx),
             FrameType::Inter => build_inter_frame_header(
                 view,
                 &refs.header_view(),
-                &self.inter_params(qindex, filters, tx),
+                &self.inter_params(qindex, filters, (tx, compound)),
             )
             .map(|header| header.core),
         }
-        .map_err(header_error)
+        .map_err(header_error)?;
+        match core.display_order_hint() {
+            Some(derived) if derived == self.order_hint => Ok(core),
+            derived => Err(Error::OrderHintMismatch {
+                planned: self.order_hint,
+                derived,
+            }),
+        }
     }
 
     /// The OBUs of the frame `core` built by [`Self::header`] with
-    /// `(qindex, filters, tx)`, after a temporal delimiter when the frame opens
+    /// `(qindex, filters, (tx, compound))`, after a temporal delimiter when the frame opens
     /// its temporal unit; a key frame repeats the sequence header.
     pub(crate) fn temporal_unit(
         &self,
         seq: &SequenceHeader,
         view: &CoreSeqView,
         refs: &EncoderReferences,
-        (qindex, filters, tx): (u32, &FrameFilterParams, KeyFrameTxParams),
+        (qindex, filters, tools): (u32, &FrameFilterParams, (KeyFrameTxParams, bool)),
         core: &FrameHeaderCore,
         tile: &[u8],
     ) -> Result<Vec<u8>> {
@@ -354,7 +374,7 @@ impl GopFrame {
         let header = build_inter_frame_header(
             view,
             &refs.header_view(),
-            &self.inter_params(qindex, filters, tx),
+            &self.inter_params(qindex, filters, tools),
         )
         .map_err(header_error)?;
         if header.core != *core {
@@ -375,7 +395,7 @@ impl GopFrame {
         &self,
         qindex: u32,
         filters: &FrameFilterParams,
-        tx: KeyFrameTxParams,
+        (tx, compound): (KeyFrameTxParams, bool),
     ) -> InterFrameParams {
         InterFrameParams {
             base_q_idx: qindex,
@@ -384,6 +404,8 @@ impl GopFrame {
             show_frame: self.show_frame,
             filters: *filters,
             tx,
+            reference_select: compound,
+            skip_mode_present: compound,
         }
     }
 }

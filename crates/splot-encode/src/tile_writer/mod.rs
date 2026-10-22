@@ -11,7 +11,6 @@
 pub(crate) mod coeffs;
 mod decision;
 pub(crate) mod filters;
-mod mv;
 
 use core::ops::Range;
 
@@ -26,8 +25,9 @@ use splot_decode::encoder_syntax::{
 use splot_recon::{DecodedFrame, ReconError};
 
 pub(crate) use decision::{
-    INTRA_MODES, InterMode, InterModes, LeafChoice, MotionVector, Partition, PartitionTree,
-    ResidualCoder, SuperblockDecision, TransformDecision, TxType,
+    CompoundMode, CompoundModes, INTRA_MODES, InterMode, InterModes, InterPrediction, LeafChoice,
+    MotionVector, Partition, PartitionTree, ResidualCoder, SuperblockDecision, TransformDecision,
+    TxType,
 };
 
 /// Output byte cap of one tile; larger than any 4096x2160 tile of 10-bit levels needs.
@@ -333,21 +333,19 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         Ok(blocks)
     }
 
-    /// Codes the inter leaf `leaf` under `modes`: its residual over the motion
-    /// compensated prediction, then `is_inter`, `skip_txfm`, `cdef_idx`, the
-    /// reference and mode syntax, the motion vector difference, and the
-    /// residual. A leaf whose levels are all zero codes `skip_txfm = 1`.
+    /// Codes the inter leaf `leaf` under `prediction`: its residual over the
+    /// motion compensated prediction, then `skip_mode` and `is_inter`,
+    /// `skip_txfm`, `cdef_idx`, the reference and mode syntax, the motion
+    /// vector differences, and the residual. A leaf whose levels are all zero
+    /// codes `skip_txfm = 1`.
     fn write_inter_leaf(
         &mut self,
         leaf: &LeafBlock,
-        mut modes: InterModes,
+        prediction: InterPrediction,
         coder: &mut impl ResidualCoder,
     ) -> Result<Vec<TransformBlock>> {
-        if modes.mode == InterMode::New {
-            let base = self.syntax.newmv_base(leaf, modes.ref_frame, modes.drl)?;
-            modes.mv = snap_mv(modes.mv, base, self.syntax.mv_step());
-        }
-        let mut blocks = self.syntax.plan_inter_leaf(leaf, modes)?;
+        let prediction = snap_prediction(self.syntax, leaf, prediction)?;
+        let mut blocks = self.syntax.plan_inter_leaf(leaf, prediction)?;
         let mut levels = vec![Vec::new(); blocks.len()];
         let mut luma = None;
         for (index, tx) in blocks.iter_mut().enumerate() {
@@ -375,9 +373,8 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         if let Some(filters) = self.filters.as_deref_mut() {
             filters.write_cdef_index(self.syntax, self.sink, leaf, skip)?;
         }
-        if let Some(mvd) = self.syntax.write_inter_modes(leaf, self.sink)? {
-            mv::write_mvd(self.syntax, self.sink, mvd)?;
-        }
+        let mvds = self.syntax.write_inter_modes(leaf, self.sink)?;
+        self.syntax.write_mvds(&mvds, self.sink)?;
         if !skip {
             self.syntax.write_inter_tx_partition(leaf, self.sink)?;
             self.write_residual(&blocks, &levels, &(0..3))?;
@@ -453,6 +450,32 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         }
         Ok(decision)
     }
+}
+
+/// `prediction` with each coded vector moved onto the lattice of its base.
+pub(crate) fn snap_prediction(
+    syntax: &mut IntraTileSyntax,
+    leaf: &LeafBlock,
+    prediction: InterPrediction,
+) -> Result<InterPrediction> {
+    let step = syntax.mv_step();
+    Ok(match prediction {
+        InterPrediction::Single(mut modes) if modes.mode == InterMode::New => {
+            let base = syntax.newmv_base(leaf, modes.ref_frame, modes.drl)?;
+            modes.mv = snap_mv(modes.mv, base, step);
+            InterPrediction::Single(modes)
+        }
+        InterPrediction::Compound(mut modes) => {
+            let bases = syntax.compound_bases(leaf, &modes)?;
+            for (mv, base) in modes.mvs.iter_mut().zip(bases) {
+                if let Some(base) = base {
+                    *mv = snap_mv(*mv, base, step);
+                }
+            }
+            InterPrediction::Compound(modes)
+        }
+        other => other,
+    })
 }
 
 /// `mv` moved to the nearest vector `base` plus a multiple of `step` per

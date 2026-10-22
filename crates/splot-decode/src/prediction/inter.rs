@@ -811,6 +811,7 @@ impl CompoundOrderHint {
     }
 }
 
+#[inline]
 fn compound_is_joint_context(
     ref_frame_idx: &[u32],
     ref_order_hint: &[u32],
@@ -2135,8 +2136,9 @@ pub(crate) mod reference;
 mod single_ref;
 
 pub(crate) use block::encoder_leaf::{
-    EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderSingleMotion,
-    chroma_inter_tx_type, single_transform_residual,
+    EncoderCompoundMotion, EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile,
+    EncoderMotion, EncoderSingleMotion, JMVD_SCALE_MODES, chroma_inter_tx_type,
+    single_transform_residual,
 };
 pub(crate) use block::non_intra_leaf_mode;
 pub(crate) use block::{
@@ -2145,6 +2147,7 @@ pub(crate) use block::{
     RowReferenceBounds, ScheduledTileRecon, ScheduledTileWorkspace, TipOutputStages, TipSpares,
     bounds_satisfied, decode_inter_blocks, invalid_inter_tile_scheduling_state,
 };
+pub(crate) use compound::CompoundYMode;
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{
     FixedStack, MotionFieldLayout, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
