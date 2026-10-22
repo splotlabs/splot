@@ -4867,7 +4867,7 @@ module = "crates/splot-encode/src/intra_frame.rs"
 change_id = "encoder-m2-full-intra"
 owner = "encoder"
 risk = "medium"
-notes = "Key frames are closed-loop key frames with one uniform tile; ENC-INTER-FRAME-HEADERS adds inter frames with intra blocks. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
+notes = "Key frames are closed-loop key frames with one uniform tile; ENC-INTER-FRAME-HEADERS adds inter frames. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
 
 [feature.status]
 mapped = "done"
@@ -4899,7 +4899,7 @@ module = "crates/splot-encode/src/gop.rs"
 change_id = "encoder-m3-inter-headers"
 owner = "encoder"
 risk = "medium"
-notes = "Every keyint-th frame is a closed-loop key frame; the other frames are OBU_REGULAR_TILE_GROUP inter frames whose order and refresh slots come from ENC-MINI-GOP. build_inter_frame_header writes the smallest inter header and parses it with the decoder's own reference state (splot_decode::encoder_syntax::EncoderReferences over the filtered reconstructions); the tile group carries the recorded header bits. Every block codes is_inter = 0 with the decoder's neighbour context; partition choice skips blocks for which the decoder infers is_inter. Hidden frames and OBU_REGULAR_SEF show-existing frames (derive_sef_order_hint = 1) are built here and used by ENC-MINI-GOP. Encoder policy: monotonic_output_order_flag = 1 (hidden frames are shown by show-existing frames), primary_ref_frame = PRIMARY_REF_NONE with disable_cross_frame_cdf_init = 1, quarter-pel MVs, frame-level EIGHTTAP. No inter prediction yet."
+notes = "Every keyint-th frame is a closed-loop key frame; the other frames are OBU_REGULAR_TILE_GROUP inter frames whose order and refresh slots come from ENC-MINI-GOP. build_inter_frame_header writes the smallest inter header and parses it with the decoder's own reference state (splot_decode::encoder_syntax::EncoderReferences over the filtered reconstructions); the tile group carries the recorded header bits. Blocks are intra or single-reference inter (ENC-INTER-SINGLE-REF). Hidden frames and OBU_REGULAR_SEF show-existing frames (derive_sef_order_hint = 1) are built here and used by ENC-MINI-GOP. Encoder policy: monotonic_output_order_flag = 1 (hidden frames are shown by show-existing frames), primary_ref_frame = PRIMARY_REF_NONE with disable_cross_frame_cdf_init = 1, quarter-pel MVs, frame-level EIGHTTAP."
 
 [feature.status]
 mapped = "done"
@@ -4948,6 +4948,38 @@ perf = "todo"
 [feature.proof]
 tests = ["crates/splot-encode/src/gop_tests.rs::every_plan_shows_frames_in_input_order_from_the_right_slots", "crates/splot-encode/src/gop_tests.rs::plans_a_hierarchical_mini_gop_and_a_short_last_one", "crates/splot-encode/src/encoder.rs::tests::packs_hidden_frames_into_the_next_output_unit", "crates/splot-encode/src/intra_frame_tests.rs::mini_gops_decode_to_the_encoder_recon_in_display_order", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_mini_gops_like_splot", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
 commands = ["cargo test -p splot-encode --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-INTER-SINGLE-REF"
+name = "Single-reference inter blocks: GLOBALMV, NEARMV, NEWMV with motion search"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.3", "5.20.7.4", "5.20.7.11", "5.20.7.20", "5.20.7.21", "5.20.7.23", "5.20.8.2", "7.11.3", "7.12"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/mode_decision.rs"
+change_id = "encoder-m3-inter-blocks"
+owner = "encoder"
+risk = "medium"
+notes = "Leaves of inter frames RD-compare intra coding with GLOBALMV, NEARMV over the DRL, and NEWMV from every valid reference (single_ref per block); NEWMV takes a pyramid full-sample search plus half- and quarter-sample refinement through the decoder's interpolation. splot_decode::encoder_syntax runs the decoder's own MV stack, resolution, motion compensation, inter residual reconstruction and filter records, and publication fails when the decoder resolves another vector. The MV writer inverts the joint shell syntax with the facade's rows. skip_txfm is 1 when every level is 0; inter transform types use the inter sets. Only leaves of at most 64x64 are inter; no compound, warped or OBMC motion, TIP, optical flow, temporal MVs or MV banks."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "todo"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_tests.rs::panning_content_codes_cheap_inter_frames", "crates/splot-encode/src/intra_frame_tests.rs::inter_superblock_search_is_deterministic_and_rolls_back", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot"]
+commands = ["cargo test -p splot-encode --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored"]
 fixtures = []
 diagnostics = []
 

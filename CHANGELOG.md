@@ -5,6 +5,20 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
 
 ## Unreleased
 
+### Encoder milestone 3: single-reference inter blocks
+
+- Inter-frame leaves RD-compare intra coding with GLOBALMV, NEARMV over the
+  DRL, and NEWMV, from every valid reference. NEWMV takes a pyramid
+  full-sample search with half- and quarter-sample refinement through the
+  decoder's interpolation. `skip_txfm` and the inter transform sets are coded.
+- `encoder_syntax` runs the decoder's own MV stack, resolution, motion
+  compensation and inter residual reconstruction; publication fails when the
+  decoder resolves another vector. A new MV writer inverts `read_mv`.
+- Rate points against all-intra inter frames, 10 frames, keyint 30, one
+  thread, base_q_idx 80/120/160, luma: park_joy 160x90 preset 6 BD-rate
+  -34%, encode time +64..93%; niklas 720p preset 10 BD-rate -43%, encode
+  time +26..71%.
+
 ### Encoder milestone 2: full intra coding
 
 - Every AV2 intra mode: all 61 luma mode and angle-delta pairs, every chroma

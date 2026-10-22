@@ -62,6 +62,9 @@ writer) -> temporal unit and IVF output.
 - Decisions are RD searches: a trial codes a leaf through the tile writer's own
   syntax walk into a rate sink and rolls back with a facade snapshot, so the
   rate is exact and no second syntax walk exists.
+- An inter leaf predicts and resolves its motion vector through the decoder's
+  own MV stack, resolution and motion compensation; publication fails when the
+  decoder would resolve another vector.
 - Speed presets are rows of one data table; code reads fields, never preset
   numbers. Hot kernels implement one trait twice (scalar and `std::simd`), and
   property tests compare the two bit for bit.
