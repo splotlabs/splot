@@ -231,7 +231,7 @@ impl PartitionSearch for TrialCoder<'_, '_> {
 
     fn key(&self, node: PartitionNode) -> u64 {
         let (w, h) = node.dimensions().unwrap_or_default();
-        (node.row4() << 40 | node.col4() << 16 | w << 8 | h) as u64
+        (node.row4() as u64) << 40 | (node.col4() as u64) << 16 | (w as u64) << 8 | h as u64
     }
 
     fn block_log2(&self, node: PartitionNode) -> Result<(u32, u32)> {
