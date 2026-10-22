@@ -302,6 +302,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             tx.tx_type = decision.tx_type;
             levels[index] = decision.levels;
         }
+        self.syntax.write_is_inter(leaf, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
             filters.write_cdef_index(self.syntax, self.sink, leaf)?;
         }

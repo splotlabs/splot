@@ -3,12 +3,13 @@
 
 //! Encoder-facing syntax facade; not a stable API.
 //!
-//! [`IntraTileSyntax`] owns one key-frame tile's CDF rows, neighbour state, and
+//! [`IntraTileSyntax`] owns one intra-coded tile's CDF rows, neighbour state, and
 //! reconstruction, and hands an encoder the same partition rules, § 8.3.2
 //! contexts, CDF rows, and prediction kernels the tile decoder uses. The encoder
 //! writes each symbol into the returned row, reconstructs each transform block
 //! through the facade, then publishes the coded facts back, so both sides stay
-//! in step.
+//! in step. In an inter frame every block is intra and codes `is_inter = 0`;
+//! [`EncoderReferences`] keeps the decoder's reference buffer for the next header.
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
@@ -51,10 +52,12 @@ use super::partition_traversal::{
 };
 use super::tile_frontier::{frame_mi_dimensions, minimal_partition_frame_facts};
 
+mod inter;
 mod intra;
 mod transform;
 
 pub use super::cdf::block_context::IntraYMode as IntraMode;
+pub use inter::EncoderReferences;
 pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, TxType};
 pub use transform::{TX_PARTITIONS, TxPartition};
 
@@ -396,7 +399,7 @@ pub struct SyntaxSnapshot {
     recon: intra::ReconSnapshot,
 }
 
-/// One key-frame tile's CDF rows, neighbour state, and reconstruction.
+/// One tile's CDF rows, neighbour state, and reconstruction, all blocks intra.
 pub struct IntraTileSyntax {
     frame: TilePartitionFrameFacts,
     bounds: TilePartitionBounds,
@@ -415,19 +418,17 @@ pub struct IntraTileSyntax {
     uv_cfls: TileUvCflState,
     y_modes: TileIntraYModeState,
     y_mode_table: intra::YModeTable,
+    inter: Option<inter::InterLeafState>,
 }
 
 impl IntraTileSyntax {
-    /// State for the single tile of a key frame coded with `seq` and `core`.
+    /// State for the single tile of a key or inter frame coded with `seq` and `core`.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError::Unsupported`] for SDP, a non-intra frame,
-    /// missing header facts, or another tool the facade does not model, and
+    /// Returns [`EncoderSyntaxError::Unsupported`] for SDP, skip mode, missing
+    /// header facts, or another tool the facade does not model, and
     /// [`EncoderSyntaxError::Rule`] for state setup failures.
     pub fn new(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<Self> {
-        if core.frame_is_intra != Some(true) {
-            return Err(EncoderSyntaxError::Unsupported("non-intra frame"));
-        }
         if seq.partition.is_some_and(|partition| partition.enable_sdp) {
             return Err(EncoderSyntaxError::Unsupported(
                 "semi-decoupled partitioning",
@@ -441,6 +442,7 @@ impl IntraTileSyntax {
             .base_q_idx;
         let frame = minimal_partition_frame_facts(seq, core).map_err(rule("frame facts"))?;
         let (mi_rows, mi_cols) = frame_mi_dimensions(core).map_err(rule("frame size"))?;
+        let inter = inter::InterLeafState::new(core, (mi_rows, mi_cols))?;
         let rows = 0..mi_rows;
         let cols = 0..mi_cols;
         let sb_size4 = frame
@@ -492,6 +494,7 @@ impl IntraTileSyntax {
             uv_cfls: neighbour(TileUvCflState::new(mi_rows, mi_cols, sb_size4))?,
             y_modes: neighbour(TileIntraYModeState::new(mi_rows, mi_cols, sb_size4))?,
             y_mode_table: intra::YModeTable::default(),
+            inter,
         })
     }
 

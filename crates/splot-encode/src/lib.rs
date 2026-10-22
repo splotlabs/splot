@@ -20,6 +20,7 @@ pub mod config;
 pub mod encoder;
 pub mod error;
 pub mod frame;
+mod gop;
 mod intra_frame;
 pub mod ivf;
 mod kernels;

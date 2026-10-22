@@ -17,6 +17,7 @@ use splot_decode::encoder_syntax::{
 };
 
 use crate::intra_frame::SourceResidualCoder;
+use crate::intra_frame::intra_children;
 use crate::preset::PresetParams;
 use crate::rd::coeff_rate::RateSink;
 use crate::rd::partition::PartitionSearch;
@@ -219,10 +220,20 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         if let Some(implied) = options.implied().filter(|&p| options.allows(p)) {
             return Ok(vec![implied]);
         }
-        Ok(PARTITIONS
-            .into_iter()
-            .filter(|&p| options.allows(p))
-            .collect())
+        // Inter frames infer is_inter for some block shapes, so drop the
+        // partitions that would need an intra block there.
+        let mut allowed = Vec::with_capacity(PARTITIONS.len());
+        for partition in PARTITIONS.into_iter().filter(|&p| options.allows(p)) {
+            let intra = if partition == Partition::None {
+                self.syntax.intra_allowed(&self.syntax.leaf(node)?)
+            } else {
+                intra_children(self.syntax, node, partition)?
+            };
+            if intra {
+                allowed.push(partition);
+            }
+        }
+        Ok(allowed)
     }
 
     fn children(&self, node: PartitionNode, partition: Partition) -> Result<Vec<PartitionNode>> {
