@@ -43,8 +43,12 @@ pub struct FramePlanInfo {
     /// of each mini-GOP.
     pub layer: u8,
     /// Lookahead estimate of the frame's coding cost: the sum of its blocks'
-    /// best SATD on the downscaled luma.
+    /// best SATD on the downscaled luma, each at least a floor.
     pub complexity: u64,
+    /// The complexity of a frame whose blocks all cost the floor. A frame
+    /// below twice this is flat: its size is mostly headers and says little
+    /// about the size of detailed frames.
+    pub min_complexity: u64,
     /// The lookahead's suggested change to the base qindex: negative for
     /// frames that later frames predict from.
     pub qindex_offset: i16,
@@ -212,7 +216,8 @@ pub struct Vbr {
     /// Bits spent minus bits budgeted so far, within `drift_limit`.
     drift: i64,
     base: u16,
-    /// Frame index, model class, complexity and bit depth of the planned frames.
+    /// Frame index, model class, complexity (`0` for a flat frame) and bit
+    /// depth of the planned frames.
     planned: VecDeque<(u64, usize, u64, BitDepth)>,
 }
 
@@ -293,15 +298,18 @@ impl RateController for Vbr {
         if self.planned.len() >= 64 {
             self.planned.pop_front();
         }
+        let flat = info.complexity < info.min_complexity.saturating_mul(2);
         self.planned.push_back((
             info.frame_index,
             class(info),
-            info.complexity,
+            if flat { 0 } else { info.complexity },
             info.bit_depth,
         ));
         with_offset(self.base, info.qindex_offset, info.bit_depth)
     }
 
+    /// Adds the frame to the drift, and learns its class's `k` unless the
+    /// frame is flat.
     fn update(&mut self, stats: &FrameStats) {
         self.spend(stats.bits, self.frame_bits);
         let Some(&(_, class, complexity, bit_depth)) = self
@@ -311,6 +319,9 @@ impl RateController for Vbr {
         else {
             return;
         };
+        if complexity == 0 {
+            return;
+        }
         let observed = ((u128::from(stats.bits) * u128::from(step(stats.qp, bit_depth))) << 8)
             / u128::from(complexity.max(1));
         let model = u128::from(self.model_q8[class]);

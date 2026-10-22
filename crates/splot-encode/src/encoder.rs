@@ -264,6 +264,7 @@ impl Encoder {
                 frame_type: frame.frame_type,
                 layer: frame.layer,
                 complexity: model.complexity,
+                min_complexity: model.min_complexity,
                 qindex_offset: model.qindex_offset,
                 bit_depth: self.config.bit_depth,
             })

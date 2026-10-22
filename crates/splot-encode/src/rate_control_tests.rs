@@ -26,6 +26,7 @@ fn plan(frame_index: u64, frame_type: FrameType, offset: i16) -> FramePlanInfo {
         frame_type,
         layer: 0,
         complexity: 50_000,
+        min_complexity: 1_000,
         qindex_offset: offset,
         bit_depth: BitDepth::Eight,
     }
@@ -133,8 +134,9 @@ const SIZE: (u32, u32) = (48, 32);
 const FRAMES: u64 = 30;
 
 /// Thirty frames of a texture panning by two samples a frame, with a new
-/// texture from frame 17, coded at preset 9 (mini-GOPs of 2).
-fn encode(rate_control: RateControlMode) -> Stream {
+/// texture from frame 17, coded at preset 9 (mini-GOPs of 2); the first frame
+/// is black when `black_first` is set.
+fn encode(rate_control: RateControlMode, black_first: bool) -> Stream {
     let mut config = Config::new(SIZE.0, SIZE.1);
     config.preset = Preset::new(9).unwrap();
     config.rate_control = rate_control;
@@ -151,9 +153,12 @@ fn encode(rate_control: RateControlMode) -> Stream {
             encoder.flush().unwrap();
         } else {
             let scene = u32::from(index >= 17);
-            encoder
-                .send_frame(frame(&config, index, 2 * index as usize, scene))
-                .unwrap();
+            let mut source = frame(&config, index, 2 * index as usize, scene);
+            if black_first && index == 0 {
+                let planes = source.planes().clone().map(|plane| vec![16; plane.len()]);
+                source = SourceFrame::new(&config, 0, planes).unwrap();
+            }
+            encoder.send_frame(source).unwrap();
         }
         while let Some(packet) = encoder.receive_packet().unwrap() {
             packets.push(packet);
@@ -186,7 +191,7 @@ fn cases() -> [RateControlMode; 3] {
 fn rate_controlled_streams_meet_targets_and_decode_to_the_recon() {
     let mut crf_kbps = Vec::new();
     for mode in cases() {
-        let stream = encode(mode);
+        let stream = encode(mode, false);
         if matches!(mode, RateControlMode::Crf { .. }) {
             crf_kbps.push(stream.kbps());
         }
@@ -212,7 +217,7 @@ fn rate_controlled_streams_meet_targets_and_decode_to_the_recon() {
             );
         }
     }
-    let kbps = [20, 40].map(|crf| encode(RateControlMode::Crf { crf }).kbps());
+    let kbps = [20, 40].map(|crf| encode(RateControlMode::Crf { crf }, false).kbps());
     assert!(
         kbps[0] > crf_kbps[0] && crf_kbps[0] > kbps[1],
         "{kbps:?} {crf_kbps:?}"
@@ -227,7 +232,7 @@ fn avm_decodes_rate_controlled_streams_like_splot() {
         return;
     };
     for (index, mode) in cases().into_iter().enumerate() {
-        let stream = encode(mode);
+        let stream = encode(mode, false);
         let name = format!("rc{index}");
         let avm = avm_decode(&avmdec, &stream.units, SIZE, BitDepth::Eight, &name);
         assert!(avm == stream.expected, "{mode:?}: AVM output differs");
@@ -352,5 +357,32 @@ fn extreme_inputs_do_not_overflow() {
                 }
             }
         }
+    }
+}
+
+/// A black first frame tells the bitrate model nothing about the size of
+/// later key frames: they get about the qindex they get without it.
+#[test]
+fn a_black_first_frame_keeps_key_frame_qindex_sane() {
+    for mode in &cases()[1..] {
+        let key_qps = |black_first| {
+            let stream = encode(*mode, black_first);
+            stream
+                .stats
+                .iter()
+                .filter(|s| s.pts > 0 && stream.types[s.pts as usize] == FrameType::Key)
+                .map(|s| s.qp)
+                .collect::<Vec<u16>>()
+        };
+        let reference = key_qps(false);
+        assert_eq!(reference.len(), 1, "{mode:?}");
+        let black = key_qps(true);
+        assert!(
+            black.iter().all(|&qp| qp <= reference[0] + 16)
+                && black
+                    .last()
+                    .is_some_and(|qp| qp.abs_diff(reference[0]) <= 16),
+            "{mode:?}: {black:?} vs {reference:?}"
+        );
     }
 }
