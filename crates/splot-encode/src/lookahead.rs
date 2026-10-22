@@ -25,8 +25,11 @@ const PAD: usize = 32;
 /// Radius of the exhaustive part of the search, in downscaled samples.
 const EXHAUSTIVE: i32 = 4;
 /// A frame is a scene cut when its blocks' best costs against the previous
-/// frame sum to at least this percentage of their intra costs.
-pub(crate) const SCENE_CUT_PERCENT: u64 = 70;
+/// frame sum to at least this percentage of their intra costs (its ratio) ...
+const SCENE_CUT_PERCENT: u64 = 70;
+/// ... and its ratio is at least this many points above the previous frame's,
+/// so that noise, which predicts badly in every frame, makes no cuts.
+const SCENE_CUT_JUMP_PERCENT: u64 = 20;
 /// Mean intra SATD per block below which a frame is too flat to be a cut.
 const MIN_CUT_INTRA_PER_BLOCK: u64 = 256;
 /// Downscaling by 4 starts above this many luma samples.
@@ -58,6 +61,8 @@ pub(crate) struct Lookahead {
     dims: BlockDims,
     frames: VecDeque<Analysis>,
     motion: BTreeMap<(u64, u64), Vec<BlockMotion>>,
+    /// The scene-cut ratio of the last frame pushed, in percent.
+    last_ratio: u64,
 }
 
 impl Lookahead {
@@ -79,6 +84,7 @@ impl Lookahead {
             dims: BlockDims::SQUARE_8,
             frames: VecDeque::new(),
             motion: BTreeMap::new(),
+            last_ratio: 0,
         }
     }
 
@@ -115,8 +121,12 @@ impl Lookahead {
             .zip(motion)
             .map(|(&intra, inter)| u64::from(intra.min(inter.cost)))
             .sum();
-        intra_sum >= MIN_CUT_INTRA_PER_BLOCK * intra.len() as u64
-            && best_sum * 100 >= intra_sum * SCENE_CUT_PERCENT
+        let ratio = best_sum * 100 / intra_sum.max(1);
+        let cut = intra_sum >= MIN_CUT_INTRA_PER_BLOCK * intra.len() as u64
+            && ratio >= SCENE_CUT_PERCENT
+            && ratio >= self.last_ratio + SCENE_CUT_JUMP_PERCENT;
+        self.last_ratio = ratio;
+        cut
     }
 
     /// Drops the frames before `display_index`.

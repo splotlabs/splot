@@ -207,4 +207,10 @@ fn scene_cuts_start_key_frames_and_restart_the_keyint_count() {
         planner.scheduled_key,
         "a planned cut is ignored"
     );
+    planner.force_key(34);
+    planner.force_key(37);
+    planner.force_key(41);
+    assert_eq!(planner.cuts, [34, 41], "a cut within a mini-GOP of a key");
+    planner.force_key(52);
+    assert_eq!(planner.cuts, [34, 41], "a cut 1 after the scheduled key 51");
 }

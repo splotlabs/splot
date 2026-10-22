@@ -136,9 +136,19 @@ impl GopPlanner {
         self.next_display
     }
 
-    /// Makes `display_index` a key frame, unless it is already planned.
+    /// Makes the scene cut `display_index` a key frame, unless it is already
+    /// planned or it is less than `mini_gop_size` frames after the key frame
+    /// before it. Cuts come in display order.
     pub(crate) fn force_key(&mut self, display_index: u64) {
-        if display_index >= self.next_display && !self.cuts.contains(&display_index) {
+        let last = self
+            .cuts
+            .last()
+            .map_or(self.key_display, |&cut| cut.max(self.key_display));
+        let last = display_index.saturating_sub(last) / self.keyint * self.keyint + last;
+        if display_index >= self.next_display
+            && display_index.saturating_sub(last) >= self.mini_gop_size
+            && !self.cuts.contains(&display_index)
+        {
             self.cuts.push(display_index);
             self.cuts.sort_unstable();
         }

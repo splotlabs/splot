@@ -578,6 +578,31 @@ mod tests {
         Ok(())
     }
 
+    /// Fresh noise in every frame predicts badly from the frame before, like
+    /// a cut, but no worse than the frame before did: only frame 0 is a key.
+    #[test]
+    fn noise_makes_no_scene_cuts() -> Result<()> {
+        let config = Config::new(64, 64);
+        let mut encoder =
+            Encoder::with_coder(config.clone(), Box::new(FakeCoder { fail_at: None }))?;
+        let mut random = xorshift(5);
+        for pts in 0..12 {
+            let planes = config.plane_sizes()?.map(|size| {
+                (0..size.width() * size.height())
+                    .map(|_| 16 + 37 * random() as u16)
+                    .collect()
+            });
+            encoder.send_frame(SourceFrame::new(&config, pts, planes)?)?;
+        }
+        encoder.flush()?;
+        let keys = drain(&mut encoder)?
+            .iter()
+            .filter(|packet| packet.frame_type == FrameType::Key)
+            .count();
+        assert_eq!(keys, 1);
+        Ok(())
+    }
+
     /// On static content the alt-ref of each mini-GOP of 4 gets a finer
     /// quantizer than its middle frame, and that one than the leaves.
     #[test]
