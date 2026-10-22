@@ -50,13 +50,15 @@ pub enum Error {
         crf: u8,
     },
 
-    /// A bitrate setting is zero.
-    #[error("{what} must be positive, got {value}")]
+    /// A bitrate setting is zero or too large.
+    #[error("{what} {value} is outside 1..={max}")]
     InvalidBitrate {
         /// The setting.
         what: &'static str,
         /// Its value.
         value: u32,
+        /// Its largest value.
+        max: u32,
     },
 
     /// The speed preset is outside `0..=10`.

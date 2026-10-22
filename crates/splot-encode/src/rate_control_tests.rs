@@ -58,53 +58,29 @@ fn crf_adds_the_offset_and_clamps() {
 fn bitrate_controllers_meet_a_simulated_target() {
     for cbr in [false, true] {
         let mut control = if cbr {
-            BitrateController::cbr(200, 500, (30, 1))
+            Box::new(Cbr::new(200, 500, (30, 1)).unwrap()) as Box<dyn RateController>
         } else {
-            BitrateController::vbr(200, (30, 1))
+            Box::new(Vbr::new(200, (30, 1)).unwrap())
         };
-        let (mut total, mut largest) = (0, 0);
-        for window in 0..10u64 {
-            let frames: Vec<FramePlanInfo> = (0..4)
-                .map(|i| {
-                    let index = window * 4 + i;
-                    let kind = if index % 20 == 0 {
-                        FrameType::Key
-                    } else {
-                        FrameType::Inter
-                    };
-                    plan(index, kind, -4 * i as i16)
-                })
-                .collect();
-            control.plan_window(&frames);
-            for info in &frames {
-                let qp = control.frame_qp(info);
-                let k = if info.frame_type == FrameType::Key {
-                    120
-                } else {
-                    20
-                };
-                let bits = k * info.complexity / step(qp, info.bit_depth);
-                control.update(&FrameStats {
-                    frame_index: info.frame_index,
-                    pts: info.frame_index,
-                    qp,
-                    bits,
-                    psnr_y: 0.0,
-                    psnr_u: 0.0,
-                    psnr_v: 0.0,
-                    ssim_y: None,
-                });
-                total += bits;
-                largest = largest.max(bits);
-            }
-        }
+        let sizes = simulate(control.as_mut(), 10, |index| {
+            let kind = if index % 20 == 0 {
+                FrameType::Key
+            } else {
+                FrameType::Inter
+            };
+            plan(index, kind, -4 * (index % 4) as i16)
+        });
+        let (total, largest) = (sizes.iter().sum::<u64>(), sizes.iter().max());
         let target = 200_000 * 40 / 30;
         assert!(
             total.abs_diff(target) * 20 < target,
             "cbr {cbr}: {total} vs {target}"
         );
         if cbr {
-            assert!(largest < 200 * 500 / 2 + 200_000 / 30, "{largest}");
+            assert!(
+                largest < Some(&(200 * 500 / 2 + 200_000 / 30)),
+                "{largest:?}"
+            );
         }
     }
 }
@@ -168,7 +144,7 @@ fn encode(rate_control: RateControlMode) -> Stream {
         bit_depth: config.bit_depth,
         recons: Arc::clone(&recons),
     };
-    let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder));
+    let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
     let mut packets = Vec::new();
     for index in 0..=FRAMES {
         if index == FRAMES {
@@ -255,5 +231,126 @@ fn avm_decodes_rate_controlled_streams_like_splot() {
         let name = format!("rc{index}");
         let avm = avm_decode(&avmdec, &stream.units, SIZE, BitDepth::Eight, &name);
         assert!(avm == stream.expected, "{mode:?}: AVM output differs");
+    }
+}
+
+fn stats(frame_index: u64, qp: u16, bits: u64) -> FrameStats {
+    FrameStats {
+        frame_index,
+        pts: frame_index,
+        qp,
+        bits,
+        psnr_y: 0.0,
+        psnr_u: 0.0,
+        psnr_v: 0.0,
+        ssim_y: None,
+    }
+}
+
+/// Codes `windows` windows of four frames, `frame(index)` each, through a
+/// simulated coder whose key frames cost `120 * complexity / step` bits and
+/// inter frames `20 * complexity / step`.
+fn simulate(
+    control: &mut dyn RateController,
+    windows: u64,
+    frame: impl Fn(u64) -> FramePlanInfo,
+) -> Vec<u64> {
+    let mut sizes = Vec::new();
+    for window in 0..windows {
+        let frames: Vec<FramePlanInfo> = (0..4).map(|i| frame(window * 4 + i)).collect();
+        control.plan_window(&frames);
+        for info in &frames {
+            let qp = control.frame_qp(info);
+            let k = if info.frame_type == FrameType::Key {
+                120
+            } else {
+                20
+            };
+            let bits = k * info.complexity / step(qp, info.bit_depth);
+            control.update(&stats(info.frame_index, qp, bits));
+            sizes.push(bits);
+        }
+    }
+    sizes
+}
+
+/// Ten seconds of static content underspend; the complex content after them
+/// keeps CBR inside its buffer, and both modes spend at most their bounded
+/// credit in the first second and the target, within 5%, after it.
+#[test]
+fn static_content_banks_no_unbounded_credit() {
+    let frame = |index| FramePlanInfo {
+        complexity: if index < 300 { 500 } else { 1_000_000 },
+        ..plan(index, FrameType::Inter, 0)
+    };
+    let frame_bits = 200_000 / 30;
+    let buffer = 200 * 1000;
+    let cbr = simulate(&mut Cbr::new(200, 1000, (30, 1)).unwrap(), 100, frame);
+    let mut level = buffer / 2;
+    for (index, &bits) in cbr.iter().enumerate() {
+        level = (level + bits).saturating_sub(frame_bits);
+        assert!(
+            bits <= buffer && level <= buffer,
+            "frame {index}: {bits} bits, level {level}"
+        );
+    }
+    let vbr = simulate(&mut Vbr::new(200, (30, 1)).unwrap(), 100, frame);
+    for (sizes, credit) in [(cbr, buffer / 2), (vbr, 8 * frame_bits)] {
+        for (second, sizes) in sizes[300..].chunks(30).enumerate() {
+            let bits: u64 = sizes.iter().sum();
+            let target = frame_bits * sizes.len() as u64;
+            let allowed = if second == 0 { credit } else { target / 20 };
+            assert!(
+                bits.abs_diff(target) <= allowed,
+                "second {second}: {bits} vs {target}"
+            );
+        }
+    }
+}
+
+/// Settings out of range are rejected, and extreme settings, complexities
+/// and frame sizes neither overflow nor panic.
+#[test]
+fn extreme_inputs_do_not_overflow() {
+    assert!(matches!(
+        Vbr::new(MAX_BITRATE_KBPS + 1, (30, 1)),
+        Err(Error::InvalidBitrate { .. })
+    ));
+    assert!(matches!(
+        Cbr::new(100, MAX_BUFFER_MS + 1, (30, 1)),
+        Err(Error::InvalidBitrate { .. })
+    ));
+    assert!(matches!(
+        Vbr::new(100, (30, 0)),
+        Err(Error::InvalidFrameRate { .. })
+    ));
+    let controllers: [Box<dyn RateController>; 4] = [
+        Box::new(Vbr::new(MAX_BITRATE_KBPS, (1, u32::MAX)).unwrap()),
+        Box::new(Vbr::new(1, (u32::MAX, 1)).unwrap()),
+        Box::new(Cbr::new(MAX_BITRATE_KBPS, MAX_BUFFER_MS, (1, u32::MAX)).unwrap()),
+        Box::new(Cbr::new(1, 1, (u32::MAX, 1)).unwrap()),
+    ];
+    for mut control in controllers {
+        for complexity in [0, u64::MAX] {
+            let window = [
+                FramePlanInfo {
+                    complexity,
+                    ..plan(0, FrameType::Key, i16::MIN)
+                },
+                FramePlanInfo {
+                    complexity,
+                    ..plan(1, FrameType::Inter, i16::MAX)
+                },
+            ];
+            control.plan_window(&window);
+            for info in &window {
+                let qp = control.frame_qp(info);
+                assert!((1..=255).contains(&qp), "{qp}");
+                for bits in [0, u64::MAX] {
+                    control.update(&stats(info.frame_index, qp, bits));
+                    control.update_show_existing(bits);
+                }
+            }
+        }
     }
 }

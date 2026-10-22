@@ -10,7 +10,7 @@ use splot_recon::{BitDepth, PixelFormat, PlaneSize};
 
 use crate::error::{Error, Result};
 use crate::preset::Preset;
-use crate::rate_control::{Crf, max_qindex};
+use crate::rate_control::{Crf, check_bitrate, max_qindex};
 
 /// Largest frame dimension AV2 can signal: `max_frame_width_minus_1` has at most
 /// 16 bits (§ 5.4.1, `docs/spec/av2/1.0.0/05-syntax-structures.md`).
@@ -131,17 +131,13 @@ impl Config {
             RateControlMode::Crf { crf } if crf == 0 || crf > Crf::MAX => {
                 Err(Error::InvalidCrf { crf })
             }
-            RateControlMode::Vbr { bitrate_kbps: 0 }
-            | RateControlMode::Cbr {
-                bitrate_kbps: 0, ..
-            } => Err(Error::InvalidBitrate {
-                what: "bitrate_kbps",
-                value: 0,
-            }),
-            RateControlMode::Cbr { buffer_ms: 0, .. } => Err(Error::InvalidBitrate {
-                what: "buffer_ms",
-                value: 0,
-            }),
+            RateControlMode::Vbr { bitrate_kbps } => {
+                check_bitrate(bitrate_kbps, None, self.frame_rate)
+            }
+            RateControlMode::Cbr {
+                bitrate_kbps,
+                buffer_ms,
+            } => check_bitrate(bitrate_kbps, Some(buffer_ms), self.frame_rate),
             _ => Ok(()),
         }
     }
@@ -241,6 +237,27 @@ mod tests {
         assert!(matches!(
             config.validate(),
             Err(Error::InvalidBitrate { .. })
+        ));
+        config.rate_control = RateControlMode::Vbr {
+            bitrate_kbps: u32::MAX,
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidBitrate {
+                what: "bitrate_kbps",
+                ..
+            })
+        ));
+        config.rate_control = RateControlMode::Cbr {
+            bitrate_kbps: 100,
+            buffer_ms: u32::MAX,
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidBitrate {
+                what: "buffer_ms",
+                ..
+            })
         ));
         config.rate_control = RateControlMode::Crf { crf: 63 };
         assert!(config.validate().is_ok());

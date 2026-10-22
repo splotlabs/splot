@@ -256,7 +256,7 @@ fn encode_stream(config: &Config, frames: u32) -> (Vec<Vec<u8>>, Vec<u8>) {
         bit_depth: config.bit_depth,
         recons: Arc::clone(&recons),
     };
-    let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder));
+    let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
     let mut packets = Vec::new();
     for seed in 0..=frames {
         if seed == frames {
