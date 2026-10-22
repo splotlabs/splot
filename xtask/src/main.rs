@@ -24,6 +24,7 @@ mod decoder_support;
 mod diagnostic_registry;
 mod doc_budget;
 mod dupehound;
+mod encode_perf;
 mod explain_registry;
 mod feature_status;
 mod fixtures;
@@ -227,6 +228,19 @@ enum Task {
         #[arg(long)]
         bless: bool,
     },
+    /// Encoder speed harness over synthetic clips at presets 0/6/10: fps,
+    /// IVF sha256 and instruction counts (DynamoRIO gate on Linux).
+    EncodePerf {
+        /// Rewrite `tests/perf/encode-baseline.toml` from DynamoRIO counts.
+        #[arg(long)]
+        bless: bool,
+        /// Sample a release encode and print the SIMD share of kernel samples.
+        #[arg(long)]
+        coverage: bool,
+        /// Wall-time runs per row; the fastest is kept.
+        #[arg(long, default_value_t = 3)]
+        runs: usize,
+    },
     /// Run a short local fuzz smoke session against every fuzz target.
     ///
     /// Requires a nightly toolchain and `cargo-fuzz`. Each target runs for the
@@ -351,6 +365,18 @@ fn main() -> Result<()> {
         Task::Conformance => conformance::run_conformance(&workspace_root()?),
         Task::Coverage => run_coverage(),
         Task::Perf { bless } => perf::run_perf(&workspace_root()?, bless),
+        Task::EncodePerf {
+            bless,
+            coverage,
+            runs,
+        } => encode_perf::run_encode_perf(
+            &workspace_root()?,
+            &encode_perf::EncodePerfOptions {
+                bless,
+                coverage,
+                runs,
+            },
+        ),
         Task::Fuzz { time } => run_fuzz(time),
         Task::Audit => run_audit(),
         Task::AuditScope {

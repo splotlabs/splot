@@ -89,7 +89,7 @@ struct FixtureRow {
 
 /// The DynamoRIO release that `DYNAMORIO_HOME` names and its `drrun`, when
 /// both exist.
-fn dynamorio() -> Option<(PathBuf, PathBuf)> {
+pub(crate) fn dynamorio() -> Option<(PathBuf, PathBuf)> {
     let home = PathBuf::from(std::env::var_os("DYNAMORIO_HOME")?);
     let drrun = home.join("bin64").join("drrun");
     (drrun.is_file() && home.join("cmake").is_dir()).then_some((home, drrun))
@@ -97,7 +97,7 @@ fn dynamorio() -> Option<(PathBuf, PathBuf)> {
 
 /// Builds the counting client in `xtask/perf-client` against the DynamoRIO
 /// release at `home` and returns the path of its shared library.
-fn build_client(root: &Path, home: &Path) -> Result<PathBuf> {
+pub(crate) fn build_client(root: &Path, home: &Path) -> Result<PathBuf> {
     let build = root.join("target").join("perf-client");
     let mut configure = Command::new("cmake");
     configure
@@ -170,7 +170,20 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
         if !fixture.exists() {
             bail!("perf fixture missing: {}", row.path);
         }
-        let measured = measure_instructions(&drrun, &client, &splot, &fixture)?;
+        let mut args: Vec<std::ffi::OsString> = [
+            "decode",
+            "--quiet",
+            "--threads",
+            "1",
+            "--frame-delay",
+            "1",
+            "--output-format",
+            "null",
+        ]
+        .map(Into::into)
+        .into();
+        args.push(fixture.into_os_string());
+        let measured = measure_instructions(&drrun, &client, &splot, &args)?;
         let base = row.ir_stable;
         let delta = if base == 0 {
             0.0
@@ -216,9 +229,14 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
     )
 }
 
-/// Decodes one fixture under the counting client [`RUNS`] times and returns
-/// the smallest executed-instruction count.
-fn measure_instructions(drrun: &Path, client: &Path, splot: &Path, fixture: &Path) -> Result<u64> {
+/// Runs `splot` with `args` under the counting client [`RUNS`] times and
+/// returns the smallest executed-instruction count.
+pub(crate) fn measure_instructions(
+    drrun: &Path,
+    client: &Path,
+    splot: &Path,
+    args: &[std::ffi::OsString],
+) -> Result<u64> {
     let mut best = u64::MAX;
     for _ in 0..RUNS {
         let output = Command::new("taskset")
@@ -228,17 +246,7 @@ fn measure_instructions(drrun: &Path, client: &Path, splot: &Path, fixture: &Pat
             .arg(client)
             .arg("--")
             .arg(splot)
-            .args([
-                "decode",
-                "--quiet",
-                "--threads",
-                "1",
-                "--frame-delay",
-                "1",
-                "--output-format",
-                "null",
-            ])
-            .arg(fixture)
+            .args(args)
             .output()
             .context("failed to spawn taskset with drrun")?;
         if !output.status.success() {
@@ -246,13 +254,12 @@ fn measure_instructions(drrun: &Path, client: &Path, splot: &Path, fixture: &Pat
             let lines: Vec<&str> = stderr.lines().collect();
             let tail = lines[lines.len().saturating_sub(40)..].join("\n");
             bail!(
-                "DynamoRIO decode failed for {} ({}):\n{tail}",
-                fixture.display(),
+                "DynamoRIO run failed for {args:?} ({}):\n{tail}",
                 output.status
             );
         }
         let count = parse_inscount(&String::from_utf8_lossy(&output.stdout))
-            .with_context(|| format!("inscount output for {}", fixture.display()))?;
+            .with_context(|| format!("inscount output for {args:?}"))?;
         best = best.min(count);
     }
     Ok(best)
