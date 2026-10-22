@@ -100,15 +100,47 @@ const CASES: [(u32, u32, BitDepth, u8, u16); 8] = [
     (33, 17, BitDepth::Ten, 3, 60),
 ];
 
+/// Every chroma format the encoder codes.
+const CHROMAS: [PixelFormat; 3] = [
+    PixelFormat::Yuv420,
+    PixelFormat::Yuv422,
+    PixelFormat::Yuv444,
+];
+
+/// Each case of `cases` in 4:2:0, and the cases at `extra` in 4:2:2 and
+/// 4:4:4, with its index and name.
+fn format_cases(
+    cases: &'static [(u32, u32, BitDepth, u8, u16)],
+    extra: &'static [usize],
+) -> impl Iterator<Item = (usize, Config, String)> {
+    CHROMAS.into_iter().flat_map(move |chroma| {
+        let all = chroma == PixelFormat::Yuv420;
+        let cases = cases.iter().copied().enumerate();
+        cases
+            .filter(move |(index, _)| all || extra.contains(index))
+            .map(move |(index, (width, height, bit_depth, preset, qp))| {
+                let mut config = config(width, height, bit_depth, preset, qp);
+                config.chroma = chroma;
+                let name =
+                    format!("{width}x{height} {chroma:?} {bit_depth:?} preset {preset} qp {qp}");
+                (index, config, name)
+            })
+    })
+}
+
+/// [`CASES`] by chroma format; 4:2:2 and 4:4:4 keep both bit depths and
+/// superblock sizes but skip the slowest searches.
+fn chroma_cases() -> impl Iterator<Item = (usize, Config, String)> {
+    format_cases(&CASES, &[0, 2, 3, 4, 5])
+}
+
 #[test]
 fn coded_frames_decode_to_the_encoder_recon() {
-    for (index, (width, height, bit_depth, preset, qp)) in CASES.into_iter().enumerate() {
-        let config = config(width, height, bit_depth, preset, qp);
+    for (index, config, name) in chroma_cases() {
         let coded = code(&config, index as u32);
-        let name = format!("{width}x{height} {bit_depth:?} preset {preset} qp {qp}");
         assert_same_samples(
             &decode(&coded.temporal_unit),
-            &recon_bytes(&coded, bit_depth),
+            &recon_bytes(&coded, config.bit_depth),
             &name,
         );
     }
@@ -117,8 +149,7 @@ fn coded_frames_decode_to_the_encoder_recon() {
 /// Key frames every third frame, with inter frames of unrelated content between them.
 #[test]
 fn inter_frames_decode_to_the_encoder_recon_over_several_gops() {
-    for (index, (width, height, bit_depth, preset, qp)) in CASES.into_iter().enumerate() {
-        let mut config = config(width, height, bit_depth, preset, qp);
+    for (index, mut config, name) in chroma_cases() {
         config.keyint = core::num::NonZeroU32::new(3).unwrap();
         let seeds: Vec<u32> = (0..4).map(|frame| index as u32 * 4 + frame).collect();
         let coded = code_stream(&config, &seeds);
@@ -138,9 +169,8 @@ fn inter_frames_decode_to_the_encoder_recon_over_several_gops() {
             .collect();
         let expected: Vec<u8> = coded
             .iter()
-            .flat_map(|frame| recon_bytes(frame, bit_depth))
+            .flat_map(|frame| recon_bytes(frame, config.bit_depth))
             .collect();
-        let name = format!("{width}x{height} {bit_depth:?} preset {preset} qp {qp}");
         assert_same_samples(&decode(&stream), &expected, &name);
     }
 }
@@ -158,8 +188,9 @@ fn coding_is_deterministic_and_lower_qp_costs_more_bits() {
 /// trials roll back completely and no decision depends on hidden state.
 #[test]
 fn superblock_search_is_deterministic_and_rolls_back() {
-    for preset in [3, 10] {
-        let config = config(40, 24, BitDepth::Ten, preset, 90);
+    for (preset, chroma) in [3, 10].into_iter().flat_map(|p| CHROMAS.map(|c| (p, c))) {
+        let mut config = config(40, 24, BitDepth::Ten, preset, 90);
+        config.chroma = chroma;
         let source = synthetic_frame(&config, 5);
         let frame = IntraFrameCoder::new(&config).unwrap();
         let tx = tx_choice::key_frame_tx_params(frame.preset);
@@ -170,7 +201,7 @@ fn superblock_search_is_deterministic_and_rolls_back() {
             KeyFrameTileWriter::new(&frame.sequence, &core, &refs_for(&frame.sequence), 0).unwrap();
         let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
         let sb = writer.syntax().superblock_size4() * 4;
-        let padded = PaddedSource::new(&source, mi_cols * 4 + sb, mi_rows * 4 + sb);
+        let padded = PaddedSource::new(&source, frame.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
         let lambda = Lambda::from_qindex(90, config.bit_depth).unwrap();
         let mut coder =
             SourceResidualCoder::new(&padded, 90, config.bit_depth, frame.preset, lambda);
@@ -183,10 +214,10 @@ fn superblock_search_is_deterministic_and_rolls_back() {
                 .unwrap()
         };
         let first = search();
-        assert_eq!(first, search(), "preset {preset}");
+        assert_eq!(first, search(), "preset {preset} {chroma:?}");
         assert!(
             matches!(first.0, PartitionTree::Split { .. }),
-            "preset {preset}"
+            "preset {preset} {chroma:?}"
         );
     }
 }
@@ -198,8 +229,7 @@ fn avm_decodes_coded_frames_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    for (index, (width, height, bit_depth, preset, qp)) in CASES.into_iter().enumerate() {
-        let mut config = config(width, height, bit_depth, preset, qp);
+    for (index, mut config, name) in chroma_cases() {
         config.keyint = core::num::NonZeroU32::new(3).unwrap();
         let seeds: Vec<u32> = (0..4).map(|seed| index as u32 * 4 + seed).collect();
         let units: Vec<Vec<u8>> = code_stream(&config, &seeds)
@@ -209,14 +239,11 @@ fn avm_decodes_coded_frames_like_splot() {
         let avm = avm_decode(
             &avmdec,
             &units,
-            (width, height),
-            bit_depth,
-            &format!("frame{index}"),
+            (config.width, config.height),
+            config.bit_depth,
+            &format!("frame{index}{:?}", config.chroma),
         );
-        assert!(
-            avm == decode(&units.concat()),
-            "case {index}: AVM output differs"
-        );
+        assert!(avm == decode(&units.concat()), "{name}: AVM output differs");
     }
 }
 
@@ -293,28 +320,46 @@ fn encode_stream(config: &Config, frames: u32) -> (Vec<Vec<u8>>, Vec<u8>) {
     (units, expected)
 }
 
-/// `(preset, keyint, frames, width, height, bit depth)`: presets 9, 6 and 3
-/// code mini-GOPs of 2, 4 and 8 frames; no keyint is a multiple of them, and
+/// `(preset, keyint, frames, width, height, bit depth)`: presets 9, 7 and 8
+/// code mini-GOPs of 2, 4 and 4 frames in 64x64 superblocks, 6 and 3 code 4
+/// and 8 frames in 128x128 superblocks; no keyint is a multiple of them, and
 /// the last mini-GOP of each stream is short.
-const MINI_GOP_CASES: [(u8, u32, u32, u32, u32, BitDepth); 4] = [
+const MINI_GOP_CASES: [(u8, u32, u32, u32, u32, BitDepth); 6] = [
     (9, 6, 9, 40, 24, BitDepth::Ten),
     (6, 7, 11, 33, 17, BitDepth::Eight),
     (6, 10, 8, 24, 16, BitDepth::Ten),
     (3, 11, 13, 24, 16, BitDepth::Eight),
+    (7, 9, 9, 40, 24, BitDepth::Ten),
+    (8, 5, 10, 33, 17, BitDepth::Eight),
 ];
 
-fn mini_gop_stream(case: (u8, u32, u32, u32, u32, BitDepth)) -> (Vec<Vec<u8>>, Vec<u8>) {
+/// [`MINI_GOP_CASES`] in 4:2:0; 4:2:2 and 4:4:4 skip presets 3 and 8.
+fn mini_gop_cases(chroma: PixelFormat) -> impl Iterator<Item = (u8, u32, u32, u32, u32, BitDepth)> {
+    let all = chroma == PixelFormat::Yuv420;
+    MINI_GOP_CASES
+        .into_iter()
+        .filter(move |case| all || ![3, 8].contains(&case.0))
+}
+
+fn mini_gop_stream(
+    case: (u8, u32, u32, u32, u32, BitDepth),
+    chroma: PixelFormat,
+) -> (Vec<Vec<u8>>, Vec<u8>) {
     let (preset, keyint, frames, width, height, bit_depth) = case;
     let mut config = config(width, height, bit_depth, preset, 120);
     config.keyint = core::num::NonZeroU32::new(keyint).unwrap();
+    config.chroma = chroma;
     encode_stream(&config, frames)
 }
 
 #[test]
 fn mini_gops_decode_to_the_encoder_recon_in_display_order() {
-    for case in MINI_GOP_CASES {
-        let (units, expected) = mini_gop_stream(case);
-        assert_same_samples(&decode(&units.concat()), &expected, &format!("{case:?}"));
+    for chroma in CHROMAS {
+        for case in mini_gop_cases(chroma) {
+            let (units, expected) = mini_gop_stream(case, chroma);
+            let name = format!("{case:?} {chroma:?}");
+            assert_same_samples(&decode(&units.concat()), &expected, &name);
+        }
     }
 }
 
@@ -358,12 +403,14 @@ fn avm_decodes_mini_gops_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    for (index, case) in MINI_GOP_CASES.into_iter().enumerate() {
-        let (units, expected) = mini_gop_stream(case);
-        let (_, _, _, width, height, bit_depth) = case;
-        let name = format!("gop{index}");
-        let avm = avm_decode(&avmdec, &units, (width, height), bit_depth, &name);
-        assert!(avm == expected, "{case:?}: AVM output differs");
+    for chroma in CHROMAS {
+        for (index, case) in mini_gop_cases(chroma).enumerate() {
+            let (units, expected) = mini_gop_stream(case, chroma);
+            let (_, _, _, width, height, bit_depth) = case;
+            let name = format!("gop{index}{chroma:?}");
+            let avm = avm_decode(&avmdec, &units, (width, height), bit_depth, &name);
+            assert!(avm == expected, "{case:?} {chroma:?}: AVM output differs");
+        }
     }
 }
 
@@ -597,7 +644,7 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
     let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
     let sb = writer.syntax().superblock_size4() * 4;
     let source = panning_frame(config, 1);
-    let padded = PaddedSource::new(&source, mi_cols * 4 + sb, mi_rows * 4 + sb);
+    let padded = PaddedSource::new(&source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
     let lambda = Lambda::from_qindex(qindex, config.bit_depth).unwrap();
     let mut residual =
         SourceResidualCoder::new(&padded, qindex, config.bit_depth, coder.preset, lambda);
@@ -640,17 +687,19 @@ const RANDOM_INTER_CASES: [(u32, u32, BitDepth, u8, u16); 4] = [
     (144, 80, BitDepth::Ten, 9, 60),
 ];
 
+/// [`RANDOM_INTER_CASES`] by chroma format; 4:2:2 and 4:4:4 skip the slow
+/// 128x128-superblock case.
+fn random_inter_cases() -> impl Iterator<Item = (usize, Config, String)> {
+    format_cases(&RANDOM_INTER_CASES, &[0, 2, 3])
+}
+
 /// Random inter leaves over three references, with NEWMV vectors coded by the
 /// MV writer, decode to the writer's reconstruction.
 #[test]
 fn random_inter_leaves_decode_to_the_writer_recon() {
     let mut total = Coverage::default();
-    for (index, (width, height, bit_depth, preset, qp)) in
-        RANDOM_INTER_CASES.into_iter().enumerate()
-    {
-        let config = config(width, height, bit_depth, preset, qp);
+    for (index, config, name) in random_inter_cases() {
         let (units, expected, coverage) = random_inter_stream(&config, 0x5EED + index as u64);
-        let name = format!("{width}x{height} {bit_depth:?} preset {preset} qp {qp}");
         assert_same_samples(&decode(&units.concat()), &expected, &name);
         for (sum, count) in total.iter_mut().zip(coverage) {
             *sum += count;
@@ -666,19 +715,21 @@ fn avm_decodes_inter_frames_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    for (index, (width, height, bit_depth, preset, qp)) in
-        RANDOM_INTER_CASES.into_iter().enumerate()
-    {
-        let config = config(width, height, bit_depth, preset, qp);
+    for (index, config, name) in random_inter_cases() {
+        let (width, height, bit_depth) = (config.width, config.height, config.bit_depth);
+        let RateControlMode::ConstantQp { qp } = config.rate_control else {
+            unreachable!("these tests code at a constant qp")
+        };
         let (units, expected, _) = random_inter_stream(&config, 0x5EED + index as u64);
+        let tag = format!("{index}{:?}", config.chroma);
         let avm = avm_decode(
             &avmdec,
             &units,
             (width, height),
             bit_depth,
-            &format!("random{index}"),
+            &format!("random{tag}"),
         );
-        assert!(avm == expected, "random case {index}: AVM output differs");
+        assert!(avm == expected, "random {name}: AVM output differs");
         let mut coder = IntraFrameCoder::new(&config).unwrap();
         let units: Vec<Vec<u8>> = (0..4)
             .map(|frame| {
@@ -694,11 +745,11 @@ fn avm_decodes_inter_frames_like_splot() {
             &units,
             (width, height),
             bit_depth,
-            &format!("pan{index}"),
+            &format!("pan{tag}"),
         );
         assert!(
             avm == decode(&units.concat()),
-            "panning case {index}: AVM output differs"
+            "panning {name}: AVM output differs"
         );
     }
 }
@@ -724,7 +775,7 @@ fn search_frame(
     let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references, 0).unwrap();
     let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
     let sb = writer.syntax().superblock_size4() * 4;
-    let padded = PaddedSource::new(source, mi_cols * 4 + sb, mi_rows * 4 + sb);
+    let padded = PaddedSource::new(source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
     let lambda = Lambda::from_qindex(90, bit_depth).unwrap();
     let motion = MotionSearch::new(writer.syntax(), &padded, coder.preset, lambda)
         .unwrap()
@@ -756,7 +807,14 @@ fn search_frame(
 /// content.
 #[test]
 fn inter_superblock_search_is_deterministic_and_rolls_back() {
-    let config = config(64, 40, BitDepth::Ten, 9, 90);
+    for chroma in CHROMAS {
+        inter_search_rolls_back(chroma);
+    }
+}
+
+fn inter_search_rolls_back(chroma: PixelFormat) {
+    let mut config = config(64, 40, BitDepth::Ten, 9, 90);
+    config.chroma = chroma;
     let mut coder = IntraFrameCoder::new(&config).unwrap();
     coder
         .encode_frame(

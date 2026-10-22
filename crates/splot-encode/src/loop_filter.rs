@@ -538,8 +538,10 @@ impl Search<'_> {
     /// `(luma, chroma)` SSE of one 64x64 CDEF unit.
     fn cdef_unit_sse(&self, frame: &DecodedFrame<u16>, row: usize, col: usize) -> (u64, u64) {
         let luma = self.sse(frame, 0, (col * 64, row * 64, 64, 64));
+        let format = frame.info().pixel_format();
+        let (w, h) = (64 >> format.subsampling_x(), 64 >> format.subsampling_y());
         let chroma = (1..3)
-            .map(|plane| self.sse(frame, plane, (col * 32, row * 32, 32, 32)))
+            .map(|plane| self.sse(frame, plane, (col * w, row * h, w, h)))
             .sum();
         (luma, chroma)
     }

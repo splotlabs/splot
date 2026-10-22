@@ -5,6 +5,25 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
 
 ## Unreleased
 
+### Encoder 4:2:2 and 4:4:4
+
+- `splot encode` codes 4:2:2 and 4:4:4 Y4M input (`C422`, `C444`, `p10`
+  forms) at 8 and 10 bits, key and inter frames. Monochrome input fails with
+  `UnsupportedChroma`. 4:2:0 output is byte-identical to before.
+- The `encoder_syntax` facade takes the subsampling from the sequence header
+  for its frame workspace, `BlockDecoded` state, chroma smooth grid and
+  rollback rectangles.
+- park_joy 160x90, 10 frames, preset 6, `--qp 120`, `--keyint 30`; `splot
+  decode` and `avmdec` outputs are byte-identical:
+
+  | Clip | Bits/frame | PSNR Y / U / V (dB) |
+  |---|---|---|
+  | 8-bit 4:2:0 (reference) | 6330 | 35.20 / 38.77 / 41.31 |
+  | 8-bit 4:2:2 | 6488 | 35.21 / 38.93 / 41.20 |
+  | 8-bit 4:4:4 | 7042 | 35.19 / 38.68 / 41.44 |
+  | 10-bit 4:2:2 | 23958 | 45.92 / 47.13 / 48.03 |
+  | 10-bit 4:4:4 | 28859 | 45.85 / 47.06 / 47.79 |
+
 ### Encoder milestone 5: threading, SIMD coverage, perf harness
 
 - Tiles: `--tiles COLSxROWS` codes uniform tiles in parallel, one facade per

@@ -75,7 +75,7 @@ pub struct Config {
     pub height: u32,
     /// Sample bit depth.
     pub bit_depth: BitDepth,
-    /// Chroma format; only [`PixelFormat::Yuv420`] is supported.
+    /// Chroma format: 4:2:0, 4:2:2 or 4:4:4.
     pub chroma: PixelFormat,
     /// Frame rate as `(numerator, denominator)` frames per second.
     pub frame_rate: (u32, u32),
@@ -133,7 +133,7 @@ impl Config {
                 height: self.height,
             });
         }
-        if self.chroma != PixelFormat::Yuv420 {
+        if self.chroma.is_monochrome() {
             return Err(Error::UnsupportedChroma {
                 chroma: self.chroma,
             });
@@ -215,7 +215,7 @@ mod tests {
             Err(Error::InvalidDimensions { .. })
         ));
         config = Config::new(64, 64);
-        config.chroma = PixelFormat::Yuv444;
+        config.chroma = PixelFormat::Monochrome;
         assert!(matches!(
             config.validate(),
             Err(Error::UnsupportedChroma { .. })
