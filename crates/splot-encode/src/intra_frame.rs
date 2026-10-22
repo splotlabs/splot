@@ -104,14 +104,8 @@ impl FrameCoder for IntraFrameCoder {
         let sb = writer.syntax().superblock_size4() * 4;
         let padded = PaddedSource::new(source, mi_cols * 4 + sb, mi_rows * 4 + sb);
         let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
-        let mut coder = SourceResidualCoder {
-            source: &padded,
-            qindex,
-            bit_depth: self.bit_depth,
-            preset: self.preset,
-            lambda,
-            candidate: false,
-        };
+        let mut coder =
+            SourceResidualCoder::new(&padded, qindex, self.bit_depth, self.preset, lambda);
         let mut decisions = FrameDecisions::default();
         let preset = self.preset;
         while writer.next_superblock_root().is_some() {
@@ -254,10 +248,31 @@ pub(crate) struct SourceResidualCoder<'a> {
     bit_depth: BitDepth,
     preset: &'static PresetParams,
     lambda: Lambda,
-    /// Quantizes with the deadzone even when the preset asks for RDOQ: a
-    /// candidate trial only ranks choices; RDOQ runs in a leaf's final trial
-    /// and in the stream.
+    /// A candidate trial without `full_trials`: quantize with the deadzone and
+    /// code `DCT_DCT`.
     pub(crate) candidate: bool,
+    /// Residual, coefficient, and dequantized buffers reused across blocks.
+    scratch: [Vec<i32>; 3],
+}
+
+impl<'a> SourceResidualCoder<'a> {
+    pub(crate) fn new(
+        source: &'a PaddedSource,
+        qindex: u32,
+        bit_depth: BitDepth,
+        preset: &'static PresetParams,
+        lambda: Lambda,
+    ) -> Self {
+        Self {
+            source,
+            qindex,
+            bit_depth,
+            preset,
+            lambda,
+            candidate: false,
+            scratch: Default::default(),
+        }
+    }
 }
 
 impl ResidualCoder for SourceResidualCoder<'_> {
@@ -270,7 +285,11 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         prediction: &[u16],
         tx_types: &[TxType],
     ) -> core::result::Result<TransformDecision, TileWriterError> {
-        let count = tx_choice::tx_type_candidates(self.preset).min(tx_types.len());
+        let count = if self.candidate {
+            1
+        } else {
+            tx_choice::tx_type_candidates(self.preset).min(tx_types.len())
+        };
         let mut best: Option<(u128, TransformDecision)> = None;
         for &tx_type in &tx_types[..count] {
             let tx = TransformBlock { tx_type, ..*tx };
@@ -297,16 +316,16 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let (w, h) = (1usize << log2_w, 1usize << log2_h);
         let (source, stride) = self.source.at(tx);
-        let residual: Vec<i32> = source
-            .chunks(stride)
-            .zip(prediction.chunks(w))
-            .take(h)
-            .flat_map(|(src, pred)| {
+        let mut scratch = core::mem::take(&mut self.scratch);
+        let [residual, coeffs, dequant] = &mut scratch;
+        residual.clear();
+        for (src, pred) in source.chunks(stride).zip(prediction.chunks(w)).take(h) {
+            residual.extend(
                 src.iter()
                     .zip(pred)
-                    .map(|(&s, &p)| i32::from(s) - i32::from(p))
-            })
-            .collect();
+                    .map(|(&s, &p)| i32::from(s) - i32::from(p)),
+            );
+        }
         let (params, transform) = recon_params(
             self.qindex,
             plane_id(tx.plane)?,
@@ -323,12 +342,12 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         )
         .map_err(kernel)?;
         let len = forward.coeff_width() * forward.coeff_height();
-        let mut coeffs = vec![0; len];
+        coeffs.resize(len, 0);
+        dequant.resize(len, 0);
         kernels()
-            .forward_transform_2d(&forward, &residual, &mut coeffs)
+            .forward_transform_2d(&forward, residual, coeffs)
             .map_err(kernel)?;
         let mut levels = vec![0; len];
-        let mut dequant = vec![0; len];
         // shortcut: RDOQ walks the 2D-class scan only; IDTX and 1D types take the deadzone.
         if self.preset.rdoq && !self.candidate && (tx.tx_type as u8) < TxType::Idtx as u8 {
             let block = RdoqBlock {
@@ -345,11 +364,11 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             rdoq(
                 kernels(),
                 &block,
-                &coeffs,
+                coeffs,
                 &mut rates,
                 lambda_q8,
                 &mut levels,
-                &mut dequant,
+                dequant,
             )
             .map_err(kernel)?;
         } else {
@@ -362,9 +381,10 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             )
             .map_err(kernel)?;
             kernels()
-                .quantize(&quantizer, &coeffs, &mut levels, &mut dequant)
+                .quantize(&quantizer, coeffs, &mut levels, dequant)
                 .map_err(kernel)?;
         }
+        self.scratch = scratch;
         Ok(TransformDecision {
             tx_type: tx.tx_type,
             levels,

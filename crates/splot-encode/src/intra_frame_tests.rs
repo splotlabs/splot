@@ -62,16 +62,17 @@ fn recon_bytes(coded: &CodedFrame, bit_depth: BitDepth) -> Vec<u8> {
 }
 
 /// `(width, height, bit depth, preset, qp)`: odd sizes, both superblock sizes
-/// (presets 0 and 10), and the qp extremes.
+/// (presets 0 to 6 code 128x128, 10 codes 64x64), and the qp extremes. The
+/// slow presets code small frames, so debug test runs stay short.
 const CASES: [(u32, u32, BitDepth, u8, u8); 8] = [
     (1, 1, BitDepth::Eight, 6, 80),
     (17, 9, BitDepth::Ten, 0, 1),
     (64, 64, BitDepth::Eight, 10, 255),
     (65, 65, BitDepth::Ten, 6, 120),
-    (130, 66, BitDepth::Eight, 0, 40),
+    (130, 34, BitDepth::Eight, 6, 40),
     (200, 136, BitDepth::Ten, 10, 200),
-    (352, 288, BitDepth::Eight, 6, 100),
-    (257, 131, BitDepth::Ten, 3, 60),
+    (352, 288, BitDepth::Eight, 10, 100),
+    (33, 17, BitDepth::Ten, 3, 60),
 ];
 
 #[test]
@@ -101,8 +102,8 @@ fn coding_is_deterministic_and_lower_qp_costs_more_bits() {
 /// trials roll back completely and no decision depends on hidden state.
 #[test]
 fn superblock_search_is_deterministic_and_rolls_back() {
-    for preset in [0, 10] {
-        let config = config(80, 72, BitDepth::Ten, preset, 90);
+    for preset in [3, 10] {
+        let config = config(40, 24, BitDepth::Ten, preset, 90);
         let source = synthetic_frame(&config, 5);
         let frame = IntraFrameCoder::new(&config).unwrap();
         let tx = tx_choice::key_frame_tx_params(frame.preset);
@@ -113,14 +114,8 @@ fn superblock_search_is_deterministic_and_rolls_back() {
         let sb = writer.syntax().superblock_size4() * 4;
         let padded = PaddedSource::new(&source, mi_cols * 4 + sb, mi_rows * 4 + sb);
         let lambda = Lambda::from_qindex(90, config.bit_depth).unwrap();
-        let mut coder = SourceResidualCoder {
-            source: &padded,
-            qindex: 90,
-            bit_depth: config.bit_depth,
-            preset: frame.preset,
-            lambda,
-            candidate: false,
-        };
+        let mut coder =
+            SourceResidualCoder::new(&padded, 90, config.bit_depth, frame.preset, lambda);
         let mut search = || {
             writer
                 .search_superblock(|syntax, root| {

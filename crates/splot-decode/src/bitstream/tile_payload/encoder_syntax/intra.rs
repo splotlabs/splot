@@ -543,8 +543,8 @@ impl IntraTileSyntax {
     pub fn predict(&mut self, index: usize) -> Result<Vec<u16>> {
         let tx = self.unit(index)?;
         let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
-        let zeros = vec![0; 1 << (log2_w.min(5) + log2_h.min(5))];
-        self.reconstruct_with(index, &zeros, 0, tx.tx_type)?;
+        let zeros = &ZERO_LEVELS[..1 << (log2_w.min(5) + log2_h.min(5))];
+        self.reconstruct_with(index, zeros, 0, tx.tx_type)?;
         self.reconstruction(&tx)
     }
 
@@ -885,6 +885,9 @@ impl IntraTileSyntax {
             .map_err(rule("symbol write"))
     }
 }
+
+/// The levels of a predicted block: every adjusted (at most 32x32) level zero.
+static ZERO_LEVELS: [i32; 1024] = [0; 1024];
 
 const NO_LEAF: EncoderSyntaxError = EncoderSyntaxError::Unsupported("unplanned transform block");
 

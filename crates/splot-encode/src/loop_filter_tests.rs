@@ -24,16 +24,17 @@ use crate::rate_control::{FramePlanInfo, FrameType};
 use crate::test_support::{assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes};
 
 /// `(width, height, bit depth, preset, qp)`: both superblock sizes (presets 0
-/// and 6 code 128x128, 10 codes 64x64), odd sizes, and qps where filters pay.
+/// to 6 code 128x128, 10 codes 64x64), odd sizes, and qps where filters pay.
+/// The slow presets code small frames, so debug test runs stay short.
 const CASES: [(u32, u32, BitDepth, u8, u8); 8] = [
     (64, 64, BitDepth::Eight, 6, 160),
-    (130, 66, BitDepth::Ten, 0, 220),
+    (130, 34, BitDepth::Ten, 6, 220),
     (200, 136, BitDepth::Eight, 10, 180),
-    (257, 131, BitDepth::Ten, 6, 240),
-    (352, 288, BitDepth::Eight, 6, 140),
+    (257, 131, BitDepth::Ten, 10, 240),
+    (352, 288, BitDepth::Eight, 10, 140),
     (96, 200, BitDepth::Ten, 10, 250),
-    (33, 47, BitDepth::Eight, 0, 200),
-    (160, 96, BitDepth::Eight, 3, 120),
+    (33, 23, BitDepth::Eight, 0, 200),
+    (40, 24, BitDepth::Eight, 3, 120),
 ];
 
 /// Smooth shapes with sharp edges and light noise, which blocky coding damages.

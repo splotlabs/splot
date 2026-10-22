@@ -159,7 +159,7 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         let mut best: Option<(u128, LeafChoice)> = None;
         for choice in candidates {
             self.syntax.restore(start)?;
-            self.coder.candidate = true;
+            self.coder.candidate = !self.preset.full_trials;
             let cost = self.trial(leaf, choice, planes.clone());
             self.coder.candidate = false;
             let j = cost?.cost(self.lambda);
