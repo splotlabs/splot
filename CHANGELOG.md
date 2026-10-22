@@ -5,8 +5,15 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
 
 ## Unreleased
 
-### Encoder milestone 3: single-reference inter blocks
+### Encoder milestone 3: inter coding
 
+- Inter frame headers are parse-backed like key frames; `EncoderReferences`
+  wraps the decoder's own reference buffer, so the encoder never re-derives
+  § 7.7/§ 7.23 reference state.
+- Hierarchical mini-GOPs (preset `mini_gop_size` 8/4/2/1): each mini-GOP codes
+  its last frame first as a hidden frame, then the middle frames, and shows
+  hidden frames with show-existing frames; each packet is one § 7.3.6
+  temporal unit in coding order, and `--keyint` starts key frames.
 - Inter-frame leaves RD-compare intra coding with GLOBALMV, NEARMV over the
   DRL, and NEWMV, from every valid reference. NEWMV takes a pyramid
   full-sample search with half- and quarter-sample refinement through the
@@ -28,6 +35,10 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
 - Rate points against single-reference only, preset 6, 10 frames, keyint 30,
   mini-GOP 4, base_q_idx 80/120/160/200, luma: niklas 720p BD-rate -4.5%,
   encode time +8..17%; park_joy 160x90 BD-rate -0.2%, encode time +1..22%.
+- Against AVM `--cpu-used=6 --kf-max-dist=30 --lag-in-frames=16`, park_joy
+  160x90, 10 frames, base_q_idx 85..190, preset 6: luma BD-rate +37.7%;
+  splot 0.6-3.8 fps, AVM 0.12-0.23 fps. AVM also uses temporal MVs, warped
+  and overlapped motion, optical flow and TIP, which splot does not code yet.
 
 ### Encoder milestone 2: full intra coding
 
