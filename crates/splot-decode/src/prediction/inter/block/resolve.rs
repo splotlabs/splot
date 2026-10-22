@@ -639,7 +639,7 @@ pub(super) fn compound_inter_block(
 
 /// The § 7.12 motion of a single-reference block; the encoder facade calls
 /// it too.
-#[inline]
+#[inline(always)]
 pub(super) fn resolve_single(
     syntax: &InterBlockSyntax,
     single: &SingleMotionSyntax,
@@ -837,7 +837,7 @@ fn resolve_compound(
 /// The § 7.12 motion of a compound or skip-mode block, before the warp bank
 /// update; the encoder facade calls it too, so its vectors are the ones the
 /// decoder resolves.
-#[inline]
+#[inline(always)]
 pub(super) fn compound_motion(
     syntax: &InterBlockSyntax,
     compound: &CompoundMotionSyntax,
@@ -950,6 +950,7 @@ fn single_list_candidate(
 }
 
 /// AV2 § 7.12.2 compound predictors combined with the parsed MVD pair.
+#[inline(always)]
 fn compound_mvs(
     syntax: &InterBlockSyntax,
     compound: &CompoundMotionSyntax,
