@@ -47,6 +47,10 @@ pub struct PresetParams {
     /// Frames the lookahead analyses before the next mini-GOP is coded, at
     /// least `mini_gop_size`; scene cuts and the temporal model see this far.
     pub lookahead_frames: u8,
+    /// Compound candidates of an inter leaf that get a full RD trial, best
+    /// prediction SATD first; skip-mode candidates are tried besides them.
+    /// `0` codes neither compound nor skip-mode blocks.
+    pub compound_candidates: u8,
 }
 
 const fn row(
@@ -56,7 +60,7 @@ const fn row(
     (rdoq, full_trials): (bool, bool),
     (tx_type_depth, tx_partition_search): (u8, bool),
     motion: (u16, u8),
-    (loop_filter_search, mini_gop_size, lookahead_frames): (u8, u8, u8),
+    (loop_filter_search, mini_gop_size, lookahead_frames, compound_candidates): (u8, u8, u8, u8),
 ) -> PresetParams {
     PresetParams {
         min_block_log2: blocks.0,
@@ -72,6 +76,7 @@ const fn row(
         loop_filter_search,
         mini_gop_size,
         lookahead_frames,
+        compound_candidates,
     }
 }
 
@@ -84,7 +89,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (true, true),
         (3, true),
         (256, 3),
-        (3, 8, 16),
+        (3, 8, 16, 8),
     ),
     row(
         (2, 7),
@@ -93,7 +98,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (true, true),
         (3, true),
         (192, 3),
-        (3, 8, 16),
+        (3, 8, 16, 8),
     ),
     row(
         (2, 7),
@@ -102,7 +107,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (true, true),
         (3, true),
         (128, 3),
-        (2, 8, 16),
+        (2, 8, 16, 6),
     ),
     row(
         (2, 7),
@@ -111,7 +116,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (true, true),
         (2, true),
         (96, 2),
-        (2, 8, 16),
+        (2, 8, 16, 6),
     ),
     row(
         (2, 7),
@@ -120,7 +125,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (true, false),
         (2, true),
         (64, 2),
-        (2, 4, 8),
+        (2, 4, 8, 4),
     ),
     row(
         (2, 7),
@@ -129,7 +134,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (true, false),
         (2, true),
         (64, 2),
-        (1, 4, 8),
+        (1, 4, 8, 4),
     ),
     row(
         (3, 7),
@@ -138,7 +143,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (true, false),
         (1, true),
         (48, 2),
-        (1, 4, 8),
+        (1, 4, 8, 3),
     ),
     row(
         (3, 6),
@@ -147,7 +152,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (false, false),
         (1, false),
         (32, 1),
-        (1, 4, 8),
+        (1, 4, 8, 2),
     ),
     row(
         (3, 6),
@@ -156,7 +161,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (false, false),
         (1, false),
         (24, 1),
-        (0, 2, 4),
+        (0, 2, 4, 1),
     ),
     row(
         (3, 6),
@@ -165,7 +170,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (false, false),
         (0, false),
         (16, 1),
-        (0, 2, 4),
+        (0, 2, 4, 0),
     ),
     row(
         (4, 6),
@@ -174,7 +179,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (false, false),
         (0, false),
         (16, 0),
-        (0, 1, 2),
+        (0, 1, 2, 0),
     ),
 ];
 
@@ -239,6 +244,7 @@ mod tests {
             assert!(fast.loop_filter_search <= slow.loop_filter_search);
             assert!(fast.mini_gop_size <= slow.mini_gop_size);
             assert!(fast.lookahead_frames <= slow.lookahead_frames);
+            assert!(fast.compound_candidates <= slow.compound_candidates);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));

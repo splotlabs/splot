@@ -37,9 +37,11 @@ const QINDEX_PER_IMPORTANCE_OCTAVE: u64 = 12;
 pub(crate) struct TplFrame {
     /// Zero-based input (display) index.
     pub(crate) display_index: u64,
-    /// Sum of the blocks' best costs, each at least [`MIN_BLOCK_COMPLEXITY`];
-    /// intra costs in a key frame.
+    /// Sum of the blocks' best costs, intra costs in a key frame, each at
+    /// least [`MIN_BLOCK_COMPLEXITY`].
     pub(crate) complexity: u64,
+    /// The complexity of a frame whose blocks all cost the minimum.
+    pub(crate) min_complexity: u64,
     /// The suggested change to the base qindex.
     pub(crate) qindex_offset: i16,
 }
@@ -132,11 +134,12 @@ pub(crate) fn analyze(
         .iter()
         .map(|node| {
             let intra: u64 = node.intra.iter().map(|&c| u64::from(c)).sum();
-            let best: u64 = node
-                .best
-                .iter()
-                .map(|&c| u64::from(c.max(MIN_BLOCK_COMPLEXITY)))
-                .sum();
+            let floored = |costs: &[u32]| -> u64 {
+                costs
+                    .iter()
+                    .map(|&c| u64::from(c.max(MIN_BLOCK_COMPLEXITY)))
+                    .sum()
+            };
             let gained: u64 = received
                 .get(&node.frame.display_index)
                 .map_or(0, |values| values.iter().sum());
@@ -148,11 +151,12 @@ pub(crate) fn analyze(
                 + i32::from(node.frame.layer) * LAYER_QINDEX_OFFSET;
             TplFrame {
                 display_index: node.frame.display_index,
-                complexity: if node.frame.frame_type == FrameType::Key {
-                    intra
+                complexity: floored(if node.frame.frame_type == FrameType::Key {
+                    &node.intra
                 } else {
-                    best
-                },
+                    &node.best
+                }),
+                min_complexity: blocks as u64 * u64::from(MIN_BLOCK_COMPLEXITY),
                 qindex_offset: offset as i16,
             }
         })

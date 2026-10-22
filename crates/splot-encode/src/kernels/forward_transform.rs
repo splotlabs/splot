@@ -266,6 +266,7 @@ impl ForwardTransform2d {
 
 /// Sums each residual sample pair along every 64-sample side into the
 /// `coeff_width x coeff_height` block `out`.
+#[cfg(test)]
 fn pair_sum_scalar(tx: &ForwardTransform2d, residual: &[i32], out: &mut [i32]) {
     let w = tx.coeff_width();
     let px = usize::from(tx.pair_width);
@@ -311,6 +312,7 @@ fn pair_sum_simd(tx: &ForwardTransform2d, residual: &[i32], out: &mut [i32]) {
     }
 }
 
+#[cfg(test)]
 fn round_shift(value: i32, shift: u32) -> i32 {
     if shift == 0 {
         value
@@ -319,6 +321,7 @@ fn round_shift(value: i32, shift: u32) -> i32 {
     }
 }
 
+#[cfg(test)]
 pub(super) fn forward_scalar(
     tx: &ForwardTransform2d,
     residual: &[i32],

@@ -15,7 +15,7 @@ use crate::gop::{GopFrame, GopPlanner, GopStep};
 use crate::intra_frame::IntraFrameCoder;
 use crate::lookahead::Lookahead;
 use crate::rate_control::{
-    BitrateController, ConstantQp, Crf, FramePlanInfo, FrameType, RateController,
+    Cbr, ConstantQp, Crf, FramePlanInfo, FrameType, RateController, Vbr, max_qindex,
 };
 use crate::stats::{FrameStats, psnr, ssim};
 use crate::tpl;
@@ -50,8 +50,12 @@ pub(crate) struct CodedFrame {
 /// Codes the frames and show-existing frames of the plan, in coding order.
 pub(crate) trait FrameCoder {
     /// Codes `source` as `plan` at quantizer `qp`.
-    fn encode_frame(&mut self, source: &SourceFrame, plan: &GopFrame, qp: u8)
-    -> Result<CodedFrame>;
+    fn encode_frame(
+        &mut self,
+        source: &SourceFrame,
+        plan: &GopFrame,
+        qp: u16,
+    ) -> Result<CodedFrame>;
     /// A temporal delimiter and the show-existing frame that outputs the
     /// hidden frame in `slot`.
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>>;
@@ -97,33 +101,45 @@ impl fmt::Debug for Encoder {
 }
 
 impl Encoder {
-    /// Creates an encoder.
+    /// Creates an encoder with the rate controller of `config.rate_control`.
     ///
     /// # Errors
-    /// Returns a configuration error from [`Config::validate`], or
-    /// [`Error::Unsupported`] because no frame coder is available yet.
+    /// Returns a configuration error from [`Config::validate`], or a coding
+    /// error when the frame coder cannot be set up for `config`.
     pub fn new(config: Config) -> Result<Self> {
         config.validate()?;
-        let coder = frame_coder(&config)?;
-        Ok(Self::with_coder(config, coder))
+        let rate_control = rate_controller(&config)?;
+        Self::with_rate_controller(config, rate_control)
     }
 
-    pub(crate) fn with_coder(config: Config, coder: Box<dyn FrameCoder + Send>) -> Self {
-        let rate_control: Box<dyn RateController + Send> = match config.rate_control {
-            RateControlMode::ConstantQp { qp } => Box::new(ConstantQp { qp }),
-            RateControlMode::Crf { crf } => Box::new(Crf { crf }),
-            RateControlMode::Vbr { bitrate_kbps } => {
-                Box::new(BitrateController::vbr(bitrate_kbps, config.frame_rate))
-            }
-            RateControlMode::Cbr {
-                bitrate_kbps,
-                buffer_ms,
-            } => Box::new(BitrateController::cbr(
-                bitrate_kbps,
-                buffer_ms,
-                config.frame_rate,
-            )),
-        };
+    /// Creates an encoder whose quantizers come from `rate_control` instead
+    /// of the controller that `config.rate_control` names. [`RateController`]
+    /// says when the encoder calls it; the encoder clamps its qindex to
+    /// `1..=`[`max_qindex`] of the bit depth.
+    ///
+    /// # Errors
+    /// Returns a configuration error from [`Config::validate`], or a coding
+    /// error when the frame coder cannot be set up for `config`.
+    pub fn with_rate_controller(
+        config: Config,
+        rate_control: Box<dyn RateController + Send>,
+    ) -> Result<Self> {
+        config.validate()?;
+        let coder = frame_coder(&config)?;
+        Ok(Self::with_parts(config, coder, rate_control))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_coder(config: Config, coder: Box<dyn FrameCoder + Send>) -> Result<Self> {
+        let rate_control = rate_controller(&config)?;
+        Ok(Self::with_parts(config, coder, rate_control))
+    }
+
+    fn with_parts(
+        config: Config,
+        coder: Box<dyn FrameCoder + Send>,
+        rate_control: Box<dyn RateController + Send>,
+    ) -> Self {
         let params = config.preset.params();
         let planner = GopPlanner::new(config.keyint, params.mini_gop_size);
         Self {
@@ -217,11 +233,13 @@ impl Encoder {
         Ok(self.ready.pop_front())
     }
 
-    /// Plans every queued frame, runs the temporal model over the plan, and
-    /// hands the window to the rate controller.
+    /// Plans the first `lookahead_frames` queued frames, runs the temporal
+    /// model over the plan, and hands the window to the rate controller. Coding
+    /// starts only with a full window or after the flush, so the window does not
+    /// depend on how the caller interleaves sends and receives.
     fn plan_window(&mut self) -> Result<()> {
         let mut planner = self.planner.clone();
-        let mut remaining = self.pending.len();
+        let mut remaining = self.pending.len().min(self.lookahead_frames);
         let mut plan = Vec::new();
         while let Some(len) = planner.next_len(remaining, true) {
             plan.extend(
@@ -246,7 +264,9 @@ impl Encoder {
                 frame_type: frame.frame_type,
                 layer: frame.layer,
                 complexity: model.complexity,
+                min_complexity: model.min_complexity,
                 qindex_offset: model.qindex_offset,
+                bit_depth: self.config.bit_depth,
             })
             .collect();
         self.rate_control.plan_window(&self.window);
@@ -279,7 +299,10 @@ impl Encoder {
                     stats.push(frame_stats);
                 }
                 GopStep::ShowExisting { slot, .. } => {
-                    data.extend(self.coder.show_existing_frame(slot)?);
+                    let unit = self.coder.show_existing_frame(slot)?;
+                    self.rate_control
+                        .update_show_existing(unit.len() as u64 * 8);
+                    data.extend(unit);
                 }
             }
             if let Some(display_index) = step.output() {
@@ -309,7 +332,10 @@ impl Encoder {
             .ok_or(Error::Unsupported {
                 what: "a frame outside its lookahead window",
             })?;
-        let qp = self.rate_control.frame_qp(&plan);
+        let qp = self
+            .rate_control
+            .frame_qp(&plan)
+            .clamp(1, max_qindex(frame.bit_depth()));
         let coded = self.coder.encode_frame(frame, gop_frame, qp)?;
 
         let bit_depth = frame.bit_depth();
@@ -339,6 +365,20 @@ impl Encoder {
     }
 }
 
+fn rate_controller(config: &Config) -> Result<Box<dyn RateController + Send>> {
+    Ok(match config.rate_control {
+        RateControlMode::ConstantQp { qp } => Box::new(ConstantQp { qp }),
+        RateControlMode::Crf { crf } => Box::new(Crf { crf }),
+        RateControlMode::Vbr { bitrate_kbps } => {
+            Box::new(Vbr::new(bitrate_kbps, config.frame_rate)?)
+        }
+        RateControlMode::Cbr {
+            bitrate_kbps,
+            buffer_ms,
+        } => Box::new(Cbr::new(bitrate_kbps, buffer_ms, config.frame_rate)?),
+    })
+}
+
 fn frame_coder(config: &Config) -> Result<Box<dyn FrameCoder + Send>> {
     Ok(Box::new(IntraFrameCoder::new(config)?))
 }
@@ -349,6 +389,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::config::TileLayout;
     use crate::preset::Preset;
 
     /// Emits the frame index and qp as the frame's OBUs (after `0xd0` when
@@ -363,7 +404,7 @@ mod tests {
             &mut self,
             source: &SourceFrame,
             plan: &GopFrame,
-            qp: u8,
+            qp: u16,
         ) -> Result<CodedFrame> {
             if self.fail_at == Some(plan.frame_index) {
                 return Err(Error::Unsupported { what: "test" });
@@ -377,7 +418,7 @@ mod tests {
             } else {
                 Vec::new()
             };
-            temporal_unit.extend([plan.frame_index as u8, qp]);
+            temporal_unit.extend([plan.frame_index as u8, qp as u8]);
             Ok(CodedFrame {
                 temporal_unit,
                 recon,
@@ -390,7 +431,7 @@ mod tests {
         }
     }
 
-    fn encoder(fail_at: Option<u64>, preset: u8) -> Encoder {
+    fn encoder(fail_at: Option<u64>, preset: u8) -> Result<Encoder> {
         let mut config = Config::new(4, 4);
         config.keyint = core::num::NonZeroU32::MIN.saturating_add(1);
         config.rate_control = RateControlMode::ConstantQp { qp: 40 };
@@ -440,7 +481,7 @@ mod tests {
 
     #[test]
     fn codes_frames_in_order_with_stats() -> Result<()> {
-        let mut encoder = encoder(None, Preset::MAX);
+        let mut encoder = encoder(None, Preset::MAX)?;
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink_seen = Arc::clone(&seen);
         encoder.set_stats_sink(Box::new(move |stats| {
@@ -477,7 +518,7 @@ mod tests {
     /// next output: coding order 4 2 1 [2] 3 [4], with 4 and 2 hidden in slots 1 and 2.
     #[test]
     fn packs_hidden_frames_into_the_next_output_unit() -> Result<()> {
-        let mut encoder = encoder(None, 6);
+        let mut encoder = encoder(None, 6)?;
         encoder.config.keyint = core::num::NonZeroU32::new(10).unwrap_or(encoder.config.keyint);
         encoder.planner = GopPlanner::new(encoder.config.keyint, 4);
         encoder.lookahead_frames = 4;
@@ -516,7 +557,7 @@ mod tests {
         let mut config = Config::new(64, 64);
         config.rate_control = rate_control;
         let mut encoder =
-            Encoder::with_coder(config.clone(), Box::new(FakeCoder { fail_at: None }));
+            Encoder::with_coder(config.clone(), Box::new(FakeCoder { fail_at: None }))?;
         for pts in 0..12 {
             let scene = u32::from(pts >= cut);
             let frame = crate::lookahead::tests::frame(&config, pts, shift * pts as usize, scene);
@@ -538,12 +579,37 @@ mod tests {
         Ok(())
     }
 
+    /// Fresh noise in every frame predicts badly from the frame before, like
+    /// a cut, but no worse than the frame before did: only frame 0 is a key.
+    #[test]
+    fn noise_makes_no_scene_cuts() -> Result<()> {
+        let config = Config::new(64, 64);
+        let mut encoder =
+            Encoder::with_coder(config.clone(), Box::new(FakeCoder { fail_at: None }))?;
+        let mut random = xorshift(5);
+        for pts in 0..12 {
+            let planes = config.plane_sizes()?.map(|size| {
+                (0..size.width() * size.height())
+                    .map(|_| 16 + 37 * random() as u16)
+                    .collect()
+            });
+            encoder.send_frame(SourceFrame::new(&config, pts, planes)?)?;
+        }
+        encoder.flush()?;
+        let keys = drain(&mut encoder)?
+            .iter()
+            .filter(|packet| packet.frame_type == FrameType::Key)
+            .count();
+        assert_eq!(keys, 1);
+        Ok(())
+    }
+
     /// On static content the alt-ref of each mini-GOP of 4 gets a finer
     /// quantizer than its middle frame, and that one than the leaves.
     #[test]
     fn crf_gives_referenced_frames_lower_qindex_on_static_content() -> Result<()> {
         let packets = textured(RateControlMode::Crf { crf: 30 }, 0, u64::MAX)?;
-        let qp: BTreeMap<u64, u8> = packets
+        let qp: BTreeMap<u64, u16> = packets
             .iter()
             .flat_map(|packet| &packet.stats)
             .map(|stats| (stats.pts, stats.qp))
@@ -557,9 +623,131 @@ mod tests {
         Ok(())
     }
 
+    /// Encodes 20 panning frames `width` wide in `tiles` with a cut at 11,
+    /// sending them `sends` at a time and then receiving up to `receives`
+    /// packets, until the input ends.
+    fn interleaved(
+        (rate_control, width, tiles): (RateControlMode, u32, TileLayout),
+        mut sends: impl FnMut() -> usize,
+        mut receives: impl FnMut() -> usize,
+    ) -> Result<Vec<u8>> {
+        let mut config = Config::new(width, 32);
+        config.rate_control = rate_control;
+        config.tiles = tiles;
+        config.preset = Preset::new(9).unwrap_or_default();
+        let mut encoder = Encoder::new(config.clone())?;
+        let mut bytes = Vec::new();
+        let mut next = 0;
+        while next < 20 {
+            for _ in 0..sends() {
+                if next < 20 {
+                    let scene = u32::from(next >= 11);
+                    let frame =
+                        crate::lookahead::tests::frame(&config, next, 2 * next as usize, scene);
+                    encoder.send_frame(frame)?;
+                    next += 1;
+                }
+            }
+            for _ in 0..receives() {
+                let Some(packet) = encoder.receive_packet()? else {
+                    break;
+                };
+                bytes.extend(packet.data);
+            }
+        }
+        encoder.flush()?;
+        for packet in drain(&mut encoder)? {
+            bytes.extend(packet.data);
+        }
+        Ok(bytes)
+    }
+
+    /// Pseudo-random counts in `0..6`.
+    fn xorshift(mut state: u32) -> impl FnMut() -> usize {
+        move || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state % 6) as usize
+        }
+    }
+
+    /// One send and a full drain per frame, every send before the flush, and
+    /// random interleavings all give the same bytes; the VBR case codes two
+    /// tiles in parallel.
+    #[test]
+    fn output_does_not_depend_on_the_call_pattern() -> Result<()> {
+        let one = TileLayout::default();
+        let two = TileLayout {
+            cols_log2: 1,
+            rows_log2: 0,
+        };
+        let cbr = RateControlMode::Cbr {
+            bitrate_kbps: 60,
+            buffer_ms: 1000,
+        };
+        for mode in [
+            (RateControlMode::Crf { crf: 30 }, 48, one),
+            (RateControlMode::Vbr { bitrate_kbps: 90 }, 72, two),
+            (cbr, 48, one),
+        ] {
+            let per_frame = interleaved(mode, || 1, || usize::MAX)?;
+            assert!(!per_frame.is_empty());
+            assert!(per_frame == interleaved(mode, || 20, || 0)?, "{mode:?}");
+            for seed in [1, 7, 12_345] {
+                let random = interleaved(mode, xorshift(seed), xorshift(seed + 99))?;
+                assert!(per_frame == random, "{mode:?} seed {seed}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Asks for a qindex above `MaxQ` and records the show-existing bits.
+    struct Recorder(Arc<Mutex<Vec<u64>>>);
+
+    impl RateController for Recorder {
+        fn frame_qp(&mut self, _info: &FramePlanInfo) -> u16 {
+            u16::MAX
+        }
+
+        fn update(&mut self, _stats: &FrameStats) {}
+
+        fn update_show_existing(&mut self, bits: u64) {
+            if let Ok(mut seen) = self.0.lock() {
+                seen.push(bits);
+            }
+        }
+    }
+
+    /// A caller's rate controller gets every show-existing unit's bits, and
+    /// its qindex is clamped to `MaxQ`.
+    #[test]
+    fn custom_rate_controller_sees_show_existing_bits() -> Result<()> {
+        let mut config = Config::new(16, 16);
+        config.preset = Preset::new(6)?;
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let mut encoder =
+            Encoder::with_rate_controller(config.clone(), Box::new(Recorder(Arc::clone(&seen))))?;
+        for pts in 0..5 {
+            let planes = [vec![90; 256], vec![128; 64], vec![160; 64]];
+            encoder.send_frame(SourceFrame::new(&config, pts, planes)?)?;
+        }
+        encoder.flush()?;
+        let packets = drain(&mut encoder)?;
+        let shown: Vec<u64> = packets
+            .iter()
+            .filter(|packet| packet.stats.is_empty())
+            .map(|packet| packet.data.len() as u64 * 8)
+            .collect();
+        assert_eq!(shown.len(), 2);
+        assert_eq!(seen.lock().map(|seen| seen.clone()).ok(), Some(shown));
+        assert!(packets.iter().flat_map(|p| &p.stats).all(|s| s.qp == 255));
+        Ok(())
+    }
+
     #[test]
     fn state_machine_rejects_invalid_operations() -> Result<()> {
-        let mut encoder = encoder(Some(0), Preset::MAX);
+        let mut encoder = encoder(Some(0), Preset::MAX)?;
         let mut other = Config::new(8, 4);
         other.rate_control = RateControlMode::ConstantQp { qp: 40 };
         let wrong = SourceFrame::new(&other, 0, [vec![0; 32], vec![0; 8], vec![0; 8]])?;

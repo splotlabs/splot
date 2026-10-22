@@ -98,9 +98,10 @@ fn inter_headers_parse_with_the_reference_state() {
                 let seq = sequence(width, height, bit_depth, sb);
                 let view = CoreSeqView::from_sequence(&seq).unwrap();
                 let slots = Slots::after_key(width, height, 4);
-                for (show_frame, filters) in
-                    [(true, FrameFilterParams::default()), (false, filters(sb))]
-                {
+                for (show_frame, filters, compound) in [
+                    (true, FrameFilterParams::default(), false),
+                    (false, filters(sb), true),
+                ] {
                     let params = InterFrameParams {
                         base_q_idx: 90,
                         order_hint: 5,
@@ -109,6 +110,8 @@ fn inter_headers_parse_with_the_reference_state() {
                         filters,
                         tx: KeyFrameTxParams::default(),
                         tiles: UniformTiles::default(),
+                        reference_select: compound,
+                        skip_mode_present: compound,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
                     let core = &header.core;
@@ -122,7 +125,8 @@ fn inter_headers_parse_with_the_reference_state() {
                     assert_eq!(&inter.ref_frame_idx[..], &[0]);
                     let tail = core.inter_tail.as_ref().unwrap();
                     assert_eq!(tail.tx_mode, TxMode::Largest);
-                    assert!(!tail.reference_select && !tail.skip_mode_present);
+                    assert_eq!(tail.reference_select, compound);
+                    assert_eq!(tail.skip_mode_present, compound);
                     assert_eq!(
                         tail.reduced_tx_set,
                         KeyFrameTxParams::default().reduced_tx_set
@@ -152,6 +156,8 @@ fn order_hints_unwrap_against_the_reference_slots() {
         filters: FrameFilterParams::default(),
         tx: KeyFrameTxParams::default(),
         tiles: UniformTiles::default(),
+        reference_select: false,
+        skip_mode_present: false,
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
     assert_eq!(header.core.order_hint_lsb, Some(301 - 256));
@@ -174,6 +180,8 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             filters: filters(SuperblockSize::Block64x64),
             tx: KeyFrameTxParams::default(),
             tiles: UniformTiles::default(),
+            reference_select: true,
+            skip_mode_present: false,
         },
     )
     .unwrap();
@@ -245,6 +253,8 @@ fn rejects_out_of_range_inter_inputs() {
         filters: FrameFilterParams::default(),
         tx: KeyFrameTxParams::default(),
         tiles: UniformTiles::default(),
+        reference_select: false,
+        skip_mode_present: false,
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),

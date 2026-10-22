@@ -13,7 +13,7 @@ pub struct FrameStats {
     /// Presentation timestamp of the source frame.
     pub pts: u64,
     /// The frame's `base_q_idx`.
-    pub qp: u8,
+    pub qp: u16,
     /// Size of the frame's OBUs in bits, with the temporal delimiter (and the
     /// sequence header of a key frame) when the frame opens its temporal unit.
     pub bits: u64,

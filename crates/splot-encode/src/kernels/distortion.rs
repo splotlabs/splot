@@ -16,6 +16,7 @@ use std::simd::{Simd, cmp::SimdOrd as _, simd_swizzle};
 use super::BlockDims;
 
 /// The first `dims.height()` rows of a strided block, each `dims.width()` wide.
+#[cfg(test)]
 fn rows(samples: &[u16], stride: usize, dims: BlockDims) -> impl Iterator<Item = &[u16]> {
     debug_assert!(stride >= dims.width());
     samples
@@ -24,6 +25,7 @@ fn rows(samples: &[u16], stride: usize, dims: BlockDims) -> impl Iterator<Item =
         .filter_map(move |row| row.get(..dims.width()))
 }
 
+#[cfg(test)]
 fn row_pairs<'a>(
     src: &'a [u16],
     src_stride: usize,
@@ -34,7 +36,7 @@ fn row_pairs<'a>(
     rows(src, src_stride, dims).zip(rows(pred, pred_stride, dims))
 }
 
-/// Calls `f` on the same row pairs as [`row_pairs`] with one bounds check up
+/// Calls `f` on the same row pairs as the scalar row walk, with one bounds check up
 /// front: every row after the first is the tail of a `stride`-long exact chunk.
 #[inline]
 fn for_each_row_pair<'a>(
@@ -74,6 +76,7 @@ fn for_each_row_pair<'a>(
     }
 }
 
+#[cfg(test)]
 pub(super) fn sad_scalar(
     src: &[u16],
     src_stride: usize,
@@ -87,6 +90,7 @@ pub(super) fn sad_scalar(
         .sum()
 }
 
+#[cfg(test)]
 pub(super) fn sse_scalar(
     src: &[u16],
     src_stride: usize,
@@ -168,6 +172,7 @@ fn sse_lanes<const L: usize>(
     acc.reduce_sum()
 }
 
+#[cfg(test)]
 pub(super) fn residual_scalar(
     src: &[u16],
     src_stride: usize,
@@ -234,6 +239,7 @@ fn tile_origins(dims: BlockDims, tile: usize) -> impl Iterator<Item = (usize, us
         .flat_map(move |y| (0..dims.width()).step_by(tile).map(move |x| (y, x)))
 }
 
+#[cfg(test)]
 pub(super) fn satd_scalar(
     src: &[u16],
     src_stride: usize,
@@ -266,6 +272,7 @@ pub(super) fn satd_scalar(
 
 /// The in-place unnormalized Walsh-Hadamard butterfly over the samples of `v`
 /// at `0, step, 2 * step, ...` (`v.len() / step` of them, a power of two).
+#[cfg(test)]
 fn hadamard_scalar(v: &mut [i32], step: usize) {
     let n = v.len().div_ceil(step);
     let mut half = 1;

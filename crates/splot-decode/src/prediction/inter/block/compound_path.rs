@@ -997,19 +997,11 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     block_qindex: u32,
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
-    let current = compound_current_order_hint(core);
-    let ref_order_hints = if num_total_refs > 1 {
-        Some((
-            compound_reference_order_hint(reference, ref_frame_idx, 0)?,
-            compound_reference_order_hint(reference, ref_frame_idx, 1)?,
-        ))
-    } else {
-        None
-    };
-    let default_pair = skip_mode_default_pair(current, ref_order_hints);
-    let (ref_frame0, ref_frame1) = checked_skip_mode_reference_pair(
-        neighbour_ctx.skip_mode_ref_pair(default_pair, tip_ref_pair),
-        num_total_refs,
+    let (ref_frame0, ref_frame1) = skip_mode_reference_pair(
+        core,
+        (reference, ref_frame_idx, num_total_refs),
+        neighbour_ctx,
+        tip_ref_pair,
         tile_offset,
     )?;
     block_ctx.ref_frame0 = ref_frame0;
@@ -1070,6 +1062,37 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
         mi_cols,
         residual_tool_policy,
         block_qindex,
+        tile_offset,
+    )
+}
+
+/// The § 5.20.7.10 `skip_mode_frames` reference pair of a skip-mode block
+/// whose neighbours give `neighbour_ctx`; the encoder facade calls it too.
+#[allow(
+    clippy::inline_always,
+    reason = "keeps the parse path of the parent with the facade as second caller"
+)]
+#[inline(always)]
+pub(super) fn skip_mode_reference_pair<T: ReconSample>(
+    core: &FrameHeaderCore,
+    (reference, ref_frame_idx, num_total_refs): (&InterReferenceState<T>, &[u32], usize),
+    neighbour_ctx: &BlockNeighbourContext,
+    tip_ref_pair: Option<(i8, i8)>,
+    tile_offset: ByteOffset,
+) -> Result<(i8, i8)> {
+    let current = compound_current_order_hint(core);
+    let ref_order_hints = if num_total_refs > 1 {
+        Some((
+            compound_reference_order_hint(reference, ref_frame_idx, 0)?,
+            compound_reference_order_hint(reference, ref_frame_idx, 1)?,
+        ))
+    } else {
+        None
+    };
+    let default_pair = skip_mode_default_pair(current, ref_order_hints);
+    checked_skip_mode_reference_pair(
+        neighbour_ctx.skip_mode_ref_pair(default_pair, tip_ref_pair),
+        num_total_refs,
         tile_offset,
     )
 }
@@ -1382,7 +1405,8 @@ fn compound_reference_facts<T: ReconSample>(
     })
 }
 
-fn compound_ref_contexts(
+#[inline]
+pub(super) fn compound_ref_contexts(
     neighbour_ctx: &BlockNeighbourContext,
     num_total_refs: usize,
 ) -> Result<[usize; 7]> {
@@ -1395,7 +1419,12 @@ fn compound_ref_contexts(
     Ok(contexts)
 }
 
-fn compound_ref_distance_signs<T: ReconSample>(
+#[allow(
+    clippy::inline_always,
+    reason = "keeps the parse path of the parent with the facade as second caller"
+)]
+#[inline(always)]
+pub(super) fn compound_ref_distance_signs<T: ReconSample>(
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
     current_order_hint: u32,
@@ -1490,7 +1519,8 @@ fn compound_reference_order_hint<T: ReconSample>(
         .map(CompoundOrderHint::reference)
 }
 
-fn compound_joint_mv_projection<T: ReconSample>(
+#[inline]
+pub(super) fn compound_joint_mv_projection<T: ReconSample>(
     core: &FrameHeaderCore,
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],

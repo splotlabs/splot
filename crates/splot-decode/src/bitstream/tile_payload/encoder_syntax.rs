@@ -54,13 +54,17 @@ use super::partition_traversal::{
 };
 use super::tile_frontier::minimal_partition_frame_facts;
 
+mod compound;
 mod inter;
 mod intra;
+mod mv;
 mod rollback;
 mod transform;
 
-pub use super::cdf::MvCdfSelector;
 pub use super::cdf::block_context::IntraYMode as IntraMode;
+pub use compound::{
+    COMPOUND_MODES, CompoundMode, CompoundModes, InterPrediction, JMVD_SCALE_MODES,
+};
 pub use inter::{EncoderReferences, InterMode, InterModes, MV_PRECISION_EIGHTH_PEL, MotionVector};
 pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, TxType};
 pub use rollback::SyntaxSnapshot;

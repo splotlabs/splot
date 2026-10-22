@@ -10,7 +10,7 @@ use splot_recon::{BitDepth, PixelFormat, PlaneSize};
 
 use crate::error::{Error, Result};
 use crate::preset::Preset;
-use crate::rate_control::Crf;
+use crate::rate_control::{Crf, check_bitrate, max_qindex};
 
 /// Largest frame dimension AV2 can signal: `max_frame_width_minus_1` has at most
 /// 16 bits (§ 5.4.1, `docs/spec/av2/1.0.0/05-syntax-structures.md`).
@@ -22,8 +22,9 @@ pub const MAX_FRAME_DIMENSION: u32 = 1 << 16;
 pub enum RateControlMode {
     /// Every frame uses the same `base_q_idx`.
     ConstantQp {
-        /// The frame-header `base_q_idx`, `1..=255`.
-        qp: u8,
+        /// The frame-header `base_q_idx`, `1..=255` at 8 bits and `1..=303` at
+        /// 10 bits (`MaxQ`, § 6.4.1 Table 6.3).
+        qp: u16,
     },
     /// Constant quality with lookahead offsets; see [`crate::Crf`].
     Crf {
@@ -92,7 +93,7 @@ pub struct Config {
 
 impl Config {
     /// Default `base_q_idx` for [`RateControlMode::ConstantQp`].
-    pub const DEFAULT_QP: u8 = 80;
+    pub const DEFAULT_QP: u16 = 80;
     /// Default key-frame interval.
     pub const DEFAULT_KEYINT: NonZeroU32 = match NonZeroU32::new(120) {
         Some(keyint) => keyint,
@@ -149,21 +150,22 @@ impl Config {
             return Err(Error::InvalidTiles { tiles: self.tiles });
         }
         match self.rate_control {
-            RateControlMode::ConstantQp { qp: 0 } => Err(Error::InvalidQp { qp: 0 }),
+            RateControlMode::ConstantQp { qp } if qp == 0 || qp > max_qindex(self.bit_depth) => {
+                Err(Error::InvalidQp {
+                    qp,
+                    max: max_qindex(self.bit_depth),
+                })
+            }
             RateControlMode::Crf { crf } if crf == 0 || crf > Crf::MAX => {
                 Err(Error::InvalidCrf { crf })
             }
-            RateControlMode::Vbr { bitrate_kbps: 0 }
-            | RateControlMode::Cbr {
-                bitrate_kbps: 0, ..
-            } => Err(Error::InvalidBitrate {
-                what: "bitrate_kbps",
-                value: 0,
-            }),
-            RateControlMode::Cbr { buffer_ms: 0, .. } => Err(Error::InvalidBitrate {
-                what: "buffer_ms",
-                value: 0,
-            }),
+            RateControlMode::Vbr { bitrate_kbps } => {
+                check_bitrate(bitrate_kbps, None, self.frame_rate)
+            }
+            RateControlMode::Cbr {
+                bitrate_kbps,
+                buffer_ms,
+            } => check_bitrate(bitrate_kbps, Some(buffer_ms), self.frame_rate),
             _ => Ok(()),
         }
     }
@@ -229,7 +231,23 @@ mod tests {
         ));
         config = Config::new(64, 64);
         config.rate_control = RateControlMode::ConstantQp { qp: 0 };
-        assert!(matches!(config.validate(), Err(Error::InvalidQp { qp: 0 })));
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidQp { qp: 0, .. })
+        ));
+        config.rate_control = RateControlMode::ConstantQp { qp: 256 };
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidQp { qp: 256, max: 255 })
+        ));
+        config.bit_depth = BitDepth::Ten;
+        assert!(config.validate().is_ok());
+        config.rate_control = RateControlMode::ConstantQp { qp: 304 };
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidQp { max: 303, .. })
+        ));
+        config.bit_depth = BitDepth::Eight;
         config.rate_control = RateControlMode::Crf { crf: 64 };
         assert!(matches!(
             config.validate(),
@@ -250,6 +268,27 @@ mod tests {
         assert!(matches!(
             config.validate(),
             Err(Error::InvalidBitrate { .. })
+        ));
+        config.rate_control = RateControlMode::Vbr {
+            bitrate_kbps: u32::MAX,
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidBitrate {
+                what: "bitrate_kbps",
+                ..
+            })
+        ));
+        config.rate_control = RateControlMode::Cbr {
+            bitrate_kbps: 100,
+            buffer_ms: u32::MAX,
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(Error::InvalidBitrate {
+                what: "buffer_ms",
+                ..
+            })
         ));
         config.rate_control = RateControlMode::Crf { crf: 63 };
         assert!(config.validate().is_ok());
