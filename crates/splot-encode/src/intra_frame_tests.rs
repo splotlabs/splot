@@ -300,6 +300,39 @@ fn mini_gops_decode_to_the_encoder_recon_in_display_order() {
     }
 }
 
+/// 520 frames in mini-GOPs of 8 and one key-frame period wrap the 8-bit
+/// order hint twice; the decoder derives each planned `OrderHint` and
+/// outputs the encoder recon.
+#[test]
+fn order_hints_wrap_and_decode_to_the_encoder_recon() {
+    let mut config = config(8, 8, BitDepth::Eight, Preset::MAX, 120);
+    config.keyint = core::num::NonZeroU32::new(600).unwrap();
+    let mut coder = IntraFrameCoder::new(&config).unwrap();
+    let mut planner = crate::gop::GopPlanner::new(config.keyint, 8);
+    let (mut units, mut recons) = (Vec::new(), BTreeMap::new());
+    let mut queued = 520;
+    while let Some(len) = planner.next_len(queued, true) {
+        queued -= len;
+        for step in planner.plan(len).unwrap() {
+            let unit = match step {
+                crate::gop::GopStep::Code(plan) => {
+                    let source = synthetic_frame(&config, plan.display_index as u32);
+                    let coded = coder.encode_frame(&source, &plan, 120).unwrap();
+                    recons.insert(plan.display_index, recon_bytes(&coded, config.bit_depth));
+                    coded.temporal_unit
+                }
+                crate::gop::GopStep::ShowExisting { slot, .. } => {
+                    coder.show_existing_frame(slot).unwrap()
+                }
+            };
+            units.push(unit);
+        }
+    }
+    assert_eq!(recons.len(), 520);
+    let expected: Vec<u8> = recons.into_values().flatten().collect();
+    assert_same_samples(&decode(&units.concat()), &expected, "order hint wrap");
+}
+
 /// AVM decodes mini-GOP streams to the encoder reconstructions.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]

@@ -293,7 +293,8 @@ pub(crate) fn show_existing_unit(view: &CoreSeqView, slot: u32) -> Result<Vec<u8
 impl GopFrame {
     /// The frame header at `qindex` with `filters`, parsed with `refs`; an
     /// inter frame with `compound` sets `reference_select` and
-    /// `skip_mode_present`.
+    /// `skip_mode_present`. The header codes the low bits of the planned
+    /// `OrderHint`, so the `OrderHint` the decoder derives must equal it.
     pub(crate) fn header(
         &self,
         view: &CoreSeqView,
@@ -302,7 +303,7 @@ impl GopFrame {
         filters: &FrameFilterParams,
         (tx, compound): (KeyFrameTxParams, bool),
     ) -> Result<FrameHeaderCore> {
-        match self.frame_type {
+        let core = match self.frame_type {
             FrameType::Key => build_key_frame_header(view, qindex, self.order_hint, filters, tx),
             FrameType::Inter => build_inter_frame_header(
                 view,
@@ -311,7 +312,14 @@ impl GopFrame {
             )
             .map(|header| header.core),
         }
-        .map_err(header_error)
+        .map_err(header_error)?;
+        match core.display_order_hint() {
+            Some(derived) if derived == self.order_hint => Ok(core),
+            derived => Err(Error::OrderHintMismatch {
+                planned: self.order_hint,
+                derived,
+            }),
+        }
     }
 
     /// The OBUs of the frame `core` built by [`Self::header`] with
