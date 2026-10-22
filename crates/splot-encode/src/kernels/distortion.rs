@@ -34,6 +34,46 @@ fn row_pairs<'a>(
     rows(src, src_stride, dims).zip(rows(pred, pred_stride, dims))
 }
 
+/// Calls `f` on the same row pairs as [`row_pairs`] with one bounds check up
+/// front: every row after the first is the tail of a `stride`-long exact chunk.
+#[inline]
+fn for_each_row_pair<'a>(
+    src: &'a [u16],
+    src_stride: usize,
+    pred: &'a [u16],
+    pred_stride: usize,
+    dims: BlockDims,
+    mut f: impl FnMut(&[u16], &[u16]),
+) {
+    let width = dims.width();
+    let held = |len: usize, stride: usize| match len.checked_sub(width) {
+        Some(spare) if stride >= width => spare / stride + 1,
+        _ => 0,
+    };
+    let rows = held(src.len(), src_stride)
+        .min(held(pred.len(), pred_stride))
+        .min(dims.height());
+    let Some(last) = rows.checked_sub(1) else {
+        return;
+    };
+    let split = |samples: &'a [u16], stride: usize| {
+        samples
+            .get(..last * stride + width)
+            .and_then(|block| block.split_at_checked(width))
+    };
+    let (Some((src_first, src_rest)), Some((pred_first, pred_rest))) =
+        (split(src, src_stride), split(pred, pred_stride))
+    else {
+        return;
+    };
+    f(src_first, pred_first);
+    let tail = |row: &[u16]| row.len().saturating_sub(width);
+    let src_rest = src_rest.chunks_exact(src_stride.max(1));
+    for (a, b) in src_rest.zip(pred_rest.chunks_exact(pred_stride.max(1))) {
+        f(&a[tail(a)..], &b[tail(b)..]);
+    }
+}
+
 pub(super) fn sad_scalar(
     src: &[u16],
     src_stride: usize,
@@ -86,12 +126,12 @@ fn sad_lanes<const L: usize>(
     dims: BlockDims,
 ) -> u32 {
     let mut acc = Simd::<u32, L>::splat(0);
-    for (a, b) in row_pairs(src, src_stride, pred, pred_stride, dims) {
+    for_each_row_pair(src, src_stride, pred, pred_stride, dims, |a, b| {
         for (a, b) in a.as_chunks::<L>().0.iter().zip(b.as_chunks::<L>().0) {
             let (a, b) = (Simd::from_array(*a), Simd::from_array(*b));
             acc += (a.simd_max(b) - a.simd_min(b)).cast::<u32>();
         }
-    }
+    });
     acc.reduce_sum()
 }
 
@@ -118,13 +158,13 @@ fn sse_lanes<const L: usize>(
     dims: BlockDims,
 ) -> u64 {
     let mut acc = Simd::<u64, L>::splat(0);
-    for (a, b) in row_pairs(src, src_stride, pred, pred_stride, dims) {
+    for_each_row_pair(src, src_stride, pred, pred_stride, dims, |a, b| {
         for (a, b) in a.as_chunks::<L>().0.iter().zip(b.as_chunks::<L>().0) {
             let (a, b) = (Simd::from_array(*a), Simd::from_array(*b));
             let d = (a.simd_max(b) - a.simd_min(b)).cast::<u32>();
             acc += (d * d).cast::<u64>();
         }
-    }
+    });
     acc.reduce_sum()
 }
 
@@ -167,14 +207,15 @@ fn residual_lanes<const L: usize>(
     dims: BlockDims,
     out: &mut [i32],
 ) {
-    let rows = row_pairs(src, src_stride, pred, pred_stride, dims);
-    for (out, (a, b)) in out.chunks_exact_mut(dims.width()).zip(rows) {
+    let mut out = out.chunks_exact_mut(dims.width());
+    for_each_row_pair(src, src_stride, pred, pred_stride, dims, |a, b| {
+        let Some(out) = out.next() else { return };
         let lanes = out.as_chunks_mut::<L>().0.iter_mut();
         for (slot, (a, b)) in lanes.zip(a.as_chunks::<L>().0.iter().zip(b.as_chunks::<L>().0)) {
             let (a, b) = (Simd::from_array(*a), Simd::from_array(*b));
             *slot = (a.cast::<i32>() - b.cast::<i32>()).to_array();
         }
-    }
+    });
 }
 
 /// The SATD tile side for `dims`: 8 when both sides allow it, else 4.
@@ -334,8 +375,8 @@ mod tests {
         (
             side(),
             side(),
-            0usize..9,
-            0usize..9,
+            prop_oneof![0usize..9, 9usize..300],
+            prop_oneof![0usize..9, 9usize..300],
             prop_oneof![Just(8u32), Just(10), Just(16)],
         )
             .prop_flat_map(|(w, h, pad_a, pad_b, bits)| {
@@ -361,6 +402,23 @@ mod tests {
             let (mut simd, mut scalar) = (vec![0; len], vec![1; len]);
             SimdKernels.residual(&a, sa, &b, sb, dims, &mut simd);
             ScalarKernels.residual(&a, sa, &b, sb, dims, &mut scalar);
+            prop_assert_eq!(simd, scalar);
+        }
+
+        /// Short sample slices and a short `out` drop the same rows on both paths.
+        #[test]
+        fn simd_matches_scalar_on_short_slices(
+            (dims, sa, a, sb, b) in blocks(),
+            (keep_a, keep_b, keep_out) in any::<(prop::sample::Index, prop::sample::Index, prop::sample::Index)>(),
+        ) {
+            let a = &a[..keep_a.index(a.len() + 1)];
+            let b = &b[..keep_b.index(b.len() + 1)];
+            prop_assert_eq!(SimdKernels.sad(a, sa, b, sb, dims), ScalarKernels.sad(a, sa, b, sb, dims));
+            prop_assert_eq!(SimdKernels.sse(a, sa, b, sb, dims), ScalarKernels.sse(a, sa, b, sb, dims));
+            let len = keep_out.index(dims.width() * dims.height() + 1);
+            let (mut simd, mut scalar) = (vec![7; len], vec![7; len]);
+            SimdKernels.residual(a, sa, b, sb, dims, &mut simd);
+            ScalarKernels.residual(a, sa, b, sb, dims, &mut scalar);
             prop_assert_eq!(simd, scalar);
         }
     }
