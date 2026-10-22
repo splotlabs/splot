@@ -45,13 +45,14 @@ pub(crate) struct TileFilters {
 }
 
 impl TileFilters {
-    /// The state of the frame `core` coded with `seq`; it codes every `cdef_idx`
-    /// as `0` and every restoration unit off until [`Self::set_syntax`].
-    pub(crate) fn new(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<Self> {
+    /// The state of tile `tile` of the frame `core` coded with `seq`; it codes
+    /// every `cdef_idx` as `0` and every restoration unit off until
+    /// [`Self::set_syntax`].
+    pub(crate) fn new(seq: &SequenceHeader, core: &FrameHeaderCore, tile: usize) -> Result<Self> {
         Ok(Self {
             recorder: FilterRecorder::new(seq, core)?,
-            cdef: CdefIndexMap::new(seq, core)?,
-            lr: LrLayout::new(seq, core)?,
+            cdef: CdefIndexMap::new(seq, core, tile)?,
+            lr: LrLayout::new(seq, core, tile)?,
             syntax: FilterSyntax::default(),
         })
     }

@@ -110,6 +110,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         order_hint,
                         &FrameFilterParams::default(),
                         tx,
+                        UniformTiles::default(),
                     )
                     .unwrap();
                     assert_eq!(core.frame_type, Some(FrameType::Key));
@@ -185,6 +186,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         1,
         &FrameFilterParams::default(),
         KeyFrameTxParams::default(),
+        UniformTiles::default(),
     )
     .unwrap();
     assert_eq!(core.allow_screen_content_tools, Some(false));
@@ -223,8 +225,15 @@ fn filter_params_reach_the_parsed_header() {
                 .unwrap(),
                 lr_luma_unit_size: Some(lr_size),
             };
-            let core = build_key_frame_header(&view, 120, 3, &filters, KeyFrameTxParams::default())
-                .unwrap();
+            let core = build_key_frame_header(
+                &view,
+                120,
+                3,
+                &filters,
+                KeyFrameTxParams::default(),
+                UniformTiles::default(),
+            )
+            .unwrap();
             let deblock = core.deblocking_filter_params.unwrap();
             assert_eq!(deblock.apply_deblocking_filter, filters.deblocking);
             assert_eq!(deblock.df_delta_q, filters.deblocking_delta_q);
@@ -247,6 +256,7 @@ fn filter_params_reach_the_parsed_header() {
             3,
             &FrameFilterParams::default(),
             KeyFrameTxParams::default(),
+            UniformTiles::default(),
         )
         .unwrap();
         assert!(!off.cdef_params.unwrap().cdef_frame_enable);
@@ -285,7 +295,14 @@ fn rejects_filters_the_sequence_cannot_carry() {
     };
     for filters in [cdef, lr, chroma_only] {
         assert!(matches!(
-            build_key_frame_header(&view, 60, 0, &filters, KeyFrameTxParams::default()),
+            build_key_frame_header(
+                &view,
+                60,
+                0,
+                &filters,
+                KeyFrameTxParams::default(),
+                UniformTiles::default()
+            ),
             Err(EncoderHeaderError::Write(_))
         ));
     }
@@ -336,7 +353,8 @@ fn rejects_out_of_range_inputs() {
             0,
             0,
             &FrameFilterParams::default(),
-            KeyFrameTxParams::default()
+            KeyFrameTxParams::default(),
+            UniformTiles::default()
         ),
         Err(EncoderHeaderError::InvalidBaseQIdx { .. })
     ));
@@ -346,7 +364,8 @@ fn rejects_out_of_range_inputs() {
             256,
             0,
             &FrameFilterParams::default(),
-            KeyFrameTxParams::default()
+            KeyFrameTxParams::default(),
+            UniformTiles::default()
         ),
         Err(EncoderHeaderError::InvalidBaseQIdx { .. })
     ));
@@ -361,7 +380,14 @@ fn rejects_out_of_range_inputs() {
         },
     ] {
         assert!(matches!(
-            build_key_frame_header(&view, 60, 0, &FrameFilterParams::default(), tx),
+            build_key_frame_header(
+                &view,
+                60,
+                0,
+                &FrameFilterParams::default(),
+                tx,
+                UniformTiles::default()
+            ),
             Err(EncoderHeaderError::InvalidTxParams { .. })
         ));
     }
@@ -383,6 +409,7 @@ fn temporal_unit_carries_delimiter_sequence_and_frame() {
         0,
         &FrameFilterParams::default(),
         KeyFrameTxParams::default(),
+        UniformTiles::default(),
     )
     .unwrap();
     let tile = [0x12, 0x34, 0x56];
@@ -400,7 +427,7 @@ fn temporal_unit_carries_delimiter_sequence_and_frame() {
             vec![ObuType::TemporalDelimiter, ObuType::ClosedLoopKey],
         ),
     ] {
-        let unit = encode_key_frame_temporal_unit(&seq, &core, with_seq, &tile).unwrap();
+        let unit = encode_key_frame_temporal_unit(&seq, &core, with_seq, &[&tile]).unwrap();
         let parsed = parse_annex_b_obus_partial(&unit);
         assert!(parsed.error.is_none());
         let types: Vec<_> = parsed.obus.iter().map(|o| o.header.obu_type).collect();
@@ -408,5 +435,103 @@ fn temporal_unit_carries_delimiter_sequence_and_frame() {
         let frame = parsed.obus.last().unwrap();
         assert!(frame.payload.ends_with(&tile));
     }
-    assert!(encode_key_frame_temporal_unit(&seq, &core, true, &[]).is_err());
+    assert!(encode_key_frame_temporal_unit(&seq, &core, true, &[&[]]).is_err());
+}
+
+/// A 200x136 frame with 64x64 superblocks has 4 superblock columns and 3 rows,
+/// so the last layout is capped at 4x3 tiles.
+#[test]
+fn uniform_tiles_round_trip_through_header_and_tile_group() {
+    let seq = build_encoder_sequence_header(&params(
+        200,
+        136,
+        BitDepthIdc::Eight,
+        SuperblockSize::Block64x64,
+    ))
+    .unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    for (cols_log2, rows_log2, cols, rows) in [
+        (0, 0, 1, 1),
+        (1, 0, 2, 1),
+        (0, 1, 1, 2),
+        (1, 1, 2, 2),
+        (2, 1, 4, 2),
+        (6, 6, 4, 3),
+    ] {
+        let tiles = UniformTiles {
+            cols_log2,
+            rows_log2,
+            size_bytes: 2,
+        };
+        let core = build_key_frame_header(
+            &view,
+            60,
+            0,
+            &FrameFilterParams::default(),
+            KeyFrameTxParams::default(),
+            tiles,
+        )
+        .unwrap();
+        let info = core.tile_info.as_ref().unwrap();
+        assert_eq!((info.tile_cols, info.tile_rows), (cols, rows));
+        assert_eq!(info.context_update_tile_id, 0);
+        let multi = cols * rows > 1;
+        assert_eq!(info.tile_size_bytes, multi.then_some(2));
+        assert_eq!(reparse_core(&core, &view), core);
+
+        let data: Vec<Vec<u8>> = (0..cols * rows)
+            .map(|tile| vec![tile as u8 + 1; 3 + 70 * tile as usize])
+            .collect();
+        let slices: Vec<&[u8]> = data.iter().map(Vec::as_slice).collect();
+        let unit = encode_key_frame_temporal_unit(&seq, &core, false, &slices).unwrap();
+        let parsed = parse_annex_b_obus_partial(&unit);
+        assert!(parsed.error.is_none());
+        let payload = parsed.obus.last().unwrap().payload;
+        let mut reader = BitReader::new(payload, ByteOffset::new(0));
+        assert_eq!(reader.read_bit().unwrap(), 1, "is_first_tile_group");
+        let prefix =
+            parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true)).unwrap();
+        let mut header = init_core_from_prefix(&prefix, ObuType::ClosedLoopKey, true);
+        parse_core_body(
+            &mut reader,
+            &mut header,
+            &view,
+            None,
+            &FrameReferenceStateView::unknown(),
+        )
+        .unwrap();
+        assert_eq!(header.tile_info, core.tile_info);
+        let layout = crate::headers::tile_group::TileGroupLayout::new(
+            cols,
+            rows,
+            info.tile_cols_log2,
+            info.tile_rows_log2,
+        );
+        let structure = crate::headers::tile_group::parse_tile_group_structure(
+            &mut reader,
+            layout,
+            payload.len() as u64,
+        )
+        .unwrap();
+        assert_eq!((structure.tg_start, structure.tg_end), (0, cols * rows - 1));
+        let start = structure.header_bytes.unwrap() as usize;
+        let framing = crate::headers::tile_group::parse_tile_group_framing(
+            &payload[start..],
+            0,
+            cols * rows - 1,
+            info.tile_size_bytes.unwrap_or(1),
+            false,
+        );
+        assert!(framing.defect.is_none());
+        let sizes: Vec<u64> = framing.tiles.iter().map(|tile| tile.tile_size).collect();
+        let expected: Vec<u64> = data.iter().map(|tile| tile.len() as u64).collect();
+        assert_eq!(sizes, expected);
+        assert_eq!(
+            framing,
+            crate::headers::tile_group::TileGroupFraming::tiles(
+                &expected,
+                2.min(1 + u32::from(multi))
+            )
+        );
+    }
 }

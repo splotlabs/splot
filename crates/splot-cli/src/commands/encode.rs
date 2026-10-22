@@ -13,7 +13,9 @@ use anyhow::{Context as _, Result, bail};
 use clap::{Args, ValueEnum};
 use splot_encode::ivf::IvfWriter;
 use splot_encode::y4m::Y4mReader;
-use splot_encode::{BitDepth, Config, Encoder, Preset, RateControlMode, SourceFrame, ThreadCount};
+use splot_encode::{
+    BitDepth, Config, Encoder, Preset, RateControlMode, SourceFrame, ThreadCount, TileLayout,
+};
 
 /// Arguments for `splot encode`.
 #[derive(Args, Debug)]
@@ -41,6 +43,10 @@ pub(crate) struct EncodeArgs {
     /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
     #[arg(long, default_value_t = ThreadCount::Auto)]
     threads: ThreadCount,
+    /// Tile columns x rows, each a power of two up to 64. More tiles code faster
+    /// on more threads and cost some compression.
+    #[arg(long, value_parser = parse_tiles, default_value = "1x1")]
+    tiles: TileLayout,
     /// Stop after this many input frames.
     #[arg(long)]
     limit: Option<NonZeroU64>,
@@ -50,6 +56,27 @@ pub(crate) struct EncodeArgs {
     /// Print `frame,pts,qp,bits,psnr_y,psnr_u,psnr_v` CSV lines to stdout.
     #[arg(long)]
     stats: bool,
+}
+
+/// Parses `--tiles COLSxROWS`.
+fn parse_tiles(value: &str) -> Result<TileLayout, String> {
+    let log2 = |count: &str| match count.parse::<u32>() {
+        Ok(count)
+            if count.is_power_of_two() && count.ilog2() <= u32::from(TileLayout::MAX_LOG2) =>
+        {
+            Ok(count.ilog2() as u8)
+        }
+        _ => Err(format!(
+            "tile count `{count}` is not a power of two in 1..=64"
+        )),
+    };
+    let (cols, rows) = value
+        .split_once('x')
+        .ok_or_else(|| format!("`{value}` is not COLSxROWS"))?;
+    Ok(TileLayout {
+        cols_log2: log2(cols)?,
+        rows_log2: log2(rows)?,
+    })
 }
 
 /// Bitrate modes of `splot encode --bitrate`.
@@ -106,6 +133,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.rate_control = args.rate_control();
     config.preset = Preset::new(args.preset)?;
     config.threads = args.threads;
+    config.tiles = args.tiles;
     config.keyint = args.keyint;
     if u16::try_from(header.width).is_err() || u16::try_from(header.height).is_err() {
         bail!("IVF output supports at most 65535 samples per side");

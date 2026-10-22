@@ -44,6 +44,26 @@ pub enum RateControlMode {
     },
 }
 
+/// A uniform tile layout: `1 << cols_log2` tile columns by `1 << rows_log2`
+/// tile rows (§ 5.18.7.3), capped at one tile per superblock column and row.
+///
+/// The encoder codes the tiles of a frame in parallel. A tile predicts and
+/// adapts its CDFs without the other tiles, so more tiles cost compression.
+/// `Default` is one tile.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TileLayout {
+    /// Log2 of the tile column count, `0..=6`.
+    pub cols_log2: u8,
+    /// Log2 of the tile row count, `0..=6`.
+    pub rows_log2: u8,
+}
+
+impl TileLayout {
+    /// The largest `cols_log2` and `rows_log2`: `MAX_TILE_COLS` and
+    /// `MAX_TILE_ROWS` are 64 (§ 3).
+    pub const MAX_LOG2: u8 = 6;
+}
+
 /// The encoder configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -64,6 +84,8 @@ pub struct Config {
     pub preset: Preset,
     /// Worker-thread policy. It never changes the output bytes.
     pub threads: ThreadCount,
+    /// Tile layout of every frame. The thread count never changes it.
+    pub tiles: TileLayout,
     /// Distance between key frames, in frames.
     pub keyint: NonZeroU32,
 }
@@ -91,6 +113,7 @@ impl Config {
             },
             preset: Preset::default(),
             threads: ThreadCount::Auto,
+            tiles: TileLayout::default(),
             keyint: Self::DEFAULT_KEYINT,
         }
     }
@@ -99,8 +122,8 @@ impl Config {
     ///
     /// # Errors
     /// Returns [`Error::InvalidDimensions`], [`Error::UnsupportedChroma`],
-    /// [`Error::InvalidFrameRate`], [`Error::InvalidQp`], [`Error::InvalidCrf`]
-    /// or [`Error::InvalidBitrate`].
+    /// [`Error::InvalidFrameRate`], [`Error::InvalidTiles`], [`Error::InvalidQp`],
+    /// [`Error::InvalidCrf`] or [`Error::InvalidBitrate`].
     pub fn validate(&self) -> Result<()> {
         let dimension_ok = |value| (1..=MAX_FRAME_DIMENSION).contains(&value);
         if !dimension_ok(self.width) || !dimension_ok(self.height) {
@@ -119,6 +142,11 @@ impl Config {
                 numerator: self.frame_rate.0,
                 denominator: self.frame_rate.1,
             });
+        }
+        if self.tiles.cols_log2 > TileLayout::MAX_LOG2
+            || self.tiles.rows_log2 > TileLayout::MAX_LOG2
+        {
+            return Err(Error::InvalidTiles { tiles: self.tiles });
         }
         match self.rate_control {
             RateControlMode::ConstantQp { qp: 0 } => Err(Error::InvalidQp { qp: 0 }),
@@ -190,6 +218,9 @@ mod tests {
             config.validate(),
             Err(Error::UnsupportedChroma { .. })
         ));
+        config = Config::new(64, 64);
+        config.tiles.rows_log2 = TileLayout::MAX_LOG2 + 1;
+        assert!(matches!(config.validate(), Err(Error::InvalidTiles { .. })));
         config = Config::new(64, 64);
         config.frame_rate = (30, 0);
         assert!(matches!(

@@ -148,6 +148,29 @@ impl Default for KeyFrameTxParams {
     }
 }
 
+/// The uniform tile layout of the encoder frame headers (§ 5.18.7.3).
+///
+/// `Default` is one tile with `TileSizeBytes = 4`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UniformTiles {
+    /// `TileColsLog2` before the cap at `maxLog2TileCols`.
+    pub cols_log2: u8,
+    /// `TileRowsLog2` before the cap at `maxLog2TileRows`.
+    pub rows_log2: u8,
+    /// `TileSizeBytes`, `1..=4`, which a frame of more than one tile codes.
+    pub size_bytes: u8,
+}
+
+impl Default for UniformTiles {
+    fn default() -> Self {
+        Self {
+            cols_log2: 0,
+            rows_log2: 0,
+            size_bytes: 4,
+        }
+    }
+}
+
 /// Error from the encoder header builders.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -382,7 +405,7 @@ fn write_transform_quant_entropy_config(
 /// Builds the `OBU_CLOSED_LOOP_KEY` frame header for `seq` at `base_q_idx`.
 ///
 /// The frame has the maximum frame size, `show_frame` semantics through
-/// `immediate_output_frame = 1`, one uniform tile, no segmentation, no delta-q,
+/// `immediate_output_frame = 1`, the uniform `tiles`, no segmentation, no delta-q,
 /// no quantizer matrices, the deblocking, CDEF, and loop-restoration choices of
 /// `filters`, GDF and CCSO off, the transform choices of `tx`, and no film grain.
 ///
@@ -396,8 +419,9 @@ pub fn build_key_frame_header(
     order_hint: u32,
     filters: &FrameFilterParams,
     tx: KeyFrameTxParams,
+    tiles: UniformTiles,
 ) -> Result<FrameHeaderCore, EncoderHeaderError> {
-    let bytes = key_frame_header_bits(seq, base_q_idx, order_hint, filters, tx)?;
+    let bytes = key_frame_header_bits(seq, (base_q_idx, tiles), order_hint, filters, tx)?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::ClosedLoopKey, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::ClosedLoopKey, true);
@@ -417,7 +441,7 @@ pub fn build_key_frame_header(
 
 fn key_frame_header_bits(
     seq: &CoreSeqView,
-    base_q_idx: u32,
+    (base_q_idx, tiles): (u32, UniformTiles),
     order_hint: u32,
     filters: &FrameFilterParams,
     tx: KeyFrameTxParams,
@@ -444,20 +468,20 @@ fn key_frame_header_bits(
     }
     w.write_flag(false)?; // allow_intrabc
     w.write_flag(false)?; // disable_cdf_update
-    write_quant_and_filters(&mut w, seq, base_q_idx, filters)?;
+    write_quant_and_filters(&mut w, seq, (base_q_idx, tiles), filters)?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
     w.align_to_byte();
     Ok(w.into_bytes())
 }
 
-/// § 5.18.2 from `tile_info()` through `ccso_params()`: one tile, `base_q_idx`, no
+/// § 5.18.2 from `tile_info()` through `ccso_params()`: the uniform `tiles`, `base_q_idx`, no
 /// segmentation, quantizer matrices, delta-q, TCQ or parity hiding, the filters of
 /// `filters`, and CCSO off.
 pub(super) fn write_quant_and_filters(
     w: &mut BitWriter,
     seq: &CoreSeqView,
-    base_q_idx: u32,
+    (base_q_idx, tiles): (u32, UniformTiles),
     filters: &FrameFilterParams,
 ) -> Result<(), EncoderHeaderError> {
     let q_bits = if seq.quant.bit_depth == 8 { 8 } else { 9 };
@@ -467,7 +491,7 @@ pub(super) fn write_quant_and_filters(
             limit: 1 << q_bits,
         });
     }
-    write_single_tile_info(w, seq)?;
+    write_uniform_tile_info(w, seq, tiles)?;
     w.write_bits(base_q_idx, q_bits)?;
     w.write_flag(false)?; // segmentation_enabled
     w.write_flag(false)?; // using_qmatrix
@@ -542,35 +566,69 @@ fn write_filter_params(
     write_lr_params(w, &lr, false, num_planes, &seq.restoration, geometry)
 }
 
-/// § 5.18.7.3 uniform tile spacing with one tile at level 31 (`minLog2TileCols == 0`).
-fn write_single_tile_info(w: &mut BitWriter, seq: &CoreSeqView) -> Result<(), WriteError> {
+/// § 5.18.7.2 `tile_info()` with § 5.18.7.3 uniform spacing at level 31, where
+/// `minLog2TileCols` and `minLog2Tiles` are `0`: `tiles` capped at `maxLog2TileCols`
+/// and `maxLog2TileRows`, then `context_update_tile_id = 0` and `tiles.size_bytes`
+/// when the frame has more than one tile.
+fn write_uniform_tile_info(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    tiles: UniformTiles,
+) -> Result<(), WriteError> {
     let sb_log2 = crate::tile::mi_width_log2(seq.tile.frame_sb_size(true));
-    let sbs = |frame: u32| {
-        let mi = 2 * frame.div_ceil(8);
-        mi.div_ceil(1 << sb_log2)
+    let mis = |frame: u32| 2 * frame.div_ceil(8);
+    let axis = |w: &mut BitWriter, log2: u8, mis: u32, max_tiles: u32| -> Result<u32, WriteError> {
+        let max = crate::tile::tile_log2(1, mis.div_ceil(1 << sb_log2).min(max_tiles));
+        let log2 = log2.min(max);
+        for _ in 0..log2 {
+            w.write_flag(true)?; // increment_tile_*_log2
+        }
+        if log2 < max {
+            w.write_flag(false)?;
+        }
+        Ok(crate::tile::uniform_spacing(log2, mis, seq.tile.seq_sb_size).count)
     };
     w.write_flag(true)?; // uniform_tile_spacing_flag
-    if sbs(seq.max_frame_width) > 1 {
-        w.write_flag(false)?; // increment_tile_cols_log2
-    }
-    if sbs(seq.max_frame_height) > 1 {
-        w.write_flag(false)?; // increment_tile_rows_log2
+    let cols = axis(
+        w,
+        tiles.cols_log2,
+        mis(seq.max_frame_width),
+        crate::tile::MAX_TILE_COLS,
+    )?;
+    let rows = axis(
+        w,
+        tiles.rows_log2,
+        mis(seq.max_frame_height),
+        crate::tile::MAX_TILE_ROWS,
+    )?;
+    if cols > 1 || rows > 1 {
+        if !seq.tile.enable_avg_cdf || seq.tile.avg_cdf_type == 0 {
+            let bits = crate::tile::tile_log2(1, cols) + crate::tile::tile_log2(1, rows);
+            w.write_bits(0, u32::from(bits))?; // context_update_tile_id
+        }
+        if !(1..=4).contains(&tiles.size_bytes) {
+            return Err(WriteError::NonCanonicalFrameHeader {
+                what: "tile_size_bytes",
+            });
+        }
+        w.write_bits(u32::from(tiles.size_bytes) - 1, 2)?;
     }
     Ok(())
 }
 
 /// Serializes one Annex B temporal unit: a temporal delimiter, then `seq` when
-/// `with_sequence_header`, then the `OBU_CLOSED_LOOP_KEY` frame OBU whose single tile
-/// carries `tile_data`.
+/// `with_sequence_header`, then the `OBU_CLOSED_LOOP_KEY` frame OBU whose one tile
+/// group carries the `tiles` of the frame in tile order.
 ///
 /// # Errors
-/// Returns [`EncoderHeaderError`] if `seq` has no complete view, `tile_data` is empty,
-/// or an OBU does not serialize.
+/// Returns [`EncoderHeaderError`] if `seq` has no complete view, a tile is empty or
+/// too long for `TileSizeBytes`, the tile count differs from the header, or an OBU
+/// does not serialize.
 pub fn encode_key_frame_temporal_unit(
     seq: &SequenceHeader,
     core: &FrameHeaderCore,
     with_sequence_header: bool,
-    tile_data: &[u8],
+    tiles: &[&[u8]],
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     let view = CoreSeqView::from_sequence(seq).ok_or(EncoderHeaderError::Incomplete)?;
     let mut unit = encode_temporal_delimiter_obu()?;
@@ -596,9 +654,9 @@ pub fn encode_key_frame_temporal_unit(
         &view,
         None,
         true,
-        &TileGroupStructure::single_tile_first_group(),
-        &TileGroupFraming::single_tile(tile_data.len() as u64),
-        &[tile_data],
+        &TileGroupStructure::whole_frame(tiles.len() as u32),
+        &tile_framing(core, tiles),
+        tiles,
         true,
     )?;
     write_annexb_obu(
@@ -608,6 +666,17 @@ pub fn encode_key_frame_temporal_unit(
     )?;
     unit.extend_from_slice(&w.into_bytes());
     Ok(unit)
+}
+
+/// The § 5.20.1 framing of `tiles` with the `TileSizeBytes` of `core`.
+pub(super) fn tile_framing(core: &FrameHeaderCore, tiles: &[&[u8]]) -> TileGroupFraming {
+    let sizes: Vec<u64> = tiles.iter().map(|tile| tile.len() as u64).collect();
+    let size_bytes = core
+        .tile_info
+        .as_ref()
+        .and_then(|info| info.tile_size_bytes)
+        .unwrap_or(1);
+    TileGroupFraming::tiles(&sizes, size_bytes)
 }
 
 pub(super) const fn obu_header(obu_type: ObuType) -> ObuHeader {

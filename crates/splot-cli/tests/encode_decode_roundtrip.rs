@@ -153,6 +153,8 @@ fn encode_output_is_byte_identical_across_thread_counts() {
             "4",
             "--qp",
             "90",
+            "--tiles",
+            "2x1",
             "--threads",
             threads,
         ]);
@@ -167,4 +169,21 @@ fn encode_output_is_byte_identical_across_thread_counts() {
             "--threads {threads} changed the IVF"
         );
     }
+}
+
+#[test]
+fn two_tile_clip_encodes_validates_and_decodes_to_the_encoder_stats() {
+    round_trip(
+        8,
+        &[
+            "--qp",
+            "90",
+            "--preset",
+            "10",
+            "--tiles",
+            "2x1",
+            "--threads",
+            "2",
+        ],
+    );
 }

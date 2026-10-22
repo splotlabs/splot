@@ -217,20 +217,14 @@ impl InterLeafState {
         seq: &SequenceHeader,
         core: &FrameHeaderCore,
         refs: &EncoderReferences,
-        mi_dimensions: (usize, usize),
+        tile: (core::ops::Range<usize>, core::ops::Range<usize>),
         (qindex, bit_depth): (u32, BitDepth),
     ) -> Result<Option<Self>> {
         if core.frame_is_intra == Some(true) {
             return Ok(None);
         }
-        let tile = EncoderInterTile::new(
-            seq,
-            core,
-            refs.tile_state()?,
-            mi_dimensions,
-            (qindex, bit_depth),
-        )
-        .map_err(EncoderSyntaxError::Unsupported)?;
+        let tile = EncoderInterTile::new(seq, core, refs.tile_state()?, tile, (qindex, bit_depth))
+            .map_err(EncoderSyntaxError::Unsupported)?;
         Ok(Some(Self {
             tile,
             planned: None,

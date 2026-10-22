@@ -83,10 +83,11 @@ pub(crate) enum TileWriterError {
 
 pub(crate) type Result<T> = core::result::Result<T, TileWriterError>;
 
-/// Writes the single tile of a key frame, one superblock at a time.
+/// Writes one tile of a frame, one superblock at a time.
 pub(crate) struct KeyFrameTileWriter {
     syntax: IntraTileSyntax,
     symbols: SymbolEncoder,
+    origin: (usize, usize),
     sb_cols: usize,
     superblocks: usize,
     written: usize,
@@ -94,14 +95,16 @@ pub(crate) struct KeyFrameTileWriter {
 }
 
 impl KeyFrameTileWriter {
-    /// A writer for the frame `core` coded with `seq`, predicting from `refs`.
+    /// A writer for tile `tile`, in raster order, of the frame `core` coded
+    /// with `seq`, predicting from `refs`.
     pub(crate) fn new(
         seq: &SequenceHeader,
         core: &FrameHeaderCore,
         refs: &EncoderReferences,
+        tile: usize,
     ) -> Result<Self> {
-        let syntax = IntraTileSyntax::new(seq, core, refs)?;
-        let (mi_rows, mi_cols) = syntax.mi_dimensions();
+        let syntax = IntraTileSyntax::new(seq, core, refs, tile)?;
+        let (rows, cols) = syntax.tile_ranges();
         let sb4 = syntax.superblock_size4();
         let config = SymbolEncoderConfig::new()
             .with_max_output_bytes(MAX_TILE_BYTES)
@@ -109,10 +112,11 @@ impl KeyFrameTileWriter {
         Ok(Self {
             syntax,
             symbols: SymbolEncoder::with_config(config),
-            sb_cols: mi_cols.div_ceil(sb4),
-            superblocks: mi_cols.div_ceil(sb4) * mi_rows.div_ceil(sb4),
+            origin: (rows.start, cols.start),
+            sb_cols: cols.len().div_ceil(sb4),
+            superblocks: cols.len().div_ceil(sb4) * rows.len().div_ceil(sb4),
             written: 0,
-            filters: filters::TileFilters::new(seq, core)?,
+            filters: filters::TileFilters::new(seq, core, tile)?,
         })
     }
 
@@ -121,13 +125,13 @@ impl KeyFrameTileWriter {
         &self.syntax
     }
 
-    /// The root node of the next superblock in raster order.
+    /// The root node of the next superblock of the tile in raster order.
     pub(crate) fn next_superblock_root(&self) -> Option<PartitionNode> {
         (self.written < self.superblocks).then(|| {
             let sb4 = self.syntax.superblock_size4();
             self.syntax.superblock_root(
-                self.written / self.sb_cols * sb4,
-                self.written % self.sb_cols * sb4,
+                self.origin.0 + self.written / self.sb_cols * sb4,
+                self.origin.1 + self.written % self.sb_cols * sb4,
             )
         })
     }

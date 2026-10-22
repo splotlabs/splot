@@ -12,6 +12,8 @@
 //!   leaf that codes each 64x64 index and the `cdef_index0` context.
 //! - [`LrLayout`] lists the § 5.20.10.4 restoration units of each superblock.
 //! - [`apply_loop_filters`] runs the decoder's own § 7.2 filter chain on a frame.
+//! - [`merge_tiles`] puts the tiles of a frame, each coded by its own facade,
+//!   into one reconstruction.
 
 use std::sync::Arc;
 
@@ -27,7 +29,7 @@ use super::super::partition_traversal::{
 use super::super::tile_frontier::minimal_partition_frame_facts;
 use super::{
     EncoderSyntaxError, IntraTileSyntax, LeafBlock, PartitionNode, Result, TransformBlock, rule,
-    tx_log2,
+    tile_count, tile_ranges, tx_log2,
 };
 use crate::filters::deblock::{ChromaDeblockRecords, DeblockBlock};
 use crate::filters::wienerns_lr::tx_records::CdefState;
@@ -152,6 +154,13 @@ impl FilterRecorder {
         Ok(())
     }
 
+    /// Adds the records of `other`, a later tile of the same frame.
+    pub fn append(&mut self, mut other: Self) {
+        self.deblock_blocks.append(&mut other.deblock_blocks);
+        self.chroma_blocks.append(&mut other.chroma_blocks);
+        self.tx_skip.append(&mut other.tx_skip);
+    }
+
     /// Records the planned inter leaf `leaf` of `syntax`, coded with `skip_txfm
     /// = skip`; call it before [`IntraTileSyntax::publish_inter_leaf`].
     ///
@@ -188,21 +197,24 @@ pub struct CdefSlot {
     pub unit_col: usize,
 }
 
-/// The `cdef_idx[][]` state of a single-tile frame, filled in coding order.
+/// The `cdef_idx[][]` state of one tile of a frame, filled in coding order.
 pub struct CdefIndexMap {
     state: CdefState,
     strengths: usize,
     skip_codes_index: bool,
     rows: usize,
     cols: usize,
+    origin: (usize, usize),
 }
 
 impl CdefIndexMap {
-    /// An empty map for the frame `core` coded with `seq`.
+    /// An empty map for tile `tile` of the frame `core` coded with `seq`.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] for missing frame facts.
-    pub fn new(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<Self> {
+    /// Returns [`EncoderSyntaxError`] for missing frame facts or a tile the
+    /// frame does not have.
+    pub fn new(seq: &SequenceHeader, core: &FrameHeaderCore, tile: usize) -> Result<Self> {
+        let (tile_rows, tile_cols) = tile_ranges(core, tile)?;
         let frame = minimal_partition_frame_facts(seq, core).map_err(rule("frame facts"))?;
         let strengths = core
             .cdef_params
@@ -221,6 +233,7 @@ impl CdefIndexMap {
                 .is_none_or(|cdef| cdef.cdef_on_skip_txfm_frame_enable != Some(false)),
             rows,
             cols,
+            origin: (tile_rows.start, tile_cols.start),
         })
     }
 
@@ -245,7 +258,7 @@ impl CdefIndexMap {
         }
         let ctx = self
             .state
-            .cdef_index0_ctx_at(r, c, 0, 0)
+            .cdef_index0_ctx_at(r, c, self.origin.0, self.origin.1)
             .map_err(rule("cdef_index0 context"))?;
         Ok(Some(CdefSlot {
             strengths: self.strengths,
@@ -303,6 +316,8 @@ pub const fn cdef_unit_grid((mi_rows, mi_cols): (usize, usize)) -> (usize, usize
 /// One `read_lr_unit` call (§ 5.20.10.5).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub struct LrUnit {
+    /// The tile that codes the unit, in raster order.
+    pub tile: usize,
     /// Plane index.
     pub plane: usize,
     /// `unitRow`.
@@ -311,22 +326,43 @@ pub struct LrUnit {
     pub col: usize,
 }
 
-/// The restoration-unit layout of a frame whose planes use `RESTORE_PC_WIENER`
-/// or `RESTORE_NONE`.
+/// The restoration-unit layout of one tile of a frame whose planes use
+/// `RESTORE_PC_WIENER` or `RESTORE_NONE`.
 pub struct LrLayout {
     frame: TilePartitionFrameFacts,
     bounds: TilePartitionBounds,
+    tile: usize,
+    rows: core::ops::Range<usize>,
+    cols: core::ops::Range<usize>,
 }
 
 impl LrLayout {
-    /// The layout of the frame `core` coded with `seq`.
+    /// The layout of tile `tile` of the frame `core` coded with `seq`.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] for missing frame facts.
-    pub fn new(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<Self> {
+    /// Returns [`EncoderSyntaxError`] for missing frame facts or a tile the
+    /// frame does not have.
+    pub fn new(seq: &SequenceHeader, core: &FrameHeaderCore, tile: usize) -> Result<Self> {
         let frame = minimal_partition_frame_facts(seq, core).map_err(rule("frame facts"))?;
-        let bounds = TilePartitionBounds::new(0..frame.mi_rows(), 0..frame.mi_cols());
-        Ok(Self { frame, bounds })
+        let (rows, cols) = tile_ranges(core, tile)?;
+        let bounds = TilePartitionBounds::new(rows.clone(), cols.clone());
+        Ok(Self {
+            frame,
+            bounds,
+            tile,
+            rows,
+            cols,
+        })
+    }
+
+    /// The layouts of every tile of the frame `core`, in tile order.
+    ///
+    /// # Errors
+    /// As [`Self::new`].
+    pub fn tiles(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<Vec<Self>> {
+        (0..tile_count(core))
+            .map(|tile| Self::new(seq, core, tile))
+            .collect()
     }
 
     /// The units `read_lr` codes at superblock `root`, in syntax order. Each
@@ -341,7 +377,12 @@ impl LrLayout {
             .into_iter()
             .map(|(plane, row, col, tool)| {
                 if tool == TilePartitionLoopRestorationPlaneTool::PcWiener {
-                    Ok(LrUnit { plane, row, col })
+                    Ok(LrUnit {
+                        tile: self.tile,
+                        plane,
+                        row,
+                        col,
+                    })
                 } else {
                     Err(EncoderSyntaxError::Unsupported(
                         "restoration tool other than RESTORE_PC_WIENER",
@@ -351,7 +392,7 @@ impl LrLayout {
             .collect()
     }
 
-    /// The units of every superblock, in coding order.
+    /// The units of every superblock of the tile, in coding order.
     ///
     /// # Errors
     /// As [`Self::units`].
@@ -362,8 +403,8 @@ impl LrLayout {
             .num_4x4_wide()
             .map_err(rule("superblock size"))?;
         let mut units = Vec::new();
-        for row4 in (0..self.frame.mi_rows()).step_by(sb4) {
-            for col4 in (0..self.frame.mi_cols()).step_by(sb4) {
+        for row4 in self.rows.clone().step_by(sb4) {
+            for col4 in self.cols.clone().step_by(sb4) {
                 let root =
                     TilePartitionCall::root(row4, col4, self.frame.sb_size(), ROOT_HAS_CHROMA);
                 units.extend(self.units(PartitionNode(root))?);
@@ -372,20 +413,32 @@ impl LrLayout {
         Ok(units)
     }
 
-    /// The plane rectangles a `RESTORE_PC_WIENER` unit filters, which can reach
-    /// past the visible frame.
+    /// The plane rectangles a `RESTORE_PC_WIENER` unit of the tile filters,
+    /// which can reach past the visible frame.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] for a unit outside the frame.
+    /// Returns [`EncoderSyntaxError`] for a unit outside the tile.
     pub fn unit_rects(&self, unit: LrUnit) -> Result<Vec<PlaneRect>> {
-        pc_wiener_unit_source_blocks(self.frame, self.bounds, unit.plane, unit.row, unit.col)
-            .map_err(rule("restoration unit"))?
+        self.source_blocks(unit)?
             .into_iter()
             .map(|block| {
                 PlaneRect::new(block.x, block.y, block.width, block.height)
                     .map_err(rule("restoration unit"))
             })
             .collect()
+    }
+
+    fn source_blocks(
+        &self,
+        unit: LrUnit,
+    ) -> Result<Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>> {
+        if unit.tile != self.tile {
+            return Err(EncoderSyntaxError::Unsupported(
+                "a restoration unit of another tile",
+            ));
+        }
+        pc_wiener_unit_source_blocks(self.frame, self.bounds, unit.plane, unit.row, unit.col)
+            .map_err(rule("restoration unit"))
     }
 }
 
@@ -406,21 +459,18 @@ pub fn apply_loop_filters(
     cdef_indices: &[Option<usize>],
     lr_on: &[LrUnit],
 ) -> Result<DecodedFrame<u16>> {
-    let layout = LrLayout::new(seq, core)?;
+    let layouts = LrLayout::tiles(seq, core)?;
     let mut lr_source_blocks = Vec::new();
     for unit in lr_on {
-        lr_source_blocks.extend(
-            pc_wiener_unit_source_blocks(
-                layout.frame,
-                layout.bounds,
-                unit.plane,
-                unit.row,
-                unit.col,
-            )
-            .map_err(rule("restoration unit"))?,
-        );
+        let layout = layouts
+            .get(unit.tile)
+            .ok_or(EncoderSyntaxError::Unsupported(
+                "a restoration unit of another tile",
+            ))?;
+        lr_source_blocks.extend(layout.source_blocks(*unit)?);
     }
-    let (rows, cols) = cdef_unit_grid((layout.frame.mi_rows(), layout.frame.mi_cols()));
+    let frame_facts = minimal_partition_frame_facts(seq, core).map_err(rule("frame facts"))?;
+    let (rows, cols) = cdef_unit_grid((frame_facts.mi_rows(), frame_facts.mi_cols()));
     let cdef_indices = if cdef_indices.is_empty() {
         vec![None; rows * cols]
     } else {
@@ -429,15 +479,7 @@ pub fn apply_loop_filters(
     let cdef_grid = crate::filters::cdef::CdefUnitGrid::new(rows, cols, cdef_indices)
         .map_err(rule("cdef_idx grid"))?;
     let mut workspace = CurrentFrameWorkspace::new(frame.info(), 0).map_err(rule("workspace"))?;
-    for id in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-        if let Some(plane) = frame.plane(id) {
-            let size = plane.storage_size();
-            let rect = PlaneRect::new(0, 0, size.width(), size.height()).map_err(rule("plane"))?;
-            workspace
-                .write_rect(id, rect, plane.samples(), plane.stride_samples())
-                .map_err(rule("plane"))?;
-        }
-    }
+    copy_luma_rect(&mut workspace, frame, (0, 0, usize::MAX, usize::MAX))?;
     let luma = frame.coded_luma_size();
     let mut sink = crate::filters::wienerns_lr::recon_final_filter_sink(
         workspace,
@@ -465,4 +507,68 @@ pub fn apply_loop_filters(
         )
         .map_err(rule("loop filters"))?;
     Ok(filtered)
+}
+
+/// The reconstruction of the frame `core` whose tile `t` holds the samples of
+/// `tiles[t]`, each tile coded by its own facade.
+///
+/// # Errors
+/// Returns [`EncoderSyntaxError`] when the frame has another tile count or the
+/// frames differ in geometry.
+pub fn merge_tiles(
+    core: &FrameHeaderCore,
+    tiles: &[DecodedFrame<u16>],
+) -> Result<DecodedFrame<u16>> {
+    let first = tiles
+        .first()
+        .filter(|_| tiles.len() == tile_count(core))
+        .ok_or(EncoderSyntaxError::Unsupported("one frame per tile"))?;
+    let mut workspace = CurrentFrameWorkspace::new(first.info(), 0).map_err(rule("workspace"))?;
+    for (tile, frame) in tiles.iter().enumerate() {
+        let (rows, cols) = tile_ranges(core, tile)?;
+        copy_luma_rect(
+            &mut workspace,
+            frame,
+            (
+                cols.start * 4,
+                rows.start * 4,
+                cols.len() * 4,
+                rows.len() * 4,
+            ),
+        )?;
+    }
+    workspace.freeze().map_err(rule("frame"))
+}
+
+/// Copies the samples of `frame` over the luma rectangle `(x, y, width,
+/// height)`, and the 4:2:0 chroma rectangles under it, into `workspace`.
+fn copy_luma_rect(
+    workspace: &mut CurrentFrameWorkspace<u16>,
+    frame: &DecodedFrame<u16>,
+    (x, y, width, height): (usize, usize, usize, usize),
+) -> Result<()> {
+    for (id, shift) in [(PlaneId::Y, 0), (PlaneId::U, 1), (PlaneId::V, 1)] {
+        let Some(plane) = frame.plane(id) else {
+            continue;
+        };
+        let size = plane.storage_size();
+        let (left, top) = (x >> shift, y >> shift);
+        let right = x
+            .saturating_add(width)
+            .div_ceil(1 << shift)
+            .min(size.width());
+        let bottom = y
+            .saturating_add(height)
+            .div_ceil(1 << shift)
+            .min(size.height());
+        if right <= left || bottom <= top {
+            continue;
+        }
+        let rect = PlaneRect::new(left, top, right - left, bottom - top).map_err(rule("plane"))?;
+        let stride = plane.stride_samples();
+        workspace
+            .write_rect(id, rect, &plane.samples()[top * stride + left..], stride)
+            .map_err(rule("plane"))?;
+    }
+    Ok(())
 }

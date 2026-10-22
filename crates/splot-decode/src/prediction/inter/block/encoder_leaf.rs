@@ -80,13 +80,14 @@ pub(crate) struct EncoderInterTile {
 }
 
 impl EncoderInterTile {
-    /// The state of the single tile of the inter frame `core`, over the
-    /// references in `reference`; `Err` names a tool the facade does not model.
+    /// The state of the tile over luma 4x4 `rows` and `cols` of the inter
+    /// frame `core`, over the references in `reference`; `Err` names a tool
+    /// the facade does not model.
     pub(crate) fn new(
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
         reference: InterReferenceState<u16>,
-        (mi_rows, mi_cols): (usize, usize),
+        (rows, cols): (core::ops::Range<usize>, core::ops::Range<usize>),
         (qindex, bit_depth): (u32, BitDepth),
     ) -> core::result::Result<Self, &'static str> {
         let (Some(inter), Some(tail), Some(seq_inter)) = (
@@ -149,7 +150,12 @@ impl EncoderInterTile {
             false,
         );
         let mut grid = NeighbourMvGrid::default();
-        grid.reset_for_tile(0..mi_rows, 0..mi_cols, sb_h4)
+        let size = core.frame_size.ok_or("incomplete inter frame header")?;
+        let (mi_rows, mi_cols) = (
+            (size.height as usize).div_ceil(8) * 2,
+            (size.width as usize).div_ceil(8) * 2,
+        );
+        grid.reset_for_tile(rows, cols, sb_h4)
             .map_err(|_| "neighbour grid size")?;
         let current_order_hint = core.display_order_hint().unwrap_or(0);
         let order_hints = reference_order_hints(
