@@ -45,7 +45,6 @@ use crate::pipeline::general_intra::{
 };
 use crate::prediction::intra_edge::{IntraEdgeCtx, TileSmoothGrid};
 use crate::residual::pipeline::GeneralIntraResidualPlan;
-use crate::tile::SbRowWindow;
 use crate::tile::block_context::BlockCtx;
 
 /// `CFL_ALPHABET_SIZE` (§ 3): the largest `|CflAlphaU|` and `|CflAlphaV|`.
@@ -369,9 +368,9 @@ impl Recon {
         block_decoded
             .reset(3, 1, 1, sb_size4, mi_cols, mi_rows)
             .map_err(rule("BlockDecoded state"))?;
-        let grid = |rows: usize, cols: usize| {
+        let grid = |rows: usize, cols: usize, sb_h4: usize| {
             let mut grid = TileSmoothGrid::default();
-            grid.reset_for_tile(0..rows, 0..cols, SbRowWindow::WHOLE_TILE_SB_H4)
+            grid.reset_for_tile(0..rows, 0..cols, sb_h4)
                 .map(|()| grid)
                 .map_err(|_| EncoderSyntaxError::Unsupported("smooth grid size"))
         };
@@ -379,8 +378,8 @@ impl Recon {
             workspace,
             scratch: GeneralIntraReconScratch::default(),
             block_decoded,
-            y_smooth: grid(mi_rows, mi_cols)?,
-            chroma_smooth: grid(mi_rows.div_ceil(2), mi_cols.div_ceil(2))?,
+            y_smooth: grid(mi_rows, mi_cols, sb_size4)?,
+            chroma_smooth: grid(mi_rows.div_ceil(2), mi_cols.div_ceil(2), sb_size4 >> 1)?,
             leaf: None,
         })
     }
