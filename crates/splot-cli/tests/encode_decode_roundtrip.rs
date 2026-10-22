@@ -133,3 +133,20 @@ fn crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats() {
     round_trip(8, &["--crf", "25"]);
     round_trip(10, &["--bitrate", "200", "--rc", "cbr"]);
 }
+
+#[test]
+fn two_tile_clip_encodes_validates_and_decodes_to_the_encoder_stats() {
+    round_trip(
+        8,
+        &[
+            "--qp",
+            "90",
+            "--preset",
+            "10",
+            "--tiles",
+            "2x1",
+            "--threads",
+            "2",
+        ],
+    );
+}

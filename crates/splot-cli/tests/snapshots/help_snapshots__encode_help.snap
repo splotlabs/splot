@@ -19,6 +19,7 @@ Options:
       --rc <RC>            Bitrate mode for `--bitrate`: `vbr` (default) or `cbr` (one-second buffer) [possible values: vbr, cbr]
       --preset <PRESET>    Speed preset: 0 is the slowest and best, 10 the fastest [default: 6]
       --threads <THREADS>  Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto) [default: auto]
+      --tiles <TILES>      Tile columns x rows, each a power of two up to 64. More tiles code faster on more threads and cost some compression [default: 1x1]
       --limit <LIMIT>      Stop after this many input frames
       --keyint <KEYINT>    Distance between key frames, in frames [default: 120]
       --stats              Print `frame,pts,qp,bits,psnr_y,psnr_u,psnr_v` CSV lines to stdout
