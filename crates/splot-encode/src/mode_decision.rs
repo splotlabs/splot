@@ -218,13 +218,15 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
 impl TrialCoder<'_, '_> {
     /// The inter candidates of `leaf`: for every reference `GLOBALMV`,
     /// `NEARMV` of each DRL index, and `NEWMV` with the searched vector over
-    /// the DRL base nearest to it (candidates with a vector already listed
-    /// are dropped); then the skip-mode blocks and the compound shortlist.
+    /// the DRL base nearest to it (candidates with a reference and vector
+    /// already listed are dropped); then the skip-mode blocks and the
+    /// compound shortlist.
     fn inter_candidates(&mut self, leaf: &LeafBlock) -> Result<Vec<LeafChoice>> {
-        let mut out: Vec<(MotionVector, LeafChoice)> = Vec::new();
+        let mut out: Vec<((usize, MotionVector), LeafChoice)> = Vec::new();
         let mut push = |mv: MotionVector, modes: InterModes| {
-            if out.iter().all(|&(seen, _)| seen != mv) {
-                out.push((mv, LeafChoice::inter(InterPrediction::Single(modes))));
+            let key = (modes.ref_frame, mv);
+            if out.iter().all(|&(seen, _)| seen != key) {
+                out.push((key, LeafChoice::inter(InterPrediction::Single(modes))));
             }
         };
         let mut searched = Vec::new();
