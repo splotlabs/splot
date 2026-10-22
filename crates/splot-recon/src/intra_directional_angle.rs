@@ -1780,13 +1780,13 @@ fn write_middle_lanes<O: IntraLaneSample>(
             context: "middle directional angle logical edge coverage",
         })
     };
-    let mut left_runs = [(0usize, 0i32); MAX_ONE_SIDED_SIDE];
+    let mut left_runs = [0u8; MAX_ONE_SIDED_SIDE];
     for (row, run) in left_runs.iter_mut().enumerate().take(height) {
         let walk = MiddleRowWalk::new(row, width, branch, 0)?;
         let left_run = usize::try_from(walk.min_base - (walk.above_idx >> 6))
             .unwrap_or(0)
             .min(width);
-        *run = (left_run, walk.left_idx);
+        *run = left_run as u8;
         if left_run < width {
             let above_idx = walk.above_idx + 64 * left_run as i32;
             let start = row * stride_samples + left_run;
@@ -1804,37 +1804,46 @@ fn write_middle_lanes<O: IntraLaneSample>(
         }
     }
     let dy = i32::from(branch.dy);
-    for_each_middle_left_run(&left_runs[..height], dy, |column, first, rows, left_idx| {
-        write_bilinear_line::<O, false>(
-            left,
-            (
-                offset(left_idx)?,
-                directional_shift(left_idx),
-                left.len() - 1,
-            ),
-            &mut output[first * stride_samples + column..],
-            stride_samples,
-            rows,
-        );
-        Ok(())
-    })
+    for_each_middle_left_run(
+        &left_runs[..height],
+        dy,
+        0,
+        |column, first, rows, left_idx| {
+            write_bilinear_line::<O, false>(
+                left,
+                (
+                    offset(left_idx)?,
+                    directional_shift(left_idx),
+                    left.len() - 1,
+                ),
+                &mut output[first * stride_samples + column..],
+                stride_samples,
+                rows,
+            );
+            Ok(())
+        },
+    )
 }
 
 /// Calls `write(column, first, rows, left_idx)` for each zone-2 left run down
-/// a column: rows `first..first + rows` whose leading left run (`left_runs[row]
-/// .0`) covers `column`, with `left_idx` the § 7.13.2.8 `leftIdx` of the first
-/// of them (`left_runs[row].1` is the row's `leftIdx` at column 0).
+/// a column: rows `first..first + rows` whose leading left run
+/// (`left_runs[row]` columns) covers `column`, with `left_idx` the § 7.13.2.8
+/// `leftIdx = first * 64 - (column + 1 + mrlIndex) * dy` of the first of them.
 fn for_each_middle_left_run(
-    left_runs: &[(usize, i32)],
+    left_runs: &[u8],
     dy: i32,
+    mrl_index: usize,
     mut write: impl FnMut(usize, usize, usize, i32) -> Result<()>,
 ) -> Result<()> {
-    let columns = left_runs.iter().map(|run| run.0).max().unwrap_or(0);
+    let columns = usize::from(left_runs.iter().copied().max().unwrap_or(0));
     for column in 0..columns {
         let mut row = 0;
         while row < left_runs.len() {
             let first = row;
-            while left_runs.get(row).is_some_and(|run| run.0 > column) {
+            while left_runs
+                .get(row)
+                .is_some_and(|&run| usize::from(run) > column)
+            {
                 row += 1;
             }
             if row == first {
@@ -1845,7 +1854,7 @@ fn for_each_middle_left_run(
                 column,
                 first,
                 row - first,
-                left_runs[first].1 - column as i32 * dy,
+                first as i32 * 64 - (column + 1 + mrl_index) as i32 * dy,
             )?;
         }
     }
@@ -1908,14 +1917,14 @@ fn write_middle_idif_mrl_prediction<T: ReconSample>(
     let branch = params.angle.branch();
     let width = params.size.width();
     let height = params.size.height();
-    let mut left_runs = [(0usize, 0i32); MAX_ONE_SIDED_SIDE];
+    let mut left_runs = [0u8; MAX_ONE_SIDED_SIDE];
     for (row, run) in left_runs.iter_mut().enumerate().take(height) {
         let row_start = row * params.stride_samples;
         let mut walk = MiddleRowWalk::new(row, width, branch, params.mrl_index)?;
         let left_run = usize::try_from(walk.min_base - (walk.above_idx >> 6))
             .unwrap_or(0)
             .min(width);
-        *run = (left_run, walk.left_idx);
+        *run = left_run as u8;
         if left_run == width {
             continue;
         }
@@ -1944,32 +1953,37 @@ fn write_middle_idif_mrl_prediction<T: ReconSample>(
     }
     let mut lanes = [0u16; MAX_ONE_SIDED_SIDE];
     let dy = i32::from(branch.dy);
-    for_each_middle_left_run(&left_runs[..height], dy, |column, first, rows, left_idx| {
-        let reference = MiddleSampleReference {
-            edge: IntraDirectionalAngleEdge::Left,
-            base: left_idx >> 6,
-            shift: directional_shift(left_idx),
-        };
-        let lanes = &mut lanes[..rows];
-        let lanes = left
-            .filter(|_| lanes.len() >= 4)
-            .and_then(|edge| write_middle_idif_run(edge, reference, &params, lanes).ok())
-            .map(|()| &*lanes);
-        for (k, out_row) in (first..first + rows).enumerate() {
-            let value = match lanes {
-                Some(lanes) => lanes[k],
-                None => idif_tap_with_mrl(
-                    params.left,
-                    reference.base + k as i32,
-                    reference.shift,
-                    params.bit_depth,
-                    params.mrl_index,
-                )?,
+    for_each_middle_left_run(
+        &left_runs[..height],
+        dy,
+        params.mrl_index,
+        |column, first, rows, left_idx| {
+            let reference = MiddleSampleReference {
+                edge: IntraDirectionalAngleEdge::Left,
+                base: left_idx >> 6,
+                shift: directional_shift(left_idx),
             };
-            output[out_row * params.stride_samples + column] = T::try_from_u16(value)?;
-        }
-        Ok(())
-    })
+            let lanes = &mut lanes[..rows];
+            let lanes = left
+                .filter(|_| lanes.len() >= 4)
+                .and_then(|edge| write_middle_idif_run(edge, reference, &params, lanes).ok())
+                .map(|()| &*lanes);
+            for (k, out_row) in (first..first + rows).enumerate() {
+                let value = match lanes {
+                    Some(lanes) => lanes[k],
+                    None => idif_tap_with_mrl(
+                        params.left,
+                        reference.base + k as i32,
+                        reference.shift,
+                        params.bit_depth,
+                        params.mrl_index,
+                    )?,
+                };
+                output[out_row * params.stride_samples + column] = T::try_from_u16(value)?;
+            }
+            Ok(())
+        },
+    )
 }
 
 /// `edge` as `u16` samples, widening `u8` storage into `wide`; `None` when it
