@@ -424,6 +424,7 @@ mod tests {
             let b = &b[..keep_b.index(b.len() + 1)];
             prop_assert_eq!(SimdKernels.sad(a, sa, b, sb, dims), ScalarKernels.sad(a, sa, b, sb, dims));
             prop_assert_eq!(SimdKernels.sse(a, sa, b, sb, dims), ScalarKernels.sse(a, sa, b, sb, dims));
+            prop_assert_eq!(SimdKernels.satd(a, sa, b, sb, dims), ScalarKernels.satd(a, sa, b, sb, dims));
             let len = keep_out.index(dims.width() * dims.height() + 1);
             let (mut simd, mut scalar) = (vec![7; len], vec![7; len]);
             SimdKernels.residual(a, sa, b, sb, dims, &mut simd);
@@ -464,14 +465,6 @@ mod tests {
         let b = vec![100u16; 16];
         assert_eq!(ScalarKernels.satd(&a, 4, &b, 4, dims), 160);
         assert_eq!(SimdKernels.satd(&a, 4, &b, 4, dims), 160);
-    }
-
-    #[test]
-    fn satd_pads_a_truncated_last_row_alike() {
-        let dims = BlockDims::new(8, 8).unwrap();
-        let a: Vec<u16> = (0..61).map(|i| (i * 37 % 251) as u16).collect();
-        let b = vec![7u16; 64];
-        assert_eq!(SimdKernels.satd(&a, 8, &b, 8, dims), ScalarKernels.satd(&a, 8, &b, 8, dims));
     }
 
     #[test]
