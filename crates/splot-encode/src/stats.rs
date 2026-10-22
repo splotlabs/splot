@@ -10,9 +10,12 @@ use splot_recon::BitDepth;
 pub struct FrameStats {
     /// Zero-based coding-order index.
     pub frame_index: u64,
+    /// Presentation timestamp of the source frame.
+    pub pts: u64,
     /// The frame's `base_q_idx`.
     pub qp: u8,
-    /// Size of the coded temporal unit in bits.
+    /// Size of the frame's OBUs in bits, with the temporal delimiter (and the
+    /// sequence header of a key frame) when the frame opens its temporal unit.
     pub bits: u64,
     /// Luma PSNR in dB; infinite for an exact reconstruction.
     pub psnr_y: f64,

@@ -4899,7 +4899,7 @@ module = "crates/splot-encode/src/gop.rs"
 change_id = "encoder-m3-inter-headers"
 owner = "encoder"
 risk = "medium"
-notes = "IPPP: every keyint-th frame is a closed-loop key frame; the other frames are shown OBU_REGULAR_TILE_GROUP inter frames that refresh slot 0, so each has one reference. build_inter_frame_header writes the smallest inter header and parses it with the decoder's own reference state (splot_decode::encoder_syntax::EncoderReferences over the filtered reconstructions); the tile group carries the recorded header bits. Every block codes is_inter = 0 with the decoder's neighbour context; partition choice skips blocks for which the decoder infers is_inter. Hidden frames and OBU_REGULAR_SEF show-existing frames are built and decode in splot-decode and AVM, but the GOP does not use them yet. Encoder policy: monotonic_output_order_flag = 1 (hidden frames are shown by show-existing frames), primary_ref_frame = PRIMARY_REF_NONE with disable_cross_frame_cdf_init = 1, quarter-pel MVs, frame-level EIGHTTAP. No inter prediction yet."
+notes = "Every keyint-th frame is a closed-loop key frame; the other frames are OBU_REGULAR_TILE_GROUP inter frames whose order and refresh slots come from ENC-MINI-GOP. build_inter_frame_header writes the smallest inter header and parses it with the decoder's own reference state (splot_decode::encoder_syntax::EncoderReferences over the filtered reconstructions); the tile group carries the recorded header bits. Every block codes is_inter = 0 with the decoder's neighbour context; partition choice skips blocks for which the decoder infers is_inter. Hidden frames and OBU_REGULAR_SEF show-existing frames (derive_sef_order_hint = 1) are built here and used by ENC-MINI-GOP. Encoder policy: monotonic_output_order_flag = 1 (hidden frames are shown by show-existing frames), primary_ref_frame = PRIMARY_REF_NONE with disable_cross_frame_cdf_init = 1, quarter-pel MVs, frame-level EIGHTTAP. No inter prediction yet."
 
 [feature.status]
 mapped = "done"
@@ -4914,8 +4914,40 @@ avm_diff = "done"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs", "crates/splot-encode/src/intra_frame_tests.rs::inter_frames_decode_to_the_encoder_recon_over_several_gops", "crates/splot-encode/src/intra_frame_tests.rs::hidden_frames_decode_through_show_existing_frames", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_coded_frames_like_splot", "crates/splot-encode/src/intra_frame_tests.rs::avm_shows_hidden_frames_like_splot", "crates/splot-encode/src/gop.rs::tests::plans_ippp_with_key_frames_every_keyint", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+tests = ["crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs", "crates/splot-encode/src/intra_frame_tests.rs::inter_frames_decode_to_the_encoder_recon_over_several_gops", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_coded_frames_like_splot", "crates/splot-encode/src/gop_tests.rs::plans_ippp_with_key_frames_every_keyint", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
 commands = ["cargo test -p splot-core encoder_inter_stream --locked", "cargo test -p splot-encode --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-MINI-GOP"
+name = "Hierarchical mini-GOPs with hidden frames, show-existing frames and temporal-unit packets"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "6.17.2", "7.3.3", "7.3.4", "7.3.6", "7.7", "7.21", "7.23"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/gop.rs"
+change_id = "encoder-m3-mini-gop"
+owner = "encoder"
+risk = "medium"
+notes = "GopPlanner splits the frames between key frames into mini-GOPs of the preset's mini_gop_size (1 = IPPP, 2, 4 or 8; the last one before a key frame or the stream end is shorter). A mini-GOP codes its last frame first, then the middle frame of each open span; a frame coded before earlier display frames is hidden and an OBU_REGULAR_SEF outputs it later. Key frames refresh all slots; other frames refresh an empty slot, else the oldest frame no show-existing frame waits for, so the § 7.7 implicit map finds the closest past and future frames. Each Packet is one temporal unit in coding order: the hidden frames since the last output plus one shown frame or show-existing frame, with the pts of the output frame and the stats of each coded frame; IVF frames carry one packet each. Blocks are still all intra."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "done"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "todo"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/gop_tests.rs::every_plan_shows_frames_in_input_order_from_the_right_slots", "crates/splot-encode/src/gop_tests.rs::plans_a_hierarchical_mini_gop_and_a_short_last_one", "crates/splot-encode/src/encoder.rs::tests::packs_hidden_frames_into_the_next_output_unit", "crates/splot-encode/src/intra_frame_tests.rs::mini_gops_decode_to_the_encoder_recon_in_display_order", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_mini_gops_like_splot", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+commands = ["cargo test -p splot-encode --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
 

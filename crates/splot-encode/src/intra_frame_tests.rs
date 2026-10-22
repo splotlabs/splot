@@ -3,10 +3,14 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
 use super::*;
 use splot_core::headers::frame::build_key_frame_header;
 
 use crate::config::RateControlMode;
+use crate::encoder::Encoder;
 use crate::gop::GopFrame;
 use crate::preset::Preset;
 use crate::rate_control::FrameType;
@@ -205,58 +209,101 @@ fn avm_decodes_coded_frames_like_splot() {
     }
 }
 
-/// A key frame, a hidden inter frame, and a show-existing frame of it, with
-/// the samples a decoder outputs.
-fn hidden_frame_stream(config: &Config) -> (Vec<Vec<u8>>, Vec<u8>) {
-    use splot_core::headers::frame::{
-        encode_show_existing_frame_obu, encode_temporal_delimiter_obu,
-    };
-    let RateControlMode::ConstantQp { qp } = config.rate_control;
-    let mut coder = IntraFrameCoder::new(config).unwrap();
-    let key_plan = crate::gop::plan(0, config.keyint);
-    let key = coder
-        .encode_frame(&synthetic_frame(config, 1), &key_plan, qp)
-        .unwrap();
-    let hidden_plan = GopFrame {
-        show_frame: false,
-        ..crate::gop::plan(1, config.keyint)
-    };
-    let hidden = coder
-        .encode_frame(&synthetic_frame(config, 2), &hidden_plan, qp)
-        .unwrap();
-    let mut show = encode_temporal_delimiter_obu().unwrap();
-    show.extend(encode_show_existing_frame_obu(&coder.view, 0).unwrap());
-    coder.references.show_existing(0).unwrap();
-    assert!(coder.references.show_existing(0).is_err(), "shown twice");
-    let expected = [
-        recon_bytes(&key, config.bit_depth),
-        recon_bytes(&hidden, config.bit_depth),
-    ]
-    .concat();
-    (
-        vec![key.temporal_unit, hidden.temporal_unit, show],
-        expected,
-    )
+/// Records the raw decoder output of every coded frame by display index.
+struct Recording {
+    coder: IntraFrameCoder,
+    bit_depth: BitDepth,
+    recons: Arc<Mutex<BTreeMap<u64, Vec<u8>>>>,
 }
 
-#[test]
-fn hidden_frames_decode_through_show_existing_frames() {
-    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        let config = config(72, 40, bit_depth, 6, 90);
-        let (units, expected) = hidden_frame_stream(&config);
-        assert_same_samples(&decode(&units.concat()), &expected, "hidden frame");
+impl FrameCoder for Recording {
+    fn encode_frame(
+        &mut self,
+        source: &SourceFrame,
+        plan: &GopFrame,
+        qp: u8,
+    ) -> Result<CodedFrame> {
+        let coded = self.coder.encode_frame(source, plan, qp)?;
+        let recon = recon_bytes(&coded, self.bit_depth);
+        self.recons
+            .lock()
+            .unwrap()
+            .insert(plan.display_index, recon);
+        Ok(coded)
+    }
+
+    fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
+        self.coder.show_existing_frame(slot)
     }
 }
 
-/// AVM shows the hidden frame like splot.
+/// Codes `frames` frames through the [`Encoder`]; returns the temporal units
+/// and the encoder reconstructions in display order.
+fn encode_stream(config: &Config, frames: u32) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let recons = Arc::default();
+    let coder = Recording {
+        coder: IntraFrameCoder::new(config).unwrap(),
+        bit_depth: config.bit_depth,
+        recons: Arc::clone(&recons),
+    };
+    let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder));
+    let mut packets = Vec::new();
+    for seed in 0..=frames {
+        if seed == frames {
+            encoder.flush().unwrap();
+        } else {
+            encoder.send_frame(synthetic_frame(config, seed)).unwrap();
+        }
+        while let Some(packet) = encoder.receive_packet().unwrap() {
+            packets.push(packet);
+        }
+    }
+    let pts: Vec<u64> = packets.iter().map(|packet| packet.pts).collect();
+    assert_eq!(pts, (0..u64::from(frames)).collect::<Vec<_>>());
+    let coded: usize = packets.iter().map(|packet| packet.stats.len()).sum();
+    assert_eq!(coded, frames as usize);
+    let expected = recons.lock().unwrap().values().flatten().copied().collect();
+    let units = packets.into_iter().map(|packet| packet.data).collect();
+    (units, expected)
+}
+
+/// `(preset, keyint, frames, width, height, bit depth)`: presets 9, 6 and 3
+/// code mini-GOPs of 2, 4 and 8 frames; no keyint is a multiple of them, and
+/// the last mini-GOP of each stream is short.
+const MINI_GOP_CASES: [(u8, u32, u32, u32, u32, BitDepth); 4] = [
+    (9, 6, 9, 40, 24, BitDepth::Ten),
+    (6, 7, 11, 33, 17, BitDepth::Eight),
+    (6, 10, 8, 24, 16, BitDepth::Ten),
+    (3, 11, 13, 24, 16, BitDepth::Eight),
+];
+
+fn mini_gop_stream(case: (u8, u32, u32, u32, u32, BitDepth)) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let (preset, keyint, frames, width, height, bit_depth) = case;
+    let mut config = config(width, height, bit_depth, preset, 120);
+    config.keyint = core::num::NonZeroU32::new(keyint).unwrap();
+    encode_stream(&config, frames)
+}
+
+#[test]
+fn mini_gops_decode_to_the_encoder_recon_in_display_order() {
+    for case in MINI_GOP_CASES {
+        let (units, expected) = mini_gop_stream(case);
+        assert_same_samples(&decode(&units.concat()), &expected, &format!("{case:?}"));
+    }
+}
+
+/// AVM decodes mini-GOP streams to the encoder reconstructions.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
-fn avm_shows_hidden_frames_like_splot() {
+fn avm_decodes_mini_gops_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    let config = config(72, 40, BitDepth::Ten, 6, 90);
-    let (units, expected) = hidden_frame_stream(&config);
-    let avm = avm_decode(&avmdec, &units, (72, 40), BitDepth::Ten, "hidden");
-    assert!(avm == expected, "AVM output differs");
+    for (index, case) in MINI_GOP_CASES.into_iter().enumerate() {
+        let (units, expected) = mini_gop_stream(case);
+        let (_, _, _, width, height, bit_depth) = case;
+        let name = format!("gop{index}");
+        let avm = avm_decode(&avmdec, &units, (width, height), bit_depth, &name);
+        assert!(avm == expected, "{case:?}: AVM output differs");
+    }
 }

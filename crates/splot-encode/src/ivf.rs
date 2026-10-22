@@ -44,7 +44,9 @@ impl<W: Write> IvfWriter<W> {
         Ok(Self { writer })
     }
 
-    /// Writes one packet as an IVF frame stamped with its pts.
+    /// Writes one packet as an IVF frame stamped with its pts. Packets come in
+    /// coding order, one temporal unit each, and each outputs one frame, so the
+    /// pts of consecutive IVF frames increase.
     ///
     /// # Errors
     /// Returns any write error.
@@ -79,15 +81,16 @@ mod tests {
             data: vec![1, 2, 3],
             pts: 4,
             frame_type: FrameType::Key,
-            stats: FrameStats {
+            stats: vec![FrameStats {
                 frame_index: 0,
+                pts: 4,
                 qp: 1,
                 bits: 24,
                 psnr_y: 0.0,
                 psnr_u: 0.0,
                 psnr_v: 0.0,
                 ssim_y: None,
-            },
+            }],
         })?;
         let bytes = writer.finish()?;
         let header = parse_ivf_header(&bytes).map_err(io::Error::other)?;

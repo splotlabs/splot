@@ -18,6 +18,6 @@ Options:
       --threads <THREADS>  Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto) [default: auto]
       --limit <LIMIT>      Stop after this many input frames
       --keyint <KEYINT>    Distance between key frames, in frames [default: 120]
-      --stats              Print `frame,qp,bits,psnr_y,psnr_u,psnr_v` CSV lines to stdout
+      --stats              Print `frame,pts,qp,bits,psnr_y,psnr_u,psnr_v` CSV lines to stdout
   -h, --help               Print help
   -V, --version            Print version
