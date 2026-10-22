@@ -72,6 +72,8 @@ const FSC_BSIZE_GROUPS: [usize; 29] = [
     0, 1, 1, 2, 3, 3, 4, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 3, 3, 4, 4, 6, 6, 4, 4, 6, 6,
 ];
 pub(crate) const CFL_EXPLICIT: u8 = 0;
+/// `cfl_index` value `CFL_DERIVED_ALPHA` (§ 6.19.7.25 Table 6.26).
+pub(crate) const CFL_DERIVED_ALPHA: u8 = 1;
 const CFL_MULTI: u8 = 2;
 const CFL_SIGN_ZERO: u8 = 0;
 const BLOCK_4X4: usize = 0;

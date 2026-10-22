@@ -24,10 +24,10 @@ use super::super::cdf::block_context::{
     uv_mode_ctx,
 };
 use super::super::general_intra_block::{
-    CFL_EXPLICIT, CHROMA_MODE_COUNT, CflParams, FIRST_MODE_COUNT, GeneralIntraBlockModes,
-    GeneralIntraChromaBlockMode, GeneralIntraChromaToolConfig, GeneralIntraLumaBlockMode,
-    SECOND_MODE_COUNT, UV_MODE_IDX_BITS, Y_SECOND_MODE_BITS, cfl_allowed_for_chroma_mode,
-    cfl_alpha_u_ctx, cfl_alpha_v_ctx,
+    CFL_DERIVED_ALPHA, CFL_EXPLICIT, CHROMA_MODE_COUNT, CflParams, FIRST_MODE_COUNT,
+    GeneralIntraBlockModes, GeneralIntraChromaBlockMode, GeneralIntraChromaToolConfig,
+    GeneralIntraLumaBlockMode, SECOND_MODE_COUNT, UV_MODE_IDX_BITS, Y_SECOND_MODE_BITS,
+    cfl_allowed_for_chroma_mode, cfl_alpha_u_ctx, cfl_alpha_v_ctx,
 };
 use super::super::general_intra_residual::{LumaTransformTypeContext, intra_chroma_plane_tx_type};
 use super::super::partition_traversal::{
@@ -48,8 +48,6 @@ use crate::residual::pipeline::GeneralIntraResidualPlan;
 use crate::tile::SbRowWindow;
 use crate::tile::block_context::BlockCtx;
 
-/// `cfl_index` value `CFL_DERIVED_ALPHA` (§ 6.19.7.25 Table 6.26).
-const CFL_DERIVED_ALPHA: usize = 1;
 /// `CFL_ALPHABET_SIZE` (§ 3): the largest `|CflAlphaU|` and `|CflAlphaV|`.
 pub const MAX_CFL_ALPHA: i8 = 8;
 
@@ -465,7 +463,11 @@ impl IntraTileSyntax {
                 }
             }
             ChromaMode::CflDerived => {
-                self.put(symbols, TileCdfSelector::CflIndex, CFL_DERIVED_ALPHA)?;
+                self.put(
+                    symbols,
+                    TileCdfSelector::CflIndex,
+                    usize::from(CFL_DERIVED_ALPHA),
+                )?;
             }
             ChromaMode::Cfl { alpha_u, alpha_v } => {
                 self.put(
