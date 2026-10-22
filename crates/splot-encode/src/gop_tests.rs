@@ -179,3 +179,32 @@ fn plans_ippp_with_key_frames_every_keyint() {
     );
     assert!((0..5).all(|index| plan(index, NonZeroU32::MIN).frame_type == FrameType::Key));
 }
+
+#[test]
+fn scene_cuts_start_key_frames_and_restart_the_keyint_count() {
+    let mut planner = GopPlanner::new(NonZeroU32::new(10).unwrap(), 4);
+    planner.force_key(6);
+    let mut coded = Vec::new();
+    for _ in 0..8 {
+        let len = planner.next_len(100, false).unwrap();
+        for step in planner.plan(len).unwrap() {
+            if let GopStep::Code(frame) = step {
+                coded.push((frame.display_index, frame.frame_type, frame.layer));
+            }
+        }
+    }
+    let keys: Vec<u64> = coded
+        .iter()
+        .filter(|frame| frame.1 == FrameType::Key)
+        .map(|frame| frame.0)
+        .collect();
+    assert_eq!(keys, [0, 6, 16]);
+    let layers: Vec<(u64, u8)> = coded[1..5].iter().map(|f| (f.0, f.2)).collect();
+    assert_eq!(layers, [(4, 0), (2, 1), (1, 2), (3, 2)]);
+    planner.force_key(3);
+    assert_eq!(
+        planner.next_key(),
+        planner.scheduled_key,
+        "a planned cut is ignored"
+    );
+}

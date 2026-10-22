@@ -5,7 +5,8 @@
 //! refreshed reference slots and show-existing frames of the stream, and the
 //! frame header and OBUs each coded frame gives.
 //!
-//! Every `keyint`-th input frame is a closed-loop key frame. The frames
+//! The first frame, every frame `keyint` frames after the last key frame, and
+//! every scene cut the lookahead reports are closed-loop key frames. The frames
 //! between key frames form mini-GOPs of the preset's `mini_gop_size` frames;
 //! the last mini-GOP before a key frame or the end of the input can be
 //! shorter. A mini-GOP codes its last frame first, then the middle frame of
@@ -57,6 +58,9 @@ pub(crate) struct GopFrame {
     pub(crate) order_hint: u32,
     /// `immediate_output_frame`; a hidden frame waits for a show-existing frame.
     pub(crate) show_frame: bool,
+    /// Depth in the mini-GOP hierarchy: `0` for key frames and the last frame
+    /// of each mini-GOP, one more per bisection.
+    pub(crate) layer: u8,
     /// `refresh_frame_flags`.
     pub(crate) refresh_frame_flags: u32,
     /// The slots that hold a frame when this frame is coded: the frames it may
@@ -94,7 +98,7 @@ struct Slot {
 }
 
 /// Plans key frames and mini-GOPs over the input frames.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct GopPlanner {
     keyint: u64,
     mini_gop_size: u64,
@@ -102,6 +106,10 @@ pub(crate) struct GopPlanner {
     next_display: u64,
     next_frame: u64,
     key_display: u64,
+    /// Display index of the next key frame `keyint` frames after the last one.
+    scheduled_key: u64,
+    /// Scene cuts not planned yet, ascending.
+    cuts: Vec<u64>,
     after_output: bool,
 }
 
@@ -116,6 +124,8 @@ impl GopPlanner {
             next_display: 0,
             next_frame: 0,
             key_display: 0,
+            scheduled_key: 0,
+            cuts: Vec::new(),
             after_output: true,
         }
     }
@@ -125,13 +135,28 @@ impl GopPlanner {
         self.next_display
     }
 
+    /// Makes `display_index` a key frame, unless it is already planned.
+    pub(crate) fn force_key(&mut self, display_index: u64) {
+        if display_index >= self.next_display && !self.cuts.contains(&display_index) {
+            self.cuts.push(display_index);
+            self.cuts.sort_unstable();
+        }
+    }
+
+    /// The display index of the next key frame.
+    fn next_key(&self) -> u64 {
+        self.cuts
+            .first()
+            .map_or(self.scheduled_key, |&cut| cut.min(self.scheduled_key))
+    }
+
     /// The number of frames the next [`Self::plan`] takes from `queued` input
     /// frames: a key frame alone, else a mini-GOP that stops before the next
     /// key frame. `None` while too few frames are queued, unless the input has
     /// `ended`.
     pub(crate) fn next_len(&self, queued: usize, ended: bool) -> Option<usize> {
-        let to_key = self.keyint - self.next_display % self.keyint;
-        let wanted = if to_key == self.keyint {
+        let to_key = self.next_key().saturating_sub(self.next_display);
+        let wanted = if to_key == 0 {
             1
         } else {
             to_key.min(self.mini_gop_size)
@@ -154,25 +179,27 @@ impl GopPlanner {
         let first = self.next_display;
         let last = first + len as u64 - 1;
         let mut anchor = first.saturating_sub(1);
-        if first.is_multiple_of(self.keyint) {
-            steps.push(self.code(first, FrameType::Key, true)?);
+        if first == self.next_key() {
+            self.cuts.retain(|&cut| cut > first);
+            self.scheduled_key = first + self.keyint;
+            steps.push(self.code(first, FrameType::Key, true, 0)?);
             anchor = first;
         }
         if last > anchor {
-            self.place(anchor, last, &mut steps)?;
+            self.place(anchor, last, 0, &mut steps)?;
         }
         self.next_display = last + 1;
         Ok(steps)
     }
 
-    /// Codes `hi` and the frames between the coded frame `lo` and `hi`.
-    fn place(&mut self, lo: u64, hi: u64, steps: &mut Vec<GopStep>) -> Result<()> {
+    /// Codes `hi` at `layer` and the frames between the coded frame `lo` and `hi`.
+    fn place(&mut self, lo: u64, hi: u64, layer: u8, steps: &mut Vec<GopStep>) -> Result<()> {
         if hi - lo == 1 {
-            steps.push(self.code(hi, FrameType::Inter, true)?);
+            steps.push(self.code(hi, FrameType::Inter, true, layer)?);
             return Ok(());
         }
-        steps.push(self.code(hi, FrameType::Inter, false)?);
-        self.fill(lo, hi, steps)?;
+        steps.push(self.code(hi, FrameType::Inter, false, layer)?);
+        self.fill(lo, hi, layer + 1, steps)?;
         let (slot, held) = self
             .slots
             .iter_mut()
@@ -194,12 +221,12 @@ impl GopPlanner {
         Ok(())
     }
 
-    /// Codes the frames between the coded frames `lo` and `hi`.
-    fn fill(&mut self, lo: u64, hi: u64, steps: &mut Vec<GopStep>) -> Result<()> {
+    /// Codes the frames between the coded frames `lo` and `hi` from `layer` on.
+    fn fill(&mut self, lo: u64, hi: u64, layer: u8, steps: &mut Vec<GopStep>) -> Result<()> {
         if hi - lo > 1 {
             let mid = lo + (hi - lo) / 2;
-            self.place(lo, mid, steps)?;
-            self.fill(mid, hi, steps)?;
+            self.place(lo, mid, layer, steps)?;
+            self.fill(mid, hi, layer + 1, steps)?;
         }
         Ok(())
     }
@@ -209,6 +236,7 @@ impl GopPlanner {
         display_index: u64,
         frame_type: FrameType,
         show_frame: bool,
+        layer: u8,
     ) -> Result<GopStep> {
         let (slot, refresh_frame_flags, ref_slots) = if frame_type == FrameType::Key {
             self.slots = [None; REF_SLOTS];
@@ -231,6 +259,7 @@ impl GopPlanner {
             frame_type,
             order_hint: (display_index - self.key_display) as u32,
             show_frame,
+            layer,
             refresh_frame_flags,
             ref_slots,
             opens_temporal_unit: self.after_output,
