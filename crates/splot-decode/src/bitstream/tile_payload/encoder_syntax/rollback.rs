@@ -4,8 +4,8 @@
 //! Region-local snapshots of the encoder facade.
 //!
 //! A trial on a partition node writes neighbour state only over the node's
-//! luma 4x4 rectangle, widened up and left to the 8x8 origin that the chroma
-//! of a has-chroma leaf at an odd 4x4 position covers: block publication
+//! luma 4x4 rectangle, widened up and left to the origin that the chroma of a
+//! has-chroma leaf at an odd 4x4 position in a subsampled axis covers: block publication
 //! fills the leaf footprint and its chroma reference block, and the
 //! coefficient and partition contexts fill the above and left lines along
 //! those blocks. A snapshot saves those cells, and marks a journal that keeps
@@ -24,6 +24,7 @@ use super::super::cdf::block_context::{IntraJointMode, MrlSelection};
 use super::super::cdf::coeff_context::CoeffBaseSelection;
 use super::super::cdf::{CoeffBaseRow, CoeffCdfSelector, TileCdfSelector, TileCdfSubset};
 use super::super::intra_joint_modes::{LumaPalette, TileIntraYModeFacts};
+use super::super::tile_frontier::chroma_subsampling;
 use super::intra::Recon;
 use super::{EncoderSyntaxError, IntraTileSyntax, PartitionNode, Result, rule};
 
@@ -360,10 +361,11 @@ impl IntraTileSyntax {
             size.num_4x4_wide().map_err(rule("block size"))?,
             size.num_4x4_high().map_err(rule("block size"))?,
         );
+        let (sub_x, sub_y) = self.subsampling();
         let rows =
-            node.row4().min(chroma.row()) & !1..(node.row4() + h / 4).max(chroma.row() + n4h);
+            node.row4().min(chroma.row()) & !sub_y..(node.row4() + h / 4).max(chroma.row() + n4h);
         let cols =
-            node.col4().min(chroma.col()) & !1..(node.col4() + w / 4).max(chroma.col() + n4w);
+            node.col4().min(chroma.col()) & !sub_x..(node.col4() + w / 4).max(chroma.col() + n4w);
         self.enter_rows(rows.start);
         let mut cells = Cells::default();
         self.visit_cells(&rows, &cols, Some(&mut cells), &Cells::default());
@@ -376,11 +378,17 @@ impl IntraTileSyntax {
             cells,
             palettes: self.palette_y.palettes_mut().clone(),
             block_decoded: self.recon.block_decoded.clone(),
-            samples: self.recon.save_samples((x, y, w, h))?,
+            samples: self.recon.save_samples((x, y, w, h), (sub_x, sub_y))?,
             inter: self.inter_snapshot((x, y, w, h), since),
             #[cfg(debug_assertions)]
             check: self.journal.sample().then(|| Box::new(self.whole_state())),
         })
+    }
+
+    /// `(subsampling_x, subsampling_y)` of the sequence.
+    fn subsampling(&self) -> (usize, usize) {
+        let (x, y) = chroma_subsampling(self.chroma);
+        (usize::from(x), usize::from(y))
     }
 
     fn enter_rows(&mut self, row: usize) {
@@ -392,7 +400,8 @@ impl IntraTileSyntax {
         self.uv_cfls.grid_mut().enter_row(row);
         self.y_modes.grid_mut().enter_row(row);
         self.recon.y_smooth.grid_mut().enter_row(row);
-        self.recon.chroma_smooth.grid_mut().enter_row(row >> 1);
+        let chroma_row = row >> self.subsampling().1;
+        self.recon.chroma_smooth.grid_mut().enter_row(chroma_row);
     }
 
     /// Copies the cells of luma rows `rows` x columns `cols` into `save`, or
@@ -404,9 +413,10 @@ impl IntraTileSyntax {
         save: Option<&mut Cells>,
         saved: &Cells,
     ) -> bool {
+        let (sub_x, sub_y) = self.subsampling();
         let (chroma_rows, chroma_cols) = (
-            rows.start >> 1..rows.end.div_ceil(2),
-            cols.start >> 1..cols.end.div_ceil(2),
+            rows.start >> sub_y..rows.end.div_ceil(1 << sub_y),
+            cols.start >> sub_x..cols.end.div_ceil(1 << sub_x),
         );
         let (bytes, flags, joint, mrls, palettes, y_modes) = match save {
             Some(c) => (
@@ -422,7 +432,8 @@ impl IntraTileSyntax {
         let mut bytes = Pass::new(bytes, &saved.bytes);
         self.mi_sizes
             .visit_region(rows.clone(), cols, |c| bytes.visit(c));
-        self.coeff.visit_region(rows, cols, 1, |c| bytes.visit(c));
+        self.coeff
+            .visit_region(rows, cols, (sub_x, sub_y), |c| bytes.visit(c));
         self.use_dip
             .grid_mut()
             .visit_cells(rows.clone(), cols, |c| bytes.visit(c));
@@ -486,26 +497,31 @@ impl IntraTileSyntax {
 
 impl Recon {
     /// The samples of the luma rectangle `(x, y, width, height)`, clipped to
-    /// storage. The chroma rectangle starts at the 8x8 luma origin, which a
-    /// has-chroma leaf at an odd 4x4 position codes.
+    /// storage. In a subsampled axis the chroma rectangle starts at the 8-sample
+    /// luma origin, which a has-chroma leaf at an odd 4x4 position codes.
     fn save_samples(
         &self,
         (x, y, w, h): (usize, usize, usize, usize),
+        (sub_x, sub_y): (usize, usize),
     ) -> Result<Vec<(PlaneId, PlaneRect, Vec<u16>)>> {
         let mut samples = Vec::with_capacity(3);
-        for (plane, shift) in [(PlaneId::Y, 0), (PlaneId::U, 1), (PlaneId::V, 1)] {
+        for (plane, (sx, sy)) in [
+            (PlaneId::Y, (0, 0)),
+            (PlaneId::U, (sub_x, sub_y)),
+            (PlaneId::V, (sub_x, sub_y)),
+        ] {
             let size = self
                 .workspace
                 .plane(plane)
                 .map_err(rule("snapshot plane"))?
                 .storage_size();
-            let (px, py) = ((x & !(4 * shift)) >> shift, (y & !(4 * shift)) >> shift);
+            let (px, py) = ((x & !(4 * sx)) >> sx, (y & !(4 * sy)) >> sy);
             let pw = (x + w)
-                .div_ceil(1 << shift)
+                .div_ceil(1 << sx)
                 .min(size.width())
                 .saturating_sub(px);
             let ph = (y + h)
-                .div_ceil(1 << shift)
+                .div_ceil(1 << sy)
                 .min(size.height())
                 .saturating_sub(py);
             if pw == 0 || ph == 0 {

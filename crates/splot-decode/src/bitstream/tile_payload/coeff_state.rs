@@ -356,24 +356,34 @@ impl TileCoeffContextState {
     }
 
     /// Calls `visit` with the context entries over luma 4x4 rows `rows` and
-    /// columns `cols`, a chroma plane's over that span shifted by
-    /// `chroma_shift` and rounded outwards, for the encoder facade's rollback.
+    /// columns `cols`, a chroma plane's over that span shifted by the chroma
+    /// subsampling `(x, y)` and rounded outwards, for the encoder facade's rollback.
     pub(crate) fn visit_region(
         &mut self,
         rows: &Range<usize>,
         cols: &Range<usize>,
-        chroma_shift: u32,
+        (sub_x, sub_y): (usize, usize),
         mut visit: impl FnMut(&mut [u8]),
     ) {
         for plane in 0..PLANE_COUNT {
-            let shift = if plane == 0 { 0 } else { chroma_shift };
-            let local = |range: &Range<usize>, origin: usize, len: usize| {
+            let (shift_x, shift_y) = if plane == 0 { (0, 0) } else { (sub_x, sub_y) };
+            let local = |range: &Range<usize>, shift: usize, origin: usize, len: usize| {
                 let start = (range.start >> shift).saturating_sub(origin).min(len);
                 let end = range.end.div_ceil(1 << shift).saturating_sub(origin);
                 start..end.min(len)
             };
-            let r = local(rows, self.plane_row_origins[plane], self.plane_rows[plane]);
-            let c = local(cols, self.plane_col_origins[plane], self.plane_cols[plane]);
+            let r = local(
+                rows,
+                shift_y,
+                self.plane_row_origins[plane],
+                self.plane_rows[plane],
+            );
+            let c = local(
+                cols,
+                shift_x,
+                self.plane_col_origins[plane],
+                self.plane_cols[plane],
+            );
             for (line, span) in [
                 (&mut self.above_level[plane], &c),
                 (&mut self.above_dc[plane], &c),
