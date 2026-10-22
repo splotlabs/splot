@@ -365,7 +365,7 @@ impl Search<'_> {
             };
             let params = FrameFilterParams {
                 cdef_damping: damping,
-                cdef_strengths: cdef_sets(&[set]),
+                cdef_strengths: cdef_sets(&[set])?,
                 ..FrameFilterParams::default()
             };
             let frame = self.filtered(&params, deblocked, &[])?;
@@ -431,7 +431,7 @@ impl Search<'_> {
                 uv_sec_strength: candidates[uv].1,
             })
             .collect();
-        Ok((damping, cdef_sets(&strengths), indices))
+        Ok((damping, cdef_sets(&strengths)?, indices))
     }
 
     /// `(luma, chroma)` SSE of one 64x64 CDEF unit.
@@ -524,9 +524,10 @@ impl Search<'_> {
     }
 }
 
-fn cdef_sets(sets: &[CdefStrengthSet]) -> CdefStrengthSets {
-    CdefStrengthSets::from_slice(&sets[..sets.len().min(MAX_CDEF_STRENGTH_SETS)])
-        .unwrap_or_default()
+fn cdef_sets(sets: &[CdefStrengthSet]) -> Result<CdefStrengthSets> {
+    CdefStrengthSets::from_slice(sets).ok_or(Error::Unsupported {
+        what: "more CDEF strength sets than a frame header codes",
+    })
 }
 
 /// Approximate bits of `sets` strength sets: header bits plus the `cdef_idx`
