@@ -20,7 +20,7 @@ use splot_core::tables::conversion::SIZE_TO_TX_PART_GROUP_LOOKUP;
 use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::{BitDepth, DecodedFrame, ReferencePlaneView, SharedFrame, SubpelPredictParams};
 
-use super::super::cdf::{MvCdfSelector, TileCdfSelector};
+use super::super::cdf::TileCdfSelector;
 use super::super::general_intra_residual::inter_chroma_plane_tx_type;
 use super::super::partition_traversal::{DecodedLeafPublication, GeneralIntraTreeWalkError};
 use super::compound::InterPrediction;
@@ -565,14 +565,6 @@ impl IntraTileSyntax {
             .into_iter()
             .map(MotionVector::from)
             .collect())
-    }
-
-    /// The `read_mv` CDF row `selector` (§ 5.20.7.20).
-    ///
-    /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] for an invalid row.
-    pub fn mv_cdf(&mut self, selector: MvCdfSelector) -> Result<&mut [u16]> {
-        self.tile_row(TileCdfSelector::ReadMv(selector))
     }
 
     /// Writes the § 5.20.6.3 `tx_do_partition = 0` an inter leaf with a coded

@@ -11,7 +11,6 @@
 pub(crate) mod coeffs;
 mod decision;
 pub(crate) mod filters;
-mod mv;
 
 use core::ops::Range;
 
@@ -375,7 +374,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             filters.write_cdef_index(self.syntax, self.sink, leaf, skip)?;
         }
         let mvds = self.syntax.write_inter_modes(leaf, self.sink)?;
-        mv::write_mvds(self.syntax, self.sink, &mvds)?;
+        self.syntax.write_mvds(&mvds, self.sink)?;
         if !skip {
             self.syntax.write_inter_tx_partition(leaf, self.sink)?;
             self.write_residual(&blocks, &levels, &(0..3))?;
