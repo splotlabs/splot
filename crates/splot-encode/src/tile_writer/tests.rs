@@ -594,12 +594,12 @@ fn rejects_unsupported_decisions() {
         ),
         Err(TileWriterError::Partition { .. })
     ));
+}
 
-    let mut tools = case.tools;
-    tools.mhccp = true;
+fn headers(tools: EncoderToolFlags) -> (SequenceHeader, FrameHeaderCore) {
     let seq = build_encoder_sequence_header(&EncoderStreamParams {
-        width: 16,
-        height: 16,
+        width: 64,
+        height: 64,
         bit_depth: BitDepthIdc::Eight,
         chroma: ChromaFormatIdc::Yuv420,
         sb_size: SuperblockSize::Block64x64,
@@ -614,10 +614,55 @@ fn rejects_unsupported_decisions() {
         KeyFrameTxParams::default(),
     )
     .unwrap();
-    assert!(matches!(
-        KeyFrameTileWriter::new(&seq, &core),
-        Err(TileWriterError::Unsupported(_))
-    ));
+    (seq, core)
+}
+
+/// The facade itself refuses every tool it does not model, so no caller can
+/// code a silently wrong stream.
+#[test]
+fn facade_rejects_unmodelled_tools() {
+    let base = Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64).tools;
+    let rejects = |seq: &SequenceHeader, core: &FrameHeaderCore| {
+        matches!(
+            IntraTileSyntax::new(seq, core),
+            Err(EncoderSyntaxError::Unsupported(_))
+        ) && matches!(
+            KeyFrameTileWriter::new(seq, core),
+            Err(TileWriterError::Syntax(EncoderSyntaxError::Unsupported(_)))
+        )
+    };
+    let (seq, core) = headers(base);
+    assert!(IntraTileSyntax::new(&seq, &core).is_ok());
+    let tool_cases: [fn(&mut EncoderToolFlags); 5] = [
+        |t| t.mhccp = true,
+        |t| t.intra_ist = true,
+        |t| t.cctx = true,
+        |t| t.tcq = true,
+        |t| t.idtx_intra = true,
+    ];
+    for set in tool_cases {
+        let mut tools = base;
+        set(&mut tools);
+        let (seq, core) = headers(tools);
+        assert!(rejects(&seq, &core));
+    }
+    let frame_cases: [fn(&mut FrameHeaderCore); 7] = [
+        |c| c.allow_intrabc = Some(true),
+        |c| c.lossless_info.as_mut().unwrap().allow_parity_hiding = true,
+        |c| c.lossless_info.as_mut().unwrap().coded_lossless = true,
+        |c| c.quantization_params.as_mut().unwrap().base_q_idx = 0,
+        |c| c.segmentation_params.as_mut().unwrap().segmentation_enabled = true,
+        |c| c.delta_q_params.as_mut().unwrap().delta_q_present = true,
+        |c| c.setup_qm_params.as_mut().unwrap().using_qmatrix = true,
+    ];
+    for set in frame_cases {
+        let mut core = core.clone();
+        set(&mut core);
+        assert!(rejects(&seq, &core));
+    }
+    let mut core = core;
+    core.intra_tail.as_mut().unwrap().tx_mode = TxMode::Only4x4;
+    assert!(rejects(&seq, &core));
 }
 
 /// Decodes random streams with AVM and compares them with splot's output.

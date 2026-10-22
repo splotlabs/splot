@@ -386,8 +386,9 @@ impl IntraTileSyntax {
     /// State for the single tile of a key frame coded with `seq` and `core`.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError::Unsupported`] for SDP, a non-intra frame, or
-    /// missing header facts, and [`EncoderSyntaxError::Rule`] for state setup failures.
+    /// Returns [`EncoderSyntaxError::Unsupported`] for SDP, a non-intra frame,
+    /// missing header facts, or another tool the facade does not model, and
+    /// [`EncoderSyntaxError::Rule`] for state setup failures.
     pub fn new(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<Self> {
         if core.frame_is_intra != Some(true) {
             return Err(EncoderSyntaxError::Unsupported("non-intra frame"));

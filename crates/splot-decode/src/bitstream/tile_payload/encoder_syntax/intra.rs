@@ -171,22 +171,59 @@ pub(super) struct IntraTools {
 }
 
 impl IntraTools {
-    /// Rejects every tool whose mode syntax the facade does not write.
+    /// Rejects every tool whose syntax or reconstruction the facade does not model.
     pub(super) fn new(seq: &SequenceHeader, core: &FrameHeaderCore, qindex: u32) -> Result<Self> {
-        let (Some(intra), Some(tq)) = (seq.intra, seq.transform_quant_entropy) else {
-            return Err(EncoderSyntaxError::Unsupported(
-                "incomplete sequence header",
-            ));
+        let (Some(intra), Some(tq), Some(tail), true) = (
+            seq.intra,
+            seq.transform_quant_entropy,
+            core.intra_tail.as_ref(),
+            seq.partition.is_some(),
+        ) else {
+            return Err(EncoderSyntaxError::Unsupported("incomplete header"));
         };
-        if intra.enable_mrls
-            || intra.enable_dip
-            || intra.enable_mhccp
-            || tq.enable_idtx_intra
-            || core.allow_screen_content_tools == Some(true)
-        {
-            return Err(EncoderSyntaxError::Unsupported(
+        let lossless = core.lossless_info.as_ref();
+        let refused = [
+            (
+                intra.enable_mrls
+                    || intra.enable_dip
+                    || intra.enable_mhccp
+                    || tq.enable_idtx_intra
+                    || core.allow_screen_content_tools == Some(true),
                 "MRL, DIP, MHCCP, FSC, or palette",
-            ));
+            ),
+            (
+                tq.enable_intra_ist || tq.enable_cctx || tq.enable_tcq,
+                "intra IST, CCTX, or TCQ",
+            ),
+            (core.allow_intrabc == Some(true), "intra block copy"),
+            (
+                lossless.is_some_and(|info| info.allow_tcq || info.allow_parity_hiding),
+                "TCQ or parity hiding",
+            ),
+            (
+                qindex == 0
+                    || lossless
+                        .is_some_and(|info| info.coded_lossless || info.has_lossless_segment),
+                "lossless",
+            ),
+            (
+                core.segmentation_params
+                    .as_ref()
+                    .is_some_and(|seg| seg.segmentation_enabled)
+                    || core
+                        .delta_q_params
+                        .as_ref()
+                        .is_some_and(|dq| dq.delta_q_present)
+                    || core
+                        .setup_qm_params
+                        .as_ref()
+                        .is_some_and(|qm| qm.using_qmatrix),
+                "segmentation, delta-q, or quantizer matrices",
+            ),
+            (tail.tx_mode == TxMode::Only4x4, "TX_MODE_ONLY_4X4"),
+        ];
+        if let Some(&(_, what)) = refused.iter().find(|&&(on, _)| on) {
+            return Err(EncoderSyntaxError::Unsupported(what));
         }
         Ok(Self {
             chroma: general_intra_chroma_tools(seq, core),
@@ -199,11 +236,8 @@ impl IntraTools {
                 BitDepthIdc::Ten => BitDepth::Ten,
             },
             qindex,
-            tx_mode: core.intra_tail.as_ref().map(|tail| tail.tx_mode),
-            reduced_tx_set: core
-                .intra_tail
-                .as_ref()
-                .map_or(0, |tail| usize::from(tail.reduced_tx_set)),
+            tx_mode: Some(tail.tx_mode),
+            reduced_tx_set: usize::from(tail.reduced_tx_set),
             reduced_tx_part_set: tq.reduced_tx_part_set,
         })
     }

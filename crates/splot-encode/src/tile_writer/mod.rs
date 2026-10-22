@@ -14,8 +14,8 @@ pub(crate) mod filters;
 
 use core::ops::Range;
 
-use splot_core::headers::frame::{FrameHeaderCore, TxMode};
-use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
+use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::sequence::SequenceHeader;
 use splot_core::symbol::Symbol;
 
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink};
@@ -97,7 +97,6 @@ pub(crate) struct KeyFrameTileWriter {
 impl KeyFrameTileWriter {
     /// A writer for the frame `core` coded with `seq`.
     pub(crate) fn new(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<Self> {
-        check_supported(seq, core)?;
         let syntax = IntraTileSyntax::new(seq, core)?;
         let (mi_rows, mi_cols) = syntax.mi_dimensions();
         let sb4 = syntax.superblock_size4();
@@ -489,58 +488,6 @@ const fn family_of(kind: RectKind) -> [Partition; 4] {
             Partition::Vert4B,
         ],
     }
-}
-
-/// Rejects every sequence or frame tool the writer does not code.
-fn check_supported(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<()> {
-    let unsupported = |what| Err(TileWriterError::Unsupported(what));
-    if seq.general.chroma_format_idc != ChromaFormatIdc::Yuv420 {
-        return unsupported("chroma format other than 4:2:0");
-    }
-    let (Some(intra), Some(tq), Some(partition)) =
-        (seq.intra, seq.transform_quant_entropy, seq.partition)
-    else {
-        return unsupported("incomplete sequence header");
-    };
-    if partition.enable_sdp {
-        return unsupported("semi-decoupled partitioning");
-    }
-    if intra.enable_mhccp || intra.enable_dip || intra.enable_mrls {
-        return unsupported("MHCCP, DIP, or MRL");
-    }
-    if tq.enable_idtx_intra || tq.enable_intra_ist || tq.enable_cctx || tq.enable_tcq {
-        return unsupported("IDTX/FSC, intra IST, CCTX, or TCQ");
-    }
-    let tail = core
-        .intra_tail
-        .as_ref()
-        .ok_or(TileWriterError::Unsupported("incomplete key-frame header"))?;
-    if tail.tx_mode == TxMode::Only4x4 {
-        return unsupported("TX_MODE_ONLY_4X4");
-    }
-    if core.allow_screen_content_tools == Some(true) || core.allow_intrabc == Some(true) {
-        return unsupported("screen content tools");
-    }
-    let lossless = core.lossless_info.as_ref();
-    if lossless.is_some_and(|info| info.allow_tcq || info.allow_parity_hiding) {
-        return unsupported("TCQ or parity hiding");
-    }
-    if core
-        .segmentation_params
-        .as_ref()
-        .is_some_and(|seg| seg.segmentation_enabled)
-        || core
-            .delta_q_params
-            .as_ref()
-            .is_some_and(|dq| dq.delta_q_present)
-        || core
-            .setup_qm_params
-            .as_ref()
-            .is_some_and(|qm| qm.using_qmatrix)
-    {
-        return unsupported("segmentation, delta-q, or quantizer matrices");
-    }
-    Ok(())
 }
 
 #[cfg(test)]
