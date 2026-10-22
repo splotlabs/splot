@@ -88,7 +88,8 @@ pub(crate) fn block_rate(
 const MAX_QUERY_RATE: u64 = 1 << 24;
 
 /// [`CoeffRates`] read from the rows the writer will code `tx` with. The rows
-/// stay frozen while one block is quantized.
+/// stay frozen while one block is quantized. Shortcut: V's `all_zero` is priced
+/// as if U coded nothing; it becomes exact once RDOQ sees U's `eob`.
 pub(crate) struct CdfCoeffRates<'a> {
     pub(crate) syntax: &'a mut IntraTileSyntax,
     pub(crate) tx: &'a TransformBlock,
@@ -112,7 +113,6 @@ fn clamp(bits: Bits) -> u32 {
 
 impl CoeffRates for CdfCoeffRates<'_> {
     fn eob(&mut self, _block: &RdoqBlock, eob: usize) -> u32 {
-        // shortcut: prices V's all_zero as if U coded nothing; exact once RDOQ sees U's eob.
         let mut sink = RateSink::frozen();
         let mut price = || -> Result<()> {
             let row = self.syntax.txb_skip_cdf(self.tx, false)?;
