@@ -74,6 +74,11 @@ const fn log2_q10(x: u32) -> u32 {
     (int << 10) | frac
 }
 
+/// `256 * log2(x)` in Q8, for `x >= 1`.
+pub(crate) const fn log2_q8(x: u32) -> u32 {
+    (log2_q10(x) + 2) >> 2
+}
+
 /// `COST_Q8[d]`: `round(256 * log2(4096 / d))`, the cost of an interval of `d / 4096`.
 static COST_Q8: [u16; 4097] = {
     let mut table = [0u16; 4097];

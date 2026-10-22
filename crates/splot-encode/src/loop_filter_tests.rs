@@ -138,7 +138,7 @@ fn filtered_frames_decode_to_the_encoder_recon() {
 
 #[test]
 fn more_cdef_sets_cost_more_bits() {
-    let rates: Vec<f64> = (1..=8).map(|sets| cdef_rate(sets, 10)).collect();
+    let rates: Vec<_> = (1..=8).map(|sets| cdef_rate(sets, 10)).collect();
     assert!(rates.windows(2).all(|pair| pair[0] < pair[1]));
 }
 

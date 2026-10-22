@@ -24,13 +24,14 @@ use splot_core::headers::frame::{
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
     FilterRecorder, IntraTileSyntax, LrLayout, LrUnit, TransformBlock, apply_loop_filters,
-    cdef_unit_grid, dct_recon_params,
+    cdef_unit_grid,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::preset::PresetParams;
+use crate::rd::{Bits, Lambda, RdCost, log2_q8};
 use crate::tile_writer::filters::FilterSyntax;
 use crate::tile_writer::{
     KeyFrameTileWriter, ResidualCoder, SuperblockDecision, TileWriterError, TransformDecision,
@@ -59,7 +60,7 @@ const CDEF_LADDER: [(u8, u8); 16] = [
 /// `DfDeltaQ` values in the order the search tries them (`f(3)` offsets).
 const DEBLOCK_LADDER: [i32; 8] = [0, 1, -1, 2, -2, 3, -4, -3];
 /// Approximate frame-header bits of one CDEF strength set.
-const CDEF_SET_HEADER_BITS: f64 = 12.0;
+const CDEF_SET_HEADER_BITS: u32 = 12;
 
 /// The coding decisions of one tile, kept for the second pass.
 #[derive(Default)]
@@ -181,7 +182,7 @@ pub(crate) fn finish_key_frame(
         source,
         recorder: &pass.recorder,
         recon: &pass.recon,
-        lambda: lambda(qindex, pass.recon.bit_depth())?,
+        lambda: Lambda::from_qindex(qindex, pass.recon.bit_depth()).map_err(coding("lambda"))?,
     };
     let (params, syntax) = search.run(preset)?;
     if params == FrameFilterParams::default() {
@@ -214,15 +215,6 @@ pub(crate) fn finish_key_frame(
     Ok(FilteredFrame { core, tile, recon })
 }
 
-/// Lagrange multiplier for SSE per bit: `0.09 * qstep^2`, `qstep` the luma AC
-/// step in sample units.
-fn lambda(qindex: u32, bit_depth: BitDepth) -> Result<f64> {
-    let (params, _) =
-        dct_recon_params(qindex, PlaneId::Y, 3, 3, bit_depth).map_err(coding("quantizer step"))?;
-    let step = f64::from(params.ac_quant) / 64.0;
-    Ok(0.09 * step * step)
-}
-
 fn coding<E: std::error::Error + Send + Sync + 'static>(
     stage: &'static str,
 ) -> impl FnOnce(E) -> Error {
@@ -240,7 +232,7 @@ struct Search<'a> {
     source: &'a SourceFrame,
     recorder: &'a FilterRecorder,
     recon: &'a DecodedFrame<u16>,
-    lambda: f64,
+    lambda: Lambda,
 }
 
 impl Search<'_> {
@@ -390,10 +382,14 @@ impl Search<'_> {
             let distortion: u64 = (0..units)
                 .map(|unit| sets.iter().map(|&set| cost(unit, set)).min().unwrap_or(0))
                 .sum();
-            distortion as f64 + self.lambda * cdef_rate(sets.len(), units)
+            RdCost {
+                distortion,
+                rate: cdef_rate(sets.len(), units),
+            }
+            .cost(self.lambda)
         };
         let mut sets: Vec<(usize, usize)> = Vec::new();
-        let mut best_total = f64::INFINITY;
+        let mut best_total = u128::MAX;
         while sets.len() < MAX_CDEF_STRENGTH_SETS {
             let mut trial = sets.clone();
             trial.push((0, 0));
@@ -404,7 +400,7 @@ impl Search<'_> {
                     *trial.last_mut().unwrap_or(&mut (0, 0)) = pair;
                     (total(&trial), pair)
                 })
-                .min_by(|a, b| a.0.total_cmp(&b.0));
+                .min_by_key(|&(value, _)| value);
             match pick {
                 Some((value, pair)) if value < best_total => {
                     best_total = value;
@@ -534,13 +530,12 @@ fn cdef_sets(sets: &[CdefStrengthSet]) -> CdefStrengthSets {
 
 /// Approximate bits of `sets` strength sets: header bits plus the `cdef_idx`
 /// symbols of every unit.
-fn cdef_rate(sets: usize, units: usize) -> f64 {
+fn cdef_rate(sets: usize, units: usize) -> Bits {
     let per_unit = match sets {
-        0 | 1 => 0.0,
-        2 => 1.0,
-        n => 1.0 + ((n - 1) as f64).log2(),
+        0 | 1 => 0,
+        n => Bits::whole(1).0 + u64::from(log2_q8(n as u32 - 1)),
     };
-    sets as f64 * CDEF_SET_HEADER_BITS + per_unit * units as f64
+    Bits(Bits::whole(CDEF_SET_HEADER_BITS).0 * sets as u64 + per_unit * units as u64)
 }
 
 #[cfg(test)]
