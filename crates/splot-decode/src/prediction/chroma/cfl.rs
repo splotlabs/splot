@@ -10,7 +10,9 @@
 //! `DECODE-GENERAL-INTRA-CFL-NON-420`,
 //! `DECODE-MHCCP-FRAME-EDGE-REFERENCE-EXTENT`.
 
-use std::simd::{Simd, ToBytes, num::SimdUint, simd_swizzle};
+use std::simd::cmp::{SimdOrd, SimdPartialOrd};
+use std::simd::num::{SimdInt, SimdUint};
+use std::simd::{Select, Simd, ToBytes, simd_swizzle};
 
 use splot_recon::math::{approx_divide, resolve_division, round2_signed_i32};
 use splot_recon::mhccp::{MhccpPredictor, MhccpRefs, derive_mhccp_params};
@@ -37,6 +39,8 @@ const CFL_ALPHA_SHIFT: u32 = 11;
 const CFL_ALPHA_SCALE: i32 = 32;
 const CFL_DERIVED_ALPHA_SHIFT: u8 = 8;
 const NUM_REF_SAM_CFL: usize = 8;
+/// The widest CfL row the lane run of [`CflLumaRow::q3_sum`] buffers.
+const MAX_CFL_RUN: usize = 64;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
@@ -388,13 +392,11 @@ fn apply_cfl_prediction<T: ReconSample>(
             context: "CfL luma AC length",
         });
     };
-    let predict = |ac: i32| (dc + round2_signed_i32(alpha_q3 * ac, CFL_ALPHA_SHIFT)).clamp(0, max);
+    let predict = |ac: i32| cfl_predict(dc, alpha_q3, max, ac);
     prediction.clear();
     prediction.resize(luma_ac.len(), T::default());
     if let Some(out) = T::u16_slice_mut(prediction) {
-        for (slot, &ac) in out.iter_mut().zip(luma_ac) {
-            *slot = predict(ac) as u16;
-        }
+        cfl_predict_lanes_u16(dc, alpha_q3, max, luma_ac, out);
     } else if max <= i32::from(u8::MAX)
         && let Some(out) = T::u8_slice_mut(prediction)
     {
@@ -407,6 +409,33 @@ fn apply_cfl_prediction<T: ReconSample>(
         }
     }
     Ok(())
+}
+
+/// One § 7.13.5 CfL sample: `Clip1(dc + Round2Signed(alpha * L, 11))`.
+#[inline]
+fn cfl_predict(dc: i32, alpha_q3: i32, max: i32, ac: i32) -> i32 {
+    (dc + round2_signed_i32(alpha_q3 * ac, CFL_ALPHA_SHIFT)).clamp(0, max)
+}
+
+/// [`cfl_predict`] over `luma_ac` into `out` in 8-lane groups. `Round2Signed`
+/// rounds the magnitude, so each lane rounds `|alpha * L|` and restores the
+/// sign.
+#[inline(never)]
+fn cfl_predict_lanes_u16(dc: i32, alpha_q3: i32, max: i32, luma_ac: &[i32], out: &mut [u16]) {
+    const LANES: usize = 8;
+    let mut groups = out.chunks_exact_mut(LANES);
+    let mut acs = luma_ac.chunks_exact(LANES);
+    for (out, ac) in groups.by_ref().zip(acs.by_ref()) {
+        let scaled = Simd::<i32, LANES>::from_slice(ac) * Simd::splat(alpha_q3);
+        let rounded =
+            (scaled.abs() + Simd::splat(1 << (CFL_ALPHA_SHIFT - 1))) >> CFL_ALPHA_SHIFT as i32;
+        let signed = scaled.simd_lt(Simd::splat(0)).select(-rounded, rounded);
+        let predicted = (Simd::splat(dc) + signed).simd_clamp(Simd::splat(0), Simd::splat(max));
+        out.copy_from_slice(&predicted.cast::<u16>().to_array()); // splot-copy-ok: publish eight CfL samples
+    }
+    for (slot, &ac) in groups.into_remainder().iter_mut().zip(acs.remainder()) {
+        *slot = cfl_predict(dc, alpha_q3, max, ac) as u16;
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -796,18 +825,21 @@ fn cfl_luma_average_q3<T: ReconSample>(
     let mut count = 0u32;
     if let Some(above_y) = neighbours.has_above().then(|| y.checked_sub(1)).flatten() {
         let min_luma_ref_y = cfl_above_min_luma_ref_y(y, sb_mib, luma.pixel_format);
-        let above_row = luma.row(above_y, false, min_luma_ref_y);
-        for col in (0..width).step_by(step_w) {
-            let chroma_x = x.saturating_add(col);
-            sum = sum.saturating_add(above_row.q3(chroma_x, col == 0)? as u32);
-            count = count.saturating_add(1);
-        }
+        (sum, count) = luma
+            .row(above_y, false, min_luma_ref_y)
+            .q3_sum(x, width, step_w)?;
     }
     if let Some(left_x) = neighbours.has_left().then(|| x.checked_sub(1)).flatten() {
-        for row in (0..height).step_by(step_h) {
-            let chroma_y = y.saturating_add(row);
-            sum = sum.saturating_add(luma.q3(left_x, chroma_y, false, row == 0, None)? as u32);
-            count = count.saturating_add(1);
+        let rows = height.div_ceil(step_h);
+        if let Some(column) = cfl_420_column_sum_u16(luma, left_x, y, rows, step_h) {
+            sum = sum.saturating_add(column);
+            count = count.saturating_add(rows as u32);
+        } else {
+            for row in (0..height).step_by(step_h) {
+                let chroma_y = y.saturating_add(row);
+                sum = sum.saturating_add(luma.q3(left_x, chroma_y, false, row == 0, None)? as u32);
+                count = count.saturating_add(1);
+            }
         }
     }
     if count == 0 {
@@ -1163,6 +1195,13 @@ impl<T: ReconSample> CflLumaRow<'_, '_, T> {
         Ok(total)
     }
 
+    /// The `u16` tap rows of a horizontally subsampled plane, when the lane
+    /// forms apply.
+    fn lane_rows(&self) -> Option<[&[u16]; 3]> {
+        let [r0, r1, r2] = self.rows?.map(T::u16_slice);
+        (self.luma.sub_x == 1).then_some([r0?, r1?, r2?])
+    }
+
     /// [`Self::q3`] at `chroma_x0 + i` for each `out[i]`; only the first
     /// sample clamps when `clamp_first`.
     fn q3_run(
@@ -1171,39 +1210,15 @@ impl<T: ReconSample> CflLumaRow<'_, '_, T> {
         clamp_first: bool,
         out: &mut [i32],
     ) -> splot_recon::Result<()> {
-        const LANES: usize = 8;
-        let luma = self.luma;
         let mut done = 0;
-        if luma.sub_x == 1
-            && let Some(rows) = &self.rows
-            && let [Some(r0), Some(r1), Some(r2)] = (*rows).map(T::u16_slice)
-        {
-            let rows = [r0, r1, r2];
-            let width = luma.plane.width;
-            done = usize::from(clamp_first || chroma_x0 == 0).min(out.len());
+        if let Some(rows) = self.lane_rows() {
+            done = usize::from(chroma_x0 == 0).min(out.len());
             for (i, slot) in out[..done].iter_mut().enumerate() {
                 *slot = self.q3(chroma_x0 + i, clamp_first)?;
             }
-            while done + LANES <= out.len() && 2 * (chroma_x0 + done) + 2 * LANES < width {
-                let luma_x = 2 * (chroma_x0 + done);
-                let acc = match (luma.sub_y, luma.filter_index) {
-                    (1, Some(0)) => cfl_420_chunk::<0>(rows, luma_x),
-                    (1, Some(1)) => cfl_420_chunk::<1>(rows, luma_x),
-                    (1, Some(2)) => cfl_420_chunk::<2>(rows, luma_x),
-                    _ => {
-                        let mut acc = Simd::<i32, LANES>::splat(0);
-                        for &(dx, dy, weight) in &luma.taps[..luma.tap_count] {
-                            let start = luma_x.wrapping_add_signed(dx);
-                            let row = rows[(dy + 1) as usize];
-                            let v = Simd::<u16, 16>::from_slice(&row[start..start + 16]);
-                            let even = simd_swizzle!(v, [0, 2, 4, 6, 8, 10, 12, 14]).cast::<i32>();
-                            acc += even * Simd::splat(weight);
-                        }
-                        acc
-                    }
-                };
-                out[done..done + LANES].copy_from_slice(&acc.to_array()); // splot-copy-ok: publish eight CfL luma samples
-                done += LANES;
+            done = cfl_q3_lanes_u16(self.luma, rows, chroma_x0, done, out);
+            if clamp_first && done > 0 {
+                out[0] = self.q3(chroma_x0, true)?;
             }
         }
         for (i, slot) in out.iter_mut().enumerate().skip(done) {
@@ -1211,6 +1226,126 @@ impl<T: ReconSample> CflLumaRow<'_, '_, T> {
         }
         Ok(())
     }
+
+    /// The sum and count of [`Self::q3`] at `chroma_x0 + col` for every
+    /// `step`-th `col < width`; only the first sample clamps.
+    fn q3_sum(
+        &self,
+        chroma_x0: usize,
+        width: usize,
+        step: usize,
+    ) -> splot_recon::Result<(u32, u32)> {
+        let mut run = [0i32; MAX_CFL_RUN];
+        if self.lane_rows().is_some()
+            && let Some(run) = run.get_mut(..width)
+        {
+            self.q3_run(chroma_x0, true, run)?;
+            return Ok(run.iter().step_by(step).fold((0, 0), |(sum, count), &q3| {
+                (u32::saturating_add(sum, q3 as u32), count + 1)
+            }));
+        }
+        let (mut sum, mut count) = (0u32, 0u32);
+        for col in (0..width).step_by(step) {
+            let q3 = self.q3(chroma_x0.saturating_add(col), col == 0)?;
+            sum = sum.saturating_add(q3 as u32);
+            count = count.saturating_add(1);
+        }
+        Ok((sum, count))
+    }
+}
+
+/// The 8- and 4-lane groups of [`CflLumaRow::q3_run`] from `out[done]` on, over the
+/// `u16` tap rows of a horizontally subsampled plane; returns the first
+/// sample it did not write.
+#[inline(never)]
+fn cfl_q3_lanes_u16<T: ReconSample>(
+    luma: &CflLuma<'_, T>,
+    rows: [&[u16]; 3],
+    chroma_x0: usize,
+    mut done: usize,
+    out: &mut [i32],
+) -> usize {
+    const LANES: usize = 8;
+    let width = luma.plane.width;
+    while done + LANES <= out.len() && 2 * (chroma_x0 + done) + 2 * LANES < width {
+        let luma_x = 2 * (chroma_x0 + done);
+        let acc = match (luma.sub_y, luma.filter_index) {
+            (1, Some(0)) => cfl_420_chunk::<0>(rows, luma_x),
+            (1, Some(1)) => cfl_420_chunk::<1>(rows, luma_x),
+            (1, Some(2)) => cfl_420_chunk::<2>(rows, luma_x),
+            _ => {
+                let mut acc = Simd::<i32, LANES>::splat(0);
+                for &(dx, dy, weight) in &luma.taps[..luma.tap_count] {
+                    let start = luma_x.wrapping_add_signed(dx);
+                    let row = rows[(dy + 1) as usize];
+                    let v = Simd::<u16, 16>::from_slice(&row[start..start + 16]);
+                    let even = simd_swizzle!(v, [0, 2, 4, 6, 8, 10, 12, 14]).cast::<i32>();
+                    acc += even * Simd::splat(weight);
+                }
+                acc
+            }
+        };
+        out[done..done + LANES].copy_from_slice(&acc.to_array()); // splot-copy-ok: publish eight CfL luma samples
+        done += LANES;
+    }
+    while done + 4 <= out.len() && 2 * (chroma_x0 + done) + 8 < width {
+        let luma_x = 2 * (chroma_x0 + done);
+        let mut acc = Simd::<i32, 4>::splat(0);
+        for &(dx, dy, weight) in &luma.taps[..luma.tap_count] {
+            let start = luma_x.wrapping_add_signed(dx);
+            let v = Simd::<u16, 8>::from_slice(&rows[(dy + 1) as usize][start..start + 8]);
+            acc += simd_swizzle!(v, [0, 2, 4, 6]).cast::<i32>() * Simd::splat(weight);
+        }
+        out[done..done + 4].copy_from_slice(&acc.to_array()); // splot-copy-ok: publish four CfL luma samples
+        done += 4;
+    }
+    done
+}
+
+/// The sum of [`CflLuma::q3`] down chroma column `chroma_x` of a 4:2:0 `u16`
+/// plane, over chroma rows `chroma_y0 + k * step` for `k < count` with only
+/// the first row clamped, or `None` when a tap row is not stored or a tap
+/// column clamps. The sum is linear, so each tap row adds one lane per tap
+/// column and the lanes reduce once.
+#[inline(never)]
+fn cfl_420_column_sum_u16<T: ReconSample>(
+    luma: &CflLuma<'_, T>,
+    chroma_x: usize,
+    chroma_y0: usize,
+    count: usize,
+    step: usize,
+) -> Option<u32> {
+    let plane = &luma.plane;
+    let samples = T::u16_slice(plane.samples)?;
+    let weights = CFL_FILTERS_420[luma.filter_index?];
+    let max_y = plane.height.checked_sub(1)?;
+    let luma_x = clamped_cfl_luma_coordinate(chroma_x, 1, plane.width.checked_sub(1)?);
+    if luma.sub_x != 1 || luma.sub_y != 1 || luma_x == 0 || luma_x + 2 >= plane.width {
+        return None;
+    }
+    let tap_row = |y: usize| {
+        let local = y.checked_sub(plane.origin_y)?;
+        let start = (local < plane.stored_rows).then_some(local * plane.stride + luma_x - 1)?;
+        let taps = samples.get(start..start + 4)?;
+        Some(Simd::<u16, 4>::from_slice(taps).cast::<i32>())
+    };
+    let weights = weights.map(|[left, center, right]| Simd::from_array([left, center, right, 0]));
+    let mut acc = Simd::<i32, 4>::splat(0);
+    for k in 0..count {
+        let luma_y = clamped_cfl_luma_coordinate(chroma_y0.checked_add(k * step)?, 1, max_y);
+        let top = if k == 0 {
+            luma_y
+        } else {
+            luma_y.saturating_sub(1)
+        };
+        for (y, weights) in [top, luma_y, (luma_y + 1).min(max_y)]
+            .into_iter()
+            .zip(weights)
+        {
+            acc += tap_row(y)? * weights;
+        }
+    }
+    Some(acc.reduce_sum() as u32)
 }
 
 /// Eight § 7.13.5 4:2:0 Q3 luma samples of filter `F` from luma column
