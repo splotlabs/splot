@@ -18,7 +18,11 @@
 //! A temporal unit holds the hidden frames coded since the last output and
 //! one output: a shown frame or a show-existing frame (§ 7.3.3, § 7.3.4,
 //! § 7.3.6). A key frame refreshes every slot and keeps only slot 0 valid
-//! (§ 7.23); any other frame refreshes one slot: an empty one, else the one
+//! (§ 7.23). A frame shown when coded above layer 0 is a non-reference frame
+//! (`refresh_frame_flags = 0`), except the last one of its mini-GOP: the
+//! § 5.18.2 `OrderHint` derivation needs a shown reference within half the
+//! order-hint window, and the other references of a mini-GOP are hidden. Any
+//! other frame refreshes one slot: an empty one, else the one
 //! with the oldest display index that no show-existing frame waits for. The
 //! § 7.7 implicit reference map ranks the valid slots by display distance and
 //! `base_q_idx`, so at one quantizer the closest frames rank first.
@@ -112,6 +116,8 @@ pub(crate) struct GopPlanner {
     /// Scene cuts not planned yet, ascending.
     cuts: Vec<u64>,
     after_output: bool,
+    /// Display index of the last frame of the mini-GOP being planned.
+    last_display: u64,
 }
 
 impl GopPlanner {
@@ -128,6 +134,7 @@ impl GopPlanner {
             scheduled_key: 0,
             cuts: Vec::new(),
             after_output: true,
+            last_display: 0,
         }
     }
 
@@ -197,6 +204,7 @@ impl GopPlanner {
             anchor = first;
         }
         if last > anchor {
+            self.last_display = last;
             self.place(anchor, last, 0, &mut steps)?;
         }
         self.next_display = last + 1;
@@ -249,21 +257,25 @@ impl GopPlanner {
         show_frame: bool,
         layer: u8,
     ) -> Result<GopStep> {
-        let (slot, refresh_frame_flags, ref_slots) = if frame_type == FrameType::Key {
+        let (slot, refresh_frame_flags) = if frame_type == FrameType::Key {
             self.slots = [None; REF_SLOTS];
             self.key_display = display_index;
-            (0, (1 << REF_SLOTS) - 1, 0)
+            (Some(0), (1 << REF_SLOTS) - 1)
+        } else if show_frame && layer > 0 && display_index + 1 != self.last_display {
+            (None, 0)
         } else {
-            let ref_slots = (0..REF_SLOTS)
-                .filter(|&slot| self.slots[slot].is_some())
-                .fold(0, |mask, slot| mask | 1 << slot);
             let slot = self.refresh_slot()?;
-            (slot, 1 << slot, ref_slots)
+            (Some(slot), 1 << slot)
         };
-        self.slots[slot] = Some(Slot {
-            display_index,
-            awaiting_show: !show_frame,
-        });
+        let ref_slots = (0..REF_SLOTS)
+            .filter(|&slot| self.slots[slot].is_some())
+            .fold(0, |mask, slot| mask | 1 << slot);
+        if let Some(slot) = slot {
+            self.slots[slot] = Some(Slot {
+                display_index,
+                awaiting_show: !show_frame,
+            });
+        }
         let frame = GopFrame {
             frame_index: self.next_frame,
             display_index,

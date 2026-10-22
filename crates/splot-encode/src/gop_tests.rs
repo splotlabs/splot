@@ -29,8 +29,9 @@ fn check(keyint: u32, mini_gop_size: u8, frames: u64) {
     let case = format!("keyint {keyint} mini-GOP {mini_gop_size} frames {frames}");
     let steps = run(keyint, mini_gop_size, frames);
     let mut slots: [Option<u64>; REF_SLOTS] = [None; REF_SLOTS];
-    let (mut hidden, mut coded, mut outputs) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut hidden, mut refs, mut outputs) = (Vec::new(), Vec::new(), Vec::new());
     let (mut coded_count, mut key_display, mut after_output) = (0, 0, true);
+    let mut shown = Vec::new();
     for step in &steps {
         match *step {
             GopStep::Code(frame) => {
@@ -47,14 +48,14 @@ fn check(keyint: u32, mini_gop_size: u8, frames: u64) {
                     assert_eq!(frame.refresh_frame_flags, 0xff, "{case}");
                     (key_display, slots) = (display, [None; REF_SLOTS]);
                     slots[0] = Some(display);
-                    coded.clear();
+                    refs.clear();
                 } else {
                     let valid = (0..REF_SLOTS)
                         .filter(|&slot| slots[slot].is_some())
                         .fold(0, |mask, slot| mask | 1 << slot);
                     assert_eq!(frame.ref_slots, valid, "{case}: frame {display}");
-                    let closest_past = coded.iter().filter(|&&d| d < display).max();
-                    let closest_future = coded.iter().filter(|&&d| d > display).min();
+                    let closest_past = refs.iter().filter(|&&d| d < display).max();
+                    let closest_future = refs.iter().filter(|&&d| d > display).min();
                     assert!(closest_past.is_some(), "{case}: frame {display}");
                     for closest in [closest_past, closest_future].into_iter().flatten() {
                         assert!(
@@ -62,19 +63,35 @@ fn check(keyint: u32, mini_gop_size: u8, frames: u64) {
                             "{case}: frame {display} lost reference {closest}"
                         );
                     }
-                    assert_eq!(frame.refresh_frame_flags.count_ones(), 1, "{case}");
+                    let newest_shown = slots.iter().flatten().filter(|d| shown.contains(*d)).max();
+                    assert!(
+                        newest_shown.is_some_and(|&d| display.abs_diff(d) < 128),
+                        "{case}: frame {display} cannot derive its OrderHint"
+                    );
+                    let leaf = frame.show_frame && frame.layer > 0;
+                    let refreshed = frame.refresh_frame_flags.count_ones();
+                    assert!(
+                        refreshed == 1 || leaf && refreshed == 0,
+                        "{case}: {display}"
+                    );
                     let slot = frame.refresh_frame_flags.trailing_zeros() as usize;
-                    if let Some(evicted) = slots[slot] {
+                    if let Some(evicted) = slots.get(slot).copied().flatten() {
                         assert!(
                             !hidden.contains(&evicted),
                             "{case}: frame {display} evicts hidden frame {evicted}"
                         );
                     }
-                    slots[slot] = Some(display);
+                    if refreshed == 1 {
+                        slots[slot] = Some(display);
+                    }
                 }
                 assert_eq!(u64::from(frame.order_hint), display - key_display, "{case}");
-                coded.push(display);
-                if !frame.show_frame {
+                if frame.refresh_frame_flags != 0 {
+                    refs.push(display);
+                }
+                if frame.show_frame {
+                    shown.push(display);
+                } else {
                     hidden.push(display);
                 }
                 coded_count += 1;
@@ -108,6 +125,9 @@ fn every_plan_shows_frames_in_input_order_from_the_right_slots() {
                 check(keyint, mini_gop_size, frames);
             }
         }
+    }
+    for mini_gop_size in 1..=8 {
+        check(600, mini_gop_size, 520);
     }
 }
 
