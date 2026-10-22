@@ -236,7 +236,7 @@ impl ResidualCoder for RecordedLevels {
 /// The 64x64 frame of one `DC_PRED` leaf: the tile writer's bit count and the estimate.
 fn leaf_frame_rates(bit_depth: BitDepthIdc, qindex: u32, seed: u64) -> (f64, f64) {
     let (seq, core) = headers(64, 64, bit_depth, qindex);
-    let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq)).unwrap();
+    let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq), 0).unwrap();
     let mut coder = RecordedLevels {
         rng: Rng(seed | 1),
         max_level: 1 + seed % 300,
@@ -248,7 +248,7 @@ fn leaf_frame_rates(bit_depth: BitDepthIdc, qindex: u32, seed: u64) -> (f64, f64
         .unwrap();
     let (tile, _) = writer.finish().unwrap();
 
-    let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq)).unwrap();
+    let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap();
     let root = syntax.superblock_root(0, 0);
     syntax.begin_superblock(root);
     let options = syntax.partition_options(root).unwrap();
@@ -295,7 +295,7 @@ fn coefficient_rates_match_the_tile_writer() {
 #[test]
 fn frozen_rates_leave_rows_unchanged_and_track_adapting_rates() {
     let (seq, core) = headers(64, 64, BitDepthIdc::Eight, 90);
-    let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq)).unwrap();
+    let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap();
     let root = syntax.superblock_root(0, 0);
     syntax.begin_superblock(root);
     let leaf = syntax.leaf(root).unwrap();
@@ -350,7 +350,7 @@ fn code_trial(
 fn snapshot_restores_the_facade() {
     let (seq, core) = headers(64, 64, BitDepthIdc::Eight, 90);
     let fresh = || {
-        let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq)).unwrap();
+        let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap();
         let root = syntax.superblock_root(0, 0);
         syntax.begin_superblock(root);
         let mut symbols = SymbolEncoder::new();

@@ -7,13 +7,14 @@
 //! A tile codes `cdef_idx` and `use_pc_wiener` before the frame is reconstructed,
 //! but the search needs the reconstruction. So a frame takes two passes:
 //!
-//! 1. The tile is coded with every filter off. [`FrameDecisions`] keeps each
-//!    superblock decision and each transform decision.
-//! 2. [`finish_frame`] searches the filter parameters on the pass-1
-//!    reconstruction with the decoder's own filter chain. If any filter is on,
-//!    it replays the kept decisions through a new tile writer whose header
-//!    enables the filters, so the tile also codes the filter syntax. The
-//!    unfiltered reconstruction does not change between the passes.
+//! 1. Each tile is coded with every filter off. [`FrameDecisions`] keeps each
+//!    superblock decision and each transform decision of a tile.
+//! 2. [`finish_frame`] merges the tiles and searches the filter parameters on
+//!    the pass-1 reconstruction with the decoder's own filter chain. If any
+//!    filter is on, it replays the kept decisions of each tile through a new
+//!    tile writer whose header enables the filters, so the tile also codes the
+//!    filter syntax. The unfiltered reconstruction does not change between
+//!    the passes.
 
 use std::collections::BTreeSet;
 
@@ -23,12 +24,14 @@ use splot_core::headers::frame::{
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
     EncoderReferences, FilterRecorder, IntraTileSyntax, LrLayout, LrUnit, TransformBlock,
-    apply_loop_filters, cdef_unit_grid,
+    apply_loop_filters, cdef_unit_grid, merge_tiles,
 };
+use splot_parallel::WorkerPool;
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
+use crate::intra_frame::map_tiles;
 use crate::preset::PresetParams;
 use crate::rd::{Bits, Lambda, RdCost, log2_q8};
 use crate::tile_writer::filters::FilterSyntax;
@@ -87,6 +90,18 @@ impl FrameDecisions {
         self.superblocks.push(decision);
         Ok(())
     }
+
+    /// Writes the kept decisions again through `writer`.
+    fn replay(self, writer: &mut KeyFrameTileWriter) -> core::result::Result<(), TileWriterError> {
+        let mut replay = Replay(self.transforms.into_iter());
+        for decision in &self.superblocks {
+            writer.write_superblock(decision, &mut replay)?;
+        }
+        if replay.0.next().is_some() {
+            return Err(TileWriterError::Shape("replayed transform count"));
+        }
+        Ok(())
+    }
 }
 
 /// Forwards every transform to `coder` and keeps it for the second pass.
@@ -136,35 +151,118 @@ impl ResidualCoder for Replay {
     }
 }
 
-/// The first pass of a frame.
-pub(crate) struct FirstPass {
-    pub(crate) core: FrameHeaderCore,
-    pub(crate) tile: Vec<u8>,
-    pub(crate) recon: DecodedFrame<u16>,
-    pub(crate) recorder: FilterRecorder,
-    pub(crate) decisions: FrameDecisions,
+/// One tile coded by its own writer.
+pub(crate) struct CodedTile {
+    bytes: Vec<u8>,
+    recon: DecodedFrame<u16>,
+    recorder: FilterRecorder,
+    syntax: FilterSyntax,
+    decisions: FrameDecisions,
 }
 
-/// A coded frame: its header, its filters, its tile, and its filtered
+impl CodedTile {
+    /// The finished `writer` and the `decisions` it wrote.
+    pub(crate) fn finish(
+        writer: KeyFrameTileWriter,
+        decisions: FrameDecisions,
+    ) -> core::result::Result<Self, TileWriterError> {
+        let (bytes, recon, (recorder, syntax)) = writer.finish_with_filters()?;
+        Ok(Self {
+            bytes,
+            recon,
+            recorder,
+            syntax,
+            decisions,
+        })
+    }
+}
+
+/// The tiles of a frame put together: the bytes of each tile, the merged
+/// reconstruction, filter records and coded filter choices, and the decisions
+/// of each tile.
+struct MergedTiles {
+    bytes: Vec<Vec<u8>>,
+    recon: DecodedFrame<u16>,
+    recorder: FilterRecorder,
+    syntax: FilterSyntax,
+    decisions: Vec<FrameDecisions>,
+}
+
+impl MergedTiles {
+    /// `tiles` of the frame `core`, in tile order.
+    fn new(core: &FrameHeaderCore, tiles: Vec<CodedTile>) -> Result<Self> {
+        let mut bytes = Vec::with_capacity(tiles.len());
+        let mut recons = Vec::with_capacity(tiles.len());
+        let mut recorder: Option<FilterRecorder> = None;
+        let mut syntax = FilterSyntax::default();
+        let mut decisions = Vec::with_capacity(tiles.len());
+        for tile in tiles {
+            bytes.push(tile.bytes);
+            recons.push(tile.recon);
+            match recorder.as_mut() {
+                Some(recorder) => recorder.append(tile.recorder),
+                None => recorder = Some(tile.recorder),
+            }
+            if syntax.cdef_indices.is_empty() {
+                syntax.cdef_indices = tile.syntax.cdef_indices;
+            } else {
+                for (index, coded) in syntax.cdef_indices.iter_mut().zip(tile.syntax.cdef_indices) {
+                    *index = index.or(coded);
+                }
+            }
+            syntax.lr_on.extend(tile.syntax.lr_on);
+            decisions.push(tile.decisions);
+        }
+        let recon = match <[_; 1]>::try_from(recons) {
+            Ok([recon]) => recon,
+            Err(recons) => merge_tiles(core, &recons).map_err(coding("tile merge"))?,
+        };
+        Ok(Self {
+            bytes,
+            recon,
+            recorder: recorder.ok_or(Error::Unsupported {
+                what: "a frame without tiles",
+            })?,
+            syntax,
+            decisions,
+        })
+    }
+}
+
+/// The first pass of a frame: its header and its tiles in tile order.
+pub(crate) struct FirstPass {
+    pub(crate) core: FrameHeaderCore,
+    pub(crate) tiles: Vec<CodedTile>,
+}
+
+/// A coded frame: its header, its filters, its tiles, and its filtered
 /// reconstruction.
 pub(crate) struct FilteredFrame {
     pub(crate) core: FrameHeaderCore,
     pub(crate) filters: FrameFilterParams,
-    pub(crate) tile: Vec<u8>,
+    pub(crate) tiles: Vec<Vec<u8>>,
     pub(crate) recon: DecodedFrame<u16>,
 }
 
 /// Builds the frame header with the given loop filters.
 pub(crate) type HeaderBuilder<'a> = &'a dyn Fn(&FrameFilterParams) -> Result<FrameHeaderCore>;
 
-/// Picks the frame's loop filters and, when any is on, codes the second pass.
+/// Picks the frame's loop filters and, when any is on, codes the second pass
+/// of every tile, on `pool` when there is one.
 pub(crate) fn finish_frame(
     seq: &SequenceHeader,
     header: HeaderBuilder<'_>,
     preset: &PresetParams,
-    (source, refs): (&SourceFrame, &EncoderReferences),
+    (source, refs, pool): (&SourceFrame, &EncoderReferences, Option<&WorkerPool>),
     pass: FirstPass,
 ) -> Result<FilteredFrame> {
+    let MergedTiles {
+        bytes,
+        recon,
+        recorder,
+        decisions,
+        ..
+    } = MergedTiles::new(&pass.core, pass.tiles)?;
     let qindex = pass
         .core
         .quantization_params
@@ -177,43 +275,50 @@ pub(crate) fn finish_frame(
         header,
         qindex,
         source,
-        recorder: &pass.recorder,
-        recon: &pass.recon,
-        lambda: Lambda::from_qindex(qindex, pass.recon.bit_depth()).map_err(coding("lambda"))?,
+        recorder: &recorder,
+        recon: &recon,
+        lambda: Lambda::from_qindex(qindex, recon.bit_depth()).map_err(coding("lambda"))?,
     };
     let (params, syntax) = search.run(preset)?;
     if params == FrameFilterParams::default() {
         return Ok(FilteredFrame {
             core: pass.core,
             filters: params,
-            tile: pass.tile,
-            recon: pass.recon,
+            tiles: bytes,
+            recon,
         });
     }
     let core = search.header(&params)?;
-    let mut writer = KeyFrameTileWriter::new(seq, &core, refs).map_err(coding("filter pass"))?;
-    writer.set_filter_syntax(syntax);
-    let mut replay = Replay(pass.decisions.transforms.into_iter());
-    for decision in &pass.decisions.superblocks {
-        writer
-            .write_superblock(decision, &mut replay)
-            .map_err(coding("filter pass"))?;
-    }
-    if replay.0.next().is_some() {
-        return Err(coding("filter pass")(TileWriterError::Shape(
-            "replayed transform count",
-        )));
-    }
-    let (tile, recon, (recorder, coded)) = writer
-        .finish_with_filters()
+    let writers = decisions
+        .into_iter()
+        .enumerate()
+        .map(|(tile, decisions)| {
+            let mut writer = KeyFrameTileWriter::new(seq, &core, refs, tile)?;
+            writer.set_filter_syntax(syntax.clone());
+            Ok((writer, decisions))
+        })
+        .collect::<core::result::Result<Vec<_>, TileWriterError>>()
         .map_err(coding("filter pass"))?;
+    let tiles = map_tiles(pool, writers, |(mut writer, decisions)| {
+        decisions
+            .replay(&mut writer)
+            .and_then(|()| CodedTile::finish(writer, FrameDecisions::default()))
+            .map_err(coding("filter pass"))
+    })?;
+    let MergedTiles {
+        bytes,
+        recon,
+        recorder,
+        syntax: coded,
+        ..
+    } = MergedTiles::new(&core, tiles)?;
     let lr_on: Vec<LrUnit> = coded.lr_on.into_iter().collect();
     let recon = apply_loop_filters(seq, &core, &recorder, &recon, &coded.cdef_indices, &lr_on)
         .map_err(coding("loop filters"))?;
     Ok(FilteredFrame {
         core,
         filters: params,
-        tile,
+        tiles: bytes,
         recon,
     })
 }
@@ -451,8 +556,14 @@ impl Search<'_> {
         cdef_indices: &[Option<usize>],
     ) -> Result<BTreeSet<LrUnit>> {
         let core = self.header(params)?;
-        let layout = LrLayout::new(self.seq, &core).map_err(coding("restoration layout"))?;
-        let units = layout.all_units().map_err(coding("restoration layout"))?;
+        let layouts = LrLayout::tiles(self.seq, &core).map_err(coding("restoration layout"))?;
+        let mut tile_units = Vec::new();
+        for layout in &layouts {
+            for unit in layout.all_units().map_err(coding("restoration layout"))? {
+                tile_units.push((layout, unit));
+            }
+        }
+        let units: Vec<LrUnit> = tile_units.iter().map(|&(_, unit)| unit).collect();
         let run = |lr_on: &[LrUnit]| {
             apply_loop_filters(
                 self.seq,
@@ -467,7 +578,7 @@ impl Search<'_> {
         let off = run(&[])?;
         let on = run(&units)?;
         let mut chosen = BTreeSet::new();
-        for unit in units {
+        for (layout, unit) in tile_units {
             let (mut sse_on, mut sse_off) = (0, 0);
             for rect in layout
                 .unit_rects(unit)

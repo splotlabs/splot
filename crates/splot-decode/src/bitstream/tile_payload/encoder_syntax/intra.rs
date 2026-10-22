@@ -7,6 +7,8 @@
 //! then predicts and reconstructs through the decoder's per-unit kernel
 //! dispatch, so the encoder never assembles edges or prediction itself.
 
+use core::ops::Range;
+
 use splot_core::headers::frame::{FrameHeaderCore, TxMode};
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
 use splot_core::symbol::Symbol;
@@ -43,6 +45,7 @@ use crate::pipeline::general_intra::{
     general_intra_chroma_tools, inherited_chroma_angle_delta, luma_transform_type_context,
     record_chroma_smooth, rect_chroma_plan, rect_luma_plan, sequence_cfl_ds_filter_index,
 };
+use crate::prediction::inter::chroma_smooth_tile_ranges;
 use crate::prediction::intra_edge::{IntraEdgeCtx, TileSmoothGrid};
 use crate::residual::pipeline::GeneralIntraResidualPlan;
 use crate::tile::block_context::BlockCtx;
@@ -273,12 +276,13 @@ pub(super) struct Recon {
 
 impl Recon {
     /// A 4:2:0 frame of the decoder's geometry: `FrameWidth x FrameHeight`
-    /// samples over `MiCols * 4 x MiRows * 4` storage.
+    /// samples over `MiCols * 4 x MiRows * 4` storage, with the prediction
+    /// state of the tile over luma 4x4 `rows` and `cols`.
     pub(super) fn new(
         seq: &SequenceHeader,
         core: &FrameHeaderCore,
         tools: &IntraTools,
-        (mi_rows, mi_cols): (usize, usize),
+        (rows, cols): (Range<usize>, Range<usize>),
         sb_size4: usize,
     ) -> Result<Self> {
         if seq.general.chroma_format_idc != ChromaFormatIdc::Yuv420 {
@@ -290,6 +294,7 @@ impl Recon {
             .frame_size
             .ok_or(EncoderSyntaxError::Unsupported("missing frame size"))?;
         let (width, height) = (size.width as usize, size.height as usize);
+        let (mi_rows, mi_cols) = (height.div_ceil(8) * 2, width.div_ceil(8) * 2);
         let workspace = PlaneSize::new(width, height)
             .and_then(|size| {
                 DecodedFrameInfo::new(
@@ -305,11 +310,11 @@ impl Recon {
             .map_err(rule("frame workspace"))?;
         let mut block_decoded = TileBlockDecodedState::default();
         block_decoded
-            .reset(3, 1, 1, sb_size4, mi_cols, mi_rows)
+            .reset(3, 1, 1, sb_size4, cols.end, rows.end)
             .map_err(rule("BlockDecoded state"))?;
-        let grid = |rows: usize, cols: usize, sb_h4: usize| {
+        let grid = |(rows, cols): (Range<usize>, Range<usize>), sb_h4: usize| {
             let mut grid = TileSmoothGrid::default();
-            grid.reset_for_tile(0..rows, 0..cols, sb_h4)
+            grid.reset_for_tile(rows, cols, sb_h4)
                 .map(|()| grid)
                 .map_err(|_| EncoderSyntaxError::Unsupported("smooth grid size"))
         };
@@ -317,8 +322,11 @@ impl Recon {
             workspace,
             scratch: GeneralIntraReconScratch::default(),
             block_decoded,
-            y_smooth: grid(mi_rows, mi_cols, sb_size4)?,
-            chroma_smooth: grid(mi_rows.div_ceil(2), mi_cols.div_ceil(2), sb_size4 >> 1)?,
+            y_smooth: grid((rows.clone(), cols.clone()), sb_size4)?,
+            chroma_smooth: grid(
+                chroma_smooth_tile_ranges(rows, cols, ChromaFormatIdc::Yuv420),
+                sb_size4 >> 1,
+            )?,
             leaf: None,
         })
     }
@@ -801,7 +809,7 @@ impl IntraTileSyntax {
         general_intra_block_ctx(
             &leaf.frontier,
             self.chroma,
-            (0, 0..self.frame.mi_cols()),
+            (self.tile.0.start, self.tile.1.clone()),
             self.mi_dimensions(),
             self.tools.bit_depth,
         )

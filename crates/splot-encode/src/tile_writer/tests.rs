@@ -400,7 +400,7 @@ fn encode_case(
         UniformTiles::default(),
     )
     .unwrap();
-    let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq)).unwrap();
+    let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq), 0).unwrap();
     let mut rng = Rng(seed | 1);
     let mut modes = ModePicker::new(seed);
     let mut coder = RandomLevels {
@@ -586,7 +586,7 @@ fn rejects_unsupported_decisions() {
         UniformTiles::default(),
     )
     .unwrap();
-    let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq)).unwrap();
+    let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq), 0).unwrap();
     let tree = PartitionTree::Leaf(LeafChoice::DC);
     assert!(matches!(
         writer.write_superblock(
@@ -630,15 +630,15 @@ fn facade_rejects_unmodelled_tools() {
     let base = Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64).tools;
     let rejects = |seq: &SequenceHeader, core: &FrameHeaderCore| {
         matches!(
-            IntraTileSyntax::new(seq, core, &refs_for(seq)),
+            IntraTileSyntax::new(seq, core, &refs_for(seq), 0),
             Err(EncoderSyntaxError::Unsupported(_))
         ) && matches!(
-            KeyFrameTileWriter::new(seq, core, &refs_for(seq)),
+            KeyFrameTileWriter::new(seq, core, &refs_for(seq), 0),
             Err(TileWriterError::Syntax(EncoderSyntaxError::Unsupported(_)))
         )
     };
     let (seq, core) = headers(base);
-    assert!(IntraTileSyntax::new(&seq, &core, &refs_for(&seq)).is_ok());
+    assert!(IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).is_ok());
     let tool_cases: [fn(&mut EncoderToolFlags); 5] = [
         |t| t.mhccp = true,
         |t| t.intra_ist = true,
@@ -676,7 +676,7 @@ fn facade_rejects_unmodelled_tools() {
 fn rejects_out_of_range_cfl_alphas() {
     let (seq, core) =
         headers(Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64).tools);
-    let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq)).unwrap();
+    let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap();
     let root = syntax.superblock_root(0, 0);
     syntax.begin_superblock(root);
     let node = syntax.children(root, Partition::Horz).unwrap()[0];

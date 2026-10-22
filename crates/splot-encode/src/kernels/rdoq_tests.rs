@@ -227,7 +227,7 @@ fn facade_rows_back_the_rate_model() {
             fills_block: true,
         };
         let mut rates = FacadeRates {
-            syntax: IntraTileSyntax::new(&seq, &core, &refs_for(&seq)).unwrap(),
+            syntax: IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap(),
             tx,
         };
         let b = RdoqBlock {

@@ -816,7 +816,7 @@ pub(super) fn frame_superblock_h4(seq_sb_size: SuperblockSize, frame_is_intra: b
     }
 }
 
-fn chroma_smooth_tile_ranges(
+pub(crate) fn chroma_smooth_tile_ranges(
     mi_rows: core::ops::Range<usize>,
     mi_cols: core::ops::Range<usize>,
     chroma: splot_core::headers::sequence::ChromaFormatIdc,

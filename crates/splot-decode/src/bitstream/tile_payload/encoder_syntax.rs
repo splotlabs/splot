@@ -11,6 +11,8 @@
 //! in step. An inter frame codes intra and single-reference inter leaves;
 //! [`EncoderReferences`] keeps the decoder's reference buffer they predict from.
 
+use core::ops::Range;
+
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::symbol::Symbol;
@@ -50,7 +52,7 @@ use super::partition_traversal::{
     TilePartitionFrameFacts, call_in_frame, child_calls, decode_block_frontier,
     partition_allowed_input, partition_context_inputs, updated_chroma_offset, valid_subsize,
 };
-use super::tile_frontier::{frame_mi_dimensions, minimal_partition_frame_facts};
+use super::tile_frontier::minimal_partition_frame_facts;
 
 mod inter;
 mod intra;
@@ -69,6 +71,7 @@ pub use transform::{TX_PARTITIONS, TxPartition};
 mod filters;
 pub use filters::{
     CdefIndexMap, CdefSlot, FilterRecorder, LrLayout, LrUnit, apply_loop_filters, cdef_unit_grid,
+    merge_tiles,
 };
 
 type BoxedSource = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -391,7 +394,35 @@ pub fn recon_params(
     .map_err(rule("recon parameters"))
 }
 
-/// One tile's CDF rows, neighbour state, and reconstruction, all blocks intra.
+/// The number of tiles of the frame `core` (§ 5.18.7.2).
+#[must_use]
+pub fn tile_count(core: &FrameHeaderCore) -> usize {
+    core.tile_info
+        .as_ref()
+        .map_or(1, |info| (info.tile_cols * info.tile_rows) as usize)
+}
+
+/// The luma 4x4 rows and columns of tile `tile`, in raster order, of the frame
+/// `core`: `MiRowStarts` and `MiColStarts` of § 5.18.7.2.
+///
+/// # Errors
+/// Returns [`EncoderSyntaxError::Unsupported`] without tile info or for a tile
+/// the frame does not have.
+pub fn tile_ranges(core: &FrameHeaderCore, tile: usize) -> Result<(Range<usize>, Range<usize>)> {
+    const NO_TILE: EncoderSyntaxError = EncoderSyntaxError::Unsupported("a tile of the frame");
+    let info = core.tile_info.as_ref().ok_or(NO_TILE)?;
+    let cols = (info.tile_cols as usize).max(1);
+    let span = |starts: &[u32], index: usize| match (starts.get(index), starts.get(index + 1)) {
+        (Some(&start), Some(&end)) => Ok(start as usize..end as usize),
+        _ => Err(NO_TILE),
+    };
+    Ok((
+        span(&info.mi_row_starts, tile / cols)?,
+        span(&info.mi_col_starts, tile % cols)?,
+    ))
+}
+
+/// One tile's CDF rows, neighbour state, and reconstruction.
 pub struct IntraTileSyntax {
     frame: TilePartitionFrameFacts,
     bounds: TilePartitionBounds,
@@ -412,20 +443,22 @@ pub struct IntraTileSyntax {
     y_mode_table: intra::YModeTable,
     inter: Option<inter::InterLeafState>,
     journal: CdfJournal,
+    tile: (Range<usize>, Range<usize>),
 }
 
 impl IntraTileSyntax {
-    /// State for the single tile of a key or inter frame coded with `seq` and
-    /// `core`; an inter frame predicts from the frames in `refs`.
+    /// State for tile `tile`, in raster order, of a key or inter frame coded
+    /// with `seq` and `core`; an inter frame predicts from the frames in `refs`.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError::Unsupported`] for SDP, skip mode, missing
-    /// header facts, or another tool the facade does not model, and
-    /// [`EncoderSyntaxError::Rule`] for state setup failures.
+    /// header facts, a tile the frame does not have, or another tool the facade
+    /// does not model, and [`EncoderSyntaxError::Rule`] for state setup failures.
     pub fn new(
         seq: &SequenceHeader,
         core: &FrameHeaderCore,
         refs: &EncoderReferences,
+        tile: usize,
     ) -> Result<Self> {
         if seq.partition.is_some_and(|partition| partition.enable_sdp) {
             return Err(EncoderSyntaxError::Unsupported(
@@ -439,9 +472,7 @@ impl IntraTileSyntax {
             ))?
             .base_q_idx;
         let frame = minimal_partition_frame_facts(seq, core).map_err(rule("frame facts"))?;
-        let (mi_rows, mi_cols) = frame_mi_dimensions(core).map_err(rule("frame size"))?;
-        let rows = 0..mi_rows;
-        let cols = 0..mi_cols;
+        let (rows, cols) = tile_ranges(core, tile)?;
         let sb_size4 = frame
             .sb_size()
             .num_4x4_wide()
@@ -454,7 +485,7 @@ impl IntraTileSyntax {
             seq,
             core,
             refs,
-            (mi_rows, mi_cols),
+            (rows.clone(), cols.clone()),
             (base_q_idx, tools.bit_depth),
         )?;
         let mut coeff = TileCoeffContextState::default();
@@ -466,7 +497,7 @@ impl IntraTileSyntax {
             bounds: TilePartitionBounds::new(rows.clone(), cols.clone()),
             chroma,
             sb_size4,
-            recon: intra::Recon::new(seq, core, &tools, (mi_rows, mi_cols), sb_size4)?,
+            recon: intra::Recon::new(seq, core, &tools, (rows.clone(), cols.clone()), sb_size4)?,
             tools,
             cdfs,
             coeff,
@@ -497,12 +528,25 @@ impl IntraTileSyntax {
                 cols.clone(),
                 sb_size4,
             ))?,
-            uv_cfls: neighbour(TileUvCflState::new(mi_rows, mi_cols, sb_size4))?,
-            y_modes: neighbour(TileIntraYModeState::new(mi_rows, mi_cols, sb_size4))?,
+            uv_cfls: neighbour(
+                TileUvCflState::new(rows.len(), cols.len(), sb_size4)
+                    .map(|state| state.with_origin(rows.start, cols.start)),
+            )?,
+            y_modes: neighbour(
+                TileIntraYModeState::new(rows.len(), cols.len(), sb_size4)
+                    .map(|state| state.with_origin(rows.start, cols.start)),
+            )?,
             y_mode_table: intra::YModeTable::default(),
             inter,
             journal,
+            tile: (rows, cols),
         })
+    }
+
+    /// The luma 4x4 rows and columns of this tile.
+    #[must_use]
+    pub fn tile_ranges(&self) -> (Range<usize>, Range<usize>) {
+        self.tile.clone()
     }
 
     /// Superblock side in 4x4 units.
@@ -531,7 +575,7 @@ impl IntraTileSyntax {
     /// Starts coding the superblock of `root`; call once per superblock in raster order.
     pub fn begin_superblock(&mut self, root: PartitionNode) {
         self.journal.clear();
-        if root.0.c == 0 {
+        if root.0.c == self.tile.1.start {
             self.mi_sizes.enter_sb_row(root.0.r);
         }
         self.recon
