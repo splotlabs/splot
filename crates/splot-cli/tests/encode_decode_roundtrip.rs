@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! End-to-end encoder oracle: `splot encode` codes a Y4M clip as key and inter
-//! frames, `splot validate` finds the stream conformant, and `splot decode`
-//! returns frames whose PSNR against the source equals the encoder's own
-//! statistics.
+//! End-to-end encoder oracle: `splot encode` codes a Y4M clip as key frames
+//! and a mini-GOP with a hidden frame, `splot validate` finds the stream
+//! conformant, and `splot decode` returns the frames in input order with the
+//! PSNR against the source that the encoder reported.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -13,7 +13,7 @@ use common::{splot, temp_input, temp_output};
 
 const WIDTH: usize = 72;
 const HEIGHT: usize = 40;
-const FRAMES: usize = 3;
+const FRAMES: usize = 6;
 
 /// A Y4M clip with moving gradients and texture at `bits` per sample.
 fn synthetic_y4m(bits: u32) -> (Vec<u8>, Vec<Vec<u16>>) {
@@ -76,16 +76,16 @@ fn round_trip(bits: u32) {
     );
 
     let encode = splot(&[
-        "encode", input_s, "-o", ivf_s, "--qp", "90", "--keyint", "2", "--stats",
+        "encode", input_s, "-o", ivf_s, "--qp", "90", "--keyint", "4", "--stats",
     ]);
     assert!(encode.status.success(), "{encode:?}");
     let stats = String::from_utf8(encode.stdout).unwrap();
-    let psnr_y: Vec<f64> = stats
-        .lines()
-        .skip(1)
-        .map(|line| line.split(',').nth(3).unwrap().parse().unwrap())
-        .collect();
-    assert_eq!(psnr_y.len(), FRAMES, "{stats}");
+    let mut psnr_y = [f64::NAN; FRAMES];
+    for line in stats.lines().skip(1) {
+        let fields: Vec<&str> = line.split(',').collect();
+        psnr_y[fields[1].parse::<usize>().unwrap()] = fields[4].parse().unwrap();
+    }
+    assert_eq!(stats.lines().count(), FRAMES + 1, "{stats}");
 
     let validate = splot(&["validate", "--strict", ivf_s]);
     assert!(validate.status.success(), "{validate:?}");

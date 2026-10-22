@@ -20,7 +20,7 @@ use crate::config::Config;
 use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
-use crate::gop::GopFrame;
+use crate::gop::{self, GopFrame};
 use crate::kernels::rdoq::{RdoqBlock, rdoq};
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
 use crate::loop_filter::{FilteredFrame, FirstPass, FrameDecisions, finish_frame};
@@ -163,6 +163,14 @@ impl FrameCoder for IntraFrameCoder {
             recon: planes,
             frame_type: plan.frame_type,
         })
+    }
+
+    fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
+        let unit = gop::show_existing_unit(&self.view, slot)?;
+        self.references
+            .show_existing(slot)
+            .map_err(coding("show-existing frame"))?;
+        Ok(unit)
     }
 }
 

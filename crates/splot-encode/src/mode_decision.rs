@@ -322,13 +322,13 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         self.syntax.in_frame(node)
     }
 
+    /// The allowed partitions of `node`, without those with a leaf that can
+    /// code neither an intra nor an inter block.
     fn partitions(&self, node: PartitionNode) -> Result<Vec<Partition>> {
         let options = self.syntax.partition_options(node)?;
         if let Some(implied) = options.implied().filter(|&p| options.allows(p)) {
             return Ok(vec![implied]);
         }
-        // Drop the partitions with a leaf that can code neither an intra block
-        // nor an inter block.
         let mut allowed = Vec::with_capacity(PARTITIONS.len());
         for partition in PARTITIONS.into_iter().filter(|&p| options.allows(p)) {
             if codable_children(self.syntax, node, partition)? {
