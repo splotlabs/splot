@@ -10,7 +10,9 @@
 //! by two samples per finer level. Sub-pixel refinement then tries the half
 //! and quarter positions around the best vector with the decoder's own
 //! interpolation (§ 7.11.3.3 parameters from the facade, `splot_recon` kernels),
-//! scored by SATD. Every score adds an approximate vector rate.
+//! scored by SATD. Every score adds an approximate vector rate. Compound
+//! candidates reuse the single-reference results; they are ranked by the SATD
+//! of the averaged predictions of their two lists.
 
 use splot_decode::encoder_syntax::{IntraTileSyntax, MotionVector};
 use splot_recon::{ReferencePlaneView, subpel_predict_block_strided_into};
@@ -268,24 +270,62 @@ impl MotionSearch {
         mv: MotionVector,
         pred: MotionVector,
     ) -> Result<u64> {
-        let (left, top, width, height) = block;
-        let mut predicted = vec![0u16; width * height];
-        syntax.with_luma_subpel(ref_frame, block, mv, |view, params| {
-            subpel_predict_block_strided_into(view, params, &mut predicted, width)
-        })??;
+        let predicted = predict(syntax, ref_frame, block, mv)?;
+        Ok(self.satd(block, &predicted)? + self.rate(mv, pred))
+    }
+
+    /// SATD of the rounded average of the luma predictions of the block from
+    /// each `(reference, vector)` of `lists`; it approximates the decoder's
+    /// `COMPOUND_AVERAGE`, which rounds once from higher precision.
+    pub(crate) fn compound_satd(
+        &self,
+        syntax: &IntraTileSyntax,
+        lists: [(usize, MotionVector); 2],
+        block: (usize, usize, usize, usize),
+    ) -> Result<u64> {
+        let first = predict(syntax, lists[0].0, block, lists[0].1)?;
+        let mut average = predict(syntax, lists[1].0, block, lists[1].1)?;
+        for (out, &other) in average.iter_mut().zip(&first) {
+            *out = ((u32::from(*out) + u32::from(other) + 1) >> 1) as u16;
+        }
+        self.satd(block, &average)
+    }
+
+    /// SATD between the source luma of `block` and the row-major `predicted`.
+    fn satd(
+        &self,
+        (left, top, width, height): (usize, usize, usize, usize),
+        predicted: &[u16],
+    ) -> Result<u64> {
         let source = &self.source.levels[0];
         let samples = source.at(left as i32, top as i32, width, height).ok_or(
             TileWriterError::Unsupported("source block outside the plane"),
         )?;
         let dims = BlockDims::new(width, height).map_err(TileWriterError::Kernel)?;
-        Ok(kernels().satd(samples, source.stride, &predicted, width, dims) + self.rate(mv, pred))
+        Ok(kernels().satd(samples, source.stride, predicted, width, dims))
     }
 
     /// The approximate rate of coding `mv` against `pred`, in SAD units: two
     /// bits per binary order of the joint quarter-sample difference.
-    fn rate(&self, mv: MotionVector, pred: MotionVector) -> u64 {
+    pub(crate) fn rate(&self, mv: MotionVector, pred: MotionVector) -> u64 {
         let shell = ((mv.row - pred.row).unsigned_abs() + (mv.col - pred.col).unsigned_abs()) >> 1;
         let bits_q8 = 2 * u64::from(log2_q8(shell + 1)) + 256;
         (bits_q8 * self.sad_lambda_q8) >> 16
     }
+}
+
+/// The decoder's row-major luma prediction of `block` from list reference
+/// `ref_frame` with `mv`.
+fn predict(
+    syntax: &IntraTileSyntax,
+    ref_frame: usize,
+    block: (usize, usize, usize, usize),
+    mv: MotionVector,
+) -> Result<Vec<u16>> {
+    let width = block.2;
+    let mut predicted = vec![0u16; width * block.3];
+    syntax.with_luma_subpel(ref_frame, block, mv, |view, params| {
+        subpel_predict_block_strided_into(view, params, &mut predicted, width)
+    })??;
+    Ok(predicted)
 }

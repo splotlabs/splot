@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! § 5.20.7.20 `read_mv` writer: the joint shell coding of one motion vector
-//! difference and its § 5.20.7.21 sign bits, inverting the decoder's reader
+//! § 5.20.7.20 `read_mv` writer: the joint shell coding of the motion vector
+//! differences of a block and their § 5.20.7.21 sign bits, inverting the decoder's reader
 //! with the facade's CDF rows. Adaptive MVD and sign derivation stay off.
 
 use splot_core::symbol_encoder::SymbolSink;
@@ -20,10 +20,29 @@ const MAX_COL_UNARY: u32 = 2;
 /// `NUM_CTX_COL_MV_INDEX`.
 const COL_MV_INDEX_CONTEXTS: u32 = 4;
 
-/// Writes the `NEWMV` difference `mvd` (in `1/8` samples, a multiple of the
-/// precision step) with the rows of `syntax`. Eighth-sample precision, which
-/// codes `joint_shell_last_two_classes`, is not supported.
-pub(crate) fn write_mvd(
+/// Writes the motion vector differences `mvds` of one block (in `1/8`
+/// samples, multiples of the precision step) with the rows of `syntax`: every
+/// magnitude, then every sign bit, as `NEW_NEWMV` reads them (§ 5.20.7.7).
+/// Eighth-sample precision, which codes `joint_shell_last_two_classes`, is
+/// not supported.
+pub(crate) fn write_mvds(
+    syntax: &mut IntraTileSyntax,
+    sink: &mut impl SymbolSink,
+    mvds: &[MotionVector],
+) -> Result<()> {
+    for &mvd in mvds {
+        write_magnitude(syntax, sink, mvd)?;
+    }
+    for value in mvds.iter().flat_map(|mvd| [mvd.row, mvd.col]) {
+        if value != 0 {
+            sink.literal(u32::from(value < 0), 1)?;
+        }
+    }
+    Ok(())
+}
+
+/// The joint shell coding of `|mvd|`.
+fn write_magnitude(
     syntax: &mut IntraTileSyntax,
     sink: &mut impl SymbolSink,
     mvd: MotionVector,
@@ -65,11 +84,6 @@ pub(crate) fn write_mvd(
     write_class_offset(syntax, sink, class, shell - base)?;
     if shell > 0 {
         write_col(syntax, sink, shell, class, col)?;
-    }
-    for value in [mvd.row, mvd.col] {
-        if value != 0 {
-            sink.literal(u32::from(value < 0), 1)?;
-        }
     }
     Ok(())
 }
