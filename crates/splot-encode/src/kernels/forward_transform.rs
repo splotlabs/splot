@@ -232,12 +232,12 @@ impl ForwardTransform2d {
     }
 
     /// Validates the buffers and returns the transform input: `residual`, or
-    /// its pair sums in `scratch` when a side is 64.
+    /// its pair sums in `scratch` (filled only then) when a side is 64.
     fn input<'a>(
         &self,
         residual: &'a [i32],
         coeffs: &[i32],
-        scratch: &'a mut [i32; MAX_DIM * MAX_DIM],
+        scratch: &'a mut Option<[i32; MAX_DIM * MAX_DIM]>,
     ) -> Result<&'a [i32], KernelError> {
         let (w, h) = (self.coeff_width(), self.coeff_height());
         if residual.len() != self.residual_len() {
@@ -260,6 +260,7 @@ impl ForwardTransform2d {
         let px = usize::from(self.pair_width);
         let py = usize::from(self.pair_height);
         let stride = w << px;
+        let scratch = scratch.insert([0; MAX_DIM * MAX_DIM]);
         for (y, row) in scratch.chunks_exact_mut(w).take(h).enumerate() {
             for (x, slot) in row.iter_mut().enumerate() {
                 let mut sum = 0i32;
@@ -289,7 +290,7 @@ pub(super) fn forward_scalar(
     residual: &[i32],
     coeffs: &mut [i32],
 ) -> Result<(), KernelError> {
-    let mut scratch = [0i32; MAX_DIM * MAX_DIM];
+    let mut scratch = None;
     let input = tx.input(residual, coeffs, &mut scratch)?;
     let (w, h) = (tx.coeff_width(), tx.coeff_height());
     let mut tmp = [0i32; MAX_DIM * MAX_DIM];
@@ -319,7 +320,7 @@ pub(super) fn forward_simd(
     residual: &[i32],
     coeffs: &mut [i32],
 ) -> Result<(), KernelError> {
-    let mut scratch = [0i32; MAX_DIM * MAX_DIM];
+    let mut scratch = None;
     let input = tx.input(residual, coeffs, &mut scratch)?;
     match tx.coeff_width() {
         4 => forward_lanes::<4>(tx, input, coeffs),

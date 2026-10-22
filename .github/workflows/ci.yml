@@ -359,3 +359,6 @@ jobs:
 
       - name: Decode instruction-count regression gate
         run: cargo xtask perf
+
+      - name: Encode instruction-count regression gate
+        run: cargo xtask encode-perf --runs 1

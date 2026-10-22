@@ -91,10 +91,22 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
 
     /// The prediction SATD of the `planes` of `leaf` under `modes`.
     fn satd(&mut self, leaf: &LeafBlock, modes: IntraModes, planes: Range<usize>) -> Result<u64> {
-        let mut cost = 0;
+        Ok(self.plane_satd(leaf, modes, planes)?.iter().sum())
+    }
+
+    /// The SATD of each plane in `planes` with one plan of `leaf`.
+    fn plane_satd(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+        planes: Range<usize>,
+    ) -> Result<[u64; 3]> {
+        let mut cost = [0; 3];
         for (index, tx) in self.syntax.plan_leaf(leaf, modes)?.iter().enumerate() {
-            if planes.contains(&tx.plane) {
-                cost += self.coder.source.satd(tx, &self.syntax.predict(index)?)?;
+            if let Some(slot) = cost.get_mut(tx.plane)
+                && planes.contains(&tx.plane)
+            {
+                *slot += self.coder.source.satd(tx, &self.syntax.predict(index)?)?;
             }
         }
         Ok(cost)
@@ -201,8 +213,9 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
                 alpha_u: alpha,
                 alpha_v: alpha,
             });
-            alpha_u = alpha_u.min((self.satd(leaf, both, 1..2)?, alpha));
-            alpha_v = alpha_v.min((self.satd(leaf, both, 2..3)?, alpha));
+            let [_, u, v] = self.plane_satd(leaf, both, 1..3)?;
+            alpha_u = alpha_u.min((u, alpha));
+            alpha_v = alpha_v.min((v, alpha));
         }
         candidates.push(with(ChromaMode::Cfl {
             alpha_u: alpha_u.1,
