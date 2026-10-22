@@ -254,8 +254,9 @@ pub(super) fn satd_scalar(
         for (i, row) in d.chunks_exact_mut(tile).take(tile).enumerate() {
             let a = src.get((y + i) * src_stride + x..).unwrap_or_default();
             let b = pred.get((y + i) * pred_stride + x..).unwrap_or_default();
-            for ((slot, &a), &b) in row.iter_mut().zip(a).zip(b) {
-                *slot = i32::from(a) - i32::from(b);
+            for (j, slot) in row.iter_mut().enumerate() {
+                let sample = |s: &[u16]| i32::from(s.get(j).copied().unwrap_or(0));
+                *slot = sample(a) - sample(b);
             }
         }
         let d = &mut d[..tile * tile];
@@ -319,15 +320,16 @@ fn satd_tile_lanes<const N: usize>(
     pred_stride: usize,
     row_hadamard: fn(Simd<i32, N>) -> Simd<i32, N>,
 ) -> u64 {
-    let zero = [0u16; N];
     let mut v = [Simd::<i32, N>::splat(0); N];
     for (i, slot) in v.iter_mut().enumerate() {
         let load = |s: &[u16], stride: usize| {
-            let row = s
-                .get(i * stride..)
-                .and_then(|r| r.first_chunk::<N>())
-                .unwrap_or(&zero);
-            Simd::from_array(*row).cast::<i32>()
+            let row = s.get(i * stride..).unwrap_or_default();
+            let row = row.first_chunk::<N>().copied().unwrap_or_else(|| {
+                let mut tail = [0u16; N];
+                tail[..row.len()].copy_from_slice(row);
+                tail
+            });
+            Simd::from_array(row).cast::<i32>()
         };
         *slot = load(src, src_stride) - load(pred, pred_stride);
     }
@@ -462,6 +464,14 @@ mod tests {
         let b = vec![100u16; 16];
         assert_eq!(ScalarKernels.satd(&a, 4, &b, 4, dims), 160);
         assert_eq!(SimdKernels.satd(&a, 4, &b, 4, dims), 160);
+    }
+
+    #[test]
+    fn satd_pads_a_truncated_last_row_alike() {
+        let dims = BlockDims::new(8, 8).unwrap();
+        let a: Vec<u16> = (0..61).map(|i| (i * 37 % 251) as u16).collect();
+        let b = vec![7u16; 64];
+        assert_eq!(SimdKernels.satd(&a, 8, &b, 8, dims), ScalarKernels.satd(&a, 8, &b, 8, dims));
     }
 
     #[test]

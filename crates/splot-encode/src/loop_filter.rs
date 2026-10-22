@@ -27,7 +27,7 @@ use splot_decode::encoder_syntax::{
     apply_loop_filters, cdef_unit_grid, merge_tiles,
 };
 use splot_parallel::WorkerPool;
-use splot_recon::{BitDepth, DecodedFrame, PlaneId};
+use splot_recon::{DecodedFrame, PlaneId};
 
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
@@ -451,11 +451,7 @@ impl Search<'_> {
         deblocked: &DecodedFrame<u16>,
     ) -> Result<(u8, CdefStrengthSets, Vec<Option<usize>>)> {
         let candidates = &CDEF_LADDER[..[8, 12, 16][usize::from(preset.loop_filter_search).min(2)]];
-        let qmax = if self.recon.bit_depth() == BitDepth::Eight {
-            255
-        } else {
-            511
-        };
+        let qmax = u32::from(crate::rate_control::max_qindex(self.recon.bit_depth()));
         let damping = 3 + (3 * self.qindex / qmax).min(3) as u8;
         let (rows, cols) = self.cdef_grid();
         let units = rows * cols;
