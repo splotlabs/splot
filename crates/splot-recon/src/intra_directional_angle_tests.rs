@@ -1147,10 +1147,11 @@ fn one_sided_idif_u16_lines_match_the_per_sample_reference() {
     }
 }
 
-/// The zone-2 IDIF row writer (scalar left run, lane above run) must
-/// reproduce the per-sample § 7.13.2.8 reference for every block shape, middle
-/// angle and MRL index, and every reference tap must lie inside its edge. At 8
-/// bits `u8` storage must write the same samples as `u16` storage.
+/// The zone-2 IDIF writer (lane left columns, lane above rows) must reproduce
+/// the per-sample § 7.13.2.8 reference for every block shape, middle angle and
+/// MRL index over pseudo-random edges, and every reference tap must lie inside
+/// its edge. At 8 bits `u8` storage must write the same samples as `u16`
+/// storage.
 #[test]
 fn middle_idif_u16_rows_match_the_per_sample_reference() {
     const PAD: u16 = 0xbeef;
@@ -1166,7 +1167,11 @@ fn middle_idif_u16_rows_match_the_per_sample_reference() {
                             .map(|index| match index % 4 {
                                 0 => 1023,
                                 1 => 0,
-                                _ => ((index * 37 + seed) % 1024) as u16,
+                                _ => {
+                                    let mixed = ((index * 37 + seed) as u64)
+                                        .wrapping_mul(0x9e37_79b9_7f4a_7c15);
+                                    (mixed >> 54) as u16
+                                }
                             })
                             .collect()
                     };
@@ -1277,4 +1282,94 @@ fn middle_idif_u16_rows_match_the_per_sample_reference() {
             }
         }
     }
+}
+
+fn lcg(state: &mut u64) -> u16 {
+    *state = state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    (*state >> 48) as u16
+}
+
+/// The bilinear lane writers (one-sided rows and columns, zone-2 above rows and
+/// left columns) must write the per-sample samples for every angle and block
+/// shape over random 10-bit `u16` and 8-bit `u8` edges, and leave the stride
+/// padding alone.
+#[test]
+fn bilinear_lanes_match_the_per_sample_writers_over_random_edges() {
+    const PAD: u16 = 0xbeef;
+    let mut state = 5;
+    let mut middle_blocks = 0;
+    for p_angle in 1..=269u16 {
+        let one_sided = IntraDirectionalAngle::try_from_p_angle(p_angle).ok();
+        let middle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle).ok();
+        for log2_width in 2..=6u8 {
+            for log2_height in 2..=6u8 {
+                let size = rect_size(log2_width, log2_height);
+                let stride = size.width() + 3;
+                for max in [1023u16, 255] {
+                    let mut edge = |len: usize| -> Vec<u16> {
+                        (0..len).map(|_| lcg(&mut state) % (max + 1)).collect()
+                    };
+                    let edges = [edge(size.width() + size.height()), edge(size.height() + 1)];
+                    let above = &edges[0][..=size.width()];
+                    let mut lanes = vec![PAD; stride * size.height()];
+                    let mut samples = lanes.clone();
+                    if let Some(angle) = one_sided {
+                        write_bilinear_lanes(size, angle, &edges[0], &mut lanes, stride);
+                        write_prediction_samples(size, angle, &edges[0], &mut samples, stride)
+                            .unwrap();
+                    } else if let Some(angle) = middle {
+                        if validate_middle_index_bounds(size, angle, edges[1].len(), above.len())
+                            .is_err()
+                        {
+                            continue;
+                        }
+                        middle_blocks += 1;
+                        write_middle_lanes(size, angle, &edges[1], above, &mut lanes, stride)
+                            .unwrap();
+                        write_middle_prediction_samples(
+                            size,
+                            angle,
+                            &edges[1],
+                            above,
+                            &mut samples,
+                            stride,
+                        )
+                        .unwrap();
+                    } else {
+                        continue;
+                    }
+                    assert_eq!(lanes, samples, "p_angle {p_angle} size {size:?} max {max}");
+                    if max != 255 {
+                        continue;
+                    }
+                    let narrow = |edge: &[u16]| edge.iter().map(|&v| v as u8).collect::<Vec<_>>();
+                    let (narrow_edge, narrow_left) = (narrow(&edges[0]), narrow(&edges[1]));
+                    let mut output = vec![0xa5u8; lanes.len()];
+                    if let Some(angle) = one_sided {
+                        write_prediction(size, angle, &narrow_edge, &mut output, stride).unwrap();
+                    } else if let Some(angle) = middle {
+                        let above = &narrow_edge[..=size.width()];
+                        write_middle_prediction(
+                            size,
+                            angle,
+                            &narrow_left,
+                            above,
+                            &mut output,
+                            stride,
+                        )
+                        .unwrap();
+                    }
+                    let widened: Vec<u16> = output
+                        .iter()
+                        .zip(&lanes)
+                        .map(|(&got, &want)| if want == PAD { PAD } else { u16::from(got) })
+                        .collect();
+                    assert_eq!(widened, lanes, "u8 p_angle {p_angle} size {size:?}");
+                }
+            }
+        }
+    }
+    assert!(middle_blocks > 1_000, "{middle_blocks}");
 }

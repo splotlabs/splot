@@ -5,6 +5,39 @@ Encoder milestones. Rate points are luma PSNR and kilobits per frame from
 
 ## Unreleased
 
+### Encoder milestone 5: threading, SIMD coverage, perf harness
+
+- Tiles: `--tiles COLSxROWS` codes uniform tiles in parallel, one facade per
+  tile. Niklas 720p, preset 8: BD-rate +1.3/+2.5/+3.7% at 2/4/8 tiles.
+- Frame waves: frames that read the same references code in parallel and
+  commit in coding order. Shown leaf frames are non-reference frames, except
+  the last leaf of each mini-GOP (§ 5.18.2 order hints): BD-rate -0.31%.
+- Output is byte-identical at every thread count; tests check 1/2/8 threads
+  with one and two tiles.
+- Fix: encoder grid checkpoints lost the motion records of the best partition
+  candidate after a rollback, so later trials read wrong neighbour vectors
+  (since milestone 3). Inter frames now use 20-34% fewer bits at equal PSNR.
+- Speed: region-local snapshots, less trial waste, and SIMD forms of the
+  residual, forward-transform pair sums, directional intra (zone 2, bilinear)
+  and CfL prediction. Paris CIF, 17 frames, preset 6, base_q_idx 120:
+  milestone 4 took 120 s at 1 and 8 threads; now 90 s at 1 thread, 69 s at
+  8 threads, 30 s at 8 threads with 2x2 tiles.
+- SIMD: every encoder kernel has a scalar twin under bit-exact property tests;
+  93.6% of hot-kernel samples are in SIMD code (`encode-perf --coverage`).
+- Harness: `cargo xtask encode-perf` (instruction counts, CI perf job; the
+  baseline holds the Linux CI DynamoRIO counts) and `cargo xtask bd-rate`.
+- Against AVM `--cpu-used=6`, base_q_idx 85..190, luma BD-rate:
+
+  | Clip | Coding | splot preset | BD-rate |
+  |---|---|---|---|
+  | park_joy 160x90, 10 frames | intra | 0 / 6 / 10 | -4.7% / +2.6% / +24.9% |
+  | paris CIF, 5 frames | intra | 6 / 10 | +10.4% / +52.9% |
+  | park_joy 160x90, 10 frames | inter, keyint 30 | 6 | +19.8% (milestone 3: +37.7%) |
+  | paris CIF, 10 frames | inter, keyint 30 | 6 | +30.7% |
+
+  Inter AVM runs use `--lag-in-frames=16`; AVM also codes tools splot does
+  not code yet (temporal MVs, warped and overlapped motion, optical flow, TIP).
+
 ### Encoder milestone 4: lookahead, temporal model and rate control
 
 - A lookahead plans exactly `lookahead_frames` frames, so output ignores the

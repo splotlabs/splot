@@ -232,12 +232,13 @@ impl ForwardTransform2d {
     }
 
     /// Validates the buffers and returns the transform input: `residual`, or
-    /// its pair sums in `scratch` when a side is 64.
+    /// its `pair_sum` in `scratch` (filled only then) when a side is 64.
     fn input<'a>(
         &self,
         residual: &'a [i32],
         coeffs: &[i32],
-        scratch: &'a mut [i32; MAX_DIM * MAX_DIM],
+        scratch: &'a mut Option<[i32; MAX_DIM * MAX_DIM]>,
+        pair_sum: fn(&Self, &[i32], &mut [i32]),
     ) -> Result<&'a [i32], KernelError> {
         let (w, h) = (self.coeff_width(), self.coeff_height());
         if residual.len() != self.residual_len() {
@@ -257,22 +258,57 @@ impl ForwardTransform2d {
         if !self.pair_width && !self.pair_height {
             return Ok(residual);
         }
-        let px = usize::from(self.pair_width);
-        let py = usize::from(self.pair_height);
-        let stride = w << px;
-        for (y, row) in scratch.chunks_exact_mut(w).take(h).enumerate() {
-            for (x, slot) in row.iter_mut().enumerate() {
-                let mut sum = 0i32;
-                for dy in 0..=py {
-                    for dx in 0..=px {
-                        sum =
-                            sum.wrapping_add(residual[((y << py) + dy) * stride + (x << px) + dx]);
-                    }
+        let out = &mut scratch.insert([0; MAX_DIM * MAX_DIM])[..w * h];
+        pair_sum(self, residual, out);
+        Ok(out)
+    }
+}
+
+/// Sums each residual sample pair along every 64-sample side into the
+/// `coeff_width x coeff_height` block `out`.
+#[cfg(test)]
+fn pair_sum_scalar(tx: &ForwardTransform2d, residual: &[i32], out: &mut [i32]) {
+    let w = tx.coeff_width();
+    let px = usize::from(tx.pair_width);
+    let py = usize::from(tx.pair_height);
+    let stride = w << px;
+    for (y, row) in out.chunks_exact_mut(w).enumerate() {
+        for (x, slot) in row.iter_mut().enumerate() {
+            let mut sum = 0i32;
+            for dy in 0..=py {
+                for dx in 0..=px {
+                    sum = sum.wrapping_add(residual[((y << py) + dy) * stride + (x << px) + dx]);
                 }
-                *slot = sum;
+            }
+            *slot = sum;
+        }
+    }
+}
+
+/// [`pair_sum_scalar`] in 4-lane vectors: add the source rows of one output
+/// row, then add the even and odd lanes when the width is paired.
+fn pair_sum_simd(tx: &ForwardTransform2d, residual: &[i32], out: &mut [i32]) {
+    let w = tx.coeff_width();
+    let span = w << usize::from(tx.pair_width);
+    let rows = residual.chunks_exact(span << usize::from(tx.pair_height));
+    for (dst, src) in out.chunks_exact_mut(w).zip(rows) {
+        let mut sum = [Simd::<i32, 4>::splat(0); 2 * MAX_DIM / 4];
+        for row in src.chunks_exact(span) {
+            for (acc, v) in sum.iter_mut().zip(row.as_chunks::<4>().0) {
+                *acc += Simd::from_array(*v);
             }
         }
-        Ok(&scratch[..w * h])
+        let dst = dst.as_chunks_mut::<4>().0;
+        if tx.pair_width {
+            for (d, pair) in dst.iter_mut().zip(sum.as_chunks::<2>().0) {
+                let (even, odd) = pair[0].deinterleave(pair[1]);
+                *d = (even + odd).to_array();
+            }
+        } else {
+            for (d, s) in dst.iter_mut().zip(sum) {
+                *d = s.to_array();
+            }
+        }
     }
 }
 
@@ -291,8 +327,8 @@ pub(super) fn forward_scalar(
     residual: &[i32],
     coeffs: &mut [i32],
 ) -> Result<(), KernelError> {
-    let mut scratch = [0i32; MAX_DIM * MAX_DIM];
-    let input = tx.input(residual, coeffs, &mut scratch)?;
+    let mut scratch = None;
+    let input = tx.input(residual, coeffs, &mut scratch, pair_sum_scalar)?;
     let (w, h) = (tx.coeff_width(), tx.coeff_height());
     let mut tmp = [0i32; MAX_DIM * MAX_DIM];
     for (x_row, t_row) in input.chunks_exact(w).zip(tmp.chunks_exact_mut(w)) {
@@ -321,8 +357,8 @@ pub(super) fn forward_simd(
     residual: &[i32],
     coeffs: &mut [i32],
 ) -> Result<(), KernelError> {
-    let mut scratch = [0i32; MAX_DIM * MAX_DIM];
-    let input = tx.input(residual, coeffs, &mut scratch)?;
+    let mut scratch = None;
+    let input = tx.input(residual, coeffs, &mut scratch, pair_sum_simd)?;
     match tx.coeff_width() {
         4 => forward_lanes::<4>(tx, input, coeffs),
         8 => forward_lanes::<8>(tx, input, coeffs),

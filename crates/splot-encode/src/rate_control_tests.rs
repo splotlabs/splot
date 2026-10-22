@@ -94,19 +94,20 @@ struct Recording {
 }
 
 impl FrameCoder for Recording {
-    fn encode_frame(
-        &mut self,
-        source: &SourceFrame,
-        plan: &GopFrame,
-        qp: u16,
-    ) -> Result<CodedFrame> {
-        let coded = self.coder.encode_frame(source, plan, qp)?;
-        let recon = raw_bytes(coded.recon.iter().map(Vec::as_slice), self.bit_depth);
-        self.recons
-            .lock()
-            .unwrap()
-            .insert(plan.display_index, recon);
+    fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>> {
+        let coded = self.coder.encode_wave(wave)?;
+        for ((_, plan, _), frame) in wave.iter().zip(&coded) {
+            let recon = raw_bytes(frame.recon.iter().map(Vec::as_slice), self.bit_depth);
+            self.recons
+                .lock()
+                .unwrap()
+                .insert(plan.display_index, recon);
+        }
         Ok(coded)
+    }
+
+    fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
+        self.coder.commit(frame)
     }
 
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
@@ -384,5 +385,33 @@ fn a_black_first_frame_keeps_key_frame_qindex_sane() {
                     .is_some_and(|qp| qp.abs_diff(reference[0]) <= 16),
             "{mode:?}: {black:?} vs {reference:?}"
         );
+    }
+}
+
+/// The frames of one wave take their qindex before any of them is coded.
+/// After an underspend each frame alone could fill the buffer; CBR counts
+/// the predicted size of each for the next, so the predicted level stays
+/// inside the buffer after every frame of the wave.
+#[test]
+fn cbr_keeps_a_whole_wave_inside_the_buffer() {
+    let buffer = 200 * 500;
+    for step in 0..64 {
+        let frame = FramePlanInfo {
+            complexity: (1 << 16) + step * (1 << 18),
+            ..plan(1, FrameType::Inter, 0)
+        };
+        let mut cbr = Cbr::new(200, 500, (30, 1)).unwrap();
+        for index in 0..30 {
+            cbr.update(&stats(index, 100, 0));
+        }
+        cbr.plan_window(&[frame; 4]);
+        for _ in 0..4 {
+            let qindex = cbr.frame_qp(&frame);
+            let level = buffer / 2 + cbr.vbr.drift + cbr.pending;
+            assert!(
+                qindex == 255 || level <= buffer,
+                "step {step}: qindex {qindex}, level {level}"
+            );
+        }
     }
 }

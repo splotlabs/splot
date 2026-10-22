@@ -811,7 +811,7 @@ fn derived_tip_reference_pair(
 
 pub(super) use crate::tile::frame_superblock_h4;
 
-fn chroma_smooth_tile_ranges(
+pub(crate) fn chroma_smooth_tile_ranges(
     mi_rows: core::ops::Range<usize>,
     mi_cols: core::ops::Range<usize>,
     chroma: splot_core::headers::sequence::ChromaFormatIdc,

@@ -716,3 +716,97 @@ fn mhccp_v_plane_reuses_u_plane_luma_references() {
         assert_eq!((reused.luma, reused.chroma), (fresh.luma, fresh.chroma));
     }
 }
+
+fn lcg(state: &mut u64) -> usize {
+    *state = state
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    (*state >> 33) as usize
+}
+
+#[test]
+fn cfl_predict_lanes_match_scalar_over_random_inputs() {
+    let mut state = 7;
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        let max = i32::from(bit_depth.max_sample());
+        for _ in 0..400 {
+            let len = lcg(&mut state) % 70;
+            let dc = (lcg(&mut state) % (max as usize + 1)) as i32;
+            let alpha_q3 = (lcg(&mut state) % 65_536) as i32 - 32_768;
+            let luma_ac: Vec<i32> = (0..len)
+                .map(|_| (lcg(&mut state) % (16 * max as usize + 1)) as i32 - 8 * max)
+                .collect();
+            let mut actual = vec![0u16; len];
+            cfl_predict_lanes_u16(dc, alpha_q3, max, &luma_ac, &mut actual);
+            let expected: Vec<u16> = luma_ac
+                .iter()
+                .map(|&ac| cfl_predict(dc, alpha_q3, max, ac) as u16)
+                .collect();
+            assert_eq!(actual, expected, "dc={dc} alpha={alpha_q3}");
+        }
+    }
+}
+
+#[test]
+fn cfl_luma_edge_sums_match_per_sample_q3_over_random_planes() {
+    let mut state = 11;
+    let mut lane_columns = 0;
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        for _ in 0..40 {
+            let width = 8 + 2 * (lcg(&mut state) % 70);
+            let height = 8 + 2 * (lcg(&mut state) % 70);
+            let size = PlaneSize::new(width, height).unwrap();
+            let visible = PlaneRect::new(0, 0, width, height).unwrap();
+            let format = PixelFormat::Yuv420;
+            let info = DecodedFrameInfo::new(OutputIndex::new(0), bit_depth, format, size, visible)
+                .unwrap();
+            let mut frame = CurrentFrameWorkspace::<u16>::new(info, 0).unwrap();
+            let levels = usize::from(bit_depth.max_sample()) + 1;
+            for y in 0..height {
+                for x in 0..width {
+                    let sample = (lcg(&mut state) % levels) as u16;
+                    frame
+                        .set_reconstructed_sample(PlaneId::Y, x, y, sample)
+                        .unwrap();
+                }
+            }
+            for filter in 0..3u8 {
+                let luma = CflLuma::new(&frame, filter).unwrap();
+                for _ in 0..20 {
+                    let x = 1 + lcg(&mut state) % (width / 2 - 1);
+                    let y = 1 + lcg(&mut state) % (height / 2 - 1);
+                    let side = 1 << (1 + lcg(&mut state) % 6);
+                    let step = 1 + lcg(&mut state) % 2;
+                    let min_luma_ref_y = lcg(&mut state)
+                        .is_multiple_of(2)
+                        .then_some(2 * y as isize - 1);
+
+                    let row = luma.row(y - 1, false, min_luma_ref_y);
+                    let (mut sum, mut count) = (0u32, 0u32);
+                    for col in (0..side).step_by(step) {
+                        sum += row.q3(x + col, col == 0).unwrap() as u32;
+                        count += 1;
+                    }
+                    assert_eq!(row.q3_sum(x, side, step).unwrap(), (sum, count));
+                    let x0 = lcg(&mut state) % (width / 2);
+                    let mut run = vec![0; (width / 2 - x0).min(side + 3)];
+                    row.q3_run(x0, false, &mut run).unwrap();
+                    for (i, &q3) in run.iter().enumerate() {
+                        assert_eq!(q3, row.q3(x0 + i, false).unwrap(), "x0={x0} i={i}");
+                    }
+
+                    let rows = side.div_ceil(step);
+                    let column: u32 = (0..side)
+                        .step_by(step)
+                        .map(|r| luma.q3(x - 1, y + r, false, r == 0, None).unwrap() as u32)
+                        .sum();
+                    if let Some(lanes) = cfl_420_column_sum_u16(&luma, x - 1, y, rows, step) {
+                        assert_eq!(lanes, column, "x={x} y={y} side={side} step={step}");
+                        lane_columns += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(lane_columns > 1_000, "{lane_columns}");
+}

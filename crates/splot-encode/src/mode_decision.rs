@@ -94,10 +94,22 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
 
     /// The prediction SATD of the `planes` of `leaf` under `modes`.
     fn satd(&mut self, leaf: &LeafBlock, modes: IntraModes, planes: Range<usize>) -> Result<u64> {
-        let mut cost = 0;
+        Ok(self.plane_satd(leaf, modes, planes)?.iter().sum())
+    }
+
+    /// The SATD of each plane in `planes` with one plan of `leaf`.
+    fn plane_satd(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+        planes: Range<usize>,
+    ) -> Result<[u64; 3]> {
+        let mut cost = [0; 3];
         for (index, tx) in self.syntax.plan_leaf(leaf, modes)?.iter().enumerate() {
-            if planes.contains(&tx.plane) {
-                cost += self.coder.source.satd(tx, &self.syntax.predict(index)?)?;
+            if let Some(slot) = cost.get_mut(tx.plane)
+                && planes.contains(&tx.plane)
+            {
+                *slot += self.coder.source.satd(tx, &self.syntax.predict(index)?)?;
             }
         }
         Ok(cost)
@@ -204,8 +216,9 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
                 alpha_u: alpha,
                 alpha_v: alpha,
             });
-            alpha_u = alpha_u.min((self.satd(leaf, both, 1..2)?, alpha));
-            alpha_v = alpha_v.min((self.satd(leaf, both, 2..3)?, alpha));
+            let [_, u, v] = self.plane_satd(leaf, both, 1..3)?;
+            alpha_u = alpha_u.min((u, alpha));
+            alpha_v = alpha_v.min((v, alpha));
         }
         candidates.push(with(ChromaMode::Cfl {
             alpha_u: alpha_u.1,
@@ -413,7 +426,7 @@ impl TrialCoder<'_, '_> {
         }
         if leaf.has_chroma() {
             self.trial(leaf, choice, LUMA)?;
-            let luma = self.save(node)?;
+            let luma = self.save(node, None)?;
             let modes = self.chroma_candidates(leaf, choice.modes)?;
             let mut ranked = Vec::new();
             self.rank(leaf, modes, CHROMA, &mut ranked)?;
@@ -490,7 +503,7 @@ impl PartitionSearch for TrialCoder<'_, '_> {
     /// inter candidates over all planes, then codes the whole leaf.
     fn evaluate_leaf(&mut self, node: PartitionNode) -> Result<(RdCost, LeafChoice)> {
         let leaf = self.syntax.leaf(node)?;
-        let start = self.save(node)?;
+        let start = self.save(node, None)?;
         let mut candidates = Vec::new();
         if self.syntax.intra_allowed(&leaf) {
             candidates.push(self.intra_choice(node, &leaf, &start)?);
@@ -513,11 +526,15 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         Ok(sink.bits)
     }
 
-    fn save(&mut self, node: PartitionNode) -> Result<SyntaxSnapshot> {
-        let (w, h) = node.dimensions()?;
-        Ok(self
-            .syntax
-            .snapshot((node.col4() * 4, node.row4() * 4, w, h))?)
+    fn save(
+        &mut self,
+        node: PartitionNode,
+        start: Option<&SyntaxSnapshot>,
+    ) -> Result<SyntaxSnapshot> {
+        Ok(match start {
+            Some(start) => self.syntax.snapshot_since(start, node)?,
+            None => self.syntax.snapshot(node)?,
+        })
     }
 
     fn restore(&mut self, saved: &SyntaxSnapshot) -> Result<()> {

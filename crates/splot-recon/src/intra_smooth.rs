@@ -196,6 +196,7 @@ struct SmoothColumnWeights {
 /// with a weight below its scale, so the lane groups write without a range
 /// check. Returns `false` when the scalar tail finds a sample outside the range,
 /// which hands the block back to the per-sample path for the exact error.
+#[inline(never)]
 fn predict_smooth_rect_u16<O: IntraLaneSample>(
     max: i32,
     size: IntraRectBlockSize,

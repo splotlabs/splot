@@ -61,6 +61,13 @@ pub enum Error {
         max: u32,
     },
 
+    /// A tile layout asks for more than 64 tile columns or rows.
+    #[error("tile layout {tiles:?} asks for more than 64 tile columns or rows")]
+    InvalidTiles {
+        /// Requested layout.
+        tiles: crate::config::TileLayout,
+    },
+
     /// The speed preset is outside `0..=10`.
     #[error("preset {preset} is outside 0..={max}", max = crate::preset::Preset::MAX)]
     InvalidPreset {

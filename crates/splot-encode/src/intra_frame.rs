@@ -6,14 +6,16 @@
 //! unit of a key or inter frame.
 
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, UniformTiles,
     build_encoder_sequence_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
     EncoderReferences, IntraTileSyntax, Partition, PartitionNode, TransformBlock, TxType,
-    recon_params, tx_log2,
+    recon_params, tile_count, tx_log2,
 };
+use splot_parallel::WorkerPool;
+use splot_parallel::prelude::*;
 use splot_recon::{BitDepth, DecodedFrame, PlaneId, PlaneSize};
 
 use crate::config::Config;
@@ -23,7 +25,7 @@ use crate::frame::SourceFrame;
 use crate::gop::{self, GopFrame};
 use crate::kernels::rdoq::{RdoqBlock, rdoq};
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
-use crate::loop_filter::{FilteredFrame, FirstPass, FrameDecisions, finish_frame};
+use crate::loop_filter::{CodedTile, FilteredFrame, FirstPass, FrameDecisions, finish_frame};
 use crate::mode_decision::TrialCoder;
 use crate::motion_search::MotionSearch;
 use crate::preset::PresetParams;
@@ -46,6 +48,9 @@ pub(crate) struct IntraFrameCoder {
     bit_depth: BitDepth,
     preset: &'static PresetParams,
     references: EncoderReferences,
+    tiles: UniformTiles,
+    /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
+    pool: Option<WorkerPool>,
 }
 
 impl IntraFrameCoder {
@@ -83,86 +88,33 @@ impl IntraFrameCoder {
             view,
             bit_depth: config.bit_depth,
             preset,
+            tiles: UniformTiles {
+                cols_log2: config.tiles.cols_log2,
+                rows_log2: config.tiles.rows_log2,
+                ..UniformTiles::default()
+            },
+            pool: (config.threads.resolve().get() > 1)
+                .then(|| WorkerPool::new(config.threads))
+                .transpose()
+                .map_err(coding("worker pool"))?,
         })
     }
 }
 
 impl FrameCoder for IntraFrameCoder {
-    fn encode_frame(
-        &mut self,
-        source: &SourceFrame,
-        plan: &GopFrame,
-        qp: u16,
-    ) -> Result<CodedFrame> {
-        let qindex = u32::from(qp);
-        let tools = gop::frame_tools(self.preset);
-        let header = |filters: &FrameFilterParams| {
-            plan.header(&self.view, &self.references, qindex, filters, tools)
-        };
-        let core = header(&FrameFilterParams::default())?;
-        let mut writer = KeyFrameTileWriter::new(&self.sequence, &core, &self.references)
-            .map_err(coding("tile setup"))?;
-        let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
-        let sb = writer.syntax().superblock_size4() * 4;
-        let padded = PaddedSource::new(source, mi_cols * 4 + sb, mi_rows * 4 + sb);
-        let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
-        let motion = MotionSearch::new(writer.syntax(), &padded, self.preset, lambda)
-            .map_err(coding("motion search"))?;
-        let mut coder =
-            SourceResidualCoder::new(&padded, qindex, self.bit_depth, self.preset, lambda);
-        let mut decisions = FrameDecisions::default();
-        let preset = self.preset;
-        while writer.next_superblock_root().is_some() {
-            let tree = writer
-                .search_superblock(|syntax, root| {
-                    let mut trial =
-                        TrialCoder::new(syntax, &mut coder, preset, lambda, motion.as_ref());
-                    Ok(search_partition(&mut trial, root, preset, lambda)?.0)
-                })
-                .map_err(coding("superblock search"))?;
-            decisions
-                .write_superblock(&mut writer, SuperblockDecision { tree }, &mut coder)
-                .map_err(coding("superblock"))?;
-        }
-        let (tile, recon, (recorder, _)) = writer
-            .finish_with_filters()
-            .map_err(coding("tile finish"))?;
-        let pass = FirstPass {
-            core,
-            tile,
-            recon,
-            recorder,
-            decisions,
-        };
-        let FilteredFrame {
-            core,
-            filters,
-            tile,
-            recon,
-        } = finish_frame(
-            &self.sequence,
-            &header,
-            self.preset,
-            (source, &self.references),
-            pass,
-        )?;
-        let temporal_unit = plan.temporal_unit(
-            &self.sequence,
-            &self.view,
-            &self.references,
-            (qindex, &filters, tools),
-            &core,
-            &tile,
-        )?;
-        let planes = visible_planes(&recon)?;
+    fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>> {
+        map_tiles(self.pool.as_ref(), wave.to_vec(), |(source, plan, qp)| {
+            self.code_frame(source, &plan, qp)
+        })
+    }
+
+    fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
+        let (core, recon) = frame.reference.take().ok_or(Error::Unsupported {
+            what: "a frame committed twice",
+        })?;
         self.references
             .update(&core, recon)
-            .map_err(coding("reference update"))?;
-        Ok(CodedFrame {
-            temporal_unit,
-            recon: planes,
-            frame_type: plan.frame_type,
-        })
+            .map_err(coding("reference update"))
     }
 
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
@@ -171,6 +123,92 @@ impl FrameCoder for IntraFrameCoder {
             .show_existing(slot)
             .map_err(coding("show-existing frame"))?;
         Ok(unit)
+    }
+}
+
+impl IntraFrameCoder {
+    /// Codes `source` as `plan` at quantizer `qp` against the committed references.
+    fn code_frame(&self, source: &SourceFrame, plan: &GopFrame, qp: u16) -> Result<CodedFrame> {
+        let qindex = u32::from(qp);
+        let tools = gop::frame_tools(self.preset, self.tiles);
+        let header = |filters: &FrameFilterParams| {
+            plan.header(&self.view, &self.references, qindex, filters, tools)
+        };
+        let core = header(&FrameFilterParams::default())?;
+        let writers = (0..tile_count(&core))
+            .map(|tile| KeyFrameTileWriter::new(&self.sequence, &core, &self.references, tile))
+            .collect::<core::result::Result<Vec<_>, _>>()
+            .map_err(coding("tile setup"))?;
+        let first = writers.first().ok_or(Error::Unsupported {
+            what: "a frame without tiles",
+        })?;
+        let (mi_rows, mi_cols) = first.syntax().mi_dimensions();
+        let sb = first.syntax().superblock_size4() * 4;
+        let padded = PaddedSource::new(source, mi_cols * 4 + sb, mi_rows * 4 + sb);
+        let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
+        let motion = MotionSearch::new(first.syntax(), &padded, self.preset, lambda)
+            .map_err(coding("motion search"))?;
+        let (padded, motion) = (&padded, motion.as_ref());
+        let (bit_depth, preset) = (self.bit_depth, self.preset);
+        let tiles = map_tiles(self.pool.as_ref(), writers, |mut writer| {
+            let mut coder = SourceResidualCoder::new(padded, qindex, bit_depth, preset, lambda);
+            let mut decisions = FrameDecisions::default();
+            while writer.next_superblock_root().is_some() {
+                let tree = writer
+                    .search_superblock(|syntax, root| {
+                        let mut trial = TrialCoder::new(syntax, &mut coder, preset, lambda, motion);
+                        Ok(search_partition(&mut trial, root, preset, lambda)?.0)
+                    })
+                    .map_err(coding("superblock search"))?;
+                decisions
+                    .write_superblock(&mut writer, SuperblockDecision { tree }, &mut coder)
+                    .map_err(coding("superblock"))?;
+            }
+            CodedTile::finish(writer, decisions).map_err(coding("tile finish"))
+        })?;
+        let FilteredFrame {
+            core,
+            filters,
+            tiles,
+            recon,
+        } = finish_frame(
+            &self.sequence,
+            &header,
+            self.preset,
+            (source, &self.references, self.pool.as_ref()),
+            FirstPass { core, tiles },
+        )?;
+        let tiles: Vec<&[u8]> = tiles.iter().map(Vec::as_slice).collect();
+        let temporal_unit = plan.temporal_unit(
+            &self.sequence,
+            &self.view,
+            &self.references,
+            (qindex, &filters, tools),
+            &core,
+            &tiles,
+        )?;
+        Ok(CodedFrame {
+            temporal_unit,
+            recon: visible_planes(&recon)?,
+            frame_type: plan.frame_type,
+            reference: Some((core, recon)),
+        })
+    }
+}
+
+/// `f` of each item, in order: on `pool` when there is one, else in turn.
+/// The error is the first in item order, whatever the thread count.
+pub(crate) fn map_tiles<T: Send, R: Send>(
+    pool: Option<&WorkerPool>,
+    items: Vec<T>,
+    f: impl Fn(T) -> Result<R> + Send + Sync,
+) -> Result<Vec<R>> {
+    match pool {
+        Some(pool) => pool
+            .install(|| items.into_par_iter().map(f).collect::<Vec<_>>())
+            .into_iter()
+            .collect(),
+        None => items.into_iter().map(f).collect(),
     }
 }
 
@@ -385,14 +423,9 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let (source, stride) = self.source.at(tx);
         let mut scratch = core::mem::take(&mut self.scratch);
         let [residual, coeffs, dequant] = &mut scratch;
-        residual.clear();
-        for (src, pred) in source.chunks(stride).zip(prediction.chunks(w)).take(h) {
-            residual.extend(
-                src.iter()
-                    .zip(pred)
-                    .map(|(&s, &p)| i32::from(s) - i32::from(p)),
-            );
-        }
+        let dims = BlockDims::new(w, h).map_err(kernel)?;
+        residual.resize(w * h, 0);
+        kernels().residual(source, stride, prediction, w, dims, residual);
         let (params, transform) = recon_params(
             self.qindex,
             plane_id(tx.plane)?,

@@ -109,6 +109,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         show_frame,
                         filters,
                         tx: KeyFrameTxParams::default(),
+                        tiles: UniformTiles::default(),
                         reference_select: compound,
                         skip_mode_present: compound,
                     };
@@ -154,6 +155,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         show_frame: true,
         filters: FrameFilterParams::default(),
         tx: KeyFrameTxParams::default(),
+        tiles: UniformTiles::default(),
         reference_select: false,
         skip_mode_present: false,
     };
@@ -177,13 +179,14 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             show_frame: true,
             filters: filters(SuperblockSize::Block64x64),
             tx: KeyFrameTxParams::default(),
+            tiles: UniformTiles::default(),
             reference_select: true,
             skip_mode_present: false,
         },
     )
     .unwrap();
     let tile = [0xab, 0xcd, 0xef];
-    let obu = encode_inter_frame_obu(&header, &tile).unwrap();
+    let obu = encode_inter_frame_obu(&header, &[&tile]).unwrap();
     let parsed = parse_annex_b_obus_partial(&obu);
     assert!(parsed.error.is_none());
     assert_eq!(parsed.obus.len(), 1);
@@ -249,6 +252,7 @@ fn rejects_out_of_range_inter_inputs() {
         show_frame: true,
         filters: FrameFilterParams::default(),
         tx: KeyFrameTxParams::default(),
+        tiles: UniformTiles::default(),
         reference_select: false,
         skip_mode_present: false,
     };

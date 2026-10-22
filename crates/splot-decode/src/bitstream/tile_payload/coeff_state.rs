@@ -355,6 +355,38 @@ impl TileCoeffContextState {
         )
     }
 
+    /// Calls `visit` with the context entries over luma 4x4 rows `rows` and
+    /// columns `cols`, a chroma plane's over that span shifted by
+    /// `chroma_shift` and rounded outwards, for the encoder facade's rollback.
+    pub(crate) fn visit_region(
+        &mut self,
+        rows: &Range<usize>,
+        cols: &Range<usize>,
+        chroma_shift: u32,
+        mut visit: impl FnMut(&mut [u8]),
+    ) {
+        for plane in 0..PLANE_COUNT {
+            let shift = if plane == 0 { 0 } else { chroma_shift };
+            let local = |range: &Range<usize>, origin: usize, len: usize| {
+                let start = (range.start >> shift).saturating_sub(origin).min(len);
+                let end = range.end.div_ceil(1 << shift).saturating_sub(origin);
+                start..end.min(len)
+            };
+            let r = local(rows, self.plane_row_origins[plane], self.plane_rows[plane]);
+            let c = local(cols, self.plane_col_origins[plane], self.plane_cols[plane]);
+            for (line, span) in [
+                (&mut self.above_level[plane], &c),
+                (&mut self.above_dc[plane], &c),
+                (&mut self.left_level[plane], &r),
+                (&mut self.left_dc[plane], &r),
+            ] {
+                if let Some(cells) = line.get_mut(span.clone()) {
+                    visit(cells);
+                }
+            }
+        }
+    }
+
     pub(crate) fn update_after_coeffs(
         &mut self,
         input: CoeffContextUpdate,

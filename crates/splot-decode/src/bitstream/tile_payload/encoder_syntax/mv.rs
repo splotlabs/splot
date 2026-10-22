@@ -11,7 +11,7 @@ use splot_core::symbol_encoder::SymbolSink;
 
 use super::super::cdf::{MvCdfSelector, TileCdfSelector, TileCdfSubset};
 use super::inter::{MV_PRECISION_EIGHTH_PEL, MotionVector};
-use super::{EncoderSyntaxError, IntraTileSyntax, Result, rule};
+use super::{CdfJournal, CdfRow, EncoderSyntaxError, IntraTileSyntax, Result, rule};
 use crate::prediction::inter::Mv;
 use crate::prediction::inter::read_mv::{
     MvReadConfig, MvSymbols, apply_inter_mvd_sign_pair, apply_inter_mvd_signs,
@@ -129,13 +129,14 @@ impl MvSymbols for MvWriter {
 
 /// Writes the differences `mvds` (one or two) at `precision` into `cdfs` and
 /// `sink` as `read_mv` reads them: every magnitude, then every sign bit.
-/// Adaptive MVD and sign derivation stay off.
+/// `journal` logs each CDF row before it adapts. Adaptive MVD and sign
+/// derivation stay off.
 ///
 /// # Errors
 /// Returns [`EncoderSyntaxError::Unsupported`] for differences `read_mv`
 /// cannot code, and [`EncoderSyntaxError::Rule`] for a failed read or write.
 pub(super) fn write_mvds(
-    cdfs: &mut TileCdfSubset,
+    (cdfs, journal): (&mut TileCdfSubset, &mut CdfJournal),
     precision: u8,
     mvds: &[MotionVector],
     sink: &mut impl SymbolSink,
@@ -195,13 +196,15 @@ pub(super) fn write_mvds(
             ));
         }
     }
+    let (base, _) = cdfs.rows_span();
     for step in writer.steps {
         match step {
-            MvStep::Symbol(selector, value) => sink.symbol(
-                cdfs.row_mut(TileCdfSelector::ReadMv(selector))
-                    .map_err(rule("CDF row"))?,
-                Symbol::new(value),
-            ),
+            MvStep::Symbol(selector, value) => {
+                let selector = TileCdfSelector::ReadMv(selector);
+                let row = cdfs.row_mut(selector).map_err(rule("CDF row"))?;
+                journal.log(base, CdfRow::Tile(selector), row);
+                sink.symbol(row, Symbol::new(value))
+            }
             MvStep::Literal(value, bits) => sink.literal(value, bits),
         }
         .map_err(rule("motion vector write"))?;
@@ -218,7 +221,7 @@ impl IntraTileSyntax {
     /// or a write failure.
     pub fn write_mvds(&mut self, mvds: &[MotionVector], sink: &mut impl SymbolSink) -> Result<()> {
         let precision = self.mv_precision();
-        write_mvds(&mut self.cdfs, precision, mvds, sink)
+        write_mvds((&mut self.cdfs, &mut self.journal), precision, mvds, sink)
     }
 }
 

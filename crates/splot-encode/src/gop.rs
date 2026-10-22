@@ -18,7 +18,13 @@
 //! A temporal unit holds the hidden frames coded since the last output and
 //! one output: a shown frame or a show-existing frame (§ 7.3.3, § 7.3.4,
 //! § 7.3.6). A key frame refreshes every slot and keeps only slot 0 valid
-//! (§ 7.23); any other frame refreshes one slot: an empty one, else the one
+//! (§ 7.23). A frame shown when coded above layer 0 is a non-reference frame
+//! (`refresh_frame_flags = 0`), except the last one of its mini-GOP: the
+//! § 5.18.2 `OrderHint` derivation needs a shown reference within half the
+//! order-hint window, and the other references of a mini-GOP are hidden. The
+//! frames coded after a non-reference frame up to the next reference frame
+//! read the same references: they form one wave and can code at the same
+//! time. Any other frame refreshes one slot: an empty one, else the one
 //! with the oldest display index that no show-existing frame waits for. The
 //! § 7.7 implicit reference map ranks the valid slots by display distance and
 //! `base_q_idx`, so at one quantizer the closest frames rank first.
@@ -33,7 +39,7 @@ use core::num::NonZeroU32;
 
 use splot_core::headers::frame::{
     CoreSeqView, FrameFilterParams, FrameHeaderCore, InterFrameParams, KeyFrameTxParams,
-    build_inter_frame_header, build_key_frame_header, encode_inter_frame_obu,
+    UniformTiles, build_inter_frame_header, build_key_frame_header, encode_inter_frame_obu,
     encode_key_frame_temporal_unit, encode_show_existing_frame_obu, encode_temporal_delimiter_obu,
 };
 use splot_core::headers::sequence::SequenceHeader;
@@ -112,6 +118,8 @@ pub(crate) struct GopPlanner {
     /// Scene cuts not planned yet, ascending.
     cuts: Vec<u64>,
     after_output: bool,
+    /// Display index of the last frame of the mini-GOP being planned.
+    last_display: u64,
 }
 
 impl GopPlanner {
@@ -128,6 +136,7 @@ impl GopPlanner {
             scheduled_key: 0,
             cuts: Vec::new(),
             after_output: true,
+            last_display: 0,
         }
     }
 
@@ -197,6 +206,7 @@ impl GopPlanner {
             anchor = first;
         }
         if last > anchor {
+            self.last_display = last;
             self.place(anchor, last, 0, &mut steps)?;
         }
         self.next_display = last + 1;
@@ -249,21 +259,25 @@ impl GopPlanner {
         show_frame: bool,
         layer: u8,
     ) -> Result<GopStep> {
-        let (slot, refresh_frame_flags, ref_slots) = if frame_type == FrameType::Key {
+        let (slot, refresh_frame_flags) = if frame_type == FrameType::Key {
             self.slots = [None; REF_SLOTS];
             self.key_display = display_index;
-            (0, (1 << REF_SLOTS) - 1, 0)
+            (Some(0), (1 << REF_SLOTS) - 1)
+        } else if show_frame && layer > 0 && display_index + 1 != self.last_display {
+            (None, 0)
         } else {
-            let ref_slots = (0..REF_SLOTS)
-                .filter(|&slot| self.slots[slot].is_some())
-                .fold(0, |mask, slot| mask | 1 << slot);
             let slot = self.refresh_slot()?;
-            (slot, 1 << slot, ref_slots)
+            (Some(slot), 1 << slot)
         };
-        self.slots[slot] = Some(Slot {
-            display_index,
-            awaiting_show: !show_frame,
-        });
+        let ref_slots = (0..REF_SLOTS)
+            .filter(|&slot| self.slots[slot].is_some())
+            .fold(0, |mask, slot| mask | 1 << slot);
+        if let Some(slot) = slot {
+            self.slots[slot] = Some(Slot {
+                display_index,
+                awaiting_show: !show_frame,
+            });
+        }
         let frame = GopFrame {
             frame_index: self.next_frame,
             display_index,
@@ -300,6 +314,16 @@ impl GopPlanner {
     }
 }
 
+/// Splits `steps` into waves: a wave ends after a frame that refreshes a slot.
+/// A show-existing frame does not end a wave: it changes only the output flag
+/// of its slot and the frame counter of the § 7.20 buffer, and coding a frame
+/// reads neither.
+pub(crate) fn waves(steps: &[GopStep]) -> impl Iterator<Item = &[GopStep]> {
+    steps.split_inclusive(
+        |step| matches!(step, GopStep::Code(frame) if frame.refresh_frame_flags != 0),
+    )
+}
+
 /// Frame `frame_index` of an IPPP stream with key frames every `keyint` frames.
 #[cfg(test)]
 pub(crate) fn plan(frame_index: u64, keyint: NonZeroU32) -> GopFrame {
@@ -313,12 +337,16 @@ pub(crate) fn plan(frame_index: u64, keyint: NonZeroU32) -> GopFrame {
     frame.unwrap_or_else(|| unreachable!("IPPP codes every input frame"))
 }
 
-/// The frame-level tool choices of `preset`: the transform parameters, and
-/// whether inter frames code compound and skip-mode blocks.
-pub(crate) fn frame_tools(preset: &PresetParams) -> (KeyFrameTxParams, bool) {
+/// The frame-level tool choices of `preset`: the transform parameters,
+/// whether inter frames code compound and skip-mode blocks, and the `tiles`.
+pub(crate) fn frame_tools(
+    preset: &PresetParams,
+    tiles: UniformTiles,
+) -> (KeyFrameTxParams, bool, UniformTiles) {
     (
         crate::tx_choice::key_frame_tx_params(preset),
         preset.compound_candidates > 0,
+        tiles,
     )
 }
 
@@ -340,14 +368,16 @@ impl GopFrame {
         refs: &EncoderReferences,
         qindex: u32,
         filters: &FrameFilterParams,
-        (tx, compound): (KeyFrameTxParams, bool),
+        (tx, compound, tiles): (KeyFrameTxParams, bool, UniformTiles),
     ) -> Result<FrameHeaderCore> {
         let core = match self.frame_type {
-            FrameType::Key => build_key_frame_header(view, qindex, self.order_hint, filters, tx),
+            FrameType::Key => {
+                build_key_frame_header(view, qindex, self.order_hint, filters, tx, tiles)
+            }
             FrameType::Inter => build_inter_frame_header(
                 view,
                 &refs.header_view(),
-                &self.inter_params(qindex, filters, (tx, compound)),
+                &self.inter_params(qindex, filters, (tx, compound, tiles)),
             )
             .map(|header| header.core),
         }
@@ -362,32 +392,54 @@ impl GopFrame {
     }
 
     /// The OBUs of the frame `core` built by [`Self::header`] with
-    /// `(qindex, filters, (tx, compound))`, after a temporal delimiter when the frame opens
-    /// its temporal unit; a key frame repeats the sequence header.
+    /// `(qindex, filters, (tx, compound, tiles))`, whose tile group carries
+    /// `tiles`, after a temporal delimiter when the frame opens its temporal
+    /// unit; a key frame repeats the sequence header. The header codes the
+    /// smallest `TileSizeBytes` that fits the tiles.
     pub(crate) fn temporal_unit(
         &self,
         seq: &SequenceHeader,
         view: &CoreSeqView,
         refs: &EncoderReferences,
-        (qindex, filters, tools): (u32, &FrameFilterParams, (KeyFrameTxParams, bool)),
+        (qindex, filters, (tx, compound, layout)): (
+            u32,
+            &FrameFilterParams,
+            (KeyFrameTxParams, bool, UniformTiles),
+        ),
         core: &FrameHeaderCore,
-        tile: &[u8],
+        tiles: &[&[u8]],
     ) -> Result<Vec<u8>> {
+        let longest = tiles.split_last().map_or(0, |(_, rest)| {
+            rest.iter()
+                .map(|tile| tile.len().saturating_sub(1))
+                .max()
+                .unwrap_or(0)
+        });
+        let size_bytes = (1..4u8).find(|&n| longest >> (8 * n) == 0).unwrap_or(4);
+        let layout = UniformTiles {
+            size_bytes,
+            ..layout
+        };
+        let mut expected = core.clone();
+        if let Some(info) = expected.tile_info.as_mut() {
+            info.tile_size_bytes = info.tile_size_bytes.map(|_| u32::from(size_bytes));
+        }
         if self.frame_type == FrameType::Key {
             if !self.opens_temporal_unit {
                 return Err(Error::Unsupported {
                     what: "a key frame after another frame of its temporal unit",
                 });
             }
-            return encode_key_frame_temporal_unit(seq, core, true, tile).map_err(header_error);
+            let core = self.header(view, refs, qindex, filters, (tx, compound, layout))?;
+            return encode_key_frame_temporal_unit(seq, &core, true, tiles).map_err(header_error);
         }
         let header = build_inter_frame_header(
             view,
             &refs.header_view(),
-            &self.inter_params(qindex, filters, tools),
+            &self.inter_params(qindex, filters, (tx, compound, layout)),
         )
         .map_err(header_error)?;
-        if header.core != *core {
+        if header.core != expected {
             return Err(Error::Unsupported {
                 what: "an inter frame header that changed after coding",
             });
@@ -397,7 +449,7 @@ impl GopFrame {
         } else {
             Vec::new()
         };
-        unit.extend(encode_inter_frame_obu(&header, tile).map_err(header_error)?);
+        unit.extend(encode_inter_frame_obu(&header, tiles).map_err(header_error)?);
         Ok(unit)
     }
 
@@ -405,7 +457,7 @@ impl GopFrame {
         &self,
         qindex: u32,
         filters: &FrameFilterParams,
-        (tx, compound): (KeyFrameTxParams, bool),
+        (tx, compound, tiles): (KeyFrameTxParams, bool, UniformTiles),
     ) -> InterFrameParams {
         InterFrameParams {
             base_q_idx: qindex,
@@ -414,6 +466,7 @@ impl GopFrame {
             show_frame: self.show_frame,
             filters: *filters,
             tx,
+            tiles,
             reference_select: compound,
             skip_mode_present: compound,
         }

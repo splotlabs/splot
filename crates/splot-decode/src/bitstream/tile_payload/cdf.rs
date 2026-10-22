@@ -306,6 +306,15 @@ impl TileCdfSubset {
         self.rows.clone_from(&frame.rows);
     }
 
+    /// The address and `u16` length of the row table, so the encoder facade
+    /// can key a row by its offset.
+    pub(crate) fn rows_span(&self) -> (usize, usize) {
+        (
+            core::ptr::from_ref::<TileCdfRows>(&self.rows).addr(),
+            size_of::<TileCdfRows>() / size_of::<u16>(),
+        )
+    }
+
     #[allow(
         clippy::inline_always,
         reason = "constant selectors fold into a direct row read"

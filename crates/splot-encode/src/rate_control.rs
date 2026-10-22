@@ -60,10 +60,11 @@ pub struct FramePlanInfo {
 ///
 /// The encoder codes the input as a sequence of steps: a key frame alone, or
 /// a mini-GOP. Before each step it calls [`Self::plan_window`] once. Then it
-/// codes only the frames of that step, in coding order: [`Self::frame_qp`]
-/// and then [`Self::update`] for each frame, and
-/// [`Self::update_show_existing`] for each show-existing frame. Then the next
-/// step starts with the next `plan_window` call.
+/// codes the frames of that step in waves of frames that read the same
+/// references: [`Self::frame_qp`] for each frame of the wave in coding order,
+/// then [`Self::update`] for each frame and [`Self::update_show_existing`] for
+/// each show-existing frame, in coding order. Then the next step starts with
+/// the next `plan_window` call.
 pub trait RateController {
     /// Receives the planned frames of the lookahead window in coding order:
     /// the frames of the next step first, then the frames planned after them,
@@ -346,6 +347,8 @@ impl RateController for Vbr {
 pub struct Cbr {
     vbr: Vbr,
     buffer_bits: u64,
+    /// The predicted drift of the frames of this wave that have a qindex.
+    pending: i64,
 }
 
 impl Cbr {
@@ -363,6 +366,7 @@ impl Cbr {
         Ok(Self {
             vbr: Vbr::with_limits(frame_bits, 1, buffer_bits as i64 / 2),
             buffer_bits,
+            pending: 0,
         })
     }
 }
@@ -376,17 +380,25 @@ impl RateController for Cbr {
     /// the room left after one frame budget drains.
     fn frame_qp(&mut self, info: &FramePlanInfo) -> u16 {
         let mut qindex = self.vbr.frame_qp(info);
-        let level = (self.buffer_bits as i64 / 2 + self.vbr.drift).max(0) as u64;
+        let level = (self.buffer_bits as i64 / 2)
+            .saturating_add(self.vbr.drift)
+            .saturating_add(self.pending)
+            .max(0) as u64;
         let room = (self.buffer_bits + self.vbr.frame_bits)
             .saturating_sub(level)
             .min(self.buffer_bits);
         while qindex < max_qindex(info.bit_depth) && self.vbr.predict(info, qindex) > room {
             qindex += 1;
         }
+        let predicted = i64::try_from(self.vbr.predict(info, qindex)).unwrap_or(i64::MAX);
+        self.pending = self
+            .pending
+            .saturating_add(predicted.saturating_sub(self.vbr.frame_bits as i64));
         qindex
     }
 
     fn update(&mut self, stats: &FrameStats) {
+        self.pending = 0;
         self.vbr.update(stats);
     }
 

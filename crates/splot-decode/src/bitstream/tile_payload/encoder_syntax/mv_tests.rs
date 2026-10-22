@@ -61,9 +61,10 @@ fn random_differences_round_trip_through_read_mv() {
             })
             .collect();
         let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+        let mut journal = CdfJournal::new(&cdfs);
         let mut encoder = SymbolEncoder::new();
         for mvds in &cases {
-            write_mvds(&mut cdfs, precision, mvds, &mut encoder).unwrap();
+            write_mvds((&mut cdfs, &mut journal), precision, mvds, &mut encoder).unwrap();
         }
         let payload = encoder.finish().unwrap().into_bytes();
         let mut symbols = SymbolDecoder::with_base_and_config(

@@ -8,10 +8,13 @@
 use std::collections::VecDeque;
 use std::fmt;
 
+use splot_core::headers::frame::FrameHeaderCore;
+use splot_recon::DecodedFrame;
+
 use crate::config::{Config, RateControlMode};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
-use crate::gop::{GopFrame, GopPlanner, GopStep};
+use crate::gop::{self, GopFrame, GopPlanner, GopStep};
 use crate::intra_frame::IntraFrameCoder;
 use crate::lookahead::Lookahead;
 use crate::rate_control::{
@@ -45,17 +48,17 @@ pub(crate) struct CodedFrame {
     pub(crate) recon: [Vec<u16>; 3],
     /// The frame type the coder used, which can differ from the planned one.
     pub(crate) frame_type: FrameType,
+    /// The header and filtered reconstruction that [`FrameCoder::commit`] stores.
+    pub(crate) reference: Option<(FrameHeaderCore, DecodedFrame<u16>)>,
 }
 
 /// Codes the frames and show-existing frames of the plan, in coding order.
 pub(crate) trait FrameCoder {
-    /// Codes `source` as `plan` at quantizer `qp`.
-    fn encode_frame(
-        &mut self,
-        source: &SourceFrame,
-        plan: &GopFrame,
-        qp: u16,
-    ) -> Result<CodedFrame>;
+    /// Codes each `(source, plan, qp)` of one wave against the committed
+    /// references; the frames of a wave can code at the same time.
+    fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>>;
+    /// Stores a frame of [`Self::encode_wave`] in the references, in coding order.
+    fn commit(&mut self, frame: &mut CodedFrame) -> Result<()>;
     /// A temporal delimiter and the show-existing frame that outputs the
     /// hidden frame in `slot`.
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>>;
@@ -289,29 +292,41 @@ impl Encoder {
         };
         let mut frame_types = vec![FrameType::Inter; frames.len()];
         let (mut data, mut stats) = (Vec::new(), Vec::new());
-        for step in self.planner.plan(frames.len())? {
-            match step {
-                GopStep::Code(plan) => {
-                    let frame = source(plan.display_index)?;
-                    let (coded, frame_stats) = self.code(frame, &plan)?;
-                    frame_types[(plan.display_index - first) as usize] = coded.frame_type;
-                    data.extend(coded.temporal_unit);
-                    stats.push(frame_stats);
-                }
-                GopStep::ShowExisting { slot, .. } => {
-                    let unit = self.coder.show_existing_frame(slot)?;
-                    self.rate_control
-                        .update_show_existing(unit.len() as u64 * 8);
-                    data.extend(unit);
+        let steps = self.planner.plan(frames.len())?;
+        for wave in gop::waves(&steps) {
+            let mut jobs = Vec::new();
+            for step in wave {
+                if let GopStep::Code(plan) = *step {
+                    jobs.push((source(plan.display_index)?, plan, self.frame_qp(&plan)?));
                 }
             }
-            if let Some(display_index) = step.output() {
-                self.ready.push_back(Packet {
-                    data: core::mem::take(&mut data),
-                    pts: source(display_index)?.pts(),
-                    frame_type: frame_types[(display_index - first) as usize],
-                    stats: core::mem::take(&mut stats),
-                });
+            let mut coded = jobs.iter().zip(self.coder.encode_wave(&jobs)?);
+            for step in wave {
+                match *step {
+                    GopStep::Code(_) => {
+                        let (&(frame, plan, qp), mut coded) =
+                            coded.next().ok_or(Error::Unsupported {
+                                what: "a wave with fewer coded frames than planned",
+                            })?;
+                        stats.push(self.commit(frame, &plan, qp, &mut coded)?);
+                        frame_types[(plan.display_index - first) as usize] = coded.frame_type;
+                        data.extend(coded.temporal_unit);
+                    }
+                    GopStep::ShowExisting { slot, .. } => {
+                        let unit = self.coder.show_existing_frame(slot)?;
+                        self.rate_control
+                            .update_show_existing(unit.len() as u64 * 8);
+                        data.extend(unit);
+                    }
+                }
+                if let Some(display_index) = step.output() {
+                    self.ready.push_back(Packet {
+                        data: core::mem::take(&mut data),
+                        pts: source(display_index)?.pts(),
+                        frame_type: frame_types[(display_index - first) as usize],
+                        stats: core::mem::take(&mut stats),
+                    });
+                }
             }
         }
         self.lookahead
@@ -319,11 +334,7 @@ impl Encoder {
         Ok(())
     }
 
-    fn code(
-        &mut self,
-        frame: &SourceFrame,
-        gop_frame: &GopFrame,
-    ) -> Result<(CodedFrame, FrameStats)> {
+    fn frame_qp(&mut self, gop_frame: &GopFrame) -> Result<u16> {
         let plan = self
             .window
             .iter()
@@ -332,12 +343,22 @@ impl Encoder {
             .ok_or(Error::Unsupported {
                 what: "a frame outside its lookahead window",
             })?;
-        let qp = self
+        Ok(self
             .rate_control
             .frame_qp(&plan)
-            .clamp(1, max_qindex(frame.bit_depth()));
-        let coded = self.coder.encode_frame(frame, gop_frame, qp)?;
+            .clamp(1, max_qindex(self.config.bit_depth)))
+    }
 
+    /// Commits `coded`, the frame `frame` coded as `gop_frame` at `qp`, and
+    /// reports its statistics to the rate controller and the stats sink.
+    fn commit(
+        &mut self,
+        frame: &SourceFrame,
+        gop_frame: &GopFrame,
+        qp: u16,
+        coded: &mut CodedFrame,
+    ) -> Result<FrameStats> {
+        self.coder.commit(coded)?;
         let bit_depth = frame.bit_depth();
         let [source_y, source_u, source_v] = frame.planes();
         let [recon_y, recon_u, recon_v] = &coded.recon;
@@ -361,7 +382,7 @@ impl Encoder {
         if let Some(sink) = &mut self.stats_sink {
             sink(&stats);
         }
-        Ok((coded, stats))
+        Ok(stats)
     }
 }
 
@@ -389,6 +410,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::config::TileLayout;
     use crate::preset::Preset;
 
     /// Emits the frame index and qp as the frame's OBUs (after `0xd0` when
@@ -399,8 +421,24 @@ mod tests {
     }
 
     impl FrameCoder for FakeCoder {
+        fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>> {
+            wave.iter()
+                .map(|&(source, plan, qp)| self.encode_frame(source, &plan, qp))
+                .collect()
+        }
+
+        fn commit(&mut self, _frame: &mut CodedFrame) -> Result<()> {
+            Ok(())
+        }
+
+        fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
+            Ok(vec![0xd0, 0x5e, slot as u8])
+        }
+    }
+
+    impl FakeCoder {
         fn encode_frame(
-            &mut self,
+            &self,
             source: &SourceFrame,
             plan: &GopFrame,
             qp: u16,
@@ -422,11 +460,8 @@ mod tests {
                 temporal_unit,
                 recon,
                 frame_type: plan.frame_type,
+                reference: None,
             })
-        }
-
-        fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
-            Ok(vec![0xd0, 0x5e, slot as u8])
         }
     }
 
@@ -622,15 +657,17 @@ mod tests {
         Ok(())
     }
 
-    /// Encodes 20 panning frames with a cut at 11, sending them `sends` at a
-    /// time and then receiving up to `receives` packets, until the input ends.
+    /// Encodes 20 panning frames `width` wide in `tiles` with a cut at 11,
+    /// sending them `sends` at a time and then receiving up to `receives`
+    /// packets, until the input ends.
     fn interleaved(
-        rate_control: RateControlMode,
+        (rate_control, width, tiles): (RateControlMode, u32, TileLayout),
         mut sends: impl FnMut() -> usize,
         mut receives: impl FnMut() -> usize,
     ) -> Result<Vec<u8>> {
-        let mut config = Config::new(48, 32);
+        let mut config = Config::new(width, 32);
         config.rate_control = rate_control;
+        config.tiles = tiles;
         config.preset = Preset::new(9).unwrap_or_default();
         let mut encoder = Encoder::new(config.clone())?;
         let mut bytes = Vec::new();
@@ -670,16 +707,23 @@ mod tests {
     }
 
     /// One send and a full drain per frame, every send before the flush, and
-    /// random interleavings all give the same bytes.
+    /// random interleavings all give the same bytes; the VBR case codes two
+    /// tiles in parallel.
     #[test]
     fn output_does_not_depend_on_the_call_pattern() -> Result<()> {
+        let one = TileLayout::default();
+        let two = TileLayout {
+            cols_log2: 1,
+            rows_log2: 0,
+        };
+        let cbr = RateControlMode::Cbr {
+            bitrate_kbps: 60,
+            buffer_ms: 1000,
+        };
         for mode in [
-            RateControlMode::Crf { crf: 30 },
-            RateControlMode::Vbr { bitrate_kbps: 60 },
-            RateControlMode::Cbr {
-                bitrate_kbps: 60,
-                buffer_ms: 1000,
-            },
+            (RateControlMode::Crf { crf: 30 }, 48, one),
+            (RateControlMode::Vbr { bitrate_kbps: 90 }, 72, two),
+            (cbr, 48, one),
         ] {
             let per_frame = interleaved(mode, || 1, || usize::MAX)?;
             assert!(!per_frame.is_empty());

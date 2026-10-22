@@ -45,8 +45,13 @@ pub(crate) trait PartitionSearch {
         node: Self::Node,
         partition: Partition,
     ) -> Result<Bits, Self::Error>;
-    /// Saves the state that coding `node` can change.
-    fn save(&mut self, node: Self::Node) -> Result<Self::Saved, Self::Error>;
+    /// Saves the state that coding `node` can change; with `start`, a live
+    /// save of the same node, the state a trial reached from it.
+    fn save(
+        &mut self,
+        node: Self::Node,
+        start: Option<&Self::Saved>,
+    ) -> Result<Self::Saved, Self::Error>;
     /// Restores a state saved for the same node.
     fn restore(&mut self, saved: &Self::Saved) -> Result<(), Self::Error>;
 }
@@ -101,7 +106,7 @@ fn search<S: PartitionSearch>(
     }
     let candidates = candidates(coder, node, preset)?;
     let start = if candidates.len() > 1 {
-        Some(coder.save(node)?)
+        Some(coder.save(node, None)?)
     } else {
         None
     };
@@ -136,7 +141,7 @@ fn search<S: PartitionSearch>(
         let j = cost.cost(lambda);
         if best.as_ref().is_none_or(|(best_j, ..)| j < *best_j) {
             let end = if index + 1 < candidates.len() {
-                Some(coder.save(node)?)
+                Some(coder.save(node, start.as_ref())?)
             } else {
                 None
             };

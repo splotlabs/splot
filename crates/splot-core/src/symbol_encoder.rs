@@ -10,7 +10,7 @@
 
 use crate::symbol::{
     CDF_PROB_SCALE, CdfStorage, CdfUpdateMode, EC_PROB_SHIFT, MAX_LITERAL_BITS, SYMBOL_RANGE_INIT,
-    Symbol, floor_log2, update_cdf, validate_cdf_shape,
+    Symbol, floor_log2, trusted_cdf_shape, update_cdf, validate_cdf_shape,
 };
 use crate::tables::conversion::PROB_INC;
 use crate::write::{WriteError, WriteResult};
@@ -83,13 +83,17 @@ fn split_q12<T: CdfStorage>(cdf: &[T], n: usize, symbol: usize) -> u32 {
 
 /// Adapts `cdf` after `symbol` exactly as [`SymbolEncoder::write_symbol_u16`]
 /// does with CDF updates enabled, without coding it; rate models price a
-/// symbol with the row, then adapt it.
+/// symbol with the row, then adapt it. Like
+/// [`CdfValidationMode::Trusted`](crate::symbol::CdfValidationMode::Trusted),
+/// it checks only the length and adaptation-rate index, so it is for rows the
+/// caller owns.
 ///
 /// # Errors
-/// Returns [`WriteError::InvalidSymbolCdf`] for a malformed row and
-/// [`WriteError::SymbolOutOfRange`] for a symbol outside it.
+/// Returns [`WriteError::InvalidSymbolCdf`] for a row of unsupported length
+/// or adaptation-rate index and [`WriteError::SymbolOutOfRange`] for a symbol
+/// outside it.
 pub fn adapt_cdf_u16(cdf: &mut [u16], symbol: Symbol) -> WriteResult<()> {
-    let shape = validate_cdf_shape(cdf).map_err(|kind| WriteError::InvalidSymbolCdf { kind })?;
+    let shape = trusted_cdf_shape(cdf).map_err(|kind| WriteError::InvalidSymbolCdf { kind })?;
     let index = usize::from(symbol.get());
     if index >= shape.n {
         return Err(WriteError::SymbolOutOfRange {

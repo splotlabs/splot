@@ -39,6 +39,25 @@ pub const TX_PARTITIONS: [TxPartition; 8] = [
 
 /// One symbol: its CDF and its value.
 type Step = (TileCdfSelector, usize);
+/// The symbols of one choice, in order; inline so trials do not allocate.
+type Steps = [Option<Step>; MAX_STEPS];
+/// The most symbols one transform partition or type takes.
+const MAX_STEPS: usize = 3;
+const NO_STEPS: Steps = [None; MAX_STEPS];
+
+/// `steps` inline.
+fn inline_steps(steps: &[Step]) -> Result<Steps> {
+    let mut out = NO_STEPS;
+    if steps.len() > MAX_STEPS {
+        return Err(EncoderSyntaxError::Unsupported(
+            "transform type symbol count",
+        ));
+    }
+    for (slot, &step) in out.iter_mut().zip(steps) {
+        *slot = Some(step);
+    }
+    Ok(out)
+}
 
 const PARTITION: &str = "transform partition";
 
@@ -75,7 +94,7 @@ impl IntraTileSyntax {
                 .ok_or(EncoderSyntaxError::Unsupported(
                     "transform partition of this block",
                 ))?;
-        for (selector, value) in steps {
+        for (selector, value) in steps.into_iter().flatten() {
             put(self.tile_row(selector)?, value)?;
         }
         Ok(())
@@ -106,7 +125,7 @@ impl IntraTileSyntax {
     ) -> Result<Option<TxType>> {
         let options = self.luma_tx_type_options(tx, eob)?;
         Ok(match options.as_slice() {
-            [(tx_type, steps)] if steps.is_empty() => Some(*tx_type),
+            [(tx_type, steps)] if steps.iter().all(Option::is_none) => Some(*tx_type),
             _ => None,
         })
     }
@@ -131,7 +150,7 @@ impl IntraTileSyntax {
             .ok_or(EncoderSyntaxError::Unsupported(
                 "luma transform type for this block and eob",
             ))?;
-        for (selector, value) in steps {
+        for (selector, value) in steps.into_iter().flatten() {
             put(self.tile_row(selector)?, value)?;
         }
         Ok(())
@@ -148,7 +167,7 @@ impl IntraTileSyntax {
             None => Err(EncoderSyntaxError::Unsupported(
                 "transform partition of this block",
             )),
-            Some(steps) if steps.is_empty() => Ok(None),
+            Some(steps) if steps.iter().all(Option::is_none) => Ok(None),
             Some(_) => Ok(self
                 .partition_context(leaf)?
                 .map(|(context, _)| context.max_tx_size())),
@@ -177,9 +196,9 @@ impl IntraTileSyntax {
         &self,
         leaf: &LeafBlock,
         partition: TxPartition,
-    ) -> Result<Option<Vec<Step>>> {
+    ) -> Result<Option<Steps>> {
         let Some((context, (allow_horz, allow_vert))) = self.partition_context(leaf)? else {
-            return Ok((partition == TxPartition::None).then(Vec::new));
+            return Ok((partition == TxPartition::None).then_some(NO_STEPS));
         };
         if partition != TxPartition::None
             && luma_transform_records_for_partition(0, 0, context.max_tx_size(), partition).is_err()
@@ -190,7 +209,8 @@ impl IntraTileSyntax {
         let group = |table: &[i32], name| {
             block_size_table_usize(table, name, mi_size).map_err(rule(PARTITION))
         };
-        let mut steps = vec![(
+        let mut steps = NO_STEPS;
+        steps[0] = Some((
             TileCdfSelector::TxDoPartition {
                 fsc_mode: 0,
                 is_inter: 0,
@@ -200,7 +220,7 @@ impl IntraTileSyntax {
                 )?,
             },
             usize::from(partition != TxPartition::None),
-        )];
+        ));
         if partition == TxPartition::None {
             return Ok(Some(steps));
         }
@@ -210,7 +230,7 @@ impl IntraTileSyntax {
             else {
                 return Ok(None);
             };
-            steps.push((
+            steps[1] = Some((
                 TileCdfSelector::TxPartitionType {
                     fsc_mode: 0,
                     is_inter: 0,
@@ -237,7 +257,7 @@ impl IntraTileSyntax {
             if partition != two && partition != four {
                 return Ok(None);
             }
-            steps.push((
+            steps[1] = Some((
                 TileCdfSelector::Tx2Or3PartitionType {
                     fsc_mode: 0,
                     is_inter: 0,
@@ -258,7 +278,7 @@ impl IntraTileSyntax {
         &mut self,
         tx: &TransformBlock,
         eob: usize,
-    ) -> Result<Vec<(TxType, Vec<Step>)>> {
+    ) -> Result<Vec<(TxType, Steps)>> {
         if tx.plane != 0 {
             return Err(EncoderSyntaxError::Unsupported(
                 "coded transform type of a chroma block",
@@ -269,7 +289,7 @@ impl IntraTileSyntax {
         let tx_set = transform_set_from_flags(reduced, false, 0, tx.tx_size, is_inter)
             .map_err(rule("transform set"))?;
         if dct_forced(is_inter, 0, eob, false, reduced, tx_set) {
-            return Ok(vec![(TxType::DctDct, Vec::new())]);
+            return Ok(vec![(TxType::DctDct, NO_STEPS)]);
         }
         if is_inter {
             let mut row_error = None;
@@ -283,11 +303,11 @@ impl IntraTileSyntax {
             if let Some(error) = row_error {
                 return Err(error);
             }
-            let mut out: Vec<(TxType, Vec<Step>)> = Vec::new();
+            let mut out: Vec<(TxType, Steps)> = Vec::new();
             for (tx_type, steps) in paths {
                 let tx_type = TxType::from_value(tx_type)?;
                 if out.iter().all(|&(seen, _)| seen != tx_type) {
-                    out.push((tx_type, steps));
+                    out.push((tx_type, inline_steps(&steps)?));
                 }
             }
             if let Some(dct) = out
@@ -302,8 +322,8 @@ impl IntraTileSyntax {
             .get(tx.tx_size)
             .and_then(|&sqr| usize::try_from(sqr).ok())
             .ok_or(EncoderSyntaxError::Unsupported("transform size"))?;
-        let mut out: Vec<(TxType, Vec<Step>)> = Vec::new();
-        let mut push = |tx_type: usize, steps: Vec<Step>| -> Result<()> {
+        let mut out: Vec<(TxType, Steps)> = Vec::new();
+        let mut push = |tx_type: usize, steps: Steps| -> Result<()> {
             let tx_type = TxType::from_value(tx_type)?;
             if out.iter().all(|&(seen, _)| seen != tx_type) {
                 out.push((tx_type, steps));
@@ -322,14 +342,15 @@ impl IntraTileSyntax {
                     continue;
                 }
                 for index in 0..arity {
-                    let mut steps = Vec::with_capacity(2);
-                    if !shape.long_side_dct_is_forced {
-                        steps.push((
-                            TileCdfSelector::IsLongSideDct { is_inter: 0 },
-                            is_long_side_dct,
-                        ));
-                    }
-                    steps.push((row, index));
+                    let long_side = (
+                        TileCdfSelector::IsLongSideDct { is_inter: 0 },
+                        is_long_side_dct,
+                    );
+                    let steps = if shape.long_side_dct_is_forced {
+                        [Some((row, index)), None, None]
+                    } else {
+                        [Some(long_side), Some((row, index)), None]
+                    };
                     push(
                         long_tx_type_from_index(shape, is_long_side_dct, index),
                         steps,
@@ -346,7 +367,7 @@ impl IntraTileSyntax {
             for index in 0..self.arity(row)? {
                 let tx_type = md_idx_luma_tx_type(tx.tx_size, context, index)
                     .map_err(rule("transform type"))?;
-                push(tx_type, vec![(row, index)])?;
+                push(tx_type, [Some((row, index)), None, None])?;
             }
         }
         Ok(out)

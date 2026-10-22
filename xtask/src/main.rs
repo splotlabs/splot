@@ -15,6 +15,7 @@ use clap::{Parser, Subcommand};
 
 mod ai_slop;
 mod audit_scope;
+mod bd_rate;
 mod comment_density;
 mod concurrency_policy;
 mod conformance;
@@ -24,6 +25,7 @@ mod decoder_support;
 mod diagnostic_registry;
 mod doc_budget;
 mod dupehound;
+mod encode_perf;
 mod explain_registry;
 mod feature_status;
 mod fixtures;
@@ -227,6 +229,44 @@ enum Task {
         #[arg(long)]
         bless: bool,
     },
+    /// Encoder speed harness over synthetic clips at presets 0/6/10: fps,
+    /// IVF sha256 and instruction counts (DynamoRIO gate on Linux).
+    EncodePerf {
+        /// Rewrite `tests/perf/encode-baseline.toml` from DynamoRIO counts.
+        #[arg(long)]
+        bless: bool,
+        /// Sample a release encode and print the SIMD share of kernel samples.
+        #[arg(long)]
+        coverage: bool,
+        /// Wall-time runs per row; the fastest is kept.
+        #[arg(long, default_value_t = 3)]
+        runs: usize,
+    },
+    /// Local luma BD-rate of the release `splot` encoder against `avmenc`
+    /// (path in `AVMENC`) or a `--baseline` `splot` binary. Not part of `ci`.
+    BdRate {
+        /// 8-bit 4:2:0 Y4M source; default is the synthetic 352x288 clip.
+        #[arg(long)]
+        clip: Option<PathBuf>,
+        /// Frames to encode.
+        #[arg(long, default_value_t = 8)]
+        frames: usize,
+        /// `splot` preset.
+        #[arg(long, default_value_t = 6)]
+        preset: u8,
+        /// `avmenc --cpu-used` of the AVM anchor.
+        #[arg(long, default_value_t = 6)]
+        cpu_used: u8,
+        /// Quantizer indices (at least four).
+        #[arg(long, value_delimiter = ',', default_values_t = [60u16, 90, 120, 150])]
+        qp: Vec<u16>,
+        /// Code every frame as a key frame.
+        #[arg(long)]
+        intra: bool,
+        /// Anchor `splot` binary instead of `avmenc`.
+        #[arg(long)]
+        baseline: Option<PathBuf>,
+    },
     /// Run a short local fuzz smoke session against every fuzz target.
     ///
     /// Requires a nightly toolchain and `cargo-fuzz`. Each target runs for the
@@ -351,6 +391,38 @@ fn main() -> Result<()> {
         Task::Conformance => conformance::run_conformance(&workspace_root()?),
         Task::Coverage => run_coverage(),
         Task::Perf { bless } => perf::run_perf(&workspace_root()?, bless),
+        Task::EncodePerf {
+            bless,
+            coverage,
+            runs,
+        } => encode_perf::run_encode_perf(
+            &workspace_root()?,
+            &encode_perf::EncodePerfOptions {
+                bless,
+                coverage,
+                runs,
+            },
+        ),
+        Task::BdRate {
+            clip,
+            frames,
+            preset,
+            cpu_used,
+            qp,
+            intra,
+            baseline,
+        } => bd_rate::run_bd_rate(
+            &workspace_root()?,
+            &bd_rate::BdRateOptions {
+                clip,
+                frames,
+                preset,
+                cpu_used,
+                qps: qp,
+                intra,
+                baseline,
+            },
+        ),
         Task::Fuzz { time } => run_fuzz(time),
         Task::Audit => run_audit(),
         Task::AuditScope {

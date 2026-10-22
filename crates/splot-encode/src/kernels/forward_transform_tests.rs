@@ -10,7 +10,9 @@ use splot_recon::{
 };
 
 use super::super::{EncoderKernels, Quantizer, ScalarKernels, SimdKernels};
-use super::{EXTRA_BITS, ForwardTransform2d, KINDS, MATRICES, matrix_index};
+use super::{
+    EXTRA_BITS, ForwardTransform2d, KINDS, MATRICES, matrix_index, pair_sum_scalar, pair_sum_simd,
+};
 
 /// The 25 AV2 `TX_SIZES_ALL` shapes as `(log2W, log2H)`.
 const SHAPES: [(u32, u32); 25] = [
@@ -232,6 +234,27 @@ proptest! {
         let mut simd = scalar.clone();
         ScalarKernels.forward_transform_2d(&tx, &residual, &mut scalar).unwrap();
         SimdKernels.forward_transform_2d(&tx, &residual, &mut simd).unwrap();
+        prop_assert_eq!(scalar, simd);
+    }
+
+    /// The pair sums wrap identically over the whole `i32` range.
+    #[test]
+    fn pair_sum_simd_matches_scalar(shape in 0..SHAPES.len(), seed: u64) {
+        let (log2w, log2h) = SHAPES[shape];
+        let dct = InverseTransform2dDim::Kernel(InverseTransform1dType::Dct);
+        let tx = ForwardTransform2d::new(log2w, log2h, dct, dct, BitDepth::Eight).unwrap();
+        prop_assume!(log2w > 5 || log2h > 5);
+        let mut rng = Residuals(seed | 1);
+        let residual: Vec<i32> = (0..tx.residual_len())
+            .map(|_| {
+                rng.next(0);
+                (rng.0 >> 32) as i32
+            })
+            .collect();
+        let mut scalar = vec![0i32; tx.coeff_width() * tx.coeff_height()];
+        let mut simd = scalar.clone();
+        pair_sum_scalar(&tx, &residual, &mut scalar);
+        pair_sum_simd(&tx, &residual, &mut simd);
         prop_assert_eq!(scalar, simd);
     }
 }

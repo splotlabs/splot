@@ -7,10 +7,10 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use splot_core::headers::frame::build_key_frame_header;
+use splot_core::headers::frame::{UniformTiles, build_key_frame_header};
 use splot_decode::encoder_syntax::LeafBlock;
 
-use crate::config::RateControlMode;
+use crate::config::{RateControlMode, TileLayout};
 use crate::encoder::Encoder;
 use crate::gop::GopFrame;
 use crate::preset::Preset;
@@ -164,9 +164,10 @@ fn superblock_search_is_deterministic_and_rolls_back() {
         let frame = IntraFrameCoder::new(&config).unwrap();
         let tx = tx_choice::key_frame_tx_params(frame.preset);
         let header = FrameFilterParams::default();
-        let core = build_key_frame_header(&frame.view, 90, 0, &header, tx).unwrap();
+        let core = build_key_frame_header(&frame.view, 90, 0, &header, tx, UniformTiles::default())
+            .unwrap();
         let mut writer =
-            KeyFrameTileWriter::new(&frame.sequence, &core, &refs_for(&frame.sequence)).unwrap();
+            KeyFrameTileWriter::new(&frame.sequence, &core, &refs_for(&frame.sequence), 0).unwrap();
         let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
         let sb = writer.syntax().superblock_size4() * 4;
         let padded = PaddedSource::new(&source, mi_cols * 4 + sb, mi_rows * 4 + sb);
@@ -226,20 +227,35 @@ struct Recording {
     recons: Arc<Mutex<BTreeMap<u64, Vec<u8>>>>,
 }
 
-impl FrameCoder for Recording {
-    fn encode_frame(
+impl IntraFrameCoder {
+    /// Codes one frame and commits it.
+    pub(crate) fn encode_frame(
         &mut self,
         source: &SourceFrame,
         plan: &GopFrame,
         qp: u16,
     ) -> Result<CodedFrame> {
-        let coded = self.coder.encode_frame(source, plan, qp)?;
-        let recon = recon_bytes(&coded, self.bit_depth);
-        self.recons
-            .lock()
-            .unwrap()
-            .insert(plan.display_index, recon);
+        let mut coded = self.code_frame(source, plan, qp)?;
+        self.commit(&mut coded)?;
         Ok(coded)
+    }
+}
+
+impl FrameCoder for Recording {
+    fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>> {
+        let coded = self.coder.encode_wave(wave)?;
+        for ((_, plan, _), frame) in wave.iter().zip(&coded) {
+            let recon = recon_bytes(frame, self.bit_depth);
+            self.recons
+                .lock()
+                .unwrap()
+                .insert(plan.display_index, recon);
+        }
+        Ok(coded)
+    }
+
+    fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
+        self.coder.commit(frame)
     }
 
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
@@ -568,12 +584,16 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let tools = (tx_choice::key_frame_tx_params(coder.preset), true);
+    let tools = (
+        tx_choice::key_frame_tx_params(coder.preset),
+        true,
+        coder.tiles,
+    );
     let filters = FrameFilterParams::default();
     let core = plan
         .header(&coder.view, &coder.references, qindex, &filters, tools)
         .unwrap();
-    let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references).unwrap();
+    let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references, 0).unwrap();
     let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
     let sb = writer.syntax().superblock_size4() * 4;
     let source = panning_frame(config, 1);
@@ -599,7 +619,7 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
             &coder.references,
             (qindex, &filters, tools),
             &core,
-            &tile,
+            &[&tile],
         )
         .unwrap();
     let planes = visible_planes(&recon).unwrap();
@@ -698,10 +718,10 @@ fn search_frame(
             &coder.references,
             90,
             &FrameFilterParams::default(),
-            crate::gop::frame_tools(coder.preset),
+            crate::gop::frame_tools(coder.preset, coder.tiles),
         )
         .unwrap();
-    let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references).unwrap();
+    let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references, 0).unwrap();
     let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
     let sb = writer.syntax().superblock_size4() * 4;
     let padded = PaddedSource::new(source, mi_cols * 4 + sb, mi_rows * 4 + sb);
@@ -802,5 +822,85 @@ fn leaves(tree: &PartitionTree, keep: impl Fn(&LeafChoice) -> bool + Copy) -> us
         PartitionTree::Split { children, .. } => {
             children.iter().map(|child| leaves(child, keep)).sum()
         }
+    }
+}
+
+/// `(width, height, bit depth, preset, qp, (cols_log2, rows_log2))`: 2x1, 1x2,
+/// 2x2 and 4x2 tiles at odd sizes, both bit depths and both superblock sizes.
+type TileCase = (u32, u32, BitDepth, u8, u16, (u8, u8));
+
+const TILE_CASES: [TileCase; 4] = [
+    (200, 72, BitDepth::Eight, 10, 120, (1, 0)),
+    (40, 140, BitDepth::Ten, 6, 90, (0, 1)),
+    (136, 72, BitDepth::Eight, 9, 100, (1, 1)),
+    (197, 67, BitDepth::Ten, 10, 150, (2, 1)),
+];
+
+/// Codes a key frame and two inter frames of panning content in the tiles of
+/// `case` on `threads` threads; returns the units and the encoder recon.
+fn tiled_stream(case: TileCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let (width, height, bit_depth, preset, qp, (cols_log2, rows_log2)) = case;
+    let mut config = config(width, height, bit_depth, preset, qp);
+    config.tiles = TileLayout {
+        cols_log2,
+        rows_log2,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let mut coder = IntraFrameCoder::new(&config).unwrap();
+    let coded: Vec<CodedFrame> = (0..3)
+        .map(|index| {
+            let plan = crate::gop::plan(u64::from(index), config.keyint);
+            coder
+                .encode_frame(&panning_frame(&config, index), &plan, qp)
+                .unwrap()
+        })
+        .collect();
+    let expected = coded
+        .iter()
+        .flat_map(|frame| recon_bytes(frame, bit_depth))
+        .collect();
+    (
+        coded.into_iter().map(|f| f.temporal_unit).collect(),
+        expected,
+    )
+}
+
+#[test]
+fn multi_tile_frames_decode_to_the_encoder_recon() {
+    for case in TILE_CASES {
+        let (units, expected) = tiled_stream(case, 2);
+        assert_same_samples(&decode(&units.concat()), &expected, &format!("{case:?}"));
+        let (single, _) = tiled_stream((case.0, case.1, case.2, case.3, case.4, (0, 0)), 1);
+        assert_ne!(units, single, "{case:?}: the tile layout changes no byte");
+    }
+}
+
+#[test]
+fn multi_tile_output_does_not_depend_on_the_thread_count() {
+    let case = TILE_CASES[3];
+    let (one, _) = tiled_stream(case, 1);
+    for threads in [2, 8] {
+        assert!(tiled_stream(case, threads).0 == one, "{threads} threads");
+    }
+}
+
+/// AVM decodes multi-tile key and inter frames to the encoder reconstructions.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_multi_tile_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for (index, case) in TILE_CASES.into_iter().enumerate() {
+        let (units, expected) = tiled_stream(case, 4);
+        let (width, height, bit_depth, ..) = case;
+        let avm = avm_decode(
+            &avmdec,
+            &units,
+            (width, height),
+            bit_depth,
+            &format!("tiles{index}"),
+        );
+        assert!(avm == expected, "{case:?}: AVM output differs");
     }
 }

@@ -16,7 +16,7 @@ use crate::bitstream::tile_payload::{GeneralIntraResidualError, MiGrid};
 use crate::pipeline::reconstruct::{OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters};
 use crate::prediction::{TileGridConstructionError, tile_grid_dimensions};
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub(crate) struct TileSmoothGrid {
     grid: MiGrid<bool>,
 }
@@ -74,6 +74,11 @@ impl TileSmoothGrid {
     /// Whether an access touched a row the window had already reused.
     pub(crate) fn window_violated(&self) -> bool {
         self.grid.window_violated()
+    }
+
+    /// The smoothness grid, for the encoder facade's rollback.
+    pub(crate) fn grid_mut(&mut self) -> &mut MiGrid<bool> {
+        &mut self.grid
     }
 
     pub(crate) fn block_smoothness(&self, mi_col: usize, mi_row: usize) -> (bool, bool) {

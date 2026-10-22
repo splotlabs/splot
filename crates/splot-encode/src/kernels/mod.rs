@@ -146,6 +146,18 @@ pub(crate) trait EncoderKernels: Sync {
         dims: BlockDims,
     ) -> u64;
 
+    /// The row-major `src - pred` of the block into `out` (`width * height`
+    /// values; a shorter `out` takes the rows that fit).
+    fn residual(
+        &self,
+        src: &[u16],
+        src_stride: usize,
+        pred: &[u16],
+        pred_stride: usize,
+        dims: BlockDims,
+        out: &mut [i32],
+    );
+
     /// Forward 2D transform of a row-major `residual` block of the original
     /// transform size into `coeffs` (the adjusted size of at most 32x32).
     ///
@@ -223,6 +235,18 @@ impl EncoderKernels for ScalarKernels {
         distortion::satd_scalar(src, src_stride, pred, pred_stride, dims)
     }
 
+    fn residual(
+        &self,
+        src: &[u16],
+        src_stride: usize,
+        pred: &[u16],
+        pred_stride: usize,
+        dims: BlockDims,
+        out: &mut [i32],
+    ) {
+        distortion::residual_scalar(src, src_stride, pred, pred_stride, dims, out);
+    }
+
     fn forward_transform_2d(
         &self,
         tx: &ForwardTransform2d,
@@ -275,6 +299,18 @@ impl EncoderKernels for SimdKernels {
         dims: BlockDims,
     ) -> u64 {
         distortion::satd_simd(src, src_stride, pred, pred_stride, dims)
+    }
+
+    fn residual(
+        &self,
+        src: &[u16],
+        src_stride: usize,
+        pred: &[u16],
+        pred_stride: usize,
+        dims: BlockDims,
+        out: &mut [i32],
+    ) {
+        distortion::residual_simd(src, src_stride, pred, pred_stride, dims, out);
     }
 
     fn forward_transform_2d(

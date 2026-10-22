@@ -11,7 +11,7 @@
 
 use crate::bitio::BitReader;
 use crate::headers::frame::encoder_stream::{
-    MAX_REDUCED_TX_SET, obu_header, write_quant_and_filters,
+    MAX_REDUCED_TX_SET, UniformTiles, obu_header, tile_framing, write_quant_and_filters,
 };
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
@@ -19,9 +19,7 @@ use crate::headers::frame::{
     FrameReferenceStateView, KeyFrameTxParams, TxMode, init_core_from_prefix, parse_core_body,
     parse_frame_header_prefix,
 };
-use crate::headers::tile_group::{
-    RecordedFrameHeaderBits, TileGroupFraming, TileGroupLayout, TileGroupStructure,
-};
+use crate::headers::tile_group::{RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructure};
 use crate::span::ByteOffset;
 use crate::types::ObuType;
 use crate::write::{
@@ -49,6 +47,8 @@ pub struct InterFrameParams {
     pub filters: FrameFilterParams,
     /// Transform mode and `reduced_tx_set`, as for key frames.
     pub tx: KeyFrameTxParams,
+    /// The uniform tile layout, as for key frames.
+    pub tiles: UniformTiles,
     /// `reference_select` (§ 5.18.8.3): blocks may code compound prediction.
     pub reference_select: bool,
     /// `skip_mode_present` (§ 5.18.8.2): blocks may code skip mode; the
@@ -146,7 +146,12 @@ fn inter_frame_header_bits(
             reduced_tx_set: tx.reduced_tx_set,
         });
     }
-    write_quant_and_filters(&mut w, seq, params.base_q_idx, &params.filters)?;
+    write_quant_and_filters(
+        &mut w,
+        seq,
+        (params.base_q_idx, params.tiles),
+        &params.filters,
+    )?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_flag(params.reference_select)?;
     w.write_flag(params.skip_mode_present)?;
@@ -156,16 +161,17 @@ fn inter_frame_header_bits(
     Ok((w.into_bytes(), bit_len))
 }
 
-/// Serializes the `OBU_REGULAR_TILE_GROUP` OBU of `header` whose single tile
-/// carries `tile_data`: `is_first_tile_group`, the recorded header bits, the
-/// § 5.19 structure, and the tile.
+/// Serializes the `OBU_REGULAR_TILE_GROUP` OBU of `header` whose one tile group
+/// carries the `tiles` of the frame: `is_first_tile_group`, the recorded header
+/// bits, the § 5.19 structure, and the tiles.
 ///
 /// # Errors
-/// Returns [`EncoderHeaderError`] if the header has no tile info, `tile_data` is
-/// empty, or the OBU does not serialize.
+/// Returns [`EncoderHeaderError`] if the header has no tile info, a tile is empty
+/// or too long for `TileSizeBytes`, the tile count differs from the header, or
+/// the OBU does not serialize.
 pub fn encode_inter_frame_obu(
     header: &EncodedFrameHeader,
-    tile_data: &[u8],
+    tiles: &[&[u8]],
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     let tile_info = header
         .core
@@ -189,13 +195,13 @@ pub fn encode_inter_frame_obu(
     }
     write_tile_group_structure(
         &mut payload,
-        &TileGroupStructure::single_tile_first_group(),
+        &TileGroupStructure::whole_frame(tiles.len() as u32),
         layout,
     )?;
     write_tile_group_payload(
         &mut payload,
-        &TileGroupFraming::single_tile(tile_data.len() as u64),
-        &[tile_data],
+        &tile_framing(&header.core, tiles),
+        tiles,
         tile_info.tile_size_bytes.unwrap_or(1),
         false,
     )?;

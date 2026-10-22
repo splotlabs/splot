@@ -7,7 +7,7 @@ use crate::test_support::refs_for;
 use proptest::prelude::*;
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, KeyFrameTxParams,
-    build_encoder_sequence_header, build_key_frame_header,
+    UniformTiles, build_encoder_sequence_header, build_key_frame_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -212,6 +212,7 @@ fn facade_rows_back_the_rate_model() {
         0,
         &FrameFilterParams::default(),
         KeyFrameTxParams::default(),
+        UniformTiles::default(),
     )
     .unwrap();
     let mut rng = Residuals(7);
@@ -226,7 +227,7 @@ fn facade_rows_back_the_rate_model() {
             fills_block: true,
         };
         let mut rates = FacadeRates {
-            syntax: IntraTileSyntax::new(&seq, &core, &refs_for(&seq)).unwrap(),
+            syntax: IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap(),
             tx,
         };
         let b = RdoqBlock {

@@ -40,7 +40,7 @@ mod tpl;
 mod tx_choice;
 pub mod y4m;
 
-pub use config::{Config, MAX_FRAME_DIMENSION, RateControlMode};
+pub use config::{Config, MAX_FRAME_DIMENSION, RateControlMode, TileLayout};
 pub use encoder::{Encoder, Packet, StatsSink};
 pub use error::{Error, Result};
 pub use frame::SourceFrame;
