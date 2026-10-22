@@ -385,8 +385,9 @@ impl Rng {
     }
 }
 
-/// Leaf counts of a random tree: intra, then each inter mode.
-type Coverage = [usize; 4];
+/// Leaf counts of a random tree: intra, each inter mode, and inter leaves
+/// with a reference other than the first.
+type Coverage = [usize; 5];
 
 /// A random partition tree of `node`: inter leaves of every mode, DRL index
 /// and random vectors of up to 40 samples, and `DC_PRED` intra leaves.
@@ -445,9 +446,11 @@ fn random_leaf(
     coverage[1 + mode as usize] += 1;
     let step = syntax.mv_step();
     let drl = rng.below(syntax.drl_count() as u64) as usize;
+    let ref_frame = rng.below(syntax.reference_count() as u64) as usize;
+    coverage[4] += usize::from(ref_frame > 0);
     let mut component = || (rng.below(81) as i32 - 40) * 8 + (rng.below(4) as i32) * step;
     LeafChoice::inter(InterModes {
-        ref_frame: 0,
+        ref_frame,
         mode,
         drl,
         mv: MotionVector {
@@ -457,20 +460,40 @@ fn random_leaf(
     })
 }
 
-/// An inter frame of random partitions, modes and vectors after a key frame:
-/// the temporal units and the samples a decoder outputs.
+/// The first frames of a four-frame mini-GOP with frame 1, which references
+/// frames 0, 2 and 4, coded from random partitions, modes, references and
+/// vectors: the temporal units and the samples a decoder outputs.
 fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Coverage) {
     let RateControlMode::ConstantQp { qp } = config.rate_control;
     let qindex = u32::from(qp);
     let mut coder = IntraFrameCoder::new(config).unwrap();
-    let key = coder
-        .encode_frame(
-            &panning_frame(config, 0),
-            &crate::gop::plan(0, config.keyint),
-            qp,
-        )
-        .unwrap();
-    let plan = crate::gop::plan(1, config.keyint);
+    let mut planner = crate::gop::GopPlanner::new(config.keyint, 4);
+    let mut steps = planner.plan(1).unwrap();
+    steps.extend(planner.plan(4).unwrap());
+    let mut units = Vec::new();
+    let mut expected = Vec::new();
+    let mut plan = None;
+    for step in steps {
+        let crate::gop::GopStep::Code(frame) = step else {
+            continue;
+        };
+        if frame.display_index == 1 {
+            plan = Some(frame);
+            break;
+        }
+        let coded = coder
+            .encode_frame(
+                &panning_frame(config, frame.display_index as u32),
+                &frame,
+                qp,
+            )
+            .unwrap();
+        if frame.show_frame {
+            expected.extend(recon_bytes(&coded, config.bit_depth));
+        }
+        units.push(coded.temporal_unit);
+    }
+    let plan = plan.unwrap();
     let tx = tx_choice::key_frame_tx_params(coder.preset);
     let filters = FrameFilterParams::default();
     let core = plan
@@ -506,12 +529,12 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
         )
         .unwrap();
     let planes = visible_planes(&recon).unwrap();
-    let expected = [
-        recon_bytes(&key, config.bit_depth),
-        raw_bytes(planes.iter().map(Vec::as_slice), config.bit_depth),
-    ]
-    .concat();
-    (vec![key.temporal_unit, unit], expected, coverage)
+    expected.extend(raw_bytes(
+        planes.iter().map(Vec::as_slice),
+        config.bit_depth,
+    ));
+    units.push(unit);
+    (units, expected, coverage)
 }
 
 /// `(width, height, bit depth, preset, qp)` of the random inter streams: both
@@ -522,8 +545,8 @@ const RANDOM_INTER_CASES: [(u32, u32, BitDepth, u8, u8); 3] = [
     (33, 17, BitDepth::Eight, 9, 250),
 ];
 
-/// Random inter leaves, with NEWMV vectors coded by the MV writer, decode to
-/// the writer's reconstruction.
+/// Random inter leaves over three references, with NEWMV vectors coded by the
+/// MV writer, decode to the writer's reconstruction.
 #[test]
 fn random_inter_leaves_decode_to_the_writer_recon() {
     let mut total = Coverage::default();
