@@ -276,6 +276,7 @@ impl ForwardTransform2d {
     }
 }
 
+#[cfg(test)]
 fn round_shift(value: i32, shift: u32) -> i32 {
     if shift == 0 {
         value
@@ -284,6 +285,7 @@ fn round_shift(value: i32, shift: u32) -> i32 {
     }
 }
 
+#[cfg(test)]
 pub(super) fn forward_scalar(
     tx: &ForwardTransform2d,
     residual: &[i32],
