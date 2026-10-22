@@ -837,7 +837,8 @@ impl IntraTileSyntax {
         let signs = (sign_u * 3 + sign_v)
             .checked_sub(1)
             .ok_or(EncoderSyntaxError::Unsupported("CFL with two zero alphas"))?;
-        if alpha_u.abs() > MAX_CFL_ALPHA || alpha_v.abs() > MAX_CFL_ALPHA {
+        let max = MAX_CFL_ALPHA.unsigned_abs();
+        if alpha_u.unsigned_abs() > max || alpha_v.unsigned_abs() > max {
             return Err(EncoderSyntaxError::Unsupported("CFL alpha magnitude"));
         }
         self.put(symbols, TileCdfSelector::CflSign, usize::from(signs))?;

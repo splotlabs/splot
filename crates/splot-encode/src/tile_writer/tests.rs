@@ -665,6 +665,30 @@ fn facade_rejects_unmodelled_tools() {
     assert!(rejects(&seq, &core));
 }
 
+/// A CFL alpha of `i8::MIN` is refused instead of overflowing `abs`.
+#[test]
+fn rejects_out_of_range_cfl_alphas() {
+    let (seq, core) =
+        headers(Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64).tools);
+    let mut syntax = IntraTileSyntax::new(&seq, &core).unwrap();
+    let root = syntax.superblock_root(0, 0);
+    syntax.begin_superblock(root);
+    let node = syntax.children(root, Partition::Horz).unwrap()[0];
+    let node = syntax.children(node, Partition::Vert).unwrap()[0];
+    let leaf = syntax.leaf(node).unwrap();
+    assert!(syntax.cfl_allowed(&leaf));
+    for (alpha_u, alpha_v) in [(i8::MIN, 1), (1, i8::MIN), (MAX_CFL_ALPHA + 1, 0)] {
+        let modes = IntraModes {
+            uv_mode: ChromaMode::Cfl { alpha_u, alpha_v },
+            ..IntraModes::DC
+        };
+        assert!(matches!(
+            syntax.write_intra_modes(&leaf, modes, &mut SymbolEncoder::new()),
+            Err(EncoderSyntaxError::Unsupported("CFL alpha magnitude"))
+        ));
+    }
+}
+
 /// Decodes random streams with AVM and compares them with splot's output.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
