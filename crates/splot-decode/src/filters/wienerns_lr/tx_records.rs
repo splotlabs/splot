@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::frame::{FrameHeaderCore, MAX_CDEF_STRENGTH_SETS};
-use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
+use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{
@@ -18,9 +18,7 @@ use crate::bitstream::tile_payload::{
 use crate::error::Result;
 use crate::filters::cdef::CdefUnitGrid;
 
-use super::{
-    intra_capped_seq_sb_size, selectable_missing_quantization_error, selectable_symbol_read_error,
-};
+use super::{frame_sb_size4, selectable_missing_quantization_error, selectable_symbol_read_error};
 
 pub(crate) mod ccso;
 pub(crate) mod gdf;
@@ -177,7 +175,7 @@ impl DeltaQState {
             .base_q_idx;
         let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())
             .map_err(|_| selectable_state_error())?;
-        let sb_size4 = intra_delta_q_sb_size4(sequence)?;
+        let sb_size4 = frame_sb_size4(sequence, core.frame_is_intra == Some(true))?;
         Ok(Self {
             present,
             delta_q_res,
@@ -283,6 +281,7 @@ impl CdefState {
         mi_rows: usize,
         mi_cols: usize,
         sequence: &SequenceHeader,
+        frame_is_intra: bool,
         mut values: Vec<Option<usize>>,
     ) -> Result<Self> {
         let rows = mi_rows.div_ceil(CDEF_UNIT_MI);
@@ -299,7 +298,7 @@ impl CdefState {
             rows,
             cols,
             values,
-            sb_size4: intra_delta_q_sb_size4(sequence)?,
+            sb_size4: frame_sb_size4(sequence, frame_is_intra)?,
         })
     }
 
@@ -1064,13 +1063,6 @@ fn delta_q_is_coded_for_block(
     let width4 = table_usize("Num_4x4_Blocks_Wide", &NUM_4X4_BLOCKS_WIDE, block_size)?;
     let height4 = table_usize("Num_4x4_Blocks_High", &NUM_4X4_BLOCKS_HIGH, block_size)?;
     Ok(width4 != sb_size4 || height4 != sb_size4 || !skip)
-}
-
-fn intra_delta_q_sb_size4(sequence: &SequenceHeader) -> Result<usize> {
-    Ok(match intra_capped_seq_sb_size(sequence)? {
-        SuperblockSize::Block64x64 => 16,
-        SuperblockSize::Block128x128 | SuperblockSize::Block256x256 => 32,
-    })
 }
 
 fn block_dimension(table: &'static str, block_size: usize, width: bool) -> Result<usize> {

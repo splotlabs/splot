@@ -2278,14 +2278,22 @@ fn rejects_zero_dimension() {
 }
 
 #[test]
+fn full_pel_256x256_block_copies_the_reference() {
+    let samples: Vec<u16> = (0..256 * 256).map(|i| (i % 251) as u16).collect();
+    let view = ReferencePlaneView::new(&samples, 256, 256).unwrap();
+    let params = full_pel_params(InterpolationFilter::EightTap, 256, 256, 0, 0, 256, 256);
+    assert_eq!(subpel_predict_block(&view, &params).unwrap(), samples);
+}
+
+#[test]
 fn rejects_oversized_block() {
     let samples = vec![0u16; 16];
     let view = ReferencePlaneView::new(&samples, 4, 4).unwrap();
     let mut params = full_pel_params(InterpolationFilter::EightTap, 4, 4, 0, 0, 4, 4);
-    params.w = 129;
+    params.w = 257;
     assert!(matches!(
         subpel_predict_block(&view, &params),
-        Err(ReconError::SubpelBlockDimensionUnsupported { w: 129, h: 4 })
+        Err(ReconError::SubpelBlockDimensionUnsupported { w: 257, h: 4 })
     ));
 }
 

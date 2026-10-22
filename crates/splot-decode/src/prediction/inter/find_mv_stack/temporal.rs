@@ -552,10 +552,10 @@ fn visit_temporal_block_cells(
     }
     let row8_start = block.mi_row >> 1;
     let col8_start = block.mi_col >> 1;
-    let row8_end = row_end.div_ceil(2).min(height8);
-    let col8_end = col_end.div_ceil(2).min(width8);
+    let row8_end = (row8_start + (row_end - block.mi_row).div_ceil(2)).min(height8);
+    let col8_end = (col8_start + (col_end - block.mi_col).div_ceil(2)).min(width8);
     if matches!(block.motion, TemporalBlockMotion::Mvs(_)) {
-        let (cell, hints) = derive_temporal_cell(&block, refs, row8_start, col8_start);
+        let (cell, hints) = derive_temporal_cell(&block, refs, block.mi_row, block.mi_col);
         for y8 in row8_start..row8_end {
             for x8 in col8_start..col8_end {
                 visit(y8, x8, cell, hints);
@@ -565,7 +565,12 @@ fn visit_temporal_block_cells(
     }
     for y8 in row8_start..row8_end {
         for x8 in col8_start..col8_end {
-            let (cell, hints) = derive_temporal_cell(&block, refs, y8, x8);
+            let (cell, hints) = derive_temporal_cell(
+                &block,
+                refs,
+                block.mi_row + 2 * (y8 - row8_start),
+                block.mi_col + 2 * (x8 - col8_start),
+            );
             visit(y8, x8, cell, hints);
         }
     }
@@ -576,8 +581,8 @@ fn visit_temporal_block_cells(
 fn derive_temporal_cell(
     block: &TemporalMotionBlock,
     refs: BlockRefs,
-    y8: usize,
-    x8: usize,
+    row: usize,
+    col: usize,
 ) -> (TemporalMotionCell, [Option<u32>; 2]) {
     let mut hints = [None; 2];
     let mut cell = TemporalMotionCell::default();
@@ -587,7 +592,7 @@ fn derive_temporal_cell(
         };
         let mv = block
             .motion
-            .mv_at(list, block.mi_row, block.mi_col, y8 * 2, x8 * 2);
+            .mv_at(list, block.mi_row, block.mi_col, row, col);
         if mv.row.abs() > REFMVS_LIMIT || mv.col.abs() > REFMVS_LIMIT {
             continue;
         }

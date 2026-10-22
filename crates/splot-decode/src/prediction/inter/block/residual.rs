@@ -512,6 +512,14 @@ fn read_inter_residual_chroma_group(
     }
     let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
     let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
+    let tx_fills_block = tx_w4
+        == chroma_ref_size
+            .num_4x4_wide()
+            .map_err(|_| residual_geometry_error())?
+        && tx_h4
+            == chroma_ref_size
+                .num_4x4_high()
+                .map_err(|_| residual_geometry_error())?;
     let x_offset4 = (chunk_x << 4) >> usize::from(subsampling_x);
     let y_offset4 = (chunk_y << 4) >> usize::from(subsampling_y);
     let base_x4 = chroma_ref.col() >> usize::from(subsampling_x);
@@ -536,7 +544,7 @@ fn read_inter_residual_chroma_group(
             let unit = InterChromaUnit {
                 x4,
                 y4,
-                tx_fills_block: tx_w4 == num4x4_w && tx_h4 == num4x4_h,
+                tx_fills_block,
                 chroma_inter_tx_type,
             };
             let u = read_inter_residual_plane(

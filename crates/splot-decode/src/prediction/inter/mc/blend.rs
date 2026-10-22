@@ -3,6 +3,9 @@
 
 use super::*;
 
+/// The widest luma motion-compensated block: a 256x256 superblock side.
+const MAX_MC_LUMA_DIM: usize = 256;
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn blend_compound_average<T: ReconSample>(
     pred0: &[i32],
@@ -173,12 +176,12 @@ fn blend_compound_diff_weighted<T: ReconSample>(
         .transpose()?;
     let max_sample = i32::from(bit_depth.max_sample().min(T::MAX_VALUE));
     let diff_round = u32::from(bit_depth.bits().saturating_sub(8)) + compound_inter_post_round();
-    let mut mask_row = [0i32; MAX_MC_BLOCK_DIM];
+    let mut mask_row = [0i32; MAX_MC_LUMA_DIM];
     let mask_row = mask_row
         .get_mut(..w)
         .ok_or(ReconError::BufferLengthMismatch {
             expected: w,
-            actual: MAX_MC_BLOCK_DIM,
+            actual: MAX_MC_LUMA_DIM,
         })?;
     let rows = output
         .chunks_mut(stride.max(1))

@@ -200,7 +200,7 @@ impl NeighbourAvailability {
     }
 }
 
-const fn normalize_intra_corner_counts(
+pub(crate) const fn normalize_intra_corner_counts(
     plane: PlaneId,
     width_log2: u32,
     height_log2: u32,

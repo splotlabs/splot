@@ -304,14 +304,6 @@ pub(crate) fn sequence_cfl_ds_filter_index(sequence: &SequenceHeader) -> u8 {
         .map_or(0, |intra| intra.cfl_ds_filter_index)
 }
 
-fn sequence_sb_mib(sequence: &SequenceHeader) -> usize {
-    let sb_size = sequence.partition.as_ref().map_or(
-        splot_core::headers::sequence::SuperblockSize::Block64x64,
-        splot_core::headers::sequence::SequencePartitionConfig::seq_sb_size,
-    );
-    splot_core::tile::num_4x4_blocks_wide(sb_size) as usize
-}
-
 #[inline]
 pub(crate) fn chroma_edge_smoothness(
     grid: Option<&crate::prediction::intra_edge::TileChromaSmoothGrid>,
@@ -412,7 +404,9 @@ pub(crate) fn decode_one_general_intra_block(
         .unwrap_or(false);
     let chroma_tools = general_intra_chroma_tools(sequence, core).with_lossless(lossless);
     let cfl_ds_filter_index = sequence_cfl_ds_filter_index(sequence);
-    let sb_mib = sequence_sb_mib(sequence);
+    let sb_mib = sequence.partition.as_ref().map_or(16, |partition| {
+        crate::tile::frame_superblock_h4(partition.seq_sb_size(), core.frame_is_intra == Some(true))
+    });
 
     if let crate::bitstream::tile_payload::DecodeBlockPart::ChromaPart {
         y_mode,

@@ -8,6 +8,19 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) mod block_context;
 
+/// The frame `SbSize` in 4x4 units (§ 5.18.2): intra frames cap 256x256 at 128x128.
+pub(crate) const fn frame_superblock_h4(
+    seq_sb_size: splot_core::headers::sequence::SuperblockSize,
+    frame_is_intra: bool,
+) -> usize {
+    use splot_core::headers::sequence::SuperblockSize;
+    match (seq_sb_size, frame_is_intra) {
+        (SuperblockSize::Block64x64, _) => 16,
+        (SuperblockSize::Block128x128, _) | (SuperblockSize::Block256x256, true) => 32,
+        (SuperblockSize::Block256x256, false) => 64,
+    }
+}
+
 pub(crate) fn local_grid_index(
     row: usize,
     col: usize,

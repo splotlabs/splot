@@ -145,7 +145,7 @@ impl FrameFilterRecords {
 }
 
 pub(crate) use self::diagnostics::{
-    intra_capped_seq_sb_size, selectable_missing_quantization_error, selectable_symbol_read_error,
+    frame_sb_size4, selectable_missing_quantization_error, selectable_symbol_read_error,
 };
 
 #[cfg(test)]

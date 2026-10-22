@@ -40,6 +40,21 @@ fn cdef_index0_context_uses_zero_strength_neighbours_in_same_superblock() {
 }
 
 #[test]
+fn cdef_index0_context_uses_the_frame_superblock_size() {
+    let mut sequence = splot_core::headers::frame::build_minimal_intra_sequence_header().unwrap();
+    let partition = sequence.partition.as_mut().unwrap();
+    partition.use_256x256_superblock = true;
+    partition.use_128x128_superblock = false;
+    for (frame_is_intra, expected) in [(true, 0), (false, 1)] {
+        let mut state =
+            CdefState::new_reusing(64, 64, &sequence, frame_is_intra, Vec::new()).unwrap();
+        let above = state.index(1, 2).unwrap();
+        state.values[above] = Some(0);
+        assert_eq!(state.cdef_index0_ctx_at(32, 32, 0, 0).unwrap(), expected);
+    }
+}
+
+#[test]
 fn cdef_index0_context_stops_at_tile_start() {
     let mut state = cdef_state(4, 4, 32);
     let left = state.index(0, 0).unwrap();

@@ -12,7 +12,7 @@ use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameType, GlobalMotionRef, GmType, TipFrameMode, TxMode,
     get_qindex,
 };
-use splot_core::headers::sequence::{ChromaFormatIdc, DrlReorder, SequenceHeader, SuperblockSize};
+use splot_core::headers::sequence::{ChromaFormatIdc, DrlReorder, SequenceHeader};
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{MAX_TX_SIZE_RECT, TX_HEIGHT, TX_WIDTH};
@@ -399,7 +399,8 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
             .ok_or(inter_allocation!("inter temporal motion field"))?
     };
     let motion_layout = motion_field.layout();
-    let cdef_state = CdefState::new_reusing(mi_rows, mi_cols, sequence, cdef_grid_values)?;
+    let cdef_state =
+        CdefState::new_reusing(mi_rows, mi_cols, sequence, frame_is_intra, cdef_grid_values)?;
     let gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core)?;
     let mut ref_ccso_unit_grids = RefSlots::default();
     ref_ccso_unit_grids.extend_within(reference.ref_ccso_unit_grids.iter().map(|handle| {
@@ -808,13 +809,7 @@ fn derived_tip_reference_pair(
     )
 }
 
-pub(super) fn frame_superblock_h4(seq_sb_size: SuperblockSize, frame_is_intra: bool) -> usize {
-    match (seq_sb_size, frame_is_intra) {
-        (SuperblockSize::Block64x64, _) => 16,
-        (SuperblockSize::Block128x128, _) | (SuperblockSize::Block256x256, true) => 32,
-        (SuperblockSize::Block256x256, false) => 64,
-    }
-}
+pub(super) use crate::tile::frame_superblock_h4;
 
 pub(crate) fn chroma_smooth_tile_ranges(
     mi_rows: core::ops::Range<usize>,

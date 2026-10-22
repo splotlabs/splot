@@ -224,8 +224,14 @@ impl CdefIndexMap {
             .map_or(0, usize::from);
         let (rows, cols) = cdef_unit_grid((frame.mi_rows(), frame.mi_cols()));
         Ok(Self {
-            state: CdefState::new_reusing(frame.mi_rows(), frame.mi_cols(), seq, Vec::new())
-                .map_err(rule("cdef state"))?,
+            state: CdefState::new_reusing(
+                frame.mi_rows(),
+                frame.mi_cols(),
+                seq,
+                core.frame_is_intra == Some(true),
+                Vec::new(),
+            )
+            .map_err(rule("cdef state"))?,
             strengths,
             skip_codes_index: core
                 .cdef_params
