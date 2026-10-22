@@ -24,7 +24,9 @@ use super::cdf::coeff_context::{
 pub use super::cdf::context::RectPartitionType as RectKind;
 use super::cdf::{CoeffBaseRow, CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
 use super::coeff_loop::base_level_pass::tx_class_index;
-use super::coeff_loop::max_level::{CoeffTransformClass, coeff_is_low_frequency};
+use super::coeff_loop::max_level::{
+    CoeffTransformClass, coeff_is_low_frequency, visible_max_level,
+};
 use super::coeff_loop::scan_walk::CoeffScanEntry;
 use super::coeff_loop::sign_symbol::{
     CoeffSignReadSource, CoeffSignSourceDeriveConfig, derive_nonzero_coeff_sign_input,
@@ -287,6 +289,18 @@ pub fn is_low_frequency(row: usize, col: usize, plane: usize) -> bool {
         CoeffTransformClass::TwoD,
     )
 }
+
+/// `maxLevel` of § 5.20.7.27 without parity hiding.
+#[must_use]
+pub const fn max_level(is_low_frequency: bool, plane: usize) -> u32 {
+    visible_max_level(is_low_frequency, plane)
+}
+
+/// The § 6.19.7.23 bound: every coded `Quant` magnitude is below it.
+pub const MAX_QUANT_MAGNITUDE: u32 = super::coeff_loop::quant_state::MAX_CONFORMING_QUANT_MAGNITUDE;
+
+/// The longest § 5.20.7.28 `golomb_length_bit` prefix the decoder reads.
+pub const MAX_GOLOMB_PREFIX_BITS: u32 = super::coeff_loop::read_quant::MAX_EXP_GOLOMB_PREFIX_BITS;
 
 /// The § 5.20.7.30 coefficient scan of `tx` for its type, as row-major adjusted positions.
 ///

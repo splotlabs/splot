@@ -20,7 +20,9 @@
 
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
-use splot_decode::encoder_syntax::{CoeffLevels, is_low_frequency};
+use splot_decode::encoder_syntax::{
+    CoeffLevels, MAX_GOLOMB_PREFIX_BITS, is_low_frequency, max_level,
+};
 use splot_recon::{BitDepth, TransformClass, coefficient_scan_slice};
 
 use super::{EncoderKernels, KernelError, Quantizer};
@@ -31,8 +33,6 @@ pub(crate) const BIT: u32 = 256;
 pub(crate) const BASE_SYMBOLS: usize = LF_NUM_BASE_LEVELS as usize + 2;
 /// `coeff_br` symbol costs per coefficient.
 pub(crate) const BR_SYMBOLS: usize = COEFF_BASE_RANGE as usize + 1;
-/// The longest `golomb_length_bit` prefix (as the writer codes it).
-const MAX_GOLOMB_PREFIX_BITS: u32 = 21;
 
 /// The quantizer and the adjusted shape of one transform block.
 #[derive(Clone, Copy, Debug)]
@@ -441,15 +441,6 @@ const fn base_levels(is_lf: bool) -> u32 {
         LF_NUM_BASE_LEVELS
     } else {
         NUM_BASE_LEVELS
-    }
-}
-
-/// `maxLevel` of § 5.20.7.27 without parity hiding.
-const fn max_level(is_lf: bool, plane: usize) -> u32 {
-    match (is_lf, plane == 0) {
-        (true, true) => LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1,
-        (true, false) => LF_NUM_BASE_LEVELS + 1,
-        (false, _) => NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1,
     }
 }
 

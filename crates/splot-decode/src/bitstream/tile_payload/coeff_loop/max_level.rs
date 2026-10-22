@@ -39,11 +39,17 @@ pub(crate) fn derive_coeff_max_level(entry: CoeffScanEntry, config: CoeffMaxLeve
     if config.is_hidden && entry.scan_index() == 0 {
         NUM_BASE_LEVELS + 1
     } else {
-        match (is_low_frequency, config.plane == 0) {
-            (true, true) => LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1,
-            (true, false) => LF_NUM_BASE_LEVELS + 1,
-            (false, _) => NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1,
-        }
+        visible_max_level(is_low_frequency, config.plane)
+    }
+}
+
+/// `maxLevel` of a coefficient whose level parity is not hidden.
+#[inline]
+pub(crate) const fn visible_max_level(is_low_frequency: bool, plane: usize) -> u32 {
+    match (is_low_frequency, plane == 0) {
+        (true, true) => LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1,
+        (true, false) => LF_NUM_BASE_LEVELS + 1,
+        (false, _) => NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1,
     }
 }
 

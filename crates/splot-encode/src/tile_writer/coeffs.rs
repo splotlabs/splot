@@ -5,21 +5,18 @@
 //! TCQ, parity hiding, or forward skip coding, including the § 5.20.8.2 luma
 //! transform type.
 
-use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
+use splot_core::coefficient::{LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_decode::encoder_syntax::{
-    CoeffLevels, IntraTileSyntax, TransformBlock, coefficient_scan, tx_log2,
+    CoeffLevels, IntraTileSyntax, MAX_GOLOMB_PREFIX_BITS, MAX_QUANT_MAGNITUDE, TransformBlock,
+    coefficient_scan, max_level, tx_log2,
 };
 
 use super::{Result, TileWriterError};
 
-/// `1 << 20`: the § 6.19.7.23 bound on a coded coefficient magnitude.
-const MAX_QUANT_MAGNITUDE: u32 = 1 << 20;
 /// The `eob_pt_256`/`512`/`1024` symbol that carries an `eob_pt_*_extra` literal.
 const LAST_PLAIN_EOB_PT_SYMBOL: usize = 7;
-/// The longest `golomb_length_bit` prefix a magnitude below [`MAX_QUANT_MAGNITUDE`] needs.
-const MAX_GOLOMB_PREFIX_BITS: u32 = 21;
 
 /// The `Adjusted_Tx_Size` `(log2 width, log2 height)`: each side capped at 32.
 pub(crate) fn adjusted_log2(tx_size: usize) -> Result<(u32, u32)> {
@@ -160,15 +157,6 @@ pub(crate) fn code_coeffs(
         cul_level: cul_level as u8,
         dc_category,
     })
-}
-
-/// `maxLevel` of § 5.20.7.27 without parity hiding.
-pub(crate) const fn max_level(is_lf: bool, plane: usize) -> u32 {
-    match (is_lf, plane == 0) {
-        (true, true) => LF_NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1,
-        (true, false) => LF_NUM_BASE_LEVELS + 1,
-        (false, _) => NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1,
-    }
 }
 
 /// Writes `eob_pt_*`, `eob_pt_*_extra`, `eob_extra`, and `eob_extra_bit` for `eob >= 1`.

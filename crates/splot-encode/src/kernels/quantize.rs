@@ -35,9 +35,8 @@ use splot_recon::BitDepth;
 
 use super::KernelError;
 
-/// § 6.19.7.24: `Quant` values are greater than `-(1 << 20)` and less than
-/// `1 << 20`.
-const MAX_LEVEL: u32 = (1 << 20) - 1;
+/// The largest coded `Quant` magnitude.
+const MAX_LEVEL: u32 = splot_decode::encoder_syntax::MAX_QUANT_MAGNITUDE - 1;
 
 /// The § 7.14.4 `dqHigh & 0xFFFFFF` mask width.
 const PRODUCT_BITS: u32 = 24;
