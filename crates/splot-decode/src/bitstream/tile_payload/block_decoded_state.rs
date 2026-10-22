@@ -118,6 +118,7 @@ impl TileBlockDecodedState {
     }
 
     /// Lays this state out for another tile, keeping the plane grids.
+    #[inline]
     pub(crate) fn reset(
         &mut self,
         num_planes: usize,
@@ -190,6 +191,7 @@ impl TileBlockDecodedState {
         plane_subsampling(plane, self.subsampling_x, self.subsampling_y)
     }
 
+    #[inline]
     pub(crate) fn clear_superblock(&mut self, r: usize, c: usize) {
         for plane in 0..self.num_planes {
             let (sub_x, sub_y) = plane_subsampling(plane, self.subsampling_x, self.subsampling_y);

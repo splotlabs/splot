@@ -376,7 +376,7 @@ impl CdefState {
         self.fill_units(frontier.r, frontier.c, n4w, n4h, strength)
     }
 
-    fn cdef_index0_ctx_at(
+    pub(crate) fn cdef_index0_ctx_at(
         &self,
         mi_row: usize,
         mi_col: usize,
@@ -412,7 +412,7 @@ impl CdefState {
         Ok(ctx)
     }
 
-    fn fill_units(
+    pub(crate) fn fill_units(
         &mut self,
         mi_row: usize,
         mi_col: usize,
@@ -435,7 +435,7 @@ impl CdefState {
         Ok(())
     }
 
-    fn value(&self, row: usize, col: usize) -> Result<Option<usize>> {
+    pub(crate) fn value(&self, row: usize, col: usize) -> Result<Option<usize>> {
         let index = self.index(row, col)?;
         Ok(self.values[index])
     }

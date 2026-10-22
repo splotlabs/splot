@@ -272,7 +272,7 @@ impl GeneralIntraReconCommand {
     }
 }
 
-fn general_intra_chroma_tools(
+pub(crate) fn general_intra_chroma_tools(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
 ) -> GeneralIntraChromaToolConfig {
@@ -297,7 +297,7 @@ fn general_intra_chroma_tools(
         .with_allow_screen_content_tools(effective_allow_screen_content_tools(core))
 }
 
-fn sequence_cfl_ds_filter_index(sequence: &SequenceHeader) -> u8 {
+pub(crate) fn sequence_cfl_ds_filter_index(sequence: &SequenceHeader) -> u8 {
     sequence
         .intra
         .as_ref()
@@ -312,7 +312,8 @@ fn sequence_sb_mib(sequence: &SequenceHeader) -> usize {
     splot_core::tile::num_4x4_blocks_wide(sb_size) as usize
 }
 
-fn chroma_edge_smoothness(
+#[inline]
+pub(crate) fn chroma_edge_smoothness(
     grid: Option<&crate::prediction::intra_edge::TileChromaSmoothGrid>,
     block_ctx: BlockCtx,
 ) -> (bool, bool) {
@@ -322,7 +323,7 @@ fn chroma_edge_smoothness(
     })
 }
 
-fn record_chroma_smooth(
+pub(crate) fn record_chroma_smooth(
     grid: Option<&mut crate::prediction::intra_edge::TileChromaSmoothGrid>,
     block_ctx: BlockCtx,
     mode: Option<SupportedChromaMode>,
@@ -750,7 +751,9 @@ fn leaf_mode_for_block(modes: &GeneralIntraBlockModes) -> GeneralIntraLeafMode {
     }
 }
 
-fn luma_transform_type_context(modes: &GeneralIntraBlockModes) -> LumaTransformTypeContext {
+pub(crate) fn luma_transform_type_context(
+    modes: &GeneralIntraBlockModes,
+) -> LumaTransformTypeContext {
     LumaTransformTypeContext::with_mrl_indices(
         modes.y_mode,
         modes.angle_delta_y,
@@ -759,7 +762,7 @@ fn luma_transform_type_context(modes: &GeneralIntraBlockModes) -> LumaTransformT
     )
 }
 
-fn luma_tx_partition_context(
+pub(crate) fn luma_tx_partition_context(
     tx_mode: Option<TxMode>,
     block_size: BlockSize,
     lossless: bool,
@@ -777,7 +780,8 @@ fn frame_tx_mode(core: &FrameHeaderCore) -> Option<TxMode> {
         .or_else(|| core.inter_tail.as_ref().map(|tail| tail.tx_mode))
 }
 
-fn rect_luma_plan(
+#[inline]
+pub(crate) fn rect_luma_plan(
     modes: &GeneralIntraBlockModes,
     block_ctx: BlockCtx,
     use_tcq: bool,
@@ -944,7 +948,7 @@ fn directional_p_angle_for_luma(
         .map_err(|_| crate::DecodeHeaderStateError::InvalidGeneralIntraModeState)
 }
 
-fn rect_chroma_plan(
+pub(crate) fn rect_chroma_plan(
     modes: &GeneralIntraBlockModes,
     cfl_ds_filter_index: u8,
     sb_mib: usize,

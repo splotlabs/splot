@@ -23,13 +23,16 @@ pub mod frame;
 mod intra_frame;
 pub mod ivf;
 mod kernels;
+mod loop_filter;
+mod mode_decision;
 pub mod preset;
 pub mod rate_control;
-mod recon;
+mod rd;
 pub mod stats;
 #[cfg(test)]
 mod test_support;
 mod tile_writer;
+mod tx_choice;
 pub mod y4m;
 
 pub use config::{Config, MAX_FRAME_DIMENSION, RateControlMode};

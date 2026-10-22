@@ -4,11 +4,18 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, build_encoder_sequence_header,
-    build_key_frame_header, encode_key_frame_temporal_unit,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, KeyFrameTxParams,
+    build_encoder_sequence_header, build_key_frame_header, encode_key_frame_temporal_unit,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize};
-use splot_decode::encoder_syntax::{IntraTileSyntax, PartitionNode, TransformBlock};
+use std::collections::HashSet;
+
+use splot_core::headers::frame::TxMode;
+use splot_core::tables::conversion::TX_WIDTH;
+use splot_decode::encoder_syntax::{
+    ChromaMode, IntraMode, IntraModes, IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA, PartitionNode,
+    TX_PARTITIONS, TransformBlock,
+};
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
 use super::*;
@@ -39,6 +46,7 @@ struct Case {
     base_q_idx: u32,
     tools: EncoderToolFlags,
     max_level: i32,
+    tx: KeyFrameTxParams,
 }
 
 impl Case {
@@ -58,22 +66,37 @@ impl Case {
                 extended_sdp: false,
                 ext_partitions: false,
                 uneven_4way_partitions: false,
-                cfl: false,
+                cfl: true,
                 mhccp: false,
                 screen_content: false,
-                ibp: false,
+                ibp: true,
                 mrls: false,
                 fsc: false,
                 dip: false,
                 idtx_intra: false,
-                intra_edge_filter: false,
+                intra_edge_filter: true,
                 intra_ist: false,
                 cctx: false,
                 tcq: false,
                 parity_hiding: false,
             },
             max_level: 12,
+            tx: KeyFrameTxParams {
+                tx_mode: TxMode::Largest,
+                reduced_tx_set: 2,
+            },
         }
+    }
+
+    /// `TX_MODE_SELECT` with every intra luma type, over every block shape.
+    const fn with_tx_search(mut self) -> Self {
+        self.tx = KeyFrameTxParams {
+            tx_mode: TxMode::Select,
+            reduced_tx_set: 0,
+        };
+        self.tools.ext_partitions = true;
+        self.tools.uneven_4way_partitions = true;
+        self
     }
 
     fn bit_depth(self) -> BitDepth {
@@ -110,24 +133,210 @@ fn random_levels(rng: &mut Rng, tx_size: usize, max_level: i32) -> Vec<i32> {
     levels
 }
 
-/// Codes every transform block with random levels.
+/// The luma transform choices one frame offered and coded.
+#[derive(Default)]
+struct TxCoverage {
+    /// `(tx_size, offered types)`.
+    offered: HashSet<(usize, Vec<u8>)>,
+    /// `(tx_size, type)` coded with at least two nonzero levels, and how often.
+    coded: std::collections::HashMap<(usize, u8), usize>,
+    partitions: HashSet<u8>,
+    /// `code` calls for luma: the writer's `eob == 1` recodes.
+    recodes: usize,
+    /// Pick luma modes that offer uncoded types.
+    steer: bool,
+}
+
+/// Codes every transform block with random levels, the least-coded luma type,
+/// and a random transform partition. When `coverage.steer` is set, it also
+/// replaces the planned luma mode with one that offers uncoded luma types.
 struct RandomLevels {
     rng: Rng,
     max_level: i32,
+    coverage: TxCoverage,
+}
+
+impl RandomLevels {
+    /// The number of luma types `tx` offers that this frame has not coded.
+    fn uncoded(&self, syntax: &mut IntraTileSyntax, tx: &TransformBlock) -> Result<usize> {
+        Ok(syntax
+            .allowed_luma_tx_types(tx)?
+            .into_iter()
+            .filter(|&t| !self.coverage.coded.contains_key(&(tx.tx_size, t as u8)))
+            .count())
+    }
+
+    /// `planned`, steered to a luma mode that offers uncoded types, with a
+    /// random or steered transform partition.
+    fn leaf_choice(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        leaf: &LeafBlock,
+        planned: IntraModes,
+    ) -> Result<LeafChoice> {
+        let mut best = (0, planned);
+        if self.coverage.steer {
+            for (y_mode, angle_delta) in luma_modes() {
+                let modes = IntraModes {
+                    y_mode,
+                    angle_delta,
+                    ..planned
+                };
+                let tx = syntax.plan_leaf(leaf, modes)?[0];
+                let uncoded = self.uncoded(syntax, &tx)?;
+                if uncoded > best.0 {
+                    best = (uncoded, modes);
+                }
+            }
+        }
+        let modes = best.1;
+        let options = syntax.luma_tx_partitions(leaf)?;
+        let mut partition = options[self.rng.below(options.len() as u64) as usize];
+        if self.coverage.steer && self.rng.below(2) == 0 {
+            let mut best = 0;
+            for &option in &options {
+                let tx = syntax.plan_leaf_partitioned(leaf, modes, option)?[0];
+                let uncoded = self.uncoded(syntax, &tx)?;
+                if uncoded > best {
+                    (best, partition) = (uncoded, option);
+                }
+            }
+        }
+        self.coverage.partitions.insert(partition as u8);
+        Ok(LeafChoice {
+            modes,
+            tx_partition: partition,
+        })
+    }
 }
 
 impl ResidualCoder for RandomLevels {
-    fn code(&mut self, tx: &TransformBlock, _: &[u16]) -> Result<TransformDecision> {
+    fn code_luma(
+        &mut self,
+        _: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        _: &[u16],
+        tx_types: &[TxType],
+    ) -> Result<TransformDecision> {
+        let coded = &self.coverage.coded;
+        let start = self.rng.below(tx_types.len() as u64) as usize;
+        let tx_type = *tx_types
+            .iter()
+            .cycle()
+            .skip(start)
+            .take(tx_types.len())
+            .min_by_key(|&&t| coded.get(&(tx.tx_size, t as u8)).copied().unwrap_or(0))
+            .unwrap();
+        let mut levels = random_levels(&mut self.rng, tx.tx_size, self.max_level);
+        match self.rng.below(4) {
+            0 => {
+                levels.fill(0);
+                levels[0] = 1;
+            }
+            1 | 2 => {
+                levels[0] = levels[0].max(1);
+                levels[1] = levels[1].min(-1);
+            }
+            _ => {}
+        }
+        let types = tx_types.iter().map(|&t| t as u8).collect();
+        self.coverage.offered.insert((tx.tx_size, types));
+        if levels.iter().filter(|&&level| level != 0).count() >= 2 {
+            *self
+                .coverage
+                .coded
+                .entry((tx.tx_size, tx_type as u8))
+                .or_default() += 1;
+        }
+        Ok(TransformDecision { tx_type, levels })
+    }
+
+    fn code(
+        &mut self,
+        _: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        _: &[u16],
+    ) -> Result<TransformDecision> {
+        self.coverage.recodes += usize::from(tx.plane == 0);
         Ok(TransformDecision {
-            tx_type: TxType::DctDct,
+            tx_type: tx.tx_type,
             levels: random_levels(&mut self.rng, tx.tx_size, self.max_level),
         })
     }
 }
 
-fn random_tree(syntax: &IntraTileSyntax, node: PartitionNode, rng: &mut Rng) -> PartitionTree {
+/// Every `(YMode, AngleDeltaY)` pair: the 61 § 5.20.5.5 joint modes.
+fn luma_modes() -> Vec<(IntraMode, i8)> {
+    INTRA_MODES
+        .into_iter()
+        .flat_map(|mode| {
+            let deltas = if mode.is_directional() { -3..=3 } else { 0..=0 };
+            deltas.map(move |delta| (mode, delta))
+        })
+        .collect()
+}
+
+/// Cycles through every luma mode and every chroma mode; CFL alphas are random.
+struct ModePicker {
+    rng: Rng,
+    next: usize,
+    luma: Vec<(IntraMode, i8)>,
+    coded_luma: HashSet<(u8, i8)>,
+    coded_chroma: HashSet<u8>,
+}
+
+impl ModePicker {
+    fn new(seed: u64) -> Self {
+        let luma = luma_modes();
+        Self {
+            next: seed as usize * 23 % luma.len(),
+            rng: Rng(seed.rotate_left(31) | 1),
+            luma,
+            coded_luma: HashSet::new(),
+            coded_chroma: HashSet::new(),
+        }
+    }
+
+    fn pick(&mut self, cfl_allowed: bool) -> IntraModes {
+        let (y_mode, angle_delta) = self.luma[self.next % self.luma.len()];
+        let uv = self.next % (INTRA_MODES.len() + 2);
+        self.next += 1;
+        let uv_mode = match uv {
+            _ if uv < INTRA_MODES.len() => ChromaMode::Intra(INTRA_MODES[uv]),
+            _ if !cfl_allowed => ChromaMode::Intra(INTRA_MODES[self.rng.below(13) as usize]),
+            13 => loop {
+                let span = 2 * MAX_CFL_ALPHA as u64 + 1;
+                let alpha_u = self.rng.below(span) as i8 - MAX_CFL_ALPHA;
+                let alpha_v = self.rng.below(span) as i8 - MAX_CFL_ALPHA;
+                if alpha_u != 0 || alpha_v != 0 {
+                    break ChromaMode::Cfl { alpha_u, alpha_v };
+                }
+            },
+            _ => ChromaMode::CflDerived,
+        };
+        self.coded_luma.insert((y_mode as u8, angle_delta));
+        self.coded_chroma.insert(match uv_mode {
+            ChromaMode::Intra(mode) => mode as u8,
+            ChromaMode::Cfl { .. } => 13,
+            ChromaMode::CflDerived => 14,
+        });
+        IntraModes {
+            y_mode,
+            angle_delta,
+            uv_mode,
+        }
+    }
+}
+
+fn random_tree(
+    syntax: &mut IntraTileSyntax,
+    node: PartitionNode,
+    rng: &mut Rng,
+    modes: &mut ModePicker,
+    coder: &mut RandomLevels,
+) -> PartitionTree {
     if !syntax.in_frame(node) {
-        return PartitionTree::Leaf(BlockDecision::DC);
+        return PartitionTree::Leaf(LeafChoice::DC);
     }
     let options = syntax.partition_options(node).unwrap();
     let allowed: Vec<Partition> = PARTITIONS
@@ -143,13 +352,16 @@ fn random_tree(syntax: &IntraTileSyntax, node: PartitionNode, rng: &mut Rng) -> 
         None => allowed[rng.below(allowed.len() as u64) as usize],
     };
     if partition == Partition::None {
-        return PartitionTree::Leaf(BlockDecision::DC);
+        let leaf = syntax.leaf(node).unwrap();
+        let cfl_allowed = syntax.cfl_allowed(&leaf);
+        let planned = modes.pick(cfl_allowed);
+        return PartitionTree::Leaf(coder.leaf_choice(syntax, &leaf, planned).unwrap());
     }
     let children = syntax
         .children(node, partition)
         .unwrap()
         .into_iter()
-        .map(|child| random_tree(syntax, child, rng))
+        .map(|child| random_tree(syntax, child, rng, modes, coder))
         .collect();
     PartitionTree::Split {
         kind: partition,
@@ -157,8 +369,15 @@ fn random_tree(syntax: &IntraTileSyntax, node: PartitionNode, rng: &mut Rng) -> 
     }
 }
 
-/// Encodes one random key frame; returns the Annex B temporal unit and the recon frame.
-fn encode_case(case: Case, seed: u64) -> (Vec<u8>, DecodedFrame<u16>) {
+/// Encodes one random key frame; returns the Annex B temporal unit, the recon
+/// frame, and the modes it coded.
+/// Encodes one random key frame; `coverage` carries the luma type coverage
+/// across frames.
+fn encode_case(
+    case: Case,
+    seed: u64,
+    coverage: TxCoverage,
+) -> (Vec<u8>, DecodedFrame<u16>, ModePicker, TxCoverage) {
     let seq = build_encoder_sequence_header(&EncoderStreamParams {
         width: case.width,
         height: case.height,
@@ -169,26 +388,50 @@ fn encode_case(case: Case, seed: u64) -> (Vec<u8>, DecodedFrame<u16>) {
     })
     .unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let core = build_key_frame_header(&view, case.base_q_idx, 0).unwrap();
+    let core = build_key_frame_header(
+        &view,
+        case.base_q_idx,
+        0,
+        &FrameFilterParams::default(),
+        case.tx,
+    )
+    .unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core).unwrap();
     let mut rng = Rng(seed | 1);
+    let mut modes = ModePicker::new(seed);
     let mut coder = RandomLevels {
         rng: Rng(seed.rotate_left(17) | 1),
         max_level: case.max_level,
+        coverage: TxCoverage {
+            steer: case.tx.tx_mode == TxMode::Select,
+            ..coverage
+        },
     };
-    while let Some(root) = writer.next_superblock_root() {
-        let tree = random_tree(writer.syntax(), root, &mut rng);
+    while writer.next_superblock_root().is_some() {
+        let tree = writer
+            .search_superblock(|syntax, root| {
+                Ok(random_tree(syntax, root, &mut rng, &mut modes, &mut coder))
+            })
+            .unwrap();
         writer
             .write_superblock(&SuperblockDecision { tree }, &mut coder)
             .unwrap();
     }
     let (tile, recon) = writer.finish().unwrap();
     let unit = encode_key_frame_temporal_unit(&seq, &core, true, &tile).unwrap();
-    (unit, recon)
+    (unit, recon, modes, coder.coverage)
 }
 
 fn assert_round_trip(case: Case, seed: u64) -> Vec<u8> {
-    let (unit, recon) = encode_case(case, seed);
+    assert_round_trip_modes(case, seed, TxCoverage::default()).0
+}
+
+fn assert_round_trip_modes(
+    case: Case,
+    seed: u64,
+    coverage: TxCoverage,
+) -> (Vec<u8>, ModePicker, TxCoverage) {
+    let (unit, recon, modes, coverage) = encode_case(case, seed, coverage);
     let view = recon.as_frame_ref();
     let expected = raw_bytes(
         [PlaneId::Y, PlaneId::U, PlaneId::V]
@@ -201,7 +444,7 @@ fn assert_round_trip(case: Case, seed: u64) -> Vec<u8> {
         case.width, case.height, case.bit_depth, case.sb_size
     );
     assert_same_samples(&decode(&unit), &expected, &name);
-    unit
+    (unit, modes, coverage)
 }
 
 const SIZES: [(u32, u32); 5] = [(1, 1), (17, 9), (64, 64), (65, 65), (130, 66)];
@@ -216,6 +459,78 @@ fn random_key_frames_decode_to_the_encoder_recon() {
             }
         }
     }
+}
+
+#[test]
+fn every_intra_mode_round_trips() {
+    for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+        for sb_size in [SuperblockSize::Block64x64, SuperblockSize::Block128x128] {
+            let mut luma = HashSet::new();
+            let mut chroma = HashSet::new();
+            for seed in 0..4 {
+                let case = Case::new(136, 72, bit_depth, sb_size);
+                let (_, modes, _) = assert_round_trip_modes(case, seed, TxCoverage::default());
+                luma.extend(modes.coded_luma);
+                chroma.extend(modes.coded_chroma);
+            }
+            assert_eq!(luma.len(), 61, "{bit_depth:?} {sb_size:?}");
+            assert_eq!(chroma.len(), 15, "{bit_depth:?} {sb_size:?}");
+        }
+    }
+}
+
+/// Every luma type each transform size offers, every transform partition, and
+/// the `eob == 1` recode round-trip at both bit depths.
+#[test]
+fn every_luma_tx_type_and_partition_round_trips() {
+    for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+        let mut coverage = TxCoverage::default();
+        for seed in 0..8 {
+            let sb_size = if seed % 2 == 0 {
+                SuperblockSize::Block64x64
+            } else {
+                SuperblockSize::Block128x128
+            };
+            let case = Case::new(264, 200, bit_depth, sb_size).with_tx_search();
+            coverage = assert_round_trip_modes(case, 0x7e00 + seed, coverage).2;
+        }
+        let sizes: HashSet<usize> = coverage.offered.iter().map(|(size, _)| *size).collect();
+        assert_eq!(sizes.len(), TX_WIDTH.len(), "{bit_depth:?}: {sizes:?}");
+        for (size, types) in &coverage.offered {
+            for &tx_type in types {
+                assert!(
+                    coverage.coded.contains_key(&(*size, tx_type)),
+                    "{bit_depth:?}: tx size {size} type {tx_type} never coded"
+                );
+            }
+        }
+        assert!(coverage.offered.iter().any(|(_, types)| types.len() == 7));
+        assert_eq!(
+            coverage.partitions.len(),
+            TX_PARTITIONS.len(),
+            "{bit_depth:?}"
+        );
+        assert!(coverage.recodes > 0, "{bit_depth:?}: no eob == 1 recode");
+    }
+}
+
+#[test]
+fn reduced_transform_sets_round_trip() {
+    for reduced_tx_set in 0..=3 {
+        let mut case = Case::new(130, 66, BitDepthIdc::Ten, SuperblockSize::Block64x64);
+        case.tx.reduced_tx_set = reduced_tx_set;
+        case.tx.tx_mode = TxMode::Select;
+        assert_round_trip(case, u64::from(reduced_tx_set) + 40);
+    }
+}
+
+#[test]
+fn intra_prediction_tools_off_round_trip() {
+    let mut case = Case::new(130, 66, BitDepthIdc::Ten, SuperblockSize::Block128x128);
+    case.tools.cfl = false;
+    case.tools.ibp = false;
+    case.tools.intra_edge_filter = false;
+    assert_round_trip(case, 11);
 }
 
 #[test]
@@ -258,36 +573,120 @@ fn rejects_unsupported_decisions() {
         tools: case.tools,
     })
     .unwrap();
-    let core = build_key_frame_header(&CoreSeqView::from_sequence(&seq).unwrap(), 50, 0).unwrap();
+    let core = build_key_frame_header(
+        &CoreSeqView::from_sequence(&seq).unwrap(),
+        50,
+        0,
+        &FrameFilterParams::default(),
+        KeyFrameTxParams::default(),
+    )
+    .unwrap();
     let mut writer = KeyFrameTileWriter::new(&seq, &core).unwrap();
-    let tree = PartitionTree::Leaf(BlockDecision::DC);
+    let tree = PartitionTree::Leaf(LeafChoice::DC);
     assert!(matches!(
         writer.write_superblock(
             &SuperblockDecision { tree },
             &mut RandomLevels {
                 rng: Rng(1),
-                max_level: 1
+                max_level: 1,
+                coverage: TxCoverage::default(),
             }
         ),
         Err(TileWriterError::Partition { .. })
     ));
+}
 
-    let mut tools = case.tools;
-    tools.cfl = true;
+fn headers(tools: EncoderToolFlags) -> (SequenceHeader, FrameHeaderCore) {
     let seq = build_encoder_sequence_header(&EncoderStreamParams {
-        width: 16,
-        height: 16,
+        width: 64,
+        height: 64,
         bit_depth: BitDepthIdc::Eight,
         chroma: ChromaFormatIdc::Yuv420,
         sb_size: SuperblockSize::Block64x64,
         tools,
     })
     .unwrap();
-    let core = build_key_frame_header(&CoreSeqView::from_sequence(&seq).unwrap(), 50, 0).unwrap();
-    assert!(matches!(
-        KeyFrameTileWriter::new(&seq, &core),
-        Err(TileWriterError::Unsupported(_))
-    ));
+    let core = build_key_frame_header(
+        &CoreSeqView::from_sequence(&seq).unwrap(),
+        50,
+        0,
+        &FrameFilterParams::default(),
+        KeyFrameTxParams::default(),
+    )
+    .unwrap();
+    (seq, core)
+}
+
+/// The facade itself refuses every tool it does not model, so no caller can
+/// code a silently wrong stream.
+#[test]
+fn facade_rejects_unmodelled_tools() {
+    let base = Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64).tools;
+    let rejects = |seq: &SequenceHeader, core: &FrameHeaderCore| {
+        matches!(
+            IntraTileSyntax::new(seq, core),
+            Err(EncoderSyntaxError::Unsupported(_))
+        ) && matches!(
+            KeyFrameTileWriter::new(seq, core),
+            Err(TileWriterError::Syntax(EncoderSyntaxError::Unsupported(_)))
+        )
+    };
+    let (seq, core) = headers(base);
+    assert!(IntraTileSyntax::new(&seq, &core).is_ok());
+    let tool_cases: [fn(&mut EncoderToolFlags); 5] = [
+        |t| t.mhccp = true,
+        |t| t.intra_ist = true,
+        |t| t.cctx = true,
+        |t| t.tcq = true,
+        |t| t.idtx_intra = true,
+    ];
+    for set in tool_cases {
+        let mut tools = base;
+        set(&mut tools);
+        let (seq, core) = headers(tools);
+        assert!(rejects(&seq, &core));
+    }
+    let frame_cases: [fn(&mut FrameHeaderCore); 7] = [
+        |c| c.allow_intrabc = Some(true),
+        |c| c.lossless_info.as_mut().unwrap().allow_parity_hiding = true,
+        |c| c.lossless_info.as_mut().unwrap().coded_lossless = true,
+        |c| c.quantization_params.as_mut().unwrap().base_q_idx = 0,
+        |c| c.segmentation_params.as_mut().unwrap().segmentation_enabled = true,
+        |c| c.delta_q_params.as_mut().unwrap().delta_q_present = true,
+        |c| c.setup_qm_params.as_mut().unwrap().using_qmatrix = true,
+    ];
+    for set in frame_cases {
+        let mut core = core.clone();
+        set(&mut core);
+        assert!(rejects(&seq, &core));
+    }
+    let mut core = core;
+    core.intra_tail.as_mut().unwrap().tx_mode = TxMode::Only4x4;
+    assert!(rejects(&seq, &core));
+}
+
+/// A CFL alpha of `i8::MIN` is refused instead of overflowing `abs`.
+#[test]
+fn rejects_out_of_range_cfl_alphas() {
+    let (seq, core) =
+        headers(Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64).tools);
+    let mut syntax = IntraTileSyntax::new(&seq, &core).unwrap();
+    let root = syntax.superblock_root(0, 0);
+    syntax.begin_superblock(root);
+    let node = syntax.children(root, Partition::Horz).unwrap()[0];
+    let node = syntax.children(node, Partition::Vert).unwrap()[0];
+    let leaf = syntax.leaf(node).unwrap();
+    assert!(syntax.cfl_allowed(&leaf));
+    for (alpha_u, alpha_v) in [(i8::MIN, 1), (1, i8::MIN), (MAX_CFL_ALPHA + 1, 0)] {
+        let modes = IntraModes {
+            uv_mode: ChromaMode::Cfl { alpha_u, alpha_v },
+            ..IntraModes::DC
+        };
+        assert!(matches!(
+            syntax.write_intra_modes(&leaf, modes, &mut SymbolEncoder::new()),
+            Err(EncoderSyntaxError::Unsupported("CFL alpha magnitude"))
+        ));
+    }
 }
 
 /// Decodes random streams with AVM and compares them with splot's output.
@@ -309,6 +708,17 @@ fn avm_decodes_random_key_frames_like_splot() {
     extended.tools.ext_partitions = true;
     extended.tools.uneven_4way_partitions = true;
     cases.push(extended);
+    for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+        for sb_size in [SuperblockSize::Block64x64, SuperblockSize::Block128x128] {
+            cases.push(Case::new(200, 136, bit_depth, sb_size).with_tx_search());
+        }
+        for reduced_tx_set in [1, 3] {
+            let mut case = Case::new(130, 66, bit_depth, SuperblockSize::Block64x64);
+            case.tx.tx_mode = TxMode::Select;
+            case.tx.reduced_tx_set = reduced_tx_set;
+            cases.push(case);
+        }
+    }
     for (base_q_idx, max_level) in [(1, 3000), (40, 400), (200, 20), (255, 6)] {
         let mut case = Case::new(40, 24, BitDepthIdc::Eight, SuperblockSize::Block64x64);
         case.base_q_idx = base_q_idx;

@@ -5,7 +5,9 @@
 
 use super::*;
 use crate::annexb::parse_annex_b_obus_partial;
-use crate::headers::frame::{FrameSize, FrameType, TxMode};
+use crate::headers::frame::{
+    CdefStrengthSet, CdefStrengthSets, FrameRestorationType, FrameSize, FrameType, TxMode,
+};
 use crate::write::write_frame_header_core;
 
 const SIZES: [(u32, u32); 9] = [
@@ -94,8 +96,22 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                 } else {
                     511
                 };
-                for (base_q_idx, order_hint) in [(1, 0), (80, 7), (max_q, 255)] {
-                    let core = build_key_frame_header(&view, base_q_idx, order_hint).unwrap();
+                for (index, (base_q_idx, order_hint)) in
+                    [(1, 0), (80, 7), (max_q, 255)].into_iter().enumerate()
+                {
+                    let tx = KeyFrameTxParams {
+                        tx_mode: [TxMode::Largest, TxMode::Select][index % 2],
+                        reduced_tx_set: (index + usize::from(sb == SuperblockSize::Block64x64))
+                            as u8,
+                    };
+                    let core = build_key_frame_header(
+                        &view,
+                        base_q_idx,
+                        order_hint,
+                        &FrameFilterParams::default(),
+                        tx,
+                    )
+                    .unwrap();
                     assert_eq!(core.frame_type, Some(FrameType::Key));
                     assert_eq!(core.frame_size, Some(FrameSize::new(width, height)));
                     assert_eq!(core.immediate_output_frame, Some(true));
@@ -104,8 +120,8 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                     let tiles = core.tile_info.as_ref().unwrap();
                     assert_eq!((tiles.tile_cols, tiles.tile_rows), (1, 1));
                     let tail = core.intra_tail.unwrap();
-                    assert_eq!(tail.tx_mode, TxMode::Largest);
-                    assert_eq!(u32::from(tail.reduced_tx_set), KEY_FRAME_REDUCED_TX_SET);
+                    assert_eq!(tail.tx_mode, tx.tx_mode);
+                    assert_eq!(tail.reduced_tx_set, tx.reduced_tx_set);
                     assert_eq!(reparse_core(&core, &view), core);
                 }
             }
@@ -163,9 +179,116 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert_eq!(reparse_sequence(&seq), seq);
 
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let core = build_key_frame_header(&view, 100, 1).unwrap();
+    let core = build_key_frame_header(
+        &view,
+        100,
+        1,
+        &FrameFilterParams::default(),
+        KeyFrameTxParams::default(),
+    )
+    .unwrap();
     assert_eq!(core.allow_screen_content_tools, Some(false));
     assert_eq!(reparse_core(&core, &view), core);
+}
+
+#[test]
+fn filter_params_reach_the_parsed_header() {
+    let set = |y_pri, y_sec, uv_pri, uv_sec| CdefStrengthSet {
+        y_pri_strength: y_pri,
+        y_sec_strength: y_sec,
+        uv_pri_strength: uv_pri,
+        uv_sec_strength: uv_sec,
+    };
+    for sb in [SuperblockSize::Block64x64, SuperblockSize::Block128x128] {
+        let mut p = params(352, 288, BitDepthIdc::Ten, sb);
+        p.tools.cdef = true;
+        p.tools.loop_restoration = true;
+        let seq = build_encoder_sequence_header(&p).unwrap();
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let lr_sizes: &[u32] = if sb == SuperblockSize::Block64x64 {
+            &[64, 128, 256, 512]
+        } else {
+            &[128, 256, 512]
+        };
+        for &lr_size in lr_sizes {
+            let filters = FrameFilterParams {
+                deblocking: [true, true, true, false],
+                deblocking_delta_q: [-2, 1, 0, 0],
+                cdef_damping: 5,
+                cdef_strengths: CdefStrengthSets::from_slice(&[
+                    set(0, 0, 0, 0),
+                    set(4, 2, 1, 4),
+                    set(15, 1, 0, 0),
+                ])
+                .unwrap(),
+                lr_luma_unit_size: Some(lr_size),
+            };
+            let core = build_key_frame_header(&view, 120, 3, &filters, KeyFrameTxParams::default())
+                .unwrap();
+            let deblock = core.deblocking_filter_params.unwrap();
+            assert_eq!(deblock.apply_deblocking_filter, filters.deblocking);
+            assert_eq!(deblock.df_delta_q, filters.deblocking_delta_q);
+            let cdef = core.cdef_params.unwrap();
+            assert!(cdef.cdef_frame_enable);
+            assert_eq!(cdef.cdef_damping, Some(5));
+            assert_eq!(cdef.strengths, filters.cdef_strengths);
+            let lr = core.lr_params.as_ref().unwrap();
+            assert_eq!(
+                lr.planes[0].restoration_type,
+                FrameRestorationType::PcWiener
+            );
+            assert_eq!(lr.planes[1].restoration_type, FrameRestorationType::None);
+            assert_eq!(lr.loop_restoration_size[0], lr_size);
+            assert_eq!(reparse_core(&core, &view), core);
+        }
+        let off = build_key_frame_header(
+            &view,
+            120,
+            3,
+            &FrameFilterParams::default(),
+            KeyFrameTxParams::default(),
+        )
+        .unwrap();
+        assert!(!off.cdef_params.unwrap().cdef_frame_enable);
+        assert!(!off.lr_params.unwrap().uses_lr);
+        assert_eq!(
+            off.deblocking_filter_params
+                .unwrap()
+                .apply_deblocking_filter,
+            [false; 4]
+        );
+    }
+}
+
+#[test]
+fn rejects_filters_the_sequence_cannot_carry() {
+    let seq = build_encoder_sequence_header(&params(
+        64,
+        64,
+        BitDepthIdc::Eight,
+        SuperblockSize::Block64x64,
+    ))
+    .unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let cdef = FrameFilterParams {
+        cdef_damping: 3,
+        cdef_strengths: CdefStrengthSets::from_slice(&[CdefStrengthSet::default()]).unwrap(),
+        ..FrameFilterParams::default()
+    };
+    let lr = FrameFilterParams {
+        lr_luma_unit_size: Some(64),
+        ..FrameFilterParams::default()
+    };
+    let chroma_only = FrameFilterParams {
+        deblocking: [false, false, true, true],
+        ..FrameFilterParams::default()
+    };
+    for filters in [cdef, lr, chroma_only] {
+        assert!(matches!(
+            build_key_frame_header(&view, 60, 0, &filters, KeyFrameTxParams::default()),
+            Err(EncoderHeaderError::Write(_))
+        ));
+    }
 }
 
 #[test]
@@ -208,13 +331,40 @@ fn rejects_out_of_range_inputs() {
     .unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();
     assert!(matches!(
-        build_key_frame_header(&view, 0, 0),
+        build_key_frame_header(
+            &view,
+            0,
+            0,
+            &FrameFilterParams::default(),
+            KeyFrameTxParams::default()
+        ),
         Err(EncoderHeaderError::InvalidBaseQIdx { .. })
     ));
     assert!(matches!(
-        build_key_frame_header(&view, 256, 0),
+        build_key_frame_header(
+            &view,
+            256,
+            0,
+            &FrameFilterParams::default(),
+            KeyFrameTxParams::default()
+        ),
         Err(EncoderHeaderError::InvalidBaseQIdx { .. })
     ));
+    for tx in [
+        KeyFrameTxParams {
+            tx_mode: TxMode::Only4x4,
+            reduced_tx_set: 0,
+        },
+        KeyFrameTxParams {
+            tx_mode: TxMode::Select,
+            reduced_tx_set: 4,
+        },
+    ] {
+        assert!(matches!(
+            build_key_frame_header(&view, 60, 0, &FrameFilterParams::default(), tx),
+            Err(EncoderHeaderError::InvalidTxParams { .. })
+        ));
+    }
 }
 
 #[test]
@@ -227,7 +377,14 @@ fn temporal_unit_carries_delimiter_sequence_and_frame() {
     ))
     .unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let core = build_key_frame_header(&view, 60, 0).unwrap();
+    let core = build_key_frame_header(
+        &view,
+        60,
+        0,
+        &FrameFilterParams::default(),
+        KeyFrameTxParams::default(),
+    )
+    .unwrap();
     let tile = [0x12, 0x34, 0x56];
     for (with_seq, expected) in [
         (

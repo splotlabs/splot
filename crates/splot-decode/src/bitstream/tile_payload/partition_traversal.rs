@@ -36,6 +36,7 @@ pub(crate) use lr_records::LrUnitRestorationType;
 pub(crate) use lr_records::{WienerNsLrSourceBlock, WienerNsLrUnitFilter};
 #[cfg(test)]
 use lr_syntax::{WienerNsUnitFilterState, read_wiener_ns_unit_filter};
+pub(crate) use lr_syntax::{pc_wiener_unit_source_blocks, superblock_lr_units};
 pub(crate) use partition_children::child_calls;
 pub(crate) use state_publication::DecodedLeafPublication;
 pub(crate) use state_publication::publish_intra_leaf_state;
@@ -43,13 +44,13 @@ use tree_walk::extended_sdp_allowed_for_child;
 pub(crate) use tree_walk::valid_subsize;
 pub(crate) use tree_walk::{
     GeneralIntraPartitionTreeCursor, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError,
-    TileTraversalStorage, decode_block_frontier, partition_allowed_input, partition_context_inputs,
-    updated_chroma_offset,
+    TileTraversalStorage, decode_block_frontier, is_cfl_context_for_chroma_ref,
+    partition_allowed_input, partition_context_inputs, updated_chroma_offset,
 };
 #[cfg(test)]
 use tree_walk::{
-    MIXED_REGION, SdpPartitionState, is_cfl_context_for_chroma_ref, is_intra_sdp_shared_root,
-    partition_cdf_plane, read_extended_sdp_region_type, read_frontier_partition_decision,
+    MIXED_REGION, SdpPartitionState, is_intra_sdp_shared_root, partition_cdf_plane,
+    read_extended_sdp_region_type, read_frontier_partition_decision,
     should_read_extended_sdp_region_type,
 };
 

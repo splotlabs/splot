@@ -7,6 +7,8 @@ use super::lr_records::{
     LrSourceBlockDerivation, LrUnitRestorationType, WienerNsLrUnitActivity, WienerNsLrUnitFilter,
     ceil_unit_index, count_units_in_frame, record_active_wiener_ns_source_blocks_for_unit,
 };
+use core::ops::Range;
+
 use super::{
     DecodeLimits, SymbolDecoder, TilePartitionBounds, TilePartitionCall, TilePartitionFrameFacts,
     TilePartitionLoopRestorationPlaneTool, TilePartitionLoopRestorationState,
@@ -159,65 +161,10 @@ fn read_lr_units_for_plane(
     lr_activity: &mut WienerNsLrUnitActivity,
     limits: DecodeLimits,
 ) -> Result<(), TilePartitionTraversalError> {
-    if unit_size == 0 {
-        return Err(
-            TilePartitionTraversalError::InvalidLoopRestorationUnitSize { plane, unit_size },
-        );
-    }
     let (sub_x, sub_y) = plane_subsampling(frame, plane);
-    let sample_step_x = MI_SIZE >> sub_x;
-    let sample_step_y = MI_SIZE >> sub_y;
-
-    let mi_cols = checked_sub(
-        "lr_mi_cols",
-        tile_bounds.mi_col_end,
-        tile_bounds.mi_col_start,
-    )?;
-    let mi_rows = checked_sub(
-        "lr_mi_rows",
-        tile_bounds.mi_row_end,
-        tile_bounds.mi_row_start,
-    )?;
-    let frame_cols = checked_mul_shifted("lr_frame_cols", mi_cols, MI_SIZE, sub_x)?;
-    let frame_rows = checked_mul_shifted("lr_frame_rows", mi_rows, MI_SIZE, sub_y)?;
-    let lr_row_offset =
-        checked_mul_shifted("lr_row_offset", tile_bounds.mi_row_start, MI_SIZE, sub_y)? / unit_size;
-    let lr_col_offset =
-        checked_mul_shifted("lr_col_offset", tile_bounds.mi_col_start, MI_SIZE, sub_x)? / unit_size;
-    let c = checked_sub("lr_c", call.c, tile_bounds.mi_col_start)?;
-    let r = checked_sub("lr_r", call.r, tile_bounds.mi_row_start)?;
-
-    let unit_rows = count_units_in_frame(unit_size, frame_rows)?;
-    let unit_cols = count_units_in_frame(unit_size, frame_cols)?;
-    let unit_row_start = ceil_unit_index(
-        checked_mul("lr_unit_row_start", r, sample_step_y)?,
-        unit_size,
-    )?;
-    let unit_col_start = ceil_unit_index(
-        checked_mul("lr_unit_col_start", c, sample_step_x)?,
-        unit_size,
-    )?;
-    let unit_row_end = unit_rows.min(ceil_unit_index(
-        checked_mul(
-            "lr_unit_row_end",
-            checked_add("lr_r_end", r, h)?,
-            sample_step_y,
-        )?,
-        unit_size,
-    )?);
-    let unit_col_end = unit_cols.min(ceil_unit_index(
-        checked_mul(
-            "lr_unit_col_end",
-            checked_add("lr_c_end", c, w)?,
-            sample_step_x,
-        )?,
-        unit_size,
-    )?);
-
-    for unit_row in unit_row_start..unit_row_end {
-        for unit_col in unit_col_start..unit_col_end {
-            let unit_row = checked_add("lr_unit_row", unit_row, lr_row_offset)?;
-            let unit_col = checked_add("lr_unit_col", unit_col, lr_col_offset)?;
+    let (rows, cols) = lr_unit_ranges(plane, unit_size, frame, call, tile_bounds, w, h)?;
+    for unit_row in rows {
+        for unit_col in cols.clone() {
             let restoration_type = match tool {
                 TilePartitionLoopRestorationPlaneTool::None => LrUnitRestorationType::None,
                 TilePartitionLoopRestorationPlaneTool::WienerNs => read_wiener_ns_lr_unit(
@@ -281,6 +228,156 @@ fn read_lr_units_for_plane(
         }
     }
     Ok(())
+}
+
+/// The frame unit rows and columns of `plane` that `read_lr` codes at superblock
+/// `call` of `w x h` 4x4 units (§ 5.20.10.4).
+#[inline]
+fn lr_unit_ranges(
+    plane: usize,
+    unit_size: usize,
+    frame: TilePartitionFrameFacts,
+    call: TilePartitionCall,
+    tile_bounds: TilePartitionBounds,
+    w: usize,
+    h: usize,
+) -> Result<(Range<usize>, Range<usize>), TilePartitionTraversalError> {
+    if unit_size == 0 {
+        return Err(
+            TilePartitionTraversalError::InvalidLoopRestorationUnitSize { plane, unit_size },
+        );
+    }
+    let (sub_x, sub_y) = plane_subsampling(frame, plane);
+    let sample_step_x = MI_SIZE >> sub_x;
+    let sample_step_y = MI_SIZE >> sub_y;
+
+    let mi_cols = checked_sub(
+        "lr_mi_cols",
+        tile_bounds.mi_col_end,
+        tile_bounds.mi_col_start,
+    )?;
+    let mi_rows = checked_sub(
+        "lr_mi_rows",
+        tile_bounds.mi_row_end,
+        tile_bounds.mi_row_start,
+    )?;
+    let frame_cols = checked_mul_shifted("lr_frame_cols", mi_cols, MI_SIZE, sub_x)?;
+    let frame_rows = checked_mul_shifted("lr_frame_rows", mi_rows, MI_SIZE, sub_y)?;
+    let lr_row_offset =
+        checked_mul_shifted("lr_row_offset", tile_bounds.mi_row_start, MI_SIZE, sub_y)? / unit_size;
+    let lr_col_offset =
+        checked_mul_shifted("lr_col_offset", tile_bounds.mi_col_start, MI_SIZE, sub_x)? / unit_size;
+    let c = checked_sub("lr_c", call.c, tile_bounds.mi_col_start)?;
+    let r = checked_sub("lr_r", call.r, tile_bounds.mi_row_start)?;
+
+    let unit_rows = count_units_in_frame(unit_size, frame_rows)?;
+    let unit_cols = count_units_in_frame(unit_size, frame_cols)?;
+    let unit_row_start = ceil_unit_index(
+        checked_mul("lr_unit_row_start", r, sample_step_y)?,
+        unit_size,
+    )?;
+    let unit_col_start = ceil_unit_index(
+        checked_mul("lr_unit_col_start", c, sample_step_x)?,
+        unit_size,
+    )?;
+    let unit_row_end = unit_rows.min(ceil_unit_index(
+        checked_mul(
+            "lr_unit_row_end",
+            checked_add("lr_r_end", r, h)?,
+            sample_step_y,
+        )?,
+        unit_size,
+    )?);
+    let unit_col_end = unit_cols.min(ceil_unit_index(
+        checked_mul(
+            "lr_unit_col_end",
+            checked_add("lr_c_end", c, w)?,
+            sample_step_x,
+        )?,
+        unit_size,
+    )?);
+
+    Ok((
+        checked_add("lr_unit_row", unit_row_start, lr_row_offset)?
+            ..checked_add(
+                "lr_unit_row",
+                unit_row_end.max(unit_row_start),
+                lr_row_offset,
+            )?,
+        checked_add("lr_unit_col", unit_col_start, lr_col_offset)?
+            ..checked_add(
+                "lr_unit_col",
+                unit_col_end.max(unit_col_start),
+                lr_col_offset,
+            )?,
+    ))
+}
+
+/// The restoration units `read_lr` codes at superblock root `call`, in syntax
+/// order, as `(plane, unit_row, unit_col, tool)` (§ 5.20.10.4).
+pub(crate) fn superblock_lr_units(
+    frame: TilePartitionFrameFacts,
+    call: TilePartitionCall,
+    tile_bounds: TilePartitionBounds,
+) -> Result<Vec<LrUnitSlot>, TilePartitionTraversalError> {
+    let mut units = Vec::new();
+    let TilePartitionLoopRestorationState::Frame(lr) = frame.loop_restoration else {
+        return Ok(units);
+    };
+    if call.b_size != frame.sb_size {
+        return Ok(units);
+    }
+    let w = call.b_size.num_4x4_wide()?;
+    let h = call.b_size.num_4x4_high()?;
+    let (plane_start, plane_end) = plane_range_for_tree_type(call.tree_type, frame.num_planes);
+    for plane in plane_start..plane_end.min(3) {
+        let tool = lr.plane_tool[plane];
+        if tool == TilePartitionLoopRestorationPlaneTool::None {
+            continue;
+        }
+        let (rows, cols) =
+            lr_unit_ranges(plane, lr.unit_size[plane], frame, call, tile_bounds, w, h)?;
+        for row in rows {
+            units.extend(cols.clone().map(|col| (plane, row, col, tool)));
+        }
+    }
+    Ok(units)
+}
+
+/// One `read_lr_unit` call: `(plane, unit_row, unit_col, FrameRestorationType tool)`.
+type LrUnitSlot = (usize, usize, usize, TilePartitionLoopRestorationPlaneTool);
+
+/// The source blocks the walk records for an active `RESTORE_PC_WIENER` unit.
+#[inline]
+pub(crate) fn pc_wiener_unit_source_blocks(
+    frame: TilePartitionFrameFacts,
+    tile_bounds: TilePartitionBounds,
+    plane: usize,
+    unit_row: usize,
+    unit_col: usize,
+) -> Result<Vec<super::WienerNsLrSourceBlock>, TilePartitionTraversalError> {
+    let TilePartitionLoopRestorationState::Frame(lr) = frame.loop_restoration else {
+        return Ok(Vec::new());
+    };
+    let (sub_x, sub_y) = plane_subsampling(frame, plane);
+    let mut activity = WienerNsLrUnitActivity::default();
+    record_active_wiener_ns_source_blocks_for_unit(
+        LrSourceBlockDerivation {
+            restoration_type: LrUnitRestorationType::PcWiener,
+            plane,
+            unit_size: lr.unit_size[plane.min(2)],
+            unit_row,
+            unit_col,
+            unit_filter_index: None,
+            frame,
+            tile_bounds,
+            sub_x,
+            sub_y,
+        },
+        DecodeLimits::default(),
+        &mut activity,
+    )?;
+    Ok(activity.active_source_blocks)
 }
 
 fn read_pc_wiener_lr_unit(

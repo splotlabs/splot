@@ -9,7 +9,7 @@ use splot_recon::{
     inverse_transform_2d, transform_shift,
 };
 
-use super::super::{EncoderKernels, ScalarKernels, SimdKernels};
+use super::super::{EncoderKernels, Quantizer, ScalarKernels, SimdKernels};
 use super::{EXTRA_BITS, ForwardTransform2d, KINDS, MATRICES, matrix_index};
 
 /// The 25 AV2 `TX_SIZES_ALL` shapes as `(log2W, log2H)`.
@@ -233,5 +233,27 @@ proptest! {
         ScalarKernels.forward_transform_2d(&tx, &residual, &mut scalar).unwrap();
         SimdKernels.forward_transform_2d(&tx, &residual, &mut simd).unwrap();
         prop_assert_eq!(scalar, simd);
+    }
+}
+
+/// The RDOQ multiplier relies on a flat residual's coefficient energy being
+/// `64 / dqDenom^2` times its sample energy at every size.
+#[test]
+fn coefficient_energy_gain_is_64_over_dq_denom_squared() {
+    let dct = InverseTransform2dDim::Kernel(splot_recon::InverseTransform1dType::Dct);
+    for log2_w in 2..=6u32 {
+        for log2_h in (2..=6u32).filter(|h| h.abs_diff(log2_w) <= 2) {
+            let forward =
+                ForwardTransform2d::new(log2_w, log2_h, dct, dct, BitDepth::Eight).unwrap();
+            let residual = vec![10; 1 << (log2_w + log2_h)];
+            let mut coeffs = vec![0; forward.coeff_width() * forward.coeff_height()];
+            ScalarKernels
+                .forward_transform_2d(&forward, &residual, &mut coeffs)
+                .unwrap();
+            let energy = |v: &[i32]| v.iter().map(|&x| f64::from(x).powi(2)).sum::<f64>();
+            let dq = f64::from(Quantizer::dq_denom_without_tcq(log2_w, log2_h));
+            let gain = energy(&coeffs) / energy(&residual) * dq * dq / 64.0;
+            assert!((gain - 1.0).abs() < 0.01, "{log2_w}x{log2_h}: {gain}");
+        }
     }
 }

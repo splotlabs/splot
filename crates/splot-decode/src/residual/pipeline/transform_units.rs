@@ -4,15 +4,135 @@
 //! Per-transform-unit residual replanning.
 
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
-use splot_recon::PlaneId;
+use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 
 use crate::bitstream::tile_payload::{
-    DecodeTileWorkUnit, GeneralIntraResidualError, PositionedLumaCoeffBlock,
-    current_frame_qm_segment_id,
+    CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock,
+    LumaTransformTypeContext, LumaTxPartition, PositionedLumaCoeffBlock, TileBlockDecodedState,
+    current_frame_qm_segment_id, luma_partition_record_fills_block,
+    luma_transform_record_starts_in_frame, luma_transform_records_for_partition,
 };
 use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
 
-use super::{RectLumaPlan, ResidualPlanePlan, ResidualReconstructionPlan, TX_4X4};
+use super::{
+    GeneralIntraResidualPlan, RectLumaPlan, ResidualPlanePlan, ResidualReconstructionPlan, TX_4X4,
+};
+
+impl GeneralIntraResidualPlan {
+    /// Reconstructs planned transform block `index` from its row-major adjusted
+    /// `quant` and `eob`, through the decoder's own kernel dispatch.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reconstruct_unit<T: ReconSample>(
+        &self,
+        index: usize,
+        quant: &[i32],
+        eob: usize,
+        plane_tx_type: usize,
+        scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
+        workspace: &mut CurrentFrameWorkspace<T>,
+        block_decoded: &TileBlockDecodedState,
+        qindex: u32,
+        intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
+        luma_context: LumaTransformTypeContext,
+    ) -> core::result::Result<(), GeneralIntraResidualError> {
+        let plane = self.unit(index)?;
+        let nonzero = quant
+            .iter()
+            .rposition(|&q| q != 0)
+            .map_or(0, |last| last + 1);
+        let mut coeffs = LumaCoeffBlock {
+            eob,
+            quant_range: 0..nonzero,
+            zero_tail: quant.len() - nonzero,
+            ..LumaCoeffBlock::empty(plane_tx_type, false)
+        };
+        plane.apply_reconstruction_tx_type(&mut coeffs);
+        plane.reconstruct(
+            scratch,
+            workspace,
+            CoeffBlock::new(&coeffs, quant)?,
+            block_decoded,
+            None,
+            qindex,
+            intra_edge,
+            luma_context,
+        )
+    }
+
+    /// Replaces the first plan, the luma plane of a block of at most 64x64, with
+    /// the in-frame units of the § 5.20.6.3 `partition` of its `tx_size`, planned
+    /// as the decoder plans parsed partition units.
+    pub(crate) fn partition_luma(
+        &mut self,
+        tx_size: usize,
+        partition: LumaTxPartition,
+    ) -> core::result::Result<(), GeneralIntraResidualError> {
+        let luma = self.unit(0)?;
+        if luma.plane_id != PlaneId::Y {
+            return Err(GeneralIntraResidualError::InvalidReconstructionState {
+                context: "luma transform partition plane",
+            });
+        }
+        let records = luma_transform_records_for_partition(luma.x, luma.y, tx_size, partition)?;
+        let count = records.len();
+        let (frame_width, frame_height) = (
+            luma.block_ctx.frame_mi_cols() * 4,
+            luma.block_ctx.frame_mi_rows() * 4,
+        );
+        let mut units = Vec::with_capacity(count);
+        for record in records {
+            if !luma_transform_record_starts_in_frame(&record, frame_width, frame_height) {
+                continue;
+            }
+            let unit = luma.transform_unit_plan(&PositionedLumaCoeffBlock {
+                x: record.x,
+                y: record.y,
+                tx_size: record.tx_size,
+                middle: record.middle,
+                coeffs: LumaCoeffBlock::empty(0, false),
+            })?;
+            let fills = luma_partition_record_fills_block(
+                luma.tx_fills_residual_block(),
+                count,
+                record,
+                luma.x,
+                luma.y,
+            );
+            units.push(if fills {
+                unit
+            } else {
+                ResidualPlanePlan {
+                    residual_width4: luma.residual_width4,
+                    residual_height4: luma.residual_height4,
+                    ..unit
+                }
+            });
+        }
+        self.planes.splice(0..1, units);
+        Ok(())
+    }
+
+    /// Marks a reconstructed luma transform block `index` as decoded.
+    pub(crate) fn publish_unit(
+        &self,
+        index: usize,
+        block_decoded: &mut TileBlockDecodedState,
+    ) -> core::result::Result<(), GeneralIntraResidualError> {
+        self.unit(index)?.publish_luma_transform(block_decoded);
+        Ok(())
+    }
+
+    fn unit(
+        &self,
+        index: usize,
+    ) -> core::result::Result<ResidualPlanePlan, GeneralIntraResidualError> {
+        self.planes.get(index).copied().ok_or(
+            GeneralIntraResidualError::InvalidReconstructionState {
+                context: "planned transform block index",
+            },
+        )
+    }
+}
 
 impl ResidualReconstructionPlan {
     pub(super) fn for_luma_transform_row(mut self, is_parent_row: bool) -> Self {

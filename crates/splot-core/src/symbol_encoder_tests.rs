@@ -513,3 +513,33 @@ fn output_is_old_brute_force_output_without_zero_tail() {
         assert_eq!(fnv1a(&bytes), old_hash, "seed {seed} {mode:?}");
     }
 }
+
+#[test]
+fn adapt_cdf_matches_the_encoder_update() {
+    let rows: [[u16; 5]; 1] = [[8192, 16384, 24576, 0, 0]];
+    for symbol in 0..4u8 {
+        let mut coded = rows[0];
+        let mut adapted = rows[0];
+        let mut encoder = SymbolEncoder::new();
+        for _ in 0..40 {
+            encoder
+                .write_symbol_u16(&mut coded, Symbol::new(symbol))
+                .unwrap();
+            adapt_cdf_u16(&mut adapted, Symbol::new(symbol)).unwrap();
+            assert_eq!(coded, adapted);
+        }
+    }
+    let mut row = rows[0];
+    assert!(adapt_cdf_u16(&mut row, Symbol::new(4)).is_err());
+}
+
+#[test]
+fn symbol_split_points_tile_the_scale() {
+    let row = [8192u16, 16384, 24576, 0, 0];
+    let splits: Vec<u32> = (0..4)
+        .map(|symbol| symbol_split_q12(&row, symbol).unwrap())
+        .collect();
+    assert_eq!(splits, [3072 + 12, 2048 + 8, 1024 + 4, 0]);
+    assert_eq!(symbol_split_q12(&row, 4), None);
+    assert_eq!(symbol_split_q12(&[0, 0], 0), None);
+}

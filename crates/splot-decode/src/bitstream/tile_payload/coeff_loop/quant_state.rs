@@ -11,7 +11,7 @@ use super::sign_symbol::CoeffSignRead;
 
 const TCQ_STATES: usize = 8;
 const TCQ_PARITIES: usize = 2;
-const MAX_CONFORMING_QUANT_MAGNITUDE: u32 = 1 << 20;
+pub(crate) const MAX_CONFORMING_QUANT_MAGNITUDE: u32 = 1 << 20;
 const TCQ_NEXT_STATE: [[usize; TCQ_PARITIES]; TCQ_STATES] = [
     [0, 4],
     [4, 0],

@@ -5,28 +5,28 @@
 //!
 //! [`KeyFrameTileWriter`] walks each [`SuperblockDecision`] in § 5.20.3.1 syntax
 //! order, writes every symbol through [`SymbolEncoder`] with the CDF rows and
-//! contexts of the decoder's `encoder_syntax` facade, publishes the coded facts
-//! back to the facade, and reconstructs each transform block.
+//! contexts of the decoder's `encoder_syntax` facade, reconstructs each transform
+//! block through the facade, and publishes the coded facts back to it.
 
 pub(crate) mod coeffs;
 mod decision;
+pub(crate) mod filters;
 
-use splot_core::headers::frame::{FrameHeaderCore, KEY_FRAME_REDUCED_TX_SET, TxMode};
-use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
-use splot_core::symbol::Symbol;
-use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
+use core::ops::Range;
+
+use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::sequence::SequenceHeader;
+use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink};
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
-    EncoderSyntaxError, IntraTileSyntax, LeafBlock, PartitionCdf, PartitionNode, RectKind,
+    EncoderSyntaxError, IntraTileSyntax, LeafBlock, PartitionNode, TransformBlock,
 };
-use splot_recon::{BitDepth, DecodedFrame, PixelFormat, ReconError};
+use splot_recon::{DecodedFrame, ReconError};
 
 pub(crate) use decision::{
-    BlockDecision, ChromaMode, IntraMode, LumaMode, Partition, PartitionTree, ResidualCoder,
-    SuperblockDecision, TransformDecision, TxType,
+    INTRA_MODES, LeafChoice, Partition, PartitionTree, ResidualCoder, SuperblockDecision,
+    TransformDecision, TxType,
 };
-
-use crate::recon::ReconFrame;
 
 /// Output byte cap of one tile; larger than any 4096x2160 tile of 10-bit levels needs.
 const MAX_TILE_BYTES: usize = 1 << 28;
@@ -85,50 +85,28 @@ pub(crate) type Result<T> = core::result::Result<T, TileWriterError>;
 pub(crate) struct KeyFrameTileWriter {
     syntax: IntraTileSyntax,
     symbols: SymbolEncoder,
-    recon: ReconFrame,
-    bit_depth: BitDepth,
     sb_cols: usize,
     superblocks: usize,
     written: usize,
+    filters: filters::TileFilters,
 }
 
 impl KeyFrameTileWriter {
     /// A writer for the frame `core` coded with `seq`.
     pub(crate) fn new(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<Self> {
-        check_supported(seq, core)?;
-        let base_q_idx = core
-            .quantization_params
-            .ok_or(TileWriterError::Unsupported("missing quantization params"))?
-            .base_q_idx;
-        let size = core
-            .frame_size
-            .ok_or(TileWriterError::Unsupported("missing frame size"))?;
         let syntax = IntraTileSyntax::new(seq, core)?;
         let (mi_rows, mi_cols) = syntax.mi_dimensions();
         let sb4 = syntax.superblock_size4();
-        let bit_depth = if seq.general.bit_depth_idc.get() == 1 {
-            BitDepth::Eight
-        } else {
-            BitDepth::Ten
-        };
-        let recon = ReconFrame::new(
-            (size.width, size.height),
-            (mi_cols, mi_rows),
-            bit_depth,
-            PixelFormat::Yuv420,
-            base_q_idx,
-        )?;
         let config = SymbolEncoderConfig::new()
             .with_max_output_bytes(MAX_TILE_BYTES)
             .with_max_operations(MAX_TILE_OPERATIONS);
         Ok(Self {
             syntax,
             symbols: SymbolEncoder::with_config(config),
-            recon,
-            bit_depth,
             sb_cols: mi_cols.div_ceil(sb4),
             superblocks: mi_cols.div_ceil(sb4) * mi_rows.div_ceil(sb4),
             written: 0,
+            filters: filters::TileFilters::new(seq, core)?,
         })
     }
 
@@ -158,13 +136,53 @@ impl KeyFrameTileWriter {
             .next_superblock_root()
             .ok_or(TileWriterError::TileComplete)?;
         self.syntax.begin_superblock(root);
-        self.write_node(root, &decision.tree, coder)?;
+        self.filters
+            .write_lr_units(&mut self.syntax, &mut self.symbols, root)?;
+        Walk {
+            syntax: &mut self.syntax,
+            sink: &mut self.symbols,
+            filters: Some(&mut self.filters),
+        }
+        .write_node(root, &decision.tree, coder)?;
         self.written += 1;
         Ok(())
     }
 
+    /// Runs `search` on the facade at the start of the next superblock, then
+    /// rolls the facade back, so the superblock is still to be written.
+    pub(crate) fn search_superblock<T>(
+        &mut self,
+        search: impl FnOnce(&mut IntraTileSyntax, PartitionNode) -> Result<T>,
+    ) -> Result<T> {
+        let root = self
+            .next_superblock_root()
+            .ok_or(TileWriterError::TileComplete)?;
+        let side = self.syntax.superblock_size4() * 4;
+        let saved = self
+            .syntax
+            .snapshot((root.col4() * 4, root.row4() * 4, side, side))?;
+        self.syntax.begin_superblock(root);
+        let found = search(&mut self.syntax, root);
+        self.syntax.restore(&saved)?;
+        found
+    }
+
+    /// Sets the loop-filter choices the following superblocks code.
+    pub(crate) fn set_filter_syntax(&mut self, syntax: filters::FilterSyntax) {
+        self.filters.set_syntax(syntax);
+    }
+
     /// The `tile_data` bytes and the reconstructed frame.
+    #[cfg(test)]
     pub(crate) fn finish(self) -> Result<(Vec<u8>, DecodedFrame<u16>)> {
+        let (tile, recon, _) = self.finish_with_filters()?;
+        Ok((tile, recon))
+    }
+
+    /// [`Self::finish`] plus the filter records and the coded filter choices.
+    pub(crate) fn finish_with_filters(
+        self,
+    ) -> Result<(Vec<u8>, DecodedFrame<u16>, filters::CodedFilters)> {
         if self.written != self.superblocks {
             return Err(TileWriterError::TileIncomplete {
                 written: self.written,
@@ -173,8 +191,30 @@ impl KeyFrameTileWriter {
         }
         Ok((
             self.symbols.finish()?.into_bytes(),
-            self.recon.into_frame()?,
+            self.syntax.finish()?,
+            self.filters.finish()?,
         ))
+    }
+}
+
+/// One syntax pass over a tile: the facade, a symbol sink, and the filter
+/// state. The final pass codes into the [`SymbolEncoder`] with the filters; an
+/// RD trial prices into a rate sink without them, because the filter syntax
+/// does not depend on the trial and the filter state does not roll back.
+pub(crate) struct Walk<'a, S> {
+    pub(crate) syntax: &'a mut IntraTileSyntax,
+    pub(crate) sink: &'a mut S,
+    filters: Option<&'a mut filters::TileFilters>,
+}
+
+impl<'a, S: SymbolSink> Walk<'a, S> {
+    /// A trial pass that skips the filter syntax.
+    pub(crate) const fn trial(syntax: &'a mut IntraTileSyntax, sink: &'a mut S) -> Self {
+        Self {
+            syntax,
+            sink,
+            filters: None,
+        }
     }
 
     fn write_node(
@@ -192,7 +232,10 @@ impl KeyFrameTileWriter {
         };
         self.write_partition(node, partition)?;
         match tree {
-            PartitionTree::Leaf(block) => self.write_leaf(&self.syntax.leaf(node)?, *block, coder),
+            PartitionTree::Leaf(choice) => {
+                let leaf = self.syntax.leaf(node)?;
+                self.write_leaf(&leaf, *choice, coder, 0..3).map(drop)
+            }
             PartitionTree::Split { kind, children } => {
                 let calls = self.syntax.children(node, *kind)?;
                 if calls.len() != children.len() {
@@ -207,233 +250,146 @@ impl KeyFrameTileWriter {
     }
 
     /// The § 5.20.3.2 `read_partition` symbols that select `partition`.
-    fn write_partition(&mut self, node: PartitionNode, partition: Partition) -> Result<()> {
-        let options = self.syntax.partition_options(node)?;
-        let refuse = |reason| TileWriterError::Partition {
-            partition,
-            row4: node.row4(),
-            col4: node.col4(),
-            reason,
-        };
-        if !options.allows(partition) {
-            return Err(refuse("not allowed"));
-        }
-        if let Some(implied) = options.implied().filter(|&p| options.allows(p)) {
-            return if implied == partition {
-                Ok(())
-            } else {
-                Err(refuse("position implies another partition"))
-            };
-        }
-        if PARTITIONS.iter().filter(|&&p| options.allows(p)).count() == 1 {
-            return Ok(());
-        }
-        if options.allows(Partition::None) {
-            self.partition_bool(node, PartitionCdf::DoSplit, partition != Partition::None)?;
-            if partition == Partition::None {
-                return Ok(());
-            }
-        }
-        if options.allows(Partition::Split) {
-            self.partition_bool(
-                node,
-                PartitionCdf::DoSquareSplit,
-                partition == Partition::Split,
-            )?;
-            if partition == Partition::Split {
-                return Ok(());
-            }
-        }
-        let (kind, family) = rect_family(partition).ok_or_else(|| refuse("not a rectangle"))?;
-        let allow = |kind| family_of(kind).iter().any(|&p| options.allows(p));
-        match options.rect_type() {
-            Some(implied) if implied != kind => {
-                return Err(refuse("block size implies the other rectangle"));
-            }
-            Some(_) => {}
-            None if !allow(RectKind::Horz) || !allow(RectKind::Vert) => {}
-            None => self.partition_bool(node, PartitionCdf::RectType, kind == RectKind::Vert)?,
-        }
-        let [non_ext, three, four_a, four_b] = family;
-        let ext3 = options.allows(three);
-        let ext4 = options.allows(four_a) || options.allows(four_b);
-        let do_ext = partition != non_ext;
-        if options.allows(non_ext) && (ext3 || ext4) {
-            self.partition_bool(node, PartitionCdf::DoExtPartition(kind), do_ext)?;
-        }
-        if !do_ext {
-            return Ok(());
-        }
-        let uneven = partition == four_a || partition == four_b;
-        if ext3 && ext4 {
-            self.partition_bool(node, PartitionCdf::DoUneven4Way(kind), uneven)?;
-        }
-        if uneven {
-            self.symbols
-                .write_literal(u32::from(partition == four_b), 1)?;
-        }
-        Ok(())
-    }
-
-    fn partition_bool(
+    pub(crate) fn write_partition(
         &mut self,
         node: PartitionNode,
-        cdf: PartitionCdf,
-        value: bool,
+        partition: Partition,
     ) -> Result<()> {
-        let row = self.syntax.partition_cdf(node, cdf)?;
-        self.symbols
-            .write_symbol_u16(row, Symbol::new(u8::from(value)))?;
-        Ok(())
+        self.syntax
+            .write_partition(node, partition, self.sink)
+            .map_err(|error| match error {
+                EncoderSyntaxError::Unsupported(reason) => TileWriterError::Partition {
+                    partition,
+                    row4: node.row4(),
+                    col4: node.col4(),
+                    reason,
+                },
+                error => error.into(),
+            })
     }
 
-    fn write_leaf(
+    /// Codes the blocks of `planes` of `leaf` under `choice`, then writes the
+    /// leaf syntax in order: `cdef_idx`, the modes, the luma transform
+    /// partition, and the coefficients of `planes`. Only a pass over all planes publishes the leaf. Returns the
+    /// leaf's transform blocks.
+    pub(crate) fn write_leaf(
         &mut self,
         leaf: &LeafBlock,
-        block: BlockDecision,
+        choice: LeafChoice,
         coder: &mut impl ResidualCoder,
-    ) -> Result<()> {
-        if block.y_mode
-            != (LumaMode {
-                mode: IntraMode::Dc,
-                angle_delta: 0,
-            })
-        {
-            return Err(TileWriterError::Unsupported("luma mode other than DC_PRED"));
-        }
-        let symbol = Symbol::new(0);
-        self.symbols
-            .write_symbol_u16(self.syntax.y_mode_set_cdf()?, symbol)?;
-        self.symbols
-            .write_symbol_u16(self.syntax.y_mode_index_cdf(leaf)?, symbol)?;
-        if leaf.has_chroma() {
-            if block.uv_mode
-                != (ChromaMode::Intra {
-                    mode: IntraMode::Dc,
-                    angle_delta: 0,
-                })
-            {
-                return Err(TileWriterError::Unsupported(
-                    "chroma mode other than DC_PRED",
-                ));
+        planes: Range<usize>,
+    ) -> Result<Vec<TransformBlock>> {
+        let LeafChoice {
+            modes,
+            tx_partition,
+        } = choice;
+        let mut blocks = self
+            .syntax
+            .plan_leaf_partitioned(leaf, modes, tx_partition)?;
+        let mut levels = vec![Vec::new(); blocks.len()];
+        for (index, tx) in blocks.iter_mut().enumerate() {
+            if !planes.contains(&tx.plane) {
+                continue;
             }
-            self.symbols
-                .write_symbol_u16(self.syntax.uv_mode_cdf(false)?, symbol)?;
+            let prediction = self.syntax.predict(index)?;
+            let decision = if tx.plane == 0 {
+                self.code_luma(coder, tx, &prediction)?
+            } else {
+                code_as(self.syntax, coder, tx, &prediction)?
+            };
+            self.syntax
+                .reconstruct_as(index, decision.tx_type, &decision.levels)?;
+            tx.tx_type = decision.tx_type;
+            levels[index] = decision.levels;
         }
-        self.write_residual(leaf, coder)?;
-        self.syntax.publish_dc_leaf(leaf)?;
-        Ok(())
-    }
-
-    fn write_residual(&mut self, leaf: &LeafBlock, coder: &mut impl ResidualCoder) -> Result<()> {
+        if let Some(filters) = self.filters.as_deref_mut() {
+            filters.write_cdef_index(self.syntax, self.sink, leaf)?;
+        }
+        self.syntax.write_intra_modes(leaf, modes, self.sink)?;
+        let sink = &mut *self.sink;
+        self.syntax
+            .code_luma_tx_partition(leaf, tx_partition, |cdf, value| {
+                coeffs::write_symbol(sink, cdf, value)
+            })?;
         let mut eob_u = 0;
-        for tx in &self.syntax.transform_blocks(leaf, self.bit_depth)? {
-            let prediction = self.recon.predict_dc(tx)?;
-            let decision = coder.code(tx, &prediction)?;
-            if decision.tx_type != TxType::DctDct {
-                return Err(TileWriterError::Unsupported(
-                    "transform type other than DCT_DCT",
-                ));
+        let mut eobs = vec![0; blocks.len()];
+        for ((tx, levels), eob) in blocks.iter().zip(&levels).zip(&mut eobs) {
+            if !planes.contains(&tx.plane) {
+                continue;
             }
-            let eob = coeffs::write_coeffs(
-                &mut self.syntax,
-                &mut self.symbols,
+            *eob = coeffs::write_coeffs(
+                self.syntax,
+                self.sink,
                 tx,
-                &decision.levels,
+                levels,
                 tx.plane == 2 && eob_u != 0,
             )?;
             if tx.plane == 1 {
-                eob_u = eob;
+                eob_u = *eob;
             }
-            self.recon
-                .reconstruct(tx, &prediction, &decision.levels, eob)?;
         }
-        Ok(())
+        if planes == (0..3) {
+            self.syntax.publish_intra_leaf(leaf, modes)?;
+            if let Some(filters) = self.filters.as_deref_mut() {
+                filters.record_leaf(leaf, &blocks, &eobs)?;
+            }
+        }
+        Ok(blocks)
+    }
+
+    /// The decision of luma block `tx` in a type the decoder reads or infers
+    /// for its levels.
+    fn code_luma(
+        &mut self,
+        coder: &mut impl ResidualCoder,
+        tx: &TransformBlock,
+        prediction: &[u16],
+    ) -> Result<TransformDecision> {
+        let tx_types = self.syntax.allowed_luma_tx_types(tx)?;
+        let mut decision = coder.code_luma(self.syntax, tx, prediction, &tx_types)?;
+        if !tx_types.contains(&decision.tx_type) {
+            return Err(TileWriterError::Unsupported(
+                "luma transform type outside the offered types",
+            ));
+        }
+        let coded = TransformBlock {
+            tx_type: decision.tx_type,
+            ..*tx
+        };
+        let eob = coeffs::eob(&coded, &decision.levels)?;
+        let inferred = if eob == 0 {
+            Some(tx.tx_type)
+        } else {
+            self.syntax.inferred_luma_tx_type(&coded, eob)?
+        };
+        match inferred {
+            Some(tx_type) if tx_type != decision.tx_type && eob == 0 => {
+                decision.tx_type = tx_type;
+            }
+            Some(tx_type) if tx_type != decision.tx_type => {
+                let tx = TransformBlock { tx_type, ..*tx };
+                decision = code_as(self.syntax, coder, &tx, prediction)?;
+            }
+            _ => {}
+        }
+        Ok(decision)
     }
 }
 
-/// The rectangle direction of `partition` and its family `[non-ext, 3-way, 4A, 4B]`.
-fn rect_family(partition: Partition) -> Option<(RectKind, [Partition; 4])> {
-    let kind = match partition {
-        Partition::Horz | Partition::Horz3 | Partition::Horz4A | Partition::Horz4B => {
-            RectKind::Horz
-        }
-        Partition::Vert | Partition::Vert3 | Partition::Vert4A | Partition::Vert4B => {
-            RectKind::Vert
-        }
-        Partition::None | Partition::Split => return None,
-    };
-    Some((kind, family_of(kind)))
-}
-
-const fn family_of(kind: RectKind) -> [Partition; 4] {
-    match kind {
-        RectKind::Horz => [
-            Partition::Horz,
-            Partition::Horz3,
-            Partition::Horz4A,
-            Partition::Horz4B,
-        ],
-        RectKind::Vert => [
-            Partition::Vert,
-            Partition::Vert3,
-            Partition::Vert4A,
-            Partition::Vert4B,
-        ],
+/// `coder.code(tx)`, checked to use `tx.tx_type`.
+fn code_as(
+    syntax: &mut IntraTileSyntax,
+    coder: &mut impl ResidualCoder,
+    tx: &TransformBlock,
+    prediction: &[u16],
+) -> Result<TransformDecision> {
+    let decision = coder.code(syntax, tx, prediction)?;
+    if decision.tx_type != tx.tx_type {
+        return Err(TileWriterError::Unsupported(
+            "transform type other than the requested one",
+        ));
     }
-}
-
-/// Rejects every sequence or frame tool the writer does not code.
-fn check_supported(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<()> {
-    let unsupported = |what| Err(TileWriterError::Unsupported(what));
-    if seq.general.chroma_format_idc != ChromaFormatIdc::Yuv420 {
-        return unsupported("chroma format other than 4:2:0");
-    }
-    let (Some(intra), Some(tq), Some(partition)) =
-        (seq.intra, seq.transform_quant_entropy, seq.partition)
-    else {
-        return unsupported("incomplete sequence header");
-    };
-    if partition.enable_sdp {
-        return unsupported("semi-decoupled partitioning");
-    }
-    if intra.enable_cfl_intra || intra.enable_mhccp || intra.enable_dip || intra.enable_ibp {
-        return unsupported("CFL, MHCCP, DIP, or IBP");
-    }
-    if tq.enable_idtx_intra || tq.enable_intra_ist || tq.enable_cctx || tq.enable_tcq {
-        return unsupported("IDTX/FSC, intra IST, CCTX, or TCQ");
-    }
-    let tail = core
-        .intra_tail
-        .as_ref()
-        .ok_or(TileWriterError::Unsupported("incomplete key-frame header"))?;
-    if tail.tx_mode != TxMode::Largest || u32::from(tail.reduced_tx_set) != KEY_FRAME_REDUCED_TX_SET
-    {
-        return unsupported("transform mode other than TX_MODE_LARGEST with reduced_tx_set 2");
-    }
-    if core.allow_screen_content_tools == Some(true) || core.allow_intrabc == Some(true) {
-        return unsupported("screen content tools");
-    }
-    let lossless = core.lossless_info.as_ref();
-    if lossless.is_some_and(|info| info.allow_tcq || info.allow_parity_hiding) {
-        return unsupported("TCQ or parity hiding");
-    }
-    if core
-        .segmentation_params
-        .as_ref()
-        .is_some_and(|seg| seg.segmentation_enabled)
-        || core
-            .delta_q_params
-            .as_ref()
-            .is_some_and(|dq| dq.delta_q_present)
-        || core
-            .setup_qm_params
-            .as_ref()
-            .is_some_and(|qm| qm.using_qmatrix)
-    {
-        return unsupported("segmentation, delta-q, or quantizer matrices");
-    }
-    Ok(())
+    Ok(decision)
 }
 
 #[cfg(test)]

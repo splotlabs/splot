@@ -172,10 +172,6 @@ impl PartitionDecisionFacts {
         self.implied_partition
     }
 
-    pub(crate) const fn rect_type(self) -> Option<RectPartitionType> {
-        self.rect_type
-    }
-
     pub(crate) fn read_partition_decision_input<'a>(
         self,
         bru_active: bool,

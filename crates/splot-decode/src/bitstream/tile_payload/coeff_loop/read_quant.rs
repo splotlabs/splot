@@ -14,7 +14,7 @@ use super::scan_walk::CoeffScanEntry;
 const MIN_M: u32 = 1;
 const MAX_M: u32 = 6;
 const MAX_COEFF_REM_BITS: u32 = 32;
-const MAX_EXP_GOLOMB_PREFIX_BITS: u32 = 21;
+pub(crate) const MAX_EXP_GOLOMB_PREFIX_BITS: u32 = 21;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffReadQuantConfig {

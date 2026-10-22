@@ -24,6 +24,7 @@
 mod distortion;
 mod forward_transform;
 mod quantize;
+pub(crate) mod rdoq;
 
 pub(crate) use forward_transform::ForwardTransform2d;
 pub(crate) use quantize::Quantizer;

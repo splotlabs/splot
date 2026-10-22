@@ -17,7 +17,7 @@ pub(crate) struct DeblockRecorder<'a> {
 }
 
 impl DeblockRecorder<'_> {
-    pub(super) fn record_chroma_unit(
+    pub(crate) fn record_chroma_unit(
         &mut self,
         plane_id: splot_recon::PlaneId,
         x: usize,
@@ -40,7 +40,7 @@ impl DeblockRecorder<'_> {
         }
     }
 
-    pub(super) fn record_luma_unit(
+    pub(crate) fn record_luma_unit(
         &mut self,
         r: usize,
         c: usize,

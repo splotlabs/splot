@@ -3,10 +3,29 @@
 
 //! Coding decisions of one superblock, the input of the key-frame tile writer.
 
-pub(crate) use splot_decode::encoder_syntax::Partition;
-use splot_decode::encoder_syntax::TransformBlock;
+pub(crate) use splot_decode::encoder_syntax::{
+    IntraMode, IntraModes, Partition, TxPartition, TxType,
+};
+use splot_decode::encoder_syntax::{IntraTileSyntax, TransformBlock};
 
 use super::Result;
+
+/// Every `YMode` and non-CFL `UVMode` value, in value order.
+pub(crate) const INTRA_MODES: [IntraMode; 13] = [
+    IntraMode::Dc,
+    IntraMode::Vertical,
+    IntraMode::Horizontal,
+    IntraMode::D45,
+    IntraMode::D135,
+    IntraMode::D113,
+    IntraMode::D157,
+    IntraMode::D203,
+    IntraMode::D67,
+    IntraMode::Smooth,
+    IntraMode::SmoothVertical,
+    IntraMode::SmoothHorizontal,
+    IntraMode::Paeth,
+];
 
 /// The partition tree of one superblock (§ 5.20.3.1).
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -17,8 +36,8 @@ pub(crate) struct SuperblockDecision {
 /// One `decode_partition` call: a coded leaf or a split into child calls.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PartitionTree {
-    /// `PARTITION_NONE`.
-    Leaf(BlockDecision),
+    /// `PARTITION_NONE` with its choices.
+    Leaf(LeafChoice),
     /// Any other partition, with one entry per § 5.20.3.1 child call in syntax
     /// order. Entries of children that start outside the frame are not coded.
     Split {
@@ -27,77 +46,33 @@ pub(crate) enum PartitionTree {
     },
 }
 
-/// The intra prediction modes of § 5.20.5.5 (`YMode` and `UVMode` values).
-#[expect(
-    dead_code,
-    reason = "the decision model names every AV2 value; the writer codes DC only"
-)]
+/// The modes and the luma transform partition of one leaf.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum IntraMode {
-    Dc,
-    Vertical,
-    Horizontal,
-    D45,
-    D135,
-    D113,
-    D157,
-    D203,
-    D67,
-    Smooth,
-    SmoothVertical,
-    SmoothHorizontal,
-    Paeth,
+pub(crate) struct LeafChoice {
+    pub(crate) modes: IntraModes,
+    /// One of the leaf's `luma_tx_partitions`.
+    pub(crate) tx_partition: TxPartition,
 }
 
-/// The luma prediction of a block.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct LumaMode {
-    pub(crate) mode: IntraMode,
-    /// `AngleDeltaY`, `-3..=3`, zero for non-directional modes.
-    pub(crate) angle_delta: i8,
-}
+impl LeafChoice {
+    /// `DC_PRED` with the largest transform.
+    pub(crate) const DC: Self = Self::largest(IntraModes::DC);
 
-/// The chroma prediction of a block.
-#[expect(
-    dead_code,
-    reason = "the decision model names every AV2 value; the writer codes DC only"
-)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ChromaMode {
-    /// A `UVMode` with `AngleDeltaUV`.
-    Intra { mode: IntraMode, angle_delta: i8 },
-    /// `UV_CFL_PRED` with explicit alphas.
-    Cfl { alpha_u: i8, alpha_v: i8 },
-}
-
-/// The transform types of § 3 (`DCT_DCT` = 0 … `H_FLIPADST` = 15).
-#[expect(
-    dead_code,
-    reason = "the decision model names every AV2 value; the writer codes DC only"
-)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TxType {
-    DctDct,
-    AdstDct,
-    DctAdst,
-    AdstAdst,
-    FlipadstDct,
-    DctFlipadst,
-    FlipadstFlipadst,
-    AdstFlipadst,
-    FlipadstAdst,
-    Idtx,
-    VDct,
-    HDct,
-    VAdst,
-    HAdst,
-    VFlipadst,
-    HFlipadst,
+    /// `modes` with the largest transform.
+    pub(crate) const fn largest(modes: IntraModes) -> Self {
+        Self {
+            modes,
+            tx_partition: TxPartition::None,
+        }
+    }
 }
 
 /// The coded form of one transform block.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TransformDecision {
+    /// The type the levels use: the block's `tx_type` from
+    /// [`ResidualCoder::code`], or one of the offered types from
+    /// [`ResidualCoder::code_luma`].
     pub(crate) tx_type: TxType,
     /// Quantized levels in the row-major adjusted (at most 32x32) layout.
     pub(crate) levels: Vec<i32>,
@@ -105,27 +80,30 @@ pub(crate) struct TransformDecision {
 
 /// Codes each transform block once the writer knows its prediction, because
 /// intra prediction reads the reconstruction of the blocks before it.
+///
+/// The decoder infers `DCT_DCT` for a luma block with one coded coefficient
+/// (§ 5.20.8.2). When a [`Self::code_luma`] decision has `eob == 1` with
+/// another type, the writer codes the block again through [`Self::code`] with
+/// `DCT_DCT`; all-zero levels simply take `DCT_DCT`.
 pub(crate) trait ResidualCoder {
-    /// Codes `tx`, whose row-major prediction is `prediction`.
-    fn code(&mut self, tx: &TransformBlock, prediction: &[u16]) -> Result<TransformDecision>;
-}
+    /// Codes `tx` with `tx.tx_type`, whose row-major prediction is
+    /// `prediction`; `syntax` holds the CDF rows its coefficients will use.
+    fn code(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        prediction: &[u16],
+    ) -> Result<TransformDecision>;
 
-/// Block-level choices of one leaf; its transform blocks come from a [`ResidualCoder`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct BlockDecision {
-    pub(crate) y_mode: LumaMode,
-    pub(crate) uv_mode: ChromaMode,
-}
-
-impl BlockDecision {
-    pub(crate) const DC: Self = Self {
-        y_mode: LumaMode {
-            mode: IntraMode::Dc,
-            angle_delta: 0,
-        },
-        uv_mode: ChromaMode::Intra {
-            mode: IntraMode::Dc,
-            angle_delta: 0,
-        },
-    };
+    /// Codes luma block `tx` with one of `tx_types`, the types the block may
+    /// code (`DCT_DCT` first); the default codes `tx.tx_type` through [`Self::code`].
+    fn code_luma(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        _tx_types: &[TxType],
+    ) -> Result<TransformDecision> {
+        self.code(syntax, tx, prediction)
+    }
 }
