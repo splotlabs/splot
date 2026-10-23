@@ -132,12 +132,12 @@ impl CdfJournal {
         }
     }
 
-    fn mark(&mut self) -> usize {
+    pub(super) fn mark(&mut self) -> usize {
         self.next_epoch();
         self.entries.len()
     }
 
-    fn rollback(&mut self, cdfs: &mut TileCdfSubset, mark: usize) -> Result<()> {
+    pub(super) fn rollback(&mut self, cdfs: &mut TileCdfSubset, mark: usize) -> Result<()> {
         while self.entries.len() > mark {
             let Some((key, start)) = self.entries.pop() else {
                 break;
@@ -275,6 +275,7 @@ struct WholeState {
     y_modes: super::TileIntraYModeState,
     y_smooth: crate::prediction::intra_edge::TileSmoothGrid,
     chroma_smooth: crate::prediction::intra_edge::TileSmoothGrid,
+    ref_mv_bank: Option<crate::prediction::inter::RefMvBank>,
 }
 
 impl IntraTileSyntax {
@@ -491,6 +492,10 @@ impl IntraTileSyntax {
             y_modes: self.y_modes.clone(),
             y_smooth: self.recon.y_smooth.clone(),
             chroma_smooth: self.recon.chroma_smooth.clone(),
+            ref_mv_bank: self
+                .inter
+                .as_ref()
+                .and_then(|inter| inter.tile.ref_mv_bank().cloned()),
         }
     }
 }
