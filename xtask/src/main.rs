@@ -674,6 +674,8 @@ fn run_coverage() -> Result<()> {
     run_cargo(&[
         "llvm-cov",
         "--workspace",
+        "--exclude",
+        "splot-encode",
         "--all-features",
         "--locked",
         "--html",
