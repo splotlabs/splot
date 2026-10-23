@@ -382,26 +382,22 @@ impl CoeffLevels {
     /// read only scan indices `c + 1..=c + context_reach()`.
     #[must_use]
     pub fn context_reach(&self) -> usize {
-        let (width, height) = (self.state.width(), self.state.height());
-        let mut index = vec![0usize; width * height];
-        for (c, &pos) in self.scan.iter().enumerate() {
-            if let Some(slot) = index.get_mut(usize::from(pos)) {
-                *slot = c;
-            }
-        }
+        static REACH: std::sync::OnceLock<[[[usize; 3]; 4]; 4]> = std::sync::OnceLock::new();
+        let (log2_w, log2_h) = (
+            self.state.width().trailing_zeros(),
+            self.state.height().trailing_zeros(),
+        );
         let class = tx_class_index(self.class);
-        let offsets = super::cdf::coeff_context::context_offsets(class);
-        let mut reach = 0;
-        for (pos, &c) in index.iter().enumerate() {
-            let (row, col) = (pos / width, pos % width);
-            for [dr, dc] in offsets {
-                let (r, k) = (row + dr, col + dc);
-                if r < height && k < width {
-                    reach = reach.max(index[r * width + k].saturating_sub(c));
-                }
-            }
-        }
-        reach
+        let table = REACH.get_or_init(|| {
+            core::array::from_fn(|w| {
+                core::array::from_fn(|h| {
+                    [TxType::DctDct, TxType::HDct, TxType::VDct]
+                        .map(|tx_type| scan_reach(4 << w, 4 << h, tx_type))
+                })
+            })
+        });
+        table[(log2_w as usize).saturating_sub(2).min(3)][(log2_h as usize).saturating_sub(2).min(3)]
+            [class]
     }
 
     /// Stores `Level[row][col]`.
@@ -471,6 +467,31 @@ impl CoeffLevels {
             visible_max_level(is_low_frequency, plane)
         }
     }
+}
+
+/// [`CoeffLevels::context_reach`] of a `width x height` grid coded with `tx_type`.
+fn scan_reach(width: usize, height: usize, tx_type: TxType) -> usize {
+    let Ok(scan) = type_scan(width, height, tx_type) else {
+        return 0;
+    };
+    let class = tx_class_index(CoeffTransformClass::from_plane_tx_type(tx_type as usize));
+    let mut index = vec![0usize; width * height];
+    for (c, &pos) in scan.iter().enumerate() {
+        if let Some(slot) = index.get_mut(usize::from(pos)) {
+            *slot = c;
+        }
+    }
+    let mut reach = 0;
+    for (pos, &c) in index.iter().enumerate() {
+        let (row, col) = (pos / width, pos % width);
+        for [dr, dc] in super::cdf::coeff_context::context_offsets(class) {
+            let (r, k) = (row + dr, col + dc);
+            if r < height && k < width {
+                reach = reach.max(index[r * width + k].saturating_sub(c));
+            }
+        }
+    }
+    reach
 }
 
 /// The § 6.19.7.23 bound: every coded `Quant` magnitude is below it.

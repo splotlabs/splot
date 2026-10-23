@@ -10,18 +10,20 @@
 //! the two levels of the state's quantizer whose reconstructions bracket it;
 //! the even and the odd one lead to different next states. `D` is the squared
 //! error of the exact § 7.14.4 reconstruction, and `R` comes from the CDF
-//! rows of the state's own path (`exact`) or of the best path so far. A path
-//! may also start at any coefficient as the last one, with the zeroed later
-//! coefficients and the `eob` syntax in its cost. [`EncoderKernels::tcq_step`]
-//! adds the branch metrics of all states at once and keeps the survivors.
+//! rows of the state's own path: each state keeps its own level grid, and a
+//! path that takes over another's grid copies only the levels later contexts
+//! can still read ([`CoeffLevels::context_reach`]). A path may also start at a
+//! coefficient whose nonzero level beats zero, as the last one, with the zeroed
+//! later coefficients and the `eob` syntax in its cost.
+//! [`EncoderKernels::tcq_step`] adds the branch metrics of all states at once
+//! and keeps the survivors.
 
 use std::simd::cmp::SimdPartialOrd as _;
 use std::simd::num::SimdUint as _;
 use std::simd::{Select as _, Simd, simd_swizzle};
 
-use splot_decode::encoder_syntax::{
-    CoeffLevels, TCQ_STATES, tcq_index, tcq_next_state, tcq_quantizer,
-};
+use splot_decode::encoder_syntax::{CoeffLevels, TCQ_STATES, tcq_next_state, tcq_quantizer};
+use splot_decode::encoder_syntax::MAX_QUANT_MAGNITUDE;
 use splot_recon::dequant_coefficient;
 
 use super::rdoq::{
@@ -120,36 +122,37 @@ pub(crate) fn step_simd(prev: &[u64; TCQ_STATES], b: &Branches, lambda: u64) -> 
 /// and its distortion.
 pub(crate) type Candidates = [[(u32, u64); SLOTS]; 2];
 
-/// The reconstruction index (in half quantizer steps) at or below `coeff` at `pos`.
-fn half_steps(block: &RdoqBlock, pos: usize, coeff: i32) -> u64 {
+/// The sign a level of `coeff` takes: a zero coefficient takes `+`, so every
+/// candidate level keeps its parity.
+const fn sign(coeff: i32) -> i32 {
+    if coeff < 0 { -1 } else { 1 }
+}
+
+/// Whether `coeff` at `pos` reaches the first nonzero reconstruction, half a step.
+fn reaches_half_step(block: &RdoqBlock, pos: usize, coeff: i32) -> bool {
     let q2 = if pos == 0 { block.dc_q2 } else { block.ac_q2 };
-    u64::from(coeff.unsigned_abs()) * 8 * u64::from(block.dq_denom) / u64::from(q2.max(1))
+    u64::from(coeff.unsigned_abs()) * 8 * u64::from(block.dq_denom) >= u64::from(q2)
 }
 
 /// Zero and the two levels around `coeff` at `pos` of each quantizer, with
-/// their distortions; [`MAX_DIST`] marks a missing even level.
+/// their distortions; [`MAX_DIST`] marks a missing even level. A level `q` of
+/// quantizer `z` reconstructs reconstruction index `2q - z` (§ 5.20.7.27).
 pub(crate) fn candidates(block: &RdoqBlock, pos: usize, coeff: i32) -> Candidates {
     let q2 = if pos == 0 { block.dc_q2 } else { block.ac_q2 };
-    let below = half_steps(block, pos, coeff);
-    let dist = |quant: u32, z: usize| {
-        let state = (0..TCQ_STATES).find(|&s| tcq_quantizer(s) == z).unwrap_or(0);
-        let index = tcq_index(state, quant).unwrap_or(u32::MAX >> 1);
-        let dq = dequant_coefficient(
-            coeff.signum() * index as i32,
-            q2,
-            block.dq_denom,
-            block.bit_depth,
-        );
+    let below = u64::from(coeff.unsigned_abs()) * 8 * u64::from(block.dq_denom) / u64::from(q2.max(1));
+    let dist = |index: u32| {
+        let dq = dequant_coefficient(sign(coeff) * index as i32, q2, block.dq_denom, block.bit_depth);
         (i64::from(coeff) - i64::from(dq))
             .unsigned_abs()
             .pow(2)
             .min(MAX_DIST - 1)
     };
+    let zero = dist(0);
     core::array::from_fn(|z| {
-        let low = ((below + z as u64) / 2).min(u64::from(u32::MAX >> 2)) as u32;
-        let mut out = [(0, dist(0, z)), (0, MAX_DIST), (0, MAX_DIST)];
+        let low = ((below + z as u64) / 2).min(u64::from(MAX_QUANT_MAGNITUDE)) as u32;
+        let mut out = [(0, zero), (0, MAX_DIST), (0, MAX_DIST)];
         for quant in [low, low + 1].into_iter().filter(|&q| q > 0) {
-            out[if quant & 1 == 0 { EVEN } else { ODD }] = (quant, dist(quant, z));
+            out[if quant & 1 == 0 { EVEN } else { ODD }] = (quant, dist(2 * quant - z as u32));
         }
         out
     })
@@ -168,7 +171,7 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
     block: &RdoqBlock,
     coeffs: &[i32],
     rates: &mut R,
-    (lambda_q8, exact): (u64, bool),
+    lambda_q8: u64,
     levels: &mut [i32],
 ) -> Result<usize, KernelError> {
     let shape = || KernelError::InvalidTransformShape {
@@ -179,7 +182,11 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
         return Err(shape());
     }
     let (width, height) = (1usize << block.log2_width, 1usize << block.log2_height);
-    let new_grid = || CoeffLevels::new(width, height, block.tx_type).map_err(|_| shape());
+    let new_grid = || {
+        let mut grid = CoeffLevels::new(width, height, block.tx_type).map_err(|_| shape())?;
+        grid.set_tcq_state(0);
+        Ok(grid)
+    };
     let empty = new_grid()?;
     let scan = empty.scan();
     for (buffer, len) in [("coeffs", coeffs.len()), ("levels", levels.len())] {
@@ -195,7 +202,7 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
     let lambda = lambda_q8.min(MAX_LAMBDA);
     let end = scan
         .iter()
-        .rposition(|&pos| half_steps(block, usize::from(pos), coeffs[usize::from(pos)]) > 0)
+        .rposition(|&pos| reaches_half_step(block, usize::from(pos), coeffs[usize::from(pos)]))
         .map_or(0, |last| last + 1);
     let mut zero_suffix = vec![0u64; end + 1];
     for c in (0..end).rev() {
@@ -208,121 +215,115 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
     }
 
     let reach = empty.context_reach();
-    let mut grids = Vec::with_capacity(if exact { TCQ_STATES } else { 1 });
-    for _ in 0..grids.capacity() {
-        grids.push(new_grid()?);
-    }
-    let mut slot_of: [usize; TCQ_STATES] = core::array::from_fn(|s| if exact { s } else { 0 });
+    let mut grids = (0..TCQ_STATES).map(|_| new_grid()).collect::<Result<Vec<_>, _>>()?;
+    let mut grid_of: [usize; TCQ_STATES] = core::array::from_fn(|s| s);
     let mut cost = [u64::MAX; TCQ_STATES];
     let mut hr = [0u32; TCQ_STATES];
     let mut picks = vec![[0u8; TCQ_STATES]; end];
-    let mut kept: Vec<Candidates> = Vec::with_capacity(end);
+    let mut kept = vec![[[0u32; SLOTS]; 2]; end];
     let plane = block.plane;
     for c in (0..end).rev() {
         let pos = usize::from(scan[c]);
         let (row, col) = (pos >> block.log2_width, pos & (width - 1));
-        let is_lf = empty.is_low_frequency(row, col, plane);
+        let at = At {
+            c,
+            row,
+            col,
+            is_lf: empty.is_low_frequency(row, col, plane),
+        };
         let cand = candidates(block, pos, coeffs[pos]);
-        let top = cand.iter().flatten().map(|&(q, _)| q).max().unwrap_or(0);
-        let has_br = top > base_levels(is_lf) && !(is_lf && plane > 0);
-        let at = At { c, row, col, is_lf };
+        let mut coded = [[Coded::default(); SLOTS]; 2];
+        for (coded, cand) in coded.iter_mut().zip(&cand) {
+            for (coded, &(quant, _)) in coded.iter_mut().zip(cand) {
+                *coded = Coded::new(&empty, &at, plane, quant);
+            }
+        }
+        let has_br = coded.iter().flatten().any(|coded| coded.br != u8::MAX);
         let sign = if empty.sign_has_cdf(row, col, plane) {
             rates.sign(&at.context(&empty, false))
         } else {
             BIT
         };
+
         let mut branches = Branches::default();
-        let mut next_hr = [[0u32; TCQ_STATES]; SLOTS];
-        let mut shared: [Option<LevelRows>; 2] = [None, None];
+        let mut next_hr = [hr; SLOTS];
         for s in (0..TCQ_STATES).filter(|&s| cost[s] != u64::MAX) {
             let z = tcq_quantizer(s);
-            let grid = &mut grids[slot_of[s]];
+            let grid = &mut grids[grid_of[s]];
             grid.set_tcq_state(s);
-            let rows = match shared[z] {
-                Some(rows) if !exact => rows,
-                _ => LevelRows::new(rates, &at.context(grid, false), has_br),
-            };
-            shared[z] = Some(rows);
+            let rows = LevelRows::new(rates, &at.context(grid, false), has_br);
             for k in 0..SLOTS {
-                let (quant, dist) = cand[z][k];
-                let (rate, hr_after, _) = rows.rate(grid, (c, is_lf, plane), quant, sign, hr[s]);
-                branches.dist[k][s] = dist;
-                branches.rate[k][s] = rate;
+                let (golomb, hr_after) = coded[z][k].remainder(hr[s]);
+                branches.dist[k][s] = cand[z][k].1;
+                branches.rate[k][s] = rows.rate(&coded[z][k], sign).saturating_add(golomb);
                 next_hr[k][s] = hr_after;
             }
         }
         let (mut next, mut pick) = kernels.tcq_step(&cost, &branches, lambda);
 
-        let start = zero_suffix[c + 1].saturating_add(lambda * u64::from(rates.eob(block, c + 1)));
-        let rows = LevelRows::new(rates, &at.context(&empty, true), has_br);
-        let mut start_hr = [0u32; SLOTS];
         let z = tcq_quantizer(0);
-        for k in [EVEN, ODD] {
-            let (quant, dist) = cand[z][k];
-            if dist >= MAX_DIST {
-                continue;
-            }
-            let (rate, hr_after, _) = rows.rate(&empty, (c, is_lf, plane), quant, sign, 0);
-            start_hr[k] = hr_after;
-            let j = start
-                .saturating_add(dist << 16)
-                .saturating_add(lambda * u64::from(rate));
-            let t = tcq_next_state(0, quant);
-            if j < next[t] {
-                (next[t], pick[t]) = (j, k as u8 | START << 2);
+        let mut start_hr = [0u32; SLOTS];
+        let starts = [EVEN, ODD].map(|k| (k, cand[z][k].1 < cand[z][ZERO].1));
+        if starts.iter().any(|&(_, start)| start) {
+            let eob = rates.eob(block, c + 1);
+            let start = zero_suffix[c + 1].saturating_add(lambda * u64::from(eob));
+            let rows = LevelRows::new(rates, &at.context(&empty, true), has_br);
+            for (k, _) in starts.into_iter().filter(|&(_, start)| start) {
+                let (golomb, hr_after) = coded[z][k].remainder(0);
+                let rate = rows.rate(&coded[z][k], sign).saturating_add(golomb);
+                start_hr[k] = hr_after;
+                let j = start
+                    .saturating_add(cand[z][k].1 << 16)
+                    .saturating_add(lambda * u64::from(rate));
+                let t = tcq_next_state(0, cand[z][k].0);
+                if j < next[t] {
+                    (next[t], pick[t]) = (j, k as u8 | START << 2);
+                }
             }
         }
 
+        // A next state takes its predecessor's grid; a second one copies the
+        // window later contexts read into a grid no path keeps.
         let mut claimed = [false; TCQ_STATES];
-        let mut fresh = [0usize; TCQ_STATES];
+        let mut taken = [None; TCQ_STATES];
         for t in (0..TCQ_STATES).filter(|&t| next[t] != u64::MAX) {
             let (from, k) = (usize::from(pick[t] >> 2), usize::from(pick[t] & 3));
-            hr[t] = if from == usize::from(START) { start_hr[k] } else { next_hr[k][from] };
-            if !exact {
-                continue;
-            }
-            if from < TCQ_STATES && !claimed[slot_of[from]] {
-                claimed[slot_of[from]] = true;
-                fresh[t] = slot_of[from];
-            } else {
-                fresh[t] = usize::MAX;
+            hr[t] = if from < TCQ_STATES { next_hr[k][from] } else { start_hr[k] };
+            if from < TCQ_STATES && !claimed[grid_of[from]] {
+                claimed[grid_of[from]] = true;
+                taken[t] = Some(grid_of[from]);
             }
         }
-        if exact {
-            let mut free = (0..TCQ_STATES).filter(|&g| !claimed[g]);
-            let window = c + 1..(c + reach).min(end);
-            let lost: Vec<usize> = (0..TCQ_STATES)
-                .filter(|&t| next[t] != u64::MAX && fresh[t] == usize::MAX)
-                .collect();
-            for t in lost {
-                let from = usize::from(pick[t] >> 2);
-                let Some(g) = free.next() else { break };
+        let mut free = (0..TCQ_STATES).filter(|&g| !claimed[g]);
+        let window = c + 1..(c + reach).min(end);
+        let mut next_grid = [0; TCQ_STATES];
+        for t in (0..TCQ_STATES).filter(|&t| next[t] != u64::MAX) {
+            let (from, k) = (usize::from(pick[t] >> 2), usize::from(pick[t] & 3));
+            let g = if let Some(g) = taken[t] {
+                g
+            } else {
+                let g = free.next().ok_or_else(shape)?;
                 if from < TCQ_STATES {
-                    let source = slot_of[from];
                     let [dst, src] = grids
-                        .get_disjoint_mut([g, source])
+                        .get_disjoint_mut([g, grid_of[from]])
                         .map_err(|_| shape())?;
                     dst.copy_cells(Some(src), window.clone());
                 } else {
                     grids[g].copy_cells(None, window.clone());
                 }
-                fresh[t] = g;
-            }
-            slot_of = fresh;
+                g
+            };
+            next_grid[t] = g;
+            let z = if from < TCQ_STATES { tcq_quantizer(from) } else { z };
+            grids[g]
+                .set(row, col, coded[z][k].level)
+                .map_err(|_| shape())?;
         }
-        let best = (0..TCQ_STATES).min_by_key(|&t| next[t]).unwrap_or(0);
-        for t in (0..TCQ_STATES).filter(|&t| exact && next[t] != u64::MAX || t == best) {
-            let (from, k) = (usize::from(pick[t] >> 2), usize::from(pick[t] & 3));
-            let z = if from == usize::from(START) { tcq_quantizer(0) } else { tcq_quantizer(from) };
-            let grid = &mut grids[slot_of[t]];
-            let (level, _) = grid.split(c, cand[z][k].0, is_lf, plane);
-            grid.set(row, col, level).map_err(|_| shape())?;
-        }
+        grid_of = next_grid;
         picks[c] = pick;
-        kept.push(cand);
+        kept[c] = cand.map(|slots| slots.map(|(quant, _)| quant));
         cost = next;
     }
-    kept.reverse();
 
     let (mut state, best) = (0..TCQ_STATES)
         .map(|t| (t, cost[t]))
@@ -333,10 +334,10 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
     }
     for c in 0..end {
         let (from, k) = (usize::from(picks[c][state] >> 2), usize::from(picks[c][state] & 3));
-        let z = if from == usize::from(START) { tcq_quantizer(0) } else { tcq_quantizer(from) };
+        let z = tcq_quantizer(if from < TCQ_STATES { from } else { 0 });
         let pos = usize::from(scan[c]);
-        levels[pos] = coeffs[pos].signum() * kept[c][z][k].0 as i32;
-        if from == usize::from(START) {
+        levels[pos] = sign(coeffs[pos]) * kept[c][z][k] as i32;
+        if from >= TCQ_STATES {
             return Ok(c + 1);
         }
         state = from;
@@ -370,7 +371,6 @@ impl At {
 }
 
 /// The base and `coeff_br` symbol costs of one coefficient in one context.
-#[derive(Clone, Copy)]
 struct LevelRows {
     base: [u32; BASE_SYMBOLS],
     br: [u32; BR_SYMBOLS],
@@ -385,32 +385,63 @@ impl LevelRows {
         }
     }
 
-    /// The rate of `quant` and the next `hrLevelAvg`, and its `Level`.
-    fn rate(
-        &self,
-        grid: &CoeffLevels,
-        (c, is_lf, plane): (usize, bool, usize),
-        quant: u32,
-        sign: u32,
-        hr_level_avg: u32,
-    ) -> (u32, u32, u32) {
-        if quant == 0 {
-            return (self.base[0], hr_level_avg, 0);
+    /// The rate of `coded` without its remainder.
+    fn rate(&self, coded: &Coded, sign: u32) -> u32 {
+        if coded.level == 0 {
+            return self.base[0];
         }
-        let (level, remainder) = grid.split(c, quant, is_lf, plane);
-        let base = level.min(base_levels(is_lf) + 1);
-        let mut rate = self.base[base as usize].saturating_add(sign);
-        if base > base_levels(is_lf) && !(is_lf && plane > 0) {
-            rate = rate.saturating_add(self.br[(level - base) as usize]);
+        let rate = self.base[usize::from(coded.base)].saturating_add(sign);
+        match self.br.get(usize::from(coded.br)) {
+            Some(&br) => rate.saturating_add(br),
+            None => rate,
         }
-        let Some(x) = remainder else {
-            return (rate, hr_level_avg, level);
-        };
-        (
-            rate.saturating_add(golomb_bits(x, hr_level_avg)),
-            (x + hr_level_avg) >> 1,
+    }
+}
+
+/// A `Coded::remainder` of a level without a remainder.
+const NO_REMAINDER: u32 = u32::MAX;
+
+/// How one level magnitude codes: its `Level`, base symbol, `coeff_br`
+/// symbol (`u8::MAX` without one), and § 5.20.7.28 remainder.
+#[derive(Clone, Copy)]
+struct Coded {
+    level: u32,
+    base: u8,
+    br: u8,
+    remainder: u32,
+}
+
+impl Default for Coded {
+    fn default() -> Self {
+        Self {
+            level: 0,
+            base: 0,
+            br: u8::MAX,
+            remainder: NO_REMAINDER,
+        }
+    }
+}
+
+impl Coded {
+    #[inline]
+    fn new(grid: &CoeffLevels, at: &At, plane: usize, quant: u32) -> Self {
+        let (level, remainder) = grid.split(at.c, quant, at.is_lf, plane);
+        let base = level.min(base_levels(at.is_lf) + 1);
+        let has_br = base > base_levels(at.is_lf) && !(at.is_lf && plane > 0);
+        Self {
             level,
-        )
+            base: base as u8,
+            br: if has_br { (level - base) as u8 } else { u8::MAX },
+            remainder: remainder.unwrap_or(NO_REMAINDER),
+        }
+    }
+
+    /// The rate of the remainder under `hrLevelAvg` `hr_level_avg`, and the next `hrLevelAvg`.
+    fn remainder(&self, hr_level_avg: u32) -> (u32, u32) {
+        match self.remainder {
+            NO_REMAINDER => (0, hr_level_avg),
+            x => (golomb_bits(x, hr_level_avg), (x + hr_level_avg) >> 1),
+        }
     }
 }
 

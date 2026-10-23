@@ -205,7 +205,35 @@ fn path_cost(
     cost + lambda * rate
 }
 
-/// The cheapest path over the trellis candidates, by enumeration.
+/// Visits every path from scan index `c` down in `state` over the candidates `cand`.
+fn walk(
+    c: usize,
+    state: usize,
+    cand: &[super::Candidates],
+    scan: &[u16],
+    levels: &mut [i32],
+    coeffs: &[i32],
+    visit: &mut dyn FnMut(&[i32]),
+) {
+    let pos = usize::from(scan[c]);
+    let slots = cand[c][tcq_quantizer(state)];
+    for (quant, dist) in slots {
+        let last = levels.iter().all(|&l| l == 0);
+        if dist >= MAX_DIST || (last && (quant == 0 || dist >= slots[ZERO].1)) {
+            continue;
+        }
+        levels[pos] = if coeffs[pos] < 0 { -(quant as i32) } else { quant as i32 };
+        if c == 0 {
+            visit(levels);
+        } else {
+            walk(c - 1, tcq_next_state(state, quant), cand, scan, levels, coeffs, visit);
+        }
+        levels[pos] = 0;
+    }
+}
+
+/// The cheapest path over the trellis candidates, by enumeration: the last
+/// level is one whose distortion beats zero.
 fn brute_force(
     rates: &mut impl CoeffRates,
     b: &RdoqBlock,
@@ -221,29 +249,6 @@ fn brute_force(
         .collect();
     let mut best = path_cost(rates, b, coeffs, &vec![0; coeffs.len()], lambda);
     let mut levels = vec![0; coeffs.len()];
-    fn walk(
-        c: usize,
-        state: usize,
-        cand: &[super::Candidates],
-        scan: &[u16],
-        levels: &mut Vec<i32>,
-        coeffs: &[i32],
-        visit: &mut dyn FnMut(&[i32]),
-    ) {
-        let pos = usize::from(scan[c]);
-        for (quant, dist) in cand[c][tcq_quantizer(state)] {
-            if dist >= MAX_DIST || (quant == 0 && levels.iter().all(|&l| l == 0)) {
-                continue;
-            }
-            levels[pos] = coeffs[pos].signum() * quant as i32;
-            if c == 0 {
-                visit(levels);
-            } else {
-                walk(c - 1, tcq_next_state(state, quant), cand, scan, levels, coeffs, visit);
-            }
-            levels[pos] = 0;
-        }
-    }
     for last in 0..end {
         walk(last, 0, &cand, scan, &mut levels, coeffs, &mut |levels| {
             best = best.min(path_cost(rates, b, coeffs, levels, lambda));
@@ -252,8 +257,8 @@ fn brute_force(
     best
 }
 
-/// With per-state contexts the trellis finds the cheapest path over its
-/// candidates, on blocks small enough to enumerate.
+/// The trellis finds the cheapest path over its candidates, with every rate
+/// in the contexts of its own path, on blocks small enough to enumerate.
 #[test]
 fn trellis_is_optimal_on_small_blocks() {
     let mut seed = 0x7c9_u64;
@@ -296,15 +301,12 @@ fn trellis_is_optimal_on_small_blocks() {
             coeffs[usize::from(pos)] = if next() % 3 == 0 { -magnitude } else { magnitude };
         }
         let lambda = 1 + next() % 4000;
-        let mut rates = CdfCoeffRates {
-            syntax: &mut syntax,
-            tx: &block,
-        };
+        let mut rates = CdfCoeffRates::new(&mut syntax, &block);
         let mut levels = vec![0; coeffs.len()];
-        let eob = tcq(&SimdKernels, &b, &coeffs, &mut rates, (lambda, true), &mut levels).unwrap();
+        let eob = tcq(&SimdKernels, &b, &coeffs, &mut rates, lambda, &mut levels).unwrap();
         let end = scan[..span]
             .iter()
-            .rposition(|&pos| super::half_steps(&b, usize::from(pos), coeffs[usize::from(pos)]) > 0)
+            .rposition(|&pos| super::reaches_half_step(&b, usize::from(pos), coeffs[usize::from(pos)]))
             .map_or(0, |last| last + 1);
         assert_eq!(
             eob,
@@ -334,15 +336,15 @@ fn candidates_bracket_the_coefficient() {
     };
     for coeff in -2000..2000 {
         let cand = candidates(&b, 1, coeff);
-        for z in 0..2 {
-            assert_eq!(cand[z][ZERO], (0, u64::from(coeff.unsigned_abs()).pow(2)));
-            assert_eq!(cand[z][ODD].0 & 1, 1);
-            assert!(cand[z][EVEN].1 == MAX_DIST || cand[z][EVEN].0 % 2 == 0 && cand[z][EVEN].0 > 0);
+        for (z, slots) in cand.iter().enumerate() {
+            assert_eq!(slots[ZERO], (0, u64::from(coeff.unsigned_abs()).pow(2)));
+            assert_eq!(slots[ODD].0 & 1, 1);
+            assert!(slots[EVEN].1 == MAX_DIST || slots[EVEN].0.is_multiple_of(2) && slots[EVEN].0 > 0);
             let state = (0..STATES).find(|&s| tcq_quantizer(s) == z).unwrap();
             let best = (0..200u32)
                 .map(|q| {
                     let dq = dequant_coefficient(
-                        coeff.signum() * tcq_index(state, q).unwrap() as i32,
+                        if coeff < 0 { -1 } else { 1 } * tcq_index(state, q).unwrap() as i32,
                         320,
                         2,
                         BitDepth::Eight,
@@ -351,7 +353,7 @@ fn candidates_bracket_the_coefficient() {
                 })
                 .min()
                 .unwrap();
-            assert_eq!(cand[z].iter().map(|&(_, d)| d).min().unwrap(), best, "{coeff} {z}");
+            assert_eq!(slots.iter().map(|&(_, d)| d).min().unwrap(), best, "{coeff} {z}");
         }
     }
 }

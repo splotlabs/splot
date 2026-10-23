@@ -265,15 +265,24 @@ fn tcq_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     }
 }
 
-/// A preset without TCQ codes no TCQ syntax.
+/// TCQ off codes no TCQ syntax; `Base` turns TCQ on in key frames and the
+/// base layer only.
 #[test]
-fn tcq_off_codes_no_tcq_syntax() {
-    for params in PRESETS.iter().filter(|params| params.tcq == TcqFrames::Off) {
-        let config = config(16, 16, BitDepth::Eight, 6, 60);
-        let coder = IntraFrameCoder::with_preset(&config, params).unwrap();
-        let tq = coder.sequence.transform_quant_entropy.unwrap();
-        assert!(!tq.enable_tcq && !tq.choose_tcq_per_frame);
-    }
+fn tcq_frames_follow_the_preset() {
+    let config = config(16, 16, BitDepth::Eight, 6, 60);
+    let off: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        tcq: TcqFrames::Off,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let tq = IntraFrameCoder::with_preset(&config, off)
+        .unwrap()
+        .sequence
+        .transform_quant_entropy
+        .unwrap();
+    assert!(!tq.enable_tcq && !tq.choose_tcq_per_frame);
+    assert!(PRESETS.iter().all(|params| params.tcq == TcqFrames::Base));
+    assert!(TcqFrames::Base.allows(0) && !TcqFrames::Base.allows(1));
+    assert!(!TcqFrames::Off.allows(0) && TcqFrames::All.allows(3));
 }
 
 #[test]

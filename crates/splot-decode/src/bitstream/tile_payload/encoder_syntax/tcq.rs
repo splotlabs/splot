@@ -50,9 +50,16 @@ impl IntraTileSyntax {
     #[must_use]
     pub fn uses_tcq(&self, tx: &TransformBlock) -> bool {
         self.tools.tcq
+            && !self.tools.scalar_trial
             && tx.plane == 0
             && CoeffTransformClass::from_plane_tx_type(tx.tx_type as usize)
                 == CoeffTransformClass::TwoD
+    }
+
+    /// Prices a search trial of a TCQ frame with plain levels: until set back,
+    /// no block [`Self::uses_tcq`]. A trial coded so must not reach the bitstream.
+    pub const fn set_scalar_trial(&mut self, on: bool) {
+        self.tools.scalar_trial = on;
     }
 
     /// The decoder's `Quant` of row-major coded `levels` of `tx`: the levels

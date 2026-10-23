@@ -173,6 +173,8 @@ pub(super) struct IntraTools {
     pub(super) parity_hiding: bool,
     /// `allow_tcq`.
     pub(super) tcq: bool,
+    /// TCQ blocks code plain levels for a search trial.
+    pub(super) scalar_trial: bool,
 }
 
 impl IntraTools {
@@ -241,6 +243,7 @@ impl IntraTools {
             reduced_tx_part_set: tq.reduced_tx_part_set,
             parity_hiding: lossless.is_some_and(|info| info.allow_parity_hiding),
             tcq: lossless.is_some_and(|info| info.allow_tcq),
+            scalar_trial: false,
         })
     }
 }

@@ -39,6 +39,10 @@ use crate::tile_writer::{
 };
 use crate::tx_choice;
 
+/// The TCQ trellis multiplier in percent of the RDOQ one: measured best near
+/// 60 on park_joy and paris (100 loses 0.7-1.1% BD-rate), while RDOQ itself
+/// loses at 60.
+const TCQ_LAMBDA_PERCENT: u64 = 60;
 /// Quantizer deadzone in Q8 (`128` rounds to nearest).
 const DEADZONE_ROUNDING_Q8: u32 = 96;
 /// `avg_cdf_type` of a stream that carries CDFs: `true` averages the saved
@@ -69,13 +73,6 @@ impl IntraFrameCoder {
 
     /// A coder of `config` with the search limits of `preset`.
     fn with_preset(config: &Config, preset: &'static PresetParams) -> Result<Self> {
-        // TEMP-EXPERIMENT
-        let preset: &'static PresetParams = match std::env::var("SPLOT_TCQ").as_deref() {
-            Ok("all") => Box::leak(Box::new(PresetParams { tcq: TcqFrames::All, ..*preset })),
-            Ok("base") => Box::leak(Box::new(PresetParams { tcq: TcqFrames::Base, ..*preset })),
-            Ok("off") => Box::leak(Box::new(PresetParams { tcq: TcqFrames::Off, ..*preset })),
-            _ => preset,
-        };
         let sequence = build_encoder_sequence_header(&EncoderStreamParams {
             width: config.width,
             height: config.height,
@@ -491,6 +488,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let dims = BlockDims::new(w, h).map_err(kernel)?;
         residual.resize(w * h, 0);
         kernels().residual(source, stride, prediction, w, dims, residual);
+        syntax.set_scalar_trial(self.candidate || self.trial);
         let use_tcq = syntax.uses_tcq(tx);
         let (params, transform) = recon_params(
             self.qindex,
@@ -528,26 +526,12 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             .lambda
             .coefficient_q8(Quantizer::dq_denom_without_tcq(log2_w, log2_h));
         let parity = syntax.parity_hiding(tx);
-        let mut rates = CdfCoeffRates { syntax, tx };
+        let mut rates = CdfCoeffRates::new(syntax, tx);
         let every_type = self.preset.rdoq_every_type && !self.trial;
         let rdoq_type = every_type || (tx.tx_type as u8) < TxType::Idtx as u8;
         if use_tcq {
-            // TEMP-EXPERIMENT
-            let exact = match std::env::var("SPLOT_TCQ_EXACT").as_deref() {
-                Ok("always") => true,
-                Ok("never") => false,
-                Ok("final-cand") => !self.candidate,
-                _ => !self.candidate && !self.trial,
-            };
-            tcq(
-                kernels(),
-                &block,
-                coeffs,
-                &mut rates,
-                (lambda_q8, exact),
-                &mut levels,
-            )
-            .map_err(kernel)?;
+            let lambda_q8 = lambda_q8 * TCQ_LAMBDA_PERCENT / 100;
+            tcq(kernels(), &block, coeffs, &mut rates, lambda_q8, &mut levels).map_err(kernel)?;
         } else if self.preset.rdoq && !self.candidate && rdoq_type {
             rdoq(
                 kernels(),

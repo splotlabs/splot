@@ -30,7 +30,9 @@ pub struct PresetParams {
     /// nonzero levels hides the parity of its first level in their sum. Off
     /// in every row: its gain per CPU does not beat the next slower row.
     pub parity_hiding: bool,
-    /// The frames that quantize with TCQ (`allow_tcq`); they code no parity hiding.
+    /// The frames that quantize with TCQ (`allow_tcq`); they code no parity
+    /// hiding. `Base` in every row: its BD-rate per CPU beats the next slower
+    /// row at presets 0, 6 and 10, and TCQ on the upper mini-GOP layers loses.
     pub tcq: TcqFrames,
     /// Candidate trials of the mode and transform-partition search run RDOQ
     /// and the transform-type search too; off, they quantize with a deadzone
@@ -113,7 +115,7 @@ const fn row(
         rdoq,
         rdoq_every_type: rdoq,
         parity_hiding: false,
-        tcq: TcqFrames::Off,
+        tcq: TcqFrames::Base,
         full_trials,
         tx_type_depth,
         tx_partition_search,
