@@ -962,3 +962,6 @@ fn avm_decodes_multi_tile_frames_like_splot() {
         assert!(avm == expected, "{case:?}: AVM output differs");
     }
 }
+
+#[path = "intra_frame_carry_tests.rs"]
+mod carry;

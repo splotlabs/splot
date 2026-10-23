@@ -371,7 +371,7 @@ fn snapshot_restores_the_facade() {
         once_symbols.finish().unwrap().bytes()
     );
     let frame = |s: IntraTileSyntax| {
-        let frame = s.finish().unwrap();
+        let (frame, _) = s.finish().unwrap();
         let view = frame.as_frame_ref();
         [PlaneId::Y, PlaneId::U, PlaneId::V]
             .into_iter()

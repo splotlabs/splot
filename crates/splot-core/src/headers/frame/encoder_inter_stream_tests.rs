@@ -98,9 +98,9 @@ fn inter_headers_parse_with_the_reference_state() {
                 let seq = sequence(width, height, bit_depth, sb);
                 let view = CoreSeqView::from_sequence(&seq).unwrap();
                 let slots = Slots::after_key(width, height, 4);
-                for (show_frame, filters, compound) in [
-                    (true, FrameFilterParams::default(), false),
-                    (false, filters(sb), true),
+                for (show_frame, filters, compound, primary_slot) in [
+                    (true, FrameFilterParams::default(), false, None),
+                    (false, filters(sb), true, Some(0)),
                 ] {
                     let params = InterFrameParams {
                         base_q_idx: 90,
@@ -112,6 +112,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         tiles: UniformTiles::default(),
                         reference_select: compound,
                         skip_mode_present: compound,
+                        primary_slot,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
                     let core = &header.core;
@@ -123,6 +124,12 @@ fn inter_headers_parse_with_the_reference_state() {
                     assert_eq!(core.frame_size.unwrap().width, width);
                     let inter = core.inter.as_ref().unwrap();
                     assert_eq!(&inter.ref_frame_idx[..], &[0]);
+                    let primary = primary_slot.map_or(PRIMARY_REF_NONE as u8, |_| 0);
+                    assert_eq!(inter.primary_ref_frame, Some(primary));
+                    assert_eq!(
+                        inter.disable_cross_frame_cdf_init,
+                        Some(primary_slot.is_none())
+                    );
                     let tail = core.inter_tail.as_ref().unwrap();
                     assert_eq!(tail.tx_mode, TxMode::Largest);
                     assert_eq!(tail.reference_select, compound);
@@ -158,8 +165,15 @@ fn order_hints_unwrap_against_the_reference_slots() {
         tiles: UniformTiles::default(),
         reference_select: false,
         skip_mode_present: false,
+        primary_slot: Some(3),
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
+    let inter = header.core.inter.as_ref().unwrap();
+    assert_eq!(
+        inter.primary_ref_frame,
+        Some(PRIMARY_REF_NONE as u8),
+        "slot 3 is empty"
+    );
     assert_eq!(header.core.order_hint_lsb, Some(301 - 256));
     assert_eq!(header.core.order_hint, Some(301));
 }
@@ -182,6 +196,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             tiles: UniformTiles::default(),
             reference_select: true,
             skip_mode_present: false,
+            primary_slot: Some(0),
         },
     )
     .unwrap();
@@ -255,6 +270,7 @@ fn rejects_out_of_range_inter_inputs() {
         tiles: UniformTiles::default(),
         reference_select: false,
         skip_mode_present: false,
+        primary_slot: None,
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),

@@ -154,6 +154,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         cctx: true,
         tcq: true,
         parity_hiding: false,
+        avg_cdf: Some(false),
     };
     let mut p = params(640, 360, BitDepthIdc::Ten, SuperblockSize::Block64x64);
     p.tools = tools;
@@ -170,6 +171,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         "{tq:?}"
     );
     assert!(tq.enable_cctx && tq.enable_tcq && !tq.enable_parity_hiding);
+    assert!(tq.enable_avg_cdf && tq.avg_cdf_type == 0);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
     assert!(filter.enable_ccso);

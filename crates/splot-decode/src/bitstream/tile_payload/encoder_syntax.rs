@@ -26,7 +26,7 @@ use super::cdf::block_context::{IntraYMode, uv_mode_ctx};
 use super::cdf::coeff_context::{
     CoeffBaseContext, CoeffBrContext, coeff_base_eob_ctx, dc_sign_ctx,
 };
-use super::cdf::{CoeffBaseRow, CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
+use super::cdf::{CoeffBaseRow, CoeffCdfSelector, TileCdfSelector, TileCdfSubset};
 use super::coeff_loop::base_level_pass::tx_class_index;
 use super::coeff_loop::max_level::{
     CoeffTransformClass, coeff_is_low_frequency, visible_max_level,
@@ -426,6 +426,10 @@ pub fn tile_ranges(core: &FrameHeaderCore, tile: usize) -> Result<(Range<usize>,
     ))
 }
 
+/// The CDFs of a coded tile after its last symbol, which
+/// [`EncoderReferences::update`] folds into the saved CDFs of the frame.
+pub struct TileCdfs(TileCdfSubset);
+
 /// One tile's CDF rows, neighbour state, and reconstruction.
 pub struct IntraTileSyntax {
     frame: TilePartitionFrameFacts,
@@ -483,7 +487,7 @@ impl IntraTileSyntax {
             .map_err(rule("superblock size"))?;
         let chroma = seq.general.chroma_format_idc;
         let tools = intra::IntraTools::new(seq, core, base_q_idx)?;
-        let cdfs = FrameCdfSubset::default_for_base_q(base_q_idx).tile_copy();
+        let cdfs = refs.initial_cdfs(core)?.tile_copy();
         let journal = CdfJournal::new(&cdfs);
         let inter = inter::InterLeafState::new(
             seq,

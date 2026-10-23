@@ -19,7 +19,7 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink};
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
-    EncoderReferences, EncoderSyntaxError, IntraTileSyntax, LeafBlock, PartitionNode,
+    EncoderReferences, EncoderSyntaxError, IntraTileSyntax, LeafBlock, PartitionNode, TileCdfs,
     TransformBlock,
 };
 use splot_recon::{DecodedFrame, ReconError};
@@ -182,23 +182,26 @@ impl KeyFrameTileWriter {
     /// The `tile_data` bytes and the reconstructed frame.
     #[cfg(test)]
     pub(crate) fn finish(self) -> Result<(Vec<u8>, DecodedFrame<u16>)> {
-        let (tile, recon, _) = self.finish_with_filters()?;
+        let (tile, recon, ..) = self.finish_with_filters()?;
         Ok((tile, recon))
     }
 
-    /// [`Self::finish`] plus the filter records and the coded filter choices.
+    /// [`Self::finish`] plus the tile's final CDFs, the filter records and the
+    /// coded filter choices.
     pub(crate) fn finish_with_filters(
         self,
-    ) -> Result<(Vec<u8>, DecodedFrame<u16>, filters::CodedFilters)> {
+    ) -> Result<(Vec<u8>, DecodedFrame<u16>, TileCdfs, filters::CodedFilters)> {
         if self.written != self.superblocks {
             return Err(TileWriterError::TileIncomplete {
                 written: self.written,
                 total: self.superblocks,
             });
         }
+        let (recon, cdfs) = self.syntax.finish()?;
         Ok((
             self.symbols.finish()?.into_bytes(),
-            self.syntax.finish()?,
+            recon,
+            cdfs,
             self.filters.finish()?,
         ))
     }
