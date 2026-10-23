@@ -282,8 +282,6 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
             }
         }
 
-        // A next state takes its predecessor's grid; a second one copies the
-        // window later contexts read into a grid no path keeps.
         let mut claimed = [false; TCQ_STATES];
         let mut taken = [None; TCQ_STATES];
         for t in (0..TCQ_STATES).filter(|&t| next[t] != u64::MAX) {
