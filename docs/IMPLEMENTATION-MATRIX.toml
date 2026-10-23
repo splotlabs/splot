@@ -5255,7 +5255,7 @@ module = "crates/splot-encode/src/rd/partition.rs"
 change_id = "enc-ext-partitions"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::ext_partitions sets enable_ext_partitions (1) and enable_uneven_4way_partitions (2); the encoder_syntax facade supplies the allowed shapes and their children. The RD partition search tries HORZ_3/VERT_3 only when the NONE cost is within ext_three_way_margin/256 of the best cost so far, and HORZ_4A/4B/VERT_4A/4B only when the three-way shape of the same axis is within ext_four_way_margin/256 (255 tries every shape). The children of an extended shape search without extended shapes. Only preset 0 takes the tool (full search); presets 1-10 write the old stream byte-identically."
+notes = "PresetParams::ext_partitions sets enable_ext_partitions (1) and enable_uneven_4way_partitions (2); the encoder_syntax facade supplies the allowed shapes and their children. The RD partition search tries HORZ_3/VERT_3 only when the NONE cost is within ext_three_way_margin/256 of the best cost so far, and HORZ_4A/4B/VERT_4A/4B only when the three-way shape of the same axis is within ext_four_way_margin/256 (255 tries every shape). The children of an extended shape search without extended shapes. Implemented, off in every preset (level 0, presets write the old stream byte-identically): the measured gain per CPU is below the preset ladder (p6 margin 26: -0.26%/-0.43% at 1.20x; p0 level 2 margin 26: -0.47% at 1.69x on park_joy; full search at p0: -1.52% at 5.6x)."
 
 [feature.status]
 mapped = "done"

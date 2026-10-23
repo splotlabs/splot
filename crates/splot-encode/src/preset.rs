@@ -106,35 +106,8 @@ const fn row(
     }
 }
 
-/// `(ext_partitions, ext_three_way_margin, ext_four_way_margin)` by preset.
-const EXT_PARTITIONS: [(u8, u8, u8); 11] = [
-    (2, u8::MAX, u8::MAX),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-    (0, 0, 0),
-];
-
-const fn with_ext_partitions(mut rows: [PresetParams; 11]) -> [PresetParams; 11] {
-    let mut index = 0;
-    while index < rows.len() {
-        let (level, three, four) = EXT_PARTITIONS[index];
-        rows[index].ext_partitions = level;
-        rows[index].ext_three_way_margin = three;
-        rows[index].ext_four_way_margin = four;
-        index += 1;
-    }
-    rows
-}
-
 /// Search limits indexed by preset: `0` is the slowest and best, `10` the fastest.
-pub const PRESETS: [PresetParams; 11] = with_ext_partitions([
+pub const PRESETS: [PresetParams; 11] = [
     row(
         (2, 7),
         13,
@@ -234,7 +207,7 @@ pub const PRESETS: [PresetParams; 11] = with_ext_partitions([
         (16, 0, 0),
         (0, 1, 2, 0),
     ),
-]);
+];
 
 /// A speed preset, `0..=10`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
