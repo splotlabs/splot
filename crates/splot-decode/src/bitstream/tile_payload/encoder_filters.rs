@@ -737,25 +737,34 @@ pub fn merge_tiles(
 }
 
 /// Copies the samples of `frame` over the luma rectangle `(x, y, width,
-/// height)`, and the 4:2:0 chroma rectangles under it, into `workspace`.
+/// height)`, and the chroma rectangles under it, into `workspace`.
 fn copy_luma_rect(
     workspace: &mut CurrentFrameWorkspace<u16>,
     frame: &DecodedFrame<u16>,
     (x, y, width, height): (usize, usize, usize, usize),
 ) -> Result<()> {
-    for (id, shift) in [(PlaneId::Y, 0), (PlaneId::U, 1), (PlaneId::V, 1)] {
+    let format = frame.info().pixel_format();
+    let chroma = (
+        u32::from(format.subsampling_x()),
+        u32::from(format.subsampling_y()),
+    );
+    for (id, (shift_x, shift_y)) in [
+        (PlaneId::Y, (0, 0)),
+        (PlaneId::U, chroma),
+        (PlaneId::V, chroma),
+    ] {
         let Some(plane) = frame.plane(id) else {
             continue;
         };
         let size = plane.storage_size();
-        let (left, top) = (x >> shift, y >> shift);
+        let (left, top) = (x >> shift_x, y >> shift_y);
         let right = x
             .saturating_add(width)
-            .div_ceil(1 << shift)
+            .div_ceil(1 << shift_x)
             .min(size.width());
         let bottom = y
             .saturating_add(height)
-            .div_ceil(1 << shift)
+            .div_ceil(1 << shift_y)
             .min(size.height());
         if right <= left || bottom <= top {
             continue;
