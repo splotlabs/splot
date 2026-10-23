@@ -72,6 +72,15 @@ pub struct PresetParams {
     /// `MaxDrlBits`, `1..=5`: `NEARMV` and `NEWMV` choose among the first
     /// `drl_bits + 1` entries of the reference MV stack.
     pub drl_bits: u8,
+    /// Extended partitions: `0` off, `1` adds `HORZ_3` and `VERT_3`, `2` also
+    /// the uneven 4-way shapes.
+    pub ext_partitions: u8,
+    /// A three-way shape is tried only when the `NONE` cost is within this
+    /// margin, in 1/256, of the best cost so far; `255` always tries it.
+    pub ext_three_way_margin: u8,
+    /// An uneven four-way shape is tried only when the three-way shape of its
+    /// axis costs within this margin, in 1/256, of the best; `255` always.
+    pub ext_four_way_margin: u8,
 }
 
 const fn row(
@@ -104,6 +113,9 @@ const fn row(
         cdf_carry: true,
         mv_prediction: true,
         drl_bits: motion.3,
+        ext_partitions: 0,
+        ext_three_way_margin: 0,
+        ext_four_way_margin: 0,
     }
 }
 
@@ -279,6 +291,9 @@ mod tests {
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.mv_prediction <= slow.mv_prediction);
             assert!(fast.drl_bits <= slow.drl_bits);
+            assert!(fast.ext_partitions <= slow.ext_partitions);
+            assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
+            assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));

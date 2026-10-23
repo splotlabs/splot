@@ -71,6 +71,12 @@ pub(crate) trait PartitionSearch {
 /// first search chose, and a later visit codes that tree again in the new
 /// context instead of searching it again.
 ///
+/// A three-way shape is tried only when the `NONE` cost is within the
+/// preset's margin of the best cost so far, an uneven four-way shape only
+/// when the three-way shape of its axis is; the early exit skips the other
+/// remaining partitions but leaves extended shapes to these margins. The children of an extended shape
+/// search without extended shapes, and a node keeps one tree per mode.
+///
 /// # Errors
 /// Returns the coder's errors.
 pub(crate) fn search_partition<S: PartitionSearch>(
@@ -79,11 +85,11 @@ pub(crate) fn search_partition<S: PartitionSearch>(
     preset: &PresetParams,
     lambda: Lambda,
 ) -> Result<(PartitionTree, RdCost), S::Error> {
-    search(coder, node, preset, lambda, &mut Memo::new())
+    search(coder, node, preset, lambda, &mut Memo::new(), true)
 }
 
-/// The tree each searched node chose, by node key.
-type Memo<N> = HashMap<u64, Vec<(N, PartitionTree)>>;
+/// The tree each searched node chose, by node key and extended-shape mode.
+type Memo<N> = HashMap<(u64, bool), Vec<(N, PartitionTree)>>;
 
 fn search<S: PartitionSearch>(
     coder: &mut S,
@@ -91,11 +97,12 @@ fn search<S: PartitionSearch>(
     preset: &PresetParams,
     lambda: Lambda,
     memo: &mut Memo<S::Node>,
+    extended: bool,
 ) -> Result<(PartitionTree, RdCost), S::Error> {
     if !coder.in_frame(node) {
         return Ok((PartitionTree::Leaf(LeafChoice::DC), RdCost::default()));
     }
-    let key = coder.key(node);
+    let key = (coder.key(node), extended);
     if let Some((_, tree)) = memo
         .get(&key)
         .and_then(|seen| seen.iter().find(|(seen, _)| *seen == node))
@@ -104,7 +111,7 @@ fn search<S: PartitionSearch>(
         let cost = recode(coder, node, &tree)?;
         return Ok((tree, cost));
     }
-    let candidates = candidates(coder, node, preset)?;
+    let candidates = candidates(coder, node, preset, extended)?;
     let start = if candidates.len() > 1 {
         Some(coder.save(node, None)?)
     } else {
@@ -113,7 +120,19 @@ fn search<S: PartitionSearch>(
     let mut best: Option<(u128, PartitionTree, RdCost, Option<S::Saved>)> = None;
     let mut unsplit = None;
     let mut best_split = None;
+    let mut three_way = [None; 2];
+    let mut exited = false;
     for (index, (partition, children)) in candidates.iter().enumerate() {
+        let best_j = best.as_ref().map(|(j, ..)| *j);
+        let gate = match extended_shape(*partition) {
+            Some((_, false)) => Some((unsplit, preset.ext_three_way_margin)),
+            Some((axis, true)) => Some((three_way[axis], preset.ext_four_way_margin)),
+            None => None,
+        };
+        let gated = gate.map(|(j, margin)| within_margin(j, best_j, margin));
+        if gated.map_or(exited, |accepted| !accepted) {
+            continue;
+        }
         if index > 0
             && let Some(start) = &start
         {
@@ -127,7 +146,8 @@ fn search<S: PartitionSearch>(
             let mut trees = Vec::with_capacity(children.len());
             let mut cost = RdCost::default();
             for &child in children {
-                let (tree, child_cost) = search(coder, child, preset, lambda, memo)?;
+                let nested = extended && extended_shape(*partition).is_none();
+                let (tree, child_cost) = search(coder, child, preset, lambda, memo, nested)?;
                 trees.push(tree);
                 cost = cost + child_cost;
             }
@@ -151,11 +171,12 @@ fn search<S: PartitionSearch>(
             unsplit = Some(j);
             continue;
         }
+        if let Some((axis, false)) = extended_shape(*partition) {
+            three_way[axis] = Some(j);
+        }
         let split = best_split.map_or(j, |b: u128| b.min(j));
         best_split = Some(split);
-        if preset.partition_early_exit && unsplit.is_some_and(|none| none <= split) {
-            break;
-        }
+        exited |= preset.partition_early_exit && unsplit.is_some_and(|none| none <= split);
     }
     let Some((_, tree, cost, end)) = best else {
         return Ok((PartitionTree::Leaf(LeafChoice::DC), RdCost::default()));
@@ -193,11 +214,13 @@ fn recode<S: PartitionSearch>(
 type Candidates<N> = Vec<(Partition, Vec<N>)>;
 
 /// The codable partitions of `node` inside the preset's block limits, `NONE`
-/// first and `SPLIT` second, with their children.
+/// first and `SPLIT` second, with their children; extended shapes only when
+/// `extended`.
 fn candidates<S: PartitionSearch>(
     coder: &S,
     node: S::Node,
     preset: &PresetParams,
+    extended: bool,
 ) -> Result<Candidates<S::Node>, S::Error> {
     let mut all = Vec::new();
     for partition in coder.partitions(node)? {
@@ -213,6 +236,9 @@ fn candidates<S: PartitionSearch>(
         Partition::Split => 1,
         _ => 2,
     });
+    if !extended {
+        all.retain(|(partition, _)| extended_shape(*partition).is_none());
+    }
     let mut within = Vec::new();
     for (partition, children) in &all {
         let fits = if *partition == Partition::None {
@@ -231,4 +257,27 @@ fn candidates<S: PartitionSearch>(
         }
     }
     Ok(if within.is_empty() { all } else { within })
+}
+
+/// The axis (`0` rows, `1` columns) of an extended shape, and whether it is
+/// an uneven four-way shape.
+fn extended_shape(partition: Partition) -> Option<(usize, bool)> {
+    Some(match partition {
+        Partition::Horz3 => (0, false),
+        Partition::Vert3 => (1, false),
+        Partition::Horz4A | Partition::Horz4B => (0, true),
+        Partition::Vert4A | Partition::Vert4B => (1, true),
+        _ => return None,
+    })
+}
+
+/// Whether cost `j` is within `margin`/256 of `best`; `u8::MAX` accepts any
+/// cost, and a missing cost passes only while nothing is coded yet.
+fn within_margin(j: Option<u128>, best: Option<u128>, margin: u8) -> bool {
+    match (j, best) {
+        _ if margin == u8::MAX => true,
+        (Some(j), Some(best)) => j * 256 <= best * (256 + u128::from(margin)),
+        (_, None) => true,
+        (None, Some(_)) => false,
+    }
 }

@@ -817,17 +817,20 @@ fn search_frame(
     let sb = writer.syntax().superblock_size4() * 4;
     let padded = PaddedSource::new(source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
     let lambda = Lambda::from_qindex(90, bit_depth).unwrap();
-    let motion = MotionSearch::new(writer.syntax(), &padded, coder.preset, lambda)
-        .unwrap()
-        .unwrap();
+    let motion = MotionSearch::new(writer.syntax(), &padded, coder.preset, lambda).unwrap();
     let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, coder.preset, lambda);
     let mut trees = Vec::new();
     while writer.next_superblock_root().is_some() {
         let mut search = || {
             writer
                 .search_superblock(|syntax, root| {
-                    let mut trial =
-                        TrialCoder::new(syntax, &mut residual, coder.preset, lambda, Some(&motion));
+                    let mut trial = TrialCoder::new(
+                        syntax,
+                        &mut residual,
+                        coder.preset,
+                        lambda,
+                        motion.as_ref(),
+                    );
                     search_partition(&mut trial, root, coder.preset, lambda)
                 })
                 .unwrap()
@@ -949,8 +952,8 @@ fn tiled_stream(
         rows_log2,
     };
     config.threads = splot_parallel::ThreadCount::from(threads);
-    let mut coder = IntraFrameCoder::new(&config).unwrap();
-    coder.preset = params.unwrap_or(coder.preset);
+    let preset = params.unwrap_or(config.preset.params());
+    let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
     let coded: Vec<CodedFrame> = (0..3)
         .map(|index| {
             let plan = crate::gop::plan(u64::from(index), config.keyint);
@@ -1065,3 +1068,6 @@ fn avm_decodes_multi_tile_frames_like_splot() {
 mod carry;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
+
+#[path = "ext_partition_tests.rs"]
+mod ext_partitions;

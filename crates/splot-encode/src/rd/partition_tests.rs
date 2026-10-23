@@ -13,14 +13,14 @@ use crate::tile_writer::LeafChoice;
 /// A block: left, top, log2 width, log2 height.
 type Rect = (u32, u32, u32, u32);
 
-/// Quad, binary, and `NONE` partitions down to 4x4 over a `size x size` frame;
-/// the live state is the list of coded leaves.
+/// Quad, binary, `HORZ_3`, `HORZ_4A` and `NONE` partitions down to 4x4 over a
+/// `size x size` frame; the live state is the list of coded leaves.
 struct Synthetic<F> {
     size: u32,
     leaf_cost: F,
     coded: Vec<Rect>,
     leaf_evaluations: usize,
-    evaluated: std::collections::HashSet<Rect>,
+    evaluated: std::collections::HashMap<Rect, usize>,
 }
 
 impl<F: Fn(Rect) -> RdCost> Synthetic<F> {
@@ -30,7 +30,7 @@ impl<F: Fn(Rect) -> RdCost> Synthetic<F> {
             leaf_cost,
             coded: Vec::new(),
             leaf_evaluations: 0,
-            evaluated: std::collections::HashSet::new(),
+            evaluated: std::collections::HashMap::new(),
         }
     }
 }
@@ -58,6 +58,12 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
         if w > 2 {
             out.push(Partition::Vert);
         }
+        if h > 3 && w > 2 {
+            out.push(Partition::Horz3);
+        }
+        if h > 4 {
+            out.push(Partition::Horz4A);
+        }
         Ok(out)
     }
 
@@ -72,6 +78,18 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
             ],
             Partition::Horz => vec![(x, y, w, h - 1), (x, y + hh, w, h - 1)],
             Partition::Vert => vec![(x, y, w - 1, h), (x + hw, y, w - 1, h)],
+            Partition::Horz3 => vec![
+                (x, y, w, h - 2),
+                (x, y + hh / 2, w - 1, h - 1),
+                (x + hw, y + hh / 2, w - 1, h - 1),
+                (x, y + 3 * hh / 2, w, h - 2),
+            ],
+            Partition::Horz4A => vec![
+                (x, y, w, h - 3),
+                (x, y + hh / 4, w, h - 2),
+                (x, y + 3 * hh / 4, w, h - 1),
+                (x, y + 7 * hh / 4, w, h - 3),
+            ],
             _ => Vec::new(),
         })
     }
@@ -87,7 +105,9 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
     fn evaluate_leaf(&mut self, node: Rect) -> Result<(RdCost, LeafChoice), Self::Error> {
         self.coded.push(node);
         self.leaf_evaluations += 1;
-        assert!(self.evaluated.insert(node), "{node:?} searched twice");
+        let searches = self.evaluated.entry(node).or_default();
+        *searches += 1;
+        assert!(*searches <= 2, "{node:?} searched again in one mode");
         Ok(((self.leaf_cost)(node), LeafChoice::DC))
     }
 
@@ -126,6 +146,8 @@ fn full_search() -> PresetParams {
         min_block_log2: 2,
         max_block_log2: 7,
         partition_early_exit: false,
+        ext_three_way_margin: u8::MAX,
+        ext_four_way_margin: u8::MAX,
         ..PRESETS[0]
     }
 }
@@ -155,11 +177,22 @@ fn leaves<F: Fn(Rect) -> RdCost>(
     }
 }
 
-/// The optimum `J` by plain recursion, without the search's state handling.
+/// The optimum `J` by plain recursion, without the search's state handling;
+/// the children of an extended shape take no extended shape.
 fn optimum<F: Fn(Rect) -> RdCost>(coder: &Synthetic<F>, node: Rect, lambda: Lambda) -> u128 {
+    optimum_in(coder, node, lambda, true)
+}
+
+fn optimum_in<F: Fn(Rect) -> RdCost>(
+    coder: &Synthetic<F>,
+    node: Rect,
+    lambda: Lambda,
+    extended: bool,
+) -> u128 {
     if !coder.in_frame(node) {
         return 0;
     }
+    let is_extended = |p: Partition| matches!(p, Partition::Horz3 | Partition::Horz4A);
     let rate = |partition| {
         RdCost {
             distortion: 0,
@@ -171,6 +204,7 @@ fn optimum<F: Fn(Rect) -> RdCost>(coder: &Synthetic<F>, node: Rect, lambda: Lamb
         .partitions(node)
         .unwrap()
         .into_iter()
+        .filter(|&partition| extended || !is_extended(partition))
         .map(|partition| {
             rate(partition)
                 + if partition == Partition::None {
@@ -180,7 +214,9 @@ fn optimum<F: Fn(Rect) -> RdCost>(coder: &Synthetic<F>, node: Rect, lambda: Lamb
                         .children(node, partition)
                         .unwrap()
                         .into_iter()
-                        .map(|child| optimum(coder, child, lambda))
+                        .map(|child| {
+                            optimum_in(coder, child, lambda, extended && !is_extended(partition))
+                        })
                         .sum()
                 }
         })
@@ -323,4 +359,84 @@ proptest! {
         let leaf_sum = coded.iter().map(|&leaf| cost(leaf)).fold(RdCost::default(), |a, b| a + b);
         prop_assert_eq!(leaf_sum.distortion, found.distortion);
     }
+}
+
+/// With zero margins, the extended shapes are skipped unless `NONE` is the
+/// best cost so far; the optimum needs `HORZ_3` here, so only the open
+/// margins find it.
+#[test]
+fn extended_margins_gate_the_three_and_four_way_trials() {
+    let bands = |(x, y, w, h): Rect| {
+        let (top, bottom) = (y, y + (1 << h));
+        let flat = [(0, 8), (8, 24), (24, 32)]
+            .iter()
+            .any(|&(a, b)| top >= a && bottom <= b)
+            && (h < 4 || x % 16 + (1 << w) <= 16);
+        RdCost {
+            distortion: if flat { 0 } else { 1 << 24 },
+            rate: Bits::whole(10),
+        }
+    };
+    let root = (0, 0, 5, 5);
+    let mut open = Synthetic::new(32, bands);
+    let (tree, cost) = search_partition(&mut open, root, &full_search(), unit_lambda()).unwrap();
+    assert!(
+        matches!(
+            tree,
+            PartitionTree::Split {
+                kind: Partition::Horz3,
+                ..
+            }
+        ),
+        "{tree:?}"
+    );
+    assert_eq!(
+        cost.cost(unit_lambda()),
+        optimum(&open, root, unit_lambda())
+    );
+    let closed = PresetParams {
+        ext_three_way_margin: 0,
+        ext_four_way_margin: 0,
+        ..full_search()
+    };
+    let mut gated = Synthetic::new(32, bands);
+    let (tree, _) = search_partition(&mut gated, root, &closed, unit_lambda()).unwrap();
+    assert!(
+        !matches!(
+            tree,
+            PartitionTree::Split {
+                kind: Partition::Horz3,
+                ..
+            }
+        ),
+        "{tree:?}"
+    );
+    assert!(gated.leaf_evaluations < open.leaf_evaluations);
+}
+
+/// The early exit skips the remaining binary shapes but leaves the extended
+/// shapes to their margins: with `NONE` best, `HORZ_3` is still tried.
+#[test]
+fn early_exit_leaves_extended_shapes_to_the_margins() {
+    let flat = |_: Rect| RdCost {
+        distortion: 0,
+        rate: Bits::whole(1),
+    };
+    let preset = PresetParams {
+        partition_early_exit: true,
+        ext_three_way_margin: 0,
+        ..full_search()
+    };
+    let mut coder = Synthetic::new(32, flat);
+    let root = (0, 0, 5, 5);
+    let (tree, _) = search_partition(&mut coder, root, &preset, unit_lambda()).unwrap();
+    assert!(matches!(tree, PartitionTree::Leaf(_)));
+    assert!(
+        coder.evaluated.contains_key(&(0, 8, 4, 4)),
+        "HORZ_3 was not tried"
+    );
+    assert!(
+        !coder.evaluated.contains_key(&(0, 0, 5, 4)),
+        "HORZ was tried"
+    );
 }
