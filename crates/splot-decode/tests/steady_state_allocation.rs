@@ -111,14 +111,14 @@ fn a_warmed_decode_holds_its_steady_allocation_count() {
     )
     .unwrap();
     let units = units(EIGHT_FRAME);
+    let mut pictures = 0;
     for _ in 0..4 {
-        stream_once(&mut decoder, &units);
+        pictures += stream_once(&mut decoder, &units);
     }
     let streamed = (0..3)
         .map(|_| {
             let region = Region::new(ALLOCATOR);
-            let pictures = stream_once(&mut decoder, &units);
-            assert_eq!(pictures, 8);
+            pictures += stream_once(&mut decoder, &units);
             region.change().allocations
         })
         .min()
@@ -128,6 +128,11 @@ fn a_warmed_decode_holds_its_steady_allocation_count() {
         "the quietest of three warmed streaming passes requested {streamed} allocations, \
          over the {WARMED_STREAMING_ALLOCATIONS} this path settles at"
     );
+    decoder.drain();
+    while decoder.get_picture().unwrap().is_some() {
+        pictures += 1;
+    }
+    assert_eq!(pictures, 7 * 8);
 }
 
 fn units(ivf: &[u8]) -> Vec<Vec<u8>> {
@@ -142,6 +147,9 @@ fn units(ivf: &[u8]) -> Vec<Vec<u8>> {
 }
 
 /// Sends `units` and drops every picture as it is taken; returns the count.
+///
+/// The count depends on how far the driver got, since `get_picture` does not
+/// wait while the decoder has room for more input. Only a drain settles it.
 fn stream_once(decoder: &mut Decoder, units: &[Vec<u8>]) -> usize {
     let mut pictures = 0;
     for unit in units {
