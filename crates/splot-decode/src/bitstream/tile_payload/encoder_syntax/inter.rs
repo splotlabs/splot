@@ -29,16 +29,17 @@ use super::super::general_intra_residual::inter_chroma_plane_tx_type;
 use super::super::partition_traversal::{DecodedLeafPublication, GeneralIntraTreeWalkError};
 use super::compound::InterPrediction;
 use super::{
-    EncoderSyntaxError, FrameCdfs, IntraTileSyntax, LeafBlock, Result, TileCdfs, TransformBlock,
+    EncoderSyntaxError, FrameCdfs, IntraTileSyntax, LeafBlock, Result, TileEnd, TransformBlock,
     TxType, rule,
 };
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{frame_ref_update_from_core, is_key_or_switch};
 use crate::prediction::inter::{
     EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderMotion,
-    EncoderSingleMotion, FrameCdfHandle, InterReferenceState, Mv, SINGLE_MODE_GLOBALMV,
-    SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, chroma_inter_tx_type, non_intra_leaf_mode,
-    resolve_initial_frame_cdfs, single_transform_residual,
+    EncoderSingleMotion, FrameCdfHandle, InterReferenceState, MotionFieldHandle, Mv,
+    SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, chroma_inter_tx_type,
+    encoder_motion_field, non_intra_leaf_mode, resolve_initial_frame_cdfs,
+    single_transform_residual,
 };
 use crate::reference::buffer::RuntimeReferenceBuffer;
 
@@ -48,13 +49,16 @@ const BLOCK_4X4: usize = 0;
 pub const MV_PRECISION_EIGHTH_PEL: u8 = 6;
 
 /// The decoder's § 7.23 reference buffer, filled with the encoder's filtered
-/// reconstructions and saved CDFs in coding order.
+/// reconstructions, saved CDFs and § 7.19 motion fields in coding order.
 pub struct EncoderReferences {
     sequence: SequenceHeader,
     buffer: RuntimeReferenceBuffer,
-    frames: Vec<Option<(SharedFrame<u16>, Arc<FrameCdfSubset>)>>,
+    frames: Vec<Option<SettledFrame>>,
     state: InterReferenceState<u16>,
 }
+
+/// One coded frame: its filtered reconstruction, saved CDFs and motion field.
+type SettledFrame = (SharedFrame<u16>, Arc<FrameCdfSubset>, MotionFieldHandle);
 
 impl EncoderReferences {
     /// An empty buffer with the reference slots of `seq`.
@@ -80,10 +84,10 @@ impl EncoderReferences {
         })
     }
 
-    /// Stores the coded frame `core` with its filtered reconstruction `frame`
-    /// and the saved CDFs of its final `tiles`, in tile order, in the slots its
-    /// `refresh_frame_flags` name (§ 7.20). `initial` are the CDFs
-    /// [`Self::initial_cdfs`] returned for `core`.
+    /// Stores the coded frame `core` with its filtered reconstruction `frame`,
+    /// and the saved CDFs and motion field of its final `tiles`, in tile
+    /// order, in the slots its `refresh_frame_flags` name (§ 7.20). `initial`
+    /// are the CDFs [`Self::initial_cdfs`] returned for `core`.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for a header without the § 7.20 inputs or
@@ -93,9 +97,17 @@ impl EncoderReferences {
         core: &FrameHeaderCore,
         frame: DecodedFrame<u16>,
         initial: &FrameCdfs,
-        tiles: &[TileCdfs],
+        tiles: &[TileEnd],
     ) -> Result<()> {
         let cdfs = Arc::new(saved_cdfs(&self.sequence, core, initial, tiles)?);
+        let motion = encoder_motion_field(
+            &self.sequence,
+            core,
+            &self.state,
+            frame.bit_depth(),
+            tiles.iter().map(|tile| tile.motion.as_slice()),
+        )
+        .map_err(rule("motion field"))?;
         self.buffer.prepare_for_frame(core.obu_type, true);
         let update =
             frame_ref_update_from_core(core, ByteOffset::new(0), EmbeddedLayerId::from_bits(0))
@@ -106,7 +118,7 @@ impl EncoderReferences {
         if index == self.frames.len() {
             self.frames.push(None);
         }
-        self.frames[index] = Some((SharedFrame::new(frame), cdfs));
+        self.frames[index] = Some((SharedFrame::new(frame), cdfs, motion));
         self.buffer.update(index, &update, is_key_or_switch(core));
         self.buffer
             .note_frame(core.obu_type, true, &update, &core.ref_long_term_ids);
@@ -164,7 +176,7 @@ fn saved_cdfs(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     initial: &FrameCdfs,
-    tiles: &[TileCdfs],
+    tiles: &[TileEnd],
 ) -> Result<FrameCdfSubset> {
     let info = core
         .tile_info
@@ -198,32 +210,39 @@ fn saved_cdfs(
         policies
             .into_iter()
             .zip(tiles)
-            .map(|((tile, policy), cdfs)| (tile, &cdfs.0, policy)),
+            .map(|((tile, policy), end)| (tile, &end.cdfs, policy)),
     );
     Ok(saved)
 }
 
-/// The reference state of `buffer` over settled `frames` and their saved CDFs.
+/// The reference state of `buffer` over settled `frames` with their saved
+/// CDFs and motion fields.
 fn settled_state(
     buffer: &RuntimeReferenceBuffer,
-    frames: &[Option<(SharedFrame<u16>, Arc<FrameCdfSubset>)>],
+    frames: &[Option<SettledFrame>],
 ) -> Result<InterReferenceState<u16>> {
     let (store, mut meta) = buffer
         .build_store_from(|slot, index| {
-            let (frame, _) = frames
+            let (frame, ..) = frames
                 .get(index)
                 .and_then(Option::as_ref)
                 .ok_or(crate::error::DecodeReferenceStateError::MissingFrame { slot })?;
             Ok((RefFrameSlot::completed(frame.share()), None))
         })
         .map_err(rule("reference state"))?;
-    for (slot, cdfs) in meta.ref_frame_cdfs.iter_mut().enumerate() {
-        if let Some((_, saved)) = buffer
+    for (slot, (cdfs, motion)) in meta
+        .ref_frame_cdfs
+        .iter_mut()
+        .zip(meta.ref_motion_fields.iter_mut())
+        .enumerate()
+    {
+        if let Some((_, saved, field)) = buffer
             .frame_index_for_slot(slot as u32)
             .ok()
             .and_then(|index| frames.get(index)?.as_ref())
         {
             *cdfs = Some(FrameCdfHandle::settled(Arc::clone(saved)));
+            *motion = Some(field.clone());
         }
     }
     Ok(InterReferenceState::from_metadata(store, meta))
@@ -409,6 +428,30 @@ impl IntraTileSyntax {
         tile.motion_vector(&leaf.frontier, motion)
             .map(MotionVector::from)
             .map_err(rule("motion vector"))
+    }
+
+    /// The § 7.12 candidates of list reference `ref_frame` at `leaf` in DRL
+    /// order, spatial, temporal and bank candidates as the decoder stacks
+    /// them for a single-reference block.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for a reference `leaf` cannot code.
+    pub fn mv_candidates(
+        &mut self,
+        leaf: &LeafBlock,
+        ref_frame: usize,
+    ) -> Result<Vec<MotionVector>> {
+        let ref_frame = i8::try_from(ref_frame)
+            .ok()
+            .filter(|_| ref_frame < self.reference_count())
+            .ok_or(EncoderSyntaxError::Unsupported("reference index"))?;
+        let tile = &mut self.inter_state()?.tile;
+        Ok(tile
+            .mv_stack(&leaf.frontier, ref_frame)
+            .map_err(rule("motion vector stack"))?
+            .into_iter()
+            .map(MotionVector::from)
+            .collect())
     }
 
     /// Plans the inter leaf `leaf` under `prediction`: predicts it into the
@@ -645,6 +688,48 @@ impl IntraTileSyntax {
             .into_iter()
             .map(MotionVector::from)
             .collect())
+    }
+
+    /// Prices into `symbols` the mode syntax and the motion vector difference
+    /// that the single-reference `modes` code at `leaf`, as
+    /// [`Self::write_inter_modes`] and [`Self::write_mvds`] write them for a
+    /// planned leaf, then puts the CDFs back. The leaf is not planned.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code.
+    pub fn price_single_modes(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: InterModes,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
+        let mark = self.journal.mark();
+        let written = self.write_single_modes(leaf, modes, symbols);
+        self.journal.rollback(&mut self.cdfs, mark)?;
+        written
+    }
+
+    fn write_single_modes(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: InterModes,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
+        let motion = EncoderMotion::Single(self.single_motion(leaf, modes)?);
+        let coded = self
+            .inter_ref()?
+            .tile
+            .mode_symbols(&leaf.frontier, motion)
+            .map_err(rule("inter mode syntax"))?;
+        for (selector, value) in coded {
+            self.put(symbols, selector, usize::from(value))?;
+        }
+        let mvds: Vec<MotionVector> = motion
+            .coded_mvds()
+            .into_iter()
+            .map(MotionVector::from)
+            .collect();
+        self.write_mvds(&mvds, symbols)
     }
 
     /// Writes the § 5.20.6.3 `tx_do_partition = 0` an inter leaf with a coded

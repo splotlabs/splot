@@ -430,9 +430,12 @@ pub fn tile_ranges(core: &FrameHeaderCore, tile: usize) -> Result<(Range<usize>,
 #[derive(Clone)]
 pub struct FrameCdfs(std::sync::Arc<FrameCdfSubset>);
 
-/// The CDFs of a coded tile after its last symbol, which
-/// [`EncoderReferences::update`] folds into the saved CDFs of the frame.
-pub struct TileCdfs(TileCdfSubset);
+/// The CDFs and § 7.19 motion records of a coded tile after its last leaf,
+/// which [`EncoderReferences::update`] folds into the saved state of the frame.
+pub struct TileEnd {
+    cdfs: TileCdfSubset,
+    motion: Vec<crate::prediction::inter::TemporalMotionBlock>,
+}
 
 /// One tile's CDF rows, neighbour state, and reconstruction.
 pub struct IntraTileSyntax {

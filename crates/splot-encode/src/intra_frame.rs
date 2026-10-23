@@ -44,6 +44,9 @@ const DEADZONE_ROUNDING_Q8: u32 = 96;
 /// CDFs across tiles, `false` blends the primary reference's CDFs with a
 /// second reference's.
 const AVG_CDF_ACROSS_TILES: bool = false;
+/// `constrain_drl_reorder` of a stream that reorders the DRL: `true`
+/// reorders under `DRL_REORDER_CONSTRAINT`, `false` always.
+const DRL_REORDER_CONSTRAINT: bool = true;
 
 /// Codes key frames and inter frames.
 pub(crate) struct IntraFrameCoder {
@@ -89,6 +92,9 @@ impl IntraFrameCoder {
                 ibp: true,
                 intra_edge_filter: true,
                 avg_cdf: preset.cdf_carry.then_some(AVG_CDF_ACROSS_TILES),
+                ref_frame_mvs: preset.mv_prediction,
+                refmvbank: preset.mv_prediction,
+                drl_reorder: preset.mv_prediction.then_some(DRL_REORDER_CONSTRAINT),
                 ..EncoderToolFlags::default()
             },
         })

@@ -2146,7 +2146,7 @@ mod single_ref;
 pub(crate) use block::encoder_leaf::{
     EncoderCompoundMotion, EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile,
     EncoderMotion, EncoderSingleMotion, JMVD_SCALE_MODES, chroma_inter_tx_type,
-    single_transform_residual,
+    encoder_motion_field, single_transform_residual,
 };
 pub(crate) use block::non_intra_leaf_mode;
 pub(crate) use block::{

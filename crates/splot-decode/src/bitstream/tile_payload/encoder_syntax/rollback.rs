@@ -132,12 +132,12 @@ impl CdfJournal {
         }
     }
 
-    fn mark(&mut self) -> usize {
+    pub(super) fn mark(&mut self) -> usize {
         self.next_epoch();
         self.entries.len()
     }
 
-    fn rollback(&mut self, cdfs: &mut TileCdfSubset, mark: usize) -> Result<()> {
+    pub(super) fn rollback(&mut self, cdfs: &mut TileCdfSubset, mark: usize) -> Result<()> {
         while self.entries.len() > mark {
             let Some((key, start)) = self.entries.pop() else {
                 break;

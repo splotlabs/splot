@@ -4,10 +4,11 @@
 //! Single-reference, compound and skip-mode inter leaves of the encoder
 //! syntax facade.
 //!
-//! [`EncoderInterTile`] keeps the decoder's neighbour grid and banks for one
-//! tile and runs the decoder's own § 7.12 stack, § 7.12 resolution, § 7.11.3
-//! motion compensation, inter residual reconstruction and filter records, so
-//! the facade never derives motion, prediction or residual geometry itself.
+//! [`EncoderInterTile`] keeps the decoder's neighbour grid, banks and § 7.9
+//! projected motion field for one tile and runs the decoder's own § 7.12
+//! stack, § 7.12 resolution, § 7.11.3 motion compensation, inter residual
+//! reconstruction and filter records, so the facade never derives motion,
+//! prediction or residual geometry itself.
 
 use super::super::compound::CompoundYMode;
 use super::super::find_mv_stack::{
@@ -20,7 +21,9 @@ use super::residual::{InterLumaTxTypeMap, push_inter_residual_block};
 use super::resolve::{
     InterBlockSyntax, InterMotionSyntax, MvResolutionState, ResolvedInterBlock,
     compound_inter_block, compound_motion, resolve_inter_block, resolve_single, single_inter_block,
+    single_mv_stack,
 };
+use super::temporal::temporal_motion_block;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
@@ -83,6 +86,7 @@ pub(crate) struct EncoderInterContexts {
 pub(crate) struct EncoderInterCheckpoint {
     grid: GridCheckpoint,
     warp_bank: WarpParamBank,
+    ref_mv_bank: Option<RefMvBank>,
 }
 
 /// The inter residual of one leaf: its transform blocks and their levels.
@@ -97,6 +101,8 @@ pub(crate) struct EncoderInterTile {
     grid: NeighbourMvGrid,
     warp_bank: WarpParamBank,
     ref_mv_bank: Option<RefMvBank>,
+    /// The projected motion field of a frame with `use_ref_frame_mvs`.
+    temporal: Option<TemporalMvContext>,
     reference: InterReferenceState<u16>,
     ref_frame_idx: Vec<u32>,
     order_hints: Vec<Option<u32>>,
@@ -153,9 +159,12 @@ impl EncoderInterTile {
             (
                 seq_inter.enable_adaptive_mvd
                     || seq_inter.enable_flex_mvres
-                    || seq_inter.enable_refmvbank
                     || seq_inter.enable_mvd_sign_derive,
-                "adaptive MVD, flexible MV precision, MV banks, or MVD sign derivation",
+                "adaptive MVD, flexible MV precision, or MVD sign derivation",
+            ),
+            (
+                seq_inter.enable_ref_frame_mvs && seq_inter.enable_global_motion,
+                "global motion with reference frame motion vectors",
             ),
             (
                 inter.interpolation_filter != Some(FrameInterpolationFilter::Eighttap),
@@ -165,8 +174,8 @@ impl EncoderInterTile {
                 inter
                     .tip_frame_mode
                     .is_some_and(|mode| mode != TipFrameMode::Disabled)
-                    || frame_uses_temporal_mvs(core),
-                "TIP or temporal motion vectors",
+                    || seq_inter.enable_mv_traj,
+                "TIP or motion vector trajectories",
             ),
             (
                 inter
@@ -208,6 +217,26 @@ impl EncoderInterTile {
             &reference.ref_order_hint,
         )
         .to_vec();
+        let temporal = if frame_uses_temporal_mvs(core) {
+            let geometry = super::super::FrameDecodeGeometry::new(core, sequence, bit_depth, false)
+                .map_err(|_| "frame geometry")?;
+            let mut context = TemporalMvContext::empty();
+            frame_temporal_context(
+                &mut context,
+                core,
+                sb_h4,
+                (mi_rows, mi_cols),
+                current_order_hint,
+                temporal_projection_config(sequence, core, geometry),
+                &ref_frame_idx,
+                &reference,
+                derived_tip_reference_pair(core, &order_hints),
+            )
+            .map_err(|_| "temporal motion field")?;
+            Some(context)
+        } else {
+            None
+        };
         let temporal_first = frame_temporal_first(
             sequence,
             core,
@@ -219,7 +248,8 @@ impl EncoderInterTile {
         Ok(Self {
             grid,
             warp_bank: WarpParamBank::new(),
-            ref_mv_bank: None,
+            ref_mv_bank: seq_inter.enable_refmvbank.then(RefMvBank::new),
+            temporal,
             temporal_first,
             ref_frame_idx,
             order_hints,
@@ -275,6 +305,7 @@ impl EncoderInterTile {
                 .grid
                 .checkpoint(footprint, since.map(|since| &since.grid)),
             warp_bank: self.warp_bank.clone(),
+            ref_mv_bank: self.ref_mv_bank.clone(),
         }
     }
 
@@ -282,6 +313,7 @@ impl EncoderInterTile {
     pub(crate) fn rollback(&mut self, checkpoint: &EncoderInterCheckpoint) {
         self.grid.rollback(&checkpoint.grid);
         self.warp_bank.clone_from(&checkpoint.warp_bank);
+        self.ref_mv_bank.clone_from(&checkpoint.ref_mv_bank);
     }
 
     /// The `is_inter`, `skip_mode` and `skip_txfm` contexts of `frontier`,
@@ -317,6 +349,21 @@ impl EncoderInterTile {
     ) -> Result<[Mv; 2]> {
         let syntax = self.inter_syntax(frontier, motion, true)?;
         Ok(self.resolve_motion(&syntax)?.mv)
+    }
+
+    /// The § 7.12 stack of list reference `ref_frame` at `frontier` for a
+    /// single-reference block, in DRL order.
+    pub(crate) fn mv_stack(
+        &mut self,
+        frontier: &DecodeBlockFrontier,
+        ref_frame: i8,
+    ) -> Result<Vec<Mv>> {
+        let block = self.block(frontier, (ref_frame, None))?;
+        let temporal_first = self.temporal_first(ref_frame);
+        let state = self.resolution_state(&block);
+        Ok(single_mv_stack(&block, false, temporal_first, &state)
+            .candidates()
+            .collect())
     }
 
     /// Predicts `frontier` with `motion` into `workspace` (§ 7.11.3) and
@@ -404,23 +451,72 @@ impl EncoderInterTile {
         }
     }
 
-    /// The resolution state of a leaf at `block`, with the warp bank reset
-    /// for it as the resolve pass does.
+    /// The resolution state of a leaf at `block`, with the banks reset for it
+    /// as the resolve pass does.
     fn resolution_state(&mut self, block: &MvBlockContext) -> MvResolutionState<'_> {
-        self.warp_bank
-            .reset_for_leaf(&self.grid, block.mi_row, block.mi_col, self.sb_h4);
+        self.reset_banks(block);
         MvResolutionState {
             grid: &mut self.grid,
             ref_mv_bank: &mut self.ref_mv_bank,
             warp_param_bank: &mut self.warp_bank,
             core: &self.core,
-            temporal: None,
+            temporal: self.temporal.as_ref(),
             order_hints: OrderHintMvContext::new(self.current_order_hint, &self.order_hints),
             drl_reorder: self.drl_reorder,
             max_drl_bits_minus_1: self.max_drl_bits_minus_1,
             frame_precision: self.precision,
             tile_offset: ByteOffset::new(0),
         }
+    }
+
+    /// Resets the banks for a leaf at `block` as the resolve pass does.
+    fn reset_banks(&mut self, block: &MvBlockContext) {
+        if let Some(bank) = &mut self.ref_mv_bank {
+            bank.reset_for_leaf(&self.grid, block.mi_row, block.mi_col, self.sb_h4, true);
+        }
+        self.warp_bank
+            .reset_for_leaf(&self.grid, block.mi_row, block.mi_col, self.sb_h4);
+    }
+
+    /// The § 7.19 motion records of the published leaves, in coding order,
+    /// which the decoder stores into the frame's motion field.
+    pub(crate) fn temporal_records(&self) -> Vec<TemporalMotionBlock> {
+        self.grid
+            .published_leaves()
+            .map(|((r, c, n4w, n4h), refs, mvs)| {
+                let (ref_frame0, ref_frame1) = refs.unwrap_or((-1, None));
+                if refs.is_none() {
+                    return TemporalMotionBlock::new(
+                        r,
+                        c,
+                        n4w,
+                        n4h,
+                        self.mi_rows,
+                        self.mi_cols,
+                        self.current_order_hint,
+                        [None, None],
+                        [Mv::ZERO; 2],
+                        [None, None],
+                    );
+                }
+                temporal_motion_block(
+                    &self.reference,
+                    &self.ref_frame_idx,
+                    r,
+                    c,
+                    n4w,
+                    n4h,
+                    self.mi_rows,
+                    self.mi_cols,
+                    self.current_order_hint,
+                    ref_frame0,
+                    ref_frame1,
+                    mvs[0],
+                    mvs[1],
+                    [None, None],
+                )
+            })
+            .collect()
     }
 
     /// The parse record of `motion` at `frontier` coded with `skip_txfm = skip`.
@@ -479,8 +575,7 @@ impl EncoderInterTile {
                 ..NON_INTER_FLAG_SYNTAX
             },
         );
-        self.warp_bank
-            .reset_for_leaf(&self.grid, block.mi_row, block.mi_col, self.sb_h4);
+        self.reset_banks(&block);
         self.grid.record_motion(
             block.mi_row,
             block.mi_col,
@@ -488,6 +583,15 @@ impl EncoderInterTile {
             block.bh4,
             ZERO_NEIGHBOUR_MOTION_VALUES,
         );
+        if let Some(bank) = &mut self.ref_mv_bank {
+            bank.update_count_for_non_inter(
+                block.mi_row,
+                block.mi_col,
+                block.bw4,
+                block.bh4,
+                self.sb_h4,
+            );
+        }
         Ok(())
     }
 
@@ -665,6 +769,35 @@ impl EncoderInterTile {
             _ => geometry.place(single_inter_block(syntax, resolved)),
         })
     }
+}
+
+/// The § 7.19 motion field the decoder stores for frame `core` of `sequence`,
+/// coded over `reference`, whose tiles published `records`.
+pub(crate) fn encoder_motion_field<'a>(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<u16>,
+    bit_depth: BitDepth,
+    records: impl IntoIterator<Item = &'a [TemporalMotionBlock]>,
+) -> Result<MotionFieldHandle> {
+    let intra = core.frame_is_intra == Some(true);
+    let geometry = super::super::FrameDecodeGeometry::new(core, sequence, bit_depth, intra)?;
+    let ref_frame_idx = core
+        .inter
+        .as_ref()
+        .map_or(&[][..], |inter| &inter.ref_frame_idx[..]);
+    let hints = reference_order_hints(
+        ref_frame_idx,
+        &reference.ref_valid,
+        &reference.ref_order_hint,
+    );
+    let mut field = geometry
+        .new_motion_field(&hints)
+        .ok_or(inter_allocation!("encoder motion field"))?;
+    for records in records {
+        field.record_blocks(records);
+    }
+    Ok(MotionFieldHandle::settled(field))
 }
 
 impl EncoderInterResidual {

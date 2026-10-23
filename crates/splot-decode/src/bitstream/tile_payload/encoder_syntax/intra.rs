@@ -38,7 +38,7 @@ use super::super::partition_traversal::{
 };
 use super::super::tile_frontier::chroma_subsampling;
 use super::{
-    EncoderSyntaxError, IntraMode, IntraTileSyntax, LeafBlock, Result, TileCdfs, TransformBlock,
+    EncoderSyntaxError, IntraMode, IntraTileSyntax, LeafBlock, Result, TileEnd, TransformBlock,
     TxPartition, coefficient_scan, rule, tx_log2,
 };
 use crate::pipeline::general_intra::{
@@ -673,13 +673,24 @@ impl IntraTileSyntax {
         self.publish_inter_neighbours(leaf)
     }
 
-    /// The reconstructed frame and the tile's final CDFs.
+    /// The reconstructed frame and the tile's final CDFs and motion records.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError::Rule`] if the frame does not freeze.
-    pub fn finish(self) -> Result<(DecodedFrame<u16>, TileCdfs)> {
+    pub fn finish(self) -> Result<(DecodedFrame<u16>, TileEnd)> {
+        let motion = self
+            .inter
+            .as_ref()
+            .map(|inter| inter.tile.temporal_records())
+            .unwrap_or_default();
         let frame = self.recon.workspace.freeze().map_err(rule("frame"))?;
-        Ok((frame, TileCdfs(self.cdfs)))
+        Ok((
+            frame,
+            TileEnd {
+                cdfs: self.cdfs,
+                motion,
+            },
+        ))
     }
 
     fn reconstruct_with(

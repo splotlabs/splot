@@ -667,7 +667,7 @@ pub(super) fn resolve_single(
 
 /// The § 7.12 stack of a single-reference block.
 #[inline]
-fn single_mv_stack(
+pub(super) fn single_mv_stack(
     block: &MvBlockContext,
     tip_ref: bool,
     use_temporal_first: bool,

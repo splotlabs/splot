@@ -230,10 +230,11 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
 
 impl TrialCoder<'_, '_> {
     /// The inter candidates of `leaf`: for every reference `GLOBALMV`,
-    /// `NEARMV` of each DRL index, and `NEWMV` with the searched vector over
-    /// the DRL base nearest to it (candidates with a reference and vector
-    /// already listed are dropped); then the skip-mode blocks and the
-    /// compound shortlist.
+    /// `NEARMV` of each DRL index, and `NEWMV` with the vector searched from
+    /// the whole § 7.12 stack over the DRL base whose mode and difference
+    /// syntax costs least (candidates with a reference and vector already
+    /// listed are dropped); then the skip-mode blocks and the compound
+    /// shortlist.
     fn inter_candidates(&mut self, leaf: &LeafBlock) -> Result<Vec<LeafChoice>> {
         let mut out: Vec<((usize, MotionVector), LeafChoice)> = Vec::new();
         let mut push = |mv: MotionVector, modes: InterModes| {
@@ -263,29 +264,32 @@ impl TrialCoder<'_, '_> {
             let Some(motion) = self.motion else {
                 continue;
             };
+            for mv in self.syntax.mv_candidates(leaf, ref_frame)? {
+                if !seeds.contains(&mv) {
+                    seeds.push(mv);
+                }
+            }
             let bases = (0..self.syntax.drl_count())
                 .map(|drl| self.syntax.newmv_base(leaf, ref_frame, drl))
                 .collect::<core::result::Result<Vec<_>, _>>()?;
             let pred = bases.first().copied().unwrap_or_default();
             let found = motion.search(self.syntax, ref_frame, leaf_rect(leaf)?, &seeds, pred)?;
             searched.push((found, pred));
-            let distance = |base: MotionVector| {
-                (found.row - base.row).unsigned_abs() + (found.col - base.col).unsigned_abs()
-            };
-            let (drl, base) = bases
-                .iter()
-                .copied()
-                .enumerate()
-                .min_by_key(|&(_, base)| distance(base))
-                .unwrap_or((0, pred));
-            let mv = snap_mv(found, base, self.syntax.mv_step());
-            push(
-                mv,
-                InterModes {
-                    mv,
+            let mut best: Option<(Bits, InterModes)> = None;
+            for (drl, &base) in bases.iter().enumerate() {
+                let modes = InterModes {
+                    mv: snap_mv(found, base, self.syntax.mv_step()),
                     ..mode(InterMode::New, drl)
-                },
-            );
+                };
+                let mut sink = RateSink::adapting();
+                self.syntax.price_single_modes(leaf, modes, &mut sink)?;
+                if best.is_none_or(|(bits, _)| sink.bits < bits) {
+                    best = Some((sink.bits, modes));
+                }
+            }
+            if let Some((_, modes)) = best {
+                push(modes.mv, modes);
+            }
         }
         let mut choices: Vec<LeafChoice> = out.into_iter().map(|(_, choice)| choice).collect();
         if self.preset.compound_candidates > 0 && self.syntax.skip_mode_allowed(leaf) {

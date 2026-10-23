@@ -327,6 +327,14 @@ impl Drop for NeighbourMvGrid {
     }
 }
 
+/// One published leaf: `(r, c, n4w, n4h)`, the references of an inter leaf,
+/// and its resolved motion vectors.
+pub(crate) type PublishedLeaf = (
+    (usize, usize, usize, usize),
+    Option<(i8, Option<i8>)>,
+    [Mv; 2],
+);
+
 /// A [`NeighbourMvGrid::checkpoint`].
 pub(crate) struct GridCheckpoint {
     leaves: usize,
@@ -865,6 +873,24 @@ impl NeighbourMvGrid {
                 cells.copy_from_slice(saved);
             }
         }
+    }
+
+    /// The published leaves in publication order.
+    pub(crate) fn published_leaves(&self) -> impl Iterator<Item = PublishedLeaf> + '_ {
+        self.planes.leaves.iter().map(|leaf| {
+            (
+                (
+                    leaf.base_r as usize,
+                    leaf.base_c as usize,
+                    usize::from(leaf.bw4),
+                    usize::from(leaf.bh4),
+                ),
+                leaf.flags
+                    .is_inter()
+                    .then_some((leaf.flags.ref_frame0, leaf.flags.ref_frame1)),
+                [leaf.mv, leaf.mv1],
+            )
+        })
     }
 
     /// Moves the window down to the superblock row holding tile row `row`.

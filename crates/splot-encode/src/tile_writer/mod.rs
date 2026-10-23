@@ -20,7 +20,7 @@ use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink}
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
     EncoderReferences, EncoderSyntaxError, FrameCdfs, IntraTileSyntax, LeafBlock, PartitionNode,
-    TileCdfs, TransformBlock,
+    TileEnd, TransformBlock,
 };
 use splot_recon::{DecodedFrame, ReconError};
 
@@ -202,7 +202,7 @@ impl KeyFrameTileWriter {
     /// coded filter choices.
     pub(crate) fn finish_with_filters(
         self,
-    ) -> Result<(Vec<u8>, DecodedFrame<u16>, TileCdfs, filters::CodedFilters)> {
+    ) -> Result<(Vec<u8>, DecodedFrame<u16>, TileEnd, filters::CodedFilters)> {
         if self.written != self.superblocks {
             return Err(TileWriterError::TileIncomplete {
                 written: self.written,

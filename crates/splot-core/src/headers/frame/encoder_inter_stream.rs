@@ -19,6 +19,7 @@ use crate::headers::frame::{
     FrameReferenceStateView, KeyFrameTxParams, TxMode, init_core_from_prefix, parse_core_body,
     parse_frame_header_prefix,
 };
+use crate::headers::sequence::SuperblockSize;
 use crate::headers::tile_group::{RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructure};
 use crate::span::ByteOffset;
 use crate::types::ObuType;
@@ -57,6 +58,10 @@ pub struct InterFrameParams {
     /// The reference slot whose saved CDFs the frame starts from (§ 5.18.2
     /// `set_primary_ref_frame_and_ctx`); `None` codes `PRIMARY_REF_NONE`.
     pub primary_slot: Option<u32>,
+    /// `use_ref_frame_mvs` (§ 5.18.2): blocks take temporal candidates from
+    /// the projected motion field; needs `enable_ref_frame_mvs`. A read
+    /// `tmvp_sample_step_minus_1` is `0`.
+    pub use_ref_frame_mvs: bool,
     /// `allow_high_precision_mv` (§ 5.18.2): eighth-pel motion vectors;
     /// off, `use_qtr_precision_mv` selects quarter-pel.
     pub high_precision_mv: bool,
@@ -79,6 +84,7 @@ pub struct EncodedFrameHeader {
 /// map with `disable_cross_frame_cdf_init = 0` (else `PRIMARY_REF_NONE` with
 /// `disable_cross_frame_cdf_init = 1`, also when the map does not hold the
 /// slot or holds it only as a restricted reference),
+/// `use_ref_frame_mvs` of `params`,
 /// quarter-pel or, with `high_precision_mv`, eighth-pel motion vectors, the
 /// frame-level `EIGHTTAP` filter,
 /// `reference_select` and `skip_mode_present` of `params`, and the key-frame tail
@@ -93,9 +99,17 @@ pub fn build_inter_frame_header(
     refs: &FrameReferenceStateView<'_>,
     params: &InterFrameParams,
 ) -> Result<EncodedFrameHeader, EncoderHeaderError> {
-    let header = parse_inter_frame_header(seq, refs, params, None)?;
+    let plain = InterFrameParams {
+        use_ref_frame_mvs: false,
+        ..*params
+    };
+    let header = parse_inter_frame_header(seq, refs, &plain, (None, 0))?;
+    let inter = header
+        .core
+        .inter
+        .as_ref()
+        .ok_or(EncoderHeaderError::Incomplete)?;
     let position = params.primary_slot.and_then(|slot| {
-        let inter = header.core.inter.as_ref()?;
         let position = inter
             .ref_frame_idx
             .iter()
@@ -103,19 +117,22 @@ pub fn build_inter_frame_header(
             .position(|(&index, &hint)| index == slot && hint != u32::MAX)?;
         u32::try_from(position).ok()
     });
-    match position {
-        Some(position) => parse_inter_frame_header(seq, refs, params, Some(position)),
-        None => Ok(header),
+    if position.is_none() && !params.use_ref_frame_mvs {
+        return Ok(header);
     }
+    let num_total_refs = inter.num_total_refs.unwrap_or(0);
+    parse_inter_frame_header(seq, refs, params, (position, num_total_refs))
 }
 
+/// Parses the bits of `params` with `primary_ref_frame` over a map of
+/// `num_total_refs` references.
 fn parse_inter_frame_header(
     seq: &CoreSeqView,
     refs: &FrameReferenceStateView<'_>,
     params: &InterFrameParams,
-    primary_ref_frame: Option<u32>,
+    map: (Option<u32>, u32),
 ) -> Result<EncodedFrameHeader, EncoderHeaderError> {
-    let (bytes, bit_len) = inter_frame_header_bits(seq, params, primary_ref_frame)?;
+    let (bytes, bit_len) = inter_frame_header_bits(seq, params, map)?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
@@ -139,7 +156,7 @@ fn parse_inter_frame_header(
 fn inter_frame_header_bits(
     seq: &CoreSeqView,
     params: &InterFrameParams,
-    primary_ref_frame: Option<u32>,
+    (primary_ref_frame, num_total_refs): (Option<u32>, u32),
 ) -> Result<(Vec<u8>, u64), EncoderHeaderError> {
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
@@ -164,6 +181,20 @@ fn inter_frame_header_bits(
         ));
     }
     w.write_bits(params.refresh_frame_flags, seq.num_ref_frames)?;
+    if params.use_ref_frame_mvs && !seq.inter.enable_ref_frame_mvs {
+        return Err(unsupported(
+            "use_ref_frame_mvs without enable_ref_frame_mvs",
+        ));
+    }
+    if seq.inter.enable_ref_frame_mvs {
+        w.write_flag(params.use_ref_frame_mvs)?;
+    }
+    if params.use_ref_frame_mvs
+        && num_total_refs > 1
+        && seq.tile.frame_sb_size(false) != SuperblockSize::Block64x64
+    {
+        w.write_flag(false)?; // tmvp_sample_step_minus_1
+    }
     if seq.seq_force_screen_content_tools == 2 {
         w.write_flag(false)?; // allow_screen_content_tools
     }
