@@ -15354,6 +15354,7 @@ tests = [
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::single_mv_stack_derives_tip_neighbour_for_another_reference",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::single_mv_storage_keeps_the_first_six_candidates",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/derived.rs::tests::derived_mv_storage_keeps_the_first_four_candidates",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/global_motion_tests.rs::stack_index_past_the_candidates_reads_zero",
     "crates/splot-decode/src/prediction/inter/tests.rs::mvstack_fixture_decodes_two_frames",
     "crates/splot-decode/src/prediction/inter/tests.rs::mvstack_fixture_per_frame_hash_is_stable",
     "crates/splot-cli/tests/decode_cli.rs::decode_two_frame_inter_mvstack_fixture_decodes_bit_exact",

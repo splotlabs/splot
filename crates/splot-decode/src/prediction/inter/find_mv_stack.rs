@@ -709,8 +709,10 @@ pub(crate) struct MvStack {
 }
 
 impl MvStack {
+    /// § 7.12.2 zero-initializes `RefStackMv`, so an index at or past
+    /// `NumMvFound` reads the zero entry.
     fn entry(&self, idx: usize) -> Option<&(Mv, (i32, i32))> {
-        self.stack.get(idx).or_else(|| self.stack.last())
+        self.stack.get(idx)
     }
 
     pub(crate) fn candidate(&self, idx: usize) -> Mv {
@@ -778,11 +780,7 @@ impl CompoundMvStack {
     }
 
     pub(crate) fn candidate(&self, idx: usize) -> CompoundMvCandidate {
-        self.stack
-            .get(idx)
-            .or_else(|| self.stack.last())
-            .copied()
-            .unwrap_or_default()
+        self.stack.get(idx).copied().unwrap_or_default()
     }
 }
 
