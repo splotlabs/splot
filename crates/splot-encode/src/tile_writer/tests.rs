@@ -85,6 +85,7 @@ impl Case {
                 ref_frame_mvs: false,
                 refmvbank: false,
                 drl_reorder: None,
+                max_drl_bits_minus_1: 0,
             },
             max_level: 12,
             tx: KeyFrameTxParams {
