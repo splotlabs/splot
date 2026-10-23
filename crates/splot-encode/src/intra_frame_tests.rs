@@ -13,7 +13,7 @@ use splot_decode::encoder_syntax::LeafBlock;
 use crate::config::{RateControlMode, TileLayout};
 use crate::encoder::Encoder;
 use crate::gop::GopFrame;
-use crate::preset::Preset;
+use crate::preset::{PRESETS, Preset};
 use crate::rate_control::FrameType;
 use crate::test_support::{
     assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes, refs_for,
@@ -631,11 +631,9 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let tools = (
-        tx_choice::key_frame_tx_params(coder.preset),
-        true,
-        coder.tiles,
-    );
+    let (tx, _, high_precision_mv, tiles) =
+        crate::gop::frame_tools(coder.preset, coder.tiles, qindex);
+    let tools = (tx, true, high_precision_mv, tiles);
     let filters = FrameFilterParams::default();
     let core = plan
         .header(&coder.view, &coder.references, qindex, &filters, tools)
@@ -769,7 +767,7 @@ fn search_frame(
             &coder.references,
             90,
             &FrameFilterParams::default(),
-            crate::gop::frame_tools(coder.preset, coder.tiles),
+            crate::gop::frame_tools(coder.preset, coder.tiles, 90),
         )
         .unwrap();
     let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references, 0).unwrap();
@@ -895,8 +893,13 @@ const TILE_CASES: [TileCase; 4] = [
 ];
 
 /// Codes a key frame and two inter frames of panning content in the tiles of
-/// `case` on `threads` threads; returns the units and the encoder recon.
-fn tiled_stream(case: TileCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
+/// `case` on `threads` threads, with the search limits `params` in place of
+/// the case's preset row when given; returns the units and the encoder recon.
+fn tiled_stream(
+    case: TileCase,
+    threads: usize,
+    params: Option<&'static PresetParams>,
+) -> (Vec<Vec<u8>>, Vec<u8>) {
     let (width, height, bit_depth, preset, qp, (cols_log2, rows_log2)) = case;
     let mut config = config(width, height, bit_depth, preset, qp);
     config.tiles = TileLayout {
@@ -905,6 +908,7 @@ fn tiled_stream(case: TileCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
     };
     config.threads = splot_parallel::ThreadCount::from(threads);
     let mut coder = IntraFrameCoder::new(&config).unwrap();
+    coder.preset = params.unwrap_or(coder.preset);
     let coded: Vec<CodedFrame> = (0..3)
         .map(|index| {
             let plan = crate::gop::plan(u64::from(index), config.keyint);
@@ -926,9 +930,9 @@ fn tiled_stream(case: TileCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
 #[test]
 fn multi_tile_frames_decode_to_the_encoder_recon() {
     for case in TILE_CASES {
-        let (units, expected) = tiled_stream(case, 2);
+        let (units, expected) = tiled_stream(case, 2, None);
         assert_same_samples(&decode(&units.concat()), &expected, &format!("{case:?}"));
-        let (single, _) = tiled_stream((case.0, case.1, case.2, case.3, case.4, (0, 0)), 1);
+        let (single, _) = tiled_stream((case.0, case.1, case.2, case.3, case.4, (0, 0)), 1, None);
         assert_ne!(units, single, "{case:?}: the tile layout changes no byte");
     }
 }
@@ -936,10 +940,62 @@ fn multi_tile_frames_decode_to_the_encoder_recon() {
 #[test]
 fn multi_tile_output_does_not_depend_on_the_thread_count() {
     let case = TILE_CASES[3];
-    let (one, _) = tiled_stream(case, 1);
+    let (one, _) = tiled_stream(case, 1, None);
     for threads in [2, 8] {
-        assert!(tiled_stream(case, threads).0 == one, "{threads} threads");
+        assert!(
+            tiled_stream(case, threads, None).0 == one,
+            "{threads} threads"
+        );
     }
+}
+
+/// Preset 9 refining to eighth samples in frames up to `base_q_idx` 100.
+static EIGHTH_PEL: PresetParams = PresetParams {
+    subpel_depth: 3,
+    eighth_pel_max_qindex: 100,
+    ..PRESETS[9]
+};
+
+/// [`EIGHTH_PEL`] refining to quarter samples.
+static QUARTER_PEL: PresetParams = PresetParams {
+    subpel_depth: 2,
+    ..EIGHTH_PEL
+};
+
+/// Eighth-pel refinement up to the preset's quantizer threshold: the search
+/// picks odd vector components, the stream decodes to the encoder recon, and
+/// 1, 2 and 8 threads write the same bytes. Above the threshold the frames
+/// are the quarter-pel frames of `subpel_depth` 2.
+#[test]
+fn eighth_pel_vectors_decode_to_the_encoder_recon_on_any_thread_count() {
+    let case = (72, 8, BitDepth::Eight, 9, 100, (1, 0));
+    let (one, expected) = tiled_stream(case, 1, Some(&EIGHTH_PEL));
+    assert_same_samples(&decode(&one.concat()), &expected, "eighth-pel");
+    for threads in [2, 8] {
+        let (units, _) = tiled_stream(case, threads, Some(&EIGHTH_PEL));
+        assert!(units == one, "{threads} threads");
+    }
+    let above = (72, 8, BitDepth::Eight, 9, 101, (1, 0));
+    assert_eq!(
+        tiled_stream(above, 1, Some(&EIGHTH_PEL)).0,
+        tiled_stream(above, 1, Some(&QUARTER_PEL)).0
+    );
+    let config = config(72, 8, BitDepth::Eight, 9, 90);
+    let mut coder = IntraFrameCoder::new(&config).unwrap();
+    coder.preset = &EIGHTH_PEL;
+    let key = crate::gop::plan(0, config.keyint);
+    coder
+        .encode_frame(&panning_frame(&config, 0), &key, 90)
+        .unwrap();
+    let plan = crate::gop::plan(1, config.keyint);
+    let trees = search_frame(&coder, &plan, &panning_frame(&config, 1), config.bit_depth);
+    let odd = |choice: &LeafChoice| match choice.inter {
+        Some(InterPrediction::Single(modes)) if modes.mode == InterMode::New => {
+            modes.mv.row % 2 != 0 || modes.mv.col % 2 != 0
+        }
+        _ => false,
+    };
+    assert!(trees.iter().map(|tree| leaves(tree, odd)).sum::<usize>() > 0);
 }
 
 /// AVM decodes multi-tile key and inter frames to the encoder reconstructions.
@@ -950,7 +1006,7 @@ fn avm_decodes_multi_tile_frames_like_splot() {
         return;
     };
     for (index, case) in TILE_CASES.into_iter().enumerate() {
-        let (units, expected) = tiled_stream(case, 4);
+        let (units, expected) = tiled_stream(case, 4, None);
         let (width, height, bit_depth, ..) = case;
         let avm = avm_decode(
             &avmdec,

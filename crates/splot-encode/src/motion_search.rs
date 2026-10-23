@@ -7,12 +7,13 @@
 //! pyramids of 2x2-average levels, built once per frame. A block search starts
 //! at the coarsest level its size allows: it scores the seed vectors, searches
 //! the preset's range scaled to that level around the best one, and refines
-//! by two samples per finer level. Sub-pixel refinement then tries the half
-//! and quarter positions around the best vector with the decoder's own
-//! interpolation (§ 7.11.3.3 parameters from the facade, `splot_recon` kernels),
-//! scored by SATD. Every score adds an approximate vector rate. Compound
-//! candidates reuse the single-reference results; they are ranked by the SATD
-//! of the averaged predictions of their two lists.
+//! by two samples per finer level. Sub-pixel refinement then tries the half,
+//! quarter and eighth positions the preset's depth allows around the best
+//! vector with the decoder's own interpolation (§ 7.11.3.3 parameters from the
+//! facade, `splot_recon` kernels), scored by SATD. Every score adds an
+//! approximate vector rate. Compound candidates reuse the single-reference
+//! results; they are ranked by the SATD of the averaged predictions of their
+//! two lists.
 
 use splot_decode::encoder_syntax::{IntraTileSyntax, MotionVector};
 use splot_recon::{ReferencePlaneView, subpel_predict_block_strided_into};
@@ -123,7 +124,11 @@ pub(crate) struct MotionSearch {
     references: Vec<Pyramid>,
     source: Pyramid,
     range: i32,
+    /// The preset's sub-pel depth, capped at the frame's vector precision:
+    /// a finer position would not be codable.
     subpel_depth: u8,
+    /// The frame's `NEWMV` difference step in `1/8` samples.
+    mv_step: u32,
     /// `sqrt(lambda)` in Q8, the SAD-domain multiplier of a bit.
     sad_lambda_q8: u64,
 }
@@ -155,12 +160,14 @@ impl MotionSearch {
             references.push(Pyramid::new(base));
         }
         let (luma, stride, width, height) = source.luma();
+        let mv_step = syntax.mv_step().unsigned_abs();
         let source = Pyramid::new(Level::padded(width, height, 0, |y, x| luma[y * stride + x]));
         Ok(Some(Self {
             references,
             source,
             range: i32::from(preset.motion_range),
-            subpel_depth: preset.subpel_depth,
+            subpel_depth: preset.subpel_depth.min(3 - mv_step.ilog2().min(3) as u8),
+            mv_step,
             sad_lambda_q8: lambda.sse_per_bit_q16().isqrt(),
         }))
     }
@@ -244,7 +251,7 @@ impl MotionSearch {
             return Ok(mv);
         }
         let mut best_cost = self.subpel_cost(syntax, ref_frame, block, mv, pred)?;
-        let steps = [FULL / 2, FULL / 4];
+        let steps = [FULL / 2, FULL / 4, FULL / 8];
         for &step in &steps[..usize::from(self.subpel_depth).min(steps.len())] {
             let center = mv;
             for (dr, dc) in NEIGHBOURS {
@@ -306,9 +313,10 @@ impl MotionSearch {
     }
 
     /// The approximate rate of coding `mv` against `pred`, in SAD units: two
-    /// bits per binary order of the joint quarter-sample difference.
+    /// bits per binary order of the joint difference in `NEWMV` steps.
     pub(crate) fn rate(&self, mv: MotionVector, pred: MotionVector) -> u64 {
-        let shell = ((mv.row - pred.row).unsigned_abs() + (mv.col - pred.col).unsigned_abs()) >> 1;
+        let shell = ((mv.row - pred.row).unsigned_abs() + (mv.col - pred.col).unsigned_abs())
+            / self.mv_step;
         let bits_q8 = 2 * u64::from(log2_q8(shell + 1)) + 256;
         (bits_q8 * self.sad_lambda_q8) >> 16
     }

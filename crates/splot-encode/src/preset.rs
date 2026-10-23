@@ -38,6 +38,10 @@ pub struct PresetParams {
     pub motion_range: u16,
     /// Sub-pel refinement depth: `0` full-pel, `1` half, `2` quarter, `3` eighth.
     pub subpel_depth: u8,
+    /// The largest frame `base_q_idx` that codes eighth-pel vectors when
+    /// `subpel_depth` is `3`; other inter frames code quarter-pel vectors and
+    /// refine to quarter samples. `0` never codes eighth-pel.
+    pub eighth_pel_max_qindex: u16,
     /// Loop-filter levels tried per frame; `0` derives the level from the qp.
     pub loop_filter_search: u8,
     /// Frames per mini-GOP, `1..=8`: `1` codes every frame shown (IPPP);
@@ -59,7 +63,7 @@ const fn row(
     partition_early_exit: bool,
     (rdoq, full_trials): (bool, bool),
     (tx_type_depth, tx_partition_search): (u8, bool),
-    motion: (u16, u8),
+    motion: (u16, u8, u16),
     (loop_filter_search, mini_gop_size, lookahead_frames, compound_candidates): (u8, u8, u8, u8),
 ) -> PresetParams {
     PresetParams {
@@ -73,6 +77,7 @@ const fn row(
         tx_partition_search,
         motion_range: motion.0,
         subpel_depth: motion.1,
+        eighth_pel_max_qindex: motion.2,
         loop_filter_search,
         mini_gop_size,
         lookahead_frames,
@@ -88,7 +93,7 @@ pub const PRESETS: [PresetParams; 11] = [
         false,
         (true, true),
         (3, true),
-        (256, 3),
+        (256, 3, 128),
         (3, 8, 16, 8),
     ),
     row(
@@ -97,7 +102,7 @@ pub const PRESETS: [PresetParams; 11] = [
         false,
         (true, true),
         (3, true),
-        (192, 3),
+        (192, 3, 128),
         (3, 8, 16, 8),
     ),
     row(
@@ -106,7 +111,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, true),
         (3, true),
-        (128, 3),
+        (128, 3, 128),
         (2, 8, 16, 6),
     ),
     row(
@@ -115,7 +120,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, true),
         (2, true),
-        (96, 2),
+        (96, 2, 0),
         (2, 8, 16, 6),
     ),
     row(
@@ -124,7 +129,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, false),
         (2, true),
-        (64, 2),
+        (64, 2, 0),
         (2, 4, 8, 4),
     ),
     row(
@@ -133,7 +138,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, false),
         (2, true),
-        (64, 2),
+        (64, 2, 0),
         (1, 4, 8, 4),
     ),
     row(
@@ -142,7 +147,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, false),
         (1, true),
-        (48, 2),
+        (48, 2, 0),
         (1, 4, 8, 3),
     ),
     row(
@@ -151,7 +156,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (1, false),
-        (32, 1),
+        (32, 1, 0),
         (1, 4, 8, 2),
     ),
     row(
@@ -160,7 +165,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (1, false),
-        (24, 1),
+        (24, 1, 0),
         (0, 2, 4, 1),
     ),
     row(
@@ -169,7 +174,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (0, false),
-        (16, 1),
+        (16, 1, 0),
         (0, 2, 4, 0),
     ),
     row(
@@ -178,7 +183,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (0, false),
-        (16, 0),
+        (16, 0, 0),
         (0, 1, 2, 0),
     ),
 ];
@@ -241,6 +246,7 @@ mod tests {
             assert!(fast.tx_partition_search <= slow.tx_partition_search);
             assert!(fast.motion_range <= slow.motion_range);
             assert!(fast.subpel_depth <= slow.subpel_depth);
+            assert!(fast.eighth_pel_max_qindex <= slow.eighth_pel_max_qindex);
             assert!(fast.loop_filter_search <= slow.loop_filter_search);
             assert!(fast.mini_gop_size <= slow.mini_gop_size);
             assert!(fast.lookahead_frames <= slow.lookahead_frames);

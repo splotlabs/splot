@@ -33,7 +33,8 @@
 //! `monotonic_output_order_flag`, so a hidden frame is shown by a
 //! show-existing frame with `derive_sef_order_hint = 1`; inter frames code
 //! `primary_ref_frame = PRIMARY_REF_NONE` with `disable_cross_frame_cdf_init =
-//! 1`, so no CDFs carry across frames; motion vectors are quarter-pel.
+//! 1`, so no CDFs carry across frames; motion vectors are eighth-pel when the
+//! preset refines to eighth samples at the frame's quantizer, else quarter-pel.
 
 use core::num::NonZeroU32;
 
@@ -337,18 +338,20 @@ pub(crate) fn plan(frame_index: u64, keyint: NonZeroU32) -> GopFrame {
     frame.unwrap_or_else(|| unreachable!("IPPP codes every input frame"))
 }
 
-/// The frame-level tool choices of `preset`: the transform parameters,
-/// whether inter frames code compound and skip-mode blocks, and the `tiles`.
-pub(crate) fn frame_tools(
-    preset: &PresetParams,
-    tiles: UniformTiles,
-) -> (KeyFrameTxParams, bool, UniformTiles) {
+/// The frame-level tool choices of `preset` for a frame at `qindex`: the
+/// transform parameters, whether inter frames code compound and skip-mode
+/// blocks, whether their motion vectors are eighth-pel, and the `tiles`.
+pub(crate) fn frame_tools(preset: &PresetParams, tiles: UniformTiles, qindex: u32) -> FrameTools {
     (
         crate::tx_choice::key_frame_tx_params(preset),
         preset.compound_candidates > 0,
+        preset.subpel_depth == 3 && qindex <= u32::from(preset.eighth_pel_max_qindex),
         tiles,
     )
 }
+
+/// `(tx, compound, high_precision_mv, tiles)` of [`frame_tools`].
+pub(crate) type FrameTools = (KeyFrameTxParams, bool, bool, UniformTiles);
 
 /// A temporal delimiter and the `OBU_REGULAR_SEF` that outputs `slot`.
 pub(crate) fn show_existing_unit(view: &CoreSeqView, slot: u32) -> Result<Vec<u8>> {
@@ -368,7 +371,7 @@ impl GopFrame {
         refs: &EncoderReferences,
         qindex: u32,
         filters: &FrameFilterParams,
-        (tx, compound, tiles): (KeyFrameTxParams, bool, UniformTiles),
+        (tx, compound, high_precision_mv, tiles): FrameTools,
     ) -> Result<FrameHeaderCore> {
         let core = match self.frame_type {
             FrameType::Key => {
@@ -377,7 +380,7 @@ impl GopFrame {
             FrameType::Inter => build_inter_frame_header(
                 view,
                 &refs.header_view(),
-                &self.inter_params(qindex, filters, (tx, compound, tiles)),
+                &self.inter_params(qindex, filters, (tx, compound, high_precision_mv, tiles)),
             )
             .map(|header| header.core),
         }
@@ -392,7 +395,7 @@ impl GopFrame {
     }
 
     /// The OBUs of the frame `core` built by [`Self::header`] with
-    /// `(qindex, filters, (tx, compound, tiles))`, whose tile group carries
+    /// `(qindex, filters, tools)`, whose tile group carries
     /// `tiles`, after a temporal delimiter when the frame opens its temporal
     /// unit; a key frame repeats the sequence header. The header codes the
     /// smallest `TileSizeBytes` that fits the tiles.
@@ -401,10 +404,10 @@ impl GopFrame {
         seq: &SequenceHeader,
         view: &CoreSeqView,
         refs: &EncoderReferences,
-        (qindex, filters, (tx, compound, layout)): (
+        (qindex, filters, (tx, compound, high_precision_mv, layout)): (
             u32,
             &FrameFilterParams,
-            (KeyFrameTxParams, bool, UniformTiles),
+            FrameTools,
         ),
         core: &FrameHeaderCore,
         tiles: &[&[u8]],
@@ -430,13 +433,14 @@ impl GopFrame {
                     what: "a key frame after another frame of its temporal unit",
                 });
             }
-            let core = self.header(view, refs, qindex, filters, (tx, compound, layout))?;
+            let tools = (tx, compound, high_precision_mv, layout);
+            let core = self.header(view, refs, qindex, filters, tools)?;
             return encode_key_frame_temporal_unit(seq, &core, true, tiles).map_err(header_error);
         }
         let header = build_inter_frame_header(
             view,
             &refs.header_view(),
-            &self.inter_params(qindex, filters, (tx, compound, layout)),
+            &self.inter_params(qindex, filters, (tx, compound, high_precision_mv, layout)),
         )
         .map_err(header_error)?;
         if header.core != expected {
@@ -457,7 +461,7 @@ impl GopFrame {
         &self,
         qindex: u32,
         filters: &FrameFilterParams,
-        (tx, compound, tiles): (KeyFrameTxParams, bool, UniformTiles),
+        (tx, compound, high_precision_mv, tiles): FrameTools,
     ) -> InterFrameParams {
         InterFrameParams {
             base_q_idx: qindex,
@@ -469,6 +473,7 @@ impl GopFrame {
             tiles,
             reference_select: compound,
             skip_mode_present: compound,
+            high_precision_mv,
         }
     }
 }
