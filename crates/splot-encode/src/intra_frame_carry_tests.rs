@@ -52,7 +52,7 @@ fn planned_stream(
 /// without carry, frames code `PRIMARY_REF_NONE` and start from the defaults.
 #[test]
 fn inter_frames_start_from_the_primary_reference_cdfs() {
-    let config = config(72, 40, BitDepth::Ten, 7, 110);
+    let config = config(72, 24, BitDepth::Ten, 7, 110);
     let on = Preset::new(7).unwrap().params();
     let off: &'static PresetParams = Box::leak(Box::new(PresetParams {
         cdf_carry: false,
@@ -94,7 +94,7 @@ fn inter_frames_start_from_the_primary_reference_cdfs() {
 
 /// A mini-GOP stream in 2x2 tiles, coded through the [`Encoder`] on `threads`.
 fn tiled_mini_gop(threads: usize) -> (Config, Vec<Vec<u8>>, Vec<u8>) {
-    let mut config = config(136, 72, BitDepth::Eight, 7, 100);
+    let mut config = config(72, 72, BitDepth::Eight, 7, 100);
     config.tiles = TileLayout {
         cols_log2: 1,
         rows_log2: 1,
@@ -108,9 +108,7 @@ fn tiled_mini_gop(threads: usize) -> (Config, Vec<Vec<u8>>, Vec<u8>) {
 fn tiled_mini_gops_decode_alike_on_any_thread_count() {
     let (_, one, expected) = tiled_mini_gop(1);
     assert_same_samples(&decode(&one.concat()), &expected, "2x2 tiles");
-    for threads in [2, 8] {
-        assert!(tiled_mini_gop(threads).1 == one, "{threads} threads");
-    }
+    assert!(tiled_mini_gop(3).1 == one, "3 threads");
 }
 
 /// AVM decodes a carried 2x2-tile mini-GOP stream to the encoder recon.

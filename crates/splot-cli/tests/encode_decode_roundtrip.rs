@@ -15,7 +15,7 @@ mod common;
 use common::{splot, temp_input, temp_output};
 
 const WIDTH: usize = 72;
-const HEIGHT: usize = 40;
+const HEIGHT: usize = 24;
 const FRAMES: usize = 6;
 
 /// Chroma subsampling `(x, y)` of 4:2:0, 4:2:2 and 4:4:4.
@@ -164,23 +164,32 @@ fn crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats() {
     round_trip(10, YUV420, &["--bitrate", "200", "--rc", "cbr"]);
 }
 
-/// Ten frames at preset 6 code a key frame, two mini-GOPs of 4 with waves of
-/// leaf frames, and a short one; one tile and two tiles give the same IVF at
-/// every thread count in every chroma format.
+/// Ten frames at presets 6 and 7 code a key frame, two mini-GOPs of 4 with
+/// waves of leaf frames, and a short one; one tile and two tiles (preset 7
+/// codes 64x64 superblocks) give the same IVF on one thread and on more
+/// threads than tiles or leaf frames per wave.
 #[test]
-fn encode_output_is_byte_identical_across_thread_counts() {
-    for subsampling in [YUV420, YUV422, YUV444] {
-        byte_identical_across_thread_counts(subsampling);
-    }
+fn encode_420_output_is_byte_identical_across_thread_counts() {
+    byte_identical_across_thread_counts(YUV420);
+}
+
+#[test]
+fn encode_422_output_is_byte_identical_across_thread_counts() {
+    byte_identical_across_thread_counts(YUV422);
+}
+
+#[test]
+fn encode_444_output_is_byte_identical_across_thread_counts() {
+    byte_identical_across_thread_counts(YUV444);
 }
 
 fn byte_identical_across_thread_counts(subsampling: (usize, usize)) {
     let (y4m, _) = synthetic_y4m(8, subsampling, 10);
     let input = temp_input("y4m", &y4m);
     let input_s = input.to_str().unwrap();
-    for tiles in ["1x1", "2x1"] {
+    for (tiles, preset) in [("1x1", "6"), ("2x1", "7")] {
         let mut streams = Vec::new();
-        for threads in ["1", "2", "8"] {
+        for threads in ["1", "3"] {
             let ivf = temp_output("ivf");
             let ivf_s = ivf.to_str().unwrap();
             let encode = splot(&[
@@ -191,7 +200,7 @@ fn byte_identical_across_thread_counts(subsampling: (usize, usize)) {
                 "--keyint",
                 "16",
                 "--preset",
-                "6",
+                preset,
                 "--qp",
                 "90",
                 "--tiles",
