@@ -78,10 +78,11 @@ pub(crate) fn code_coeffs(
     {
         return Err(TileWriterError::LevelOutOfRange(bad));
     }
-    let mut grid = CoeffLevels::for_block(tx)?;
-    let scan = grid.scan();
+    let scan = coefficient_scan(tx)?;
     let eob = eob(tx, levels)?;
-    if let Some(parity) = syntax.parity_hiding(tx)
+    let mut hidden = false;
+    if eob > 0
+        && let Some(parity) = syntax.parity_hiding(tx)
         && let Some(sum_abs1) = parity.sum_abs1(levels)?
     {
         if levels[usize::from(scan[0])].unsigned_abs() & 1 != sum_abs1 {
@@ -89,7 +90,7 @@ pub(crate) fn code_coeffs(
                 "a scan index 0 level of the wrong hidden parity",
             ));
         }
-        grid.set_hidden(true);
+        hidden = true;
     }
     write_symbol(
         symbols,
@@ -113,6 +114,8 @@ pub(crate) fn code_coeffs(
         let pos = usize::from(scan[c]);
         (pos, pos >> log2_w, pos & (width - 1))
     };
+    let mut grid = CoeffLevels::for_block(tx)?;
+    grid.set_hidden(hidden);
     for c in (0..eob).rev() {
         let (pos, row, col) = position(c);
         let is_lf = grid.is_low_frequency(row, col, plane);

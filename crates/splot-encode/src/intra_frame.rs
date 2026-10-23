@@ -510,7 +510,8 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let lambda_q8 = self.lambda.coefficient_q8(params.dq_denom);
         let parity = syntax.parity_hiding(tx);
         let mut rates = CdfCoeffRates { syntax, tx };
-        let rdoq_type = self.preset.rdoq_every_type || (tx.tx_type as u8) < TxType::Idtx as u8;
+        let every_type = self.preset.rdoq_every_type && !self.trial;
+        let rdoq_type = every_type || (tx.tx_type as u8) < TxType::Idtx as u8;
         if self.preset.rdoq && !self.candidate && rdoq_type {
             rdoq(
                 kernels(),

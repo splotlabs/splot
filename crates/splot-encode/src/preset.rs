@@ -23,8 +23,8 @@ pub struct PresetParams {
     pub partition_early_exit: bool,
     /// Rate-distortion optimized quantization.
     pub rdoq: bool,
-    /// RDOQ also quantizes the identity and 1D transform types; off, they
-    /// take the deadzone quantizer.
+    /// RDOQ also quantizes the identity and 1D transform types outside mode
+    /// trials; off, they take the deadzone quantizer.
     pub rdoq_every_type: bool,
     /// Parity hiding (`enable_parity_hiding`): a luma block with enough
     /// nonzero levels hides the parity of its first level in their sum. Off

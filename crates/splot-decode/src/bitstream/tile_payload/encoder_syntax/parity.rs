@@ -90,3 +90,35 @@ impl ParityHiding {
         }))
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::super::super::coeff_loop::sign_symbol::{
+        CoeffSignReadSource, derive_nonzero_coeff_sign_input,
+    };
+    use super::super::{CoeffLevels, TxType};
+    use super::CoeffScanEntry;
+
+    /// `CoeffLevels::sign_has_cdf` skips the decoder rule off row 0 and
+    /// column 0: no class codes a CDF sign there.
+    #[test]
+    fn sign_rows_only_lie_on_row_or_column_zero() {
+        for tx_type in [TxType::DctDct, TxType::Idtx, TxType::VDct, TxType::HDct] {
+            for hidden in [false, true] {
+                let mut grid = CoeffLevels::new(32, 32, tx_type).expect("grid");
+                grid.set_hidden(hidden);
+                for (plane, row, col) in
+                    (0..3).flat_map(|p| (0..32).flat_map(move |r| (0..32).map(move |c| (p, r, c))))
+                {
+                    let entry = CoeffScanEntry::new(0, 0, row, col);
+                    let cdf = matches!(
+                        derive_nonzero_coeff_sign_input(entry, 1, grid.sign_config(plane)).source,
+                        CoeffSignReadSource::Cdf(_)
+                    );
+                    assert_eq!(grid.sign_has_cdf(row, col, plane), cdf);
+                }
+            }
+        }
+    }
+}

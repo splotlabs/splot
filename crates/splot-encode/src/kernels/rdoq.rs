@@ -546,6 +546,7 @@ impl<'b> Walk<'b> {
     }
 
     /// Records `level` at scan index `c` as the writer's grid and remainder state do.
+    #[inline]
     fn commit(&mut self, c: usize, level: u32, costs: &LevelCosts) -> Result<(), KernelError> {
         let pos = usize::from(self.scan[c]);
         let capped = (level >> costs.shift).min(costs.max);

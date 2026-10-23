@@ -23,7 +23,9 @@ use splot_recon::{
 };
 
 use super::cdf::block_context::{IntraYMode, uv_mode_ctx};
-use super::cdf::coeff_context::{CoeffBaseContext, CoeffBrContext, coeff_base_eob_ctx};
+use super::cdf::coeff_context::{
+    CoeffBaseContext, CoeffBaseSelection, CoeffBrContext, coeff_base_eob_ctx,
+};
 use super::cdf::{CoeffBaseRow, CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
 use super::coeff_loop::base_level_pass::tx_class_index;
 use super::coeff_loop::max_level::{
@@ -349,6 +351,9 @@ impl CoeffLevels {
     #[must_use]
     #[inline]
     pub fn sign_has_cdf(&self, row: usize, col: usize, plane: usize) -> bool {
+        if row > 0 && col > 0 {
+            return false;
+        }
         let entry = CoeffScanEntry::new(0, 0, row, col);
         matches!(
             derive_nonzero_coeff_sign_input(entry, 1, self.sign_config(plane)).source,
@@ -357,7 +362,7 @@ impl CoeffLevels {
     }
 
     /// The sign source of this grid, without the neighbour DC contexts.
-    const fn sign_config(&self, plane: usize) -> CoeffSignSourceDeriveConfig<'static> {
+    pub(super) const fn sign_config(&self, plane: usize) -> CoeffSignSourceDeriveConfig<'static> {
         CoeffSignSourceDeriveConfig {
             plane,
             plane_type: if plane > 0 { 1 } else { 0 },
@@ -902,17 +907,21 @@ impl IntraTileSyntax {
         (row, col, c): (usize, usize, usize),
         is_lf: bool,
     ) -> Result<&mut [u16]> {
-        let selection = CoeffBaseContext {
+        let context = CoeffBaseContext {
             row,
             col,
             stride: levels.state.level_stride(),
             plane,
             is_lf,
-            is_hidden: levels.hidden,
+            is_hidden: false,
             c,
             tx_class: tx_class_index(levels.class),
-        }
-        .select(levels.state.level());
+        };
+        let selection = if levels.hides(c) {
+            hidden_base_selection(context, levels.state.level())
+        } else {
+            context.select(levels.state.level())
+        };
         let (base, _) = self.cdfs.rows_span();
         let tx_size = txb_skip_tx_size_ctx(tx_size);
         let row = match self
@@ -1028,6 +1037,16 @@ impl IntraTileSyntax {
         self.journal.log(base, CdfRow::Tile(selector), row);
         Ok(row)
     }
+}
+
+/// The `coeff_base` row selection of a level whose parity the block hides.
+#[inline(never)]
+fn hidden_base_selection(context: CoeffBaseContext, level: &[u8]) -> CoeffBaseSelection {
+    CoeffBaseContext {
+        is_hidden: true,
+        ..context
+    }
+    .select(level)
 }
 
 fn neighbour<T, E: std::error::Error + Send + Sync + 'static>(
