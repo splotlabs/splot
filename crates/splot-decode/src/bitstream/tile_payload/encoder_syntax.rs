@@ -67,7 +67,9 @@ pub use super::cdf::block_context::IntraYMode as IntraMode;
 pub use compound::{
     COMPOUND_MODES, CompoundMode, CompoundModes, InterPrediction, JMVD_SCALE_MODES,
 };
-pub use inter::{EncoderReferences, InterMode, InterModes, MV_PRECISION_EIGHTH_PEL, MotionVector};
+pub use inter::{
+    EncoderReferences, InterMode, InterModes, MV_PRECISION_EIGHTH_PEL, MotionVector, SingleMvs,
+};
 pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, TxType};
 pub use parity::ParityHiding;
 pub use rollback::SyntaxSnapshot;
@@ -493,13 +495,20 @@ pub fn tile_ranges(core: &FrameHeaderCore, tile: usize) -> Result<(Range<usize>,
     ))
 }
 
-/// The CDFs a frame starts from (§ 5.18.2), shared by its tiles.
+/// The state a frame starts from, shared by its tiles: the CDFs (§ 5.18.2)
+/// and, with `use_ref_frame_mvs`, the projected motion field (§ 7.9).
 #[derive(Clone)]
-pub struct FrameCdfs(std::sync::Arc<FrameCdfSubset>);
+pub struct FrameStart {
+    cdfs: std::sync::Arc<FrameCdfSubset>,
+    temporal: Option<std::sync::Arc<crate::prediction::inter::TemporalMvContext>>,
+}
 
-/// The CDFs of a coded tile after its last symbol, which
-/// [`EncoderReferences::update`] folds into the saved CDFs of the frame.
-pub struct TileCdfs(TileCdfSubset);
+/// The CDFs and § 7.19 motion records of a coded tile after its last leaf,
+/// which [`EncoderReferences::update`] folds into the saved state of the frame.
+pub struct TileEnd {
+    cdfs: TileCdfSubset,
+    motion: Vec<crate::prediction::inter::TemporalMotionBlock>,
+}
 
 /// One tile's CDF rows, neighbour state, and reconstruction.
 pub struct IntraTileSyntax {
@@ -539,20 +548,20 @@ impl IntraTileSyntax {
         refs: &EncoderReferences,
         tile: usize,
     ) -> Result<Self> {
-        Self::with_cdfs(seq, core, refs, &refs.initial_cdfs(core)?, tile)
+        Self::with_start(seq, core, refs, &refs.frame_start(core)?, tile)
     }
 
-    /// [`Self::new`] for a frame whose initial CDFs `cdfs`
-    /// [`EncoderReferences::initial_cdfs`] returned for `core`, so the tiles
-    /// of one frame share them.
+    /// [`Self::new`] for a frame that starts from the `start`
+    /// [`EncoderReferences::frame_start`] returned for `core`, so the tiles
+    /// of one frame share it.
     ///
     /// # Errors
     /// As [`Self::new`].
-    pub fn with_cdfs(
+    pub fn with_start(
         seq: &SequenceHeader,
         core: &FrameHeaderCore,
         refs: &EncoderReferences,
-        cdfs: &FrameCdfs,
+        start: &FrameStart,
         tile: usize,
     ) -> Result<Self> {
         if seq.partition.is_some_and(|partition| partition.enable_sdp) {
@@ -574,12 +583,13 @@ impl IntraTileSyntax {
             .map_err(rule("superblock size"))?;
         let chroma = seq.general.chroma_format_idc;
         let tools = intra::IntraTools::new(seq, core, base_q_idx)?;
-        let cdfs = cdfs.0.tile_copy();
+        let cdfs = start.cdfs.tile_copy();
         let journal = CdfJournal::new(&cdfs);
         let inter = inter::InterLeafState::new(
             seq,
             core,
             refs,
+            start.temporal.clone(),
             (rows.clone(), cols.clone()),
             (base_q_idx, tools.bit_depth),
         )?;

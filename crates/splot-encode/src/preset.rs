@@ -65,6 +65,10 @@ pub struct PresetParams {
     /// Inter frames start from the saved CDFs of a reference frame instead of
     /// the default CDFs, and the sequence enables CDF averaging.
     pub cdf_carry: bool,
+    /// Inter frames predict motion vectors from the projected motion fields
+    /// of their references and from the reference MV bank, and reorder the
+    /// DRL candidates.
+    pub mv_prediction: bool,
 }
 
 const fn row(
@@ -95,6 +99,7 @@ const fn row(
         lookahead_frames,
         compound_candidates,
         cdf_carry: true,
+        mv_prediction: true,
     }
 }
 
@@ -268,6 +273,7 @@ mod tests {
             assert!(fast.lookahead_frames <= slow.lookahead_frames);
             assert!(fast.compound_candidates <= slow.compound_candidates);
             assert!(fast.cdf_carry <= slow.cdf_carry);
+            assert!(fast.mv_prediction <= slow.mv_prediction);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));

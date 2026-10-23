@@ -8,6 +8,7 @@ use crate::annexb::parse_annex_b_obus_partial;
 use crate::headers::frame::{
     CdefStrengthSet, CdefStrengthSets, FrameRestorationType, FrameSize, FrameType, TxMode,
 };
+use crate::headers::sequence::DrlReorder;
 use crate::write::write_frame_header_core;
 
 const SIZES: [(u32, u32); 9] = [
@@ -155,6 +156,9 @@ fn every_tool_flag_reaches_the_parsed_header() {
         tcq: true,
         parity_hiding: false,
         avg_cdf: Some(false),
+        ref_frame_mvs: true,
+        refmvbank: true,
+        drl_reorder: Some(true),
     };
     let mut p = params(640, 360, BitDepthIdc::Ten, SuperblockSize::Block64x64);
     p.tools = tools;
@@ -172,6 +176,9 @@ fn every_tool_flag_reaches_the_parsed_header() {
     );
     assert!(tq.enable_cctx && tq.enable_tcq && !tq.enable_parity_hiding);
     assert!(tq.enable_avg_cdf && tq.avg_cdf_type == 0);
+    let inter = seq.inter.unwrap();
+    assert!(inter.enable_ref_frame_mvs && !inter.reduced_ref_frame_mvs_mode);
+    assert!(inter.enable_refmvbank && inter.drl_reorder == DrlReorder::Constraint);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
     assert!(filter.enable_ccso);

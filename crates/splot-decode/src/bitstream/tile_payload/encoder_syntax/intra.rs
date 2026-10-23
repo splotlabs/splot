@@ -38,7 +38,7 @@ use super::super::partition_traversal::{
 };
 use super::super::tile_frontier::chroma_subsampling;
 use super::{
-    EncoderSyntaxError, IntraMode, IntraTileSyntax, LeafBlock, Result, TileCdfs, TransformBlock,
+    EncoderSyntaxError, IntraMode, IntraTileSyntax, LeafBlock, Result, TileEnd, TransformBlock,
     TxPartition, coefficient_scan, rule, tx_log2,
 };
 use crate::pipeline::general_intra::{
@@ -236,10 +236,7 @@ impl IntraTools {
             enable_ibp: intra.enable_ibp,
             enable_intra_edge_filter: intra.enable_intra_edge_filter,
             enable_chroma_dctonly: tq.enable_chroma_dctonly,
-            bit_depth: match seq.general.bit_depth_idc {
-                BitDepthIdc::Eight => BitDepth::Eight,
-                BitDepthIdc::Ten => BitDepth::Ten,
-            },
+            bit_depth: sequence_bit_depth(seq),
             qindex,
             tx_mode: Some(tx_mode),
             reduced_tx_set: usize::from(reduced_tx_set),
@@ -673,13 +670,24 @@ impl IntraTileSyntax {
         self.publish_inter_neighbours(leaf)
     }
 
-    /// The reconstructed frame and the tile's final CDFs.
+    /// The reconstructed frame and the tile's final CDFs and motion records.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError::Rule`] if the frame does not freeze.
-    pub fn finish(self) -> Result<(DecodedFrame<u16>, TileCdfs)> {
+    pub fn finish(self) -> Result<(DecodedFrame<u16>, TileEnd)> {
+        let motion = self
+            .inter
+            .as_ref()
+            .map(|inter| inter.tile.temporal_records())
+            .unwrap_or_default();
         let frame = self.recon.workspace.freeze().map_err(rule("frame"))?;
-        Ok((frame, TileCdfs(self.cdfs)))
+        Ok((
+            frame,
+            TileEnd {
+                cdfs: self.cdfs,
+                motion,
+            },
+        ))
     }
 
     fn reconstruct_with(
@@ -829,6 +837,14 @@ impl IntraTileSyntax {
         symbols
             .symbol(row, Symbol::new(value))
             .map_err(rule("symbol write"))
+    }
+}
+
+/// The sample bit depth of `seq`.
+pub(super) const fn sequence_bit_depth(seq: &SequenceHeader) -> BitDepth {
+    match seq.general.bit_depth_idc {
+        BitDepthIdc::Eight => BitDepth::Eight,
+        BitDepthIdc::Ten => BitDepth::Ten,
     }
 }
 

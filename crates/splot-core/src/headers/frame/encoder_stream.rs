@@ -93,6 +93,14 @@ pub struct EncoderToolFlags {
     /// the saved CDFs across tiles, `Some(false)` blends the CDFs of two
     /// references; `None` disables averaging.
     pub avg_cdf: Option<bool>,
+    /// `enable_ref_frame_mvs` with `reduced_ref_frame_mvs_mode = 0` (§ 5.4.6).
+    pub ref_frame_mvs: bool,
+    /// `enable_refmvbank`.
+    pub refmvbank: bool,
+    /// `disable_drl_reorder = 0` with `constrain_drl_reorder` (§ 5.4.6):
+    /// `Some(true)` is `DRL_REORDER_CONSTRAINT`, `Some(false)`
+    /// `DRL_REORDER_ALWAYS`; `None` disables reordering.
+    pub drl_reorder: Option<bool>,
 }
 
 /// Stream-level inputs of [`build_encoder_sequence_header`].
@@ -297,7 +305,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     w.write_flag(tools.mhccp)?;
     w.write_flag(tools.ibp)?;
 
-    write_minimal_inter_config(&mut w)?;
+    write_inter_config(&mut w, tools)?;
 
     w.write_flag(tools.screen_content)?; // seq_choose_screen_content_tools
     if tools.screen_content {
@@ -346,14 +354,21 @@ const fn profile_idc(chroma: ChromaFormatIdc) -> u32 {
 /// themselves in a compound block (§ 5.20.7.11).
 const NUM_SAME_REF_COMPOUND: u32 = 2;
 
-/// § 5.4.6 for a non-single-picture header with every inter tool off.
-fn write_minimal_inter_config(w: &mut BitWriter) -> Result<(), WriteError> {
+/// § 5.4.6 for a non-single-picture header with the motion vector prediction
+/// tools of `tools` and every other inter tool off.
+fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), WriteError> {
     w.write_bits(0, 4)?; // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
     w.write_flag(false)?; // enable_masked_compound
-    w.write_flag(false)?; // enable_ref_frame_mvs
+    w.write_flag(tools.ref_frame_mvs)?;
+    if tools.ref_frame_mvs {
+        w.write_flag(false)?; // reduced_ref_frame_mvs_mode
+    }
     w.write_bits(ORDER_HINT_BITS_MINUS_1, 4)?;
-    w.write_flag(false)?; // enable_refmvbank
-    w.write_flag(true)?; // disable_drl_reorder
+    w.write_flag(tools.refmvbank)?;
+    w.write_flag(tools.drl_reorder.is_none())?; // disable_drl_reorder
+    if let Some(constrain) = tools.drl_reorder {
+        w.write_flag(constrain)?; // constrain_drl_reorder
+    }
     w.write_flag(false)?; // explicit_ref_frame_map
     w.write_flag(false)?; // explicit_num_ref_frames
     w.write_bits(0, 3)?; // long_term_frame_id_bits

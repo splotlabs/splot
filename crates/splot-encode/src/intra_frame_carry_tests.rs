@@ -13,7 +13,7 @@ const PRIMARY_REF_NONE: u8 = 7;
 
 /// A panning mini-GOP stream coded with `preset`: the units in coding order,
 /// the recon in display order, and the header of every frame.
-fn planned_stream(
+pub(super) fn planned_stream(
     config: &Config,
     preset: &'static PresetParams,
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
