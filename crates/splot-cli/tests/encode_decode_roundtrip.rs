@@ -5,8 +5,8 @@
 //! Y4M clip as key frames and a mini-GOP with a hidden frame, `splot validate`
 //! finds the stream conformant, and `splot decode` returns the frames in input
 //! order with the PSNR against the source that the encoder reported. The IVF
-//! bytes do not depend on `--threads`. Coverage builds skip it: the gated
-//! coverage is `splot-validate`, and instrumented encoding takes minutes.
+//! bytes do not depend on `--threads`. Coverage builds skip it: other tests
+//! reach the gated lines, and instrumented encoding takes minutes.
 
 #![cfg(not(coverage))]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
