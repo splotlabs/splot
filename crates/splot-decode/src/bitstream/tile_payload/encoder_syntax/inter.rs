@@ -12,6 +12,8 @@
 //! publishes the leaf; publication runs the decoder's § 7.12 resolution and
 //! fails when it derives other motion vectors than the plan.
 
+use std::sync::Arc;
+
 use splot_core::headers::frame::{FrameHeaderCore, FrameReferenceStateView, TxMode};
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
@@ -20,17 +22,23 @@ use splot_core::tables::conversion::SIZE_TO_TX_PART_GROUP_LOOKUP;
 use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::{BitDepth, DecodedFrame, ReferencePlaneView, SharedFrame, SubpelPredictParams};
 
-use super::super::cdf::TileCdfSelector;
+use super::super::cdf::{
+    FrameCdfSubset, TileCdfPolicyInput, TileCdfSelector, tile_cdf_save_policy,
+};
 use super::super::general_intra_residual::inter_chroma_plane_tx_type;
 use super::super::partition_traversal::{DecodedLeafPublication, GeneralIntraTreeWalkError};
 use super::compound::InterPrediction;
-use super::{EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, TransformBlock, TxType, rule};
+use super::{
+    EncoderSyntaxError, FrameCdfs, IntraTileSyntax, LeafBlock, Result, TileCdfs, TransformBlock,
+    TxType, rule,
+};
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{frame_ref_update_from_core, is_key_or_switch};
 use crate::prediction::inter::{
     EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderMotion,
-    EncoderSingleMotion, InterReferenceState, Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV,
-    SINGLE_MODE_NEWMV, chroma_inter_tx_type, non_intra_leaf_mode, single_transform_residual,
+    EncoderSingleMotion, FrameCdfHandle, InterReferenceState, Mv, SINGLE_MODE_GLOBALMV,
+    SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, chroma_inter_tx_type, non_intra_leaf_mode,
+    resolve_initial_frame_cdfs, single_transform_residual,
 };
 use crate::reference::buffer::RuntimeReferenceBuffer;
 
@@ -40,10 +48,11 @@ const BLOCK_4X4: usize = 0;
 pub const MV_PRECISION_EIGHTH_PEL: u8 = 6;
 
 /// The decoder's § 7.23 reference buffer, filled with the encoder's filtered
-/// reconstructions in coding order.
+/// reconstructions and saved CDFs in coding order.
 pub struct EncoderReferences {
+    sequence: SequenceHeader,
     buffer: RuntimeReferenceBuffer,
-    frames: Vec<Option<SharedFrame<u16>>>,
+    frames: Vec<Option<(SharedFrame<u16>, Arc<FrameCdfSubset>)>>,
     state: InterReferenceState<u16>,
 }
 
@@ -64,6 +73,7 @@ impl EncoderReferences {
             RuntimeReferenceBuffer::new(usize::from(slots)).map_err(rule("reference buffer"))?;
         let state = settled_state(&buffer, &[])?;
         Ok(Self {
+            sequence: seq.clone(),
             buffer,
             frames: Vec::new(),
             state,
@@ -71,11 +81,21 @@ impl EncoderReferences {
     }
 
     /// Stores the coded frame `core` with its filtered reconstruction `frame`
-    /// in the slots its `refresh_frame_flags` name (§ 7.20).
+    /// and the saved CDFs of its final `tiles`, in tile order, in the slots its
+    /// `refresh_frame_flags` name (§ 7.20). `initial` are the CDFs
+    /// [`Self::initial_cdfs`] returned for `core`.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError`] for a header without the § 7.20 inputs.
-    pub fn update(&mut self, core: &FrameHeaderCore, frame: DecodedFrame<u16>) -> Result<()> {
+    /// Returns [`EncoderSyntaxError`] for a header without the § 7.20 inputs or
+    /// a tile count the header does not have.
+    pub fn update(
+        &mut self,
+        core: &FrameHeaderCore,
+        frame: DecodedFrame<u16>,
+        initial: &FrameCdfs,
+        tiles: &[TileCdfs],
+    ) -> Result<()> {
+        let cdfs = Arc::new(saved_cdfs(&self.sequence, core, initial, tiles)?);
         self.buffer.prepare_for_frame(core.obu_type, true);
         let update =
             frame_ref_update_from_core(core, ByteOffset::new(0), EmbeddedLayerId::from_bits(0))
@@ -86,7 +106,7 @@ impl EncoderReferences {
         if index == self.frames.len() {
             self.frames.push(None);
         }
-        self.frames[index] = Some(SharedFrame::new(frame));
+        self.frames[index] = Some((SharedFrame::new(frame), cdfs));
         self.buffer.update(index, &update, is_key_or_switch(core));
         self.buffer
             .note_frame(core.obu_type, true, &update, &core.ref_long_term_ids);
@@ -120,26 +140,92 @@ impl EncoderReferences {
         self.state.header_view()
     }
 
+    /// The CDFs the frame `core` starts from (§ 5.18.2), which every tile of
+    /// the frame and [`Self::update`] take.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] when the primary reference holds
+    /// no saved CDFs.
+    pub fn initial_cdfs(&self, core: &FrameHeaderCore) -> Result<FrameCdfs> {
+        resolve_initial_frame_cdfs(core, &self.sequence, &self.state, None, ByteOffset::new(0))
+            .map(FrameCdfs)
+            .map_err(rule("initial CDFs"))
+    }
+
     /// A fresh reference state for one tile.
     fn tile_state(&self) -> Result<InterReferenceState<u16>> {
         settled_state(&self.buffer, &self.frames)
     }
 }
 
-/// The reference state of `buffer` over settled `frames`.
+/// The § 7.23 saved CDFs of the frame `core` of `sequence` that started from
+/// `initial` and whose tiles ended with `tiles`.
+fn saved_cdfs(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    initial: &FrameCdfs,
+    tiles: &[TileCdfs],
+) -> Result<FrameCdfSubset> {
+    let info = core
+        .tile_info
+        .as_ref()
+        .ok_or(EncoderSyntaxError::Unsupported("missing tile info"))?;
+    let (enable_avg_cdf, avg_cdf_type) = sequence
+        .transform_quant_entropy
+        .as_ref()
+        .map_or((false, false), |tq| {
+            (tq.enable_avg_cdf, tq.avg_cdf_type != 0)
+        });
+    let input = TileCdfPolicyInput::new(
+        info.tile_cols,
+        info.tile_rows,
+        enable_avg_cdf,
+        avg_cdf_type,
+        info.context_update_tile_id,
+    );
+    if tiles.len() != super::tile_count(core) {
+        return Err(EncoderSyntaxError::Unsupported(
+            "a tile count the frame does not have",
+        ));
+    }
+    let policies = (0..tiles.len() as u32)
+        .map(|tile| tile_cdf_save_policy(input, tile).map(|policy| (tile, policy)))
+        .collect::<core::result::Result<Vec<_>, _>>()
+        .map_err(rule("tile CDF save policy"))?;
+    let mut saved = FrameCdfSubset::from_defaults();
+    saved.fold_frame_end(
+        &initial.0,
+        policies
+            .into_iter()
+            .zip(tiles)
+            .map(|((tile, policy), cdfs)| (tile, &cdfs.0, policy)),
+    );
+    Ok(saved)
+}
+
+/// The reference state of `buffer` over settled `frames` and their saved CDFs.
 fn settled_state(
     buffer: &RuntimeReferenceBuffer,
-    frames: &[Option<SharedFrame<u16>>],
+    frames: &[Option<(SharedFrame<u16>, Arc<FrameCdfSubset>)>],
 ) -> Result<InterReferenceState<u16>> {
-    let (store, meta) = buffer
+    let (store, mut meta) = buffer
         .build_store_from(|slot, index| {
-            let frame = frames
+            let (frame, _) = frames
                 .get(index)
                 .and_then(Option::as_ref)
                 .ok_or(crate::error::DecodeReferenceStateError::MissingFrame { slot })?;
             Ok((RefFrameSlot::completed(frame.share()), None))
         })
         .map_err(rule("reference state"))?;
+    for (slot, cdfs) in meta.ref_frame_cdfs.iter_mut().enumerate() {
+        if let Some((_, saved)) = buffer
+            .frame_index_for_slot(slot as u32)
+            .ok()
+            .and_then(|index| frames.get(index)?.as_ref())
+        {
+            *cdfs = Some(FrameCdfHandle::settled(Arc::clone(saved)));
+        }
+    }
     Ok(InterReferenceState::from_metadata(store, meta))
 }
 

@@ -5434,6 +5434,38 @@ tests = ["crates/splot-encode/src/intra_frame_tests.rs::coded_frames_decode_to_t
 commands = ["cargo test -p splot-encode decode_to_the_encoder_recon --locked", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "ENC-CDF-CARRY"
+name = "Encoder cross-frame CDF carry"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.8", "5.18.2", "7.23"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/gop.rs"
+change_id = "enc-cdf-carry"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::cdf_carry (on in every preset): inter frames code primary_ref_frame at the planner's primary slot (closest layer at or below the frame, inter over key, then display distance) with disable_cross_frame_cdf_init = 0, and the sequence enables enable_avg_cdf with avg_cdf_type 0 (blend with the secondary reference; measured better than the tile average). The encoder_syntax facade starts each tile from resolve_initial_frame_cdfs and EncoderReferences::update folds the final tile CDFs with FrameCdfSubset::fold_frame_end, the same two functions the decoder runs. Carry off writes the old stream byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_carry_tests.rs::inter_frames_start_from_the_primary_reference_cdfs", "crates/splot-encode/src/intra_frame_carry_tests.rs::tiled_mini_gops_decode_alike_on_any_thread_count", "crates/splot-encode/src/intra_frame_carry_tests.rs::avm_decodes_tiled_mini_gops_like_splot", "crates/splot-encode/src/gop_tests.rs::primary_reference_is_the_closest_layer_at_or_below_the_frame", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::inter_headers_parse_with_the_reference_state"]
+commands = ["cargo test -p splot-encode carry --locked", "cargo test -p splot-core encoder_inter_stream --locked"]
+fixtures = []
+diagnostics = []
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------

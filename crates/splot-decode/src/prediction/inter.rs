@@ -236,7 +236,8 @@ pub(crate) fn tip_output_products<T: ReconSample>(
         geometry.info().bit_depth(),
         sequence.general.chroma_format_idc,
     )?;
-    let frame_cdfs = resolve_initial_frame_cdfs(core, sequence, reference, candidate, offset)?;
+    let frame_cdfs =
+        resolve_initial_frame_cdfs(core, sequence, reference, Some(candidate), offset)?;
     products.frame_cdfs()?.reset_output_from(&frame_cdfs);
     let frame_cdfs = products.cdf_output()?;
     let (mi_rows, mi_cols) = geometry.mi_dimensions();
@@ -300,7 +301,8 @@ fn decode_bridge_frame<T: ReconSample>(
         .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
     let motion_field = bridge::motion_field(frame_size, current_order_hint, reference_order_hint)
         .ok_or(inter_allocation!("bridge temporal motion field"))?;
-    let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, candidate, offset)?;
+    let frame_cdfs =
+        resolve_initial_frame_cdfs(&core, sequence, reference, Some(candidate), offset)?;
     let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
     let frame = bridge::reconstruct(source.samples()?, frame_size, visible, 0, offset)?;
     products.frame_cdfs()?.reset_output_from(&frame_cdfs);
@@ -366,37 +368,29 @@ fn frame_cdf_load(
     )
 }
 
-fn resolve_initial_frame_cdfs(
+/// The CDFs frame `core` starts from (§ 5.18.2 `set_primary_ref_frame_and_ctx`):
+/// the defaults, or the saved CDFs of the primary reference blended with the
+/// secondary one. The encoder facade calls it with no `candidate`.
+pub(crate) fn resolve_initial_frame_cdfs(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
     reference: &InterReferenceState<impl ReconSample>,
-    candidate: &DecodePlannedObu,
+    candidate: Option<&DecodePlannedObu>,
     offset: ByteOffset,
 ) -> Result<Arc<FrameCdfSubset>> {
-    let default_cdfs = || {
-        Ok(Arc::new(FrameCdfSubset::default_for_base_q(
+    match frame_cdf_load(core, sequence, reference) {
+        ResolvedCdfLoad::Default => Ok(Arc::new(FrameCdfSubset::default_for_base_q(
             core.quantization_params.map_or(0, |q| q.base_q_idx),
-        )))
-    };
-    let cdf_load = frame_cdf_load(core, sequence, reference);
-    match cdf_load {
-        ResolvedCdfLoad::Default => default_cdfs(),
+        ))),
         ResolvedCdfLoad::OutOfRangePrimary {
             index,
             reference_count,
-        } => Err(DecodeError::MalformedSource {
-            issue: DecodeSourceIssue::frame_header_conformance(
-                offset,
-                candidate
-                    .ivf_frame()
-                    .map(DecodeIvfFrameContext::frame_index),
-                SPEC_HEADER_SEMANTICS,
-                format!(
-                    "primary reference index {index} is outside the active \
-                     {reference_count}-entry map"
-                ),
-            ),
-        }),
+        } => Err(primary_out_of_range(
+            candidate,
+            offset,
+            index,
+            reference_count,
+        )),
         ResolvedCdfLoad::LoadSlot {
             primary,
             blend: None,
@@ -410,6 +404,27 @@ fn resolve_initial_frame_cdfs(
             cdfs.blend_from_saved(&blend_cdfs);
             Ok(Arc::new(cdfs))
         }
+    }
+}
+
+fn primary_out_of_range(
+    candidate: Option<&DecodePlannedObu>,
+    offset: ByteOffset,
+    index: u8,
+    reference_count: usize,
+) -> DecodeError {
+    DecodeError::MalformedSource {
+        issue: DecodeSourceIssue::frame_header_conformance(
+            offset,
+            candidate
+                .and_then(DecodePlannedObu::ivf_frame)
+                .map(DecodeIvfFrameContext::frame_index),
+            SPEC_HEADER_SEMANTICS,
+            format!(
+                "primary reference index {index} is outside the active \
+                 {reference_count}-entry map"
+            ),
+        ),
     }
 }
 
@@ -427,19 +442,12 @@ fn resolve_initial_frame_cdfs_reusing(
             index,
             reference_count,
         } => {
-            return Err(DecodeError::MalformedSource {
-                issue: DecodeSourceIssue::frame_header_conformance(
-                    offset,
-                    candidate
-                        .ivf_frame()
-                        .map(DecodeIvfFrameContext::frame_index),
-                    SPEC_HEADER_SEMANTICS,
-                    format!(
-                        "primary reference index {index} is outside the active \
-                         {reference_count}-entry map"
-                    ),
-                ),
-            });
+            return Err(primary_out_of_range(
+                Some(candidate),
+                offset,
+                index,
+                reference_count,
+            ));
         }
         ResolvedCdfLoad::Default => None,
         ResolvedCdfLoad::LoadSlot { primary, .. } => Some(reference.cdfs_for_slot(primary)?),

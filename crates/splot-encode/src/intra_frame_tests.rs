@@ -1022,5 +1022,8 @@ fn avm_decodes_multi_tile_frames_like_splot() {
     }
 }
 
+#[path = "intra_frame_carry_tests.rs"]
+mod carry;
+
 #[path = "ext_partition_tests.rs"]
 mod ext_partitions;

@@ -40,6 +40,10 @@ use crate::tx_choice;
 
 /// Quantizer deadzone in Q8 (`128` rounds to nearest).
 const DEADZONE_ROUNDING_Q8: u32 = 96;
+/// `avg_cdf_type` of a stream that carries CDFs: `true` averages the saved
+/// CDFs across tiles, `false` blends the primary reference's CDFs with a
+/// second reference's.
+const AVG_CDF_ACROSS_TILES: bool = false;
 
 /// Codes key frames and inter frames.
 pub(crate) struct IntraFrameCoder {
@@ -56,16 +60,10 @@ pub(crate) struct IntraFrameCoder {
 
 impl IntraFrameCoder {
     pub(crate) fn new(config: &Config) -> Result<Self> {
-        let mut p = *config.preset.params();
-        if let Ok(v) = std::env::var("SPLOT_EXT") {
-            let mut it = v.split(',').map(|x| x.parse::<u8>().unwrap_or(0));
-            p.ext_partitions = it.next().unwrap_or(0);
-            p.ext_partition_gate = it.next().unwrap_or(0);
-        }
-        Self::with_preset(config, Box::leak(Box::new(p)))
+        Self::with_preset(config, config.preset.params())
     }
 
-    /// A coder of `config` with the search limits `preset`.
+    /// A coder of `config` with the search limits of `preset`.
     fn with_preset(config: &Config, preset: &'static PresetParams) -> Result<Self> {
         let sequence = build_encoder_sequence_header(&EncoderStreamParams {
             width: config.width,
@@ -92,6 +90,7 @@ impl IntraFrameCoder {
                 intra_edge_filter: true,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
+                avg_cdf: preset.cdf_carry.then_some(AVG_CDF_ACROSS_TILES),
                 ..EncoderToolFlags::default()
             },
         })
@@ -127,11 +126,11 @@ impl FrameCoder for IntraFrameCoder {
     }
 
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
-        let (core, recon) = frame.reference.take().ok_or(Error::Unsupported {
+        let (core, recon, initial, cdfs) = frame.reference.take().ok_or(Error::Unsupported {
             what: "a frame committed twice",
         })?;
         self.references
-            .update(&core, recon)
+            .update(&core, recon, &initial, &cdfs)
             .map_err(coding("reference update"))
     }
 
@@ -147,14 +146,30 @@ impl FrameCoder for IntraFrameCoder {
 impl IntraFrameCoder {
     /// Codes `source` as `plan` at quantizer `qp` against the committed references.
     fn code_frame(&self, source: &SourceFrame, plan: &GopFrame, qp: u16) -> Result<CodedFrame> {
+        let plan = &GopFrame {
+            primary_slot: plan.primary_slot.filter(|_| self.preset.cdf_carry),
+            ..*plan
+        };
         let qindex = u32::from(qp);
         let tools = gop::frame_tools(self.preset, self.tiles, qindex);
         let header = |filters: &FrameFilterParams| {
             plan.header(&self.view, &self.references, qindex, filters, tools)
         };
         let core = header(&FrameFilterParams::default())?;
+        let initial = self
+            .references
+            .initial_cdfs(&core)
+            .map_err(coding("initial CDFs"))?;
         let writers = (0..tile_count(&core))
-            .map(|tile| KeyFrameTileWriter::new(&self.sequence, &core, &self.references, tile))
+            .map(|tile| {
+                KeyFrameTileWriter::with_cdfs(
+                    &self.sequence,
+                    &core,
+                    &self.references,
+                    &initial,
+                    tile,
+                )
+            })
             .collect::<core::result::Result<Vec<_>, _>>()
             .map_err(coding("tile setup"))?;
         let first = writers.first().ok_or(Error::Unsupported {
@@ -188,13 +203,18 @@ impl IntraFrameCoder {
             core,
             filters,
             tiles,
+            cdfs,
             recon,
         } = finish_frame(
             &self.sequence,
             &header,
             self.preset,
             (source, &self.references, self.pool.as_ref()),
-            FirstPass { core, tiles },
+            FirstPass {
+                core,
+                cdfs: initial.clone(),
+                tiles,
+            },
         )?;
         let tiles: Vec<&[u8]> = tiles.iter().map(Vec::as_slice).collect();
         let temporal_unit = plan.temporal_unit(
@@ -209,7 +229,7 @@ impl IntraFrameCoder {
             temporal_unit,
             recon: visible_planes(&recon)?,
             frame_type: plan.frame_type,
-            reference: Some((core, recon)),
+            reference: Some((core, recon, initial, cdfs)),
         })
     }
 }

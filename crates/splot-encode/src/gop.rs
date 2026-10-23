@@ -29,12 +29,16 @@
 //! § 7.7 implicit reference map ranks the valid slots by display distance and
 //! `base_q_idx`, so at one quantizer the closest frames rank first.
 //!
+//! An inter frame starts from the saved CDFs of its primary reference
+//! (§ 5.18.2), picked among the references whose layer is not above the
+//! frame's own: the closest layer, then an inter frame over the key frame,
+//! then the closest in display order, then the lower slot.
+//!
 //! Encoder policy, fixed for now: the sequence sets
 //! `monotonic_output_order_flag`, so a hidden frame is shown by a
-//! show-existing frame with `derive_sef_order_hint = 1`; inter frames code
-//! `primary_ref_frame = PRIMARY_REF_NONE` with `disable_cross_frame_cdf_init =
-//! 1`, so no CDFs carry across frames; motion vectors are eighth-pel when the
-//! preset refines to eighth samples at the frame's quantizer, else quarter-pel.
+//! show-existing frame with `derive_sef_order_hint = 1`; motion vectors are
+//! eighth-pel when the preset refines to eighth samples at the frame's
+//! quantizer, else quarter-pel.
 
 use core::num::NonZeroU32;
 
@@ -74,6 +78,8 @@ pub(crate) struct GopFrame {
     /// The slots that hold a frame when this frame is coded: the frames it may
     /// reference.
     pub(crate) ref_slots: u32,
+    /// The slot whose saved CDFs the frame starts from; `None` for key frames.
+    pub(crate) primary_slot: Option<u32>,
     /// The frame starts its temporal unit, after the temporal delimiter.
     pub(crate) opens_temporal_unit: bool,
 }
@@ -102,6 +108,7 @@ impl GopStep {
 #[derive(Debug, Clone, Copy)]
 struct Slot {
     display_index: u64,
+    layer: u8,
     awaiting_show: bool,
 }
 
@@ -273,9 +280,22 @@ impl GopPlanner {
         let ref_slots = (0..REF_SLOTS)
             .filter(|&slot| self.slots[slot].is_some())
             .fold(0, |mask, slot| mask | 1 << slot);
+        let primary_slot = (0..REF_SLOTS)
+            .filter_map(|slot| {
+                self.slots[slot]
+                    .filter(|held| held.layer <= layer)
+                    .map(|held| {
+                        let distance = held.display_index.abs_diff(display_index);
+                        let key = held.display_index == self.key_display;
+                        ((layer - held.layer, key, distance), slot as u32)
+                    })
+            })
+            .min()
+            .map(|(_, slot)| slot);
         if let Some(slot) = slot {
             self.slots[slot] = Some(Slot {
                 display_index,
+                layer,
                 awaiting_show: !show_frame,
             });
         }
@@ -288,6 +308,7 @@ impl GopPlanner {
             layer,
             refresh_frame_flags,
             ref_slots,
+            primary_slot,
             opens_temporal_unit: self.after_output,
         };
         self.next_frame += 1;
@@ -474,6 +495,7 @@ impl GopFrame {
             reference_select: compound,
             skip_mode_present: compound,
             high_precision_mv,
+            primary_slot: self.primary_slot,
         }
     }
 }
