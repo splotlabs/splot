@@ -71,28 +71,75 @@ fn kinds(tree: &PartitionTree, out: &mut Vec<Partition>) {
     }
 }
 
-/// The search codes three-way and uneven four-way shapes where the source
-/// has their bands, and a preset without the tool codes none.
-#[test]
-fn search_codes_three_way_and_uneven_four_way_partitions() {
+const EXTENDED: [Partition; 6] = [
+    Partition::Horz3,
+    Partition::Vert3,
+    Partition::Horz4A,
+    Partition::Horz4B,
+    Partition::Vert4A,
+    Partition::Vert4B,
+];
+
+/// The partition kinds the search picks for the banded frame under `preset`.
+fn banded_kinds(preset: &'static PresetParams) -> Vec<Partition> {
     let config = config(128, 128, BitDepth::Eight, 9, 90);
-    let coder = IntraFrameCoder::with_preset(&config, &EXT).unwrap();
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
     let key = crate::gop::plan(0, config.keyint);
     let mut found = Vec::new();
     for tree in search_frame(&coder, &key, &banded_frame(&config), config.bit_depth) {
         kinds(&tree, &mut found);
     }
+    found
+}
+
+/// The search codes three-way and uneven four-way shapes where the source
+/// has their bands, and a level-0 preset codes none.
+#[test]
+fn search_codes_three_way_and_uneven_four_way_partitions() {
+    let found = banded_kinds(&EXT);
+    let three = [Partition::Horz3, Partition::Vert3];
+    assert!(found.iter().any(|kind| three.contains(kind)), "{found:?}");
     assert!(
-        found
-            .iter()
-            .any(|&kind| matches!(kind, Partition::Horz3 | Partition::Vert3)),
+        found.iter().any(|kind| EXTENDED[2..].contains(kind)),
         "{found:?}"
     );
-    assert!(
-        found.iter().any(|&kind| matches!(
-            kind,
-            Partition::Horz4A | Partition::Horz4B | Partition::Vert4A | Partition::Vert4B
-        )),
-        "{found:?}"
-    );
+    assert_eq!(PRESETS[9].ext_partitions, 0);
+    let off = banded_kinds(&PRESETS[9]);
+    assert!(!off.iter().any(|kind| EXTENDED.contains(kind)), "{off:?}");
+}
+
+/// The sequence header enables the shapes of the preset's level only.
+#[test]
+fn sequence_flags_follow_the_preset_level() {
+    let config = config(64, 64, BitDepth::Eight, 9, 90);
+    for (level, flags) in [(0, (false, false)), (1, (true, false)), (2, (true, true))] {
+        let preset = Box::leak(Box::new(PresetParams {
+            ext_partitions: level,
+            ..EXT
+        }));
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        let partition = coder.sequence.partition.unwrap();
+        assert_eq!(
+            (
+                partition.enable_ext_partitions,
+                partition.enable_uneven_4way_partitions
+            ),
+            flags,
+            "level {level}"
+        );
+    }
+}
+
+/// AVM decodes key and inter frames with extended partitions to the encoder
+/// reconstructions.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_ext_partitions_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let case = (136, 72, BitDepth::Eight, 9, 120, (1, 0));
+    let (units, expected) = tiled_stream(case, 2, Some(&EXT));
+    let avm = avm_decode(&avmdec, &units, (136, 72), BitDepth::Eight, "ext");
+    assert!(avm == expected, "AVM output differs");
 }
