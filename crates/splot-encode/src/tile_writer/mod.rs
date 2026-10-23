@@ -332,6 +332,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         self.syntax.write_is_inter(leaf, false, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
             filters.write_cdef_index(self.syntax, self.sink, leaf, false)?;
+            filters.write_ccso_blocks(self.syntax, self.sink, leaf)?;
         }
         self.syntax.write_intra_modes(leaf, modes, self.sink)?;
         let sink = &mut *self.sink;
@@ -388,6 +389,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         self.syntax.write_skip_txfm(leaf, skip, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
             filters.write_cdef_index(self.syntax, self.sink, leaf, skip)?;
+            filters.write_ccso_blocks(self.syntax, self.sink, leaf)?;
         }
         let mvds = self.syntax.write_inter_modes(leaf, self.sink)?;
         self.syntax.write_mvds(&mvds, self.sink)?;

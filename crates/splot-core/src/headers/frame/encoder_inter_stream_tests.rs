@@ -6,7 +6,7 @@
 use super::*;
 use crate::annexb::parse_annex_b_obus_partial;
 use crate::headers::frame::{
-    CdefStrengthSet, CdefStrengthSets, EncoderStreamParams, EncoderToolFlags,
+    CcsoPlaneParams, CdefStrengthSet, CdefStrengthSets, EncoderStreamParams, EncoderToolFlags,
     FrameHeaderParseInput, FrameHeaderParseMode, FrameType, MvPrecision, TxMode,
     build_encoder_sequence_header, parse_frame_header_core,
 };
@@ -64,6 +64,7 @@ fn sequence(width: u32, height: u32, bit_depth: BitDepthIdc, sb: SuperblockSize)
         tools: EncoderToolFlags {
             cdef: true,
             loop_restoration: true,
+            ccso: true,
             ..EncoderToolFlags::default()
         },
     })
@@ -87,6 +88,22 @@ fn filters(sb: SuperblockSize) -> FrameFilterParams {
         } else {
             128
         }),
+        ccso: [
+            CcsoPlaneParams::default(),
+            CcsoPlaneParams {
+                ccso_planes: true,
+                ccso_bo_only: Some(true),
+                ccso_scale_idx: Some(2),
+                ccso_quant_idx: Some(0),
+                ccso_ext_filter: Some(0),
+                ccso_edge_clf: Some(false),
+                ccso_max_band_log2: Some(1),
+                ccso_offset_idx: crate::headers::frame::CcsoOffsets::from_iter_checked([6, 1])
+                    .unwrap(),
+                ..CcsoPlaneParams::default()
+            },
+            CcsoPlaneParams::default(),
+        ],
     }
 }
 
@@ -151,6 +168,14 @@ fn inter_headers_parse_with_the_reference_state() {
                         core.cdef_params.as_ref().unwrap().cdef_frame_enable,
                         !show_frame
                     );
+                    let ccso = core.ccso_params.as_ref().unwrap();
+                    assert_eq!(ccso.ccso_frame_flag, Some(!show_frame));
+                    let planes = if show_frame {
+                        &[][..]
+                    } else {
+                        &filters.ccso[..]
+                    };
+                    assert_eq!(ccso.planes[..], *planes);
                     assert_eq!(core.consumed_bits, header.bits.num_frame_header_bits());
                 }
             }

@@ -606,9 +606,7 @@ pub(crate) const fn default_restoration_size(geometry: LrGeometry) -> [u32; 3] {
 }
 
 /// One plane's parsed `ccso_params()` state (AV2 § 5.18.7.12).
-///
-/// Not `Copy`: [`Self::ccso_offset_idx`] owns the per-plane `ccso_offset_idx` array.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CcsoPlaneParams {
     /// `ccso_planes[plane]`: whether CCSO is enabled for the plane.
     pub ccso_planes: bool,

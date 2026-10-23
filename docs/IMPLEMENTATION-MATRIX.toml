@@ -5530,6 +5530,38 @@ tests = ["crates/splot-encode/src/intra_frame_mvpred_tests.rs::deep_drl_streams_
 commands = ["cargo test -p splot-encode mvpred --locked", "cargo test -p splot-core encoder_inter_stream --locked"]
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "ENC-CCSO"
+name = "Encoder cross-component sample offset"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.7.12", "5.20.10.2", "7.19"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/loop_filter_ccso.rs"
+change_id = "enc-ccso"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::ccso_candidates (0 disables enable_ccso): after CDEF, one statistics pass per (ccso_ext_filter, ccso_scale_idx, ccso_quant_idx) candidate classifies every sample on the deblocked luma and sums source minus CDEF output per class and CCSO unit, on SB-row bands of the worker pool. Band and edge-classifier variants are sums of these classes; each class takes the offset index with the least squared error plus tu(7) rate, each unit turns on with the exact ccso_blk rate of the adapting CDF, and a plane codes CCSO when the total RD beats off. The encoder_syntax facade exposes CcsoGrid, CcsoBlockMap (the decoder's CcsoState), the decoder's taps and offset table, and apply_loop_filters runs the decoder's CCSO. Off writes the old stream byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/loop_filter_tests.rs::ccso_search_classes_match_the_decoder_output", "crates/splot-encode/src/loop_filter_tests.rs::filtered_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_ccso_tests.rs::ccso_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_ccso_tests.rs::avm_decodes_ccso_frames_like_splot", "crates/splot-encode/src/kernels/ccso.rs::tests::simd_matches_scalar", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::filter_params_reach_the_parsed_header", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::inter_headers_parse_with_the_reference_state"]
+commands = ["cargo test -p splot-encode ccso --locked", "cargo test -p splot-core encoder_stream --locked"]
+fixtures = []
+diagnostics = []
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------

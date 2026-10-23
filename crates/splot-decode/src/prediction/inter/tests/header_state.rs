@@ -699,7 +699,7 @@ fn missing_reference_ccso_plane_is_a_malformed_source_diagnostic() {
         .as_mut()
         .expect("CCSO state")
         .planes
-        .push(reuse_plane.clone());
+        .push(reuse_plane);
     let mut disabled_ccso = saved_ccso.clone();
     let mut disabled_plane = reuse_plane;
     disabled_plane.ccso_planes = false;

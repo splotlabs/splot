@@ -18,7 +18,7 @@ use super::{
 };
 
 const CCSO_PLANES: usize = 3;
-const CCSO_OFFSET: [i32; 8] = [0, 1, -1, 3, -3, 7, -7, -10];
+pub(crate) const CCSO_OFFSET: [i32; 8] = [0, 1, -1, 3, -3, 7, -7, -10];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CcsoUnitGrid {
@@ -781,7 +781,7 @@ fn ccso_score(diff: i32, quant_step: i32, edge_clf: bool) -> usize {
     }
 }
 
-fn ccso_sample_offsets(ext_filter: u8) -> Result<[(isize, isize); 2], CcsoError> {
+pub(crate) fn ccso_sample_offsets(ext_filter: u8) -> Result<[(isize, isize); 2], CcsoError> {
     match ext_filter {
         0 => Ok([(0, -1), (0, 1)]),
         1 => Ok([(-1, 0), (1, 0)]),

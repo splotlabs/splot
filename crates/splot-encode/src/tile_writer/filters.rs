@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Loop-filter syntax of the key-frame tile writer: `cdef_idx` (§ 5.20.10.1) and
-//! `use_pc_wiener` (§ 5.20.10.5), plus the per-leaf records of the decoder's
-//! filter chain.
+//! Loop-filter syntax of the key-frame tile writer: `cdef_idx` (§ 5.20.10.1),
+//! `ccso_blk` (§ 5.20.10.2) and `use_pc_wiener` (§ 5.20.10.5), plus the
+//! per-leaf records of the decoder's filter chain.
 //!
 //! The writer calls three hooks: [`TileFilters::write_lr_units`] at each
 //! superblock root before its partition symbols, [`TileFilters::write_cdef_index`]
-//! at the start of each leaf (after `skip_txfm` of an inter leaf), and
+//! and [`TileFilters::write_ccso_blocks`] at the start of each leaf (after
+//! `skip_txfm` of an inter leaf), and
 //! [`TileFilters::record_leaf`] or [`TileFilters::record_inter_leaf`] after
 //! each leaf's residual.
 
@@ -18,8 +19,8 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_decode::encoder_syntax::{
-    CdefIndexMap, FilterRecorder, IntraTileSyntax, LeafBlock, LrLayout, LrUnit, PartitionNode,
-    TransformBlock,
+    CcsoBlockMap, CcsoGrid, CdefIndexMap, FilterRecorder, IntraTileSyntax, LeafBlock, LrLayout,
+    LrUnit, PartitionNode, TransformBlock,
 };
 
 use super::{Result, TileWriterError};
@@ -31,6 +32,9 @@ pub(crate) struct FilterSyntax {
     pub(crate) cdef_indices: Vec<Option<usize>>,
     /// The restoration units whose `use_pc_wiener` is `1`.
     pub(crate) lr_on: BTreeSet<LrUnit>,
+    /// `ccso_blk` per plane and [`CcsoGrid`] unit in raster order; a missing
+    /// entry codes `0`.
+    pub(crate) ccso_blocks: Vec<Vec<u8>>,
 }
 
 /// The filter records of a finished tile and the filter choices it coded.
@@ -40,6 +44,8 @@ pub(crate) type CodedFilters = (FilterRecorder, FilterSyntax);
 pub(crate) struct TileFilters {
     recorder: FilterRecorder,
     cdef: CdefIndexMap,
+    ccso: CcsoBlockMap,
+    ccso_cols: usize,
     lr: LrLayout,
     syntax: FilterSyntax,
 }
@@ -52,6 +58,8 @@ impl TileFilters {
         Ok(Self {
             recorder: FilterRecorder::new(seq, core)?,
             cdef: CdefIndexMap::new(seq, core, tile)?,
+            ccso: CcsoBlockMap::new(seq, core, tile)?,
+            ccso_cols: CcsoGrid::new(seq, core)?.cols,
             lr: LrLayout::new(seq, core, tile)?,
             syntax: FilterSyntax::default(),
         })
@@ -115,6 +123,32 @@ impl TileFilters {
         Ok(())
     }
 
+    /// Writes `ccso_blk` of every coded plane when `leaf` starts a CCSO unit.
+    pub(crate) fn write_ccso_blocks(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        symbols: &mut impl SymbolSink,
+        leaf: &LeafBlock,
+    ) -> Result<()> {
+        let Some(unit) = self.ccso.unit(leaf) else {
+            return Ok(());
+        };
+        for plane in 0..3 {
+            let Some(ctx) = self.ccso.ctx(plane, unit) else {
+                continue;
+            };
+            let on = self
+                .syntax
+                .ccso_blocks
+                .get(plane)
+                .and_then(|blocks| blocks.get(unit.0 * self.ccso_cols + unit.1))
+                .is_some_and(|&value| value != 0);
+            symbols.symbol(syntax.ccso_blk_cdf(plane, ctx)?, Symbol::new(u8::from(on)))?;
+            self.ccso.set(plane, unit, on)?;
+        }
+        Ok(())
+    }
+
     /// Records the transform blocks of a coded leaf and their `eob`s.
     pub(crate) fn record_leaf(
         &mut self,
@@ -143,6 +177,7 @@ impl TileFilters {
             FilterSyntax {
                 cdef_indices,
                 lr_on: self.syntax.lr_on,
+                ccso_blocks: self.syntax.ccso_blocks,
             },
         ))
     }
