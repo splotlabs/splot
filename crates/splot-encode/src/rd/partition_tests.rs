@@ -413,3 +413,30 @@ fn extended_margins_gate_the_three_and_four_way_trials() {
     );
     assert!(gated.leaf_evaluations < open.leaf_evaluations);
 }
+
+/// The early exit skips the remaining binary shapes but leaves the extended
+/// shapes to their margins: with `NONE` best, `HORZ_3` is still tried.
+#[test]
+fn early_exit_leaves_extended_shapes_to_the_margins() {
+    let flat = |_: Rect| RdCost {
+        distortion: 0,
+        rate: Bits::whole(1),
+    };
+    let preset = PresetParams {
+        partition_early_exit: true,
+        ext_three_way_margin: 0,
+        ..full_search()
+    };
+    let mut coder = Synthetic::new(32, flat);
+    let root = (0, 0, 5, 5);
+    let (tree, _) = search_partition(&mut coder, root, &preset, unit_lambda()).unwrap();
+    assert!(matches!(tree, PartitionTree::Leaf(_)));
+    assert!(
+        coder.evaluated.contains_key(&(0, 8, 4, 4)),
+        "HORZ_3 was not tried"
+    );
+    assert!(
+        !coder.evaluated.contains_key(&(0, 0, 5, 4)),
+        "HORZ was tried"
+    );
+}

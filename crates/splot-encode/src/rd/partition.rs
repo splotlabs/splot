@@ -73,7 +73,8 @@ pub(crate) trait PartitionSearch {
 ///
 /// A three-way shape is tried only when the `NONE` cost is within the
 /// preset's margin of the best cost so far, an uneven four-way shape only
-/// when the three-way shape of its axis is. The children of an extended shape
+/// when the three-way shape of its axis is; the early exit skips the other
+/// remaining partitions but leaves extended shapes to these margins. The children of an extended shape
 /// search without extended shapes, and a node keeps one tree per mode.
 ///
 /// # Errors
@@ -120,6 +121,7 @@ fn search<S: PartitionSearch>(
     let mut unsplit = None;
     let mut best_split = None;
     let mut three_way = [None; 2];
+    let mut exited = false;
     for (index, (partition, children)) in candidates.iter().enumerate() {
         let best_j = best.as_ref().map(|(j, ..)| *j);
         let gate = match extended_shape(*partition) {
@@ -127,7 +129,8 @@ fn search<S: PartitionSearch>(
             Some((axis, true)) => Some((three_way[axis], preset.ext_four_way_margin)),
             None => None,
         };
-        if gate.is_some_and(|(j, margin)| !within_margin(j, best_j, margin)) {
+        let gated = gate.map(|(j, margin)| within_margin(j, best_j, margin));
+        if gated.map_or(exited, |accepted| !accepted) {
             continue;
         }
         if index > 0
@@ -173,9 +176,7 @@ fn search<S: PartitionSearch>(
         }
         let split = best_split.map_or(j, |b: u128| b.min(j));
         best_split = Some(split);
-        if preset.partition_early_exit && unsplit.is_some_and(|none| none <= split) {
-            break;
-        }
+        exited |= preset.partition_early_exit && unsplit.is_some_and(|none| none <= split);
     }
     let Some((_, tree, cost, end)) = best else {
         return Ok((PartitionTree::Leaf(LeafChoice::DC), RdCost::default()));
