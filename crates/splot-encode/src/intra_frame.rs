@@ -536,12 +536,12 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                 .map_err(kernel)?;
         }
         if let Some(parity) = parity {
-            let holds = |levels: &[i32]| parity.holds(levels).unwrap_or(false);
-            if !holds(&levels) {
+            let holds = |levels: &[i32]| parity.holds(levels).map_err(TileWriterError::from);
+            if !holds(&levels)? {
                 let rates = (!self.candidate && !self.trial).then_some(&mut rates);
                 let moves =
                     parity_moves(&block, coeffs, rates, lambda_q8, &levels).map_err(kernel)?;
-                hide_parity(holds, moves, (&mut levels, dequant)).map_err(kernel)?;
+                hide_parity(holds, moves, (&mut levels, dequant))?;
             }
         }
         self.scratch = scratch;

@@ -334,7 +334,7 @@ proptest! {
         let mut approx = ApproxCoeffRates;
         let rates = exact.then_some(&mut approx);
         let moves = parity_moves(&b, &coeffs, rates, lambda, &levels).unwrap();
-        hide_parity(|l| rule_holds(scan, l), moves, (&mut levels, &mut dequant)).unwrap();
+        hide_parity(|l| Ok::<_, KernelError>(rule_holds(scan, l)), moves, (&mut levels, &mut dequant)).unwrap();
         prop_assert!(rule_holds(scan, &levels));
         let changed: Vec<usize> = (0..levels.len()).filter(|&i| levels[i] != before[i]).collect();
         if held {
@@ -357,7 +357,7 @@ fn parity_fixup_reports_an_unreachable_rule() {
     let mut levels = [3, 0, 0, 0];
     let mut dequant = [0; 4];
     assert_eq!(
-        hide_parity(|_| false, Vec::new(), (&mut levels, &mut dequant)),
+        hide_parity(|_| Ok(false), Vec::new(), (&mut levels, &mut dequant)),
         Err(KernelError::HiddenParity)
     );
 }

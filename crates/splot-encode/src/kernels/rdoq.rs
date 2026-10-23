@@ -389,13 +389,14 @@ pub(crate) fn parity_moves<R: CoeffRates + ?Sized>(
 /// order after which the rule holds.
 ///
 /// # Errors
-/// Returns [`KernelError::HiddenParity`] when no move keeps the rule.
-pub(crate) fn hide_parity(
-    holds: impl Fn(&[i32]) -> bool,
+/// Returns the error of `holds`, and [`KernelError::HiddenParity`] when no
+/// move keeps the rule.
+pub(crate) fn hide_parity<E: From<KernelError>>(
+    holds: impl Fn(&[i32]) -> Result<bool, E>,
     mut moves: Vec<ParityMove>,
     (levels, dequant): (&mut [i32], &mut [i32]),
-) -> Result<(), KernelError> {
-    if holds(levels) {
+) -> Result<(), E> {
+    if holds(levels)? {
         return Ok(());
     }
     while let Some(best) = (0..moves.len()).min_by_key(|&i| moves[i]) {
@@ -409,13 +410,13 @@ pub(crate) fn hide_parity(
             continue;
         }
         let kept = core::mem::replace(&mut levels[pos], level);
-        if holds(levels) {
+        if holds(levels)? {
             dequant[pos] = dq;
             return Ok(());
         }
         levels[pos] = kept;
     }
-    Err(KernelError::HiddenParity)
+    Err(KernelError::HiddenParity.into())
 }
 
 /// The writer's reverse-scan state: the level grids and `hrLevelAvg`.
