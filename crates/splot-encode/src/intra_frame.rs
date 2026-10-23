@@ -102,6 +102,7 @@ impl IntraFrameCoder {
                 ref_frame_mvs: preset.mv_prediction,
                 refmvbank: preset.mv_prediction,
                 drl_reorder: preset.mv_prediction.then_some(DRL_REORDER_CONSTRAINT),
+                max_drl_bits_minus_1: u32::from(preset.drl_bits.saturating_sub(1)),
                 parity_hiding: preset.parity_hiding,
                 tcq: preset.tcq != TcqFrames::Off,
                 ..EncoderToolFlags::default()

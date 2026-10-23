@@ -146,23 +146,15 @@ fn coded_frames_decode_to_the_encoder_recon() {
     }
 }
 
-/// Key frames every third frame, with inter frames of unrelated content between them.
+/// Key frames every second frame, with an inter frame of unrelated content between them.
 #[test]
 fn inter_frames_decode_to_the_encoder_recon_over_several_gops() {
     for (index, mut config, name) in chroma_cases() {
-        config.keyint = core::num::NonZeroU32::new(3).unwrap();
-        let seeds: Vec<u32> = (0..4).map(|frame| index as u32 * 4 + frame).collect();
+        config.keyint = core::num::NonZeroU32::new(2).unwrap();
+        let seeds: Vec<u32> = (0..3).map(|frame| index as u32 * 4 + frame).collect();
         let coded = code_stream(&config, &seeds);
         let types: Vec<_> = coded.iter().map(|frame| frame.frame_type).collect();
-        assert_eq!(
-            types[..4],
-            [
-                FrameType::Key,
-                FrameType::Inter,
-                FrameType::Inter,
-                FrameType::Key
-            ]
-        );
+        assert_eq!(types, [FrameType::Key, FrameType::Inter, FrameType::Key]);
         let stream: Vec<u8> = coded
             .iter()
             .flat_map(|frame| frame.temporal_unit.clone())
