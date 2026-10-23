@@ -103,7 +103,7 @@ fn temporal_candidates_reach_the_first_leaf_of_a_frame() {
                 let leaf = syntax.leaf(top_left(syntax, root, 16))?;
                 let mut stacks = Vec::new();
                 for ref_frame in 0..syntax.reference_count() {
-                    stacks.extend(syntax.mv_candidates(&leaf, ref_frame)?);
+                    stacks.extend(syntax.single_mvs(&leaf, ref_frame)?.stack);
                 }
                 Ok(stacks)
             })
@@ -163,7 +163,7 @@ fn rollback_restores_the_reference_mv_bank() {
                     &mut residual,
                     0..3,
                 )?;
-                Ok::<_, TileWriterError>(syntax.mv_candidates(&target, 0)?)
+                Ok::<_, TileWriterError>(syntax.single_mvs(&target, 0)?.stack)
             };
             let without = code(syntax, 16, -24)?;
             syntax.restore(&start)?;

@@ -695,7 +695,7 @@ pub(super) fn single_mv_stack(
 
 /// The motion vector `single` codes over `stack`.
 #[inline]
-fn single_mode_mv(
+pub(super) fn single_mode_mv(
     single: &SingleMotionSyntax,
     stack: &MvStack,
     (precision, use_amvd): (BlockPrecisionRecord, bool),

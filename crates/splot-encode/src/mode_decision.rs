@@ -251,27 +251,22 @@ impl TrialCoder<'_, '_> {
                 drl,
                 mv: MotionVector::default(),
             };
-            push(
-                self.syntax.inter_mv(leaf, mode(InterMode::Global, 0))?,
-                mode(InterMode::Global, 0),
-            );
+            let mvs = self.syntax.single_mvs(leaf, ref_frame)?;
+            push(mvs.global, mode(InterMode::Global, 0));
             let mut seeds = Vec::new();
-            for drl in 0..self.syntax.drl_count() {
-                let mv = self.syntax.inter_mv(leaf, mode(InterMode::Near, drl))?;
+            for (drl, &mv) in mvs.near.iter().enumerate() {
                 seeds.push(mv);
                 push(mv, mode(InterMode::Near, drl));
             }
             let Some(motion) = self.motion else {
                 continue;
             };
-            for mv in self.syntax.mv_candidates(leaf, ref_frame)? {
+            for &mv in &mvs.stack {
                 if !seeds.contains(&mv) {
                     seeds.push(mv);
                 }
             }
-            let bases = (0..self.syntax.drl_count())
-                .map(|drl| self.syntax.newmv_base(leaf, ref_frame, drl))
-                .collect::<core::result::Result<Vec<_>, _>>()?;
+            let bases = mvs.new_bases;
             let pred = bases.first().copied().unwrap_or_default();
             let found = motion.search(self.syntax, ref_frame, leaf_rect(leaf)?, &seeds, pred)?;
             searched.push((found, pred));
@@ -282,7 +277,8 @@ impl TrialCoder<'_, '_> {
                     ..mode(InterMode::New, drl)
                 };
                 let mut sink = RateSink::adapting();
-                self.syntax.price_single_modes(leaf, modes, &mut sink)?;
+                self.syntax
+                    .price_single_modes(leaf, (modes, base), &mut sink)?;
                 if best.is_none_or(|(bits, _)| sink.bits < bits) {
                     best = Some((sink.bits, modes));
                 }

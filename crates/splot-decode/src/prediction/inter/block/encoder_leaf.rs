@@ -21,7 +21,7 @@ use super::residual::{InterLumaTxTypeMap, push_inter_residual_block};
 use super::resolve::{
     InterBlockSyntax, InterMotionSyntax, MvResolutionState, ResolvedInterBlock,
     compound_inter_block, compound_motion, resolve_inter_block, resolve_single, single_inter_block,
-    single_mv_stack,
+    single_mode_mv, single_mv_stack,
 };
 use super::temporal::temporal_motion_block;
 #[allow(clippy::wildcard_imports)]
@@ -74,6 +74,15 @@ pub(crate) struct EncoderSingleMotion {
     pub(crate) mvd: Mv,
 }
 
+/// The single-reference vectors of one leaf and reference, see
+/// [`EncoderInterTile::single_mvs`].
+pub(crate) struct EncoderSingleMvs {
+    pub(crate) global: Mv,
+    pub(crate) near: Vec<Mv>,
+    pub(crate) new_bases: Vec<Mv>,
+    pub(crate) stack: Vec<Mv>,
+}
+
 /// The § 8.3.2 contexts of one inter leaf's syntax.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct EncoderInterContexts {
@@ -102,7 +111,7 @@ pub(crate) struct EncoderInterTile {
     warp_bank: WarpParamBank,
     ref_mv_bank: Option<RefMvBank>,
     /// The projected motion field of a frame with `use_ref_frame_mvs`.
-    temporal: Option<TemporalMvContext>,
+    temporal: Option<Arc<TemporalMvContext>>,
     reference: InterReferenceState<u16>,
     ref_frame_idx: Vec<u32>,
     order_hints: Vec<Option<u32>>,
@@ -128,10 +137,12 @@ impl EncoderInterTile {
     /// The state of the tile over luma 4x4 `rows` and `cols` of the inter
     /// frame `core`, over the references in `reference`; `Err` names a tool
     /// the facade does not model.
+    /// `temporal` is the [`encoder_temporal_context`] of the frame.
     pub(crate) fn new(
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
         reference: InterReferenceState<u16>,
+        temporal: Option<Arc<TemporalMvContext>>,
         (rows, cols): (core::ops::Range<usize>, core::ops::Range<usize>),
         (qindex, bit_depth): (u32, BitDepth),
     ) -> core::result::Result<Self, &'static str> {
@@ -217,26 +228,6 @@ impl EncoderInterTile {
             &reference.ref_order_hint,
         )
         .to_vec();
-        let temporal = if frame_uses_temporal_mvs(core) {
-            let geometry = super::super::FrameDecodeGeometry::new(core, sequence, bit_depth, false)
-                .map_err(|_| "frame geometry")?;
-            let mut context = TemporalMvContext::empty();
-            frame_temporal_context(
-                &mut context,
-                core,
-                sb_h4,
-                (mi_rows, mi_cols),
-                current_order_hint,
-                temporal_projection_config(sequence, core, geometry),
-                &ref_frame_idx,
-                &reference,
-                derived_tip_reference_pair(core, &order_hints),
-            )
-            .map_err(|_| "temporal motion field")?;
-            Some(context)
-        } else {
-            None
-        };
         let temporal_first = frame_temporal_first(
             sequence,
             core,
@@ -309,6 +300,12 @@ impl EncoderInterTile {
         }
     }
 
+    /// The reference MV bank, for the debug rollback check.
+    #[cfg(debug_assertions)]
+    pub(crate) const fn ref_mv_bank(&self) -> Option<&RefMvBank> {
+        self.ref_mv_bank.as_ref()
+    }
+
     /// Puts a [`Self::checkpoint`] back.
     pub(crate) fn rollback(&mut self, checkpoint: &EncoderInterCheckpoint) {
         self.grid.rollback(&checkpoint.grid);
@@ -351,19 +348,47 @@ impl EncoderInterTile {
         Ok(self.resolve_motion(&syntax)?.mv)
     }
 
-    /// The § 7.12 stack of list reference `ref_frame` at `frontier` for a
-    /// single-reference block, in DRL order.
-    pub(crate) fn mv_stack(
+    /// The vectors `GLOBALMV`, then `NEARMV` and the `NEWMV` bases of the
+    /// first `drls` DRL indices code from list reference `ref_frame` at
+    /// `frontier`, and the § 7.12 stack they come from, all from one stack.
+    pub(crate) fn single_mvs(
         &mut self,
         frontier: &DecodeBlockFrontier,
         ref_frame: i8,
-    ) -> Result<Vec<Mv>> {
+        drls: usize,
+    ) -> Result<EncoderSingleMvs> {
         let block = self.block(frontier, (ref_frame, None))?;
+        let precision = BlockPrecisionRecord::most_probable(self.precision);
+        let single = |mode, ref_mv_idx| {
+            self.single_syntax(
+                &block,
+                EncoderSingleMotion {
+                    ref_frame,
+                    mode,
+                    ref_mv_idx,
+                    mvd: Mv::ZERO,
+                },
+            )
+        };
+        let global = single(SINGLE_MODE_GLOBALMV, 0);
+        let near: Vec<_> = (0..drls)
+            .map(|idx| single(SINGLE_MODE_NEARMV, idx))
+            .collect();
+        let new: Vec<_> = (0..drls)
+            .map(|idx| single(SINGLE_MODE_NEWMV, idx))
+            .collect();
         let temporal_first = self.temporal_first(ref_frame);
         let state = self.resolution_state(&block);
-        Ok(single_mv_stack(&block, false, temporal_first, &state)
-            .candidates()
-            .collect())
+        let stack = single_mv_stack(&block, false, temporal_first, &state);
+        let mv = |single: &SingleMotionSyntax| {
+            single_mode_mv(single, &stack, (precision, false), &block, &state)
+        };
+        Ok(EncoderSingleMvs {
+            global: mv(&global),
+            near: near.iter().map(mv).collect(),
+            new_bases: new.iter().map(mv).collect(),
+            stack: stack.candidates().collect(),
+        })
     }
 
     /// Predicts `frontier` with `motion` into `workspace` (§ 7.11.3) and
@@ -460,7 +485,7 @@ impl EncoderInterTile {
             ref_mv_bank: &mut self.ref_mv_bank,
             warp_param_bank: &mut self.warp_bank,
             core: &self.core,
-            temporal: self.temporal.as_ref(),
+            temporal: self.temporal.as_deref(),
             order_hints: OrderHintMvContext::new(self.current_order_hint, &self.order_hints),
             drl_reorder: self.drl_reorder,
             max_drl_bits_minus_1: self.max_drl_bits_minus_1,
@@ -769,6 +794,43 @@ impl EncoderInterTile {
             _ => geometry.place(single_inter_block(syntax, resolved)),
         })
     }
+}
+
+/// The § 7.9 projected motion field of frame `core` of `sequence` over
+/// `reference`, which every tile of the frame shares; `None` without
+/// `use_ref_frame_mvs`.
+pub(crate) fn encoder_temporal_context(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<u16>,
+    bit_depth: BitDepth,
+) -> Result<Option<Arc<TemporalMvContext>>> {
+    if !frame_uses_temporal_mvs(core) {
+        return Ok(None);
+    }
+    let geometry = super::super::FrameDecodeGeometry::new(core, sequence, bit_depth, false)?;
+    let ref_frame_idx = core
+        .inter
+        .as_ref()
+        .map_or(&[][..], |inter| &inter.ref_frame_idx[..]);
+    let hints = reference_order_hints(
+        ref_frame_idx,
+        &reference.ref_valid,
+        &reference.ref_order_hint,
+    );
+    let mut context = TemporalMvContext::empty();
+    frame_temporal_context(
+        &mut context,
+        core,
+        geometry.sb_h4(),
+        geometry.mi_dimensions(),
+        core.display_order_hint().unwrap_or(0),
+        temporal_projection_config(sequence, core, geometry),
+        ref_frame_idx,
+        reference,
+        derived_tip_reference_pair(core, &hints),
+    )?;
+    Ok(Some(Arc::new(context)))
 }
 
 /// The § 7.19 motion field the decoder stores for frame `core` of `sequence`,

@@ -162,11 +162,11 @@ impl IntraFrameCoder {
         let core = header(&FrameFilterParams::default())?;
         let initial = self
             .references
-            .initial_cdfs(&core)
+            .frame_start(&core)
             .map_err(coding("initial CDFs"))?;
         let writers = (0..tile_count(&core))
             .map(|tile| {
-                KeyFrameTileWriter::with_cdfs(
+                KeyFrameTileWriter::with_start(
                     &self.sequence,
                     &core,
                     &self.references,
@@ -216,7 +216,7 @@ impl IntraFrameCoder {
             (source, &self.references, self.pool.as_ref()),
             FirstPass {
                 core,
-                cdfs: initial.clone(),
+                start: initial.clone(),
                 tiles,
             },
         )?;

@@ -961,7 +961,7 @@ impl Default for RefMvBankEntry {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct RefMvBank {
     entries: [[RefMvBankEntry; REF_MV_BANK_SIZE]; BANK_REFS_PER_FRAME as usize],
     sizes: [usize; BANK_REFS_PER_FRAME as usize],

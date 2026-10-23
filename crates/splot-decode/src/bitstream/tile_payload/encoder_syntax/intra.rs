@@ -237,10 +237,7 @@ impl IntraTools {
             enable_ibp: intra.enable_ibp,
             enable_intra_edge_filter: intra.enable_intra_edge_filter,
             enable_chroma_dctonly: tq.enable_chroma_dctonly,
-            bit_depth: match seq.general.bit_depth_idc {
-                BitDepthIdc::Eight => BitDepth::Eight,
-                BitDepthIdc::Ten => BitDepth::Ten,
-            },
+            bit_depth: sequence_bit_depth(seq),
             qindex,
             tx_mode: Some(tx_mode),
             reduced_tx_set: usize::from(reduced_tx_set),
@@ -840,6 +837,14 @@ impl IntraTileSyntax {
         symbols
             .symbol(row, Symbol::new(value))
             .map_err(rule("symbol write"))
+    }
+}
+
+/// The sample bit depth of `seq`.
+pub(super) const fn sequence_bit_depth(seq: &SequenceHeader) -> BitDepth {
+    match seq.general.bit_depth_idc {
+        BitDepthIdc::Eight => BitDepth::Eight,
+        BitDepthIdc::Ten => BitDepth::Ten,
     }
 }
 

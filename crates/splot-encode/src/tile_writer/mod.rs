@@ -19,7 +19,7 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink};
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
-    EncoderReferences, EncoderSyntaxError, FrameCdfs, IntraTileSyntax, LeafBlock, PartitionNode,
+    EncoderReferences, EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock, PartitionNode,
     TileEnd, TransformBlock,
 };
 use splot_recon::{DecodedFrame, ReconError};
@@ -104,18 +104,18 @@ impl KeyFrameTileWriter {
         refs: &EncoderReferences,
         tile: usize,
     ) -> Result<Self> {
-        Self::with_cdfs(seq, core, refs, &refs.initial_cdfs(core)?, tile)
+        Self::with_start(seq, core, refs, &refs.frame_start(core)?, tile)
     }
 
     /// [`Self::new`] starting from the frame's initial `cdfs`.
-    pub(crate) fn with_cdfs(
+    pub(crate) fn with_start(
         seq: &SequenceHeader,
         core: &FrameHeaderCore,
         refs: &EncoderReferences,
-        cdfs: &FrameCdfs,
+        cdfs: &FrameStart,
         tile: usize,
     ) -> Result<Self> {
-        let syntax = IntraTileSyntax::with_cdfs(seq, core, refs, cdfs, tile)?;
+        let syntax = IntraTileSyntax::with_start(seq, core, refs, cdfs, tile)?;
         let (rows, cols) = syntax.tile_ranges();
         let sb4 = syntax.superblock_size4();
         let config = SymbolEncoderConfig::new()

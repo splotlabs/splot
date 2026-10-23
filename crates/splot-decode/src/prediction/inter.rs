@@ -2145,8 +2145,8 @@ mod single_ref;
 
 pub(crate) use block::encoder_leaf::{
     EncoderCompoundMotion, EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile,
-    EncoderMotion, EncoderSingleMotion, JMVD_SCALE_MODES, chroma_inter_tx_type,
-    encoder_motion_field, single_transform_residual,
+    EncoderMotion, EncoderSingleMotion, EncoderSingleMvs, JMVD_SCALE_MODES, chroma_inter_tx_type,
+    encoder_motion_field, encoder_temporal_context, single_transform_residual,
 };
 pub(crate) use block::non_intra_leaf_mode;
 pub(crate) use block::{
@@ -2158,6 +2158,8 @@ pub(crate) use block::{
 };
 pub(crate) use compound::CompoundYMode;
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
+#[cfg(debug_assertions)]
+pub(crate) use find_mv_stack::RefMvBank;
 pub(crate) use find_mv_stack::{
     FixedStack, MotionFieldLayout, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
 };
