@@ -10,39 +10,49 @@ use splot_core::headers::frame::{
     UniformTiles, build_encoder_sequence_header, build_key_frame_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SuperblockSize};
-use splot_decode::encoder_syntax::{
-    IntraTileSyntax, TransformBlock, dct_recon_params, is_low_frequency,
-};
+use splot_decode::encoder_syntax::{IntraTileSyntax, TransformBlock, TxType, dct_recon_params};
 use splot_recon::{BitDepth, PlaneId, dequant_coefficient, max_quantizer_index, quantizer_value};
 
 use super::super::{EncoderKernels, ForwardTransform2d, Quantizer, ScalarKernels, SimdKernels};
 use super::{
-    ApproxCoeffRates, BASE_SYMBOLS, BR_SYMBOLS, CoeffRates, LevelContext, RdoqBlock, Walk,
-    base_levels, rdoq,
+    ApproxCoeffRates, BASE_SYMBOLS, BR_SYMBOLS, CoeffRates, KernelError, LevelContext, RdoqBlock,
+    Walk, base_levels, hide_parity, parity_moves, rdoq,
 };
+
+/// One type of each class: 2D, identity, vertical and horizontal.
+const TYPES: [TxType; 6] = [
+    TxType::DctDct,
+    TxType::FlipadstAdst,
+    TxType::Idtx,
+    TxType::VDct,
+    TxType::HAdst,
+    TxType::VFlipadst,
+];
 
 fn block() -> impl Strategy<Value = RdoqBlock> {
     (
-        any::<bool>(),
-        0u32..=1000,
-        -64i32..=64,
+        (any::<bool>(), 0u32..=1000, -64i32..=64),
         2u32..=5,
         2u32..=5,
         0usize..3,
+        proptest::sample::select(&TYPES[..]),
     )
-        .prop_map(|(ten, qindex, delta, log2_width, log2_height, plane)| {
-            let bit_depth = if ten { BitDepth::Ten } else { BitDepth::Eight };
-            let qindex = qindex % (max_quantizer_index(bit_depth) + 1);
-            RdoqBlock {
-                dc_q2: quantizer_value(qindex, delta, bit_depth),
-                ac_q2: quantizer_value(qindex, 0, bit_depth),
-                dq_denom: Quantizer::dq_denom_without_tcq(log2_width, log2_height),
-                bit_depth,
-                log2_width,
-                log2_height,
-                plane,
-            }
-        })
+        .prop_map(
+            |((ten, qindex, delta), log2_width, log2_height, plane, tx_type)| {
+                let bit_depth = if ten { BitDepth::Ten } else { BitDepth::Eight };
+                let qindex = qindex % (max_quantizer_index(bit_depth) + 1);
+                RdoqBlock {
+                    dc_q2: quantizer_value(qindex, delta, bit_depth),
+                    ac_q2: quantizer_value(qindex, 0, bit_depth),
+                    dq_denom: Quantizer::dq_denom_without_tcq(log2_width, log2_height),
+                    bit_depth,
+                    log2_width,
+                    log2_height,
+                    plane,
+                    tx_type,
+                }
+            },
+        )
 }
 
 fn coefficient() -> impl Strategy<Value = i32> {
@@ -126,7 +136,8 @@ impl CheckedRates {
         assert_eq!(usize::from(self.scan[ctx.c]), ctx.row * width + ctx.col);
         assert_eq!(
             ctx.is_lf,
-            is_low_frequency(ctx.row, ctx.col, self.block.plane)
+            ctx.levels
+                .is_low_frequency(ctx.row, ctx.col, self.block.plane)
         );
         assert!(ctx.base_class <= 4 && ctx.br_class <= 6);
     }
@@ -147,8 +158,8 @@ impl CoeffRates for CheckedRates {
         ApproxCoeffRates.br(ctx)
     }
 
-    fn dc_sign(&mut self) -> u32 {
-        ApproxCoeffRates.dc_sign()
+    fn sign(&mut self, ctx: &LevelContext<'_>) -> u32 {
+        ApproxCoeffRates.sign(ctx)
     }
 }
 
@@ -188,9 +199,13 @@ impl CoeffRates for FacadeRates {
         ApproxCoeffRates.br(ctx)
     }
 
-    fn dc_sign(&mut self) -> u32 {
-        assert!(self.syntax.dc_sign_cdf(&self.tx).unwrap().len() >= 2);
-        ApproxCoeffRates.dc_sign()
+    fn sign(&mut self, ctx: &LevelContext<'_>) -> u32 {
+        let row = self
+            .syntax
+            .sign_cdf(&self.tx, ctx.levels, (ctx.row, ctx.col))
+            .unwrap();
+        assert!(row.is_none_or(|row| row.len() >= 2));
+        ApproxCoeffRates.sign(ctx)
     }
 }
 
@@ -219,7 +234,7 @@ fn facade_rows_back_the_rate_model() {
     for tx_size in 0..4 {
         let log2 = tx_size as u32 + 2;
         let tx = TransformBlock {
-            tx_type: splot_decode::encoder_syntax::TxType::DctDct,
+            tx_type: TxType::DctDct,
             plane: 0,
             x: 0,
             y: 0,
@@ -238,6 +253,7 @@ fn facade_rows_back_the_rate_model() {
             log2_width: log2,
             log2_height: log2,
             plane: 0,
+            tx_type: TxType::DctDct,
         };
         let coeffs: Vec<i32> = rng
             .block(1 << log2, 1 << log2)
@@ -293,6 +309,59 @@ proptest! {
     }
 }
 
+/// The § 5.20.7.27 rule for a luma block: the levels after scan index 0 hide
+/// the parity of its level once `PHTHRESH` (4) of them are nonzero; each adds
+/// the parity of its level capped at 6.
+fn rule_holds(scan: &[u16], levels: &[i32]) -> bool {
+    let after: Vec<u32> = scan[1..]
+        .iter()
+        .map(|&pos| levels[usize::from(pos)].unsigned_abs())
+        .filter(|&level| level != 0)
+        .collect();
+    let sum = after.iter().fold(0, |sum, &level| sum ^ (level.min(6) & 1));
+    after.len() < 4 || levels[usize::from(scan[0])].unsigned_abs() & 1 == sum
+}
+
+proptest! {
+    /// The fix-up moves one level by one, only when the rule fails, keeps the
+    /// exact reconstruction, and without rates moves only scan index 0.
+    #[test]
+    fn parity_fixup_keeps_the_rule((b, coeffs, lambda) in case(), exact in any::<bool>()) {
+        let (mut levels, mut dequant, _) = run(&ScalarKernels, &b, &coeffs, lambda);
+        let scan = Walk::new(&b).unwrap().scan;
+        let before = levels.clone();
+        let held = rule_holds(scan, &levels);
+        let mut approx = ApproxCoeffRates;
+        let rates = exact.then_some(&mut approx);
+        let moves = parity_moves(&b, &coeffs, rates, lambda, &levels).unwrap();
+        hide_parity(|l| rule_holds(scan, l), moves, (&mut levels, &mut dequant)).unwrap();
+        prop_assert!(rule_holds(scan, &levels));
+        let changed: Vec<usize> = (0..levels.len()).filter(|&i| levels[i] != before[i]).collect();
+        if held {
+            prop_assert!(changed.is_empty());
+        } else {
+            prop_assert_eq!(changed.len(), 1);
+            prop_assert_eq!((levels[changed[0]] - before[changed[0]]).abs(), 1);
+            prop_assert!(exact || changed[0] == usize::from(scan[0]));
+        }
+        for (i, (&level, &dq)) in levels.iter().zip(&dequant).enumerate() {
+            let q2 = if i == 0 { b.dc_q2 } else { b.ac_q2 };
+            prop_assert_eq!(dq, dequant_coefficient(level, q2, b.dq_denom, b.bit_depth));
+        }
+    }
+}
+
+/// A rule no move can satisfy is an error, not a silent stream defect.
+#[test]
+fn parity_fixup_reports_an_unreachable_rule() {
+    let mut levels = [3, 0, 0, 0];
+    let mut dequant = [0; 4];
+    assert_eq!(
+        hide_parity(|_| false, Vec::new(), (&mut levels, &mut dequant)),
+        Err(KernelError::HiddenParity)
+    );
+}
+
 #[test]
 fn huge_lambda_codes_nothing() {
     let b = RdoqBlock {
@@ -303,6 +372,7 @@ fn huge_lambda_codes_nothing() {
         log2_width: 2,
         log2_height: 2,
         plane: 0,
+        tx_type: TxType::DctDct,
     };
     let coeffs = [40, -24, 16, 9, 0, 3, -2, 1, 0, 0, 0, 0, 0, 0, 0, 1];
     assert!(run(&SimdKernels, &b, &coeffs, 0).2 > 0);
@@ -322,6 +392,7 @@ fn rejects_invalid_blocks() {
         log2_width: 6,
         log2_height: 2,
         plane: 0,
+        tx_type: TxType::DctDct,
     };
     let mut out = [0; 16];
     let mut dq = [0; 16];
@@ -442,6 +513,7 @@ fn rdoq_lowers_rd_cost_on_natural_residuals() {
                 log2_width: log2_w,
                 log2_height: log2_h,
                 plane: 0,
+                tx_type: TxType::DctDct,
             };
             let step_q3 = u64::from(b.ac_q2 / b.dq_denom);
             let lambda = step_q3 * step_q3 * 5 / 8;

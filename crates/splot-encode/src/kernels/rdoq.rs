@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Rate-distortion optimized quantization of one 2D-class transform block,
-//! for the § 5.20.7.27 `coeffs()` syntax without TCQ or parity hiding.
+//! Rate-distortion optimized quantization of one transform block of any
+//! class, for the § 5.20.7.27 `coeffs()` syntax without TCQ, and the parity
+//! fix-up of a block that hides a level parity.
 //!
 //! The round-to-nearest levels `L` are the candidates. In reverse scan, each
 //! coefficient keeps the cheapest of `{L, L - 1, 0}` by
@@ -17,12 +18,18 @@
 //! Both quantization passes run on [`EncoderKernels::quantize`], so
 //! [`super::SimdKernels`] vectorizes them; the reverse-scan decisions are
 //! sequential.
+//!
+//! [`hide_parity`] runs after any quantizer. When the block hides the parity
+//! of its scan index 0 level and that level has the other parity, it moves the
+//! one level by one whose move has the lowest `J` delta: the exact distortion
+//! delta plus the rate delta of the level's own symbols in the writer's
+//! contexts, among the moves after which the facade rule holds.
 
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
 use splot_decode::encoder_syntax::{
-    CoeffLevels, MAX_GOLOMB_PREFIX_BITS, is_low_frequency, max_level,
+    CoeffLevels, MAX_GOLOMB_PREFIX_BITS, MAX_QUANT_MAGNITUDE, TxType, type_scan,
 };
-use splot_recon::{BitDepth, TransformClass, coefficient_scan_slice};
+use splot_recon::{BitDepth, dequant_coefficient};
 
 use super::{EncoderKernels, KernelError, Quantizer};
 
@@ -50,6 +57,8 @@ pub(crate) struct RdoqBlock {
     pub(crate) log2_height: u32,
     /// Plane index (`0` luma).
     pub(crate) plane: usize,
+    /// The coded type: its class picks the scan and the contexts.
+    pub(crate) tx_type: TxType,
 }
 
 /// The context of one coefficient level, as the writer derives it.
@@ -76,14 +85,14 @@ pub(crate) struct LevelContext<'a> {
 
 /// Coefficient symbol costs in 1/256 bit.
 ///
-/// Other signs are one bypass bit and the Golomb remainder is exact, so they
-/// are not part of the model. A CDF-backed model holds the tile's
-/// `IntraTileSyntax` and the `TransformBlock`, and reads the rows that the
+/// The Golomb remainder is exact, so it is not part of the model. A
+/// CDF-backed model holds the tile's `IntraTileSyntax` and the
+/// `TransformBlock`, and reads the rows that the
 /// writer will use: `txb_skip_cdf`, `eob_pt_cdf` and `eob_extra_cdf` (plus the
 /// literal bits) for [`Self::eob`]; `coeff_base_eob_cdf` when `is_last`, else
 /// `coeff_base_cdf(ctx.levels, ..)` for [`Self::base`];
-/// `coeff_br_cdf(ctx.levels, ..)` for [`Self::br`]; `dc_sign_cdf` for
-/// [`Self::dc_sign`]. The writer derives the same rows, so it reports a facade
+/// `coeff_br_cdf(ctx.levels, ..)` for [`Self::br`]; `sign_cdf(ctx.levels, ..)`
+/// for [`Self::sign`]. The writer derives the same rows, so it reports a facade
 /// error; the model can return a high cost for it.
 pub(crate) trait CoeffRates {
     /// The cost of `all_zero` and, for `eob >= 1`, of the `eob` syntax elements.
@@ -96,8 +105,8 @@ pub(crate) trait CoeffRates {
     /// Index `s` is the cost of `coeff_br` symbol `s`.
     fn br(&mut self, ctx: &LevelContext<'_>) -> [u32; BR_SYMBOLS];
 
-    /// The cost of the luma `dc_sign` (either value).
-    fn dc_sign(&mut self) -> u32;
+    /// The cost of the sign of a nonzero level (either value).
+    fn sign(&mut self, ctx: &LevelContext<'_>) -> u32;
 }
 
 /// A static rate model that needs no CDF state.
@@ -160,7 +169,7 @@ impl CoeffRates for ApproxCoeffRates {
         ]
     }
 
-    fn dc_sign(&mut self) -> u32 {
+    fn sign(&mut self, _: &LevelContext<'_>) -> u32 {
         BIT
     }
 }
@@ -287,6 +296,128 @@ pub(crate) fn rdoq<R: CoeffRates + ?Sized>(
     Ok(best.0)
 }
 
+/// Moving one level of a block by one: the `J` delta, the row-major
+/// position, the new level and its reconstruction.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct ParityMove {
+    delta: i128,
+    pos: usize,
+    level: i32,
+    dequant: i32,
+}
+
+/// The [`ParityMove`]s of `levels` (adjusted, row-major) below their `eob`,
+/// priced in the writer's contexts by `rates` with the scan index 0 level
+/// coded as hidden. Without `rates` only the scan index 0 level moves, ranked
+/// by distortion.
+///
+/// # Errors
+/// Returns [`KernelError::InvalidTransformShape`] for an invalid block.
+pub(crate) fn parity_moves<R: CoeffRates + ?Sized>(
+    block: &RdoqBlock,
+    coeffs: &[i32],
+    mut rates: Option<&mut R>,
+    lambda_q8: u64,
+    levels: &[i32],
+) -> Result<Vec<ParityMove>, KernelError> {
+    let shape = || shape_error(block);
+    let scan = type_scan(1 << block.log2_width, 1 << block.log2_height, block.tx_type)
+        .map_err(|_| shape())?;
+    if coeffs.len() != scan.len() || levels.len() != scan.len() {
+        return Err(shape());
+    }
+    let mut walk = rates.is_some().then(|| Walk::new(block)).transpose()?;
+    if let Some(walk) = &mut walk {
+        walk.levels.set_hidden(true);
+    }
+    let eob = scan
+        .iter()
+        .rposition(|&pos| levels[usize::from(pos)] != 0)
+        .map_or(0, |last| last + 1);
+    let lambda = i128::from(lambda_q8);
+    let movable = if rates.is_some() { eob } else { eob.min(1) };
+    let mut moves = Vec::with_capacity(2 * movable);
+    for c in (0..movable).rev() {
+        let pos = usize::from(scan[c]);
+        let level = levels[pos].unsigned_abs();
+        let costs = rates
+            .as_deref_mut()
+            .zip(walk.as_ref())
+            .map(|(rates, walk)| {
+                (
+                    walk.costs(rates, c, c + 1 == eob, level + 1, None),
+                    walk.hr_level_avg,
+                )
+            });
+        let q2 = if pos == 0 { block.dc_q2 } else { block.ac_q2 };
+        let sign = if levels[pos] < 0 || (levels[pos] == 0 && coeffs[pos] < 0) {
+            -1
+        } else {
+            1
+        };
+        let price = |m: u32| {
+            let dq = dequant_coefficient(sign * m as i32, q2, block.dq_denom, block.bit_depth);
+            let d = (i64::from(coeffs[pos]) - i64::from(dq))
+                .unsigned_abs()
+                .pow(2);
+            let rate = costs.as_ref().map_or(0, |(costs, hr)| costs.rate(m, *hr).0);
+            ((i128::from(d) << 16) + lambda * i128::from(rate), dq)
+        };
+        let (kept, _) = price(level);
+        for m in [level + 1, level.wrapping_sub(1)] {
+            if m < MAX_QUANT_MAGNITUDE && (m > 0 || c + 1 < eob) {
+                let (j, dequant) = price(m);
+                let level = sign * m as i32;
+                moves.push(ParityMove {
+                    delta: j - kept,
+                    pos,
+                    level,
+                    dequant,
+                });
+            }
+        }
+        if let (Some(walk), Some((costs, _))) = (&mut walk, &costs) {
+            walk.commit(c, level, costs)?;
+        }
+    }
+    Ok(moves)
+}
+
+/// Makes `levels` and their reconstruction `dequant` keep the rule `holds`
+/// (the facade's `ParityHiding::holds`): when they hide a parity the scan
+/// index 0 level does not have, applies the first move of `moves` in `J`
+/// order after which the rule holds.
+///
+/// # Errors
+/// Returns [`KernelError::HiddenParity`] when no move keeps the rule.
+pub(crate) fn hide_parity(
+    holds: impl Fn(&[i32]) -> bool,
+    mut moves: Vec<ParityMove>,
+    (levels, dequant): (&mut [i32], &mut [i32]),
+) -> Result<(), KernelError> {
+    if holds(levels) {
+        return Ok(());
+    }
+    while let Some(best) = (0..moves.len()).min_by_key(|&i| moves[i]) {
+        let ParityMove {
+            pos,
+            level,
+            dequant: dq,
+            ..
+        } = moves.swap_remove(best);
+        if pos >= levels.len().min(dequant.len()) {
+            continue;
+        }
+        let kept = core::mem::replace(&mut levels[pos], level);
+        if holds(levels) {
+            dequant[pos] = dq;
+            return Ok(());
+        }
+        levels[pos] = kept;
+    }
+    Err(KernelError::HiddenParity)
+}
+
 /// The writer's reverse-scan state: the level grids and `hrLevelAvg`.
 struct Walk<'b> {
     block: &'b RdoqBlock,
@@ -303,6 +434,10 @@ struct Walk<'b> {
 struct LevelCosts {
     is_lf: bool,
     plane: usize,
+    /// `maxLevel`.
+    max: u32,
+    /// `1` when the level codes half its magnitude (hidden parity).
+    shift: u32,
     base: [u32; BASE_SYMBOLS],
     br: [u32; BR_SYMBOLS],
     sign: u32,
@@ -315,14 +450,12 @@ impl<'b> Walk<'b> {
             return Err(invalid());
         }
         let (width, height) = (1 << block.log2_width, 1 << block.log2_height);
-        let scan =
-            coefficient_scan_slice(width, height, TransformClass::TwoD).map_err(|_| invalid())?;
-        let levels = CoeffLevels::new(width, height).map_err(|_| invalid())?;
+        let levels = CoeffLevels::new(width, height, block.tx_type).map_err(|_| invalid())?;
         Ok(Self {
             block,
             width,
             height,
-            scan,
+            scan: levels.scan(),
             levels,
             chosen: vec![0; width * height],
             hr_level_avg: 0,
@@ -330,7 +463,8 @@ impl<'b> Walk<'b> {
     }
 
     fn grid(&self) -> Result<CoeffLevels, KernelError> {
-        CoeffLevels::new(self.width, self.height).map_err(|_| shape_error(self.block))
+        CoeffLevels::new(self.width, self.height, self.block.tx_type)
+            .map_err(|_| shape_error(self.block))
     }
 
     /// The costs at scan index `c` for levels up to `max_candidate`; `empty`
@@ -346,7 +480,10 @@ impl<'b> Walk<'b> {
         let pos = usize::from(self.scan[c]);
         let (row, col) = (pos >> self.block.log2_width, pos & (self.width - 1));
         let plane = self.block.plane;
-        let is_lf = is_low_frequency(row, col, plane);
+        let levels = empty.unwrap_or(&self.levels);
+        let is_lf = levels.is_low_frequency(row, col, plane);
+        let max = levels.max_level(c, is_lf, plane);
+        let shift = u32::from(levels.hides(c));
         #[cfg(test)]
         let (base_class, br_class) = if empty.is_some() {
             (0, 0)
@@ -354,7 +491,7 @@ impl<'b> Walk<'b> {
             self.classes(row, col)
         };
         let ctx = LevelContext {
-            levels: empty.unwrap_or(&self.levels),
+            levels,
             c,
             row,
             col,
@@ -365,20 +502,21 @@ impl<'b> Walk<'b> {
             #[cfg(test)]
             br_class,
         };
-        let has_br = |level: u32| {
-            level.min(max_level(is_lf, plane)) > base_levels(is_lf) && !(is_lf && plane > 0)
-        };
+        let has_br =
+            |level: u32| (level >> shift).min(max) > base_levels(is_lf) && !(is_lf && plane > 0);
         LevelCosts {
             is_lf,
             plane,
+            max,
+            shift,
             base: rates.base(&ctx),
             br: if has_br(max_candidate) {
                 rates.br(&ctx)
             } else {
                 [0; BR_SYMBOLS]
             },
-            sign: if pos == 0 && plane == 0 {
-                rates.dc_sign()
+            sign: if levels.sign_has_cdf(row, col, plane) {
+                rates.sign(&ctx)
             } else {
                 BIT
             },
@@ -409,7 +547,7 @@ impl<'b> Walk<'b> {
     /// Records `level` at scan index `c` as the writer's grid and remainder state do.
     fn commit(&mut self, c: usize, level: u32, costs: &LevelCosts) -> Result<(), KernelError> {
         let pos = usize::from(self.scan[c]);
-        let capped = level.min(max_level(costs.is_lf, costs.plane));
+        let capped = (level >> costs.shift).min(costs.max);
         self.hr_level_avg = costs.rate(level, self.hr_level_avg).1;
         self.chosen[pos] = capped as u8;
         self.levels
@@ -431,18 +569,19 @@ impl LevelCosts {
         if level == 0 {
             return (self.base[0], hr_level_avg);
         }
-        let max = max_level(self.is_lf, self.plane);
-        let capped = level.min(max);
+        let (coded, max) = (level >> self.shift, self.max);
+        let capped = coded.min(max);
         let base = capped.min(base_levels(self.is_lf) + 1);
         let mut rate = self.base[base as usize] + self.sign;
         if base > base_levels(self.is_lf) && !(self.is_lf && self.plane > 0) {
             rate += self.br[(capped - base) as usize];
         }
-        if level < max {
+        if coded < max {
             return (rate, hr_level_avg);
         }
-        let (bits, next) = golomb_bits(level - max, hr_level_avg);
-        (rate + bits, next)
+        let x = coded - max;
+        let bits = golomb_bits(x, hr_level_avg >> self.shift);
+        (rate + bits, ((x << self.shift) + hr_level_avg) >> 1)
     }
 }
 
@@ -454,9 +593,9 @@ const fn base_levels(is_lf: bool) -> u32 {
     }
 }
 
-/// The exact bypass cost of the § 5.20.7.28 remainder `x` and the next `hrLevelAvg`.
-fn golomb_bits(x: u32, hr_level_avg: u32) -> (u32, u32) {
-    let m = hr_level_avg.checked_ilog2().unwrap_or(0).clamp(1, 6);
+/// The exact bypass cost of the § 5.20.7.28 remainder `x` under `predLevel` `pred_level`.
+fn golomb_bits(x: u32, pred_level: u32) -> u32 {
+    let m = pred_level.checked_ilog2().unwrap_or(0).clamp(1, 6);
     let k = m + 1;
     let c_max = (m + 4).min(6);
     let bits = if x >> m < c_max {
@@ -465,7 +604,7 @@ fn golomb_bits(x: u32, hr_level_avg: u32) -> (u32, u32) {
         let length = (x - (c_max << m) + (1 << k)).ilog2();
         c_max + (length - k + 1).min(MAX_GOLOMB_PREFIX_BITS) + length
     };
-    (bits * BIT, (x + hr_level_avg) >> 1)
+    bits * BIT
 }
 
 #[cfg(test)]

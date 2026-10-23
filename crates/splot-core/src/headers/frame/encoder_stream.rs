@@ -480,8 +480,8 @@ fn key_frame_header_bits(
 }
 
 /// § 5.18.2 from `tile_info()` through `ccso_params()`: the uniform `tiles`, `base_q_idx`, no
-/// segmentation, quantizer matrices, delta-q, TCQ or parity hiding, the filters of
-/// `filters`, and CCSO off.
+/// segmentation, quantizer matrices, delta-q or TCQ, parity hiding when the sequence enables
+/// it, the filters of `filters`, and CCSO off.
 pub(super) fn write_quant_and_filters(
     w: &mut BitWriter,
     seq: &CoreSeqView,
@@ -505,7 +505,7 @@ pub(super) fn write_quant_and_filters(
     }
     let allow_tcq = seq.quant.enable_tcq && !seq.quant.choose_tcq_per_frame;
     if seq.quant.enable_parity_hiding && !allow_tcq {
-        w.write_flag(false)?; // allow_parity_hiding
+        w.write_flag(true)?; // allow_parity_hiding
     }
     write_filter_params(w, seq, filters)?;
     if seq.ccso.enable_ccso {

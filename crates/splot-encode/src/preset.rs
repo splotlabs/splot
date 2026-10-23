@@ -23,6 +23,13 @@ pub struct PresetParams {
     pub partition_early_exit: bool,
     /// Rate-distortion optimized quantization.
     pub rdoq: bool,
+    /// RDOQ also quantizes the identity and 1D transform types; off, they
+    /// take the deadzone quantizer.
+    pub rdoq_every_type: bool,
+    /// Parity hiding (`enable_parity_hiding`): a luma block with enough
+    /// nonzero levels hides the parity of its first level in their sum. Off
+    /// in every row: its gain per CPU does not beat the next slower row.
+    pub parity_hiding: bool,
     /// Candidate trials of the mode and transform-partition search run RDOQ
     /// and the transform-type search too; off, they quantize with a deadzone
     /// and code `DCT_DCT`, and only a leaf's final trial runs both.
@@ -68,6 +75,8 @@ const fn row(
         intra_modes,
         partition_early_exit,
         rdoq,
+        rdoq_every_type: rdoq,
+        parity_hiding: false,
         full_trials,
         tx_type_depth,
         tx_partition_search,
@@ -236,6 +245,9 @@ mod tests {
             assert!(fast.intra_modes <= slow.intra_modes);
             assert!(fast.partition_early_exit >= slow.partition_early_exit);
             assert!(fast.rdoq <= slow.rdoq);
+            assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
+            assert!(fast.parity_hiding <= slow.parity_hiding);
+            assert!(fast.rdoq || !fast.rdoq_every_type);
             assert!(fast.full_trials <= slow.full_trials);
             assert!(fast.tx_type_depth <= slow.tx_type_depth);
             assert!(fast.tx_partition_search <= slow.tx_partition_search);

@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! § 5.20.7.27 `coeffs()` writer for transform blocks of every class without
-//! TCQ, parity hiding, or forward skip coding, including the § 5.20.8.2 luma
+//! TCQ or forward skip coding, including parity hiding and the § 5.20.8.2 luma
 //! transform type.
 
 use splot_core::coefficient::{LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
@@ -10,7 +10,7 @@ use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_decode::encoder_syntax::{
     CoeffLevels, IntraTileSyntax, MAX_GOLOMB_PREFIX_BITS, MAX_QUANT_MAGNITUDE, TransformBlock,
-    coefficient_scan, max_level, tx_log2,
+    coefficient_scan, tx_log2,
 };
 
 use super::{Result, TileWriterError};
@@ -78,8 +78,19 @@ pub(crate) fn code_coeffs(
     {
         return Err(TileWriterError::LevelOutOfRange(bad));
     }
-    let scan = coefficient_scan(tx)?;
+    let mut grid = CoeffLevels::for_block(tx)?;
+    let scan = grid.scan();
     let eob = eob(tx, levels)?;
+    if let Some(parity) = syntax.parity_hiding(tx)
+        && let Some(sum_abs1) = parity.sum_abs1(levels)?
+    {
+        if levels[usize::from(scan[0])].unsigned_abs() & 1 != sum_abs1 {
+            return Err(TileWriterError::Unsupported(
+                "a scan index 0 level of the wrong hidden parity",
+            ));
+        }
+        grid.set_hidden(true);
+    }
     write_symbol(
         symbols,
         syntax.txb_skip_cdf(tx, eob_u_nonzero)?,
@@ -102,11 +113,11 @@ pub(crate) fn code_coeffs(
         let pos = usize::from(scan[c]);
         (pos, pos >> log2_w, pos & (width - 1))
     };
-    let mut grid = CoeffLevels::for_block(tx)?;
     for c in (0..eob).rev() {
         let (pos, row, col) = position(c);
         let is_lf = grid.is_low_frequency(row, col, plane);
-        let level = levels[pos].unsigned_abs().min(max_level(is_lf, plane));
+        let shift = u32::from(grid.hides(c));
+        let level = (levels[pos].unsigned_abs() >> shift).min(grid.max_level(c, is_lf, plane));
         let base_levels = if is_lf {
             LF_NUM_BASE_LEVELS
         } else {
@@ -138,14 +149,17 @@ pub(crate) fn code_coeffs(
         let quant = levels[pos].unsigned_abs();
         if quant != 0 {
             let negative = u8::from(levels[pos] < 0);
-            match syntax.sign_cdf(tx, row, col)? {
+            match syntax.sign_cdf(tx, &grid, (row, col))? {
                 Some(cdf) => write_symbol(symbols, cdf, usize::from(negative))?,
                 None => symbols.literal(u32::from(negative), 1)?,
             }
         }
-        let max = max_level(grid.is_low_frequency(row, col, plane), plane);
-        if quant >= max {
-            hr_level_avg = write_golomb(symbols, quant - max, hr_level_avg)?;
+        let shift = u32::from(grid.hides(c));
+        let max = grid.max_level(c, grid.is_low_frequency(row, col, plane), plane);
+        if quant >> shift >= max {
+            let x = (quant >> shift) - max;
+            write_golomb(symbols, x, hr_level_avg >> shift)?;
+            hr_level_avg = ((x << shift) + hr_level_avg) >> 1;
         }
         if pos == 0 && quant > 0 {
             dc_category = if levels[pos] < 0 { 1 } else { 2 };
@@ -189,9 +203,9 @@ pub(crate) fn write_eob(
     Ok(())
 }
 
-/// Writes the § 5.20.7.28 remainder `x` and returns the next `hrLevelAvg`.
-fn write_golomb(symbols: &mut impl SymbolSink, x: u32, hr_level_avg: u32) -> Result<u32> {
-    let m = hr_level_avg.checked_ilog2().unwrap_or(0).clamp(1, 6);
+/// Writes the § 5.20.7.28 remainder `x` under `predLevel` `pred_level`.
+fn write_golomb(symbols: &mut impl SymbolSink, x: u32, pred_level: u32) -> Result<()> {
+    let m = pred_level.checked_ilog2().unwrap_or(0).clamp(1, 6);
     let k = m + 1;
     let c_max = (m + 4).min(6);
     let q = x >> m;
@@ -205,7 +219,7 @@ fn write_golomb(symbols: &mut impl SymbolSink, x: u32, hr_level_avg: u32) -> Res
         symbols.unary(length - k, MAX_GOLOMB_PREFIX_BITS)?;
         symbols.literal(shifted - (1 << length), length)?;
     }
-    Ok((x + hr_level_avg) >> 1)
+    Ok(())
 }
 
 pub(crate) fn write_symbol(

@@ -169,6 +169,8 @@ pub(super) struct IntraTools {
     pub(super) tx_mode: Option<TxMode>,
     pub(super) reduced_tx_set: usize,
     pub(super) reduced_tx_part_set: bool,
+    /// `allow_parity_hiding`.
+    pub(super) parity_hiding: bool,
 }
 
 impl IntraTools {
@@ -202,10 +204,7 @@ impl IntraTools {
                 "intra IST, CCTX, or TCQ",
             ),
             (core.allow_intrabc == Some(true), "intra block copy"),
-            (
-                lossless.is_some_and(|info| info.allow_tcq || info.allow_parity_hiding),
-                "TCQ or parity hiding",
-            ),
+            (lossless.is_some_and(|info| info.allow_tcq), "TCQ"),
             (
                 qindex == 0
                     || lossless
@@ -245,6 +244,7 @@ impl IntraTools {
             tx_mode: Some(tx_mode),
             reduced_tx_set: usize::from(reduced_tx_set),
             reduced_tx_part_set: tq.reduced_tx_part_set,
+            parity_hiding: lossless.is_some_and(|info| info.allow_parity_hiding),
         })
     }
 }
