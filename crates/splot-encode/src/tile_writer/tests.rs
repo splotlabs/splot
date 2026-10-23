@@ -82,6 +82,9 @@ impl Case {
                 tcq: false,
                 parity_hiding: false,
                 avg_cdf: None,
+                ref_frame_mvs: false,
+                refmvbank: false,
+                drl_reorder: None,
             },
             max_level: 12,
             tx: KeyFrameTxParams {

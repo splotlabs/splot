@@ -717,6 +717,11 @@ impl MvStack {
         self.entry(idx).map_or(Mv::ZERO, |entry| entry.0)
     }
 
+    /// The candidates in stack order.
+    pub(crate) fn candidates(&self) -> impl Iterator<Item = Mv> + '_ {
+        self.stack.iter().map(|&(mv, _)| mv)
+    }
+
     pub(crate) fn candidate_offsets(&self, idx: usize) -> (i32, i32) {
         self.entry(idx).map_or((0, 0), |entry| entry.1)
     }
@@ -956,6 +961,7 @@ impl Default for RefMvBankEntry {
     }
 }
 
+#[derive(Clone, PartialEq)]
 pub(crate) struct RefMvBank {
     entries: [[RefMvBankEntry; REF_MV_BANK_SIZE]; BANK_REFS_PER_FRAME as usize],
     sizes: [usize; BANK_REFS_PER_FRAME as usize],

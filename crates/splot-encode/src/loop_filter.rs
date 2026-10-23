@@ -23,7 +23,7 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    EncoderReferences, FilterRecorder, FrameCdfs, IntraTileSyntax, LrLayout, LrUnit, TileCdfs,
+    EncoderReferences, FilterRecorder, FrameStart, IntraTileSyntax, LrLayout, LrUnit, TileEnd,
     TransformBlock, apply_loop_filters, cdef_unit_grid, merge_tiles,
 };
 use splot_parallel::WorkerPool;
@@ -155,7 +155,7 @@ impl ResidualCoder for Replay {
 pub(crate) struct CodedTile {
     bytes: Vec<u8>,
     recon: DecodedFrame<u16>,
-    cdfs: TileCdfs,
+    cdfs: TileEnd,
     recorder: FilterRecorder,
     syntax: FilterSyntax,
     decisions: FrameDecisions,
@@ -184,7 +184,7 @@ impl CodedTile {
 /// decisions of each tile.
 struct MergedTiles {
     bytes: Vec<Vec<u8>>,
-    cdfs: Vec<TileCdfs>,
+    cdfs: Vec<TileEnd>,
     recon: DecodedFrame<u16>,
     recorder: FilterRecorder,
     syntax: FilterSyntax,
@@ -238,8 +238,8 @@ impl MergedTiles {
 /// The first pass of a frame: its header and its tiles in tile order.
 pub(crate) struct FirstPass {
     pub(crate) core: FrameHeaderCore,
-    /// The initial CDFs of the frame, which the filter pass starts from too.
-    pub(crate) cdfs: FrameCdfs,
+    /// The state the frame starts from, which the filter pass starts from too.
+    pub(crate) start: FrameStart,
     pub(crate) tiles: Vec<CodedTile>,
 }
 
@@ -249,7 +249,7 @@ pub(crate) struct FilteredFrame {
     pub(crate) core: FrameHeaderCore,
     pub(crate) filters: FrameFilterParams,
     pub(crate) tiles: Vec<Vec<u8>>,
-    pub(crate) cdfs: Vec<TileCdfs>,
+    pub(crate) cdfs: Vec<TileEnd>,
     pub(crate) recon: DecodedFrame<u16>,
 }
 
@@ -304,7 +304,7 @@ pub(crate) fn finish_frame(
         .into_iter()
         .enumerate()
         .map(|(tile, decisions)| {
-            let mut writer = KeyFrameTileWriter::with_cdfs(seq, &core, refs, &pass.cdfs, tile)?;
+            let mut writer = KeyFrameTileWriter::with_start(seq, &core, refs, &pass.start, tile)?;
             writer.set_filter_syntax(syntax.clone());
             Ok((writer, decisions))
         })
