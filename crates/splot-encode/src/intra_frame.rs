@@ -149,7 +149,7 @@ impl IntraFrameCoder {
             ..*plan
         };
         let qindex = u32::from(qp);
-        let tools = gop::frame_tools(self.preset, self.tiles);
+        let tools = gop::frame_tools(self.preset, self.tiles, qindex);
         let header = |filters: &FrameFilterParams| {
             plan.header(&self.view, &self.references, qindex, filters, tools)
         };

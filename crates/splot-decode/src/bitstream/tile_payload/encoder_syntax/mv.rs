@@ -37,6 +37,10 @@ struct MvWriter {
     steps: Vec<MvStep>,
 }
 
+/// The last `shell_class` symbol value; at eighth-pel, shell set `1` codes
+/// the last two classes with it and `joint_shell_last_two_classes`.
+const LAST_RAW_SHELL_CLASS: u32 = 7;
+
 /// The joint shell coding of one magnitude: `(class, offset, column, low)`,
 /// where `low` is the smaller part of the shell split.
 fn shell(target: Mv, precision: u8) -> (u32, u32, u32, u32) {
@@ -69,8 +73,11 @@ impl MvSymbols for MvWriter {
         let set0 = shell_set0_classes(self.precision).unsigned_abs();
         let value = match selector {
             MvCdfSelector::JointShellSet { .. } => u32::from(class >= set0),
-            MvCdfSelector::JointShellClass { shell_set, .. } => {
-                class.saturating_sub(set0 * shell_set as u32)
+            MvCdfSelector::JointShellClass { shell_set, .. } => class
+                .saturating_sub(set0 * shell_set as u32)
+                .min(LAST_RAW_SHELL_CLASS),
+            MvCdfSelector::JointShellLastTwo { .. } => {
+                class.saturating_sub(set0 + LAST_RAW_SHELL_CLASS)
             }
             MvCdfSelector::ShellOffsetLowClass { .. } => offset,
             MvCdfSelector::ShellOffsetClass2 { .. } => u32::from(offset > 0),
@@ -144,9 +151,9 @@ pub(super) fn write_mvds(
     if mvds.is_empty() {
         return Ok(());
     }
-    if precision >= MV_PRECISION_EIGHTH_PEL || mvds.len() > 2 {
+    if mvds.len() > 2 {
         return Err(EncoderSyntaxError::Unsupported(
-            "eighth-pel or more than two motion vector differences",
+            "more than two motion vector differences",
         ));
     }
     let mut targets = [Mv::default(); 2];

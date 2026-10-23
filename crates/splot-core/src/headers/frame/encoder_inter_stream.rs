@@ -57,6 +57,9 @@ pub struct InterFrameParams {
     /// The reference slot whose saved CDFs the frame starts from (§ 5.18.2
     /// `set_primary_ref_frame_and_ctx`); `None` codes `PRIMARY_REF_NONE`.
     pub primary_slot: Option<u32>,
+    /// `allow_high_precision_mv` (§ 5.18.2): eighth-pel motion vectors;
+    /// off, `use_qtr_precision_mv` selects quarter-pel.
+    pub high_precision_mv: bool,
 }
 
 /// A parsed frame header and the exact bits it was parsed from.
@@ -76,7 +79,8 @@ pub struct EncodedFrameHeader {
 /// map with `disable_cross_frame_cdf_init = 0` (else `PRIMARY_REF_NONE` with
 /// `disable_cross_frame_cdf_init = 1`, also when the map does not hold the
 /// slot or holds it only as a restricted reference),
-/// quarter-pel motion vectors, the frame-level `EIGHTTAP` filter,
+/// quarter-pel or, with `high_precision_mv`, eighth-pel motion vectors, the
+/// frame-level `EIGHTTAP` filter,
 /// `reference_select` and `skip_mode_present` of `params`, and the key-frame tail
 /// (`TX_MODE_LARGEST`, `reduced_tx_set = 2`) with the filters of `params`.
 ///
@@ -164,7 +168,10 @@ fn inter_frame_header_bits(
         w.write_flag(false)?; // allow_screen_content_tools
     }
     w.write_flag(false)?; // allow_intrabc
-    w.write_flag(true)?; // use_qtr_precision_mv
+    w.write_flag(!params.high_precision_mv)?; // use_qtr_precision_mv
+    if params.high_precision_mv {
+        w.write_flag(true)?; // allow_high_precision_mv
+    }
     w.write_flag(false)?; // is_filter_switchable
     w.write_bits(EIGHTTAP, 2)?; // interpolation_filter
     w.write_flag(false)?; // disable_cdf_update
