@@ -177,3 +177,52 @@ fn nonmatching_globalmv_neighbour_derives_from_its_stored_sub_mv() {
     assert_eq!(stack.candidate(0), Mv { row: 4, col: 6 });
     assert_ne!(stack.candidate(0), Mv { row: -20, col: 40 });
 }
+
+/// § 7.12.2: `RefStackMv` starts at zero, so a `RefMvIdx` at or past
+/// `NumMvFound` selects a zero vector, not the last candidate.
+#[test]
+fn stack_index_past_the_candidates_reads_zero() {
+    let grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
+    let global_mv = Mv { row: -4, col: 6 };
+
+    let single = find_mv_stack(
+        &grid,
+        &block_at(8, 8),
+        global_mv,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+        false,
+    );
+
+    assert_eq!(single.candidate(0), global_mv);
+    for idx in 1..=MAX_REF_MV_STACK_SIZE {
+        assert_eq!(single.candidate(idx), Mv::ZERO, "single idx {idx}");
+        assert_eq!(single.candidate_offsets(idx), (0, 0), "single idx {idx}");
+    }
+
+    let mut block = block_at(8, 8);
+    block.ref_frame1 = Some(1);
+    let global_mvs = [global_mv, Mv { row: 2, col: -8 }];
+    let compound = find_compound_mv_stack_with_temporal(
+        &grid,
+        &block,
+        global_mvs,
+        None,
+        DrlReorder::Disabled,
+        None,
+    );
+
+    assert_eq!(compound.candidate(0).mvs, global_mvs);
+    for idx in 1..=MAX_REF_MV_STACK_SIZE {
+        assert_eq!(
+            compound.candidate(idx),
+            CompoundMvCandidate {
+                mvs: [Mv::ZERO; 2],
+                cwp_weight: CWP_EQUAL,
+            },
+            "compound idx {idx}"
+        );
+    }
+}
