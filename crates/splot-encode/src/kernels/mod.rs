@@ -63,6 +63,9 @@ pub(crate) enum KernelError {
     /// No move of one level by one gives the parity the block hides.
     #[error("no level move keeps the hidden parity")]
     HiddenParity,
+    /// The TCQ trellis lost track of a path's level grid.
+    #[error("inconsistent TCQ trellis state")]
+    TrellisState,
     /// The deadzone rounding is above one half (`128` in Q8).
     #[error("invalid quantizer rounding {rounding_q8}/256")]
     InvalidRounding {

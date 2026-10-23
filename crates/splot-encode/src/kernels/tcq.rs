@@ -18,7 +18,7 @@
 //! [`EncoderKernels::tcq_step`] adds the branch metrics of all states at once
 //! and keeps the survivors.
 
-use std::simd::cmp::SimdPartialOrd as _;
+use std::simd::cmp::{SimdOrd as _, SimdPartialEq as _, SimdPartialOrd as _};
 use std::simd::num::SimdUint as _;
 use std::simd::{Select as _, Simd, simd_swizzle};
 
@@ -52,10 +52,25 @@ pub(crate) const FIRST: [usize; TCQ_STATES] = [0, 2, 12, 14, 8, 10, 4, 6];
 /// See [`FIRST`].
 pub(crate) const SECOND: [usize; TCQ_STATES] = [9, 11, 5, 7, 1, 3, 13, 15];
 
-/// The largest distortion and `lambda_q8` the branch kernel takes, so no
-/// path sum overflows `u64`; a distortion of `MAX_DIST` marks a missing slot.
+/// A distortion of `MAX_DIST` marks a missing slot; real distortions are below it.
 pub(crate) const MAX_DIST: u64 = 1 << 40;
 const MAX_LAMBDA: u64 = 1 << 30;
+/// The cost of a state no path reaches. A reached path saturates at
+/// [`MAX_COST`], so it stays reached.
+pub(crate) const UNREACHED: u64 = u64::MAX;
+/// The largest cost of a reached path.
+pub(crate) const MAX_COST: u64 = u64::MAX - 1;
+
+/// `prev + j` for a reached `prev`, capped at [`MAX_COST`].
+#[cfg(test)]
+const fn extend(prev: u64, j: u64) -> u64 {
+    if prev == UNREACHED {
+        UNREACHED
+    } else {
+        let sum = prev.saturating_add(j);
+        if sum > MAX_COST { MAX_COST } else { sum }
+    }
+}
 
 /// The distortion and rate of each slot in each state at one coefficient.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -82,11 +97,8 @@ pub(crate) fn step_scalar(prev: &[u64; TCQ_STATES], b: &Branches, lambda: u64) -
         } else {
             (even, EVEN)
         };
-        lanes[s] = (prev[s].saturating_add(even), slot as u8 | (s as u8) << 2);
-        lanes[TCQ_STATES + s] = (
-            prev[s].saturating_add(j(ODD, s)),
-            ODD as u8 | (s as u8) << 2,
-        );
+        lanes[s] = (extend(prev[s], even), slot as u8 | (s as u8) << 2);
+        lanes[TCQ_STATES + s] = (extend(prev[s], j(ODD, s)), ODD as u8 | (s as u8) << 2);
     }
     let mut out = ([0; TCQ_STATES], [0; TCQ_STATES]);
     for t in 0..TCQ_STATES {
@@ -108,8 +120,15 @@ pub(crate) fn step_simd(prev: &[u64; TCQ_STATES], b: &Branches, lambda: u64) -> 
     let (zero, even) = (j(ZERO), j(EVEN));
     let take_zero = zero.simd_le(even);
     let prev = V::from_array(*prev);
-    let even = prev.saturating_add(take_zero.select(zero, even));
-    let odd = prev.saturating_add(j(ODD));
+    let reached = prev.simd_ne(V::splat(UNREACHED));
+    let extend = |j: V| {
+        reached.select(
+            prev.saturating_add(j).simd_min(V::splat(MAX_COST)),
+            V::splat(UNREACHED),
+        )
+    };
+    let even = extend(take_zero.select(zero, even));
+    let odd = extend(j(ODD));
     let lane = V::from_array([0, 1, 2, 3, 4, 5, 6, 7]) << 2;
     let even_pick = lane | take_zero.select(V::splat(ZERO as u64), V::splat(EVEN as u64));
     let odd_pick = lane | V::splat(ODD as u64);
@@ -233,7 +252,7 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
         .map(|_| new_grid())
         .collect::<Result<Vec<_>, _>>()?;
     let mut grid_of: [usize; TCQ_STATES] = core::array::from_fn(|s| s);
-    let mut cost = [u64::MAX; TCQ_STATES];
+    let mut cost = [UNREACHED; TCQ_STATES];
     let mut hr = [0u32; TCQ_STATES];
     let mut picks = vec![[0u8; TCQ_STATES]; end];
     let mut kept = vec![[[0u32; SLOTS]; 2]; end];
@@ -263,7 +282,7 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
 
         let mut branches = Branches::default();
         let mut next_hr = [hr; SLOTS];
-        for s in (0..TCQ_STATES).filter(|&s| cost[s] != u64::MAX) {
+        for s in (0..TCQ_STATES).filter(|&s| cost[s] != UNREACHED) {
             let z = tcq_quantizer(s);
             let grid = &mut grids[grid_of[s]];
             grid.set_tcq_state(s);
@@ -290,7 +309,8 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
                 start_hr[k] = hr_after;
                 let j = start
                     .saturating_add(cand[z][k].1 << 16)
-                    .saturating_add(lambda * u64::from(rate));
+                    .saturating_add(lambda * u64::from(rate))
+                    .min(MAX_COST);
                 let t = tcq_next_state(0, cand[z][k].0);
                 if j < next[t] {
                     (next[t], pick[t]) = (j, k as u8 | START << 2);
@@ -300,7 +320,7 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
 
         let mut claimed = [false; TCQ_STATES];
         let mut taken = [None; TCQ_STATES];
-        for t in (0..TCQ_STATES).filter(|&t| next[t] != u64::MAX) {
+        for t in (0..TCQ_STATES).filter(|&t| next[t] != UNREACHED) {
             let (from, k) = (usize::from(pick[t] >> 2), usize::from(pick[t] & 3));
             hr[t] = if from < TCQ_STATES {
                 next_hr[k][from]
@@ -315,16 +335,16 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
         let mut free = (0..TCQ_STATES).filter(|&g| !claimed[g]);
         let window = c + 1..(c + reach).min(end);
         let mut next_grid = [0; TCQ_STATES];
-        for t in (0..TCQ_STATES).filter(|&t| next[t] != u64::MAX) {
+        for t in (0..TCQ_STATES).filter(|&t| next[t] != UNREACHED) {
             let (from, k) = (usize::from(pick[t] >> 2), usize::from(pick[t] & 3));
             let g = if let Some(g) = taken[t] {
                 g
             } else {
-                let g = free.next().ok_or_else(shape)?;
+                let g = free.next().ok_or(KernelError::TrellisState)?;
                 if from < TCQ_STATES {
                     let [dst, src] = grids
                         .get_disjoint_mut([g, grid_of[from]])
-                        .map_err(|_| shape())?;
+                        .map_err(|_| KernelError::TrellisState)?;
                     dst.copy_cells(Some(src), window.clone());
                 } else {
                     grids[g].copy_cells(None, window.clone());

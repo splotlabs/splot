@@ -185,6 +185,7 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             self.coder.trial = true;
             let cost = self.trial(leaf, choice, planes.clone());
             (self.coder.candidate, self.coder.trial) = (false, false);
+            self.syntax.set_scalar_trial(false);
             let j = cost?.cost(self.lambda);
             if best.is_none_or(|(best_j, _)| j < best_j) {
                 best = Some((j, choice));

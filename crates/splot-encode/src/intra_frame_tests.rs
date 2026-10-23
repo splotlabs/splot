@@ -211,14 +211,15 @@ fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
 }
 
 /// TCQ on every frame: key and inter frames at a full-trial and a
-/// candidate-trial preset, at both bit depths, decode to the encoder recon,
-/// with the same bytes on 1, 2 and 8 threads.
+/// candidate-trial preset, at both bit depths and in every chroma format,
+/// decode to the encoder recon, with the same bytes on 1, 2 and 8 threads.
 #[test]
 fn tcq_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for (preset, width, height, bit_depth) in [
-        (1u8, 40, 24, BitDepth::Ten),
-        (6, 72, 40, BitDepth::Eight),
-        (6, 48, 32, BitDepth::Ten),
+    for (preset, width, height, bit_depth, chroma) in [
+        (1u8, 40, 24, BitDepth::Ten, PixelFormat::Yuv420),
+        (6, 72, 40, BitDepth::Eight, PixelFormat::Yuv420),
+        (6, 48, 32, BitDepth::Ten, PixelFormat::Yuv422),
+        (6, 40, 24, BitDepth::Eight, PixelFormat::Yuv444),
     ] {
         let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
             tcq: TcqFrames::All,
@@ -226,6 +227,7 @@ fn tcq_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         }));
         let mut config = config(width, height, bit_depth, preset, 60);
         config.keyint = core::num::NonZeroU32::new(3).unwrap();
+        config.chroma = chroma;
         let stream = |threads: usize| {
             let mut config = config.clone();
             config.threads = splot_parallel::ThreadCount::from(threads);
@@ -245,7 +247,7 @@ fn tcq_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             .iter()
             .flat_map(|frame| recon_bytes(frame, bit_depth))
             .collect();
-        let name = format!("preset {preset} {bit_depth:?}");
+        let name = format!("preset {preset} {bit_depth:?} {chroma:?}");
         assert_same_samples(&decode(&units), &expected, &name);
         for threads in [2, 8] {
             let other: Vec<u8> = stream(threads)

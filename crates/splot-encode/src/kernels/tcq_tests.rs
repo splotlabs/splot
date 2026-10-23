@@ -18,13 +18,18 @@ use splot_recon::{BitDepth, PlaneId, dequant_coefficient};
 use super::super::rdoq::{BIT, CoeffRates, LevelContext, base_levels, golomb_bits};
 use super::super::{EncoderKernels, ScalarKernels, SimdKernels};
 use super::{
-    Branches, EVEN, FIRST, MAX_DIST, ODD, RdoqBlock, SECOND, STATES, ZERO, candidates, tcq,
+    Branches, EVEN, FIRST, MAX_COST, MAX_DIST, ODD, RdoqBlock, SECOND, STATES, UNREACHED, ZERO,
+    candidates, tcq,
 };
 use crate::rd::coeff_rate::CdfCoeffRates;
 use crate::test_support::refs_for;
 
 fn branches() -> impl Strategy<Value = ([u64; STATES], Branches, u64)> {
-    let cost = prop_oneof![1 => Just(u64::MAX), 6 => 0u64..(1 << 60)];
+    let cost = prop_oneof![
+        1 => Just(UNREACHED),
+        6 => 0u64..(1 << 60),
+        2 => (MAX_COST - (1 << 50))..=MAX_COST,
+    ];
     (
         proptest::array::uniform8(cost),
         proptest::array::uniform3(proptest::array::uniform8(prop_oneof![
@@ -45,6 +50,17 @@ proptest! {
             SimdKernels.tcq_step(&prev, &b, lambda),
             ScalarKernels.tcq_step(&prev, &b, lambda)
         );
+    }
+
+    /// A next state with a reached predecessor stays reached, however large
+    /// its cost grows.
+    #[test]
+    fn reached_paths_never_become_unreached((prev, b, lambda) in branches()) {
+        let (next, _) = SimdKernels.tcq_step(&prev, &b, lambda);
+        for t in 0..STATES {
+            let reached = [FIRST[t], SECOND[t]].iter().any(|&lane| prev[lane % STATES] != UNREACHED);
+            prop_assert_eq!(next[t] != UNREACHED, reached);
+        }
     }
 }
 
