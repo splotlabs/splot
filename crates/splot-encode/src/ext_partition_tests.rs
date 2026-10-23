@@ -5,10 +5,11 @@
 
 use super::*;
 
-/// Preset 9 with every extended shape on and no source gate.
+/// Preset 9 with every extended shape on and open margins.
 static EXT: PresetParams = PresetParams {
     ext_partitions: 2,
-    ext_partition_gate: 0,
+    ext_three_way_margin: u8::MAX,
+    ext_four_way_margin: u8::MAX,
     ..PRESETS[9]
 };
 

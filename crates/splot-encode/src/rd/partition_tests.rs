@@ -7,20 +7,20 @@ use core::result::Result;
 
 use super::*;
 use crate::preset::{PRESETS, PresetParams};
-use crate::rd::partition::{PartitionSearch, SourceProfile, search_partition};
+use crate::rd::partition::{PartitionSearch, search_partition};
 use crate::tile_writer::LeafChoice;
 
 /// A block: left, top, log2 width, log2 height.
 type Rect = (u32, u32, u32, u32);
 
-/// Quad, binary, and `NONE` partitions down to 4x4 over a `size x size` frame;
-/// the live state is the list of coded leaves.
+/// Quad, binary, `HORZ_3`, `HORZ_4A` and `NONE` partitions down to 4x4 over a
+/// `size x size` frame; the live state is the list of coded leaves.
 struct Synthetic<F> {
     size: u32,
     leaf_cost: F,
     coded: Vec<Rect>,
     leaf_evaluations: usize,
-    evaluated: std::collections::HashSet<Rect>,
+    evaluated: std::collections::HashMap<Rect, usize>,
 }
 
 impl<F: Fn(Rect) -> RdCost> Synthetic<F> {
@@ -30,7 +30,7 @@ impl<F: Fn(Rect) -> RdCost> Synthetic<F> {
             leaf_cost,
             coded: Vec::new(),
             leaf_evaluations: 0,
-            evaluated: std::collections::HashSet::new(),
+            evaluated: std::collections::HashMap::new(),
         }
     }
 }
@@ -58,6 +58,12 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
         if w > 2 {
             out.push(Partition::Vert);
         }
+        if h > 3 && w > 2 {
+            out.push(Partition::Horz3);
+        }
+        if h > 4 {
+            out.push(Partition::Horz4A);
+        }
         Ok(out)
     }
 
@@ -72,6 +78,18 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
             ],
             Partition::Horz => vec![(x, y, w, h - 1), (x, y + hh, w, h - 1)],
             Partition::Vert => vec![(x, y, w - 1, h), (x + hw, y, w - 1, h)],
+            Partition::Horz3 => vec![
+                (x, y, w, h - 2),
+                (x, y + hh / 2, w - 1, h - 1),
+                (x + hw, y + hh / 2, w - 1, h - 1),
+                (x, y + 3 * hh / 2, w, h - 2),
+            ],
+            Partition::Horz4A => vec![
+                (x, y, w, h - 3),
+                (x, y + hh / 4, w, h - 2),
+                (x, y + 3 * hh / 4, w, h - 1),
+                (x, y + 7 * hh / 4, w, h - 3),
+            ],
             _ => Vec::new(),
         })
     }
@@ -84,14 +102,12 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
         Ok((w, h))
     }
 
-    fn source_profile(&self, _: Rect) -> Result<SourceProfile, Self::Error> {
-        Ok(SourceProfile::default())
-    }
-
     fn evaluate_leaf(&mut self, node: Rect) -> Result<(RdCost, LeafChoice), Self::Error> {
         self.coded.push(node);
         self.leaf_evaluations += 1;
-        assert!(self.evaluated.insert(node), "{node:?} searched twice");
+        let searches = self.evaluated.entry(node).or_default();
+        *searches += 1;
+        assert!(*searches <= 2, "{node:?} searched again in one mode");
         Ok(((self.leaf_cost)(node), LeafChoice::DC))
     }
 
@@ -130,6 +146,8 @@ fn full_search() -> PresetParams {
         min_block_log2: 2,
         max_block_log2: 7,
         partition_early_exit: false,
+        ext_three_way_margin: u8::MAX,
+        ext_four_way_margin: u8::MAX,
         ..PRESETS[0]
     }
 }
@@ -159,11 +177,22 @@ fn leaves<F: Fn(Rect) -> RdCost>(
     }
 }
 
-/// The optimum `J` by plain recursion, without the search's state handling.
+/// The optimum `J` by plain recursion, without the search's state handling;
+/// the children of an extended shape take no extended shape.
 fn optimum<F: Fn(Rect) -> RdCost>(coder: &Synthetic<F>, node: Rect, lambda: Lambda) -> u128 {
+    optimum_in(coder, node, lambda, true)
+}
+
+fn optimum_in<F: Fn(Rect) -> RdCost>(
+    coder: &Synthetic<F>,
+    node: Rect,
+    lambda: Lambda,
+    extended: bool,
+) -> u128 {
     if !coder.in_frame(node) {
         return 0;
     }
+    let is_extended = |p: Partition| matches!(p, Partition::Horz3 | Partition::Horz4A);
     let rate = |partition| {
         RdCost {
             distortion: 0,
@@ -175,6 +204,7 @@ fn optimum<F: Fn(Rect) -> RdCost>(coder: &Synthetic<F>, node: Rect, lambda: Lamb
         .partitions(node)
         .unwrap()
         .into_iter()
+        .filter(|&partition| extended || !is_extended(partition))
         .map(|partition| {
             rate(partition)
                 + if partition == Partition::None {
@@ -184,7 +214,9 @@ fn optimum<F: Fn(Rect) -> RdCost>(coder: &Synthetic<F>, node: Rect, lambda: Lamb
                         .children(node, partition)
                         .unwrap()
                         .into_iter()
-                        .map(|child| optimum(coder, child, lambda))
+                        .map(|child| {
+                            optimum_in(coder, child, lambda, extended && !is_extended(partition))
+                        })
                         .sum()
                 }
         })
@@ -329,70 +361,55 @@ proptest! {
     }
 }
 
-/// A `size x size` plane whose rows take `levels` in bands of `eighths`.
-fn banded(size: usize, eighths: &[usize], levels: &[u16]) -> Vec<u16> {
-    let mut plane = Vec::with_capacity(size * size);
-    for (&band, &level) in eighths.iter().zip(levels) {
-        plane.resize(plane.len() + band * size / 8 * size, level);
-    }
-    plane
-}
-
-fn profile(plane: &[u16], size: usize) -> SourceProfile {
-    SourceProfile::measure(plane, size, (0, 0, size, size)).unwrap()
-}
-
+/// With zero margins, the extended shapes are skipped unless `NONE` is the
+/// best cost so far; the optimum needs `HORZ_3` here, so only the open
+/// margins find it.
 #[test]
-fn source_gate_tries_extended_shapes_that_fit_the_bands() {
-    let three = profile(&banded(32, &[2, 4, 2], &[40, 200, 40]), 32);
-    assert!(three.worth_trying(Partition::Horz3, 200));
-    assert!(!three.worth_trying(Partition::Vert3, 1));
-    assert!(three.worth_trying(Partition::Horz, u8::MAX));
-    let uneven = profile(&banded(32, &[1, 2, 4, 1], &[10, 90, 170, 250]), 32);
-    assert!(uneven.worth_trying(Partition::Horz4A, 100));
-    assert!(!uneven.worth_trying(Partition::Horz4B, 100));
-    let halves = profile(&banded(16, &[4, 4], &[10, 250]), 16);
-    assert!(!halves.worth_trying(Partition::Horz3, 0));
-    let flat = profile(&[77; 64 * 64], 64);
-    for partition in [Partition::Horz3, Partition::Vert4A, Partition::Horz4B] {
-        assert!(!flat.worth_trying(partition, 0));
-    }
-}
-
-proptest! {
-    #[test]
-    fn source_profile_matches_direct_sums(
-        seed in any::<u64>(),
-        (log2_w, log2_h) in (2u32..=7, 2u32..=7),
-        (x, y) in (0usize..9, 0usize..5),
-        max in prop::sample::select(vec![255u16, 1023]),
-    ) {
-        let (width, height, stride) = (1usize << log2_w, 1usize << log2_h, 141);
-        let plane: Vec<u16> = (0..stride * (y + height))
-            .map(|at| (((at as u64 * 0x9e37_79b9) ^ seed) >> 7) as u16 % (max + 1))
-            .collect();
-        let profile = SourceProfile::measure(&plane, stride, (x, y, width, height)).unwrap();
-        let sample = |r: usize, c: usize| u64::from(plane[(y + r) * stride + x + c]);
-        let (strip_h, strip_w) = (height / profile.strips.0, width / profile.strips.1);
-        for strip in 0..profile.strips.0 {
-            let sum = (strip * strip_h..(strip + 1) * strip_h)
-                .flat_map(|r| (0..width).map(move |c| (r, c)))
-                .map(|(r, c)| sample(r, c))
-                .sum::<u64>();
-            prop_assert_eq!(profile.rows[strip], sum);
+fn extended_margins_gate_the_three_and_four_way_trials() {
+    let bands = |(x, y, w, h): Rect| {
+        let (top, bottom) = (y, y + (1 << h));
+        let flat = [(0, 8), (8, 24), (24, 32)]
+            .iter()
+            .any(|&(a, b)| top >= a && bottom <= b)
+            && (h < 4 || x % 16 + (1 << w) <= 16);
+        RdCost {
+            distortion: if flat { 0 } else { 1 << 24 },
+            rate: Bits::whole(10),
         }
-        for strip in 0..profile.strips.1 {
-            let sum = (0..height)
-                .flat_map(|r| (strip * strip_w..(strip + 1) * strip_w).map(move |c| (r, c)))
-                .map(|(r, c)| sample(r, c))
-                .sum::<u64>();
-            prop_assert_eq!(profile.cols[strip], sum);
-        }
-        let squares = (0..height)
-            .flat_map(|r| (0..width).map(move |c| (r, c)))
-            .map(|(r, c)| sample(r, c).pow(2))
-            .sum::<u64>();
-        prop_assert_eq!(profile.squares, squares);
-        prop_assert_eq!(profile.samples, (width * height) as u64);
-    }
+    };
+    let root = (0, 0, 5, 5);
+    let mut open = Synthetic::new(32, bands);
+    let (tree, cost) = search_partition(&mut open, root, &full_search(), unit_lambda()).unwrap();
+    assert!(
+        matches!(
+            tree,
+            PartitionTree::Split {
+                kind: Partition::Horz3,
+                ..
+            }
+        ),
+        "{tree:?}"
+    );
+    assert_eq!(
+        cost.cost(unit_lambda()),
+        optimum(&open, root, unit_lambda())
+    );
+    let closed = PresetParams {
+        ext_three_way_margin: 0,
+        ext_four_way_margin: 0,
+        ..full_search()
+    };
+    let mut gated = Synthetic::new(32, bands);
+    let (tree, _) = search_partition(&mut gated, root, &closed, unit_lambda()).unwrap();
+    assert!(
+        !matches!(
+            tree,
+            PartitionTree::Split {
+                kind: Partition::Horz3,
+                ..
+            }
+        ),
+        "{tree:?}"
+    );
+    assert!(gated.leaf_evaluations < open.leaf_evaluations);
 }

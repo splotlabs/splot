@@ -61,10 +61,12 @@ pub struct PresetParams {
     /// Extended partitions: `0` off, `1` adds `HORZ_3` and `VERT_3`, `2` also
     /// the uneven 4-way shapes.
     pub ext_partitions: u8,
-    /// An extended shape is tried only when its segments explain at least
-    /// this much more of the block's luma variance, in 1/256, than the binary
-    /// split along the same axis.
-    pub ext_partition_gate: u8,
+    /// A three-way shape is tried only when the `NONE` cost is within this
+    /// margin, in 1/256, of the best cost so far; `255` always tries it.
+    pub ext_three_way_margin: u8,
+    /// An uneven four-way shape is tried only when the three-way shape of its
+    /// axis costs within this margin, in 1/256, of the best; `255` always.
+    pub ext_four_way_margin: u8,
 }
 
 const fn row(
@@ -94,29 +96,33 @@ const fn row(
         compound_candidates,
         cdf_carry: true,
         ext_partitions: 0,
-        ext_partition_gate: u8::MAX,
+        ext_three_way_margin: 0,
+        ext_four_way_margin: 0,
     }
 }
 
-/// `(ext_partitions, ext_partition_gate)` by preset.
-const EXT_PARTITIONS: [(u8, u8); 11] = [
-    (2, 0),
-    (2, 0),
-    (2, 0),
-    (2, 0),
-    (1, 0),
-    (1, 0),
-    (1, 0),
-    (0, u8::MAX),
-    (0, u8::MAX),
-    (0, u8::MAX),
-    (0, u8::MAX),
+/// `(ext_partitions, ext_three_way_margin, ext_four_way_margin)` by preset.
+const EXT_PARTITIONS: [(u8, u8, u8); 11] = [
+    (2, u8::MAX, u8::MAX),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
+    (0, 0, 0),
 ];
 
 const fn with_ext_partitions(mut rows: [PresetParams; 11]) -> [PresetParams; 11] {
     let mut index = 0;
     while index < rows.len() {
-        (rows[index].ext_partitions, rows[index].ext_partition_gate) = EXT_PARTITIONS[index];
+        let (level, three, four) = EXT_PARTITIONS[index];
+        rows[index].ext_partitions = level;
+        rows[index].ext_three_way_margin = three;
+        rows[index].ext_four_way_margin = four;
         index += 1;
     }
     rows
@@ -290,7 +296,8 @@ mod tests {
             assert!(fast.compound_candidates <= slow.compound_candidates);
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.ext_partitions <= slow.ext_partitions);
-            assert!(fast.ext_partition_gate >= slow.ext_partition_gate);
+            assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
+            assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));
