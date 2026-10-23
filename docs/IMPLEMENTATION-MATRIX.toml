@@ -4363,7 +4363,7 @@ module = "crates/splot-core/src/write/mod.rs"
 change_id = "bit-writer-primitives"
 owner = "encoder"
 risk = "high"
-notes = "BitWriter implements every BitReader descriptor with read/write property tests. OBU headers, Annex B and IVF framing, sequence headers, frame-header slices, tile-group framing, metadata, and all fourteen ParsedObu body writers are implemented with round-trip and fuzz coverage. The complete OBU dispatch is exhaustive, so any future ParsedObu variant must add a writer. SymbolEncoder provides bounded deterministic § 8.2 primitives as a streaming range coder with O(1) amortized work per write and the shortest exit_symbol()-valid payload. Remaining writer work is the inter first-group tile-group composer, § 8.3 CDF selection for encoder-owned streams, and § 5.20 coded tile bodies. The CLI does not expose an encode command."
+notes = "BitWriter implements every BitReader descriptor with read/write property tests. OBU headers, Annex B and IVF framing, sequence headers, frame-header slices, tile-group framing, metadata, and all fourteen ParsedObu body writers are implemented with round-trip and fuzz coverage. The complete OBU dispatch is exhaustive, so any future ParsedObu variant must add a writer. SymbolEncoder provides bounded deterministic § 8.2 primitives as a streaming range coder with O(1) amortized work per write and the shortest exit_symbol()-valid payload. splot encode writes every stream with these writers: key and inter frame headers and multi-tile tile groups (encoder_stream.rs, encoder_inter_stream.rs), and coded tile bodies through SymbolEncoder with the decoder's CDFs from splot_decode::encoder_syntax (ENC-INTRA-KEYFRAME-DC). Remaining writer work is § 5.20 tile syntax for the tools the encoder does not code. AVM decodes the encoder streams; the other OBU writers have no AVM check."
 
 [feature.status]
 mapped = "partial"
@@ -4371,15 +4371,15 @@ types = "partial"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "partial"
-encode = "todo"
-decode_check = "todo"
+encode = "done"
+decode_check = "done"
 tests = "partial"
-avm_diff = "pending"
+avm_diff = "partial"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests", "crates/splot-core/src/write/obu.rs::tests", "crates/splot-core/src/write/dispatch_tests.rs::tests", "crates/splot-core/src/write/roundtrip_tests.rs::tests", "crates/splot-core/src/symbol_encoder.rs::tests", "crates/splot-core/src/symbol_encoder.rs::proptests", "crates/splot-validate/tests/writer_roundtrip_conformance.rs", "fuzz/fuzz_targets/symbol_encoder_bytes.rs"]
-commands = ["cargo test -p splot-core write", "cargo test -p splot-core symbol_encoder --locked", "cargo test -p splot-core symbol --locked", "cargo test -p splot-validate --test writer_roundtrip_conformance", "cargo check --manifest-path fuzz/Cargo.toml --bins --locked", "cargo +nightly fuzz run roundtrip_obu_bytes", "cargo +nightly fuzz run symbol_encoder_bytes"]
+tests = ["crates/splot-core/src/write/bit_writer.rs::tests", "crates/splot-core/src/write/bit_writer.rs::proptests", "crates/splot-core/src/write/obu.rs::tests", "crates/splot-core/src/write/dispatch_tests.rs::tests", "crates/splot-core/src/write/roundtrip_tests.rs::tests", "crates/splot-core/src/symbol_encoder.rs::tests", "crates/splot-core/src/symbol_encoder.rs::proptests", "crates/splot-validate/tests/writer_roundtrip_conformance.rs", "fuzz/fuzz_targets/symbol_encoder_bytes.rs", "crates/splot-encode/src/intra_frame_tests.rs::coded_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_coded_frames_like_splot", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+commands = ["cargo test -p splot-core write", "cargo test -p splot-core symbol_encoder --locked", "cargo test -p splot-core symbol --locked", "cargo test -p splot-validate --test writer_roundtrip_conformance", "cargo check --manifest-path fuzz/Cargo.toml --bins --locked", "cargo +nightly fuzz run roundtrip_obu_bytes", "cargo +nightly fuzz run symbol_encoder_bytes", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = ["tests/fixtures/padding.av2", "tests/fixtures/metadata-short.av2", "tests/fixtures/metadata-group.av2", "fuzz/fuzz_targets/symbol_encoder_bytes.rs"]
 diagnostics = []
 
@@ -4395,7 +4395,7 @@ module = "crates/splot-encode/src/y4m.rs"
 change_id = "encoder-y4m-input"
 owner = "encoder"
 risk = "medium"
-notes = "Input format plumbing; not normative AV2 syntax. Y4mReader streams YUV4MPEG2 over any Read: W/H/F/I/A/C tags, XYSCSS fallback, 420jpeg/420mpeg2/420paldv/420/422/444/mono and pN high-bit-depth layouts, 8-bit and 2-byte little-endian samples. Malformed headers, oversized dimensions and truncated frames are typed errors, and frame buffers grow only with bytes read. SourceFrame owns u16 planes sized from Config and rejects short planes, bad strides and out-of-range samples. Residual: no lookahead or motion-analysis pipeline."
+notes = "Input format plumbing; not normative AV2 syntax. Y4mReader streams YUV4MPEG2 over any Read: W/H/F/I/A/C tags, XYSCSS fallback, 420jpeg/420mpeg2/420paldv/420/422/444/mono and pN high-bit-depth layouts, 8-bit and 2-byte little-endian samples. Malformed headers, oversized dimensions and truncated frames are typed errors, and frame buffers grow only with bytes read. SourceFrame owns u16 planes sized from Config and rejects short planes, bad strides and out-of-range samples."
 
 [feature.status]
 mapped = "done"
@@ -4426,7 +4426,7 @@ module = "crates/splot-encode/src/encoder.rs"
 change_id = "encoder-context-state-machine"
 owner = "encoder"
 risk = "medium"
-notes = "Non-normative encoder API lifecycle. Encoder has accepting, flushed and failed states: send_frame queues owned SourceFrames checked against Config, receive_packet codes the oldest frame through the crate-private FrameCoder seam and returns one Packet with FrameStats, flush ends input, and a coding error is terminal. Encoder::new returns Error::Unsupported until a frame coder is wired; the state machine is tested through a test-double coder."
+notes = "Non-normative encoder API lifecycle. Encoder has accepting, flushed and failed states: send_frame queues owned SourceFrames checked against Config, receive_packet codes the next mini-GOP through the crate-private FrameCoder seam once the lookahead window is full (or after flush) and returns one Packet per temporal unit, flush ends input, and a coding error is terminal. Encoder::new builds the frame coder for the Config; unit tests also drive the state machine through a test-double coder."
 
 [feature.status]
 mapped = "done"
@@ -4457,9 +4457,7 @@ module = "crates/splot-core/src/headers/tile_group.rs"
 change_id = "encoder-writer-input-framing"
 owner = "encoder"
 risk = "low"
-# encode stays `todo`: the constructor (write-surface) exists and round-trips, but no
-# splot-encode code consumes it yet — encoder consumption lands in a later bridge brick.
-notes = "TileGroupFraming::single_tile constructs the parser-equivalent framing for one last tile, including ZeroSizeTile for empty input. Minimal intra composition consumes it; payload writing and reparsing verify both framing and caller-supplied byte preservation."
+notes = "TileGroupFraming::single_tile constructs the parser-equivalent framing for one last tile, including ZeroSizeTile for empty input. Minimal intra composition consumes it; payload writing and reparsing verify both framing and caller-supplied byte preservation. The encoder does not use it: it frames its tiles with TileGroupFraming::tiles (ENC-TILES)."
 
 [feature.status]
 mapped = "done"
@@ -4467,7 +4465,7 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "todo"
+encode = "not-applicable"
 decode_check = "not-applicable"
 tests = "done"
 avm_diff = "not-applicable"
@@ -4491,9 +4489,7 @@ module = "crates/splot-core/src/headers/tile_group.rs"
 change_id = "encoder-writer-input-structure"
 owner = "encoder"
 risk = "low"
-# encode stays `todo`: the constructor (write-surface) exists and round-trips, but no
-# splot-encode code consumes it yet — encoder consumption lands in a later bridge brick.
-notes = "TileGroupStructure::single_tile_first_group constructs the inferred range and complete status for one first tile group. Header/payload byte counts remain unset because writers recompute that parse context. Minimal intra composition uses it, with semantic write/reparse coverage."
+notes = "TileGroupStructure::single_tile_first_group constructs the inferred range and complete status for one first tile group. Header/payload byte counts remain unset because writers recompute that parse context. Minimal intra composition uses it, with semantic write/reparse coverage. The encoder does not use it: it writes TileGroupStructure::whole_frame (ENC-TILES)."
 
 [feature.status]
 mapped = "done"
@@ -4501,7 +4497,7 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "todo"
+encode = "not-applicable"
 decode_check = "not-applicable"
 tests = "done"
 avm_diff = "not-applicable"
@@ -4525,10 +4521,7 @@ module = "crates/splot-core/src/headers/frame/encoder_input.rs"
 change_id = "encoder-coreseq-inter-ctor"
 owner = "encoder"
 risk = "low"
-# encode stays `todo`: the constructor (write-surface) exists and the round-trips
-# regress it, but no splot-encode code consumes it yet — the CoreSeqView/FrameHeaderCore
-# constructors and the encoder call-site are later bridge bricks.
-notes = "CoreSeqInterView::new_minimal_intra supplies the disabled inter configuration used by minimal intra construction and parser/writer fixtures. It preserves the non-exhaustive public model and is exercised by field checks and composed header round-trips."
+notes = "CoreSeqInterView::new_minimal_intra supplies the disabled inter configuration used by minimal intra construction and parser/writer fixtures. It preserves the non-exhaustive public model and is exercised by field checks and composed header round-trips. The encoder does not use it: it takes CoreSeqView::from_sequence of its own sequence header."
 
 [feature.status]
 mapped = "done"
@@ -4536,7 +4529,7 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "todo"
+encode = "not-applicable"
 decode_check = "not-applicable"
 tests = "done"
 avm_diff = "not-applicable"
@@ -4560,10 +4553,7 @@ module = "crates/splot-core/src/headers/frame/encoder_input.rs"
 change_id = "encoder-coreseqview-ctor"
 owner = "encoder"
 risk = "low"
-# encode stays `todo`: the constructor (write-surface) exists and the round-trip suite
-# regresses it, but no splot-encode code consumes it yet — the FrameHeaderCore assembler
-# and the encoder call-site are later bridge bricks.
-notes = "CoreSeqView::new_minimal_intra constructs the disabled-tool, non-single-picture 8-bit 4:2:0 view for maxima in 1..=65536. Widths are derived with a one-bit minimum. Parser/writer fixtures exercise the constructor; single-picture inferences are provided by the separate constructor tracked by ENC-FRAME-HEADER-CORE-ASSEMBLER."
+notes = "CoreSeqView::new_minimal_intra constructs the disabled-tool, non-single-picture 8-bit 4:2:0 view for maxima in 1..=65536. Widths are derived with a one-bit minimum. Parser/writer fixtures exercise the constructor; single-picture inferences are provided by the separate constructor tracked by ENC-FRAME-HEADER-CORE-ASSEMBLER. The encoder does not use it: it takes CoreSeqView::from_sequence of its own sequence header."
 
 [feature.status]
 mapped = "done"
@@ -4571,7 +4561,7 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "todo"
+encode = "not-applicable"
 decode_check = "not-applicable"
 tests = "done"
 avm_diff = "not-applicable"
@@ -4595,10 +4585,7 @@ module = "crates/splot-core/src/headers/frame/encoder_input.rs"
 change_id = "encoder-frame-header-core-assembler"
 owner = "encoder"
 risk = "low"
-# encode stays `todo`: the assembler (write-surface) produces a conformant FrameHeaderCore
-# and the round-trip proves it, but no splot-encode code consumes it yet — the tile-group
-# OBU call-site and the packet path are later bridge bricks.
-notes = "build_minimal_intra_clk_core constructs and reparses a canonical 64x64 single-picture CLK header and returns its matched CoreSeqView. The single-picture constructor applies the required inferred fields; the assembled pair uses matching superblock geometry. Typed errors and write/reparse tests protect the header contract. Minimal tile-group and packet composition consume this pair."
+notes = "build_minimal_intra_clk_core constructs and reparses a canonical 64x64 single-picture CLK header and returns its matched CoreSeqView. The single-picture constructor applies the required inferred fields; the assembled pair uses matching superblock geometry. Typed errors and write/reparse tests protect the header contract. Minimal tile-group and packet composition consume this pair. The encoder does not use it: it builds headers with build_key_frame_header and build_inter_frame_header."
 
 [feature.status]
 mapped = "done"
@@ -4606,7 +4593,7 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "todo"
+encode = "not-applicable"
 decode_check = "not-applicable"
 tests = "done"
 avm_diff = "not-applicable"
@@ -4630,10 +4617,7 @@ module = "crates/splot-core/src/headers/frame/encoder_input.rs"
 change_id = "encoder-tile-group-obu-callsite"
 owner = "encoder"
 risk = "low"
-# encode stays `todo`: the payload assembler (write-surface) emits a round-trippable
-# tile_group_obu() payload, but no splot-encode code consumes it yet and the tile_data
-# content is a caller input — a complete coded tile + the OBU wrapper are later bricks.
-notes = "encode_minimal_intra_clk_tile_group_obu composes the matched minimal intra header, single-tile structure/framing, and caller-supplied coded tile bytes into an OBU payload. Empty tile data returns a typed write error. Reparsing checks the prefix and aligned tile region; coded tile content is the caller's responsibility."
+notes = "encode_minimal_intra_clk_tile_group_obu composes the matched minimal intra header, single-tile structure/framing, and caller-supplied coded tile bytes into an OBU payload. Empty tile data returns a typed write error. Reparsing checks the prefix and aligned tile region; coded tile content is the caller's responsibility. The encoder does not use it: it writes frame OBUs with encode_key_frame_temporal_unit and encode_inter_frame_obu."
 
 [feature.status]
 mapped = "done"
@@ -4641,7 +4625,7 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "todo"
+encode = "not-applicable"
 decode_check = "not-applicable"
 tests = "done"
 avm_diff = "not-applicable"
@@ -4665,10 +4649,7 @@ module = "crates/splot-core/src/headers/frame/encoder_input.rs"
 change_id = "encoder-annexb-obu-wrapper"
 owner = "encoder"
 risk = "low"
-# encode stays `todo`: the wrapper emits a self-delimiting CLK OBU, but it is a single frame
-# OBU (no temporal delimiter / sequence header / IVF), the tile_data content is a caller
-# input, and no splot-encode code consumes it yet.
-notes = "encode_minimal_intra_clk_annexb_obu wraps the minimal CLK tile-group payload in its no-extension OBU header and Annex B length framing. Tests reparse one ClosedLoopKey OBU and preserve the payload bytes; empty tile errors propagate. Temporal-unit composition adds the sequence and delimiter OBUs."
+notes = "encode_minimal_intra_clk_annexb_obu wraps the minimal CLK tile-group payload in its no-extension OBU header and Annex B length framing. Tests reparse one ClosedLoopKey OBU and preserve the payload bytes; empty tile errors propagate. Temporal-unit composition adds the sequence and delimiter OBUs. The encoder does not use it: it writes frame OBUs with encode_key_frame_temporal_unit and encode_inter_frame_obu."
 
 [feature.status]
 mapped = "done"
@@ -4676,7 +4657,7 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "todo"
+encode = "not-applicable"
 decode_check = "not-applicable"
 tests = "done"
 avm_diff = "not-applicable"
@@ -4700,9 +4681,7 @@ module = "crates/splot-core/src/headers/frame/encoder_input.rs"
 change_id = "encoder-temporal-delimiter-obu"
 owner = "encoder"
 risk = "low"
-# encode stays `todo`: a single OBU primitive (one building block of a temporal unit); no
-# sequence header / IVF / packet, and no splot-encode consumer yet.
-notes = "encode_temporal_delimiter_obu emits the canonical empty temporal-delimiter OBU in Annex B framing. Tests verify bytes [0x01, 0x08], inferred global extended-layer id, and empty payload. Minimal intra temporal-unit composition consumes it."
+notes = "encode_temporal_delimiter_obu emits the canonical empty temporal-delimiter OBU in Annex B framing. Tests verify bytes [0x01, 0x08], inferred global extended-layer id, and empty payload. Minimal intra composition and every encoder temporal unit (key, inter and show-existing frames) start with it."
 
 [feature.status]
 mapped = "done"
@@ -4710,15 +4689,15 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "todo"
+encode = "done"
 decode_check = "not-applicable"
 tests = "done"
 avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_temporal_delimiter_obu_round_trips"]
-commands = ["cargo test -p splot-core encoder_input"]
+tests = ["crates/splot-core/src/headers/frame/encoder_input.rs::tests::encode_temporal_delimiter_obu_round_trips", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+commands = ["cargo test -p splot-core encoder_input", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
 
@@ -4734,10 +4713,7 @@ module = "crates/splot-core/src/headers/frame/encoder_input.rs"
 change_id = "encoder-sequence-header-obu"
 owner = "encoder"
 risk = "low"
-# encode stays `todo`: the sequence-header OBU is byte-exact to the conformance vector, but
-# it is a single OBU — the temporal unit, the consistent frame OBU, and the IVF wrap are
-# later bricks, and no splot-encode code consumes it yet.
-notes = "build_minimal_intra_sequence_header constructs the canonical minimal intra sequence model; encode_minimal_intra_sequence_header_obu writes its body, extension/trailing bits, and Annex B framing. Byte-exact conformance-vector comparison protects the complete OBU and its agreement with minimal frame-header construction."
+notes = "build_minimal_intra_sequence_header constructs the canonical minimal intra sequence model; encode_minimal_intra_sequence_header_obu writes its body, extension/trailing bits, and Annex B framing. Byte-exact conformance-vector comparison protects the complete OBU and its agreement with minimal frame-header construction. The encoder does not use it: it writes the sequence header of build_encoder_sequence_header."
 
 [feature.status]
 mapped = "done"
@@ -4745,7 +4721,7 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "todo"
+encode = "not-applicable"
 decode_check = "not-applicable"
 tests = "done"
 avm_diff = "not-applicable"
@@ -4769,9 +4745,7 @@ module = "crates/splot-core/src/headers/frame/encoder_input.rs"
 change_id = "encoder-ivf-temporal-unit"
 owner = "encoder"
 risk = "low"
-# encode stays `todo`: the IVF is structurally valid with consistent headers, but the coded
-# tile content is a caller input, and no splot-encode code consumes it yet.
-notes = "encode_minimal_intra_clk_ivf assembles temporal delimiter, matching sequence header, and CLK frame into one AV02 64x64 IVF frame. Parsing tests check OBU order, shared sequence/frame geometry, and empty-tile rejection. Coded tile bytes remain caller-supplied; decoder-backed emitters are tracked separately."
+notes = "encode_minimal_intra_clk_ivf assembles temporal delimiter, matching sequence header, and CLK frame into one AV02 64x64 IVF frame. Parsing tests check OBU order, shared sequence/frame geometry, and empty-tile rejection. Coded tile bytes remain caller-supplied; decoder-backed emitters are tracked separately. The encoder does not use it: splot-encode ivf.rs writes its IVF output."
 
 [feature.status]
 mapped = "done"
@@ -4779,7 +4753,7 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "todo"
+encode = "not-applicable"
 decode_check = "not-applicable"
 tests = "done"
 avm_diff = "not-applicable"
@@ -4803,7 +4777,7 @@ module = "crates/splot-core/src/headers/frame/encoder_input.rs"
 change_id = "encoder-minimal-clk-base-q-idx"
 owner = "encoder"
 risk = "low"
-notes = "encode_minimal_intra_clk_ivf_with_base_q_idx threads a nonzero base_q_idx through minimal header/container composition; default entry points retain 255. Zero is rejected because lossless coding changes the header layout. With QP 80 and the recorded tile bytes, the entire IVF matches the AVM-validated q80 fixture byte-for-byte."
+notes = "encode_minimal_intra_clk_ivf_with_base_q_idx threads a nonzero base_q_idx through minimal header/container composition; default entry points retain 255. Zero is rejected because lossless coding changes the header layout. With QP 80 and the recorded tile bytes, the entire IVF matches the AVM-validated q80 fixture byte-for-byte. The encoder does not use it: ENC-CONFIG-QP-FIELD carries its base_q_idx."
 
 [feature.status]
 mapped = "done"
@@ -4811,7 +4785,7 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "done"
+encode = "not-applicable"
 decode_check = "not-applicable"
 tests = "done"
 avm_diff = "not-applicable"
@@ -4835,7 +4809,7 @@ module = "crates/splot-encode/src/encoder.rs"
 change_id = "encoder-context-receive-packet"
 owner = "encoder"
 risk = "low"
-notes = "Encoder::receive_packet returns one Annex B temporal unit per frame with pts, the coded frame type and FrameStats (bits, PSNR, SSIM). The frame coder is ENC-INTRA-KEYFRAME-DC."
+notes = "Encoder::receive_packet returns one Annex B temporal unit per output frame: the hidden frames coded since the last packet and one shown or show-existing frame, with the output pts and frame type and the FrameStats (bits, PSNR, SSIM) of each coded frame. The frame coder is ENC-INTRA-KEYFRAME-DC with ENC-INTER-FRAME-HEADERS."
 
 [feature.status]
 mapped = "done"
@@ -4857,7 +4831,7 @@ diagnostics = []
 
 [[feature]]
 id = "ENC-INTRA-KEYFRAME-DC"
-name = "Key-frame encoder: RD-searched intra coding, any frame size, 8/10-bit 4:2:0"
+name = "Key-frame encoder: RD-searched intra coding, any frame size, 8/10-bit"
 category = "encoder"
 kind = "encoder-tool"
 spec_sections = ["5.4", "5.9", "5.20.3", "5.20.5.5", "5.20.5.6", "5.20.7.27", "5.20.7.29", "5.20.7.32", "7.13.2", "7.14.4", "7.15", "8.2"]
@@ -4867,7 +4841,7 @@ module = "crates/splot-encode/src/intra_frame.rs"
 change_id = "encoder-m2-full-intra"
 owner = "encoder"
 risk = "medium"
-notes = "Key frames are closed-loop key frames with one uniform tile; ENC-INTER-FRAME-HEADERS adds inter frames. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
+notes = "Key frames are closed-loop key frames with uniform tiles (ENC-TILES) in 4:2:0, 4:2:2 or 4:4:4 (ENC-CHROMA-FORMATS); ENC-INTER-FRAME-HEADERS adds inter frames. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
 
 [feature.status]
 mapped = "done"
@@ -4889,7 +4863,7 @@ diagnostics = []
 
 [[feature]]
 id = "ENC-INTER-FRAME-HEADERS"
-name = "Inter frame headers, show-existing frames and reference plumbing (all-intra blocks)"
+name = "Inter frame headers, show-existing frames and reference plumbing"
 category = "encoder"
 kind = "encoder-tool"
 spec_sections = ["5.18.2", "5.18.3.3", "5.18.3.4", "5.18.5.1", "5.18.8.1", "5.18.8.2", "5.18.8.3", "5.20.7.1", "5.20.7.3", "7.7", "7.20", "7.21"]
@@ -4899,7 +4873,7 @@ module = "crates/splot-encode/src/gop.rs"
 change_id = "encoder-m3-inter-headers"
 owner = "encoder"
 risk = "medium"
-notes = "Every keyint-th frame is a closed-loop key frame; the other frames are OBU_REGULAR_TILE_GROUP inter frames whose order and refresh slots come from ENC-MINI-GOP. build_inter_frame_header writes the smallest inter header and parses it with the decoder's own reference state (splot_decode::encoder_syntax::EncoderReferences over the filtered reconstructions); the tile group carries the recorded header bits. Blocks are intra or single-reference inter (ENC-INTER-SINGLE-REF). Hidden frames and OBU_REGULAR_SEF show-existing frames (derive_sef_order_hint = 1) are built here and used by ENC-MINI-GOP. Encoder policy: monotonic_output_order_flag = 1 (hidden frames are shown by show-existing frames), primary_ref_frame = PRIMARY_REF_NONE with disable_cross_frame_cdf_init = 1, quarter-pel MVs, frame-level EIGHTTAP."
+notes = "The frame keyint frames after the last key frame and every scene cut (ENC-SCENE-CUT) are closed-loop key frames; the other frames are OBU_REGULAR_TILE_GROUP inter frames whose order and refresh slots come from ENC-MINI-GOP. build_inter_frame_header writes the inter header and parses it with the decoder's own reference state (splot_decode::encoder_syntax::EncoderReferences over the filtered reconstructions); the tile group carries the recorded header bits. Blocks are intra, single-reference inter (ENC-INTER-SINGLE-REF), compound or skip mode (ENC-INTER-COMPOUND). Hidden frames and OBU_REGULAR_SEF show-existing frames (derive_sef_order_hint = 1) are built here and used by ENC-MINI-GOP. Encoder policy: monotonic_output_order_flag = 1 (hidden frames are shown by show-existing frames), primary_ref_frame = PRIMARY_REF_NONE with disable_cross_frame_cdf_init = 1, quarter-pel MVs, frame-level EIGHTTAP. encode stays partial: no frame size override or reference scaling, switchable interpolation filter, CDF inheritance from a reference frame, intra block copy, segmentation, delta-q, global motion or TIP frames."
 
 [feature.status]
 mapped = "done"
@@ -4931,7 +4905,7 @@ module = "crates/splot-encode/src/gop.rs"
 change_id = "encoder-m3-mini-gop"
 owner = "encoder"
 risk = "medium"
-notes = "GopPlanner splits the frames between key frames into mini-GOPs of the preset's mini_gop_size (1 = IPPP, 2, 4 or 8; the last one before a key frame or the stream end is shorter). A mini-GOP codes its last frame first, then the middle frame of each open span; a frame coded before earlier display frames is hidden and an OBU_REGULAR_SEF outputs it later. Key frames refresh all slots; other frames refresh an empty slot, else the oldest frame no show-existing frame waits for, so the § 7.7 implicit map finds the closest past and future frames. Each Packet is one temporal unit in coding order: the hidden frames since the last output plus one shown frame or show-existing frame, with the pts of the output frame and the stats of each coded frame; IVF frames carry one packet each. Shown leaf frames below layer 0 are non-reference frames (refresh_frame_flags = 0), except the last leaf of each mini-GOP: § 5.18.2 get_disp_order_hint counts only shown references, so that leaf keeps a shown reference within 128 order hints of every frame. See ENC-FRAME-WAVES."
+notes = "GopPlanner splits the frames between key frames into mini-GOPs of the preset's mini_gop_size (1 = IPPP, 2, 4 or 8; the last one before a key frame or the stream end is shorter). A mini-GOP codes its last frame first, then the middle frame of each open span; a frame coded before earlier display frames is hidden and an OBU_REGULAR_SEF outputs it later. Key frames refresh all slots; other frames refresh an empty slot, else the oldest frame no show-existing frame waits for, so the § 7.7 implicit map finds the closest past and future frames. Each Packet is one temporal unit in coding order: the hidden frames since the last output plus one shown frame or show-existing frame, with the pts of the output frame and the stats of each coded frame; IVF frames carry one packet each. Frames shown when coded above layer 0 are non-reference frames (refresh_frame_flags = 0), except the last leaf of each mini-GOP: § 5.18.2 get_disp_order_hint counts only shown references, so that leaf keeps a shown reference within 128 order hints of every frame. See ENC-FRAME-WAVES. encode stays partial: the mini-GOP size is fixed per preset (at most 8) and does not adapt to the content, and the reference map is implicit (no explicit_ref_frame_map or long-term frames)."
 
 [feature.status]
 mapped = "done"
@@ -4995,7 +4969,7 @@ module = "crates/splot-encode/src/mode_decision.rs"
 change_id = "encoder-m3-compound"
 owner = "encoder"
 risk = "medium"
-notes = "Inter frames set reference_select and skip_mode_present when the preset's compound_candidates is nonzero; the sequence sets num_same_ref_compound = 2. Leaves RD-compare single-reference candidates with skip-mode blocks (each skip-DRL index) and a SATD-ranked shortlist of compound candidates over the pairs of the three closest references: NEAR_NEARMV over both DRLs, and for distinct references GLOBAL_GLOBALMV, NEW_NEWMV, NEAR_NEWMV, NEW_NEARMV and JOINT_NEWMV seeded by the single-reference search results (no joint refinement; jmvd_scale_mode 0). splot_decode::encoder_syntax writes comp_mode, comp_ref, the compound mode, jmvd_scale_mode and both DRLs by answering the decoder's own reads, resolves motion with the decoder's compound stack and resolution, predicts with its COMPOUND_AVERAGE motion compensation, and derives the skip_mode_frames pair from the decoder. Masked, wedge, CWP, optical-flow and refined compound stay off at sequence level."
+notes = "Inter frames set reference_select and skip_mode_present when the preset's compound_candidates is nonzero; the sequence sets num_same_ref_compound = 2. Leaves RD-compare single-reference candidates with skip-mode blocks (each skip-DRL index) and a SATD-ranked shortlist of compound candidates over the pairs of the three closest references: NEAR_NEARMV over both DRLs, and for distinct references GLOBAL_GLOBALMV, NEW_NEWMV, NEAR_NEWMV, NEW_NEARMV and JOINT_NEWMV seeded by the single-reference search results (no joint refinement; jmvd_scale_mode 0). splot_decode::encoder_syntax writes comp_mode, comp_ref, the compound mode, jmvd_scale_mode and both DRLs by answering the decoder's own reads, resolves motion with the decoder's compound stack and resolution, predicts with its COMPOUND_AVERAGE motion compensation, and derives the skip_mode_frames pair from the decoder. Masked, wedge, inter-intra, CWP, BAWP, optical-flow and refined compound stay off at sequence level, so encode stays partial."
 
 [feature.status]
 mapped = "done"
@@ -5027,23 +5001,23 @@ module = "crates/splot-encode/src/config.rs"
 change_id = "encoder-config-qp-field"
 owner = "encoder"
 risk = "low"
-notes = "Config.rate_control = RateControlMode::ConstantQp { qp } holds the base_q_idx (default 80, valid 1..=255); Config::validate rejects 0. The ConstantQp rate controller returns it for every frame and FrameStats records it. No frame coder writes it to a frame header yet."
+notes = "Config.rate_control = RateControlMode::ConstantQp { qp } (CLI --qp; the default mode, at 80) holds base_q_idx: 1..=255 at 8 bits, 1..=303 at 10 bits; Config::validate rejects other values. The ConstantQp rate controller returns it for every frame, key and inter frame headers write it as base_q_idx (§ 5.18.6.1), and FrameStats records it."
 
 [feature.status]
 mapped = "done"
 types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
-write = "todo"
-encode = "todo"
-decode_check = "todo"
-tests = "partial"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
 avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/config.rs::tests::rejects_unsupported_settings", "crates/splot-encode/src/encoder.rs::tests::codes_frames_in_order_with_stats"]
-commands = ["cargo test -p splot-encode config --locked", "cargo test -p splot-encode encoder --locked"]
+tests = ["crates/splot-encode/src/config.rs::tests::rejects_unsupported_settings", "crates/splot-encode/src/encoder.rs::tests::codes_frames_in_order_with_stats", "crates/splot-encode/src/intra_frame_tests.rs::coding_is_deterministic_and_lower_qp_costs_more_bits", "crates/splot-cli/tests/encode_decode_roundtrip.rs::eight_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats", "crates/splot-cli/tests/encode_decode_roundtrip.rs::ten_bit_clip_encodes_validates_and_decodes_to_the_encoder_stats"]
+commands = ["cargo test -p splot-encode config --locked", "cargo test -p splot-encode encoder --locked", "cargo test -p splot-encode coding_is_deterministic --locked", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
 fixtures = []
 diagnostics = []
 [[feature]]
@@ -5058,7 +5032,7 @@ module = "crates/splot-encode/src/config.rs"
 change_id = "encoder-recon-dependency"
 owner = "encoder"
 risk = "medium"
-notes = "Non-normative encoder infrastructure. The encoder crate has the approved direct `splot-recon` dependency edge and reuses its BitDepth, PixelFormat and PlaneSize types for configuration and source-frame geometry, and the `splot-decode` edge for the `encoder_syntax` facade (decoder CDF rows, contexts and partition rules). `splot-cli` depends on `splot-encode` for the encode command. This row claims only the dependency boundary."
+notes = "Non-normative encoder infrastructure. The encoder crate has the approved direct `splot-recon` dependency edge and reuses its BitDepth, PixelFormat and PlaneSize types for configuration and source-frame geometry, and the `splot-decode` edge for the `encoder_syntax` facade (the decoder's syntax, prediction, reconstruction and loop filters), and the `splot-parallel` edge for its WorkerPool. `splot-cli` depends on `splot-encode` for the encode command. This row claims only the dependency boundary."
 
 [feature.status]
 mapped = "done"
@@ -5089,19 +5063,19 @@ module = "crates/splot-encode/src/encoder.rs"
 change_id = "toy-intra-encoder-v0"
 owner = "encoder"
 risk = "high"
-notes = "The toy intra proposal is parked. Further encoder work follows the Baseline Encoder Profile v1 contract (DOC-ENCODER-PROGRAM-CONTRACT) and requires current writer, reconstruction, and conformance evidence."
+notes = "Superseded by ENC-INTRA-KEYFRAME-DC: the toy intra proposal was parked, and the encoder follows the Baseline Encoder Profile v1 contract (DOC-ENCODER-PROGRAM-CONTRACT)."
 
 [feature.status]
-mapped = "partial"
-types = "todo"
+mapped = "done"
+types = "not-applicable"
 parse = "not-applicable"
 validate = "not-applicable"
-write = "todo"
-encode = "todo"
-decode_check = "todo"
-tests = "todo"
-avm_diff = "pending"
-perf = "todo"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "not-applicable"
+avm_diff = "not-applicable"
+perf = "not-applicable"
 
 [feature.proof]
 tests = []
@@ -5121,19 +5095,19 @@ module = "crates/splot-encode/src/rate_control.rs"
 change_id = "rate-control-v0"
 owner = "encoder"
 risk = "medium"
-notes = "Encoder strategy, not direct spec implementation. The RateController trait (frame_qp before coding, update after) is the seam. Superseded by ENC-RATE-CONTROL, which adds CRF, VBR and CBR."
+notes = "Superseded by ENC-RATE-CONTROL, which keeps the RateController seam of this row (frame_qp before coding, update after) and adds CRF, VBR and CBR."
 
 [feature.status]
-mapped = "partial"
-types = "partial"
+mapped = "done"
+types = "not-applicable"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "not-applicable"
-encode = "todo"
+encode = "not-applicable"
 decode_check = "not-applicable"
-tests = "todo"
+tests = "not-applicable"
 avm_diff = "not-applicable"
-perf = "todo"
+perf = "not-applicable"
 
 [feature.proof]
 tests = ["crates/splot-encode/src/encoder.rs::tests::codes_frames_in_order_with_stats"]
