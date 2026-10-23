@@ -19,8 +19,8 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink};
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
-    EncoderReferences, EncoderSyntaxError, IntraTileSyntax, LeafBlock, PartitionNode, TileCdfs,
-    TransformBlock,
+    EncoderReferences, EncoderSyntaxError, FrameCdfs, IntraTileSyntax, LeafBlock, PartitionNode,
+    TileCdfs, TransformBlock,
 };
 use splot_recon::{DecodedFrame, ReconError};
 
@@ -97,13 +97,25 @@ pub(crate) struct KeyFrameTileWriter {
 impl KeyFrameTileWriter {
     /// A writer for tile `tile`, in raster order, of the frame `core` coded
     /// with `seq`, predicting from `refs`.
+    #[cfg(test)]
     pub(crate) fn new(
         seq: &SequenceHeader,
         core: &FrameHeaderCore,
         refs: &EncoderReferences,
         tile: usize,
     ) -> Result<Self> {
-        let syntax = IntraTileSyntax::new(seq, core, refs, tile)?;
+        Self::with_cdfs(seq, core, refs, &refs.initial_cdfs(core)?, tile)
+    }
+
+    /// [`Self::new`] starting from the frame's initial `cdfs`.
+    pub(crate) fn with_cdfs(
+        seq: &SequenceHeader,
+        core: &FrameHeaderCore,
+        refs: &EncoderReferences,
+        cdfs: &FrameCdfs,
+        tile: usize,
+    ) -> Result<Self> {
+        let syntax = IntraTileSyntax::with_cdfs(seq, core, refs, cdfs, tile)?;
         let (rows, cols) = syntax.tile_ranges();
         let sb4 = syntax.superblock_size4();
         let config = SymbolEncoderConfig::new()

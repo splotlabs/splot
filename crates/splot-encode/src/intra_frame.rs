@@ -124,11 +124,11 @@ impl FrameCoder for IntraFrameCoder {
     }
 
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
-        let (core, recon, cdfs) = frame.reference.take().ok_or(Error::Unsupported {
+        let (core, recon, initial, cdfs) = frame.reference.take().ok_or(Error::Unsupported {
             what: "a frame committed twice",
         })?;
         self.references
-            .update(&core, recon, &cdfs)
+            .update(&core, recon, &initial, &cdfs)
             .map_err(coding("reference update"))
     }
 
@@ -154,8 +154,20 @@ impl IntraFrameCoder {
             plan.header(&self.view, &self.references, qindex, filters, tools)
         };
         let core = header(&FrameFilterParams::default())?;
+        let initial = self
+            .references
+            .initial_cdfs(&core)
+            .map_err(coding("initial CDFs"))?;
         let writers = (0..tile_count(&core))
-            .map(|tile| KeyFrameTileWriter::new(&self.sequence, &core, &self.references, tile))
+            .map(|tile| {
+                KeyFrameTileWriter::with_cdfs(
+                    &self.sequence,
+                    &core,
+                    &self.references,
+                    &initial,
+                    tile,
+                )
+            })
             .collect::<core::result::Result<Vec<_>, _>>()
             .map_err(coding("tile setup"))?;
         let first = writers.first().ok_or(Error::Unsupported {
@@ -196,7 +208,11 @@ impl IntraFrameCoder {
             &header,
             self.preset,
             (source, &self.references, self.pool.as_ref()),
-            FirstPass { core, tiles },
+            FirstPass {
+                core,
+                cdfs: initial.clone(),
+                tiles,
+            },
         )?;
         let tiles: Vec<&[u8]> = tiles.iter().map(Vec::as_slice).collect();
         let temporal_unit = plan.temporal_unit(
@@ -211,7 +227,7 @@ impl IntraFrameCoder {
             temporal_unit,
             recon: visible_planes(&recon)?,
             frame_type: plan.frame_type,
-            reference: Some((core, recon, cdfs)),
+            reference: Some((core, recon, initial, cdfs)),
         })
     }
 }

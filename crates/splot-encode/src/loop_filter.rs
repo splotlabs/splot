@@ -23,8 +23,8 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    EncoderReferences, FilterRecorder, IntraTileSyntax, LrLayout, LrUnit, TileCdfs, TransformBlock,
-    apply_loop_filters, cdef_unit_grid, merge_tiles,
+    EncoderReferences, FilterRecorder, FrameCdfs, IntraTileSyntax, LrLayout, LrUnit, TileCdfs,
+    TransformBlock, apply_loop_filters, cdef_unit_grid, merge_tiles,
 };
 use splot_parallel::WorkerPool;
 use splot_recon::{DecodedFrame, PlaneId};
@@ -238,6 +238,8 @@ impl MergedTiles {
 /// The first pass of a frame: its header and its tiles in tile order.
 pub(crate) struct FirstPass {
     pub(crate) core: FrameHeaderCore,
+    /// The initial CDFs of the frame, which the filter pass starts from too.
+    pub(crate) cdfs: FrameCdfs,
     pub(crate) tiles: Vec<CodedTile>,
 }
 
@@ -302,7 +304,7 @@ pub(crate) fn finish_frame(
         .into_iter()
         .enumerate()
         .map(|(tile, decisions)| {
-            let mut writer = KeyFrameTileWriter::new(seq, &core, refs, tile)?;
+            let mut writer = KeyFrameTileWriter::with_cdfs(seq, &core, refs, &pass.cdfs, tile)?;
             writer.set_filter_syntax(syntax.clone());
             Ok((writer, decisions))
         })
