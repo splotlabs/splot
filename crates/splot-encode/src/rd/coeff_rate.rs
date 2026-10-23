@@ -164,9 +164,14 @@ impl CoeffRates for CdfCoeffRates<'_> {
         out
     }
 
-    fn dc_sign(&mut self) -> u32 {
-        self.syntax.dc_sign_cdf(self.tx).map_or(BIT, |row| {
-            clamp(Bits((symbol_cost(row, 0).0 + symbol_cost(row, 1).0) / 2))
-        })
+    fn sign(&mut self, ctx: &LevelContext<'_>) -> u32 {
+        match self
+            .syntax
+            .sign_cdf(self.tx, ctx.levels, (ctx.row, ctx.col))
+        {
+            Ok(Some(row)) => clamp(Bits((symbol_cost(row, 0).0 + symbol_cost(row, 1).0) / 2)),
+            Ok(None) => BIT,
+            Err(_) => MAX_QUERY_RATE as u32,
+        }
     }
 }
