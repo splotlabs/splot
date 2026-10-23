@@ -108,19 +108,24 @@ overflow-checks = true
 # Encoder tests run the codec at unoptimized speed otherwise; overflow checks
 # and debug assertions stay on. The test profile inherits these.
 [profile.dev.package.splot-core]
-opt-level = 1
+opt-level = 2
+debug = "line-tables-only"
 
 [profile.dev.package.splot-parallel]
-opt-level = 1
+opt-level = 2
+debug = "line-tables-only"
 
 [profile.dev.package.splot-recon]
-opt-level = 1
+opt-level = 2
+debug = "line-tables-only"
 
 [profile.dev.package.splot-decode]
-opt-level = 1
+opt-level = 2
+debug = "line-tables-only"
 
 [profile.dev.package.splot-encode]
-opt-level = 1
+opt-level = 2
+debug = "line-tables-only"
 
 [profile.test]
 overflow-checks = true
