@@ -72,6 +72,8 @@ pub(crate) struct EncoderSingleMotion {
     pub(crate) ref_mv_idx: usize,
     /// The signed motion vector difference in 1/8 samples.
     pub(crate) mvd: Mv,
+    /// `interp_filter`, where the decoder reads it.
+    pub(crate) interp: ReconInterpolationFilter,
 }
 
 /// The single-reference vectors of one leaf and reference, see
@@ -123,6 +125,8 @@ pub(crate) struct EncoderInterTile {
     drl_reorder: DrlReorder,
     /// `reference_select` and `skip_mode_present`.
     compound_tools: (bool, bool),
+    /// `interpolation_filter == SWITCHABLE`.
+    interp_switchable: bool,
     num_same_ref_compound: u8,
     sb_h4: usize,
     mi_rows: usize,
@@ -178,8 +182,11 @@ impl EncoderInterTile {
                 "global motion with reference frame motion vectors",
             ),
             (
-                inter.interpolation_filter != Some(FrameInterpolationFilter::Eighttap),
-                "an interpolation filter other than EIGHTTAP",
+                !matches!(
+                    inter.interpolation_filter,
+                    Some(FrameInterpolationFilter::Eighttap | FrameInterpolationFilter::Switchable)
+                ),
+                "an interpolation filter other than EIGHTTAP or SWITCHABLE",
             ),
             (
                 inter
@@ -253,6 +260,8 @@ impl EncoderInterTile {
                 .ok_or("incomplete inter frame tools")?,
             drl_reorder: sequence_drl_reorder(sequence),
             compound_tools: (tail.reference_select, tail.skip_mode_present),
+            interp_switchable: inter.interpolation_filter
+                == Some(FrameInterpolationFilter::Switchable),
             num_same_ref_compound: seq_inter.num_same_ref_compound,
             sb_h4,
             mi_rows,
@@ -367,6 +376,7 @@ impl EncoderInterTile {
                     mode,
                     ref_mv_idx,
                     mvd: Mv::ZERO,
+                    interp: ReconInterpolationFilter::EightTap,
                 },
             )
         };
@@ -552,24 +562,18 @@ impl EncoderInterTile {
         skip: bool,
     ) -> Result<InterBlockSyntax> {
         let block = self.block(frontier, motion.refs())?;
-        let (syntax, interp) = match motion {
-            EncoderMotion::Single(single) => (
-                InterMotionSyntax::Single(self.single_syntax(&block, single)),
-                ReconInterpolationFilter::EightTap,
-            ),
-            EncoderMotion::Compound(compound) => (
-                InterMotionSyntax::Compound(self.compound_syntax(&block, compound)?),
-                if compound.skip_mode {
-                    ReconInterpolationFilter::EightTapSharp
-                } else {
-                    ReconInterpolationFilter::EightTap
-                },
-            ),
+        let syntax = match motion {
+            EncoderMotion::Single(single) => {
+                InterMotionSyntax::Single(self.single_syntax(&block, single))
+            }
+            EncoderMotion::Compound(compound) => {
+                InterMotionSyntax::Compound(self.compound_syntax(&block, compound)?)
+            }
         };
         Ok(InterBlockSyntax {
             block_ctx: block,
             motion: syntax,
-            interp,
+            interp: self.interp_filter(frontier, motion)?.0,
             precision: BlockPrecisionRecord::most_probable(self.precision),
             skip,
             use_amvd: false,
@@ -621,12 +625,13 @@ impl EncoderInterTile {
     }
 
     /// Calls `read` with the plane view and the § 7.11.3.3 parameters that
-    /// predict the luma rectangle `(x, y, w, h)` from `ref_frame` with `mv`.
+    /// predict the luma rectangle `(x, y, w, h)` from `ref_frame` with `mv`
+    /// and `filter`.
     pub(crate) fn with_luma_subpel<R>(
         &self,
         ref_frame: i8,
         rect: (usize, usize, usize, usize),
-        mv: Mv,
+        (mv, filter): (Mv, ReconInterpolationFilter),
         read: impl FnOnce(
             &splot_recon::ReferencePlaneView<'_, u16>,
             &splot_recon::SubpelPredictParams,
@@ -644,7 +649,7 @@ impl EncoderInterTile {
             ReconPlaneId::Y,
             mc::McBlockRect::from_luma_rect(rect.0, rect.1, rect.2, rect.3),
             mv,
-            ReconInterpolationFilter::EightTap,
+            filter,
             0,
             0,
             ByteOffset::new(0),

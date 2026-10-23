@@ -65,6 +65,9 @@ pub struct InterFrameParams {
     /// `allow_high_precision_mv` (§ 5.18.2): eighth-pel motion vectors;
     /// off, `use_qtr_precision_mv` selects quarter-pel.
     pub high_precision_mv: bool,
+    /// `is_filter_switchable` (§ 5.18.5.1): blocks code `interp_filter`;
+    /// off, the frame codes `EIGHTTAP`.
+    pub switchable_interp_filter: bool,
 }
 
 /// A parsed frame header and the exact bits it was parsed from.
@@ -86,7 +89,8 @@ pub struct EncodedFrameHeader {
 /// slot or holds it only as a restricted reference),
 /// `use_ref_frame_mvs` of `params`,
 /// quarter-pel or, with `high_precision_mv`, eighth-pel motion vectors, the
-/// frame-level `EIGHTTAP` filter,
+/// frame-level `EIGHTTAP` filter or, with `switchable_interp_filter`,
+/// `SWITCHABLE`,
 /// `reference_select` and `skip_mode_present` of `params`, and the key-frame tail
 /// (`TX_MODE_LARGEST`, `reduced_tx_set = 2`) with the filters of `params`.
 ///
@@ -203,8 +207,10 @@ fn inter_frame_header_bits(
     if params.high_precision_mv {
         w.write_flag(true)?; // allow_high_precision_mv
     }
-    w.write_flag(false)?; // is_filter_switchable
-    w.write_bits(EIGHTTAP, 2)?; // interpolation_filter
+    w.write_flag(params.switchable_interp_filter)?; // is_filter_switchable
+    if !params.switchable_interp_filter {
+        w.write_bits(EIGHTTAP, 2)?; // interpolation_filter
+    }
     w.write_flag(false)?; // disable_cdf_update
     let tx = params.tx;
     if tx.tx_mode == TxMode::Only4x4 || tx.reduced_tx_set > MAX_REDUCED_TX_SET {

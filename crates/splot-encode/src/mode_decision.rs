@@ -13,9 +13,10 @@
 use core::ops::Range;
 
 use splot_decode::encoder_syntax::{
-    ChromaMode, EncoderSyntaxError, IntraModes, IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA,
-    PartitionNode, SyntaxSnapshot,
+    ChromaMode, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax, LeafBlock,
+    MAX_CFL_ALPHA, PartitionNode, SyntaxSnapshot,
 };
+use splot_recon::InterpolationFilter;
 
 use crate::intra_frame::SourceResidualCoder;
 use crate::intra_frame::codable_children;
@@ -251,6 +252,7 @@ impl TrialCoder<'_, '_> {
                 mode,
                 drl,
                 mv: MotionVector::default(),
+                filter: InterpolationFilter::EightTap,
             };
             let mvs = self.syntax.single_mvs(leaf, ref_frame)?;
             push(mvs.global, mode(InterMode::Global, 0));
@@ -296,7 +298,73 @@ impl TrialCoder<'_, '_> {
             );
         }
         choices.extend(self.compound_candidates(leaf, &searched)?);
+        if self.preset.interp_filter_search {
+            for choice in &mut choices {
+                if let Some(prediction) = choice.inter.as_mut() {
+                    self.choose_filter(leaf, prediction)?;
+                }
+            }
+        }
         Ok(choices)
+    }
+
+    /// Sets the filter of `prediction` at `leaf`, which reads one, to the
+    /// [`INTERP_FILTERS`] entry whose luma prediction SATD at the decoded
+    /// vectors plus `interp_filter` rate is lowest; ties keep the earlier.
+    fn choose_filter(&mut self, leaf: &LeafBlock, prediction: &mut InterPrediction) -> Result<()> {
+        let Some(motion) = self.motion else {
+            return Ok(());
+        };
+        let refs = match *prediction {
+            InterPrediction::Single(modes) => vec![modes.ref_frame],
+            InterPrediction::Compound(modes) => vec![modes.refs.0, modes.refs.1],
+            InterPrediction::SkipMode { .. } => return Ok(()),
+        };
+        let mvs = self.syntax.inter_mvs(leaf, *prediction)?;
+        let lists: Vec<_> = refs.into_iter().zip(mvs).collect();
+        let mut best: Option<(u64, InterpolationFilter)> = None;
+        for filter in INTERP_FILTERS {
+            let candidate = with_filter(*prediction, filter);
+            let mut sink = RateSink::adapting();
+            if !self
+                .syntax
+                .price_interp_filter(leaf, candidate, &mut sink)?
+            {
+                return Ok(());
+            }
+            let cost = motion.prediction_satd(self.syntax, &lists, filter, leaf_rect(leaf)?)?
+                + motion.bits_cost(sink.bits);
+            if best.is_none_or(|(best_cost, _)| cost < best_cost) {
+                best = Some((cost, filter));
+            }
+        }
+        if let Some((_, filter)) = best {
+            *prediction = with_filter(*prediction, filter);
+        }
+        Ok(())
+    }
+
+    /// `choice` with the filter of the lowest full-trial cost when it is an
+    /// inter leaf that reads `interp_filter`; the state is `start` after.
+    fn refine_filter(
+        &mut self,
+        leaf: &LeafBlock,
+        choice: LeafChoice,
+        start: &SyntaxSnapshot,
+    ) -> Result<LeafChoice> {
+        let Some(prediction) = choice.inter.filter(|_| self.preset.interp_filter_search) else {
+            return Ok(choice);
+        };
+        if !self
+            .syntax
+            .price_interp_filter(leaf, prediction, &mut RateSink::adapting())?
+        {
+            return Ok(choice);
+        }
+        let filters = INTERP_FILTERS
+            .map(|filter| LeafChoice::inter(with_filter(prediction, filter)))
+            .to_vec();
+        self.best(leaf, filters, ALL, start)
     }
 
     /// The `preset.compound_candidates` compound predictions of `leaf` with
@@ -329,6 +397,7 @@ impl TrialCoder<'_, '_> {
                 drl,
                 mvs,
                 jmvd_scale_mode: 0,
+                filter: InterpolationFilter::EightTap,
             };
             let zero = [MotionVector::default(); 2];
             let mut trials: Vec<CompoundModes> = (0..drls * drls)
@@ -388,9 +457,10 @@ impl TrialCoder<'_, '_> {
                         motion.rate(mv, pred)
                     })
                     .sum();
-                let satd = motion.compound_satd(
+                let satd = motion.prediction_satd(
                     self.syntax,
-                    [(refs.0, mvs[0]), (refs.1, mvs[1])],
+                    &[(refs.0, mvs[0]), (refs.1, mvs[1])],
+                    InterpolationFilter::EightTap,
                     leaf_rect(leaf)?,
                 )?;
                 ranked.push((satd + rate, mvs, trial));
@@ -450,6 +520,17 @@ impl TrialCoder<'_, '_> {
 fn leaf_rect(leaf: &LeafBlock) -> Result<(usize, usize, usize, usize)> {
     let (w, h) = leaf.dimensions()?;
     Ok((leaf.col4() * 4, leaf.row4() * 4, w, h))
+}
+
+/// `prediction` with `interp_filter = filter`.
+fn with_filter(prediction: InterPrediction, filter: InterpolationFilter) -> InterPrediction {
+    match prediction {
+        InterPrediction::Single(modes) => InterPrediction::Single(InterModes { filter, ..modes }),
+        InterPrediction::Compound(modes) => {
+            InterPrediction::Compound(CompoundModes { filter, ..modes })
+        }
+        skip @ InterPrediction::SkipMode { .. } => skip,
+    }
 }
 
 /// `Some` result, `None` for a candidate the leaf cannot code.
@@ -513,6 +594,7 @@ impl PartitionSearch for TrialCoder<'_, '_> {
             candidates.extend(self.inter_candidates(&leaf)?);
         }
         let choice = self.best(&leaf, candidates, ALL, &start)?;
+        let choice = self.refine_filter(&leaf, choice, &start)?;
         Ok((self.trial(&leaf, choice, ALL)?, choice))
     }
 
