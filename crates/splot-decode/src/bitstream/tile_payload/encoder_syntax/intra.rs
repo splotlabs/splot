@@ -171,6 +171,8 @@ pub(super) struct IntraTools {
     pub(super) reduced_tx_part_set: bool,
     /// `allow_parity_hiding`.
     pub(super) parity_hiding: bool,
+    /// `allow_tcq`.
+    pub(super) tcq: bool,
 }
 
 impl IntraTools {
@@ -199,12 +201,8 @@ impl IntraTools {
                     || core.allow_screen_content_tools == Some(true),
                 "MRL, DIP, MHCCP, FSC, or palette",
             ),
-            (
-                tq.enable_intra_ist || tq.enable_cctx || tq.enable_tcq,
-                "intra IST, CCTX, or TCQ",
-            ),
+            (tq.enable_intra_ist || tq.enable_cctx, "intra IST or CCTX"),
             (core.allow_intrabc == Some(true), "intra block copy"),
-            (lossless.is_some_and(|info| info.allow_tcq), "TCQ"),
             (
                 qindex == 0
                     || lossless
@@ -242,6 +240,7 @@ impl IntraTools {
             reduced_tx_set: usize::from(reduced_tx_set),
             reduced_tx_part_set: tq.reduced_tx_part_set,
             parity_hiding: lossless.is_some_and(|info| info.allow_parity_hiding),
+            tcq: lossless.is_some_and(|info| info.allow_tcq),
         })
     }
 }
@@ -453,7 +452,7 @@ impl IntraTileSyntax {
         let (block_ctx, _) = self.block_ctx(leaf);
         let (_, joint) = self.y_mode_index(leaf, modes)?;
         let block_modes = block_modes(leaf, modes, joint)?;
-        let luma = rect_luma_plan(&block_modes, block_ctx, false, self.sb_size4)
+        let luma = rect_luma_plan(&block_modes, block_ctx, self.tools.tcq, self.sb_size4)
             .map_err(rule("luma plan"))?;
         let chroma = rect_chroma_plan(&block_modes, self.tools.cfl_ds_filter_index, self.sb_size4);
         let mut plan = GeneralIntraResidualPlan::rect(block_ctx, luma, chroma, false, None, false)
@@ -594,12 +593,13 @@ impl IntraTileSyntax {
                 "level count of a transform block",
             ));
         }
-        let scan = coefficient_scan(&TransformBlock { tx_type, ..tx })?;
-        let eob = scan
+        let coded = TransformBlock { tx_type, ..tx };
+        let eob = coefficient_scan(&coded)?
             .iter()
             .rposition(|&pos| levels[usize::from(pos)] != 0)
             .map_or(0, |last| last + 1);
-        self.reconstruct_with(index, levels, eob, tx_type)?;
+        let quant = self.decoder_quant(&coded, levels)?;
+        self.reconstruct_with(index, &quant, eob, tx_type)?;
         if let Some(leaf) = &self.recon.leaf
             && tx.plane == 0
         {
@@ -697,6 +697,10 @@ impl IntraTileSyntax {
         eob: usize,
         tx_type: TxType,
     ) -> Result<()> {
+        let use_tcq = self.uses_tcq(&TransformBlock {
+            tx_type,
+            ..self.unit(index)?
+        });
         let Recon {
             workspace,
             scratch,
@@ -710,7 +714,7 @@ impl IntraTileSyntax {
                 index,
                 quant,
                 eob,
-                tx_type as usize,
+                (tx_type as usize, use_tcq),
                 scratch,
                 workspace,
                 block_decoded,

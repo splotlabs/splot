@@ -13,7 +13,7 @@ use splot_decode::encoder_syntax::LeafBlock;
 use crate::config::{RateControlMode, TileLayout};
 use crate::encoder::Encoder;
 use crate::gop::GopFrame;
-use crate::preset::{PRESETS, Preset, PresetParams};
+use crate::preset::{PRESETS, Preset, PresetParams, TcqFrames};
 use crate::rate_control::FrameType;
 use crate::test_support::{
     assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes, refs_for,
@@ -215,6 +215,64 @@ fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
                 .collect();
             assert!(other == units, "preset {preset}: {threads} threads");
         }
+    }
+}
+
+/// TCQ on every frame: key and inter frames at a full-trial and a
+/// candidate-trial preset, at both bit depths, decode to the encoder recon,
+/// with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn tcq_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    for (preset, width, height, bit_depth) in [
+        (1u8, 40, 24, BitDepth::Ten),
+        (6, 72, 40, BitDepth::Eight),
+        (6, 48, 32, BitDepth::Ten),
+    ] {
+        let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
+            tcq: TcqFrames::All,
+            ..*Preset::new(preset).unwrap().params()
+        }));
+        let mut config = config(width, height, bit_depth, preset, 60);
+        config.keyint = core::num::NonZeroU32::new(3).unwrap();
+        let stream = |threads: usize| {
+            let mut config = config.clone();
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+            assert!(coder.sequence.transform_quant_entropy.unwrap().enable_tcq);
+            (0..4)
+                .map(|index| {
+                    let plan = crate::gop::plan(index, config.keyint);
+                    let source = synthetic_frame(&config, 40 + index as u32);
+                    coder.encode_frame(&source, &plan, 60).unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        let coded = stream(1);
+        let units: Vec<u8> = coded.iter().flat_map(|f| f.temporal_unit.clone()).collect();
+        let expected: Vec<u8> = coded
+            .iter()
+            .flat_map(|frame| recon_bytes(frame, bit_depth))
+            .collect();
+        let name = format!("preset {preset} {bit_depth:?}");
+        assert_same_samples(&decode(&units), &expected, &name);
+        for threads in [2, 8] {
+            let other: Vec<u8> = stream(threads)
+                .iter()
+                .flat_map(|f| f.temporal_unit.clone())
+                .collect();
+            assert!(other == units, "{name}: {threads} threads");
+        }
+    }
+}
+
+/// A preset without TCQ codes no TCQ syntax.
+#[test]
+fn tcq_off_codes_no_tcq_syntax() {
+    for params in PRESETS.iter().filter(|params| params.tcq == TcqFrames::Off) {
+        let config = config(16, 16, BitDepth::Eight, 6, 60);
+        let coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+        let tq = coder.sequence.transform_quant_entropy.unwrap();
+        assert!(!tq.enable_tcq && !tq.choose_tcq_per_frame);
     }
 }
 

@@ -24,11 +24,12 @@ use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::gop::{self, GopFrame};
 use crate::kernels::rdoq::{RdoqBlock, hide_parity, parity_moves, rdoq};
+use crate::kernels::tcq::tcq;
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
 use crate::loop_filter::{CodedTile, FilteredFrame, FirstPass, FrameDecisions, finish_frame};
 use crate::mode_decision::TrialCoder;
 use crate::motion_search::MotionSearch;
-use crate::preset::PresetParams;
+use crate::preset::{PresetParams, TcqFrames};
 use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, block_rate};
 use crate::rd::partition::search_partition;
 use crate::rd::{Lambda, RdCost};
@@ -68,6 +69,13 @@ impl IntraFrameCoder {
 
     /// A coder of `config` with the search limits of `preset`.
     fn with_preset(config: &Config, preset: &'static PresetParams) -> Result<Self> {
+        // TEMP-EXPERIMENT
+        let preset: &'static PresetParams = match std::env::var("SPLOT_TCQ").as_deref() {
+            Ok("all") => Box::leak(Box::new(PresetParams { tcq: TcqFrames::All, ..*preset })),
+            Ok("base") => Box::leak(Box::new(PresetParams { tcq: TcqFrames::Base, ..*preset })),
+            Ok("off") => Box::leak(Box::new(PresetParams { tcq: TcqFrames::Off, ..*preset })),
+            _ => preset,
+        };
         let sequence = build_encoder_sequence_header(&EncoderStreamParams {
             width: config.width,
             height: config.height,
@@ -96,6 +104,7 @@ impl IntraFrameCoder {
                 refmvbank: preset.mv_prediction,
                 drl_reorder: preset.mv_prediction.then_some(DRL_REORDER_CONSTRAINT),
                 parity_hiding: preset.parity_hiding,
+                tcq: preset.tcq != TcqFrames::Off,
                 ..EncoderToolFlags::default()
             },
         })
@@ -156,7 +165,8 @@ impl IntraFrameCoder {
             ..*plan
         };
         let qindex = u32::from(qp);
-        let tools = gop::frame_tools(self.preset, self.tiles, qindex);
+        let mut tools = gop::frame_tools(self.preset, self.tiles, qindex);
+        tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
         let header = |filters: &FrameFilterParams| {
             plan.header(&self.view, &self.references, qindex, filters, tools)
         };
@@ -481,11 +491,12 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let dims = BlockDims::new(w, h).map_err(kernel)?;
         residual.resize(w * h, 0);
         kernels().residual(source, stride, prediction, w, dims, residual);
+        let use_tcq = syntax.uses_tcq(tx);
         let (params, transform) = recon_params(
             self.qindex,
             plane_id(tx.plane)?,
             (log2_w, log2_h),
-            tx.tx_type,
+            (tx.tx_type, use_tcq),
             self.bit_depth,
         )?;
         let forward = ForwardTransform2d::new(
@@ -513,12 +524,31 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             plane: tx.plane,
             tx_type: tx.tx_type,
         };
-        let lambda_q8 = self.lambda.coefficient_q8(params.dq_denom);
+        let lambda_q8 = self
+            .lambda
+            .coefficient_q8(Quantizer::dq_denom_without_tcq(log2_w, log2_h));
         let parity = syntax.parity_hiding(tx);
         let mut rates = CdfCoeffRates { syntax, tx };
         let every_type = self.preset.rdoq_every_type && !self.trial;
         let rdoq_type = every_type || (tx.tx_type as u8) < TxType::Idtx as u8;
-        if self.preset.rdoq && !self.candidate && rdoq_type {
+        if use_tcq {
+            // TEMP-EXPERIMENT
+            let exact = match std::env::var("SPLOT_TCQ_EXACT").as_deref() {
+                Ok("always") => true,
+                Ok("never") => false,
+                Ok("final-cand") => !self.candidate,
+                _ => !self.candidate && !self.trial,
+            };
+            tcq(
+                kernels(),
+                &block,
+                coeffs,
+                &mut rates,
+                (lambda_q8, exact),
+                &mut levels,
+            )
+            .map_err(kernel)?;
+        } else if self.preset.rdoq && !self.candidate && rdoq_type {
             rdoq(
                 kernels(),
                 &block,
@@ -578,7 +608,8 @@ impl SourceResidualCoder<'_> {
         {
             return Ok(None);
         }
-        let recon = tx_choice::reconstruct(prediction, tx, levels, (self.qindex, self.bit_depth))?;
+        let recon =
+            tx_choice::reconstruct(syntax, prediction, tx, levels, (self.qindex, self.bit_depth))?;
         let cost = RdCost {
             distortion: self.source.sse(tx, &recon)?,
             rate: block_rate(syntax, &mut RateSink::frozen(), tx, levels, false)?,

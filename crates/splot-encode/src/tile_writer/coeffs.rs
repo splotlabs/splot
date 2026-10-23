@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! § 5.20.7.27 `coeffs()` writer for transform blocks of every class without
-//! TCQ or forward skip coding, including parity hiding and the § 5.20.8.2 luma
+//! forward skip coding, including TCQ, parity hiding, and the § 5.20.8.2 luma
 //! transform type.
 
 use splot_core::coefficient::{LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
@@ -10,7 +10,7 @@ use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_decode::encoder_syntax::{
     CoeffLevels, IntraTileSyntax, MAX_GOLOMB_PREFIX_BITS, MAX_QUANT_MAGNITUDE, TransformBlock,
-    coefficient_scan, tx_log2,
+    coefficient_scan, tcq_next_state, tx_log2,
 };
 
 use super::{Result, TileWriterError};
@@ -116,11 +116,14 @@ pub(crate) fn code_coeffs(
     };
     let mut grid = CoeffLevels::for_block(tx)?;
     grid.set_hidden(hidden);
+    if syntax.uses_tcq(tx) {
+        grid.set_tcq_state(0);
+    }
     for c in (0..eob).rev() {
         let (pos, row, col) = position(c);
         let is_lf = grid.is_low_frequency(row, col, plane);
         let shift = u32::from(grid.hides(c));
-        let level = (levels[pos].unsigned_abs() >> shift).min(grid.max_level(c, is_lf, plane));
+        let (level, _) = grid.split(c, levels[pos].unsigned_abs() >> shift, is_lf, plane);
         let base_levels = if is_lf {
             LF_NUM_BASE_LEVELS
         } else {
@@ -142,6 +145,9 @@ pub(crate) fn code_coeffs(
             write_symbol(symbols, cdf, (level - base) as usize)?;
         }
         grid.set(row, col, level)?;
+        if let Some(state) = grid.tcq_state() {
+            grid.set_tcq_state(tcq_next_state(state, level));
+        }
     }
 
     let mut cul_level = 0u32;
@@ -158,9 +164,8 @@ pub(crate) fn code_coeffs(
             }
         }
         let shift = u32::from(grid.hides(c));
-        let max = grid.max_level(c, grid.is_low_frequency(row, col, plane), plane);
-        if quant >> shift >= max {
-            let x = (quant >> shift) - max;
+        let is_lf = grid.is_low_frequency(row, col, plane);
+        if let (_, Some(x)) = grid.split(c, quant >> shift, is_lf, plane) {
             write_golomb(symbols, x, hr_level_avg >> shift)?;
             hr_level_avg = ((x << shift) + hr_level_avg) >> 1;
         }

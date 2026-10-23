@@ -30,6 +30,8 @@ pub struct PresetParams {
     /// nonzero levels hides the parity of its first level in their sum. Off
     /// in every row: its gain per CPU does not beat the next slower row.
     pub parity_hiding: bool,
+    /// The frames that quantize with TCQ (`allow_tcq`); they code no parity hiding.
+    pub tcq: TcqFrames,
     /// Candidate trials of the mode and transform-partition search run RDOQ
     /// and the transform-type search too; off, they quantize with a deadzone
     /// and code `DCT_DCT`, and only a leaf's final trial runs both.
@@ -71,6 +73,29 @@ pub struct PresetParams {
     pub mv_prediction: bool,
 }
 
+/// The frames of [`PresetParams::tcq`], from none to all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TcqFrames {
+    /// No frame.
+    Off,
+    /// Key frames and the frames of mini-GOP layer 0.
+    Base,
+    /// Every frame.
+    All,
+}
+
+impl TcqFrames {
+    /// Whether a frame of mini-GOP `layer` quantizes with TCQ.
+    #[must_use]
+    pub const fn allows(self, layer: u8) -> bool {
+        match self {
+            Self::Off => false,
+            Self::Base => layer == 0,
+            Self::All => true,
+        }
+    }
+}
+
 const fn row(
     blocks: (u8, u8),
     intra_modes: u8,
@@ -88,6 +113,7 @@ const fn row(
         rdoq,
         rdoq_every_type: rdoq,
         parity_hiding: false,
+        tcq: TcqFrames::Off,
         full_trials,
         tx_type_depth,
         tx_partition_search,
@@ -261,6 +287,7 @@ mod tests {
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
             assert!(fast.parity_hiding <= slow.parity_hiding);
+            assert!(fast.tcq <= slow.tcq);
             assert!(fast.rdoq || !fast.rdoq_every_type);
             assert!(fast.full_trials <= slow.full_trials);
             assert!(fast.tx_type_depth <= slow.tx_type_depth);
