@@ -5244,6 +5244,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-EXT-PARTITIONS"
+name = "Encoder three-way and uneven four-way partition search"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.3.1", "5.20.3.2", "6.19.3.1"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/rd/partition.rs"
+change_id = "enc-ext-partitions"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::ext_partitions sets enable_ext_partitions (1) and enable_uneven_4way_partitions (2); the encoder_syntax facade supplies the allowed shapes and their children. The RD partition search tries HORZ_3/VERT_3 only when the NONE cost is within ext_three_way_margin/256 of the best cost so far, and HORZ_4A/4B/VERT_4A/4B only when the three-way shape of the same axis is within ext_four_way_margin/256 (255 tries every shape). The children of an extended shape search without extended shapes. Implemented, off in every preset (level 0, presets write the old stream byte-identically): the measured gain per CPU is below the preset ladder (p6 margin 26: -0.26%/-0.43% at 1.20x; p0 level 2 margin 26: -0.47% at 1.69x on park_joy; full search at p0: -1.52% at 5.6x)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "pending"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/ext_partition_tests.rs::ext_partitions_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/ext_partition_tests.rs::search_codes_three_way_and_uneven_four_way_partitions", "crates/splot-encode/src/ext_partition_tests.rs::sequence_flags_follow_the_preset_level", "crates/splot-encode/src/ext_partition_tests.rs::avm_decodes_ext_partitions_like_splot", "crates/splot-encode/src/rd/partition_tests.rs::extended_margins_gate_the_three_and_four_way_trials", "crates/splot-encode/src/rd/partition_tests.rs::exhaustive_search_is_optimal"]
+commands = ["cargo test -p splot-encode ext_partitions --locked", "cargo test -p splot-encode partition_tests --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_ext_partitions --locked -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-FRAME-WAVES"
 name = "Frame-parallel mini-GOP waves"
 category = "encoder"
@@ -5400,6 +5432,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/intra_frame_tests.rs::coded_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_tests.rs::inter_frames_decode_to_the_encoder_recon_over_several_gops", "crates/splot-encode/src/intra_frame_tests.rs::mini_gops_decode_to_the_encoder_recon_in_display_order", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_mini_gops_like_splot", "crates/splot-encode/src/y4m.rs::tests::reads_422_and_444_frames", "crates/splot-cli/tests/encode_decode_roundtrip.rs::chroma_422_and_444_clips_encode_validate_and_decode_to_the_encoder_stats"]
 commands = ["cargo test -p splot-encode decode_to_the_encoder_recon --locked", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-PARITY-HIDING"
+name = "Encoder parity hiding and RDOQ for 1D and identity transforms"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "5.20.7.27", "5.20.7.28", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/kernels/rdoq.rs"
+change_id = "enc-parity-hiding"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::rdoq_every_type (on with rdoq, presets 0-6) lets RDOQ take the scan, contexts and sign rows of IDTX and 1D types instead of the deadzone, outside mode trials. PresetParams::parity_hiding sets enable_parity_hiding, and every frame then codes allow_parity_hiding = 1; it is off in every row because its BD-rate per CPU does not beat the next slower row. The encoder_syntax facade publishes the decoder rule (ParityHiding::sum_abs1 and holds run the decoder first coefficient pass) and the hidden-level coding (CoeffLevels::hides, max_level, the PH base row and the isHidden sign group). After the quantizer, a block that hides the other parity moves the one level by one with the lowest J delta: the exact distortion and the rate of that level symbols in the writer contexts from the live CDFs. Mode trials move only the scan index 0 level."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/tile_writer/tests.rs::parity_hiding_round_trips", "crates/splot-encode/src/tile_writer/tests.rs::facade_parity_rule_is_the_spec_rule", "crates/splot-encode/src/kernels/rdoq_tests.rs::parity_fixup_keeps_the_rule", "crates/splot-encode/src/kernels/rdoq_tests.rs::simd_matches_scalar", "crates/splot-encode/src/intra_frame_tests.rs::parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_tests.rs::inter_frames_decode_to_the_encoder_recon_over_several_gops"]
+commands = ["cargo test -p splot-encode parity --locked", "cargo test -p splot-encode decode_to_the_encoder_recon --locked"]
 fixtures = []
 diagnostics = []
 

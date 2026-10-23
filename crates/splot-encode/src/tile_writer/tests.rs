@@ -16,7 +16,7 @@ use splot_core::headers::frame::TxMode;
 use splot_core::tables::conversion::TX_WIDTH;
 use splot_decode::encoder_syntax::{
     ChromaMode, IntraMode, IntraModes, IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA, PartitionNode,
-    TX_PARTITIONS, TransformBlock,
+    TX_PARTITIONS, TransformBlock, coefficient_scan,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -151,6 +151,42 @@ struct TxCoverage {
     recodes: usize,
     /// Pick luma modes that offer uncoded types.
     steer: bool,
+    /// Luma blocks that hide a parity: `sumAbs1` 0 and 1, a remainder on
+    /// the hidden level, a hidden `quant` of 1, and a one-dimensional type.
+    hidden: [usize; 5],
+}
+
+/// Moves the scan index 0 level of `levels` by one when they hide a parity
+/// it does not have, and counts the hidden blocks.
+fn keep_parity(
+    syntax: &IntraTileSyntax,
+    tx: &TransformBlock,
+    levels: &mut [i32],
+    rng: &mut Rng,
+    hidden: &mut [usize; 5],
+) -> Result<()> {
+    let Some(parity) = syntax.parity_hiding(tx) else {
+        return Ok(());
+    };
+    let first = usize::from(coefficient_scan(tx)?[0]);
+    if !parity.holds(levels)? {
+        let magnitude = levels[first].unsigned_abs();
+        let step = if magnitude == 0 || rng.below(2) == 0 {
+            1
+        } else {
+            -1
+        };
+        let sign = if levels[first] < 0 { -1 } else { 1 };
+        levels[first] = sign * (magnitude as i32 + step);
+    }
+    if let Some(sum) = parity.sum_abs1(levels)? {
+        let magnitude = levels[first].unsigned_abs();
+        hidden[sum as usize] += 1;
+        hidden[2] += usize::from(magnitude >> 1 >= 3);
+        hidden[3] += usize::from(magnitude == 1);
+        hidden[4] += usize::from(tx.tx_type as u8 > TxType::Idtx as u8);
+    }
+    Ok(())
 }
 
 /// Codes every transform block with random levels, the least-coded luma type,
@@ -220,7 +256,7 @@ impl RandomLevels {
 impl ResidualCoder for RandomLevels {
     fn code_luma(
         &mut self,
-        _: &mut IntraTileSyntax,
+        syntax: &mut IntraTileSyntax,
         tx: &TransformBlock,
         _: &[u16],
         tx_types: &[TxType],
@@ -246,6 +282,9 @@ impl ResidualCoder for RandomLevels {
             }
             _ => {}
         }
+        let coded_tx = TransformBlock { tx_type, ..*tx };
+        let hidden = &mut self.coverage.hidden;
+        keep_parity(syntax, &coded_tx, &mut levels, &mut self.rng, hidden)?;
         let types = tx_types.iter().map(|&t| t as u8).collect();
         self.coverage.offered.insert((tx.tx_size, types));
         if levels.iter().filter(|&&level| level != 0).count() >= 2 {
@@ -260,14 +299,17 @@ impl ResidualCoder for RandomLevels {
 
     fn code(
         &mut self,
-        _: &mut IntraTileSyntax,
+        syntax: &mut IntraTileSyntax,
         tx: &TransformBlock,
         _: &[u16],
     ) -> Result<TransformDecision> {
         self.coverage.recodes += usize::from(tx.plane == 0);
+        let mut levels = random_levels(&mut self.rng, tx.tx_size, self.max_level);
+        let hidden = &mut self.coverage.hidden;
+        keep_parity(syntax, tx, &mut levels, &mut self.rng, hidden)?;
         Ok(TransformDecision {
             tx_type: tx.tx_type,
-            levels: random_levels(&mut self.rng, tx.tx_size, self.max_level),
+            levels,
         })
     }
 }
@@ -627,6 +669,85 @@ fn headers(tools: EncoderToolFlags) -> (SequenceHeader, FrameHeaderCore) {
     (seq, core)
 }
 
+/// Parity hiding round-trips over every luma type and partition, with each
+/// hidden parity, a hidden level with a remainder, a hidden `quant` of 1, and
+/// one-dimensional types.
+#[test]
+fn parity_hiding_round_trips() {
+    for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+        let mut coverage = TxCoverage::default();
+        for seed in 0..4 {
+            let mut case =
+                Case::new(136, 72, bit_depth, SuperblockSize::Block64x64).with_tx_search();
+            case.tools.parity_hiding = true;
+            case.max_level = 40;
+            coverage = assert_round_trip_modes(case, 0x9a00 + seed, coverage).2;
+        }
+        assert!(
+            coverage.hidden.iter().all(|&n| n > 0),
+            "{bit_depth:?}: {:?}",
+            coverage.hidden
+        );
+    }
+}
+
+/// Publication check: the facade's parity rule is the § 5.20.7.27 rule the
+/// writer and the quantizer assume, for every class and transform size.
+#[test]
+fn facade_parity_rule_is_the_spec_rule() {
+    let mut tools = Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64).tools;
+    tools.parity_hiding = true;
+    let (seq, core) = headers(tools);
+    assert!(core.lossless_info.as_ref().unwrap().allow_parity_hiding);
+    let syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap();
+    let mut rng = Rng(0x9a17);
+    let types = [
+        TxType::DctDct,
+        TxType::AdstFlipadst,
+        TxType::Idtx,
+        TxType::VDct,
+        TxType::HFlipadst,
+    ];
+    for tx_size in 0..TX_WIDTH.len() {
+        for tx_type in types {
+            for plane in 0..2 {
+                let tx = TransformBlock {
+                    tx_type,
+                    plane,
+                    x: 0,
+                    y: 0,
+                    tx_size,
+                    fills_block: true,
+                };
+                let parity = syntax.parity_hiding(&tx);
+                assert_eq!(parity.is_some(), plane == 0 && tx_type != TxType::Idtx);
+                let Some(parity) = parity else { continue };
+                let scan = coefficient_scan(&tx).unwrap();
+                for _ in 0..16 {
+                    let levels = random_levels(&mut rng, tx_size, 20);
+                    let after: Vec<u32> = scan[1..]
+                        .iter()
+                        .map(|&pos| levels[usize::from(pos)].unsigned_abs())
+                        .filter(|&level| level != 0)
+                        .collect();
+                    let sum = after.iter().fold(0, |sum, &level| sum ^ (level.min(6) & 1));
+                    let expected = (after.len() >= 4).then_some(sum);
+                    assert_eq!(
+                        parity.sum_abs1(&levels).unwrap(),
+                        expected,
+                        "{tx_size} {tx_type:?}"
+                    );
+                    let first = levels[usize::from(scan[0])].unsigned_abs() & 1;
+                    assert_eq!(
+                        parity.holds(&levels).unwrap(),
+                        expected.is_none_or(|s| s == first)
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// The facade itself refuses every tool it does not model, so no caller can
 /// code a silently wrong stream.
 #[test]
@@ -658,7 +779,7 @@ fn facade_rejects_unmodelled_tools() {
     }
     let frame_cases: [fn(&mut FrameHeaderCore); 7] = [
         |c| c.allow_intrabc = Some(true),
-        |c| c.lossless_info.as_mut().unwrap().allow_parity_hiding = true,
+        |c| c.lossless_info.as_mut().unwrap().allow_tcq = true,
         |c| c.lossless_info.as_mut().unwrap().coded_lossless = true,
         |c| c.quantization_params.as_mut().unwrap().base_q_idx = 0,
         |c| c.segmentation_params.as_mut().unwrap().segmentation_enabled = true,

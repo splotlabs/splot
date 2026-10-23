@@ -23,6 +23,13 @@ pub struct PresetParams {
     pub partition_early_exit: bool,
     /// Rate-distortion optimized quantization.
     pub rdoq: bool,
+    /// RDOQ also quantizes the identity and 1D transform types outside mode
+    /// trials; off, they take the deadzone quantizer.
+    pub rdoq_every_type: bool,
+    /// Parity hiding (`enable_parity_hiding`): a luma block with enough
+    /// nonzero levels hides the parity of its first level in their sum. Off
+    /// in every row: its gain per CPU does not beat the next slower row.
+    pub parity_hiding: bool,
     /// Candidate trials of the mode and transform-partition search run RDOQ
     /// and the transform-type search too; off, they quantize with a deadzone
     /// and code `DCT_DCT`, and only a leaf's final trial runs both.
@@ -62,6 +69,15 @@ pub struct PresetParams {
     /// of their references and from the reference MV bank, and reorder the
     /// DRL candidates.
     pub mv_prediction: bool,
+    /// Extended partitions: `0` off, `1` adds `HORZ_3` and `VERT_3`, `2` also
+    /// the uneven 4-way shapes.
+    pub ext_partitions: u8,
+    /// A three-way shape is tried only when the `NONE` cost is within this
+    /// margin, in 1/256, of the best cost so far; `255` always tries it.
+    pub ext_three_way_margin: u8,
+    /// An uneven four-way shape is tried only when the three-way shape of its
+    /// axis costs within this margin, in 1/256, of the best; `255` always.
+    pub ext_four_way_margin: u8,
 }
 
 const fn row(
@@ -79,6 +95,8 @@ const fn row(
         intra_modes,
         partition_early_exit,
         rdoq,
+        rdoq_every_type: rdoq,
+        parity_hiding: false,
         full_trials,
         tx_type_depth,
         tx_partition_search,
@@ -91,6 +109,9 @@ const fn row(
         compound_candidates,
         cdf_carry: true,
         mv_prediction: true,
+        ext_partitions: 0,
+        ext_three_way_margin: 0,
+        ext_four_way_margin: 0,
     }
 }
 
@@ -250,6 +271,9 @@ mod tests {
             assert!(fast.intra_modes <= slow.intra_modes);
             assert!(fast.partition_early_exit >= slow.partition_early_exit);
             assert!(fast.rdoq <= slow.rdoq);
+            assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
+            assert!(fast.parity_hiding <= slow.parity_hiding);
+            assert!(fast.rdoq || !fast.rdoq_every_type);
             assert!(fast.full_trials <= slow.full_trials);
             assert!(fast.tx_type_depth <= slow.tx_type_depth);
             assert!(fast.tx_partition_search <= slow.tx_partition_search);
@@ -262,6 +286,9 @@ mod tests {
             assert!(fast.compound_candidates <= slow.compound_candidates);
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.mv_prediction <= slow.mv_prediction);
+            assert!(fast.ext_partitions <= slow.ext_partitions);
+            assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
+            assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));

@@ -24,12 +24,13 @@ use splot_recon::{
 
 use super::cdf::block_context::{IntraYMode, uv_mode_ctx};
 use super::cdf::coeff_context::{
-    CoeffBaseContext, CoeffBrContext, coeff_base_eob_ctx, dc_sign_ctx,
+    CoeffBaseContext, CoeffBaseSelection, CoeffBrContext, coeff_base_eob_ctx,
 };
 use super::cdf::{CoeffBaseRow, CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
 use super::coeff_loop::base_level_pass::tx_class_index;
 use super::coeff_loop::max_level::{
-    CoeffTransformClass, coeff_is_low_frequency, visible_max_level,
+    CoeffMaxLevelConfig, CoeffTransformClass, coeff_is_low_frequency, derive_coeff_max_level,
+    visible_max_level,
 };
 use super::coeff_loop::scan_walk::CoeffScanEntry;
 use super::coeff_loop::sign_symbol::{
@@ -58,6 +59,7 @@ mod compound;
 mod inter;
 mod intra;
 mod mv;
+mod parity;
 mod rollback;
 mod transform;
 
@@ -69,6 +71,7 @@ pub use inter::{
     EncoderReferences, InterMode, InterModes, MV_PRECISION_EIGHTH_PEL, MotionVector, SingleMvs,
 };
 pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, TxType};
+pub use parity::ParityHiding;
 pub use rollback::SyntaxSnapshot;
 use rollback::{CdfJournal, CdfRow};
 pub use transform::{TX_PARTITIONS, TxPartition};
@@ -271,36 +274,60 @@ pub struct TransformBlock {
 }
 
 /// The `Level` grid of one transform block (§ 5.20.7.27), in adjusted
-/// coordinates, with the transform class its contexts read.
+/// coordinates, with the scan and the transform class its contexts read.
 #[derive(Debug)]
 pub struct CoeffLevels {
     state: TransformCoeffBlockState,
     class: CoeffTransformClass,
+    scan: &'static [u16],
+    hidden: bool,
 }
 
 impl CoeffLevels {
-    /// A zero 2D-class grid of `width x height` adjusted coefficients (each `4..=32`).
+    /// A zero grid of `width x height` adjusted coefficients (each `4..=32`)
+    /// coded with `tx_type`.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError::Rule`] for an invalid extent.
-    pub fn new(width: usize, height: usize) -> Result<Self> {
+    pub fn new(width: usize, height: usize, tx_type: TxType) -> Result<Self> {
+        let scan = type_scan(width, height, tx_type)?;
         TransformCoeffBlockState::new(width, height)
             .map(|state| Self {
                 state,
-                class: CoeffTransformClass::TwoD,
+                class: CoeffTransformClass::from_plane_tx_type(tx_type as usize),
+                scan,
+                hidden: false,
             })
             .map_err(rule("coefficient grid"))
     }
 
-    /// A zero grid of the adjusted size and the transform class of `tx`.
+    /// A zero grid of the adjusted size and the type of `tx`.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for an invalid transform size.
     pub fn for_block(tx: &TransformBlock) -> Result<Self> {
         let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
-        let mut grid = Self::new(1 << log2_w.min(5), 1 << log2_h.min(5))?;
-        grid.class = CoeffTransformClass::from_plane_tx_type(tx.tx_type as usize);
-        Ok(grid)
+        Self::new(1 << log2_w.min(5), 1 << log2_h.min(5), tx.tx_type)
+    }
+
+    /// The § 5.20.7.30 coefficient scan, as row-major adjusted positions.
+    #[must_use]
+    #[inline]
+    pub const fn scan(&self) -> &'static [u16] {
+        self.scan
+    }
+
+    /// Codes the levels as a block that hides the parity of its scan index 0
+    /// (`isHidden` of § 5.20.7.27), from [`ParityHiding::sum_abs1`].
+    pub const fn set_hidden(&mut self, hidden: bool) {
+        self.hidden = hidden;
+    }
+
+    /// Whether scan index `c` codes `quant >> 1`: the level whose parity the block hides.
+    #[must_use]
+    #[inline]
+    pub const fn hides(&self, c: usize) -> bool {
+        self.hidden && c == 0
     }
 
     /// Stores `Level[row][col]`.
@@ -316,25 +343,60 @@ impl CoeffLevels {
     /// Whether the coefficient at `(row, col)` is low frequency for this grid's
     /// class (`get_lf_limits`, § 5.20.7.27).
     #[must_use]
+    #[inline]
     pub fn is_low_frequency(&self, row: usize, col: usize, plane: usize) -> bool {
         coeff_is_low_frequency(CoeffScanEntry::new(0, 0, row, col), plane, self.class)
     }
-}
 
-/// Whether a 2D-class coefficient is low frequency (`get_lf_limits`, § 5.20.7.27).
-#[must_use]
-pub fn is_low_frequency(row: usize, col: usize, plane: usize) -> bool {
-    coeff_is_low_frequency(
-        CoeffScanEntry::new(0, 0, row, col),
-        plane,
-        CoeffTransformClass::TwoD,
-    )
-}
+    /// Whether the sign of a nonzero level at `(row, col)` is a CDF symbol
+    /// (`dc_sign` or `dc_sign_horz_vert`) rather than an `L(1)` literal.
+    #[must_use]
+    #[inline]
+    pub fn sign_has_cdf(&self, row: usize, col: usize, plane: usize) -> bool {
+        if row > 0 && col > 0 {
+            return false;
+        }
+        let entry = CoeffScanEntry::new(0, 0, row, col);
+        matches!(
+            derive_nonzero_coeff_sign_input(entry, 1, self.sign_config(plane)).source,
+            CoeffSignReadSource::Cdf(_)
+        )
+    }
 
-/// `maxLevel` of § 5.20.7.27 without parity hiding.
-#[must_use]
-pub const fn max_level(is_low_frequency: bool, plane: usize) -> u32 {
-    visible_max_level(is_low_frequency, plane)
+    /// The sign source of this grid, without the neighbour DC contexts.
+    pub(super) const fn sign_config(&self, plane: usize) -> CoeffSignSourceDeriveConfig<'static> {
+        CoeffSignSourceDeriveConfig {
+            plane,
+            plane_type: if plane > 0 { 1 } else { 0 },
+            tx_class: self.class,
+            is_hidden: self.hidden,
+            sum_abs1: 0,
+            above_dc: &[],
+            left_dc: &[],
+            x4: 0,
+            y4: 0,
+            w4: 0,
+            h4: 0,
+        }
+    }
+
+    /// `maxLevel` of § 5.20.7.27 at scan index `c` of a coefficient that
+    /// [`Self::is_low_frequency`] puts in the low-frequency region or not.
+    #[must_use]
+    #[inline]
+    pub fn max_level(&self, c: usize, is_low_frequency: bool, plane: usize) -> u32 {
+        if self.hides(c) {
+            let entry = CoeffScanEntry::new(c, 0, 0, 0);
+            let config = CoeffMaxLevelConfig {
+                plane,
+                tx_class: self.class,
+                is_hidden: true,
+            };
+            derive_coeff_max_level(entry, config)
+        } else {
+            visible_max_level(is_low_frequency, plane)
+        }
+    }
 }
 
 /// The § 6.19.7.23 bound: every coded `Quant` magnitude is below it.
@@ -349,12 +411,17 @@ pub const MAX_GOLOMB_PREFIX_BITS: u32 = super::coeff_loop::read_quant::MAX_EXP_G
 /// Returns [`EncoderSyntaxError`] for an invalid transform size.
 pub fn coefficient_scan(tx: &TransformBlock) -> Result<&'static [u16]> {
     let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
-    coefficient_scan_slice(
-        1 << log2_w.min(5),
-        1 << log2_h.min(5),
-        tx_class(tx.tx_type as usize),
-    )
-    .map_err(rule("coefficient scan"))
+    type_scan(1 << log2_w.min(5), 1 << log2_h.min(5), tx.tx_type)
+}
+
+/// The § 5.20.7.30 coefficient scan of a `width x height` adjusted block
+/// (each `4..=32`) coded with `tx_type`, as row-major positions.
+///
+/// # Errors
+/// Returns [`EncoderSyntaxError::Rule`] for an invalid extent.
+pub fn type_scan(width: usize, height: usize, tx_type: TxType) -> Result<&'static [u16]> {
+    coefficient_scan_slice(width, height, tx_class(tx_type as usize))
+        .map_err(rule("coefficient scan"))
 }
 
 /// The decoder's dequantization and inverse-transform parameters of a DCT block.
@@ -850,7 +917,7 @@ impl IntraTileSyntax {
         (row, col, c): (usize, usize, usize),
         is_lf: bool,
     ) -> Result<&mut [u16]> {
-        let selection = CoeffBaseContext {
+        let context = CoeffBaseContext {
             row,
             col,
             stride: levels.state.level_stride(),
@@ -859,8 +926,12 @@ impl IntraTileSyntax {
             is_hidden: false,
             c,
             tx_class: tx_class_index(levels.class),
-        }
-        .select(levels.state.level());
+        };
+        let selection = if levels.hides(c) {
+            hidden_base_selection(context, levels.state.level())
+        } else {
+            context.select(levels.state.level())
+        };
         let (base, _) = self.cdfs.rows_span();
         let tx_size = txb_skip_tx_size_ctx(tx_size);
         let row = match self
@@ -907,71 +978,31 @@ impl IntraTileSyntax {
         Ok(row)
     }
 
-    /// The luma `dc_sign` CDF row of `tx`.
-    ///
-    /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] outside the tile.
-    pub fn dc_sign_cdf(&mut self, tx: &TransformBlock) -> Result<&mut [u16]> {
-        let [x4, y4, w4, h4] = tx_area4(tx)?;
-        let plane = tx.plane;
-        let local_x4 = self
-            .coeff
-            .local_x4(plane, x4)
-            .map_err(rule("dc_sign context"))?;
-        let local_y4 = self
-            .coeff
-            .local_y4(plane, y4)
-            .map_err(rule("dc_sign context"))?;
-        let above = self
-            .coeff
-            .above_dc(plane)
-            .map_err(rule("dc_sign context"))?;
-        let left = self.coeff.left_dc(plane).map_err(rule("dc_sign context"))?;
-        let ctx = dc_sign_ctx(above, left, local_x4, local_y4, w4, h4);
-        self.tile_row(TileCdfSelector::DcSign {
-            plane_type: usize::from(plane > 0),
-            group: 0,
-            ctx,
-        })
-    }
-
     /// The CDF row of the sign of the nonzero coefficient at adjusted `(row, col)`
-    /// of `tx`, or `None` when the sign is an `L(1)` literal.
+    /// of `tx` coded as `levels`, or `None` when the sign is an `L(1)` literal.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError::Rule`] outside the tile.
     pub fn sign_cdf(
         &mut self,
         tx: &TransformBlock,
-        row: usize,
-        col: usize,
+        levels: &CoeffLevels,
+        (row, col): (usize, usize),
     ) -> Result<Option<&mut [u16]>> {
-        let [x4, y4, w4, h4] = tx_area4(tx)?;
         let plane = tx.plane;
-        let input = derive_nonzero_coeff_sign_input(
-            CoeffScanEntry::new(0, 0, row, col),
-            1,
-            CoeffSignSourceDeriveConfig {
-                plane,
-                plane_type: usize::from(plane > 0),
-                tx_class: CoeffTransformClass::from_plane_tx_type(tx.tx_type as usize),
-                is_hidden: false,
-                sum_abs1: 0,
-                above_dc: self.coeff.above_dc(plane).map_err(rule("sign context"))?,
-                left_dc: self.coeff.left_dc(plane).map_err(rule("sign context"))?,
-                x4: self
-                    .coeff
-                    .local_x4(plane, x4)
-                    .map_err(rule("sign context"))?,
-                y4: self
-                    .coeff
-                    .local_y4(plane, y4)
-                    .map_err(rule("sign context"))?,
-                w4,
-                h4,
-            },
-        );
-        match input.source {
+        if !levels.sign_has_cdf(row, col, plane) {
+            return Ok(None);
+        }
+        let entry = CoeffScanEntry::new(0, 0, row, col);
+        let mut config = levels.sign_config(plane);
+        let [x4, y4, w4, h4] = tx_area4(tx)?;
+        let context = |error| rule("sign context")(error);
+        config.above_dc = self.coeff.above_dc(plane).map_err(context)?;
+        config.left_dc = self.coeff.left_dc(plane).map_err(context)?;
+        config.x4 = self.coeff.local_x4(plane, x4).map_err(context)?;
+        config.y4 = self.coeff.local_y4(plane, y4).map_err(context)?;
+        (config.w4, config.h4) = (w4, h4);
+        match derive_nonzero_coeff_sign_input(entry, 1, config).source {
             CoeffSignReadSource::Cdf(selector) => self.tile_row(selector.tile_selector()).map(Some),
             CoeffSignReadSource::None | CoeffSignReadSource::SignBit => Ok(None),
         }
@@ -1016,6 +1047,16 @@ impl IntraTileSyntax {
         self.journal.log(base, CdfRow::Tile(selector), row);
         Ok(row)
     }
+}
+
+/// The `coeff_base` row selection of a level whose parity the block hides.
+#[inline(never)]
+fn hidden_base_selection(context: CoeffBaseContext, level: &[u8]) -> CoeffBaseSelection {
+    CoeffBaseContext {
+        is_hidden: true,
+        ..context
+    }
+    .select(level)
 }
 
 fn neighbour<T, E: std::error::Error + Send + Sync + 'static>(

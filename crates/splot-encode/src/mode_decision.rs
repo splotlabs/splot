@@ -182,8 +182,9 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         for choice in candidates {
             self.syntax.restore(start)?;
             self.coder.candidate = !self.preset.full_trials;
+            self.coder.trial = true;
             let cost = self.trial(leaf, choice, planes.clone());
-            self.coder.candidate = false;
+            (self.coder.candidate, self.coder.trial) = (false, false);
             let j = cost?.cost(self.lambda);
             if best.is_none_or(|(best_j, _)| j < best_j) {
                 best = Some((j, choice));
