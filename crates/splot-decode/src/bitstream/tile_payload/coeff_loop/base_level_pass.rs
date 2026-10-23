@@ -54,7 +54,7 @@ impl CoeffBaseFirstPassSummary {
         self.is_hidden
     }
 
-    fn update_after_level(
+    pub(crate) fn update_after_level(
         &mut self,
         entry: CoeffScanEntry,
         level: u32,
