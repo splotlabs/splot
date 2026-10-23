@@ -13,7 +13,7 @@ use splot_decode::encoder_syntax::LeafBlock;
 use crate::config::{RateControlMode, TileLayout};
 use crate::encoder::Encoder;
 use crate::gop::GopFrame;
-use crate::preset::{PRESETS, Preset};
+use crate::preset::{PRESETS, Preset, PresetParams};
 use crate::rate_control::FrameType;
 use crate::test_support::{
     assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes, refs_for,
@@ -172,6 +172,49 @@ fn inter_frames_decode_to_the_encoder_recon_over_several_gops() {
             .flat_map(|frame| recon_bytes(frame, config.bit_depth))
             .collect();
         assert_same_samples(&decode(&stream), &expected, &name);
+    }
+}
+
+/// Parity hiding on, which no preset row turns on: key and inter frames at
+/// a full-trial and a candidate-trial preset decode to the encoder recon,
+/// with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    for (preset, width, height) in [(1u8, 40, 24), (6, 72, 40)] {
+        let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
+            parity_hiding: true,
+            ..*Preset::new(preset).unwrap().params()
+        }));
+        let mut config = config(width, height, BitDepth::Ten, preset, 60);
+        config.keyint = core::num::NonZeroU32::new(3).unwrap();
+        let stream = |threads: usize| {
+            let mut config = config.clone();
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let mut coder = IntraFrameCoder::with_preset(&config, params).unwrap();
+            let tq = coder.sequence.transform_quant_entropy.unwrap();
+            assert!(tq.enable_parity_hiding);
+            (0..4)
+                .map(|index| {
+                    let plan = crate::gop::plan(index, config.keyint);
+                    let source = synthetic_frame(&config, 40 + index as u32);
+                    coder.encode_frame(&source, &plan, 60).unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        let coded = stream(1);
+        let units: Vec<u8> = coded.iter().flat_map(|f| f.temporal_unit.clone()).collect();
+        let expected: Vec<u8> = coded
+            .iter()
+            .flat_map(|frame| recon_bytes(frame, BitDepth::Ten))
+            .collect();
+        assert_same_samples(&decode(&units), &expected, &format!("preset {preset}"));
+        for threads in [2, 8] {
+            let other: Vec<u8> = stream(threads)
+                .iter()
+                .flat_map(|f| f.temporal_unit.clone())
+                .collect();
+            assert!(other == units, "preset {preset}: {threads} threads");
+        }
     }
 }
 
