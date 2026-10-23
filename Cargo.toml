@@ -57,6 +57,7 @@ rayon = "1"
 [workspace.lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage)"] }
 
 [workspace.lints.clippy]
 # Individual overrides take precedence over lint groups.
