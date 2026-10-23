@@ -38,8 +38,8 @@ fn component(state: &mut u64, precision: u8) -> i32 {
     }
 }
 
-/// Random single and paired differences of every lattice precision below
-/// eighth-pel, written by the facade, read back by the decoder's `read_mv`.
+/// Random single and paired differences of every lattice precision, written
+/// by the facade, read back by the decoder's `read_mv`.
 #[test]
 fn random_differences_round_trip_through_read_mv() {
     let mut state = 0x5EED_u64;
@@ -49,6 +49,7 @@ fn random_differences_round_trip_through_read_mv() {
         MV_PRECISION_ONE_PEL,
         MV_PRECISION_HALF_PEL,
         MV_PRECISION_QUARTER_PEL,
+        MV_PRECISION_EIGHTH_PEL,
     ] {
         let cases: Vec<Vec<MotionVector>> = (0..400)
             .map(|case| {

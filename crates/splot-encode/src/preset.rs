@@ -36,7 +36,8 @@ pub struct PresetParams {
     pub tx_partition_search: bool,
     /// Full-pel motion search radius in luma samples.
     pub motion_range: u16,
-    /// Sub-pel refinement depth: `0` full-pel, `1` half, `2` quarter, `3` eighth.
+    /// Sub-pel refinement depth: `0` full-pel, `1` half, `2` quarter, `3` eighth;
+    /// inter frames code eighth-pel vectors at `3`, else quarter-pel.
     pub subpel_depth: u8,
     /// Loop-filter levels tried per frame; `0` derives the level from the qp.
     pub loop_filter_search: u8,

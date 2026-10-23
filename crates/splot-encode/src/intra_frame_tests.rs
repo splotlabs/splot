@@ -631,11 +631,8 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let tools = (
-        tx_choice::key_frame_tx_params(coder.preset),
-        true,
-        coder.tiles,
-    );
+    let (tx, _, high_precision_mv, tiles) = crate::gop::frame_tools(coder.preset, coder.tiles);
+    let tools = (tx, true, high_precision_mv, tiles);
     let filters = FrameFilterParams::default();
     let core = plan
         .header(&coder.view, &coder.references, qindex, &filters, tools)
@@ -940,6 +937,34 @@ fn multi_tile_output_does_not_depend_on_the_thread_count() {
     for threads in [2, 8] {
         assert!(tiled_stream(case, threads).0 == one, "{threads} threads");
     }
+}
+
+/// A `subpel_depth` 3 preset codes eighth-pel vectors: its search picks odd
+/// vector components, its stream decodes to the encoder recon, and 1, 2 and
+/// 8 threads write the same bytes.
+#[test]
+fn eighth_pel_vectors_decode_to_the_encoder_recon_on_any_thread_count() {
+    let case = (136, 8, BitDepth::Eight, 2, 100, (1, 0));
+    let (one, expected) = tiled_stream(case, 1);
+    assert_same_samples(&decode(&one.concat()), &expected, "eighth-pel");
+    for threads in [2, 8] {
+        assert!(tiled_stream(case, threads).0 == one, "{threads} threads");
+    }
+    let config = config(136, 8, BitDepth::Eight, 2, 100);
+    let mut coder = IntraFrameCoder::new(&config).unwrap();
+    let key = crate::gop::plan(0, config.keyint);
+    coder
+        .encode_frame(&panning_frame(&config, 0), &key, 100)
+        .unwrap();
+    let plan = crate::gop::plan(1, config.keyint);
+    let trees = search_frame(&coder, &plan, &panning_frame(&config, 1), config.bit_depth);
+    let odd = |choice: &LeafChoice| match choice.inter {
+        Some(InterPrediction::Single(modes)) if modes.mode == InterMode::New => {
+            modes.mv.row % 2 != 0 || modes.mv.col % 2 != 0
+        }
+        _ => false,
+    };
+    assert!(trees.iter().map(|tree| leaves(tree, odd)).sum::<usize>() > 0);
 }
 
 /// AVM decodes multi-tile key and inter frames to the encoder reconstructions.
