@@ -59,6 +59,9 @@ pub(crate) enum KernelError {
         /// The § 7.14.4 `dqDenom`.
         dq_denom: u32,
     },
+    /// No move of one level by one gives the parity the block hides.
+    #[error("no level move keeps the hidden parity")]
+    HiddenParity,
     /// The deadzone rounding is above one half (`128` in Q8).
     #[error("invalid quantizer rounding {rounding_q8}/256")]
     InvalidRounding {

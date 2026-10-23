@@ -23,7 +23,7 @@ use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::gop::{self, GopFrame};
-use crate::kernels::rdoq::{RdoqBlock, rdoq};
+use crate::kernels::rdoq::{RdoqBlock, hide_parity, parity_moves, rdoq};
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
 use crate::loop_filter::{CodedTile, FilteredFrame, FirstPass, FrameDecisions, finish_frame};
 use crate::mode_decision::TrialCoder;
@@ -97,6 +97,7 @@ impl IntraFrameCoder {
                 ref_frame_mvs: preset.mv_prediction,
                 refmvbank: preset.mv_prediction,
                 drl_reorder: preset.mv_prediction.then_some(DRL_REORDER_CONSTRAINT),
+                parity_hiding: preset.parity_hiding,
                 ..EncoderToolFlags::default()
             },
         })
@@ -408,6 +409,9 @@ pub(crate) struct SourceResidualCoder<'a> {
     /// A candidate trial without `full_trials`: quantize with the deadzone and
     /// code `DCT_DCT`.
     pub(crate) candidate: bool,
+    /// A mode trial of the search: a block that hides the other parity moves
+    /// its scan index 0 level instead of pricing every move.
+    pub(crate) trial: bool,
     /// Residual, coefficient, and dequantized buffers reused across blocks.
     scratch: [Vec<i32>; 3],
 }
@@ -427,6 +431,7 @@ impl<'a> SourceResidualCoder<'a> {
             preset,
             lambda,
             candidate: false,
+            trial: false,
             scratch: Default::default(),
         }
     }
@@ -500,19 +505,22 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             .forward_transform_2d(&forward, residual, coeffs)
             .map_err(kernel)?;
         let mut levels = vec![0; len];
-        // shortcut: RDOQ walks the 2D-class scan only; IDTX and 1D types take the deadzone.
-        if self.preset.rdoq && !self.candidate && (tx.tx_type as u8) < TxType::Idtx as u8 {
-            let block = RdoqBlock {
-                dc_q2: params.dc_quant,
-                ac_q2: params.ac_quant,
-                dq_denom: params.dq_denom,
-                bit_depth: self.bit_depth,
-                log2_width: forward.coeff_width().ilog2(),
-                log2_height: forward.coeff_height().ilog2(),
-                plane: tx.plane,
-            };
-            let lambda_q8 = self.lambda.coefficient_q8(params.dq_denom);
-            let mut rates = CdfCoeffRates { syntax, tx };
+        let block = RdoqBlock {
+            dc_q2: params.dc_quant,
+            ac_q2: params.ac_quant,
+            dq_denom: params.dq_denom,
+            bit_depth: self.bit_depth,
+            log2_width: forward.coeff_width().ilog2(),
+            log2_height: forward.coeff_height().ilog2(),
+            plane: tx.plane,
+            tx_type: tx.tx_type,
+        };
+        let lambda_q8 = self.lambda.coefficient_q8(params.dq_denom);
+        let parity = syntax.parity_hiding(tx);
+        let mut rates = CdfCoeffRates { syntax, tx };
+        let every_type = self.preset.rdoq_every_type && !self.trial;
+        let rdoq_type = every_type || (tx.tx_type as u8) < TxType::Idtx as u8;
+        if self.preset.rdoq && !self.candidate && rdoq_type {
             rdoq(
                 kernels(),
                 &block,
@@ -535,6 +543,15 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             kernels()
                 .quantize(&quantizer, coeffs, &mut levels, dequant)
                 .map_err(kernel)?;
+        }
+        if let Some(parity) = parity {
+            let holds = |levels: &[i32]| parity.holds(levels).map_err(TileWriterError::from);
+            if !holds(&levels)? {
+                let rates = (!self.candidate && !self.trial).then_some(&mut rates);
+                let moves =
+                    parity_moves(&block, coeffs, rates, lambda_q8, &levels).map_err(kernel)?;
+                hide_parity(holds, moves, (&mut levels, dequant))?;
+            }
         }
         self.scratch = scratch;
         Ok(TransformDecision {
