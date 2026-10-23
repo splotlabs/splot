@@ -1344,7 +1344,6 @@ mod tests {
     #[test]
     fn finish_advance_is_not_claimable_until_init_publishes_the_frontier() {
         let frame = FinishFrame::<u8>::new(RowWake::detached());
-        // `init` sets the stripe count before it stores the frontier.
         frame.stages[FINISH_ADVANCE].set_rows(1);
         assert!(frame.claim().is_none());
         frame.started.store(true, Ordering::Release);
