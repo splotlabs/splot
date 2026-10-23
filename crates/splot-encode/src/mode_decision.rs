@@ -32,6 +32,8 @@ use crate::tile_writer::{
 
 /// The largest `|AngleDeltaY|` (§ 5.20.5.5).
 const MAX_ANGLE_DELTA: i8 = 3;
+/// One luma sample in `1/8` units.
+const FULL_PEL: i32 = 8;
 /// References whose pairs compound candidates take: the § 7.7 map ranks the
 /// closest references first.
 const COMPOUND_REFS: usize = 3;
@@ -176,8 +178,20 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         planes: Range<usize>,
         start: &SyntaxSnapshot,
     ) -> Result<LeafChoice> {
+        Ok(self.best_scored(leaf, candidates, planes, start)?.1)
+    }
+
+    /// [`Self::best`] with its `D + lambda * R`; `None` for a lone candidate,
+    /// which gets no trial.
+    fn best_scored(
+        &mut self,
+        leaf: &LeafBlock,
+        candidates: Vec<LeafChoice>,
+        planes: Range<usize>,
+        start: &SyntaxSnapshot,
+    ) -> Result<(Option<u128>, LeafChoice)> {
         if let [only] = candidates.as_slice() {
-            return Ok(*only);
+            return Ok((None, *only));
         }
         let mut best: Option<(u128, LeafChoice)> = None;
         for choice in candidates {
@@ -192,7 +206,7 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             }
         }
         self.syntax.restore(start)?;
-        best.map(|(_, choice)| choice)
+        best.map(|(j, choice)| (Some(j), choice))
             .ok_or(TileWriterError::Shape("no leaf candidate"))
     }
 
@@ -316,6 +330,8 @@ impl TrialCoder<'_, '_> {
     /// Sets the filter of `prediction` at `leaf`, which reads one, to the
     /// [`INTERP_FILTERS`] entry whose luma prediction SATD at the decoded
     /// vectors plus `interp_filter` rate is lowest; ties keep the earlier.
+    /// Full-pel vectors predict luma alike with every filter, so their SATD
+    /// is not computed.
     fn choose_filter(&mut self, leaf: &LeafBlock, prediction: &mut InterPrediction) -> Result<()> {
         let Some(motion) = self.motion else {
             return Ok(());
@@ -327,6 +343,9 @@ impl TrialCoder<'_, '_> {
         };
         let mvs = self.syntax.inter_mvs(leaf, *prediction)?;
         let lists: Vec<_> = refs.into_iter().zip(mvs).collect();
+        let full_pel = lists
+            .iter()
+            .all(|(_, mv)| mv.row % FULL_PEL == 0 && mv.col % FULL_PEL == 0);
         let mut best: Option<(u64, InterpolationFilter)> = None;
         for filter in INTERP_FILTERS {
             let candidate = with_filter(*prediction, filter);
@@ -337,8 +356,12 @@ impl TrialCoder<'_, '_> {
             {
                 return Ok(());
             }
-            let cost = motion.prediction_satd(self.syntax, &lists, filter, leaf_rect(leaf)?)?
-                + motion.bits_cost(sink.bits);
+            let satd = if full_pel {
+                0
+            } else {
+                motion.prediction_satd(self.syntax, &lists, filter, leaf_rect(leaf)?)?
+            };
+            let cost = satd + motion.bits_cost(sink.bits);
             if best.is_none_or(|(best_cost, _)| cost < best_cost) {
                 best = Some((cost, filter));
             }
@@ -349,12 +372,13 @@ impl TrialCoder<'_, '_> {
         Ok(())
     }
 
-    /// `choice` with the filter of the lowest full-trial cost when it is an
-    /// inter leaf that reads `interp_filter`; the state is `start` after.
+    /// `choice`, of full-trial cost `cost`, with the filter of the lowest
+    /// full-trial cost when it is an inter leaf that reads `interp_filter`;
+    /// ties keep `choice`. The state is `start` after.
     fn refine_filter(
         &mut self,
         leaf: &LeafBlock,
-        choice: LeafChoice,
+        (cost, choice): (Option<u128>, LeafChoice),
         start: &SyntaxSnapshot,
     ) -> Result<LeafChoice> {
         let Some(prediction) = choice.inter.filter(|_| self.preset.interp_filter_search) else {
@@ -366,10 +390,17 @@ impl TrialCoder<'_, '_> {
         {
             return Ok(choice);
         }
-        let filters = INTERP_FILTERS
+        let mut filters: Vec<LeafChoice> = INTERP_FILTERS
             .map(|filter| LeafChoice::inter(with_filter(prediction, filter)))
             .to_vec();
-        self.best(leaf, filters, ALL, start)
+        let Some(cost) = cost else {
+            return self.best(leaf, filters, ALL, start);
+        };
+        filters.retain(|&other| other != choice);
+        match self.best_scored(leaf, filters, ALL, start)? {
+            (Some(other_cost), other) if other_cost < cost => Ok(other),
+            _ => Ok(choice),
+        }
     }
 
     /// The `preset.compound_candidates` compound predictions of `leaf` with
@@ -584,8 +615,8 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         if self.syntax.inter_allowed(&leaf) {
             candidates.extend(self.inter_candidates(&leaf)?);
         }
-        let choice = self.best(&leaf, candidates, ALL, &start)?;
-        let choice = self.refine_filter(&leaf, choice, &start)?;
+        let scored = self.best_scored(&leaf, candidates, ALL, &start)?;
+        let choice = self.refine_filter(&leaf, scored, &start)?;
         Ok((self.trial(&leaf, choice, ALL)?, choice))
     }
 
