@@ -667,7 +667,7 @@ mod tests {
         mut sends: impl FnMut() -> usize,
         mut receives: impl FnMut() -> usize,
     ) -> Result<Vec<u8>> {
-        let mut config = Config::new(width, 32);
+        let mut config = Config::new(width, 16);
         config.rate_control = rate_control;
         config.tiles = tiles;
         config.preset = Preset::new(9).unwrap_or_default();
