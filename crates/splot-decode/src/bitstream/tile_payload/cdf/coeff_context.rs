@@ -30,7 +30,9 @@ pub(crate) fn context_offsets(tx_class: usize) -> [[usize; 2]; 8] {
     let class = tx_class_idx(tx_class);
     let sig = SIG_OFFSETS[class].map(|[r, c]| [r as usize, c as usize]);
     let mag = MAG_REF_OFFSET_WITH_TX_CLASS[class];
-    [sig[0], sig[1], sig[2], sig[3], sig[4], mag[0], mag[1], mag[2]]
+    [
+        sig[0], sig[1], sig[2], sig[3], sig[4], mag[0], mag[1], mag[2],
+    ]
 }
 
 const fn tx_class_idx(tx_class: usize) -> usize {

@@ -38,9 +38,14 @@ pub const fn tcq_quantizer(state: usize) -> usize {
 pub fn tcq_index(state: usize, quant: u32) -> Result<u32> {
     let mut walk = quant_walk();
     walk.set_tcq_q0(tcq_quantizer(state) == 1);
-    walk.apply_entry(0, CoeffScanEntry::new(1, 1, 0, 1), false, CoeffQuantReadInput { quant })
-        .map(|write| write.quant().unsigned_abs())
-        .map_err(rule("TCQ reconstruction index"))
+    walk.apply_entry(
+        0,
+        CoeffScanEntry::new(1, 1, 0, 1),
+        false,
+        CoeffQuantReadInput { quant },
+    )
+    .map(|write| write.quant().unsigned_abs())
+    .map_err(rule("TCQ reconstruction index"))
 }
 
 impl IntraTileSyntax {
@@ -69,7 +74,11 @@ impl IntraTileSyntax {
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for short `levels` or a magnitude the
     /// decoder rejects.
-    pub fn decoder_quant<'a>(&self, tx: &TransformBlock, levels: &'a [i32]) -> Result<Cow<'a, [i32]>> {
+    pub fn decoder_quant<'a>(
+        &self,
+        tx: &TransformBlock,
+        levels: &'a [i32],
+    ) -> Result<Cow<'a, [i32]>> {
         if !self.uses_tcq(tx) {
             return Ok(Cow::Borrowed(levels));
         }

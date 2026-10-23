@@ -74,8 +74,8 @@ pub use inter::{
 pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, TxType};
 pub use parity::ParityHiding;
 pub use rollback::SyntaxSnapshot;
-pub use tcq::{TCQ_STATES, tcq_index, tcq_next_state, tcq_quantizer};
 use rollback::{CdfJournal, CdfRow};
+pub use tcq::{TCQ_STATES, tcq_index, tcq_next_state, tcq_quantizer};
 pub use transform::{TX_PARTITIONS, TxPartition};
 
 #[path = "encoder_filters.rs"]
@@ -353,7 +353,13 @@ impl CoeffLevels {
     /// it shifted left by `allowTcq`.
     #[must_use]
     #[inline]
-    pub fn split(&self, c: usize, coded: u32, is_low_frequency: bool, plane: usize) -> (u32, Option<u32>) {
+    pub fn split(
+        &self,
+        c: usize,
+        coded: u32,
+        is_low_frequency: bool,
+        plane: usize,
+    ) -> (u32, Option<u32>) {
         let tcq = u32::from(self.tcq.is_some());
         let threshold = self.max_level(c, is_low_frequency, plane) - tcq;
         if coded < threshold {
@@ -366,13 +372,18 @@ impl CoeffLevels {
     /// Copies the levels at scan indices `scan` from `from`, or zeroes them
     /// without `from`. The grids must have one shape.
     pub fn copy_cells(&mut self, from: Option<&Self>, scan: Range<usize>) {
-        let (stride, log2_w) = (self.state.level_stride(), self.state.width().trailing_zeros());
+        let (stride, log2_w) = (
+            self.state.level_stride(),
+            self.state.width().trailing_zeros(),
+        );
         let level = self.state.level_mut();
         for &pos in self.scan.get(scan).unwrap_or_default() {
             let pos = usize::from(pos);
             let at = (pos >> log2_w) * stride + (pos & ((1 << log2_w) - 1));
             if let Some(slot) = level.get_mut(at) {
-                *slot = from.and_then(|from| from.state.level().get(at).copied()).unwrap_or(0);
+                *slot = from
+                    .and_then(|from| from.state.level().get(at).copied())
+                    .unwrap_or(0);
             }
         }
     }
@@ -396,8 +407,8 @@ impl CoeffLevels {
                 })
             })
         });
-        table[(log2_w as usize).saturating_sub(2).min(3)][(log2_h as usize).saturating_sub(2).min(3)]
-            [class]
+        table[(log2_w as usize).saturating_sub(2).min(3)]
+            [(log2_h as usize).saturating_sub(2).min(3)][class]
     }
 
     /// Stores `Level[row][col]`.

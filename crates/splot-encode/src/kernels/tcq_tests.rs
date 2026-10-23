@@ -56,7 +56,10 @@ fn trellis_assumptions_are_the_decoder_rules() {
         for parity in 0..2 {
             let lane = parity * STATES + state;
             let next = tcq_next_state(state, parity as u32);
-            assert!(FIRST[next] == lane || SECOND[next] == lane, "{state} {parity}");
+            assert!(
+                FIRST[next] == lane || SECOND[next] == lane,
+                "{state} {parity}"
+            );
         }
         for quant in 0..300 {
             let expected = if quant == 0 {
@@ -129,10 +132,16 @@ fn tcq_doubles_dq_denom_for_luma_2d_only() {
             let doubled = block.plane == 0 && block.tx_type != TxType::VDct;
             assert_eq!(syntax.uses_tcq(&block), doubled, "{block:?}");
             let params = |tcq| {
-                recon_params(90, plane, (log2, log2), (block.tx_type, tcq), BitDepth::Eight)
-                    .unwrap()
-                    .0
-                    .dq_denom
+                recon_params(
+                    90,
+                    plane,
+                    (log2, log2),
+                    (block.tx_type, tcq),
+                    BitDepth::Eight,
+                )
+                .unwrap()
+                .0
+                .dq_denom
             };
             let coded = params(syntax.uses_tcq(&block));
             assert_eq!(coded, params(false) << u32::from(doubled), "{block:?}");
@@ -169,8 +178,16 @@ fn path_cost(
         let quant = levels[pos].unsigned_abs();
         let index = tcq_index(state, quant).unwrap();
         let q2 = if pos == 0 { b.dc_q2 } else { b.ac_q2 };
-        let dq = dequant_coefficient(levels[pos].signum() * index as i32, q2, b.dq_denom, b.bit_depth);
-        cost += (i64::from(coeffs[pos]) - i64::from(dq)).unsigned_abs().pow(2) << 16;
+        let dq = dequant_coefficient(
+            levels[pos].signum() * index as i32,
+            q2,
+            b.dq_denom,
+            b.bit_depth,
+        );
+        cost += (i64::from(coeffs[pos]) - i64::from(dq))
+            .unsigned_abs()
+            .pow(2)
+            << 16;
         let (level, remainder) = grid.split(c, quant, is_lf, 0);
         let ctx = LevelContext {
             levels: &grid,
@@ -222,11 +239,23 @@ fn walk(
         if dist >= MAX_DIST || (last && (quant == 0 || dist >= slots[ZERO].1)) {
             continue;
         }
-        levels[pos] = if coeffs[pos] < 0 { -(quant as i32) } else { quant as i32 };
+        levels[pos] = if coeffs[pos] < 0 {
+            -(quant as i32)
+        } else {
+            quant as i32
+        };
         if c == 0 {
             visit(levels);
         } else {
-            walk(c - 1, tcq_next_state(state, quant), cand, scan, levels, coeffs, visit);
+            walk(
+                c - 1,
+                tcq_next_state(state, quant),
+                cand,
+                scan,
+                levels,
+                coeffs,
+                visit,
+            );
         }
         levels[pos] = 0;
     }
@@ -278,9 +307,14 @@ fn trellis_is_optimal_on_small_blocks() {
         let (tx_size, log2) = [(0, 2), (1, 3)][case % 3 / 2];
         let block = tx(0, tx_size, TxType::DctDct);
         let qindex = 20 + (next() % 200) as u32;
-        let (params, _) =
-            recon_params(qindex, PlaneId::Y, (log2, log2), (TxType::DctDct, true), bit_depth)
-                .unwrap();
+        let (params, _) = recon_params(
+            qindex,
+            PlaneId::Y,
+            (log2, log2),
+            (TxType::DctDct, true),
+            bit_depth,
+        )
+        .unwrap();
         let b = RdoqBlock {
             dc_q2: params.dc_quant,
             ac_q2: params.ac_quant,
@@ -298,7 +332,11 @@ fn trellis_is_optimal_on_small_blocks() {
         let span = 3 + case % 4;
         for &pos in &scan[..span] {
             let magnitude = (next() % u64::from(params.ac_quant * 6 / 8)) as i32;
-            coeffs[usize::from(pos)] = if next() % 3 == 0 { -magnitude } else { magnitude };
+            coeffs[usize::from(pos)] = if next() % 3 == 0 {
+                -magnitude
+            } else {
+                magnitude
+            };
         }
         let lambda = 1 + next() % 4000;
         let mut rates = CdfCoeffRates::new(&mut syntax, &block);
@@ -306,7 +344,9 @@ fn trellis_is_optimal_on_small_blocks() {
         let eob = tcq(&SimdKernels, &b, &coeffs, &mut rates, lambda, &mut levels).unwrap();
         let end = scan[..span]
             .iter()
-            .rposition(|&pos| super::reaches_half_step(&b, usize::from(pos), coeffs[usize::from(pos)]))
+            .rposition(|&pos| {
+                super::reaches_half_step(&b, usize::from(pos), coeffs[usize::from(pos)])
+            })
             .map_or(0, |last| last + 1);
         assert_eq!(
             eob,
@@ -339,7 +379,9 @@ fn candidates_bracket_the_coefficient() {
         for (z, slots) in cand.iter().enumerate() {
             assert_eq!(slots[ZERO], (0, u64::from(coeff.unsigned_abs()).pow(2)));
             assert_eq!(slots[ODD].0 & 1, 1);
-            assert!(slots[EVEN].1 == MAX_DIST || slots[EVEN].0.is_multiple_of(2) && slots[EVEN].0 > 0);
+            assert!(
+                slots[EVEN].1 == MAX_DIST || slots[EVEN].0.is_multiple_of(2) && slots[EVEN].0 > 0
+            );
             let state = (0..STATES).find(|&s| tcq_quantizer(s) == z).unwrap();
             let best = (0..200u32)
                 .map(|q| {
@@ -353,7 +395,11 @@ fn candidates_bracket_the_coefficient() {
                 })
                 .min()
                 .unwrap();
-            assert_eq!(slots.iter().map(|&(_, d)| d).min().unwrap(), best, "{coeff} {z}");
+            assert_eq!(
+                slots.iter().map(|&(_, d)| d).min().unwrap(),
+                best,
+                "{coeff} {z}"
+            );
         }
     }
 }

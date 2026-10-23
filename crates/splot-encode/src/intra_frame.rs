@@ -534,7 +534,15 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let rdoq_type = every_type || (tx.tx_type as u8) < TxType::Idtx as u8;
         if use_tcq {
             let lambda_q8 = lambda_q8 * TCQ_LAMBDA_PERCENT / 100;
-            tcq(kernels(), &block, coeffs, &mut rates, lambda_q8, &mut levels).map_err(kernel)?;
+            tcq(
+                kernels(),
+                &block,
+                coeffs,
+                &mut rates,
+                lambda_q8,
+                &mut levels,
+            )
+            .map_err(kernel)?;
         } else if self.preset.rdoq && !self.candidate && rdoq_type {
             rdoq(
                 kernels(),
@@ -595,8 +603,13 @@ impl SourceResidualCoder<'_> {
         {
             return Ok(None);
         }
-        let recon =
-            tx_choice::reconstruct(syntax, prediction, tx, levels, (self.qindex, self.bit_depth))?;
+        let recon = tx_choice::reconstruct(
+            syntax,
+            prediction,
+            tx,
+            levels,
+            (self.qindex, self.bit_depth),
+        )?;
         let cost = RdCost {
             distortion: self.source.sse(tx, &recon)?,
             rate: block_rate(syntax, &mut RateSink::frozen(), tx, levels, false)?,
