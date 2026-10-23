@@ -709,12 +709,19 @@ pub(crate) struct MvStack {
 }
 
 impl MvStack {
+    /// § 7.12.2 zero-initializes `RefStackMv`, so an index at or past
+    /// `NumMvFound` reads the zero entry.
     fn entry(&self, idx: usize) -> Option<&(Mv, (i32, i32))> {
-        self.stack.get(idx).or_else(|| self.stack.last())
+        self.stack.get(idx)
     }
 
     pub(crate) fn candidate(&self, idx: usize) -> Mv {
         self.entry(idx).map_or(Mv::ZERO, |entry| entry.0)
+    }
+
+    /// The candidates in stack order.
+    pub(crate) fn candidates(&self) -> impl Iterator<Item = Mv> + '_ {
+        self.stack.iter().map(|&(mv, _)| mv)
     }
 
     pub(crate) fn candidate_offsets(&self, idx: usize) -> (i32, i32) {
@@ -778,11 +785,7 @@ impl CompoundMvStack {
     }
 
     pub(crate) fn candidate(&self, idx: usize) -> CompoundMvCandidate {
-        self.stack
-            .get(idx)
-            .or_else(|| self.stack.last())
-            .copied()
-            .unwrap_or_default()
+        self.stack.get(idx).copied().unwrap_or_default()
     }
 }
 
@@ -956,6 +959,7 @@ impl Default for RefMvBankEntry {
     }
 }
 
+#[derive(Clone, PartialEq)]
 pub(crate) struct RefMvBank {
     entries: [[RefMvBankEntry; REF_MV_BANK_SIZE]; BANK_REFS_PER_FRAME as usize],
     sizes: [usize; BANK_REFS_PER_FRAME as usize],

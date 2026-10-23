@@ -113,6 +113,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         reference_select: compound,
                         skip_mode_present: compound,
                         primary_slot,
+                        use_ref_frame_mvs: false,
                         high_precision_mv,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
@@ -173,6 +174,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         reference_select: false,
         skip_mode_present: false,
         primary_slot: Some(3),
+        use_ref_frame_mvs: false,
         high_precision_mv: false,
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
@@ -184,6 +186,66 @@ fn order_hints_unwrap_against_the_reference_slots() {
     );
     assert_eq!(header.core.order_hint_lsb, Some(301 - 256));
     assert_eq!(header.core.order_hint, Some(301));
+}
+
+/// `use_ref_frame_mvs` parses back; over two references with 128x128
+/// superblocks the header also codes `tmvp_sample_step_minus_1 = 0`. A
+/// sequence without `enable_ref_frame_mvs` refuses it.
+#[test]
+fn reference_frame_mvs_parse_over_one_and_two_references() {
+    for sb in [SuperblockSize::Block64x64, SuperblockSize::Block128x128] {
+        let mut stream = EncoderStreamParams {
+            width: 64,
+            height: 64,
+            bit_depth: BitDepthIdc::Eight,
+            chroma: ChromaFormatIdc::Yuv420,
+            sb_size: sb,
+            tools: EncoderToolFlags {
+                ref_frame_mvs: true,
+                ..EncoderToolFlags::default()
+            },
+        };
+        let seq = build_encoder_sequence_header(&stream).unwrap();
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        for refs in [1, 2] {
+            let mut slots = Slots::after_key(64, 64, 4);
+            slots.valid[1] = refs == 2;
+            slots.hints[1] = 2;
+            slots.counters[1] = 1;
+            let params = InterFrameParams {
+                base_q_idx: 90,
+                order_hint: 5,
+                refresh_frame_flags: 0b100,
+                show_frame: true,
+                primary_slot: Some(0),
+                use_ref_frame_mvs: true,
+                ..InterFrameParams::default()
+            };
+            let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
+            let inter = header.core.inter.as_ref().unwrap();
+            assert_eq!(inter.num_total_refs, Some(refs));
+            assert_eq!(inter.use_ref_frame_mvs, Some(true));
+            assert_eq!(inter.primary_ref_frame, Some(0));
+            let step = refs == 2 && sb == SuperblockSize::Block128x128;
+            assert_eq!(inter.tmvp_sample_step_minus_1, step.then_some(false));
+            assert_eq!(
+                header.core.consumed_bits,
+                header.bits.num_frame_header_bits()
+            );
+        }
+        stream.tools.ref_frame_mvs = false;
+        let seq = build_encoder_sequence_header(&stream).unwrap();
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let params = InterFrameParams {
+            base_q_idx: 90,
+            order_hint: 5,
+            show_frame: true,
+            use_ref_frame_mvs: true,
+            ..InterFrameParams::default()
+        };
+        let slots = Slots::after_key(64, 64, 4);
+        assert!(build_inter_frame_header(&view, &slots.view(), &params).is_err());
+    }
 }
 
 #[test]
@@ -205,6 +267,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             reference_select: true,
             skip_mode_present: false,
             primary_slot: Some(0),
+            use_ref_frame_mvs: false,
             high_precision_mv: false,
         },
     )
@@ -280,6 +343,7 @@ fn rejects_out_of_range_inter_inputs() {
         reference_select: false,
         skip_mode_present: false,
         primary_slot: None,
+        use_ref_frame_mvs: false,
         high_precision_mv: false,
     };
     assert!(matches!(
