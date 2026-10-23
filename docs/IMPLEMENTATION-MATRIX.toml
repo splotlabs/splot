@@ -5508,10 +5508,10 @@ spec_sections = ["5.4.6", "5.18.2", "7.9", "7.12", "7.19"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/mode_decision.rs"
-change_id = "enc-mv-pred"
+change_id = "enc-drl-depth"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::mv_prediction (on in every preset): the sequence enables enable_ref_frame_mvs, enable_refmvbank and DRL_REORDER_CONSTRAINT, and inter frames code use_ref_frame_mvs = 1. The encoder_syntax facade projects the reference motion fields with the decoder's frame_temporal_context, keeps the decoder's RefMvBank per tile (whole-cloned in rollback checkpoints), and EncoderReferences stores each frame's motion field from the published leaves of the neighbour grid. The full stack seeds the motion search, and NEWMV takes the DRL base whose mode and difference syntax prices lowest. DRL depth stays 1: deeper DRLs decode differently in AVM; motion trajectories measured no gain."
+notes = "PresetParams::mv_prediction (on in every preset): the sequence enables enable_ref_frame_mvs, enable_refmvbank and DRL_REORDER_CONSTRAINT, and inter frames code use_ref_frame_mvs = 1. The encoder_syntax facade projects the reference motion fields with the decoder's frame_temporal_context, keeps the decoder's RefMvBank per tile (whole-cloned in rollback checkpoints), and EncoderReferences stores each frame's motion field from the published leaves of the neighbour grid. The full stack seeds the motion search, and NEWMV takes the DRL base whose mode and difference syntax prices lowest. PresetParams::drl_bits sets seq_max_drl_bits_minus_1 (3 DRL bits in presets 0-6, 1 in 7-10, placed by BD-rate per CPU); an index past NumMvFound codes the zero vector the decoder reads. Motion trajectories measured no gain."
 
 [feature.status]
 mapped = "done"
@@ -5526,7 +5526,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_mvpred_tests.rs::mv_prediction_reaches_the_headers_and_the_decoder", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::temporal_candidates_reach_the_first_leaf_of_a_frame", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::rollback_restores_the_reference_mv_bank", "crates/splot-encode/src/intra_frame_carry_tests.rs::tiled_mini_gops_decode_alike_on_any_thread_count", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::reference_frame_mvs_parse_over_one_and_two_references"]
+tests = ["crates/splot-encode/src/intra_frame_mvpred_tests.rs::deep_drl_streams_decode_alike_on_any_thread_count", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::mv_prediction_reaches_the_headers_and_the_decoder", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::temporal_candidates_reach_the_first_leaf_of_a_frame", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::rollback_restores_the_reference_mv_bank", "crates/splot-encode/src/intra_frame_carry_tests.rs::tiled_mini_gops_decode_alike_on_any_thread_count", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::reference_frame_mvs_parse_over_one_and_two_references"]
 commands = ["cargo test -p splot-encode mvpred --locked", "cargo test -p splot-core encoder_inter_stream --locked"]
 fixtures = []
 diagnostics = []

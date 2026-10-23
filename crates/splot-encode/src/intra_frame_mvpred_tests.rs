@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Motion vector prediction: temporal motion vectors (§ 7.9), the reference
-//! MV bank and DRL reordering (§ 7.12).
+//! MV bank, DRL reordering (§ 7.12) and the DRL depth (§ 5.4.6).
 
 use super::*;
 use crate::gop::GopStep;
@@ -41,7 +41,7 @@ fn top_left(syntax: &IntraTileSyntax, root: PartitionNode, size: usize) -> Parti
 fn mv_prediction_reaches_the_headers_and_the_decoder() {
     let config = config(72, 40, BitDepth::Ten, 6, 110);
     let on = Preset::new(6).unwrap().params();
-    assert!(on.mv_prediction);
+    assert!(on.mv_prediction && on.drl_bits > 1);
     let mut streams = Vec::new();
     for (preset, tools) in [(on, true), (without_mv_prediction(on), false)] {
         let (units, expected, cores, coder) = super::carry::planned_stream(&config, preset);
@@ -49,6 +49,8 @@ fn mv_prediction_reaches_the_headers_and_the_decoder() {
         assert_eq!(inter.enable_ref_frame_mvs, tools);
         assert_eq!(inter.enable_refmvbank, tools);
         assert_eq!(inter.drl_reorder != DrlReorder::Disabled, tools);
+        let drl_bits_minus_1 = u32::from(preset.drl_bits - 1);
+        assert_eq!(inter.seq_max_drl_bits_minus_1, drl_bits_minus_1);
         let frames: Vec<_> = cores
             .iter()
             .filter_map(|core| core.inter.as_ref())
@@ -56,6 +58,7 @@ fn mv_prediction_reaches_the_headers_and_the_decoder() {
         assert!(frames.len() >= 7, "{} inter frames", frames.len());
         for header in frames {
             assert_eq!(header.use_ref_frame_mvs, Some(tools));
+            assert_eq!(header.max_drl_bits_minus_1, Some(drl_bits_minus_1));
         }
         assert_same_samples(&decode(&units), &expected, &format!("tools {tools}"));
         streams.push(units);
@@ -182,4 +185,26 @@ fn rollback_restores_the_reference_mv_bank() {
         "{trial:?}"
     );
     assert_eq!(with_trial, without);
+}
+
+/// A mini-GOP stream in 2x2 tiles at a preset with DRL depth above one
+/// decodes to the encoder recon and codes the same bytes on 1, 2 and 8
+/// threads.
+#[test]
+fn deep_drl_streams_decode_alike_on_any_thread_count() {
+    let stream = |threads: usize| {
+        let mut config = config(136, 72, BitDepth::Eight, 6, 100);
+        assert!(config.preset.params().drl_bits > 1);
+        config.tiles = TileLayout {
+            cols_log2: 1,
+            rows_log2: 1,
+        };
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        encode_stream(&config, 9)
+    };
+    let (one, expected) = stream(1);
+    assert_same_samples(&decode(&one.concat()), &expected, "deep DRL");
+    for threads in [2, 8] {
+        assert!(stream(threads).0 == one, "{threads} threads");
+    }
 }

@@ -69,6 +69,9 @@ pub struct PresetParams {
     /// of their references and from the reference MV bank, and reorder the
     /// DRL candidates.
     pub mv_prediction: bool,
+    /// `MaxDrlBits`, `1..=5`: `NEARMV` and `NEWMV` choose among the first
+    /// `drl_bits + 1` entries of the reference MV stack.
+    pub drl_bits: u8,
     /// Extended partitions: `0` off, `1` adds `HORZ_3` and `VERT_3`, `2` also
     /// the uneven 4-way shapes.
     pub ext_partitions: u8,
@@ -86,7 +89,7 @@ const fn row(
     partition_early_exit: bool,
     (rdoq, full_trials): (bool, bool),
     (tx_type_depth, tx_partition_search): (u8, bool),
-    motion: (u16, u8, u16),
+    motion: (u16, u8, u16, u8),
     (loop_filter_search, mini_gop_size, lookahead_frames, compound_candidates): (u8, u8, u8, u8),
 ) -> PresetParams {
     PresetParams {
@@ -109,6 +112,7 @@ const fn row(
         compound_candidates,
         cdf_carry: true,
         mv_prediction: true,
+        drl_bits: motion.3,
         ext_partitions: 0,
         ext_three_way_margin: 0,
         ext_four_way_margin: 0,
@@ -123,7 +127,7 @@ pub const PRESETS: [PresetParams; 11] = [
         false,
         (true, true),
         (3, true),
-        (256, 3, 128),
+        (256, 3, 128, 3),
         (3, 8, 16, 8),
     ),
     row(
@@ -132,7 +136,7 @@ pub const PRESETS: [PresetParams; 11] = [
         false,
         (true, true),
         (3, true),
-        (192, 3, 128),
+        (192, 3, 128, 3),
         (3, 8, 16, 8),
     ),
     row(
@@ -141,7 +145,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, true),
         (3, true),
-        (128, 3, 128),
+        (128, 3, 128, 3),
         (2, 8, 16, 6),
     ),
     row(
@@ -150,7 +154,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, true),
         (2, true),
-        (96, 2, 0),
+        (96, 2, 0, 3),
         (2, 8, 16, 6),
     ),
     row(
@@ -159,7 +163,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, false),
         (2, true),
-        (64, 2, 0),
+        (64, 2, 0, 3),
         (2, 4, 8, 4),
     ),
     row(
@@ -168,7 +172,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, false),
         (2, true),
-        (64, 2, 0),
+        (64, 2, 0, 3),
         (1, 4, 8, 4),
     ),
     row(
@@ -177,7 +181,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, false),
         (1, true),
-        (48, 2, 0),
+        (48, 2, 0, 3),
         (1, 4, 8, 3),
     ),
     row(
@@ -186,7 +190,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (1, false),
-        (32, 1, 0),
+        (32, 1, 0, 1),
         (1, 4, 8, 2),
     ),
     row(
@@ -195,7 +199,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (1, false),
-        (24, 1, 0),
+        (24, 1, 0, 1),
         (0, 2, 4, 1),
     ),
     row(
@@ -204,7 +208,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (0, false),
-        (16, 1, 0),
+        (16, 1, 0, 1),
         (0, 2, 4, 0),
     ),
     row(
@@ -213,7 +217,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (0, false),
-        (16, 0, 0),
+        (16, 0, 0, 1),
         (0, 1, 2, 0),
     ),
 ];
@@ -286,6 +290,7 @@ mod tests {
             assert!(fast.compound_candidates <= slow.compound_candidates);
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.mv_prediction <= slow.mv_prediction);
+            assert!(fast.drl_bits <= slow.drl_bits);
             assert!(fast.ext_partitions <= slow.ext_partitions);
             assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
@@ -293,6 +298,7 @@ mod tests {
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));
             assert!(params.lookahead_frames >= params.mini_gop_size);
+            assert!((1..=5).contains(&params.drl_bits));
         }
     }
 
