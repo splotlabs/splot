@@ -109,23 +109,23 @@ overflow-checks = true
 # and debug assertions stay on. The test profile inherits these.
 [profile.dev.package.splot-core]
 opt-level = 2
-debug = "line-tables-only"
+debug = false
 
 [profile.dev.package.splot-parallel]
 opt-level = 2
-debug = "line-tables-only"
+debug = false
 
 [profile.dev.package.splot-recon]
 opt-level = 2
-debug = "line-tables-only"
+debug = false
 
 [profile.dev.package.splot-decode]
 opt-level = 2
-debug = "line-tables-only"
+debug = false
 
 [profile.dev.package.splot-encode]
 opt-level = 2
-debug = "line-tables-only"
+debug = false
 
 [profile.test]
 overflow-checks = true
