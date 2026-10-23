@@ -23,8 +23,8 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    EncoderReferences, FilterRecorder, IntraTileSyntax, LrLayout, LrUnit, TransformBlock,
-    apply_loop_filters, cdef_unit_grid, merge_tiles,
+    EncoderReferences, FilterRecorder, FrameCdfs, IntraTileSyntax, LrLayout, LrUnit, TileCdfs,
+    TransformBlock, apply_loop_filters, cdef_unit_grid, merge_tiles,
 };
 use splot_parallel::WorkerPool;
 use splot_recon::{DecodedFrame, PlaneId};
@@ -155,6 +155,7 @@ impl ResidualCoder for Replay {
 pub(crate) struct CodedTile {
     bytes: Vec<u8>,
     recon: DecodedFrame<u16>,
+    cdfs: TileCdfs,
     recorder: FilterRecorder,
     syntax: FilterSyntax,
     decisions: FrameDecisions,
@@ -166,10 +167,11 @@ impl CodedTile {
         writer: KeyFrameTileWriter,
         decisions: FrameDecisions,
     ) -> core::result::Result<Self, TileWriterError> {
-        let (bytes, recon, (recorder, syntax)) = writer.finish_with_filters()?;
+        let (bytes, recon, cdfs, (recorder, syntax)) = writer.finish_with_filters()?;
         Ok(Self {
             bytes,
             recon,
+            cdfs,
             recorder,
             syntax,
             decisions,
@@ -177,11 +179,12 @@ impl CodedTile {
     }
 }
 
-/// The tiles of a frame put together: the bytes of each tile, the merged
-/// reconstruction, filter records and coded filter choices, and the decisions
-/// of each tile.
+/// The tiles of a frame put together: the bytes and final CDFs of each tile,
+/// the merged reconstruction, filter records and coded filter choices, and the
+/// decisions of each tile.
 struct MergedTiles {
     bytes: Vec<Vec<u8>>,
+    cdfs: Vec<TileCdfs>,
     recon: DecodedFrame<u16>,
     recorder: FilterRecorder,
     syntax: FilterSyntax,
@@ -192,12 +195,14 @@ impl MergedTiles {
     /// `tiles` of the frame `core`, in tile order.
     fn new(core: &FrameHeaderCore, tiles: Vec<CodedTile>) -> Result<Self> {
         let mut bytes = Vec::with_capacity(tiles.len());
+        let mut cdfs = Vec::with_capacity(tiles.len());
         let mut recons = Vec::with_capacity(tiles.len());
         let mut recorder: Option<FilterRecorder> = None;
         let mut syntax = FilterSyntax::default();
         let mut decisions = Vec::with_capacity(tiles.len());
         for tile in tiles {
             bytes.push(tile.bytes);
+            cdfs.push(tile.cdfs);
             recons.push(tile.recon);
             match recorder.as_mut() {
                 Some(recorder) => recorder.append(tile.recorder),
@@ -219,6 +224,7 @@ impl MergedTiles {
         };
         Ok(Self {
             bytes,
+            cdfs,
             recon,
             recorder: recorder.ok_or(Error::Unsupported {
                 what: "a frame without tiles",
@@ -232,15 +238,18 @@ impl MergedTiles {
 /// The first pass of a frame: its header and its tiles in tile order.
 pub(crate) struct FirstPass {
     pub(crate) core: FrameHeaderCore,
+    /// The initial CDFs of the frame, which the filter pass starts from too.
+    pub(crate) cdfs: FrameCdfs,
     pub(crate) tiles: Vec<CodedTile>,
 }
 
-/// A coded frame: its header, its filters, its tiles, and its filtered
-/// reconstruction.
+/// A coded frame: its header, its filters, its tiles and their final CDFs,
+/// and its filtered reconstruction.
 pub(crate) struct FilteredFrame {
     pub(crate) core: FrameHeaderCore,
     pub(crate) filters: FrameFilterParams,
     pub(crate) tiles: Vec<Vec<u8>>,
+    pub(crate) cdfs: Vec<TileCdfs>,
     pub(crate) recon: DecodedFrame<u16>,
 }
 
@@ -258,6 +267,7 @@ pub(crate) fn finish_frame(
 ) -> Result<FilteredFrame> {
     let MergedTiles {
         bytes,
+        cdfs,
         recon,
         recorder,
         decisions,
@@ -285,6 +295,7 @@ pub(crate) fn finish_frame(
             core: pass.core,
             filters: params,
             tiles: bytes,
+            cdfs,
             recon,
         });
     }
@@ -293,7 +304,7 @@ pub(crate) fn finish_frame(
         .into_iter()
         .enumerate()
         .map(|(tile, decisions)| {
-            let mut writer = KeyFrameTileWriter::new(seq, &core, refs, tile)?;
+            let mut writer = KeyFrameTileWriter::with_cdfs(seq, &core, refs, &pass.cdfs, tile)?;
             writer.set_filter_syntax(syntax.clone());
             Ok((writer, decisions))
         })
@@ -307,6 +318,7 @@ pub(crate) fn finish_frame(
     })?;
     let MergedTiles {
         bytes,
+        cdfs,
         recon,
         recorder,
         syntax: coded,
@@ -319,6 +331,7 @@ pub(crate) fn finish_frame(
         core,
         filters: params,
         tiles: bytes,
+        cdfs,
         recon,
     })
 }

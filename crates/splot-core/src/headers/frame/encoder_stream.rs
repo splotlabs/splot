@@ -89,6 +89,10 @@ pub struct EncoderToolFlags {
     pub tcq: bool,
     /// `enable_parity_hiding`.
     pub parity_hiding: bool,
+    /// `enable_avg_cdf` with `avg_cdf_type` (§ 5.4.8): `Some(true)` averages
+    /// the saved CDFs across tiles, `Some(false)` blends the CDFs of two
+    /// references; `None` disables averaging.
+    pub avg_cdf: Option<bool>,
 }
 
 /// Stream-level inputs of [`build_encoder_sequence_header`].
@@ -394,7 +398,10 @@ fn write_transform_quant_entropy_config(
     } else {
         w.write_flag(tools.parity_hiding)?;
     }
-    w.write_flag(false)?; // enable_avg_cdf
+    w.write_flag(tools.avg_cdf.is_some())?; // enable_avg_cdf
+    if let Some(across_tiles) = tools.avg_cdf {
+        w.write_flag(across_tiles)?; // avg_cdf_type
+    }
     if !monochrome {
         w.write_flag(false)?; // separate_uv_delta_q
     }

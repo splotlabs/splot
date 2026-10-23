@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 use std::fmt;
 
 use splot_core::headers::frame::FrameHeaderCore;
+use splot_decode::encoder_syntax::{FrameCdfs, TileCdfs};
 use splot_recon::DecodedFrame;
 
 use crate::config::{Config, RateControlMode};
@@ -48,8 +49,9 @@ pub(crate) struct CodedFrame {
     pub(crate) recon: [Vec<u16>; 3],
     /// The frame type the coder used, which can differ from the planned one.
     pub(crate) frame_type: FrameType,
-    /// The header and filtered reconstruction that [`FrameCoder::commit`] stores.
-    pub(crate) reference: Option<(FrameHeaderCore, DecodedFrame<u16>)>,
+    /// The header, filtered reconstruction, initial CDFs and final tile CDFs
+    /// that [`FrameCoder::commit`] stores.
+    pub(crate) reference: Option<(FrameHeaderCore, DecodedFrame<u16>, FrameCdfs, Vec<TileCdfs>)>,
 }
 
 /// Codes the frames and show-existing frames of the plan, in coding order.

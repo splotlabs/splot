@@ -7,8 +7,8 @@ use super::*;
 use crate::annexb::parse_annex_b_obus_partial;
 use crate::headers::frame::{
     CdefStrengthSet, CdefStrengthSets, EncoderStreamParams, EncoderToolFlags,
-    FrameHeaderParseInput, FrameHeaderParseMode, FrameType, TxMode, build_encoder_sequence_header,
-    parse_frame_header_core,
+    FrameHeaderParseInput, FrameHeaderParseMode, FrameType, MvPrecision, TxMode,
+    build_encoder_sequence_header, parse_frame_header_core,
 };
 use crate::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 
@@ -98,9 +98,9 @@ fn inter_headers_parse_with_the_reference_state() {
                 let seq = sequence(width, height, bit_depth, sb);
                 let view = CoreSeqView::from_sequence(&seq).unwrap();
                 let slots = Slots::after_key(width, height, 4);
-                for (show_frame, filters, compound) in [
-                    (true, FrameFilterParams::default(), false),
-                    (false, filters(sb), true),
+                for (show_frame, filters, compound, high_precision_mv, primary_slot) in [
+                    (true, FrameFilterParams::default(), false, false, None),
+                    (false, filters(sb), true, true, Some(0)),
                 ] {
                     let params = InterFrameParams {
                         base_q_idx: 90,
@@ -112,6 +112,8 @@ fn inter_headers_parse_with_the_reference_state() {
                         tiles: UniformTiles::default(),
                         reference_select: compound,
                         skip_mode_present: compound,
+                        primary_slot,
+                        high_precision_mv,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
                     let core = &header.core;
@@ -123,6 +125,18 @@ fn inter_headers_parse_with_the_reference_state() {
                     assert_eq!(core.frame_size.unwrap().width, width);
                     let inter = core.inter.as_ref().unwrap();
                     assert_eq!(&inter.ref_frame_idx[..], &[0]);
+                    let primary = primary_slot.map_or(PRIMARY_REF_NONE as u8, |_| 0);
+                    assert_eq!(inter.primary_ref_frame, Some(primary));
+                    assert_eq!(
+                        inter.disable_cross_frame_cdf_init,
+                        Some(primary_slot.is_none())
+                    );
+                    let precision = if high_precision_mv {
+                        MvPrecision::EighthPel
+                    } else {
+                        MvPrecision::QuarterPel
+                    };
+                    assert_eq!(inter.mv_precision, Some(precision));
                     let tail = core.inter_tail.as_ref().unwrap();
                     assert_eq!(tail.tx_mode, TxMode::Largest);
                     assert_eq!(tail.reference_select, compound);
@@ -158,8 +172,16 @@ fn order_hints_unwrap_against_the_reference_slots() {
         tiles: UniformTiles::default(),
         reference_select: false,
         skip_mode_present: false,
+        primary_slot: Some(3),
+        high_precision_mv: false,
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
+    let inter = header.core.inter.as_ref().unwrap();
+    assert_eq!(
+        inter.primary_ref_frame,
+        Some(PRIMARY_REF_NONE as u8),
+        "slot 3 is empty"
+    );
     assert_eq!(header.core.order_hint_lsb, Some(301 - 256));
     assert_eq!(header.core.order_hint, Some(301));
 }
@@ -182,6 +204,8 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             tiles: UniformTiles::default(),
             reference_select: true,
             skip_mode_present: false,
+            primary_slot: Some(0),
+            high_precision_mv: false,
         },
     )
     .unwrap();
@@ -255,6 +279,8 @@ fn rejects_out_of_range_inter_inputs() {
         tiles: UniformTiles::default(),
         reference_select: false,
         skip_mode_present: false,
+        primary_slot: None,
+        high_precision_mv: false,
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),

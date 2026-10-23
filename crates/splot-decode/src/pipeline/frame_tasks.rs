@@ -1132,7 +1132,9 @@ impl<T: SplitSample> FrameWork for FinishFrame<T> {
         if let Some(row) = self.stages[FINISH_INIT].claim(|_| true) {
             return Some(claim(FINISH_INIT, row));
         }
-        if let Some(row) = self.stages[FINISH_ADVANCE].claim(|_| true) {
+        if let Some(row) =
+            self.stages[FINISH_ADVANCE].claim(|_| self.started.load(Ordering::Acquire))
+        {
             return Some(claim(FINISH_ADVANCE, row));
         }
         if let Some(stripe) = self.filter.claim_ready() {
@@ -1332,5 +1334,23 @@ impl RowPools {
     pub(crate) fn drain(&mut self, rows: &RowScheduler) {
         self.eight.drain(rows);
         self.ten.drain(rows);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finish_advance_is_not_claimable_until_init_publishes_the_frontier() {
+        let frame = FinishFrame::<u8>::new(RowWake::detached());
+        frame.stages[FINISH_ADVANCE].set_rows(1);
+        assert!(frame.claim().is_none());
+        frame.started.store(true, Ordering::Release);
+        assert!(
+            frame
+                .claim()
+                .is_some_and(|claim| claim.stage == FINISH_ADVANCE)
+        );
     }
 }

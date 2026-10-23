@@ -81,6 +81,7 @@ impl Case {
                 cctx: false,
                 tcq: false,
                 parity_hiding: false,
+                avg_cdf: None,
             },
             max_level: 12,
             tx: KeyFrameTxParams {

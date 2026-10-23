@@ -83,6 +83,28 @@ jobs:
           fi
 
       - run: cargo xtask ci
+
+  decode-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo registry, git, and target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-v1-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-v1-
+
       - run: cargo test -p splot-decode --release --lib --locked
 
   dav2d-test-data:
@@ -309,9 +331,22 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
+      - name: Cache cargo registry and target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-cov-v1-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-cov-v1-
+
+      # The gate covers splot-validate and splot-tables; dropping splot-encode's
+      # tests does not lower it (96.32% -> 96.33% gated lines when measured).
       - name: Coverage (workspace summary + lcov)
         run: |
-          cargo llvm-cov --workspace --all-features --locked --no-report
+          cargo llvm-cov --workspace --exclude splot-encode --all-features --locked --no-report
           cargo llvm-cov report --summary-only
           cargo llvm-cov report --lcov --output-path lcov.info
       # Keep the exclusion in sync with SPLOT_VALIDATE_COVERAGE_IGNORE_REGEX in xtask.

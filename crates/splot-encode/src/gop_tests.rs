@@ -279,3 +279,35 @@ fn leaf_frames_refresh_no_slot_and_code_in_waves() {
     assert_eq!(waves, [vec![1]]);
     assert!(leaves.is_empty());
 }
+
+/// Each inter frame's primary reference is at or below its layer: the closest
+/// layer, an inter frame over the key frame, then the closest display index;
+/// key frames have none.
+#[test]
+fn primary_reference_is_the_closest_layer_at_or_below_the_frame() {
+    let mut slots: [Option<u64>; REF_SLOTS] = [None; REF_SLOTS];
+    let mut primaries = Vec::new();
+    for step in run(100, 4, 7) {
+        if let GopStep::Code(frame) = step {
+            let primary = frame.primary_slot.map(|slot| slots[slot as usize].unwrap());
+            primaries.push((frame.display_index, primary));
+            for (slot, held) in slots.iter_mut().enumerate() {
+                if frame.refresh_frame_flags & 1 << slot != 0 {
+                    *held = Some(frame.display_index);
+                }
+            }
+        }
+    }
+    assert_eq!(
+        primaries,
+        [
+            (0, None),
+            (4, Some(0)),
+            (2, Some(4)),
+            (1, Some(2)),
+            (3, Some(2)),
+            (6, Some(4)),
+            (5, Some(2)),
+        ]
+    );
+}

@@ -54,6 +54,12 @@ pub struct InterFrameParams {
     /// `skip_mode_present` (§ 5.18.8.2): blocks may code skip mode; the
     /// parser derives `SkipModeFrame`.
     pub skip_mode_present: bool,
+    /// The reference slot whose saved CDFs the frame starts from (§ 5.18.2
+    /// `set_primary_ref_frame_and_ctx`); `None` codes `PRIMARY_REF_NONE`.
+    pub primary_slot: Option<u32>,
+    /// `allow_high_precision_mv` (§ 5.18.2): eighth-pel motion vectors;
+    /// off, `use_qtr_precision_mv` selects quarter-pel.
+    pub high_precision_mv: bool,
 }
 
 /// A parsed frame header and the exact bits it was parsed from.
@@ -68,9 +74,13 @@ pub struct EncodedFrameHeader {
 /// Builds an `OBU_REGULAR_TILE_GROUP` inter frame header for `seq` and the § 7.23
 /// reference state `refs`.
 ///
-/// The frame has the maximum frame size, `primary_ref_frame = PRIMARY_REF_NONE`
-/// with `disable_cross_frame_cdf_init = 1`, the § 7.7 implicit reference map,
-/// quarter-pel motion vectors, the frame-level `EIGHTTAP` filter,
+/// The frame has the maximum frame size, the § 7.7 implicit reference map,
+/// `primary_ref_frame` at the first position of `params.primary_slot` in that
+/// map with `disable_cross_frame_cdf_init = 0` (else `PRIMARY_REF_NONE` with
+/// `disable_cross_frame_cdf_init = 1`, also when the map does not hold the
+/// slot or holds it only as a restricted reference),
+/// quarter-pel or, with `high_precision_mv`, eighth-pel motion vectors, the
+/// frame-level `EIGHTTAP` filter,
 /// `reference_select` and `skip_mode_present` of `params`, and the key-frame tail
 /// (`TX_MODE_LARGEST`, `reduced_tx_set = 2`) with the filters of `params`.
 ///
@@ -83,7 +93,29 @@ pub fn build_inter_frame_header(
     refs: &FrameReferenceStateView<'_>,
     params: &InterFrameParams,
 ) -> Result<EncodedFrameHeader, EncoderHeaderError> {
-    let (bytes, bit_len) = inter_frame_header_bits(seq, params)?;
+    let header = parse_inter_frame_header(seq, refs, params, None)?;
+    let position = params.primary_slot.and_then(|slot| {
+        let inter = header.core.inter.as_ref()?;
+        let position = inter
+            .ref_frame_idx
+            .iter()
+            .zip(inter.order_hints.iter())
+            .position(|(&index, &hint)| index == slot && hint != u32::MAX)?;
+        u32::try_from(position).ok()
+    });
+    match position {
+        Some(position) => parse_inter_frame_header(seq, refs, params, Some(position)),
+        None => Ok(header),
+    }
+}
+
+fn parse_inter_frame_header(
+    seq: &CoreSeqView,
+    refs: &FrameReferenceStateView<'_>,
+    params: &InterFrameParams,
+    primary_ref_frame: Option<u32>,
+) -> Result<EncodedFrameHeader, EncoderHeaderError> {
+    let (bytes, bit_len) = inter_frame_header_bits(seq, params, primary_ref_frame)?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
@@ -107,6 +139,7 @@ pub fn build_inter_frame_header(
 fn inter_frame_header_bits(
     seq: &CoreSeqView,
     params: &InterFrameParams,
+    primary_ref_frame: Option<u32>,
 ) -> Result<(Vec<u8>, u64), EncoderHeaderError> {
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
@@ -123,8 +156,8 @@ fn inter_frame_header_bits(
     let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
     w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
     w.write_flag(true)?; // signal_primary_ref_frame
-    w.write_flag(true)?; // disable_cross_frame_cdf_init
-    w.write_bits(PRIMARY_REF_NONE, 3)?; // primary_ref_frame
+    w.write_flag(primary_ref_frame.is_none())?; // disable_cross_frame_cdf_init
+    w.write_bits(primary_ref_frame.unwrap_or(PRIMARY_REF_NONE), 3)?; // primary_ref_frame
     if seq.enable_short_refresh_frame_flags || seq.seq_force_screen_content_tools == 1 {
         return Err(unsupported(
             "short refresh flags or forced screen content tools",
@@ -135,7 +168,10 @@ fn inter_frame_header_bits(
         w.write_flag(false)?; // allow_screen_content_tools
     }
     w.write_flag(false)?; // allow_intrabc
-    w.write_flag(true)?; // use_qtr_precision_mv
+    w.write_flag(!params.high_precision_mv)?; // use_qtr_precision_mv
+    if params.high_precision_mv {
+        w.write_flag(true)?; // allow_high_precision_mv
+    }
     w.write_flag(false)?; // is_filter_switchable
     w.write_bits(EIGHTTAP, 2)?; // interpolation_filter
     w.write_flag(false)?; // disable_cdf_update
