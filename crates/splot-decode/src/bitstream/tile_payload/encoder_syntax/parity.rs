@@ -34,7 +34,9 @@ impl ParityHiding {
     /// `Some(sumAbs1)` when the row-major adjusted `levels` make the block
     /// hide the parity of its scan index 0 level (`isHidden`): that level's
     /// magnitude must then have the parity `sumAbs1`, and the block codes
-    /// half of it. `None` when the block hides nothing.
+    /// half of it. `None` when the block hides nothing. The decoder's summary
+    /// is a parity and a count over the nonzero levels after scan index 0, so
+    /// a raster walk gives its result.
     ///
     /// # Errors
     /// Returns [`super::EncoderSyntaxError`] for an invalid transform size or
@@ -58,8 +60,6 @@ impl ParityHiding {
         };
         let first = scan.first().map_or(0, |&pos| usize::from(pos));
         let mut summary = CoeffBaseFirstPassSummary::default();
-        // The summary is a parity and a count over the nonzero levels after scan index 0,
-        // so a raster walk gives the decoder's result.
         for (pos, &level) in levels.get(..scan.len()).ok_or(SHORT)?.iter().enumerate() {
             if level == 0 || pos == first {
                 continue;
