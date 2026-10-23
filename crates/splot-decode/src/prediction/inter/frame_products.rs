@@ -14,7 +14,6 @@ use crate::filters::ccso::CcsoUnitGrid;
 pub(crate) struct EntropyProductHandle<T>(Arc<CompletionCell<Option<Arc<T>>>>);
 
 impl<T> EntropyProductHandle<T> {
-    #[cfg(test)]
     pub(crate) fn settled(product: Arc<T>) -> Self {
         Self(Arc::new(CompletionCell::completed(Some(product))))
     }

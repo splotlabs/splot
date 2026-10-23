@@ -426,6 +426,14 @@ pub fn tile_ranges(core: &FrameHeaderCore, tile: usize) -> Result<(Range<usize>,
     ))
 }
 
+/// The CDFs a frame starts from (§ 5.18.2), shared by its tiles.
+#[derive(Clone)]
+pub struct FrameCdfs(std::sync::Arc<FrameCdfSubset>);
+
+/// The CDFs of a coded tile after its last symbol, which
+/// [`EncoderReferences::update`] folds into the saved CDFs of the frame.
+pub struct TileCdfs(TileCdfSubset);
+
 /// One tile's CDF rows, neighbour state, and reconstruction.
 pub struct IntraTileSyntax {
     frame: TilePartitionFrameFacts,
@@ -464,6 +472,22 @@ impl IntraTileSyntax {
         refs: &EncoderReferences,
         tile: usize,
     ) -> Result<Self> {
+        Self::with_cdfs(seq, core, refs, &refs.initial_cdfs(core)?, tile)
+    }
+
+    /// [`Self::new`] for a frame whose initial CDFs `cdfs`
+    /// [`EncoderReferences::initial_cdfs`] returned for `core`, so the tiles
+    /// of one frame share them.
+    ///
+    /// # Errors
+    /// As [`Self::new`].
+    pub fn with_cdfs(
+        seq: &SequenceHeader,
+        core: &FrameHeaderCore,
+        refs: &EncoderReferences,
+        cdfs: &FrameCdfs,
+        tile: usize,
+    ) -> Result<Self> {
         if seq.partition.is_some_and(|partition| partition.enable_sdp) {
             return Err(EncoderSyntaxError::Unsupported(
                 "semi-decoupled partitioning",
@@ -483,7 +507,7 @@ impl IntraTileSyntax {
             .map_err(rule("superblock size"))?;
         let chroma = seq.general.chroma_format_idc;
         let tools = intra::IntraTools::new(seq, core, base_q_idx)?;
-        let cdfs = FrameCdfSubset::default_for_base_q(base_q_idx).tile_copy();
+        let cdfs = cdfs.0.tile_copy();
         let journal = CdfJournal::new(&cdfs);
         let inter = inter::InterLeafState::new(
             seq,

@@ -494,17 +494,16 @@ fn finish_frame_cdfs(
     work_units: &[DecodeTileWorkUnit],
     products: &mut super::FrameProductWriters,
 ) -> Result<Arc<FrameCdfSubset>> {
-    let mut saved = false;
-    for tile in work_units {
-        products.frame_cdfs()?.reset_saved_from_tile(
-            initial.as_ref(),
-            tile.tile_num(),
-            tile.cdf().tile_cdfs(),
-            tile.cdf().save_policy(),
-            &mut saved,
-        );
-    }
-    products.frame_cdfs()?.finish_saved(initial, saved);
+    products.frame_cdfs()?.fold_frame_end(
+        initial,
+        work_units.iter().map(|tile| {
+            (
+                tile.tile_num(),
+                tile.cdf().tile_cdfs(),
+                tile.cdf().save_policy(),
+            )
+        }),
+    );
     products.cdf_output()
 }
 

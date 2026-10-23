@@ -55,6 +55,9 @@ pub struct PresetParams {
     /// prediction SATD first; skip-mode candidates are tried besides them.
     /// `0` codes neither compound nor skip-mode blocks.
     pub compound_candidates: u8,
+    /// Inter frames start from the saved CDFs of a reference frame instead of
+    /// the default CDFs, and the sequence enables CDF averaging.
+    pub cdf_carry: bool,
 }
 
 const fn row(
@@ -82,6 +85,7 @@ const fn row(
         mini_gop_size,
         lookahead_frames,
         compound_candidates,
+        cdf_carry: true,
     }
 }
 
@@ -251,6 +255,7 @@ mod tests {
             assert!(fast.mini_gop_size <= slow.mini_gop_size);
             assert!(fast.lookahead_frames <= slow.lookahead_frames);
             assert!(fast.compound_candidates <= slow.compound_candidates);
+            assert!(fast.cdf_carry <= slow.cdf_carry);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));

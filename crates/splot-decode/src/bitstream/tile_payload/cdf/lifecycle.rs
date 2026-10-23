@@ -30,7 +30,22 @@ impl FrameCdfSubset {
         self.rows.clone_from(&frame.rows);
     }
 
-    pub(crate) fn reset_saved_from_tile(
+    /// Sets `self` to the saved CDFs at the end of a frame that started from
+    /// `frame`: each tile's final CDFs folded under its save policy in tile
+    /// order, then the frame-end count scaling (§ 7.23).
+    pub(crate) fn fold_frame_end<'a>(
+        &mut self,
+        frame: &Self,
+        tiles: impl IntoIterator<Item = (u32, &'a TileCdfSubset, TileCdfSavePolicy)>,
+    ) {
+        let mut saved = false;
+        for (tile_num, tile, policy) in tiles {
+            self.reset_saved_from_tile(frame, tile_num, tile, policy, &mut saved);
+        }
+        self.finish_saved(frame, saved);
+    }
+
+    fn reset_saved_from_tile(
         &mut self,
         frame: &Self,
         tile_num: u32,
@@ -51,7 +66,7 @@ impl FrameCdfSubset {
         }
     }
 
-    pub(crate) fn finish_saved(&mut self, frame: &Self, saved: bool) {
+    fn finish_saved(&mut self, frame: &Self, saved: bool) {
         if !saved {
             self.rows.clone_from(&frame.rows);
         }

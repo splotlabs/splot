@@ -171,7 +171,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     let initial_cdfs = if let Some(storage) = initial_cdf_storage {
         resolve_initial_frame_cdfs_reusing(core, sequence, reference, candidate, offset, storage)?
     } else {
-        resolve_initial_frame_cdfs(core, sequence, reference, candidate, offset)?
+        resolve_initial_frame_cdfs(core, sequence, reference, Some(candidate), offset)?
     };
     let frame_size = geometry.frame_size();
     let frame_width = frame_size.width;
