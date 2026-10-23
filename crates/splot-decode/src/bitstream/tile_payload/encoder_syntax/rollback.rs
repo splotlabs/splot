@@ -33,7 +33,7 @@ use super::{EncoderSyntaxError, IntraTileSyntax, PartitionNode, Result, rule};
 pub(super) enum CdfRow {
     Tile(TileCdfSelector),
     Coeff(CoeffCdfSelector),
-    Base(CoeffBaseSelection, usize),
+    Base(CoeffBaseSelection, usize, usize),
     Br(usize, bool, usize),
 }
 
@@ -45,10 +45,10 @@ impl CdfRow {
                 .coeff_rows_mut()
                 .row_mut(selector)
                 .map_err(rule("coeff_base_eob row")),
-            Self::Base(selection, tx_size) => Ok(
+            Self::Base(selection, tx_size, quantizer) => Ok(
                 match cdfs
                     .coeff_rows_mut()
-                    .base_row(selection, tx_size, 0)
+                    .base_row(selection, tx_size, quantizer)
                     .map_err(rule("coeff_base row"))?
                 {
                     CoeffBaseRow::Base(row) => row.as_mut_slice(),

@@ -216,7 +216,7 @@ fn inter_frame_header_bits(
     write_quant_and_filters(
         &mut w,
         seq,
-        (params.base_q_idx, params.tiles),
+        (params.base_q_idx, params.tiles, tx.allow_tcq),
         &params.filters,
     )?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select

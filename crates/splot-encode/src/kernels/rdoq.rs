@@ -587,7 +587,7 @@ impl LevelCosts {
     }
 }
 
-const fn base_levels(is_lf: bool) -> u32 {
+pub(crate) const fn base_levels(is_lf: bool) -> u32 {
     if is_lf {
         LF_NUM_BASE_LEVELS
     } else {
@@ -596,7 +596,7 @@ const fn base_levels(is_lf: bool) -> u32 {
 }
 
 /// The exact bypass cost of the § 5.20.7.28 remainder `x` under `predLevel` `pred_level`.
-fn golomb_bits(x: u32, pred_level: u32) -> u32 {
+pub(crate) fn golomb_bits(x: u32, pred_level: u32) -> u32 {
     let m = pred_level.checked_ilog2().unwrap_or(0).clamp(1, 6);
     let k = m + 1;
     let c_max = (m + 4).min(6);

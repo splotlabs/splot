@@ -17,6 +17,7 @@ mod distortion;
 mod forward_transform;
 mod quantize;
 pub(crate) mod rdoq;
+pub(crate) mod tcq;
 
 pub(crate) use forward_transform::ForwardTransform2d;
 pub(crate) use quantize::Quantizer;
@@ -189,6 +190,16 @@ pub(crate) trait EncoderKernels: Sync {
         levels: &mut [i32],
         dequant: &mut [i32],
     ) -> Result<usize, KernelError>;
+
+    /// One TCQ trellis step: adds the branch metrics of every state to its
+    /// path cost and keeps the cheaper branch into each next state
+    /// ([`tcq::step_simd`]).
+    fn tcq_step(
+        &self,
+        prev: &[u64; tcq::STATES],
+        branches: &tcq::Branches,
+        lambda: u64,
+    ) -> tcq::Survivors;
 }
 
 /// The scalar reference kernels.
@@ -268,6 +279,15 @@ impl EncoderKernels for ScalarKernels {
     ) -> Result<usize, KernelError> {
         quantize::quantize_scalar(quantizer, coeffs, levels, dequant)
     }
+
+    fn tcq_step(
+        &self,
+        prev: &[u64; tcq::STATES],
+        branches: &tcq::Branches,
+        lambda: u64,
+    ) -> tcq::Survivors {
+        tcq::step_scalar(prev, branches, lambda)
+    }
 }
 
 impl EncoderKernels for SimdKernels {
@@ -333,5 +353,14 @@ impl EncoderKernels for SimdKernels {
         dequant: &mut [i32],
     ) -> Result<usize, KernelError> {
         quantize::quantize_simd(quantizer, coeffs, levels, dequant)
+    }
+
+    fn tcq_step(
+        &self,
+        prev: &[u64; tcq::STATES],
+        branches: &tcq::Branches,
+        lambda: u64,
+    ) -> tcq::Survivors {
+        tcq::step_simd(prev, branches, lambda)
     }
 }
