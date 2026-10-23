@@ -124,6 +124,8 @@ pub(crate) struct MotionSearch {
     references: Vec<Pyramid>,
     source: Pyramid,
     range: i32,
+    /// The preset's sub-pel depth, capped at the frame's vector precision:
+    /// a finer position would not be codable.
     subpel_depth: u8,
     /// The frame's `NEWMV` difference step in `1/8` samples.
     mv_step: u32,
@@ -158,13 +160,14 @@ impl MotionSearch {
             references.push(Pyramid::new(base));
         }
         let (luma, stride, width, height) = source.luma();
+        let mv_step = syntax.mv_step().unsigned_abs();
         let source = Pyramid::new(Level::padded(width, height, 0, |y, x| luma[y * stride + x]));
         Ok(Some(Self {
             references,
             source,
             range: i32::from(preset.motion_range),
-            subpel_depth: preset.subpel_depth,
-            mv_step: syntax.mv_step().unsigned_abs(),
+            subpel_depth: preset.subpel_depth.min(3 - mv_step.ilog2().min(3) as u8),
+            mv_step,
             sad_lambda_q8: lambda.sse_per_bit_q16().isqrt(),
         }))
     }

@@ -34,7 +34,7 @@
 //! show-existing frame with `derive_sef_order_hint = 1`; inter frames code
 //! `primary_ref_frame = PRIMARY_REF_NONE` with `disable_cross_frame_cdf_init =
 //! 1`, so no CDFs carry across frames; motion vectors are eighth-pel when the
-//! preset refines to eighth samples, else quarter-pel.
+//! preset refines to eighth samples at the frame's quantizer, else quarter-pel.
 
 use core::num::NonZeroU32;
 
@@ -338,14 +338,14 @@ pub(crate) fn plan(frame_index: u64, keyint: NonZeroU32) -> GopFrame {
     frame.unwrap_or_else(|| unreachable!("IPPP codes every input frame"))
 }
 
-/// The frame-level tool choices of `preset`: the transform parameters,
-/// whether inter frames code compound and skip-mode blocks, whether their
-/// motion vectors are eighth-pel, and the `tiles`.
-pub(crate) fn frame_tools(preset: &PresetParams, tiles: UniformTiles) -> FrameTools {
+/// The frame-level tool choices of `preset` for a frame at `qindex`: the
+/// transform parameters, whether inter frames code compound and skip-mode
+/// blocks, whether their motion vectors are eighth-pel, and the `tiles`.
+pub(crate) fn frame_tools(preset: &PresetParams, tiles: UniformTiles, qindex: u32) -> FrameTools {
     (
         crate::tx_choice::key_frame_tx_params(preset),
         preset.compound_candidates > 0,
-        preset.subpel_depth == 3,
+        preset.subpel_depth == 3 && qindex <= u32::from(preset.eighth_pel_max_qindex),
         tiles,
     )
 }

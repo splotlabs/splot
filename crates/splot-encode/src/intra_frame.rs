@@ -136,7 +136,7 @@ impl IntraFrameCoder {
     /// Codes `source` as `plan` at quantizer `qp` against the committed references.
     fn code_frame(&self, source: &SourceFrame, plan: &GopFrame, qp: u16) -> Result<CodedFrame> {
         let qindex = u32::from(qp);
-        let tools = gop::frame_tools(self.preset, self.tiles);
+        let tools = gop::frame_tools(self.preset, self.tiles, qindex);
         let header = |filters: &FrameFilterParams| {
             plan.header(&self.view, &self.references, qindex, filters, tools)
         };
