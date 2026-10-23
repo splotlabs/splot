@@ -369,7 +369,7 @@ proptest! {
     ) {
         let (width, height, stride) = (1usize << log2_w, 1usize << log2_h, 141);
         let plane: Vec<u16> = (0..stride * (y + height))
-            .map(|at| ((at as u64 * 0x9e37_79b9 ^ seed) >> 7) as u16 % (max + 1))
+            .map(|at| (((at as u64 * 0x9e37_79b9) ^ seed) >> 7) as u16 % (max + 1))
             .collect();
         let profile = SourceProfile::measure(&plane, stride, (x, y, width, height)).unwrap();
         let sample = |r: usize, c: usize| u64::from(plane[(y + r) * stride + x + c]);
