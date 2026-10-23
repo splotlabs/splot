@@ -69,6 +69,15 @@ pub struct PresetParams {
     /// of their references and from the reference MV bank, and reorder the
     /// DRL candidates.
     pub mv_prediction: bool,
+    /// Extended partitions: `0` off, `1` adds `HORZ_3` and `VERT_3`, `2` also
+    /// the uneven 4-way shapes.
+    pub ext_partitions: u8,
+    /// A three-way shape is tried only when the `NONE` cost is within this
+    /// margin, in 1/256, of the best cost so far; `255` always tries it.
+    pub ext_three_way_margin: u8,
+    /// An uneven four-way shape is tried only when the three-way shape of its
+    /// axis costs within this margin, in 1/256, of the best; `255` always.
+    pub ext_four_way_margin: u8,
 }
 
 const fn row(
@@ -100,6 +109,9 @@ const fn row(
         compound_candidates,
         cdf_carry: true,
         mv_prediction: true,
+        ext_partitions: 0,
+        ext_three_way_margin: 0,
+        ext_four_way_margin: 0,
     }
 }
 
@@ -274,6 +286,9 @@ mod tests {
             assert!(fast.compound_candidates <= slow.compound_candidates);
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.mv_prediction <= slow.mv_prediction);
+            assert!(fast.ext_partitions <= slow.ext_partitions);
+            assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
+            assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));
