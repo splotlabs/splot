@@ -7,7 +7,7 @@ use core::result::Result;
 
 use super::*;
 use crate::preset::{PRESETS, PresetParams};
-use crate::rd::partition::{PartitionSearch, search_partition};
+use crate::rd::partition::{PartitionSearch, SourceProfile, search_partition};
 use crate::tile_writer::LeafChoice;
 
 /// A block: left, top, log2 width, log2 height.
@@ -82,6 +82,10 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
 
     fn block_log2(&self, (_, _, w, h): Rect) -> Result<(u32, u32), Self::Error> {
         Ok((w, h))
+    }
+
+    fn source_profile(&self, _: Rect) -> Result<SourceProfile, Self::Error> {
+        Ok(SourceProfile::default())
     }
 
     fn evaluate_leaf(&mut self, node: Rect) -> Result<(RdCost, LeafChoice), Self::Error> {
@@ -322,5 +326,73 @@ proptest! {
         prop_assert_eq!(&coder.coded, &coded);
         let leaf_sum = coded.iter().map(|&leaf| cost(leaf)).fold(RdCost::default(), |a, b| a + b);
         prop_assert_eq!(leaf_sum.distortion, found.distortion);
+    }
+}
+
+/// A `size x size` plane whose rows take `levels` in bands of `eighths`.
+fn banded(size: usize, eighths: &[usize], levels: &[u16]) -> Vec<u16> {
+    let mut plane = Vec::with_capacity(size * size);
+    for (&band, &level) in eighths.iter().zip(levels) {
+        plane.resize(plane.len() + band * size / 8 * size, level);
+    }
+    plane
+}
+
+fn profile(plane: &[u16], size: usize) -> SourceProfile {
+    SourceProfile::measure(plane, size, (0, 0, size, size)).unwrap()
+}
+
+#[test]
+fn source_gate_tries_extended_shapes_that_fit_the_bands() {
+    let three = profile(&banded(32, &[2, 4, 2], &[40, 200, 40]), 32);
+    assert!(three.worth_trying(Partition::Horz3, 200));
+    assert!(!three.worth_trying(Partition::Vert3, 1));
+    assert!(three.worth_trying(Partition::Horz, u8::MAX));
+    let uneven = profile(&banded(32, &[1, 2, 4, 1], &[10, 90, 170, 250]), 32);
+    assert!(uneven.worth_trying(Partition::Horz4A, 100));
+    assert!(!uneven.worth_trying(Partition::Horz4B, 100));
+    let halves = profile(&banded(16, &[4, 4], &[10, 250]), 16);
+    assert!(!halves.worth_trying(Partition::Horz3, 0));
+    let flat = profile(&[77; 64 * 64], 64);
+    for partition in [Partition::Horz3, Partition::Vert4A, Partition::Horz4B] {
+        assert!(!flat.worth_trying(partition, 0));
+    }
+}
+
+proptest! {
+    #[test]
+    fn source_profile_matches_direct_sums(
+        seed in any::<u64>(),
+        (log2_w, log2_h) in (2u32..=7, 2u32..=7),
+        (x, y) in (0usize..9, 0usize..5),
+        max in prop::sample::select(vec![255u16, 1023]),
+    ) {
+        let (width, height, stride) = (1usize << log2_w, 1usize << log2_h, 141);
+        let plane: Vec<u16> = (0..stride * (y + height))
+            .map(|at| ((at as u64 * 0x9e37_79b9 ^ seed) >> 7) as u16 % (max + 1))
+            .collect();
+        let profile = SourceProfile::measure(&plane, stride, (x, y, width, height)).unwrap();
+        let sample = |r: usize, c: usize| u64::from(plane[(y + r) * stride + x + c]);
+        let (strip_h, strip_w) = (height / profile.strips.0, width / profile.strips.1);
+        for strip in 0..profile.strips.0 {
+            let sum = (strip * strip_h..(strip + 1) * strip_h)
+                .flat_map(|r| (0..width).map(move |c| (r, c)))
+                .map(|(r, c)| sample(r, c))
+                .sum::<u64>();
+            prop_assert_eq!(profile.rows[strip], sum);
+        }
+        for strip in 0..profile.strips.1 {
+            let sum = (0..height)
+                .flat_map(|r| (strip * strip_w..(strip + 1) * strip_w).map(move |c| (r, c)))
+                .map(|(r, c)| sample(r, c))
+                .sum::<u64>();
+            prop_assert_eq!(profile.cols[strip], sum);
+        }
+        let squares = (0..height)
+            .flat_map(|r| (0..width).map(move |c| (r, c)))
+            .map(|(r, c)| sample(r, c).pow(2))
+            .sum::<u64>();
+        prop_assert_eq!(profile.squares, squares);
+        prop_assert_eq!(profile.samples, (width * height) as u64);
     }
 }

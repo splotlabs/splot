@@ -22,7 +22,7 @@ use crate::intra_frame::codable_children;
 use crate::motion_search::MotionSearch;
 use crate::preset::PresetParams;
 use crate::rd::coeff_rate::RateSink;
-use crate::rd::partition::PartitionSearch;
+use crate::rd::partition::{PartitionSearch, SourceProfile};
 use crate::rd::{Bits, Lambda, RdCost};
 use crate::tile_writer::{
     CompoundMode, CompoundModes, INTRA_MODES, InterMode, InterModes, InterPrediction, LeafChoice,
@@ -497,6 +497,13 @@ impl PartitionSearch for TrialCoder<'_, '_> {
     fn block_log2(&self, node: PartitionNode) -> Result<(u32, u32)> {
         let (w, h) = node.dimensions()?;
         Ok((w.ilog2(), h.ilog2()))
+    }
+
+    fn source_profile(&self, node: PartitionNode) -> Result<SourceProfile> {
+        let (w, h) = node.dimensions()?;
+        let (plane, stride, ..) = self.coder.source.luma();
+        let rect = (node.col4() * 4, node.row4() * 4, w, h);
+        Ok(SourceProfile::measure(plane, stride, rect)?)
     }
 
     /// RD-chooses the intra choice of the leaf, then compares it with the

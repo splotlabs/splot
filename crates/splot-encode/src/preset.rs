@@ -55,6 +55,13 @@ pub struct PresetParams {
     /// prediction SATD first; skip-mode candidates are tried besides them.
     /// `0` codes neither compound nor skip-mode blocks.
     pub compound_candidates: u8,
+    /// Extended partitions: `0` off, `1` adds `HORZ_3` and `VERT_3`, `2` also
+    /// the uneven 4-way shapes.
+    pub ext_partitions: u8,
+    /// An extended shape is tried only when its segments explain at least
+    /// this much more of the block's luma variance, in 1/256, than the binary
+    /// split along the same axis.
+    pub ext_partition_gate: u8,
 }
 
 const fn row(
@@ -82,11 +89,37 @@ const fn row(
         mini_gop_size,
         lookahead_frames,
         compound_candidates,
+        ext_partitions: 0,
+        ext_partition_gate: u8::MAX,
     }
 }
 
+/// `(ext_partitions, ext_partition_gate)` by preset.
+const EXT_PARTITIONS: [(u8, u8); 11] = [
+    (2, 0),
+    (2, 0),
+    (2, 0),
+    (2, 0),
+    (1, 0),
+    (1, 0),
+    (1, 0),
+    (0, u8::MAX),
+    (0, u8::MAX),
+    (0, u8::MAX),
+    (0, u8::MAX),
+];
+
+const fn with_ext_partitions(mut rows: [PresetParams; 11]) -> [PresetParams; 11] {
+    let mut index = 0;
+    while index < rows.len() {
+        (rows[index].ext_partitions, rows[index].ext_partition_gate) = EXT_PARTITIONS[index];
+        index += 1;
+    }
+    rows
+}
+
 /// Search limits indexed by preset: `0` is the slowest and best, `10` the fastest.
-pub const PRESETS: [PresetParams; 11] = [
+pub const PRESETS: [PresetParams; 11] = with_ext_partitions([
     row(
         (2, 7),
         13,
@@ -186,7 +219,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (16, 0, 0),
         (0, 1, 2, 0),
     ),
-];
+]);
 
 /// A speed preset, `0..=10`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -251,6 +284,8 @@ mod tests {
             assert!(fast.mini_gop_size <= slow.mini_gop_size);
             assert!(fast.lookahead_frames <= slow.lookahead_frames);
             assert!(fast.compound_candidates <= slow.compound_candidates);
+            assert!(fast.ext_partitions <= slow.ext_partitions);
+            assert!(fast.ext_partition_gate >= slow.ext_partition_gate);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));

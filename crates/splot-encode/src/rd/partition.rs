@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use super::{Bits, Lambda, RdCost};
+use crate::kernels::{BlockDims, KernelError, kernels};
 use crate::preset::PresetParams;
 use crate::tile_writer::{LeafChoice, Partition, PartitionTree};
 
@@ -35,6 +36,8 @@ pub(crate) trait PartitionSearch {
     fn key(&self, node: Self::Node) -> u64;
     /// Luma `(log2 width, log2 height)` of `node`.
     fn block_log2(&self, node: Self::Node) -> Result<(u32, u32), Self::Error>;
+    /// The luma source profile of `node`.
+    fn source_profile(&self, node: Self::Node) -> Result<SourceProfile, Self::Error>;
     /// Codes `node` as a leaf into the live state; returns its cost and decision.
     fn evaluate_leaf(&mut self, node: Self::Node) -> Result<(RdCost, LeafChoice), Self::Error>;
     /// Codes `node` as a leaf with `choice` into the live state; returns its cost.
@@ -71,6 +74,9 @@ pub(crate) trait PartitionSearch {
 /// first search chose, and a later visit codes that tree again in the new
 /// context instead of searching it again.
 ///
+/// The children of an extended shape search without extended shapes, and a
+/// node keeps one tree per mode.
+///
 /// # Errors
 /// Returns the coder's errors.
 pub(crate) fn search_partition<S: PartitionSearch>(
@@ -79,11 +85,11 @@ pub(crate) fn search_partition<S: PartitionSearch>(
     preset: &PresetParams,
     lambda: Lambda,
 ) -> Result<(PartitionTree, RdCost), S::Error> {
-    search(coder, node, preset, lambda, &mut Memo::new())
+    search(coder, node, preset, lambda, &mut Memo::new(), true)
 }
 
-/// The tree each searched node chose, by node key.
-type Memo<N> = HashMap<u64, Vec<(N, PartitionTree)>>;
+/// The tree each searched node chose, by node key and extended-shape mode.
+type Memo<N> = HashMap<(u64, bool), Vec<(N, PartitionTree)>>;
 
 fn search<S: PartitionSearch>(
     coder: &mut S,
@@ -91,11 +97,12 @@ fn search<S: PartitionSearch>(
     preset: &PresetParams,
     lambda: Lambda,
     memo: &mut Memo<S::Node>,
+    extended: bool,
 ) -> Result<(PartitionTree, RdCost), S::Error> {
     if !coder.in_frame(node) {
         return Ok((PartitionTree::Leaf(LeafChoice::DC), RdCost::default()));
     }
-    let key = coder.key(node);
+    let key = (coder.key(node), extended);
     if let Some((_, tree)) = memo
         .get(&key)
         .and_then(|seen| seen.iter().find(|(seen, _)| *seen == node))
@@ -104,7 +111,7 @@ fn search<S: PartitionSearch>(
         let cost = recode(coder, node, &tree)?;
         return Ok((tree, cost));
     }
-    let candidates = candidates(coder, node, preset)?;
+    let candidates = candidates(coder, node, preset, extended)?;
     let start = if candidates.len() > 1 {
         Some(coder.save(node, None)?)
     } else {
@@ -127,7 +134,8 @@ fn search<S: PartitionSearch>(
             let mut trees = Vec::with_capacity(children.len());
             let mut cost = RdCost::default();
             for &child in children {
-                let (tree, child_cost) = search(coder, child, preset, lambda, memo)?;
+                let nested = extended && segments(*partition).is_none();
+                let (tree, child_cost) = search(coder, child, preset, lambda, memo, nested)?;
                 trees.push(tree);
                 cost = cost + child_cost;
             }
@@ -193,11 +201,13 @@ fn recode<S: PartitionSearch>(
 type Candidates<N> = Vec<(Partition, Vec<N>)>;
 
 /// The codable partitions of `node` inside the preset's block limits, `NONE`
-/// first and `SPLIT` second, with their children.
+/// first and `SPLIT` second, with their children; `extended` shapes only when
+/// the source profile backs them.
 fn candidates<S: PartitionSearch>(
     coder: &S,
     node: S::Node,
     preset: &PresetParams,
+    extended: bool,
 ) -> Result<Candidates<S::Node>, S::Error> {
     let mut all = Vec::new();
     for partition in coder.partitions(node)? {
@@ -213,6 +223,16 @@ fn candidates<S: PartitionSearch>(
         Partition::Split => 1,
         _ => 2,
     });
+    if all
+        .iter()
+        .any(|(partition, _)| segments(*partition).is_some())
+    {
+        let profile = extended.then(|| coder.source_profile(node)).transpose()?;
+        all.retain(|(partition, _)| {
+            segments(*partition).is_none()
+                || profile.is_some_and(|p| p.worth_trying(*partition, preset.ext_partition_gate))
+        });
+    }
     let mut within = Vec::new();
     for (partition, children) in &all {
         let fits = if *partition == Partition::None {
@@ -231,4 +251,112 @@ fn candidates<S: PartitionSearch>(
         }
     }
     Ok(if within.is_empty() { all } else { within })
+}
+
+/// Luma source sums of a block: `rows[i]` sums row strip `i` of `strips.0`
+/// equal strips, `cols[i]` column strip `i` of `strips.1`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SourceProfile {
+    pub(crate) rows: [u64; 8],
+    pub(crate) cols: [u64; 8],
+    pub(crate) strips: (usize, usize),
+    /// The sum of the squared samples.
+    pub(crate) squares: u64,
+    pub(crate) samples: u64,
+}
+
+impl SourceProfile {
+    /// The profile of the `width x height` block at `(x, y)` of `plane`, in
+    /// strips of at least four samples.
+    ///
+    /// # Errors
+    /// Returns [`KernelError::InvalidBlockDims`] for a side outside `4..=128`.
+    pub(crate) fn measure(
+        plane: &[u16],
+        stride: usize,
+        (x, y, width, height): (usize, usize, usize, usize),
+    ) -> Result<Self, KernelError> {
+        static ZERO: [u16; 2048] = [0; 2048];
+        let k = kernels();
+        let at = plane.get(y * stride + x..).unwrap_or_default();
+        let strips = ((height / 4).clamp(1, 8), (width / 4).clamp(1, 8));
+        let (strip_h, strip_w) = (height / strips.0, width / strips.1);
+        let mut profile = Self {
+            strips,
+            samples: (width * height) as u64,
+            ..Self::default()
+        };
+        let dims = BlockDims::new(width, strip_h)?;
+        for (index, sum) in profile.rows[..strips.0].iter_mut().enumerate() {
+            let strip = at.get(index * strip_h * stride..).unwrap_or_default();
+            *sum = u64::from(k.sad(strip, stride, &ZERO, width, dims));
+            profile.squares += k.sse(strip, stride, &ZERO, width, dims);
+        }
+        let dims = BlockDims::new(strip_w, height)?;
+        for (index, sum) in profile.cols[..strips.1].iter_mut().enumerate() {
+            let strip = at.get(index * strip_w..).unwrap_or_default();
+            *sum = u64::from(k.sad(strip, stride, &ZERO, strip_w, dims));
+        }
+        Ok(profile)
+    }
+
+    /// Whether the search tries `partition`: always for a non-extended shape;
+    /// for an extended one only when its segments explain at least `gate`/256
+    /// more of the luma variance than the binary split along its axis does.
+    pub(crate) fn worth_trying(&self, partition: Partition, gate: u8) -> bool {
+        let Some((rows, segments)) = segments(partition) else {
+            return true;
+        };
+        let sums = if rows {
+            &self.rows[..self.strips.0]
+        } else {
+            &self.cols[..self.strips.1]
+        };
+        let (Some(shape), Some(binary)) = (explained(sums, segments), explained(sums, &[4, 4]))
+        else {
+            return true;
+        };
+        let total: u128 = sums.iter().map(|&sum| u128::from(sum)).sum();
+        let variance =
+            (u128::from(self.samples) * u128::from(self.squares)).saturating_sub(total * total);
+        variance > 0 && shape >= binary && (shape - binary) * 256 >= u128::from(gate) * variance
+    }
+}
+
+/// The split axis (`true` for rows) and the segment lengths in eighths of an
+/// extended partition.
+fn segments(partition: Partition) -> Option<(bool, &'static [u64])> {
+    Some(match partition {
+        Partition::Horz3 => (true, &[2, 4, 2]),
+        Partition::Vert3 => (false, &[2, 4, 2]),
+        Partition::Horz4A => (true, &[1, 2, 4, 1]),
+        Partition::Horz4B => (true, &[1, 4, 2, 1]),
+        Partition::Vert4A => (false, &[1, 2, 4, 1]),
+        Partition::Vert4B => (false, &[1, 4, 2, 1]),
+        _ => return None,
+    })
+}
+
+/// `samples * sum(S_k^2 / n_k)` over the segments of `segments` (in eighths)
+/// of equal strips with sums `sums`; `None` when a segment edge splits a strip.
+fn explained(sums: &[u64], segments: &[u64]) -> Option<u128> {
+    let per_strip = 8 / u64::try_from(sums.len())
+        .ok()
+        .filter(|&n| n > 0 && 8 % n == 0)?;
+    let mut at = 0;
+    let mut total = 0;
+    for &eighths in segments {
+        if eighths % per_strip != 0 {
+            return None;
+        }
+        let count = usize::try_from(eighths / per_strip).ok()?;
+        let sum: u128 = sums
+            .get(at..at + count)?
+            .iter()
+            .map(|&s| u128::from(s))
+            .sum();
+        at += count;
+        total += sum * sum * u128::from(8 / eighths);
+    }
+    Some(total)
 }

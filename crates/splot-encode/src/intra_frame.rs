@@ -56,7 +56,17 @@ pub(crate) struct IntraFrameCoder {
 
 impl IntraFrameCoder {
     pub(crate) fn new(config: &Config) -> Result<Self> {
-        let preset = config.preset.params();
+        let mut p = *config.preset.params();
+        if let Ok(v) = std::env::var("SPLOT_EXT") {
+            let mut it = v.split(',').map(|x| x.parse::<u8>().unwrap_or(0));
+            p.ext_partitions = it.next().unwrap_or(0);
+            p.ext_partition_gate = it.next().unwrap_or(0);
+        }
+        Self::with_preset(config, Box::leak(Box::new(p)))
+    }
+
+    /// A coder of `config` with the search limits `preset`.
+    fn with_preset(config: &Config, preset: &'static PresetParams) -> Result<Self> {
         let sequence = build_encoder_sequence_header(&EncoderStreamParams {
             width: config.width,
             height: config.height,
@@ -80,6 +90,8 @@ impl IntraFrameCoder {
                 cfl: true,
                 ibp: true,
                 intra_edge_filter: true,
+                ext_partitions: preset.ext_partitions > 0,
+                uneven_4way_partitions: preset.ext_partitions > 1,
                 ..EncoderToolFlags::default()
             },
         })
