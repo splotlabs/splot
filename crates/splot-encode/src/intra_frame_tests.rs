@@ -631,9 +631,8 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let (tx, _, high_precision_mv, tiles) =
-        crate::gop::frame_tools(coder.preset, coder.tiles, qindex);
-    let tools = (tx, true, high_precision_mv, tiles);
+    let (tx, _, mv_tools, tiles) = crate::gop::frame_tools(coder.preset, coder.tiles, qindex);
+    let tools = (tx, true, mv_tools, tiles);
     let filters = FrameFilterParams::default();
     let core = plan
         .header(&coder.view, &coder.references, qindex, &filters, tools)
@@ -1021,3 +1020,5 @@ fn avm_decodes_multi_tile_frames_like_splot() {
 
 #[path = "intra_frame_carry_tests.rs"]
 mod carry;
+#[path = "intra_frame_mvpred_tests.rs"]
+mod mvpred;

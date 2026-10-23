@@ -364,27 +364,7 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
     let (mi_rows, mi_cols) = geometry.mi_dimensions();
     let current_order_hint = core.display_order_hint().unwrap_or(0);
     let sb_h4 = geometry.sb_h4();
-    let projection_step = tip::tmvp_projection_step(core);
-    let temporal_config = TemporalProjectionConfig {
-        frame_size: (
-            geometry.info().coded_luma_size().width(),
-            geometry.info().coded_luma_size().height(),
-        ),
-        step: projection_step,
-        unit_size8: tip::tmvp_unit_size8(projection_step, sb_h4),
-        enable_tip: sequence
-            .inter
-            .as_ref()
-            .is_some_and(|tools| tools.enable_tip),
-        enable_trajectory: sequence
-            .inter
-            .as_ref()
-            .is_some_and(|tools| tools.enable_mv_traj),
-        reduced: sequence
-            .inter
-            .as_ref()
-            .is_some_and(|tools| tools.reduced_ref_frame_mvs_mode),
-    };
+    let temporal_config = temporal_projection_config(sequence, core, geometry);
     let derived_order_hints = super::find_mv_stack::reference_order_hints(
         ref_frame_idx,
         &reference.ref_valid,
@@ -645,6 +625,25 @@ pub(crate) fn segment_map_error(error: &TileSegmentIdStateError) -> crate::error
         TileSegmentIdStateError::Allocation { .. } => {
             inter_allocation!("inter frame segment id map")
         }
+    }
+}
+
+/// The § 7.9 projection settings of frame `core` of `sequence` with `geometry`.
+fn temporal_projection_config(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    geometry: super::FrameDecodeGeometry,
+) -> TemporalProjectionConfig {
+    let step = tip::tmvp_projection_step(core);
+    let tools = sequence.inter.as_ref();
+    let size = geometry.info().coded_luma_size();
+    TemporalProjectionConfig {
+        frame_size: (size.width(), size.height()),
+        step,
+        unit_size8: tip::tmvp_unit_size8(step, geometry.sb_h4()),
+        enable_tip: tools.is_some_and(|tools| tools.enable_tip),
+        enable_trajectory: tools.is_some_and(|tools| tools.enable_mv_traj),
+        reduced: tools.is_some_and(|tools| tools.reduced_ref_frame_mvs_mode),
     }
 }
 
