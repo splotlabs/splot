@@ -23,6 +23,9 @@ permissions:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -31,6 +34,11 @@ jobs:
 
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Start sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.18.0
 
       - name: Cache cargo registry, git, and target
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -84,8 +92,15 @@ jobs:
 
       - run: cargo xtask ci
 
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
+
   decode-release:
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,6 +108,11 @@ jobs:
 
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Start sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.18.0
 
       - name: Cache cargo registry, git, and target
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -106,6 +126,10 @@ jobs:
             ${{ runner.os }}-cargo-release-v1-
 
       - run: cargo test -p splot-decode --release --lib --locked
+
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
 
   dav2d-test-data:
     runs-on: ubuntu-latest
@@ -315,6 +339,9 @@ jobs:
 
   coverage:
     runs-on: ubuntu-latest
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -322,6 +349,11 @@ jobs:
 
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Start sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.18.0
 
       - name: Add llvm-tools-preview
         run: rustup component add llvm-tools-preview
@@ -359,6 +391,10 @@ jobs:
           name: coverage-lcov
           path: lcov.info
           if-no-files-found: warn
+
+      - name: sccache statistics
+        if: always()
+        run: sccache --show-stats
 
   perf:
     runs-on: ubuntu-latest
