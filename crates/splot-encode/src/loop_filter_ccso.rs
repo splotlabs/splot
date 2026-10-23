@@ -5,9 +5,9 @@
 //!
 //! One statistics pass per candidate classification reads the deblocked luma,
 //! the CDEF output and the source, and keeps `source - filtered` and a count
-//! per class of every unit; the unit rows run on the pool. Every band and edge
-//! variant of a candidate is a sum of these classes, so no candidate runs the
-//! filter. A variant takes the offset of each class that minimizes the squared
+//! per class of every unit; each CCSO unit row is one worker-pool job. Every
+//! band and edge variant of a candidate is a sum of these classes, so no
+//! candidate runs the filter. A variant takes the offset of each class that minimizes the squared
 //! error plus the `ccso_offset_idx` rate, turns each unit on or off with the
 //! exact `ccso_blk` rate of the adapting CDF, and refits the offsets on the
 //! units that stay on.
