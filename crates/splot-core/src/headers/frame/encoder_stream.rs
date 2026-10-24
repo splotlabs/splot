@@ -505,7 +505,13 @@ fn key_frame_header_bits(
     }
     w.write_flag(false)?; // allow_intrabc
     w.write_flag(false)?; // disable_cdf_update
-    write_quant_and_filters(&mut w, seq, (base_q_idx, tiles, tx.allow_tcq), filters, true)?;
+    write_quant_and_filters(
+        &mut w,
+        seq,
+        (base_q_idx, tiles, tx.allow_tcq),
+        filters,
+        true,
+    )?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
     w.align_to_byte();
