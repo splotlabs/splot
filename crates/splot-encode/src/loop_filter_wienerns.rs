@@ -15,6 +15,7 @@
 //! frame also tries the bank of its primary reference (`temporal_pred_flag`).
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 
 use splot_core::headers::frame::{
     CdefStrengthSets, CoreSeqRestorationView, CoreSeqView, FrameFilterParams, FrameHeaderCore,
@@ -126,11 +127,42 @@ impl Padded {
         })
     }
 
-    /// The sample at `(x + dx, y + dy)`.
-    fn at(&self, x: usize, y: usize, (dy, dx): (isize, isize)) -> i32 {
-        let row = (y + self.radius) as isize + dy;
-        let col = (x + self.radius) as isize + dx;
-        i32::from(self.samples[row as usize * self.width + col as usize])
+    /// Row `y + dy` from column `-radius`.
+    fn row(&self, y: usize, dy: isize) -> &[u16] {
+        let start = ((y + self.radius) as isize + dy) as usize * self.width;
+        &self.samples[start..start + self.width]
+    }
+
+    /// `source - m` over the columns `span` of row `y`, `source` from column `0`.
+    fn target(&self, y: usize, span: Range<usize>, source: &[u16], out: &mut Vec<i32>) {
+        let centre = &self.row(y, 0)[self.radius..];
+        out.clear();
+        out.extend(
+            source[span.clone()]
+                .iter()
+                .zip(&centre[span])
+                .map(|(&s, &m)| i32::from(s) - i32::from(m)),
+        );
+    }
+
+    /// The pair feature `s(dy, dx) + s(-dy, -dx) - 2m` over `span` of row `y`.
+    fn pair(&self, y: usize, span: Range<usize>, (dy, dx): (isize, isize), out: &mut Vec<i32>) {
+        let radius = self.radius as isize;
+        let (plus, minus, centre) = (self.row(y, dy), self.row(y, -dy), self.row(y, 0));
+        let (ahead, behind) = ((radius + dx) as usize, (radius - dx) as usize);
+        out.clear();
+        out.extend(span.map(|x| {
+            i32::from(plus[x + ahead]) + i32::from(minus[x + behind])
+                - 2 * i32::from(centre[x + self.radius])
+        }));
+    }
+
+    /// The tap difference `s(dy, dx) - m` over `span` of row `y`.
+    fn diff(&self, y: usize, span: Range<usize>, (dy, dx): (isize, isize), out: &mut Vec<i32>) {
+        let (tap, centre) = (self.row(y, dy), self.row(y, 0));
+        let (p, c) = ((self.radius as isize + dx) as usize, self.radius);
+        out.clear();
+        out.extend(span.map(|x| i32::from(tap[x + p]) - i32::from(centre[x + c])));
     }
 }
 
@@ -279,6 +311,7 @@ impl Search<'_> {
     ) -> Result<Choice> {
         let format = off.info().pixel_format();
         let shift = format.subsampling_x().max(format.subsampling_y());
+        let original = best.params;
         let luma_size = best.params.lr_luma_unit_size.unwrap_or(64);
         let chroma_size = (luma_size >> shift).max(64 >> format.subsampling_y());
         if !units_fit_tiles(&self.header(&best.params)?, chroma_size << shift) {
@@ -376,6 +409,7 @@ impl Search<'_> {
             }
         }
         if current.params.lr_chroma_wiener_ns == [None; 2] {
+            best.params = original;
             return Ok(best);
         }
         Ok(current)
@@ -504,49 +538,51 @@ impl Search<'_> {
             .filter(|(_, unit)| unit.plane == plane)
             .copied()
             .collect();
+        let max_product = 4 * max * max;
         map_tiles(self.pool, jobs, |(layout, unit)| {
-            let mut stats = WienerStats::new(n);
-            let mut lanes = WienerAccumulator::new(n, 4 * max * max);
-            let mut features = vec![Vec::new(); n];
-            let mut target = Vec::new();
-            for rect in units.layouts[layout]
+            let rects = units.layouts[layout]
                 .unit_rects(unit)
-                .map_err(coding("restoration unit"))?
-            {
-                let right = (rect.x() + rect.width()).min(source_size.width());
-                let bottom = (rect.y() + rect.height()).min(source_size.height());
-                for y in rect.y()..bottom {
-                    for row in &mut features {
-                        row.clear();
-                    }
-                    target.clear();
-                    for x in rect.x()..right {
-                        let m = padded.at(x, y, (0, 0));
-                        target.push(i32::from(source[y * source_size.width() + x]) - m);
-                        if let Some(luma) = &luma {
-                            let centre = luma.at(x, y, (0, 0));
-                            for (k, &(dy, dx, _)) in WIENER_NS_CONFIG_UV.iter().enumerate() {
-                                if k % 2 == 0 {
-                                    features[k / 2].push(
-                                        padded.at(x, y, (dy, dx)) + padded.at(x, y, (-dy, -dx))
-                                            - 2 * m,
-                                    );
-                                }
-                                features[CHROMA_SHORT + k].push(luma.at(x, y, (dy, dx)) - centre);
+                .map_err(coding("restoration unit"))?;
+            let mut stats = WienerStats::new(n);
+            let mut target = Vec::new();
+            if let Some(luma) = &luma {
+                let mut lanes = WienerAccumulator::<CHROMA_COEFFS>::new(max_product);
+                let mut features: [Vec<i32>; CHROMA_COEFFS] = Default::default();
+                for rect in &rects {
+                    let right = (rect.x() + rect.width()).min(source_size.width());
+                    for y in rect.y()..(rect.y() + rect.height()).min(source_size.height()) {
+                        let span = rect.x()..right;
+                        let row = &source[y * source_size.width()..];
+                        padded.target(y, span.clone(), row, &mut target);
+                        for (k, &(dy, dx, _)) in WIENER_NS_CONFIG_UV.iter().enumerate() {
+                            if k % 2 == 0 {
+                                padded.pair(y, span.clone(), (dy, dx), &mut features[k / 2]);
                             }
-                        } else {
-                            for (k, &(dy, dx, _)) in WIENER_NS_CONFIG_Y_PAIRS.iter().enumerate() {
-                                features[k].push(
-                                    padded.at(x, y, (dy, dx)) + padded.at(x, y, (-dy, -dx)) - 2 * m,
-                                );
-                            }
+                            luma.diff(y, span.clone(), (dy, dx), &mut features[CHROMA_SHORT + k]);
                         }
+                        let rows = core::array::from_fn(|k| features[k].as_slice());
+                        lanes.add(&rows, &target, &mut stats);
                     }
-                    let rows: Vec<&[i32]> = features.iter().map(Vec::as_slice).collect();
-                    lanes.add(&rows, &target, &mut stats);
                 }
+                lanes.flush(&mut stats);
+            } else {
+                let mut lanes = WienerAccumulator::<LUMA_COEFFS>::new(max_product);
+                let mut features: [Vec<i32>; LUMA_COEFFS] = Default::default();
+                for rect in &rects {
+                    let right = (rect.x() + rect.width()).min(source_size.width());
+                    for y in rect.y()..(rect.y() + rect.height()).min(source_size.height()) {
+                        let span = rect.x()..right;
+                        let row = &source[y * source_size.width()..];
+                        padded.target(y, span.clone(), row, &mut target);
+                        for (k, &(dy, dx, _)) in WIENER_NS_CONFIG_Y_PAIRS.iter().enumerate() {
+                            padded.pair(y, span.clone(), (dy, dx), &mut features[k]);
+                        }
+                        let rows = core::array::from_fn(|k| features[k].as_slice());
+                        lanes.add(&rows, &target, &mut stats);
+                    }
+                }
+                lanes.flush(&mut stats);
             }
-            lanes.flush(&mut stats);
             Ok(stats)
         })
     }
@@ -900,8 +936,8 @@ mod tests {
             direct += (t * 128 - fitted).pow(2) - (t * 128).pow(2);
         }
         let mut stats = WienerStats::new(LUMA_COEFFS);
-        let rows: Vec<&[i32]> = features.iter().map(Vec::as_slice).collect();
-        let mut lanes = WienerAccumulator::new(LUMA_COEFFS, 1 << 20);
+        let rows: [&[i32]; LUMA_COEFFS] = core::array::from_fn(|k| features[k].as_slice());
+        let mut lanes = WienerAccumulator::<LUMA_COEFFS>::new(1 << 20);
         lanes.add(&rows, &target, &mut stats);
         lanes.flush(&mut stats);
         stats.samples = 0;

@@ -85,22 +85,22 @@ pub(crate) fn accumulate_scalar(features: &[&[i32]], target: &[i32], stats: &mut
     accumulate_samples(features, target, 0..target.len(), stats);
 }
 
-/// The SIMD accumulation: `i32` lane sums carried across rows, moved to `i64`
-/// before a lane can overflow.
-pub(crate) struct WienerAccumulator {
-    pairs: Vec<V>,
-    cross: Vec<V>,
+/// The SIMD accumulation over `N` coefficients: `i32` lane sums carried
+/// across rows, moved to `i64` before a lane can overflow.
+pub(crate) struct WienerAccumulator<const N: usize> {
+    pairs: [[V; N]; N],
+    cross: [V; N],
     chunks: usize,
     budget: usize,
 }
 
-impl WienerAccumulator {
-    /// An accumulator over `n` coefficients whose feature and target products
-    /// are at most `max_product` in magnitude.
-    pub(crate) fn new(n: usize, max_product: u64) -> Self {
+impl<const N: usize> WienerAccumulator<N> {
+    /// An accumulator whose feature and target products are at most
+    /// `max_product` in magnitude.
+    pub(crate) fn new(max_product: u64) -> Self {
         Self {
-            pairs: vec![V::splat(0); n * (n + 1) / 2],
-            cross: vec![V::splat(0); n],
+            pairs: [[V::splat(0); N]; N],
+            cross: [V::splat(0); N],
             chunks: 0,
             budget: (i32::MAX as u64 / max_product.max(1)).max(1) as usize,
         }
@@ -108,25 +108,20 @@ impl WienerAccumulator {
 
     /// Accumulates the rows `features[k]` and `target`, which have the same
     /// length, into the lanes and, for their tail, into `stats`.
-    pub(crate) fn add(&mut self, features: &[&[i32]], target: &[i32], stats: &mut WienerStats) {
+    pub(crate) fn add(&mut self, features: &[&[i32]; N], target: &[i32], stats: &mut WienerStats) {
         let len = target.len();
-        let mut f = vec![V::splat(0); features.len()];
         let mut x = 0;
         stats.samples += (len - len % LANES) as u64;
         while x + LANES <= len {
             if self.chunks == self.budget {
                 self.flush(stats);
             }
-            for (lanes, row) in f.iter_mut().zip(features) {
-                *lanes = V::from_slice(&row[x..x + LANES]);
-            }
+            let f: [V; N] = core::array::from_fn(|k| V::from_slice(&features[k][x..x + LANES]));
             let t = V::from_slice(&target[x..x + LANES]);
-            let mut pair = 0;
-            for (i, &fi) in f.iter().enumerate() {
-                self.cross[i] += fi * t;
-                for &fj in &f[i..] {
-                    self.pairs[pair] += fi * fj;
-                    pair += 1;
+            for i in 0..N {
+                self.cross[i] += f[i] * t;
+                for j in i..N {
+                    self.pairs[i][j] += f[i] * f[j];
                 }
             }
             x += LANES;
@@ -137,13 +132,15 @@ impl WienerAccumulator {
 
     /// Moves the lane sums into `stats`.
     pub(crate) fn flush(&mut self, stats: &mut WienerStats) {
-        for (sum, lanes) in stats.a.iter_mut().zip(self.pairs.iter_mut()) {
-            *sum += lanes.cast::<i64>().reduce_sum();
-            *lanes = V::splat(0);
-        }
-        for (sum, lanes) in stats.b.iter_mut().zip(self.cross.iter_mut()) {
-            *sum += lanes.cast::<i64>().reduce_sum();
-            *lanes = V::splat(0);
+        let mut pair = 0;
+        for i in 0..N {
+            stats.b[i] += self.cross[i].cast::<i64>().reduce_sum();
+            self.cross[i] = V::splat(0);
+            for j in i..N {
+                stats.a[pair] += self.pairs[i][j].cast::<i64>().reduce_sum();
+                self.pairs[i][j] = V::splat(0);
+                pair += 1;
+            }
         }
         self.chunks = 0;
     }
@@ -177,16 +174,27 @@ mod tests {
             })
     }
 
-    fn run(n: usize, max: i32, rows: &[(Vec<Vec<i32>>, Vec<i32>)]) -> (WienerStats, WienerStats) {
-        let (mut scalar, mut simd) = (WienerStats::new(n), WienerStats::new(n));
-        let mut lanes = WienerAccumulator::new(n, 4 * (max as u64).pow(2));
+    fn run_n<const N: usize>(
+        max: i32,
+        rows: &[(Vec<Vec<i32>>, Vec<i32>)],
+    ) -> (WienerStats, WienerStats) {
+        let (mut scalar, mut simd) = (WienerStats::new(N), WienerStats::new(N));
+        let mut lanes = WienerAccumulator::<N>::new(4 * (max as u64).pow(2));
         for (features, target) in rows {
-            let features: Vec<&[i32]> = features.iter().map(Vec::as_slice).collect();
+            let features: [&[i32]; N] = core::array::from_fn(|k| features[k].as_slice());
             accumulate_scalar(&features, target, &mut scalar);
             lanes.add(&features, target, &mut simd);
         }
         lanes.flush(&mut simd);
         (scalar, simd)
+    }
+
+    fn run(n: usize, max: i32, rows: &[(Vec<Vec<i32>>, Vec<i32>)]) -> (WienerStats, WienerStats) {
+        if n == 16 {
+            run_n::<16>(max, rows)
+        } else {
+            run_n::<18>(max, rows)
+        }
     }
 
     proptest! {
