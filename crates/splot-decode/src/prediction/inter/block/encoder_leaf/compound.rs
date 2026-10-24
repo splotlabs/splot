@@ -12,15 +12,35 @@ use super::super::super::compound::{
 };
 use super::super::compound_path::{
     compound_joint_mv_projection, compound_needs_interp_filter, compound_ref_contexts,
-    compound_ref_distance_signs, skip_mode_reference_pair,
+    compound_ref_distance_signs, compound_use_amvd_selector, skip_mode_reference_pair,
 };
 use super::super::resolve::CompoundMotionSyntax;
-use super::super::syntax::interp_filter_symbol;
+use super::super::syntax::{
+    block_mv_precision_with, interp_filter_symbol, single_use_amvd_selector,
+};
+use super::super::warp::{
+    inter_mv_read_config, inter_mvd_sign_derivation_allowed,
+    mvd_sign_derivation_block_scope_allowed,
+};
 use super::*;
 
 /// `JOINT_NEWMV_SCALE_FACTOR_CNT` (§ 3): the `jmvd_scale_mode` values without
 /// adaptive MVD.
 pub(crate) const JMVD_SCALE_MODES: u8 = 5;
+
+/// The `pb_mv_precision` values a block codes.
+const PB_MV_PRECISION_SYMBOLS: u8 =
+    crate::bitstream::tile_payload::PB_MV_PRECISION_CDF_ROW_LEN as u8 - 1;
+
+/// How the decoder reads the differences of one leaf (§ 5.20.7.13):
+/// `MvPrecision`, `use_amvd`, and the derived-sign rule with its threshold.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MvdCoding {
+    pub(crate) precision: u8,
+    pub(crate) use_amvd: bool,
+    pub(crate) derive_sign: bool,
+    pub(crate) derive_threshold: usize,
+}
 
 /// The compound choice of one leaf (§ 5.20.7.12), or a skip-mode leaf
 /// (§ 5.20.7.10) whose `ref_frames` are the `skip_mode_frames` pair.
@@ -61,6 +81,138 @@ impl EncoderMotion {
 }
 
 impl EncoderInterTile {
+    /// The block precision record of `motion`.
+    pub(crate) fn block_precision(&self, motion: EncoderMotion) -> BlockPrecisionRecord {
+        match motion {
+            EncoderMotion::Single(EncoderSingleMotion {
+                precision: Some(precision),
+                ..
+            }) => BlockPrecisionRecord::explicit(precision),
+            _ => BlockPrecisionRecord::most_probable(self.precision),
+        }
+    }
+
+    /// How the decoder reads the differences of `motion`.
+    pub(crate) fn mvd_coding(&self, motion: EncoderMotion) -> Result<MvdCoding> {
+        let precision = self.block_precision(motion).mv_precision;
+        let frame_config = inter_mv_read_config(&self.core)?;
+        let allowed = |use_amvd| {
+            inter_mvd_sign_derivation_allowed(
+                &self.sequence,
+                &self.core,
+                SINGLE_MODE_NEWMV,
+                use_amvd,
+                frame_config,
+                MvReadConfig::inter(precision),
+            )
+        };
+        let (use_amvd, derive_sign, derive_threshold) = match motion {
+            EncoderMotion::Single(single) => (
+                single.use_amvd,
+                single.mode == SINGLE_MODE_NEWMV
+                    && mvd_sign_derivation_block_scope_allowed(MotionMode::Simple, false, None)
+                    && allowed(single.use_amvd),
+                1,
+            ),
+            EncoderMotion::Compound(compound) => (
+                false,
+                matches!(
+                    compound.y_mode,
+                    CompoundYMode::JointNew | CompoundYMode::NewNew
+                ) && mvd_sign_derivation_block_scope_allowed(
+                    MotionMode::Simple,
+                    false,
+                    Some(compound.ref_mv_idx),
+                ) && allowed(false),
+                compound.y_mode.mvd_sign_derivation_threshold(),
+            ),
+        };
+        Ok(MvdCoding {
+            precision,
+            use_amvd,
+            derive_sign,
+            derive_threshold,
+        })
+    }
+
+    /// Whether the sequence enables adaptive MVD.
+    pub(crate) fn enable_adaptive_mvd(&self) -> bool {
+        self.sequence
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.enable_adaptive_mvd)
+    }
+
+    /// The explicit block precisions a `NEWMV` at `frontier` can code,
+    /// finest first.
+    pub(crate) fn newmv_precisions(&self, frontier: &DecodeBlockFrontier) -> Result<Vec<u8>> {
+        let neighbour = block_neighbour_ctx(
+            &self.grid,
+            &self.block(frontier, (SINGLE_REF_FRAME0, None))?,
+        );
+        let mut out = Vec::new();
+        for pb in 0..PB_MV_PRECISION_SYMBOLS {
+            let read = block_mv_precision_with(
+                &self.sequence,
+                &self.core,
+                &neighbour,
+                self.precision,
+                (true, false),
+                |selector| {
+                    Ok(match selector {
+                        TileCdfSelector::UseMostProbablePrecision { .. } => 0,
+                        _ => pb,
+                    })
+                },
+            );
+            if let Ok(read) = read
+                && !read.use_most_probable_precision
+            {
+                out.push(read.mv_precision);
+            }
+        }
+        out.sort_unstable_by(|a, b| b.cmp(a));
+        out.dedup();
+        Ok(out)
+    }
+
+    /// The `use_most_probable_precision` and `pb_mv_precision` symbols that
+    /// code `target` for a block that codes `NEWMV` as `has_newmv`, answered
+    /// through the decoder's own reads.
+    fn precision_symbols(
+        &self,
+        out: &mut Vec<(TileCdfSelector, u8)>,
+        neighbour: &BlockNeighbourContext,
+        has_newmv: bool,
+        (target, use_amvd): (BlockPrecisionRecord, bool),
+    ) -> Result<()> {
+        for pb in 0..PB_MV_PRECISION_SYMBOLS {
+            let mut coded = Vec::new();
+            let read = block_mv_precision_with(
+                &self.sequence,
+                &self.core,
+                neighbour,
+                self.precision,
+                (has_newmv, use_amvd),
+                |selector| {
+                    let value = match selector {
+                        TileCdfSelector::UseMostProbablePrecision { .. } => {
+                            u8::from(target.use_most_probable_precision)
+                        }
+                        _ => pb,
+                    };
+                    coded.push((selector, value));
+                    Ok(value)
+                },
+            );
+            if read.is_ok_and(|read| read == target) {
+                out.extend(coded);
+                return Ok(());
+            }
+        }
+        Err(DecodeHeaderStateError::InvalidInterBlockModeState.into())
+    }
+
     /// The filter the decoder predicts `motion` at `frontier` with, and the
     /// `interp_filter` symbol it reads for it (§ 5.20.7.6), if any.
     pub(crate) fn interp_filter(
@@ -267,10 +419,24 @@ impl EncoderInterTile {
                     }
                 }
                 out.push((TileCdfSelector::SingleMode { ctx: new_mv }, single.mode));
+                let amvd_ctx = neighbour.amvd_ctx(single.ref_frame);
+                if let Some(selector) =
+                    single_use_amvd_selector(self.enable_adaptive_mvd(), single.mode, amvd_ctx)
+                {
+                    out.push((selector, u8::from(single.use_amvd)));
+                } else if single.use_amvd {
+                    return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
+                }
                 if single.mode != SINGLE_MODE_GLOBALMV {
                     let selector = |idx| TileCdfSelector::DrlMode { idx, ctx: new_mv };
                     drl_symbols(&mut out, selector, 0, max_drl, single.ref_mv_idx)?;
                 }
+                self.precision_symbols(
+                    &mut out,
+                    &neighbour,
+                    single.mode == SINGLE_MODE_NEWMV,
+                    (self.block_precision(motion), single.use_amvd),
+                )?;
             }
             EncoderMotion::Compound(compound) => {
                 self.compound_symbols(&mut out, &neighbour, (new_mv, max_drl), compound)?;
@@ -316,17 +482,21 @@ impl EncoderInterTile {
         if pair != target || y_mode != compound.y_mode {
             return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
         }
+        let amvd_ctx = neighbour.amvd_ctx(pair.0);
+        if let Some(selector) =
+            compound_use_amvd_selector(self.enable_adaptive_mvd(), y_mode, false, amvd_ctx)
+        {
+            out.push((selector, 0));
+        }
         if y_mode == CompoundYMode::JointNew {
             if compound.jmvd_scale_mode >= JMVD_SCALE_MODES {
                 return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
             }
             out.push((TileCdfSelector::JmvdScaleMode, compound.jmvd_scale_mode));
         }
-        if !y_mode.reads_drl_idx() {
-            return Ok(());
-        }
         let selector = |idx| TileCdfSelector::DrlMode { idx, ctx: new_mv };
         match compound.independent_idx {
+            _ if !y_mode.reads_drl_idx() => {}
             Some([first, second]) => {
                 drl_symbols(out, selector, 0, max_drl, first)?;
                 let min = if pair.0 == pair.1 && y_mode == CompoundYMode::NearNear {
@@ -334,10 +504,12 @@ impl EncoderInterTile {
                 } else {
                     0
                 };
-                drl_symbols(out, selector, min, max_drl, second)
+                drl_symbols(out, selector, min, max_drl, second)?;
             }
-            None => drl_symbols(out, selector, 0, max_drl, compound.ref_mv_idx),
+            None => drl_symbols(out, selector, 0, max_drl, compound.ref_mv_idx)?,
         }
+        let precision = BlockPrecisionRecord::most_probable(self.precision);
+        self.precision_symbols(out, neighbour, y_mode.has_newmv(), (precision, false))
     }
 
     /// The parse record of `compound` at `block`, as the decoder builds it
