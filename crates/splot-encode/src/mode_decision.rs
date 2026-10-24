@@ -569,45 +569,46 @@ impl TrialCoder<'_, '_> {
         Ok(if other_cost < cost { other } else { choice })
     }
 
-    /// `choice`, or for an inter `choice` whose luma prediction residual is
-    /// uneven, its best luma transform partition: one quadrant holds more than
-    /// `preset.inter_tx_split / 64` of the residual energy. Leaves narrower or
-    /// shorter than 8 keep `NONE`.
-    fn refine_inter_tx_partition(
+    /// Whether the final trial of `choice` measures the quadrant energy of its
+    /// luma prediction residual: an inter leaf of a frame with luma transform
+    /// partitions, both sides at least 8, under `preset.inter_tx_split`.
+    fn measures_quadrants(&self, leaf: &LeafBlock, choice: LeafChoice) -> Result<bool> {
+        let (w, h) = leaf.dimensions()?;
+        Ok(choice.inter.is_some()
+            && self.preset.inter_tx_split > 0
+            && w.min(h) >= 8
+            && self.syntax.luma_tx_partitions(leaf)?.len() > 1)
+    }
+
+    /// The best luma transform partition of the coded inter `choice` when one
+    /// quadrant of its prediction residual holds more than
+    /// `preset.inter_tx_split / 64` of the energy; `None` keeps `choice`.
+    fn uneven_split(
         &mut self,
         leaf: &LeafBlock,
         choice: LeafChoice,
+        quadrants: Option<[u64; 4]>,
         start: &SyntaxSnapshot,
-    ) -> Result<LeafChoice> {
-        let (w, h) = leaf.dimensions()?;
-        let Some(prediction) = choice.inter.filter(|_| self.preset.inter_tx_split > 0) else {
-            return Ok(choice);
+    ) -> Result<Option<LeafChoice>> {
+        let Some(quadrants) = quadrants else {
+            return Ok(None);
         };
-        let partitions = self.syntax.luma_tx_partitions(leaf)?;
-        if partitions.len() < 2 || w.min(h) < 8 {
-            return Ok(choice);
-        }
-        let prediction = snap_prediction(self.syntax, leaf, prediction)?;
-        let blocks = self.syntax.plan_inter_leaf(leaf, prediction)?;
-        let luma = blocks
-            .first()
-            .map(|tx| self.syntax.reconstruction(tx))
-            .ok_or(TileWriterError::Shape("an inter leaf without luma"))??;
-        self.syntax.restore(start)?;
-        let quadrants = quadrant_sse(self.coder.source, leaf_rect(leaf)?, &luma)?;
         let total: u64 = quadrants.iter().sum();
         let max = quadrants.iter().copied().max().unwrap_or(0);
         if max * 64 <= total * u64::from(self.preset.inter_tx_split) {
-            return Ok(choice);
+            return Ok(None);
         }
-        let candidates = partitions
+        self.syntax.restore(start)?;
+        let candidates = self
+            .syntax
+            .luma_tx_partitions(leaf)?
             .into_iter()
             .map(|tx_partition| LeafChoice {
                 tx_partition,
                 ..choice
             })
             .collect();
-        self.best(leaf, candidates, ALL, start)
+        Ok(Some(self.best(leaf, candidates, ALL, start)?))
     }
 
     /// The `preset.compound_candidates` compound predictions of `leaf` with
@@ -864,8 +865,14 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         }
         let scored = self.best_scored(&leaf, candidates, ALL, &start)?;
         let choice = self.refine_filter(&leaf, scored, &start)?;
-        let choice = self.refine_inter_tx_partition(&leaf, choice, &start)?;
-        Ok((self.code_leaf(node, choice)?, choice))
+        self.coder.quadrants = self.measures_quadrants(&leaf, choice)?.then_some([0; 4]);
+        let cost = self.code_leaf(node, choice);
+        let quadrants = self.coder.quadrants.take();
+        let cost = cost?;
+        match self.uneven_split(&leaf, choice, quadrants, &start)? {
+            Some(split) => Ok((self.code_leaf(node, split)?, split)),
+            None => Ok((cost, choice)),
+        }
     }
 
     fn code_leaf(&mut self, node: PartitionNode, choice: LeafChoice) -> Result<RdCost> {

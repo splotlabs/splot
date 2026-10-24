@@ -196,7 +196,7 @@ const fn row(
         mrl_trials: 0,
         ist_sets: 0,
         large_inter: true,
-        inter_tx_split: 24,
+        inter_tx_split: if tx_partition_search { 24 } else { 0 },
     }
 }
 

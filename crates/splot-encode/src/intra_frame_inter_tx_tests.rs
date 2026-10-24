@@ -112,8 +112,9 @@ fn split_inter_leaves(trees: &[PartitionTree]) -> usize {
 }
 
 /// With `inter_tx_split` the search of an inter frame over a pan with fresh
-/// luma noise in strips picks inter leaves with a luma transform partition in every chroma
-/// format, repeats from one state and rolls back; without it it picks none.
+/// luma noise in strips picks inter leaves with a luma transform partition in
+/// every chroma format, and finds the same tree when it searches again from
+/// the restored state; without it it picks none.
 #[test]
 fn the_search_picks_inter_tx_partitions() {
     for chroma in CHROMAS {
