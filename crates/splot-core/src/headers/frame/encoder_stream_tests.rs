@@ -258,6 +258,8 @@ fn filter_params_reach_the_parsed_header() {
                 .unwrap(),
                 lr_luma_unit_size: Some(lr_size),
                 lr_luma_wiener_ns: None,
+                lr_chroma_unit_size: None,
+                lr_chroma_wiener_ns: [None; 2],
                 ccso: [ccso_plane(), CcsoPlaneParams::default(), ccso_plane()],
             };
             let core = build_key_frame_header(
@@ -393,6 +395,73 @@ fn wiener_ns_bank_reaches_the_parsed_header() {
         )
         .is_err()
     );
+}
+
+/// Chroma banks with and without `wiener_ns_uv_sym` parse back on U and V
+/// with luma restoration off.
+#[test]
+fn chroma_wiener_ns_banks_reach_the_parsed_header() {
+    use crate::headers::frame::{WienerNsCoeffs, WienerNsFrameFilterClass};
+    let bank = |subset, sym, coeffs: [i16; 18]| WienerNsFrameFilterBank {
+        classes: crate::tile::InlineVec::from_iter_checked([WienerNsFrameFilterClass {
+            match_index: 0,
+            merged: false,
+            ref_bank: 0,
+            subset: Some(subset),
+            wiener_ns_uv_sym: sym,
+            coeffs: WienerNsCoeffs::from_iter_checked(coeffs).unwrap(),
+        }])
+        .unwrap(),
+    };
+    let u = bank(
+        2,
+        true,
+        [9, -3, 4, 0, -7, 2, 3, 3, -2, -2, 1, 1, 0, 0, 5, 5, -8, -8],
+    );
+    let v = bank(
+        1,
+        false,
+        [
+            -24, 39, -14, 15, 2, 1, -16, 15, 3, -4, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+    );
+    let mut p = params(200, 136, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    p.tools.loop_restoration = true;
+    let seq = build_encoder_sequence_header(&p).unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let choice = |bank| {
+        Some(FrameWienerNs {
+            switchable: false,
+            rst_ref_pic_idx: None,
+            bank,
+        })
+    };
+    let filters = FrameFilterParams {
+        lr_chroma_unit_size: Some(32),
+        lr_chroma_wiener_ns: [choice(u), choice(v)],
+        ..FrameFilterParams::default()
+    };
+    let core = build_key_frame_header(
+        &view,
+        120,
+        0,
+        &filters,
+        KeyFrameTxParams::default(),
+        UniformTiles::default(),
+    )
+    .unwrap();
+    let lr = core.lr_params.as_ref().unwrap();
+    assert!(lr.uses_lr);
+    assert_eq!(lr.planes[0].restoration_type, FrameRestorationType::None);
+    assert_eq!(lr.loop_restoration_size[1..], [32, 32]);
+    for (plane, bank) in [(1, u), (2, v)] {
+        assert_eq!(
+            lr.planes[plane].restoration_type,
+            FrameRestorationType::WienerNonsep
+        );
+        assert_eq!(lr.planes[plane].frame_filter_bank, Some(bank));
+    }
+    assert_eq!(reparse_core(&core, &view), core);
 }
 
 #[test]
