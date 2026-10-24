@@ -314,23 +314,26 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             .syntax
             .plan_leaf_partitioned(leaf, modes, tx_partition)?;
         let mut levels = vec![Vec::new(); blocks.len()];
-        for (index, tx) in blocks.iter_mut().enumerate() {
-            if !planes.contains(&tx.plane) {
-                continue;
+        // Luma first: the decoder reconstructs CFL chroma after the whole luma.
+        for luma in [true, false] {
+            for (index, tx) in blocks.iter_mut().enumerate() {
+                if !planes.contains(&tx.plane) || (tx.plane == 0) != luma {
+                    continue;
+                }
+                let prediction = self.syntax.predict(index)?;
+                let decision = if tx.plane == 0 {
+                    self.code_luma(coder, tx, &prediction)?
+                } else {
+                    code_as(self.syntax, coder, tx, &prediction)?
+                };
+                *tx = TransformBlock {
+                    tx_type: decision.tx_type,
+                    ist: decision.ist,
+                    ..*tx
+                };
+                self.syntax.reconstruct_as(index, tx, &decision.levels)?;
+                levels[index] = decision.levels;
             }
-            let prediction = self.syntax.predict(index)?;
-            let decision = if tx.plane == 0 {
-                self.code_luma(coder, tx, &prediction)?
-            } else {
-                code_as(self.syntax, coder, tx, &prediction)?
-            };
-            *tx = TransformBlock {
-                tx_type: decision.tx_type,
-                ist: decision.ist,
-                ..*tx
-            };
-            self.syntax.reconstruct_as(index, tx, &decision.levels)?;
-            levels[index] = decision.levels;
         }
         self.syntax.write_is_inter(leaf, false, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
