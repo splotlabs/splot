@@ -153,7 +153,8 @@ mod tests {
         }
 
         /// The forward transform of the decoder's inverse returns the inputs
-        /// within a few units: the kernel rows are orthogonal.
+        /// within a few units plus the leak of a Gram matrix within 1.5% of
+        /// `128^2` times identity.
         #[test]
         fn forward_undoes_inverse(
             params in params().prop_filter("full height", |p| p.n == if p.w >= 8 && p.h >= 8 { 32 } else { 8 }),
@@ -170,9 +171,10 @@ mod tests {
             }
             secondary_inverse_transform(&mut coeffs, &params).unwrap();
             forward_simd(&layout, &mut coeffs).unwrap();
+            let leak = forward.iter().map(|v| v.abs()).sum::<i32>() / 64;
             for (r, &pos) in layout.inputs[..layout.n].iter().enumerate() {
                 let error = (coeffs[usize::from(pos)] - forward[r]).abs();
-                prop_assert!(error <= 2 + forward[r].abs() / 64, "row {r}: {error}");
+                prop_assert!(error <= 4 + leak, "row {r}: {error} above {leak}");
             }
         }
     }

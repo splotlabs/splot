@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Intra coding tools in coded streams: MRL (§ 7.13.2).
+//! Intra coding tools in coded streams: MRL (§ 7.13.2) and IST (§ 7.15.3).
 
 use super::*;
 
@@ -31,12 +31,21 @@ fn tool_stream(
     (units, recon, coder.sequence)
 }
 
-/// Preset 9, fast enough for debug tests, with the MRL trials of preset 6.
+/// Preset 9, fast enough for debug tests, with `set` applied.
+fn preset_with(set: fn(&mut PresetParams)) -> &'static PresetParams {
+    let mut preset = PRESETS[9];
+    set(&mut preset);
+    Box::leak(Box::new(preset))
+}
+
+/// Preset 9 with the MRL trials of preset 6.
 fn mrl_preset() -> &'static PresetParams {
-    Box::leak(Box::new(PresetParams {
-        mrl_trials: PRESETS[6].mrl_trials,
-        ..PRESETS[9]
-    }))
+    preset_with(|p| p.mrl_trials = PRESETS[6].mrl_trials)
+}
+
+/// Preset 9 with the IST sets of preset 6.
+fn ist_preset() -> &'static PresetParams {
+    preset_with(|p| p.ist_sets = PRESETS[6].ist_sets)
 }
 
 /// Whether `seq` enables MRL.
@@ -66,11 +75,7 @@ fn mrl_frames_decode_to_the_encoder_recon_on_any_thread_count() {
             "{threads} threads"
         );
     }
-    let off = Box::leak(Box::new(PresetParams {
-        mrl_trials: 0,
-        ..*on
-    }));
-    let (units, recon, seq) = tool_stream(case, off);
+    let (units, recon, seq) = tool_stream(case, preset_with(|p| p.mrl_trials = 0));
     assert!(!mrl_enabled(&seq));
     assert_same_samples(&decode(&units.concat()), &recon, "no mrl");
     assert_ne!(units, one);
@@ -105,6 +110,70 @@ fn avm_decodes_mrl_frames_like_splot() {
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
         let (units, recon, _) = tool_stream((2, PixelFormat::Yuv420, bit_depth), mrl_preset());
         let avm = avm_decode(&avmdec, &units, (136, 72), bit_depth, "mrl");
+        assert!(avm == recon, "{bit_depth:?}: AVM output differs");
+    }
+}
+
+/// IST streams of every chroma format and both bit depths decode to the
+/// encoder recon, and 1, 2 and 8 threads write the same bytes. Without IST
+/// the sequence does not enable it and the stream changes.
+#[test]
+fn ist_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    let on = ist_preset();
+    for chroma in CHROMAS {
+        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+            let (units, recon, seq) = tool_stream((2, chroma, bit_depth), on);
+            assert!(seq.transform_quant_entropy.unwrap().enable_intra_ist);
+            let name = format!("{chroma:?} {bit_depth:?}");
+            assert_same_samples(&decode(&units.concat()), &recon, &name);
+        }
+    }
+    let case = (1, PixelFormat::Yuv420, BitDepth::Ten);
+    let (one, ..) = tool_stream(case, on);
+    for threads in [2, 8] {
+        assert!(
+            tool_stream((threads, case.1, case.2), on).0 == one,
+            "{threads} threads"
+        );
+    }
+    let (units, recon, seq) = tool_stream(case, preset_with(|p| p.ist_sets = 0));
+    assert!(!seq.transform_quant_entropy.unwrap().enable_intra_ist);
+    assert_same_samples(&decode(&units.concat()), &recon, "no ist");
+    assert_ne!(units, one);
+}
+
+/// An oblique sine wave: directional residual that IST compacts.
+fn wave_frame(config: &Config) -> SourceFrame {
+    let max = f64::from(config.bit_depth.max_sample());
+    let planes = config.plane_sizes().unwrap().map(|size| {
+        (0..size.height())
+            .flat_map(|y| (0..size.width()).map(move |x| (x as f64, y as f64)))
+            .map(|(x, y)| (max * (0.5 + 0.3 * ((x * 0.8 + y * 0.6) / 7.0).sin())) as u16)
+            .collect()
+    });
+    SourceFrame::new(config, 0, planes).unwrap()
+}
+
+/// The key-frame search codes luma blocks with a secondary transform.
+#[test]
+fn search_picks_ist_blocks() {
+    let config = config(64, 64, BitDepth::Eight, 9, 90);
+    let coder = IntraFrameCoder::with_preset(&config, ist_preset()).unwrap();
+    let plan = crate::gop::plan(0, config.keyint);
+    let (_, ist) = search_frame_counting(&coder, &plan, &wave_frame(&config), config.bit_depth);
+    assert!(ist > 0);
+}
+
+/// AVM decodes the IST key and inter frames to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_ist_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        let (units, recon, _) = tool_stream((2, PixelFormat::Yuv420, bit_depth), ist_preset());
+        let avm = avm_decode(&avmdec, &units, (136, 72), bit_depth, "ist");
         assert!(avm == recon, "{bit_depth:?}: AVM output differs");
     }
 }

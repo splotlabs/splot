@@ -912,6 +912,42 @@ fn search_frame(
     source: &SourceFrame,
     bit_depth: BitDepth,
 ) -> Vec<PartitionTree> {
+    search_frame_counting(coder, plan, source, bit_depth).0
+}
+
+/// Counts the coded luma blocks with a secondary transform.
+struct IstCount<'a, 'b>(&'a mut SourceResidualCoder<'b>, usize);
+
+impl ResidualCoder for IstCount<'_, '_> {
+    fn code(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        prediction: &[u16],
+    ) -> core::result::Result<TransformDecision, TileWriterError> {
+        self.0.code(syntax, tx, prediction)
+    }
+
+    fn code_luma(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        prediction: &[u16],
+        tx_types: &[TxType],
+    ) -> core::result::Result<TransformDecision, TileWriterError> {
+        let decision = self.0.code_luma(syntax, tx, prediction, tx_types)?;
+        self.1 += usize::from(decision.ist != splot_decode::encoder_syntax::Ist::OFF);
+        Ok(decision)
+    }
+}
+
+/// [`search_frame`] and the number of luma decisions with a secondary transform.
+fn search_frame_counting(
+    coder: &IntraFrameCoder,
+    plan: &GopFrame,
+    source: &SourceFrame,
+    bit_depth: BitDepth,
+) -> (Vec<PartitionTree>, usize) {
     let core = plan
         .header(
             &coder.view,
@@ -928,7 +964,7 @@ fn search_frame(
     let lambda = Lambda::from_qindex(90, bit_depth).unwrap();
     let motion = MotionSearch::new(writer.syntax(), &padded, coder.preset, lambda).unwrap();
     let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, coder.preset, lambda);
-    let mut trees = Vec::new();
+    let (mut trees, mut ist) = (Vec::new(), 0);
     while writer.next_superblock_root().is_some() {
         let mut search = || {
             writer
@@ -947,12 +983,14 @@ fn search_frame(
         };
         let tree = search();
         assert_eq!(tree, search());
+        let mut counting = IstCount(&mut residual, ist);
         writer
-            .write_superblock(&SuperblockDecision { tree: tree.clone() }, &mut residual)
+            .write_superblock(&SuperblockDecision { tree: tree.clone() }, &mut counting)
             .unwrap();
+        ist = counting.1;
         trees.push(tree);
     }
-    trees
+    (trees, ist)
 }
 
 /// An inter-frame search is repeatable and picks inter leaves for panning
