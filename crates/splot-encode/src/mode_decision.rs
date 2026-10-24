@@ -468,9 +468,9 @@ impl TrialCoder<'_, '_> {
     /// The `preset.compound_candidates` compound predictions of `leaf` with
     /// the lowest luma SATD plus the exact rate of their mode and difference
     /// syntax, DRL indices included (priced for the [`PRICED_COMPOUND_SHARE`]
-    /// times as many lowest-SATD vector pairs; candidates with the same
-    /// references and vectors keep the lowest price), over the reference
-    /// pairs of the
+    /// times as many lowest-SATD ones; a candidate with the references and
+    /// vectors of an earlier one is dropped, which measured better than
+    /// keeping the cheapest), over the reference pairs of the
     /// first [`COMPOUND_REFS`] references. Each pair tries `NEAR_NEARMV` over
     /// the DRL indices, and a pair of distinct references also
     /// `GLOBAL_GLOBALMV` and the `NEWMV` modes, whose lists take the
@@ -535,46 +535,30 @@ impl TrialCoder<'_, '_> {
                 else {
                     continue;
                 };
-                let seen = ranked
+                if ranked
                     .iter()
-                    .find(|(_, seen, other)| *seen == mvs && other.refs == refs);
-                let satd = match seen {
-                    Some(&(satd, ..)) => satd,
-                    None => motion.prediction_satd(
-                        self.syntax,
-                        &[(refs.0, mvs[0]), (refs.1, mvs[1])],
-                        InterpolationFilter::EightTap,
-                        leaf_rect(leaf)?,
-                    )?,
-                };
+                    .any(|(_, seen, other)| *seen == mvs && other.refs == refs)
+                {
+                    continue;
+                }
+                let satd = motion.prediction_satd(
+                    self.syntax,
+                    &[(refs.0, mvs[0]), (refs.1, mvs[1])],
+                    InterpolationFilter::EightTap,
+                    leaf_rect(leaf)?,
+                )?;
                 ranked.push((satd, mvs, trial));
             }
         }
         let keep = usize::from(self.preset.compound_candidates);
         ranked.sort_by_key(|&(satd, ..)| satd);
-        let mut priced: Vec<(u64, [MotionVector; 2], CompoundModes)> = Vec::new();
-        let mut keys = 0;
-        for (satd, mvs, trial) in ranked {
-            let same = |(_, seen, other): &(u64, [MotionVector; 2], CompoundModes)| {
-                *seen == mvs && other.refs == trial.refs
-            };
-            if !priced.iter().any(same) {
-                if keys == keep * PRICED_COMPOUND_SHARE {
-                    break;
-                }
-                keys += 1;
-            }
+        ranked.truncate(keep * PRICED_COMPOUND_SHARE);
+        for (cost, _, trial) in &mut ranked {
             let mut sink = RateSink::adapting();
             self.syntax
-                .price_inter_modes(leaf, InterPrediction::Compound(trial), &mut sink)?;
-            let cost = satd + motion.bits_cost(sink.bits);
-            match priced.iter_mut().find(|entry| same(entry)) {
-                Some(entry) if cost < entry.0 => *entry = (cost, mvs, trial),
-                Some(_) => {}
-                None => priced.push((cost, mvs, trial)),
-            }
+                .price_inter_modes(leaf, InterPrediction::Compound(*trial), &mut sink)?;
+            *cost += motion.bits_cost(sink.bits);
         }
-        let mut ranked = priced;
         ranked.sort_by_key(|&(cost, ..)| cost);
         ranked.truncate(keep);
         Ok(ranked
