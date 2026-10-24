@@ -5,7 +5,7 @@
 
 pub(crate) use splot_decode::encoder_syntax::{
     CompoundMode, CompoundModes, InterMode, InterModes, InterPrediction, IntraMode, IntraModes,
-    MotionVector, Partition, TxPartition, TxType,
+    Ist, MotionVector, Partition, TxPartition, TxType,
 };
 use splot_decode::encoder_syntax::{IntraTileSyntax, TransformBlock};
 
@@ -87,6 +87,8 @@ pub(crate) struct TransformDecision {
     /// [`ResidualCoder::code`], or one of the offered types from
     /// [`ResidualCoder::code_luma`].
     pub(crate) tx_type: TxType,
+    /// The secondary transform the levels use: the block's `ist`.
+    pub(crate) ist: Ist,
     /// Quantized levels in the row-major adjusted (at most 32x32) layout.
     pub(crate) levels: Vec<i32>,
 }

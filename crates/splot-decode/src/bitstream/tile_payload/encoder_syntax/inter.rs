@@ -613,6 +613,7 @@ impl IntraTileSyntax {
                 y,
                 tx_size,
                 fills_block,
+                ist: super::Ist::OFF,
             })
             .collect();
         if let (Some(tx_size), true) = (split, partition != TxPartition::None) {

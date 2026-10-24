@@ -14,13 +14,20 @@ use splot_core::tables::conversion::{
 };
 
 use super::super::cdf::TileCdfSelector;
+use splot_recon::SecondaryInverseTransform;
+
+use super::super::CoeffBlock;
+use super::super::general_intra_residual::reconstruct::resolve_secondary_inverse_transform;
 use super::super::general_intra_residual::{
-    LumaTransformPartitionContext, TX_SET_HIGH_32, TX_SET_HIGH_64, TX_SET_INTRA_2, TX_SET_WIDE_32,
-    TX_SET_WIDE_64, block_size_table_usize, dct_forced, inter_tx_type_symbols, long_tx_set_shape,
-    long_tx_type_from_index, luma_transform_records_for_partition, luma_tx_partition_allows,
-    md_idx_luma_tx_type, transform_set_from_flags,
+    IST_DIR_SIZE, IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext, TX_SET_HIGH_32,
+    TX_SET_HIGH_64, TX_SET_INTRA_2, TX_SET_WIDE_32, TX_SET_WIDE_64, block_size_table_usize,
+    dct_forced, inter_tx_type_symbols, intra_ist_most_probable_stx_selector, ist_eob_limit,
+    long_tx_set_shape, long_tx_type_from_index, luma_transform_records_for_partition,
+    luma_tx_partition_allows, md_idx_luma_tx_type, transform_set_from_flags,
 };
-use super::{EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, TransformBlock, TxType, rule};
+use super::{
+    EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, TransformBlock, TxType, rule, tx_log2,
+};
 use crate::pipeline::general_intra::luma_tx_partition_context;
 
 pub use super::super::general_intra_residual::LumaTxPartition as TxPartition;
@@ -36,6 +43,37 @@ pub const TX_PARTITIONS: [TxPartition; 8] = [
     TxPartition::Horz5,
     TxPartition::Vert5,
 ];
+
+/// `IST_DIR_SIZE` (§ 3): the `most_probable_stx_set` values.
+pub const IST_SETS: u8 = IST_DIR_SIZE as u8;
+
+/// `sec_tx_type` and `most_probable_stx_set` of an intra luma block (§ 5.20.8.2).
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct Ist {
+    /// `sec_tx_type`, `0..=3`; `0` codes no secondary transform and ignores `set`.
+    pub sec_tx_type: u8,
+    /// `most_probable_stx_set`, below [`IST_SETS`].
+    pub set: u8,
+}
+
+impl Ist {
+    /// No secondary transform.
+    pub const OFF: Self = Self {
+        sec_tx_type: 0,
+        set: 0,
+    };
+
+    /// The decoder's syntax of a coded `sec_tx_type`.
+    pub(super) const fn syntax(self) -> Option<IntraIstSyntax> {
+        if self.sec_tx_type == 0 {
+            return None;
+        }
+        Some(IntraIstSyntax {
+            sec_tx_type: self.sec_tx_type as usize,
+            most_probable_stx_set: Some(self.set as usize),
+        })
+    }
+}
 
 /// One symbol: its CDF and its value.
 type Step = (TileCdfSelector, usize);
@@ -154,7 +192,84 @@ impl IntraTileSyntax {
         for (selector, value) in steps.into_iter().flatten() {
             put(self.tile_row(selector)?, value)?;
         }
+        if !self.ist_coded(tx, eob)? {
+            if tx.ist.sec_tx_type != 0 {
+                return Err(EncoderSyntaxError::Unsupported("IST for this block and eob").into());
+            }
+            return Ok(());
+        }
+        let ist = tx.ist;
+        if ist.sec_tx_type > 3 || (ist.sec_tx_type > 0 && ist.set >= self.ist_sets(tx)?) {
+            return Err(EncoderSyntaxError::Unsupported("IST type or set").into());
+        }
+        let row = TileCdfSelector::SecTxType {
+            is_inter: 0,
+            tx_size_sqr: tx_size_sqr(tx.tx_size)?,
+        };
+        put(self.tile_row(row)?, ist.sec_tx_type.into())?;
+        if ist.sec_tx_type > 0 {
+            put(self.tile_row(Self::ist_set_row(tx)?)?, ist.set.into())?;
+        }
         Ok(())
+    }
+
+    /// The `most_probable_stx_set` values luma block `tx` can code.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for an invalid transform size.
+    pub fn ist_sets(&mut self, tx: &TransformBlock) -> Result<u8> {
+        let row = Self::ist_set_row(tx)?;
+        u8::try_from(self.arity(row)?).map_err(|_| EncoderSyntaxError::Unsupported("IST sets"))
+    }
+
+    fn ist_set_row(tx: &TransformBlock) -> Result<TileCdfSelector> {
+        intra_ist_most_probable_stx_selector(tx.tx_size, tx.tx_type as usize)
+            .map_err(rule("IST set row"))
+    }
+
+    /// Whether intra luma block `tx` with `eob` codes `sec_tx_type` (§ 5.20.8.2).
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] without a planned leaf.
+    pub fn ist_coded(&self, tx: &TransformBlock, eob: usize) -> Result<bool> {
+        if !self.tools.enable_intra_ist
+            || tx.plane != 0
+            || eob <= 1
+            || self.leaf_is_inter()
+            || !matches!(tx.tx_type, TxType::DctDct | TxType::AdstAdst)
+            || self.planned_luma_context()?.y_mode().is_paeth()
+        {
+            return Ok(false);
+        }
+        Ok(eob <= ist_eob_limit(tx.tx_size, tx.tx_type as usize).map_err(rule("IST limit"))?)
+    }
+
+    /// The decoder's § 7.15.3 secondary transform of `tx` in the planned leaf;
+    /// `None` without one.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] without a planned leaf or for an IST
+    /// `tx` cannot code.
+    pub fn secondary_transform(
+        &self,
+        tx: &TransformBlock,
+    ) -> Result<Option<SecondaryInverseTransform>> {
+        let Some(ist) = tx.ist.syntax() else {
+            return Ok(None);
+        };
+        let block = LumaCoeffBlock {
+            intra_ist: Some(ist),
+            ..LumaCoeffBlock::empty(tx.tx_type as usize, false)
+        };
+        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
+        resolve_secondary_inverse_transform(
+            CoeffBlock::new(&block, &[]).map_err(rule("IST block"))?,
+            log2_w,
+            log2_h,
+            self.tools.bit_depth,
+            Some(self.planned_luma_context()?),
+        )
+        .map_err(rule("IST parameters"))
     }
 
     /// The transform size a `partition` of `leaf` splits, or `None` when the plan
@@ -320,10 +435,7 @@ impl IntraTileSyntax {
             }
             return Ok(out);
         }
-        let tx_size_sqr = TX_SIZE_SQR
-            .get(tx.tx_size)
-            .and_then(|&sqr| usize::try_from(sqr).ok())
-            .ok_or(EncoderSyntaxError::Unsupported("transform size"))?;
+        let tx_size_sqr = tx_size_sqr(tx.tx_size)?;
         let mut out: Vec<(TxType, Steps)> = Vec::new();
         let mut push = |tx_type: usize, steps: Steps| -> Result<()> {
             let tx_type = TxType::from_value(tx_type)?;
@@ -379,4 +491,12 @@ impl IntraTileSyntax {
     fn arity(&mut self, selector: TileCdfSelector) -> Result<usize> {
         Ok(self.tile_row(selector)?.len().saturating_sub(1))
     }
+}
+
+/// `Tx_Size_Sqr[tx_size]`.
+fn tx_size_sqr(tx_size: usize) -> Result<usize> {
+    TX_SIZE_SQR
+        .get(tx_size)
+        .and_then(|&sqr| usize::try_from(sqr).ok())
+        .ok_or(EncoderSyntaxError::Unsupported("transform size"))
 }

@@ -228,6 +228,7 @@ impl ResidualCoder for RecordedLevels {
         self.coded.push((*tx, levels.clone()));
         Ok(TransformDecision {
             tx_type: TxType::DctDct,
+            ist: tx.ist,
             levels,
         })
     }

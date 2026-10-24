@@ -77,7 +77,7 @@ pub use parity::ParityHiding;
 pub use rollback::SyntaxSnapshot;
 use rollback::{CdfJournal, CdfRow};
 pub use tcq::{TCQ_STATES, tcq_index, tcq_next_state, tcq_quantizer};
-pub use transform::{TX_PARTITIONS, TxPartition};
+pub use transform::{IST_SETS, Ist, TX_PARTITIONS, TxPartition};
 
 #[path = "encoder_filters.rs"]
 mod filters;
@@ -278,6 +278,8 @@ pub struct TransformBlock {
     pub tx_size: usize,
     /// The transform covers the plane residual block.
     pub fills_block: bool,
+    /// The secondary transform of an intra luma block; a planned block has none.
+    pub ist: Ist,
 }
 
 /// The `Level` grid of one transform block (§ 5.20.7.27), in adjusted
