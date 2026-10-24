@@ -770,7 +770,11 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
         unreachable!("these tests code at a constant qp")
     };
     let qindex = u32::from(qp);
-    let mut coder = IntraFrameCoder::new(config).unwrap();
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        mvd_tools: [true; 3],
+        ..*config.preset.params()
+    }));
+    let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();
     let mut planner = crate::gop::GopPlanner::new(config.keyint, 4);
     let mut steps = planner.plan(1).unwrap();
     steps.extend(planner.plan(4).unwrap());

@@ -164,7 +164,7 @@ const fn row(
         mv_prediction: true,
         drl_bits: motion.3,
         interp_filter_search: motion.4,
-        mvd_tools: [true; 3],
+        mvd_tools: [false; 3],
         ext_partitions: 0,
         ext_three_way_margin: 0,
         ext_four_way_margin: 0,
@@ -388,6 +388,13 @@ mod tests {
     #[test]
     fn interp_filter_search_placement() {
         assert_eq!(PRESETS.map(|params| params.interp_filter_search), [0; 11]);
+    }
+
+    /// The measured placement of the MVD tools: off in every row (see
+    /// `ENC-MV-CODING`).
+    #[test]
+    fn mvd_tools_placement() {
+        assert_eq!(PRESETS.map(|params| params.mvd_tools), [[false; 3]; 11]);
     }
 
     #[test]
