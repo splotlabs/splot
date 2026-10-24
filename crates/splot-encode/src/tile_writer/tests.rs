@@ -894,3 +894,60 @@ fn avm_decodes_random_key_frames_like_splot() {
         );
     }
 }
+
+/// A 128x128 CFL leaf predicts its chroma from all four reconstructed 64x64
+/// luma chunks: the decoder defers CFL chroma until the luma is complete.
+#[test]
+fn cfl_chroma_of_a_128x128_leaf_reads_the_whole_luma() {
+    let case = Case::new(128, 128, BitDepthIdc::Eight, SuperblockSize::Block128x128);
+    let seq = build_encoder_sequence_header(&EncoderStreamParams {
+        width: 128,
+        height: 128,
+        bit_depth: case.bit_depth,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: case.sb_size,
+        tools: case.tools,
+    })
+    .unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let core = build_key_frame_header(
+        &view,
+        case.base_q_idx,
+        0,
+        &FrameFilterParams::default(),
+        case.tx,
+        UniformTiles::default(),
+    )
+    .unwrap();
+    let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq), 0).unwrap();
+    let root = writer.next_superblock_root().unwrap();
+    let leaf = writer.syntax().leaf(root).unwrap();
+    assert!(writer.syntax().cfl_allowed(&leaf));
+    let modes = IntraModes {
+        y_mode: IntraMode::D135,
+        uv_mode: ChromaMode::Cfl {
+            alpha_u: 5,
+            alpha_v: -4,
+        },
+        ..IntraModes::DC
+    };
+    let mut coder = RandomLevels {
+        rng: Rng(0xcf1),
+        max_level: 40,
+        coverage: TxCoverage::default(),
+    };
+    let tree = PartitionTree::Leaf(LeafChoice::largest(modes));
+    writer
+        .write_superblock(&SuperblockDecision { tree }, &mut coder)
+        .unwrap();
+    let (tile, recon) = writer.finish().unwrap();
+    let unit = encode_key_frame_temporal_unit(&seq, &core, true, &[&tile]).unwrap();
+    let view = recon.as_frame_ref();
+    let expected = raw_bytes(
+        [PlaneId::Y, PlaneId::U, PlaneId::V]
+            .into_iter()
+            .flat_map(|plane| view.plane(plane).unwrap().visible_rows()),
+        case.bit_depth(),
+    );
+    assert_same_samples(&decode(&unit), &expected, "128x128 CFL leaf");
+}
