@@ -61,6 +61,51 @@ impl GeneralIntraResidualPlan {
         )
     }
 
+    /// Reconstructs the planned chroma blocks `u` and `v` of one position from
+    /// their row-major adjusted `quant` and `eob`, with cross-chroma transform
+    /// `cctx_type`, through the decoder's paired reconstruction.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn reconstruct_cctx_pair<T: ReconSample>(
+        &self,
+        [u, v]: [(usize, &[i32], usize); 2],
+        (plane_tx_type, cctx_type): (usize, usize),
+        scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
+        workspace: &mut CurrentFrameWorkspace<T>,
+        block_decoded: &TileBlockDecodedState,
+        qindex: u32,
+        intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
+        luma_context: LumaTransformTypeContext,
+    ) -> core::result::Result<(), GeneralIntraResidualError> {
+        let block = |(index, quant, eob): (usize, &[i32], usize), cctx_type| {
+            let plane = self.unit(index)?;
+            let nonzero = quant
+                .iter()
+                .rposition(|&q| q != 0)
+                .map_or(0, |last| last + 1);
+            let mut coeffs = LumaCoeffBlock {
+                eob,
+                quant_range: 0..nonzero,
+                zero_tail: quant.len() - nonzero,
+                cctx_type,
+                ..LumaCoeffBlock::empty(plane_tx_type, false)
+            };
+            plane.apply_reconstruction_tx_type(&mut coeffs);
+            Ok::<_, GeneralIntraResidualError>((plane, coeffs))
+        };
+        let (u_plane, u_coeffs) = block(u, Some(cctx_type))?;
+        let (v_plane, v_coeffs) = block(v, None)?;
+        super::chroma_pair::reconstruct_chroma_pair_or_planes(
+            scratch,
+            workspace,
+            block_decoded,
+            &(u_plane, CoeffBlock::new(&u_coeffs, u.1)?),
+            Some(&(v_plane, CoeffBlock::new(&v_coeffs, v.1)?)),
+            qindex,
+            intra_edge,
+            luma_context,
+        )
+    }
+
     /// Replaces the first plan, the luma plane of a block of at most 64x64, with
     /// the in-frame units of the § 5.20.6.3 `partition` of its `tx_size`, planned
     /// as the decoder plans parsed partition units.

@@ -26,10 +26,11 @@ use super::super::cdf::block_context::{
     uv_mode_ctx,
 };
 use super::super::general_intra_block::{
-    CFL_DERIVED_ALPHA, CFL_EXPLICIT, CHROMA_MODE_COUNT, CflParams, FIRST_MODE_COUNT,
-    GeneralIntraBlockModes, GeneralIntraChromaBlockMode, GeneralIntraChromaToolConfig,
-    GeneralIntraLumaBlockMode, SECOND_MODE_COUNT, UV_MODE_IDX_BITS, Y_SECOND_MODE_BITS,
-    cfl_allowed_for_chroma_mode, cfl_alpha_u_ctx, cfl_alpha_v_ctx,
+    CFL_DERIVED_ALPHA, CFL_EXPLICIT, CHROMA_MODE_COUNT, CflMultiDirection, CflParams,
+    FIRST_MODE_COUNT, GeneralIntraBlockModes, GeneralIntraChromaBlockMode,
+    GeneralIntraChromaToolConfig, GeneralIntraLumaBlockMode, SECOND_MODE_COUNT, UV_MODE_IDX_BITS,
+    Y_SECOND_MODE_BITS, cfl_allowed_for_chroma_mode, cfl_alpha_u_ctx, cfl_alpha_v_ctx,
+    cfl_mh_dir_size_group, mhccp_allowed_for_chroma_mode,
 };
 use super::super::general_intra_residual::{LumaTransformTypeContext, intra_chroma_plane_tx_type};
 use super::super::partition_traversal::{
@@ -69,6 +70,11 @@ pub enum ChromaMode {
     },
     /// `UV_CFL_PRED` with `CFL_DERIVED_ALPHA`.
     CflDerived,
+    /// `UV_CFL_PRED` with `CFL_MULTI` (MHCCP) and `cfl_mh_dir`, `0..3`.
+    Mhccp {
+        /// `cfl_mh_dir`.
+        direction: u8,
+    },
 }
 
 /// The prediction modes of one leaf.
@@ -187,9 +193,11 @@ pub(super) struct IntraTools {
     enable_mrls: bool,
     /// `enable_intra_ist`.
     pub(super) enable_intra_ist: bool,
+    /// `enable_cctx`.
+    pub(super) enable_cctx: bool,
     pub(super) enable_chroma_dctonly: bool,
     pub(super) bit_depth: BitDepth,
-    qindex: u32,
+    pub(super) qindex: u32,
     pub(super) tx_mode: Option<TxMode>,
     pub(super) reduced_tx_set: usize,
     pub(super) reduced_tx_part_set: bool,
@@ -221,12 +229,10 @@ impl IntraTools {
         let refused = [
             (
                 intra.enable_dip
-                    || intra.enable_mhccp
                     || tq.enable_idtx_intra
                     || core.allow_screen_content_tools == Some(true),
-                "DIP, MHCCP, FSC, or palette",
+                "DIP, FSC, or palette",
             ),
-            (tq.enable_cctx, "CCTX"),
             (core.allow_intrabc == Some(true), "intra block copy"),
             (
                 qindex == 0
@@ -260,6 +266,7 @@ impl IntraTools {
             enable_intra_edge_filter: intra.enable_intra_edge_filter,
             enable_mrls: intra.enable_mrls,
             enable_intra_ist: tq.enable_intra_ist,
+            enable_cctx: tq.enable_cctx,
             enable_chroma_dctonly: tq.enable_chroma_dctonly,
             bit_depth: sequence_bit_depth(seq),
             qindex,
@@ -367,6 +374,16 @@ impl IntraTileSyntax {
                 .is_some_and(|(n4w, n4h)| cfl_allowed_for_chroma_mode(self.tools.chroma, n4w, n4h))
     }
 
+    /// Whether `leaf` may code MHCCP (§ 5.20.5.6 `is_mhccp_allowed`).
+    #[must_use]
+    pub fn mhccp_allowed(&self, leaf: &LeafBlock) -> bool {
+        let (_, chroma) = self.block_ctx(leaf);
+        self.cfl_allowed(leaf)
+            && chroma.is_some_and(|(n4w, n4h)| {
+                mhccp_allowed_for_chroma_mode(self.tools.chroma, n4w, n4h)
+            })
+    }
+
     /// Writes the § 5.20.5.5 luma and § 5.20.5.6 chroma mode syntax of `leaf`.
     ///
     /// # Errors
@@ -449,20 +466,8 @@ impl IntraTileSyntax {
                     literal(symbols, symbol - last, UV_MODE_IDX_BITS)?;
                 }
             }
-            ChromaMode::CflDerived => {
-                self.put(
-                    symbols,
-                    TileCdfSelector::CflIndex,
-                    usize::from(CFL_DERIVED_ALPHA),
-                )?;
-            }
-            ChromaMode::Cfl { alpha_u, alpha_v } => {
-                self.put(
-                    symbols,
-                    TileCdfSelector::CflIndex,
-                    usize::from(CFL_EXPLICIT),
-                )?;
-                self.write_cfl_alphas(symbols, alpha_u, alpha_v)?;
+            ChromaMode::CflDerived | ChromaMode::Cfl { .. } | ChromaMode::Mhccp { .. } => {
+                self.write_cfl_index(leaf, modes.uv_mode, symbols)?;
             }
         }
         Ok(())
@@ -493,6 +498,7 @@ impl IntraTileSyntax {
         partition: TxPartition,
     ) -> Result<Vec<TransformBlock>> {
         self.clear_inter_plan();
+        self.plan_cctx(leaf);
         let (block_ctx, _) = self.block_ctx(leaf);
         let (_, joint) = self.y_mode_index(leaf, modes)?;
         let block_modes = block_modes(leaf, modes, joint, self.mrl_selection(modes)?)?;
@@ -532,6 +538,7 @@ impl IntraTileSyntax {
                     tx_size,
                     fills_block,
                     ist: Ist::OFF,
+                    cctx: 0,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -665,6 +672,54 @@ impl IntraTileSyntax {
         Ok(())
     }
 
+    /// Reconstructs planned chroma blocks `u_index` and `v_index` of one
+    /// position from their row-major adjusted `levels` with the `cctx` of
+    /// `u_coded` (nonzero) and the transform type of both.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for blocks the decoder cannot pair or
+    /// without planned blocks.
+    pub fn reconstruct_cctx_pair(
+        &mut self,
+        [u_index, v_index]: [usize; 2],
+        u_coded: &TransformBlock,
+        [u_levels, v_levels]: [&[i32]; 2],
+    ) -> Result<()> {
+        let u = TransformBlock {
+            tx_type: u_coded.tx_type,
+            cctx: u_coded.cctx,
+            ..self.unit(u_index)?
+        };
+        let v = TransformBlock {
+            tx_type: u_coded.tx_type,
+            ..self.unit(v_index)?
+        };
+        let (u_eob, v_eob) = (
+            super::cctx::block_eob(&u, u_levels)?,
+            super::cctx::block_eob(&v, v_levels)?,
+        );
+        let Recon {
+            workspace,
+            scratch,
+            block_decoded,
+            leaf,
+            ..
+        } = &mut self.recon;
+        let leaf = leaf.as_ref().ok_or(NO_LEAF)?;
+        leaf.plan
+            .reconstruct_cctx_pair(
+                [(u_index, u_levels, u_eob), (v_index, v_levels, v_eob)],
+                (u.tx_type as usize, usize::from(u.cctx)),
+                scratch,
+                workspace,
+                block_decoded,
+                self.tools.qindex,
+                leaf.intra_edge,
+                leaf.luma_context,
+            )
+            .map_err(rule("CCTX reconstruction"))
+    }
+
     /// Publishes a coded leaf into the neighbour, smoothness, and `BlockDecoded` state.
     ///
     /// # Errors
@@ -791,6 +846,47 @@ impl IntraTileSyntax {
             .ok_or(NO_LEAF)
     }
 
+    /// `cfl_mhccp`, `cfl_index`, `cfl_mh_dir` and the alphas of a CFL `uv_mode`
+    /// (§ 5.20.7.32).
+    fn write_cfl_index(
+        &mut self,
+        leaf: &LeafBlock,
+        uv_mode: ChromaMode,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
+        let multi = matches!(uv_mode, ChromaMode::Mhccp { .. });
+        if self.mhccp_allowed(leaf) {
+            self.put(symbols, TileCdfSelector::CflMhccp, usize::from(multi))?;
+        } else if multi {
+            return Err(EncoderSyntaxError::Unsupported("MHCCP in this block"));
+        }
+        match uv_mode {
+            ChromaMode::Mhccp { direction } => {
+                CflMultiDirection::from_symbol(direction)
+                    .ok_or(EncoderSyntaxError::Unsupported("MHCCP direction"))?;
+                let size_group = cfl_mh_dir_size_group(leaf.frontier.b_size);
+                self.put(
+                    symbols,
+                    TileCdfSelector::CflMhDir { size_group },
+                    direction.into(),
+                )
+            }
+            ChromaMode::Cfl { alpha_u, alpha_v } => {
+                self.put(
+                    symbols,
+                    TileCdfSelector::CflIndex,
+                    usize::from(CFL_EXPLICIT),
+                )?;
+                self.write_cfl_alphas(symbols, alpha_u, alpha_v)
+            }
+            _ => self.put(
+                symbols,
+                TileCdfSelector::CflIndex,
+                usize::from(CFL_DERIVED_ALPHA),
+            ),
+        }
+    }
+
     fn write_cfl_alphas(
         &mut self,
         symbols: &mut impl SymbolSink,
@@ -879,7 +975,7 @@ impl IntraTileSyntax {
             .ok_or(EncoderSyntaxError::Unsupported("luma mode and angle delta"))
     }
 
-    fn block_ctx(&self, leaf: &LeafBlock) -> (BlockCtx, Option<(usize, usize)>) {
+    pub(super) fn block_ctx(&self, leaf: &LeafBlock) -> (BlockCtx, Option<(usize, usize)>) {
         general_intra_block_ctx(
             &leaf.frontier,
             self.chroma,
@@ -954,6 +1050,10 @@ fn block_modes(
             GeneralIntraChromaBlockMode::Cfl(CflParams::Explicit { alpha_u, alpha_v })
         }
         ChromaMode::CflDerived => GeneralIntraChromaBlockMode::Cfl(CflParams::DerivedAlpha),
+        ChromaMode::Mhccp { direction } => GeneralIntraChromaBlockMode::Cfl(CflParams::Multi {
+            direction: CflMultiDirection::from_symbol(direction)
+                .ok_or(EncoderSyntaxError::Unsupported("MHCCP direction"))?,
+        }),
     };
     Ok(GeneralIntraBlockModes::from_luma_chroma_palette(
         luma, chroma, None,

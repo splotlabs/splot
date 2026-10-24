@@ -120,6 +120,14 @@ pub struct PresetParams {
     /// every row: on top of MRL its BD-rate per CPU loses at every measured
     /// preset.
     pub ist_sets: u8,
+    /// A chroma pair in a leaf's final trial tries the CCTX rotation that
+    /// leaves V the least energy; off disables `enable_cctx`. Off in every
+    /// row: its `cctx_type` flags lose luma and chroma BD-rate.
+    pub cctx: bool,
+    /// The chroma candidates of a CFL leaf include the three MHCCP
+    /// directions; off disables `enable_mhccp`. Off in every row: its
+    /// `cfl_mhccp` flags lose luma BD-rate.
+    pub mhccp: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -188,6 +196,8 @@ const fn row(
         wiener_ns_chroma: 0,
         mrl_trials: 0,
         ist_sets: 0,
+        cctx: false,
+        mhccp: false,
     }
 }
 
@@ -416,6 +426,8 @@ mod tests {
             assert!(fast.wiener_ns_chroma <= slow.wiener_ns_chroma);
             assert!(fast.mrl_trials <= slow.mrl_trials);
             assert!(fast.ist_sets <= slow.ist_sets);
+            assert!(fast.cctx <= slow.cctx);
+            assert!(fast.mhccp <= slow.mhccp);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));

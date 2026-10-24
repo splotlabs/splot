@@ -14,6 +14,7 @@
 //! outputs use the scale that those decoder processes expect.
 
 pub(crate) mod ccso;
+mod cctx;
 mod distortion;
 mod forward_transform;
 mod ist;
@@ -210,6 +211,13 @@ pub(crate) trait EncoderKernels: Sync {
         coeffs: &mut [i32],
     ) -> Result<(), KernelError>;
 
+    /// `[Σ u², Σ v², Σ u·v]` of U and V coefficients ([`cctx::stats_simd`]).
+    fn cctx_stats(&self, u: &[i32], v: &[i32]) -> [i64; 3];
+
+    /// The forward cross-chroma rotation `[cos, sin]` of U and V
+    /// coefficients in place ([`cctx::rotate_simd`]).
+    fn cctx_rotate(&self, u: &mut [i32], v: &mut [i32], rotation: [i32; 2]);
+
     /// One TCQ trellis step: adds the branch metrics of every state to its
     /// path cost and keeps the cheaper branch into each next state
     /// ([`tcq::step_simd`]).
@@ -307,6 +315,14 @@ impl EncoderKernels for ScalarKernels {
         ist::forward_scalar(layout, coeffs)
     }
 
+    fn cctx_stats(&self, u: &[i32], v: &[i32]) -> [i64; 3] {
+        cctx::stats_scalar(u, v)
+    }
+
+    fn cctx_rotate(&self, u: &mut [i32], v: &mut [i32], rotation: [i32; 2]) {
+        cctx::rotate_scalar(u, v, rotation);
+    }
+
     fn tcq_step(
         &self,
         prev: &[u64; tcq::STATES],
@@ -388,6 +404,14 @@ impl EncoderKernels for SimdKernels {
         coeffs: &mut [i32],
     ) -> Result<(), KernelError> {
         ist::forward_simd(layout, coeffs)
+    }
+
+    fn cctx_stats(&self, u: &[i32], v: &[i32]) -> [i64; 3] {
+        cctx::stats_simd(u, v)
+    }
+
+    fn cctx_rotate(&self, u: &mut [i32], v: &mut [i32], rotation: [i32; 2]) {
+        cctx::rotate_simd(u, v, rotation);
     }
 
     fn tcq_step(

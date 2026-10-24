@@ -272,7 +272,7 @@ impl GeneralIntraChromaBlockMode {
 }
 
 impl CflMultiDirection {
-    const fn from_symbol(value: u8) -> Option<Self> {
+    pub(crate) const fn from_symbol(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::Direct),
             1 => Some(Self::Above),
@@ -1056,7 +1056,7 @@ pub(crate) fn cfl_allowed_for_chroma_mode(
     cfl_allowed_for_non_lossless(chroma_tools, block_n4w, block_n4h)
 }
 
-fn mhccp_allowed_for_chroma_mode(
+pub(crate) fn mhccp_allowed_for_chroma_mode(
     chroma_tools: GeneralIntraChromaToolConfig,
     block_n4w: usize,
     block_n4h: usize,
@@ -1133,7 +1133,7 @@ fn lossless_max_tx_size(block_size: BlockSize) -> usize {
     ADJUSTED_TX_SIZE[max_tx_size] as usize
 }
 
-fn cfl_mh_dir_size_group(block_size: BlockSize) -> usize {
+pub(crate) fn cfl_mh_dir_size_group(block_size: BlockSize) -> usize {
     SIZE_GROUP[block_size.index()] as usize
 }
 
