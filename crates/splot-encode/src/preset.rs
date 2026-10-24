@@ -60,7 +60,10 @@ pub struct PresetParams {
     /// `subpel_depth` is `3`; other inter frames code quarter-pel vectors and
     /// refine to quarter samples. `0` never codes eighth-pel.
     pub eighth_pel_max_qindex: u16,
-    /// Loop-filter levels tried per frame; `0` derives the level from the qp.
+    /// Loop-filter search depth; `0` derives the deblocking level from the qp
+    /// and tries 8 CDEF strengths. `1` fits a parabola to the deblocking SSE
+    /// per plane, `2` also tries the neighbours of its best offset; CDEF tries
+    /// 8, 12 or 16 strengths at depth `0`, `1` or `2` and more.
     pub loop_filter_search: u8,
     /// Frames per mini-GOP, `1..=8`: `1` codes every frame shown (IPPP);
     /// larger sizes code the last frame first as a hidden alt-ref and the

@@ -91,6 +91,33 @@ pub(super) fn sad_scalar(
 }
 
 #[cfg(test)]
+pub(super) fn sse_row_scalar(a: &[u16], b: &[u16]) -> u64 {
+    a.iter()
+        .zip(b)
+        .map(|(&a, &b)| u64::from(a.abs_diff(b)).pow(2))
+        .sum()
+}
+
+/// [`sse_row_scalar`] in 16 lanes plus a scalar tail.
+pub(super) fn sse_row_simd(a: &[u16], b: &[u16]) -> u64 {
+    let len = a.len().min(b.len());
+    let (a_chunks, a_tail) = a[..len].as_chunks::<16>();
+    let (b_chunks, b_tail) = b[..len].as_chunks::<16>();
+    let mut acc = Simd::<u64, 16>::splat(0);
+    for (a, b) in a_chunks.iter().zip(b_chunks) {
+        let (a, b) = (Simd::from_array(*a), Simd::from_array(*b));
+        let d = (a.simd_max(b) - a.simd_min(b)).cast::<u32>();
+        acc += (d * d).cast::<u64>();
+    }
+    acc.reduce_sum()
+        + a_tail
+            .iter()
+            .zip(b_tail)
+            .map(|(&a, &b)| u64::from(a.abs_diff(b)).pow(2))
+            .sum::<u64>()
+}
+
+#[cfg(test)]
 pub(super) fn sse_scalar(
     src: &[u16],
     src_stride: usize,
@@ -412,6 +439,15 @@ mod tests {
             SimdKernels.residual(&a, sa, &b, sb, dims, &mut simd);
             ScalarKernels.residual(&a, sa, &b, sb, dims, &mut scalar);
             prop_assert_eq!(simd, scalar);
+        }
+
+        /// Rows of any length, both slices of different lengths.
+        #[test]
+        fn row_sse_simd_matches_scalar(
+            a in proptest::collection::vec(any::<u16>(), 0..100),
+            b in proptest::collection::vec(any::<u16>(), 0..100),
+        ) {
+            prop_assert_eq!(SimdKernels.sse_row(&a, &b), ScalarKernels.sse_row(&a, &b));
         }
 
         /// Short sample slices and a short `out` drop the same rows on both paths.
