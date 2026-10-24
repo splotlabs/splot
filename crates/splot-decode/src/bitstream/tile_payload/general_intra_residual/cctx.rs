@@ -12,7 +12,7 @@ use super::reconstruct::{dequantize_coeff_block, reconstruct_block_setup};
 use super::{CoeffBlock, GeneralIntraResidualError, with_residual_scratch};
 
 const CCTX_PREC_BITS: u32 = 8;
-const CCTX_MTX: [[i32; 2]; 6] = [
+pub(crate) const CCTX_MTX: [[i32; 2]; 6] = [
     [181, 181],
     [222, 128],
     [128, 222],

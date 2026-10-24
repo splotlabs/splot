@@ -580,6 +580,7 @@ impl IntraTileSyntax {
         }
         let motion = self.motion(leaf, prediction)?;
         self.recon.leaf = None;
+        self.plan_cctx(leaf);
         let chroma = self.chroma;
         let state = self.inter.as_mut().ok_or(INTRA_FRAME)?;
         state.planned = None;
@@ -598,6 +599,7 @@ impl IntraTileSyntax {
                 tx_size,
                 fills_block,
                 ist: super::Ist::OFF,
+                cctx: 0,
             })
             .collect();
         state.planned = Some(PlannedInter {

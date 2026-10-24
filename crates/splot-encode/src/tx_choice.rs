@@ -32,7 +32,7 @@ pub(crate) const fn tx_type_candidates(preset: &PresetParams) -> usize {
     2 * preset.tx_type_depth as usize + 1
 }
 
-/// The row-major reconstruction of luma block `tx` (with its `tx_type` and
+/// The row-major reconstruction of block `tx` (with its `tx_type` and
 /// `ist`) coded as `levels` over `prediction`, with the decoder's
 /// dequantization and inverse transforms.
 pub(crate) fn reconstruct(
@@ -51,7 +51,7 @@ pub(crate) fn reconstruct(
     let tcq = syntax.uses_tcq(tx);
     let (params, transform) = recon_params(
         qindex,
-        PlaneId::Y,
+        [PlaneId::Y, PlaneId::U, PlaneId::V][tx.plane.min(2)],
         (log2_w, log2_h),
         (tx.tx_type, tcq),
         bit_depth,
