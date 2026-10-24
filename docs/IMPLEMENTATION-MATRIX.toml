@@ -5657,9 +5657,6 @@ tests = ["crates/splot-encode/src/tile_writer/tests.rs::every_mrl_line_round_tri
 commands = ["cargo test -p splot-encode mrl --locked"]
 fixtures = []
 diagnostics = []
-# ---------------------------------------------------------------------------
-# Conformance and differential testing
-# ---------------------------------------------------------------------------
 
 [[feature]]
 id = "ENC-WIENERNS"
