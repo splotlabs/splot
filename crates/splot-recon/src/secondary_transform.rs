@@ -85,33 +85,35 @@ pub struct SecondaryInverseTransform {
     pub bit_depth: BitDepth,
 }
 
-/// Applies the AV2 § 7.15.3 secondary inverse transform to the dequantized block
-/// `dequant` (a `w * h` row-major array), modifying it in place.
-///
-/// The process gathers the first `params.n` coefficients of `dequant` in
-/// § 5.20.7.30 2D scan order (zeroing those positions), multiplies the gathered
-/// vector by the § 9.7 IST kernel (`Ist_4x4_Kernel` or `Ist_8x8_Kernel` selected
-/// by `large = w >= 8 && h >= 8`), clears the dequantized coefficient block as
-/// AVM does before writeback, applies `Round2Signed(t, 7)` and the
-/// `Clip3(±(1 << (BitDepth + 7)))` bound, and scatters the results into the
-/// top-left scan sub-block via `Stx_Scan_Order_4x4` / `Stx_Scan_Order_8x8` (and,
-/// for the large case, `Stx_Scan_Map`), honoring `transpose`.
-///
-/// The computation is total and panic-free for valid inputs: the accumulation
-/// uses `i32` (at most 32 products of § 7.14.4-bounded coefficients and kernels
-/// below 128, fitting below 2^30), every table index is validated before use,
-/// and the scan scratch is a fixed 32x32 stack buffer.
+/// The § 7.15.3 geometry of one secondary transform, shared by the inverse
+/// and an encoder's forward transform: the row-major block positions of the
+/// `n` inputs (the first `n` of the primary scan), the block position of each
+/// of the `width` outputs, and the `n` kernel rows.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SecondaryTransformLayout {
+    /// § 7.15.3 `n`.
+    pub n: usize,
+    /// Block positions of the `n` inputs.
+    pub inputs: [u16; IST_8X8_HEIGHT],
+    /// Kernel width: `IST_4X4_WIDTH` or `IST_8X8_WIDTH`.
+    pub width: usize,
+    /// Block position of each of the `width` outputs.
+    pub outputs: [u16; IST_8X8_WIDTH],
+    /// The `n` kernel rows of `width` weights each, row-major.
+    pub kernel: &'static [i32],
+    /// The `Clip3` bound `1 << (BitDepth + 7)`.
+    pub bound: i32,
+}
+
+/// The § 7.15.3 layout of `params`.
 ///
 /// # Errors
 /// Returns [`ReconError::SecondaryTransformInvalidShape`] if `w` / `h` are not
-/// powers of two in `4..=32`, [`ReconError::SecondaryTransformBufferMismatch`] if
-/// `dequant` is not `w * h`, and [`ReconError::SecondaryTransformInvalidParams`]
-/// if `n`, `kernel`, or `sec_tx_type` are out of range for the selected kernel
-/// set. All inputs are validated before any coefficient is modified.
-pub fn secondary_inverse_transform(
-    dequant: &mut [i32],
+/// powers of two in `4..=32`, and [`ReconError::SecondaryTransformInvalidParams`]
+/// if `n`, `kernel`, or `sec_tx_type` are out of range for the kernel set.
+pub fn secondary_transform_layout(
     params: &SecondaryInverseTransform,
-) -> Result<()> {
+) -> Result<SecondaryTransformLayout> {
     let SecondaryInverseTransform {
         w,
         h,
@@ -122,72 +124,107 @@ pub fn secondary_inverse_transform(
         transpose,
         bit_depth,
     } = *params;
-
     if !is_valid_side(w) || !is_valid_side(h) {
         return Err(ReconError::SecondaryTransformInvalidShape { w, h });
     }
-    let expected = w * h;
+    let large = w >= 8 && h >= 8;
+    let (set_size, kernel_height, width) = if large {
+        (IST_SET_SIZE_8X8, IST_8X8_HEIGHT, IST_8X8_WIDTH)
+    } else {
+        (IST_SET_SIZE_4X4, IST_4X4_HEIGHT, IST_4X4_WIDTH)
+    };
+    let invalid = || ReconError::SecondaryTransformInvalidParams {
+        n,
+        kernel,
+        sec_tx_type,
+    };
+    if n == 0 || n > kernel_height || kernel >= set_size || !(1..STX_TYPES).contains(&sec_tx_type) {
+        return Err(invalid());
+    }
+    let stx = sec_tx_type - 1;
+    let scan = crate::coefficient_scan_slice(w, h, primary_scan_class)?;
+    let mut inputs = [0u16; IST_8X8_HEIGHT];
+    for (slot, &pos) in inputs[..n].iter_mut().zip(scan.iter()) {
+        *slot = pos;
+    }
+    let (scan_bwl, scan_w) = if large {
+        (3u32, 8usize)
+    } else {
+        (2u32, 4usize)
+    };
+    let mut outputs = [0u16; IST_8X8_WIDTH];
+    for (i, slot) in outputs[..width].iter_mut().enumerate() {
+        let pos = if large {
+            let mapped = usize::try_from(STX_SCAN_MAP[kernel][stx][i]).map_err(|_| invalid())?;
+            STX_SCAN_ORDER_8X8[mapped]
+        } else {
+            STX_SCAN_ORDER_4X4[i]
+        };
+        let (x, y) = (pos & (scan_w - 1), pos >> scan_bwl);
+        let index = if transpose { x * w + y } else { y * w + x };
+        *slot = u16::try_from(index).map_err(|_| invalid())?;
+    }
+    let kernel = if large {
+        &IST_8X8_KERNEL[kernel][stx].as_flattened()[..n * width]
+    } else {
+        &IST_4X4_KERNEL[kernel][stx].as_flattened()[..n * width]
+    };
+    Ok(SecondaryTransformLayout {
+        n,
+        inputs,
+        width,
+        outputs,
+        kernel,
+        bound: 1i32 << (u32::from(bit_depth.bits()) + 7),
+    })
+}
+
+/// Applies the AV2 § 7.15.3 secondary inverse transform to the dequantized block
+/// `dequant` (a `w * h` row-major array), modifying it in place.
+///
+/// The process gathers the first `params.n` coefficients of `dequant` in
+/// § 5.20.7.30 2D scan order, multiplies the gathered vector by the § 9.7 IST
+/// kernel (`Ist_4x4_Kernel` or `Ist_8x8_Kernel` selected by
+/// `large = w >= 8 && h >= 8`), clears the dequantized coefficient block as
+/// AVM does before writeback, applies `Round2Signed(t, 7)` and the
+/// `Clip3(±(1 << (BitDepth + 7)))` bound, and scatters the results into the
+/// top-left scan sub-block ([`secondary_transform_layout`]).
+///
+/// The computation is total and panic-free for valid inputs: the accumulation
+/// uses `i32` (at most 32 products of clipped coefficients and kernels below
+/// 128, fitting below 2^30), and every table index is validated before use.
+///
+/// # Errors
+/// Returns the [`secondary_transform_layout`] errors, and
+/// [`ReconError::SecondaryTransformBufferMismatch`] if `dequant` is not
+/// `w * h`. All inputs are validated before any coefficient is modified.
+pub fn secondary_inverse_transform(
+    dequant: &mut [i32],
+    params: &SecondaryInverseTransform,
+) -> Result<()> {
+    let layout = secondary_transform_layout(params)?;
+    let expected = params.w * params.h;
     if dequant.len() != expected {
         return Err(ReconError::SecondaryTransformBufferMismatch {
             expected,
             actual: dequant.len(),
         });
     }
-
-    let large = w >= 8 && h >= 8;
-    let (set_size, kernel_height, kernel_width) = if large {
-        (IST_SET_SIZE_8X8, IST_8X8_HEIGHT, IST_8X8_WIDTH)
-    } else {
-        (IST_SET_SIZE_4X4, IST_4X4_HEIGHT, IST_4X4_WIDTH)
-    };
-    if n == 0 || n > kernel_height || kernel >= set_size || !(1..STX_TYPES).contains(&sec_tx_type) {
-        return Err(ReconError::SecondaryTransformInvalidParams {
-            n,
-            kernel,
-            sec_tx_type,
-        });
-    }
-    let stx = sec_tx_type - 1;
-
-    let scan = crate::coefficient_scan_slice(w, h, primary_scan_class)?;
-    let bound = 1i32 << (u32::from(bit_depth.bits()) + 7);
+    let bound = layout.bound;
     let mut coefs = [0i32; IST_8X8_HEIGHT];
-    for (slot, &pos) in coefs[..n].iter_mut().zip(scan.iter()) {
-        let index = pos as usize;
-        *slot = dequant[index].clamp(-bound, bound - 1);
+    for (slot, &pos) in coefs[..layout.n].iter_mut().zip(&layout.inputs) {
+        *slot = dequant[usize::from(pos)].clamp(-bound, bound - 1);
     }
     dequant.fill(0);
-
-    let (scan_bwl, scan_w) = if large {
-        (3u32, 8usize)
-    } else {
-        (2u32, 4usize)
-    };
     let mut sums = [0i32; IST_8X8_WIDTH];
-    if large {
-        accumulate_kernel_rows(&IST_8X8_KERNEL[kernel][stx][..n], &coefs[..n], &mut sums);
+    let coefs = &coefs[..layout.n];
+    if layout.width == IST_8X8_WIDTH {
+        accumulate_kernel_rows(layout.kernel.as_chunks().0, coefs, &mut sums);
     } else if let Some(sums) = sums.first_chunk_mut::<IST_4X4_WIDTH>() {
-        accumulate_kernel_rows(&IST_4X4_KERNEL[kernel][stx][..n], &coefs[..n], sums);
+        accumulate_kernel_rows(layout.kernel.as_chunks().0, coefs, sums);
     }
-    for (i, &t) in sums[..kernel_width].iter().enumerate() {
-        let v = round2_signed_i32(t, 7).clamp(-bound, bound - 1);
-
-        let pos = if large {
-            let mapped = usize::try_from(STX_SCAN_MAP[kernel][stx][i]).map_err(|_| {
-                ReconError::SecondaryTransformInvalidParams {
-                    n,
-                    kernel,
-                    sec_tx_type,
-                }
-            })?;
-            STX_SCAN_ORDER_8X8[mapped]
-        } else {
-            STX_SCAN_ORDER_4X4[i]
-        };
-        let x = pos & (scan_w - 1);
-        let y = pos >> scan_bwl;
-        let out_index = if transpose { x * w + y } else { y * w + x };
-        dequant[out_index] = v;
+    for (&t, &pos) in sums[..layout.width].iter().zip(&layout.outputs) {
+        dequant[usize::from(pos)] = round2_signed_i32(t, 7).clamp(-bound, bound - 1);
     }
     Ok(())
 }

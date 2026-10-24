@@ -46,7 +46,7 @@ use super::{BlockSize, DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 
 mod cctx;
 mod luma_transform_partition;
-mod reconstruct;
+pub(crate) mod reconstruct;
 
 #[cfg(test)]
 use cctx::apply_cross_chroma_transform;
@@ -355,7 +355,7 @@ const TX_TYPE_INTER_INV_SET2: [usize; 12] = [
 const TX_TYPE_INTER_INV_SET3: [usize; 2] = [IDTX, DCT_DCT];
 const TX_TYPE_INTER_INV_SET4: [usize; 4] = [DCT_DCT, V_DCT, H_DCT, IDTX];
 const INTER_TX_TYPE_INDEX_COUNT: usize = 8;
-const IST_DIR_SIZE: usize = 7;
+pub(crate) const IST_DIR_SIZE: usize = 7;
 const IST_REDUCE_SET_SIZE_ADST_ADST: usize = 4;
 
 #[doc = "AV2 § 7.15.3 secondary transform process inverse IST maps."]
@@ -1516,7 +1516,7 @@ const fn intra_ist_can_read_sec_tx_type(luma_tx_type: usize) -> bool {
     matches!(luma_tx_type, DCT_DCT | ADST_ADST)
 }
 
-fn intra_ist_most_probable_stx_selector(
+pub(crate) fn intra_ist_most_probable_stx_selector(
     tx_size: usize,
     luma_tx_type: usize,
 ) -> Result<TileCdfSelector, GeneralIntraResidualError> {
@@ -1528,7 +1528,10 @@ fn intra_ist_most_probable_stx_selector(
     }
 }
 
-fn ist_eob_limit(tx_size: usize, tx_type: usize) -> Result<usize, GeneralIntraResidualError> {
+pub(crate) fn ist_eob_limit(
+    tx_size: usize,
+    tx_type: usize,
+) -> Result<usize, GeneralIntraResidualError> {
     let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
     if tx_width < 8 || tx_height < 8 {
         Ok(IST_4X4_HEIGHT)
