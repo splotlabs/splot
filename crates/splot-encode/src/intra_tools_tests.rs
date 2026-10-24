@@ -31,6 +31,14 @@ fn tool_stream(
     (units, recon, coder.sequence)
 }
 
+/// Preset 9, fast enough for debug tests, with the MRL trials of preset 6.
+fn mrl_preset() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        mrl_trials: PRESETS[6].mrl_trials,
+        ..PRESETS[9]
+    }))
+}
+
 /// Whether `seq` enables MRL.
 fn mrl_enabled(seq: &SequenceHeader) -> bool {
     seq.intra.unwrap().enable_mrls
@@ -41,7 +49,7 @@ fn mrl_enabled(seq: &SequenceHeader) -> bool {
 /// the sequence does not enable it and the stream changes.
 #[test]
 fn mrl_frames_decode_to_the_encoder_recon_on_any_thread_count() {
-    let on = Preset::new(9).unwrap().params();
+    let on = mrl_preset();
     for chroma in CHROMAS {
         for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
             let (units, recon, seq) = tool_stream((2, chroma, bit_depth), on);
@@ -72,7 +80,7 @@ fn mrl_frames_decode_to_the_encoder_recon_on_any_thread_count() {
 #[test]
 fn search_picks_mrl_lines() {
     let config = config(136, 72, BitDepth::Ten, 9, 90);
-    let coder = IntraFrameCoder::new(&config).unwrap();
+    let coder = IntraFrameCoder::with_preset(&config, mrl_preset()).unwrap();
     let plan = crate::gop::plan(0, config.keyint);
     let trees = search_frame(
         &coder,
@@ -95,10 +103,7 @@ fn avm_decodes_mrl_frames_like_splot() {
         return;
     };
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        let (units, recon, _) = tool_stream(
-            (2, PixelFormat::Yuv420, bit_depth),
-            Preset::new(9).unwrap().params(),
-        );
+        let (units, recon, _) = tool_stream((2, PixelFormat::Yuv420, bit_depth), mrl_preset());
         let avm = avm_decode(&avmdec, &units, (136, 72), bit_depth, "mrl");
         assert!(avm == recon, "{bit_depth:?}: AVM output differs");
     }

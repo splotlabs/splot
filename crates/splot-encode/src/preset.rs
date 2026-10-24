@@ -175,7 +175,7 @@ const fn row(
 pub const PRESETS: [PresetParams; 11] = with_columns(
     ROWS,
     [8, 8, 6, 6, 4, 4, 4, 2, 2, 1, 1],
-    [2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 0],
+    [2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0],
 );
 
 /// `rows` with `ccso_candidates[i]` and `mrl_trials[i]` in row `i`.
