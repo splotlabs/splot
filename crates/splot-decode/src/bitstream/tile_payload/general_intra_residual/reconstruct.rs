@@ -26,7 +26,7 @@ pub(super) struct ReconstructBlockSetup {
     pub(super) transform: InverseTransform2dOuter,
 }
 
-pub(super) fn resolve_secondary_inverse_transform(
+pub(crate) fn resolve_secondary_inverse_transform(
     block: CoeffBlock<'_>,
     log2_width: u32,
     log2_height: u32,

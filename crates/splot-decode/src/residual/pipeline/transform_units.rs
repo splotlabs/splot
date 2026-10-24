@@ -7,7 +7,7 @@ use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 
 use crate::bitstream::tile_payload::{
-    CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock,
+    CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock,
     LumaTransformTypeContext, LumaTxPartition, PositionedLumaCoeffBlock, TileBlockDecodedState,
     current_frame_qm_segment_id, luma_partition_record_fills_block,
     luma_transform_record_starts_in_frame, luma_transform_records_for_partition,
@@ -27,7 +27,7 @@ impl GeneralIntraResidualPlan {
         index: usize,
         quant: &[i32],
         eob: usize,
-        (plane_tx_type, use_tcq): (usize, bool),
+        (plane_tx_type, use_tcq, intra_ist): (usize, bool, Option<IntraIstSyntax>),
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &TileBlockDecodedState,
@@ -45,6 +45,7 @@ impl GeneralIntraResidualPlan {
             quant_range: 0..nonzero,
             zero_tail: quant.len() - nonzero,
             use_tcq,
+            intra_ist,
             ..LumaCoeffBlock::empty(plane_tx_type, false)
         };
         plane.apply_reconstruction_tx_type(&mut coeffs);
