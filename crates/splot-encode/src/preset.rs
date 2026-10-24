@@ -113,7 +113,9 @@ pub struct PresetParams {
     pub mrl_trials: u8,
     /// `most_probable_stx_set` values whose three kernels a luma block ranks
     /// by kept energy in a leaf's final trial when its plain levels code
-    /// `eob > 1`; the best gets one RD trial. `0` disables intra IST.
+    /// `eob > 1`; the best gets one RD trial. `0` disables intra IST. Off in
+    /// every row: on top of MRL its BD-rate per CPU loses at every measured
+    /// preset.
     pub ist_sets: u8,
 }
 
@@ -191,7 +193,7 @@ pub const PRESETS: [PresetParams; 11] = with_columns(
     [8, 8, 6, 6, 4, 4, 4, 2, 2, 1, 1],
     [2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1],
     [2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0],
-    [7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 );
 
 /// `rows` with `ccso_candidates[i]`, `wiener_ns[i]`, `mrl_trials[i]` and

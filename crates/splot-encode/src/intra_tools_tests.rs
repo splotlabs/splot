@@ -43,9 +43,9 @@ fn mrl_preset() -> &'static PresetParams {
     preset_with(|p| p.mrl_trials = PRESETS[6].mrl_trials)
 }
 
-/// Preset 9 with the IST sets of preset 6.
+/// Preset 9 with every IST set.
 fn ist_preset() -> &'static PresetParams {
-    preset_with(|p| p.ist_sets = PRESETS[6].ist_sets)
+    preset_with(|p| p.ist_sets = splot_decode::encoder_syntax::IST_SETS)
 }
 
 /// Whether `seq` enables MRL.
