@@ -532,8 +532,11 @@ fn panning_frame(config: &Config, index: u32) -> SourceFrame {
     let sizes = config.plane_sizes().unwrap();
     let planes = core::array::from_fn(|plane| {
         let size = sizes[plane];
-        let shift = if plane == 0 { 1 } else { 2 };
-        let (dx, dy) = (i64::from(4 * index) / shift, i64::from(2 * index) / shift);
+        let (sx, sy) = match plane {
+            0 => (0, 0),
+            _ => (config.chroma.subsampling_x(), config.chroma.subsampling_y()),
+        };
+        let (dx, dy) = (i64::from(4 * index) >> sx, i64::from(2 * index) >> sy);
         (0..size.height() as i64)
             .flat_map(|y| (0..size.width() as i64).map(move |x| (x, y)))
             .map(|(x, y)| texture(x + dx, y + dy, plane, max))
@@ -766,6 +769,20 @@ fn random_modes(
 /// frames 0, 2 and 4, coded from random partitions, modes, references and
 /// vectors: the temporal units and the samples a decoder outputs.
 fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Coverage) {
+    inter_stream_with(config, seed, random_tree)
+}
+
+/// [`random_inter_stream`] with the trees of frame 1 from `tree`.
+fn inter_stream_with(
+    config: &Config,
+    seed: u64,
+    mut tree: impl FnMut(
+        &mut IntraTileSyntax,
+        PartitionNode,
+        &mut Rng,
+        &mut Coverage,
+    ) -> core::result::Result<PartitionTree, TileWriterError>,
+) -> (Vec<Vec<u8>>, Vec<u8>, Coverage) {
     let RateControlMode::ConstantQp { qp } = config.rate_control else {
         unreachable!("these tests code at a constant qp")
     };
@@ -821,7 +838,7 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
     let mut coverage = Coverage::default();
     while writer.next_superblock_root().is_some() {
         let tree = writer
-            .search_superblock(|syntax, root| random_tree(syntax, root, &mut rng, &mut coverage))
+            .search_superblock(|syntax, root| tree(syntax, root, &mut rng, &mut coverage))
             .unwrap();
         writer
             .write_superblock(&SuperblockDecision { tree }, &mut residual)
@@ -1237,6 +1254,8 @@ mod carry;
 mod ccso;
 #[path = "intra_tools_tests.rs"]
 mod intra_tools;
+#[path = "intra_frame_large_inter_tests.rs"]
+mod large_inter;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
 #[path = "intra_frame_wienerns_tests.rs"]

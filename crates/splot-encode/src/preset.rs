@@ -120,6 +120,9 @@ pub struct PresetParams {
     /// every row: on top of MRL its BD-rate per CPU loses at every measured
     /// preset.
     pub ist_sets: u8,
+    /// Leaves wider or taller than 64 also try inter, skip-mode and compound
+    /// predictions; off, they code intra only.
+    pub large_inter: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -188,6 +191,7 @@ const fn row(
         wiener_ns_chroma: 0,
         mrl_trials: 0,
         ist_sets: 0,
+        large_inter: true,
     }
 }
 
@@ -416,6 +420,7 @@ mod tests {
             assert!(fast.wiener_ns_chroma <= slow.wiener_ns_chroma);
             assert!(fast.mrl_trials <= slow.mrl_trials);
             assert!(fast.ist_sets <= slow.ist_sets);
+            assert!(fast.large_inter <= slow.large_inter);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));

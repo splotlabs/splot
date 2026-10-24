@@ -22,7 +22,11 @@ fn without_mv_prediction(preset: &PresetParams) -> &'static PresetParams {
 }
 
 /// The square node of `size` luma samples at the top-left of `root`.
-fn top_left(syntax: &IntraTileSyntax, root: PartitionNode, size: usize) -> PartitionNode {
+pub(super) fn top_left(
+    syntax: &IntraTileSyntax,
+    root: PartitionNode,
+    size: usize,
+) -> PartitionNode {
     let mut node = root;
     loop {
         let (w, h) = node.dimensions().unwrap();
