@@ -104,7 +104,6 @@ const fn row(
     (tx_type_depth, tx_partition_search): (u8, bool),
     motion: (u16, u8, u16, u8, u8),
     (loop_filter_search, mini_gop_size, lookahead_frames, compound_candidates): (u8, u8, u8, u8),
-    mvd_tools: [bool; 3],
 ) -> PresetParams {
     PresetParams {
         min_block_log2: blocks.0,
@@ -128,7 +127,7 @@ const fn row(
         mv_prediction: true,
         drl_bits: motion.3,
         interp_filter_search: motion.4,
-        mvd_tools,
+        mvd_tools: [true; 3],
         ext_partitions: 0,
         ext_three_way_margin: 0,
         ext_four_way_margin: 0,
@@ -158,7 +157,6 @@ const ROWS: [PresetParams; 11] = [
         (3, true),
         (256, 3, 128, 3, 2),
         (3, 8, 16, 8),
-        [true; 3],
     ),
     row(
         (2, 7),
@@ -168,7 +166,6 @@ const ROWS: [PresetParams; 11] = [
         (3, true),
         (192, 3, 128, 3, 2),
         (3, 8, 16, 8),
-        [true; 3],
     ),
     row(
         (2, 7),
@@ -178,7 +175,6 @@ const ROWS: [PresetParams; 11] = [
         (3, true),
         (128, 3, 128, 3, 2),
         (2, 8, 16, 6),
-        [true; 3],
     ),
     row(
         (2, 7),
@@ -188,7 +184,6 @@ const ROWS: [PresetParams; 11] = [
         (2, true),
         (96, 2, 0, 3, 2),
         (2, 8, 16, 6),
-        [true; 3],
     ),
     row(
         (2, 7),
@@ -198,7 +193,6 @@ const ROWS: [PresetParams; 11] = [
         (2, true),
         (64, 2, 0, 3, 2),
         (2, 4, 8, 4),
-        [true; 3],
     ),
     row(
         (2, 7),
@@ -208,7 +202,6 @@ const ROWS: [PresetParams; 11] = [
         (2, true),
         (64, 2, 0, 3, 2),
         (1, 4, 8, 4),
-        [true; 3],
     ),
     row(
         (3, 7),
@@ -218,7 +211,6 @@ const ROWS: [PresetParams; 11] = [
         (1, true),
         (48, 2, 0, 3, 2),
         (1, 4, 8, 3),
-        [true; 3],
     ),
     row(
         (3, 6),
@@ -228,7 +220,6 @@ const ROWS: [PresetParams; 11] = [
         (1, false),
         (32, 1, 0, 1, 2),
         (1, 4, 8, 2),
-        [true; 3],
     ),
     row(
         (3, 6),
@@ -238,7 +229,6 @@ const ROWS: [PresetParams; 11] = [
         (1, false),
         (24, 1, 0, 1, 2),
         (0, 2, 4, 1),
-        [true; 3],
     ),
     row(
         (3, 6),
@@ -248,7 +238,6 @@ const ROWS: [PresetParams; 11] = [
         (0, false),
         (16, 1, 0, 1, 2),
         (0, 2, 4, 0),
-        [true; 3],
     ),
     row(
         (4, 6),
@@ -258,7 +247,6 @@ const ROWS: [PresetParams; 11] = [
         (0, false),
         (16, 0, 0, 1, 2),
         (0, 1, 2, 0),
-        [true; 3],
     ),
 ];
 
