@@ -255,6 +255,7 @@ fn filter_params_reach_the_parsed_header() {
                 ])
                 .unwrap(),
                 lr_luma_unit_size: Some(lr_size),
+                lr_luma_wiener_ns: None,
                 ccso: [ccso_plane(), CcsoPlaneParams::default(), ccso_plane()],
             };
             let core = build_key_frame_header(
@@ -304,6 +305,92 @@ fn filter_params_reach_the_parsed_header() {
             [false; 4]
         );
     }
+}
+
+/// A luma bank of two coded classes and one class merged into the first,
+/// switchable or not, parses back to the same coefficients.
+#[test]
+fn wiener_ns_bank_reaches_the_parsed_header() {
+    use crate::headers::frame::{WienerNsCoeffs, WienerNsFrameFilterClass};
+    let class = |match_index, merged, subset, coeffs: [i16; 16]| WienerNsFrameFilterClass {
+        match_index,
+        merged,
+        ref_bank: 0,
+        subset,
+        wiener_ns_uv_sym: false,
+        coeffs: WienerNsCoeffs::from_iter_checked(coeffs).unwrap(),
+    };
+    let first = [9, -3, 4, 0, -7, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let second = [-24, 39, -14, 17, -16, 15, -8, 7, 1, -1, 2, 3, -5, 6, 0, -8];
+    let bank = WienerNsFrameFilterBank {
+        classes: crate::tile::InlineVec::from_iter_checked([
+            class(0, false, Some(0), first),
+            class(1, false, Some(3), second),
+            class(1, true, None, first),
+        ])
+        .unwrap(),
+    };
+    let mut p = params(200, 136, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    p.tools.loop_restoration = true;
+    let seq = build_encoder_sequence_header(&p).unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    for switchable in [false, true] {
+        let filters = FrameFilterParams {
+            lr_luma_unit_size: Some(64),
+            lr_luma_wiener_ns: Some(FrameWienerNs {
+                switchable,
+                rst_ref_pic_idx: None,
+                bank,
+            }),
+            ..FrameFilterParams::default()
+        };
+        let build = |q| {
+            build_key_frame_header(
+                &view,
+                q,
+                0,
+                &filters,
+                KeyFrameTxParams::default(),
+                UniformTiles::default(),
+            )
+        };
+        let core = build(120).unwrap();
+        let plane = &core.lr_params.as_ref().unwrap().planes[0];
+        assert!(plane.frame_filters_on);
+        assert_eq!(plane.num_filter_classes, Some(3));
+        assert_eq!(plane.frame_filter_bank, Some(bank));
+        assert_eq!(
+            plane.restoration_type,
+            if switchable {
+                FrameRestorationType::Switchable
+            } else {
+                FrameRestorationType::WienerNonsep
+            }
+        );
+        assert_eq!(reparse_core(&core, &view), core);
+    }
+    let mut wrong = bank;
+    wrong.classes[2].coeffs[0] = 1;
+    let filters = FrameFilterParams {
+        lr_luma_unit_size: Some(64),
+        lr_luma_wiener_ns: Some(FrameWienerNs {
+            switchable: true,
+            rst_ref_pic_idx: None,
+            bank: wrong,
+        }),
+        ..FrameFilterParams::default()
+    };
+    assert!(
+        build_key_frame_header(
+            &view,
+            120,
+            0,
+            &filters,
+            KeyFrameTxParams::default(),
+            UniformTiles::default()
+        )
+        .is_err()
+    );
 }
 
 #[test]
