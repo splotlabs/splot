@@ -83,8 +83,8 @@ pub use transform::{IST_SETS, Ist, TX_PARTITIONS, TxPartition};
 mod filters;
 pub use filters::{
     CcsoBlockMap, CcsoGrid, CdefIndexMap, CdefSlot, FilterRecorder, LrLayout, LrSymbol, LrUnit,
-    LrUnitType, apply_loop_filters, ccso_offset, ccso_taps, cdef_unit_grid, merge_tiles,
-    pc_wiener_cell_classes,
+    LrUnitType, PcWienerClassMap, apply_loop_filters, ccso_offset, ccso_taps, cdef_unit_grid,
+    merge_tiles, pc_wiener_cell_classes,
 };
 /// The first tap `(dy, dx, coeff_index)` of each § 7.20.3 luma pair; the partner is `(-dy, -dx)`.
 pub use splot_recon::WIENER_NS_CONFIG_Y_PAIRS;

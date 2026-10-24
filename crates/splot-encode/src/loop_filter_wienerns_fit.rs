@@ -79,7 +79,7 @@ impl Search<'_> {
                 distortion += predicted_delta(class_stats, &class.coeffs);
                 classes.push(class);
             }
-            let bank = bank_of(&classes)?;
+            let bank = matched_to_previous(classes, view)?;
             let cost = rd(
                 distortion,
                 Bits::whole(bank_bits(&bank, 0, view)?),
@@ -282,6 +282,32 @@ pub(super) fn one_class_bank(
     coeffs: &[i16],
 ) -> Result<WienerNsFrameFilterBank> {
     bank_of(&[class_of(subset, sym, coeffs)?])
+}
+
+/// `classes` as a bank in which each class after the first codes its
+/// coefficients against the class before it, or merges into it when they
+/// are equal, wherever that takes fewer bits than the zero filter.
+fn matched_to_previous(
+    mut classes: Vec<WienerNsFrameFilterClass>,
+    view: CoreSeqRestorationView,
+) -> Result<WienerNsFrameFilterBank> {
+    for c in 1..classes.len() {
+        let mut best = (bank_bits(&bank_of(&classes)?, 0, view)?, classes[c]);
+        let mut matched = classes[c];
+        matched.match_index = c as u8;
+        if matched.coeffs == classes[c - 1].coeffs {
+            matched.merged = true;
+            matched.subset = None;
+            matched.wiener_ns_uv_sym = false;
+        }
+        classes[c] = matched;
+        let bits = bank_bits(&bank_of(&classes)?, 0, view)?;
+        if bits < best.0 {
+            best = (bits, matched);
+        }
+        classes[c] = best.1;
+    }
+    bank_of(&classes)
 }
 
 /// A coded class with `coeffs`, matched to the zero filter.

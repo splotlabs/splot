@@ -753,9 +753,8 @@ fn ccso_unit_grid(
 
 /// The § 7.20.4 PC-Wiener class `cls` of every 4x4 luma cell of the frame
 /// `core`, row by row over `(MiRows, MiCols)`, as its loop restoration
-/// classifies the luma of `frame`. `frame` is read for every § 7.20.2 source
-/// sample, also for the two rows past a stripe that the decoder takes before
-/// CDEF.
+/// classifies the luma of `filtered`, the CDEF and CCSO output. The § 7.20.2
+/// source samples past a stripe come from `deblocked`, the frame before CDEF.
 ///
 /// # Errors
 /// Returns [`EncoderSyntaxError::Rule`] when the transform records do not
@@ -764,8 +763,8 @@ pub fn pc_wiener_cell_classes(
     seq: &SequenceHeader,
     core: &FrameHeaderCore,
     recorder: &FilterRecorder,
-    frame: &DecodedFrame<u16>,
-) -> Result<Vec<u8>> {
+    (deblocked, filtered): (&DecodedFrame<u16>, &DecodedFrame<u16>),
+) -> Result<PcWienerClassMap> {
     let facts = minimal_partition_frame_facts(seq, core).map_err(rule("frame facts"))?;
     let (mi_rows, mi_cols) = (facts.mi_rows(), facts.mi_cols());
     let grid = crate::filters::wienerns_lr::derive_wienerns_lr_tx_skip_grid_reusing(
@@ -775,11 +774,14 @@ pub fn pc_wiener_cell_classes(
         Vec::new(),
     )
     .map_err(rule("LrTxSkip grid"))?;
-    let luma = frame
+    let no_luma = EncoderSyntaxError::Unsupported("a frame without luma");
+    let inside = filtered.plane(PlaneId::Y).ok_or(no_luma)?;
+    let outside = deblocked
         .plane(PlaneId::Y)
         .ok_or(EncoderSyntaxError::Unsupported("a frame without luma"))?;
-    let stride = luma.stride_samples();
-    let storage = luma.storage_size();
+    let (stride, storage) = (inside.stride_samples(), inside.storage_size());
+    let outside_stride = outside.stride_samples();
+    let (inside, outside) = (inside.samples(), outside.samples());
     let across = seq
         .filter
         .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
@@ -811,7 +813,7 @@ pub fn pc_wiener_cell_classes(
                 let params = splot_recon::PcWienerClassifyParams {
                     x: block_x as isize,
                     y: top as isize,
-                    bit_depth: frame.bit_depth(),
+                    bit_depth: filtered.bit_depth(),
                     base_q_idx: recorder.qindex,
                     block_start_x: block_x,
                     block_end_x,
@@ -825,7 +827,11 @@ pub fn pc_wiener_cell_classes(
                     let y = (y.max(start_y as isize) as usize).min(end_y);
                     let y = y.clamp(stripe_start.saturating_sub(2), stripe_end + 2);
                     let (x, y) = (x.min(storage.width() - 1), y.min(storage.height() - 1));
-                    Ok(luma.samples()[y * stride + x])
+                    Ok(if (stripe_start..=stripe_end).contains(&y) {
+                        inside[y * stride + x]
+                    } else {
+                        outside[y * outside_stride + x]
+                    })
                 };
                 let skip = |lookup: splot_recon::PcWienerTxSkipLookup| {
                     grid.run(lookup.row, lookup.col, 1)
@@ -847,7 +853,28 @@ pub fn pc_wiener_cell_classes(
             }
         }
     }
-    Ok(classes)
+    Ok(PcWienerClassMap {
+        classes,
+        cols: mi_cols,
+    })
+}
+
+/// The § 7.20.4 PC-Wiener class of every 4x4 luma cell of a frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PcWienerClassMap {
+    classes: Vec<u8>,
+    cols: usize,
+}
+
+impl PcWienerClassMap {
+    /// The class of the cell that holds luma sample `(x, y)`, or `None`
+    /// outside the frame.
+    #[must_use]
+    pub fn class(&self, x: usize, y: usize) -> Option<u8> {
+        (x >> 2 < self.cols)
+            .then(|| self.classes.get((y >> 2) * self.cols + (x >> 2)).copied())
+            .flatten()
+    }
 }
 
 /// The reconstruction of the frame `core` whose tile `t` holds the samples of

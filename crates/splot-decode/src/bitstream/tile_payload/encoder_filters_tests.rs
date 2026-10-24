@@ -4,7 +4,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use splot_core::headers::frame::{
-    CoreSeqView, FrameFilterParams, FrameWienerNs, KeyFrameTxParams, UniformTiles, WienerNsCoeffs,
+    CcsoOffsets, CcsoPlaneParams, CdefStrengthSet, CdefStrengthSets, CoreSeqView,
+    FrameFilterParams, FrameWienerNs, KeyFrameTxParams, UniformTiles, WienerNsCoeffs,
     WienerNsFrameFilterBank, WienerNsFrameFilterClass, build_encoder_sequence_header,
     build_key_frame_header,
 };
@@ -36,18 +37,34 @@ fn sample(x: usize, y: usize) -> u16 {
 /// The publication check of the class map: with a 16-class bank whose class
 /// `s` weighs only the vertical tap pair with `s - 8`, every luma sample of
 /// the decoder's restoration is the one `SubclassLookup` of its
-/// [`pc_wiener_cell_classes`] class predicts.
+/// [`pc_wiener_cell_classes`] class predicts, at 8 and 10 bits, with CDEF and
+/// CCSO off and on.
 #[test]
 fn cell_classes_are_the_classes_the_restoration_applies() {
-    let (width, height) = (128usize, 64usize);
+    for (bit_depth, other) in [
+        (BitDepthIdc::Eight, false),
+        (BitDepthIdc::Ten, false),
+        (BitDepthIdc::Eight, true),
+        (BitDepthIdc::Ten, true),
+    ] {
+        check_cell_classes(bit_depth, other);
+    }
+}
+
+fn check_cell_classes(bit_depth: BitDepthIdc, cdef_and_ccso: bool) {
+    let (width, height) = (128usize, 128usize);
+    let shift = if bit_depth == BitDepthIdc::Ten { 2 } else { 0 };
+    let max = (255i32 << shift) | ((1 << shift) - 1);
     let seq = build_encoder_sequence_header(&EncoderStreamParams {
         width: width as u32,
         height: height as u32,
-        bit_depth: BitDepthIdc::Eight,
+        bit_depth,
         chroma: ChromaFormatIdc::Yuv420,
         sb_size: SuperblockSize::Block64x64,
         tools: EncoderToolFlags {
             loop_restoration: true,
+            cdef: true,
+            ccso: true,
             ..EncoderToolFlags::default()
         },
     })
@@ -67,7 +84,7 @@ fn cell_classes_are_the_classes_the_restoration_applies() {
     let bank = WienerNsFrameFilterBank {
         classes: splot_core::tile::InlineVec::from_iter_checked((0..16).map(class)).unwrap(),
     };
-    let filters = FrameFilterParams {
+    let mut filters = FrameFilterParams {
         lr_luma_unit_size: Some(64),
         lr_luma_wiener_ns: Some(FrameWienerNs {
             switchable: false,
@@ -76,6 +93,30 @@ fn cell_classes_are_the_classes_the_restoration_applies() {
         }),
         ..FrameFilterParams::default()
     };
+    if cdef_and_ccso {
+        filters.cdef_damping = 4;
+        filters.cdef_strengths = CdefStrengthSets::from_slice(&[CdefStrengthSet {
+            y_pri_strength: 6,
+            y_sec_strength: 2,
+            uv_pri_strength: 0,
+            uv_sec_strength: 0,
+        }])
+        .unwrap();
+        filters.ccso[0] = CcsoPlaneParams {
+            ccso_planes: true,
+            ccso_bo_only: Some(false),
+            ccso_scale_idx: Some(1),
+            ccso_quant_idx: Some(0),
+            ccso_ext_filter: Some(2),
+            ccso_edge_clf: Some(false),
+            ccso_max_band_log2: Some(3),
+            ccso_offset_idx: CcsoOffsets::from_iter_checked(
+                (0..72).map(|k| ((k * 5 + 3) % 8) as u8),
+            )
+            .unwrap(),
+            ..CcsoPlaneParams::default()
+        };
+    }
     let view = CoreSeqView::from_sequence(&seq).unwrap();
     let core = build_key_frame_header(
         &view,
@@ -88,7 +129,11 @@ fn cell_classes_are_the_classes_the_restoration_applies() {
     .unwrap();
     let info = DecodedFrameInfo::new(
         OutputIndex::new(0),
-        BitDepth::Eight,
+        if shift == 0 {
+            BitDepth::Eight
+        } else {
+            BitDepth::Ten
+        },
         PixelFormat::Yuv420,
         PlaneSize::new(width, height).unwrap(),
         PlaneRect::new(0, 0, width, height).unwrap(),
@@ -96,7 +141,9 @@ fn cell_classes_are_the_classes_the_restoration_applies() {
     .unwrap();
     let mut workspace = CurrentFrameWorkspace::new(info, 0).unwrap();
     let luma: Vec<u16> = (0..height)
-        .flat_map(|y| (0..width).map(move |x| sample(x, y)))
+        .flat_map(|y| {
+            (0..width).map(move |x| (sample(x, y) << shift) | (x as u16 & ((1 << shift) - 1)))
+        })
         .collect();
     workspace
         .write_rect(
@@ -106,7 +153,7 @@ fn cell_classes_are_the_classes_the_restoration_applies() {
             width,
         )
         .unwrap();
-    let chroma = vec![128u16; width * height / 4];
+    let chroma = vec![128u16 << shift; width * height / 4];
     for id in [PlaneId::U, PlaneId::V] {
         let rect = PlaneRect::new(0, 0, width / 2, height / 2).unwrap();
         workspace.write_rect(id, rect, &chroma, width / 2).unwrap();
@@ -132,6 +179,15 @@ fn cell_classes_are_the_classes_the_restoration_applies() {
         chroma_blocks: ChromaDeblockRecords::new(),
         tx_skip,
     };
+    let (rows, cols) = cdef_unit_grid((height / 4, width / 4));
+    let cdef = vec![Some(0); rows * cols];
+    let grid = CcsoGrid::new(&seq, &core).unwrap();
+    let ccso = vec![vec![1u8; grid.rows * grid.cols]];
+    let (cdef, ccso): (&[Option<usize>], &[Vec<u8>]) = if cdef_and_ccso {
+        (&cdef, &ccso)
+    } else {
+        (&[], &[])
+    };
     let mut lr_on = Vec::new();
     for layout in LrLayout::tiles(&seq, &core).unwrap() {
         lr_on.extend(
@@ -142,25 +198,48 @@ fn cell_classes_are_the_classes_the_restoration_applies() {
                 .map(|unit| (unit, LrUnitType::WienerNs)),
         );
     }
-    let out = apply_loop_filters(&seq, &core, &recorder, &frame, (&[], &[]), &lr_on).unwrap();
-    let classes = pc_wiener_cell_classes(&seq, &core, &recorder, &frame).unwrap();
+    let plane = |frame: &DecodedFrame<u16>, x: usize, y: usize| {
+        let plane = frame.plane(PlaneId::Y).unwrap();
+        i32::from(plane.samples()[y * plane.stride_samples() + x])
+    };
+    let filtered = apply_loop_filters(&seq, &core, &recorder, &frame, (cdef, ccso), &[]).unwrap();
+    let out = apply_loop_filters(&seq, &core, &recorder, &frame, (cdef, ccso), &lr_on).unwrap();
+    let changed =
+        (0..height).any(|y| (0..width).any(|x| plane(&filtered, x, y) != plane(&frame, x, y)));
+    assert_eq!(changed, cdef_and_ccso, "{bit_depth:?}");
+    let classes = pc_wiener_cell_classes(&seq, &core, &recorder, (&frame, &filtered)).unwrap();
     let table =
         splot_recon::pc_wiener_subclass_table(16, splot_recon::pc_wiener_filter_set_index(QINDEX))
             .unwrap();
-    let restored = out.plane(PlaneId::Y).unwrap();
-    let at = |x: usize, y: isize| i32::from(sample(x, y.clamp(0, height as isize - 1) as usize));
     let mut used = [false; 16];
     for y in 0..height {
+        let stripe = (y + 8) / 64;
+        let (start, end) = (
+            (stripe * 64).saturating_sub(8),
+            (stripe * 64 + 55).min(height - 1),
+        );
+        let source = |x: usize, row: isize| {
+            let row = row.clamp(0, height as isize - 1) as usize;
+            if (start..=end).contains(&row) {
+                plane(&filtered, x, row)
+            } else {
+                plane(&frame, x, row)
+            }
+        };
         for x in 0..width {
-            let subclass = table[usize::from(classes[(y / 4) * (width / 4) + x / 4])];
+            let subclass = table[usize::from(classes.class(x, y).unwrap())];
             used[usize::from(subclass)] = true;
-            let m = at(x, y as isize);
+            let m = source(x, y as isize);
             let coeff = i32::from(subclass) - 8;
-            let s =
-                m * 128 + coeff * (at(x, y as isize + 1) - m) + coeff * (at(x, y as isize - 1) - m);
-            let expected = ((s + 64) >> 7).clamp(0, 255);
-            let actual = i32::from(restored.samples()[y * restored.stride_samples() + x]);
-            assert_eq!(actual, expected, "sample ({x}, {y}) subclass {subclass}");
+            let s = m * 128
+                + coeff * (source(x, y as isize + 1) - m)
+                + coeff * (source(x, y as isize - 1) - m);
+            let expected = ((s + 64) >> 7).clamp(0, max);
+            assert_eq!(
+                plane(&out, x, y),
+                expected,
+                "{bit_depth:?} cdef+ccso {cdef_and_ccso}: sample ({x}, {y}) subclass {subclass}"
+            );
         }
     }
     assert!(used.iter().filter(|&&u| u).count() >= 4, "{used:?}");

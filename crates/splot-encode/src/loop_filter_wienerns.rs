@@ -26,8 +26,9 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::adapt_cdf_u16;
 use splot_decode::encoder_syntax::{
-    LrLayout, LrSymbol, LrUnit, LrUnitType, WIENER_NS_CONFIG_UV, WIENER_NS_CONFIG_Y_PAIRS,
-    apply_loop_filters, pc_wiener_cell_classes, wiener_ns_chroma_luma_plane,
+    LrLayout, LrSymbol, LrUnit, LrUnitType, PcWienerClassMap, WIENER_NS_CONFIG_UV,
+    WIENER_NS_CONFIG_Y_PAIRS, apply_loop_filters, pc_wiener_cell_classes,
+    wiener_ns_chroma_luma_plane,
 };
 use splot_recon::PC_WIENER_LUT_CLASSES;
 use splot_recon::{DecodedFrame, PlaneId};
@@ -36,7 +37,7 @@ use super::ccso::rd;
 use super::{Search, coding};
 use crate::error::{Error, Result};
 use crate::intra_frame::map_tiles;
-use crate::kernels::wiener::{WienerAccumulator, WienerStats};
+use crate::kernels::wiener::{WienerAccumulator, WienerClassAccumulator, WienerStats};
 use crate::preset::PresetParams;
 use crate::rd::{Bits, symbol_cost};
 use crate::tile_writer::filters::{FilterSyntax, lr_unit_symbols};
@@ -177,7 +178,7 @@ impl Search<'_> {
         &self,
         pc: &FrameFilterParams,
         syntax: &FilterSyntax,
-        preset: &PresetParams,
+        (preset, pre_cdef): (&PresetParams, Option<&DecodedFrame<u16>>),
     ) -> Result<(FrameFilterParams, BTreeMap<LrUnit, LrUnitType>)> {
         let core = self.header(pc)?;
         let units = Units::new(self.seq, &core)?;
@@ -285,26 +286,36 @@ impl Search<'_> {
             .copied()
             .filter(|&count| count > 1 && count <= preset.wiener_ns_classes)
             .collect();
-        let cells = if counts.is_empty() || preset.wiener_ns == 0 {
+        let map = if counts.is_empty() || preset.wiener_ns == 0 {
             None
         } else {
-            let mi_cols = 2 * off.coded_luma_size().width().div_ceil(8);
-            let map = pc_wiener_cell_classes(self.seq, &core, self.recorder, &off)
-                .map_err(coding("PC-Wiener classes"))?;
-            Some((map, mi_cols))
+            Some(
+                pc_wiener_cell_classes(
+                    self.seq,
+                    &core,
+                    self.recorder,
+                    (pre_cdef.unwrap_or(&off), &off),
+                )
+                .map_err(coding("PC-Wiener classes"))?,
+            )
         };
-        let stats = self.plane_stats(
-            &off,
-            &units,
-            0,
-            cells.as_ref().map(|(map, cols)| (map.as_slice(), *cols)),
-        )?;
+        let (stats, mut classes) = match &map {
+            Some(map) => {
+                let (singles, classes) = self.luma_class_stats(&off, &units, map, None)?;
+                (singles, Some(classes))
+            }
+            None => (self.plane_stats(&off, &units, 0)?, None),
+        };
         let mut taken = vec![true; stats.len()];
-        for _ in 0..preset.wiener_ns {
-            let classes = sum_taken(&stats, &taken);
-            let mut pick = self.fit(&sum_all(&classes), 0)?;
-            if cells.is_some()
-                && let Some((cost, bank)) = self.fit_classes(&classes, &counts)?
+        for pass in 0..preset.wiener_ns {
+            let mut pick = self.fit(&sum_taken(&stats, &taken), 0)?;
+            if let Some(map) = &map
+                && pass > 0
+            {
+                classes = Some(self.luma_class_stats(&off, &units, map, Some(&taken))?.1);
+            }
+            if let Some(classes) = &classes
+                && let Some((cost, bank)) = self.fit_classes(classes, &counts)?
                 && pick.as_ref().is_none_or(|(single, _)| cost < *single)
             {
                 pick = Some((cost, bank));
@@ -386,7 +397,7 @@ impl Search<'_> {
             lr_on: best.lr_on.clone(),
         };
         for plane in 1..3 {
-            let stats = self.plane_stats(off, &probe_units, plane, None)?;
+            let stats = self.plane_stats(off, &probe_units, plane)?;
             let mut try_bank = |rst_ref_pic_idx, bank| -> Result<Vec<bool>> {
                 let mut params = current.params;
                 params.lr_chroma_wiener_ns[plane - 1] = Some(choice(rst_ref_pic_idx, &bank));
@@ -424,7 +435,7 @@ impl Search<'_> {
             }
             let mut taken = vec![true; stats.len()];
             for _ in 0..preset.wiener_ns_chroma {
-                let Some((_, bank)) = self.fit(&sum_all(&sum_taken(&stats, &taken)), plane)? else {
+                let Some((_, bank)) = self.fit(&sum_taken(&stats, &taken), plane)? else {
                     break;
                 };
                 taken = try_bank(None, bank)?;
@@ -503,142 +514,173 @@ impl Search<'_> {
         off: &DecodedFrame<u16>,
         units: &Units,
         plane: usize,
-        cells: Option<(&[u8], usize)>,
-    ) -> Result<Vec<Vec<WienerStats>>> {
+    ) -> Result<Vec<WienerStats>> {
         let missing = || Error::Unsupported {
             what: "a restoration plane the frame does not have",
         };
-        let ids = [PlaneId::Y, PlaneId::U, PlaneId::V];
         let coded = off.coded_luma_size();
         let format = off.info().pixel_format();
-        let (sub_x, sub_y) = if plane == 0 {
-            (0, 0)
-        } else {
-            (format.subsampling_x(), format.subsampling_y())
-        };
-        let size = (
-            coded.width().div_ceil(1 << sub_x),
-            coded.height().div_ceil(1 << sub_y),
-        );
-        let samples = off.plane(ids[plane]).ok_or_else(missing)?;
-        let radius = if plane == 0 {
-            LUMA_RADIUS
-        } else {
-            CHROMA_RADIUS
-        };
-        let padded = Padded::new(samples.samples(), samples.stride_samples(), size, radius)?;
-        let luma = if plane == 0 {
-            None
-        } else {
-            let luma = off.plane(PlaneId::Y).ok_or_else(missing)?;
-            let cfl = self
-                .seq
-                .intra
-                .as_ref()
-                .map_or(0, |intra| intra.cfl_ds_filter_index);
-            let plane = wiener_ns_chroma_luma_plane(
-                (luma.samples(), luma.stride_samples()),
-                size,
-                (sub_x, sub_y),
-                cfl,
-                (
-                    (coded.width().div_ceil(8) * 8).min(luma.storage_size().width()) - 1,
-                    (coded.height().div_ceil(8) * 8).min(luma.storage_size().height()) / 4,
-                ),
-                off.bit_depth().max_sample(),
-            )
-            .map_err(coding("restoration luma"))?;
-            Some(Padded::new(&plane, size.0, size, CHROMA_RADIUS)?)
-        };
+        let max = u64::from(off.bit_depth().max_sample());
+        let max_product = 4 * max * max;
         let source_size = self.source.plane_sizes()[plane];
         let source = &self.source.planes()[plane];
-        let n = if plane == 0 {
-            LUMA_COEFFS
-        } else {
-            CHROMA_COEFFS
-        };
-        let max = u64::from(off.bit_depth().max_sample());
         let jobs: Vec<_> = units
             .units
             .iter()
             .filter(|(_, unit)| unit.plane == plane)
             .copied()
             .collect();
-        let max_product = 4 * max * max;
-        map_tiles(self.pool, jobs, |(layout, unit)| {
-            let rects = units.layouts[layout]
-                .unit_rects(unit)
-                .map_err(coding("restoration unit"))?;
-            let mut stats = WienerStats::new(n);
-            let mut target = Vec::new();
-            let mut buckets: Vec<Vec<i32>> = Vec::new();
-            if cells.is_some() {
-                buckets = vec![Vec::new(); PC_WIENER_LUT_CLASSES * (LUMA_COEFFS + 1)];
-            }
-            if let Some(luma) = &luma {
-                let mut lanes = WienerAccumulator::<CHROMA_COEFFS>::new(max_product);
-                let mut features: [Vec<i32>; CHROMA_COEFFS] = Default::default();
-                for rect in &rects {
-                    let right = (rect.x() + rect.width()).min(source_size.width());
-                    for y in rect.y()..(rect.y() + rect.height()).min(source_size.height()) {
-                        let span = rect.x()..right;
-                        let row = &source[y * source_size.width()..];
-                        padded.target(y, span.clone(), row, &mut target);
-                        for (k, &(dy, dx, _)) in WIENER_NS_CONFIG_UV.iter().enumerate() {
-                            if k % 2 == 0 {
-                                padded.pair(y, span.clone(), (dy, dx), &mut features[k / 2]);
-                            }
-                            luma.diff(y, span.clone(), (dy, dx), &mut features[CHROMA_SHORT + k]);
-                        }
-                        let rows = core::array::from_fn(|k| features[k].as_slice());
-                        lanes.add(&rows, &target, &mut stats);
-                    }
-                }
-                lanes.flush(&mut stats);
-            } else {
+        if plane == 0 {
+            let padded = luma_padded(off)?;
+            return map_tiles(self.pool, jobs, |(layout, unit)| {
+                let mut stats = WienerStats::new(LUMA_COEFFS);
                 let mut lanes = WienerAccumulator::<LUMA_COEFFS>::new(max_product);
                 let mut features: [Vec<i32>; LUMA_COEFFS] = Default::default();
-                for rect in &rects {
-                    let right = (rect.x() + rect.width()).min(source_size.width());
-                    for y in rect.y()..(rect.y() + rect.height()).min(source_size.height()) {
-                        let span = rect.x()..right;
-                        let row = &source[y * source_size.width()..];
-                        padded.target(y, span.clone(), row, &mut target);
-                        for (k, &(dy, dx, _)) in WIENER_NS_CONFIG_Y_PAIRS.iter().enumerate() {
-                            padded.pair(y, span.clone(), (dy, dx), &mut features[k]);
-                        }
-                        if let Some((map, mi_cols)) = cells {
-                            for (i, x) in span.enumerate() {
-                                let class = usize::from(map[(y >> 2) * mi_cols + (x >> 2)]);
-                                let base = class * (LUMA_COEFFS + 1);
-                                for (k, row) in features.iter().enumerate() {
-                                    buckets[base + k].push(row[i]);
-                                }
-                                buckets[base + LUMA_COEFFS].push(target[i]);
-                            }
-                        } else {
-                            let rows = core::array::from_fn(|k| features[k].as_slice());
-                            lanes.add(&rows, &target, &mut stats);
-                        }
-                    }
+                let mut target = Vec::new();
+                for (y, span) in unit_rows(units, layout, unit, source_size)? {
+                    let row = &source[y * source_size.width()..];
+                    luma_row(&padded, y, span, row, (&mut features, &mut target));
+                    let rows = core::array::from_fn(|k| features[k].as_slice());
+                    lanes.add(&rows, &target, &mut stats);
                 }
                 lanes.flush(&mut stats);
+                Ok(stats)
+            });
+        }
+        let (sub_x, sub_y) = (format.subsampling_x(), format.subsampling_y());
+        let size = (
+            coded.width().div_ceil(1 << sub_x),
+            coded.height().div_ceil(1 << sub_y),
+        );
+        let ids = [PlaneId::Y, PlaneId::U, PlaneId::V];
+        let samples = off.plane(ids[plane]).ok_or_else(missing)?;
+        let padded = Padded::new(
+            samples.samples(),
+            samples.stride_samples(),
+            size,
+            CHROMA_RADIUS,
+        )?;
+        let luma = off.plane(PlaneId::Y).ok_or_else(missing)?;
+        let cfl = self
+            .seq
+            .intra
+            .as_ref()
+            .map_or(0, |intra| intra.cfl_ds_filter_index);
+        let luma = wiener_ns_chroma_luma_plane(
+            (luma.samples(), luma.stride_samples()),
+            size,
+            (sub_x, sub_y),
+            cfl,
+            (
+                (coded.width().div_ceil(8) * 8).min(luma.storage_size().width()) - 1,
+                (coded.height().div_ceil(8) * 8).min(luma.storage_size().height()) / 4,
+            ),
+            off.bit_depth().max_sample(),
+        )
+        .map_err(coding("restoration luma"))?;
+        let luma = Padded::new(&luma, size.0, size, CHROMA_RADIUS)?;
+        map_tiles(self.pool, jobs, |(layout, unit)| {
+            let mut stats = WienerStats::new(CHROMA_COEFFS);
+            let mut lanes = WienerAccumulator::<CHROMA_COEFFS>::new(max_product);
+            let mut features: [Vec<i32>; CHROMA_COEFFS] = Default::default();
+            let mut target = Vec::new();
+            for (y, span) in unit_rows(units, layout, unit, source_size)? {
+                let row = &source[y * source_size.width()..];
+                padded.target(y, span.clone(), row, &mut target);
+                for (k, &(dy, dx, _)) in WIENER_NS_CONFIG_UV.iter().enumerate() {
+                    if k % 2 == 0 {
+                        padded.pair(y, span.clone(), (dy, dx), &mut features[k / 2]);
+                    }
+                    luma.diff(y, span.clone(), (dy, dx), &mut features[CHROMA_SHORT + k]);
+                }
+                let rows = core::array::from_fn(|k| features[k].as_slice());
+                lanes.add(&rows, &target, &mut stats);
             }
-            if cells.is_some() {
-                return buckets
-                    .chunks(LUMA_COEFFS + 1)
-                    .map(|bucket| {
-                        let mut class = WienerStats::new(LUMA_COEFFS);
-                        let mut lanes = WienerAccumulator::<LUMA_COEFFS>::new(max_product);
-                        let rows = core::array::from_fn(|k| bucket[k].as_slice());
-                        lanes.add(&rows, &bucket[LUMA_COEFFS], &mut class);
-                        lanes.flush(&mut class);
-                        Ok(class)
-                    })
-                    .collect();
-            }
-            Ok(vec![stats])
+            lanes.flush(&mut stats);
+            Ok(stats)
         })
+    }
+
+    /// The normal equations of each luma unit, in [`Units`] order, and of each
+    /// § 7.20.4 class of `map` over the units `taken` (all when `None`). One
+    /// worker-pool job codes a row of units, so the class sums stay one set
+    /// per unit row.
+    fn luma_class_stats(
+        &self,
+        off: &DecodedFrame<u16>,
+        units: &Units,
+        map: &PcWienerClassMap,
+        taken: Option<&[bool]>,
+    ) -> Result<(Vec<WienerStats>, Vec<WienerStats>)> {
+        let unclassified = || Error::Unsupported {
+            what: "a luma sample without a PC-Wiener class",
+        };
+        let max = u64::from(off.bit_depth().max_sample());
+        let source_size = self.source.plane_sizes()[0];
+        let source = &self.source.planes()[0];
+        let padded = luma_padded(off)?;
+        let luma_units: Vec<(usize, LrUnit)> = units
+            .units
+            .iter()
+            .filter(|(_, unit)| unit.plane == 0)
+            .copied()
+            .collect();
+        let mut rows: Vec<Vec<(usize, usize, LrUnit)>> = Vec::new();
+        for (index, &(layout, unit)) in luma_units.iter().enumerate() {
+            if taken.is_some_and(|taken| !taken.get(index).copied().unwrap_or(false)) {
+                continue;
+            }
+            match rows.last_mut() {
+                Some(row)
+                    if row.last().is_some_and(|&(_, last, prior)| {
+                        last == layout && prior.row == unit.row
+                    }) =>
+                {
+                    row.push((index, layout, unit));
+                }
+                _ => rows.push(vec![(index, layout, unit)]),
+            }
+        }
+        let jobs = map_tiles(self.pool, rows, |row| {
+            let mut lanes =
+                WienerClassAccumulator::<LUMA_COEFFS>::new(PC_WIENER_LUT_CLASSES, 4 * max * max);
+            let mut unit_classes = vec![WienerStats::new(LUMA_COEFFS); PC_WIENER_LUT_CLASSES];
+            let mut totals = vec![WienerStats::new(LUMA_COEFFS); PC_WIENER_LUT_CLASSES];
+            let mut singles = Vec::with_capacity(row.len());
+            let mut features: [Vec<i32>; LUMA_COEFFS] = Default::default();
+            let (mut target, mut cells) = (Vec::new(), Vec::new());
+            for (index, layout, unit) in row {
+                for (y, span) in unit_rows(units, layout, unit, source_size)? {
+                    cells.clear();
+                    for x in span.clone().step_by(4) {
+                        cells.push(map.class(x, y).ok_or_else(unclassified)?);
+                    }
+                    let line = &source[y * source_size.width()..];
+                    luma_row(&padded, y, span, line, (&mut features, &mut target));
+                    let rows = core::array::from_fn(|k| features[k].as_slice());
+                    lanes.add(&rows, &target, &cells, &mut unit_classes);
+                }
+                let mut single = WienerStats::new(LUMA_COEFFS);
+                for class in lanes.flush(&mut unit_classes) {
+                    single.add(&unit_classes[class]);
+                    totals[class].add(&unit_classes[class]);
+                    unit_classes[class] = WienerStats::new(LUMA_COEFFS);
+                }
+                singles.push((index, single));
+            }
+            Ok((singles, totals))
+        })?;
+        let mut singles = vec![WienerStats::new(LUMA_COEFFS); luma_units.len()];
+        let mut totals = vec![WienerStats::new(LUMA_COEFFS); PC_WIENER_LUT_CLASSES];
+        for (row_singles, row_totals) in jobs {
+            for (index, single) in row_singles {
+                singles[index] = single;
+            }
+            for (total, class) in totals.iter_mut().zip(&row_totals) {
+                total.add(class);
+            }
+        }
+        Ok((singles, totals))
     }
 
     /// Each unit's cheapest candidate of `options` under the plane types of
@@ -743,27 +785,61 @@ fn empty_bank() -> WienerNsFrameFilterBank {
     }
 }
 
-/// The statistics of each class summed over the units `taken`.
-fn sum_taken(stats: &[Vec<WienerStats>], taken: &[bool]) -> Vec<WienerStats> {
-    let mut total: Vec<WienerStats> = stats.first().cloned().unwrap_or_default();
-    for unit in &mut total {
-        *unit = WienerStats::new(unit.len());
-    }
+/// The sum of the statistics of the units `taken`.
+fn sum_taken(stats: &[WienerStats], taken: &[bool]) -> WienerStats {
+    let mut total = WienerStats::new(stats.first().map_or(LUMA_COEFFS, WienerStats::len));
     for (unit, _) in stats.iter().zip(taken).filter(|&(_, &on)| on) {
-        for (sum, class) in total.iter_mut().zip(unit) {
-            sum.add(class);
-        }
+        total.add(unit);
     }
     total
 }
 
-/// The statistics of every class together.
-fn sum_all(classes: &[WienerStats]) -> WienerStats {
-    let mut total = WienerStats::new(classes.first().map_or(LUMA_COEFFS, WienerStats::len));
-    for class in classes {
-        total.add(class);
+/// The luma of `off` over its coded size, padded for the luma taps.
+fn luma_padded(off: &DecodedFrame<u16>) -> Result<Padded> {
+    let luma = off.plane(PlaneId::Y).ok_or(Error::Unsupported {
+        what: "a frame without luma",
+    })?;
+    let coded = off.coded_luma_size();
+    Padded::new(
+        luma.samples(),
+        luma.stride_samples(),
+        (coded.width(), coded.height()),
+        LUMA_RADIUS,
+    )
+}
+
+/// The luma features and target of the samples `span` of row `y`.
+fn luma_row(
+    padded: &Padded,
+    y: usize,
+    span: Range<usize>,
+    source: &[u16],
+    (features, target): (&mut [Vec<i32>; LUMA_COEFFS], &mut Vec<i32>),
+) {
+    padded.target(y, span.clone(), source, target);
+    for (k, &(dy, dx, _)) in WIENER_NS_CONFIG_Y_PAIRS.iter().enumerate() {
+        padded.pair(y, span.clone(), (dy, dx), &mut features[k]);
     }
-    total
+}
+
+/// The visible rows of `unit` and their column spans.
+fn unit_rows(
+    units: &Units,
+    layout: usize,
+    unit: LrUnit,
+    size: splot_recon::PlaneSize,
+) -> Result<Vec<(usize, Range<usize>)>> {
+    let mut rows = Vec::new();
+    for rect in units.layouts[layout]
+        .unit_rects(unit)
+        .map_err(coding("restoration unit"))?
+    {
+        let right = (rect.x() + rect.width()).min(size.width());
+        for y in rect.y()..(rect.y() + rect.height()).min(size.height()) {
+            rows.push((y, rect.x()..right));
+        }
+    }
+    Ok(rows)
 }
 
 #[path = "loop_filter_wienerns_fit.rs"]
