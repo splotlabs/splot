@@ -195,12 +195,7 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         }
         let mut best: Option<(u128, LeafChoice)> = None;
         for choice in candidates {
-            self.syntax.restore(start)?;
-            self.coder.candidate = !self.preset.full_trials;
-            self.coder.trial = true;
-            let cost = self.trial(leaf, choice, planes.clone());
-            (self.coder.candidate, self.coder.trial) = (false, false);
-            let j = cost?.cost(self.lambda);
+            let j = self.trial_cost(leaf, choice, planes.clone(), start)?;
             if best.is_none_or(|(best_j, _)| j < best_j) {
                 best = Some((j, choice));
             }
@@ -208,6 +203,23 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         self.syntax.restore(start)?;
         best.map(|(j, choice)| (Some(j), choice))
             .ok_or(TileWriterError::Shape("no leaf candidate"))
+    }
+
+    /// The candidate-trial `D + lambda * R` of `choice` over `planes` from
+    /// `start`; the state is the trial's after.
+    fn trial_cost(
+        &mut self,
+        leaf: &LeafBlock,
+        choice: LeafChoice,
+        planes: Range<usize>,
+        start: &SyntaxSnapshot,
+    ) -> Result<u128> {
+        self.syntax.restore(start)?;
+        self.coder.candidate = !self.preset.full_trials;
+        self.coder.trial = true;
+        let cost = self.trial(leaf, choice, planes);
+        (self.coder.candidate, self.coder.trial) = (false, false);
+        Ok(cost?.cost(self.lambda))
     }
 
     /// Every chroma mode, CFL with derived alphas, and CFL with the explicit
@@ -317,13 +329,6 @@ impl TrialCoder<'_, '_> {
             }
         }
         choices.extend(self.compound_candidates(leaf, &searched)?);
-        if self.preset.interp_filter_search {
-            for choice in &mut choices {
-                if let Some(prediction) = choice.inter.as_mut() {
-                    self.choose_filter(leaf, prediction)?;
-                }
-            }
-        }
         Ok(choices)
     }
 
@@ -372,35 +377,36 @@ impl TrialCoder<'_, '_> {
         Ok(())
     }
 
-    /// `choice`, of full-trial cost `cost`, with the filter of the lowest
-    /// full-trial cost when it is an inter leaf that reads `interp_filter`;
-    /// ties keep `choice`. The state is `start` after.
+    /// `choice`, the leaf's winner of trial cost `cost`, with the filter of
+    /// [`Self::choose_filter`] when it is an inter leaf that reads
+    /// `interp_filter`. With `interp_filter_search` 2 a filter other than
+    /// the winner's must also lower the trial cost. The state is `start`
+    /// after.
     fn refine_filter(
         &mut self,
         leaf: &LeafBlock,
         (cost, choice): (Option<u128>, LeafChoice),
         start: &SyntaxSnapshot,
     ) -> Result<LeafChoice> {
-        let Some(prediction) = choice.inter.filter(|_| self.preset.interp_filter_search) else {
+        let Some(prediction) = choice
+            .inter
+            .filter(|_| self.preset.interp_filter_search > 0)
+        else {
             return Ok(choice);
         };
-        if !self
-            .syntax
-            .price_interp_filter(leaf, prediction, &mut RateSink::adapting())?
-        {
-            return Ok(choice);
+        let mut picked = prediction;
+        self.choose_filter(leaf, &mut picked)?;
+        let other = LeafChoice::inter(picked);
+        if picked == prediction || self.preset.interp_filter_search < 2 {
+            return Ok(other);
         }
-        let mut filters: Vec<LeafChoice> = INTERP_FILTERS
-            .map(|filter| LeafChoice::inter(with_filter(prediction, filter)))
-            .to_vec();
-        let Some(cost) = cost else {
-            return self.best(leaf, filters, ALL, start);
+        let cost = match cost {
+            Some(cost) => cost,
+            None => self.trial_cost(leaf, choice, ALL, start)?,
         };
-        filters.retain(|&other| other != choice);
-        match self.best_scored(leaf, filters, ALL, start)? {
-            (Some(other_cost), other) if other_cost < cost => Ok(other),
-            _ => Ok(choice),
-        }
+        let other_cost = self.trial_cost(leaf, other, ALL, start)?;
+        self.syntax.restore(start)?;
+        Ok(if other_cost < cost { other } else { choice })
     }
 
     /// The `preset.compound_candidates` compound predictions of `leaf` with

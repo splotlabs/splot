@@ -224,6 +224,7 @@ fn inter_frame_header_bits(
         seq,
         (params.base_q_idx, params.tiles),
         &params.filters,
+        false,
     )?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_flag(params.reference_select)?;

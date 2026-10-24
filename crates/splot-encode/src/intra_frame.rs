@@ -88,6 +88,7 @@ impl IntraFrameCoder {
             tools: EncoderToolFlags {
                 cdef: true,
                 loop_restoration: true,
+                ccso: preset.ccso_candidates > 0,
                 cfl: true,
                 ibp: true,
                 intra_edge_filter: true,
@@ -602,7 +603,7 @@ fn kernel(error: crate::kernels::KernelError) -> TileWriterError {
 }
 
 /// The visible samples of each plane, packed like [`SourceFrame`] planes.
-fn visible_planes(recon: &DecodedFrame<u16>) -> Result<[Vec<u16>; 3]> {
+pub(crate) fn visible_planes(recon: &DecodedFrame<u16>) -> Result<[Vec<u16>; 3]> {
     let view = recon.as_frame_ref();
     let mut planes: [Vec<u16>; 3] = Default::default();
     for (out, id) in planes.iter_mut().zip([PlaneId::Y, PlaneId::U, PlaneId::V]) {

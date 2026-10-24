@@ -72,11 +72,12 @@ pub struct PresetParams {
     /// `MaxDrlBits`, `1..=5`: `NEARMV` and `NEWMV` choose among the first
     /// `drl_bits + 1` entries of the reference MV stack.
     pub drl_bits: u8,
-    /// Inter frames code `SWITCHABLE` interpolation filters: each inter
-    /// candidate takes the filter whose luma prediction SATD plus
-    /// `interp_filter` rate is lowest at its final vectors, and the winning
-    /// leaf tries every filter in a full trial. Off, frames code `EIGHTTAP`.
-    pub interp_filter_search: bool,
+    /// Interpolation filter search: `0` codes `EIGHTTAP` frames; `1` codes
+    /// `SWITCHABLE` frames whose winning inter leaf takes the filter with
+    /// the lowest luma prediction SATD plus `interp_filter` rate at its final
+    /// vectors; `2` also keeps a filter other than the winner's only when a
+    /// trial confirms it.
+    pub interp_filter_search: u8,
     /// Extended partitions: `0` off, `1` adds `HORZ_3` and `VERT_3`, `2` also
     /// the uneven 4-way shapes.
     pub ext_partitions: u8,
@@ -86,6 +87,9 @@ pub struct PresetParams {
     /// An uneven four-way shape is tried only when the three-way shape of its
     /// axis costs within this margin, in 1/256, of the best; `255` always.
     pub ext_four_way_margin: u8,
+    /// CCSO classifications the filter search tries per plane; `0` disables
+    /// CCSO in the sequence.
+    pub ccso_candidates: u8,
 }
 
 const fn row(
@@ -94,7 +98,7 @@ const fn row(
     partition_early_exit: bool,
     (rdoq, full_trials): (bool, bool),
     (tx_type_depth, tx_partition_search): (u8, bool),
-    motion: (u16, u8, u16, u8, bool),
+    motion: (u16, u8, u16, u8, u8),
     (loop_filter_search, mini_gop_size, lookahead_frames, compound_candidates): (u8, u8, u8, u8),
 ) -> PresetParams {
     PresetParams {
@@ -122,18 +126,31 @@ const fn row(
         ext_partitions: 0,
         ext_three_way_margin: 0,
         ext_four_way_margin: 0,
+        ccso_candidates: 0,
     }
 }
 
 /// Search limits indexed by preset: `0` is the slowest and best, `10` the fastest.
-pub const PRESETS: [PresetParams; 11] = [
+pub const PRESETS: [PresetParams; 11] = with_ccso(ROWS, [8, 8, 6, 6, 4, 4, 4, 2, 2, 1, 1]);
+
+/// `rows` with `ccso_candidates[i]` in row `i`.
+const fn with_ccso(mut rows: [PresetParams; 11], ccso_candidates: [u8; 11]) -> [PresetParams; 11] {
+    let mut i = 0;
+    while i < rows.len() {
+        rows[i].ccso_candidates = ccso_candidates[i];
+        i += 1;
+    }
+    rows
+}
+
+const ROWS: [PresetParams; 11] = [
     row(
         (2, 7),
         13,
         false,
         (true, true),
         (3, true),
-        (256, 3, 128, 3, true),
+        (256, 3, 128, 3, 2),
         (3, 8, 16, 8),
     ),
     row(
@@ -142,7 +159,7 @@ pub const PRESETS: [PresetParams; 11] = [
         false,
         (true, true),
         (3, true),
-        (192, 3, 128, 3, true),
+        (192, 3, 128, 3, 2),
         (3, 8, 16, 8),
     ),
     row(
@@ -151,7 +168,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, true),
         (3, true),
-        (128, 3, 128, 3, true),
+        (128, 3, 128, 3, 2),
         (2, 8, 16, 6),
     ),
     row(
@@ -160,7 +177,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, true),
         (2, true),
-        (96, 2, 0, 3, true),
+        (96, 2, 0, 3, 2),
         (2, 8, 16, 6),
     ),
     row(
@@ -169,7 +186,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, false),
         (2, true),
-        (64, 2, 0, 3, true),
+        (64, 2, 0, 3, 2),
         (2, 4, 8, 4),
     ),
     row(
@@ -178,7 +195,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, false),
         (2, true),
-        (64, 2, 0, 3, true),
+        (64, 2, 0, 3, 2),
         (1, 4, 8, 4),
     ),
     row(
@@ -187,7 +204,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, false),
         (1, true),
-        (48, 2, 0, 3, true),
+        (48, 2, 0, 3, 2),
         (1, 4, 8, 3),
     ),
     row(
@@ -196,7 +213,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (1, false),
-        (32, 1, 0, 1, true),
+        (32, 1, 0, 1, 2),
         (1, 4, 8, 2),
     ),
     row(
@@ -205,7 +222,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (1, false),
-        (24, 1, 0, 1, true),
+        (24, 1, 0, 1, 2),
         (0, 2, 4, 1),
     ),
     row(
@@ -214,7 +231,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (0, false),
-        (16, 1, 0, 1, true),
+        (16, 1, 0, 1, 2),
         (0, 2, 4, 0),
     ),
     row(
@@ -223,7 +240,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (0, false),
-        (16, 0, 0, 1, true),
+        (16, 0, 0, 1, 2),
         (0, 1, 2, 0),
     ),
 ];
@@ -301,6 +318,7 @@ mod tests {
             assert!(fast.ext_partitions <= slow.ext_partitions);
             assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
+            assert!(fast.ccso_candidates <= slow.ccso_candidates);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));
