@@ -23,36 +23,32 @@ use crate::frame::SourceFrame;
 use crate::intra_frame::map_tiles;
 use crate::rd::{Bits, symbol_cost};
 
-/// `(gdf_pic_qc_idx, gdf_pic_scale_idx)` in the order the search tries them.
-const CANDIDATES: [(u8, u8); 16] = [
-    (0, 0),
-    (0, 1),
-    (1, 0),
-    (0, 2),
-    (1, 1),
-    (2, 0),
-    (0, 3),
-    (1, 2),
-    (2, 1),
-    (3, 0),
-    (1, 3),
-    (2, 2),
-    (3, 1),
-    (2, 3),
-    (3, 2),
-    (3, 3),
-];
+/// The 8-bit-equivalent `base_q_idx` from which frames try
+/// `gdf_pic_scale_idx` 2 and 3 first; below the first, 1.
+const SCALE_QINDEX: [u32; 2] = [125, 155];
+
+/// Every `(gdf_pic_qc_idx, gdf_pic_scale_idx)` in the order a frame of
+/// `qindex` at `bit_depth` tries them: the largest `gdf_pic_qc_idx` with the
+/// scale index of [`SCALE_QINDEX`] first, then by distance from it.
+pub(super) fn candidates(qindex: u32, bit_depth: u32) -> [(u8, u8); 16] {
+    let q8 = qindex.saturating_sub(24 * bit_depth.saturating_sub(8));
+    let scale = 1 + SCALE_QINDEX.iter().filter(|&&q| q8 >= q).count() as u8;
+    let mut pairs: [(u8, u8); 16] = core::array::from_fn(|i| (i as u8 / 4, i as u8 % 4));
+    pairs.sort_by_key(|&(qc, s)| (3 - qc + s.abs_diff(scale), 3 - qc));
+    pairs
+}
+
 /// `gdf_per_block`, `gdf_pic_qc_idx` and `gdf_pic_scale_idx` bits.
 const HEADER_BITS: u32 = 5;
 
 impl Search<'_> {
     /// The GDF choice on top of `params` and `syntax`, from the first
-    /// `candidates` entries of [`CANDIDATES`]; `None` keeps GDF off.
+    /// `candidates` entries of [`candidates`]; `None` keeps GDF off.
     pub(super) fn gdf(
         &self,
         params: &FrameFilterParams,
         syntax: &FilterSyntax,
-        candidates: usize,
+        count: usize,
     ) -> Result<Option<(FrameGdf, Vec<u8>)>> {
         let lr_on: Vec<(LrUnit, LrUnitType)> = syntax.lr_on.iter().map(|(&u, &t)| (u, t)).collect();
         let run = |core: &FrameHeaderCore, blocks: &[u8]| {
@@ -71,7 +67,8 @@ impl Search<'_> {
             .map_err(coding("loop filters"))
         };
         let off = run(&self.header(params)?, &[])?;
-        let headers = CANDIDATES[..candidates.min(CANDIDATES.len())]
+        let order = candidates(self.qindex, u32::from(self.recon.bit_depth().bits()));
+        let headers = order[..count.min(order.len())]
             .iter()
             .map(|&(qc_idx, scale_idx)| {
                 let gdf = FrameGdf { qc_idx, scale_idx };
@@ -108,6 +105,18 @@ impl Search<'_> {
             if cost < best.as_ref().map_or(0, |best| best.0) {
                 best = Some((cost, gdf, flags));
             }
+        }
+        if std::env::var_os("GDF_DEBUG").is_some() {
+            eprintln!(
+                "gdf q{} {:?}",
+                self.qindex,
+                best.as_ref().map(|b| (
+                    b.1.qc_idx,
+                    b.1.scale_idx,
+                    b.2.iter().filter(|&&f| f == 1).count(),
+                    b.2.len()
+                ))
+            );
         }
         Ok(best.map(|(_, gdf, flags)| (gdf, flags)))
     }

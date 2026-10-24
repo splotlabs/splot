@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+//! GDF (§ 7.20.5) in key and inter frames.
+
+use super::*;
+use crate::preset::PresetParams;
+
+/// `preset` with `candidates` GDF candidates.
+fn with_gdf(preset: &PresetParams, candidates: u8) -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        gdf_candidates: candidates,
+        ..*preset
+    }))
+}
+
+/// A key frame and two inter frames of a two-tile pan on `threads` threads:
+/// the units, the encoder recon, the `use_gdf` count of each frame (`None`
+/// when the frame codes no GDF), and whether the sequence enables GDF.
+fn gdf_stream(
+    threads: usize,
+    preset: &'static PresetParams,
+) -> (Vec<Vec<u8>>, Vec<u8>, Vec<Option<usize>>, bool) {
+    let mut config = config(200, 136, BitDepth::Ten, 9, 200);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let (mut units, mut recon, mut flags) = (Vec::new(), Vec::new(), Vec::new());
+    for index in 0..3 {
+        let plan = crate::gop::plan(u64::from(index), config.keyint);
+        let mut coded = coder
+            .code_frame(&panning_frame(&config, index), &plan, 200)
+            .unwrap();
+        let core = &coded.reference.as_ref().unwrap().0;
+        flags.push(
+            core.gdf_params
+                .as_ref()
+                .filter(|gdf| gdf.gdf_frame_enable)
+                .map(|gdf| usize::from(gdf.gdf_pic_qc_idx.unwrap_or(0))),
+        );
+        coder.commit(&mut coded).unwrap();
+        recon.extend(recon_bytes(&coded, config.bit_depth));
+        units.push(coded.temporal_unit);
+    }
+    let enabled = coder.sequence.filter.unwrap().enable_gdf;
+    (units, recon, flags, enabled)
+}
+
+/// Key and inter frames code GDF, decode to the encoder recon, and 1, 2 and
+/// 8 threads write the same bytes. Without GDF the sequence does not enable
+/// it and the stream differs.
+#[test]
+fn gdf_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    let base = Preset::new(9).unwrap().params();
+    let on = with_gdf(base, 16);
+    let (one, recon, flags, enabled) = gdf_stream(1, on);
+    assert!(
+        enabled && flags[0].is_some() && flags[1..].iter().any(Option::is_some),
+        "{flags:?}"
+    );
+    assert_same_samples(&decode(&one.concat()), &recon, "gdf");
+    for threads in [2, 8] {
+        assert!(gdf_stream(threads, on).0 == one, "{threads} threads");
+    }
+    let (off, off_recon, off_flags, off_enabled) = gdf_stream(1, base);
+    assert!(
+        !off_enabled && off_flags.iter().all(Option::is_none),
+        "{off_flags:?}"
+    );
+    assert_same_samples(&decode(&off.concat()), &off_recon, "no gdf");
+    assert_ne!(off, one);
+}
+
+/// AVM decodes GDF key and inter frames to the splot output.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_gdf_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, recon, flags, _) = gdf_stream(2, with_gdf(Preset::new(9).unwrap().params(), 16));
+    assert!(flags.iter().all(Option::is_some), "{flags:?}");
+    let avm = avm_decode(&avmdec, &units, (200, 136), BitDepth::Ten, "gdf");
+    assert!(avm == recon, "AVM output differs");
+}
