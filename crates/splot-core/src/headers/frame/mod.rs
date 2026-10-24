@@ -45,8 +45,8 @@ pub use encoder_inter_stream::{
     encode_show_existing_frame_obu,
 };
 pub use encoder_stream::{
-    EncoderHeaderError, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, KeyFrameTxParams,
-    UniformTiles, build_encoder_sequence_header, build_key_frame_header,
+    EncoderHeaderError, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameWienerNs,
+    KeyFrameTxParams, UniformTiles, build_encoder_sequence_header, build_key_frame_header,
     encode_key_frame_temporal_unit,
 };
 pub(crate) use filtering::gdf_per_block_is_coded;
@@ -84,13 +84,15 @@ pub use restoration::{
     CoreSeqRestorationView, FrameRestorationType, LrGeometry, LrParams, LrPlaneParams,
     LrTemporalReferenceView, MAX_CCSO_OFFSETS, MAX_WIENER_NS_CLASSES, SlotFrameFilterTaps,
     WienerNsCoeffs, WienerNsFrameFilterBank, WienerNsFrameFilterClass, ccso_quant_step,
-    parse_ccso_params, parse_lr_params, parse_lr_params_for_inter,
+    parse_ccso_params, parse_lr_params, parse_lr_params_for_inter, wiener_ns_coeff_range,
+    wiener_ns_tap_present, write_frame_wiener_ns_filter,
 };
 /// The § 5.18.7.11 / § 5.18.7.12 helpers and constants the
 /// [`crate::write::frame_restoration`] writer shares with the parser so the two never drift:
 /// the size-signaling base/default and the `indexToTool` table.
 pub(crate) use restoration::{
-    CCSO_INPUT_INTERVAL, RESTORATION_TILESIZE_MAX, default_restoration_size, lr_plane_tool_table,
+    CCSO_INPUT_INTERVAL, DECODE_NUM_FILTER_CLASSES, RESTORATION_TILESIZE_MAX,
+    default_restoration_size, lr_plane_tool_table,
 };
 pub use segmentation::{CoreSeqSegView, MfhSegView, SegmentationParams, parse_segmentation_params};
 pub use size::FrameSize;

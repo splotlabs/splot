@@ -115,6 +115,12 @@ pub struct CoreSeqView {
 }
 
 impl CoreSeqView {
+    /// The § 5.4.10 loop-restoration tool flags `lr_params()` reads.
+    #[must_use]
+    pub const fn restoration(&self) -> CoreSeqRestorationView {
+        self.restoration
+    }
+
     /// Gathers the sequence-derived state the frame-header core parse — and the inverse
     /// [`crate::write`] frame-header writer — need from a fully parsed [`SequenceHeader`]
     /// (AV2 v1.0.0 § 5.4.1). Returns `None` when any required child config is absent (the

@@ -124,7 +124,7 @@ struct PlaneChoice {
 }
 
 /// `delta` squared error plus `bits` at `lambda`, scaled as [`crate::rd::RdCost`].
-fn rd(delta: i64, bits: Bits, lambda: Lambda) -> i128 {
+pub(super) fn rd(delta: i64, bits: Bits, lambda: Lambda) -> i128 {
     (i128::from(delta) << (16 + Bits::FRAC_BITS))
         + i128::from(lambda.sse_per_bit_q16()) * i128::from(bits.0)
 }

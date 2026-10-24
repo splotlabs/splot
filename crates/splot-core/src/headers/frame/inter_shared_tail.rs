@@ -307,7 +307,7 @@ fn derived_primary_is_none(
 /// Luma takes one per retained class of every valid reference, so the list is
 /// bounded by the sequence's sixteen reference slots (AV2 § 5.5.2) times the
 /// sixteen classes a bank holds; chroma takes two per reference.
-type LrReferenceFilterEntries<'a> = crate::tile::InlineVec<
+pub(super) type LrReferenceFilterEntries<'a> = crate::tile::InlineVec<
     Option<&'a [i16]>,
     {
         crate::headers::sequence::MAX_REF_FRAMES
@@ -315,7 +315,7 @@ type LrReferenceFilterEntries<'a> = crate::tile::InlineVec<
     },
 >;
 
-fn lr_reference_filter_entries<'a>(
+pub(super) fn lr_reference_filter_entries<'a>(
     reference_state: &FrameReferenceStateView<'a>,
     ref_frame_idx: &[u32],
     num_total_refs: u32,
@@ -353,7 +353,7 @@ fn lr_reference_filter_entries<'a>(
     entries
 }
 
-fn lr_reference_filter_counts(
+pub(super) fn lr_reference_filter_counts(
     reference_state: &FrameReferenceStateView<'_>,
     ref_frame_idx: &[u32],
     num_total_refs: u32,

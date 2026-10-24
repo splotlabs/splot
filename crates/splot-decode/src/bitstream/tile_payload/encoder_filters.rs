@@ -27,8 +27,8 @@ use splot_core::span::ByteOffset;
 
 use super::super::cdf::TileCdfSelector;
 use super::super::partition_traversal::{
-    ROOT_HAS_CHROMA, TilePartitionBounds, TilePartitionCall, TilePartitionFrameFacts,
-    TilePartitionLoopRestorationPlaneTool, pc_wiener_unit_source_blocks, superblock_lr_units,
+    LrUnitRestorationType, ROOT_HAS_CHROMA, TilePartitionBounds, TilePartitionCall,
+    TilePartitionFrameFacts, pc_wiener_unit_source_blocks, superblock_lr_units,
 };
 use super::super::tile_frontier::minimal_partition_frame_facts;
 use super::{
@@ -61,12 +61,12 @@ impl IntraTileSyntax {
         self.tile_row(TileCdfSelector::CdefIndexMinus1 { strengths })
     }
 
-    /// The `use_pc_wiener` CDF row (§ 5.20.10.5).
+    /// The CDF row of the `read_lr_unit` symbol `symbol` (§ 5.20.10.5).
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] for a CDF table defect.
-    pub fn use_pc_wiener_cdf(&mut self) -> Result<&mut [u16]> {
-        self.tile_row(TileCdfSelector::UsePcWiener)
+    /// Returns [`EncoderSyntaxError::Rule`] for an invalid tool or plane.
+    pub fn lr_symbol_cdf(&mut self, symbol: LrSymbol) -> Result<&mut [u16]> {
+        self.tile_row(symbol.selector())
     }
 
     /// The `ccso_blk` CDF row of `plane` for context `ctx` (§ 5.20.10.2).
@@ -91,6 +91,54 @@ impl FrameStart {
             .map_err(rule("CDF row"))?;
         Ok(row.to_vec())
     }
+}
+
+impl FrameStart {
+    /// A copy of the CDF row of `symbol` that every tile of the frame starts
+    /// from (§ 5.20.10.5).
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] for an invalid tool or plane.
+    pub fn lr_symbol_cdf(&self, symbol: LrSymbol) -> Result<Vec<u16>> {
+        let mut cdfs = self.cdfs.tile_copy();
+        let row = cdfs.row_mut(symbol.selector()).map_err(rule("CDF row"))?;
+        Ok(row.to_vec())
+    }
+}
+
+/// A `read_lr_unit` symbol (§ 5.20.10.5).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+pub enum LrSymbol {
+    /// `use_pc_wiener` of a `RESTORE_PC_WIENER` plane.
+    UsePcWiener,
+    /// `use_wiener_ns` of a `RESTORE_WIENER_NONSEP` plane.
+    UseWienerNs,
+    /// `flex_restoration_type` of `tool` (`0` or `1`) of a `RESTORE_SWITCHABLE` plane.
+    Flex {
+        /// The tool the symbol selects when it is `1`.
+        tool: usize,
+        /// The plane.
+        plane: usize,
+    },
+}
+
+impl LrSymbol {
+    const fn selector(self) -> TileCdfSelector {
+        match self {
+            Self::UsePcWiener => TileCdfSelector::UsePcWiener,
+            Self::UseWienerNs => TileCdfSelector::UseWienerNs,
+            Self::Flex { tool, plane } => TileCdfSelector::FlexRestorationType { tool, plane },
+        }
+    }
+}
+
+/// The restoration a unit applies (§ 5.20.10.5 `LrType`), other than `RESTORE_NONE`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
+pub enum LrUnitType {
+    /// `RESTORE_PC_WIENER`.
+    PcWiener,
+    /// `RESTORE_WIENER_NONSEP` with the frame filters.
+    WienerNs,
 }
 
 /// The CCSO unit grid of a frame (§ 5.18.7.12): units of
@@ -477,8 +525,9 @@ pub struct LrUnit {
     pub col: usize,
 }
 
-/// The restoration-unit layout of one tile of a frame whose planes use
-/// `RESTORE_PC_WIENER` or `RESTORE_NONE`.
+/// The restoration-unit layout of one tile of a frame. A `RESTORE_WIENER_NONSEP`
+/// or `RESTORE_SWITCHABLE` plane must code `frame_filters_on = 1`, so a unit codes
+/// its type only.
 pub struct LrLayout {
     frame: TilePartitionFrameFacts,
     bounds: TilePartitionBounds,
@@ -516,31 +565,21 @@ impl LrLayout {
             .collect()
     }
 
-    /// The units `read_lr` codes at superblock `root`, in syntax order. Each
-    /// codes one `use_pc_wiener` symbol.
+    /// The units `read_lr` codes at superblock `root`, in syntax order.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError::Unsupported`] for a plane tool other than
-    /// `RESTORE_PC_WIENER`, and [`EncoderSyntaxError::Rule`] for an invalid root.
+    /// Returns [`EncoderSyntaxError::Rule`] for an invalid root.
     pub fn units(&self, root: PartitionNode) -> Result<Vec<LrUnit>> {
-        superblock_lr_units(self.frame, root.0, self.bounds)
+        Ok(superblock_lr_units(self.frame, root.0, self.bounds)
             .map_err(rule("read_lr"))?
             .into_iter()
-            .map(|(plane, row, col, tool)| {
-                if tool == TilePartitionLoopRestorationPlaneTool::PcWiener {
-                    Ok(LrUnit {
-                        tile: self.tile,
-                        plane,
-                        row,
-                        col,
-                    })
-                } else {
-                    Err(EncoderSyntaxError::Unsupported(
-                        "restoration tool other than RESTORE_PC_WIENER",
-                    ))
-                }
+            .map(|(plane, row, col, _)| LrUnit {
+                tile: self.tile,
+                plane,
+                row,
+                col,
             })
-            .collect()
+            .collect())
     }
 
     /// The units of every superblock of the tile, in coding order.
@@ -564,13 +603,13 @@ impl LrLayout {
         Ok(units)
     }
 
-    /// The plane rectangles a `RESTORE_PC_WIENER` unit of the tile filters,
-    /// which can reach past the visible frame.
+    /// The plane rectangles a unit of the tile filters, which can reach past
+    /// the visible frame.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for a unit outside the tile.
     pub fn unit_rects(&self, unit: LrUnit) -> Result<Vec<PlaneRect>> {
-        self.source_blocks(unit)?
+        self.source_blocks(unit, LrUnitType::PcWiener)?
             .into_iter()
             .map(|block| {
                 PlaneRect::new(block.x, block.y, block.width, block.height)
@@ -582,14 +621,22 @@ impl LrLayout {
     fn source_blocks(
         &self,
         unit: LrUnit,
+        kind: LrUnitType,
     ) -> Result<Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>> {
         if unit.tile != self.tile {
             return Err(EncoderSyntaxError::Unsupported(
                 "a restoration unit of another tile",
             ));
         }
-        pc_wiener_unit_source_blocks(self.frame, self.bounds, unit.plane, unit.row, unit.col)
-            .map_err(rule("restoration unit"))
+        let mut blocks =
+            pc_wiener_unit_source_blocks(self.frame, self.bounds, unit.plane, unit.row, unit.col)
+                .map_err(rule("restoration unit"))?;
+        if kind == LrUnitType::WienerNs {
+            for block in &mut blocks {
+                block.restoration_type = LrUnitRestorationType::WienerNonsep;
+            }
+        }
+        Ok(blocks)
     }
 }
 
@@ -599,8 +646,7 @@ impl LrLayout {
 /// `cdef_indices` holds `cdef_idx` per 64x64 unit in raster order (see
 /// [`cdef_unit_grid`]), or is empty when no unit codes one; `ccso_blocks[p]`
 /// holds `ccso_blk` of plane `p` per [`CcsoGrid`] unit in raster order, or is
-/// empty when every unit is off; `lr_on` lists the units whose
-/// `use_pc_wiener` is `1`.
+/// empty when every unit is off; `lr_on` lists the restoring units and their type.
 ///
 /// # Errors
 /// Returns [`EncoderSyntaxError::Rule`] when a filter stage rejects its inputs.
@@ -610,17 +656,17 @@ pub fn apply_loop_filters(
     recorder: &FilterRecorder,
     frame: &DecodedFrame<u16>,
     (cdef_indices, ccso_blocks): (&[Option<usize>], &[Vec<u8>]),
-    lr_on: &[LrUnit],
+    lr_on: &[(LrUnit, LrUnitType)],
 ) -> Result<DecodedFrame<u16>> {
     let layouts = LrLayout::tiles(seq, core)?;
     let mut lr_source_blocks = Vec::new();
-    for unit in lr_on {
+    for &(unit, kind) in lr_on {
         let layout = layouts
             .get(unit.tile)
             .ok_or(EncoderSyntaxError::Unsupported(
                 "a restoration unit of another tile",
             ))?;
-        lr_source_blocks.extend(layout.source_blocks(*unit)?);
+        lr_source_blocks.extend(layout.source_blocks(unit, kind)?);
     }
     let frame_facts = minimal_partition_frame_facts(seq, core).map_err(rule("frame facts"))?;
     let (rows, cols) = cdef_unit_grid((frame_facts.mi_rows(), frame_facts.mi_cols()));

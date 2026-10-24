@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Loop-filter syntax of the key-frame tile writer: `cdef_idx` (§ 5.20.10.1),
-//! `ccso_blk` (§ 5.20.10.2) and `use_pc_wiener` (§ 5.20.10.5), plus the
+//! `ccso_blk` (§ 5.20.10.2) and the `read_lr_unit` type (§ 5.20.10.5), plus the
 //! per-leaf records of the decoder's filter chain.
 //!
 //! The writer calls three hooks: [`TileFilters::write_lr_units`] at each
@@ -12,15 +12,15 @@
 //! [`TileFilters::record_leaf`] or [`TileFilters::record_inter_leaf`] after
 //! each leaf's residual.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
-use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType};
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_decode::encoder_syntax::{
     CcsoBlockMap, CcsoGrid, CdefIndexMap, FilterRecorder, IntraTileSyntax, LeafBlock, LrLayout,
-    LrUnit, PartitionNode, TransformBlock,
+    LrSymbol, LrUnit, LrUnitType, PartitionNode, TransformBlock,
 };
 
 use super::{Result, TileWriterError};
@@ -30,8 +30,8 @@ use super::{Result, TileWriterError};
 pub(crate) struct FilterSyntax {
     /// `cdef_idx` per 64x64 unit in raster order; a missing entry codes `0`.
     pub(crate) cdef_indices: Vec<Option<usize>>,
-    /// The restoration units whose `use_pc_wiener` is `1`.
-    pub(crate) lr_on: BTreeSet<LrUnit>,
+    /// The restoring units and their type; a missing unit codes `RESTORE_NONE`.
+    pub(crate) lr_on: BTreeMap<LrUnit, LrUnitType>,
     /// `ccso_blk` per plane and [`CcsoGrid`] unit in raster order; a missing
     /// entry codes `0`.
     pub(crate) ccso_blocks: Vec<Vec<u8>>,
@@ -40,6 +40,36 @@ pub(crate) struct FilterSyntax {
 /// The filter records of a finished tile and the filter choices it coded.
 pub(crate) type CodedFilters = (FilterRecorder, FilterSyntax);
 
+/// The symbols that code `kind` (`None` is `RESTORE_NONE`) on a `plane` coded
+/// with `tool`, in order (§ 5.20.10.5).
+pub(crate) fn lr_unit_symbols(
+    tool: FrameRestorationType,
+    plane: usize,
+    kind: Option<LrUnitType>,
+) -> Result<Vec<(LrSymbol, bool)>> {
+    let flex = |tool| LrSymbol::Flex { tool, plane };
+    Ok(match (tool, kind) {
+        (FrameRestorationType::PcWiener, None | Some(LrUnitType::PcWiener)) => {
+            vec![(LrSymbol::UsePcWiener, kind.is_some())]
+        }
+        (FrameRestorationType::WienerNonsep, None | Some(LrUnitType::WienerNs)) => {
+            vec![(LrSymbol::UseWienerNs, kind.is_some())]
+        }
+        (FrameRestorationType::Switchable, None) => vec![(flex(0), true)],
+        (FrameRestorationType::Switchable, Some(LrUnitType::PcWiener)) => {
+            vec![(flex(0), false), (flex(1), true)]
+        }
+        (FrameRestorationType::Switchable, Some(LrUnitType::WienerNs)) => {
+            vec![(flex(0), false), (flex(1), false)]
+        }
+        _ => {
+            return Err(TileWriterError::Shape(
+                "a restoration unit type the plane does not code",
+            ));
+        }
+    })
+}
+
 /// The filter state of one tile.
 pub(crate) struct TileFilters {
     recorder: FilterRecorder,
@@ -47,6 +77,7 @@ pub(crate) struct TileFilters {
     ccso: CcsoBlockMap,
     ccso_cols: usize,
     lr: LrLayout,
+    lr_tools: [FrameRestorationType; 3],
     syntax: FilterSyntax,
 }
 
@@ -61,6 +92,12 @@ impl TileFilters {
             ccso: CcsoBlockMap::new(seq, core, tile)?,
             ccso_cols: CcsoGrid::new(seq, core)?.cols,
             lr: LrLayout::new(seq, core, tile)?,
+            lr_tools: core::array::from_fn(|plane| {
+                core.lr_params
+                    .as_ref()
+                    .and_then(|lr| lr.planes.get(plane))
+                    .map_or(FrameRestorationType::None, |p| p.restoration_type)
+            }),
             syntax: FilterSyntax::default(),
         })
     }
@@ -70,7 +107,7 @@ impl TileFilters {
         self.syntax = syntax;
     }
 
-    /// Writes `use_pc_wiener` of every unit `read_lr` codes at superblock `root`.
+    /// Writes the type of every unit `read_lr` codes at superblock `root`.
     pub(crate) fn write_lr_units(
         &self,
         syntax: &mut IntraTileSyntax,
@@ -78,8 +115,10 @@ impl TileFilters {
         root: PartitionNode,
     ) -> Result<()> {
         for unit in self.lr.units(root)? {
-            let on = self.syntax.lr_on.contains(&unit);
-            symbols.symbol(syntax.use_pc_wiener_cdf()?, Symbol::new(u8::from(on)))?;
+            let kind = self.syntax.lr_on.get(&unit).copied();
+            for (symbol, value) in lr_unit_symbols(self.lr_tools[unit.plane], unit.plane, kind)? {
+                symbols.symbol(syntax.lr_symbol_cdf(symbol)?, Symbol::new(u8::from(value)))?;
+            }
         }
         Ok(())
     }

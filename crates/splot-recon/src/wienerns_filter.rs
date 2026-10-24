@@ -83,7 +83,7 @@ const WIENER_NS_CONFIG_Y: [(isize, isize, usize); WIENER_NS_LUMA_TAPS] = [
 
 /// First tap `(dy, dx, coeff_index)` of each § 7.20.3 `Wiener_Ns_Config_Y`
 /// symmetric pair; the partner tap is `(-dy, -dx, coeff_index)`.
-const WIENER_NS_CONFIG_Y_PAIRS: [(isize, isize, usize); WIENER_NS_LUMA_COEFFS] = {
+pub const WIENER_NS_CONFIG_Y_PAIRS: [(isize, isize, usize); WIENER_NS_LUMA_COEFFS] = {
     let mut pairs = [(0isize, 0isize, 0usize); WIENER_NS_LUMA_COEFFS];
     let mut j = 0;
     while j < WIENER_NS_LUMA_COEFFS {

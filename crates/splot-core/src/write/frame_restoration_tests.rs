@@ -66,6 +66,7 @@ mod tests {
             frame_filters_on: false,
             num_filter_classes: None,
             frame_filter_bank: None,
+            rst_ref_pic_idx: None,
         }
     }
 
@@ -271,10 +272,11 @@ mod tests {
 
 
     #[test]
-    fn lr_frame_filters_on_is_rejected_hard_residual() {
+    fn lr_frame_filters_on_without_a_bank_is_rejected() {
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
         let mut plane = lr_plane(FrameRestorationType::WienerNonsep);
         plane.frame_filters_on = true;
+        plane.num_filter_classes = Some(1);
         let params = lr_params(
             true,
             vec![
@@ -284,11 +286,32 @@ mod tests {
             ],
             [256, 32, 32],
         );
-        assert_lr_rejected(&params, 3, geometry, "lr_frame_filters_on");
+        assert_lr_rejected(&params, 3, geometry, "lr_frame_filter_bank");
     }
 
     #[test]
-    fn lr_frame_filter_bank_is_rejected_until_writer_support() {
+    fn lr_temporal_plane_with_a_bank_is_rejected() {
+        let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
+        let mut plane = lr_plane(FrameRestorationType::WienerNonsep);
+        plane.frame_filters_on = true;
+        plane.rst_ref_pic_idx = Some(0);
+        plane.frame_filter_bank = Some(WienerNsFrameFilterBank {
+            classes: crate::tile::InlineVec::default(),
+        });
+        let params = lr_params(
+            true,
+            vec![
+                plane,
+                lr_plane(FrameRestorationType::None),
+                lr_plane(FrameRestorationType::None),
+            ],
+            [256, 32, 32],
+        );
+        assert_lr_rejected(&params, 3, geometry, "lr_frame_filter_bank");
+    }
+
+    #[test]
+    fn lr_frame_filter_bank_on_a_plane_without_frame_filters_is_rejected() {
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
         let params = LrParams {
             uses_lr: false,
@@ -306,6 +329,7 @@ mod tests {
                         coeffs: crate::headers::frame::WienerNsCoeffs::from_iter_checked([0; 16]).expect("fits"),
                     }]).expect("fits"),
                 }),
+                rst_ref_pic_idx: None,
             }]).expect("fits"),
             loop_restoration_size: [64, 32, 32],
         };
@@ -329,6 +353,7 @@ mod tests {
                 frame_filters_on: false,
                 num_filter_classes: None,
                 frame_filter_bank: None,
+                rst_ref_pic_idx: None,
             }]).expect("fits"),
             loop_restoration_size: [64, 32, 32],
         };
@@ -387,18 +412,21 @@ mod tests {
                     frame_filters_on: false,
                     num_filter_classes: None,
                     frame_filter_bank: None,
+                    rst_ref_pic_idx: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
                     frame_filter_bank: None,
+                    rst_ref_pic_idx: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
                     frame_filter_bank: None,
+                    rst_ref_pic_idx: None,
                 },
             ]).expect("fits"),
             loop_restoration_size: [64, 32, 32],
@@ -485,18 +513,21 @@ mod tests {
                     frame_filters_on: false,
                     num_filter_classes: None,
                     frame_filter_bank: None,
+                    rst_ref_pic_idx: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
                     frame_filter_bank: None,
+                    rst_ref_pic_idx: None,
                 },
                 LrPlaneParams {
                     restoration_type: FrameRestorationType::None,
                     frame_filters_on: false,
                     num_filter_classes: None,
                     frame_filter_bank: None,
+                    rst_ref_pic_idx: None,
                 },
             ]).expect("fits"),
             loop_restoration_size: [64, 32, 16],
