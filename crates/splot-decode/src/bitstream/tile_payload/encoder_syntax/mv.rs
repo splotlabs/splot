@@ -171,6 +171,12 @@ pub(super) fn write_mvds(
     for (target, &mvd) in targets.iter_mut().zip(mvds) {
         *target = mvd.into();
     }
+    let amvd = |d: i32| d == 0 || AMVD_INDEX_TO_MVD.contains(&d.abs());
+    if coding.use_amvd && !targets.iter().all(|t| amvd(t.row) && amvd(t.col)) {
+        return Err(EncoderSyntaxError::Unsupported(
+            "an adaptive-MVD difference off the AMVD steps",
+        ));
+    }
     let precision = coding.precision;
     let mut writer = MvWriter {
         targets,

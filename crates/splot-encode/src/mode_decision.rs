@@ -363,10 +363,13 @@ impl TrialCoder<'_, '_> {
         modes: InterModes,
         found: MotionVector,
     ) -> Result<InterModes> {
+        let precisions = self.syntax.newmv_precisions(leaf)?;
+        if precisions.is_empty() && !self.syntax.adaptive_mvd() {
+            return Ok(modes);
+        }
         let Some(mut best) = self.newmv_cost(leaf, modes)? else {
             return Ok(modes);
         };
-        let precisions = self.syntax.newmv_precisions(leaf)?;
         let mut exact = None;
         for (index, &precision) in precisions.iter().enumerate() {
             if let Some(candidate) = self.newmv_at(leaf, modes, found, (Some(precision), false))?

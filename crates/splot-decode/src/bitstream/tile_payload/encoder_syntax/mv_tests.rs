@@ -183,6 +183,21 @@ fn adaptive_and_derived_sign_differences_round_trip() {
         cases.push((false, MV_PRECISION_ONE_PEL, mvd));
     }
     assert!(refused > 50, "{refused} refused");
+    let off_step = MvdCoding {
+        precision: MV_PRECISION_QUARTER_PEL,
+        use_amvd: true,
+        derive_sign: false,
+        derive_threshold: 1,
+    };
+    let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+    let mut journal = CdfJournal::new(&cdfs);
+    let written = write_mvds(
+        (&mut cdfs, &mut journal),
+        off_step,
+        &[MotionVector { row: 10, col: 4 }],
+        &mut SymbolEncoder::new(),
+    );
+    assert!(matches!(written, Err(EncoderSyntaxError::Unsupported(_))));
     let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
     let mut journal = CdfJournal::new(&cdfs);
     let mut encoder = SymbolEncoder::new();
