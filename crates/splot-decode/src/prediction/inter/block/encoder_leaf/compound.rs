@@ -2,18 +2,20 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Mode syntax of encoder inter leaves: `comp_mode`, the single and compound
-//! references, the modes and the DRL indices (§ 5.20.7.6, § 5.20.7.10,
-//! § 5.20.7.11), produced by the decoder's own reads answering for a target.
+//! references, the modes, the DRL indices and `interp_filter` (§ 5.20.7.6,
+//! § 5.20.7.10, § 5.20.7.11), produced by the decoder's own reads answering
+//! for a target.
 
 use super::super::super::compound::{
     CompoundParseInput, compound_reference_pair, compound_y_mode, non_joint_compound_mode,
     same_refs_compound_mode,
 };
 use super::super::compound_path::{
-    compound_joint_mv_projection, compound_ref_contexts, compound_ref_distance_signs,
-    skip_mode_reference_pair,
+    compound_joint_mv_projection, compound_needs_interp_filter, compound_ref_contexts,
+    compound_ref_distance_signs, skip_mode_reference_pair,
 };
 use super::super::resolve::CompoundMotionSyntax;
+use super::super::syntax::interp_filter_symbol;
 use super::*;
 
 /// `JOINT_NEWMV_SCALE_FACTOR_CNT` (§ 3): the `jmvd_scale_mode` values without
@@ -38,6 +40,8 @@ pub(crate) struct EncoderCompoundMotion {
     pub(crate) mvd: [Mv; 2],
     /// `jmvd_scale_mode`.
     pub(crate) jmvd_scale_mode: u8,
+    /// `interp_filter`, where the decoder reads it.
+    pub(crate) interp: ReconInterpolationFilter,
 }
 
 impl EncoderMotion {
@@ -57,6 +61,70 @@ impl EncoderMotion {
 }
 
 impl EncoderInterTile {
+    /// The filter the decoder predicts `motion` at `frontier` with, and the
+    /// `interp_filter` symbol it reads for it (§ 5.20.7.6), if any.
+    pub(crate) fn interp_filter(
+        &self,
+        frontier: &DecodeBlockFrontier,
+        motion: EncoderMotion,
+    ) -> Result<(ReconInterpolationFilter, Option<(TileCdfSelector, u8)>)> {
+        if motion.skip_mode() {
+            return Ok((ReconInterpolationFilter::EightTapSharp, None));
+        }
+        let (global, interp) = match motion {
+            EncoderMotion::Single(single) => (single.mode == SINGLE_MODE_GLOBALMV, single.interp),
+            EncoderMotion::Compound(compound) => (
+                compound.y_mode == CompoundYMode::GlobalGlobal,
+                compound.interp,
+            ),
+        };
+        let (ref_frame0, ref_frame1) = motion.refs();
+        match self.interp_filter_selector(frontier, (ref_frame0, ref_frame1.is_some()), global)? {
+            None => Ok((ReconInterpolationFilter::EightTap, None)),
+            Some(_) if interp == ReconInterpolationFilter::Bilinear => {
+                Err(DecodeHeaderStateError::InvalidInterpolationFilter.into())
+            }
+            Some(selector) => Ok((interp, Some((selector, interp_filter_symbol(interp))))),
+        }
+    }
+
+    /// The `interp_filter` selector of a block at `frontier` over list
+    /// reference `ref_frame0`, compound or not, that codes `GLOBALMV` or
+    /// `GLOBAL_GLOBALMV` or not; `None` where the decoder reads no filter.
+    pub(crate) fn interp_filter_selector(
+        &self,
+        frontier: &DecodeBlockFrontier,
+        (ref_frame0, compound): (i8, bool),
+        global: bool,
+    ) -> Result<Option<TileCdfSelector>> {
+        let (n4w, n4h) = block_size4(frontier)?;
+        let needs = if compound {
+            let y_mode = if global {
+                CompoundYMode::GlobalGlobal
+            } else {
+                CompoundYMode::NearNear
+            };
+            compound_needs_interp_filter(n4w, n4h, y_mode, false)
+        } else {
+            let mode = if global {
+                SINGLE_MODE_GLOBALMV
+            } else {
+                SINGLE_MODE_NEARMV
+            };
+            single_inter_needs_interp_filter(n4w, n4h, mode)
+        };
+        if !self.interp_switchable || !needs {
+            return Ok(None);
+        }
+        let neighbour = block_neighbour_ctx(
+            &self.grid,
+            &self.block(frontier, (SINGLE_REF_FRAME0, None))?,
+        );
+        Ok(Some(TileCdfSelector::InterpFilter {
+            ctx: neighbour.interp_filter_ctx(ref_frame0, compound),
+        }))
+    }
+
     /// Whether the decoder reads `comp_mode` (§ 5.20.7.6) and `skip_mode`
     /// (§ 5.20.5.9) of a block at `frontier`.
     pub(crate) fn reads_compound_syntax(

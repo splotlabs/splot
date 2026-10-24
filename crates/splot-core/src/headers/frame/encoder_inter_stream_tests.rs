@@ -7,8 +7,8 @@ use super::*;
 use crate::annexb::parse_annex_b_obus_partial;
 use crate::headers::frame::{
     CcsoPlaneParams, CdefStrengthSet, CdefStrengthSets, EncoderStreamParams, EncoderToolFlags,
-    FrameHeaderParseInput, FrameHeaderParseMode, FrameType, MvPrecision, TxMode,
-    build_encoder_sequence_header, parse_frame_header_core,
+    FrameHeaderParseInput, FrameHeaderParseMode, FrameType, InterpolationFilter, MvPrecision,
+    TxMode, build_encoder_sequence_header, parse_frame_header_core,
 };
 use crate::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 
@@ -120,6 +120,7 @@ fn inter_headers_parse_with_the_reference_state() {
                     (true, FrameFilterParams::default(), false, false, None),
                     (false, filters(sb), true, true, Some(0)),
                 ] {
+                    let switchable_interp_filter = compound;
                     let params = InterFrameParams {
                         base_q_idx: 90,
                         order_hint: 5,
@@ -133,6 +134,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         primary_slot,
                         use_ref_frame_mvs: false,
                         high_precision_mv,
+                        switchable_interp_filter,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
                     let core = &header.core;
@@ -156,6 +158,12 @@ fn inter_headers_parse_with_the_reference_state() {
                         MvPrecision::QuarterPel
                     };
                     assert_eq!(inter.mv_precision, Some(precision));
+                    let filter = if switchable_interp_filter {
+                        InterpolationFilter::Switchable
+                    } else {
+                        InterpolationFilter::Eighttap
+                    };
+                    assert_eq!(inter.interpolation_filter, Some(filter));
                     let tail = core.inter_tail.as_ref().unwrap();
                     assert_eq!(tail.tx_mode, TxMode::Largest);
                     assert_eq!(tail.reference_select, compound);
@@ -202,6 +210,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         primary_slot: Some(3),
         use_ref_frame_mvs: false,
         high_precision_mv: false,
+        switchable_interp_filter: false,
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
     let inter = header.core.inter.as_ref().unwrap();
@@ -295,6 +304,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             primary_slot: Some(0),
             use_ref_frame_mvs: false,
             high_precision_mv: false,
+            switchable_interp_filter: false,
         },
     )
     .unwrap();
@@ -371,6 +381,7 @@ fn rejects_out_of_range_inter_inputs() {
         primary_slot: None,
         use_ref_frame_mvs: false,
         high_precision_mv: false,
+        switchable_interp_filter: false,
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),

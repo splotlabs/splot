@@ -314,20 +314,23 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             .syntax
             .plan_leaf_partitioned(leaf, modes, tx_partition)?;
         let mut levels = vec![Vec::new(); blocks.len()];
-        for (index, tx) in blocks.iter_mut().enumerate() {
-            if !planes.contains(&tx.plane) {
-                continue;
+        // Luma first: the decoder reconstructs CFL chroma after the whole luma.
+        for luma in [true, false] {
+            for (index, tx) in blocks.iter_mut().enumerate() {
+                if !planes.contains(&tx.plane) || (tx.plane == 0) != luma {
+                    continue;
+                }
+                let prediction = self.syntax.predict(index)?;
+                let decision = if tx.plane == 0 {
+                    self.code_luma(coder, tx, &prediction)?
+                } else {
+                    code_as(self.syntax, coder, tx, &prediction)?
+                };
+                self.syntax
+                    .reconstruct_as(index, decision.tx_type, &decision.levels)?;
+                tx.tx_type = decision.tx_type;
+                levels[index] = decision.levels;
             }
-            let prediction = self.syntax.predict(index)?;
-            let decision = if tx.plane == 0 {
-                self.code_luma(coder, tx, &prediction)?
-            } else {
-                code_as(self.syntax, coder, tx, &prediction)?
-            };
-            self.syntax
-                .reconstruct_as(index, decision.tx_type, &decision.levels)?;
-            tx.tx_type = decision.tx_type;
-            levels[index] = decision.levels;
         }
         self.syntax.write_is_inter(leaf, false, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
@@ -353,7 +356,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
     /// Codes the inter leaf `leaf` under `prediction`: its residual over the
     /// motion compensated prediction, then `skip_mode` and `is_inter`,
     /// `skip_txfm`, `cdef_idx`, the reference and mode syntax, the motion
-    /// vector differences, and the residual. A leaf whose levels are all zero
+    /// vector differences, `interp_filter`, and the residual. A leaf whose levels are all zero
     /// codes `skip_txfm = 1`.
     fn write_inter_leaf(
         &mut self,
@@ -393,6 +396,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         }
         let mvds = self.syntax.write_inter_modes(leaf, self.sink)?;
         self.syntax.write_mvds(&mvds, self.sink)?;
+        self.syntax.write_interp_filter(leaf, self.sink)?;
         if !skip {
             self.syntax.write_inter_tx_partition(leaf, self.sink)?;
             self.write_residual(&blocks, &levels, &(0..3))?;

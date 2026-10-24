@@ -22,7 +22,7 @@ use crate::tile_writer::{
     CompoundModes, InterMode, InterModes, InterPrediction, LeafChoice, MotionVector, PARTITIONS,
     PartitionTree,
 };
-use splot_decode::encoder_syntax::{COMPOUND_MODES, JMVD_SCALE_MODES};
+use splot_decode::encoder_syntax::{COMPOUND_MODES, INTERP_FILTERS, JMVD_SCALE_MODES};
 
 /// Gradients, a ripple, and seeded noise, so blocks of every size split.
 fn synthetic_frame(config: &Config, seed: u32) -> SourceFrame {
@@ -592,8 +592,9 @@ impl Rng {
 /// Leaf counts of a random tree: intra; each single-reference mode; single
 /// leaves with a reference other than the first; each compound mode in
 /// [`COMPOUND_MODES`] order; skip mode; same-reference compound; a nonzero
-/// second-DRL index of list 1; a nonzero `jmvd_scale_mode`.
-type Coverage = [usize; 15];
+/// second-DRL index of list 1; a nonzero `jmvd_scale_mode`; a coded
+/// `interp_filter` other than `EIGHTTAP`.
+type Coverage = [usize; 16];
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -645,6 +646,26 @@ fn random_leaf(
     rng: &mut Rng,
     coverage: &mut Coverage,
 ) -> LeafChoice {
+    let filter = INTERP_FILTERS[rng.below(3) as usize];
+    let choice = random_modes(syntax, leaf, rng, coverage, filter);
+    if let Some(prediction) = choice.inter
+        && filter != INTERP_FILTERS[0]
+        && syntax
+            .price_interp_filter(leaf, prediction, &mut RateSink::adapting())
+            .unwrap()
+    {
+        coverage[15] += 1;
+    }
+    choice
+}
+
+fn random_modes(
+    syntax: &mut IntraTileSyntax,
+    leaf: &LeafBlock,
+    rng: &mut Rng,
+    coverage: &mut Coverage,
+    filter: splot_recon::InterpolationFilter,
+) -> LeafChoice {
     if !syntax.inter_allowed(leaf) || (syntax.intra_allowed(leaf) && rng.below(5) == 0) {
         coverage[0] += 1;
         return LeafChoice::DC;
@@ -675,6 +696,7 @@ fn random_leaf(
                 drl: [rng.below(drls) as usize, rng.below(drls) as usize],
                 mvs,
                 jmvd_scale_mode: rng.below(u64::from(JMVD_SCALE_MODES)) as u8,
+                filter,
             };
             if syntax.compound_bases(leaf, &modes).is_err() {
                 continue;
@@ -696,6 +718,7 @@ fn random_leaf(
         mode,
         drl,
         mv: mvs[0],
+        filter,
     }))
 }
 
@@ -735,8 +758,9 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let (tx, _, mv_tools, tiles) = crate::gop::frame_tools(coder.preset, coder.tiles, qindex);
-    let tools = (tx, true, mv_tools, tiles);
+    let (tx, _, (high_precision_mv, ref_mvs, _), tiles) =
+        crate::gop::frame_tools(coder.preset, coder.tiles, qindex);
+    let tools = (tx, true, (high_precision_mv, ref_mvs, true), tiles);
     let filters = FrameFilterParams::default();
     let core = plan
         .header(&coder.view, &coder.references, qindex, &filters, tools)
