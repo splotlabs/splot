@@ -93,41 +93,64 @@ const MAX_QUERY_RATE: u64 = 1 << 24;
 pub(crate) struct CdfCoeffRates<'a> {
     syntax: &'a mut IntraTileSyntax,
     tx: &'a TransformBlock,
-    /// The base and `coeff_br` costs of the rows priced so far, by row address.
-    base_rows: RowCache<BASE_SYMBOLS>,
-    br_rows: RowCache<BR_SYMBOLS>,
+    rows: &'a mut RowCaches,
 }
 
-/// Row costs by row address; the rows stay frozen while one block is quantized.
-struct RowCache<const N: usize>([(usize, [u32; N]); 64]);
+/// The base and `coeff_br` costs of the rows priced while one block is
+/// quantized, by row address; each [`CdfCoeffRates`] starts a new generation,
+/// so the caches are reused without clearing.
+#[derive(Debug)]
+pub(crate) struct RowCaches {
+    generation: u64,
+    base: RowCache<BASE_SYMBOLS>,
+    br: RowCache<BR_SYMBOLS>,
+}
+
+impl Default for RowCaches {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            base: RowCache([(0, 0, [0; BASE_SYMBOLS]); ROW_SLOTS]),
+            br: RowCache([(0, 0, [0; BR_SYMBOLS]); ROW_SLOTS]),
+        }
+    }
+}
+
+/// `(generation, key, costs)` slots.
+#[derive(Debug)]
+struct RowCache<const N: usize>([(u64, usize, [u32; N]); ROW_SLOTS]);
+
+/// [`RowCache`] slots: a power of two above the rows one block reads.
+const ROW_SLOTS: usize = 128;
 
 impl<const N: usize> RowCache<N> {
     /// The costs of `row` from symbol index `first` on.
-    fn priced(&mut self, row: Result<&mut [u16]>, first: usize) -> [u32; N] {
+    fn priced(&mut self, generation: u64, row: Result<&mut [u16]>, first: usize) -> [u32; N] {
         let Ok(row) = row else {
             return [MAX_QUERY_RATE as u32; N];
         };
-        let key = (row.as_ptr().addr() | first) + 1;
-        let slot = &mut self.0[(key >> 1) % 64];
-        if slot.0 != key {
+        let key = row.as_ptr().addr() | first;
+        let hash = (key as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - ROW_SLOTS.ilog2());
+        let slot = &mut self.0[hash as usize];
+        if (slot.0, slot.1) != (generation, key) {
             let mut out = [MAX_QUERY_RATE as u32; N];
             for (cost, bits) in out[first..].iter_mut().zip(row_costs(row)) {
                 *cost = clamp(bits);
             }
-            *slot = (key, out);
+            *slot = (generation, key, out);
         }
-        slot.1
+        slot.2
     }
 }
 
 impl<'a> CdfCoeffRates<'a> {
-    pub(crate) const fn new(syntax: &'a mut IntraTileSyntax, tx: &'a TransformBlock) -> Self {
-        Self {
-            syntax,
-            tx,
-            base_rows: RowCache([(0, [0; BASE_SYMBOLS]); 64]),
-            br_rows: RowCache([(0, [0; BR_SYMBOLS]); 64]),
-        }
+    pub(crate) fn new(
+        syntax: &'a mut IntraTileSyntax,
+        tx: &'a TransformBlock,
+        rows: &'a mut RowCaches,
+    ) -> Self {
+        rows.generation += 1;
+        Self { syntax, tx, rows }
     }
 }
 
@@ -159,7 +182,7 @@ impl CoeffRates for CdfCoeffRates<'_> {
                     .syntax
                     .coeff_base_eob_cdf(plane, tx_size, ctx.c, shape, ctx.is_lf)?)
             });
-            self.base_rows.priced(row, 1)
+            self.rows.base.priced(self.rows.generation, row, 1)
         } else {
             let row = self
                 .syntax
@@ -171,7 +194,7 @@ impl CoeffRates for CdfCoeffRates<'_> {
                     ctx.is_lf,
                 )
                 .map_err(TileWriterError::from);
-            self.base_rows.priced(row, 0)
+            self.rows.base.priced(self.rows.generation, row, 0)
         }
     }
 
@@ -180,7 +203,7 @@ impl CoeffRates for CdfCoeffRates<'_> {
             .syntax
             .coeff_br_cdf(ctx.levels, self.tx.plane, (ctx.row, ctx.col), ctx.is_lf)
             .map_err(TileWriterError::from);
-        self.br_rows.priced(row, 0)
+        self.rows.br.priced(self.rows.generation, row, 0)
     }
 
     fn sign(&mut self, ctx: &LevelContext<'_>) -> u32 {

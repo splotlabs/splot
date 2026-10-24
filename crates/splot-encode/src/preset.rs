@@ -32,8 +32,15 @@ pub struct PresetParams {
     pub parity_hiding: bool,
     /// The frames that quantize with TCQ (`allow_tcq`); they code no parity
     /// hiding. `Base` in every row: its BD-rate per CPU beats the next slower
-    /// row at presets 0, 6 and 10, and TCQ on the upper mini-GOP layers loses.
+    /// row at every measured preset, and TCQ on the upper mini-GOP layers loses.
     pub tcq: TcqFrames,
+    /// The final trial of each leaf in the partition search runs the TCQ
+    /// trellis; off, it prices TCQ blocks as plain levels and only the frame
+    /// write runs the trellis. Mode trials always price plain levels.
+    pub tcq_search_trellis: bool,
+    /// The luma transform-type search and the luma trial before the chroma
+    /// search run the TCQ trellis; off, they price TCQ blocks as plain levels.
+    pub tcq_type_trellis: bool,
     /// Candidate trials of the mode and transform-partition search run RDOQ
     /// and the transform-type search too; off, they quantize with a deadzone
     /// and code `DCT_DCT`, and only a leaf's final trial runs both.
@@ -128,6 +135,8 @@ const fn row(
         rdoq_every_type: rdoq,
         parity_hiding: false,
         tcq: TcqFrames::Base,
+        tcq_search_trellis: true,
+        tcq_type_trellis: full_trials,
         full_trials,
         tx_type_depth,
         tx_partition_search,
@@ -239,15 +248,18 @@ pub const PRESETS: [PresetParams; 11] = [
         (16, 1, 0, 1),
         (0, 2, 4, 0),
     ),
-    row(
-        (4, 6),
-        2,
-        true,
-        (false, false),
-        (0, false),
-        (16, 0, 0, 1),
-        (0, 1, 2, 0),
-    ),
+    PresetParams {
+        tcq_search_trellis: false,
+        ..row(
+            (4, 6),
+            2,
+            true,
+            (false, false),
+            (0, false),
+            (16, 0, 0, 1),
+            (0, 1, 2, 0),
+        )
+    },
 ];
 
 /// A speed preset, `0..=10`.
@@ -306,6 +318,9 @@ mod tests {
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
             assert!(fast.parity_hiding <= slow.parity_hiding);
             assert!(fast.tcq <= slow.tcq);
+            assert!(fast.tcq_search_trellis <= slow.tcq_search_trellis);
+            assert!(fast.tcq_type_trellis <= slow.tcq_type_trellis);
+            assert!(fast.tcq_search_trellis || !fast.tcq_type_trellis);
             assert!(fast.rdoq || !fast.rdoq_every_type);
             assert!(fast.full_trials <= slow.full_trials);
             assert!(fast.tx_type_depth <= slow.tx_type_depth);

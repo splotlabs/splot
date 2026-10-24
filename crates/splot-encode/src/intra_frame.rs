@@ -24,13 +24,13 @@ use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::gop::{self, GopFrame};
 use crate::kernels::rdoq::{RdoqBlock, hide_parity, parity_moves, rdoq};
-use crate::kernels::tcq::tcq;
+use crate::kernels::tcq::{TcqScratch, tcq};
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
 use crate::loop_filter::{CodedTile, FilteredFrame, FirstPass, FrameDecisions, finish_frame};
 use crate::mode_decision::TrialCoder;
 use crate::motion_search::MotionSearch;
 use crate::preset::{PresetParams, TcqFrames};
-use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, block_rate};
+use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, RowCaches, block_rate};
 use crate::rd::partition::search_partition;
 use crate::rd::{Lambda, RdCost};
 use crate::tile_writer::coeffs::eob;
@@ -420,8 +420,12 @@ pub(crate) struct SourceResidualCoder<'a> {
     /// A mode trial of the search: a block that hides the other parity moves
     /// its scan index 0 level instead of pricing every move.
     pub(crate) trial: bool,
+    /// Price TCQ blocks as plain levels ([`IntraTileSyntax::set_scalar_trial`]).
+    pub(crate) scalar: bool,
     /// Residual, coefficient, and dequantized buffers reused across blocks.
     scratch: [Vec<i32>; 3],
+    /// The row costs and the trellis buffers reused across blocks.
+    rates: (RowCaches, TcqScratch),
 }
 
 impl<'a> SourceResidualCoder<'a> {
@@ -440,7 +444,9 @@ impl<'a> SourceResidualCoder<'a> {
             lambda,
             candidate: false,
             trial: false,
+            scalar: false,
             scratch: Default::default(),
+            rates: Default::default(),
         }
     }
 }
@@ -461,10 +467,14 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             tx_choice::tx_type_candidates(self.preset).min(tx_types.len())
         };
         let mut best: Option<(u128, TransformDecision)> = None;
+        let scalar_types = count > 1 && !self.preset.tcq_type_trellis;
+        let scalar = self.scalar;
+        self.scalar |= scalar_types;
         for &tx_type in &tx_types[..count] {
             let tx = TransformBlock { tx_type, ..*tx };
             let decision = self.code(syntax, &tx, prediction)?;
             if count == 1 {
+                self.scalar = scalar;
                 return Ok(decision);
             }
             if let Some(cost) = self.luma_cost(syntax, &tx, prediction, &decision.levels)?
@@ -473,8 +483,19 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                 best = Some((cost, decision));
             }
         }
-        best.map(|(_, decision)| decision)
-            .ok_or(TileWriterError::Shape("no luma transform type"))
+        self.scalar = scalar;
+        let (_, decision) = best.ok_or(TileWriterError::Shape("no luma transform type"))?;
+        if scalar_types {
+            return self.code(
+                syntax,
+                &TransformBlock {
+                    tx_type: decision.tx_type,
+                    ..*tx
+                },
+                prediction,
+            );
+        }
+        Ok(decision)
     }
 
     fn code(
@@ -491,7 +512,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let dims = BlockDims::new(w, h).map_err(kernel)?;
         residual.resize(w * h, 0);
         kernels().residual(source, stride, prediction, w, dims, residual);
-        syntax.set_scalar_trial(self.candidate || self.trial);
+        syntax.set_scalar_trial(self.candidate || self.trial || self.scalar);
         let use_tcq = syntax.uses_tcq(tx);
         let (params, transform) = recon_params(
             self.qindex,
@@ -529,7 +550,8 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             .lambda
             .coefficient_q8(Quantizer::dq_denom_without_tcq(log2_w, log2_h));
         let parity = syntax.parity_hiding(tx);
-        let mut rates = CdfCoeffRates::new(syntax, tx);
+        let (rows, trellis) = &mut self.rates;
+        let mut rates = CdfCoeffRates::new(syntax, tx, rows);
         let every_type = self.preset.rdoq_every_type && !self.trial;
         let rdoq_type = every_type || (tx.tx_type as u8) < TxType::Idtx as u8;
         if use_tcq {
@@ -538,7 +560,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                 kernels(),
                 &block,
                 coeffs,
-                &mut rates,
+                (&mut rates, trellis),
                 lambda_q8,
                 &mut levels,
             )

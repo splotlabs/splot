@@ -5479,7 +5479,7 @@ module = "crates/splot-encode/src/kernels/tcq.rs"
 change_id = "enc-tcq"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::tcq (Base in every row) sets enable_tcq with choose_tcq_per_frame, and key frames and mini-GOP layer 0 frames code allow_tcq = 1. The encoder_syntax facade publishes Tcq_Next_State, the state quantizer, the reconstruction index (decoder quant pass), uses_tcq (luma TX_CLASS_2D), the state coeff_base rows, the maxLevel - allowTcq remainder split, the TCQ dqDenom, and reconstructs TCQ levels. An 8-state Viterbi trellis over the reverse scan prices every state in the contexts of its own path; std::simd survivor selection with a scalar twin. Search trials price TCQ blocks as plain levels (IntraTileSyntax::set_scalar_trial); only leaf final trials and the frame write run the trellis, at 60% of the RDOQ lambda."
+notes = "PresetParams::tcq (Base in every row) sets enable_tcq with choose_tcq_per_frame, and key frames and mini-GOP layer 0 frames code allow_tcq = 1. The encoder_syntax facade publishes Tcq_Next_State, the state quantizer, the reconstruction index (decoder quant pass), uses_tcq (luma TX_CLASS_2D), the state coeff_base rows, the maxLevel - allowTcq remainder split, the TCQ dqDenom, and reconstructs TCQ levels. An 8-state Viterbi trellis over the reverse scan prices every state in the contexts of its own path; std::simd survivor selection with a scalar twin. Mode trials price TCQ blocks as plain levels (IntraTileSyntax::set_scalar_trial); the frame write runs the trellis at 60% of the RDOQ lambda, and so do leaf final trials where PresetParams::tcq_search_trellis is on (presets 0-9) and the transform-type and pre-chroma luma trials where tcq_type_trellis is on (presets 0-3)."
 
 [feature.status]
 mapped = "done"

@@ -23,7 +23,9 @@ use std::simd::num::SimdUint as _;
 use std::simd::{Select as _, Simd, simd_swizzle};
 
 use splot_decode::encoder_syntax::MAX_QUANT_MAGNITUDE;
-use splot_decode::encoder_syntax::{CoeffLevels, TCQ_STATES, tcq_next_state, tcq_quantizer};
+use splot_decode::encoder_syntax::{
+    CoeffLevels, TCQ_STATES, TxType, tcq_next_state, tcq_quantizer,
+};
 use splot_recon::dequant_coefficient;
 
 use super::rdoq::{
@@ -191,6 +193,47 @@ pub(crate) fn candidates(block: &RdoqBlock, pos: usize, coeff: i32) -> Candidate
     })
 }
 
+/// The buffers of [`tcq`], kept across blocks so a call allocates nothing
+/// for a shape and type it has seen last.
+#[derive(Debug, Default)]
+pub(crate) struct TcqScratch {
+    /// The shape and type of `grids`.
+    shape: Option<(usize, usize, TxType)>,
+    /// One level grid per state, then a grid that stays zero.
+    grids: Vec<CoeffLevels>,
+    /// The scan indices below which the state grids may hold levels.
+    dirty: usize,
+    zero_suffix: Vec<u64>,
+    picks: Vec<[u8; TCQ_STATES]>,
+    kept: Vec<[[u32; SLOTS]; 2]>,
+}
+
+impl TcqScratch {
+    /// Zero grids of `width x height` levels coded with `tx_type`.
+    fn reset(
+        &mut self,
+        width: usize,
+        height: usize,
+        tx_type: TxType,
+    ) -> Result<&mut Self, splot_decode::encoder_syntax::EncoderSyntaxError> {
+        if self.shape == Some((width, height, tx_type)) {
+            for grid in &mut self.grids[..TCQ_STATES] {
+                grid.copy_cells(None, 0..self.dirty);
+            }
+        } else {
+            self.grids = (0..=TCQ_STATES)
+                .map(|_| CoeffLevels::new(width, height, tx_type))
+                .collect::<Result<_, _>>()?;
+            self.shape = Some((width, height, tx_type));
+        }
+        if let Some(empty) = self.grids.last_mut() {
+            empty.set_tcq_state(0);
+        }
+        self.dirty = 0;
+        Ok(self)
+    }
+}
+
 /// TCQ-quantizes `coeffs` (adjusted, row-major) into the coded `levels` of a
 /// block of type `block.tx_type`, whose `dq_denom` is the TCQ `dqDenom`;
 /// returns `eob`.
@@ -203,7 +246,7 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
     kernels: &dyn EncoderKernels,
     block: &RdoqBlock,
     coeffs: &[i32],
-    rates: &mut R,
+    (rates, scratch): (&mut R, &mut TcqScratch),
     lambda_q8: u64,
     levels: &mut [i32],
 ) -> Result<usize, KernelError> {
@@ -215,12 +258,18 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
         return Err(shape());
     }
     let (width, height) = (1usize << block.log2_width, 1usize << block.log2_height);
-    let new_grid = || {
-        let mut grid = CoeffLevels::new(width, height, block.tx_type).map_err(|_| shape())?;
-        grid.set_tcq_state(0);
-        Ok(grid)
-    };
-    let empty = new_grid()?;
+    let TcqScratch {
+        grids,
+        dirty,
+        zero_suffix,
+        picks,
+        kept,
+        ..
+    } = scratch
+        .reset(width, height, block.tx_type)
+        .map_err(|_| shape())?;
+    let (grids, empty) = grids.split_at_mut(TCQ_STATES);
+    let empty = &empty[0];
     let scan = empty.scan();
     for (buffer, len) in [("coeffs", coeffs.len()), ("levels", levels.len())] {
         if len != scan.len() {
@@ -237,7 +286,8 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
         .iter()
         .rposition(|&pos| reaches_half_step(block, usize::from(pos), coeffs[usize::from(pos)]))
         .map_or(0, |last| last + 1);
-    let mut zero_suffix = vec![0u64; end + 1];
+    zero_suffix.clear();
+    zero_suffix.resize(end + 1, 0);
     for c in (0..end).rev() {
         let d = u64::from(coeffs[usize::from(scan[c])].unsigned_abs()).pow(2);
         zero_suffix[c] = zero_suffix[c + 1].saturating_add(d.min(MAX_DIST - 1) << 16);
@@ -248,14 +298,14 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
     }
 
     let reach = empty.context_reach();
-    let mut grids = (0..TCQ_STATES)
-        .map(|_| new_grid())
-        .collect::<Result<Vec<_>, _>>()?;
+    *dirty = end;
     let mut grid_of: [usize; TCQ_STATES] = core::array::from_fn(|s| s);
     let mut cost = [UNREACHED; TCQ_STATES];
     let mut hr = [0u32; TCQ_STATES];
-    let mut picks = vec![[0u8; TCQ_STATES]; end];
-    let mut kept = vec![[[0u32; SLOTS]; 2]; end];
+    picks.clear();
+    picks.resize(end, [0; TCQ_STATES]);
+    kept.clear();
+    kept.resize(end, [[0; SLOTS]; 2]);
     let plane = block.plane;
     for c in (0..end).rev() {
         let pos = usize::from(scan[c]);
@@ -270,12 +320,12 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
         let mut coded = [[Coded::default(); SLOTS]; 2];
         for (coded, cand) in coded.iter_mut().zip(&cand) {
             for (coded, &(quant, _)) in coded.iter_mut().zip(cand) {
-                *coded = Coded::new(&empty, &at, plane, quant);
+                *coded = Coded::new(empty, &at, plane, quant);
             }
         }
         let has_br = coded.iter().flatten().any(|coded| coded.br != u8::MAX);
         let sign = if empty.sign_has_cdf(row, col, plane) {
-            rates.sign(&at.context(&empty, false))
+            rates.sign(&at.context(empty, false))
         } else {
             BIT
         };
@@ -302,7 +352,7 @@ pub(crate) fn tcq<R: CoeffRates + ?Sized>(
         if starts.iter().any(|&(_, start)| start) {
             let eob = rates.eob(block, c + 1);
             let start = zero_suffix[c + 1].saturating_add(lambda * u64::from(eob));
-            let rows = LevelRows::new(rates, &at.context(&empty, true), has_br);
+            let rows = LevelRows::new(rates, &at.context(empty, true), has_br);
             for (k, _) in starts.into_iter().filter(|&(_, start)| start) {
                 let (golomb, hr_after) = coded[z][k].remainder(0);
                 let rate = rows.rate(&coded[z][k], sign).saturating_add(golomb);

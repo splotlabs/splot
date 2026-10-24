@@ -18,10 +18,10 @@ use splot_recon::{BitDepth, PlaneId, dequant_coefficient};
 use super::super::rdoq::{BIT, CoeffRates, LevelContext, base_levels, golomb_bits};
 use super::super::{EncoderKernels, ScalarKernels, SimdKernels};
 use super::{
-    Branches, EVEN, FIRST, MAX_COST, MAX_DIST, ODD, RdoqBlock, SECOND, STATES, UNREACHED, ZERO,
-    candidates, tcq,
+    Branches, EVEN, FIRST, MAX_COST, MAX_DIST, ODD, RdoqBlock, SECOND, STATES, TcqScratch,
+    UNREACHED, ZERO, candidates, tcq,
 };
-use crate::rd::coeff_rate::CdfCoeffRates;
+use crate::rd::coeff_rate::{CdfCoeffRates, RowCaches};
 use crate::test_support::refs_for;
 
 fn branches() -> impl Strategy<Value = ([u64; STATES], Branches, u64)> {
@@ -313,6 +313,7 @@ fn trellis_is_optimal_on_small_blocks() {
         seed ^= seed << 17;
         seed
     };
+    let mut scratch = TcqScratch::default();
     for case in 0..96 {
         let (bit_depth, idc) = if case % 2 == 0 {
             (BitDepth::Eight, BitDepthIdc::Eight)
@@ -355,9 +356,18 @@ fn trellis_is_optimal_on_small_blocks() {
             };
         }
         let lambda = 1 + next() % 4000;
-        let mut rates = CdfCoeffRates::new(&mut syntax, &block);
+        let mut rows = RowCaches::default();
+        let mut rates = CdfCoeffRates::new(&mut syntax, &block, &mut rows);
         let mut levels = vec![0; coeffs.len()];
-        let eob = tcq(&SimdKernels, &b, &coeffs, &mut rates, lambda, &mut levels).unwrap();
+        let eob = tcq(
+            &SimdKernels,
+            &b,
+            &coeffs,
+            (&mut rates, &mut scratch),
+            lambda,
+            &mut levels,
+        )
+        .unwrap();
         let end = scan[..span]
             .iter()
             .rposition(|&pos| {
