@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Loop-filter decisions of a frame: deblocking, CDEF, CCSO and luma
-//! PC-Wiener loop restoration. GDF stays off.
+//! PC-Wiener and Wiener-NS loop restoration. GDF stays off.
 //!
 //! A tile codes `cdef_idx`, `ccso_blk` and `use_pc_wiener` before the frame is
 //! reconstructed, but the search needs the reconstruction. So a frame takes
@@ -17,15 +17,15 @@
 //!    filter syntax. The unfiltered reconstruction does not change between
 //!    the passes.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use splot_core::headers::frame::{
     CdefStrengthSet, CdefStrengthSets, FrameFilterParams, FrameHeaderCore, MAX_CDEF_STRENGTH_SETS,
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    EncoderReferences, FilterRecorder, FrameStart, IntraTileSyntax, LrLayout, LrUnit, TileEnd,
-    TransformBlock, apply_loop_filters, cdef_unit_grid, merge_tiles,
+    EncoderReferences, FilterRecorder, FrameStart, IntraTileSyntax, LrLayout, LrUnit, LrUnitType,
+    TileEnd, TransformBlock, apply_loop_filters, cdef_unit_grid, merge_tiles,
 };
 use splot_parallel::WorkerPool;
 use splot_recon::{DecodedFrame, PlaneId};
@@ -293,6 +293,7 @@ pub(crate) fn finish_frame(
         recon: &recon,
         lambda: Lambda::from_qindex(qindex, recon.bit_depth()).map_err(coding("lambda"))?,
         start: &pass.start,
+        refs,
         pool,
     };
     let (params, syntax) = search.run(preset)?;
@@ -330,7 +331,7 @@ pub(crate) fn finish_frame(
         syntax: coded,
         ..
     } = MergedTiles::new(&core, tiles)?;
-    let lr_on: Vec<LrUnit> = coded.lr_on.into_iter().collect();
+    let lr_on: Vec<(LrUnit, LrUnitType)> = coded.lr_on.into_iter().collect();
     let recon = apply_loop_filters(
         seq,
         &core,
@@ -367,6 +368,7 @@ struct Search<'a> {
     recon: &'a DecodedFrame<u16>,
     lambda: Lambda,
     start: &'a FrameStart,
+    refs: &'a EncoderReferences,
     pool: Option<&'a WorkerPool>,
 }
 
@@ -402,9 +404,13 @@ impl Search<'_> {
                 lr_luma_unit_size: Some(if sb128 { 128 } else { 64 }),
                 ..params
             };
-            let lr_on = self.restoration(&candidate, &syntax)?;
+            let (chosen, lr_on) = if preset.wiener_ns > 0 {
+                self.restoration_rd(&candidate, &syntax, preset)?
+            } else {
+                (candidate, self.restoration(&candidate, &syntax)?)
+            };
             if !lr_on.is_empty() {
-                params = candidate;
+                params = chosen;
                 syntax.lr_on = lr_on;
             }
         }
@@ -420,7 +426,7 @@ impl Search<'_> {
         &self,
         params: &FrameFilterParams,
         frame: &DecodedFrame<u16>,
-        lr_on: &[LrUnit],
+        lr_on: &[(LrUnit, LrUnitType)],
     ) -> Result<DecodedFrame<u16>> {
         let core = self.header(params)?;
         let (rows, cols) = self.cdef_grid();
@@ -632,7 +638,7 @@ impl Search<'_> {
         &self,
         params: &FrameFilterParams,
         syntax: &FilterSyntax,
-    ) -> Result<BTreeSet<LrUnit>> {
+    ) -> Result<BTreeMap<LrUnit, LrUnitType>> {
         let core = self.header(params)?;
         let layouts = LrLayout::tiles(self.seq, &core).map_err(coding("restoration layout"))?;
         let mut tile_units = Vec::new();
@@ -641,8 +647,11 @@ impl Search<'_> {
                 tile_units.push((layout, unit));
             }
         }
-        let units: Vec<LrUnit> = tile_units.iter().map(|&(_, unit)| unit).collect();
-        let run = |lr_on: &[LrUnit]| {
+        let units: Vec<_> = tile_units
+            .iter()
+            .map(|&(_, unit)| (unit, LrUnitType::PcWiener))
+            .collect();
+        let run = |lr_on: &[(LrUnit, LrUnitType)]| {
             apply_loop_filters(
                 self.seq,
                 &core,
@@ -655,7 +664,7 @@ impl Search<'_> {
         };
         let off = run(&[])?;
         let on = run(&units)?;
-        let mut chosen = BTreeSet::new();
+        let mut chosen = BTreeMap::new();
         for (layout, unit) in tile_units {
             let (mut sse_on, mut sse_off) = (0, 0);
             for rect in layout
@@ -667,7 +676,7 @@ impl Search<'_> {
                 sse_off += self.sse(&off, unit.plane, rect);
             }
             if sse_on < sse_off {
-                chosen.insert(unit);
+                chosen.insert(unit, LrUnitType::PcWiener);
             }
         }
         Ok(chosen)
@@ -731,6 +740,8 @@ fn cdef_rate(sets: usize, units: usize) -> Bits {
 
 #[path = "loop_filter_ccso.rs"]
 mod ccso;
+#[path = "loop_filter_wienerns.rs"]
+mod wienerns;
 
 #[cfg(test)]
 #[path = "loop_filter_tests.rs"]

@@ -14,8 +14,9 @@ use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CcsoPlaneParams, CdefParams, CdefStrengthSets, CoreSeqView, DeblockingFilterParams,
     FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView, FrameRestorationType,
-    LrGeometry, LrParams, LrPlaneParams, TxMode, encode_temporal_delimiter_obu,
-    init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
+    LrGeometry, LrParams, LrPlaneParams, TxMode, WienerNsFrameFilterBank,
+    encode_temporal_delimiter_obu, init_core_from_prefix, parse_core_body,
+    parse_frame_header_prefix,
 };
 use crate::headers::sequence::{
     BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize, parse_sequence_header,
@@ -25,8 +26,9 @@ use crate::obu::{ObuHeader, ParsedObu};
 use crate::span::ByteOffset;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, ObuType, TemporalLayerId};
 use crate::write::{
-    BitWriter, WriteError, write_annexb_obu, write_ccso_plane_params, write_cdef_params,
-    write_deblocking_filter_params, write_lr_params, write_obu_payload, write_tile_group_obu,
+    BitWriter, LrReferenceFilters, WriteError, write_annexb_obu, write_ccso_plane_params,
+    write_cdef_params, write_deblocking_filter_params, write_lr_params_for_inter,
+    write_obu_payload, write_tile_group_obu,
 };
 
 /// `seq_level_idx == 31`: the level without tile-size limits (§ 5.18.7.3).
@@ -140,12 +142,26 @@ pub struct FrameFilterParams {
     pub cdef_damping: u8,
     /// The CDEF strength sets (§ 5.18.7.10); empty turns CDEF off.
     pub cdef_strengths: CdefStrengthSets,
-    /// `LoopRestorationSize[0]` of luma `RESTORE_PC_WIENER` (§ 5.18.7.11); `None`
+    /// `LoopRestorationSize[0]` of luma restoration (§ 5.18.7.11); `None`
     /// turns loop restoration off. Chroma restoration is always off.
     pub lr_luma_unit_size: Option<u32>,
+    /// The luma frame Wiener-NS filters; `None` codes `RESTORE_PC_WIENER`
+    /// when `lr_luma_unit_size` is set.
+    pub lr_luma_wiener_ns: Option<FrameWienerNs>,
     /// `ccso_params()` of each plane (§ 5.18.7.12) without reuse; the frame
     /// codes `ccso_frame_flag = 1` when a plane sets `ccso_planes`.
     pub ccso: [CcsoPlaneParams; 3],
+}
+
+/// A plane coded with `frame_filters_on = 1` (§ 5.18.7.11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameWienerNs {
+    /// `RESTORE_SWITCHABLE` when `true`, else `RESTORE_WIENER_NONSEP`.
+    pub switchable: bool,
+    /// `rst_ref_pic_idx` of `temporal_pred_flag = 1`; `None` codes `bank`.
+    pub rst_ref_pic_idx: Option<u8>,
+    /// The coded bank (§ 5.20.10.6); a luma bank's class count is `NumFilterClasses`.
+    pub bank: WienerNsFrameFilterBank,
 }
 
 /// Transform choices of [`build_key_frame_header`].
@@ -516,7 +532,7 @@ fn key_frame_header_bits(
         seq,
         (base_q_idx, tiles, tx.allow_tcq),
         filters,
-        true,
+        (true, LrReferenceFilters::default()),
     )?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
@@ -533,7 +549,7 @@ pub(super) fn write_quant_and_filters(
     seq: &CoreSeqView,
     (base_q_idx, tiles, allow_tcq): (u32, UniformTiles, bool),
     filters: &FrameFilterParams,
-    frame_is_intra: bool,
+    (frame_is_intra, lr_refs): (bool, LrReferenceFilters<'_>),
 ) -> Result<(), EncoderHeaderError> {
     if allow_tcq && !seq.quant.choose_tcq_per_frame {
         return Err(EncoderHeaderError::TcqNotChosen);
@@ -557,7 +573,7 @@ pub(super) fn write_quant_and_filters(
     if seq.quant.enable_parity_hiding && !allow_tcq {
         w.write_flag(true)?; // allow_parity_hiding
     }
-    write_filter_params(w, seq, filters)?;
+    write_filter_params(w, seq, filters, lr_refs)?;
     if seq.ccso.enable_ccso {
         let planes = &filters.ccso[..usize::from(seq.quant.num_planes).min(3)];
         let on = planes.iter().any(|plane| plane.ccso_planes);
@@ -582,6 +598,7 @@ fn write_filter_params(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     filters: &FrameFilterParams,
+    lr_refs: LrReferenceFilters<'_>,
 ) -> Result<(), WriteError> {
     let num_planes = seq.quant.num_planes;
     let delta = filters.deblocking_delta_q;
@@ -611,16 +628,30 @@ fn write_filter_params(
     };
     if seq.restoration.enable_restoration {
         for plane in 0..num_planes {
-            let restoration_type = if plane == 0 && filters.lr_luma_unit_size.is_some() {
-                FrameRestorationType::PcWiener
-            } else {
-                FrameRestorationType::None
+            let luma = plane == 0 && filters.lr_luma_unit_size.is_some();
+            let params = match filters.lr_luma_wiener_ns.filter(|_| luma) {
+                Some(choice) => LrPlaneParams {
+                    restoration_type: if choice.switchable {
+                        FrameRestorationType::Switchable
+                    } else {
+                        FrameRestorationType::WienerNonsep
+                    },
+                    frame_filters_on: true,
+                    num_filter_classes: choice
+                        .rst_ref_pic_idx
+                        .is_none()
+                        .then_some(choice.bank.classes.len() as u8),
+                    frame_filter_bank: choice.rst_ref_pic_idx.is_none().then_some(choice.bank),
+                    rst_ref_pic_idx: choice.rst_ref_pic_idx,
+                },
+                None if luma => LrPlaneParams {
+                    restoration_type: FrameRestorationType::PcWiener,
+                    ..LrPlaneParams::default()
+                },
+                None => LrPlaneParams::default(),
             };
             lr.planes
-                .push(LrPlaneParams {
-                    restoration_type,
-                    ..LrPlaneParams::default()
-                })
+                .push(params)
                 .ok_or(WriteError::NonCanonicalFrameHeader {
                     what: "lr_num_planes",
                 })?;
@@ -629,7 +660,14 @@ fn write_filter_params(
     if let Some(size) = filters.lr_luma_unit_size {
         lr.loop_restoration_size[0] = size;
     }
-    write_lr_params(w, &lr, false, num_planes, &seq.restoration, geometry)
+    write_lr_params_for_inter(
+        w,
+        &lr,
+        (false, num_planes),
+        &seq.restoration,
+        geometry,
+        lr_refs,
+    )
 }
 
 /// § 5.18.7.2 `tile_info()` with § 5.18.7.3 uniform spacing at level 31, where

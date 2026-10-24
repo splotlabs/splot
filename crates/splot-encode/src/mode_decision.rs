@@ -14,7 +14,7 @@ use core::ops::Range;
 
 use splot_decode::encoder_syntax::{
     ChromaMode, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax, LeafBlock,
-    MAX_CFL_ALPHA, PartitionNode, SyntaxSnapshot,
+    MAX_CFL_ALPHA, Mrl, PartitionNode, SyntaxSnapshot,
 };
 use splot_recon::InterpolationFilter;
 
@@ -37,6 +37,21 @@ const MAX_ANGLE_DELTA: i8 = 3;
 const COARSER_RATE_SHARE: u64 = 4;
 /// `(SATD + rate, rate, modes)` of one `NEWMV` coding.
 type NewmvCost = (u64, u64, InterModes);
+/// The best directional modes of the luma shortlist whose MRL lines are ranked.
+const MRL_MODES: usize = 2;
+/// Every MRL line past the adjacent one, without and with the secondary blend.
+const MRL_LINES: [Mrl; 6] = {
+    let mut lines = [Mrl::OFF; 6];
+    let mut i = 0;
+    while i < 6 {
+        lines[i] = Mrl {
+            index: 1 + i as u8 / 2,
+            secondary: i % 2 == 1,
+        };
+        i += 1;
+    }
+    lines
+};
 /// The compound shortlist prices the syntax of this many times as many of
 /// its lowest-SATD candidates as it keeps.
 const PRICED_COMPOUND_SHARE: usize = 2;
@@ -152,7 +167,9 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
     }
 
     /// The luma shortlist: every mode without an angle delta, then the angle
-    /// deltas of the shortlisted directional modes.
+    /// deltas of the shortlisted directional modes; then the
+    /// `preset.mrl_trials` MRL lines of the [`MRL_MODES`] best directional
+    /// modes with the lowest SATD, appended so they displace no line-0 mode.
     fn luma_shortlist(&mut self, leaf: &LeafBlock) -> Result<Vec<LeafChoice>> {
         let base = INTRA_MODES.map(|y_mode| IntraModes {
             y_mode,
@@ -174,7 +191,34 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             })
             .collect();
         self.rank(leaf, deltas, LUMA, &mut ranked)?;
-        Ok(self.shortlist(ranked))
+        let mut shortlist = self.shortlist(ranked);
+        if self.preset.mrl_trials > 0 {
+            let blend = leaf.dimensions()? != (4, 4); // § 7.13.2.7 `not4x4`
+            let lines: Vec<IntraModes> = shortlist
+                .iter()
+                .filter(|choice| choice.modes.y_mode.is_directional())
+                .take(MRL_MODES)
+                .flat_map(|choice| {
+                    MRL_LINES
+                        .into_iter()
+                        .filter(move |mrl| blend || !mrl.secondary)
+                        .map(move |mrl| IntraModes {
+                            mrl,
+                            ..choice.modes
+                        })
+                })
+                .collect();
+            let mut ranked = Vec::new();
+            self.rank(leaf, lines, LUMA, &mut ranked)?;
+            ranked.sort_by_key(|&(satd, _)| satd);
+            ranked.truncate(usize::from(self.preset.mrl_trials));
+            shortlist.extend(
+                ranked
+                    .into_iter()
+                    .map(|(_, modes)| LeafChoice::largest(modes)),
+            );
+        }
+        Ok(shortlist)
     }
 
     /// The candidate with the lowest `D + lambda * R` over `planes`; each
