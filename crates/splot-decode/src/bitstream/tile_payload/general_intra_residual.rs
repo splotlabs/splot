@@ -44,7 +44,7 @@ use super::coeff_state::{
 };
 use super::{BlockSize, DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 
-mod cctx;
+pub(crate) mod cctx;
 mod luma_transform_partition;
 pub(crate) mod reconstruct;
 

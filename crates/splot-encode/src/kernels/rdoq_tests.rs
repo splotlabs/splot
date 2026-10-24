@@ -241,6 +241,7 @@ fn facade_rows_back_the_rate_model() {
             tx_size,
             fills_block: true,
             ist: splot_decode::encoder_syntax::Ist::OFF,
+            cctx: 0,
         };
         let mut rates = FacadeRates {
             syntax: IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap(),

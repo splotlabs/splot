@@ -49,6 +49,7 @@ struct Case {
     tools: EncoderToolFlags,
     max_level: i32,
     tx: KeyFrameTxParams,
+    chroma: ChromaFormatIdc,
 }
 
 impl Case {
@@ -89,6 +90,7 @@ impl Case {
                 mvd_tools: [false; 3],
             },
             max_level: 12,
+            chroma: ChromaFormatIdc::Yuv420,
             tx: KeyFrameTxParams {
                 tx_mode: TxMode::Largest,
                 reduced_tx_set: 2,
@@ -160,6 +162,8 @@ struct TxCoverage {
     hidden: [usize; 5],
     /// `(sec_tx_type, most_probable_stx_set, primary type)` of IST blocks.
     ist: HashSet<(u8, u8, u8)>,
+    /// `cctx_type` values of coded chroma pairs.
+    cctx: HashSet<u8>,
 }
 
 /// Moves the scan index 0 level of `levels` by one when they hide a parity
@@ -322,6 +326,7 @@ impl ResidualCoder for RandomLevels {
         Ok(TransformDecision {
             tx_type,
             ist: coded_tx.ist,
+            cctx: 0,
             levels,
         })
     }
@@ -339,8 +344,34 @@ impl ResidualCoder for RandomLevels {
         Ok(TransformDecision {
             tx_type: tx.tx_type,
             ist: tx.ist,
+            cctx: 0,
             levels,
         })
+    }
+
+    /// A random `cctx_type` with U levels of at least two coefficients when
+    /// the pair may code CCTX.
+    fn code_chroma_pair(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        [u, v]: [&TransformBlock; 2],
+        [u_prediction, v_prediction]: [&[u16]; 2],
+    ) -> Result<[TransformDecision; 2]> {
+        let mut decisions = [
+            self.code(syntax, u, u_prediction)?,
+            self.code(syntax, v, v_prediction)?,
+        ];
+        if syntax.cctx_coded(u, 2) && u.tx_type == v.tx_type {
+            let cctx = self.rng.below(7) as u8;
+            let scan = coefficient_scan(u)?;
+            let levels = &mut decisions[0].levels;
+            for &pos in &scan[..2] {
+                levels[usize::from(pos)] |= 1;
+            }
+            decisions[0].cctx = cctx;
+            self.coverage.cctx.insert(cctx);
+        }
+        Ok(decisions)
     }
 }
 
@@ -364,6 +395,7 @@ struct ModePicker {
     coded_luma: HashSet<(u8, i8)>,
     coded_chroma: HashSet<u8>,
     mrl: bool,
+    mhccp: bool,
     coded_mrl: HashSet<Mrl>,
 }
 
@@ -377,11 +409,12 @@ impl ModePicker {
             coded_luma: HashSet::new(),
             coded_chroma: HashSet::new(),
             mrl: false,
+            mhccp: false,
             coded_mrl: HashSet::new(),
         }
     }
 
-    fn pick(&mut self, cfl_allowed: bool) -> IntraModes {
+    fn pick(&mut self, cfl_allowed: bool, mhccp_allowed: bool) -> IntraModes {
         let (y_mode, angle_delta) = self.luma[self.next % self.luma.len()];
         let uv = self.next % (INTRA_MODES.len() + 2);
         self.next += 1;
@@ -398,11 +431,19 @@ impl ModePicker {
             },
             _ => ChromaMode::CflDerived,
         };
+        let uv_mode = if self.mhccp && mhccp_allowed && self.rng.below(3) == 0 {
+            ChromaMode::Mhccp {
+                direction: self.rng.below(3) as u8,
+            }
+        } else {
+            uv_mode
+        };
         self.coded_luma.insert((y_mode as u8, angle_delta));
         self.coded_chroma.insert(match uv_mode {
             ChromaMode::Intra(mode) => mode as u8,
             ChromaMode::Cfl { .. } => 13,
             ChromaMode::CflDerived => 14,
+            ChromaMode::Mhccp { direction } => 15 + direction,
         });
         let mut mrl = Mrl::OFF;
         if self.mrl && y_mode.is_directional() {
@@ -448,7 +489,7 @@ fn random_tree(
     if partition == Partition::None {
         let leaf = syntax.leaf(node).unwrap();
         let cfl_allowed = syntax.cfl_allowed(&leaf);
-        let planned = modes.pick(cfl_allowed);
+        let planned = modes.pick(cfl_allowed, syntax.mhccp_allowed(&leaf));
         return PartitionTree::Leaf(coder.leaf_choice(syntax, &leaf, planned).unwrap());
     }
     let children = syntax
@@ -476,7 +517,7 @@ fn encode_case(
         width: case.width,
         height: case.height,
         bit_depth: case.bit_depth,
-        chroma: ChromaFormatIdc::Yuv420,
+        chroma: case.chroma,
         sb_size: case.sb_size,
         tools: case.tools,
     })
@@ -495,6 +536,7 @@ fn encode_case(
     let mut rng = Rng(seed | 1);
     let mut modes = ModePicker::new(seed);
     modes.mrl = case.tools.mrls;
+    modes.mhccp = case.tools.mhccp;
     let mut coder = RandomLevels {
         rng: Rng(seed.rotate_left(17) | 1),
         max_level: case.max_level,
@@ -575,6 +617,29 @@ fn every_intra_mode_round_trips() {
     }
 }
 
+/// Random MHCCP directions decode to the encoder recon: the facade writes
+/// `cfl_mhccp` and `cfl_mh_dir` and predicts with the decoder's MHCCP.
+#[test]
+fn every_mhccp_direction_round_trips() {
+    for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+        let mut chroma = HashSet::new();
+        for (seed, sb_size) in [SuperblockSize::Block64x64, SuperblockSize::Block128x128]
+            .into_iter()
+            .enumerate()
+        {
+            let mut case = Case::new(136, 72, bit_depth, sb_size);
+            case.tools.mhccp = true;
+            let (_, modes, _) =
+                assert_round_trip_modes(case, 0x4cc + seed as u64, TxCoverage::default());
+            chroma.extend(modes.coded_chroma);
+        }
+        assert!(
+            (15..18).all(|id| chroma.contains(&id)),
+            "{bit_depth:?}: {chroma:?}"
+        );
+    }
+}
+
 /// Random MRL lines and secondary blends decode to the encoder recon, with
 /// every transform type and partition: the facade writes `mrl_index` and
 /// `mrl_sec_index` in the decoder's contexts and publishes `UsesMrls`.
@@ -595,6 +660,30 @@ fn every_mrl_line_round_trips() {
             }
         }
         assert_eq!(lines.len(), 7, "{bit_depth:?}: {lines:?}");
+    }
+}
+
+/// Random CCTX rotations of chroma pairs decode to the encoder recon in every
+/// chroma format: the facade writes `cctx_type` and reconstructs each pair
+/// with the decoder's cross-chroma transform.
+#[test]
+fn every_cctx_type_round_trips() {
+    for chroma in [
+        ChromaFormatIdc::Yuv420,
+        ChromaFormatIdc::Yuv422,
+        ChromaFormatIdc::Yuv444,
+    ] {
+        let mut coverage = TxCoverage::default();
+        for (seed, bit_depth) in [BitDepthIdc::Eight, BitDepthIdc::Ten]
+            .into_iter()
+            .enumerate()
+        {
+            let mut case = Case::new(136, 72, bit_depth, SuperblockSize::Block64x64);
+            case.tools.cctx = true;
+            case.chroma = chroma;
+            coverage = assert_round_trip_modes(case, 0xcc7 + seed as u64, coverage).2;
+        }
+        assert_eq!(coverage.cctx.len(), 7, "{chroma:?}: {:?}", coverage.cctx);
     }
 }
 
@@ -830,6 +919,7 @@ fn facade_parity_rule_is_the_spec_rule() {
                     tx_size,
                     fills_block: true,
                     ist: splot_decode::encoder_syntax::Ist::OFF,
+                    cctx: 0,
                 };
                 let parity = syntax.parity_hiding(&tx);
                 assert_eq!(parity.is_some(), plane == 0 && tx_type != TxType::Idtx);
@@ -876,11 +966,7 @@ fn facade_rejects_unmodelled_tools() {
     };
     let (seq, core) = headers(base);
     assert!(IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).is_ok());
-    let tool_cases: [fn(&mut EncoderToolFlags); 3] = [
-        |t| t.mhccp = true,
-        |t| t.cctx = true,
-        |t| t.idtx_intra = true,
-    ];
+    let tool_cases: [fn(&mut EncoderToolFlags); 1] = [|t| t.idtx_intra = true];
     for set in tool_cases {
         let mut tools = base;
         set(&mut tools);
@@ -948,6 +1034,9 @@ fn avm_decodes_random_key_frames_like_splot() {
     extended.tools.ext_partitions = true;
     extended.tools.uneven_4way_partitions = true;
     cases.push(extended);
+    let mut mhccp = Case::new(200, 136, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    mhccp.tools.mhccp = true;
+    cases.push(mhccp);
     let mut mrl =
         Case::new(200, 136, BitDepthIdc::Ten, SuperblockSize::Block64x64).with_tx_search();
     mrl.tools.mrls = true;

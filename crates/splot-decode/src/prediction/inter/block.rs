@@ -2155,6 +2155,7 @@ pub(crate) use intrabc::global_intrabc_enabled;
 mod pixel_commit;
 mod prediction;
 mod residual;
+pub(crate) use residual::inter_residual_units;
 mod resolve;
 mod row_gate;
 pub(crate) use row_gate::{RowReferenceBounds, bounds_satisfied};

@@ -316,16 +316,41 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         let mut levels = vec![Vec::new(); blocks.len()];
         // Luma first: the decoder reconstructs CFL chroma after the whole luma.
         for luma in [true, false] {
-            for (index, tx) in blocks.iter_mut().enumerate() {
-                if !planes.contains(&tx.plane) || (tx.plane == 0) != luma {
+            for index in 0..blocks.len() {
+                let tx = blocks[index];
+                if !planes.contains(&tx.plane)
+                    || (tx.plane == 0) != luma
+                    || !levels[index].is_empty()
+                {
                     continue;
                 }
                 let prediction = self.syntax.predict(index)?;
+                if let Some(v_index) = chroma_partner(&blocks, &tx) {
+                    let v = blocks[v_index];
+                    let v_prediction = self.syntax.predict(v_index)?;
+                    let [u_decision, v_decision] =
+                        self.code_chroma_pair(coder, [&tx, &v], [&prediction, &v_prediction])?;
+                    blocks[index].cctx = u_decision.cctx;
+                    if u_decision.cctx == 0 {
+                        self.syntax.reconstruct_as(index, &tx, &u_decision.levels)?;
+                        self.syntax
+                            .reconstruct_as(v_index, &v, &v_decision.levels)?;
+                    } else {
+                        let levels = [u_decision.levels.as_slice(), &v_decision.levels];
+                        let u = &blocks[index];
+                        self.syntax
+                            .reconstruct_cctx_pair([index, v_index], u, levels)?;
+                    }
+                    levels[index] = u_decision.levels;
+                    levels[v_index] = v_decision.levels;
+                    continue;
+                }
                 let decision = if tx.plane == 0 {
-                    self.code_luma(coder, tx, &prediction)?
+                    self.code_luma(coder, &tx, &prediction)?
                 } else {
-                    code_as(self.syntax, coder, tx, &prediction)?
+                    code_as(self.syntax, coder, &tx, &prediction)?
                 };
+                let tx = &mut blocks[index];
                 *tx = TransformBlock {
                     tx_type: decision.tx_type,
                     ist: decision.ist,
@@ -370,22 +395,22 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         let prediction = snap_prediction(self.syntax, leaf, prediction)?;
         let mut blocks = self.syntax.plan_inter_leaf(leaf, prediction)?;
         let mut levels = vec![Vec::new(); blocks.len()];
-        let mut luma = None;
-        for (index, tx) in blocks.iter_mut().enumerate() {
-            if let (true, Some(luma)) = (tx.plane > 0, luma.as_ref()) {
-                tx.tx_type = self.syntax.inter_chroma_tx_type(leaf, luma, tx)?;
+        for index in 0..blocks.len() {
+            let mut tx = blocks[index];
+            if tx.plane > 0 {
+                tx.tx_type = self
+                    .syntax
+                    .inter_chroma_tx_type(leaf, &blocks[..index], &tx)?;
             }
-            let prediction = self.syntax.reconstruction(tx)?;
+            let prediction = self.syntax.reconstruction(&tx)?;
             let decision = if tx.plane == 0 {
-                self.code_luma(coder, tx, &prediction)?
+                self.code_luma(coder, &tx, &prediction)?
             } else {
-                code_as(self.syntax, coder, tx, &prediction)?
+                code_as(self.syntax, coder, &tx, &prediction)?
             };
             tx.tx_type = decision.tx_type;
+            blocks[index] = tx;
             levels[index] = decision.levels;
-            if tx.plane == 0 {
-                luma = Some(*tx);
-            }
         }
         let skip = levels.iter().flatten().all(|&level| level == 0);
         if !skip {
@@ -436,6 +461,38 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             }
         }
         Ok(eobs)
+    }
+
+    /// The decisions of U block `u` and V block `v` of one position; a CCTX
+    /// the decoder would not read for the final U levels is recoded without.
+    fn code_chroma_pair(
+        &mut self,
+        coder: &mut impl ResidualCoder,
+        [u, v]: [&TransformBlock; 2],
+        predictions: [&[u16]; 2],
+    ) -> Result<[TransformDecision; 2]> {
+        let decisions = coder.code_chroma_pair(self.syntax, [u, v], predictions)?;
+        let [u_decision, v_decision] = &decisions;
+        if u_decision.tx_type != u.tx_type || v_decision.tx_type != v.tx_type {
+            return Err(TileWriterError::Unsupported(
+                "chroma transform type other than the planned one",
+            ));
+        }
+        let coded = TransformBlock {
+            cctx: u_decision.cctx,
+            ..*u
+        };
+        if coded.cctx != 0
+            && !self
+                .syntax
+                .cctx_coded(&coded, coeffs::eob(&coded, &u_decision.levels)?)
+        {
+            return Ok([
+                code_as(self.syntax, coder, u, predictions[0])?,
+                code_as(self.syntax, coder, v, predictions[1])?,
+            ]);
+        }
+        Ok(decisions)
     }
 
     /// The decision of luma block `tx` in a type the decoder reads or infers
@@ -491,6 +548,16 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         }
         Ok(decision)
     }
+}
+
+/// The index of the V block that pairs with U block `u` in `blocks`.
+fn chroma_partner(blocks: &[TransformBlock], u: &TransformBlock) -> Option<usize> {
+    if u.plane != 1 {
+        return None;
+    }
+    blocks
+        .iter()
+        .position(|v| v.plane == 2 && (v.x, v.y, v.tx_size) == (u.x, u.y, u.tx_size))
 }
 
 /// `prediction` with each coded vector moved onto the lattice of its base.
@@ -594,7 +661,7 @@ fn code_as(
     prediction: &[u16],
 ) -> Result<TransformDecision> {
     let decision = coder.code(syntax, tx, prediction)?;
-    if decision.tx_type != tx.tx_type || decision.ist != tx.ist {
+    if decision.tx_type != tx.tx_type || decision.ist != tx.ist || decision.cctx != tx.cctx {
         return Err(TileWriterError::Unsupported(
             "transform type other than the requested one",
         ));

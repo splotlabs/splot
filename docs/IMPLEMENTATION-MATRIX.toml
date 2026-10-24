@@ -4841,7 +4841,7 @@ module = "crates/splot-encode/src/intra_frame.rs"
 change_id = "encoder-m2-full-intra"
 owner = "encoder"
 risk = "medium"
-notes = "Key frames are closed-loop key frames with uniform tiles (ENC-TILES) in 4:2:0, 4:2:2 or 4:4:4 (ENC-CHROMA-FORMATS); ENC-INTER-FRAME-HEADERS adds inter frames. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No DIP, FSC, MHCCP, palette, IntraBC, CCTX, TCQ, Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
+notes = "Key frames are closed-loop key frames with uniform tiles (ENC-TILES) in 4:2:0, 4:2:2 or 4:4:4 (ENC-CHROMA-FORMATS); ENC-INTER-FRAME-HEADERS adds inter frames. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No DIP, FSC, palette, IntraBC, TCQ, Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
 
 [feature.status]
 mapped = "done"
@@ -4937,7 +4937,7 @@ module = "crates/splot-encode/src/mode_decision.rs"
 change_id = "encoder-m3-inter-blocks"
 owner = "encoder"
 risk = "medium"
-notes = "Leaves of inter frames RD-compare intra coding with GLOBALMV, NEARMV over the DRL, and NEWMV from every valid reference (single_ref per block); NEWMV takes a pyramid full-sample search plus half-, quarter- and (at subpel_depth 3) eighth-sample refinement through the decoder's interpolation; subpel_depth 3 frames at base_q_idx up to the preset's eighth_pel_max_qindex code eighth-pel vectors (allow_high_precision_mv), the others refine and code quarter-pel. splot_decode::encoder_syntax runs the decoder's own MV stack, resolution, motion compensation, inter residual reconstruction and filter records, and publication fails when the decoder resolves another vector. The MV writer inverts the joint shell syntax with the facade's rows. skip_txfm is 1 when every level is 0; inter transform types use the inter sets. Only leaves of at most 64x64 are inter; compound and skip-mode blocks are ENC-INTER-COMPOUND; no warped or OBMC motion, TIP, optical flow, temporal MVs or MV banks."
+notes = "Leaves of inter frames RD-compare intra coding with GLOBALMV, NEARMV over the DRL, and NEWMV from every valid reference (single_ref per block); NEWMV takes a pyramid full-sample search plus half-, quarter- and (at subpel_depth 3) eighth-sample refinement through the decoder's interpolation; subpel_depth 3 frames at base_q_idx up to the preset's eighth_pel_max_qindex code eighth-pel vectors (allow_high_precision_mv), the others refine and code quarter-pel. splot_decode::encoder_syntax runs the decoder's own MV stack, resolution, motion compensation, inter residual reconstruction and filter records, and publication fails when the decoder resolves another vector. The MV writer inverts the joint shell syntax with the facade's rows. skip_txfm is 1 when every level is 0; inter transform types use the inter sets. Leaves wider or taller than 64 are inter with PresetParams::large_inter (ENC-LARGE-INTER); compound and skip-mode blocks are ENC-INTER-COMPOUND; no warped or OBMC motion, TIP, optical flow, temporal MVs or MV banks."
 
 [feature.status]
 mapped = "done"
@@ -5628,6 +5628,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-LARGE-INTER"
+name = "Encoder inter leaves wider or taller than 64"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.6.3", "5.20.7.23", "5.20.7.24"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/mode_decision.rs"
+change_id = "enc-large-inter"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::large_inter: leaves wider or taller than 64 (128x128, 128x64 and 64x128; AV2 has no 128-wide three- or four-way shapes, see large_leaves_are_128x128_128x64_or_64x128) also try single-reference, compound and skip-mode inter. The encoder_syntax facade plans their residual with the decoder's chunk walk (inter_residual_units beside read_inter_residual, sharing InterChromaGroup): the 64x64 luma transforms of each chunk, and after the first chunk of each chroma group its U, then V, blocks; a chroma transform type reads the luma types coded before it, and these leaves write no tx_do_partition. Off writes the old stream byte-identically. On in presets 0-6 (the 128x128-superblock rows) pending placement; measured vs main: niklas 720p p6 -1.01% BD-rate at 0.993x CPU, paris p6 -0.06% at 1.007x, paris p0 -0.17% at 1.000x, park_joy 90p p6 -0.14% at 0.994x, p0 +0.00%; presets 7-10 code 64x64 superblocks and are byte-identical. The motion search pads references by 80 samples, so a 128-wide leaf at a frame edge searches fewer vectors."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_large_inter_tests.rs::a_128x128_inter_leaf_plans_the_chunked_residual", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::a_pan_codes_large_inter_leaves", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::rollback_restores_a_128x128_inter_leaf", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::large_inter_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::large_inter_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::large_leaves_are_128x128_128x64_or_64x128", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::compound_and_skip_mode_large_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::avm_decodes_large_inter_leaves_like_splot"]
+commands = ["cargo test -p splot-encode large_inter --locked", "SPLOT_AVM_DECODER=<avmdec> cargo test -p splot-encode avm_decodes_large_inter -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-CCSO"
 name = "Encoder cross-component sample offset"
 category = "encoder"
@@ -5687,6 +5719,70 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/tile_writer/tests.rs::every_ist_kernel_and_set_round_trips", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot", "crates/splot-encode/src/kernels/ist.rs::tests::simd_matches_scalar", "crates/splot-encode/src/kernels/ist.rs::tests::forward_undoes_inverse", "crates/splot-encode/src/intra_tools_tests.rs::ist_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_ist_blocks", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_ist_frames_like_splot"]
 commands = ["cargo test -p splot-encode ist --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-CCTX"
+name = "Encoder cross-chroma transform"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "7.14.6"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/kernels/cctx.rs"
+change_id = "enc-cctx-mhccp"
+owner = "encoder"
+risk = "medium"
+notes = "Implemented, OFF in every preset. PresetParams::cctx (off disables enable_cctx): a chroma pair in a leaf's final trial takes the Cctx_Mtx rotation that leaves V the least energy (closed form over the U/V energy sums of the primary coefficients) when it leaves less than the smaller plain plane, and keeps it if one RD trial beats the plain pair. SIMD and scalar energy and rotation kernels. The encoder_syntax facade carries cctx in TransformBlock, writes cctx_type after the U eob, reconstructs the pair with the decoder's paired reconstruction and offers cctx_reconstruction for RD. On at p0-p6 against main: paris intra +0.22% Y (1.01x CPU), inter +0.22%, park_joy intra +0.07%, inter -0.39%; paris intra p6 also spends +0.1..+0.4% bytes for -0.03..-0.17 dB U PSNR. Revisit with B3 multi-stage MD (per-block flag cost vs final-trial-only search). Off writes the old stream byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/tile_writer/tests.rs::every_cctx_type_round_trips", "crates/splot-encode/src/kernels/cctx.rs::tests::simd_matches_scalar", "crates/splot-encode/src/kernels/cctx.rs::tests::inverse_undoes_rotation", "crates/splot-encode/src/intra_tools_tests.rs::cctx_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_cctx_pairs_and_mhccp_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_cctx_and_mhccp_frames_like_splot"]
+commands = ["cargo test -p splot-encode cctx --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-MHCCP"
+name = "Encoder multi-hypothesis cross-component prediction"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.5.6", "5.20.7.32"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/mode_decision.rs"
+change_id = "enc-cctx-mhccp"
+owner = "encoder"
+risk = "low"
+notes = "Implemented, OFF in every preset. PresetParams::mhccp (off disables enable_mhccp): a CFL leaf ranks the three MHCCP directions with its chroma candidates by SATD. The encoder_syntax facade takes ChromaMode::Mhccp, writes cfl_mhccp and cfl_mh_dir and predicts with the decoder's MHCCP (CflParams::Multi). On at every preset against main (p6): paris intra Y +0.30% / YUV(6:1:1) +0.09% (1.01x CPU), inter Y +0.49% / YUV +0.14%; park_joy intra Y +0.08% / YUV -0.00%, inter Y +0.07% / YUV +0.13%. MHCCP wins about 45% of the chroma trials it enters, but the cfl_mhccp flag of every CFL block costs more. Revisit with B3 multi-stage MD (per-block flag cost vs final-trial-only search). Off writes the old stream byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/tile_writer/tests.rs::every_mhccp_direction_round_trips", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot", "crates/splot-encode/src/intra_tools_tests.rs::mhccp_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_cctx_pairs_and_mhccp_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_cctx_and_mhccp_frames_like_splot"]
+commands = ["cargo test -p splot-encode mhccp --locked"]
 fixtures = []
 diagnostics = []
 

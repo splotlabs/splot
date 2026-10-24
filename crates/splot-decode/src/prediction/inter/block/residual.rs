@@ -461,123 +461,64 @@ fn read_inter_residual_chroma_group(
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<()> {
+    let group = InterChromaGroup::new(
+        frontier,
+        mi_size_chunk,
+        (subsampling_x, subsampling_y),
+        (chunk_x, chunk_y),
+        lossless,
+    )?;
+    let (tx_size, cctx_allowed) = (group.tx_size, group.cctx_allowed);
+    let (base_x4, base_y4) = group.base;
     let chroma_ref = frontier.chroma_ref_geometry();
-    let chroma_mi_size = chroma_ref.size();
-    let chroma_ref_size = get_plane_residual_size(chroma_mi_size, 1, subsampling_x, subsampling_y)
-        .map_err(|_| residual_geometry_error())?
-        .ok_or_else(residual_geometry_error)?;
-    let tx_size = fixed_inter_residual_tx_size(chroma_ref_size.index(), lossless)?;
-    let cctx_allowed = is_cctx_geometry_allowed(
-        subsampling_x && subsampling_y,
-        chroma_ref_size
-            .num_4x4_wide()
-            .map_err(|_| residual_geometry_error())?
-            * MI_SIZE,
-        chroma_ref_size
-            .num_4x4_high()
-            .map_err(|_| residual_geometry_error())?
-            * MI_SIZE,
-    );
-    let plane_source_size = if chroma_mi_size != frontier.b_size {
-        chroma_mi_size
-    } else {
-        mi_size_chunk
-    };
-    let plane_size = get_plane_residual_size(plane_source_size, 1, subsampling_x, subsampling_y)
-        .map_err(|_| residual_geometry_error())?
-        .ok_or_else(residual_geometry_error)?;
-    let block_width_chunks = (frontier
-        .b_size
-        .num_4x4_wide()
-        .map_err(|_| residual_geometry_error())?
-        >> 4)
-        .max(1);
-    let block_height_chunks = (frontier
-        .b_size
-        .num_4x4_high()
-        .map_err(|_| residual_geometry_error())?
-        >> 4)
-        .max(1);
-    let mut num4x4_w = plane_size
-        .num_4x4_wide()
-        .map_err(|_| residual_geometry_error())?;
-    let mut num4x4_h = plane_size
-        .num_4x4_high()
-        .map_err(|_| residual_geometry_error())?;
-    if subsampling_x && chunk_x + 1 < block_width_chunks && !lossless {
-        num4x4_w <<= 1;
-    }
-    if subsampling_y && chunk_y + 1 < block_height_chunks && !lossless {
-        num4x4_h <<= 1;
-    }
-    let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
-    let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
-    let tx_fills_block = tx_w4
-        == chroma_ref_size
-            .num_4x4_wide()
-            .map_err(|_| residual_geometry_error())?
-        && tx_h4
-            == chroma_ref_size
-                .num_4x4_high()
-                .map_err(|_| residual_geometry_error())?;
-    let x_offset4 = (chunk_x << 4) >> usize::from(subsampling_x);
-    let y_offset4 = (chunk_y << 4) >> usize::from(subsampling_y);
-    let base_x4 = chroma_ref.col() >> usize::from(subsampling_x);
-    let base_y4 = chroma_ref.row() >> usize::from(subsampling_y);
     let lossless_uses_current_block =
         lossless && is_inter && (frontier.r != chroma_ref.row() || frontier.c != chroma_ref.col());
     chroma_reads.clear();
-    let mut y4 = y_offset4;
-    while y4 < y_offset4 + num4x4_h {
-        let mut x4 = x_offset4;
-        while x4 < x_offset4 + num4x4_w {
-            let start_x = (base_x4 + x4) * MI_SIZE;
-            let start_y = (base_y4 + y4) * MI_SIZE;
-            let chroma_inter_tx_type = luma_tx_types.chroma_inter_tx_type(
-                frontier.r,
-                frontier.c,
-                base_y4 + y4,
-                base_x4 + x4,
-                (subsampling_x, subsampling_y),
-                lossless_uses_current_block,
-            );
-            let unit = InterChromaUnit {
-                x4,
-                y4,
-                tx_fills_block,
-                chroma_inter_tx_type,
-            };
-            let u = read_inter_residual_plane(
-                work_unit,
-                symbols,
-                coeff_ctx,
-                arena,
-                1,
-                tx_size,
-                start_x,
-                start_y,
-                unit.tx_fills_block,
-                unit.chroma_inter_tx_type,
-                false,
-                cctx_allowed,
-                residual_tool_policy,
-                tile_offset,
-            )?;
-            let block_index = push_inter_residual_block(
-                blocks,
-                ReconPlaneId::U,
-                base_x4 + x4,
-                base_y4 + y4,
-                tx_size,
-                u,
-            )?;
-            chroma_reads
-                .try_reserve(1)
-                .map_err(|_| inter_allocation!("inter residual chroma read list"))?;
-            chroma_reads.push(InterChromaURead { unit, block_index });
-            x4 = x4.checked_add(tx_w4).ok_or_else(residual_geometry_error)?;
-        }
-        y4 = y4.checked_add(tx_h4).ok_or_else(residual_geometry_error)?;
+    for (x4, y4) in group.units() {
+        let start_x = (base_x4 + x4) * MI_SIZE;
+        let start_y = (base_y4 + y4) * MI_SIZE;
+        let chroma_inter_tx_type = luma_tx_types.chroma_inter_tx_type(
+            frontier.r,
+            frontier.c,
+            base_y4 + y4,
+            base_x4 + x4,
+            (subsampling_x, subsampling_y),
+            lossless_uses_current_block,
+        );
+        let unit = InterChromaUnit {
+            x4,
+            y4,
+            tx_fills_block: group.tx_fills_block,
+            chroma_inter_tx_type,
+        };
+        let u = read_inter_residual_plane(
+            work_unit,
+            symbols,
+            coeff_ctx,
+            arena,
+            1,
+            tx_size,
+            start_x,
+            start_y,
+            unit.tx_fills_block,
+            unit.chroma_inter_tx_type,
+            false,
+            cctx_allowed,
+            residual_tool_policy,
+            tile_offset,
+        )?;
+        let block_index = push_inter_residual_block(
+            blocks,
+            ReconPlaneId::U,
+            base_x4 + x4,
+            base_y4 + y4,
+            tx_size,
+            u,
+        )?;
+        chroma_reads
+            .try_reserve(1)
+            .map_err(|_| inter_allocation!("inter residual chroma read list"))?;
+        chroma_reads.push(InterChromaURead { unit, block_index });
     }
 
     for read in chroma_reads.iter().copied() {
@@ -617,6 +558,173 @@ fn read_inter_residual_chroma_group(
         }
     }
     Ok(())
+}
+
+/// The § 5.20.7.23 geometry of the chroma group that starts at luma chunk
+/// `chunk` of a block: one transform size and the 4x4 offsets of its
+/// transform blocks from `base`, the chroma origin of the block.
+pub(super) struct InterChromaGroup {
+    tx_size: usize,
+    cctx_allowed: bool,
+    tx_fills_block: bool,
+    base: (usize, usize),
+    start: (usize, usize),
+    extent: (usize, usize),
+    step: (usize, usize),
+}
+
+impl InterChromaGroup {
+    fn new(
+        frontier: &DecodeBlockFrontier,
+        mi_size_chunk: BlockSize,
+        (subsampling_x, subsampling_y): (bool, bool),
+        (chunk_x, chunk_y): (usize, usize),
+        lossless: bool,
+    ) -> Result<Self> {
+        let dims = |size: BlockSize| -> Result<(usize, usize)> {
+            Ok((
+                size.num_4x4_wide().map_err(|_| residual_geometry_error())?,
+                size.num_4x4_high().map_err(|_| residual_geometry_error())?,
+            ))
+        };
+        let residual_size = |size: BlockSize| {
+            get_plane_residual_size(size, 1, subsampling_x, subsampling_y)
+                .map_err(|_| residual_geometry_error())?
+                .ok_or_else(residual_geometry_error)
+        };
+        let chroma_ref = frontier.chroma_ref_geometry();
+        let chroma_mi_size = chroma_ref.size();
+        let chroma_ref_size = residual_size(chroma_mi_size)?;
+        let tx_size = fixed_inter_residual_tx_size(chroma_ref_size.index(), lossless)?;
+        let (ref_w4, ref_h4) = dims(chroma_ref_size)?;
+        let cctx_allowed = is_cctx_geometry_allowed(
+            subsampling_x && subsampling_y,
+            ref_w4 * MI_SIZE,
+            ref_h4 * MI_SIZE,
+        );
+        let plane_source_size = if chroma_mi_size != frontier.b_size {
+            chroma_mi_size
+        } else {
+            mi_size_chunk
+        };
+        let (mut num4x4_w, mut num4x4_h) = dims(residual_size(plane_source_size)?)?;
+        let (block_w4, block_h4) = dims(frontier.b_size)?;
+        if subsampling_x && chunk_x + 1 < (block_w4 >> 4).max(1) && !lossless {
+            num4x4_w <<= 1;
+        }
+        if subsampling_y && chunk_y + 1 < (block_h4 >> 4).max(1) && !lossless {
+            num4x4_h <<= 1;
+        }
+        let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
+        let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
+        Ok(Self {
+            tx_size,
+            cctx_allowed,
+            tx_fills_block: tx_w4 == ref_w4 && tx_h4 == ref_h4,
+            base: (
+                chroma_ref.col() >> usize::from(subsampling_x),
+                chroma_ref.row() >> usize::from(subsampling_y),
+            ),
+            start: (
+                (chunk_x << 4) >> usize::from(subsampling_x),
+                (chunk_y << 4) >> usize::from(subsampling_y),
+            ),
+            extent: (num4x4_w, num4x4_h),
+            step: (tx_w4.max(1), tx_h4.max(1)),
+        })
+    }
+
+    /// The 4x4 offsets `(x4, y4)` from `base` of the group's transform
+    /// blocks, in raster order.
+    fn units(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let (x0, y0) = self.start;
+        (y0..y0 + self.extent.1)
+            .step_by(self.step.1)
+            .flat_map(move |y4| {
+                (x0..x0 + self.extent.0)
+                    .step_by(self.step.0)
+                    .map(move |x4| (x4, y4))
+            })
+    }
+}
+
+/// One transform block of a leaf: `(plane, x, y, tx_size, fills_block)` in
+/// plane samples.
+pub(crate) type ResidualUnit = (usize, usize, usize, usize, bool);
+
+/// The transform blocks of a non-lossless inter leaf with its largest
+/// transforms, in the § 5.20.7.23 order [`read_inter_residual`] reads them:
+/// the luma blocks of each 64x64 chunk, each followed at the first chunk of a
+/// chroma group by the U blocks, then the V blocks, of the group.
+pub(crate) fn inter_residual_units(
+    frontier: &DecodeBlockFrontier,
+    chroma: ChromaFormatIdc,
+) -> Result<Vec<ResidualUnit>> {
+    let n4w = frontier
+        .b_size
+        .num_4x4_wide()
+        .map_err(|_| residual_geometry_error())?;
+    let n4h = frontier
+        .b_size
+        .num_4x4_high()
+        .map_err(|_| residual_geometry_error())?;
+    let subsampling = chroma_subsampling(chroma);
+    let (width_chunks, height_chunks) = ((n4w >> 4).max(1), (n4h >> 4).max(1));
+    let mi_size_chunk = if width_chunks > 1 || height_chunks > 1 {
+        BlockSize::new(BLOCK_64X64).map_err(|_| residual_geometry_error())?
+    } else {
+        frontier.b_size
+    };
+    let tx_size = max_tx_size(frontier.b_size.index())?;
+    let tx_w4 = (tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE).max(1);
+    let tx_h4 = (tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE).max(1);
+    let fills = tx_w4 == n4w && tx_h4 == n4h;
+    let has_chroma = frontier.has_chroma && chroma != ChromaFormatIdc::Monochrome;
+    let mut units = Vec::new();
+    for start_y in (0..height_chunks).step_by(2) {
+        for start_x in (0..width_chunks).step_by(2) {
+            for chunk_y in start_y..(start_y + 2).min(height_chunks) {
+                for chunk_x in start_x..(start_x + 2).min(width_chunks) {
+                    let (col, row) = (frontier.c + (chunk_x << 4), frontier.r + (chunk_y << 4));
+                    let (col_end, row_end) = (
+                        (frontier.c + n4w).min(col + CHUNK_64_N4),
+                        (frontier.r + n4h).min(row + CHUNK_64_N4),
+                    );
+                    for y4 in (row..row_end).step_by(tx_h4) {
+                        for x4 in (col..col_end).step_by(tx_w4) {
+                            units.push((0, x4 * MI_SIZE, y4 * MI_SIZE, tx_size, fills));
+                        }
+                    }
+                    let group_start = chroma_parse_group_start(
+                        chunk_x,
+                        chunk_y,
+                        width_chunks,
+                        height_chunks,
+                        subsampling.0,
+                        subsampling.1,
+                        false,
+                    );
+                    if let (true, Some(chunk)) = (has_chroma, group_start) {
+                        let group = InterChromaGroup::new(
+                            frontier,
+                            mi_size_chunk,
+                            subsampling,
+                            chunk,
+                            false,
+                        )?;
+                        let (bx, by) = group.base;
+                        for plane in 1..3 {
+                            units.extend(group.units().map(|(x4, y4)| {
+                                let (x, y) = ((bx + x4) * MI_SIZE, (by + y4) * MI_SIZE);
+                                (plane, x, y, group.tx_size, group.tx_fills_block)
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(units)
 }
 
 fn record_inter_residual_chroma_pair(

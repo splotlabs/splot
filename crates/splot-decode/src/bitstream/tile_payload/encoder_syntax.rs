@@ -55,6 +55,7 @@ use super::partition_traversal::{
 };
 use super::tile_frontier::minimal_partition_frame_facts;
 
+mod cctx;
 mod compound;
 mod inter;
 mod intra;
@@ -65,6 +66,7 @@ mod tcq;
 mod transform;
 
 pub use super::cdf::block_context::IntraYMode as IntraMode;
+pub use cctx::CCTX_ROTATIONS;
 pub use compound::{
     COMPOUND_MODES, CompoundMode, CompoundModes, InterPrediction, JMVD_SCALE_MODES,
 };
@@ -284,6 +286,8 @@ pub struct TransformBlock {
     pub fills_block: bool,
     /// The secondary transform of an intra luma block; a planned block has none.
     pub ist: Ist,
+    /// `cctx_type` of a U block, `0..=6`; a planned block codes none.
+    pub cctx: u8,
 }
 
 /// The `Level` grid of one transform block (§ 5.20.7.27), in adjusted
@@ -649,6 +653,8 @@ pub struct IntraTileSyntax {
     inter: Option<inter::InterLeafState>,
     journal: CdfJournal,
     tile: (Range<usize>, Range<usize>),
+    /// The planned leaf may code CCTX.
+    cctx_leaf: bool,
 }
 
 impl IntraTileSyntax {
@@ -762,6 +768,7 @@ impl IntraTileSyntax {
             inter,
             journal,
             tile: (rows, cols),
+            cctx_leaf: false,
         })
     }
 
