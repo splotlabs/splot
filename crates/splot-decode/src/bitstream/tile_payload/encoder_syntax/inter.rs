@@ -42,8 +42,8 @@ use crate::prediction::inter::{
     EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderMotion,
     EncoderSingleMotion, EncoderSingleMvs, FrameCdfHandle, InterReferenceState, MotionFieldHandle,
     Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, TemporalMvContext,
-    chroma_inter_tx_type, encoder_motion_field, encoder_temporal_context, non_intra_leaf_mode,
-    resolve_initial_frame_cdfs, single_transform_residual,
+    chroma_inter_tx_type, encoder_motion_field, encoder_temporal_context, inter_residual_units,
+    non_intra_leaf_mode, resolve_initial_frame_cdfs,
 };
 use crate::reference::buffer::RuntimeReferenceBuffer;
 
@@ -438,16 +438,9 @@ impl IntraTileSyntax {
     }
 
     /// Whether `leaf` may code a single-reference inter block.
-    ///
-    /// shortcut: only leaves whose planes each take one transform (at most
-    /// 64x64) are inter; lift with the chunked § 5.20.7.23 residual walk.
     #[must_use]
     pub fn inter_allowed(&self, leaf: &LeafBlock) -> bool {
-        self.inter.is_some()
-            && !leaf.frontier.is_luma_part()
-            && !leaf.frontier.is_chroma_part()
-            && single_transform_residual(&leaf.frontier, self.chroma)
-                .is_ok_and(|units| units.is_some())
+        self.inter.is_some() && !leaf.frontier.is_luma_part() && !leaf.frontier.is_chroma_part()
     }
 
     /// `NumTotalRefs`; `0` in an intra frame.
@@ -571,9 +564,9 @@ impl IntraTileSyntax {
     }
 
     /// Plans the inter leaf `leaf` under `prediction`: predicts it into the
-    /// frame and returns its transform blocks, luma then chroma. Chroma blocks
-    /// hold the type a `DCT_DCT` luma block implies; see
-    /// [`Self::inter_chroma_tx_type`].
+    /// frame and returns its transform blocks in § 5.20.7.23 order, each 64x64
+    /// luma chunk before its chroma. Chroma blocks hold the type `DCT_DCT`
+    /// luma blocks imply; see [`Self::inter_chroma_tx_type`].
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for a prediction `leaf` cannot code.
@@ -594,18 +587,16 @@ impl IntraTileSyntax {
             .tile
             .predict(&leaf.frontier, motion, &mut self.recon.workspace)
             .map_err(rule("inter prediction"))?;
-        let units = single_transform_residual(&leaf.frontier, chroma)
-            .map_err(rule("inter residual"))?
-            .ok_or(EncoderSyntaxError::Unsupported("an inter block here"))?;
+        let units = inter_residual_units(&leaf.frontier, chroma).map_err(rule("inter residual"))?;
         let mut blocks: Vec<TransformBlock> = units
             .into_iter()
-            .map(|(plane, x, y, tx_size)| TransformBlock {
+            .map(|(plane, x, y, tx_size, fills_block)| TransformBlock {
                 tx_type: TxType::DctDct,
                 plane,
                 x,
                 y,
                 tx_size,
-                fills_block: true,
+                fills_block,
             })
             .collect();
         state.planned = Some(PlannedInter {
@@ -614,29 +605,34 @@ impl IntraTileSyntax {
             mvs,
             residual: EncoderInterResidual::default(),
         });
-        if let Some(&luma) = blocks.first() {
-            for chroma in blocks.iter_mut().skip(1) {
-                chroma.tx_type = self.inter_chroma_tx_type(leaf, &luma, chroma)?;
+        for index in 0..blocks.len() {
+            if blocks[index].plane > 0 {
+                blocks[index].tx_type =
+                    self.inter_chroma_tx_type(leaf, &blocks[..index], &blocks[index])?;
             }
         }
         Ok(blocks)
     }
 
-    /// The type of chroma block `chroma` of the planned inter leaf `leaf` whose
-    /// luma block `luma` codes `luma.tx_type` (`DCT_DCT` when all zero).
+    /// The type of chroma block `chroma` of the planned inter leaf `leaf`
+    /// after its blocks `before`, whose luma blocks each code their `tx_type`
+    /// (`DCT_DCT` when all zero).
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for an invalid block.
     pub fn inter_chroma_tx_type(
         &self,
         leaf: &LeafBlock,
-        luma: &TransformBlock,
+        before: &[TransformBlock],
         chroma: &TransformBlock,
     ) -> Result<TxType> {
         let collocated = chroma_inter_tx_type(
             &leaf.frontier,
             self.chroma,
-            (luma.tx_size, luma.tx_type as usize),
+            before
+                .iter()
+                .filter(|tx| tx.plane == 0)
+                .map(|tx| (tx.x, tx.y, tx.tx_size, tx.tx_type as usize)),
             (chroma.x, chroma.y),
         )
         .map_err(rule("chroma transform type"))?;
@@ -961,7 +957,8 @@ impl IntraTileSyntax {
     }
 
     /// Writes the § 5.20.6.3 `tx_do_partition = 0` an inter leaf with a coded
-    /// residual reads in a `TX_MODE_SELECT` frame.
+    /// residual reads in a `TX_MODE_SELECT` frame; a leaf wider or taller
+    /// than 64 reads none.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for an invalid block or a write failure.
@@ -971,7 +968,9 @@ impl IntraTileSyntax {
         symbols: &mut impl SymbolSink,
     ) -> Result<()> {
         let size = leaf.frontier.b_size.index();
-        if self.tools.tx_mode != Some(TxMode::Select) || size == BLOCK_4X4 {
+        let (width, height) = leaf.dimensions()?;
+        if self.tools.tx_mode != Some(TxMode::Select) || size == BLOCK_4X4 || width.max(height) > 64
+        {
             return Ok(());
         }
         let txfm_split_group = SIZE_TO_TX_PART_GROUP_LOOKUP

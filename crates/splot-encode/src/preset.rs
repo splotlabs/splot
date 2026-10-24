@@ -111,6 +111,9 @@ pub struct PresetParams {
     /// MRL candidates of an intra leaf that get an RD trial besides the luma
     /// shortlist, lowest SATD first; `0` disables MRL in the sequence.
     pub mrl_trials: u8,
+    /// Leaves wider or taller than 64 also try inter, skip-mode and compound
+    /// predictions; off, they code intra only.
+    pub large_inter: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -177,6 +180,7 @@ const fn row(
         ccso_candidates: 0,
         wiener_ns: 0,
         mrl_trials: 0,
+        large_inter: true,
     }
 }
 
@@ -396,6 +400,7 @@ mod tests {
             assert!(fast.ccso_candidates <= slow.ccso_candidates);
             assert!(fast.wiener_ns <= slow.wiener_ns);
             assert!(fast.mrl_trials <= slow.mrl_trials);
+            assert!(fast.large_inter <= slow.large_inter);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));

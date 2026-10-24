@@ -367,22 +367,22 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         let prediction = snap_prediction(self.syntax, leaf, prediction)?;
         let mut blocks = self.syntax.plan_inter_leaf(leaf, prediction)?;
         let mut levels = vec![Vec::new(); blocks.len()];
-        let mut luma = None;
-        for (index, tx) in blocks.iter_mut().enumerate() {
-            if let (true, Some(luma)) = (tx.plane > 0, luma.as_ref()) {
-                tx.tx_type = self.syntax.inter_chroma_tx_type(leaf, luma, tx)?;
+        for index in 0..blocks.len() {
+            let mut tx = blocks[index];
+            if tx.plane > 0 {
+                tx.tx_type = self
+                    .syntax
+                    .inter_chroma_tx_type(leaf, &blocks[..index], &tx)?;
             }
-            let prediction = self.syntax.reconstruction(tx)?;
+            let prediction = self.syntax.reconstruction(&tx)?;
             let decision = if tx.plane == 0 {
-                self.code_luma(coder, tx, &prediction)?
+                self.code_luma(coder, &tx, &prediction)?
             } else {
-                code_as(self.syntax, coder, tx, &prediction)?
+                code_as(self.syntax, coder, &tx, &prediction)?
             };
             tx.tx_type = decision.tx_type;
+            blocks[index] = tx;
             levels[index] = decision.levels;
-            if tx.plane == 0 {
-                luma = Some(*tx);
-            }
         }
         let skip = levels.iter().flatten().all(|&level| level == 0);
         if !skip {

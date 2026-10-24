@@ -532,8 +532,11 @@ fn panning_frame(config: &Config, index: u32) -> SourceFrame {
     let sizes = config.plane_sizes().unwrap();
     let planes = core::array::from_fn(|plane| {
         let size = sizes[plane];
-        let shift = if plane == 0 { 1 } else { 2 };
-        let (dx, dy) = (i64::from(4 * index) / shift, i64::from(2 * index) / shift);
+        let (sx, sy) = match plane {
+            0 => (0, 0),
+            _ => (config.chroma.subsampling_x(), config.chroma.subsampling_y()),
+        };
+        let (dx, dy) = (i64::from(4 * index) >> sx, i64::from(2 * index) >> sy);
         (0..size.height() as i64)
             .flat_map(|y| (0..size.width() as i64).map(move |x| (x, y)))
             .map(|(x, y)| texture(x + dx, y + dy, plane, max))
@@ -1199,6 +1202,8 @@ mod carry;
 mod ccso;
 #[path = "intra_tools_tests.rs"]
 mod intra_tools;
+#[path = "intra_frame_large_inter_tests.rs"]
+mod large_inter;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
 #[path = "intra_frame_wienerns_tests.rs"]

@@ -2147,8 +2147,8 @@ pub(crate) use block::encoder_leaf::{
     EncoderCompoundMotion, EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile,
     EncoderMotion, EncoderSingleMotion, EncoderSingleMvs, JMVD_SCALE_MODES, MvdCoding,
     chroma_inter_tx_type, encoder_motion_field, encoder_temporal_context,
-    single_transform_residual,
 };
+pub(crate) use block::inter_residual_units;
 pub(crate) use block::non_intra_leaf_mode;
 pub(crate) use block::{
     InterBlockDecodeOutput, InterBlockFacts, InterDecodeScratch, InterFilterInputs,
