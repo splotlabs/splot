@@ -185,6 +185,7 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             self.coder.trial = true;
             let cost = self.trial(leaf, choice, planes.clone());
             (self.coder.candidate, self.coder.trial) = (false, false);
+            self.syntax.set_scalar_trial(false);
             let j = cost?.cost(self.lambda);
             if best.is_none_or(|(best_j, _)| j < best_j) {
                 best = Some((j, choice));
@@ -426,7 +427,10 @@ impl TrialCoder<'_, '_> {
             choice = self.best(leaf, candidates, LUMA, start)?;
         }
         if leaf.has_chroma() {
-            self.trial(leaf, choice, LUMA)?;
+            self.coder.scalar = !self.preset.tcq_type_trellis;
+            let luma = self.trial(leaf, choice, LUMA);
+            self.coder.scalar = false;
+            luma?;
             let luma = self.save(node, None)?;
             let modes = self.chroma_candidates(leaf, choice.modes)?;
             let mut ranked = Vec::new();
@@ -513,12 +517,15 @@ impl PartitionSearch for TrialCoder<'_, '_> {
             candidates.extend(self.inter_candidates(&leaf)?);
         }
         let choice = self.best(&leaf, candidates, ALL, &start)?;
-        Ok((self.trial(&leaf, choice, ALL)?, choice))
+        Ok((self.code_leaf(node, choice)?, choice))
     }
 
     fn code_leaf(&mut self, node: PartitionNode, choice: LeafChoice) -> Result<RdCost> {
         let leaf = self.syntax.leaf(node)?;
-        self.trial(&leaf, choice, ALL)
+        self.coder.scalar = !self.preset.tcq_search_trellis;
+        let cost = self.trial(&leaf, choice, ALL);
+        self.coder.scalar = false;
+        cost
     }
 
     fn partition_rate(&mut self, node: PartitionNode, partition: Partition) -> Result<Bits> {

@@ -87,7 +87,7 @@ pub struct EncoderToolFlags {
     pub intra_ist: bool,
     /// `enable_cctx`.
     pub cctx: bool,
-    /// `enable_tcq`.
+    /// `enable_tcq` with `choose_tcq_per_frame = 1`: each frame codes `allow_tcq`.
     pub tcq: bool,
     /// `enable_parity_hiding`.
     pub parity_hiding: bool,
@@ -171,6 +171,8 @@ pub struct KeyFrameTxParams {
     pub tx_mode: TxMode,
     /// `reduced_tx_set`, `0..=3`: the § 5.20.8.3 `get_tx_set` restriction.
     pub reduced_tx_set: u8,
+    /// `allow_tcq`; needs a sequence with `choose_tcq_per_frame`.
+    pub allow_tcq: bool,
 }
 
 impl Default for KeyFrameTxParams {
@@ -178,6 +180,7 @@ impl Default for KeyFrameTxParams {
         Self {
             tx_mode: TxMode::Largest,
             reduced_tx_set: 2,
+            allow_tcq: false,
         }
     }
 }
@@ -231,6 +234,9 @@ pub enum EncoderHeaderError {
         /// The rejected `reduced_tx_set`.
         reduced_tx_set: u8,
     },
+    /// `allow_tcq` is set, but the sequence does not code it per frame.
+    #[error("allow_tcq needs choose_tcq_per_frame")]
+    TcqNotChosen,
     /// The sequence view is a single-picture view; the key-frame builder needs a stream view.
     #[error("single-picture sequence views are not supported")]
     SinglePictureView,
@@ -431,10 +437,9 @@ fn write_transform_quant_entropy_config(
     }
     w.write_flag(tools.tcq)?;
     if tools.tcq {
-        w.write_flag(false)?; // choose_tcq_per_frame
-    } else {
-        w.write_flag(tools.parity_hiding)?;
+        w.write_flag(true)?; // choose_tcq_per_frame
     }
+    w.write_flag(tools.parity_hiding)?;
     w.write_flag(tools.avg_cdf.is_some())?; // enable_avg_cdf
     if let Some(across_tiles) = tools.avg_cdf {
         w.write_flag(across_tiles)?; // avg_cdf_type
@@ -519,7 +524,7 @@ fn key_frame_header_bits(
     write_quant_and_filters(
         &mut w,
         seq,
-        (base_q_idx, tiles),
+        (base_q_idx, tiles, tx.allow_tcq),
         filters,
         (true, LrReferenceFilters::default()),
     )?;
@@ -530,15 +535,19 @@ fn key_frame_header_bits(
 }
 
 /// § 5.18.2 from `tile_info()` through `ccso_params()`: the uniform `tiles`, `base_q_idx`, no
-/// segmentation, quantizer matrices, delta-q or TCQ, parity hiding when the sequence enables
-/// it, and the filters of `filters`; an inter frame codes no CCSO reuse.
+/// segmentation, quantizer matrices or delta-q, `allow_tcq`, parity hiding when the sequence
+/// enables it and the frame has no TCQ, and the filters of `filters`; an inter frame codes no
+/// CCSO reuse.
 pub(super) fn write_quant_and_filters(
     w: &mut BitWriter,
     seq: &CoreSeqView,
-    (base_q_idx, tiles): (u32, UniformTiles),
+    (base_q_idx, tiles, allow_tcq): (u32, UniformTiles, bool),
     filters: &FrameFilterParams,
     (frame_is_intra, lr_refs): (bool, LrReferenceFilters<'_>),
 ) -> Result<(), EncoderHeaderError> {
+    if allow_tcq && !seq.quant.choose_tcq_per_frame {
+        return Err(EncoderHeaderError::TcqNotChosen);
+    }
     let q_bits = if seq.quant.bit_depth == 8 { 8 } else { 9 };
     if base_q_idx == 0 || base_q_idx >= 1 << q_bits {
         return Err(EncoderHeaderError::InvalidBaseQIdx {
@@ -552,9 +561,9 @@ pub(super) fn write_quant_and_filters(
     w.write_flag(false)?; // using_qmatrix
     w.write_flag(false)?; // delta_q_present
     if seq.quant.choose_tcq_per_frame {
-        w.write_flag(false)?; // allow_tcq
+        w.write_flag(allow_tcq)?;
     }
-    let allow_tcq = seq.quant.enable_tcq && !seq.quant.choose_tcq_per_frame;
+    let allow_tcq = allow_tcq || (seq.quant.enable_tcq && !seq.quant.choose_tcq_per_frame);
     if seq.quant.enable_parity_hiding && !allow_tcq {
         w.write_flag(true)?; // allow_parity_hiding
     }

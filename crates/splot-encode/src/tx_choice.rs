@@ -6,7 +6,7 @@
 //! The RD search prices each choice with the writer's own syntax.
 
 use splot_core::headers::frame::{KeyFrameTxParams, TxMode};
-use splot_decode::encoder_syntax::{TransformBlock, recon_params, tx_log2};
+use splot_decode::encoder_syntax::{IntraTileSyntax, TransformBlock, recon_params, tx_log2};
 use splot_recon::{BitDepth, PlaneId, reconstruct_transform_block_residual};
 
 use crate::preset::PresetParams;
@@ -23,6 +23,7 @@ pub(crate) fn key_frame_tx_params(preset: &PresetParams) -> KeyFrameTxParams {
             TxMode::Largest
         },
         reduced_tx_set: if preset.tx_type_depth == 0 { 2 } else { 0 },
+        allow_tcq: false,
     }
 }
 
@@ -35,6 +36,7 @@ pub(crate) const fn tx_type_candidates(preset: &PresetParams) -> usize {
 /// as `levels` over `prediction`, with the decoder's dequantization and
 /// inverse transform.
 pub(crate) fn reconstruct(
+    syntax: &IntraTileSyntax,
     prediction: &[u16],
     tx: &TransformBlock,
     levels: &[i32],
@@ -46,13 +48,19 @@ pub(crate) fn reconstruct(
     }
     let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
     let (adj_w, adj_h) = adjusted_log2(tx.tx_size)?;
-    let (params, transform) =
-        recon_params(qindex, PlaneId::Y, (log2_w, log2_h), tx.tx_type, bit_depth)?;
+    let tcq = syntax.uses_tcq(tx);
+    let (params, transform) = recon_params(
+        qindex,
+        PlaneId::Y,
+        (log2_w, log2_h),
+        (tx.tx_type, tcq),
+        bit_depth,
+    )?;
     let mut dequant = vec![0; 1 << (adj_w + adj_h)];
     let mut residual = vec![0; prediction.len()];
     reconstruct_transform_block_residual(
         prediction,
-        levels,
+        &syntax.decoder_quant(tx, levels)?,
         &params,
         &transform,
         &mut dequant,

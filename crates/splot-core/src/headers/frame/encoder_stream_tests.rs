@@ -104,6 +104,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         tx_mode: [TxMode::Largest, TxMode::Select][index % 2],
                         reduced_tx_set: (index + usize::from(sb == SuperblockSize::Block64x64))
                             as u8,
+                        allow_tcq: false,
                     };
                     let core = build_key_frame_header(
                         &view,
@@ -175,7 +176,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         tq.enable_fsc && tq.enable_idtx_intra && tq.enable_intra_ist,
         "{tq:?}"
     );
-    assert!(tq.enable_cctx && tq.enable_tcq && !tq.enable_parity_hiding);
+    assert!(tq.enable_cctx && tq.enable_tcq && tq.choose_tcq_per_frame);
     assert!(tq.enable_avg_cdf && tq.avg_cdf_type == 0);
     let inter = seq.inter.unwrap();
     assert!(inter.enable_ref_frame_mvs && !inter.reduced_ref_frame_mvs_mode);
@@ -495,10 +496,12 @@ fn rejects_out_of_range_inputs() {
         KeyFrameTxParams {
             tx_mode: TxMode::Only4x4,
             reduced_tx_set: 0,
+            allow_tcq: false,
         },
         KeyFrameTxParams {
             tx_mode: TxMode::Select,
             reduced_tx_set: 4,
+            allow_tcq: false,
         },
     ] {
         assert!(matches!(

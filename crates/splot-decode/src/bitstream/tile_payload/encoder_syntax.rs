@@ -61,6 +61,7 @@ mod intra;
 mod mv;
 mod parity;
 mod rollback;
+mod tcq;
 mod transform;
 
 pub use super::cdf::block_context::IntraYMode as IntraMode;
@@ -74,6 +75,7 @@ pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, TxType};
 pub use parity::ParityHiding;
 pub use rollback::SyntaxSnapshot;
 use rollback::{CdfJournal, CdfRow};
+pub use tcq::{TCQ_STATES, tcq_index, tcq_next_state, tcq_quantizer};
 pub use transform::{TX_PARTITIONS, TxPartition};
 
 #[path = "encoder_filters.rs"]
@@ -283,6 +285,8 @@ pub struct CoeffLevels {
     class: CoeffTransformClass,
     scan: &'static [u16],
     hidden: bool,
+    /// `tcqState` before the next level of a TCQ block.
+    tcq: Option<usize>,
 }
 
 impl CoeffLevels {
@@ -299,6 +303,7 @@ impl CoeffLevels {
                 class: CoeffTransformClass::from_plane_tx_type(tx_type as usize),
                 scan,
                 hidden: false,
+                tcq: None,
             })
             .map_err(rule("coefficient grid"))
     }
@@ -330,6 +335,82 @@ impl CoeffLevels {
     #[inline]
     pub const fn hides(&self, c: usize) -> bool {
         self.hidden && c == 0
+    }
+
+    /// Codes the levels as TCQ levels ([`IntraTileSyntax::uses_tcq`]) whose
+    /// next level is coded in `state`; its quantizer picks the `coeff_base` rows.
+    pub const fn set_tcq_state(&mut self, state: usize) {
+        self.tcq = Some(state % tcq::TCQ_STATES);
+    }
+
+    /// The `tcqState` of [`Self::set_tcq_state`]; `None` for levels without TCQ.
+    #[must_use]
+    pub const fn tcq_state(&self) -> Option<usize> {
+        self.tcq
+    }
+
+    /// The `(Level, remainder)` that code the magnitude `coded` at scan index
+    /// `c` (`quant >> 1` when [`Self::hides`] `c`): `read_quant` (§ 5.20.7.28)
+    /// reads the remainder once `Level` reaches `maxLevel - allowTcq`, and adds
+    /// it shifted left by `allowTcq`.
+    #[must_use]
+    #[inline]
+    pub fn split(
+        &self,
+        c: usize,
+        coded: u32,
+        is_low_frequency: bool,
+        plane: usize,
+    ) -> (u32, Option<u32>) {
+        let tcq = u32::from(self.tcq.is_some());
+        let threshold = self.max_level(c, is_low_frequency, plane) - tcq;
+        if coded < threshold {
+            return (coded, None);
+        }
+        let level = threshold + ((coded - threshold) & tcq);
+        (level, Some((coded - level) >> tcq))
+    }
+
+    /// Copies the levels at scan indices `scan` from `from`, or zeroes them
+    /// without `from`. The grids must have one shape.
+    pub fn copy_cells(&mut self, from: Option<&Self>, scan: Range<usize>) {
+        let (stride, log2_w) = (
+            self.state.level_stride(),
+            self.state.width().trailing_zeros(),
+        );
+        let level = self.state.level_mut();
+        for &pos in self.scan.get(scan).unwrap_or_default() {
+            let pos = usize::from(pos);
+            let at = (pos >> log2_w) * stride + (pos & ((1 << log2_w) - 1));
+            if let Some(slot) = level.get_mut(at) {
+                *slot = from
+                    .and_then(|from| from.state.level().get(at).copied())
+                    .unwrap_or(0);
+            }
+        }
+    }
+
+    /// The largest scan distance from a coefficient to a level its `coeff_base`
+    /// or `coeff_br` context reads (§ 8.3.2): the contexts at scan index `c`
+    /// read only scan indices `c + 1..=c + context_reach()`.
+    #[must_use]
+    pub fn context_reach(&self) -> usize {
+        static REACH: std::sync::OnceLock<[[[usize; 3]; 4]; 4]> = std::sync::OnceLock::new();
+        let (log2_w, log2_h) = (
+            self.state.width().trailing_zeros(),
+            self.state.height().trailing_zeros(),
+        );
+        let class = tx_class_index(self.class);
+        let table = REACH.get_or_init(|| {
+            core::array::from_fn(|w| {
+                core::array::from_fn(|h| {
+                    [TxType::DctDct, TxType::HDct, TxType::VDct]
+                        .map(|tx_type| scan_reach(4 << w, 4 << h, tx_type))
+                })
+            })
+        });
+        table[(log2_w as usize).saturating_sub(2).min(3)]
+            [(log2_h as usize).saturating_sub(2).min(3)][class]
     }
 
     /// Stores `Level[row][col]`.
@@ -401,6 +482,31 @@ impl CoeffLevels {
     }
 }
 
+/// [`CoeffLevels::context_reach`] of a `width x height` grid coded with `tx_type`.
+fn scan_reach(width: usize, height: usize, tx_type: TxType) -> usize {
+    let Ok(scan) = type_scan(width, height, tx_type) else {
+        return 0;
+    };
+    let class = tx_class_index(CoeffTransformClass::from_plane_tx_type(tx_type as usize));
+    let mut index = vec![0usize; width * height];
+    for (c, &pos) in scan.iter().enumerate() {
+        if let Some(slot) = index.get_mut(usize::from(pos)) {
+            *slot = c;
+        }
+    }
+    let mut reach = 0;
+    for (pos, &c) in index.iter().enumerate() {
+        let (row, col) = (pos / width, pos % width);
+        for [dr, dc] in super::cdf::coeff_context::context_offsets(class) {
+            let (r, k) = (row + dr, col + dc);
+            if r < height && k < width {
+                reach = reach.max(index[r * width + k].saturating_sub(c));
+            }
+        }
+    }
+    reach
+}
+
 /// The § 6.19.7.23 bound: every coded `Quant` magnitude is below it.
 pub const MAX_QUANT_MAGNITUDE: u32 = super::coeff_loop::quant_state::MAX_CONFORMING_QUANT_MAGNITUDE;
 
@@ -441,13 +547,14 @@ pub fn dct_recon_params(
         qindex,
         plane,
         (log2_width, log2_height),
-        TxType::DctDct,
+        (TxType::DctDct, false),
         bit_depth,
     )
 }
 
 /// The decoder's dequantization and inverse-transform parameters of a
-/// `(log2 width, log2 height)` block of type `tx_type`.
+/// `(log2 width, log2 height)` block of type `tx_type`, whose levels are TCQ
+/// levels when `use_tcq` ([`IntraTileSyntax::uses_tcq`]).
 ///
 /// # Errors
 /// Returns [`EncoderSyntaxError::Rule`] for an invalid shape.
@@ -455,15 +562,14 @@ pub fn recon_params(
     qindex: u32,
     plane: PlaneId,
     (log2_width, log2_height): (u32, u32),
-    tx_type: TxType,
+    (tx_type, use_tcq): (TxType, bool),
     bit_depth: BitDepth,
 ) -> Result<(DequantBlockParams, InverseTransform2dOuter)> {
     block_recon_params(
         qindex,
         plane,
-        log2_width,
-        log2_height,
-        tx_type as usize,
+        (log2_width, log2_height),
+        (tx_type as usize, use_tcq),
         bit_depth,
     )
     .map_err(rule("recon parameters"))
@@ -936,17 +1042,18 @@ impl IntraTileSyntax {
         };
         let (base, _) = self.cdfs.rows_span();
         let tx_size = txb_skip_tx_size_ctx(tx_size);
+        let quantizer = levels.tcq.map_or(0, tcq_quantizer);
         let row = match self
             .cdfs
             .coeff_rows_mut()
-            .base_row(selection, tx_size, 0)
+            .base_row(selection, tx_size, quantizer)
             .map_err(rule("coeff_base row"))?
         {
             CoeffBaseRow::Base(row) => row.as_mut_slice(),
             CoeffBaseRow::Lf(row) => row.as_mut_slice(),
         };
         self.journal
-            .log(base, CdfRow::Base(selection, tx_size), row);
+            .log(base, CdfRow::Base(selection, tx_size, quantizer), row);
         Ok(row)
     }
 

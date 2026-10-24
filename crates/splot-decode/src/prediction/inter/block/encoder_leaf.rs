@@ -436,7 +436,7 @@ impl EncoderInterTile {
             &residual.blocks,
             &residual.coeffs,
             self.qindex,
-            false,
+            true,
             false,
             false,
             self.bit_depth,
@@ -881,7 +881,7 @@ impl EncoderInterResidual {
         (plane, x, y, tx_size): (usize, usize, usize, usize),
         levels: &[i32],
         eob: usize,
-        tx_type: usize,
+        (tx_type, use_tcq): (usize, bool),
     ) -> Result<()> {
         let plane = [ReconPlaneId::Y, ReconPlaneId::U, ReconPlaneId::V]
             .get(plane)
@@ -897,6 +897,7 @@ impl EncoderInterResidual {
             eob,
             quant_range: start..start + nonzero,
             zero_tail: levels.len() - nonzero,
+            use_tcq,
             ..LumaCoeffBlock::empty(tx_type, false)
         };
         push_inter_residual_block(

@@ -5468,6 +5468,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-TCQ"
+name = "Encoder trellis-coded quantization"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "5.20.7.27", "5.20.7.28", "7.14.4", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/kernels/tcq.rs"
+change_id = "enc-tcq"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::tcq (Base in every row) sets enable_tcq with choose_tcq_per_frame, and key frames and mini-GOP layer 0 frames code allow_tcq = 1. The encoder_syntax facade publishes Tcq_Next_State, the state quantizer, the reconstruction index (decoder quant pass), uses_tcq (luma TX_CLASS_2D), the state coeff_base rows, the maxLevel - allowTcq remainder split, the TCQ dqDenom, and reconstructs TCQ levels. An 8-state Viterbi trellis over the reverse scan prices every state in the contexts of its own path; std::simd survivor selection with a scalar twin. Mode trials price TCQ blocks as plain levels (IntraTileSyntax::set_scalar_trial); the frame write runs the trellis at 60% of the RDOQ lambda, and so do leaf final trials where PresetParams::tcq_search_trellis is on (presets 0-9) and the transform-type and pre-chroma luma trials where tcq_type_trellis is on (presets 0-3)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/kernels/tcq_tests.rs::trellis_is_optimal_on_small_blocks", "crates/splot-encode/src/kernels/tcq_tests.rs::trellis_assumptions_are_the_decoder_rules", "crates/splot-encode/src/kernels/tcq_tests.rs::simd_step_matches_scalar", "crates/splot-encode/src/kernels/tcq_tests.rs::tcq_doubles_dq_denom_for_luma_2d_only", "crates/splot-encode/src/tile_writer/tests.rs::tcq_levels_round_trip", "crates/splot-encode/src/intra_frame_tests.rs::tcq_streams_decode_to_the_encoder_recon_on_any_thread_count"]
+commands = ["cargo test -p splot-encode tcq --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-CDF-CARRY"
 name = "Encoder cross-frame CDF carry"
 category = "encoder"
