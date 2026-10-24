@@ -182,15 +182,19 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         self.rank(leaf, deltas, LUMA, &mut ranked)?;
         let mut shortlist = self.shortlist(ranked);
         if self.preset.mrl_trials > 0 {
+            let blend = leaf.dimensions()? != (4, 4); // § 7.13.2.7 `not4x4`
             let lines: Vec<IntraModes> = shortlist
                 .iter()
                 .filter(|choice| choice.modes.y_mode.is_directional())
                 .take(MRL_MODES)
                 .flat_map(|choice| {
-                    MRL_LINES.map(|mrl| IntraModes {
-                        mrl,
-                        ..choice.modes
-                    })
+                    MRL_LINES
+                        .into_iter()
+                        .filter(move |mrl| blend || !mrl.secondary)
+                        .map(move |mrl| IntraModes {
+                            mrl,
+                            ..choice.modes
+                        })
                 })
                 .collect();
             let mut ranked = Vec::new();
