@@ -118,6 +118,10 @@ impl TransformCoeffBlockState {
         &self.level
     }
 
+    pub(crate) fn level_mut(&mut self) -> &mut [u8] {
+        &mut self.level
+    }
+
     /// Row stride of the padded level and sign grids.
     #[must_use]
     pub(crate) const fn level_stride(&self) -> usize {

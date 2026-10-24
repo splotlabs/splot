@@ -27,7 +27,7 @@ impl GeneralIntraResidualPlan {
         index: usize,
         quant: &[i32],
         eob: usize,
-        plane_tx_type: usize,
+        (plane_tx_type, use_tcq): (usize, bool),
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &TileBlockDecodedState,
@@ -44,6 +44,7 @@ impl GeneralIntraResidualPlan {
             eob,
             quant_range: 0..nonzero,
             zero_tail: quant.len() - nonzero,
+            use_tcq,
             ..LumaCoeffBlock::empty(plane_tx_type, false)
         };
         plane.apply_reconstruction_tx_type(&mut coeffs);

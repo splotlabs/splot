@@ -30,6 +30,17 @@ pub struct PresetParams {
     /// nonzero levels hides the parity of its first level in their sum. Off
     /// in every row: its gain per CPU does not beat the next slower row.
     pub parity_hiding: bool,
+    /// The frames that quantize with TCQ (`allow_tcq`); they code no parity
+    /// hiding. `Base` in every row: its BD-rate per CPU beats the next slower
+    /// row at every measured preset, and TCQ on the upper mini-GOP layers loses.
+    pub tcq: TcqFrames,
+    /// The final trial of each leaf in the partition search runs the TCQ
+    /// trellis; off, it prices TCQ blocks as plain levels and only the frame
+    /// write runs the trellis. Mode trials always price plain levels.
+    pub tcq_search_trellis: bool,
+    /// The luma transform-type search and the luma trial before the chroma
+    /// search run the TCQ trellis; off, they price TCQ blocks as plain levels.
+    pub tcq_type_trellis: bool,
     /// Candidate trials of the mode and transform-partition search run RDOQ
     /// and the transform-type search too; off, they quantize with a deadzone
     /// and code `DCT_DCT`, and only a leaf's final trial runs both.
@@ -92,6 +103,29 @@ pub struct PresetParams {
     pub ccso_candidates: u8,
 }
 
+/// The frames of [`PresetParams::tcq`], from none to all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TcqFrames {
+    /// No frame.
+    Off,
+    /// Key frames and the frames of mini-GOP layer 0.
+    Base,
+    /// Every frame.
+    All,
+}
+
+impl TcqFrames {
+    /// Whether a frame of mini-GOP `layer` quantizes with TCQ.
+    #[must_use]
+    pub const fn allows(self, layer: u8) -> bool {
+        match self {
+            Self::Off => false,
+            Self::Base => layer == 0,
+            Self::All => true,
+        }
+    }
+}
+
 const fn row(
     blocks: (u8, u8),
     intra_modes: u8,
@@ -109,6 +143,9 @@ const fn row(
         rdoq,
         rdoq_every_type: rdoq,
         parity_hiding: false,
+        tcq: TcqFrames::Base,
+        tcq_search_trellis: true,
+        tcq_type_trellis: full_trials,
         full_trials,
         tx_type_depth,
         tx_partition_search,
@@ -150,7 +187,7 @@ const ROWS: [PresetParams; 11] = [
         false,
         (true, true),
         (3, true),
-        (256, 3, 128, 3, 2),
+        (256, 3, 128, 3, 0),
         (3, 8, 16, 8),
     ),
     row(
@@ -159,7 +196,7 @@ const ROWS: [PresetParams; 11] = [
         false,
         (true, true),
         (3, true),
-        (192, 3, 128, 3, 2),
+        (192, 3, 128, 3, 0),
         (3, 8, 16, 8),
     ),
     row(
@@ -168,7 +205,7 @@ const ROWS: [PresetParams; 11] = [
         true,
         (true, true),
         (3, true),
-        (128, 3, 128, 3, 2),
+        (128, 3, 128, 3, 0),
         (2, 8, 16, 6),
     ),
     row(
@@ -177,7 +214,7 @@ const ROWS: [PresetParams; 11] = [
         true,
         (true, true),
         (2, true),
-        (96, 2, 0, 3, 2),
+        (96, 2, 0, 3, 0),
         (2, 8, 16, 6),
     ),
     row(
@@ -186,7 +223,7 @@ const ROWS: [PresetParams; 11] = [
         true,
         (true, false),
         (2, true),
-        (64, 2, 0, 3, 2),
+        (64, 2, 0, 3, 0),
         (2, 4, 8, 4),
     ),
     row(
@@ -195,7 +232,7 @@ const ROWS: [PresetParams; 11] = [
         true,
         (true, false),
         (2, true),
-        (64, 2, 0, 3, 2),
+        (64, 2, 0, 3, 0),
         (1, 4, 8, 4),
     ),
     row(
@@ -204,7 +241,7 @@ const ROWS: [PresetParams; 11] = [
         true,
         (true, false),
         (1, true),
-        (48, 2, 0, 3, 2),
+        (48, 2, 0, 3, 0),
         (1, 4, 8, 3),
     ),
     row(
@@ -213,7 +250,7 @@ const ROWS: [PresetParams; 11] = [
         true,
         (false, false),
         (1, false),
-        (32, 1, 0, 1, 2),
+        (32, 1, 0, 1, 0),
         (1, 4, 8, 2),
     ),
     row(
@@ -222,7 +259,7 @@ const ROWS: [PresetParams; 11] = [
         true,
         (false, false),
         (1, false),
-        (24, 1, 0, 1, 2),
+        (24, 1, 0, 1, 0),
         (0, 2, 4, 1),
     ),
     row(
@@ -231,18 +268,21 @@ const ROWS: [PresetParams; 11] = [
         true,
         (false, false),
         (0, false),
-        (16, 1, 0, 1, 2),
+        (16, 1, 0, 1, 0),
         (0, 2, 4, 0),
     ),
-    row(
-        (4, 6),
-        2,
-        true,
-        (false, false),
-        (0, false),
-        (16, 0, 0, 1, 2),
-        (0, 1, 2, 0),
-    ),
+    PresetParams {
+        tcq_search_trellis: false,
+        ..row(
+            (4, 6),
+            2,
+            true,
+            (false, false),
+            (0, false),
+            (16, 0, 0, 1, 0),
+            (0, 1, 2, 0),
+        )
+    },
 ];
 
 /// A speed preset, `0..=10`.
@@ -300,6 +340,10 @@ mod tests {
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
             assert!(fast.parity_hiding <= slow.parity_hiding);
+            assert!(fast.tcq <= slow.tcq);
+            assert!(fast.tcq_search_trellis <= slow.tcq_search_trellis);
+            assert!(fast.tcq_type_trellis <= slow.tcq_type_trellis);
+            assert!(fast.tcq_search_trellis || !fast.tcq_type_trellis);
             assert!(fast.rdoq || !fast.rdoq_every_type);
             assert!(fast.full_trials <= slow.full_trials);
             assert!(fast.tx_type_depth <= slow.tx_type_depth);
