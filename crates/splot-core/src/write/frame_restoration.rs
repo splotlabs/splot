@@ -20,17 +20,15 @@
 //! [`LrGeometry`]) and validates the whole structure before any bit is written
 //! (reject-before-write): every reject path leaves `writer.bit_len() == 0`.
 //!
-//! **Hard residual — `frame_filters_on` is unwritable (§ 5.18.7.11).** The parser can model
-//! the fixed-coded frame-level `read_wienerns_filter()` bank, but this writer does not yet
-//! emit that bank. A model with `frame_filters_on` set is still rejected here
-//! ([`WriteError::NonCanonicalFrameHeader`] with `what == "lr_frame_filters_on"`). This
-//! writer ships the `frame_filters_on == false` surface only; the `frame_filters_on == true`
-//! arm lands with the Wiener-bank writer.
+//! `frame_filters_on` planes code the § 5.20.10.6 frame bank with
+//! [`write_frame_wiener_ns_filter`], or `temporal_pred_flag` with `rst_ref_pic_idx`;
+//! [`write_lr_params_for_inter`] takes the reference state the inter parser reads.
 
 use crate::headers::frame::{
-    CCSO_INPUT_INTERVAL, CcsoParams, CoreSeqCcsoView, CoreSeqRestorationView, FrameRestorationType,
-    LrGeometry, LrParams, RESTORATION_TILESIZE_MAX, ccso_quant_step, default_restoration_size,
-    lr_plane_tool_table,
+    CCSO_INPUT_INTERVAL, CcsoParams, CoreSeqCcsoView, CoreSeqRestorationView,
+    DECODE_NUM_FILTER_CLASSES, FrameRestorationType, LrGeometry, LrParams, LrPlaneParams,
+    RESTORATION_TILESIZE_MAX, ccso_quant_step, default_restoration_size, lr_plane_tool_table,
+    write_frame_wiener_ns_filter,
 };
 use crate::headers::sequence::SuperblockSize;
 use crate::write::bit_writer::BitWriter;
@@ -49,10 +47,6 @@ const CCSO_OFFSET_IDX_MAX: u8 = 7;
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-11`), the inverse of
 /// [`crate::headers::frame::parse_lr_params`].
 ///
-/// **Hard residual.** A plane carrying `frame_filters_on == true` is rejected up front
-/// (`what == "lr_frame_filters_on"`): this writer does not yet emit frame-level
-/// `read_wienerns_filter()` bank syntax.
-///
 /// When `coded_lossless || !view.enable_restoration` the parser writes no bits and leaves
 /// `uses_lr == false`, `planes` empty, and `loop_restoration_size == default_restoration_size`,
 /// so the model must match. Otherwise the writer emits, per plane, the `tool_index ns(n)`
@@ -61,12 +55,12 @@ const CCSO_OFFSET_IDX_MAX: u8 = 7;
 /// validated before any bit is written (reject-before-write).
 ///
 /// # Errors
-/// [`WriteError::NonCanonicalFrameHeader`] for any model this writer does not support or the
-/// § 5.18.7.11 parser could not have produced: a plane with `frame_filters_on`
-/// (`lr_frame_filters_on`); stray bank data (`lr_frame_filter_bank`); a disabled-arm model
+/// [`WriteError::NonCanonicalFrameHeader`] for any model the § 5.18.7.11 parser could not
+/// have produced: frame-filter state on a plane that does not code it, or a bank the
+/// § 5.20.10.6 syntax cannot code (`lr_frame_filters_on`, `lr_frame_filter_bank`); a disabled-arm model
 /// that is non-default (`lr_disabled`); a plane count that disagrees with `num_planes`
 /// (`lr_num_planes`); a restoration type absent from the (tool-disabled) `indexToTool` table
-/// (`lr_tool_index`); a non-`None` `num_filter_classes` (`lr_num_filter_classes`); a stored
+/// (`lr_tool_index`); a `num_filter_classes` outside a coded luma bank (`lr_num_filter_classes`); a stored
 /// `loop_restoration_size` that is not the inferred default for an unused luma/chroma plane or
 /// disagrees with `loop_restoration_size[1]` for plane 2 (`lr_size`); a size that is not an
 /// exact power-of-two division of its base or whose shift is unreachable for the frame `SbSize`
@@ -79,12 +73,50 @@ pub fn write_lr_params(
     view: &CoreSeqRestorationView,
     geometry: LrGeometry,
 ) -> WriteResult<()> {
+    write_lr_params_for_inter(
+        writer,
+        params,
+        (coded_lossless, num_planes),
+        view,
+        geometry,
+        LrReferenceFilters::default(),
+    )
+}
+
+/// The reference state the inter `lr_params()` reads (§ 5.18.7.11): `NumTotalRefs`
+/// (`0` for an intra or switch frame) and, per plane, the count and retained taps of
+/// the § 5.20.10.6 `search_frame_filters` entries in order.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LrReferenceFilters<'a> {
+    /// `numRefFrames` of § 5.18.7.11.
+    pub num_ref_frames: u32,
+    /// `numRefFilters` per plane before the § 5.20.10.6 cap.
+    pub counts: [usize; 3],
+    /// The retained taps of each entry, as the parser takes them.
+    pub taps: [&'a [Option<&'a [i16]>]; 3],
+}
+
+/// [`write_lr_params`] for a frame whose references are `refs`, the inverse of
+/// [`crate::headers::frame::parse_lr_params_for_inter`].
+///
+/// # Errors
+/// As [`write_lr_params`], and `lr_frame_filters_on` for a `rst_ref_pic_idx` outside
+/// `refs.num_ref_frames`.
+pub fn write_lr_params_for_inter(
+    writer: &mut BitWriter,
+    params: &LrParams,
+    (coded_lossless, num_planes): (bool, u8),
+    view: &CoreSeqRestorationView,
+    geometry: LrGeometry,
+    refs: LrReferenceFilters<'_>,
+) -> WriteResult<()> {
     let plan = check_lr_encodable(params, coded_lossless, num_planes, *view, geometry)?;
 
     if plan.disabled {
         return Ok(());
     }
 
+    let mut w = BitWriter::new();
     for (plane, plane_params) in params.planes.iter().enumerate() {
         let is_chroma = plane > 0;
         let (index_to_tool, n) = lr_plane_tool_table(*view, is_chroma);
@@ -93,21 +125,79 @@ pub fn write_lr_params(
             .iter()
             .position(|&t| t == tool)
             .map_or(0u32, |idx| idx as u32);
-        writer.write_ns(tool_index, n)?;
+        w.write_ns(tool_index, n)?;
 
         if matches!(
             plane_params.restoration_type,
             FrameRestorationType::WienerNonsep | FrameRestorationType::Switchable
         ) {
-            writer.write_bit(0)?;
+            w.write_flag(plane_params.frame_filters_on)?;
+            if plane_params.frame_filters_on {
+                write_frame_filter_source(&mut w, plane, plane_params, refs.num_ref_frames)?;
+            }
         }
     }
 
     if plan.uses_luma_lr {
-        write_lr_size_shift(writer, plan.luma_shift, geometry.sb_size)?;
+        write_lr_size_shift(&mut w, plan.luma_shift, geometry.sb_size)?;
     }
     if plan.uses_chroma_lr {
-        write_lr_size_shift(writer, plan.chroma_shift, geometry.sb_size)?;
+        write_lr_size_shift(&mut w, plan.chroma_shift, geometry.sb_size)?;
+    }
+    for (plane, plane_params) in params.planes.iter().enumerate() {
+        if let (true, None, Some(bank)) = (
+            plane_params.frame_filters_on,
+            plane_params.rst_ref_pic_idx,
+            plane_params.frame_filter_bank.as_ref(),
+        ) {
+            write_frame_wiener_ns_filter(
+                &mut w,
+                plane,
+                (refs.counts[plane], refs.taps[plane]),
+                *view,
+                bank,
+            )?;
+        }
+    }
+    writer.append(&w)
+}
+
+/// `temporal_pred_flag`, `rst_ref_pic_idx` and `num_filter_classes_idx` of a plane
+/// with `frame_filters_on` (§ 5.18.7.11).
+fn write_frame_filter_source(
+    w: &mut BitWriter,
+    plane: usize,
+    params: &LrPlaneParams,
+    num_ref_frames: u32,
+) -> WriteResult<()> {
+    let filters_on = || WriteError::NonCanonicalFrameHeader {
+        what: "lr_frame_filters_on",
+    };
+    if let Some(index) = params.rst_ref_pic_idx {
+        if u32::from(index) >= num_ref_frames {
+            return Err(filters_on());
+        }
+        w.write_flag(true)?;
+        if num_ref_frames > 1 {
+            w.write_bits(
+                u32::from(index),
+                u32::BITS - (num_ref_frames - 1).leading_zeros(),
+            )?;
+        }
+        return Ok(());
+    }
+    if num_ref_frames > 0 {
+        w.write_flag(false)?;
+    }
+    if plane == 0 {
+        let classes = params.num_filter_classes.ok_or_else(filters_on)?;
+        let index = DECODE_NUM_FILTER_CLASSES
+            .iter()
+            .position(|&count| count == classes)
+            .ok_or(WriteError::NonCanonicalFrameHeader {
+                what: "lr_num_filter_classes",
+            })?;
+        w.write_bits(index as u32, 3)?;
     }
     Ok(())
 }
@@ -139,15 +229,29 @@ fn check_lr_encodable(
     view: CoreSeqRestorationView,
     geometry: LrGeometry,
 ) -> WriteResult<LrPlan> {
-    if params.planes.iter().any(|p| p.frame_filters_on) {
-        return Err(WriteError::NonCanonicalFrameHeader {
-            what: "lr_frame_filters_on",
-        });
-    }
-    if params.planes.iter().any(|p| p.frame_filter_bank.is_some()) {
-        return Err(WriteError::NonCanonicalFrameHeader {
-            what: "lr_frame_filter_bank",
-        });
+    for (plane, p) in params.planes.iter().enumerate() {
+        let codes_filters = matches!(
+            p.restoration_type,
+            FrameRestorationType::WienerNonsep | FrameRestorationType::Switchable
+        );
+        if p.frame_filters_on && !codes_filters
+            || !p.frame_filters_on && p.rst_ref_pic_idx.is_some()
+        {
+            return Err(WriteError::NonCanonicalFrameHeader {
+                what: "lr_frame_filters_on",
+            });
+        }
+        let coded_bank = p.frame_filters_on && p.rst_ref_pic_idx.is_none();
+        if coded_bank != p.frame_filter_bank.is_some() {
+            return Err(WriteError::NonCanonicalFrameHeader {
+                what: "lr_frame_filter_bank",
+            });
+        }
+        if p.num_filter_classes.is_some() && !(plane == 0 && p.frame_filters_on) {
+            return Err(WriteError::NonCanonicalFrameHeader {
+                what: "lr_num_filter_classes",
+            });
+        }
     }
 
     if geometry.subsampling_x > 1 || geometry.subsampling_y > 1 {
@@ -191,12 +295,6 @@ fn check_lr_encodable(
                     what: "lr_tool_index",
                 });
             }
-        }
-
-        if plane_params.num_filter_classes.is_some() {
-            return Err(WriteError::NonCanonicalFrameHeader {
-                what: "lr_num_filter_classes",
-            });
         }
 
         if plane_params.restoration_type != FrameRestorationType::None {
