@@ -146,6 +146,104 @@ impl<const N: usize> WienerAccumulator<N> {
     }
 }
 
+type V4 = Simd<i32, CELL>;
+/// Samples of a row that share a § 7.20.4 class: one 4x4 cell.
+const CELL: usize = 4;
+
+/// The SIMD accumulation of samples into per-class normal equations: each
+/// run of four samples of one cell adds to its class's `i32` lanes, which
+/// move to `i64` before they can overflow.
+pub(crate) struct WienerClassAccumulator<const N: usize> {
+    pairs: Vec<[[V4; N]; N]>,
+    cross: Vec<[V4; N]>,
+    chunks: Vec<usize>,
+    touched: Vec<usize>,
+    budget: usize,
+}
+
+impl<const N: usize> WienerClassAccumulator<N> {
+    /// An accumulator of `classes` classes whose feature and target products
+    /// are at most `max_product` in magnitude.
+    pub(crate) fn new(classes: usize, max_product: u64) -> Self {
+        Self {
+            pairs: vec![[[V4::splat(0); N]; N]; classes],
+            cross: vec![[V4::splat(0); N]; classes],
+            chunks: vec![0; classes],
+            touched: Vec::new(),
+            budget: (i32::MAX as u64 / max_product.max(1)).max(1) as usize,
+        }
+    }
+
+    /// Accumulates the rows `features[k]` and `target`, whose samples
+    /// `4 * i .. 4 * i + 4` have class `cells[i]`, into the lanes and, for the
+    /// tail, into `stats`.
+    pub(crate) fn add(
+        &mut self,
+        features: &[&[i32]; N],
+        target: &[i32],
+        cells: &[u8],
+        stats: &mut [WienerStats],
+    ) {
+        let len = target.len();
+        for (i, &class) in cells.iter().enumerate().take(len / CELL) {
+            let class = usize::from(class);
+            if self.chunks[class] == self.budget {
+                self.flush_class(class, stats);
+            }
+            if self.chunks[class] == 0 {
+                self.touched.push(class);
+            }
+            let x = i * CELL;
+            let f: [V4; N] = core::array::from_fn(|k| V4::from_slice(&features[k][x..x + CELL]));
+            let t = V4::from_slice(&target[x..x + CELL]);
+            let (pairs, cross) = (&mut self.pairs[class], &mut self.cross[class]);
+            for i in 0..N {
+                cross[i] += f[i] * t;
+                for j in i..N {
+                    pairs[i][j] += f[i] * f[j];
+                }
+            }
+            self.chunks[class] += 1;
+            stats[class].samples += CELL as u64;
+        }
+        let tail = len - len % CELL;
+        if let Some(&class) = cells.get(tail / CELL).filter(|_| tail < len) {
+            accumulate_samples(features, target, tail..len, &mut stats[usize::from(class)]);
+        }
+    }
+
+    /// Moves the lane sums of every class into `stats` and returns the classes
+    /// with samples since the last call, sorted.
+    pub(crate) fn flush(&mut self, stats: &mut [WienerStats]) -> Vec<usize> {
+        let mut touched = core::mem::take(&mut self.touched);
+        for &class in &touched {
+            self.flush_class(class, stats);
+        }
+        touched.sort_unstable();
+        touched.dedup();
+        touched
+    }
+
+    fn flush_class(&mut self, class: usize, stats: &mut [WienerStats]) {
+        let (pairs, cross, stats) = (
+            &mut self.pairs[class],
+            &mut self.cross[class],
+            &mut stats[class],
+        );
+        let mut pair = 0;
+        for i in 0..N {
+            stats.b[i] += cross[i].cast::<i64>().reduce_sum();
+            cross[i] = V4::splat(0);
+            for lanes in &mut pairs[i][i..] {
+                stats.a[pair] += lanes.cast::<i64>().reduce_sum();
+                *lanes = V4::splat(0);
+                pair += 1;
+            }
+        }
+        self.chunks[class] = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +296,39 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn class_simd_matches_scalar(
+            (_, max, rows) in case(),
+            seed in any::<u64>(),
+        ) {
+            let classes = 7usize;
+            let mut state = seed | 1;
+            let mut next = move || {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state % classes as u64) as u8
+            };
+            let n = rows.first().map_or(16, |row| row.0.len());
+            let (mut scalar, mut simd) = (vec![WienerStats::new(n); classes], vec![WienerStats::new(n); classes]);
+            let mut touched = Vec::new();
+            if n == 16 {
+                let mut lanes = WienerClassAccumulator::<16>::new(classes, 4 * (max as u64).pow(2));
+                for (features, target) in &rows {
+                    let cells: Vec<u8> = (0..target.len().div_ceil(4)).map(|_| next()).collect();
+                    let features: [&[i32]; 16] = core::array::from_fn(|k| features[k].as_slice());
+                    for (x, &t) in target.iter().enumerate() {
+                        let one: [&[i32]; 16] = core::array::from_fn(|k| &features[k][x..=x]);
+                        accumulate_scalar(&one, &[t], &mut scalar[usize::from(cells[x / 4])]);
+                    }
+                    lanes.add(&features, target, &cells, &mut simd);
+                }
+                touched = lanes.flush(&mut simd);
+            }
+            prop_assert_eq!(&scalar, &simd);
+            prop_assert!(touched.windows(2).all(|pair| pair[0] < pair[1]));
+        }
+
         #[test]
         fn simd_matches_scalar((n, max, rows) in case()) {
             let (scalar, simd) = run(n, max, &rows);

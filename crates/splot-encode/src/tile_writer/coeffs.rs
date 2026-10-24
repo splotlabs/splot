@@ -107,6 +107,8 @@ pub(crate) fn code_coeffs(
     write_eob(syntax, symbols, tx, eob)?;
     if tx.plane == 0 {
         syntax.code_luma_tx_type(tx, eob, |cdf, value| write_symbol(symbols, cdf, value))?;
+    } else if tx.plane == 1 {
+        syntax.code_cctx_type(tx, eob, |cdf, value| write_symbol(symbols, cdf, value))?;
     }
 
     let plane = tx.plane;

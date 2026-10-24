@@ -4841,7 +4841,7 @@ module = "crates/splot-encode/src/intra_frame.rs"
 change_id = "encoder-m2-full-intra"
 owner = "encoder"
 risk = "medium"
-notes = "Key frames are closed-loop key frames with uniform tiles (ENC-TILES) in 4:2:0, 4:2:2 or 4:4:4 (ENC-CHROMA-FORMATS); ENC-INTER-FRAME-HEADERS adds inter frames. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No DIP, FSC, MHCCP, palette, IntraBC, CCTX, TCQ, Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
+notes = "Key frames are closed-loop key frames with uniform tiles (ENC-TILES) in 4:2:0, 4:2:2 or 4:4:4 (ENC-CHROMA-FORMATS); ENC-INTER-FRAME-HEADERS adds inter frames. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No DIP, FSC, palette, IntraBC, TCQ, Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
 
 [feature.status]
 mapped = "done"
@@ -5755,6 +5755,70 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-CCTX"
+name = "Encoder cross-chroma transform"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.27", "7.14.6"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/kernels/cctx.rs"
+change_id = "enc-cctx-mhccp"
+owner = "encoder"
+risk = "medium"
+notes = "Implemented, OFF in every preset. PresetParams::cctx (off disables enable_cctx): a chroma pair in a leaf's final trial takes the Cctx_Mtx rotation that leaves V the least energy (closed form over the U/V energy sums of the primary coefficients) when it leaves less than the smaller plain plane, and keeps it if one RD trial beats the plain pair. SIMD and scalar energy and rotation kernels. The encoder_syntax facade carries cctx in TransformBlock, writes cctx_type after the U eob, reconstructs the pair with the decoder's paired reconstruction and offers cctx_reconstruction for RD. On at p0-p6 against main: paris intra +0.22% Y (1.01x CPU), inter +0.22%, park_joy intra +0.07%, inter -0.39%; paris intra p6 also spends +0.1..+0.4% bytes for -0.03..-0.17 dB U PSNR. Revisit with B3 multi-stage MD (per-block flag cost vs final-trial-only search). Off writes the old stream byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/tile_writer/tests.rs::every_cctx_type_round_trips", "crates/splot-encode/src/kernels/cctx.rs::tests::simd_matches_scalar", "crates/splot-encode/src/kernels/cctx.rs::tests::inverse_undoes_rotation", "crates/splot-encode/src/intra_tools_tests.rs::cctx_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_cctx_pairs_and_mhccp_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_cctx_and_mhccp_frames_like_splot"]
+commands = ["cargo test -p splot-encode cctx --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-MHCCP"
+name = "Encoder multi-hypothesis cross-component prediction"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.5.6", "5.20.7.32"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/mode_decision.rs"
+change_id = "enc-cctx-mhccp"
+owner = "encoder"
+risk = "low"
+notes = "Implemented, OFF in every preset. PresetParams::mhccp (off disables enable_mhccp): a CFL leaf ranks the three MHCCP directions with its chroma candidates by SATD. The encoder_syntax facade takes ChromaMode::Mhccp, writes cfl_mhccp and cfl_mh_dir and predicts with the decoder's MHCCP (CflParams::Multi). On at every preset against main (p6): paris intra Y +0.30% / YUV(6:1:1) +0.09% (1.01x CPU), inter Y +0.49% / YUV +0.14%; park_joy intra Y +0.08% / YUV -0.00%, inter Y +0.07% / YUV +0.13%. MHCCP wins about 45% of the chroma trials it enters, but the cfl_mhccp flag of every CFL block costs more. Revisit with B3 multi-stage MD (per-block flag cost vs final-trial-only search). Off writes the old stream byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/tile_writer/tests.rs::every_mhccp_direction_round_trips", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot", "crates/splot-encode/src/intra_tools_tests.rs::mhccp_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_cctx_pairs_and_mhccp_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_cctx_and_mhccp_frames_like_splot"]
+commands = ["cargo test -p splot-encode mhccp --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-MRL"
 name = "Encoder multiple reference line intra prediction"
 category = "encoder"
@@ -5795,10 +5859,10 @@ spec_sections = ["5.18.7.11", "5.20.10.5", "5.20.10.6", "7.20.3"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/loop_filter_wienerns.rs"
-change_id = "enc-wienerns"
+change_id = "enc-wienerns-classes"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::wiener_ns bank fits: one pass over the CDEF and CCSO output keeps the 16-coefficient normal equations of every luma unit (one worker-pool job per unit, std::simd kernel with a scalar twin). The one-class frame bank (frame_filters_on = 1) is the least-squares solution per wiener_ns_length subset, rounded, clipped and refined one step at a time on the predicted error plus the 1/12 rounding noise, with the exact bank bits of the splot-core writer; later fits use the units that took the filter. The decoder filters each candidate; every unit takes none, PC-Wiener or Wiener-NS with the exact flex_restoration_type / use_wiener_ns / use_pc_wiener rate of the adapting CDFs, and the frame takes RESTORE_PC_WIENER, RESTORE_WIENER_NONSEP or RESTORE_SWITCHABLE by total RD. Inter frames try the primary reference's bank (temporal_pred_flag) first. splot-core writes the frame bank and the inter temporal arm. Pending: NumFilterClasses > 1 (needs the decoder's PC-Wiener class map in the facade). Off writes the old stream byte-identically."
+notes = "PresetParams::wiener_ns bank fits: one pass over the CDEF and CCSO output keeps the 16-coefficient normal equations of every luma unit (one worker-pool job per unit, std::simd kernel with a scalar twin). The one-class frame bank (frame_filters_on = 1) is the least-squares solution per wiener_ns_length subset, rounded, clipped and refined one step at a time on the predicted error plus the 1/12 rounding noise, with the exact bank bits of the splot-core writer; later fits use the units that took the filter. The decoder filters each candidate; every unit takes none, PC-Wiener or Wiener-NS with the exact flex_restoration_type / use_wiener_ns / use_pc_wiener rate of the adapting CDFs, and the frame takes RESTORE_PC_WIENER, RESTORE_WIENER_NONSEP or RESTORE_SWITCHABLE by total RD. Inter frames try the primary reference's bank (temporal_pred_flag) first. splot-core writes the frame bank and the inter temporal arm. With PresetParams::wiener_ns_classes > 1 the same pass buckets the equations by the § 7.20.4 PC-Wiener class of each 4x4 cell (the decoder's classifier through encoder_syntax::pc_wiener_cell_classes), and each NumFilterClasses up to that bound merges the classes by the decoder's SubclassLookup, fits each class, and competes with the one-class bank on predicted error plus exact bank bits. Off writes the old stream byte-identically."
 
 [feature.status]
 mapped = "done"
@@ -5806,14 +5870,14 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "partial"
+encode = "done"
 decode_check = "done"
 tests = "done"
 avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::temporal_wiener_ns_bank_decodes_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_422_and_444_tiles_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::avm_decodes_wiener_ns_frames_like_splot", "crates/splot-encode/src/kernels/wiener.rs::tests::simd_matches_scalar", "crates/splot-encode/src/loop_filter_wienerns.rs::tests::solve_recovers_a_known_filter", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::wiener_ns_bank_reaches_the_parsed_header", "crates/splot-core/src/write/frame_restoration_proptests.rs::lr_round_trips"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/encoder_filters_tests.rs::cell_classes_are_the_classes_the_restoration_applies", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::class_banks_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::temporal_wiener_ns_bank_decodes_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_422_and_444_tiles_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::avm_decodes_wiener_ns_frames_like_splot", "crates/splot-encode/src/kernels/wiener.rs::tests::simd_matches_scalar", "crates/splot-encode/src/loop_filter_wienerns_fit.rs::tests::solve_recovers_a_known_filter", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::wiener_ns_bank_reaches_the_parsed_header", "crates/splot-core/src/write/frame_restoration_proptests.rs::lr_round_trips"]
 commands = ["cargo test -p splot-encode wiener --locked", "cargo test -p splot-core frame_restoration --locked"]
 fixtures = []
 diagnostics = []
@@ -5845,7 +5909,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_422_and_444_tiles_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::avm_decodes_wiener_ns_frames_like_splot", "crates/splot-encode/src/loop_filter_wienerns.rs::tests::chroma_groups_pair_the_luma_taps", "crates/splot-encode/src/kernels/wiener.rs::tests::simd_matches_scalar", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::chroma_wiener_ns_banks_reach_the_parsed_header", "crates/splot-core/src/write/frame_restoration_proptests.rs::lr_round_trips"]
+tests = ["crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_422_and_444_tiles_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::avm_decodes_wiener_ns_frames_like_splot", "crates/splot-encode/src/loop_filter_wienerns_fit.rs::tests::chroma_groups_pair_the_luma_taps", "crates/splot-encode/src/kernels/wiener.rs::tests::simd_matches_scalar", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::chroma_wiener_ns_banks_reach_the_parsed_header", "crates/splot-core/src/write/frame_restoration_proptests.rs::lr_round_trips"]
 commands = ["cargo test -p splot-encode wiener --locked", "cargo test -p splot-core encoder_stream --locked"]
 fixtures = []
 diagnostics = []

@@ -229,6 +229,7 @@ impl ResidualCoder for RecordedLevels {
         Ok(TransformDecision {
             tx_type: TxType::DctDct,
             ist: tx.ist,
+            cctx: 0,
             levels,
         })
     }

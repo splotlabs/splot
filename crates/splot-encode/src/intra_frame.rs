@@ -11,8 +11,8 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    EncoderReferences, IntraTileSyntax, Ist, Partition, PartitionNode, TransformBlock, TxType,
-    recon_params, tile_count, tx_log2,
+    CCTX_ROTATIONS, EncoderReferences, IntraTileSyntax, Ist, Partition, PartitionNode,
+    TransformBlock, TxType, recon_params, tile_count, tx_log2,
 };
 use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
@@ -102,6 +102,8 @@ impl IntraFrameCoder {
                 intra_edge_filter: true,
                 mrls: preset.mrl_trials > 0,
                 intra_ist: preset.ist_sets > 0,
+                cctx: preset.cctx,
+                mhccp: preset.mhccp,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
                 avg_cdf: preset.cdf_carry.then_some(AVG_CDF_ACROSS_TILES),
@@ -434,6 +436,8 @@ pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) quadrants: Option<[u64; 4]>,
     /// Residual, coefficient, and dequantized buffers reused across blocks.
     scratch: [Vec<i32>; 3],
+    /// The U and V coefficients of a CCTX trial.
+    pair: [Vec<i32>; 2],
     /// The row costs and the trellis buffers reused across blocks.
     rates: (RowCaches, TcqScratch),
 }
@@ -457,6 +461,7 @@ impl<'a> SourceResidualCoder<'a> {
             scalar: false,
             quadrants: None,
             scratch: Default::default(),
+            pair: Default::default(),
             rates: Default::default(),
         }
     }
@@ -545,19 +550,185 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         tx: &TransformBlock,
         prediction: &[u16],
     ) -> core::result::Result<TransformDecision, TileWriterError> {
-        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let mut scratch = core::mem::take(&mut self.scratch);
         let [residual, coeffs, dequant] = &mut scratch;
         syntax.set_scalar_trial(self.candidate || self.trial || self.scalar);
         let use_tcq = syntax.uses_tcq(tx);
         let (params, forward) = self.forward(tx, use_tcq, prediction, residual, coeffs)?;
-        let len = coeffs.len();
-        dequant.resize(len, 0);
         if let Some(secondary) = syntax.secondary_transform(tx)? {
             kernels()
                 .forward_ist(&secondary_transform_layout(&secondary)?, coeffs)
                 .map_err(kernel)?;
         }
+        let levels = self.quantize(syntax, tx, (&params, &forward), coeffs, dequant);
+        self.scratch = scratch;
+        Ok(TransformDecision {
+            tx_type: tx.tx_type,
+            ist: tx.ist,
+            cctx: 0,
+            levels: levels?,
+        })
+    }
+
+    /// Both blocks coded plainly, and in a leaf's final trial with the
+    /// rotation that leaves V the least energy when it leaves less than either
+    /// plain plane; the pair with the lower `D + lambda * R` wins.
+    fn code_chroma_pair(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        [u, v]: [&TransformBlock; 2],
+        predictions: [&[u16]; 2],
+    ) -> core::result::Result<[TransformDecision; 2], TileWriterError> {
+        let plain = [
+            self.code(syntax, u, predictions[0])?,
+            self.code(syntax, v, predictions[1])?,
+        ];
+        if self.candidate || !self.preset.cctx || u.tx_type != v.tx_type || !syntax.cctx_coded(u, 2)
+        {
+            return Ok(plain);
+        }
+        let mut scratch = core::mem::take(&mut self.scratch);
+        let mut pair = core::mem::take(&mut self.pair);
+        let rotated = self.rotated_pair(syntax, [u, v], predictions, &mut scratch, &mut pair);
+        (self.scratch, self.pair) = (scratch, pair);
+        let Some([u_levels, v_levels, cctx]) = rotated? else {
+            return Ok(plain);
+        };
+        let coded = TransformBlock {
+            cctx: cctx[0] as u8,
+            ..*u
+        };
+        if !syntax.cctx_coded(&coded, eob(&coded, &u_levels)?) {
+            return Ok(plain);
+        }
+        let plain_cost = self.pair_cost(
+            syntax,
+            [u, v],
+            predictions,
+            [&plain[0].levels, &plain[1].levels],
+            None,
+        )?;
+        let cost = self.pair_cost(
+            syntax,
+            [&coded, v],
+            predictions,
+            [&u_levels, &v_levels],
+            Some(()),
+        )?;
+        if cost >= plain_cost {
+            return Ok(plain);
+        }
+        Ok([
+            TransformDecision {
+                cctx: coded.cctx,
+                levels: u_levels,
+                ..plain[0].clone()
+            },
+            TransformDecision {
+                levels: v_levels,
+                ..plain[1].clone()
+            },
+        ])
+    }
+}
+
+impl SourceResidualCoder<'_> {
+    /// The levels of `u` and `v` rotated by the CCTX that leaves V the least
+    /// energy, and that `cctx_type` (as `[u, v, [cctx]]`); `None` when no
+    /// rotation leaves less than the smaller plain plane.
+    fn rotated_pair(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        [u, v]: [&TransformBlock; 2],
+        [u_prediction, v_prediction]: [&[u16]; 2],
+        [residual, _, dequant]: &mut [Vec<i32>; 3],
+        [u_coeffs, v_coeffs]: &mut [Vec<i32>; 2],
+    ) -> core::result::Result<Option<[Vec<i32>; 3]>, TileWriterError> {
+        let (u_params, u_forward) = self.forward(u, false, u_prediction, residual, u_coeffs)?;
+        let (v_params, v_forward) = self.forward(v, false, v_prediction, residual, v_coeffs)?;
+        let [uu, vv, uv] = kernels().cctx_stats(u_coeffs, v_coeffs);
+        let energy = |[c, s]: [i32; 2]| {
+            let (c, s) = (i128::from(c), i128::from(s));
+            s * s * i128::from(uu) + c * c * i128::from(vv) - 2 * c * s * i128::from(uv)
+        };
+        let Some((index, best)) = CCTX_ROTATIONS
+            .iter()
+            .map(|&rotation| energy(rotation))
+            .enumerate()
+            .min_by_key(|&(_, e)| e)
+        else {
+            return Ok(None);
+        };
+        if best >= i128::from(uu.min(vv)) << 16 {
+            return Ok(None);
+        }
+        kernels().cctx_rotate(u_coeffs, v_coeffs, CCTX_ROTATIONS[index]);
+        let cctx =
+            i32::try_from(index + 1).map_err(|_| TileWriterError::Unsupported("CCTX type"))?;
+        let coded = TransformBlock {
+            cctx: cctx as u8,
+            ..*u
+        };
+        let u_levels = self.quantize(syntax, &coded, (&u_params, &u_forward), u_coeffs, dequant)?;
+        let v_levels = self.quantize(syntax, v, (&v_params, &v_forward), v_coeffs, dequant)?;
+        Ok(Some([u_levels, v_levels, vec![cctx]]))
+    }
+
+    /// `D + lambda * R` of chroma blocks `u` and `v` coded as `levels`, with
+    /// the decoder's cross-chroma reconstruction when `cctx` is `Some`.
+    fn pair_cost(
+        &self,
+        syntax: &mut IntraTileSyntax,
+        [u, v]: [&TransformBlock; 2],
+        predictions: [&[u16]; 2],
+        levels: [&[i32]; 2],
+        cctx: Option<()>,
+    ) -> core::result::Result<u128, TileWriterError> {
+        let recon = match cctx {
+            Some(()) => syntax.cctx_reconstruction([u, v], predictions, levels)?,
+            None => [
+                tx_choice::reconstruct(
+                    syntax,
+                    predictions[0],
+                    u,
+                    levels[0],
+                    (self.qindex, self.bit_depth),
+                )?,
+                tx_choice::reconstruct(
+                    syntax,
+                    predictions[1],
+                    v,
+                    levels[1],
+                    (self.qindex, self.bit_depth),
+                )?,
+            ],
+        };
+        let u_eob = eob(u, levels[0])?;
+        let mut sink = RateSink::frozen();
+        let rate = block_rate(syntax, &mut sink, u, levels[0], false)?;
+        let rate = rate + block_rate(syntax, &mut sink, v, levels[1], u_eob != 0)?;
+        let cost = RdCost {
+            distortion: self.source.sse(u, &recon[0])? + self.source.sse(v, &recon[1])?,
+            rate,
+        };
+        Ok(cost.cost(self.lambda))
+    }
+
+    /// The levels of the forward coefficients `coeffs` of `tx`: TCQ, RDOQ or
+    /// the deadzone quantizer as the preset and the trial ask, with parity
+    /// hiding.
+    fn quantize(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        tx: &TransformBlock,
+        (params, forward): (&DequantBlockParams, &ForwardTransform2d),
+        coeffs: &[i32],
+        dequant: &mut Vec<i32>,
+    ) -> core::result::Result<Vec<i32>, TileWriterError> {
+        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
+        let len = coeffs.len();
+        dequant.resize(len, 0);
+        let use_tcq = syntax.uses_tcq(tx);
         let mut levels = vec![0; len];
         let block = RdoqBlock {
             dc_q2: params.dc_quant,
@@ -621,16 +792,9 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                 hide_parity(holds, moves, (&mut levels, dequant))?;
             }
         }
-        self.scratch = scratch;
-        Ok(TransformDecision {
-            tx_type: tx.tx_type,
-            ist: tx.ist,
-            levels,
-        })
+        Ok(levels)
     }
-}
 
-impl SourceResidualCoder<'_> {
     /// The source residual of `tx` over `prediction` and its primary forward
     /// transform into `coeffs`, with the block's dequantization parameters.
     fn forward(

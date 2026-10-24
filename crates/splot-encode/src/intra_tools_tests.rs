@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Intra coding tools in coded streams: MRL (§ 7.13.2) and IST (§ 7.15.3).
+//! Intra coding tools in coded streams: MRL (§ 7.13.2), IST (§ 7.15.3), CCTX
+//! (§ 7.14.6) and MHCCP (§ 5.20.7.32).
 
 use super::*;
 
@@ -48,21 +49,18 @@ fn ist_preset() -> &'static PresetParams {
     preset_with(|p| p.ist_sets = splot_decode::encoder_syntax::IST_SETS)
 }
 
-/// Whether `seq` enables MRL.
-fn mrl_enabled(seq: &SequenceHeader) -> bool {
-    seq.intra.unwrap().enable_mrls
-}
-
-/// MRL streams of every chroma format and both bit depths decode to the
-/// encoder recon, and 1, 2 and 8 threads write the same bytes. Without MRL
-/// the sequence does not enable it and the stream changes.
-#[test]
-fn mrl_frames_decode_to_the_encoder_recon_on_any_thread_count() {
-    let on = mrl_preset();
+/// Streams of `on` in every chroma format and both bit depths decode to the
+/// encoder recon with `enabled` set, and 1, 2 and 8 threads write the same
+/// bytes; `off` clears `enabled` and changes the stream.
+fn assert_tool_streams(
+    on: &'static PresetParams,
+    off: &'static PresetParams,
+    enabled: fn(&SequenceHeader) -> bool,
+) {
     for chroma in CHROMAS {
         for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
             let (units, recon, seq) = tool_stream((2, chroma, bit_depth), on);
-            assert!(mrl_enabled(&seq));
+            assert!(enabled(&seq));
             let name = format!("{chroma:?} {bit_depth:?}");
             assert_same_samples(&decode(&units.concat()), &recon, &name);
         }
@@ -75,10 +73,30 @@ fn mrl_frames_decode_to_the_encoder_recon_on_any_thread_count() {
             "{threads} threads"
         );
     }
-    let (units, recon, seq) = tool_stream(case, preset_with(|p| p.mrl_trials = 0));
-    assert!(!mrl_enabled(&seq));
-    assert_same_samples(&decode(&units.concat()), &recon, "no mrl");
+    let (units, recon, seq) = tool_stream(case, off);
+    assert!(!enabled(&seq));
+    assert_same_samples(&decode(&units.concat()), &recon, "off");
     assert_ne!(units, one);
+}
+
+/// AVM decodes the key and inter frames of `preset` to the encoder recon.
+fn assert_avm_decodes(preset: &'static PresetParams, name: &str) {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        let (units, recon, _) = tool_stream((2, PixelFormat::Yuv420, bit_depth), preset);
+        let avm = avm_decode(&avmdec, &units, (136, 72), bit_depth, name);
+        assert!(avm == recon, "{name} {bit_depth:?}: AVM output differs");
+    }
+}
+
+/// MRL streams decode to the encoder recon on any thread count.
+#[test]
+fn mrl_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    assert_tool_streams(mrl_preset(), preset_with(|p| p.mrl_trials = 0), |seq| {
+        seq.intra.unwrap().enable_mrls
+    });
 }
 
 /// The key-frame search codes leaves on every MRL line.
@@ -104,42 +122,63 @@ fn search_picks_mrl_lines() {
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
 fn avm_decodes_mrl_frames_like_splot() {
-    let Some(avmdec) = avm_decoder() else {
-        return;
-    };
-    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        let (units, recon, _) = tool_stream((2, PixelFormat::Yuv420, bit_depth), mrl_preset());
-        let avm = avm_decode(&avmdec, &units, (136, 72), bit_depth, "mrl");
-        assert!(avm == recon, "{bit_depth:?}: AVM output differs");
-    }
+    assert_avm_decodes(mrl_preset(), "mrl");
 }
 
-/// IST streams of every chroma format and both bit depths decode to the
-/// encoder recon, and 1, 2 and 8 threads write the same bytes. Without IST
-/// the sequence does not enable it and the stream changes.
+/// IST streams decode to the encoder recon on any thread count.
 #[test]
 fn ist_frames_decode_to_the_encoder_recon_on_any_thread_count() {
-    let on = ist_preset();
-    for chroma in CHROMAS {
-        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-            let (units, recon, seq) = tool_stream((2, chroma, bit_depth), on);
-            assert!(seq.transform_quant_entropy.unwrap().enable_intra_ist);
-            let name = format!("{chroma:?} {bit_depth:?}");
-            assert_same_samples(&decode(&units.concat()), &recon, &name);
-        }
-    }
-    let case = (1, PixelFormat::Yuv420, BitDepth::Ten);
-    let (one, ..) = tool_stream(case, on);
-    for threads in [2, 8] {
-        assert!(
-            tool_stream((threads, case.1, case.2), on).0 == one,
-            "{threads} threads"
-        );
-    }
-    let (units, recon, seq) = tool_stream(case, preset_with(|p| p.ist_sets = 0));
-    assert!(!seq.transform_quant_entropy.unwrap().enable_intra_ist);
-    assert_same_samples(&decode(&units.concat()), &recon, "no ist");
-    assert_ne!(units, one);
+    assert_tool_streams(ist_preset(), preset_with(|p| p.ist_sets = 0), |seq| {
+        seq.transform_quant_entropy.unwrap().enable_intra_ist
+    });
+}
+
+/// CCTX streams decode to the encoder recon on any thread count.
+#[test]
+fn cctx_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    assert_tool_streams(preset_with(|p| p.cctx = true), preset_with(|_| {}), |seq| {
+        seq.transform_quant_entropy.unwrap().enable_cctx
+    });
+}
+
+/// MHCCP streams decode to the encoder recon on any thread count.
+#[test]
+fn mhccp_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    assert_tool_streams(
+        preset_with(|p| p.mhccp = true),
+        preset_with(|_| {}),
+        |seq| seq.intra.unwrap().enable_mhccp,
+    );
+}
+
+/// The key-frame search codes CCTX pairs and MHCCP leaves.
+#[test]
+fn search_picks_cctx_pairs_and_mhccp_leaves() {
+    let config = config(136, 72, BitDepth::Ten, 9, 90);
+    let preset = preset_with(|p| (p.cctx, p.mhccp) = (true, true));
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let plan = crate::gop::plan(0, config.keyint);
+    let source = wave_frame(&config);
+    let (trees, [_, cctx]) = search_frame_counting(&coder, &plan, &source, config.bit_depth);
+    let mhccp = |choice: &LeafChoice| {
+        choice.inter.is_none()
+            && matches!(
+                choice.modes.uv_mode,
+                splot_decode::encoder_syntax::ChromaMode::Mhccp { .. }
+            )
+    };
+    let leaves: usize = trees.iter().map(|tree| leaves(tree, mhccp)).sum();
+    assert!(cctx > 0 && leaves > 0, "cctx {cctx} mhccp {leaves}");
+}
+
+/// AVM decodes CCTX and MHCCP key and inter frames to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_cctx_and_mhccp_frames_like_splot() {
+    assert_avm_decodes(
+        preset_with(|p| (p.cctx, p.mhccp) = (true, true)),
+        "cctx-mhccp",
+    );
 }
 
 /// An oblique sine wave: directional residual that IST compacts.
@@ -160,7 +199,8 @@ fn search_picks_ist_blocks() {
     let config = config(64, 64, BitDepth::Eight, 9, 90);
     let coder = IntraFrameCoder::with_preset(&config, ist_preset()).unwrap();
     let plan = crate::gop::plan(0, config.keyint);
-    let (_, ist) = search_frame_counting(&coder, &plan, &wave_frame(&config), config.bit_depth);
+    let (_, [ist, _]) =
+        search_frame_counting(&coder, &plan, &wave_frame(&config), config.bit_depth);
     assert!(ist > 0);
 }
 
@@ -168,12 +208,5 @@ fn search_picks_ist_blocks() {
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
 fn avm_decodes_ist_frames_like_splot() {
-    let Some(avmdec) = avm_decoder() else {
-        return;
-    };
-    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        let (units, recon, _) = tool_stream((2, PixelFormat::Yuv420, bit_depth), ist_preset());
-        let avm = avm_decode(&avmdec, &units, (136, 72), bit_depth, "ist");
-        assert!(avm == recon, "{bit_depth:?}: AVM output differs");
-    }
+    assert_avm_decodes(ist_preset(), "ist");
 }

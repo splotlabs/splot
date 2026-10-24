@@ -956,10 +956,11 @@ fn search_frame(
     search_frame_counting(coder, plan, source, bit_depth).0
 }
 
-/// Counts the coded luma blocks with a secondary transform.
-struct IstCount<'a, 'b>(&'a mut SourceResidualCoder<'b>, usize);
+/// Counts the coded luma blocks with a secondary transform and the coded
+/// chroma pairs with a cross-chroma transform.
+struct ToolCount<'a, 'b>(&'a mut SourceResidualCoder<'b>, [usize; 2]);
 
-impl ResidualCoder for IstCount<'_, '_> {
+impl ResidualCoder for ToolCount<'_, '_> {
     fn code(
         &mut self,
         syntax: &mut IntraTileSyntax,
@@ -977,18 +978,30 @@ impl ResidualCoder for IstCount<'_, '_> {
         tx_types: &[TxType],
     ) -> core::result::Result<TransformDecision, TileWriterError> {
         let decision = self.0.code_luma(syntax, tx, prediction, tx_types)?;
-        self.1 += usize::from(decision.ist != splot_decode::encoder_syntax::Ist::OFF);
+        self.1[0] += usize::from(decision.ist != splot_decode::encoder_syntax::Ist::OFF);
         Ok(decision)
+    }
+
+    fn code_chroma_pair(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        blocks: [&TransformBlock; 2],
+        predictions: [&[u16]; 2],
+    ) -> core::result::Result<[TransformDecision; 2], TileWriterError> {
+        let decisions = self.0.code_chroma_pair(syntax, blocks, predictions)?;
+        self.1[1] += usize::from(decisions[0].cctx != 0);
+        Ok(decisions)
     }
 }
 
-/// [`search_frame`] and the number of luma decisions with a secondary transform.
+/// [`search_frame`] and the number of coded luma blocks with IST and of
+/// chroma pairs with CCTX.
 fn search_frame_counting(
     coder: &IntraFrameCoder,
     plan: &GopFrame,
     source: &SourceFrame,
     bit_depth: BitDepth,
-) -> (Vec<PartitionTree>, usize) {
+) -> (Vec<PartitionTree>, [usize; 2]) {
     let core = plan
         .header(
             &coder.view,
@@ -1005,7 +1018,7 @@ fn search_frame_counting(
     let lambda = Lambda::from_qindex(90, bit_depth).unwrap();
     let motion = MotionSearch::new(writer.syntax(), &padded, coder.preset, lambda).unwrap();
     let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, coder.preset, lambda);
-    let (mut trees, mut ist) = (Vec::new(), 0);
+    let (mut trees, mut counts) = (Vec::new(), [0; 2]);
     while writer.next_superblock_root().is_some() {
         let mut search = || {
             writer
@@ -1024,14 +1037,14 @@ fn search_frame_counting(
         };
         let tree = search();
         assert_eq!(tree, search());
-        let mut counting = IstCount(&mut residual, ist);
+        let mut counting = ToolCount(&mut residual, counts);
         writer
             .write_superblock(&SuperblockDecision { tree: tree.clone() }, &mut counting)
             .unwrap();
-        ist = counting.1;
+        counts = counting.1;
         trees.push(tree);
     }
-    (trees, ist)
+    (trees, counts)
 }
 
 /// An inter-frame search is repeatable and picks inter leaves for panning

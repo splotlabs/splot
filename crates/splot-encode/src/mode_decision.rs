@@ -276,8 +276,8 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         Ok(cost?.cost(self.lambda))
     }
 
-    /// Every chroma mode, CFL with derived alphas, and CFL with the explicit
-    /// alphas of the lowest SATD per plane.
+    /// Every chroma mode, CFL with derived alphas, CFL with the explicit
+    /// alphas of the lowest SATD per plane, and the MHCCP directions.
     fn chroma_candidates(
         &mut self,
         leaf: &LeafBlock,
@@ -306,6 +306,9 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             alpha_u: alpha_u.1,
             alpha_v: alpha_v.1,
         }));
+        if self.preset.mhccp && self.syntax.mhccp_allowed(leaf) {
+            candidates.extend((0..3).map(|direction| with(ChromaMode::Mhccp { direction })));
+        }
         Ok(candidates)
     }
 }

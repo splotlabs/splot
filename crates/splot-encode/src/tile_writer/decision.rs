@@ -89,6 +89,8 @@ pub(crate) struct TransformDecision {
     pub(crate) tx_type: TxType,
     /// The secondary transform the levels use: the block's `ist`.
     pub(crate) ist: Ist,
+    /// The `cctx_type` a U block codes; `0` for other blocks.
+    pub(crate) cctx: u8,
     /// Quantized levels in the row-major adjusted (at most 32x32) layout.
     pub(crate) levels: Vec<i32>,
 }
@@ -120,5 +122,20 @@ pub(crate) trait ResidualCoder {
         _tx_types: &[TxType],
     ) -> Result<TransformDecision> {
         self.code(syntax, tx, prediction)
+    }
+
+    /// Codes U block `u` and V block `v` of one position with their planned
+    /// types, the U decision with a `cctx_type`; the default codes each
+    /// through [`Self::code`] without CCTX.
+    fn code_chroma_pair(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        [u, v]: [&TransformBlock; 2],
+        [u_prediction, v_prediction]: [&[u16]; 2],
+    ) -> Result<[TransformDecision; 2]> {
+        Ok([
+            self.code(syntax, u, u_prediction)?,
+            self.code(syntax, v, v_prediction)?,
+        ])
     }
 }

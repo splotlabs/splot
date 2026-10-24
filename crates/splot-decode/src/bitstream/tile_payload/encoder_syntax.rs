@@ -55,6 +55,7 @@ use super::partition_traversal::{
 };
 use super::tile_frontier::minimal_partition_frame_facts;
 
+mod cctx;
 mod compound;
 mod inter;
 mod intra;
@@ -65,6 +66,7 @@ mod tcq;
 mod transform;
 
 pub use super::cdf::block_context::IntraYMode as IntraMode;
+pub use cctx::CCTX_ROTATIONS;
 pub use compound::{
     COMPOUND_MODES, CompoundMode, CompoundModes, InterPrediction, JMVD_SCALE_MODES,
 };
@@ -83,12 +85,16 @@ pub use transform::{IST_SETS, Ist, TX_PARTITIONS, TxPartition};
 mod filters;
 pub use filters::{
     CcsoBlockMap, CcsoGrid, CdefIndexMap, CdefSlot, FilterRecorder, LrLayout, LrSymbol, LrUnit,
-    LrUnitType, apply_loop_filters, ccso_offset, ccso_taps, cdef_unit_grid, merge_tiles,
+    LrUnitType, PcWienerClassMap, apply_loop_filters, ccso_offset, ccso_taps, cdef_unit_grid,
+    merge_tiles, pc_wiener_cell_classes,
 };
 /// The first tap `(dy, dx, coeff_index)` of each § 7.20.3 luma pair; the partner is `(-dy, -dx)`.
 pub use splot_recon::WIENER_NS_CONFIG_Y_PAIRS;
 /// The § 7.20.3 chroma taps `(dy, dx, coeff_index)` and their luma samples.
-pub use splot_recon::{WIENER_NS_CONFIG_UV, wiener_ns_chroma_luma_plane};
+pub use splot_recon::{
+    WIENER_NS_CONFIG_UV, pc_wiener_filter_set_index, pc_wiener_subclass_table,
+    wiener_ns_chroma_luma_plane,
+};
 
 type BoxedSource = Box<dyn std::error::Error + Send + Sync + 'static>;
 
@@ -280,6 +286,8 @@ pub struct TransformBlock {
     pub fills_block: bool,
     /// The secondary transform of an intra luma block; a planned block has none.
     pub ist: Ist,
+    /// `cctx_type` of a U block, `0..=6`; a planned block codes none.
+    pub cctx: u8,
 }
 
 /// The `Level` grid of one transform block (§ 5.20.7.27), in adjusted
@@ -645,6 +653,8 @@ pub struct IntraTileSyntax {
     inter: Option<inter::InterLeafState>,
     journal: CdfJournal,
     tile: (Range<usize>, Range<usize>),
+    /// The planned leaf may code CCTX.
+    cctx_leaf: bool,
 }
 
 impl IntraTileSyntax {
@@ -758,6 +768,7 @@ impl IntraTileSyntax {
             inter,
             journal,
             tile: (rows, cols),
+            cctx_leaf: false,
         })
     }
 
