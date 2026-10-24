@@ -7,7 +7,8 @@
 //! `f[k]` is the sum of the differences of the two taps of pair `k` from `m`.
 //! A least-squares fit of `source - m` needs `A = sum(f f^T)` and
 //! `b = sum(f (source - m))`. The SIMD form takes eight samples at a time in
-//! `i32` lanes and moves the lanes to `i64` sums before they can overflow.
+//! `i32` lanes, carries them across the rows of a unit, and moves them to
+//! `i64` sums before they can overflow.
 
 use std::simd::Simd;
 use std::simd::num::{SimdInt as _, SimdUint as _};
@@ -22,9 +23,6 @@ pub(crate) const PAIRS: usize = COEFFS * (COEFFS + 1) / 2;
 pub(crate) const RADIUS: usize = 4;
 
 const LANES: usize = 8;
-/// Chunks a lane sums before its `i32` sum moves to `i64`: a 12-bit `f` is
-/// below `2^13`, so 16 squares stay below `2^31`.
-const FLUSH_CHUNKS: usize = 16;
 
 /// The normal-equation sums of a set of samples.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,63 +101,86 @@ fn accumulate_samples(row: WienerRow<'_>, range: core::ops::Range<usize>, stats:
     }
 }
 
-/// The scalar reference of [`accumulate_simd`].
+/// The scalar reference of [`WienerAccumulator`].
 #[cfg(test)]
 pub(crate) fn accumulate_scalar(row: WienerRow<'_>, stats: &mut WienerStats) {
     accumulate_samples(row, 0..row.len(), stats);
 }
 
-/// Accumulates `row` into `stats`.
-pub(crate) fn accumulate_simd(row: WienerRow<'_>, stats: &mut WienerStats) {
-    type V = Simd<i32, LANES>;
-    let len = row.len();
-    let load = |dy: isize, x: isize| {
-        let start = (RADIUS as isize + x) as usize;
-        Simd::<u16, LANES>::from_slice(
-            &row.rows[(RADIUS as isize + dy) as usize][start..start + LANES],
-        )
-        .cast::<i32>()
-    };
-    let mut pairs = [V::splat(0); PAIRS];
-    let mut cross = [V::splat(0); COEFFS];
-    let flush = |a: &mut [V; PAIRS], b: &mut [V; COEFFS], stats: &mut WienerStats| {
-        for (sum, lanes) in stats.a.iter_mut().zip(a.iter_mut()) {
-            *sum += lanes.cast::<i64>().reduce_sum();
-            *lanes = V::splat(0);
-        }
-        for (sum, lanes) in stats.b.iter_mut().zip(b.iter_mut()) {
-            *sum += lanes.cast::<i64>().reduce_sum();
-            *lanes = V::splat(0);
-        }
-    };
-    let mut x = 0;
-    let mut chunks = 0;
-    stats.samples += (len - len % LANES) as u64;
-    while x + LANES <= len {
-        let xi = x as isize;
-        let centre = load(0, xi);
-        let f: [V; COEFFS] = core::array::from_fn(|k| {
-            let (dy, dx, _) = WIENER_NS_CONFIG_Y_PAIRS[k];
-            load(dy, xi + dx) + load(-dy, xi - dx) - centre - centre
-        });
-        let t = Simd::<u16, LANES>::from_slice(&row.source[x..x + LANES]).cast::<i32>() - centre;
-        let mut pair = 0;
-        for i in 0..COEFFS {
-            cross[i] += f[i] * t;
-            for j in i..COEFFS {
-                pairs[pair] += f[i] * f[j];
-                pair += 1;
-            }
-        }
-        x += LANES;
-        chunks += 1;
-        if chunks == FLUSH_CHUNKS {
-            flush(&mut pairs, &mut cross, stats);
-            chunks = 0;
+type V = Simd<i32, LANES>;
+
+/// The SIMD accumulation: `i32` lane sums carried across rows, moved to `i64`
+/// before a lane can overflow.
+pub(crate) struct WienerAccumulator {
+    pairs: [V; PAIRS],
+    cross: [V; COEFFS],
+    chunks: usize,
+    budget: usize,
+}
+
+impl WienerAccumulator {
+    /// An accumulator for samples up to `max_sample`: each lane product is at
+    /// most `(2 * max_sample)^2`, so a lane takes that many chunks of `i32::MAX`.
+    pub(crate) fn new(max_sample: u16) -> Self {
+        let product = 4 * u64::from(max_sample).pow(2);
+        Self {
+            pairs: [V::splat(0); PAIRS],
+            cross: [V::splat(0); COEFFS],
+            chunks: 0,
+            budget: (i32::MAX as u64 / product.max(1)).max(1) as usize,
         }
     }
-    flush(&mut pairs, &mut cross, stats);
-    accumulate_samples(row, x..len, stats);
+
+    /// Accumulates `row` into the lanes and, for its tail, into `stats`.
+    pub(crate) fn add_row(&mut self, row: WienerRow<'_>, stats: &mut WienerStats) {
+        let len = row.len();
+        let load = |dy: isize, x: isize| {
+            let start = (RADIUS as isize + x) as usize;
+            Simd::<u16, LANES>::from_slice(
+                &row.rows[(RADIUS as isize + dy) as usize][start..start + LANES],
+            )
+            .cast::<i32>()
+        };
+        let mut x = 0;
+        stats.samples += (len - len % LANES) as u64;
+        while x + LANES <= len {
+            if self.chunks == self.budget {
+                self.flush(stats);
+            }
+            let xi = x as isize;
+            let centre = load(0, xi);
+            let f: [V; COEFFS] = core::array::from_fn(|k| {
+                let (dy, dx, _) = WIENER_NS_CONFIG_Y_PAIRS[k];
+                load(dy, xi + dx) + load(-dy, xi - dx) - centre - centre
+            });
+            let t =
+                Simd::<u16, LANES>::from_slice(&row.source[x..x + LANES]).cast::<i32>() - centre;
+            let mut pair = 0;
+            for i in 0..COEFFS {
+                self.cross[i] += f[i] * t;
+                for j in i..COEFFS {
+                    self.pairs[pair] += f[i] * f[j];
+                    pair += 1;
+                }
+            }
+            x += LANES;
+            self.chunks += 1;
+        }
+        accumulate_samples(row, x..len, stats);
+    }
+
+    /// Moves the lane sums into `stats`.
+    pub(crate) fn flush(&mut self, stats: &mut WienerStats) {
+        for (sum, lanes) in stats.a.iter_mut().zip(self.pairs.iter_mut()) {
+            *sum += lanes.cast::<i64>().reduce_sum();
+            *lanes = V::splat(0);
+        }
+        for (sum, lanes) in stats.b.iter_mut().zip(self.cross.iter_mut()) {
+            *sum += lanes.cast::<i64>().reduce_sum();
+            *lanes = V::splat(0);
+        }
+        self.chunks = 0;
+    }
 }
 
 #[cfg(test)]
@@ -167,50 +188,65 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    fn case() -> impl Strategy<Value = (Vec<Vec<u16>>, Vec<u16>)> {
-        (8u32..=12, 0usize..90).prop_flat_map(|(bits, width)| {
+    /// `(max sample, rows of (9 tap rows, source))`.
+    type Case = (u16, Vec<(Vec<Vec<u16>>, Vec<u16>)>);
+
+    fn case() -> impl Strategy<Value = Case> {
+        (8u32..=12, 0usize..300, 1usize..4).prop_flat_map(|(bits, width, rows)| {
             let max = (1u16 << bits) - 1;
-            (
+            let row = (
                 proptest::collection::vec(
                     proptest::collection::vec(0..=max, width + 2 * RADIUS),
                     2 * RADIUS + 1,
                 ),
                 proptest::collection::vec(0..=max, width),
-            )
+            );
+            (Just(max), proptest::collection::vec(row, rows))
         })
+    }
+
+    fn run(max: u16, rows: &[(Vec<Vec<u16>>, Vec<u16>)]) -> (WienerStats, WienerStats) {
+        let (mut scalar, mut simd) = (WienerStats::default(), WienerStats::default());
+        let mut lanes = WienerAccumulator::new(max);
+        for (taps, source) in rows {
+            let row = WienerRow {
+                rows: core::array::from_fn(|i| taps[i].as_slice()),
+                source,
+            };
+            accumulate_scalar(row, &mut scalar);
+            lanes.add_row(row, &mut simd);
+        }
+        lanes.flush(&mut simd);
+        (scalar, simd)
     }
 
     proptest! {
         #[test]
-        fn simd_matches_scalar((rows, source) in case()) {
-            let row = WienerRow {
-                rows: core::array::from_fn(|i| rows[i].as_slice()),
-                source: &source,
-            };
-            let (mut scalar, mut simd) = (WienerStats::default(), WienerStats::default());
-            accumulate_scalar(row, &mut scalar);
-            accumulate_simd(row, &mut simd);
+        fn simd_matches_scalar((max, rows) in case()) {
+            let (scalar, simd) = run(max, &rows);
             prop_assert_eq!(scalar, simd);
         }
     }
 
-    /// Full-range 12-bit taps of opposite sign over a long row reach the flush
+    /// Full-range 12-bit taps of opposite sign over long rows reach the flush
     /// bound without overflow.
     #[test]
     fn extreme_rows_do_not_overflow() {
-        let width = 8 * FLUSH_CHUNKS * 3 + 5;
+        let width = 8 * 40 + 5;
         let high = vec![4095u16; width + 2 * RADIUS];
         let low = vec![0u16; width + 2 * RADIUS];
-        let rows: [&[u16]; 9] =
-            core::array::from_fn(|i| if i == RADIUS { &low[..] } else { &high[..] });
-        let row = WienerRow {
-            rows,
-            source: &low[..width],
-        };
-        let (mut scalar, mut simd) = (WienerStats::default(), WienerStats::default());
-        accumulate_scalar(row, &mut scalar);
-        accumulate_simd(row, &mut simd);
+        let taps: Vec<Vec<u16>> = (0..=2 * RADIUS)
+            .map(|i| {
+                if i == RADIUS {
+                    low.clone()
+                } else {
+                    high.clone()
+                }
+            })
+            .collect();
+        let rows = vec![(taps, low[..width].to_vec()); 3];
+        let (scalar, simd) = run(4095, &rows);
         assert_eq!(scalar, simd);
-        assert_eq!(scalar.a[0], (2 * 4095i64).pow(2) * width as i64);
+        assert_eq!(scalar.a[0], (2 * 4095i64).pow(2) * 3 * width as i64);
     }
 }

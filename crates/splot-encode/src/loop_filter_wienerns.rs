@@ -17,9 +17,10 @@
 use std::collections::BTreeMap;
 
 use splot_core::headers::frame::{
-    CoreSeqRestorationView, CoreSeqView, FrameFilterParams, FrameHeaderCore, FrameRestorationType,
-    FrameWienerNs, WienerNsCoeffs, WienerNsFrameFilterBank, WienerNsFrameFilterClass,
-    wiener_ns_coeff_range, wiener_ns_tap_present, write_frame_wiener_ns_filter,
+    CdefStrengthSets, CoreSeqRestorationView, CoreSeqView, FrameFilterParams, FrameHeaderCore,
+    FrameRestorationType, FrameWienerNs, WienerNsCoeffs, WienerNsFrameFilterBank,
+    WienerNsFrameFilterClass, wiener_ns_coeff_range, wiener_ns_tap_present,
+    write_frame_wiener_ns_filter,
 };
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::adapt_cdf_u16;
@@ -31,7 +32,7 @@ use super::ccso::rd;
 use super::{Search, coding};
 use crate::error::{Error, Result};
 use crate::intra_frame::map_tiles;
-use crate::kernels::wiener::{COEFFS, RADIUS, WienerRow, WienerStats, accumulate_simd};
+use crate::kernels::wiener::{COEFFS, RADIUS, WienerAccumulator, WienerRow, WienerStats};
 use crate::preset::PresetParams;
 use crate::rd::{Bits, symbol_cost};
 use crate::tile_writer::filters::{FilterSyntax, lr_unit_symbols};
@@ -58,7 +59,10 @@ struct Units<'a> {
 impl Search<'_> {
     /// The loop restoration of `pc` (luma PC-Wiener at its unit size) or of a
     /// Wiener-NS plane, whichever costs least, with the CDEF and CCSO choices
-    /// of `syntax`; restoration off returns no units.
+    /// of `syntax`; restoration off returns no units. The deblocking, CDEF and
+    /// CCSO output is filtered once; each candidate then runs the decoder's
+    /// restoration alone on it, which reads that output also for the two rows
+    /// past a stripe that the frame chain takes before CDEF.
     pub(super) fn restoration_rd(
         &self,
         pc: &FrameFilterParams,
@@ -78,23 +82,31 @@ impl Search<'_> {
                 }
             }
         }
-        let run = |core: &FrameHeaderCore, kind: Option<LrUnitType>| {
-            let lr_on: Vec<_> = kind
-                .map(|kind| units.units.iter().map(|&(_, unit)| (unit, kind)).collect())
-                .unwrap_or_default();
-            apply_loop_filters(
-                self.seq,
-                core,
-                self.recorder,
-                self.recon,
-                (&syntax.cdef_indices, &syntax.ccso_blocks),
-                &lr_on,
-            )
-            .map_err(coding("loop filters"))
+        let off = apply_loop_filters(
+            self.seq,
+            &core,
+            self.recorder,
+            self.recon,
+            (&syntax.cdef_indices, &syntax.ccso_blocks),
+            &[],
+        )
+        .map_err(coding("loop filters"))?;
+        let unit_sse = |params: &FrameFilterParams, kind| {
+            let core = self.header(&FrameFilterParams {
+                deblocking: [false; 4],
+                deblocking_delta_q: [0; 4],
+                cdef_strengths: CdefStrengthSets::empty(),
+                ccso: Default::default(),
+                ..*params
+            })?;
+            let lr_on: Vec<_> = units.units.iter().map(|&(_, unit)| (unit, kind)).collect();
+            let frame =
+                apply_loop_filters(self.seq, &core, self.recorder, &off, (&[], &[]), &lr_on)
+                    .map_err(coding("loop filters"))?;
+            self.unit_sse(&frame, &units)
         };
-        let off = run(&core, None)?;
         let off_sse = self.unit_sse(&off, &units)?;
-        let pc_sse = self.unit_sse(&run(&core, Some(LrUnitType::PcWiener))?, &units)?;
+        let pc_sse = unit_sse(pc, LrUnitType::PcWiener)?;
         let off_bits = self
             .header(&FrameFilterParams {
                 lr_luma_unit_size: None,
@@ -124,7 +136,7 @@ impl Search<'_> {
         let mut try_bank = |rst_ref_pic_idx, bank: WienerNsFrameFilterBank| -> Result<Vec<bool>> {
             let params = wiener(rst_ref_pic_idx, bank, true);
             let core = self.header(&params)?;
-            let wns_sse = self.unit_sse(&run(&core, Some(LrUnitType::WienerNs))?, &units)?;
+            let wns_sse = unit_sse(&params, LrUnitType::WienerNs)?;
             let switchable = self.decide(
                 &params,
                 &core,
@@ -224,6 +236,7 @@ impl Search<'_> {
         let source = &self.source.planes()[0];
         map_tiles(self.pool, units.units.clone(), |(layout, unit)| {
             let mut stats = WienerStats::default();
+            let mut lanes = WienerAccumulator::new(self.recon.bit_depth().max_sample());
             for rect in units.layouts[layout]
                 .unit_rects(unit)
                 .map_err(coding("restoration unit"))?
@@ -239,7 +252,7 @@ impl Search<'_> {
                         &padded[start..start + right - rect.x() + 2 * RADIUS]
                     });
                     let start = y * size.width();
-                    accumulate_simd(
+                    lanes.add_row(
                         WienerRow {
                             rows,
                             source: &source[start + rect.x()..start + right],
@@ -248,6 +261,7 @@ impl Search<'_> {
                     );
                 }
             }
+            lanes.flush(&mut stats);
             Ok(stats)
         })
     }
