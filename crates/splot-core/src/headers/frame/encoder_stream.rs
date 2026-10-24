@@ -140,11 +140,17 @@ pub struct FrameFilterParams {
     /// The CDEF strength sets (§ 5.18.7.10); empty turns CDEF off.
     pub cdef_strengths: CdefStrengthSets,
     /// `LoopRestorationSize[0]` of luma restoration (§ 5.18.7.11); `None`
-    /// turns loop restoration off. Chroma restoration is always off.
+    /// turns luma restoration off.
     pub lr_luma_unit_size: Option<u32>,
     /// The luma frame Wiener-NS filters; `None` codes `RESTORE_PC_WIENER`
     /// when `lr_luma_unit_size` is set.
     pub lr_luma_wiener_ns: Option<FrameWienerNs>,
+    /// `LoopRestorationSize[1]` of chroma restoration (§ 5.18.7.11); `None`
+    /// turns chroma restoration off.
+    pub lr_chroma_unit_size: Option<u32>,
+    /// The `RESTORE_WIENER_NONSEP` frame filters of U and V; `None` codes
+    /// `RESTORE_NONE`. `switchable` must be `false`.
+    pub lr_chroma_wiener_ns: [Option<FrameWienerNs>; 2],
     /// `ccso_params()` of each plane (§ 5.18.7.12) without reuse; the frame
     /// codes `ccso_frame_flag = 1` when a plane sets `ccso_planes`.
     pub ccso: [CcsoPlaneParams; 3],
@@ -615,15 +621,29 @@ fn write_filter_params(
     };
     write_cdef_params(w, &cdef, false, num_planes, &seq.filter)?;
     let geometry = LrGeometry::new(seq.tile.frame_sb_size(true), seq.chroma_format_idc);
+    let chroma = |plane: u8| {
+        filters
+            .lr_chroma_wiener_ns
+            .get(usize::from(plane).wrapping_sub(1))
+            .copied()
+            .flatten()
+            .filter(|_| filters.lr_chroma_unit_size.is_some())
+    };
+    let uses_chroma = chroma(1).is_some() || chroma(2).is_some();
     let mut lr = LrParams {
-        uses_lr: filters.lr_luma_unit_size.is_some(),
+        uses_lr: filters.lr_luma_unit_size.is_some() || uses_chroma,
         planes: crate::tile::InlineVec::default(),
         loop_restoration_size: default_restoration_size(geometry),
     };
     if seq.restoration.enable_restoration {
         for plane in 0..num_planes {
             let luma = plane == 0 && filters.lr_luma_unit_size.is_some();
-            let params = match filters.lr_luma_wiener_ns.filter(|_| luma) {
+            let wiener = if plane == 0 {
+                filters.lr_luma_wiener_ns.filter(|_| luma)
+            } else {
+                chroma(plane)
+            };
+            let params = match wiener {
                 Some(choice) => LrPlaneParams {
                     restoration_type: if choice.switchable {
                         FrameRestorationType::Switchable
@@ -631,9 +651,7 @@ fn write_filter_params(
                         FrameRestorationType::WienerNonsep
                     },
                     frame_filters_on: true,
-                    num_filter_classes: choice
-                        .rst_ref_pic_idx
-                        .is_none()
+                    num_filter_classes: (plane == 0 && choice.rst_ref_pic_idx.is_none())
                         .then_some(choice.bank.classes.len() as u8),
                     frame_filter_bank: choice.rst_ref_pic_idx.is_none().then_some(choice.bank),
                     rst_ref_pic_idx: choice.rst_ref_pic_idx,
@@ -653,6 +671,10 @@ fn write_filter_params(
     }
     if let Some(size) = filters.lr_luma_unit_size {
         lr.loop_restoration_size[0] = size;
+    }
+    if let Some(size) = filters.lr_chroma_unit_size.filter(|_| uses_chroma) {
+        lr.loop_restoration_size[1] = size;
+        lr.loop_restoration_size[2] = size;
     }
     write_lr_params_for_inter(
         w,

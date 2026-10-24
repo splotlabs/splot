@@ -104,6 +104,9 @@ pub struct PresetParams {
     /// Luma Wiener-NS bank fits per frame, each on the units the previous fit
     /// took; `0` searches PC-Wiener alone.
     pub wiener_ns: u8,
+    /// Wiener-NS bank fits per frame of each chroma plane; `0` codes chroma
+    /// restoration off.
+    pub wiener_ns_chroma: u8,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -168,6 +171,7 @@ const fn row(
         ext_four_way_margin: 0,
         ccso_candidates: 0,
         wiener_ns: 0,
+        wiener_ns_chroma: 0,
     }
 }
 
@@ -176,18 +180,22 @@ pub const PRESETS: [PresetParams; 11] = with_filters(
     ROWS,
     [8, 8, 6, 6, 4, 4, 4, 2, 2, 1, 1],
     [2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1],
+    [2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1],
 );
 
-/// `rows` with `ccso_candidates[i]` and `wiener_ns[i]` in row `i`.
+/// `rows` with `ccso_candidates[i]`, `wiener_ns[i]` and `wiener_ns_chroma[i]`
+/// in row `i`.
 const fn with_filters(
     mut rows: [PresetParams; 11],
     ccso_candidates: [u8; 11],
     wiener_ns: [u8; 11],
+    wiener_ns_chroma: [u8; 11],
 ) -> [PresetParams; 11] {
     let mut i = 0;
     while i < rows.len() {
         rows[i].ccso_candidates = ccso_candidates[i];
         rows[i].wiener_ns = wiener_ns[i];
+        rows[i].wiener_ns_chroma = wiener_ns_chroma[i];
         i += 1;
     }
     rows
@@ -377,6 +385,7 @@ mod tests {
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
             assert!(fast.ccso_candidates <= slow.ccso_candidates);
             assert!(fast.wiener_ns <= slow.wiener_ns);
+            assert!(fast.wiener_ns_chroma <= slow.wiener_ns_chroma);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));

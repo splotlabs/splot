@@ -87,6 +87,8 @@ pub use filters::{
 };
 /// The first tap `(dy, dx, coeff_index)` of each § 7.20.3 luma pair; the partner is `(-dy, -dx)`.
 pub use splot_recon::WIENER_NS_CONFIG_Y_PAIRS;
+/// The § 7.20.3 chroma taps `(dy, dx, coeff_index)` and their luma samples.
+pub use splot_recon::{WIENER_NS_CONFIG_UV, wiener_ns_chroma_luma_plane};
 
 type BoxedSource = Box<dyn std::error::Error + Send + Sync + 'static>;
 
