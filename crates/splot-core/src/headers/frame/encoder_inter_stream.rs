@@ -111,6 +111,7 @@ pub fn build_inter_frame_header(
         use_ref_frame_mvs: false,
         filters: FrameFilterParams {
             lr_luma_wiener_ns: None,
+            lr_chroma_wiener_ns: [None; 2],
             ..params.filters
         },
         ..*params

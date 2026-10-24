@@ -108,6 +108,9 @@ pub struct PresetParams {
     /// Luma Wiener-NS bank fits per frame, each on the units the previous fit
     /// took; `0` searches PC-Wiener alone.
     pub wiener_ns: u8,
+    /// Wiener-NS bank fits per frame of each chroma plane; `0` codes chroma
+    /// restoration off.
+    pub wiener_ns_chroma: u8,
     /// MRL candidates of an intra leaf that get an RD trial besides the luma
     /// shortlist, lowest SATD first; `0` disables MRL in the sequence.
     pub mrl_trials: u8,
@@ -179,6 +182,7 @@ const fn row(
         ext_four_way_margin: 0,
         ccso_candidates: 0,
         wiener_ns: 0,
+        wiener_ns_chroma: 0,
         mrl_trials: 0,
         large_inter: true,
     }
@@ -189,20 +193,24 @@ pub const PRESETS: [PresetParams; 11] = with_columns(
     ROWS,
     [8, 8, 6, 6, 4, 4, 4, 2, 2, 1, 1],
     [2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1],
+    [2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1],
     [2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0],
 );
 
-/// `rows` with `ccso_candidates[i]`, `wiener_ns[i]` and `mrl_trials[i]` in row `i`.
+/// `rows` with `ccso_candidates[i]`, `wiener_ns[i]`, `wiener_ns_chroma[i]` and
+/// `mrl_trials[i]` in row `i`.
 const fn with_columns(
     mut rows: [PresetParams; 11],
     ccso_candidates: [u8; 11],
     wiener_ns: [u8; 11],
+    wiener_ns_chroma: [u8; 11],
     mrl_trials: [u8; 11],
 ) -> [PresetParams; 11] {
     let mut i = 0;
     while i < rows.len() {
         rows[i].ccso_candidates = ccso_candidates[i];
         rows[i].wiener_ns = wiener_ns[i];
+        rows[i].wiener_ns_chroma = wiener_ns_chroma[i];
         rows[i].mrl_trials = mrl_trials[i];
         i += 1;
     }
@@ -399,6 +407,7 @@ mod tests {
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
             assert!(fast.ccso_candidates <= slow.ccso_candidates);
             assert!(fast.wiener_ns <= slow.wiener_ns);
+            assert!(fast.wiener_ns_chroma <= slow.wiener_ns_chroma);
             assert!(fast.mrl_trials <= slow.mrl_trials);
             assert!(fast.large_inter <= slow.large_inter);
         }
