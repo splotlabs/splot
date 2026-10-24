@@ -32,6 +32,9 @@ use crate::tile_writer::{
 
 /// The largest `|AngleDeltaY|` (§ 5.20.5.5).
 const MAX_ANGLE_DELTA: i8 = 3;
+/// The compound shortlist prices the syntax of this many times as many of
+/// its lowest-SATD candidates as it keeps.
+const PRICED_COMPOUND_SHARE: usize = 2;
 /// One luma sample in `1/8` units.
 const FULL_PEL: i32 = 8;
 /// References whose pairs compound candidates take: the § 7.7 map ranks the
@@ -411,7 +414,8 @@ impl TrialCoder<'_, '_> {
 
     /// The `preset.compound_candidates` compound predictions of `leaf` with
     /// the lowest luma SATD plus the exact rate of their mode and difference
-    /// syntax, DRL indices included, over the reference pairs of the
+    /// syntax, DRL indices included (priced for the [`PRICED_COMPOUND_SHARE`]
+    /// times as many lowest-SATD ones), over the reference pairs of the
     /// first [`COMPOUND_REFS`] references. Each pair tries `NEAR_NEARMV` over
     /// the DRL indices, and a pair of distinct references also
     /// `GLOBAL_GLOBALMV` and the `NEWMV` modes, whose lists take the
@@ -482,20 +486,26 @@ impl TrialCoder<'_, '_> {
                 {
                     continue;
                 }
-                let mut sink = RateSink::adapting();
-                self.syntax
-                    .price_inter_modes(leaf, InterPrediction::Compound(trial), &mut sink)?;
                 let satd = motion.prediction_satd(
                     self.syntax,
                     &[(refs.0, mvs[0]), (refs.1, mvs[1])],
                     InterpolationFilter::EightTap,
                     leaf_rect(leaf)?,
                 )?;
-                ranked.push((satd + motion.bits_cost(sink.bits), mvs, trial));
+                ranked.push((satd, mvs, trial));
             }
         }
+        let keep = usize::from(self.preset.compound_candidates);
+        ranked.sort_by_key(|&(satd, ..)| satd);
+        ranked.truncate(keep * PRICED_COMPOUND_SHARE);
+        for (cost, _, trial) in &mut ranked {
+            let mut sink = RateSink::adapting();
+            self.syntax
+                .price_inter_modes(leaf, InterPrediction::Compound(*trial), &mut sink)?;
+            *cost += motion.bits_cost(sink.bits);
+        }
         ranked.sort_by_key(|&(cost, ..)| cost);
-        ranked.truncate(usize::from(self.preset.compound_candidates));
+        ranked.truncate(keep);
         Ok(ranked
             .into_iter()
             .map(|(.., trial)| LeafChoice::inter(InterPrediction::Compound(trial)))
