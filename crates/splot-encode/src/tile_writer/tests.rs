@@ -903,6 +903,10 @@ fn avm_decodes_random_key_frames_like_splot() {
     extended.tools.ext_partitions = true;
     extended.tools.uneven_4way_partitions = true;
     cases.push(extended);
+    let mut ist =
+        Case::new(200, 136, BitDepthIdc::Ten, SuperblockSize::Block64x64).with_tx_search();
+    ist.tools.intra_ist = true;
+    cases.push(ist);
     for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
         for sb_size in [SuperblockSize::Block64x64, SuperblockSize::Block128x128] {
             cases.push(Case::new(200, 136, bit_depth, sb_size).with_tx_search());
