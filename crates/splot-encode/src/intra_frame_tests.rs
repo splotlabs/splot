@@ -22,7 +22,7 @@ use crate::tile_writer::{
     CompoundModes, InterMode, InterModes, InterPrediction, LeafChoice, MotionVector, PARTITIONS,
     PartitionTree,
 };
-use splot_decode::encoder_syntax::{COMPOUND_MODES, INTERP_FILTERS, JMVD_SCALE_MODES};
+use splot_decode::encoder_syntax::{COMPOUND_MODES, INTERP_FILTERS, JMVD_SCALE_MODES, TxPartition};
 
 /// Gradients, a ripple, and seeded noise, so blocks of every size split.
 fn synthetic_frame(config: &Config, seed: u32) -> SourceFrame {
@@ -598,7 +598,7 @@ impl Rng {
 /// second-DRL index of list 1; a nonzero `jmvd_scale_mode`; a coded
 /// `interp_filter` other than `EIGHTTAP`; a `NEWMV` below the frame
 /// precision; an adaptive-MVD `NEWMV`.
-type Coverage = [usize; 18];
+type Coverage = [usize; 19];
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -675,7 +675,12 @@ fn random_leaf(
     coverage: &mut Coverage,
 ) -> LeafChoice {
     let filter = INTERP_FILTERS[rng.below(3) as usize];
-    let choice = random_modes(syntax, leaf, rng, coverage, filter);
+    let mut choice = random_modes(syntax, leaf, rng, coverage, filter);
+    let partitions = syntax.luma_tx_partitions(leaf).unwrap();
+    if choice.inter.is_some() && partitions.len() > 1 {
+        choice.tx_partition = partitions[rng.below(partitions.len() as u64) as usize];
+        coverage[18] += usize::from(choice.tx_partition != TxPartition::None);
+    }
     if let Some(prediction) = choice.inter
         && filter != INTERP_FILTERS[0]
         && syntax
@@ -873,10 +878,9 @@ const RANDOM_INTER_CASES: [(u32, u32, BitDepth, u8, u16); 4] = [
     (144, 80, BitDepth::Ten, 9, 60),
 ];
 
-/// [`RANDOM_INTER_CASES`] by chroma format; 4:2:2 and 4:4:4 skip the slow
-/// 128x128-superblock case.
+/// [`RANDOM_INTER_CASES`] in every chroma format.
 fn random_inter_cases() -> impl Iterator<Item = (usize, Config, String)> {
-    format_cases(&RANDOM_INTER_CASES, &[0, 2, 3])
+    format_cases(&RANDOM_INTER_CASES, &[0, 1, 2, 3])
 }
 
 /// Random inter leaves over three references, with NEWMV vectors coded by the
@@ -1252,6 +1256,8 @@ fn avm_decodes_multi_tile_frames_like_splot() {
 mod carry;
 #[path = "intra_frame_ccso_tests.rs"]
 mod ccso;
+#[path = "intra_frame_inter_tx_tests.rs"]
+mod inter_tx;
 #[path = "intra_tools_tests.rs"]
 mod intra_tools;
 #[path = "intra_frame_large_inter_tests.rs"]

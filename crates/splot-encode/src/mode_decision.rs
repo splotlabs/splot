@@ -18,8 +18,9 @@ use splot_decode::encoder_syntax::{
 };
 use splot_recon::InterpolationFilter;
 
-use crate::intra_frame::SourceResidualCoder;
 use crate::intra_frame::codable_children;
+use crate::intra_frame::{PaddedSource, SourceResidualCoder};
+use crate::kernels::{BlockDims, kernels};
 use crate::motion_search::MotionSearch;
 use crate::preset::PresetParams;
 use crate::rd::coeff_rate::RateSink;
@@ -568,6 +569,48 @@ impl TrialCoder<'_, '_> {
         Ok(if other_cost < cost { other } else { choice })
     }
 
+    /// Whether the final trial of `choice` measures the quadrant energy of its
+    /// luma prediction residual: an inter leaf of a frame with luma transform
+    /// partitions, both sides at least 8, under `preset.inter_tx_split`.
+    fn measures_quadrants(&self, leaf: &LeafBlock, choice: LeafChoice) -> Result<bool> {
+        let (w, h) = leaf.dimensions()?;
+        Ok(choice.inter.is_some()
+            && self.preset.inter_tx_split > 0
+            && w.min(h) >= 8
+            && self.syntax.luma_tx_partitions(leaf)?.len() > 1)
+    }
+
+    /// The best luma transform partition of the coded inter `choice` when one
+    /// quadrant of its prediction residual holds more than
+    /// `preset.inter_tx_split / 64` of the energy; `None` keeps `choice`.
+    fn uneven_split(
+        &mut self,
+        leaf: &LeafBlock,
+        choice: LeafChoice,
+        quadrants: Option<[u64; 4]>,
+        start: &SyntaxSnapshot,
+    ) -> Result<Option<LeafChoice>> {
+        let Some(quadrants) = quadrants else {
+            return Ok(None);
+        };
+        let total: u64 = quadrants.iter().sum();
+        let max = quadrants.iter().copied().max().unwrap_or(0);
+        if max * 64 <= total * u64::from(self.preset.inter_tx_split) {
+            return Ok(None);
+        }
+        self.syntax.restore(start)?;
+        let candidates = self
+            .syntax
+            .luma_tx_partitions(leaf)?
+            .into_iter()
+            .map(|tx_partition| LeafChoice {
+                tx_partition,
+                ..choice
+            })
+            .collect();
+        Ok(Some(self.best(leaf, candidates, ALL, start)?))
+    }
+
     /// The `preset.compound_candidates` compound predictions of `leaf` with
     /// the lowest luma SATD plus the exact rate of their mode and difference
     /// syntax, DRL indices included (priced for the [`PRICED_COMPOUND_SHARE`]
@@ -715,6 +758,28 @@ impl TrialCoder<'_, '_> {
     }
 }
 
+/// The squared error between the luma source and the row-major `prediction`
+/// of the luma rectangle `(x, y, w, h)` in each quadrant, in raster order.
+pub(crate) fn quadrant_sse(
+    source: &PaddedSource,
+    (x, y, w, h): (usize, usize, usize, usize),
+    prediction: &[u16],
+) -> Result<[u64; 4]> {
+    let (luma, stride, ..) = source.luma();
+    let dims = BlockDims::new(w / 2, h / 2).map_err(TileWriterError::Kernel)?;
+    let mut out = [0; 4];
+    for (index, sse) in out.iter_mut().enumerate() {
+        let (dx, dy) = (index % 2 * w / 2, index / 2 * h / 2);
+        let at = (y + dy) * stride + x + dx;
+        let (Some(source), Some(predicted)) = (luma.get(at..), prediction.get(dy * w + dx..))
+        else {
+            return Err(TileWriterError::Shape("quadrant outside the source"));
+        };
+        *sse = kernels().sse(source, stride, predicted, w, dims);
+    }
+    Ok(out)
+}
+
 /// The luma rectangle `(x, y, width, height)` of `leaf`.
 fn leaf_rect(leaf: &LeafBlock) -> Result<(usize, usize, usize, usize)> {
     let (w, h) = leaf.dimensions()?;
@@ -800,7 +865,14 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         }
         let scored = self.best_scored(&leaf, candidates, ALL, &start)?;
         let choice = self.refine_filter(&leaf, scored, &start)?;
-        Ok((self.code_leaf(node, choice)?, choice))
+        self.coder.quadrants = self.measures_quadrants(&leaf, choice)?.then_some([0; 4]);
+        let cost = self.code_leaf(node, choice);
+        let quadrants = self.coder.quadrants.take();
+        let cost = cost?;
+        match self.uneven_split(&leaf, choice, quadrants, &start)? {
+            Some(split) => Ok((self.code_leaf(node, split)?, split)),
+            None => Ok((cost, choice)),
+        }
     }
 
     fn code_leaf(&mut self, node: PartitionNode, choice: LeafChoice) -> Result<RdCost> {

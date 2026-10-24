@@ -123,6 +123,10 @@ pub struct PresetParams {
     /// Leaves wider or taller than 64 also try inter, skip-mode and compound
     /// predictions; off, they code intra only.
     pub large_inter: bool,
+    /// An inter leaf tries the luma transform partitions of a `TX_MODE_SELECT`
+    /// frame when one quadrant of its luma prediction residual holds more than
+    /// `inter_tx_split / 64` of the energy; `0` codes `NONE` without a trial.
+    pub inter_tx_split: u8,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -192,6 +196,7 @@ const fn row(
         mrl_trials: 0,
         ist_sets: 0,
         large_inter: true,
+        inter_tx_split: if tx_partition_search { 24 } else { 0 },
     }
 }
 
@@ -421,6 +426,10 @@ mod tests {
             assert!(fast.mrl_trials <= slow.mrl_trials);
             assert!(fast.ist_sets <= slow.ist_sets);
             assert!(fast.large_inter <= slow.large_inter);
+            assert!(
+                fast.inter_tx_split == 0
+                    || (slow.inter_tx_split != 0 && fast.inter_tx_split >= slow.inter_tx_split)
+            );
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));
