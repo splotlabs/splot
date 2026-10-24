@@ -24,6 +24,17 @@ const CHROMA_2D_PLANE_CONTEXT_OFFSET: [usize; 3] = [4, 0, 4];
 const LF_2D_CONTEXT_CAP_AND_OFFSET: [(usize, usize); 3] = [(8, 0), (6, 9), (4, 16)];
 const HF_2D_CONTEXT_OFFSET: [usize; 3] = [0, 5, 10];
 
+/// Every neighbour offset `[row, col]` the `coeff_base` and `coeff_br`
+/// contexts of class index `tx_class` read.
+pub(crate) fn context_offsets(tx_class: usize) -> [[usize; 2]; 8] {
+    let class = tx_class_idx(tx_class);
+    let sig = SIG_OFFSETS[class].map(|[r, c]| [r as usize, c as usize]);
+    let mag = MAG_REF_OFFSET_WITH_TX_CLASS[class];
+    [
+        sig[0], sig[1], sig[2], sig[3], sig[4], mag[0], mag[1], mag[2],
+    ]
+}
+
 const fn tx_class_idx(tx_class: usize) -> usize {
     if tx_class < 3 { tx_class } else { 0 }
 }

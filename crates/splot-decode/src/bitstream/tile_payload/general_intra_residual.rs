@@ -2137,14 +2137,13 @@ fn intra_secondary_transform_kernel(
 }
 
 /// The § 7.14.4 dequantization and § 7.15.4 inverse-transform parameters the
-/// decoder uses for a `plane_tx_type` block without quantizer matrices, TCQ, or
+/// decoder uses for a `plane_tx_type` block without quantizer matrices or
 /// secondary transforms.
 pub(crate) fn block_recon_params(
     qindex: u32,
     plane_id: PlaneId,
-    log2_width: u32,
-    log2_height: u32,
-    plane_tx_type: usize,
+    (log2_width, log2_height): (u32, u32),
+    (plane_tx_type, use_tcq): (usize, bool),
     bit_depth: BitDepth,
 ) -> Result<(DequantBlockParams, InverseTransform2dOuter), GeneralIntraResidualError> {
     let samples = (1usize << log2_width) << log2_height;
@@ -2157,7 +2156,7 @@ pub(crate) fn block_recon_params(
         log2_width,
         log2_height,
         plane_tx_type,
-        false,
+        use_tcq,
         false,
         false,
         None,

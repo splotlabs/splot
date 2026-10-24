@@ -218,11 +218,10 @@ fn deep_drl_streams_decode_alike_on_any_thread_count() {
 #[test]
 fn switchable_filters_reach_the_headers_and_the_decoder() {
     let config = config(72, 40, BitDepth::Ten, 6, 110);
-    let on = Preset::new(6).unwrap().params();
-    assert!(on.interp_filter_search > 0);
-    let off = Box::leak(Box::new(PresetParams {
-        interp_filter_search: 0,
-        ..*on
+    let off = Preset::new(6).unwrap().params();
+    let on: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        interp_filter_search: 2,
+        ..*off
     }));
     let mut streams = Vec::new();
     for (preset, filter) in [(on, FrameFilter::Switchable), (off, FrameFilter::Eighttap)] {
@@ -239,4 +238,27 @@ fn switchable_filters_reach_the_headers_and_the_decoder() {
         streams.push(units);
     }
     assert_ne!(streams[0], streams[1]);
+}
+
+/// A tiled stream with the filter search at level 2 codes the same bytes on
+/// 1, 2 and 8 threads.
+#[test]
+fn switchable_filter_streams_match_on_any_thread_count() {
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        interp_filter_search: 2,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let stream = |threads: usize| {
+        let mut config = config(136, 72, BitDepth::Eight, 6, 100);
+        config.tiles = TileLayout {
+            cols_log2: 1,
+            rows_log2: 1,
+        };
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        super::carry::planned_stream(&config, preset).0
+    };
+    let one = stream(1);
+    for threads in [2, 8] {
+        assert!(stream(threads) == one, "{threads} threads");
+    }
 }

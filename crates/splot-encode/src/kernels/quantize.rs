@@ -131,7 +131,6 @@ impl Quantizer {
 
     /// The § 7.14.4 `dqDenom` with `allow_tcq` off for an original
     /// `2^log2_width x 2^log2_height` transform: `1 << ((pels > 256) + (pels > 1024))`.
-    #[cfg(test)]
     pub(crate) fn dq_denom_without_tcq(log2_width: u32, log2_height: u32) -> u32 {
         let pels = 1u32 << (log2_width + log2_height);
         1 << (u32::from(pels > 256) + u32::from(pels > 1024))
