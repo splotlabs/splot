@@ -79,9 +79,11 @@ pub use transform::{TX_PARTITIONS, TxPartition};
 #[path = "encoder_filters.rs"]
 mod filters;
 pub use filters::{
-    CcsoBlockMap, CcsoGrid, CdefIndexMap, CdefSlot, FilterRecorder, LrLayout, LrUnit,
-    apply_loop_filters, ccso_offset, ccso_taps, cdef_unit_grid, merge_tiles,
+    CcsoBlockMap, CcsoGrid, CdefIndexMap, CdefSlot, FilterRecorder, LrLayout, LrSymbol, LrUnit,
+    LrUnitType, apply_loop_filters, ccso_offset, ccso_taps, cdef_unit_grid, merge_tiles,
 };
+/// The first tap `(dy, dx, coeff_index)` of each § 7.20.3 luma pair; the partner is `(-dy, -dx)`.
+pub use splot_recon::WIENER_NS_CONFIG_Y_PAIRS;
 
 type BoxedSource = Box<dyn std::error::Error + Send + Sync + 'static>;
 

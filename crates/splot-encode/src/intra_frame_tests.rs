@@ -1062,6 +1062,8 @@ mod carry;
 mod ccso;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
+#[path = "intra_frame_wienerns_tests.rs"]
+mod wienerns;
 
 #[path = "ext_partition_tests.rs"]
 mod ext_partitions;
