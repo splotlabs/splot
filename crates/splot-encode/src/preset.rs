@@ -104,6 +104,9 @@ pub struct PresetParams {
     /// Luma Wiener-NS bank fits per frame, each on the units the previous fit
     /// took; `0` searches PC-Wiener alone.
     pub wiener_ns: u8,
+    /// MRL candidates of an intra leaf that get an RD trial besides the luma
+    /// shortlist, lowest SATD first; `0` disables MRL in the sequence.
+    pub mrl_trials: u8,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -168,26 +171,30 @@ const fn row(
         ext_four_way_margin: 0,
         ccso_candidates: 0,
         wiener_ns: 0,
+        mrl_trials: 0,
     }
 }
 
 /// Search limits indexed by preset: `0` is the slowest and best, `10` the fastest.
-pub const PRESETS: [PresetParams; 11] = with_filters(
+pub const PRESETS: [PresetParams; 11] = with_columns(
     ROWS,
     [8, 8, 6, 6, 4, 4, 4, 2, 2, 1, 1],
     [2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1],
+    [2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0],
 );
 
-/// `rows` with `ccso_candidates[i]` and `wiener_ns[i]` in row `i`.
-const fn with_filters(
+/// `rows` with `ccso_candidates[i]`, `wiener_ns[i]` and `mrl_trials[i]` in row `i`.
+const fn with_columns(
     mut rows: [PresetParams; 11],
     ccso_candidates: [u8; 11],
     wiener_ns: [u8; 11],
+    mrl_trials: [u8; 11],
 ) -> [PresetParams; 11] {
     let mut i = 0;
     while i < rows.len() {
         rows[i].ccso_candidates = ccso_candidates[i];
         rows[i].wiener_ns = wiener_ns[i];
+        rows[i].mrl_trials = mrl_trials[i];
         i += 1;
     }
     rows
@@ -377,6 +384,7 @@ mod tests {
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
             assert!(fast.ccso_candidates <= slow.ccso_candidates);
             assert!(fast.wiener_ns <= slow.wiener_ns);
+            assert!(fast.mrl_trials <= slow.mrl_trials);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));
