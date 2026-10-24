@@ -254,7 +254,7 @@ const ACTIVE_TAP_SPANS: [[(usize, usize); NUM_PHASES]; NUM_FILTER_TYPES] = activ
 /// Only the three frame-level filter types are exposed; the 4-tap small-block
 /// substitutions (indices 4 and 5) are an internal § 7.13.3.18 step, never a
 /// caller-selectable filter.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum InterpolationFilter {
     /// `EIGHTTAP` (`interp_filter == 0`).
     EightTap,

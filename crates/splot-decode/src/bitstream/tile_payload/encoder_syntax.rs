@@ -69,7 +69,8 @@ pub use compound::{
     COMPOUND_MODES, CompoundMode, CompoundModes, InterPrediction, JMVD_SCALE_MODES,
 };
 pub use inter::{
-    EncoderReferences, InterMode, InterModes, MV_PRECISION_EIGHTH_PEL, MotionVector, SingleMvs,
+    EncoderReferences, INTERP_FILTERS, InterMode, InterModes, MV_PRECISION_EIGHTH_PEL,
+    MotionVector, SingleMvs,
 };
 pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, TxType};
 pub use parity::ParityHiding;

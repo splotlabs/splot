@@ -5,6 +5,8 @@
 //! § 5.20.7.12) with `COMPOUND_AVERAGE` prediction: the masked, weighted,
 //! warped and refined compound tools stay off at sequence level.
 
+use splot_recon::InterpolationFilter;
+
 use super::inter::{InterModes, MotionVector};
 use super::{EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, rule};
 use crate::prediction::inter::{CompoundYMode, EncoderCompoundMotion, EncoderMotion, Mv};
@@ -59,6 +61,8 @@ pub struct CompoundModes {
     /// `jmvd_scale_mode`, below [`JMVD_SCALE_MODES`]; only `JOINT_NEWMV`
     /// codes it.
     pub jmvd_scale_mode: u8,
+    /// `interp_filter`, as [`InterModes::filter`].
+    pub filter: InterpolationFilter,
 }
 
 /// The prediction of one inter leaf.
@@ -191,6 +195,7 @@ impl IntraTileSyntax {
                     independent_idx: None,
                     mvd: [Mv::default(); 2],
                     jmvd_scale_mode: 0,
+                    interp: InterpolationFilter::EightTapSharp,
                 })
             }
         })
@@ -232,6 +237,7 @@ impl IntraTileSyntax {
             } else {
                 0
             },
+            interp: modes.filter,
         };
         let tile = &self.inter_ref()?.tile;
         tile.mode_symbols(&leaf.frontier, EncoderMotion::Compound(motion))

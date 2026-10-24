@@ -452,7 +452,7 @@ fn resolve_compound_interp_filter(
     )
 }
 
-fn compound_needs_interp_filter(
+pub(super) fn compound_needs_interp_filter(
     n4w: usize,
     n4h: usize,
     y_mode: CompoundYMode,

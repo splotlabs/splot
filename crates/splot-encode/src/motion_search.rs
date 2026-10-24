@@ -13,15 +13,16 @@
 //! facade, `splot_recon` kernels), scored by SATD. Every score adds an
 //! approximate vector rate. Compound candidates reuse the single-reference
 //! results; they are ranked by the SATD of the averaged predictions of their
-//! two lists.
+//! two lists. The search predicts with `EIGHTTAP`; a block's final vectors
+//! then score every switchable filter.
 
 use splot_decode::encoder_syntax::{IntraTileSyntax, MotionVector};
-use splot_recon::{ReferencePlaneView, subpel_predict_block_strided_into};
+use splot_recon::{InterpolationFilter, ReferencePlaneView, subpel_predict_block_strided_into};
 
 use crate::intra_frame::PaddedSource;
 use crate::kernels::{BlockDims, kernels};
 use crate::preset::PresetParams;
-use crate::rd::{Lambda, log2_q8};
+use crate::rd::{Bits, Lambda, log2_q8};
 use crate::tile_writer::{Result, TileWriterError};
 
 /// Coarse pyramid levels below full resolution.
@@ -150,7 +151,7 @@ impl MotionSearch {
             let base = syntax.with_luma_subpel(
                 ref_frame,
                 (0, 0, 8, 8),
-                MotionVector::default(),
+                (MotionVector::default(), InterpolationFilter::EightTap),
                 |view: &ReferencePlaneView<'_, u16>, _| {
                     Level::padded(view.width(), view.height(), EDGE, |y, x| {
                         view.sample(y, x) as u16
@@ -277,25 +278,43 @@ impl MotionSearch {
         mv: MotionVector,
         pred: MotionVector,
     ) -> Result<u64> {
-        let predicted = predict(syntax, ref_frame, block, mv)?;
+        let predicted = predict(
+            syntax,
+            ref_frame,
+            block,
+            (mv, InterpolationFilter::EightTap),
+        )?;
         Ok(self.satd(block, &predicted)? + self.rate(mv, pred))
     }
 
-    /// SATD of the rounded average of the luma predictions of the block from
-    /// each `(reference, vector)` of `lists`; it approximates the decoder's
-    /// `COMPOUND_AVERAGE`, which rounds once from higher precision.
-    pub(crate) fn compound_satd(
+    /// SATD of the luma prediction of the block with `filter` from the one or
+    /// two `(reference, vector)` of `lists`; two lists take the rounded
+    /// average, which approximates the decoder's `COMPOUND_AVERAGE`, which
+    /// rounds once from higher precision.
+    pub(crate) fn prediction_satd(
         &self,
         syntax: &IntraTileSyntax,
-        lists: [(usize, MotionVector); 2],
+        lists: &[(usize, MotionVector)],
+        filter: InterpolationFilter,
         block: (usize, usize, usize, usize),
     ) -> Result<u64> {
-        let first = predict(syntax, lists[0].0, block, lists[0].1)?;
-        let mut average = predict(syntax, lists[1].0, block, lists[1].1)?;
-        for (out, &other) in average.iter_mut().zip(&first) {
-            *out = ((u32::from(*out) + u32::from(other) + 1) >> 1) as u16;
+        let mut average = Vec::new();
+        for (index, &(ref_frame, mv)) in lists.iter().enumerate() {
+            let predicted = predict(syntax, ref_frame, block, (mv, filter))?;
+            if index == 0 {
+                average = predicted;
+            } else {
+                for (out, &other) in average.iter_mut().zip(&predicted) {
+                    *out = ((u32::from(*out) + u32::from(other) + 1) >> 1) as u16;
+                }
+            }
         }
         self.satd(block, &average)
+    }
+
+    /// The cost of `bits` in SAD units.
+    pub(crate) fn bits_cost(&self, bits: Bits) -> u64 {
+        (bits.0 * self.sad_lambda_q8) >> 16
     }
 
     /// SATD between the source luma of `block` and the row-major `predicted`.
@@ -317,22 +336,21 @@ impl MotionSearch {
     pub(crate) fn rate(&self, mv: MotionVector, pred: MotionVector) -> u64 {
         let shell = ((mv.row - pred.row).unsigned_abs() + (mv.col - pred.col).unsigned_abs())
             / self.mv_step;
-        let bits_q8 = 2 * u64::from(log2_q8(shell + 1)) + 256;
-        (bits_q8 * self.sad_lambda_q8) >> 16
+        self.bits_cost(Bits(2 * u64::from(log2_q8(shell + 1)) + 256))
     }
 }
 
 /// The decoder's row-major luma prediction of `block` from list reference
-/// `ref_frame` with `mv`.
+/// `ref_frame` with `(mv, filter)`.
 fn predict(
     syntax: &IntraTileSyntax,
     ref_frame: usize,
     block: (usize, usize, usize, usize),
-    mv: MotionVector,
+    motion: (MotionVector, InterpolationFilter),
 ) -> Result<Vec<u16>> {
     let width = block.2;
     let mut predicted = vec![0u16; width * block.3];
-    syntax.with_luma_subpel(ref_frame, block, mv, |view, params| {
+    syntax.with_luma_subpel(ref_frame, block, motion, |view, params| {
         subpel_predict_block_strided_into(view, params, &mut predicted, width)
     })??;
     Ok(predicted)
