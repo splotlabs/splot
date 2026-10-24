@@ -4841,7 +4841,7 @@ module = "crates/splot-encode/src/intra_frame.rs"
 change_id = "encoder-m2-full-intra"
 owner = "encoder"
 risk = "medium"
-notes = "Key frames are closed-loop key frames with uniform tiles (ENC-TILES) in 4:2:0, 4:2:2 or 4:4:4 (ENC-CHROMA-FORMATS); ENC-INTER-FRAME-HEADERS adds inter frames. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No DIP, FSC, palette, IntraBC, TCQ, Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
+notes = "Key frames are closed-loop key frames with uniform tiles (ENC-TILES) in 4:2:0, 4:2:2 or 4:4:4 (ENC-CHROMA-FORMATS); ENC-INTER-FRAME-HEADERS adds inter frames. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No DIP, palette, IntraBC, TCQ, Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
 
 [feature.status]
 mapped = "done"
@@ -5815,6 +5815,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/tile_writer/tests.rs::every_mhccp_direction_round_trips", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot", "crates/splot-encode/src/intra_tools_tests.rs::mhccp_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_cctx_pairs_and_mhccp_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_cctx_and_mhccp_frames_like_splot"]
 commands = ["cargo test -p splot-encode mhccp --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-FSC"
+name = "Encoder forward skip coding"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.5.5", "5.20.6.3", "5.20.7.27"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/tile_writer/coeffs.rs"
+change_id = "enc-fsc"
+owner = "encoder"
+risk = "medium"
+notes = "Implemented, OFF in every preset; enable via the A14 screen-content detector. PresetParams::fsc (off disables enable_fsc): the winning luma mode of an intra leaf gets one RD trial with fsc_mode. The encoder_syntax facade takes IntraModes::fsc, writes fsc_mode (neighbour context, or the inter context for intra leaves in mixed regions of inter frames), plans IDTX-only luma, uses the FSC transform-partition rows and txb_skip context, and offers the FSC coefficient rows (coeff_base_bob, coeff_base_idtx, coeff_br_idtx, idtx_sign); the tile writer codes FSC levels from the first nonzero scan position, also for inter IDTX blocks. FSC blocks skip TCQ (uses_tcq excludes useFsc) and RDOQ. On at p6 against main: screendata intra -28.01% (0.69x CPU), inter -24.45% (0.87x); paris intra +1.02%, inter +0.92%; park_joy intra +0.14%. Off writes the old stream byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/tile_writer/tests.rs::fsc_leaves_round_trip", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot", "crates/splot-encode/src/intra_tools_tests.rs::fsc_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_fsc_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_fsc_frames_like_splot"]
+commands = ["cargo test -p splot-encode fsc --locked"]
 fixtures = []
 diagnostics = []
 

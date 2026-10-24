@@ -32,6 +32,7 @@ use super::super::general_intra_block::{
     Y_SECOND_MODE_BITS, cfl_allowed_for_chroma_mode, cfl_alpha_u_ctx, cfl_alpha_v_ctx,
     cfl_mh_dir_size_group, mhccp_allowed_for_chroma_mode,
 };
+use super::super::general_intra_block::{INTER_FSC_MODE_CONTEXT, allow_fsc_intra, fsc_bsize_group};
 use super::super::general_intra_residual::{LumaTransformTypeContext, intra_chroma_plane_tx_type};
 use super::super::partition_traversal::{
     DecodedLeafPublication, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
@@ -88,6 +89,9 @@ pub struct IntraModes {
     pub uv_mode: ChromaMode,
     /// The luma reference line of a directional `y_mode`.
     pub mrl: Mrl,
+    /// `fsc_mode`: the luma blocks code IDTX, with FSC levels when the
+    /// sequence enables FSC.
+    pub fsc: bool,
 }
 
 impl IntraModes {
@@ -97,6 +101,7 @@ impl IntraModes {
         angle_delta: 0,
         uv_mode: ChromaMode::Intra(IntraMode::Dc),
         mrl: Mrl::OFF,
+        fsc: false,
     };
 }
 
@@ -193,6 +198,10 @@ pub(super) struct IntraTools {
     enable_mrls: bool,
     /// `enable_intra_ist`.
     pub(super) enable_intra_ist: bool,
+    /// `enable_fsc`.
+    pub(super) enable_fsc: bool,
+    /// `enable_idtx_intra`: leaves may code `fsc_mode`.
+    fsc_mode: bool,
     /// `enable_cctx`.
     pub(super) enable_cctx: bool,
     pub(super) enable_chroma_dctonly: bool,
@@ -228,10 +237,8 @@ impl IntraTools {
         let lossless = core.lossless_info.as_ref();
         let refused = [
             (
-                intra.enable_dip
-                    || tq.enable_idtx_intra
-                    || core.allow_screen_content_tools == Some(true),
-                "DIP, FSC, or palette",
+                intra.enable_dip || core.allow_screen_content_tools == Some(true),
+                "DIP or palette",
             ),
             (core.allow_intrabc == Some(true), "intra block copy"),
             (
@@ -266,6 +273,8 @@ impl IntraTools {
             enable_intra_edge_filter: intra.enable_intra_edge_filter,
             enable_mrls: intra.enable_mrls,
             enable_intra_ist: tq.enable_intra_ist,
+            enable_fsc: tq.enable_fsc,
+            fsc_mode: tq.enable_idtx_intra,
             enable_cctx: tq.enable_cctx,
             enable_chroma_dctonly: tq.enable_chroma_dctonly,
             bit_depth: sequence_bit_depth(seq),
@@ -374,6 +383,18 @@ impl IntraTileSyntax {
                 .is_some_and(|(n4w, n4h)| cfl_allowed_for_chroma_mode(self.tools.chroma, n4w, n4h))
     }
 
+    /// Whether `leaf` may code `fsc_mode` (§ 5.20.5.5 `allow_fsc_intra`).
+    #[must_use]
+    pub fn fsc_allowed(&self, leaf: &LeafBlock) -> bool {
+        self.tools.fsc_mode
+            && leaf_size4(leaf).is_ok_and(|(n4w, n4h)| allow_fsc_intra(self.tools.chroma, n4w, n4h))
+    }
+
+    /// Whether the planned intra leaf codes `fsc_mode`.
+    pub(super) const fn planned_fsc(&self) -> bool {
+        self.fsc_leaf
+    }
+
     /// Whether `leaf` may code MHCCP (§ 5.20.5.6 `is_mhccp_allowed`).
     #[must_use]
     pub fn mhccp_allowed(&self, leaf: &LeafBlock) -> bool {
@@ -420,6 +441,20 @@ impl IntraTileSyntax {
                 1 + second / SECOND_MODE_COUNT,
             )?;
             literal(symbols, second % SECOND_MODE_COUNT, Y_SECOND_MODE_BITS)?;
+        }
+        if self.fsc_allowed(leaf) {
+            let (n4w, n4h) = leaf_size4(leaf)?;
+            let ctx = if self.inter.is_none() || !leaf.frontier.is_mixed_region() {
+                self.fsc_modes
+                    .fsc_mode_ctx(leaf.frontier.r, leaf.frontier.c, n4w, n4h)
+            } else {
+                INTER_FSC_MODE_CONTEXT
+            };
+            let bsize_group = fsc_bsize_group(leaf.frontier.b_size);
+            let selector = TileCdfSelector::FscMode { ctx, bsize_group };
+            self.put(symbols, selector, modes.fsc.into())?;
+        } else if modes.fsc {
+            return Err(EncoderSyntaxError::Unsupported("FSC in this block"));
         }
         self.mrl_selection(modes)?;
         if self.tools.enable_mrls && modes.y_mode.is_directional() {
@@ -499,14 +534,19 @@ impl IntraTileSyntax {
     ) -> Result<Vec<TransformBlock>> {
         self.clear_inter_plan();
         self.plan_cctx(leaf);
+        self.fsc_leaf = modes.fsc;
         let (block_ctx, _) = self.block_ctx(leaf);
         let (_, joint) = self.y_mode_index(leaf, modes)?;
         let block_modes = block_modes(leaf, modes, joint, self.mrl_selection(modes)?)?;
         let luma = rect_luma_plan(&block_modes, block_ctx, self.tools.tcq, self.sb_size4)
             .map_err(rule("luma plan"))?;
         let chroma = rect_chroma_plan(&block_modes, self.tools.cfl_ds_filter_index, self.sb_size4);
-        let mut plan = GeneralIntraResidualPlan::rect(block_ctx, luma, chroma, false, None, false)
-            .map_err(rule("residual plan"))?;
+        if modes.fsc && !self.fsc_allowed(leaf) {
+            return Err(EncoderSyntaxError::Unsupported("FSC in this block"));
+        }
+        let mut plan =
+            GeneralIntraResidualPlan::rect(block_ctx, luma, chroma, modes.fsc, None, false)
+                .map_err(rule("residual plan"))?;
         if let Some(tx_size) = self.partitioned_tx_size(leaf, partition)? {
             plan.partition_luma(tx_size, partition)
                 .map_err(rule("transform partition"))?;
@@ -516,7 +556,9 @@ impl IntraTileSyntax {
         let units = plan
             .transform_blocks()
             .map(|(plane, x, y, tx_size, fills_block)| {
-                let tx_type = if plane == 0 {
+                let tx_type = if plane == 0 && modes.fsc {
+                    TxType::Idtx
+                } else if plane == 0 {
                     TxType::DctDct
                 } else {
                     TxType::from_value(
@@ -728,7 +770,8 @@ impl IntraTileSyntax {
         let (_, joint) = self.y_mode_index(leaf, modes)?;
         let mrl = self.mrl_selection(modes)?;
         let block_modes = block_modes(leaf, modes, joint, mrl)?;
-        let mut mode = GeneralIntraLeafMode::luma(joint, modes.y_mode, modes.angle_delta, 0, mrl);
+        let fsc = u8::from(modes.fsc);
+        let mut mode = GeneralIntraLeafMode::luma(joint, modes.y_mode, modes.angle_delta, fsc, mrl);
         if leaf.frontier.has_chroma {
             mode = mode.with_uv_cfl(block_modes.is_cfl());
         }
@@ -1025,7 +1068,7 @@ fn block_modes(
         angle_delta_y: modes.angle_delta,
         intra_joint_mode,
         mrl,
-        fsc_mode: 0,
+        fsc_mode: modes.fsc.into(),
         use_dip: 0,
         dip_transpose: 0,
         dip_mode: 0,

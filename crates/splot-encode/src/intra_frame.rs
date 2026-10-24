@@ -104,6 +104,7 @@ impl IntraFrameCoder {
                 intra_ist: preset.ist_sets > 0,
                 cctx: preset.cctx,
                 mhccp: preset.mhccp,
+                fsc: preset.fsc,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
                 avg_cdf: preset.cdf_carry.then_some(AVG_CDF_ACROSS_TILES),
@@ -745,6 +746,7 @@ impl SourceResidualCoder<'_> {
             .coefficient_q8(Quantizer::dq_denom_without_tcq(log2_w, log2_h));
         let parity = syntax.parity_hiding(tx);
         let (rows, trellis) = &mut self.rates;
+        let fsc = syntax.uses_fsc(tx);
         let mut rates = CdfCoeffRates::new(syntax, tx, rows);
         let every_type = self.preset.rdoq_every_type && !self.trial;
         let rdoq_type = every_type || (tx.tx_type as u8) < TxType::Idtx as u8;
@@ -759,7 +761,7 @@ impl SourceResidualCoder<'_> {
                 &mut levels,
             )
             .map_err(kernel)?;
-        } else if self.preset.rdoq && !self.candidate && rdoq_type {
+        } else if self.preset.rdoq && !self.candidate && rdoq_type && !fsc {
             rdoq(
                 kernels(),
                 &block,

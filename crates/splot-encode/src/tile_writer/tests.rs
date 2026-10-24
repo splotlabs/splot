@@ -396,6 +396,8 @@ struct ModePicker {
     coded_chroma: HashSet<u8>,
     mrl: bool,
     mhccp: bool,
+    fsc: bool,
+    coded_fsc: bool,
     coded_mrl: HashSet<Mrl>,
 }
 
@@ -410,11 +412,13 @@ impl ModePicker {
             coded_chroma: HashSet::new(),
             mrl: false,
             mhccp: false,
+            fsc: false,
+            coded_fsc: false,
             coded_mrl: HashSet::new(),
         }
     }
 
-    fn pick(&mut self, cfl_allowed: bool, mhccp_allowed: bool) -> IntraModes {
+    fn pick(&mut self, cfl_allowed: bool, mhccp_allowed: bool, fsc_allowed: bool) -> IntraModes {
         let (y_mode, angle_delta) = self.luma[self.next % self.luma.len()];
         let uv = self.next % (INTRA_MODES.len() + 2);
         self.next += 1;
@@ -454,11 +458,14 @@ impl ModePicker {
             };
             self.coded_mrl.insert(mrl);
         }
+        let fsc = self.fsc && fsc_allowed && self.rng.below(2) == 0;
+        self.coded_fsc |= fsc;
         IntraModes {
             y_mode,
             angle_delta,
             uv_mode,
             mrl,
+            fsc,
         }
     }
 }
@@ -489,7 +496,11 @@ fn random_tree(
     if partition == Partition::None {
         let leaf = syntax.leaf(node).unwrap();
         let cfl_allowed = syntax.cfl_allowed(&leaf);
-        let planned = modes.pick(cfl_allowed, syntax.mhccp_allowed(&leaf));
+        let planned = modes.pick(
+            cfl_allowed,
+            syntax.mhccp_allowed(&leaf),
+            syntax.fsc_allowed(&leaf),
+        );
         return PartitionTree::Leaf(coder.leaf_choice(syntax, &leaf, planned).unwrap());
     }
     let children = syntax
@@ -537,6 +548,7 @@ fn encode_case(
     let mut modes = ModePicker::new(seed);
     modes.mrl = case.tools.mrls;
     modes.mhccp = case.tools.mhccp;
+    modes.fsc = case.tools.fsc || case.tools.idtx_intra;
     let mut coder = RandomLevels {
         rng: Rng(seed.rotate_left(17) | 1),
         max_level: case.max_level,
@@ -614,6 +626,27 @@ fn every_intra_mode_round_trips() {
             assert_eq!(luma.len(), 61, "{bit_depth:?} {sb_size:?}");
             assert_eq!(chroma.len(), 15, "{bit_depth:?} {sb_size:?}");
         }
+    }
+}
+
+/// Random FSC leaves decode to the encoder recon with IDTX-only and FSC
+/// coefficient coding, with and without `enable_fsc`.
+#[test]
+fn fsc_leaves_round_trip() {
+    for (seed, (bit_depth, fsc)) in [
+        (BitDepthIdc::Eight, false),
+        (BitDepthIdc::Eight, true),
+        (BitDepthIdc::Ten, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut case = Case::new(136, 72, bit_depth, SuperblockSize::Block64x64).with_tx_search();
+        (case.tools.fsc, case.tools.idtx_intra) = (fsc, !fsc);
+        (case.tools.tcq, case.tx.allow_tcq) = (true, true);
+        let (_, modes, _) =
+            assert_round_trip_modes(case, 0xf5c + seed as u64, TxCoverage::default());
+        assert!(modes.coded_fsc, "{bit_depth:?} fsc {fsc}");
     }
 }
 
@@ -966,13 +999,6 @@ fn facade_rejects_unmodelled_tools() {
     };
     let (seq, core) = headers(base);
     assert!(IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).is_ok());
-    let tool_cases: [fn(&mut EncoderToolFlags); 1] = [|t| t.idtx_intra = true];
-    for set in tool_cases {
-        let mut tools = base;
-        set(&mut tools);
-        let (seq, core) = headers(tools);
-        assert!(rejects(&seq, &core));
-    }
     let frame_cases: [fn(&mut FrameHeaderCore); 6] = [
         |c| c.allow_intrabc = Some(true),
         |c| c.lossless_info.as_mut().unwrap().coded_lossless = true,
@@ -1034,6 +1060,10 @@ fn avm_decodes_random_key_frames_like_splot() {
     extended.tools.ext_partitions = true;
     extended.tools.uneven_4way_partitions = true;
     cases.push(extended);
+    let mut fsc =
+        Case::new(200, 136, BitDepthIdc::Ten, SuperblockSize::Block64x64).with_tx_search();
+    fsc.tools.fsc = true;
+    cases.push(fsc);
     let mut mhccp = Case::new(200, 136, BitDepthIdc::Eight, SuperblockSize::Block64x64);
     mhccp.tools.mhccp = true;
     cases.push(mhccp);
