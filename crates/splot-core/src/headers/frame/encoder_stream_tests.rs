@@ -206,6 +206,24 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert_eq!(reparse_core(&core, &view), core);
 }
 
+/// An edge-classified CCSO plane with asymmetric offsets.
+fn ccso_plane() -> CcsoPlaneParams {
+    CcsoPlaneParams {
+        ccso_planes: true,
+        ccso_bo_only: Some(false),
+        ccso_scale_idx: Some(1),
+        ccso_quant_idx: Some(2),
+        ccso_ext_filter: Some(4),
+        ccso_edge_clf: Some(true),
+        ccso_max_band_log2: Some(1),
+        ccso_offset_idx: crate::headers::frame::CcsoOffsets::from_iter_checked([
+            3, 0, 7, 1, 2, 6, 5, 4,
+        ])
+        .unwrap(),
+        ..CcsoPlaneParams::default()
+    }
+}
+
 #[test]
 fn filter_params_reach_the_parsed_header() {
     let set = |y_pri, y_sec, uv_pri, uv_sec| CdefStrengthSet {
@@ -218,6 +236,7 @@ fn filter_params_reach_the_parsed_header() {
         let mut p = params(352, 288, BitDepthIdc::Ten, sb);
         p.tools.cdef = true;
         p.tools.loop_restoration = true;
+        p.tools.ccso = true;
         let seq = build_encoder_sequence_header(&p).unwrap();
         let view = CoreSeqView::from_sequence(&seq).unwrap();
         let lr_sizes: &[u32] = if sb == SuperblockSize::Block64x64 {
@@ -237,6 +256,7 @@ fn filter_params_reach_the_parsed_header() {
                 ])
                 .unwrap(),
                 lr_luma_unit_size: Some(lr_size),
+                ccso: [ccso_plane(), CcsoPlaneParams::default(), ccso_plane()],
             };
             let core = build_key_frame_header(
                 &view,
@@ -261,6 +281,9 @@ fn filter_params_reach_the_parsed_header() {
             );
             assert_eq!(lr.planes[1].restoration_type, FrameRestorationType::None);
             assert_eq!(lr.loop_restoration_size[0], lr_size);
+            let ccso = core.ccso_params.as_ref().unwrap();
+            assert_eq!(ccso.ccso_frame_flag, Some(true));
+            assert_eq!(ccso.planes[..], filters.ccso[..]);
             assert_eq!(reparse_core(&core, &view), core);
         }
         let off = build_key_frame_header(
@@ -273,6 +296,7 @@ fn filter_params_reach_the_parsed_header() {
         )
         .unwrap();
         assert!(!off.cdef_params.unwrap().cdef_frame_enable);
+        assert_eq!(off.ccso_params.unwrap().ccso_frame_flag, Some(false));
         assert!(!off.lr_params.unwrap().uses_lr);
         assert_eq!(
             off.deblocking_filter_params

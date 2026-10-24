@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Loop-filter decisions of a frame: deblocking, CDEF and luma PC-Wiener
-//! loop restoration. CCSO and GDF stay off.
+//! Loop-filter decisions of a frame: deblocking, CDEF, CCSO and luma
+//! PC-Wiener loop restoration. GDF stays off.
 //!
-//! A tile codes `cdef_idx` and `use_pc_wiener` before the frame is reconstructed,
-//! but the search needs the reconstruction. So a frame takes two passes:
+//! A tile codes `cdef_idx`, `ccso_blk` and `use_pc_wiener` before the frame is
+//! reconstructed, but the search needs the reconstruction. So a frame takes
+//! two passes:
 //!
 //! 1. Each tile is coded with every filter off. [`FrameDecisions`] keeps each
 //!    superblock decision and each transform decision of a tile.
@@ -216,6 +217,9 @@ impl MergedTiles {
                 }
             }
             syntax.lr_on.extend(tile.syntax.lr_on);
+            if syntax.ccso_blocks.is_empty() {
+                syntax.ccso_blocks = tile.syntax.ccso_blocks;
+            }
             decisions.push(tile.decisions);
         }
         let recon = match <[_; 1]>::try_from(recons) {
@@ -288,6 +292,8 @@ pub(crate) fn finish_frame(
         recorder: &recorder,
         recon: &recon,
         lambda: Lambda::from_qindex(qindex, recon.bit_depth()).map_err(coding("lambda"))?,
+        start: &pass.start,
+        pool,
     };
     let (params, syntax) = search.run(preset)?;
     if params == FrameFilterParams::default() {
@@ -325,8 +331,15 @@ pub(crate) fn finish_frame(
         ..
     } = MergedTiles::new(&core, tiles)?;
     let lr_on: Vec<LrUnit> = coded.lr_on.into_iter().collect();
-    let recon = apply_loop_filters(seq, &core, &recorder, &recon, &coded.cdef_indices, &lr_on)
-        .map_err(coding("loop filters"))?;
+    let recon = apply_loop_filters(
+        seq,
+        &core,
+        &recorder,
+        &recon,
+        (&coded.cdef_indices, &coded.ccso_blocks),
+        &lr_on,
+    )
+    .map_err(coding("loop filters"))?;
     Ok(FilteredFrame {
         core,
         filters: params,
@@ -353,6 +366,8 @@ struct Search<'a> {
     recorder: &'a FilterRecorder,
     recon: &'a DecodedFrame<u16>,
     lambda: Lambda,
+    start: &'a FrameStart,
+    pool: Option<&'a WorkerPool>,
 }
 
 impl Search<'_> {
@@ -362,17 +377,21 @@ impl Search<'_> {
         })?;
         let mut params = self.deblocking(preset)?;
         let mut syntax = FilterSyntax::default();
+        let ccso = filter.enable_ccso && preset.ccso_candidates > 0;
+        let deblocked = if params.deblocking == [false; 4] || !(filter.enable_cdef || ccso) {
+            None
+        } else {
+            Some(self.filtered(&params, self.recon, &[])?)
+        };
+        let deblocked = deblocked.as_ref().unwrap_or(self.recon);
         if filter.enable_cdef {
-            let deblocked = if params.deblocking == [false; 4] {
-                None
-            } else {
-                Some(self.filtered(&params, self.recon, &[])?)
-            };
-            let (cdef_damping, cdef_strengths, indices) =
-                self.cdef(preset, deblocked.as_ref().unwrap_or(self.recon))?;
+            let (cdef_damping, cdef_strengths, indices) = self.cdef(preset, deblocked)?;
             params.cdef_damping = cdef_damping;
             params.cdef_strengths = cdef_strengths;
             syntax.cdef_indices = indices;
+        }
+        if ccso {
+            (params.ccso, syntax.ccso_blocks) = self.ccso(&params, &syntax, deblocked, preset)?;
         }
         if filter.enable_restoration {
             let sb128 = self
@@ -383,7 +402,7 @@ impl Search<'_> {
                 lr_luma_unit_size: Some(if sb128 { 128 } else { 64 }),
                 ..params
             };
-            let lr_on = self.restoration(&candidate, &syntax.cdef_indices)?;
+            let lr_on = self.restoration(&candidate, &syntax)?;
             if !lr_on.is_empty() {
                 params = candidate;
                 syntax.lr_on = lr_on;
@@ -410,7 +429,7 @@ impl Search<'_> {
             &core,
             self.recorder,
             frame,
-            &vec![Some(0); rows * cols],
+            (&vec![Some(0); rows * cols], &[]),
             lr_on,
         )
         .map_err(coding("loop filters"))
@@ -559,12 +578,60 @@ impl Search<'_> {
         (luma, chroma)
     }
 
+    /// The CCSO choice on top of the CDEF choice of `params` and `syntax`.
+    fn ccso(
+        &self,
+        params: &FrameFilterParams,
+        syntax: &FilterSyntax,
+        deblocked: &DecodedFrame<u16>,
+        preset: &PresetParams,
+    ) -> Result<ccso::CcsoChoice> {
+        let cdef = FrameFilterParams {
+            cdef_damping: params.cdef_damping,
+            cdef_strengths: params.cdef_strengths,
+            ..FrameFilterParams::default()
+        };
+        let filtered = if cdef.cdef_strengths.is_empty() {
+            None
+        } else {
+            let core = self.header(&cdef)?;
+            Some(
+                apply_loop_filters(
+                    self.seq,
+                    &core,
+                    self.recorder,
+                    deblocked,
+                    (&syntax.cdef_indices, &[]),
+                    &[],
+                )
+                .map_err(coding("loop filters"))?,
+            )
+        };
+        let core = self.header(&FrameFilterParams {
+            ccso: [ccso::placeholder_plane(); 3],
+            ..*params
+        })?;
+        ccso::search(
+            &ccso::CcsoInput {
+                seq: self.seq,
+                core: &core,
+                start: self.start,
+                deblocked,
+                filtered: filtered.as_ref().unwrap_or(deblocked),
+                source: self.source,
+                lambda: self.lambda,
+                pool: self.pool,
+            },
+            usize::from(preset.ccso_candidates),
+        )
+    }
+
     /// The luma PC-Wiener units that lower the SSE of `params` (whose loop
-    /// restoration is on) with CDEF indices `cdef_indices`.
+    /// restoration is on) with the CDEF and CCSO choices of `syntax`.
     fn restoration(
         &self,
         params: &FrameFilterParams,
-        cdef_indices: &[Option<usize>],
+        syntax: &FilterSyntax,
     ) -> Result<BTreeSet<LrUnit>> {
         let core = self.header(params)?;
         let layouts = LrLayout::tiles(self.seq, &core).map_err(coding("restoration layout"))?;
@@ -581,7 +648,7 @@ impl Search<'_> {
                 &core,
                 self.recorder,
                 self.recon,
-                cdef_indices,
+                (&syntax.cdef_indices, &syntax.ccso_blocks),
                 lr_on,
             )
             .map_err(coding("loop filters"))
@@ -661,6 +728,9 @@ fn cdef_rate(sets: usize, units: usize) -> Bits {
     };
     Bits(Bits::whole(CDEF_SET_HEADER_BITS).0 * sets as u64 + per_unit * units as u64)
 }
+
+#[path = "loop_filter_ccso.rs"]
+mod ccso;
 
 #[cfg(test)]
 #[path = "loop_filter_tests.rs"]

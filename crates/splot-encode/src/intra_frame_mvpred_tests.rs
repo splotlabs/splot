@@ -221,9 +221,9 @@ fn deep_drl_streams_decode_alike_on_any_thread_count() {
 fn switchable_filters_reach_the_headers_and_the_decoder() {
     let config = config(72, 40, BitDepth::Ten, 6, 110);
     let on = Preset::new(6).unwrap().params();
-    assert!(on.interp_filter_search);
+    assert!(on.interp_filter_search > 0);
     let off = Box::leak(Box::new(PresetParams {
-        interp_filter_search: false,
+        interp_filter_search: 0,
         ..*on
     }));
     let mut streams = Vec::new();

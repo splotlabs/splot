@@ -183,36 +183,19 @@ impl CcsoState {
         frontier: &DecodeBlockFrontier,
         tile_offset: ByteOffset,
     ) -> Result<()> {
-        if !self.active || frontier.is_chroma_part() {
+        if frontier.is_chroma_part() {
             return Ok(());
         }
-        let unit_mask = (1usize << self.shift) - 1;
-        if frontier.r & unit_mask != 0 || frontier.c & unit_mask != 0 {
+        let Some(unit) = self.unit_at(frontier.r, frontier.c) else {
             return Ok(());
-        }
-        let unit_row = frontier.r >> self.shift;
-        let unit_col = frontier.c >> self.shift;
-        if self.block_index(unit_row, unit_col).is_none() {
+        };
+        if self.block_index(unit.0, unit.1).is_none() {
             return Err(ccso_state_error());
         }
+        let tile_col_start = work_unit.mi_col_range().start as usize;
         for plane in 0..CCSO_PLANES {
-            if !self.plane_enabled[plane] {
+            let Some(ctx) = self.blk_ctx(plane, unit, tile_col_start) else {
                 continue;
-            }
-            if self.sb_reuse[plane] {
-                continue;
-            }
-            let tile_col_start = work_unit.mi_col_range().start as usize;
-            let unit_width = 1usize << self.shift;
-            let left_available = frontier
-                .c
-                .checked_sub(unit_width)
-                .is_some_and(|left_col| left_col >= tile_col_start);
-            let ctx = if left_available {
-                let left = self.block_value(plane, unit_row, unit_col - 1);
-                2 * usize::from(left)
-            } else {
-                0
             };
             let value = read_tx_symbol(
                 work_unit,
@@ -224,9 +207,39 @@ impl CcsoState {
             if value >= CCSO_SYMBOL_VALUES {
                 return Err(ccso_state_error());
             }
-            self.set_block_value(plane, unit_row, unit_col, value as u8)?;
+            self.set_block_value(plane, unit.0, unit.1, value as u8)?;
         }
         Ok(())
+    }
+
+    /// The `(unitRow, unitCol)` whose `ccso_blk` a block at `(r, c)` reads
+    /// (§ 5.20.10.2), or `None` when it reads none.
+    pub(crate) fn unit_at(&self, r: usize, c: usize) -> Option<(usize, usize)> {
+        let unit_mask = (1usize << self.shift) - 1;
+        (self.active && r & unit_mask == 0 && c & unit_mask == 0)
+            .then_some((r >> self.shift, c >> self.shift))
+    }
+
+    /// The `ccso_blk` context of `plane` at `unit` in a tile starting at MI
+    /// column `tile_col_start`, or `None` when the plane codes no flag.
+    pub(crate) fn blk_ctx(
+        &self,
+        plane: usize,
+        (unit_row, unit_col): (usize, usize),
+        tile_col_start: usize,
+    ) -> Option<usize> {
+        if !*self.plane_enabled.get(plane)? || self.sb_reuse[plane] {
+            return None;
+        }
+        let unit_width = 1usize << self.shift;
+        let left_available = (unit_col << self.shift)
+            .checked_sub(unit_width)
+            .is_some_and(|left_col| left_col >= tile_col_start);
+        Some(if left_available {
+            2 * usize::from(self.block_value(plane, unit_row, unit_col - 1))
+        } else {
+            0
+        })
     }
 
     pub(crate) fn block_value(&self, plane: usize, unit_row: usize, unit_col: usize) -> u8 {
@@ -373,7 +386,7 @@ impl CcsoState {
     }
 }
 
-fn ccso_mi_width_log2(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Result<u32> {
+pub(crate) fn ccso_mi_width_log2(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Result<u32> {
     let filter = sequence.filter.as_ref();
     let sb_mi_width_log2 = frame_sb_mi_width_log2(sequence, core)?;
     let Some(tile_info) = core.tile_info.as_ref() else {

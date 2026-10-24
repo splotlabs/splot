@@ -12,10 +12,10 @@ use crate::bitio::BitReader;
 use crate::headers::frame::restoration::default_restoration_size;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
-    CdefParams, CdefStrengthSets, CoreSeqView, DeblockingFilterParams, FrameHeaderCore,
-    FrameHeaderParseStatus, FrameReferenceStateView, FrameRestorationType, LrGeometry, LrParams,
-    LrPlaneParams, TxMode, encode_temporal_delimiter_obu, init_core_from_prefix, parse_core_body,
-    parse_frame_header_prefix,
+    CcsoPlaneParams, CdefParams, CdefStrengthSets, CoreSeqView, DeblockingFilterParams,
+    FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView, FrameRestorationType,
+    LrGeometry, LrParams, LrPlaneParams, TxMode, encode_temporal_delimiter_obu,
+    init_core_from_prefix, parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::sequence::{
     BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize, parse_sequence_header,
@@ -25,8 +25,8 @@ use crate::obu::{ObuHeader, ParsedObu};
 use crate::span::ByteOffset;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, ObuType, TemporalLayerId};
 use crate::write::{
-    BitWriter, WriteError, write_annexb_obu, write_cdef_params, write_deblocking_filter_params,
-    write_lr_params, write_obu_payload, write_tile_group_obu,
+    BitWriter, WriteError, write_annexb_obu, write_ccso_plane_params, write_cdef_params,
+    write_deblocking_filter_params, write_lr_params, write_obu_payload, write_tile_group_obu,
 };
 
 /// `seq_level_idx == 31`: the level without tile-size limits (§ 5.18.7.3).
@@ -128,7 +128,7 @@ pub struct EncoderStreamParams {
 
 /// Frame-level loop-filter choices of [`build_key_frame_header`].
 ///
-/// `Default` turns every filter off. GDF and CCSO are always off.
+/// `Default` turns every filter off. GDF is always off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameFilterParams {
     /// `apply_deblocking_filter[0..4]` (§ 5.18.5.2). Flags 2 and 3 need flag 0 or 1.
@@ -143,6 +143,9 @@ pub struct FrameFilterParams {
     /// `LoopRestorationSize[0]` of luma `RESTORE_PC_WIENER` (§ 5.18.7.11); `None`
     /// turns loop restoration off. Chroma restoration is always off.
     pub lr_luma_unit_size: Option<u32>,
+    /// `ccso_params()` of each plane (§ 5.18.7.12) without reuse; the frame
+    /// codes `ccso_frame_flag = 1` when a plane sets `ccso_planes`.
+    pub ccso: [CcsoPlaneParams; 3],
 }
 
 /// Transform choices of [`build_key_frame_header`].
@@ -442,7 +445,7 @@ fn write_transform_quant_entropy_config(
 /// The frame has the maximum frame size, `show_frame` semantics through
 /// `immediate_output_frame = 1`, the uniform `tiles`, no segmentation, no delta-q,
 /// no quantizer matrices, the deblocking, CDEF, and loop-restoration choices of
-/// `filters`, GDF and CCSO off, the transform choices of `tx`, and no film grain.
+/// `filters`, GDF off, the transform choices of `tx`, and no film grain.
 ///
 /// # Errors
 /// Returns [`EncoderHeaderError`] for a zero or too-wide `base_q_idx`, a
@@ -503,7 +506,7 @@ fn key_frame_header_bits(
     }
     w.write_flag(false)?; // allow_intrabc
     w.write_flag(false)?; // disable_cdf_update
-    write_quant_and_filters(&mut w, seq, (base_q_idx, tiles), filters)?;
+    write_quant_and_filters(&mut w, seq, (base_q_idx, tiles), filters, true)?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
     w.align_to_byte();
@@ -512,12 +515,13 @@ fn key_frame_header_bits(
 
 /// § 5.18.2 from `tile_info()` through `ccso_params()`: the uniform `tiles`, `base_q_idx`, no
 /// segmentation, quantizer matrices, delta-q or TCQ, parity hiding when the sequence enables
-/// it, the filters of `filters`, and CCSO off.
+/// it, and the filters of `filters`; an inter frame codes no CCSO reuse.
 pub(super) fn write_quant_and_filters(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     (base_q_idx, tiles): (u32, UniformTiles),
     filters: &FrameFilterParams,
+    frame_is_intra: bool,
 ) -> Result<(), EncoderHeaderError> {
     let q_bits = if seq.quant.bit_depth == 8 { 8 } else { 9 };
     if base_q_idx == 0 || base_q_idx >= 1 << q_bits {
@@ -540,7 +544,19 @@ pub(super) fn write_quant_and_filters(
     }
     write_filter_params(w, seq, filters)?;
     if seq.ccso.enable_ccso {
-        w.write_flag(false)?; // ccso_frame_flag
+        let planes = &filters.ccso[..usize::from(seq.quant.num_planes).min(3)];
+        let on = planes.iter().any(|plane| plane.ccso_planes);
+        w.write_flag(on)?; // ccso_frame_flag
+        for plane in planes.iter().filter(|_| on) {
+            w.write_flag(plane.ccso_planes)?;
+            if plane.ccso_planes {
+                if !frame_is_intra {
+                    w.write_flag(false)?; // reuse_ccso
+                    w.write_flag(false)?; // sb_reuse_ccso
+                }
+                write_ccso_plane_params(w, plane)?;
+            }
+        }
     }
     Ok(())
 }
