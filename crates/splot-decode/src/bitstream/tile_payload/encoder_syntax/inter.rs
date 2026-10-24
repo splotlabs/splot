@@ -789,6 +789,36 @@ impl IntraTileSyntax {
     ) -> Result<()> {
         let motion =
             EncoderMotion::Single(self.single_motion_over(leaf, modes, Some(base.into()))?);
+        self.write_motion_modes(leaf, motion, symbols)
+    }
+
+    /// Prices into `symbols` the mode syntax and the motion vector
+    /// differences that `prediction` codes at `leaf`, as
+    /// [`Self::write_inter_modes`] and [`Self::write_mvds`] write them for a
+    /// planned leaf, then puts the CDFs back. The leaf is not planned.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for a prediction `leaf` cannot code.
+    pub fn price_inter_modes(
+        &mut self,
+        leaf: &LeafBlock,
+        prediction: InterPrediction,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
+        let mark = self.journal.mark();
+        let written = self
+            .motion(leaf, prediction)
+            .and_then(|motion| self.write_motion_modes(leaf, motion, symbols));
+        self.journal.rollback(&mut self.cdfs, mark)?;
+        written
+    }
+
+    fn write_motion_modes(
+        &mut self,
+        leaf: &LeafBlock,
+        motion: EncoderMotion,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
         let coded = self
             .inter_ref()?
             .tile
