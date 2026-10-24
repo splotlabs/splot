@@ -106,6 +106,9 @@ pub struct EncoderToolFlags {
     /// `seq_max_drl_bits_minus_1` (§ 5.4.6), `0..=4`: `NEARMV` and `NEWMV`
     /// code `RefMvIdx` below `seq_max_drl_bits_minus_1 + 2`.
     pub max_drl_bits_minus_1: u32,
+    /// `enable_adaptive_mvd`, `enable_mvd_sign_derive` and
+    /// `enable_flex_mvres` (§ 5.4.6).
+    pub mvd_tools: [bool; 3],
 }
 
 /// Stream-level inputs of [`build_encoder_sequence_header`].
@@ -389,7 +392,7 @@ const fn profile_idc(chroma: ChromaFormatIdc) -> u32 {
 const NUM_SAME_REF_COMPOUND: u32 = 2;
 
 /// § 5.4.6 for a non-single-picture header with the motion vector prediction
-/// tools of `tools` and every other inter tool off.
+/// and difference tools of `tools` and every other inter tool off.
 fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), WriteError> {
     w.write_bits(0, 4)?; // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
     w.write_flag(false)?; // enable_masked_compound
@@ -415,9 +418,12 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
         w.write_flag(false)?; // enable_tip, mv_traj, bawp, cwp, imp_msk_bld, df_sub_pu
     }
     w.write_bits(0, 2)?; // enable_opfl_refine
-    for _ in 0..6 {
-        w.write_flag(false)?; // refinemv, bru, adaptive_mvd, mvd_sign_derive, flex_mvres, global_motion
+    w.write_flag(false)?; // enable_refinemv
+    w.write_flag(false)?; // enable_bru
+    for flag in tools.mvd_tools {
+        w.write_flag(flag)?; // adaptive_mvd, mvd_sign_derive, flex_mvres
     }
+    w.write_flag(false)?; // enable_global_motion
     w.write_flag(false) // enable_short_refresh_frame_flags
 }
 

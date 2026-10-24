@@ -162,13 +162,24 @@ pub(super) fn read_use_amvd_syntax(
     ctx: usize,
     tile_offset: ByteOffset,
 ) -> Result<bool> {
-    if !enable_adaptive_mvd || single_mode != SINGLE_MODE_NEWMV {
+    let Some(selector) = single_use_amvd_selector(enable_adaptive_mvd, single_mode, ctx) else {
         return Ok(false);
-    }
+    };
     let use_amvd = cdfs
-        .read_block_symbol_trace(TileCdfSelector::UseAmvd { index: 4, ctx }, symbols)
+        .read_block_symbol_trace(selector, symbols)
         .map_err(|error| symbol_read_error(error, tile_offset))?;
     Ok(use_amvd.get() != 0)
+}
+
+/// The `use_amvd` selector of a single-reference block coding `single_mode`
+/// (§ 5.20.7.6); `None` where the decoder reads no `use_amvd`.
+pub(crate) fn single_use_amvd_selector(
+    enable_adaptive_mvd: bool,
+    single_mode: u8,
+    ctx: usize,
+) -> Option<TileCdfSelector> {
+    (enable_adaptive_mvd && single_mode == SINGLE_MODE_NEWMV)
+        .then_some(TileCdfSelector::UseAmvd { index: 4, ctx })
 }
 
 pub(super) fn read_skip_mode_syntax(
@@ -226,6 +237,32 @@ pub(super) fn read_block_mv_precision_syntax(
     is_adaptive_mvd: bool,
     tile_offset: ByteOffset,
 ) -> Result<BlockPrecisionRecord> {
+    block_mv_precision_with(
+        sequence,
+        core,
+        neighbour_ctx,
+        frame_precision,
+        (block_has_newmv, is_adaptive_mvd),
+        |selector| {
+            cdfs.read_block_symbol_trace(selector, symbols)
+                .map(splot_core::symbol::Symbol::get)
+                .map_err(|error| symbol_read_error(error, tile_offset))
+        },
+    )
+}
+
+/// The § 5.20.7.6 block motion vector precision of a block that codes
+/// `NEWMV` and adaptive MVD as `(block_has_newmv, is_adaptive_mvd)`; `read`
+/// gives each `use_most_probable_precision` and `pb_mv_precision` value, and
+/// the encoder facade answers it for a target.
+pub(crate) fn block_mv_precision_with(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    neighbour_ctx: &BlockNeighbourContext,
+    frame_precision: u8,
+    (block_has_newmv, is_adaptive_mvd): (bool, bool),
+    mut read: impl FnMut(TileCdfSelector) -> Result<u8>,
+) -> Result<BlockPrecisionRecord> {
     if is_adaptive_mvd
         || !block_has_newmv
         || !use_per_block_mv_precision(sequence, core)
@@ -233,29 +270,19 @@ pub(super) fn read_block_mv_precision_syntax(
     {
         return Ok(BlockPrecisionRecord::most_probable(frame_precision));
     }
-    let use_most_probable = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::UseMostProbablePrecision {
-                ctx: neighbour_ctx.most_probable_precision_ctx(),
-            },
-            symbols,
-        )
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    if use_most_probable.get() != 0 {
+    let use_most_probable = read(TileCdfSelector::UseMostProbablePrecision {
+        ctx: neighbour_ctx.most_probable_precision_ctx(),
+    })?;
+    if use_most_probable != 0 {
         return Ok(BlockPrecisionRecord::most_probable(frame_precision));
     }
-    let pb_mv_precision = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::PbMvPrecision {
-                ctx: neighbour_ctx.pb_mv_precision_ctx(frame_precision),
-                frame_ctx: usize::from(frame_precision - MV_PRECISION_HALF_PEL),
-            },
-            symbols,
-        )
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
+    let pb_mv_precision = read(TileCdfSelector::PbMvPrecision {
+        ctx: neighbour_ctx.pb_mv_precision_ctx(frame_precision),
+        frame_ctx: usize::from(frame_precision - MV_PRECISION_HALF_PEL),
+    })?;
     let adjusted = MV_PRECISION_ONE_PEL
         .max(frame_precision - 2)
-        .checked_sub(pb_mv_precision.get())
+        .checked_sub(pb_mv_precision)
         .filter(|&adjusted| adjusted > 0)
         .ok_or(crate::DecodeHeaderStateError::InvalidInterBlockModeState)?;
     let mv_precision = if adjusted <= MV_PRECISION_TWO_PEL {

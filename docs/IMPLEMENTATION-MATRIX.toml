@@ -4966,10 +4966,10 @@ spec_sections = ["5.18.8.2", "5.18.8.3", "5.20.5.9", "5.20.7.6", "5.20.7.7", "5.
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/mode_decision.rs"
-change_id = "enc-compound-drl-rate"
+change_id = "enc-dedup-first-found"
 owner = "encoder"
 risk = "medium"
-notes = "Inter frames set reference_select and skip_mode_present when the preset's compound_candidates is nonzero; the sequence sets num_same_ref_compound = 2. Leaves RD-compare single-reference candidates with skip-mode blocks (per distinct vector pair, the skip-DRL index of the lowest exact price) and a shortlist of compound candidates, ranked by SATD plus the exact mode and difference rate (IntraTileSyntax::price_inter_modes, DRL indices included; duplicates of the same references and vectors keep the lowest price), over the pairs of the three closest references: NEAR_NEARMV over both DRLs, and for distinct references GLOBAL_GLOBALMV, NEW_NEWMV, NEAR_NEWMV, NEW_NEARMV and JOINT_NEWMV seeded by the single-reference search results (no joint refinement; jmvd_scale_mode 0). splot_decode::encoder_syntax writes comp_mode, comp_ref, the compound mode, jmvd_scale_mode and both DRLs by answering the decoder's own reads, resolves motion with the decoder's compound stack and resolution, predicts with its COMPOUND_AVERAGE motion compensation, and derives the skip_mode_frames pair from the decoder. Masked, wedge, inter-intra, CWP, BAWP, optical-flow and refined compound stay off at sequence level, so encode stays partial."
+notes = "Inter frames set reference_select and skip_mode_present when the preset's compound_candidates is nonzero; the sequence sets num_same_ref_compound = 2. Leaves RD-compare single-reference candidates with skip-mode blocks (per distinct vector pair, the skip-DRL index of the lowest exact price) and a shortlist of compound candidates, ranked by SATD plus the exact mode and difference rate (IntraTileSyntax::price_inter_modes, DRL indices included; a candidate with the references and vectors of an earlier one is dropped, which measured better than keeping the cheapest), over the pairs of the three closest references: NEAR_NEARMV over both DRLs, and for distinct references GLOBAL_GLOBALMV, NEW_NEWMV, NEAR_NEWMV, NEW_NEARMV and JOINT_NEWMV seeded by the single-reference search results (no joint refinement; jmvd_scale_mode 0). splot_decode::encoder_syntax writes comp_mode, comp_ref, the compound mode, jmvd_scale_mode and both DRLs by answering the decoder's own reads, resolves motion with the decoder's compound stack and resolution, predicts with its COMPOUND_AVERAGE motion compensation, and derives the skip_mode_frames pair from the decoder. Masked, wedge, inter-intra, CWP, BAWP, optical-flow and refined compound stay off at sequence level, so encode stays partial."
 
 [feature.status]
 mapped = "done"
@@ -5592,6 +5592,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/preset.rs::tests::interp_filter_search_placement", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::switchable_filter_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::switchable_filters_reach_the_headers_and_the_decoder", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::deep_drl_streams_decode_alike_on_any_thread_count", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::inter_headers_parse_with_the_reference_state"]
 commands = ["cargo test -p splot-encode mvpred --locked", "cargo test -p splot-encode random_inter --locked", "cargo test -p splot-core encoder_inter_stream --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-MV-CODING"
+name = "Encoder adaptive MVD, MVD sign derivation and block MV precision"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.6", "5.20.7.6", "5.20.7.13", "5.20.7.20", "5.20.7.21", "8.3.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/mode_decision.rs"
+change_id = "enc-mvd-tools"
+owner = "encoder"
+risk = "medium"
+notes = "Implemented, off in every preset: PresetParams::mvd_tools ([enable_adaptive_mvd, enable_mvd_sign_derive, enable_flex_mvres]) is false in every row, pinned by preset::tests::mvd_tools_placement. With the tools on, a single-reference NEWMV takes, by luma SATD plus exact rate, the frame precision, the coarsest block precision (IntraTileSyntax::newmv_precisions) that codes its searched vector exactly, one coarser precision when the difference rate exceeds a quarter of the cost, or adaptive-MVD steps (AMVD_STEPS); snap_prediction moves a coarse vector by one lattice step when the decoder would derive the other sign. Compound NEWMV modes code use_amvd = 0 and the most probable precision. The encoder_syntax facade writes use_amvd, use_most_probable_precision and pb_mv_precision through the decoder's own reads, and the AMVD and derived-sign differences through read_mv. Measured off: the per-NEWMV flags cost more than the tools save (park p6 +0.92%, paris p6 +0.72%, niklas p6 +0.08% at 1.05x CPU; park p10 -0.82% at 1.09x), and the field is monotone. Frame-level precision from previous-frame statistics and JMVD scale-mode search are not done."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/preset.rs::tests::mvd_tools_placement", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::mvd_tools_reach_the_sequence_and_the_decoder", "crates/splot-encode/src/intra_frame_mvpred_tests.rs::mvd_tool_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-decode/src/bitstream/tile_payload/encoder_syntax/mv_tests.rs::adaptive_and_derived_sign_differences_round_trip", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::every_tool_flag_reaches_the_parsed_header"]
+commands = ["cargo test -p splot-encode mvpred --locked", "cargo test -p splot-encode random_inter --locked", "cargo test -p splot-decode adaptive_and_derived --locked"]
 fixtures = []
 diagnostics = []
 

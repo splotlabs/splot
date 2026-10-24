@@ -162,6 +162,8 @@ fn rollback_restores_the_reference_mv_bank() {
                     drl: 0,
                     mv,
                     filter: splot_recon::InterpolationFilter::EightTap,
+                    precision: None,
+                    amvd: false,
                 }));
                 Walk::trial(syntax, &mut RateSink::adapting()).write_leaf(
                     &leaf,
@@ -240,6 +242,30 @@ fn switchable_filters_reach_the_headers_and_the_decoder() {
     assert_ne!(streams[0], streams[1]);
 }
 
+/// With the MVD tools the sequence enables adaptive MVD, MVD sign derivation
+/// and flexible block precision, and the stream decodes to the encoder
+/// recon; without them none is enabled and the stream differs.
+#[test]
+fn mvd_tools_reach_the_sequence_and_the_decoder() {
+    let config = config(72, 40, BitDepth::Eight, 6, 140);
+    let base = Preset::new(6).unwrap().params();
+    let with = |mvd_tools| -> &'static PresetParams {
+        Box::leak(Box::new(PresetParams { mvd_tools, ..*base }))
+    };
+    let (on, off) = (with([true; 3]), with([false; 3]));
+    let mut streams = Vec::new();
+    for (preset, tools) in [(on, true), (off, false)] {
+        let (units, expected, _, coder) = super::carry::planned_stream(&config, preset);
+        let inter = coder.sequence.inter.unwrap();
+        assert_eq!(inter.enable_adaptive_mvd, tools);
+        assert_eq!(inter.enable_mvd_sign_derive, tools);
+        assert_eq!(inter.enable_flex_mvres, tools);
+        assert_same_samples(&decode(&units), &expected, &format!("tools {tools}"));
+        streams.push(units);
+    }
+    assert_ne!(streams[0], streams[1]);
+}
+
 /// A tiled stream with the filter search at level 2 codes the same bytes on
 /// 1, 2 and 8 threads.
 #[test]
@@ -250,6 +276,29 @@ fn switchable_filter_streams_match_on_any_thread_count() {
     }));
     let stream = |threads: usize| {
         let mut config = config(136, 72, BitDepth::Eight, 6, 100);
+        config.tiles = TileLayout {
+            cols_log2: 1,
+            rows_log2: 1,
+        };
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        super::carry::planned_stream(&config, preset).0
+    };
+    let one = stream(1);
+    for threads in [2, 8] {
+        assert!(stream(threads) == one, "{threads} threads");
+    }
+}
+
+/// A tiled stream with every MVD tool on codes the same bytes on 1, 2 and 8
+/// threads.
+#[test]
+fn mvd_tool_streams_match_on_any_thread_count() {
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        mvd_tools: [true; 3],
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let stream = |threads: usize| {
+        let mut config = config(136, 72, BitDepth::Eight, 6, 140);
         config.tiles = TileLayout {
             cols_log2: 1,
             rows_log2: 1,

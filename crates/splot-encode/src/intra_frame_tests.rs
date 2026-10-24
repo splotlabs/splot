@@ -593,8 +593,9 @@ impl Rng {
 /// leaves with a reference other than the first; each compound mode in
 /// [`COMPOUND_MODES`] order; skip mode; same-reference compound; a nonzero
 /// second-DRL index of list 1; a nonzero `jmvd_scale_mode`; a coded
-/// `interp_filter` other than `EIGHTTAP`.
-type Coverage = [usize; 16];
+/// `interp_filter` other than `EIGHTTAP`; a `NEWMV` below the frame
+/// precision; an adaptive-MVD `NEWMV`.
+type Coverage = [usize; 18];
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -737,13 +738,28 @@ fn random_modes(
     let drl = rng.below(drls) as usize;
     let ref_frame = rng.below(syntax.reference_count() as u64) as usize;
     coverage[4] += usize::from(ref_frame > 0);
-    LeafChoice::inter(InterPrediction::Single(InterModes {
+    let modes = InterModes {
         ref_frame,
         mode,
         drl,
         mv: mvs[0],
         filter,
-    }))
+        precision: None,
+        amvd: false,
+    };
+    if mode == InterMode::New {
+        let precisions = syntax.newmv_precisions(leaf).unwrap();
+        let pick = rng.below(precisions.len() as u64 + 2) as usize;
+        let coarse = InterModes {
+            precision: precisions.get(pick).copied(),
+            amvd: pick == precisions.len() && syntax.adaptive_mvd(),
+            ..modes
+        };
+        coverage[16] += usize::from(coarse.precision.is_some());
+        coverage[17] += usize::from(coarse.amvd);
+        return LeafChoice::inter(InterPrediction::Single(coarse));
+    }
+    LeafChoice::inter(InterPrediction::Single(modes))
 }
 
 /// The first frames of a four-frame mini-GOP with frame 1, which references
@@ -754,7 +770,11 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
         unreachable!("these tests code at a constant qp")
     };
     let qindex = u32::from(qp);
-    let mut coder = IntraFrameCoder::new(config).unwrap();
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        mvd_tools: [true; 3],
+        ..*config.preset.params()
+    }));
+    let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();
     let mut planner = crate::gop::GopPlanner::new(config.keyint, 4);
     let mut steps = planner.plan(1).unwrap();
     steps.extend(planner.plan(4).unwrap());
