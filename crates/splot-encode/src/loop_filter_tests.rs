@@ -37,7 +37,7 @@ const CASES: [(u32, u32, BitDepth, u8, u16); 8] = [
     (130, 34, BitDepth::Ten, 6, 220),
     (200, 136, BitDepth::Eight, 6, 200),
     (257, 131, BitDepth::Ten, 10, 240),
-    (352, 288, BitDepth::Eight, 9, 140),
+    (352, 288, BitDepth::Eight, 9, 120),
     (96, 200, BitDepth::Ten, 9, 250),
     (33, 23, BitDepth::Eight, 0, 200),
     (40, 24, BitDepth::Eight, 3, 120),
