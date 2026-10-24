@@ -5763,26 +5763,26 @@ spec_sections = ["5.4.10", "5.18.7.11", "5.20.10.6", "7.20.3"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/loop_filter_wienerns.rs"
-change_id = "enc-wienerns"
+change_id = "enc-chroma-lr"
 owner = "encoder"
 risk = "medium"
-notes = "Pending: chroma RESTORE_WIENER_NONSEP frame filters (18 coefficients with the luma cross taps). The sequence already enables chroma Wiener-NS (lr_tools_uv_present = 0 copies the luma flag) and splot-core writes chroma banks; the encoder codes chroma restoration off."
+notes = "PresetParams::wiener_ns_chroma bank fits per chroma plane: after the luma restoration choice, each chroma unit keeps the 18-coefficient normal equations of its chroma tap pairs and its 12 luma cross taps, which read the decoder's § 7.20.3 get_luma_sample plane (splot-recon wiener_ns_chroma_luma_plane). U and then V take a one-class RESTORE_WIENER_NONSEP bank per wiener_ns_length subset, with and without wiener_ns_uv_sym, refined like luma; a temporal bank of the primary reference is tried first. Each unit takes none or Wiener-NS with the exact use_wiener_ns rate (the CDF is shared with luma, so the walk covers every plane in coding order), and a plane codes the bank when the total RD beats off. The sequence keeps lr_tools_uv_present = 0, which already enables chroma Wiener-NS. Off writes the luma-only stream byte-identically."
 
 [feature.status]
-mapped = "partial"
+mapped = "done"
 types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "todo"
-decode_check = "pending"
-tests = "pending"
-avm_diff = "pending"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/write/frame_restoration_proptests.rs::lr_round_trips"]
-commands = ["cargo test -p splot-core frame_restoration --locked"]
+tests = ["crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_422_and_444_tiles_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::avm_decodes_wiener_ns_frames_like_splot", "crates/splot-encode/src/loop_filter_wienerns.rs::tests::chroma_groups_pair_the_luma_taps", "crates/splot-encode/src/kernels/wiener.rs::tests::simd_matches_scalar", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::chroma_wiener_ns_banks_reach_the_parsed_header", "crates/splot-core/src/write/frame_restoration_proptests.rs::lr_round_trips"]
+commands = ["cargo test -p splot-encode wiener --locked", "cargo test -p splot-core encoder_stream --locked"]
 fixtures = []
 diagnostics = []
 # ---------------------------------------------------------------------------
