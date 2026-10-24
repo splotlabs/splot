@@ -244,7 +244,8 @@ fn ccso_search_classes_match_the_decoder_output() {
         assert!(grid.rows * grid.cols > 1, "{grid:?}");
         let on = vec![vec![1; grid.rows * grid.cols]; 3];
         let recorder = FilterRecorder::new(&seq, &core).unwrap();
-        let out = apply_loop_filters(&seq, &core, &recorder, &recon, (&[], &on), &[]).unwrap();
+        let out =
+            apply_loop_filters(&seq, &core, &recorder, &recon, (&[], &on, None), &[]).unwrap();
         let source = SourceFrame::new(&config, 0, visible_planes(&out).unwrap()).unwrap();
         let input = CcsoInput {
             seq: &seq,

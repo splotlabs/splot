@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Loop-filter decisions of a frame: deblocking, CDEF, CCSO and luma
-//! PC-Wiener and Wiener-NS loop restoration. GDF stays off.
+//! Loop-filter decisions of a frame: deblocking, CDEF, CCSO, PC-Wiener and
+//! Wiener-NS loop restoration, and GDF.
 //!
-//! A tile codes `cdef_idx`, `ccso_blk` and `use_pc_wiener` before the frame is
+//! A tile codes `use_gdf`, `cdef_idx`, `ccso_blk` and `use_pc_wiener` before the frame is
 //! reconstructed, but the search needs the reconstruction. So a frame takes
 //! two passes:
 //!
@@ -24,8 +24,8 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    EncoderReferences, FilterRecorder, FrameStart, IntraTileSyntax, LrLayout, LrUnit, LrUnitType,
-    TileEnd, TransformBlock, apply_loop_filters, cdef_unit_grid, merge_tiles,
+    EncoderReferences, FilterRecorder, FrameStart, GdfFlags, IntraTileSyntax, LrLayout, LrUnit,
+    LrUnitType, TileEnd, TransformBlock, apply_loop_filters, cdef_unit_grid, merge_tiles,
 };
 use splot_parallel::WorkerPool;
 use splot_recon::{DecodedFrame, PlaneId};
@@ -220,6 +220,9 @@ impl MergedTiles {
             if syntax.ccso_blocks.is_empty() {
                 syntax.ccso_blocks = tile.syntax.ccso_blocks;
             }
+            if syntax.gdf_blocks.is_empty() {
+                syntax.gdf_blocks = tile.syntax.gdf_blocks;
+            }
             decisions.push(tile.decisions);
         }
         let recon = match <[_; 1]>::try_from(recons) {
@@ -337,7 +340,14 @@ pub(crate) fn finish_frame(
         &core,
         &recorder,
         &recon,
-        (&coded.cdef_indices, &coded.ccso_blocks),
+        (
+            &coded.cdef_indices,
+            &coded.ccso_blocks,
+            Some(GdfFlags {
+                blocks: &coded.gdf_blocks,
+                refs,
+            }),
+        ),
         &lr_on,
     )
     .map_err(coding("loop filters"))?;
@@ -415,6 +425,14 @@ impl Search<'_> {
                 syntax.lr_on = lr_on;
             }
         }
+        if filter.enable_gdf && preset.gdf_candidates > 0 {
+            if let Some((gdf, blocks)) =
+                self.gdf(&params, &syntax, usize::from(preset.gdf_candidates))?
+            {
+                params.gdf = Some(gdf);
+                syntax.gdf_blocks = blocks;
+            }
+        }
         Ok((params, syntax))
     }
 
@@ -436,7 +454,7 @@ impl Search<'_> {
             &core,
             self.recorder,
             frame,
-            (&vec![Some(0); rows * cols], &[]),
+            (&vec![Some(0); rows * cols], &[], None),
             lr_on,
         )
         .map_err(coding("loop filters"))
@@ -608,7 +626,7 @@ impl Search<'_> {
                     &core,
                     self.recorder,
                     deblocked,
-                    (&syntax.cdef_indices, &[]),
+                    (&syntax.cdef_indices, &[], None),
                     &[],
                 )
                 .map_err(coding("loop filters"))?,
@@ -658,7 +676,7 @@ impl Search<'_> {
                 &core,
                 self.recorder,
                 self.recon,
-                (&syntax.cdef_indices, &syntax.ccso_blocks),
+                (&syntax.cdef_indices, &syntax.ccso_blocks, None),
                 lr_on,
             )
             .map_err(coding("loop filters"))
@@ -693,34 +711,45 @@ impl Search<'_> {
         &self,
         frame: &DecodedFrame<u16>,
         plane: usize,
-        (left, top, width, height): (usize, usize, usize, usize),
+        rect: (usize, usize, usize, usize),
     ) -> u64 {
-        let sizes = self.source.plane_sizes();
-        let (Some(id), Some(size), Some(source)) = (
-            [PlaneId::Y, PlaneId::U, PlaneId::V].get(plane),
-            sizes.get(plane),
-            self.source.planes().get(plane),
-        ) else {
-            return 0;
-        };
-        let Some(recon) = frame.plane(*id) else {
-            return 0;
-        };
-        let right = left.saturating_add(width).min(size.width());
-        let bottom = top.saturating_add(height).min(size.height());
-        let stride = recon.stride_samples();
-        let mut sum = 0u64;
-        for row in top..bottom {
-            let coded = recon
-                .samples()
-                .get(row * stride + left..row * stride + right);
-            let original = source.get(row * size.width() + left..row * size.width() + right);
-            for (&coded, &original) in coded.unwrap_or(&[]).iter().zip(original.unwrap_or(&[])) {
-                sum += u64::from(coded.abs_diff(original)).pow(2);
-            }
-        }
-        sum
+        plane_sse(self.source, frame, plane, rect)
     }
+}
+
+/// SSE of plane `plane` of `frame` against `source` over the visible part of
+/// `(left, top, width, height)`.
+fn plane_sse(
+    source: &SourceFrame,
+    frame: &DecodedFrame<u16>,
+    plane: usize,
+    (left, top, width, height): (usize, usize, usize, usize),
+) -> u64 {
+    let sizes = source.plane_sizes();
+    let (Some(id), Some(size), Some(source)) = (
+        [PlaneId::Y, PlaneId::U, PlaneId::V].get(plane),
+        sizes.get(plane),
+        source.planes().get(plane),
+    ) else {
+        return 0;
+    };
+    let Some(recon) = frame.plane(*id) else {
+        return 0;
+    };
+    let right = left.saturating_add(width).min(size.width());
+    let bottom = top.saturating_add(height).min(size.height());
+    let stride = recon.stride_samples();
+    let mut sum = 0u64;
+    for row in top..bottom {
+        let coded = recon
+            .samples()
+            .get(row * stride + left..row * stride + right);
+        let original = source.get(row * size.width() + left..row * size.width() + right);
+        for (&coded, &original) in coded.unwrap_or(&[]).iter().zip(original.unwrap_or(&[])) {
+            sum += u64::from(coded.abs_diff(original)).pow(2);
+        }
+    }
+    sum
 }
 
 fn cdef_sets(sets: &[CdefStrengthSet]) -> Result<CdefStrengthSets> {
@@ -741,6 +770,8 @@ fn cdef_rate(sets: usize, units: usize) -> Bits {
 
 #[path = "loop_filter_ccso.rs"]
 mod ccso;
+#[path = "loop_filter_gdf.rs"]
+mod gdf;
 #[path = "loop_filter_wienerns.rs"]
 mod wienerns;
 

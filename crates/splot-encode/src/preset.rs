@@ -134,6 +134,9 @@ pub struct PresetParams {
     /// Leaves wider or taller than 64 also try inter, skip-mode and compound
     /// predictions; off, they code intra only.
     pub large_inter: bool,
+    /// GDF `(gdf_pic_qc_idx, gdf_pic_scale_idx)` pairs the filter search
+    /// tries per frame; `0` disables GDF in the sequence.
+    pub gdf_candidates: u8,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -206,6 +209,7 @@ const fn row(
         cctx: false,
         mhccp: false,
         large_inter: true,
+        gdf_candidates: 0,
     }
 }
 
@@ -441,6 +445,7 @@ mod tests {
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.mhccp <= slow.mhccp);
             assert!(fast.large_inter <= slow.large_inter);
+            assert!(fast.gdf_candidates <= slow.gdf_candidates);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));
