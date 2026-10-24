@@ -405,7 +405,8 @@ impl Search<'_> {
                 ..params
             };
             let (chosen, lr_on) = if preset.wiener_ns > 0 {
-                self.restoration_rd(&candidate, &syntax, preset)?
+                let pre_cdef = (filter.enable_cdef || ccso).then_some(deblocked);
+                self.restoration_rd(&candidate, &syntax, (preset, pre_cdef))?
             } else {
                 (candidate, self.restoration(&candidate, &syntax)?)
             };

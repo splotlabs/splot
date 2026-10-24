@@ -87,12 +87,16 @@ pub use transform::{IST_SETS, Ist, TX_PARTITIONS, TxPartition};
 mod filters;
 pub use filters::{
     CcsoBlockMap, CcsoGrid, CdefIndexMap, CdefSlot, FilterRecorder, LrLayout, LrSymbol, LrUnit,
-    LrUnitType, apply_loop_filters, ccso_offset, ccso_taps, cdef_unit_grid, merge_tiles,
+    LrUnitType, PcWienerClassMap, apply_loop_filters, ccso_offset, ccso_taps, cdef_unit_grid,
+    merge_tiles, pc_wiener_cell_classes,
 };
 /// The first tap `(dy, dx, coeff_index)` of each § 7.20.3 luma pair; the partner is `(-dy, -dx)`.
 pub use splot_recon::WIENER_NS_CONFIG_Y_PAIRS;
 /// The § 7.20.3 chroma taps `(dy, dx, coeff_index)` and their luma samples.
-pub use splot_recon::{WIENER_NS_CONFIG_UV, wiener_ns_chroma_luma_plane};
+pub use splot_recon::{
+    WIENER_NS_CONFIG_UV, pc_wiener_filter_set_index, pc_wiener_subclass_table,
+    wiener_ns_chroma_luma_plane,
+};
 
 type BoxedSource = Box<dyn std::error::Error + Send + Sync + 'static>;
 
