@@ -5660,6 +5660,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTER-TX-PARTITION"
+name = "Encoder inter luma transform partition search"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.6.2", "5.20.6.3", "5.20.7.23"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/mode_decision.rs"
+change_id = "enc-inter-tx-partition"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::inter_tx_split: after the mode and filter choice, an inter leaf of at most 64x64 in a TX_MODE_SELECT frame plans its prediction once and sums the squared luma prediction error per quadrant with the SIMD sse kernel; when one quadrant holds more than inter_tx_split / 64 of the energy, every luma_tx_partitions entry gets an RD trial, otherwise the leaf codes NONE without one. The encoder_syntax facade plans the split luma blocks as the decoder's records (plan_inter_leaf_partitioned, luma_transform_records_for_partition in scan order, in-frame records only) and writes tx_do_partition and the partition type through code_luma_tx_partition with the inter CDF rows of a planned inter leaf. Off writes the old stream byte-identically. MEASURED"
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_inter_tx_tests.rs::inter_tx_partitions_plan_the_decoder_records", "crates/splot-encode/src/intra_frame_inter_tx_tests.rs::the_search_picks_inter_tx_partitions", "crates/splot-encode/src/intra_frame_inter_tx_tests.rs::inter_tx_partition_streams_decode_alike_on_any_thread_count", "crates/splot-encode/src/intra_frame_inter_tx_tests.rs::quadrant_sse_matches_a_scalar_sum", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon"]
+commands = ["cargo test -p splot-encode inter_tx --locked", "cargo test -p splot-encode random_inter --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-CCSO"
 name = "Encoder cross-component sample offset"
 category = "encoder"

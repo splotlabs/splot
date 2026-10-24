@@ -9,7 +9,7 @@ use crate::rd::coeff_rate::RateSink;
 use crate::tile_writer::Walk;
 
 /// Preset 6, which codes 128x128 superblocks, with `large_inter`.
-fn preset6(large_inter: bool) -> &'static PresetParams {
+pub(super) fn preset6(large_inter: bool) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         large_inter,
         ..*Preset::new(6).unwrap().params()
@@ -18,7 +18,7 @@ fn preset6(large_inter: bool) -> &'static PresetParams {
 
 /// Runs `test` on the first superblock of the first inter frame of a
 /// panning stream at `config`, with the residual coder of that frame.
-fn in_first_inter_frame<R>(
+pub(super) fn in_first_inter_frame<R>(
     config: &Config,
     test: impl FnOnce(
         &mut IntraTileSyntax,

@@ -18,8 +18,9 @@ use splot_decode::encoder_syntax::{
 };
 use splot_recon::InterpolationFilter;
 
-use crate::intra_frame::SourceResidualCoder;
 use crate::intra_frame::codable_children;
+use crate::intra_frame::{PaddedSource, SourceResidualCoder};
+use crate::kernels::{BlockDims, kernels};
 use crate::motion_search::MotionSearch;
 use crate::preset::PresetParams;
 use crate::rd::coeff_rate::RateSink;
@@ -568,6 +569,47 @@ impl TrialCoder<'_, '_> {
         Ok(if other_cost < cost { other } else { choice })
     }
 
+    /// `choice`, or for an inter `choice` whose luma prediction residual is
+    /// uneven, its best luma transform partition: one quadrant holds more than
+    /// `preset.inter_tx_split / 64` of the residual energy. Leaves narrower or
+    /// shorter than 8 keep `NONE`.
+    fn refine_inter_tx_partition(
+        &mut self,
+        leaf: &LeafBlock,
+        choice: LeafChoice,
+        start: &SyntaxSnapshot,
+    ) -> Result<LeafChoice> {
+        let (w, h) = leaf.dimensions()?;
+        let Some(prediction) = choice.inter.filter(|_| self.preset.inter_tx_split > 0) else {
+            return Ok(choice);
+        };
+        let partitions = self.syntax.luma_tx_partitions(leaf)?;
+        if partitions.len() < 2 || w.min(h) < 8 {
+            return Ok(choice);
+        }
+        let prediction = snap_prediction(self.syntax, leaf, prediction)?;
+        let blocks = self.syntax.plan_inter_leaf(leaf, prediction)?;
+        let luma = blocks
+            .first()
+            .map(|tx| self.syntax.reconstruction(tx))
+            .ok_or(TileWriterError::Shape("an inter leaf without luma"))??;
+        self.syntax.restore(start)?;
+        let quadrants = quadrant_sse(self.coder.source, leaf_rect(leaf)?, &luma)?;
+        let total: u64 = quadrants.iter().sum();
+        let max = quadrants.iter().copied().max().unwrap_or(0);
+        if max * 64 <= total * u64::from(self.preset.inter_tx_split) {
+            return Ok(choice);
+        }
+        let candidates = partitions
+            .into_iter()
+            .map(|tx_partition| LeafChoice {
+                tx_partition,
+                ..choice
+            })
+            .collect();
+        self.best(leaf, candidates, ALL, start)
+    }
+
     /// The `preset.compound_candidates` compound predictions of `leaf` with
     /// the lowest luma SATD plus the exact rate of their mode and difference
     /// syntax, DRL indices included (priced for the [`PRICED_COMPOUND_SHARE`]
@@ -715,6 +757,28 @@ impl TrialCoder<'_, '_> {
     }
 }
 
+/// The squared error between the luma source and the row-major `prediction`
+/// of the luma rectangle `(x, y, w, h)` in each quadrant, in raster order.
+pub(crate) fn quadrant_sse(
+    source: &PaddedSource,
+    (x, y, w, h): (usize, usize, usize, usize),
+    prediction: &[u16],
+) -> Result<[u64; 4]> {
+    let (luma, stride, ..) = source.luma();
+    let dims = BlockDims::new(w / 2, h / 2).map_err(TileWriterError::Kernel)?;
+    let mut out = [0; 4];
+    for (index, sse) in out.iter_mut().enumerate() {
+        let (dx, dy) = (index % 2 * w / 2, index / 2 * h / 2);
+        let at = (y + dy) * stride + x + dx;
+        let (Some(source), Some(predicted)) = (luma.get(at..), prediction.get(dy * w + dx..))
+        else {
+            return Err(TileWriterError::Shape("quadrant outside the source"));
+        };
+        *sse = kernels().sse(source, stride, predicted, w, dims);
+    }
+    Ok(out)
+}
+
 /// The luma rectangle `(x, y, width, height)` of `leaf`.
 fn leaf_rect(leaf: &LeafBlock) -> Result<(usize, usize, usize, usize)> {
     let (w, h) = leaf.dimensions()?;
@@ -800,6 +864,7 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         }
         let scored = self.best_scored(&leaf, candidates, ALL, &start)?;
         let choice = self.refine_filter(&leaf, scored, &start)?;
+        let choice = self.refine_inter_tx_partition(&leaf, choice, &start)?;
         Ok((self.code_leaf(node, choice)?, choice))
     }
 
