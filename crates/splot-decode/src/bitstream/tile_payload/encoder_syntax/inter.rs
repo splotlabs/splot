@@ -14,11 +14,10 @@
 
 use std::sync::Arc;
 
-use splot_core::headers::frame::{FrameHeaderCore, FrameReferenceStateView, TxMode};
+use splot_core::headers::frame::{FrameHeaderCore, FrameReferenceStateView};
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
 use splot_core::symbol_encoder::SymbolSink;
-use splot_core::tables::conversion::SIZE_TO_TX_PART_GROUP_LOOKUP;
 use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::{
     BitDepth, DecodedFrame, InterpolationFilter, ReferencePlaneView, SharedFrame,
@@ -28,12 +27,14 @@ use splot_recon::{
 use super::super::cdf::{
     FrameCdfSubset, TileCdfPolicyInput, TileCdfSelector, tile_cdf_save_policy,
 };
-use super::super::general_intra_residual::inter_chroma_plane_tx_type;
+use super::super::general_intra_residual::{
+    inter_chroma_plane_tx_type, luma_transform_records_for_partition,
+};
 use super::super::partition_traversal::{DecodedLeafPublication, GeneralIntraTreeWalkError};
 use super::compound::InterPrediction;
 use super::{
     EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock, Result, TileEnd, TransformBlock,
-    TxType, rule,
+    TxPartition, TxType, rule,
 };
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{frame_ref_update_from_core, is_key_or_switch};
@@ -47,8 +48,6 @@ use crate::prediction::inter::{
 };
 use crate::reference::buffer::RuntimeReferenceBuffer;
 
-/// `BLOCK_4X4` (§ 9.3), which codes no inter transform partition.
-const BLOCK_4X4: usize = 0;
 /// `MV_PRECISION_EIGHTH_PEL`: motion vectors are in units of `1/8` sample.
 pub const MV_PRECISION_EIGHTH_PEL: u8 = 6;
 /// The nonzero magnitudes, in `1/8` samples, of an adaptive-MVD component
@@ -575,6 +574,23 @@ impl IntraTileSyntax {
         leaf: &LeafBlock,
         prediction: InterPrediction,
     ) -> Result<Vec<TransformBlock>> {
+        self.plan_inter_leaf_partitioned(leaf, prediction, TxPartition::None)
+    }
+
+    /// [`Self::plan_inter_leaf`] with the luma transform split by `partition`,
+    /// one of [`Self::luma_tx_partitions`].
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for a prediction or a partition the leaf
+    /// cannot code.
+    pub fn plan_inter_leaf_partitioned(
+        &mut self,
+        leaf: &LeafBlock,
+        prediction: InterPrediction,
+        partition: TxPartition,
+    ) -> Result<Vec<TransformBlock>> {
+        let split = self.partitioned_tx_size(leaf, partition)?;
+        let (mi_rows, mi_cols) = self.mi_dimensions();
         if !self.inter_allowed(leaf) {
             return Err(EncoderSyntaxError::Unsupported("an inter block here"));
         }
@@ -603,6 +619,29 @@ impl IntraTileSyntax {
                 cctx: 0,
             })
             .collect();
+        if let (Some(tx_size), true) = (split, partition != TxPartition::None) {
+            let records = luma_transform_records_for_partition(
+                leaf.frontier.c * 4,
+                leaf.frontier.r * 4,
+                tx_size,
+                partition,
+            )
+            .map_err(rule("transform partition"))?;
+            let luma = records
+                .into_iter()
+                .filter(|record| record.y / 4 < mi_rows && record.x / 4 < mi_cols)
+                .map(|record| TransformBlock {
+                    tx_type: TxType::DctDct,
+                    plane: 0,
+                    x: record.x,
+                    y: record.y,
+                    tx_size: record.tx_size,
+                    fills_block: false,
+                    ist: super::Ist::OFF,
+                    cctx: 0,
+                });
+            blocks.splice(..1, luma);
+        }
         state.planned = Some(PlannedInter {
             leaf: *leaf,
             motion,
@@ -958,38 +997,6 @@ impl IntraTileSyntax {
             Some((selector, value)) => self.put(symbols, selector, usize::from(value)),
             None => Ok(()),
         }
-    }
-
-    /// Writes the § 5.20.6.3 `tx_do_partition = 0` an inter leaf with a coded
-    /// residual reads in a `TX_MODE_SELECT` frame; a leaf wider or taller
-    /// than 64 reads none.
-    ///
-    /// # Errors
-    /// Returns [`EncoderSyntaxError`] for an invalid block or a write failure.
-    pub fn write_inter_tx_partition(
-        &mut self,
-        leaf: &LeafBlock,
-        symbols: &mut impl SymbolSink,
-    ) -> Result<()> {
-        let size = leaf.frontier.b_size.index();
-        let (width, height) = leaf.dimensions()?;
-        if self.tools.tx_mode != Some(TxMode::Select) || size == BLOCK_4X4 || width.max(height) > 64
-        {
-            return Ok(());
-        }
-        let txfm_split_group = SIZE_TO_TX_PART_GROUP_LOOKUP
-            .get(size)
-            .and_then(|&group| usize::try_from(group).ok())
-            .ok_or(EncoderSyntaxError::Unsupported("block size"))?;
-        self.put(
-            symbols,
-            TileCdfSelector::TxDoPartition {
-                fsc_mode: 0,
-                is_inter: 1,
-                txfm_split_group,
-            },
-            0,
-        )
     }
 
     /// Publishes the coded inter leaf `leaf` into the neighbour, motion and

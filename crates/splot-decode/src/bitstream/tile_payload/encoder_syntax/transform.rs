@@ -116,7 +116,8 @@ impl IntraTileSyntax {
     }
 
     /// Sends the § 5.20.6.3 symbols that select `partition` for `leaf` to `put`
-    /// as `(CDF row, value)`.
+    /// as `(CDF row, value)`, in the inter rows when the planned leaf is inter;
+    /// an inter leaf wider or taller than 64 codes none.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError::Unsupported`] for a partition `leaf` cannot
@@ -338,6 +339,7 @@ impl IntraTileSyntax {
             return Ok(None);
         }
         let mi_size = context.block_size().index();
+        let is_inter = usize::from(self.leaf_is_inter());
         let group = |table: &[i32], name| {
             block_size_table_usize(table, name, mi_size).map_err(rule(PARTITION))
         };
@@ -345,7 +347,7 @@ impl IntraTileSyntax {
         steps[0] = Some((
             TileCdfSelector::TxDoPartition {
                 fsc_mode: 0,
-                is_inter: 0,
+                is_inter,
                 txfm_split_group: group(
                     &SIZE_TO_TX_PART_GROUP_LOOKUP,
                     "Size_To_Tx_Part_Group_Lookup",
@@ -365,7 +367,7 @@ impl IntraTileSyntax {
             steps[1] = Some((
                 TileCdfSelector::TxPartitionType {
                     fsc_mode: 0,
-                    is_inter: 0,
+                    is_inter,
                     ctx: group(
                         &SIZE_TO_TX_TYPE_GROUP_VERT_AND_HORZ,
                         "Size_To_Tx_Type_Group_Vert_And_Horz",
@@ -392,7 +394,7 @@ impl IntraTileSyntax {
             steps[1] = Some((
                 TileCdfSelector::Tx2Or3PartitionType {
                     fsc_mode: 0,
-                    is_inter: 0,
+                    is_inter,
                     ctx: vert_or_horz - 1,
                 },
                 usize::from(partition == four),
