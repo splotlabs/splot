@@ -134,6 +134,10 @@ pub struct PresetParams {
     /// Leaves wider or taller than 64 also try inter, skip-mode and compound
     /// predictions; off, they code intra only.
     pub large_inter: bool,
+    /// An inter leaf tries the luma transform partitions of a `TX_MODE_SELECT`
+    /// frame when one quadrant of its luma prediction residual holds more than
+    /// `inter_tx_split / 64` of the energy; `0` codes `NONE` without a trial.
+    pub inter_tx_split: u8,
     /// GDF `(gdf_pic_qc_idx, gdf_pic_scale_idx)` pairs the filter search
     /// tries per frame; `0` disables GDF in the sequence.
     pub gdf_candidates: u8,
@@ -209,6 +213,7 @@ const fn row(
         cctx: false,
         mhccp: false,
         large_inter: true,
+        inter_tx_split: if tx_partition_search { 24 } else { 0 },
         gdf_candidates: 0,
     }
 }
@@ -445,6 +450,10 @@ mod tests {
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.mhccp <= slow.mhccp);
             assert!(fast.large_inter <= slow.large_inter);
+            assert!(
+                fast.inter_tx_split == 0
+                    || (slow.inter_tx_split != 0 && fast.inter_tx_split >= slow.inter_tx_split)
+            );
             assert!(fast.gdf_candidates <= slow.gdf_candidates);
         }
         for params in PRESETS {

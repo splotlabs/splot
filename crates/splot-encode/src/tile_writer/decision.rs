@@ -52,7 +52,7 @@ pub(crate) enum PartitionTree {
 pub(crate) struct LeafChoice {
     /// The intra modes; an inter leaf ignores them.
     pub(crate) modes: IntraModes,
-    /// One of the leaf's `luma_tx_partitions`; an inter leaf codes `None`.
+    /// One of the leaf's `luma_tx_partitions`.
     pub(crate) tx_partition: TxPartition,
     /// `Some` for an inter leaf.
     pub(crate) inter: Option<InterPrediction>,

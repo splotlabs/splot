@@ -432,6 +432,9 @@ pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) trial: bool,
     /// Price TCQ blocks as plain levels ([`IntraTileSyntax::set_scalar_trial`]).
     pub(crate) scalar: bool,
+    /// When `Some`, a luma block that fills its leaf stores the quadrant
+    /// energy of its prediction residual here.
+    pub(crate) quadrants: Option<[u64; 4]>,
     /// Residual, coefficient, and dequantized buffers reused across blocks.
     scratch: [Vec<i32>; 3],
     /// The U and V coefficients of a CCTX trial.
@@ -457,6 +460,7 @@ impl<'a> SourceResidualCoder<'a> {
             candidate: false,
             trial: false,
             scalar: false,
+            quadrants: None,
             scratch: Default::default(),
             pair: Default::default(),
             rates: Default::default(),
@@ -474,6 +478,11 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         prediction: &[u16],
         tx_types: &[TxType],
     ) -> core::result::Result<TransformDecision, TileWriterError> {
+        if let (Some(quadrants), true) = (&mut self.quadrants, tx.fills_block) {
+            let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
+            let rect = (tx.x, tx.y, 1 << log2_w, 1 << log2_h);
+            *quadrants = crate::mode_decision::quadrant_sse(self.source, rect, prediction)?;
+        }
         let count = if self.candidate {
             1
         } else {
