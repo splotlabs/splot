@@ -371,6 +371,14 @@ mod tests {
         }
     }
 
+    /// The measured placement of the interpolation filter search: off in
+    /// every row (see `ENC-INTERP-FILTER`); a merge must not change it
+    /// silently.
+    #[test]
+    fn interp_filter_search_placement() {
+        assert_eq!(PRESETS.map(|params| params.interp_filter_search), [0; 11]);
+    }
+
     #[test]
     fn rejects_out_of_range_preset() {
         assert!(Preset::new(Preset::MAX).is_ok());
