@@ -72,11 +72,12 @@ pub struct PresetParams {
     /// `MaxDrlBits`, `1..=5`: `NEARMV` and `NEWMV` choose among the first
     /// `drl_bits + 1` entries of the reference MV stack.
     pub drl_bits: u8,
-    /// Inter frames code `SWITCHABLE` interpolation filters: each inter
-    /// candidate takes the filter whose luma prediction SATD plus
-    /// `interp_filter` rate is lowest at its final vectors, and the winning
-    /// leaf tries every filter in a full trial. Off, frames code `EIGHTTAP`.
-    pub interp_filter_search: bool,
+    /// Interpolation filter search: `0` codes `EIGHTTAP` frames; `1` codes
+    /// `SWITCHABLE` frames whose winning inter leaf takes the filter with
+    /// the lowest luma prediction SATD plus `interp_filter` rate at its final
+    /// vectors; `2` also keeps a filter other than the winner's only when a
+    /// trial confirms it.
+    pub interp_filter_search: u8,
     /// Extended partitions: `0` off, `1` adds `HORZ_3` and `VERT_3`, `2` also
     /// the uneven 4-way shapes.
     pub ext_partitions: u8,
@@ -94,7 +95,7 @@ const fn row(
     partition_early_exit: bool,
     (rdoq, full_trials): (bool, bool),
     (tx_type_depth, tx_partition_search): (u8, bool),
-    motion: (u16, u8, u16, u8, bool),
+    motion: (u16, u8, u16, u8, u8),
     (loop_filter_search, mini_gop_size, lookahead_frames, compound_candidates): (u8, u8, u8, u8),
 ) -> PresetParams {
     PresetParams {
@@ -133,7 +134,7 @@ pub const PRESETS: [PresetParams; 11] = [
         false,
         (true, true),
         (3, true),
-        (256, 3, 128, 3, true),
+        (256, 3, 128, 3, 2),
         (3, 8, 16, 8),
     ),
     row(
@@ -142,7 +143,7 @@ pub const PRESETS: [PresetParams; 11] = [
         false,
         (true, true),
         (3, true),
-        (192, 3, 128, 3, true),
+        (192, 3, 128, 3, 2),
         (3, 8, 16, 8),
     ),
     row(
@@ -151,7 +152,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, true),
         (3, true),
-        (128, 3, 128, 3, true),
+        (128, 3, 128, 3, 2),
         (2, 8, 16, 6),
     ),
     row(
@@ -160,7 +161,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, true),
         (2, true),
-        (96, 2, 0, 3, true),
+        (96, 2, 0, 3, 2),
         (2, 8, 16, 6),
     ),
     row(
@@ -169,7 +170,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, false),
         (2, true),
-        (64, 2, 0, 3, true),
+        (64, 2, 0, 3, 2),
         (2, 4, 8, 4),
     ),
     row(
@@ -178,7 +179,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, false),
         (2, true),
-        (64, 2, 0, 3, true),
+        (64, 2, 0, 3, 2),
         (1, 4, 8, 4),
     ),
     row(
@@ -187,7 +188,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (true, false),
         (1, true),
-        (48, 2, 0, 3, true),
+        (48, 2, 0, 3, 2),
         (1, 4, 8, 3),
     ),
     row(
@@ -196,7 +197,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (1, false),
-        (32, 1, 0, 1, true),
+        (32, 1, 0, 1, 2),
         (1, 4, 8, 2),
     ),
     row(
@@ -205,7 +206,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (1, false),
-        (24, 1, 0, 1, true),
+        (24, 1, 0, 1, 2),
         (0, 2, 4, 1),
     ),
     row(
@@ -214,7 +215,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (0, false),
-        (16, 1, 0, 1, true),
+        (16, 1, 0, 1, 2),
         (0, 2, 4, 0),
     ),
     row(
@@ -223,7 +224,7 @@ pub const PRESETS: [PresetParams; 11] = [
         true,
         (false, false),
         (0, false),
-        (16, 0, 0, 1, true),
+        (16, 0, 0, 1, 2),
         (0, 1, 2, 0),
     ),
 ];

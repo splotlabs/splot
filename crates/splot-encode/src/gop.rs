@@ -371,7 +371,7 @@ pub(crate) fn frame_tools(preset: &PresetParams, tiles: UniformTiles, qindex: u3
         (
             preset.subpel_depth == 3 && qindex <= u32::from(preset.eighth_pel_max_qindex),
             preset.mv_prediction,
-            preset.interp_filter_search,
+            preset.interp_filter_search > 0,
         ),
         tiles,
     )
