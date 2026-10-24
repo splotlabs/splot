@@ -54,7 +54,17 @@ fn pan_stream(
             .code_frame(&panning_frame(&config, index * speed), &plan, 190)
             .unwrap();
         let core = &coded.reference.as_ref().unwrap().0;
-        let planes = &core.lr_params.as_ref().unwrap().planes;
+        let params = core.lr_params.as_ref().unwrap();
+        if params
+            .planes
+            .iter()
+            .skip(1)
+            .any(|p| p.restoration_type != FrameRestorationType::None)
+        {
+            let sub_y = u32::from(chroma == PixelFormat::Yuv420);
+            assert!(params.loop_restoration_size[1] >= 64 >> sub_y, "{params:?}");
+        }
+        let planes = &params.planes;
         lr.push(core::array::from_fn(|plane| {
             planes
                 .get(plane)
@@ -149,7 +159,10 @@ fn avm_decodes_wiener_ns_frames_like_splot() {
     let on = Preset::new(6).unwrap().params();
     for (speed, preset) in [(1, on), (0, with_wiener_ns(on, (1, 1)))] {
         let (units, recon, lr) = pan_stream((2, PixelFormat::Yuv420), preset, speed);
-        assert!(codes_wiener_ns(&lr, 0..3), "{lr:?}");
+        assert!(
+            codes_wiener_ns(&lr, 0..1) && codes_wiener_ns(&lr, 1..3),
+            "{lr:?}"
+        );
         let avm = avm_decode(&avmdec, &units, (200, 96), BitDepth::Ten, "wienerns");
         assert!(avm == recon, "speed {speed}: AVM output differs");
     }

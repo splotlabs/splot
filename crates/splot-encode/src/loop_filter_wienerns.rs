@@ -267,7 +267,9 @@ impl Search<'_> {
     }
 
     /// `best` with the cheapest Wiener-NS filter of U and then of V, each
-    /// against keeping the plane off; every other unit keeps its type.
+    /// against keeping the plane off; every other unit keeps its type. The
+    /// chroma units are the luma units at chroma scale, but at least the
+    /// stripe height, and must not cross a tile edge (§ 6.17.7.7).
     fn chroma(
         &self,
         mut best: Choice,
@@ -278,11 +280,15 @@ impl Search<'_> {
         let format = off.info().pixel_format();
         let shift = format.subsampling_x().max(format.subsampling_y());
         let luma_size = best.params.lr_luma_unit_size.unwrap_or(64);
+        let chroma_size = (luma_size >> shift).max(64 >> format.subsampling_y());
+        if !units_fit_tiles(&self.header(&best.params)?, chroma_size << shift) {
+            return Ok(best);
+        }
         if best.lr_on.is_empty() {
             best.params.lr_luma_unit_size = None;
             best.params.lr_luma_wiener_ns = None;
         }
-        best.params.lr_chroma_unit_size = Some(luma_size >> shift);
+        best.params.lr_chroma_unit_size = Some(chroma_size);
         let probe = FrameFilterParams {
             lr_chroma_wiener_ns: [Some(choice(
                 None,
@@ -656,6 +662,21 @@ impl Search<'_> {
             .map(Vec::as_mut_slice)
             .ok_or(Error::Unsupported { what: "an lr CDF" })
     }
+}
+
+/// Whether units of `size` luma samples end on every internal tile edge of
+/// the frame `core` (§ 6.17.7.7 `check_ru_size`).
+fn units_fit_tiles(core: &FrameHeaderCore, size: u32) -> bool {
+    core.tile_info.as_ref().is_some_and(|tiles| {
+        [&tiles.mi_col_starts[..], &tiles.mi_row_starts[..]]
+            .iter()
+            .all(|starts| {
+                starts
+                    .windows(2)
+                    .take(starts.len().saturating_sub(2))
+                    .all(|pair| ((pair[1] - pair[0]) * 4) % size == 0)
+            })
+    })
 }
 
 /// A plane choice of `bank`, or of the bank of reference `rst_ref_pic_idx`.
