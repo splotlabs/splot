@@ -9,8 +9,8 @@ use splot_core::coefficient::{LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_decode::encoder_syntax::{
-    CoeffLevels, IntraTileSyntax, MAX_GOLOMB_PREFIX_BITS, MAX_QUANT_MAGNITUDE, TransformBlock,
-    coefficient_scan, tcq_next_state, tx_log2,
+    CoeffLevels, FSC_MAX_LEVEL, IntraTileSyntax, MAX_GOLOMB_PREFIX_BITS, MAX_QUANT_MAGNITUDE,
+    TransformBlock, coefficient_scan, tcq_next_state, tx_log2,
 };
 
 use super::{Result, TileWriterError};
@@ -77,6 +77,9 @@ pub(crate) fn code_coeffs(
         .find(|q| q.unsigned_abs() >= MAX_QUANT_MAGNITUDE)
     {
         return Err(TileWriterError::LevelOutOfRange(bad));
+    }
+    if syntax.uses_fsc(tx) {
+        return code_fsc_coeffs(syntax, symbols, tx, levels, eob_u_nonzero);
     }
     let scan = coefficient_scan(tx)?;
     let eob = eob(tx, levels)?;
@@ -178,6 +181,84 @@ pub(crate) fn code_coeffs(
     }
     Ok(CodedCoeffs {
         eob,
+        cul_level: cul_level as u8,
+        dc_category,
+    })
+}
+
+/// The § 5.20.7.27 FSC coefficients of luma IDTX block `tx`: the `eob` syntax
+/// codes the positions from the first nonzero scan index `bob` to the end,
+/// the levels follow in scan order from `bob` with the `idtx` rows, then each
+/// nonzero level's `idtx_sign` and remainder.
+fn code_fsc_coeffs(
+    syntax: &mut IntraTileSyntax,
+    symbols: &mut impl SymbolSink,
+    tx: &TransformBlock,
+    levels: &[i32],
+    eob_u_nonzero: bool,
+) -> Result<CodedCoeffs> {
+    let scan = coefficient_scan(tx)?;
+    let seg_eob = scan.len();
+    let bob = scan.iter().position(|&pos| levels[usize::from(pos)] != 0);
+    write_symbol(
+        symbols,
+        syntax.txb_skip_cdf(tx, eob_u_nonzero)?,
+        usize::from(bob.is_none()),
+    )?;
+    let Some(bob) = bob else {
+        return Ok(CodedCoeffs {
+            eob: 0,
+            cul_level: 0,
+            dc_category: 0,
+        });
+    };
+    let coded_eob = seg_eob - bob;
+    write_eob(syntax, symbols, tx, coded_eob)?;
+    syntax.code_luma_tx_type(tx, coded_eob, |cdf, value| {
+        write_symbol(symbols, cdf, value)
+    })?;
+    let (log2_w, _) = adjusted_log2(tx.tx_size)?;
+    let position = |c: usize| {
+        let pos = usize::from(scan[c]);
+        (pos, pos >> log2_w, pos & ((1 << log2_w) - 1))
+    };
+    let mut grid = CoeffLevels::for_block(tx)?;
+    for c in bob..seg_eob {
+        let (pos, row, col) = position(c);
+        let level = levels[pos].unsigned_abs().min(FSC_MAX_LEVEL);
+        let base = level.min(NUM_BASE_LEVELS + 1);
+        let first = (c == bob).then_some((bob, seg_eob));
+        let cdf = syntax.fsc_base_cdf(tx, &grid, (row, col), first)?;
+        write_symbol(symbols, cdf, (base - u32::from(first.is_some())) as usize)?;
+        if base > NUM_BASE_LEVELS {
+            let cdf = syntax.fsc_br_cdf(tx, &grid, (row, col))?;
+            write_symbol(symbols, cdf, (level - base) as usize)?;
+        }
+        grid.set(row, col, level)?;
+    }
+    let (mut cul_level, mut dc_category, mut hr_level_avg) = (0u32, 0u8, 0u32);
+    for c in bob..seg_eob {
+        let (pos, row, col) = position(c);
+        let quant = levels[pos].unsigned_abs();
+        if quant == 0 {
+            continue;
+        }
+        let negative = levels[pos] < 0;
+        let cdf = syntax.idtx_sign_cdf(tx, &grid, (row, col))?;
+        write_symbol(symbols, cdf, usize::from(negative))?;
+        grid.set_sign(row, col, negative)?;
+        if quant >= FSC_MAX_LEVEL {
+            let x = quant - FSC_MAX_LEVEL;
+            write_golomb(symbols, x, hr_level_avg)?;
+            hr_level_avg = (x + hr_level_avg) >> 1;
+        }
+        if pos == 0 {
+            dc_category = if negative { 1 } else { 2 };
+        }
+        cul_level = (cul_level + quant).min(4);
+    }
+    Ok(CodedCoeffs {
+        eob: coded_eob,
         cul_level: cul_level as u8,
         dc_category,
     })
