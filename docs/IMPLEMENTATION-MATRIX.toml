@@ -5689,9 +5689,6 @@ tests = ["crates/splot-encode/src/tile_writer/tests.rs::every_ist_kernel_and_set
 commands = ["cargo test -p splot-encode ist --locked"]
 fixtures = []
 diagnostics = []
-# ---------------------------------------------------------------------------
-# Conformance and differential testing
-# ---------------------------------------------------------------------------
 
 [[feature]]
 id = "ENC-MRL"
