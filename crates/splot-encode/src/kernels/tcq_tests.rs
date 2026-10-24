@@ -127,6 +127,7 @@ const fn tx(plane: usize, tx_size: usize, tx_type: TxType) -> TransformBlock {
         y: 0,
         tx_size,
         fills_block: true,
+        ist: splot_decode::encoder_syntax::Ist::OFF,
     }
 }
 

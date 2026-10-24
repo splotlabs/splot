@@ -38,8 +38,8 @@ use super::super::partition_traversal::{
 };
 use super::super::tile_frontier::chroma_subsampling;
 use super::{
-    EncoderSyntaxError, IntraMode, IntraTileSyntax, LeafBlock, Result, TileEnd, TransformBlock,
-    TxPartition, coefficient_scan, rule, tx_log2,
+    EncoderSyntaxError, IntraMode, IntraTileSyntax, Ist, LeafBlock, Result, TileEnd,
+    TransformBlock, TxPartition, coefficient_scan, rule, tx_log2,
 };
 use crate::pipeline::general_intra::{
     GeneralIntraReconScratch, chroma_edge_smoothness, general_intra_block_ctx,
@@ -185,6 +185,8 @@ pub(super) struct IntraTools {
     enable_ibp: bool,
     enable_intra_edge_filter: bool,
     enable_mrls: bool,
+    /// `enable_intra_ist`.
+    pub(super) enable_intra_ist: bool,
     pub(super) enable_chroma_dctonly: bool,
     pub(super) bit_depth: BitDepth,
     qindex: u32,
@@ -224,7 +226,7 @@ impl IntraTools {
                     || core.allow_screen_content_tools == Some(true),
                 "DIP, MHCCP, FSC, or palette",
             ),
-            (tq.enable_intra_ist || tq.enable_cctx, "intra IST or CCTX"),
+            (tq.enable_cctx, "CCTX"),
             (core.allow_intrabc == Some(true), "intra block copy"),
             (
                 qindex == 0
@@ -257,6 +259,7 @@ impl IntraTools {
             enable_ibp: intra.enable_ibp,
             enable_intra_edge_filter: intra.enable_intra_edge_filter,
             enable_mrls: intra.enable_mrls,
+            enable_intra_ist: tq.enable_intra_ist,
             enable_chroma_dctonly: tq.enable_chroma_dctonly,
             bit_depth: sequence_bit_depth(seq),
             qindex,
@@ -528,6 +531,7 @@ impl IntraTileSyntax {
                     y,
                     tx_size,
                     fills_block,
+                    ist: Ist::OFF,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -565,7 +569,7 @@ impl IntraTileSyntax {
         let tx = self.unit(index)?;
         let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let zeros = &ZERO_LEVELS[..1 << (log2_w.min(5) + log2_h.min(5))];
-        self.reconstruct_with(index, zeros, 0, tx.tx_type)?;
+        self.reconstruct_with(index, zeros, 0, &tx)?;
         self.reconstruction(&tx)
     }
 
@@ -615,17 +619,23 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError`] for a level count that does not match the
     /// block, or without a planned block `index`.
     pub fn reconstruct(&mut self, index: usize, levels: &[i32]) -> Result<()> {
-        let tx_type = self.unit(index)?.tx_type;
-        self.reconstruct_as(index, tx_type, levels)
+        let tx = self.unit(index)?;
+        self.reconstruct_as(index, &tx, levels)
     }
 
-    /// [`Self::reconstruct`] with transform type `tx_type`, which must be the type
-    /// the decoder reads or infers for these levels.
+    /// [`Self::reconstruct`] with the transform type and secondary transform
+    /// of `coded`, planned block `index` as the decoder reads or infers them
+    /// for these levels.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for a level count that does not match the
-    /// block, or without a planned block `index`.
-    pub fn reconstruct_as(&mut self, index: usize, tx_type: TxType, levels: &[i32]) -> Result<()> {
+    /// block, a `coded` block elsewhere, or without a planned block `index`.
+    pub fn reconstruct_as(
+        &mut self,
+        index: usize,
+        coded: &TransformBlock,
+        levels: &[i32],
+    ) -> Result<()> {
         let tx = self.unit(index)?;
         let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let (width, height) = (1usize << log2_w.min(5), 1usize << log2_h.min(5));
@@ -634,13 +644,17 @@ impl IntraTileSyntax {
                 "level count of a transform block",
             ));
         }
-        let coded = TransformBlock { tx_type, ..tx };
+        let coded = TransformBlock {
+            tx_type: coded.tx_type,
+            ist: coded.ist,
+            ..tx
+        };
         let eob = coefficient_scan(&coded)?
             .iter()
             .rposition(|&pos| levels[usize::from(pos)] != 0)
             .map_or(0, |last| last + 1);
         let quant = self.decoder_quant(&coded, levels)?;
-        self.reconstruct_with(index, &quant, eob, tx_type)?;
+        self.reconstruct_with(index, &quant, eob, &coded)?;
         if let Some(leaf) = &self.recon.leaf
             && tx.plane == 0
         {
@@ -731,12 +745,10 @@ impl IntraTileSyntax {
         index: usize,
         quant: &[i32],
         eob: usize,
-        tx_type: TxType,
+        coded: &TransformBlock,
     ) -> Result<()> {
-        let use_tcq = self.uses_tcq(&TransformBlock {
-            tx_type,
-            ..self.unit(index)?
-        });
+        let use_tcq = self.uses_tcq(coded);
+        let (tx_type, ist) = (coded.tx_type, coded.ist.syntax());
         let Recon {
             workspace,
             scratch,
@@ -750,7 +762,7 @@ impl IntraTileSyntax {
                 index,
                 quant,
                 eob,
-                (tx_type as usize, use_tcq),
+                (tx_type as usize, use_tcq, ist),
                 scratch,
                 workspace,
                 block_decoded,

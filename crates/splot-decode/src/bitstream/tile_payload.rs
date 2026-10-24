@@ -67,10 +67,12 @@ pub(crate) use general_intra_block::{
     decode_general_intra_luma_block_mode_with_fsc_context, read_general_intra_dip_mode_info,
     read_general_intra_palette_y_mode, read_lossless_luma_tx_size, read_lossless_tx_size,
 };
+#[cfg(test)]
+pub(crate) use general_intra_residual::reconstruct_general_intra_chroma_cctx_pair_with_predictions;
 pub(crate) use general_intra_residual::{
     CoeffBlock, FrameQmScope, FrameQmSegmentScope, FrameQuantizerDeltasScope,
     FrameQuantizerSnapshot, FrameUserQmLevel, FrameUserQmLevels, FrameUserQmScope,
-    GeneralIntraResidualError, LumaCoeffBlock, LumaTransformPartitionContext,
+    GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext,
     LumaTransformPartitionUnits, LumaTransformTypeContext, LumaTxPartition,
     PositionedLumaCoeffBlock, TransformToolResidualPolicy, current_frame_qm_segment_id,
     decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
@@ -80,10 +82,6 @@ pub(crate) use general_intra_residual::{
     reconstruct_general_intra_coeff_block_rect_into_frame,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
     reconstruct_inter_coeff_block_residual_rect_into,
-};
-#[cfg(test)]
-pub(crate) use general_intra_residual::{
-    IntraIstSyntax, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
 };
 #[cfg(test)]
 pub(crate) use input::plan_derived_tile_payload_boundary;
