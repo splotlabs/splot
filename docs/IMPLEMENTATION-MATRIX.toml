@@ -5926,7 +5926,7 @@ module = "crates/splot-encode/src/loop_filter.rs"
 change_id = "enc-deblock-offsets"
 owner = "encoder"
 risk = "low"
-notes = "With PresetParams::loop_filter_search >= 1 the frame deblocks the pass-1 reconstruction at DfDeltaQ -1, 0 and 1 on every plane, fits a parabola to the SSE of luma, U and V, and deblocks once more at each plane's vertex (a non-convex fit steps past its lower side); depth 2 also tries the two neighbours of each plane's best offset. Each plane keeps its offset of least SSE or turns off, within the df_par_bits range of the sequence. AV2 has one offset per plane and edge direction (§ 7.17.6 lvlSeg drives both qThr and side), so there is no separate side offset; luma codes one offset for both directions. Plane SSE uses the EncoderKernels::sse_row std::simd kernel."
+notes = "With PresetParams::loop_filter_search >= 1 the frame deblocks the pass-1 reconstruction at DfDeltaQ -1, 0 and 1 on every plane, fits a parabola to the SSE of luma, U and V, and deblocks once more at each plane's vertex (a non-convex fit steps past its lower side), which reaches -2..=2; each depth above 1 tries the two neighbours of each plane's best offset once more, so depth 2 reaches -3..=3 and depth 3 the whole -4..=3. Each plane keeps its offset of least SSE or turns off, within the df_par_bits range of the sequence. AV2 has one offset per plane and edge direction (§ 7.17.6 lvlSeg drives both qThr and side), so there is no separate side offset; luma codes one offset for both directions. Plane SSE uses the EncoderKernels::sse_row std::simd kernel."
 
 [feature.status]
 mapped = "done"

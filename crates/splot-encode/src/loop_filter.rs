@@ -449,7 +449,7 @@ impl Search<'_> {
     /// Deblocking on every plane at the qindex-derived level, or with the
     /// per-plane `DfDeltaQ` of least SSE among the offsets a parabola fit on
     /// SSE proposes: offsets `-1`, `0` and `1`, then the vertex of each plane,
-    /// then with `loop_filter_search >= 2` the two neighbours of the best.
+    /// then once per depth above 1 the two neighbours of each plane's best.
     fn deblocking(&self, preset: &PresetParams) -> Result<FrameFilterParams> {
         let on = FrameFilterParams {
             deblocking: [true; 4],
@@ -498,7 +498,7 @@ impl Search<'_> {
                 .min_by_key(|&(_, sse)| *sse)
                 .map(|(&delta, &sse)| (delta, sse))
         };
-        if preset.loop_filter_search >= 2 {
+        for _ in 1..preset.loop_filter_search {
             for side in [-1, 1] {
                 let deltas =
                     core::array::from_fn(|plane| best(&seen[plane]).map_or(0, |b| b.0) + side);
