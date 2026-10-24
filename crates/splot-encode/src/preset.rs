@@ -92,6 +92,9 @@ pub struct PresetParams {
     /// An uneven four-way shape is tried only when the three-way shape of its
     /// axis costs within this margin, in 1/256, of the best; `255` always.
     pub ext_four_way_margin: u8,
+    /// CCSO classifications the filter search tries per plane; `0` disables
+    /// CCSO in the sequence.
+    pub ccso_candidates: u8,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -153,11 +156,24 @@ const fn row(
         ext_partitions: 0,
         ext_three_way_margin: 0,
         ext_four_way_margin: 0,
+        ccso_candidates: 0,
     }
 }
 
 /// Search limits indexed by preset: `0` is the slowest and best, `10` the fastest.
-pub const PRESETS: [PresetParams; 11] = [
+pub const PRESETS: [PresetParams; 11] = with_ccso(ROWS, [8, 8, 6, 6, 4, 4, 4, 2, 2, 1, 1]);
+
+/// `rows` with `ccso_candidates[i]` in row `i`.
+const fn with_ccso(mut rows: [PresetParams; 11], ccso_candidates: [u8; 11]) -> [PresetParams; 11] {
+    let mut i = 0;
+    while i < rows.len() {
+        rows[i].ccso_candidates = ccso_candidates[i];
+        i += 1;
+    }
+    rows
+}
+
+const ROWS: [PresetParams; 11] = [
     row(
         (2, 7),
         13,
@@ -338,6 +354,7 @@ mod tests {
             assert!(fast.ext_partitions <= slow.ext_partitions);
             assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
+            assert!(fast.ccso_candidates <= slow.ccso_candidates);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));

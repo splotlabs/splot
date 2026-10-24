@@ -13,6 +13,7 @@
 //! `splot-recon` § 7.15.4 inverse transform and § 7.14.4 dequantizer: their
 //! outputs use the scale that those decoder processes expect.
 
+pub(crate) mod ccso;
 mod distortion;
 mod forward_transform;
 mod quantize;
