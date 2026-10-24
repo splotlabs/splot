@@ -5639,7 +5639,7 @@ module = "crates/splot-encode/src/mode_decision.rs"
 change_id = "enc-large-inter"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::large_inter: leaves wider or taller than 64 (128x128, 128x64, 64x128 and the 128-wide three- and four-way shapes) also try single-reference, compound and skip-mode inter. The encoder_syntax facade plans their residual with the decoder's chunk walk (inter_residual_units beside read_inter_residual, sharing InterChromaGroup): the 64x64 luma transforms of each chunk, and after the first chunk of each chroma group its U, then V, blocks; a chroma transform type reads the luma types coded before it, and these leaves write no tx_do_partition. Off writes the old stream byte-identically. On in presets 0-6 (the 128x128-superblock rows) pending placement; measured vs main: niklas 720p p6 -1.01% BD-rate at 0.993x CPU, paris p6 -0.06% at 1.007x, paris p0 -0.17% at 1.000x, park_joy 90p p6 -0.14% at 0.994x, p0 +0.00%; presets 7-10 code 64x64 superblocks and are byte-identical. The motion search pads references by 80 samples, so a 128-wide leaf at a frame edge searches fewer vectors."
+notes = "PresetParams::large_inter: leaves wider or taller than 64 (128x128, 128x64 and 64x128; AV2 has no 128-wide three- or four-way shapes, see large_leaves_are_128x128_128x64_or_64x128) also try single-reference, compound and skip-mode inter. The encoder_syntax facade plans their residual with the decoder's chunk walk (inter_residual_units beside read_inter_residual, sharing InterChromaGroup): the 64x64 luma transforms of each chunk, and after the first chunk of each chroma group its U, then V, blocks; a chroma transform type reads the luma types coded before it, and these leaves write no tx_do_partition. Off writes the old stream byte-identically. On in presets 0-6 (the 128x128-superblock rows) pending placement; measured vs main: niklas 720p p6 -1.01% BD-rate at 0.993x CPU, paris p6 -0.06% at 1.007x, paris p0 -0.17% at 1.000x, park_joy 90p p6 -0.14% at 0.994x, p0 +0.00%; presets 7-10 code 64x64 superblocks and are byte-identical. The motion search pads references by 80 samples, so a 128-wide leaf at a frame edge searches fewer vectors."
 
 [feature.status]
 mapped = "done"
@@ -5654,8 +5654,8 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_large_inter_tests.rs::a_128x128_inter_leaf_plans_the_chunked_residual", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::a_pan_codes_large_inter_leaves", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::rollback_restores_a_128x128_inter_leaf", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::large_inter_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::large_inter_streams_match_on_any_thread_count"]
-commands = ["cargo test -p splot-encode large_inter --locked"]
+tests = ["crates/splot-encode/src/intra_frame_large_inter_tests.rs::a_128x128_inter_leaf_plans_the_chunked_residual", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::a_pan_codes_large_inter_leaves", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::rollback_restores_a_128x128_inter_leaf", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::large_inter_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::large_inter_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::large_leaves_are_128x128_128x64_or_64x128", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::compound_and_skip_mode_large_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_large_inter_tests.rs::avm_decodes_large_inter_leaves_like_splot"]
+commands = ["cargo test -p splot-encode large_inter --locked", "SPLOT_AVM_DECODER=<avmdec> cargo test -p splot-encode avm_decodes_large_inter -- --ignored"]
 fixtures = []
 diagnostics = []
 
@@ -5795,26 +5795,26 @@ spec_sections = ["5.4.10", "5.18.7.11", "5.20.10.6", "7.20.3"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/loop_filter_wienerns.rs"
-change_id = "enc-wienerns"
+change_id = "enc-chroma-lr"
 owner = "encoder"
 risk = "medium"
-notes = "Pending: chroma RESTORE_WIENER_NONSEP frame filters (18 coefficients with the luma cross taps). The sequence already enables chroma Wiener-NS (lr_tools_uv_present = 0 copies the luma flag) and splot-core writes chroma banks; the encoder codes chroma restoration off."
+notes = "PresetParams::wiener_ns_chroma bank fits per chroma plane: after the luma restoration choice, each chroma unit keeps the 18-coefficient normal equations of its chroma tap pairs and its 12 luma cross taps, which read the decoder's § 7.20.3 get_luma_sample plane (splot-recon wiener_ns_chroma_luma_plane). U and then V take a one-class RESTORE_WIENER_NONSEP bank per wiener_ns_length subset, with and without wiener_ns_uv_sym, refined like luma; a temporal bank of the primary reference is tried first. Each unit takes none or Wiener-NS with the exact use_wiener_ns rate (the CDF is shared with luma, so the walk covers every plane in coding order), and a plane codes the bank when the total RD beats off. The sequence keeps lr_tools_uv_present = 0, which already enables chroma Wiener-NS. Off writes the luma-only stream byte-identically."
 
 [feature.status]
-mapped = "partial"
+mapped = "done"
 types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "todo"
-decode_check = "pending"
-tests = "pending"
-avm_diff = "pending"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-core/src/write/frame_restoration_proptests.rs::lr_round_trips"]
-commands = ["cargo test -p splot-core frame_restoration --locked"]
+tests = ["crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_422_and_444_tiles_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::avm_decodes_wiener_ns_frames_like_splot", "crates/splot-encode/src/loop_filter_wienerns.rs::tests::chroma_groups_pair_the_luma_taps", "crates/splot-encode/src/kernels/wiener.rs::tests::simd_matches_scalar", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::chroma_wiener_ns_banks_reach_the_parsed_header", "crates/splot-core/src/write/frame_restoration_proptests.rs::lr_round_trips"]
+commands = ["cargo test -p splot-encode wiener --locked", "cargo test -p splot-core encoder_stream --locked"]
 fixtures = []
 diagnostics = []
 # ---------------------------------------------------------------------------

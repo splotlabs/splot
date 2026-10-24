@@ -45,7 +45,7 @@ const WIENER_NS_CHROMA_COEFF_SLOTS: usize = 6;
 const MI_SIZE: usize = 4;
 
 /// AV2 § 7.20.3 `Wiener_Ns_Config_Uv`: `(dy, dx, coeff_index)`.
-const WIENER_NS_CONFIG_UV: [(isize, isize, usize); WIENER_NS_CHROMA_TAPS] = [
+pub const WIENER_NS_CONFIG_UV: [(isize, isize, usize); WIENER_NS_CHROMA_TAPS] = [
     (1, 0, 0),
     (-1, 0, 0),
     (0, 1, 1),
@@ -1368,6 +1368,77 @@ where
 
     let value = round2_i32(s, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample));
     T::try_from_u16(value as u16)
+}
+
+/// The § 7.20.3 `get_luma_sample` value at every position of a `width x
+/// height` chroma plane, from the luma plane `luma` with row stride `stride`,
+/// with the frame's `subsampling`, `cfl_ds_filter_index`, `LumaEndX` (the
+/// frame's last luma column, `LumaStartX = 0`) and `MiRows`.
+///
+/// # Errors
+/// Returns [`ReconError`] for a subsampling above `1`, a filter index above
+/// `3`, an empty luma range, or a luma sample outside `luma` or above
+/// `max_sample`.
+pub fn wiener_ns_chroma_luma_plane(
+    (luma, stride): (&[u16], usize),
+    (width, height): (usize, usize),
+    (subsampling_x, subsampling_y): (u8, u8),
+    cfl_ds_filter_index: u8,
+    (luma_end_x, mi_rows): (usize, usize),
+    max_sample: u16,
+) -> Result<Vec<u16>> {
+    let invalid = |field| ReconError::LoopRestorationSourceInvalidBounds { field };
+    if subsampling_x > 1 || subsampling_y > 1 {
+        return Err(ReconError::LoopRestorationSourceInvalidSubsampling {
+            subsampling_x,
+            subsampling_y,
+        });
+    }
+    if cfl_ds_filter_index > 3 {
+        return Err(ReconError::WienerNsFilterInvalidCflDsFilterIndex {
+            index: cfl_ds_filter_index,
+        });
+    }
+    let last = |end: Option<usize>, sub: u8, field| {
+        end.and_then(|end| end.checked_sub(usize::from(sub)))
+            .ok_or(invalid(field))
+            .and_then(|value| checked_isize(value, field))
+    };
+    let context = ChromaFilterContext {
+        sample_count: 0,
+        luma_start_x: 0,
+        luma_last_x: last(
+            Some(luma_end_x),
+            subsampling_x,
+            "Wiener NS chroma luma last x",
+        )?,
+        luma_last_y: last(
+            (mi_rows * MI_SIZE).checked_sub(1),
+            subsampling_y,
+            "Wiener NS chroma luma last y",
+        )?,
+        subsampling_x,
+        subsampling_y,
+        cfl_ds_filter_index: usize::from(cfl_ds_filter_index % 3),
+    };
+    let mut source = |x: isize, y: isize| {
+        luma.get(y as usize * stride + x as usize)
+            .copied()
+            .unwrap_or(u16::MAX)
+    };
+    let mut plane = Vec::with_capacity(width * height);
+    for y in 0..height {
+        for x in 0..width {
+            plane.push(get_luma_sample::<u16, _>(
+                &context,
+                checked_isize(x, "Wiener NS chroma x")?,
+                checked_isize(y, "Wiener NS chroma y")?,
+                max_sample,
+                &mut source,
+            )?);
+        }
+    }
+    Ok(plane)
 }
 
 fn get_luma_sample<T, F>(

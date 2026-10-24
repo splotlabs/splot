@@ -89,6 +89,8 @@ fn filters(sb: SuperblockSize) -> FrameFilterParams {
             128
         }),
         lr_luma_wiener_ns: None,
+        lr_chroma_unit_size: None,
+        lr_chroma_wiener_ns: [None; 2],
         ccso: [
             CcsoPlaneParams::default(),
             CcsoPlaneParams {
