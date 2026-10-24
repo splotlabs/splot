@@ -386,9 +386,17 @@ impl Search<'_> {
         };
         let deblocked = deblocked.as_ref().unwrap_or(self.recon);
         if filter.enable_cdef {
-            let (cdef_damping, cdef_strengths, indices) = self.cdef(preset, deblocked)?;
-            params.cdef_damping = cdef_damping;
-            params.cdef_strengths = cdef_strengths;
+            let mut best = self.cdef(preset, deblocked, false)?;
+            if preset.cdef_on_skip {
+                let on_skip = self.cdef(preset, deblocked, true)?;
+                if on_skip.0 < best.0 {
+                    best = on_skip;
+                }
+            }
+            let (_, cdef, indices) = best;
+            params.cdef_damping = cdef.cdef_damping;
+            params.cdef_strengths = cdef.cdef_strengths;
+            params.cdef_on_skip = cdef.cdef_on_skip;
             syntax.cdef_indices = indices;
         }
         if ccso {
@@ -521,12 +529,14 @@ impl Search<'_> {
     }
 
     /// The CDEF damping, strength sets and per-unit indices that minimize SSE
-    /// plus the approximate index rate on the deblocked frame.
+    /// plus the approximate index rate on the deblocked frame, with CDEF on
+    /// skipped transform blocks when `on_skip`, and their RD cost.
     fn cdef(
         &self,
         preset: &PresetParams,
         deblocked: &DecodedFrame<u16>,
-    ) -> Result<(u8, CdefStrengthSets, Vec<Option<usize>>)> {
+        on_skip: bool,
+    ) -> Result<(u128, FrameFilterParams, Vec<Option<usize>>)> {
         let candidates = &CDEF_LADDER[..[8, 12, 16][usize::from(preset.loop_filter_search).min(2)]];
         let qmax = u32::from(crate::rate_control::max_qindex(self.recon.bit_depth()));
         let damping = 3 + (3 * self.qindex / qmax).min(3) as u8;
@@ -544,6 +554,7 @@ impl Search<'_> {
             let params = FrameFilterParams {
                 cdef_damping: damping,
                 cdef_strengths: cdef_sets(&[set])?,
+                cdef_on_skip: on_skip,
                 ..FrameFilterParams::default()
             };
             let frame = self.filtered(&params, deblocked, &[])?;
@@ -589,7 +600,7 @@ impl Search<'_> {
             }
         }
         if sets.iter().all(|&(y, uv)| y == 0 && uv == 0) {
-            return Ok((0, CdefStrengthSets::empty(), Vec::new()));
+            return Ok((best_total, FrameFilterParams::default(), Vec::new()));
         }
         let indices = (0..units)
             .map(|unit| {
@@ -609,7 +620,13 @@ impl Search<'_> {
                 uv_sec_strength: candidates[uv].1,
             })
             .collect();
-        Ok((damping, cdef_sets(&strengths)?, indices))
+        let choice = FrameFilterParams {
+            cdef_damping: damping,
+            cdef_strengths: cdef_sets(&strengths)?,
+            cdef_on_skip: on_skip,
+            ..FrameFilterParams::default()
+        };
+        Ok((best_total, choice, indices))
     }
 
     /// `(luma, chroma)` SSE of one 64x64 CDEF unit.
@@ -634,6 +651,7 @@ impl Search<'_> {
         let cdef = FrameFilterParams {
             cdef_damping: params.cdef_damping,
             cdef_strengths: params.cdef_strengths,
+            cdef_on_skip: params.cdef_on_skip,
             ..FrameFilterParams::default()
         };
         let filtered = if cdef.cdef_strengths.is_empty() {

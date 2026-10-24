@@ -256,6 +256,7 @@ fn filter_params_reach_the_parsed_header() {
                     set(15, 1, 0, 0),
                 ])
                 .unwrap(),
+                cdef_on_skip: lr_size % 256 == 0,
                 lr_luma_unit_size: Some(lr_size),
                 lr_luma_wiener_ns: None,
                 lr_chroma_unit_size: None,
@@ -278,6 +279,10 @@ fn filter_params_reach_the_parsed_header() {
             assert!(cdef.cdef_frame_enable);
             assert_eq!(cdef.cdef_damping, Some(5));
             assert_eq!(cdef.strengths, filters.cdef_strengths);
+            assert_eq!(
+                cdef.cdef_on_skip_txfm_frame_enable,
+                Some(filters.cdef_on_skip)
+            );
             let lr = core.lr_params.as_ref().unwrap();
             assert_eq!(
                 lr.planes[0].restoration_type,

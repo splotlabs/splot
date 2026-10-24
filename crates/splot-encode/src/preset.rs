@@ -147,6 +147,9 @@ pub struct PresetParams {
     /// frame when one quadrant of its luma prediction residual holds more than
     /// `inter_tx_split / 64` of the energy; `0` codes `NONE` without a trial.
     pub inter_tx_split: u8,
+    /// The CDEF search also tries the frame with CDEF on skipped transform
+    /// blocks (`cdef_on_skip_txfm_frame_enable`) and keeps the cheaper.
+    pub cdef_on_skip: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -221,6 +224,7 @@ const fn row(
         fsc: false,
         large_inter: true,
         inter_tx_split: if tx_partition_search { 24 } else { 0 },
+        cdef_on_skip: false,
     }
 }
 
@@ -457,6 +461,7 @@ mod tests {
             assert!(fast.mhccp <= slow.mhccp);
             assert!(fast.fsc <= slow.fsc);
             assert!(fast.large_inter <= slow.large_inter);
+            assert!(fast.cdef_on_skip <= slow.cdef_on_skip);
             assert!(
                 fast.inter_tx_split == 0
                     || (slow.inter_tx_split != 0 && fast.inter_tx_split >= slow.inter_tx_split)

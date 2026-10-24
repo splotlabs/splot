@@ -5977,6 +5977,38 @@ tests = ["crates/splot-encode/src/loop_filter_tests.rs::parabola_vertex_finds_th
 commands = ["cargo test -p splot-encode loop_filter --locked"]
 fixtures = []
 diagnostics = []
+[[feature]]
+id = "ENC-CDEF-ON-SKIP"
+name = "Encoder CDEF on skipped transform blocks"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.10", "5.18.7.10", "5.20.10.1", "7.18"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/loop_filter.rs"
+change_id = "enc-cdef-skip"
+owner = "encoder"
+risk = "low"
+notes = "The encoder sequence codes CdefOnSkipTxfm = CDEF_ON_SKIP_TXFM_ADAPTIVE. With PresetParams::cdef_on_skip the CDEF search runs a second time with cdef_on_skip_txfm_frame_enable = 1, where § 7.18 also filters skip_txfm blocks and skipped leaves code cdef_idx (§ 5.20.10.1), and the frame keeps the flag of the lower SSE plus approximate index rate. Off codes the flag 0 byte-identically. The sub-PU deblocking flag (allow_df_sub_pu, § 5.18.5.2) is not searched: SubPuColBase and SubPuRowBase differ from the block origin only for TIP, RefineMV and optical-flow prediction (§ 7.13.3.15), which the encoder does not code, so the flag changes no sample and enable_df_sub_pu stays 0."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_cdef_skip_tests.rs::cdef_on_skip_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_cdef_skip_tests.rs::avm_decodes_cdef_on_skip_frames_like_splot", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::filter_params_reach_the_parsed_header"]
+commands = ["cargo test -p splot-encode cdef_on_skip --locked", "cargo test -p splot-core encoder_stream --locked"]
+fixtures = []
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------
