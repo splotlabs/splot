@@ -242,7 +242,7 @@ pub fn wiener_ns_tap_present(chroma: bool, subset: usize, j: usize) -> bool {
 }
 
 /// Writes `bank` as `read_wienerns_filter(plane, 0, 0, 1)` (§ 5.20.10.6), the
-/// inverse of [`parse_frame_wiener_ns_filter`] with the same reference inputs.
+/// inverse of the § 5.18.7.11 bank parse with the same reference inputs.
 /// Nothing is written when the bank is not one the parser could produce.
 ///
 /// # Errors
