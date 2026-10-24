@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Intra coding tools in coded streams: MRL (§ 7.13.2), IST (§ 7.15.3), CCTX
-//! (§ 7.14.6) and MHCCP (§ 5.20.7.32).
+//! (§ 7.14.6), MHCCP (§ 5.20.7.32) and FSC (§ 5.20.7.27).
 
 use super::*;
 
@@ -149,6 +149,40 @@ fn mhccp_frames_decode_to_the_encoder_recon_on_any_thread_count() {
         preset_with(|_| {}),
         |seq| seq.intra.unwrap().enable_mhccp,
     );
+}
+
+/// FSC streams decode to the encoder recon on any thread count.
+#[test]
+fn fsc_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    assert_tool_streams(
+        preset_with(|p| p.fsc = true),
+        preset_with(|p| p.fsc = false),
+        |seq| seq.transform_quant_entropy.unwrap().enable_fsc,
+    );
+}
+
+/// The key-frame search codes FSC leaves.
+#[test]
+fn search_picks_fsc_leaves() {
+    let config = config(136, 72, BitDepth::Eight, 9, 90);
+    let coder = IntraFrameCoder::with_preset(&config, preset_with(|p| p.fsc = true)).unwrap();
+    let plan = crate::gop::plan(0, config.keyint);
+    let trees = search_frame(
+        &coder,
+        &plan,
+        &synthetic_frame(&config, 3),
+        config.bit_depth,
+    );
+    let fsc = |choice: &LeafChoice| choice.inter.is_none() && choice.modes.fsc;
+    let count: usize = trees.iter().map(|tree| leaves(tree, fsc)).sum();
+    assert!(count > 0);
+}
+
+/// AVM decodes the FSC key and inter frames to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_fsc_frames_like_splot() {
+    assert_avm_decodes(preset_with(|p| p.fsc = true), "fsc");
 }
 
 /// The key-frame search codes CCTX pairs and MHCCP leaves.

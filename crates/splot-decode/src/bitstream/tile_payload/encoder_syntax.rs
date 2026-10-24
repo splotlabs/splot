@@ -57,6 +57,7 @@ use super::tile_frontier::minimal_partition_frame_facts;
 
 mod cctx;
 mod compound;
+mod fsc;
 mod inter;
 mod intra;
 mod mv;
@@ -70,6 +71,7 @@ pub use cctx::CCTX_ROTATIONS;
 pub use compound::{
     COMPOUND_MODES, CompoundMode, CompoundModes, InterPrediction, JMVD_SCALE_MODES,
 };
+pub use fsc::FSC_MAX_LEVEL;
 pub use inter::{
     AMVD_STEPS, EncoderReferences, INTERP_FILTERS, InterMode, InterModes, MV_PRECISION_EIGHTH_PEL,
     MotionVector, SingleMvs,
@@ -960,8 +962,8 @@ impl IntraTileSyntax {
             tx_area4(tx)?,
             tx.fills_block,
             eob_u_nonzero,
-            usize::from(self.leaf_is_inter()),
-            false,
+            usize::from(self.leaf_is_inter() || self.planned_fsc()),
+            self.planned_fsc() && self.tools.enable_fsc,
         )
         .map_err(rule("all_zero context"))?;
         self.tile_row(selector)

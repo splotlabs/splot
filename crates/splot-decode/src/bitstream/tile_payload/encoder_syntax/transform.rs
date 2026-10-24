@@ -324,10 +324,11 @@ impl IntraTileSyntax {
         let group = |table: &[i32], name| {
             block_size_table_usize(table, name, mi_size).map_err(rule(PARTITION))
         };
+        let fsc_mode = usize::from(self.planned_fsc());
         let mut steps = NO_STEPS;
         steps[0] = Some((
             TileCdfSelector::TxDoPartition {
-                fsc_mode: 0,
+                fsc_mode,
                 is_inter: 0,
                 txfm_split_group: group(
                     &SIZE_TO_TX_PART_GROUP_LOOKUP,
@@ -347,7 +348,7 @@ impl IntraTileSyntax {
             };
             steps[1] = Some((
                 TileCdfSelector::TxPartitionType {
-                    fsc_mode: 0,
+                    fsc_mode,
                     is_inter: 0,
                     ctx: group(
                         &SIZE_TO_TX_TYPE_GROUP_VERT_AND_HORZ,
@@ -374,7 +375,7 @@ impl IntraTileSyntax {
             }
             steps[1] = Some((
                 TileCdfSelector::Tx2Or3PartitionType {
-                    fsc_mode: 0,
+                    fsc_mode,
                     is_inter: 0,
                     ctx: vert_or_horz - 1,
                 },
@@ -401,6 +402,9 @@ impl IntraTileSyntax {
         }
         let reduced = self.tools.reduced_tx_set;
         let is_inter = self.leaf_is_inter();
+        if !is_inter && self.planned_fsc() {
+            return Ok(vec![(TxType::Idtx, NO_STEPS)]);
+        }
         let tx_set = transform_set_from_flags(reduced, false, 0, tx.tx_size, is_inter)
             .map_err(rule("transform set"))?;
         if dct_forced(is_inter, 0, eob, false, reduced, tx_set) {

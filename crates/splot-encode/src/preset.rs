@@ -128,6 +128,10 @@ pub struct PresetParams {
     /// directions; off disables `enable_mhccp`. Off in every row: its
     /// `cfl_mhccp` flags lose luma BD-rate.
     pub mhccp: bool,
+    /// The winning luma mode of an intra leaf gets one RD trial with
+    /// `fsc_mode`; off disables `enable_fsc`. Off in every row: it pays only
+    /// on screen content, so it waits for a screen-content detector.
+    pub fsc: bool,
     /// Leaves wider or taller than 64 also try inter, skip-mode and compound
     /// predictions; off, they code intra only.
     pub large_inter: bool,
@@ -201,6 +205,7 @@ const fn row(
         ist_sets: 0,
         cctx: false,
         mhccp: false,
+        fsc: false,
         large_inter: true,
     }
 }
@@ -432,6 +437,7 @@ mod tests {
             assert!(fast.ist_sets <= slow.ist_sets);
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.mhccp <= slow.mhccp);
+            assert!(fast.fsc <= slow.fsc);
             assert!(fast.large_inter <= slow.large_inter);
         }
         for params in PRESETS {
