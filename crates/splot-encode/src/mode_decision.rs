@@ -383,7 +383,9 @@ impl TrialCoder<'_, '_> {
         (cost, choice): (Option<u128>, LeafChoice),
         start: &SyntaxSnapshot,
     ) -> Result<LeafChoice> {
-        let Some(prediction) = choice.inter.filter(|_| self.preset.interp_filter_search > 0)
+        let Some(prediction) = choice
+            .inter
+            .filter(|_| self.preset.interp_filter_search > 0)
         else {
             return Ok(choice);
         };
