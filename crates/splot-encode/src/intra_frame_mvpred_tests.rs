@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Motion vector prediction: temporal motion vectors (§ 7.9), the reference
-//! MV bank, DRL reordering (§ 7.12) and the DRL depth (§ 5.4.6).
+//! Motion vector prediction and coding: temporal motion vectors (§ 7.9), the
+//! reference MV bank, DRL reordering (§ 7.12), the DRL depth (§ 5.4.6) and
+//! switchable interpolation filters (§ 5.18.5.1).
 
 use super::*;
 use crate::gop::GopStep;
 use crate::preset::PresetParams;
 use crate::rd::coeff_rate::RateSink;
 use crate::tile_writer::Walk;
+use splot_core::headers::frame::InterpolationFilter as FrameFilter;
 use splot_core::headers::sequence::DrlReorder;
 
 /// `preset` without MV prediction.
@@ -159,6 +161,7 @@ fn rollback_restores_the_reference_mv_bank() {
                     mode: InterMode::New,
                     drl: 0,
                     mv,
+                    filter: splot_recon::InterpolationFilter::EightTap,
                 }));
                 Walk::trial(syntax, &mut RateSink::adapting()).write_leaf(
                     &leaf,
@@ -206,5 +209,56 @@ fn deep_drl_streams_decode_alike_on_any_thread_count() {
     assert_same_samples(&decode(&one.concat()), &expected, "deep DRL");
     for threads in [2, 8] {
         assert!(stream(threads).0 == one, "{threads} threads");
+    }
+}
+
+/// With the filter search every inter frame codes `SWITCHABLE` filters and
+/// the stream decodes to the encoder recon; without it the frames code
+/// `EIGHTTAP` and the stream differs.
+#[test]
+fn switchable_filters_reach_the_headers_and_the_decoder() {
+    let config = config(72, 40, BitDepth::Ten, 6, 110);
+    let off = Preset::new(6).unwrap().params();
+    let on: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        interp_filter_search: 2,
+        ..*off
+    }));
+    let mut streams = Vec::new();
+    for (preset, filter) in [(on, FrameFilter::Switchable), (off, FrameFilter::Eighttap)] {
+        let (units, expected, cores, _) = super::carry::planned_stream(&config, preset);
+        let frames: Vec<_> = cores
+            .iter()
+            .filter_map(|core| core.inter.as_ref())
+            .collect();
+        assert!(frames.len() >= 7, "{} inter frames", frames.len());
+        for header in frames {
+            assert_eq!(header.interpolation_filter, Some(filter));
+        }
+        assert_same_samples(&decode(&units), &expected, &format!("{filter:?}"));
+        streams.push(units);
+    }
+    assert_ne!(streams[0], streams[1]);
+}
+
+/// A tiled stream with the filter search at level 2 codes the same bytes on
+/// 1, 2 and 8 threads.
+#[test]
+fn switchable_filter_streams_match_on_any_thread_count() {
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        interp_filter_search: 2,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let stream = |threads: usize| {
+        let mut config = config(136, 72, BitDepth::Eight, 6, 100);
+        config.tiles = TileLayout {
+            cols_log2: 1,
+            rows_log2: 1,
+        };
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        super::carry::planned_stream(&config, preset).0
+    };
+    let one = stream(1);
+    for threads in [2, 8] {
+        assert!(stream(threads) == one, "{threads} threads");
     }
 }

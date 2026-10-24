@@ -359,7 +359,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
     /// Codes the inter leaf `leaf` under `prediction`: its residual over the
     /// motion compensated prediction, then `skip_mode` and `is_inter`,
     /// `skip_txfm`, `cdef_idx`, the reference and mode syntax, the motion
-    /// vector differences, and the residual. A leaf whose levels are all zero
+    /// vector differences, `interp_filter`, and the residual. A leaf whose levels are all zero
     /// codes `skip_txfm = 1`.
     fn write_inter_leaf(
         &mut self,
@@ -399,6 +399,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         }
         let mvds = self.syntax.write_inter_modes(leaf, self.sink)?;
         self.syntax.write_mvds(&mvds, self.sink)?;
+        self.syntax.write_interp_filter(leaf, self.sink)?;
         if !skip {
             self.syntax.write_inter_tx_partition(leaf, self.sink)?;
             self.write_residual(&blocks, &levels, &(0..3))?;

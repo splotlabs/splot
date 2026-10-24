@@ -20,7 +20,10 @@ use splot_core::span::ByteOffset;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_core::tables::conversion::SIZE_TO_TX_PART_GROUP_LOOKUP;
 use splot_core::types::{EmbeddedLayerId, ObuType};
-use splot_recon::{BitDepth, DecodedFrame, ReferencePlaneView, SharedFrame, SubpelPredictParams};
+use splot_recon::{
+    BitDepth, DecodedFrame, InterpolationFilter, ReferencePlaneView, SharedFrame,
+    SubpelPredictParams,
+};
 
 use super::super::cdf::{
     FrameCdfSubset, TileCdfPolicyInput, TileCdfSelector, tile_cdf_save_policy,
@@ -47,6 +50,12 @@ use crate::reference::buffer::RuntimeReferenceBuffer;
 const BLOCK_4X4: usize = 0;
 /// `MV_PRECISION_EIGHTH_PEL`: motion vectors are in units of `1/8` sample.
 pub const MV_PRECISION_EIGHTH_PEL: u8 = 6;
+/// The `interp_filter` values a block codes, in symbol order (§ 6.19.7.5).
+pub const INTERP_FILTERS: [InterpolationFilter; 3] = [
+    InterpolationFilter::EightTap,
+    InterpolationFilter::EightTapSmooth,
+    InterpolationFilter::EightTapSharp,
+];
 
 /// The decoder's § 7.23 reference buffer, filled with the encoder's filtered
 /// reconstructions, saved CDFs and § 7.19 motion fields in coding order.
@@ -328,6 +337,9 @@ pub struct InterModes {
     /// The block motion vector of `NEWMV`: the DRL candidate plus a multiple of
     /// [`IntraTileSyntax::mv_step`]. The other modes ignore it.
     pub mv: MotionVector,
+    /// `interp_filter`, one of [`INTERP_FILTERS`]; a block that reads no
+    /// filter (see [`IntraTileSyntax::price_interp_filter`]) ignores it.
+    pub filter: InterpolationFilter,
 }
 
 /// The single-reference vectors of one leaf and list reference, see
@@ -472,6 +484,7 @@ impl IntraTileSyntax {
             mode: InterMode::Near,
             drl,
             mv: MotionVector::default(),
+            filter: InterpolationFilter::EightTap,
         };
         let motion = EncoderSingleMotion {
             mode: SINGLE_MODE_NEWMV,
@@ -793,6 +806,77 @@ impl IntraTileSyntax {
         self.write_mvds(&mvds, symbols)
     }
 
+    /// Prices into `symbols` the `interp_filter` that `prediction` codes at
+    /// `leaf` (§ 5.20.7.6), then puts the CDFs back. Returns whether the
+    /// decoder reads it: a skip-mode block, a large global block and a frame
+    /// without `SWITCHABLE` filters read none and price nothing.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for a prediction `leaf` cannot code or a
+    /// filter outside [`INTERP_FILTERS`].
+    pub fn price_interp_filter(
+        &mut self,
+        leaf: &LeafBlock,
+        prediction: InterPrediction,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<bool> {
+        let (refs, global, filter) = match prediction {
+            InterPrediction::Single(modes) => (
+                (modes.ref_frame, false),
+                modes.mode == InterMode::Global,
+                modes.filter,
+            ),
+            InterPrediction::Compound(modes) => (
+                (modes.refs.0, true),
+                modes.mode == super::CompoundMode::GlobalGlobal,
+                modes.filter,
+            ),
+            InterPrediction::SkipMode { .. } => return Ok(false),
+        };
+        let ref_frame0 =
+            i8::try_from(refs.0).map_err(|_| EncoderSyntaxError::Unsupported("reference index"))?;
+        let selector = self
+            .inter_ref()?
+            .tile
+            .interp_filter_selector(&leaf.frontier, (ref_frame0, refs.1), global)
+            .map_err(rule("interp_filter context"))?;
+        let Some(selector) = selector else {
+            return Ok(false);
+        };
+        let value = INTERP_FILTERS
+            .iter()
+            .position(|&f| f == filter)
+            .ok_or(EncoderSyntaxError::Unsupported("interpolation filter"))?;
+        let mark = self.journal.mark();
+        let written = self.put(symbols, selector, value);
+        self.journal.rollback(&mut self.cdfs, mark)?;
+        written.map(|()| true)
+    }
+
+    /// Writes the `interp_filter` of the planned inter leaf `leaf`, after its
+    /// motion vector differences (§ 5.20.7.6); a leaf that reads none writes
+    /// nothing.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] without a planned inter leaf or for a
+    /// write failure.
+    pub fn write_interp_filter(
+        &mut self,
+        leaf: &LeafBlock,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
+        let state = self.inter_ref()?;
+        let motion = state.planned.as_ref().ok_or(NO_INTER_LEAF)?.motion;
+        let (_, coded) = state
+            .tile
+            .interp_filter(&leaf.frontier, motion)
+            .map_err(rule("interp_filter"))?;
+        match coded {
+            Some((selector, value)) => self.put(symbols, selector, usize::from(value)),
+            None => Ok(()),
+        }
+    }
+
     /// Writes the § 5.20.6.3 `tx_do_partition = 0` an inter leaf with a coded
     /// residual reads in a `TX_MODE_SELECT` frame.
     ///
@@ -854,8 +938,8 @@ impl IntraTileSyntax {
 
     /// Calls `read` with the reference plane view and the § 7.11.3.3
     /// parameters that predict the luma rectangle `(x, y, width, height)` from
-    /// list reference `ref_frame` with `mv`; `splot_recon`'s sub-pixel kernels
-    /// take both.
+    /// list reference `ref_frame` with `mv` and `filter`; `splot_recon`'s
+    /// sub-pixel kernels take both.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] in an intra frame or for a missing reference.
@@ -863,14 +947,14 @@ impl IntraTileSyntax {
         &self,
         ref_frame: usize,
         rect: (usize, usize, usize, usize),
-        mv: MotionVector,
+        (mv, filter): (MotionVector, InterpolationFilter),
         read: impl FnOnce(&ReferencePlaneView<'_, u16>, &SubpelPredictParams) -> R,
     ) -> Result<R> {
         let ref_frame = i8::try_from(ref_frame)
             .map_err(|_| EncoderSyntaxError::Unsupported("reference index"))?;
         self.inter_ref()?
             .tile
-            .with_luma_subpel(ref_frame, rect, mv.into(), read)
+            .with_luma_subpel(ref_frame, rect, (mv.into(), filter), read)
             .map_err(rule("sub-pixel prediction"))
     }
 
@@ -1012,6 +1096,7 @@ impl IntraTileSyntax {
                 modes.drl
             },
             mvd: Mv::default(),
+            interp: modes.filter,
         };
         if mode == SINGLE_MODE_NEWMV {
             let step = self.mv_step();
