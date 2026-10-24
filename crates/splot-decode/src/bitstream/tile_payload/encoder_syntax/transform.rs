@@ -207,7 +207,7 @@ impl IntraTileSyntax {
         };
         put(self.tile_row(row)?, ist.sec_tx_type.into())?;
         if ist.sec_tx_type > 0 {
-            put(self.tile_row(self.ist_set_row(tx)?)?, ist.set.into())?;
+            put(self.tile_row(Self::ist_set_row(tx)?)?, ist.set.into())?;
         }
         Ok(())
     }
@@ -217,11 +217,11 @@ impl IntraTileSyntax {
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for an invalid transform size.
     pub fn ist_sets(&mut self, tx: &TransformBlock) -> Result<u8> {
-        let row = self.ist_set_row(tx)?;
+        let row = Self::ist_set_row(tx)?;
         u8::try_from(self.arity(row)?).map_err(|_| EncoderSyntaxError::Unsupported("IST sets"))
     }
 
-    fn ist_set_row(&self, tx: &TransformBlock) -> Result<TileCdfSelector> {
+    fn ist_set_row(tx: &TransformBlock) -> Result<TileCdfSelector> {
         intra_ist_most_probable_stx_selector(tx.tx_size, tx.tx_type as usize)
             .map_err(rule("IST set row"))
     }

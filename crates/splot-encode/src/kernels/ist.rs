@@ -162,7 +162,7 @@ mod tests {
         ) {
             let layout = secondary_transform_layout(&params).unwrap();
             let mut coeffs = vec![0; params.w * params.h];
-            let mut forward = vec![0; 32];
+            let mut forward = [0; 32];
             for (r, slot) in forward[..layout.n].iter_mut().enumerate() {
                 *slot = values[r];
             }
