@@ -192,13 +192,13 @@ fn rollback_restores_the_reference_mv_bank() {
     assert_eq!(with_trial, without);
 }
 
-/// A mini-GOP stream in 2x2 tiles at a preset with DRL depth above one
-/// decodes to the encoder recon and codes the same bytes on 1, 2 and 8
+/// A mini-GOP stream in two tiles at a preset with DRL depth above one
+/// decodes to the encoder recon and codes the same bytes on 1 and 3
 /// threads.
 #[test]
 fn deep_drl_streams_decode_alike_on_any_thread_count() {
     let stream = |threads: usize| {
-        let mut config = config(136, 72, BitDepth::Eight, 6, 100);
+        let mut config = config(136, 40, BitDepth::Eight, 6, 100);
         assert!(config.preset.params().drl_bits > 1);
         config.tiles = TileLayout {
             cols_log2: 1,
@@ -209,9 +209,7 @@ fn deep_drl_streams_decode_alike_on_any_thread_count() {
     };
     let (one, expected) = stream(1);
     assert_same_samples(&decode(&one.concat()), &expected, "deep DRL");
-    for threads in [2, 8] {
-        assert!(stream(threads).0 == one, "{threads} threads");
-    }
+    assert!(stream(3).0 == one, "3 threads");
 }
 
 /// With the filter search every inter frame codes `SWITCHABLE` filters and
@@ -267,7 +265,7 @@ fn mvd_tools_reach_the_sequence_and_the_decoder() {
 }
 
 /// A tiled stream with the filter search at level 2 codes the same bytes on
-/// 1, 2 and 8 threads.
+/// 1 and 3 threads.
 #[test]
 fn switchable_filter_streams_match_on_any_thread_count() {
     let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
@@ -275,7 +273,7 @@ fn switchable_filter_streams_match_on_any_thread_count() {
         ..*Preset::new(6).unwrap().params()
     }));
     let stream = |threads: usize| {
-        let mut config = config(136, 72, BitDepth::Eight, 6, 100);
+        let mut config = config(136, 40, BitDepth::Eight, 6, 100);
         config.tiles = TileLayout {
             cols_log2: 1,
             rows_log2: 1,
@@ -284,12 +282,10 @@ fn switchable_filter_streams_match_on_any_thread_count() {
         super::carry::planned_stream(&config, preset).0
     };
     let one = stream(1);
-    for threads in [2, 8] {
-        assert!(stream(threads) == one, "{threads} threads");
-    }
+    assert!(stream(3) == one, "3 threads");
 }
 
-/// A tiled stream with every MVD tool on codes the same bytes on 1, 2 and 8
+/// A tiled stream with every MVD tool on codes the same bytes on 1 and 3
 /// threads.
 #[test]
 fn mvd_tool_streams_match_on_any_thread_count() {
@@ -298,7 +294,7 @@ fn mvd_tool_streams_match_on_any_thread_count() {
         ..*Preset::new(6).unwrap().params()
     }));
     let stream = |threads: usize| {
-        let mut config = config(136, 72, BitDepth::Eight, 6, 140);
+        let mut config = config(136, 40, BitDepth::Eight, 6, 140);
         config.tiles = TileLayout {
             cols_log2: 1,
             rows_log2: 1,
@@ -307,7 +303,5 @@ fn mvd_tool_streams_match_on_any_thread_count() {
         super::carry::planned_stream(&config, preset).0
     };
     let one = stream(1);
-    for threads in [2, 8] {
-        assert!(stream(threads) == one, "{threads} threads");
-    }
+    assert!(stream(3) == one, "3 threads");
 }

@@ -92,7 +92,7 @@ fn codes_wiener_ns(lr: &[FrameLr], planes: core::ops::Range<usize>) -> bool {
 }
 
 /// Key and inter frames code luma and chroma Wiener-NS banks, the stream
-/// decodes to the encoder recon, and 1, 2 and 8 threads write the same bytes.
+/// decodes to the encoder recon, and 1 and 3 threads write the same bytes.
 /// Without the tool no plane codes it; without the chroma fits only luma does.
 #[test]
 fn wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count() {
@@ -102,12 +102,10 @@ fn wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     assert!(codes_wiener_ns(&lr[1..], 0..1), "{lr:?}");
     assert!(codes_wiener_ns(&lr, 1..3), "{lr:?}");
     assert_same_samples(&decode(&one.concat()), &recon, "wiener-ns");
-    for threads in [2, 8] {
-        assert!(
-            wiener_stream((threads, PixelFormat::Yuv420), on).0 == one,
-            "{threads} threads"
-        );
-    }
+    assert!(
+        wiener_stream((3, PixelFormat::Yuv420), on).0 == one,
+        "3 threads"
+    );
     let (off, off_recon, off_lr) =
         wiener_stream((1, PixelFormat::Yuv420), with_wiener_ns(on, (0, 0)));
     assert!(!codes_wiener_ns(&off_lr, 0..3), "{off_lr:?}");

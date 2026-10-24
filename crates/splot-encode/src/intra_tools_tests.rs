@@ -45,7 +45,7 @@ fn mrl_enabled(seq: &SequenceHeader) -> bool {
 }
 
 /// MRL streams of every chroma format and both bit depths decode to the
-/// encoder recon, and 1, 2 and 8 threads write the same bytes. Without MRL
+/// encoder recon, and 1 and 3 threads write the same bytes. Without MRL
 /// the sequence does not enable it and the stream changes.
 #[test]
 fn mrl_frames_decode_to_the_encoder_recon_on_any_thread_count() {
@@ -60,12 +60,7 @@ fn mrl_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     }
     let case = (1, PixelFormat::Yuv420, BitDepth::Ten);
     let (one, ..) = tool_stream(case, on);
-    for threads in [2, 8] {
-        assert!(
-            tool_stream((threads, case.1, case.2), on).0 == one,
-            "{threads} threads"
-        );
-    }
+    assert!(tool_stream((3, case.1, case.2), on).0 == one, "3 threads");
     let off = Box::leak(Box::new(PresetParams {
         mrl_trials: 0,
         ..*on

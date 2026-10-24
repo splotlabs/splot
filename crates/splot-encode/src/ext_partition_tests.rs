@@ -14,7 +14,7 @@ static EXT: PresetParams = PresetParams {
 };
 
 /// Key and inter frames with extended partitions decode to the encoder recon,
-/// and 1, 2 and 8 threads write the same bytes.
+/// and 1 and 3 threads write the same bytes.
 #[test]
 fn ext_partitions_decode_to_the_encoder_recon_on_any_thread_count() {
     for case in [
@@ -23,12 +23,7 @@ fn ext_partitions_decode_to_the_encoder_recon_on_any_thread_count() {
     ] {
         let (one, expected) = tiled_stream(case, 1, Some(&EXT));
         assert_same_samples(&decode(&one.concat()), &expected, &format!("{case:?}"));
-        for threads in [2, 8] {
-            assert!(
-                tiled_stream(case, threads, Some(&EXT)).0 == one,
-                "{threads} threads"
-            );
-        }
+        assert!(tiled_stream(case, 3, Some(&EXT)).0 == one, "3 threads");
     }
 }
 

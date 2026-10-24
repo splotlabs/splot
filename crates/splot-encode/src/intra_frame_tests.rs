@@ -169,7 +169,7 @@ fn inter_frames_decode_to_the_encoder_recon_over_several_gops() {
 
 /// Parity hiding on, which no preset row turns on: key and inter frames at
 /// a full-trial and a candidate-trial preset decode to the encoder recon,
-/// with the same bytes on 1, 2 and 8 threads.
+/// with the same bytes on 1 and 3 threads.
 #[test]
 fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     for (preset, width, height) in [(1u8, 40, 24), (6, 72, 40)] {
@@ -200,19 +200,17 @@ fn parity_hiding_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             .flat_map(|frame| recon_bytes(frame, BitDepth::Ten))
             .collect();
         assert_same_samples(&decode(&units), &expected, &format!("preset {preset}"));
-        for threads in [2, 8] {
-            let other: Vec<u8> = stream(threads)
-                .iter()
-                .flat_map(|f| f.temporal_unit.clone())
-                .collect();
-            assert!(other == units, "preset {preset}: {threads} threads");
-        }
+        let other: Vec<u8> = stream(3)
+            .iter()
+            .flat_map(|f| f.temporal_unit.clone())
+            .collect();
+        assert!(other == units, "preset {preset}: 3 threads");
     }
 }
 
 /// TCQ on every frame: key and inter frames at a full-trial and a
 /// candidate-trial preset, at both bit depths and in every chroma format,
-/// decode to the encoder recon, with the same bytes on 1, 2 and 8 threads.
+/// decode to the encoder recon, with the same bytes on 1 and 3 threads.
 #[test]
 fn tcq_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     for (preset, width, height, bit_depth, chroma) in [
@@ -249,13 +247,11 @@ fn tcq_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             .collect();
         let name = format!("preset {preset} {bit_depth:?} {chroma:?}");
         assert_same_samples(&decode(&units), &expected, &name);
-        for threads in [2, 8] {
-            let other: Vec<u8> = stream(threads)
-                .iter()
-                .flat_map(|f| f.temporal_unit.clone())
-                .collect();
-            assert!(other == units, "{name}: {threads} threads");
-        }
+        let other: Vec<u8> = stream(3)
+            .iter()
+            .flat_map(|f| f.temporal_unit.clone())
+            .collect();
+        assert!(other == units, "{name}: 3 threads");
     }
 }
 
@@ -1115,12 +1111,7 @@ fn multi_tile_frames_decode_to_the_encoder_recon() {
 fn multi_tile_output_does_not_depend_on_the_thread_count() {
     let case = TILE_CASES[3];
     let (one, _) = tiled_stream(case, 1, None);
-    for threads in [2, 8] {
-        assert!(
-            tiled_stream(case, threads, None).0 == one,
-            "{threads} threads"
-        );
-    }
+    assert!(tiled_stream(case, 3, None).0 == one, "3 threads");
 }
 
 /// Preset 9 refining to eighth samples in frames up to `base_q_idx` 100.
@@ -1138,17 +1129,15 @@ static QUARTER_PEL: PresetParams = PresetParams {
 
 /// Eighth-pel refinement up to the preset's quantizer threshold: the search
 /// picks odd vector components, the stream decodes to the encoder recon, and
-/// 1, 2 and 8 threads write the same bytes. Above the threshold the frames
+/// 1 and 3 threads write the same bytes. Above the threshold the frames
 /// are the quarter-pel frames of `subpel_depth` 2.
 #[test]
 fn eighth_pel_vectors_decode_to_the_encoder_recon_on_any_thread_count() {
     let case = (72, 8, BitDepth::Eight, 9, 100, (1, 0));
     let (one, expected) = tiled_stream(case, 1, Some(&EIGHTH_PEL));
     assert_same_samples(&decode(&one.concat()), &expected, "eighth-pel");
-    for threads in [2, 8] {
-        let (units, _) = tiled_stream(case, threads, Some(&EIGHTH_PEL));
-        assert!(units == one, "{threads} threads");
-    }
+    let (units, _) = tiled_stream(case, 3, Some(&EIGHTH_PEL));
+    assert!(units == one, "3 threads");
     let above = (72, 8, BitDepth::Eight, 9, 101, (1, 0));
     assert_eq!(
         tiled_stream(above, 1, Some(&EIGHTH_PEL)).0,

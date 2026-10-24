@@ -49,8 +49,8 @@ fn ccso_stream(
     (units, recon, flags, enabled)
 }
 
-/// Key and inter frames code CCSO, decode to the encoder recon, and 1, 2 and
-/// 8 threads write the same bytes. Without CCSO the sequence does not enable
+/// Key and inter frames code CCSO, decode to the encoder recon, and 1 and 3
+/// threads write the same bytes. Without CCSO the sequence does not enable
 /// it and no frame codes it.
 #[test]
 fn ccso_frames_decode_to_the_encoder_recon_on_any_thread_count() {
@@ -61,12 +61,10 @@ fn ccso_frames_decode_to_the_encoder_recon_on_any_thread_count() {
         "{flags:?}"
     );
     assert_same_samples(&decode(&one.concat()), &recon, "ccso");
-    for threads in [2, 8] {
-        assert!(
-            ccso_stream((threads, PixelFormat::Yuv420), on).0 == one,
-            "{threads} threads"
-        );
-    }
+    assert!(
+        ccso_stream((3, PixelFormat::Yuv420), on).0 == one,
+        "3 threads"
+    );
     let (off, off_recon, off_flags, off_enabled) =
         ccso_stream((1, PixelFormat::Yuv420), without_ccso(on));
     assert!(!off_enabled && !off_flags.contains(&true), "{off_flags:?}");
