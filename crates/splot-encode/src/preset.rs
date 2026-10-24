@@ -89,6 +89,10 @@ pub struct PresetParams {
     /// vectors; `2` also keeps a filter other than the winner's only when a
     /// trial confirms it.
     pub interp_filter_search: u8,
+    /// Sequence MVD tools `[enable_adaptive_mvd, enable_mvd_sign_derive,
+    /// enable_flex_mvres]`: a `NEWMV` also tries adaptive-MVD steps and
+    /// coarser block precisions, and coarse differences derive one sign.
+    pub mvd_tools: [bool; 3],
     /// Extended partitions: `0` off, `1` adds `HORZ_3` and `VERT_3`, `2` also
     /// the uneven 4-way shapes.
     pub ext_partitions: u8,
@@ -166,6 +170,7 @@ const fn row(
         mv_prediction: true,
         drl_bits: motion.3,
         interp_filter_search: motion.4,
+        mvd_tools: [false; 3],
         ext_partitions: 0,
         ext_three_way_margin: 0,
         ext_four_way_margin: 0,
@@ -379,6 +384,12 @@ mod tests {
             assert!(fast.mv_prediction <= slow.mv_prediction);
             assert!(fast.drl_bits <= slow.drl_bits);
             assert!(fast.interp_filter_search <= slow.interp_filter_search);
+            assert!(
+                fast.mvd_tools
+                    .iter()
+                    .zip(slow.mvd_tools)
+                    .all(|(&f, s)| f <= s)
+            );
             assert!(fast.ext_partitions <= slow.ext_partitions);
             assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
@@ -399,6 +410,13 @@ mod tests {
     #[test]
     fn interp_filter_search_placement() {
         assert_eq!(PRESETS.map(|params| params.interp_filter_search), [0; 11]);
+    }
+
+    /// The measured placement of the MVD tools: off in every row (see
+    /// `ENC-MV-CODING`).
+    #[test]
+    fn mvd_tools_placement() {
+        assert_eq!(PRESETS.map(|params| params.mvd_tools), [[false; 3]; 11]);
     }
 
     #[test]
