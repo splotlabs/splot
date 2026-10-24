@@ -769,6 +769,20 @@ fn random_modes(
 /// frames 0, 2 and 4, coded from random partitions, modes, references and
 /// vectors: the temporal units and the samples a decoder outputs.
 fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Coverage) {
+    inter_stream_with(config, seed, random_tree)
+}
+
+/// [`random_inter_stream`] with the trees of frame 1 from `tree`.
+fn inter_stream_with(
+    config: &Config,
+    seed: u64,
+    mut tree: impl FnMut(
+        &mut IntraTileSyntax,
+        PartitionNode,
+        &mut Rng,
+        &mut Coverage,
+    ) -> core::result::Result<PartitionTree, TileWriterError>,
+) -> (Vec<Vec<u8>>, Vec<u8>, Coverage) {
     let RateControlMode::ConstantQp { qp } = config.rate_control else {
         unreachable!("these tests code at a constant qp")
     };
@@ -824,7 +838,7 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
     let mut coverage = Coverage::default();
     while writer.next_superblock_root().is_some() {
         let tree = writer
-            .search_superblock(|syntax, root| random_tree(syntax, root, &mut rng, &mut coverage))
+            .search_superblock(|syntax, root| tree(syntax, root, &mut rng, &mut coverage))
             .unwrap();
         writer
             .write_superblock(&SuperblockDecision { tree }, &mut residual)

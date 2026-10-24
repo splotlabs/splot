@@ -166,8 +166,8 @@ fn large_inter_streams_decode_to_the_encoder_recon() {
     let cases = [
         (PixelFormat::Yuv420, BitDepth::Eight, false),
         (PixelFormat::Yuv420, BitDepth::Ten, true),
-        (PixelFormat::Yuv422, BitDepth::Ten, false),
-        (PixelFormat::Yuv444, BitDepth::Eight, false),
+        (PixelFormat::Yuv422, BitDepth::Ten, true),
+        (PixelFormat::Yuv444, BitDepth::Ten, false),
     ];
     for (chroma, bit_depth, tiled) in cases {
         let mut config = config(if tiled { 264 } else { 136 }, 136, bit_depth, 6, 110);
@@ -238,5 +238,179 @@ fn a_pan_codes_large_inter_leaves() {
             let count = large_inter_leaves(&trees);
             assert_eq!(count > 0, large_inter, "{chroma:?} {count}");
         }
+    }
+}
+
+/// With extended partitions on, every partition of a node wider or taller
+/// than 64 gives children of 128x128, 128x64, 64x128 or at most 64x64: AV2
+/// has no 128-wide three- or four-way shapes (§ 9.2 block sizes), so these
+/// three are the only leaves the chunked residual walk serves.
+#[test]
+fn large_leaves_are_128x128_128x64_or_64x128() {
+    let config = config(136, 136, BitDepth::Eight, 6, 110);
+    let ext: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        ext_partitions: 2,
+        ..*preset6(true)
+    }));
+    let mut coder = IntraFrameCoder::with_preset(&config, ext).unwrap();
+    let key = crate::gop::plan(0, config.keyint);
+    coder
+        .encode_frame(&panning_frame(&config, 0), &key, 110)
+        .unwrap();
+    let plan = crate::gop::plan(1, config.keyint);
+    let tools = crate::gop::frame_tools(coder.preset, coder.tiles, 110);
+    let filters = FrameFilterParams::default();
+    let core = plan
+        .header(&coder.view, &coder.references, 110, &filters, tools)
+        .unwrap();
+    let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references, 0).unwrap();
+    let (large, ext_seen) = writer
+        .search_superblock(|syntax, root| {
+            let (mut large, mut ext_seen, mut nodes) = (Vec::new(), false, vec![root]);
+            while let Some(node) = nodes.pop() {
+                let options = syntax.partition_options(node)?;
+                let (w, h) = node.dimensions()?;
+                if w.max(h) <= 64 {
+                    ext_seen |= options.allows(Partition::Horz3);
+                    continue;
+                }
+                large.push((w, h));
+                for partition in PARTITIONS.into_iter().filter(|&p| options.allows(p)) {
+                    if partition != Partition::None {
+                        nodes.extend(syntax.children(node, partition)?);
+                    }
+                }
+            }
+            Ok::<_, TileWriterError>((large, ext_seen))
+        })
+        .unwrap();
+    assert!(ext_seen, "extended partitions are on");
+    for size in large {
+        assert!(
+            [(128, 128), (128, 64), (64, 128)].contains(&size),
+            "{size:?}"
+        );
+    }
+}
+
+/// Frame 1 of a mini-GOP over three references, with every full 128x128
+/// superblock coding a 128x128 compound leaf or two 128x64 leaves (skip
+/// mode, then `NEWMV`), and random trees elsewhere: the units, the decoded samples and the compound and
+/// skip-mode large leaves coded.
+fn large_leaf_stream(config: &Config) -> (Vec<Vec<u8>>, Vec<u8>, [usize; 2]) {
+    let mut counts = [0; 2];
+    let (units, expected, _) =
+        super::inter_stream_with(config, 0x1A26E, |syntax, root, rng, coverage| {
+            let (mi_rows, mi_cols) = syntax.mi_dimensions();
+            let full = root.row4() + 32 <= mi_rows && root.col4() + 32 <= mi_cols;
+            let variant = (root.col4() / 32) % 2;
+            let kind = [Partition::None, Partition::Horz][variant];
+            if !full || !syntax.partition_options(root)?.allows(kind) {
+                return super::random_tree(syntax, root, rng, coverage);
+            }
+            let compound = |syntax: &mut IntraTileSyntax, leaf: &LeafBlock| {
+                let refs = syntax
+                    .compound_pairs()
+                    .into_iter()
+                    .find(|refs| refs.0 != refs.1)?;
+                let modes = CompoundModes {
+                    refs,
+                    mode: COMPOUND_MODES[0],
+                    drl: [0, 0],
+                    mvs: [MotionVector::default(); 2],
+                    jmvd_scale_mode: 0,
+                    filter: splot_recon::InterpolationFilter::EightTap,
+                };
+                syntax
+                    .compound_allowed(leaf)
+                    .then_some(())
+                    .and(syntax.compound_bases(leaf, &modes).ok())
+                    .map(|_| LeafChoice::inter(InterPrediction::Compound(modes)))
+            };
+            let nodes = if kind == Partition::None {
+                vec![root]
+            } else {
+                syntax.children(root, kind)?
+            };
+            let mut leaves = Vec::new();
+            for (index, node) in nodes.into_iter().enumerate() {
+                let leaf = syntax.leaf(node)?;
+                let choice = match (variant, index) {
+                    (1, 0) if syntax.skip_mode_allowed(&leaf) => {
+                        counts[1] += 1;
+                        Some(LeafChoice::inter(InterPrediction::SkipMode { drl: 0 }))
+                    }
+                    (1, _) => Some(LeafChoice::inter(single(
+                        InterMode::New,
+                        MotionVector { row: 16, col: -24 },
+                    ))),
+                    _ => compound(syntax, &leaf).inspect(|_| counts[0] += 1),
+                };
+                leaves.push(PartitionTree::Leaf(choice.unwrap_or(LeafChoice::DC)));
+            }
+            Ok(match kind {
+                Partition::None => leaves.remove(0),
+                kind => PartitionTree::Split {
+                    kind,
+                    children: leaves,
+                },
+            })
+        });
+    (units, expected, counts)
+}
+
+/// Compound 128x128 and skip-mode 128x64 leaves over three references decode to the writer's recon in 4:2:0, 4:2:2 and 4:4:4 at
+/// both bit depths.
+#[test]
+fn compound_and_skip_mode_large_leaves_decode_to_the_writer_recon() {
+    let mut total = [0; 2];
+    for (chroma, bit_depth) in [
+        (PixelFormat::Yuv420, BitDepth::Eight),
+        (PixelFormat::Yuv422, BitDepth::Eight),
+        (PixelFormat::Yuv444, BitDepth::Ten),
+    ] {
+        let mut config = config(264, 136, bit_depth, 6, 140);
+        config.chroma = chroma;
+        let (units, expected, counts) = large_leaf_stream(&config);
+        assert_same_samples(&decode(&units.concat()), &expected, &format!("{chroma:?}"));
+        total = [total[0] + counts[0], total[1] + counts[1]];
+    }
+    assert!(total.iter().all(|&count| count >= 2), "{total:?}");
+}
+
+/// AVM decodes streams with large inter leaves like splot: the forced
+/// compound and skip-mode leaves, and searched panning streams.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_large_inter_leaves_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for (chroma, bit_depth) in [
+        (PixelFormat::Yuv420, BitDepth::Eight),
+        (PixelFormat::Yuv422, BitDepth::Ten),
+        (PixelFormat::Yuv444, BitDepth::Ten),
+    ] {
+        let mut config = config(264, 136, bit_depth, 6, 140);
+        config.chroma = chroma;
+        let (units, expected, _) = large_leaf_stream(&config);
+        let size = (config.width, config.height);
+        let avm = avm_decode(
+            &avmdec,
+            &units,
+            size,
+            bit_depth,
+            &format!("large{chroma:?}"),
+        );
+        assert!(avm == expected, "forced {chroma:?}: AVM output differs");
+        let (units, expected, ..) = super::carry::planned_stream(&config, preset6(true));
+        let avm = avm_decode(
+            &avmdec,
+            &[units],
+            size,
+            bit_depth,
+            &format!("pan{chroma:?}"),
+        );
+        assert!(avm == expected, "pan {chroma:?}: AVM output differs");
     }
 }
