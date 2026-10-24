@@ -20,7 +20,7 @@ use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink}
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
     AMVD_STEPS, EncoderReferences, EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock,
-    PartitionNode, TileEnd, TransformBlock,
+    PartitionNode, TileEnd, TransformBlock, TxPartition,
 };
 use splot_recon::{DecodedFrame, ReconError};
 
@@ -303,7 +303,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         planes: Range<usize>,
     ) -> Result<Vec<TransformBlock>> {
         if let Some(modes) = choice.inter {
-            return self.write_inter_leaf(leaf, modes, coder);
+            return self.write_inter_leaf(leaf, (modes, choice.tx_partition), coder);
         }
         let LeafChoice {
             modes,
@@ -389,11 +389,13 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
     fn write_inter_leaf(
         &mut self,
         leaf: &LeafBlock,
-        prediction: InterPrediction,
+        (prediction, tx_partition): (InterPrediction, TxPartition),
         coder: &mut impl ResidualCoder,
     ) -> Result<Vec<TransformBlock>> {
         let prediction = snap_prediction(self.syntax, leaf, prediction)?;
-        let mut blocks = self.syntax.plan_inter_leaf(leaf, prediction)?;
+        let mut blocks = self
+            .syntax
+            .plan_inter_leaf_partitioned(leaf, prediction, tx_partition)?;
         let mut levels = vec![Vec::new(); blocks.len()];
         for index in 0..blocks.len() {
             let mut tx = blocks[index];
@@ -426,7 +428,11 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         self.syntax.write_mvds(&mvds, self.sink)?;
         self.syntax.write_interp_filter(leaf, self.sink)?;
         if !skip {
-            self.syntax.write_inter_tx_partition(leaf, self.sink)?;
+            let sink = &mut *self.sink;
+            self.syntax
+                .code_luma_tx_partition(leaf, tx_partition, |cdf, value| {
+                    coeffs::write_symbol(sink, cdf, value)
+                })?;
             self.write_residual(&blocks, &levels, &(0..3))?;
         }
         if let Some(filters) = self.filters.as_deref_mut() {
