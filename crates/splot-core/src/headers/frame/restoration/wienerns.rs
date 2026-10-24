@@ -7,6 +7,8 @@ use crate::bitio::BitReader;
 use crate::error::Result;
 use crate::headers::frame::decode_signed_subexp_with_ref;
 use crate::tables::loop_restoration::PC_WIENER_FILTERS;
+use crate::write::bit_writer::BitWriter;
+use crate::write::error::{WriteError, WriteResult};
 
 use super::CoreSeqRestorationView;
 
@@ -71,7 +73,7 @@ const SHUFFLED_INDEX: [usize; 64] = [
 ];
 
 /// The resolved frame-level `FrameLrWienerNs[plane]` bank.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WienerNsFrameFilterBank {
     /// One resolved class entry per `numClasses`, held inline: AV2 bounds a
     /// bank at `MAX_WIENER_NS_CLASSES` classes.
@@ -216,6 +218,219 @@ pub(super) fn parse_frame_wiener_ns_filter(
     }
 
     Ok(WienerNsFrameFilterBank { classes })
+}
+
+/// The coefficient range `min..=max` of tap `j` of a luma or chroma filter
+/// (`Wiener_Ns_Taps_Min`, `Wiener_Ns_Taps_K`, § 5.20.10.6), or `None` past the
+/// last coefficient.
+#[must_use]
+pub fn wiener_ns_coeff_range(chroma: bool, j: usize) -> Option<(i16, i16)> {
+    let plane = usize::from(chroma);
+    let min = *WIENER_NS_TAPS_MIN[plane].get(j)?;
+    Some((min, min + (1i16 << WIENER_NS_TAPS_K[plane][j]) - 1))
+}
+
+/// Whether `wiener_ns_length` subset `subset` codes coefficient `j`
+/// (`Wiener_Ns_Taps_Present`, § 5.20.10.6).
+#[must_use]
+pub fn wiener_ns_tap_present(chroma: bool, subset: usize, j: usize) -> bool {
+    WIENER_NS_TAPS_PRESENT[usize::from(chroma)]
+        .get(subset)
+        .and_then(|taps| taps.get(j))
+        .copied()
+        .unwrap_or(false)
+}
+
+/// Writes `bank` as `read_wienerns_filter(plane, 0, 0, 1)` (§ 5.20.10.6), the
+/// inverse of [`parse_frame_wiener_ns_filter`] with the same reference inputs.
+/// Nothing is written when the bank is not one the parser could produce.
+///
+/// # Errors
+/// [`WriteError::NonCanonicalFrameHeader`] (`lr_frame_filter_bank`) for a class
+/// count, match index, subset or coefficient the syntax cannot code, or a
+/// merged class whose coefficients differ from its match.
+pub fn write_frame_wiener_ns_filter(
+    writer: &mut BitWriter,
+    plane: usize,
+    (num_ref_filters, ref_taps): (usize, &[Option<&[i16]>]),
+    view: CoreSeqRestorationView,
+    bank: &WienerNsFrameFilterBank,
+) -> WriteResult<()> {
+    let bad = || WriteError::NonCanonicalFrameHeader {
+        what: "lr_frame_filter_bank",
+    };
+    let chroma = plane > 0;
+    let num_classes = bank.classes.len();
+    if num_classes == 0 || (chroma && num_classes != 1) {
+        return Err(bad());
+    }
+    let n_coeffs = if chroma {
+        WIENER_NS_CHROMA_COEFFS
+    } else {
+        WIENER_NS_LUMA_COEFFS
+    };
+    let nopcw = view.lr_pc_wiener_disabled;
+    let capped_ref = capped_reference_filter_count(plane, num_classes, num_ref_filters, nopcw);
+    let ref_taps = ref_taps
+        .get(..capped_ref.min(ref_taps.len()))
+        .unwrap_or(&[]);
+    let counts = [
+        num_classes,
+        capped_ref,
+        sampled_pc_wiener_filter_count(plane, num_classes, capped_ref, nopcw),
+    ];
+    let mut w = BitWriter::new();
+    let mut prior = crate::tile::InlineVec::<usize, MAX_WIENER_NS_CLASSES>::default();
+    for (c, class) in bank.classes.iter().enumerate() {
+        let m = usize::from(class.match_index);
+        let group = index_to_group(m, counts);
+        let base = group_base(group, counts);
+        let n = if group == 0 { c + 1 } else { counts[group] };
+        if m >= base + n {
+            return Err(bad());
+        }
+        let pred = if c == 0 {
+            most_probable_group(c, counts)
+        } else {
+            predict_group_from_prior_matches(&prior, counts)
+        };
+        if only_group_available(counts, pred) {
+            if group != pred {
+                return Err(bad());
+            }
+        } else {
+            w.write_flag(group != pred)?;
+            if group != pred && first_zero_group(counts, pred).is_none() {
+                w.write_flag(if group > pred { group - 1 } else { group } != 0)?;
+            }
+        }
+        if n > 1 {
+            write_signed_subexp_with_ref(
+                &mut w,
+                (base as i32, (base + n) as i32),
+                (base + (n >> 1)) as i32,
+                4,
+                m as i32,
+            )?;
+        }
+        prior.push(m).ok_or_else(bad)?;
+    }
+    for class in &bank.classes {
+        w.write_flag(class.merged)?;
+    }
+    for (c, class) in bank.classes.iter().enumerate() {
+        if class.coeffs.len() != n_coeffs {
+            return Err(bad());
+        }
+        let subset = usize::from(class.subset.unwrap_or(0));
+        if !class.merged {
+            let num_subsets = if chroma { 3 } else { 4 };
+            if class.subset.is_none() || subset >= num_subsets {
+                return Err(bad());
+            }
+            for _ in 0..subset {
+                w.write_bit(1)?;
+            }
+            if subset < num_subsets - 1 {
+                w.write_bit(0)?;
+            }
+            if chroma && subset > 0 {
+                w.write_flag(class.wiener_ns_uv_sym)?;
+            } else if class.wiener_ns_uv_sym {
+                return Err(bad());
+            }
+        }
+        let mut j = 0;
+        while j < n_coeffs {
+            let reference = filter_match_coeff(
+                chroma,
+                usize::from(class.match_index),
+                num_classes,
+                capped_ref,
+                ref_taps,
+                &bank.classes[..c],
+                j,
+            );
+            let value = class.coeffs[j];
+            if class.merged {
+                if value != reference {
+                    return Err(bad());
+                }
+            } else if WIENER_NS_TAPS_PRESENT[usize::from(chroma)][subset][j] {
+                let min = i32::from(WIENER_NS_TAPS_MIN[usize::from(chroma)][j]);
+                let k = u32::from(WIENER_NS_TAPS_K[usize::from(chroma)][j]);
+                write_signed_subexp_with_ref(
+                    &mut w,
+                    (min, min + (1 << k)),
+                    i32::from(reference),
+                    k.saturating_sub(3),
+                    i32::from(value),
+                )?;
+            } else if value != 0 {
+                return Err(bad());
+            }
+            let paired = !class.merged
+                && chroma
+                && j >= WIENER_NS_SHORT_COEFFS
+                && class.wiener_ns_uv_sym
+                && j + 1 < n_coeffs;
+            if paired && class.coeffs[j + 1] != value {
+                return Err(bad());
+            }
+            j += 1 + usize::from(paired);
+        }
+    }
+    writer.append(&w)
+}
+
+/// Writes `value` in `low..high` as `decode_signed_subexp_with_ref(low, high, r, k)`.
+fn write_signed_subexp_with_ref(
+    writer: &mut BitWriter,
+    (low, high): (i32, i32),
+    reference: i32,
+    k: u32,
+    value: i32,
+) -> WriteResult<()> {
+    let mx = high - low;
+    let offset = value - low;
+    if !(0..mx).contains(&offset) {
+        return Err(WriteError::ValueOutOfRange {
+            descriptor: "subexp",
+            value: i64::from(value),
+        });
+    }
+    let reference = (reference - low).clamp(0, mx - 1);
+    let coded = if reference <= mx / 2 {
+        recenter(reference, offset)
+    } else {
+        recenter(mx - 1 - reference, mx - 1 - offset)
+    };
+    let (mut round, mut base) = (0u32, 0i32);
+    loop {
+        let bits = if round == 0 { k } else { k + round - 1 };
+        let step = 1i32 << bits;
+        if mx <= base + 3 * step {
+            return writer.write_ns((coded - base) as u32, (mx - base) as u32);
+        }
+        let more = coded >= base + step;
+        writer.write_flag(more)?;
+        if !more {
+            return writer.write_bits((coded - base) as u32, bits);
+        }
+        round += 1;
+        base += step;
+    }
+}
+
+/// The inverse of `inverse_recenter(r, v)` (§ 5.18.9.6) for `x` in `0..mx`.
+const fn recenter(r: i32, x: i32) -> i32 {
+    if x > 2 * r {
+        x
+    } else if x >= r {
+        (x - r) << 1
+    } else {
+        ((r - x) << 1) - 1
+    }
 }
 
 fn read_match_indices(

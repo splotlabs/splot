@@ -60,7 +60,7 @@ mod proptests {
             lr_uv_wiener_nonsep_disabled in any::<bool>(),
             sb_size in arbitrary_sb_size(),
             chroma in arbitrary_chroma(),
-            bits in proptest::collection::vec(any::<bool>(), 0..24),
+            bits in proptest::collection::vec(any::<bool>(), 0..600),
         ) {
             let view = CoreSeqRestorationView {
                 enable_restoration,
@@ -78,11 +78,6 @@ mod proptests {
                 &view,
                 geometry,
             ) {
-                if params.planes.iter().any(|plane| {
-                    plane.frame_filters_on || plane.frame_filter_bank.is_some()
-                }) {
-                    return Ok(());
-                }
                 let mut writer = BitWriter::new();
                 write_lr_params(
                     &mut writer,
@@ -150,6 +145,7 @@ mod proptests {
                     frame_filters_on,
                     num_filter_classes,
                     frame_filter_bank: None,
+                    rst_ref_pic_idx: None,
                 });
             let planes = crate::tile::InlineVec::from_iter_checked(planes)
                 .expect("proptest plane count is bounded");

@@ -18,6 +18,7 @@ mod wienerns;
 use wienerns::parse_frame_wiener_ns_filter;
 pub use wienerns::{
     MAX_WIENER_NS_CLASSES, WienerNsCoeffs, WienerNsFrameFilterBank, WienerNsFrameFilterClass,
+    wiener_ns_coeff_range, wiener_ns_tap_present, write_frame_wiener_ns_filter,
 };
 
 /// `RESTORATION_TILESIZE_MAX` (AV2 v1.0.0 § 3, `docs/spec/av2/1.0.0/03-symbols.md`):
@@ -38,7 +39,7 @@ pub const MAX_CCSO_PLANES: usize = 3;
 
 /// `Decode_Num_Filter_Classes[8]` (AV2 § 5.18.7.11, mirror :7410): maps the f(3)
 /// `num_filter_classes_idx` to `NumFilterClasses`.
-const DECODE_NUM_FILTER_CLASSES: [u8; 8] = [1, 2, 3, 4, 6, 8, 12, 16];
+pub(crate) const DECODE_NUM_FILTER_CLASSES: [u8; 8] = [1, 2, 3, 4, 6, 8, 12, 16];
 
 /// `CCSO_INPUT_INTERVAL` (AV2 § 3): number of CCSO edge classes (mirror :7572). Exposed
 /// `pub(crate)` so the § 5.18.7.12 writer ([`crate::write::frame_restoration`]) re-derives the
@@ -266,6 +267,9 @@ pub struct LrPlaneParams {
     /// `read_wienerns_filter(plane, 0, 0, 1)` (§ 5.20.10.6) or copied from the selected
     /// reference frame by the § 5.18.7.11 temporal-prediction arm.
     pub frame_filter_bank: Option<WienerNsFrameFilterBank>,
+    /// `rst_ref_pic_idx` when `temporal_pred_flag[plane]` copies the bank from a
+    /// reference frame, `None` when the bank is coded or absent.
+    pub rst_ref_pic_idx: Option<u8>,
 }
 
 /// Parsed `lr_params()` (AV2 v1.0.0 § 5.18.7.11) on the intra path.
@@ -422,6 +426,7 @@ pub fn parse_lr_params_for_inter(
                 frame_filters_on,
                 num_filter_classes,
                 frame_filter_bank: None,
+                rst_ref_pic_idx: temporal_pred_flag.then_some(temporal_ref_index as u8),
             })
             .ok_or(crate::error::Error::Unimplemented {
                 feature: "lr_params_plane_count",
@@ -1087,6 +1092,7 @@ mod tests {
             frame_filters_on: true,
             num_filter_classes: None,
             frame_filter_bank: None,
+            rst_ref_pic_idx: None,
         };
         copy_temporal_frame_filter(&mut chroma, 1, 0, references);
         let bank = chroma
@@ -1100,6 +1106,7 @@ mod tests {
             frame_filters_on: true,
             num_filter_classes: None,
             frame_filter_bank: None,
+            rst_ref_pic_idx: None,
         };
         copy_temporal_frame_filter(&mut luma, 0, 0, references);
         assert_eq!(luma.num_filter_classes, Some(2));

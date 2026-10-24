@@ -13,6 +13,9 @@ use crate::bitio::BitReader;
 use crate::headers::frame::encoder_stream::{
     MAX_REDUCED_TX_SET, UniformTiles, obu_header, tile_framing, write_quant_and_filters,
 };
+use crate::headers::frame::inter_shared_tail::{
+    lr_reference_filter_counts, lr_reference_filter_entries,
+};
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CoreSeqView, EncoderHeaderError, FrameFilterParams, FrameHeaderCore, FrameHeaderParseStatus,
@@ -24,7 +27,8 @@ use crate::headers::tile_group::{RecordedFrameHeaderBits, TileGroupLayout, TileG
 use crate::span::ByteOffset;
 use crate::types::ObuType;
 use crate::write::{
-    BitWriter, WriteError, write_annexb_obu, write_tile_group_payload, write_tile_group_structure,
+    BitWriter, LrReferenceFilters, WriteError, write_annexb_obu, write_tile_group_payload,
+    write_tile_group_structure,
 };
 
 /// `PRIMARY_REF_NONE` (§ 3).
@@ -101,9 +105,13 @@ pub fn build_inter_frame_header(
 ) -> Result<EncodedFrameHeader, EncoderHeaderError> {
     let plain = InterFrameParams {
         use_ref_frame_mvs: false,
+        filters: FrameFilterParams {
+            lr_luma_wiener_ns: None,
+            ..params.filters
+        },
         ..*params
     };
-    let header = parse_inter_frame_header(seq, refs, &plain, (None, 0))?;
+    let header = parse_inter_frame_header(seq, refs, &plain, (None, 0), &[])?;
     let inter = header
         .core
         .inter
@@ -117,11 +125,18 @@ pub fn build_inter_frame_header(
             .position(|(&index, &hint)| index == slot && hint != u32::MAX)?;
         u32::try_from(position).ok()
     });
-    if position.is_none() && !params.use_ref_frame_mvs {
+    if position.is_none() && !params.use_ref_frame_mvs && params.filters == plain.filters {
         return Ok(header);
     }
     let num_total_refs = inter.num_total_refs.unwrap_or(0);
-    parse_inter_frame_header(seq, refs, params, (position, num_total_refs))
+    let ref_frame_idx = inter.ref_frame_idx.clone();
+    parse_inter_frame_header(
+        seq,
+        refs,
+        params,
+        (position, num_total_refs),
+        &ref_frame_idx,
+    )
 }
 
 /// Parses the bits of `params` with `primary_ref_frame` over a map of
@@ -131,8 +146,16 @@ fn parse_inter_frame_header(
     refs: &FrameReferenceStateView<'_>,
     params: &InterFrameParams,
     map: (Option<u32>, u32),
+    ref_frame_idx: &[u32],
 ) -> Result<EncodedFrameHeader, EncoderHeaderError> {
-    let (bytes, bit_len) = inter_frame_header_bits(seq, params, map)?;
+    let counts = lr_reference_filter_counts(refs, ref_frame_idx, map.1);
+    let entries = lr_reference_filter_entries(refs, ref_frame_idx, map.1);
+    let lr_refs = LrReferenceFilters {
+        num_ref_frames: map.1,
+        counts,
+        taps: [&entries[0], &entries[1], &entries[2]],
+    };
+    let (bytes, bit_len) = inter_frame_header_bits(seq, params, map, lr_refs)?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
@@ -157,6 +180,7 @@ fn inter_frame_header_bits(
     seq: &CoreSeqView,
     params: &InterFrameParams,
     (primary_ref_frame, num_total_refs): (Option<u32>, u32),
+    lr_refs: LrReferenceFilters<'_>,
 ) -> Result<(Vec<u8>, u64), EncoderHeaderError> {
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
@@ -218,7 +242,7 @@ fn inter_frame_header_bits(
         seq,
         (params.base_q_idx, params.tiles),
         &params.filters,
-        false,
+        (false, lr_refs),
     )?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_flag(params.reference_select)?;
