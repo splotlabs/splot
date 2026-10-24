@@ -21,8 +21,9 @@ fn with_wiener_ns(
     }))
 }
 
-/// What each plane's restoration of a frame codes: `(type, temporal_pred_flag)`.
-type FrameLr = [(FrameRestorationType, bool); 3];
+/// What each plane's restoration of a frame codes: `(type, temporal_pred_flag,
+/// NumFilterClasses)`.
+type FrameLr = [(FrameRestorationType, bool, u8); 3];
 
 /// A key frame and three inter frames of a two-tile `chroma` pan on `threads`
 /// threads: the units, the encoder recon and the luma restoration of each frame.
@@ -68,8 +69,12 @@ fn pan_stream(
         lr.push(core::array::from_fn(|plane| {
             planes
                 .get(plane)
-                .map_or((FrameRestorationType::None, false), |p| {
-                    (p.restoration_type, p.rst_ref_pic_idx.is_some())
+                .map_or((FrameRestorationType::None, false, 1), |p| {
+                    (
+                        p.restoration_type,
+                        p.rst_ref_pic_idx.is_some(),
+                        p.num_filter_classes.unwrap_or(1),
+                    )
                 })
         }));
         coder.commit(&mut coded).unwrap();
@@ -82,7 +87,7 @@ fn pan_stream(
 /// Whether a frame codes a Wiener-NS bank on one of `planes`.
 fn codes_wiener_ns(lr: &[FrameLr], planes: core::ops::Range<usize>) -> bool {
     lr.iter().any(|frame| {
-        frame[planes.clone()].iter().any(|(tool, _)| {
+        frame[planes.clone()].iter().any(|(tool, _, _)| {
             matches!(
                 tool,
                 FrameRestorationType::WienerNonsep | FrameRestorationType::Switchable
@@ -123,13 +128,50 @@ fn wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     assert_ne!(luma, one);
 }
 
+/// Three frames of a 352x288 pan at preset 9 with banks of up to 16 classes:
+/// the units, the encoder recon and the luma `NumFilterClasses` of each frame.
+fn class_stream() -> (Vec<Vec<u8>>, Vec<u8>, Vec<Option<u8>>) {
+    let preset = Box::leak(Box::new(PresetParams {
+        wiener_ns_classes: 16,
+        ..*Preset::new(9).unwrap().params()
+    }));
+    let mut config = config(352, 288, BitDepth::Eight, 9, 110);
+    config.threads = splot_parallel::ThreadCount::from(2);
+    let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let (mut units, mut recon, mut classes) = (Vec::new(), Vec::new(), Vec::new());
+    for index in 0..3 {
+        let plan = crate::gop::plan(u64::from(index), config.keyint);
+        let mut coded = coder
+            .code_frame(&panning_frame(&config, index), &plan, 110)
+            .unwrap();
+        let core = &coded.reference.as_ref().unwrap().0;
+        classes.push(core.lr_params.as_ref().unwrap().planes[0].num_filter_classes);
+        coder.commit(&mut coded).unwrap();
+        recon.extend(recon_bytes(&coded, config.bit_depth));
+        units.push(coded.temporal_unit);
+    }
+    (units, recon, classes)
+}
+
+/// Luma banks of several classes over the § 7.20.4 PC-Wiener classes decode
+/// to the encoder recon.
+#[test]
+fn class_banks_decode_to_the_encoder_recon() {
+    let (units, recon, classes) = class_stream();
+    assert!(classes.iter().any(|&count| count > Some(1)), "{classes:?}");
+    assert_same_samples(&decode(&units.concat()), &recon, "class banks");
+}
+
 /// A still scene reuses the bank of the primary reference, which decodes to
 /// the encoder recon.
 #[test]
 fn temporal_wiener_ns_bank_decodes_to_the_encoder_recon() {
     let on = Preset::new(6).unwrap().params();
     let (units, recon, lr) = pan_stream((2, PixelFormat::Yuv420), with_wiener_ns(on, (1, 1)), 0);
-    assert!(lr.iter().flatten().any(|&(_, temporal)| temporal), "{lr:?}");
+    assert!(
+        lr.iter().flatten().any(|&(_, temporal, _)| temporal),
+        "{lr:?}"
+    );
     assert_same_samples(&decode(&units.concat()), &recon, "temporal");
 }
 
@@ -166,4 +208,14 @@ fn avm_decodes_wiener_ns_frames_like_splot() {
         let avm = avm_decode(&avmdec, &units, (200, 96), BitDepth::Ten, "wienerns");
         assert!(avm == recon, "speed {speed}: AVM output differs");
     }
+    let (units, recon, classes) = class_stream();
+    assert!(classes.iter().any(|&count| count > Some(1)), "{classes:?}");
+    let avm = avm_decode(
+        &avmdec,
+        &units,
+        (352, 288),
+        BitDepth::Eight,
+        "wienerns-classes",
+    );
+    assert!(avm == recon, "class banks: AVM output differs");
 }

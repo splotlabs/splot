@@ -39,7 +39,7 @@ pub const MAX_CCSO_PLANES: usize = 3;
 
 /// `Decode_Num_Filter_Classes[8]` (AV2 § 5.18.7.11, mirror :7410): maps the f(3)
 /// `num_filter_classes_idx` to `NumFilterClasses`.
-pub(crate) const DECODE_NUM_FILTER_CLASSES: [u8; 8] = [1, 2, 3, 4, 6, 8, 12, 16];
+pub const DECODE_NUM_FILTER_CLASSES: [u8; 8] = [1, 2, 3, 4, 6, 8, 12, 16];
 
 /// `CCSO_INPUT_INTERVAL` (AV2 § 3): number of CCSO edge classes (mirror :7572). Exposed
 /// `pub(crate)` so the § 5.18.7.12 writer ([`crate::write::frame_restoration`]) re-derives the
