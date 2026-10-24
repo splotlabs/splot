@@ -290,6 +290,27 @@ mod tests {
     }
 
     #[test]
+    fn lr_temporal_plane_with_a_bank_is_rejected() {
+        let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
+        let mut plane = lr_plane(FrameRestorationType::WienerNonsep);
+        plane.frame_filters_on = true;
+        plane.rst_ref_pic_idx = Some(0);
+        plane.frame_filter_bank = Some(WienerNsFrameFilterBank {
+            classes: crate::tile::InlineVec::default(),
+        });
+        let params = lr_params(
+            true,
+            vec![
+                plane,
+                lr_plane(FrameRestorationType::None),
+                lr_plane(FrameRestorationType::None),
+            ],
+            [256, 32, 32],
+        );
+        assert_lr_rejected(&params, 3, geometry, "lr_frame_filter_bank");
+    }
+
+    #[test]
     fn lr_frame_filter_bank_on_a_plane_without_frame_filters_is_rejected() {
         let geometry = geom(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
         let params = LrParams {

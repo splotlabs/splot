@@ -242,7 +242,7 @@ fn check_lr_encodable(
             });
         }
         let coded_bank = p.frame_filters_on && p.rst_ref_pic_idx.is_none();
-        if coded_bank != p.frame_filter_bank.is_some() && p.rst_ref_pic_idx.is_none() {
+        if coded_bank != p.frame_filter_bank.is_some() {
             return Err(WriteError::NonCanonicalFrameHeader {
                 what: "lr_frame_filter_bank",
             });
