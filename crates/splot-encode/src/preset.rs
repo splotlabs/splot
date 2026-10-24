@@ -114,6 +114,12 @@ pub struct PresetParams {
     /// MRL candidates of an intra leaf that get an RD trial besides the luma
     /// shortlist, lowest SATD first; `0` disables MRL in the sequence.
     pub mrl_trials: u8,
+    /// `most_probable_stx_set` values whose three kernels a luma block ranks
+    /// by kept energy in a leaf's final trial when its plain levels code
+    /// `eob > 1`; the best gets one RD trial. `0` disables intra IST. Off in
+    /// every row: on top of MRL its BD-rate per CPU loses at every measured
+    /// preset.
+    pub ist_sets: u8,
     /// Leaves wider or taller than 64 also try inter, skip-mode and compound
     /// predictions; off, they code intra only.
     pub large_inter: bool,
@@ -184,6 +190,7 @@ const fn row(
         wiener_ns: 0,
         wiener_ns_chroma: 0,
         mrl_trials: 0,
+        ist_sets: 0,
         large_inter: true,
     }
 }
@@ -195,16 +202,18 @@ pub const PRESETS: [PresetParams; 11] = with_columns(
     [2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1],
     [2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1],
     [2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 );
 
-/// `rows` with `ccso_candidates[i]`, `wiener_ns[i]`, `wiener_ns_chroma[i]` and
-/// `mrl_trials[i]` in row `i`.
+/// `rows` with `ccso_candidates[i]`, `wiener_ns[i]`, `wiener_ns_chroma[i]`,
+/// `mrl_trials[i]` and `ist_sets[i]` in row `i`.
 const fn with_columns(
     mut rows: [PresetParams; 11],
     ccso_candidates: [u8; 11],
     wiener_ns: [u8; 11],
     wiener_ns_chroma: [u8; 11],
     mrl_trials: [u8; 11],
+    ist_sets: [u8; 11],
 ) -> [PresetParams; 11] {
     let mut i = 0;
     while i < rows.len() {
@@ -212,6 +221,7 @@ const fn with_columns(
         rows[i].wiener_ns = wiener_ns[i];
         rows[i].wiener_ns_chroma = wiener_ns_chroma[i];
         rows[i].mrl_trials = mrl_trials[i];
+        rows[i].ist_sets = ist_sets[i];
         i += 1;
     }
     rows
@@ -409,6 +419,7 @@ mod tests {
             assert!(fast.wiener_ns <= slow.wiener_ns);
             assert!(fast.wiener_ns_chroma <= slow.wiener_ns_chroma);
             assert!(fast.mrl_trials <= slow.mrl_trials);
+            assert!(fast.ist_sets <= slow.ist_sets);
             assert!(fast.large_inter <= slow.large_inter);
         }
         for params in PRESETS {

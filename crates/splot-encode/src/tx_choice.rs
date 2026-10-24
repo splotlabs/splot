@@ -7,7 +7,7 @@
 
 use splot_core::headers::frame::{KeyFrameTxParams, TxMode};
 use splot_decode::encoder_syntax::{IntraTileSyntax, TransformBlock, recon_params, tx_log2};
-use splot_recon::{BitDepth, PlaneId, reconstruct_transform_block_residual};
+use splot_recon::{BitDepth, PlaneId, reconstruct_transform_block_residual_with_secondary};
 
 use crate::preset::PresetParams;
 use crate::tile_writer::{Result, coeffs::adjusted_log2};
@@ -32,9 +32,9 @@ pub(crate) const fn tx_type_candidates(preset: &PresetParams) -> usize {
     2 * preset.tx_type_depth as usize + 1
 }
 
-/// The row-major reconstruction of luma block `tx` (with its `tx_type`) coded
-/// as `levels` over `prediction`, with the decoder's dequantization and
-/// inverse transform.
+/// The row-major reconstruction of luma block `tx` (with its `tx_type` and
+/// `ist`) coded as `levels` over `prediction`, with the decoder's
+/// dequantization and inverse transforms.
 pub(crate) fn reconstruct(
     syntax: &IntraTileSyntax,
     prediction: &[u16],
@@ -58,11 +58,12 @@ pub(crate) fn reconstruct(
     )?;
     let mut dequant = vec![0; 1 << (adj_w + adj_h)];
     let mut residual = vec![0; prediction.len()];
-    reconstruct_transform_block_residual(
+    reconstruct_transform_block_residual_with_secondary(
         prediction,
         &syntax.decoder_quant(tx, levels)?,
         &params,
         &transform,
+        syntax.secondary_transform(tx)?.as_ref(),
         &mut dequant,
         &mut residual,
         &mut recon,

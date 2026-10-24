@@ -597,6 +597,7 @@ impl IntraTileSyntax {
                 y,
                 tx_size,
                 fills_block,
+                ist: super::Ist::OFF,
             })
             .collect();
         state.planned = Some(PlannedInter {

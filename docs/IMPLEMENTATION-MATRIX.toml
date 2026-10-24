@@ -4841,7 +4841,7 @@ module = "crates/splot-encode/src/intra_frame.rs"
 change_id = "encoder-m2-full-intra"
 owner = "encoder"
 risk = "medium"
-notes = "Key frames are closed-loop key frames with uniform tiles (ENC-TILES) in 4:2:0, 4:2:2 or 4:4:4 (ENC-CHROMA-FORMATS); ENC-INTER-FRAME-HEADERS adds inter frames. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No DIP, FSC, MHCCP, palette, IntraBC, IST, CCTX, TCQ, Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
+notes = "Key frames are closed-loop key frames with uniform tiles (ENC-TILES) in 4:2:0, 4:2:2 or 4:4:4 (ENC-CHROMA-FORMATS); ENC-INTER-FRAME-HEADERS adds inter frames. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No DIP, FSC, MHCCP, palette, IntraBC, CCTX, TCQ, Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
 
 [feature.status]
 mapped = "done"
@@ -5690,6 +5690,38 @@ tests = ["crates/splot-encode/src/loop_filter_tests.rs::ccso_search_classes_matc
 commands = ["cargo test -p splot-encode ccso --locked", "cargo test -p splot-core encoder_stream --locked"]
 fixtures = []
 diagnostics = []
+[[feature]]
+id = "ENC-IST"
+name = "Encoder intra secondary transform"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.8.2", "7.15.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/kernels/ist.rs"
+change_id = "enc-ist"
+owner = "encoder"
+risk = "medium"
+notes = "Implemented, OFF in every preset. PresetParams::ist_sets (0 disables enable_intra_ist): in a leaf's final trial, each DCT_DCT or ADST_ADST luma type whose plain levels code eob > 1 ranks the three kernels of its first ist_sets most_probable_stx_set values by the energy their forward outputs keep, and the best gets one RD trial. The forward IST (std::simd and scalar) is the transpose of the decoder's kernel over splot_recon::secondary_transform_layout, which the decoder's inverse shares. The encoder_syntax facade carries Ist in TransformBlock, writes sec_tx_type and most_probable_stx_set, and reconstructs with the decoder's secondary transform; a block whose final levels code no sec_tx_type is recoded without IST. On at p0-p6 (7 sets) against main with MRL: park_joy intra +0.68% (1.13x CPU) and inter +0.57%, paris intra -0.37% (1.14x) and inter +0.14%, park_joy p0 intra +0.10% (1.17x) and inter +0.61%; the sec_tx_type flag of every eligible block costs about 0.5-1%. IST may pay inside mode decision (Phase B3 multi-stage MD). Off writes the old stream byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/tile_writer/tests.rs::every_ist_kernel_and_set_round_trips", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot", "crates/splot-encode/src/kernels/ist.rs::tests::simd_matches_scalar", "crates/splot-encode/src/kernels/ist.rs::tests::forward_undoes_inverse", "crates/splot-encode/src/intra_tools_tests.rs::ist_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_ist_blocks", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_ist_frames_like_splot"]
+commands = ["cargo test -p splot-encode ist --locked"]
+fixtures = []
+diagnostics = []
+
 [[feature]]
 id = "ENC-MRL"
 name = "Encoder multiple reference line intra prediction"
