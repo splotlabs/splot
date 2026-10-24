@@ -637,6 +637,7 @@ impl IntraTileSyntax {
                     tx_size: record.tx_size,
                     fills_block: false,
                     ist: super::Ist::OFF,
+                    cctx: 0,
                 });
             blocks.splice(..1, luma);
         }
