@@ -101,10 +101,10 @@ pub struct PresetParams {
     /// CCSO classifications the filter search tries per plane; `0` disables
     /// CCSO in the sequence.
     pub ccso_candidates: u8,
-    /// IST kernels (`sec_tx_type`) of the most probable set a luma block
-    /// tries in a leaf's final trial when its plain levels code `eob > 1`;
-    /// `0` disables intra IST in the sequence.
-    pub ist_kernels: u8,
+    /// `most_probable_stx_set` values whose three kernels a luma block ranks
+    /// by kept energy in a leaf's final trial when its plain levels code
+    /// `eob > 1`; the best gets one RD trial. `0` disables intra IST.
+    pub ist_sets: u8,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -168,7 +168,7 @@ const fn row(
         ext_three_way_margin: 0,
         ext_four_way_margin: 0,
         ccso_candidates: 0,
-        ist_kernels: 0,
+        ist_sets: 0,
     }
 }
 
@@ -176,19 +176,19 @@ const fn row(
 pub const PRESETS: [PresetParams; 11] = with_columns(
     ROWS,
     [8, 8, 6, 6, 4, 4, 4, 2, 2, 1, 1],
-    [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3],
+    [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7],
 );
 
-/// `rows` with `ccso_candidates[i]` and `ist_kernels[i]` in row `i`.
+/// `rows` with `ccso_candidates[i]` and `ist_sets[i]` in row `i`.
 const fn with_columns(
     mut rows: [PresetParams; 11],
     ccso_candidates: [u8; 11],
-    ist_kernels: [u8; 11],
+    ist_sets: [u8; 11],
 ) -> [PresetParams; 11] {
     let mut i = 0;
     while i < rows.len() {
         rows[i].ccso_candidates = ccso_candidates[i];
-        rows[i].ist_kernels = ist_kernels[i];
+        rows[i].ist_sets = ist_sets[i];
         i += 1;
     }
     rows
@@ -377,7 +377,7 @@ mod tests {
             assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
             assert!(fast.ccso_candidates <= slow.ccso_candidates);
-            assert!(fast.ist_kernels <= slow.ist_kernels);
+            assert!(fast.ist_sets <= slow.ist_sets);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));
