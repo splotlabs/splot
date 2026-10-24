@@ -16,12 +16,14 @@
 pub(crate) mod ccso;
 mod distortion;
 mod forward_transform;
+mod ist;
 mod quantize;
 pub(crate) mod rdoq;
 pub(crate) mod tcq;
 
 pub(crate) use forward_transform::ForwardTransform2d;
 pub(crate) use quantize::Quantizer;
+use splot_recon::SecondaryTransformLayout;
 
 /// An invalid kernel argument.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -195,6 +197,18 @@ pub(crate) trait EncoderKernels: Sync {
         dequant: &mut [i32],
     ) -> Result<usize, KernelError>;
 
+    /// The forward § 7.15.3 secondary transform of the adjusted `coeffs`
+    /// in place ([`ist::forward_simd`]).
+    ///
+    /// # Errors
+    /// Returns [`KernelError::BufferLength`] if `coeffs` misses a position of
+    /// `layout`.
+    fn forward_ist(
+        &self,
+        layout: &SecondaryTransformLayout,
+        coeffs: &mut [i32],
+    ) -> Result<(), KernelError>;
+
     /// One TCQ trellis step: adds the branch metrics of every state to its
     /// path cost and keeps the cheaper branch into each next state
     /// ([`tcq::step_simd`]).
@@ -284,6 +298,14 @@ impl EncoderKernels for ScalarKernels {
         quantize::quantize_scalar(quantizer, coeffs, levels, dequant)
     }
 
+    fn forward_ist(
+        &self,
+        layout: &SecondaryTransformLayout,
+        coeffs: &mut [i32],
+    ) -> Result<(), KernelError> {
+        ist::forward_scalar(layout, coeffs)
+    }
+
     fn tcq_step(
         &self,
         prev: &[u64; tcq::STATES],
@@ -357,6 +379,14 @@ impl EncoderKernels for SimdKernels {
         dequant: &mut [i32],
     ) -> Result<usize, KernelError> {
         quantize::quantize_simd(quantizer, coeffs, levels, dequant)
+    }
+
+    fn forward_ist(
+        &self,
+        layout: &SecondaryTransformLayout,
+        coeffs: &mut [i32],
+    ) -> Result<(), KernelError> {
+        ist::forward_simd(layout, coeffs)
     }
 
     fn tcq_step(

@@ -170,7 +170,10 @@ pub use reference::{
     ReferenceFrameEntries, ReferenceFrameEntry, ReferenceFrameReplacement, ReferenceFrameStore,
     ReferenceRefreshMask, ReferenceRefreshOutcome, ReferenceRefreshSlots, ReferenceSlot,
 };
-pub use secondary_transform::{SecondaryInverseTransform, secondary_inverse_transform};
+pub use secondary_transform::{
+    SecondaryInverseTransform, SecondaryTransformLayout, secondary_inverse_transform,
+    secondary_transform_layout,
+};
 /// Re-export of the § 9.4 `Qm_Offset[txSz]` table so decode crates can resolve a
 /// transform block's built-in quantizer-matrix region without depending on
 /// `splot-tables` directly.

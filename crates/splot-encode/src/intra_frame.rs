@@ -11,12 +11,14 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    EncoderReferences, IntraTileSyntax, Partition, PartitionNode, TransformBlock, TxType,
+    EncoderReferences, IntraTileSyntax, Ist, Partition, PartitionNode, TransformBlock, TxType,
     recon_params, tile_count, tx_log2,
 };
 use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
-use splot_recon::{BitDepth, DecodedFrame, PixelFormat, PlaneId, PlaneSize};
+use splot_recon::{
+    BitDepth, DecodedFrame, PixelFormat, PlaneId, PlaneSize, secondary_transform_layout,
+};
 
 use crate::config::Config;
 use crate::encoder::{CodedFrame, FrameCoder};
@@ -97,6 +99,7 @@ impl IntraFrameCoder {
                 cfl: true,
                 ibp: true,
                 intra_edge_filter: true,
+                intra_ist: preset.ist_kernels > 0,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
                 avg_cdf: preset.cdf_carry.then_some(AVG_CDF_ACROSS_TILES),
@@ -467,21 +470,48 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         } else {
             tx_choice::tx_type_candidates(self.preset).min(tx_types.len())
         };
+        let ist_kernels = if self.candidate {
+            0
+        } else {
+            self.preset.ist_kernels
+        };
         let mut best: Option<(u128, TransformDecision)> = None;
-        let scalar_types = count > 1 && !self.preset.tcq_type_trellis;
+        let scalar_types = (count > 1 || ist_kernels > 0) && !self.preset.tcq_type_trellis;
         let scalar = self.scalar;
         self.scalar |= scalar_types;
         for &tx_type in &tx_types[..count] {
             let tx = TransformBlock { tx_type, ..*tx };
             let decision = self.code(syntax, &tx, prediction)?;
-            if count == 1 {
+            let ist =
+                ist_kernels > 0 && eob(&tx, &decision.levels)? > 1 && syntax.ist_coded(&tx, 2)?;
+            if count == 1 && !ist {
                 self.scalar = scalar;
+                if scalar_types {
+                    return self.code(syntax, &tx, prediction);
+                }
                 return Ok(decision);
             }
-            if let Some(cost) = self.luma_cost(syntax, &tx, prediction, &decision.levels)?
-                && best.as_ref().is_none_or(|(best_cost, _)| cost < *best_cost)
-            {
-                best = Some((cost, decision));
+            let mut trials = vec![decision];
+            for sec_tx_type in (1..=ist_kernels).filter(|_| ist) {
+                let tx = TransformBlock {
+                    ist: Ist {
+                        sec_tx_type,
+                        set: 0,
+                    },
+                    ..tx
+                };
+                trials.push(self.code(syntax, &tx, prediction)?);
+            }
+            for decision in trials {
+                let coded = TransformBlock {
+                    ist: decision.ist,
+                    ..tx
+                };
+                if let Some(cost) = self.luma_cost(syntax, &coded, prediction, &decision.levels)?
+                    && best.as_ref().is_none_or(|(best_cost, _)| cost < *best_cost)
+                {
+                    best = Some((cost, decision));
+                }
             }
         }
         self.scalar = scalar;
@@ -491,6 +521,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
                 syntax,
                 &TransformBlock {
                     tx_type: decision.tx_type,
+                    ist: decision.ist,
                     ..*tx
                 },
                 prediction,
@@ -536,6 +567,11 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         kernels()
             .forward_transform_2d(&forward, residual, coeffs)
             .map_err(kernel)?;
+        if let Some(secondary) = syntax.secondary_transform(tx)? {
+            kernels()
+                .forward_ist(&secondary_transform_layout(&secondary)?, coeffs)
+                .map_err(kernel)?;
+        }
         let mut levels = vec![0; len];
         let block = RdoqBlock {
             dc_q2: params.dc_quant,
@@ -602,6 +638,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         self.scratch = scratch;
         Ok(TransformDecision {
             tx_type: tx.tx_type,
+            ist: tx.ist,
             levels,
         })
     }
@@ -623,6 +660,7 @@ impl SourceResidualCoder<'_> {
             && syntax
                 .inferred_luma_tx_type(tx, eob)?
                 .is_some_and(|t| t != tx.tx_type)
+            || tx.ist != Ist::OFF && !syntax.ist_coded(tx, eob)?
         {
             return Ok(None);
         }

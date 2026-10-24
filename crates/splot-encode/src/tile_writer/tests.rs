@@ -15,8 +15,8 @@ use std::collections::HashSet;
 use splot_core::headers::frame::TxMode;
 use splot_core::tables::conversion::TX_WIDTH;
 use splot_decode::encoder_syntax::{
-    ChromaMode, IntraMode, IntraModes, IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA, PartitionNode,
-    TX_PARTITIONS, TransformBlock, coefficient_scan,
+    ChromaMode, IST_SETS, IntraMode, IntraModes, IntraTileSyntax, Ist, LeafBlock, MAX_CFL_ALPHA,
+    PartitionNode, TX_PARTITIONS, TransformBlock, coefficient_scan,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -157,6 +157,8 @@ struct TxCoverage {
     /// Luma blocks that hide a parity: `sumAbs1` 0 and 1, a remainder on
     /// the hidden level, a hidden `quant` of 1, and a one-dimensional type.
     hidden: [usize; 5],
+    /// `(sec_tx_type, most_probable_stx_set, primary type)` of IST blocks.
+    ist: HashSet<(u8, u8, u8)>,
 }
 
 /// Moves the scan index 0 level of `levels` by one when they hide a parity
@@ -285,7 +287,21 @@ impl ResidualCoder for RandomLevels {
             }
             _ => {}
         }
-        let coded_tx = TransformBlock { tx_type, ..*tx };
+        let mut coded_tx = TransformBlock { tx_type, ..*tx };
+        if syntax.ist_coded(&coded_tx, 2)? && self.rng.below(2) == 0 {
+            coded_tx.ist = Ist {
+                sec_tx_type: 1 + self.rng.below(3) as u8,
+                set: self.rng.below(u64::from(syntax.ist_sets(&coded_tx)?)) as u8,
+            };
+            let n = syntax.secondary_transform(&coded_tx)?.map_or(0, |p| p.n);
+            let scan = coefficient_scan(&coded_tx)?;
+            for &pos in &scan[n..] {
+                levels[usize::from(pos)] = 0;
+            }
+            levels[usize::from(scan[1])] |= 1;
+            let ist = (coded_tx.ist.sec_tx_type, coded_tx.ist.set, tx_type as u8);
+            self.coverage.ist.insert(ist);
+        }
         let hidden = &mut self.coverage.hidden;
         keep_parity(syntax, &coded_tx, &mut levels, &mut self.rng, hidden)?;
         let types = tx_types.iter().map(|&t| t as u8).collect();
@@ -297,7 +313,11 @@ impl ResidualCoder for RandomLevels {
                 .entry((tx.tx_size, tx_type as u8))
                 .or_default() += 1;
         }
-        Ok(TransformDecision { tx_type, levels })
+        Ok(TransformDecision {
+            tx_type,
+            ist: coded_tx.ist,
+            levels,
+        })
     }
 
     fn code(
@@ -312,6 +332,7 @@ impl ResidualCoder for RandomLevels {
         keep_parity(syntax, tx, &mut levels, &mut self.rng, hidden)?;
         Ok(TransformDecision {
             tx_type: tx.tx_type,
+            ist: tx.ist,
             levels,
         })
     }
@@ -532,6 +553,30 @@ fn every_intra_mode_round_trips() {
     }
 }
 
+/// Random IST kernels and sets of DCT and ADST blocks decode to the encoder
+/// recon: the facade writes `sec_tx_type` and `most_probable_stx_set`, and
+/// reconstructs with the decoder's secondary transform.
+#[test]
+fn every_ist_kernel_and_set_round_trips() {
+    for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+        let mut coverage = TxCoverage::default();
+        for seed in 0..6 {
+            let sb_size = if seed % 2 == 0 {
+                SuperblockSize::Block64x64
+            } else {
+                SuperblockSize::Block128x128
+            };
+            let mut case = Case::new(200, 136, bit_depth, sb_size).with_tx_search();
+            case.tools.intra_ist = true;
+            coverage = assert_round_trip_modes(case, 0x157 + seed, coverage).2;
+        }
+        let types: HashSet<u8> = coverage.ist.iter().map(|&(.., t)| t).collect();
+        let kernels: HashSet<(u8, u8)> = coverage.ist.iter().map(|&(k, s, _)| (k, s)).collect();
+        assert_eq!(types.len(), 2, "{bit_depth:?}: {types:?}");
+        assert_eq!(kernels.len(), 3 * usize::from(IST_SETS), "{bit_depth:?}");
+    }
+}
+
 /// Every luma type each transform size offers, every transform partition, and
 /// the `eob == 1` recode round-trip at both bit depths.
 #[test]
@@ -739,6 +784,7 @@ fn facade_parity_rule_is_the_spec_rule() {
                     y: 0,
                     tx_size,
                     fills_block: true,
+                    ist: splot_decode::encoder_syntax::Ist::OFF,
                 };
                 let parity = syntax.parity_hiding(&tx);
                 assert_eq!(parity.is_some(), plane == 0 && tx_type != TxType::Idtx);
@@ -785,9 +831,8 @@ fn facade_rejects_unmodelled_tools() {
     };
     let (seq, core) = headers(base);
     assert!(IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).is_ok());
-    let tool_cases: [fn(&mut EncoderToolFlags); 4] = [
+    let tool_cases: [fn(&mut EncoderToolFlags); 3] = [
         |t| t.mhccp = true,
-        |t| t.intra_ist = true,
         |t| t.cctx = true,
         |t| t.idtx_intra = true,
     ];

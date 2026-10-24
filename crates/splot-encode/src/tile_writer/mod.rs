@@ -25,9 +25,9 @@ use splot_decode::encoder_syntax::{
 use splot_recon::{DecodedFrame, ReconError};
 
 pub(crate) use decision::{
-    CompoundMode, CompoundModes, INTRA_MODES, InterMode, InterModes, InterPrediction, LeafChoice,
-    MotionVector, Partition, PartitionTree, ResidualCoder, SuperblockDecision, TransformDecision,
-    TxType,
+    CompoundMode, CompoundModes, INTRA_MODES, InterMode, InterModes, InterPrediction, Ist,
+    LeafChoice, MotionVector, Partition, PartitionTree, ResidualCoder, SuperblockDecision,
+    TransformDecision, TxType,
 };
 
 /// Output byte cap of one tile; larger than any 4096x2160 tile of 10-bit levels needs.
@@ -324,9 +324,12 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             } else {
                 code_as(self.syntax, coder, tx, &prediction)?
             };
-            self.syntax
-                .reconstruct_as(index, decision.tx_type, &decision.levels)?;
-            tx.tx_type = decision.tx_type;
+            *tx = TransformBlock {
+                tx_type: decision.tx_type,
+                ist: decision.ist,
+                ..*tx
+            };
+            self.syntax.reconstruct_as(index, tx, &decision.levels)?;
             levels[index] = decision.levels;
         }
         self.syntax.write_is_inter(leaf, false, self.sink)?;
@@ -448,6 +451,22 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         }
         let coded = TransformBlock {
             tx_type: decision.tx_type,
+            ist: decision.ist,
+            ..*tx
+        };
+        if coded.ist != Ist::OFF
+            && !self
+                .syntax
+                .ist_coded(&coded, coeffs::eob(&coded, &decision.levels)?)?
+        {
+            let tx = TransformBlock {
+                ist: Ist::OFF,
+                ..coded
+            };
+            decision = code_as(self.syntax, coder, &tx, prediction)?;
+        }
+        let coded = TransformBlock {
+            tx_type: decision.tx_type,
             ..*tx
         };
         let eob = coeffs::eob(&coded, &decision.levels)?;
@@ -514,7 +533,7 @@ fn code_as(
     prediction: &[u16],
 ) -> Result<TransformDecision> {
     let decision = coder.code(syntax, tx, prediction)?;
-    if decision.tx_type != tx.tx_type {
+    if decision.tx_type != tx.tx_type || decision.ist != tx.ist {
         return Err(TileWriterError::Unsupported(
             "transform type other than the requested one",
         ));

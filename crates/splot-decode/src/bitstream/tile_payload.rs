@@ -70,7 +70,7 @@ pub(crate) use general_intra_block::{
 pub(crate) use general_intra_residual::{
     CoeffBlock, FrameQmScope, FrameQmSegmentScope, FrameQuantizerDeltasScope,
     FrameQuantizerSnapshot, FrameUserQmLevel, FrameUserQmLevels, FrameUserQmScope,
-    GeneralIntraResidualError, LumaCoeffBlock, LumaTransformPartitionContext,
+    GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext,
     LumaTransformPartitionUnits, LumaTransformTypeContext, LumaTxPartition,
     PositionedLumaCoeffBlock, TransformToolResidualPolicy, current_frame_qm_segment_id,
     decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
