@@ -12,7 +12,7 @@ const MAX_COL_TRUNCATED_UNARY_VAL: usize = 2;
 const NUM_CTX_COL_MV_INDEX: usize = 4;
 pub(crate) const MV_LOW: i32 = -(1 << 16);
 pub(crate) const MV_UPP: i32 = 1 << 16;
-const AMVD_INDEX_TO_MVD: [i32; 9] = [0, 2, 4, 6, 8, 16, 32, 64, 128];
+pub(crate) const AMVD_INDEX_TO_MVD: [i32; 9] = [0, 2, 4, 6, 8, 16, 32, 64, 128];
 
 pub(crate) const MV_PRECISION_EIGHT_PEL: u8 = 0;
 pub(crate) const MV_PRECISION_FOUR_PEL: u8 = 1;
@@ -147,12 +147,12 @@ pub(crate) fn lower_mv_precision(precision: u8, mv: Mv) -> Mv {
     }
 }
 
-pub(crate) fn read_newmv_amvd_block_mvd(
+pub(crate) fn read_newmv_amvd_block_mvd<S: MvSymbols + ?Sized>(
     cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
+    symbols: &mut S,
     tile_offset: ByteOffset,
 ) -> Result<Mv> {
-    let joint = read_symbol(cdfs, symbols, MvCdfSelector::AmvdJoint, tile_offset)?;
+    let joint = symbols.symbol(cdfs, MvCdfSelector::AmvdJoint, tile_offset)?;
     let row = if matches!(joint, 2 | 3) {
         read_amvd_component(cdfs, symbols, 0, tile_offset)?
     } else {
@@ -347,18 +347,13 @@ fn read_shell_diff<S: MvSymbols + ?Sized>(
     Ok((diff_row, diff_col))
 }
 
-fn read_amvd_component(
+fn read_amvd_component<S: MvSymbols + ?Sized>(
     cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
+    symbols: &mut S,
     comp: usize,
     tile_offset: ByteOffset,
 ) -> Result<i32> {
-    let symbol = read_symbol(
-        cdfs,
-        symbols,
-        MvCdfSelector::AmvdIndex { comp },
-        tile_offset,
-    )?;
+    let symbol = symbols.symbol(cdfs, MvCdfSelector::AmvdIndex { comp }, tile_offset)?;
     let index = usize::from(symbol) + 1;
     amvd_index_to_mvd(index, tile_offset)
 }

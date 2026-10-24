@@ -32,6 +32,11 @@ use crate::tile_writer::{
 
 /// The largest `|AngleDeltaY|` (§ 5.20.5.5).
 const MAX_ANGLE_DELTA: i8 = 3;
+/// A `NEWMV` tries one block precision coarser than the search justifies
+/// when its difference rate exceeds `1 / COARSER_RATE_SHARE` of its cost.
+const COARSER_RATE_SHARE: u64 = 4;
+/// `(SATD + rate, rate, modes)` of one `NEWMV` coding.
+type NewmvCost = (u64, u64, InterModes);
 /// References whose pairs compound candidates take: the § 7.7 map ranks the
 /// closest references first.
 const COMPOUND_REFS: usize = 3;
@@ -253,6 +258,8 @@ impl TrialCoder<'_, '_> {
                 drl,
                 mv: MotionVector::default(),
                 filter: InterpolationFilter::EightTap,
+                precision: None,
+                amvd: false,
             };
             let mvs = self.syntax.single_mvs(leaf, ref_frame)?;
             push(mvs.global, mode(InterMode::Global, 0));
@@ -287,7 +294,11 @@ impl TrialCoder<'_, '_> {
                 }
             }
             if let Some((_, modes)) = best {
-                push(modes.mv, modes);
+                let coded = self.mvd_choice(leaf, modes, found)?;
+                if coded.mv != modes.mv {
+                    push(modes.mv, modes);
+                }
+                push(coded.mv, coded);
             }
         }
         let mut choices: Vec<LeafChoice> = out.into_iter().map(|(_, choice)| choice).collect();
@@ -311,6 +322,98 @@ impl TrialCoder<'_, '_> {
             }
         }
         Ok(choices)
+    }
+
+    /// The cheapest coding, by luma SATD plus exact mode and difference
+    /// rate, of the frame-precision `NEWMV` `modes` searched to `found`: the
+    /// coarsest block precision that codes `found` exactly, one precision
+    /// coarser only when the difference rate exceeds [`COARSER_RATE_SHARE`]
+    /// of the cost, and adaptive-MVD steps.
+    fn mvd_choice(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: InterModes,
+        found: MotionVector,
+    ) -> Result<InterModes> {
+        let Some(mut best) = self.newmv_cost(leaf, modes)? else {
+            return Ok(modes);
+        };
+        let precisions = self.syntax.newmv_precisions(leaf)?;
+        let mut exact = None;
+        for (index, &precision) in precisions.iter().enumerate() {
+            if let Some(candidate) = self.newmv_at(leaf, modes, found, (Some(precision), false))?
+                && candidate.2.mv == found
+            {
+                exact = Some((index, candidate));
+            }
+        }
+        let mut coarser = 0;
+        if let Some((index, candidate)) = exact {
+            coarser = index + 1;
+            best = cheaper(best, candidate);
+        }
+        if best.1 * COARSER_RATE_SHARE > best.0
+            && let Some(&precision) = precisions.get(coarser)
+            && let Some(candidate) = self.newmv_at(leaf, modes, found, (Some(precision), false))?
+        {
+            best = cheaper(best, candidate);
+        }
+        if self.syntax.adaptive_mvd()
+            && let Some(candidate) = self.newmv_at(leaf, modes, found, (None, true))?
+        {
+            best = cheaper(best, candidate);
+        }
+        Ok(best.2)
+    }
+
+    /// `modes` coded at `(precision, amvd)` with the vector nearest `found`
+    /// that it codes (see [`snap_prediction`]), with its
+    /// [`Self::newmv_cost`].
+    fn newmv_at(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: InterModes,
+        found: MotionVector,
+        (precision, amvd): (Option<u8>, bool),
+    ) -> Result<Option<NewmvCost>> {
+        let modes = InterModes {
+            precision,
+            amvd,
+            mv: found,
+            ..modes
+        };
+        let Some(InterPrediction::Single(modes)) = codable(snap_prediction(
+            self.syntax,
+            leaf,
+            InterPrediction::Single(modes),
+        ))?
+        else {
+            return Ok(None);
+        };
+        self.newmv_cost(leaf, modes)
+    }
+
+    /// `(SATD + rate, rate, modes)` of the `NEWMV` `modes` at `leaf`, in SAD
+    /// units; `None` when the leaf cannot code it.
+    fn newmv_cost(&mut self, leaf: &LeafBlock, modes: InterModes) -> Result<Option<NewmvCost>> {
+        let Some(motion) = self.motion else {
+            return Ok(None);
+        };
+        let mut sink = RateSink::adapting();
+        let priced = self
+            .syntax
+            .price_inter_modes(leaf, InterPrediction::Single(modes), &mut sink);
+        if codable(priced.map_err(Into::into))?.is_none() {
+            return Ok(None);
+        }
+        let rate = motion.bits_cost(sink.bits);
+        let satd = motion.prediction_satd(
+            self.syntax,
+            &[(modes.ref_frame, modes.mv)],
+            InterpolationFilter::EightTap,
+            leaf_rect(leaf)?,
+        )?;
+        Ok(Some((satd + rate, rate, modes)))
     }
 
     /// Sets the filter of `prediction` at `leaf`, which reads one, to the
@@ -511,6 +614,11 @@ impl TrialCoder<'_, '_> {
 fn leaf_rect(leaf: &LeafBlock) -> Result<(usize, usize, usize, usize)> {
     let (w, h) = leaf.dimensions()?;
     Ok((leaf.col4() * 4, leaf.row4() * 4, w, h))
+}
+
+/// The cheaper of `a` and `b`; a tie keeps `a`.
+fn cheaper(a: NewmvCost, b: NewmvCost) -> NewmvCost {
+    if b.0 < a.0 { b } else { a }
 }
 
 /// `prediction` with `interp_filter = filter`.

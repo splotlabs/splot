@@ -65,7 +65,13 @@ fn random_differences_round_trip_through_read_mv() {
         let mut journal = CdfJournal::new(&cdfs);
         let mut encoder = SymbolEncoder::new();
         for mvds in &cases {
-            write_mvds((&mut cdfs, &mut journal), precision, mvds, &mut encoder).unwrap();
+            let coding = MvdCoding {
+                precision,
+                use_amvd: false,
+                derive_sign: false,
+                derive_threshold: 1,
+            };
+            write_mvds((&mut cdfs, &mut journal), coding, mvds, &mut encoder).unwrap();
         }
         let payload = encoder.finish().unwrap().into_bytes();
         let mut symbols = SymbolDecoder::with_base_and_config(
@@ -112,5 +118,102 @@ fn random_differences_round_trip_through_read_mv() {
         )
         .0;
         assert_eq!(classes, (0..=max).collect(), "precision {precision}");
+    }
+}
+
+/// Random adaptive-MVD differences, and coarse differences whose last sign
+/// the decoder derives from the parity of their magnitudes, round-trip
+/// through the decoder's reads; a target whose last sign is the other
+/// parity is refused.
+#[test]
+fn adaptive_and_derived_sign_differences_round_trip() {
+    let mut state = 0xA5D_u64;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    let amvd = |v: u64| match v % 9 {
+        0 => 0,
+        i => AMVD_INDEX_TO_MVD[i as usize] * if v & 16 == 0 { 1 } else { -1 },
+    };
+    let mut cases = Vec::new();
+    for _ in 0..300 {
+        let mvd = MotionVector {
+            row: amvd(next()),
+            col: amvd(next() >> 8),
+        };
+        cases.push((true, MV_PRECISION_QUARTER_PEL, mvd));
+    }
+    let mut refused = 0;
+    for _ in 0..300 {
+        let mvd = MotionVector {
+            row: component(&mut state, MV_PRECISION_ONE_PEL),
+            col: component(&mut state, MV_PRECISION_ONE_PEL),
+        };
+        let magnitudes = (mvd.row.abs() >> 3) + (mvd.col.abs() >> 3);
+        let last_negative = if mvd.col != 0 {
+            mvd.col < 0
+        } else {
+            mvd.row < 0
+        };
+        if (mvd.row != 0 || mvd.col != 0) && (magnitudes & 1 == 1) != last_negative {
+            let coding = MvdCoding {
+                precision: MV_PRECISION_ONE_PEL,
+                use_amvd: false,
+                derive_sign: true,
+                derive_threshold: 1,
+            };
+            let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+            let mut journal = CdfJournal::new(&cdfs);
+            let written = write_mvds(
+                (&mut cdfs, &mut journal),
+                coding,
+                &[mvd],
+                &mut SymbolEncoder::new(),
+            );
+            assert!(
+                matches!(written, Err(EncoderSyntaxError::Unsupported(_))),
+                "{mvd:?}"
+            );
+            refused += 1;
+            continue;
+        }
+        cases.push((false, MV_PRECISION_ONE_PEL, mvd));
+    }
+    assert!(refused > 50, "{refused} refused");
+    let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+    let mut journal = CdfJournal::new(&cdfs);
+    let mut encoder = SymbolEncoder::new();
+    for &(use_amvd, precision, mvd) in &cases {
+        let coding = MvdCoding {
+            precision,
+            use_amvd,
+            derive_sign: !use_amvd,
+            derive_threshold: 1,
+        };
+        write_mvds((&mut cdfs, &mut journal), coding, &[mvd], &mut encoder).unwrap();
+    }
+    let payload = encoder.finish().unwrap().into_bytes();
+    let mut symbols = SymbolDecoder::with_base_and_config(
+        &payload,
+        ByteOffset::new(0),
+        SymbolDecoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
+    )
+    .unwrap();
+    let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+    let offset = ByteOffset::new(0);
+    for &(use_amvd, precision, mvd) in &cases {
+        let config = MvReadConfig::inter(precision);
+        let magnitude = if use_amvd {
+            read_newmv_amvd_block_mvd(&mut cdfs, &mut symbols, offset).unwrap()
+        } else {
+            read_newmv_block_mvd_magnitude_with_config(&mut cdfs, &mut symbols, offset, config)
+                .unwrap()
+        };
+        let read =
+            apply_inter_mvd_signs(magnitude, &mut symbols, offset, config, !use_amvd, 1).unwrap();
+        assert_eq!(MotionVector::from(read), mvd, "amvd {use_amvd}");
     }
 }

@@ -19,8 +19,8 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink};
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
-    EncoderReferences, EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock, PartitionNode,
-    TileEnd, TransformBlock,
+    AMVD_STEPS, EncoderReferences, EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock,
+    PartitionNode, TileEnd, TransformBlock,
 };
 use splot_recon::{DecodedFrame, ReconError};
 
@@ -478,8 +478,17 @@ pub(crate) fn snap_prediction(
     let step = syntax.mv_step();
     Ok(match prediction {
         InterPrediction::Single(mut modes) if modes.mode == InterMode::New => {
-            let base = syntax.newmv_base(leaf, modes.ref_frame, modes.drl)?;
-            modes.mv = snap_mv(modes.mv, base, step);
+            let base = syntax.newmv_base(leaf, modes)?;
+            let target = modes.mv;
+            if modes.amvd {
+                modes.mv = snap_amvd(target, base);
+            } else {
+                let step = syntax.newmv_step(&modes);
+                modes.mv = snap_mv(target, base, step);
+                if modes.precision.is_some() {
+                    modes = derivable_sign(syntax, leaf, modes, step)?;
+                }
+            }
             InterPrediction::Single(modes)
         }
         InterPrediction::Compound(mut modes) => {
@@ -495,10 +504,58 @@ pub(crate) fn snap_prediction(
     })
 }
 
+/// `modes`, whose coarse difference may have its last sign derived from the
+/// parity of its magnitudes (§ 5.20.7.13), moved by one `step` to the next
+/// lattice vector the decoder reads as coded when the derived sign differs.
+fn derivable_sign(
+    syntax: &mut IntraTileSyntax,
+    leaf: &LeafBlock,
+    modes: InterModes,
+    step: i32,
+) -> Result<InterModes> {
+    for (dr, dc) in [(0, 0), (0, 1), (0, -1), (1, 0), (-1, 0)] {
+        let moved = InterModes {
+            mv: MotionVector {
+                row: modes.mv.row + dr * step,
+                col: modes.mv.col + dc * step,
+            },
+            ..modes
+        };
+        let mut sink = crate::rd::coeff_rate::RateSink::adapting();
+        match syntax.price_inter_modes(leaf, InterPrediction::Single(moved), &mut sink) {
+            Ok(()) => return Ok(moved),
+            Err(EncoderSyntaxError::Unsupported(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(TileWriterError::Unsupported(
+        "a NEWMV without a codable derived sign",
+    ))
+}
+
 /// `mv` moved to the nearest vector `base` plus a multiple of `step` per
 /// component, which a `NEWMV` over `base` can code.
 pub(crate) fn snap_mv(mv: MotionVector, base: MotionVector, step: i32) -> MotionVector {
     let round = |v: i32, b: i32| b + (v - b + step / 2).div_euclid(step) * step;
+    MotionVector {
+        row: round(mv.row, base.row),
+        col: round(mv.col, base.col),
+    }
+}
+
+/// `mv` moved to the nearest vector `base` plus, per component, zero or `±`
+/// an [`AMVD_STEPS`] entry, which an adaptive-MVD `NEWMV` over `base` codes.
+pub(crate) fn snap_amvd(mv: MotionVector, base: MotionVector) -> MotionVector {
+    let round = |v: i32, b: i32| {
+        let d = v - b;
+        let nearest = AMVD_STEPS
+            .iter()
+            .map(|&step| step * d.signum())
+            .chain([0])
+            .min_by_key(|&step| ((d - step).abs(), step.abs()))
+            .unwrap_or(0);
+        b + nearest
+    };
     MotionVector {
         row: round(mv.row, base.row),
         col: round(mv.col, base.col),

@@ -37,6 +37,7 @@ use super::{
 };
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{frame_ref_update_from_core, is_key_or_switch};
+use crate::prediction::inter::read_mv::AMVD_INDEX_TO_MVD;
 use crate::prediction::inter::{
     EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderMotion,
     EncoderSingleMotion, EncoderSingleMvs, FrameCdfHandle, InterReferenceState, MotionFieldHandle,
@@ -50,6 +51,17 @@ use crate::reference::buffer::RuntimeReferenceBuffer;
 const BLOCK_4X4: usize = 0;
 /// `MV_PRECISION_EIGHTH_PEL`: motion vectors are in units of `1/8` sample.
 pub const MV_PRECISION_EIGHTH_PEL: u8 = 6;
+/// The nonzero magnitudes, in `1/8` samples, of an adaptive-MVD component
+/// (§ 5.20.7.21).
+pub const AMVD_STEPS: [i32; 8] = {
+    let mut steps = [0; 8];
+    let mut i = 0;
+    while i < 8 {
+        steps[i] = AMVD_INDEX_TO_MVD[i + 1];
+        i += 1;
+    }
+    steps
+};
 /// The `interp_filter` values a block codes, in symbol order (§ 6.19.7.5).
 pub const INTERP_FILTERS: [InterpolationFilter; 3] = [
     InterpolationFilter::EightTap,
@@ -340,6 +352,15 @@ pub struct InterModes {
     /// `interp_filter`, one of [`INTERP_FILTERS`]; a block that reads no
     /// filter (see [`IntraTileSyntax::price_interp_filter`]) ignores it.
     pub filter: InterpolationFilter,
+    /// The block `MvPrecision` of a `NEWMV` below the frame precision, one of
+    /// [`IntraTileSyntax::newmv_precisions`]; `None` codes the frame
+    /// precision. A `NEWMV` vector is its base plus a multiple of
+    /// [`IntraTileSyntax::newmv_step`] per component.
+    pub precision: Option<u8>,
+    /// `use_amvd` of a `NEWMV` (see [`IntraTileSyntax::adaptive_mvd`]): each
+    /// difference component is zero or `±` an [`AMVD_STEPS`] entry over the
+    /// unrounded base.
+    pub amvd: bool,
 }
 
 /// The single-reference vectors of one leaf and list reference, see
@@ -375,6 +396,11 @@ struct PlannedInter {
 pub(super) type InterSnapshot = Option<EncoderInterCheckpoint>;
 
 impl InterLeafState {
+    /// The motion of the planned inter leaf.
+    pub(super) fn planned_motion(&self) -> Option<EncoderMotion> {
+        self.planned.as_ref().map(|planned| planned.motion)
+    }
+
     /// `None` for an intra frame.
     pub(super) fn new(
         seq: &SequenceHeader,
@@ -467,28 +493,51 @@ impl IntraTileSyntax {
             .map_err(rule("motion vector"))
     }
 
-    /// The `NEWMV` base vector of DRL candidate `drl` from list reference
-    /// `ref_frame` at `leaf`: a `NEWMV` vector is this plus a multiple of
-    /// [`Self::mv_step`] per component.
+    /// The `NEWMV` difference step of `modes` in `1/8` samples: the step of
+    /// its block precision.
+    #[must_use]
+    pub fn newmv_step(&self, modes: &InterModes) -> i32 {
+        let precision = modes.precision.unwrap_or_else(|| self.mv_precision());
+        1 << MV_PRECISION_EIGHTH_PEL.saturating_sub(precision)
+    }
+
+    /// The block precisions below the frame precision that a `NEWMV` at
+    /// `leaf` can code, finest first; empty without `enable_flex_mvres`.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] in an intra frame.
+    pub fn newmv_precisions(&self, leaf: &LeafBlock) -> Result<Vec<u8>> {
+        self.inter_ref()?
+            .tile
+            .newmv_precisions(&leaf.frontier)
+            .map_err(rule("block MV precision"))
+    }
+
+    /// Whether a `NEWMV` may code adaptive MVD (`enable_adaptive_mvd`).
+    #[must_use]
+    pub fn adaptive_mvd(&self) -> bool {
+        self.inter
+            .as_ref()
+            .is_some_and(|inter| inter.tile.enable_adaptive_mvd())
+    }
+
+    /// The `NEWMV` base vector of the reference, DRL index, block precision
+    /// and `amvd` of `modes` at `leaf`: a `NEWMV` vector is this plus a
+    /// multiple of [`Self::newmv_step`] per component, or with `amvd` plus
+    /// zero or `±` an [`AMVD_STEPS`] entry per component.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for a reference or index `leaf` cannot code.
-    pub fn newmv_base(
-        &mut self,
-        leaf: &LeafBlock,
-        ref_frame: usize,
-        drl: usize,
-    ) -> Result<MotionVector> {
-        let modes = InterModes {
-            ref_frame,
+    pub fn newmv_base(&mut self, leaf: &LeafBlock, modes: InterModes) -> Result<MotionVector> {
+        let near = InterModes {
             mode: InterMode::Near,
-            drl,
-            mv: MotionVector::default(),
-            filter: InterpolationFilter::EightTap,
+            ..modes
         };
         let motion = EncoderSingleMotion {
             mode: SINGLE_MODE_NEWMV,
-            ..self.single_motion(leaf, modes)?
+            precision: modes.precision,
+            use_amvd: modes.amvd,
+            ..self.single_motion(leaf, near)?
         };
         let tile = &mut self.inter_state()?.tile;
         tile.motion_vector(&leaf.frontier, motion)
@@ -828,7 +877,12 @@ impl IntraTileSyntax {
             .into_iter()
             .map(MotionVector::from)
             .collect();
-        self.write_mvds(&mvds, symbols)
+        let coding = self
+            .inter_ref()?
+            .tile
+            .mvd_coding(motion)
+            .map_err(rule("motion vector difference"))?;
+        super::mv::write_mvds((&mut self.cdfs, &mut self.journal), coding, &mvds, symbols)
     }
 
     /// Prices into `symbols` the `interp_filter` that `prediction` codes at
@@ -1122,9 +1176,11 @@ impl IntraTileSyntax {
             },
             mvd: Mv::default(),
             interp: modes.filter,
+            precision: modes.precision.filter(|_| mode == SINGLE_MODE_NEWMV),
+            use_amvd: modes.amvd && mode == SINGLE_MODE_NEWMV,
         };
         if mode == SINGLE_MODE_NEWMV {
-            let step = self.mv_step();
+            let step = self.newmv_step(&modes);
             let base = match base {
                 Some(base) => base,
                 None => self
@@ -1137,7 +1193,13 @@ impl IntraTileSyntax {
                 row: modes.mv.row - base.row,
                 col: modes.mv.col - base.col,
             };
-            if mvd.row % step != 0 || mvd.col % step != 0 {
+            let amvd = |d: i32| d == 0 || AMVD_STEPS.contains(&d.abs());
+            let on_lattice = if modes.amvd {
+                amvd(mvd.row) && amvd(mvd.col)
+            } else {
+                mvd.row % step == 0 && mvd.col % step == 0
+            };
+            if !on_lattice {
                 return Err(EncoderSyntaxError::Unsupported(
                     "a NEWMV vector off the precision lattice",
                 ));

@@ -162,6 +162,8 @@ fn rollback_restores_the_reference_mv_bank() {
                     drl: 0,
                     mv,
                     filter: splot_recon::InterpolationFilter::EightTap,
+                    precision: None,
+                    amvd: false,
                 }));
                 Walk::trial(syntax, &mut RateSink::adapting()).write_leaf(
                     &leaf,
@@ -236,6 +238,31 @@ fn switchable_filters_reach_the_headers_and_the_decoder() {
             assert_eq!(header.interpolation_filter, Some(filter));
         }
         assert_same_samples(&decode(&units), &expected, &format!("{filter:?}"));
+        streams.push(units);
+    }
+    assert_ne!(streams[0], streams[1]);
+}
+
+/// With the MVD tools the sequence enables adaptive MVD, MVD sign derivation
+/// and flexible block precision, and the stream decodes to the encoder
+/// recon; without them none is enabled and the stream differs.
+#[test]
+fn mvd_tools_reach_the_sequence_and_the_decoder() {
+    let config = config(72, 40, BitDepth::Eight, 6, 140);
+    let on = Preset::new(6).unwrap().params();
+    assert_eq!(on.mvd_tools, [true; 3]);
+    let off = Box::leak(Box::new(PresetParams {
+        mvd_tools: [false; 3],
+        ..*on
+    }));
+    let mut streams = Vec::new();
+    for (preset, tools) in [(on, true), (off, false)] {
+        let (units, expected, _, coder) = super::carry::planned_stream(&config, preset);
+        let inter = coder.sequence.inter.unwrap();
+        assert_eq!(inter.enable_adaptive_mvd, tools);
+        assert_eq!(inter.enable_mvd_sign_derive, tools);
+        assert_eq!(inter.enable_flex_mvres, tools);
+        assert_same_samples(&decode(&units), &expected, &format!("tools {tools}"));
         streams.push(units);
     }
     assert_ne!(streams[0], streams[1]);

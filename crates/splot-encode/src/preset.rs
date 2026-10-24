@@ -77,6 +77,10 @@ pub struct PresetParams {
     /// `interp_filter` rate is lowest at its final vectors, and the winning
     /// leaf tries every filter in a full trial. Off, frames code `EIGHTTAP`.
     pub interp_filter_search: bool,
+    /// Sequence MVD tools `[enable_adaptive_mvd, enable_mvd_sign_derive,
+    /// enable_flex_mvres]`: a `NEWMV` also tries adaptive-MVD steps and
+    /// coarser block precisions, and coarse differences derive one sign.
+    pub mvd_tools: [bool; 3],
     /// Extended partitions: `0` off, `1` adds `HORZ_3` and `VERT_3`, `2` also
     /// the uneven 4-way shapes.
     pub ext_partitions: u8,
@@ -96,6 +100,7 @@ const fn row(
     (tx_type_depth, tx_partition_search): (u8, bool),
     motion: (u16, u8, u16, u8, bool),
     (loop_filter_search, mini_gop_size, lookahead_frames, compound_candidates): (u8, u8, u8, u8),
+    mvd_tools: [bool; 3],
 ) -> PresetParams {
     PresetParams {
         min_block_log2: blocks.0,
@@ -119,6 +124,7 @@ const fn row(
         mv_prediction: true,
         drl_bits: motion.3,
         interp_filter_search: motion.4,
+        mvd_tools,
         ext_partitions: 0,
         ext_three_way_margin: 0,
         ext_four_way_margin: 0,
@@ -135,6 +141,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (3, true),
         (256, 3, 128, 3, true),
         (3, 8, 16, 8),
+        [true; 3],
     ),
     row(
         (2, 7),
@@ -144,6 +151,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (3, true),
         (192, 3, 128, 3, true),
         (3, 8, 16, 8),
+        [true; 3],
     ),
     row(
         (2, 7),
@@ -153,6 +161,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (3, true),
         (128, 3, 128, 3, true),
         (2, 8, 16, 6),
+        [true; 3],
     ),
     row(
         (2, 7),
@@ -162,6 +171,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (2, true),
         (96, 2, 0, 3, true),
         (2, 8, 16, 6),
+        [true; 3],
     ),
     row(
         (2, 7),
@@ -171,6 +181,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (2, true),
         (64, 2, 0, 3, true),
         (2, 4, 8, 4),
+        [true; 3],
     ),
     row(
         (2, 7),
@@ -180,6 +191,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (2, true),
         (64, 2, 0, 3, true),
         (1, 4, 8, 4),
+        [true; 3],
     ),
     row(
         (3, 7),
@@ -189,6 +201,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (1, true),
         (48, 2, 0, 3, true),
         (1, 4, 8, 3),
+        [true; 3],
     ),
     row(
         (3, 6),
@@ -198,6 +211,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (1, false),
         (32, 1, 0, 1, true),
         (1, 4, 8, 2),
+        [true; 3],
     ),
     row(
         (3, 6),
@@ -207,6 +221,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (1, false),
         (24, 1, 0, 1, true),
         (0, 2, 4, 1),
+        [true; 3],
     ),
     row(
         (3, 6),
@@ -216,6 +231,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (0, false),
         (16, 1, 0, 1, true),
         (0, 2, 4, 0),
+        [true; 3],
     ),
     row(
         (4, 6),
@@ -225,6 +241,7 @@ pub const PRESETS: [PresetParams; 11] = [
         (0, false),
         (16, 0, 0, 1, true),
         (0, 1, 2, 0),
+        [true; 3],
     ),
 ];
 
@@ -298,6 +315,12 @@ mod tests {
             assert!(fast.mv_prediction <= slow.mv_prediction);
             assert!(fast.drl_bits <= slow.drl_bits);
             assert!(fast.interp_filter_search <= slow.interp_filter_search);
+            assert!(
+                fast.mvd_tools
+                    .iter()
+                    .zip(slow.mvd_tools)
+                    .all(|(&f, s)| f <= s)
+            );
             assert!(fast.ext_partitions <= slow.ext_partitions);
             assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);

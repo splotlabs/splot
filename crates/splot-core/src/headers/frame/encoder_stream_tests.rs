@@ -160,6 +160,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         refmvbank: true,
         drl_reorder: Some(true),
         max_drl_bits_minus_1: 3,
+        mvd_tools: [true, false, true],
     };
     let mut p = params(640, 360, BitDepthIdc::Ten, SuperblockSize::Block64x64);
     p.tools = tools;
@@ -181,6 +182,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.enable_ref_frame_mvs && !inter.reduced_ref_frame_mvs_mode);
     assert!(inter.enable_refmvbank && inter.drl_reorder == DrlReorder::Constraint);
     assert_eq!(inter.seq_max_drl_bits_minus_1, 3);
+    assert!(inter.enable_adaptive_mvd && !inter.enable_mvd_sign_derive && inter.enable_flex_mvres);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
     assert!(filter.enable_ccso);

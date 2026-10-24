@@ -29,7 +29,7 @@ use super::*;
 
 mod compound;
 
-pub(crate) use compound::{EncoderCompoundMotion, JMVD_SCALE_MODES};
+pub(crate) use compound::{EncoderCompoundMotion, JMVD_SCALE_MODES, MvdCoding};
 
 /// The motion of one inter leaf.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,6 +74,11 @@ pub(crate) struct EncoderSingleMotion {
     pub(crate) mvd: Mv,
     /// `interp_filter`, where the decoder reads it.
     pub(crate) interp: ReconInterpolationFilter,
+    /// The block `MvPrecision` of a `NEWMV` coded with
+    /// `use_most_probable_precision = 0`; `None` takes `FrameMvPrecision`.
+    pub(crate) precision: Option<u8>,
+    /// `use_amvd` of a `NEWMV`.
+    pub(crate) use_amvd: bool,
 }
 
 /// The single-reference vectors of one leaf and reference, see
@@ -120,6 +125,7 @@ pub(crate) struct EncoderInterTile {
     current_order_hint: u32,
     temporal_first: bool,
     core: FrameHeaderCore,
+    sequence: SequenceHeader,
     precision: u8,
     max_drl_bits_minus_1: u32,
     drl_reorder: DrlReorder,
@@ -170,12 +176,6 @@ impl EncoderInterTile {
             (
                 tail.allow_warpmv_mode || tail.allow_bawp,
                 "warped motion or BAWP",
-            ),
-            (
-                seq_inter.enable_adaptive_mvd
-                    || seq_inter.enable_flex_mvres
-                    || seq_inter.enable_mvd_sign_derive,
-                "adaptive MVD, flexible MV precision, or MVD sign derivation",
             ),
             (
                 seq_inter.enable_ref_frame_mvs && seq_inter.enable_global_motion,
@@ -254,6 +254,7 @@ impl EncoderInterTile {
             current_order_hint,
             reference,
             core: core.clone(),
+            sequence: sequence.clone(),
             precision: frame_mv_precision(core).map_err(|_| "MV precision")?,
             max_drl_bits_minus_1: inter
                 .max_drl_bits_minus_1
@@ -377,6 +378,8 @@ impl EncoderInterTile {
                     ref_mv_idx,
                     mvd: Mv::ZERO,
                     interp: ReconInterpolationFilter::EightTap,
+                    precision: None,
+                    use_amvd: false,
                 },
             )
         };
@@ -574,9 +577,9 @@ impl EncoderInterTile {
             block_ctx: block,
             motion: syntax,
             interp: self.interp_filter(frontier, motion)?.0,
-            precision: BlockPrecisionRecord::most_probable(self.precision),
+            precision: self.block_precision(motion),
             skip,
-            use_amvd: false,
+            use_amvd: matches!(motion, EncoderMotion::Single(single) if single.use_amvd),
             tip_size_16x16: false,
             blend: mc::CompoundBlend::default(),
             bawp: BawpSyntax::default(),

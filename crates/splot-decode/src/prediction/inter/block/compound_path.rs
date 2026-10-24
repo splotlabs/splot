@@ -1625,16 +1625,28 @@ fn read_compound_use_amvd_syntax(
     ctx: usize,
     tile_offset: ByteOffset,
 ) -> Result<bool> {
-    let Some(index) = y_mode
-        .use_amvd_index(use_optflow)
-        .filter(|_| enable_adaptive_mvd)
+    let Some(selector) = compound_use_amvd_selector(enable_adaptive_mvd, y_mode, use_optflow, ctx)
     else {
         return Ok(false);
     };
     let use_amvd = cdfs
-        .read_block_symbol_trace(TileCdfSelector::UseAmvd { index, ctx }, symbols)
+        .read_block_symbol_trace(selector, symbols)
         .map_err(|error| symbol_read_error(error, tile_offset))?;
     Ok(use_amvd.get() != 0)
+}
+
+/// The `use_amvd` selector of a compound block coding `y_mode` (§ 5.20.7.6);
+/// `None` where the decoder reads no `use_amvd`.
+pub(super) fn compound_use_amvd_selector(
+    enable_adaptive_mvd: bool,
+    y_mode: CompoundYMode,
+    use_optflow: bool,
+    ctx: usize,
+) -> Option<TileCdfSelector> {
+    y_mode
+        .use_amvd_index(use_optflow)
+        .filter(|_| enable_adaptive_mvd)
+        .map(|index| TileCdfSelector::UseAmvd { index, ctx })
 }
 
 fn read_compound_jmvd_scale_mode_syntax(

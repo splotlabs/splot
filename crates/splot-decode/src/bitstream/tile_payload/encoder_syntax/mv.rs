@@ -12,11 +12,11 @@ use splot_core::symbol_encoder::SymbolSink;
 use super::super::cdf::{MvCdfSelector, TileCdfSelector, TileCdfSubset};
 use super::inter::{MV_PRECISION_EIGHTH_PEL, MotionVector};
 use super::{CdfJournal, CdfRow, EncoderSyntaxError, IntraTileSyntax, Result, rule};
-use crate::prediction::inter::Mv;
 use crate::prediction::inter::read_mv::{
-    MvReadConfig, MvSymbols, apply_inter_mvd_sign_pair, apply_inter_mvd_signs,
-    read_newmv_block_mvd_magnitude_with_config, shell_set0_classes,
+    AMVD_INDEX_TO_MVD, MvReadConfig, MvSymbols, apply_inter_mvd_sign_pair, apply_inter_mvd_signs,
+    read_newmv_amvd_block_mvd, read_newmv_block_mvd_magnitude_with_config, shell_set0_classes,
 };
+use crate::prediction::inter::{Mv, MvdCoding};
 
 /// One answered `read_mv` symbol.
 #[derive(Clone, Copy, Debug)]
@@ -88,7 +88,19 @@ impl MvSymbols for MvWriter {
                 u32::from(greater)
             }
             MvCdfSelector::ColMvIndex { .. } => u32::from(col != low),
-            _ => 0,
+            MvCdfSelector::AmvdJoint => {
+                let target = self.targets[self.vector];
+                2 * u32::from(target.row != 0) + u32::from(target.col != 0)
+            }
+            MvCdfSelector::AmvdIndex { comp } => {
+                let target = self.targets[self.vector];
+                let magnitude = if comp == 0 { target.row } else { target.col }.abs();
+                AMVD_INDEX_TO_MVD
+                    .iter()
+                    .position(|&step| step == magnitude)
+                    .and_then(|index| (index as u32).checked_sub(1))
+                    .unwrap_or(u32::MAX)
+            }
         };
         let value = u8::try_from(value).unwrap_or(u8::MAX);
         self.steps.push(MvStep::Symbol(selector, value));
@@ -134,17 +146,16 @@ impl MvSymbols for MvWriter {
     }
 }
 
-/// Writes the differences `mvds` (one or two) at `precision` into `cdfs` and
-/// `sink` as `read_mv` reads them: every magnitude, then every sign bit.
-/// `journal` logs each CDF row before it adapts. Adaptive MVD and sign
-/// derivation stay off.
+/// Writes the differences `mvds` (one or two) read with `coding` into `cdfs`
+/// and `sink` as `read_mv` reads them: every magnitude, then every sign bit
+/// the decoder does not derive. `journal` logs each CDF row before it adapts.
 ///
 /// # Errors
 /// Returns [`EncoderSyntaxError::Unsupported`] for differences `read_mv`
 /// cannot code, and [`EncoderSyntaxError::Rule`] for a failed read or write.
 pub(super) fn write_mvds(
     (cdfs, journal): (&mut TileCdfSubset, &mut CdfJournal),
-    precision: u8,
+    coding: MvdCoding,
     mvds: &[MotionVector],
     sink: &mut impl SymbolSink,
 ) -> Result<()> {
@@ -160,6 +171,7 @@ pub(super) fn write_mvds(
     for (target, &mvd) in targets.iter_mut().zip(mvds) {
         *target = mvd.into();
     }
+    let precision = coding.precision;
     let mut writer = MvWriter {
         targets,
         vector: 0,
@@ -173,12 +185,24 @@ pub(super) fn write_mvds(
     for (vector, magnitude) in magnitudes.iter_mut().take(mvds.len()).enumerate() {
         writer.vector = vector;
         writer.greater = 0;
-        *magnitude = read_newmv_block_mvd_magnitude_with_config(cdfs, &mut writer, offset, config)
-            .map_err(rule("motion vector difference"))?;
+        *magnitude = if coding.use_amvd {
+            read_newmv_amvd_block_mvd(cdfs, &mut writer, offset)
+        } else {
+            read_newmv_block_mvd_magnitude_with_config(cdfs, &mut writer, offset, config)
+        }
+        .map_err(rule("motion vector difference"))?;
     }
+    let derive = (coding.derive_sign, coding.derive_threshold);
     let read = if mvds.len() == 1 {
         [
-            apply_inter_mvd_signs(magnitudes[0], &mut writer, offset, config, false, 1),
+            apply_inter_mvd_signs(
+                magnitudes[0],
+                &mut writer,
+                offset,
+                config,
+                derive.0,
+                derive.1,
+            ),
             Ok(Mv::default()),
         ]
     } else {
@@ -188,8 +212,8 @@ pub(super) fn write_mvds(
             &mut writer,
             offset,
             config,
-            false,
-            1,
+            derive.0,
+            derive.1,
         );
         match pair {
             Ok((first, second)) => [Ok(first), Ok(second)],
@@ -220,15 +244,22 @@ pub(super) fn write_mvds(
 }
 
 impl IntraTileSyntax {
-    /// Writes the motion vector differences `mvds` of the inter leaf in
-    /// coding order, as [`Self::write_inter_modes`] returns them.
+    /// Writes the motion vector differences `mvds` of the planned inter leaf
+    /// in coding order, as [`Self::write_inter_modes`] returns them.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError`] for differences `read_mv` cannot code
-    /// or a write failure.
+    /// Returns [`EncoderSyntaxError`] for differences `read_mv` cannot code,
+    /// including a derived sign the target does not have, or a write failure.
     pub fn write_mvds(&mut self, mvds: &[MotionVector], sink: &mut impl SymbolSink) -> Result<()> {
-        let precision = self.mv_precision();
-        write_mvds((&mut self.cdfs, &mut self.journal), precision, mvds, sink)
+        let state = self.inter_ref()?;
+        let motion = state
+            .planned_motion()
+            .ok_or(EncoderSyntaxError::Unsupported("no planned inter leaf"))?;
+        let coding = state
+            .tile
+            .mvd_coding(motion)
+            .map_err(rule("motion vector difference"))?;
+        write_mvds((&mut self.cdfs, &mut self.journal), coding, mvds, sink)
     }
 }
 
