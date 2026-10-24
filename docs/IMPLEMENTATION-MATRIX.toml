@@ -5945,6 +5945,38 @@ tests = ["crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_frame
 commands = ["cargo test -p splot-encode wiener --locked", "cargo test -p splot-core encoder_stream --locked"]
 fixtures = []
 diagnostics = []
+
+[[feature]]
+id = "ENC-DEBLOCK-OFFSETS"
+name = "Encoder per-plane deblocking offsets"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.5.2", "7.17.5", "7.17.6"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/loop_filter.rs"
+change_id = "enc-deblock-offsets"
+owner = "encoder"
+risk = "low"
+notes = "With PresetParams::loop_filter_search >= 1 the frame deblocks the pass-1 reconstruction at DfDeltaQ -1, 0 and 1 on every plane, fits a parabola to the SSE of luma, U and V, and deblocks once more at each plane's vertex (a non-convex fit steps past its lower side), which reaches -2..=2; each depth above 1 tries the two neighbours of each plane's best offset once more, so depth 2 reaches -3..=3 and depth 3 the whole -4..=3. Each plane keeps its offset of least SSE or turns off, within the df_par_bits range of the sequence. AV2 has one offset per plane and edge direction (§ 7.17.6 lvlSeg drives both qThr and side), so there is no separate side offset; luma codes one offset for both directions. Plane SSE uses the EncoderKernels::sse_row std::simd kernel."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/loop_filter_tests.rs::parabola_vertex_finds_the_minimum_offset", "crates/splot-encode/src/loop_filter_tests.rs::filtered_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/loop_filter_tests.rs::avm_decodes_filtered_frames_like_splot", "crates/splot-encode/src/kernels/distortion.rs::tests::row_sse_simd_matches_scalar"]
+commands = ["cargo test -p splot-encode loop_filter --locked"]
+fixtures = []
+diagnostics = []
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------
