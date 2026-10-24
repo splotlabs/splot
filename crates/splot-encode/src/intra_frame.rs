@@ -100,6 +100,7 @@ impl IntraFrameCoder {
                 cfl: true,
                 ibp: true,
                 intra_edge_filter: true,
+                mrls: preset.mrl_trials > 0,
                 intra_ist: preset.ist_sets > 0,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,

@@ -622,9 +622,11 @@ fn random_tree(
     };
     if partition == Partition::None {
         let leaf = syntax.leaf(node)?;
-        return Ok(PartitionTree::Leaf(random_leaf(
-            syntax, &leaf, rng, coverage,
-        )));
+        let choice = random_leaf(syntax, &leaf, rng, coverage);
+        if let Some(prediction) = choice.inter {
+            assert_priced_as_written(syntax, node, &leaf, prediction)?;
+        }
+        return Ok(PartitionTree::Leaf(choice));
     }
     let mut children = Vec::new();
     for child in syntax.children(node, partition)? {
@@ -638,6 +640,28 @@ fn random_tree(
         kind: partition,
         children,
     })
+}
+
+/// [`IntraTileSyntax::price_inter_modes`] of `prediction` at `leaf` is the
+/// rate the writer codes for its mode and difference syntax; the state is
+/// put back after.
+fn assert_priced_as_written(
+    syntax: &mut IntraTileSyntax,
+    node: PartitionNode,
+    leaf: &LeafBlock,
+    prediction: InterPrediction,
+) -> core::result::Result<(), TileWriterError> {
+    let saved = syntax.snapshot(node)?;
+    let prediction = crate::tile_writer::snap_prediction(syntax, leaf, prediction)?;
+    let mut priced = RateSink::adapting();
+    syntax.price_inter_modes(leaf, prediction, &mut priced)?;
+    syntax.plan_inter_leaf(leaf, prediction)?;
+    let mut written = RateSink::adapting();
+    let mvds = syntax.write_inter_modes(leaf, &mut written)?;
+    syntax.write_mvds(&mvds, &mut written)?;
+    assert_eq!(priced.bits, written.bits, "{prediction:?}");
+    syntax.restore(&saved)?;
+    Ok(())
 }
 
 fn random_leaf(
@@ -1153,8 +1177,12 @@ fn avm_decodes_multi_tile_frames_like_splot() {
 mod carry;
 #[path = "intra_frame_ccso_tests.rs"]
 mod ccso;
+#[path = "intra_tools_tests.rs"]
+mod intra_tools;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
+#[path = "intra_frame_wienerns_tests.rs"]
+mod wienerns;
 
 #[path = "ext_partition_tests.rs"]
 mod ext_partitions;

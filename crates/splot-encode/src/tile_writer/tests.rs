@@ -16,7 +16,7 @@ use splot_core::headers::frame::TxMode;
 use splot_core::tables::conversion::TX_WIDTH;
 use splot_decode::encoder_syntax::{
     ChromaMode, IST_SETS, IntraMode, IntraModes, IntraTileSyntax, Ist, LeafBlock, MAX_CFL_ALPHA,
-    PartitionNode, TX_PARTITIONS, TransformBlock, coefficient_scan,
+    Mrl, PartitionNode, TX_PARTITIONS, TransformBlock, coefficient_scan,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -227,6 +227,11 @@ impl RandomLevels {
                 let modes = IntraModes {
                     y_mode,
                     angle_delta,
+                    mrl: if y_mode.is_directional() {
+                        planned.mrl
+                    } else {
+                        Mrl::OFF
+                    },
                     ..planned
                 };
                 let tx = syntax.plan_leaf(leaf, modes)?[0];
@@ -349,13 +354,16 @@ fn luma_modes() -> Vec<(IntraMode, i8)> {
         .collect()
 }
 
-/// Cycles through every luma mode and every chroma mode; CFL alphas are random.
+/// Cycles through every luma mode and every chroma mode; CFL alphas and,
+/// with `mrl`, the MRL lines of directional modes are random.
 struct ModePicker {
     rng: Rng,
     next: usize,
     luma: Vec<(IntraMode, i8)>,
     coded_luma: HashSet<(u8, i8)>,
     coded_chroma: HashSet<u8>,
+    mrl: bool,
+    coded_mrl: HashSet<Mrl>,
 }
 
 impl ModePicker {
@@ -367,6 +375,8 @@ impl ModePicker {
             luma,
             coded_luma: HashSet::new(),
             coded_chroma: HashSet::new(),
+            mrl: false,
+            coded_mrl: HashSet::new(),
         }
     }
 
@@ -393,10 +403,20 @@ impl ModePicker {
             ChromaMode::Cfl { .. } => 13,
             ChromaMode::CflDerived => 14,
         });
+        let mut mrl = Mrl::OFF;
+        if self.mrl && y_mode.is_directional() {
+            let index = self.rng.below(4) as u8;
+            mrl = Mrl {
+                index,
+                secondary: index > 0 && self.rng.below(2) == 0,
+            };
+            self.coded_mrl.insert(mrl);
+        }
         IntraModes {
             y_mode,
             angle_delta,
             uv_mode,
+            mrl,
         }
     }
 }
@@ -473,6 +493,7 @@ fn encode_case(
     let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq), 0).unwrap();
     let mut rng = Rng(seed | 1);
     let mut modes = ModePicker::new(seed);
+    modes.mrl = case.tools.mrls;
     let mut coder = RandomLevels {
         rng: Rng(seed.rotate_left(17) | 1),
         max_level: case.max_level,
@@ -550,6 +571,29 @@ fn every_intra_mode_round_trips() {
             assert_eq!(luma.len(), 61, "{bit_depth:?} {sb_size:?}");
             assert_eq!(chroma.len(), 15, "{bit_depth:?} {sb_size:?}");
         }
+    }
+}
+
+/// Random MRL lines and secondary blends decode to the encoder recon, with
+/// every transform type and partition: the facade writes `mrl_index` and
+/// `mrl_sec_index` in the decoder's contexts and publishes `UsesMrls`.
+#[test]
+fn every_mrl_line_round_trips() {
+    for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+        let mut lines = HashSet::new();
+        for (seed, sb_size) in [SuperblockSize::Block64x64, SuperblockSize::Block128x128]
+            .into_iter()
+            .enumerate()
+        {
+            let mut case = Case::new(136, 72, bit_depth, sb_size);
+            case.tools.mrls = true;
+            for case in [case, case.with_tx_search()] {
+                let (_, modes, _) =
+                    assert_round_trip_modes(case, 0x3a1 + seed as u64, TxCoverage::default());
+                lines.extend(modes.coded_mrl);
+            }
+        }
+        assert_eq!(lines.len(), 7, "{bit_depth:?}: {lines:?}");
     }
 }
 
@@ -903,6 +947,10 @@ fn avm_decodes_random_key_frames_like_splot() {
     extended.tools.ext_partitions = true;
     extended.tools.uneven_4way_partitions = true;
     cases.push(extended);
+    let mut mrl =
+        Case::new(200, 136, BitDepthIdc::Ten, SuperblockSize::Block64x64).with_tx_search();
+    mrl.tools.mrls = true;
+    cases.push(mrl);
     let mut ist =
         Case::new(200, 136, BitDepthIdc::Ten, SuperblockSize::Block64x64).with_tx_search();
     ist.tools.intra_ist = true;

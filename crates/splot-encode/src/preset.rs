@@ -101,6 +101,12 @@ pub struct PresetParams {
     /// CCSO classifications the filter search tries per plane; `0` disables
     /// CCSO in the sequence.
     pub ccso_candidates: u8,
+    /// Luma Wiener-NS bank fits per frame, each on the units the previous fit
+    /// took; `0` searches PC-Wiener alone.
+    pub wiener_ns: u8,
+    /// MRL candidates of an intra leaf that get an RD trial besides the luma
+    /// shortlist, lowest SATD first; `0` disables MRL in the sequence.
+    pub mrl_trials: u8,
     /// `most_probable_stx_set` values whose three kernels a luma block ranks
     /// by kept energy in a leaf's final trial when its plain levels code
     /// `eob > 1`; the best gets one RD trial. `0` disables intra IST.
@@ -168,6 +174,8 @@ const fn row(
         ext_three_way_margin: 0,
         ext_four_way_margin: 0,
         ccso_candidates: 0,
+        wiener_ns: 0,
+        mrl_trials: 0,
         ist_sets: 0,
     }
 }
@@ -176,18 +184,25 @@ const fn row(
 pub const PRESETS: [PresetParams; 11] = with_columns(
     ROWS,
     [8, 8, 6, 6, 4, 4, 4, 2, 2, 1, 1],
+    [2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1],
+    [2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0],
     [7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0],
 );
 
-/// `rows` with `ccso_candidates[i]` and `ist_sets[i]` in row `i`.
+/// `rows` with `ccso_candidates[i]`, `wiener_ns[i]`, `mrl_trials[i]` and
+/// `ist_sets[i]` in row `i`.
 const fn with_columns(
     mut rows: [PresetParams; 11],
     ccso_candidates: [u8; 11],
+    wiener_ns: [u8; 11],
+    mrl_trials: [u8; 11],
     ist_sets: [u8; 11],
 ) -> [PresetParams; 11] {
     let mut i = 0;
     while i < rows.len() {
         rows[i].ccso_candidates = ccso_candidates[i];
+        rows[i].wiener_ns = wiener_ns[i];
+        rows[i].mrl_trials = mrl_trials[i];
         rows[i].ist_sets = ist_sets[i];
         i += 1;
     }
@@ -377,6 +392,8 @@ mod tests {
             assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
             assert!(fast.ccso_candidates <= slow.ccso_candidates);
+            assert!(fast.wiener_ns <= slow.wiener_ns);
+            assert!(fast.mrl_trials <= slow.mrl_trials);
             assert!(fast.ist_sets <= slow.ist_sets);
         }
         for params in PRESETS {

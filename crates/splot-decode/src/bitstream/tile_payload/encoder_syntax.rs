@@ -72,7 +72,7 @@ pub use inter::{
     EncoderReferences, INTERP_FILTERS, InterMode, InterModes, MV_PRECISION_EIGHTH_PEL,
     MotionVector, SingleMvs,
 };
-pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, TxType};
+pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, Mrl, TxType};
 pub use parity::ParityHiding;
 pub use rollback::SyntaxSnapshot;
 use rollback::{CdfJournal, CdfRow};
@@ -82,9 +82,11 @@ pub use transform::{IST_SETS, Ist, TX_PARTITIONS, TxPartition};
 #[path = "encoder_filters.rs"]
 mod filters;
 pub use filters::{
-    CcsoBlockMap, CcsoGrid, CdefIndexMap, CdefSlot, FilterRecorder, LrLayout, LrUnit,
-    apply_loop_filters, ccso_offset, ccso_taps, cdef_unit_grid, merge_tiles,
+    CcsoBlockMap, CcsoGrid, CdefIndexMap, CdefSlot, FilterRecorder, LrLayout, LrSymbol, LrUnit,
+    LrUnitType, apply_loop_filters, ccso_offset, ccso_taps, cdef_unit_grid, merge_tiles,
 };
+/// The first tap `(dy, dx, coeff_index)` of each § 7.20.3 luma pair; the partner is `(-dy, -dx)`.
+pub use splot_recon::WIENER_NS_CONFIG_Y_PAIRS;
 
 type BoxedSource = Box<dyn std::error::Error + Send + Sync + 'static>;
 
