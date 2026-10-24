@@ -59,7 +59,7 @@ fn mrl_frames_decode_to_the_encoder_recon_on_any_thread_count() {
         );
     }
     let off = Box::leak(Box::new(PresetParams {
-        mrl_modes: 0,
+        mrl_trials: 0,
         ..*on
     }));
     let (units, recon, seq) = tool_stream(case, off);

@@ -31,6 +31,8 @@ use crate::tile_writer::{
 
 /// The largest `|AngleDeltaY|` (§ 5.20.5.5).
 const MAX_ANGLE_DELTA: i8 = 3;
+/// The best directional modes of the luma shortlist whose MRL lines are ranked.
+const MRL_MODES: usize = 2;
 /// Every MRL line past the adjacent one, without and with the secondary blend.
 const MRL_LINES: [Mrl; 6] = {
     let mut lines = [Mrl::OFF; 6];
@@ -154,8 +156,9 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
     }
 
     /// The luma shortlist: every mode without an angle delta, then the angle
-    /// deltas of the shortlisted directional modes, then the MRL lines of the
-    /// best `preset.mrl_modes` directional modes.
+    /// deltas of the shortlisted directional modes; then the
+    /// `preset.mrl_trials` MRL lines of the [`MRL_MODES`] best directional
+    /// modes with the lowest SATD, appended so they displace no line-0 mode.
     fn luma_shortlist(&mut self, leaf: &LeafBlock) -> Result<Vec<LeafChoice>> {
         let base = INTRA_MODES.map(|y_mode| IntraModes {
             y_mode,
@@ -177,12 +180,12 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             })
             .collect();
         self.rank(leaf, deltas, LUMA, &mut ranked)?;
-        if self.preset.mrl_modes > 0 {
-            let lines: Vec<IntraModes> = self
-                .shortlist(ranked.clone())
-                .into_iter()
+        let mut shortlist = self.shortlist(ranked);
+        if self.preset.mrl_trials > 0 {
+            let lines: Vec<IntraModes> = shortlist
+                .iter()
                 .filter(|choice| choice.modes.y_mode.is_directional())
-                .take(usize::from(self.preset.mrl_modes))
+                .take(MRL_MODES)
                 .flat_map(|choice| {
                     MRL_LINES.map(|mrl| IntraModes {
                         mrl,
@@ -190,9 +193,17 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
                     })
                 })
                 .collect();
+            let mut ranked = Vec::new();
             self.rank(leaf, lines, LUMA, &mut ranked)?;
+            ranked.sort_by_key(|&(satd, _)| satd);
+            ranked.truncate(usize::from(self.preset.mrl_trials));
+            shortlist.extend(
+                ranked
+                    .into_iter()
+                    .map(|(_, modes)| LeafChoice::largest(modes)),
+            );
         }
-        Ok(self.shortlist(ranked))
+        Ok(shortlist)
     }
 
     /// The candidate with the lowest `D + lambda * R` over `planes`; each

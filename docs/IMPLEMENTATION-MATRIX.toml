@@ -5607,7 +5607,7 @@ module = "crates/splot-encode/src/mode_decision.rs"
 change_id = "enc-mrl"
 owner = "encoder"
 risk = "low"
-notes = "PresetParams::mrl_modes (0 disables enable_mrls): after the line-0 luma SATD shortlist, the best mrl_modes directional modes rank their six MRL lines (mrl_index 1..3, with and without mrl_sec_index) by SATD into the same shortlist, so MRL costs prediction SATDs but no extra RD trial. The encoder_syntax facade takes Mrl in IntraModes, writes mrl_index and mrl_sec_index with the decoder's UsesMrls contexts, plans the decoder's MRL prediction and publishes UsesMrls. Off writes the old stream byte-identically."
+notes = "PresetParams::mrl_trials (0 disables enable_mrls): after the line-0 luma SATD shortlist, its two best directional modes rank their six MRL lines (mrl_index 1..3, with and without mrl_sec_index) by SATD, and the mrl_trials best get an RD trial besides the shortlist, so MRL never displaces a line-0 candidate. The encoder_syntax facade takes Mrl in IntraModes, writes mrl_index and mrl_sec_index with the decoder's UsesMrls contexts, plans the decoder's MRL prediction and publishes UsesMrls. Off writes the old stream byte-identically."
 
 [feature.status]
 mapped = "done"
