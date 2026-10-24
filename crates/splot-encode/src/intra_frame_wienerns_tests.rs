@@ -103,7 +103,10 @@ fn wiener_ns_422_and_444_tiles_decode_to_the_encoder_recon() {
     let on = Preset::new(6).unwrap().params();
     for chroma in [PixelFormat::Yuv422, PixelFormat::Yuv444] {
         let (units, recon, lr) = wiener_stream((2, chroma), on);
-        assert!(lr.iter().copied().any(codes_wiener_ns), "{chroma:?}: {lr:?}");
+        assert!(
+            lr.iter().copied().any(codes_wiener_ns),
+            "{chroma:?}: {lr:?}"
+        );
         assert_same_samples(&decode(&units.concat()), &recon, &format!("{chroma:?}"));
     }
 }
