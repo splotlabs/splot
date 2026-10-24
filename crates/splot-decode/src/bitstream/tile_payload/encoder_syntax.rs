@@ -71,7 +71,7 @@ pub use compound::{
 pub use inter::{
     EncoderReferences, InterMode, InterModes, MV_PRECISION_EIGHTH_PEL, MotionVector, SingleMvs,
 };
-pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, TxType};
+pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, Mrl, TxType};
 pub use parity::ParityHiding;
 pub use rollback::SyntaxSnapshot;
 use rollback::{CdfJournal, CdfRow};

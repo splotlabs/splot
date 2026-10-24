@@ -95,6 +95,9 @@ pub struct PresetParams {
     /// CCSO classifications the filter search tries per plane; `0` disables
     /// CCSO in the sequence.
     pub ccso_candidates: u8,
+    /// The best directional modes of the luma shortlist whose MRL lines are
+    /// ranked with it; `0` disables MRL in the sequence.
+    pub mrl_modes: u8,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -157,17 +160,27 @@ const fn row(
         ext_three_way_margin: 0,
         ext_four_way_margin: 0,
         ccso_candidates: 0,
+        mrl_modes: 0,
     }
 }
 
 /// Search limits indexed by preset: `0` is the slowest and best, `10` the fastest.
-pub const PRESETS: [PresetParams; 11] = with_ccso(ROWS, [8, 8, 6, 6, 4, 4, 4, 2, 2, 1, 1]);
+pub const PRESETS: [PresetParams; 11] = with_columns(
+    ROWS,
+    [8, 8, 6, 6, 4, 4, 4, 2, 2, 1, 1],
+    [2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1],
+);
 
-/// `rows` with `ccso_candidates[i]` in row `i`.
-const fn with_ccso(mut rows: [PresetParams; 11], ccso_candidates: [u8; 11]) -> [PresetParams; 11] {
+/// `rows` with `ccso_candidates[i]` and `mrl_modes[i]` in row `i`.
+const fn with_columns(
+    mut rows: [PresetParams; 11],
+    ccso_candidates: [u8; 11],
+    mrl_modes: [u8; 11],
+) -> [PresetParams; 11] {
     let mut i = 0;
     while i < rows.len() {
         rows[i].ccso_candidates = ccso_candidates[i];
+        rows[i].mrl_modes = mrl_modes[i];
         i += 1;
     }
     rows
@@ -355,6 +368,7 @@ mod tests {
             assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
             assert!(fast.ccso_candidates <= slow.ccso_candidates);
+            assert!(fast.mrl_modes <= slow.mrl_modes);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));

@@ -13,7 +13,7 @@
 use core::ops::Range;
 
 use splot_decode::encoder_syntax::{
-    ChromaMode, EncoderSyntaxError, IntraModes, IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA,
+    ChromaMode, EncoderSyntaxError, IntraModes, IntraTileSyntax, LeafBlock, MAX_CFL_ALPHA, Mrl,
     PartitionNode, SyntaxSnapshot,
 };
 
@@ -31,6 +31,19 @@ use crate::tile_writer::{
 
 /// The largest `|AngleDeltaY|` (§ 5.20.5.5).
 const MAX_ANGLE_DELTA: i8 = 3;
+/// Every MRL line past the adjacent one, without and with the secondary blend.
+const MRL_LINES: [Mrl; 6] = {
+    let mut lines = [Mrl::OFF; 6];
+    let mut i = 0;
+    while i < 6 {
+        lines[i] = Mrl {
+            index: 1 + i as u8 / 2,
+            secondary: i % 2 == 1,
+        };
+        i += 1;
+    }
+    lines
+};
 /// References whose pairs compound candidates take: the § 7.7 map ranks the
 /// closest references first.
 const COMPOUND_REFS: usize = 3;
@@ -141,7 +154,8 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
     }
 
     /// The luma shortlist: every mode without an angle delta, then the angle
-    /// deltas of the shortlisted directional modes.
+    /// deltas of the shortlisted directional modes, then the MRL lines of the
+    /// best `preset.mrl_modes` directional modes.
     fn luma_shortlist(&mut self, leaf: &LeafBlock) -> Result<Vec<LeafChoice>> {
         let base = INTRA_MODES.map(|y_mode| IntraModes {
             y_mode,
@@ -163,6 +177,21 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             })
             .collect();
         self.rank(leaf, deltas, LUMA, &mut ranked)?;
+        if self.preset.mrl_modes > 0 {
+            let lines: Vec<IntraModes> = self
+                .shortlist(ranked.clone())
+                .into_iter()
+                .filter(|choice| choice.modes.y_mode.is_directional())
+                .take(usize::from(self.preset.mrl_modes))
+                .flat_map(|choice| {
+                    MRL_LINES.map(|mrl| IntraModes {
+                        mrl,
+                        ..choice.modes
+                    })
+                })
+                .collect();
+            self.rank(leaf, lines, LUMA, &mut ranked)?;
+        }
         Ok(self.shortlist(ranked))
     }
 

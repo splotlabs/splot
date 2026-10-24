@@ -97,6 +97,7 @@ impl IntraFrameCoder {
                 cfl: true,
                 ibp: true,
                 intra_edge_filter: true,
+                mrls: preset.mrl_modes > 0,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
                 avg_cdf: preset.cdf_carry.then_some(AVG_CDF_ACROSS_TILES),

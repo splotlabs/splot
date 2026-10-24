@@ -80,6 +80,8 @@ pub struct IntraModes {
     pub angle_delta: i8,
     /// The chroma prediction; a leaf without chroma ignores it.
     pub uv_mode: ChromaMode,
+    /// The luma reference line of a directional `y_mode`.
+    pub mrl: Mrl,
 }
 
 impl IntraModes {
@@ -88,6 +90,25 @@ impl IntraModes {
         y_mode: IntraMode::Dc,
         angle_delta: 0,
         uv_mode: ChromaMode::Intra(IntraMode::Dc),
+        mrl: Mrl::OFF,
+    };
+}
+
+/// `mrl_index` and `mrl_sec_index` (§ 5.20.5.5): the reference line a
+/// directional luma prediction reads, and whether it blends a second angle.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct Mrl {
+    /// `mrl_index`, `0..=3`; `0` reads the adjacent line and ignores `secondary`.
+    pub index: u8,
+    /// `mrl_sec_index`.
+    pub secondary: bool,
+}
+
+impl Mrl {
+    /// The adjacent line.
+    pub const OFF: Self = Self {
+        index: 0,
+        secondary: false,
     };
 }
 
@@ -163,6 +184,7 @@ pub(super) struct IntraTools {
     cfl_ds_filter_index: u8,
     enable_ibp: bool,
     enable_intra_edge_filter: bool,
+    enable_mrls: bool,
     pub(super) enable_chroma_dctonly: bool,
     pub(super) bit_depth: BitDepth,
     qindex: u32,
@@ -196,12 +218,11 @@ impl IntraTools {
         let lossless = core.lossless_info.as_ref();
         let refused = [
             (
-                intra.enable_mrls
-                    || intra.enable_dip
+                intra.enable_dip
                     || intra.enable_mhccp
                     || tq.enable_idtx_intra
                     || core.allow_screen_content_tools == Some(true),
-                "MRL, DIP, MHCCP, FSC, or palette",
+                "DIP, MHCCP, FSC, or palette",
             ),
             (tq.enable_intra_ist || tq.enable_cctx, "intra IST or CCTX"),
             (core.allow_intrabc == Some(true), "intra block copy"),
@@ -235,6 +256,7 @@ impl IntraTools {
             cfl_ds_filter_index: sequence_cfl_ds_filter_index(seq),
             enable_ibp: intra.enable_ibp,
             enable_intra_edge_filter: intra.enable_intra_edge_filter,
+            enable_mrls: intra.enable_mrls,
             enable_chroma_dctonly: tq.enable_chroma_dctonly,
             bit_depth: sequence_bit_depth(seq),
             qindex,
@@ -379,6 +401,22 @@ impl IntraTileSyntax {
             )?;
             literal(symbols, second % SECOND_MODE_COUNT, Y_SECOND_MODE_BITS)?;
         }
+        self.mrl_selection(modes)?;
+        if self.tools.enable_mrls && modes.y_mode.is_directional() {
+            let (n4w, n4h) = leaf_size4(leaf)?;
+            let (r, c) = (leaf.frontier.r, leaf.frontier.c);
+            let ctx = self.uses_mrls.mrl_index_ctx(r, c, n4w, n4h);
+            self.put(
+                symbols,
+                TileCdfSelector::MrlIndex { ctx },
+                modes.mrl.index.into(),
+            )?;
+            if modes.mrl.index > 0 {
+                let ctx = self.uses_mrls.mrl_sec_index_ctx(r, c, n4w, n4h);
+                let secondary = modes.mrl.secondary.into();
+                self.put(symbols, TileCdfSelector::MrlSecIndex { ctx }, secondary)?;
+            }
+        }
         if !leaf.has_chroma() {
             return Ok(());
         }
@@ -454,7 +492,7 @@ impl IntraTileSyntax {
         self.clear_inter_plan();
         let (block_ctx, _) = self.block_ctx(leaf);
         let (_, joint) = self.y_mode_index(leaf, modes)?;
-        let block_modes = block_modes(leaf, modes, joint)?;
+        let block_modes = block_modes(leaf, modes, joint, self.mrl_selection(modes)?)?;
         let luma = rect_luma_plan(&block_modes, block_ctx, self.tools.tcq, self.sb_size4)
             .map_err(rule("luma plan"))?;
         let chroma = rect_chroma_plan(&block_modes, self.tools.cfl_ds_filter_index, self.sb_size4);
@@ -619,14 +657,9 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError`] for an invalid geometry or mode.
     pub fn publish_intra_leaf(&mut self, leaf: &LeafBlock, modes: IntraModes) -> Result<()> {
         let (_, joint) = self.y_mode_index(leaf, modes)?;
-        let block_modes = block_modes(leaf, modes, joint)?;
-        let mut mode = GeneralIntraLeafMode::luma(
-            joint,
-            modes.y_mode,
-            modes.angle_delta,
-            0,
-            MrlSelection::Disabled,
-        );
+        let mrl = self.mrl_selection(modes)?;
+        let block_modes = block_modes(leaf, modes, joint, mrl)?;
+        let mut mode = GeneralIntraLeafMode::luma(joint, modes.y_mode, modes.angle_delta, 0, mrl);
         if leaf.frontier.has_chroma {
             mode = mode.with_uv_cfl(block_modes.is_cfl());
         }
@@ -781,6 +814,18 @@ impl IntraTileSyntax {
         Ok(())
     }
 
+    /// The decoder's `MrlIndex` selection of `modes`.
+    fn mrl_selection(&self, modes: IntraModes) -> Result<MrlSelection> {
+        if modes.mrl.index == 0 {
+            return Ok(MrlSelection::Disabled);
+        }
+        if !self.tools.enable_mrls || !modes.y_mode.is_directional() {
+            return Err(EncoderSyntaxError::Unsupported("MRL in this block"));
+        }
+        MrlSelection::from_symbols(modes.mrl.index, Some(modes.mrl.secondary.into()))
+            .map_err(|_| EncoderSyntaxError::Unsupported("MRL index"))
+    }
+
     /// The § 5.20.5.5 mode index that codes the luma modes of `modes` in `leaf`,
     /// found by running the decoder's list derivation over every index once
     /// per neighbour context.
@@ -860,17 +905,18 @@ static ZERO_LEVELS: [i32; 1024] = [0; 1024];
 
 const NO_LEAF: EncoderSyntaxError = EncoderSyntaxError::Unsupported("unplanned transform block");
 
-/// The decoder's block modes of `modes` in `leaf`, without MRL, FSC, DIP, or palette.
+/// The decoder's block modes of `modes` in `leaf`, without FSC, DIP, or palette.
 fn block_modes(
     leaf: &LeafBlock,
     modes: IntraModes,
     intra_joint_mode: IntraJointMode,
+    mrl: MrlSelection,
 ) -> Result<GeneralIntraBlockModes> {
     let luma = GeneralIntraLumaBlockMode {
         y_mode: modes.y_mode,
         angle_delta_y: modes.angle_delta,
         intra_joint_mode,
-        mrl: MrlSelection::Disabled,
+        mrl,
         fsc_mode: 0,
         use_dip: 0,
         dip_transpose: 0,

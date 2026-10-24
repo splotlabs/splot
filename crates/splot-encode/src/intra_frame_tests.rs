@@ -1129,6 +1129,8 @@ fn avm_decodes_multi_tile_frames_like_splot() {
 mod carry;
 #[path = "intra_frame_ccso_tests.rs"]
 mod ccso;
+#[path = "intra_tools_tests.rs"]
+mod intra_tools;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
 
