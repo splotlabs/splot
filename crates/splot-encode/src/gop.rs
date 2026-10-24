@@ -362,7 +362,8 @@ pub(crate) fn plan(frame_index: u64, keyint: NonZeroU32) -> GopFrame {
 /// The frame-level tool choices of `preset` for a frame at `qindex`: the
 /// transform parameters, whether inter frames code compound and skip-mode
 /// blocks, whether their motion vectors are eighth-pel, whether they take
-/// temporal motion vectors, and the `tiles`.
+/// temporal motion vectors, whether they code switchable interpolation
+/// filters, and the `tiles`.
 pub(crate) fn frame_tools(preset: &PresetParams, tiles: UniformTiles, qindex: u32) -> FrameTools {
     (
         crate::tx_choice::key_frame_tx_params(preset),
@@ -370,14 +371,15 @@ pub(crate) fn frame_tools(preset: &PresetParams, tiles: UniformTiles, qindex: u3
         (
             preset.subpel_depth == 3 && qindex <= u32::from(preset.eighth_pel_max_qindex),
             preset.mv_prediction,
+            preset.interp_filter_search > 0,
         ),
         tiles,
     )
 }
 
-/// `(tx, compound, (high_precision_mv, use_ref_frame_mvs), tiles)` of
-/// [`frame_tools`].
-pub(crate) type FrameTools = (KeyFrameTxParams, bool, (bool, bool), UniformTiles);
+/// `(tx, compound, (high_precision_mv, use_ref_frame_mvs,
+/// switchable_interp_filter), tiles)` of [`frame_tools`].
+pub(crate) type FrameTools = (KeyFrameTxParams, bool, (bool, bool, bool), UniformTiles);
 
 /// A temporal delimiter and the `OBU_REGULAR_SEF` that outputs `slot`.
 pub(crate) fn show_existing_unit(view: &CoreSeqView, slot: u32) -> Result<Vec<u8>> {
@@ -483,7 +485,7 @@ impl GopFrame {
         &self,
         qindex: u32,
         filters: &FrameFilterParams,
-        (tx, compound, (high_precision_mv, use_ref_frame_mvs), tiles): FrameTools,
+        (tx, compound, (high_precision_mv, use_ref_frame_mvs, switchable_interp_filter), tiles): FrameTools,
     ) -> InterFrameParams {
         InterFrameParams {
             base_q_idx: qindex,
@@ -497,6 +499,7 @@ impl GopFrame {
             skip_mode_present: compound,
             high_precision_mv,
             use_ref_frame_mvs,
+            switchable_interp_filter,
             primary_slot: self.primary_slot,
         }
     }
