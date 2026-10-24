@@ -35,7 +35,7 @@ use crate::test_support::{assert_same_samples, avm_decode, avm_decoder, decode, 
 const CASES: [(u32, u32, BitDepth, u8, u16); 8] = [
     (64, 64, BitDepth::Eight, 6, 160),
     (130, 34, BitDepth::Ten, 6, 220),
-    (200, 136, BitDepth::Eight, 10, 180),
+    (200, 136, BitDepth::Eight, 6, 200),
     (257, 131, BitDepth::Ten, 10, 240),
     (352, 288, BitDepth::Eight, 9, 140),
     (96, 200, BitDepth::Ten, 9, 250),
