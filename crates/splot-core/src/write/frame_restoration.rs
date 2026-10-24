@@ -367,45 +367,56 @@ pub fn write_ccso_params(
 
     for plane in &params.planes {
         writer.write_flag(plane.ccso_planes)?;
-        if !plane.ccso_planes {
-            continue;
+        if plane.ccso_planes {
+            write_ccso_plane_params(writer, plane)?;
         }
-        let (
-            Some(bo_only),
-            Some(scale_idx),
-            Some(quant_idx),
-            Some(ext_filter),
-            Some(edge_clf),
-            Some(max_band_log2),
-        ) = (
-            plane.ccso_bo_only,
-            plane.ccso_scale_idx,
-            plane.ccso_quant_idx,
-            plane.ccso_ext_filter,
-            plane.ccso_edge_clf,
-            plane.ccso_max_band_log2,
-        )
-        else {
-            return Err(WriteError::NonCanonicalFrameHeader {
-                what: "ccso_plane_fields",
-            });
-        };
+    }
+    Ok(())
+}
 
-        writer.write_flag(bo_only)?;
-        writer.write_bits_u8(scale_idx, 2)?;
-        if !bo_only {
-            writer.write_bits_u8(quant_idx, 2)?;
-            writer.write_bits_u8(ext_filter, 3)?;
-            if ccso_quant_step(scale_idx, quant_idx) != 0 {
-                writer.write_flag(edge_clf)?;
-            }
+/// Writes the § 5.18.7.12 fields of one enabled plane after `ccso_planes` and
+/// any reuse flags: `ccso_bo_only` through the `ccso_offset_idx` table.
+///
+/// # Errors
+/// As [`write_ccso_params`] for a plane.
+pub fn write_ccso_plane_params(
+    writer: &mut BitWriter,
+    plane: &crate::headers::frame::CcsoPlaneParams,
+) -> WriteResult<()> {
+    check_ccso_plane_encodable(plane)?;
+    let (
+        Some(bo_only),
+        Some(scale_idx),
+        Some(quant_idx),
+        Some(ext_filter),
+        Some(edge_clf),
+        Some(max_band_log2),
+    ) = (
+        plane.ccso_bo_only,
+        plane.ccso_scale_idx,
+        plane.ccso_quant_idx,
+        plane.ccso_ext_filter,
+        plane.ccso_edge_clf,
+        plane.ccso_max_band_log2,
+    )
+    else {
+        return Err(WriteError::NonCanonicalFrameHeader {
+            what: "ccso_plane_fields",
+        });
+    };
+    writer.write_flag(bo_only)?;
+    writer.write_bits_u8(scale_idx, 2)?;
+    if !bo_only {
+        writer.write_bits_u8(quant_idx, 2)?;
+        writer.write_bits_u8(ext_filter, 3)?;
+        if ccso_quant_step(scale_idx, quant_idx) != 0 {
+            writer.write_flag(edge_clf)?;
         }
-        let band_bits = 2 + u32::from(bo_only);
-        writer.write_bits_u8(max_band_log2, band_bits)?;
-
-        for &offset in &plane.ccso_offset_idx {
-            writer.write_tu(u32::from(offset), u32::from(CCSO_OFFSET_IDX_MAX))?;
-        }
+    }
+    let band_bits = 2 + u32::from(bo_only);
+    writer.write_bits_u8(max_band_log2, band_bits)?;
+    for &offset in &plane.ccso_offset_idx {
+        writer.write_tu(u32::from(offset), u32::from(CCSO_OFFSET_IDX_MAX))?;
     }
     Ok(())
 }

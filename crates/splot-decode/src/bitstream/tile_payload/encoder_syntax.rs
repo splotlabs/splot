@@ -79,8 +79,8 @@ pub use transform::{TX_PARTITIONS, TxPartition};
 #[path = "encoder_filters.rs"]
 mod filters;
 pub use filters::{
-    CdefIndexMap, CdefSlot, FilterRecorder, LrLayout, LrUnit, apply_loop_filters, cdef_unit_grid,
-    merge_tiles,
+    CcsoBlockMap, CcsoGrid, CdefIndexMap, CdefSlot, FilterRecorder, LrLayout, LrUnit,
+    apply_loop_filters, ccso_offset, ccso_taps, cdef_unit_grid, merge_tiles,
 };
 
 type BoxedSource = Box<dyn std::error::Error + Send + Sync + 'static>;
