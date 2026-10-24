@@ -28,7 +28,8 @@ use crate::tile_writer::{Result, TileWriterError};
 /// Coarse pyramid levels below full resolution.
 const MAX_LEVEL: usize = 2;
 /// Reference samples kept past each frame edge at full resolution: a 64-sample
-/// inter block plus margin. Vectors that point further out are not searched.
+/// block plus margin. A vector whose block reaches further out is not
+/// searched, so a 128-sample leaf near a frame edge searches fewer vectors.
 const EDGE: usize = 80;
 /// Full samples, in `1/8` units.
 const FULL: i32 = 8;

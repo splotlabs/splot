@@ -128,6 +128,9 @@ pub struct PresetParams {
     /// directions; off disables `enable_mhccp`. Off in every row: its
     /// `cfl_mhccp` flags lose luma BD-rate.
     pub mhccp: bool,
+    /// Leaves wider or taller than 64 also try inter, skip-mode and compound
+    /// predictions; off, they code intra only.
+    pub large_inter: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -198,6 +201,7 @@ const fn row(
         ist_sets: 0,
         cctx: false,
         mhccp: false,
+        large_inter: true,
     }
 }
 
@@ -428,6 +432,7 @@ mod tests {
             assert!(fast.ist_sets <= slow.ist_sets);
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.mhccp <= slow.mhccp);
+            assert!(fast.large_inter <= slow.large_inter);
         }
         for params in PRESETS {
             assert!((1..=8).contains(&params.mini_gop_size));

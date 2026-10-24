@@ -926,65 +926,21 @@ impl EncoderInterResidual {
     }
 }
 
-/// One transform block of a leaf: `(plane, x, y, tx_size)` in plane samples.
-pub(crate) type ResidualUnit = (usize, usize, usize, usize);
-
-/// The transform blocks `(plane, x, y, tx_size)` of a non-lossless inter leaf
-/// whose planes each take one transform (§ 5.20.7.23), luma first; `None` for
-/// a leaf whose residual spans more than one transform per plane.
-pub(crate) fn single_transform_residual(
-    frontier: &DecodeBlockFrontier,
-    chroma: ChromaFormatIdc,
-) -> Result<Option<Vec<ResidualUnit>>> {
-    let (n4w, n4h) = block_size4(frontier)?;
-    let luma = residual::max_tx_size(frontier.b_size.index())?;
-    let covers = |tx_size: usize, w4: usize, h4: usize| -> Result<bool> {
-        Ok(
-            residual::tx_size_dimension(&TX_WIDTH, tx_size)? == w4 * MI_SIZE
-                && residual::tx_size_dimension(&TX_HEIGHT, tx_size)? == h4 * MI_SIZE,
-        )
-    };
-    if n4w > CHUNK_64_N4 || n4h > CHUNK_64_N4 || !covers(luma, n4w, n4h)? {
-        return Ok(None);
-    }
-    let mut units = vec![(0, frontier.c * MI_SIZE, frontier.r * MI_SIZE, luma)];
-    if frontier.has_chroma && chroma != ChromaFormatIdc::Monochrome {
-        let (sub_x, sub_y) = chroma_subsampling(chroma);
-        let chroma_ref = frontier.chroma_ref_geometry();
-        let size = get_plane_residual_size(chroma_ref.size(), 1, sub_x, sub_y)
-            .map_err(|_| residual::residual_geometry_error())?
-            .ok_or_else(residual::residual_geometry_error)?;
-        let tx_size = residual::max_tx_size(size.index())?;
-        let (w4, h4) = (
-            size.num_4x4_wide()
-                .map_err(|_| residual::residual_geometry_error())?,
-            size.num_4x4_high()
-                .map_err(|_| residual::residual_geometry_error())?,
-        );
-        if !covers(tx_size, w4, h4)? {
-            return Ok(None);
-        }
-        let x = (chroma_ref.col() >> usize::from(sub_x)) * MI_SIZE;
-        let y = (chroma_ref.row() >> usize::from(sub_y)) * MI_SIZE;
-        units.push((1, x, y, tx_size));
-        units.push((2, x, y, tx_size));
-    }
-    Ok(Some(units))
-}
-
 /// The `chroma_inter_tx_type` the decoder reads for the chroma transform at
-/// plane position `(x, y)` of `frontier`, whose single luma transform of
-/// size `luma_tx_size` has type `luma_tx_type`.
+/// plane position `(x, y)` of `frontier`, after the luma transforms `luma`,
+/// each `(x, y, tx_size, tx_type)` in luma samples.
 pub(crate) fn chroma_inter_tx_type(
     frontier: &DecodeBlockFrontier,
     chroma: ChromaFormatIdc,
-    (luma_tx_size, luma_tx_type): (usize, usize),
+    luma: impl IntoIterator<Item = (usize, usize, usize, usize)>,
     (x, y): (usize, usize),
 ) -> Result<usize> {
     let (n4w, n4h) = block_size4(frontier)?;
     let mut map = InterLumaTxTypeMap::default();
     map.reset(frontier.r, frontier.c, n4h, n4w)?;
-    map.update(frontier.r, frontier.c, luma_tx_size, luma_tx_type)?;
+    for (luma_x, luma_y, tx_size, tx_type) in luma {
+        map.update(luma_y / MI_SIZE, luma_x / MI_SIZE, tx_size, tx_type)?;
+    }
     Ok(map.chroma_inter_tx_type(
         frontier.r,
         frontier.c,

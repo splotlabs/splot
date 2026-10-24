@@ -797,7 +797,8 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         if self.syntax.intra_allowed(&leaf) {
             candidates.push(self.intra_choice(node, &leaf, &start)?);
         }
-        if self.syntax.inter_allowed(&leaf) {
+        let (w, h) = leaf.dimensions()?;
+        if self.syntax.inter_allowed(&leaf) && (self.preset.large_inter || w.max(h) <= 64) {
             candidates.extend(self.inter_candidates(&leaf)?);
         }
         let scored = self.best_scored(&leaf, candidates, ALL, &start)?;
