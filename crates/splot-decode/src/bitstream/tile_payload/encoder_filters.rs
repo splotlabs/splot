@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Encoder-facing loop-filter facade (deblocking, CDEF, loop restoration); not a
-//! stable API.
+//! Encoder-facing loop-filter facade (deblocking, CDEF, CCSO, loop
+//! restoration); not a stable API.
 //!
 //! - [`FilterRecorder`] keeps the per-transform records the decoder's walk keeps.
 //!   Call [`FilterRecorder::record_leaf`] once per coded leaf, after the leaf's
@@ -11,6 +11,8 @@
 //! - [`CdefIndexMap`] is the tile's `cdef_idx` state of § 5.20.10.1: it names the
 //!   leaf that codes each 64x64 index and the `cdef_index0` context.
 //! - [`LrLayout`] lists the § 5.20.10.4 restoration units of each superblock.
+//! - [`CcsoBlockMap`] is the tile's `ccso_blk` state of § 5.20.10.2, and
+//!   [`CcsoGrid`] the frame's CCSO unit grid.
 //! - [`apply_loop_filters`] runs the decoder's own § 7.2 filter chain on a frame.
 //! - [`merge_tiles`] puts the tiles of a frame, each coded by its own facade,
 //!   into one reconstruction.
@@ -21,6 +23,8 @@ use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_recon::{CurrentFrameWorkspace, DecodedFrame, PlaneId, PlaneRect};
 
+use splot_core::span::ByteOffset;
+
 use super::super::cdf::TileCdfSelector;
 use super::super::partition_traversal::{
     ROOT_HAS_CHROMA, TilePartitionBounds, TilePartitionCall, TilePartitionFrameFacts,
@@ -28,11 +32,13 @@ use super::super::partition_traversal::{
 };
 use super::super::tile_frontier::minimal_partition_frame_facts;
 use super::{
-    EncoderSyntaxError, IntraTileSyntax, LeafBlock, PartitionNode, Result, TransformBlock, rule,
-    tile_count, tile_ranges, tx_log2,
+    EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock, PartitionNode, Result,
+    TransformBlock, rule, tile_count, tile_ranges, tx_log2,
 };
+use crate::filters::ccso::{CCSO_OFFSET, CcsoUnitGrid, ccso_sample_offsets};
 use crate::filters::deblock::{ChromaDeblockRecords, DeblockBlock};
 use crate::filters::wienerns_lr::tx_records::CdefState;
+use crate::filters::wienerns_lr::tx_records::ccso::{CcsoState, ccso_mi_width_log2};
 use crate::filters::wienerns_lr::{FrameFilterRecords, WienerNsLrTxSkipTransformRecord};
 
 /// `cdef_idx` units are 64x64 luma samples, 16 4x4 units a side (§ 5.20.10.1).
@@ -61,6 +67,145 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError::Rule`] for a CDF table defect.
     pub fn use_pc_wiener_cdf(&mut self) -> Result<&mut [u16]> {
         self.tile_row(TileCdfSelector::UsePcWiener)
+    }
+
+    /// The `ccso_blk` CDF row of `plane` for context `ctx` (§ 5.20.10.2).
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] for an invalid plane or context.
+    pub fn ccso_blk_cdf(&mut self, plane: usize, ctx: usize) -> Result<&mut [u16]> {
+        self.tile_row(TileCdfSelector::CcsoBlk { plane, ctx })
+    }
+}
+
+impl FrameStart {
+    /// A copy of the `ccso_blk` CDF row of `plane` for context `ctx` that
+    /// every tile of the frame starts from (§ 5.20.10.2).
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] for an invalid plane or context.
+    pub fn ccso_blk_cdf(&self, plane: usize, ctx: usize) -> Result<Vec<u16>> {
+        let mut cdfs = self.cdfs.tile_copy();
+        let row = cdfs
+            .row_mut(TileCdfSelector::CcsoBlk { plane, ctx })
+            .map_err(rule("CDF row"))?;
+        Ok(row.to_vec())
+    }
+}
+
+/// The CCSO unit grid of a frame (§ 5.18.7.12): units of
+/// `1 << luma_size_log2` luma samples in raster order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CcsoGrid {
+    /// `CcsoLumaSizeLog2`.
+    pub luma_size_log2: u32,
+    /// Unit rows.
+    pub rows: usize,
+    /// Unit columns.
+    pub cols: usize,
+}
+
+impl CcsoGrid {
+    /// The grid of the frame `core` coded with `seq`.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] for missing frame facts.
+    pub fn new(seq: &SequenceHeader, core: &FrameHeaderCore) -> Result<Self> {
+        let shift = ccso_mi_width_log2(seq, core).map_err(rule("CCSO unit size"))?;
+        let frame = minimal_partition_frame_facts(seq, core).map_err(rule("frame facts"))?;
+        Ok(Self {
+            luma_size_log2: shift + 2,
+            rows: frame.mi_rows().div_ceil(1 << shift),
+            cols: frame.mi_cols().div_ceil(1 << shift),
+        })
+    }
+}
+
+/// `CcsoFilterOffset` of `ccso_offset_idx` at `ccso_scale_idx` (§ 5.18.7.12),
+/// or `None` outside `0..8`.
+#[must_use]
+pub fn ccso_offset(offset_idx: u8, scale_idx: u8) -> Option<i32> {
+    CCSO_OFFSET
+        .get(usize::from(offset_idx))
+        .map(|&offset| offset * (i32::from(scale_idx) + 1))
+}
+
+/// The luma taps `(dx, dy)` of `cls0` and `cls1` for `ccso_ext_filter` (§ 7.19.1).
+///
+/// # Errors
+/// Returns [`EncoderSyntaxError::Rule`] for a filter outside `0..7`.
+pub fn ccso_taps(ext_filter: u8) -> Result<[(isize, isize); 2]> {
+    ccso_sample_offsets(ext_filter).map_err(rule("ccso_ext_filter"))
+}
+
+/// The `ccso_blk` state of one tile of a frame (§ 5.20.10.2), filled in
+/// coding order.
+pub struct CcsoBlockMap {
+    state: CcsoState,
+    tile_col_start: usize,
+}
+
+impl CcsoBlockMap {
+    /// An empty map for tile `tile` of the frame `core` coded with `seq`.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for missing frame facts, a tile the
+    /// frame does not have, or CCSO block reuse.
+    pub fn new(seq: &SequenceHeader, core: &FrameHeaderCore, tile: usize) -> Result<Self> {
+        let frame = minimal_partition_frame_facts(seq, core).map_err(rule("frame facts"))?;
+        let (rows, cols) = tile_ranges(core, tile)?;
+        let tile_col_start = cols.start;
+        let state = CcsoState::new(
+            frame.mi_rows(),
+            frame.mi_cols(),
+            seq,
+            core,
+            &[],
+            &[],
+            ByteOffset::new(0),
+            Default::default(),
+        )
+        .and_then(|state| state.try_for_tile(rows, cols, None))
+        .map_err(rule("CCSO state"))?;
+        Ok(Self {
+            state,
+            tile_col_start,
+        })
+    }
+
+    /// The `(unitRow, unitCol)` whose `ccso_blk` `leaf` codes, if any.
+    #[must_use]
+    pub fn unit(&self, leaf: &LeafBlock) -> Option<(usize, usize)> {
+        self.state.unit_at(leaf.row4(), leaf.col4())
+    }
+
+    /// The units of the tile in raster order, which is their coding order:
+    /// a unit is never smaller than a superblock.
+    #[must_use]
+    pub fn units(&self) -> Vec<(usize, usize)> {
+        let state = &self.state;
+        (state.row_start..state.row_start + state.grid_rows)
+            .flat_map(|row| {
+                (state.col_start..state.col_start + state.grid_cols).map(move |col| (row, col))
+            })
+            .collect()
+    }
+
+    /// The `ccso_blk` context of `plane` at `unit`, or `None` when the plane
+    /// codes no flag.
+    #[must_use]
+    pub fn ctx(&self, plane: usize, unit: (usize, usize)) -> Option<usize> {
+        self.state.blk_ctx(plane, unit, self.tile_col_start)
+    }
+
+    /// Stores `ccso_blk` of `plane` at `unit` after it is coded.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] for a unit outside the tile.
+    pub fn set(&mut self, plane: usize, unit: (usize, usize), on: bool) -> Result<()> {
+        self.state
+            .set_block_value(plane, unit.0, unit.1, u8::from(on))
+            .map_err(rule("ccso_blk"))
     }
 }
 
@@ -452,8 +597,10 @@ impl LrLayout {
 /// the frame `core` on `frame`, as a decoder of the same tile would.
 ///
 /// `cdef_indices` holds `cdef_idx` per 64x64 unit in raster order (see
-/// [`cdef_unit_grid`]), or is empty when no unit codes one; `lr_on` lists the
-/// units whose `use_pc_wiener` is `1`.
+/// [`cdef_unit_grid`]), or is empty when no unit codes one; `ccso_blocks[p]`
+/// holds `ccso_blk` of plane `p` per [`CcsoGrid`] unit in raster order, or is
+/// empty when every unit is off; `lr_on` lists the units whose
+/// `use_pc_wiener` is `1`.
 ///
 /// # Errors
 /// Returns [`EncoderSyntaxError::Rule`] when a filter stage rejects its inputs.
@@ -462,7 +609,7 @@ pub fn apply_loop_filters(
     core: &FrameHeaderCore,
     recorder: &FilterRecorder,
     frame: &DecodedFrame<u16>,
-    cdef_indices: &[Option<usize>],
+    (cdef_indices, ccso_blocks): (&[Option<usize>], &[Vec<u8>]),
     lr_on: &[LrUnit],
 ) -> Result<DecodedFrame<u16>> {
     let layouts = LrLayout::tiles(seq, core)?;
@@ -501,6 +648,7 @@ pub fn apply_loop_filters(
         ..FrameFilterRecords::default()
     });
     sink.set_cdef_grid(Some(cdef_grid));
+    sink.set_ccso_grid(ccso_unit_grid(seq, core, ccso_blocks)?.map(Arc::new));
     sink.set_cfl_ds_filter_index(seq.intra.as_ref().map_or(0, |i| i.cfl_ds_filter_index));
     let (filtered, _) = sink
         .into_filtered_frame(
@@ -513,6 +661,48 @@ pub fn apply_loop_filters(
         )
         .map_err(rule("loop filters"))?;
     Ok(filtered)
+}
+
+/// The decoder's CCSO grid of the frame `core` with `blocks`, or `None` when
+/// the frame codes no CCSO.
+fn ccso_unit_grid(
+    seq: &SequenceHeader,
+    core: &FrameHeaderCore,
+    blocks: &[Vec<u8>],
+) -> Result<Option<CcsoUnitGrid>> {
+    let Some(params) = core
+        .ccso_params
+        .as_ref()
+        .filter(|params| params.ccso_frame_flag == Some(true))
+    else {
+        return Ok(None);
+    };
+    let grid = CcsoGrid::new(seq, core)?;
+    let cells = grid.rows * grid.cols;
+    let mut planes: [Vec<u8>; 3] = Default::default();
+    for (plane, target) in planes.iter_mut().enumerate() {
+        *target = match blocks.get(plane) {
+            Some(values) if values.len() == cells => values.clone(),
+            Some(values) if !values.is_empty() => {
+                return Err(EncoderSyntaxError::Unsupported(
+                    "ccso_blk grid of another size",
+                ));
+            }
+            _ => vec![0; cells],
+        };
+    }
+    let enabled =
+        core::array::from_fn(|plane| params.planes.get(plane).is_some_and(|p| p.ccso_planes));
+    CcsoUnitGrid::new(
+        true,
+        grid.luma_size_log2 - 2,
+        enabled,
+        planes,
+        grid.rows,
+        grid.cols,
+    )
+    .map(Some)
+    .map_err(rule("CCSO grid"))
 }
 
 /// The reconstruction of the frame `core` whose tile `t` holds the samples of
@@ -547,25 +737,34 @@ pub fn merge_tiles(
 }
 
 /// Copies the samples of `frame` over the luma rectangle `(x, y, width,
-/// height)`, and the 4:2:0 chroma rectangles under it, into `workspace`.
+/// height)`, and the chroma rectangles under it, into `workspace`.
 fn copy_luma_rect(
     workspace: &mut CurrentFrameWorkspace<u16>,
     frame: &DecodedFrame<u16>,
     (x, y, width, height): (usize, usize, usize, usize),
 ) -> Result<()> {
-    for (id, shift) in [(PlaneId::Y, 0), (PlaneId::U, 1), (PlaneId::V, 1)] {
+    let format = frame.info().pixel_format();
+    let chroma = (
+        u32::from(format.subsampling_x()),
+        u32::from(format.subsampling_y()),
+    );
+    for (id, (shift_x, shift_y)) in [
+        (PlaneId::Y, (0, 0)),
+        (PlaneId::U, chroma),
+        (PlaneId::V, chroma),
+    ] {
         let Some(plane) = frame.plane(id) else {
             continue;
         };
         let size = plane.storage_size();
-        let (left, top) = (x >> shift, y >> shift);
+        let (left, top) = (x >> shift_x, y >> shift_y);
         let right = x
             .saturating_add(width)
-            .div_ceil(1 << shift)
+            .div_ceil(1 << shift_x)
             .min(size.width());
         let bottom = y
             .saturating_add(height)
-            .div_ceil(1 << shift)
+            .div_ceil(1 << shift_y)
             .min(size.height());
         if right <= left || bottom <= top {
             continue;
