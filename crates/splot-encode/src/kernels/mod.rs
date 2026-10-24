@@ -18,6 +18,7 @@ mod distortion;
 mod forward_transform;
 mod quantize;
 pub(crate) mod rdoq;
+pub(crate) mod tcq;
 
 pub(crate) use forward_transform::ForwardTransform2d;
 pub(crate) use quantize::Quantizer;
@@ -63,6 +64,9 @@ pub(crate) enum KernelError {
     /// No move of one level by one gives the parity the block hides.
     #[error("no level move keeps the hidden parity")]
     HiddenParity,
+    /// The TCQ trellis lost track of a path's level grid.
+    #[error("inconsistent TCQ trellis state")]
+    TrellisState,
     /// The deadzone rounding is above one half (`128` in Q8).
     #[error("invalid quantizer rounding {rounding_q8}/256")]
     InvalidRounding {
@@ -190,6 +194,16 @@ pub(crate) trait EncoderKernels: Sync {
         levels: &mut [i32],
         dequant: &mut [i32],
     ) -> Result<usize, KernelError>;
+
+    /// One TCQ trellis step: adds the branch metrics of every state to its
+    /// path cost and keeps the cheaper branch into each next state
+    /// ([`tcq::step_simd`]).
+    fn tcq_step(
+        &self,
+        prev: &[u64; tcq::STATES],
+        branches: &tcq::Branches,
+        lambda: u64,
+    ) -> tcq::Survivors;
 }
 
 /// The scalar reference kernels.
@@ -269,6 +283,15 @@ impl EncoderKernels for ScalarKernels {
     ) -> Result<usize, KernelError> {
         quantize::quantize_scalar(quantizer, coeffs, levels, dequant)
     }
+
+    fn tcq_step(
+        &self,
+        prev: &[u64; tcq::STATES],
+        branches: &tcq::Branches,
+        lambda: u64,
+    ) -> tcq::Survivors {
+        tcq::step_scalar(prev, branches, lambda)
+    }
 }
 
 impl EncoderKernels for SimdKernels {
@@ -334,5 +357,14 @@ impl EncoderKernels for SimdKernels {
         dequant: &mut [i32],
     ) -> Result<usize, KernelError> {
         quantize::quantize_simd(quantizer, coeffs, levels, dequant)
+    }
+
+    fn tcq_step(
+        &self,
+        prev: &[u64; tcq::STATES],
+        branches: &tcq::Branches,
+        lambda: u64,
+    ) -> tcq::Survivors {
+        tcq::step_simd(prev, branches, lambda)
     }
 }

@@ -661,10 +661,14 @@ impl IntraTileSyntax {
         blocks: &[TransformBlock],
         levels: &[Vec<i32>],
     ) -> Result<()> {
+        let mut residual = Vec::with_capacity(blocks.len());
+        for (tx, levels) in blocks.iter().zip(levels) {
+            residual.push((self.decoder_quant(tx, levels)?, self.uses_tcq(tx)));
+        }
         let state = self.inter.as_mut().ok_or(INTRA_FRAME)?;
         let planned = state.planned.as_mut().ok_or(NO_INTER_LEAF)?;
         planned.residual.clear();
-        for (tx, levels) in blocks.iter().zip(levels) {
+        for (tx, (levels, use_tcq)) in blocks.iter().zip(residual) {
             let eob = super::coefficient_scan(tx)?
                 .iter()
                 .rposition(|&pos| levels.get(usize::from(pos)).is_some_and(|&l| l != 0))
@@ -674,9 +678,9 @@ impl IntraTileSyntax {
                 .residual
                 .push(
                     (tx.plane, tx.x, tx.y, tx.tx_size),
-                    levels,
+                    &levels,
                     eob,
-                    tx_type as usize,
+                    (tx_type as usize, use_tcq),
                 )
                 .map_err(rule("inter residual"))?;
         }

@@ -220,11 +220,10 @@ fn deep_drl_streams_decode_alike_on_any_thread_count() {
 #[test]
 fn switchable_filters_reach_the_headers_and_the_decoder() {
     let config = config(72, 40, BitDepth::Ten, 6, 110);
-    let on = Preset::new(6).unwrap().params();
-    assert!(on.interp_filter_search > 0);
-    let off = Box::leak(Box::new(PresetParams {
-        interp_filter_search: 0,
-        ..*on
+    let off = Preset::new(6).unwrap().params();
+    let on: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        interp_filter_search: 2,
+        ..*off
     }));
     let mut streams = Vec::new();
     for (preset, filter) in [(on, FrameFilter::Switchable), (off, FrameFilter::Eighttap)] {
@@ -249,12 +248,11 @@ fn switchable_filters_reach_the_headers_and_the_decoder() {
 #[test]
 fn mvd_tools_reach_the_sequence_and_the_decoder() {
     let config = config(72, 40, BitDepth::Eight, 6, 140);
-    let on = Preset::new(6).unwrap().params();
-    assert_eq!(on.mvd_tools, [true; 3]);
-    let off = Box::leak(Box::new(PresetParams {
-        mvd_tools: [false; 3],
-        ..*on
-    }));
+    let base = Preset::new(6).unwrap().params();
+    let with = |mvd_tools| -> &'static PresetParams {
+        Box::leak(Box::new(PresetParams { mvd_tools, ..*base }))
+    };
+    let (on, off) = (with([true; 3]), with([false; 3]));
     let mut streams = Vec::new();
     for (preset, tools) in [(on, true), (off, false)] {
         let (units, expected, _, coder) = super::carry::planned_stream(&config, preset);
@@ -266,4 +264,50 @@ fn mvd_tools_reach_the_sequence_and_the_decoder() {
         streams.push(units);
     }
     assert_ne!(streams[0], streams[1]);
+}
+
+/// A tiled stream with the filter search at level 2 codes the same bytes on
+/// 1, 2 and 8 threads.
+#[test]
+fn switchable_filter_streams_match_on_any_thread_count() {
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        interp_filter_search: 2,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let stream = |threads: usize| {
+        let mut config = config(136, 72, BitDepth::Eight, 6, 100);
+        config.tiles = TileLayout {
+            cols_log2: 1,
+            rows_log2: 1,
+        };
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        super::carry::planned_stream(&config, preset).0
+    };
+    let one = stream(1);
+    for threads in [2, 8] {
+        assert!(stream(threads) == one, "{threads} threads");
+    }
+}
+
+/// A tiled stream with every MVD tool on codes the same bytes on 1, 2 and 8
+/// threads.
+#[test]
+fn mvd_tool_streams_match_on_any_thread_count() {
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        mvd_tools: [true; 3],
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let stream = |threads: usize| {
+        let mut config = config(136, 72, BitDepth::Eight, 6, 140);
+        config.tiles = TileLayout {
+            cols_log2: 1,
+            rows_log2: 1,
+        };
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        super::carry::planned_stream(&config, preset).0
+    };
+    let one = stream(1);
+    for threads in [2, 8] {
+        assert!(stream(threads) == one, "{threads} threads");
+    }
 }

@@ -92,6 +92,7 @@ impl Case {
             tx: KeyFrameTxParams {
                 tx_mode: TxMode::Largest,
                 reduced_tx_set: 2,
+                allow_tcq: false,
             },
         }
     }
@@ -101,6 +102,7 @@ impl Case {
         self.tx = KeyFrameTxParams {
             tx_mode: TxMode::Select,
             reduced_tx_set: 0,
+            ..self.tx
         };
         self.tools.ext_partitions = true;
         self.tools.uneven_4way_partitions = true;
@@ -693,6 +695,24 @@ fn parity_hiding_round_trips() {
     }
 }
 
+/// TCQ levels round-trip over every luma type and partition at both bit
+/// depths: luma 2D blocks code and reconstruct along the TCQ states (with
+/// remainders on both sides of the `maxLevel - 1` threshold), chroma and 1D
+/// blocks code plain levels in the same frame.
+#[test]
+fn tcq_levels_round_trip() {
+    for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+        for seed in 0..4 {
+            let mut case =
+                Case::new(136, 72, bit_depth, SuperblockSize::Block64x64).with_tx_search();
+            case.tools.tcq = true;
+            case.tx.allow_tcq = true;
+            case.max_level = 40;
+            assert_round_trip_modes(case, 0x7c00 + seed, TxCoverage::default());
+        }
+    }
+}
+
 /// Publication check: the facade's parity rule is the § 5.20.7.27 rule the
 /// writer and the quantizer assume, for every class and transform size.
 #[test]
@@ -766,11 +786,10 @@ fn facade_rejects_unmodelled_tools() {
     };
     let (seq, core) = headers(base);
     assert!(IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).is_ok());
-    let tool_cases: [fn(&mut EncoderToolFlags); 5] = [
+    let tool_cases: [fn(&mut EncoderToolFlags); 4] = [
         |t| t.mhccp = true,
         |t| t.intra_ist = true,
         |t| t.cctx = true,
-        |t| t.tcq = true,
         |t| t.idtx_intra = true,
     ];
     for set in tool_cases {
@@ -779,9 +798,8 @@ fn facade_rejects_unmodelled_tools() {
         let (seq, core) = headers(tools);
         assert!(rejects(&seq, &core));
     }
-    let frame_cases: [fn(&mut FrameHeaderCore); 7] = [
+    let frame_cases: [fn(&mut FrameHeaderCore); 6] = [
         |c| c.allow_intrabc = Some(true),
-        |c| c.lossless_info.as_mut().unwrap().allow_tcq = true,
         |c| c.lossless_info.as_mut().unwrap().coded_lossless = true,
         |c| c.quantization_params.as_mut().unwrap().base_q_idx = 0,
         |c| c.segmentation_params.as_mut().unwrap().segmentation_enabled = true,
