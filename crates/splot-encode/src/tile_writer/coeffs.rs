@@ -190,6 +190,8 @@ pub(crate) fn code_coeffs(
 /// codes the positions from the first nonzero scan index `bob` to the end,
 /// the levels follow in scan order from `bob` with the `idtx` rows, then each
 /// nonzero level's `idtx_sign` and remainder.
+#[cold]
+#[inline(never)]
 fn code_fsc_coeffs(
     syntax: &mut IntraTileSyntax,
     symbols: &mut impl SymbolSink,

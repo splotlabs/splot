@@ -60,7 +60,7 @@ impl IntraTileSyntax {
             && tx.plane == 0
             && CoeffTransformClass::from_plane_tx_type(tx.tx_type as usize)
                 == CoeffTransformClass::TwoD
-            && !self.uses_fsc(tx)
+            && !(self.tools.enable_fsc && self.uses_fsc(tx))
     }
 
     /// Prices a search trial of a TCQ frame with plain levels: until set back,

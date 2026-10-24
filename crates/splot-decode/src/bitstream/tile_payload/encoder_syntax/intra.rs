@@ -200,6 +200,8 @@ pub(super) struct IntraTools {
     pub(super) enable_intra_ist: bool,
     /// `enable_fsc`.
     pub(super) enable_fsc: bool,
+    /// `enable_idtx_intra`: leaves may code `fsc_mode`.
+    fsc_mode: bool,
     /// `enable_cctx`.
     pub(super) enable_cctx: bool,
     pub(super) enable_chroma_dctonly: bool,
@@ -272,6 +274,7 @@ impl IntraTools {
             enable_mrls: intra.enable_mrls,
             enable_intra_ist: tq.enable_intra_ist,
             enable_fsc: tq.enable_fsc,
+            fsc_mode: tq.enable_idtx_intra,
             enable_cctx: tq.enable_cctx,
             enable_chroma_dctonly: tq.enable_chroma_dctonly,
             bit_depth: sequence_bit_depth(seq),
@@ -300,8 +303,6 @@ pub(super) struct PlannedLeaf {
     units: Vec<TransformBlock>,
     intra_edge: IntraEdgeCtx,
     luma_context: LumaTransformTypeContext,
-    /// `fsc_mode` of the leaf.
-    fsc: bool,
 }
 
 /// The reconstructed frame and the state its prediction reads.
@@ -385,12 +386,13 @@ impl IntraTileSyntax {
     /// Whether `leaf` may code `fsc_mode` (§ 5.20.5.5 `allow_fsc_intra`).
     #[must_use]
     pub fn fsc_allowed(&self, leaf: &LeafBlock) -> bool {
-        leaf_size4(leaf).is_ok_and(|(n4w, n4h)| allow_fsc_intra(self.tools.chroma, n4w, n4h))
+        self.tools.fsc_mode
+            && leaf_size4(leaf).is_ok_and(|(n4w, n4h)| allow_fsc_intra(self.tools.chroma, n4w, n4h))
     }
 
     /// Whether the planned intra leaf codes `fsc_mode`.
-    pub(super) fn planned_fsc(&self) -> bool {
-        self.recon.leaf.as_ref().is_some_and(|leaf| leaf.fsc)
+    pub(super) const fn planned_fsc(&self) -> bool {
+        self.fsc_leaf
     }
 
     /// Whether `leaf` may code MHCCP (§ 5.20.5.6 `is_mhccp_allowed`).
@@ -532,6 +534,7 @@ impl IntraTileSyntax {
     ) -> Result<Vec<TransformBlock>> {
         self.clear_inter_plan();
         self.plan_cctx(leaf);
+        self.fsc_leaf = modes.fsc;
         let (block_ctx, _) = self.block_ctx(leaf);
         let (_, joint) = self.y_mode_index(leaf, modes)?;
         let block_modes = block_modes(leaf, modes, joint, self.mrl_selection(modes)?)?;
@@ -599,7 +602,6 @@ impl IntraTileSyntax {
                 chroma_left_smooth,
             },
             luma_context: luma_transform_type_context(&block_modes),
-            fsc: modes.fsc,
         });
         Ok(units)
     }

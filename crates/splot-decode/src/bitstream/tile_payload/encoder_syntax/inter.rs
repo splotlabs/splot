@@ -581,6 +581,7 @@ impl IntraTileSyntax {
         let motion = self.motion(leaf, prediction)?;
         self.recon.leaf = None;
         self.plan_cctx(leaf);
+        self.fsc_leaf = false;
         let chroma = self.chroma;
         let state = self.inter.as_mut().ok_or(INTRA_FRAME)?;
         state.planned = None;

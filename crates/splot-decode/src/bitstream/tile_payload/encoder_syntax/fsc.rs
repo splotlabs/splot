@@ -24,6 +24,7 @@ pub const FSC_MAX_LEVEL: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1;
 impl IntraTileSyntax {
     /// Whether `tx` of the planned leaf codes its levels with FSC (`useFsc`).
     #[must_use]
+    #[inline]
     pub fn uses_fsc(&self, tx: &TransformBlock) -> bool {
         self.tools.enable_fsc
             && tx.plane == 0
