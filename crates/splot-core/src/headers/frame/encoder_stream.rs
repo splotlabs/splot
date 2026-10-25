@@ -70,6 +70,8 @@ pub struct EncoderToolFlags {
     pub cfl: bool,
     /// `enable_mhccp`.
     pub mhccp: bool,
+    /// `cfl_ds_filter_index`, `0..=3`; not coded for monochrome.
+    pub cfl_ds_filter: u8,
     /// `seq_choose_screen_content_tools`: frames may use palette and intra block copy.
     pub screen_content: bool,
     /// `enable_ibp`.
@@ -351,7 +353,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     w.write_flag(tools.mrls)?;
     w.write_flag(tools.cfl)?;
     if !monochrome {
-        w.write_bits(0, 2)?; // cfl_ds_filter_index
+        w.write_bits_u8(tools.cfl_ds_filter, 2)?;
     }
     w.write_flag(tools.mhccp)?;
     w.write_flag(tools.ibp)?;
