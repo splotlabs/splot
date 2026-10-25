@@ -146,6 +146,9 @@ pub(crate) trait EncoderKernels: Sync {
         dims: BlockDims,
     ) -> u64;
 
+    /// Sum of squared differences of the first `min(a.len(), b.len())` samples.
+    fn sse_row(&self, a: &[u16], b: &[u16]) -> u64;
+
     /// Sum of absolute unnormalized Hadamard-transformed differences, so a flat
     /// difference gives the SAD. Blocks with both sides at least 8 use 8x8
     /// tiles; other blocks use 4x4 tiles.
@@ -265,6 +268,10 @@ impl EncoderKernels for ScalarKernels {
         distortion::sse_scalar(src, src_stride, pred, pred_stride, dims)
     }
 
+    fn sse_row(&self, a: &[u16], b: &[u16]) -> u64 {
+        distortion::sse_row_scalar(a, b)
+    }
+
     fn satd(
         &self,
         src: &[u16],
@@ -354,6 +361,10 @@ impl EncoderKernels for SimdKernels {
         dims: BlockDims,
     ) -> u64 {
         distortion::sse_simd(src, src_stride, pred, pred_stride, dims)
+    }
+
+    fn sse_row(&self, a: &[u16], b: &[u16]) -> u64 {
+        distortion::sse_row_simd(a, b)
     }
 
     fn satd(

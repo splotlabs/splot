@@ -60,7 +60,14 @@ pub struct PresetParams {
     /// `subpel_depth` is `3`; other inter frames code quarter-pel vectors and
     /// refine to quarter samples. `0` never codes eighth-pel.
     pub eighth_pel_max_qindex: u16,
-    /// Loop-filter levels tried per frame; `0` derives the level from the qp.
+    /// Loop-filter search depth. Deblocking: `0` derives the level from the
+    /// qp; `1` fits a parabola to each plane's SSE at `DfDeltaQ` -1, 0 and 1
+    /// and tries its vertex, reaching -2..=2; each depth above 1 tries the two
+    /// neighbours of each plane's best offset once more, so `2` reaches
+    /// -3..=3 and `3` the whole sequence range (-4..=3 with `df_par_bits`
+    /// 3, as the encoder sequence codes). On equal SSE the smallest |offset|
+    /// wins, since a nonzero offset costs header bits. CDEF tries 8, 12 or
+    /// 16 strengths at depth 0, 1 or 2; depth 3 tries 16, as depth 2 does.
     pub loop_filter_search: u8,
     /// Frames per mini-GOP, `1..=8`: `1` codes every frame shown (IPPP);
     /// larger sizes code the last frame first as a hidden alt-ref and the
@@ -131,6 +138,10 @@ pub struct PresetParams {
     /// directions; off disables `enable_mhccp`. Off in every row: its
     /// `cfl_mhccp` flags lose luma BD-rate.
     pub mhccp: bool,
+    /// The winning luma mode of an intra leaf gets one RD trial with
+    /// `fsc_mode`; off disables `enable_fsc`. Off in every row: it pays only
+    /// on screen content, so it waits for a screen-content detector.
+    pub fsc: bool,
     /// Leaves wider or taller than 64 also try inter, skip-mode and compound
     /// predictions; off, they code intra only.
     pub large_inter: bool,
@@ -212,6 +223,7 @@ const fn row(
         ist_sets: 0,
         cctx: false,
         mhccp: false,
+        fsc: false,
         large_inter: true,
         inter_tx_split: if tx_partition_search { 24 } else { 0 },
         gdf_candidates: 0,
@@ -449,6 +461,7 @@ mod tests {
             assert!(fast.ist_sets <= slow.ist_sets);
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.mhccp <= slow.mhccp);
+            assert!(fast.fsc <= slow.fsc);
             assert!(fast.large_inter <= slow.large_inter);
             assert!(
                 fast.inter_tx_split == 0

@@ -20,7 +20,7 @@ use splot_decode::encoder_syntax::{CcsoGrid, FilterRecorder, apply_loop_filters,
 use splot_recon::BitDepth;
 
 use super::ccso::{CcsoInput, class_sums};
-use super::cdef_rate;
+use super::{cdef_rate, parabola_vertex};
 use crate::config::{Config, RateControlMode};
 use crate::encoder::{CodedFrame, FrameCoder};
 use crate::frame::SourceFrame;
@@ -142,6 +142,20 @@ fn filtered_frames_decode_to_the_encoder_recon() {
         used[..3].iter().all(|&count| count >= 2) && used[3] >= 1,
         "filters used {used:?}"
     );
+}
+
+/// The vertex of `sse(d) = 7 * (d - v)^2 + 1000` sampled at `-2, 0, 2` is
+/// `v`; a concave or monotone fit steps past its lower side.
+#[test]
+fn parabola_vertex_finds_the_minimum_offset() {
+    for v in -4i64..=4 {
+        let sse = |d: i64| (7 * (d - v).pow(2) + 1000) as u64;
+        assert_eq!(i64::from(parabola_vertex(2, [sse(-2), sse(0), sse(2)])), v);
+    }
+    assert_eq!(parabola_vertex(2, [90, 100, 95]), -4);
+    assert_eq!(parabola_vertex(2, [95, 100, 90]), 4);
+    assert_eq!(parabola_vertex(2, [100, 100, 100]), 0);
+    assert_eq!(parabola_vertex(2, [300, 200, 100]), 4);
 }
 
 /// Every GDF pair is tried once; the first takes the largest

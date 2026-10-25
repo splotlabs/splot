@@ -51,7 +51,8 @@ pub fn tcq_index(state: usize, quant: u32) -> Result<u32> {
 impl IntraTileSyntax {
     /// Whether the levels of `tx` are TCQ levels (`useTcq` of § 5.20.7.27):
     /// the frame has `allow_tcq` and `tx` is a luma block of class
-    /// `TX_CLASS_2D`. Such a block dequantizes with `dqDenom` doubled (§ 7.14.4).
+    /// `TX_CLASS_2D` without FSC. Such a block dequantizes with `dqDenom`
+    /// doubled (§ 7.14.4).
     #[must_use]
     pub fn uses_tcq(&self, tx: &TransformBlock) -> bool {
         self.tools.tcq
@@ -59,6 +60,7 @@ impl IntraTileSyntax {
             && tx.plane == 0
             && CoeffTransformClass::from_plane_tx_type(tx.tx_type as usize)
                 == CoeffTransformClass::TwoD
+            && !(self.tools.enable_fsc && self.uses_fsc(tx))
     }
 
     /// Prices a search trial of a TCQ frame with plain levels: until set back,

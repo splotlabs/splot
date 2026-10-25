@@ -133,10 +133,27 @@ impl IntraTileSyntax {
                 .ok_or(EncoderSyntaxError::Unsupported(
                     "transform partition of this block",
                 ))?;
+        let fsc = self.planned_fsc();
         for (selector, value) in steps.into_iter().flatten() {
-            put(self.tile_row(selector)?, value)?;
+            put(
+                self.tile_row(if fsc { fsc_rows(selector) } else { selector })?,
+                value,
+            )?;
         }
         Ok(())
+    }
+
+    /// The luma types of `tx` with `eob`: only an inferred IDTX for an intra
+    /// FSC leaf.
+    fn luma_type_options(
+        &mut self,
+        tx: &TransformBlock,
+        eob: usize,
+    ) -> Result<Vec<(TxType, Steps)>> {
+        if self.planned_fsc() && !self.leaf_is_inter() {
+            return Ok(vec![(TxType::Idtx, NO_STEPS)]);
+        }
+        self.luma_tx_type_options(tx, eob)
     }
 
     /// The luma types `tx` of the planned leaf can code when its `eob` is above
@@ -146,7 +163,7 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError`] for a chroma block or without a planned leaf.
     pub fn allowed_luma_tx_types(&mut self, tx: &TransformBlock) -> Result<Vec<TxType>> {
         Ok(self
-            .luma_tx_type_options(tx, 2)?
+            .luma_type_options(tx, 2)?
             .into_iter()
             .map(|(tx_type, _)| tx_type)
             .collect())
@@ -162,7 +179,7 @@ impl IntraTileSyntax {
         tx: &TransformBlock,
         eob: usize,
     ) -> Result<Option<TxType>> {
-        let options = self.luma_tx_type_options(tx, eob)?;
+        let options = self.luma_type_options(tx, eob)?;
         Ok(match options.as_slice() {
             [(tx_type, steps)] if steps.iter().all(Option::is_none) => Some(*tx_type),
             _ => None,
@@ -183,7 +200,7 @@ impl IntraTileSyntax {
         mut put: impl FnMut(&mut [u16], usize) -> core::result::Result<(), E>,
     ) -> core::result::Result<(), E> {
         let (_, steps) = self
-            .luma_tx_type_options(tx, eob)?
+            .luma_type_options(tx, eob)?
             .into_iter()
             .find(|&(tx_type, _)| tx_type == tx.tx_type)
             .ok_or(EncoderSyntaxError::Unsupported(
@@ -499,4 +516,39 @@ fn tx_size_sqr(tx_size: usize) -> Result<usize> {
         .get(tx_size)
         .and_then(|&sqr| usize::try_from(sqr).ok())
         .ok_or(EncoderSyntaxError::Unsupported("transform size"))
+}
+
+/// `selector`, a transform-partition row of a leaf without FSC, as the row of
+/// an FSC leaf.
+const fn fsc_rows(selector: TileCdfSelector) -> TileCdfSelector {
+    match selector {
+        TileCdfSelector::TxDoPartition {
+            is_inter,
+            txfm_split_group,
+            ..
+        } => TileCdfSelector::TxDoPartition {
+            fsc_mode: 1,
+            is_inter,
+            txfm_split_group,
+        },
+        TileCdfSelector::TxPartitionType {
+            is_inter,
+            ctx,
+            reduced,
+            ..
+        } => TileCdfSelector::TxPartitionType {
+            fsc_mode: 1,
+            is_inter,
+            ctx,
+            reduced,
+        },
+        TileCdfSelector::Tx2Or3PartitionType { is_inter, ctx, .. } => {
+            TileCdfSelector::Tx2Or3PartitionType {
+                fsc_mode: 1,
+                is_inter,
+                ctx,
+            }
+        }
+        other => other,
+    }
 }

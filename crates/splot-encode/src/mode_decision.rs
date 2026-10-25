@@ -716,8 +716,9 @@ impl TrialCoder<'_, '_> {
             .collect())
     }
 
-    /// The best intra choice of `leaf`: luma modes on luma alone, then the
-    /// luma transform partition, then the chroma mode over the coded luma.
+    /// The best intra choice of `leaf`: luma modes on luma alone, the winner
+    /// with FSC, then the luma transform partition, then the chroma mode over
+    /// the coded luma.
     fn intra_choice(
         &mut self,
         node: PartitionNode,
@@ -726,6 +727,13 @@ impl TrialCoder<'_, '_> {
     ) -> Result<LeafChoice> {
         let luma = self.luma_shortlist(leaf)?;
         let mut choice = self.best(leaf, luma, LUMA, start)?;
+        if self.preset.fsc && self.syntax.fsc_allowed(leaf) {
+            let fsc = LeafChoice::largest(IntraModes {
+                fsc: true,
+                ..choice.modes
+            });
+            choice = self.best(leaf, vec![choice, fsc], LUMA, start)?;
+        }
         if self.preset.tx_partition_search {
             let partitions = self.syntax.luma_tx_partitions(leaf)?;
             let candidates = partitions

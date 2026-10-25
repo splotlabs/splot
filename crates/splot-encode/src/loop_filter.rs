@@ -33,6 +33,7 @@ use splot_recon::{DecodedFrame, PlaneId};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::intra_frame::map_tiles;
+use crate::kernels::kernels;
 use crate::preset::PresetParams;
 use crate::rd::{Bits, Lambda, RdCost, log2_q8};
 use crate::tile_writer::filters::FilterSyntax;
@@ -60,8 +61,6 @@ const CDEF_LADDER: [(u8, u8); 16] = [
     (8, 4),
     (1, 1),
 ];
-/// `DfDeltaQ` values in the order the search tries them (`f(3)` offsets).
-const DEBLOCK_LADDER: [i32; 8] = [0, 1, -1, 2, -2, 3, -4, -3];
 /// Approximate frame-header bits of one CDEF strength set.
 const CDEF_SET_HEADER_BITS: u32 = 12;
 
@@ -466,7 +465,9 @@ impl Search<'_> {
     }
 
     /// Deblocking on every plane at the qindex-derived level, or with the
-    /// per-plane best `DfDeltaQ` of up to `1 + 2 * loop_filter_search` levels.
+    /// per-plane `DfDeltaQ` of least SSE among the offsets a parabola fit on
+    /// SSE proposes: offsets `-1`, `0` and `1`, then the vertex of each plane,
+    /// then once per depth above 1 the two neighbours of each plane's best.
     fn deblocking(&self, preset: &PresetParams) -> Result<FrameFilterParams> {
         let on = FrameFilterParams {
             deblocking: [true; 4],
@@ -475,22 +476,59 @@ impl Search<'_> {
         if preset.loop_filter_search == 0 {
             return Ok(on);
         }
-        let levels = (1 + 2 * usize::from(preset.loop_filter_search)).min(DEBLOCK_LADDER.len());
-        let off = self.plane_sse_all(self.recon);
-        let mut best: [(u64, Option<i32>); 3] = core::array::from_fn(|plane| (off[plane], None));
-        for &delta in &DEBLOCK_LADDER[..levels] {
+        let bits = self
+            .seq
+            .filter
+            .map_or(3, |f| u32::from(f.df_par_bits_minus_2) + 2);
+        let range = -(1 << (bits - 1))..=(1 << (bits - 1)) - 1;
+        let mut seen: [BTreeMap<i32, u64>; 3] = Default::default();
+        let evaluate = |deltas: [i32; 3], seen: &mut [BTreeMap<i32, u64>; 3]| -> Result<()> {
+            let deltas = deltas.map(|d| d.clamp(*range.start(), *range.end()));
+            if seen
+                .iter()
+                .zip(deltas)
+                .all(|(seen, d)| seen.contains_key(&d))
+            {
+                return Ok(());
+            }
+            let [y, u, v] = deltas;
             let params = FrameFilterParams {
-                deblocking_delta_q: [delta; 4],
+                deblocking_delta_q: [y, y, u, v],
                 ..on
             };
             let sse = self.plane_sse_all(&self.filtered(&params, self.recon, &[])?);
-            for (best, sse) in best.iter_mut().zip(sse) {
-                if sse < best.0 {
-                    *best = (sse, Some(delta));
-                }
+            for ((seen, delta), sse) in seen.iter_mut().zip(deltas).zip(sse) {
+                seen.insert(delta, sse);
+            }
+            Ok(())
+        };
+        let step = 1;
+        for delta in [-step, 0, step] {
+            evaluate([delta; 3], &mut seen)?;
+        }
+        let vertex = core::array::from_fn(|plane| {
+            let at = |d| seen[plane].get(&d).copied().unwrap_or(u64::MAX);
+            parabola_vertex(step, [at(-step), at(0), at(step)])
+        });
+        evaluate(vertex, &mut seen)?;
+        let best = |seen: &BTreeMap<i32, u64>| {
+            seen.iter()
+                .min_by_key(|&(&delta, &sse)| (sse, delta.unsigned_abs()))
+                .map(|(&delta, &sse)| (delta, sse))
+        };
+        for _ in 1..preset.loop_filter_search {
+            for side in [-1, 1] {
+                let deltas =
+                    core::array::from_fn(|plane| best(&seen[plane]).map_or(0, |b| b.0) + side);
+                evaluate(deltas, &mut seen)?;
             }
         }
-        let [luma, u, v] = best.map(|(_, delta)| delta);
+        let off = self.plane_sse_all(self.recon);
+        let [luma, u, v]: [Option<i32>; 3] = core::array::from_fn(|plane| {
+            best(&seen[plane])
+                .filter(|&(_, sse)| sse < off[plane])
+                .map(|(delta, _)| delta)
+        });
         let chroma = |delta: Option<i32>| luma.and(delta);
         let planes = [luma, luma, chroma(u), chroma(v)];
         Ok(FrameFilterParams {
@@ -739,17 +777,30 @@ fn plane_sse(
     let right = left.saturating_add(width).min(size.width());
     let bottom = top.saturating_add(height).min(size.height());
     let stride = recon.stride_samples();
-    let mut sum = 0u64;
-    for row in top..bottom {
-        let coded = recon
-            .samples()
-            .get(row * stride + left..row * stride + right);
-        let original = source.get(row * size.width() + left..row * size.width() + right);
-        for (&coded, &original) in coded.unwrap_or(&[]).iter().zip(original.unwrap_or(&[])) {
-            sum += u64::from(coded.abs_diff(original)).pow(2);
-        }
+    let kernels = kernels();
+    (top..bottom)
+        .map(|row| {
+            let coded = recon
+                .samples()
+                .get(row * stride + left..row * stride + right);
+            let original = source.get(row * size.width() + left..row * size.width() + right);
+            kernels.sse_row(coded.unwrap_or(&[]), original.unwrap_or(&[]))
+        })
+        .sum()
+}
+
+/// The integer offset nearest the vertex of the parabola through the SSE
+/// `(l, m, r)` at offsets `-step`, `0` and `step`; when the points are not
+/// convex, the lower side stepped out once more.
+fn parabola_vertex(step: i32, [l, m, r]: [u64; 3]) -> i32 {
+    let (l, m, r) = (i128::from(l), i128::from(m), i128::from(r));
+    let curvature = l + r - 2 * m;
+    if curvature <= 0 {
+        return -2 * step * (r - l).signum() as i32;
     }
-    sum
+    let (num, den) = (i128::from(step) * (l - r), 2 * curvature);
+    let rounded = (2 * num + num.signum() * den) / (2 * den);
+    rounded.clamp(-i128::from(2 * step), i128::from(2 * step)) as i32
 }
 
 fn cdef_sets(sets: &[CdefStrengthSet]) -> Result<CdefStrengthSets> {
