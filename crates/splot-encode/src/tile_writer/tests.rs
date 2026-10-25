@@ -15,8 +15,8 @@ use std::collections::HashSet;
 use splot_core::headers::frame::TxMode;
 use splot_core::tables::conversion::TX_WIDTH;
 use splot_decode::encoder_syntax::{
-    ChromaMode, IST_SETS, IntraMode, IntraModes, IntraTileSyntax, Ist, LeafBlock, MAX_CFL_ALPHA,
-    Mrl, PartitionNode, TX_PARTITIONS, TransformBlock, coefficient_scan,
+    ChromaMode, Dip, IST_SETS, IntraMode, IntraModes, IntraTileSyntax, Ist, LeafBlock,
+    MAX_CFL_ALPHA, Mrl, PartitionNode, TX_PARTITIONS, TransformBlock, coefficient_scan,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -399,6 +399,8 @@ struct ModePicker {
     mhccp: bool,
     fsc: bool,
     coded_fsc: bool,
+    dip: bool,
+    coded_dip: HashSet<Dip>,
     coded_mrl: HashSet<Mrl>,
 }
 
@@ -415,11 +417,19 @@ impl ModePicker {
             mhccp: false,
             fsc: false,
             coded_fsc: false,
+            dip: false,
+            coded_dip: HashSet::new(),
             coded_mrl: HashSet::new(),
         }
     }
 
-    fn pick(&mut self, cfl_allowed: bool, mhccp_allowed: bool, fsc_allowed: bool) -> IntraModes {
+    fn pick(
+        &mut self,
+        cfl_allowed: bool,
+        mhccp_allowed: bool,
+        fsc_allowed: bool,
+        dip_modes: u8,
+    ) -> IntraModes {
         let (y_mode, angle_delta) = self.luma[self.next % self.luma.len()];
         let uv = self.next % (INTRA_MODES.len() + 2);
         self.next += 1;
@@ -461,12 +471,30 @@ impl ModePicker {
         }
         let fsc = self.fsc && fsc_allowed && self.rng.below(2) == 0;
         self.coded_fsc |= fsc;
+        if dip_modes > 0 && self.rng.below(2) == 0 {
+            let dip = Dip {
+                mode: self.rng.below(u64::from(dip_modes)) as u8,
+                transpose: self.rng.below(2) == 0,
+            };
+            self.coded_dip.insert(dip);
+            let uv_mode = match uv_mode {
+                ChromaMode::Intra(_) => ChromaMode::Intra(IntraMode::Dc),
+                cfl => cfl,
+            };
+            return IntraModes {
+                uv_mode,
+                fsc,
+                dip: Some(dip),
+                ..IntraModes::DC
+            };
+        }
         IntraModes {
             y_mode,
             angle_delta,
             uv_mode,
             mrl,
             fsc,
+            dip: None,
         }
     }
 }
@@ -497,10 +525,17 @@ fn random_tree(
     if partition == Partition::None {
         let leaf = syntax.leaf(node).unwrap();
         let cfl_allowed = syntax.cfl_allowed(&leaf);
+        let dc = IntraModes::DC;
+        let dip_modes = if modes.dip && syntax.dip_allowed(&leaf, dc) {
+            syntax.dip_modes().unwrap()
+        } else {
+            0
+        };
         let planned = modes.pick(
             cfl_allowed,
             syntax.mhccp_allowed(&leaf),
             syntax.fsc_allowed(&leaf),
+            dip_modes,
         );
         return PartitionTree::Leaf(coder.leaf_choice(syntax, &leaf, planned).unwrap());
     }
@@ -550,6 +585,7 @@ fn encode_case(
     modes.mrl = case.tools.mrls;
     modes.mhccp = case.tools.mhccp;
     modes.fsc = case.tools.fsc || case.tools.idtx_intra;
+    modes.dip = case.tools.dip;
     let mut coder = RandomLevels {
         rng: Rng(seed.rotate_left(17) | 1),
         max_level: case.max_level,
@@ -628,6 +664,25 @@ fn every_intra_mode_round_trips() {
             assert_eq!(chroma.len(), 15, "{bit_depth:?} {sb_size:?}");
         }
     }
+}
+
+/// Random DIP modes and transposes of `DC_PRED` leaves decode to the encoder
+/// recon: the facade writes `use_dip`, `dip_transpose` and `dip_mode`, and
+/// predicts with the decoder's DIP.
+#[test]
+fn every_dip_mode_round_trips() {
+    let mut dips = HashSet::new();
+    for (seed, bit_depth) in [BitDepthIdc::Eight, BitDepthIdc::Ten, BitDepthIdc::Eight]
+        .into_iter()
+        .enumerate()
+    {
+        let mut case = Case::new(200, 136, bit_depth, SuperblockSize::Block64x64);
+        case.tools.dip = true;
+        let (_, modes, _) =
+            assert_round_trip_modes(case, 0xd19 + seed as u64, TxCoverage::default());
+        dips.extend(modes.coded_dip);
+    }
+    assert!(dips.len() >= 8, "{dips:?}");
 }
 
 /// Random FSC leaves decode to the encoder recon with IDTX-only and FSC
@@ -1065,6 +1120,9 @@ fn avm_decodes_random_key_frames_like_splot() {
         Case::new(200, 136, BitDepthIdc::Ten, SuperblockSize::Block64x64).with_tx_search();
     fsc.tools.fsc = true;
     cases.push(fsc);
+    let mut dip = Case::new(200, 136, BitDepthIdc::Ten, SuperblockSize::Block128x128);
+    dip.tools.dip = true;
+    cases.push(dip);
     let mut mhccp = Case::new(200, 136, BitDepthIdc::Eight, SuperblockSize::Block64x64);
     mhccp.tools.mhccp = true;
     cases.push(mhccp);
