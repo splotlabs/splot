@@ -154,23 +154,43 @@ impl GdfState {
         frontier: &DecodeBlockFrontier,
         tile_offset: ByteOffset,
     ) -> Result<()> {
-        if !self.active || frontier.is_chroma_part() {
+        let Some((unit_row, unit_col)) = self.unit_for(frontier) else {
             return Ok(());
-        }
-        if !frontier.r.is_multiple_of(self.sb_size4) || !frontier.c.is_multiple_of(self.sb_size4) {
-            return Ok(());
-        }
-        let sb_row = frontier.r / self.sb_size4;
-        let sb_col = frontier.c / self.sb_size4;
-        if !sb_row.is_multiple_of(self.sb_per_gdf) || !sb_col.is_multiple_of(self.sb_per_gdf) {
-            return Ok(());
-        }
-        let unit_row = sb_row / self.sb_per_gdf;
-        let unit_col = sb_col / self.sb_per_gdf;
+        };
         let index = self.index(unit_row, unit_col).ok_or_else(gdf_state_error)?;
         self.values[index] =
             read_use_gdf(work_unit.cdf_mut().tile_cdfs_mut(), symbols, tile_offset)?;
         Ok(())
+    }
+
+    /// The `(row, col)` of the GDF unit whose `use_gdf` the block at
+    /// `frontier` codes (§ 5.20.10.3), if any.
+    pub(crate) fn unit_for(&self, frontier: &DecodeBlockFrontier) -> Option<(usize, usize)> {
+        if !self.active
+            || frontier.is_chroma_part()
+            || !frontier.r.is_multiple_of(self.sb_size4)
+            || !frontier.c.is_multiple_of(self.sb_size4)
+        {
+            return None;
+        }
+        let sb_row = frontier.r / self.sb_size4;
+        let sb_col = frontier.c / self.sb_size4;
+        if !sb_row.is_multiple_of(self.sb_per_gdf) || !sb_col.is_multiple_of(self.sb_per_gdf) {
+            return None;
+        }
+        Some((sb_row / self.sb_per_gdf, sb_col / self.sb_per_gdf))
+    }
+
+    /// The units of this tile state in raster order, which is their coding order.
+    pub(crate) fn units(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        (self.row_start..self.row_start + self.grid_rows).flat_map(move |row| {
+            (self.col_start..self.col_start + self.grid_cols).map(move |col| (row, col))
+        })
+    }
+
+    /// `GdfBlkSize`, `0` when no block codes `use_gdf`.
+    pub(crate) const fn block_size(&self) -> usize {
+        self.block_size
     }
 
     fn index(&self, row: usize, col: usize) -> Option<usize> {

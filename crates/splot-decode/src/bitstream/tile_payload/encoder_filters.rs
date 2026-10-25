@@ -14,6 +14,8 @@
 //! - [`CcsoBlockMap`] is the tile's `ccso_blk` state of § 5.20.10.2, and
 //!   [`CcsoGrid`] the frame's CCSO unit grid.
 //! - [`apply_loop_filters`] runs the decoder's own § 7.2 filter chain on a frame.
+//! - [`GdfBlockMap`](super::GdfBlockMap) is the tile's `use_gdf` state of
+//!   § 5.20.10.3, and [`GdfGrid`](super::GdfGrid) the frame's GDF unit grid.
 //! - [`merge_tiles`] puts the tiles of a frame, each coded by its own facade,
 //!   into one reconstruction.
 
@@ -32,7 +34,7 @@ use super::super::partition_traversal::{
 };
 use super::super::tile_frontier::minimal_partition_frame_facts;
 use super::{
-    EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock, PartitionNode, Result,
+    EncoderSyntaxError, FrameStart, GdfFlags, IntraTileSyntax, LeafBlock, PartitionNode, Result,
     TransformBlock, rule, tile_count, tile_ranges, tx_log2,
 };
 use crate::filters::ccso::{CCSO_OFFSET, CcsoUnitGrid, ccso_sample_offsets};
@@ -646,7 +648,8 @@ impl LrLayout {
 /// `cdef_indices` holds `cdef_idx` per 64x64 unit in raster order (see
 /// [`cdef_unit_grid`]), or is empty when no unit codes one; `ccso_blocks[p]`
 /// holds `ccso_blk` of plane `p` per [`CcsoGrid`] unit in raster order, or is
-/// empty when every unit is off; `lr_on` lists the restoring units and their type.
+/// empty when every unit is off; `gdf` holds the `use_gdf` flags of a frame
+/// that enables GDF; `lr_on` lists the restoring units and their type.
 ///
 /// # Errors
 /// Returns [`EncoderSyntaxError::Rule`] when a filter stage rejects its inputs.
@@ -655,7 +658,7 @@ pub fn apply_loop_filters(
     core: &FrameHeaderCore,
     recorder: &FilterRecorder,
     frame: &DecodedFrame<u16>,
-    (cdef_indices, ccso_blocks): (&[Option<usize>], &[Vec<u8>]),
+    (cdef_indices, ccso_blocks, gdf): (&[Option<usize>], &[Vec<u8>], Option<GdfFlags<'_>>),
     lr_on: &[(LrUnit, LrUnitType)],
 ) -> Result<DecodedFrame<u16>> {
     let layouts = LrLayout::tiles(seq, core)?;
@@ -696,6 +699,11 @@ pub fn apply_loop_filters(
     sink.set_cdef_grid(Some(cdef_grid));
     sink.set_ccso_grid(ccso_unit_grid(seq, core, ccso_blocks)?.map(Arc::new));
     sink.set_cfl_ds_filter_index(seq.intra.as_ref().map_or(0, |i| i.cfl_ds_filter_index));
+    if let Some(gdf) = gdf {
+        let (grid, reference) = gdf.decoder_inputs(seq, core)?;
+        sink.set_gdf_grid(grid);
+        sink.set_gdf_reference_context(reference);
+    }
     let (filtered, _) = sink
         .into_filtered_frame(
             Arc::new(core.clone()),

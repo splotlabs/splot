@@ -264,6 +264,7 @@ fn filter_params_reach_the_parsed_header() {
                 lr_chroma_unit_size: None,
                 lr_chroma_wiener_ns: [None; 2],
                 ccso: [ccso_plane(), CcsoPlaneParams::default(), ccso_plane()],
+                gdf: None,
             };
             let core = build_key_frame_header(
                 &view,
@@ -469,6 +470,53 @@ fn chroma_wiener_ns_banks_reach_the_parsed_header() {
         assert_eq!(lr.planes[plane].frame_filter_bank, Some(bank));
     }
     assert_eq!(reparse_core(&core, &view), core);
+}
+
+/// GDF parses back on and off; `gdf_per_block` is coded only when the frame
+/// spans more than one GDF block, including the 64-sample blocks of a
+/// two-tile 64x64-superblock frame (§ 5.18.7.9).
+#[test]
+fn gdf_params_reach_the_parsed_header() {
+    let cases = [
+        (64, 64, SuperblockSize::Block64x64, 0, Some(false)),
+        (200, 136, SuperblockSize::Block128x128, 0, Some(true)),
+        (128, 64, SuperblockSize::Block64x64, 1, Some(true)),
+    ];
+    for (width, height, sb, cols_log2, per_block) in cases {
+        let mut p = params(width, height, BitDepthIdc::Eight, sb);
+        p.tools.gdf = true;
+        let seq = build_encoder_sequence_header(&p).unwrap();
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let tiles = UniformTiles {
+            cols_log2,
+            ..UniformTiles::default()
+        };
+        for gdf in [
+            None,
+            Some(FrameGdf {
+                qc_idx: 2,
+                scale_idx: 1,
+            }),
+        ] {
+            let filters = FrameFilterParams {
+                gdf,
+                ..FrameFilterParams::default()
+            };
+            let core =
+                build_key_frame_header(&view, 120, 0, &filters, KeyFrameTxParams::default(), tiles)
+                    .unwrap();
+            let parsed = core.gdf_params.unwrap();
+            assert_eq!(parsed.gdf_frame_enable, gdf.is_some());
+            if gdf.is_some() {
+                assert_eq!(parsed.gdf_per_block, per_block, "{width}x{height}");
+                assert_eq!(
+                    (parsed.gdf_pic_qc_idx, parsed.gdf_pic_scale_idx),
+                    (Some(2), Some(1))
+                );
+            }
+            assert_eq!(reparse_core(&core, &view), core);
+        }
+    }
 }
 
 #[test]

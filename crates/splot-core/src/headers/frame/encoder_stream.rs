@@ -14,8 +14,8 @@ use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CcsoPlaneParams, CdefParams, CdefStrengthSets, CoreSeqView, DeblockingFilterParams,
     FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView, FrameRestorationType,
-    LrGeometry, LrParams, LrPlaneParams, TxMode, WienerNsFrameFilterBank,
-    encode_temporal_delimiter_obu, init_core_from_prefix, parse_core_body,
+    GdfGeometry, GdfParams, LrGeometry, LrParams, LrPlaneParams, TxMode, WienerNsFrameFilterBank,
+    encode_temporal_delimiter_obu, gdf_per_block_is_coded, init_core_from_prefix, parse_core_body,
     parse_frame_header_prefix,
 };
 use crate::headers::sequence::{
@@ -24,10 +24,11 @@ use crate::headers::sequence::{
 use crate::headers::tile_group::{TileGroupFraming, TileGroupStructure};
 use crate::obu::{ObuHeader, ParsedObu};
 use crate::span::ByteOffset;
+use crate::tile::TileSpacing;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, ObuType, TemporalLayerId};
 use crate::write::{
     BitWriter, LrReferenceFilters, WriteError, write_annexb_obu, write_ccso_plane_params,
-    write_cdef_params, write_deblocking_filter_params, write_lr_params_for_inter,
+    write_cdef_params, write_deblocking_filter_params, write_gdf_params, write_lr_params_for_inter,
     write_obu_payload, write_tile_group_obu,
 };
 
@@ -132,7 +133,7 @@ pub struct EncoderStreamParams {
 
 /// Frame-level loop-filter choices of [`build_key_frame_header`].
 ///
-/// `Default` turns every filter off. GDF is always off.
+/// `Default` turns every filter off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameFilterParams {
     /// `apply_deblocking_filter[0..4]` (§ 5.18.5.2). Flags 2 and 3 need flag 0 or 1.
@@ -162,6 +163,19 @@ pub struct FrameFilterParams {
     /// `ccso_params()` of each plane (§ 5.18.7.12) without reuse; the frame
     /// codes `ccso_frame_flag = 1` when a plane sets `ccso_planes`.
     pub ccso: [CcsoPlaneParams; 3],
+    /// `gdf_params()` (§ 5.18.7.9) of a frame with `gdf_frame_enable = 1`;
+    /// `None` codes `gdf_frame_enable = 0` when the sequence enables GDF.
+    pub gdf: Option<FrameGdf>,
+}
+
+/// A frame coded with `gdf_frame_enable = 1` (§ 5.18.7.9). It codes
+/// `gdf_per_block = 1` whenever the bit is coded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameGdf {
+    /// `gdf_pic_qc_idx`, `0..=3`.
+    pub qc_idx: u8,
+    /// `gdf_pic_scale_idx`, `0..=3`.
+    pub scale_idx: u8,
 }
 
 /// A plane coded with `frame_filters_on = 1` (§ 5.18.7.11).
@@ -572,7 +586,7 @@ pub(super) fn write_quant_and_filters(
             limit: 1 << q_bits,
         });
     }
-    write_uniform_tile_info(w, seq, tiles)?;
+    let spacing = write_uniform_tile_info(w, seq, tiles)?;
     w.write_bits(base_q_idx, q_bits)?;
     w.write_flag(false)?; // segmentation_enabled
     w.write_flag(false)?; // using_qmatrix
@@ -584,7 +598,27 @@ pub(super) fn write_quant_and_filters(
     if seq.quant.enable_parity_hiding && !allow_tcq {
         w.write_flag(true)?; // allow_parity_hiding
     }
-    write_filter_params(w, seq, filters, lr_refs)?;
+    let sb_shift = crate::tile::mi_width_log2(seq.tile.seq_sb_size);
+    let [col_starts, row_starts] = spacing.map(|axis| {
+        let starts: Vec<u32> = axis
+            .starts
+            .as_ref()
+            .iter()
+            .map(|&sb| sb << sb_shift)
+            .collect();
+        (starts, axis.count)
+    });
+    let mis = |frame: u32| 2 * frame.div_ceil(8);
+    let gdf = GdfGeometry {
+        sb_size: seq.tile.frame_sb_size(frame_is_intra),
+        mi_cols: mis(seq.max_frame_width),
+        mi_rows: mis(seq.max_frame_height),
+        tile_cols: col_starts.1,
+        tile_rows: row_starts.1,
+        mi_col_starts: &col_starts.0,
+        mi_row_starts: &row_starts.0,
+    };
+    write_filter_params(w, seq, filters, (lr_refs, gdf))?;
     if seq.ccso.enable_ccso {
         let planes = &filters.ccso[..usize::from(seq.quant.num_planes).min(3)];
         let on = planes.iter().any(|plane| plane.ccso_planes);
@@ -603,13 +637,13 @@ pub(super) fn write_quant_and_filters(
     Ok(())
 }
 
-/// § 5.18.5.2 `deblocking_filter_params()`, § 5.18.7.9 `gdf_params()` (off),
+/// § 5.18.5.2 `deblocking_filter_params()`, § 5.18.7.9 `gdf_params()`,
 /// § 5.18.7.10 `cdef_params()`, and § 5.18.7.11 `lr_params()` of `filters`.
 fn write_filter_params(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     filters: &FrameFilterParams,
-    lr_refs: LrReferenceFilters<'_>,
+    (lr_refs, gdf_geometry): (LrReferenceFilters<'_>, GdfGeometry<'_>),
 ) -> Result<(), WriteError> {
     let num_planes = seq.quant.num_planes;
     let delta = filters.deblocking_delta_q;
@@ -619,9 +653,19 @@ fn write_filter_params(
     let deblocking = DeblockingFilterParams::new(filters.deblocking, present, delta);
     let df_par_bits_minus_2 = seq.filter.df_par_bits_minus_2;
     write_deblocking_filter_params(w, &deblocking, false, num_planes, df_par_bits_minus_2, None)?;
-    if seq.filter.enable_gdf {
-        w.write_flag(false)?; // gdf_frame_enable
-    }
+    let off = GdfParams {
+        gdf_frame_enable: false,
+        gdf_per_block: None,
+        gdf_pic_qc_idx: None,
+        gdf_pic_scale_idx: None,
+    };
+    let gdf = filters.gdf.map_or(off, |gdf| GdfParams {
+        gdf_frame_enable: true,
+        gdf_per_block: Some(gdf_per_block_is_coded(seq.filter, gdf_geometry)),
+        gdf_pic_qc_idx: Some(gdf.qc_idx),
+        gdf_pic_scale_idx: Some(gdf.scale_idx),
+    });
+    write_gdf_params(w, &gdf, false, &seq.filter, gdf_geometry)?;
     let cdef_on = !filters.cdef_strengths.is_empty();
     let cdef = CdefParams {
         cdef_frame_enable: cdef_on,
@@ -705,10 +749,14 @@ fn write_uniform_tile_info(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     tiles: UniformTiles,
-) -> Result<(), WriteError> {
+) -> Result<[TileSpacing; 2], WriteError> {
     let sb_log2 = crate::tile::mi_width_log2(seq.tile.frame_sb_size(true));
     let mis = |frame: u32| 2 * frame.div_ceil(8);
-    let axis = |w: &mut BitWriter, log2: u8, mis: u32, max_tiles: u32| -> Result<u32, WriteError> {
+    let axis = |w: &mut BitWriter,
+                log2: u8,
+                mis: u32,
+                max_tiles: u32|
+     -> Result<TileSpacing, WriteError> {
         let max = crate::tile::tile_log2(1, mis.div_ceil(1 << sb_log2).min(max_tiles));
         let log2 = log2.min(max);
         for _ in 0..log2 {
@@ -717,7 +765,11 @@ fn write_uniform_tile_info(
         if log2 < max {
             w.write_flag(false)?;
         }
-        Ok(crate::tile::uniform_spacing(log2, mis, seq.tile.seq_sb_size).count)
+        Ok(crate::tile::uniform_spacing(
+            log2,
+            mis,
+            seq.tile.seq_sb_size,
+        ))
     };
     w.write_flag(true)?; // uniform_tile_spacing_flag
     let cols = axis(
@@ -732,9 +784,10 @@ fn write_uniform_tile_info(
         mis(seq.max_frame_height),
         crate::tile::MAX_TILE_ROWS,
     )?;
-    if cols > 1 || rows > 1 {
+    if cols.count > 1 || rows.count > 1 {
         if !seq.tile.enable_avg_cdf || seq.tile.avg_cdf_type == 0 {
-            let bits = crate::tile::tile_log2(1, cols) + crate::tile::tile_log2(1, rows);
+            let bits =
+                crate::tile::tile_log2(1, cols.count) + crate::tile::tile_log2(1, rows.count);
             w.write_bits(0, u32::from(bits))?; // context_update_tile_id
         }
         if !(1..=4).contains(&tiles.size_bytes) {
@@ -744,7 +797,7 @@ fn write_uniform_tile_info(
         }
         w.write_bits(u32::from(tiles.size_bytes) - 1, 2)?;
     }
-    Ok(())
+    Ok([cols, rows])
 }
 
 /// Serializes one Annex B temporal unit: a temporal delimiter, then `seq` when

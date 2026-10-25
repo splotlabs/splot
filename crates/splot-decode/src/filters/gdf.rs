@@ -468,7 +468,11 @@ pub(crate) fn apply_stripe<T: ReconSample>(
     })
 }
 
-fn gdf_stripe_row(core: &FrameHeaderCore, y: usize, luma_height: usize) -> Result<usize> {
+pub(crate) fn gdf_stripe_row(
+    core: &FrameHeaderCore,
+    y: usize,
+    luma_height: usize,
+) -> Result<usize> {
     let frame_end_y = luma_height.checked_sub(1).ok_or_else(gdf_state_error)?;
     let tile_end_y = core.tile_info.as_ref().map_or(Ok(frame_end_y), |tile| {
         tile_axis_bounds(&tile.mi_row_starts, y, luma_height).map(|(_, end)| end)

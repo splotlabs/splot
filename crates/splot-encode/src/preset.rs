@@ -137,8 +137,11 @@ pub struct PresetParams {
     pub mhccp: bool,
     /// The winning luma mode of an intra leaf gets one RD trial with
     /// `fsc_mode`; off disables `enable_fsc`. Off in every row: it pays only
-    /// on screen content, so it waits for a screen-content detector.
+    /// on screen content, whose preset rows turn it on.
     pub fsc: bool,
+    /// The first frame switches the sequence to the screen-content row of
+    /// its preset (FSC on) when it looks like screen content.
+    pub screen_detect: bool,
     /// The first frame picks the sequence's `cfl_ds_filter_index` by the
     /// down-sampled luma that best predicts its chroma; off codes `0`.
     pub cfl_filter: bool,
@@ -153,6 +156,11 @@ pub struct PresetParams {
     /// frame when one quadrant of its luma prediction residual holds more than
     /// `inter_tx_split / 64` of the energy; `0` codes `NONE` without a trial.
     pub inter_tx_split: u8,
+    /// GDF `(gdf_pic_qc_idx, gdf_pic_scale_idx)` pairs the filter search
+    /// tries per frame; `0` disables GDF in the sequence. All 16 in every
+    /// row: fewer pairs lost BD-rate, and each pair costs one filter-chain
+    /// run (paris -1.35% Y at p6, -1.28% Y at p10 for +3% CPU).
+    pub gdf_candidates: u8,
     /// The CDEF search also tries the frame with CDEF on skipped transform
     /// blocks (`cdef_on_skip_txfm_frame_enable`) and keeps the cheaper. Off
     /// in every row: paris p6 Y -0.04%, park_joy p6 Y +0.42%.
@@ -229,10 +237,12 @@ const fn row(
         cctx: false,
         mhccp: false,
         fsc: false,
+        screen_detect: true,
         cfl_filter: true,
         dip: false,
         large_inter: true,
         inter_tx_split: if tx_partition_search { 24 } else { 0 },
+        gdf_candidates: 16,
         cdef_on_skip: false,
     }
 }
@@ -247,6 +257,18 @@ pub const PRESETS: [PresetParams; 11] = with_columns(
     [2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 );
+
+/// [`PRESETS`] with the screen-content tools on, for a sequence whose first
+/// frame looks like screen content.
+pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
+    let mut rows = PRESETS;
+    let mut i = 0;
+    while i < rows.len() {
+        rows[i].fsc = true;
+        i += 1;
+    }
+    rows
+};
 
 /// `rows` with `ccso_candidates[i]`, `wiener_ns[i]`, `wiener_ns_chroma[i]`,
 /// `wiener_ns_classes[i]`, `mrl_trials[i]` and `ist_sets[i]` in row `i`.
@@ -408,6 +430,11 @@ impl Preset {
     pub const fn params(self) -> &'static PresetParams {
         &PRESETS[self.0 as usize]
     }
+
+    /// The row of [`SCREEN_PRESETS`] of this preset.
+    pub(crate) fn screen_params(self) -> &'static PresetParams {
+        &SCREEN_PRESETS[usize::from(self.0)]
+    }
 }
 
 impl Default for Preset {
@@ -469,9 +496,11 @@ mod tests {
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.mhccp <= slow.mhccp);
             assert!(fast.fsc <= slow.fsc);
+            assert!(fast.screen_detect <= slow.screen_detect);
             assert!(fast.cfl_filter <= slow.cfl_filter);
             assert!(fast.dip <= slow.dip);
             assert!(fast.large_inter <= slow.large_inter);
+            assert!(fast.gdf_candidates <= slow.gdf_candidates);
             assert!(fast.cdef_on_skip <= slow.cdef_on_skip);
             assert!(
                 fast.inter_tx_split == 0
