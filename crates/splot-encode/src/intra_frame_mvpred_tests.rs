@@ -94,7 +94,7 @@ fn temporal_candidates_reach_the_first_leaf_of_a_frame() {
             coder.encode_frame(&source, &plan, 110).unwrap();
         }
         let plan = plans.next().unwrap();
-        let tools_of = crate::gop::frame_tools(coder.preset, coder.tiles, 110);
+        let tools_of = crate::gop::frame_tools(&coder.preset, coder.tiles, 110);
         let core = plan
             .header(
                 &coder.view,
@@ -138,7 +138,7 @@ fn rollback_restores_the_reference_mv_bank() {
         )
         .unwrap();
     let plan = crate::gop::plan(1, config.keyint);
-    let tools = crate::gop::frame_tools(coder.preset, coder.tiles, 110);
+    let tools = crate::gop::frame_tools(&coder.preset, coder.tiles, 110);
     let filters = FrameFilterParams::default();
     let core = plan
         .header(&coder.view, &coder.references, 110, &filters, tools)
@@ -150,7 +150,7 @@ fn rollback_restores_the_reference_mv_bank() {
     let padded = PaddedSource::new(&source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
     let lambda = Lambda::from_qindex(110, config.bit_depth).unwrap();
     let mut residual =
-        SourceResidualCoder::new(&padded, 110, config.bit_depth, coder.preset, lambda);
+        SourceResidualCoder::new(&padded, 110, config.bit_depth, &coder.preset, lambda);
     let (with_trial, without, trial) = writer
         .search_superblock(|syntax, root| {
             let sb4 = syntax.superblock_size4();
