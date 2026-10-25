@@ -436,10 +436,12 @@ impl EncoderInterTile {
         Ok(mvs)
     }
 
-    /// Adds `residual` to the predicted samples of `frontier` in `workspace`.
+    /// Adds `residual` to the predicted samples of `frontier` in `workspace`;
+    /// an IntraBC block (`use_intrabc`) transforms without DDT.
     pub(crate) fn add_residual(
         &mut self,
         residual: &EncoderInterResidual,
+        use_intrabc: bool,
         workspace: &mut CurrentFrameWorkspace<u16>,
     ) -> Result<()> {
         super::super::add_inter_residual_to_workspace(
@@ -453,7 +455,7 @@ impl EncoderInterTile {
             self.sequence
                 .transform_quant_entropy
                 .is_some_and(|tq| tq.enable_inter_ddt),
-            false,
+            use_intrabc,
             self.bit_depth,
         )
     }

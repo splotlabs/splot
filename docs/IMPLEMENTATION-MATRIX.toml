@@ -5718,7 +5718,7 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_luma_blocks_code_ist_as_the_decoder_reads_it", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_ist_and_ddt_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_ist_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot"]
+tests = ["crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_luma_blocks_code_ist_as_the_decoder_reads_it", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_ist_and_ddt_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_ist_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::ddt_follows_the_planned_leaf", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot"]
 commands = ["cargo test -p splot-encode inter_ist --locked", "SPLOT_AVM_DECODER=<avmdec> cargo test -p splot-encode avm_decodes_inter_frames -- --ignored"]
 fixtures = []
 diagnostics = []

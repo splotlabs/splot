@@ -8,7 +8,7 @@ use super::large_inter::{in_first_inter_frame, preset6};
 use super::mvpred::top_left;
 use super::*;
 use crate::preset::PresetParams;
-use splot_decode::encoder_syntax::Ist;
+use splot_decode::encoder_syntax::{IntraModes, Ist};
 
 /// Preset 6 with `inter_ist` and `inter_ddt`.
 fn with_tools(inter_ist: bool, inter_ddt: bool) -> &'static PresetParams {
@@ -96,4 +96,30 @@ fn inter_ist_streams_match_on_any_thread_count() {
     for threads in [2, 8] {
         assert!(stream(threads) == one, "{threads} threads");
     }
+}
+
+/// DDT follows the planned leaf like the decoder's `useDdt`: an inter leaf of
+/// a DDT sequence transforms with DDT, an intra leaf does not, and an IntraBC
+/// block never does (the planned inter leaf carries `use_intrabc` into both
+/// `uses_ddt` and the residual reconstruction).
+#[test]
+fn ddt_follows_the_planned_leaf() {
+    let config = config(136, 136, BitDepth::Eight, 6, 110);
+    in_first_inter_frame(&config, with_tools(false, true), |syntax, root, _| {
+        let leaf = syntax.leaf(top_left(syntax, root, 32))?;
+        let prediction = InterPrediction::Single(InterModes {
+            ref_frame: 0,
+            mode: InterMode::Global,
+            drl: 0,
+            mv: MotionVector::default(),
+            filter: splot_recon::InterpolationFilter::EightTap,
+            precision: None,
+            amvd: false,
+        });
+        syntax.plan_inter_leaf(&leaf, prediction)?;
+        assert!(syntax.uses_ddt());
+        syntax.plan_leaf(&leaf, IntraModes::DC)?;
+        assert!(!syntax.uses_ddt());
+        Ok(())
+    });
 }

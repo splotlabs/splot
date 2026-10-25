@@ -275,7 +275,6 @@ impl IntraTileSyntax {
         if !self.tools.enable_intra_ist
             || tx.plane != 0
             || eob <= 1
-            || self.leaf_is_inter()
             || !matches!(tx.tx_type, TxType::DctDct | TxType::AdstAdst)
             || self.planned_luma_context()?.y_mode().is_paeth()
         {
