@@ -161,6 +161,10 @@ pub struct PresetParams {
     /// row: fewer pairs lost BD-rate, and each pair costs one filter-chain
     /// run (paris -1.35% Y at p6, -1.28% Y at p10 for +3% CPU).
     pub gdf_candidates: u8,
+    /// The CDEF search also tries the frame with CDEF on skipped transform
+    /// blocks (`cdef_on_skip_txfm_frame_enable`) and keeps the cheaper. Off
+    /// in every row: paris p6 Y -0.04%, park_joy p6 Y +0.42%.
+    pub cdef_on_skip: bool,
     /// `enable_inter_ddt`: inter ADST and FDST sides of length 8 or 16
     /// transform with the DDT kernels. Off in every row (2026-10-25): it
     /// measured BD-rate neutral at p6 (park_joy -0.00%, niklas +0.03%).
@@ -436,6 +440,7 @@ preset_table! {
         wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
         gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,    16],
+        cdef_on_skip:          [false, false, false, false, false, false, false, false, false, false, false],
     }
     screen_content {
         fsc:                   [false, false, false, false, false, false, false, false, false, false, false],
@@ -567,6 +572,7 @@ mod tests {
             assert!(fast.dip <= slow.dip);
             assert!(fast.large_inter <= slow.large_inter);
             assert!(fast.gdf_candidates <= slow.gdf_candidates);
+            assert!(fast.cdef_on_skip <= slow.cdef_on_skip);
             assert!(fast.inter_ddt <= slow.inter_ddt);
             assert!(fast.inter_ist <= slow.inter_ist);
             assert!(
@@ -629,7 +635,12 @@ mod tests {
         let mut params = PRESETS[6];
         let unknown = PresetError::UnknownField { name: "gdf".into() };
         assert_eq!(params.set("gdf", "4"), Err(unknown.clone()));
-        assert!(unknown.to_string().contains("gdf_candidates, fsc"));
+        let message = unknown.to_string();
+        assert!(
+            PresetParams::FIELDS
+                .iter()
+                .all(|field| message.contains(field))
+        );
         for (field, value) in [
             ("gdf_candidates", "256"),
             ("gdf_candidates", "-1"),
