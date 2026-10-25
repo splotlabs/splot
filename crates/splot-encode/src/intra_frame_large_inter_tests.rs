@@ -17,16 +17,18 @@ pub(super) fn preset6(large_inter: bool) -> &'static PresetParams {
 }
 
 /// Runs `test` on the first superblock of the first inter frame of a
-/// panning stream at `config`, with the residual coder of that frame.
+/// panning stream at `config` and `preset`, with the residual coder of that
+/// frame.
 pub(super) fn in_first_inter_frame<R>(
     config: &Config,
+    preset: &'static PresetParams,
     test: impl FnOnce(
         &mut IntraTileSyntax,
         PartitionNode,
         &mut SourceResidualCoder,
     ) -> core::result::Result<R, TileWriterError>,
 ) -> R {
-    let mut coder = IntraFrameCoder::with_preset(config, preset6(true)).unwrap();
+    let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();
     let key = crate::gop::plan(0, config.keyint);
     coder
         .encode_frame(&panning_frame(config, 0), &key, 110)
@@ -107,7 +109,7 @@ fn a_128x128_inter_leaf_plans_the_chunked_residual() {
     for (chroma, top, bottom) in cases {
         let mut config = config(136, 136, BitDepth::Eight, 6, 110);
         config.chroma = chroma;
-        let blocks = in_first_inter_frame(&config, |syntax, root, _| {
+        let blocks = in_first_inter_frame(&config, preset6(true), |syntax, root, _| {
             let leaf = syntax.leaf(root)?;
             assert_eq!(leaf.dimensions()?, (128, 128));
             assert!(syntax.inter_allowed(&leaf));
@@ -132,30 +134,31 @@ fn a_128x128_inter_leaf_plans_the_chunked_residual() {
 #[test]
 fn rollback_restores_a_128x128_inter_leaf() {
     let config = config(200, 136, BitDepth::Ten, 6, 110);
-    let (with_trial, without) = in_first_inter_frame(&config, |syntax, root, residual| {
-        let leaf = syntax.leaf(root)?;
-        let next = syntax.superblock_root(0, syntax.superblock_size4());
-        let target = syntax.leaf(super::mvpred::top_left(syntax, next, 8))?;
-        let start = syntax.snapshot(root)?;
-        let mut code = |syntax: &mut IntraTileSyntax, row: i32, col: i32| {
-            let mut sink = RateSink::adapting();
-            let choice = LeafChoice::inter(single(InterMode::New, MotionVector { row, col }));
-            let blocks =
-                Walk::trial(syntax, &mut sink).write_leaf(&leaf, choice, residual, 0..3)?;
-            let recon = blocks
-                .iter()
-                .map(|tx| syntax.reconstruction(tx))
-                .collect::<core::result::Result<Vec<_>, _>>()?;
-            let stack = syntax.single_mvs(&target, 0)?.stack;
-            Ok::<_, TileWriterError>((sink.bits, recon, stack))
-        };
-        let without = code(syntax, 16, -24)?;
-        syntax.restore(&start)?;
-        let trial = code(syntax, -40, 8)?;
-        assert_ne!(trial.0, without.0, "the trial codes another residual");
-        syntax.restore(&start)?;
-        Ok((code(syntax, 16, -24)?, without))
-    });
+    let (with_trial, without) =
+        in_first_inter_frame(&config, preset6(true), |syntax, root, residual| {
+            let leaf = syntax.leaf(root)?;
+            let next = syntax.superblock_root(0, syntax.superblock_size4());
+            let target = syntax.leaf(super::mvpred::top_left(syntax, next, 8))?;
+            let start = syntax.snapshot(root)?;
+            let mut code = |syntax: &mut IntraTileSyntax, row: i32, col: i32| {
+                let mut sink = RateSink::adapting();
+                let choice = LeafChoice::inter(single(InterMode::New, MotionVector { row, col }));
+                let blocks =
+                    Walk::trial(syntax, &mut sink).write_leaf(&leaf, choice, residual, 0..3)?;
+                let recon = blocks
+                    .iter()
+                    .map(|tx| syntax.reconstruction(tx))
+                    .collect::<core::result::Result<Vec<_>, _>>()?;
+                let stack = syntax.single_mvs(&target, 0)?.stack;
+                Ok::<_, TileWriterError>((sink.bits, recon, stack))
+            };
+            let without = code(syntax, 16, -24)?;
+            syntax.restore(&start)?;
+            let trial = code(syntax, -40, 8)?;
+            assert_ne!(trial.0, without.0, "the trial codes another residual");
+            syntax.restore(&start)?;
+            Ok((code(syntax, 16, -24)?, without))
+        });
     assert_eq!(with_trial, without);
 }
 

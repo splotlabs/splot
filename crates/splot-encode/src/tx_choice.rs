@@ -53,7 +53,7 @@ pub(crate) fn reconstruct(
         qindex,
         [PlaneId::Y, PlaneId::U, PlaneId::V][tx.plane.min(2)],
         (log2_w, log2_h),
-        (tx.tx_type, tcq),
+        (tx.tx_type, tcq, syntax.uses_ddt()),
         bit_depth,
     )?;
     let mut dequant = vec![0; 1 << (adj_w + adj_h)];

@@ -1279,6 +1279,8 @@ mod carry;
 mod ccso;
 #[path = "intra_frame_gdf_tests.rs"]
 mod gdf;
+#[path = "intra_frame_inter_ist_tests.rs"]
+mod inter_ist;
 #[path = "intra_frame_inter_tx_tests.rs"]
 mod inter_tx;
 #[path = "intra_tools_tests.rs"]

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Speed presets. Each preset is one row of [`PRESETS`]; encoder stages read the
-//! row's fields instead of comparing preset numbers.
+//! Speed presets. Each preset is one column of [`PRESETS`]; encoder stages read the
+//! preset's fields instead of comparing preset numbers.
 
 use crate::error::{Error, Result};
 
@@ -140,8 +140,13 @@ pub struct PresetParams {
     /// on screen content, whose preset rows turn it on.
     pub fsc: bool,
     /// The first frame switches the sequence to the screen-content row of
-    /// its preset (FSC on) when it looks like screen content.
+    /// its preset (FSC and palette on) when it looks like screen content.
     pub screen_detect: bool,
+    /// The winning luma mode of an intra leaf gets RD trials against
+    /// `DC_PRED` palettes of up to 8, 4 and 2 of the leaf's most frequent
+    /// luma values; off disables `allow_screen_content_tools`. Off in every
+    /// row: it pays only on screen content, whose preset rows turn it on.
+    pub palette: bool,
     /// The first frame picks the sequence's `cfl_ds_filter_index` by the
     /// down-sampled luma that best predicts its chroma; off codes `0`.
     pub cfl_filter: bool,
@@ -161,6 +166,16 @@ pub struct PresetParams {
     /// row: fewer pairs lost BD-rate, and each pair costs one filter-chain
     /// run (paris -1.35% Y at p6, -1.28% Y at p10 for +3% CPU).
     pub gdf_candidates: u8,
+    /// `enable_inter_ddt`: inter ADST and FDST sides of length 8 or 16
+    /// transform with the DDT kernels. Off in every row (2026-10-25): it
+    /// measured BD-rate neutral at p6 (park_joy -0.00%, niklas +0.03%).
+    pub inter_ddt: bool,
+    /// `enable_inter_ist`: in a leaf's final trial, a `DCT_DCT` inter luma
+    /// block of at least 16x16 ranks the three secondary kernels by kept
+    /// energy and gives the best one an RD trial. Off in every row
+    /// (2026-10-25): every such block with `eob > 3` then pays a
+    /// `sec_tx_type` symbol, and p6 measured park_joy -0.06%, paris +0.34%.
+    pub inter_ist: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -186,72 +201,92 @@ impl TcqFrames {
     }
 }
 
-const fn row(
-    blocks: (u8, u8),
-    intra_modes: u8,
-    partition_early_exit: bool,
-    (rdoq, full_trials): (bool, bool),
-    (tx_type_depth, tx_partition_search): (u8, bool),
-    motion: (u16, u8, u16, u8, u8),
-    (loop_filter_search, mini_gop_size, lookahead_frames, compound_candidates): (u8, u8, u8, u8),
-) -> PresetParams {
-    PresetParams {
-        min_block_log2: blocks.0,
-        max_block_log2: blocks.1,
-        intra_modes,
-        partition_early_exit,
-        rdoq,
-        rdoq_every_type: rdoq,
-        parity_hiding: false,
-        tcq: TcqFrames::Base,
-        tcq_search_trellis: true,
-        tcq_type_trellis: full_trials,
-        full_trials,
-        tx_type_depth,
-        tx_partition_search,
-        motion_range: motion.0,
-        subpel_depth: motion.1,
-        eighth_pel_max_qindex: motion.2,
-        loop_filter_search,
-        mini_gop_size,
-        lookahead_frames,
-        compound_candidates,
-        cdf_carry: true,
-        mv_prediction: true,
-        drl_bits: motion.3,
-        interp_filter_search: motion.4,
-        mvd_tools: [false; 3],
-        ext_partitions: 0,
-        ext_three_way_margin: 0,
-        ext_four_way_margin: 0,
-        ccso_candidates: 0,
-        wiener_ns: 0,
-        wiener_ns_chroma: 0,
-        wiener_ns_classes: 1,
-        mrl_trials: 0,
-        ist_sets: 0,
-        cctx: false,
-        mhccp: false,
-        fsc: false,
-        screen_detect: true,
-        cfl_filter: true,
-        dip: false,
-        large_inter: true,
-        inter_tx_split: if tx_partition_search { 24 } else { 0 },
-        gdf_candidates: 16,
-    }
+/// Builds [`PRESETS`] from a `preset: [p0, ..., p10]` header and groups of
+/// `field: [one value per preset]` lines, one line per [`PresetParams`] field;
+/// a missing, repeated or short line does not compile.
+macro_rules! preset_table {
+    (
+        preset: [p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10],
+        $($group:ident { $($field:ident: $values:expr,)* })*
+    ) => {{
+        const fn preset(i: usize) -> PresetParams {
+            PresetParams { $($($field: { let values: [_; 11] = $values; values[i] },)*)* }
+        }
+        [
+            preset(0), preset(1), preset(2), preset(3), preset(4), preset(5),
+            preset(6), preset(7), preset(8), preset(9), preset(10),
+        ]
+    }};
 }
 
 /// Search limits indexed by preset: `0` is the slowest and best, `10` the fastest.
-pub const PRESETS: [PresetParams; 11] = with_columns(
-    ROWS,
-    [8, 8, 6, 6, 4, 4, 4, 2, 2, 1, 1],
-    [2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1],
-    [2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1],
-    [16, 16, 16, 16, 16, 16, 16, 4, 4, 4, 4],
-    [2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0],
-    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-);
+#[rustfmt::skip]
+pub const PRESETS: [PresetParams; 11] = {
+    use TcqFrames::Base;
+    preset_table! {
+        preset:                    [   p0,    p1,    p2,    p3,    p4,    p5,    p6,    p7,    p8,    p9,   p10],
+        partition {
+            min_block_log2:        [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
+            max_block_log2:        [    7,     7,     7,     7,     7,     7,     7,     6,     6,     6,     6],
+            partition_early_exit:  [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+            ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+            ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+            ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        }
+        intra {
+            intra_modes:           [   13,    13,    12,    10,     9,     8,     6,     5,     4,     3,     2],
+            mrl_trials:            [    2,     2,     2,     2,     2,     2,     2,     0,     0,     0,     0],
+            cfl_filter:            [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+            mhccp:                 [false, false, false, false, false, false, false, false, false, false, false],
+            dip:                   [false, false, false, false, false, false, false, false, false, false, false],
+        }
+        transform {
+            full_trials:           [ true,  true,  true,  true, false, false, false, false, false, false, false],
+            rdoq:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
+            rdoq_every_type:       [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
+            parity_hiding:         [false, false, false, false, false, false, false, false, false, false, false],
+            tcq:                   [ Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base],
+            tcq_search_trellis:    [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
+            tcq_type_trellis:      [ true,  true,  true,  true, false, false, false, false, false, false, false],
+            tx_type_depth:         [    3,     3,     3,     2,     2,     2,     1,     1,     1,     0,     0],
+            tx_partition_search:   [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
+            inter_tx_split:        [   24,    24,    24,    24,    24,    24,    24,     0,     0,     0,     0],
+            ist_sets:              [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+            cctx:                  [false, false, false, false, false, false, false, false, false, false, false],
+            inter_ist:             [false, false, false, false, false, false, false, false, false, false, false],
+            inter_ddt:             [false, false, false, false, false, false, false, false, false, false, false],
+        }
+        inter {
+            motion_range:          [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
+            subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     0],
+            eighth_pel_max_qindex: [  128,   128,   128,     0,     0,     0,     0,     0,     0,     0,     0],
+            compound_candidates:   [    8,     8,     6,     6,     4,     4,     3,     2,     1,     0,     0],
+            large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+            mv_prediction:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+            drl_bits:              [    3,     3,     3,     3,     3,     3,     3,     1,     1,     1,     1],
+            mvd_tools:             [[false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3]],
+            interp_filter_search:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+            cdf_carry:             [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        }
+        filters {
+            loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
+            ccso_candidates:       [    8,     8,     6,     6,     4,     4,     4,     2,     2,     1,     1],
+            wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
+            wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
+            wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
+            gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,    16],
+        }
+        screen_content {
+            fsc:                   [false, false, false, false, false, false, false, false, false, false, false],
+            screen_detect:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+            palette:               [false, false, false, false, false, false, false, false, false, false, false],
+        }
+        gop {
+            mini_gop_size:         [    8,     8,     8,     8,     4,     4,     4,     4,     2,     2,     1],
+            lookahead_frames:      [   16,    16,    16,    16,     8,     8,     8,     8,     4,     4,     2],
+        }
+    }
+};
 
 /// [`PRESETS`] with the screen-content tools on, for a sequence whose first
 /// frame looks like screen content.
@@ -259,140 +294,15 @@ pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
     let mut rows = PRESETS;
     let mut i = 0;
     while i < rows.len() {
-        rows[i].fsc = true;
+        rows[i] = PresetParams {
+            fsc: true,
+            palette: true,
+            ..rows[i]
+        };
         i += 1;
     }
     rows
 };
-
-/// `rows` with `ccso_candidates[i]`, `wiener_ns[i]`, `wiener_ns_chroma[i]`,
-/// `wiener_ns_classes[i]`, `mrl_trials[i]` and `ist_sets[i]` in row `i`.
-const fn with_columns(
-    mut rows: [PresetParams; 11],
-    ccso_candidates: [u8; 11],
-    wiener_ns: [u8; 11],
-    wiener_ns_chroma: [u8; 11],
-    wiener_ns_classes: [u8; 11],
-    mrl_trials: [u8; 11],
-    ist_sets: [u8; 11],
-) -> [PresetParams; 11] {
-    let mut i = 0;
-    while i < rows.len() {
-        rows[i].ccso_candidates = ccso_candidates[i];
-        rows[i].wiener_ns = wiener_ns[i];
-        rows[i].wiener_ns_chroma = wiener_ns_chroma[i];
-        rows[i].wiener_ns_classes = wiener_ns_classes[i];
-        rows[i].mrl_trials = mrl_trials[i];
-        rows[i].ist_sets = ist_sets[i];
-        i += 1;
-    }
-    rows
-}
-
-const ROWS: [PresetParams; 11] = [
-    row(
-        (2, 7),
-        13,
-        false,
-        (true, true),
-        (3, true),
-        (256, 3, 128, 3, 0),
-        (3, 8, 16, 8),
-    ),
-    row(
-        (2, 7),
-        13,
-        false,
-        (true, true),
-        (3, true),
-        (192, 3, 128, 3, 0),
-        (3, 8, 16, 8),
-    ),
-    row(
-        (2, 7),
-        12,
-        true,
-        (true, true),
-        (3, true),
-        (128, 3, 128, 3, 0),
-        (2, 8, 16, 6),
-    ),
-    row(
-        (2, 7),
-        10,
-        true,
-        (true, true),
-        (2, true),
-        (96, 2, 0, 3, 0),
-        (2, 8, 16, 6),
-    ),
-    row(
-        (2, 7),
-        9,
-        true,
-        (true, false),
-        (2, true),
-        (64, 2, 0, 3, 0),
-        (2, 4, 8, 4),
-    ),
-    row(
-        (2, 7),
-        8,
-        true,
-        (true, false),
-        (2, true),
-        (64, 2, 0, 3, 0),
-        (1, 4, 8, 4),
-    ),
-    row(
-        (3, 7),
-        6,
-        true,
-        (true, false),
-        (1, true),
-        (48, 2, 0, 3, 0),
-        (1, 4, 8, 3),
-    ),
-    row(
-        (3, 6),
-        5,
-        true,
-        (false, false),
-        (1, false),
-        (32, 1, 0, 1, 0),
-        (1, 4, 8, 2),
-    ),
-    row(
-        (3, 6),
-        4,
-        true,
-        (false, false),
-        (1, false),
-        (24, 1, 0, 1, 0),
-        (0, 2, 4, 1),
-    ),
-    row(
-        (3, 6),
-        3,
-        true,
-        (false, false),
-        (0, false),
-        (16, 1, 0, 1, 0),
-        (0, 2, 4, 0),
-    ),
-    PresetParams {
-        tcq_search_trellis: false,
-        ..row(
-            (4, 6),
-            2,
-            true,
-            (false, false),
-            (0, false),
-            (16, 0, 0, 1, 0),
-            (0, 1, 2, 0),
-        )
-    },
-];
 
 /// A speed preset, `0..=10`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -491,11 +401,14 @@ mod tests {
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.mhccp <= slow.mhccp);
             assert!(fast.fsc <= slow.fsc);
+            assert!(fast.palette <= slow.palette);
             assert!(fast.screen_detect <= slow.screen_detect);
             assert!(fast.cfl_filter <= slow.cfl_filter);
             assert!(fast.dip <= slow.dip);
             assert!(fast.large_inter <= slow.large_inter);
             assert!(fast.gdf_candidates <= slow.gdf_candidates);
+            assert!(fast.inter_ddt <= slow.inter_ddt);
+            assert!(fast.inter_ist <= slow.inter_ist);
             assert!(
                 fast.inter_tx_split == 0
                     || (slow.inter_tx_split != 0 && fast.inter_tx_split >= slow.inter_tx_split)
@@ -514,6 +427,16 @@ mod tests {
     #[test]
     fn interp_filter_search_placement() {
         assert_eq!(PRESETS.map(|params| params.interp_filter_search), [0; 11]);
+    }
+
+    /// The measured placement of inter IST and DDT: off in every row (see
+    /// `ENC-INTER-IST-DDT`).
+    #[test]
+    fn inter_ist_and_ddt_placement() {
+        assert_eq!(
+            PRESETS.map(|params| (params.inter_ist, params.inter_ddt)),
+            [(false, false); 11]
+        );
     }
 
     /// The measured placement of the MVD tools: off in every row (see
