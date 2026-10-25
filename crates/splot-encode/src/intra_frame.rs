@@ -65,10 +65,10 @@ pub(crate) struct IntraFrameCoder {
     view: CoreSeqView,
     bit_depth: BitDepth,
     chroma: PixelFormat,
-    preset: &'static PresetParams,
+    preset: PresetParams,
     /// The preset row a screen-content sequence switches to; `None` keeps
     /// [`Self::preset`].
-    screen: Option<&'static PresetParams>,
+    screen: Option<PresetParams>,
     references: EncoderReferences,
     tiles: UniformTiles,
     /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
@@ -76,12 +76,20 @@ pub(crate) struct IntraFrameCoder {
 }
 
 impl IntraFrameCoder {
+    /// A coder of `config`. Preset overrides apply to the preset row and to
+    /// its screen-content row.
     pub(crate) fn new(config: &Config) -> Result<Self> {
-        Self::with_preset(config, config.preset.params())
+        let preset = config.override_preset(config.preset.params())?;
+        let mut coder = Self::with_preset(config, &preset)?;
+        coder.screen = (preset.screen_detect)
+            .then(|| config.override_preset(config.preset.screen_params()))
+            .transpose()?;
+        Ok(coder)
     }
 
-    /// A coder of `config` with the search limits of `preset`.
-    fn with_preset(config: &Config, preset: &'static PresetParams) -> Result<Self> {
+    /// A coder of `config` with the search limits of `preset`; only the
+    /// preset's own row switches to its screen-content row.
+    fn with_preset(config: &Config, preset: &PresetParams) -> Result<Self> {
         let params = EncoderStreamParams {
             width: config.width,
             height: config.height,
@@ -137,9 +145,9 @@ impl IntraFrameCoder {
             view,
             bit_depth: config.bit_depth,
             chroma: config.chroma,
-            preset,
+            preset: *preset,
             screen: (preset.screen_detect && core::ptr::eq(preset, config.preset.params()))
-                .then(|| config.preset.screen_params()),
+                .then(|| *config.preset.screen_params()),
             tiles: UniformTiles {
                 cols_log2: config.tiles.cols_log2,
                 rows_log2: config.tiles.rows_log2,
@@ -228,7 +236,7 @@ impl IntraFrameCoder {
             ..*plan
         };
         let qindex = u32::from(qp);
-        let mut tools = gop::frame_tools(self.preset, self.tiles, qindex);
+        let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
         let header = |filters: &FrameFilterParams| {
             plan.header(&self.view, &self.references, qindex, filters, tools)
@@ -257,10 +265,10 @@ impl IntraFrameCoder {
         let sb = first.syntax().superblock_size4() * 4;
         let padded = PaddedSource::new(source, self.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
         let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
-        let motion = MotionSearch::new(first.syntax(), &padded, self.preset, lambda)
+        let motion = MotionSearch::new(first.syntax(), &padded, &self.preset, lambda)
             .map_err(coding("motion search"))?;
         let (padded, motion) = (&padded, motion.as_ref());
-        let (bit_depth, preset) = (self.bit_depth, self.preset);
+        let (bit_depth, preset) = (self.bit_depth, &self.preset);
         let tiles = map_tiles(self.pool.as_ref(), writers, |mut writer| {
             let mut coder = SourceResidualCoder::new(padded, qindex, bit_depth, preset, lambda);
             let mut decisions = FrameDecisions::default();
@@ -286,7 +294,7 @@ impl IntraFrameCoder {
         } = finish_frame(
             &self.sequence,
             &header,
-            self.preset,
+            &self.preset,
             (source, &self.references, self.pool.as_ref()),
             FirstPass {
                 core,
@@ -475,7 +483,7 @@ pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) source: &'a PaddedSource,
     qindex: u32,
     bit_depth: BitDepth,
-    preset: &'static PresetParams,
+    preset: &'a PresetParams,
     lambda: Lambda,
     /// A candidate trial without `full_trials`: quantize with the deadzone and
     /// code `DCT_DCT`.
@@ -501,7 +509,7 @@ impl<'a> SourceResidualCoder<'a> {
         source: &'a PaddedSource,
         qindex: u32,
         bit_depth: BitDepth,
-        preset: &'static PresetParams,
+        preset: &'a PresetParams,
         lambda: Lambda,
     ) -> Self {
         Self {

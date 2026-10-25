@@ -92,7 +92,7 @@ pub use filters::{
     LrUnitType, PcWienerClassMap, apply_loop_filters, ccso_offset, ccso_taps, cdef_unit_grid,
     merge_tiles, pc_wiener_cell_classes,
 };
-pub use gdf::{GdfBlockMap, GdfFlags, GdfGrid};
+pub use gdf::{GdfBlockMap, GdfFlags, GdfGrid, gdf_errors};
 /// The first tap `(dy, dx, coeff_index)` of each § 7.20.3 luma pair; the partner is `(-dy, -dx)`.
 pub use splot_recon::WIENER_NS_CONFIG_Y_PAIRS;
 /// The § 7.20.3 chroma taps `(dy, dx, coeff_index)` and their luma samples.

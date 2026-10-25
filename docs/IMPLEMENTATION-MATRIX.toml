@@ -5380,10 +5380,10 @@ spec_sections = []
 sources = []
 crate = "splot-encode"
 module = "crates/splot-encode/src/preset.rs"
-change_id = "encoder-speed-presets"
+change_id = "enc-preset-set"
 owner = "encoder"
 risk = "medium"
-notes = "Preset accepts 0..=10 (default 6) and maps to one row of the PRESETS table: block-size range, intra modes tried, partition early-exit margin, RDOQ, transform-type depth, motion range, sub-pel depth and loop-filter search, mini-GOP size and lookahead depth. Every field is monotone from slow to fast."
+notes = "Preset accepts 0..=10 (default 6) and maps to one column of the PRESETS table, one named line per PresetParams field. Every field is monotone from slow to fast. The same table generates PresetParams::set: Config::preset_overrides (CLI --preset-set FIELD=VALUE) sets any field by name after the preset and its screen-content switch; an unknown name, a value outside the field type, or a row outside the ranges of PresetParams::validate is a typed PresetError."
 
 [feature.status]
 mapped = "done"
@@ -5398,7 +5398,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/preset.rs::tests"]
+tests = ["crates/splot-encode/src/preset.rs::tests", "crates/splot-encode/src/encoder.rs::tests::preset_overrides_change_the_stream", "crates/splot-encode/src/screen.rs::tests::the_encoder_enables_fsc_for_screen_content"]
 commands = ["cargo test -p splot-encode preset --locked"]
 fixtures = []
 diagnostics = []
@@ -5720,6 +5720,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_luma_blocks_code_ist_as_the_decoder_reads_it", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_ist_and_ddt_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_ist_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::ddt_follows_the_planned_leaf", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot"]
 commands = ["cargo test -p splot-encode inter_ist --locked", "SPLOT_AVM_DECODER=<avmdec> cargo test -p splot-encode avm_decodes_inter_frames -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-TIP"
+name = "Encoder TIP as a reference"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.6", "5.18.2", "5.20.7.6", "7.11.3", "7.12"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/mode_decision.rs"
+change_id = "enc-tip"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::tip (S1 of A5): the sequence codes enable_tip with disable_tip_output = 1 and no hole fill; every inter frame with use_ref_frame_mvs and two references codes TIP_FRAME_AS_REF with tip_global_wtd_index 0 (Tip_Weighting_Factor 8, the equal average), and inter leaves also try the TIP NEARMV candidates of the TIP DRL. In the encoder_syntax facade an InterModes whose ref_frame is reference_count() is a TIP block: tip_mode, tip_pred_mode, the TIP DRL index, use_amvd and the block precision go through the decoder's selectors, the decoder's tip::motion and tip::predict predict it, its § 7.22 unit records are checkpointed like grid leaves, compound mode contexts and the skip-mode pair take the TIP pair, and deblocking takes the TIP sub-PU size. TIP output, the weight search and hole fill are later stages. Off writes the old stream byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_tip_tests.rs::tip_frames_reach_the_headers_and_the_decoder", "crates/splot-encode/src/intra_frame_tip_tests.rs::tip_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot"]
+commands = ["cargo test -p splot-encode tip --locked", "cargo test -p splot-encode random_inter --locked", "SPLOT_AVM_DECODER=<avmdec> cargo test -p splot-encode avm_decodes_inter_frames -- --ignored"]
 fixtures = []
 diagnostics = []
 

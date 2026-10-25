@@ -162,6 +162,35 @@ fn gdf_candidates_start_from_the_qindex_scale() {
     }
 }
 
+/// A frame with a lossless segment keeps GDF off: the search skips it and
+/// the facade refuses its errors, since GDF leaves lossless samples alone.
+#[test]
+fn gdf_skips_frames_with_a_lossless_segment() {
+    let mut config = Config::new(64, 64);
+    config.preset = Preset::new(9).unwrap();
+    let coded = IntraFrameCoder::new(&config)
+        .unwrap()
+        .encode_wave(&[(&source(&config, 3), crate::gop::plan(0, config.keyint), 160)])
+        .unwrap()
+        .pop()
+        .unwrap();
+    let (seq, mut core) = headers(&coded.temporal_unit);
+    assert!(!super::gdf::has_lossless_segment(&core));
+    if let Some(info) = core.lossless_info.as_mut() {
+        info.has_lossless_segment = true;
+    }
+    assert!(super::gdf::has_lossless_segment(&core));
+    let (_, recon, _, _) = coded.reference.unwrap();
+    let refs = splot_decode::encoder_syntax::EncoderReferences::new(&seq).unwrap();
+    let flags = splot_decode::encoder_syntax::GdfFlags {
+        blocks: &[],
+        refs: &refs,
+    };
+    assert!(
+        splot_decode::encoder_syntax::gdf_errors(&seq, &core, (&recon, &recon), flags).is_err()
+    );
+}
+
 #[test]
 fn more_cdef_sets_cost_more_bits() {
     let rates: Vec<_> = (1..=8).map(|sets| cdef_rate(sets, 10)).collect();

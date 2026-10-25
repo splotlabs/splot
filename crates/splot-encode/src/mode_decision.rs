@@ -411,7 +411,13 @@ impl TrialCoder<'_, '_> {
         }
         if self.preset.tip > 0 && self.syntax.tip_allowed(leaf) {
             let ref_frame = self.syntax.reference_count();
-            for (drl, &mv) in self.syntax.single_mvs(leaf, ref_frame)?.near.iter().enumerate() {
+            for (drl, &mv) in self
+                .syntax
+                .single_mvs(leaf, ref_frame)?
+                .near
+                .iter()
+                .enumerate()
+            {
                 push(
                     mv,
                     InterModes {

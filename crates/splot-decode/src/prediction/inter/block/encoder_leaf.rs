@@ -683,7 +683,7 @@ impl EncoderInterTile {
                     [None, None],
                 )
             })
-            .chain(self.tip_records.iter().cloned())
+            .chain(self.tip_records.iter().copied())
             .collect()
     }
 

@@ -9,7 +9,7 @@ use splot_parallel::ThreadCount;
 use splot_recon::{BitDepth, PixelFormat, PlaneSize};
 
 use crate::error::{Error, Result};
-use crate::preset::Preset;
+use crate::preset::{Preset, PresetParams};
 use crate::rate_control::{Crf, check_bitrate, max_qindex};
 
 /// Largest frame dimension AV2 can signal: `max_frame_width_minus_1` has at most
@@ -83,6 +83,10 @@ pub struct Config {
     pub rate_control: RateControlMode,
     /// Speed preset.
     pub preset: Preset,
+    /// `(field, value)` overrides of the preset's [`PresetParams`], applied in
+    /// order by [`PresetParams::set`]. They apply to the screen-content row
+    /// too, so they win over the screen-content switch.
+    pub preset_overrides: Vec<(String, String)>,
     /// Worker-thread policy. It never changes the output bytes.
     pub threads: ThreadCount,
     /// Tile layout of every frame. The thread count never changes it.
@@ -113,6 +117,7 @@ impl Config {
                 qp: Self::DEFAULT_QP,
             },
             preset: Preset::default(),
+            preset_overrides: Vec::new(),
             threads: ThreadCount::Auto,
             tiles: TileLayout::default(),
             keyint: Self::DEFAULT_KEYINT,
@@ -124,8 +129,10 @@ impl Config {
     /// # Errors
     /// Returns [`Error::InvalidDimensions`], [`Error::UnsupportedChroma`],
     /// [`Error::InvalidFrameRate`], [`Error::InvalidTiles`], [`Error::InvalidQp`],
-    /// [`Error::InvalidCrf`] or [`Error::InvalidBitrate`].
+    /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`] or [`Error::Preset`].
     pub fn validate(&self) -> Result<()> {
+        self.override_preset(self.preset.params())?;
+        self.override_preset(self.preset.screen_params())?;
         let dimension_ok = |value| (1..=MAX_FRAME_DIMENSION).contains(&value);
         if !dimension_ok(self.width) || !dimension_ok(self.height) {
             return Err(Error::InvalidDimensions {
@@ -168,6 +175,17 @@ impl Config {
             } => check_bitrate(bitrate_kbps, Some(buffer_ms), self.frame_rate),
             _ => Ok(()),
         }
+    }
+
+    /// `row` with [`Self::preset_overrides`] applied, checked by
+    /// [`PresetParams::validate`].
+    pub(crate) fn override_preset(&self, row: &PresetParams) -> Result<PresetParams> {
+        let mut row = *row;
+        for (name, value) in &self.preset_overrides {
+            row.set(name, value)?;
+        }
+        row.validate()?;
+        Ok(row)
     }
 
     /// Returns the Y, U and V plane sizes of one frame.

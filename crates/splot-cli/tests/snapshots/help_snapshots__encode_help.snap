@@ -10,18 +10,19 @@ Arguments:
   <INPUT>  Input Y4M file, or `-` for standard input
 
 Options:
-  -o, --output <OUTPUT>    Output IVF file
-  -v, --verbose...         Increase logging verbosity (repeatable: -v, -vv, -vvv)
-      --qp <QP>            Constant quantizer (`base_q_idx`): 1..=255 at 8 bits, 1..=303 at 10 bits; the default mode, at 80
-      --quiet              Silence all logging except errors
-      --crf <CRF>          Constant quality with lookahead offsets: rate factor 1..=63, higher is smaller
-      --bitrate <BITRATE>  Target bitrate in kilobits per second
-      --rc <RC>            Bitrate mode for `--bitrate`: `vbr` (default) or `cbr` (one-second buffer) [possible values: vbr, cbr]
-      --preset <PRESET>    Speed preset: 0 is the slowest and best, 10 the fastest [default: 6]
-      --threads <THREADS>  Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto) [default: auto]
-      --tiles <TILES>      Tile columns x rows, each a power of two up to 64. More tiles code faster on more threads and cost some compression [default: 1x1]
-      --limit <LIMIT>      Stop after this many input frames
-      --keyint <KEYINT>    Distance between key frames, in frames [default: 120]
-      --stats              Print `frame,pts,qp,bits,psnr_y,psnr_u,psnr_v` CSV lines to stdout
-  -h, --help               Print help
-  -V, --version            Print version
+  -o, --output <OUTPUT>           Output IVF file
+  -v, --verbose...                Increase logging verbosity (repeatable: -v, -vv, -vvv)
+      --qp <QP>                   Constant quantizer (`base_q_idx`): 1..=255 at 8 bits, 1..=303 at 10 bits; the default mode, at 80
+      --quiet                     Silence all logging except errors
+      --crf <CRF>                 Constant quality with lookahead offsets: rate factor 1..=63, higher is smaller
+      --bitrate <BITRATE>         Target bitrate in kilobits per second
+      --rc <RC>                   Bitrate mode for `--bitrate`: `vbr` (default) or `cbr` (one-second buffer) [possible values: vbr, cbr]
+      --preset <PRESET>           Speed preset: 0 is the slowest and best, 10 the fastest [default: 6]
+      --preset-set <FIELD=VALUE>  Overrides one field of the preset, as FIELD=VALUE; repeat for more fields. It wins over the screen-content switch. Flags take 0, 1, false or true, `tcq` takes Off, Base or All, `mvd_tools` takes three comma-separated flags. An unknown FIELD lists the valid names
+      --threads <THREADS>         Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto) [default: auto]
+      --tiles <TILES>             Tile columns x rows, each a power of two up to 64. More tiles code faster on more threads and cost some compression [default: 1x1]
+      --limit <LIMIT>             Stop after this many input frames
+      --keyint <KEYINT>           Distance between key frames, in frames [default: 120]
+      --stats                     Print `frame,pts,qp,bits,psnr_y,psnr_u,psnr_v` CSV lines to stdout
+  -h, --help                      Print help
+  -V, --version                   Print version
