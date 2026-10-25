@@ -9,24 +9,24 @@
 [[row]]
 clip = "inter-128x96"
 preset = 6
-ir_stable = 32551222534
+ir_stable = 32600036941
 
 [[row]]
 clip = "inter-128x96"
 preset = 10
-ir_stable = 4130033595
+ir_stable = 4332258282
 
 [[row]]
 clip = "intra-176x144"
 preset = 6
-ir_stable = 16546421317
+ir_stable = 16542234286
 
 [[row]]
 clip = "intra-176x144"
 preset = 10
-ir_stable = 1956718120
+ir_stable = 1951057849
 
 [[row]]
 clip = "intra-64x64"
 preset = 0
-ir_stable = 54197892380
+ir_stable = 54275809436

@@ -29,12 +29,16 @@ use crate::pipeline::reconstruct::commit_intra_prediction;
 use crate::tile::block_context::NeighbourAvailability;
 
 const MI_SIZE: usize = 4;
-const CFL_FILTERS_420: [[[i32; 3]; 3]; 3] = [
+/// `Cfl_Filters_420[filterIdx][dy + 1][dx + 1]` (§ 7.13.5): the luma taps
+/// of a 4:2:0 CfL sample, `dy` and `dx` in `-1..=1`, summing to `8`.
+pub const CFL_FILTERS_420: [[[i32; 3]; 3]; 3] = [
     [[0, 0, 0], [0, 2, 2], [0, 2, 2]],
     [[0, 0, 0], [1, 2, 1], [1, 2, 1]],
     [[0, 1, 0], [1, 4, 1], [0, 1, 0]],
 ];
-const CFL_FILTERS_422: [[i32; 3]; 3] = [[0, 4, 4], [2, 4, 2], [0, 8, 0]];
+/// `Cfl_Filters_422[filterIdx][dx + 1]` (§ 7.13.5): the luma taps of a 4:2:2
+/// CfL sample, summing to `8`.
+pub const CFL_FILTERS_422: [[i32; 3]; 3] = [[0, 4, 4], [2, 4, 2], [0, 8, 0]];
 const CFL_ALPHA_SHIFT: u32 = 11;
 const CFL_ALPHA_SCALE: i32 = 32;
 const CFL_DERIVED_ALPHA_SHIFT: u8 = 8;

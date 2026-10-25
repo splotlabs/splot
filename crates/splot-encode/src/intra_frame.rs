@@ -21,6 +21,7 @@ use splot_recon::{
     secondary_transform_layout,
 };
 
+use crate::cfl_filter::cfl_ds_filter;
 use crate::config::Config;
 use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
@@ -58,6 +59,7 @@ const DRL_REORDER_CONSTRAINT: bool = true;
 
 /// Codes key frames and inter frames.
 pub(crate) struct IntraFrameCoder {
+    params: EncoderStreamParams,
     sequence: SequenceHeader,
     view: CoreSeqView,
     bit_depth: BitDepth,
@@ -76,7 +78,7 @@ impl IntraFrameCoder {
 
     /// A coder of `config` with the search limits of `preset`.
     fn with_preset(config: &Config, preset: &'static PresetParams) -> Result<Self> {
-        let sequence = build_encoder_sequence_header(&EncoderStreamParams {
+        let params = EncoderStreamParams {
             width: config.width,
             height: config.height,
             bit_depth: match config.bit_depth {
@@ -120,13 +122,11 @@ impl IntraFrameCoder {
                 tcq: preset.tcq != TcqFrames::Off,
                 ..EncoderToolFlags::default()
             },
-        })
-        .map_err(coding("sequence header"))?;
-        let view = CoreSeqView::from_sequence(&sequence).ok_or(Error::Unsupported {
-            what: "an incomplete sequence header",
-        })?;
+        };
+        let (sequence, view, references) = sequence_state(&params)?;
         Ok(Self {
-            references: EncoderReferences::new(&sequence).map_err(coding("reference buffer"))?,
+            params,
+            references,
             sequence,
             view,
             bit_depth: config.bit_depth,
@@ -168,9 +168,38 @@ impl FrameCoder for IntraFrameCoder {
             .map_err(coding("show-existing frame"))?;
         Ok(unit)
     }
+
+    fn start_sequence(&mut self, first: &SourceFrame) -> Result<()> {
+        if self.preset.cfl_filter {
+            self.set_cfl_filter(cfl_ds_filter(first))?;
+        }
+        Ok(())
+    }
+}
+
+/// The sequence header of `params`, its view and empty references.
+fn sequence_state(
+    params: &EncoderStreamParams,
+) -> Result<(SequenceHeader, CoreSeqView, EncoderReferences)> {
+    let sequence = build_encoder_sequence_header(params).map_err(coding("sequence header"))?;
+    let view = CoreSeqView::from_sequence(&sequence).ok_or(Error::Unsupported {
+        what: "an incomplete sequence header",
+    })?;
+    let references = EncoderReferences::new(&sequence).map_err(coding("reference buffer"))?;
+    Ok((sequence, view, references))
 }
 
 impl IntraFrameCoder {
+    /// Rebuilds the sequence with `cfl_ds_filter_index` `index`; call it
+    /// before the first frame.
+    fn set_cfl_filter(&mut self, index: u8) -> Result<()> {
+        if index != self.params.tools.cfl_ds_filter {
+            self.params.tools.cfl_ds_filter = index;
+            (self.sequence, self.view, self.references) = sequence_state(&self.params)?;
+        }
+        Ok(())
+    }
+
     /// Codes `source` as `plan` at quantizer `qp` against the committed references.
     fn code_frame(&self, source: &SourceFrame, plan: &GopFrame, qp: u16) -> Result<CodedFrame> {
         let plan = &GopFrame {
