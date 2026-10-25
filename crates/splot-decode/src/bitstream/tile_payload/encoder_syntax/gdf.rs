@@ -13,7 +13,10 @@ use super::{
     EncoderReferences, EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock, Result, rule,
     tile_ranges,
 };
+use splot_recon::{DecodedFrame, FramePlanes, Plane, PlaneId};
+
 use crate::filters::gdf::{GdfBlockGrid, GdfReferenceContext, gdf_stripe_row};
+use crate::filters::source::{FramePlane, StripePlane};
 use crate::filters::wienerns_lr::tx_records::gdf::GdfState;
 
 impl IntraTileSyntax {
@@ -152,4 +155,103 @@ impl GdfFlags<'_> {
         });
         Ok((grid, reference))
     }
+}
+
+/// The frame `restored` with the GDF of `core` and `gdf` applied, sample for
+/// sample as [`super::apply_loop_filters`] gives it, without running the
+/// filters before GDF again.
+///
+/// `deblocked`, `cdef` and `restored` are the chain's frames before GDF of
+/// the same decisions: after deblocking, after CDEF and CCSO, and after loop
+/// restoration. GDF reads luma only (§ 7.20.5): each 64-row stripe reads the
+/// CDEF output inside the stripe and the deblocked frame outside it.
+///
+/// # Errors
+/// Returns [`EncoderSyntaxError`] when the frames differ in size or a GDF
+/// stage rejects its inputs.
+pub fn apply_gdf(
+    seq: &SequenceHeader,
+    core: &FrameHeaderCore,
+    (deblocked, cdef, restored): (&DecodedFrame<u16>, &DecodedFrame<u16>, &DecodedFrame<u16>),
+    gdf: GdfFlags<'_>,
+) -> Result<DecodedFrame<u16>> {
+    let (grid, reference) = gdf.decoder_inputs(seq, core)?;
+    let size = restored.coded_luma_size();
+    let (width, height) = (size.width(), size.height());
+    let packed = |frame: &DecodedFrame<u16>| -> Result<Vec<u16>> {
+        let y = frame.y();
+        if frame.coded_luma_size() != size {
+            return Err(EncoderSyntaxError::Unsupported(
+                "GDF frames of another size",
+            ));
+        }
+        let stride = y.stride_samples();
+        Ok((0..height)
+            .flat_map(|row| &y.samples()[row * stride..row * stride + width])
+            .copied()
+            .collect())
+    };
+    let shape = || EncoderSyntaxError::Unsupported("GDF stripe shape");
+    let (deblocked_y, cdef_y, mut out_y) = (packed(deblocked)?, packed(cdef)?, packed(restored)?);
+    let deblocked_plane =
+        FramePlane::window(&deblocked_y, width, height, 0, height).ok_or_else(shape)?;
+    let stripe = |samples: &[u16], (start, end): (usize, usize)| {
+        StripePlane::from_samples(
+            width,
+            height,
+            start,
+            samples[start * width..end * width].to_vec(),
+        )
+        .ok_or_else(shape)
+    };
+    let cdef_frame = [stripe(&cdef_y, (0, height))?];
+    let disable_across_tiles = seq
+        .filter
+        .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
+    for range in crate::filters::gdf::stripe_ranges(core, height) {
+        let range = range.map_err(rule("GDF stripe"))?;
+        let separate = stripe(&cdef_y, range)?;
+        let mut output = stripe(&out_y, range)?;
+        crate::filters::gdf::apply_stripe(
+            core,
+            deblocked_plane,
+            Some(&separate),
+            &cdef_frame,
+            &mut output,
+            grid.as_ref(),
+            None,
+            restored.bit_depth(),
+            disable_across_tiles,
+            reference,
+        )
+        .map_err(rule("GDF"))?;
+        out_y[range.0 * width..range.1 * width].copy_from_slice(output.samples());
+    }
+    let y = restored.y();
+    let stride = y.stride_samples();
+    let mut luma = y.samples().to_vec();
+    for row in 0..height {
+        luma[row * stride..row * stride + width]
+            .copy_from_slice(&out_y[row * width..(row + 1) * width]);
+    }
+    let copy = |plane: &Plane<u16>, samples: Vec<u16>| {
+        Plane::from_vec(
+            plane.storage_size(),
+            plane.stride_samples(),
+            plane.visible_rect(),
+            samples,
+        )
+    };
+    let chroma = |id| {
+        restored
+            .plane(id)
+            .map(|plane| copy(plane, plane.samples().to_vec()))
+            .transpose()
+    };
+    let planes = FramePlanes::new(
+        copy(y, luma).map_err(rule("GDF plane"))?,
+        chroma(PlaneId::U).map_err(rule("GDF plane"))?,
+        chroma(PlaneId::V).map_err(rule("GDF plane"))?,
+    );
+    DecodedFrame::try_new(restored.info(), planes).map_err(rule("GDF frame"))
 }
