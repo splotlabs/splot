@@ -103,6 +103,7 @@ impl IntraFrameCoder {
                 cdef: true,
                 loop_restoration: true,
                 ccso: preset.ccso_candidates > 0,
+                gdf: preset.gdf_candidates > 0,
                 cfl: true,
                 ibp: true,
                 intra_edge_filter: true,
