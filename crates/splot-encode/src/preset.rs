@@ -137,10 +137,10 @@ pub struct PresetParams {
     pub mhccp: bool,
     /// The winning luma mode of an intra leaf gets one RD trial with
     /// `fsc_mode`; off disables `enable_fsc`. Off in every row: it pays only
-    /// on screen content, where [`SCREEN_PRESETS`] turns it on.
+    /// on screen content, whose preset rows turn it on.
     pub fsc: bool,
-    /// The first frame switches the sequence to the row of [`SCREEN_PRESETS`]
-    /// when it looks like screen content.
+    /// The first frame switches the sequence to the screen-content row of
+    /// its preset (FSC on) when it looks like screen content.
     pub screen_detect: bool,
     /// The first frame picks the sequence's `cfl_ds_filter_index` by the
     /// down-sampled luma that best predicts its chroma; off codes `0`.
