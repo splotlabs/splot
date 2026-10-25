@@ -598,7 +598,7 @@ impl Rng {
 /// second-DRL index of list 1; a nonzero `jmvd_scale_mode`; a coded
 /// `interp_filter` other than `EIGHTTAP`; a `NEWMV` below the frame
 /// precision; an adaptive-MVD `NEWMV`.
-type Coverage = [usize; 19];
+type Coverage = [usize; 20];
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -741,6 +741,19 @@ fn random_modes(
             return LeafChoice::inter(InterPrediction::Compound(modes));
         }
     }
+    if syntax.tip_allowed(leaf) && rng.below(4) == 0 {
+        coverage[19] += 1;
+        let mode = [InterMode::Near, InterMode::New][rng.below(2) as usize];
+        return LeafChoice::inter(InterPrediction::Single(InterModes {
+            ref_frame: syntax.reference_count(),
+            mode,
+            drl: rng.below(drls) as usize,
+            mv: mvs[0],
+            filter,
+            precision: None,
+            amvd: false,
+        }));
+    }
     let mode = [InterMode::Near, InterMode::Global, InterMode::New][rng.below(3) as usize];
     coverage[1 + mode as usize] += 1;
     let drl = rng.below(drls) as usize;
@@ -824,9 +837,9 @@ fn inter_stream_with(
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let (tx, _, (high_precision_mv, ref_mvs, _), tiles) =
+    let (tx, _, (high_precision_mv, ref_mvs, _, tip), tiles) =
         crate::gop::frame_tools(coder.preset, coder.tiles, qindex);
-    let tools = (tx, true, (high_precision_mv, ref_mvs, true), tiles);
+    let tools = (tx, true, (high_precision_mv, ref_mvs, true, tip), tiles);
     let filters = FrameFilterParams::default();
     let core = plan
         .header(&coder.view, &coder.references, qindex, &filters, tools)
@@ -1273,6 +1286,8 @@ mod ccso;
 mod gdf;
 #[path = "intra_frame_inter_ist_tests.rs"]
 mod inter_ist;
+#[path = "intra_frame_tip_tests.rs"]
+mod tip;
 #[path = "intra_frame_inter_tx_tests.rs"]
 mod inter_tx;
 #[path = "intra_tools_tests.rs"]

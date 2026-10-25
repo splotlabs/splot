@@ -220,7 +220,7 @@ impl EncoderInterTile {
         frontier: &DecodeBlockFrontier,
         motion: EncoderMotion,
     ) -> Result<(ReconInterpolationFilter, Option<(TileCdfSelector, u8)>)> {
-        if motion.skip_mode() {
+        if motion.skip_mode() || matches!(motion, EncoderMotion::Single(single) if single.tip) {
             return Ok((ReconInterpolationFilter::EightTapSharp, None));
         }
         let (global, interp) = match motion {
@@ -318,7 +318,7 @@ impl EncoderInterTile {
             &self.core,
             (&self.reference, &self.ref_frame_idx, self.num_total_refs()),
             &block_neighbour_ctx(&self.grid, &block),
-            None,
+            self.tip_ref_pair(),
             ByteOffset::new(0),
         )
     }
@@ -384,7 +384,11 @@ impl EncoderInterTile {
             &self.grid,
             &self.block(frontier, (SINGLE_REF_FRAME0, None))?,
         );
-        let new_mv = find_mode_ctx(&self.grid, &block).new_mv_context;
+        let tip_pair = match motion {
+            EncoderMotion::Compound(_) => self.tip_ref_pair(),
+            EncoderMotion::Single(_) => None,
+        };
+        let new_mv = find_mode_ctx_with_tip(&self.grid, &block, tip_pair).new_mv_context;
         if let EncoderMotion::Compound(compound) = motion
             && compound.skip_mode
         {
@@ -394,6 +398,37 @@ impl EncoderInterTile {
                 0,
                 max_drl,
                 compound.ref_mv_idx,
+            )?;
+            return Ok(out);
+        }
+        let tip = matches!(motion, EncoderMotion::Single(single) if single.tip);
+        if self.tip_allowed(frontier)? {
+            let ctx = neighbour.tip_mode_ctx();
+            out.push((TileCdfSelector::TipMode { ctx }, u8::from(tip)));
+        } else if tip {
+            return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
+        }
+        if let (true, EncoderMotion::Single(single)) = (tip, motion) {
+            let new = single.mode == SINGLE_MODE_NEWMV;
+            if !new && single.mode != SINGLE_MODE_NEARMV {
+                return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
+            }
+            out.push((TileCdfSelector::TipPredMode, u8::from(new)));
+            let amvd_ctx = neighbour.amvd_ctx(TIP_REF_FRAME);
+            if let Some(selector) =
+                single_use_amvd_selector(self.enable_adaptive_mvd(), single.mode, amvd_ctx)
+            {
+                out.push((selector, u8::from(single.use_amvd)));
+            } else if single.use_amvd {
+                return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
+            }
+            let selector = |idx| TileCdfSelector::TipDrlMode { idx };
+            drl_symbols(&mut out, selector, 0, max_drl, single.ref_mv_idx)?;
+            self.precision_symbols(
+                &mut out,
+                &neighbour,
+                new,
+                (self.block_precision(motion), single.use_amvd),
             )?;
             return Ok(out);
         }

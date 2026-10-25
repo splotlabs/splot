@@ -111,6 +111,7 @@ impl IntraFrameCoder {
                 intra_ist: preset.ist_sets > 0,
                 inter_ddt: preset.inter_ddt,
                 inter_ist: preset.inter_ist,
+                tip: preset.tip > 0 && preset.mv_prediction,
                 cctx: preset.cctx,
                 mhccp: preset.mhccp,
                 fsc: preset.fsc,

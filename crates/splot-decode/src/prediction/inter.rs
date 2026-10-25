@@ -2161,6 +2161,7 @@ pub(crate) use compound::CompoundYMode;
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 #[cfg(debug_assertions)]
 pub(crate) use find_mv_stack::RefMvBank;
+pub(crate) use find_mv_stack::TIP_REF_FRAME;
 pub(crate) use find_mv_stack::{
     FixedStack, MotionFieldLayout, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
 };

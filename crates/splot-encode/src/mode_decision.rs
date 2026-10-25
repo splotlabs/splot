@@ -409,6 +409,23 @@ impl TrialCoder<'_, '_> {
                 push(coded.mv, coded);
             }
         }
+        if self.preset.tip > 0 && self.syntax.tip_allowed(leaf) {
+            let ref_frame = self.syntax.reference_count();
+            for (drl, &mv) in self.syntax.single_mvs(leaf, ref_frame)?.near.iter().enumerate() {
+                push(
+                    mv,
+                    InterModes {
+                        ref_frame,
+                        mode: InterMode::Near,
+                        drl,
+                        mv: MotionVector::default(),
+                        filter: InterpolationFilter::EightTap,
+                        precision: None,
+                        amvd: false,
+                    },
+                );
+            }
+        }
         let mut choices: Vec<LeafChoice> = out.into_iter().map(|(_, choice)| choice).collect();
         if self.preset.compound_candidates > 0 && self.syntax.skip_mode_allowed(leaf) {
             let mut cheapest: Vec<([MotionVector; 2], Bits, InterPrediction)> = Vec::new();
