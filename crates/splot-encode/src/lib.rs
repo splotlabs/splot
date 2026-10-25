@@ -32,6 +32,7 @@ mod motion_search;
 pub mod preset;
 pub mod rate_control;
 mod rd;
+mod screen;
 pub mod stats;
 #[cfg(test)]
 mod test_support;

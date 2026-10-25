@@ -137,8 +137,11 @@ pub struct PresetParams {
     pub mhccp: bool,
     /// The winning luma mode of an intra leaf gets one RD trial with
     /// `fsc_mode`; off disables `enable_fsc`. Off in every row: it pays only
-    /// on screen content, so it waits for a screen-content detector.
+    /// on screen content, where [`SCREEN_PRESETS`] turns it on.
     pub fsc: bool,
+    /// The first frame switches the sequence to the row of [`SCREEN_PRESETS`]
+    /// when it looks like screen content.
+    pub screen_detect: bool,
     /// The DIP prediction with the lowest SATD gets one RD trial when it
     /// beats the best angular SATD; off disables `enable_dip`. Off in every
     /// row: the `use_dip` flag cost offsets its wins (2026-10-25).
@@ -222,6 +225,7 @@ const fn row(
         cctx: false,
         mhccp: false,
         fsc: false,
+        screen_detect: true,
         dip: false,
         large_inter: true,
         inter_tx_split: if tx_partition_search { 24 } else { 0 },
@@ -238,6 +242,18 @@ pub const PRESETS: [PresetParams; 11] = with_columns(
     [2, 2, 2, 2, 2, 2, 2, 0, 0, 0, 0],
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 );
+
+/// [`PRESETS`] with the screen-content tools on, for a sequence whose first
+/// frame looks like screen content.
+pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
+    let mut rows = PRESETS;
+    let mut i = 0;
+    while i < rows.len() {
+        rows[i].fsc = true;
+        i += 1;
+    }
+    rows
+};
 
 /// `rows` with `ccso_candidates[i]`, `wiener_ns[i]`, `wiener_ns_chroma[i]`,
 /// `wiener_ns_classes[i]`, `mrl_trials[i]` and `ist_sets[i]` in row `i`.
@@ -399,6 +415,11 @@ impl Preset {
     pub const fn params(self) -> &'static PresetParams {
         &PRESETS[self.0 as usize]
     }
+
+    /// The row of [`SCREEN_PRESETS`] of this preset.
+    pub(crate) fn screen_params(self) -> &'static PresetParams {
+        &SCREEN_PRESETS[usize::from(self.0)]
+    }
 }
 
 impl Default for Preset {
@@ -460,6 +481,7 @@ mod tests {
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.mhccp <= slow.mhccp);
             assert!(fast.fsc <= slow.fsc);
+            assert!(fast.screen_detect <= slow.screen_detect);
             assert!(fast.dip <= slow.dip);
             assert!(fast.large_inter <= slow.large_inter);
             assert!(
