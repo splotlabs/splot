@@ -53,7 +53,7 @@ pub(crate) fn cfl_ds_filter(frame: &SourceFrame) -> u8 {
     best.1
 }
 
-/// `n²` times the least-squares residual energy of `chroma` on `luma`,
+/// `n` times the least-squares residual energy of `chroma` on `luma`,
 /// summed over the whole `BLOCK x BLOCK` blocks of two `width x height`
 /// planes, where `n = BLOCK²`.
 fn fit_residual(luma: &[i32], chroma: &[u16], width: usize, height: usize) -> u128 {
