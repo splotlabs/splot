@@ -4841,7 +4841,7 @@ module = "crates/splot-encode/src/intra_frame.rs"
 change_id = "encoder-m2-full-intra"
 owner = "encoder"
 risk = "medium"
-notes = "Key frames are closed-loop key frames with uniform tiles (ENC-TILES) in 4:2:0, 4:2:2 or 4:4:4 (ENC-CHROMA-FORMATS); ENC-INTER-FRAME-HEADERS adds inter frames. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No DIP, FSC, palette, IntraBC, TCQ, Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
+notes = "Key frames are closed-loop key frames with uniform tiles (ENC-TILES) in 4:2:0, 4:2:2 or 4:4:4 (ENC-CHROMA-FORMATS); ENC-INTER-FRAME-HEADERS adds inter frames. A recursive RD partition search (presets gate depth and early exit) evaluates leaves by trial coding through the tile writer's own syntax walk into a rate sink, with facade snapshot/restore for rollback. Leaves choose all 61 luma YMode/AngleDeltaY pairs (SATD shortlist, then RD), the chroma mode or CFL, the luma transform partition (TX_MODE_SELECT) and the luma transform type of the selected set, quantized by RDOQ with CDF-backed rates. Deblocking, CDEF and luma PC-Wiener are searched per frame and coded in a second pass. splot_decode::encoder_syntax supplies every CDF row, context, mode list, transform set and the decoder's own prediction, reconstruction and loop filters. The encoder reconstruction equals splot-decode output sample for sample; the encoder-avm-oracle CI job checks AVM decodes the same samples. No palette, IntraBC, TCQ, Wiener-NS coefficient search, CCSO, GDF or chroma loop restoration yet."
 
 [feature.status]
 mapped = "done"
@@ -5851,6 +5851,70 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-FSC"
+name = "Encoder forward skip coding"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.5.5", "5.20.6.3", "5.20.7.27"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/tile_writer/coeffs.rs"
+change_id = "enc-fsc"
+owner = "encoder"
+risk = "medium"
+notes = "Implemented, OFF in every preset; enable via the A14 screen-content detector. PresetParams::fsc (off disables enable_fsc): the winning luma mode of an intra leaf gets one RD trial with fsc_mode. The encoder_syntax facade takes IntraModes::fsc, writes fsc_mode (neighbour context, or the inter context for intra leaves in mixed regions of inter frames), plans IDTX-only luma, uses the FSC transform-partition rows and txb_skip context, and offers the FSC coefficient rows (coeff_base_bob, coeff_base_idtx, coeff_br_idtx, idtx_sign); the tile writer codes FSC levels from the first nonzero scan position, also for inter IDTX blocks. FSC blocks skip TCQ (uses_tcq excludes useFsc) and RDOQ. On at p6 against main: screendata intra -28.01% (0.69x CPU), inter -24.45% (0.87x); paris intra +1.02%, inter +0.92%; park_joy intra +0.14%. Off writes the old stream byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/tile_writer/tests.rs::fsc_leaves_round_trip", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot", "crates/splot-encode/src/intra_tools_tests.rs::fsc_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_fsc_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_fsc_frames_like_splot"]
+commands = ["cargo test -p splot-encode fsc --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-DIP"
+name = "Encoder data-driven intra prediction"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.7.9", "6.19.7.8", "7.13.2.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/mode_decision.rs"
+change_id = "enc-dip-off"
+owner = "encoder"
+risk = "medium"
+notes = "Implemented, OFF in every preset (2026-10-25); revisit in B3 with a search that prices use_dip on more than the final trial. PresetParams::dip (off disables enable_dip): the DIP mode and transpose with the lowest luma SATD get one RD trial when that SATD beats the best angular SATD. The encoder_syntax facade takes IntraModes::dip, writes use_dip, dip_transpose and dip_mode after the chroma mode, and predicts and publishes DIP leaves through the decoder. On at p2 against main: paris +0.03% (0.99x CPU), park_joy -0.01% (0.99x); p0 park_joy -0.09% (1.01x); the use_dip flag cost offsets the wins. Off writes the old stream byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/tile_writer/tests.rs::every_dip_mode_round_trips", "crates/splot-encode/src/intra_tools_tests.rs::dip_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::search_picks_dip_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_dip_frames_like_splot"]
+commands = ["cargo test -p splot-encode dip --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-MRL"
 name = "Encoder multiple reference line intra prediction"
 category = "encoder"
@@ -5943,6 +6007,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::wiener_ns_422_and_444_tiles_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_wienerns_tests.rs::avm_decodes_wiener_ns_frames_like_splot", "crates/splot-encode/src/loop_filter_wienerns_fit.rs::tests::chroma_groups_pair_the_luma_taps", "crates/splot-encode/src/kernels/wiener.rs::tests::simd_matches_scalar", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::chroma_wiener_ns_banks_reach_the_parsed_header", "crates/splot-core/src/write/frame_restoration_proptests.rs::lr_round_trips"]
 commands = ["cargo test -p splot-encode wiener --locked", "cargo test -p splot-core encoder_stream --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-DEBLOCK-OFFSETS"
+name = "Encoder per-plane deblocking offsets"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.5.2", "7.17.5", "7.17.6"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/loop_filter.rs"
+change_id = "enc-deblock-offsets"
+owner = "encoder"
+risk = "low"
+notes = "With PresetParams::loop_filter_search >= 1 the frame deblocks the pass-1 reconstruction at the DfDeltaQ ladder 0, 1, -1, 2, -2, 3, -3, -4 on every plane, the first 3, 5 or 8 entries at depth 1, 2 or 3 (depth 3 covers the whole -4..=3 range of df_par_bits 3, which the encoder sequence codes; entries outside the sequence range are skipped). Each plane keeps the offset of least SSE after deblocking, the earlier ladder entry on equal SSE, or turns off. A parabola fit on that SSE, scored before or after CDEF and loop restoration, measured neutral to worse than this ladder (#1596 and its follow-up), so the ladder stays. AV2 has one offset per plane and edge direction (§ 7.17.6 lvlSeg drives both qThr and side), so there is no separate side offset; luma codes one offset for both directions. Plane SSE uses the EncoderKernels::sse_row std::simd kernel."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/loop_filter_tests.rs::filtered_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/loop_filter_tests.rs::avm_decodes_filtered_frames_like_splot", "crates/splot-encode/src/kernels/distortion.rs::tests::row_sse_simd_matches_scalar"]
+commands = ["cargo test -p splot-encode loop_filter --locked"]
 fixtures = []
 diagnostics = []
 # ---------------------------------------------------------------------------

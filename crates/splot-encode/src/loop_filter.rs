@@ -33,6 +33,7 @@ use splot_recon::{DecodedFrame, PlaneId};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::intra_frame::map_tiles;
+use crate::kernels::kernels;
 use crate::preset::PresetParams;
 use crate::rd::{Bits, Lambda, RdCost, log2_q8};
 use crate::tile_writer::filters::FilterSyntax;
@@ -60,8 +61,9 @@ const CDEF_LADDER: [(u8, u8); 16] = [
     (8, 4),
     (1, 1),
 ];
-/// `DfDeltaQ` values in the order the search tries them (`f(3)` offsets).
-const DEBLOCK_LADDER: [i32; 8] = [0, 1, -1, 2, -2, 3, -4, -3];
+/// `DfDeltaQ` values in the order the search tries them, `0` and then by
+/// |offset|.
+const DEBLOCK_LADDER: [i32; 8] = [0, 1, -1, 2, -2, 3, -3, -4];
 /// Approximate frame-header bits of one CDEF strength set.
 const CDEF_SET_HEADER_BITS: u32 = 12;
 
@@ -448,7 +450,9 @@ impl Search<'_> {
     }
 
     /// Deblocking on every plane at the qindex-derived level, or with the
-    /// per-plane best `DfDeltaQ` of up to `1 + 2 * loop_filter_search` levels.
+    /// per-plane `DfDeltaQ` of least SSE among the first 3, 5 or 8 offsets
+    /// of [`DEBLOCK_LADDER`] at depth 1, 2 or 3 that the sequence codes; on
+    /// equal SSE the earlier offset, so `0` and then the smallest |offset|.
     fn deblocking(&self, preset: &PresetParams) -> Result<FrameFilterParams> {
         let on = FrameFilterParams {
             deblocking: [true; 4],
@@ -457,10 +461,18 @@ impl Search<'_> {
         if preset.loop_filter_search == 0 {
             return Ok(on);
         }
-        let levels = (1 + 2 * usize::from(preset.loop_filter_search)).min(DEBLOCK_LADDER.len());
+        let bits = self
+            .seq
+            .filter
+            .map_or(3, |f| u32::from(f.df_par_bits_minus_2) + 2);
+        let range = -(1 << (bits - 1))..=(1 << (bits - 1)) - 1;
+        let levels = [0, 3, 5, 8][usize::from(preset.loop_filter_search).min(3)];
         let off = self.plane_sse_all(self.recon);
         let mut best: [(u64, Option<i32>); 3] = core::array::from_fn(|plane| (off[plane], None));
-        for &delta in &DEBLOCK_LADDER[..levels] {
+        for &delta in DEBLOCK_LADDER[..levels]
+            .iter()
+            .filter(|&&d| range.contains(&d))
+        {
             let params = FrameFilterParams {
                 deblocking_delta_q: [delta; 4],
                 ..on
@@ -709,17 +721,16 @@ impl Search<'_> {
         let right = left.saturating_add(width).min(size.width());
         let bottom = top.saturating_add(height).min(size.height());
         let stride = recon.stride_samples();
-        let mut sum = 0u64;
-        for row in top..bottom {
-            let coded = recon
-                .samples()
-                .get(row * stride + left..row * stride + right);
-            let original = source.get(row * size.width() + left..row * size.width() + right);
-            for (&coded, &original) in coded.unwrap_or(&[]).iter().zip(original.unwrap_or(&[])) {
-                sum += u64::from(coded.abs_diff(original)).pow(2);
-            }
-        }
-        sum
+        let kernels = kernels();
+        (top..bottom)
+            .map(|row| {
+                let coded = recon
+                    .samples()
+                    .get(row * stride + left..row * stride + right);
+                let original = source.get(row * size.width() + left..row * size.width() + right);
+                kernels.sse_row(coded.unwrap_or(&[]), original.unwrap_or(&[]))
+            })
+            .sum()
     }
 }
 

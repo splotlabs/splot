@@ -67,7 +67,7 @@ const LOSSLESS_TX_SIZE_REASON: &str = "lossless_tx_size";
 const FSC_MAX_SAMPLES: usize = 32;
 const PALETTE_MIN_BLOCK_SIZE_INDEX: usize = 3;
 const PALETTE_MAX_SAMPLES: usize = 64;
-const INTER_FSC_MODE_CONTEXT: usize = 3;
+pub(crate) const INTER_FSC_MODE_CONTEXT: usize = 3;
 const FSC_BSIZE_GROUPS: [usize; 29] = [
     0, 1, 1, 2, 3, 3, 4, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 3, 3, 4, 4, 6, 6, 4, 4, 6, 6,
 ];
@@ -1081,7 +1081,7 @@ fn lossless_chroma_plane_is_4x4(
     chroma_n4w == 1 && chroma_n4h == 1
 }
 
-fn allow_fsc_intra(
+pub(crate) fn allow_fsc_intra(
     chroma_tools: GeneralIntraChromaToolConfig,
     block_n4w: usize,
     block_n4h: usize,
@@ -1105,7 +1105,7 @@ fn palette_y_mode_allowed(
         && block_n4h.saturating_mul(4) <= PALETTE_MAX_SAMPLES
 }
 
-fn dip_mode_info_allowed(
+pub(crate) fn dip_mode_info_allowed(
     chroma_tools: GeneralIntraChromaToolConfig,
     y_mode: IntraYMode,
     palette_y: Option<LumaPalette>,
@@ -1120,7 +1120,7 @@ fn dip_mode_info_allowed(
         && block_n4w.saturating_mul(block_n4h) >= 8
 }
 
-fn fsc_bsize_group(block_size: BlockSize) -> usize {
+pub(crate) fn fsc_bsize_group(block_size: BlockSize) -> usize {
     FSC_BSIZE_GROUPS[block_size.index()]
 }
 

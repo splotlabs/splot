@@ -57,6 +57,7 @@ use super::tile_frontier::minimal_partition_frame_facts;
 
 mod cctx;
 mod compound;
+mod fsc;
 mod inter;
 mod intra;
 mod mv;
@@ -70,11 +71,12 @@ pub use cctx::CCTX_ROTATIONS;
 pub use compound::{
     COMPOUND_MODES, CompoundMode, CompoundModes, InterPrediction, JMVD_SCALE_MODES,
 };
+pub use fsc::FSC_MAX_LEVEL;
 pub use inter::{
     AMVD_STEPS, EncoderReferences, INTERP_FILTERS, InterMode, InterModes, MV_PRECISION_EIGHTH_PEL,
     MotionVector, SingleMvs,
 };
-pub use intra::{ChromaMode, IntraModes, MAX_CFL_ALPHA, Mrl, TxType};
+pub use intra::{ChromaMode, Dip, IntraModes, MAX_CFL_ALPHA, Mrl, TxType};
 pub use parity::ParityHiding;
 pub use rollback::SyntaxSnapshot;
 use rollback::{CdfJournal, CdfRow};
@@ -656,6 +658,8 @@ pub struct IntraTileSyntax {
     tile: (Range<usize>, Range<usize>),
     /// The planned leaf may code CCTX.
     cctx_leaf: bool,
+    /// The planned intra leaf codes `fsc_mode`.
+    fsc_leaf: bool,
 }
 
 impl IntraTileSyntax {
@@ -770,6 +774,7 @@ impl IntraTileSyntax {
             journal,
             tile: (rows, cols),
             cctx_leaf: false,
+            fsc_leaf: false,
         })
     }
 
@@ -965,8 +970,8 @@ impl IntraTileSyntax {
             tx_area4(tx)?,
             tx.fills_block,
             eob_u_nonzero,
-            usize::from(self.leaf_is_inter()),
-            false,
+            usize::from(self.leaf_is_inter() || self.fsc_leaf),
+            self.fsc_leaf && self.tools.enable_fsc,
         )
         .map_err(rule("all_zero context"))?;
         self.tile_row(selector)

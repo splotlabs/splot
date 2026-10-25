@@ -13,7 +13,7 @@
 use core::ops::Range;
 
 use splot_decode::encoder_syntax::{
-    ChromaMode, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax, LeafBlock,
+    ChromaMode, Dip, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax, LeafBlock,
     MAX_CFL_ALPHA, Mrl, PartitionNode, SyntaxSnapshot,
 };
 use splot_recon::InterpolationFilter;
@@ -192,7 +192,17 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             })
             .collect();
         self.rank(leaf, deltas, LUMA, &mut ranked)?;
+        let angular = self.preset.dip.then(|| {
+            ranked
+                .iter()
+                .filter(|(_, modes)| modes.y_mode.is_directional())
+                .map(|&(satd, _)| satd)
+                .min()
+        });
         let mut shortlist = self.shortlist(ranked);
+        if let Some(Some(angular)) = angular {
+            shortlist.extend(self.dip_candidate(leaf, angular)?);
+        }
         if self.preset.mrl_trials > 0 {
             let blend = leaf.dimensions()? != (4, 4); // § 7.13.2.7 `not4x4`
             let lines: Vec<IntraModes> = shortlist
@@ -220,6 +230,29 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             );
         }
         Ok(shortlist)
+    }
+
+    /// The DIP prediction of `leaf` with the lowest SATD, when it beats the
+    /// best angular SATD `angular`.
+    fn dip_candidate(&mut self, leaf: &LeafBlock, angular: u64) -> Result<Option<LeafChoice>> {
+        if !self.syntax.dip_allowed(leaf, IntraModes::DC) {
+            return Ok(None);
+        }
+        let candidates: Vec<IntraModes> = (0..self.syntax.dip_modes()?)
+            .flat_map(|mode| {
+                [false, true].map(|transpose| IntraModes {
+                    dip: Some(Dip { mode, transpose }),
+                    ..IntraModes::DC
+                })
+            })
+            .collect();
+        let mut ranked = Vec::new();
+        self.rank(leaf, candidates, LUMA, &mut ranked)?;
+        Ok(ranked
+            .into_iter()
+            .min_by_key(|&(satd, _)| satd)
+            .filter(|&(satd, _)| satd < angular)
+            .map(|(_, modes)| LeafChoice::largest(modes)))
     }
 
     /// The candidate with the lowest `D + lambda * R` over `planes`; each
@@ -716,8 +749,9 @@ impl TrialCoder<'_, '_> {
             .collect())
     }
 
-    /// The best intra choice of `leaf`: luma modes on luma alone, then the
-    /// luma transform partition, then the chroma mode over the coded luma.
+    /// The best intra choice of `leaf`: luma modes on luma alone, the winner
+    /// with FSC, then the luma transform partition, then the chroma mode over
+    /// the coded luma.
     fn intra_choice(
         &mut self,
         node: PartitionNode,
@@ -726,6 +760,13 @@ impl TrialCoder<'_, '_> {
     ) -> Result<LeafChoice> {
         let luma = self.luma_shortlist(leaf)?;
         let mut choice = self.best(leaf, luma, LUMA, start)?;
+        if self.preset.fsc && self.syntax.fsc_allowed(leaf) {
+            let fsc = LeafChoice::largest(IntraModes {
+                fsc: true,
+                ..choice.modes
+            });
+            choice = self.best(leaf, vec![choice, fsc], LUMA, start)?;
+        }
         if self.preset.tx_partition_search {
             let partitions = self.syntax.luma_tx_partitions(leaf)?;
             let candidates = partitions

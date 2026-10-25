@@ -60,7 +60,11 @@ pub struct PresetParams {
     /// `subpel_depth` is `3`; other inter frames code quarter-pel vectors and
     /// refine to quarter samples. `0` never codes eighth-pel.
     pub eighth_pel_max_qindex: u16,
-    /// Loop-filter levels tried per frame; `0` derives the level from the qp.
+    /// Loop-filter search depth. Deblocking: `0` derives the level from the
+    /// qp; depth 1, 2 or 3 tries `DfDeltaQ` 0, ±1 (3 offsets), then ±2 (5),
+    /// then 3, -3 and -4 (8, the whole -4..=3 sequence range of
+    /// `df_par_bits` 3) per plane, by SSE after deblocking. CDEF tries 8, 12
+    /// or 16 strengths at depth 0, 1 or 2; depth 3 tries 16, as depth 2 does.
     pub loop_filter_search: u8,
     /// Frames per mini-GOP, `1..=8`: `1` codes every frame shown (IPPP);
     /// larger sizes code the last frame first as a hidden alt-ref and the
@@ -131,6 +135,14 @@ pub struct PresetParams {
     /// directions; off disables `enable_mhccp`. Off in every row: its
     /// `cfl_mhccp` flags lose luma BD-rate.
     pub mhccp: bool,
+    /// The winning luma mode of an intra leaf gets one RD trial with
+    /// `fsc_mode`; off disables `enable_fsc`. Off in every row: it pays only
+    /// on screen content, so it waits for a screen-content detector.
+    pub fsc: bool,
+    /// The DIP prediction with the lowest SATD gets one RD trial when it
+    /// beats the best angular SATD; off disables `enable_dip`. Off in every
+    /// row: the `use_dip` flag cost offsets its wins (2026-10-25).
+    pub dip: bool,
     /// Leaves wider or taller than 64 also try inter, skip-mode and compound
     /// predictions; off, they code intra only.
     pub large_inter: bool,
@@ -217,6 +229,8 @@ const fn row(
         ist_sets: 0,
         cctx: false,
         mhccp: false,
+        fsc: false,
+        dip: false,
         large_inter: true,
         inter_tx_split: if tx_partition_search { 24 } else { 0 },
         inter_ddt: false,
@@ -455,6 +469,8 @@ mod tests {
             assert!(fast.ist_sets <= slow.ist_sets);
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.mhccp <= slow.mhccp);
+            assert!(fast.fsc <= slow.fsc);
+            assert!(fast.dip <= slow.dip);
             assert!(fast.large_inter <= slow.large_inter);
             assert!(fast.inter_ddt <= slow.inter_ddt);
             assert!(fast.inter_ist <= slow.inter_ist);
