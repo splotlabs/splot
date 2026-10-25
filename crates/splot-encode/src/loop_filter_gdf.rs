@@ -38,8 +38,9 @@ pub(super) fn candidates(qindex: u32, bit_depth: u32) -> [(u8, u8); 16] {
     pairs
 }
 
-/// `gdf_per_block`, `gdf_pic_qc_idx` and `gdf_pic_scale_idx` bits.
-const HEADER_BITS: u32 = 5;
+/// `gdf_pic_qc_idx` and `gdf_pic_scale_idx` bits; `gdf_per_block` adds one
+/// where a grid codes it.
+const HEADER_BITS: u32 = 4;
 
 impl Search<'_> {
     /// The GDF choice on top of `params` and `syntax`, from the first
@@ -101,7 +102,8 @@ impl Search<'_> {
                     rd(deltas.iter().sum(), Bits::default(), self.lambda),
                 ),
             };
-            let cost = cost + rd(0, Bits::whole(HEADER_BITS), self.lambda);
+            let header = HEADER_BITS + u32::from(grid.is_some());
+            let cost = cost + rd(0, Bits::whole(header), self.lambda);
             if cost < best.as_ref().map_or(0, |best| best.0) {
                 best = Some((cost, gdf, flags));
             }
