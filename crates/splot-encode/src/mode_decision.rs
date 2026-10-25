@@ -14,7 +14,7 @@ use core::ops::Range;
 
 use splot_decode::encoder_syntax::{
     ChromaMode, Dip, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax, LeafBlock,
-    MAX_CFL_ALPHA, Mrl, PartitionNode, SyntaxSnapshot,
+    MAX_CFL_ALPHA, Mrl, PALETTE_COLORS, PartitionNode, SyntaxSnapshot,
 };
 use splot_recon::InterpolationFilter;
 
@@ -765,7 +765,7 @@ impl TrialCoder<'_, '_> {
             && self.coder.palette.count(self.coder.source, leaf)? >= 2
         {
             let mut candidates = vec![choice];
-            for size in [8, 4, 2] {
+            for size in (2..=PALETTE_COLORS).rev() {
                 if let Some(palette) = self.coder.palette.palette(size) {
                     let palette = LeafChoice::largest(IntraModes {
                         palette: Some(palette),

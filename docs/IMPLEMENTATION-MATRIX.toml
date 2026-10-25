@@ -5958,7 +5958,7 @@ module = "crates/splot-encode/src/screen.rs"
 change_id = "enc-screen-detect"
 owner = "encoder"
 risk = "low"
-notes = "PresetParams::screen_detect (on in every row): the first frame in display order is screen content when at least 6/64 of its 8x8 luma blocks that are not flat (range above 8 in 8-bit steps) have 8 or fewer distinct values; measured 19/64 on screendata and 35/64 on desktop_credits, at most 1.5/64 on park_joy (8/10/12-bit, 4:2:0/4:2:2/4:4:4), paris, niklas, rush_hour and the encode-perf clips. A detected sequence codes with the SCREEN_PRESETS row of its preset (FSC on, ENC-FSC). The block_colours kernel has a std::simd form and a scalar twin. allow_screen_content_tools stays 0 until the palette search lands. Against main c3b1959 at p6: screendata intra Y -27.90% (0.76x CPU), inter Y -23.39% (0.94x); desktop_credits intra Y -12.62% (0.91x), inter Y -10.76% (1.06x); screendata p10 intra Y -40.20%. Natural clips are byte-identical."
+notes = "PresetParams::screen_detect (on in every row): the first frame in display order is screen content when at least 6/64 of its 8x8 luma blocks that are not flat (range above 8 in 8-bit steps) have 8 or fewer distinct values; measured 19/64 on screendata and 35/64 on desktop_credits, at most 1.5/64 on park_joy (8/10/12-bit, 4:2:0/4:2:2/4:4:4), paris, niklas, rush_hour and the encode-perf clips. A detected sequence codes with the SCREEN_PRESETS row of its preset (FSC on, ENC-FSC; palette on, ENC-PALETTE). The block_colours kernel has a std::simd form and a scalar twin. Against main c3b1959 at p6: screendata intra Y -27.90% (0.76x CPU), inter Y -23.39% (0.94x); desktop_credits intra Y -12.62% (0.91x), inter Y -10.76% (1.06x); screendata p10 intra Y -40.20%. Natural clips are byte-identical."
 
 [feature.status]
 mapped = "done"
@@ -6134,6 +6134,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/intra_frame_gdf_tests.rs::gdf_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_gdf_tests.rs::avm_decodes_gdf_frames_like_splot", "crates/splot-encode/src/loop_filter_tests.rs::gdf_candidates_start_from_the_qindex_scale", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::gdf_params_reach_the_parsed_header"]
 commands = ["cargo test -p splot-encode gdf --locked", "cargo test -p splot-core gdf_params --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-PALETTE"
+name = "Encoder luma palette"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.3.3", "5.20.5.3", "5.20.8.1", "5.20.8.4", "5.20.8.5", "7.13.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/palette.rs"
+change_id = "enc-palette"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::palette, OFF in every PRESETS row and ON in SCREEN_PRESETS (ENC-SCREEN-DETECT); on, the sequence codes seq_choose_screen_content_tools and every frame allow_screen_content_tools = 1 with force_integer_mv = 0 (MVD sign derivation then stays off, as § 5.20.7.13 requires). The winning luma mode of an intra leaf gets RD trials against DC_PRED palettes of each size from 8 down to 2 colors: the leaf's most frequent luma values, each moved by one k-means step to the mean of its nearest samples unless it holds half of them. The color map is the nearest color of each source sample (nearest_colours kernel, std::simd form and scalar twin). The encoder_syntax facade writes has_palette_y, the size, the colors through the color cache, literal and deltas, and palette_tokens (identity rows and scan direction chosen by the facade, PaletteYColorIndex contexts from the decoder), predicts through the decoder's palette reconstruction for every transform partition, pads the map past the frame as the decoder does, and publishes the palette for the cache; the second pass replays the color maps. MEASURE"
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/tile_writer/tests.rs::palette_leaves_round_trip", "crates/splot-encode/src/intra_tools_tests.rs::palette_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::screen_streams_code_palette_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_palette_frames_like_splot", "crates/splot-encode/src/kernels/colours.rs::nearest_simd_matches_scalar", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::inter_headers_parse_with_the_reference_state"]
+commands = ["cargo test -p splot-encode palette --locked", "cargo test -p splot-core encoder_ --locked"]
 fixtures = []
 diagnostics = []
 

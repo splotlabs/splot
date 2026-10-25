@@ -51,8 +51,7 @@ impl PaletteSearch {
         for (color, &(_, value)) in colors.iter_mut().zip(&self.runs[..size]) {
             *color = value;
         }
-        let colors_of = |colors: &mut [u16; PALETTE_COLORS]| colors[..size].sort_unstable();
-        colors_of(&mut colors);
+        colors[..size].sort_unstable();
         if self.runs.len() == size {
             return Some(palette(colors, size));
         }
@@ -73,7 +72,7 @@ impl PaletteSearch {
                 *color = ((sum + count / 2) / count) as u16;
             }
         }
-        colors_of(&mut colors);
+        colors[..size].sort_unstable();
         let mut kept = 0;
         for index in 0..size {
             if kept == 0 || colors[index] != colors[kept - 1] {

@@ -143,8 +143,8 @@ pub struct PresetParams {
     /// its preset (FSC and palette on) when it looks like screen content.
     pub screen_detect: bool,
     /// The winning luma mode of an intra leaf gets RD trials against
-    /// `DC_PRED` palettes of up to 8, 4 and 2 of the leaf's most frequent
-    /// luma values; off disables `allow_screen_content_tools`. Off in every
+    /// `DC_PRED` palettes of 2 to 8 of the leaf's most frequent luma values;
+    /// off disables `allow_screen_content_tools`. Off in every
     /// row: it pays only on screen content, whose preset rows turn it on.
     pub palette: bool,
     /// The first frame picks the sequence's `cfl_ds_filter_index` by the
