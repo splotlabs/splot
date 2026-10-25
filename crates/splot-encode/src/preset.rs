@@ -151,7 +151,9 @@ pub struct PresetParams {
     /// `inter_tx_split / 64` of the energy; `0` codes `NONE` without a trial.
     pub inter_tx_split: u8,
     /// GDF `(gdf_pic_qc_idx, gdf_pic_scale_idx)` pairs the filter search
-    /// tries per frame; `0` disables GDF in the sequence.
+    /// tries per frame; `0` disables GDF in the sequence. All 16 in every
+    /// row: fewer pairs lost BD-rate, and each pair costs one filter-chain
+    /// run (paris -1.35% Y at p6, -1.28% Y at p10 for +3% CPU).
     pub gdf_candidates: u8,
 }
 
@@ -228,7 +230,7 @@ const fn row(
         dip: false,
         large_inter: true,
         inter_tx_split: if tx_partition_search { 24 } else { 0 },
-        gdf_candidates: 0,
+        gdf_candidates: 16,
     }
 }
 

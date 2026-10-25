@@ -49,8 +49,7 @@ fn gdf_stream(
 /// it and the stream differs.
 #[test]
 fn gdf_frames_decode_to_the_encoder_recon_on_any_thread_count() {
-    let base = Preset::new(9).unwrap().params();
-    let on = with_gdf(base, 16);
+    let on = Preset::new(9).unwrap().params();
     let (one, recon, flags, enabled) = gdf_stream(1, on);
     assert!(
         enabled && flags[0] && flags[1..].contains(&true),
@@ -60,7 +59,7 @@ fn gdf_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     for threads in [2, 8] {
         assert!(gdf_stream(threads, on).0 == one, "{threads} threads");
     }
-    let (off, off_recon, off_flags, off_enabled) = gdf_stream(1, base);
+    let (off, off_recon, off_flags, off_enabled) = gdf_stream(1, with_gdf(on, 0));
     assert!(!off_enabled && !off_flags.contains(&true), "{off_flags:?}");
     assert_same_samples(&decode(&off.concat()), &off_recon, "no gdf");
     assert_ne!(off, one);
@@ -73,7 +72,7 @@ fn avm_decodes_gdf_frames_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    let (units, recon, flags, _) = gdf_stream(2, with_gdf(Preset::new(9).unwrap().params(), 16));
+    let (units, recon, flags, _) = gdf_stream(2, Preset::new(9).unwrap().params());
     assert!(flags.iter().all(|&on| on), "{flags:?}");
     let avm = avm_decode(&avmdec, &units, (200, 136), BitDepth::Ten, "gdf");
     assert!(avm == recon, "AVM output differs");
