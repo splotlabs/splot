@@ -107,6 +107,7 @@ fn filters(sb: SuperblockSize) -> FrameFilterParams {
             },
             CcsoPlaneParams::default(),
         ],
+        gdf: None,
     }
 }
 
