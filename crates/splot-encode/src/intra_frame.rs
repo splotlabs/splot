@@ -37,6 +37,7 @@ use crate::preset::{PresetParams, TcqFrames};
 use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, RowCaches, block_rate};
 use crate::rd::partition::search_partition;
 use crate::rd::{Lambda, RdCost};
+use crate::screen::is_screen_content;
 use crate::tile_writer::coeffs::eob;
 use crate::tile_writer::{
     KeyFrameTileWriter, ResidualCoder, SuperblockDecision, TileWriterError, TransformDecision,
@@ -65,6 +66,9 @@ pub(crate) struct IntraFrameCoder {
     bit_depth: BitDepth,
     chroma: PixelFormat,
     preset: &'static PresetParams,
+    /// The preset row a screen-content sequence switches to; `None` keeps
+    /// [`Self::preset`].
+    screen: Option<&'static PresetParams>,
     references: EncoderReferences,
     tiles: UniformTiles,
     /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
@@ -132,6 +136,8 @@ impl IntraFrameCoder {
             bit_depth: config.bit_depth,
             chroma: config.chroma,
             preset,
+            screen: (preset.screen_detect && core::ptr::eq(preset, config.preset.params()))
+                .then(|| config.preset.screen_params()),
             tiles: UniformTiles {
                 cols_log2: config.tiles.cols_log2,
                 rows_log2: config.tiles.rows_log2,
@@ -170,10 +176,15 @@ impl FrameCoder for IntraFrameCoder {
     }
 
     fn start_sequence(&mut self, first: &SourceFrame) -> Result<()> {
-        if self.preset.cfl_filter {
-            self.set_cfl_filter(cfl_ds_filter(first))?;
+        let mut tools = self.params.tools;
+        if let Some(screen) = self.screen.filter(|_| is_screen_content(first)) {
+            self.preset = screen;
+            tools.fsc = screen.fsc;
         }
-        Ok(())
+        if self.preset.cfl_filter {
+            tools.cfl_ds_filter = cfl_ds_filter(first);
+        }
+        self.set_tools(tools)
     }
 }
 
@@ -190,14 +201,22 @@ fn sequence_state(
 }
 
 impl IntraFrameCoder {
-    /// Rebuilds the sequence with `cfl_ds_filter_index` `index`; call it
-    /// before the first frame.
-    fn set_cfl_filter(&mut self, index: u8) -> Result<()> {
-        if index != self.params.tools.cfl_ds_filter {
-            self.params.tools.cfl_ds_filter = index;
+    /// Rebuilds the sequence with `tools`; call it before the first frame.
+    fn set_tools(&mut self, tools: EncoderToolFlags) -> Result<()> {
+        if tools != self.params.tools {
+            self.params.tools = tools;
             (self.sequence, self.view, self.references) = sequence_state(&self.params)?;
         }
         Ok(())
+    }
+
+    /// [`Self::set_tools`] with `cfl_ds_filter_index` `index`.
+    #[cfg(test)]
+    fn set_cfl_filter(&mut self, index: u8) -> Result<()> {
+        self.set_tools(EncoderToolFlags {
+            cfl_ds_filter: index,
+            ..self.params.tools
+        })
     }
 
     /// Codes `source` as `plan` at quantizer `qp` against the committed references.
