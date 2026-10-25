@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Intra coding tools in coded streams: MRL (§ 7.13.2), IST (§ 7.15.3), CCTX
-//! (§ 7.14.6), MHCCP (§ 5.20.7.32) and FSC (§ 5.20.7.27).
+//! (§ 7.14.6), MHCCP (§ 5.20.7.32), FSC (§ 5.20.7.27) and DIP (§ 5.20.7.9).
 
 use super::*;
 
@@ -183,6 +183,40 @@ fn search_picks_fsc_leaves() {
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
 fn avm_decodes_fsc_frames_like_splot() {
     assert_avm_decodes(preset_with(|p| p.fsc = true), "fsc");
+}
+
+/// DIP streams decode to the encoder recon on any thread count.
+#[test]
+fn dip_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    assert_tool_streams(
+        preset_with(|p| p.dip = true),
+        preset_with(|p| p.dip = false),
+        |seq| seq.intra.unwrap().enable_dip,
+    );
+}
+
+/// The key-frame search codes DIP leaves.
+#[test]
+fn search_picks_dip_leaves() {
+    let config = config(136, 72, BitDepth::Ten, 9, 90);
+    let coder = IntraFrameCoder::with_preset(&config, preset_with(|p| p.dip = true)).unwrap();
+    let plan = crate::gop::plan(0, config.keyint);
+    let trees = search_frame(
+        &coder,
+        &plan,
+        &synthetic_frame(&config, 3),
+        config.bit_depth,
+    );
+    let dip = |choice: &LeafChoice| choice.inter.is_none() && choice.modes.dip.is_some();
+    let count: usize = trees.iter().map(|tree| leaves(tree, dip)).sum();
+    assert!(count > 0);
+}
+
+/// AVM decodes the DIP key and inter frames to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_dip_frames_like_splot() {
+    assert_avm_decodes(preset_with(|p| p.dip = true), "dip");
 }
 
 /// The key-frame search codes CCTX pairs and MHCCP leaves.
