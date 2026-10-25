@@ -5,11 +5,11 @@
 //! (§ 5.18.7.9) and the `use_gdf` flags (§ 5.20.10.3).
 //!
 //! GDF runs last in the filter chain and changes luma only, from inputs the
-//! flags do not change (§ 7.20.5). A sample is `Clip1(lr + Round2Signed(err
-//! * scale, shift))` and `err` does not depend on the scale, so the chain
-//! runs once up to GDF, the GDF `err` of every sample comes from one pass per
-//! `gdf_pic_qc_idx`, and one kernel pass gives the exact squared error of
-//! each unit at all four scales. The flags then follow by RD.
+//! flags do not change (§ 7.20.5). The GDF `err` of a sample does not
+//! depend on `GdfPixScale`, so the chain runs once up to GDF, `err` comes
+//! from one GDF pass per `gdf_pic_qc_idx`, and one kernel pass gives the
+//! exact squared error of each unit at all four scales. The flags then
+//! follow by RD.
 
 use splot_core::headers::frame::{FrameFilterParams, FrameGdf, FrameHeaderCore};
 use splot_core::symbol::Symbol;
