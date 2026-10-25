@@ -132,6 +132,7 @@ impl Config {
     /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`] or [`Error::Preset`].
     pub fn validate(&self) -> Result<()> {
         self.override_preset(self.preset.params())?;
+        self.override_preset(self.preset.screen_params())?;
         let dimension_ok = |value| (1..=MAX_FRAME_DIMENSION).contains(&value);
         if !dimension_ok(self.width) || !dimension_ok(self.height) {
             return Err(Error::InvalidDimensions {
@@ -176,12 +177,14 @@ impl Config {
         }
     }
 
-    /// `row` with [`Self::preset_overrides`] applied.
+    /// `row` with [`Self::preset_overrides`] applied, checked by
+    /// [`PresetParams::validate`].
     pub(crate) fn override_preset(&self, row: &PresetParams) -> Result<PresetParams> {
         let mut row = *row;
         for (name, value) in &self.preset_overrides {
             row.set(name, value)?;
         }
+        row.validate()?;
         Ok(row)
     }
 

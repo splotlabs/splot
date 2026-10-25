@@ -215,6 +215,62 @@ pub enum PresetError {
         /// The values the field accepts.
         expected: &'static str,
     },
+    /// A field is outside the range the encoder supports, alone or against
+    /// another field.
+    #[error("preset field `{field}` = {value} is outside {allowed}")]
+    OutOfRange {
+        /// The field.
+        field: &'static str,
+        /// Its value.
+        value: u16,
+        /// The supported range.
+        allowed: String,
+    },
+}
+
+impl PresetParams {
+    /// Checks the ranges the encoder supports, per field and across fields;
+    /// every [`PRESETS`] row passes, a row with overrides may not.
+    ///
+    /// # Errors
+    /// Returns [`PresetError::OutOfRange`] for the first field outside its range.
+    pub fn validate(&self) -> core::result::Result<(), PresetError> {
+        let check = |field, value: u8, min: u8, max: u8, bound: &str| {
+            if (min..=max).contains(&value) {
+                Ok(())
+            } else {
+                Err(PresetError::OutOfRange {
+                    field,
+                    value: value.into(),
+                    allowed: format!("{min}..={max}{bound}"),
+                })
+            }
+        };
+        check("max_block_log2", self.max_block_log2, 2, 7, "")?;
+        check(
+            "min_block_log2",
+            self.min_block_log2,
+            2,
+            self.max_block_log2,
+            " (max_block_log2)",
+        )?;
+        check("intra_modes", self.intra_modes, 1, u8::MAX, "")?;
+        check("subpel_depth", self.subpel_depth, 0, 3, "")?;
+        check("loop_filter_search", self.loop_filter_search, 0, 3, "")?;
+        check("mini_gop_size", self.mini_gop_size, 1, 8, "")?;
+        check(
+            "lookahead_frames",
+            self.lookahead_frames,
+            self.mini_gop_size,
+            u8::MAX,
+            " (mini_gop_size..)",
+        )?;
+        check("drl_bits", self.drl_bits, 1, 5, "")?;
+        check("interp_filter_search", self.interp_filter_search, 0, 2, "")?;
+        check("ext_partitions", self.ext_partitions, 0, 2, "")?;
+        check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
+        check("gdf_candidates", self.gdf_candidates, 0, 16, "")
+    }
 }
 
 /// A [`PresetParams`] field type that [`PresetParams::set`] parses.
@@ -452,7 +508,10 @@ impl Default for Preset {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
+    use crate::{Config, Encoder, SourceFrame};
 
     #[test]
     fn every_field_is_monotone_from_slow_to_fast() {
@@ -590,6 +649,91 @@ mod tests {
             );
         }
         assert_eq!(params, PRESETS[6]);
+    }
+
+    #[test]
+    fn every_row_passes_validate() {
+        for params in PRESETS.iter().chain(&SCREEN_PRESETS) {
+            assert_eq!(params.validate(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn validate_rejects_unsupported_ranges() {
+        for (overrides, field) in [
+            (
+                &[("min_block_log2", "7"), ("max_block_log2", "6")][..],
+                "min_block_log2",
+            ),
+            (&[("max_block_log2", "8")], "max_block_log2"),
+            (&[("drl_bits", "6")], "drl_bits"),
+            (&[("drl_bits", "0")], "drl_bits"),
+            (&[("lookahead_frames", "3")], "lookahead_frames"),
+            (&[("mini_gop_size", "0")], "mini_gop_size"),
+            (&[("mini_gop_size", "9")], "mini_gop_size"),
+            (&[("intra_modes", "0")], "intra_modes"),
+            (&[("gdf_candidates", "17")], "gdf_candidates"),
+        ] {
+            let mut params = PRESETS[6];
+            for (name, value) in overrides {
+                assert_eq!(params.set(name, value), Ok(()));
+            }
+            assert!(
+                matches!(params.validate(), Err(PresetError::OutOfRange { field: f, .. }) if f == field),
+                "{overrides:?}"
+            );
+        }
+    }
+
+    /// Values at the type extremes and around the supported bounds.
+    const PROBE_VALUES: [&str; 17] = [
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "16", "17", "255", "65535", "All", "Off",
+        "1,1,1",
+    ];
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// A random set of overrides either fails validation or encodes two
+        /// tiny frames.
+        #[test]
+        fn random_overrides_validate_or_encode(
+            preset in 0..=Preset::MAX,
+            picks in prop::collection::vec(
+                (0..PresetParams::FIELDS.len(), 0..PROBE_VALUES.len()),
+                1..7,
+            ),
+        ) {
+            let mut config = Config::new(24, 16);
+            config.preset = Preset::new(preset).unwrap_or_default();
+            config.threads = splot_parallel::ThreadCount::from_count_or_auto(1);
+            let mut scratch = PRESETS[0];
+            for (field, start) in picks {
+                let name = PresetParams::FIELDS[field];
+                let value = (start..start + PROBE_VALUES.len())
+                    .map(|i| PROBE_VALUES[i % PROBE_VALUES.len()])
+                    .find(|value| scratch.set(name, value).is_ok());
+                config.preset_overrides.extend(value.map(|value| (name.into(), value.into())));
+            }
+            if config.validate().is_ok() {
+                let encode = || -> crate::Result<usize> {
+                    let mut encoder = Encoder::new(config.clone())?;
+                    for pts in 0..2 {
+                        let luma = (0..24 * 16).map(|i| ((i * 37 + i / 24 * 91 + pts * 13) % 97) as u16 + 60);
+                        let planes = [luma.collect(), vec![128; 12 * 8], vec![120; 12 * 8]];
+                        encoder.send_frame(SourceFrame::new(&config, pts as u64, planes)?)?;
+                    }
+                    encoder.flush()?;
+                    let mut bytes = 0;
+                    while let Some(packet) = encoder.receive_packet()? {
+                        bytes += packet.data.len();
+                    }
+                    Ok(bytes)
+                };
+                let result = encode();
+                prop_assert!(result.is_ok(), "{:?}: {:?}", config.preset_overrides, result);
+            }
+        }
     }
 
     #[test]
