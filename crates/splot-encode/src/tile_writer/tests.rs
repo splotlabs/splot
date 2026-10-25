@@ -71,6 +71,7 @@ impl Case {
                 uneven_4way_partitions: false,
                 cfl: true,
                 mhccp: false,
+                cfl_ds_filter: 0,
                 screen_content: false,
                 ibp: true,
                 mrls: false,

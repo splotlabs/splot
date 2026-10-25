@@ -67,6 +67,7 @@ mod tcq;
 mod transform;
 
 pub use super::cdf::block_context::IntraYMode as IntraMode;
+pub use crate::prediction::chroma::cfl::{CFL_FILTERS_420, CFL_FILTERS_422};
 pub use cctx::CCTX_ROTATIONS;
 pub use compound::{
     COMPOUND_MODES, CompoundMode, CompoundModes, InterPrediction, JMVD_SCALE_MODES,

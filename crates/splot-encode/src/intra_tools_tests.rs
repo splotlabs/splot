@@ -2,15 +2,25 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Intra coding tools in coded streams: MRL (§ 7.13.2), IST (§ 7.15.3), CCTX
-//! (§ 7.14.6), MHCCP (§ 5.20.7.32), FSC (§ 5.20.7.27) and DIP (§ 5.20.7.9).
+//! (§ 7.14.6), MHCCP (§ 5.20.7.32), FSC (§ 5.20.7.27), DIP (§ 5.20.7.9) and
+//! the CfL down-sampling filter (§ 7.13.5).
 
 use super::*;
 
 /// A key frame and two inter frames of a two-tile `chroma` pan at `bit_depth`
 /// on `threads` threads: the units, the encoder recon, and the sequence.
 fn tool_stream(
+    case: (usize, PixelFormat, BitDepth),
+    preset: &'static PresetParams,
+) -> (Vec<Vec<u8>>, Vec<u8>, SequenceHeader) {
+    cfl_stream(case, preset, 0)
+}
+
+/// [`tool_stream`] with `cfl_ds_filter_index` `cfl_filter`.
+fn cfl_stream(
     (threads, chroma, bit_depth): (usize, PixelFormat, BitDepth),
     preset: &'static PresetParams,
+    cfl_filter: u8,
 ) -> (Vec<Vec<u8>>, Vec<u8>, SequenceHeader) {
     let mut config = config(136, 72, bit_depth, 9, 120);
     config.chroma = chroma;
@@ -20,6 +30,7 @@ fn tool_stream(
     };
     config.threads = splot_parallel::ThreadCount::from(threads);
     let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    coder.set_cfl_filter(cfl_filter).unwrap();
     let (mut units, mut recon) = (Vec::new(), Vec::new());
     for index in 0..3 {
         let plan = crate::gop::plan(u64::from(index), config.keyint);
@@ -30,6 +41,37 @@ fn tool_stream(
         units.push(coded.temporal_unit);
     }
     (units, recon, coder.sequence)
+}
+
+/// Every `cfl_ds_filter_index` reaches the sequence header, and its CfL and
+/// chroma Wiener-NS samples decode to the encoder recon in every chroma
+/// format and both bit depths.
+#[test]
+fn cfl_filters_decode_to_the_encoder_recon() {
+    for chroma in CHROMAS {
+        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+            for index in 1..3 {
+                let (units, recon, seq) = cfl_stream((2, chroma, bit_depth), &PRESETS[9], index);
+                assert_eq!(seq.intra.unwrap().cfl_ds_filter_index, index);
+                let name = format!("{chroma:?} {bit_depth:?} filter {index}");
+                assert_same_samples(&decode(&units.concat()), &recon, &name);
+            }
+        }
+    }
+}
+
+/// AVM decodes the CfL and chroma Wiener-NS samples of every filter like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_cfl_filters_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for (index, bit_depth) in [(1, BitDepth::Eight), (2, BitDepth::Ten)] {
+        let (units, recon, _) = cfl_stream((2, PixelFormat::Yuv420, bit_depth), &PRESETS[9], index);
+        let avm = avm_decode(&avmdec, &units, (136, 72), bit_depth, "cfl filter");
+        assert!(avm == recon, "filter {index}: AVM output differs");
+    }
 }
 
 /// Preset 9, fast enough for debug tests, with `set` applied.

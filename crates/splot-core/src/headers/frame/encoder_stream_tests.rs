@@ -145,6 +145,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         uneven_4way_partitions: true,
         cfl: true,
         mhccp: true,
+        cfl_ds_filter: 2,
         screen_content: true,
         ibp: true,
         mrls: true,
@@ -172,6 +173,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     let intra = seq.intra.unwrap();
     assert!(intra.enable_dip && intra.enable_mrls && intra.enable_cfl_intra);
     assert!(intra.enable_mhccp && intra.enable_ibp && intra.enable_intra_edge_filter);
+    assert_eq!(intra.cfl_ds_filter_index, 2);
     let tq = seq.transform_quant_entropy.unwrap();
     assert!(
         tq.enable_fsc && tq.enable_idtx_intra && tq.enable_intra_ist,
