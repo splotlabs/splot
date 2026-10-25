@@ -187,7 +187,7 @@ impl Search<'_> {
             &core,
             self.recorder,
             self.recon,
-            (&syntax.cdef_indices, &syntax.ccso_blocks),
+            (&syntax.cdef_indices, &syntax.ccso_blocks, None),
             &[],
         )
         .map_err(coding("loop filters"))?;
@@ -466,7 +466,7 @@ impl Search<'_> {
             ccso: Default::default(),
             ..*params
         })?;
-        apply_loop_filters(self.seq, &core, self.recorder, off, (&[], &[]), lr_on)
+        apply_loop_filters(self.seq, &core, self.recorder, off, (&[], &[], None), lr_on)
             .map_err(coding("loop filters"))
     }
 

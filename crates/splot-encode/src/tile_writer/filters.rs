@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Loop-filter syntax of the key-frame tile writer: `cdef_idx` (§ 5.20.10.1),
-//! `ccso_blk` (§ 5.20.10.2) and the `read_lr_unit` type (§ 5.20.10.5), plus the
-//! per-leaf records of the decoder's filter chain.
+//! Loop-filter syntax of the key-frame tile writer: `use_gdf` (§ 5.20.10.3),
+//! `cdef_idx` (§ 5.20.10.1), `ccso_blk` (§ 5.20.10.2) and the `read_lr_unit`
+//! type (§ 5.20.10.5), plus the per-leaf records of the decoder's filter chain.
 //!
 //! The writer calls three hooks: [`TileFilters::write_lr_units`] at each
-//! superblock root before its partition symbols, [`TileFilters::write_cdef_index`]
-//! and [`TileFilters::write_ccso_blocks`] at the start of each leaf (after
-//! `skip_txfm` of an inter leaf), and
+//! superblock root before its partition symbols, [`TileFilters::write_leaf_syntax`]
+//! at the start of each leaf (after `skip_txfm` of an inter leaf), and
 //! [`TileFilters::record_leaf`] or [`TileFilters::record_inter_leaf`] after
 //! each leaf's residual.
 
@@ -19,8 +18,8 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_decode::encoder_syntax::{
-    CcsoBlockMap, CcsoGrid, CdefIndexMap, FilterRecorder, IntraTileSyntax, LeafBlock, LrLayout,
-    LrSymbol, LrUnit, LrUnitType, PartitionNode, TransformBlock,
+    CcsoBlockMap, CcsoGrid, CdefIndexMap, FilterRecorder, GdfBlockMap, GdfGrid, IntraTileSyntax,
+    LeafBlock, LrLayout, LrSymbol, LrUnit, LrUnitType, PartitionNode, TransformBlock,
 };
 
 use super::{Result, TileWriterError};
@@ -35,6 +34,8 @@ pub(crate) struct FilterSyntax {
     /// `ccso_blk` per plane and [`CcsoGrid`] unit in raster order; a missing
     /// entry codes `0`.
     pub(crate) ccso_blocks: Vec<Vec<u8>>,
+    /// `use_gdf` per [`GdfGrid`] unit in raster order; a missing entry codes `0`.
+    pub(crate) gdf_blocks: Vec<u8>,
 }
 
 /// The filter records of a finished tile and the filter choices it coded.
@@ -76,6 +77,8 @@ pub(crate) struct TileFilters {
     cdef: CdefIndexMap,
     ccso: CcsoBlockMap,
     ccso_cols: usize,
+    gdf: GdfBlockMap,
+    gdf_cols: usize,
     lr: LrLayout,
     lr_tools: [FrameRestorationType; 3],
     syntax: FilterSyntax,
@@ -91,6 +94,8 @@ impl TileFilters {
             cdef: CdefIndexMap::new(seq, core, tile)?,
             ccso: CcsoBlockMap::new(seq, core, tile)?,
             ccso_cols: CcsoGrid::new(seq, core)?.cols,
+            gdf: GdfBlockMap::new(seq, core, tile)?,
+            gdf_cols: GdfGrid::new(seq, core)?.map_or(0, |grid| grid.cols),
             lr: LrLayout::new(seq, core, tile)?,
             lr_tools: core::array::from_fn(|plane| {
                 core.lr_params
@@ -123,9 +128,30 @@ impl TileFilters {
         Ok(())
     }
 
+    /// Writes `use_gdf`, `cdef_idx` and `ccso_blk` where `leaf`, coded with
+    /// `skip_txfm = skip`, codes them.
+    pub(crate) fn write_leaf_syntax(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        symbols: &mut impl SymbolSink,
+        leaf: &LeafBlock,
+        skip: bool,
+    ) -> Result<()> {
+        if let Some((row, col)) = self.gdf.unit(leaf) {
+            let on = self
+                .syntax
+                .gdf_blocks
+                .get(row * self.gdf_cols + col)
+                .is_some_and(|&value| value != 0);
+            symbols.symbol(syntax.use_gdf_cdf()?, Symbol::new(u8::from(on)))?;
+        }
+        self.write_cdef_index(syntax, symbols, leaf, skip)?;
+        self.write_ccso_blocks(syntax, symbols, leaf)
+    }
+
     /// Writes `cdef_idx` when `leaf`, coded with `skip_txfm = skip`, is the
     /// first leaf of its 64x64 unit that codes one.
-    pub(crate) fn write_cdef_index(
+    fn write_cdef_index(
         &mut self,
         syntax: &mut IntraTileSyntax,
         symbols: &mut impl SymbolSink,
@@ -163,7 +189,7 @@ impl TileFilters {
     }
 
     /// Writes `ccso_blk` of every coded plane when `leaf` starts a CCSO unit.
-    pub(crate) fn write_ccso_blocks(
+    fn write_ccso_blocks(
         &mut self,
         syntax: &mut IntraTileSyntax,
         symbols: &mut impl SymbolSink,
@@ -217,6 +243,7 @@ impl TileFilters {
                 cdef_indices,
                 lr_on: self.syntax.lr_on,
                 ccso_blocks: self.syntax.ccso_blocks,
+                gdf_blocks: self.syntax.gdf_blocks,
             },
         ))
     }

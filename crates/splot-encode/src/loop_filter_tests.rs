@@ -144,6 +144,24 @@ fn filtered_frames_decode_to_the_encoder_recon() {
     );
 }
 
+/// Every GDF pair is tried once; the first takes the largest
+/// `gdf_pic_qc_idx` and the scale index of its qindex at either bit depth.
+#[test]
+fn gdf_candidates_start_from_the_qindex_scale() {
+    for (qindex, bit_depth, first) in [
+        (100, 8, (3, 1)),
+        (140, 8, (3, 2)),
+        (200, 8, (3, 3)),
+        (188, 10, (3, 2)),
+    ] {
+        let order = super::gdf::candidates(qindex, bit_depth);
+        assert_eq!(order[0], first, "q{qindex} {bit_depth}-bit");
+        let mut sorted = order;
+        sorted.sort_unstable();
+        assert_eq!(sorted, core::array::from_fn(|i| (i as u8 / 4, i as u8 % 4)));
+    }
+}
+
 #[test]
 fn more_cdef_sets_cost_more_bits() {
     let rates: Vec<_> = (1..=8).map(|sets| cdef_rate(sets, 10)).collect();
@@ -244,7 +262,8 @@ fn ccso_search_classes_match_the_decoder_output() {
         assert!(grid.rows * grid.cols > 1, "{grid:?}");
         let on = vec![vec![1; grid.rows * grid.cols]; 3];
         let recorder = FilterRecorder::new(&seq, &core).unwrap();
-        let out = apply_loop_filters(&seq, &core, &recorder, &recon, (&[], &on), &[]).unwrap();
+        let out =
+            apply_loop_filters(&seq, &core, &recorder, &recon, (&[], &on, None), &[]).unwrap();
         let source = SourceFrame::new(&config, 0, visible_planes(&out).unwrap()).unwrap();
         let input = CcsoInput {
             seq: &seq,

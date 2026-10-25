@@ -202,8 +202,10 @@ fn check_cell_classes(bit_depth: BitDepthIdc, cdef_and_ccso: bool) {
         let plane = frame.plane(PlaneId::Y).unwrap();
         i32::from(plane.samples()[y * plane.stride_samples() + x])
     };
-    let filtered = apply_loop_filters(&seq, &core, &recorder, &frame, (cdef, ccso), &[]).unwrap();
-    let out = apply_loop_filters(&seq, &core, &recorder, &frame, (cdef, ccso), &lr_on).unwrap();
+    let filtered =
+        apply_loop_filters(&seq, &core, &recorder, &frame, (cdef, ccso, None), &[]).unwrap();
+    let out =
+        apply_loop_filters(&seq, &core, &recorder, &frame, (cdef, ccso, None), &lr_on).unwrap();
     let changed =
         (0..height).any(|y| (0..width).any(|x| plane(&filtered, x, y) != plane(&frame, x, y)));
     assert_eq!(changed, cdef_and_ccso, "{bit_depth:?}");
