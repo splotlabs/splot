@@ -92,8 +92,12 @@ mod tests {
     }
 
     /// `enable_fsc` of the stream the encoder writes for `frame`.
-    fn encoded_fsc(frame: SourceFrame) -> bool {
+    fn encoded_fsc(frame: SourceFrame, overrides: &[(&str, &str)]) -> bool {
         let mut config = Config::new(64, 32);
+        config.preset_overrides = overrides
+            .iter()
+            .map(|&(field, value)| (field.into(), value.into()))
+            .collect();
         config.bit_depth = frame.bit_depth();
         config.preset = Preset::new(10).unwrap();
         config.rate_control = RateControlMode::ConstantQp { qp: 120 };
@@ -111,16 +115,20 @@ mod tests {
         seq.unwrap().transform_quant_entropy.unwrap().enable_fsc
     }
 
-    /// The encoder turns FSC on for screen content only.
+    /// The encoder turns FSC on for screen content only; preset overrides
+    /// win over the switch.
     #[test]
     fn the_encoder_enables_fsc_for_screen_content() {
         let text = frame(BitDepth::Ten, |x, y| {
             if (x * 7 + y * 3) % 11 < 3 { 80 } else { 920 }
         });
-        assert!(encoded_fsc(text));
+        assert!(encoded_fsc(text.clone(), &[]));
+        assert!(!encoded_fsc(text.clone(), &[("fsc", "0")]));
+        assert!(!encoded_fsc(text, &[("screen_detect", "0")]));
         let noise = frame(BitDepth::Eight, |x, y| {
             ((x * 37 + y * 91 + x * y * 13) % 97) as u16 + 60
         });
-        assert!(!encoded_fsc(noise));
+        assert!(!encoded_fsc(noise.clone(), &[]));
+        assert!(encoded_fsc(noise, &[("fsc", "1")]));
     }
 }

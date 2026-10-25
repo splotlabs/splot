@@ -34,7 +34,7 @@ pub(super) fn in_first_inter_frame<R>(
         .encode_frame(&panning_frame(config, 0), &key, 110)
         .unwrap();
     let plan = crate::gop::plan(1, config.keyint);
-    let tools = crate::gop::frame_tools(coder.preset, coder.tiles, 110);
+    let tools = crate::gop::frame_tools(&coder.preset, coder.tiles, 110);
     let core = plan
         .header(
             &coder.view,
@@ -51,7 +51,7 @@ pub(super) fn in_first_inter_frame<R>(
     let padded = PaddedSource::new(&source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
     let lambda = Lambda::from_qindex(110, config.bit_depth).unwrap();
     let mut residual =
-        SourceResidualCoder::new(&padded, 110, config.bit_depth, coder.preset, lambda);
+        SourceResidualCoder::new(&padded, 110, config.bit_depth, &coder.preset, lambda);
     writer
         .search_superblock(|syntax, root| test(syntax, root, &mut residual))
         .unwrap()
@@ -261,7 +261,7 @@ fn large_leaves_are_128x128_128x64_or_64x128() {
         .encode_frame(&panning_frame(&config, 0), &key, 110)
         .unwrap();
     let plan = crate::gop::plan(1, config.keyint);
-    let tools = crate::gop::frame_tools(coder.preset, coder.tiles, 110);
+    let tools = crate::gop::frame_tools(&coder.preset, coder.tiles, 110);
     let filters = FrameFilterParams::default();
     let core = plan
         .header(&coder.view, &coder.references, 110, &filters, tools)
