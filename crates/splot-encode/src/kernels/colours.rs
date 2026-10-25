@@ -12,10 +12,11 @@ use std::simd::num::SimdUint as _;
 pub(crate) const MAX_COLOURS: usize = 16;
 const LANES: usize = 8;
 
-/// `(min(distinct values, limit + 1), max - min)` of `block`, `limit` at
-/// most [`MAX_COLOURS`] - 1; `(0, 0)` for an empty block.
+/// `(min(distinct values, limit + 1), max - min)` of `block`, with `limit`
+/// clamped to [`MAX_COLOURS`] - 1; `(0, 0)` for an empty block.
 #[cfg(test)]
 pub(crate) fn colours_scalar(block: &[u16], limit: usize) -> (usize, u16) {
+    let limit = limit.min(MAX_COLOURS - 1);
     let mut seen = Vec::new();
     for &sample in block {
         if seen.len() <= limit && !seen.contains(&sample) {
@@ -75,7 +76,7 @@ mod tests {
         #[test]
         fn simd_matches_scalar(
             block in prop::collection::vec(prop_oneof![3 => 40u16..46, 1 => 0u16..1024], 0..80),
-            limit in 0..MAX_COLOURS,
+            limit in 0..2 * MAX_COLOURS,
         ) {
             prop_assert_eq!(colours_scalar(&block, limit), colours_simd(&block, limit));
         }
