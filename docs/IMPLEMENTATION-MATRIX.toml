@@ -5692,6 +5692,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-INTER-IST-DDT"
+name = "Encoder inter secondary transforms and DDT kernels"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.8", "5.20.8.2", "7.15.3", "7.15.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_frame.rs"
+change_id = "enc-inter-ist-ddt"
+owner = "encoder"
+risk = "medium"
+notes = "Implemented, off in every row (pinned by preset::tests::inter_ist_and_ddt_placement). PresetParams::inter_ist (enable_inter_ist): in a leaf's final trial a DCT_DCT inter luma block of at least 16x16 ranks the three inter secondary kernels by kept energy and gives the best one an RD trial; the facade codes sec_tx_type in the inter CDF rows without most_probable_stx_set, resolves the inter kernel and carries sec_tx_type into the inter residual reconstruction. PresetParams::inter_ddt (enable_inter_ddt) makes inter ADST and FDST sides of length 8 or 16 use the DDT kernels through recon_params and the inter residual add; 2026-10-25 measurements: DDT is BD-rate neutral at p6 (park_joy -0.00%, niklas +0.03%); inter IST vs main c3b195964 gives p6 park_joy -0.06% at 1.004x CPU, paris +0.34% at 1.011x, p0 park_joy +0.26%, niklas p6 -0.00% at 1.011x (p6 mean +0.09%), every DCT_DCT inter block of at least 16x16 with eob > 3 pays a sec_tx_type symbol; revisit with a cheaper signalling decision in B3. The forward DDT matrices and forward_ist kernels are the existing SIMD kernels with scalar twins. Off writes the old stream byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_luma_blocks_code_ist_as_the_decoder_reads_it", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_ist_and_ddt_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::inter_ist_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_inter_ist_tests.rs::ddt_follows_the_planned_leaf", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot"]
+commands = ["cargo test -p splot-encode inter_ist --locked", "SPLOT_AVM_DECODER=<avmdec> cargo test -p splot-encode avm_decodes_inter_frames -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-CCSO"
 name = "Encoder cross-component sample offset"
 category = "encoder"

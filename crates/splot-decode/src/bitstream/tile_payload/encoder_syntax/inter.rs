@@ -389,6 +389,8 @@ struct PlannedInter {
     motion: EncoderMotion,
     mvs: [Mv; 2],
     residual: EncoderInterResidual,
+    /// `use_intrabc`: an IntraBC block transforms without DDT (§ 7.15.4).
+    use_intrabc: bool,
 }
 
 /// The saved inter state of one region.
@@ -647,6 +649,7 @@ impl IntraTileSyntax {
             motion,
             mvs,
             residual: EncoderInterResidual::default(),
+            use_intrabc: false,
         });
         for index in 0..blocks.len() {
             if blocks[index].plane > 0 {
@@ -720,12 +723,17 @@ impl IntraTileSyntax {
                     &levels,
                     eob,
                     (tx_type as usize, use_tcq),
+                    tx.ist.syntax(true).filter(|_| eob > 0),
                 )
                 .map_err(rule("inter residual"))?;
         }
         state
             .tile
-            .add_residual(&planned.residual, &mut self.recon.workspace)
+            .add_residual(
+                &planned.residual,
+                planned.use_intrabc,
+                &mut self.recon.workspace,
+            )
             .map_err(rule("inter residual"))
     }
 
@@ -1062,8 +1070,17 @@ impl IntraTileSyntax {
         }
     }
 
+    /// Whether the planned inter leaf is an IntraBC block.
+    pub(super) fn leaf_uses_intrabc(&self) -> bool {
+        self.inter
+            .as_ref()
+            .and_then(|inter| inter.planned.as_ref())
+            .is_some_and(|planned| planned.use_intrabc)
+    }
+
     /// Whether the planned leaf is an inter leaf.
-    pub(super) fn leaf_is_inter(&self) -> bool {
+    #[must_use]
+    pub fn leaf_is_inter(&self) -> bool {
         self.inter
             .as_ref()
             .is_some_and(|inter| inter.planned.is_some())
