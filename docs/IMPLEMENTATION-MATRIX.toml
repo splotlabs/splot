@@ -5830,7 +5830,7 @@ module = "crates/splot-encode/src/tile_writer/coeffs.rs"
 change_id = "enc-fsc"
 owner = "encoder"
 risk = "medium"
-notes = "Implemented, OFF in every preset; enable via the A14 screen-content detector. PresetParams::fsc (off disables enable_fsc): the winning luma mode of an intra leaf gets one RD trial with fsc_mode. The encoder_syntax facade takes IntraModes::fsc, writes fsc_mode (neighbour context, or the inter context for intra leaves in mixed regions of inter frames), plans IDTX-only luma, uses the FSC transform-partition rows and txb_skip context, and offers the FSC coefficient rows (coeff_base_bob, coeff_base_idtx, coeff_br_idtx, idtx_sign); the tile writer codes FSC levels from the first nonzero scan position, also for inter IDTX blocks. FSC blocks skip TCQ (uses_tcq excludes useFsc) and RDOQ. On at p6 against main: screendata intra -28.01% (0.69x CPU), inter -24.45% (0.87x); paris intra +1.02%, inter +0.92%; park_joy intra +0.14%. Off writes the old stream byte-identically."
+notes = "Implemented, OFF in every PRESETS row; ON in SCREEN_PRESETS, which a sequence uses when ENC-SCREEN-DETECT flags its first frame. PresetParams::fsc (off disables enable_fsc): the winning luma mode of an intra leaf gets one RD trial with fsc_mode. The encoder_syntax facade takes IntraModes::fsc, writes fsc_mode (neighbour context, or the inter context for intra leaves in mixed regions of inter frames), plans IDTX-only luma, uses the FSC transform-partition rows and txb_skip context, and offers the FSC coefficient rows (coeff_base_bob, coeff_base_idtx, coeff_br_idtx, idtx_sign); the tile writer codes FSC levels from the first nonzero scan position, also for inter IDTX blocks. FSC blocks skip TCQ (uses_tcq excludes useFsc) and RDOQ. On at p6 against main: screendata intra -28.01% (0.69x CPU), inter -24.45% (0.87x); paris intra +1.02%, inter +0.92%; park_joy intra +0.14%. Off writes the old stream byte-identically."
 
 [feature.status]
 mapped = "done"
@@ -5911,6 +5911,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/cfl_filter.rs::picks_the_filter_that_made_the_chroma", "crates/splot-encode/src/cfl_filter.rs::the_encoder_codes_the_index_of_the_first_frame", "crates/splot-encode/src/kernels/cfl.rs::simd_matches_scalar", "crates/splot-encode/src/intra_tools_tests.rs::cfl_filters_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_cfl_filters_like_splot"]
 commands = ["cargo test -p splot-encode cfl --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-SCREEN-DETECT"
+name = "Encoder screen-content detection"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.5.5", "5.20.7.27"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/screen.rs"
+change_id = "enc-screen-detect"
+owner = "encoder"
+risk = "low"
+notes = "PresetParams::screen_detect (on in every row): the first frame in display order is screen content when at least 6/64 of its 8x8 luma blocks that are not flat (range above 8 in 8-bit steps) have 8 or fewer distinct values; measured 19/64 on screendata and 35/64 on desktop_credits, at most 1.5/64 on park_joy (8/10/12-bit, 4:2:0/4:2:2/4:4:4), paris, niklas, rush_hour and the encode-perf clips. A detected sequence codes with the SCREEN_PRESETS row of its preset (FSC on, ENC-FSC). The block_colours kernel has a std::simd form and a scalar twin. allow_screen_content_tools stays 0 until the palette search lands. Against main c3b1959 at p6: screendata intra Y -27.90% (0.76x CPU), inter Y -23.39% (0.94x); desktop_credits intra Y -12.62% (0.91x), inter Y -10.76% (1.06x); screendata p10 intra Y -40.20%. Natural clips are byte-identical."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/screen.rs::text_on_a_flat_page_is_screen_content", "crates/splot-encode/src/screen.rs::camera_texture_and_flat_frames_are_not", "crates/splot-encode/src/screen.rs::the_encoder_enables_fsc_for_screen_content", "crates/splot-encode/src/kernels/colours.rs::simd_matches_scalar"]
+commands = ["cargo test -p splot-encode screen --locked"]
 fixtures = []
 diagnostics = []
 
