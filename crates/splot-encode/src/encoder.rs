@@ -64,6 +64,11 @@ pub(crate) trait FrameCoder {
     /// A temporal delimiter and the show-existing frame that outputs the
     /// hidden frame in `slot`.
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>>;
+    /// Fits the sequence to `first`, the first frame in display order,
+    /// before any frame is coded.
+    fn start_sequence(&mut self, _first: &SourceFrame) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Callback that receives the statistics of every coded frame.
@@ -284,6 +289,11 @@ impl Encoder {
         self.plan_window()?;
         let frames: Vec<SourceFrame> = self.pending.drain(..len).collect();
         let first = self.planner.next_display();
+        if first == 0
+            && let Some(frame) = frames.first()
+        {
+            self.coder.start_sequence(frame)?;
+        }
         let source = |display_index: u64| {
             usize::try_from(display_index - first)
                 .ok()

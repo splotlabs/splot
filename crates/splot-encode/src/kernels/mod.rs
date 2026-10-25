@@ -15,6 +15,7 @@
 
 pub(crate) mod ccso;
 mod cctx;
+mod cfl;
 mod distortion;
 mod forward_transform;
 mod ist;
@@ -221,6 +222,10 @@ pub(crate) trait EncoderKernels: Sync {
     /// coefficients in place ([`cctx::rotate_simd`]).
     fn cctx_rotate(&self, u: &mut [i32], v: &mut [i32], rotation: [i32; 2]);
 
+    /// One chroma row of the luma rows above, at and below it, down-sampled
+    /// by the CfL taps `weights` ([`cfl::downsample_simd`]).
+    fn cfl_downsample(&self, weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out: &mut [i32]);
+
     /// One TCQ trellis step: adds the branch metrics of every state to its
     /// path cost and keeps the cheaper branch into each next state
     /// ([`tcq::step_simd`]).
@@ -330,6 +335,10 @@ impl EncoderKernels for ScalarKernels {
         cctx::rotate_scalar(u, v, rotation);
     }
 
+    fn cfl_downsample(&self, weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out: &mut [i32]) {
+        cfl::downsample_scalar(weights, rows, out);
+    }
+
     fn tcq_step(
         &self,
         prev: &[u64; tcq::STATES],
@@ -423,6 +432,10 @@ impl EncoderKernels for SimdKernels {
 
     fn cctx_rotate(&self, u: &mut [i32], v: &mut [i32], rotation: [i32; 2]) {
         cctx::rotate_simd(u, v, rotation);
+    }
+
+    fn cfl_downsample(&self, weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out: &mut [i32]) {
+        cfl::downsample_simd(weights, rows, out);
     }
 
     fn tcq_step(
