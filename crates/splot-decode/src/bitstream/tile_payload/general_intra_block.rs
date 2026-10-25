@@ -1105,7 +1105,7 @@ fn palette_y_mode_allowed(
         && block_n4h.saturating_mul(4) <= PALETTE_MAX_SAMPLES
 }
 
-fn dip_mode_info_allowed(
+pub(crate) fn dip_mode_info_allowed(
     chroma_tools: GeneralIntraChromaToolConfig,
     y_mode: IntraYMode,
     palette_y: Option<LumaPalette>,

@@ -106,6 +106,7 @@ impl IntraFrameCoder {
                 cctx: preset.cctx,
                 mhccp: preset.mhccp,
                 fsc: preset.fsc,
+                dip: preset.dip,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
                 avg_cdf: preset.cdf_carry.then_some(AVG_CDF_ACROSS_TILES),

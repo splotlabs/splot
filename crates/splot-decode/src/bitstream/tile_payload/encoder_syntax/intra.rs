@@ -32,7 +32,9 @@ use super::super::general_intra_block::{
     Y_SECOND_MODE_BITS, cfl_allowed_for_chroma_mode, cfl_alpha_u_ctx, cfl_alpha_v_ctx,
     cfl_mh_dir_size_group, mhccp_allowed_for_chroma_mode,
 };
-use super::super::general_intra_block::{INTER_FSC_MODE_CONTEXT, allow_fsc_intra, fsc_bsize_group};
+use super::super::general_intra_block::{
+    INTER_FSC_MODE_CONTEXT, allow_fsc_intra, dip_mode_info_allowed, fsc_bsize_group,
+};
 use super::super::general_intra_residual::{LumaTransformTypeContext, intra_chroma_plane_tx_type};
 use super::super::partition_traversal::{
     DecodedLeafPublication, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
@@ -92,6 +94,17 @@ pub struct IntraModes {
     /// `fsc_mode`: the luma blocks code IDTX, with FSC levels when the
     /// sequence enables FSC.
     pub fsc: bool,
+    /// `use_dip` with its mode: a `DC_PRED` luma prediction by DIP.
+    pub dip: Option<Dip>,
+}
+
+/// `dip_mode` and `dip_transpose` of a DIP luma prediction (§ 5.20.7.9).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct Dip {
+    /// `dip_mode`, below [`IntraTileSyntax::dip_modes`].
+    pub mode: u8,
+    /// `dip_transpose`.
+    pub transpose: bool,
 }
 
 impl IntraModes {
@@ -102,6 +115,7 @@ impl IntraModes {
         uv_mode: ChromaMode::Intra(IntraMode::Dc),
         mrl: Mrl::OFF,
         fsc: false,
+        dip: None,
     };
 }
 
@@ -236,10 +250,7 @@ impl IntraTools {
         };
         let lossless = core.lossless_info.as_ref();
         let refused = [
-            (
-                intra.enable_dip || core.allow_screen_content_tools == Some(true),
-                "DIP or palette",
-            ),
+            (core.allow_screen_content_tools == Some(true), "palette"),
             (core.allow_intrabc == Some(true), "intra block copy"),
             (
                 qindex == 0
@@ -411,6 +422,67 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError::Unsupported`] for a mode the leaf cannot
     /// code, and [`EncoderSyntaxError::Rule`] for a symbol write failure.
     pub fn write_intra_modes(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
+        self.write_y_uv_modes(leaf, modes, symbols)?;
+        self.write_dip(leaf, modes, symbols)
+    }
+
+    /// Whether `leaf` codes `use_dip` under the luma mode of `modes` (§ 5.20.7.9).
+    #[must_use]
+    pub fn dip_allowed(&self, leaf: &LeafBlock, modes: IntraModes) -> bool {
+        leaf_size4(leaf).is_ok_and(|(n4w, n4h)| {
+            dip_mode_info_allowed(self.tools.chroma, modes.y_mode, None, n4w, n4h)
+        })
+    }
+
+    /// The number of `dip_mode` values.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] for a missing CDF row.
+    pub fn dip_modes(&mut self) -> Result<u8> {
+        let arity = self
+            .tile_row(TileCdfSelector::DipMode)?
+            .len()
+            .saturating_sub(1);
+        u8::try_from(arity).map_err(|_| EncoderSyntaxError::Unsupported("DIP modes"))
+    }
+
+    fn write_dip(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
+        if !self.dip_allowed(leaf, modes) {
+            return match modes.dip {
+                Some(_) => Err(EncoderSyntaxError::Unsupported("DIP in this block")),
+                None => Ok(()),
+            };
+        }
+        let (n4w, n4h) = leaf_size4(leaf)?;
+        let ctx = self
+            .use_dip
+            .use_dip_ctx(leaf.frontier.r, leaf.frontier.c, n4w, n4h);
+        self.put(
+            symbols,
+            TileCdfSelector::UseDip { ctx },
+            usize::from(modes.dip.is_some()),
+        )?;
+        let Some(dip) = modes.dip else {
+            return Ok(());
+        };
+        if dip.mode >= self.dip_modes()? {
+            return Err(EncoderSyntaxError::Unsupported("DIP mode"));
+        }
+        literal(symbols, usize::from(dip.transpose), 1)?;
+        self.put(symbols, TileCdfSelector::DipMode, dip.mode.into())
+    }
+
+    fn write_y_uv_modes(
         &mut self,
         leaf: &LeafBlock,
         modes: IntraModes,
@@ -771,7 +843,8 @@ impl IntraTileSyntax {
         let mrl = self.mrl_selection(modes)?;
         let block_modes = block_modes(leaf, modes, joint, mrl)?;
         let fsc = u8::from(modes.fsc);
-        let mut mode = GeneralIntraLeafMode::luma(joint, modes.y_mode, modes.angle_delta, fsc, mrl);
+        let mut mode = GeneralIntraLeafMode::luma(joint, modes.y_mode, modes.angle_delta, fsc, mrl)
+            .with_use_dip(modes.dip.is_some().into());
         if leaf.frontier.has_chroma {
             mode = mode.with_uv_cfl(block_modes.is_cfl());
         }
@@ -1069,9 +1142,9 @@ fn block_modes(
         intra_joint_mode,
         mrl,
         fsc_mode: modes.fsc.into(),
-        use_dip: 0,
-        dip_transpose: 0,
-        dip_mode: 0,
+        use_dip: modes.dip.is_some().into(),
+        dip_transpose: modes.dip.is_some_and(|dip| dip.transpose).into(),
+        dip_mode: modes.dip.map_or(0, |dip| dip.mode),
         use_dpcm_y: 0,
         dpcm_mode_y: 0,
     };
