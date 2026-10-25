@@ -154,7 +154,8 @@ pub struct PresetParams {
     /// `inter_tx_split / 64` of the energy; `0` codes `NONE` without a trial.
     pub inter_tx_split: u8,
     /// The CDEF search also tries the frame with CDEF on skipped transform
-    /// blocks (`cdef_on_skip_txfm_frame_enable`) and keeps the cheaper.
+    /// blocks (`cdef_on_skip_txfm_frame_enable`) and keeps the cheaper. Off
+    /// in every row: paris p6 Y -0.04%, park_joy p6 Y +0.42%.
     pub cdef_on_skip: bool,
 }
 

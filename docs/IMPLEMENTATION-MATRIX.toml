@@ -6053,7 +6053,7 @@ module = "crates/splot-encode/src/loop_filter.rs"
 change_id = "enc-cdef-skip"
 owner = "encoder"
 risk = "low"
-notes = "The encoder sequence codes CdefOnSkipTxfm = CDEF_ON_SKIP_TXFM_ADAPTIVE. With PresetParams::cdef_on_skip the CDEF search runs a second time with cdef_on_skip_txfm_frame_enable = 1, where § 7.18 also filters skip_txfm blocks and skipped leaves code cdef_idx (§ 5.20.10.1), and the frame keeps the flag of the lower SSE plus approximate index rate. Off codes the flag 0 byte-identically. The sub-PU deblocking flag (allow_df_sub_pu, § 5.18.5.2) is not searched: SubPuColBase and SubPuRowBase differ from the block origin only for TIP, RefineMV and optical-flow prediction (§ 7.13.3.15), which the encoder does not code, so the flag changes no sample and enable_df_sub_pu stays 0."
+notes = "The encoder sequence codes CdefOnSkipTxfm = CDEF_ON_SKIP_TXFM_ADAPTIVE. With PresetParams::cdef_on_skip the CDEF search runs a second time with cdef_on_skip_txfm_frame_enable = 1, where § 7.18 also filters skip_txfm blocks and skipped leaves code cdef_idx (§ 5.20.10.1), and the frame keeps the flag of the lower SSE plus approximate index rate. Off in every preset row: measured 2026-10-25 at p6 f10 vs main cd04bd871, paris Y -0.04% YUV +0.01%, park_joy Y +0.42% YUV +0.40%, at no CPU change. Off codes the flag 0 byte-identically. The sub-PU deblocking flag (allow_df_sub_pu, § 5.18.5.2) is not searched: SubPuColBase and SubPuRowBase differ from the block origin only for TIP, RefineMV and optical-flow prediction (§ 7.13.3.15), which the encoder does not code, so the flag changes no sample and enable_df_sub_pu stays 0."
 
 [feature.status]
 mapped = "done"
