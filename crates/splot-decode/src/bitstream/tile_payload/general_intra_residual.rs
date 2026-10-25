@@ -2146,7 +2146,7 @@ pub(crate) fn block_recon_params(
     qindex: u32,
     plane_id: PlaneId,
     (log2_width, log2_height): (u32, u32),
-    (plane_tx_type, use_tcq): (usize, bool),
+    (plane_tx_type, use_tcq, use_ddt): (usize, bool, bool),
     bit_depth: BitDepth,
 ) -> Result<(DequantBlockParams, InverseTransform2dOuter), GeneralIntraResidualError> {
     let samples = (1usize << log2_width) << log2_height;
@@ -2160,7 +2160,7 @@ pub(crate) fn block_recon_params(
         log2_height,
         plane_tx_type,
         use_tcq,
-        false,
+        use_ddt,
         false,
         None,
         bit_depth,

@@ -138,6 +138,14 @@ pub struct PresetParams {
     /// frame when one quadrant of its luma prediction residual holds more than
     /// `inter_tx_split / 64` of the energy; `0` codes `NONE` without a trial.
     pub inter_tx_split: u8,
+    /// `enable_inter_ddt`: inter ADST and FDST sides of length 8 or 16
+    /// transform with the DDT kernels. Off in every row (2026-10-25): it
+    /// measured BD-rate neutral at p6 (park_joy -0.00%, niklas +0.03%).
+    pub inter_ddt: bool,
+    /// `enable_inter_ist`: in a leaf's final trial, a `DCT_DCT` inter luma
+    /// block of at least 16x16 ranks the three secondary kernels by kept
+    /// energy and gives the best one an RD trial.
+    pub inter_ist: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -211,6 +219,8 @@ const fn row(
         mhccp: false,
         large_inter: true,
         inter_tx_split: if tx_partition_search { 24 } else { 0 },
+        inter_ddt: false,
+        inter_ist: tx_partition_search,
     }
 }
 
@@ -446,6 +456,8 @@ mod tests {
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.mhccp <= slow.mhccp);
             assert!(fast.large_inter <= slow.large_inter);
+            assert!(fast.inter_ddt <= slow.inter_ddt);
+            assert!(fast.inter_ist <= slow.inter_ist);
             assert!(
                 fast.inter_tx_split == 0
                     || (slow.inter_tx_split != 0 && fast.inter_tx_split >= slow.inter_tx_split)

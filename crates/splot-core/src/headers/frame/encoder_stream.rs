@@ -85,6 +85,10 @@ pub struct EncoderToolFlags {
     pub intra_edge_filter: bool,
     /// `enable_intra_ist`.
     pub intra_ist: bool,
+    /// `enable_inter_ddt`.
+    pub inter_ddt: bool,
+    /// `enable_inter_ist`.
+    pub inter_ist: bool,
     /// `enable_cctx`.
     pub cctx: bool,
     /// `enable_tcq` with `choose_tcq_per_frame = 1`: each frame codes `allow_tcq`.
@@ -438,11 +442,11 @@ fn write_transform_quant_entropy_config(
         w.write_flag(tools.idtx_intra)?;
     }
     w.write_flag(tools.intra_ist)?;
-    w.write_flag(false)?; // enable_inter_ist
+    w.write_flag(tools.inter_ist)?;
     if !monochrome {
         w.write_flag(false)?; // enable_chroma_dctonly
     }
-    w.write_flag(false)?; // enable_inter_ddt
+    w.write_flag(tools.inter_ddt)?;
     w.write_flag(false)?; // reduced_tx_part_set
     if !monochrome {
         w.write_flag(tools.cctx)?;

@@ -153,6 +153,8 @@ fn every_tool_flag_reaches_the_parsed_header() {
         idtx_intra: true,
         intra_edge_filter: true,
         intra_ist: true,
+        inter_ddt: true,
+        inter_ist: true,
         cctx: true,
         tcq: true,
         parity_hiding: false,

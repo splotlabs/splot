@@ -719,6 +719,7 @@ impl IntraTileSyntax {
                     &levels,
                     eob,
                     (tx_type as usize, use_tcq),
+                    tx.ist.syntax(true).filter(|_| eob > 0),
                 )
                 .map_err(rule("inter residual"))?;
         }
@@ -1062,7 +1063,8 @@ impl IntraTileSyntax {
     }
 
     /// Whether the planned leaf is an inter leaf.
-    pub(super) fn leaf_is_inter(&self) -> bool {
+    #[must_use]
+    pub fn leaf_is_inter(&self) -> bool {
         self.inter
             .as_ref()
             .is_some_and(|inter| inter.planned.is_some())

@@ -450,7 +450,9 @@ impl EncoderInterTile {
             &residual.coeffs,
             self.qindex,
             true,
-            false,
+            self.sequence
+                .transform_quant_entropy
+                .is_some_and(|tq| tq.enable_inter_ddt),
             false,
             self.bit_depth,
         )
@@ -890,6 +892,7 @@ impl EncoderInterResidual {
         levels: &[i32],
         eob: usize,
         (tx_type, use_tcq): (usize, bool),
+        intra_ist: Option<crate::bitstream::tile_payload::IntraIstSyntax>,
     ) -> Result<()> {
         let plane = [ReconPlaneId::Y, ReconPlaneId::U, ReconPlaneId::V]
             .get(plane)
@@ -906,6 +909,7 @@ impl EncoderInterResidual {
             quant_range: start..start + nonzero,
             zero_tail: levels.len() - nonzero,
             use_tcq,
+            intra_ist,
             ..LumaCoeffBlock::empty(tx_type, false)
         };
         push_inter_residual_block(

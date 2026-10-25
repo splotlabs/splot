@@ -79,6 +79,8 @@ impl Case {
                 idtx_intra: false,
                 intra_edge_filter: true,
                 intra_ist: false,
+                inter_ddt: false,
+                inter_ist: false,
                 cctx: false,
                 tcq: false,
                 parity_hiding: false,

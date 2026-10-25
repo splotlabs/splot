@@ -61,6 +61,15 @@ impl IntraTileSyntax {
                 == CoeffTransformClass::TwoD
     }
 
+    /// Whether the planned leaf transforms with DDT kernels (§ 7.15.4
+    /// `get_transform_1d_type`): an inter leaf of a sequence with
+    /// `enable_inter_ddt`, whose ADST and FDST sides of length 8 or 16 take
+    /// DDTX and FDDT.
+    #[must_use]
+    pub fn uses_ddt(&self) -> bool {
+        self.tools.enable_inter_ddt && self.leaf_is_inter()
+    }
+
     /// Prices a search trial of a TCQ frame with plain levels: until set back,
     /// no block [`Self::uses_tcq`]. A trial coded so must not reach the bitstream.
     pub const fn set_scalar_trial(&mut self, on: bool) {
