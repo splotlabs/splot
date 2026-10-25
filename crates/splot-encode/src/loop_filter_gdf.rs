@@ -44,6 +44,13 @@ pub(super) fn candidates(qindex: u32, bit_depth: u32) -> [(u8, u8); 16] {
     pairs
 }
 
+/// Whether the frame `core` has a lossless segment, whose samples GDF leaves
+/// alone; the search then keeps GDF off.
+pub(super) fn has_lossless_segment(core: &FrameHeaderCore) -> bool {
+    core.lossless_info
+        .is_some_and(|info| info.has_lossless_segment)
+}
+
 /// `gdf_pic_qc_idx` and `gdf_pic_scale_idx` bits; `gdf_per_block` adds one
 /// where a grid codes it.
 const HEADER_BITS: u32 = 4;
@@ -105,7 +112,10 @@ impl Search<'_> {
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
-        let Some((_, first)) = headers.first() else {
+        let Some((_, first)) = headers
+            .first()
+            .filter(|(_, core)| !has_lossless_segment(core))
+        else {
             return Ok(None);
         };
         let grid = GdfGrid::new(self.seq, first).map_err(coding("gdf grid"))?;

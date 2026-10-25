@@ -168,14 +168,23 @@ impl GdfFlags<'_> {
 /// row width and the errors.
 ///
 /// # Errors
-/// Returns [`EncoderSyntaxError`] when the frames differ in size or a GDF
-/// stage rejects its inputs.
+/// Returns [`EncoderSyntaxError`] when the frames differ in size, the frame
+/// has a lossless segment (whose samples GDF leaves alone), or a GDF stage
+/// rejects its inputs.
 pub fn gdf_errors(
     seq: &SequenceHeader,
     core: &FrameHeaderCore,
     (deblocked, cdef): (&DecodedFrame<u16>, &DecodedFrame<u16>),
     gdf: GdfFlags<'_>,
 ) -> Result<(usize, Vec<i16>)> {
+    if core
+        .lossless_info
+        .is_some_and(|info| info.has_lossless_segment)
+    {
+        return Err(EncoderSyntaxError::Unsupported(
+            "GDF errors of a frame with a lossless segment",
+        ));
+    }
     let (grid, reference) = gdf.decoder_inputs(seq, core)?;
     let size = cdef.y().storage_size();
     let (width, height) = (size.width(), size.height());
