@@ -106,18 +106,6 @@ impl Search<'_> {
                 best = Some((cost, gdf, flags));
             }
         }
-        if std::env::var_os("GDF_DEBUG").is_some() {
-            eprintln!(
-                "gdf q{} {:?}",
-                self.qindex,
-                best.as_ref().map(|b| (
-                    b.1.qc_idx,
-                    b.1.scale_idx,
-                    b.2.iter().filter(|&&f| f == 1).count(),
-                    b.2.len()
-                ))
-            );
-        }
         Ok(best.map(|(_, gdf, flags)| (gdf, flags)))
     }
 
