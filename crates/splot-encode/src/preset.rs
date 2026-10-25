@@ -548,12 +548,12 @@ mod tests {
     }
 
     #[test]
-    fn set_overrides_one_field() {
+    fn set_overrides_one_field() -> core::result::Result<(), PresetError> {
         let mut params = PRESETS[6];
-        params.set("gdf_candidates", "4").unwrap();
-        params.set("rdoq", "false").unwrap();
-        params.set("tcq", "All").unwrap();
-        params.set("mvd_tools", "1,0,true").unwrap();
+        params.set("gdf_candidates", "4")?;
+        params.set("rdoq", "false")?;
+        params.set("tcq", "All")?;
+        params.set("mvd_tools", "1,0,true")?;
         let expected = PresetParams {
             gdf_candidates: 4,
             rdoq: false,
@@ -562,14 +562,15 @@ mod tests {
             ..PRESETS[6]
         };
         assert_eq!(params, expected);
+        Ok(())
     }
 
     #[test]
     fn set_rejects_unknown_fields_and_bad_values() {
         let mut params = PRESETS[6];
-        let err = params.set("gdf", "4").unwrap_err();
-        assert_eq!(err, PresetError::UnknownField { name: "gdf".into() });
-        assert!(err.to_string().contains("gdf_candidates, fsc"));
+        let unknown = PresetError::UnknownField { name: "gdf".into() };
+        assert_eq!(params.set("gdf", "4"), Err(unknown.clone()));
+        assert!(unknown.to_string().contains("gdf_candidates, fsc"));
         for (field, value) in [
             ("gdf_candidates", "256"),
             ("gdf_candidates", "-1"),
