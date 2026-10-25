@@ -161,6 +161,16 @@ pub struct PresetParams {
     /// row: fewer pairs lost BD-rate, and each pair costs one filter-chain
     /// run (paris -1.35% Y at p6, -1.28% Y at p10 for +3% CPU).
     pub gdf_candidates: u8,
+    /// `enable_inter_ddt`: inter ADST and FDST sides of length 8 or 16
+    /// transform with the DDT kernels. Off in every row (2026-10-25): it
+    /// measured BD-rate neutral at p6 (park_joy -0.00%, niklas +0.03%).
+    pub inter_ddt: bool,
+    /// `enable_inter_ist`: in a leaf's final trial, a `DCT_DCT` inter luma
+    /// block of at least 16x16 ranks the three secondary kernels by kept
+    /// energy and gives the best one an RD trial. Off in every row
+    /// (2026-10-25): every such block with `eob > 3` then pays a
+    /// `sec_tx_type` symbol, and p6 measured park_joy -0.06%, paris +0.34%.
+    pub inter_ist: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -239,6 +249,8 @@ const fn row(
         large_inter: true,
         inter_tx_split: if tx_partition_search { 24 } else { 0 },
         gdf_candidates: 16,
+        inter_ddt: false,
+        inter_ist: false,
     }
 }
 
@@ -496,6 +508,8 @@ mod tests {
             assert!(fast.dip <= slow.dip);
             assert!(fast.large_inter <= slow.large_inter);
             assert!(fast.gdf_candidates <= slow.gdf_candidates);
+            assert!(fast.inter_ddt <= slow.inter_ddt);
+            assert!(fast.inter_ist <= slow.inter_ist);
             assert!(
                 fast.inter_tx_split == 0
                     || (slow.inter_tx_split != 0 && fast.inter_tx_split >= slow.inter_tx_split)
@@ -514,6 +528,16 @@ mod tests {
     #[test]
     fn interp_filter_search_placement() {
         assert_eq!(PRESETS.map(|params| params.interp_filter_search), [0; 11]);
+    }
+
+    /// The measured placement of inter IST and DDT: off in every row (see
+    /// `ENC-INTER-IST-DDT`).
+    #[test]
+    fn inter_ist_and_ddt_placement() {
+        assert_eq!(
+            PRESETS.map(|params| (params.inter_ist, params.inter_ddt)),
+            [(false, false); 11]
+        );
     }
 
     /// The measured placement of the MVD tools: off in every row (see

@@ -109,6 +109,8 @@ impl IntraFrameCoder {
                 intra_edge_filter: true,
                 mrls: preset.mrl_trials > 0,
                 intra_ist: preset.ist_sets > 0,
+                inter_ddt: preset.inter_ddt,
+                inter_ist: preset.inter_ist,
                 cctx: preset.cctx,
                 mhccp: preset.mhccp,
                 fsc: preset.fsc,
@@ -538,11 +540,13 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         } else {
             tx_choice::tx_type_candidates(self.preset).min(tx_types.len())
         };
-        let ist_sets = if self.candidate {
-            0
-        } else {
-            self.preset.ist_sets
+        let inter = syntax.leaf_is_inter();
+        let ist_sets = match (self.candidate, inter) {
+            (true, _) => 0,
+            (false, true) => u8::from(self.preset.inter_ist && !self.trial),
+            (false, false) => self.preset.ist_sets,
         };
+        let ist_probe = if inter { 4 } else { 2 };
         let mut best: Option<(u128, TransformDecision)> = None;
         let scalar_types = (count > 1 || ist_sets > 0) && !self.preset.tcq_type_trellis;
         let scalar = self.scalar;
@@ -550,8 +554,9 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         for &tx_type in &tx_types[..count] {
             let tx = TransformBlock { tx_type, ..*tx };
             let decision = self.code(syntax, &tx, prediction)?;
-            let ist =
-                ist_sets > 0 && eob(&tx, &decision.levels)? > 1 && syntax.ist_coded(&tx, 2)?;
+            let ist = ist_sets > 0
+                && eob(&tx, &decision.levels)? > 1
+                && syntax.ist_coded(&tx, ist_probe)?;
             if count == 1 && !ist {
                 self.scalar = scalar;
                 if scalar_types {
@@ -561,7 +566,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             }
             let mut trials = vec![decision];
             if ist {
-                let ist = self.ist_choice(syntax, &tx, prediction)?;
+                let ist = self.ist_choice(syntax, &tx, prediction, ist_sets)?;
                 if ist != Ist::OFF {
                     let tx = TransformBlock { ist, ..tx };
                     trials.push(self.code(syntax, &tx, prediction)?);
@@ -605,7 +610,8 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let [residual, coeffs, dequant] = &mut scratch;
         syntax.set_scalar_trial(self.candidate || self.trial || self.scalar);
         let use_tcq = syntax.uses_tcq(tx);
-        let (params, forward) = self.forward(tx, use_tcq, prediction, residual, coeffs)?;
+        let ddt = syntax.uses_ddt();
+        let (params, forward) = self.forward(tx, (use_tcq, ddt), prediction, residual, coeffs)?;
         if let Some(secondary) = syntax.secondary_transform(tx)? {
             kernels()
                 .forward_ist(&secondary_transform_layout(&secondary)?, coeffs)
@@ -695,8 +701,9 @@ impl SourceResidualCoder<'_> {
         [residual, _, dequant]: &mut [Vec<i32>; 3],
         [u_coeffs, v_coeffs]: &mut [Vec<i32>; 2],
     ) -> core::result::Result<Option<[Vec<i32>; 3]>, TileWriterError> {
-        let (u_params, u_forward) = self.forward(u, false, u_prediction, residual, u_coeffs)?;
-        let (v_params, v_forward) = self.forward(v, false, v_prediction, residual, v_coeffs)?;
+        let ddt = (false, syntax.uses_ddt());
+        let (u_params, u_forward) = self.forward(u, ddt, u_prediction, residual, u_coeffs)?;
+        let (v_params, v_forward) = self.forward(v, ddt, v_prediction, residual, v_coeffs)?;
         let [uu, vv, uv] = kernels().cctx_stats(u_coeffs, v_coeffs);
         let energy = |[c, s]: [i32; 2]| {
             let (c, s) = (i128::from(c), i128::from(s));
@@ -852,7 +859,7 @@ impl SourceResidualCoder<'_> {
     fn forward(
         &self,
         tx: &TransformBlock,
-        use_tcq: bool,
+        (use_tcq, use_ddt): (bool, bool),
         prediction: &[u16],
         residual: &mut Vec<i32>,
         coeffs: &mut Vec<i32>,
@@ -867,7 +874,7 @@ impl SourceResidualCoder<'_> {
             self.qindex,
             plane_id(tx.plane)?,
             (log2_w, log2_h),
-            (tx.tx_type, use_tcq),
+            (tx.tx_type, use_tcq, use_ddt),
             self.bit_depth,
         )?;
         let forward = ForwardTransform2d::new(
@@ -885,18 +892,25 @@ impl SourceResidualCoder<'_> {
         Ok((params, forward))
     }
 
-    /// The secondary transform of the preset's `ist_sets` whose outputs keep
-    /// the most energy of the primary coefficients of `tx`.
+    /// The secondary transform of the first `sets` sets whose outputs keep the
+    /// most energy of the primary coefficients of `tx`.
     fn ist_choice(
         &mut self,
         syntax: &mut IntraTileSyntax,
         tx: &TransformBlock,
         prediction: &[u16],
+        sets: u8,
     ) -> core::result::Result<Ist, TileWriterError> {
-        let sets = self.preset.ist_sets.min(syntax.ist_sets(tx)?);
+        let sets = sets.min(syntax.ist_sets(tx)?);
         let mut scratch = core::mem::take(&mut self.scratch);
         let [residual, coeffs, work] = &mut scratch;
-        let found = self.forward(tx, syntax.uses_tcq(tx), prediction, residual, coeffs);
+        let found = self.forward(
+            tx,
+            (syntax.uses_tcq(tx), syntax.uses_ddt()),
+            prediction,
+            residual,
+            coeffs,
+        );
         let mut best = (0, Ist::OFF);
         if found.is_ok() {
             for set in 0..sets {
