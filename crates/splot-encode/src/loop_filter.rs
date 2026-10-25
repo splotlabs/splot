@@ -427,13 +427,13 @@ impl Search<'_> {
                 syntax.lr_on = lr_on;
             }
         }
-        if filter.enable_gdf && preset.gdf_candidates > 0 {
-            if let Some((gdf, blocks)) =
+        if filter.enable_gdf
+            && preset.gdf_candidates > 0
+            && let Some((gdf, blocks)) =
                 self.gdf(&params, &syntax, usize::from(preset.gdf_candidates))?
-            {
-                params.gdf = Some(gdf);
-                syntax.gdf_blocks = blocks;
-            }
+        {
+            params.gdf = Some(gdf);
+            syntax.gdf_blocks = blocks;
         }
         Ok((params, syntax))
     }

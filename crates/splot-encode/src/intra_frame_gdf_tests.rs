@@ -15,12 +15,12 @@ fn with_gdf(preset: &PresetParams, candidates: u8) -> &'static PresetParams {
 }
 
 /// A key frame and two inter frames of a two-tile pan on `threads` threads:
-/// the units, the encoder recon, the `use_gdf` count of each frame (`None`
-/// when the frame codes no GDF), and whether the sequence enables GDF.
+/// the units, the encoder recon, whether each frame codes GDF, and whether
+/// the sequence enables it.
 fn gdf_stream(
     threads: usize,
     preset: &'static PresetParams,
-) -> (Vec<Vec<u8>>, Vec<u8>, Vec<Option<usize>>, bool) {
+) -> (Vec<Vec<u8>>, Vec<u8>, Vec<bool>, bool) {
     let mut config = config(200, 136, BitDepth::Ten, 9, 200);
     config.tiles = TileLayout {
         cols_log2: 1,
@@ -35,12 +35,7 @@ fn gdf_stream(
             .code_frame(&panning_frame(&config, index), &plan, 200)
             .unwrap();
         let core = &coded.reference.as_ref().unwrap().0;
-        flags.push(
-            core.gdf_params
-                .as_ref()
-                .filter(|gdf| gdf.gdf_frame_enable)
-                .map(|gdf| usize::from(gdf.gdf_pic_qc_idx.unwrap_or(0))),
-        );
+        flags.push(core.gdf_params.is_some_and(|gdf| gdf.gdf_frame_enable));
         coder.commit(&mut coded).unwrap();
         recon.extend(recon_bytes(&coded, config.bit_depth));
         units.push(coded.temporal_unit);
@@ -58,7 +53,7 @@ fn gdf_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     let on = with_gdf(base, 16);
     let (one, recon, flags, enabled) = gdf_stream(1, on);
     assert!(
-        enabled && flags[0].is_some() && flags[1..].iter().any(Option::is_some),
+        enabled && flags[0] && flags[1..].contains(&true),
         "{flags:?}"
     );
     assert_same_samples(&decode(&one.concat()), &recon, "gdf");
@@ -66,10 +61,7 @@ fn gdf_frames_decode_to_the_encoder_recon_on_any_thread_count() {
         assert!(gdf_stream(threads, on).0 == one, "{threads} threads");
     }
     let (off, off_recon, off_flags, off_enabled) = gdf_stream(1, base);
-    assert!(
-        !off_enabled && off_flags.iter().all(Option::is_none),
-        "{off_flags:?}"
-    );
+    assert!(!off_enabled && !off_flags.contains(&true), "{off_flags:?}");
     assert_same_samples(&decode(&off.concat()), &off_recon, "no gdf");
     assert_ne!(off, one);
 }
@@ -82,7 +74,7 @@ fn avm_decodes_gdf_frames_like_splot() {
         return;
     };
     let (units, recon, flags, _) = gdf_stream(2, with_gdf(Preset::new(9).unwrap().params(), 16));
-    assert!(flags.iter().all(Option::is_some), "{flags:?}");
+    assert!(flags.iter().all(|&on| on), "{flags:?}");
     let avm = avm_decode(&avmdec, &units, (200, 136), BitDepth::Ten, "gdf");
     assert!(avm == recon, "AVM output differs");
 }
