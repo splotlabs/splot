@@ -176,11 +176,11 @@ pub fn apply_gdf(
     gdf: GdfFlags<'_>,
 ) -> Result<DecodedFrame<u16>> {
     let (grid, reference) = gdf.decoder_inputs(seq, core)?;
-    let size = restored.coded_luma_size();
+    let size = restored.y().storage_size();
     let (width, height) = (size.width(), size.height());
     let packed = |frame: &DecodedFrame<u16>| -> Result<Vec<u16>> {
         let y = frame.y();
-        if frame.coded_luma_size() != size {
+        if y.storage_size() != size {
             return Err(EncoderSyntaxError::Unsupported(
                 "GDF frames of another size",
             ));
