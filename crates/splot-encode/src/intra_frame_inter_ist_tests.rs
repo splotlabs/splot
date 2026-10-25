@@ -25,7 +25,7 @@ fn with_tools(inter_ist: bool, inter_ddt: bool) -> &'static PresetParams {
 #[test]
 fn inter_luma_blocks_code_ist_as_the_decoder_reads_it() {
     let config = config(136, 136, BitDepth::Eight, 6, 110);
-    in_first_inter_frame(&config, |syntax, root, _| {
+    in_first_inter_frame(&config, with_tools(true, false), |syntax, root, _| {
         let prediction = InterPrediction::Single(InterModes {
             ref_frame: 0,
             mode: InterMode::Global,

@@ -159,7 +159,9 @@ pub struct PresetParams {
     pub inter_ddt: bool,
     /// `enable_inter_ist`: in a leaf's final trial, a `DCT_DCT` inter luma
     /// block of at least 16x16 ranks the three secondary kernels by kept
-    /// energy and gives the best one an RD trial.
+    /// energy and gives the best one an RD trial. Off in every row
+    /// (2026-10-25): every such block with `eob > 3` then pays a
+    /// `sec_tx_type` symbol, and p6 measured park_joy -0.06%, paris +0.34%.
     pub inter_ist: bool,
 }
 
@@ -238,7 +240,7 @@ const fn row(
         large_inter: true,
         inter_tx_split: if tx_partition_search { 24 } else { 0 },
         inter_ddt: false,
-        inter_ist: tx_partition_search,
+        inter_ist: false,
     }
 }
 
@@ -497,6 +499,16 @@ mod tests {
     #[test]
     fn interp_filter_search_placement() {
         assert_eq!(PRESETS.map(|params| params.interp_filter_search), [0; 11]);
+    }
+
+    /// The measured placement of inter IST and DDT: off in every row (see
+    /// `ENC-INTER-IST-DDT`).
+    #[test]
+    fn inter_ist_and_ddt_placement() {
+        assert_eq!(
+            PRESETS.map(|params| (params.inter_ist, params.inter_ddt)),
+            [(false, false); 11]
+        );
     }
 
     /// The measured placement of the MVD tools: off in every row (see
