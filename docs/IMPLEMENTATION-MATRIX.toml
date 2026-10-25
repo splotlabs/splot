@@ -5883,6 +5883,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-CFL-FILTER"
+name = "Encoder CfL down-sampling filter choice"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["6.4.5", "7.13.5", "7.20.3"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/cfl_filter.rs"
+change_id = "enc-cfl-filter"
+owner = "encoder"
+risk = "low"
+notes = "PresetParams::cfl_filter (on in every row): the first frame in display order picks cfl_ds_filter_index, the § 7.13.5 CfL filter whose down-sampled source luma best predicts the source chroma by a least-squares fit per 8x8 chroma block (U and V); a tie and 4:4:4 keep 0. The frame coder rebuilds the sequence header before it codes a frame. The cfl_downsample kernel has a std::simd form and a scalar twin; the facade exports CFL_FILTERS_420 and CFL_FILTERS_422. Against main 6dcc7c85e: paris p6 intra Y +0.02% / YUV -0.20%, inter Y -0.12% / YUV -0.52% (0.98x CPU); paris p10 intra Y -0.32% / YUV -0.54%, inter Y +0.03% / YUV -0.00%; park_joy picks 0 and is byte-identical. Off codes 0 and writes the old stream."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/cfl_filter.rs::picks_the_filter_that_made_the_chroma", "crates/splot-encode/src/cfl_filter.rs::the_encoder_codes_the_index_of_the_first_frame", "crates/splot-encode/src/kernels/cfl.rs::simd_matches_scalar", "crates/splot-encode/src/intra_tools_tests.rs::cfl_filters_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_cfl_filters_like_splot"]
+commands = ["cargo test -p splot-encode cfl --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-MRL"
 name = "Encoder multiple reference line intra prediction"
 category = "encoder"

@@ -170,8 +170,8 @@ mod tests {
     fn keeps_zero_without_subsampling() {
         let mut config = Config::new(16, 16);
         config.chroma = PixelFormat::Yuv444;
-        let plane: Vec<u16> = (0..256).map(|i| (i * 13 % 251) as u16).collect();
-        let frame = SourceFrame::new(&config, 0, [plane.clone(), plane.clone(), plane]).unwrap();
+        let plane = || (0..256).map(|i| (i * 13 % 251) as u16).collect();
+        let frame = SourceFrame::new(&config, 0, [plane(), plane(), plane()]).unwrap();
         assert_eq!(cfl_ds_filter(&frame), 0);
     }
 }
