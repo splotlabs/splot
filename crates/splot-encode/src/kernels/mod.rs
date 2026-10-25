@@ -16,6 +16,7 @@
 pub(crate) mod ccso;
 mod cctx;
 mod cfl;
+mod colours;
 mod distortion;
 mod forward_transform;
 mod ist;
@@ -222,6 +223,10 @@ pub(crate) trait EncoderKernels: Sync {
     /// coefficients in place ([`cctx::rotate_simd`]).
     fn cctx_rotate(&self, u: &mut [i32], v: &mut [i32], rotation: [i32; 2]);
 
+    /// `(min(distinct values, limit + 1), max - min)` of `block`
+    /// ([`colours::colours_simd`]).
+    fn block_colours(&self, block: &[u16], limit: usize) -> (usize, u16);
+
     /// One chroma row of the luma rows above, at and below it, down-sampled
     /// by the CfL taps `weights` ([`cfl::downsample_simd`]).
     fn cfl_downsample(&self, weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out: &mut [i32]);
@@ -335,6 +340,10 @@ impl EncoderKernels for ScalarKernels {
         cctx::rotate_scalar(u, v, rotation);
     }
 
+    fn block_colours(&self, block: &[u16], limit: usize) -> (usize, u16) {
+        colours::colours_scalar(block, limit)
+    }
+
     fn cfl_downsample(&self, weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out: &mut [i32]) {
         cfl::downsample_scalar(weights, rows, out);
     }
@@ -432,6 +441,10 @@ impl EncoderKernels for SimdKernels {
 
     fn cctx_rotate(&self, u: &mut [i32], v: &mut [i32], rotation: [i32; 2]) {
         cctx::rotate_simd(u, v, rotation);
+    }
+
+    fn block_colours(&self, block: &[u16], limit: usize) -> (usize, u16) {
+        colours::colours_simd(block, limit)
     }
 
     fn cfl_downsample(&self, weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out: &mut [i32]) {
