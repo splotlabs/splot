@@ -212,6 +212,10 @@ pub(super) struct IntraTools {
     enable_mrls: bool,
     /// `enable_intra_ist`.
     pub(super) enable_intra_ist: bool,
+    /// `enable_inter_ddt`.
+    pub(super) enable_inter_ddt: bool,
+    /// `enable_inter_ist`.
+    pub(super) enable_inter_ist: bool,
     /// `enable_fsc`.
     pub(super) enable_fsc: bool,
     /// `enable_idtx_intra`: leaves may code `fsc_mode`.
@@ -284,6 +288,8 @@ impl IntraTools {
             enable_intra_edge_filter: intra.enable_intra_edge_filter,
             enable_mrls: intra.enable_mrls,
             enable_intra_ist: tq.enable_intra_ist,
+            enable_inter_ddt: tq.enable_inter_ddt,
+            enable_inter_ist: tq.enable_inter_ist,
             enable_fsc: tq.enable_fsc,
             fsc_mode: tq.enable_idtx_intra,
             enable_cctx: tq.enable_cctx,
@@ -919,7 +925,7 @@ impl IntraTileSyntax {
         coded: &TransformBlock,
     ) -> Result<()> {
         let use_tcq = self.uses_tcq(coded);
-        let (tx_type, ist) = (coded.tx_type, coded.ist.syntax());
+        let (tx_type, ist) = (coded.tx_type, coded.ist.syntax(false));
         let Recon {
             workspace,
             scratch,

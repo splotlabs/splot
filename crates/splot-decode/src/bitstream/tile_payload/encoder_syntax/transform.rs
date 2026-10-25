@@ -63,14 +63,19 @@ impl Ist {
         set: 0,
     };
 
-    /// The decoder's syntax of a coded `sec_tx_type`.
-    pub(super) const fn syntax(self) -> Option<IntraIstSyntax> {
+    /// The decoder's syntax of a coded `sec_tx_type`; an inter block codes no
+    /// set (§ 5.20.8.2).
+    pub(super) const fn syntax(self, is_inter: bool) -> Option<IntraIstSyntax> {
         if self.sec_tx_type == 0 {
             return None;
         }
         Some(IntraIstSyntax {
             sec_tx_type: self.sec_tx_type as usize,
-            most_probable_stx_set: Some(self.set as usize),
+            most_probable_stx_set: if is_inter {
+                None
+            } else {
+                Some(self.set as usize)
+            },
         })
     }
 }
@@ -219,22 +224,27 @@ impl IntraTileSyntax {
         if ist.sec_tx_type > 3 || (ist.sec_tx_type > 0 && ist.set >= self.ist_sets(tx)?) {
             return Err(EncoderSyntaxError::Unsupported("IST type or set").into());
         }
+        let is_inter = self.leaf_is_inter();
         let row = TileCdfSelector::SecTxType {
-            is_inter: 0,
+            is_inter: usize::from(is_inter),
             tx_size_sqr: tx_size_sqr(tx.tx_size)?,
         };
         put(self.tile_row(row)?, ist.sec_tx_type.into())?;
-        if ist.sec_tx_type > 0 {
+        if ist.sec_tx_type > 0 && !is_inter {
             put(self.tile_row(Self::ist_set_row(tx)?)?, ist.set.into())?;
         }
         Ok(())
     }
 
-    /// The `most_probable_stx_set` values luma block `tx` can code.
+    /// The `most_probable_stx_set` values luma block `tx` can code; one for
+    /// an inter block, which codes none.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for an invalid transform size.
     pub fn ist_sets(&mut self, tx: &TransformBlock) -> Result<u8> {
+        if self.leaf_is_inter() {
+            return Ok(1);
+        }
         let row = Self::ist_set_row(tx)?;
         u8::try_from(self.arity(row)?).map_err(|_| EncoderSyntaxError::Unsupported("IST sets"))
     }
@@ -244,15 +254,27 @@ impl IntraTileSyntax {
             .map_err(rule("IST set row"))
     }
 
-    /// Whether intra luma block `tx` with `eob` codes `sec_tx_type` (§ 5.20.8.2).
+    /// Whether luma block `tx` of the planned leaf with `eob` codes
+    /// `sec_tx_type` (§ 5.20.8.2): an inter block needs `enable_inter_ist`,
+    /// `DCT_DCT`, `eob > 3` and both sides at least 16.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] without a planned leaf.
     pub fn ist_coded(&self, tx: &TransformBlock, eob: usize) -> Result<bool> {
+        if self.leaf_is_inter() {
+            let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
+            return Ok(self.tools.enable_inter_ist
+                && tx.plane == 0
+                && eob > 3
+                && tx.tx_type == TxType::DctDct
+                && log2_w.min(log2_h) >= 4
+                && eob
+                    <= ist_eob_limit(tx.tx_size, tx.tx_type as usize)
+                        .map_err(rule("IST limit"))?);
+        }
         if !self.tools.enable_intra_ist
             || tx.plane != 0
             || eob <= 1
-            || self.leaf_is_inter()
             || !matches!(tx.tx_type, TxType::DctDct | TxType::AdstAdst)
             || self.planned_luma_context()?.y_mode().is_paeth()
         {
@@ -271,7 +293,8 @@ impl IntraTileSyntax {
         &self,
         tx: &TransformBlock,
     ) -> Result<Option<SecondaryInverseTransform>> {
-        let Some(ist) = tx.ist.syntax() else {
+        let is_inter = self.leaf_is_inter();
+        let Some(ist) = tx.ist.syntax(is_inter) else {
             return Ok(None);
         };
         let block = LumaCoeffBlock {
@@ -284,7 +307,11 @@ impl IntraTileSyntax {
             log2_w,
             log2_h,
             self.tools.bit_depth,
-            Some(self.planned_luma_context()?),
+            if is_inter {
+                None
+            } else {
+                Some(self.planned_luma_context()?)
+            },
         )
         .map_err(rule("IST parameters"))
     }

@@ -26,7 +26,7 @@ type Luma = (usize, usize, usize);
 #[test]
 fn inter_tx_partitions_plan_the_decoder_records() {
     let config = config(136, 136, BitDepth::Eight, 6, 110);
-    let (planned, large) = in_first_inter_frame(&config, |syntax, root, _| {
+    let (planned, large) = in_first_inter_frame(&config, preset6(true), |syntax, root, _| {
         let large = syntax.luma_tx_partitions(&syntax.leaf(root)?)?;
         let leaf = syntax.leaf(top_left(syntax, root, 32))?;
         let prediction = InterPrediction::Single(InterModes {

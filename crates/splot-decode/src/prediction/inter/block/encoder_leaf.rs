@@ -436,10 +436,12 @@ impl EncoderInterTile {
         Ok(mvs)
     }
 
-    /// Adds `residual` to the predicted samples of `frontier` in `workspace`.
+    /// Adds `residual` to the predicted samples of `frontier` in `workspace`;
+    /// an IntraBC block (`use_intrabc`) transforms without DDT.
     pub(crate) fn add_residual(
         &mut self,
         residual: &EncoderInterResidual,
+        use_intrabc: bool,
         workspace: &mut CurrentFrameWorkspace<u16>,
     ) -> Result<()> {
         super::super::add_inter_residual_to_workspace(
@@ -450,8 +452,10 @@ impl EncoderInterTile {
             &residual.coeffs,
             self.qindex,
             true,
-            false,
-            false,
+            self.sequence
+                .transform_quant_entropy
+                .is_some_and(|tq| tq.enable_inter_ddt),
+            use_intrabc,
             self.bit_depth,
         )
     }
@@ -890,6 +894,7 @@ impl EncoderInterResidual {
         levels: &[i32],
         eob: usize,
         (tx_type, use_tcq): (usize, bool),
+        intra_ist: Option<crate::bitstream::tile_payload::IntraIstSyntax>,
     ) -> Result<()> {
         let plane = [ReconPlaneId::Y, ReconPlaneId::U, ReconPlaneId::V]
             .get(plane)
@@ -906,6 +911,7 @@ impl EncoderInterResidual {
             quant_range: start..start + nonzero,
             zero_tail: levels.len() - nonzero,
             use_tcq,
+            intra_ist,
             ..LumaCoeffBlock::empty(tx_type, false)
         };
         push_inter_residual_block(

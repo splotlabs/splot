@@ -154,7 +154,7 @@ fn tcq_doubles_dq_denom_for_luma_2d_only() {
                     90,
                     plane,
                     (log2, log2),
-                    (block.tx_type, tcq),
+                    (block.tx_type, tcq, false),
                     BitDepth::Eight,
                 )
                 .unwrap()
@@ -330,7 +330,7 @@ fn trellis_is_optimal_on_small_blocks() {
             qindex,
             PlaneId::Y,
             (log2, log2),
-            (TxType::DctDct, true),
+            (TxType::DctDct, true, false),
             bit_depth,
         )
         .unwrap();
