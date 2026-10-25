@@ -136,23 +136,23 @@ impl Encoder {
     ) -> Result<Self> {
         config.validate()?;
         let coder = frame_coder(&config)?;
-        Ok(Self::with_parts(config, coder, rate_control))
+        Self::with_parts(config, coder, rate_control)
     }
 
     #[cfg(test)]
     pub(crate) fn with_coder(config: Config, coder: Box<dyn FrameCoder + Send>) -> Result<Self> {
         let rate_control = rate_controller(&config)?;
-        Ok(Self::with_parts(config, coder, rate_control))
+        Self::with_parts(config, coder, rate_control)
     }
 
     fn with_parts(
         config: Config,
         coder: Box<dyn FrameCoder + Send>,
         rate_control: Box<dyn RateController + Send>,
-    ) -> Self {
-        let params = config.preset.params();
+    ) -> Result<Self> {
+        let params = config.override_preset(config.preset.params())?;
         let planner = GopPlanner::new(config.keyint, params.mini_gop_size);
-        Self {
+        Ok(Self {
             rate_control,
             stats_sink: None,
             pending: VecDeque::new(),
@@ -164,7 +164,7 @@ impl Encoder {
             coder,
             ready: VecDeque::new(),
             state: State::Accepting,
-        }
+        })
     }
 
     /// Returns the configuration.
@@ -423,7 +423,7 @@ mod tests {
 
     use super::*;
     use crate::config::TileLayout;
-    use crate::preset::Preset;
+    use crate::preset::{Preset, PresetError};
 
     /// Emits the frame index and qp as the frame's OBUs (after `0xd0` when
     /// the frame opens a unit) and a recon that is the source plus one; fails
@@ -522,6 +522,49 @@ mod tests {
         }
         let types: Vec<_> = packets.iter().map(|packet| packet.frame_type).collect();
         assert_eq!(types, [FrameType::Key, FrameType::Inter]);
+        Ok(())
+    }
+
+    /// The stream of three flat 40x24 frames at preset 6 with `overrides`.
+    fn stream_with(overrides: &[(&str, &str)]) -> Result<Vec<u8>> {
+        let mut config = Config::new(40, 24);
+        config.preset_overrides = overrides
+            .iter()
+            .map(|&(field, value)| (field.into(), value.into()))
+            .collect();
+        let mut encoder = Encoder::new(config.clone())?;
+        for pts in 0..3 {
+            let planes = [
+                vec![90 + pts as u16; 40 * 24],
+                vec![128; 20 * 12],
+                vec![160; 20 * 12],
+            ];
+            encoder.send_frame(SourceFrame::new(&config, pts, planes)?)?;
+        }
+        encoder.flush()?;
+        Ok(drain(&mut encoder)?
+            .into_iter()
+            .flat_map(|packet| packet.data)
+            .collect())
+    }
+
+    #[test]
+    fn preset_overrides_change_the_stream() -> Result<()> {
+        let plain = stream_with(&[])?;
+        assert_eq!(
+            stream_with(&[("max_block_log2", "7"), ("mini_gop_size", "4")])?,
+            plain
+        );
+        assert_ne!(stream_with(&[("max_block_log2", "6")])?, plain);
+        assert_ne!(stream_with(&[("mini_gop_size", "1")])?, plain);
+        assert!(matches!(
+            stream_with(&[("mini_gop", "1")]),
+            Err(Error::Preset(PresetError::UnknownField { .. }))
+        ));
+        assert!(matches!(
+            stream_with(&[("mini_gop_size", "x")]),
+            Err(Error::Preset(PresetError::InvalidValue { .. }))
+        ));
         Ok(())
     }
 

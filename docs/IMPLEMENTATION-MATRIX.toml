@@ -5380,10 +5380,10 @@ spec_sections = []
 sources = []
 crate = "splot-encode"
 module = "crates/splot-encode/src/preset.rs"
-change_id = "encoder-speed-presets"
+change_id = "enc-preset-set"
 owner = "encoder"
 risk = "medium"
-notes = "Preset accepts 0..=10 (default 6) and maps to one row of the PRESETS table: block-size range, intra modes tried, partition early-exit margin, RDOQ, transform-type depth, motion range, sub-pel depth and loop-filter search, mini-GOP size and lookahead depth. Every field is monotone from slow to fast."
+notes = "Preset accepts 0..=10 (default 6) and maps to one column of the PRESETS table, one named line per PresetParams field. Every field is monotone from slow to fast. The same table generates PresetParams::set: Config::preset_overrides (CLI --preset-set FIELD=VALUE) sets any field by name after the preset and its screen-content switch; an unknown name or a value outside the field type is a typed PresetError."
 
 [feature.status]
 mapped = "done"
@@ -5398,7 +5398,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/preset.rs::tests"]
+tests = ["crates/splot-encode/src/preset.rs::tests", "crates/splot-encode/src/encoder.rs::tests::preset_overrides_change_the_stream", "crates/splot-encode/src/screen.rs::tests::the_encoder_enables_fsc_for_screen_content"]
 commands = ["cargo test -p splot-encode preset --locked"]
 fixtures = []
 diagnostics = []

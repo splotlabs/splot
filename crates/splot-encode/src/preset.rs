@@ -196,91 +196,200 @@ impl TcqFrames {
     }
 }
 
-/// Builds [`PRESETS`] from a `preset: [p0, ..., p10]` header and groups of
-/// `field: [one value per preset]` lines, one line per [`PresetParams`] field;
-/// a missing, repeated or short line does not compile.
+/// A preset field override that [`PresetParams::set`] rejects.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PresetError {
+    /// No [`PresetParams`] field has this name.
+    #[error("unknown preset field `{name}`; valid fields: {}", PresetParams::FIELDS.join(", "))]
+    UnknownField {
+        /// The requested name.
+        name: String,
+    },
+    /// The value does not parse as the field's type or is outside its range.
+    #[error("preset field `{field}` does not accept `{value}`; expected {expected}")]
+    InvalidValue {
+        /// The field.
+        field: &'static str,
+        /// The rejected value.
+        value: String,
+        /// The values the field accepts.
+        expected: &'static str,
+    },
+}
+
+/// A [`PresetParams`] field type that [`PresetParams::set`] parses.
+trait FieldValue: Sized {
+    /// The accepted values, for [`PresetError::InvalidValue`].
+    const EXPECTED: &'static str;
+    fn parse(value: &str) -> Option<Self>;
+}
+
+impl FieldValue for u8 {
+    const EXPECTED: &'static str = "an integer in 0..=255";
+    fn parse(value: &str) -> Option<Self> {
+        value.parse().ok()
+    }
+}
+
+impl FieldValue for u16 {
+    const EXPECTED: &'static str = "an integer in 0..=65535";
+    fn parse(value: &str) -> Option<Self> {
+        value.parse().ok()
+    }
+}
+
+impl FieldValue for bool {
+    const EXPECTED: &'static str = "0, 1, false or true";
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "0" | "false" => Some(false),
+            "1" | "true" => Some(true),
+            _ => None,
+        }
+    }
+}
+
+impl FieldValue for TcqFrames {
+    const EXPECTED: &'static str = "Off, Base or All";
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "Off" => Some(Self::Off),
+            "Base" => Some(Self::Base),
+            "All" => Some(Self::All),
+            _ => None,
+        }
+    }
+}
+
+impl FieldValue for [bool; 3] {
+    const EXPECTED: &'static str = "three comma-separated flags, such as 1,0,1";
+    fn parse(value: &str) -> Option<Self> {
+        let mut flags = value.split(',').map(bool::parse);
+        let parsed = [flags.next()??, flags.next()??, flags.next()??];
+        flags.next().is_none().then_some(parsed)
+    }
+}
+
+fn parse_field<T: FieldValue>(
+    field: &'static str,
+    value: &str,
+) -> core::result::Result<T, PresetError> {
+    T::parse(value).ok_or_else(|| PresetError::InvalidValue {
+        field,
+        value: value.to_owned(),
+        expected: T::EXPECTED,
+    })
+}
+
+/// Builds [`PRESETS`], [`PresetParams::FIELDS`] and [`PresetParams::set`]
+/// from a `preset: [p0, ..., p10]` header and groups of `field: [one value
+/// per preset]` lines, one line per [`PresetParams`] field; a missing,
+/// repeated or short line does not compile.
 macro_rules! preset_table {
     (
         preset: [p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10],
         $($group:ident { $($field:ident: $values:expr,)* })*
-    ) => {{
-        const fn preset(i: usize) -> PresetParams {
-            PresetParams { $($($field: { let values: [_; 11] = $values; values[i] },)*)* }
+    ) => {
+        /// Search limits indexed by preset: `0` is the slowest and best, `10` the fastest.
+        pub const PRESETS: [PresetParams; 11] = {
+            const fn preset(i: usize) -> PresetParams {
+                PresetParams { $($($field: { let values: [_; 11] = $values; values[i] },)*)* }
+            }
+            [
+                preset(0), preset(1), preset(2), preset(3), preset(4), preset(5),
+                preset(6), preset(7), preset(8), preset(9), preset(10),
+            ]
+        };
+
+        impl PresetParams {
+            /// The field names [`Self::set`] accepts, in table order.
+            pub const FIELDS: &'static [&'static str] = &[$($(stringify!($field),)*)*];
+
+            /// Sets the field `name` to `value`: an integer in the field's
+            /// type range, `0`, `1`, `false` or `true` for a flag, a
+            /// [`TcqFrames`] variant name for `tcq`, and three comma-separated
+            /// flags for `mvd_tools`.
+            ///
+            /// # Errors
+            /// Returns [`PresetError::UnknownField`] when no field has this
+            /// name, or [`PresetError::InvalidValue`] when `value` does not fit
+            /// the field.
+            pub fn set(&mut self, name: &str, value: &str) -> core::result::Result<(), PresetError> {
+                match name {
+                    $($(stringify!($field) => self.$field = parse_field(stringify!($field), value)?,)*)*
+                    _ => return Err(PresetError::UnknownField { name: name.to_owned() }),
+                }
+                Ok(())
+            }
         }
-        [
-            preset(0), preset(1), preset(2), preset(3), preset(4), preset(5),
-            preset(6), preset(7), preset(8), preset(9), preset(10),
-        ]
-    }};
+    };
 }
 
-/// Search limits indexed by preset: `0` is the slowest and best, `10` the fastest.
+use TcqFrames::Base;
+
 #[rustfmt::skip]
-pub const PRESETS: [PresetParams; 11] = {
-    use TcqFrames::Base;
-    preset_table! {
-        preset:                    [   p0,    p1,    p2,    p3,    p4,    p5,    p6,    p7,    p8,    p9,   p10],
-        partition {
-            min_block_log2:        [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
-            max_block_log2:        [    7,     7,     7,     7,     7,     7,     7,     6,     6,     6,     6],
-            partition_early_exit:  [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
-            ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-            ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-            ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        }
-        intra {
-            intra_modes:           [   13,    13,    12,    10,     9,     8,     6,     5,     4,     3,     2],
-            mrl_trials:            [    2,     2,     2,     2,     2,     2,     2,     0,     0,     0,     0],
-            cfl_filter:            [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
-            mhccp:                 [false, false, false, false, false, false, false, false, false, false, false],
-            dip:                   [false, false, false, false, false, false, false, false, false, false, false],
-        }
-        transform {
-            full_trials:           [ true,  true,  true,  true, false, false, false, false, false, false, false],
-            rdoq:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
-            rdoq_every_type:       [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
-            parity_hiding:         [false, false, false, false, false, false, false, false, false, false, false],
-            tcq:                   [ Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base],
-            tcq_search_trellis:    [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
-            tcq_type_trellis:      [ true,  true,  true,  true, false, false, false, false, false, false, false],
-            tx_type_depth:         [    3,     3,     3,     2,     2,     2,     1,     1,     1,     0,     0],
-            tx_partition_search:   [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
-            inter_tx_split:        [   24,    24,    24,    24,    24,    24,    24,     0,     0,     0,     0],
-            ist_sets:              [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-            cctx:                  [false, false, false, false, false, false, false, false, false, false, false],
-            inter_ist:             [false, false, false, false, false, false, false, false, false, false, false],
-            inter_ddt:             [false, false, false, false, false, false, false, false, false, false, false],
-        }
-        inter {
-            motion_range:          [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
-            subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     0],
-            eighth_pel_max_qindex: [  128,   128,   128,     0,     0,     0,     0,     0,     0,     0,     0],
-            compound_candidates:   [    8,     8,     6,     6,     4,     4,     3,     2,     1,     0,     0],
-            large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
-            mv_prediction:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
-            drl_bits:              [    3,     3,     3,     3,     3,     3,     3,     1,     1,     1,     1],
-            mvd_tools:             [[false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3]],
-            interp_filter_search:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-            cdf_carry:             [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
-        }
-        filters {
-            loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
-            ccso_candidates:       [    8,     8,     6,     6,     4,     4,     4,     2,     2,     1,     1],
-            wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
-            wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
-            wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
-            gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,    16],
-        }
-        screen_content {
-            fsc:                   [false, false, false, false, false, false, false, false, false, false, false],
-            screen_detect:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
-        }
-        gop {
-            mini_gop_size:         [    8,     8,     8,     8,     4,     4,     4,     4,     2,     2,     1],
-            lookahead_frames:      [   16,    16,    16,    16,     8,     8,     8,     8,     4,     4,     2],
-        }
+preset_table! {
+    preset:                    [   p0,    p1,    p2,    p3,    p4,    p5,    p6,    p7,    p8,    p9,   p10],
+    partition {
+        min_block_log2:        [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
+        max_block_log2:        [    7,     7,     7,     7,     7,     7,     7,     6,     6,     6,     6],
+        partition_early_exit:  [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
-};
+    intra {
+        intra_modes:           [   13,    13,    12,    10,     9,     8,     6,     5,     4,     3,     2],
+        mrl_trials:            [    2,     2,     2,     2,     2,     2,     2,     0,     0,     0,     0],
+        cfl_filter:            [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        mhccp:                 [false, false, false, false, false, false, false, false, false, false, false],
+        dip:                   [false, false, false, false, false, false, false, false, false, false, false],
+    }
+    transform {
+        full_trials:           [ true,  true,  true,  true, false, false, false, false, false, false, false],
+        rdoq:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
+        rdoq_every_type:       [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
+        parity_hiding:         [false, false, false, false, false, false, false, false, false, false, false],
+        tcq:                   [ Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base],
+        tcq_search_trellis:    [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
+        tcq_type_trellis:      [ true,  true,  true,  true, false, false, false, false, false, false, false],
+        tx_type_depth:         [    3,     3,     3,     2,     2,     2,     1,     1,     1,     0,     0],
+        tx_partition_search:   [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
+        inter_tx_split:        [   24,    24,    24,    24,    24,    24,    24,     0,     0,     0,     0],
+        ist_sets:              [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        cctx:                  [false, false, false, false, false, false, false, false, false, false, false],
+        inter_ist:             [false, false, false, false, false, false, false, false, false, false, false],
+        inter_ddt:             [false, false, false, false, false, false, false, false, false, false, false],
+    }
+    inter {
+        motion_range:          [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
+        subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     0],
+        eighth_pel_max_qindex: [  128,   128,   128,     0,     0,     0,     0,     0,     0,     0,     0],
+        compound_candidates:   [    8,     8,     6,     6,     4,     4,     3,     2,     1,     0,     0],
+        large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        mv_prediction:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        drl_bits:              [    3,     3,     3,     3,     3,     3,     3,     1,     1,     1,     1],
+        mvd_tools:             [[false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3]],
+        interp_filter_search:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        cdf_carry:             [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+    }
+    filters {
+        loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
+        ccso_candidates:       [    8,     8,     6,     6,     4,     4,     4,     2,     2,     1,     1],
+        wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
+        wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
+        wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
+        gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,    16],
+    }
+    screen_content {
+        fsc:                   [false, false, false, false, false, false, false, false, false, false, false],
+        screen_detect:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+    }
+    gop {
+        mini_gop_size:         [    8,     8,     8,     8,     4,     4,     4,     4,     2,     2,     1],
+        lookahead_frames:      [   16,    16,    16,    16,     8,     8,     8,     8,     4,     4,     2],
+    }
+}
 
 /// [`PRESETS`] with the screen-content tools on, for a sequence whose first
 /// frame looks like screen content.
@@ -436,6 +545,64 @@ mod tests {
     #[test]
     fn mvd_tools_placement() {
         assert_eq!(PRESETS.map(|params| params.mvd_tools), [[false; 3]; 11]);
+    }
+
+    #[test]
+    fn set_overrides_one_field() {
+        let mut params = PRESETS[6];
+        params.set("gdf_candidates", "4").unwrap();
+        params.set("rdoq", "false").unwrap();
+        params.set("tcq", "All").unwrap();
+        params.set("mvd_tools", "1,0,true").unwrap();
+        let expected = PresetParams {
+            gdf_candidates: 4,
+            rdoq: false,
+            tcq: TcqFrames::All,
+            mvd_tools: [true, false, true],
+            ..PRESETS[6]
+        };
+        assert_eq!(params, expected);
+    }
+
+    #[test]
+    fn set_rejects_unknown_fields_and_bad_values() {
+        let mut params = PRESETS[6];
+        let err = params.set("gdf", "4").unwrap_err();
+        assert_eq!(err, PresetError::UnknownField { name: "gdf".into() });
+        assert!(err.to_string().contains("gdf_candidates, fsc"));
+        for (field, value) in [
+            ("gdf_candidates", "256"),
+            ("gdf_candidates", "-1"),
+            ("motion_range", "65536"),
+            ("rdoq", "2"),
+            ("rdoq", "yes"),
+            ("tcq", "base"),
+            ("mvd_tools", "1,0"),
+            ("mvd_tools", "1,0,1,1"),
+        ] {
+            assert!(
+                matches!(
+                    params.set(field, value),
+                    Err(PresetError::InvalidValue { .. })
+                ),
+                "{field}={value}"
+            );
+        }
+        assert_eq!(params, PRESETS[6]);
+    }
+
+    #[test]
+    fn every_field_is_settable_by_name() {
+        let mut params = PRESETS[10];
+        for &field in PresetParams::FIELDS {
+            assert!(
+                ["1", "Base", "1,1,1"]
+                    .iter()
+                    .any(|value| params.set(field, value).is_ok()),
+                "{field}"
+            );
+        }
+        assert_ne!(params, PRESETS[10]);
     }
 
     #[test]

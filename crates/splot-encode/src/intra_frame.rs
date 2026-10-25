@@ -76,8 +76,23 @@ pub(crate) struct IntraFrameCoder {
 }
 
 impl IntraFrameCoder {
+    /// A coder of `config`. Preset overrides apply to the preset row and to
+    /// its screen-content row. The coder holds `&'static` rows, so a coder
+    /// with overrides leaks its two rows (shortcut: hold owned rows if
+    /// encoders with overrides are made in a loop).
     pub(crate) fn new(config: &Config) -> Result<Self> {
-        Self::with_preset(config, config.preset.params())
+        let preset = config.preset.params();
+        if config.preset_overrides.is_empty() {
+            return Self::with_preset(config, preset);
+        }
+        let leak = |row| -> Result<&'static PresetParams> {
+            Ok(Box::leak(Box::new(config.override_preset(row)?)))
+        };
+        let mut coder = Self::with_preset(config, leak(preset)?)?;
+        coder.screen = (coder.preset.screen_detect)
+            .then(|| leak(config.preset.screen_params()))
+            .transpose()?;
+        Ok(coder)
     }
 
     /// A coder of `config` with the search limits of `preset`.

@@ -40,6 +40,12 @@ pub(crate) struct EncodeArgs {
     /// Speed preset: 0 is the slowest and best, 10 the fastest.
     #[arg(long, default_value_t = Preset::default().get())]
     preset: u8,
+    /// Overrides one field of the preset, as FIELD=VALUE; repeat for more
+    /// fields. It wins over the screen-content switch. Flags take 0, 1,
+    /// false or true, `tcq` takes Off, Base or All, `mvd_tools` takes three
+    /// comma-separated flags. An unknown FIELD lists the valid names.
+    #[arg(long, value_name = "FIELD=VALUE", value_parser = parse_preset_set)]
+    preset_set: Vec<(String, String)>,
     /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
     #[arg(long, default_value_t = ThreadCount::Auto)]
     threads: ThreadCount,
@@ -77,6 +83,14 @@ fn parse_tiles(value: &str) -> Result<TileLayout, String> {
         cols_log2: log2(cols)?,
         rows_log2: log2(rows)?,
     })
+}
+
+/// Parses `--preset-set FIELD=VALUE`.
+fn parse_preset_set(value: &str) -> Result<(String, String), String> {
+    let (field, value) = value
+        .split_once('=')
+        .ok_or_else(|| format!("`{value}` is not FIELD=VALUE"))?;
+    Ok((field.to_owned(), value.to_owned()))
 }
 
 /// Bitrate modes of `splot encode --bitrate`.
@@ -132,6 +146,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.frame_rate = header.frame_rate;
     config.rate_control = args.rate_control();
     config.preset = Preset::new(args.preset)?;
+    config.preset_overrides.clone_from(&args.preset_set);
     config.threads = args.threads;
     config.tiles = args.tiles;
     config.keyint = args.keyint;

@@ -46,7 +46,7 @@ pub use config::{Config, MAX_FRAME_DIMENSION, RateControlMode, TileLayout};
 pub use encoder::{Encoder, Packet, StatsSink};
 pub use error::{Error, Result};
 pub use frame::SourceFrame;
-pub use preset::{PRESETS, Preset, PresetParams};
+pub use preset::{PRESETS, Preset, PresetError, PresetParams};
 pub use rate_control::{
     Cbr, ConstantQp, Crf, FramePlanInfo, FrameType, RateController, Vbr, max_qindex,
 };
