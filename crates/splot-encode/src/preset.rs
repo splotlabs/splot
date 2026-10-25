@@ -142,6 +142,9 @@ pub struct PresetParams {
     /// The first frame switches the sequence to the row of [`SCREEN_PRESETS`]
     /// when it looks like screen content.
     pub screen_detect: bool,
+    /// The first frame picks the sequence's `cfl_ds_filter_index` by the
+    /// down-sampled luma that best predicts its chroma; off codes `0`.
+    pub cfl_filter: bool,
     /// The DIP prediction with the lowest SATD gets one RD trial when it
     /// beats the best angular SATD; off disables `enable_dip`. Off in every
     /// row: the `use_dip` flag cost offsets its wins (2026-10-25).
@@ -226,6 +229,7 @@ const fn row(
         mhccp: false,
         fsc: false,
         screen_detect: true,
+        cfl_filter: true,
         dip: false,
         large_inter: true,
         inter_tx_split: if tx_partition_search { 24 } else { 0 },
@@ -482,6 +486,7 @@ mod tests {
             assert!(fast.mhccp <= slow.mhccp);
             assert!(fast.fsc <= slow.fsc);
             assert!(fast.screen_detect <= slow.screen_detect);
+            assert!(fast.cfl_filter <= slow.cfl_filter);
             assert!(fast.dip <= slow.dip);
             assert!(fast.large_inter <= slow.large_inter);
             assert!(

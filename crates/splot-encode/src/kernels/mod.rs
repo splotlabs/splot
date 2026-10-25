@@ -15,6 +15,7 @@
 
 pub(crate) mod ccso;
 mod cctx;
+mod cfl;
 mod colours;
 mod distortion;
 mod forward_transform;
@@ -226,6 +227,10 @@ pub(crate) trait EncoderKernels: Sync {
     /// ([`colours::colours_simd`]).
     fn block_colours(&self, block: &[u16], limit: usize) -> (usize, u16);
 
+    /// One chroma row of the luma rows above, at and below it, down-sampled
+    /// by the CfL taps `weights` ([`cfl::downsample_simd`]).
+    fn cfl_downsample(&self, weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out: &mut [i32]);
+
     /// One TCQ trellis step: adds the branch metrics of every state to its
     /// path cost and keeps the cheaper branch into each next state
     /// ([`tcq::step_simd`]).
@@ -339,6 +344,10 @@ impl EncoderKernels for ScalarKernels {
         colours::colours_scalar(block, limit)
     }
 
+    fn cfl_downsample(&self, weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out: &mut [i32]) {
+        cfl::downsample_scalar(weights, rows, out);
+    }
+
     fn tcq_step(
         &self,
         prev: &[u64; tcq::STATES],
@@ -436,6 +445,10 @@ impl EncoderKernels for SimdKernels {
 
     fn block_colours(&self, block: &[u16], limit: usize) -> (usize, u16) {
         colours::colours_simd(block, limit)
+    }
+
+    fn cfl_downsample(&self, weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out: &mut [i32]) {
+        cfl::downsample_simd(weights, rows, out);
     }
 
     fn tcq_step(

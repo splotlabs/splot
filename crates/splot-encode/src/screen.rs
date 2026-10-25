@@ -47,9 +47,16 @@ pub(crate) fn is_screen_content(frame: &SourceFrame) -> bool {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use splot_core::annexb::parse_annex_b_obus_partial;
+    use splot_core::bitio::BitReader;
+    use splot_core::headers::sequence::parse_sequence_header;
+    use splot_core::span::ByteOffset;
+    use splot_core::types::ObuType;
+
     use super::*;
-    use crate::config::Config;
-    use crate::{BitDepth, PixelFormat};
+    use crate::config::{Config, RateControlMode};
+    use crate::preset::Preset;
+    use crate::{BitDepth, Encoder, PixelFormat};
 
     fn frame(bit_depth: BitDepth, luma: impl Fn(usize, usize) -> u16) -> SourceFrame {
         let mut config = Config::new(64, 32);
@@ -65,7 +72,11 @@ mod tests {
         for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
             let scale = bit_depth.max_sample() / 255;
             let text = frame(bit_depth, |x, y| {
-                if (x * 7 + y * 3) % 11 < 3 { 20 * scale } else { 230 * scale }
+                if (x * 7 + y * 3) % 11 < 3 {
+                    20 * scale
+                } else {
+                    230 * scale
+                }
             });
             assert!(is_screen_content(&text), "{bit_depth:?}");
         }
@@ -73,8 +84,43 @@ mod tests {
 
     #[test]
     fn camera_texture_and_flat_frames_are_not() {
-        let noise = frame(BitDepth::Eight, |x, y| ((x * 37 + y * 91 + x * y * 13) % 97) as u16 + 60);
+        let noise = frame(BitDepth::Eight, |x, y| {
+            ((x * 37 + y * 91 + x * y * 13) % 97) as u16 + 60
+        });
         assert!(!is_screen_content(&noise));
         assert!(!is_screen_content(&frame(BitDepth::Ten, |_, _| 512)));
+    }
+
+    /// `enable_fsc` of the stream the encoder writes for `frame`.
+    fn encoded_fsc(frame: SourceFrame) -> bool {
+        let mut config = Config::new(64, 32);
+        config.bit_depth = frame.bit_depth();
+        config.preset = Preset::new(10).unwrap();
+        config.rate_control = RateControlMode::ConstantQp { qp: 120 };
+        let mut encoder = Encoder::new(config).unwrap();
+        encoder.send_frame(frame).unwrap();
+        encoder.flush().unwrap();
+        let packet = encoder.receive_packet().unwrap().unwrap();
+        let parsed = parse_annex_b_obus_partial(&packet.data);
+        let obu = parsed
+            .obus
+            .iter()
+            .find(|obu| obu.header.obu_type == ObuType::SequenceHeader)
+            .unwrap();
+        let seq = parse_sequence_header(&mut BitReader::new(obu.payload, ByteOffset::new(0)));
+        seq.unwrap().transform_quant_entropy.unwrap().enable_fsc
+    }
+
+    /// The encoder turns FSC on for screen content only.
+    #[test]
+    fn the_encoder_enables_fsc_for_screen_content() {
+        let text = frame(BitDepth::Ten, |x, y| {
+            if (x * 7 + y * 3) % 11 < 3 { 80 } else { 920 }
+        });
+        assert!(encoded_fsc(text));
+        let noise = frame(BitDepth::Eight, |x, y| {
+            ((x * 37 + y * 91 + x * y * 13) % 97) as u16 + 60
+        });
+        assert!(!encoded_fsc(noise));
     }
 }

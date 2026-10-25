@@ -17,6 +17,7 @@
 
 #![feature(portable_simd)]
 
+mod cfl_filter;
 pub mod config;
 pub mod encoder;
 pub mod error;

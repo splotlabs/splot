@@ -21,6 +21,7 @@ use splot_recon::{
     secondary_transform_layout,
 };
 
+use crate::cfl_filter::cfl_ds_filter;
 use crate::config::Config;
 use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
@@ -36,6 +37,7 @@ use crate::preset::{PresetParams, TcqFrames};
 use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, RowCaches, block_rate};
 use crate::rd::partition::search_partition;
 use crate::rd::{Lambda, RdCost};
+use crate::screen::is_screen_content;
 use crate::tile_writer::coeffs::eob;
 use crate::tile_writer::{
     KeyFrameTileWriter, ResidualCoder, SuperblockDecision, TileWriterError, TransformDecision,
@@ -58,11 +60,15 @@ const DRL_REORDER_CONSTRAINT: bool = true;
 
 /// Codes key frames and inter frames.
 pub(crate) struct IntraFrameCoder {
+    params: EncoderStreamParams,
     sequence: SequenceHeader,
     view: CoreSeqView,
     bit_depth: BitDepth,
     chroma: PixelFormat,
     preset: &'static PresetParams,
+    /// The preset row a screen-content sequence switches to; `None` keeps
+    /// [`Self::preset`].
+    screen: Option<&'static PresetParams>,
     references: EncoderReferences,
     tiles: UniformTiles,
     /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
@@ -76,7 +82,7 @@ impl IntraFrameCoder {
 
     /// A coder of `config` with the search limits of `preset`.
     fn with_preset(config: &Config, preset: &'static PresetParams) -> Result<Self> {
-        let sequence = build_encoder_sequence_header(&EncoderStreamParams {
+        let params = EncoderStreamParams {
             width: config.width,
             height: config.height,
             bit_depth: match config.bit_depth {
@@ -118,18 +124,18 @@ impl IntraFrameCoder {
                 tcq: preset.tcq != TcqFrames::Off,
                 ..EncoderToolFlags::default()
             },
-        })
-        .map_err(coding("sequence header"))?;
-        let view = CoreSeqView::from_sequence(&sequence).ok_or(Error::Unsupported {
-            what: "an incomplete sequence header",
-        })?;
+        };
+        let (sequence, view, references) = sequence_state(&params)?;
         Ok(Self {
-            references: EncoderReferences::new(&sequence).map_err(coding("reference buffer"))?,
+            params,
+            references,
             sequence,
             view,
             bit_depth: config.bit_depth,
             chroma: config.chroma,
             preset,
+            screen: (preset.screen_detect && core::ptr::eq(preset, config.preset.params()))
+                .then(|| config.preset.screen_params()),
             tiles: UniformTiles {
                 cols_log2: config.tiles.cols_log2,
                 rows_log2: config.tiles.rows_log2,
@@ -166,9 +172,51 @@ impl FrameCoder for IntraFrameCoder {
             .map_err(coding("show-existing frame"))?;
         Ok(unit)
     }
+
+    fn start_sequence(&mut self, first: &SourceFrame) -> Result<()> {
+        let mut tools = self.params.tools;
+        if let Some(screen) = self.screen.filter(|_| is_screen_content(first)) {
+            self.preset = screen;
+            tools.fsc = screen.fsc;
+        }
+        if self.preset.cfl_filter {
+            tools.cfl_ds_filter = cfl_ds_filter(first);
+        }
+        self.set_tools(tools)
+    }
+}
+
+/// The sequence header of `params`, its view and empty references.
+fn sequence_state(
+    params: &EncoderStreamParams,
+) -> Result<(SequenceHeader, CoreSeqView, EncoderReferences)> {
+    let sequence = build_encoder_sequence_header(params).map_err(coding("sequence header"))?;
+    let view = CoreSeqView::from_sequence(&sequence).ok_or(Error::Unsupported {
+        what: "an incomplete sequence header",
+    })?;
+    let references = EncoderReferences::new(&sequence).map_err(coding("reference buffer"))?;
+    Ok((sequence, view, references))
 }
 
 impl IntraFrameCoder {
+    /// Rebuilds the sequence with `tools`; call it before the first frame.
+    fn set_tools(&mut self, tools: EncoderToolFlags) -> Result<()> {
+        if tools != self.params.tools {
+            self.params.tools = tools;
+            (self.sequence, self.view, self.references) = sequence_state(&self.params)?;
+        }
+        Ok(())
+    }
+
+    /// [`Self::set_tools`] with `cfl_ds_filter_index` `index`.
+    #[cfg(test)]
+    fn set_cfl_filter(&mut self, index: u8) -> Result<()> {
+        self.set_tools(EncoderToolFlags {
+            cfl_ds_filter: index,
+            ..self.params.tools
+        })
+    }
+
     /// Codes `source` as `plan` at quantizer `qp` against the committed references.
     fn code_frame(&self, source: &SourceFrame, plan: &GopFrame, qp: u16) -> Result<CodedFrame> {
         let plan = &GopFrame {
