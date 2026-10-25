@@ -5,14 +5,15 @@
 //! (§ 5.18.7.9) and the `use_gdf` flags (§ 5.20.10.3).
 //!
 //! GDF runs last in the filter chain and changes luma only, from inputs the
-//! flags do not change (§ 7.20.5). So one run with every unit on gives the
+//! flags do not change (§ 7.20.5). So the chain runs once up to GDF, each
+//! candidate runs only the GDF stage with every unit on, which gives the
 //! exact squared-error change of each unit, and the flags follow by RD.
 
 use splot_core::headers::frame::{FrameFilterParams, FrameGdf, FrameHeaderCore};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::adapt_cdf_u16;
 use splot_decode::encoder_syntax::{
-    GdfBlockMap, GdfFlags, GdfGrid, LrUnit, LrUnitType, apply_loop_filters, tile_count,
+    GdfBlockMap, GdfFlags, GdfGrid, LrUnit, LrUnitType, apply_gdf, apply_loop_filters, tile_count,
 };
 use splot_recon::DecodedFrame;
 
@@ -52,22 +53,38 @@ impl Search<'_> {
         count: usize,
     ) -> Result<Option<(FrameGdf, Vec<u8>)>> {
         let lr_on: Vec<(LrUnit, LrUnitType)> = syntax.lr_on.iter().map(|(&u, &t)| (u, t)).collect();
-        let run = |core: &FrameHeaderCore, blocks: &[u8]| {
-            let gdf = GdfFlags {
-                blocks,
-                refs: self.refs,
+        let run =
+            |params: &FrameFilterParams, (cdef, ccso): (&[Option<usize>], &[Vec<u8>]), lr_on| {
+                let core = self.header(params)?;
+                apply_loop_filters(
+                    self.seq,
+                    &core,
+                    self.recorder,
+                    self.recon,
+                    (cdef, ccso, None),
+                    lr_on,
+                )
+                .map_err(coding("loop filters"))
             };
-            apply_loop_filters(
-                self.seq,
-                core,
-                self.recorder,
-                self.recon,
-                (&syntax.cdef_indices, &syntax.ccso_blocks, Some(gdf)),
-                &lr_on,
-            )
-            .map_err(coding("loop filters"))
+        let blocks = (&syntax.cdef_indices[..], &syntax.ccso_blocks[..]);
+        let deblocked = run(
+            &FrameFilterParams {
+                deblocking: params.deblocking,
+                deblocking_delta_q: params.deblocking_delta_q,
+                ..FrameFilterParams::default()
+            },
+            (&[], &[]),
+            &[],
+        )?;
+        let unrestored = FrameFilterParams {
+            lr_luma_unit_size: None,
+            lr_luma_wiener_ns: None,
+            lr_chroma_unit_size: None,
+            lr_chroma_wiener_ns: [None; 2],
+            ..*params
         };
-        let off = run(&self.header(params)?, &[])?;
+        let cdef = run(&unrestored, blocks, &[])?;
+        let off = run(params, blocks, &lr_on)?;
         let order = candidates(self.qindex, u32::from(self.recon.bit_depth().bits()));
         let headers = order[..count.min(order.len())]
             .iter()
@@ -88,8 +105,31 @@ impl Search<'_> {
         let grid = GdfGrid::new(self.seq, first).map_err(coding("gdf grid"))?;
         let all_on = grid.map_or_else(Vec::new, |grid| vec![1u8; grid.rows * grid.cols]);
         let (source, height) = (self.source, self.recon.coded_luma_size().height());
+        let (seq, refs) = (self.seq, self.refs);
         let tried = map_tiles(self.pool, headers, |(gdf, core)| {
-            let on = run(&core, &all_on)?;
+            let flags = GdfFlags {
+                blocks: &all_on,
+                refs,
+            };
+            let on =
+                apply_gdf(seq, &core, (&deblocked, &cdef, &off), flags).map_err(coding("gdf"))?;
+            #[cfg(test)]
+            {
+                let chain = apply_loop_filters(
+                    seq,
+                    &core,
+                    self.recorder,
+                    self.recon,
+                    (&syntax.cdef_indices, &syntax.ccso_blocks, Some(flags)),
+                    &lr_on,
+                )
+                .map_err(coding("loop filters"))?;
+                if chain != on {
+                    return Err(Error::Unsupported {
+                        what: "a GDF stage that differs from the filter chain",
+                    });
+                }
+            }
             let deltas = unit_deltas(source, (&core, grid, height), (&on, &off))?;
             Ok((gdf, core, deltas))
         })?;

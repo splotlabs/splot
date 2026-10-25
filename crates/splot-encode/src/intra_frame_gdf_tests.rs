@@ -14,7 +14,7 @@ fn with_gdf(preset: &PresetParams, candidates: u8) -> &'static PresetParams {
     }))
 }
 
-/// A key frame and two inter frames of a two-tile pan on `threads` threads:
+/// A key frame and two inter frames of a 2x2-tile pan on `threads` threads:
 /// the units, the encoder recon, whether each frame codes GDF, and whether
 /// the sequence enables it.
 fn gdf_stream(
@@ -24,7 +24,7 @@ fn gdf_stream(
     let mut config = config(200, 136, BitDepth::Ten, 9, 200);
     config.tiles = TileLayout {
         cols_log2: 1,
-        rows_log2: 0,
+        rows_log2: 1,
     };
     config.threads = splot_parallel::ThreadCount::from(threads);
     let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
