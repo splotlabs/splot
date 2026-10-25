@@ -61,11 +61,10 @@ pub struct PresetParams {
     /// refine to quarter samples. `0` never codes eighth-pel.
     pub eighth_pel_max_qindex: u16,
     /// Loop-filter search depth. Deblocking: `0` derives the level from the
-    /// qp; `1` fits a parabola to each plane's SSE at `DfDeltaQ` -1, 0 and 1
-    /// and tries its vertex, reaching -2..=2; each depth above 1 tries the two
-    /// neighbours of each plane's best offset once more, so `2` reaches
-    /// -3..=3 and `3` the whole -4..=3. CDEF tries 8, 12 or 16 strengths at
-    /// depth 0, 1 or 2; depth 3 tries 16, as depth 2 does.
+    /// qp; depth 1, 2 or 3 tries `DfDeltaQ` 0, ±1 (3 offsets), then ±2 (5),
+    /// then 3, -3 and -4 (8, the whole -4..=3 sequence range of
+    /// `df_par_bits` 3) per plane, by SSE after deblocking. CDEF tries 8, 12
+    /// or 16 strengths at depth 0, 1 or 2; depth 3 tries 16, as depth 2 does.
     pub loop_filter_search: u8,
     /// Frames per mini-GOP, `1..=8`: `1` codes every frame shown (IPPP);
     /// larger sizes code the last frame first as a hidden alt-ref and the
