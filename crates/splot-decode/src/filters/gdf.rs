@@ -293,6 +293,73 @@ pub(crate) fn apply_stripe<T: ReconSample>(
     let Some(config) = gdf_config(core, block_grid, bit_depth, reference)? else {
         return Ok(());
     };
+    apply_stripe_config(
+        config,
+        core,
+        (deblocked_luma, separate_cdef_luma, cdef_overlap),
+        post_lr_luma,
+        (block_grid, lossless_grid),
+        bit_depth,
+        disable_loopfilters_across_tiles,
+    )
+}
+
+/// The § 7.20.5 `err` of every enabled luma sample of a stripe whose
+/// `post_lr_luma` holds [`GDF_ERROR_BASE`] everywhere, written as
+/// `GDF_ERROR_BASE + err`: the stripe runs with `GdfPixScale = 1 << (12 -
+/// BitDepth)`, so the rounding keeps `err` exact, and a sample range wide
+/// enough that no `err` clips.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn error_stripe(
+    core: &FrameHeaderCore,
+    deblocked_luma: FramePlane<'_, u16>,
+    separate_cdef_luma: Option<&StripePlane>,
+    cdef_overlap: &[StripePlane],
+    post_lr_luma: &mut StripePlane,
+    block_grid: Option<&GdfBlockGrid>,
+    bit_depth: BitDepth,
+    disable_loopfilters_across_tiles: bool,
+    reference: Option<GdfReferenceContext>,
+) -> Result<()> {
+    let Some(config) = gdf_config(core, block_grid, bit_depth, reference)? else {
+        return Ok(());
+    };
+    let config = GdfConfig {
+        pix_scale: 1 << (12 - i32::from(bit_depth.bits())),
+        max_sample: 2 * GDF_ERROR_BASE as i32 - 1,
+        ..config
+    };
+    apply_stripe_config(
+        config,
+        core,
+        (deblocked_luma, separate_cdef_luma, cdef_overlap),
+        post_lr_luma,
+        (block_grid, None),
+        bit_depth,
+        disable_loopfilters_across_tiles,
+    )
+}
+
+/// The base sample of [`error_stripe`]; every `err` table entry lies well
+/// inside `-GDF_ERROR_BASE..GDF_ERROR_BASE`.
+pub(crate) const GDF_ERROR_BASE: u16 = 1024;
+
+fn apply_stripe_config<T: ReconSample>(
+    config: GdfConfig,
+    core: &FrameHeaderCore,
+    (deblocked_luma, separate_cdef_luma, cdef_overlap): (
+        FramePlane<'_, T>,
+        Option<&StripePlane>,
+        &[StripePlane],
+    ),
+    post_lr_luma: &mut StripePlane,
+    (block_grid, lossless_grid): (
+        Option<&GdfBlockGrid>,
+        Option<&crate::filters::lossless::LosslessBlockGrid>,
+    ),
+    bit_depth: BitDepth,
+    disable_loopfilters_across_tiles: bool,
+) -> Result<()> {
     let (width, stride) = (post_lr_luma.width(), post_lr_luma.stride());
     let frame_height = post_lr_luma.frame_height();
     let y = post_lr_luma.origin_y();

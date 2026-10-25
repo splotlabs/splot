@@ -13,7 +13,10 @@ use super::{
     EncoderReferences, EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock, Result, rule,
     tile_ranges,
 };
-use crate::filters::gdf::{GdfBlockGrid, GdfReferenceContext, gdf_stripe_row};
+use splot_recon::DecodedFrame;
+
+use crate::filters::gdf::{GDF_ERROR_BASE, GdfBlockGrid, GdfReferenceContext, gdf_stripe_row};
+use crate::filters::source::{FramePlane, StripePlane};
 use crate::filters::wienerns_lr::tx_records::gdf::GdfState;
 
 impl IntraTileSyntax {
@@ -152,4 +155,85 @@ impl GdfFlags<'_> {
         });
         Ok((grid, reference))
     }
+}
+
+/// The § 7.20.5 `err` of every luma sample of the frame `core` that a unit
+/// of `gdf` enables (`0` elsewhere), row by row over the luma storage plane.
+/// GDF of `GdfPixScale` `s` gives the sample `Clip1(lr + Round2Signed(err * s,
+/// 12 - BitDepth))`, where `lr` is the sample after loop restoration.
+///
+/// `deblocked` and `cdef` are the chain's frames of the same decisions after
+/// deblocking and after CDEF and CCSO: each 64-row stripe reads the CDEF
+/// output inside the stripe and the deblocked frame outside it. Returns the
+/// row width and the errors.
+///
+/// # Errors
+/// Returns [`EncoderSyntaxError`] when the frames differ in size, the frame
+/// has a lossless segment (whose samples GDF leaves alone), or a GDF stage
+/// rejects its inputs.
+pub fn gdf_errors(
+    seq: &SequenceHeader,
+    core: &FrameHeaderCore,
+    (deblocked, cdef): (&DecodedFrame<u16>, &DecodedFrame<u16>),
+    gdf: GdfFlags<'_>,
+) -> Result<(usize, Vec<i16>)> {
+    if core
+        .lossless_info
+        .is_some_and(|info| info.has_lossless_segment)
+    {
+        return Err(EncoderSyntaxError::Unsupported(
+            "GDF errors of a frame with a lossless segment",
+        ));
+    }
+    let (grid, reference) = gdf.decoder_inputs(seq, core)?;
+    let size = cdef.y().storage_size();
+    let (width, height) = (size.width(), size.height());
+    let packed = |frame: &DecodedFrame<u16>| -> Result<Vec<u16>> {
+        let y = frame.y();
+        if y.storage_size() != size {
+            return Err(EncoderSyntaxError::Unsupported(
+                "GDF frames of another size",
+            ));
+        }
+        let stride = y.stride_samples();
+        Ok((0..height)
+            .flat_map(|row| &y.samples()[row * stride..row * stride + width])
+            .copied()
+            .collect())
+    };
+    let shape = || EncoderSyntaxError::Unsupported("GDF stripe shape");
+    let (deblocked_y, cdef_y) = (packed(deblocked)?, packed(cdef)?);
+    let deblocked_plane =
+        FramePlane::window(&deblocked_y, width, height, 0, height).ok_or_else(shape)?;
+    let stripe = |samples: Vec<u16>, start: usize| {
+        StripePlane::from_samples(width, height, start, samples).ok_or_else(shape)
+    };
+    let cdef_frame = [stripe(cdef_y.clone(), 0)?];
+    let disable_across_tiles = seq
+        .filter
+        .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
+    let mut errors = vec![0i16; width * height];
+    for range in crate::filters::gdf::stripe_ranges(core, height) {
+        let (start, end) = range.map_err(rule("GDF stripe"))?;
+        let rows = start * width..end * width;
+        let separate = stripe(cdef_y[rows.clone()].to_vec(), start)?;
+        let base = vec![GDF_ERROR_BASE; rows.len()];
+        let mut output = stripe(base, start)?;
+        crate::filters::gdf::error_stripe(
+            core,
+            deblocked_plane,
+            Some(&separate),
+            &cdef_frame,
+            &mut output,
+            grid.as_ref(),
+            cdef.bit_depth(),
+            disable_across_tiles,
+            reference,
+        )
+        .map_err(rule("GDF"))?;
+        for (error, &sample) in errors[rows].iter_mut().zip(output.samples()) {
+            *error = sample as i16 - GDF_ERROR_BASE as i16;
+        }
+    }
+    Ok((width, errors))
 }

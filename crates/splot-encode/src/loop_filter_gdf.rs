@@ -5,22 +5,28 @@
 //! (§ 5.18.7.9) and the `use_gdf` flags (§ 5.20.10.3).
 //!
 //! GDF runs last in the filter chain and changes luma only, from inputs the
-//! flags do not change (§ 7.20.5). So one run with every unit on gives the
-//! exact squared-error change of each unit, and the flags follow by RD.
+//! flags do not change (§ 7.20.5). The GDF `err` of a sample does not
+//! depend on `GdfPixScale`, so the chain runs once up to GDF, `err` comes
+//! from one GDF pass per `gdf_pic_qc_idx`, and one kernel pass gives the
+//! exact squared error of each unit at all four scales. The flags then
+//! follow by RD.
 
 use splot_core::headers::frame::{FrameFilterParams, FrameGdf, FrameHeaderCore};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::adapt_cdf_u16;
 use splot_decode::encoder_syntax::{
-    GdfBlockMap, GdfFlags, GdfGrid, LrUnit, LrUnitType, apply_loop_filters, tile_count,
+    GdfBlockMap, GdfFlags, GdfGrid, LrUnit, LrUnitType, apply_loop_filters, gdf_errors, tile_count,
 };
-use splot_recon::DecodedFrame;
+use splot_recon::{DecodedFrame, PlaneId};
 
 use super::ccso::rd;
-use super::{FilterSyntax, Search, coding, plane_sse};
+#[cfg(test)]
+use super::plane_sse;
+use super::{FilterSyntax, Search, coding};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::intra_frame::map_tiles;
+use crate::kernels::gdf;
 use crate::rd::{Bits, symbol_cost};
 
 /// The 8-bit-equivalent `base_q_idx` from which frames try
@@ -38,6 +44,13 @@ pub(super) fn candidates(qindex: u32, bit_depth: u32) -> [(u8, u8); 16] {
     pairs
 }
 
+/// Whether the frame `core` has a lossless segment, whose samples GDF leaves
+/// alone; the search then keeps GDF off.
+pub(super) fn has_lossless_segment(core: &FrameHeaderCore) -> bool {
+    core.lossless_info
+        .is_some_and(|info| info.has_lossless_segment)
+}
+
 /// `gdf_pic_qc_idx` and `gdf_pic_scale_idx` bits; `gdf_per_block` adds one
 /// where a grid codes it.
 const HEADER_BITS: u32 = 4;
@@ -52,23 +65,40 @@ impl Search<'_> {
         count: usize,
     ) -> Result<Option<(FrameGdf, Vec<u8>)>> {
         let lr_on: Vec<(LrUnit, LrUnitType)> = syntax.lr_on.iter().map(|(&u, &t)| (u, t)).collect();
-        let run = |core: &FrameHeaderCore, blocks: &[u8]| {
-            let gdf = GdfFlags {
-                blocks,
-                refs: self.refs,
+        let run =
+            |params: &FrameFilterParams, (cdef, ccso): (&[Option<usize>], &[Vec<u8>]), lr_on| {
+                let core = self.header(params)?;
+                apply_loop_filters(
+                    self.seq,
+                    &core,
+                    self.recorder,
+                    self.recon,
+                    (cdef, ccso, None),
+                    lr_on,
+                )
+                .map_err(coding("loop filters"))
             };
-            apply_loop_filters(
-                self.seq,
-                core,
-                self.recorder,
-                self.recon,
-                (&syntax.cdef_indices, &syntax.ccso_blocks, Some(gdf)),
-                &lr_on,
-            )
-            .map_err(coding("loop filters"))
+        let blocks = (&syntax.cdef_indices[..], &syntax.ccso_blocks[..]);
+        let deblocked = run(
+            &FrameFilterParams {
+                deblocking: params.deblocking,
+                deblocking_delta_q: params.deblocking_delta_q,
+                ..FrameFilterParams::default()
+            },
+            (&[], &[]),
+            &[],
+        )?;
+        let unrestored = FrameFilterParams {
+            lr_luma_unit_size: None,
+            lr_luma_wiener_ns: None,
+            lr_chroma_unit_size: None,
+            lr_chroma_wiener_ns: [None; 2],
+            ..*params
         };
-        let off = run(&self.header(params)?, &[])?;
-        let order = candidates(self.qindex, u32::from(self.recon.bit_depth().bits()));
+        let cdef = run(&unrestored, blocks, &[])?;
+        let off = run(params, blocks, &lr_on)?;
+        let bit_depth = u32::from(self.recon.bit_depth().bits());
+        let order = candidates(self.qindex, bit_depth);
         let headers = order[..count.min(order.len())]
             .iter()
             .map(|&(qc_idx, scale_idx)| {
@@ -82,17 +112,74 @@ impl Search<'_> {
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
-        let Some((_, first)) = headers.first() else {
+        let Some((_, first)) = headers
+            .first()
+            .filter(|(_, core)| !has_lossless_segment(core))
+        else {
             return Ok(None);
         };
         let grid = GdfGrid::new(self.seq, first).map_err(coding("gdf grid"))?;
         let all_on = grid.map_or_else(Vec::new, |grid| vec![1u8; grid.rows * grid.cols]);
         let (source, height) = (self.source, self.recon.coded_luma_size().height());
-        let tried = map_tiles(self.pool, headers, |(gdf, core)| {
-            let on = run(&core, &all_on)?;
-            let deltas = unit_deltas(source, (&core, grid, height), (&on, &off))?;
-            Ok((gdf, core, deltas))
+        let (seq, refs) = (self.seq, self.refs);
+        let flags = GdfFlags {
+            blocks: &all_on,
+            refs,
+        };
+        let mut qc_cores: Vec<(u8, FrameHeaderCore)> = Vec::new();
+        for (gdf, core) in &headers {
+            if qc_cores.iter().all(|(qc, _)| *qc != gdf.qc_idx) {
+                qc_cores.push((gdf.qc_idx, core.clone()));
+            }
+        }
+        let shift = 12 - bit_depth;
+        let max = self.recon.bit_depth().max_sample();
+        let per_qc = map_tiles(self.pool, qc_cores, |(qc, core)| {
+            let (width, errors) =
+                gdf_errors(seq, &core, (&deblocked, &cdef), flags).map_err(coding("gdf"))?;
+            let sums = unit_scale_sums(
+                source,
+                (&core, grid, height),
+                (&off, &errors, width),
+                (shift, max),
+            )?;
+            Ok((qc, sums))
         })?;
+        let tried = headers
+            .into_iter()
+            .map(|(gdf, core)| {
+                let sums = per_qc
+                    .iter()
+                    .find(|(qc, _)| *qc == gdf.qc_idx)
+                    .map(|(_, sums)| sums)
+                    .ok_or(Error::Unsupported {
+                        what: "a GDF candidate without errors",
+                    })?;
+                let scale = usize::from(gdf.scale_idx) + 1;
+                let deltas: Vec<i64> = sums
+                    .iter()
+                    .map(|sum| sum[scale] as i64 - sum[0] as i64)
+                    .collect();
+                #[cfg(test)]
+                {
+                    let on = apply_loop_filters(
+                        seq,
+                        &core,
+                        self.recorder,
+                        self.recon,
+                        (&syntax.cdef_indices, &syntax.ccso_blocks, Some(flags)),
+                        &lr_on,
+                    )
+                    .map_err(coding("loop filters"))?;
+                    if unit_deltas(source, (&core, grid, height), (&on, &off))? != deltas {
+                        return Err(Error::Unsupported {
+                            what: "GDF errors that differ from the filter chain",
+                        });
+                    }
+                }
+                Ok((gdf, core, deltas))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let mut best: Option<(i128, FrameGdf, Vec<u8>)> = None;
         for (gdf, core, deltas) in tried {
             let (flags, cost) = match grid {
@@ -146,9 +233,54 @@ impl Search<'_> {
     }
 }
 
+/// The luma squared error per unit of `grid` in raster order (one unit
+/// without a grid) of `off` and of `off` with GDF `errors` (rows `width`
+/// wide) at `GdfPixScale` 1 to 4, as [`gdf::scale_sse_simd`] sums them;
+/// luma rows follow the unit that governs their stripe in a frame `height`
+/// coded rows high.
+fn unit_scale_sums(
+    source: &SourceFrame,
+    (core, grid, height): (&FrameHeaderCore, Option<GdfGrid>, usize),
+    (off, errors, width): (&DecodedFrame<u16>, &[i16], usize),
+    (shift, max): (u32, u16),
+) -> Result<Vec<[u64; 5]>> {
+    let size = source.plane_sizes()[0];
+    let (Some(original), Some(lr)) = (source.planes().first(), off.plane(PlaneId::Y)) else {
+        return Err(Error::Unsupported {
+            what: "a GDF frame without luma",
+        });
+    };
+    let stride = lr.stride_samples();
+    let (block, cols) = grid.map_or((usize::MAX, 1), |grid| (grid.block_size, grid.cols));
+    let mut sums = vec![[0u64; 5]; grid.map_or(1, |grid| grid.rows * grid.cols)];
+    for y in 0..size.height() {
+        let row = match grid {
+            Some(grid) => grid.unit_row(core, y, height).map_err(coding("gdf grid"))?,
+            None => 0,
+        };
+        for col in 0..cols {
+            let left = col.saturating_mul(block).min(size.width());
+            let right = left.saturating_add(block).min(size.width());
+            let rows = (
+                lr.samples().get(y * stride + left..y * stride + right),
+                errors.get(y * width + left..y * width + right),
+                original.get(y * size.width() + left..y * size.width() + right),
+            );
+            let (Some(lr), Some(err), Some(src)) = rows else {
+                return Err(Error::Unsupported {
+                    what: "a GDF row outside the frame",
+                });
+            };
+            gdf::scale_sse_simd((lr, err, src), (shift, max), &mut sums[row * cols + col]);
+        }
+    }
+    Ok(sums)
+}
+
 /// The luma squared-error change of GDF per unit of `grid` in raster order
 /// (one unit without a grid), `on` against `off`; luma rows follow the unit
 /// that governs their stripe in a frame `height` coded rows high.
+#[cfg(test)]
 fn unit_deltas(
     source: &SourceFrame,
     (core, grid, height): (&FrameHeaderCore, Option<GdfGrid>, usize),
