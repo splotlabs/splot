@@ -36,11 +36,13 @@ use super::super::general_intra_block::{
     INTER_FSC_MODE_CONTEXT, allow_fsc_intra, dip_mode_info_allowed, fsc_bsize_group,
 };
 use super::super::general_intra_residual::{LumaTransformTypeContext, intra_chroma_plane_tx_type};
+use super::super::intra_joint_modes::LumaPalette;
 use super::super::partition_traversal::{
     DecodedLeafPublication, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
     is_cfl_context_for_chroma_ref, publish_intra_leaf_state,
 };
 use super::super::tile_frontier::chroma_subsampling;
+use super::palette::{Palette, PlannedPalette, unit_map};
 use super::{
     EncoderSyntaxError, IntraMode, IntraTileSyntax, Ist, LeafBlock, Result, TileEnd,
     TransformBlock, TxPartition, coefficient_scan, rule, tx_log2,
@@ -96,6 +98,9 @@ pub struct IntraModes {
     pub fsc: bool,
     /// `use_dip` with its mode: a `DC_PRED` luma prediction by DIP.
     pub dip: Option<Dip>,
+    /// `has_palette_y` with its palette: a `DC_PRED` luma prediction from
+    /// the color map [`IntraTileSyntax::set_palette_map`] sets.
+    pub palette: Option<Palette>,
 }
 
 /// `dip_mode` and `dip_transpose` of a DIP luma prediction (§ 5.20.7.9).
@@ -116,6 +121,7 @@ impl IntraModes {
         mrl: Mrl::OFF,
         fsc: false,
         dip: None,
+        palette: None,
     };
 }
 
@@ -205,7 +211,7 @@ impl TxType {
 
 /// The sequence and frame facts intra prediction reads.
 pub(super) struct IntraTools {
-    chroma: GeneralIntraChromaToolConfig,
+    pub(super) chroma: GeneralIntraChromaToolConfig,
     cfl_ds_filter_index: u8,
     enable_ibp: bool,
     enable_intra_edge_filter: bool,
@@ -250,7 +256,6 @@ impl IntraTools {
         };
         let lossless = core.lossless_info.as_ref();
         let refused = [
-            (core.allow_screen_content_tools == Some(true), "palette"),
             (core.allow_intrabc == Some(true), "intra block copy"),
             (
                 qindex == 0
@@ -311,6 +316,7 @@ pub(super) struct YModeTable {
 /// One leaf planned for prediction and reconstruction.
 pub(super) struct PlannedLeaf {
     plan: GeneralIntraResidualPlan,
+    palette: Option<PlannedPalette>,
     units: Vec<TransformBlock>,
     intra_edge: IntraEdgeCtx,
     luma_context: LumaTransformTypeContext,
@@ -428,14 +434,16 @@ impl IntraTileSyntax {
         symbols: &mut impl SymbolSink,
     ) -> Result<()> {
         self.write_y_uv_modes(leaf, modes, symbols)?;
+        self.write_palette_mode_info(leaf, modes, symbols)?;
         self.write_dip(leaf, modes, symbols)
     }
 
     /// Whether `leaf` codes `use_dip` under the luma mode of `modes` (§ 5.20.7.9).
     #[must_use]
     pub fn dip_allowed(&self, leaf: &LeafBlock, modes: IntraModes) -> bool {
+        let palette = modes.palette.and_then(|palette| self.luma_palette(palette).ok());
         leaf_size4(leaf).is_ok_and(|(n4w, n4h)| {
-            dip_mode_info_allowed(self.tools.chroma, modes.y_mode, None, n4w, n4h)
+            dip_mode_info_allowed(self.tools.chroma, modes.y_mode, palette, n4w, n4h)
         })
     }
 
@@ -609,7 +617,9 @@ impl IntraTileSyntax {
         self.fsc_leaf = modes.fsc;
         let (block_ctx, _) = self.block_ctx(leaf);
         let (_, joint) = self.y_mode_index(leaf, modes)?;
-        let block_modes = block_modes(leaf, modes, joint, self.mrl_selection(modes)?)?;
+        let palette = self.plan_palette(leaf, modes)?;
+        let mrl = self.mrl_selection(modes)?;
+        let block_modes = block_modes(leaf, modes, joint, mrl, palette.map(|p| p.palette))?;
         let luma = rect_luma_plan(&block_modes, block_ctx, self.tools.tcq, self.sb_size4)
             .map_err(rule("luma plan"))?;
         let chroma = rect_chroma_plan(&block_modes, self.tools.cfl_ds_filter_index, self.sb_size4);
@@ -664,6 +674,7 @@ impl IntraTileSyntax {
             chroma_edge_smoothness(Some(&self.recon.chroma_smooth), block_ctx);
         self.recon.leaf = Some(PlannedLeaf {
             plan,
+            palette,
             units: units.clone(),
             intra_edge: IntraEdgeCtx {
                 enable_ibp: self.tools.enable_ibp,
@@ -841,10 +852,15 @@ impl IntraTileSyntax {
     pub fn publish_intra_leaf(&mut self, leaf: &LeafBlock, modes: IntraModes) -> Result<()> {
         let (_, joint) = self.y_mode_index(leaf, modes)?;
         let mrl = self.mrl_selection(modes)?;
-        let block_modes = block_modes(leaf, modes, joint, mrl)?;
+        let palette = modes
+            .palette
+            .map(|palette| self.luma_palette(palette))
+            .transpose()?;
+        let block_modes = block_modes(leaf, modes, joint, mrl, palette)?;
         let fsc = u8::from(modes.fsc);
         let mut mode = GeneralIntraLeafMode::luma(joint, modes.y_mode, modes.angle_delta, fsc, mrl)
-            .with_use_dip(modes.dip.is_some().into());
+            .with_use_dip(modes.dip.is_some().into())
+            .with_palette_y(palette);
         if leaf.frontier.has_chroma {
             mode = mode.with_uv_cfl(block_modes.is_cfl());
         }
@@ -920,6 +936,7 @@ impl IntraTileSyntax {
     ) -> Result<()> {
         let use_tcq = self.uses_tcq(coded);
         let (tx_type, ist) = (coded.tx_type, coded.ist.syntax());
+        let (log2_w, log2_h) = tx_log2(coded.tx_size)?;
         let Recon {
             workspace,
             scratch,
@@ -928,12 +945,21 @@ impl IntraTileSyntax {
             ..
         } = &mut self.recon;
         let leaf = leaf.as_ref().ok_or(NO_LEAF)?;
+        let palette_map = match coded.plane {
+            0 => unit_map(
+                (&self.palette_map, &mut self.palette_unit),
+                leaf.palette.as_ref(),
+                (coded.x, coded.y, 1 << log2_w, 1 << log2_h),
+            )?,
+            _ => None,
+        };
         leaf.plan
             .reconstruct_unit(
                 index,
                 quant,
                 eob,
                 (tx_type as usize, use_tcq, ist),
+                palette_map,
                 scratch,
                 workspace,
                 block_decoded,
@@ -942,6 +968,20 @@ impl IntraTileSyntax {
                 leaf.luma_context,
             )
             .map_err(rule("reconstruction"))
+    }
+
+    /// The palette of the planned leaf.
+    pub(super) fn planned_palette(&self) -> Result<Option<PlannedPalette>> {
+        self.recon
+            .leaf
+            .as_ref()
+            .map(|leaf| leaf.palette)
+            .ok_or(NO_LEAF)
+    }
+
+    /// The decoder's palette of `palette`.
+    fn luma_palette(&self, palette: Palette) -> Result<LumaPalette> {
+        palette.luma(u32::from(self.tools.bit_depth.bits()))
     }
 
     /// The luma transform-type context of the planned leaf.
@@ -1129,12 +1169,13 @@ static ZERO_LEVELS: [i32; 1024] = [0; 1024];
 
 const NO_LEAF: EncoderSyntaxError = EncoderSyntaxError::Unsupported("unplanned transform block");
 
-/// The decoder's block modes of `modes` in `leaf`, without FSC, DIP, or palette.
+/// The decoder's block modes of `modes` in `leaf` with luma `palette`.
 fn block_modes(
     leaf: &LeafBlock,
     modes: IntraModes,
     intra_joint_mode: IntraJointMode,
     mrl: MrlSelection,
+    palette: Option<LumaPalette>,
 ) -> Result<GeneralIntraBlockModes> {
     let luma = GeneralIntraLumaBlockMode {
         y_mode: modes.y_mode,
@@ -1149,7 +1190,7 @@ fn block_modes(
         dpcm_mode_y: 0,
     };
     if !leaf.has_chroma() {
-        return Ok(GeneralIntraBlockModes::luma_only(luma));
+        return Ok(GeneralIntraBlockModes::luma_only(luma).with_palette_y(palette));
     }
     let chroma = match modes.uv_mode {
         ChromaMode::Intra(uv_mode) => {
@@ -1172,7 +1213,7 @@ fn block_modes(
         }),
     };
     Ok(GeneralIntraBlockModes::from_luma_chroma_palette(
-        luma, chroma, None,
+        luma, chroma, palette,
     ))
 }
 

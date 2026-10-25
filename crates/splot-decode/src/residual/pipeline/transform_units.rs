@@ -20,7 +20,8 @@ use super::{
 
 impl GeneralIntraResidualPlan {
     /// Reconstructs planned transform block `index` from its row-major adjusted
-    /// `quant` and `eob`, through the decoder's own kernel dispatch.
+    /// `quant` and `eob`, through the decoder's own kernel dispatch; a palette
+    /// luma block predicts from its row-major `palette_map`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn reconstruct_unit<T: ReconSample>(
         &self,
@@ -28,6 +29,7 @@ impl GeneralIntraResidualPlan {
         quant: &[i32],
         eob: usize,
         (plane_tx_type, use_tcq, intra_ist): (usize, bool, Option<IntraIstSyntax>),
+        palette_map: Option<&[u8]>,
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &TileBlockDecodedState,
@@ -54,7 +56,7 @@ impl GeneralIntraResidualPlan {
             workspace,
             CoeffBlock::new(&coeffs, quant)?,
             block_decoded,
-            None,
+            palette_map,
             qindex,
             intra_edge,
             luma_context,

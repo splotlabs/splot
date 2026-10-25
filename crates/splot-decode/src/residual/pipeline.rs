@@ -14,6 +14,7 @@ mod chroma_pair;
 pub(crate) use chroma_pair::read_cctx_prediction;
 mod deblock_recorder;
 mod palette;
+pub(crate) use palette::palette_color_index_context;
 mod plan;
 mod plane_execution;
 mod reconstruct_dispatch;
