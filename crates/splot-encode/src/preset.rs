@@ -140,6 +140,10 @@ pub struct PresetParams {
     /// `fsc_mode`; off disables `enable_fsc`. Off in every row: it pays only
     /// on screen content, so it waits for a screen-content detector.
     pub fsc: bool,
+    /// The DIP prediction with the lowest SATD gets one RD trial when it
+    /// beats the best angular SATD; off disables `enable_dip`. Off in every
+    /// row: the `use_dip` flag cost offsets its wins (2026-10-25).
+    pub dip: bool,
     /// Leaves wider or taller than 64 also try inter, skip-mode and compound
     /// predictions; off, they code intra only.
     pub large_inter: bool,
@@ -219,6 +223,7 @@ const fn row(
         cctx: false,
         mhccp: false,
         fsc: false,
+        dip: false,
         large_inter: true,
         inter_tx_split: if tx_partition_search { 24 } else { 0 },
     }
@@ -456,6 +461,7 @@ mod tests {
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.mhccp <= slow.mhccp);
             assert!(fast.fsc <= slow.fsc);
+            assert!(fast.dip <= slow.dip);
             assert!(fast.large_inter <= slow.large_inter);
             assert!(
                 fast.inter_tx_split == 0
