@@ -225,7 +225,10 @@ fn inter_frame_header_bits(
         w.write_flag(false)?; // tmvp_sample_step_minus_1
     }
     if seq.seq_force_screen_content_tools == 2 {
-        w.write_flag(false)?; // allow_screen_content_tools
+        w.write_flag(true)?; // allow_screen_content_tools
+        if seq.seq_force_integer_mv == 2 {
+            w.write_flag(false)?; // force_integer_mv
+        }
     }
     w.write_flag(false)?; // allow_intrabc
     w.write_flag(!params.high_precision_mv)?; // use_qtr_precision_mv

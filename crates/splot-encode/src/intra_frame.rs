@@ -11,8 +11,8 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    CCTX_ROTATIONS, EncoderReferences, IntraTileSyntax, Ist, Partition, PartitionNode,
-    TransformBlock, TxType, recon_params, tile_count, tx_log2,
+    CCTX_ROTATIONS, EncoderReferences, IntraTileSyntax, Ist, LeafBlock, Palette, Partition,
+    PartitionNode, TransformBlock, TxType, recon_params, tile_count, tx_log2,
 };
 use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
@@ -33,6 +33,7 @@ use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
 use crate::loop_filter::{CodedTile, FilteredFrame, FirstPass, FrameDecisions, finish_frame};
 use crate::mode_decision::TrialCoder;
 use crate::motion_search::MotionSearch;
+use crate::palette::PaletteSearch;
 use crate::preset::{PresetParams, TcqFrames};
 use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, RowCaches, block_rate};
 use crate::rd::partition::search_partition;
@@ -112,6 +113,7 @@ impl IntraFrameCoder {
                 cctx: preset.cctx,
                 mhccp: preset.mhccp,
                 fsc: preset.fsc,
+                screen_content: preset.palette,
                 dip: preset.dip,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
@@ -178,7 +180,7 @@ impl FrameCoder for IntraFrameCoder {
         let mut tools = self.params.tools;
         if let Some(screen) = self.screen.filter(|_| is_screen_content(first)) {
             self.preset = screen;
-            tools.fsc = screen.fsc;
+            (tools.fsc, tools.screen_content) = (screen.fsc, screen.palette);
         }
         if self.preset.cfl_filter {
             tools.cfl_ds_filter = cfl_ds_filter(first);
@@ -491,6 +493,7 @@ pub(crate) struct SourceResidualCoder<'a> {
     pair: [Vec<i32>; 2],
     /// The row costs and the trellis buffers reused across blocks.
     rates: (RowCaches, TcqScratch),
+    pub(crate) palette: PaletteSearch,
 }
 
 impl<'a> SourceResidualCoder<'a> {
@@ -514,11 +517,16 @@ impl<'a> SourceResidualCoder<'a> {
             scratch: Default::default(),
             pair: Default::default(),
             rates: Default::default(),
+            palette: PaletteSearch::default(),
         }
     }
 }
 
 impl ResidualCoder for SourceResidualCoder<'_> {
+    fn palette_map(&mut self, leaf: &LeafBlock, palette: &Palette) -> core::result::Result<&[u8], TileWriterError> {
+        self.palette.map(self.source, leaf, palette)
+    }
+
     /// The offered type of the preset's leading `tx_types` with the lowest
     /// `D + lambda * R`, with the exact coefficient and type rate.
     fn code_luma(

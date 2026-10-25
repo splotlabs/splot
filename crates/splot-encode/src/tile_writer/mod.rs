@@ -291,9 +291,9 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
     }
 
     /// Codes the blocks of `planes` of `leaf` under `choice`, then writes the
-    /// leaf syntax in order: `is_inter`, `cdef_idx`, the modes, the luma
-    /// transform partition, and the coefficients of `planes`. Only a pass over
-    /// all planes publishes the leaf. An inter leaf codes every plane. Returns
+    /// leaf syntax in order: `is_inter`, `cdef_idx`, the modes, the palette
+    /// color map, the luma transform partition, and the coefficients of
+    /// `planes`. Only a pass over all planes publishes the leaf. An inter leaf codes every plane. Returns
     /// the leaf's transform blocks.
     pub(crate) fn write_leaf(
         &mut self,
@@ -310,6 +310,9 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             tx_partition,
             ..
         } = choice;
+        if let Some(palette) = &modes.palette {
+            self.syntax.set_palette_map(coder.palette_map(leaf, palette)?);
+        }
         let mut blocks = self
             .syntax
             .plan_leaf_partitioned(leaf, modes, tx_partition)?;
@@ -365,6 +368,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             filters.write_leaf_syntax(self.syntax, self.sink, leaf, false)?;
         }
         self.syntax.write_intra_modes(leaf, modes, self.sink)?;
+        self.syntax.write_palette_tokens(self.sink)?;
         let sink = &mut *self.sink;
         self.syntax
             .code_luma_tx_partition(leaf, tx_partition, |cdf, value| {

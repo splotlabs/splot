@@ -60,7 +60,7 @@ pub(super) struct PlannedPalette {
 
 impl IntraTileSyntax {
     /// Whether `leaf` codes `has_palette_y` under a `DC_PRED` luma mode
-    /// (§ 5.20.5.3).
+    /// (§ 5.20.5.3, § 5.20.7.5).
     #[must_use]
     pub fn palette_allowed(&self, leaf: &LeafBlock) -> bool {
         let size = leaf.frontier.b_size;
