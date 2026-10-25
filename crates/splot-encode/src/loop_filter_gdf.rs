@@ -5,23 +5,28 @@
 //! (§ 5.18.7.9) and the `use_gdf` flags (§ 5.20.10.3).
 //!
 //! GDF runs last in the filter chain and changes luma only, from inputs the
-//! flags do not change (§ 7.20.5). So the chain runs once up to GDF, each
-//! candidate runs only the GDF stage with every unit on, which gives the
-//! exact squared-error change of each unit, and the flags follow by RD.
+//! flags do not change (§ 7.20.5). A sample is `Clip1(lr + Round2Signed(err
+//! * scale, shift))` and `err` does not depend on the scale, so the chain
+//! runs once up to GDF, the GDF `err` of every sample comes from one pass per
+//! `gdf_pic_qc_idx`, and one kernel pass gives the exact squared error of
+//! each unit at all four scales. The flags then follow by RD.
 
 use splot_core::headers::frame::{FrameFilterParams, FrameGdf, FrameHeaderCore};
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::adapt_cdf_u16;
 use splot_decode::encoder_syntax::{
-    GdfBlockMap, GdfFlags, GdfGrid, LrUnit, LrUnitType, apply_gdf, apply_loop_filters, tile_count,
+    GdfBlockMap, GdfFlags, GdfGrid, LrUnit, LrUnitType, apply_loop_filters, gdf_errors, tile_count,
 };
-use splot_recon::DecodedFrame;
+use splot_recon::{DecodedFrame, PlaneId};
 
 use super::ccso::rd;
-use super::{FilterSyntax, Search, coding, plane_sse};
+#[cfg(test)]
+use super::plane_sse;
+use super::{FilterSyntax, Search, coding};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::intra_frame::map_tiles;
+use crate::kernels::gdf;
 use crate::rd::{Bits, symbol_cost};
 
 /// The 8-bit-equivalent `base_q_idx` from which frames try
@@ -85,7 +90,8 @@ impl Search<'_> {
         };
         let cdef = run(&unrestored, blocks, &[])?;
         let off = run(params, blocks, &lr_on)?;
-        let order = candidates(self.qindex, u32::from(self.recon.bit_depth().bits()));
+        let bit_depth = u32::from(self.recon.bit_depth().bits());
+        let order = candidates(self.qindex, bit_depth);
         let headers = order[..count.min(order.len())]
             .iter()
             .map(|&(qc_idx, scale_idx)| {
@@ -106,33 +112,64 @@ impl Search<'_> {
         let all_on = grid.map_or_else(Vec::new, |grid| vec![1u8; grid.rows * grid.cols]);
         let (source, height) = (self.source, self.recon.coded_luma_size().height());
         let (seq, refs) = (self.seq, self.refs);
-        let tried = map_tiles(self.pool, headers, |(gdf, core)| {
-            let flags = GdfFlags {
-                blocks: &all_on,
-                refs,
-            };
-            let on =
-                apply_gdf(seq, &core, (&deblocked, &cdef, &off), flags).map_err(coding("gdf"))?;
-            #[cfg(test)]
-            {
-                let chain = apply_loop_filters(
-                    seq,
-                    &core,
-                    self.recorder,
-                    self.recon,
-                    (&syntax.cdef_indices, &syntax.ccso_blocks, Some(flags)),
-                    &lr_on,
-                )
-                .map_err(coding("loop filters"))?;
-                if chain != on {
-                    return Err(Error::Unsupported {
-                        what: "a GDF stage that differs from the filter chain",
-                    });
-                }
+        let flags = GdfFlags {
+            blocks: &all_on,
+            refs,
+        };
+        let mut qc_cores: Vec<(u8, FrameHeaderCore)> = Vec::new();
+        for (gdf, core) in &headers {
+            if qc_cores.iter().all(|(qc, _)| *qc != gdf.qc_idx) {
+                qc_cores.push((gdf.qc_idx, core.clone()));
             }
-            let deltas = unit_deltas(source, (&core, grid, height), (&on, &off))?;
-            Ok((gdf, core, deltas))
+        }
+        let shift = 12 - bit_depth;
+        let max = self.recon.bit_depth().max_sample();
+        let per_qc = map_tiles(self.pool, qc_cores, |(qc, core)| {
+            let (width, errors) =
+                gdf_errors(seq, &core, (&deblocked, &cdef), flags).map_err(coding("gdf"))?;
+            let sums = unit_scale_sums(
+                source,
+                (&core, grid, height),
+                (&off, &errors, width),
+                (shift, max),
+            )?;
+            Ok((qc, sums))
         })?;
+        let tried = headers
+            .into_iter()
+            .map(|(gdf, core)| {
+                let sums = per_qc
+                    .iter()
+                    .find(|(qc, _)| *qc == gdf.qc_idx)
+                    .map(|(_, sums)| sums)
+                    .ok_or(Error::Unsupported {
+                        what: "a GDF candidate without errors",
+                    })?;
+                let scale = usize::from(gdf.scale_idx) + 1;
+                let deltas: Vec<i64> = sums
+                    .iter()
+                    .map(|sum| sum[scale] as i64 - sum[0] as i64)
+                    .collect();
+                #[cfg(test)]
+                {
+                    let on = apply_loop_filters(
+                        seq,
+                        &core,
+                        self.recorder,
+                        self.recon,
+                        (&syntax.cdef_indices, &syntax.ccso_blocks, Some(flags)),
+                        &lr_on,
+                    )
+                    .map_err(coding("loop filters"))?;
+                    if unit_deltas(source, (&core, grid, height), (&on, &off))? != deltas {
+                        return Err(Error::Unsupported {
+                            what: "GDF errors that differ from the filter chain",
+                        });
+                    }
+                }
+                Ok((gdf, core, deltas))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let mut best: Option<(i128, FrameGdf, Vec<u8>)> = None;
         for (gdf, core, deltas) in tried {
             let (flags, cost) = match grid {
@@ -186,9 +223,54 @@ impl Search<'_> {
     }
 }
 
+/// The luma squared error per unit of `grid` in raster order (one unit
+/// without a grid) of `off` and of `off` with GDF `errors` (rows `width`
+/// wide) at `GdfPixScale` 1 to 4, as [`gdf::scale_sse_simd`] sums them;
+/// luma rows follow the unit that governs their stripe in a frame `height`
+/// coded rows high.
+fn unit_scale_sums(
+    source: &SourceFrame,
+    (core, grid, height): (&FrameHeaderCore, Option<GdfGrid>, usize),
+    (off, errors, width): (&DecodedFrame<u16>, &[i16], usize),
+    (shift, max): (u32, u16),
+) -> Result<Vec<[u64; 5]>> {
+    let size = source.plane_sizes()[0];
+    let (Some(original), Some(lr)) = (source.planes().first(), off.plane(PlaneId::Y)) else {
+        return Err(Error::Unsupported {
+            what: "a GDF frame without luma",
+        });
+    };
+    let stride = lr.stride_samples();
+    let (block, cols) = grid.map_or((usize::MAX, 1), |grid| (grid.block_size, grid.cols));
+    let mut sums = vec![[0u64; 5]; grid.map_or(1, |grid| grid.rows * grid.cols)];
+    for y in 0..size.height() {
+        let row = match grid {
+            Some(grid) => grid.unit_row(core, y, height).map_err(coding("gdf grid"))?,
+            None => 0,
+        };
+        for col in 0..cols {
+            let left = col.saturating_mul(block).min(size.width());
+            let right = left.saturating_add(block).min(size.width());
+            let rows = (
+                lr.samples().get(y * stride + left..y * stride + right),
+                errors.get(y * width + left..y * width + right),
+                original.get(y * size.width() + left..y * size.width() + right),
+            );
+            let (Some(lr), Some(err), Some(src)) = rows else {
+                return Err(Error::Unsupported {
+                    what: "a GDF row outside the frame",
+                });
+            };
+            gdf::scale_sse_simd((lr, err, src), (shift, max), &mut sums[row * cols + col]);
+        }
+    }
+    Ok(sums)
+}
+
 /// The luma squared-error change of GDF per unit of `grid` in raster order
 /// (one unit without a grid), `on` against `off`; luma rows follow the unit
 /// that governs their stripe in a frame `height` coded rows high.
+#[cfg(test)]
 fn unit_deltas(
     source: &SourceFrame,
     (core, grid, height): (&FrameHeaderCore, Option<GdfGrid>, usize),
