@@ -54,7 +54,9 @@ impl IntraTileSyntax {
     }
 
     /// Whether `leaf` may code the block vector `bv`: a whole-sample vector
-    /// of a leaf at least 8x8 that [`global_bv_valid`] accepts.
+    /// of a leaf at least 8x8 that § 6.17.3.3 `is_mv_valid` accepts for the
+    /// global area, with the source in the current or the previous
+    /// superblock row.
     #[must_use]
     pub fn intrabc_bv_valid(&self, leaf: &LeafBlock, bv: MotionVector) -> bool {
         let Ok(size) = leaf.dimensions() else {

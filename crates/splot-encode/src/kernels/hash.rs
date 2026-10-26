@@ -143,7 +143,12 @@ mod tests {
 
     #[test]
     fn equal_blocks_hash_alike_and_a_changed_sample_does_not() {
-        let plane: Vec<u16> = (0..16 * 16).map(|i| ((i % 16) * 37 % 11) as u16).collect();
+        let rows = |changed: bool| -> Vec<u16> {
+            (0..16 * 16)
+                .map(|i| ((i % 16) * 37 % 11) as u16 + u16::from(changed && i == 3 * 16 + 4))
+                .collect()
+        };
+        let plane = rows(false);
         let hash_at = |plane: &[u16], x: usize, y: usize| {
             let rows: Vec<Vec<u32>> = (y..y + 8)
                 .map(|row| {
@@ -158,8 +163,7 @@ mod tests {
             out[x]
         };
         assert_eq!(hash_at(&plane, 1, 0), hash_at(&plane, 1, 5));
-        let mut changed = plane.clone();
-        changed[3 * 16 + 4] += 1;
+        let changed = rows(true);
         assert_ne!(hash_at(&plane, 1, 0), hash_at(&changed, 1, 0));
     }
 }
