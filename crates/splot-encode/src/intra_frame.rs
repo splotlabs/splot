@@ -128,7 +128,7 @@ impl IntraFrameCoder {
                 cctx: preset.cctx,
                 mhccp: preset.mhccp,
                 fsc: preset.fsc,
-                screen_content: preset.palette,
+                screen_content: preset.palette || preset.integer_mv,
                 dip: preset.dip,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
@@ -201,7 +201,8 @@ impl FrameCoder for IntraFrameCoder {
         let mut tools = self.params.tools;
         if let Some(screen) = self.screen.filter(|_| is_screen_content(first)) {
             self.preset = screen;
-            (tools.fsc, tools.screen_content) = (screen.fsc, screen.palette);
+            tools.fsc = screen.fsc;
+            tools.screen_content = screen.palette || screen.integer_mv;
         }
         if self.preset.cfl_filter {
             tools.cfl_ds_filter = cfl_ds_filter(first);

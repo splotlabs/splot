@@ -229,10 +229,7 @@ impl EncoderInterTile {
                     .is_some_and(|modes| modes.iter().any(|&on| on)),
                 "inter-intra or a motion mode",
             ),
-            (
-                effective_force_integer_mv(core) || core.frame_type == Some(FrameType::Switch),
-                "integer motion vectors or a switch frame",
-            ),
+            (core.frame_type == Some(FrameType::Switch), "a switch frame"),
         ];
         if let Some(&(_, what)) = refused.iter().find(|&&(on, _)| on) {
             return Err(what);

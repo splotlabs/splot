@@ -77,6 +77,10 @@ pub struct InterFrameParams {
     /// frame without `enable_tip`, `use_ref_frame_mvs` or two references
     /// reads neither and is `TIP_FRAME_DISABLED`.
     pub tip_weight: Option<u8>,
+    /// `force_integer_mv` (§ 5.18.3.3) of a sequence that chooses screen
+    /// content tools: whole-sample motion vectors; `high_precision_mv` must
+    /// then be off.
+    pub force_integer_mv: bool,
 }
 
 /// A parsed frame header and the exact bits it was parsed from.
@@ -238,14 +242,20 @@ fn inter_frame_header_bits(
             w.write_bits(u32::from(weight), 3)?; // tip_global_wtd_index
         }
     }
+    let coded_integer_mv = seq.seq_force_screen_content_tools == 2 && seq.seq_force_integer_mv == 2;
+    if params.force_integer_mv && (!coded_integer_mv || params.high_precision_mv) {
+        return Err(unsupported("force_integer_mv the sequence does not select"));
+    }
     if seq.seq_force_screen_content_tools == 2 {
         w.write_flag(true)?; // allow_screen_content_tools
         if seq.seq_force_integer_mv == 2 {
-            w.write_flag(false)?; // force_integer_mv
+            w.write_flag(params.force_integer_mv)?;
         }
     }
     w.write_flag(false)?; // allow_intrabc
-    w.write_flag(!params.high_precision_mv)?; // use_qtr_precision_mv
+    if !params.force_integer_mv {
+        w.write_flag(!params.high_precision_mv)?; // use_qtr_precision_mv
+    }
     if params.high_precision_mv {
         w.write_flag(true)?; // allow_high_precision_mv
     }

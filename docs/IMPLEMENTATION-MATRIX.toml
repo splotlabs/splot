@@ -6022,7 +6022,7 @@ module = "crates/splot-encode/src/screen.rs"
 change_id = "enc-screen-detect"
 owner = "encoder"
 risk = "low"
-notes = "PresetParams::screen_detect (on in every row): the first frame in display order is screen content when at least 6/64 of its 8x8 luma blocks that are not flat (range above 8 in 8-bit steps) have 8 or fewer distinct values; measured 19/64 on screendata and 35/64 on desktop_credits, at most 1.5/64 on park_joy (8/10/12-bit, 4:2:0/4:2:2/4:4:4), paris, niklas, rush_hour and the encode-perf clips. A detected sequence codes with the SCREEN_PRESETS row of its preset (FSC on, ENC-FSC; palette on, ENC-PALETTE; IntraBC on, ENC-INTRABC). The block_colours kernel has a std::simd form and a scalar twin. Against main c3b1959 at p6: screendata intra Y -27.90% (0.76x CPU), inter Y -23.39% (0.94x); desktop_credits intra Y -12.62% (0.91x), inter Y -10.76% (1.06x); screendata p10 intra Y -40.20%. Natural clips are byte-identical."
+notes = "PresetParams::screen_detect (on in every row): the first frame in display order is screen content when at least 6/64 of its 8x8 luma blocks that are not flat (range above 8 in 8-bit steps) have 8 or fewer distinct values; measured 19/64 on screendata and 35/64 on desktop_credits, at most 1.5/64 on park_joy (8/10/12-bit, 4:2:0/4:2:2/4:4:4), paris, niklas, rush_hour and the encode-perf clips. A detected sequence codes with the SCREEN_PRESETS row of its preset (FSC on, ENC-FSC; palette on, ENC-PALETTE; IntraBC on, ENC-INTRABC; integer MV on, ENC-INTEGER-MV). The block_colours kernel has a std::simd form and a scalar twin. Against main c3b1959 at p6: screendata intra Y -27.90% (0.76x CPU), inter Y -23.39% (0.94x); desktop_credits intra Y -12.62% (0.91x), inter Y -10.76% (1.06x); screendata p10 intra Y -40.20%. Natural clips are byte-identical."
 
 [feature.status]
 mapped = "done"
@@ -6326,6 +6326,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/intra_tools_tests.rs::screen_streams_code_intrabc_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_intrabc_frames_like_splot", "crates/splot-encode/src/intrabc.rs::finds_the_exact_earlier_copy", "crates/splot-encode/src/kernels/hash.rs::row_hashes_simd_match_scalar", "crates/splot-decode/src/bitstream/tile_payload/encoder_syntax/intrabc.rs::global_vectors_follow_the_superblock_delay", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::headers_round_trip_for_every_size_bit_depth_and_superblock"]
 commands = ["cargo test -p splot-encode intrabc --locked", "cargo test -p splot-decode intrabc --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-INTEGER-MV"
+name = "Encoder whole-sample motion vectors"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "5.18.3.3", "5.20.7.20"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/gop.rs"
+change_id = "enc-integer-mv"
+owner = "encoder"
+risk = "low"
+notes = "PresetParams::integer_mv, OFF in every PRESETS row and ON in SCREEN_PRESETS (ENC-SCREEN-DETECT): inter frames code force_integer_mv = 1 (InterFrameParams::force_integer_mv, which needs a sequence that chooses screen content tools and refuses high-precision MV), so FrameMvPrecision is MV_PRECISION_ONE_PEL and no block codes a precision. The facade's inter tile no longer refuses integer-MV frames; the decoder's own MV rounding and the whole-sample lattice step give the vectors, and the motion search stops at whole samples. Against the ENC-INTRABC branch at p6 f10: screendata inter Y -0.69% (0.985x CPU), desktop_credits inter Y +0.09% (0.975x). Off codes byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_tools_tests.rs::integer_mv_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::integer_mv_frames_code_whole_sample_vectors", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_integer_mv_frames_like_splot", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::inter_headers_parse_with_the_reference_state", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::rejects_out_of_range_inter_inputs"]
+commands = ["cargo test -p splot-encode integer_mv --locked", "cargo test -p splot-core encoder_inter --locked"]
 fixtures = []
 diagnostics = []
 
