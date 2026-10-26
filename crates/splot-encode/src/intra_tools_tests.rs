@@ -99,9 +99,8 @@ fn ist_preset() -> &'static PresetParams {
 }
 
 /// Streams of `on` in every chroma format and both bit depths decode to the
-/// encoder recon with `enabled` set (monochrome may clear a chroma tool), and
-/// 1, 2 and 8 threads write the same bytes; `off` clears `enabled` and changes
-/// the stream.
+/// encoder recon with `enabled` set, and 1, 2 and 8 threads write the same
+/// bytes; `off` clears `enabled` and changes the stream.
 fn assert_tool_streams(
     on: &'static PresetParams,
     off: &'static PresetParams,
@@ -110,7 +109,7 @@ fn assert_tool_streams(
     for chroma in CHROMAS {
         for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
             let (units, recon, seq) = tool_stream((2, chroma, bit_depth), on);
-            assert!(enabled(&seq) || chroma.is_monochrome());
+            assert!(enabled(&seq));
             let name = format!("{chroma:?} {bit_depth:?}");
             assert_same_samples(&decode(&units.concat()), &recon, &name);
         }
@@ -183,11 +182,13 @@ fn ist_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     });
 }
 
-/// CCTX streams decode to the encoder recon on any thread count.
+/// CCTX streams decode to the encoder recon on any thread count; a
+/// monochrome sequence has no chroma to code it for.
 #[test]
 fn cctx_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     assert_tool_streams(preset_with(|p| p.cctx = true), preset_with(|_| {}), |seq| {
         seq.transform_quant_entropy.unwrap().enable_cctx
+            || seq.general.chroma_format_idc.is_monochrome()
     });
 }
 

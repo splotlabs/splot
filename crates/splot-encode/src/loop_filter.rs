@@ -576,10 +576,11 @@ impl Search<'_> {
         } else {
             1
         };
+        let uv_strengths = |(pri, sec)| if chroma > 1 { (pri, sec) } else { (0, 0) };
         // sse[candidate][unit] as (luma, chroma).
         let mut sse = Vec::with_capacity(candidates.len());
-        for (index, &(pri, sec)) in candidates.iter().enumerate() {
-            let (uv_pri, uv_sec) = if index < chroma { (pri, sec) } else { (0, 0) };
+        for &(pri, sec) in candidates {
+            let (uv_pri, uv_sec) = uv_strengths((pri, sec));
             let set = CdefStrengthSet {
                 y_pri_strength: pri,
                 y_sec_strength: sec,
@@ -648,11 +649,14 @@ impl Search<'_> {
             .collect();
         let strengths: Vec<CdefStrengthSet> = sets
             .iter()
-            .map(|&(y, uv)| CdefStrengthSet {
-                y_pri_strength: candidates[y].0,
-                y_sec_strength: candidates[y].1,
-                uv_pri_strength: candidates[uv].0,
-                uv_sec_strength: candidates[uv].1,
+            .map(|&(y, uv)| {
+                let (uv_pri_strength, uv_sec_strength) = uv_strengths(candidates[uv]);
+                CdefStrengthSet {
+                    y_pri_strength: candidates[y].0,
+                    y_sec_strength: candidates[y].1,
+                    uv_pri_strength,
+                    uv_sec_strength,
+                }
             })
             .collect();
         let choice = FrameFilterParams {
