@@ -11,6 +11,7 @@
 //! trial.
 
 use core::ops::Range;
+use std::collections::HashMap;
 
 use splot_decode::encoder_syntax::{
     ChromaMode, Dip, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax, LeafBlock,
@@ -28,7 +29,8 @@ use crate::rd::partition::PartitionSearch;
 use crate::rd::{Bits, Lambda, RdCost};
 use crate::tile_writer::{
     CompoundMode, CompoundModes, INTRA_MODES, InterMode, InterModes, InterPrediction, LeafChoice,
-    MotionVector, PARTITIONS, Partition, Result, TileWriterError, Walk, snap_mv, snap_prediction,
+    MotionVector, PARTITIONS, Partition, PartitionTree, Result, TileWriterError, Walk, snap_mv,
+    snap_prediction,
 };
 
 /// The largest `|AngleDeltaY|` (§ 5.20.5.5).
@@ -73,10 +75,13 @@ pub(crate) struct TrialCoder<'a, 'b> {
     preset: &'a PresetParams,
     lambda: Lambda,
     motion: Option<&'a MotionSearch>,
+    /// The partition of each node of the coded luma tree, by key, while a
+    /// chroma tree is searched.
+    luma: HashMap<u64, Partition>,
 }
 
 impl<'a, 'b> TrialCoder<'a, 'b> {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         syntax: &'a mut IntraTileSyntax,
         coder: &'a mut SourceResidualCoder<'b>,
         preset: &'a PresetParams,
@@ -89,6 +94,7 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             preset,
             lambda,
             motion,
+            luma: HashMap::new(),
         }
     }
 
@@ -772,6 +778,29 @@ impl TrialCoder<'_, '_> {
             .collect())
     }
 
+    /// The best chroma mode of the `CHROMA_PART` leaf `leaf` over its
+    /// collocated luma: the shortlist of chroma SATD, then RD trials.
+    fn chroma_choice(&mut self, leaf: &LeafBlock, start: &SyntaxSnapshot) -> Result<LeafChoice> {
+        let modes = self.chroma_candidates(leaf, IntraModes::DC)?;
+        let mut ranked = Vec::new();
+        self.rank(leaf, modes, CHROMA, &mut ranked)?;
+        let candidates = self.shortlist(ranked);
+        self.best(leaf, candidates, CHROMA, start)
+    }
+
+    /// The partitions of each node of the luma `tree` at `node`, by key.
+    fn record_luma(&mut self, node: PartitionNode, tree: &PartitionTree) -> Result<()> {
+        let PartitionTree::Split { kind, children } = tree else {
+            self.luma.insert(self.key(node), Partition::None);
+            return Ok(());
+        };
+        self.luma.insert(self.key(node), *kind);
+        for (child, tree) in self.syntax.children(node, *kind)?.into_iter().zip(children) {
+            self.record_luma(child, tree)?;
+        }
+        Ok(())
+    }
+
     /// The best intra choice of `leaf`: luma modes on luma alone, the winner
     /// against a palette, the winner with FSC, then the luma transform
     /// partition, then the chroma mode over the coded luma.
@@ -922,7 +951,26 @@ impl PartitionSearch for TrialCoder<'_, '_> {
                 allowed.push(partition);
             }
         }
+        if node.is_chroma_part() && !self.luma.is_empty() {
+            let luma = self.luma.get(&self.key(node)).copied();
+            let merges: Vec<Partition> = allowed
+                .iter()
+                .copied()
+                .filter(|&p| p == Partition::None || Some(p) == luma)
+                .collect();
+            if !merges.is_empty() {
+                return Ok(merges);
+            }
+        }
         Ok(allowed)
+    }
+
+    fn follow_luma(&mut self, luma: Option<(PartitionNode, &PartitionTree)>) -> Result<()> {
+        self.luma.clear();
+        match luma {
+            Some((root, tree)) => self.record_luma(root, tree),
+            None => Ok(()),
+        }
     }
 
     fn children(&self, node: PartitionNode, partition: Partition) -> Result<Vec<PartitionNode>> {
@@ -944,6 +992,10 @@ impl PartitionSearch for TrialCoder<'_, '_> {
     fn evaluate_leaf(&mut self, node: PartitionNode) -> Result<(RdCost, LeafChoice)> {
         let leaf = self.syntax.leaf(node)?;
         let start = self.save(node, None)?;
+        if leaf.is_chroma_part() {
+            let choice = self.chroma_choice(&leaf, &start)?;
+            return Ok((self.code_leaf(node, choice)?, choice));
+        }
         let mut candidates = Vec::new();
         if self.syntax.intra_allowed(&leaf) {
             candidates.push(self.intra_choice(node, &leaf, &start)?);

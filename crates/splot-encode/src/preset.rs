@@ -106,6 +106,10 @@ pub struct PresetParams {
     /// An uneven four-way shape is tried only when the three-way shape of its
     /// axis costs within this margin, in 1/256, of the best; `255` always.
     pub ext_four_way_margin: u8,
+    /// Semi-decoupled partitioning (`enable_sdp`): each 64x64 node of an
+    /// intra frame searches its luma tree on luma alone, then a chroma tree
+    /// that only merges luma leaves.
+    pub sdp: bool,
     /// CCSO classifications the filter search tries per plane; `0` disables
     /// CCSO in the sequence.
     pub ccso_candidates: u8,
@@ -419,6 +423,7 @@ preset_table! {
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        sdp:                   [false, false, false, false, false, false, false, false, false, false, false],
     }
     intra {
         intra_modes:           [   13,    13,    12,    10,     9,     8,     6,     5,     4,     3,     2],
