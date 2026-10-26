@@ -17,6 +17,15 @@ pub(super) fn planned_stream(
     config: &Config,
     preset: &'static PresetParams,
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
+    planned_stream_of(config, preset, panning_frame)
+}
+
+/// [`planned_stream`] of the frames `frame(config, display_index)`.
+pub(super) fn planned_stream_of(
+    config: &Config,
+    preset: &'static PresetParams,
+    frame: fn(&Config, u32) -> SourceFrame,
+) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
     let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();
     let mut planner = GopPlanner::new(config.keyint, preset.mini_gop_size);
     let (mut units, mut recons, mut cores) = (Vec::new(), BTreeMap::new(), Vec::new());
@@ -26,9 +35,14 @@ pub(super) fn planned_stream(
         for step in planner.plan(len).unwrap() {
             match step {
                 GopStep::Code(plan) => {
-                    let source = panning_frame(config, plan.display_index as u32);
+                    let source = frame(config, plan.display_index as u32);
                     let mut coded = coder.code_frame(&source, &plan, 110, &[]).unwrap();
-                    cores.push(coded.reference.as_ref().unwrap().0.clone());
+                    cores.push(
+                        coded
+                            .tip_output
+                            .clone()
+                            .unwrap_or_else(|| coded.reference.as_ref().unwrap().0.clone()),
+                    );
                     coder.commit(&mut coded).unwrap();
                     recons.insert(plan.display_index, recon_bytes(&coded, config.bit_depth));
                     units.extend(coded.temporal_unit);

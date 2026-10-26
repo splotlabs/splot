@@ -11,8 +11,14 @@ use splot_core::headers::frame::TipFrameMode;
 
 /// Preset 6 with `tip`.
 fn with_tip(tip: u8) -> &'static PresetParams {
+    with_tip_output(tip, 0)
+}
+
+/// Preset 6 with `tip` and `tip_output`.
+fn with_tip_output(tip: u8, tip_output: u8) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         tip,
+        tip_output,
         ..*Preset::new(6).unwrap().params()
     }))
 }
@@ -191,4 +197,42 @@ fn the_tip_weight_search_follows_the_nearer_content() {
     }
     units.push(coded.temporal_unit);
     assert_same_samples(&decode(&units.concat()), &expected, "weight search");
+}
+
+/// With a `tip_output` that prefers it, the shown non-reference frames of a
+/// still texture code `OBU_REGULAR_TIP` `TIP_FRAME_AS_OUTPUT` frames, and
+/// streams of 4:2:0 10-bit, 4:2:2 8-bit and 4:4:4 10-bit decode to
+/// the encoder recon; with `tip_output = 0` the sequence disables TIP output
+/// and no frame codes it.
+#[test]
+fn tip_output_frames_decode_to_the_encoder_recon() {
+    for (chroma, bit_depth) in [
+        (PixelFormat::Yuv420, BitDepth::Ten),
+        (PixelFormat::Yuv422, BitDepth::Eight),
+        (PixelFormat::Yuv444, BitDepth::Ten),
+    ] {
+        let mut config = config(72, 40, bit_depth, 6, 110);
+        config.chroma = chroma;
+        for tip_output in [200, 0] {
+            let (units, expected, cores, coder) = super::carry::planned_stream_of(
+                &config,
+                with_tip_output(1, tip_output),
+                |config, _| panning_frame(config, 0),
+            );
+            let inter = coder.sequence.inter.unwrap();
+            assert_eq!(inter.enable_tip_output, tip_output > 0);
+            let outputs: Vec<_> = cores
+                .iter()
+                .filter(|core| core.obu_type == splot_core::types::ObuType::RegularTip)
+                .collect();
+            assert_eq!(!outputs.is_empty(), tip_output > 0, "{chroma:?}");
+            for core in outputs {
+                let inter = core.inter.as_ref().unwrap();
+                assert_eq!(inter.tip_frame_mode, Some(TipFrameMode::AsOutput));
+                assert_eq!(core.refresh_frame_flags, Some(0));
+            }
+            let name = format!("{chroma:?} tip_output {tip_output}");
+            assert_same_samples(&decode(&units), &expected, &name);
+        }
+    }
 }

@@ -409,3 +409,57 @@ fn rejects_out_of_range_inter_inputs() {
     };
     assert!(build_inter_frame_header(&view, &no_valid_slot.view(), &params).is_err());
 }
+
+#[test]
+fn tip_output_header_parses_complete_and_needs_tip_output() {
+    let mut stream = EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block128x128,
+        tools: EncoderToolFlags {
+            ref_frame_mvs: true,
+            tip: true,
+            tip_output: true,
+            ..EncoderToolFlags::default()
+        },
+    };
+    let mut slots = Slots::after_key(64, 64, 4);
+    slots.valid[1] = true;
+    slots.hints[1] = 8;
+    slots.counters[1] = 1;
+    let params = InterFrameParams {
+        order_hint: 6,
+        show_frame: true,
+        tip_weight: Some(3),
+        ..InterFrameParams::default()
+    };
+    let seq = build_encoder_sequence_header(&stream).unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let header = build_tip_output_frame_header(&view, &slots.view(), &params, 2).unwrap();
+    assert_eq!(header.core.obu_type, ObuType::RegularTip);
+    let inter = header.core.inter.as_ref().unwrap();
+    assert_eq!(inter.tip_frame_mode, Some(TipFrameMode::AsOutput));
+    assert_eq!(inter.tip_global_wtd_index, Some(3));
+    assert_eq!(
+        inter.tip_interpolation_filter,
+        Some(InterpolationFilter::EighttapSharp)
+    );
+    assert_eq!(header.core.refresh_frame_flags, Some(0));
+    let obu = encode_tip_output_frame_obu(&header).unwrap();
+    let parsed = parse_annex_b_obus_partial(&obu);
+    assert!(parsed.error.is_none());
+    assert_eq!(parsed.obus.len(), 1);
+    assert_eq!(parsed.obus[0].header.obu_type, ObuType::RegularTip);
+    let no_weight = InterFrameParams {
+        tip_weight: None,
+        ..params
+    };
+    assert!(build_tip_output_frame_header(&view, &slots.view(), &no_weight, 2).is_err());
+    assert!(build_tip_output_frame_header(&view, &slots.view(), &params, 1).is_err());
+    stream.tools.tip_output = false;
+    let seq = build_encoder_sequence_header(&stream).unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    assert!(build_tip_output_frame_header(&view, &slots.view(), &params, 2).is_err());
+}

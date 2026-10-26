@@ -5756,6 +5756,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-TIP-OUTPUT"
+name = "Encoder TIP output frames"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.6", "5.18.2", "7.11.3", "7.20"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_frame.rs"
+change_id = "enc-tip-output"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::tip_output (S3 of A5): the sequence codes disable_tip_output = 0. A shown non-reference frame that codes TIP_FRAME_AS_REF is also built as an OBU_REGULAR_TIP TIP_FRAME_AS_OUTPUT frame (build_tip_output_frame_header: PRIMARY_REF_NONE, a zero tip_global_mv, EIGHTTAP_SHARP, the frame's TIP weight), whose quantizer and picture come from the decoder (EncoderReferences::tip_output runs resolve_tip_output_core and the decoder's TIP output reconstruction); the frame keeps it when its RD cost (squared error of every plane plus lambda times its bits) times 100 is at most tip_output times that of the frame coded normally. EncoderReferences::update_tip_output records it in the reference buffer. Off writes the old stream byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_tip_tests.rs::tip_output_frames_decode_to_the_encoder_recon", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::tip_output_header_parses_complete_and_needs_tip_output"]
+commands = ["cargo test -p splot-encode tip_output --locked", "cargo test -p splot-core tip_output_header --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-CCSO"
 name = "Encoder cross-component sample offset"
 category = "encoder"

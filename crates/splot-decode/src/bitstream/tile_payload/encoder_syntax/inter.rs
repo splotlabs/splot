@@ -48,6 +48,9 @@ use crate::prediction::inter::{
 };
 use crate::reference::buffer::RuntimeReferenceBuffer;
 
+#[path = "tip_output.rs"]
+mod tip_output;
+
 /// `MV_PRECISION_EIGHTH_PEL`: motion vectors are in units of `1/8` sample.
 pub const MV_PRECISION_EIGHTH_PEL: u8 = 6;
 /// The nonzero magnitudes, in `1/8` samples, of an adaptive-MVD component

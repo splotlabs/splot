@@ -97,6 +97,9 @@ pub struct EncoderToolFlags {
     /// `enable_tip` with `disable_tip_output = 1` and no hole fill: inter
     /// blocks may predict from the TIP frame.
     pub tip: bool,
+    /// With `tip`, `disable_tip_output = 0`: `OBU_REGULAR_TIP` frames code
+    /// `TIP_FRAME_AS_OUTPUT`.
+    pub tip_output: bool,
     /// `enable_cctx`.
     pub cctx: bool,
     /// `enable_tcq` with `choose_tcq_per_frame = 1`: each frame codes `allow_tcq`.
@@ -451,7 +454,7 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     w.write_bits(NUM_SAME_REF_COMPOUND, 2)?;
     w.write_flag(tools.tip)?; // enable_tip
     if tools.tip {
-        w.write_flag(true)?; // disable_tip_output
+        w.write_flag(!tools.tip_output)?; // disable_tip_output
         w.write_flag(false)?; // enable_tip_hole_fill
     }
     for _ in 0..5 {

@@ -84,6 +84,7 @@ impl Case {
                 inter_ddt: false,
                 inter_ist: false,
                 tip: false,
+                tip_output: false,
                 cctx: false,
                 tcq: false,
                 parity_hiding: false,
