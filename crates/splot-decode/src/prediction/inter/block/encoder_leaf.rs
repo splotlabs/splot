@@ -750,15 +750,15 @@ impl EncoderInterTile {
         if self.intrabc.is_some() {
             return Vec::new();
         }
-        let unit_leaves: std::collections::HashSet<(usize, usize)> = self
-            .tip_records
-            .iter()
-            .map(TemporalMotionBlock::origin)
-            .collect();
+        let mut unit_leaves: Vec<(usize, usize)> = Vec::new();
+        if self.refines_compound() {
+            unit_leaves.extend(self.tip_records.iter().map(TemporalMotionBlock::origin));
+            unit_leaves.sort_unstable();
+        }
         self.grid
             .published_leaves()
             .filter(|(_, refs, _)| refs.is_none_or(|(ref_frame0, _)| ref_frame0 != TIP_REF_FRAME))
-            .filter(|((r, c, ..), ..)| !unit_leaves.contains(&(*r, *c)))
+            .filter(|((r, c, ..), ..)| unit_leaves.binary_search(&(*r, *c)).is_err())
             .map(|((r, c, n4w, n4h), refs, mvs)| {
                 let (ref_frame0, ref_frame1) = refs.unwrap_or((-1, None));
                 if refs.is_none() {
