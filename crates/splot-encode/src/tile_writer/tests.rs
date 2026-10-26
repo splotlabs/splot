@@ -15,9 +15,9 @@ use std::collections::HashSet;
 use splot_core::headers::frame::TxMode;
 use splot_core::tables::conversion::TX_WIDTH;
 use splot_decode::encoder_syntax::{
-    ChromaMode, Dip, IST_SETS, IntraMode, IntraModes, IntraTileSyntax, Ist, LeafBlock,
-    MAX_CFL_ALPHA, Mrl, PALETTE_COLORS, Palette, PartitionNode, TX_PARTITIONS, TransformBlock,
-    coefficient_scan,
+    ChromaMode, Dip, EncoderSyntaxError, IST_SETS, IntraMode, IntraModes, IntraTileSyntax, Ist,
+    LeafBlock, MAX_CFL_ALPHA, Mrl, PALETTE_COLORS, Palette, PartitionNode, TX_PARTITIONS,
+    TransformBlock, coefficient_scan,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -84,6 +84,7 @@ impl Case {
                 inter_ddt: false,
                 inter_ist: false,
                 tip: false,
+                tip_output: false,
                 cctx: false,
                 tcq: false,
                 parity_hiding: false,
@@ -236,7 +237,7 @@ impl RandomLevels {
         planned: IntraModes,
     ) -> Result<LeafChoice> {
         let mut best = (0, planned);
-        let steer = self.coverage.steer && planned.palette.is_none();
+        let steer = self.coverage.steer && planned.palette.is_none() && !leaf.is_chroma_part();
         if steer {
             for (y_mode, angle_delta) in luma_modes() {
                 let modes = IntraModes {
@@ -549,6 +550,18 @@ fn random_tree(
     if !syntax.in_frame(node) {
         return PartitionTree::Leaf(LeafChoice::DC);
     }
+    if let Some((luma_root, chroma_root)) = syntax.sdp_roots(node) {
+        let luma = random_tree(syntax, luma_root, rng, modes, coder);
+        let mut sink = crate::rd::coeff_rate::RateSink::adapting();
+        Walk::trial(syntax, &mut sink)
+            .write_node(luma_root, &luma, coder)
+            .unwrap();
+        let chroma = random_tree(syntax, chroma_root, rng, modes, coder);
+        return PartitionTree::Sdp {
+            luma: Box::new(luma),
+            chroma: Box::new(chroma),
+        };
+    }
     let options = syntax.partition_options(node).unwrap();
     let allowed: Vec<Partition> = PARTITIONS
         .into_iter()
@@ -577,6 +590,12 @@ fn random_tree(
             syntax.fsc_allowed(&leaf),
             dip_modes,
         );
+        if leaf.is_chroma_part() {
+            planned = IntraModes {
+                uv_mode: planned.uv_mode,
+                ..IntraModes::DC
+            };
+        }
         if modes.palette && syntax.palette_allowed(&leaf) && rng.below(2) == 0 {
             planned = random_palette(rng, planned);
             modes.coded_palette.extend(planned.palette);
@@ -1071,6 +1090,198 @@ fn extended_partitions_and_frame_filter_tools_round_trip() {
     }
 }
 
+/// SDP key frames (§ 5.20.3.1) with random, independent luma and chroma
+/// trees decode to the encoder recon in every chroma format, at frame
+/// edges, with both superblock sizes and with extended partitions.
+#[test]
+fn sdp_key_frames_decode_to_the_encoder_recon() {
+    for (index, case) in sdp_cases().into_iter().enumerate() {
+        assert_round_trip(case, 0x5d9 + index as u64);
+    }
+}
+
+fn sdp_cases() -> Vec<Case> {
+    let mut cases = Vec::new();
+    for (index, chroma) in [
+        ChromaFormatIdc::Yuv420,
+        ChromaFormatIdc::Yuv422,
+        ChromaFormatIdc::Yuv444,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for (width, height) in [(17, 9), (64, 64), (65, 65), (200, 136)] {
+            let bit_depth = [BitDepthIdc::Eight, BitDepthIdc::Ten][(index + width as usize) % 2];
+            for sb_size in [SuperblockSize::Block64x64, SuperblockSize::Block128x128] {
+                let mut case = Case::new(width, height, bit_depth, sb_size);
+                case.chroma = chroma;
+                case.tools.sdp = true;
+                cases.push(case);
+            }
+        }
+        let mut case = Case::new(130, 66, BitDepthIdc::Ten, SuperblockSize::Block128x128);
+        case.chroma = chroma;
+        case.tools.sdp = true;
+        case.tools.mrls = true;
+        cases.push(case.with_tx_search());
+    }
+    cases
+}
+
+/// The facade gives a 64x64 intra node SDP roots. The 64x64 chroma node
+/// follows a luma `HORZ` whose halves split across and then implies `HORZ`,
+/// but not a luma `VERT` whose halves split along; a chroma 8x16 node allows
+/// no vertical split and a chroma 8x8 node implies `NONE` (§ 5.20.3.2).
+#[test]
+fn sdp_chroma_tree_follows_the_luma_tree_rules() {
+    let mut tools = Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64).tools;
+    let (seq, core) = headers(tools);
+    let syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap();
+    assert!(syntax.sdp_roots(syntax.superblock_root(0, 0)).is_none());
+    tools.sdp = true;
+    let (seq, core) = headers(tools);
+    let mut sink = crate::rd::coeff_rate::RateSink::adapting();
+    for (top, follows) in [(Partition::Horz, true), (Partition::Vert, false)] {
+        let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap();
+        let root = syntax.superblock_root(0, 0);
+        syntax.begin_superblock(root);
+        let (luma, chroma) = syntax.sdp_roots(root).unwrap();
+        assert!(syntax.sdp_roots(luma).is_none() && syntax.sdp_roots(chroma).is_none());
+        assert!(chroma.is_chroma_part() && !luma.is_chroma_part());
+        syntax.write_partition(luma, top, &mut sink).unwrap();
+        for child in syntax.children(luma, top).unwrap() {
+            syntax
+                .write_partition(child, Partition::Vert, &mut sink)
+                .unwrap();
+        }
+        let options = syntax.partition_options(chroma).unwrap();
+        assert_eq!(options.implied(), follows.then_some(Partition::Horz));
+        if follows {
+            continue;
+        }
+        let mut node = chroma;
+        for (step, partition) in [
+            Partition::Horz,
+            Partition::Vert,
+            Partition::Horz,
+            Partition::Vert,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            syntax.write_partition(node, partition, &mut sink).unwrap();
+            node = syntax.children(node, partition).unwrap()[step % 2];
+        }
+        assert_eq!(node.dimensions().unwrap(), (16, 16));
+        let narrow = syntax.children(node, Partition::Vert).unwrap()[0];
+        assert_eq!(narrow.dimensions().unwrap(), (8, 16));
+        let options = syntax.partition_options(narrow).unwrap();
+        assert!(!options.allows(Partition::Vert) && options.allows(Partition::Horz));
+        assert!(matches!(
+            syntax.write_partition(narrow, Partition::Vert, &mut sink),
+            Err(EncoderSyntaxError::Unsupported(_))
+        ));
+        let small = syntax.children(narrow, Partition::Horz).unwrap()[1];
+        assert_eq!(small.dimensions().unwrap(), (8, 8));
+        let options = syntax.partition_options(small).unwrap();
+        assert_eq!(options.implied(), Some(Partition::None));
+    }
+}
+
+/// A `CHROMA_PART` leaf codes no luma-only syntax (§ 5.20.5.3): the facade
+/// refuses IntraBC, a luma transform partition, FSC, MRL and a `delta_qindex`
+/// there, and codes the chroma mode alone.
+#[test]
+fn sdp_chroma_leaves_refuse_luma_only_syntax() {
+    let mut tools = Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64).tools;
+    (tools.sdp, tools.fsc, tools.mrls) = (true, true, true);
+    let (seq, core) = headers(tools);
+    let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap();
+    let root = syntax.superblock_root(0, 0);
+    syntax.begin_superblock(root);
+    let (luma, chroma) = syntax.sdp_roots(root).unwrap();
+    let mut sink = crate::rd::coeff_rate::RateSink::adapting();
+    let mut coder = RandomLevels {
+        rng: Rng(7),
+        max_level: 3,
+        coverage: TxCoverage::default(),
+        map: Vec::new(),
+    };
+    Walk::trial(&mut syntax, &mut sink)
+        .write_node(luma, &PartitionTree::Leaf(LeafChoice::DC), &mut coder)
+        .unwrap();
+    let leaf = syntax.leaf(chroma).unwrap();
+    assert!(leaf.is_chroma_part() && leaf.has_chroma() && !leaf.is_luma_part());
+    assert!(!syntax.fsc_allowed(&leaf) && !syntax.palette_allowed(&leaf));
+    assert!(!syntax.dip_allowed(&leaf, IntraModes::DC) && !syntax.intrabc_allowed(&leaf));
+    let unsupported = |result: core::result::Result<(), EncoderSyntaxError>| {
+        matches!(result, Err(EncoderSyntaxError::Unsupported(_)))
+    };
+    assert!(unsupported(syntax.write_use_intrabc(
+        &leaf,
+        Some(false),
+        &mut sink
+    )));
+    assert!(unsupported(syntax.code_luma_tx_partition(
+        &leaf,
+        TX_PARTITIONS[1],
+        |_, _| Ok::<(), EncoderSyntaxError>(())
+    )));
+    for modes in [
+        IntraModes {
+            fsc: true,
+            ..IntraModes::DC
+        },
+        IntraModes {
+            mrl: Mrl {
+                index: 1,
+                secondary: false,
+            },
+            ..IntraModes::DC
+        },
+    ] {
+        assert!(unsupported(
+            syntax.write_intra_modes(&leaf, modes, &mut sink)
+        ));
+    }
+    assert!(unsupported(
+        syntax.write_delta_qindex(&leaf, false, &mut sink)
+    ));
+    syntax
+        .write_intra_modes(&leaf, IntraModes::DC, &mut sink)
+        .unwrap();
+}
+
+/// A shared tree at an SDP node and an SDP tree at a shared node do not code.
+#[test]
+fn rejects_sdp_tree_mismatches() {
+    let mut tools = Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64).tools;
+    for sdp in [true, false] {
+        tools.sdp = sdp;
+        let (seq, core) = headers(tools);
+        let mut writer = KeyFrameTileWriter::new(&seq, &core, &refs_for(&seq), 0).unwrap();
+        let leaf = PartitionTree::Leaf(LeafChoice::DC);
+        let tree = if sdp {
+            leaf
+        } else {
+            PartitionTree::Sdp {
+                luma: Box::new(leaf.clone()),
+                chroma: Box::new(leaf),
+            }
+        };
+        let mut coder = RandomLevels {
+            rng: Rng(1),
+            max_level: 1,
+            coverage: TxCoverage::default(),
+            map: Vec::new(),
+        };
+        assert!(matches!(
+            writer.write_superblock(&SuperblockDecision { tree }, &mut coder),
+            Err(TileWriterError::Shape(_))
+        ));
+    }
+}
+
 #[test]
 fn rejects_unsupported_decisions() {
     let case = Case::new(16, 16, BitDepthIdc::Eight, SuperblockSize::Block64x64);
@@ -1319,6 +1530,7 @@ fn avm_decodes_random_key_frames_like_splot() {
             }
         }
     }
+    cases.extend(sdp_cases());
     let mut extended = Case::new(150, 98, BitDepthIdc::Eight, SuperblockSize::Block64x64);
     extended.tools.ext_partitions = true;
     extended.tools.uneven_4way_partitions = true;

@@ -203,6 +203,13 @@ pub struct PresetParams {
     /// frame's `tip_global_wtd_index` by the luma SSE of the TIP prediction
     /// over every other 64x64 block.
     pub tip: u8,
+    /// TIP output (`disable_tip_output = 0`), `0..=200`: with `tip`, a shown
+    /// non-reference frame with a TIP reference pair codes an
+    /// `OBU_REGULAR_TIP` `TIP_FRAME_AS_OUTPUT` frame when the RD cost of the
+    /// TIP output times 100 is at most this value times the RD cost of the
+    /// frame coded normally; `0` is off. `100` in every row (2026-10-26):
+    /// p6 measured park_joy -0.19%, paris -0.12%, niklas 0.00%.
+    pub tip_output: u8,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -304,7 +311,8 @@ impl PresetParams {
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
-        check("tip", self.tip, 0, 2, "")
+        check("tip", self.tip, 0, 2, "")?;
+        check("tip_output", self.tip_output, 0, 200, "")
     }
 }
 
@@ -464,6 +472,7 @@ preset_table! {
         interp_filter_search:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         cdf_carry:             [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+        tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -730,6 +739,7 @@ mod tests {
             (&[("intra_modes", "0")], "intra_modes"),
             (&[("gdf_candidates", "17")], "gdf_candidates"),
             (&[("tip", "3")], "tip"),
+            (&[("tip_output", "201")], "tip_output"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {

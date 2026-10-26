@@ -38,7 +38,7 @@ use crate::palette::PaletteSearch;
 use crate::preset::{PresetParams, TcqFrames};
 use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, RowCaches, block_rate};
 use crate::rd::partition::search_partition;
-use crate::rd::{Lambda, RdCost};
+use crate::rd::{Bits, Lambda, RdCost};
 use crate::screen::is_screen_content;
 use crate::tile_writer::coeffs::eob;
 use crate::tile_writer::{
@@ -125,6 +125,7 @@ impl IntraFrameCoder {
                 inter_ddt: preset.inter_ddt,
                 inter_ist: preset.inter_ist,
                 tip: preset.tip > 0 && preset.mv_prediction,
+                tip_output: preset.tip > 0 && preset.mv_prediction && preset.tip_output > 0,
                 cctx: preset.cctx,
                 mhccp: preset.mhccp,
                 fsc: preset.fsc,
@@ -180,6 +181,12 @@ impl FrameCoder for IntraFrameCoder {
     }
 
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
+        if let Some(core) = frame.tip_output.take() {
+            return self
+                .references
+                .update_tip_output(&core)
+                .map_err(coding("TIP output update"));
+        }
         let (core, recon, initial, cdfs) = frame.reference.take().ok_or(Error::Unsupported {
             what: "a frame committed twice",
         })?;
@@ -460,12 +467,78 @@ impl IntraFrameCoder {
             &core,
             &tiles,
         )?;
-        Ok(CodedFrame {
+        let coded = CodedFrame {
             temporal_unit,
             recon: visible_planes(&recon)?,
             frame_type: plan.frame_type,
             reference: Some((core, recon, initial, cdfs)),
-        })
+            tip_output: None,
+        };
+        match tools.2.3 {
+            Some(weight)
+                if self.params.tools.tip_output
+                    && plan.refresh_frame_flags == 0
+                    && plan.show_frame =>
+            {
+                Ok(self
+                    .tip_output_frame(source, plan, qindex, weight, &coded)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(coded))
+            }
+            _ => Ok(coded),
+        }
+    }
+
+    /// The frame `plan`, coded normally at `qindex` with TIP weight `weight`
+    /// as `coded`, as a `TIP_FRAME_AS_OUTPUT` frame when its RD cost times 100
+    /// is at most `PresetParams::tip_output` times that of `coded`; both
+    /// distortions are the squared error of every plane. The caller keeps
+    /// `coded` when this fails.
+    fn tip_output_frame(
+        &self,
+        source: &SourceFrame,
+        plan: &GopFrame,
+        qindex: u32,
+        weight: u8,
+        coded: &CodedFrame,
+    ) -> Result<Option<CodedFrame>> {
+        let num_total_refs = coded
+            .reference
+            .as_ref()
+            .and_then(|(core, ..)| core.inter.as_ref()?.num_total_refs)
+            .ok_or(Error::Unsupported {
+                what: "a TIP frame without references",
+            })?;
+        let (core, temporal_unit) =
+            plan.tip_output_unit(&self.view, &self.references, num_total_refs, weight)?;
+        let (core, frame) = self
+            .references
+            .tip_output(&core)
+            .map_err(coding("TIP output"))?;
+        let recon = visible_planes(&frame)?;
+        let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
+        let cost = |planes: &[Vec<u16>; 3], bytes: usize| {
+            let distortion = planes
+                .iter()
+                .zip(source.planes())
+                .flat_map(|(recon, source)| recon.iter().zip(source))
+                .map(|(&a, &b)| u64::from(a.abs_diff(b)).pow(2))
+                .sum();
+            let rate = Bits((bytes as u64 * 8) << Bits::FRAC_BITS);
+            RdCost { distortion, rate }.cost(lambda)
+        };
+        let tip = cost(&recon, temporal_unit.len());
+        let normal = cost(&coded.recon, coded.temporal_unit.len());
+        Ok(
+            (tip * 100 <= normal * u128::from(self.preset.tip_output)).then(|| CodedFrame {
+                temporal_unit,
+                recon,
+                frame_type: plan.frame_type,
+                reference: None,
+                tip_output: Some(core),
+            }),
+        )
     }
 }
 

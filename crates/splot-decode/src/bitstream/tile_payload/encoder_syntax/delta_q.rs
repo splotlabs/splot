@@ -86,13 +86,20 @@ impl IntraTileSyntax {
     /// them; a superblock-sized skipped leaf keeps the previous `CurrentQIndex`.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] for a write failure.
+    /// Returns [`EncoderSyntaxError::Unsupported`] for a `CHROMA_PART` leaf,
+    /// which reads no delta (§ 5.20.5.3), and [`EncoderSyntaxError::Rule`]
+    /// for a write failure.
     pub fn write_delta_qindex(
         &mut self,
         leaf: &LeafBlock,
         skip: bool,
         symbols: &mut impl SymbolSink,
     ) -> Result<()> {
+        if leaf.is_chroma_part() {
+            return Err(EncoderSyntaxError::Unsupported(
+                "delta_qindex in a CHROMA_PART leaf",
+            ));
+        }
         if !self.delta_q.pending {
             return Ok(());
         }

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use super::{Bits, Lambda, RdCost};
 use crate::preset::PresetParams;
-use crate::tile_writer::{LeafChoice, Partition, PartitionTree};
+use crate::tile_writer::{LeafChoice, Partition, PartitionTree, TileWriterError};
 
 /// What the partition search needs from a coder. Trials code into live state:
 /// [`Self::evaluate_leaf`] leaves its leaf coded, and the search rolls back
@@ -18,10 +18,12 @@ pub(crate) trait PartitionSearch {
     /// A saved coder state.
     type Saved;
     /// The coder's error.
-    type Error;
+    type Error: From<TileWriterError>;
 
     /// Whether `node` starts inside the frame; nodes outside code nothing.
     fn in_frame(&self, node: Self::Node) -> bool;
+    /// The luma and chroma roots that code `node` in turn when it is an SDP node.
+    fn sdp_roots(&self, node: Self::Node) -> Option<(Self::Node, Self::Node)>;
     /// The partitions `node` can code: the implied one alone when the position
     /// implies one, else the allowed set.
     fn partitions(&self, node: Self::Node) -> Result<Vec<Partition>, Self::Error>;
@@ -197,9 +199,15 @@ fn recode<S: PartitionSearch>(
     if !coder.in_frame(node) {
         return Ok(RdCost::default());
     }
-    let (partition, mut cost) = match tree {
-        PartitionTree::Leaf(choice) => (Partition::None, coder.code_leaf(node, *choice)?),
-        PartitionTree::Split { kind, children } => {
+    let (partition, mut cost) = match (tree, coder.sdp_roots(node)) {
+        (PartitionTree::Sdp { luma, chroma }, Some((luma_root, chroma_root))) => {
+            return Ok(recode(coder, luma_root, luma)? + recode(coder, chroma_root, chroma)?);
+        }
+        (PartitionTree::Sdp { .. }, None) | (_, Some(_)) => {
+            return Err(TileWriterError::Shape("SDP tree at a shared node or none").into());
+        }
+        (PartitionTree::Leaf(choice), None) => (Partition::None, coder.code_leaf(node, *choice)?),
+        (PartitionTree::Split { kind, children }, None) => {
             let mut cost = RdCost::default();
             for (child, tree) in coder.children(node, *kind)?.into_iter().zip(children) {
                 cost = cost + recode(coder, child, tree)?;

@@ -19,8 +19,8 @@ use crate::headers::frame::inter_shared_tail::{
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
     CoreSeqView, EncoderHeaderError, FrameFilterParams, FrameHeaderCore, FrameHeaderParseStatus,
-    FrameReferenceStateView, KeyFrameTxParams, TxMode, init_core_from_prefix, parse_core_body,
-    parse_frame_header_prefix,
+    FrameReferenceStateView, KeyFrameTxParams, TipFrameMode, TxMode, init_core_from_prefix,
+    parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::sequence::SuperblockSize;
 use crate::headers::tile_group::{RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructure};
@@ -338,6 +338,112 @@ pub fn encode_inter_frame_obu(
     write_annexb_obu(
         &mut w,
         &obu_header(ObuType::RegularTileGroup),
+        &payload.into_bytes(),
+    )?;
+    Ok(w.into_bytes())
+}
+
+/// Builds the `OBU_REGULAR_TIP` header of a `TIP_FRAME_AS_OUTPUT` frame
+/// (§ 5.18.2) over a map of `num_total_refs` references for `seq` and the
+/// § 7.23 reference state `refs`: the `order_hint`, `refresh_frame_flags`,
+/// `show_frame` and `tip_weight` of `params`, `PRIMARY_REF_NONE`,
+/// `use_ref_frame_mvs = 1`, a zero `tip_global_mv` and the `EIGHTTAP_SHARP`
+/// filter.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] for a sequence without TIP output, the
+/// tools the header does not write, a missing `tip_weight`, or bits that do
+/// not parse to a complete TIP output header with `refs`.
+pub fn build_tip_output_frame_header(
+    seq: &CoreSeqView,
+    refs: &FrameReferenceStateView<'_>,
+    params: &InterFrameParams,
+    num_total_refs: u32,
+) -> Result<EncodedFrameHeader, EncoderHeaderError> {
+    let inter = &seq.inter;
+    if seq.single_picture_header_flag {
+        return Err(EncoderHeaderError::SinglePictureView);
+    }
+    if !inter.enable_tip_output || !inter.enable_ref_frame_mvs || num_total_refs < 2 {
+        return Err(unsupported(
+            "TIP output without TIP, reference MVs or two references",
+        ));
+    }
+    if seq.enable_short_refresh_frame_flags
+        || inter.enable_tip_hole_fill
+        || inter.enable_tip_explicit_qp
+        || seq.filter.enable_df_sub_pu
+        || seq.film_grain_params_present != Some(false)
+    {
+        return Err(unsupported("TIP output header tools"));
+    }
+    let weight = params
+        .tip_weight
+        .ok_or(unsupported("tip_global_wtd_index"))?;
+    let mut w = BitWriter::new();
+    w.write_uvlc(0)?; // cur_mfh_id
+    w.write_uvlc(0)?; // seq_header_id_in_frame_header
+    w.write_flag(params.show_frame)?; // immediate_output_frame
+    if !params.show_frame && !seq.monotonic_output_order_flag {
+        w.write_flag(false)?; // implicit_output_frame
+    }
+    w.write_flag(false)?; // frame_size_override_flag
+    let order_hint_mask = (1u32 << seq.order_hint_bits) - 1;
+    w.write_bits(params.order_hint & order_hint_mask, seq.order_hint_bits)?;
+    w.write_flag(true)?; // signal_primary_ref_frame
+    w.write_bits(PRIMARY_REF_NONE, 3)?; // primary_ref_frame
+    w.write_bits(params.refresh_frame_flags, seq.num_ref_frames)?;
+    w.write_flag(true)?; // use_ref_frame_mvs
+    if seq.tile.frame_sb_size(false) != SuperblockSize::Block64x64 {
+        w.write_flag(false)?; // tmvp_sample_step_minus_1
+    }
+    w.write_bits(u32::from(weight), 3)?; // tip_global_wtd_index
+    w.write_flag(true)?; // tip_global_mv_zero
+    w.write_flag(true)?; // tip_sharp
+    let bit_len = w.bit_len();
+    w.write_trailing_bits(8 - bit_len % 8)?;
+    let bytes = w.into_bytes();
+    let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
+    let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTip, Some(true))?;
+    let mut core = init_core_from_prefix(&prefix, ObuType::RegularTip, true);
+    parse_core_body(&mut reader, &mut core, seq, None, refs)?;
+    core.consumed_bits = reader.consumed_bits();
+    let as_output = core
+        .inter
+        .as_ref()
+        .is_some_and(|inter| inter.tip_frame_mode == Some(TipFrameMode::AsOutput));
+    if core.status != FrameHeaderParseStatus::InterHeaderComplete
+        || core.consumed_bits != bit_len
+        || !as_output
+    {
+        return Err(EncoderHeaderError::Incomplete);
+    }
+    let bits =
+        RecordedFrameHeaderBits::record(&mut BitReader::new(&bytes, ByteOffset::new(0)), bit_len)?;
+    Ok(EncodedFrameHeader { core, bits })
+}
+
+/// Serializes the `OBU_REGULAR_TIP` OBU of `header`: the recorded header
+/// bits and `trailing_bits()`.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] if the OBU does not serialize.
+pub fn encode_tip_output_frame_obu(
+    header: &EncodedFrameHeader,
+) -> Result<Vec<u8>, EncoderHeaderError> {
+    let mut payload = BitWriter::new();
+    for index in 0..header.bits.num_frame_header_bits() {
+        let bit = header
+            .bits
+            .bit(index)
+            .ok_or(EncoderHeaderError::Incomplete)?;
+        payload.write_flag(bit)?;
+    }
+    payload.write_trailing_bits(8 - payload.bit_len() % 8)?;
+    let mut w = BitWriter::new();
+    write_annexb_obu(
+        &mut w,
+        &obu_header(ObuType::RegularTip),
         &payload.into_bytes(),
     )?;
     Ok(w.into_bytes())

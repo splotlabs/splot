@@ -44,8 +44,9 @@ use core::num::NonZeroU32;
 
 use splot_core::headers::frame::{
     CoreSeqView, FrameFilterParams, FrameHeaderCore, InterFrameParams, KeyFrameTxParams,
-    UniformTiles, build_inter_frame_header, build_key_frame_header, encode_inter_frame_obu,
-    encode_key_frame_temporal_unit, encode_show_existing_frame_obu, encode_temporal_delimiter_obu,
+    UniformTiles, build_inter_frame_header, build_key_frame_header, build_tip_output_frame_header,
+    encode_inter_frame_obu, encode_key_frame_temporal_unit, encode_show_existing_frame_obu,
+    encode_temporal_delimiter_obu, encode_tip_output_frame_obu,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_decode::encoder_syntax::EncoderReferences;
@@ -493,6 +494,42 @@ impl GopFrame {
         };
         unit.extend(encode_inter_frame_obu(&header, tiles).map_err(header_error)?);
         Ok(unit)
+    }
+
+    /// The header and OBUs of the frame as a `TIP_FRAME_AS_OUTPUT` frame with
+    /// `tip_global_wtd_index` `weight` over a map of `num_total_refs`
+    /// references, after a temporal delimiter when the frame opens its
+    /// temporal unit.
+    pub(crate) fn tip_output_unit(
+        &self,
+        view: &CoreSeqView,
+        refs: &EncoderReferences,
+        num_total_refs: u32,
+        weight: u8,
+    ) -> Result<(FrameHeaderCore, Vec<u8>)> {
+        let params = InterFrameParams {
+            order_hint: self.order_hint,
+            refresh_frame_flags: self.refresh_frame_flags,
+            show_frame: self.show_frame,
+            tip_weight: Some(weight),
+            ..InterFrameParams::default()
+        };
+        let header =
+            build_tip_output_frame_header(view, &refs.header_view(), &params, num_total_refs)
+                .map_err(header_error)?;
+        if header.core.display_order_hint() != Some(self.order_hint) {
+            return Err(Error::OrderHintMismatch {
+                planned: self.order_hint,
+                derived: header.core.display_order_hint(),
+            });
+        }
+        let mut unit = if self.opens_temporal_unit {
+            encode_temporal_delimiter_obu().map_err(header_error)?
+        } else {
+            Vec::new()
+        };
+        unit.extend(encode_tip_output_frame_obu(&header).map_err(header_error)?);
+        Ok((header.core, unit))
     }
 
     fn inter_params(

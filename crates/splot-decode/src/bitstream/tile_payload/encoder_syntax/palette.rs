@@ -64,16 +64,17 @@ impl IntraTileSyntax {
     #[must_use]
     pub fn palette_allowed(&self, leaf: &LeafBlock) -> bool {
         let size = leaf.frontier.b_size;
-        matches!(
-            (size.num_4x4_wide(), size.num_4x4_high()),
-            (Ok(n4w), Ok(n4h)) if palette_y_mode_allowed(
-                self.tools.chroma,
-                IntraMode::Dc,
-                size.index(),
-                n4w,
-                n4h,
+        !leaf.is_chroma_part()
+            && matches!(
+                (size.num_4x4_wide(), size.num_4x4_high()),
+                (Ok(n4w), Ok(n4h)) if palette_y_mode_allowed(
+                    self.tools.chroma,
+                    IntraMode::Dc,
+                    size.index(),
+                    n4w,
+                    n4h,
+                )
             )
-        )
     }
 
     /// Sets the row-major color map, one index per luma sample of the leaf,
