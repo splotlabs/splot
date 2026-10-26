@@ -1337,6 +1337,8 @@ mod intra_tools;
 mod large_inter;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
+#[path = "intra_frame_refine_tests.rs"]
+mod refine;
 #[path = "intra_frame_tip_tests.rs"]
 mod tip;
 #[path = "intra_frame_wienerns_tests.rs"]
