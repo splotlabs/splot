@@ -140,6 +140,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         use_ref_frame_mvs: false,
                         high_precision_mv,
                         switchable_interp_filter,
+                        tip_weight: None,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
                     let core = &header.core;
@@ -219,6 +220,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         use_ref_frame_mvs: false,
         high_precision_mv: false,
         switchable_interp_filter: false,
+        tip_weight: None,
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
     let inter = header.core.inter.as_ref().unwrap();
@@ -313,6 +315,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             use_ref_frame_mvs: false,
             high_precision_mv: false,
             switchable_interp_filter: false,
+            tip_weight: None,
         },
     )
     .unwrap();
@@ -390,6 +393,7 @@ fn rejects_out_of_range_inter_inputs() {
         use_ref_frame_mvs: false,
         high_precision_mv: false,
         switchable_interp_filter: false,
+        tip_weight: None,
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),

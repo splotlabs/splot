@@ -180,6 +180,10 @@ pub struct PresetParams {
     /// (2026-10-25): every such block with `eob > 3` then pays a
     /// `sec_tx_type` symbol, and p6 measured park_joy -0.06%, paris +0.34%.
     pub inter_ist: bool,
+    /// TIP (`enable_tip`), `0..=1`: `1` inter frames with reference MVs and
+    /// two references code `TIP_FRAME_AS_REF` with equal weights, and inter
+    /// leaves also try the TIP `NEARMV` candidates.
+    pub tip: u8,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -278,7 +282,8 @@ impl PresetParams {
         check("interp_filter_search", self.interp_filter_search, 0, 2, "")?;
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
-        check("gdf_candidates", self.gdf_candidates, 0, 16, "")
+        check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
+        check("tip", self.tip, 0, 1, "")
     }
 }
 
@@ -437,6 +442,7 @@ preset_table! {
         mvd_tools:             [[false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3]],
         interp_filter_search:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         cdf_carry:             [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -583,6 +589,7 @@ mod tests {
             assert!(fast.cdef_on_skip <= slow.cdef_on_skip);
             assert!(fast.inter_ddt <= slow.inter_ddt);
             assert!(fast.inter_ist <= slow.inter_ist);
+            assert!(fast.tip <= slow.tip);
             assert!(
                 fast.inter_tx_split == 0
                     || (slow.inter_tx_split != 0 && fast.inter_tx_split >= slow.inter_tx_split)
@@ -692,6 +699,7 @@ mod tests {
             (&[("mini_gop_size", "9")], "mini_gop_size"),
             (&[("intra_modes", "0")], "intra_modes"),
             (&[("gdf_candidates", "17")], "gdf_candidates"),
+            (&[("tip", "2")], "tip"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {
