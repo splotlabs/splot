@@ -469,7 +469,7 @@ pub(super) fn read_reference(
     tile_offset: ByteOffset,
 ) -> Result<bool> {
     let (n4w, n4h) = n4;
-    if tip_frame_mode == TipFrameMode::Disabled || !allowed_for_block(frontier, n4w, n4h) {
+    if tip_frame_mode == TipFrameMode::Disabled || !tip_block_allowed(frontier, n4w, n4h) {
         return Ok(false);
     }
     let tip_ref = cdfs
@@ -483,7 +483,7 @@ pub(super) fn read_reference(
     Ok(tip_ref.get() != 0)
 }
 
-fn allowed_for_block(frontier: &DecodeBlockFrontier, n4w: usize, n4h: usize) -> bool {
+pub(super) fn tip_block_allowed(frontier: &DecodeBlockFrontier, n4w: usize, n4h: usize) -> bool {
     tip_allowed_for_block_indices(
         frontier.chroma_offset,
         frontier.is_luma_part(),

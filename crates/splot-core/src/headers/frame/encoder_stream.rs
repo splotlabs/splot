@@ -94,6 +94,9 @@ pub struct EncoderToolFlags {
     pub inter_ddt: bool,
     /// `enable_inter_ist`.
     pub inter_ist: bool,
+    /// `enable_tip` with `disable_tip_output = 1` and no hole fill: inter
+    /// blocks may predict from the TIP frame.
+    pub tip: bool,
     /// `enable_cctx`.
     pub cctx: bool,
     /// `enable_tcq` with `choose_tcq_per_frame = 1`: each frame codes `allow_tcq`.
@@ -446,8 +449,13 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     w.write_ns(0, 3)?; // seq_max_bvp_drl_bits_minus_1, ns(MAX_REF_BV_STACK_SIZE - 1)
     w.write_flag(false)?; // allow_frame_max_bvp_drl_bits
     w.write_bits(NUM_SAME_REF_COMPOUND, 2)?;
-    for _ in 0..6 {
-        w.write_flag(false)?; // enable_tip, mv_traj, bawp, cwp, imp_msk_bld, df_sub_pu
+    w.write_flag(tools.tip)?; // enable_tip
+    if tools.tip {
+        w.write_flag(true)?; // disable_tip_output
+        w.write_flag(false)?; // enable_tip_hole_fill
+    }
+    for _ in 0..5 {
+        w.write_flag(false)?; // enable_mv_traj, bawp, cwp, imp_msk_bld, df_sub_pu
     }
     w.write_bits(0, 2)?; // enable_opfl_refine
     w.write_flag(false)?; // enable_refinemv

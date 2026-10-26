@@ -122,6 +122,7 @@ impl IntraFrameCoder {
                 intra_ist: preset.ist_sets > 0,
                 inter_ddt: preset.inter_ddt,
                 inter_ist: preset.inter_ist,
+                tip: preset.tip > 0 && preset.mv_prediction,
                 cctx: preset.cctx,
                 mhccp: preset.mhccp,
                 fsc: preset.fsc,
@@ -250,6 +251,18 @@ impl IntraFrameCoder {
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
         tools.0.delta_q_res = (!sb_offsets.is_empty()).then_some(DELTA_Q_RES);
+        if tools.2.3.is_some() {
+            let probe = plan.header(
+                &self.view,
+                &self.references,
+                qindex,
+                &FrameFilterParams::default(),
+                tools,
+            )?;
+            if !self.references.tip_pair_available(&probe) {
+                tools.2.3 = None;
+            }
+        }
         let header = |filters: &FrameFilterParams| {
             plan.header(&self.view, &self.references, qindex, filters, tools)
         };
