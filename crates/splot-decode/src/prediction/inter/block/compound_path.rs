@@ -855,7 +855,7 @@ fn read_compound_mvd_magnitude(
     }
 }
 
-const fn compound_deblock_sub_pu_size(
+pub(super) const fn compound_deblock_sub_pu_size(
     use_optflow: bool,
     use_refinemv: bool,
     luma_width: usize,

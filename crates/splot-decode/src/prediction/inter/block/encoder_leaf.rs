@@ -931,6 +931,24 @@ impl EncoderInterTile {
         let (blocks, range) = residual.map_or((&[][..], None), |residual| {
             (residual.blocks.as_slice(), Some(residual.range()))
         });
+        let sub_pu_size = match motion {
+            EncoderMotion::Single(single) if single.tip => {
+                let units16 = super::tip::reference_uses_16x16_units(n4w, n4h, false);
+                Some(crate::filters::deblock::DeblockSubPuSize::square(
+                    if units16 { 16 } else { 8 },
+                ))
+            }
+            EncoderMotion::Single(_) => None,
+            EncoderMotion::Compound(compound) => {
+                let refinement = self.compound_refinement(frontier, compound)?;
+                super::compound_path::compound_deblock_sub_pu_size(
+                    refinement.use_optflow,
+                    refinement.refinemv_signalled,
+                    n4w * MI_SIZE,
+                    n4h * MI_SIZE,
+                )
+            }
+        };
         record_inter_deblock_geometry(
             deblock,
             chroma,
@@ -940,10 +958,7 @@ impl EncoderInterTile {
             self.chroma,
             range.as_ref(),
             blocks,
-            is_tip(motion).then(|| {
-                let units16 = super::tip::reference_uses_16x16_units(n4w, n4h, false);
-                crate::filters::deblock::DeblockSubPuSize::square(if units16 { 16 } else { 8 })
-            }),
+            sub_pu_size,
             self.qindex,
             false,
         )
