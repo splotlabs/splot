@@ -112,6 +112,11 @@ pub struct PresetParams {
     /// An uneven four-way shape is tried only when the three-way shape of its
     /// axis costs within this margin, in 1/256, of the best; `255` always.
     pub ext_four_way_margin: u8,
+    /// Semi-decoupled partitioning (`enable_sdp`): each 64x64 node of an
+    /// intra frame searches its luma tree on luma alone, then a chroma tree
+    /// that only merges luma leaves. On in every row: intra frames gain luma
+    /// BD-rate, with mixed YUV, at 0.62x to 0.87x of their CPU (2026-10-26).
+    pub sdp: bool,
     /// CCSO classifications the filter search tries per plane; `0` disables
     /// CCSO in the sequence.
     pub ccso_candidates: u8,
@@ -441,6 +446,7 @@ preset_table! {
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
     }
     intra {
         intra_modes:           [   13,    13,    12,    10,     9,     8,     6,     5,     4,     3,     2],
@@ -503,8 +509,10 @@ preset_table! {
     }
 }
 
-/// [`PRESETS`] with the screen-content tools on, for a sequence whose first
-/// frame looks like screen content.
+/// [`PRESETS`] with the screen-content tools on and SDP off, for a sequence
+/// whose first frame looks like screen content. SDP off: desktop_credits p6
+/// measured Y +0.34% intra and +2.30% inter with it (screendata -0.24% and
+/// -0.91%, 2026-10-26).
 pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
     let mut rows = PRESETS;
     let mut i = 0;
@@ -514,6 +522,7 @@ pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
             palette: true,
             intrabc: true,
             integer_mv: true,
+            sdp: false,
             ..rows[i]
         };
         i += 1;
@@ -581,6 +590,7 @@ mod tests {
             assert!(fast.min_block_log2 <= fast.max_block_log2);
             assert!(fast.intra_modes <= slow.intra_modes);
             assert!(fast.partition_early_exit >= slow.partition_early_exit);
+            assert!(fast.sdp <= slow.sdp);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
             assert!(fast.parity_hiding <= slow.parity_hiding);

@@ -321,7 +321,10 @@ fn superblock_search_is_deterministic_and_rolls_back() {
         let first = search();
         assert_eq!(first, search(), "preset {preset} {chroma:?}");
         assert!(
-            matches!(first.0, PartitionTree::Split { .. }),
+            matches!(
+                first.0,
+                PartitionTree::Split { .. } | PartitionTree::Sdp { .. }
+            ),
             "preset {preset} {chroma:?}"
         );
     }
@@ -683,7 +686,10 @@ fn random_leaf(
         choice.tx_partition = partitions[rng.below(partitions.len() as u64) as usize];
         coverage[18] += usize::from(choice.tx_partition != TxPartition::None);
     }
-    if let Some(prediction) = choice.inter
+    let snapped = choice
+        .inter
+        .map(|prediction| crate::tile_writer::snap_prediction(syntax, leaf, prediction).unwrap());
+    if let Some(prediction) = snapped
         && filter != INTERP_FILTERS[0]
         && syntax
             .price_interp_filter(leaf, prediction, &mut RateSink::adapting())
@@ -1348,3 +1354,5 @@ mod wienerns;
 mod ext_partitions;
 #[path = "sb256_tests.rs"]
 mod sb256;
+#[path = "sdp_tests.rs"]
+mod sdp;
