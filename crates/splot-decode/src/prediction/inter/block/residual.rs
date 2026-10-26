@@ -189,6 +189,9 @@ pub(crate) fn read_inter_residual(
                     for chunk_x in start_chunk_x..group_end_x {
                         let luma_chunk_x = frontier.c + (chunk_x << 4);
                         let luma_chunk_y = frontier.r + (chunk_y << 4);
+                        if luma_chunk_y >= mi_rows || luma_chunk_x >= mi_cols {
+                            continue;
+                        }
                         read_inter_residual_luma_chunk(
                             work_unit,
                             symbols,

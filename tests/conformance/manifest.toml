@@ -1908,3 +1908,8 @@ expect = "clean"
 path = "vectors/valid/syn-mrl-4x4-10bit-96x96-q60.ivf"
 description = "Original 10-bit 96x96 texture selects 35 nonzero MRL predictions on 4x4 luma units. The vector enables extended partitions. The pinned AVM recipe is in tools/decoder-fixtures/generate.py."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-4frame-sb256-offframe-chunk-inter-264x136-q100.ivf"
+description = "AVM-encoded 4-frame 264x136 8-bit 4:2:0 panning stream with 256x256 superblocks (avmenc --sb-size=256 --min-partition-size=128 --enable-ccso=0 --qp=100). An inter 256x256 block codes no residual chunk that starts below the frame (§ 5.20.7.23); splot before the chunk gate failed with an inconsistent inter coefficient state. Fixed splot and avmdec produce raw I420 SHA-256 24dbb5912d333e20620427d5f99d6e2c574ee6564fbe0f3ad2776a74c0b8b08d; validates clean."
+expect = "clean"
