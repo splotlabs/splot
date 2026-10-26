@@ -27,8 +27,26 @@ const fn powers(base: u32) -> [u32; HASH_SIDE] {
 const ROW_POWERS: [u32; HASH_SIDE] = powers(ROW_BASE);
 const COLUMN_POWERS: [u32; HASH_SIDE] = powers(COLUMN_BASE);
 
-/// Writes to `out[x]` the hash of `row[x..x + 8]` for every `x` that fits
-/// both, wrapping: `Σ row[x + i] · ROW_BASE^i`.
+/// The hash of `row[x..x + 8]`, wrapping: `Σ row[x + i] · ROW_BASE^i`.
+fn row_hash(row: &[u16], x: usize) -> u32 {
+    row[x..x + HASH_SIDE]
+        .iter()
+        .zip(ROW_POWERS)
+        .fold(0u32, |hash, (&sample, power)| {
+            hash.wrapping_add(u32::from(sample).wrapping_mul(power))
+        })
+}
+
+/// The block hash at `x` of the eight row-hash runs `rows`.
+fn column_hash(rows: &[&[u32]; HASH_SIDE], x: usize) -> u32 {
+    rows.iter()
+        .zip(COLUMN_POWERS)
+        .fold(0u32, |hash, (row, power)| {
+            hash.wrapping_add(row[x].wrapping_mul(power))
+        })
+}
+
+/// Writes to `out[x]` the [`row_hash`] of `row` at every `x` that fits both.
 #[cfg(test)]
 pub(crate) fn row_hashes_scalar(row: &[u16], out: &mut [u32]) {
     for (x, out) in out
@@ -36,12 +54,7 @@ pub(crate) fn row_hashes_scalar(row: &[u16], out: &mut [u32]) {
         .enumerate()
         .take((row.len() + 1).saturating_sub(HASH_SIDE))
     {
-        *out = row[x..x + HASH_SIDE]
-            .iter()
-            .zip(ROW_POWERS)
-            .fold(0u32, |hash, (&sample, power)| {
-                hash.wrapping_add(u32::from(sample).wrapping_mul(power))
-            });
+        *out = row_hash(row, x);
     }
 }
 
@@ -59,27 +72,17 @@ pub(crate) fn row_hashes_simd(row: &[u16], out: &mut [u32]) {
         x += LANES;
     }
     for (x, out) in out.iter_mut().enumerate().take(count).skip(x) {
-        *out = row[x..x + HASH_SIDE]
-            .iter()
-            .zip(ROW_POWERS)
-            .fold(0u32, |hash, (&sample, power)| {
-                hash.wrapping_add(u32::from(sample).wrapping_mul(power))
-            });
+        *out = row_hash(row, x);
     }
 }
 
-/// Writes to `out[x]` the block hash `Σ rows[j][x] · COLUMN_BASE^j` over
-/// the eight row-hash runs `rows`, for every `x` all of them and `out` hold.
+/// Writes to `out[x]` the [`column_hash`] of the eight row-hash runs `rows`
+/// for every `x` all of them and `out` hold.
 #[cfg(test)]
 pub(crate) fn column_hashes_scalar(rows: [&[u32]; HASH_SIDE], out: &mut [u32]) {
     let count = rows.iter().map(|row| row.len()).min().unwrap_or(0);
     for (x, out) in out.iter_mut().enumerate().take(count) {
-        *out = rows
-            .iter()
-            .zip(COLUMN_POWERS)
-            .fold(0u32, |hash, (row, power)| {
-                hash.wrapping_add(row[x].wrapping_mul(power))
-            });
+        *out = column_hash(&rows, x);
     }
 }
 
@@ -101,12 +104,7 @@ pub(crate) fn column_hashes_simd(rows: [&[u32]; HASH_SIDE], out: &mut [u32]) {
         x += LANES;
     }
     for (x, out) in out.iter_mut().enumerate().take(count).skip(x) {
-        *out = rows
-            .iter()
-            .zip(COLUMN_POWERS)
-            .fold(0u32, |hash, (row, power)| {
-                hash.wrapping_add(row[x].wrapping_mul(power))
-            });
+        *out = column_hash(&rows, x);
     }
 }
 

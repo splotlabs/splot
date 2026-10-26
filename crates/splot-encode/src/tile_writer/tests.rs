@@ -1256,6 +1256,25 @@ fn facade_rejects_unmodelled_tools() {
         set(&mut core);
         assert!(rejects(&seq, &core));
     }
+    let intrabc = |global, local| {
+        let mut core = core.clone();
+        core.allow_intrabc = Some(true);
+        core.intrabc = Some(splot_core::headers::frame::IntrabcParams {
+            allow_intrabc: true,
+            allow_global_intrabc: Some(global),
+            allow_local_intrabc: local,
+            change_bvp_drl: None,
+            max_bvp_drl_bits_minus_1: None,
+        });
+        core
+    };
+    let global_only = intrabc(true, Some(false));
+    assert!(IntraTileSyntax::new(&seq, &global_only, &refs_for(&seq), 0).is_ok());
+    assert!(rejects(&seq, &intrabc(false, None)), "local-only IntraBC");
+    assert!(rejects(&seq, &intrabc(true, Some(true))), "local IntraBC");
+    let mut inter = global_only;
+    inter.frame_is_intra = Some(false);
+    assert!(rejects(&seq, &inter), "IntraBC in an inter frame");
     let mut core = core;
     core.intra_tail.as_mut().unwrap().tx_mode = TxMode::Only4x4;
     assert!(rejects(&seq, &core));

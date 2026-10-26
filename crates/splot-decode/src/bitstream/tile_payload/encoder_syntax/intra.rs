@@ -47,6 +47,7 @@ use super::{
     EncoderSyntaxError, IntraMode, IntraTileSyntax, Ist, LeafBlock, Result, TileEnd,
     TransformBlock, TxPartition, coefficient_scan, rule, tx_log2,
 };
+use crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc;
 use crate::pipeline::general_intra::{
     GeneralIntraReconScratch, chroma_edge_smoothness, general_intra_block_ctx,
     general_intra_chroma_tools, inherited_chroma_angle_delta, luma_transform_type_context,
@@ -260,6 +261,15 @@ impl IntraTools {
         };
         let lossless = core.lossless_info.as_ref();
         let refused = [
+            (
+                frame_allows_intrabc(core)
+                    && !(core.frame_is_intra == Some(true)
+                        && core.intrabc.is_some_and(|params| {
+                            params.allow_global_intrabc == Some(true)
+                                && params.allow_local_intrabc == Some(false)
+                        })),
+                "intra block copy other than global-only in an intra frame",
+            ),
             (
                 qindex == 0
                     || lossless
