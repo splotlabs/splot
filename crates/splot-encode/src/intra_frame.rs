@@ -545,11 +545,12 @@ fn coding<E: std::error::Error + Send + Sync + 'static>(
     }
 }
 
-/// Source planes extended by edge replication to cover every coded block.
+/// Source planes extended by edge replication to cover every coded block;
+/// the chroma planes of a monochrome source stay empty.
 pub(crate) struct PaddedSource {
     planes: [Vec<u16>; 3],
     strides: [usize; 3],
-    visible: [PlaneSize; 3],
+    visible: Vec<PlaneSize>,
 }
 
 impl PaddedSource {
@@ -565,7 +566,9 @@ impl PaddedSource {
             width.div_ceil(1 << sub_x),
         ];
         let planes = core::array::from_fn(|plane| {
-            let size = sizes[plane];
+            let Some(&size) = sizes.get(plane) else {
+                return Vec::new();
+            };
             let (w, h) = if plane == 0 {
                 (width, height)
             } else {
@@ -583,7 +586,7 @@ impl PaddedSource {
         Self {
             planes,
             strides,
-            visible: sizes,
+            visible: sizes.to_vec(),
         }
     }
 
@@ -630,7 +633,10 @@ impl PaddedSource {
     ) -> core::result::Result<u64, TileWriterError> {
         let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let (w, h) = (1usize << log2_w, 1usize << log2_h);
-        let size = self.visible[tx.plane];
+        let size = self
+            .visible
+            .get(tx.plane)
+            .ok_or(TileWriterError::Unsupported("plane index"))?;
         let visible_w = w.min(size.width().saturating_sub(tx.x));
         let visible_h = h.min(size.height().saturating_sub(tx.y));
         let (source, stride) = self.at(tx);
@@ -1216,7 +1222,13 @@ fn kernel(error: crate::kernels::KernelError) -> TileWriterError {
 pub(crate) fn visible_planes(recon: &DecodedFrame<u16>) -> Result<[Vec<u16>; 3]> {
     let view = recon.as_frame_ref();
     let mut planes: [Vec<u16>; 3] = Default::default();
-    for (out, id) in planes.iter_mut().zip([PlaneId::Y, PlaneId::U, PlaneId::V]) {
+    let ids = [PlaneId::Y, PlaneId::U, PlaneId::V];
+    let count = if recon.info().pixel_format().is_monochrome() {
+        1
+    } else {
+        3
+    };
+    for (out, id) in planes.iter_mut().zip(ids).take(count) {
         let plane = view.plane(id).ok_or(Error::ReconSizeMismatch)?;
         for row in plane.visible_rows() {
             out.extend_from_slice(row);

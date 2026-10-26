@@ -46,10 +46,10 @@ fn cfl_stream(
 
 /// Every `cfl_ds_filter_index` reaches the sequence header, and its CfL and
 /// chroma Wiener-NS samples decode to the encoder recon in every chroma
-/// format and both bit depths.
+/// format with chroma and both bit depths.
 #[test]
 fn cfl_filters_decode_to_the_encoder_recon() {
-    for chroma in CHROMAS {
+    for chroma in CHROMAS.into_iter().filter(|chroma| !chroma.is_monochrome()) {
         for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
             for index in 1..3 {
                 let (units, recon, seq) =
@@ -99,8 +99,9 @@ fn ist_preset() -> &'static PresetParams {
 }
 
 /// Streams of `on` in every chroma format and both bit depths decode to the
-/// encoder recon with `enabled` set, and 1, 2 and 8 threads write the same
-/// bytes; `off` clears `enabled` and changes the stream.
+/// encoder recon with `enabled` set (monochrome may clear a chroma tool), and
+/// 1, 2 and 8 threads write the same bytes; `off` clears `enabled` and changes
+/// the stream.
 fn assert_tool_streams(
     on: &'static PresetParams,
     off: &'static PresetParams,
@@ -109,7 +110,7 @@ fn assert_tool_streams(
     for chroma in CHROMAS {
         for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
             let (units, recon, seq) = tool_stream((2, chroma, bit_depth), on);
-            assert!(enabled(&seq));
+            assert!(enabled(&seq) || chroma.is_monochrome());
             let name = format!("{chroma:?} {bit_depth:?}");
             assert_same_samples(&decode(&units.concat()), &recon, &name);
         }
@@ -245,7 +246,9 @@ fn drawn_text(config: &Config, index: u32, stride: u32) -> SourceFrame {
     let max = u32::from(config.bit_depth.max_sample());
     let sizes = config.plane_sizes().unwrap();
     let planes = core::array::from_fn(|plane| {
-        let size = sizes[plane];
+        let Some(&size) = sizes.get(plane) else {
+            return Vec::new();
+        };
         let mut samples = Vec::with_capacity(size.width() * size.height());
         for y in 0..size.height() as u32 {
             for x in 0..size.width() as u32 {
@@ -326,7 +329,9 @@ pub(super) fn tiled_text(config: &Config, index: u32) -> SourceFrame {
     let max = u32::from(config.bit_depth.max_sample());
     let sizes = config.plane_sizes().unwrap();
     let planes = core::array::from_fn(|plane| {
-        let size = sizes[plane];
+        let Some(&size) = sizes.get(plane) else {
+            return Vec::new();
+        };
         let mut samples = Vec::with_capacity(size.width() * size.height());
         for y in 0..size.height() as u32 {
             for x in 0..size.width() as u32 {
@@ -554,7 +559,11 @@ fn avm_decodes_cctx_and_mhccp_frames_like_splot() {
 /// An oblique sine wave: directional residual that IST compacts.
 fn wave_frame(config: &Config) -> SourceFrame {
     let max = f64::from(config.bit_depth.max_sample());
-    let planes = config.plane_sizes().unwrap().map(|size| {
+    let sizes = config.plane_sizes().unwrap();
+    let planes = core::array::from_fn(|plane| {
+        let Some(&size) = sizes.get(plane) else {
+            return Vec::new();
+        };
         (0..size.height())
             .flat_map(|y| (0..size.width()).map(move |x| (x as f64, y as f64)))
             .map(|(x, y)| (max * (0.5 + 0.3 * ((x * 0.8 + y * 0.6) / 7.0).sin())) as u16)

@@ -75,7 +75,7 @@ pub struct Config {
     pub height: u32,
     /// Sample bit depth.
     pub bit_depth: BitDepth,
-    /// Chroma format: 4:2:0, 4:2:2 or 4:4:4.
+    /// Chroma format: 4:2:0, 4:2:2, 4:4:4 or monochrome (`mono_chrome`, luma alone).
     pub chroma: PixelFormat,
     /// Frame rate as `(numerator, denominator)` frames per second.
     pub frame_rate: (u32, u32),
@@ -127,8 +127,7 @@ impl Config {
     /// Checks that the encoder supports this configuration.
     ///
     /// # Errors
-    /// Returns [`Error::InvalidDimensions`], [`Error::UnsupportedChroma`],
-    /// [`Error::InvalidFrameRate`], [`Error::InvalidTiles`], [`Error::InvalidQp`],
+    /// Returns [`Error::InvalidDimensions`], [`Error::InvalidFrameRate`], [`Error::InvalidTiles`], [`Error::InvalidQp`],
     /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`] or [`Error::Preset`].
     pub fn validate(&self) -> Result<()> {
         self.override_preset(self.preset.params())?;
@@ -138,11 +137,6 @@ impl Config {
             return Err(Error::InvalidDimensions {
                 width: self.width,
                 height: self.height,
-            });
-        }
-        if self.chroma.is_monochrome() {
-            return Err(Error::UnsupportedChroma {
-                chroma: self.chroma,
             });
         }
         if self.frame_rate.0 == 0 || self.frame_rate.1 == 0 {
@@ -188,26 +182,19 @@ impl Config {
         Ok(row)
     }
 
-    /// Returns the Y, U and V plane sizes of one frame.
+    /// Returns the Y, U and V plane sizes of one frame; monochrome has Y alone.
     ///
     /// # Errors
-    /// Returns [`Error::InvalidDimensions`] for a zero dimension and
-    /// [`Error::UnsupportedChroma`] for monochrome.
-    pub fn plane_sizes(&self) -> Result<[PlaneSize; 3]> {
+    /// Returns [`Error::InvalidDimensions`] for a zero dimension.
+    pub fn plane_sizes(&self) -> Result<Vec<PlaneSize>> {
         let invalid = || Error::InvalidDimensions {
             width: self.width,
             height: self.height,
         };
         let luma =
             PlaneSize::new(self.width as usize, self.height as usize).map_err(|_| invalid())?;
-        let chroma = self
-            .chroma
-            .chroma_size(luma)
-            .map_err(|_| invalid())?
-            .ok_or(Error::UnsupportedChroma {
-                chroma: self.chroma,
-            })?;
-        Ok([luma, chroma, chroma])
+        let chroma = self.chroma.chroma_size(luma).map_err(|_| invalid())?;
+        Ok(chroma.map_or(vec![luma], |chroma| vec![luma, chroma, chroma]))
     }
 }
 
@@ -231,12 +218,6 @@ mod tests {
         assert!(matches!(
             config.validate(),
             Err(Error::InvalidDimensions { .. })
-        ));
-        config = Config::new(64, 64);
-        config.chroma = PixelFormat::Monochrome;
-        assert!(matches!(
-            config.validate(),
-            Err(Error::UnsupportedChroma { .. })
         ));
         config = Config::new(64, 64);
         config.tiles.rows_log2 = TileLayout::MAX_LOG2 + 1;
@@ -314,10 +295,16 @@ mod tests {
 
     #[test]
     fn odd_sizes_round_chroma_up() -> Result<()> {
-        let [y, u, v] = Config::new(5, 3).plane_sizes()?;
+        let mut config = Config::new(5, 3);
+        let &[y, u, v] = config.plane_sizes()?.as_slice() else {
+            unreachable!("4:2:0 has three planes")
+        };
         assert_eq!((y.width(), y.height()), (5, 3));
         assert_eq!((u.width(), u.height()), (3, 2));
         assert_eq!(u, v);
+        config.chroma = PixelFormat::Monochrome;
+        assert!(config.validate().is_ok());
+        assert_eq!(config.plane_sizes()?, [y]);
         Ok(())
     }
 }

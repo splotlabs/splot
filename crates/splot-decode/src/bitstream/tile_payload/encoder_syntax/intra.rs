@@ -355,9 +355,6 @@ impl Recon {
         sb_size4: usize,
     ) -> Result<Self> {
         let chroma = seq.general.chroma_format_idc;
-        if chroma.is_monochrome() {
-            return Err(EncoderSyntaxError::Unsupported("monochrome"));
-        }
         let (sub_x, sub_y) = chroma_subsampling(chroma);
         let size = core
             .frame_size
@@ -379,7 +376,14 @@ impl Recon {
             .map_err(rule("frame workspace"))?;
         let mut block_decoded = TileBlockDecodedState::default();
         block_decoded
-            .reset(3, sub_x.into(), sub_y.into(), sb_size4, cols.end, rows.end)
+            .reset(
+                if chroma.is_monochrome() { 1 } else { 3 },
+                sub_x.into(),
+                sub_y.into(),
+                sb_size4,
+                cols.end,
+                rows.end,
+            )
             .map_err(rule("BlockDecoded state"))?;
         let grid = |(rows, cols): (Range<usize>, Range<usize>), sb_h4: usize| {
             let mut grid = TileSmoothGrid::default();
