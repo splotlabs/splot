@@ -235,6 +235,11 @@ fn push_ordered_planes(
         for start_chunk_x in (0..width_chunks).step_by(2) {
             for chunk_y in start_chunk_y..(start_chunk_y + 2).min(height_chunks) {
                 for chunk_x in start_chunk_x..(start_chunk_x + 2).min(width_chunks) {
+                    if block.row4() + chunk_y * CHUNK_64_N4 >= block_ctx.frame_mi_rows()
+                        || block.col4() + chunk_x * CHUNK_64_N4 >= block_ctx.frame_mi_cols()
+                    {
+                        continue;
+                    }
                     let chunk_luma_reconstruction =
                         luma_reconstruction.for_luma_transform_row(chunk_y == 0);
                     planes.push(ResidualPlanePlan::new(

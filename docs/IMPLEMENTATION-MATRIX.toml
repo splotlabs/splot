@@ -559,7 +559,7 @@ module = "crates/splot-decode/src/residual/pipeline/plan.rs"
 change_id = "decode-general-intra-oversized-chroma-chunks"
 owner = "decoder"
 risk = "high"
-notes = "Oversized chroma residuals follow the luma-chunk grouping required by subsampling and retain U-before-V entropy order. Original residual dimensions remain separate from chunk-local transform geometry for the V all_zero size context."
+notes = "Oversized chroma residuals follow the luma-chunk grouping required by subsampling and retain U-before-V entropy order. Original residual dimensions remain separate from chunk-local transform geometry for the V all_zero size context. Intra and inter residuals code no 64x64 chunk that starts below or right of the frame, which only a 256x256 block can have."
 
 [feature.status]
 mapped = "done"
@@ -577,6 +577,7 @@ perf = "not-applicable"
 tests = [
     "crates/splot-decode/src/residual/pipeline/tests.rs::oversized_explicit_chroma_ref_is_chunked_in_spec_read_order",
     "crates/splot-decode/src/residual/pipeline/tests.rs::every_av2_block_shape_maps_to_valid_luma_and_chroma_chunk_tx_sizes",
+    "crates/splot-decode/src/residual/pipeline/tests.rs::plans_no_chunk_that_starts_outside_the_frame",
     "crates/splot-decode/src/output/hash_tests.rs::rect_chroma_chunks_444_fixture_matches_reference_output_hash",
     "crates/splot-decode/src/output/hash_tests.rs::truncated_fixtures_fail_closed",
     "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
@@ -592,6 +593,7 @@ commands = [
 ]
 fixtures = [
     "tests/conformance/vectors/valid/syn-rect-chroma-chunks-444-intra-128x64-q80.ivf",
+    "tests/conformance/vectors/valid/syn-4frame-sb256-offframe-chunk-inter-264x136-q100.ivf",
     "docs/LOCAL-REFERENCE-EVIDENCE.toml",
 ]
 diagnostics = ["decode/malformed-source"]
