@@ -239,7 +239,7 @@ impl IntraFrameCoder {
     /// The `(qindex offset, lambda log2 Q8)` of each superblock of `plan`
     /// from its block importances; empty without them.
     fn superblock_quant(&self, plan: &GopFrame) -> Vec<(i16, i16)> {
-        let Some(log2_beta) = self.importance.frames.get(&plan.display_index) else {
+        let Some(costs) = self.importance.frames.get(&plan.display_index) else {
             return Vec::new();
         };
         let sb = match self.params.sb_size {
@@ -249,7 +249,7 @@ impl IntraFrameCoder {
         };
         let (width, height) = (self.params.width as usize, self.params.height as usize);
         tpl::superblock_quant(
-            log2_beta,
+            costs,
             self.importance.grid,
             (width.div_ceil(sb), height.div_ceil(sb), sb),
             self.importance.strength,

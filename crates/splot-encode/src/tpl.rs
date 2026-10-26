@@ -51,9 +51,10 @@ pub(crate) struct TplFrame {
     pub(crate) min_complexity: u64,
     /// The suggested change to the base qindex.
     pub(crate) qindex_offset: i16,
-    /// `log2` of each block's importance over the frame's, Q8, in raster
-    /// order; empty for a frame outside the [`BlockModel`].
-    pub(crate) block_log2_beta: Vec<i16>,
+    /// The intra cost, at least [`MIN_BLOCK_COMPLEXITY`], and the received
+    /// amount of each block in raster order; empty for a frame outside the
+    /// [`BlockModel`].
+    pub(crate) block_costs: Vec<(u32, u64)>,
 }
 
 /// The block-level pass of the model: the first `frames` frames of the plan,
@@ -71,8 +72,8 @@ pub(crate) struct BlockImportance {
     pub(crate) grid: (usize, usize, usize),
     /// The `tpl_delta_q` strength in percent.
     pub(crate) strength: u8,
-    /// [`TplFrame::block_log2_beta`] by display index.
-    pub(crate) frames: BTreeMap<u64, Vec<i16>>,
+    /// [`TplFrame::block_costs`] by display index.
+    pub(crate) frames: BTreeMap<u64, Vec<(u32, u64)>>,
 }
 
 /// The lookahead SATD a block of `block_luma` luma samples gains from the
@@ -185,10 +186,13 @@ pub(crate) fn analyze(
                 }),
                 min_complexity: blocks as u64 * u64::from(MIN_BLOCK_COMPLEXITY),
                 qindex_offset: offset as i16,
-                block_log2_beta: block_received
+                block_costs: block_received
                     .as_ref()
                     .and_then(|received| received.get(&node.frame.display_index))
-                    .map_or_else(Vec::new, |received| block_log2_beta(&node.intra, received)),
+                    .map_or_else(Vec::new, |received| {
+                        let floored = node.intra.iter().map(|&c| c.max(MIN_BLOCK_COMPLEXITY));
+                        floored.zip(received.iter().copied()).collect()
+                    }),
             }
         })
         .collect()
@@ -224,58 +228,45 @@ fn propagate(nodes: &[Node], (cols, rows): (usize, usize), noise: u32) -> BTreeM
     received
 }
 
-/// `log2` of `(intra + received) / intra` of each block over the same ratio
-/// of the frame's sums, Q8, with each intra cost at least
-/// [`MIN_BLOCK_COMPLEXITY`].
-fn block_log2_beta(intra: &[u32], received: &[u64]) -> Vec<i16> {
-    let floored = |cost: u32| u64::from(cost.max(MIN_BLOCK_COMPLEXITY));
-    let log2_ratio = |num: u64, den: u64| {
-        i32::try_from(log2_q8(
-            u32::try_from(num.saturating_mul(256) / den).unwrap_or(u32::MAX),
-        ))
-        .unwrap_or(i32::MAX)
-    };
-    let intra_sum: u64 = intra.iter().map(|&cost| floored(cost)).sum();
-    let received_sum: u64 = received.iter().sum();
-    let frame = log2_ratio(intra_sum + received_sum, intra_sum.max(1));
-    intra
-        .iter()
-        .zip(received)
-        .map(|(&cost, &received)| {
-            let cost = floored(cost);
-            (log2_ratio(cost + received, cost) - frame).clamp(-32_768, 32_767) as i16
-        })
-        .collect()
+/// `log2((intra + received) / intra)` in Q8.
+fn log2_importance(intra: u64, received: u64) -> i64 {
+    let ratio = (intra + received).saturating_mul(256) / intra.max(1);
+    i64::from(log2_q8(u32::try_from(ratio).unwrap_or(u32::MAX)))
 }
 
 /// The `(qindex offset, lambda log2 Q8)` of each superblock of a
-/// `(sb_cols, sb_rows)` grid of `sb_luma` samples: from the mean
-/// `log2_beta` over the `(cols, rows)` grid of `block_luma` blocks it covers,
-/// scaled by `strength` percent, the lambda moves by `-log2_beta` and the
-/// qindex by 12 per octave, both bounded by [`MAX_TPL_QINDEX_DECREASE`].
+/// `(sb_cols, sb_rows)` grid of `sb_luma` samples. `costs` holds the
+/// `(intra, received)` of each block of the `(cols, rows)` grid of
+/// `block_luma` blocks. A superblock's `log2_beta` is the mean over its
+/// blocks of the `log2` of their importance `(intra + received) / intra`,
+/// less that of the frame's sums. Scaled by `strength` percent, the lambda
+/// moves by `-log2_beta` and the qindex by 12 per octave, both bounded by
+/// [`MAX_TPL_QINDEX_DECREASE`].
 pub(crate) fn superblock_quant(
-    log2_beta: &[i16],
+    costs: &[(u32, u64)],
     (cols, rows, block_luma): (usize, usize, usize),
     (sb_cols, sb_rows, sb_luma): (usize, usize, usize),
     strength: u8,
 ) -> Vec<(i16, i16)> {
     let per_sb = (sb_luma / block_luma).max(1);
     let max_log2 = MAX_TPL_QINDEX_DECREASE * 256 / QINDEX_PER_IMPORTANCE_OCTAVE as i32;
+    let (intra, received) = costs
+        .iter()
+        .fold((0, 0), |(i, r), &(intra, received)| (i + u64::from(intra), r + received));
+    let frame = log2_importance(intra, received);
     (0..sb_rows * sb_cols)
         .map(|index| {
             let (row, col) = (index / sb_cols * per_sb, index % sb_cols * per_sb);
-            let (mut sum, mut count) = (0i64, 0i64);
-            for r in row..(row + per_sb).min(rows) {
-                for c in col..(col + per_sb).min(cols) {
-                    sum += i64::from(log2_beta.get(r * cols + c).copied().unwrap_or(0));
-                    count += 1;
-                }
-            }
-            let mean = if count == 0 { 0 } else { sum / count };
-            let lambda = (-mean * i64::from(strength) / 100) as i32;
+            let (sum, count) = (row..(row + per_sb).min(rows))
+                .flat_map(|r| (col..(col + per_sb).min(cols)).map(move |c| r * cols + c))
+                .filter_map(|i| costs.get(i))
+                .fold((0, 0), |(sum, count), &(intra, received)| {
+                    (sum + log2_importance(u64::from(intra), received), count + 1)
+                });
+            let log2_beta = if count == 0 { 0 } else { sum / count - frame };
+            let lambda = (-log2_beta * i64::from(strength) / 100) as i32;
             let lambda = lambda.clamp(-max_log2, max_log2);
-            let per_octave = QINDEX_PER_IMPORTANCE_OCTAVE as i32;
-            let offset = (lambda * per_octave + 128).div_euclid(256);
+            let offset = (lambda * QINDEX_PER_IMPORTANCE_OCTAVE as i32 + 128).div_euclid(256);
             (offset as i16, lambda as i16)
         })
         .collect()
@@ -337,32 +328,28 @@ mod tests {
         analyze(&mut lookahead, &plan, None, None)
     }
 
-    /// A block that later frames predict from is more important than the
-    /// frame, one that nothing predicts from less, and the superblock offsets
-    /// and lambdas follow the mean, scaled and bounded.
+    /// A superblock whose blocks later frames predict from gets a lower
+    /// qindex and lambda, one that nothing predicts from higher, by the mean
+    /// block importance over the frame's, scaled and bounded.
     #[test]
     fn superblocks_follow_the_importance_of_their_blocks() {
-        let beta = block_log2_beta(
-            &[1000, 1000, 1000, 1000, 40, 1000],
-            &[7000, 0, 0, 1000, 0, 0],
-        );
-        assert!(beta[0] > 0 && beta[3] < 0 && beta[3] > beta[1], "{beta:?}");
-        assert_eq!((beta[1], beta[2], beta[5]), (beta[2], beta[5], beta[4]));
+        let costs = [(1000, 7000), (1000, 0), (1000, 0), (1000, 1000), (128, 0), (1000, 0)];
         let grid = (3, 2, 16);
-        let quant = superblock_quant(&beta, grid, (2, 1, 32), 100);
+        let quant = superblock_quant(&costs, grid, (2, 1, 32), 100);
         let (left, right) = (quant[0], quant[1]);
-        assert!(
-            left.0 < right.0 && left.1 < right.1 && right.0 > 0,
-            "{quant:?}"
-        );
-        let mean = [0, 1, 3, 4].map(|i| i32::from(beta[i])).iter().sum::<i32>() / 4;
-        assert_eq!(i32::from(left.1), -mean);
-        assert_eq!(i32::from(left.0), (-mean * 12 + 128).div_euclid(256));
-        let half = superblock_quant(&beta, grid, (2, 1, 32), 50);
-        assert_eq!(i32::from(half[0].1), -mean / 2);
-        let strong = superblock_quant(&[-4096, 4096], (2, 1, 16), (2, 1, 16), 200);
-        assert_eq!(strong, [(32, 682), (-32, -682)]);
-        assert_eq!(superblock_quant(&beta, grid, (2, 1, 32), 0), [(0, 0); 2]);
+        assert!(left.0 < right.0 && left.1 < right.1 && right.0 > 0, "{quant:?}");
+        let log2 = |i: u64, r: u64| i64::from(log2_q8((((i + r) << 8) / i) as u32));
+        let frame = log2(5128, 8000);
+        let blocks = log2(1000, 7000) + log2(1000, 0) + log2(1000, 1000) + log2(128, 0);
+        let mean = blocks / 4 - frame;
+        assert_eq!(i64::from(left.1), -mean);
+        assert_eq!(i64::from(left.0), (-mean * 12 + 128).div_euclid(256));
+        assert_eq!(i64::from(right.1), frame - log2(1, 0));
+        let half = superblock_quant(&costs, grid, (2, 1, 32), 50);
+        assert_eq!(i64::from(half[0].1), -mean / 2);
+        let strong = superblock_quant(&[(128, 1 << 20), (128, 0)], (2, 1, 16), (2, 1, 16), 200);
+        assert_eq!(strong[1], (32, 682));
+        assert_eq!(superblock_quant(&costs, grid, (2, 1, 32), 0), [(0, 0); 2]);
     }
 
     #[test]

@@ -291,8 +291,8 @@ impl Encoder {
                 strength: self.tpl_delta_q,
                 frames: model
                     .iter()
-                    .filter(|frame| !frame.block_log2_beta.is_empty())
-                    .map(|frame| (frame.display_index, frame.block_log2_beta.clone()))
+                    .filter(|frame| !frame.block_costs.is_empty())
+                    .map(|frame| (frame.display_index, frame.block_costs.clone()))
                     .collect(),
             });
         }
