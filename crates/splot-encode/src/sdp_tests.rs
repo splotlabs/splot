@@ -17,9 +17,14 @@ const SDP_CASES: [SdpCase; 3] = [
     (72, 40, BitDepth::Eight, 6, PixelFormat::Yuv444, (0, 1)),
 ];
 
-/// Codes key frame, inter frame, key frame of panning content with SDP on
-/// `threads` threads; returns the units and the encoder recon.
-fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
+/// The frame filter tools some coded frame turned on: deblocking, CDEF with
+/// more than one strength, CCSO, GDF, luma and chroma LR, and `delta_q`.
+type Tools = [bool; 7];
+
+/// Codes key frame, inter frame, key frame of panning content with SDP and
+/// asymmetric superblock qindex offsets on `threads` threads; returns the
+/// units, the encoder recon and the frame filter tools coded.
+fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Tools) {
     let (width, height, bit_depth, preset, chroma, (cols_log2, rows_log2)) = case;
     let mut config = config(width, height, bit_depth, preset, 110);
     config.chroma = chroma;
@@ -35,31 +40,60 @@ fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
     };
     let mut coder = IntraFrameCoder::with_preset(&config, &preset).unwrap();
     assert!(coder.sequence.partition.unwrap().enable_sdp);
-    let coded: Vec<CodedFrame> = (0..3)
-        .map(|index| {
-            let plan = crate::gop::plan(u64::from(index), config.keyint);
-            coder
-                .encode_frame(&panning_frame(&config, index), &plan, 110)
-                .unwrap()
-        })
-        .collect();
-    let expected = coded
-        .iter()
-        .flat_map(|frame| recon_bytes(frame, bit_depth))
-        .collect();
-    (
-        coded.into_iter().map(|f| f.temporal_unit).collect(),
-        expected,
-    )
+    let sb = if preset.max_block_log2 >= 7 { 128 } else { 64 };
+    let superblocks = (width.div_ceil(sb) * height.div_ceil(sb)) as usize;
+    let (mut units, mut recon, mut tools) = (Vec::new(), Vec::new(), [false; 7]);
+    for index in 0..3 {
+        let plan = crate::gop::plan(u64::from(index), config.keyint);
+        let offsets: Vec<i16> = (0..superblocks)
+            .map(|sb| [-23, 0, 17, -6, 29][(sb * 3 + index as usize) % 5])
+            .collect();
+        let mut coded = coder
+            .code_frame(&panning_frame(&config, index), &plan, 110, &offsets)
+            .unwrap();
+        let core = &coded.reference.as_ref().unwrap().0;
+        let lr = |plane: usize| {
+            core.lr_params.as_ref().is_some_and(|lr| {
+                lr.planes.get(plane).is_some_and(|p| {
+                    p.restoration_type != splot_core::headers::frame::FrameRestorationType::None
+                })
+            })
+        };
+        let coded_tools = [
+            core.deblocking_filter_params
+                .as_ref()
+                .is_some_and(|df| df.apply_deblocking_filter.iter().any(|&on| on)),
+            core.cdef_params
+                .as_ref()
+                .is_some_and(|cdef| cdef.cdef_strengths.unwrap_or(0) > 1),
+            core.ccso_params
+                .as_ref()
+                .is_some_and(|ccso| ccso.ccso_frame_flag == Some(true)),
+            core.gdf_params
+                .as_ref()
+                .is_some_and(|gdf| gdf.gdf_frame_enable),
+            lr(0),
+            lr(1) || lr(2),
+            core.delta_q_params.is_some_and(|dq| dq.delta_q_present),
+        ];
+        for (tool, on) in tools.iter_mut().zip(coded_tools) {
+            *tool |= on;
+        }
+        coder.commit(&mut coded).unwrap();
+        recon.extend(recon_bytes(&coded, bit_depth));
+        units.push(coded.temporal_unit);
+    }
+    (units, recon, tools)
 }
 
 /// SDP key frames and the inter frames between them decode to the encoder
-/// recon in every chroma format and with tiles, and 1, 2 and 8 threads
-/// write the same bytes.
+/// recon in every chroma format, with tiles and with every frame filter tool
+/// and `delta_q`, and 1, 2 and 8 threads write the same bytes.
 #[test]
 fn sdp_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     for case in SDP_CASES {
-        let (one, expected) = sdp_stream(case, 1);
+        let (one, expected, tools) = sdp_stream(case, 1);
+        assert_eq!(tools, [true; 7], "{case:?}: some filter tool is never coded");
         assert_same_samples(&decode(&one.concat()), &expected, &format!("{case:?}"));
         for threads in [2, 8] {
             assert!(sdp_stream(case, threads).0 == one, "{case:?} {threads} threads");
@@ -159,7 +193,7 @@ fn avm_decodes_sdp_streams_like_splot() {
         return;
     };
     for case in SDP_CASES {
-        let (units, expected) = sdp_stream(case, 2);
+        let (units, expected, _) = sdp_stream(case, 2);
         let avm = avm_decode(&avmdec, &units, (case.0, case.1), case.2, "sdp");
         assert!(avm == expected, "{case:?}: AVM output differs");
     }
