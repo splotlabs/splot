@@ -710,6 +710,8 @@ impl TrialCoder<'_, '_> {
                 mvs,
                 jmvd_scale_mode: 0,
                 filter: InterpolationFilter::EightTap,
+                optflow: false,
+                refinemv: false,
             };
             let zero = [MotionVector::default(); 2];
             let mut trials: Vec<CompoundModes> = (0..drls * drls)

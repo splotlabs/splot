@@ -699,6 +699,11 @@ pub(crate) struct TemporalMotionBlock {
 }
 
 impl TemporalMotionBlock {
+    /// The `(MiRow, MiCol)` of the record's top-left unit.
+    pub(crate) const fn origin(&self) -> (usize, usize) {
+        (self.mi_row, self.mi_col)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         mi_row: usize,

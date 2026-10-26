@@ -364,7 +364,8 @@ pub(crate) fn plan(frame_index: u64, keyint: NonZeroU32) -> GopFrame {
 /// transform parameters, whether inter frames code compound and skip-mode
 /// blocks, whether their motion vectors are eighth-pel, whether they take
 /// temporal motion vectors, whether they code switchable interpolation
-/// filters, their TIP weight, and the `tiles`.
+/// filters, their TIP weight, whether they force integer vectors, their
+/// `opfl_refine_type`, and the `tiles`.
 pub(crate) fn frame_tools(preset: &PresetParams, tiles: UniformTiles, qindex: u32) -> FrameTools {
     (
         crate::tx_choice::key_frame_tx_params(preset),
@@ -377,22 +378,27 @@ pub(crate) fn frame_tools(preset: &PresetParams, tiles: UniformTiles, qindex: u3
             preset.interp_filter_search > 0,
             (preset.tip > 0 && preset.mv_prediction).then_some(TIP_EQUAL_WEIGHT),
             preset.integer_mv,
+            if preset.opfl { REFINE_SWITCHABLE } else { 0 },
         ),
         tiles,
     )
 }
+
+/// `opfl_refine_type` `REFINE_SWITCHABLE` (§ 3): compound blocks code
+/// `use_optflow`.
+const REFINE_SWITCHABLE: u8 = 1;
 
 /// `tip_global_wtd_index` of `Tip_Weighting_Factor` 8 (`CWP_EQUAL`), the
 /// plain average of the two TIP references (§ 7.13.3.1).
 const TIP_EQUAL_WEIGHT: u8 = 0;
 
 /// `(tx, compound, (high_precision_mv, use_ref_frame_mvs,
-/// switchable_interp_filter, tip_weight, force_integer_mv), tiles)` of
-/// [`frame_tools`].
+/// switchable_interp_filter, tip_weight, force_integer_mv,
+/// opfl_refine_type), tiles)` of [`frame_tools`].
 pub(crate) type FrameTools = (
     KeyFrameTxParams,
     bool,
-    (bool, bool, bool, Option<u8>, bool),
+    (bool, bool, bool, Option<u8>, bool, u8),
     UniformTiles,
 );
 
@@ -545,6 +551,7 @@ impl GopFrame {
                 switchable_interp_filter,
                 tip_weight,
                 force_integer_mv,
+                opfl_refine_type,
             ),
             tiles,
         ): FrameTools,
@@ -568,6 +575,7 @@ impl GopFrame {
             primary_slot: self.primary_slot,
             tip_weight,
             force_integer_mv,
+            opfl_refine_type,
         }
     }
 }

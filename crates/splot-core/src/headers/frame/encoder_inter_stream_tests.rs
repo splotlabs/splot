@@ -141,6 +141,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         high_precision_mv,
                         switchable_interp_filter,
                         tip_weight: None,
+                        opfl_refine_type: 0,
                         force_integer_mv: sb == SuperblockSize::Block128x128 && !high_precision_mv,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
@@ -224,6 +225,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         high_precision_mv: false,
         switchable_interp_filter: false,
         tip_weight: None,
+        opfl_refine_type: 0,
         force_integer_mv: false,
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
@@ -320,6 +322,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             high_precision_mv: false,
             switchable_interp_filter: false,
             tip_weight: None,
+            opfl_refine_type: 0,
             force_integer_mv: false,
         },
     )
@@ -399,6 +402,7 @@ fn rejects_out_of_range_inter_inputs() {
         high_precision_mv: false,
         switchable_interp_filter: false,
         tip_weight: None,
+        opfl_refine_type: 0,
         force_integer_mv: false,
     };
     assert!(matches!(
@@ -466,6 +470,7 @@ fn tip_output_header_parses_complete_and_needs_tip_output() {
     assert_eq!(parsed.obus[0].header.obu_type, ObuType::RegularTip);
     let no_weight = InterFrameParams {
         tip_weight: None,
+        opfl_refine_type: 0,
         ..params
     };
     assert!(build_tip_output_frame_header(&view, &slots.view(), &no_weight, 2).is_err());
@@ -474,4 +479,56 @@ fn tip_output_header_parses_complete_and_needs_tip_output() {
     let seq = build_encoder_sequence_header(&stream).unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();
     assert!(build_tip_output_frame_header(&view, &slots.view(), &params, 2).is_err());
+}
+
+#[test]
+fn opfl_refine_type_parses_with_and_without_tip() {
+    for tip in [false, true] {
+        let stream = EncoderStreamParams {
+            width: 64,
+            height: 64,
+            bit_depth: BitDepthIdc::Eight,
+            chroma: ChromaFormatIdc::Yuv420,
+            sb_size: SuperblockSize::Block64x64,
+            tools: EncoderToolFlags {
+                ref_frame_mvs: true,
+                tip,
+                opfl_refine: true,
+                refinemv: true,
+                ..EncoderToolFlags::default()
+            },
+        };
+        let seq = build_encoder_sequence_header(&stream).unwrap();
+        let inter = seq.inter.as_ref().unwrap();
+        assert!(
+            inter.enable_refinemv && inter.enable_opfl_refine == 3 && !inter.enable_tip_refinemv
+        );
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let mut slots = Slots::after_key(64, 64, 4);
+        slots.valid[1] = true;
+        slots.hints[1] = 8;
+        slots.counters[1] = 1;
+        for refine in 0..3 {
+            let params = InterFrameParams {
+                base_q_idx: 90,
+                order_hint: 6,
+                show_frame: true,
+                use_ref_frame_mvs: true,
+                tip_weight: tip.then_some(0),
+                opfl_refine_type: refine,
+                ..InterFrameParams::default()
+            };
+            let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
+            let inter = header.core.inter.as_ref().unwrap();
+            assert_eq!(inter.opfl_refine_type, Some(u32::from(refine)), "tip {tip}");
+        }
+        let bad = InterFrameParams {
+            base_q_idx: 90,
+            order_hint: 6,
+            show_frame: true,
+            opfl_refine_type: 3,
+            ..InterFrameParams::default()
+        };
+        assert!(build_inter_frame_header(&view, &slots.view(), &bad).is_err());
+    }
 }
