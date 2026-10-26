@@ -24,8 +24,9 @@ fn offsets(config: &Config, seed: usize) -> Vec<(i16, i16)> {
 
 /// Two tiles of a texture that pans every second frame, so inter frames code
 /// superblock-sized skipped leaves: a key frame and four inter frames on
-/// `threads` threads with superblock offsets. Returns the units, the encoder
-/// recon and whether each frame codes `delta_q_present`.
+/// `threads` threads with superblock offsets, every loop filter coded in
+/// some frame. Returns the units, the encoder recon and whether each frame
+/// codes `delta_q_present`.
 fn delta_q_stream(mut config: Config, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Vec<bool>) {
     config.tiles = TileLayout {
         cols_log2: 1,
@@ -37,6 +38,7 @@ fn delta_q_stream(mut config: Config, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>,
     };
     let mut coder = IntraFrameCoder::new(&config).unwrap();
     let (mut units, mut recon, mut present) = (Vec::new(), Vec::new(), Vec::new());
+    let mut filters = [false; 5];
     for index in 0..5 {
         let plan = crate::gop::plan(u64::from(index), config.keyint);
         let source = panning_frame(&config, index / 2);
@@ -45,10 +47,22 @@ fn delta_q_stream(mut config: Config, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>,
             .unwrap();
         let core = &coded.reference.as_ref().unwrap().0;
         present.push(core.delta_q_params.is_some_and(|dq| dq.delta_q_present));
+        let used = [
+            core.deblocking_filter_params
+                .is_some_and(|df| df.apply_deblocking_filter.contains(&true)),
+            core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable),
+            core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr),
+            core.ccso_params
+                .as_ref()
+                .is_some_and(|ccso| ccso.ccso_frame_flag == Some(true)),
+            core.gdf_params.is_some_and(|gdf| gdf.gdf_frame_enable),
+        ];
+        filters = core::array::from_fn(|i| filters[i] || used[i]);
         coder.commit(&mut coded).unwrap();
         recon.extend(recon_bytes(&coded, config.bit_depth));
         units.push(coded.temporal_unit);
     }
+    assert_eq!(filters, [true; 5], "deblock, CDEF, LR, CCSO, GDF");
     (units, recon, present)
 }
 
@@ -58,8 +72,8 @@ fn delta_q_stream(mut config: Config, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>,
 fn superblock_offsets_decode_to_the_encoder_recon_on_any_thread_count() {
     for (index, (bit_depth, preset, qp)) in [
         (BitDepth::Eight, 9, 200),
-        (BitDepth::Ten, 6, 120),
-        (BitDepth::Eight, 10, 60),
+        (BitDepth::Ten, 6, 240),
+        (BitDepth::Eight, 10, 200),
     ]
     .into_iter()
     .enumerate()
@@ -152,7 +166,7 @@ fn avm_decodes_delta_q_frames_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    for (bit_depth, preset, qp) in [(BitDepth::Eight, 9, 200), (BitDepth::Ten, 6, 120)] {
+    for (bit_depth, preset, qp) in [(BitDepth::Eight, 9, 200), (BitDepth::Ten, 6, 240)] {
         let config = config(200, 136, bit_depth, preset, qp);
         let (units, recon, _) = delta_q_stream(config.clone(), 2);
         let avm = avm_decode(&avmdec, &units, (200, 136), bit_depth, "delta-q");
