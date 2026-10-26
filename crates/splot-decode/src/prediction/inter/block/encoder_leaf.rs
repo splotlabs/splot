@@ -305,6 +305,14 @@ impl EncoderInterTile {
         })
     }
 
+    /// Sets `tip_global_wtd_index` and returns the previous value.
+    pub(crate) fn set_tip_weight(&mut self, weight: Option<u8>) -> Option<u8> {
+        self.core
+            .inter
+            .as_mut()
+            .and_then(|inter| core::mem::replace(&mut inter.tip_global_wtd_index, weight))
+    }
+
     /// The TIP reference pair of a frame whose blocks may predict from TIP.
     pub(crate) const fn tip_ref_pair(&self) -> Option<(i8, i8)> {
         self.tip_ref_pair

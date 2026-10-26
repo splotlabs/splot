@@ -180,9 +180,11 @@ pub struct PresetParams {
     /// (2026-10-25): every such block with `eob > 3` then pays a
     /// `sec_tx_type` symbol, and p6 measured park_joy -0.06%, paris +0.34%.
     pub inter_ist: bool,
-    /// TIP (`enable_tip`), `0..=1`: `1` inter frames with reference MVs and
-    /// two references code `TIP_FRAME_AS_REF` with equal weights, and inter
-    /// leaves also try the TIP `NEARMV` candidates.
+    /// TIP (`enable_tip`), `0..=2`: `1` inter frames with reference MVs and
+    /// a TIP reference pair code `TIP_FRAME_AS_REF` with equal weights, and
+    /// inter leaves also try the TIP `NEARMV` candidates; `2` also picks the
+    /// frame's `tip_global_wtd_index` by the luma SSE of the TIP prediction
+    /// over every other 64x64 block.
     pub tip: u8,
 }
 
@@ -283,7 +285,7 @@ impl PresetParams {
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
-        check("tip", self.tip, 0, 1, "")
+        check("tip", self.tip, 0, 2, "")
     }
 }
 
@@ -699,7 +701,7 @@ mod tests {
             (&[("mini_gop_size", "9")], "mini_gop_size"),
             (&[("intra_modes", "0")], "intra_modes"),
             (&[("gdf_candidates", "17")], "gdf_candidates"),
-            (&[("tip", "2")], "tip"),
+            (&[("tip", "3")], "tip"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {
