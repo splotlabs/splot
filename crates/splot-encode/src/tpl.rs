@@ -17,7 +17,11 @@
 
 use std::collections::BTreeMap;
 
+use splot_decode::encoder_syntax::dct_recon_params;
+use splot_recon::{BitDepth, PlaneId};
+
 use crate::gop::GopFrame;
+use crate::kernels::kernels;
 use crate::lookahead::{BLOCK, Lookahead};
 use crate::rate_control::FrameType;
 use crate::rd::log2_q8;
@@ -31,9 +35,12 @@ pub(crate) const LAYER_QINDEX_OFFSET: i32 = 3;
 const MIN_BLOCK_COMPLEXITY: u32 = 128;
 /// qindex change per octave of importance: half of the 24 per step octave.
 const QINDEX_PER_IMPORTANCE_OCTAVE: u64 = 12;
+/// The share of the uniform quantization noise [`recon_noise`] adds to an
+/// inter cost, in percent.
+const RECON_NOISE_PERCENT: u64 = 50;
 
 /// The model's view of one planned frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TplFrame {
     /// Zero-based input (display) index.
     pub(crate) display_index: u64,
@@ -44,6 +51,43 @@ pub(crate) struct TplFrame {
     pub(crate) min_complexity: u64,
     /// The suggested change to the base qindex.
     pub(crate) qindex_offset: i16,
+    /// `log2` of each block's importance over the frame's, Q8, in raster
+    /// order; empty for a frame outside the [`BlockModel`].
+    pub(crate) block_log2_beta: Vec<i16>,
+}
+
+/// The block-level pass of the model: the first `frames` frames of the plan,
+/// with inter costs raised by `noise` for a coded reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BlockModel {
+    pub(crate) frames: usize,
+    pub(crate) noise: u32,
+}
+
+/// The block importances the encoder hands its frame coder.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct BlockImportance {
+    /// Blocks per row and per column, and the luma side of a block.
+    pub(crate) grid: (usize, usize, usize),
+    /// The `tpl_delta_q` strength in percent.
+    pub(crate) strength: u8,
+    /// [`TplFrame::block_log2_beta`] by display index.
+    pub(crate) frames: BTreeMap<u64, Vec<i16>>,
+}
+
+/// The lookahead SATD a block of `block_luma` luma samples gains from the
+/// quantization noise of a reference coded at `qindex`: uniform noise of the
+/// § 7.14.2 luma AC step `q` has deviation `q / sqrt(12)`, averaging down to
+/// the lookahead scale divides it by `block_luma / 8`, and an 8x8 Hadamard
+/// SATD of white noise is about 410 deviations. Scaled by
+/// [`RECON_NOISE_PERCENT`].
+pub(crate) fn recon_noise(qindex: u16, bit_depth: BitDepth, block_luma: usize) -> u32 {
+    let Ok((params, _)) = dct_recon_params(u32::from(qindex), PlaneId::Y, 3, 3, bit_depth) else {
+        return 0;
+    };
+    let step_q6 = u64::from(params.ac_quant) >> (bit_depth.bits() - 8);
+    let noise = step_q6 * 410 * 8 * RECON_NOISE_PERCENT / (64 * 346 * block_luma as u64);
+    u32::try_from(noise).unwrap_or(u32::MAX)
 }
 
 /// A reference display index and the vector into it.
@@ -61,11 +105,13 @@ struct Node {
 
 /// Runs the model over `plan`, the coded frames of the window in coding
 /// order; `coded_before` is the last frame coded before the window. Returns
-/// one entry per frame of `plan`, in the same order.
+/// one entry per frame of `plan`, in the same order, with block importances
+/// for the frames of `blocks_model`.
 pub(crate) fn analyze(
     lookahead: &mut Lookahead,
     plan: &[GopFrame],
     coded_before: Option<u64>,
+    blocks_model: Option<BlockModel>,
 ) -> Vec<TplFrame> {
     let (cols, rows) = lookahead.grid();
     let blocks = cols * rows;
@@ -106,30 +152,11 @@ pub(crate) fn analyze(
         });
     }
 
-    let mut received: BTreeMap<u64, Vec<u64>> = plan
-        .iter()
-        .map(|frame| (frame.display_index, vec![0; blocks]))
-        .collect();
-    for node in nodes.iter().rev() {
-        let own = received
-            .get(&node.frame.display_index)
-            .cloned()
-            .unwrap_or_default();
-        for (index, sources) in node.source.iter().enumerate() {
-            let count = sources.iter().flatten().count() as u64;
-            for &(reference, mv) in sources.iter().flatten() {
-                let Some(target) = received.get_mut(&reference) else {
-                    continue;
-                };
-                let intra = u64::from(node.intra[index]);
-                let kept = intra - u64::from(node.best[index]);
-                let amount = (intra + own.get(index).copied().unwrap_or(0)) * kept / intra;
-                let (col, row) = ((index % cols) as i32, (index / cols) as i32);
-                spread(target, (cols, rows), (col, row), mv, amount / count);
-            }
-        }
-    }
-
+    let received = propagate(&nodes, (cols, rows), 0);
+    let block_received = blocks_model.map(|model| {
+        let frames = model.frames.min(nodes.len());
+        propagate(&nodes[..frames], (cols, rows), model.noise)
+    });
     nodes
         .iter()
         .map(|node| {
@@ -158,7 +185,100 @@ pub(crate) fn analyze(
                 }),
                 min_complexity: blocks as u64 * u64::from(MIN_BLOCK_COMPLEXITY),
                 qindex_offset: offset as i16,
+                block_log2_beta: block_received
+                    .as_ref()
+                    .and_then(|received| received.get(&node.frame.display_index))
+                    .map_or_else(Vec::new, |received| block_log2_beta(&node.intra, received)),
             }
+        })
+        .collect()
+}
+
+/// The amount each block of `nodes` receives from the later nodes that
+/// predict from it, walking them backwards, with `noise` added to every
+/// inter cost.
+fn propagate(
+    nodes: &[Node],
+    (cols, rows): (usize, usize),
+    noise: u32,
+) -> BTreeMap<u64, Vec<u64>> {
+    let blocks = cols * rows;
+    let mut received: BTreeMap<u64, Vec<u64>> = nodes
+        .iter()
+        .map(|node| (node.frame.display_index, vec![0; blocks]))
+        .collect();
+    let mut amounts = vec![0; blocks];
+    for node in nodes.iter().rev() {
+        let own = received
+            .get(&node.frame.display_index)
+            .cloned()
+            .unwrap_or_else(|| vec![0; blocks]);
+        kernels().tpl_propagate(&node.intra, &node.best, &own, noise, &mut amounts);
+        for (index, sources) in node.source.iter().enumerate() {
+            let count = sources.iter().flatten().count() as u64;
+            for &(reference, mv) in sources.iter().flatten() {
+                let Some(target) = received.get_mut(&reference) else {
+                    continue;
+                };
+                let (col, row) = ((index % cols) as i32, (index / cols) as i32);
+                spread(target, (cols, rows), (col, row), mv, amounts[index] / count);
+            }
+        }
+    }
+    received
+}
+
+/// `log2` of `(intra + received) / intra` of each block over the same ratio
+/// of the frame's sums, Q8, with each intra cost at least
+/// [`MIN_BLOCK_COMPLEXITY`].
+fn block_log2_beta(intra: &[u32], received: &[u64]) -> Vec<i16> {
+    let floored = |cost: u32| u64::from(cost.max(MIN_BLOCK_COMPLEXITY));
+    let log2_ratio = |num: u64, den: u64| {
+        i32::try_from(log2_q8(u32::try_from(num.saturating_mul(256) / den).unwrap_or(u32::MAX)))
+            .unwrap_or(i32::MAX)
+    };
+    let intra_sum: u64 = intra.iter().map(|&cost| floored(cost)).sum();
+    let received_sum: u64 = received.iter().sum();
+    let frame = log2_ratio(intra_sum + received_sum, intra_sum.max(1));
+    intra
+        .iter()
+        .zip(received)
+        .map(|(&cost, &received)| {
+            let cost = floored(cost);
+            (log2_ratio(cost + received, cost) - frame).clamp(-32_768, 32_767) as i16
+        })
+        .collect()
+}
+
+/// The `(qindex offset, lambda log2 Q8)` of each superblock of a
+/// `(sb_cols, sb_rows)` grid of `sb_luma` samples: from the mean
+/// `log2_beta` over the `(cols, rows)` grid of `block_luma` blocks it covers,
+/// scaled by `strength` percent, the lambda moves by `-log2_beta` and the
+/// qindex by 12 per octave, both bounded by [`MAX_TPL_QINDEX_DECREASE`].
+pub(crate) fn superblock_quant(
+    log2_beta: &[i16],
+    (cols, rows, block_luma): (usize, usize, usize),
+    (sb_cols, sb_rows, sb_luma): (usize, usize, usize),
+    strength: u8,
+) -> Vec<(i16, i16)> {
+    let per_sb = (sb_luma / block_luma).max(1);
+    let max_log2 = MAX_TPL_QINDEX_DECREASE * 256 / QINDEX_PER_IMPORTANCE_OCTAVE as i32;
+    (0..sb_rows * sb_cols)
+        .map(|index| {
+            let (row, col) = (index / sb_cols * per_sb, index % sb_cols * per_sb);
+            let (mut sum, mut count) = (0i64, 0i64);
+            for r in row..(row + per_sb).min(rows) {
+                for c in col..(col + per_sb).min(cols) {
+                    sum += i64::from(log2_beta.get(r * cols + c).copied().unwrap_or(0));
+                    count += 1;
+                }
+            }
+            let mean = if count == 0 { 0 } else { sum / count };
+            let lambda = (-mean * i64::from(strength) / 100) as i32;
+            let lambda = lambda.clamp(-max_log2, max_log2);
+            let per_octave = QINDEX_PER_IMPORTANCE_OCTAVE as i32;
+            let offset = (lambda * per_octave + 128).div_euclid(256);
+            (offset as i16, lambda as i16)
         })
         .collect()
 }
@@ -216,7 +336,7 @@ mod tests {
                 GopStep::ShowExisting { .. } => None,
             })
             .collect();
-        analyze(&mut lookahead, &plan, None)
+        analyze(&mut lookahead, &plan, None, None)
     }
 
     #[test]

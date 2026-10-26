@@ -69,6 +69,9 @@ pub(crate) trait FrameCoder {
     fn start_sequence(&mut self, _first: &SourceFrame) -> Result<()> {
         Ok(())
     }
+    /// Receives the block importances of the next frames to code, which
+    /// replace the previous ones.
+    fn set_block_importance(&mut self, _importance: tpl::BlockImportance) {}
 }
 
 /// Callback that receives the statistics of every coded frame.
@@ -94,6 +97,10 @@ pub struct Encoder {
     lookahead_frames: usize,
     /// The planned frames of the current lookahead window.
     window: Vec<FramePlanInfo>,
+    /// The preset's `tpl_delta_q` strength in percent.
+    tpl_delta_q: u8,
+    /// The last frame qindex, which estimates the next ones.
+    last_qindex: Option<u16>,
     ready: VecDeque<Packet>,
     state: State,
 }
@@ -160,6 +167,8 @@ impl Encoder {
             lookahead: Lookahead::new(&config),
             lookahead_frames: usize::from(params.lookahead_frames),
             window: Vec::new(),
+            tpl_delta_q: params.tpl_delta_q,
+            last_qindex: None,
             config,
             coder,
             ready: VecDeque::new(),
@@ -251,6 +260,7 @@ impl Encoder {
         let mut planner = self.planner.clone();
         let mut remaining = self.pending.len().min(self.lookahead_frames);
         let mut plan = Vec::new();
+        let mut first_step = None;
         while let Some(len) = planner.next_len(remaining, true) {
             plan.extend(
                 planner
@@ -262,9 +272,30 @@ impl Encoder {
                     }),
             );
             remaining -= len;
+            first_step.get_or_insert(plan.len());
         }
         let coded_before = self.planner.next_display().checked_sub(1);
-        let model = tpl::analyze(&mut self.lookahead, &plan, coded_before);
+        let blocks = (self.tpl_delta_q > 0).then(|| tpl::BlockModel {
+            frames: first_step.unwrap_or(0) + 1,
+            noise: tpl::recon_noise(
+                self.qindex_estimate(),
+                self.config.bit_depth,
+                self.lookahead.block_luma(),
+            ),
+        });
+        let model = tpl::analyze(&mut self.lookahead, &plan, coded_before, blocks);
+        if blocks.is_some() {
+            let (cols, rows) = self.lookahead.grid();
+            self.coder.set_block_importance(tpl::BlockImportance {
+                grid: (cols, rows, self.lookahead.block_luma()),
+                strength: self.tpl_delta_q,
+                frames: model
+                    .iter()
+                    .filter(|frame| !frame.block_log2_beta.is_empty())
+                    .map(|frame| (frame.display_index, frame.block_log2_beta.clone()))
+                    .collect(),
+            });
+        }
         self.window = plan
             .iter()
             .zip(model)
@@ -355,10 +386,23 @@ impl Encoder {
             .ok_or(Error::Unsupported {
                 what: "a frame outside its lookahead window",
             })?;
-        Ok(self
+        let qindex = self
             .rate_control
             .frame_qp(&plan)
-            .clamp(1, max_qindex(self.config.bit_depth)))
+            .clamp(1, max_qindex(self.config.bit_depth));
+        self.last_qindex = Some(qindex);
+        Ok(qindex)
+    }
+
+    /// The last frame qindex, or before the first frame the base qindex of
+    /// a constant-qp or constant-quality configuration (a mid qindex else).
+    fn qindex_estimate(&self) -> u16 {
+        self.last_qindex
+            .unwrap_or(match self.config.rate_control {
+                RateControlMode::ConstantQp { qp } => qp,
+                RateControlMode::Crf { crf } => Crf { crf }.base_qindex(self.config.bit_depth),
+                _ => max_qindex(self.config.bit_depth) / 2,
+            })
     }
 
     /// Commits `coded`, the frame `frame` coded as `gop_frame` at `qp`, and
