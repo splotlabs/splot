@@ -1,10 +1,238 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Intra block copy of the encoder facade: the block vectors a leaf may
-//! code (§ 6.17.3.3 `is_mv_valid`).
+//! Intra block copy of the encoder facade (§ 5.20.5.4): the block vectors
+//! a leaf may code (§ 6.17.3.3 `is_mv_valid`), their syntax, the copy
+//! prediction and the publication, through the decoder's intra-frame state.
 
 use core::ops::Range;
+
+use splot_core::symbol_encoder::SymbolSink;
+
+use super::super::cdf::TileCdfSelector;
+use super::{
+    EncoderSyntaxError, IntraTileSyntax, LeafBlock, MotionVector, Result, TransformBlock,
+    TxPartition, rule,
+};
+use crate::prediction::inter::read_mv::{MV_PRECISION_ONE_PEL, MvReadConfig};
+use crate::prediction::inter::{MvdCoding, non_intra_leaf_mode};
+
+/// An intra block copy of a leaf (§ 5.20.5.4).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IntrabcModes {
+    /// The whole-sample block vector in 1/8 samples.
+    pub bv: MotionVector,
+    /// `RefMvIdx`, below the length of [`IntraTileSyntax::intrabc_ref_bvs`].
+    pub drl: usize,
+}
+
+impl IntraTileSyntax {
+    /// Whether `leaf` codes `use_intrabc`: an intra frame with
+    /// `allow_intrabc` and a leaf of at most 64x64 other than 64x64.
+    #[must_use]
+    pub fn intrabc_allowed(&self, leaf: &LeafBlock) -> bool {
+        self.inter.as_ref().is_some_and(|inter| {
+            inter.tile.is_intra_frame()
+                && matches!(inter.tile.intrabc_contexts(&leaf.frontier), Ok(Some(_)))
+        })
+    }
+
+    /// The reference block vector of each `RefMvIdx` of `leaf` (§ 7.12).
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] when `leaf` codes no `use_intrabc`.
+    pub fn intrabc_ref_bvs(&mut self, leaf: &LeafBlock) -> Result<Vec<MotionVector>> {
+        if !self.intrabc_allowed(leaf) {
+            return Err(NO_INTRABC);
+        }
+        let mvs = self
+            .inter_state()?
+            .tile
+            .intrabc_ref_mvs(&leaf.frontier)
+            .map_err(rule("IntraBC vector stack"))?;
+        Ok(mvs.into_iter().map(MotionVector::from).collect())
+    }
+
+    /// Whether `leaf` may code the block vector `bv`: a whole-sample vector
+    /// of a leaf at least 8x8 that [`global_bv_valid`] accepts.
+    #[must_use]
+    pub fn intrabc_bv_valid(&self, leaf: &LeafBlock, bv: MotionVector) -> bool {
+        let Ok(size) = leaf.dimensions() else {
+            return false;
+        };
+        self.intrabc_allowed(leaf)
+            && global_bv_valid(
+                &BvFrame {
+                    mi: (leaf.row4(), leaf.col4()),
+                    size,
+                    tile: self.tile.clone(),
+                    sb_size: self.sb_size4 * 4,
+                },
+                [bv.row, bv.col],
+            )
+    }
+
+    /// Plans the IntraBC leaf `leaf` of `modes` with the luma transform split
+    /// by `partition`: predicts it by the copy and returns its transform
+    /// blocks as [`Self::plan_inter_leaf_partitioned`] does.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for a vector or partition `leaf`
+    /// cannot code.
+    pub fn plan_intrabc_leaf(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: IntrabcModes,
+        partition: TxPartition,
+    ) -> Result<Vec<TransformBlock>> {
+        let split = self.partitioned_tx_size(leaf, partition)?;
+        if !self.intrabc_bv_valid(leaf, modes.bv) {
+            return Err(EncoderSyntaxError::Unsupported("this IntraBC vector"));
+        }
+        let motion = self.inter_ref()?.tile.intrabc_motion(modes.drl);
+        self.plan_motion_leaf(leaf, (motion, Some(modes.bv.into())), (partition, split))
+    }
+
+    /// Writes `use_intrabc` of `leaf` and, for an IntraBC leaf (`skip` is
+    /// `Some`), its `skip_txfm` (§ 5.20.5.3); nothing for a leaf that codes
+    /// no `use_intrabc`.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for an IntraBC leaf where `leaf` codes
+    /// none, or for a write failure.
+    pub fn write_use_intrabc(
+        &mut self,
+        leaf: &LeafBlock,
+        skip: Option<bool>,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
+        let contexts = match &self.inter {
+            Some(inter) if inter.tile.is_intra_frame() => inter
+                .tile
+                .intrabc_contexts(&leaf.frontier)
+                .map_err(rule("IntraBC contexts"))?,
+            _ => None,
+        };
+        let Some(contexts) = contexts else {
+            return match skip {
+                Some(_) => Err(NO_INTRABC),
+                None => Ok(()),
+            };
+        };
+        let ctx = contexts.use_intrabc;
+        self.put(
+            symbols,
+            TileCdfSelector::Intrabc { ctx },
+            usize::from(skip.is_some()),
+        )?;
+        match skip {
+            Some(skip) => {
+                let ctx = contexts.skip;
+                self.put(symbols, TileCdfSelector::Skip { ctx }, usize::from(skip))
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Writes the § 5.20.5.4 IntraBC syntax of `leaf` under `modes`:
+    /// `intrabc_mode`, the `intrabc_drl_mode` bits, `intrabc_precision`
+    /// (whole samples), the vector difference and `morph_pred = 0`.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for an index or vector `leaf` cannot
+    /// code, or for a write failure.
+    pub fn write_intrabc_modes(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: IntrabcModes,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
+        let refs = self.intrabc_ref_bvs(leaf)?;
+        let reference = *refs.get(modes.drl).ok_or(NO_INTRABC)?;
+        let tile = &self.inter_ref()?.tile;
+        let contexts = tile
+            .intrabc_contexts(&leaf.frontier)
+            .map_err(rule("IntraBC contexts"))?
+            .ok_or(NO_INTRABC)?;
+        let core = tile.frame_header();
+        let force_integer_mv = core.force_integer_mv == Some(true);
+        let morph_coded = core.allow_screen_content_tools == Some(true)
+            && tile
+                .sequence_header()
+                .inter
+                .as_ref()
+                .is_some_and(|inter| inter.enable_bawp);
+        let mode = usize::from(modes.bv == reference);
+        self.put(symbols, TileCdfSelector::IntrabcMode, mode)?;
+        let max = refs.len() - 1;
+        for idx in 0..max {
+            literal(symbols, u32::from(modes.drl > idx), 1)?;
+            if modes.drl <= idx {
+                break;
+            }
+        }
+        if mode == 0 {
+            if !force_integer_mv {
+                self.put(symbols, TileCdfSelector::IntrabcPrecision, 0)?;
+            }
+            let base = lower_to_whole(reference);
+            let mvd = MotionVector {
+                row: modes.bv.row - base.row,
+                col: modes.bv.col - base.col,
+            };
+            let coding = MvdCoding {
+                precision: MV_PRECISION_ONE_PEL,
+                use_amvd: false,
+                derive_sign: false,
+                derive_threshold: 1,
+            };
+            let config = MvReadConfig::intrabc(MV_PRECISION_ONE_PEL);
+            super::mv::write_mvds_with(
+                (&mut self.cdfs, &mut self.journal),
+                (coding, config),
+                &[mvd],
+                symbols,
+            )?;
+        }
+        if morph_coded {
+            let ctx = contexts.morph_pred;
+            self.put(symbols, TileCdfSelector::MorphPred { ctx }, 0)?;
+        }
+        Ok(())
+    }
+
+    /// Publishes the coded IntraBC leaf `leaf` with `skip_txfm = skip` into
+    /// the neighbour, IntraBC, motion and `BlockDecoded` state.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] without a planned IntraBC leaf.
+    pub fn publish_intrabc_leaf(&mut self, leaf: &LeafBlock, skip: bool) -> Result<()> {
+        let mv = self.take_planned_intrabc(leaf)?;
+        let state = self.inter.as_mut().ok_or(NO_INTRABC)?;
+        if skip {
+            state
+                .tile
+                .reset_skip_contexts(&leaf.frontier, &mut self.coeff)
+                .map_err(rule("coefficient contexts"))?;
+        }
+        let tile = &mut self.inter_state()?.tile;
+        tile.publish_intrabc(&leaf.frontier, mv, skip)
+            .map_err(rule("IntraBC publication"))?;
+        self.publish_leaf_modes(leaf, non_intra_leaf_mode(&leaf.frontier).mark_intrabc())
+    }
+}
+
+/// `pred` with each component rounded to whole samples as § 7.10.2.11
+/// `lower_mv_precision` does for `MV_PRECISION_ONE_PEL`.
+fn lower_to_whole(pred: MotionVector) -> MotionVector {
+    crate::prediction::inter::read_mv::lower_mv_precision(MV_PRECISION_ONE_PEL, pred.into()).into()
+}
+
+fn literal(symbols: &mut impl SymbolSink, value: u32, bits: u32) -> Result<()> {
+    symbols.literal(value, bits).map_err(rule("symbol write"))
+}
+
+const NO_INTRABC: EncoderSyntaxError = EncoderSyntaxError::Unsupported("IntraBC in this block");
 
 /// `INTRABC_DELAY_SB64` (§ 3).
 const INTRABC_DELAY_SB64: i64 = 4;
@@ -63,7 +291,8 @@ pub(super) fn global_bv_valid(frame: &BvFrame, mv: [i32; 2]) -> bool {
     }
     let gradient = INTRABC_DELAY_SB64 + sb_h / 64;
     let wf_offset = gradient * (active_sb_row - src_sb_row);
-    if src_sb_row > active_sb_row || src_sb64_col >= active_sb64_col - INTRABC_DELAY_SB64 + wf_offset
+    if src_sb_row > active_sb_row
+        || src_sb64_col >= active_sb64_col - INTRABC_DELAY_SB64 + wf_offset
     {
         return false;
     }

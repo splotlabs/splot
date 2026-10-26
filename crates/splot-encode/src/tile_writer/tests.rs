@@ -101,6 +101,7 @@ impl Case {
                 reduced_tx_set: 2,
                 allow_tcq: false,
                 delta_q_res: None,
+                allow_intrabc: false,
             },
         }
     }
@@ -273,6 +274,7 @@ impl RandomLevels {
             modes,
             tx_partition: partition,
             inter: None,
+            intrabc: None,
         })
     }
 }
@@ -1243,8 +1245,7 @@ fn facade_rejects_unmodelled_tools() {
     };
     let (seq, core) = headers(base);
     assert!(IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).is_ok());
-    let frame_cases: [fn(&mut FrameHeaderCore); 5] = [
-        |c| c.allow_intrabc = Some(true),
+    let frame_cases: [fn(&mut FrameHeaderCore); 4] = [
         |c| c.lossless_info.as_mut().unwrap().coded_lossless = true,
         |c| c.quantization_params.as_mut().unwrap().base_q_idx = 0,
         |c| c.segmentation_params.as_mut().unwrap().segmentation_enabled = true,

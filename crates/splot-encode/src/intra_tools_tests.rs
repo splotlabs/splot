@@ -320,6 +320,107 @@ fn screen_streams_code_palette_leaves() {
     }
 }
 
+/// Frame `index` of a 24x16 glyph tile repeated over the frame, panning by
+/// `(4, 2)` luma samples per frame, on flat chroma.
+fn tiled_text(config: &Config, index: u32) -> SourceFrame {
+    let max = u32::from(config.bit_depth.max_sample());
+    let sizes = config.plane_sizes().unwrap();
+    let planes = core::array::from_fn(|plane| {
+        let size = sizes[plane];
+        let mut samples = Vec::with_capacity(size.width() * size.height());
+        for y in 0..size.height() as u32 {
+            for x in 0..size.width() as u32 {
+                let (x, y) = ((x + 4 * index) % 24, (y + 2 * index) % 16);
+                let ink = (x * 5 + y * y * 3 + x * y) % 7 < 2;
+                let luma = if ink { max / 8 } else { max * 7 / 8 };
+                samples.push(if plane == 0 {
+                    luma
+                } else {
+                    max / 2 + 5 * plane as u32
+                } as u16);
+            }
+        }
+        samples
+    });
+    SourceFrame::new(config, u64::from(index), planes).unwrap()
+}
+
+/// Two key frames of [`tiled_text`] at 256x128 coded with `preset` on
+/// `threads` threads: the units and the encoder recon.
+fn intrabc_stream(
+    (threads, chroma, bit_depth): (usize, PixelFormat, BitDepth),
+    preset: &'static PresetParams,
+) -> (Vec<u8>, Vec<u8>) {
+    let mut config = config(256, 128, bit_depth, 9, 90);
+    config.chroma = chroma;
+    config.keyint = core::num::NonZeroU32::MIN;
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let (mut units, mut recon) = (Vec::new(), Vec::new());
+    for index in 0..2 {
+        let plan = crate::gop::plan(u64::from(index), config.keyint);
+        let coded = coder
+            .encode_frame(&tiled_text(&config, index), &plan, 120)
+            .unwrap();
+        recon.extend(recon_bytes(&coded, bit_depth));
+        units.push(coded.temporal_unit);
+    }
+    (units.concat(), recon)
+}
+
+/// AVM decodes the IntraBC key frames of repeated text to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_intrabc_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let preset = preset_with(|p| p.intrabc = true);
+    for (chroma, bit_depth) in [
+        (PixelFormat::Yuv420, BitDepth::Eight),
+        (PixelFormat::Yuv420, BitDepth::Ten),
+    ] {
+        let (units, recon) = intrabc_stream((2, chroma, bit_depth), preset);
+        let avm = avm_decode(&avmdec, &[units], (256, 128), bit_depth, "intrabc");
+        assert!(avm == recon, "intrabc {bit_depth:?}: AVM output differs");
+    }
+}
+
+/// Repeated text codes IntraBC leaves in key frames at both bit depths and
+/// in 4:2:0 and 4:4:4; its streams decode to the encoder recon in every
+/// chroma format and both bit depths, and 1, 2 and 8 threads write the same
+/// bytes.
+#[test]
+fn screen_streams_code_intrabc_leaves() {
+    let preset = preset_with(|p| p.intrabc = true);
+    let intrabc = |choice: &LeafChoice| choice.intrabc.is_some();
+    let stream = |case| intrabc_stream(case, preset);
+    for (chroma, bit_depth) in [
+        (PixelFormat::Yuv420, BitDepth::Ten),
+        (PixelFormat::Yuv444, BitDepth::Eight),
+    ] {
+        let mut config = config(256, 128, bit_depth, 9, 90);
+        config.chroma = chroma;
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        let key = crate::gop::plan(0, config.keyint);
+        let trees = search_frame(&coder, &key, &tiled_text(&config, 0), bit_depth);
+        let count: usize = trees.iter().map(|tree| leaves(tree, intrabc)).sum();
+        assert!(count > 0, "{chroma:?} {bit_depth:?}");
+    }
+    for chroma in CHROMAS {
+        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+            let (units, recon) = stream((2, chroma, bit_depth));
+            let name = format!("{chroma:?} {bit_depth:?}");
+            assert_same_samples(&decode(&units), &recon, &name);
+        }
+    }
+    let case = |threads| (threads, PixelFormat::Yuv420, BitDepth::Ten);
+    let (one, _) = stream(case(1));
+    for threads in [2, 8] {
+        assert!(stream(case(threads)).0 == one, "{threads} threads");
+    }
+}
+
 /// AVM decodes the palette key and inter frames of drawn text to the
 /// encoder recon.
 #[test]

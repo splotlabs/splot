@@ -7,12 +7,19 @@
 
 use std::collections::HashMap;
 
+use splot_decode::encoder_syntax::{IntraTileSyntax, IntrabcModes, LeafBlock, MotionVector};
+
+use crate::intra_frame::SourceResidualCoder;
 use crate::kernels::{BlockDims, kernels};
+use crate::tile_writer::{LeafChoice, Result};
 
 /// The side of the hashed blocks.
 const SIDE: usize = 8;
-/// The most earlier positions with the leaf's hash that are checked.
+/// The most accepted earlier positions with the leaf's hash that are priced.
 const MAX_CANDIDATES: usize = 32;
+/// The most earlier positions with the leaf's hash that are looked at; the
+/// closest ones are often within the IntraBC delay.
+const MAX_SCAN: usize = 1024;
 /// The refinement reach around the best hashed copy, in samples.
 const REFINE: i64 = 4;
 
@@ -58,8 +65,8 @@ impl BvSearch {
     /// The whole-sample block vector `[row, col]` in 1/8 samples, and its
     /// squared error, of the copy of the `w x h` luma block at `(x, y)` with
     /// the lowest squared error over `luma` (stride `stride`) among: the
-    /// [`MAX_CANDIDATES`] closest earlier blocks whose top-left 8x8 hash
-    /// matches and that `valid` accepts, then every vector within
+    /// [`MAX_CANDIDATES`] closest earlier blocks (of the [`MAX_SCAN`]
+    /// closest) whose top-left 8x8 hash matches and that `valid` accepts, then every vector within
     /// [`REFINE`] samples of the best of them that `valid` accepts. A tie
     /// keeps the earlier candidate. `None` without an accepted candidate.
     pub(crate) fn search(
@@ -89,12 +96,21 @@ impl BvSearch {
         let positions = self.table.get(self.hashes.get(here as usize)?)?;
         let earlier = positions.partition_point(|&at| at < here);
         let mut best: Option<([i32; 2], u64)> = None;
-        for &at in positions[..earlier].iter().rev().take(MAX_CANDIDATES) {
-            let (sy, sx) = ((at as usize / self.columns) as i64, (at as usize % self.columns) as i64);
-            if let Some(found) = cost(sy - y as i64, sx - x as i64)
-                && best.is_none_or(|(_, sse)| found.1 < sse)
-            {
+        let mut priced = 0;
+        for &at in positions[..earlier].iter().rev().take(MAX_SCAN) {
+            let (sy, sx) = (
+                (at as usize / self.columns) as i64,
+                (at as usize % self.columns) as i64,
+            );
+            let Some(found) = cost(sy - y as i64, sx - x as i64) else {
+                continue;
+            };
+            if best.is_none_or(|(_, sse)| found.1 < sse) {
                 best = Some(found);
+            }
+            priced += 1;
+            if priced == MAX_CANDIDATES {
+                break;
             }
         }
         let ([row, col], _) = best?;
@@ -110,6 +126,35 @@ impl BvSearch {
         }
         best
     }
+}
+
+/// The IntraBC candidate of `leaf` in a frame whose block hashes `coder`
+/// holds: the [`BvSearch::search`] copy of its luma source among the
+/// vectors the leaf may code, with the `RefMvIdx` whose reference vector it
+/// equals, else the closest one; `None` without one.
+pub(crate) fn intrabc_choice(
+    syntax: &mut IntraTileSyntax,
+    coder: &SourceResidualCoder<'_>,
+    leaf: &LeafBlock,
+) -> Result<Option<LeafChoice>> {
+    let Some(search) = coder.intrabc.filter(|_| syntax.intrabc_allowed(leaf)) else {
+        return Ok(None);
+    };
+    let (w, h) = leaf.dimensions()?;
+    let (luma, stride, ..) = coder.source.luma();
+    let valid = |[row, col]: [i32; 2]| syntax.intrabc_bv_valid(leaf, MotionVector { row, col });
+    let rect = (leaf.col4() * 4, leaf.row4() * 4, w, h);
+    let Some(([row, col], _)) = search.search((luma, stride), rect, valid) else {
+        return Ok(None);
+    };
+    let bv = MotionVector { row, col };
+    let refs = syntax.intrabc_ref_bvs(leaf)?;
+    let distance =
+        |r: &MotionVector| (bv.row - r.row).unsigned_abs() + (bv.col - r.col).unsigned_abs();
+    let drl = (0..refs.len())
+        .min_by_key(|&i| distance(&refs[i]))
+        .unwrap_or(0);
+    Ok(Some(LeafChoice::intrabc(IntrabcModes { bv, drl })))
 }
 
 #[cfg(test)]
@@ -149,7 +194,10 @@ mod tests {
         let search = BvSearch::new(&plane, 64, (64, 32));
         let found = search.search((&plane, 64), (40, 20, 16, 8), |mv| mv[0] != -16 * 8);
         assert_eq!(found, Some(([-8 * 8, -16 * 8], 1)));
-        assert_eq!(search.search((&plane, 64), (40, 20, 16, 8), |_| false), None);
+        assert_eq!(
+            search.search((&plane, 64), (40, 20, 16, 8), |_| false),
+            None
+        );
         assert_eq!(search.search((&plane, 64), (40, 20, 4, 8), |_| true), None);
     }
 }

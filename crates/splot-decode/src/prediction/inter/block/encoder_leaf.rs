@@ -28,6 +28,7 @@ use super::temporal::temporal_motion_block;
 use super::*;
 
 mod compound;
+mod intrabc;
 
 pub(crate) use compound::{EncoderCompoundMotion, JMVD_SCALE_MODES, MvdCoding};
 
@@ -117,6 +118,7 @@ pub(crate) struct EncoderInterCheckpoint {
     /// The TIP records before the region, and those appended after it that
     /// a rollback puts back, as [`GridCheckpoint`] keeps its leaves.
     tip_records: (usize, Vec<TemporalMotionBlock>),
+    intrabc: Option<crate::filters::wienerns_lr::intrabc_records::IntrabcCheckpoint>,
 }
 
 /// The inter residual of one leaf: its transform blocks and their levels.
@@ -163,6 +165,9 @@ pub(crate) struct EncoderInterTile {
     /// The unit records a TIP trial derives and drops, kept for reuse.
     tip_trial_records: Vec<TemporalMotionBlock>,
     tip_scratch: super::tip::TipReconstructScratch<u16>,
+    /// The intra block copy state of an intra frame with `allow_intrabc`;
+    /// `None` in an inter frame.
+    intrabc: Option<TileIntrabcPreludeState>,
 }
 
 impl EncoderInterTile {
@@ -302,6 +307,7 @@ impl EncoderInterTile {
             tip_records: Vec::new(),
             tip_trial_records: Vec::new(),
             tip_scratch: super::tip::TipReconstructScratch::default(),
+            intrabc: None,
         })
     }
 
@@ -339,6 +345,9 @@ impl EncoderInterTile {
     /// Enters the superblock row holding `row`, before any leaf of it is coded.
     pub(crate) fn enter_superblock(&mut self, row: usize) {
         self.grid.enter_sb_row(row);
+        if let Some(intrabc) = &mut self.intrabc {
+            intrabc.enter_sb_row(row);
+        }
     }
 
     /// Saves the state a leaf inside `footprint` can change; with `since`, an
@@ -359,6 +368,10 @@ impl EncoderInterTile {
                 kept,
                 self.tip_records.get(kept..).unwrap_or_default().to_vec(),
             ),
+            intrabc: self.intrabc.as_ref().map(|intrabc| {
+                let (r, c, n4w, n4h) = footprint;
+                intrabc.checkpoint(r..r + n4h, c..c + n4w)
+            }),
         }
     }
 
@@ -382,6 +395,9 @@ impl EncoderInterTile {
         self.tip_records.truncate(checkpoint.tip_records.0);
         self.tip_records
             .extend_from_slice(&checkpoint.tip_records.1);
+        if let (Some(intrabc), Some(saved)) = (&mut self.intrabc, &checkpoint.intrabc) {
+            intrabc.rollback(saved);
+        }
     }
 
     /// The `is_inter`, `skip_mode` and `skip_txfm` contexts of `frontier`,
@@ -650,8 +666,9 @@ impl EncoderInterTile {
 
     /// Resets the banks for a leaf at `block` as the resolve pass does.
     fn reset_banks(&mut self, block: &MvBlockContext) {
+        let (sb_h4, inter_frame) = (self.bank_sb_h4(), self.intrabc.is_none());
         if let Some(bank) = &mut self.ref_mv_bank {
-            bank.reset_for_leaf(&self.grid, block.mi_row, block.mi_col, self.sb_h4, true);
+            bank.reset_for_leaf(&self.grid, block.mi_row, block.mi_col, sb_h4, inter_frame);
         }
         self.warp_bank
             .reset_for_leaf(&self.grid, block.mi_row, block.mi_col, self.sb_h4);
@@ -660,6 +677,9 @@ impl EncoderInterTile {
     /// The § 7.19 motion records of the published leaves, in coding order,
     /// which the decoder stores into the frame's motion field.
     pub(crate) fn temporal_records(&self) -> Vec<TemporalMotionBlock> {
+        if self.intrabc.is_some() {
+            return Vec::new();
+        }
         self.grid
             .published_leaves()
             .filter(|(_, refs, _)| refs.is_none_or(|(ref_frame0, _)| ref_frame0 != TIP_REF_FRAME))
@@ -759,16 +779,23 @@ impl EncoderInterTile {
             block.bh4,
             ZERO_NEIGHBOUR_MOTION_VALUES,
         );
+        let sb_h4 = self.bank_sb_h4();
         if let Some(bank) = &mut self.ref_mv_bank {
             bank.update_count_for_non_inter(
                 block.mi_row,
                 block.mi_col,
                 block.bw4,
                 block.bh4,
-                self.sb_h4,
+                sb_h4,
             );
         }
-        Ok(())
+        self.record_intrabc_prelude(
+            frontier,
+            IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
+                use_intrabc: false,
+                skip_flag: false,
+            }),
+        )
     }
 
     /// Calls `read` with the plane view and the § 7.11.3.3 parameters that

@@ -260,7 +260,6 @@ impl IntraTools {
         };
         let lossless = core.lossless_info.as_ref();
         let refused = [
-            (core.allow_intrabc == Some(true), "intra block copy"),
             (
                 qindex == 0
                     || lossless
@@ -528,7 +527,7 @@ impl IntraTileSyntax {
         }
         if self.fsc_allowed(leaf) {
             let (n4w, n4h) = leaf_size4(leaf)?;
-            let ctx = if self.inter.is_none() || !leaf.frontier.is_mixed_region() {
+            let ctx = if !self.inter_frame() || !leaf.frontier.is_mixed_region() {
                 self.fsc_modes
                     .fsc_mode_ctx(leaf.frontier.r, leaf.frontier.c, n4w, n4h)
             } else {

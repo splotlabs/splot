@@ -385,7 +385,8 @@ pub struct SingleMvs {
     pub stack: Vec<MotionVector>,
 }
 
-/// The inter state of one tile, `None` in an intra frame.
+/// The inter state of one tile, `None` in an intra frame without intra block
+/// copy.
 pub(super) struct InterLeafState {
     pub(super) tile: EncoderInterTile,
     planned: Option<PlannedInter>,
@@ -420,7 +421,21 @@ impl InterLeafState {
         (qindex, bit_depth): (u32, BitDepth),
     ) -> Result<Option<Self>> {
         if core.frame_is_intra == Some(true) {
-            return Ok(None);
+            if core.allow_intrabc != Some(true) {
+                return Ok(None);
+            }
+            let tile = EncoderInterTile::new_intrabc(
+                seq,
+                core,
+                refs.tile_state()?,
+                tile,
+                (qindex, bit_depth),
+            )
+            .map_err(EncoderSyntaxError::Unsupported)?;
+            return Ok(Some(Self {
+                tile,
+                planned: None,
+            }));
         }
         let tile = EncoderInterTile::new(
             seq,
@@ -443,13 +458,13 @@ impl IntraTileSyntax {
     /// `is_inter = 1` for a block whose chroma is coded with another block.
     #[must_use]
     pub fn intra_allowed(&self, leaf: &LeafBlock) -> bool {
-        self.inter.is_none() || !leaf.frontier.shared_mixed_chroma_ref_forces_inter()
+        !self.inter_frame() || !leaf.frontier.shared_mixed_chroma_ref_forces_inter()
     }
 
     /// Whether `leaf` may code a single-reference inter block.
     #[must_use]
     pub fn inter_allowed(&self, leaf: &LeafBlock) -> bool {
-        self.inter.is_some() && !leaf.frontier.is_luma_part() && !leaf.frontier.is_chroma_part()
+        self.inter_frame() && !leaf.frontier.is_luma_part() && !leaf.frontier.is_chroma_part()
     }
 
     /// Whether `leaf` may predict from the TIP frame (§ 7.11.3): an
@@ -620,21 +635,37 @@ impl IntraTileSyntax {
         partition: TxPartition,
     ) -> Result<Vec<TransformBlock>> {
         let split = self.partitioned_tx_size(leaf, partition)?;
-        let (mi_rows, mi_cols) = self.mi_dimensions();
         if !self.inter_allowed(leaf) {
             return Err(EncoderSyntaxError::Unsupported("an inter block here"));
         }
         let motion = self.motion(leaf, prediction)?;
+        self.plan_motion_leaf(leaf, (motion, None), (partition, split))
+    }
+
+    /// Plans the leaf `leaf` of `motion` with the luma transform split by
+    /// `partition` into `split`: an inter prediction, or with `intrabc` the
+    /// intra block copy of that block vector, whose `motion` names the
+    /// IntraBC reference.
+    pub(super) fn plan_motion_leaf(
+        &mut self,
+        leaf: &LeafBlock,
+        (motion, intrabc): (EncoderMotion, Option<Mv>),
+        (partition, split): (TxPartition, Option<usize>),
+    ) -> Result<Vec<TransformBlock>> {
+        let (mi_rows, mi_cols) = self.mi_dimensions();
         self.recon.leaf = None;
         self.plan_cctx(leaf);
         self.fsc_leaf = false;
         let chroma = self.chroma;
         let state = self.inter.as_mut().ok_or(INTRA_FRAME)?;
         state.planned = None;
-        let mvs = state
-            .tile
-            .predict(&leaf.frontier, motion, &mut self.recon.workspace)
-            .map_err(rule("inter prediction"))?;
+        let workspace = &mut self.recon.workspace;
+        let mvs = match intrabc {
+            None => state.tile.predict(&leaf.frontier, motion, workspace),
+            Some(mv) => (state.tile.predict_intrabc(&leaf.frontier, mv, workspace))
+                .map(|()| [mv, Mv::default()]),
+        }
+        .map_err(rule("inter prediction"))?;
         let units = inter_residual_units(&leaf.frontier, chroma).map_err(rule("inter residual"))?;
         let mut blocks: Vec<TransformBlock> = units
             .into_iter()
@@ -677,7 +708,7 @@ impl IntraTileSyntax {
             motion,
             mvs,
             residual: EncoderInterResidual::default(),
-            use_intrabc: false,
+            use_intrabc: intrabc.is_some(),
         });
         for index in 0..blocks.len() {
             if blocks[index].plane > 0 {
@@ -789,7 +820,7 @@ impl IntraTileSyntax {
                 "an is_inter value this block cannot code",
             ));
         }
-        let Some(inter) = &self.inter else {
+        let (true, Some(inter)) = (self.inter_frame(), &self.inter) else {
             return Ok(());
         };
         let frontier = &leaf.frontier;
@@ -1179,11 +1210,20 @@ impl IntraTileSyntax {
     }
 
     fn publish_non_intra_modes(&mut self, leaf: &LeafBlock) -> Result<()> {
+        self.publish_leaf_modes(leaf, non_intra_leaf_mode(&leaf.frontier))
+    }
+
+    /// Publishes the leaf modes `mode` of the non-intra leaf `leaf`.
+    pub(super) fn publish_leaf_modes(
+        &mut self,
+        leaf: &LeafBlock,
+        mode: super::super::partition_traversal::GeneralIntraLeafMode,
+    ) -> Result<()> {
         super::super::partition_traversal::publish_intra_leaf_state::<core::convert::Infallible>(
             self.frame,
             leaf.call,
             &leaf.frontier,
-            non_intra_leaf_mode(&leaf.frontier),
+            mode,
             leaf.call.b_size,
             &mut self.joint_modes,
             &mut self.fsc_modes,
@@ -1283,6 +1323,22 @@ impl IntraTileSyntax {
             motion.mvd = mvd;
         }
         Ok(motion)
+    }
+
+    /// Whether the frame is an inter frame.
+    pub(super) fn inter_frame(&self) -> bool {
+        self.inter
+            .as_ref()
+            .is_some_and(|inter| !inter.tile.is_intra_frame())
+    }
+
+    /// Takes the planned IntraBC leaf `leaf` and returns its block vector.
+    pub(super) fn take_planned_intrabc(&mut self, leaf: &LeafBlock) -> Result<Mv> {
+        let state = self.inter_state()?;
+        match state.planned.take() {
+            Some(planned) if planned.use_intrabc && planned.leaf == *leaf => Ok(planned.mvs[0]),
+            _ => Err(NO_INTER_LEAF),
+        }
     }
 
     pub(super) fn inter_ref(&self) -> Result<&InterLeafState> {

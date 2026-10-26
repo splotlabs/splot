@@ -81,6 +81,7 @@ pub use inter::{
     MotionVector, SingleMvs,
 };
 pub use intra::{ChromaMode, Dip, IntraModes, MAX_CFL_ALPHA, Mrl, TxType};
+pub use intrabc::IntrabcModes;
 pub use palette::{PALETTE_COLORS, Palette};
 pub use parity::ParityHiding;
 pub use rollback::SyntaxSnapshot;
