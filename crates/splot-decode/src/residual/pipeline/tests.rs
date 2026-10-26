@@ -1503,3 +1503,31 @@ fn workspace_with_tile_boundary_edges(above: u8) -> splot_recon::CurrentFrameWor
         .expect("left block");
     workspace
 }
+
+/// A 256x256 block of a 264x136 frame plans no 64x64 chunk that starts below
+/// the frame (§ 5.20.7.23): three of its four chunk rows start inside; the
+/// chroma group of the third row starts inside too.
+#[test]
+fn plans_no_chunk_that_starts_outside_the_frame() {
+    let block = BlockRect::new(0, 0, 64, 64);
+    let tx = TxShape::from_luma_4x4(64, 64).expect("256x256 block shape");
+    let ctx = BlockCtx::new(block, tx, 66, 34, BitDepth::Eight, ChromaSampling::Yuv420);
+    let plan = GeneralIntraResidualPlan::rect(
+        ctx,
+        RectLumaPlan::Dc { use_tcq: false },
+        Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
+        false,
+        None,
+        false,
+    )
+    .expect("256x256 plan");
+    let luma: Vec<_> = plan
+        .transform_blocks()
+        .filter(|&(plane, ..)| plane == 0)
+        .map(|(_, x, y, ..)| (x, y))
+        .collect();
+    assert_eq!(luma.len(), 12);
+    assert!(luma.iter().all(|&(_, y)| y < 34 * 4));
+    let chroma = plan.transform_blocks().filter(|&(plane, ..)| plane > 0);
+    assert_eq!(chroma.count(), 8);
+}
