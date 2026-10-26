@@ -126,11 +126,14 @@ impl IntraFrameCoder {
                 inter_ist: preset.inter_ist,
                 tip: preset.tip > 0 && preset.mv_prediction,
                 tip_output: preset.tip > 0 && preset.mv_prediction && preset.tip_output > 0,
+                opfl_refine: preset.opfl,
+                refinemv: preset.refinemv,
                 cctx: preset.cctx,
                 mhccp: preset.mhccp,
                 fsc: preset.fsc,
                 screen_content: preset.palette || preset.integer_mv,
                 dip: preset.dip,
+                sdp: preset.sdp,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
                 avg_cdf: preset.cdf_carry.then_some(AVG_CDF_ACROSS_TILES),
@@ -351,7 +354,7 @@ impl IntraFrameCoder {
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
         tools.0.delta_q_res = (!sb_quant.is_empty()).then_some(self.preset.delta_q_res);
-        if tools.2.3.is_some() {
+        if tools.2.3.is_some() || tools.2.5 != 0 {
             let probe = plan.header(
                 &self.view,
                 &self.references,
@@ -360,8 +363,8 @@ impl IntraFrameCoder {
                 tools,
             )?;
             if !self.references.tip_pair_available(&probe) {
-                tools.2.3 = None;
-            } else if self.preset.tip >= 2 {
+                (tools.2.3, tools.2.5) = (None, 0);
+            } else if tools.2.3.is_some() && self.preset.tip >= 2 {
                 tools.2.3 = Some(self.tip_weight(source, &probe)?);
             }
         }

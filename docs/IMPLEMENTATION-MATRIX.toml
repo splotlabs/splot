@@ -5788,6 +5788,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-OPFL-REFINEMV"
+name = "Encoder optical-flow and decoder-side vector refinement"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.6", "5.18.3.2", "5.20.7.6", "5.20.7.17", "7.13.3.3", "7.13.3.8"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/mode_decision.rs"
+change_id = "enc-opfl-refinemv"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::opfl and refinemv (A6 PR1, off in every row): the sequence codes enable_opfl_refine = REFINE_AUTO and enable_refinemv; inter frames with a TIP reference pair code opfl_refine_type REFINE_SWITCHABLE, others REFINE_NONE. CompoundModes::optflow and refinemv set use_optflow and use_refinemv where IntraTileSyntax::compound_refinements says the block reads them; the facade takes every reachability rule, the use_optflow and use_refinemv contexts, the single DRL of optical-flow blocks and the optical-flow distances from the decoder's compound path, predicts through the decoder's refinement grid, records the decoder's deblocking sub-PU size (compound_deblock_sub_pu_size; deblock sub-PU records match the decoder, df_sub_pu not coded yet), and stores the grid's 8x8 temporal records in place of the leaf's. The mode decision does not choose refinement yet. Off writes the old stream byte-identically."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot", "crates/splot-encode/src/intra_frame_refine_tests.rs::refined_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_refine_tests.rs::refined_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_refine_tests.rs::avm_decodes_refined_streams_like_splot", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::opfl_refine_type_parses_with_and_without_tip"]
+commands = ["cargo test -p splot-encode random_inter --locked", "cargo test -p splot-encode refine --locked", "cargo test -p splot-core opfl_refine_type --locked", "SPLOT_AVM_DECODER=<avmdec> cargo test -p splot-encode avm_decodes -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-CCSO"
 name = "Encoder cross-component sample offset"
 category = "encoder"
@@ -6369,11 +6401,11 @@ kind = "encoder-tool"
 spec_sections = ["5.20.3.1", "5.20.3.2", "5.20.4.1", "5.20.5.3"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
-module = "crates/splot-encode/src/tile_writer/mod.rs"
-change_id = "enc-sdp"
+module = "crates/splot-encode/src/rd/partition.rs"
+change_id = "enc-sdp-search"
 owner = "encoder"
 risk = "medium"
-notes = "Facade: the encoder_syntax facade codes the SDP trees of an intra frame with enable_sdp. sdp_roots gives the LUMA_PART and CHROMA_PART roots of each 64x64 SHARED_PART node; partition_options, write_partition and children run the decoder's SdpPartitionState (ChromaFollowsLuma, LumaPartitions, CflAllowedInSdp); a CHROMA_PART leaf codes its chroma mode over the collocated luma mode and its chroma residual alone. Snapshots save the SDP state. The tile writer codes PartitionTree::Sdp, luma tree then chroma tree, with the read_lr units of each tree at a 64x64 superblock. No preset turns SDP on yet: the search lands separately. Tests and the AVM check cover the trees with the loop filters off; the coverage with deblocking, CDEF, CCSO, GDF, luma and chroma LR and delta-q comes with the search."
+notes = "PresetParams::sdp (on in every row) sets enable_sdp. Facade: the encoder_syntax facade gives the LUMA_PART and CHROMA_PART roots of each 64x64 SHARED_PART node of an intra frame (sdp_roots); partition_options, write_partition and children run the decoder's SdpPartitionState (ChromaFollowsLuma, LumaPartitions, CflAllowedInSdp); a CHROMA_PART leaf codes its chroma mode over the collocated luma mode and its chroma residual alone, and the facade refuses luma-only syntax there. The tile writer codes PartitionTree::Sdp with the read_lr units of each tree at a 64x64 superblock. Search: an SDP node searches its luma tree on luma alone, then a chroma tree whose nodes try NONE and the luma partition of the same node only, so chroma merges luma leaves and never splits deeper (a chroma tree that follows luma exactly measured +0.9..+1.5% Y). Against main 96caf9438 (2026-10-26), intra Y/YUV(6:1:1) at CPU ratio: p0 paris -0.42/-0.66 0.87x, park_joy -0.42/-0.29 0.85x; p6 paris -0.68/-0.38 0.75x, park_joy -0.48/+0.02 0.76x, niklas -1.30/-2.17 0.76x; p10 paris -0.36/+0.21 0.66x, park_joy -0.50/+0.26 0.69x, niklas -1.44/-1.13 0.62x; inter p6 paris -0.47/+0.11 0.98x, park_joy -0.46/+0.10 1.01x, niklas -0.53/-0.63 0.99x. RD trials over every chroma candidate instead of the intra_modes shortlist stay out, below the ladder (2026-10-26: paris p10 intra -0.58/-0.40 at 0.82x, park_joy p10 -0.76/+0.05 at 0.85x). SCREEN_PRESETS turn SDP off: desktop_credits p6 Y +0.34% intra, +2.30% inter (screendata -0.24%, -0.91%)."
 
 [feature.status]
 mapped = "done"
@@ -6381,15 +6413,15 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "todo"
+encode = "done"
 decode_check = "done"
-tests = "partial"
-avm_diff = "partial"
+tests = "done"
+avm_diff = "done"
 perf = "pending"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/tile_writer/tests.rs::sdp_key_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/tile_writer/tests.rs::sdp_chroma_tree_follows_the_luma_tree_rules", "crates/splot-encode/src/tile_writer/tests.rs::rejects_sdp_tree_mismatches", "crates/splot-encode/src/tile_writer/tests.rs::sdp_chroma_leaves_refuse_luma_only_syntax", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot"]
-commands = ["cargo test -p splot-encode sdp --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_random_key_frames --locked -- --ignored"]
+tests = ["crates/splot-encode/src/sdp_tests.rs::sdp_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/sdp_tests.rs::sdp_search_codes_chroma_trees_that_merge_luma_nodes", "crates/splot-encode/src/sdp_tests.rs::avm_decodes_sdp_streams_like_splot", "crates/splot-encode/src/tile_writer/tests.rs::sdp_key_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/tile_writer/tests.rs::sdp_chroma_tree_follows_the_luma_tree_rules", "crates/splot-encode/src/tile_writer/tests.rs::rejects_sdp_tree_mismatches", "crates/splot-encode/src/tile_writer/tests.rs::sdp_chroma_leaves_refuse_luma_only_syntax", "crates/splot-encode/src/tile_writer/tests.rs::avm_decodes_random_key_frames_like_splot"]
+commands = ["cargo test -p splot-encode sdp --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_random_key_frames --locked -- --ignored", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_sdp_streams --locked -- --ignored"]
 fixtures = []
 diagnostics = []
 

@@ -24,6 +24,12 @@ pub(crate) trait PartitionSearch {
     fn in_frame(&self, node: Self::Node) -> bool;
     /// The luma and chroma roots that code `node` in turn when it is an SDP node.
     fn sdp_roots(&self, node: Self::Node) -> Option<(Self::Node, Self::Node)>;
+    /// Limits the chroma tree to merges of the coded luma `tree` at `root`;
+    /// `None` lifts the limit.
+    fn follow_luma(
+        &mut self,
+        luma: Option<(Self::Node, &PartitionTree)>,
+    ) -> Result<(), Self::Error>;
     /// The partitions `node` can code: the implied one alone when the position
     /// implies one, else the allowed set.
     fn partitions(&self, node: Self::Node) -> Result<Vec<Partition>, Self::Error>;
@@ -69,6 +75,11 @@ pub(crate) trait PartitionSearch {
 /// tolerance that also stops when the split wins by a margin compounds over the
 /// levels of the tree: 10% cost 20 points of BD-rate on CIF content.
 ///
+/// An SDP node searches its luma tree on luma alone, then its chroma tree
+/// over the coded luma, where each node tries `NONE` and the luma partition
+/// at the same node only: the chroma tree merges luma leaves and never splits
+/// deeper.
+///
 /// Partition paths reach many nodes more than once. A node keeps the tree its
 /// first search chose, and a later visit codes that tree again in the new
 /// context instead of searching it again.
@@ -112,6 +123,19 @@ fn search<S: PartitionSearch>(
         let tree = tree.clone();
         let cost = recode(coder, node, &tree)?;
         return Ok((tree, cost));
+    }
+    if let Some((luma_root, chroma_root)) = coder.sdp_roots(node) {
+        let (luma, luma_cost) = search(coder, luma_root, preset, lambda, memo, extended)?;
+        coder.follow_luma(Some((luma_root, &luma)))?;
+        let chroma = search(coder, chroma_root, preset, lambda, memo, extended);
+        coder.follow_luma(None)?;
+        let (chroma, chroma_cost) = chroma?;
+        let tree = PartitionTree::Sdp {
+            luma: Box::new(luma),
+            chroma: Box::new(chroma),
+        };
+        memo.entry(key).or_default().push((node, tree.clone()));
+        return Ok((tree, luma_cost + chroma_cost));
     }
     let candidates = candidates(coder, node, preset, extended)?;
     let start = if candidates.len() > 1 {
@@ -190,7 +214,8 @@ fn search<S: PartitionSearch>(
     Ok((tree, cost))
 }
 
-/// Codes `tree` at `node` into the live state; returns its cost.
+/// Codes `tree` at `node` into the live state, partition symbols before the
+/// children as the bitstream orders them; returns its cost.
 fn recode<S: PartitionSearch>(
     coder: &mut S,
     node: S::Node,
@@ -199,23 +224,29 @@ fn recode<S: PartitionSearch>(
     if !coder.in_frame(node) {
         return Ok(RdCost::default());
     }
-    let (partition, mut cost) = match (tree, coder.sdp_roots(node)) {
+    let partition = match (tree, coder.sdp_roots(node)) {
         (PartitionTree::Sdp { luma, chroma }, Some((luma_root, chroma_root))) => {
             return Ok(recode(coder, luma_root, luma)? + recode(coder, chroma_root, chroma)?);
         }
         (PartitionTree::Sdp { .. }, None) | (_, Some(_)) => {
             return Err(TileWriterError::Shape("SDP tree at a shared node or none").into());
         }
-        (PartitionTree::Leaf(choice), None) => (Partition::None, coder.code_leaf(node, *choice)?),
-        (PartitionTree::Split { kind, children }, None) => {
+        (PartitionTree::Leaf(_), None) => Partition::None,
+        (PartitionTree::Split { kind, .. }, None) => *kind,
+    };
+    let rate = coder.partition_rate(node, partition)?;
+    let mut cost = match tree {
+        PartitionTree::Split { kind, children } => {
             let mut cost = RdCost::default();
             for (child, tree) in coder.children(node, *kind)?.into_iter().zip(children) {
                 cost = cost + recode(coder, child, tree)?;
             }
-            (*kind, cost)
+            cost
         }
+        PartitionTree::Leaf(choice) => coder.code_leaf(node, *choice)?,
+        PartitionTree::Sdp { .. } => RdCost::default(),
     };
-    cost.rate += coder.partition_rate(node, partition)?;
+    cost.rate += rate;
     Ok(cost)
 }
 

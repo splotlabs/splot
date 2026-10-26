@@ -6,13 +6,16 @@
 //! § 5.20.7.10, § 5.20.7.11), produced by the decoder's own reads answering
 //! for a target.
 
+use super::super::super::compound::CompoundBlockSyntax;
 use super::super::super::compound::{
     CompoundParseInput, compound_reference_pair, compound_y_mode, non_joint_compound_mode,
     same_refs_compound_mode,
 };
 use super::super::compound_path::{
-    compound_joint_mv_projection, compound_needs_interp_filter, compound_ref_contexts,
-    compound_ref_distance_signs, compound_use_amvd_selector, skip_mode_reference_pair,
+    compound_all_opfl_reachable, compound_joint_mv_projection, compound_needs_interp_filter,
+    compound_ref_contexts, compound_ref_distance_signs, compound_refinemv_is_switchable,
+    compound_refinemv_reachable, compound_switchable_opfl_reachable, compound_use_amvd_selector,
+    skip_mode_reference_pair, use_optflow_ctx, use_refinemv_ctx,
 };
 use super::super::resolve::CompoundMotionSyntax;
 use super::super::syntax::{
@@ -62,6 +65,26 @@ pub(crate) struct EncoderCompoundMotion {
     pub(crate) jmvd_scale_mode: u8,
     /// `interp_filter`, where the decoder reads it.
     pub(crate) interp: ReconInterpolationFilter,
+    /// `use_optflow`, where the decoder reads it (§ 5.20.7.6).
+    pub(crate) use_optflow: bool,
+    /// `use_refinemv`, where the decoder reads it (§ 5.20.7.17); where it
+    /// infers the flag, the block refines whenever refinement is reachable.
+    pub(crate) use_refinemv: bool,
+}
+
+/// The decoder's refinement of a compound block (§ 5.20.7.6, § 5.20.7.17).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct CompoundRefinement {
+    /// Whether the block reads `use_optflow`.
+    pub(crate) reads_optflow: bool,
+    /// The `use_refinemv` selector, where the block reads the flag.
+    pub(crate) refinemv_selector: Option<TileCdfSelector>,
+    /// Whether the block predicts with optical flow, `REFINE_ALL` included.
+    pub(crate) use_optflow: bool,
+    /// Whether `use_refinemv` is read as `1` or inferred.
+    pub(crate) refinemv_signalled: bool,
+    /// `refinemv_switchable` of the decoder's motion syntax.
+    pub(crate) refinemv_switchable: bool,
 }
 
 impl EncoderMotion {
@@ -213,6 +236,118 @@ impl EncoderInterTile {
         Err(DecodeHeaderStateError::InvalidInterBlockModeState.into())
     }
 
+    /// Whether a compound block of the frame can refine: the frame codes an
+    /// `opfl_refine_type` other than `REFINE_NONE` or the sequence enables
+    /// `use_refinemv`.
+    pub(crate) fn refines_compound(&self) -> bool {
+        self.core
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.opfl_refine_type.is_some_and(|refine| refine != 0))
+            || self
+                .sequence
+                .inter
+                .as_ref()
+                .is_some_and(|inter| inter.enable_refinemv)
+    }
+
+    /// The refinement the decoder derives for `compound` at `frontier`.
+    ///
+    /// # Errors
+    /// Returns the decoder's diagnostic where `compound` sets a flag the
+    /// block does not read.
+    pub(crate) fn compound_refinement(
+        &self,
+        frontier: &DecodeBlockFrontier,
+        compound: EncoderCompoundMotion,
+    ) -> Result<CompoundRefinement> {
+        let invalid =
+            || -> crate::DecodeError { DecodeHeaderStateError::InvalidInterBlockModeState.into() };
+        if compound.skip_mode || !self.refines_compound() {
+            if compound.use_optflow || compound.use_refinemv {
+                return Err(invalid());
+            }
+            return Ok(CompoundRefinement::default());
+        }
+        let (n4w, n4h) = block_size4(frontier)?;
+        let opfl = self
+            .core
+            .inter
+            .as_ref()
+            .and_then(|inter| inter.opfl_refine_type)
+            .ok_or(DecodeHeaderStateError::IncompleteInterFrameTools)?;
+        let enable_refinemv = self
+            .sequence
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.enable_refinemv);
+        let mut block = CompoundBlockSyntax {
+            y_mode: compound.y_mode,
+            use_optflow: false,
+            ref_frame0: compound.ref_frames.0,
+            ref_frame1: compound.ref_frames.1,
+            mv0: Mv::ZERO,
+            mv1: Mv::ZERO,
+        };
+        let refs = (&self.core, &self.reference, self.ref_frame_idx.as_slice());
+        let reads_optflow =
+            compound_switchable_opfl_reachable(opfl, refs.0, refs.1, refs.2, block, n4w, n4h)?;
+        if compound.use_optflow && !reads_optflow {
+            return Err(invalid());
+        }
+        block.use_optflow = compound.use_optflow;
+        let refinemv_switchable = compound_refinemv_is_switchable(block, opfl);
+        let reached = compound_refinemv_reachable(
+            enable_refinemv,
+            opfl,
+            refs.0,
+            refs.1,
+            refs.2,
+            block,
+            n4w,
+            n4h,
+        )?;
+        let reads_refinemv = reached && refinemv_switchable;
+        if compound.use_refinemv && !reads_refinemv {
+            return Err(invalid());
+        }
+        let all = compound_all_opfl_reachable(
+            opfl,
+            refs.0,
+            refs.1,
+            refs.2,
+            block,
+            n4w,
+            n4h,
+            super::super::mc::CompoundBlend::default(),
+        )?;
+        Ok(CompoundRefinement {
+            reads_optflow,
+            refinemv_selector: reads_refinemv.then(|| TileCdfSelector::UseRefinemv {
+                ctx: use_refinemv_ctx(compound.y_mode, compound.use_optflow),
+            }),
+            use_optflow: compound.use_optflow || all,
+            refinemv_signalled: reached && (!refinemv_switchable || compound.use_refinemv),
+            refinemv_switchable,
+        })
+    }
+
+    /// The `use_refinemv` symbol `motion` at `frontier` codes after its
+    /// differences (§ 5.20.7.17), if the decoder reads one.
+    pub(crate) fn refinemv_symbol(
+        &self,
+        frontier: &DecodeBlockFrontier,
+        motion: EncoderMotion,
+    ) -> Result<Option<(TileCdfSelector, u8)>> {
+        let EncoderMotion::Compound(compound) = motion else {
+            return Ok(None);
+        };
+        Ok(self
+            .compound_refinement(frontier, compound)?
+            .refinemv_selector
+            .map(|selector| (selector, u8::from(compound.use_refinemv))))
+    }
+
     /// The filter the decoder predicts `motion` at `frontier` with, and the
     /// `interp_filter` symbol it reads for it (§ 5.20.7.6), if any.
     pub(crate) fn interp_filter(
@@ -222,6 +357,12 @@ impl EncoderInterTile {
     ) -> Result<(ReconInterpolationFilter, Option<(TileCdfSelector, u8)>)> {
         if motion.skip_mode() || matches!(motion, EncoderMotion::Single(single) if single.tip) {
             return Ok((ReconInterpolationFilter::EightTapSharp, None));
+        }
+        if let EncoderMotion::Compound(compound) = motion {
+            let refinement = self.compound_refinement(frontier, compound)?;
+            if refinement.use_optflow || refinement.refinemv_signalled {
+                return Ok((ReconInterpolationFilter::EightTapSharp, None));
+            }
         }
         let (global, interp) = match motion {
             EncoderMotion::Single(single) => (single.mode == SINGLE_MODE_GLOBALMV, single.interp),
@@ -474,7 +615,13 @@ impl EncoderInterTile {
                 )?;
             }
             EncoderMotion::Compound(compound) => {
-                self.compound_symbols(&mut out, &neighbour, (new_mv, max_drl), compound)?;
+                let refinement = self.compound_refinement(frontier, compound)?;
+                self.compound_symbols(
+                    &mut out,
+                    &neighbour,
+                    (new_mv, max_drl, refinement.reads_optflow),
+                    compound,
+                )?;
             }
         }
         Ok(out)
@@ -484,7 +631,7 @@ impl EncoderInterTile {
         &self,
         out: &mut Vec<(TileCdfSelector, u8)>,
         neighbour: &BlockNeighbourContext,
-        (new_mv, max_drl): (usize, usize),
+        (new_mv, max_drl, reads_optflow): (usize, usize, bool),
         compound: EncoderCompoundMotion,
     ) -> Result<()> {
         let refs = self.num_total_refs();
@@ -517,10 +664,21 @@ impl EncoderInterTile {
         if pair != target || y_mode != compound.y_mode {
             return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
         }
+        if reads_optflow {
+            out.push((
+                TileCdfSelector::UseOptflow {
+                    ctx: use_optflow_ctx(y_mode),
+                },
+                u8::from(compound.use_optflow),
+            ));
+        }
         let amvd_ctx = neighbour.amvd_ctx(pair.0);
-        if let Some(selector) =
-            compound_use_amvd_selector(self.enable_adaptive_mvd(), y_mode, false, amvd_ctx)
-        {
+        if let Some(selector) = compound_use_amvd_selector(
+            self.enable_adaptive_mvd(),
+            y_mode,
+            compound.use_optflow,
+            amvd_ctx,
+        ) {
             out.push((selector, 0));
         }
         if y_mode == CompoundYMode::JointNew {
@@ -547,13 +705,15 @@ impl EncoderInterTile {
         self.precision_symbols(out, neighbour, y_mode.has_newmv(), (precision, false))
     }
 
-    /// The parse record of `compound` at `block`, as the decoder builds it
-    /// with every masked, weighted, warped and refined tool off.
+    /// The parse record of `compound` at `frontier` and `block`, as the
+    /// decoder builds it with every masked, weighted and warped tool off.
     pub(super) fn compound_syntax(
         &self,
+        frontier: &DecodeBlockFrontier,
         block: &MvBlockContext,
         compound: EncoderCompoundMotion,
     ) -> Result<CompoundMotionSyntax> {
+        let refinement = self.compound_refinement(frontier, compound)?;
         let (ref0, ref1) = compound.ref_frames;
         let global = compound.y_mode == CompoundYMode::GlobalGlobal;
         let warp =
@@ -562,7 +722,7 @@ impl EncoderInterTile {
             y_mode: compound.y_mode,
             ref_frame1: ref1,
             skip_mode: compound.skip_mode,
-            use_optflow: false,
+            use_optflow: refinement.use_optflow,
             local_warp: false,
             global_warp: if global {
                 [warp(ref0), warp(ref1)]
@@ -582,8 +742,8 @@ impl EncoderInterTile {
             } else {
                 [self.temporal_first(ref0), self.temporal_first(ref1)]
             },
-            use_refinemv: false,
-            refinemv_switchable: false,
+            use_refinemv: refinement.refinemv_signalled,
+            refinemv_switchable: refinement.refinemv_switchable,
         })
     }
 

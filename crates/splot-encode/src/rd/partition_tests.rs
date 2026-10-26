@@ -48,6 +48,10 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
         None
     }
 
+    fn follow_luma(&mut self, _: Option<(Rect, &PartitionTree)>) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     fn partitions(&self, (x, y, w, h): Rect) -> Result<Vec<Partition>, Self::Error> {
         if x + (1 << w) > self.size || y + (1 << h) > self.size {
             return Ok(vec![Partition::Split]);

@@ -113,6 +113,11 @@ pub struct PresetParams {
     /// An uneven four-way shape is tried only when the three-way shape of its
     /// axis costs within this margin, in 1/256, of the best; `255` always.
     pub ext_four_way_margin: u8,
+    /// Semi-decoupled partitioning (`enable_sdp`): each 64x64 node of an
+    /// intra frame searches its luma tree on luma alone, then a chroma tree
+    /// that only merges luma leaves. On in every row: intra frames gain luma
+    /// BD-rate, with mixed YUV, at 0.62x to 0.87x of their CPU (2026-10-26).
+    pub sdp: bool,
     /// CCSO classifications the filter search tries per plane; `0` disables
     /// CCSO in the sequence.
     pub ccso_candidates: u8,
@@ -210,6 +215,13 @@ pub struct PresetParams {
     /// frame coded normally; `0` is off. `100` in every row (2026-10-26):
     /// p6 measured park_joy -0.19%, paris -0.12%, niklas 0.00%.
     pub tip_output: u8,
+    /// Optical-flow refinement (`enable_opfl_refine = REFINE_AUTO`): inter
+    /// frames with a past and a future reference code `REFINE_SWITCHABLE`,
+    /// so compound blocks may code `use_optflow`; others code `REFINE_NONE`.
+    pub opfl: bool,
+    /// Decoder-side vector refinement (`enable_refinemv`): compound blocks
+    /// with a past and a future reference may code `use_refinemv`.
+    pub refinemv: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -436,6 +448,7 @@ preset_table! {
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
     }
     intra {
         intra_modes:           [   13,    13,    12,    10,     9,     8,     6,     5,     4,     3,     2],
@@ -473,6 +486,8 @@ preset_table! {
         cdf_carry:             [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
+        opfl:                  [false, false, false, false, false, false, false, false, false, false, false],
+        refinemv:              [false, false, false, false, false, false, false, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -498,8 +513,10 @@ preset_table! {
     }
 }
 
-/// [`PRESETS`] with the screen-content tools on, for a sequence whose first
-/// frame looks like screen content.
+/// [`PRESETS`] with the screen-content tools on and SDP off, for a sequence
+/// whose first frame looks like screen content. SDP off: desktop_credits p6
+/// measured Y +0.34% intra and +2.30% inter with it (screendata -0.24% and
+/// -0.91%, 2026-10-26).
 pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
     let mut rows = PRESETS;
     let mut i = 0;
@@ -509,6 +526,7 @@ pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
             palette: true,
             intrabc: true,
             integer_mv: true,
+            sdp: false,
             ..rows[i]
         };
         i += 1;
@@ -576,6 +594,7 @@ mod tests {
             assert!(fast.min_block_log2 <= fast.max_block_log2);
             assert!(fast.intra_modes <= slow.intra_modes);
             assert!(fast.partition_early_exit >= slow.partition_early_exit);
+            assert!(fast.sdp <= slow.sdp);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
             assert!(fast.parity_hiding <= slow.parity_hiding);

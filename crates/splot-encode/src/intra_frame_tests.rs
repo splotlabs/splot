@@ -321,7 +321,10 @@ fn superblock_search_is_deterministic_and_rolls_back() {
         let first = search();
         assert_eq!(first, search(), "preset {preset} {chroma:?}");
         assert!(
-            matches!(first.0, PartitionTree::Split { .. }),
+            matches!(
+                first.0,
+                PartitionTree::Split { .. } | PartitionTree::Sdp { .. }
+            ),
             "preset {preset} {chroma:?}"
         );
     }
@@ -602,8 +605,9 @@ impl Rng {
 /// [`COMPOUND_MODES`] order; skip mode; same-reference compound; a nonzero
 /// second-DRL index of list 1; a nonzero `jmvd_scale_mode`; a coded
 /// `interp_filter` other than `EIGHTTAP`; a `NEWMV` below the frame
-/// precision; an adaptive-MVD `NEWMV`; a TIP leaf.
-type Coverage = [usize; 20];
+/// precision; an adaptive-MVD `NEWMV`; a TIP leaf; a compound leaf coding
+/// `use_optflow = 1`; a compound leaf coding `use_refinemv = 1`.
+type Coverage = [usize; 22];
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -686,7 +690,10 @@ fn random_leaf(
         choice.tx_partition = partitions[rng.below(partitions.len() as u64) as usize];
         coverage[18] += usize::from(choice.tx_partition != TxPartition::None);
     }
-    if let Some(prediction) = choice.inter
+    let snapped = choice
+        .inter
+        .map(|prediction| crate::tile_writer::snap_prediction(syntax, leaf, prediction).unwrap());
+    if let Some(prediction) = snapped
         && filter != INTERP_FILTERS[0]
         && syntax
             .price_interp_filter(leaf, prediction, &mut RateSink::adapting())
@@ -735,10 +742,25 @@ fn random_modes(
                 mvs,
                 jmvd_scale_mode: rng.below(u64::from(JMVD_SCALE_MODES)) as u8,
                 filter,
+                optflow: false,
+                refinemv: false,
             };
             if syntax.compound_bases(leaf, &modes).is_err() {
                 continue;
             }
+            let mut side = Rng(rng.0.rotate_left(17));
+            let (reads_optflow, _) = syntax.compound_refinements(leaf, modes).unwrap();
+            let modes = CompoundModes {
+                optflow: reads_optflow && side.below(4) != 0,
+                ..modes
+            };
+            let (_, reads_refinemv) = syntax.compound_refinements(leaf, modes).unwrap();
+            let modes = CompoundModes {
+                refinemv: reads_refinemv && side.below(4) != 0,
+                ..modes
+            };
+            coverage[20] += usize::from(modes.optflow);
+            coverage[21] += usize::from(modes.refinemv);
             coverage[5 + mode] += 1;
             coverage[12] += usize::from(refs.0 == refs.1);
             coverage[13] += usize::from(modes.drl[1] > 0 && mode < 2);
@@ -815,6 +837,8 @@ fn inter_stream_with(
     let qindex = u32::from(qp);
     let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
         mvd_tools: [true; 3],
+        opfl: true,
+        refinemv: true,
         ..*config.preset.params()
     }));
     let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();
@@ -845,12 +869,12 @@ fn inter_stream_with(
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let (tx, _, (high_precision_mv, ref_mvs, _, tip, integer_mv), tiles) =
+    let (tx, _, (high_precision_mv, ref_mvs, _, tip, integer_mv, opfl), tiles) =
         crate::gop::frame_tools(&coder.preset, coder.tiles, qindex);
     let tools = (
         tx,
         true,
-        (high_precision_mv, ref_mvs, true, tip, integer_mv),
+        (high_precision_mv, ref_mvs, true, tip, integer_mv, opfl),
         tiles,
     );
     let filters = FrameFilterParams::default();
@@ -1323,6 +1347,8 @@ mod intra_tools;
 mod large_inter;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
+#[path = "intra_frame_refine_tests.rs"]
+mod refine;
 #[path = "intra_frame_tip_tests.rs"]
 mod tip;
 #[path = "intra_frame_wienerns_tests.rs"]
@@ -1330,3 +1356,5 @@ mod wienerns;
 
 #[path = "ext_partition_tests.rs"]
 mod ext_partitions;
+#[path = "sdp_tests.rs"]
+mod sdp;

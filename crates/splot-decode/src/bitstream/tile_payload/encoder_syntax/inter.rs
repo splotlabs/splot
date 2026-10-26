@@ -1035,10 +1035,12 @@ impl IntraTileSyntax {
         super::mv::write_mvds((&mut self.cdfs, &mut self.journal), coding, &mvds, symbols)
     }
 
-    /// Prices into `symbols` the `interp_filter` that `prediction` codes at
-    /// `leaf` (§ 5.20.7.6), then puts the CDFs back. Returns whether the
-    /// decoder reads it: a skip-mode block, a TIP block, a large global block
-    /// and a frame without `SWITCHABLE` filters read none and price nothing.
+    /// Prices into `symbols` the `use_refinemv` and the `interp_filter` that
+    /// `prediction` codes at `leaf` (§ 5.20.7.17, § 5.20.7.6), as
+    /// [`Self::write_interp_filter`] writes them, then puts the CDFs back.
+    /// Returns whether the decoder reads `interp_filter`: a skip-mode block,
+    /// a TIP block, a refined compound block, a large global block and a
+    /// frame without `SWITCHABLE` filters read none.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for a prediction `leaf` cannot code or a
@@ -1058,6 +1060,9 @@ impl IntraTileSyntax {
                 modes.mode == InterMode::Global,
                 modes.filter,
             ),
+            InterPrediction::Compound(_) if self.inter_ref()?.tile.refines_compound() => {
+                return self.price_compound_tail(leaf, prediction, symbols);
+            }
             InterPrediction::Compound(modes) => (
                 (modes.refs.0, true),
                 modes.mode == super::CompoundMode::GlobalGlobal,
@@ -1085,9 +1090,9 @@ impl IntraTileSyntax {
         written.map(|()| true)
     }
 
-    /// Writes the `interp_filter` of the planned inter leaf `leaf`, after its
-    /// motion vector differences (§ 5.20.7.6); a leaf that reads none writes
-    /// nothing.
+    /// Writes the `use_refinemv` and the `interp_filter` of the planned inter
+    /// leaf `leaf`, after its motion vector differences (§ 5.20.7.17,
+    /// § 5.20.7.6); a leaf that reads neither writes nothing.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] without a planned inter leaf or for a
@@ -1099,14 +1104,42 @@ impl IntraTileSyntax {
     ) -> Result<()> {
         let state = self.inter_ref()?;
         let motion = state.planned.as_ref().ok_or(NO_INTER_LEAF)?.motion;
-        let (_, coded) = state
+        let refinemv = state
+            .tile
+            .refinemv_symbol(&leaf.frontier, motion)
+            .map_err(rule("use_refinemv"))?;
+        let (_, interp) = state
             .tile
             .interp_filter(&leaf.frontier, motion)
             .map_err(rule("interp_filter"))?;
-        match coded {
-            Some((selector, value)) => self.put(symbols, selector, usize::from(value)),
-            None => Ok(()),
+        for (selector, value) in refinemv.into_iter().chain(interp) {
+            self.put(symbols, selector, usize::from(value))?;
         }
+        Ok(())
+    }
+
+    /// [`Self::price_interp_filter`] of a compound `prediction`.
+    fn price_compound_tail(
+        &mut self,
+        leaf: &LeafBlock,
+        prediction: InterPrediction,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<bool> {
+        let motion = self.motion(leaf, prediction)?;
+        let tile = &self.inter_ref()?.tile;
+        let refinemv = tile
+            .refinemv_symbol(&leaf.frontier, motion)
+            .map_err(rule("use_refinemv"))?;
+        let (_, interp) = tile
+            .interp_filter(&leaf.frontier, motion)
+            .map_err(rule("interp_filter"))?;
+        let mark = self.journal.mark();
+        let written = refinemv
+            .into_iter()
+            .chain(interp)
+            .try_for_each(|(selector, value)| self.put(symbols, selector, usize::from(value)));
+        self.journal.rollback(&mut self.cdfs, mark)?;
+        written.map(|()| interp.is_some())
     }
 
     /// Publishes the coded inter leaf `leaf` into the neighbour, motion and
