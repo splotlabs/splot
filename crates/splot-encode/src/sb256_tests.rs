@@ -13,19 +13,35 @@ static SB256: PresetParams = PresetParams {
     ..PRESETS[9]
 };
 
-/// `(width, height, bit depth, chroma, (cols_log2, rows_log2))`.
-type Sb256Case = (u32, u32, BitDepth, PixelFormat, (u8, u8));
+/// `(width, height, bit depth, chroma, (cols_log2, rows_log2), still)`: a
+/// still case codes 256x256 skipped leaves over a finer key frame.
+type Sb256Case = (u32, u32, BitDepth, PixelFormat, (u8, u8), bool);
 
-const SB256_CASES: [Sb256Case; 3] = [
-    (320, 200, BitDepth::Eight, PixelFormat::Yuv420, (1, 0)),
-    (300, 264, BitDepth::Ten, PixelFormat::Yuv422, (0, 0)),
-    (264, 136, BitDepth::Eight, PixelFormat::Yuv444, (0, 0)),
+const SB256_CASES: [Sb256Case; 4] = [
+    (
+        320,
+        200,
+        BitDepth::Eight,
+        PixelFormat::Yuv420,
+        (1, 0),
+        false,
+    ),
+    (300, 264, BitDepth::Ten, PixelFormat::Yuv422, (0, 0), false),
+    (
+        264,
+        136,
+        BitDepth::Eight,
+        PixelFormat::Yuv444,
+        (0, 0),
+        false,
+    ),
+    (520, 300, BitDepth::Eight, PixelFormat::Yuv420, (0, 0), true),
 ];
 
 /// Key, inter, inter and key frames of panning content with [`SB256`] on
 /// `threads` threads: the units and the encoder recon.
 fn sb256_stream(case: Sb256Case, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
-    let (width, height, bit_depth, chroma, (cols_log2, rows_log2)) = case;
+    let (width, height, bit_depth, chroma, (cols_log2, rows_log2), still) = case;
     let mut config = config(width, height, bit_depth, 9, 140);
     config.chroma = chroma;
     config.keyint = core::num::NonZeroU32::new(3).unwrap();
@@ -40,9 +56,12 @@ fn sb256_stream(case: Sb256Case, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
     let (mut units, mut recon) = (Vec::new(), Vec::new());
     for index in 0..4 {
         let plan = crate::gop::plan(u64::from(index), config.keyint);
-        let coded = coder
-            .encode_frame(&panning_frame(&config, index), &plan, 140)
-            .unwrap();
+        let (source, qp) = if still {
+            (ramp(&config), if index == 0 { 60 } else { 160 })
+        } else {
+            (panning_frame(&config, index), 140)
+        };
+        let coded = coder.encode_frame(&source, &plan, qp).unwrap();
         recon.extend(recon_bytes(&coded, bit_depth));
         units.push(coded.temporal_unit);
     }
@@ -51,8 +70,8 @@ fn sb256_stream(case: Sb256Case, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
 
 /// Inter frames with 256x256 superblocks between 128x128-superblock key
 /// frames decode to the encoder recon with the frame filters, in every
-/// chroma format, at frame edges and with tiles, and 1, 2 and 8 threads
-/// write the same bytes.
+/// chroma format, at frame edges, with tiles and with 256x256 leaves, and 1,
+/// 2 and 8 threads write the same bytes.
 #[test]
 fn sb256_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     for case in SB256_CASES {
@@ -67,19 +86,29 @@ fn sb256_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     }
 }
 
-/// The search of an inter frame of a pan codes leaves wider than 128 in its
-/// 256x256 superblocks; a short frame or `max_block_log2` 7 codes 128x128
-/// superblocks.
+/// A still diagonal ramp.
+fn ramp(config: &Config) -> SourceFrame {
+    let sizes = config.plane_sizes().unwrap();
+    let planes = core::array::from_fn(|plane| {
+        let size = sizes[plane];
+        (0..size.height())
+            .flat_map(|y| (0..size.width()).map(move |x| (40 + (x + y) / 4 + plane * 9) as u16))
+            .collect()
+    });
+    SourceFrame::new(config, 0, planes).unwrap()
+}
+
+/// The search of an inter frame of a still ramp over a finer key frame codes
+/// leaves wider than 128 in its 256x256 superblocks; a short frame or
+/// `max_block_log2` 7 codes 128x128 superblocks.
 #[test]
 fn sb256_search_codes_256_wide_inter_leaves() {
-    let config = config(512, 256, BitDepth::Eight, 9, 230);
+    let config = config(512, 256, BitDepth::Eight, 9, 140);
     let mut coder = IntraFrameCoder::with_preset(&config, &SB256).unwrap();
     let key = crate::gop::plan(0, config.keyint);
-    coder
-        .encode_frame(&panning_frame(&config, 0), &key, 140)
-        .unwrap();
+    coder.encode_frame(&ramp(&config), &key, 60).unwrap();
     let plan = crate::gop::plan(1, config.keyint);
-    let trees = search_frame(&coder, &plan, &panning_frame(&config, 0), config.bit_depth);
+    let trees = search_frame(&coder, &plan, &ramp(&config), config.bit_depth);
     assert!(widest_leaf(&trees) > 128, "no leaf wider than 128");
     for preset in [
         PresetParams {
