@@ -615,6 +615,20 @@ fn rejects_out_of_range_inputs() {
     assert!(matches!(
         build_key_frame_header(
             &view,
+            0,
+            0,
+            &FrameFilterParams::default(),
+            KeyFrameTxParams {
+                delta_q_res: Some(1),
+                ..KeyFrameTxParams::default()
+            },
+            UniformTiles::default()
+        ),
+        Err(EncoderHeaderError::DeltaQWithoutBaseQIdx)
+    ));
+    assert!(matches!(
+        build_key_frame_header(
+            &view,
             256,
             0,
             &FrameFilterParams::default(),
