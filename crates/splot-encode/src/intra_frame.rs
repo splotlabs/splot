@@ -6,13 +6,13 @@
 //! unit of a key or inter frame.
 
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, UniformTiles,
-    build_encoder_sequence_header,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
+    UniformTiles, build_encoder_sequence_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    CCTX_ROTATIONS, EncoderReferences, IntraTileSyntax, Ist, Partition, PartitionNode,
-    TransformBlock, TxType, recon_params, tile_count, tx_log2,
+    CCTX_ROTATIONS, EncoderReferences, IntraTileSyntax, Ist, LeafBlock, Palette, Partition,
+    PartitionNode, TransformBlock, TxType, recon_params, tile_count, tx_log2,
 };
 use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
@@ -27,12 +27,14 @@ use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::gop::{self, GopFrame};
+use crate::intrabc::BvSearch;
 use crate::kernels::rdoq::{RdoqBlock, hide_parity, parity_moves, rdoq};
 use crate::kernels::tcq::{TcqScratch, tcq};
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
 use crate::loop_filter::{CodedTile, FilteredFrame, FirstPass, FrameDecisions, finish_frame};
 use crate::mode_decision::TrialCoder;
 use crate::motion_search::MotionSearch;
+use crate::palette::PaletteSearch;
 use crate::preset::{PresetParams, TcqFrames};
 use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, RowCaches, block_rate};
 use crate::rd::partition::search_partition;
@@ -122,9 +124,11 @@ impl IntraFrameCoder {
                 intra_ist: preset.ist_sets > 0,
                 inter_ddt: preset.inter_ddt,
                 inter_ist: preset.inter_ist,
+                tip: preset.tip > 0 && preset.mv_prediction,
                 cctx: preset.cctx,
                 mhccp: preset.mhccp,
                 fsc: preset.fsc,
+                screen_content: preset.palette || preset.integer_mv,
                 dip: preset.dip,
                 ext_partitions: preset.ext_partitions > 0,
                 uneven_4way_partitions: preset.ext_partitions > 1,
@@ -197,6 +201,7 @@ impl FrameCoder for IntraFrameCoder {
         if let Some(screen) = self.screen.filter(|_| is_screen_content(first)) {
             self.preset = screen;
             tools.fsc = screen.fsc;
+            tools.screen_content = screen.palette || screen.integer_mv;
         }
         if self.preset.cfl_filter {
             tools.cfl_ds_filter = cfl_ds_filter(first);
@@ -256,6 +261,70 @@ impl IntraFrameCoder {
         )
     }
 
+    /// The `tip_global_wtd_index` whose TIP prediction of `source` has the
+    /// least luma SSE over every other in-frame 64x64 block (a checkerboard)
+    /// of the frame `core`, a `TIP_FRAME_AS_REF` frame; ties keep the lower
+    /// index.
+    fn tip_weight(&self, source: &SourceFrame, core: &FrameHeaderCore) -> Result<u8> {
+        const PROBE4: usize = 16;
+        let initial = self
+            .references
+            .frame_start(core)
+            .map_err(coding("initial CDFs"))?;
+        let mut totals = [0u64; 8];
+        let mut padded = None;
+        for tile in 0..tile_count(core) {
+            let mut writer = KeyFrameTileWriter::with_start(
+                &self.sequence,
+                core,
+                &self.references,
+                &initial,
+                tile,
+            )
+            .map_err(coding("tile setup"))?;
+            let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
+            let sb4 = writer.syntax().superblock_size4();
+            let padded = padded.get_or_insert_with(|| {
+                PaddedSource::new(
+                    source,
+                    self.chroma,
+                    mi_cols * 4 + sb4 * 4,
+                    mi_rows * 4 + sb4 * 4,
+                )
+            });
+            writer
+                .probe_superblocks(|syntax, root| {
+                    let nodes = if sb4 > PROBE4 {
+                        syntax.children(root, Partition::Split)?
+                    } else {
+                        vec![root]
+                    };
+                    for node in nodes {
+                        let (row4, col4) = (node.row4(), node.col4());
+                        let full = row4 + PROBE4 <= mi_rows && col4 + PROBE4 <= mi_cols;
+                        if !full || (row4 / PROBE4 + col4 / PROBE4) % 2 == 1 {
+                            continue;
+                        }
+                        let leaf = syntax.leaf(node)?;
+                        if !syntax.tip_allowed(&leaf)? {
+                            continue;
+                        }
+                        for (weight, total) in (0u8..).zip(totals.iter_mut()) {
+                            for (tx, prediction) in syntax.tip_prediction(&leaf, weight)? {
+                                *total += padded.sse(&tx, &prediction)?;
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+                .map_err(coding("TIP weight"))?;
+        }
+        Ok((0u8..)
+            .zip(totals)
+            .min_by_key(|&(_, total)| total)
+            .map_or(0, |(weight, _)| weight))
+    }
+
     /// Codes `source` as `plan` at quantizer `qp` against the committed
     /// references; non-empty `sb_quant`, one `(qindex offset, lambda log2
     /// Q8)` per superblock in frame raster order, moves the qindex of each
@@ -275,6 +344,20 @@ impl IntraFrameCoder {
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
         tools.0.delta_q_res = (!sb_quant.is_empty()).then_some(self.preset.delta_q_res);
+        if tools.2.3.is_some() {
+            let probe = plan.header(
+                &self.view,
+                &self.references,
+                qindex,
+                &FrameFilterParams::default(),
+                tools,
+            )?;
+            if !self.references.tip_pair_available(&probe) {
+                tools.2.3 = None;
+            } else if self.preset.tip >= 2 {
+                tools.2.3 = Some(self.tip_weight(source, &probe)?);
+            }
+        }
         let header = |filters: &FrameFilterParams| {
             plan.header(&self.view, &self.references, qindex, filters, tools)
         };
@@ -304,7 +387,11 @@ impl IntraFrameCoder {
         let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
         let motion = MotionSearch::new(first.syntax(), &padded, &self.preset, lambda)
             .map_err(coding("motion search"))?;
-        let (padded, motion) = (&padded, motion.as_ref());
+        let bv_search = (core.allow_intrabc == Some(true)).then(|| {
+            let (luma, stride, width, height) = padded.luma();
+            BvSearch::new(luma, stride, (width, height))
+        });
+        let (padded, motion, bv_search) = (&padded, motion.as_ref(), bv_search.as_ref());
         let (bit_depth, preset) = (self.bit_depth, &self.preset);
         let sb_cols = mi_cols.div_ceil(sb / 4);
         if !sb_quant.is_empty() && sb_quant.len() != sb_cols * mi_rows.div_ceil(sb / 4) {
@@ -314,6 +401,7 @@ impl IntraFrameCoder {
         }
         let tiles = map_tiles(self.pool.as_ref(), writers, |mut writer| {
             let mut coder = SourceResidualCoder::new(padded, qindex, bit_depth, preset, lambda);
+            coder.intrabc = bv_search;
             let mut decisions = FrameDecisions::default();
             while let Some(root) = writer.next_superblock_root() {
                 let index = root.row4() / (sb / 4) * sb_cols + root.col4() / (sb / 4);
@@ -563,6 +651,9 @@ pub(crate) struct SourceResidualCoder<'a> {
     pair: [Vec<i32>; 2],
     /// The row costs and the trellis buffers reused across blocks.
     rates: (RowCaches, TcqScratch),
+    pub(crate) palette: PaletteSearch,
+    /// The block hashes of the frame source, in a frame with IntraBC.
+    pub(crate) intrabc: Option<&'a BvSearch>,
 }
 
 impl<'a> SourceResidualCoder<'a> {
@@ -592,11 +683,21 @@ impl<'a> SourceResidualCoder<'a> {
             scratch: Default::default(),
             pair: Default::default(),
             rates: Default::default(),
+            palette: PaletteSearch::default(),
+            intrabc: None,
         }
     }
 }
 
 impl ResidualCoder for SourceResidualCoder<'_> {
+    fn palette_map(
+        &mut self,
+        leaf: &LeafBlock,
+        palette: &Palette,
+    ) -> core::result::Result<&[u8], TileWriterError> {
+        self.palette.map(self.source, leaf, palette)
+    }
+
     /// The offered type of the preset's leading `tx_types` with the lowest
     /// `D + lambda * R`, with the exact coefficient and type rate.
     fn code_luma(

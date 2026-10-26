@@ -72,6 +72,15 @@ pub struct InterFrameParams {
     /// `is_filter_switchable` (§ 5.18.5.1): blocks code `interp_filter`;
     /// off, the frame codes `EIGHTTAP`.
     pub switchable_interp_filter: bool,
+    /// `tip_global_wtd_index` of a frame coding `tip_frame_mode =
+    /// TIP_FRAME_AS_REF` (§ 5.18.2); `None` codes `TIP_FRAME_DISABLED`. A
+    /// frame without `enable_tip`, `use_ref_frame_mvs` or two references
+    /// reads neither and is `TIP_FRAME_DISABLED`.
+    pub tip_weight: Option<u8>,
+    /// `force_integer_mv` (§ 5.18.3.3) of a sequence that chooses screen
+    /// content tools: whole-sample motion vectors; `high_precision_mv` must
+    /// then be off.
+    pub force_integer_mv: bool,
 }
 
 /// A parsed frame header and the exact bits it was parsed from.
@@ -224,11 +233,29 @@ fn inter_frame_header_bits(
     {
         w.write_flag(false)?; // tmvp_sample_step_minus_1
     }
+    if seq.inter.enable_tip && params.use_ref_frame_mvs && num_total_refs >= 2 {
+        w.write_flag(params.tip_weight.is_some())?; // tip_frame_mode
+        if let Some(weight) = params.tip_weight {
+            if seq.inter.enable_tip_hole_fill {
+                w.write_flag(false)?; // allow_tip_hole_fill
+            }
+            w.write_bits(u32::from(weight), 3)?; // tip_global_wtd_index
+        }
+    }
+    let coded_integer_mv = seq.seq_force_screen_content_tools == 2 && seq.seq_force_integer_mv == 2;
+    if params.force_integer_mv && (!coded_integer_mv || params.high_precision_mv) {
+        return Err(unsupported("force_integer_mv the sequence does not select"));
+    }
     if seq.seq_force_screen_content_tools == 2 {
-        w.write_flag(false)?; // allow_screen_content_tools
+        w.write_flag(true)?; // allow_screen_content_tools
+        if seq.seq_force_integer_mv == 2 {
+            w.write_flag(params.force_integer_mv)?;
+        }
     }
     w.write_flag(false)?; // allow_intrabc
-    w.write_flag(!params.high_precision_mv)?; // use_qtr_precision_mv
+    if !params.force_integer_mv {
+        w.write_flag(!params.high_precision_mv)?; // use_qtr_precision_mv
+    }
     if params.high_precision_mv {
         w.write_flag(true)?; // allow_high_precision_mv
     }
@@ -238,6 +265,9 @@ fn inter_frame_header_bits(
     }
     w.write_flag(false)?; // disable_cdf_update
     let tx = params.tx;
+    if tx.allow_intrabc {
+        return Err(unsupported("intra block copy in an inter frame"));
+    }
     if tx.tx_mode == TxMode::Only4x4 || tx.reduced_tx_set > MAX_REDUCED_TX_SET {
         return Err(EncoderHeaderError::InvalidTxParams {
             tx_mode: tx.tx_mode,

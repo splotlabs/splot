@@ -602,8 +602,8 @@ impl Rng {
 /// [`COMPOUND_MODES`] order; skip mode; same-reference compound; a nonzero
 /// second-DRL index of list 1; a nonzero `jmvd_scale_mode`; a coded
 /// `interp_filter` other than `EIGHTTAP`; a `NEWMV` below the frame
-/// precision; an adaptive-MVD `NEWMV`.
-type Coverage = [usize; 19];
+/// precision; an adaptive-MVD `NEWMV`; a TIP leaf.
+type Coverage = [usize; 20];
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -746,6 +746,22 @@ fn random_modes(
             return LeafChoice::inter(InterPrediction::Compound(modes));
         }
     }
+    if syntax.tip_allowed(leaf).unwrap() && rng.below(4) == 0 {
+        coverage[19] += 1;
+        let mode = [InterMode::Near, InterMode::New][rng.below(2) as usize];
+        let precisions = syntax.newmv_precisions(leaf).unwrap();
+        let pick = rng.below(precisions.len() as u64 + 2) as usize;
+        let new = mode == InterMode::New;
+        return LeafChoice::inter(InterPrediction::Single(InterModes {
+            ref_frame: syntax.reference_count(),
+            mode,
+            drl: rng.below(drls) as usize,
+            mv: mvs[0],
+            filter,
+            precision: precisions.get(pick).copied().filter(|_| new),
+            amvd: new && pick == precisions.len() && syntax.adaptive_mvd(),
+        }));
+    }
     let mode = [InterMode::Near, InterMode::Global, InterMode::New][rng.below(3) as usize];
     coverage[1 + mode as usize] += 1;
     let drl = rng.below(drls) as usize;
@@ -829,9 +845,14 @@ fn inter_stream_with(
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let (tx, _, (high_precision_mv, ref_mvs, _), tiles) =
+    let (tx, _, (high_precision_mv, ref_mvs, _, tip, integer_mv), tiles) =
         crate::gop::frame_tools(&coder.preset, coder.tiles, qindex);
-    let tools = (tx, true, (high_precision_mv, ref_mvs, true), tiles);
+    let tools = (
+        tx,
+        true,
+        (high_precision_mv, ref_mvs, true, tip, integer_mv),
+        tiles,
+    );
     let filters = FrameFilterParams::default();
     let core = plan
         .header(&coder.view, &coder.references, qindex, &filters, tools)
@@ -966,6 +987,14 @@ fn search_frame(
 struct ToolCount<'a, 'b>(&'a mut SourceResidualCoder<'b>, [usize; 2]);
 
 impl ResidualCoder for ToolCount<'_, '_> {
+    fn palette_map(
+        &mut self,
+        leaf: &splot_decode::encoder_syntax::LeafBlock,
+        palette: &splot_decode::encoder_syntax::Palette,
+    ) -> core::result::Result<&[u8], TileWriterError> {
+        self.0.palette_map(leaf, palette)
+    }
+
     fn code(
         &mut self,
         syntax: &mut IntraTileSyntax,
@@ -1023,6 +1052,9 @@ fn search_frame_counting(
     let lambda = Lambda::from_qindex(90, bit_depth).unwrap();
     let motion = MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda).unwrap();
     let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, &coder.preset, lambda);
+    let (luma, stride, width, height) = padded.luma();
+    let bv_search = crate::intrabc::BvSearch::new(luma, stride, (width, height));
+    residual.intrabc = (core.allow_intrabc == Some(true)).then_some(&bv_search);
     let (mut trees, mut counts) = (Vec::new(), [0; 2]);
     while writer.next_superblock_root().is_some() {
         let mut search = || {
@@ -1290,6 +1322,8 @@ mod intra_tools;
 mod large_inter;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
+#[path = "intra_frame_tip_tests.rs"]
+mod tip;
 #[path = "intra_frame_wienerns_tests.rs"]
 mod wienerns;
 

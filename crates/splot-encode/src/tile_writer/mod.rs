@@ -25,8 +25,8 @@ use splot_decode::encoder_syntax::{
 use splot_recon::{DecodedFrame, ReconError};
 
 pub(crate) use decision::{
-    CompoundMode, CompoundModes, INTRA_MODES, InterMode, InterModes, InterPrediction, Ist,
-    LeafChoice, MotionVector, Partition, PartitionTree, ResidualCoder, SuperblockDecision,
+    CompoundMode, CompoundModes, INTRA_MODES, InterMode, InterModes, InterPrediction, IntrabcModes,
+    Ist, LeafChoice, MotionVector, Partition, PartitionTree, ResidualCoder, SuperblockDecision,
     TransformDecision, TxType,
 };
 
@@ -170,6 +170,24 @@ impl KeyFrameTileWriter {
         Ok(())
     }
 
+    /// Runs `probe` on the facade at the root of every superblock of the tile
+    /// in raster order, before any superblock is written.
+    pub(crate) fn probe_superblocks(
+        &mut self,
+        mut probe: impl FnMut(&mut IntraTileSyntax, PartitionNode) -> Result<()>,
+    ) -> Result<()> {
+        let sb4 = self.syntax.superblock_size4();
+        for index in 0..self.superblocks {
+            let root = self.syntax.superblock_root(
+                self.origin.0 + index / self.sb_cols * sb4,
+                self.origin.1 + index % self.sb_cols * sb4,
+            );
+            self.syntax.begin_superblock(root);
+            probe(&mut self.syntax, root)?;
+        }
+        Ok(())
+    }
+
     /// Runs `search` on the facade at the start of the next superblock, then
     /// rolls the facade back, so the superblock is still to be written.
     pub(crate) fn search_superblock<T>(
@@ -297,9 +315,9 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
     }
 
     /// Codes the blocks of `planes` of `leaf` under `choice`, then writes the
-    /// leaf syntax in order: `is_inter`, `cdef_idx`, the modes, the luma
-    /// transform partition, and the coefficients of `planes`. Only a pass over
-    /// all planes publishes the leaf. An inter leaf codes every plane. Returns
+    /// leaf syntax in order: `is_inter`, `cdef_idx`, the modes, the palette
+    /// color map, the luma transform partition, and the coefficients of
+    /// `planes`. Only a pass over all planes publishes the leaf. An inter leaf codes every plane. Returns
     /// the leaf's transform blocks.
     pub(crate) fn write_leaf(
         &mut self,
@@ -311,11 +329,18 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         if let Some(modes) = choice.inter {
             return self.write_inter_leaf(leaf, (modes, choice.tx_partition), coder);
         }
+        if let Some(modes) = choice.intrabc {
+            return self.write_intrabc_leaf(leaf, (modes, choice.tx_partition), coder);
+        }
         let LeafChoice {
             modes,
             tx_partition,
             ..
         } = choice;
+        if let Some(palette) = &modes.palette {
+            self.syntax
+                .set_palette_map(coder.palette_map(leaf, palette)?);
+        }
         let mut blocks = self
             .syntax
             .plan_leaf_partitioned(leaf, modes, tx_partition)?;
@@ -367,10 +392,12 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             }
         }
         self.syntax.write_is_inter(leaf, false, self.sink)?;
+        self.syntax.write_use_intrabc(leaf, None, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
             filters.write_leaf_syntax(self.syntax, self.sink, leaf, false)?;
         }
         self.syntax.write_intra_modes(leaf, modes, self.sink)?;
+        self.syntax.write_palette_tokens(self.sink)?;
         let sink = &mut *self.sink;
         self.syntax
             .code_luma_tx_partition(leaf, tx_partition, |cdf, value| {
@@ -401,28 +428,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         let mut blocks = self
             .syntax
             .plan_inter_leaf_partitioned(leaf, prediction, tx_partition)?;
-        let mut levels = vec![Vec::new(); blocks.len()];
-        for index in 0..blocks.len() {
-            let mut tx = blocks[index];
-            if tx.plane > 0 {
-                tx.tx_type = self
-                    .syntax
-                    .inter_chroma_tx_type(leaf, &blocks[..index], &tx)?;
-            }
-            let prediction = self.syntax.reconstruction(&tx)?;
-            let decision = if tx.plane == 0 {
-                self.code_luma(coder, &tx, &prediction)?
-            } else {
-                code_as(self.syntax, coder, &tx, &prediction)?
-            };
-            tx.tx_type = decision.tx_type;
-            blocks[index] = tx;
-            levels[index] = decision.levels;
-        }
-        let skip = levels.iter().flatten().all(|&level| level == 0);
-        if !skip {
-            self.syntax.reconstruct_inter(&blocks, &levels)?;
-        }
+        let (levels, skip) = self.code_inter_residual(leaf, &mut blocks, coder)?;
         self.syntax.write_is_inter(leaf, true, self.sink)?;
         self.syntax.write_skip_txfm(leaf, skip, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
@@ -444,6 +450,71 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         }
         self.syntax.publish_inter_leaf(leaf, skip)?;
         Ok(blocks)
+    }
+
+    /// Codes the IntraBC leaf `leaf` of `modes`: its residual over the copy,
+    /// then `use_intrabc` and `skip_txfm`, `cdef_idx`, the IntraBC syntax and
+    /// the residual. A leaf whose levels are all zero codes `skip_txfm = 1`.
+    fn write_intrabc_leaf(
+        &mut self,
+        leaf: &LeafBlock,
+        (modes, tx_partition): (IntrabcModes, TxPartition),
+        coder: &mut impl ResidualCoder,
+    ) -> Result<Vec<TransformBlock>> {
+        let mut blocks = self.syntax.plan_intrabc_leaf(leaf, modes, tx_partition)?;
+        let (levels, skip) = self.code_inter_residual(leaf, &mut blocks, coder)?;
+        self.syntax.write_use_intrabc(leaf, Some(skip), self.sink)?;
+        if let Some(filters) = self.filters.as_deref_mut() {
+            filters.write_leaf_syntax(self.syntax, self.sink, leaf, skip)?;
+        }
+        self.syntax.write_intrabc_modes(leaf, modes, self.sink)?;
+        if !skip {
+            let sink = &mut *self.sink;
+            self.syntax
+                .code_luma_tx_partition(leaf, tx_partition, |cdf, value| {
+                    coeffs::write_symbol(sink, cdf, value)
+                })?;
+            self.write_residual(&blocks, &levels, &(0..3))?;
+        }
+        if let Some(filters) = self.filters.as_deref_mut() {
+            filters.record_inter_leaf(self.syntax, leaf, skip)?;
+        }
+        self.syntax.publish_intrabc_leaf(leaf, skip)?;
+        Ok(blocks)
+    }
+
+    /// Codes each planned block of the inter or IntraBC leaf `leaf` over its
+    /// prediction and adds the residual; returns the levels and whether all
+    /// are zero.
+    fn code_inter_residual(
+        &mut self,
+        leaf: &LeafBlock,
+        blocks: &mut [TransformBlock],
+        coder: &mut impl ResidualCoder,
+    ) -> Result<(Vec<Vec<i32>>, bool)> {
+        let mut levels = vec![Vec::new(); blocks.len()];
+        for index in 0..blocks.len() {
+            let mut tx = blocks[index];
+            if tx.plane > 0 {
+                tx.tx_type = self
+                    .syntax
+                    .inter_chroma_tx_type(leaf, &blocks[..index], &tx)?;
+            }
+            let prediction = self.syntax.reconstruction(&tx)?;
+            let decision = if tx.plane == 0 {
+                self.code_luma(coder, &tx, &prediction)?
+            } else {
+                code_as(self.syntax, coder, &tx, &prediction)?
+            };
+            tx.tx_type = decision.tx_type;
+            blocks[index] = tx;
+            levels[index] = decision.levels;
+        }
+        let skip = levels.iter().flatten().all(|&level| level == 0);
+        if !skip {
+            self.syntax.reconstruct_inter(blocks, &levels)?;
+        }
+        Ok((levels, skip))
     }
 
     /// Writes the coefficients of the blocks of `planes`; returns each `eob`.

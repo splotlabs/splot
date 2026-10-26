@@ -147,8 +147,23 @@ pub struct PresetParams {
     /// on screen content, whose preset rows turn it on.
     pub fsc: bool,
     /// The first frame switches the sequence to the screen-content row of
-    /// its preset (FSC on) when it looks like screen content.
+    /// its preset (FSC, palette, IntraBC and integer motion vectors on) when
+    /// it looks like screen content.
     pub screen_detect: bool,
+    /// The winning luma mode of an intra leaf gets RD trials against
+    /// `DC_PRED` palettes of 2 to 8 of the leaf's most frequent luma values;
+    /// off disables `allow_screen_content_tools`. Off in every row: it pays
+    /// only on screen content, whose preset rows turn it on.
+    pub palette: bool,
+    /// Key frames code `allow_intrabc`, and each leaf of at most 64x64
+    /// (other than 64x64) gets an RD trial of the closest earlier copy of
+    /// its luma that the block hashes find. Off in every row: it pays only
+    /// on screen content, whose preset rows turn it on.
+    pub intrabc: bool,
+    /// Inter frames code `force_integer_mv = 1`: whole-sample motion vectors
+    /// and a whole-sample motion search. Off in every row: it pays only on
+    /// screen content, whose preset rows turn it on.
+    pub integer_mv: bool,
     /// The first frame picks the sequence's `cfl_ds_filter_index` by the
     /// down-sampled luma that best predicts its chroma; off codes `0`.
     pub cfl_filter: bool,
@@ -182,6 +197,12 @@ pub struct PresetParams {
     /// (2026-10-25): every such block with `eob > 3` then pays a
     /// `sec_tx_type` symbol, and p6 measured park_joy -0.06%, paris +0.34%.
     pub inter_ist: bool,
+    /// TIP (`enable_tip`), `0..=2`: `1` inter frames with reference MVs and
+    /// a TIP reference pair code `TIP_FRAME_AS_REF` with equal weights, and
+    /// inter leaves also try the TIP `NEARMV` candidates; `2` also picks the
+    /// frame's `tip_global_wtd_index` by the luma SSE of the TIP prediction
+    /// over every other 64x64 block.
+    pub tip: u8,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -282,7 +303,8 @@ impl PresetParams {
         check("interp_filter_search", self.interp_filter_search, 0, 2, "")?;
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
-        check("gdf_candidates", self.gdf_candidates, 0, 16, "")
+        check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
+        check("tip", self.tip, 0, 2, "")
     }
 }
 
@@ -441,6 +463,7 @@ preset_table! {
         mvd_tools:             [[false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3], [false; 3]],
         interp_filter_search:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         cdf_carry:             [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -454,6 +477,9 @@ preset_table! {
     screen_content {
         fsc:                   [false, false, false, false, false, false, false, false, false, false, false],
         screen_detect:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        palette:               [false, false, false, false, false, false, false, false, false, false, false],
+        intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
+        integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {
         mini_gop_size:         [    8,     8,     8,     8,     4,     4,     4,     4,     2,     2,     1],
@@ -471,6 +497,9 @@ pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
     while i < rows.len() {
         rows[i] = PresetParams {
             fsc: true,
+            palette: true,
+            intrabc: true,
+            integer_mv: true,
             ..rows[i]
         };
         i += 1;
@@ -579,6 +608,9 @@ mod tests {
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.mhccp <= slow.mhccp);
             assert!(fast.fsc <= slow.fsc);
+            assert!(fast.palette <= slow.palette);
+            assert!(fast.intrabc <= slow.intrabc);
+            assert!(fast.integer_mv <= slow.integer_mv);
             assert!(fast.screen_detect <= slow.screen_detect);
             assert!(fast.cfl_filter <= slow.cfl_filter);
             assert!(fast.dip <= slow.dip);
@@ -587,6 +619,7 @@ mod tests {
             assert!(fast.cdef_on_skip <= slow.cdef_on_skip);
             assert!(fast.inter_ddt <= slow.inter_ddt);
             assert!(fast.inter_ist <= slow.inter_ist);
+            assert!(fast.tip <= slow.tip);
             assert!(
                 fast.inter_tx_split == 0
                     || (slow.inter_tx_split != 0 && fast.inter_tx_split >= slow.inter_tx_split)
@@ -696,6 +729,7 @@ mod tests {
             (&[("mini_gop_size", "9")], "mini_gop_size"),
             (&[("intra_modes", "0")], "intra_modes"),
             (&[("gdf_candidates", "17")], "gdf_candidates"),
+            (&[("tip", "3")], "tip"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {

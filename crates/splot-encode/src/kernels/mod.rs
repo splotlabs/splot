@@ -20,6 +20,7 @@ mod colours;
 mod distortion;
 mod forward_transform;
 pub(crate) mod gdf;
+mod hash;
 mod ist;
 mod quantize;
 pub(crate) mod rdoq;
@@ -229,6 +230,18 @@ pub(crate) trait EncoderKernels: Sync {
     /// ([`colours::colours_simd`]).
     fn block_colours(&self, block: &[u16], limit: usize) -> (usize, u16);
 
+    /// The index of the color of `colors` nearest each sample of `samples`
+    /// into `out` ([`colours::nearest_simd`]).
+    fn nearest_colours(&self, samples: &[u16], colors: &[u16], out: &mut [u8]);
+
+    /// The hash of each eight-sample run of `row` into `out`
+    /// ([`hash::row_hashes_simd`]).
+    fn row_hashes(&self, row: &[u16], out: &mut [u32]);
+
+    /// The 8x8 block hash of each position of eight row-hash runs into
+    /// `out` ([`hash::column_hashes_simd`]).
+    fn column_hashes(&self, rows: [&[u32]; hash::HASH_SIDE], out: &mut [u32]);
+
     /// One chroma row of the luma rows above, at and below it, down-sampled
     /// by the CfL taps `weights` ([`cfl::downsample_simd`]).
     fn cfl_downsample(&self, weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out: &mut [i32]);
@@ -357,6 +370,18 @@ impl EncoderKernels for ScalarKernels {
         colours::colours_scalar(block, limit)
     }
 
+    fn nearest_colours(&self, samples: &[u16], colors: &[u16], out: &mut [u8]) {
+        colours::nearest_scalar(samples, colors, out);
+    }
+
+    fn row_hashes(&self, row: &[u16], out: &mut [u32]) {
+        hash::row_hashes_scalar(row, out);
+    }
+
+    fn column_hashes(&self, rows: [&[u32]; hash::HASH_SIDE], out: &mut [u32]) {
+        hash::column_hashes_scalar(rows, out);
+    }
+
     fn cfl_downsample(&self, weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out: &mut [i32]) {
         cfl::downsample_scalar(weights, rows, out);
     }
@@ -469,6 +494,18 @@ impl EncoderKernels for SimdKernels {
 
     fn block_colours(&self, block: &[u16], limit: usize) -> (usize, u16) {
         colours::colours_simd(block, limit)
+    }
+
+    fn nearest_colours(&self, samples: &[u16], colors: &[u16], out: &mut [u8]) {
+        colours::nearest_simd(samples, colors, out);
+    }
+
+    fn row_hashes(&self, row: &[u16], out: &mut [u32]) {
+        hash::row_hashes_simd(row, out);
+    }
+
+    fn column_hashes(&self, rows: [&[u32]; hash::HASH_SIDE], out: &mut [u32]) {
+        hash::column_hashes_simd(rows, out);
     }
 
     fn cfl_downsample(&self, weights: &[[i32; 3]; 3], rows: [&[u16]; 3], out: &mut [i32]) {

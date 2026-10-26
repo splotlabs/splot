@@ -1091,7 +1091,7 @@ pub(crate) fn allow_fsc_intra(
         && block_n4h.saturating_mul(4) <= FSC_MAX_SAMPLES
 }
 
-fn palette_y_mode_allowed(
+pub(crate) fn palette_y_mode_allowed(
     chroma_tools: GeneralIntraChromaToolConfig,
     y_mode: IntraYMode,
     block_size_index: usize,
@@ -1187,7 +1187,7 @@ fn read_literal_u32(
         .map_err(|source| GeneralIntraBlockModeError::Literal { reason, source })
 }
 
-const fn ceil_log2_u32(value: u32) -> u32 {
+pub(crate) const fn ceil_log2_u32(value: u32) -> u32 {
     if value < 2 {
         0
     } else {

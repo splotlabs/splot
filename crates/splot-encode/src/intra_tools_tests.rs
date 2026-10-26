@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Intra coding tools in coded streams: MRL (§ 7.13.2), IST (§ 7.15.3), CCTX
-//! (§ 7.14.6), MHCCP (§ 5.20.7.32), FSC (§ 5.20.7.27), DIP (§ 5.20.7.9) and
-//! the CfL down-sampling filter (§ 7.13.5).
+//! (§ 7.14.6), MHCCP (§ 5.20.7.32), FSC (§ 5.20.7.27), DIP (§ 5.20.7.9),
+//! palette (§ 5.20.8.1) and the CfL down-sampling filter (§ 7.13.5).
 
 use super::*;
 
@@ -13,7 +13,7 @@ fn tool_stream(
     case: (usize, PixelFormat, BitDepth),
     preset: &'static PresetParams,
 ) -> (Vec<Vec<u8>>, Vec<u8>, SequenceHeader) {
-    cfl_stream(case, preset, 0)
+    cfl_stream(case, preset, 0, panning_frame)
 }
 
 /// [`tool_stream`] with `cfl_ds_filter_index` `cfl_filter`.
@@ -21,6 +21,7 @@ fn cfl_stream(
     (threads, chroma, bit_depth): (usize, PixelFormat, BitDepth),
     preset: &'static PresetParams,
     cfl_filter: u8,
+    frame: fn(&Config, u32) -> SourceFrame,
 ) -> (Vec<Vec<u8>>, Vec<u8>, SequenceHeader) {
     let mut config = config(136, 72, bit_depth, 9, 120);
     config.chroma = chroma;
@@ -35,7 +36,7 @@ fn cfl_stream(
     for index in 0..3 {
         let plan = crate::gop::plan(u64::from(index), config.keyint);
         let coded = coder
-            .encode_frame(&panning_frame(&config, index), &plan, 120)
+            .encode_frame(&frame(&config, index), &plan, 120)
             .unwrap();
         recon.extend(recon_bytes(&coded, bit_depth));
         units.push(coded.temporal_unit);
@@ -51,7 +52,8 @@ fn cfl_filters_decode_to_the_encoder_recon() {
     for chroma in CHROMAS {
         for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
             for index in 1..3 {
-                let (units, recon, seq) = cfl_stream((2, chroma, bit_depth), &PRESETS[9], index);
+                let (units, recon, seq) =
+                    cfl_stream((2, chroma, bit_depth), &PRESETS[9], index, panning_frame);
                 assert_eq!(seq.intra.unwrap().cfl_ds_filter_index, index);
                 let name = format!("{chroma:?} {bit_depth:?} filter {index}");
                 assert_same_samples(&decode(&units.concat()), &recon, &name);
@@ -68,7 +70,12 @@ fn avm_decodes_cfl_filters_like_splot() {
         return;
     };
     for (index, bit_depth) in [(1, BitDepth::Eight), (2, BitDepth::Ten)] {
-        let (units, recon, _) = cfl_stream((2, PixelFormat::Yuv420, bit_depth), &PRESETS[9], index);
+        let (units, recon, _) = cfl_stream(
+            (2, PixelFormat::Yuv420, bit_depth),
+            &PRESETS[9],
+            index,
+            panning_frame,
+        );
         let avm = avm_decode(&avmdec, &units, (136, 72), bit_depth, "cfl filter");
         assert!(avm == recon, "filter {index}: AVM output differs");
     }
@@ -225,6 +232,259 @@ fn search_picks_fsc_leaves() {
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
 fn avm_decodes_fsc_frames_like_splot() {
     assert_avm_decodes(preset_with(|p| p.fsc = true), "fsc");
+}
+
+/// Frame `index` of drawn text panning by `(4, 2)` luma samples per frame:
+/// two luma levels with an edge level between, on flat chroma.
+fn screen_frame(config: &Config, index: u32) -> SourceFrame {
+    drawn_text(config, index, 7)
+}
+
+/// [`screen_frame`] whose glyph pattern advances `stride` levels per column.
+fn drawn_text(config: &Config, index: u32, stride: u32) -> SourceFrame {
+    let max = u32::from(config.bit_depth.max_sample());
+    let sizes = config.plane_sizes().unwrap();
+    let planes = core::array::from_fn(|plane| {
+        let size = sizes[plane];
+        let mut samples = Vec::with_capacity(size.width() * size.height());
+        for y in 0..size.height() as u32 {
+            for x in 0..size.width() as u32 {
+                let (x, y) = (x + 4 * index, y + 2 * index);
+                let luma = match (x * stride + y * 3 + x / 5 * (y / 3)) % 13 {
+                    0..=2 => max / 10,
+                    3 => max / 2 + 3,
+                    _ => max * 9 / 10,
+                };
+                samples.push(if plane == 0 {
+                    luma
+                } else {
+                    max / 2 + 7 * plane as u32
+                } as u16);
+            }
+        }
+        samples
+    });
+    SourceFrame::new(config, u64::from(index), planes).unwrap()
+}
+
+/// Palette streams decode to the encoder recon on any thread count.
+#[test]
+fn palette_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    assert_tool_streams(
+        preset_with(|p| p.palette = true),
+        preset_with(|p| p.palette = false),
+        |seq| seq.screen_content.unwrap().seq_force_screen_content_tools == 2,
+    );
+}
+
+/// Drawn text codes palette leaves in key frames and, over new text, in
+/// inter frames, at both bit depths and in 4:2:0 and 4:4:4. Its streams
+/// decode to the encoder recon in every chroma format and both bit depths,
+/// and 1, 2 and 8 threads write the same bytes.
+#[test]
+fn screen_streams_code_palette_leaves() {
+    let preset = preset_with(|p| p.palette = true);
+    let palette = |choice: &LeafChoice| choice.inter.is_none() && choice.modes.palette.is_some();
+    for (chroma, bit_depth) in [
+        (PixelFormat::Yuv420, BitDepth::Ten),
+        (PixelFormat::Yuv420, BitDepth::Eight),
+        (PixelFormat::Yuv444, BitDepth::Eight),
+    ] {
+        let mut config = config(136, 72, bit_depth, 9, 90);
+        config.chroma = chroma;
+        let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        let key = crate::gop::plan(0, config.keyint);
+        let trees = search_frame(&coder, &key, &screen_frame(&config, 0), bit_depth);
+        let count: usize = trees.iter().map(|tree| leaves(tree, palette)).sum();
+        assert!(count > 0, "key {chroma:?} {bit_depth:?}");
+        coder
+            .encode_frame(&screen_frame(&config, 0), &key, 90)
+            .unwrap();
+        let plan = crate::gop::plan(1, config.keyint);
+        let trees = search_frame(&coder, &plan, &drawn_text(&config, 1, 5), bit_depth);
+        let count: usize = trees.iter().map(|tree| leaves(tree, palette)).sum();
+        assert!(count > 0, "inter {chroma:?} {bit_depth:?}");
+    }
+    for chroma in CHROMAS {
+        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+            let (units, recon, _) = cfl_stream((2, chroma, bit_depth), preset, 0, screen_frame);
+            let name = format!("{chroma:?} {bit_depth:?}");
+            assert_same_samples(&decode(&units.concat()), &recon, &name);
+        }
+    }
+    let case = |threads| (threads, PixelFormat::Yuv420, BitDepth::Ten);
+    let (one, ..) = cfl_stream(case(1), preset, 0, screen_frame);
+    for threads in [2, 8] {
+        let (units, ..) = cfl_stream(case(threads), preset, 0, screen_frame);
+        assert!(units == one, "{threads} threads");
+    }
+}
+
+/// Frame `index` of a 24x16 glyph tile repeated over the frame, panning by
+/// `(4, 2)` luma samples per frame, on flat chroma.
+fn tiled_text(config: &Config, index: u32) -> SourceFrame {
+    let max = u32::from(config.bit_depth.max_sample());
+    let sizes = config.plane_sizes().unwrap();
+    let planes = core::array::from_fn(|plane| {
+        let size = sizes[plane];
+        let mut samples = Vec::with_capacity(size.width() * size.height());
+        for y in 0..size.height() as u32 {
+            for x in 0..size.width() as u32 {
+                let (x, y) = ((x + 4 * index) % 24, (y + 2 * index) % 16);
+                let ink = (x * 5 + y * y * 3 + x * y) % 7 < 2;
+                let luma = if ink { max / 8 } else { max * 7 / 8 };
+                samples.push(if plane == 0 {
+                    luma
+                } else {
+                    max / 2 + 5 * plane as u32
+                } as u16);
+            }
+        }
+        samples
+    });
+    SourceFrame::new(config, u64::from(index), planes).unwrap()
+}
+
+/// Two key frames of [`tiled_text`] at 256x128 coded with `preset` on
+/// `threads` threads: the units and the encoder recon.
+fn intrabc_stream(
+    (threads, chroma, bit_depth): (usize, PixelFormat, BitDepth),
+    preset: &'static PresetParams,
+) -> (Vec<u8>, Vec<u8>) {
+    let mut config = config(256, 128, bit_depth, 9, 90);
+    config.chroma = chroma;
+    config.keyint = core::num::NonZeroU32::MIN;
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let (mut units, mut recon) = (Vec::new(), Vec::new());
+    for index in 0..2 {
+        let plan = crate::gop::plan(u64::from(index), config.keyint);
+        let coded = coder
+            .encode_frame(&tiled_text(&config, index), &plan, 120)
+            .unwrap();
+        recon.extend(recon_bytes(&coded, bit_depth));
+        units.push(coded.temporal_unit);
+    }
+    (units.concat(), recon)
+}
+
+/// AVM decodes the IntraBC key frames of repeated text to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_intrabc_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let preset = preset_with(|p| p.intrabc = true);
+    for (chroma, bit_depth) in [
+        (PixelFormat::Yuv420, BitDepth::Eight),
+        (PixelFormat::Yuv420, BitDepth::Ten),
+    ] {
+        let (units, recon) = intrabc_stream((2, chroma, bit_depth), preset);
+        let avm = avm_decode(&avmdec, &[units], (256, 128), bit_depth, "intrabc");
+        assert!(avm == recon, "intrabc {bit_depth:?}: AVM output differs");
+    }
+}
+
+/// Repeated text codes IntraBC leaves in key frames at both bit depths and
+/// in 4:2:0 and 4:4:4; its streams decode to the encoder recon in every
+/// chroma format and both bit depths, and 1, 2 and 8 threads write the same
+/// bytes.
+#[test]
+fn screen_streams_code_intrabc_leaves() {
+    let preset = preset_with(|p| p.intrabc = true);
+    let intrabc = |choice: &LeafChoice| choice.intrabc.is_some();
+    let stream = |case| intrabc_stream(case, preset);
+    for (chroma, bit_depth) in [
+        (PixelFormat::Yuv420, BitDepth::Ten),
+        (PixelFormat::Yuv444, BitDepth::Eight),
+    ] {
+        let mut config = config(256, 128, bit_depth, 9, 90);
+        config.chroma = chroma;
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        let key = crate::gop::plan(0, config.keyint);
+        let trees = search_frame(&coder, &key, &tiled_text(&config, 0), bit_depth);
+        let count: usize = trees.iter().map(|tree| leaves(tree, intrabc)).sum();
+        assert!(count > 0, "{chroma:?} {bit_depth:?}");
+    }
+    for chroma in CHROMAS {
+        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+            let (units, recon) = stream((2, chroma, bit_depth));
+            let name = format!("{chroma:?} {bit_depth:?}");
+            assert_same_samples(&decode(&units), &recon, &name);
+        }
+    }
+    let case = |threads| (threads, PixelFormat::Yuv420, BitDepth::Ten);
+    let (one, _) = stream(case(1));
+    for threads in [2, 8] {
+        assert!(stream(case(threads)).0 == one, "{threads} threads");
+    }
+}
+
+/// Integer-MV streams decode to the encoder recon on any thread count.
+#[test]
+fn integer_mv_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    assert_tool_streams(
+        preset_with(|p| p.integer_mv = true),
+        preset_with(|p| p.integer_mv = false),
+        |seq| seq.screen_content.unwrap().seq_force_screen_content_tools == 2,
+    );
+}
+
+/// An inter frame with `force_integer_mv` codes inter leaves whose vectors
+/// are all whole samples.
+#[test]
+fn integer_mv_frames_code_whole_sample_vectors() {
+    let config = config(64, 40, BitDepth::Ten, 9, 90);
+    let preset = preset_with(|p| p.integer_mv = true);
+    let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let key = crate::gop::plan(0, config.keyint);
+    coder
+        .encode_frame(&panning_frame(&config, 0), &key, 90)
+        .unwrap();
+    let plan = crate::gop::plan(1, config.keyint);
+    let trees = search_frame(&coder, &plan, &panning_frame(&config, 1), config.bit_depth);
+    let inter = |choice: &LeafChoice| choice.inter.is_some();
+    assert!(trees.iter().map(|tree| leaves(tree, inter)).sum::<usize>() > 0);
+    let fractional = |choice: &LeafChoice| match choice.inter {
+        Some(InterPrediction::Single(modes)) => modes.mv.row % 8 != 0 || modes.mv.col % 8 != 0,
+        Some(InterPrediction::Compound(modes)) => modes
+            .mvs
+            .iter()
+            .any(|mv| mv.row % 8 != 0 || mv.col % 8 != 0),
+        _ => false,
+    };
+    assert_eq!(
+        trees
+            .iter()
+            .map(|tree| leaves(tree, fractional))
+            .sum::<usize>(),
+        0
+    );
+}
+
+/// AVM decodes the integer-MV key and inter frames to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_integer_mv_frames_like_splot() {
+    assert_avm_decodes(preset_with(|p| p.integer_mv = true), "integer mv");
+}
+
+/// AVM decodes the palette key and inter frames of drawn text to the
+/// encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_palette_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let preset = preset_with(|p| p.palette = true);
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        let case = (2, PixelFormat::Yuv420, bit_depth);
+        let (units, recon, _) = cfl_stream(case, preset, 0, screen_frame);
+        let avm = avm_decode(&avmdec, &units, (136, 72), bit_depth, "palette");
+        assert!(avm == recon, "palette {bit_depth:?}: AVM output differs");
+    }
 }
 
 /// DIP streams decode to the encoder recon on any thread count.

@@ -363,23 +363,37 @@ pub(crate) fn plan(frame_index: u64, keyint: NonZeroU32) -> GopFrame {
 /// transform parameters, whether inter frames code compound and skip-mode
 /// blocks, whether their motion vectors are eighth-pel, whether they take
 /// temporal motion vectors, whether they code switchable interpolation
-/// filters, and the `tiles`.
+/// filters, their TIP weight, and the `tiles`.
 pub(crate) fn frame_tools(preset: &PresetParams, tiles: UniformTiles, qindex: u32) -> FrameTools {
     (
         crate::tx_choice::key_frame_tx_params(preset),
         preset.compound_candidates > 0,
         (
-            preset.subpel_depth == 3 && qindex <= u32::from(preset.eighth_pel_max_qindex),
+            !preset.integer_mv
+                && preset.subpel_depth == 3
+                && qindex <= u32::from(preset.eighth_pel_max_qindex),
             preset.mv_prediction,
             preset.interp_filter_search > 0,
+            (preset.tip > 0 && preset.mv_prediction).then_some(TIP_EQUAL_WEIGHT),
+            preset.integer_mv,
         ),
         tiles,
     )
 }
 
+/// `tip_global_wtd_index` of `Tip_Weighting_Factor` 8 (`CWP_EQUAL`), the
+/// plain average of the two TIP references (§ 7.13.3.1).
+const TIP_EQUAL_WEIGHT: u8 = 0;
+
 /// `(tx, compound, (high_precision_mv, use_ref_frame_mvs,
-/// switchable_interp_filter), tiles)` of [`frame_tools`].
-pub(crate) type FrameTools = (KeyFrameTxParams, bool, (bool, bool, bool), UniformTiles);
+/// switchable_interp_filter, tip_weight, force_integer_mv), tiles)` of
+/// [`frame_tools`].
+pub(crate) type FrameTools = (
+    KeyFrameTxParams,
+    bool,
+    (bool, bool, bool, Option<u8>, bool),
+    UniformTiles,
+);
 
 /// A temporal delimiter and the `OBU_REGULAR_SEF` that outputs `slot`.
 pub(crate) fn show_existing_unit(view: &CoreSeqView, slot: u32) -> Result<Vec<u8>> {
@@ -485,7 +499,18 @@ impl GopFrame {
         &self,
         qindex: u32,
         filters: &FrameFilterParams,
-        (tx, compound, (high_precision_mv, use_ref_frame_mvs, switchable_interp_filter), tiles): FrameTools,
+        (
+            tx,
+            compound,
+            (
+                high_precision_mv,
+                use_ref_frame_mvs,
+                switchable_interp_filter,
+                tip_weight,
+                force_integer_mv,
+            ),
+            tiles,
+        ): FrameTools,
     ) -> InterFrameParams {
         InterFrameParams {
             base_q_idx: qindex,
@@ -493,7 +518,10 @@ impl GopFrame {
             refresh_frame_flags: self.refresh_frame_flags,
             show_frame: self.show_frame,
             filters: *filters,
-            tx,
+            tx: KeyFrameTxParams {
+                allow_intrabc: false,
+                ..tx
+            },
             tiles,
             reference_select: compound,
             skip_mode_present: compound,
@@ -501,6 +529,8 @@ impl GopFrame {
             use_ref_frame_mvs,
             switchable_interp_filter,
             primary_slot: self.primary_slot,
+            tip_weight,
+            force_integer_mv,
         }
     }
 }

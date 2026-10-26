@@ -14,7 +14,8 @@ use crate::tile_writer::{Result, coeffs::adjusted_log2};
 
 /// The frame-header transform choices of `preset`: `TX_MODE_SELECT` when it
 /// searches transform partitions, and every intra type (`reduced_tx_set = 0`)
-/// when it searches types; otherwise every luma block infers `DCT_DCT`.
+/// when it searches types; otherwise every luma block infers `DCT_DCT`. Key
+/// frames code `allow_intrabc` with the preset's IntraBC search.
 pub(crate) fn key_frame_tx_params(preset: &PresetParams) -> KeyFrameTxParams {
     KeyFrameTxParams {
         tx_mode: if preset.tx_partition_search {
@@ -23,6 +24,7 @@ pub(crate) fn key_frame_tx_params(preset: &PresetParams) -> KeyFrameTxParams {
             TxMode::Largest
         },
         reduced_tx_set: if preset.tx_type_depth == 0 { 2 } else { 0 },
+        allow_intrabc: preset.intrabc,
         ..KeyFrameTxParams::default()
     }
 }

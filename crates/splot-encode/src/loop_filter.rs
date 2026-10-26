@@ -24,8 +24,9 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
-    EncoderReferences, FilterRecorder, FrameStart, GdfFlags, IntraTileSyntax, LrLayout, LrUnit,
-    LrUnitType, TileEnd, TransformBlock, apply_loop_filters, cdef_unit_grid, merge_tiles,
+    EncoderReferences, FilterRecorder, FrameStart, GdfFlags, IntraTileSyntax, LeafBlock, LrLayout,
+    LrUnit, LrUnitType, Palette, TileEnd, TransformBlock, apply_loop_filters, cdef_unit_grid,
+    merge_tiles,
 };
 use splot_parallel::WorkerPool;
 use splot_recon::{DecodedFrame, PlaneId};
@@ -73,6 +74,7 @@ pub(crate) struct FrameDecisions {
     /// Each superblock's decision and its target qindex.
     superblocks: Vec<(SuperblockDecision, Option<u32>)>,
     transforms: Vec<TransformDecision>,
+    palette_maps: Vec<Vec<u8>>,
 }
 
 impl FrameDecisions {
@@ -89,6 +91,7 @@ impl FrameDecisions {
             &mut Recording {
                 coder,
                 transforms: &mut self.transforms,
+                palette_maps: &mut self.palette_maps,
             },
         )?;
         self.superblocks.push((decision, qindex));
@@ -97,27 +100,40 @@ impl FrameDecisions {
 
     /// Writes the kept decisions again through `writer`.
     fn replay(self, writer: &mut KeyFrameTileWriter) -> core::result::Result<(), TileWriterError> {
-        let mut replay = Replay(self.transforms.into_iter());
+        let maps = self.palette_maps.into_iter();
+        let mut replay = Replay(self.transforms.into_iter(), maps, Vec::new());
         for (decision, qindex) in &self.superblocks {
             if let Some(qindex) = *qindex {
                 writer.set_superblock_qindex(qindex)?;
             }
             writer.write_superblock(decision, &mut replay)?;
         }
-        if replay.0.next().is_some() {
+        if replay.0.next().is_some() || replay.1.next().is_some() {
             return Err(TileWriterError::Shape("replayed transform count"));
         }
         Ok(())
     }
 }
 
-/// Forwards every transform to `coder` and keeps it for the second pass.
+/// Forwards every transform and palette map to `coder` and keeps it for the
+/// second pass.
 struct Recording<'a, C> {
     coder: &'a mut C,
     transforms: &'a mut Vec<TransformDecision>,
+    palette_maps: &'a mut Vec<Vec<u8>>,
 }
 
 impl<C: ResidualCoder> ResidualCoder for Recording<'_, C> {
+    fn palette_map(
+        &mut self,
+        leaf: &LeafBlock,
+        palette: &Palette,
+    ) -> core::result::Result<&[u8], TileWriterError> {
+        let map = self.coder.palette_map(leaf, palette)?.to_vec();
+        self.palette_maps.push(map);
+        Ok(self.palette_maps.last().map_or(&[], Vec::as_slice))
+    }
+
     fn code_luma(
         &mut self,
         syntax: &mut IntraTileSyntax,
@@ -142,10 +158,26 @@ impl<C: ResidualCoder> ResidualCoder for Recording<'_, C> {
     }
 }
 
-/// Replays the kept transform decisions in coding order.
-struct Replay(std::vec::IntoIter<TransformDecision>);
+/// Replays the kept transform decisions and palette maps in coding order.
+struct Replay(
+    std::vec::IntoIter<TransformDecision>,
+    std::vec::IntoIter<Vec<u8>>,
+    Vec<u8>,
+);
 
 impl ResidualCoder for Replay {
+    fn palette_map(
+        &mut self,
+        _leaf: &LeafBlock,
+        _palette: &Palette,
+    ) -> core::result::Result<&[u8], TileWriterError> {
+        self.2 = self
+            .1
+            .next()
+            .ok_or(TileWriterError::Shape("replayed palette map count"))?;
+        Ok(&self.2)
+    }
+
     fn code(
         &mut self,
         _syntax: &mut IntraTileSyntax,

@@ -61,7 +61,9 @@ mod delta_q;
 mod fsc;
 mod inter;
 mod intra;
+mod intrabc;
 mod mv;
+mod palette;
 mod parity;
 mod rollback;
 mod tcq;
@@ -79,6 +81,8 @@ pub use inter::{
     MotionVector, SingleMvs,
 };
 pub use intra::{ChromaMode, Dip, IntraModes, MAX_CFL_ALPHA, Mrl, TxType};
+pub use intrabc::{IntrabcModes, IntrabcVectors};
+pub use palette::{PALETTE_COLORS, Palette};
 pub use parity::ParityHiding;
 pub use rollback::SyntaxSnapshot;
 use rollback::{CdfJournal, CdfRow};
@@ -665,6 +669,10 @@ pub struct IntraTileSyntax {
     cctx_leaf: bool,
     /// The planned intra leaf codes `fsc_mode`.
     fsc_leaf: bool,
+    /// The color map of the next palette leaf, then of the planned one.
+    palette_map: Vec<u8>,
+    /// The color map of one transform block of the planned palette leaf.
+    palette_unit: Vec<u8>,
 }
 
 impl IntraTileSyntax {
@@ -782,6 +790,8 @@ impl IntraTileSyntax {
             delta_q,
             cctx_leaf: false,
             fsc_leaf: false,
+            palette_map: Vec::new(),
+            palette_unit: Vec::new(),
         })
     }
 

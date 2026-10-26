@@ -42,9 +42,9 @@ use crate::prediction::inter::read_mv::AMVD_INDEX_TO_MVD;
 use crate::prediction::inter::{
     EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderMotion,
     EncoderSingleMotion, EncoderSingleMvs, FrameCdfHandle, InterReferenceState, MotionFieldHandle,
-    Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, TemporalMvContext,
-    chroma_inter_tx_type, encoder_motion_field, encoder_temporal_context, inter_residual_units,
-    non_intra_leaf_mode, resolve_initial_frame_cdfs,
+    Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, TIP_REF_FRAME,
+    TemporalMvContext, chroma_inter_tx_type, encoder_motion_field, encoder_temporal_context,
+    inter_residual_units, non_intra_leaf_mode, resolve_initial_frame_cdfs,
 };
 use crate::reference::buffer::RuntimeReferenceBuffer;
 
@@ -185,6 +185,14 @@ impl EncoderReferences {
     #[must_use]
     pub fn header_view(&self) -> FrameReferenceStateView<'_> {
         self.state.header_view()
+    }
+
+    /// Whether the frame `core` has the past/future reference pair TIP needs
+    /// (§ 7.12.2); a frame without one must code `TIP_FRAME_DISABLED`, since
+    /// the decoder reads `tip_mode` in every TIP frame.
+    #[must_use]
+    pub fn tip_pair_available(&self, core: &FrameHeaderCore) -> bool {
+        crate::prediction::inter::tip_pair_available(core, &self.state)
     }
 
     /// The CDFs and projected motion field the frame `core` starts from
@@ -377,7 +385,8 @@ pub struct SingleMvs {
     pub stack: Vec<MotionVector>,
 }
 
-/// The inter state of one tile, `None` in an intra frame.
+/// The inter state of one tile, `None` in an intra frame without intra block
+/// copy.
 pub(super) struct InterLeafState {
     pub(super) tile: EncoderInterTile,
     planned: Option<PlannedInter>,
@@ -412,7 +421,21 @@ impl InterLeafState {
         (qindex, bit_depth): (u32, BitDepth),
     ) -> Result<Option<Self>> {
         if core.frame_is_intra == Some(true) {
-            return Ok(None);
+            if core.allow_intrabc != Some(true) {
+                return Ok(None);
+            }
+            let tile = EncoderInterTile::new_intrabc(
+                seq,
+                core,
+                refs.tile_state()?,
+                tile,
+                (qindex, bit_depth),
+            )
+            .map_err(EncoderSyntaxError::Unsupported)?;
+            return Ok(Some(Self {
+                tile,
+                planned: None,
+            }));
         }
         let tile = EncoderInterTile::new(
             seq,
@@ -435,13 +458,66 @@ impl IntraTileSyntax {
     /// `is_inter = 1` for a block whose chroma is coded with another block.
     #[must_use]
     pub fn intra_allowed(&self, leaf: &LeafBlock) -> bool {
-        self.inter.is_none() || !leaf.frontier.shared_mixed_chroma_ref_forces_inter()
+        !self.inter_frame() || !leaf.frontier.shared_mixed_chroma_ref_forces_inter()
     }
 
     /// Whether `leaf` may code a single-reference inter block.
     #[must_use]
     pub fn inter_allowed(&self, leaf: &LeafBlock) -> bool {
-        self.inter.is_some() && !leaf.frontier.is_luma_part() && !leaf.frontier.is_chroma_part()
+        self.inter_frame() && !leaf.frontier.is_luma_part() && !leaf.frontier.is_chroma_part()
+    }
+
+    /// Whether `leaf` may predict from the TIP frame (§ 7.11.3): an
+    /// [`InterModes`] whose `ref_frame` is [`Self::reference_count`] then
+    /// codes `tip_mode` with `NEARMV` or `NEWMV` over the TIP stack.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] for an invalid block size.
+    pub fn tip_allowed(&self, leaf: &LeafBlock) -> Result<bool> {
+        match &self.inter {
+            Some(inter) if self.inter_allowed(leaf) => inter
+                .tile
+                .tip_allowed(&leaf.frontier)
+                .map_err(rule("TIP block size")),
+            _ => Ok(false),
+        }
+    }
+
+    /// The luma transform blocks of the TIP `NEARMV` prediction of `leaf` with
+    /// `tip_global_wtd_index = weight` (§ 7.11.3), each with its row-major
+    /// samples, for a frame-level weight choice. The prediction overwrites the
+    /// leaf's samples and the planned leaf, so call it before the search of
+    /// the tile.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] where `leaf` cannot code TIP or for a
+    /// weight index above 7.
+    pub fn tip_prediction(
+        &mut self,
+        leaf: &LeafBlock,
+        weight: u8,
+    ) -> Result<Vec<(TransformBlock, Vec<u16>)>> {
+        if !self.tip_allowed(leaf)? || weight > 7 {
+            return Err(EncoderSyntaxError::Unsupported("TIP prediction here"));
+        }
+        let modes = InterModes {
+            ref_frame: self.reference_count(),
+            mode: InterMode::Near,
+            drl: 0,
+            mv: MotionVector::default(),
+            filter: InterpolationFilter::EightTap,
+            precision: None,
+            amvd: false,
+        };
+        let previous = self.inter_state()?.tile.set_tip_weight(Some(weight));
+        let planned = self.plan_inter_leaf(leaf, InterPrediction::Single(modes));
+        self.inter_state()?.tile.set_tip_weight(previous);
+        let mut out = Vec::new();
+        for tx in planned?.into_iter().filter(|tx| tx.plane == 0) {
+            out.push((tx, self.reconstruction(&tx)?));
+        }
+        self.clear_inter_plan();
+        Ok(out)
     }
 
     /// `NumTotalRefs`; `0` in an intra frame.
@@ -546,10 +622,14 @@ impl IntraTileSyntax {
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for a reference `leaf` cannot code.
     pub fn single_mvs(&mut self, leaf: &LeafBlock, ref_frame: usize) -> Result<SingleMvs> {
-        let ref_frame = i8::try_from(ref_frame)
-            .ok()
-            .filter(|_| ref_frame < self.reference_count())
-            .ok_or(EncoderSyntaxError::Unsupported("reference index"))?;
+        let ref_frame = if ref_frame == self.reference_count() && self.tip_allowed(leaf)? {
+            TIP_REF_FRAME
+        } else {
+            i8::try_from(ref_frame)
+                .ok()
+                .filter(|_| ref_frame < self.reference_count())
+                .ok_or(EncoderSyntaxError::Unsupported("reference index"))?
+        };
         let drls = self.drl_count();
         let tile = &mut self.inter_state()?.tile;
         let mvs: EncoderSingleMvs = tile
@@ -592,21 +672,37 @@ impl IntraTileSyntax {
         partition: TxPartition,
     ) -> Result<Vec<TransformBlock>> {
         let split = self.partitioned_tx_size(leaf, partition)?;
-        let (mi_rows, mi_cols) = self.mi_dimensions();
         if !self.inter_allowed(leaf) {
             return Err(EncoderSyntaxError::Unsupported("an inter block here"));
         }
         let motion = self.motion(leaf, prediction)?;
+        self.plan_motion_leaf(leaf, (motion, None), (partition, split))
+    }
+
+    /// Plans the leaf `leaf` of `motion` with the luma transform split by
+    /// `partition` into `split`: an inter prediction, or with `intrabc` the
+    /// intra block copy of that block vector, whose `motion` names the
+    /// IntraBC reference.
+    pub(super) fn plan_motion_leaf(
+        &mut self,
+        leaf: &LeafBlock,
+        (motion, intrabc): (EncoderMotion, Option<Mv>),
+        (partition, split): (TxPartition, Option<usize>),
+    ) -> Result<Vec<TransformBlock>> {
+        let (mi_rows, mi_cols) = self.mi_dimensions();
         self.recon.leaf = None;
         self.plan_cctx(leaf);
         self.fsc_leaf = false;
         let chroma = self.chroma;
         let state = self.inter.as_mut().ok_or(INTRA_FRAME)?;
         state.planned = None;
-        let mvs = state
-            .tile
-            .predict(&leaf.frontier, motion, &mut self.recon.workspace)
-            .map_err(rule("inter prediction"))?;
+        let workspace = &mut self.recon.workspace;
+        let mvs = match intrabc {
+            None => state.tile.predict(&leaf.frontier, motion, workspace),
+            Some(mv) => (state.tile.predict_intrabc(&leaf.frontier, mv, workspace))
+                .map(|()| [mv, Mv::default()]),
+        }
+        .map_err(rule("inter prediction"))?;
         let units = inter_residual_units(&leaf.frontier, chroma).map_err(rule("inter residual"))?;
         let mut blocks: Vec<TransformBlock> = units
             .into_iter()
@@ -649,7 +745,7 @@ impl IntraTileSyntax {
             motion,
             mvs,
             residual: EncoderInterResidual::default(),
-            use_intrabc: false,
+            use_intrabc: intrabc.is_some(),
         });
         for index in 0..blocks.len() {
             if blocks[index].plane > 0 {
@@ -761,7 +857,7 @@ impl IntraTileSyntax {
                 "an is_inter value this block cannot code",
             ));
         }
-        let Some(inter) = &self.inter else {
+        let (true, Some(inter)) = (self.inter_frame(), &self.inter) else {
             return Ok(());
         };
         let frontier = &leaf.frontier;
@@ -938,8 +1034,8 @@ impl IntraTileSyntax {
 
     /// Prices into `symbols` the `interp_filter` that `prediction` codes at
     /// `leaf` (§ 5.20.7.6), then puts the CDFs back. Returns whether the
-    /// decoder reads it: a skip-mode block, a large global block and a frame
-    /// without `SWITCHABLE` filters read none and price nothing.
+    /// decoder reads it: a skip-mode block, a TIP block, a large global block
+    /// and a frame without `SWITCHABLE` filters read none and price nothing.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for a prediction `leaf` cannot code or a
@@ -951,6 +1047,9 @@ impl IntraTileSyntax {
         symbols: &mut impl SymbolSink,
     ) -> Result<bool> {
         let (refs, global, filter) = match prediction {
+            InterPrediction::Single(modes) if modes.ref_frame == self.reference_count() => {
+                return Ok(false);
+            }
             InterPrediction::Single(modes) => (
                 (modes.ref_frame, false),
                 modes.mode == InterMode::Global,
@@ -1027,7 +1126,12 @@ impl IntraTileSyntax {
         }
         let resolved = state
             .tile
-            .publish(&leaf.frontier, planned.motion, skip)
+            .publish(
+                &leaf.frontier,
+                planned.motion,
+                skip,
+                &mut self.recon.workspace,
+            )
             .map_err(rule("motion resolution"))?;
         if resolved != planned.mvs {
             return Err(EncoderSyntaxError::Unsupported(
@@ -1138,16 +1242,25 @@ impl IntraTileSyntax {
         let residual = (!skip && !planned.residual.is_empty()).then_some(&planned.residual);
         state
             .tile
-            .record_filters(&leaf.frontier, residual, records)
+            .record_filters(&leaf.frontier, (planned.motion, residual), records)
             .map_err(rule("filter records"))
     }
 
     fn publish_non_intra_modes(&mut self, leaf: &LeafBlock) -> Result<()> {
+        self.publish_leaf_modes(leaf, non_intra_leaf_mode(&leaf.frontier))
+    }
+
+    /// Publishes the leaf modes `mode` of the non-intra leaf `leaf`.
+    pub(super) fn publish_leaf_modes(
+        &mut self,
+        leaf: &LeafBlock,
+        mode: super::super::partition_traversal::GeneralIntraLeafMode,
+    ) -> Result<()> {
         super::super::partition_traversal::publish_intra_leaf_state::<core::convert::Infallible>(
             self.frame,
             leaf.call,
             &leaf.frontier,
-            non_intra_leaf_mode(&leaf.frontier),
+            mode,
             leaf.call.b_size,
             &mut self.joint_modes,
             &mut self.fsc_modes,
@@ -1185,10 +1298,18 @@ impl IntraTileSyntax {
         modes: InterModes,
         base: Option<Mv>,
     ) -> Result<EncoderSingleMotion> {
-        let ref_frame = i8::try_from(modes.ref_frame)
-            .ok()
-            .filter(|_| modes.ref_frame < self.reference_count())
-            .ok_or(EncoderSyntaxError::Unsupported("reference index"))?;
+        let tip = modes.ref_frame == self.reference_count();
+        if tip && (modes.mode == InterMode::Global || !self.tip_allowed(leaf)?) {
+            return Err(EncoderSyntaxError::Unsupported("TIP here"));
+        }
+        let ref_frame = if tip {
+            TIP_REF_FRAME
+        } else {
+            i8::try_from(modes.ref_frame)
+                .ok()
+                .filter(|_| modes.ref_frame < self.reference_count())
+                .ok_or(EncoderSyntaxError::Unsupported("reference index"))?
+        };
         if modes.mode != InterMode::Global && modes.drl >= self.drl_count() {
             return Err(EncoderSyntaxError::Unsupported("RefMvIdx"));
         }
@@ -1209,6 +1330,7 @@ impl IntraTileSyntax {
             interp: modes.filter,
             precision: modes.precision.filter(|_| mode == SINGLE_MODE_NEWMV),
             use_amvd: modes.amvd && mode == SINGLE_MODE_NEWMV,
+            tip,
         };
         if mode == SINGLE_MODE_NEWMV {
             let step = self.newmv_step(&modes);
@@ -1238,6 +1360,22 @@ impl IntraTileSyntax {
             motion.mvd = mvd;
         }
         Ok(motion)
+    }
+
+    /// Whether the frame is an inter frame.
+    pub(super) fn inter_frame(&self) -> bool {
+        self.inter
+            .as_ref()
+            .is_some_and(|inter| !inter.tile.is_intra_frame())
+    }
+
+    /// Takes the planned IntraBC leaf `leaf` and returns its block vector.
+    pub(super) fn take_planned_intrabc(&mut self, leaf: &LeafBlock) -> Result<Mv> {
+        let state = self.inter_state()?;
+        match state.planned.take() {
+            Some(planned) if planned.use_intrabc && planned.leaf == *leaf => Ok(planned.mvs[0]),
+            _ => Err(NO_INTER_LEAF),
+        }
     }
 
     pub(super) fn inter_ref(&self) -> Result<&InterLeafState> {

@@ -28,6 +28,7 @@ use super::temporal::temporal_motion_block;
 use super::*;
 
 mod compound;
+mod intrabc;
 
 pub(crate) use compound::{EncoderCompoundMotion, JMVD_SCALE_MODES, MvdCoding};
 
@@ -79,6 +80,17 @@ pub(crate) struct EncoderSingleMotion {
     pub(crate) precision: Option<u8>,
     /// `use_amvd` of a `NEWMV`.
     pub(crate) use_amvd: bool,
+    /// `tip_mode`: the block predicts from the TIP frame (§ 7.11.3); its
+    /// `ref_frame` is `TIP_REF_FRAME` and its mode `NEARMV` or `NEWMV`.
+    pub(crate) tip: bool,
+}
+
+/// Whether `motion` predicts from the TIP frame.
+const fn is_tip(motion: EncoderMotion) -> bool {
+    matches!(
+        motion,
+        EncoderMotion::Single(EncoderSingleMotion { tip: true, .. })
+    )
 }
 
 /// The single-reference vectors of one leaf and reference, see
@@ -103,6 +115,10 @@ pub(crate) struct EncoderInterCheckpoint {
     grid: GridCheckpoint,
     warp_bank: WarpParamBank,
     ref_mv_bank: Option<RefMvBank>,
+    /// The TIP records before the region, and those appended after it that
+    /// a rollback puts back, as [`GridCheckpoint`] keeps its leaves.
+    tip_records: (usize, Vec<TemporalMotionBlock>),
+    intrabc: Option<crate::filters::wienerns_lr::intrabc_records::IntrabcCheckpoint>,
 }
 
 /// The inter residual of one leaf: its transform blocks and their levels.
@@ -141,6 +157,17 @@ pub(crate) struct EncoderInterTile {
     qindex: u32,
     bit_depth: BitDepth,
     residual_scratch: super::super::InterResidualReconScratch<u16>,
+    /// `TipFrameMode == TIP_FRAME_AS_REF` with the TIP reference pair.
+    tip_ref_pair: Option<(i8, i8)>,
+    /// The § 7.22 records of the published TIP leaves, which the decoder
+    /// derives per TIP unit.
+    tip_records: Vec<TemporalMotionBlock>,
+    /// The unit records a TIP trial derives and drops, kept for reuse.
+    tip_trial_records: Vec<TemporalMotionBlock>,
+    tip_scratch: super::tip::TipReconstructScratch<u16>,
+    /// The intra block copy state of an intra frame with `allow_intrabc`;
+    /// `None` in an inter frame.
+    intrabc: Option<TileIntrabcPreludeState>,
 }
 
 impl EncoderInterTile {
@@ -191,9 +218,10 @@ impl EncoderInterTile {
             (
                 inter
                     .tip_frame_mode
-                    .is_some_and(|mode| mode != TipFrameMode::Disabled)
-                    || seq_inter.enable_mv_traj,
-                "TIP or motion vector trajectories",
+                    .is_some_and(|mode| mode == TipFrameMode::AsOutput)
+                    || seq_inter.enable_mv_traj
+                    || seq_inter.enable_tip_refinemv,
+                "TIP output, refined TIP or motion vector trajectories",
             ),
             (
                 inter
@@ -201,10 +229,7 @@ impl EncoderInterTile {
                     .is_some_and(|modes| modes.iter().any(|&on| on)),
                 "inter-intra or a motion mode",
             ),
-            (
-                effective_force_integer_mv(core) || core.frame_type == Some(FrameType::Switch),
-                "integer motion vectors or a switch frame",
-            ),
+            (core.frame_type == Some(FrameType::Switch), "a switch frame"),
         ];
         if let Some(&(_, what)) = refused.iter().find(|&&(on, _)| on) {
             return Err(what);
@@ -235,6 +260,10 @@ impl EncoderInterTile {
             &reference.ref_order_hint,
         )
         .to_vec();
+        let tip_ref_pair = (inter.tip_frame_mode == Some(TipFrameMode::AsRef))
+            .then(|| derived_tip_reference_pair(core, &order_hints))
+            .flatten()
+            .map(|pair| (pair.past_ref, pair.future_ref));
         let temporal_first = frame_temporal_first(
             sequence,
             core,
@@ -271,7 +300,31 @@ impl EncoderInterTile {
             qindex,
             bit_depth,
             residual_scratch: super::super::InterResidualReconScratch::default(),
+            tip_ref_pair,
+            tip_records: Vec::new(),
+            tip_trial_records: Vec::new(),
+            tip_scratch: super::tip::TipReconstructScratch::default(),
+            intrabc: None,
         })
+    }
+
+    /// Sets `tip_global_wtd_index` and returns the previous value.
+    pub(crate) fn set_tip_weight(&mut self, weight: Option<u8>) -> Option<u8> {
+        self.core
+            .inter
+            .as_mut()
+            .and_then(|inter| core::mem::replace(&mut inter.tip_global_wtd_index, weight))
+    }
+
+    /// The TIP reference pair of a frame whose blocks may predict from TIP.
+    pub(crate) const fn tip_ref_pair(&self) -> Option<(i8, i8)> {
+        self.tip_ref_pair
+    }
+
+    /// Whether a block at `frontier` may code `tip_mode`.
+    pub(crate) fn tip_allowed(&self, frontier: &DecodeBlockFrontier) -> Result<bool> {
+        let (n4w, n4h) = block_size4(frontier)?;
+        Ok(self.tip_ref_pair.is_some() && super::tip::tip_block_allowed(frontier, n4w, n4h))
     }
 
     /// `NumTotalRefs`.
@@ -297,6 +350,9 @@ impl EncoderInterTile {
     /// Enters the superblock row holding `row`, before any leaf of it is coded.
     pub(crate) fn enter_superblock(&mut self, row: usize) {
         self.grid.enter_sb_row(row);
+        if let Some(intrabc) = &mut self.intrabc {
+            intrabc.enter_sb_row(row);
+        }
     }
 
     /// Saves the state a leaf inside `footprint` can change; with `since`, an
@@ -306,12 +362,21 @@ impl EncoderInterTile {
         footprint: (usize, usize, usize, usize),
         since: Option<&EncoderInterCheckpoint>,
     ) -> EncoderInterCheckpoint {
+        let kept = since.map_or(self.tip_records.len(), |since| since.tip_records.0);
         EncoderInterCheckpoint {
             grid: self
                 .grid
                 .checkpoint(footprint, since.map(|since| &since.grid)),
             warp_bank: self.warp_bank.clone(),
             ref_mv_bank: self.ref_mv_bank.clone(),
+            tip_records: (
+                kept,
+                self.tip_records.get(kept..).unwrap_or_default().to_vec(),
+            ),
+            intrabc: self.intrabc.as_ref().map(|intrabc| {
+                let (r, c, n4w, n4h) = footprint;
+                intrabc.checkpoint(r..r + n4h, c..c + n4w)
+            }),
         }
     }
 
@@ -321,11 +386,23 @@ impl EncoderInterTile {
         self.ref_mv_bank.as_ref()
     }
 
+    /// The published TIP unit records, for the debug rollback check.
+    #[cfg(debug_assertions)]
+    pub(crate) fn tip_records(&self) -> &[TemporalMotionBlock] {
+        &self.tip_records
+    }
+
     /// Puts a [`Self::checkpoint`] back.
     pub(crate) fn rollback(&mut self, checkpoint: &EncoderInterCheckpoint) {
         self.grid.rollback(&checkpoint.grid);
         self.warp_bank.clone_from(&checkpoint.warp_bank);
         self.ref_mv_bank.clone_from(&checkpoint.ref_mv_bank);
+        self.tip_records.truncate(checkpoint.tip_records.0);
+        self.tip_records
+            .extend_from_slice(&checkpoint.tip_records.1);
+        if let (Some(intrabc), Some(saved)) = (&mut self.intrabc, &checkpoint.intrabc) {
+            intrabc.rollback(saved);
+        }
     }
 
     /// The `is_inter`, `skip_mode` and `skip_txfm` contexts of `frontier`,
@@ -374,6 +451,7 @@ impl EncoderInterTile {
     ) -> Result<EncoderSingleMvs> {
         let block = self.block(frontier, (ref_frame, None))?;
         let precision = BlockPrecisionRecord::most_probable(self.precision);
+        let tip = ref_frame == TIP_REF_FRAME;
         let single = |mode, ref_mv_idx| {
             self.single_syntax(
                 &block,
@@ -385,6 +463,7 @@ impl EncoderInterTile {
                     interp: ReconInterpolationFilter::EightTap,
                     precision: None,
                     use_amvd: false,
+                    tip,
                 },
             )
         };
@@ -395,9 +474,9 @@ impl EncoderInterTile {
         let new: Vec<_> = (0..drls)
             .map(|idx| single(SINGLE_MODE_NEWMV, idx))
             .collect();
-        let temporal_first = self.temporal_first(ref_frame);
+        let temporal_first = !tip && self.temporal_first(ref_frame);
         let state = self.resolution_state(&block);
-        let stack = single_mv_stack(&block, false, temporal_first, &state);
+        let stack = single_mv_stack(&block, tip, temporal_first, &state);
         let mv = |single: &SingleMotionSyntax| {
             single_mode_mv(single, &stack, (precision, false), &block, &state)
         };
@@ -421,6 +500,14 @@ impl EncoderInterTile {
         let resolved = self.resolve_motion(&syntax)?;
         let mvs = resolved.mv;
         let placed = self.placed(frontier, syntax, &resolved)?;
+        if is_tip(motion) {
+            let mut records = core::mem::take(&mut self.tip_trial_records);
+            records.clear();
+            let predicted = self.tip_motion(&placed, workspace, &mut records, true);
+            self.tip_trial_records = records;
+            predicted?;
+            return Ok(mvs);
+        }
         prediction::reconstruct_pure_inter_block(
             &mut mc::WorkspaceSink::Frame(workspace),
             &mut self.residual_scratch,
@@ -472,6 +559,7 @@ impl EncoderInterTile {
         frontier: &DecodeBlockFrontier,
         motion: EncoderMotion,
         skip: bool,
+        workspace: &mut CurrentFrameWorkspace<u16>,
     ) -> Result<[Mv; 2]> {
         let syntax = self.inter_syntax(frontier, motion, skip)?;
         let block = syntax.block_ctx;
@@ -483,7 +571,72 @@ impl EncoderInterTile {
             syntax.flag_syntax(),
         );
         let mut state = self.resolution_state(&block);
-        Ok(resolve_inter_block(&syntax, &mut state)?.mv)
+        let resolved = resolve_inter_block(&syntax, &mut state)?;
+        if is_tip(motion) {
+            let placed = self.placed(frontier, syntax, &resolved)?;
+            let mut records = core::mem::take(&mut self.tip_records);
+            let derived = self.tip_motion(&placed, workspace, &mut records, false);
+            self.tip_records = records;
+            derived?;
+        }
+        Ok(resolved.mv)
+    }
+
+    /// The decoder's § 7.11.3 TIP motion of `placed`, whose unit records it
+    /// appends to `records`; with `predict`, also its prediction into
+    /// `workspace`.
+    fn tip_motion(
+        &mut self,
+        placed: &PlacedInterBlock,
+        workspace: &mut CurrentFrameWorkspace<u16>,
+        records: &mut Vec<TemporalMotionBlock>,
+        predict: bool,
+    ) -> Result<()> {
+        let temporal = self
+            .temporal
+            .clone()
+            .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?;
+        let mut sink = mc::WorkspaceSink::Frame(workspace);
+        let shared = (
+            &self.sequence,
+            &self.core,
+            &self.ref_frame_idx,
+            &self.reference,
+        );
+        let grid = super::tip::motion(
+            &mut self.tip_scratch,
+            records,
+            &sink,
+            placed,
+            &temporal,
+            shared.0,
+            shared.1,
+            shared.2,
+            shared.3,
+            ByteOffset::new(0),
+        )?;
+        if predict {
+            super::tip::predict(
+                &mut self.tip_scratch,
+                &mut self.residual_scratch,
+                &mut sink,
+                grid,
+                placed,
+                &[],
+                &[],
+                &temporal,
+                shared.0,
+                shared.1,
+                shared.2,
+                shared.3,
+                self.qindex,
+                false,
+                false,
+                self.bit_depth,
+                ByteOffset::new(0),
+            )?;
+        }
+        Ok(())
     }
 
     /// The decoder's § 7.12 motion of `syntax`, not published.
@@ -518,8 +671,9 @@ impl EncoderInterTile {
 
     /// Resets the banks for a leaf at `block` as the resolve pass does.
     fn reset_banks(&mut self, block: &MvBlockContext) {
+        let (sb_h4, inter_frame) = (self.bank_sb_h4(), self.intrabc.is_none());
         if let Some(bank) = &mut self.ref_mv_bank {
-            bank.reset_for_leaf(&self.grid, block.mi_row, block.mi_col, self.sb_h4, true);
+            bank.reset_for_leaf(&self.grid, block.mi_row, block.mi_col, sb_h4, inter_frame);
         }
         self.warp_bank
             .reset_for_leaf(&self.grid, block.mi_row, block.mi_col, self.sb_h4);
@@ -528,8 +682,12 @@ impl EncoderInterTile {
     /// The § 7.19 motion records of the published leaves, in coding order,
     /// which the decoder stores into the frame's motion field.
     pub(crate) fn temporal_records(&self) -> Vec<TemporalMotionBlock> {
+        if self.intrabc.is_some() {
+            return Vec::new();
+        }
         self.grid
             .published_leaves()
+            .filter(|(_, refs, _)| refs.is_none_or(|(ref_frame0, _)| ref_frame0 != TIP_REF_FRAME))
             .map(|((r, c, n4w, n4h), refs, mvs)| {
                 let (ref_frame0, ref_frame1) = refs.unwrap_or((-1, None));
                 if refs.is_none() {
@@ -563,6 +721,7 @@ impl EncoderInterTile {
                     [None, None],
                 )
             })
+            .chain(self.tip_records.iter().copied())
             .collect()
     }
 
@@ -589,7 +748,8 @@ impl EncoderInterTile {
             precision: self.block_precision(motion),
             skip,
             use_amvd: matches!(motion, EncoderMotion::Single(single) if single.use_amvd),
-            tip_size_16x16: false,
+            tip_size_16x16: matches!(motion, EncoderMotion::Single(single) if single.tip)
+                && super::tip::reference_uses_16x16_units(block.bw4, block.bh4, false),
             blend: mc::CompoundBlend::default(),
             bawp: BawpSyntax::default(),
             interintra: None,
@@ -624,16 +784,23 @@ impl EncoderInterTile {
             block.bh4,
             ZERO_NEIGHBOUR_MOTION_VALUES,
         );
+        let sb_h4 = self.bank_sb_h4();
         if let Some(bank) = &mut self.ref_mv_bank {
             bank.update_count_for_non_inter(
                 block.mi_row,
                 block.mi_col,
                 block.bw4,
                 block.bh4,
-                self.sb_h4,
+                sb_h4,
             );
         }
-        Ok(())
+        self.record_intrabc_prelude(
+            frontier,
+            IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
+                use_intrabc: false,
+                skip_flag: false,
+            }),
+        )
     }
 
     /// Calls `read` with the plane view and the § 7.11.3.3 parameters that
@@ -673,7 +840,7 @@ impl EncoderInterTile {
     pub(crate) fn record_filters(
         &self,
         frontier: &DecodeBlockFrontier,
-        residual: Option<&EncoderInterResidual>,
+        (motion, residual): (EncoderMotion, Option<&EncoderInterResidual>),
         (deblock, chroma, tx_skip): (
             &mut Vec<crate::filters::deblock::DeblockBlock>,
             &mut crate::filters::deblock::ChromaDeblockRecords,
@@ -693,7 +860,10 @@ impl EncoderInterTile {
             self.chroma,
             range.as_ref(),
             blocks,
-            None,
+            is_tip(motion).then(|| {
+                let units16 = super::tip::reference_uses_16x16_units(n4w, n4h, false);
+                crate::filters::deblock::DeblockSubPuSize::square(if units16 { 16 } else { 8 })
+            }),
             self.qindex,
             false,
         )
@@ -766,11 +936,11 @@ impl EncoderInterTile {
     ) -> SingleMotionSyntax {
         SingleMotionSyntax {
             mode: motion.mode,
-            tip_ref: false,
+            tip_ref: motion.tip,
             ref_mv_idx: motion.ref_mv_idx,
             mvd: motion.mvd,
-            use_temporal_first: self.temporal_first(motion.ref_frame),
-            global_warp: (motion.mode == SINGLE_MODE_GLOBALMV)
+            use_temporal_first: !motion.tip && self.temporal_first(motion.ref_frame),
+            global_warp: (!motion.tip && motion.mode == SINGLE_MODE_GLOBALMV)
                 .then(|| {
                     global_motion_warp(&self.core, motion.ref_frame, false, block.bw4, block.bh4)
                 })

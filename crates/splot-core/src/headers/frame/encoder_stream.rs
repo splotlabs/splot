@@ -9,6 +9,7 @@
 //! tile in an Annex B temporal unit.
 
 use crate::bitio::BitReader;
+use crate::headers::frame::IntrabcParams;
 use crate::headers::frame::restoration::default_restoration_size;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
@@ -28,8 +29,8 @@ use crate::tile::TileSpacing;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, ObuType, TemporalLayerId};
 use crate::write::{
     BitWriter, LrReferenceFilters, WriteError, write_annexb_obu, write_ccso_plane_params,
-    write_cdef_params, write_deblocking_filter_params, write_gdf_params, write_lr_params_for_inter,
-    write_obu_payload, write_tile_group_obu,
+    write_cdef_params, write_deblocking_filter_params, write_gdf_params, write_intrabc_params,
+    write_lr_params_for_inter, write_obu_payload, write_tile_group_obu,
 };
 
 /// `seq_level_idx == 31`: the level without tile-size limits (§ 5.18.7.3).
@@ -72,7 +73,9 @@ pub struct EncoderToolFlags {
     pub mhccp: bool,
     /// `cfl_ds_filter_index`, `0..=3`; not coded for monochrome.
     pub cfl_ds_filter: u8,
-    /// `seq_choose_screen_content_tools`: frames may use palette and intra block copy.
+    /// `seq_choose_screen_content_tools` with `seq_choose_integer_mv`:
+    /// every frame codes `allow_screen_content_tools = 1` (palette) and
+    /// `force_integer_mv = 0`.
     pub screen_content: bool,
     /// `enable_ibp`.
     pub ibp: bool,
@@ -92,6 +95,9 @@ pub struct EncoderToolFlags {
     pub inter_ddt: bool,
     /// `enable_inter_ist`.
     pub inter_ist: bool,
+    /// `enable_tip` with `disable_tip_output = 1` and no hole fill: inter
+    /// blocks may predict from the TIP frame.
+    pub tip: bool,
     /// `enable_cctx`.
     pub cctx: bool,
     /// `enable_tcq` with `choose_tcq_per_frame = 1`: each frame codes `allow_tcq`.
@@ -207,6 +213,9 @@ pub struct KeyFrameTxParams {
     pub allow_tcq: bool,
     /// `delta_q_res` of a frame that codes `delta_q_present` (§ 5.18.7.8), `0..=3`.
     pub delta_q_res: Option<u8>,
+    /// `allow_intrabc` of a key frame, with `allow_global_intrabc = 1` and
+    /// `allow_local_intrabc = 0` (§ 5.18.3.4); an inter frame refuses it.
+    pub allow_intrabc: bool,
 }
 
 impl Default for KeyFrameTxParams {
@@ -216,6 +225,7 @@ impl Default for KeyFrameTxParams {
             reduced_tx_set: 2,
             allow_tcq: false,
             delta_q_res: None,
+            allow_intrabc: false,
         }
     }
 }
@@ -444,8 +454,13 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     w.write_ns(0, 3)?; // seq_max_bvp_drl_bits_minus_1, ns(MAX_REF_BV_STACK_SIZE - 1)
     w.write_flag(false)?; // allow_frame_max_bvp_drl_bits
     w.write_bits(NUM_SAME_REF_COMPOUND, 2)?;
-    for _ in 0..6 {
-        w.write_flag(false)?; // enable_tip, mv_traj, bawp, cwp, imp_msk_bld, df_sub_pu
+    w.write_flag(tools.tip)?; // enable_tip
+    if tools.tip {
+        w.write_flag(true)?; // disable_tip_output
+        w.write_flag(false)?; // enable_tip_hole_fill
+    }
+    for _ in 0..5 {
+        w.write_flag(false)?; // enable_mv_traj, bawp, cwp, imp_msk_bld, df_sub_pu
     }
     w.write_bits(0, 2)?; // enable_opfl_refine
     w.write_flag(false)?; // enable_refinemv
@@ -559,9 +574,19 @@ fn key_frame_header_bits(
     w.write_flag(false)?; // frame_size_override_flag
     w.write_bits(order_hint & order_hint_mask, seq.order_hint_bits)?;
     if seq.seq_force_screen_content_tools == 2 {
-        w.write_flag(false)?; // allow_screen_content_tools
+        w.write_flag(true)?; // allow_screen_content_tools
+        if seq.seq_force_integer_mv == 2 {
+            w.write_flag(false)?; // force_integer_mv
+        }
     }
-    w.write_flag(false)?; // allow_intrabc
+    let intrabc = IntrabcParams {
+        allow_intrabc: tx.allow_intrabc,
+        allow_global_intrabc: tx.allow_intrabc.then_some(true),
+        allow_local_intrabc: tx.allow_intrabc.then_some(false),
+        change_bvp_drl: (tx.allow_intrabc && seq.allow_frame_max_bvp_drl_bits).then_some(false),
+        max_bvp_drl_bits_minus_1: None,
+    };
+    write_intrabc_params(&mut w, &intrabc, true, seq.allow_frame_max_bvp_drl_bits)?;
     w.write_flag(false)?; // disable_cdf_update
     write_quant_and_filters(
         &mut w,
