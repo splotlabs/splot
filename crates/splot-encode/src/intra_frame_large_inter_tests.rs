@@ -222,16 +222,20 @@ fn large_inter_leaves(trees: &[PartitionTree]) -> usize {
         .sum()
 }
 
-/// On a pan, the search of an inter frame picks inter leaves wider or taller
-/// than 64 in every chroma format, repeats from one state, and rolls back;
-/// without `large_inter` it picks none.
+/// On a pan over a shared-tree key frame, the search of an inter frame picks
+/// inter leaves wider or taller than 64 in every chroma format, repeats from
+/// one state, and rolls back; without `large_inter` it picks none.
 #[test]
 fn a_pan_codes_large_inter_leaves() {
     for chroma in CHROMAS {
         let mut config = config(200, 136, BitDepth::Eight, 6, 90);
         config.chroma = chroma;
         for large_inter in [true, false] {
-            let mut coder = IntraFrameCoder::with_preset(&config, preset6(large_inter)).unwrap();
+            let preset = PresetParams {
+                sdp: false,
+                ..*preset6(large_inter)
+            };
+            let mut coder = IntraFrameCoder::with_preset(&config, &preset).unwrap();
             let key = crate::gop::plan(0, config.keyint);
             coder
                 .encode_frame(&panning_frame(&config, 0), &key, 90)
