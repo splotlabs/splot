@@ -572,8 +572,12 @@ impl EncoderInterTile {
         );
         let mut state = self.resolution_state(&block);
         let resolved = resolve_inter_block(&syntax, &mut state)?;
-        let compound = match syntax.motion {
-            InterMotionSyntax::Compound(compound) => Some(compound),
+        let refined = match syntax.motion {
+            InterMotionSyntax::Compound(compound)
+                if compound.use_refinemv || compound.use_optflow =>
+            {
+                Some(compound)
+            }
             _ => None,
         };
         if is_tip(motion) {
@@ -582,7 +586,7 @@ impl EncoderInterTile {
             let derived = self.tip_motion(&placed, workspace, &mut records, false);
             self.tip_records = records;
             derived?;
-        } else if let Some(compound) = compound {
+        } else if let Some(compound) = refined {
             let refine = (
                 compound.use_refinemv,
                 compound.refinemv_switchable,
