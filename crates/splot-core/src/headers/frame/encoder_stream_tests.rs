@@ -166,6 +166,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         inter_ddt: true,
         inter_ist: true,
         tip: true,
+        tip_output: true,
         cctx: true,
         tcq: true,
         parity_hiding: false,
@@ -197,6 +198,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.enable_ref_frame_mvs && !inter.reduced_ref_frame_mvs_mode);
     assert!(inter.enable_refmvbank && inter.drl_reorder == DrlReorder::Constraint);
     assert_eq!(inter.seq_max_drl_bits_minus_1, 3);
+    assert!(inter.enable_tip && inter.enable_tip_output && !inter.enable_tip_hole_fill);
     assert!(inter.enable_adaptive_mvd && !inter.enable_mvd_sign_derive && inter.enable_flex_mvres);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);

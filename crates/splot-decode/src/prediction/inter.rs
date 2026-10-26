@@ -1522,15 +1522,7 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
     if envelope.header.obu_type.is_sef() {
         validate_sef_frame_core(&core, reference, envelope.offset, frame_index)?;
     } else if envelope.header.obu_type.is_tip_frame() {
-        validate_tip_output_frame_parse(&core, envelope.offset, frame_index)?;
-        infer_tip_output_quantization(
-            &mut core,
-            sequence,
-            reference,
-            envelope.offset,
-            frame_index,
-        )?;
-        validate_tip_output_frame_core(&core)?;
+        resolve_tip_output_core(&mut core, sequence, reference, envelope.offset, frame_index)?;
     } else {
         validate_and_resolve_inter_frame_core(
             &mut core,
@@ -1703,6 +1695,19 @@ fn required_tip_reference_pair(
             ),
         }
     })
+}
+
+/// Validates the parsed TIP output frame `core` and infers its quantizer.
+pub(crate) fn resolve_tip_output_core(
+    core: &mut FrameHeaderCore,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<impl ReconSample>,
+    offset: ByteOffset,
+    frame_index: Option<usize>,
+) -> Result<()> {
+    validate_tip_output_frame_parse(core, offset, frame_index)?;
+    infer_tip_output_quantization(core, sequence, reference, offset, frame_index)?;
+    validate_tip_output_frame_core(core)
 }
 
 fn infer_tip_output_quantization(
