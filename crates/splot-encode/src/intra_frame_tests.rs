@@ -841,9 +841,14 @@ fn inter_stream_with(
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let (tx, _, (high_precision_mv, ref_mvs, _, tip), tiles) =
+    let (tx, _, (high_precision_mv, ref_mvs, _, tip, integer_mv), tiles) =
         crate::gop::frame_tools(&coder.preset, coder.tiles, qindex);
-    let tools = (tx, true, (high_precision_mv, ref_mvs, true, tip), tiles);
+    let tools = (
+        tx,
+        true,
+        (high_precision_mv, ref_mvs, true, tip, integer_mv),
+        tiles,
+    );
     let filters = FrameFilterParams::default();
     let core = plan
         .header(&coder.view, &coder.references, qindex, &filters, tools)

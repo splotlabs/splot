@@ -141,6 +141,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         high_precision_mv,
                         switchable_interp_filter,
                         tip_weight: None,
+                        force_integer_mv: sb == SuperblockSize::Block128x128 && !high_precision_mv,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
                     let core = &header.core;
@@ -158,7 +159,9 @@ fn inter_headers_parse_with_the_reference_state() {
                         inter.disable_cross_frame_cdf_init,
                         Some(primary_slot.is_none())
                     );
-                    let precision = if high_precision_mv {
+                    let precision = if params.force_integer_mv {
+                        MvPrecision::OnePel
+                    } else if high_precision_mv {
                         MvPrecision::EighthPel
                     } else {
                         MvPrecision::QuarterPel
@@ -166,7 +169,7 @@ fn inter_headers_parse_with_the_reference_state() {
                     assert_eq!(inter.mv_precision, Some(precision));
                     let screen = sb == SuperblockSize::Block128x128;
                     assert_eq!(inter.allow_screen_content_tools, Some(screen));
-                    assert_eq!(inter.force_integer_mv, Some(false));
+                    assert_eq!(inter.force_integer_mv, Some(params.force_integer_mv));
                     let filter = if switchable_interp_filter {
                         InterpolationFilter::Switchable
                     } else {
@@ -221,6 +224,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         high_precision_mv: false,
         switchable_interp_filter: false,
         tip_weight: None,
+        force_integer_mv: false,
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
     let inter = header.core.inter.as_ref().unwrap();
@@ -316,6 +320,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             high_precision_mv: false,
             switchable_interp_filter: false,
             tip_weight: None,
+            force_integer_mv: false,
         },
     )
     .unwrap();
@@ -394,6 +399,7 @@ fn rejects_out_of_range_inter_inputs() {
         high_precision_mv: false,
         switchable_interp_filter: false,
         tip_weight: None,
+        force_integer_mv: false,
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),
@@ -408,4 +414,10 @@ fn rejects_out_of_range_inter_inputs() {
         ..params
     };
     assert!(build_inter_frame_header(&view, &no_valid_slot.view(), &params).is_err());
+    let integer_mv = InterFrameParams {
+        force_integer_mv: true,
+        ..params
+    };
+    let slots = Slots::after_key(64, 64, 0);
+    assert!(build_inter_frame_header(&view, &slots.view(), &integer_mv).is_err());
 }
