@@ -98,6 +98,7 @@ impl Case {
                 tx_mode: TxMode::Largest,
                 reduced_tx_set: 2,
                 allow_tcq: false,
+                delta_q_res: None,
             },
         }
     }
@@ -596,7 +597,21 @@ fn encode_case(
             ..coverage
         },
     };
+    let max_q = splot_recon::max_quantizer_index(case.bit_depth());
+    let mut edges = [6, 7, 8, -600, 600, -600].into_iter();
     while writer.next_superblock_root().is_some() {
+        if let Some(res) = case.tx.delta_q_res {
+            let before = writer.syntax().qindex();
+            let target = match edges.next() {
+                Some(jump) => before.saturating_add_signed(jump << res),
+                None => [1, max_q, rng.below(u64::from(max_q) + 8) as u32][rng.below(3) as usize],
+            };
+            let qindex = writer.set_superblock_qindex(target).unwrap();
+            let step = 1 << res;
+            assert!((1..=max_q).contains(&qindex), "{qindex}");
+            assert!(qindex.abs_diff(target.clamp(1, max_q)) <= step / 2 || qindex == max_q);
+            assert!(qindex.abs_diff(before).is_multiple_of(step) || qindex == 1 || qindex == max_q);
+        }
         let tree = writer
             .search_superblock(|syntax, root| {
                 Ok(random_tree(syntax, root, &mut rng, &mut modes, &mut coder))
@@ -648,6 +663,34 @@ fn random_key_frames_decode_to_the_encoder_recon() {
             }
         }
     }
+}
+
+/// Superblock qindex targets at every `delta_q_res`: `delta_q_abs` 6, 7 and 8
+/// around `DELTA_Q_SMALL`, the largest jumps both ways, then random targets: the facade codes each `delta_q_abs`, escape and sign, and
+/// dequantizes with the `CurrentQIndex` the decoder derives.
+#[test]
+fn superblock_qindex_deltas_round_trip() {
+    for (seed, res) in (0..4).enumerate() {
+        for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+            let sb_size = [SuperblockSize::Block64x64, SuperblockSize::Block128x128][seed % 2];
+            let mut case = Case::new(200, 136, bit_depth, sb_size);
+            case.tx.delta_q_res = Some(res);
+            assert_round_trip(case, 0xde17a + seed as u64);
+        }
+    }
+}
+
+/// Without `delta_q_present` the facade plans no superblock qindex.
+#[test]
+fn superblock_qindex_needs_delta_q_present() {
+    let case = Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    let (seq, core) = headers(case.tools);
+    let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap();
+    assert!(matches!(
+        syntax.set_superblock_qindex(100),
+        Err(EncoderSyntaxError::Unsupported(_))
+    ));
+    assert_eq!(syntax.qindex(), 50);
 }
 
 #[test]
@@ -1057,12 +1100,11 @@ fn facade_rejects_unmodelled_tools() {
     };
     let (seq, core) = headers(base);
     assert!(IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).is_ok());
-    let frame_cases: [fn(&mut FrameHeaderCore); 6] = [
+    let frame_cases: [fn(&mut FrameHeaderCore); 5] = [
         |c| c.allow_intrabc = Some(true),
         |c| c.lossless_info.as_mut().unwrap().coded_lossless = true,
         |c| c.quantization_params.as_mut().unwrap().base_q_idx = 0,
         |c| c.segmentation_params.as_mut().unwrap().segmentation_enabled = true,
-        |c| c.delta_q_params.as_mut().unwrap().delta_q_present = true,
         |c| c.setup_qm_params.as_mut().unwrap().using_qmatrix = true,
     ];
     for set in frame_cases {
