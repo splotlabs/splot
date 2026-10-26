@@ -608,9 +608,16 @@ fn encode_case(
             };
             let qindex = writer.set_superblock_qindex(target).unwrap();
             let step = 1 << res;
-            assert!((1..=max_q).contains(&qindex), "{qindex}");
-            assert!(qindex.abs_diff(target.clamp(1, max_q)) <= step / 2 || qindex == max_q);
-            assert!(qindex.abs_diff(before).is_multiple_of(step) || qindex == 1 || qindex == max_q);
+            let target = target.clamp(1, max_q) as i32;
+            let nearest = (-600..=600)
+                .map(|reduced| (before as i32 + reduced * step).clamp(1, max_q as i32))
+                .map(|codable| codable.abs_diff(target))
+                .min();
+            assert_eq!(
+                Some((qindex as i32).abs_diff(target)),
+                nearest,
+                "{before} {target}"
+            );
         }
         let tree = writer
             .search_superblock(|syntax, root| {
@@ -678,6 +685,50 @@ fn superblock_qindex_deltas_round_trip() {
             assert_round_trip(case, 0xde17a + seed as u64);
         }
     }
+}
+
+/// A superblock whose first leaf is a superblock-sized skipped leaf reads no
+/// delta and keeps `CurrentQIndex`; the next superblock's delta is coded
+/// from it, and a non-skipped leaf codes the planned qindex.
+#[test]
+fn superblock_sized_skipped_leaf_keeps_current_qindex() {
+    let mut case = Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64);
+    case.tx.delta_q_res = Some(0);
+    let seq = build_encoder_sequence_header(&EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: case.bit_depth,
+        chroma: case.chroma,
+        sb_size: case.sb_size,
+        tools: case.tools,
+    })
+    .unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let core = build_key_frame_header(
+        &view,
+        50,
+        0,
+        &FrameFilterParams::default(),
+        case.tx,
+        UniformTiles::default(),
+    )
+    .unwrap();
+    let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap();
+    let root = syntax.superblock_root(0, 0);
+    let leaf = syntax.leaf(root).unwrap();
+    let mut sink = crate::rd::coeff_rate::RateSink::adapting();
+    syntax.begin_superblock(root);
+    assert_eq!(syntax.set_superblock_qindex(120).unwrap(), 120);
+    assert_eq!(syntax.qindex(), 120);
+    syntax.write_delta_qindex(&leaf, true, &mut sink).unwrap();
+    assert_eq!((syntax.qindex(), sink.bits.0), (50, 0));
+    syntax.begin_superblock(root);
+    assert_eq!(syntax.set_superblock_qindex(57).unwrap(), 57);
+    syntax.write_delta_qindex(&leaf, false, &mut sink).unwrap();
+    assert!(sink.bits.0 > 0);
+    assert_eq!(syntax.qindex(), 57);
+    syntax.begin_superblock(root);
+    assert_eq!(syntax.set_superblock_qindex(1).unwrap(), 1);
 }
 
 /// Without `delta_q_present` the facade plans no superblock qindex.

@@ -231,8 +231,8 @@ impl IntraFrameCoder {
     }
 
     /// Codes `source` as `plan` at quantizer `qp` against the committed
-    /// references; non-empty `sb_offsets` moves the qindex of each superblock,
-    /// in frame raster order, by its entry through `delta_q`.
+    /// references; non-empty `sb_offsets`, one entry per superblock in frame
+    /// raster order, moves the qindex of each superblock through `delta_q`.
     fn code_frame(
         &self,
         source: &SourceFrame,
@@ -280,15 +280,19 @@ impl IntraFrameCoder {
         let (padded, motion) = (&padded, motion.as_ref());
         let (bit_depth, preset) = (self.bit_depth, &self.preset);
         let sb_cols = mi_cols.div_ceil(sb / 4);
+        if !sb_offsets.is_empty() && sb_offsets.len() != sb_cols * mi_rows.div_ceil(sb / 4) {
+            return Err(Error::Unsupported {
+                what: "superblock offsets that do not cover the superblock grid",
+            });
+        }
         let tiles = map_tiles(self.pool.as_ref(), writers, |mut writer| {
             let mut coder = SourceResidualCoder::new(padded, qindex, bit_depth, preset, lambda);
             let mut decisions = FrameDecisions::default();
             while let Some(root) = writer.next_superblock_root() {
                 let index = root.row4() / (sb / 4) * sb_cols + root.col4() / (sb / 4);
-                let target = (!sb_offsets.is_empty()).then(|| {
-                    let offset = sb_offsets.get(index).copied().unwrap_or(0);
-                    qindex.saturating_add_signed(i32::from(offset))
-                });
+                let target = sb_offsets
+                    .get(index)
+                    .map(|&offset| qindex.saturating_add_signed(i32::from(offset)));
                 let lambda = match target {
                     Some(target) => {
                         let sb_qindex = writer

@@ -269,6 +269,10 @@ pub enum EncoderHeaderError {
         /// The rejected `reduced_tx_set`.
         reduced_tx_set: u8,
     },
+    /// `delta_q_res` is set with `base_q_idx = 0`, which codes no
+    /// `delta_q_present` (§ 5.18.7.8).
+    #[error("delta_q_res needs base_q_idx > 0")]
+    DeltaQWithoutBaseQIdx,
     /// `allow_tcq` is set, but the sequence does not code it per frame.
     #[error("allow_tcq needs choose_tcq_per_frame")]
     TcqNotChosen,
@@ -584,6 +588,9 @@ pub(super) fn write_quant_and_filters(
     (frame_is_intra, lr_refs): (bool, LrReferenceFilters<'_>),
 ) -> Result<(), EncoderHeaderError> {
     let allow_tcq = tx.allow_tcq;
+    if tx.delta_q_res.is_some() && base_q_idx == 0 {
+        return Err(EncoderHeaderError::DeltaQWithoutBaseQIdx);
+    }
     if allow_tcq && !seq.quant.choose_tcq_per_frame {
         return Err(EncoderHeaderError::TcqNotChosen);
     }
@@ -598,7 +605,9 @@ pub(super) fn write_quant_and_filters(
     w.write_bits(base_q_idx, q_bits)?;
     w.write_flag(false)?; // segmentation_enabled
     w.write_flag(false)?; // using_qmatrix
-    w.write_flag(tx.delta_q_res.is_some())?; // delta_q_present
+    if base_q_idx > 0 {
+        w.write_flag(tx.delta_q_res.is_some())?; // delta_q_present
+    }
     if let Some(res) = tx.delta_q_res {
         w.write_bits(u32::from(res), 2)?; // delta_q_res
     }

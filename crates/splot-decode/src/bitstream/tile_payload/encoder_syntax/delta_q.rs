@@ -53,7 +53,8 @@ impl IntraTileSyntax {
     }
 
     /// Plans the qindex of the blocks of the following superblocks: the
-    /// codable `CurrentQIndex` nearest `target`. Returns it.
+    /// codable `CurrentQIndex` nearest `target` after the clip to
+    /// `1..=MaxQ`, by the smaller delta on a tie. Returns it.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError::Unsupported`] when the frame does not
@@ -63,10 +64,18 @@ impl IntraTileSyntax {
         let res = state.res.ok_or(EncoderSyntaxError::Unsupported(
             "delta-q without delta_q_present",
         ))?;
-        let step = 1 << res;
-        let target = i32::try_from(target).unwrap_or(i32::MAX).min(state.max_q);
-        let reduced = (target - state.coded + step / 2).div_euclid(step);
-        let qindex = updated_current_q_index(state.coded, reduced, res, state.max_q);
+        let target = i32::try_from(target)
+            .unwrap_or(i32::MAX)
+            .clamp(1, state.max_q);
+        let below = (target - state.coded).div_euclid(1 << res);
+        let (qindex, reduced) = [below, below + 1]
+            .map(|reduced| {
+                let qindex = updated_current_q_index(state.coded, reduced, res, state.max_q);
+                (qindex, reduced)
+            })
+            .into_iter()
+            .min_by_key(|&(qindex, reduced)| ((qindex - target).abs(), reduced.abs()))
+            .unwrap_or((state.coded, 0));
         state.planned = (qindex, reduced);
         self.apply_qindex(qindex);
         Ok(qindex as u32)
