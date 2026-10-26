@@ -137,6 +137,9 @@ impl TileFilters {
         leaf: &LeafBlock,
         skip: bool,
     ) -> Result<()> {
+        if leaf.is_chroma_part() {
+            return Ok(()); // § 5.20.5.3: a CHROMA_PART leaf codes none of them
+        }
         if let Some((row, col)) = self.gdf.unit(leaf) {
             let on = self
                 .syntax

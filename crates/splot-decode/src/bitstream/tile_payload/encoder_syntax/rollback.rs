@@ -253,6 +253,7 @@ pub struct SyntaxSnapshot {
     cells: Cells,
     palettes: Vec<LumaPalette>,
     block_decoded: TileBlockDecodedState,
+    sdp: super::SdpPartitionState,
     samples: Vec<(PlaneId, PlaneRect, Vec<u16>)>,
     inter: super::inter::InterSnapshot,
     #[cfg(debug_assertions)]
@@ -324,6 +325,7 @@ impl IntraTileSyntax {
         }
         self.palette_y.palettes_mut().clone_from(&snapshot.palettes);
         self.recon.block_decoded.clone_from(&snapshot.block_decoded);
+        self.sdp = snapshot.sdp;
         self.recon.restore_samples(&snapshot.samples)?;
         self.inter_restore(&snapshot.inter);
         #[cfg(debug_assertions)]
@@ -384,6 +386,7 @@ impl IntraTileSyntax {
             cells,
             palettes: self.palette_y.palettes_mut().clone(),
             block_decoded: self.recon.block_decoded.clone(),
+            sdp: self.sdp,
             samples: self.recon.save_samples((x, y, w, h), (sub_x, sub_y))?,
             inter: self.inter_snapshot((x, y, w, h), since),
             #[cfg(debug_assertions)]

@@ -38,7 +38,7 @@ use super::super::general_intra_block::{
 use super::super::general_intra_residual::{LumaTransformTypeContext, intra_chroma_plane_tx_type};
 use super::super::intra_joint_modes::LumaPalette;
 use super::super::partition_traversal::{
-    DecodedLeafPublication, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
+    DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
     is_cfl_context_for_chroma_ref, publish_intra_leaf_state,
 };
 use super::super::tile_frontier::chroma_subsampling;
@@ -407,6 +407,7 @@ impl IntraTileSyntax {
     pub fn cfl_allowed(&self, leaf: &LeafBlock) -> bool {
         let (_, chroma) = self.block_ctx(leaf);
         leaf.has_chroma()
+            && leaf.frontier.cfl_allowed_in_sdp()
             && chroma
                 .is_some_and(|(n4w, n4h)| cfl_allowed_for_chroma_mode(self.tools.chroma, n4w, n4h))
     }
@@ -415,6 +416,7 @@ impl IntraTileSyntax {
     #[must_use]
     pub fn fsc_allowed(&self, leaf: &LeafBlock) -> bool {
         self.tools.fsc_mode
+            && !leaf.is_chroma_part()
             && leaf_size4(leaf).is_ok_and(|(n4w, n4h)| allow_fsc_intra(self.tools.chroma, n4w, n4h))
     }
 
@@ -444,6 +446,7 @@ impl IntraTileSyntax {
         modes: IntraModes,
         symbols: &mut impl SymbolSink,
     ) -> Result<()> {
+        let modes = part_modes(leaf, modes)?;
         self.write_y_uv_modes(leaf, modes, symbols)?;
         self.write_palette_mode_info(leaf, modes, symbols)?;
         self.write_dip(leaf, modes, symbols)
@@ -455,9 +458,10 @@ impl IntraTileSyntax {
         let palette = modes
             .palette
             .and_then(|palette| self.luma_palette(palette).ok());
-        leaf_size4(leaf).is_ok_and(|(n4w, n4h)| {
-            dip_mode_info_allowed(self.tools.chroma, modes.y_mode, palette, n4w, n4h)
-        })
+        !leaf.is_chroma_part()
+            && leaf_size4(leaf).is_ok_and(|(n4w, n4h)| {
+                dip_mode_info_allowed(self.tools.chroma, modes.y_mode, palette, n4w, n4h)
+            })
     }
 
     /// The number of `dip_mode` values.
@@ -504,6 +508,21 @@ impl IntraTileSyntax {
     }
 
     fn write_y_uv_modes(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
+        if !leaf.is_chroma_part() {
+            self.write_y_modes(leaf, modes, symbols)?;
+        }
+        if !leaf.has_chroma() {
+            return Ok(());
+        }
+        self.write_uv_modes(leaf, modes, symbols)
+    }
+
+    fn write_y_modes(
         &mut self,
         leaf: &LeafBlock,
         modes: IntraModes,
@@ -565,9 +584,15 @@ impl IntraTileSyntax {
                 self.put(symbols, TileCdfSelector::MrlSecIndex { ctx }, secondary)?;
             }
         }
-        if !leaf.has_chroma() {
-            return Ok(());
-        }
+        Ok(())
+    }
+
+    fn write_uv_modes(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: IntraModes,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
         let is_cfl = !matches!(modes.uv_mode, ChromaMode::Intra(_));
         if self.cfl_allowed(leaf) {
             let ctx = is_cfl_context_for_chroma_ref(
@@ -625,6 +650,7 @@ impl IntraTileSyntax {
         modes: IntraModes,
         partition: TxPartition,
     ) -> Result<Vec<TransformBlock>> {
+        let modes = part_modes(leaf, modes)?;
         self.clear_inter_plan();
         self.plan_cctx(leaf);
         self.fsc_leaf = modes.fsc;
@@ -633,15 +659,19 @@ impl IntraTileSyntax {
         let palette = self.plan_palette(leaf, modes)?;
         let mrl = self.mrl_selection(modes)?;
         let block_modes = block_modes(leaf, modes, joint, mrl, palette.map(|p| p.palette))?;
-        let luma = rect_luma_plan(&block_modes, block_ctx, self.tools.tcq, self.sb_size4)
-            .map_err(rule("luma plan"))?;
         let chroma = rect_chroma_plan(&block_modes, self.tools.cfl_ds_filter_index, self.sb_size4);
         if modes.fsc && !self.fsc_allowed(leaf) {
             return Err(EncoderSyntaxError::Unsupported("FSC in this block"));
         }
-        let mut plan =
+        let mut plan = if leaf.is_chroma_part() {
+            let chroma = chroma.ok_or(EncoderSyntaxError::Unsupported("chroma-part plan"))?;
+            GeneralIntraResidualPlan::chroma(block_ctx, chroma, false)
+        } else {
+            let luma = rect_luma_plan(&block_modes, block_ctx, self.tools.tcq, self.sb_size4)
+                .map_err(rule("luma plan"))?;
             GeneralIntraResidualPlan::rect(block_ctx, luma, chroma, modes.fsc, None, false)
-                .map_err(rule("residual plan"))?;
+        }
+        .map_err(rule("residual plan"))?;
         if let Some(tx_size) = self.partitioned_tx_size(leaf, partition)? {
             plan.partition_luma(tx_size, partition)
                 .map_err(rule("transform partition"))?;
@@ -863,6 +893,7 @@ impl IntraTileSyntax {
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for an invalid geometry or mode.
     pub fn publish_intra_leaf(&mut self, leaf: &LeafBlock, modes: IntraModes) -> Result<()> {
+        let modes = part_modes(leaf, modes)?;
         let (_, joint) = self.y_mode_index(leaf, modes)?;
         let mrl = self.mrl_selection(modes)?;
         let palette = modes
@@ -898,13 +929,15 @@ impl IntraTileSyntax {
             GeneralIntraTreeWalkError::Leaf(never) => match never {},
         })?;
         let (n4w, n4h) = leaf_size4(leaf)?;
-        self.recon.y_smooth.record(
-            leaf.frontier.r,
-            leaf.frontier.c,
-            n4w,
-            n4h,
-            mode.y_mode_is_smooth(),
-        );
+        if !leaf.is_chroma_part() {
+            self.recon.y_smooth.record(
+                leaf.frontier.r,
+                leaf.frontier.c,
+                n4w,
+                n4h,
+                mode.y_mode_is_smooth(),
+            );
+        }
         if leaf.frontier.has_chroma {
             let (block_ctx, _) = self.block_ctx(leaf);
             record_chroma_smooth(
@@ -1181,6 +1214,39 @@ pub(super) const fn sequence_bit_depth(seq: &SequenceHeader) -> BitDepth {
 static ZERO_LEVELS: [i32; 1024] = [0; 1024];
 
 const NO_LEAF: EncoderSyntaxError = EncoderSyntaxError::Unsupported("unplanned transform block");
+
+/// `modes` of a `CHROMA_PART` leaf over its collocated luma mode (§ 5.20.5.3);
+/// `modes` itself elsewhere.
+///
+/// # Errors
+/// Returns [`EncoderSyntaxError::Unsupported`] for a luma-only tool (MRL,
+/// FSC, DIP, palette) in a `CHROMA_PART` leaf.
+fn part_modes(leaf: &LeafBlock, modes: IntraModes) -> Result<IntraModes> {
+    let DecodeBlockPart::ChromaPart {
+        y_mode,
+        angle_delta_y,
+    } = leaf.frontier.part()
+    else {
+        return Ok(modes);
+    };
+    let collocated = IntraModes {
+        y_mode,
+        angle_delta: angle_delta_y,
+        uv_mode: modes.uv_mode,
+        ..IntraModes::DC
+    };
+    let luma_only = IntraModes {
+        y_mode,
+        angle_delta: angle_delta_y,
+        ..modes
+    };
+    if luma_only != collocated {
+        return Err(EncoderSyntaxError::Unsupported(
+            "a luma-only tool in a CHROMA_PART leaf",
+        ));
+    }
+    Ok(collocated)
+}
 
 /// The decoder's block modes of `modes` in `leaf` with luma `palette`.
 fn block_modes(

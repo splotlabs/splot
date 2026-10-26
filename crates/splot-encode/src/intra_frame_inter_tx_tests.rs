@@ -106,6 +106,7 @@ fn split_inter_leaves(trees: &[PartitionTree]) -> usize {
                 usize::from(choice.inter.is_some() && choice.tx_partition != TxPartition::None)
             }
             PartitionTree::Split { children, .. } => children.iter().map(count).sum(),
+            PartitionTree::Sdp { luma, chroma } => count(luma) + count(chroma),
         }
     }
     trees.iter().map(count).sum()
