@@ -184,8 +184,8 @@ impl Lambda {
     #[must_use]
     pub(crate) fn scaled(self, log2_q8: i32) -> Self {
         let frac = u64::from(log2_q8.rem_euclid(256).unsigned_abs());
-        let mantissa_q16 = 65_536 + (frac * 43_025 >> 8) + (frac * frac * 22_511 >> 16);
-        let scaled = u128::from(self.step_sq_q12) * u128::from(mantissa_q16) >> 16;
+        let mantissa_q16 = 65_536 + ((frac * 43_025) >> 8) + ((frac * frac * 22_511) >> 16);
+        let scaled = (u128::from(self.step_sq_q12) * u128::from(mantissa_q16)) >> 16;
         let octaves = log2_q8.div_euclid(256);
         let scaled = if octaves >= 0 {
             scaled << octaves.unsigned_abs().min(32)

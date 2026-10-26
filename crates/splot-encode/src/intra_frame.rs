@@ -252,7 +252,8 @@ impl IntraFrameCoder {
     }
 
     /// The `(qindex offset, lambda log2 Q8)` of each superblock of `plan`
-    /// from its block importances; empty without them.
+    /// from its block importances; empty without them or when no offset is
+    /// nonzero, which codes no `delta_q_present`.
     fn superblock_quant(&self, plan: &GopFrame) -> Vec<(i16, i16)> {
         let Some(costs) = self.importance.frames.get(&plan.display_index) else {
             return Vec::new();
@@ -263,12 +264,16 @@ impl IntraFrameCoder {
             SuperblockSize::Block256x256 => 256,
         };
         let (width, height) = (self.params.width as usize, self.params.height as usize);
-        tpl::superblock_quant(
+        let quant = tpl::superblock_quant(
             costs,
             self.importance.grid,
             (width.div_ceil(sb), height.div_ceil(sb), sb),
             self.importance.strength,
-        )
+        );
+        if quant.iter().all(|&(offset, _)| offset == 0) {
+            return Vec::new();
+        }
+        quant
     }
 
     /// The `tip_global_wtd_index` whose TIP prediction of `source` has the

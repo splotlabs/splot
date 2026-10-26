@@ -76,9 +76,12 @@ pub struct PresetParams {
     /// Strength in percent of the block-level temporal model: each
     /// superblock's qindex and lambda move with the importance of its
     /// lookahead blocks over the frame's, coded as `delta_q`. `0` is off.
+    /// `100` in every row (2026-10-26, CRF, vs main 9ec81da32): p6 niklas
+    /// f30 Y -0.86%, paris f30 -1.92%, park_joy f10 +0.06% at 0.95-1.0x CPU.
     pub tpl_delta_q: u8,
     /// `delta_q_res` of a frame with superblock qindex offsets: the qindex
-    /// moves in steps of `1 << delta_q_res`, `0..=3`.
+    /// moves in steps of `1 << delta_q_res`, `0..=3`. `1` in every row:
+    /// `2` lost 0.8% on park_joy p6 and gained 0.5% on paris.
     pub delta_q_res: u8,
     /// Compound candidates of an inter leaf that get a full RD trial, best
     /// prediction SATD first; skip-mode candidates are tried besides them.
@@ -508,8 +511,8 @@ preset_table! {
     gop {
         mini_gop_size:         [    8,     8,     8,     8,     4,     4,     4,     4,     2,     2,     1],
         lookahead_frames:      [   16,    16,    16,    16,     8,     8,     8,     8,     4,     4,     2],
-        tpl_delta_q:           [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        delta_q_res:           [    2,     2,     2,     2,     2,     2,     2,     2,     2,     2,     2],
+        tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
+        delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
 }
 
