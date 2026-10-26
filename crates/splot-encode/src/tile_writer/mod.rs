@@ -170,6 +170,24 @@ impl KeyFrameTileWriter {
         Ok(())
     }
 
+    /// Runs `probe` on the facade at the root of every superblock of the tile
+    /// in raster order, before any superblock is written.
+    pub(crate) fn probe_superblocks(
+        &mut self,
+        mut probe: impl FnMut(&mut IntraTileSyntax, PartitionNode) -> Result<()>,
+    ) -> Result<()> {
+        let sb4 = self.syntax.superblock_size4();
+        for index in 0..self.superblocks {
+            let root = self.syntax.superblock_root(
+                self.origin.0 + index / self.sb_cols * sb4,
+                self.origin.1 + index % self.sb_cols * sb4,
+            );
+            self.syntax.begin_superblock(root);
+            probe(&mut self.syntax, root)?;
+        }
+        Ok(())
+    }
+
     /// Runs `search` on the facade at the start of the next superblock, then
     /// rolls the facade back, so the superblock is still to be written.
     pub(crate) fn search_superblock<T>(

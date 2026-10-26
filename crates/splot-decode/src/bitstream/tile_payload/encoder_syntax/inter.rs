@@ -468,6 +468,43 @@ impl IntraTileSyntax {
         }
     }
 
+    /// The luma transform blocks of the TIP `NEARMV` prediction of `leaf` with
+    /// `tip_global_wtd_index = weight` (§ 7.11.3), each with its row-major
+    /// samples, for a frame-level weight choice. The prediction overwrites the
+    /// leaf's samples and the planned leaf, so call it before the search of
+    /// the tile.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] where `leaf` cannot code TIP or for a
+    /// weight index above 7.
+    pub fn tip_prediction(
+        &mut self,
+        leaf: &LeafBlock,
+        weight: u8,
+    ) -> Result<Vec<(TransformBlock, Vec<u16>)>> {
+        if !self.tip_allowed(leaf)? || weight > 7 {
+            return Err(EncoderSyntaxError::Unsupported("TIP prediction here"));
+        }
+        let modes = InterModes {
+            ref_frame: self.reference_count(),
+            mode: InterMode::Near,
+            drl: 0,
+            mv: MotionVector::default(),
+            filter: InterpolationFilter::EightTap,
+            precision: None,
+            amvd: false,
+        };
+        let previous = self.inter_state()?.tile.set_tip_weight(Some(weight));
+        let planned = self.plan_inter_leaf(leaf, InterPrediction::Single(modes));
+        self.inter_state()?.tile.set_tip_weight(previous);
+        let mut out = Vec::new();
+        for tx in planned?.into_iter().filter(|tx| tx.plane == 0) {
+            out.push((tx, self.reconstruction(&tx)?));
+        }
+        self.clear_inter_plan();
+        Ok(out)
+    }
+
     /// `NumTotalRefs`; `0` in an intra frame.
     #[must_use]
     pub fn reference_count(&self) -> usize {

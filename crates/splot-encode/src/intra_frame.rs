@@ -6,8 +6,8 @@
 //! unit of a key or inter frame.
 
 use splot_core::headers::frame::{
-    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, UniformTiles,
-    build_encoder_sequence_header,
+    CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
+    UniformTiles, build_encoder_sequence_header,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -233,6 +233,70 @@ impl IntraFrameCoder {
         })
     }
 
+    /// The `tip_global_wtd_index` whose TIP prediction of `source` has the
+    /// least luma SSE over every other in-frame 64x64 block (a checkerboard)
+    /// of the frame `core`, a `TIP_FRAME_AS_REF` frame; ties keep the lower
+    /// index.
+    fn tip_weight(&self, source: &SourceFrame, core: &FrameHeaderCore) -> Result<u8> {
+        const PROBE4: usize = 16;
+        let initial = self
+            .references
+            .frame_start(core)
+            .map_err(coding("initial CDFs"))?;
+        let mut totals = [0u64; 8];
+        let mut padded = None;
+        for tile in 0..tile_count(core) {
+            let mut writer = KeyFrameTileWriter::with_start(
+                &self.sequence,
+                core,
+                &self.references,
+                &initial,
+                tile,
+            )
+            .map_err(coding("tile setup"))?;
+            let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
+            let sb4 = writer.syntax().superblock_size4();
+            let padded = padded.get_or_insert_with(|| {
+                PaddedSource::new(
+                    source,
+                    self.chroma,
+                    mi_cols * 4 + sb4 * 4,
+                    mi_rows * 4 + sb4 * 4,
+                )
+            });
+            writer
+                .probe_superblocks(|syntax, root| {
+                    let nodes = if sb4 > PROBE4 {
+                        syntax.children(root, Partition::Split)?
+                    } else {
+                        vec![root]
+                    };
+                    for node in nodes {
+                        let (row4, col4) = (node.row4(), node.col4());
+                        let full = row4 + PROBE4 <= mi_rows && col4 + PROBE4 <= mi_cols;
+                        if !full || (row4 / PROBE4 + col4 / PROBE4) % 2 == 1 {
+                            continue;
+                        }
+                        let leaf = syntax.leaf(node)?;
+                        if !syntax.tip_allowed(&leaf)? {
+                            continue;
+                        }
+                        for (weight, total) in (0u8..).zip(totals.iter_mut()) {
+                            for (tx, prediction) in syntax.tip_prediction(&leaf, weight)? {
+                                *total += padded.sse(&tx, &prediction)?;
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+                .map_err(coding("TIP weight"))?;
+        }
+        Ok((0u8..)
+            .zip(totals)
+            .min_by_key(|&(_, total)| total)
+            .map_or(0, |(weight, _)| weight))
+    }
+
     /// Codes `source` as `plan` at quantizer `qp` against the committed
     /// references; non-empty `sb_offsets`, one entry per superblock in frame
     /// raster order, moves the qindex of each superblock through `delta_q`.
@@ -261,6 +325,8 @@ impl IntraFrameCoder {
             )?;
             if !self.references.tip_pair_available(&probe) {
                 tools.2.3 = None;
+            } else if self.preset.tip >= 2 {
+                tools.2.3 = Some(self.tip_weight(source, &probe)?);
             }
         }
         let header = |filters: &FrameFilterParams| {
