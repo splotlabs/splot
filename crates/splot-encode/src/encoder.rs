@@ -52,6 +52,9 @@ pub(crate) struct CodedFrame {
     /// The header, filtered reconstruction, initial CDFs and final tile CDFs
     /// that [`FrameCoder::commit`] stores.
     pub(crate) reference: Option<(FrameHeaderCore, DecodedFrame<u16>, FrameStart, Vec<TileEnd>)>,
+    /// The header of a `TIP_FRAME_AS_OUTPUT` frame, which
+    /// [`FrameCoder::commit`] records in place of `reference`.
+    pub(crate) tip_output: Option<FrameHeaderCore>,
 }
 
 /// Codes the frames and show-existing frames of the plan, in coding order.
@@ -473,6 +476,7 @@ mod tests {
                 recon,
                 frame_type: plan.frame_type,
                 reference: None,
+                tip_output: None,
             })
         }
     }

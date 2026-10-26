@@ -5728,7 +5728,7 @@ id = "ENC-TIP"
 name = "Encoder TIP as a reference"
 category = "encoder"
 kind = "encoder-tool"
-spec_sections = ["5.4.6", "5.18.2", "5.20.7.6", "7.11.3", "7.12"]
+spec_sections = ["5.4.6", "5.18.2", "5.20.7.6", "7.10.6", "7.12", "7.13.3.1"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/mode_decision.rs"
@@ -5752,6 +5752,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/intra_frame_tip_tests.rs::tip_frames_reach_the_headers_and_the_decoder", "crates/splot-encode/src/intra_frame_tip_tests.rs::tip_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_tip_tests.rs::a_frame_without_a_tip_pair_codes_tip_disabled", "crates/splot-encode/src/intra_frame_tip_tests.rs::the_tip_weight_search_follows_the_nearer_content", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot"]
 commands = ["cargo test -p splot-encode tip --locked", "cargo test -p splot-encode random_inter --locked", "SPLOT_AVM_DECODER=<avmdec> cargo test -p splot-encode avm_decodes_inter_frames -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-TIP-OUTPUT"
+name = "Encoder TIP output frames"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.6", "5.18.2", "7.10.6", "7.23"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_frame.rs"
+change_id = "enc-tip-output"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::tip_output (S3 of A5): the sequence codes disable_tip_output = 0. A shown non-reference frame that codes TIP_FRAME_AS_REF is also built as an OBU_REGULAR_TIP TIP_FRAME_AS_OUTPUT frame (build_tip_output_frame_header: PRIMARY_REF_NONE, a zero tip_global_mv, EIGHTTAP_SHARP, the frame's TIP weight), whose quantizer and picture come from the decoder (EncoderReferences::tip_output runs resolve_tip_output_core and the decoder's TIP output reconstruction); the frame keeps it when its RD cost (squared error of every plane plus lambda times its bits) times 100 is at most tip_output times that of the frame coded normally. EncoderReferences::update_tip_output records it in the reference buffer. Off writes the old stream byte-identically. Hole fill stays off (enable_tip_hole_fill = 0): with allow_tip_hole_fill = 1 in every TIP frame, p6 measured park_joy +1.41% and paris +0.70%."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_tip_tests.rs::tip_output_frames_decode_to_the_encoder_recon", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::tip_output_header_parses_complete_and_needs_tip_output"]
+commands = ["cargo test -p splot-encode tip_output --locked", "cargo test -p splot-core tip_output_header --locked"]
 fixtures = []
 diagnostics = []
 

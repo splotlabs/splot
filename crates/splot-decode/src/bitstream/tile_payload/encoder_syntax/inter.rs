@@ -48,6 +48,9 @@ use crate::prediction::inter::{
 };
 use crate::reference::buffer::RuntimeReferenceBuffer;
 
+#[path = "tip_output.rs"]
+mod tip_output;
+
 /// `MV_PRECISION_EIGHTH_PEL`: motion vectors are in units of `1/8` sample.
 pub const MV_PRECISION_EIGHTH_PEL: u8 = 6;
 /// The nonzero magnitudes, in `1/8` samples, of an adaptive-MVD component
@@ -110,12 +113,12 @@ impl EncoderReferences {
 
     /// Stores the coded frame `core` with its filtered reconstruction `frame`,
     /// and the saved CDFs and motion field of its final `tiles`, in tile
-    /// order, in the slots its `refresh_frame_flags` name (§ 7.20). `initial`
+    /// order, in the slots its `refresh_frame_flags` name (§ 7.23). `initial`
     /// is the [`Self::frame_start`] of `core`. A frame that refreshes no slot,
     /// or a sequence without `enable_ref_frame_mvs`, stores no motion field.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError`] for a header without the § 7.20 inputs or
+    /// Returns [`EncoderSyntaxError`] for a header without the § 7.23 inputs or
     /// a tile count the header does not have.
     pub fn update(
         &mut self,
@@ -467,7 +470,7 @@ impl IntraTileSyntax {
         self.inter_frame() && !leaf.frontier.is_luma_part() && !leaf.frontier.is_chroma_part()
     }
 
-    /// Whether `leaf` may predict from the TIP frame (§ 7.11.3): an
+    /// Whether `leaf` may predict from the TIP frame (§ 7.10.6): an
     /// [`InterModes`] whose `ref_frame` is [`Self::reference_count`] then
     /// codes `tip_mode` with `NEARMV` or `NEWMV` over the TIP stack.
     ///
@@ -484,7 +487,7 @@ impl IntraTileSyntax {
     }
 
     /// The luma transform blocks of the TIP `NEARMV` prediction of `leaf` with
-    /// `tip_global_wtd_index = weight` (§ 7.11.3), each with its row-major
+    /// `tip_global_wtd_index = weight` (§ 7.13.3.1), each with its row-major
     /// samples, for a frame-level weight choice. The prediction overwrites the
     /// leaf's samples and the planned leaf, so call it before the search of
     /// the tile.
