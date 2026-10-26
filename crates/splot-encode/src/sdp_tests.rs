@@ -168,7 +168,8 @@ fn sdp_search_codes_chroma_trees_that_merge_luma_nodes() {
         merged += usize::from(shape(chroma) != shape(luma));
     }
     assert!(merged > 0, "no chroma tree merged a luma node");
-    let coder = IntraFrameCoder::with_preset(&config, config.preset.params()).unwrap();
+    let off = PresetParams { sdp: false, ..sdp };
+    let coder = IntraFrameCoder::with_preset(&config, &off).unwrap();
     assert!(!coder.sequence.partition.unwrap().enable_sdp);
     for tree in search_frame(&coder, &key, &source, config.bit_depth) {
         let mut roots = Vec::new();

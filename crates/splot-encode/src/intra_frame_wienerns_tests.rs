@@ -135,14 +135,14 @@ fn class_stream() -> (Vec<Vec<u8>>, Vec<u8>, Vec<Option<u8>>) {
         wiener_ns_classes: 16,
         ..*Preset::new(9).unwrap().params()
     }));
-    let mut config = config(352, 288, BitDepth::Eight, 9, 110);
+    let mut config = config(352, 288, BitDepth::Eight, 9, 150);
     config.threads = splot_parallel::ThreadCount::from(2);
     let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
     let (mut units, mut recon, mut classes) = (Vec::new(), Vec::new(), Vec::new());
     for index in 0..3 {
         let plan = crate::gop::plan(u64::from(index), config.keyint);
         let mut coded = coder
-            .code_frame(&panning_frame(&config, index), &plan, 110, &[])
+            .code_frame(&panning_frame(&config, index), &plan, 150, &[])
             .unwrap();
         let core = &coded.reference.as_ref().unwrap().0;
         classes.push(core.lr_params.as_ref().unwrap().planes[0].num_filter_classes);

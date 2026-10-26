@@ -563,11 +563,14 @@ fn wave_frame(config: &Config) -> SourceFrame {
     SourceFrame::new(config, 0, planes).unwrap()
 }
 
-/// The key-frame search codes luma blocks with a secondary transform.
+/// The key-frame search without SDP, whose shared tree splits this frame
+/// finer, codes luma blocks with a secondary transform.
 #[test]
 fn search_picks_ist_blocks() {
     let config = config(64, 64, BitDepth::Eight, 9, 90);
-    let coder = IntraFrameCoder::with_preset(&config, ist_preset()).unwrap();
+    let shared =
+        preset_with(|p| (p.ist_sets, p.sdp) = (splot_decode::encoder_syntax::IST_SETS, false));
+    let coder = IntraFrameCoder::with_preset(&config, shared).unwrap();
     let plan = crate::gop::plan(0, config.keyint);
     let (_, [ist, _]) =
         search_frame_counting(&coder, &plan, &wave_frame(&config), config.bit_depth);

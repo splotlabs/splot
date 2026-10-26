@@ -321,7 +321,10 @@ fn superblock_search_is_deterministic_and_rolls_back() {
         let first = search();
         assert_eq!(first, search(), "preset {preset} {chroma:?}");
         assert!(
-            matches!(first.0, PartitionTree::Split { .. }),
+            matches!(
+                first.0,
+                PartitionTree::Split { .. } | PartitionTree::Sdp { .. }
+            ),
             "preset {preset} {chroma:?}"
         );
     }

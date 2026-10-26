@@ -47,7 +47,6 @@ pub(crate) enum PartitionTree {
     },
     /// The 64x64 node of an intra frame with `enable_sdp`: its `LUMA_PART`
     /// tree, then its `CHROMA_PART` tree (§ 5.20.3.1).
-    #[cfg_attr(not(test), expect(dead_code, reason = "the SDP search builds it"))]
     Sdp {
         luma: Box<PartitionTree>,
         chroma: Box<PartitionTree>,

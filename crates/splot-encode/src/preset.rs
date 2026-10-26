@@ -108,7 +108,8 @@ pub struct PresetParams {
     pub ext_four_way_margin: u8,
     /// Semi-decoupled partitioning (`enable_sdp`): each 64x64 node of an
     /// intra frame searches its luma tree on luma alone, then a chroma tree
-    /// that only merges luma leaves.
+    /// that only merges luma leaves. On in every row: intra frames gain luma
+    /// and YUV BD-rate at 0.62x to 0.87x of their CPU (2026-10-26).
     pub sdp: bool,
     /// CCSO classifications the filter search tries per plane; `0` disables
     /// CCSO in the sequence.
@@ -431,7 +432,7 @@ preset_table! {
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        sdp:                   [false, false, false, false, false, false, false, false, false, false, false],
+        sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
     }
     intra {
         intra_modes:           [   13,    13,    12,    10,     9,     8,     6,     5,     4,     3,     2],
@@ -570,6 +571,7 @@ mod tests {
             assert!(fast.min_block_log2 <= fast.max_block_log2);
             assert!(fast.intra_modes <= slow.intra_modes);
             assert!(fast.partition_early_exit >= slow.partition_early_exit);
+            assert!(fast.sdp <= slow.sdp);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
             assert!(fast.parity_hiding <= slow.parity_hiding);

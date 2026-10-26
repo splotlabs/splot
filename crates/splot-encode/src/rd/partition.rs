@@ -26,8 +26,10 @@ pub(crate) trait PartitionSearch {
     fn sdp_roots(&self, node: Self::Node) -> Option<(Self::Node, Self::Node)>;
     /// Limits the chroma tree to merges of the coded luma `tree` at `root`;
     /// `None` lifts the limit.
-    fn follow_luma(&mut self, luma: Option<(Self::Node, &PartitionTree)>)
-    -> Result<(), Self::Error>;
+    fn follow_luma(
+        &mut self,
+        luma: Option<(Self::Node, &PartitionTree)>,
+    ) -> Result<(), Self::Error>;
     /// The partitions `node` can code: the implied one alone when the position
     /// implies one, else the allowed set.
     fn partitions(&self, node: Self::Node) -> Result<Vec<Partition>, Self::Error>;
