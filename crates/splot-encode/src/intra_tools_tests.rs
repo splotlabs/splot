@@ -237,6 +237,11 @@ fn avm_decodes_fsc_frames_like_splot() {
 /// Frame `index` of drawn text panning by `(4, 2)` luma samples per frame:
 /// two luma levels with an edge level between, on flat chroma.
 fn screen_frame(config: &Config, index: u32) -> SourceFrame {
+    drawn_text(config, index, 7)
+}
+
+/// [`screen_frame`] whose glyph pattern advances `stride` levels per column.
+fn drawn_text(config: &Config, index: u32, stride: u32) -> SourceFrame {
     let max = u32::from(config.bit_depth.max_sample());
     let sizes = config.plane_sizes().unwrap();
     let planes = core::array::from_fn(|plane| {
@@ -245,7 +250,7 @@ fn screen_frame(config: &Config, index: u32) -> SourceFrame {
         for y in 0..size.height() as u32 {
             for x in 0..size.width() as u32 {
                 let (x, y) = (x + 4 * index, y + 2 * index);
-                let luma = match (x * 7 + y * 3 + x / 5 * (y / 3)) % 13 {
+                let luma = match (x * stride + y * 3 + x / 5 * (y / 3)) % 13 {
                     0..=2 => max / 10,
                     3 => max / 2 + 3,
                     _ => max * 9 / 10,
@@ -272,24 +277,34 @@ fn palette_frames_decode_to_the_encoder_recon_on_any_thread_count() {
     );
 }
 
-/// Drawn text codes palette leaves in key and inter frames that decode to
-/// the encoder recon in every chroma format and both bit depths, and 1, 2
-/// and 8 threads write the same bytes.
+/// Drawn text codes palette leaves in key frames and, over new text, in
+/// inter frames, at both bit depths and in 4:2:0 and 4:4:4. Its streams
+/// decode to the encoder recon in every chroma format and both bit depths,
+/// and 1, 2 and 8 threads write the same bytes.
 #[test]
 fn screen_streams_code_palette_leaves() {
     let preset = preset_with(|p| p.palette = true);
-    let config = config(136, 72, BitDepth::Ten, 9, 90);
-    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-    let plan = crate::gop::plan(0, config.keyint);
-    let trees = search_frame(&coder, &plan, &screen_frame(&config, 0), config.bit_depth);
     let palette = |choice: &LeafChoice| choice.inter.is_none() && choice.modes.palette.is_some();
-    assert!(
-        trees
-            .iter()
-            .map(|tree| leaves(tree, palette))
-            .sum::<usize>()
-            > 0
-    );
+    for (chroma, bit_depth) in [
+        (PixelFormat::Yuv420, BitDepth::Ten),
+        (PixelFormat::Yuv420, BitDepth::Eight),
+        (PixelFormat::Yuv444, BitDepth::Eight),
+    ] {
+        let mut config = config(136, 72, bit_depth, 9, 90);
+        config.chroma = chroma;
+        let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        let key = crate::gop::plan(0, config.keyint);
+        let trees = search_frame(&coder, &key, &screen_frame(&config, 0), bit_depth);
+        let count: usize = trees.iter().map(|tree| leaves(tree, palette)).sum();
+        assert!(count > 0, "key {chroma:?} {bit_depth:?}");
+        coder
+            .encode_frame(&screen_frame(&config, 0), &key, 90)
+            .unwrap();
+        let plan = crate::gop::plan(1, config.keyint);
+        let trees = search_frame(&coder, &plan, &drawn_text(&config, 1, 5), bit_depth);
+        let count: usize = trees.iter().map(|tree| leaves(tree, palette)).sum();
+        assert!(count > 0, "inter {chroma:?} {bit_depth:?}");
+    }
     for chroma in CHROMAS {
         for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
             let (units, recon, _) = cfl_stream((2, chroma, bit_depth), preset, 0, screen_frame);
