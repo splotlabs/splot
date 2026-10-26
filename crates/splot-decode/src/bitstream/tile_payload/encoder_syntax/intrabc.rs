@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Intra block copy of the encoder facade (§ 5.20.5.4): the block vectors
-//! a leaf may code (§ 6.17.3.3 `is_mv_valid`), their syntax, the copy
+//! a leaf may code (§ 6.19.7.12 `is_mv_valid`), their syntax, the copy
 //! prediction and the publication, through the decoder's intra-frame state.
 
 use core::ops::Range;
@@ -16,6 +16,19 @@ use super::{
 };
 use crate::prediction::inter::read_mv::{MV_PRECISION_ONE_PEL, MvReadConfig};
 use crate::prediction::inter::{MvdCoding, non_intra_leaf_mode};
+
+/// The block vectors one leaf may code, see
+/// [`IntraTileSyntax::intrabc_vectors`].
+#[derive(Clone, Debug)]
+pub struct IntrabcVectors(BvFrame);
+
+impl IntrabcVectors {
+    /// Whether the leaf may code the block vector `bv`.
+    #[must_use]
+    pub fn valid(&self, bv: MotionVector) -> bool {
+        global_bv_valid(&self.0, [bv.row, bv.col])
+    }
+}
 
 /// An intra block copy of a leaf (§ 5.20.5.4).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,25 +66,31 @@ impl IntraTileSyntax {
         Ok(mvs.into_iter().map(MotionVector::from).collect())
     }
 
-    /// Whether `leaf` may code the block vector `bv`: a whole-sample vector
-    /// of a leaf at least 8x8 that § 6.17.3.3 `is_mv_valid` accepts for the
+    /// Whether `leaf` may code the block vector `bv`; see
+    /// [`Self::intrabc_vectors`].
+    #[must_use]
+    pub fn intrabc_bv_valid(&self, leaf: &LeafBlock, bv: MotionVector) -> bool {
+        self.intrabc_vectors(leaf)
+            .is_some_and(|vectors| vectors.valid(bv))
+    }
+
+    /// The block vectors `leaf` may code, `None` when it codes no
+    /// `use_intrabc`: whole-sample vectors of a leaf at least 8x8 whose
+    /// chroma is its own, that § 6.19.7.12 `is_mv_valid` accepts for the
     /// global area, with the source in the current or the previous
     /// superblock row.
     #[must_use]
-    pub fn intrabc_bv_valid(&self, leaf: &LeafBlock, bv: MotionVector) -> bool {
-        let Ok(size) = leaf.dimensions() else {
-            return false;
-        };
-        self.intrabc_allowed(leaf)
-            && global_bv_valid(
-                &BvFrame {
-                    mi: (leaf.row4(), leaf.col4()),
-                    size,
-                    tile: self.tile.clone(),
-                    sb_size: self.sb_size4 * 4,
-                },
-                [bv.row, bv.col],
-            )
+    pub fn intrabc_vectors(&self, leaf: &LeafBlock) -> Option<IntrabcVectors> {
+        let size = leaf.dimensions().ok()?;
+        self.intrabc_allowed(leaf).then(|| {
+            IntrabcVectors(BvFrame {
+                mi: (leaf.row4(), leaf.col4()),
+                size,
+                tile: self.tile.clone(),
+                sb_size: self.sb_size4 * 4,
+                chroma_offset: leaf.frontier.chroma_offset,
+            })
+        })
     }
 
     /// Plans the IntraBC leaf `leaf` of `modes` with the luma transform split
@@ -252,17 +271,26 @@ pub(super) struct BvFrame {
     pub(super) tile: (Range<usize>, Range<usize>),
     /// `Block_Width[SbSize]` (= `Block_Height[SbSize]`) in samples.
     pub(super) sb_size: usize,
+    /// The leaf's chroma is coded at another position (`ChromaMiRow/Col`
+    /// differ from `MiRow/Col`).
+    pub(super) chroma_offset: bool,
 }
 
 /// Whether the whole-sample block vector `mv` (`[row, col]` in 1/8 samples)
-/// passes § 6.17.3.3 `is_mv_valid` for a frame with `allow_local_intrabc =
+/// passes § 6.19.7.12 `is_mv_valid` for a frame with `allow_local_intrabc =
 /// 0` and `allow_global_intrabc = 1`, taking `sb64Residual = 0` (a subset of
 /// the vectors `AllowExtraIBCRange` allows), for a leaf at least 8x8 whose
-/// chroma is its own (so `ChromaMiRow/Col` equal `MiRow/Col`). The source
+/// chroma is its own (so `ChromaMiRow/Col` equal `MiRow/Col`); any vector
+/// of another leaf is refused. The source
 /// must also lie in the current or the previous superblock row, the global
 /// area of the frame header semantics.
 pub(super) fn global_bv_valid(frame: &BvFrame, mv: [i32; 2]) -> bool {
-    if mv[0] & 7 != 0 || mv[1] & 7 != 0 || frame.size.0 < 8 || frame.size.1 < 8 {
+    if mv[0] & 7 != 0
+        || mv[1] & 7 != 0
+        || frame.size.0 < 8
+        || frame.size.1 < 8
+        || frame.chroma_offset
+    {
         return false;
     }
     let (mi_row, mi_col) = (frame.mi.0 as i64, frame.mi.1 as i64);
@@ -311,10 +339,11 @@ mod tests {
             size,
             tile: (0..64, 0..160),
             sb_size: 64,
+            chroma_offset: false,
         }
     }
 
-    /// § 6.17.3.3 for a 16x8 leaf at (64, 384) of a 640-wide tile of 64x64
+    /// § 6.19.7.12 for a 16x8 leaf at (64, 384) of a 640-wide tile of 64x64
     /// superblocks: in its own row the source must end four 64-wide columns
     /// before the current one; in the row above, before the wavefront.
     #[test]
@@ -330,6 +359,11 @@ mod tests {
         assert!(!global_bv_valid(&leaf, sample(0, -400)));
         assert!(!global_bv_valid(&leaf, [4, -64 * 8 * 5]));
         assert!(!global_bv_valid(&frame((16, 96), (4, 8)), sample(-64, 0)));
+        let shared = BvFrame {
+            chroma_offset: true,
+            ..leaf
+        };
+        assert!(!global_bv_valid(&shared, sample(-64, 0)));
     }
 
     #[test]

@@ -137,12 +137,12 @@ pub(crate) fn intrabc_choice(
     coder: &SourceResidualCoder<'_>,
     leaf: &LeafBlock,
 ) -> Result<Option<LeafChoice>> {
-    let Some(search) = coder.intrabc.filter(|_| syntax.intrabc_allowed(leaf)) else {
+    let (Some(search), Some(vectors)) = (coder.intrabc, syntax.intrabc_vectors(leaf)) else {
         return Ok(None);
     };
     let (w, h) = leaf.dimensions()?;
     let (luma, stride, ..) = coder.source.luma();
-    let valid = |[row, col]: [i32; 2]| syntax.intrabc_bv_valid(leaf, MotionVector { row, col });
+    let valid = |[row, col]: [i32; 2]| vectors.valid(MotionVector { row, col });
     let rect = (leaf.col4() * 4, leaf.row4() * 4, w, h);
     let Some(([row, col], _)) = search.search((luma, stride), rect, valid) else {
         return Ok(None);
