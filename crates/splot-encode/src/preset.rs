@@ -109,7 +109,7 @@ pub struct PresetParams {
     /// Semi-decoupled partitioning (`enable_sdp`): each 64x64 node of an
     /// intra frame searches its luma tree on luma alone, then a chroma tree
     /// that only merges luma leaves. On in every row: intra frames gain luma
-    /// and YUV BD-rate at 0.62x to 0.87x of their CPU (2026-10-26).
+    /// BD-rate, with mixed YUV, at 0.62x to 0.87x of their CPU (2026-10-26).
     pub sdp: bool,
     /// CCSO classifications the filter search tries per plane; `0` disables
     /// CCSO in the sequence.
@@ -493,8 +493,10 @@ preset_table! {
     }
 }
 
-/// [`PRESETS`] with the screen-content tools on, for a sequence whose first
-/// frame looks like screen content.
+/// [`PRESETS`] with the screen-content tools on and SDP off, for a sequence
+/// whose first frame looks like screen content. SDP off: desktop_credits p6
+/// measured Y +0.34% intra and +2.30% inter with it (screendata -0.24% and
+/// -0.91%, 2026-10-26).
 pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
     let mut rows = PRESETS;
     let mut i = 0;
@@ -504,6 +506,7 @@ pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
             palette: true,
             intrabc: true,
             integer_mv: true,
+            sdp: false,
             ..rows[i]
         };
         i += 1;

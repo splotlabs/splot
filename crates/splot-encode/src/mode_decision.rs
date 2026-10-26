@@ -958,9 +958,12 @@ impl PartitionSearch for TrialCoder<'_, '_> {
                 .copied()
                 .filter(|&p| p == Partition::None || Some(p) == luma)
                 .collect();
-            if !merges.is_empty() {
-                return Ok(merges);
+            if merges.is_empty() {
+                return Err(TileWriterError::Shape(
+                    "a chroma node that cannot merge luma",
+                ));
             }
+            return Ok(merges);
         }
         Ok(allowed)
     }

@@ -121,7 +121,7 @@ fn search<S: PartitionSearch>(
         .and_then(|seen| seen.iter().find(|(seen, _)| *seen == node))
     {
         let tree = tree.clone();
-        let cost = recode(coder, node, &tree, false)?;
+        let cost = recode(coder, node, &tree)?;
         return Ok((tree, cost));
     }
     if let Some((luma_root, chroma_root)) = coder.sdp_roots(node) {
@@ -214,22 +214,19 @@ fn search<S: PartitionSearch>(
     Ok((tree, cost))
 }
 
-/// Codes `tree` at `node` into the live state; returns its cost. With
-/// `rate_first` the partition symbols of `node` code before its children, as
-/// the SDP state of a luma root needs.
+/// Codes `tree` at `node` into the live state, partition symbols before the
+/// children as the bitstream orders them; returns its cost.
 fn recode<S: PartitionSearch>(
     coder: &mut S,
     node: S::Node,
     tree: &PartitionTree,
-    rate_first: bool,
 ) -> Result<RdCost, S::Error> {
     if !coder.in_frame(node) {
         return Ok(RdCost::default());
     }
     let partition = match (tree, coder.sdp_roots(node)) {
         (PartitionTree::Sdp { luma, chroma }, Some((luma_root, chroma_root))) => {
-            let luma = recode(coder, luma_root, luma, true)?;
-            return Ok(luma + recode(coder, chroma_root, chroma, true)?);
+            return Ok(recode(coder, luma_root, luma)? + recode(coder, chroma_root, chroma)?);
         }
         (PartitionTree::Sdp { .. }, None) | (_, Some(_)) => {
             return Err(TileWriterError::Shape("SDP tree at a shared node or none").into());
@@ -237,26 +234,19 @@ fn recode<S: PartitionSearch>(
         (PartitionTree::Leaf(_), None) => Partition::None,
         (PartitionTree::Split { kind, .. }, None) => *kind,
     };
-    let rate = if rate_first {
-        Some(coder.partition_rate(node, partition)?)
-    } else {
-        None
-    };
+    let rate = coder.partition_rate(node, partition)?;
     let mut cost = match tree {
         PartitionTree::Split { kind, children } => {
             let mut cost = RdCost::default();
             for (child, tree) in coder.children(node, *kind)?.into_iter().zip(children) {
-                cost = cost + recode(coder, child, tree, false)?;
+                cost = cost + recode(coder, child, tree)?;
             }
             cost
         }
         PartitionTree::Leaf(choice) => coder.code_leaf(node, *choice)?,
         PartitionTree::Sdp { .. } => RdCost::default(),
     };
-    cost.rate += match rate {
-        Some(rate) => rate,
-        None => coder.partition_rate(node, partition)?,
-    };
+    cost.rate += rate;
     Ok(cost)
 }
 

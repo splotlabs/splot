@@ -216,3 +216,82 @@ fn avm_decodes_sdp_streams_like_splot() {
         assert!(avm == expected, "{case:?}: AVM output differs");
     }
 }
+
+/// The screen-content row of preset 9 (palette, IntraBC, FSC, whole-sample
+/// motion) with SDP.
+static SCREEN_SDP: PresetParams = PresetParams {
+    sdp: true,
+    ..crate::preset::SCREEN_PRESETS[9]
+};
+
+/// Key, inter and key frames of panning repeated text at 256x128 with
+/// [`SCREEN_SDP`] on `threads` threads: the units and the encoder recon.
+fn screen_stream(threads: usize, chroma: PixelFormat, bit_depth: BitDepth) -> (Vec<u8>, Vec<u8>) {
+    let mut config = config(256, 128, bit_depth, 9, 120);
+    config.chroma = chroma;
+    config.keyint = core::num::NonZeroU32::new(2).unwrap();
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let preset = &SCREEN_SDP;
+    assert!(preset.palette && preset.intrabc && preset.fsc);
+    let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let (mut units, mut recon) = (Vec::new(), Vec::new());
+    for index in 0..3 {
+        let plan = crate::gop::plan(u64::from(index), config.keyint);
+        let source = super::intra_tools::tiled_text(&config, index);
+        let coded = coder.encode_frame(&source, &plan, 120).unwrap();
+        recon.extend(recon_bytes(&coded, bit_depth));
+        units.push(coded.temporal_unit);
+    }
+    (units.concat(), recon)
+}
+
+/// The SDP luma trees of a screen-content key frame code palette and IntraBC
+/// leaves, so chroma trees code over palette and IntraBC luma; the key,
+/// inter and key frames decode to the encoder recon with the frame filters
+/// in every chroma format, and 1, 2 and 8 threads write the same bytes.
+#[test]
+fn sdp_screen_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    let mut config = config(256, 128, BitDepth::Eight, 9, 120);
+    config.keyint = core::num::NonZeroU32::new(2).unwrap();
+    let coder = IntraFrameCoder::with_preset(&config, &SCREEN_SDP).unwrap();
+    let key = crate::gop::plan(0, config.keyint);
+    let source = super::intra_tools::tiled_text(&config, 0);
+    let trees = search_frame(&coder, &key, &source, config.bit_depth);
+    let mut roots = Vec::new();
+    for tree in &trees {
+        collect_sdp(tree, &mut roots);
+    }
+    let count = |keep: fn(&LeafChoice) -> bool| -> usize {
+        roots.iter().map(|(luma, _)| leaves(luma, keep)).sum()
+    };
+    assert!(
+        count(|choice| choice.intrabc.is_some()) > 0,
+        "no IntraBC luma leaf"
+    );
+    assert!(
+        count(|choice| choice.modes.palette.is_some()) > 0,
+        "no palette luma leaf"
+    );
+    for chroma in CHROMAS {
+        let (units, recon) = screen_stream(2, chroma, BitDepth::Ten);
+        assert_same_samples(&decode(&units), &recon, &format!("{chroma:?}"));
+    }
+    let (one, _) = screen_stream(1, PixelFormat::Yuv420, BitDepth::Eight);
+    for threads in [2, 8] {
+        assert!(screen_stream(threads, PixelFormat::Yuv420, BitDepth::Eight).0 == one);
+    }
+}
+
+/// AVM decodes SDP screen-content streams to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_sdp_screen_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for chroma in CHROMAS {
+        let (units, recon) = screen_stream(2, chroma, BitDepth::Eight);
+        let avm = avm_decode(&avmdec, &[units], (256, 128), BitDepth::Eight, "sdp-screen");
+        assert!(avm == recon, "{chroma:?}: AVM output differs");
+    }
+}

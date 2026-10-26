@@ -322,7 +322,7 @@ fn screen_streams_code_palette_leaves() {
 
 /// Frame `index` of a 24x16 glyph tile repeated over the frame, panning by
 /// `(4, 2)` luma samples per frame, on flat chroma.
-fn tiled_text(config: &Config, index: u32) -> SourceFrame {
+pub(super) fn tiled_text(config: &Config, index: u32) -> SourceFrame {
     let max = u32::from(config.bit_depth.max_sample());
     let sizes = config.plane_sizes().unwrap();
     let planes = core::array::from_fn(|plane| {
