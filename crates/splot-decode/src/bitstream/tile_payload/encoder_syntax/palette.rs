@@ -35,7 +35,7 @@ impl Palette {
     /// The decoder's palette, for samples of at most `bits` bits.
     pub(super) fn luma(self, bits: u32) -> Result<LumaPalette> {
         let colors = self.colors();
-        if !(2..=PALETTE_COLORS).contains(&colors.len())
+        if !(2..=PALETTE_COLORS).contains(&usize::from(self.size))
             || colors.windows(2).any(|pair| pair[0] >= pair[1])
             || colors.iter().any(|&color| u32::from(color) >> bits != 0)
         {
@@ -101,9 +101,14 @@ impl IntraTileSyntax {
         let (w, h) = leaf.dimensions()?;
         let (x, y) = (leaf.col4() * 4, leaf.row4() * 4);
         let (mi_rows, mi_cols) = self.mi_dimensions();
-        let onscreen = (w.min(mi_cols * 4 - x), h.min(mi_rows * 4 - y));
+        let onscreen = (
+            w.min((mi_cols * 4).saturating_sub(x)),
+            h.min((mi_rows * 4).saturating_sub(y)),
+        );
         let map = &mut self.palette_map;
-        if map.len() != w * h
+        if onscreen.0 == 0
+            || onscreen.1 == 0
+            || map.len() != w * h
             || map
                 .iter()
                 .any(|&index| usize::from(index) >= palette.size())
@@ -318,4 +323,26 @@ fn write_uniform(symbols: &mut impl SymbolSink, value: u32, n: usize) -> Result<
 
 fn literal(symbols: &mut impl SymbolSink, value: u32, bits: u32) -> Result<()> {
     symbols.literal(value, bits).map_err(rule("symbol write"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A palette codes 2 to 8 strictly ascending colors that fit the bit
+    /// depth; any other is refused, never coded.
+    #[test]
+    fn palettes_outside_the_syntax_are_refused() {
+        let palette = |size: u8, colors: [u16; PALETTE_COLORS]| Palette { size, colors };
+        let ascending = [3, 40, 41, 99, 128, 200, 230, 255];
+        assert!(palette(8, ascending).luma(8).is_ok());
+        assert!(palette(2, ascending).luma(8).is_ok());
+        for size in [0, 1, 9, 255] {
+            assert!(palette(size, ascending).luma(10).is_err(), "size {size}");
+        }
+        assert!(palette(3, [3, 3, 40, 0, 0, 0, 0, 0]).luma(8).is_err());
+        assert!(palette(3, [40, 3, 99, 0, 0, 0, 0, 0]).luma(8).is_err());
+        assert!(palette(2, [3, 256, 0, 0, 0, 0, 0, 0]).luma(8).is_err());
+        assert!(palette(2, [3, 1023, 0, 0, 0, 0, 0, 0]).luma(10).is_ok());
+    }
 }
