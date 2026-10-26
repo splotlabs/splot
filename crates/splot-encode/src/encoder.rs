@@ -397,12 +397,11 @@ impl Encoder {
     /// The last frame qindex, or before the first frame the base qindex of
     /// a constant-qp or constant-quality configuration (a mid qindex else).
     fn qindex_estimate(&self) -> u16 {
-        self.last_qindex
-            .unwrap_or(match self.config.rate_control {
-                RateControlMode::ConstantQp { qp } => qp,
-                RateControlMode::Crf { crf } => Crf { crf }.base_qindex(self.config.bit_depth),
-                _ => max_qindex(self.config.bit_depth) / 2,
-            })
+        self.last_qindex.unwrap_or(match self.config.rate_control {
+            RateControlMode::ConstantQp { qp } => qp,
+            RateControlMode::Crf { crf } => Crf { crf }.base_qindex(self.config.bit_depth),
+            _ => max_qindex(self.config.bit_depth) / 2,
+        })
     }
 
     /// Commits `coded`, the frame `frame` coded as `gop_frame` at `qp`, and
