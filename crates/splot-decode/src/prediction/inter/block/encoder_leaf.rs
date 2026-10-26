@@ -525,18 +525,6 @@ impl EncoderInterTile {
     ) -> Result<[Mv; 2]> {
         let syntax = self.inter_syntax(frontier, motion, skip)?;
         let block = syntax.block_ctx;
-        if is_tip(motion) {
-            let resolved = self.resolve_motion(&syntax)?;
-            let placed = self.placed(
-                frontier,
-                self.inter_syntax(frontier, motion, skip)?,
-                &resolved,
-            )?;
-            let mut records = core::mem::take(&mut self.tip_records);
-            let derived = self.tip_motion(&placed, workspace, &mut records, false);
-            self.tip_records = records;
-            derived?;
-        }
         self.grid.record_flags(
             block.mi_row,
             block.mi_col,
@@ -545,7 +533,15 @@ impl EncoderInterTile {
             syntax.flag_syntax(),
         );
         let mut state = self.resolution_state(&block);
-        Ok(resolve_inter_block(&syntax, &mut state)?.mv)
+        let resolved = resolve_inter_block(&syntax, &mut state)?;
+        if is_tip(motion) {
+            let placed = self.placed(frontier, syntax, &resolved)?;
+            let mut records = core::mem::take(&mut self.tip_records);
+            let derived = self.tip_motion(&placed, workspace, &mut records, false);
+            self.tip_records = records;
+            derived?;
+        }
+        Ok(resolved.mv)
     }
 
     /// The decoder's § 7.11.3 TIP motion of `placed`, whose unit records it
