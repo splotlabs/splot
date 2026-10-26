@@ -24,6 +24,7 @@ pub mod error;
 pub mod frame;
 mod gop;
 mod intra_frame;
+mod intrabc;
 pub mod ivf;
 mod kernels;
 mod lookahead;

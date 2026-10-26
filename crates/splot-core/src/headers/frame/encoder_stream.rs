@@ -9,6 +9,7 @@
 //! tile in an Annex B temporal unit.
 
 use crate::bitio::BitReader;
+use crate::headers::frame::IntrabcParams;
 use crate::headers::frame::restoration::default_restoration_size;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::frame::{
@@ -28,8 +29,8 @@ use crate::tile::TileSpacing;
 use crate::types::{EmbeddedLayerId, ExtendedLayerId, ObuType, TemporalLayerId};
 use crate::write::{
     BitWriter, LrReferenceFilters, WriteError, write_annexb_obu, write_ccso_plane_params,
-    write_cdef_params, write_deblocking_filter_params, write_gdf_params, write_lr_params_for_inter,
-    write_obu_payload, write_tile_group_obu,
+    write_cdef_params, write_deblocking_filter_params, write_gdf_params, write_intrabc_params,
+    write_lr_params_for_inter, write_obu_payload, write_tile_group_obu,
 };
 
 /// `seq_level_idx == 31`: the level without tile-size limits (§ 5.18.7.3).
@@ -215,6 +216,9 @@ pub struct KeyFrameTxParams {
     pub allow_tcq: bool,
     /// `delta_q_res` of a frame that codes `delta_q_present` (§ 5.18.7.8), `0..=3`.
     pub delta_q_res: Option<u8>,
+    /// `allow_intrabc` of a key frame, with `allow_global_intrabc = 1` and
+    /// `allow_local_intrabc = 0` (§ 5.18.3.4); an inter frame refuses it.
+    pub allow_intrabc: bool,
 }
 
 impl Default for KeyFrameTxParams {
@@ -224,6 +228,7 @@ impl Default for KeyFrameTxParams {
             reduced_tx_set: 2,
             allow_tcq: false,
             delta_q_res: None,
+            allow_intrabc: false,
         }
     }
 }
@@ -577,7 +582,14 @@ fn key_frame_header_bits(
             w.write_flag(false)?; // force_integer_mv
         }
     }
-    w.write_flag(false)?; // allow_intrabc
+    let intrabc = IntrabcParams {
+        allow_intrabc: tx.allow_intrabc,
+        allow_global_intrabc: tx.allow_intrabc.then_some(true),
+        allow_local_intrabc: tx.allow_intrabc.then_some(false),
+        change_bvp_drl: (tx.allow_intrabc && seq.allow_frame_max_bvp_drl_bits).then_some(false),
+        max_bvp_drl_bits_minus_1: None,
+    };
+    write_intrabc_params(&mut w, &intrabc, true, seq.allow_frame_max_bvp_drl_bits)?;
     w.write_flag(false)?; // disable_cdf_update
     write_quant_and_filters(
         &mut w,

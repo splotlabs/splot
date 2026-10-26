@@ -255,6 +255,9 @@ fn inter_frame_header_bits(
     }
     w.write_flag(false)?; // disable_cdf_update
     let tx = params.tx;
+    if tx.allow_intrabc {
+        return Err(unsupported("intra block copy in an inter frame"));
+    }
     if tx.tx_mode == TxMode::Only4x4 || tx.reduced_tx_set > MAX_REDUCED_TX_SET {
         return Err(EncoderHeaderError::InvalidTxParams {
             tx_mode: tx.tx_mode,

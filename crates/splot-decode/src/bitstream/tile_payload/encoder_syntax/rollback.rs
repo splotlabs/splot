@@ -277,6 +277,10 @@ struct WholeState {
     chroma_smooth: crate::prediction::intra_edge::TileSmoothGrid,
     ref_mv_bank: Option<crate::prediction::inter::RefMvBank>,
     tip_records: Vec<crate::prediction::inter::TemporalMotionBlock>,
+    intrabc: Option<(
+        crate::filters::wienerns_lr::intrabc_records::TileIntrabcPreludeState,
+        Vec<Option<crate::prediction::inter::Mv>>,
+    )>,
 }
 
 impl IntraTileSyntax {
@@ -502,6 +506,10 @@ impl IntraTileSyntax {
                 .as_ref()
                 .map(|inter| inter.tile.tip_records().to_vec())
                 .unwrap_or_default(),
+            intrabc: self
+                .inter
+                .as_ref()
+                .and_then(|inter| inter.tile.intrabc_debug_state()),
         }
     }
 }

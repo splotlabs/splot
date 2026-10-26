@@ -325,6 +325,10 @@ impl From<IntrabcBlockVector> for Mv {
     }
 }
 
+/// Saved cells of a [`TileIntrabcPreludeState`].
+#[derive(Clone, Debug, Default)]
+pub(crate) struct IntrabcCheckpoint(Vec<(usize, IntrabcGridCell)>);
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TileIntrabcPreludeState {
     enabled: bool,
@@ -490,11 +494,17 @@ impl TileIntrabcPreludeState {
         self.neighbor_context(row, col, n4w, n4h, IntrabcNeighborContext::UseIntrabc)
     }
 
-    fn skip_ctx(&self, row: usize, col: usize, n4w: usize, n4h: usize) -> Result<usize> {
+    pub(crate) fn skip_ctx(&self, row: usize, col: usize, n4w: usize, n4h: usize) -> Result<usize> {
         self.neighbor_context(row, col, n4w, n4h, IntrabcNeighborContext::Skip)
     }
 
-    fn morph_pred_ctx(&self, row: usize, col: usize, n4w: usize, n4h: usize) -> Result<usize> {
+    pub(crate) fn morph_pred_ctx(
+        &self,
+        row: usize,
+        col: usize,
+        n4w: usize,
+        n4h: usize,
+    ) -> Result<usize> {
         self.neighbor_context(row, col, n4w, n4h, IntrabcNeighborContext::MorphPred)
     }
 
@@ -611,6 +621,46 @@ impl TileIntrabcPreludeState {
             && col >= self.origin_col
             && row < self.origin_row.saturating_add(self.tile_rows)
             && col < self.origin_col.saturating_add(self.tile_cols)
+    }
+
+    /// Moves the window to the superblock row holding `row` before its first
+    /// leaf, so that [`Self::checkpoint`] sees the rows that leaf writes.
+    pub(crate) fn enter_sb_row(&mut self, row: usize) {
+        if !self.enabled || row < self.origin_row {
+            return;
+        }
+        if let Some(slide) = self.window.enter(row - self.origin_row) {
+            slide.apply(&mut self.values, self.tile_cols, IntrabcGridCell::default());
+        }
+    }
+
+    /// The cells of the 4x4 rows `rows` and columns `cols` the window holds.
+    pub(crate) fn checkpoint(&self, rows: Range<usize>, cols: Range<usize>) -> IntrabcCheckpoint {
+        let mut cells = Vec::new();
+        for row in rows {
+            for col in cols.clone() {
+                if let Some(index) = self
+                    .is_inside(row, col)
+                    .then(|| self.window.plane_row(row - self.origin_row))
+                    .flatten()
+                {
+                    let index = index * self.tile_cols + (col - self.origin_col);
+                    if let Some(&cell) = self.values.get(index) {
+                        cells.push((index, cell));
+                    }
+                }
+            }
+        }
+        IntrabcCheckpoint(cells)
+    }
+
+    /// Puts the cells of a [`Self::checkpoint`] back.
+    pub(crate) fn rollback(&mut self, checkpoint: &IntrabcCheckpoint) {
+        for &(index, cell) in &checkpoint.0 {
+            if let Some(value) = self.values.get_mut(index) {
+                *value = cell;
+            }
+        }
     }
 
     /// Whether a probe read a row the window had already reused.
@@ -1116,6 +1166,16 @@ fn intrabc_luma_source_envelope(
     .map_err(|_| invalid())
 }
 
+/// Whether the block at `frontier` codes `use_intrabc` (§ 5.20.5.3).
+pub(crate) fn intrabc_use_coded(
+    core: &FrameHeaderCore,
+    frontier: &DecodeBlockFrontier,
+    n4w: usize,
+    n4h: usize,
+) -> bool {
+    intrabc_use_is_coded(core, IntrabcBlockContext::from_frontier(frontier), n4w, n4h)
+}
+
 fn intrabc_use_is_coded(
     core: &FrameHeaderCore,
     block: IntrabcBlockContext,
@@ -1158,7 +1218,10 @@ fn read_symbol(
         })
 }
 
-fn max_bvp_drl_bits_minus_1(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Result<u32> {
+pub(crate) fn max_bvp_drl_bits_minus_1(
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+) -> Result<u32> {
     if let Some(max) = core
         .intrabc
         .as_ref()

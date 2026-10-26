@@ -545,7 +545,10 @@ impl GopFrame {
             refresh_frame_flags: self.refresh_frame_flags,
             show_frame: self.show_frame,
             filters: *filters,
-            tx,
+            tx: KeyFrameTxParams {
+                allow_intrabc: false,
+                ..tx
+            },
             tiles,
             reference_select: compound,
             skip_mode_present: compound,
