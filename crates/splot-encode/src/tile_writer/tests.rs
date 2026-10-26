@@ -85,6 +85,8 @@ impl Case {
                 inter_ist: false,
                 tip: false,
                 tip_output: false,
+                opfl_refine: false,
+                refinemv: false,
                 cctx: false,
                 tcq: false,
                 parity_hiding: false,
