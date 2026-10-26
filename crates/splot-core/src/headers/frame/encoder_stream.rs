@@ -637,7 +637,7 @@ pub(super) fn write_quant_and_filters(
             limit: 1 << q_bits,
         });
     }
-    let spacing = write_uniform_tile_info(w, seq, tiles)?;
+    let spacing = write_uniform_tile_info(w, seq, tiles, frame_is_intra)?;
     w.write_bits(base_q_idx, q_bits)?;
     w.write_flag(false)?; // segmentation_enabled
     w.write_flag(false)?; // using_qmatrix
@@ -731,7 +731,7 @@ fn write_filter_params(
         strengths: filters.cdef_strengths,
     };
     write_cdef_params(w, &cdef, false, num_planes, &seq.filter)?;
-    let geometry = LrGeometry::new(seq.tile.frame_sb_size(true), seq.chroma_format_idc);
+    let geometry = LrGeometry::new(gdf_geometry.sb_size, seq.chroma_format_idc);
     let chroma = |plane: u8| {
         filters
             .lr_chroma_wiener_ns
@@ -805,8 +805,9 @@ fn write_uniform_tile_info(
     w: &mut BitWriter,
     seq: &CoreSeqView,
     tiles: UniformTiles,
+    frame_is_intra: bool,
 ) -> Result<[TileSpacing; 2], WriteError> {
-    let sb_log2 = crate::tile::mi_width_log2(seq.tile.frame_sb_size(true));
+    let sb_log2 = crate::tile::mi_width_log2(seq.tile.frame_sb_size(frame_is_intra));
     let mis = |frame: u32| 2 * frame.div_ceil(8);
     let axis = |w: &mut BitWriter,
                 log2: u8,
