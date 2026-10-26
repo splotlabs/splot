@@ -151,6 +151,9 @@ pub struct FrameFilterParams {
     pub cdef_damping: u8,
     /// The CDEF strength sets (§ 5.18.7.10); empty turns CDEF off.
     pub cdef_strengths: CdefStrengthSets,
+    /// `cdef_on_skip_txfm_frame_enable` (§ 5.18.7.10) of a frame with CDEF
+    /// on; the encoder sequence codes `CDEF_ON_SKIP_TXFM_ADAPTIVE`.
+    pub cdef_on_skip: bool,
     /// `LoopRestorationSize[0]` of luma restoration (§ 5.18.7.11); `None`
     /// turns luma restoration off.
     pub lr_luma_unit_size: Option<u32>,
@@ -677,7 +680,7 @@ fn write_filter_params(
         cdef_frame_enable: cdef_on,
         cdef_damping: cdef_on.then_some(filters.cdef_damping),
         cdef_strengths: cdef_on.then_some(filters.cdef_strengths.len() as u8),
-        cdef_on_skip_txfm_frame_enable: cdef_on.then_some(false),
+        cdef_on_skip_txfm_frame_enable: cdef_on.then_some(filters.cdef_on_skip),
         strengths: filters.cdef_strengths,
     };
     write_cdef_params(w, &cdef, false, num_planes, &seq.filter)?;

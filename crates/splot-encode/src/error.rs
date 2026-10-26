@@ -75,6 +75,10 @@ pub enum Error {
         preset: u8,
     },
 
+    /// A preset field override names no field or does not fit it.
+    #[error(transparent)]
+    Preset(#[from] crate::preset::PresetError),
+
     /// Input samples have a different bit depth than the configuration.
     #[error("input bit depth {actual:?} does not match the configured {expected:?}")]
     BitDepthMismatch {

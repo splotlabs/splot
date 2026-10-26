@@ -5380,10 +5380,10 @@ spec_sections = []
 sources = []
 crate = "splot-encode"
 module = "crates/splot-encode/src/preset.rs"
-change_id = "encoder-speed-presets"
+change_id = "enc-preset-set"
 owner = "encoder"
 risk = "medium"
-notes = "Preset accepts 0..=10 (default 6) and maps to one row of the PRESETS table: block-size range, intra modes tried, partition early-exit margin, RDOQ, transform-type depth, motion range, sub-pel depth and loop-filter search, mini-GOP size and lookahead depth. Every field is monotone from slow to fast."
+notes = "Preset accepts 0..=10 (default 6) and maps to one column of the PRESETS table, one named line per PresetParams field. Every field is monotone from slow to fast. The same table generates PresetParams::set: Config::preset_overrides (CLI --preset-set FIELD=VALUE) sets any field by name after the preset and its screen-content switch; an unknown name, a value outside the field type, or a row outside the ranges of PresetParams::validate is a typed PresetError."
 
 [feature.status]
 mapped = "done"
@@ -5398,7 +5398,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/preset.rs::tests"]
+tests = ["crates/splot-encode/src/preset.rs::tests", "crates/splot-encode/src/encoder.rs::tests::preset_overrides_change_the_stream", "crates/splot-encode/src/screen.rs::tests::the_encoder_enables_fsc_for_screen_content"]
 commands = ["cargo test -p splot-encode preset --locked"]
 fixtures = []
 diagnostics = []
@@ -6134,6 +6134,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/intra_frame_gdf_tests.rs::gdf_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_gdf_tests.rs::avm_decodes_gdf_frames_like_splot", "crates/splot-encode/src/loop_filter_tests.rs::gdf_candidates_start_from_the_qindex_scale", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::gdf_params_reach_the_parsed_header"]
 commands = ["cargo test -p splot-encode gdf --locked", "cargo test -p splot-core gdf_params --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-CDEF-ON-SKIP"
+name = "Encoder CDEF on skipped transform blocks"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.10", "5.18.7.10", "5.20.10.1", "7.18"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/loop_filter.rs"
+change_id = "enc-cdef-skip"
+owner = "encoder"
+risk = "low"
+notes = "The encoder sequence codes CdefOnSkipTxfm = CDEF_ON_SKIP_TXFM_ADAPTIVE. With PresetParams::cdef_on_skip the CDEF search runs a second time with cdef_on_skip_txfm_frame_enable = 1, where § 7.18 also filters skip_txfm blocks and skipped leaves code cdef_idx (§ 5.20.10.1), and the frame keeps the flag of the lower SSE plus approximate index rate. Off in every preset row: measured 2026-10-25 at p6 f10 vs main cd04bd871, paris Y -0.04% YUV +0.01%, park_joy Y +0.42% YUV +0.40%, at no CPU change. Off codes the flag 0 byte-identically. The sub-PU deblocking flag (allow_df_sub_pu, § 5.18.5.2) is not searched: SubPuColBase and SubPuRowBase differ from the block origin only for TIP, RefineMV and optical-flow prediction (§ 7.13.3.15), which the encoder does not code, so the flag changes no sample and enable_df_sub_pu stays 0."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_cdef_skip_tests.rs::cdef_on_skip_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_cdef_skip_tests.rs::avm_decodes_cdef_on_skip_frames_like_splot", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::filter_params_reach_the_parsed_header"]
+commands = ["cargo test -p splot-encode cdef_on_skip --locked", "cargo test -p splot-core encoder_stream --locked"]
 fixtures = []
 diagnostics = []
 

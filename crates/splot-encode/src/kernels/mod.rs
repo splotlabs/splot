@@ -19,6 +19,7 @@ mod cfl;
 mod colours;
 mod distortion;
 mod forward_transform;
+pub(crate) mod gdf;
 mod ist;
 mod quantize;
 pub(crate) mod rdoq;

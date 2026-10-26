@@ -622,7 +622,6 @@ pub(crate) enum StripeInitialization {
 }
 
 impl StripePlane {
-    #[cfg(test)]
     pub(crate) fn from_samples(
         width: usize,
         frame_height: usize,

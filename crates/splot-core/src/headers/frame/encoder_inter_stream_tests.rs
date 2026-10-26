@@ -84,6 +84,7 @@ fn filters(sb: SuperblockSize) -> FrameFilterParams {
             uv_sec_strength: 0,
         }])
         .unwrap(),
+        cdef_on_skip: true,
         lr_luma_unit_size: Some(if sb == SuperblockSize::Block64x64 {
             64
         } else {

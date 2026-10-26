@@ -297,7 +297,7 @@ fn superblock_search_is_deterministic_and_rolls_back() {
         config.chroma = chroma;
         let source = synthetic_frame(&config, 5);
         let frame = IntraFrameCoder::new(&config).unwrap();
-        let tx = tx_choice::key_frame_tx_params(frame.preset);
+        let tx = tx_choice::key_frame_tx_params(&frame.preset);
         let header = FrameFilterParams::default();
         let core = build_key_frame_header(&frame.view, 90, 0, &header, tx, UniformTiles::default())
             .unwrap();
@@ -308,12 +308,13 @@ fn superblock_search_is_deterministic_and_rolls_back() {
         let padded = PaddedSource::new(&source, frame.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
         let lambda = Lambda::from_qindex(90, config.bit_depth).unwrap();
         let mut coder =
-            SourceResidualCoder::new(&padded, 90, config.bit_depth, frame.preset, lambda);
+            SourceResidualCoder::new(&padded, 90, config.bit_depth, &frame.preset, lambda);
         let mut search = || {
             writer
                 .search_superblock(|syntax, root| {
-                    let mut trial = TrialCoder::new(syntax, &mut coder, frame.preset, lambda, None);
-                    search_partition(&mut trial, root, frame.preset, lambda)
+                    let mut trial =
+                        TrialCoder::new(syntax, &mut coder, &frame.preset, lambda, None);
+                    search_partition(&mut trial, root, &frame.preset, lambda)
                 })
                 .unwrap()
         };
@@ -825,7 +826,7 @@ fn inter_stream_with(
     }
     let plan = plan.unwrap();
     let (tx, _, (high_precision_mv, ref_mvs, _), tiles) =
-        crate::gop::frame_tools(coder.preset, coder.tiles, qindex);
+        crate::gop::frame_tools(&coder.preset, coder.tiles, qindex);
     let tools = (tx, true, (high_precision_mv, ref_mvs, true), tiles);
     let filters = FrameFilterParams::default();
     let core = plan
@@ -838,7 +839,7 @@ fn inter_stream_with(
     let padded = PaddedSource::new(&source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
     let lambda = Lambda::from_qindex(qindex, config.bit_depth).unwrap();
     let mut residual =
-        SourceResidualCoder::new(&padded, qindex, config.bit_depth, coder.preset, lambda);
+        SourceResidualCoder::new(&padded, qindex, config.bit_depth, &coder.preset, lambda);
     let mut rng = Rng(seed);
     let mut coverage = Coverage::default();
     while writer.next_superblock_root().is_some() {
@@ -1016,7 +1017,7 @@ fn search_frame_counting(
             &coder.references,
             90,
             &FrameFilterParams::default(),
-            crate::gop::frame_tools(coder.preset, coder.tiles, 90),
+            crate::gop::frame_tools(&coder.preset, coder.tiles, 90),
         )
         .unwrap();
     let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references, 0).unwrap();
@@ -1024,8 +1025,8 @@ fn search_frame_counting(
     let sb = writer.syntax().superblock_size4() * 4;
     let padded = PaddedSource::new(source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
     let lambda = Lambda::from_qindex(90, bit_depth).unwrap();
-    let motion = MotionSearch::new(writer.syntax(), &padded, coder.preset, lambda).unwrap();
-    let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, coder.preset, lambda);
+    let motion = MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda).unwrap();
+    let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, &coder.preset, lambda);
     let (mut trees, mut counts) = (Vec::new(), [0; 2]);
     while writer.next_superblock_root().is_some() {
         let mut search = || {
@@ -1034,11 +1035,11 @@ fn search_frame_counting(
                     let mut trial = TrialCoder::new(
                         syntax,
                         &mut residual,
-                        coder.preset,
+                        &coder.preset,
                         lambda,
                         motion.as_ref(),
                     );
-                    search_partition(&mut trial, root, coder.preset, lambda)
+                    search_partition(&mut trial, root, &coder.preset, lambda)
                 })
                 .unwrap()
                 .0
@@ -1236,7 +1237,7 @@ fn eighth_pel_vectors_decode_to_the_encoder_recon_on_any_thread_count() {
     );
     let config = config(72, 8, BitDepth::Eight, 9, 90);
     let mut coder = IntraFrameCoder::new(&config).unwrap();
-    coder.preset = &EIGHTH_PEL;
+    coder.preset = EIGHTH_PEL;
     let key = crate::gop::plan(0, config.keyint);
     coder
         .encode_frame(&panning_frame(&config, 0), &key, 90)
@@ -1277,6 +1278,8 @@ fn avm_decodes_multi_tile_frames_like_splot() {
 mod carry;
 #[path = "intra_frame_ccso_tests.rs"]
 mod ccso;
+#[path = "intra_frame_cdef_skip_tests.rs"]
+mod cdef_skip;
 #[path = "intra_frame_gdf_tests.rs"]
 mod gdf;
 #[path = "intra_frame_inter_ist_tests.rs"]
