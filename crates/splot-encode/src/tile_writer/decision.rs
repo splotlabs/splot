@@ -7,9 +7,9 @@ pub(crate) use splot_decode::encoder_syntax::{
     CompoundMode, CompoundModes, InterMode, InterModes, InterPrediction, IntraMode, IntraModes,
     Ist, MotionVector, Partition, TxPartition, TxType,
 };
-use splot_decode::encoder_syntax::{IntraTileSyntax, TransformBlock};
+use splot_decode::encoder_syntax::{IntraTileSyntax, LeafBlock, Palette, TransformBlock};
 
-use super::Result;
+use super::{Result, TileWriterError};
 
 /// Every `YMode` and non-CFL `UVMode` value, in value order.
 pub(crate) const INTRA_MODES: [IntraMode; 13] = [
@@ -137,5 +137,11 @@ pub(crate) trait ResidualCoder {
             self.code(syntax, u, u_prediction)?,
             self.code(syntax, v, v_prediction)?,
         ])
+    }
+
+    /// The row-major color map of `palette` over the luma of `leaf`, one
+    /// index per sample; the default refuses palette leaves.
+    fn palette_map(&mut self, _leaf: &LeafBlock, _palette: &Palette) -> Result<&[u8]> {
+        Err(TileWriterError::Unsupported("palette leaves"))
     }
 }

@@ -978,6 +978,14 @@ fn search_frame(
 struct ToolCount<'a, 'b>(&'a mut SourceResidualCoder<'b>, [usize; 2]);
 
 impl ResidualCoder for ToolCount<'_, '_> {
+    fn palette_map(
+        &mut self,
+        leaf: &splot_decode::encoder_syntax::LeafBlock,
+        palette: &splot_decode::encoder_syntax::Palette,
+    ) -> core::result::Result<&[u8], TileWriterError> {
+        self.0.palette_map(leaf, palette)
+    }
+
     fn code(
         &mut self,
         syntax: &mut IntraTileSyntax,

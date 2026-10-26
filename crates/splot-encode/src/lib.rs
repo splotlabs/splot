@@ -30,6 +30,7 @@ mod lookahead;
 mod loop_filter;
 mod mode_decision;
 mod motion_search;
+mod palette;
 pub mod preset;
 pub mod rate_control;
 mod rd;

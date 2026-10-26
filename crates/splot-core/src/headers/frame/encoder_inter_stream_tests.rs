@@ -65,6 +65,7 @@ fn sequence(width: u32, height: u32, bit_depth: BitDepthIdc, sb: SuperblockSize)
             cdef: true,
             loop_restoration: true,
             ccso: true,
+            screen_content: sb == SuperblockSize::Block128x128,
             ..EncoderToolFlags::default()
         },
     })
@@ -163,6 +164,9 @@ fn inter_headers_parse_with_the_reference_state() {
                         MvPrecision::QuarterPel
                     };
                     assert_eq!(inter.mv_precision, Some(precision));
+                    let screen = sb == SuperblockSize::Block128x128;
+                    assert_eq!(inter.allow_screen_content_tools, Some(screen));
+                    assert_eq!(inter.force_integer_mv, Some(false));
                     let filter = if switchable_interp_filter {
                         InterpolationFilter::Switchable
                     } else {

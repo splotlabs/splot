@@ -237,7 +237,7 @@ const fn unsigned_bits(num_values: usize) -> usize {
     }
 }
 
-fn palette_color_index_context(
+pub(crate) fn palette_color_index_context(
     color_map: &[u8],
     stride: usize,
     row: usize,
