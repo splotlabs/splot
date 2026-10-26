@@ -598,7 +598,7 @@ impl Rng {
 /// [`COMPOUND_MODES`] order; skip mode; same-reference compound; a nonzero
 /// second-DRL index of list 1; a nonzero `jmvd_scale_mode`; a coded
 /// `interp_filter` other than `EIGHTTAP`; a `NEWMV` below the frame
-/// precision; an adaptive-MVD `NEWMV`.
+/// precision; an adaptive-MVD `NEWMV`; a TIP leaf.
 type Coverage = [usize; 20];
 
 /// A random partition tree of `node`: single-reference, compound and
@@ -742,17 +742,20 @@ fn random_modes(
             return LeafChoice::inter(InterPrediction::Compound(modes));
         }
     }
-    if syntax.tip_allowed(leaf) && rng.below(4) == 0 {
+    if syntax.tip_allowed(leaf).unwrap() && rng.below(4) == 0 {
         coverage[19] += 1;
         let mode = [InterMode::Near, InterMode::New][rng.below(2) as usize];
+        let precisions = syntax.newmv_precisions(leaf).unwrap();
+        let pick = rng.below(precisions.len() as u64 + 2) as usize;
+        let new = mode == InterMode::New;
         return LeafChoice::inter(InterPrediction::Single(InterModes {
             ref_frame: syntax.reference_count(),
             mode,
             drl: rng.below(drls) as usize,
             mv: mvs[0],
             filter,
-            precision: None,
-            amvd: false,
+            precision: precisions.get(pick).copied().filter(|_| new),
+            amvd: new && pick == precisions.len() && syntax.adaptive_mvd(),
         }));
     }
     let mode = [InterMode::Near, InterMode::Global, InterMode::New][rng.below(3) as usize];

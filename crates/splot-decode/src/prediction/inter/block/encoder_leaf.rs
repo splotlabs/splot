@@ -160,6 +160,8 @@ pub(crate) struct EncoderInterTile {
     /// The § 7.22 records of the published TIP leaves, which the decoder
     /// derives per TIP unit.
     tip_records: Vec<TemporalMotionBlock>,
+    /// The unit records a TIP trial derives and drops, kept for reuse.
+    tip_trial_records: Vec<TemporalMotionBlock>,
     tip_scratch: super::tip::TipReconstructScratch<u16>,
 }
 
@@ -298,6 +300,7 @@ impl EncoderInterTile {
             residual_scratch: super::super::InterResidualReconScratch::default(),
             tip_ref_pair,
             tip_records: Vec::new(),
+            tip_trial_records: Vec::new(),
             tip_scratch: super::tip::TipReconstructScratch::default(),
         })
     }
@@ -358,6 +361,12 @@ impl EncoderInterTile {
     #[cfg(debug_assertions)]
     pub(crate) const fn ref_mv_bank(&self) -> Option<&RefMvBank> {
         self.ref_mv_bank.as_ref()
+    }
+
+    /// The published TIP unit records, for the debug rollback check.
+    #[cfg(debug_assertions)]
+    pub(crate) fn tip_records(&self) -> &[TemporalMotionBlock] {
+        &self.tip_records
     }
 
     /// Puts a [`Self::checkpoint`] back.
@@ -466,8 +475,11 @@ impl EncoderInterTile {
         let mvs = resolved.mv;
         let placed = self.placed(frontier, syntax, &resolved)?;
         if is_tip(motion) {
-            let mut records = Vec::new();
-            self.tip_motion(&placed, workspace, &mut records, true)?;
+            let mut records = core::mem::take(&mut self.tip_trial_records);
+            records.clear();
+            let predicted = self.tip_motion(&placed, workspace, &mut records, true);
+            self.tip_trial_records = records;
+            predicted?;
             return Ok(mvs);
         }
         prediction::reconstruct_pure_inter_block(

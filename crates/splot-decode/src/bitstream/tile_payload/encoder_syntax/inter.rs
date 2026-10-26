@@ -187,6 +187,14 @@ impl EncoderReferences {
         self.state.header_view()
     }
 
+    /// Whether the frame `core` has the past/future reference pair TIP needs
+    /// (§ 7.12.2); a frame without one must code `TIP_FRAME_DISABLED`, since
+    /// the decoder reads `tip_mode` in every TIP frame.
+    #[must_use]
+    pub fn tip_pair_available(&self, core: &FrameHeaderCore) -> bool {
+        crate::prediction::inter::tip_pair_available(core, &self.state)
+    }
+
     /// The CDFs and projected motion field the frame `core` starts from
     /// (§ 5.18.2, § 7.9), which every tile of the frame and [`Self::update`]
     /// take.
@@ -447,13 +455,17 @@ impl IntraTileSyntax {
     /// Whether `leaf` may predict from the TIP frame (§ 7.11.3): an
     /// [`InterModes`] whose `ref_frame` is [`Self::reference_count`] then
     /// codes `tip_mode` with `NEARMV` or `NEWMV` over the TIP stack.
-    #[must_use]
-    pub fn tip_allowed(&self, leaf: &LeafBlock) -> bool {
-        self.inter_allowed(leaf)
-            && self
-                .inter
-                .as_ref()
-                .is_some_and(|inter| inter.tile.tip_allowed(&leaf.frontier).unwrap_or(false))
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] for an invalid block size.
+    pub fn tip_allowed(&self, leaf: &LeafBlock) -> Result<bool> {
+        match &self.inter {
+            Some(inter) if self.inter_allowed(leaf) => inter
+                .tile
+                .tip_allowed(&leaf.frontier)
+                .map_err(rule("TIP block size")),
+            _ => Ok(false),
+        }
     }
 
     /// `NumTotalRefs`; `0` in an intra frame.
@@ -558,7 +570,7 @@ impl IntraTileSyntax {
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for a reference `leaf` cannot code.
     pub fn single_mvs(&mut self, leaf: &LeafBlock, ref_frame: usize) -> Result<SingleMvs> {
-        let ref_frame = if ref_frame == self.reference_count() && self.tip_allowed(leaf) {
+        let ref_frame = if ref_frame == self.reference_count() && self.tip_allowed(leaf)? {
             TIP_REF_FRAME
         } else {
             i8::try_from(ref_frame)
@@ -1210,7 +1222,7 @@ impl IntraTileSyntax {
         base: Option<Mv>,
     ) -> Result<EncoderSingleMotion> {
         let tip = modes.ref_frame == self.reference_count();
-        if tip && (modes.mode == InterMode::Global || !self.tip_allowed(leaf)) {
+        if tip && (modes.mode == InterMode::Global || !self.tip_allowed(leaf)?) {
             return Err(EncoderSyntaxError::Unsupported("TIP here"));
         }
         let ref_frame = if tip {

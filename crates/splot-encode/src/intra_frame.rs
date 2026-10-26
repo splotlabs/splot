@@ -238,6 +238,18 @@ impl IntraFrameCoder {
         let qindex = u32::from(qp);
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
+        if tools.2.3.is_some() {
+            let probe = plan.header(
+                &self.view,
+                &self.references,
+                qindex,
+                &FrameFilterParams::default(),
+                tools,
+            )?;
+            if !self.references.tip_pair_available(&probe) {
+                tools.2.3 = None;
+            }
+        }
         let header = |filters: &FrameFilterParams| {
             plan.header(&self.view, &self.references, qindex, filters, tools)
         };

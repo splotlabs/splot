@@ -1666,6 +1666,15 @@ fn validate_sef_frame_core(
     Ok(())
 }
 
+/// Whether frame `core` over `reference` has the past/future reference pair
+/// TIP needs (§ 7.12.2).
+pub(crate) fn tip_pair_available(
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<impl ReconSample>,
+) -> bool {
+    required_tip_reference_pair(core, reference, ByteOffset::new(0), None).is_ok()
+}
+
 fn required_tip_reference_pair(
     core: &FrameHeaderCore,
     reference: &InterReferenceState<impl ReconSample>,

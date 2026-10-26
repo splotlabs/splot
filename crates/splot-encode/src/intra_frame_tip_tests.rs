@@ -65,3 +65,69 @@ fn tip_streams_match_on_any_thread_count() {
         assert!(stream(threads).0 == one, "{threads} threads");
     }
 }
+
+/// A frame whose references are all in its future has no TIP reference
+/// pair (§ 7.12.2): it codes `TIP_FRAME_DISABLED`, since the decoder reads
+/// `tip_mode` in every TIP frame, and the stream decodes to the encoder recon.
+#[test]
+fn a_frame_without_a_tip_pair_codes_tip_disabled() {
+    let config = config(64, 48, BitDepth::Eight, 6, 110);
+    let mut coder = IntraFrameCoder::with_preset(&config, with_tip(1)).unwrap();
+    let mut planner = crate::gop::GopPlanner::new(config.keyint, 4);
+    let mut steps = planner.plan(1).unwrap();
+    steps.extend(planner.plan(4).unwrap());
+    let mut plans = steps.into_iter().filter_map(|step| match step {
+        crate::gop::GopStep::Code(plan) => Some(plan),
+        crate::gop::GopStep::ShowExisting { .. } => None,
+    });
+    let mut units = Vec::new();
+    let mut expected = Vec::new();
+    for plan in plans.by_ref().take(2) {
+        let coded = coder
+            .encode_frame(
+                &panning_frame(&config, plan.display_index as u32),
+                &plan,
+                110,
+            )
+            .unwrap();
+        if plan.show_frame {
+            expected.extend(recon_bytes(&coded, config.bit_depth));
+        }
+        units.push(coded.temporal_unit);
+    }
+    let middle = plans.next().unwrap();
+    let past_less = crate::gop::GopFrame {
+        order_hint: 0,
+        ..middle
+    };
+    let tools = crate::gop::frame_tools(&coder.preset, coder.tiles, 110);
+    let core = past_less
+        .header(
+            &coder.view,
+            &coder.references,
+            110,
+            &FrameFilterParams::default(),
+            tools,
+        )
+        .unwrap();
+    assert!(core.inter.as_ref().unwrap().num_total_refs.unwrap() >= 2);
+    assert_eq!(
+        core.inter.as_ref().unwrap().tip_frame_mode,
+        Some(TipFrameMode::AsRef)
+    );
+    assert!(!coder.references.tip_pair_available(&core));
+    let mut coded = coder
+        .code_frame(&panning_frame(&config, 0), &past_less, 110)
+        .unwrap();
+    let core = coded.reference.as_ref().unwrap().0.clone();
+    assert_eq!(
+        core.inter.as_ref().unwrap().tip_frame_mode,
+        Some(TipFrameMode::Disabled)
+    );
+    coder.commit(&mut coded).unwrap();
+    if past_less.show_frame {
+        expected.extend(recon_bytes(&coded, config.bit_depth));
+    }
+    units.push(coded.temporal_unit);
+    assert_same_samples(&decode(&units.concat()), &expected, "no TIP pair");
+}
