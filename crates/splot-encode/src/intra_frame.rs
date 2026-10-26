@@ -51,6 +51,8 @@ use crate::tx_choice;
 const TCQ_LAMBDA_PERCENT: u64 = 60;
 /// Quantizer deadzone in Q8 (`128` rounds to nearest).
 const DEADZONE_ROUNDING_Q8: u32 = 96;
+/// `delta_q_res` of a frame with superblock qindex offsets: a qindex step of 4.
+const DELTA_Q_RES: u8 = 2;
 /// `avg_cdf_type` of a stream that carries CDFs: `true` averages the saved
 /// CDFs across tiles, `false` blends the primary reference's CDFs with a
 /// second reference's.
@@ -165,7 +167,7 @@ impl IntraFrameCoder {
 impl FrameCoder for IntraFrameCoder {
     fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>> {
         map_tiles(self.pool.as_ref(), wave.to_vec(), |(source, plan, qp)| {
-            self.code_frame(source, &plan, qp)
+            self.code_frame(source, &plan, qp, &[])
         })
     }
 
@@ -230,8 +232,16 @@ impl IntraFrameCoder {
         })
     }
 
-    /// Codes `source` as `plan` at quantizer `qp` against the committed references.
-    fn code_frame(&self, source: &SourceFrame, plan: &GopFrame, qp: u16) -> Result<CodedFrame> {
+    /// Codes `source` as `plan` at quantizer `qp` against the committed
+    /// references; non-empty `sb_offsets`, one entry per superblock in frame
+    /// raster order, moves the qindex of each superblock through `delta_q`.
+    fn code_frame(
+        &self,
+        source: &SourceFrame,
+        plan: &GopFrame,
+        qp: u16,
+        sb_offsets: &[i16],
+    ) -> Result<CodedFrame> {
         let plan = &GopFrame {
             primary_slot: plan.primary_slot.filter(|_| self.preset.cdf_carry),
             ..*plan
@@ -239,6 +249,7 @@ impl IntraFrameCoder {
         let qindex = u32::from(qp);
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
+        tools.0.delta_q_res = (!sb_offsets.is_empty()).then_some(DELTA_Q_RES);
         let header = |filters: &FrameFilterParams| {
             plan.header(&self.view, &self.references, qindex, filters, tools)
         };
@@ -270,10 +281,32 @@ impl IntraFrameCoder {
             .map_err(coding("motion search"))?;
         let (padded, motion) = (&padded, motion.as_ref());
         let (bit_depth, preset) = (self.bit_depth, &self.preset);
+        let sb_cols = mi_cols.div_ceil(sb / 4);
+        if !sb_offsets.is_empty() && sb_offsets.len() != sb_cols * mi_rows.div_ceil(sb / 4) {
+            return Err(Error::Unsupported {
+                what: "superblock offsets that do not cover the superblock grid",
+            });
+        }
         let tiles = map_tiles(self.pool.as_ref(), writers, |mut writer| {
             let mut coder = SourceResidualCoder::new(padded, qindex, bit_depth, preset, lambda);
             let mut decisions = FrameDecisions::default();
-            while writer.next_superblock_root().is_some() {
+            while let Some(root) = writer.next_superblock_root() {
+                let index = root.row4() / (sb / 4) * sb_cols + root.col4() / (sb / 4);
+                let target = sb_offsets
+                    .get(index)
+                    .map(|&offset| qindex.saturating_add_signed(i32::from(offset)));
+                let lambda = match target {
+                    Some(target) => {
+                        let sb_qindex = writer
+                            .set_superblock_qindex(target)
+                            .map_err(coding("delta-q"))?;
+                        let lambda =
+                            Lambda::from_qindex(sb_qindex, bit_depth).map_err(coding("lambda"))?;
+                        coder.set_quantizer(sb_qindex, lambda);
+                        lambda
+                    }
+                    None => lambda,
+                };
                 let tree = writer
                     .search_superblock(|syntax, root| {
                         let mut trial = TrialCoder::new(syntax, &mut coder, preset, lambda, motion);
@@ -281,7 +314,11 @@ impl IntraFrameCoder {
                     })
                     .map_err(coding("superblock search"))?;
                 decisions
-                    .write_superblock(&mut writer, SuperblockDecision { tree }, &mut coder)
+                    .write_superblock(
+                        &mut writer,
+                        (SuperblockDecision { tree }, target),
+                        &mut coder,
+                    )
                     .map_err(coding("superblock"))?;
             }
             CodedTile::finish(writer, decisions).map_err(coding("tile finish"))
@@ -507,6 +544,12 @@ pub(crate) struct SourceResidualCoder<'a> {
 }
 
 impl<'a> SourceResidualCoder<'a> {
+    /// Quantizes the following blocks at `qindex` and prices them with `lambda`.
+    pub(crate) const fn set_quantizer(&mut self, qindex: u32, lambda: Lambda) {
+        self.qindex = qindex;
+        self.lambda = lambda;
+    }
+
     pub(crate) fn new(
         source: &'a PaddedSource,
         qindex: u32,

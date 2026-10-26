@@ -303,6 +303,7 @@ impl FilterRecorder {
     /// or a transform size is unknown.
     pub fn record_leaf(
         &mut self,
+        syntax: &IntraTileSyntax,
         leaf: &LeafBlock,
         transforms: &[TransformBlock],
         eobs: &[usize],
@@ -323,7 +324,7 @@ impl FilterRecorder {
                 .find(|tx| tx.plane == 1)
                 .map(|tx| tx.tx_size),
             chroma_subsampling: self.subsampling,
-            qindex: self.qindex,
+            qindex: syntax.qindex(),
             lossless: false,
         };
         for (tx, &eob) in transforms.iter().zip(eobs) {

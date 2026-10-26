@@ -33,7 +33,7 @@ fn ccso_stream(
     for index in 0..3 {
         let plan = crate::gop::plan(u64::from(index), config.keyint);
         let mut coded = coder
-            .code_frame(&panning_frame(&config, index), &plan, 170)
+            .code_frame(&panning_frame(&config, index), &plan, 170, &[])
             .unwrap();
         let core = &coded.reference.as_ref().unwrap().0;
         flags.push(

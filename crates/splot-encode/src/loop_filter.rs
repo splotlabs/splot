@@ -71,18 +71,19 @@ const CDEF_SET_HEADER_BITS: u32 = 12;
 /// The coding decisions of one tile, kept for the second pass.
 #[derive(Default)]
 pub(crate) struct FrameDecisions {
-    superblocks: Vec<SuperblockDecision>,
+    /// Each superblock's decision and its target qindex.
+    superblocks: Vec<(SuperblockDecision, Option<u32>)>,
     transforms: Vec<TransformDecision>,
     palette_maps: Vec<Vec<u8>>,
 }
 
 impl FrameDecisions {
-    /// Writes `decision` through `writer` and keeps it with the transform
-    /// decisions `coder` makes.
+    /// Writes `decision` through `writer`, which plans the superblock at
+    /// `qindex`, and keeps both with the transform decisions `coder` makes.
     pub(crate) fn write_superblock(
         &mut self,
         writer: &mut KeyFrameTileWriter,
-        decision: SuperblockDecision,
+        (decision, qindex): (SuperblockDecision, Option<u32>),
         coder: &mut impl ResidualCoder,
     ) -> core::result::Result<(), TileWriterError> {
         writer.write_superblock(
@@ -93,7 +94,7 @@ impl FrameDecisions {
                 palette_maps: &mut self.palette_maps,
             },
         )?;
-        self.superblocks.push(decision);
+        self.superblocks.push((decision, qindex));
         Ok(())
     }
 
@@ -101,7 +102,10 @@ impl FrameDecisions {
     fn replay(self, writer: &mut KeyFrameTileWriter) -> core::result::Result<(), TileWriterError> {
         let maps = self.palette_maps.into_iter();
         let mut replay = Replay(self.transforms.into_iter(), maps, Vec::new());
-        for decision in &self.superblocks {
+        for (decision, qindex) in &self.superblocks {
+            if let Some(qindex) = *qindex {
+                writer.set_superblock_qindex(qindex)?;
+            }
             writer.write_superblock(decision, &mut replay)?;
         }
         if replay.0.next().is_some() || replay.1.next().is_some() {

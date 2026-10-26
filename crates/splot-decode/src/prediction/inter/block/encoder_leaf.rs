@@ -289,6 +289,11 @@ impl EncoderInterTile {
         self.precision
     }
 
+    /// Sets the `CurrentQIndex` the following leaves dequantize and deblock with.
+    pub(crate) const fn set_qindex(&mut self, qindex: u32) {
+        self.qindex = qindex;
+    }
+
     /// Enters the superblock row holding `row`, before any leaf of it is coded.
     pub(crate) fn enter_superblock(&mut self, row: usize) {
         self.grid.enter_sb_row(row);

@@ -27,7 +27,7 @@ pub(super) fn planned_stream(
             match step {
                 GopStep::Code(plan) => {
                     let source = panning_frame(config, plan.display_index as u32);
-                    let mut coded = coder.code_frame(&source, &plan, 110).unwrap();
+                    let mut coded = coder.code_frame(&source, &plan, 110, &[]).unwrap();
                     cores.push(coded.reference.as_ref().unwrap().0.clone());
                     coder.commit(&mut coded).unwrap();
                     recons.insert(plan.display_index, recon_bytes(&coded, config.bit_depth));
