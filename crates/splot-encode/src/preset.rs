@@ -14,8 +14,14 @@ use crate::error::{Error, Result};
 pub struct PresetParams {
     /// log2 of the smallest square block size searched (2 = 4x4).
     pub min_block_log2: u8,
-    /// log2 of the largest square block size searched (7 = 128x128).
+    /// log2 of the largest square block size searched (7 = 128x128); `8`
+    /// also codes 256x256 superblocks in frames at least `sb256_min_height`
+    /// tall, whose inter frames search 256x256 leaves (intra frames keep
+    /// 128x128 superblocks, § 6.4.3).
     pub max_block_log2: u8,
+    /// The smallest frame height that codes 256x256 superblocks when
+    /// `max_block_log2` is `8`.
+    pub sb256_min_height: u16,
     /// Number of luma intra modes tried per block, best-ranked first.
     pub intra_modes: u8,
     /// Partition search skips a block's remaining partitions once its unsplit
@@ -278,7 +284,7 @@ impl PresetParams {
                 })
             }
         };
-        check("max_block_log2", self.max_block_log2, 2, 7, "")?;
+        check("max_block_log2", self.max_block_log2, 2, 8, "")?;
         check(
             "min_block_log2",
             self.min_block_log2,
@@ -422,7 +428,8 @@ preset_table! {
     preset:                    [   p0,    p1,    p2,    p3,    p4,    p5,    p6,    p7,    p8,    p9,   p10],
     partition {
         min_block_log2:        [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
-        max_block_log2:        [    7,     7,     7,     7,     7,     7,     7,     6,     6,     6,     6],
+        max_block_log2:        [    8,     8,     8,     7,     7,     7,     7,     6,     6,     6,     6],
+        sb256_min_height:      [  720,   720,   720,   720,   720,   720,   720,   720,   720,   720,   720],
         partition_early_exit:  [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
@@ -718,7 +725,7 @@ mod tests {
                 &[("min_block_log2", "7"), ("max_block_log2", "6")][..],
                 "min_block_log2",
             ),
-            (&[("max_block_log2", "8")], "max_block_log2"),
+            (&[("max_block_log2", "9")], "max_block_log2"),
             (&[("drl_bits", "6")], "drl_bits"),
             (&[("drl_bits", "0")], "drl_bits"),
             (&[("lookahead_frames", "3")], "lookahead_frames"),

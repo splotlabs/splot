@@ -723,7 +723,7 @@ fn write_filter_params(
         strengths: filters.cdef_strengths,
     };
     write_cdef_params(w, &cdef, false, num_planes, &seq.filter)?;
-    let geometry = LrGeometry::new(seq.tile.frame_sb_size(true), seq.chroma_format_idc);
+    let geometry = LrGeometry::new(gdf_geometry.sb_size, seq.chroma_format_idc);
     let chroma = |plane: u8| {
         filters
             .lr_chroma_wiener_ns

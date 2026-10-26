@@ -507,6 +507,6 @@ mod tests {
     fn rejects_unsupported_sizes() {
         assert!(BlockDims::new(2, 4).is_err());
         assert!(BlockDims::new(12, 4).is_err());
-        assert!(BlockDims::new(4, 256).is_err());
+        assert!(BlockDims::new(4, 512).is_err());
     }
 }
