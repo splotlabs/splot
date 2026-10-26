@@ -1060,9 +1060,14 @@ impl IntraTileSyntax {
                 modes.mode == InterMode::Global,
                 modes.filter,
             ),
-            InterPrediction::Compound(_) => {
+            InterPrediction::Compound(_) if self.inter_ref()?.tile.refines_compound() => {
                 return self.price_compound_tail(leaf, prediction, symbols);
             }
+            InterPrediction::Compound(modes) => (
+                (modes.refs.0, true),
+                modes.mode == super::CompoundMode::GlobalGlobal,
+                modes.filter,
+            ),
             InterPrediction::SkipMode { .. } => return Ok(false),
         };
         let ref_frame0 =

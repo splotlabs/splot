@@ -236,6 +236,21 @@ impl EncoderInterTile {
         Err(DecodeHeaderStateError::InvalidInterBlockModeState.into())
     }
 
+    /// Whether a compound block of the frame can refine: the frame codes an
+    /// `opfl_refine_type` other than `REFINE_NONE` or the sequence enables
+    /// `use_refinemv`.
+    pub(crate) fn refines_compound(&self) -> bool {
+        self.core
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.opfl_refine_type.is_some_and(|refine| refine != 0))
+            || self
+                .sequence
+                .inter
+                .as_ref()
+                .is_some_and(|inter| inter.enable_refinemv)
+    }
+
     /// The refinement the decoder derives for `compound` at `frontier`.
     ///
     /// # Errors
@@ -248,7 +263,7 @@ impl EncoderInterTile {
     ) -> Result<CompoundRefinement> {
         let invalid =
             || -> crate::DecodeError { DecodeHeaderStateError::InvalidInterBlockModeState.into() };
-        if compound.skip_mode {
+        if compound.skip_mode || !self.refines_compound() {
             if compound.use_optflow || compound.use_refinemv {
                 return Err(invalid());
             }
