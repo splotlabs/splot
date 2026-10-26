@@ -250,9 +250,9 @@ pub(crate) fn superblock_quant(
 ) -> Vec<(i16, i16)> {
     let per_sb = (sb_luma / block_luma).max(1);
     let max_log2 = MAX_TPL_QINDEX_DECREASE * 256 / QINDEX_PER_IMPORTANCE_OCTAVE as i32;
-    let (intra, received) = costs
-        .iter()
-        .fold((0, 0), |(i, r), &(intra, received)| (i + u64::from(intra), r + received));
+    let (intra, received) = costs.iter().fold((0, 0), |(i, r), &(intra, received)| {
+        (i + u64::from(intra), r + received)
+    });
     let frame = log2_importance(intra, received);
     (0..sb_rows * sb_cols)
         .map(|index| {
@@ -333,11 +333,21 @@ mod tests {
     /// block importance over the frame's, scaled and bounded.
     #[test]
     fn superblocks_follow_the_importance_of_their_blocks() {
-        let costs = [(1000, 7000), (1000, 0), (1000, 0), (1000, 1000), (128, 0), (1000, 0)];
+        let costs = [
+            (1000, 7000),
+            (1000, 0),
+            (1000, 0),
+            (1000, 1000),
+            (128, 0),
+            (1000, 0),
+        ];
         let grid = (3, 2, 16);
         let quant = superblock_quant(&costs, grid, (2, 1, 32), 100);
         let (left, right) = (quant[0], quant[1]);
-        assert!(left.0 < right.0 && left.1 < right.1 && right.0 > 0, "{quant:?}");
+        assert!(
+            left.0 < right.0 && left.1 < right.1 && right.0 > 0,
+            "{quant:?}"
+        );
         let log2 = |i: u64, r: u64| i64::from(log2_q8((((i + r) << 8) / i) as u32));
         let frame = log2(5128, 8000);
         let blocks = log2(1000, 7000) + log2(1000, 0) + log2(1000, 1000) + log2(128, 0);
