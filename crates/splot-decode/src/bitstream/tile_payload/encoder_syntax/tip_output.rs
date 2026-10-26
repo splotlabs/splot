@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! `TIP_FRAME_AS_OUTPUT` frames (§ 5.18.2, § 7.11.3): the decoder's TIP
+//! `TIP_FRAME_AS_OUTPUT` frames (§ 5.18.2, § 7.10.6): the decoder's TIP
 //! output reconstruction and reference update over the encoder references.
 
 use splot_core::headers::frame::FrameHeaderCore;
@@ -58,7 +58,7 @@ impl EncoderReferences {
     }
 
     /// Records the TIP output frame `core` of [`Self::tip_output`], which
-    /// refreshes no slot, as the decoder's § 7.20 reference update does.
+    /// refreshes no slot, as the decoder's § 7.23 reference update does.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for a frame that refreshes a slot.

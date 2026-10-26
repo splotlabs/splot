@@ -17,17 +17,19 @@ pub(super) fn planned_stream(
     config: &Config,
     preset: &'static PresetParams,
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
-    planned_stream_of(config, preset, panning_frame)
+    let coder = IntraFrameCoder::with_preset(config, preset).unwrap();
+    planned_stream_of(config, coder, panning_frame, 110)
 }
 
-/// [`planned_stream`] of the frames `frame(config, display_index)`.
+/// [`planned_stream`] with `coder` of the frames `frame(config,
+/// display_index)` at `qp`.
 pub(super) fn planned_stream_of(
     config: &Config,
-    preset: &'static PresetParams,
+    mut coder: IntraFrameCoder,
     frame: fn(&Config, u32) -> SourceFrame,
+    qp: u16,
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
-    let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();
-    let mut planner = GopPlanner::new(config.keyint, preset.mini_gop_size);
+    let mut planner = GopPlanner::new(config.keyint, coder.preset.mini_gop_size);
     let (mut units, mut recons, mut cores) = (Vec::new(), BTreeMap::new(), Vec::new());
     let mut queued = 9;
     while let Some(len) = planner.next_len(queued, true) {
@@ -36,7 +38,7 @@ pub(super) fn planned_stream_of(
             match step {
                 GopStep::Code(plan) => {
                     let source = frame(config, plan.display_index as u32);
-                    let mut coded = coder.code_frame(&source, &plan, 110, &[]).unwrap();
+                    let mut coded = coder.code_frame(&source, &plan, qp, &[]).unwrap();
                     cores.push(
                         coded
                             .tip_output

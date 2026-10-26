@@ -455,24 +455,29 @@ impl IntraFrameCoder {
                     && plan.refresh_frame_flags == 0
                     && plan.show_frame =>
             {
-                self.tip_output_frame(source, plan, qindex, weight, coded)
+                Ok(self
+                    .tip_output_frame(source, plan, qindex, weight, &coded)
+                    .ok()
+                    .flatten()
+                    .unwrap_or(coded))
             }
             _ => Ok(coded),
         }
     }
 
-    /// `coded`, the frame `plan` coded normally at `qindex` with TIP weight
-    /// `weight`, or the frame as a `TIP_FRAME_AS_OUTPUT` frame when its RD
-    /// cost times 100 is at most `PresetParams::tip_output` times that of
-    /// `coded`; both distortions are the squared error of every plane.
+    /// The frame `plan`, coded normally at `qindex` with TIP weight `weight`
+    /// as `coded`, as a `TIP_FRAME_AS_OUTPUT` frame when its RD cost times 100
+    /// is at most `PresetParams::tip_output` times that of `coded`; both
+    /// distortions are the squared error of every plane. The caller keeps
+    /// `coded` when this fails.
     fn tip_output_frame(
         &self,
         source: &SourceFrame,
         plan: &GopFrame,
         qindex: u32,
         weight: u8,
-        coded: CodedFrame,
-    ) -> Result<CodedFrame> {
+        coded: &CodedFrame,
+    ) -> Result<Option<CodedFrame>> {
         let num_total_refs = coded
             .reference
             .as_ref()
@@ -500,16 +505,15 @@ impl IntraFrameCoder {
         };
         let tip = cost(&recon, temporal_unit.len());
         let normal = cost(&coded.recon, coded.temporal_unit.len());
-        if tip * 100 > normal * u128::from(self.preset.tip_output) {
-            return Ok(coded);
-        }
-        Ok(CodedFrame {
-            temporal_unit,
-            recon,
-            frame_type: plan.frame_type,
-            reference: None,
-            tip_output: Some(core),
-        })
+        Ok(
+            (tip * 100 <= normal * u128::from(self.preset.tip_output)).then(|| CodedFrame {
+                temporal_unit,
+                recon,
+                frame_type: plan.frame_type,
+                reference: None,
+                tip_output: Some(core),
+            }),
+        )
     }
 }
 

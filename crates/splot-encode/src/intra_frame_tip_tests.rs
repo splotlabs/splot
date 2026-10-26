@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! TIP as a reference (§ 7.11.3, § 5.18.2 `tip_frame_mode`, § 5.20.7.6
+//! TIP as a reference (§ 7.10.6, § 5.18.2 `tip_frame_mode`, § 5.20.7.6
 //! `tip_mode`). Random TIP leaves are covered by
 //! `random_inter_leaves_decode_to_the_writer_recon`.
 
@@ -200,10 +200,11 @@ fn the_tip_weight_search_follows_the_nearer_content() {
 }
 
 /// With a `tip_output` that prefers it, the shown non-reference frames of a
-/// still texture code `OBU_REGULAR_TIP` `TIP_FRAME_AS_OUTPUT` frames, and
-/// streams of 4:2:0 10-bit, 4:2:2 8-bit and 4:4:4 10-bit decode to
-/// the encoder recon; with `tip_output = 0` the sequence disables TIP output
-/// and no frame codes it.
+/// panning texture at a coarse quantizer code `OBU_REGULAR_TIP`
+/// `TIP_FRAME_AS_OUTPUT` frames from the projected motion, and streams of
+/// 4:2:0 10-bit, 4:2:2 8-bit and 4:4:4 10-bit decode to the encoder recon;
+/// with `tip_output = 0` the sequence disables TIP output and no frame codes
+/// it.
 #[test]
 fn tip_output_frames_decode_to_the_encoder_recon() {
     for (chroma, bit_depth) in [
@@ -211,14 +212,13 @@ fn tip_output_frames_decode_to_the_encoder_recon() {
         (PixelFormat::Yuv422, BitDepth::Eight),
         (PixelFormat::Yuv444, BitDepth::Ten),
     ] {
-        let mut config = config(72, 40, bit_depth, 6, 110);
+        let mut config = config(72, 40, bit_depth, 6, 250);
         config.chroma = chroma;
         for tip_output in [200, 0] {
-            let (units, expected, cores, coder) = super::carry::planned_stream_of(
-                &config,
-                with_tip_output(1, tip_output),
-                |config, _| panning_frame(config, 0),
-            );
+            let coder =
+                IntraFrameCoder::with_preset(&config, with_tip_output(1, tip_output)).unwrap();
+            let (units, expected, cores, coder) =
+                super::carry::planned_stream_of(&config, coder, panning_frame, 250);
             let inter = coder.sequence.inter.unwrap();
             assert_eq!(inter.enable_tip_output, tip_output > 0);
             let outputs: Vec<_> = cores
@@ -235,4 +235,23 @@ fn tip_output_frames_decode_to_the_encoder_recon() {
             assert_same_samples(&decode(&units), &expected, &name);
         }
     }
+}
+
+/// `tip_output = 0` codes the same stream as a coder whose preset prefers
+/// TIP output but whose sequence disables it: the preset value reaches the
+/// stream only through `disable_tip_output` and the frame decision.
+#[test]
+fn tip_output_zero_codes_the_stream_with_tip_output_disabled() {
+    let config = config(72, 40, BitDepth::Ten, 6, 180);
+    let off = IntraFrameCoder::with_preset(&config, with_tip_output(1, 0)).unwrap();
+    let mut disabled = IntraFrameCoder::with_preset(&config, with_tip_output(1, 200)).unwrap();
+    disabled
+        .set_tools(EncoderToolFlags {
+            tip_output: false,
+            ..disabled.params.tools
+        })
+        .unwrap();
+    let (off, ..) = super::carry::planned_stream_of(&config, off, panning_frame, 180);
+    let (disabled, ..) = super::carry::planned_stream_of(&config, disabled, panning_frame, 180);
+    assert_eq!(off, disabled);
 }
