@@ -72,14 +72,14 @@ fn sb256_streams_decode_to_the_encoder_recon_on_any_thread_count() {
 /// superblocks.
 #[test]
 fn sb256_search_codes_256_wide_inter_leaves() {
-    let config = config(512, 256, BitDepth::Eight, 9, 140);
+    let config = config(512, 256, BitDepth::Eight, 9, 230);
     let mut coder = IntraFrameCoder::with_preset(&config, &SB256).unwrap();
     let key = crate::gop::plan(0, config.keyint);
     coder
         .encode_frame(&panning_frame(&config, 0), &key, 140)
         .unwrap();
     let plan = crate::gop::plan(1, config.keyint);
-    let trees = search_frame(&coder, &plan, &panning_frame(&config, 1), config.bit_depth);
+    let trees = search_frame(&coder, &plan, &panning_frame(&config, 0), config.bit_depth);
     assert!(widest_leaf(&trees) > 128, "no leaf wider than 128");
     for preset in [
         PresetParams {
