@@ -57,7 +57,7 @@ fn sb256_stream(case: Sb256Case, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
     for index in 0..4 {
         let plan = crate::gop::plan(u64::from(index), config.keyint);
         let (source, qp) = if still {
-            (ramp(&config), if index == 0 { 60 } else { 160 })
+            (ramp(&config), if index == 0 { 10 } else { 160 })
         } else {
             (panning_frame(&config, index), 140)
         };
@@ -106,7 +106,7 @@ fn sb256_search_codes_256_wide_inter_leaves() {
     let config = config(512, 256, BitDepth::Eight, 9, 140);
     let mut coder = IntraFrameCoder::with_preset(&config, &SB256).unwrap();
     let key = crate::gop::plan(0, config.keyint);
-    coder.encode_frame(&ramp(&config), &key, 60).unwrap();
+    coder.encode_frame(&ramp(&config), &key, 10).unwrap();
     let plan = crate::gop::plan(1, config.keyint);
     let trees = search_frame(&coder, &plan, &ramp(&config), config.bit_depth);
     assert!(widest_leaf(&trees) > 128, "no leaf wider than 128");
