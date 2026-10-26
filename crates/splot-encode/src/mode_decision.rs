@@ -905,6 +905,10 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         self.syntax.in_frame(node)
     }
 
+    fn sdp_roots(&self, node: PartitionNode) -> Option<(PartitionNode, PartitionNode)> {
+        self.syntax.sdp_roots(node)
+    }
+
     /// The allowed partitions of `node`, without those with a leaf that can
     /// code neither an intra nor an inter block.
     fn partitions(&self, node: PartitionNode) -> Result<Vec<Partition>> {

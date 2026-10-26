@@ -340,6 +340,9 @@ impl IntraTileSyntax {
         &self,
         leaf: &LeafBlock,
     ) -> Result<Option<(LumaTransformPartitionContext, (bool, bool))>> {
+        if leaf.is_chroma_part() {
+            return Ok(None);
+        }
         let Some(context) =
             luma_tx_partition_context(self.tools.tx_mode, leaf.frontier.b_size, false)
         else {

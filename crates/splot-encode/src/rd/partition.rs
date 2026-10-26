@@ -22,6 +22,8 @@ pub(crate) trait PartitionSearch {
 
     /// Whether `node` starts inside the frame; nodes outside code nothing.
     fn in_frame(&self, node: Self::Node) -> bool;
+    /// The luma and chroma roots that code `node` in turn when it is an SDP node.
+    fn sdp_roots(&self, node: Self::Node) -> Option<(Self::Node, Self::Node)>;
     /// The partitions `node` can code: the implied one alone when the position
     /// implies one, else the allowed set.
     fn partitions(&self, node: Self::Node) -> Result<Vec<Partition>, Self::Error>;
@@ -198,6 +200,12 @@ fn recode<S: PartitionSearch>(
         return Ok(RdCost::default());
     }
     let (partition, mut cost) = match tree {
+        PartitionTree::Sdp { luma, chroma } => {
+            let Some((luma_root, chroma_root)) = coder.sdp_roots(node) else {
+                return Ok(RdCost::default());
+            };
+            return Ok(recode(coder, luma_root, luma)? + recode(coder, chroma_root, chroma)?);
+        }
         PartitionTree::Leaf(choice) => (Partition::None, coder.code_leaf(node, *choice)?),
         PartitionTree::Split { kind, children } => {
             let mut cost = RdCost::default();
