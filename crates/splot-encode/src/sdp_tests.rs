@@ -278,7 +278,8 @@ fn sdp_screen_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     }
     let (one, _) = screen_stream(1, PixelFormat::Yuv420, BitDepth::Eight);
     for threads in [2, 8] {
-        assert!(screen_stream(threads, PixelFormat::Yuv420, BitDepth::Eight).0 == one);
+        let (units, _) = screen_stream(threads, PixelFormat::Yuv420, BitDepth::Eight);
+        assert!(units == one, "{threads} threads");
     }
 }
 
