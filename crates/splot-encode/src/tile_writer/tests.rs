@@ -589,6 +589,12 @@ fn random_tree(
             syntax.fsc_allowed(&leaf),
             dip_modes,
         );
+        if leaf.is_chroma_part() {
+            planned = IntraModes {
+                uv_mode: planned.uv_mode,
+                ..IntraModes::DC
+            };
+        }
         if modes.palette && syntax.palette_allowed(&leaf) && rng.below(2) == 0 {
             planned = random_palette(rng, planned);
             modes.coded_palette.extend(planned.palette);
@@ -1179,6 +1185,70 @@ fn sdp_chroma_tree_follows_the_luma_tree_rules() {
         let options = syntax.partition_options(small).unwrap();
         assert_eq!(options.implied(), Some(Partition::None));
     }
+}
+
+/// A `CHROMA_PART` leaf codes no luma-only syntax (§ 5.20.5.3): the facade
+/// refuses IntraBC, a luma transform partition, FSC, MRL and a `delta_qindex`
+/// there, and codes the chroma mode alone.
+#[test]
+fn sdp_chroma_leaves_refuse_luma_only_syntax() {
+    let mut tools = Case::new(64, 64, BitDepthIdc::Eight, SuperblockSize::Block64x64).tools;
+    (tools.sdp, tools.fsc, tools.mrls) = (true, true, true);
+    let (seq, core) = headers(tools);
+    let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap();
+    let root = syntax.superblock_root(0, 0);
+    syntax.begin_superblock(root);
+    let (luma, chroma) = syntax.sdp_roots(root).unwrap();
+    let mut sink = crate::rd::coeff_rate::RateSink::adapting();
+    let mut coder = RandomLevels {
+        rng: Rng(7),
+        max_level: 3,
+        coverage: TxCoverage::default(),
+        map: Vec::new(),
+    };
+    Walk::trial(&mut syntax, &mut sink)
+        .write_node(luma, &PartitionTree::Leaf(LeafChoice::DC), &mut coder)
+        .unwrap();
+    let leaf = syntax.leaf(chroma).unwrap();
+    assert!(leaf.is_chroma_part() && leaf.has_chroma() && !leaf.is_luma_part());
+    assert!(!syntax.fsc_allowed(&leaf) && !syntax.palette_allowed(&leaf));
+    assert!(!syntax.dip_allowed(&leaf, IntraModes::DC) && !syntax.intrabc_allowed(&leaf));
+    let unsupported = |result: core::result::Result<(), EncoderSyntaxError>| {
+        matches!(result, Err(EncoderSyntaxError::Unsupported(_)))
+    };
+    assert!(unsupported(syntax.write_use_intrabc(
+        &leaf,
+        Some(false),
+        &mut sink
+    )));
+    assert!(unsupported(syntax.code_luma_tx_partition(
+        &leaf,
+        TX_PARTITIONS[1],
+        |_, _| Ok::<(), EncoderSyntaxError>(())
+    )));
+    for modes in [
+        IntraModes {
+            fsc: true,
+            ..IntraModes::DC
+        },
+        IntraModes {
+            mrl: Mrl {
+                index: 1,
+                secondary: false,
+            },
+            ..IntraModes::DC
+        },
+    ] {
+        assert!(unsupported(
+            syntax.write_intra_modes(&leaf, modes, &mut sink)
+        ));
+    }
+    assert!(unsupported(
+        syntax.write_delta_qindex(&leaf, false, &mut sink)
+    ));
+    syntax
+        .write_intra_modes(&leaf, IntraModes::DC, &mut sink)
+        .unwrap();
 }
 
 /// A shared tree at an SDP node and an SDP tree at a shared node do not code.
