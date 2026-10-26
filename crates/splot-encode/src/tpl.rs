@@ -197,11 +197,7 @@ pub(crate) fn analyze(
 /// The amount each block of `nodes` receives from the later nodes that
 /// predict from it, walking them backwards, with `noise` added to every
 /// inter cost.
-fn propagate(
-    nodes: &[Node],
-    (cols, rows): (usize, usize),
-    noise: u32,
-) -> BTreeMap<u64, Vec<u64>> {
+fn propagate(nodes: &[Node], (cols, rows): (usize, usize), noise: u32) -> BTreeMap<u64, Vec<u64>> {
     let blocks = cols * rows;
     let mut received: BTreeMap<u64, Vec<u64>> = nodes
         .iter()
@@ -234,8 +230,10 @@ fn propagate(
 fn block_log2_beta(intra: &[u32], received: &[u64]) -> Vec<i16> {
     let floored = |cost: u32| u64::from(cost.max(MIN_BLOCK_COMPLEXITY));
     let log2_ratio = |num: u64, den: u64| {
-        i32::try_from(log2_q8(u32::try_from(num.saturating_mul(256) / den).unwrap_or(u32::MAX)))
-            .unwrap_or(i32::MAX)
+        i32::try_from(log2_q8(
+            u32::try_from(num.saturating_mul(256) / den).unwrap_or(u32::MAX),
+        ))
+        .unwrap_or(i32::MAX)
     };
     let intra_sum: u64 = intra.iter().map(|&cost| floored(cost)).sum();
     let received_sum: u64 = received.iter().sum();
@@ -337,6 +335,46 @@ mod tests {
             })
             .collect();
         analyze(&mut lookahead, &plan, None, None)
+    }
+
+    /// A block that later frames predict from is more important than the
+    /// frame, one that nothing predicts from less, and the superblock offsets
+    /// and lambdas follow the mean, scaled and bounded.
+    #[test]
+    fn superblocks_follow_the_importance_of_their_blocks() {
+        let beta = block_log2_beta(
+            &[1000, 1000, 1000, 1000, 40, 1000],
+            &[7000, 0, 0, 1000, 0, 0],
+        );
+        assert!(beta[0] > 0 && beta[3] < 0 && beta[3] > beta[1], "{beta:?}");
+        assert_eq!((beta[1], beta[2], beta[5]), (beta[2], beta[5], beta[4]));
+        let grid = (3, 2, 16);
+        let quant = superblock_quant(&beta, grid, (2, 1, 32), 100);
+        let (left, right) = (quant[0], quant[1]);
+        assert!(
+            left.0 < right.0 && left.1 < right.1 && right.0 > 0,
+            "{quant:?}"
+        );
+        let mean = [0, 1, 3, 4].map(|i| i32::from(beta[i])).iter().sum::<i32>() / 4;
+        assert_eq!(i32::from(left.1), -mean);
+        assert_eq!(i32::from(left.0), (-mean * 12 + 128).div_euclid(256));
+        let half = superblock_quant(&beta, grid, (2, 1, 32), 50);
+        assert_eq!(i32::from(half[0].1), -mean / 2);
+        let strong = superblock_quant(&[-4096, 4096], (2, 1, 16), (2, 1, 16), 200);
+        assert_eq!(strong, [(32, 682), (-32, -682)]);
+        assert_eq!(superblock_quant(&beta, grid, (2, 1, 32), 0), [(0, 0); 2]);
+    }
+
+    #[test]
+    fn recon_noise_grows_with_qindex_and_shrinks_with_the_block() {
+        let noise = |qindex, bit_depth, block| recon_noise(qindex, bit_depth, block);
+        assert!(noise(60, BitDepth::Eight, 16) < noise(200, BitDepth::Eight, 16));
+        assert!(noise(200, BitDepth::Eight, 32) < noise(200, BitDepth::Eight, 16));
+        let ten = noise(248, BitDepth::Ten, 16);
+        assert!(
+            ten.abs_diff(noise(200, BitDepth::Eight, 16)) * 20 < ten,
+            "{ten}"
+        );
     }
 
     #[test]

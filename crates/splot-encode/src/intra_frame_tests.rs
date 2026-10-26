@@ -393,6 +393,10 @@ impl FrameCoder for Recording {
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
         self.coder.show_existing_frame(slot)
     }
+
+    fn set_block_importance(&mut self, importance: crate::tpl::BlockImportance) {
+        self.coder.set_block_importance(importance);
+    }
 }
 
 /// Codes `frames` frames through the [`Encoder`]; returns the temporal units

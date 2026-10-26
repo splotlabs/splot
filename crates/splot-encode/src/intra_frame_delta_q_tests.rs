@@ -6,9 +6,10 @@
 
 use super::*;
 
-/// Asymmetric offsets for each superblock of `config`: large jumps both
-/// ways, zeros, and offsets that the `delta_q_res` step does not divide.
-fn offsets(config: &Config, seed: usize) -> Vec<i16> {
+/// Asymmetric qindex offsets, with the matching lambda log2, for each
+/// superblock of `config`: large jumps both ways, zeros, and offsets that
+/// the `delta_q_res` step does not divide.
+fn offsets(config: &Config, seed: usize) -> Vec<(i16, i16)> {
     let sb = if config.preset.params().max_block_log2 >= 7 {
         128
     } else {
@@ -17,6 +18,7 @@ fn offsets(config: &Config, seed: usize) -> Vec<i16> {
     let count = config.width.div_ceil(sb) * config.height.div_ceil(sb);
     (0..count as usize)
         .map(|index| [-29, 0, 17, -6, 31, 3, -32, 0, 11][(index * 7 + seed) % 9])
+        .map(|offset| (offset, offset * 256 / 12))
         .collect()
 }
 
@@ -103,6 +105,46 @@ fn empty_offsets_code_no_delta_q() {
     assert_ne!(off.temporal_unit, on.temporal_unit);
 }
 
+/// `config` at constant quality with the block-level temporal model at
+/// `strength` percent on `threads` threads, through the [`Encoder`].
+fn tpl_stream(mut config: Config, strength: u8, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
+    config.rate_control = RateControlMode::Crf { crf: 30 };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    config.preset_overrides = vec![("tpl_delta_q".into(), strength.to_string())];
+    encode_stream(&config, 9)
+}
+
+/// The temporal model's superblock qindex and lambda change the stream, which
+/// decodes to the encoder recon in mini-GOPs at both superblock sizes and
+/// every chroma format, with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn tpl_delta_q_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    for (index, (preset, bit_depth)) in [
+        (6, BitDepth::Eight),
+        (9, BitDepth::Ten),
+        (8, BitDepth::Eight),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut config = config(136, 72, bit_depth, preset, 0);
+        config.chroma = CHROMAS[index];
+        let name = format!("preset {preset} {bit_depth:?} {:?}", config.chroma);
+        let (units, recon) = tpl_stream(config.clone(), 100, 1);
+        assert_same_samples(&decode(&units.concat()), &recon, &name);
+        assert!(
+            units != tpl_stream(config.clone(), 0, 1).0,
+            "{name}: no change"
+        );
+        for threads in [2, 8] {
+            assert!(
+                tpl_stream(config.clone(), 100, threads).0 == units,
+                "{name}: {threads}"
+            );
+        }
+    }
+}
+
 /// AVM decodes frames with superblock qindex deltas to the splot output.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
@@ -112,8 +154,14 @@ fn avm_decodes_delta_q_frames_like_splot() {
     };
     for (bit_depth, preset, qp) in [(BitDepth::Eight, 9, 200), (BitDepth::Ten, 6, 120)] {
         let config = config(200, 136, bit_depth, preset, qp);
-        let (units, recon, _) = delta_q_stream(config, 2);
+        let (units, recon, _) = delta_q_stream(config.clone(), 2);
         let avm = avm_decode(&avmdec, &units, (200, 136), bit_depth, "delta-q");
         assert!(avm == recon, "{bit_depth:?}: AVM output differs");
+        let (units, recon) = tpl_stream(config, 100, 2);
+        let avm = avm_decode(&avmdec, &units, (200, 136), bit_depth, "tpl-delta-q");
+        assert!(
+            avm == recon,
+            "{bit_depth:?}: AVM output of the temporal model differs"
+        );
     }
 }

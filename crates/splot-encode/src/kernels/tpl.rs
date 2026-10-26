@@ -37,7 +37,11 @@ pub(crate) fn propagate_simd(
     noise: u32,
     out: &mut [u64],
 ) {
-    let len = out.len().min(intra.len()).min(best.len()).min(received.len());
+    let len = out
+        .len()
+        .min(intra.len())
+        .min(best.len())
+        .min(received.len());
     let (noise, one) = (Simd::splat(u64::from(noise)), Simd::splat(1));
     let mut index = 0;
     while index + LANES <= len {

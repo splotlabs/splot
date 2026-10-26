@@ -179,6 +179,25 @@ impl Lambda {
         })
     }
 
+    /// The multiplier times `2^(log2_q8 / 256)`, with the fraction from
+    /// `1 + 0.6565 f + 0.3435 f^2`, exact at both ends of `[0, 1)`.
+    #[must_use]
+    pub(crate) fn scaled(self, log2_q8: i32) -> Self {
+        let frac = u64::from(log2_q8.rem_euclid(256).unsigned_abs());
+        let mantissa_q16 = 65_536 + (frac * 43_025 >> 8) + (frac * frac * 22_511 >> 16);
+        let scaled = u128::from(self.step_sq_q12) * u128::from(mantissa_q16) >> 16;
+        let octaves = log2_q8.div_euclid(256);
+        let scaled = if octaves >= 0 {
+            scaled << octaves.unsigned_abs().min(32)
+        } else {
+            scaled >> octaves.unsigned_abs().min(127)
+        };
+        Self {
+            step_sq_q12: u64::try_from(scaled).unwrap_or(u64::MAX).max(1),
+            ..self
+        }
+    }
+
     /// The RDOQ multiplier of a transform with `dq_denom`: `lambda` per 1/256
     /// bit in the squared error of its coefficients, Q16. Coefficient energy is
     /// `64 / dq_denom^2` times sample energy.
