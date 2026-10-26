@@ -272,14 +272,10 @@ impl IntraTools {
                     .as_ref()
                     .is_some_and(|seg| seg.segmentation_enabled)
                     || core
-                        .delta_q_params
-                        .as_ref()
-                        .is_some_and(|dq| dq.delta_q_present)
-                    || core
                         .setup_qm_params
                         .as_ref()
                         .is_some_and(|qm| qm.using_qmatrix),
-                "segmentation, delta-q, or quantizer matrices",
+                "segmentation or quantizer matrices",
             ),
             (tx_mode == TxMode::Only4x4, "TX_MODE_ONLY_4X4"),
         ];

@@ -367,7 +367,7 @@ impl IntraFrameCoder {
         plan: &GopFrame,
         qp: u16,
     ) -> Result<CodedFrame> {
-        let mut coded = self.code_frame(source, plan, qp)?;
+        let mut coded = self.code_frame(source, plan, qp, &[])?;
         self.commit(&mut coded)?;
         Ok(coded)
     }
@@ -1280,6 +1280,8 @@ mod carry;
 mod ccso;
 #[path = "intra_frame_cdef_skip_tests.rs"]
 mod cdef_skip;
+#[path = "intra_frame_delta_q_tests.rs"]
+mod delta_q;
 #[path = "intra_frame_gdf_tests.rs"]
 mod gdf;
 #[path = "intra_frame_inter_ist_tests.rs"]
