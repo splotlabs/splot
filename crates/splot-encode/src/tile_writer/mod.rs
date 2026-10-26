@@ -311,7 +311,8 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             ..
         } = choice;
         if let Some(palette) = &modes.palette {
-            self.syntax.set_palette_map(coder.palette_map(leaf, palette)?);
+            self.syntax
+                .set_palette_map(coder.palette_map(leaf, palette)?);
         }
         let mut blocks = self
             .syntax

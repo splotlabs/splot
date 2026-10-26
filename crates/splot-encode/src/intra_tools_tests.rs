@@ -52,7 +52,8 @@ fn cfl_filters_decode_to_the_encoder_recon() {
     for chroma in CHROMAS {
         for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
             for index in 1..3 {
-                let (units, recon, seq) = cfl_stream((2, chroma, bit_depth), &PRESETS[9], index, panning_frame);
+                let (units, recon, seq) =
+                    cfl_stream((2, chroma, bit_depth), &PRESETS[9], index, panning_frame);
                 assert_eq!(seq.intra.unwrap().cfl_ds_filter_index, index);
                 let name = format!("{chroma:?} {bit_depth:?} filter {index}");
                 assert_same_samples(&decode(&units.concat()), &recon, &name);
@@ -69,7 +70,12 @@ fn avm_decodes_cfl_filters_like_splot() {
         return;
     };
     for (index, bit_depth) in [(1, BitDepth::Eight), (2, BitDepth::Ten)] {
-        let (units, recon, _) = cfl_stream((2, PixelFormat::Yuv420, bit_depth), &PRESETS[9], index, panning_frame);
+        let (units, recon, _) = cfl_stream(
+            (2, PixelFormat::Yuv420, bit_depth),
+            &PRESETS[9],
+            index,
+            panning_frame,
+        );
         let avm = avm_decode(&avmdec, &units, (136, 72), bit_depth, "cfl filter");
         assert!(avm == recon, "filter {index}: AVM output differs");
     }
@@ -244,7 +250,11 @@ fn screen_frame(config: &Config, index: u32) -> SourceFrame {
                     3 => max / 2 + 3,
                     _ => max * 9 / 10,
                 };
-                samples.push(if plane == 0 { luma } else { max / 2 + 7 * plane as u32 } as u16);
+                samples.push(if plane == 0 {
+                    luma
+                } else {
+                    max / 2 + 7 * plane as u32
+                } as u16);
             }
         }
         samples
@@ -273,7 +283,13 @@ fn screen_streams_code_palette_leaves() {
     let plan = crate::gop::plan(0, config.keyint);
     let trees = search_frame(&coder, &plan, &screen_frame(&config, 0), config.bit_depth);
     let palette = |choice: &LeafChoice| choice.inter.is_none() && choice.modes.palette.is_some();
-    assert!(trees.iter().map(|tree| leaves(tree, palette)).sum::<usize>() > 0);
+    assert!(
+        trees
+            .iter()
+            .map(|tree| leaves(tree, palette))
+            .sum::<usize>()
+            > 0
+    );
     for chroma in CHROMAS {
         for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
             let (units, recon, _) = cfl_stream((2, chroma, bit_depth), preset, 0, screen_frame);

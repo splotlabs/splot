@@ -292,13 +292,12 @@ impl ResidualCoder for RandomLevels {
             };
             lines.push(line);
         }
-        self.map.clear();
-        for y in 0..h {
-            for x in 0..w {
-                self.map
-                    .push(if columns { lines[x][y] } else { lines[y][x] });
-            }
-        }
+        self.map = (0..w * h)
+            .map(|i| {
+                let (y, x) = (i / w, i % w);
+                if columns { lines[x][y] } else { lines[y][x] }
+            })
+            .collect();
         Ok(&self.map)
     }
 

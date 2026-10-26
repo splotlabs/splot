@@ -103,7 +103,11 @@ impl IntraTileSyntax {
         let (mi_rows, mi_cols) = self.mi_dimensions();
         let onscreen = (w.min(mi_cols * 4 - x), h.min(mi_rows * 4 - y));
         let map = &mut self.palette_map;
-        if map.len() != w * h || map.iter().any(|&index| usize::from(index) >= palette.size()) {
+        if map.len() != w * h
+            || map
+                .iter()
+                .any(|&index| usize::from(index) >= palette.size())
+        {
             return Err(EncoderSyntaxError::Unsupported("palette color map"));
         }
         let (cols, rows) = onscreen;
@@ -202,7 +206,11 @@ impl IntraTileSyntax {
         let (cols, rows) = planned.onscreen;
         let map = core::mem::take(&mut self.palette_map);
         let lines = |transposed: bool| -> (usize, usize) {
-            if transposed { (cols, rows) } else { (rows, cols) }
+            if transposed {
+                (cols, rows)
+            } else {
+                (rows, cols)
+            }
         };
         let at = |transposed: bool, i: usize, j: usize| -> u8 {
             if transposed {
@@ -216,7 +224,9 @@ impl IntraTileSyntax {
             if i > 0 && (0..inner).all(|j| at(transposed, i, j) == at(transposed, i - 1, j)) {
                 2
             } else {
-                u8::from(inner > 1 && (1..inner).all(|j| at(transposed, i, j) == at(transposed, i, 0)))
+                u8::from(
+                    inner > 1 && (1..inner).all(|j| at(transposed, i, j) == at(transposed, i, 0)),
+                )
             }
         };
         let copies = |transposed: bool| {
@@ -233,7 +243,11 @@ impl IntraTileSyntax {
             let mut previous = 3;
             for i in 0..outer {
                 let flag = identity(transposed, i);
-                self.put(symbols, TileCdfSelector::IdentityRowY { ctx: previous }, flag.into())?;
+                self.put(
+                    symbols,
+                    TileCdfSelector::IdentityRowY { ctx: previous },
+                    flag.into(),
+                )?;
                 previous = usize::from(flag);
                 for j in 0..inner {
                     if flag == 2 || (flag == 1 && j > 0) {

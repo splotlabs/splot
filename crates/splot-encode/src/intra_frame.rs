@@ -533,7 +533,11 @@ impl<'a> SourceResidualCoder<'a> {
 }
 
 impl ResidualCoder for SourceResidualCoder<'_> {
-    fn palette_map(&mut self, leaf: &LeafBlock, palette: &Palette) -> core::result::Result<&[u8], TileWriterError> {
+    fn palette_map(
+        &mut self,
+        leaf: &LeafBlock,
+        palette: &Palette,
+    ) -> core::result::Result<&[u8], TileWriterError> {
         self.palette.map(self.source, leaf, palette)
     }
 

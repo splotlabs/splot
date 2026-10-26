@@ -5,9 +5,9 @@
 //! tell screen content from camera content, and the nearest palette color of
 //! each sample.
 
-use std::simd::{Select as _, Simd};
 use std::simd::cmp::{SimdOrd as _, SimdPartialEq as _, SimdPartialOrd as _};
 use std::simd::num::SimdUint as _;
+use std::simd::{Select as _, Simd};
 
 /// The most distinct values [`colours_simd`] tracks.
 pub(crate) const MAX_COLOURS: usize = 16;
@@ -85,7 +85,9 @@ pub(crate) fn nearest_scalar(samples: &[u16], colors: &[u16], out: &mut [u8]) {
 pub(crate) fn nearest_simd(samples: &[u16], colors: &[u16], out: &mut [u8]) {
     const WIDE: usize = 16;
     let Some((&first, rest)) = colors.split_first() else {
-        out.iter_mut().take(samples.len()).for_each(|index| *index = 0);
+        out.iter_mut()
+            .take(samples.len())
+            .for_each(|index| *index = 0);
         return;
     };
     let chunks = samples.chunks_exact(WIDE);

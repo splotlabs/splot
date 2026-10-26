@@ -447,7 +447,9 @@ impl IntraTileSyntax {
     /// Whether `leaf` codes `use_dip` under the luma mode of `modes` (§ 5.20.7.9).
     #[must_use]
     pub fn dip_allowed(&self, leaf: &LeafBlock, modes: IntraModes) -> bool {
-        let palette = modes.palette.and_then(|palette| self.luma_palette(palette).ok());
+        let palette = modes
+            .palette
+            .and_then(|palette| self.luma_palette(palette).ok());
         leaf_size4(leaf).is_ok_and(|(n4w, n4h)| {
             dip_mode_info_allowed(self.tools.chroma, modes.y_mode, palette, n4w, n4h)
         })
