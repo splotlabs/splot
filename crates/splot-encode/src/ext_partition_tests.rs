@@ -64,11 +64,18 @@ fn banded_frame(config: &Config) -> SourceFrame {
 }
 
 fn kinds(tree: &PartitionTree, out: &mut Vec<Partition>) {
-    if let PartitionTree::Split { kind, children } = tree {
-        out.push(*kind);
-        for child in children {
-            kinds(child, out);
+    match tree {
+        PartitionTree::Split { kind, children } => {
+            out.push(*kind);
+            for child in children {
+                kinds(child, out);
+            }
         }
+        PartitionTree::Sdp { luma, chroma } => {
+            kinds(luma, out);
+            kinds(chroma, out);
+        }
+        PartitionTree::Leaf(_) => {}
     }
 }
 
