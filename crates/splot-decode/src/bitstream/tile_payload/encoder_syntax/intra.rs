@@ -47,6 +47,7 @@ use super::{
     EncoderSyntaxError, IntraMode, IntraTileSyntax, Ist, LeafBlock, Result, TileEnd,
     TransformBlock, TxPartition, coefficient_scan, rule, tx_log2,
 };
+use crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc;
 use crate::pipeline::general_intra::{
     GeneralIntraReconScratch, chroma_edge_smoothness, general_intra_block_ctx,
     general_intra_chroma_tools, inherited_chroma_angle_delta, luma_transform_type_context,
@@ -260,7 +261,15 @@ impl IntraTools {
         };
         let lossless = core.lossless_info.as_ref();
         let refused = [
-            (core.allow_intrabc == Some(true), "intra block copy"),
+            (
+                frame_allows_intrabc(core)
+                    && !(core.frame_is_intra == Some(true)
+                        && core.intrabc.is_some_and(|params| {
+                            params.allow_global_intrabc == Some(true)
+                                && params.allow_local_intrabc == Some(false)
+                        })),
+                "intra block copy other than global-only in an intra frame",
+            ),
             (
                 qindex == 0
                     || lossless
@@ -528,7 +537,7 @@ impl IntraTileSyntax {
         }
         if self.fsc_allowed(leaf) {
             let (n4w, n4h) = leaf_size4(leaf)?;
-            let ctx = if self.inter.is_none() || !leaf.frontier.is_mixed_region() {
+            let ctx = if !self.inter_frame() || !leaf.frontier.is_mixed_region() {
                 self.fsc_modes
                     .fsc_mode_ctx(leaf.frontier.r, leaf.frontier.c, n4w, n4h)
             } else {

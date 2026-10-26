@@ -5,7 +5,7 @@
 
 pub(crate) use splot_decode::encoder_syntax::{
     CompoundMode, CompoundModes, InterMode, InterModes, InterPrediction, IntraMode, IntraModes,
-    Ist, MotionVector, Partition, TxPartition, TxType,
+    IntrabcModes, Ist, MotionVector, Partition, TxPartition, TxType,
 };
 use splot_decode::encoder_syntax::{IntraTileSyntax, LeafBlock, Palette, TransformBlock};
 
@@ -56,6 +56,8 @@ pub(crate) struct LeafChoice {
     pub(crate) tx_partition: TxPartition,
     /// `Some` for an inter leaf.
     pub(crate) inter: Option<InterPrediction>,
+    /// `Some` for an IntraBC leaf.
+    pub(crate) intrabc: Option<IntrabcModes>,
 }
 
 impl LeafChoice {
@@ -68,6 +70,7 @@ impl LeafChoice {
             modes,
             tx_partition: TxPartition::None,
             inter: None,
+            intrabc: None,
         }
     }
 
@@ -75,6 +78,14 @@ impl LeafChoice {
     pub(crate) const fn inter(prediction: InterPrediction) -> Self {
         Self {
             inter: Some(prediction),
+            ..Self::DC
+        }
+    }
+
+    /// The IntraBC leaf of `modes`.
+    pub(crate) const fn intrabc(modes: IntrabcModes) -> Self {
+        Self {
+            intrabc: Some(modes),
             ..Self::DC
         }
     }

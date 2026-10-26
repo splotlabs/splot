@@ -1043,6 +1043,9 @@ fn search_frame_counting(
     let lambda = Lambda::from_qindex(90, bit_depth).unwrap();
     let motion = MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda).unwrap();
     let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, &coder.preset, lambda);
+    let (luma, stride, width, height) = padded.luma();
+    let bv_search = crate::intrabc::BvSearch::new(luma, stride, (width, height));
+    residual.intrabc = (core.allow_intrabc == Some(true)).then_some(&bv_search);
     let (mut trees, mut counts) = (Vec::new(), [0; 2]);
     while writer.next_superblock_root().is_some() {
         let mut search = || {

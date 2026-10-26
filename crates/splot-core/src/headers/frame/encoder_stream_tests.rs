@@ -106,6 +106,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                             as u8,
                         allow_tcq: false,
                         delta_q_res: [None, Some(0), Some(3)][index],
+                        allow_intrabc: index == 1,
                     };
                     let core = build_key_frame_header(
                         &view,
@@ -126,6 +127,11 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                     let tail = core.intra_tail.unwrap();
                     assert_eq!(tail.tx_mode, tx.tx_mode);
                     assert_eq!(tail.reduced_tx_set, tx.reduced_tx_set);
+                    assert_eq!(core.allow_intrabc, Some(tx.allow_intrabc));
+                    let intrabc = core.intrabc.unwrap();
+                    let global = tx.allow_intrabc.then_some(true);
+                    assert_eq!(intrabc.allow_global_intrabc, global);
+                    assert_eq!(intrabc.allow_local_intrabc, global.map(|_| false));
                     let dq = core.delta_q_params.unwrap();
                     assert_eq!(dq.delta_q_present.then_some(dq.delta_q_res), tx.delta_q_res);
                     assert_eq!(reparse_core(&core, &view), core);
@@ -213,6 +219,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     .unwrap();
     assert_eq!(core.allow_screen_content_tools, Some(true));
     assert_eq!(core.force_integer_mv, Some(false));
+    assert_eq!(core.allow_intrabc, Some(false));
     assert_eq!(reparse_core(&core, &view), core);
 }
 

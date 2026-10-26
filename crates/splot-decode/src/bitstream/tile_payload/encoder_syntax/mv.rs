@@ -154,8 +154,19 @@ impl MvSymbols for MvWriter {
 /// Returns [`EncoderSyntaxError::Unsupported`] for differences `read_mv`
 /// cannot code, and [`EncoderSyntaxError::Rule`] for a failed read or write.
 pub(super) fn write_mvds(
-    (cdfs, journal): (&mut TileCdfSubset, &mut CdfJournal),
+    state: (&mut TileCdfSubset, &mut CdfJournal),
     coding: MvdCoding,
+    mvds: &[MotionVector],
+    sink: &mut impl SymbolSink,
+) -> Result<()> {
+    let config = MvReadConfig::inter(coding.precision);
+    write_mvds_with(state, (coding, config), mvds, sink)
+}
+
+/// [`write_mvds`] read with `config`, such as the IntraBC context.
+pub(super) fn write_mvds_with(
+    (cdfs, journal): (&mut TileCdfSubset, &mut CdfJournal),
+    (coding, config): (MvdCoding, MvReadConfig),
     mvds: &[MotionVector],
     sink: &mut impl SymbolSink,
 ) -> Result<()> {
@@ -185,7 +196,6 @@ pub(super) fn write_mvds(
         greater: 0,
         steps: Vec::new(),
     };
-    let config = MvReadConfig::inter(precision);
     let offset = ByteOffset::new(0);
     let mut magnitudes = [Mv::default(); 2];
     for (vector, magnitude) in magnitudes.iter_mut().take(mvds.len()).enumerate() {

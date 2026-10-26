@@ -101,6 +101,7 @@ impl Case {
                 reduced_tx_set: 2,
                 allow_tcq: false,
                 delta_q_res: None,
+                allow_intrabc: false,
             },
         }
     }
@@ -273,6 +274,7 @@ impl RandomLevels {
             modes,
             tx_partition: partition,
             inter: None,
+            intrabc: None,
         })
     }
 }
@@ -1243,8 +1245,7 @@ fn facade_rejects_unmodelled_tools() {
     };
     let (seq, core) = headers(base);
     assert!(IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).is_ok());
-    let frame_cases: [fn(&mut FrameHeaderCore); 5] = [
-        |c| c.allow_intrabc = Some(true),
+    let frame_cases: [fn(&mut FrameHeaderCore); 4] = [
         |c| c.lossless_info.as_mut().unwrap().coded_lossless = true,
         |c| c.quantization_params.as_mut().unwrap().base_q_idx = 0,
         |c| c.segmentation_params.as_mut().unwrap().segmentation_enabled = true,
@@ -1255,6 +1256,25 @@ fn facade_rejects_unmodelled_tools() {
         set(&mut core);
         assert!(rejects(&seq, &core));
     }
+    let intrabc = |global, local| {
+        let mut core = core.clone();
+        core.allow_intrabc = Some(true);
+        core.intrabc = Some(splot_core::headers::frame::IntrabcParams {
+            allow_intrabc: true,
+            allow_global_intrabc: Some(global),
+            allow_local_intrabc: local,
+            change_bvp_drl: None,
+            max_bvp_drl_bits_minus_1: None,
+        });
+        core
+    };
+    let global_only = intrabc(true, Some(false));
+    assert!(IntraTileSyntax::new(&seq, &global_only, &refs_for(&seq), 0).is_ok());
+    assert!(rejects(&seq, &intrabc(false, None)), "local-only IntraBC");
+    assert!(rejects(&seq, &intrabc(true, Some(true))), "local IntraBC");
+    let mut inter = global_only;
+    inter.frame_is_intra = Some(false);
+    assert!(rejects(&seq, &inter), "IntraBC in an inter frame");
     let mut core = core;
     core.intra_tail.as_mut().unwrap().tx_mode = TxMode::Only4x4;
     assert!(rejects(&seq, &core));

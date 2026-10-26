@@ -27,6 +27,7 @@ use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::gop::{self, GopFrame};
+use crate::intrabc::BvSearch;
 use crate::kernels::rdoq::{RdoqBlock, hide_parity, parity_moves, rdoq};
 use crate::kernels::tcq::{TcqScratch, tcq};
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
@@ -358,7 +359,11 @@ impl IntraFrameCoder {
         let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
         let motion = MotionSearch::new(first.syntax(), &padded, &self.preset, lambda)
             .map_err(coding("motion search"))?;
-        let (padded, motion) = (&padded, motion.as_ref());
+        let bv_search = (core.allow_intrabc == Some(true)).then(|| {
+            let (luma, stride, width, height) = padded.luma();
+            BvSearch::new(luma, stride, (width, height))
+        });
+        let (padded, motion, bv_search) = (&padded, motion.as_ref(), bv_search.as_ref());
         let (bit_depth, preset) = (self.bit_depth, &self.preset);
         let sb_cols = mi_cols.div_ceil(sb / 4);
         if !sb_offsets.is_empty() && sb_offsets.len() != sb_cols * mi_rows.div_ceil(sb / 4) {
@@ -368,6 +373,7 @@ impl IntraFrameCoder {
         }
         let tiles = map_tiles(self.pool.as_ref(), writers, |mut writer| {
             let mut coder = SourceResidualCoder::new(padded, qindex, bit_depth, preset, lambda);
+            coder.intrabc = bv_search;
             let mut decisions = FrameDecisions::default();
             while let Some(root) = writer.next_superblock_root() {
                 let index = root.row4() / (sb / 4) * sb_cols + root.col4() / (sb / 4);
@@ -620,6 +626,8 @@ pub(crate) struct SourceResidualCoder<'a> {
     /// The row costs and the trellis buffers reused across blocks.
     rates: (RowCaches, TcqScratch),
     pub(crate) palette: PaletteSearch,
+    /// The block hashes of the frame source, in a frame with IntraBC.
+    pub(crate) intrabc: Option<&'a BvSearch>,
 }
 
 impl<'a> SourceResidualCoder<'a> {
@@ -650,6 +658,7 @@ impl<'a> SourceResidualCoder<'a> {
             pair: Default::default(),
             rates: Default::default(),
             palette: PaletteSearch::default(),
+            intrabc: None,
         }
     }
 }
