@@ -5990,7 +5990,7 @@ module = "crates/splot-encode/src/screen.rs"
 change_id = "enc-screen-detect"
 owner = "encoder"
 risk = "low"
-notes = "PresetParams::screen_detect (on in every row): the first frame in display order is screen content when at least 6/64 of its 8x8 luma blocks that are not flat (range above 8 in 8-bit steps) have 8 or fewer distinct values; measured 19/64 on screendata and 35/64 on desktop_credits, at most 1.5/64 on park_joy (8/10/12-bit, 4:2:0/4:2:2/4:4:4), paris, niklas, rush_hour and the encode-perf clips. A detected sequence codes with the SCREEN_PRESETS row of its preset (FSC on, ENC-FSC; palette on, ENC-PALETTE). The block_colours kernel has a std::simd form and a scalar twin. Against main c3b1959 at p6: screendata intra Y -27.90% (0.76x CPU), inter Y -23.39% (0.94x); desktop_credits intra Y -12.62% (0.91x), inter Y -10.76% (1.06x); screendata p10 intra Y -40.20%. Natural clips are byte-identical."
+notes = "PresetParams::screen_detect (on in every row): the first frame in display order is screen content when at least 6/64 of its 8x8 luma blocks that are not flat (range above 8 in 8-bit steps) have 8 or fewer distinct values; measured 19/64 on screendata and 35/64 on desktop_credits, at most 1.5/64 on park_joy (8/10/12-bit, 4:2:0/4:2:2/4:4:4), paris, niklas, rush_hour and the encode-perf clips. A detected sequence codes with the SCREEN_PRESETS row of its preset (FSC on, ENC-FSC; palette on, ENC-PALETTE; IntraBC on, ENC-INTRABC). The block_colours kernel has a std::simd form and a scalar twin. Against main c3b1959 at p6: screendata intra Y -27.90% (0.76x CPU), inter Y -23.39% (0.94x); desktop_credits intra Y -12.62% (0.91x), inter Y -10.76% (1.06x); screendata p10 intra Y -40.20%. Natural clips are byte-identical."
 
 [feature.status]
 mapped = "done"
@@ -6262,6 +6262,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/tile_writer/tests.rs::palette_leaves_round_trip", "crates/splot-encode/src/intra_tools_tests.rs::palette_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::screen_streams_code_palette_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_palette_frames_like_splot", "crates/splot-encode/src/kernels/colours.rs::nearest_simd_matches_scalar", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::inter_headers_parse_with_the_reference_state"]
 commands = ["cargo test -p splot-encode palette --locked", "cargo test -p splot-core encoder_ --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-INTRABC"
+name = "Encoder intra block copy"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.3.4", "5.20.5.3", "5.20.5.4", "6.17.3.3", "7.11.4", "7.12"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intrabc.rs"
+change_id = "enc-intrabc"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::intrabc, OFF in every PRESETS row and ON in SCREEN_PRESETS (ENC-SCREEN-DETECT). Key frames code allow_intrabc = 1 with allow_global_intrabc = 1 and allow_local_intrabc = 0; inter frames code 0. Each leaf of at most 64x64 (other than 64x64) and at least 8x8 gets an RD trial of the copy that the frame's 8x8 block hash table finds: up to 32 accepted earlier positions with the leaf's top-left hash (of the 1024 closest), then a +-4 whole-sample refinement, with the RefMvIdx of the nearest reference vector. The row_hashes and column_hashes kernels have std::simd forms and scalar twins. The facade gives EncoderInterTile an intra-frame mode (neighbour grid, reference MV bank and the decoder's IntraBC prelude state, all covered by snapshots and the debug WholeState check), writes use_intrabc, skip_txfm, intrabc_mode, the BVP DRL bits, intrabc_precision, the vector difference (IntraBC MV context) and morph_pred = 0, checks § 6.17.3.3 is_mv_valid for the global area (plus the current or previous superblock row), predicts through the decoder's IntraBC copy and codes the residual on the inter paths. With allow_intrabc = 0 every intra frame codes byte-identically. Against main c4a1cf3 (detected sequences, f10 unless noted): screendata p6 intra Y -42.72% (1.48x CPU), p6 inter Y -31.29% (0.97x), p10 intra Y -22.43% (1.24x), p0 intra f3 Y -46.83% (1.01x); desktop_credits p6 intra Y -0.38% (1.03x), inter Y -0.34% (1.03x)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_tools_tests.rs::screen_streams_code_intrabc_leaves", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_intrabc_frames_like_splot", "crates/splot-encode/src/intrabc.rs::finds_the_exact_earlier_copy", "crates/splot-encode/src/kernels/hash.rs::row_hashes_simd_match_scalar", "crates/splot-decode/src/bitstream/tile_payload/encoder_syntax/intrabc.rs::global_vectors_follow_the_superblock_delay", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::headers_round_trip_for_every_size_bit_depth_and_superblock"]
+commands = ["cargo test -p splot-encode intrabc --locked", "cargo test -p splot-decode intrabc --locked"]
 fixtures = []
 diagnostics = []
 
