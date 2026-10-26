@@ -23,7 +23,7 @@ pub(crate) fn key_frame_tx_params(preset: &PresetParams) -> KeyFrameTxParams {
             TxMode::Largest
         },
         reduced_tx_set: if preset.tx_type_depth == 0 { 2 } else { 0 },
-        allow_tcq: false,
+        ..KeyFrameTxParams::default()
     }
 }
 

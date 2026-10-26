@@ -105,6 +105,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         reduced_tx_set: (index + usize::from(sb == SuperblockSize::Block64x64))
                             as u8,
                         allow_tcq: false,
+                        delta_q_res: [None, Some(0), Some(3)][index],
                     };
                     let core = build_key_frame_header(
                         &view,
@@ -125,6 +126,8 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                     let tail = core.intra_tail.unwrap();
                     assert_eq!(tail.tx_mode, tx.tx_mode);
                     assert_eq!(tail.reduced_tx_set, tx.reduced_tx_set);
+                    let dq = core.delta_q_params.unwrap();
+                    assert_eq!(dq.delta_q_present.then_some(dq.delta_q_res), tx.delta_q_res);
                     assert_eq!(reparse_core(&core, &view), core);
                 }
             }
@@ -612,6 +615,20 @@ fn rejects_out_of_range_inputs() {
     assert!(matches!(
         build_key_frame_header(
             &view,
+            0,
+            0,
+            &FrameFilterParams::default(),
+            KeyFrameTxParams {
+                delta_q_res: Some(1),
+                ..KeyFrameTxParams::default()
+            },
+            UniformTiles::default()
+        ),
+        Err(EncoderHeaderError::DeltaQWithoutBaseQIdx)
+    ));
+    assert!(matches!(
+        build_key_frame_header(
+            &view,
             256,
             0,
             &FrameFilterParams::default(),
@@ -624,12 +641,12 @@ fn rejects_out_of_range_inputs() {
         KeyFrameTxParams {
             tx_mode: TxMode::Only4x4,
             reduced_tx_set: 0,
-            allow_tcq: false,
+            ..KeyFrameTxParams::default()
         },
         KeyFrameTxParams {
             tx_mode: TxMode::Select,
             reduced_tx_set: 4,
-            allow_tcq: false,
+            ..KeyFrameTxParams::default()
         },
     ] {
         assert!(matches!(

@@ -57,6 +57,7 @@ use super::tile_frontier::minimal_partition_frame_facts;
 
 mod cctx;
 mod compound;
+mod delta_q;
 mod fsc;
 mod inter;
 mod intra;
@@ -659,6 +660,7 @@ pub struct IntraTileSyntax {
     inter: Option<inter::InterLeafState>,
     journal: CdfJournal,
     tile: (Range<usize>, Range<usize>),
+    delta_q: delta_q::DeltaQ,
     /// The planned leaf may code CCTX.
     cctx_leaf: bool,
     /// The planned intra leaf codes `fsc_mode`.
@@ -724,6 +726,7 @@ impl IntraTileSyntax {
             (rows.clone(), cols.clone()),
             (base_q_idx, tools.bit_depth),
         )?;
+        let delta_q = delta_q::DeltaQ::new(core, base_q_idx, tools.bit_depth);
         let mut coeff = TileCoeffContextState::default();
         coeff
             .reset_for_tile_chroma(rows.clone(), cols.clone(), chroma)
@@ -776,6 +779,7 @@ impl IntraTileSyntax {
             inter,
             journal,
             tile: (rows, cols),
+            delta_q,
             cctx_leaf: false,
             fsc_leaf: false,
         })
@@ -820,6 +824,7 @@ impl IntraTileSyntax {
             .block_decoded
             .clear_superblock(root.0.r, root.0.c);
         self.enter_inter_superblock(root.0.r);
+        self.begin_delta_q();
     }
 
     /// Whether `node` starts inside the frame; nodes outside code nothing.
