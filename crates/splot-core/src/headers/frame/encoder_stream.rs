@@ -72,7 +72,9 @@ pub struct EncoderToolFlags {
     pub mhccp: bool,
     /// `cfl_ds_filter_index`, `0..=3`; not coded for monochrome.
     pub cfl_ds_filter: u8,
-    /// `seq_choose_screen_content_tools`: frames may use palette and intra block copy.
+    /// `seq_choose_screen_content_tools` with `seq_choose_integer_mv`:
+    /// every frame codes `allow_screen_content_tools = 1` (palette) and
+    /// `force_integer_mv = 0`.
     pub screen_content: bool,
     /// `enable_ibp`.
     pub ibp: bool,
@@ -559,7 +561,10 @@ fn key_frame_header_bits(
     w.write_flag(false)?; // frame_size_override_flag
     w.write_bits(order_hint & order_hint_mask, seq.order_hint_bits)?;
     if seq.seq_force_screen_content_tools == 2 {
-        w.write_flag(false)?; // allow_screen_content_tools
+        w.write_flag(true)?; // allow_screen_content_tools
+        if seq.seq_force_integer_mv == 2 {
+            w.write_flag(false)?; // force_integer_mv
+        }
     }
     w.write_flag(false)?; // allow_intrabc
     w.write_flag(false)?; // disable_cdf_update

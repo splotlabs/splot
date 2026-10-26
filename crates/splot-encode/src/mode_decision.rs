@@ -14,7 +14,7 @@ use core::ops::Range;
 
 use splot_decode::encoder_syntax::{
     ChromaMode, Dip, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax, LeafBlock,
-    MAX_CFL_ALPHA, Mrl, PartitionNode, SyntaxSnapshot,
+    MAX_CFL_ALPHA, Mrl, PALETTE_COLORS, PartitionNode, SyntaxSnapshot,
 };
 use splot_recon::InterpolationFilter;
 
@@ -750,8 +750,8 @@ impl TrialCoder<'_, '_> {
     }
 
     /// The best intra choice of `leaf`: luma modes on luma alone, the winner
-    /// with FSC, then the luma transform partition, then the chroma mode over
-    /// the coded luma.
+    /// against a palette, the winner with FSC, then the luma transform
+    /// partition, then the chroma mode over the coded luma.
     fn intra_choice(
         &mut self,
         node: PartitionNode,
@@ -760,6 +760,24 @@ impl TrialCoder<'_, '_> {
     ) -> Result<LeafChoice> {
         let luma = self.luma_shortlist(leaf)?;
         let mut choice = self.best(leaf, luma, LUMA, start)?;
+        if self.preset.palette
+            && self.syntax.palette_allowed(leaf)
+            && self.coder.palette.count(self.coder.source, leaf)? >= 2
+        {
+            let mut candidates = vec![choice];
+            for size in (2..=PALETTE_COLORS).rev() {
+                if let Some(palette) = self.coder.palette.palette(size) {
+                    let palette = LeafChoice::largest(IntraModes {
+                        palette: Some(palette),
+                        ..IntraModes::DC
+                    });
+                    if !candidates.contains(&palette) {
+                        candidates.push(palette);
+                    }
+                }
+            }
+            choice = self.best(leaf, candidates, LUMA, start)?;
+        }
         if self.preset.fsc && self.syntax.fsc_allowed(leaf) {
             let fsc = LeafChoice::largest(IntraModes {
                 fsc: true,

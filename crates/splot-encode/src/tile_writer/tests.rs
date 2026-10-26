@@ -16,7 +16,8 @@ use splot_core::headers::frame::TxMode;
 use splot_core::tables::conversion::TX_WIDTH;
 use splot_decode::encoder_syntax::{
     ChromaMode, Dip, IST_SETS, IntraMode, IntraModes, IntraTileSyntax, Ist, LeafBlock,
-    MAX_CFL_ALPHA, Mrl, PartitionNode, TX_PARTITIONS, TransformBlock, coefficient_scan,
+    MAX_CFL_ALPHA, Mrl, PALETTE_COLORS, Palette, PartitionNode, TX_PARTITIONS, TransformBlock,
+    coefficient_scan,
 };
 use splot_recon::{BitDepth, DecodedFrame, PlaneId};
 
@@ -210,6 +211,8 @@ struct RandomLevels {
     rng: Rng,
     max_level: i32,
     coverage: TxCoverage,
+    /// The color map of the last palette leaf.
+    map: Vec<u8>,
 }
 
 impl RandomLevels {
@@ -231,7 +234,8 @@ impl RandomLevels {
         planned: IntraModes,
     ) -> Result<LeafChoice> {
         let mut best = (0, planned);
-        if self.coverage.steer {
+        let steer = self.coverage.steer && planned.palette.is_none();
+        if steer {
             for (y_mode, angle_delta) in luma_modes() {
                 let modes = IntraModes {
                     y_mode,
@@ -253,7 +257,7 @@ impl RandomLevels {
         let modes = best.1;
         let options = syntax.luma_tx_partitions(leaf)?;
         let mut partition = options[self.rng.below(options.len() as u64) as usize];
-        if self.coverage.steer && self.rng.below(2) == 0 {
+        if steer && self.rng.below(2) == 0 {
             let mut best = 0;
             for &option in &options {
                 let tx = syntax.plan_leaf_partitioned(leaf, modes, option)?[0];
@@ -273,6 +277,31 @@ impl RandomLevels {
 }
 
 impl ResidualCoder for RandomLevels {
+    /// Random lines of indices, some uniform or copies of the line before,
+    /// along rows or, for a third of the leaves, along columns.
+    fn palette_map(&mut self, leaf: &LeafBlock, palette: &Palette) -> Result<&[u8]> {
+        let (w, h) = leaf.dimensions()?;
+        let size = u64::from(palette.size);
+        let columns = self.rng.below(3) == 0;
+        let (outer, inner) = if columns { (w, h) } else { (h, w) };
+        let mut lines: Vec<Vec<u8>> = Vec::with_capacity(outer);
+        for i in 0..outer {
+            let line = match self.rng.below(4) {
+                0 if i > 0 => lines[i - 1].clone(),
+                1 => vec![self.rng.below(size) as u8; inner],
+                _ => (0..inner).map(|_| self.rng.below(size) as u8).collect(),
+            };
+            lines.push(line);
+        }
+        self.map = (0..w * h)
+            .map(|i| {
+                let (y, x) = (i / w, i % w);
+                if columns { lines[x][y] } else { lines[y][x] }
+            })
+            .collect();
+        Ok(&self.map)
+    }
+
     fn code_luma(
         &mut self,
         syntax: &mut IntraTileSyntax,
@@ -405,6 +434,8 @@ struct ModePicker {
     dip: bool,
     coded_dip: HashSet<Dip>,
     coded_mrl: HashSet<Mrl>,
+    palette: bool,
+    coded_palette: HashSet<Palette>,
 }
 
 impl ModePicker {
@@ -423,6 +454,8 @@ impl ModePicker {
             dip: false,
             coded_dip: HashSet::new(),
             coded_mrl: HashSet::new(),
+            palette: false,
+            coded_palette: HashSet::new(),
         }
     }
 
@@ -498,6 +531,7 @@ impl ModePicker {
             mrl,
             fsc,
             dip: None,
+            palette: None,
         }
     }
 }
@@ -534,12 +568,16 @@ fn random_tree(
         } else {
             0
         };
-        let planned = modes.pick(
+        let mut planned = modes.pick(
             cfl_allowed,
             syntax.mhccp_allowed(&leaf),
             syntax.fsc_allowed(&leaf),
             dip_modes,
         );
+        if modes.palette && syntax.palette_allowed(&leaf) && rng.below(2) == 0 {
+            planned = random_palette(rng, planned);
+            modes.coded_palette.extend(planned.palette);
+        }
         return PartitionTree::Leaf(coder.leaf_choice(syntax, &leaf, planned).unwrap());
     }
     let children = syntax
@@ -551,6 +589,33 @@ fn random_tree(
     PartitionTree::Split {
         kind: partition,
         children,
+    }
+}
+
+/// A `DC_PRED` palette of two to eight colors from a small pool, so
+/// neighbours share colors through the cache, with the chroma and FSC of
+/// `planned`.
+fn random_palette(rng: &mut Rng, planned: IntraModes) -> IntraModes {
+    let mut pool = [3u16, 12, 40, 41, 77, 99, 128, 129, 200, 201, 230, 250];
+    let size = 2 + rng.below(7) as usize;
+    for i in 0..size {
+        let j = i + rng.below((pool.len() - i) as u64) as usize;
+        pool.swap(i, j);
+    }
+    let mut colors = [0; PALETTE_COLORS];
+    colors[..size].copy_from_slice(&pool[..size]);
+    colors[..size].sort_unstable();
+    IntraModes {
+        uv_mode: match planned.uv_mode {
+            ChromaMode::Intra(_) => ChromaMode::Intra(IntraMode::Dc),
+            cfl => cfl,
+        },
+        fsc: planned.fsc,
+        palette: Some(Palette {
+            size: size as u8,
+            colors,
+        }),
+        ..IntraModes::DC
     }
 }
 
@@ -589,6 +654,7 @@ fn encode_case(
     modes.mhccp = case.tools.mhccp;
     modes.fsc = case.tools.fsc || case.tools.idtx_intra;
     modes.dip = case.tools.dip;
+    modes.palette = case.tools.screen_content;
     let mut coder = RandomLevels {
         rng: Rng(seed.rotate_left(17) | 1),
         max_level: case.max_level,
@@ -596,6 +662,7 @@ fn encode_case(
             steer: case.tx.tx_mode == TxMode::Select,
             ..coverage
         },
+        map: Vec::new(),
     };
     let max_q = splot_recon::max_quantizer_index(case.bit_depth());
     let mut edges = [6, 7, 8, -600, 600, -600].into_iter();
@@ -779,6 +846,29 @@ fn every_dip_mode_round_trips() {
         dips.extend(modes.coded_dip);
     }
     assert!(dips.len() >= 8, "{dips:?}");
+}
+
+/// Random palettes, color maps and transform partitions of `DC_PRED` leaves
+/// decode to the encoder recon: the facade writes `palette_mode_info` with
+/// the color cache and `palette_tokens` in both scan directions, also for
+/// leaves past the frame edge.
+#[test]
+fn palette_leaves_round_trip() {
+    let mut palettes = HashSet::new();
+    for (seed, bit_depth) in [BitDepthIdc::Eight, BitDepthIdc::Ten, BitDepthIdc::Eight]
+        .into_iter()
+        .enumerate()
+    {
+        let mut case = Case::new(200, 136, bit_depth, SuperblockSize::Block64x64);
+        if seed == 2 {
+            case = case.with_tx_search();
+        }
+        case.tools.screen_content = true;
+        let (_, modes, _) =
+            assert_round_trip_modes(case, 0xba1 + seed as u64, TxCoverage::default());
+        palettes.extend(modes.coded_palette);
+    }
+    assert!(palettes.len() >= 20, "{}", palettes.len());
 }
 
 /// Random FSC leaves decode to the encoder recon with IDTX-only and FSC
@@ -1008,6 +1098,7 @@ fn rejects_unsupported_decisions() {
                 rng: Rng(1),
                 max_level: 1,
                 coverage: TxCoverage::default(),
+                map: Vec::new(),
             }
         ),
         Err(TileWriterError::Partition { .. })
@@ -1218,6 +1309,11 @@ fn avm_decodes_random_key_frames_like_splot() {
     let mut dip = Case::new(200, 136, BitDepthIdc::Ten, SuperblockSize::Block128x128);
     dip.tools.dip = true;
     cases.push(dip);
+    for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
+        let mut palette = Case::new(200, 136, bit_depth, SuperblockSize::Block64x64);
+        palette.tools.screen_content = true;
+        cases.push(palette.with_tx_search());
+    }
     let mut mhccp = Case::new(200, 136, BitDepthIdc::Eight, SuperblockSize::Block64x64);
     mhccp.tools.mhccp = true;
     cases.push(mhccp);
@@ -1306,6 +1402,7 @@ fn cfl_chroma_of_a_128x128_leaf_reads_the_whole_luma() {
         rng: Rng(0xcf1),
         max_level: 40,
         coverage: TxCoverage::default(),
+        map: Vec::new(),
     };
     let tree = PartitionTree::Leaf(LeafChoice::largest(modes));
     writer

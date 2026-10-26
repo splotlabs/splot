@@ -210,7 +210,8 @@ fn every_tool_flag_reaches_the_parsed_header() {
         UniformTiles::default(),
     )
     .unwrap();
-    assert_eq!(core.allow_screen_content_tools, Some(false));
+    assert_eq!(core.allow_screen_content_tools, Some(true));
+    assert_eq!(core.force_integer_mv, Some(false));
     assert_eq!(reparse_core(&core, &view), core);
 }
 

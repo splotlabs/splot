@@ -140,8 +140,13 @@ pub struct PresetParams {
     /// on screen content, whose preset rows turn it on.
     pub fsc: bool,
     /// The first frame switches the sequence to the screen-content row of
-    /// its preset (FSC on) when it looks like screen content.
+    /// its preset (FSC and palette on) when it looks like screen content.
     pub screen_detect: bool,
+    /// The winning luma mode of an intra leaf gets RD trials against
+    /// `DC_PRED` palettes of 2 to 8 of the leaf's most frequent luma values;
+    /// off disables `allow_screen_content_tools`. Off in every row: it pays
+    /// only on screen content, whose preset rows turn it on.
+    pub palette: bool,
     /// The first frame picks the sequence's `cfl_ds_filter_index` by the
     /// down-sampled luma that best predicts its chroma; off codes `0`.
     pub cfl_filter: bool,
@@ -445,6 +450,7 @@ preset_table! {
     screen_content {
         fsc:                   [false, false, false, false, false, false, false, false, false, false, false],
         screen_detect:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        palette:               [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {
         mini_gop_size:         [    8,     8,     8,     8,     4,     4,     4,     4,     2,     2,     1],
@@ -460,6 +466,7 @@ pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
     while i < rows.len() {
         rows[i] = PresetParams {
             fsc: true,
+            palette: true,
             ..rows[i]
         };
         i += 1;
@@ -567,6 +574,7 @@ mod tests {
             assert!(fast.cctx <= slow.cctx);
             assert!(fast.mhccp <= slow.mhccp);
             assert!(fast.fsc <= slow.fsc);
+            assert!(fast.palette <= slow.palette);
             assert!(fast.screen_detect <= slow.screen_detect);
             assert!(fast.cfl_filter <= slow.cfl_filter);
             assert!(fast.dip <= slow.dip);
