@@ -16908,7 +16908,7 @@ module = "crates/splot-decode/src/prediction/inter/block/compound_path.rs"
 change_id = "decode-compound-local-warp"
 owner = "decoder"
 risk = "medium"
-notes = "Compound LOCALWARP derives a model per reference list and uses translation when that list has no warp samples. Prediction uses each list's model, compound rounding and the existing average/wedge/difference-weighted blends; compound warp disables the implicit mask. Refine-MV and CWP are suppressed, interpolation is inferred, and both lists' sub-block MVs are retained for spatial and temporal prediction. The committed list-1 sample fixture has complete AVM output agreement; broader compound LOCALWARP conformance remains partial."
+notes = "Compound LOCALWARP derives a model per reference list and uses translation when that list has no warp samples. Prediction uses each list's model, compound rounding and the existing average/wedge/difference-weighted blends; compound warp disables the implicit mask. Refine-MV and CWP are suppressed, interpolation is inferred, and both lists' sub-block MVs are retained for spatial and temporal prediction. The committed list-1 sample fixture has complete AVM output agreement; broader compound LOCALWARP conformance remains partial. A single-reference warp block of a force_integer_mv frame keeps its stored model but predicts by translation (useWarp = 0, 7.13.3.14)."
 
 [feature.status]
 mapped = "done"
@@ -16942,6 +16942,7 @@ commands = [
 ]
 fixtures = [
     "tests/conformance/vectors/valid/syn-2frame-warp-sample-list1-48x48-q90.ivf",
+    "tests/conformance/vectors/valid/syn-3frame-warpmv-integer-mv-inter-264x136-q230.ivf",
 ]
 diagnostics = ["decode/unsupported-feature"]
 
