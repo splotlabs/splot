@@ -583,7 +583,11 @@ impl EncoderInterTile {
             self.tip_records = records;
             derived?;
         } else if let Some(compound) = compound {
-            let refine = (compound.use_refinemv, compound.refinemv_switchable);
+            let refine = (
+                compound.use_refinemv,
+                compound.refinemv_switchable,
+                compound.use_optflow,
+            );
             let placed = self.placed(frontier, syntax, &resolved)?;
             if let Some(grid) = self.compound_grid(&placed, refine, workspace)? {
                 super::compound_path::append_compound_temporal_motion(
@@ -613,14 +617,17 @@ impl EncoderInterTile {
     }
 
     /// The decoder's refinement grid of the compound block `placed` with
-    /// `(use_refinemv, refinemv_switchable)`, `None` where it predicts
-    /// without one.
+    /// `(use_refinemv, refinemv_switchable, use_optflow)`, `None` where it
+    /// predicts without one.
     fn compound_grid(
         &self,
         placed: &PlacedInterBlock,
-        (use_refinemv, switchable): (bool, bool),
+        (use_refinemv, switchable, use_optflow): (bool, bool, bool),
         workspace: &mut CurrentFrameWorkspace<u16>,
     ) -> Result<Option<mc::CompoundMotionGrid>> {
+        if !use_refinemv && !use_optflow {
+            return Ok(None);
+        }
         let held = super::super::hold_inter_block_references(
             &self.ref_frame_idx,
             &self.reference,
@@ -1214,12 +1221,14 @@ fn block_size4(frontier: &DecodeBlockFrontier) -> Result<(usize, usize)> {
     ))
 }
 
-/// `(use_refinemv, refinemv_switchable)` of `motion`.
-fn refinemv_flags(motion: &InterMotionSyntax) -> (bool, bool) {
+/// `(use_refinemv, refinemv_switchable, use_optflow)` of `motion`.
+fn refinemv_flags(motion: &InterMotionSyntax) -> (bool, bool, bool) {
     match motion {
-        InterMotionSyntax::Compound(compound) => {
-            (compound.use_refinemv, compound.refinemv_switchable)
-        }
-        _ => (false, false),
+        InterMotionSyntax::Compound(compound) => (
+            compound.use_refinemv,
+            compound.refinemv_switchable,
+            compound.use_optflow,
+        ),
+        _ => (false, false, false),
     }
 }
