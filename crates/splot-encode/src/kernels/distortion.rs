@@ -403,7 +403,7 @@ mod tests {
     use super::super::{BlockDims, EncoderKernels, ScalarKernels, SimdKernels, kernels};
 
     fn side() -> impl Strategy<Value = usize> {
-        (2u32..=7).prop_map(|log2| 1usize << log2)
+        (2u32..=8).prop_map(|log2| 1usize << log2)
     }
 
     /// Two strided blocks of `w x h` samples below `2^bits`.
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn constant_difference_values() {
-        for (w, h) in [(4, 4), (8, 8), (16, 4), (128, 128)] {
+        for (w, h) in [(4, 4), (8, 8), (16, 4), (128, 128), (256, 256)] {
             let dims = BlockDims::new(w, h).unwrap();
             let a = vec![300u16; w * h];
             let b = vec![297u16; w * h];
