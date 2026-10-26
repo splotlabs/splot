@@ -140,8 +140,8 @@ pub struct PresetParams {
     /// on screen content, whose preset rows turn it on.
     pub fsc: bool,
     /// The first frame switches the sequence to the screen-content row of
-    /// its preset (FSC, palette and IntraBC on) when it looks like screen
-    /// content.
+    /// its preset (FSC, palette, IntraBC and integer motion vectors on) when
+    /// it looks like screen content.
     pub screen_detect: bool,
     /// The winning luma mode of an intra leaf gets RD trials against
     /// `DC_PRED` palettes of 2 to 8 of the leaf's most frequent luma values;
@@ -153,6 +153,10 @@ pub struct PresetParams {
     /// its luma that the block hashes find. Off in every row: it pays only
     /// on screen content, whose preset rows turn it on.
     pub intrabc: bool,
+    /// Inter frames code `force_integer_mv = 1`: whole-sample motion vectors
+    /// and a whole-sample motion search. Off in every row: it pays only on
+    /// screen content, whose preset rows turn it on.
+    pub integer_mv: bool,
     /// The first frame picks the sequence's `cfl_ds_filter_index` by the
     /// down-sampled luma that best predicts its chroma; off codes `0`.
     pub cfl_filter: bool,
@@ -466,6 +470,7 @@ preset_table! {
         screen_detect:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         palette:               [false, false, false, false, false, false, false, false, false, false, false],
         intrabc:               [false, false, false, false, false, false, false, false, false, false, false],
+        integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {
         mini_gop_size:         [    8,     8,     8,     8,     4,     4,     4,     4,     2,     2,     1],
@@ -483,6 +488,7 @@ pub(crate) static SCREEN_PRESETS: [PresetParams; 11] = {
             fsc: true,
             palette: true,
             intrabc: true,
+            integer_mv: true,
             ..rows[i]
         };
         i += 1;
@@ -592,6 +598,7 @@ mod tests {
             assert!(fast.fsc <= slow.fsc);
             assert!(fast.palette <= slow.palette);
             assert!(fast.intrabc <= slow.intrabc);
+            assert!(fast.integer_mv <= slow.integer_mv);
             assert!(fast.screen_detect <= slow.screen_detect);
             assert!(fast.cfl_filter <= slow.cfl_filter);
             assert!(fast.dip <= slow.dip);

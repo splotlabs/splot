@@ -421,6 +421,55 @@ fn screen_streams_code_intrabc_leaves() {
     }
 }
 
+/// Integer-MV streams decode to the encoder recon on any thread count.
+#[test]
+fn integer_mv_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    assert_tool_streams(
+        preset_with(|p| p.integer_mv = true),
+        preset_with(|p| p.integer_mv = false),
+        |seq| seq.screen_content.unwrap().seq_force_screen_content_tools == 2,
+    );
+}
+
+/// An inter frame with `force_integer_mv` codes inter leaves whose vectors
+/// are all whole samples.
+#[test]
+fn integer_mv_frames_code_whole_sample_vectors() {
+    let config = config(64, 40, BitDepth::Ten, 9, 90);
+    let preset = preset_with(|p| p.integer_mv = true);
+    let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let key = crate::gop::plan(0, config.keyint);
+    coder
+        .encode_frame(&panning_frame(&config, 0), &key, 90)
+        .unwrap();
+    let plan = crate::gop::plan(1, config.keyint);
+    let trees = search_frame(&coder, &plan, &panning_frame(&config, 1), config.bit_depth);
+    let inter = |choice: &LeafChoice| choice.inter.is_some();
+    assert!(trees.iter().map(|tree| leaves(tree, inter)).sum::<usize>() > 0);
+    let fractional = |choice: &LeafChoice| match choice.inter {
+        Some(InterPrediction::Single(modes)) => modes.mv.row % 8 != 0 || modes.mv.col % 8 != 0,
+        Some(InterPrediction::Compound(modes)) => modes
+            .mvs
+            .iter()
+            .any(|mv| mv.row % 8 != 0 || mv.col % 8 != 0),
+        _ => false,
+    };
+    assert_eq!(
+        trees
+            .iter()
+            .map(|tree| leaves(tree, fractional))
+            .sum::<usize>(),
+        0
+    );
+}
+
+/// AVM decodes the integer-MV key and inter frames to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_integer_mv_frames_like_splot() {
+    assert_avm_decodes(preset_with(|p| p.integer_mv = true), "integer mv");
+}
+
 /// AVM decodes the palette key and inter frames of drawn text to the
 /// encoder recon.
 #[test]

@@ -369,10 +369,13 @@ pub(crate) fn frame_tools(preset: &PresetParams, tiles: UniformTiles, qindex: u3
         crate::tx_choice::key_frame_tx_params(preset),
         preset.compound_candidates > 0,
         (
-            preset.subpel_depth == 3 && qindex <= u32::from(preset.eighth_pel_max_qindex),
+            !preset.integer_mv
+                && preset.subpel_depth == 3
+                && qindex <= u32::from(preset.eighth_pel_max_qindex),
             preset.mv_prediction,
             preset.interp_filter_search > 0,
             (preset.tip > 0 && preset.mv_prediction).then_some(TIP_EQUAL_WEIGHT),
+            preset.integer_mv,
         ),
         tiles,
     )
@@ -383,11 +386,12 @@ pub(crate) fn frame_tools(preset: &PresetParams, tiles: UniformTiles, qindex: u3
 const TIP_EQUAL_WEIGHT: u8 = 0;
 
 /// `(tx, compound, (high_precision_mv, use_ref_frame_mvs,
-/// switchable_interp_filter, tip_weight), tiles)` of [`frame_tools`].
+/// switchable_interp_filter, tip_weight, force_integer_mv), tiles)` of
+/// [`frame_tools`].
 pub(crate) type FrameTools = (
     KeyFrameTxParams,
     bool,
-    (bool, bool, bool, Option<u8>),
+    (bool, bool, bool, Option<u8>, bool),
     UniformTiles,
 );
 
@@ -498,7 +502,13 @@ impl GopFrame {
         (
             tx,
             compound,
-            (high_precision_mv, use_ref_frame_mvs, switchable_interp_filter, tip_weight),
+            (
+                high_precision_mv,
+                use_ref_frame_mvs,
+                switchable_interp_filter,
+                tip_weight,
+                force_integer_mv,
+            ),
             tiles,
         ): FrameTools,
     ) -> InterFrameParams {
@@ -520,6 +530,7 @@ impl GopFrame {
             switchable_interp_filter,
             primary_slot: self.primary_slot,
             tip_weight,
+            force_integer_mv,
         }
     }
 }
