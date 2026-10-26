@@ -38,7 +38,7 @@ impl<F: Fn(Rect) -> RdCost> Synthetic<F> {
 impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
     type Node = Rect;
     type Saved = Vec<Rect>;
-    type Error = core::convert::Infallible;
+    type Error = crate::tile_writer::TileWriterError;
 
     fn in_frame(&self, (x, y, ..): Rect) -> bool {
         x < self.size && y < self.size

@@ -446,7 +446,7 @@ impl IntraTileSyntax {
         modes: IntraModes,
         symbols: &mut impl SymbolSink,
     ) -> Result<()> {
-        let modes = part_modes(leaf, modes);
+        let modes = part_modes(leaf, modes)?;
         self.write_y_uv_modes(leaf, modes, symbols)?;
         self.write_palette_mode_info(leaf, modes, symbols)?;
         self.write_dip(leaf, modes, symbols)
@@ -650,7 +650,7 @@ impl IntraTileSyntax {
         modes: IntraModes,
         partition: TxPartition,
     ) -> Result<Vec<TransformBlock>> {
-        let modes = part_modes(leaf, modes);
+        let modes = part_modes(leaf, modes)?;
         self.clear_inter_plan();
         self.plan_cctx(leaf);
         self.fsc_leaf = modes.fsc;
@@ -893,7 +893,7 @@ impl IntraTileSyntax {
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for an invalid geometry or mode.
     pub fn publish_intra_leaf(&mut self, leaf: &LeafBlock, modes: IntraModes) -> Result<()> {
-        let modes = part_modes(leaf, modes);
+        let modes = part_modes(leaf, modes)?;
         let (_, joint) = self.y_mode_index(leaf, modes)?;
         let mrl = self.mrl_selection(modes)?;
         let palette = modes
@@ -1215,21 +1215,37 @@ static ZERO_LEVELS: [i32; 1024] = [0; 1024];
 
 const NO_LEAF: EncoderSyntaxError = EncoderSyntaxError::Unsupported("unplanned transform block");
 
-/// `modes` of a `CHROMA_PART` leaf over its collocated luma mode (§ 5.20.5.3)
-/// with every luma-only tool off; `modes` itself elsewhere.
-fn part_modes(leaf: &LeafBlock, modes: IntraModes) -> IntraModes {
-    match leaf.frontier.part() {
-        DecodeBlockPart::ChromaPart {
-            y_mode,
-            angle_delta_y,
-        } => IntraModes {
-            y_mode,
-            angle_delta: angle_delta_y,
-            uv_mode: modes.uv_mode,
-            ..IntraModes::DC
-        },
-        _ => modes,
+/// `modes` of a `CHROMA_PART` leaf over its collocated luma mode (§ 5.20.5.3);
+/// `modes` itself elsewhere.
+///
+/// # Errors
+/// Returns [`EncoderSyntaxError::Unsupported`] for a luma-only tool (MRL,
+/// FSC, DIP, palette) in a `CHROMA_PART` leaf.
+fn part_modes(leaf: &LeafBlock, modes: IntraModes) -> Result<IntraModes> {
+    let DecodeBlockPart::ChromaPart {
+        y_mode,
+        angle_delta_y,
+    } = leaf.frontier.part()
+    else {
+        return Ok(modes);
+    };
+    let collocated = IntraModes {
+        y_mode,
+        angle_delta: angle_delta_y,
+        uv_mode: modes.uv_mode,
+        ..IntraModes::DC
+    };
+    let luma_only = IntraModes {
+        y_mode,
+        angle_delta: angle_delta_y,
+        ..modes
+    };
+    if luma_only != collocated {
+        return Err(EncoderSyntaxError::Unsupported(
+            "a luma-only tool in a CHROMA_PART leaf",
+        ));
     }
+    Ok(collocated)
 }
 
 /// The decoder's block modes of `modes` in `leaf` with luma `palette`.
