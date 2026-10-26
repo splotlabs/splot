@@ -60,6 +60,7 @@ mod compound;
 mod fsc;
 mod inter;
 mod intra;
+mod intrabc;
 mod mv;
 mod palette;
 mod parity;
