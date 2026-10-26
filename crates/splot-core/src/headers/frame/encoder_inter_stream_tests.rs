@@ -85,10 +85,10 @@ fn filters(sb: SuperblockSize) -> FrameFilterParams {
         }])
         .unwrap(),
         cdef_on_skip: true,
-        lr_luma_unit_size: Some(if sb == SuperblockSize::Block64x64 {
-            64
-        } else {
-            128
+        lr_luma_unit_size: Some(match sb {
+            SuperblockSize::Block64x64 => 64,
+            SuperblockSize::Block128x128 => 128,
+            SuperblockSize::Block256x256 => 256,
         }),
         lr_luma_wiener_ns: None,
         lr_chroma_unit_size: None,
@@ -117,7 +117,11 @@ fn filters(sb: SuperblockSize) -> FrameFilterParams {
 fn inter_headers_parse_with_the_reference_state() {
     for (width, height) in [(1, 1), (17, 9), (200, 136), (1920, 1080)] {
         for bit_depth in [BitDepthIdc::Eight, BitDepthIdc::Ten] {
-            for sb in [SuperblockSize::Block64x64, SuperblockSize::Block128x128] {
+            for sb in [
+                SuperblockSize::Block64x64,
+                SuperblockSize::Block128x128,
+                SuperblockSize::Block256x256,
+            ] {
                 let seq = sequence(width, height, bit_depth, sb);
                 let view = CoreSeqView::from_sequence(&seq).unwrap();
                 let slots = Slots::after_key(width, height, 4);
