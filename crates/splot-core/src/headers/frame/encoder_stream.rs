@@ -208,6 +208,8 @@ pub struct KeyFrameTxParams {
     pub reduced_tx_set: u8,
     /// `allow_tcq`; needs a sequence with `choose_tcq_per_frame`.
     pub allow_tcq: bool,
+    /// `delta_q_res` of a frame that codes `delta_q_present` (§ 5.18.7.8), `0..=3`.
+    pub delta_q_res: Option<u8>,
 }
 
 impl Default for KeyFrameTxParams {
@@ -216,6 +218,7 @@ impl Default for KeyFrameTxParams {
             tx_mode: TxMode::Largest,
             reduced_tx_set: 2,
             allow_tcq: false,
+            delta_q_res: None,
         }
     }
 }
@@ -269,6 +272,10 @@ pub enum EncoderHeaderError {
         /// The rejected `reduced_tx_set`.
         reduced_tx_set: u8,
     },
+    /// `delta_q_res` is set with `base_q_idx = 0`, which codes no
+    /// `delta_q_present` (§ 5.18.7.8).
+    #[error("delta_q_res needs base_q_idx > 0")]
+    DeltaQWithoutBaseQIdx,
     /// `allow_tcq` is set, but the sequence does not code it per frame.
     #[error("allow_tcq needs choose_tcq_per_frame")]
     TcqNotChosen,
@@ -501,7 +508,7 @@ fn write_transform_quant_entropy_config(
 /// Builds the `OBU_CLOSED_LOOP_KEY` frame header for `seq` at `base_q_idx`.
 ///
 /// The frame has the maximum frame size, `show_frame` semantics through
-/// `immediate_output_frame = 1`, the uniform `tiles`, no segmentation, no delta-q,
+/// `immediate_output_frame = 1`, the uniform `tiles`, no segmentation, the delta-q of `tx`,
 /// no quantizer matrices, the deblocking, CDEF, and loop-restoration choices of
 /// `filters`, GDF off, the transform choices of `tx`, and no film grain.
 ///
@@ -567,7 +574,7 @@ fn key_frame_header_bits(
     write_quant_and_filters(
         &mut w,
         seq,
-        (base_q_idx, tiles, tx.allow_tcq),
+        (base_q_idx, tiles, tx),
         filters,
         (true, LrReferenceFilters::default()),
     )?;
@@ -578,16 +585,20 @@ fn key_frame_header_bits(
 }
 
 /// § 5.18.2 from `tile_info()` through `ccso_params()`: the uniform `tiles`, `base_q_idx`, no
-/// segmentation, quantizer matrices or delta-q, `allow_tcq`, parity hiding when the sequence
-/// enables it and the frame has no TCQ, and the filters of `filters`; an inter frame codes no
-/// CCSO reuse.
+/// segmentation or quantizer matrices, the delta-q and `allow_tcq` of `tx`, parity hiding when
+/// the sequence enables it and the frame has no TCQ, and the filters of `filters`; an inter
+/// frame codes no CCSO reuse.
 pub(super) fn write_quant_and_filters(
     w: &mut BitWriter,
     seq: &CoreSeqView,
-    (base_q_idx, tiles, allow_tcq): (u32, UniformTiles, bool),
+    (base_q_idx, tiles, tx): (u32, UniformTiles, KeyFrameTxParams),
     filters: &FrameFilterParams,
     (frame_is_intra, lr_refs): (bool, LrReferenceFilters<'_>),
 ) -> Result<(), EncoderHeaderError> {
+    let allow_tcq = tx.allow_tcq;
+    if tx.delta_q_res.is_some() && base_q_idx == 0 {
+        return Err(EncoderHeaderError::DeltaQWithoutBaseQIdx);
+    }
     if allow_tcq && !seq.quant.choose_tcq_per_frame {
         return Err(EncoderHeaderError::TcqNotChosen);
     }
@@ -602,7 +613,12 @@ pub(super) fn write_quant_and_filters(
     w.write_bits(base_q_idx, q_bits)?;
     w.write_flag(false)?; // segmentation_enabled
     w.write_flag(false)?; // using_qmatrix
-    w.write_flag(false)?; // delta_q_present
+    if base_q_idx > 0 {
+        w.write_flag(tx.delta_q_res.is_some())?; // delta_q_present
+    }
+    if let Some(res) = tx.delta_q_res {
+        w.write_bits(u32::from(res), 2)?; // delta_q_res
+    }
     if seq.quant.choose_tcq_per_frame {
         w.write_flag(allow_tcq)?;
     }

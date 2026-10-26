@@ -117,7 +117,7 @@ fn a_frame_without_a_tip_pair_codes_tip_disabled() {
     );
     assert!(!coder.references.tip_pair_available(&core));
     let mut coded = coder
-        .code_frame(&panning_frame(&config, 0), &past_less, 110)
+        .code_frame(&panning_frame(&config, 0), &past_less, 110, &[])
         .unwrap();
     let core = coded.reference.as_ref().unwrap().0.clone();
     assert_eq!(

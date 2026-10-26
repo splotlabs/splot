@@ -35,7 +35,7 @@ const TX_PARTITION_HORZ4: usize = 4;
 const TX_PARTITION_VERT4: usize = 5;
 const TX_PARTITION_HORZ5: usize = 6;
 const TX_PARTITION_VERT5: usize = 7;
-const DELTA_Q_SMALL: usize = 7;
+pub(crate) const DELTA_Q_SMALL: usize = 7;
 const DELTA_Q_REM_BITS_WIDTH: u32 = 3;
 const DELTA_Q_SIGN_BIT_WIDTH: u32 = 1;
 
@@ -1044,7 +1044,7 @@ fn read_delta_q_abs(
     Ok(delta_q_abs_bits as usize + delta_q_large_base + (DELTA_Q_SMALL - 2))
 }
 
-fn updated_current_q_index(
+pub(crate) fn updated_current_q_index(
     current_q_index: i32,
     reduced_delta_q_index: i32,
     delta_q_res: u8,
@@ -1055,7 +1055,7 @@ fn updated_current_q_index(
     current_q_index.saturating_add(delta).clamp(1, max_q)
 }
 
-fn delta_q_is_coded_for_block(
+pub(crate) fn delta_q_is_coded_for_block(
     block_size: usize,
     sb_size4: usize,
     skip: bool,

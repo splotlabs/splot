@@ -52,7 +52,7 @@ fn pan_stream(
     for index in 0..4 {
         let plan = crate::gop::plan(u64::from(index), config.keyint);
         let mut coded = coder
-            .code_frame(&panning_frame(&config, index * speed), &plan, 190)
+            .code_frame(&panning_frame(&config, index * speed), &plan, 190, &[])
             .unwrap();
         let core = &coded.reference.as_ref().unwrap().0;
         let params = core.lr_params.as_ref().unwrap();
@@ -142,7 +142,7 @@ fn class_stream() -> (Vec<Vec<u8>>, Vec<u8>, Vec<Option<u8>>) {
     for index in 0..3 {
         let plan = crate::gop::plan(u64::from(index), config.keyint);
         let mut coded = coder
-            .code_frame(&panning_frame(&config, index), &plan, 110)
+            .code_frame(&panning_frame(&config, index), &plan, 110, &[])
             .unwrap();
         let core = &coded.reference.as_ref().unwrap().0;
         classes.push(core.lr_params.as_ref().unwrap().planes[0].num_filter_classes);

@@ -6201,6 +6201,38 @@ commands = ["cargo test -p splot-encode cdef_on_skip --locked", "cargo test -p s
 fixtures = []
 diagnostics = []
 
+[[feature]]
+id = "ENC-DELTA-Q"
+name = "Encoder superblock quantizer index deltas"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.7.8", "5.20.5.11", "6.19.5.11", "7.14.1", "7.17.5"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_frame.rs"
+change_id = "enc-delta-q"
+owner = "encoder"
+risk = "medium"
+notes = "A frame coded with superblock qindex offsets sets delta_q_present with delta_q_res = 2. Before each superblock's search the encoder asks splot_decode::encoder_syntax for the codable CurrentQIndex nearest base_q_idx plus the offset (IntraTileSyntax::set_superblock_qindex, which resolves with the decoder's own clip and delta_q_res rule); the search, the quantizer and the RD lambda of that superblock use it. The facade writes delta_q_abs, its escape bits and its sign after ccso_blk on the first leaf that reads them, keeps the previous CurrentQIndex for a superblock-sized skipped leaf, and dequantizes and records deblocking levels (LumaQIndex, § 7.17.5) with the block qindex, so deblocking follows delta-q (AV2 has no per-block loop-filter delta syntax). Nothing in the encoder sets offsets yet; a frame without offsets codes delta_q_present = 0 byte-identically. Segmentation and quantizer matrices stay refused."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_delta_q_tests.rs::superblock_offsets_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::empty_offsets_code_no_delta_q", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::avm_decodes_delta_q_frames_like_splot", "crates/splot-encode/src/tile_writer/tests.rs::superblock_qindex_deltas_round_trip", "crates/splot-encode/src/tile_writer/tests.rs::superblock_qindex_needs_delta_q_present", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::headers_round_trip_for_every_size_bit_depth_and_superblock"]
+commands = ["cargo test -p splot-encode delta_q --locked", "cargo test -p splot-encode superblock_qindex --locked"]
+fixtures = []
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------

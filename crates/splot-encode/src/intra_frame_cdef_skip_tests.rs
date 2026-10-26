@@ -32,7 +32,7 @@ fn cdef_skip_stream(
     for index in 0..4 {
         let plan = crate::gop::plan(u64::from(index), config.keyint);
         let mut coded = coder
-            .code_frame(&panning_frame(&config, index), &plan, 200)
+            .code_frame(&panning_frame(&config, index), &plan, 200, &[])
             .unwrap();
         let core = &coded.reference.as_ref().unwrap().0;
         flags.push(

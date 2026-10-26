@@ -128,8 +128,8 @@ impl TileFilters {
         Ok(())
     }
 
-    /// Writes `use_gdf`, `cdef_idx` and `ccso_blk` where `leaf`, coded with
-    /// `skip_txfm = skip`, codes them.
+    /// Writes `use_gdf`, `cdef_idx`, `ccso_blk` and `delta_q_abs` where
+    /// `leaf`, coded with `skip_txfm = skip`, codes them.
     pub(crate) fn write_leaf_syntax(
         &mut self,
         syntax: &mut IntraTileSyntax,
@@ -146,7 +146,8 @@ impl TileFilters {
             symbols.symbol(syntax.use_gdf_cdf()?, Symbol::new(u8::from(on)))?;
         }
         self.write_cdef_index(syntax, symbols, leaf, skip)?;
-        self.write_ccso_blocks(syntax, symbols, leaf)
+        self.write_ccso_blocks(syntax, symbols, leaf)?;
+        Ok(syntax.write_delta_qindex(leaf, skip, symbols)?)
     }
 
     /// Writes `cdef_idx` when `leaf`, coded with `skip_txfm = skip`, is the
@@ -217,11 +218,12 @@ impl TileFilters {
     /// Records the transform blocks of a coded leaf and their `eob`s.
     pub(crate) fn record_leaf(
         &mut self,
+        syntax: &IntraTileSyntax,
         leaf: &LeafBlock,
         transforms: &[TransformBlock],
         eobs: &[usize],
     ) -> Result<()> {
-        Ok(self.recorder.record_leaf(leaf, transforms, eobs)?)
+        Ok(self.recorder.record_leaf(syntax, leaf, transforms, eobs)?)
     }
 
     /// Records the planned inter leaf of `syntax` before it is published.

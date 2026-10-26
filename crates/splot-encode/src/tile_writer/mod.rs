@@ -186,6 +186,12 @@ impl KeyFrameTileWriter {
         found
     }
 
+    /// Plans the following superblocks at the codable qindex nearest
+    /// `target`; returns it.
+    pub(crate) fn set_superblock_qindex(&mut self, target: u32) -> Result<u32> {
+        Ok(self.syntax.set_superblock_qindex(target)?)
+    }
+
     /// Sets the loop-filter choices the following superblocks code.
     pub(crate) fn set_filter_syntax(&mut self, syntax: filters::FilterSyntax) {
         self.filters.set_syntax(syntax);
@@ -374,7 +380,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         if planes == (0..3) {
             self.syntax.publish_intra_leaf(leaf, modes)?;
             if let Some(filters) = self.filters.as_deref_mut() {
-                filters.record_leaf(leaf, &blocks, &eobs)?;
+                filters.record_leaf(self.syntax, leaf, &blocks, &eobs)?;
             }
         }
         Ok(blocks)
