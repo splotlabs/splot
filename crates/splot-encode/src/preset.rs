@@ -209,6 +209,13 @@ pub struct PresetParams {
     /// frame coded normally; `0` is off. `100` in every row (2026-10-26):
     /// p6 measured park_joy -0.19%, paris -0.12%, niklas 0.00%.
     pub tip_output: u8,
+    /// Optical-flow refinement (`enable_opfl_refine = REFINE_AUTO`): inter
+    /// frames with a past and a future reference code `REFINE_SWITCHABLE`,
+    /// so compound blocks may code `use_optflow`; others code `REFINE_NONE`.
+    pub opfl: bool,
+    /// Decoder-side vector refinement (`enable_refinemv`): compound blocks
+    /// with a past and a future reference may code `use_refinemv`.
+    pub refinemv: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -471,6 +478,8 @@ preset_table! {
         cdf_carry:             [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
+        opfl:                  [false, false, false, false, false, false, false, false, false, false, false],
+        refinemv:              [false, false, false, false, false, false, false, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],

@@ -61,8 +61,15 @@ pub struct CompoundModes {
     /// `jmvd_scale_mode`, below [`JMVD_SCALE_MODES`]; only `JOINT_NEWMV`
     /// codes it.
     pub jmvd_scale_mode: u8,
-    /// `interp_filter`, as [`InterModes::filter`].
+    /// `interp_filter`, as [`InterModes::filter`]; a refined block codes
+    /// none and predicts with `EIGHTTAP_SHARP`.
     pub filter: InterpolationFilter,
+    /// `use_optflow`, where [`IntraTileSyntax::compound_refinements`] says the
+    /// block reads it.
+    pub optflow: bool,
+    /// `use_refinemv`, where [`IntraTileSyntax::compound_refinements`] says
+    /// the block reads it.
+    pub refinemv: bool,
 }
 
 /// The prediction of one inter leaf.
@@ -196,6 +203,8 @@ impl IntraTileSyntax {
                     mvd: [Mv::default(); 2],
                     jmvd_scale_mode: 0,
                     interp: InterpolationFilter::EightTapSharp,
+                    use_optflow: false,
+                    use_refinemv: false,
                 })
             }
         })
@@ -220,7 +229,7 @@ impl IntraTileSyntax {
             CompoundMode::JointNew => CompoundYMode::JointNew,
             CompoundMode::NewNew => CompoundYMode::NewNew,
         };
-        let second_drl = y_mode.has_second_drl();
+        let second_drl = !modes.optflow && y_mode.has_second_drl();
         let motion = EncoderCompoundMotion {
             ref_frames: (pair.0 as i8, pair.1 as i8),
             y_mode,
@@ -238,6 +247,8 @@ impl IntraTileSyntax {
                 0
             },
             interp: modes.filter,
+            use_optflow: modes.optflow,
+            use_refinemv: modes.refinemv,
         };
         let tile = &self.inter_ref()?.tile;
         tile.mode_symbols(&leaf.frontier, EncoderMotion::Compound(motion))
@@ -245,6 +256,37 @@ impl IntraTileSyntax {
                 EncoderSyntaxError::Unsupported("compound modes this block cannot code")
             })?;
         Ok(motion)
+    }
+
+    /// Whether the compound block `modes` at `leaf` reads `use_optflow`, and
+    /// whether it reads `use_refinemv` with the `use_optflow` of `modes`
+    /// (§ 5.20.7.6, § 5.20.7.17).
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code.
+    pub fn compound_refinements(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: CompoundModes,
+    ) -> Result<(bool, bool)> {
+        let plain = CompoundModes {
+            optflow: false,
+            refinemv: false,
+            ..modes
+        };
+        let motion = EncoderCompoundMotion {
+            use_optflow: modes.optflow,
+            ..self.compound_choice(leaf, &plain)?
+        };
+        let refinement = self
+            .inter_ref()?
+            .tile
+            .compound_refinement(&leaf.frontier, motion)
+            .map_err(|_| EncoderSyntaxError::Unsupported("use_optflow on this block"))?;
+        Ok((
+            refinement.reads_optflow,
+            refinement.refinemv_selector.is_some(),
+        ))
     }
 
     fn compound_tool(&self, leaf: &LeafBlock, tool: impl Fn((bool, bool)) -> bool) -> bool {
