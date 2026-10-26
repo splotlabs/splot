@@ -6,7 +6,8 @@
 //! The SIMD forms run one row at a time in `min(width, 16)` lanes (rows are 4,
 //! 8, or a multiple of 16 samples wide). Every sum is exact integer arithmetic
 //! that cannot overflow for `u16` inputs, so lane order does not change a
-//! result: `|d| <= 65535` keeps a SAD lane below `2^27`, `d * d` fits `u32`
+//! result: `|d| <= 65535` keeps a SAD lane of a 256x256 block below `2^28`
+//! and its whole `u32` sum below `2^32` (`65536 * 65535`), `d * d` fits `u32`
 //! before it widens into `u64` lanes, and an 8x8 Hadamard coefficient stays
 //! below `64 * 65535`.
 
@@ -403,7 +404,7 @@ mod tests {
     use super::super::{BlockDims, EncoderKernels, ScalarKernels, SimdKernels, kernels};
 
     fn side() -> impl Strategy<Value = usize> {
-        (2u32..=7).prop_map(|log2| 1usize << log2)
+        (2u32..=8).prop_map(|log2| 1usize << log2)
     }
 
     /// Two strided blocks of `w x h` samples below `2^bits`.
@@ -471,7 +472,7 @@ mod tests {
 
     #[test]
     fn constant_difference_values() {
-        for (w, h) in [(4, 4), (8, 8), (16, 4), (128, 128)] {
+        for (w, h) in [(4, 4), (8, 8), (16, 4), (128, 128), (256, 256)] {
             let dims = BlockDims::new(w, h).unwrap();
             let a = vec![300u16; w * h];
             let b = vec![297u16; w * h];
@@ -507,6 +508,6 @@ mod tests {
     fn rejects_unsupported_sizes() {
         assert!(BlockDims::new(2, 4).is_err());
         assert!(BlockDims::new(12, 4).is_err());
-        assert!(BlockDims::new(4, 256).is_err());
+        assert!(BlockDims::new(4, 512).is_err());
     }
 }
