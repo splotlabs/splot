@@ -329,7 +329,8 @@ pub(super) struct PlannedLeaf {
     plan: GeneralIntraResidualPlan,
     palette: Option<PlannedPalette>,
     units: Vec<TransformBlock>,
-    /// The plan index of each of `units`.
+    /// The plan index of each of `units`, which leave out the 64x64 chunks
+    /// that start below or right of the frame (§ 5.20.7.23).
     plan_index: Vec<usize>,
     intra_edge: IntraEdgeCtx,
     luma_context: LumaTransformTypeContext,
@@ -689,7 +690,6 @@ impl IntraTileSyntax {
         let angle_delta_uv = inherited_chroma_angle_delta(uv_mode, modes.y_mode, modes.angle_delta);
         let (sub_x, sub_y) = chroma_subsampling(self.chroma);
         let (mi_rows, mi_cols) = (self.frame.mi_rows(), self.frame.mi_cols());
-        // § 5.20.7.23 codes no 64x64 chunk that starts below or right of the frame.
         let (plan_index, units): (Vec<usize>, Vec<_>) = plan
             .transform_blocks()
             .enumerate()
