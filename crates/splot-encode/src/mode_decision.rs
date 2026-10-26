@@ -796,7 +796,8 @@ impl TrialCoder<'_, '_> {
                 ..trial
             });
         }
-        for index in 0..variants.len() {
+        let base = variants.len();
+        for index in 0..base {
             let variant = variants[index];
             if self.syntax.compound_refinements(leaf, variant)?.1 {
                 variants.push(CompoundModes {
@@ -828,6 +829,11 @@ impl TrialCoder<'_, '_> {
             self.syntax
                 .price_interp_filter(leaf, prediction, &mut sink)?;
             cost += motion.bits_cost(sink.bits);
+            let cost = if variant.refinemv {
+                cost.saturating_mul(100) / REFINEMV_MARGIN_PCT
+            } else {
+                cost
+            };
             if cost < best.0 {
                 best = (cost, variant);
             }
@@ -951,6 +957,10 @@ fn with_filter(prediction: InterPrediction, filter: InterpolationFilter) -> Inte
 }
 
 /// `Some` result, `None` for a candidate the leaf cannot code.
+/// A `use_refinemv` variant wins only below this percentage of the cost of
+/// the best other variant.
+const REFINEMV_MARGIN_PCT: u64 = 97;
+
 fn codable<T>(result: Result<T>) -> Result<Option<T>> {
     match result {
         Ok(value) => Ok(Some(value)),
