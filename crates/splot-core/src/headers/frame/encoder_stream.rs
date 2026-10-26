@@ -101,6 +101,11 @@ pub struct EncoderToolFlags {
     /// With `tip`, `disable_tip_output = 0`: `OBU_REGULAR_TIP` frames code
     /// `TIP_FRAME_AS_OUTPUT`.
     pub tip_output: bool,
+    /// `enable_opfl_refine = REFINE_AUTO`: each inter frame codes its
+    /// `opfl_refine_type`.
+    pub opfl_refine: bool,
+    /// `enable_refinemv`: compound blocks may refine their vectors (DMVR).
+    pub refinemv: bool,
     /// `enable_cctx`.
     pub cctx: bool,
     /// `enable_tcq` with `choose_tcq_per_frame = 1`: each frame codes `allow_tcq`.
@@ -465,8 +470,11 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     for _ in 0..5 {
         w.write_flag(false)?; // enable_mv_traj, bawp, cwp, imp_msk_bld, df_sub_pu
     }
-    w.write_bits(0, 2)?; // enable_opfl_refine
-    w.write_flag(false)?; // enable_refinemv
+    w.write_bits(if tools.opfl_refine { 3 } else { 0 }, 2)?; // enable_opfl_refine
+    w.write_flag(tools.refinemv)?; // enable_refinemv
+    if tools.tip && (tools.opfl_refine || tools.refinemv) {
+        w.write_flag(false)?; // enable_tip_refinemv
+    }
     w.write_flag(false)?; // enable_bru
     for flag in tools.mvd_tools {
         w.write_flag(flag)?; // adaptive_mvd, mvd_sign_derive, flex_mvres

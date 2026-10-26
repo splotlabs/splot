@@ -35,6 +35,8 @@ use crate::write::{
 const PRIMARY_REF_NONE: u32 = 7;
 /// `interpolation_filter` value `EIGHTTAP` (§ 6.17.5.1).
 const EIGHTTAP: u32 = 0;
+/// `REFINE_AUTO` (§ 3): each frame codes `opfl_refine_type`.
+const REFINE_AUTO: u8 = 3;
 
 /// Frame-level choices of [`build_inter_frame_header`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -77,6 +79,10 @@ pub struct InterFrameParams {
     /// frame without `enable_tip`, `use_ref_frame_mvs` or two references
     /// reads neither and is `TIP_FRAME_DISABLED`.
     pub tip_weight: Option<u8>,
+    /// `opfl_refine_type` (§ 5.18.3.2) of a sequence with `enable_opfl_refine
+    /// = REFINE_AUTO`: `0` `REFINE_NONE`, `1` `REFINE_SWITCHABLE`, `2`
+    /// `REFINE_ALL`. Other sequences code none and ignore it.
+    pub opfl_refine_type: u8,
     /// `force_integer_mv` (§ 5.18.3.3) of a sequence that chooses screen
     /// content tools: whole-sample motion vectors; `high_precision_mv` must
     /// then be off.
@@ -233,14 +239,25 @@ fn inter_frame_header_bits(
     {
         w.write_flag(false)?; // tmvp_sample_step_minus_1
     }
-    if seq.inter.enable_tip && params.use_ref_frame_mvs && num_total_refs >= 2 {
+    let tip_gate = seq.inter.enable_tip && params.use_ref_frame_mvs && num_total_refs >= 2;
+    if tip_gate {
         w.write_flag(params.tip_weight.is_some())?; // tip_frame_mode
-        if let Some(weight) = params.tip_weight {
-            if seq.inter.enable_tip_hole_fill {
-                w.write_flag(false)?; // allow_tip_hole_fill
+    }
+    if seq.inter.enable_opfl_refine == REFINE_AUTO {
+        match params.opfl_refine_type {
+            1 => w.write_bits(1, 1)?, // opfl_refine_type = REFINE_SWITCHABLE
+            refine @ (0 | 2) => {
+                w.write_bits(0, 1)?; // opfl_refine_type
+                w.write_flag(refine == 2)?; // REFINE_ALL or REFINE_NONE
             }
-            w.write_bits(u32::from(weight), 3)?; // tip_global_wtd_index
+            _ => return Err(unsupported("opfl_refine_type")),
         }
+    }
+    if let (true, Some(weight)) = (tip_gate, params.tip_weight) {
+        if seq.inter.enable_tip_hole_fill {
+            w.write_flag(false)?; // allow_tip_hole_fill
+        }
+        w.write_bits(u32::from(weight), 3)?; // tip_global_wtd_index
     }
     let coded_integer_mv = seq.seq_force_screen_content_tools == 2 && seq.seq_force_integer_mv == 2;
     if params.force_integer_mv && (!coded_integer_mv || params.high_precision_mv) {

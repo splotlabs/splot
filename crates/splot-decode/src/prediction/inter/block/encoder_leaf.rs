@@ -195,10 +195,8 @@ impl EncoderInterTile {
                 (tail.reference_select || tail.skip_mode_present)
                     && (seq_inter.enable_masked_compound
                         || seq_inter.enable_cwp
-                        || seq_inter.enable_imp_msk_bld
-                        || seq_inter.enable_refinemv
-                        || seq_inter.enable_opfl_refine != 0),
-                "masked, weighted, refined or optical-flow compound prediction",
+                        || seq_inter.enable_imp_msk_bld),
+                "masked or weighted compound prediction",
             ),
             (
                 tail.allow_warpmv_mode || tail.allow_bawp,
@@ -497,6 +495,7 @@ impl EncoderInterTile {
         workspace: &mut CurrentFrameWorkspace<u16>,
     ) -> Result<[Mv; 2]> {
         let syntax = self.inter_syntax(frontier, motion, true)?;
+        let refine = refinemv_flags(&syntax.motion);
         let resolved = self.resolve_motion(&syntax)?;
         let mvs = resolved.mv;
         let placed = self.placed(frontier, syntax, &resolved)?;
@@ -508,15 +507,16 @@ impl EncoderInterTile {
             predicted?;
             return Ok(mvs);
         }
+        let grid = self.compound_grid(&placed, refine, workspace)?;
         prediction::reconstruct_pure_inter_block(
             &mut mc::WorkspaceSink::Frame(workspace),
             &mut self.residual_scratch,
             &placed,
             &[],
             &[],
-            None,
-            false,
-            false,
+            grid,
+            refine.0,
+            refine.1,
             &self.ref_frame_idx,
             &self.reference,
             self.qindex,
@@ -572,14 +572,68 @@ impl EncoderInterTile {
         );
         let mut state = self.resolution_state(&block);
         let resolved = resolve_inter_block(&syntax, &mut state)?;
+        let compound = match syntax.motion {
+            InterMotionSyntax::Compound(compound) => Some(compound),
+            _ => None,
+        };
         if is_tip(motion) {
             let placed = self.placed(frontier, syntax, &resolved)?;
             let mut records = core::mem::take(&mut self.tip_records);
             let derived = self.tip_motion(&placed, workspace, &mut records, false);
             self.tip_records = records;
             derived?;
+        } else if let Some(compound) = compound {
+            let refine = (compound.use_refinemv, compound.refinemv_switchable);
+            let placed = self.placed(frontier, syntax, &resolved)?;
+            if let Some(grid) = self.compound_grid(&placed, refine, workspace)? {
+                super::compound_path::append_compound_temporal_motion(
+                    &mut self.tip_records,
+                    &self.reference,
+                    &self.ref_frame_idx,
+                    &placed,
+                    super::super::compound::CompoundBlockSyntax {
+                        y_mode: compound.y_mode,
+                        use_optflow: compound.use_optflow,
+                        ref_frame0: block.ref_frame0,
+                        ref_frame1: compound.ref_frame1,
+                        mv0: resolved.mv[0],
+                        mv1: resolved.mv[1],
+                    },
+                    resolved.warp_params,
+                    Some(&grid),
+                    block.mi_row,
+                    block.mi_col,
+                    self.mi_rows,
+                    self.mi_cols,
+                    self.current_order_hint,
+                )?;
+            }
         }
         Ok(resolved.mv)
+    }
+
+    /// The decoder's refinement grid of the compound block `placed` with
+    /// `(use_refinemv, refinemv_switchable)`, `None` where it predicts
+    /// without one.
+    fn compound_grid(
+        &self,
+        placed: &PlacedInterBlock,
+        (use_refinemv, switchable): (bool, bool),
+        workspace: &mut CurrentFrameWorkspace<u16>,
+    ) -> Result<Option<mc::CompoundMotionGrid>> {
+        let held = super::super::hold_inter_block_references(
+            &self.ref_frame_idx,
+            &self.reference,
+            placed,
+        )?;
+        mc::inter_block_motion_grid(
+            &mc::WorkspaceSink::Frame(workspace),
+            held.block_params(placed, placed.motion_compensation_rect())?
+                .with_refinemv(use_refinemv)
+                .with_switchable_refinemv(switchable),
+            None,
+            ByteOffset::new(0),
+        )
     }
 
     /// The decoder's § 7.11.3 TIP motion of `placed`, whose unit records it
@@ -685,9 +739,15 @@ impl EncoderInterTile {
         if self.intrabc.is_some() {
             return Vec::new();
         }
+        let unit_leaves: std::collections::HashSet<(usize, usize)> = self
+            .tip_records
+            .iter()
+            .map(TemporalMotionBlock::origin)
+            .collect();
         self.grid
             .published_leaves()
             .filter(|(_, refs, _)| refs.is_none_or(|(ref_frame0, _)| ref_frame0 != TIP_REF_FRAME))
+            .filter(|((r, c, ..), ..)| !unit_leaves.contains(&(*r, *c)))
             .map(|((r, c, n4w, n4h), refs, mvs)| {
                 let (ref_frame0, ref_frame1) = refs.unwrap_or((-1, None));
                 if refs.is_none() {
@@ -733,12 +793,21 @@ impl EncoderInterTile {
         skip: bool,
     ) -> Result<InterBlockSyntax> {
         let block = self.block(frontier, motion.refs())?;
-        let syntax = match motion {
-            EncoderMotion::Single(single) => {
-                InterMotionSyntax::Single(self.single_syntax(&block, single))
-            }
+        let (syntax, optflow_distances) = match motion {
+            EncoderMotion::Single(single) => (
+                InterMotionSyntax::Single(self.single_syntax(&block, single)),
+                None,
+            ),
             EncoderMotion::Compound(compound) => {
-                InterMotionSyntax::Compound(self.compound_syntax(&block, compound)?)
+                let syntax = self.compound_syntax(frontier, &block, compound)?;
+                let distances = super::compound_path::compound_optflow_distances(
+                    &self.core,
+                    &self.reference,
+                    &self.ref_frame_idx,
+                    block.ref_frame0,
+                    &syntax,
+                )?;
+                (InterMotionSyntax::Compound(syntax), distances)
             }
         };
         Ok(InterBlockSyntax {
@@ -753,7 +822,7 @@ impl EncoderInterTile {
             blend: mc::CompoundBlend::default(),
             bawp: BawpSyntax::default(),
             interintra: None,
-            optflow_distances: None,
+            optflow_distances,
             residual: None,
         })
     }
@@ -1143,4 +1212,14 @@ fn block_size4(frontier: &DecodeBlockFrontier) -> Result<(usize, usize)> {
             .num_4x4_high()
             .map_err(|_| DecodeHeaderStateError::InvalidBlockGeometry)?,
     ))
+}
+
+/// `(use_refinemv, refinemv_switchable)` of `motion`.
+fn refinemv_flags(motion: &InterMotionSyntax) -> (bool, bool) {
+    match motion {
+        InterMotionSyntax::Compound(compound) => {
+            (compound.use_refinemv, compound.refinemv_switchable)
+        }
+        _ => (false, false),
+    }
 }

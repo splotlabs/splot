@@ -452,6 +452,40 @@ fn resolve_compound_interp_filter(
     )
 }
 
+/// The signed order-hint distances of an optical-flow compound block
+/// `motion` over `ref_frame0` to its two references; `None` without optical
+/// flow.
+pub(super) fn compound_optflow_distances<T: ReconSample>(
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<T>,
+    ref_frame_idx: &[u32],
+    ref_frame0: i8,
+    motion: &CompoundMotionSyntax,
+) -> Result<Option<[i32; 2]>> {
+    if !motion.use_optflow {
+        return Ok(None);
+    }
+    let reference_pair = CompoundBlockSyntax {
+        y_mode: motion.y_mode,
+        use_optflow: motion.use_optflow,
+        ref_frame0,
+        ref_frame1: motion.ref_frame1,
+        mv0: Mv::ZERO,
+        mv1: Mv::ZERO,
+    };
+    Ok(
+        compound_sized_reference_facts(core, reference, ref_frame_idx, reference_pair)?.map(
+            |(ref0, ref1)| {
+                let current = compound_current_order_hint(core);
+                [
+                    current.relative_dist(ref0.order_hint),
+                    current.relative_dist(ref1.order_hint),
+                ]
+            },
+        ),
+    )
+}
+
 pub(super) fn compound_needs_interp_filter(
     n4w: usize,
     n4h: usize,
@@ -681,27 +715,13 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
         (n4w, n4h),
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
     )?;
-    let reference_pair = CompoundBlockSyntax {
-        y_mode: motion.y_mode,
-        use_optflow: motion.use_optflow,
-        ref_frame0: block_ctx.ref_frame0,
-        ref_frame1: motion.ref_frame1,
-        mv0: Mv::ZERO,
-        mv1: Mv::ZERO,
-    };
-    let optflow_distances = if motion.use_optflow {
-        compound_sized_reference_facts(core, reference, ref_frame_idx, reference_pair)?.map(
-            |(ref0, ref1)| {
-                let current = compound_current_order_hint(core);
-                [
-                    current.relative_dist(ref0.order_hint),
-                    current.relative_dist(ref1.order_hint),
-                ]
-            },
-        )
-    } else {
-        None
-    };
+    let optflow_distances = compound_optflow_distances(
+        core,
+        reference,
+        ref_frame_idx,
+        block_ctx.ref_frame0,
+        &motion,
+    )?;
     intrabc_state.record_block(
         frontier.r,
         frontier.c,
@@ -1136,7 +1156,7 @@ fn checked_skip_mode_reference_pair(
     Ok(pair)
 }
 
-fn compound_switchable_opfl_reachable<T: ReconSample>(
+pub(super) fn compound_switchable_opfl_reachable<T: ReconSample>(
     opfl_refine_type: u32,
     core: &FrameHeaderCore,
     reference: &InterReferenceState<T>,
@@ -1163,7 +1183,7 @@ fn read_compound_use_optflow_syntax(
     let use_optflow = cdfs
         .read_block_symbol_trace(
             TileCdfSelector::UseOptflow {
-                ctx: usize::from(y_mode != CompoundYMode::NearNear),
+                ctx: use_optflow_ctx(y_mode),
             },
             symbols,
         )
@@ -1171,17 +1191,10 @@ fn read_compound_use_optflow_syntax(
     Ok(use_optflow.get() != 0)
 }
 
-/// AV2 § 5.20.7.17 switchable `use_refinemv` read over
-/// `TileUseRefinemvCdf[ctx]`, with the § 8.3.2 context
-/// `1 + (YMode - NEAR_NEARMV) + 6 * use_optflow`, reduced by one for
-/// optical-flow modes past `GLOBAL_GLOBALMV`.
-fn read_compound_use_refinemv_syntax(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    y_mode: CompoundYMode,
-    use_optflow: bool,
-    tile_offset: ByteOffset,
-) -> Result<bool> {
+/// The § 8.3.2 `use_refinemv` context `1 + (YMode - NEAR_NEARMV) + 6 *
+/// use_optflow`, reduced by one for optical-flow modes past
+/// `GLOBAL_GLOBALMV`.
+pub(super) const fn use_refinemv_ctx(y_mode: CompoundYMode, use_optflow: bool) -> usize {
     let mode_delta = match y_mode {
         CompoundYMode::NearNear => 0usize,
         CompoundYMode::NearNew => 1,
@@ -1190,12 +1203,35 @@ fn read_compound_use_refinemv_syntax(
         CompoundYMode::NewNew => 4,
         CompoundYMode::JointNew => 5,
     };
-    let mut ctx = 1 + mode_delta + 6 * usize::from(use_optflow);
+    let ctx = 1 + mode_delta + 6 * use_optflow as usize;
     if use_optflow && mode_delta > 3 {
-        ctx -= 1;
+        ctx - 1
+    } else {
+        ctx
     }
+}
+
+/// The § 5.20.7.6 `use_optflow` context: `0` for `NEAR_NEARMV`.
+pub(super) fn use_optflow_ctx(y_mode: CompoundYMode) -> usize {
+    usize::from(y_mode != CompoundYMode::NearNear)
+}
+
+/// AV2 § 5.20.7.17 switchable `use_refinemv` read over
+/// `TileUseRefinemvCdf[ctx]` with the [`use_refinemv_ctx`] context.
+fn read_compound_use_refinemv_syntax(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    y_mode: CompoundYMode,
+    use_optflow: bool,
+    tile_offset: ByteOffset,
+) -> Result<bool> {
     let use_refinemv = cdfs
-        .read_block_symbol_trace(TileCdfSelector::UseRefinemv { ctx }, symbols)
+        .read_block_symbol_trace(
+            TileCdfSelector::UseRefinemv {
+                ctx: use_refinemv_ctx(y_mode, use_optflow),
+            },
+            symbols,
+        )
         .map_err(|error| symbol_read_error(error, tile_offset))?;
     Ok(use_refinemv.get() != 0)
 }
@@ -1217,7 +1253,7 @@ pub(super) fn select_near_near_candidates(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compound_all_opfl_reachable<T: ReconSample>(
+pub(super) fn compound_all_opfl_reachable<T: ReconSample>(
     opfl_refine_type: u32,
     core: &FrameHeaderCore,
     reference: &InterReferenceState<T>,
@@ -1268,7 +1304,7 @@ fn compound_opfl_reference_allowed<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compound_refinemv_reachable<T: ReconSample>(
+pub(super) fn compound_refinemv_reachable<T: ReconSample>(
     enable_refinemv: bool,
     opfl_refine_type: u32,
     core: &FrameHeaderCore,
@@ -1301,7 +1337,7 @@ const fn compound_refinemv_mode_allowed(
             && !compound.use_optflow)
 }
 
-fn compound_refinemv_is_switchable(
+pub(super) fn compound_refinemv_is_switchable(
     compound: super::super::compound::CompoundBlockSyntax,
     opfl_refine_type: u32,
 ) -> bool {
