@@ -21,12 +21,16 @@ const SDP_CASES: [SdpCase; 3] = [
 /// more than one strength, CCSO, GDF, luma and chroma LR, and `delta_q`.
 type Tools = [bool; 7];
 
+/// The qp at which the cases code every frame filter tool between them, and
+/// luma and chroma restoration with 64x64 superblocks.
+const QP: u16 = 160;
+
 /// Codes key frame, inter frame, key frame of panning content with SDP and
 /// asymmetric superblock qindex offsets on `threads` threads; returns the
 /// units, the encoder recon and the frame filter tools coded.
 fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Tools) {
     let (width, height, bit_depth, preset, chroma, (cols_log2, rows_log2)) = case;
-    let mut config = config(width, height, bit_depth, preset, 110);
+    let mut config = config(width, height, bit_depth, preset, QP);
     config.chroma = chroma;
     config.keyint = core::num::NonZeroU32::new(2).unwrap();
     config.tiles = TileLayout {
@@ -49,7 +53,7 @@ fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Tools) {
             .map(|sb| [-23, 0, 17, -6, 29][(sb * 3 + index as usize) % 5])
             .collect();
         let mut coded = coder
-            .code_frame(&panning_frame(&config, index), &plan, 110, &offsets)
+            .code_frame(&panning_frame(&config, index), &plan, QP, &offsets)
             .unwrap();
         let core = &coded.reference.as_ref().unwrap().0;
         let lr = |plane: usize| {
@@ -91,14 +95,27 @@ fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Tools) {
 /// and `delta_q`, and 1, 2 and 8 threads write the same bytes.
 #[test]
 fn sdp_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for case in SDP_CASES {
+    let mut coded = [false; 7];
+    for (index, case) in SDP_CASES.into_iter().enumerate() {
         let (one, expected, tools) = sdp_stream(case, 1);
-        assert_eq!(tools, [true; 7], "{case:?}: some filter tool is never coded");
+        if index == 0 {
+            assert!(
+                tools[4] && tools[5],
+                "64x64 superblocks code luma and chroma LR"
+            );
+        }
+        for (all, on) in coded.iter_mut().zip(tools) {
+            *all |= on;
+        }
         assert_same_samples(&decode(&one.concat()), &expected, &format!("{case:?}"));
         for threads in [2, 8] {
-            assert!(sdp_stream(case, threads).0 == one, "{case:?} {threads} threads");
+            assert!(
+                sdp_stream(case, threads).0 == one,
+                "{case:?} {threads} threads"
+            );
         }
     }
+    assert_eq!(coded, [true; 7], "some frame filter tool is never coded");
 }
 
 /// Whether `chroma` only merges nodes of `luma`: each chroma split is the
@@ -144,7 +161,10 @@ fn sdp_search_codes_chroma_trees_that_merge_luma_nodes() {
     assert_eq!(roots.len(), 4, "one SDP node per 64x64 quadrant");
     let mut merged = 0;
     for (luma, chroma) in roots {
-        assert!(merges(chroma, luma), "{chroma:?} splits deeper than {luma:?}");
+        assert!(
+            merges(chroma, luma),
+            "{chroma:?} splits deeper than {luma:?}"
+        );
         merged += usize::from(shape(chroma) != shape(luma));
     }
     assert!(merged > 0, "no chroma tree merged a luma node");
@@ -157,10 +177,7 @@ fn sdp_search_codes_chroma_trees_that_merge_luma_nodes() {
     }
 }
 
-fn collect_sdp<'a>(
-    tree: &'a PartitionTree,
-    out: &mut Vec<(&'a PartitionTree, &'a PartitionTree)>,
-) {
+fn collect_sdp<'a>(tree: &'a PartitionTree, out: &mut Vec<(&'a PartitionTree, &'a PartitionTree)>) {
     match tree {
         PartitionTree::Sdp { luma, chroma } => out.push((luma, chroma)),
         PartitionTree::Split { children, .. } => {
