@@ -46,6 +46,11 @@ pub(crate) struct EncodeArgs {
     /// comma-separated flags. An unknown FIELD lists the valid names.
     #[arg(long, value_name = "FIELD=VALUE", value_parser = parse_preset_set)]
     preset_set: Vec<(String, String)>,
+    /// Low delay: one packet per input frame, in display order. Sets
+    /// `mini_gop_size=1` (IPPP, every frame shown) and `lookahead_frames=1`
+    /// before `--preset-set`; off by default.
+    #[arg(long)]
+    low_delay: bool,
     /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
     #[arg(long, default_value_t = ThreadCount::Auto)]
     threads: ThreadCount,
@@ -100,6 +105,9 @@ enum RcMode {
     Cbr,
 }
 
+/// The preset overrides of `--low-delay`.
+const LOW_DELAY: [(&str, &str); 2] = [("mini_gop_size", "1"), ("lookahead_frames", "1")];
+
 /// Buffer of `--rc cbr`, in milliseconds.
 const CBR_BUFFER_MS: u32 = 1000;
 
@@ -146,7 +154,15 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.frame_rate = header.frame_rate;
     config.rate_control = args.rate_control();
     config.preset = Preset::new(args.preset)?;
-    config.preset_overrides.clone_from(&args.preset_set);
+    if args.low_delay {
+        config.preset_overrides = LOW_DELAY
+            .iter()
+            .map(|&(field, value)| (field.to_owned(), value.to_owned()))
+            .collect();
+    }
+    config
+        .preset_overrides
+        .extend(args.preset_set.iter().cloned());
     config.threads = args.threads;
     config.tiles = args.tiles;
     config.keyint = args.keyint;
