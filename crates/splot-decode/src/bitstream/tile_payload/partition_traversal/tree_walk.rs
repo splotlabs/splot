@@ -60,7 +60,7 @@ pub(crate) fn decode_block_frontier(
     }
 }
 
-fn decode_block_part(
+pub(crate) fn decode_block_part(
     call: TilePartitionCall,
     y_modes: &TileIntraYModeState,
 ) -> Result<DecodeBlockPart, TilePartitionTraversalError> {
@@ -550,7 +550,7 @@ pub(super) const fn partition_cdf_plane(tree_type: PartitionTreeType) -> usize {
     matches!(tree_type, PartitionTreeType::ChromaPart) as usize
 }
 
-pub(super) fn is_intra_sdp_shared_root(
+pub(crate) fn is_intra_sdp_shared_root(
     frame: TilePartitionFrameFacts,
     call: TilePartitionCall,
 ) -> bool {
@@ -1057,7 +1057,7 @@ fn extended_sdp_chroma_call(call: TilePartitionCall) -> TilePartitionCall {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) struct SdpPartitionState {
+pub(crate) struct SdpPartitionState {
     top_luma_horz: bool,
     top_luma_vert: bool,
     top_luma_uneven_horz: bool,
@@ -1067,7 +1067,7 @@ pub(super) struct SdpPartitionState {
 }
 
 impl SdpPartitionState {
-    pub(super) fn record_partition(
+    pub(crate) fn record_partition(
         &mut self,
         frame: TilePartitionFrameFacts,
         call: TilePartitionCall,
@@ -1126,7 +1126,7 @@ impl SdpPartitionState {
         cfl_allowed_in_sdp
     }
 
-    pub(super) fn forced_chroma_partition(
+    pub(crate) fn forced_chroma_partition(
         &self,
         frame: TilePartitionFrameFacts,
         call: TilePartitionCall,

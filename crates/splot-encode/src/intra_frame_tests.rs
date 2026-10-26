@@ -1175,6 +1175,7 @@ fn leaves(tree: &PartitionTree, keep: impl Fn(&LeafChoice) -> bool + Copy) -> us
         PartitionTree::Split { children, .. } => {
             children.iter().map(|child| leaves(child, keep)).sum()
         }
+        PartitionTree::Sdp { luma, chroma } => leaves(luma, keep) + leaves(chroma, keep),
     }
 }
 

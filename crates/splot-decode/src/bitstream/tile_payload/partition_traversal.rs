@@ -44,14 +44,14 @@ use tree_walk::extended_sdp_allowed_for_child;
 pub(crate) use tree_walk::valid_subsize;
 pub(crate) use tree_walk::{
     GeneralIntraPartitionTreeCursor, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError,
-    TileTraversalStorage, decode_block_frontier, is_cfl_context_for_chroma_ref,
-    partition_allowed_input, partition_context_inputs, updated_chroma_offset,
+    SdpPartitionState, TileTraversalStorage, decode_block_frontier, decode_block_part,
+    is_cfl_context_for_chroma_ref, is_intra_sdp_shared_root, partition_allowed_input,
+    partition_context_inputs, updated_chroma_offset,
 };
 #[cfg(test)]
 use tree_walk::{
-    MIXED_REGION, SdpPartitionState, is_intra_sdp_shared_root, partition_cdf_plane,
-    read_extended_sdp_region_type, read_frontier_partition_decision,
-    should_read_extended_sdp_region_type,
+    MIXED_REGION, partition_cdf_plane, read_extended_sdp_region_type,
+    read_frontier_partition_decision, should_read_extended_sdp_region_type,
 };
 
 pub(crate) const BLOCK_8X32: usize = 21;
@@ -308,11 +308,11 @@ impl TilePartitionCall {
         })
     }
 
-    const fn with_tree_type(self, tree_type: PartitionTreeType) -> Self {
+    pub(crate) const fn with_tree_type(self, tree_type: PartitionTreeType) -> Self {
         Self { tree_type, ..self }
     }
 
-    const fn with_cfl_allowed_in_sdp(self, cfl_allowed_in_sdp: bool) -> Self {
+    pub(crate) const fn with_cfl_allowed_in_sdp(self, cfl_allowed_in_sdp: bool) -> Self {
         Self {
             cfl_allowed_in_sdp,
             ..self

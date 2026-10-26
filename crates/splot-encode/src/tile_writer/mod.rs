@@ -158,8 +158,10 @@ impl KeyFrameTileWriter {
             .next_superblock_root()
             .ok_or(TileWriterError::TileComplete)?;
         self.syntax.begin_superblock(root);
-        self.filters
-            .write_lr_units(&mut self.syntax, &mut self.symbols, root)?;
+        if self.syntax.sdp_roots(root).is_none() {
+            self.filters
+                .write_lr_units(&mut self.syntax, &mut self.symbols, root)?;
+        }
         Walk {
             syntax: &mut self.syntax,
             sink: &mut self.symbols,
@@ -272,9 +274,21 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         if !self.syntax.in_frame(node) {
             return Ok(());
         }
-        let partition = match tree {
-            PartitionTree::Leaf(_) => Partition::None,
-            PartitionTree::Split { kind, .. } => *kind,
+        let sdp = self.syntax.sdp_roots(node);
+        let partition = match (tree, sdp) {
+            (PartitionTree::Sdp { luma, chroma }, Some((luma_root, chroma_root))) => {
+                let superblock = node.dimensions()?.0 == self.syntax.superblock_size4() * 4;
+                for (root, tree) in [(luma_root, luma), (chroma_root, chroma)] {
+                    if superblock && let Some(filters) = self.filters.as_deref_mut() {
+                        filters.write_lr_units(self.syntax, self.sink, root)?;
+                    }
+                    self.write_node(root, tree, coder)?;
+                }
+                return Ok(());
+            }
+            (PartitionTree::Leaf(_), None) => Partition::None,
+            (PartitionTree::Split { kind, .. }, None) => *kind,
+            _ => return Err(TileWriterError::Shape("SDP tree at a shared node or none")),
         };
         self.write_partition(node, partition)?;
         match tree {
@@ -292,6 +306,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                 }
                 Ok(())
             }
+            PartitionTree::Sdp { .. } => Err(TileWriterError::Shape("SDP tree")),
         }
     }
 

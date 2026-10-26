@@ -38,10 +38,14 @@ impl<F: Fn(Rect) -> RdCost> Synthetic<F> {
 impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
     type Node = Rect;
     type Saved = Vec<Rect>;
-    type Error = core::convert::Infallible;
+    type Error = crate::tile_writer::TileWriterError;
 
     fn in_frame(&self, (x, y, ..): Rect) -> bool {
         x < self.size && y < self.size
+    }
+
+    fn sdp_roots(&self, _: Rect) -> Option<(Rect, Rect)> {
+        None
     }
 
     fn partitions(&self, (x, y, w, h): Rect) -> Result<Vec<Partition>, Self::Error> {
@@ -174,6 +178,7 @@ fn leaves<F: Fn(Rect) -> RdCost>(
                 leaves(coder, child, tree, out);
             }
         }
+        PartitionTree::Sdp { .. } => unreachable!("the synthetic coder has no SDP node"),
     }
 }
 
