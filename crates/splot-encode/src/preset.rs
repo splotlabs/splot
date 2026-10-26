@@ -19,8 +19,8 @@ pub struct PresetParams {
     /// tall, whose inter frames search 256x256 leaves (intra frames keep
     /// 128x128 superblocks, § 6.4.3).
     pub max_block_log2: u8,
-    /// The smallest frame height that codes 256x256 superblocks when
-    /// `max_block_log2` is `8`.
+    /// The smallest frame height, at least 64, that codes 256x256
+    /// superblocks when `max_block_log2` is `8`.
     pub sb256_min_height: u16,
     /// Number of luma intra modes tried per block, best-ranked first.
     pub intra_modes: u8,
@@ -297,6 +297,13 @@ impl PresetParams {
             }
         };
         check("max_block_log2", self.max_block_log2, 2, 8, "")?;
+        if self.sb256_min_height < 64 {
+            return Err(PresetError::OutOfRange {
+                field: "sb256_min_height",
+                value: self.sb256_min_height,
+                allowed: "64..=65535".to_owned(),
+            });
+        }
         check(
             "min_block_log2",
             self.min_block_log2,
@@ -745,6 +752,7 @@ mod tests {
                 "min_block_log2",
             ),
             (&[("max_block_log2", "9")], "max_block_log2"),
+            (&[("sb256_min_height", "63")], "sb256_min_height"),
             (&[("drl_bits", "6")], "drl_bits"),
             (&[("drl_bits", "0")], "drl_bits"),
             (&[("lookahead_frames", "3")], "lookahead_frames"),

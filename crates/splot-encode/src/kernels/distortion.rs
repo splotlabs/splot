@@ -6,7 +6,8 @@
 //! The SIMD forms run one row at a time in `min(width, 16)` lanes (rows are 4,
 //! 8, or a multiple of 16 samples wide). Every sum is exact integer arithmetic
 //! that cannot overflow for `u16` inputs, so lane order does not change a
-//! result: `|d| <= 65535` keeps a SAD lane below `2^27`, `d * d` fits `u32`
+//! result: `|d| <= 65535` keeps a SAD lane of a 256x256 block below `2^28`
+//! and its whole `u32` sum below `2^32` (`65536 * 65535`), `d * d` fits `u32`
 //! before it widens into `u64` lanes, and an 8x8 Hadamard coefficient stays
 //! below `64 * 65535`.
 

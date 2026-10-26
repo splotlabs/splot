@@ -9,7 +9,7 @@ use splot_core::headers::sequence::SuperblockSize;
 /// Preset 9 that codes 256x256 superblocks in any frame.
 static SB256: PresetParams = PresetParams {
     max_block_log2: 8,
-    sb256_min_height: 1,
+    sb256_min_height: 64,
     ..PRESETS[9]
 };
 
@@ -160,4 +160,47 @@ fn avm_decodes_sb256_streams_like_splot() {
         let avm = avm_decode(&avmdec, &units, (case.0, case.1), case.2, "sb256");
         assert!(avm == expected, "{case:?}: AVM output differs");
     }
+}
+
+/// [`SB256`] that codes no leaf smaller than 256x256 where it can.
+static FORCED: PresetParams = PresetParams {
+    min_block_log2: 8,
+    ..SB256
+};
+
+/// A key and an inter frame of a 264x136 pan with [`FORCED`]: a 256x256
+/// inter leaf whose last 64x64 chunk row starts below the frame.
+fn forced_edge_stream() -> (Vec<Vec<u8>>, Vec<u8>) {
+    let config = config(264, 136, BitDepth::Eight, 9, 120);
+    let mut coder = IntraFrameCoder::with_preset(&config, &FORCED).unwrap();
+    let (mut units, mut recon) = (Vec::new(), Vec::new());
+    for index in 0..2 {
+        let plan = crate::gop::plan(u64::from(index), config.keyint);
+        let coded = coder
+            .encode_frame(&panning_frame(&config, index), &plan, 120)
+            .unwrap();
+        recon.extend(recon_bytes(&coded, config.bit_depth));
+        units.push(coded.temporal_unit);
+    }
+    (units, recon)
+}
+
+/// Forced 256x256 leaves at the frame edge code no chunk outside the frame
+/// (§ 5.20.7.23) and decode to the encoder recon.
+#[test]
+fn forced_256_leaves_at_the_frame_edge_decode_to_the_encoder_recon() {
+    let (units, recon) = forced_edge_stream();
+    assert_same_samples(&decode(&units.concat()), &recon, "forced 256x256 edge");
+}
+
+/// AVM decodes forced 256x256 leaves at the frame edge to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_forced_256_edge_leaves_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, recon) = forced_edge_stream();
+    let avm = avm_decode(&avmdec, &units, (264, 136), BitDepth::Eight, "sb256-edge");
+    assert!(avm == recon, "AVM output differs");
 }
