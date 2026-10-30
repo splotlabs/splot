@@ -70,13 +70,45 @@ impl CompoundTypeReads {
 /// selector an `L(1)` literal.
 pub(crate) type TypeSymbol = (Option<TileCdfSelector>, u8);
 
+/// The most elements one compound type codes: `comp_group_idx`,
+/// `compound_type`, three wedge symbols and `wedge_sign`.
+const MAX_TYPE_SYMBOLS: usize = 6;
+
+/// The compound type elements of one block, in coding order, without a heap
+/// allocation.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TypeSymbols {
+    items: [TypeSymbol; MAX_TYPE_SYMBOLS],
+    len: usize,
+}
+
+impl TypeSymbols {
+    fn push(&mut self, item: TypeSymbol) {
+        if let Some(slot) = self.items.get_mut(self.len) {
+            *slot = item;
+            self.len += 1;
+        }
+    }
+}
+
+impl IntoIterator for TypeSymbols {
+    type Item = TypeSymbol;
+    type IntoIter = core::iter::Take<core::array::IntoIter<TypeSymbol, MAX_TYPE_SYMBOLS>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter().take(self.len)
+    }
+}
+
 impl EncoderInterTile {
     /// Whether the sequence enables `cwp_idx` or masked compound.
-    pub(super) fn codes_compound_types(&self) -> bool {
-        self.sequence
-            .inter
-            .as_ref()
-            .is_some_and(|inter| inter.enable_cwp || inter.enable_masked_compound)
+    pub(super) const fn codes_compound_types(&self) -> bool {
+        self.blend_tools.0
+    }
+
+    /// The `COMPOUND_AVERAGE` blend of the sequence (§ 7.13.3.16).
+    pub(super) const fn average_blend(&self) -> mc::CompoundBlend {
+        mc::CompoundBlend::average_with_implicit_mask(self.blend_tools.1)
     }
 
     /// The compound type syntax the decoder reads for `compound` at
@@ -156,8 +188,7 @@ impl EncoderInterTile {
         compound: EncoderCompoundMotion,
         reads: CompoundTypeReads,
     ) -> Result<mc::CompoundBlend> {
-        let implicit = CompoundBlendToolConfig::from_sequence(&self.sequence).implicit_mask;
-        let average = mc::CompoundBlend::average_with_implicit_mask(implicit);
+        let average = self.average_blend();
         let masked = reads.group_idx_ctx.is_some();
         match compound.blend {
             CompoundType::Average { cwp: 0 } => Ok(average),
@@ -188,9 +219,9 @@ impl EncoderInterTile {
         &self,
         compound: EncoderCompoundMotion,
         reads: CompoundTypeReads,
-    ) -> Result<Vec<TypeSymbol>> {
+    ) -> Result<TypeSymbols> {
         self.compound_type_blend(compound, reads)?;
-        let mut out = Vec::new();
+        let mut out = TypeSymbols::default();
         if let Some(ctx) = reads.group_idx_ctx {
             let masked = !matches!(compound.blend, CompoundType::Average { .. });
             out.push((
@@ -241,7 +272,7 @@ fn wedge_position(index: u8) -> Result<(u8, u8)> {
 
 /// `wedge_quad`, `wedge_angle` and `wedge_dist1` or `wedge_dist2` of
 /// `WedgeIndex` `index` (§ 5.20.7.18).
-pub(super) fn wedge_symbols(out: &mut Vec<TypeSymbol>, index: u8) -> Result<()> {
+fn wedge_symbols(out: &mut TypeSymbols, index: u8) -> Result<()> {
     let (angle, dist) = wedge_position(index)?;
     let quad = angle / QUAD_WEDGE_ANGLES;
     out.push((Some(TileCdfSelector::WedgeQuad), quad));
@@ -273,8 +304,9 @@ mod tests {
     #[test]
     fn wedge_symbols_read_back_to_their_index() -> Result<()> {
         for index in 0..68u8 {
-            let mut out = Vec::new();
+            let mut out = TypeSymbols::default();
             wedge_symbols(&mut out, index)?;
+            let out: Vec<_> = out.into_iter().collect();
             assert_eq!(out.len(), 3, "{index}: {out:?}");
             let (quad, angle, (selector, dist)) = (out[0].1, out[1].1, out[2]);
             let angle = quad * QUAD_WEDGE_ANGLES + angle;
@@ -289,7 +321,7 @@ mod tests {
                 index as i8
             );
         }
-        assert!(wedge_symbols(&mut Vec::new(), 68).is_err());
+        assert!(wedge_symbols(&mut TypeSymbols::default(), 68).is_err());
         Ok(())
     }
 }

@@ -26,7 +26,7 @@ use super::super::warp::{
     inter_mv_read_config, inter_mvd_sign_derivation_allowed,
     mvd_sign_derivation_block_scope_allowed,
 };
-use super::blend::{CompoundType, CompoundTypeReads, TypeSymbol};
+use super::blend::{CompoundType, CompoundTypeReads, TypeSymbols};
 use super::*;
 
 /// `JOINT_NEWMV_SCALE_FACTOR_CNT` (§ 3): the `jmvd_scale_mode` values without
@@ -290,21 +290,14 @@ impl EncoderInterTile {
             if compound.use_optflow || compound.use_refinemv {
                 return Err(invalid());
             }
-            if compound.skip_mode {
-                if compound.blend != CompoundType::default() {
-                    return Err(invalid());
-                }
-                let implicit = self
-                    .sequence
-                    .inter
-                    .as_ref()
-                    .is_some_and(|inter| inter.enable_imp_msk_bld);
-                return Ok(CompoundRefinement {
-                    blend: mc::CompoundBlend::average_with_implicit_mask(implicit),
-                    ..CompoundRefinement::default()
-                });
+            if compound.skip_mode && compound.blend != CompoundType::default() {
+                return Err(invalid());
             }
-            let type_reads = self.compound_type_reads(frontier, compound, (false, false))?;
+            let type_reads = if compound.skip_mode {
+                CompoundTypeReads::default()
+            } else {
+                self.compound_type_reads(frontier, compound, (false, false))?
+            };
             return Ok(CompoundRefinement {
                 type_reads,
                 blend: self.compound_type_blend(compound, type_reads)?,
@@ -398,7 +391,7 @@ impl EncoderInterTile {
         &self,
         frontier: &DecodeBlockFrontier,
         motion: EncoderMotion,
-    ) -> Result<Vec<TypeSymbol>> {
+    ) -> Result<TypeSymbols> {
         match motion {
             EncoderMotion::Compound(compound)
                 if !compound.skip_mode && self.codes_compound_types() =>
@@ -406,7 +399,7 @@ impl EncoderInterTile {
                 let reads = self.compound_refinement(frontier, compound)?.type_reads;
                 self.compound_type_symbols(compound, reads)
             }
-            _ => Ok(Vec::new()),
+            _ => Ok(TypeSymbols::default()),
         }
     }
 

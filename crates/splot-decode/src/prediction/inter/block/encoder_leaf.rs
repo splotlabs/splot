@@ -157,6 +157,8 @@ pub(crate) struct EncoderInterTile {
     drl_reorder: DrlReorder,
     /// `reference_select` and `skip_mode_present`.
     compound_tools: (bool, bool),
+    /// `enable_cwp || enable_masked_compound` and `enable_imp_msk_bld`.
+    blend_tools: (bool, bool),
     /// `interpolation_filter == SWITCHABLE`.
     interp_switchable: bool,
     num_same_ref_compound: u8,
@@ -288,6 +290,10 @@ impl EncoderInterTile {
                 .ok_or("incomplete inter frame tools")?,
             drl_reorder: sequence_drl_reorder(sequence),
             compound_tools: (tail.reference_select, tail.skip_mode_present),
+            blend_tools: (
+                seq_inter.enable_cwp || seq_inter.enable_masked_compound,
+                seq_inter.enable_imp_msk_bld,
+            ),
             interp_switchable: inter.interpolation_filter
                 == Some(FrameInterpolationFilter::Switchable),
             num_same_ref_compound: seq_inter.num_same_ref_compound,
@@ -581,6 +587,14 @@ impl EncoderInterTile {
             }
             _ => None,
         };
+        let wedge = match syntax.motion {
+            InterMotionSyntax::Compound(compound)
+                if matches!(syntax.blend, mc::CompoundBlend::Wedge { .. }) =>
+            {
+                Some(compound)
+            }
+            _ => None,
+        };
         if is_tip(motion) {
             let placed = self.placed(frontier, syntax, &resolved)?;
             let mut records = core::mem::take(&mut self.tip_records);
@@ -595,30 +609,46 @@ impl EncoderInterTile {
             );
             let placed = self.placed(frontier, syntax, &resolved)?;
             if let Some(grid) = self.compound_grid(&placed, refine, workspace)? {
-                super::compound_path::append_compound_temporal_motion(
-                    &mut self.tip_records,
-                    &self.reference,
-                    &self.ref_frame_idx,
-                    &placed,
-                    super::super::compound::CompoundBlockSyntax {
-                        y_mode: compound.y_mode,
-                        use_optflow: compound.use_optflow,
-                        ref_frame0: block.ref_frame0,
-                        ref_frame1: compound.ref_frame1,
-                        mv0: resolved.mv[0],
-                        mv1: resolved.mv[1],
-                    },
-                    resolved.warp_params,
-                    Some(&grid),
-                    block.mi_row,
-                    block.mi_col,
-                    self.mi_rows,
-                    self.mi_cols,
-                    self.current_order_hint,
-                )?;
+                self.append_compound_records((&placed, &block), compound, &resolved, Some(&grid))?;
             }
+        } else if let Some(compound) = wedge {
+            let placed = self.placed(frontier, syntax, &resolved)?;
+            self.append_compound_records((&placed, &block), compound, &resolved, None)?;
         }
         Ok(resolved.mv)
+    }
+
+    /// Appends the § 7.19 temporal records of the compound block `placed`
+    /// of `block` as 8x8 units, as the decoder records a refined or wedge
+    /// block.
+    fn append_compound_records(
+        &mut self,
+        (placed, block): (&PlacedInterBlock, &MvBlockContext),
+        compound: CompoundMotionSyntax,
+        resolved: &ResolvedInterBlock,
+        grid: Option<&mc::CompoundMotionGrid>,
+    ) -> Result<()> {
+        super::compound_path::append_compound_temporal_motion(
+            &mut self.tip_records,
+            &self.reference,
+            &self.ref_frame_idx,
+            placed,
+            super::super::compound::CompoundBlockSyntax {
+                y_mode: compound.y_mode,
+                use_optflow: compound.use_optflow,
+                ref_frame0: block.ref_frame0,
+                ref_frame1: compound.ref_frame1,
+                mv0: resolved.mv[0],
+                mv1: resolved.mv[1],
+            },
+            resolved.warp_params,
+            grid,
+            block.mi_row,
+            block.mi_col,
+            self.mi_rows,
+            self.mi_cols,
+            self.current_order_hint,
+        )
     }
 
     /// Whether the sequence enables `enable_tip_refinemv`.
@@ -761,11 +791,12 @@ impl EncoderInterTile {
             return Vec::new();
         }
         let integer_mv = effective_force_integer_mv(&self.core);
-        let mut unit_leaves: Vec<(usize, usize)> = Vec::new();
-        if self.refines_compound() {
-            unit_leaves.extend(self.tip_records.iter().map(TemporalMotionBlock::origin));
-            unit_leaves.sort_unstable();
-        }
+        let mut unit_leaves: Vec<(usize, usize)> = self
+            .tip_records
+            .iter()
+            .map(TemporalMotionBlock::origin)
+            .collect();
+        unit_leaves.sort_unstable();
         self.grid
             .published_leaves()
             .filter(|(_, refs, ..)| refs.is_none_or(|(ref_frame0, _)| ref_frame0 != TIP_REF_FRAME))

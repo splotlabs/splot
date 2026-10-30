@@ -6627,11 +6627,11 @@ kind = "encoder-tool"
 spec_sections = ["5.4.6", "5.20.7.6", "5.20.7.16", "5.20.7.18", "7.13.3.16"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
-module = "crates/splot-decode/src/prediction/inter/block/encoder_leaf/blend.rs"
+module = "crates/splot-encode/src/mode_decision.rs"
 change_id = "enc-compound-types"
 owner = "encoder"
 risk = "medium"
-notes = "A7 facade (1a). PresetParams::compound_types (1: enable_cwp, 2: also enable_masked_compound) and PresetParams::implicit_mask (enable_imp_msk_bld) set the sequence tools. In the encoder_syntax facade CompoundModes::blend is a CompoundType (COMPOUND_AVERAGE with a cwp_idx coding index, COMPOUND_WEDGE with WedgeIndex and wedge_sign, COMPOUND_DIFFWTD with mask_type); IntraTileSyntax::compound_types gives what the block reads after its refinement, through the decoder's own gates (compound_reads_group_idx, Wedge_Bits, compound_cwp_signal_allowed) and contexts (compound_group_idx_context, is_same_side). The writer codes comp_group_idx, compound_type, wedge_quad/angle/dist, wedge_sign, mask_type and cwp_idx after use_refinemv; the decoder's blend, DecidedAgainstRefinemv and the REFINE_ALL gate take the coded type, and skip-mode blocks take the implicit mask. Every preset row keeps both off: the compound search is A7 part 2, and implicit_mask alone measured park_joy +1.26%, paris +0.20% at p6 (2026-10-30); off output is byte-identical. Inter-intra and BAWP are later stages."
+notes = "A7 facade (1a). PresetParams::compound_types (1: enable_cwp, 2: also enable_masked_compound) and PresetParams::implicit_mask (enable_imp_msk_bld) set the sequence tools. In the encoder_syntax facade CompoundModes::blend is a CompoundType (COMPOUND_AVERAGE with a cwp_idx coding index, COMPOUND_WEDGE with WedgeIndex and wedge_sign, COMPOUND_DIFFWTD with mask_type); IntraTileSyntax::compound_types gives what the block reads after its refinement, through the decoder's own gates (compound_reads_group_idx, Wedge_Bits, compound_cwp_signal_allowed) and contexts (compound_group_idx_context, is_same_side). The writer codes comp_group_idx, compound_type, wedge_quad/angle/dist, wedge_sign, mask_type and cwp_idx after use_refinemv; the decoder's blend, DecidedAgainstRefinemv and the REFINE_ALL gate take the coded type, skip-mode blocks take the implicit mask, and wedge blocks record their § 7.19 temporal motion per 8x8 unit with the wedge's dominant list, as the decoder does. Every preset row keeps both off: the compound search is A7 part 2, and implicit_mask alone measured park_joy +1.26%, paris +0.20% at p6 (2026-10-30); off output is byte-identical. Inter-intra and BAWP are later stages."
 
 [feature.status]
 mapped = "done"
@@ -6646,8 +6646,8 @@ avm_diff = "done"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot", "crates/splot-encode/src/intra_frame_compound_tests.rs::compound_type_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_compound_tests.rs::compound_types_off_disable_the_sequence_tools", "crates/splot-decode/src/prediction/inter/block/encoder_leaf/blend.rs::tests::wedge_symbols_read_back_to_their_index", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::every_tool_flag_reaches_the_parsed_header"]
-commands = ["cargo test -p splot-encode compound --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_inter_frames --locked -- --ignored"]
+tests = ["crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot", "crates/splot-encode/src/intra_frame_compound_tests.rs::compound_type_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_compound_tests.rs::compound_types_off_disable_the_sequence_tools", "crates/splot-encode/src/intra_frame_compound_tests.rs::forced_compound_types_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_compound_tests.rs::avm_decodes_compound_types_like_splot", "crates/splot-decode/src/prediction/inter/block/encoder_leaf/blend.rs::tests::wedge_symbols_read_back_to_their_index", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::every_tool_flag_reaches_the_parsed_header"]
+commands = ["cargo test -p splot-encode compound --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_ --locked -- --ignored"]
 fixtures = []
 diagnostics = []
 
