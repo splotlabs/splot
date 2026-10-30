@@ -501,19 +501,18 @@ impl EncoderInterTile {
     /// The reference pairs `read_compound_ref` can code.
     pub(crate) fn compound_pairs(&self) -> Vec<(i8, i8)> {
         let refs = self.num_total_refs() as i8;
+        (0..refs)
+            .flat_map(|first| (first..refs).map(move |second| (first, second)))
+            .filter(|&pair| self.codes_pair(pair))
+            .collect()
+    }
+
+    /// Whether `pair` is one of [`Self::compound_pairs`].
+    pub(crate) fn codes_pair(&self, pair: (i8, i8)) -> bool {
         let input = self.compound_input([0; 7], [true; 7]);
-        let mut pairs = Vec::new();
-        for first in 0..refs {
-            for second in first..refs {
-                let pair = (first, second);
-                if compound_reference_pair(input, |selector| Ok(comp_ref_bit(selector, pair)))
-                    .is_ok_and(|coded| coded == pair)
-                {
-                    pairs.push(pair);
-                }
-            }
-        }
-        pairs
+        (0 <= pair.0 && pair.0 <= pair.1 && pair.1 < self.num_total_refs() as i8)
+            && compound_reference_pair(input, |selector| Ok(comp_ref_bit(selector, pair)))
+                .is_ok_and(|coded| coded == pair)
     }
 
     /// The `skip_mode_frames` pair of a skip-mode block at `frontier`.
