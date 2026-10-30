@@ -619,6 +619,14 @@ impl EncoderInterTile {
         Ok(resolved.mv)
     }
 
+    /// Whether the sequence enables `enable_tip_refinemv`.
+    fn tip_refinemv(&self) -> bool {
+        self.sequence
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.enable_tip_refinemv)
+    }
+
     /// The decoder's refinement grid of the compound block `placed` with
     /// `(use_refinemv, refinemv_switchable, use_optflow)`, `None` where it
     /// predicts without one.
@@ -828,7 +836,11 @@ impl EncoderInterTile {
             skip,
             use_amvd: matches!(motion, EncoderMotion::Single(single) if single.use_amvd),
             tip_size_16x16: matches!(motion, EncoderMotion::Single(single) if single.tip)
-                && super::tip::reference_uses_16x16_units(block.bw4, block.bh4, false),
+                && super::tip::reference_uses_16x16_units(
+                    block.bw4,
+                    block.bh4,
+                    self.tip_refinemv(),
+                ),
             blend: mc::CompoundBlend::default(),
             bawp: BawpSyntax::default(),
             interintra: None,
@@ -932,7 +944,7 @@ impl EncoderInterTile {
         });
         let sub_pu_size = match motion {
             EncoderMotion::Single(single) if single.tip => {
-                let units16 = super::tip::reference_uses_16x16_units(n4w, n4h, false);
+                let units16 = super::tip::reference_uses_16x16_units(n4w, n4h, self.tip_refinemv());
                 Some(crate::filters::deblock::DeblockSubPuSize::square(
                     if units16 { 16 } else { 8 },
                 ))

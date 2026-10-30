@@ -270,16 +270,18 @@ fn with_tip_refinement() -> &'static PresetParams {
 /// With TIP refinement, TIP blocks and TIP output frames refine their
 /// projected vectors, frames with a past and a future reference code no TIP
 /// weight, and panning streams at a fine and a coarse quantizer decode to the
-/// encoder recon in 4:2:0 10-bit, 4:2:2 8-bit and 4:4:4 10-bit.
+/// encoder recon in 4:2:0 10-bit, 4:2:2 8-bit and 4:4:4 10-bit, and in a
+/// 160x96 4:2:0 stream with 16x16-capable TIP blocks.
 #[test]
 fn refined_tip_streams_decode_to_the_encoder_recon() {
-    for (chroma, bit_depth) in [
-        (PixelFormat::Yuv420, BitDepth::Ten),
-        (PixelFormat::Yuv422, BitDepth::Eight),
-        (PixelFormat::Yuv444, BitDepth::Ten),
+    for (chroma, bit_depth, (width, height)) in [
+        (PixelFormat::Yuv420, BitDepth::Ten, (72, 40)),
+        (PixelFormat::Yuv422, BitDepth::Eight, (72, 40)),
+        (PixelFormat::Yuv444, BitDepth::Ten, (72, 40)),
+        (PixelFormat::Yuv420, BitDepth::Eight, (160, 96)),
     ] {
         for qp in [110, 250] {
-            let mut config = config(72, 40, bit_depth, 6, qp);
+            let mut config = config(width, height, bit_depth, 6, qp);
             config.chroma = chroma;
             let coder = IntraFrameCoder::with_preset(&config, with_tip_refinement()).unwrap();
             let (units, expected, cores, coder) =
