@@ -243,9 +243,12 @@ pub struct PresetParams {
     /// -0.12% over OPFL alone; off at p10, which codes no optical flow.
     pub tip_refinemv: bool,
     /// Warped motion (`seq_enabled_motion_modes` `LOCALWARP`, `DELTAWARP`,
-    /// `EXTENDWARP`), `0..=1`: `1` inter frames code `allow_warpmv_mode` and
-    /// single-reference leaves try the decoder's warp candidates. Off in
-    /// every row until measured.
+    /// `EXTENDWARP`), `0..=2`: inter frames of a layer that picks warp code
+    /// `allow_warpmv_mode`, and a leaf gives this many warp models of its best
+    /// translational reference an RD trial when their luma SATD plus rate
+    /// beats its `NEWMV`. Off in every row (2026-10-30): at `1` p6 measured
+    /// paris -0.57%, park_joy +0.63%, niklas +0.02% at about +9% CPU, and
+    /// p0 park_joy +0.20%.
     pub warp: u8,
     /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` enables
     /// `cwp_idx` weights (`enable_cwp`), `2` also wedge and
@@ -374,7 +377,7 @@ impl PresetParams {
             u8::from(self.opfl || self.refinemv),
             " (1 needs opfl or refinemv)",
         )?;
-        check("warp", self.warp, 0, 1, "")?;
+        check("warp", self.warp, 0, 2, "")?;
         check(
             "compound_types",
             self.compound_types,
@@ -835,7 +838,7 @@ mod tests {
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),
             (&[("opfl", "false")], "tip_refinemv"),
-            (&[("warp", "2")], "warp"),
+            (&[("warp", "3")], "warp"),
             (&[("compound_types", "4")], "compound_types"),
         ] {
             let mut params = PRESETS[6];

@@ -373,7 +373,7 @@ impl TrialCoder<'_, '_> {
             }
         };
         let mut searched = Vec::new();
-        let mut warps = Vec::new();
+        let mut warp_base: Option<(u64, usize, MotionVector)> = None;
         for ref_frame in 0..self.syntax.reference_count() {
             let mode = |mode, drl| InterModes {
                 ref_frame,
@@ -403,14 +403,6 @@ impl TrialCoder<'_, '_> {
             let pred = bases.first().copied().unwrap_or_default();
             let found = motion.search(self.syntax, ref_frame, leaf_rect(leaf)?, &seeds, pred)?;
             searched.push(found);
-            if self.preset.warp > 0 {
-                warps.extend(crate::warp::candidates(
-                    self.syntax,
-                    leaf,
-                    ref_frame,
-                    found,
-                )?);
-            }
             let mut best: Option<(Bits, InterModes)> = None;
             for (drl, &base) in bases.iter().enumerate() {
                 let modes = InterModes {
@@ -427,6 +419,20 @@ impl TrialCoder<'_, '_> {
             if let Some((_, modes)) = best {
                 let coded = self.mvd_choice(leaf, modes, found)?;
                 push(coded.mv, coded);
+                if self.preset.warp > 0
+                    && let Some((cost, ..)) = self.newmv_cost(leaf, coded)?
+                {
+                    let mut filter = RateSink::adapting();
+                    self.syntax.price_interp_filter(
+                        leaf,
+                        InterPrediction::Single(coded),
+                        &mut filter,
+                    )?;
+                    let cost = cost + motion.bits_cost(filter.bits);
+                    if warp_base.is_none_or(|(best, ..)| cost < best) {
+                        warp_base = Some((cost, ref_frame, found));
+                    }
+                }
             }
         }
         if self.preset.tip > 0 && self.syntax.tip_allowed(leaf)? {
@@ -453,7 +459,16 @@ impl TrialCoder<'_, '_> {
             }
         }
         let mut choices: Vec<LeafChoice> = out.into_iter().map(|(_, choice)| choice).collect();
-        choices.extend(warps.into_iter().map(LeafChoice::inter));
+        if let (Some(motion), Some((cost, ref_frame, found))) = (self.motion, warp_base) {
+            let warps = crate::warp::search(
+                self.syntax,
+                motion,
+                leaf,
+                (ref_frame, found, cost),
+                usize::from(self.preset.warp),
+            )?;
+            choices.extend(warps.into_iter().map(|(_, warp)| LeafChoice::inter(warp)));
+        }
         if self.preset.compound_candidates > 0 && self.syntax.skip_mode_allowed(leaf) {
             let mut cheapest: Vec<([MotionVector; 2], Bits, InterPrediction)> = Vec::new();
             for drl in 0..self.syntax.drl_count() {
@@ -1022,7 +1037,7 @@ pub(crate) fn quadrant_sse(
 }
 
 /// The luma rectangle `(x, y, width, height)` of `leaf`.
-fn leaf_rect(leaf: &LeafBlock) -> Result<(usize, usize, usize, usize)> {
+pub(crate) fn leaf_rect(leaf: &LeafBlock) -> Result<(usize, usize, usize, usize)> {
     let (w, h) = leaf.dimensions()?;
     Ok((leaf.col4() * 4, leaf.row4() * 4, w, h))
 }
