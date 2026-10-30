@@ -395,15 +395,17 @@ mod tests {
         (Pyramid::new(&smooth(config, shift)), reference)
     }
 
-    /// A pan of 37 samples, beyond the full-resolution range of every preset
-    /// row, is found through the coarse levels in every block size of the
+    /// A pan of 37 samples, beyond the full-resolution range, is found
+    /// through the coarse levels in every block size of the
     /// superblocks whose samples all move.
     #[test]
     fn finds_a_pan_beyond_the_full_resolution_range() {
         let config = Config::new(200, 136);
         let (current, reference) = pyramids(&config, 37);
-        let ranges = Ranges::new(&PRESETS[6]);
-        assert!(ranges.full < 37);
+        let ranges = Ranges {
+            coarse: 12,
+            full: 8,
+        };
         let motion = search(&current, &reference, 1, ranges, None);
         for size in 0..4 {
             let (cols, blocks) = motion.blocks(size);
