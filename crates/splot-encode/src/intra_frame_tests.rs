@@ -22,7 +22,9 @@ use crate::tile_writer::{
     CompoundModes, InterMode, InterModes, InterPrediction, LeafChoice, MotionVector, PARTITIONS,
     PartitionTree,
 };
-use splot_decode::encoder_syntax::{COMPOUND_MODES, INTERP_FILTERS, JMVD_SCALE_MODES, TxPartition};
+use splot_decode::encoder_syntax::{
+    COMPOUND_MODES, CompoundType, INTERP_FILTERS, JMVD_SCALE_MODES, MAX_CWP_NUM, TxPartition,
+};
 
 /// Gradients, a ripple, and seeded noise, so blocks of every size split.
 fn synthetic_frame(config: &Config, seed: u32) -> SourceFrame {
@@ -436,6 +438,10 @@ impl FrameCoder for Recording {
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
         self.coder.show_existing_frame(slot)
     }
+
+    fn set_block_importance(&mut self, importance: crate::tpl::BlockImportance) {
+        self.coder.set_block_importance(importance);
+    }
 }
 
 /// Codes `frames` frames through the [`Encoder`]; returns the temporal units
@@ -646,8 +652,10 @@ impl Rng {
 /// precision; an adaptive-MVD `NEWMV`; a TIP leaf; a compound leaf coding
 /// `use_optflow = 1`; a compound leaf coding `use_refinemv = 1`; a warp leaf;
 /// a `LOCALWARP` and an `EXTENDWARP` leaf; a coded six-parameter and a coded
-/// high-precision `DELTAWARP` leaf; a `WARPMV` leaf with a difference.
-type Coverage = [usize; 28];
+/// high-precision `DELTAWARP` leaf; a `WARPMV` leaf with a difference; a
+/// `COMPOUND_WEDGE`, a `COMPOUND_DIFFWTD` and a weighted `COMPOUND_AVERAGE`
+/// compound leaf.
+type Coverage = [usize; 31];
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -784,6 +792,7 @@ fn random_modes(
                 filter,
                 optflow: false,
                 refinemv: false,
+                blend: CompoundType::default(),
             };
             if syntax.compound_bases(leaf, &modes).is_err() {
                 continue;
@@ -799,8 +808,54 @@ fn random_modes(
                 refinemv: reads_refinemv && side.below(4) != 0,
                 ..modes
             };
+            let types = syntax.compound_types(leaf, modes).unwrap();
+            let blend = match side.below(4) {
+                0 | 1 if types.cwp => CompoundType::Average {
+                    cwp: 1 + side.below(u64::from(MAX_CWP_NUM) - 1) as u8,
+                },
+                2 if types.wedge => CompoundType::Wedge {
+                    index: side.below(68) as u8,
+                    sign: side.below(2) == 1,
+                },
+                3 if types.masked => CompoundType::DiffWeighted {
+                    inverse: side.below(2) == 1,
+                },
+                _ => CompoundType::default(),
+            };
+            for (refused, unreadable) in [
+                (CompoundType::Average { cwp: 1 }, !types.cwp),
+                (CompoundType::Average { cwp: MAX_CWP_NUM }, true),
+                (
+                    CompoundType::Wedge {
+                        index: 0,
+                        sign: true,
+                    },
+                    !types.wedge,
+                ),
+                (
+                    CompoundType::Wedge {
+                        index: 68,
+                        sign: false,
+                    },
+                    true,
+                ),
+                (CompoundType::DiffWeighted { inverse: true }, !types.masked),
+            ] {
+                let refused = CompoundModes {
+                    blend: refused,
+                    ..modes
+                };
+                if unreadable {
+                    let prediction = InterPrediction::Compound(refused);
+                    assert!(syntax.inter_mvs(leaf, prediction).is_err(), "{refused:?}");
+                }
+            }
+            let modes = CompoundModes { blend, ..modes };
             coverage[20] += usize::from(modes.optflow);
             coverage[21] += usize::from(modes.refinemv);
+            coverage[28] += usize::from(matches!(blend, CompoundType::Wedge { .. }));
+            coverage[29] += usize::from(matches!(blend, CompoundType::DiffWeighted { .. }));
+            coverage[30] += usize::from(matches!(blend, CompoundType::Average { cwp } if cwp > 0));
             coverage[5 + mode] += 1;
             coverage[12] += usize::from(refs.0 == refs.1);
             coverage[13] += usize::from(modes.drl[1] > 0 && mode < 2);
@@ -918,6 +973,8 @@ fn inter_stream_of(
         refinemv: true,
         warp: 1,
         global_motion: 1,
+        compound_types: 2,
+        implicit_mask: true,
         ..*config.preset.params()
     }));
     let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();
@@ -1403,6 +1460,8 @@ mod carry;
 mod ccso;
 #[path = "intra_frame_cdef_skip_tests.rs"]
 mod cdef_skip;
+#[path = "intra_frame_compound_tests.rs"]
+mod compound;
 #[path = "intra_frame_delta_q_tests.rs"]
 mod delta_q;
 #[path = "intra_frame_gdf_tests.rs"]

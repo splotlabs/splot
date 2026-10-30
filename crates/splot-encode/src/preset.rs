@@ -79,6 +79,16 @@ pub struct PresetParams {
     /// Frames the lookahead analyses before the next mini-GOP is coded, at
     /// least `mini_gop_size`; scene cuts and the temporal model see this far.
     pub lookahead_frames: u8,
+    /// Strength in percent of the block-level temporal model: each
+    /// superblock's qindex and lambda move with the importance of its
+    /// lookahead blocks over the frame's, coded as `delta_q`. `0` is off.
+    /// `100` in every row (2026-10-26, CRF, vs main 9ec81da32): p6 niklas
+    /// f30 Y -0.86%, paris f30 -1.92%, park_joy f10 +0.06% at 0.95-1.0x CPU.
+    pub tpl_delta_q: u8,
+    /// `delta_q_res` of a frame with superblock qindex offsets: the qindex
+    /// moves in steps of `1 << delta_q_res`, `0..=3`. `1` in every row:
+    /// `2` lost 0.8% on park_joy p6 and gained 0.5% on paris.
+    pub delta_q_res: u8,
     /// Compound candidates of an inter leaf that get a full RD trial, best
     /// prediction SATD first; skip-mode candidates are tried besides them.
     /// `0` codes neither compound nor skip-mode blocks.
@@ -241,6 +251,16 @@ pub struct PresetParams {
     /// `use_global_motion` with the models the encoder estimates. Off in
     /// every row until the estimator lands and is measured.
     pub global_motion: u8,
+    /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` enables
+    /// `cwp_idx` weights (`enable_cwp`), `2` also wedge and
+    /// difference-weighted masks (`enable_masked_compound`). Off in every
+    /// row until the search is measured.
+    pub compound_types: u8,
+    /// `enable_imp_msk_bld`: `COMPOUND_AVERAGE` and TIP blocks blend with the
+    /// implicit mask the decoder derives; no search. Off in every row
+    /// (2026-10-30): on alone it measured park_joy +1.26%, paris +0.20% at
+    /// p6, as the compound search scores the plain average.
+    pub implicit_mask: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -343,6 +363,8 @@ impl PresetParams {
             " (mini_gop_size..)",
         )?;
         check("drl_bits", self.drl_bits, 1, 5, "")?;
+        check("tpl_delta_q", self.tpl_delta_q, 0, 200, "")?;
+        check("delta_q_res", self.delta_q_res, 0, 3, "")?;
         check("interp_filter_search", self.interp_filter_search, 0, 2, "")?;
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
@@ -357,9 +379,23 @@ impl PresetParams {
             " (1 needs opfl or refinemv)",
         )?;
         check("warp", self.warp, 0, 1, "")?;
+        check(
+            "compound_types",
+            self.compound_types,
+            0,
+            MAX_COMPOUND_TYPES,
+            "",
+        )?;
         check("global_motion", self.global_motion, 0, 1, "")
     }
 }
+
+/// The largest [`PresetParams::compound_types`]; tests also take
+/// [`crate::mode_decision::FORCED_COMPOUND_TYPES`].
+#[cfg(not(test))]
+const MAX_COMPOUND_TYPES: u8 = 2;
+#[cfg(test)]
+const MAX_COMPOUND_TYPES: u8 = crate::mode_decision::FORCED_COMPOUND_TYPES;
 
 /// A [`PresetParams`] field type that [`PresetParams::set`] parses.
 trait FieldValue: Sized {
@@ -525,6 +561,8 @@ preset_table! {
         tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         global_motion:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        compound_types:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -545,6 +583,8 @@ preset_table! {
     gop {
         mini_gop_size:         [    8,     8,     8,     8,     4,     4,     4,     4,     2,     2,     1],
         lookahead_frames:      [   16,    16,    16,    16,     8,     8,     8,     8,     4,     4,     2],
+        tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
+        delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
 }
 
@@ -647,6 +687,7 @@ mod tests {
             assert!(fast.loop_filter_search <= slow.loop_filter_search);
             assert!(fast.mini_gop_size <= slow.mini_gop_size);
             assert!(fast.lookahead_frames <= slow.lookahead_frames);
+            assert!(fast.tpl_delta_q <= slow.tpl_delta_q);
             assert!(fast.compound_candidates <= slow.compound_candidates);
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.mv_prediction <= slow.mv_prediction);
@@ -684,6 +725,8 @@ mod tests {
             assert!(fast.tip <= slow.tip);
             assert!(fast.warp <= slow.warp);
             assert!(fast.global_motion <= slow.global_motion);
+            assert!(fast.compound_types <= slow.compound_types);
+            assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.opfl <= slow.opfl);
             assert!(fast.tip_refinemv <= slow.tip_refinemv);
             assert!(
@@ -801,6 +844,7 @@ mod tests {
             (&[("opfl", "false")], "tip_refinemv"),
             (&[("warp", "2")], "warp"),
             (&[("global_motion", "2")], "global_motion"),
+            (&[("compound_types", "4")], "compound_types"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {

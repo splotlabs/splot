@@ -73,6 +73,7 @@ impl EncoderInterTile {
             max_drl_bits_minus_1: 0,
             drl_reorder: sequence_drl_reorder(sequence),
             compound_tools: (false, false),
+            blend_tools: (false, false),
             interp_switchable: false,
             num_same_ref_compound: 0,
             sb_h4,

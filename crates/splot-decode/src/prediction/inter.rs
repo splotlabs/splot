@@ -2157,10 +2157,11 @@ pub(crate) mod read_mv;
 pub(crate) mod reference;
 mod single_ref;
 
+pub use block::encoder_leaf::CompoundType;
 pub(crate) use block::encoder_leaf::{
     EncoderCompoundMotion, EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile,
     EncoderMotion, EncoderSingleMotion, EncoderSingleMvs, EncoderWarpMotion, EncoderWarpSource,
-    JMVD_SCALE_MODES, MvdCoding, chroma_inter_tx_type, encoder_motion_field,
+    JMVD_SCALE_MODES, MAX_CWP_NUM, MvdCoding, chroma_inter_tx_type, encoder_motion_field,
     encoder_temporal_context,
 };
 pub(crate) use block::inter_residual_units;

@@ -1059,8 +1059,9 @@ impl IntraTileSyntax {
         super::mv::write_mvds((&mut self.cdfs, &mut self.journal), coding, &mvds, symbols)
     }
 
-    /// Prices into `symbols` the `use_refinemv` and the `interp_filter` that
-    /// `prediction` codes at `leaf` (§ 5.20.7.17, § 5.20.7.6), or the warp
+    /// Prices into `symbols` the `use_refinemv`, the compound type and the
+    /// `interp_filter` that `prediction` codes at `leaf` (§ 5.20.7.17,
+    /// § 5.20.7.16, § 5.20.7.6), or the warp
     /// deltas and `warp_inter_intra` of a warp block (§ 5.20.7.7,
     /// § 5.20.7.15), as [`Self::write_interp_filter`] writes them, then puts
     /// the CDFs back. A warp block reads no `interp_filter`.
@@ -1086,14 +1087,9 @@ impl IntraTileSyntax {
                 modes.mode == InterMode::Global,
                 modes.filter,
             ),
-            InterPrediction::Compound(_) if self.inter_ref()?.tile.refines_compound() => {
+            InterPrediction::Compound(_) => {
                 return self.price_compound_tail(leaf, prediction, symbols);
             }
-            InterPrediction::Compound(modes) => (
-                (modes.refs.0, true),
-                modes.mode == super::CompoundMode::GlobalGlobal,
-                modes.filter,
-            ),
             InterPrediction::SkipMode { .. } => return Ok(false),
             InterPrediction::Warp(_) => {
                 let motion = self.motion(leaf, prediction)?;
@@ -1131,9 +1127,10 @@ impl IntraTileSyntax {
         written.map(|()| true)
     }
 
-    /// Writes the `use_refinemv` and the `interp_filter` of the planned inter
-    /// leaf `leaf`, or the warp deltas and `warp_inter_intra` of a warp leaf,
-    /// after its motion vector differences (§ 5.20.7.17, § 5.20.7.6,
+    /// Writes the `use_refinemv`, the compound type and the `interp_filter`
+    /// of the planned inter leaf `leaf`, or the warp deltas and
+    /// `warp_inter_intra` of a warp leaf, after its motion vector
+    /// differences (§ 5.20.7.17, § 5.20.7.16, § 5.20.7.6,
     /// § 5.20.7.7, § 5.20.7.15); a leaf that reads none writes nothing.
     ///
     /// # Errors
@@ -1154,6 +1151,10 @@ impl IntraTileSyntax {
             .tile
             .interp_filter(&leaf.frontier, motion)
             .map_err(rule("interp_filter"))?;
+        let compound_type = state
+            .tile
+            .compound_type_tail(&leaf.frontier, motion)
+            .map_err(rule("compound type"))?;
         let tail = match motion {
             EncoderMotion::Warp(warp) => state
                 .tile
@@ -1161,10 +1162,33 @@ impl IntraTileSyntax {
                 .map_err(rule("warp syntax"))?,
             _ => Vec::new(),
         };
-        for (selector, value) in refinemv.into_iter().chain(interp).chain(tail) {
-            self.put(symbols, selector, usize::from(value))?;
+        let coded = refinemv
+            .map(|(selector, value)| (Some(selector), value))
+            .into_iter()
+            .chain(compound_type)
+            .chain(interp.map(|(selector, value)| (Some(selector), value)))
+            .chain(
+                tail.into_iter()
+                    .map(|(selector, value)| (Some(selector), value)),
+            );
+        for element in coded {
+            self.put_element(symbols, element)?;
         }
         Ok(())
+    }
+
+    /// Writes one `S()` symbol, or with no selector one `L(1)` literal.
+    fn put_element(
+        &mut self,
+        symbols: &mut impl SymbolSink,
+        (selector, value): (Option<TileCdfSelector>, u8),
+    ) -> Result<()> {
+        match selector {
+            Some(selector) => self.put(symbols, selector, usize::from(value)),
+            None => symbols
+                .literal(u32::from(value), 1)
+                .map_err(rule("symbol write")),
+        }
     }
 
     /// [`Self::price_interp_filter`] of a compound `prediction`.
@@ -1179,14 +1203,19 @@ impl IntraTileSyntax {
         let refinemv = tile
             .refinemv_symbol(&leaf.frontier, motion)
             .map_err(rule("use_refinemv"))?;
+        let compound_type = tile
+            .compound_type_tail(&leaf.frontier, motion)
+            .map_err(rule("compound type"))?;
         let (_, interp) = tile
             .interp_filter(&leaf.frontier, motion)
             .map_err(rule("interp_filter"))?;
-        let mark = self.journal.mark();
-        let written = refinemv
+        let mut coded = refinemv
+            .map(|(selector, value)| (Some(selector), value))
             .into_iter()
-            .chain(interp)
-            .try_for_each(|(selector, value)| self.put(symbols, selector, usize::from(value)));
+            .chain(compound_type)
+            .chain(interp.map(|(selector, value)| (Some(selector), value)));
+        let mark = self.journal.mark();
+        let written = coded.try_for_each(|element| self.put_element(symbols, element));
         self.journal.rollback(&mut self.cdfs, mark)?;
         written.map(|()| interp.is_some())
     }

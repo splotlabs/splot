@@ -329,6 +329,7 @@ fn large_leaf_stream(config: &Config) -> (Vec<Vec<u8>>, Vec<u8>, [usize; 2]) {
                     filter: splot_recon::InterpolationFilter::EightTap,
                     optflow: false,
                     refinemv: false,
+                    blend: CompoundType::default(),
                 };
                 syntax
                     .compound_allowed(leaf)

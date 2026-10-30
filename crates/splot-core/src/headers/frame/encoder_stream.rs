@@ -144,6 +144,15 @@ pub struct EncoderToolFlags {
     /// `enable_global_motion` (§ 5.4.6): each inter frame codes
     /// `use_global_motion`.
     pub global_motion: bool,
+    /// `enable_masked_compound` (§ 5.4.6): compound blocks may code a wedge
+    /// or difference-weighted mask (§ 5.20.7.16).
+    pub masked_compound: bool,
+    /// `enable_cwp` (§ 5.4.6): compound blocks may code `cwp_idx`
+    /// (§ 5.20.7.6).
+    pub cwp: bool,
+    /// `enable_imp_msk_bld` (§ 5.4.6): `COMPOUND_AVERAGE` blends with the
+    /// implicit mask (§ 7.13.3.16).
+    pub implicit_mask: bool,
 }
 
 /// Stream-level inputs of [`build_encoder_sequence_header`].
@@ -458,8 +467,8 @@ const fn profile_idc(chroma: ChromaFormatIdc) -> u32 {
 /// themselves in a compound block (§ 5.20.7.11).
 const NUM_SAME_REF_COMPOUND: u32 = 2;
 
-/// § 5.4.6 for a non-single-picture header with the motion vector prediction
-/// and difference tools of `tools` and every other inter tool off.
+/// § 5.4.6 for a non-single-picture header with the motion vector prediction,
+/// difference and compound tools of `tools` and every other inter tool off.
 fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), WriteError> {
     if tools.warp {
         w.write_bits(0b0111, 4)?; // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
@@ -468,7 +477,7 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     } else {
         w.write_bits(0, 4)?; // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
     }
-    w.write_flag(false)?; // enable_masked_compound
+    w.write_flag(tools.masked_compound)?; // enable_masked_compound
     w.write_flag(tools.ref_frame_mvs)?;
     if tools.ref_frame_mvs {
         w.write_flag(false)?; // reduced_ref_frame_mvs_mode
@@ -492,9 +501,11 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
         w.write_flag(!tools.tip_output)?; // disable_tip_output
         w.write_flag(false)?; // enable_tip_hole_fill
     }
-    for _ in 0..5 {
-        w.write_flag(false)?; // enable_mv_traj, bawp, cwp, imp_msk_bld, df_sub_pu
-    }
+    w.write_flag(false)?; // enable_mv_traj
+    w.write_flag(false)?; // enable_bawp
+    w.write_flag(tools.cwp)?; // enable_cwp
+    w.write_flag(tools.implicit_mask)?; // enable_imp_msk_bld
+    w.write_flag(false)?; // enable_df_sub_pu
     w.write_bits(if tools.opfl_refine { 3 } else { 0 }, 2)?; // enable_opfl_refine
     w.write_flag(tools.refinemv)?; // enable_refinemv
     if tools.tip && (tools.opfl_refine || tools.refinemv) {
