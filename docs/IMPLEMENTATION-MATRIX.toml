@@ -5161,7 +5161,7 @@ module = "crates/splot-encode/src/tpl.rs"
 change_id = "encoder-m4-lookahead-tpl"
 owner = "encoder"
 risk = "medium"
-notes = "Encoder strategy. The lookahead (lookahead.rs) holds the preset's lookahead_frames frames as luma downscaled by 2 (by 4 above 1080p) in 8-bit, with per-8x8-block intra SATD (best of DC, V, H) and inter SATD from a full-sample search (exhaustive radius 4, then logarithmic). The model (tpl.rs) plans the window with a copy of the GOP planner, takes each block's best of intra and the closest past and future coded frames, and propagates (intra + received) * (intra - best) / intra to the reference blocks under the vector, split on ties. Frame importance (intra + received) / intra gives a qindex offset of -12 * log2(importance), at most -32, plus 3 per mini-GOP layer. The rate controller gets the window and the offsets; the block-level pass of ENC-DELTA-Q reuses the propagation."
+notes = "Encoder strategy. The lookahead (lookahead.rs) holds the preset's lookahead_frames frames as luma downscaled by 2 (by 4 above 1080p) in 8-bit, with per-8x8-block intra SATD (best of DC, V, H) and inter SATD at the best SAD within one downscaled sample of the ENC-OPEN-LOOP-ME vectors of the block's luma area, of its quadrants and of the left block. The model (tpl.rs) plans the window with a copy of the GOP planner, takes each block's best of intra and the closest past and future coded frames, and propagates (intra + received) * (intra - best) / intra to the reference blocks under the vector, split on ties. Frame importance (intra + received) / intra gives a qindex offset of -12 * log2(importance), at most -32, plus 3 per mini-GOP layer. The rate controller gets the window and the offsets; the block-level pass of ENC-DELTA-Q reuses the propagation."
 
 [feature.status]
 mapped = "done"
@@ -6744,6 +6744,38 @@ perf = "todo"
 [feature.proof]
 tests = ["crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot", "crates/splot-encode/src/intra_frame_compound_tests.rs::bawp_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_compound_tests.rs::avm_decodes_bawp_streams_like_splot", "crates/splot-encode/src/intra_frame_compound_tests.rs::bawp_templates_fit_only_inside_the_reference", "crates/splot-decode/src/prediction/inter/block/encoder_leaf/blend.rs::tests::bawp_templates_stay_inside_the_plane", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::every_tool_flag_reaches_the_parsed_header"]
 commands = ["cargo test -p splot-encode bawp --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_bawp --locked -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-OPEN-LOOP-ME"
+name = "Open-loop hierarchical motion estimation on source frames"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/hme.rs"
+change_id = "enc-hme"
+owner = "encoder"
+risk = "medium"
+notes = "B1 part 1. Encoder strategy. Each lookahead frame keeps an 8-bit luma pyramid (full, half and quarter per side, 2x2 means, padded). Per 64x64 superblock and frame pair: a full search on the quarter level over PresetParams::hme_range times the reference distance (at most 4), a radius-2 refinement on the half level, then a full search at full resolution over PresetParams::me_range around that centre, halved or quartered when the half-level SAD and vector are small. Every position scores the 8x8 blocks four positions at a time (EncoderKernels::sad8x8_x4); 2x2 sums give 16x16, 32x32 and 64x64, and each block keeps its best vector and SAD in flat per-pair arrays. Superblock rows run on the coder's WorkerPool; the result does not depend on the thread count. The lookahead (ENC-LOOKAHEAD-TPL, ENC-SCENE-CUT, ENC-GLOBAL-MOTION) reads the 16x16 and 8x8 results (32x32 and 16x16 above 1080p) instead of its own search. Not yet read: mode-decision NEWMV seeds, temporal filtering and GOP decisions; the RD search keeps its own closed-loop search, so the B1 target (p6 1-thread time -20%) is not met yet. Measured 2026-10-30 vs main bdb2c0f0a, 10 frames: p6 park_joy -0.13%, paris -0.15%; park_joy p0 +0.10%, p10 +0.01%; CPU 0.99x to 1.01x."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "partial"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "todo"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/hme.rs::tests::finds_a_pan_beyond_the_full_resolution_range", "crates/splot-encode/src/hme.rs::tests::worker_pools_give_the_same_motion", "crates/splot-encode/src/hme.rs::tests::levels_halve_and_pad", "crates/splot-encode/src/kernels/motion.rs::tests::sads_match_scalar", "crates/splot-encode/src/kernels/motion.rs::tests::quads_and_best_match_scalar", "crates/splot-encode/src/kernels/motion.rs::tests::downscale_matches_scalar", "crates/splot-encode/src/lookahead.rs::tests::finds_motion_and_scene_cuts"]
+commands = ["cargo test -p splot-encode hme --locked", "cargo test -p splot-encode kernels::motion --locked"]
 fixtures = []
 diagnostics = []
 

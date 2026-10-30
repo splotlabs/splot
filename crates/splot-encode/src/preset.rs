@@ -60,6 +60,16 @@ pub struct PresetParams {
     pub tx_partition_search: bool,
     /// Full-pel motion search radius in luma samples.
     pub motion_range: u16,
+    /// Open-loop motion estimation of the lookahead: the radius of the
+    /// quarter-resolution search against the adjacent frame, in quarter
+    /// samples; the radius grows with the reference distance up to four
+    /// frames.
+    pub hme_range: u8,
+    /// Open-loop motion estimation of the lookahead: the radius of the
+    /// full-resolution searches around the zero and the coarse vector, in
+    /// luma samples. At least 8 in every row: the lookahead search it
+    /// replaced covered 8 samples around zero at every preset.
+    pub me_range: u8,
     /// Sub-pel refinement depth: `0` full-pel, `1` half, `2` quarter, `3` eighth.
     pub subpel_depth: u8,
     /// The largest frame `base_q_idx` that codes eighth-pel vectors when
@@ -564,6 +574,8 @@ preset_table! {
     }
     inter {
         motion_range:          [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
+        hme_range:             [   24,    24,    24,    20,    20,    16,    16,    16,    16,    16,    16],
+        me_range:              [   16,    16,    16,    12,    12,     8,     8,     8,     8,     8,     8],
         subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     0],
         eighth_pel_max_qindex: [  128,   128,   128,     0,     0,     0,     0,     0,     0,     0,     0],
         compound_candidates:   [    8,     8,     6,     6,     4,     4,     3,     2,     1,     0,     0],
@@ -703,6 +715,7 @@ mod tests {
             assert!(fast.tx_type_depth <= slow.tx_type_depth);
             assert!(fast.tx_partition_search <= slow.tx_partition_search);
             assert!(fast.motion_range <= slow.motion_range);
+            assert!(fast.hme_range <= slow.hme_range && fast.me_range <= slow.me_range);
             assert!(fast.subpel_depth <= slow.subpel_depth);
             assert!(fast.eighth_pel_max_qindex <= slow.eighth_pel_max_qindex);
             assert!(fast.loop_filter_search <= slow.loop_filter_search);

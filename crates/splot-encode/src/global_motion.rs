@@ -79,7 +79,7 @@ pub(crate) fn estimate(
             let Some(motion) = lookahead.motion(display, reference) else {
                 continue;
             };
-            let pairs = pairs(motion, &intra, (cols, rows), block);
+            let pairs = pairs(&motion, &intra, (cols, rows), block);
             let frame = ((cols * block) as f64, (rows * block) as f64);
             if let Some(model) = fit(&pairs, frame, display ^ reference.rotate_left(32)) {
                 models.insert((display, reference), model);
