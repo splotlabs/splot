@@ -120,6 +120,70 @@ fn global_globalmv_neighbour_uses_current_global_mv_and_retains_list1_model() {
     );
 }
 
+fn compound_stack_beside_global_globalmv(
+    global_lists: [bool; 2],
+) -> (CompoundMvCandidate, [Mv; 2], [Mv; 2]) {
+    let mut grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
+    let neighbour_mvs = [Mv { row: 8, col: 16 }, Mv { row: -24, col: 40 }];
+    grid.record_flags(
+        8,
+        0,
+        N4_32,
+        N4_32,
+        NeighbourFlagSyntax {
+            is_inter: true,
+            ref_frame0: 0,
+            ref_frame1: Some(1),
+            motion_mode: MotionMode::Simple,
+            ..NON_INTER_FLAG_SYNTAX
+        },
+    );
+    grid.record_motion(
+        8,
+        0,
+        N4_32,
+        N4_32,
+        NeighbourMotionValues {
+            mv: neighbour_mvs,
+            cwp_weight: CWP_EQUAL,
+            stored_warp: None,
+            global_mv: global_lists,
+            splat_warp: [None, None],
+        },
+    );
+    let mut block = block_at(8, 8);
+    block.ref_frame1 = Some(1);
+    let global_mvs = [Mv { row: 12, col: -10 }, Mv { row: 2, col: -8 }];
+    let stack = find_compound_mv_stack_with_temporal(
+        &grid,
+        &block,
+        global_mvs,
+        None,
+        DrlReorder::Disabled,
+        None,
+    );
+    (stack.candidate(0), neighbour_mvs, global_mvs)
+}
+
+/// § 7.12.2.13: a large GLOBAL_GLOBALMV neighbour with the same reference
+/// pair contributes the current block's `GlobalMvs`, not its stored `SubMvs`.
+#[test]
+fn compound_global_globalmv_neighbour_uses_current_global_mvs() {
+    let (candidate, _, global_mvs) = compound_stack_beside_global_globalmv([true, true]);
+
+    assert_eq!(candidate.mvs, global_mvs);
+}
+
+/// § 7.12.2.13: the substitution is per list, so a list whose reference has
+/// an IDENTITY model keeps the neighbour's stored sub-MV.
+#[test]
+fn compound_global_globalmv_neighbour_substitutes_only_non_identity_lists() {
+    let (candidate, neighbour_mvs, global_mvs) =
+        compound_stack_beside_global_globalmv([true, false]);
+
+    assert_eq!(candidate.mvs, [global_mvs[0], neighbour_mvs[1]]);
+}
+
 #[test]
 fn nonmatching_globalmv_neighbour_derives_from_its_stored_sub_mv() {
     let mut grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
