@@ -88,6 +88,7 @@ fn write_subexp(writer: &mut BitWriter, num_syms: i32, k: u32, v: i32) -> WriteR
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::bitio::BitReader;
