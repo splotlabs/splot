@@ -65,7 +65,7 @@ fn compound_types_off_disable_the_sequence_tools() {
     assert!(!inter.enable_masked_compound && !inter.enable_cwp && !inter.enable_imp_msk_bld);
     let coder = IntraFrameCoder::with_preset(&config, with_compound(1, false)).unwrap();
     let inter = coder.sequence.inter.unwrap();
-    assert!(!inter.enable_masked_compound && inter.enable_cwp);
+    assert!(inter.enable_masked_compound && !inter.enable_cwp);
 }
 
 /// A panning frame with noise, which averaging two references removes.
@@ -140,4 +140,41 @@ fn avm_decodes_compound_types_like_splot() {
         "compound-types",
     );
     assert!(avm == decode(&units), "AVM output differs");
+}
+
+/// A tiled noisy mini-GOP stream with the compound type search and the joint
+/// `NEW_NEWMV` refinement: the search codes weighted, wedge and
+/// difference-weighted leaves, the loop filters run, later frames reference
+/// them, and the stream decodes to the encoder recon with the same bytes on
+/// 1, 2 and 8 threads.
+#[test]
+fn searched_compound_types_decode_on_any_thread_count() {
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        compound_types: 2,
+        joint_newmv: true,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let stream = |threads: usize| {
+        let mut config = config(136, 72, BitDepth::Ten, 6, 140);
+        config.tiles = TileLayout {
+            cols_log2: 1,
+            rows_log2: 0,
+        };
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 140)
+    };
+    crate::tile_writer::CODED_TYPES.set([0; 4]);
+    let (one, expected, cores, _) = stream(1);
+    let [weighted, wedges, diffs, _] = crate::tile_writer::CODED_TYPES.get();
+    assert!(weighted + wedges + diffs > 0, "{weighted} {wedges} {diffs}");
+    assert!(cores.iter().any(|core| {
+        core.deblocking_filter_params
+            .as_ref()
+            .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
+    }));
+    assert_same_samples(&decode(&one), &expected, "searched compound types");
+    for threads in [2, 8] {
+        assert!(stream(threads).0 == one, "{threads} threads");
+    }
 }

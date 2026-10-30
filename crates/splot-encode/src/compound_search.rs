@@ -146,3 +146,93 @@ impl TrialCoder<'_, '_> {
             .collect())
     }
 }
+
+/// Half a luma sample in `1/8` units: the step of the joint refinement.
+const HALF_PEL: i32 = 4;
+
+impl TrialCoder<'_, '_> {
+    /// The `NEW_NEWMV` survivor `trial` after the joint refinement: in each
+    /// round, each list in turn moves its vector by one step of half a sample
+    /// (or the frame's difference step) to the neighbour with the least luma
+    /// SATD of the average plus vector rate, keeping the other list's
+    /// prediction; the rounds stop when no list moves, after two at most.
+    pub(super) fn joint_refined(
+        &mut self,
+        leaf: &LeafBlock,
+        motion: &MotionSearch,
+        trial: CompoundModes,
+    ) -> Result<CompoundModes> {
+        if !self.preset.joint_newmv || trial.mode != CompoundMode::NewNew {
+            return Ok(trial);
+        }
+        let bases = codable(self.syntax.compound_bases(leaf, &trial).map_err(Into::into))?;
+        let Some([Some(base0), Some(base1)]) = bases else {
+            return Ok(trial);
+        };
+        let bases = [base0, base1];
+        let rect = leaf_rect(leaf)?;
+        let step = self.syntax.mv_step().max(HALF_PEL);
+        let refs = [trial.refs.0, trial.refs.1];
+        let predict = |syntax: &IntraTileSyntax, list: usize, mv: MotionVector| {
+            MotionSearch::luma_prediction(syntax, refs[list], rect, (mv, trial.filter))
+        };
+        let mut mvs = trial.mvs;
+        let mut preds = [
+            predict(self.syntax, 0, mvs[0])?,
+            predict(self.syntax, 1, mvs[1])?,
+        ];
+        let rate =
+            |mvs: &[MotionVector; 2]| motion.rate(mvs[0], bases[0]) + motion.rate(mvs[1], bases[1]);
+        let mut best = motion.average_satd((&preds[0], &preds[1]), rect)? + rate(&mvs);
+        for _ in 0..2 {
+            let mut moved = false;
+            for list in 0..2 {
+                let mut pick = None;
+                for (dr, dc) in [
+                    (-1, -1),
+                    (-1, 0),
+                    (-1, 1),
+                    (0, -1),
+                    (0, 1),
+                    (1, -1),
+                    (1, 0),
+                    (1, 1),
+                ] {
+                    let mut moved_mvs = mvs;
+                    moved_mvs[list] = MotionVector {
+                        row: mvs[list].row + dr * step,
+                        col: mvs[list].col + dc * step,
+                    };
+                    let p = predict(self.syntax, list, moved_mvs[list])?;
+                    let pair: (&[u16], &[u16]) = if list == 0 {
+                        (&p, &preds[1])
+                    } else {
+                        (&preds[0], &p)
+                    };
+                    let cost = motion.average_satd(pair, rect)? + rate(&moved_mvs);
+                    if cost < best {
+                        best = cost;
+                        pick = Some((moved_mvs, p));
+                    }
+                }
+                if let Some((picked, p)) = pick {
+                    (mvs, preds[list], moved) = (picked, p, true);
+                }
+            }
+            if !moved {
+                break;
+            }
+        }
+        let refined = CompoundModes { mvs, ..trial };
+        let codable_mvs = codable(
+            self.syntax
+                .inter_mvs(leaf, InterPrediction::Compound(refined))
+                .map_err(Into::into),
+        )?;
+        Ok(if codable_mvs == Some(mvs) {
+            refined
+        } else {
+            trial
+        })
+    }
+}

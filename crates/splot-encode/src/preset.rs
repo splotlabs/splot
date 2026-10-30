@@ -237,16 +237,21 @@ pub struct PresetParams {
     /// single-reference leaves try the decoder's warp candidates. Off in
     /// every row until measured.
     pub warp: u8,
-    /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` enables
-    /// `cwp_idx` weights (`enable_cwp`), `2` also wedge and
-    /// difference-weighted masks (`enable_masked_compound`). Off in every
-    /// row until the search is measured.
+    /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` enables wedge
+    /// and difference-weighted masks (`enable_masked_compound`), `2` also
+    /// `cwp_idx` weights (`enable_cwp`). Off in every row until the search
+    /// is measured.
     pub compound_types: u8,
     /// `enable_imp_msk_bld`: `COMPOUND_AVERAGE` and TIP blocks blend with the
     /// implicit mask the decoder derives; no search. Off in every row
     /// (2026-10-30): on alone it measured park_joy +1.26%, paris +0.20% at
     /// p6, as the compound search scores the plain average.
     pub implicit_mask: bool,
+    /// Joint `NEW_NEWMV` refinement: each compound `NEW_NEWMV` survivor
+    /// moves its two vectors by half-sample steps, one list at a time, while
+    /// the SATD of their average plus the vector rate drops. Off in every row
+    /// until measured.
+    pub joint_newmv: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -545,6 +550,7 @@ preset_table! {
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         compound_types:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
+        joint_newmv:           [false, false, false, false, false, false, false, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -705,6 +711,7 @@ mod tests {
             assert!(fast.warp <= slow.warp);
             assert!(fast.compound_types <= slow.compound_types);
             assert!(fast.implicit_mask <= slow.implicit_mask);
+            assert!(fast.joint_newmv <= slow.joint_newmv);
             assert!(fast.opfl <= slow.opfl);
             assert!(fast.tip_refinemv <= slow.tip_refinemv);
             assert!(

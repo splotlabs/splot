@@ -797,6 +797,7 @@ impl TrialCoder<'_, '_> {
         ranked.truncate(keep);
         let mut out = Vec::with_capacity(ranked.len());
         for (.., trial) in ranked {
+            let trial = self.joint_refined(leaf, motion, trial)?;
             let trial = self.refined(leaf, motion, trial)?;
             #[cfg(test)]
             let trial = self.forced_type(leaf, trial)?;

@@ -299,18 +299,15 @@ impl MotionSearch {
         filter: InterpolationFilter,
         block: (usize, usize, usize, usize),
     ) -> Result<u64> {
-        let mut average = Vec::new();
-        for (index, &(ref_frame, mv)) in lists.iter().enumerate() {
-            let predicted = predict(syntax, ref_frame, block, (mv, filter))?;
-            if index == 0 {
-                average = predicted;
-            } else {
-                for (out, &other) in average.iter_mut().zip(&predicted) {
-                    *out = ((u32::from(*out) + u32::from(other) + 1) >> 1) as u16;
-                }
+        match *lists {
+            [(ref0, mv0), (ref1, mv1)] => {
+                let p0 = predict(syntax, ref0, block, (mv0, filter))?;
+                let p1 = predict(syntax, ref1, block, (mv1, filter))?;
+                self.average_satd((&p0, &p1), block)
             }
+            [(ref0, mv0)] => self.satd(block, &predict(syntax, ref0, block, (mv0, filter))?),
+            _ => Err(TileWriterError::Unsupported("one or two prediction lists")),
         }
-        self.satd(block, &average)
     }
 
     /// The row-major source luma of `block` and the decoder's luma
@@ -338,6 +335,32 @@ impl MotionSearch {
             predict(syntax, ref0, block, (mv0, filter))?,
             predict(syntax, ref1, block, (mv1, filter))?,
         ])
+    }
+
+    /// The decoder's row-major luma prediction of `block` from list
+    /// reference `ref_frame` with `(mv, filter)`.
+    pub(crate) fn luma_prediction(
+        syntax: &IntraTileSyntax,
+        ref_frame: usize,
+        block: (usize, usize, usize, usize),
+        motion: (MotionVector, InterpolationFilter),
+    ) -> Result<Vec<u16>> {
+        predict(syntax, ref_frame, block, motion)
+    }
+
+    /// SATD of the rounded average of the row-major predictions `p0` and
+    /// `p1` of `block`, as [`Self::prediction_satd`] of two lists.
+    pub(crate) fn average_satd(
+        &self,
+        (p0, p1): (&[u16], &[u16]),
+        block: (usize, usize, usize, usize),
+    ) -> Result<u64> {
+        let average: Vec<u16> = p0
+            .iter()
+            .zip(p1)
+            .map(|(&a, &b)| ((u32::from(a) + u32::from(b) + 1) >> 1) as u16)
+            .collect();
+        self.satd(block, &average)
     }
 
     /// The cost of `bits` in SAD units.
