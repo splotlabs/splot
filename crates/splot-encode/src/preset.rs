@@ -236,7 +236,9 @@ pub struct PresetParams {
     /// `EXTENDWARP`), `0..=2`: inter frames of a layer that picks warp code
     /// `allow_warpmv_mode`, and a leaf gives this many warp models of its best
     /// translational reference an RD trial when their luma SATD plus rate
-    /// beats its `NEWMV`. Off in every row until measured.
+    /// beats its `NEWMV`. Off in every row (2026-10-30): at `1` p6 measured
+    /// paris -0.57%, park_joy +0.63%, niklas +0.02% at about +9% CPU, and
+    /// p0 park_joy +0.20%.
     pub warp: u8,
 }
 
