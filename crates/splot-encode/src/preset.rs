@@ -250,10 +250,12 @@ pub struct PresetParams {
     /// paris -0.57%, park_joy +0.63%, niklas +0.02% at about +9% CPU, and
     /// p0 park_joy +0.20%.
     pub warp: u8,
-    /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` enables wedge
+    /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` searches wedge
     /// and difference-weighted masks (`enable_masked_compound`), `2` also
-    /// `cwp_idx` weights (`enable_cwp`). Off in every row until the search
-    /// is measured.
+    /// `cwp_idx` weights (`enable_cwp`). `1` on p0-p8, the rows with compound
+    /// candidates (2026-10-30, p6 vs main): park_joy -5.70%, paris -0.82%,
+    /// niklas -1.04% for 11% more CPU. `2` measured paris -1.00% and
+    /// park_joy -5.51% at the same CPU, so the weights stay off.
     pub compound_types: u8,
     /// `enable_imp_msk_bld`: `COMPOUND_AVERAGE` and TIP blocks blend with the
     /// implicit mask the decoder derives; no search. Off in every row
@@ -263,7 +265,7 @@ pub struct PresetParams {
     /// Joint `NEW_NEWMV` refinement: each compound `NEW_NEWMV` survivor
     /// moves its two vectors by half-sample steps, one list at a time, while
     /// the SATD of their average plus the vector rate drops. Off in every row
-    /// until measured.
+    /// (2026-10-30): alone it measured paris +0.13% at p6 for 2.7% more CPU.
     pub joint_newmv: bool,
 }
 
@@ -563,7 +565,7 @@ preset_table! {
         refinemv:              [false, false, false, false, false, false, false, false, false, false, false],
         tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        compound_types:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         joint_newmv:           [false, false, false, false, false, false, false, false, false, false, false],
     }
