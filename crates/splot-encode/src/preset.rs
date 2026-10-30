@@ -345,6 +345,13 @@ impl PresetParams {
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
+        check(
+            "tip_refinemv",
+            u8::from(self.tip_refinemv),
+            0,
+            u8::from(self.opfl || self.refinemv),
+            " (1 needs opfl or refinemv)",
+        )?;
         check("warp", self.warp, 0, 1, "")
     }
 }
@@ -784,6 +791,7 @@ mod tests {
             (&[("gdf_candidates", "17")], "gdf_candidates"),
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),
+            (&[("opfl", "false")], "tip_refinemv"),
             (&[("warp", "2")], "warp"),
         ] {
             let mut params = PRESETS[6];
