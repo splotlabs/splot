@@ -6587,6 +6587,38 @@ commands = ["cargo test -p splot-encode warp --locked", "SPLOT_AVM_DECODER=avmde
 fixtures = []
 diagnostics = []
 
+[[feature]]
+id = "ENC-FILM-GRAIN"
+name = "Encoder film grain estimation"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.14", "5.18.10.1", "5.18.10.2", "7.21.7"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/grain.rs"
+change_id = "enc-film-grain"
+owner = "encoder"
+risk = "medium"
+notes = "Config::film_grain (CLI --film-grain, off by default) sets film_grain_params_present. Each key frame estimates the noise of its source: per plane, the Laplacian noise estimate of every whole 8x8 block, its lower quartile in each of 8 intensity bins (8 blocks at least), mapped through the standard deviation of Gaussian_Sequence to a § 5.18.10.2 scaling point; a plane under 1.0 8-bit samples in every bin gets no points, and 4:2:0 keeps both chroma planes when either is noisy (§ 6.17.10.2 pairing; GrainScaling and encoder_film_grain_model check the point rules). A key frame with points carries an OBU_FILM_GRAIN (§ 5.14) of model slot 0 (ar_coeff_lag 0, grain_scaling_minus_8 0, chroma scaled by its own sample), and every output frame of its GOP, show-existing frames included, codes apply_grain = 1, fgm_id = 0 and a nonzero grain_seed (§ 5.18.10.1) from the even (coded) or odd (show-existing) steps of one bijection of 0..65535; a key frame without points sends no OBU and its GOP codes apply_grain = 0. Shortcut, not a spec rule: TIP output frames stay off while grain is on, because the TIP-output header builder does not write film_grain_config yet (§ 5.18.2 codes it there). No denoiser: the recon and the stats PSNR exclude the grain, which § 7.21.7 adds at the decoder, so grain is a perceptual option with no PSNR gain. Off output is byte-identical to before."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/grain.rs::tests::scaling_tracks_the_source_noise", "crates/splot-encode/src/grain.rs::tests::quiet_sources_get_no_grain", "crates/splot-encode/src/grain.rs::tests::chroma_420_keeps_both_planes", "crates/splot-encode/src/intra_frame_grain_tests.rs::grain_streams_decode_to_the_recon_plus_grain", "crates/splot-encode/src/intra_frame_grain_tests.rs::every_output_frame_gets_its_own_grain", "crates/splot-encode/src/intra_frame_grain_tests.rs::avm_decodes_grain_streams_like_splot", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::show_existing_frame_obu_parses_complete", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::film_grain_headers_code_the_seed_and_the_model"]
+commands = ["cargo test -p splot-encode grain --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_grain --locked -- --ignored"]
+fixtures = []
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------

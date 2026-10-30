@@ -362,7 +362,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
 fn show_existing_frame_obu_parses_complete() {
     let seq = sequence(17, 9, BitDepthIdc::Eight, SuperblockSize::Block64x64);
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let obu = encode_show_existing_frame_obu(&view, 5).unwrap();
+    let obu = encode_show_existing_frame_obu(&view, 5, None).unwrap();
     let parsed = parse_annex_b_obus_partial(&obu);
     assert!(parsed.error.is_none());
     assert_eq!(parsed.obus.len(), 1);
@@ -386,7 +386,81 @@ fn show_existing_frame_obu_parses_complete() {
     );
     assert_eq!(core.frame_to_show_map_idx, Some(5));
     assert_eq!(core.order_hint, Some(7));
-    assert!(encode_show_existing_frame_obu(&view, 8).is_err());
+    assert!(encode_show_existing_frame_obu(&view, 8, None).is_err());
+}
+
+/// A film-grain sequence codes `apply_grain` with the seed of each output
+/// key or show-existing frame, refuses a seed without film grain, refuses
+/// models that break § 6.17.10.2, and its grain OBU parses back to the model.
+#[test]
+fn film_grain_headers_code_the_seed_and_the_model() {
+    let mut params = EncoderStreamParams {
+        width: 17,
+        height: 9,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            film_grain: true,
+            ..EncoderToolFlags::default()
+        },
+    };
+    let seq = build_encoder_sequence_header(&params).unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    assert_eq!(view.film_grain_params_present, Some(true));
+    let tx = KeyFrameTxParams {
+        grain_seed: Some(0xa5c3),
+        ..KeyFrameTxParams::default()
+    };
+    let core = crate::headers::frame::build_key_frame_header(
+        &view,
+        90,
+        0,
+        &FrameFilterParams::default(),
+        tx,
+        UniformTiles::default(),
+    )
+    .unwrap();
+    let grain = core.intra_tail.unwrap().film_grain;
+    assert_eq!(
+        (grain.apply_grain, grain.fgm_id, grain.grain_seed),
+        (true, Some(0), Some(0xa5c3))
+    );
+    let sef = encode_show_existing_frame_obu(&view, 2, Some(0x0f0f)).unwrap();
+    assert!(parse_annex_b_obus_partial(&sef).error.is_none());
+    params.tools.film_grain = false;
+    let plain =
+        CoreSeqView::from_sequence(&build_encoder_sequence_header(&params).unwrap()).unwrap();
+    assert!(encode_show_existing_frame_obu(&plain, 2, Some(1)).is_err());
+    assert!(
+        crate::headers::frame::build_key_frame_header(
+            &plain,
+            90,
+            0,
+            &FrameFilterParams::default(),
+            tx,
+            UniformTiles::default()
+        )
+        .is_err()
+    );
+    let points = GrainScaling::new(vec![(16, 40), (112, 64), (240, 9)]).unwrap();
+    let cb = GrainScaling::new(vec![(128, 20)]).unwrap();
+    let none = GrainScaling::default();
+    assert!(GrainScaling::new(vec![(16, 1), (16, 2)]).is_err());
+    assert!(GrainScaling::new((0..15).map(|v| (v, 1)).collect()).is_err());
+    assert!(encoder_film_grain_model(ChromaFormatIdc::Yuv420, [&points, &cb, &none]).is_err());
+    assert!(encoder_film_grain_model(ChromaFormatIdc::Monochrome, [&points, &cb, &cb]).is_err());
+    assert!(encoder_film_grain_model(ChromaFormatIdc::Yuv444, [&points, &cb, &none]).is_ok());
+    let model = encoder_film_grain_model(ChromaFormatIdc::Yuv420, [&points, &cb, &cb]).unwrap();
+    let obu = encode_film_grain_obu(ChromaFormatIdc::Yuv420, &model).unwrap();
+    let parsed = parse_annex_b_obus_partial(&obu);
+    assert!(parsed.error.is_none());
+    let fg = crate::headers::film_grain::parse_film_grain(&mut BitReader::new(
+        parsed.obus[0].payload,
+        ByteOffset::new(0),
+    ))
+    .unwrap();
+    assert_eq!((fg.update_flags, &fg.models[0].model), (1, &model));
 }
 
 #[test]

@@ -66,6 +66,12 @@ pub(crate) struct EncodeArgs {
     /// `--stats` PSNR (against the resized source) are at the coded size.
     #[arg(long, value_name = "D")]
     resize_denominator: Option<u8>,
+    /// Film grain: each key frame codes a grain model fitted to the noise of
+    /// its source, and every output frame applies it at decode; off by
+    /// default. The encoder does not denoise, so the stats PSNR does not
+    /// include the grain.
+    #[arg(long)]
+    film_grain: bool,
     /// Distance between key frames, in frames.
     #[arg(long, default_value_t = Config::DEFAULT_KEYINT)]
     keyint: NonZeroU32,
@@ -172,6 +178,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.tiles = args.tiles;
     config.keyint = args.keyint;
     config.resize_denominator = args.resize_denominator;
+    config.film_grain = args.film_grain;
     if u16::try_from(header.width).is_err() || u16::try_from(header.height).is_err() {
         bail!("IVF output supports at most 65535 samples per side");
     }

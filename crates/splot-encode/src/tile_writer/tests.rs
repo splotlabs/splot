@@ -90,6 +90,7 @@ impl Case {
                 cctx: false,
                 tcq: false,
                 parity_hiding: false,
+                film_grain: false,
                 avg_cdf: None,
                 ref_frame_mvs: false,
                 refmvbank: false,
@@ -106,6 +107,7 @@ impl Case {
                 allow_tcq: false,
                 delta_q_res: None,
                 allow_intrabc: false,
+                grain_seed: None,
             },
         }
     }
@@ -721,7 +723,7 @@ fn encode_case(
             .unwrap();
     }
     let (tile, recon) = writer.finish().unwrap();
-    let unit = encode_key_frame_temporal_unit(&seq, &core, true, &[&tile]).unwrap();
+    let unit = encode_key_frame_temporal_unit(&seq, &core, true, &[&tile], &[]).unwrap();
     (unit, recon, modes, coder.coverage)
 }
 
@@ -1645,7 +1647,7 @@ fn cfl_chroma_of_a_128x128_leaf_reads_the_whole_luma() {
         .write_superblock(&SuperblockDecision { tree }, &mut coder)
         .unwrap();
     let (tile, recon) = writer.finish().unwrap();
-    let unit = encode_key_frame_temporal_unit(&seq, &core, true, &[&tile]).unwrap();
+    let unit = encode_key_frame_temporal_unit(&seq, &core, true, &[&tile], &[]).unwrap();
     let view = recon.as_frame_ref();
     let expected = raw_bytes(
         [PlaneId::Y, PlaneId::U, PlaneId::V]
