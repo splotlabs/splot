@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Compound and skip-mode inter leaves of the encoder facade (§ 5.20.7.10,
-//! § 5.20.7.12) with `COMPOUND_AVERAGE` prediction: the masked, weighted,
-//! warped and refined compound tools stay off at sequence level.
+//! Compound and skip-mode inter leaves of the encoder facade (§ 5.20.7.6,
+//! § 5.20.7.10, § 5.20.7.11) with `COMPOUND_AVERAGE` prediction: the masked,
+//! weighted and warped compound tools stay off at sequence level; optical
+//! flow and vector refinement are set per block (§ 5.20.7.17).
 
 use splot_recon::InterpolationFilter;
 

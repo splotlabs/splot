@@ -217,9 +217,13 @@ pub struct PresetParams {
     /// Optical-flow refinement (`enable_opfl_refine = REFINE_AUTO`): inter
     /// frames with a past and a future reference code `REFINE_SWITCHABLE`,
     /// so compound blocks may code `use_optflow`; others code `REFINE_NONE`.
+    /// On at p0-p9 (2026-10-30): p6 measured park_joy -0.05%, paris -0.92%,
+    /// niklas -0.22%; off at p10, which codes no compound blocks.
     pub opfl: bool,
     /// Decoder-side vector refinement (`enable_refinemv`): compound blocks
-    /// with a past and a future reference may code `use_refinemv`.
+    /// with a past and a future reference may code `use_refinemv`. Off in
+    /// every row (2026-10-30): alone it measured niklas +0.23% at p6, largely
+    /// from the refinement the decoder infers on `NEAR_NEARMV` blocks.
     pub refinemv: bool,
     /// Warped motion (`seq_enabled_motion_modes` `LOCALWARP`, `DELTAWARP`,
     /// `EXTENDWARP`), `0..=1`: `1` inter frames code `allow_warpmv_mode` and
@@ -497,7 +501,7 @@ preset_table! {
         cdf_carry:             [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
-        opfl:                  [false, false, false, false, false, false, false, false, false, false, false],
+        opfl:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         refinemv:              [false, false, false, false, false, false, false, false, false, false, false],
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
@@ -658,6 +662,7 @@ mod tests {
             assert!(fast.inter_ist <= slow.inter_ist);
             assert!(fast.tip <= slow.tip);
             assert!(fast.warp <= slow.warp);
+            assert!(fast.opfl <= slow.opfl);
             assert!(
                 fast.inter_tx_split == 0
                     || (slow.inter_tx_split != 0 && fast.inter_tx_split >= slow.inter_tx_split)

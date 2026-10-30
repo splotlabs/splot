@@ -608,7 +608,7 @@ fn read_compound_motion_mode_syntax(
     Ok(use_local_warp != 0)
 }
 
-/// Parsed § 5.20.7.12 compound syntax handed to the § 7.12 resolution step.
+/// Parsed § 5.20.7.6 compound syntax handed to the § 7.12 resolution step.
 #[derive(Clone, Copy)]
 pub(super) struct ParsedCompoundBlock {
     pub(super) block_ctx: MvBlockContext,

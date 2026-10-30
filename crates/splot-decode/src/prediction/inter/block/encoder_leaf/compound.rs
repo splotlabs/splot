@@ -45,7 +45,7 @@ pub(crate) struct MvdCoding {
     pub(crate) derive_threshold: usize,
 }
 
-/// The compound choice of one leaf (§ 5.20.7.12), or a skip-mode leaf
+/// The compound choice of one leaf (§ 5.20.7.6), or a skip-mode leaf
 /// (§ 5.20.7.10) whose `ref_frames` are the `skip_mode_frames` pair.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct EncoderCompoundMotion {

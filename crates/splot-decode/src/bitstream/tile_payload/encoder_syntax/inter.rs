@@ -513,8 +513,23 @@ impl IntraTileSyntax {
             amvd: false,
         };
         let previous = self.inter_state()?.tile.set_tip_weight(Some(weight));
-        let planned = self.plan_inter_leaf(leaf, InterPrediction::Single(modes));
+        let predicted = self.luma_prediction(leaf, InterPrediction::Single(modes));
         self.inter_state()?.tile.set_tip_weight(previous);
+        predicted
+    }
+
+    /// The luma transform blocks of the decoder's prediction of `prediction`
+    /// at `leaf`, refinement included, each with its row-major samples. The
+    /// prediction overwrites the leaf's samples and clears the planned leaf.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for a prediction `leaf` cannot code.
+    pub fn luma_prediction(
+        &mut self,
+        leaf: &LeafBlock,
+        prediction: InterPrediction,
+    ) -> Result<Vec<(TransformBlock, Vec<u16>)>> {
+        let planned = self.plan_inter_leaf(leaf, prediction);
         let mut out = Vec::new();
         for tx in planned?.into_iter().filter(|tx| tx.plane == 0) {
             out.push((tx, self.reconstruction(&tx)?));
