@@ -62,7 +62,7 @@ pub(crate) struct Lookahead {
     ranges: hme::Ranges,
     pool: Option<WorkerPool>,
     frames: VecDeque<Analysis>,
-    motion: BTreeMap<(u64, u64), FrameMotion>,
+    motion: BTreeMap<(u64, u64), Vec<BlockMotion>>,
     /// The scene-cut ratio of the last frame pushed, in percent.
     last_ratio: u64,
 }
@@ -112,16 +112,19 @@ impl Lookahead {
         let Some(previous) = display_index.checked_sub(1) else {
             return false;
         };
-        let (Some(motion), Some(intra)) = (
-            self.motion(display_index, previous),
+        if self.motion(display_index, previous).is_none() {
+            return false;
+        }
+        let (Some(intra), Some(motion)) = (
             self.intra(display_index),
+            self.motion.get(&(display_index, previous)),
         ) else {
             return false;
         };
         let intra_sum: u64 = intra.iter().map(|&cost| u64::from(cost)).sum();
         let best_sum: u64 = intra
             .iter()
-            .zip(&motion)
+            .zip(motion)
             .map(|(&intra, inter)| u64::from(intra.min(inter.cost)))
             .sum();
         let ratio = best_sum * 100 / intra_sum.max(1);
@@ -153,27 +156,24 @@ impl Lookahead {
 
     /// The best inter prediction of each block of frame `current` from frame
     /// `reference`; `None` when either frame is not held. The open-loop
-    /// motion of the pair is searched once and kept.
-    pub(crate) fn motion(&mut self, current: u64, reference: u64) -> Option<Vec<BlockMotion>> {
-        let pair = (self.frame(current)?, self.frame(reference)?);
+    /// motion of the pair is searched once and its blocks kept.
+    pub(crate) fn motion(&mut self, current: u64, reference: u64) -> Option<&[BlockMotion]> {
         if !self.motion.contains_key(&(current, reference)) {
+            let (now, then) = (self.frame(current)?, self.frame(reference)?);
             let distance = current.abs_diff(reference);
             let motion = hme::search(
-                &pair.0.pyramid,
-                &pair.1.pyramid,
+                &now.pyramid,
+                &then.pyramid,
                 distance,
                 self.ranges,
                 self.pool.as_ref(),
             );
-            self.motion.insert((current, reference), motion);
+            let level = self.shift as usize;
+            let planes = (now.pyramid.level(level), then.pyramid.level(level));
+            let blocks = self.block_motion(planes, &motion);
+            self.motion.insert((current, reference), blocks);
         }
-        let motion = self.motion.get(&(current, reference))?;
-        let level = self.shift as usize;
-        let pair = (self.frame(current)?, self.frame(reference)?);
-        Some(self.block_motion(
-            (pair.0.pyramid.level(level), pair.1.pyramid.level(level)),
-            motion,
-        ))
+        self.motion.get(&(current, reference)).map(Vec::as_slice)
     }
 
     /// Frame `display_index`; the held frames have consecutive indices.
@@ -229,68 +229,55 @@ impl Lookahead {
     /// Each analysis block's prediction from the open-loop `motion`: the
     /// SATD at the lowest SAD within one sample of the vectors of its luma
     /// area, of its quadrants and of the left block, the first on a tie.
-    fn block_motion(
-        &self,
-        (current, reference): (&Plane, &Plane),
-        motion: &FrameMotion,
-    ) -> Vec<BlockMotion> {
+    fn block_motion(&self, planes: (&Plane, &Plane), motion: &FrameMotion) -> Vec<BlockMotion> {
         let size = self.shift as usize;
         let ((stride, blocks), (sub_stride, sub_blocks)) =
             (motion.blocks(size), motion.blocks(size - 1));
-        let scaled = |found: Option<&Motion>| {
-            found.map(|found| found.mv.map(|v| i32::from(v) >> self.shift))
-        };
+        let scaled = |found: &Motion| found.mv.map(|v| i32::from(v) >> self.shift);
         let mut out: Vec<BlockMotion> = Vec::with_capacity(self.cols * self.rows);
         for row in 0..self.rows {
             for col in 0..self.cols {
-                let (x, y) = ((col * BLOCK) as i32, (row * BLOCK) as i32);
-                let mut best = BlockMotion {
-                    cost: u32::MAX,
-                    mv: (0, 0),
-                };
-                let Some(source) = current.block8(x, y) else {
-                    out.push(best);
-                    continue;
-                };
+                let at = ((col * BLOCK) as i32, (row * BLOCK) as i32);
                 let sub =
                     |i: usize| sub_blocks.get((2 * row + i / 2) * sub_stride + 2 * col + i % 2);
+                let found = [blocks.get(row * stride + col)]
+                    .into_iter()
+                    .chain((0..4).map(sub));
                 let left = (col > 0)
                     .then(|| out[out.len() - 1].mv)
                     .map(|(x, y)| [x, y]);
-                let centres = [scaled(blocks.get(row * stride + col))]
-                    .into_iter()
-                    .chain((0..4).map(|i| scaled(sub(i))))
-                    .chain([left])
-                    .flatten();
-                let mut chosen = (u32::MAX, None);
-                for [cx, cy] in centres {
-                    for mv in [0, -1, 1]
-                        .into_iter()
-                        .flat_map(|dy| [0, -1, 1].map(|dx| (cx + dx, cy + dy)))
-                    {
-                        if let Some(prediction) = reference.block8(x + mv.0, y + mv.1) {
-                            let sad = kernels().sad(
-                                &source,
-                                BLOCK,
-                                &prediction,
-                                BLOCK,
-                                BlockDims::SQUARE_8,
-                            );
-                            if sad < chosen.0 {
-                                chosen = (sad, Some((mv, prediction)));
-                            }
-                        }
+                let (mut centres, mut count) = ([[0; 2]; 6], 0);
+                for centre in found.flatten().map(scaled).chain(left) {
+                    if !centres[..count].contains(&centre) {
+                        centres[count] = centre;
+                        count += 1;
                     }
                 }
-                if let (_, Some((mv, prediction))) = chosen {
+                let mut chosen: Option<(u32, [i32; 2])> = None;
+                for &centre in &centres[..count] {
+                    if let Some(near) = hme::best_near(planes, at, centre)
+                        && chosen.is_none_or(|(sad, _)| near.0 < sad)
+                    {
+                        chosen = Some(near);
+                    }
+                }
+                let cost = chosen.and_then(|(_, mv)| {
+                    let source = planes.0.block8(at.0, at.1)?;
+                    let prediction = planes.1.block8(at.0 + mv[0], at.1 + mv[1])?;
                     let satd =
                         kernels().satd(&source, BLOCK, &prediction, BLOCK, BlockDims::SQUARE_8);
-                    best = BlockMotion {
-                        cost: u32::try_from(satd).unwrap_or(u32::MAX),
-                        mv,
-                    };
-                }
-                out.push(best);
+                    Some((u32::try_from(satd).unwrap_or(u32::MAX), mv))
+                });
+                out.push(cost.map_or(
+                    BlockMotion {
+                        cost: u32::MAX,
+                        mv: (0, 0),
+                    },
+                    |(cost, mv)| BlockMotion {
+                        cost,
+                        mv: (mv[0], mv[1]),
+                    },
+                ));
             }
         }
         out

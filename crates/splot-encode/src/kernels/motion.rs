@@ -10,9 +10,9 @@
 //! is at most `64 * 255`, so a `u16` row accumulator cannot overflow; sums
 //! of SADs wrap in `u32` on both paths.
 
-use std::simd::Simd;
 use std::simd::cmp::{SimdOrd as _, SimdPartialEq as _};
 use std::simd::num::SimdUint as _;
+use std::simd::{Simd, simd_swizzle};
 
 /// The positions one SAD call scores, one sample apart horizontally.
 pub(crate) const WAYS: usize = 4;
@@ -81,7 +81,7 @@ pub(super) fn sad8x8_x4_scalar(
 }
 
 /// [`sad8x8_x4_scalar`] with each source row loaded once for the four
-/// positions, in eight `u16` lanes per position.
+/// positions, two horizontally adjacent blocks per 16-lane row.
 pub(super) fn sad8x8_x4_simd(
     (src, src_stride): (&[u8], usize),
     (refs, ref_stride): (&[u8], usize),
@@ -93,19 +93,44 @@ pub(super) fn sad8x8_x4_simd(
         out.fill([u32::MAX; WAYS]);
         return;
     }
-    for (index, sads) in out.iter_mut().enumerate().take(cols * rows) {
-        let (x, y) = (index % cols * 8, index / cols * 8);
-        let mut acc = [Simd::<u16, 8>::splat(0); WAYS];
-        for row in y..y + 8 {
-            let source = Simd::<u8, 8>::from_slice(&src[row * src_stride + x..]);
-            let candidates = &refs[row * ref_stride + x..];
-            for (lane, acc) in acc.iter_mut().enumerate() {
-                let candidate = Simd::<u8, 8>::from_slice(&candidates[lane..]);
-                *acc += (source.simd_max(candidate) - source.simd_min(candidate)).cast::<u16>();
-            }
+    for block_row in 0..rows {
+        let y = block_row * 8;
+        let mut col = 0;
+        while col + 2 <= cols {
+            let acc = row_sads::<16>((src, src_stride), (refs, ref_stride), (col * 8, y));
+            let index = block_row * cols + col;
+            out[index] =
+                acc.map(|acc| u32::from(simd_swizzle!(acc, [0, 1, 2, 3, 4, 5, 6, 7]).reduce_sum()));
+            out[index + 1] = acc.map(|acc| {
+                u32::from(simd_swizzle!(acc, [8, 9, 10, 11, 12, 13, 14, 15]).reduce_sum())
+            });
+            col += 2;
         }
-        *sads = acc.map(|acc| u32::from(acc.reduce_sum()));
+        if col < cols {
+            let acc = row_sads::<8>((src, src_stride), (refs, ref_stride), (col * 8, y));
+            out[block_row * cols + col] = acc.map(|acc| u32::from(acc.reduce_sum()));
+        }
     }
+}
+
+/// The per-column `|d|` sums over eight rows of an `L`-wide strip at `(x, y)`,
+/// one accumulator per position.
+#[inline]
+fn row_sads<const L: usize>(
+    (src, src_stride): (&[u8], usize),
+    (refs, ref_stride): (&[u8], usize),
+    (x, y): (usize, usize),
+) -> [Simd<u16, L>; WAYS] {
+    let mut acc = [Simd::<u16, L>::splat(0); WAYS];
+    for row in y..y + 8 {
+        let source = Simd::<u8, L>::from_slice(&src[row * src_stride + x..]);
+        let candidates = &refs[row * ref_stride + x..];
+        for (lane, acc) in acc.iter_mut().enumerate() {
+            let candidate = Simd::<u8, L>::from_slice(&candidates[lane..]);
+            *acc += (source.simd_max(candidate) - source.simd_min(candidate)).cast::<u16>();
+        }
+    }
+    acc
 }
 
 /// `out[i]`: the wrapping sum of each 2x2 group of a `cols`-wide grid of

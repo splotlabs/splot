@@ -9,9 +9,9 @@
 //! motion of a frame against another is searched per superblock: a full
 //! search on the quarter level over the preset's `hme_range`, scaled by the
 //! frames' distance; a refinement of [`REFINE`] samples on the half level;
-//! then full searches at full resolution over the preset's `me_range` around
-//! the zero vector and around that centre, the second shrunk when the
-//! half-level SAD and vector are small. Each level first scores the zero (or inherited) vector,
+//! then full searches at full resolution around the zero vector over half
+//! the preset's `me_range` and around that centre over `me_range`, shrunk
+//! when the half-level SAD and vector are small. Each level first scores the zero (or inherited) vector,
 //! so ties keep it. Every
 //! position scores the superblock's 8x8 blocks four horizontal positions at
 //! a time; their SADs sum to 16x16, 32x32 and 64x64 blocks, and each block
@@ -34,7 +34,7 @@ const PAD: usize = 128;
 /// The half-level refinement radius around the quarter-level vector.
 const REFINE: i16 = 2;
 /// The reference distance beyond which the coarse range stops growing.
-const MAX_DISTANCE_SCALE: u64 = 4;
+const MAX_DISTANCE_SCALE: u64 = 2;
 /// Mean half-level SADs per sample at or below which the full-resolution
 /// range halves, and quarters when the vector is also within
 /// [`STILL_MV`] full samples.
@@ -122,6 +122,38 @@ impl Plane {
             u16::from(block[i / 8 * self.stride + i % 8])
         }))
     }
+}
+
+/// The lowest SAD of the 8x8 block of `current` at `(x, y)` against
+/// `reference` within one sample of `centre`, and its vector; `centre` wins
+/// a tie, then the vectors in `[0, -1, 1]` order by row and column. `None`
+/// when no position fits the padded planes.
+pub(crate) fn best_near(
+    (current, reference): (&Plane, &Plane),
+    (x, y): (i32, i32),
+    centre: [i32; 2],
+) -> Option<(u32, [i32; 2])> {
+    let source = current.block(x, y, 8, 8)?;
+    let mut best: Option<(u32, [i32; 2])> = None;
+    for dy in [0, -1, 1] {
+        let (left, top) = (x + centre[0] - 1, y + centre[1] + dy);
+        let Some(candidate) = reference.block(left, top, 8 + WAYS - 1, 8) else {
+            continue;
+        };
+        let mut sads = [[0; WAYS]];
+        kernels().sad8x8_x4(
+            (source, current.stride),
+            (candidate, reference.stride),
+            1,
+            &mut sads,
+        );
+        for (lane, dx) in [(1, 0), (0, -1), (2, 1)] {
+            if best.is_none_or(|(sad, _)| sads[0][lane] < sad) {
+                best = Some((sads[0][lane], [centre[0] + dx, centre[1] + dy]));
+            }
+        }
+    }
+    best
 }
 
 /// The full-resolution, half and quarter levels of one frame's luma.
@@ -265,7 +297,11 @@ fn search_superblock(
     } else {
         full
     };
-    let windows = [([0, 0], 0), ([0, 0], full), (centre, shrunk.max(1))];
+    let windows = [
+        ([0, 0], 0),
+        ([0, 0], (full / 2).max(1)),
+        (centre, shrunk.max(1)),
+    ];
     level(0, &windows[..if centre == [0, 0] { 2 } else { 3 }])
 }
 
@@ -386,7 +422,7 @@ mod tests {
             assert_eq!(found, total, "size {size}");
         }
         let narrow = Ranges {
-            coarse: 3,
+            coarse: 5,
             ..ranges
         };
         let near = search(&current, &reference, 1, narrow, None);
@@ -394,7 +430,7 @@ mod tests {
             near.blocks(1).1.iter().all(|m| m.mv != [-37, 0]),
             "the coarse range bounds the search"
         );
-        let far = search(&current, &reference, 4, narrow, None);
+        let far = search(&current, &reference, 2, narrow, None);
         let found = far.blocks(1).1.iter().filter(|m| m.mv == [-37, 0]).count();
         assert!(found >= 30, "distance scales the range: {found}");
     }

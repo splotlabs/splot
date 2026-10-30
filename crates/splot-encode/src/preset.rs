@@ -62,13 +62,11 @@ pub struct PresetParams {
     pub motion_range: u16,
     /// Open-loop motion estimation of the lookahead: the radius of the
     /// quarter-resolution search against the adjacent frame, in quarter
-    /// samples; the radius grows with the reference distance up to four
-    /// frames.
+    /// samples; the radius doubles for references two or more frames away.
     pub hme_range: u8,
-    /// Open-loop motion estimation of the lookahead: the radius of the
-    /// full-resolution searches around the zero and the coarse vector, in
-    /// luma samples. At least 8 in every row: the lookahead search it
-    /// replaced covered 8 samples around zero at every preset.
+    /// Open-loop motion estimation of the lookahead: the radius, in luma
+    /// samples, of the full-resolution search around the coarse vector; the
+    /// search around the zero vector covers half of it.
     pub me_range: u8,
     /// Sub-pel refinement depth: `0` full-pel, `1` half, `2` quarter, `3` eighth.
     pub subpel_depth: u8,
@@ -574,8 +572,8 @@ preset_table! {
     }
     inter {
         motion_range:          [  256,   192,   128,    96,    64,    64,    48,    32,    24,    16,    16],
-        hme_range:             [   24,    24,    24,    20,    20,    16,    16,    16,    16,    16,    16],
-        me_range:              [   16,    16,    16,    12,    12,     8,     8,     8,     8,     8,     8],
+        hme_range:             [   16,    16,    16,    12,    12,     8,     8,     8,     8,     8,     8],
+        me_range:              [   16,    16,    16,    12,    12,     8,     8,     8,     6,     4,     4],
         subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     0],
         eighth_pel_max_qindex: [  128,   128,   128,     0,     0,     0,     0,     0,     0,     0,     0],
         compound_candidates:   [    8,     8,     6,     6,     4,     4,     3,     2,     1,     0,     0],
