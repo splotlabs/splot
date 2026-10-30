@@ -527,11 +527,19 @@ impl Recon {
         (sub_x, sub_y): (usize, usize),
     ) -> Result<Vec<(PlaneId, PlaneRect, Vec<u16>)>> {
         let mut samples = Vec::with_capacity(3);
+        let planes = if self.workspace.info().pixel_format().is_monochrome() {
+            1
+        } else {
+            3
+        };
         for (plane, (sx, sy)) in [
             (PlaneId::Y, (0, 0)),
             (PlaneId::U, (sub_x, sub_y)),
             (PlaneId::V, (sub_x, sub_y)),
-        ] {
+        ]
+        .into_iter()
+        .take(planes)
+        {
             let size = self
                 .workspace
                 .plane(plane)

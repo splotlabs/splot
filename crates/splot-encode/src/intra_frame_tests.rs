@@ -30,7 +30,9 @@ fn synthetic_frame(config: &Config, seed: u32) -> SourceFrame {
     let sizes = config.plane_sizes().unwrap();
     let mut state = seed.wrapping_mul(2_654_435_761) | 1;
     let planes = core::array::from_fn(|plane| {
-        let size = sizes[plane];
+        let Some(&size) = sizes.get(plane) else {
+            return Vec::new();
+        };
         let mut samples = Vec::with_capacity(size.width() * size.height());
         for y in 0..size.height() {
             for x in 0..size.width() {
@@ -101,14 +103,15 @@ const CASES: [(u32, u32, BitDepth, u8, u16); 8] = [
 ];
 
 /// Every chroma format the encoder codes.
-const CHROMAS: [PixelFormat; 3] = [
+const CHROMAS: [PixelFormat; 4] = [
     PixelFormat::Yuv420,
     PixelFormat::Yuv422,
     PixelFormat::Yuv444,
+    PixelFormat::Monochrome,
 ];
 
-/// Each case of `cases` in 4:2:0, and the cases at `extra` in 4:2:2 and
-/// 4:4:4, with its index and name.
+/// Each case of `cases` in 4:2:0, and the cases at `extra` in 4:2:2, 4:4:4
+/// and monochrome, with its index and name.
 fn format_cases(
     cases: &'static [(u32, u32, BitDepth, u8, u16)],
     extra: &'static [usize],
@@ -164,6 +167,43 @@ fn inter_frames_decode_to_the_encoder_recon_over_several_gops() {
             .flat_map(|frame| recon_bytes(frame, config.bit_depth))
             .collect();
         assert_same_samples(&decode(&stream), &expected, &name);
+    }
+}
+
+/// A monochrome key frame and two inter frames that reference it code luma
+/// alone, decode to the encoder recon with every loop filter of the preset
+/// row, and write the same bytes on 1, 2 and 8 threads.
+#[test]
+fn monochrome_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    for (preset, bit_depth) in [(6u8, BitDepth::Ten), (9, BitDepth::Eight)] {
+        let stream = |threads: usize| {
+            let mut config = config(72, 40, bit_depth, preset, 120);
+            config.chroma = PixelFormat::Monochrome;
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            code_stream(&config, &[3, 4, 5])
+        };
+        let coded = stream(1);
+        let types: Vec<_> = coded.iter().map(|frame| frame.frame_type).collect();
+        assert_eq!(types, [FrameType::Key, FrameType::Inter, FrameType::Inter]);
+        assert!(
+            coded
+                .iter()
+                .all(|f| f.recon[1].is_empty() && f.recon[2].is_empty())
+        );
+        let units: Vec<u8> = coded.iter().flat_map(|f| f.temporal_unit.clone()).collect();
+        let expected: Vec<u8> = coded
+            .iter()
+            .flat_map(|frame| recon_bytes(frame, bit_depth))
+            .collect();
+        let name = format!("preset {preset}");
+        assert_same_samples(&decode(&units), &expected, &name);
+        for threads in [2, 8] {
+            let other: Vec<u8> = stream(threads)
+                .iter()
+                .flat_map(|f| f.temporal_unit.clone())
+                .collect();
+            assert!(other == units, "{name}: {threads} threads");
+        }
     }
 }
 
@@ -535,7 +575,9 @@ fn panning_frame(config: &Config, index: u32) -> SourceFrame {
     let max = u32::from(config.bit_depth.max_sample());
     let sizes = config.plane_sizes().unwrap();
     let planes = core::array::from_fn(|plane| {
-        let size = sizes[plane];
+        let Some(&size) = sizes.get(plane) else {
+            return Vec::new();
+        };
         let (sx, sy) = match plane {
             0 => (0, 0),
             _ => (config.chroma.subsampling_x(), config.chroma.subsampling_y()),
