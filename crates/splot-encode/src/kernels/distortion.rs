@@ -9,7 +9,7 @@
 //! result: `|d| <= 65535` keeps a SAD lane of a 256x256 block below `2^28`
 //! and its whole `u32` sum below `2^32` (`65536 * 65535`), `d * d` fits `u32`
 //! before it widens into `u64` lanes, and an 8x8 Hadamard coefficient stays
-//! below `64 * 65535`.
+//! below `64 * 65535`, so one tile's magnitudes also sum in `u32`.
 
 use std::simd::num::{SimdInt as _, SimdUint as _};
 use std::simd::{Simd, cmp::SimdOrd as _, simd_swizzle};
@@ -330,28 +330,69 @@ pub(super) fn satd_simd(
         let a = src.get(y * src_stride + x..).unwrap_or_default();
         let b = pred.get(y * pred_stride + x..).unwrap_or_default();
         total += if tile == 8 {
-            satd_tile_lanes::<8>(a, src_stride, b, pred_stride, hadamard_rows8)
+            satd_tile8(a, src_stride, b, pred_stride)
         } else {
-            satd_tile_lanes::<4>(a, src_stride, b, pred_stride, hadamard_rows4)
+            satd_tile4(a, src_stride, b, pred_stride)
         };
     }
     total
 }
 
-/// One `N x N` SATD tile: a column Hadamard across the row vectors, then a
-/// row Hadamard inside each vector. The row transform permutes its outputs,
-/// which leaves the sum of magnitudes unchanged.
-fn satd_tile_lanes<const N: usize>(
+/// One 4x4 SATD tile: a column Hadamard across the row vectors, then a row
+/// Hadamard inside each vector. The row transform permutes its outputs, which
+/// leaves the sum of magnitudes unchanged.
+fn satd_tile4(src: &[u16], src_stride: usize, pred: &[u16], pred_stride: usize) -> u64 {
+    column_hadamard::<4>(src, src_stride, pred, pred_stride)
+        .iter()
+        .map(|&row| u64::from(hadamard_rows4(row).abs().cast::<u32>().reduce_sum()))
+        .sum()
+}
+
+/// One 8x8 SATD tile. The row Hadamard runs on two rows at once: each
+/// butterfly stage pairs lanes of two vectors with one swizzle per operand,
+/// so it needs no sign multiply, and the magnitudes reduce once per tile.
+fn satd_tile8(src: &[u16], src_stride: usize, pred: &[u16], pred_stride: usize) -> u64 {
+    let rows = column_hadamard::<8>(src, src_stride, pred, pred_stride);
+    let mut acc = Simd::<i32, 8>::splat(0);
+    for [r0, r1] in rows.as_chunks::<2>().0 {
+        let (lo, hi) = (
+            simd_swizzle!(*r0, *r1, [0, 1, 2, 3, 8, 9, 10, 11]),
+            simd_swizzle!(*r0, *r1, [4, 5, 6, 7, 12, 13, 14, 15]),
+        );
+        let (sum, dif) = (lo + hi, lo - hi);
+        let (lo, hi) = (
+            simd_swizzle!(sum, dif, [0, 1, 8, 9, 4, 5, 12, 13]),
+            simd_swizzle!(sum, dif, [2, 3, 10, 11, 6, 7, 14, 15]),
+        );
+        let (sum, dif) = (lo + hi, lo - hi);
+        let (lo, hi) = (
+            simd_swizzle!(sum, dif, [0, 2, 4, 6, 8, 10, 12, 14]),
+            simd_swizzle!(sum, dif, [1, 3, 5, 7, 9, 11, 13, 15]),
+        );
+        acc += (lo + hi).abs() + (lo - hi).abs();
+    }
+    u64::from(acc.cast::<u32>().reduce_sum())
+}
+
+/// The `src - pred` rows of an `N x N` tile after the column Hadamard, with
+/// one bounds check per tile when both slices hold it. Rows and samples that
+/// a short slice does not hold count as zero.
+fn column_hadamard<const N: usize>(
     src: &[u16],
     src_stride: usize,
     pred: &[u16],
     pred_stride: usize,
-    row_hadamard: fn(Simd<i32, N>) -> Simd<i32, N>,
-) -> u64 {
+) -> [Simd<i32, N>; N] {
+    let end = |stride: usize| (N - 1) * stride + N;
     let mut v = [Simd::<i32, N>::splat(0); N];
-    for (i, slot) in v.iter_mut().enumerate() {
-        let load = |s: &[u16], stride: usize| {
-            let row = s.get(i * stride..).unwrap_or_default();
+    if let (Some(a), Some(b)) = (src.get(..end(src_stride)), pred.get(..end(pred_stride))) {
+        let row = |s: &[u16], at: usize| Simd::<u16, N>::from_slice(&s[at..at + N]).cast::<i32>();
+        for (i, slot) in v.iter_mut().enumerate() {
+            *slot = row(a, i * src_stride) - row(b, i * pred_stride);
+        }
+    } else {
+        let row = |s: &[u16], at: usize| {
+            let row = s.get(at..).unwrap_or_default();
             let row = row.first_chunk::<N>().copied().unwrap_or_else(|| {
                 let mut tail = [0u16; N];
                 tail[..row.len()].copy_from_slice(row);
@@ -359,7 +400,9 @@ fn satd_tile_lanes<const N: usize>(
             });
             Simd::from_array(row).cast::<i32>()
         };
-        *slot = load(src, src_stride) - load(pred, pred_stride);
+        for (i, slot) in v.iter_mut().enumerate() {
+            *slot = row(src, i * src_stride) - row(pred, i * pred_stride);
+        }
     }
     let mut half = 1;
     while half < N {
@@ -372,9 +415,7 @@ fn satd_tile_lanes<const N: usize>(
         }
         half *= 2;
     }
-    v.iter()
-        .map(|&row| u64::from(row_hadamard(row).abs().cast::<u32>().reduce_sum()))
-        .sum()
+    v
 }
 
 fn hadamard_rows4(v: Simd<i32, 4>) -> Simd<i32, 4> {
@@ -382,18 +423,6 @@ fn hadamard_rows4(v: Simd<i32, 4>) -> Simd<i32, 4> {
         + simd_swizzle!(v, [1, 1, 3, 3]) * Simd::from_array([1, -1, 1, -1]);
     simd_swizzle!(v, [0, 1, 0, 1])
         + simd_swizzle!(v, [2, 3, 2, 3]) * Simd::from_array([1, 1, -1, -1])
-}
-
-fn hadamard_rows8(v: Simd<i32, 8>) -> Simd<i32, 8> {
-    let v = simd_swizzle!(v, [0, 0, 2, 2, 4, 4, 6, 6])
-        + simd_swizzle!(v, [1, 1, 3, 3, 5, 5, 7, 7])
-            * Simd::from_array([1, -1, 1, -1, 1, -1, 1, -1]);
-    let v = simd_swizzle!(v, [0, 1, 0, 1, 4, 5, 4, 5])
-        + simd_swizzle!(v, [2, 3, 2, 3, 6, 7, 6, 7])
-            * Simd::from_array([1, 1, -1, -1, 1, 1, -1, -1]);
-    simd_swizzle!(v, [0, 1, 2, 3, 0, 1, 2, 3])
-        + simd_swizzle!(v, [4, 5, 6, 7, 4, 5, 6, 7])
-            * Simd::from_array([1, 1, 1, 1, -1, -1, -1, -1])
 }
 
 #[cfg(test)]
