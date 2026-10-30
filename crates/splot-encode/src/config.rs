@@ -93,6 +93,10 @@ pub struct Config {
     pub tiles: TileLayout,
     /// Distance between key frames, in frames.
     pub keyint: NonZeroU32,
+    /// Fixed-ratio resize: every frame is coded at `8 / denominator` of the
+    /// input size per axis, `9..=16`; `None` codes the input size. AV2 has no
+    /// superres, so the stream decodes to the coded size.
+    pub resize_denominator: Option<u8>,
     /// Film grain: every key frame codes a grain model fitted to the noise of
     /// its source (none under a threshold), and every output frame applies it
     /// (§ 5.14, § 5.18.10.1). Off by default; TIP output frames stay off.
@@ -107,6 +111,10 @@ impl Config {
         Some(keyint) => keyint,
         None => NonZeroU32::MIN,
     };
+
+    /// The `resize_denominator` range: down to half size, the largest step
+    /// of the § 7.13.3.18 resampler.
+    pub const RESIZE_DENOMINATORS: core::ops::RangeInclusive<u8> = 9..=16;
 
     /// Creates an 8-bit 4:2:0 configuration at 30 fps with default settings.
     #[must_use]
@@ -125,6 +133,7 @@ impl Config {
             threads: ThreadCount::Auto,
             tiles: TileLayout::default(),
             keyint: Self::DEFAULT_KEYINT,
+            resize_denominator: None,
             film_grain: false,
         }
     }
@@ -132,7 +141,8 @@ impl Config {
     /// Checks that the encoder supports this configuration.
     ///
     /// # Errors
-    /// Returns [`Error::InvalidDimensions`], [`Error::InvalidFrameRate`], [`Error::InvalidTiles`], [`Error::InvalidQp`],
+    /// Returns [`Error::InvalidDimensions`], [`Error::InvalidResize`],
+    /// [`Error::InvalidFrameRate`], [`Error::InvalidTiles`], [`Error::InvalidQp`],
     /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`] or [`Error::Preset`].
     pub fn validate(&self) -> Result<()> {
         self.override_preset(self.preset.params())?;
@@ -143,6 +153,11 @@ impl Config {
                 width: self.width,
                 height: self.height,
             });
+        }
+        if let Some(denominator) = self.resize_denominator
+            && !Self::RESIZE_DENOMINATORS.contains(&denominator)
+        {
+            return Err(Error::InvalidResize { denominator });
         }
         if self.frame_rate.0 == 0 || self.frame_rate.1 == 0 {
             return Err(Error::InvalidFrameRate {
@@ -173,6 +188,31 @@ impl Config {
                 buffer_ms,
             } => check_bitrate(bitrate_kbps, Some(buffer_ms), self.frame_rate),
             _ => Ok(()),
+        }
+    }
+
+    /// The configuration of the coded frames: the frame size after
+    /// [`Self::resize_denominator`], which it clears. A denominator outside
+    /// [`Self::RESIZE_DENOMINATORS`], which [`Self::validate`] rejects, keeps
+    /// the input size.
+    #[must_use]
+    pub fn coded(&self) -> Self {
+        let Some(denominator) = self
+            .resize_denominator
+            .filter(|denominator| Self::RESIZE_DENOMINATORS.contains(denominator))
+        else {
+            return self.clone();
+        };
+        let scale = |value: u32| {
+            let scaled =
+                (u64::from(value) * 8 + u64::from(denominator / 2)) / u64::from(denominator);
+            u32::try_from(scaled).unwrap_or(value).max(1)
+        };
+        Self {
+            width: scale(self.width),
+            height: scale(self.height),
+            resize_denominator: None,
+            ..self.clone()
         }
     }
 
@@ -311,5 +351,31 @@ mod tests {
         assert!(config.validate().is_ok());
         assert_eq!(config.plane_sizes()?, [y]);
         Ok(())
+    }
+
+    #[test]
+    fn resize_scales_the_coded_size_by_8_over_the_denominator() {
+        let mut config = Config::new(160, 90);
+        assert_eq!(config.coded(), config);
+        for (denominator, size) in [(9, (142, 80)), (12, (107, 60)), (16, (80, 45))] {
+            config.resize_denominator = Some(denominator);
+            assert!(config.validate().is_ok());
+            let coded = config.coded();
+            assert_eq!(
+                ((coded.width, coded.height), coded.resize_denominator),
+                (size, None)
+            );
+        }
+        config.width = 1;
+        assert_eq!(config.coded().width, 1);
+        config.width = 160;
+        for denominator in [0, 8, 17] {
+            config.resize_denominator = Some(denominator);
+            assert_eq!((config.coded().width, config.coded().height), (160, 90));
+            assert!(matches!(
+                config.validate(),
+                Err(Error::InvalidResize { denominator: d }) if d == denominator
+            ));
+        }
     }
 }

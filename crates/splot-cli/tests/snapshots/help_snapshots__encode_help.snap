@@ -23,6 +23,7 @@ Options:
       --threads <THREADS>         Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto) [default: auto]
       --tiles <TILES>             Tile columns x rows, each a power of two up to 64. More tiles code faster on more threads and cost some compression [default: 1x1]
       --limit <LIMIT>             Stop after this many input frames
+      --resize-denominator <D>    Fixed-ratio resize: codes every frame at 8/D of the input size per axis, D in 9..=16; off by default. The IVF, its decode and the `--stats` PSNR (against the resized source) are at the coded size
       --film-grain                Film grain: each key frame codes a grain model fitted to the noise of its source, and every output frame applies it at decode; off by default. The encoder does not denoise, so the stats PSNR does not include the grain
       --keyint <KEYINT>           Distance between key frames, in frames [default: 120]
       --stats                     Print `frame,pts,qp,bits,psnr_y,psnr_u,psnr_v` CSV lines to stdout

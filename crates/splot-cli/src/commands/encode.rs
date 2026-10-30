@@ -61,6 +61,11 @@ pub(crate) struct EncodeArgs {
     /// Stop after this many input frames.
     #[arg(long)]
     limit: Option<NonZeroU64>,
+    /// Fixed-ratio resize: codes every frame at 8/D of the input size per
+    /// axis, D in 9..=16; off by default. The IVF, its decode and the
+    /// `--stats` PSNR (against the resized source) are at the coded size.
+    #[arg(long, value_name = "D")]
+    resize_denominator: Option<u8>,
     /// Film grain: each key frame codes a grain model fitted to the noise of
     /// its source, and every output frame applies it at decode; off by
     /// default. The encoder does not denoise, so the stats PSNR does not
@@ -172,6 +177,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.threads = args.threads;
     config.tiles = args.tiles;
     config.keyint = args.keyint;
+    config.resize_denominator = args.resize_denominator;
     config.film_grain = args.film_grain;
     if u16::try_from(header.width).is_err() || u16::try_from(header.height).is_err() {
         bail!("IVF output supports at most 65535 samples per side");

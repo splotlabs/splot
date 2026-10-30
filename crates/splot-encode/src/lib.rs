@@ -36,6 +36,7 @@ mod palette;
 pub mod preset;
 pub mod rate_control;
 mod rd;
+mod resize;
 mod screen;
 pub mod stats;
 #[cfg(test)]
