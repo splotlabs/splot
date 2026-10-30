@@ -47,6 +47,7 @@ use crate::tile_writer::coeffs::eob;
 use crate::tile_writer::{
     KeyFrameTileWriter, ResidualCoder, SuperblockDecision, TileWriterError, TransformDecision,
 };
+use crate::tpl;
 use crate::tx_choice;
 
 /// The TCQ trellis multiplier in percent of the RDOQ one: measured best near
@@ -55,8 +56,6 @@ use crate::tx_choice;
 const TCQ_LAMBDA_PERCENT: u64 = 60;
 /// Quantizer deadzone in Q8 (`128` rounds to nearest).
 const DEADZONE_ROUNDING_Q8: u32 = 96;
-/// `delta_q_res` of a frame with superblock qindex offsets: a qindex step of 4.
-const DELTA_Q_RES: u8 = 2;
 /// `avg_cdf_type` of a stream that carries CDFs: `true` averages the saved
 /// CDFs across tiles, `false` blends the primary reference's CDFs with a
 /// second reference's.
@@ -80,6 +79,8 @@ pub(crate) struct IntraFrameCoder {
     tiles: UniformTiles,
     /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
     pool: Option<WorkerPool>,
+    /// The block importances of the next frames to code.
+    importance: tpl::BlockImportance,
     /// Show-existing frames output so far, which seed their film grain.
     shown_existing: u64,
     /// The last committed key frame coded a film grain model, which the
@@ -184,6 +185,7 @@ impl IntraFrameCoder {
                 .then(|| WorkerPool::new(config.threads))
                 .transpose()
                 .map_err(coding("worker pool"))?,
+            importance: tpl::BlockImportance::default(),
             shown_existing: 0,
             grain_active: false,
             warp_gate: crate::warp::WarpGate::default(),
@@ -194,8 +196,12 @@ impl IntraFrameCoder {
 impl FrameCoder for IntraFrameCoder {
     fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>> {
         map_tiles(self.pool.as_ref(), wave.to_vec(), |(source, plan, qp)| {
-            self.code_frame(source, &plan, qp, &[])
+            self.code_frame(source, &plan, qp, &self.superblock_quant(&plan))
         })
+    }
+
+    fn set_block_importance(&mut self, importance: tpl::BlockImportance) {
+        self.importance = importance;
     }
 
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
@@ -276,6 +282,33 @@ impl IntraFrameCoder {
             cfl_ds_filter: index,
             ..self.params.tools
         })
+    }
+
+    /// The `(qindex offset, lambda log2 Q8)` of each superblock of `plan`
+    /// from its block importances; empty without them or when every offset
+    /// snaps to 0 at the `delta_q_res` step, which codes no `delta_q_present`
+    /// and keeps the frame lambda.
+    fn superblock_quant(&self, plan: &GopFrame) -> Vec<(i16, i16)> {
+        let Some(costs) = self.importance.frames.get(&plan.display_index) else {
+            return Vec::new();
+        };
+        let sb = match self.params.sb_size {
+            SuperblockSize::Block64x64 => 64,
+            SuperblockSize::Block128x128 => 128,
+            SuperblockSize::Block256x256 => 256,
+        };
+        let (width, height) = (self.params.width as usize, self.params.height as usize);
+        let quant = tpl::superblock_quant(
+            costs,
+            self.importance.grid,
+            (width.div_ceil(sb), height.div_ceil(sb), sb),
+            self.importance.strength,
+        );
+        let half_step = (1 << self.preset.delta_q_res) >> 1;
+        if quant.iter().all(|&(offset, _)| offset.abs() <= half_step) {
+            return Vec::new();
+        }
+        quant
     }
 
     /// The `tip_global_wtd_index` whose TIP prediction of `source` has the
@@ -368,14 +401,15 @@ impl IntraFrameCoder {
     }
 
     /// Codes `source` as `plan` at quantizer `qp` against the committed
-    /// references; non-empty `sb_offsets`, one entry per superblock in frame
-    /// raster order, moves the qindex of each superblock through `delta_q`.
+    /// references; non-empty `sb_quant`, one `(qindex offset, lambda log2
+    /// Q8)` per superblock in frame raster order, moves the qindex of each
+    /// superblock through `delta_q` and scales its lambda.
     fn code_frame(
         &self,
         source: &SourceFrame,
         plan: &GopFrame,
         qp: u16,
-        sb_offsets: &[i16],
+        sb_quant: &[(i16, i16)],
     ) -> Result<CodedFrame> {
         let plan = &GopFrame {
             primary_slot: plan.primary_slot.filter(|_| self.preset.cdf_carry),
@@ -385,7 +419,7 @@ impl IntraFrameCoder {
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
         tools.2.6 &= self.warp_gate.allows(plan.layer);
-        tools.0.delta_q_res = (!sb_offsets.is_empty()).then_some(DELTA_Q_RES);
+        tools.0.delta_q_res = (!sb_quant.is_empty()).then_some(self.preset.delta_q_res);
         let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
         tools.0.grain_seed = grain_seed;
         if tools.2.3.is_some() || tools.2.5 != 0 {
@@ -439,7 +473,7 @@ impl IntraFrameCoder {
         let (padded, motion, bv_search) = (&padded, motion.as_ref(), bv_search.as_ref());
         let (bit_depth, preset) = (self.bit_depth, &self.preset);
         let sb_cols = mi_cols.div_ceil(sb / 4);
-        if !sb_offsets.is_empty() && sb_offsets.len() != sb_cols * mi_rows.div_ceil(sb / 4) {
+        if !sb_quant.is_empty() && sb_quant.len() != sb_cols * mi_rows.div_ceil(sb / 4) {
             return Err(Error::Unsupported {
                 what: "superblock offsets that do not cover the superblock grid",
             });
@@ -450,21 +484,26 @@ impl IntraFrameCoder {
             let mut decisions = FrameDecisions::default();
             while let Some(root) = writer.next_superblock_root() {
                 let index = root.row4() / (sb / 4) * sb_cols + root.col4() / (sb / 4);
-                let target = sb_offsets
-                    .get(index)
-                    .map(|&offset| qindex.saturating_add_signed(i32::from(offset)));
-                let lambda = match target {
-                    Some(target) => {
+                let lambda = match sb_quant.get(index) {
+                    Some(&(offset, lambda_log2)) => {
+                        let target = qindex.saturating_add_signed(i32::from(offset));
                         let sb_qindex = writer
                             .set_superblock_qindex(target)
                             .map_err(coding("delta-q"))?;
-                        let lambda =
-                            Lambda::from_qindex(sb_qindex, bit_depth).map_err(coding("lambda"))?;
+                        let applied = 2 * (sb_qindex as i32 - qindex as i32);
+                        let clip_slack = (1 << self.preset.delta_q_res) + 1;
+                        let per_octave = tpl::QINDEX_PER_IMPORTANCE_OCTAVE as i32;
+                        let lambda_log2 = i32::from(lambda_log2).clamp(
+                            (applied - clip_slack) * 128 / per_octave,
+                            (applied + clip_slack) * 128 / per_octave,
+                        );
+                        let lambda = lambda.scaled(lambda_log2);
                         coder.set_quantizer(sb_qindex, lambda);
-                        lambda
+                        (lambda, Some(target))
                     }
-                    None => lambda,
+                    None => (lambda, None),
                 };
+                let (lambda, target) = lambda;
                 let tree = writer
                     .search_superblock(|syntax, root| {
                         let mut trial = TrialCoder::new(syntax, &mut coder, preset, lambda, motion);

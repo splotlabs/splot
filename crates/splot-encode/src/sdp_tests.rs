@@ -49,8 +49,9 @@ fn sdp_stream(case: SdpCase, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>, Tools) {
     let (mut units, mut recon, mut tools) = (Vec::new(), Vec::new(), [false; 7]);
     for index in 0..3 {
         let plan = crate::gop::plan(u64::from(index), config.keyint);
-        let offsets: Vec<i16> = (0..superblocks)
+        let offsets: Vec<(i16, i16)> = (0..superblocks)
             .map(|sb| [-23, 0, 17, -6, 29][(sb * 3 + index as usize) % 5])
+            .map(|offset| (offset, offset * 256 / 12))
             .collect();
         let mut coded = coder
             .code_frame(&panning_frame(&config, index), &plan, QP, &offsets)
