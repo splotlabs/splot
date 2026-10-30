@@ -141,6 +141,9 @@ pub struct EncoderToolFlags {
     /// `enable_six_param_warp_delta` (§ 5.4.6): each inter frame codes
     /// whether its blocks may warp.
     pub warp: bool,
+    /// `enable_global_motion` (§ 5.4.6): each inter frame codes
+    /// `use_global_motion`.
+    pub global_motion: bool,
     /// `enable_masked_compound` (§ 5.4.6): compound blocks may code a wedge
     /// or difference-weighted mask (§ 5.20.7.16).
     pub masked_compound: bool,
@@ -512,7 +515,7 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     for flag in tools.mvd_tools {
         w.write_flag(flag)?; // adaptive_mvd, mvd_sign_derive, flex_mvres
     }
-    w.write_flag(false)?; // enable_global_motion
+    w.write_flag(tools.global_motion)?; // enable_global_motion
     w.write_flag(false) // enable_short_refresh_frame_flags
 }
 

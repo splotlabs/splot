@@ -53,6 +53,19 @@ pub(crate) enum PartitionTree {
     },
 }
 
+impl PartitionTree {
+    /// The leaves of the tree that `keep` accepts.
+    pub(crate) fn count_leaves(&self, keep: &impl Fn(&LeafChoice) -> bool) -> usize {
+        match self {
+            Self::Leaf(choice) => usize::from(keep(choice)),
+            Self::Split { children, .. } => {
+                children.iter().map(|child| child.count_leaves(keep)).sum()
+            }
+            Self::Sdp { luma, chroma } => luma.count_leaves(keep) + chroma.count_leaves(keep),
+        }
+    }
+}
+
 /// The modes and the luma transform partition of one leaf.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LeafChoice {

@@ -58,6 +58,9 @@ pub(crate) struct CodedFrame {
     /// How the inter frame used warped motion; `None` for key frames and for
     /// `TIP_FRAME_AS_OUTPUT` frames, which code no leaves.
     pub(crate) warp: Option<crate::warp::WarpUse>,
+    /// The `GLOBALMV` and `GLOBAL_GLOBALMV` leaves of the coded trees.
+    #[cfg(test)]
+    pub(crate) global_leaves: usize,
 }
 
 /// Codes the frames and show-existing frames of the plan, in coding order.
@@ -78,6 +81,13 @@ pub(crate) trait FrameCoder {
     /// Receives the block importances of the next frames to code, which
     /// replace the previous ones.
     fn set_block_importance(&mut self, _importance: tpl::BlockImportance) {}
+    /// Whether the coder codes global motion models.
+    fn wants_global_motion(&self) -> bool {
+        false
+    }
+    /// Receives the global motion models of the next frames to code, which
+    /// replace the previous ones.
+    fn set_global_motion(&mut self, _models: crate::global_motion::GlobalModels) {}
 }
 
 /// Callback that receives the statistics of every coded frame.
@@ -298,6 +308,10 @@ impl Encoder {
             ),
         });
         let model = tpl::analyze(&mut self.lookahead, &plan, coded_before, blocks);
+        if self.coder.wants_global_motion() {
+            let models = crate::global_motion::estimate(&mut self.lookahead, &plan, coded_before);
+            self.coder.set_global_motion(models);
+        }
         let mut costs = std::collections::BTreeMap::new();
         self.window = plan
             .iter()
@@ -534,6 +548,7 @@ mod tests {
                 reference: None,
                 tip_output: None,
                 warp: None,
+                global_leaves: 0,
             })
         }
     }

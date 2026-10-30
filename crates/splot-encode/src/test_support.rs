@@ -62,8 +62,9 @@ pub(crate) fn avm_decoder() -> Option<PathBuf> {
     Some(path)
 }
 
-/// Decodes the Annex B temporal units `units` of a `width x height` stream
-/// with AVM and returns its raw output.
+/// Decodes the Annex B frames `units` of a `width x height` stream with AVM
+/// and returns its raw output; the IVF file holds one temporal unit per
+/// record, each starting at a temporal delimiter.
 pub(crate) fn avm_decode(
     avmdec: &PathBuf,
     units: &[Vec<u8>],
@@ -71,6 +72,15 @@ pub(crate) fn avm_decode(
     bit_depth: BitDepth,
     name: &str,
 ) -> Vec<u8> {
+    let delimiter = splot_core::headers::frame::encode_temporal_delimiter_obu().unwrap();
+    let mut records: Vec<Vec<u8>> = Vec::new();
+    for unit in units {
+        match records.last_mut() {
+            Some(record) if !unit.starts_with(&delimiter) => record.extend_from_slice(unit),
+            _ => records.push(unit.clone()),
+        }
+    }
+    let units = records.as_slice();
     let work = std::env::temp_dir().join(format!("splot-encode-avm-{}", std::process::id()));
     std::fs::create_dir_all(&work).unwrap();
     let mut ivf = Vec::new();

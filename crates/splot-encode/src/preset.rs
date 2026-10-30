@@ -250,6 +250,10 @@ pub struct PresetParams {
     /// paris -0.57%, park_joy +0.63%, niklas +0.02% at about +9% CPU, and
     /// p0 park_joy +0.20%.
     pub warp: u8,
+    /// Global motion (`enable_global_motion`), `0..=1`: inter frames code
+    /// `use_global_motion` with the models the lookahead estimates. Off in
+    /// every row until the estimator is tuned and measured.
+    pub global_motion: u8,
     /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` searches wedge
     /// and difference-weighted masks (`enable_masked_compound`), `2` also
     /// `cwp_idx` weights (`enable_cwp`). `1` on p0-p8, the rows with compound
@@ -391,7 +395,8 @@ impl PresetParams {
             0,
             MAX_COMPOUND_TYPES,
             "",
-        )
+        )?;
+        check("global_motion", self.global_motion, 0, 1, "")
     }
 }
 
@@ -565,6 +570,7 @@ preset_table! {
         refinemv:              [false, false, false, false, false, false, false, false, false, false, false],
         tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        global_motion:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         joint_newmv:           [false, false, false, false, false, false, false, false, false, false, false],
@@ -729,6 +735,7 @@ mod tests {
             assert!(fast.inter_ist <= slow.inter_ist);
             assert!(fast.tip <= slow.tip);
             assert!(fast.warp <= slow.warp);
+            assert!(fast.global_motion <= slow.global_motion);
             assert!(fast.compound_types <= slow.compound_types);
             assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.joint_newmv <= slow.joint_newmv);
@@ -848,6 +855,7 @@ mod tests {
             (&[("tip_output", "201")], "tip_output"),
             (&[("opfl", "false")], "tip_refinemv"),
             (&[("warp", "3")], "warp"),
+            (&[("global_motion", "2")], "global_motion"),
             (&[("compound_types", "4")], "compound_types"),
         ] {
             let mut params = PRESETS[6];
