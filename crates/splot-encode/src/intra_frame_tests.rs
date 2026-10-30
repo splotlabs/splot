@@ -930,7 +930,8 @@ fn random_modes(
     random_warp_or(syntax, leaf, rng, coverage, InterPrediction::Single(modes))
 }
 
-/// `modes` with a random BAWP in three of four draws of a side generator
+/// `modes` with a random BAWP whose § 7.13.3.25 template lies inside the
+/// reference in three of four draws of a side generator
 /// where the leaf reads it, else a random inter-intra prediction in half the
 /// draws where the leaf reads it, a wedge in half of those where it
 /// reads one; `rng` stays as it was.
@@ -945,15 +946,21 @@ fn random_interintra(
     if side.below(4) != 0 && syntax.bawp_reads(leaf, modes).unwrap_or(false) {
         let explicit_scale = [None, None, Some(true), Some(false)][side.below(4) as usize];
         let chroma = side.below(2) == 0 && leaf.has_chroma();
-        coverage[33] += usize::from(explicit_scale.is_none());
-        coverage[34] += usize::from(explicit_scale.is_some());
-        return InterModes {
+        let bawp = InterModes {
             bawp: Some(Bawp {
                 explicit_scale,
                 chroma,
             }),
             ..modes
         };
+        if syntax
+            .inter_mvs(leaf, InterPrediction::Single(bawp))
+            .is_ok()
+        {
+            coverage[33] += usize::from(explicit_scale.is_none());
+            coverage[34] += usize::from(explicit_scale.is_some());
+            return bawp;
+        }
     }
     let (reads, reads_wedge) = syntax.interintra_reads(leaf).unwrap();
     if !reads || side.below(2) == 0 {

@@ -20,7 +20,7 @@ const MAX_BAWP_RECT_DIM: usize = 64;
 /// [`bawp_template_counts`] caps the template side at 16 luma samples.
 const MAX_TEMPLATE_EXTENT: usize = 16;
 
-const fn to_fullmv(mv: i32) -> i32 {
+pub(super) const fn to_fullmv(mv: i32) -> i32 {
     (mv + 3 + if mv >= 0 { 1 } else { 0 }) >> 3
 }
 

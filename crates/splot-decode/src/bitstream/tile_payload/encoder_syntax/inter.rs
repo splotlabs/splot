@@ -692,6 +692,7 @@ impl IntraTileSyntax {
     pub fn newmv_base(&mut self, leaf: &LeafBlock, modes: InterModes) -> Result<MotionVector> {
         let near = InterModes {
             mode: InterMode::Near,
+            bawp: None,
             ..modes
         };
         let motion = EncoderSingleMotion {
@@ -1524,7 +1525,7 @@ impl IntraTileSyntax {
             use_amvd: modes.amvd && mode == SINGLE_MODE_NEWMV,
             tip,
             interintra: modes.interintra.map(InterIntra::prediction).transpose()?,
-            bawp: modes.bawp,
+            bawp: None,
         };
         if mode == SINGLE_MODE_NEWMV {
             let step = self.newmv_step(&modes);
@@ -1552,6 +1553,18 @@ impl IntraTileSyntax {
                 ));
             }
             motion.mvd = mvd;
+        }
+        if let Some(bawp) = modes.bawp {
+            let tile = &mut self.inter_state()?.tile;
+            if !tile
+                .bawp_conformant(&leaf.frontier, motion)
+                .map_err(rule("BAWP"))?
+            {
+                return Err(EncoderSyntaxError::Unsupported(
+                    "a BAWP template outside the reference",
+                ));
+            }
+            motion.bawp = Some(bawp);
         }
         Ok(motion)
     }

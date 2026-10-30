@@ -423,6 +423,36 @@ impl EncoderInterTile {
         Ok(())
     }
 
+    /// Whether the BAWP template of `single` at `frontier` lies inside every
+    /// plane the block predicts, as § 7.13.3.25 requires of a conformant
+    /// stream: `refX >= 1`, `refY >= 1`, `refX + bw <= planeWidth` and
+    /// `refY + bh <= planeHeight`.
+    pub(crate) fn bawp_conformant(
+        &mut self,
+        frontier: &DecodeBlockFrontier,
+        single: EncoderSingleMotion,
+    ) -> Result<bool> {
+        let mv = self.motion_vector(frontier, single)?;
+        let (n4w, n4h) = block_size4(frontier)?;
+        let chroma = frontier.has_chroma && self.chroma != ChromaFormatIdc::Monochrome;
+        let subsampling = super::super::block_chroma_subsampling(self.chroma);
+        let planes = [(0, 0), subsampling];
+        let to_fullmv = crate::prediction::inter::bawp::to_fullmv;
+        Ok(planes[..=usize::from(chroma)].iter().all(|&(sx, sy)| {
+            let plane_width = (self.mi_cols * MI_SIZE) as i64 >> sx;
+            let plane_height = (self.mi_rows * MI_SIZE) as i64 >> sy;
+            let (x, y) = (
+                ((frontier.c * MI_SIZE) >> sx) as i64,
+                ((frontier.r * MI_SIZE) >> sy) as i64,
+            );
+            let bw = (plane_width - x).min(((n4w * MI_SIZE) >> sx) as i64);
+            let bh = (plane_height - y).min(((n4h * MI_SIZE) >> sy) as i64);
+            let ref_y = ((frontier.r * MI_SIZE) as i64 + i64::from(to_fullmv(mv.row))) >> sy;
+            let ref_x = ((frontier.c * MI_SIZE) as i64 + i64::from(to_fullmv(mv.col))) >> sx;
+            ref_x >= 1 && ref_y >= 1 && ref_x + bw <= plane_width && ref_y + bh <= plane_height
+        }))
+    }
+
     /// The decoder's BAWP record of `single` at `frontier`
     /// (§ 7.13.3.25).
     pub(super) fn bawp_syntax(
