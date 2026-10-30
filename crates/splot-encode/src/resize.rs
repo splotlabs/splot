@@ -55,7 +55,12 @@ fn resample(
     };
     let (step_x, offset_x) = axis(from.width(), to.width());
     let (step_y, offset_y) = axis(from.height(), to.height());
-    let narrow = |value: i64| i32::try_from(value).unwrap_or(i32::MAX);
+    let narrow = |value: i64| {
+        i32::try_from(value).map_err(|source| Error::Coding {
+            stage: "resize position",
+            source: Box::new(source),
+        })
+    };
     let mut out = vec![0; to.width() * to.height()];
     for y in (0..to.height()).step_by(TILE) {
         for x in (0..to.width()).step_by(TILE) {
@@ -63,14 +68,14 @@ fn resample(
                 interp: InterpolationFilter::EightTapSmooth,
                 w: TILE.min(to.width() - x),
                 h: TILE.min(to.height() - y),
-                start_x: narrow(x as i64 * step_x + offset_x),
-                start_y: narrow(y as i64 * step_y + offset_y),
-                step_x: narrow(step_x),
-                step_y: narrow(step_y),
+                start_x: narrow(x as i64 * step_x + offset_x)?,
+                start_y: narrow(y as i64 * step_y + offset_y)?,
+                step_x: narrow(step_x)?,
+                step_y: narrow(step_y)?,
                 first_x: 0,
                 first_y: 0,
-                last_x: narrow(from.width() as i64 - 1),
-                last_y: narrow(from.height() as i64 - 1),
+                last_x: narrow(from.width() as i64 - 1)?,
+                last_y: narrow(from.height() as i64 - 1)?,
                 bit_depth,
             };
             let at = y * to.width() + x;

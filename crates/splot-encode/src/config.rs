@@ -187,10 +187,15 @@ impl Config {
     }
 
     /// The configuration of the coded frames: the frame size after
-    /// [`Self::resize_denominator`], which it clears.
+    /// [`Self::resize_denominator`], which it clears. A denominator outside
+    /// [`Self::RESIZE_DENOMINATORS`], which [`Self::validate`] rejects, keeps
+    /// the input size.
     #[must_use]
     pub fn coded(&self) -> Self {
-        let Some(denominator) = self.resize_denominator else {
+        let Some(denominator) = self
+            .resize_denominator
+            .filter(|denominator| Self::RESIZE_DENOMINATORS.contains(denominator))
+        else {
             return self.clone();
         };
         let scale = |value: u32| {
@@ -358,8 +363,10 @@ mod tests {
         }
         config.width = 1;
         assert_eq!(config.coded().width, 1);
+        config.width = 160;
         for denominator in [0, 8, 17] {
             config.resize_denominator = Some(denominator);
+            assert_eq!((config.coded().width, config.coded().height), (160, 90));
             assert!(matches!(
                 config.validate(),
                 Err(Error::InvalidResize { denominator: d }) if d == denominator
