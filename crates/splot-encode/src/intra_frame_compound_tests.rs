@@ -155,14 +155,14 @@ fn searched_compound_types_decode_on_any_thread_count() {
         ..*Preset::new(6).unwrap().params()
     }));
     let stream = |threads: usize| {
-        let mut config = config(136, 72, BitDepth::Ten, 6, 140);
+        let mut config = config(136, 72, BitDepth::Ten, 6, 200);
         config.tiles = TileLayout {
             cols_log2: 1,
             rows_log2: 0,
         };
         config.threads = splot_parallel::ThreadCount::from(threads);
         let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-        super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 140)
+        super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200)
     };
     crate::tile_writer::CODED_TYPES.set([0; 4]);
     let (one, expected, cores, _) = stream(1);

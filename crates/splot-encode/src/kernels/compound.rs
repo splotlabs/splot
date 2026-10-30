@@ -9,7 +9,7 @@
 //! mask is scored from the per-sample terms `d·e` and `e²` without blending.
 
 use std::simd::cmp::SimdOrd as _;
-use std::simd::num::{SimdInt as _, SimdUint as _};
+use std::simd::num::{SimdInt, SimdUint as _};
 use std::simd::{Simd, u16x8};
 
 const LANES: usize = 8;
@@ -53,22 +53,22 @@ pub(crate) fn terms_simd(
         .min(de.len())
         .min(ee.len());
     let mut acc = [Simd::<i64, LANES>::splat(0); 3];
-    let mut i = 0;
-    while i + LANES <= len {
-        let sv: Simd<i32, LANES> = u16x8::from_slice(&s[i..]).cast();
-        let a: Simd<i32, LANES> = u16x8::from_slice(&p0[i..]).cast();
-        let b: Simd<i32, LANES> = u16x8::from_slice(&p1[i..]).cast();
-        let (d, e) = (sv - b, a - b);
-        let (dd, dev, eev) = (d * d, d * e, e * e);
-        dev.copy_to_slice(&mut de[i..i + LANES]);
-        eev.copy_to_slice(&mut ee[i..i + LANES]);
+    let mut start = 0;
+    while start + LANES <= len {
+        let src: Simd<i32, LANES> = u16x8::from_slice(&s[start..]).cast();
+        let pred1: Simd<i32, LANES> = u16x8::from_slice(&p1[start..]).cast();
+        let diff = src - pred1;
+        let gap = u16x8::from_slice(&p0[start..]).cast::<i32>() - pred1;
+        let (dd, dev, eev) = (diff * diff, diff * gap, gap * gap);
+        dev.copy_to_slice(&mut de[start..start + LANES]);
+        eev.copy_to_slice(&mut ee[start..start + LANES]);
         acc[0] += dd.cast();
         acc[1] += dev.cast();
         acc[2] += eev.cast();
-        i += LANES;
+        start += LANES;
     }
-    let mut sums = acc.map(|lane| lane.reduce_sum());
-    for j in i..len {
+    let mut sums = acc.map(SimdInt::reduce_sum);
+    for j in start..len {
         let d = i32::from(s[j]) - i32::from(p1[j]);
         let e = i32::from(p0[j]) - i32::from(p1[j]);
         (de[j], ee[j]) = (d * e, e * e);
@@ -109,7 +109,7 @@ pub(crate) fn mask_moments_simd(mask: &[u8], de: &[i32], ee: &[i32]) -> [i64; 3]
         i += LANES;
     }
     let tail = mask_moments_tail(&mask[i..len], &de[i..len], &ee[i..len]);
-    let sums = acc.map(|lane| lane.reduce_sum());
+    let sums = acc.map(SimdInt::reduce_sum);
     [sums[0] + tail[0], sums[1] + tail[1], sums[2] + tail[2]]
 }
 
