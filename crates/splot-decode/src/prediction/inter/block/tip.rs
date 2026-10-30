@@ -1656,6 +1656,73 @@ mod tests {
         Ok(())
     }
 
+    /// A one-unit TIP block whose two flat predictions fall under the
+    /// § 7.13.3.8 SAD gate predicts unrefined: its motion grid is `None`.
+    #[test]
+    fn one_unit_tip_block_under_the_optflow_sad_gate_has_no_grid()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut reference = crate::prediction::inter::InterReferenceState::<u8>::empty()?;
+        let mut store = splot_recon::ReferenceFrameStore::with_capacity(2)?;
+        for slot in 0..2 {
+            store.put(
+                splot_recon::ReferenceSlot::new(slot)?,
+                crate::pipeline::inflight::RefFrameSlot::completed(splot_recon::SharedFrame::new(
+                    tip_workspace()?.freeze()?,
+                )),
+            )?;
+        }
+        reference.store = store;
+        let rect = mc::McBlockRect::from_luma_rect(0, 0, 8, 8);
+        let plan = super::TipBlockPlan {
+            references: crate::prediction::inter::find_mv_stack::TipReferencePair {
+                past_ref: 0,
+                future_ref: 1,
+                past_offset: 1,
+                future_offset: -1,
+                ref_offset: 2,
+            },
+            plan: TipReferencePlan {
+                past: 0,
+                future: Some(1),
+                interpolation_filter: InterpolationFilter::EightTapSharp,
+                blend: mc::CompoundBlend::default(),
+                optflow_distances: Some([1, -1]),
+                use_refinemv: false,
+                search_refinemv: false,
+                optflow_sad_threshold: Some(6),
+            },
+            two_references: true,
+            output: false,
+            use_optflow: true,
+            unit_size: 8,
+            unit_count: 1,
+            block_w: 8,
+            block_h: 8,
+            batch_rect: rect,
+            batch_has_chroma: false,
+            frame_mi_rows: 2,
+            frame_mi_cols: 2,
+        };
+        let mut scratch = super::TipReconstructScratch::<u8>::default();
+        scratch.units.push(super::TipUnit {
+            rect,
+            has_chroma: false,
+            mvs: [crate::prediction::inter::Mv::ZERO; 2],
+            metadata: None,
+        });
+        let mut workspace = tip_workspace()?;
+        let sink = mc::WorkspaceSink::Frame(&mut workspace);
+        let grid = super::tip_motion_grid(
+            &mut scratch,
+            &plan,
+            &sink,
+            &reference,
+            splot_core::span::ByteOffset::new(0),
+        )?;
+        assert!(grid.is_none());
+        Ok(())
+    }
+
     fn tip_workspace() -> splot_recon::Result<CurrentFrameWorkspace<u8>> {
         let size = PlaneSize::new(8, 8)?;
         let visible = PlaneRect::new(0, 0, 8, 8)?;

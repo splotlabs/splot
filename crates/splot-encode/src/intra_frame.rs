@@ -494,12 +494,13 @@ impl IntraFrameCoder {
         let ref_frame_idx = coded
             .reference
             .as_ref()
-            .and_then(|(core, ..)| Some(core.inter.as_ref()?.ref_frame_idx.to_vec()))
+            .and_then(|(core, ..)| core.inter.as_ref())
+            .map(|inter| &inter.ref_frame_idx[..])
             .ok_or(Error::Unsupported {
                 what: "a TIP frame without references",
             })?;
         let (core, temporal_unit) =
-            plan.tip_output_unit(&self.view, &self.references, &ref_frame_idx, weight)?;
+            plan.tip_output_unit(&self.view, &self.references, ref_frame_idx, weight)?;
         let (core, frame) = self
             .references
             .tip_output(&core)
