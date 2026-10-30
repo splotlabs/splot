@@ -8,8 +8,11 @@
 //! moved by its full-sample vector. RANSAC over the pairs keeps the
 //! translation or rotation-zoom model with the most pairs within
 //! [`INLIER_SAMPLES`] samples, refits it to them by least squares, and keeps
-//! it when they are at least [`MIN_INLIER_PERCENT`] of the pairs. The model
-//! goes to the coded lattice as `ROTZOOM` `gm_params`.
+//! it when they are at least [`MIN_INLIER_PERCENT`] of the pairs and its zoom
+//! and rotation move a frame corner by at least [`MIN_CORNER_SAMPLES`]
+//! against the translation alone: below that, `GLOBALMV` predicts no better
+//! than a translational vector. The model goes to the coded lattice as
+//! `ROTZOOM` `gm_params`.
 
 #![allow(
     clippy::many_single_char_names,
@@ -32,6 +35,9 @@ const ITERATIONS: usize = 64;
 const INLIER_SAMPLES: f64 = 1.5;
 /// The share of pairs a model must fit.
 const MIN_INLIER_PERCENT: usize = 50;
+/// The least corner motion, in luma samples, of the zoom and rotation of a
+/// kept model.
+const MIN_CORNER_SAMPLES: f64 = 1.0;
 /// The pairs a frame needs before any model is trusted.
 const MIN_PAIRS: usize = 16;
 /// The intra SATD below which a block is too flat for its vector to count.
@@ -74,7 +80,8 @@ pub(crate) fn estimate(
                 continue;
             };
             let pairs = pairs(motion, &intra, (cols, rows), block);
-            if let Some(model) = fit(&pairs, display ^ reference.rotate_left(32)) {
+            let frame = ((cols * block) as f64, (rows * block) as f64);
+            if let Some(model) = fit(&pairs, frame, display ^ reference.rotate_left(32)) {
                 models.insert((display, reference), model);
             }
         }
@@ -119,9 +126,9 @@ fn pairs(
 /// A rotation-zoom `[a, c, tx, ty]`: `u = a x + c y + tx`, `v = -c x + a y + ty`.
 type Model = [f64; 4];
 
-/// The `gm_params` that RANSAC over `pairs` finds, if any; `seed` makes the
-/// sampling deterministic.
-fn fit(pairs: &[Pair], seed: u64) -> Option<[i32; 6]> {
+/// The `gm_params` that RANSAC over `pairs` of a `(width, height)` frame
+/// finds, if any; `seed` makes the sampling deterministic.
+fn fit(pairs: &[Pair], (width, height): (f64, f64), seed: u64) -> Option<[i32; 6]> {
     if pairs.len() < MIN_PAIRS {
         return None;
     }
@@ -156,7 +163,15 @@ fn fit(pairs: &[Pair], seed: u64) -> Option<[i32; 6]> {
     if inliers.len() * 100 < pairs.len() * MIN_INLIER_PERCENT {
         return None;
     }
-    quantize(least_squares(&inliers)?)
+    let model = least_squares(&inliers)?;
+    let [a, c, ..] = model;
+    let corner = ((a - 1.0).abs() * width + c.abs() * height)
+        .max((a - 1.0).abs() * height + c.abs() * width)
+        / 2.0;
+    if corner < MIN_CORNER_SAMPLES {
+        return None;
+    }
+    quantize(model)
 }
 
 /// The rotation-zoom through two pairs; `None` when they coincide.
@@ -232,7 +247,7 @@ mod tests {
                 pairs.push([x, y, (u + shift).round(), (v - shift).round()]);
             }
         }
-        let params = fit(&pairs, 7).unwrap();
+        let params = fit(&pairs, (256.0, 192.0), 7).unwrap();
         let step = |value: f64| (value * PREC / 64.0).round() as i32 * 64;
         assert!(
             (params[2] - (1 << 16) - step(a - 1.0)).abs() <= 64,
@@ -247,14 +262,15 @@ mod tests {
         assert_eq!(params[0] % TRANS_STEP, 0);
     }
 
-    /// Too few pairs, scattered vectors and the identity give no model.
+    /// Too few pairs, scattered vectors, the identity and a pure pan give no
+    /// model.
     #[test]
     fn ransac_refuses_noise_and_the_identity() {
         let still: Vec<Pair> = (0..40)
             .map(|i| [f64::from(i) * 8.0, 4.0, f64::from(i) * 8.0, 4.0])
             .collect();
-        assert_eq!(fit(&still, 1), None);
-        assert_eq!(fit(&still[..8], 1), None);
+        assert_eq!(fit(&still, (320.0, 8.0), 1), None);
+        assert_eq!(fit(&still[..8], (320.0, 8.0), 1), None);
         let noise: Vec<Pair> = (0..40)
             .map(|i| {
                 let x = f64::from(i) * 8.0;
@@ -266,6 +282,14 @@ mod tests {
                 ]
             })
             .collect();
-        assert_eq!(fit(&noise, 1), None);
+        assert_eq!(fit(&noise, (320.0, 8.0), 1), None);
+        let pan: Vec<Pair> = (0..40)
+            .map(|i| [f64::from(i) * 8.0, 4.0, f64::from(i) * 8.0 + 3.0, 2.0])
+            .collect();
+        assert_eq!(
+            fit(&pan, (320.0, 8.0), 1),
+            None,
+            "a pan is a translational vector"
+        );
     }
 }

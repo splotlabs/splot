@@ -6660,10 +6660,10 @@ spec_sections = ["5.4.6", "5.18.9.1", "5.18.9.2", "5.18.9.3", "5.18.9.4", "5.18.
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/global_motion.rs"
-change_id = "enc-gm-facade"
+change_id = "enc-gm-corner"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::global_motion 1 enables enable_global_motion; inter frames write global_motion_params() with our_ref = NumTotalRefs, each ROTZOOM gm_params coded by the inverse of read_global_param (sub-exponential difference from the scale_warp_model prediction). The encoder_syntax facade codes frames with global motion and reference frame motion vectors, derives GLOBALMV and GLOBAL_GLOBALMV models with the frame's force_integer_mv, and stores the GLOBALMV models in the § 7.19 motion records as the decoder does. The estimator fits a translation or rotation-zoom by RANSAC to the lookahead 8x8 vectors of each frame against its nearest past and future coded frames. Off in every preset row: against main 36076e467 (2026-10-30) p6 park_joy measured +0.89%, p2 park_joy +1.22%, p2 paris +0.03%; acceptance tuning follows."
+notes = "PresetParams::global_motion 1 enables enable_global_motion; inter frames write global_motion_params() with our_ref = NumTotalRefs, each ROTZOOM gm_params coded by the inverse of read_global_param (sub-exponential difference from the scale_warp_model prediction). The encoder_syntax facade codes frames with global motion and reference frame motion vectors, derives GLOBALMV and GLOBAL_GLOBALMV models with the frame's force_integer_mv, and stores the GLOBALMV models in the § 7.19 motion records as the decoder does. The estimator fits a translation or rotation-zoom by RANSAC to the lookahead 8x8 vectors of each frame against its nearest past and future coded frames. A model is kept when at least half of the pairs fit it within 1.5 samples and its zoom and rotation move a frame corner by at least 1 sample. Off in every preset row (2026-10-30): against main ace5c5be0, global_motion = 1, f10, p6 paris Y +0.01%, niklas 720p +0.00%, park_joy (8 qps) +0.49%; the full-sample lookahead vectors are too coarse for models that beat NEWMV, and niklas has no global motion (no model fits). Misses the A8 park_joy -3% target; revisit with open-loop hierarchical ME (B1)."
 
 [feature.status]
 mapped = "done"
