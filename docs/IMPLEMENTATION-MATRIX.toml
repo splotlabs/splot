@@ -6715,6 +6715,38 @@ commands = ["cargo test -p splot-encode interintra --locked", "SPLOT_AVM_DECODER
 fixtures = []
 diagnostics = []
 
+[[feature]]
+id = "ENC-BAWP"
+name = "Encoder block adaptive weighted prediction"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.6", "5.18.2", "5.20.7.6", "7.13.3.25"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/interintra_search.rs"
+change_id = "enc-bawp"
+owner = "encoder"
+risk = "medium"
+notes = "A7 part 1c. PresetParams::bawp sets enable_bawp and every inter frame codes allow_bawp = 1. In the encoder_syntax facade InterModes::bawp is a Bawp (explicit_bawp_scale or implicit, use_bawp_chroma); IntraTileSyntax::bawp_reads gives the decoder's gate (bawp_signal_allowed, shared with the decoder's read), and the facade refuses a BAWP block whose § 7.13.3.25 template falls outside the reference (refX >= 1, refY >= 1, refX + bw <= planeWidth, refY + bh <= planeHeight), a bitstream conformance requirement AVM enforces. The writer codes use_bawp, explicit_bawp, explicit_bawp_scale and use_bawp_chroma after use_amvd; a BAWP block codes no inter-intra; the decoder's reconstruct_placed_inter_block applies the weights. The search adds the BAWP scale with the least decoder luma SATD plus rate on the single-reference NEWMV with the least cost to the leaf's RD trials. Off in every row until measured; off output is byte-identical."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "todo"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot", "crates/splot-encode/src/intra_frame_compound_tests.rs::bawp_streams_decode_on_any_thread_count", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::every_tool_flag_reaches_the_parsed_header"]
+commands = ["cargo test -p splot-encode bawp --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode bawp_streams --locked"]
+fixtures = []
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------
