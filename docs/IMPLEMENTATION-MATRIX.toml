@@ -6564,10 +6564,10 @@ spec_sections = ["5.4.6", "5.18.2", "5.20.7.7", "5.20.7.11", "5.20.7.14", "7.13.
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/warp.rs"
-change_id = "enc-warp-facade"
+change_id = "enc-warp-search"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::warp 1 enables LOCALWARP, DELTAWARP and EXTENDWARP with six-parameter deltas in the sequence and allow_warpmv_mode in each inter frame. The encoder_syntax facade codes WARPMV and WARP_NEWMV leaves with the decoder's symbols and § 7.12 / § 7.13.3 models (no encoder-side fit), writes is_warp = 0 for other single-reference leaves and use_local_warp = 0 for compound NEW_NEWMV, predicts warp blocks of force_integer_mv frames by translation (§ 7.13.3.14), and stores warp models in the § 7.19 motion field. Leaves try the first WARPMV candidate and the zero-delta, local and extended models at the searched vector. Off in every preset row until the search lands and is measured."
+notes = "PresetParams::warp (0..=2) enables LOCALWARP, DELTAWARP and EXTENDWARP with six-parameter deltas in the sequence and allow_warpmv_mode in each inter frame of a temporal layer whose frames pick warp (a decaying per-layer warp-win table, re-probed every 4 frames). The encoder_syntax facade codes WARPMV and WARP_NEWMV leaves with the decoder's symbols and § 7.12 / § 7.13.3 models (no encoder-side fit), writes is_warp = 0 for other single-reference leaves and use_local_warp = 0 for compound NEW_NEWMV, predicts warp blocks of force_integer_mv frames by translation (§ 7.13.3.14), and stores warp models in the § 7.19 motion field. The search ranks the WARPMV candidates and the local, extended and zero-delta models of the best translational reference by luma SATD plus exact rate, steps each delta parameter once and the best WARP_NEWMV vector up to twice, and gives the best warp models that beat NEWMV an RD trial. Against main 7b5b80c4d (2026-10-30), warp = 1, f10: p6 paris Y -0.78% at 1.108x CPU, park_joy (8 qps) -0.21% at 1.117x, niklas 720p -0.13% at 1.113x; p0 park_joy +0.66% at 1.022x. Placement pending."
 
 [feature.status]
 mapped = "done"
