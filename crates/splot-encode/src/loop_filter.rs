@@ -333,6 +333,7 @@ pub(crate) fn finish_frame(
         recorder: &recorder,
         recon: &recon,
         lambda: Lambda::from_qindex(qindex, recon.bit_depth()).map_err(coding("lambda"))?,
+        frame_is_intra: pass.core.frame_is_intra == Some(true),
         start: &pass.start,
         refs,
         pool,
@@ -415,6 +416,7 @@ struct Search<'a> {
     recorder: &'a FilterRecorder,
     recon: &'a DecodedFrame<u16>,
     lambda: Lambda,
+    frame_is_intra: bool,
     start: &'a FrameStart,
     refs: &'a EncoderReferences,
     pool: Option<&'a WorkerPool>,
@@ -452,12 +454,14 @@ impl Search<'_> {
             (params.ccso, syntax.ccso_blocks) = self.ccso(&params, &syntax, deblocked, preset)?;
         }
         if filter.enable_restoration {
-            let sb128 = self
-                .seq
-                .partition
-                .is_some_and(|partition| partition.seq_sb_size() != SuperblockSize::Block64x64);
+            let sb = self.seq.partition.map(|partition| partition.seq_sb_size());
+            let unit = match (sb, self.frame_is_intra) {
+                (Some(SuperblockSize::Block256x256), false) => 256,
+                (Some(SuperblockSize::Block64x64) | None, _) => 64,
+                _ => 128,
+            };
             let candidate = FrameFilterParams {
-                lr_luma_unit_size: Some(if sb128 { 128 } else { 64 }),
+                lr_luma_unit_size: Some(unit),
                 ..params
             };
             let (chosen, lr_on) = if preset.wiener_ns > 0 {

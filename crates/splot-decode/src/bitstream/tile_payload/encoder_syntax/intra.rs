@@ -329,8 +329,18 @@ pub(super) struct PlannedLeaf {
     plan: GeneralIntraResidualPlan,
     palette: Option<PlannedPalette>,
     units: Vec<TransformBlock>,
+    /// The plan index of each of `units`, which leave out the 64x64 chunks
+    /// that start below or right of the frame (§ 5.20.7.23).
+    plan_index: Vec<usize>,
     intra_edge: IntraEdgeCtx,
     luma_context: LumaTransformTypeContext,
+}
+
+impl PlannedLeaf {
+    /// The plan index of planned block `index`.
+    fn plan_index(&self, index: usize) -> Result<usize> {
+        self.plan_index.get(index).copied().ok_or(NO_LEAF)
+    }
 }
 
 /// The reconstructed frame and the state its prediction reads.
@@ -682,9 +692,20 @@ impl IntraTileSyntax {
         }
         let uv_mode = block_modes.coeff_uv_mode();
         let angle_delta_uv = inherited_chroma_angle_delta(uv_mode, modes.y_mode, modes.angle_delta);
-        let units = plan
+        let (sub_x, sub_y) = chroma_subsampling(self.chroma);
+        let (mi_rows, mi_cols) = (self.frame.mi_rows(), self.frame.mi_cols());
+        let (plan_index, units): (Vec<usize>, Vec<_>) = plan
             .transform_blocks()
-            .map(|(plane, x, y, tx_size, fills_block)| {
+            .enumerate()
+            .filter(|&(_, (plane, x, y, ..))| {
+                let (sx, sy) = if plane > 0 {
+                    (sub_x, sub_y)
+                } else {
+                    (false, false)
+                };
+                x < (mi_cols * 4) >> u8::from(sx) && y < (mi_rows * 4) >> u8::from(sy)
+            })
+            .map(|(index, (plane, x, y, tx_size, fills_block))| {
                 let tx_type = if plane == 0 && modes.fsc {
                     TxType::Idtx
                 } else if plane == 0 {
@@ -701,18 +722,23 @@ impl IntraTileSyntax {
                         .map_err(rule("chroma transform type"))?,
                     )?
                 };
-                Ok(TransformBlock {
-                    tx_type,
-                    plane,
-                    x,
-                    y,
-                    tx_size,
-                    fills_block,
-                    ist: Ist::OFF,
-                    cctx: 0,
-                })
+                Ok((
+                    index,
+                    TransformBlock {
+                        tx_type,
+                        plane,
+                        x,
+                        y,
+                        tx_size,
+                        fills_block,
+                        ist: Ist::OFF,
+                        cctx: 0,
+                    },
+                ))
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .unzip();
         let (above_smooth, left_smooth) = self
             .recon
             .y_smooth
@@ -723,6 +749,7 @@ impl IntraTileSyntax {
             plan,
             palette,
             units: units.clone(),
+            plan_index,
             intra_edge: IntraEdgeCtx {
                 enable_ibp: self.tools.enable_ibp,
                 enable_intra_edge_filter: self.tools.enable_intra_edge_filter,
@@ -838,7 +865,7 @@ impl IntraTileSyntax {
             && tx.plane == 0
         {
             leaf.plan
-                .publish_unit(index, &mut self.recon.block_decoded)
+                .publish_unit(leaf.plan_index(index)?, &mut self.recon.block_decoded)
                 .map_err(rule("BlockDecoded update"))?;
         }
         Ok(())
@@ -878,6 +905,7 @@ impl IntraTileSyntax {
             ..
         } = &mut self.recon;
         let leaf = leaf.as_ref().ok_or(NO_LEAF)?;
+        let [u_index, v_index] = [leaf.plan_index(u_index)?, leaf.plan_index(v_index)?];
         leaf.plan
             .reconstruct_cctx_pair(
                 [(u_index, u_levels, u_eob), (v_index, v_levels, v_eob)],
@@ -1005,7 +1033,7 @@ impl IntraTileSyntax {
         };
         leaf.plan
             .reconstruct_unit(
-                index,
+                leaf.plan_index(index)?,
                 quant,
                 eob,
                 (tx_type as usize, use_tcq, ist),
