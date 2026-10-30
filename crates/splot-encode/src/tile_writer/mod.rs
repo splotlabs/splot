@@ -656,7 +656,9 @@ fn chroma_partner(blocks: &[TransformBlock], u: &TransformBlock) -> Option<usize
         .position(|v| v.plane == 2 && (v.x, v.y, v.tx_size) == (u.x, u.y, u.tx_size))
 }
 
-/// `prediction` with each coded vector moved onto the lattice of its base.
+/// `prediction` with each coded vector moved onto the lattice of its base. A
+/// `LOCALWARP` or `EXTENDWARP` model the leaf cannot code, which a memoized
+/// subtree recoded under other neighbours meets, codes the zero `DELTAWARP`.
 pub(crate) fn snap_prediction(
     syntax: &mut IntraTileSyntax,
     leaf: &LeafBlock,
@@ -695,8 +697,6 @@ pub(crate) fn snap_prediction(
                 _ => true,
             };
             if !reachable {
-                // A memoized subtree recoded under other neighbours may lose
-                // the warp samples LOCALWARP and EXTENDWARP need.
                 modes.model = WarpModel::Delta {
                     high_precision: false,
                     values: [0; 4],

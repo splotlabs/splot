@@ -749,13 +749,12 @@ impl EncoderInterTile {
     }
 
     /// The § 7.19 motion records of the published leaves, in coding order,
-    /// which the decoder stores into the frame's motion field.
+    /// which the decoder stores into the frame's motion field; a warp block
+    /// of a `force_integer_mv` frame stores its translation (§ 7.13.3.14).
     pub(crate) fn temporal_records(&self) -> Vec<TemporalMotionBlock> {
         if self.intrabc.is_some() {
             return Vec::new();
         }
-        // A warp block of a force_integer_mv frame predicts, and so stores
-        // its motion, by translation (§ 7.13.3.14).
         let integer_mv = effective_force_integer_mv(&self.core);
         let mut unit_leaves: Vec<(usize, usize)> = Vec::new();
         if self.refines_compound() {
