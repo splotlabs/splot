@@ -37,7 +37,7 @@ pub(crate) use compound::{EncoderCompoundMotion, JMVD_SCALE_MODES, MvdCoding};
 pub(crate) enum EncoderMotion {
     /// A single-reference block (§ 5.20.7.11).
     Single(EncoderSingleMotion),
-    /// A compound or skip-mode block (§ 5.20.7.10, § 5.20.7.12).
+    /// A compound or skip-mode block (§ 5.20.7.6, § 5.20.7.10).
     Compound(EncoderCompoundMotion),
 }
 

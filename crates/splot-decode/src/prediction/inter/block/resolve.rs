@@ -427,7 +427,7 @@ pub(super) struct CompoundJointMvProjection {
     pub(super) second_dist: i32,
 }
 
-/// § 5.20.7.12 compound and § 5.20.7.10 skip-mode syntax.
+/// § 5.20.7.6 compound and § 5.20.7.10 skip-mode syntax.
 #[derive(Clone, Copy)]
 pub(super) struct CompoundMotionSyntax {
     pub(super) y_mode: CompoundYMode,
