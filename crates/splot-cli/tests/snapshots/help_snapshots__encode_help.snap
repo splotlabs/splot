@@ -19,6 +19,7 @@ Options:
       --rc <RC>                   Bitrate mode for `--bitrate`: `vbr` (default) or `cbr` (one-second buffer) [possible values: vbr, cbr]
       --preset <PRESET>           Speed preset: 0 is the slowest and best, 10 the fastest [default: 6]
       --preset-set <FIELD=VALUE>  Overrides one field of the preset, as FIELD=VALUE; repeat for more fields. It wins over the screen-content switch. Flags take 0, 1, false or true, `tcq` takes Off, Base or All, `mvd_tools` takes three comma-separated flags. An unknown FIELD lists the valid names
+      --low-delay                 Low delay: one packet per input frame, in display order. Sets `mini_gop_size=1` (IPPP, every frame shown) and `lookahead_frames=1` before `--preset-set`; off by default
       --threads <THREADS>         Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto) [default: auto]
       --tiles <TILES>             Tile columns x rows, each a power of two up to 64. More tiles code faster on more threads and cost some compression [default: 1x1]
       --limit <LIMIT>             Stop after this many input frames
