@@ -11,7 +11,11 @@ use splot_recon::apply_film_grain;
 /// [`synthetic_frame`] with seeded noise of about 4 8-bit samples on every
 /// sample, so the grain model has points.
 fn grainy_frame(config: &Config, seed: u32) -> SourceFrame {
-    let frame = synthetic_frame(config, seed);
+    with_noise(config, &synthetic_frame(config, seed), seed)
+}
+
+/// `frame` with the noise of [`grainy_frame`] of `seed`.
+pub(super) fn with_noise(config: &Config, frame: &SourceFrame, seed: u32) -> SourceFrame {
     let max = i32::from(config.bit_depth.max_sample());
     let scale = 1 << (config.bit_depth.bits() - 8);
     let mut state = seed.wrapping_mul(747_796_405) | 1;
