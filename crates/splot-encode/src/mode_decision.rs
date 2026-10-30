@@ -385,6 +385,7 @@ impl TrialCoder<'_, '_> {
                 precision: None,
                 amvd: false,
                 interintra: None,
+                bawp: None,
             };
             let mvs = self.syntax.single_mvs(leaf, ref_frame)?;
             push(mvs.global, mode(InterMode::Global, 0));
@@ -421,7 +422,7 @@ impl TrialCoder<'_, '_> {
             if let Some((_, modes)) = best {
                 let coded = self.mvd_choice(leaf, modes, found)?;
                 push(coded.mv, coded);
-                if (self.preset.warp > 0 || self.preset.interintra)
+                if (self.preset.warp > 0 || self.preset.interintra || self.preset.bawp)
                     && let Some((cost, ..)) = self.newmv_cost(leaf, coded)?
                 {
                     let mut filter = RateSink::adapting();
@@ -458,18 +459,25 @@ impl TrialCoder<'_, '_> {
                         precision: None,
                         amvd: false,
                         interintra: None,
+                        bawp: None,
                     },
                 );
             }
         }
         let mut choices: Vec<LeafChoice> = out.into_iter().map(|(_, choice)| choice).collect();
-        if let (Some(motion), Some(base), true) =
-            (self.motion, interintra_base, self.preset.interintra)
-        {
-            choices.extend(
-                self.interintra_choice(leaf, motion, base)?
-                    .map(|modes| LeafChoice::inter(InterPrediction::Single(modes))),
-            );
+        if let (Some(motion), Some(base)) = (self.motion, interintra_base) {
+            if self.preset.interintra {
+                choices.extend(
+                    self.interintra_choice(leaf, motion, base)?
+                        .map(|modes| LeafChoice::inter(InterPrediction::Single(modes))),
+                );
+            }
+            if self.preset.bawp {
+                choices.extend(
+                    self.bawp_choice(leaf, motion, base)?
+                        .map(|modes| LeafChoice::inter(InterPrediction::Single(modes))),
+                );
+            }
         }
         let warp_base = warp_base.filter(|_| self.preset.warp > 0);
         if let (Some(motion), Some((cost, ref_frame, found))) = (self.motion, warp_base) {

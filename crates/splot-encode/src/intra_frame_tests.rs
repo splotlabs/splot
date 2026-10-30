@@ -23,8 +23,8 @@ use crate::tile_writer::{
     PartitionTree,
 };
 use splot_decode::encoder_syntax::{
-    COMPOUND_MODES, CompoundType, INTERINTRA_MODES, INTERP_FILTERS, InterIntra, JMVD_SCALE_MODES,
-    MAX_CWP_NUM, TxPartition,
+    Bawp, COMPOUND_MODES, CompoundType, INTERINTRA_MODES, INTERP_FILTERS, InterIntra,
+    JMVD_SCALE_MODES, MAX_CWP_NUM, TxPartition,
 };
 
 /// Gradients, a ripple, and seeded noise, so blocks of every size split.
@@ -667,10 +667,11 @@ impl Rng {
 /// a `LOCALWARP` and an `EXTENDWARP` leaf; a coded six-parameter and a coded
 /// high-precision `DELTAWARP` leaf; a `WARPMV` leaf with a difference; a
 /// `COMPOUND_WEDGE`, a `COMPOUND_DIFFWTD` and a weighted `COMPOUND_AVERAGE`
-/// compound leaf; a smooth and a wedge inter-intra leaf.
+/// compound leaf; a smooth and a wedge inter-intra leaf; an implicit and an
+/// explicit BAWP leaf.
 type Coverage = [usize; COVERAGE_SLOTS];
 /// The slots of [`Coverage`].
-const COVERAGE_SLOTS: usize = 33;
+const COVERAGE_SLOTS: usize = 35;
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -893,6 +894,7 @@ fn random_modes(
             precision: precisions.get(pick).copied().filter(|_| new),
             amvd: new && pick == precisions.len() && syntax.adaptive_mvd(),
             interintra: None,
+            bawp: None,
         }));
     }
     let mode = [InterMode::Near, InterMode::Global, InterMode::New][rng.below(3) as usize];
@@ -909,6 +911,7 @@ fn random_modes(
         precision: None,
         amvd: false,
         interintra: None,
+        bawp: None,
     };
     if mode == InterMode::New {
         let precisions = syntax.newmv_precisions(leaf).unwrap();
@@ -927,18 +930,32 @@ fn random_modes(
     random_warp_or(syntax, leaf, rng, coverage, InterPrediction::Single(modes))
 }
 
-/// `modes` with a random inter-intra prediction in half the draws of a side
-/// generator where the leaf reads it, a wedge in half of those where it
+/// `modes` with a random BAWP in three of four draws of a side generator
+/// where the leaf reads it, else a random inter-intra prediction in half the
+/// draws where the leaf reads it, a wedge in half of those where it
 /// reads one; `rng` stays as it was.
 fn random_interintra(
-    syntax: &IntraTileSyntax,
+    syntax: &mut IntraTileSyntax,
     leaf: &LeafBlock,
     rng: &Rng,
     coverage: &mut Coverage,
     modes: InterModes,
 ) -> InterModes {
-    let (reads, reads_wedge) = syntax.interintra_reads(leaf).unwrap();
     let mut side = Rng(rng.0.rotate_left(41));
+    if side.below(4) != 0 && syntax.bawp_reads(leaf, modes).unwrap_or(false) {
+        let explicit_scale = [None, None, Some(true), Some(false)][side.below(4) as usize];
+        let chroma = side.below(2) == 0 && leaf.has_chroma();
+        coverage[33] += usize::from(explicit_scale.is_none());
+        coverage[34] += usize::from(explicit_scale.is_some());
+        return InterModes {
+            bawp: Some(Bawp {
+                explicit_scale,
+                chroma,
+            }),
+            ..modes
+        };
+    }
+    let (reads, reads_wedge) = syntax.interintra_reads(leaf).unwrap();
     if !reads || side.below(2) == 0 {
         return modes;
     }
@@ -1022,6 +1039,7 @@ fn inter_stream_of(
         compound_types: 2,
         implicit_mask: true,
         interintra: true,
+        bawp: true,
         ..*config.preset.params()
     }));
     let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();

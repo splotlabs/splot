@@ -679,7 +679,13 @@ impl EncoderInterTile {
                 } else if single.use_amvd {
                     return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
                 }
-                self.interintra_symbols(&mut out, frontier, single.interintra)?;
+                self.bawp_symbols(&mut out, frontier, single)?;
+                if single.bawp.is_some() && single.interintra.is_some() {
+                    return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
+                }
+                if single.bawp.is_none() {
+                    self.interintra_symbols(&mut out, frontier, single.interintra)?;
+                }
                 if single.mode != SINGLE_MODE_GLOBALMV {
                     let selector = |idx| TileCdfSelector::DrlMode { idx, ctx: new_mv };
                     drl_symbols(&mut out, selector, 0, max_drl, single.ref_mv_idx)?;

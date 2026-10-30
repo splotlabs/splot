@@ -325,6 +325,126 @@ impl EncoderInterTile {
     }
 }
 
+impl EncoderInterTile {
+    /// The § 5.20.7.6 parse input of the BAWP syntax of `single` at
+    /// `frontier`.
+    fn bawp_input(
+        &self,
+        frontier: &DecodeBlockFrontier,
+        single: EncoderSingleMotion,
+    ) -> Result<super::super::BawpParseInput> {
+        let (n4w, n4h) = block_size4(frontier)?;
+        let (avail_up, avail_left) = super::super::tile_neighbour_availability(
+            frontier.r,
+            frontier.c,
+            self.tile_start.0,
+            self.tile_start.1,
+        );
+        Ok(super::super::BawpParseInput {
+            allow_bawp: !single.tip
+                && self
+                    .core
+                    .inter_tail
+                    .as_ref()
+                    .is_some_and(|tail| tail.allow_bawp),
+            reference_scaled: !single.tip
+                && super::super::block_reference_is_scaled(
+                    &self.core,
+                    &self.reference,
+                    &self.ref_frame_idx,
+                    single.ref_frame,
+                )?,
+            frame_is_switch: self.core.frame_type == Some(FrameType::Switch),
+            single_mode: single.mode,
+            use_amvd: single.use_amvd,
+            n4w,
+            n4h,
+            has_chroma: frontier.has_chroma,
+            avail_up,
+            avail_left,
+        })
+    }
+
+    /// Whether the single-reference block `single` at `frontier` reads
+    /// `use_bawp` (§ 5.20.7.6).
+    pub(crate) fn bawp_reads(
+        &self,
+        frontier: &DecodeBlockFrontier,
+        single: EncoderSingleMotion,
+    ) -> Result<bool> {
+        Ok(super::super::bawp_signal_allowed(
+            self.bawp_input(frontier, single)?,
+        ))
+    }
+
+    /// Pushes the `use_bawp`, `explicit_bawp`, `explicit_bawp_scale` and
+    /// `use_bawp_chroma` symbols of `single` at `frontier` (§ 5.20.7.6).
+    ///
+    /// # Errors
+    /// Returns the decoder's diagnostic for BAWP the decoder does not read.
+    pub(super) fn bawp_symbols(
+        &self,
+        out: &mut Vec<(TileCdfSelector, u8)>,
+        frontier: &DecodeBlockFrontier,
+        single: EncoderSingleMotion,
+    ) -> Result<()> {
+        if !self.bawp_reads(frontier, single)? {
+            return match single.bawp {
+                Some(_) => Err(invalid_type()),
+                None => Ok(()),
+            };
+        }
+        out.push((TileCdfSelector::UseBawp, u8::from(single.bawp.is_some())));
+        let Some(bawp) = single.bawp else {
+            return Ok(());
+        };
+        let ctx = super::super::explicit_bawp_context(single.mode, single.use_amvd);
+        out.push((
+            TileCdfSelector::ExplicitBawp { ctx },
+            u8::from(bawp.explicit_scale.is_some()),
+        ));
+        if let Some(positive) = bawp.explicit_scale {
+            out.push((TileCdfSelector::ExplicitBawpScale, u8::from(positive)));
+        }
+        if frontier.has_chroma {
+            out.push((TileCdfSelector::UseBawpChroma, u8::from(bawp.chroma)));
+        } else if bawp.chroma {
+            return Err(invalid_type());
+        }
+        Ok(())
+    }
+
+    /// The decoder's BAWP record of `single` at `frontier`
+    /// (§ 7.13.3.25).
+    pub(super) fn bawp_syntax(
+        &self,
+        frontier: &DecodeBlockFrontier,
+        single: EncoderSingleMotion,
+    ) -> Result<BawpSyntax> {
+        let Some(bawp) = single.bawp else {
+            return Ok(BawpSyntax::default());
+        };
+        let input = self.bawp_input(frontier, single)?;
+        let syntax = BawpSyntax {
+            enabled: true,
+            explicit: bawp.explicit_scale.is_some(),
+            explicit_scale_positive: bawp.explicit_scale.unwrap_or(false),
+            list_index: super::super::explicit_bawp_context(single.mode, single.use_amvd) as u8,
+            ref_dist_gt4: false,
+            chroma: bawp.chroma && frontier.has_chroma,
+            avail_up: input.avail_up,
+            avail_left: input.avail_left,
+        };
+        Ok(super::super::bawp_with_ref_distance(
+            syntax,
+            single.ref_frame,
+            &self.ref_frame_idx,
+            &self.reference,
+            self.current_order_hint,
+        ))
+    }
+}
+
 /// `(wedgeAngle, wedgeDist)` of `WedgeIndex` `index` (§ 5.20.7.18).
 fn wedge_position(index: u8) -> Result<(u8, u8)> {
     (0u8..)

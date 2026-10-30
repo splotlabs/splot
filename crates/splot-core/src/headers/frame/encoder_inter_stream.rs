@@ -358,7 +358,7 @@ fn inter_frame_header_bits(
     w.write_flag(params.reference_select)?;
     w.write_flag(params.skip_mode_present)?;
     if seq.inter.enable_bawp {
-        return Err(unsupported("block adaptive weighted prediction"));
+        w.write_flag(true)?; // allow_bawp
     }
     if warp {
         w.write_flag(true)?; // allow_warpmv_mode

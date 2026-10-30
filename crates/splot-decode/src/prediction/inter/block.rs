@@ -1902,23 +1902,13 @@ fn decode_block<T: ReconSample>(
             tile_offset,
         )?
     };
-    let bawp = if bawp.enabled {
-        let slot = usize::try_from(ref_frame0)
-            .ok()
-            .and_then(|list_ref| ref_frame_idx.get(list_ref).copied())
-            .unwrap_or(0);
-        let ref_hint = reference
-            .ref_order_hint
-            .get(slot as usize)
-            .copied()
-            .map_or(0, |hint| i32::try_from(hint).unwrap_or(i32::MAX));
-        BawpSyntax {
-            ref_dist_gt4: super::get_relative_dist(ref_hint, current_order_hint as i32).abs() > 4,
-            ..bawp
-        }
-    } else {
-        bawp
-    };
+    let bawp = bawp_with_ref_distance(
+        bawp,
+        ref_frame0,
+        ref_frame_idx,
+        reference,
+        current_order_hint,
+    );
     let interintra = if tip_ref || segment_forces_globalmv {
         None
     } else if !bawp.enabled {
@@ -2246,17 +2236,55 @@ fn read_inter_intra_syntax_enabled(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct BawpParseInput {
-    allow_bawp: bool,
-    reference_scaled: bool,
-    frame_is_switch: bool,
-    single_mode: u8,
-    use_amvd: bool,
-    n4w: usize,
-    n4h: usize,
-    has_chroma: bool,
-    avail_up: bool,
-    avail_left: bool,
+pub(super) struct BawpParseInput {
+    pub(super) allow_bawp: bool,
+    pub(super) reference_scaled: bool,
+    pub(super) frame_is_switch: bool,
+    pub(super) single_mode: u8,
+    pub(super) use_amvd: bool,
+    pub(super) n4w: usize,
+    pub(super) n4h: usize,
+    pub(super) has_chroma: bool,
+    pub(super) avail_up: bool,
+    pub(super) avail_left: bool,
+}
+
+/// Whether a single-reference block of `input` reads `use_bawp`
+/// (§ 5.20.7.6).
+pub(super) const fn bawp_signal_allowed(input: BawpParseInput) -> bool {
+    input.allow_bawp
+        && !input.reference_scaled
+        && !input.frame_is_switch
+        && input.single_mode != SINGLE_MODE_GLOBALMV
+        && input.n4w >= 2
+        && input.n4h >= 2
+}
+
+/// `bawp` with `ref_dist_gt4` of list reference `ref_frame0` at
+/// `current_order_hint` (§ 7.13.3.25).
+pub(super) fn bawp_with_ref_distance<T: ReconSample>(
+    bawp: BawpSyntax,
+    ref_frame0: i8,
+    ref_frame_idx: &[u32],
+    reference: &InterReferenceState<T>,
+    current_order_hint: u32,
+) -> BawpSyntax {
+    if !bawp.enabled {
+        return bawp;
+    }
+    let slot = usize::try_from(ref_frame0)
+        .ok()
+        .and_then(|list_ref| ref_frame_idx.get(list_ref).copied())
+        .unwrap_or(0);
+    let ref_hint = reference
+        .ref_order_hint
+        .get(slot as usize)
+        .copied()
+        .map_or(0, |hint| i32::try_from(hint).unwrap_or(i32::MAX));
+    BawpSyntax {
+        ref_dist_gt4: super::get_relative_dist(ref_hint, current_order_hint as i32).abs() > 4,
+        ..bawp
+    }
 }
 
 fn read_bawp_syntax(
@@ -2265,13 +2293,7 @@ fn read_bawp_syntax(
     input: BawpParseInput,
     tile_offset: ByteOffset,
 ) -> Result<BawpSyntax> {
-    if !input.allow_bawp
-        || input.reference_scaled
-        || input.frame_is_switch
-        || input.single_mode == SINGLE_MODE_GLOBALMV
-        || input.n4w < 2
-        || input.n4h < 2
-    {
+    if !bawp_signal_allowed(input) {
         return Ok(BawpSyntax::default());
     }
 
@@ -2316,7 +2338,7 @@ fn read_bawp_syntax(
     })
 }
 
-fn block_reference_is_scaled<T: ReconSample>(
+pub(super) fn block_reference_is_scaled<T: ReconSample>(
     core: &FrameHeaderCore,
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
@@ -2347,7 +2369,7 @@ fn block_reference_is_scaled<T: ReconSample>(
     ))
 }
 
-fn explicit_bawp_context(single_mode: u8, use_amvd: bool) -> usize {
+pub(super) fn explicit_bawp_context(single_mode: u8, use_amvd: bool) -> usize {
     if single_mode == SINGLE_MODE_NEARMV {
         0
     } else if single_mode == SINGLE_MODE_NEWMV && use_amvd {

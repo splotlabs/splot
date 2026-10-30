@@ -157,6 +157,10 @@ pub struct EncoderToolFlags {
     /// `seq_frame_motion_modes_present_flag` (§ 5.4.6): every inter frame
     /// enables inter-intra blocks (§ 5.20.7.15).
     pub interintra: bool,
+    /// `enable_bawp` (§ 5.4.6): every inter frame codes `allow_bawp = 1`, so
+    /// single-reference blocks may code block adaptive weighted prediction
+    /// (§ 5.20.7.6, § 7.13.3.25).
+    pub bawp: bool,
 }
 
 /// Stream-level inputs of [`build_encoder_sequence_header`].
@@ -507,7 +511,7 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
         w.write_flag(false)?; // enable_tip_hole_fill
     }
     w.write_flag(false)?; // enable_mv_traj
-    w.write_flag(false)?; // enable_bawp
+    w.write_flag(tools.bawp)?; // enable_bawp
     w.write_flag(tools.cwp)?; // enable_cwp
     w.write_flag(tools.implicit_mask)?; // enable_imp_msk_bld
     w.write_flag(false)?; // enable_df_sub_pu

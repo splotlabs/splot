@@ -249,9 +249,9 @@ impl KeyFrameTileWriter {
 thread_local! {
     /// Compound leaves of the final passes on this thread: weighted
     /// `COMPOUND_AVERAGE`, wedge, difference-weighted, and masked
-    /// `NEAR_NEARMV`; then inter-intra leaves.
-    pub(crate) static CODED_TYPES: core::cell::Cell<[usize; 5]> =
-        const { core::cell::Cell::new([0; 5]) };
+    /// `NEAR_NEARMV`; then inter-intra and BAWP leaves.
+    pub(crate) static CODED_TYPES: core::cell::Cell<[usize; 6]> =
+        const { core::cell::Cell::new([0; 6]) };
 }
 
 #[cfg(test)]
@@ -259,6 +259,7 @@ fn count_coded_type(prediction: InterPrediction) {
     let mut counts = CODED_TYPES.get();
     if let InterPrediction::Single(single) = prediction {
         counts[4] += usize::from(single.interintra.is_some());
+        counts[5] += usize::from(single.bawp.is_some());
         CODED_TYPES.set(counts);
     }
     let InterPrediction::Compound(modes) = prediction else {

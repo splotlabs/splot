@@ -272,6 +272,11 @@ pub struct PresetParams {
     /// paris +0.13% Y for 3% more CPU, largely the `inter_intra` flag every
     /// eligible block codes.
     pub interintra: bool,
+    /// Block adaptive weighted prediction (`enable_bawp`, every inter frame
+    /// codes `allow_bawp = 1`): the cheapest single-reference `NEWMV` of a
+    /// leaf adds its best BAWP scale by luma SATD to the RD trials. Off in
+    /// every row until measured.
+    pub bawp: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -575,6 +580,7 @@ preset_table! {
         compound_types:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
+        bawp:                  [false, false, false, false, false, false, false, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -740,6 +746,7 @@ mod tests {
             assert!(fast.compound_types <= slow.compound_types);
             assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.interintra <= slow.interintra);
+            assert!(fast.bawp <= slow.bawp);
             assert!(fast.opfl <= slow.opfl);
             assert!(fast.tip_refinemv <= slow.tip_refinemv);
             assert!(

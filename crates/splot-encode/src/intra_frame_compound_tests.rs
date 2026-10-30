@@ -98,9 +98,9 @@ fn forced_compound_types_decode_on_any_thread_count() {
         let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
         super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200)
     };
-    crate::tile_writer::CODED_TYPES.set([0; 5]);
+    crate::tile_writer::CODED_TYPES.set([0; 6]);
     let (one, expected, cores, _) = stream(1);
-    let [weighted, wedges, diffs, masked_near, _] = crate::tile_writer::CODED_TYPES.get();
+    let [weighted, wedges, diffs, masked_near, ..] = crate::tile_writer::CODED_TYPES.get();
     assert!(
         weighted > 0 && wedges > 0 && diffs > 0 && masked_near > 0,
         "{weighted} {wedges} {diffs} {masked_near}"
@@ -161,7 +161,7 @@ fn interintra_streams_decode_on_any_thread_count() {
         let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
         super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200)
     };
-    crate::tile_writer::CODED_TYPES.set([0; 5]);
+    crate::tile_writer::CODED_TYPES.set([0; 6]);
     let (one, expected, cores, coder) = stream(1);
     assert!(coder.sequence.inter.unwrap().seq_enabled_motion_modes[1]);
     let interintra = crate::tile_writer::CODED_TYPES.get()[4];
@@ -199,4 +199,50 @@ fn avm_decodes_interintra_like_splot() {
         "interintra",
     );
     assert!(avm == decode(&units), "AVM output differs");
+}
+
+/// A noisy mini-GOP stream with the BAWP search codes BAWP leaves through
+/// the filtered frames that later frames reference, decodes to the encoder
+/// recon, and codes the same bytes on 1, 2 and 8 threads; AVM decodes it
+/// like splot where a decoder build is set.
+#[test]
+fn bawp_streams_decode_on_any_thread_count() {
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        bawp: true,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let stream = |threads: usize| {
+        let mut config = config(136, 72, BitDepth::Ten, 6, 200);
+        config.tiles = TileLayout {
+            cols_log2: 1,
+            rows_log2: 0,
+        };
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200)
+    };
+    crate::tile_writer::CODED_TYPES.set([0; 6]);
+    let (one, expected, cores, coder) = stream(1);
+    assert!(coder.sequence.inter.unwrap().enable_bawp);
+    let bawp = crate::tile_writer::CODED_TYPES.get()[5];
+    assert!(bawp > 0, "no BAWP leaf");
+    assert!(cores.iter().any(|core| {
+        core.deblocking_filter_params
+            .as_ref()
+            .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
+    }));
+    assert_same_samples(&decode(&one), &expected, "BAWP");
+    for threads in [2, 8] {
+        assert!(stream(threads).0 == one, "{threads} threads");
+    }
+    if let Some(avmdec) = avm_decoder() {
+        let avm = avm_decode(
+            &avmdec,
+            std::slice::from_ref(&one),
+            (136, 72),
+            BitDepth::Ten,
+            "bawp",
+        );
+        assert!(avm == decode(&one), "AVM output differs");
+    }
 }

@@ -68,6 +68,7 @@ fn single(mode: InterMode, mv: MotionVector) -> InterPrediction {
         precision: None,
         amvd: false,
         interintra: None,
+        bawp: None,
     })
 }
 
