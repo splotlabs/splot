@@ -316,20 +316,6 @@ const fn delta_limit(high_precision: bool) -> u8 {
 }
 
 impl EncoderInterTile {
-    /// The vector and § 7.13.3 model the decoder resolves for `warp` at
-    /// `frontier`, not published.
-    pub(crate) fn warp_resolution(
-        &mut self,
-        frontier: &DecodeBlockFrontier,
-        warp: EncoderWarpMotion,
-    ) -> Result<(Mv, [i32; 6])> {
-        let syntax = self.inter_syntax(frontier, EncoderMotion::Warp(warp), true)?;
-        let resolved = self.resolve_motion(&syntax)?;
-        let model =
-            resolved.warp_params[0].ok_or(DecodeHeaderStateError::InvalidInterWarpModelState)?;
-        Ok((resolved.mv[0], model))
-    }
-
     /// The warp bank and the warp model of each 4x4 unit of a warp frame,
     /// for the debug rollback check.
     #[cfg(debug_assertions)]

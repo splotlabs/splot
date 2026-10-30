@@ -129,23 +129,6 @@ impl IntraTileSyntax {
             .saturating_sub(precision.unwrap_or_else(|| self.mv_precision()))
     }
 
-    /// The decoder's § 7.13.3 model and vector of `modes` at `leaf`.
-    ///
-    /// # Errors
-    /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code.
-    pub fn warp_model(
-        &mut self,
-        leaf: &LeafBlock,
-        modes: WarpModes,
-    ) -> Result<([i32; 6], MotionVector)> {
-        let motion = self.warp_motion(leaf, modes)?;
-        let tile = &mut self.inter_state()?.tile;
-        let (mv, model) = tile
-            .warp_resolution(&leaf.frontier, motion)
-            .map_err(rule("warp model"))?;
-        Ok((model, mv.into()))
-    }
-
     /// The decoder's warp syntax of `modes` at `leaf`, its symbols checked.
     pub(super) fn warp_motion(
         &mut self,
