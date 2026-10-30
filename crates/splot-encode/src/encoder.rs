@@ -79,6 +79,13 @@ pub(crate) trait FrameCoder {
     /// Receives the block importances of the next frames to code, which
     /// replace the previous ones.
     fn set_block_importance(&mut self, _importance: tpl::BlockImportance) {}
+    /// Whether the coder codes global motion models.
+    fn wants_global_motion(&self) -> bool {
+        false
+    }
+    /// Receives the global motion models of the next frames to code, which
+    /// replace the previous ones.
+    fn set_global_motion(&mut self, _models: crate::global_motion::GlobalModels) {}
 }
 
 /// Callback that receives the statistics of every coded frame.
@@ -299,6 +306,10 @@ impl Encoder {
             ),
         });
         let model = tpl::analyze(&mut self.lookahead, &plan, coded_before, blocks);
+        if self.coder.wants_global_motion() {
+            let models = crate::global_motion::estimate(&mut self.lookahead, &plan, coded_before);
+            self.coder.set_global_motion(models);
+        }
         let mut costs = std::collections::BTreeMap::new();
         self.window = plan
             .iter()

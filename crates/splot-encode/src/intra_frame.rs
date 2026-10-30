@@ -82,6 +82,8 @@ pub(crate) struct IntraFrameCoder {
     /// The global motion models every inter frame codes, set by tests.
     #[cfg(test)]
     global_motion: [Option<[i32; 6]>; 7],
+    /// The global motion models of the next frames to code.
+    global_models: crate::global_motion::GlobalModels,
     /// The block importances of the next frames to code.
     importance: tpl::BlockImportance,
     /// Show-existing frames output so far, which seed their film grain.
@@ -190,6 +192,7 @@ impl IntraFrameCoder {
             #[cfg(test)]
             global_motion: [None; 7],
             importance: tpl::BlockImportance::default(),
+            global_models: crate::global_motion::GlobalModels::new(),
             shown_existing: 0,
             grain_active: false,
         })
@@ -205,6 +208,14 @@ impl FrameCoder for IntraFrameCoder {
 
     fn set_block_importance(&mut self, importance: tpl::BlockImportance) {
         self.importance = importance;
+    }
+
+    fn wants_global_motion(&self) -> bool {
+        self.preset.global_motion > 0
+    }
+
+    fn set_global_motion(&mut self, models: crate::global_motion::GlobalModels) {
+        self.global_models = models;
     }
 
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
@@ -421,6 +432,29 @@ impl IntraFrameCoder {
         #[cfg(test)]
         {
             tools.2.7 = self.global_motion;
+        }
+        if plan.frame_type == FrameType::Inter && !self.global_models.is_empty() {
+            let probe = plan.header(
+                &self.view,
+                &self.references,
+                qindex,
+                &FrameFilterParams::default(),
+                tools,
+            )?;
+            let key_display = plan.display_index - u64::from(plan.order_hint);
+            let hints = probe
+                .inter
+                .as_ref()
+                .map_or(&[][..], |inter| &inter.order_hints[..]);
+            for (model, &hint) in tools.2.7.iter_mut().zip(hints) {
+                *model = (hint != u32::MAX)
+                    .then(|| {
+                        let reference = key_display + u64::from(hint);
+                        self.global_models.get(&(plan.display_index, reference))
+                    })
+                    .flatten()
+                    .copied();
+            }
         }
         tools.0.delta_q_res = (!sb_quant.is_empty()).then_some(self.preset.delta_q_res);
         let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
