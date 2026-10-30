@@ -25,6 +25,13 @@ pub enum Error {
         chroma: PixelFormat,
     },
 
+    /// A resize denominator is outside [`crate::Config::RESIZE_DENOMINATORS`].
+    #[error("resize denominator {denominator} is outside 9..=16")]
+    InvalidResize {
+        /// Requested denominator.
+        denominator: u8,
+    },
+
     /// A frame-rate term is zero.
     #[error("frame rate {numerator}:{denominator} must have nonzero terms")]
     InvalidFrameRate {
