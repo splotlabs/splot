@@ -252,7 +252,8 @@ pub struct PresetParams {
     pub warp: u8,
     /// Global motion (`enable_global_motion`), `0..=1`: inter frames code
     /// `use_global_motion` with the models the lookahead estimates. Off in
-    /// every row until the estimator is tuned and measured.
+    /// every row (2026-10-30): at `1` p6 measured paris +0.01%, niklas
+    /// +0.00%, park_joy +0.49%; the lookahead vectors are too coarse.
     pub global_motion: u8,
     /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` searches wedge
     /// and difference-weighted masks (`enable_masked_compound`), `2` also
