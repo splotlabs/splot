@@ -634,6 +634,14 @@ fixtureable = true
 spec_sections = ["7.12.3.1", "7.12.3.2", "7.13.3.23"]
 
 [[capability]]
+id = "inter.warp.integer_mv_translation"
+name = "Warp block of a force_integer_mv frame predicted by translation"
+category = "inter"
+fixtureable = true
+spec_sections = ["7.13.3.14"]
+notes = "A WARPMV block of a frame with force_integer_mv keeps its warp model but predicts with useWarp = 0."
+
+[[capability]]
 id = "transform.cctx"
 name = "Cross-chroma component transform (CCTX)"
 category = "transform"
