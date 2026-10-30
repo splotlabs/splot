@@ -414,10 +414,21 @@ pub(crate) fn show_existing_unit(
     Ok(unit)
 }
 
-/// A nonzero `grain_seed` for output number `n`; a zero seed would keep the
-/// § 7.21.7.2 random register at zero.
-pub(crate) fn grain_seed(n: u64) -> u16 {
-    (1 + n.wrapping_mul(7919) % 65535) as u16
+/// The `grain_seed` of coded frame `frame_index`. Coded and show-existing
+/// frames take the even and odd steps of one bijection of `0..65535`, so no
+/// two output frames within 32768 of each other share a seed, and no seed is
+/// zero, which would keep the § 7.21.7.2 random register at zero.
+pub(crate) fn coded_grain_seed(frame_index: u64) -> u16 {
+    grain_seed(frame_index.wrapping_mul(2))
+}
+
+/// The `grain_seed` of the `n`-th show-existing frame; see [`coded_grain_seed`].
+pub(crate) fn shown_grain_seed(n: u64) -> u16 {
+    grain_seed(n.wrapping_mul(2).wrapping_add(1))
+}
+
+fn grain_seed(step: u64) -> u16 {
+    (1 + step % 65535 * 7919 % 65535) as u16
 }
 
 impl GopFrame {

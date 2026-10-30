@@ -7,6 +7,9 @@
 use splot_core::headers::frame::GrainScaling;
 use splot_core::tables::conversion::GAUSSIAN_SEQUENCE;
 
+use splot_recon::PixelFormat;
+
+use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 
 /// Block side of the noise measurement.
@@ -23,22 +26,23 @@ const MIN_SIGMA: f64 = 1.0;
 /// `s * std(Gaussian_Sequence) / 4096` 8-bit samples (§ 7.21.7.3, § 7.21.7.5).
 const NOISE_UNIT: f64 = 4096.0;
 
-/// The `[Y, Cb, Cr]` scaling functions of the noise in `frame`; a plane whose
-/// noise stays under [`MIN_SIGMA`] in every bin gets no points.
-pub(crate) fn estimate(frame: &SourceFrame) -> [GrainScaling; 3] {
+/// The `[Y, Cb, Cr]` scaling functions of the noise in `frame` of `chroma`;
+/// a plane whose noise stays under [`MIN_SIGMA`] in every bin gets no points.
+/// 4:2:0 keeps both chroma planes when either is noisy (§ 6.17.10.2).
+pub(crate) fn estimate(frame: &SourceFrame, chroma: PixelFormat) -> Result<[GrainScaling; 3]> {
     let shift = u32::from(frame.bit_depth().bits()) - 8;
     let gaussian = gaussian_sigma();
-    let mut scalings: [GrainScaling; 3] = Default::default();
-    for ((scaling, samples), size) in scalings
+    let mut points: [Vec<(u8, u8)>; 3] = Default::default();
+    let mut noisy = [false; 3];
+    for (((points, noisy), samples), size) in points
         .iter_mut()
+        .zip(&mut noisy)
         .zip(frame.planes())
         .zip(frame.plane_sizes())
     {
         let sigmas = bin_sigmas(samples, size.width(), size.height(), shift);
-        if sigmas.iter().flatten().all(|&sigma| sigma < MIN_SIGMA) {
-            continue;
-        }
-        *scaling = sigmas
+        *noisy = sigmas.iter().flatten().any(|&sigma| sigma >= MIN_SIGMA);
+        *points = sigmas
             .iter()
             .enumerate()
             .filter_map(|(bin, &sigma)| {
@@ -48,7 +52,20 @@ pub(crate) fn estimate(frame: &SourceFrame) -> [GrainScaling; 3] {
             })
             .collect();
     }
-    scalings
+    if chroma == PixelFormat::Yuv420 {
+        let pair = noisy[1] || noisy[2];
+        (noisy[1], noisy[2]) = (pair, pair);
+    }
+    let mut scalings: [GrainScaling; 3] = Default::default();
+    for ((scaling, points), noisy) in scalings.iter_mut().zip(points).zip(noisy) {
+        if noisy {
+            *scaling = GrainScaling::new(points).map_err(|source| Error::Coding {
+                stage: "film grain",
+                source: Box::new(source),
+            })?;
+        }
+    }
+    Ok(scalings)
 }
 
 /// The standard deviation of `Gaussian_Sequence` (§ 7.21.7.3).
@@ -104,11 +121,12 @@ mod tests {
     use crate::config::Config;
     use splot_recon::BitDepth;
 
-    /// A plane of flat halves at 60 and 180 (8-bit scale) with Gaussian noise
-    /// of `sigma` 8-bit samples, from a seeded Box-Muller generator.
-    fn noisy_frame(bit_depth: BitDepth, sigma: f64) -> SourceFrame {
+    /// Planes of flat halves at 60 and 180 (8-bit scale) with Gaussian noise
+    /// of `sigmas` 8-bit samples, from a seeded Box-Muller generator.
+    fn noisy_frame(bit_depth: BitDepth, chroma: PixelFormat, sigmas: [f64; 3]) -> SourceFrame {
         let mut config = Config::new(128, 96);
         config.bit_depth = bit_depth;
+        config.chroma = chroma;
         let scale = f64::from(1u32 << (bit_depth.bits() - 8));
         let mut state = 0x2545_f491_u32;
         let mut uniform = move || {
@@ -128,7 +146,7 @@ mod tests {
                     let base = if i % width < width / 2 { 60.0 } else { 180.0 };
                     let gauss = (-2.0 * uniform().ln()).sqrt()
                         * (2.0 * core::f64::consts::PI * uniform()).cos();
-                    ((base + sigma * gauss) * scale).round() as u16
+                    ((base + sigmas[plane] * gauss) * scale).round() as u16
                 })
                 .collect()
         });
@@ -141,11 +159,13 @@ mod tests {
     fn scaling_tracks_the_source_noise() {
         for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
             for sigma in [3.0, 8.0] {
-                let [y, cb, cr] = estimate(&noisy_frame(bit_depth, sigma));
+                let frame = noisy_frame(bit_depth, PixelFormat::Yuv420, [sigma; 3]);
+                let [y, cb, cr] = estimate(&frame, PixelFormat::Yuv420).unwrap_or_default();
                 for scaling in [&y, &cb, &cr] {
-                    let values: Vec<u8> = scaling.iter().map(|&(value, _)| value).collect();
+                    let values: Vec<u8> =
+                        scaling.points().iter().map(|&(value, _)| value).collect();
                     assert_eq!(values, [48, 176], "{bit_depth:?} {sigma}");
-                    for &(_, scale) in scaling {
+                    for &(_, scale) in scaling.points() {
                         let measured = f64::from(scale) * gaussian_sigma() / NOISE_UNIT;
                         assert!(
                             (measured / sigma - 1.0).abs() < 0.3,
@@ -161,8 +181,21 @@ mod tests {
     #[test]
     fn quiet_sources_get_no_grain() {
         for sigma in [0.0, 0.4] {
-            let scalings = estimate(&noisy_frame(BitDepth::Eight, sigma));
-            assert!(scalings.iter().all(Vec::is_empty), "{sigma}");
+            let frame = noisy_frame(BitDepth::Eight, PixelFormat::Yuv420, [sigma; 3]);
+            let scalings = estimate(&frame, PixelFormat::Yuv420).unwrap_or_default();
+            assert!(scalings.iter().all(GrainScaling::is_empty), "{sigma}");
+        }
+    }
+
+    /// Noise in Cb alone gives Cr points too in 4:2:0 (§ 6.17.10.2 pairs
+    /// them), and Cb points alone in 4:4:4.
+    #[test]
+    fn chroma_420_keeps_both_planes() {
+        for (chroma, cr_points) in [(PixelFormat::Yuv420, true), (PixelFormat::Yuv444, false)] {
+            let frame = noisy_frame(BitDepth::Eight, chroma, [0.0, 5.0, 0.0]);
+            let [y, cb, cr] = estimate(&frame, chroma).unwrap_or_default();
+            assert!(y.is_empty() && !cb.is_empty(), "{chroma:?}");
+            assert_eq!(!cr.is_empty(), cr_points, "{chroma:?}");
         }
     }
 }

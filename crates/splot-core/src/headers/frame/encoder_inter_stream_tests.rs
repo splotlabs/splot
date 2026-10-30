@@ -387,8 +387,8 @@ fn show_existing_frame_obu_parses_complete() {
 }
 
 /// A film-grain sequence codes `apply_grain` with the seed of each output
-/// key or show-existing frame, refuses a seed without film grain, and its
-/// grain OBU parses back to the model.
+/// key or show-existing frame, refuses a seed without film grain, refuses
+/// models that break § 6.17.10.2, and its grain OBU parses back to the model.
 #[test]
 fn film_grain_headers_code_the_seed_and_the_model() {
     let mut params = EncoderStreamParams {
@@ -440,11 +440,15 @@ fn film_grain_headers_code_the_seed_and_the_model() {
         )
         .is_err()
     );
-    let points: GrainScaling = vec![(16, 40), (112, 64), (240, 9)];
-    let model = encoder_film_grain_model(
-        ChromaFormatIdc::Yuv420,
-        [&points, &vec![(128, 20)], &Vec::new()],
-    );
+    let points = GrainScaling::new(vec![(16, 40), (112, 64), (240, 9)]).unwrap();
+    let cb = GrainScaling::new(vec![(128, 20)]).unwrap();
+    let none = GrainScaling::default();
+    assert!(GrainScaling::new(vec![(16, 1), (16, 2)]).is_err());
+    assert!(GrainScaling::new((0..15).map(|v| (v, 1)).collect()).is_err());
+    assert!(encoder_film_grain_model(ChromaFormatIdc::Yuv420, [&points, &cb, &none]).is_err());
+    assert!(encoder_film_grain_model(ChromaFormatIdc::Monochrome, [&points, &cb, &cb]).is_err());
+    assert!(encoder_film_grain_model(ChromaFormatIdc::Yuv444, [&points, &cb, &none]).is_ok());
+    let model = encoder_film_grain_model(ChromaFormatIdc::Yuv420, [&points, &cb, &cb]).unwrap();
     let obu = encode_film_grain_obu(ChromaFormatIdc::Yuv420, &model).unwrap();
     let parsed = parse_annex_b_obus_partial(&obu);
     assert!(parsed.error.is_none());

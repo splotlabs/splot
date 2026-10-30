@@ -4,6 +4,8 @@
 //! Film grain (§ 5.14, § 5.18.10, § 7.21.7) in key and inter frames.
 
 use super::*;
+use crate::encoder::Encoder;
+use splot_core::types::ObuType;
 use splot_recon::apply_film_grain;
 
 /// [`synthetic_frame`] with seeded noise of about 4 8-bit samples on every
@@ -43,13 +45,13 @@ fn grain_stream(mut config: Config, threads: usize, on: bool) -> (Vec<Vec<u8>>, 
         let source = grainy_frame(&config, 11 + index);
         let plan = crate::gop::plan(u64::from(index), config.keyint);
         if plan.frame_type == FrameType::Key {
-            let [y, cb, cr] = grain::estimate(&source);
-            model = Some(encoder_film_grain_model(chroma, [&y, &cb, &cr]));
+            let [y, cb, cr] = grain::estimate(&source, config.chroma).unwrap();
+            model = Some(encoder_film_grain_model(chroma, [&y, &cb, &cr]).unwrap());
         }
         let mut coded = coder.code_frame(&source, &plan, 120, &[]).unwrap();
         let frame = &coded.reference.as_ref().unwrap().1;
         let planes = if on {
-            let seed = crate::gop::grain_seed(plan.frame_index);
+            let seed = crate::gop::coded_grain_seed(plan.frame_index);
             visible_planes(&apply_film_grain(frame, model.as_ref().unwrap(), seed).unwrap())
         } else {
             visible_planes(frame)
@@ -74,6 +76,7 @@ fn grain_stream(mut config: Config, threads: usize, on: bool) -> (Vec<Vec<u8>>, 
 fn grain_streams_decode_to_the_recon_plus_grain() {
     for (chroma, bit_depth) in [
         (PixelFormat::Yuv420, BitDepth::Eight),
+        (PixelFormat::Yuv422, BitDepth::Eight),
         (PixelFormat::Yuv422, BitDepth::Ten),
         (PixelFormat::Yuv444, BitDepth::Eight),
         (PixelFormat::Monochrome, BitDepth::Ten),
@@ -96,6 +99,81 @@ fn grain_streams_decode_to_the_recon_plus_grain() {
     }
 }
 
+/// Frames through the [`Encoder`] at preset 6, whose mini-GOPs output
+/// hidden alt-refs through show-existing frames, with grain `on`.
+fn mini_gop_units(on: bool, noisy: bool) -> Vec<Vec<u8>> {
+    let mut config = config(72, 40, BitDepth::Eight, 6, 120);
+    config.film_grain = on;
+    let mut encoder = Encoder::new(config.clone()).unwrap();
+    for index in 0..9 {
+        let frame = if noisy {
+            grainy_frame(&config, 31 + index)
+        } else {
+            let sizes = config.plane_sizes().unwrap();
+            let planes = core::array::from_fn(|plane| {
+                let width = sizes.get(plane).map_or(1, |size| size.width());
+                let count = sizes
+                    .get(plane)
+                    .map_or(0, |size| size.width() * size.height());
+                (0..count)
+                    .map(|i| (40 + i % width + i / width + index as usize) as u16)
+                    .collect()
+            });
+            SourceFrame::new(&config, u64::from(index), planes).unwrap()
+        };
+        encoder.send_frame(frame).unwrap();
+    }
+    encoder.flush().unwrap();
+    let mut units = Vec::new();
+    while let Some(packet) = encoder.receive_packet().unwrap() {
+        units.push(packet.data);
+    }
+    units
+}
+
+/// Every output frame of a mini-GOP stream, show-existing frames included,
+/// gets grain with its own seed: no two frames carry the same noise. A clean
+/// source codes no grain model, so its frames decode with `apply_grain = 0`.
+#[test]
+fn every_output_frame_gets_its_own_grain() {
+    let frame_len = 72 * 40 * 3 / 2;
+    let plain = decode(&mini_gop_units(false, true).concat());
+    let grained = decode(&mini_gop_units(true, true).concat());
+    assert_eq!((plain.len(), grained.len()), (9 * frame_len, 9 * frame_len));
+    let noise: Vec<Vec<i16>> = plain
+        .chunks(frame_len)
+        .zip(grained.chunks(frame_len))
+        .map(|(a, b)| {
+            a.iter()
+                .zip(b)
+                .map(|(&a, &b)| i16::from(b) - i16::from(a))
+                .collect()
+        })
+        .collect();
+    for (index, frame) in noise.iter().enumerate() {
+        assert!(frame.iter().any(|&d| d != 0), "frame {index} has no grain");
+        assert!(
+            !noise[..index].contains(frame),
+            "frame {index} repeats a seed"
+        );
+    }
+    for n in 0..1000 {
+        assert_ne!(crate::gop::coded_grain_seed(n), 0);
+        assert!(
+            (0..1000).all(|m| crate::gop::coded_grain_seed(n) != crate::gop::shown_grain_seed(m))
+        );
+    }
+    let clean = mini_gop_units(true, false);
+    assert_eq!(decode(&clean.concat()).len(), 9 * frame_len);
+    for unit in &clean {
+        let obus = splot_core::annexb::parse_annex_b_obus_partial(unit).obus;
+        assert!(
+            obus.iter()
+                .all(|obu| obu.header.obu_type != ObuType::FilmGrain)
+        );
+    }
+}
+
 /// AVM synthesizes the same grain as splot.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
@@ -108,4 +186,10 @@ fn avm_decodes_grain_streams_like_splot() {
         let avm = avm_decode(&avmdec, &units, (72, 40), bit_depth, "grain");
         assert!(avm == grained, "{bit_depth:?}: AVM output differs");
     }
+    let units = mini_gop_units(true, true);
+    let avm = avm_decode(&avmdec, &units, (72, 40), BitDepth::Eight, "grain-sef");
+    assert!(
+        avm == decode(&units.concat()),
+        "mini-GOP: AVM output differs"
+    );
 }

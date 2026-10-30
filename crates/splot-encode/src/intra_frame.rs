@@ -7,7 +7,8 @@
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
-    UniformTiles, build_encoder_sequence_header, encode_film_grain_obu, encoder_film_grain_model,
+    GrainScaling, UniformTiles, build_encoder_sequence_header, encode_film_grain_obu,
+    encoder_film_grain_model,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -81,6 +82,9 @@ pub(crate) struct IntraFrameCoder {
     pool: Option<WorkerPool>,
     /// Show-existing frames output so far, which seed their film grain.
     shown_existing: u64,
+    /// The last committed key frame coded a film grain model, which the
+    /// output frames after it apply.
+    grain_active: bool,
 }
 
 impl IntraFrameCoder {
@@ -177,6 +181,7 @@ impl IntraFrameCoder {
                 .transpose()
                 .map_err(coding("worker pool"))?,
             shown_existing: 0,
+            grain_active: false,
         })
     }
 }
@@ -198,15 +203,20 @@ impl FrameCoder for IntraFrameCoder {
         let (core, recon, initial, cdfs) = frame.reference.take().ok_or(Error::Unsupported {
             what: "a frame committed twice",
         })?;
+        if frame.frame_type == FrameType::Key {
+            self.grain_active = core
+                .intra_tail
+                .is_some_and(|tail| tail.film_grain.apply_grain);
+        }
         self.references
             .update(&core, recon, &initial, &cdfs)
             .map_err(coding("reference update"))
     }
 
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
-        let seed = self.params.tools.film_grain.then(|| {
+        let seed = self.grain_active.then(|| {
             self.shown_existing += 1;
-            gop::grain_seed(self.shown_existing << 32)
+            gop::shown_grain_seed(self.shown_existing)
         });
         let unit = gop::show_existing_unit(&self.view, slot, seed)?;
         self.references
@@ -342,9 +352,22 @@ impl IntraFrameCoder {
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
         tools.0.delta_q_res = (!sb_offsets.is_empty()).then_some(DELTA_Q_RES);
-        let film_grain = self.params.tools.film_grain;
+        let grain_model = if self.params.tools.film_grain && plan.frame_type == FrameType::Key {
+            let scalings = grain::estimate(source, self.chroma)?;
+            let [y, cb, cr] = &scalings;
+            (!scalings.iter().all(GrainScaling::is_empty))
+                .then(|| encoder_film_grain_model(self.params.chroma, [y, cb, cr]))
+                .transpose()
+                .map_err(coding("film grain"))?
+        } else {
+            None
+        };
+        let grain_on = match plan.frame_type {
+            FrameType::Key => grain_model.is_some(),
+            _ => self.grain_active,
+        };
         tools.0.grain_seed =
-            (film_grain && plan.show_frame).then(|| gop::grain_seed(plan.frame_index));
+            (grain_on && plan.show_frame).then(|| gop::coded_grain_seed(plan.frame_index));
         if tools.2.3.is_some() || tools.2.5 != 0 {
             let probe = plan.header(
                 &self.view,
@@ -455,13 +478,11 @@ impl IntraFrameCoder {
             },
         )?;
         let tiles: Vec<&[u8]> = tiles.iter().map(Vec::as_slice).collect();
-        let grain_obu = if film_grain && plan.frame_type == FrameType::Key {
-            let [y, cb, cr] = grain::estimate(source);
-            let model = encoder_film_grain_model(self.params.chroma, [&y, &cb, &cr]);
-            encode_film_grain_obu(self.params.chroma, &model).map_err(coding("film grain"))?
-        } else {
-            Vec::new()
-        };
+        let grain_obu = grain_model
+            .map(|model| encode_film_grain_obu(self.params.chroma, &model))
+            .transpose()
+            .map_err(coding("film grain"))?
+            .unwrap_or_default();
         let temporal_unit = plan.temporal_unit(
             &self.sequence,
             &self.view,

@@ -519,42 +519,76 @@ pub fn encode_show_existing_frame_obu(
 }
 
 /// One piecewise-linear `film_grain_model()` scaling function (§ 5.18.10.2):
-/// `(point value, scaling)` pairs with increasing values.
-pub type GrainScaling = Vec<(u8, u8)>;
+/// at most [`Self::MAX_POINTS`] `(point value, scaling)` pairs with strictly
+/// increasing values.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GrainScaling(Vec<(u8, u8)>);
+
+impl GrainScaling {
+    /// The largest `num_*_points` (§ 6.17.10.2).
+    pub const MAX_POINTS: usize = 14;
+
+    /// Checks `points` against the § 6.17.10.2 point rules.
+    ///
+    /// # Errors
+    /// Returns [`EncoderHeaderError`] for more than [`Self::MAX_POINTS`]
+    /// points or values that do not increase.
+    pub fn new(points: Vec<(u8, u8)>) -> Result<Self, EncoderHeaderError> {
+        if points.len() > Self::MAX_POINTS || points.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            return Err(unsupported("film grain scaling points"));
+        }
+        Ok(Self(points))
+    }
+
+    /// The `(point value, scaling)` pairs.
+    #[must_use]
+    pub fn points(&self) -> &[(u8, u8)] {
+        &self.0
+    }
+
+    /// Whether the function has no points (the plane gets no grain).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 
 /// The `film_grain_model()` (§ 5.18.10.2) of the encoder for `chroma`: the
 /// `[Y, Cb, Cr]` scaling functions, `grain_scaling_minus_8 = 0`,
 /// `ar_coeff_lag = 0` with zero coefficients, and each chroma scaling indexed
 /// by its own sample (`*_mult = 192`, `*_luma_mult = 128`, `*_offset = 256`).
-#[must_use]
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] for chroma points in a monochrome model, or
+/// 4:2:0 chroma with points in one of Cb and Cr only (§ 6.17.10.2).
 pub fn encoder_film_grain_model(
     chroma: ChromaFormatIdc,
     [y, cb, cr]: [&GrainScaling; 3],
-) -> FilmGrainModel {
+) -> Result<FilmGrainModel, EncoderHeaderError> {
     let monochrome = chroma.is_monochrome();
+    if (monochrome && !(cb.is_empty() && cr.is_empty()))
+        || (chroma == ChromaFormatIdc::Yuv420 && cb.is_empty() != cr.is_empty())
+    {
+        return Err(unsupported("film grain chroma points"));
+    }
     let points = |points: &GrainScaling| {
         let points: Vec<FilmGrainScalingPoint> = points
+            .points()
             .iter()
             .map(|&(value, scaling)| FilmGrainScalingPoint {
                 value: value.into(),
                 scaling: scaling.into(),
             })
             .collect();
-        (points.len() as u8, points)
+        u8::try_from(points.len())
+            .map(|count| (count, points))
+            .map_err(|_| unsupported("film grain scaling points"))
     };
-    let (num_y_points, point_y) = points(y);
-    let (num_cb_points, point_cb) = if monochrome {
-        (0, Vec::new())
-    } else {
-        points(cb)
-    };
-    let (num_cr_points, point_cr) = if monochrome {
-        (0, Vec::new())
-    } else {
-        points(cr)
-    };
+    let (num_y_points, point_y) = points(y)?;
+    let (num_cb_points, point_cb) = points(cb)?;
+    let (num_cr_points, point_cr) = points(cr)?;
     let chroma_coeffs = |num: u8| vec![0; usize::from(num > 0 && num_y_points > 0)];
-    FilmGrainModel {
+    Ok(FilmGrainModel {
         chroma_scaling_from_luma: false,
         num_y_points,
         point_y,
@@ -579,7 +613,7 @@ pub fn encoder_film_grain_model(
         clip_to_restricted_range: false,
         mc_identity: false,
         film_grain_block_size: false,
-    }
+    })
 }
 
 /// Serializes an `OBU_FILM_GRAIN` (§ 5.14) that saves `model` in slot 0 for
