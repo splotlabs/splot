@@ -815,19 +815,49 @@ fn compound_local_warp_uses_translation_for_a_list_without_samples() {
 #[test]
 fn compound_warp_blend_forces_plain_average_but_keeps_masks() {
     let average = mc::CompoundBlend::average_with_implicit_mask(true);
+    let plain = mc::CompoundBlend::Average {
+        implicit_mask: false,
+        cwp_weight: mc::CWP_EQUAL,
+    };
     assert_eq!(
-        compound_warp_blend(average, true),
+        compound_warp_blend(average, true, CompoundYMode::NewNew),
+        plain
+    );
+    assert_eq!(
+        compound_warp_blend(average, false, CompoundYMode::NewNew),
+        average
+    );
+    let wedge = mc::CompoundBlend::Wedge {
+        index: 3,
+        sign: true,
+    };
+    assert_eq!(
+        compound_warp_blend(wedge, true, CompoundYMode::NewNew),
+        wedge
+    );
+}
+
+/// § 7.13.3.14: the implicit-mask average excludes `GLOBAL_GLOBALMV`, with
+/// or without a global warp, and keeps its `cwp_idx` weight.
+#[test]
+fn global_globalmv_average_drops_the_implicit_mask() {
+    let average = mc::CompoundBlend::average_with_implicit_mask(true);
+    assert_eq!(
+        compound_warp_blend(average, false, CompoundYMode::GlobalGlobal),
         mc::CompoundBlend::Average {
             implicit_mask: false,
             cwp_weight: mc::CWP_EQUAL,
         }
     );
-    assert_eq!(compound_warp_blend(average, false), average);
-    let wedge = mc::CompoundBlend::Wedge {
-        index: 3,
-        sign: true,
-    };
-    assert_eq!(compound_warp_blend(wedge, true), wedge);
+    assert_eq!(
+        compound_warp_blend(average, false, CompoundYMode::NearNear),
+        average
+    );
+    let weighted = average.average_with_cwp_weight(12);
+    assert_eq!(
+        compound_warp_blend(weighted, false, CompoundYMode::GlobalGlobal),
+        mc::CompoundBlend::average_with_implicit_mask(false).average_with_cwp_weight(12)
+    );
 }
 
 #[test]
