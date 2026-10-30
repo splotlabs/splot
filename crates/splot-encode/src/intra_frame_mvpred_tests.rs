@@ -168,6 +168,7 @@ fn rollback_restores_the_reference_mv_bank() {
                     filter: splot_recon::InterpolationFilter::EightTap,
                     precision: None,
                     amvd: false,
+                    interintra: None,
                 }));
                 Walk::trial(syntax, &mut RateSink::adapting()).write_leaf(
                     &leaf,

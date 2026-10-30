@@ -73,6 +73,7 @@ impl EncoderInterTile {
             max_drl_bits_minus_1: 0,
             drl_reorder: sequence_drl_reorder(sequence),
             compound_tools: (false, false),
+            tile_start: (0, 0),
             blend_tools: (false, false),
             interp_switchable: false,
             num_same_ref_compound: 0,
@@ -83,6 +84,7 @@ impl EncoderInterTile {
             qindex,
             bit_depth,
             residual_scratch: super::super::super::InterResidualReconScratch::default(),
+            interintra_scratch: super::super::interintra::InterIntraScratch::default(),
             tip_ref_pair: None,
             tip_records: Vec::new(),
             tip_trial_records: Vec::new(),
@@ -103,6 +105,7 @@ impl EncoderInterTile {
             precision: Some(self.precision),
             use_amvd: false,
             tip: false,
+            interintra: None,
         })
     }
 

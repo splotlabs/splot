@@ -155,7 +155,15 @@ impl EncoderInterTile {
             EncoderMotion::Single(single) => (
                 single.use_amvd,
                 single.mode == SINGLE_MODE_NEWMV
-                    && mvd_sign_derivation_block_scope_allowed(MotionMode::Simple, false, None)
+                    && mvd_sign_derivation_block_scope_allowed(
+                        if single.interintra.is_some() {
+                            MotionMode::InterIntra
+                        } else {
+                            MotionMode::Simple
+                        },
+                        false,
+                        None,
+                    )
                     && allowed(single.use_amvd),
                 1,
             ),
@@ -671,6 +679,7 @@ impl EncoderInterTile {
                 } else if single.use_amvd {
                     return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
                 }
+                self.interintra_symbols(&mut out, frontier, single.interintra)?;
                 if single.mode != SINGLE_MODE_GLOBALMV {
                     let selector = |idx| TileCdfSelector::DrlMode { idx, ctx: new_mv };
                     drl_symbols(&mut out, selector, 0, max_drl, single.ref_mv_idx)?;

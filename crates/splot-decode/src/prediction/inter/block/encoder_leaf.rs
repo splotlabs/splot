@@ -93,6 +93,9 @@ pub(crate) struct EncoderSingleMotion {
     /// `tip_mode`: the block predicts from the TIP frame (§ 7.11.3); its
     /// `ref_frame` is `TIP_REF_FRAME` and its mode `NEARMV` or `NEWMV`.
     pub(crate) tip: bool,
+    /// The inter-intra prediction (§ 5.20.7.15) of a block that codes
+    /// `inter_intra = 1`.
+    pub(crate) interintra: Option<InterIntraPrediction>,
 }
 
 /// Whether `motion` predicts from the TIP frame.
@@ -157,6 +160,8 @@ pub(crate) struct EncoderInterTile {
     drl_reorder: DrlReorder,
     /// `reference_select` and `skip_mode_present`.
     compound_tools: (bool, bool),
+    /// The first luma 4x4 row and column of the tile.
+    tile_start: (usize, usize),
     /// `enable_cwp || enable_masked_compound` and `enable_imp_msk_bld`.
     blend_tools: (bool, bool),
     /// `interpolation_filter == SWITCHABLE`.
@@ -169,6 +174,7 @@ pub(crate) struct EncoderInterTile {
     qindex: u32,
     bit_depth: BitDepth,
     residual_scratch: super::super::InterResidualReconScratch<u16>,
+    interintra_scratch: super::interintra::InterIntraScratch<u16>,
     /// `TipFrameMode == TIP_FRAME_AS_REF` with the TIP reference pair.
     tip_ref_pair: Option<(i8, i8)>,
     /// The § 7.22 records of the published TIP leaves, which the decoder
@@ -220,10 +226,10 @@ impl EncoderInterTile {
             ),
             (
                 inter.frame_enabled_motion_modes.is_some_and(|modes| {
-                    modes[splot_core::headers::frame::INTERINTRA]
-                        || !modes[splot_core::headers::frame::DELTAWARP] && modes.contains(&true)
+                    !modes[splot_core::headers::frame::DELTAWARP]
+                        && modes[splot_core::headers::frame::LOCALWARP..].contains(&true)
                 }),
-                "inter-intra or a warp mode without DELTAWARP",
+                "a warp mode without DELTAWARP",
             ),
             (core.frame_type == Some(FrameType::Switch), "a switch frame"),
         ];
@@ -247,6 +253,7 @@ impl EncoderInterTile {
             (size.height as usize).div_ceil(8) * 2,
             (size.width as usize).div_ceil(8) * 2,
         );
+        let tile_start = (rows.start, cols.start);
         grid.reset_for_tile(rows, cols, sb_h4)
             .map_err(|_| "neighbour grid size")?;
         let current_order_hint = core.display_order_hint().unwrap_or(0);
@@ -286,6 +293,7 @@ impl EncoderInterTile {
                 .ok_or("incomplete inter frame tools")?,
             drl_reorder: sequence_drl_reorder(sequence),
             compound_tools: (tail.reference_select, tail.skip_mode_present),
+            tile_start,
             blend_tools: (
                 seq_inter.enable_cwp || seq_inter.enable_masked_compound,
                 seq_inter.enable_imp_msk_bld,
@@ -300,6 +308,7 @@ impl EncoderInterTile {
             qindex,
             bit_depth,
             residual_scratch: super::super::InterResidualReconScratch::default(),
+            interintra_scratch: super::interintra::InterIntraScratch::default(),
             tip_ref_pair,
             tip_records: Vec::new(),
             tip_trial_records: Vec::new(),
@@ -464,6 +473,7 @@ impl EncoderInterTile {
                     precision: None,
                     use_amvd: false,
                     tip,
+                    interintra: None,
                 },
             )
         };
@@ -495,6 +505,7 @@ impl EncoderInterTile {
         frontier: &DecodeBlockFrontier,
         motion: EncoderMotion,
         workspace: &mut CurrentFrameWorkspace<u16>,
+        (block_decoded, enable_ibp): (&TileBlockDecodedState, bool),
     ) -> Result<[Mv; 2]> {
         let syntax = self.inter_syntax(frontier, motion, true)?;
         let refine = refinemv_flags(&syntax.motion);
@@ -508,6 +519,29 @@ impl EncoderInterTile {
             let predicted = self.tip_motion(&placed, workspace, &mut records, true);
             self.tip_trial_records = records;
             predicted?;
+            return Ok(mvs);
+        }
+        if placed.block.interintra.is_some() {
+            prediction::reconstruct_placed_inter_block(
+                &mut self.interintra_scratch,
+                &mut self.residual_scratch,
+                workspace,
+                &placed,
+                &[],
+                &[],
+                None,
+                false,
+                false,
+                block_decoded,
+                &self.ref_frame_idx,
+                &self.reference,
+                self.qindex,
+                false,
+                false,
+                self.bit_depth,
+                enable_ibp,
+                ByteOffset::new(0),
+            )?;
             return Ok(mvs);
         }
         let grid = self.compound_grid(&placed, refine, workspace)?;
@@ -887,7 +921,10 @@ impl EncoderInterTile {
                 ),
             blend,
             bawp: BawpSyntax::default(),
-            interintra: None,
+            interintra: match motion {
+                EncoderMotion::Single(single) => single.interintra,
+                EncoderMotion::Compound(_) | EncoderMotion::Warp(_) => None,
+            },
             optflow_distances,
             residual: None,
         })
@@ -1124,7 +1161,7 @@ impl EncoderInterTile {
     ) -> Result<PlacedInterBlock> {
         let geometry = prediction::placed_inter_geometry_at(
             frontier,
-            (0, 0),
+            self.tile_start,
             (syntax.block_ctx.bw4, syntax.block_ctx.bh4),
             self.chroma != ChromaFormatIdc::Monochrome,
         )?;

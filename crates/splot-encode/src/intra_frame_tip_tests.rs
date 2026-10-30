@@ -392,6 +392,7 @@ fn tip_tree(
                     filter: splot_recon::InterpolationFilter::EightTap,
                     precision: None,
                     amvd: false,
+                    interintra: None,
                 }),
             )));
         }

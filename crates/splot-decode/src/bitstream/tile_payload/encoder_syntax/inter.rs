@@ -20,7 +20,7 @@ use splot_core::span::ByteOffset;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::{
-    BitDepth, DecodedFrame, InterpolationFilter, ReferencePlaneView, SharedFrame,
+    BitDepth, DecodedFrame, InterIntraMode, InterpolationFilter, ReferencePlaneView, SharedFrame,
     SubpelPredictParams,
 };
 
@@ -41,10 +41,11 @@ use crate::pipeline::{frame_ref_update_from_core, is_key_or_switch};
 use crate::prediction::inter::read_mv::AMVD_INDEX_TO_MVD;
 use crate::prediction::inter::{
     EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderMotion,
-    EncoderSingleMotion, EncoderSingleMvs, FrameCdfHandle, InterReferenceState, MotionFieldHandle,
-    Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, TIP_REF_FRAME,
-    TemporalMvContext, chroma_inter_tx_type, encoder_motion_field, encoder_temporal_context,
-    inter_residual_units, non_intra_leaf_mode, resolve_initial_frame_cdfs,
+    EncoderSingleMotion, EncoderSingleMvs, FrameCdfHandle, InterIntraPrediction,
+    InterReferenceState, MotionFieldHandle, Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV,
+    SINGLE_MODE_NEWMV, TIP_REF_FRAME, TemporalMvContext, chroma_inter_tx_type,
+    encoder_motion_field, encoder_temporal_context, inter_residual_units, non_intra_leaf_mode,
+    resolve_initial_frame_cdfs,
 };
 use crate::reference::buffer::RuntimeReferenceBuffer;
 
@@ -371,6 +372,38 @@ pub struct InterModes {
     /// difference component is zero or `±` an [`AMVD_STEPS`] entry over the
     /// unrounded base.
     pub amvd: bool,
+    /// The inter-intra prediction, where [`IntraTileSyntax::interintra_reads`]
+    /// says the block reads it.
+    pub interintra: Option<InterIntra>,
+}
+
+/// `INTERINTRA_MODES` (§ 3): the `interintra_mode` values.
+pub const INTERINTRA_MODES: u8 = 4;
+
+/// The inter-intra prediction of a single-reference block (§ 5.20.7.15).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct InterIntra {
+    /// `interintra_mode`, below [`INTERINTRA_MODES`]: `II_DC_PRED`,
+    /// `II_V_PRED`, `II_H_PRED` or `II_SMOOTH_PRED`.
+    pub mode: u8,
+    /// `WedgeIndex` of a block that codes `wedge_interintra = 1`.
+    pub wedge: Option<u8>,
+}
+
+impl InterIntra {
+    fn prediction(self) -> Result<InterIntraPrediction> {
+        let mode = match self.mode {
+            0 => InterIntraMode::Dc,
+            1 => InterIntraMode::Vertical,
+            2 => InterIntraMode::Horizontal,
+            3 => InterIntraMode::Smooth,
+            _ => return Err(EncoderSyntaxError::Unsupported("interintra_mode")),
+        };
+        Ok(match self.wedge {
+            Some(wedge_index) => InterIntraPrediction::WedgeMask { mode, wedge_index },
+            None => InterIntraPrediction::SmoothMask { mode },
+        })
+    }
 }
 
 /// The single-reference vectors of one leaf and list reference, see
@@ -511,6 +544,7 @@ impl IntraTileSyntax {
             filter: InterpolationFilter::EightTap,
             precision: None,
             amvd: false,
+            interintra: None,
         };
         let previous = self.inter_state()?.tile.set_tip_weight(Some(weight));
         let predicted = self.luma_prediction(leaf, InterPrediction::Single(modes));
@@ -536,6 +570,18 @@ impl IntraTileSyntax {
         }
         self.clear_inter_plan();
         Ok(out)
+    }
+
+    /// Whether a single-reference leaf `leaf` reads `inter_intra`, and
+    /// whether it reads `wedge_interintra` (§ 5.20.7.14, § 5.20.7.15).
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] in an intra frame.
+    pub fn interintra_reads(&self, leaf: &LeafBlock) -> Result<(bool, bool)> {
+        self.inter_ref()?
+            .tile
+            .interintra_reads(&leaf.frontier)
+            .map_err(rule("inter_intra"))
     }
 
     /// `NumTotalRefs`; `0` in an intra frame.
@@ -716,7 +762,12 @@ impl IntraTileSyntax {
         state.planned = None;
         let workspace = &mut self.recon.workspace;
         let mvs = match intrabc {
-            None => state.tile.predict(&leaf.frontier, motion, workspace),
+            None => state.tile.predict(
+                &leaf.frontier,
+                motion,
+                workspace,
+                (&self.recon.block_decoded, self.tools.enable_ibp),
+            ),
             Some(mv) => (state.tile.predict_intrabc(&leaf.frontier, mv, workspace))
                 .map(|()| [mv, Mv::default()]),
         }
@@ -1445,6 +1496,7 @@ impl IntraTileSyntax {
             precision: modes.precision.filter(|_| mode == SINGLE_MODE_NEWMV),
             use_amvd: modes.amvd && mode == SINGLE_MODE_NEWMV,
             tip,
+            interintra: modes.interintra.map(InterIntra::prediction).transpose()?,
         };
         if mode == SINGLE_MODE_NEWMV {
             let step = self.newmv_step(&modes);

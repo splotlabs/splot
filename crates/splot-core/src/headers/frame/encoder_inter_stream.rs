@@ -29,7 +29,7 @@ use crate::headers::frame::{
     FrameReferenceStateView, KeyFrameTxParams, TipFrameMode, TxMode, init_core_from_prefix,
     parse_core_body, parse_frame_header_prefix,
 };
-use crate::headers::frame::{DELTAWARP, INTERINTRA, LOCALWARP};
+use crate::headers::frame::{DELTAWARP, INTERINTRA};
 use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 use crate::headers::tile_group::{RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructure};
 use crate::span::ByteOffset;
@@ -321,19 +321,20 @@ fn inter_frame_header_bits(
         w.write_bits(EIGHTTAP, 2)?; // interpolation_filter
     }
     let modes = seq.inter.seq_enabled_motion_modes;
-    if modes[INTERINTRA]
-        || (!seq.inter.seq_frame_motion_modes_present_flag && modes.contains(&true))
-    {
-        return Err(unsupported(
-            "inter-intra or motion modes every frame enables",
-        ));
+    if !seq.inter.seq_frame_motion_modes_present_flag && modes.contains(&true) {
+        return Err(unsupported("motion modes every frame enables"));
     }
     let warp = params.warp && modes[DELTAWARP];
     if params.warp && !warp {
         return Err(unsupported("warped motion the sequence does not enable"));
     }
-    for _ in modes.iter().skip(LOCALWARP).filter(|&&on| on) {
-        w.write_flag(warp)?; // frame_enabled_motion_modes[mode]
+    for (mode, _) in modes
+        .iter()
+        .enumerate()
+        .skip(INTERINTRA)
+        .filter(|&(_, &on)| on)
+    {
+        w.write_flag(mode == INTERINTRA || warp)?; // frame_enabled_motion_modes[mode]
     }
     w.write_flag(false)?; // disable_cdf_update
     let tx = params.tx;

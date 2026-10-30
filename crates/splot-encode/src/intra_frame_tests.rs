@@ -23,7 +23,8 @@ use crate::tile_writer::{
     PartitionTree,
 };
 use splot_decode::encoder_syntax::{
-    COMPOUND_MODES, CompoundType, INTERP_FILTERS, JMVD_SCALE_MODES, MAX_CWP_NUM, TxPartition,
+    COMPOUND_MODES, CompoundType, INTERINTRA_MODES, INTERP_FILTERS, InterIntra, JMVD_SCALE_MODES,
+    MAX_CWP_NUM, TxPartition,
 };
 
 /// Gradients, a ripple, and seeded noise, so blocks of every size split.
@@ -666,8 +667,10 @@ impl Rng {
 /// a `LOCALWARP` and an `EXTENDWARP` leaf; a coded six-parameter and a coded
 /// high-precision `DELTAWARP` leaf; a `WARPMV` leaf with a difference; a
 /// `COMPOUND_WEDGE`, a `COMPOUND_DIFFWTD` and a weighted `COMPOUND_AVERAGE`
-/// compound leaf.
-type Coverage = [usize; 31];
+/// compound leaf; a smooth and a wedge inter-intra leaf.
+type Coverage = [usize; COVERAGE_SLOTS];
+/// The slots of [`Coverage`].
+const COVERAGE_SLOTS: usize = 33;
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -889,6 +892,7 @@ fn random_modes(
             filter,
             precision: precisions.get(pick).copied().filter(|_| new),
             amvd: new && pick == precisions.len() && syntax.adaptive_mvd(),
+            interintra: None,
         }));
     }
     let mode = [InterMode::Near, InterMode::Global, InterMode::New][rng.below(3) as usize];
@@ -904,6 +908,7 @@ fn random_modes(
         filter,
         precision: None,
         amvd: false,
+        interintra: None,
     };
     if mode == InterMode::New {
         let precisions = syntax.newmv_precisions(leaf).unwrap();
@@ -915,9 +920,38 @@ fn random_modes(
         };
         coverage[16] += usize::from(coarse.precision.is_some());
         coverage[17] += usize::from(coarse.amvd);
+        let coarse = random_interintra(syntax, leaf, rng, coverage, coarse);
         return random_warp_or(syntax, leaf, rng, coverage, InterPrediction::Single(coarse));
     }
+    let modes = random_interintra(syntax, leaf, rng, coverage, modes);
     random_warp_or(syntax, leaf, rng, coverage, InterPrediction::Single(modes))
+}
+
+/// `modes` with a random inter-intra prediction in half the draws of a side
+/// generator where the leaf reads it, a wedge in half of those where it
+/// reads one; `rng` stays as it was.
+fn random_interintra(
+    syntax: &IntraTileSyntax,
+    leaf: &LeafBlock,
+    rng: &Rng,
+    coverage: &mut Coverage,
+    modes: InterModes,
+) -> InterModes {
+    let (reads, reads_wedge) = syntax.interintra_reads(leaf).unwrap();
+    let mut side = Rng(rng.0.rotate_left(41));
+    if !reads || side.below(2) == 0 {
+        return modes;
+    }
+    let wedge = (reads_wedge && side.below(2) == 0).then(|| side.below(68) as u8);
+    coverage[31] += usize::from(wedge.is_none());
+    coverage[32] += usize::from(wedge.is_some());
+    InterModes {
+        interintra: Some(InterIntra {
+            mode: side.below(u64::from(INTERINTRA_MODES)) as u8,
+            wedge,
+        }),
+        ..modes
+    }
 }
 
 /// A random warp leaf in two of three draws of a side generator, which
@@ -987,6 +1021,7 @@ fn inter_stream_of(
         global_motion: 1,
         compound_types: 2,
         implicit_mask: true,
+        interintra: true,
         ..*config.preset.params()
     }));
     let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();
@@ -1029,7 +1064,7 @@ fn inter_stream_of(
     let mut residual =
         SourceResidualCoder::new(&padded, qindex, config.bit_depth, &coder.preset, lambda);
     let mut rng = Rng(seed);
-    let mut coverage = Coverage::default();
+    let mut coverage = [0; COVERAGE_SLOTS];
     while writer.next_superblock_root().is_some() {
         let tree = writer
             .search_superblock(|syntax, root| tree(syntax, root, &mut rng, &mut coverage))
@@ -1076,7 +1111,7 @@ fn random_inter_cases() -> impl Iterator<Item = (usize, Config, String)> {
 /// MV writer, decode to the writer's reconstruction.
 #[test]
 fn random_inter_leaves_decode_to_the_writer_recon() {
-    let mut total = Coverage::default();
+    let mut total = [0; COVERAGE_SLOTS];
     for (index, config, name) in random_inter_cases() {
         let (units, expected, coverage) = random_inter_stream(&config, 0x5EED + index as u64);
         assert_same_samples(&decode(&units.concat()), &expected, &name);

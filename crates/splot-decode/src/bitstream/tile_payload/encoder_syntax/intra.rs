@@ -214,7 +214,7 @@ impl TxType {
 pub(super) struct IntraTools {
     pub(super) chroma: GeneralIntraChromaToolConfig,
     cfl_ds_filter_index: u8,
-    enable_ibp: bool,
+    pub(super) enable_ibp: bool,
     enable_intra_edge_filter: bool,
     enable_mrls: bool,
     /// `enable_intra_ist`.

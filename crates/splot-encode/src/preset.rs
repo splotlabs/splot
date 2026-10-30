@@ -267,6 +267,13 @@ pub struct PresetParams {
     /// (2026-10-30): on alone it measured park_joy +1.26%, paris +0.20% at
     /// p6, as the compound search scores the plain average.
     pub implicit_mask: bool,
+    /// Inter-intra (`seq_enabled_motion_modes[INTERINTRA]`): the cheapest
+    /// single-reference `NEWMV` of a leaf adds its best smooth-mask
+    /// `interintra_mode` by luma SATD to the RD trials. Off in every row
+    /// (2026-10-30): at p6 it measured park_joy +0.39% Y (-0.05% YUV) and
+    /// paris +0.13% Y for 3% more CPU, largely the `inter_intra` flag every
+    /// eligible block codes.
+    pub interintra: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -569,6 +576,7 @@ preset_table! {
         global_motion:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
+        interintra:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -733,6 +741,7 @@ mod tests {
             assert!(fast.global_motion <= slow.global_motion);
             assert!(fast.compound_types <= slow.compound_types);
             assert!(fast.implicit_mask <= slow.implicit_mask);
+            assert!(fast.interintra <= slow.interintra);
             assert!(fast.opfl <= slow.opfl);
             assert!(fast.tip_refinemv <= slow.tip_refinemv);
             assert!(
