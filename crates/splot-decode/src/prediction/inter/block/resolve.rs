@@ -884,7 +884,7 @@ pub(super) fn compound_motion(
     state: &MvResolutionState<'_>,
 ) -> Result<ResolvedInterBlock> {
     let block = &syntax.block_ctx;
-    let precision = syntax.precision.mv_precision;
+    let precision = state.frame_precision;
     let global_mvs = [
         global_motion_mv(state.core, block.ref_frame0, block, precision),
         global_motion_mv(state.core, compound.ref_frame1, block, precision),
@@ -1067,3 +1067,7 @@ fn lowered_amvd_pred(syntax: &InterBlockSyntax, pred_mv: Mv) -> Mv {
         lowered_pred_mv(syntax.precision, pred_mv)
     }
 }
+
+#[cfg(test)]
+#[path = "resolve_tests.rs"]
+mod tests;

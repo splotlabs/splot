@@ -335,7 +335,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         },
         tile_offset,
     )?;
-    let compound_blend = compound_warp_blend(compound_blend, local_warp);
+    let compound_blend = compound_warp_blend(compound_blend, local_warp, compound.y_mode);
     if compound_all_opfl_reachable(
         opfl_refine_type,
         core,
@@ -569,11 +569,16 @@ fn compound_ref_warp_model(
     )?))
 }
 
-/// AV2 § 7.13.3.14: compound LOCALWARP (`compoundWarp = 1`) disables the
-/// implicit-mask average branch, so COMPOUND_AVERAGE collapses to the plain
-/// weighted average; wedge/diff-weighted blends are unaffected.
-fn compound_warp_blend(blend: mc::CompoundBlend, local_warp: bool) -> mc::CompoundBlend {
-    if !local_warp {
+/// AV2 § 7.13.3.14: compound LOCALWARP (`compoundWarp = 1`) and
+/// `GLOBAL_GLOBALMV` disable the implicit-mask average branch, so
+/// COMPOUND_AVERAGE collapses to the plain weighted average; wedge and
+/// diff-weighted blends are unaffected.
+pub(super) fn compound_warp_blend(
+    blend: mc::CompoundBlend,
+    local_warp: bool,
+    y_mode: CompoundYMode,
+) -> mc::CompoundBlend {
+    if !local_warp && y_mode != CompoundYMode::GlobalGlobal {
         return blend;
     }
     match blend {
