@@ -57,6 +57,8 @@ pub(crate) struct CodedFrame {
     pub(crate) tip_output: Option<FrameHeaderCore>,
     /// The warp leaves and the inter leaves of the coded trees.
     pub(crate) warp_leaves: (usize, usize),
+    /// The `GLOBALMV` and `GLOBAL_GLOBALMV` leaves of the coded trees.
+    pub(crate) global_leaves: usize,
 }
 
 /// Codes the frames and show-existing frames of the plan, in coding order.
@@ -533,6 +535,7 @@ mod tests {
                 reference: None,
                 tip_output: None,
                 warp_leaves: (0, 0),
+                global_leaves: 0,
             })
         }
     }

@@ -124,16 +124,26 @@ fn with_warp(change: impl FnOnce(&mut PresetParams)) -> &'static PresetParams {
 
 /// A coded warp stream: its temporal units, the recon in display order, and
 /// each coded frame's header and `(warp leaves, inter leaves)` in coding order.
-struct WarpStream {
-    units: Vec<u8>,
-    expected: Vec<u8>,
-    frames: Vec<(FrameHeaderCore, (usize, usize))>,
+pub(super) struct WarpStream {
+    pub(super) units: Vec<u8>,
+    pub(super) expected: Vec<u8>,
+    pub(super) frames: Vec<(FrameHeaderCore, (usize, usize))>,
     coder: IntraFrameCoder,
 }
 
 /// Nine zooming frames in mini-GOPs at qp 180, where the encoder deblocks.
 fn warp_stream(config: &Config, preset: &PresetParams) -> WarpStream {
-    let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();
+    let coder = IntraFrameCoder::with_preset(config, preset).unwrap();
+    zooming_stream(config, coder, |coded| coded.warp_leaves)
+}
+
+/// Nine zooming frames of `coder` in mini-GOPs at qp 180, each coded frame
+/// with the leaf counts `count` takes from it.
+pub(super) fn zooming_stream(
+    config: &Config,
+    mut coder: IntraFrameCoder,
+    count: impl Fn(&CodedFrame) -> (usize, usize),
+) -> WarpStream {
     let mut planner = crate::gop::GopPlanner::new(config.keyint, coder.preset.mini_gop_size);
     let (mut units, mut recons, mut frames) = (Vec::new(), BTreeMap::new(), Vec::new());
     let mut queued = 9;
@@ -148,7 +158,7 @@ fn warp_stream(config: &Config, preset: &PresetParams) -> WarpStream {
                         .tip_output
                         .clone()
                         .unwrap_or_else(|| coded.reference.as_ref().unwrap().0.clone());
-                    frames.push((core, coded.warp_leaves));
+                    frames.push((core, count(&coded)));
                     coder.commit(&mut coded).unwrap();
                     recons.insert(plan.display_index, recon_bytes(&coded, config.bit_depth));
                     units.extend(coded.temporal_unit);
@@ -170,7 +180,10 @@ fn warp_stream(config: &Config, preset: &PresetParams) -> WarpStream {
 /// Asserts that a frame codes warp leaves into a reference slot and a later
 /// frame takes temporal vectors over that slot, so the decoder reads the warp
 /// frame's § 7.19 motion records.
-fn assert_warp_records_consumed(frames: &[(FrameHeaderCore, (usize, usize))], case: &str) {
+pub(super) fn assert_warp_records_consumed(
+    frames: &[(FrameHeaderCore, (usize, usize))],
+    case: &str,
+) {
     let mut warp_slots = [false; 8];
     let mut consumed = false;
     for (core, (warp, _)) in frames {

@@ -217,6 +217,18 @@ impl CodedTile {
         })
     }
 
+    /// The leaves of the tile that `keep` accepts.
+    pub(crate) fn count_leaves(
+        &self,
+        keep: &impl Fn(&crate::tile_writer::LeafChoice) -> bool,
+    ) -> usize {
+        self.decisions
+            .superblocks
+            .iter()
+            .map(|(decision, _)| decision.tree.count_leaves(keep))
+            .sum()
+    }
+
     /// The warp leaves and the inter leaves of the tile.
     pub(crate) fn warp_leaves(&self) -> (usize, usize) {
         self.decisions

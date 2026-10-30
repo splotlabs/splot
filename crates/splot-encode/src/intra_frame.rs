@@ -523,6 +523,10 @@ impl IntraFrameCoder {
             }
             CodedTile::finish(writer, decisions).map_err(coding("tile finish"))
         })?;
+        let global_leaves = tiles
+            .iter()
+            .map(|tile| tile.count_leaves(&crate::global_motion::is_global))
+            .sum();
         let warp_leaves = tiles
             .iter()
             .map(CodedTile::warp_leaves)
@@ -560,6 +564,7 @@ impl IntraFrameCoder {
             reference: Some((core, recon, initial, cdfs)),
             tip_output: None,
             warp_leaves,
+            global_leaves,
         };
         match tools.2.3 {
             Some(weight)
@@ -630,6 +635,7 @@ impl IntraFrameCoder {
                 reference: None,
                 tip_output: Some(core),
                 warp_leaves: coded.warp_leaves,
+                global_leaves: coded.global_leaves,
             }),
         )
     }
