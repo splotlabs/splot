@@ -17,7 +17,8 @@ pub struct IvfWriter<W> {
 }
 
 impl<W: Write> IvfWriter<W> {
-    /// Writes the IVF header for `config`; the time base is the inverse frame rate.
+    /// Writes the IVF header for the [`Config::coded`] size of `config`; the
+    /// time base is the inverse frame rate.
     ///
     /// # Errors
     /// Returns [`io::ErrorKind::InvalidInput`] when a dimension exceeds the
@@ -32,6 +33,7 @@ impl<W: Write> IvfWriter<W> {
             })
         };
         let (rate, scale) = config.frame_rate;
+        let config = config.coded();
         let header = IvfHeader::new(
             *b"AV02",
             dimension(config.width)?,

@@ -12,7 +12,7 @@ const WARP_PARAM_BANK_SIZE: usize = 4;
 const MAX_WARP_SB_HITS: u32 = 64;
 const WARP_BANK_REFS: usize = 7;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct WarpParamBank {
     entries: [[[i32; 6]; WARP_PARAM_BANK_SIZE]; WARP_BANK_REFS],
     sizes: [usize; WARP_BANK_REFS],

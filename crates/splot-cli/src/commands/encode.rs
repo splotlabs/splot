@@ -46,6 +46,11 @@ pub(crate) struct EncodeArgs {
     /// comma-separated flags. An unknown FIELD lists the valid names.
     #[arg(long, value_name = "FIELD=VALUE", value_parser = parse_preset_set)]
     preset_set: Vec<(String, String)>,
+    /// Low delay: one packet per input frame, in display order. Sets
+    /// `mini_gop_size=1` (IPPP, every frame shown) and `lookahead_frames=1`
+    /// before `--preset-set`; off by default.
+    #[arg(long)]
+    low_delay: bool,
     /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
     #[arg(long, default_value_t = ThreadCount::Auto)]
     threads: ThreadCount,
@@ -56,6 +61,11 @@ pub(crate) struct EncodeArgs {
     /// Stop after this many input frames.
     #[arg(long)]
     limit: Option<NonZeroU64>,
+    /// Fixed-ratio resize: codes every frame at 8/D of the input size per
+    /// axis, D in 9..=16; off by default. The IVF, its decode and the
+    /// `--stats` PSNR (against the resized source) are at the coded size.
+    #[arg(long, value_name = "D")]
+    resize_denominator: Option<u8>,
     /// Distance between key frames, in frames.
     #[arg(long, default_value_t = Config::DEFAULT_KEYINT)]
     keyint: NonZeroU32,
@@ -99,6 +109,9 @@ enum RcMode {
     Vbr,
     Cbr,
 }
+
+/// The preset overrides of `--low-delay`.
+const LOW_DELAY: [(&str, &str); 2] = [("mini_gop_size", "1"), ("lookahead_frames", "1")];
 
 /// Buffer of `--rc cbr`, in milliseconds.
 const CBR_BUFFER_MS: u32 = 1000;
@@ -146,10 +159,19 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.frame_rate = header.frame_rate;
     config.rate_control = args.rate_control();
     config.preset = Preset::new(args.preset)?;
-    config.preset_overrides.clone_from(&args.preset_set);
+    if args.low_delay {
+        config.preset_overrides = LOW_DELAY
+            .iter()
+            .map(|&(field, value)| (field.to_owned(), value.to_owned()))
+            .collect();
+    }
+    config
+        .preset_overrides
+        .extend(args.preset_set.iter().cloned());
     config.threads = args.threads;
     config.tiles = args.tiles;
     config.keyint = args.keyint;
+    config.resize_denominator = args.resize_denominator;
     if u16::try_from(header.width).is_err() || u16::try_from(header.height).is_err() {
         bail!("IVF output supports at most 65535 samples per side");
     }

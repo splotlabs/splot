@@ -278,6 +278,10 @@ struct WholeState {
     chroma_smooth: crate::prediction::intra_edge::TileSmoothGrid,
     ref_mv_bank: Option<crate::prediction::inter::RefMvBank>,
     tip_records: Vec<crate::prediction::inter::TemporalMotionBlock>,
+    warp: Option<(
+        crate::prediction::inter::WarpParamBank,
+        Vec<Option<[i32; 6]>>,
+    )>,
     intrabc: Option<(
         crate::filters::wienerns_lr::intrabc_records::TileIntrabcPreludeState,
         Vec<Option<crate::prediction::inter::Mv>>,
@@ -509,6 +513,10 @@ impl IntraTileSyntax {
                 .as_ref()
                 .map(|inter| inter.tile.tip_records().to_vec())
                 .unwrap_or_default(),
+            warp: self
+                .inter
+                .as_ref()
+                .map(|inter| inter.tile.warp_debug_state()),
             intrabc: self
                 .inter
                 .as_ref()
@@ -527,11 +535,19 @@ impl Recon {
         (sub_x, sub_y): (usize, usize),
     ) -> Result<Vec<(PlaneId, PlaneRect, Vec<u16>)>> {
         let mut samples = Vec::with_capacity(3);
+        let planes = if self.workspace.info().pixel_format().is_monochrome() {
+            1
+        } else {
+            3
+        };
         for (plane, (sx, sy)) in [
             (PlaneId::Y, (0, 0)),
             (PlaneId::U, (sub_x, sub_y)),
             (PlaneId::V, (sub_x, sub_y)),
-        ] {
+        ]
+        .into_iter()
+        .take(planes)
+        {
             let size = self
                 .workspace
                 .plane(plane)

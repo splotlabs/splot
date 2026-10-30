@@ -495,7 +495,7 @@ pub(super) fn compound_needs_interp_filter(
     !local_warp && (n4w < 2 || n4h < 2 || y_mode != CompoundYMode::GlobalGlobal)
 }
 
-fn compound_local_warp_signal_allowed(
+pub(super) fn compound_local_warp_signal_allowed(
     compound: super::super::compound::CompoundBlockSyntax,
     n4w: usize,
     n4h: usize,
@@ -608,7 +608,7 @@ fn read_compound_motion_mode_syntax(
     Ok(use_local_warp != 0)
 }
 
-/// Parsed § 5.20.7.12 compound syntax handed to the § 7.12 resolution step.
+/// Parsed § 5.20.7.6 compound syntax handed to the § 7.12 resolution step.
 #[derive(Clone, Copy)]
 pub(super) struct ParsedCompoundBlock {
     pub(super) block_ctx: MvBlockContext,

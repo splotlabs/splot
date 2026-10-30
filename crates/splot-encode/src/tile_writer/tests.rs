@@ -96,6 +96,7 @@ impl Case {
                 drl_reorder: None,
                 max_drl_bits_minus_1: 0,
                 mvd_tools: [false; 3],
+                warp: false,
             },
             max_level: 12,
             chroma: ChromaFormatIdc::Yuv420,

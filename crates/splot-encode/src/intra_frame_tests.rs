@@ -30,7 +30,9 @@ fn synthetic_frame(config: &Config, seed: u32) -> SourceFrame {
     let sizes = config.plane_sizes().unwrap();
     let mut state = seed.wrapping_mul(2_654_435_761) | 1;
     let planes = core::array::from_fn(|plane| {
-        let size = sizes[plane];
+        let Some(&size) = sizes.get(plane) else {
+            return Vec::new();
+        };
         let mut samples = Vec::with_capacity(size.width() * size.height());
         for y in 0..size.height() {
             for x in 0..size.width() {
@@ -101,14 +103,15 @@ const CASES: [(u32, u32, BitDepth, u8, u16); 8] = [
 ];
 
 /// Every chroma format the encoder codes.
-const CHROMAS: [PixelFormat; 3] = [
+const CHROMAS: [PixelFormat; 4] = [
     PixelFormat::Yuv420,
     PixelFormat::Yuv422,
     PixelFormat::Yuv444,
+    PixelFormat::Monochrome,
 ];
 
-/// Each case of `cases` in 4:2:0, and the cases at `extra` in 4:2:2 and
-/// 4:4:4, with its index and name.
+/// Each case of `cases` in 4:2:0, and the cases at `extra` in 4:2:2, 4:4:4
+/// and monochrome, with its index and name.
 fn format_cases(
     cases: &'static [(u32, u32, BitDepth, u8, u16)],
     extra: &'static [usize],
@@ -164,6 +167,43 @@ fn inter_frames_decode_to_the_encoder_recon_over_several_gops() {
             .flat_map(|frame| recon_bytes(frame, config.bit_depth))
             .collect();
         assert_same_samples(&decode(&stream), &expected, &name);
+    }
+}
+
+/// A monochrome key frame and two inter frames that reference it code luma
+/// alone, decode to the encoder recon with every loop filter of the preset
+/// row, and write the same bytes on 1, 2 and 8 threads.
+#[test]
+fn monochrome_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    for (preset, bit_depth) in [(6u8, BitDepth::Ten), (9, BitDepth::Eight)] {
+        let stream = |threads: usize| {
+            let mut config = config(72, 40, bit_depth, preset, 120);
+            config.chroma = PixelFormat::Monochrome;
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            code_stream(&config, &[3, 4, 5])
+        };
+        let coded = stream(1);
+        let types: Vec<_> = coded.iter().map(|frame| frame.frame_type).collect();
+        assert_eq!(types, [FrameType::Key, FrameType::Inter, FrameType::Inter]);
+        assert!(
+            coded
+                .iter()
+                .all(|f| f.recon[1].is_empty() && f.recon[2].is_empty())
+        );
+        let units: Vec<u8> = coded.iter().flat_map(|f| f.temporal_unit.clone()).collect();
+        let expected: Vec<u8> = coded
+            .iter()
+            .flat_map(|frame| recon_bytes(frame, bit_depth))
+            .collect();
+        let name = format!("preset {preset}");
+        assert_same_samples(&decode(&units), &expected, &name);
+        for threads in [2, 8] {
+            let other: Vec<u8> = stream(threads)
+                .iter()
+                .flat_map(|f| f.temporal_unit.clone())
+                .collect();
+            assert!(other == units, "{name}: {threads} threads");
+        }
     }
 }
 
@@ -539,7 +579,9 @@ fn panning_frame(config: &Config, index: u32) -> SourceFrame {
     let max = u32::from(config.bit_depth.max_sample());
     let sizes = config.plane_sizes().unwrap();
     let planes = core::array::from_fn(|plane| {
-        let size = sizes[plane];
+        let Some(&size) = sizes.get(plane) else {
+            return Vec::new();
+        };
         let (sx, sy) = match plane {
             0 => (0, 0),
             _ => (config.chroma.subsampling_x(), config.chroma.subsampling_y()),
@@ -606,8 +648,10 @@ impl Rng {
 /// second-DRL index of list 1; a nonzero `jmvd_scale_mode`; a coded
 /// `interp_filter` other than `EIGHTTAP`; a `NEWMV` below the frame
 /// precision; an adaptive-MVD `NEWMV`; a TIP leaf; a compound leaf coding
-/// `use_optflow = 1`; a compound leaf coding `use_refinemv = 1`.
-type Coverage = [usize; 22];
+/// `use_optflow = 1`; a compound leaf coding `use_refinemv = 1`; a warp leaf;
+/// a `LOCALWARP` and an `EXTENDWARP` leaf; a coded six-parameter and a coded
+/// high-precision `DELTAWARP` leaf; a `WARPMV` leaf with a difference.
+type Coverage = [usize; 28];
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -808,9 +852,31 @@ fn random_modes(
         };
         coverage[16] += usize::from(coarse.precision.is_some());
         coverage[17] += usize::from(coarse.amvd);
-        return LeafChoice::inter(InterPrediction::Single(coarse));
+        return random_warp_or(syntax, leaf, rng, coverage, InterPrediction::Single(coarse));
     }
-    LeafChoice::inter(InterPrediction::Single(modes))
+    random_warp_or(syntax, leaf, rng, coverage, InterPrediction::Single(modes))
+}
+
+/// A random warp leaf in two of three draws of a side generator, which
+/// leaves `rng` as it was, else `single`.
+fn random_warp_or(
+    syntax: &mut IntraTileSyntax,
+    leaf: &LeafBlock,
+    rng: &Rng,
+    coverage: &mut Coverage,
+    single: InterPrediction,
+) -> LeafChoice {
+    let mut side = Rng(rng.0.rotate_left(29));
+    let mv = MotionVector {
+        row: (side.below(161) as i32 - 80) * 2,
+        col: (side.below(161) as i32 - 80) * 2,
+    };
+    let warp = if side.below(3) == 0 {
+        None
+    } else {
+        warp::random_warp(syntax, leaf, &mut side, mv, coverage)
+    };
+    LeafChoice::inter(warp.unwrap_or(single))
 }
 
 /// The first frames of a four-frame mini-GOP with frame 1, which references
@@ -839,6 +905,7 @@ fn inter_stream_with(
         mvd_tools: [true; 3],
         opfl: true,
         refinemv: true,
+        warp: 1,
         ..*config.preset.params()
     }));
     let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();
@@ -869,12 +936,20 @@ fn inter_stream_with(
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let (tx, _, (high_precision_mv, ref_mvs, _, tip, integer_mv, opfl), tiles) =
+    let (tx, _, (high_precision_mv, ref_mvs, _, tip, integer_mv, opfl, warp), tiles) =
         crate::gop::frame_tools(&coder.preset, coder.tiles, qindex);
     let tools = (
         tx,
         true,
-        (high_precision_mv, ref_mvs, true, tip, integer_mv, opfl),
+        (
+            high_precision_mv,
+            ref_mvs,
+            true,
+            tip,
+            integer_mv,
+            opfl,
+            warp,
+        ),
         tiles,
     );
     let filters = FrameFilterParams::default();
@@ -1351,6 +1426,8 @@ mod mvpred;
 mod refine;
 #[path = "intra_frame_tip_tests.rs"]
 mod tip;
+#[path = "intra_frame_warp_tests.rs"]
+mod warp;
 #[path = "intra_frame_wienerns_tests.rs"]
 mod wienerns;
 

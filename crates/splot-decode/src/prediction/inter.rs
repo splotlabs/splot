@@ -2159,8 +2159,9 @@ mod single_ref;
 
 pub(crate) use block::encoder_leaf::{
     EncoderCompoundMotion, EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile,
-    EncoderMotion, EncoderSingleMotion, EncoderSingleMvs, JMVD_SCALE_MODES, MvdCoding,
-    chroma_inter_tx_type, encoder_motion_field, encoder_temporal_context,
+    EncoderMotion, EncoderSingleMotion, EncoderSingleMvs, EncoderWarpMotion, EncoderWarpSource,
+    JMVD_SCALE_MODES, MvdCoding, chroma_inter_tx_type, encoder_motion_field,
+    encoder_temporal_context,
 };
 pub(crate) use block::inter_residual_units;
 pub(crate) use block::non_intra_leaf_mode;
@@ -2173,12 +2174,12 @@ pub(crate) use block::{
 };
 pub(crate) use compound::CompoundYMode;
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
-#[cfg(debug_assertions)]
-pub(crate) use find_mv_stack::RefMvBank;
 pub(crate) use find_mv_stack::TIP_REF_FRAME;
 pub(crate) use find_mv_stack::{
     FixedStack, MotionFieldLayout, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
 };
+#[cfg(debug_assertions)]
+pub(crate) use find_mv_stack::{RefMvBank, WarpParamBank};
 pub(crate) use frame_products::{
     CcsoGridHandle, FrameCdfHandle, FrameProductWriters, FrameProducts, SegmentIdMapHandle,
 };

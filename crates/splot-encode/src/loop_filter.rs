@@ -216,6 +216,15 @@ impl CodedTile {
             decisions,
         })
     }
+
+    /// The warp leaves and the inter leaves of the tile.
+    pub(crate) fn warp_leaves(&self) -> (usize, usize) {
+        self.decisions
+            .superblocks
+            .iter()
+            .map(|(decision, _)| crate::warp::leaf_counts(&decision.tree))
+            .fold((0, 0), |(w, i), (dw, di)| (w + dw, i + di))
+    }
 }
 
 /// The tiles of a frame put together: the bytes and final CDFs of each tile,
@@ -520,8 +529,9 @@ impl Search<'_> {
     /// of [`DEBLOCK_LADDER`] at depth 1, 2 or 3 that the sequence codes; on
     /// equal SSE the earlier offset, so `0` and then the smallest |offset|.
     fn deblocking(&self, preset: &PresetParams) -> Result<FrameFilterParams> {
+        let chroma = self.recon.plane(PlaneId::U).is_some();
         let on = FrameFilterParams {
-            deblocking: [true; 4],
+            deblocking: [true, true, chroma, chroma],
             ..FrameFilterParams::default()
         };
         if preset.loop_filter_search == 0 {
@@ -540,7 +550,7 @@ impl Search<'_> {
             .filter(|&&d| range.contains(&d))
         {
             let params = FrameFilterParams {
-                deblocking_delta_q: [delta; 4],
+                deblocking_delta_q: on.deblocking.map(|on| if on { delta } else { 0 }),
                 ..on
             };
             let sse = self.plane_sse_all(&self.filtered(&params, self.recon, &[])?);
@@ -574,14 +584,21 @@ impl Search<'_> {
         let damping = 3 + (3 * self.qindex / qmax).min(3) as u8;
         let (rows, cols) = self.cdef_grid();
         let units = rows * cols;
+        let chroma = if deblocked.plane(PlaneId::U).is_some() {
+            candidates.len()
+        } else {
+            1
+        };
+        let uv_strengths = |(pri, sec)| if chroma > 1 { (pri, sec) } else { (0, 0) };
         // sse[candidate][unit] as (luma, chroma).
         let mut sse = Vec::with_capacity(candidates.len());
         for &(pri, sec) in candidates {
+            let (uv_pri, uv_sec) = uv_strengths((pri, sec));
             let set = CdefStrengthSet {
                 y_pri_strength: pri,
                 y_sec_strength: sec,
-                uv_pri_strength: pri,
-                uv_sec_strength: sec,
+                uv_pri_strength: uv_pri,
+                uv_sec_strength: uv_sec,
             };
             let params = FrameFilterParams {
                 cdef_damping: damping,
@@ -597,7 +614,7 @@ impl Search<'_> {
             );
         }
         let pairs: Vec<(usize, usize)> = (0..candidates.len())
-            .flat_map(|y| (0..candidates.len()).map(move |uv| (y, uv)))
+            .flat_map(|y| (0..chroma).map(move |uv| (y, uv)))
             .collect();
         let cost = |unit: usize, (y, uv): (usize, usize)| sse[y][unit].0 + sse[uv][unit].1;
         let total = |sets: &[(usize, usize)]| {
@@ -645,11 +662,14 @@ impl Search<'_> {
             .collect();
         let strengths: Vec<CdefStrengthSet> = sets
             .iter()
-            .map(|&(y, uv)| CdefStrengthSet {
-                y_pri_strength: candidates[y].0,
-                y_sec_strength: candidates[y].1,
-                uv_pri_strength: candidates[uv].0,
-                uv_sec_strength: candidates[uv].1,
+            .map(|&(y, uv)| {
+                let (uv_pri_strength, uv_sec_strength) = uv_strengths(candidates[uv]);
+                CdefStrengthSet {
+                    y_pri_strength: candidates[y].0,
+                    y_sec_strength: candidates[y].1,
+                    uv_pri_strength,
+                    uv_sec_strength,
+                }
             })
             .collect();
         let choice = FrameFilterParams {

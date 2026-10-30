@@ -130,6 +130,11 @@ pub struct EncoderToolFlags {
     /// `enable_adaptive_mvd`, `enable_mvd_sign_derive` and
     /// `enable_flex_mvres` (§ 5.4.6).
     pub mvd_tools: [bool; 3],
+    /// `seq_enabled_motion_modes` `LOCALWARP`, `DELTAWARP` and `EXTENDWARP`
+    /// with `seq_frame_motion_modes_present_flag` and
+    /// `enable_six_param_warp_delta` (§ 5.4.6): each inter frame codes
+    /// whether its blocks may warp.
+    pub warp: bool,
 }
 
 /// Stream-level inputs of [`build_encoder_sequence_header`].
@@ -442,7 +447,13 @@ const NUM_SAME_REF_COMPOUND: u32 = 2;
 /// § 5.4.6 for a non-single-picture header with the motion vector prediction
 /// and difference tools of `tools` and every other inter tool off.
 fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), WriteError> {
-    w.write_bits(0, 4)?; // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
+    if tools.warp {
+        w.write_bits(0b0111, 4)?; // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
+        w.write_flag(true)?; // seq_frame_motion_modes_present_flag
+        w.write_flag(true)?; // enable_six_param_warp_delta
+    } else {
+        w.write_bits(0, 4)?; // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
+    }
     w.write_flag(false)?; // enable_masked_compound
     w.write_flag(tools.ref_frame_mvs)?;
     if tools.ref_frame_mvs {

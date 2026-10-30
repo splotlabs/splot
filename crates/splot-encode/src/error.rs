@@ -19,10 +19,17 @@ pub enum Error {
     },
 
     /// The chroma format is not supported.
-    #[error("chroma format {chroma:?} is not supported; only 4:2:0, 4:2:2 and 4:4:4 are")]
+    #[error("chroma format {chroma:?} is not supported")]
     UnsupportedChroma {
         /// Configured chroma format.
         chroma: PixelFormat,
+    },
+
+    /// A resize denominator is outside [`crate::Config::RESIZE_DENOMINATORS`].
+    #[error("resize denominator {denominator} is outside 9..=16")]
+    InvalidResize {
+        /// Requested denominator.
+        denominator: u8,
     },
 
     /// A frame-rate term is zero.

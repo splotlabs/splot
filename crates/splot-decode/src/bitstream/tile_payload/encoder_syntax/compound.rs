@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Compound and skip-mode inter leaves of the encoder facade (§ 5.20.7.10,
-//! § 5.20.7.12) with `COMPOUND_AVERAGE` prediction: the masked, weighted,
-//! warped and refined compound tools stay off at sequence level.
+//! Compound and skip-mode inter leaves of the encoder facade (§ 5.20.7.6,
+//! § 5.20.7.10, § 5.20.7.11) with `COMPOUND_AVERAGE` prediction: the masked,
+//! weighted and warped compound tools stay off at sequence level; optical
+//! flow and vector refinement are set per block (§ 5.20.7.17).
 
 use splot_recon::InterpolationFilter;
 
@@ -79,6 +80,8 @@ pub enum InterPrediction {
     Single(InterModes),
     /// A compound block.
     Compound(CompoundModes),
+    /// A `WARPMV` or `WARP_NEWMV` block.
+    Warp(super::WarpModes),
     /// A skip-mode block: `NEAR_NEARMV` over the `skip_mode_frames` pair with
     /// skip-DRL index `drl`.
     SkipMode {
@@ -187,6 +190,7 @@ impl IntraTileSyntax {
                 }
                 EncoderMotion::Compound(motion)
             }
+            InterPrediction::Warp(modes) => EncoderMotion::Warp(self.warp_motion(leaf, modes)?),
             InterPrediction::SkipMode { drl } => {
                 if !self.skip_mode_allowed(leaf) || drl >= self.drl_count() {
                     return Err(EncoderSyntaxError::Unsupported("a skip-mode block here"));

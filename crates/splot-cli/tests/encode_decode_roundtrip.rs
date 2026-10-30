@@ -158,6 +158,75 @@ fn chroma_422_and_444_clips_encode_validate_and_decode_to_the_encoder_stats() {
     }
 }
 
+/// `--low-delay` is the `mini_gop_size=1` and `lookahead_frames=1`
+/// overrides: every frame is coded and shown in input order.
+#[test]
+fn low_delay_clips_code_every_frame_in_input_order() {
+    round_trip(8, YUV420, &["--qp", "90", "--low-delay"]);
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let encode = |flags: &[&str]| {
+        let ivf = temp_output("ivf");
+        let mut args = vec!["encode", input.to_str().unwrap(), "-o"];
+        args.push(ivf.to_str().unwrap());
+        args.extend(["--keyint", "16", "--stats"]);
+        args.extend(flags);
+        let out = splot(&args);
+        assert!(out.status.success(), "{out:?}");
+        let bytes = std::fs::read(&ivf).unwrap();
+        let _ = std::fs::remove_file(ivf);
+        (String::from_utf8(out.stdout).unwrap(), bytes)
+    };
+    let (stats, low_delay) = encode(&["--low-delay"]);
+    let pts: Vec<&str> = stats
+        .lines()
+        .skip(1)
+        .map(|line| line.split(',').nth(1).unwrap())
+        .collect();
+    assert_eq!(pts, ["0", "1", "2", "3", "4", "5"]);
+    let overrides = [
+        "--preset-set",
+        "mini_gop_size=1",
+        "--preset-set",
+        "lookahead_frames=1",
+    ];
+    assert_eq!(encode(&overrides).1, low_delay);
+    assert_ne!(encode(&[]).1, low_delay);
+    let _ = std::fs::remove_file(input);
+}
+
+/// `--resize-denominator 16` codes the 72x24 clip at 36x12: the IVF header,
+/// the validated stream and its decode have the coded size.
+#[test]
+fn resized_clips_code_and_decode_at_the_scaled_size() {
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let ivf = temp_output("ivf");
+    let raw = temp_output("yuv");
+    let (input_s, ivf_s, raw_s) = (
+        input.to_str().unwrap(),
+        ivf.to_str().unwrap(),
+        raw.to_str().unwrap(),
+    );
+    let encode = splot(&["encode", input_s, "-o", ivf_s, "--resize-denominator", "16"]);
+    assert!(encode.status.success(), "{encode:?}");
+    let header = std::fs::read(&ivf).unwrap();
+    assert_eq!(header[12..16], [36, 0, 12, 0]);
+    let validate = splot(&["validate", "--strict", ivf_s]);
+    assert!(validate.status.success(), "{validate:?}");
+    let decode = splot(&["decode", ivf_s, "--output", raw_s, "--output-format", "raw"]);
+    assert!(decode.status.success(), "{decode:?}");
+    assert_eq!(
+        std::fs::read(&raw).unwrap().len(),
+        FRAMES * (36 * 12 + 2 * 18 * 6)
+    );
+    let bad = splot(&["encode", input_s, "-o", ivf_s, "--resize-denominator", "8"]);
+    assert_eq!(bad.status.code(), Some(2), "{bad:?}");
+    for path in [input, ivf, raw] {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[test]
 fn crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats() {
     round_trip(8, YUV420, &["--crf", "25"]);
