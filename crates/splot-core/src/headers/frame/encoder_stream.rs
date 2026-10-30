@@ -151,7 +151,7 @@ pub struct EncoderToolFlags {
     /// (§ 5.20.7.6).
     pub cwp: bool,
     /// `enable_imp_msk_bld` (§ 5.4.6): `COMPOUND_AVERAGE` blends with the
-    /// implicit mask (§ 7.13.3.16).
+    /// implicit mask (§ 7.13.3.14).
     pub implicit_mask: bool,
 }
 
