@@ -15,8 +15,8 @@ use super::super::compound_path::{
     compound_all_opfl_reachable, compound_joint_mv_projection, compound_needs_interp_filter,
     compound_ref_contexts, compound_ref_distance_signs, compound_refinemv_active_after_blend,
     compound_refinemv_is_switchable, compound_refinemv_reachable,
-    compound_switchable_opfl_reachable, compound_use_amvd_selector, skip_mode_reference_pair,
-    use_optflow_ctx, use_refinemv_ctx,
+    compound_switchable_opfl_reachable, compound_use_amvd_selector, compound_warp_blend,
+    skip_mode_reference_pair, use_optflow_ctx, use_refinemv_ctx,
 };
 use super::super::resolve::CompoundMotionSyntax;
 use super::super::syntax::{
@@ -867,7 +867,10 @@ impl EncoderInterTile {
             use_refinemv: refinement.use_refinemv(),
             refinemv_switchable: refinement.refinemv_switchable,
         };
-        Ok((syntax, refinement.blend))
+        Ok((
+            syntax,
+            compound_warp_blend(refinement.blend, false, compound.y_mode),
+        ))
     }
 
     fn joint_projection(
