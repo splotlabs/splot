@@ -1,104 +1,197 @@
-# splot
+<p align="center">
+  <img src="./docs/assets/hero.svg" alt="splot — AV2. Encode it. Decode it. Trust it." width="100%">
+</p>
 
-Spec-faithful AV2 bitstream validation in safe Rust.
+<p align="center">
+  <b>The complete AV2 toolkit.</b><br>
+  An encoder, a decoder and a validator for the next-generation video codec.<br>
+  One binary. Safe Rust. Built from the spec.
+</p>
 
-`splot` is a validator and inspector for AV2 streams. It accepts raw Annex B
-or IVF-wrapped Annex B input and reports structured diagnostics with stable rule
-ids, severities, spec sections, offsets, and messages.
+<p align="center">
+  <a href="#watch-instantly">Watch</a> ·
+  <a href="#encode-beautifully">Encode</a> ·
+  <a href="#decode-every-frame">Decode</a> ·
+  <a href="#validate-with-proof">Validate</a> ·
+  <a href="#embed-in-a-few-lines">Embed</a> ·
+  <a href="#install-from-source">Install</a> ·
+  <a href="./docs/README.md">Developers</a>
+</p>
 
-[![CI](https://github.com/splotlabs/splot/actions/workflows/ci.yml/badge.svg)](https://github.com/splotlabs/splot/actions/workflows/ci.yml)
-[![AV2 spec v1.0.0](https://img.shields.io/badge/AV2%20spec-v1.0.0-blueviolet)](https://av2.aomedia.org/v1.0.0/index.html)
-[![Rust nightly · edition 2024](https://img.shields.io/badge/rust-nightly%20%C2%B7%20edition%202024-orange)](./rust-toolchain.toml)
-[![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](./LICENSE.md)
+<p align="center">
+  <a href="https://github.com/splotlabs/splot/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/splotlabs/splot/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://av2.aomedia.org/v1.0.0/index.html"><img alt="AV2 spec v1.0.0" src="https://img.shields.io/badge/AV2%20spec-v1.0.0-blueviolet"></a>
+  <a href="./LICENSE.md"><img alt="License: PolyForm Noncommercial 1.0.0" src="https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue"></a>
+</p>
 
-## Status
+---
 
-Pre-alpha, validator-first. Validation, inspection, and narrow decode are present.
-`splot encode` reads Y4M and writes IVF; its frame coder is not wired in yet.
-
-The canonical status ledger is
-[`docs/IMPLEMENTATION-MATRIX.toml`](./docs/IMPLEMENTATION-MATRIX.toml). Generated
-views are produced on demand:
+## Three commands. Your first AV2 video.
 
 ```bash
-cargo xtask feature-status
-cargo xtask spec-coverage
-cargo xtask decoder-support
-cargo xtask decoder-conformance-coverage
+splot encode clip.y4m -o clip.ivf      # make it
+splot validate clip.ivf                # prove it
+splot decode clip.ivf -o - | ffplay -  # watch it
 ```
 
-## Quick Start
+That is the whole loop: from raw video to a conformant AV2 stream and back to
+your screen.
 
-The workspace uses the pinned nightly in `rust-toolchain.toml` for portable
-SIMD. Rustup selects and installs it automatically.
+## Watch. Instantly.
+
+Decode to Y4M on standard output and pipe it into any player that reads Y4M.
+No temporary files.
 
 ```bash
-rustup show active-toolchain
-cargo build --release
-./target/release/splot --help
+splot decode --quiet -o - movie.ivf | ffplay -i -
 ```
 
-> **x86-64 CPU requirement:** builds target the `x86-64-v3` microarchitecture
-> level (AVX2/FMA/BMI2, Intel Haswell 2013+ / AMD Excavator 2015+) for decode
-> throughput. On an older x86 CPU the binary traps with `SIGILL`; build with
-> `RUSTFLAGS="-C target-cpu=x86-64" cargo build --release` for a portable
-> baseline. `aarch64` (Apple Silicon, ARM servers) is unaffected — 128-bit NEON
-> is its baseline.
-
-Common commands:
+The decoder uses every core by default. 10-bit, 4:2:2 and 4:4:4 streams play
+the same way. To send the video to a different tool, change the pipe:
 
 ```bash
-splot validate sample.av2
-splot validate sample.ivf --json
-splot validate sample.av2 --strict
-splot validate sample.av2 --summary-only
-splot inspect sample.ivf --headers
-splot inspect sample.av2 --json
+splot decode --quiet -o - movie.ivf | ffmpeg -i - movie.mp4
+splot decode --quiet -o - movie.ivf | mpv -
+```
+
+## Encode. Beautifully.
+
+Give it a Y4M file, or `-` for standard input. Get an AV2 IVF file.
+
+```bash
+splot encode input.y4m -o output.ivf
+```
+
+You choose the trade-off:
+
+| You want                | Use                                |
+| ----------------------- | ---------------------------------- |
+| Constant quality        | `--crf 30` (1–63, higher is smaller) |
+| A target bitrate        | `--bitrate 2000` (kbps), `--rc cbr` for streaming |
+| A fixed quantizer       | `--qp 80` (the default)            |
+| More speed              | `--preset 10` (0 is best, 10 is fastest, 6 is the default) |
+| Low latency             | `--low-delay` (one packet per frame) |
+| Natural film look       | `--film-grain`                     |
+| More cores in parallel  | `--tiles 2x2 --threads 8`          |
+| Per-frame quality data  | `--stats` (CSV with bits and PSNR) |
+
+8-bit and 10-bit input, 4:2:0, 4:2:2, 4:4:4 and monochrome all just work. The
+encoder reads the format from the Y4M header.
+
+```bash
+ffmpeg -i camera.mov -f yuv4mpegpipe - | splot encode - --crf 28 -o camera.ivf
+```
+
+## Decode. Every frame.
+
+```bash
+splot decode movie.ivf -o movie.y4m                        # Y4M video
+splot decode movie.ivf -o movie.yuv --output-format raw    # raw planes
+splot decode movie.ivf --output-format hash                # frame hashes
+splot decode movie.ivf --output-format null --threads 8    # speed test
+splot decode movie.ivf -o first.y4m --limit 10             # first 10 frames
+```
+
+The decoder reads IVF files and raw Annex B streams. A raw stream has no frame
+rate, so give one for Y4M output: `--frame-rate 30:1`.
+
+## Validate. With proof.
+
+Find out if a stream is correct, and if not, exactly where and why.
+
+```bash
+splot validate movie.ivf                 # human-readable report
+splot validate movie.ivf --json          # for scripts and CI
+splot validate movie.ivf --strict        # warnings fail too
+splot inspect movie.ivf --headers        # every OBU and header
 splot explain obu-header/global-xlayer-required
 ```
 
-Exit codes are stable: `0` means clean, `1` means findings or an unsupported
-codec operation, and `2` means operational or usage failure.
+Each finding has a stable rule id, a severity, the AV2 spec section and a byte
+offset. Exit codes are stable too: `0` is clean, `1` means findings or an unsupported
+feature, and `2` means a usage or I/O error.
 
-## Project Layout
+## Embed. In a few lines.
 
-```text
-crates/splot-core      AV2 bitstream model and parsers
-crates/splot-parallel  approved concurrency primitives
-crates/splot-tables    generated AV2 § 9 tables
-crates/splot-recon     reconstruction primitives and frame storage
-crates/splot-decode    decode planning, diagnostics, and narrow runtime output
-crates/splot-validate  parser-driven conformance diagnostics
-crates/splot-encode    encoder API, Y4M reader, IVF writer
-crates/splot-cli       thin `splot` binary
-xtask                  repository automation
-fuzz                   cargo-fuzz targets outside the workspace
+**Rust.** Encode frames and decode them back in a few lines:
+
+```rust
+use splot_decode::{DataProps, Decoder, DecoderSettings, PlaneId, SendStatus};
+use splot_encode::{Config, Encoder, SourceFrame};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Encode one second of 640×360 video.
+    let mut encoder = Encoder::new(Config::new(640, 360))?;
+    let (y, uv) = (vec![128u8; 640 * 360], vec![128u8; 320 * 180]);
+    for pts in 0..30 {
+        let frame = SourceFrame::from_u8(encoder.config(), pts, [(&y, 640), (&uv, 320), (&uv, 320)])?;
+        encoder.send_frame(frame)?;
+    }
+    encoder.flush()?;
+
+    // Decode every packet straight back into pictures.
+    let mut decoder = Decoder::new(DecoderSettings::default())?;
+    while let Some(packet) = encoder.receive_packet()? {
+        while decoder.send_data(&packet.data, DataProps::default())? == SendStatus::Full {
+            show(&mut decoder)?;
+        }
+        show(&mut decoder)?;
+    }
+    decoder.drain();
+    Ok(show(&mut decoder)?)
+}
+
+fn show(decoder: &mut Decoder) -> splot_decode::Result<()> {
+    while let Some(picture) = decoder.get_picture()? {
+        let luma = picture.plane(PlaneId::Y);
+        println!("{}x{} luma: {}", picture.width(), picture.height(), luma.is_some());
+    }
+    Ok(())
+}
 ```
 
-Dependency direction is enforced by `cargo xtask check-dependency-direction`.
-Architecture and ownership rules are in [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
-
-## Validation
+**C.** The decoder has a stable C ABI with zero-copy pictures:
+`splot_open`, `splot_send_data`, `splot_get_picture`, `splot_drain`,
+`splot_close`. The header is
+[`crates/splot-capi/include/splot.h`](./crates/splot-capi/include/splot.h), and
+[`examples/decode.c`](./crates/splot-capi/examples/decode.c) is a complete IVF
+decoder in about 100 lines.
 
 ```bash
-cargo xtask ci
+cargo build --release -p splot-capi
+cc crates/splot-capi/examples/decode.c -I crates/splot-capi/include \
+   -L target/release -lsplot_capi -o decode
 ```
 
-The CI gate runs formatting, clippy, tests, doctests, rustdoc, optional external
-tool checks, dependency and concurrency policy checks, spec mirror integrity,
-diagnostic registry drift checks, duplicate-code budget checks, and the manual
-documentation budget.
+## Install. From source.
 
-Focused docs:
+You need [rustup](https://rustup.rs). The repository pins its Rust toolchain,
+and rustup installs it for you.
 
-- [docs/README.md](./docs/README.md) - retained documentation map
-- [docs/TESTING.md](./docs/TESTING.md) - test layers and commands
-- [docs/CONFORMANCE.md](./docs/CONFORMANCE.md) - conformance proof policy
-- [docs/DIAGNOSTICS.md](./docs/DIAGNOSTICS.md) - emitted diagnostic registry
-- [AGENTS.md](./AGENTS.md) - contributor and coding-agent rules
+```bash
+git clone https://github.com/splotlabs/splot && cd splot
+cargo install --path crates/splot-cli --locked
+splot --help
+```
 
-## License
+> **Older x86 CPUs:** release builds use AVX2 (Intel Haswell 2013+, AMD
+> Excavator 2015+). On an older CPU, build with
+> `RUSTFLAGS="-C target-cpu=x86-64"`. Apple Silicon and ARM need nothing extra.
 
-Project code, docs, tests, and fixtures are PolyForm Noncommercial 1.0.0.
-Third-party/source-boundary material is listed in
-[docs/references/THIRD-PARTY-NOTICES.md](./docs/references/THIRD-PARTY-NOTICES.md).
+## Where it stands.
+
+splot is pre-alpha and moves fast. The encoder, decoder and validator work end
+to end today, and their output is checked against the AV2 reference decoder
+(AVM). Expect sharp edges, and please report them.
+
+## For developers.
+
+Architecture, crate layout, testing, conformance and contribution rules are in
+the **[developer guide](./docs/README.md)**.
+
+## License.
+
+[PolyForm Noncommercial 1.0.0](./LICENSE.md). Commercial use of any component
+needs a separate written license from Bartosz Tomczyk (bartekplus@gmail.com).
+Third-party material is listed in
+[THIRD-PARTY-NOTICES](./docs/references/THIRD-PARTY-NOTICES.md).
