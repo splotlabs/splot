@@ -611,6 +611,28 @@ impl IntraTileSyntax {
             .map_err(rule("use_bawp"))
     }
 
+    /// Whether the BAWP of the single-reference `modes` at `leaf` keeps its
+    /// § 7.13.3.25 template inside the reference; `true` without BAWP.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code.
+    pub fn bawp_fits(&mut self, leaf: &LeafBlock, modes: InterModes) -> Result<bool> {
+        let Some(bawp) = modes.bawp else {
+            return Ok(true);
+        };
+        let single = self.single_motion(
+            leaf,
+            InterModes {
+                bawp: None,
+                ..modes
+            },
+        )?;
+        self.inter_state()?
+            .tile
+            .bawp_conformant(&leaf.frontier, single, bawp.chroma)
+            .map_err(rule("BAWP"))
+    }
+
     /// `NumTotalRefs`; `0` in an intra frame.
     #[must_use]
     pub fn reference_count(&self) -> usize {
@@ -1557,7 +1579,7 @@ impl IntraTileSyntax {
         if let Some(bawp) = modes.bawp {
             let tile = &mut self.inter_state()?.tile;
             if !tile
-                .bawp_conformant(&leaf.frontier, motion)
+                .bawp_conformant(&leaf.frontier, motion, bawp.chroma)
                 .map_err(rule("BAWP"))?
             {
                 return Err(EncoderSyntaxError::Unsupported(

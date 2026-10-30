@@ -397,7 +397,12 @@ impl EncoderInterTile {
         frontier: &DecodeBlockFrontier,
         single: EncoderSingleMotion,
     ) -> Result<()> {
-        if !self.bawp_reads(frontier, single)? {
+        let allowed = self
+            .core
+            .inter_tail
+            .as_ref()
+            .is_some_and(|tail| tail.allow_bawp);
+        if !allowed || !self.bawp_reads(frontier, single)? {
             return match single.bawp {
                 Some(_) => Err(invalid_type()),
                 None => Ok(()),
@@ -423,34 +428,27 @@ impl EncoderInterTile {
         Ok(())
     }
 
-    /// Whether the BAWP template of `single` at `frontier` lies inside every
-    /// plane the block predicts, as § 7.13.3.25 requires of a conformant
-    /// stream: `refX >= 1`, `refY >= 1`, `refX + bw <= planeWidth` and
-    /// `refY + bh <= planeHeight`.
+    /// Whether the BAWP template of `single` at `frontier` lies inside the
+    /// luma plane and, with `chroma` (`use_bawp_chroma`), the chroma planes,
+    /// as § 7.13.3.25 requires of a conformant stream.
     pub(crate) fn bawp_conformant(
         &mut self,
         frontier: &DecodeBlockFrontier,
         single: EncoderSingleMotion,
+        chroma: bool,
     ) -> Result<bool> {
         let mv = self.motion_vector(frontier, single)?;
         let (n4w, n4h) = block_size4(frontier)?;
-        let chroma = frontier.has_chroma && self.chroma != ChromaFormatIdc::Monochrome;
-        let subsampling = super::super::block_chroma_subsampling(self.chroma);
-        let planes = [(0, 0), subsampling];
-        let to_fullmv = crate::prediction::inter::bawp::to_fullmv;
-        Ok(planes[..=usize::from(chroma)].iter().all(|&(sx, sy)| {
-            let plane_width = (self.mi_cols * MI_SIZE) as i64 >> sx;
-            let plane_height = (self.mi_rows * MI_SIZE) as i64 >> sy;
-            let (x, y) = (
-                ((frontier.c * MI_SIZE) >> sx) as i64,
-                ((frontier.r * MI_SIZE) >> sy) as i64,
-            );
-            let bw = (plane_width - x).min(((n4w * MI_SIZE) >> sx) as i64);
-            let bh = (plane_height - y).min(((n4h * MI_SIZE) >> sy) as i64);
-            let ref_y = ((frontier.r * MI_SIZE) as i64 + i64::from(to_fullmv(mv.row))) >> sy;
-            let ref_x = ((frontier.c * MI_SIZE) as i64 + i64::from(to_fullmv(mv.col))) >> sx;
-            ref_x >= 1 && ref_y >= 1 && ref_x + bw <= plane_width && ref_y + bh <= plane_height
-        }))
+        let chroma = chroma && frontier.has_chroma && self.chroma != ChromaFormatIdc::Monochrome;
+        let planes = [(0, 0), super::super::block_chroma_subsampling(self.chroma)];
+        let block = BawpBlock {
+            mi: (frontier.r, frontier.c),
+            n4: (n4w, n4h),
+            mi_size: (self.mi_rows, self.mi_cols),
+        };
+        Ok(planes[..=usize::from(chroma)]
+            .iter()
+            .all(|&subsampling| block.template_inside(subsampling, mv)))
     }
 
     /// The decoder's BAWP record of `single` at `frontier`
@@ -481,6 +479,34 @@ impl EncoderInterTile {
             &self.reference,
             self.current_order_hint,
         ))
+    }
+}
+
+/// A block for the § 7.13.3.25 template requirement, in luma 4x4 units:
+/// its position, its size and the frame's `MiRows` and `MiCols`.
+#[derive(Clone, Copy, Debug)]
+struct BawpBlock {
+    mi: (usize, usize),
+    n4: (usize, usize),
+    mi_size: (usize, usize),
+}
+
+impl BawpBlock {
+    /// Whether the template of the plane with `(subX, subY)` under `mv`
+    /// lies inside the plane: `refX >= 1`, `refY >= 1`,
+    /// `refX + bw <= planeWidth` and `refY + bh <= planeHeight`.
+    fn template_inside(self, (sx, sy): (u32, u32), mv: Mv) -> bool {
+        let to_fullmv = crate::prediction::inter::bawp::to_fullmv;
+        let ((row, col), (n4w, n4h), (mi_rows, mi_cols)) = (self.mi, self.n4, self.mi_size);
+        let plane_width = (mi_cols * MI_SIZE) as i64 >> sx;
+        let plane_height = (mi_rows * MI_SIZE) as i64 >> sy;
+        let x = ((col * MI_SIZE) >> sx) as i64;
+        let y = ((row * MI_SIZE) >> sy) as i64;
+        let bw = (plane_width - x).min(((n4w * MI_SIZE) >> sx) as i64);
+        let bh = (plane_height - y).min(((n4h * MI_SIZE) >> sy) as i64);
+        let ref_y = ((row * MI_SIZE) as i64 + i64::from(to_fullmv(mv.row))) >> sy;
+        let ref_x = ((col * MI_SIZE) as i64 + i64::from(to_fullmv(mv.col))) >> sx;
+        ref_x >= 1 && ref_y >= 1 && ref_x + bw <= plane_width && ref_y + bh <= plane_height
     }
 }
 
@@ -550,5 +576,35 @@ mod tests {
         }
         assert!(wedge_symbols(&mut TypeSymbols::default(), 68).is_err());
         Ok(())
+    }
+
+    /// The § 7.13.3.25 template requirement at its boundaries: a 16x16 block
+    /// at luma (16, 16) of a 64x48 frame accepts `refX == 1` and
+    /// `refX + bw == planeWidth` (and the same for Y), refuses `refX == 0`
+    /// and `refX + bw == planeWidth + 1`, in luma, 4:2:0 and 4:2:2 chroma.
+    #[test]
+    fn bawp_templates_stay_inside_the_plane() {
+        let block = BawpBlock {
+            mi: (4, 4),
+            n4: (4, 4),
+            mi_size: (12, 16),
+        };
+        let fullpel = |row: i32, col: i32| Mv {
+            row: row * 8,
+            col: col * 8,
+        };
+        for (sx, sy) in [(0u32, 0u32), (1, 1), (1, 0)] {
+            let (x, y) = (16 >> sx, 16 >> sy);
+            let (width, height) = (64 >> sx, 48 >> sy);
+            let (bw, bh) = (16 >> sx, 16 >> sy);
+            let shift = |plane: i32, s: u32| plane << s;
+            let accepts = |dx: i32, dy: i32| {
+                block.template_inside((sx, sy), fullpel(shift(dy, sy), shift(dx, sx)))
+            };
+            assert!(accepts(1 - x, 0) && accepts(0, 1 - y), "{sx}{sy} low edge");
+            assert!(accepts(width - bw - x, 0) && accepts(0, height - bh - y));
+            assert!(!accepts(-x, 0) && !accepts(0, -y), "{sx}{sy} zero");
+            assert!(!accepts(width - bw - x + 1, 0) && !accepts(0, height - bh - y + 1));
+        }
     }
 }

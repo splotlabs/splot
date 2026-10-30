@@ -325,30 +325,42 @@ fn avm_decodes_interintra_like_splot() {
     assert!(avm == decode(&units), "AVM output differs");
 }
 
-/// A noisy mini-GOP stream with the BAWP search codes BAWP leaves through
-/// the filtered frames that later frames reference, decodes to the encoder
-/// recon, and codes the same bytes on 1, 2 and 8 threads; AVM decodes it
-/// like splot where a decoder build is set.
-#[test]
-fn bawp_streams_decode_on_any_thread_count() {
+/// A noisy 10-bit mini-GOP stream of `width`x`height` in two tiles with the
+/// BAWP search on `threads` threads: the units, the recon, the headers and
+/// the BAWP leaves of the final pass (counted on one thread).
+fn bawp_stream(
+    (width, height): (u32, u32),
+    threads: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, usize) {
     let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
         bawp: true,
         ..*Preset::new(6).unwrap().params()
     }));
-    let stream = |threads: usize| {
-        let mut config = config(136, 72, BitDepth::Ten, 6, 200);
-        config.tiles = TileLayout {
-            cols_log2: 1,
-            rows_log2: 0,
-        };
-        config.threads = splot_parallel::ThreadCount::from(threads);
-        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-        super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200)
+    let mut config = config(width, height, BitDepth::Ten, 6, 200);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
     };
-    crate::tile_writer::CODED_TYPES.set([0; 7]);
-    let (one, expected, cores, coder) = stream(1);
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
     assert!(coder.sequence.inter.unwrap().enable_bawp);
-    let bawp = crate::tile_writer::CODED_TYPES.get()[6];
+    crate::tile_writer::CODED_TYPES.set([0; 7]);
+    let (units, expected, cores, _) =
+        super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
+    (
+        units,
+        expected,
+        cores,
+        crate::tile_writer::CODED_TYPES.get()[6],
+    )
+}
+
+/// The BAWP search codes BAWP leaves in a deblocked two-tile stream that
+/// decodes to the encoder recon with the same bytes on 1, 2 and 8 threads,
+/// and in a 130x70 stream, whose planes end inside a 4x4 unit.
+#[test]
+fn bawp_streams_decode_on_any_thread_count() {
+    let (one, expected, cores, bawp) = bawp_stream((136, 72), 1);
     assert!(bawp > 0, "no BAWP leaf");
     assert!(cores.iter().any(|core| {
         core.deblocking_filter_params
@@ -357,16 +369,92 @@ fn bawp_streams_decode_on_any_thread_count() {
     }));
     assert_same_samples(&decode(&one), &expected, "BAWP");
     for threads in [2, 8] {
-        assert!(stream(threads).0 == one, "{threads} threads");
+        assert!(
+            bawp_stream((136, 72), threads).0 == one,
+            "{threads} threads"
+        );
     }
-    if let Some(avmdec) = avm_decoder() {
+    let (odd, expected, _, bawp) = bawp_stream((130, 70), 1);
+    assert!(bawp > 0, "no BAWP leaf at 130x70");
+    assert_same_samples(&decode(&odd), &expected, "BAWP 130x70");
+}
+
+/// AVM decodes the BAWP streams, which code BAWP leaves, like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_bawp_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for size in [(136, 72), (130, 70)] {
+        let (units, _, _, bawp) = bawp_stream(size, 1);
+        assert!(bawp > 0, "no BAWP leaf at {size:?}");
         let avm = avm_decode(
             &avmdec,
-            std::slice::from_ref(&one),
-            (136, 72),
+            std::slice::from_ref(&units),
+            size,
             BitDepth::Ten,
             "bawp",
         );
-        assert!(avm == decode(&one), "AVM output differs");
+        assert!(avm == decode(&units), "{size:?}: AVM output differs");
     }
+}
+
+/// A BAWP `NEWMV` at a superblock root whose luma template starts at
+/// `refX = refY = 1` fits without chroma weighting but not with it, as the
+/// 4:2:0 chroma template starts at 0 (§ 7.13.3.25 applies the requirement
+/// to chroma only with `use_bawp_chroma`); `snap_prediction` drops the BAWP
+/// that no longer fits instead of failing the frame.
+#[test]
+fn bawp_templates_fit_only_inside_the_reference() {
+    let mut config = config(272, 200, BitDepth::Eight, 6, 140);
+    config.chroma = PixelFormat::Yuv420;
+    let mut checked = 0;
+    let tree = |syntax: &mut IntraTileSyntax,
+                node: PartitionNode,
+                rng: &mut Rng,
+                coverage: &mut Coverage| {
+        let leaf = syntax.leaf(node)?;
+        if checked == 0 && leaf.row4() == 0 && leaf.col4() == 0 && syntax.inter_allowed(&leaf) {
+            let base = InterModes {
+                ref_frame: 0,
+                mode: InterMode::New,
+                drl: 0,
+                mv: MotionVector { row: 8, col: 8 },
+                filter: splot_recon::InterpolationFilter::EightTap,
+                precision: None,
+                amvd: false,
+                interintra: None,
+                bawp: None,
+            };
+            let snapped = match crate::tile_writer::snap_prediction(
+                syntax,
+                &leaf,
+                InterPrediction::Single(base),
+            )? {
+                InterPrediction::Single(modes) => modes,
+                other => panic!("{other:?}"),
+            };
+            assert!(syntax.bawp_reads(&leaf, snapped)?);
+            let with = |chroma| InterModes {
+                bawp: Some(Bawp {
+                    explicit_scale: None,
+                    chroma,
+                }),
+                ..snapped
+            };
+            assert!(syntax.bawp_fits(&leaf, with(false))?);
+            assert!(!syntax.bawp_fits(&leaf, with(true))?);
+            let dropped = crate::tile_writer::snap_prediction(
+                syntax,
+                &leaf,
+                InterPrediction::Single(with(true)),
+            )?;
+            assert_eq!(dropped, InterPrediction::Single(snapped));
+            checked += 1;
+        }
+        super::random_tree(syntax, node, rng, coverage)
+    };
+    super::inter_stream_with(&config, 0xBA3F, tree);
+    assert_eq!(checked, 1);
 }

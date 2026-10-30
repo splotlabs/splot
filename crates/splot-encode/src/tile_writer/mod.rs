@@ -697,14 +697,15 @@ fn chroma_partner(blocks: &[TransformBlock], u: &TransformBlock) -> Option<usize
 
 /// `prediction` with each coded vector moved onto the lattice of its base. A
 /// `LOCALWARP` or `EXTENDWARP` model the leaf cannot code, which a memoized
-/// subtree recoded under other neighbours meets, codes the zero `DELTAWARP`.
+/// subtree recoded under other neighbours meets, codes the zero `DELTAWARP`;
+/// a BAWP whose § 7.13.3.25 template no longer fits is dropped.
 pub(crate) fn snap_prediction(
     syntax: &mut IntraTileSyntax,
     leaf: &LeafBlock,
     prediction: InterPrediction,
 ) -> Result<InterPrediction> {
     let step = syntax.mv_step();
-    Ok(match prediction {
+    let snapped = match prediction {
         InterPrediction::Single(mut modes) if modes.mode == InterMode::New => {
             let base = syntax.newmv_base(leaf, modes)?;
             let target = modes.mv;
@@ -746,6 +747,15 @@ pub(crate) fn snap_prediction(
                 modes.mv = Some(snap_mv(target, base, syntax.warp_step(&modes)));
             }
             InterPrediction::Warp(modes)
+        }
+        other => other,
+    };
+    Ok(match snapped {
+        InterPrediction::Single(modes) if !syntax.bawp_fits(leaf, modes)? => {
+            InterPrediction::Single(InterModes {
+                bawp: None,
+                ..modes
+            })
         }
         other => other,
     })
