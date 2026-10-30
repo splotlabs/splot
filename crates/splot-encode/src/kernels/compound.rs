@@ -94,19 +94,20 @@ pub(crate) fn mask_moments_scalar(mask: &[u8], de: &[i32], ee: &[i32]) -> [i64; 
     mask_moments_tail(mask, de, ee)
 }
 
-/// [`mask_moments_scalar`] in eight lanes.
+/// [`mask_moments_scalar`] in eight lanes. Every product is of two values
+/// that fit `i32` (`m·m` is below `2^16`), so it is one widening multiply.
 pub(crate) fn mask_moments_simd(mask: &[u8], de: &[i32], ee: &[i32]) -> [i64; 3] {
     let len = mask.len().min(de.len()).min(ee.len());
+    let wide = |v: Simd<i32, LANES>| v.cast::<i64>();
     let mut acc = [Simd::<i64, LANES>::splat(0); 3];
     let mut i = 0;
     while i + LANES <= len {
-        let m: Simd<i64, LANES> = Simd::<u8, LANES>::from_slice(&mask[i..]).cast();
-        let d: Simd<i64, LANES> = Simd::<i32, LANES>::from_slice(&de[i..]).cast();
-        let e: Simd<i64, LANES> = Simd::<i32, LANES>::from_slice(&ee[i..]).cast();
-        let me = m * e;
-        acc[0] += m * d;
-        acc[1] += me;
-        acc[2] += m * me;
+        let m: Simd<i32, LANES> = Simd::<u8, LANES>::from_slice(&mask[i..]).cast();
+        let d = Simd::<i32, LANES>::from_slice(&de[i..]);
+        let e = Simd::<i32, LANES>::from_slice(&ee[i..]);
+        acc[0] += wide(m) * wide(d);
+        acc[1] += wide(m) * wide(e);
+        acc[2] += wide(m * m) * wide(e);
         i += LANES;
     }
     let tail = mask_moments_tail(&mask[i..len], &de[i..len], &ee[i..len]);
@@ -189,6 +190,17 @@ mod tests {
             diff_mask_scalar(&p0[..len], &p1[..len], shift, &mut a);
             diff_mask_simd(&p0[..len], &p1[..len], shift, &mut b);
             prop_assert_eq!(a, b);
+        }
+
+        /// Mask moments of any `u8` mask over any `i32` terms, of different
+        /// lengths, need the full widening products.
+        #[test]
+        fn mask_moments_simd_matches_scalar_over_every_value(
+            mask in prop::collection::vec(any::<u8>(), 0..80),
+            de in prop::collection::vec(any::<i32>(), 0..80),
+            ee in prop::collection::vec(any::<i32>(), 0..80),
+        ) {
+            prop_assert_eq!(mask_moments_scalar(&mask, &de, &ee), mask_moments_simd(&mask, &de, &ee));
         }
 
         /// The squared error of an explicit `m / 64` blend equals the moment
