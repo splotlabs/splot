@@ -25,6 +25,7 @@ mod ist;
 mod quantize;
 pub(crate) mod rdoq;
 pub(crate) mod tcq;
+mod tpl;
 pub(crate) mod wiener;
 
 pub(crate) use forward_transform::ForwardTransform2d;
@@ -254,6 +255,17 @@ pub(crate) trait EncoderKernels: Sync {
         branches: &tcq::Branches,
         lambda: u64,
     ) -> tcq::Survivors;
+
+    /// The amount each block of a temporal-model frame passes to its
+    /// references ([`tpl::propagate_simd`]).
+    fn tpl_propagate(
+        &self,
+        intra: &[u32],
+        best: &[u32],
+        received: &[u64],
+        noise: u32,
+        out: &mut [u64],
+    );
 }
 
 /// The scalar reference kernels.
@@ -382,6 +394,17 @@ impl EncoderKernels for ScalarKernels {
     ) -> tcq::Survivors {
         tcq::step_scalar(prev, branches, lambda)
     }
+
+    fn tpl_propagate(
+        &self,
+        intra: &[u32],
+        best: &[u32],
+        received: &[u64],
+        noise: u32,
+        out: &mut [u64],
+    ) {
+        tpl::propagate_scalar(intra, best, received, noise, out);
+    }
 }
 
 impl EncoderKernels for SimdKernels {
@@ -496,5 +519,16 @@ impl EncoderKernels for SimdKernels {
         lambda: u64,
     ) -> tcq::Survivors {
         tcq::step_simd(prev, branches, lambda)
+    }
+
+    fn tpl_propagate(
+        &self,
+        intra: &[u32],
+        best: &[u32],
+        received: &[u64],
+        noise: u32,
+        out: &mut [u64],
+    ) {
+        tpl::propagate_simd(intra, best, received, noise, out);
     }
 }
