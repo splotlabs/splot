@@ -57,7 +57,7 @@ const AFFINE: u8 = 2;
 /// `REFS_PER_FRAME` (AV2 v1.0.0 § 3): the per-frame `GmType` / `gm_params` table size
 /// (mirror :7778). Every reference is initialised to the identity warp before the inter
 /// arm overwrites the active `0..NumTotalRefs` entries.
-pub(crate) const REFS_PER_FRAME: usize = 7;
+pub const REFS_PER_FRAME: usize = 7;
 
 /// One frame's § 7.23 `SavedGmParams[slot]` table.
 pub type SavedGlobalMotionParams = [[i32; 6]; REFS_PER_FRAME];

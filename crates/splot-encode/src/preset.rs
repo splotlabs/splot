@@ -251,8 +251,8 @@ pub struct PresetParams {
     /// p0 park_joy +0.20%.
     pub warp: u8,
     /// Global motion (`enable_global_motion`), `0..=1`: inter frames code
-    /// `use_global_motion` with the models the encoder estimates. Off in
-    /// every row until the estimator lands and is measured.
+    /// `use_global_motion` with the models the lookahead estimates. Off in
+    /// every row until the estimator is tuned and measured.
     pub global_motion: u8,
     /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` enables
     /// `cwp_idx` weights (`enable_cwp`), `2` also wedge and

@@ -850,4 +850,11 @@ fn global_motion_models_round_trip_through_the_parser() {
         .view()
         .with_global_motion_state(&counts, &hints, &saved);
     assert!(build_inter_frame_header(&view, &refs, &off_lattice).is_err());
+    let mut unread = [None; 7];
+    unread[5] = Some([0, 0, (1 << 16) + (1 << 6), 0, 0, (1 << 16) + (1 << 6)]);
+    let no_reference = InterFrameParams {
+        global_motion: unread,
+        ..off_lattice
+    };
+    assert!(build_inter_frame_header(&view, &refs, &no_reference).is_err());
 }

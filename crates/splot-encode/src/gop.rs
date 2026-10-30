@@ -44,9 +44,9 @@ use core::num::NonZeroU32;
 
 use splot_core::headers::frame::{
     CoreSeqView, FrameFilterParams, FrameHeaderCore, InterFrameParams, KeyFrameTxParams,
-    UniformTiles, build_inter_frame_header, build_key_frame_header, build_tip_output_frame_header,
-    encode_inter_frame_obu, encode_key_frame_temporal_unit, encode_show_existing_frame_obu,
-    encode_temporal_delimiter_obu, encode_tip_output_frame_obu,
+    REFS_PER_FRAME, UniformTiles, build_inter_frame_header, build_key_frame_header,
+    build_tip_output_frame_header, encode_inter_frame_obu, encode_key_frame_temporal_unit,
+    encode_show_existing_frame_obu, encode_temporal_delimiter_obu, encode_tip_output_frame_obu,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_decode::encoder_syntax::EncoderReferences;
@@ -380,7 +380,7 @@ pub(crate) fn frame_tools(preset: &PresetParams, tiles: UniformTiles, qindex: u3
             preset.integer_mv,
             if preset.opfl { REFINE_SWITCHABLE } else { 0 },
             preset.warp > 0,
-            [None; 7],
+            [None; REFS_PER_FRAME],
         ),
         tiles,
     )
@@ -408,7 +408,7 @@ pub(crate) type FrameTools = (
         bool,
         u8,
         bool,
-        [Option<[i32; 6]>; 7],
+        [Option<[i32; 6]>; REFS_PER_FRAME],
     ),
     UniformTiles,
 );

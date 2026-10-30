@@ -403,7 +403,7 @@ fn write_global_motion(
         let Some(model) = model else {
             continue;
         };
-        let rotzoom = model[4] == -model[3] && model[5] == model[2];
+        let rotzoom = model[3].checked_neg() == Some(model[4]) && model[5] == model[2];
         w.write_flag(rotzoom)?; // is_rot_zoom
         let coded: &[usize] = if rotzoom {
             &[2, 3, 0, 1]

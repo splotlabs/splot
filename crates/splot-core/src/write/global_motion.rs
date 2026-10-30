@@ -7,10 +7,9 @@
 
 use crate::headers::frame::global_motion::{
     GLOBAL_PARAM_K, GM_ALPHA_MAX, GM_ALPHA_PREC_BITS, GM_TRANS_MAX, GM_TRANS_PREC_BITS,
+    WARPEDMODEL_PREC_BITS,
 };
 use crate::write::{BitWriter, WriteError, WriteResult};
-
-const WARPEDMODEL_PREC_BITS: u32 = 16;
 
 /// Writes `gm_params[ ref ][ idx ] = value` predicted from `prev_gm_param`
 /// (`PrevGmParams[ ref ][ idx ]`), the inverse of `read_global_param`.

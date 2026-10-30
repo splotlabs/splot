@@ -81,7 +81,7 @@ pub(crate) struct IntraFrameCoder {
     pool: Option<WorkerPool>,
     /// The global motion models every inter frame codes, set by tests.
     #[cfg(test)]
-    global_motion: [Option<[i32; 6]>; 7],
+    global_motion: [Option<[i32; 6]>; splot_core::headers::frame::REFS_PER_FRAME],
     /// The global motion models of the next frames to code.
     global_models: crate::global_motion::GlobalModels,
     /// The block importances of the next frames to code.
@@ -192,7 +192,7 @@ impl IntraFrameCoder {
                 .transpose()
                 .map_err(coding("worker pool"))?,
             #[cfg(test)]
-            global_motion: [None; 7],
+            global_motion: [None; splot_core::headers::frame::REFS_PER_FRAME],
             importance: tpl::BlockImportance::default(),
             global_models: crate::global_motion::GlobalModels::new(),
             shown_existing: 0,
