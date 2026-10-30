@@ -67,3 +67,77 @@ fn compound_types_off_disable_the_sequence_tools() {
     let inter = coder.sequence.inter.unwrap();
     assert!(!inter.enable_masked_compound && inter.enable_cwp);
 }
+
+/// A panning frame with noise, which averaging two references removes.
+fn noisy_panning_frame(config: &Config, index: u32) -> SourceFrame {
+    super::grain_streams::with_noise(config, &panning_frame(config, index), 3 + index)
+}
+
+/// A tiled mini-GOP stream at a coarse quantizer whose compound candidates
+/// are forced to wedges, difference-weighted masks and `cwp_idx` weights,
+/// with vector refinement on: masked `NEAR_NEARMV` blocks drop the refinement
+/// the decoder infers (`DecidedAgainstRefinemv`, with its deblock sub-PU
+/// size), the loop filters run, later frames take the motion and weights of
+/// the earlier ones, the stream decodes to the encoder recon and codes the
+/// same bytes on 1, 2 and 8 threads.
+#[test]
+fn forced_compound_types_decode_on_any_thread_count() {
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        compound_types: crate::mode_decision::FORCED_COMPOUND_TYPES,
+        implicit_mask: true,
+        refinemv: true,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let stream = |threads: usize| {
+        let mut config = config(136, 72, BitDepth::Eight, 6, 200);
+        config.tiles = TileLayout {
+            cols_log2: 1,
+            rows_log2: 0,
+        };
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+        super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200)
+    };
+    crate::tile_writer::CODED_TYPES.set([0; 4]);
+    let (one, expected, cores, _) = stream(1);
+    let [weighted, wedges, diffs, masked_near] = crate::tile_writer::CODED_TYPES.get();
+    assert!(
+        weighted > 0 && wedges > 0 && diffs > 0 && masked_near > 0,
+        "{weighted} {wedges} {diffs} {masked_near}"
+    );
+    assert!(cores.iter().any(|core| {
+        core.deblocking_filter_params
+            .as_ref()
+            .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
+    }));
+    assert_same_samples(&decode(&one), &expected, "forced compound types");
+    for threads in [2, 8] {
+        assert!(stream(threads).0 == one, "{threads} threads");
+    }
+}
+
+/// AVM decodes the forced compound type stream like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_compound_types_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        compound_types: crate::mode_decision::FORCED_COMPOUND_TYPES,
+        implicit_mask: true,
+        refinemv: true,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let config = config(136, 72, BitDepth::Eight, 6, 200);
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let (units, ..) = super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
+    let avm = avm_decode(
+        &avmdec,
+        std::slice::from_ref(&units),
+        (136, 72),
+        BitDepth::Eight,
+        "compound-types",
+    );
+    assert!(avm == decode(&units), "AVM output differs");
+}

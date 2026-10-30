@@ -363,9 +363,22 @@ impl PresetParams {
             " (1 needs opfl or refinemv)",
         )?;
         check("warp", self.warp, 0, 1, "")?;
-        check("compound_types", self.compound_types, 0, 2, "")
+        check(
+            "compound_types",
+            self.compound_types,
+            0,
+            MAX_COMPOUND_TYPES,
+            "",
+        )
     }
 }
+
+/// The largest [`PresetParams::compound_types`]; tests also take
+/// [`crate::mode_decision::FORCED_COMPOUND_TYPES`].
+#[cfg(not(test))]
+const MAX_COMPOUND_TYPES: u8 = 2;
+#[cfg(test)]
+const MAX_COMPOUND_TYPES: u8 = crate::mode_decision::FORCED_COMPOUND_TYPES;
 
 /// A [`PresetParams`] field type that [`PresetParams::set`] parses.
 trait FieldValue: Sized {

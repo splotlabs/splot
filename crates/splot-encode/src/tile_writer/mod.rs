@@ -245,6 +245,33 @@ impl KeyFrameTileWriter {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Compound leaves of the final passes on this thread: weighted
+    /// `COMPOUND_AVERAGE`, wedge, difference-weighted, and masked
+    /// `NEAR_NEARMV`.
+    pub(crate) static CODED_TYPES: core::cell::Cell<[usize; 4]> =
+        const { core::cell::Cell::new([0; 4]) };
+}
+
+#[cfg(test)]
+fn count_coded_type(prediction: InterPrediction) {
+    let InterPrediction::Compound(modes) = prediction else {
+        return;
+    };
+    let mut counts = CODED_TYPES.get();
+    match modes.blend {
+        CompoundType::Average { cwp } => counts[0] += usize::from(cwp > 0),
+        CompoundType::Wedge { .. } => counts[1] += 1,
+        CompoundType::DiffWeighted { .. } => counts[2] += 1,
+    }
+    counts[3] += usize::from(
+        modes.mode == CompoundMode::NearNear
+            && !matches!(modes.blend, CompoundType::Average { .. }),
+    );
+    CODED_TYPES.set(counts);
+}
+
 /// One syntax pass over a tile: the facade, a symbol sink, and the filter
 /// state. The final pass codes into the [`SymbolEncoder`] with the filters; an
 /// RD trial prices into a rate sink without them, because the filter syntax
@@ -342,6 +369,10 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         planes: Range<usize>,
     ) -> Result<Vec<TransformBlock>> {
         if let Some(modes) = choice.inter {
+            #[cfg(test)]
+            if self.filters.is_some() {
+                count_coded_type(modes);
+            }
             return self.write_inter_leaf(leaf, (modes, choice.tx_partition), coder);
         }
         if let Some(modes) = choice.intrabc {

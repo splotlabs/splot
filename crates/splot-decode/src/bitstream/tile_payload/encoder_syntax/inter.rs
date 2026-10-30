@@ -1171,7 +1171,7 @@ impl IntraTileSyntax {
                 tail.into_iter()
                     .map(|(selector, value)| (Some(selector), value)),
             );
-        for element in coded.collect::<Vec<_>>() {
+        for element in coded {
             self.put_element(symbols, element)?;
         }
         Ok(())
@@ -1209,16 +1209,13 @@ impl IntraTileSyntax {
         let (_, interp) = tile
             .interp_filter(&leaf.frontier, motion)
             .map_err(rule("interp_filter"))?;
-        let coded: Vec<_> = refinemv
+        let mut coded = refinemv
             .map(|(selector, value)| (Some(selector), value))
             .into_iter()
             .chain(compound_type)
-            .chain(interp.map(|(selector, value)| (Some(selector), value)))
-            .collect();
+            .chain(interp.map(|(selector, value)| (Some(selector), value)));
         let mark = self.journal.mark();
-        let written = coded
-            .into_iter()
-            .try_for_each(|element| self.put_element(symbols, element));
+        let written = coded.try_for_each(|element| self.put_element(symbols, element));
         self.journal.rollback(&mut self.cdfs, mark)?;
         written.map(|()| interp.is_some())
     }
