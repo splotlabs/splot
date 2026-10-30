@@ -793,36 +793,38 @@ impl TrialCoder<'_, '_> {
         Ok(out)
     }
 
-    /// `trial` with the `use_optflow` and `use_refinemv` it reads whose
-    /// decoder prediction has the least luma SATD plus mode and filter rate;
-    /// each variant is predicted once, by the decoder's own refinement.
+    /// `trial` with the `use_optflow` and `use_refinemv` it reads, or one of
+    /// its [`Self::typed_variants`], whose decoder prediction has the least
+    /// luma SATD plus mode and filter rate; each variant is predicted once,
+    /// by the decoder's own refinement and blend.
     fn refined(
         &mut self,
         leaf: &LeafBlock,
         motion: &MotionSearch,
         trial: CompoundModes,
     ) -> Result<CompoundModes> {
-        if !self.preset.opfl && !self.preset.refinemv {
-            return Ok(trial);
-        }
-        let (reads_optflow, _) = self.syntax.compound_refinements(leaf, trial)?;
         let mut variants = vec![trial];
-        if reads_optflow {
-            variants.push(CompoundModes {
-                optflow: true,
-                ..trial
-            });
-        }
-        let base = variants.len();
-        for index in 0..base {
-            let variant = variants[index];
-            if self.syntax.compound_refinements(leaf, variant)?.1 {
+        if self.preset.opfl || self.preset.refinemv {
+            let (reads_optflow, _) = self.syntax.compound_refinements(leaf, trial)?;
+            if reads_optflow {
                 variants.push(CompoundModes {
-                    refinemv: true,
-                    ..variant
+                    optflow: true,
+                    ..trial
                 });
             }
+            let base = variants.len();
+            for index in 0..base {
+                let variant = variants[index];
+                if self.syntax.compound_refinements(leaf, variant)?.1 {
+                    variants.push(CompoundModes {
+                        refinemv: true,
+                        ..variant
+                    });
+                }
+            }
         }
+        let typed = self.typed_variants(leaf, motion, trial)?;
+        variants.extend(typed);
         if variants.len() == 1 {
             return Ok(trial);
         }
@@ -1137,3 +1139,6 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         Ok(self.syntax.restore(saved)?)
     }
 }
+
+#[path = "compound_search.rs"]
+mod compound_search;

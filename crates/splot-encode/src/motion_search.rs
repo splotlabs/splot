@@ -313,6 +313,33 @@ impl MotionSearch {
         self.satd(block, &average)
     }
 
+    /// The row-major source luma of `block` and the decoder's luma
+    /// predictions of `block` from the two `(reference, vector)` `lists`
+    /// with `filter`.
+    pub(crate) fn compound_inputs(
+        &self,
+        syntax: &IntraTileSyntax,
+        lists: [(usize, MotionVector); 2],
+        filter: InterpolationFilter,
+        block: (usize, usize, usize, usize),
+    ) -> Result<[Vec<u16>; 3]> {
+        let (left, top, width, height) = block;
+        let source = &self.source.levels[0];
+        let samples = source.at(left as i32, top as i32, width, height).ok_or(
+            TileWriterError::Unsupported("source block outside the plane"),
+        )?;
+        let mut rows = Vec::with_capacity(width * height);
+        for row in samples.chunks(source.stride).take(height) {
+            rows.extend_from_slice(&row[..width]);
+        }
+        let [(ref0, mv0), (ref1, mv1)] = lists;
+        Ok([
+            rows,
+            predict(syntax, ref0, block, (mv0, filter))?,
+            predict(syntax, ref1, block, (mv1, filter))?,
+        ])
+    }
+
     /// The cost of `bits` in SAD units.
     pub(crate) fn bits_cost(&self, bits: Bits) -> u64 {
         (bits.0 * self.sad_lambda_q8) >> 16

@@ -754,7 +754,7 @@ pub(crate) fn codable_children(
 pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) source: &'a PaddedSource,
     qindex: u32,
-    bit_depth: BitDepth,
+    pub(crate) bit_depth: BitDepth,
     preset: &'a PresetParams,
     lambda: Lambda,
     /// A candidate trial without `full_trials`: quantize with the deadzone and

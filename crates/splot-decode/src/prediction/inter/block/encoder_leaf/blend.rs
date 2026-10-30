@@ -57,6 +57,15 @@ pub(crate) struct CompoundTypeReads {
     pub(crate) cwp_same_side: Option<bool>,
 }
 
+impl CompoundTypeReads {
+    /// The `Cwp_Weighting_Factor` row of the `cwp` index, where the block
+    /// reads `cwp_idx`.
+    pub(crate) fn cwp_weights(self) -> Option<[i16; MAX_CWP_NUM as usize]> {
+        self.cwp_same_side
+            .map(|same_side| CWP_WEIGHTING_FACTOR[usize::from(same_side)])
+    }
+}
+
 /// One coded element of the compound type: an `S()` symbol, or with no
 /// selector an `L(1)` literal.
 pub(crate) type TypeSymbol = (Option<TileCdfSelector>, u8);

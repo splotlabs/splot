@@ -17,6 +17,7 @@ pub(crate) mod ccso;
 mod cctx;
 mod cfl;
 mod colours;
+pub(crate) mod compound;
 mod distortion;
 mod forward_transform;
 pub(crate) mod gdf;
@@ -218,6 +219,23 @@ pub(crate) trait EncoderKernels: Sync {
         coeffs: &mut [i32],
     ) -> Result<(), KernelError>;
 
+    /// `[Σd², Σd·e, Σe²]` of a source `s` and two predictions, with the
+    /// per-sample `d·e` and `e²` into `de` and `ee` ([`compound::terms_simd`]).
+    fn compound_terms(
+        &self,
+        s: &[u16],
+        preds: (&[u16], &[u16]),
+        de: &mut [i32],
+        ee: &mut [i32],
+    ) -> [i64; 3];
+
+    /// `[Σm·de, Σm·ee, Σm²·ee]` of a blend mask ([`compound::mask_moments_simd`]).
+    fn mask_moments(&self, mask: &[u8], de: &[i32], ee: &[i32]) -> [i64; 3];
+
+    /// The difference-weighted mask of two predictions
+    /// ([`compound::diff_mask_simd`]).
+    fn diff_mask(&self, p0: &[u16], p1: &[u16], shift: u32, out: &mut [u8]);
+
     /// `[Σ u², Σ v², Σ u·v]` of U and V coefficients ([`cctx::stats_simd`]).
     fn cctx_stats(&self, u: &[i32], v: &[i32]) -> [i64; 3];
 
@@ -346,6 +364,24 @@ impl EncoderKernels for ScalarKernels {
         ist::forward_scalar(layout, coeffs)
     }
 
+    fn compound_terms(
+        &self,
+        s: &[u16],
+        preds: (&[u16], &[u16]),
+        de: &mut [i32],
+        ee: &mut [i32],
+    ) -> [i64; 3] {
+        compound::terms_scalar(s, preds, de, ee)
+    }
+
+    fn mask_moments(&self, mask: &[u8], de: &[i32], ee: &[i32]) -> [i64; 3] {
+        compound::mask_moments_scalar(mask, de, ee)
+    }
+
+    fn diff_mask(&self, p0: &[u16], p1: &[u16], shift: u32, out: &mut [u8]) {
+        compound::diff_mask_scalar(p0, p1, shift, out);
+    }
+
     fn cctx_stats(&self, u: &[i32], v: &[i32]) -> [i64; 3] {
         cctx::stats_scalar(u, v)
     }
@@ -459,6 +495,24 @@ impl EncoderKernels for SimdKernels {
         coeffs: &mut [i32],
     ) -> Result<(), KernelError> {
         ist::forward_simd(layout, coeffs)
+    }
+
+    fn compound_terms(
+        &self,
+        s: &[u16],
+        preds: (&[u16], &[u16]),
+        de: &mut [i32],
+        ee: &mut [i32],
+    ) -> [i64; 3] {
+        compound::terms_simd(s, preds, de, ee)
+    }
+
+    fn mask_moments(&self, mask: &[u8], de: &[i32], ee: &[i32]) -> [i64; 3] {
+        compound::mask_moments_simd(mask, de, ee)
+    }
+
+    fn diff_mask(&self, p0: &[u16], p1: &[u16], shift: u32, out: &mut [u8]) {
+        compound::diff_mask_simd(p0, p1, shift, out);
     }
 
     fn cctx_stats(&self, u: &[i32], v: &[i32]) -> [i64; 3] {

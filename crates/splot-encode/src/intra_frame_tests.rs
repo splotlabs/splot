@@ -806,7 +806,7 @@ fn random_modes(
             };
             let types = syntax.compound_types(leaf, modes).unwrap();
             let blend = match side.below(4) {
-                0 | 1 if types.cwp => CompoundType::Average {
+                0 | 1 if types.cwp.is_some() => CompoundType::Average {
                     cwp: 1 + side.below(u64::from(MAX_CWP_NUM) - 1) as u8,
                 },
                 2 if types.wedge => CompoundType::Wedge {
@@ -819,7 +819,7 @@ fn random_modes(
                 _ => CompoundType::default(),
             };
             for (refused, unreadable) in [
-                (CompoundType::Average { cwp: 1 }, !types.cwp),
+                (CompoundType::Average { cwp: 1 }, types.cwp.is_none()),
                 (CompoundType::Average { cwp: MAX_CWP_NUM }, true),
                 (
                     CompoundType::Wedge {

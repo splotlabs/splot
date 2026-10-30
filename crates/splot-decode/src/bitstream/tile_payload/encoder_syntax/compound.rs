@@ -29,8 +29,9 @@ pub struct CompoundTypes {
     /// [`CompoundType::Wedge`] (`comp_group_idx` is read and
     /// `Wedge_Bits` is not `0`).
     pub wedge: bool,
-    /// [`CompoundType::Average`] with any `cwp` below [`MAX_CWP_NUM`].
-    pub cwp: bool,
+    /// [`CompoundType::Average`] with any `cwp` below [`MAX_CWP_NUM`]: the
+    /// `cwpWeight` of `p0` in sixteenths for each `cwp` (§ 7.13.3.16).
+    pub cwp: Option<[i16; MAX_CWP_NUM as usize]>,
 }
 
 /// The candidate failure of a prediction whose vectors the decoder cannot derive.
@@ -342,7 +343,7 @@ impl IntraTileSyntax {
         Ok(CompoundTypes {
             masked,
             wedge: masked && reads.wedge,
-            cwp: reads.cwp_same_side.is_some(),
+            cwp: reads.cwp_weights(),
         })
     }
 
