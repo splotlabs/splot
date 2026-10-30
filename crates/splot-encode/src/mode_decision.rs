@@ -60,6 +60,13 @@ const MRL_LINES: [Mrl; 6] = {
 /// candidates when it has any.
 #[cfg(test)]
 pub(crate) const FORCED_COMPOUND_TYPES: u8 = 3;
+#[cfg(test)]
+thread_local! {
+    /// Makes the inter-intra candidate of a leaf its only inter candidate on
+    /// this thread.
+    pub(crate) static FORCE_INTERINTRA: core::cell::Cell<bool> =
+        const { core::cell::Cell::new(false) };
+}
 /// The compound shortlist prices the syntax of this many times as many of
 /// its lowest-SATD candidates as it keeps.
 const PRICED_COMPOUND_SHARE: usize = 2;
@@ -466,10 +473,14 @@ impl TrialCoder<'_, '_> {
         if let (Some(motion), Some(base), true) =
             (self.motion, interintra_base, self.preset.interintra)
         {
-            choices.extend(
-                self.interintra_choice(leaf, motion, base)?
-                    .map(|modes| LeafChoice::inter(InterPrediction::Single(modes))),
-            );
+            let interintra = self
+                .interintra_choice(leaf, motion, base)?
+                .map(|modes| LeafChoice::inter(InterPrediction::Single(modes)));
+            #[cfg(test)]
+            if let (Some(choice), true) = (interintra, FORCE_INTERINTRA.get()) {
+                return Ok(vec![choice]);
+            }
+            choices.extend(interintra);
         }
         let warp_base = warp_base.filter(|_| self.preset.warp > 0);
         if let (Some(motion), Some((cost, ref_frame, found))) = (self.motion, warp_base) {
@@ -1175,6 +1186,10 @@ impl PartitionSearch for TrialCoder<'_, '_> {
                 && inter
                     .iter()
                     .any(|choice| matches!(choice.inter, Some(InterPrediction::Compound(_))))
+                || FORCE_INTERINTRA.get()
+                    && inter.iter().any(|choice| {
+                        matches!(choice.inter, Some(InterPrediction::Single(single)) if single.interintra.is_some())
+                    })
             {
                 candidates.clear();
             }

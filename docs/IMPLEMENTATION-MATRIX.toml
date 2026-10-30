@@ -6710,7 +6710,7 @@ avm_diff = "done"
 perf = "todo"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot", "crates/splot-encode/src/intra_frame_compound_tests.rs::interintra_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_compound_tests.rs::avm_decodes_interintra_like_splot", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::every_tool_flag_reaches_the_parsed_header"]
+tests = ["crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/intra_frame_tests.rs::avm_decodes_inter_frames_like_splot", "crates/splot-encode/src/intra_frame_compound_tests.rs::interintra_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_compound_tests.rs::avm_decodes_interintra_like_splot", "crates/splot-encode/src/intra_frame_compound_tests.rs::forced_interintra_at_tile_edges_decodes", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::every_tool_flag_reaches_the_parsed_header"]
 commands = ["cargo test -p splot-encode interintra --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_interintra --locked -- --ignored"]
 fixtures = []
 diagnostics = []

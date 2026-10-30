@@ -98,9 +98,9 @@ fn forced_compound_types_decode_on_any_thread_count() {
         let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
         super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200)
     };
-    crate::tile_writer::CODED_TYPES.set([0; 5]);
+    crate::tile_writer::CODED_TYPES.set([0; 6]);
     let (one, expected, cores, _) = stream(1);
-    let [weighted, wedges, diffs, masked_near, _] = crate::tile_writer::CODED_TYPES.get();
+    let [weighted, wedges, diffs, masked_near, ..] = crate::tile_writer::CODED_TYPES.get();
     assert!(
         weighted > 0 && wedges > 0 && diffs > 0 && masked_near > 0,
         "{weighted} {wedges} {diffs} {masked_near}"
@@ -161,7 +161,7 @@ fn interintra_streams_decode_on_any_thread_count() {
         let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
         super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200)
     };
-    crate::tile_writer::CODED_TYPES.set([0; 5]);
+    crate::tile_writer::CODED_TYPES.set([0; 6]);
     let (one, expected, cores, coder) = stream(1);
     assert!(coder.sequence.inter.unwrap().seq_enabled_motion_modes[1]);
     let interintra = crate::tile_writer::CODED_TYPES.get()[4];
@@ -177,20 +177,73 @@ fn interintra_streams_decode_on_any_thread_count() {
     }
 }
 
-/// AVM decodes the inter-intra stream like splot.
+/// The inter-intra preset of the tiled stream tests.
+fn interintra_preset() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        interintra: true,
+        ..*Preset::new(6).unwrap().params()
+    }))
+}
+
+/// A two-tile 10-bit noisy mini-GOP stream at qp 200 whose leaves code their
+/// inter-intra candidate wherever they have one: inter-intra leaves at the
+/// left edge of the second tile predict without the left edge, as the
+/// decoder does (§ 7.13.3.30 edge availability inside the tile), and the
+/// stream decodes to the encoder recon; AVM decodes it like splot where a
+/// decoder build is set.
+#[test]
+fn forced_interintra_at_tile_edges_decodes() {
+    let mut config = config(136, 72, BitDepth::Ten, 6, 200);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(1);
+    let coder = IntraFrameCoder::with_preset(&config, interintra_preset()).unwrap();
+    crate::tile_writer::CODED_TYPES.set([0; 6]);
+    crate::mode_decision::FORCE_INTERINTRA.set(true);
+    let (units, expected, ..) =
+        super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
+    crate::mode_decision::FORCE_INTERINTRA.set(false);
+    let [.., interintra, at_tile_edge] = crate::tile_writer::CODED_TYPES.get();
+    assert!(
+        at_tile_edge > 0,
+        "{interintra} inter-intra leaves, none at a tile edge"
+    );
+    assert_same_samples(&decode(&units), &expected, "inter-intra at tile edges");
+    if let Some(avmdec) = avm_decoder() {
+        let avm = avm_decode(
+            &avmdec,
+            std::slice::from_ref(&units),
+            (136, 72),
+            BitDepth::Ten,
+            "interintra-tiles",
+        );
+        assert!(avm == decode(&units), "AVM output differs");
+    }
+}
+
+/// AVM decodes the two-tile inter-intra stream, which codes inter-intra
+/// leaves, like splot.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
 fn avm_decodes_interintra_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
-        interintra: true,
-        ..*Preset::new(6).unwrap().params()
-    }));
-    let config = config(136, 72, BitDepth::Ten, 6, 200);
-    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    let mut config = config(136, 72, BitDepth::Ten, 6, 200);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(1);
+    let coder = IntraFrameCoder::with_preset(&config, interintra_preset()).unwrap();
+    crate::tile_writer::CODED_TYPES.set([0; 6]);
     let (units, ..) = super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
+    assert!(
+        crate::tile_writer::CODED_TYPES.get()[4] > 0,
+        "no inter-intra leaf"
+    );
     let avm = avm_decode(
         &avmdec,
         std::slice::from_ref(&units),

@@ -20,7 +20,7 @@ use splot_core::span::ByteOffset;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::{
-    BitDepth, DecodedFrame, InterpolationFilter, ReferencePlaneView, SharedFrame,
+    BitDepth, DecodedFrame, InterIntraMode, InterpolationFilter, ReferencePlaneView, SharedFrame,
     SubpelPredictParams,
 };
 
@@ -39,8 +39,6 @@ use super::{
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{frame_ref_update_from_core, is_key_or_switch};
 use crate::prediction::inter::read_mv::AMVD_INDEX_TO_MVD;
-use splot_recon::InterIntraMode;
-
 use crate::prediction::inter::{
     EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderMotion,
     EncoderSingleMotion, EncoderSingleMvs, FrameCdfHandle, InterIntraPrediction,
