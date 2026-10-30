@@ -16,9 +16,11 @@ const BLOCK: usize = 8;
 /// `frame` best predicts its chroma: the lowest sum, over the whole 8x8
 /// chroma blocks of U and V, of the residual energy of a least-squares fit
 /// `chroma = alpha * luma + beta`, the model that CfL codes. `0` on a tie and
-/// without horizontal subsampling.
+/// without horizontal subsampling or chroma.
 pub(crate) fn cfl_ds_filter(frame: &SourceFrame) -> u8 {
-    let [luma, chroma, _] = frame.plane_sizes();
+    let &[luma, chroma, _] = frame.plane_sizes() else {
+        return 0;
+    };
     let (width, height) = (chroma.width(), chroma.height());
     if width == 0 || luma.width() == width {
         return 0;
@@ -110,7 +112,7 @@ mod tests {
         let luma: Vec<u16> = (0..64 * 48)
             .map(|i| ((i % 64) * 37 + (i / 64) * 91 + (i % 7) * (i / 64 % 5) * 29) as u16 % 1024)
             .collect();
-        let [_, size, _] = config.plane_sizes().unwrap();
+        let size = config.plane_sizes().unwrap()[1];
         let sample = |x: usize, y: usize| i32::from(luma[y.min(47) * 64 + x.min(63)]);
         let down: Vec<i32> = (0..size.width() * size.height())
             .map(|i| {
