@@ -21,7 +21,6 @@ use std::collections::BTreeMap;
 use crate::gop::GopFrame;
 use crate::lookahead::{BLOCK, BlockMotion, Lookahead};
 use crate::rate_control::FrameType;
-use crate::tile_writer::{CompoundMode, InterMode, InterPrediction, LeafChoice};
 
 /// The `ROTZOOM` `gm_params` of each `(frame, reference)` pair of display
 /// indices that has a global model.
@@ -46,16 +45,6 @@ const TRANS_STEP: i32 = 1 << 13;
 /// The coded ranges of those terms, in steps (`GM_ALPHA_MAX`, `GM_TRANS_MAX`).
 const ALPHA_MAX: i32 = 511;
 const TRANS_MAX: i32 = 16383;
-
-/// Whether `choice` predicts with the global motion of its references:
-/// `GLOBALMV` or `GLOBAL_GLOBALMV`.
-pub(crate) fn is_global(choice: &LeafChoice) -> bool {
-    match choice.inter {
-        Some(InterPrediction::Single(modes)) => modes.mode == InterMode::Global,
-        Some(InterPrediction::Compound(modes)) => modes.mode == CompoundMode::GlobalGlobal,
-        _ => false,
-    }
-}
 
 /// The models of the frames of `plan`, in coding order, against their
 /// nearest past and future coded frames; `coded_before` is the last frame

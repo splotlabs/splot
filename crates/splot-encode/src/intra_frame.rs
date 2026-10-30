@@ -91,6 +91,8 @@ pub(crate) struct IntraFrameCoder {
     /// The last committed key frame coded a film grain model, which the
     /// output frames after it apply.
     grain_active: bool,
+    /// Which temporal layers code warped motion, from the committed frames.
+    warp_gate: crate::warp::WarpGate,
 }
 
 impl IntraFrameCoder {
@@ -195,6 +197,7 @@ impl IntraFrameCoder {
             global_models: crate::global_motion::GlobalModels::new(),
             shown_existing: 0,
             grain_active: false,
+            warp_gate: crate::warp::WarpGate::default(),
         })
     }
 }
@@ -219,6 +222,9 @@ impl FrameCoder for IntraFrameCoder {
     }
 
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
+        if let Some(used) = frame.warp {
+            self.warp_gate.record(used);
+        }
         if let Some(core) = frame.tip_output.take() {
             return self
                 .references
@@ -456,6 +462,7 @@ impl IntraFrameCoder {
                     .copied();
             }
         }
+        tools.2.6 &= self.warp_gate.allows(plan.layer);
         tools.0.delta_q_res = (!sb_quant.is_empty()).then_some(self.preset.delta_q_res);
         let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
         tools.0.grain_seed = grain_seed;
@@ -557,9 +564,10 @@ impl IntraFrameCoder {
             }
             CodedTile::finish(writer, decisions).map_err(coding("tile finish"))
         })?;
+        #[cfg(test)]
         let global_leaves = tiles
             .iter()
-            .map(|tile| tile.count_leaves(&crate::global_motion::is_global))
+            .map(|tile| tile.count_leaves(&tests::is_global))
             .sum();
         let warp_leaves = tiles
             .iter()
@@ -597,7 +605,14 @@ impl IntraFrameCoder {
             frame_type: plan.frame_type,
             reference: Some((core, recon, initial, cdfs)),
             tip_output: None,
-            warp_leaves,
+            warp: (plan.frame_type == crate::rate_control::FrameType::Inter).then_some(
+                crate::warp::WarpUse {
+                    layer: plan.layer,
+                    enabled: tools.2.6,
+                    leaves: warp_leaves,
+                },
+            ),
+            #[cfg(test)]
             global_leaves,
         };
         match tools.2.3 {
@@ -668,8 +683,9 @@ impl IntraFrameCoder {
                 frame_type: plan.frame_type,
                 reference: None,
                 tip_output: Some(core),
-                warp_leaves: coded.warp_leaves,
-                global_leaves: coded.global_leaves,
+                warp: None,
+                #[cfg(test)]
+                global_leaves: 0,
             }),
         )
     }

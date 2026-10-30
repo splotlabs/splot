@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 520" role="img" aria-labelledby="t d">
+  <!-- SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 -->
+  <title id="t">splot</title>
+  <desc id="d">splot: encode, decode and validate AV2 video, in safe Rust.</desc>
+  <defs>
+    <linearGradient id="word" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#5ee7ff"/>
+      <stop offset="0.45" stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#ff7ab6"/>
+    </linearGradient>
+    <radialGradient id="glowA"><stop offset="0" stop-color="#6d5dfc" stop-opacity="0.55"/><stop offset="1" stop-color="#6d5dfc" stop-opacity="0"/></radialGradient>
+    <radialGradient id="glowB"><stop offset="0" stop-color="#ff5fa2" stop-opacity="0.38"/><stop offset="1" stop-color="#ff5fa2" stop-opacity="0"/></radialGradient>
+    <radialGradient id="glowC"><stop offset="0" stop-color="#22d3ee" stop-opacity="0.35"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></radialGradient>
+    <clipPath id="card"><rect width="1280" height="520" rx="32"/></clipPath>
+    <style>
+      .drift-a { animation: a 14s ease-in-out infinite alternate; }
+      .drift-b { animation: b 18s ease-in-out infinite alternate; }
+      .drift-c { animation: c 16s ease-in-out infinite alternate; }
+      @keyframes a { to { transform: translate(140px, 40px); } }
+      @keyframes b { to { transform: translate(-160px, -30px); } }
+      @keyframes c { to { transform: translate(80px, -60px); } }
+      @media (prefers-reduced-motion: reduce) { .drift-a, .drift-b, .drift-c { animation: none; } }
+      text { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Helvetica Neue", Arial, sans-serif; }
+    </style>
+  </defs>
+  <g clip-path="url(#card)">
+    <rect width="1280" height="520" fill="#05050a"/>
+    <circle class="drift-a" cx="360" cy="200" r="380" fill="url(#glowA)"/>
+    <circle class="drift-b" cx="980" cy="330" r="360" fill="url(#glowB)"/>
+    <circle class="drift-c" cx="700" cy="520" r="320" fill="url(#glowC)"/>
+    <text x="640" y="268" text-anchor="middle" font-size="184" font-weight="700" letter-spacing="-8" fill="url(#word)">splot</text>
+    <text x="640" y="346" text-anchor="middle" font-size="40" font-weight="600" letter-spacing="-0.5" fill="#f5f5f7">AV2. Encode it. Decode it. Trust it.</text>
+    <text x="640" y="398" text-anchor="middle" font-size="22" font-weight="400" letter-spacing="0.2" fill="#a1a1aa">The next-generation video codec, in safe Rust.</text>
+  </g>
+</svg>

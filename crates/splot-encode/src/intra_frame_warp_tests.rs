@@ -134,7 +134,9 @@ pub(super) struct WarpStream {
 /// Nine zooming frames in mini-GOPs at qp 180, where the encoder deblocks.
 fn warp_stream(config: &Config, preset: &PresetParams) -> WarpStream {
     let coder = IntraFrameCoder::with_preset(config, preset).unwrap();
-    zooming_stream(config, coder, |coded| coded.warp_leaves)
+    zooming_stream(config, coder, |coded| {
+        coded.warp.map_or((0, 0), |used| used.leaves)
+    })
 }
 
 /// Nine zooming frames of `coder` in mini-GOPs at qp 180, each coded frame
@@ -281,7 +283,7 @@ fn zoom_frames_code_warp_leaves() {
         let mut coded = coder
             .code_frame(&zooming_frame(&config, frame), &plan, 90, &[])
             .unwrap();
-        warps += coded.warp_leaves.0;
+        warps += coded.warp.map_or(0, |used| used.leaves.0);
         expected.extend(recon_bytes(&coded, config.bit_depth));
         coder.commit(&mut coded).unwrap();
         units.extend(coded.temporal_unit);
@@ -309,6 +311,101 @@ fn integer_mv_warp_streams_decode_to_the_encoder_recon() {
     );
     assert_warp_records_consumed(&stream.frames, "integer mv");
     assert_same_samples(&decode(&stream.units), &stream.expected, "integer mv");
+}
+
+/// The warp search of the superblock roots of a zooming inter frame
+/// returns at most `keep` models, cheapest first, each cheaper than the
+/// translational cost it must beat; a cost of zero admits none.
+#[test]
+fn warp_search_keeps_the_cheapest_models_under_the_bar() {
+    let config = config(128, 128, BitDepth::Eight, 6, 90);
+    let mut coder = IntraFrameCoder::with_preset(&config, with_warp(|_| {})).unwrap();
+    let mut key = coder
+        .code_frame(
+            &zooming_frame(&config, 0),
+            &crate::gop::plan(0, config.keyint),
+            90,
+            &[],
+        )
+        .unwrap();
+    coder.commit(&mut key).unwrap();
+    let plan = crate::gop::plan(1, config.keyint);
+    let core = plan
+        .header(
+            &coder.view,
+            &coder.references,
+            90,
+            &FrameFilterParams::default(),
+            crate::gop::frame_tools(&coder.preset, coder.tiles, 90),
+        )
+        .unwrap();
+    let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references, 0).unwrap();
+    let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
+    let sb = writer.syntax().superblock_size4() * 4;
+    let source = zooming_frame(&config, 1);
+    let padded = PaddedSource::new(&source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
+    let lambda = Lambda::from_qindex(90, config.bit_depth).unwrap();
+    let motion = MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda)
+        .unwrap()
+        .unwrap();
+    let mut found = 0;
+    while writer.next_superblock_root().is_some() {
+        writer
+            .search_superblock(|syntax, root| {
+                let leaf = syntax.leaf(root)?;
+                for keep in [1, 2] {
+                    let warps = crate::warp::search(
+                        syntax,
+                        &motion,
+                        &leaf,
+                        (0, MotionVector::default(), u64::MAX),
+                        keep,
+                    )?;
+                    assert!(warps.len() <= keep);
+                    assert!(warps.windows(2).all(|pair| pair[0].0 <= pair[1].0));
+                    found += warps.len();
+                    if let Some(&(cost, _)) = warps.first() {
+                        let under = crate::warp::search(
+                            syntax,
+                            &motion,
+                            &leaf,
+                            (0, MotionVector::default(), cost + 1),
+                            keep,
+                        )?;
+                        assert!(!under.is_empty() && under.iter().all(|&(c, _)| c <= cost));
+                    }
+                }
+                let none = crate::warp::search(
+                    syntax,
+                    &motion,
+                    &leaf,
+                    (0, MotionVector::default(), 0),
+                    2,
+                )?;
+                assert!(none.is_empty());
+                Ok(PartitionTree::Leaf(LeafChoice::DC))
+            })
+            .unwrap();
+        writer
+            .write_superblock(
+                &SuperblockDecision {
+                    tree: PartitionTree::Leaf(LeafChoice::DC),
+                },
+                &mut SourceResidualCoder::new(&padded, 90, config.bit_depth, &coder.preset, lambda),
+            )
+            .unwrap();
+    }
+    assert!(found > 0);
+}
+
+/// A stream whose leaves give two warp models an RD trial decodes to the
+/// encoder recon, with later frames reading the warp frames' motion.
+#[test]
+fn two_model_warp_streams_decode_to_the_encoder_recon() {
+    let config = config(72, 56, BitDepth::Eight, 6, 180);
+    let stream = warp_stream(&config, with_warp(|p| p.warp = 2));
+    assert_warp_records_consumed(&stream.frames, "warp 2");
+    assert_same_samples(&decode(&stream.units), &stream.expected, "warp 2");
 }
 
 /// AVM decodes warp streams, with and without `force_integer_mv`, like splot.

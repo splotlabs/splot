@@ -632,6 +632,18 @@ fn panning_content_codes_cheap_inter_frames() {
     }
 }
 
+/// Whether `choice` predicts with the global motion of its references:
+/// `GLOBALMV` or `GLOBAL_GLOBALMV`.
+pub(super) fn is_global(choice: &LeafChoice) -> bool {
+    match choice.inter {
+        Some(InterPrediction::Single(modes)) => modes.mode == InterMode::Global,
+        Some(InterPrediction::Compound(modes)) => {
+            modes.mode == splot_decode::encoder_syntax::CompoundMode::GlobalGlobal
+        }
+        _ => false,
+    }
+}
+
 /// A small deterministic generator (xorshift64*).
 struct Rng(u64);
 

@@ -55,9 +55,11 @@ pub(crate) struct CodedFrame {
     /// The header of a `TIP_FRAME_AS_OUTPUT` frame, which
     /// [`FrameCoder::commit`] records in place of `reference`.
     pub(crate) tip_output: Option<FrameHeaderCore>,
-    /// The warp leaves and the inter leaves of the coded trees.
-    pub(crate) warp_leaves: (usize, usize),
+    /// How the inter frame used warped motion; `None` for key frames and for
+    /// `TIP_FRAME_AS_OUTPUT` frames, which code no leaves.
+    pub(crate) warp: Option<crate::warp::WarpUse>,
     /// The `GLOBALMV` and `GLOBAL_GLOBALMV` leaves of the coded trees.
+    #[cfg(test)]
     pub(crate) global_leaves: usize,
 }
 
@@ -545,7 +547,7 @@ mod tests {
                 frame_type: plan.frame_type,
                 reference: None,
                 tip_output: None,
-                warp_leaves: (0, 0),
+                warp: None,
                 global_leaves: 0,
             })
         }
