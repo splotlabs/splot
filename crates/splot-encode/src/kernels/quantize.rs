@@ -196,13 +196,16 @@ struct StepLanes {
     max_level: Simd<u32, LANES>,
     limit: Simd<u32, LANES>,
     reciprocal: Simd<f32, LANES>,
+    /// `ceil((256 - rounding) * r(1) / 256)`: a magnitude below it is below
+    /// `r(1)` and does not round up, so it quantizes to level 0.
+    zero_below: Simd<u32, LANES>,
 }
 
 const LANES: usize = 8;
 
 impl StepLanes {
     /// Lane 0 takes `first`, the other lanes `rest`.
-    fn new(first: Step, rest: Step) -> Self {
+    fn new(first: Step, rest: Step, rounding_q8: u32) -> Self {
         let pick = |f: fn(Step) -> u32| {
             Simd::from_array(core::array::from_fn(|i| {
                 f(if i == 0 { first } else { rest })
@@ -213,6 +216,10 @@ impl StepLanes {
             denom_shift: pick(|s| s.denom_shift),
             max_level: pick(|s| s.max_level),
             limit: pick(|s| s.limit),
+            zero_below: Simd::from_array(core::array::from_fn(|i| {
+                let step = if i == 0 { first } else { rest };
+                ((256 - rounding_q8) * step.recon(1)).div_ceil(256)
+            })),
             reciprocal: Simd::from_array(core::array::from_fn(|i| {
                 if i == 0 {
                     first.reciprocal
@@ -242,12 +249,17 @@ pub(super) fn quantize_simd(
     let (c_chunks, c_tail) = coeffs.as_chunks::<LANES>();
     let (l_chunks, l_tail) = levels.as_chunks_mut::<LANES>();
     let (d_chunks, d_tail) = dequant.as_chunks_mut::<LANES>();
-    let first = StepLanes::new(quantizer.dc, quantizer.ac);
-    let rest = StepLanes::new(quantizer.ac, quantizer.ac);
+    let first = StepLanes::new(quantizer.dc, quantizer.ac, quantizer.rounding_q8);
+    let rest = StepLanes::new(quantizer.ac, quantizer.ac, quantizer.rounding_q8);
     let mut nonzero = Simd::<u32, LANES>::splat(0);
     for (i, ((c, l), d)) in c_chunks.iter().zip(l_chunks).zip(d_chunks).enumerate() {
         let steps = if i == 0 { &first } else { &rest };
-        let (level, dq) = quantize_lanes(quantizer, steps, Simd::from_array(*c));
+        let c = Simd::from_array(*c);
+        if c.abs().cast::<u32>().simd_lt(steps.zero_below).all() {
+            (*l, *d) = ([0; LANES], [0; LANES]);
+            continue;
+        }
+        let (level, dq) = quantize_lanes(quantizer, steps, c);
         nonzero += level.simd_ne(Simd::splat(0)).to_simd().cast::<u32>() & Simd::splat(1);
         *l = level.to_array();
         *d = dq.to_array();
