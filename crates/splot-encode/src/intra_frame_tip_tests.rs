@@ -14,11 +14,13 @@ fn with_tip(tip: u8) -> &'static PresetParams {
     with_tip_output(tip, 0)
 }
 
-/// Preset 6 with `tip` and `tip_output`.
+/// Preset 6 with `tip` and `tip_output`, without TIP refinement, so frames
+/// code their TIP weight.
 fn with_tip_output(tip: u8, tip_output: u8) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         tip,
         tip_output,
+        tip_refinemv: false,
         ..*Preset::new(6).unwrap().params()
     }))
 }
