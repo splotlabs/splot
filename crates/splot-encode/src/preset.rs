@@ -280,6 +280,13 @@ pub struct PresetParams {
     /// p0-p6 (2026-10-30, p6 vs main): park_joy -0.28%, paris -0.11%, niklas
     /// -0.26% for about 3% more CPU; p7-p10 are not measured.
     pub bawp: bool,
+    /// Staged mode decision: the inter candidates of a leaf that each class
+    /// (`[MVP, NEWMV, compound]`) keeps for the all-plane trials, lowest
+    /// luma prediction SATD plus mode rate first. `255` keeps every one.
+    pub mds0_budgets: [u8; 3],
+    /// The luma and chroma intra shortlists of a leaf in an inter frame,
+    /// as `intra_modes` is for intra frames.
+    pub mds_inter_frame_intra: u8,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -371,6 +378,13 @@ impl PresetParams {
             " (max_block_log2)",
         )?;
         check("intra_modes", self.intra_modes, 1, u8::MAX, "")?;
+        check(
+            "mds_inter_frame_intra",
+            self.mds_inter_frame_intra,
+            1,
+            u8::MAX,
+            "",
+        )?;
         check("subpel_depth", self.subpel_depth, 0, 3, "")?;
         check("loop_filter_search", self.loop_filter_search, 0, 3, "")?;
         check("mini_gop_size", self.mini_gop_size, 1, 8, "")?;
@@ -445,6 +459,15 @@ impl FieldValue for bool {
             "1" | "true" => Some(true),
             _ => None,
         }
+    }
+}
+
+impl FieldValue for [u8; 3] {
+    const EXPECTED: &'static str = "three comma-separated integers in 0..=255, such as 6,2,4";
+    fn parse(value: &str) -> Option<Self> {
+        let mut values = value.split(',').map(u8::parse);
+        let parsed = [values.next()??, values.next()??, values.next()??];
+        values.next().is_none().then_some(parsed)
     }
 }
 
@@ -607,6 +630,10 @@ preset_table! {
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
+    mode_decision {
+        mds0_budgets:          [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
+        mds_inter_frame_intra: [   13,    13,    12,    10,     9,     8,     3,     3,     3,     3,     2],
+    }
 }
 
 /// [`PRESETS`] with the screen-content tools on and SDP off, for a sequence
@@ -750,6 +777,13 @@ mod tests {
             assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.interintra <= slow.interintra);
             assert!(fast.bawp <= slow.bawp);
+            assert!(
+                fast.mds0_budgets
+                    .iter()
+                    .zip(slow.mds0_budgets)
+                    .all(|(&f, s)| f <= s)
+            );
+            assert!(fast.mds_inter_frame_intra <= slow.mds_inter_frame_intra);
             assert!(fast.opfl <= slow.opfl);
             assert!(fast.tip_refinemv <= slow.tip_refinemv);
             assert!(

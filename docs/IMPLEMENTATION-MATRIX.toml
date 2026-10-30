@@ -6747,6 +6747,38 @@ commands = ["cargo test -p splot-encode bawp --locked", "SPLOT_AVM_DECODER=avmde
 fixtures = []
 diagnostics = []
 
+[[feature]]
+id = "ENC-MULTI-STAGE-MD"
+name = "Encoder multi-stage mode decision"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/rd/stages.rs"
+change_id = "enc-mds"
+owner = "encoder"
+risk = "medium"
+notes = "B3 part 1. The inter candidates of a leaf fall in three classes (MVP: NEARMV, GLOBALMV, skip mode; NEWMV with its BAWP, inter-intra and warp variants; compound). MDS0 scores each by the luma SATD of the decoder's prediction (IntraTileSyntax::luma_prediction, refinement included; the compound search hands over the scores it already measured) plus the exact mode and filter rate times the SATD tile side, and PresetParams::mds0_budgets keeps the cheapest of each class for the existing all-plane trials (MDS3), which stay the final arbiter. PresetParams::mds_inter_frame_intra is the intra luma and chroma shortlist of a leaf in an inter frame. The compound search no longer snaps NEAR_NEARMV and GLOBAL_GLOBALMV, and the facade checks a compound reference pair without listing every pair (byte-identical). p6-p10 code (4, 2, 2) and an inter-frame intra shortlist of 3 (2 at p10); p0-p5 code the old stream byte-identically. Measured f10 against main 09f0bf79f: park_joy p6 -0.85% at 0.720x CPU, p10 +0.19% at 0.690x, paris p6 -0.10% at 0.768x; against bdb2c0f0a (same streams): park_joy p7 +0.67% at 0.751x, p8 +1.11% at 0.718x, p9 +0.15% at 0.776x. Not done: the p6 -30% CPU target, MDS1 (a luma-only DCT trial measured as costly as the all-plane trial at p6), MDS2 for slow presets, cost-deviation bands (a 50% class band lost 0.4% on park_joy at no instruction gain, a 30% candidate band 0.2%), per-frame-kind budgets (non-reference budgets moved instructions under 1%) and an intra skip by inter SATD (100% of the SAD lambda lost 0.6% for 1.6% fewer instructions)."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "partial"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/rd/stages.rs::tests::budgets_keep_the_cheapest_of_each_class_and_ties_keep_the_earlier", "crates/splot-encode/src/rd/stages.rs::tests::open_limits_keep_everything", "crates/splot-encode/src/intra_frame_mds_tests.rs::staged_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_mds_tests.rs::open_limits_keep_every_candidate", "crates/splot-encode/src/intra_frame_mds_tests.rs::avm_decodes_staged_streams_like_splot", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
+commands = ["cargo test -p splot-encode mds --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_staged --locked -- --ignored"]
+fixtures = []
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------
