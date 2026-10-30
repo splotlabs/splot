@@ -222,7 +222,8 @@ pub struct PresetParams {
     pub opfl: bool,
     /// Decoder-side vector refinement (`enable_refinemv`): compound blocks
     /// with a past and a future reference may code `use_refinemv`. Off in
-    /// every row (2026-10-30): alone it measured niklas +0.23% at p6.
+    /// every row (2026-10-30): alone it measured niklas +0.23% at p6, largely
+    /// from the refinement the decoder infers on `NEAR_NEARMV` blocks.
     pub refinemv: bool,
 }
 
