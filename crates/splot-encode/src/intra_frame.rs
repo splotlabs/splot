@@ -143,6 +143,7 @@ impl IntraFrameCoder {
                 drl_reorder: preset.mv_prediction.then_some(DRL_REORDER_CONSTRAINT),
                 max_drl_bits_minus_1: u32::from(preset.drl_bits.saturating_sub(1)),
                 mvd_tools: preset.mvd_tools,
+                warp: preset.warp > 0,
                 parity_hiding: preset.parity_hiding,
                 tcq: preset.tcq != TcqFrames::Off,
                 ..EncoderToolFlags::default()
@@ -421,6 +422,10 @@ impl IntraFrameCoder {
             }
             CodedTile::finish(writer, decisions).map_err(coding("tile finish"))
         })?;
+        let warp_leaves = tiles
+            .iter()
+            .map(CodedTile::warp_leaves)
+            .fold((0, 0), |(w, i), (dw, di)| (w + dw, i + di));
         let FilteredFrame {
             core,
             filters,
@@ -453,6 +458,7 @@ impl IntraFrameCoder {
             frame_type: plan.frame_type,
             reference: Some((core, recon, initial, cdfs)),
             tip_output: None,
+            warp_leaves,
         };
         match tools.2.3 {
             Some(weight)
@@ -517,6 +523,7 @@ impl IntraFrameCoder {
                 frame_type: plan.frame_type,
                 reference: None,
                 tip_output: Some(core),
+                warp_leaves: coded.warp_leaves,
             }),
         )
     }

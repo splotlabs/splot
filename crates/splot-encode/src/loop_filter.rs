@@ -216,6 +216,15 @@ impl CodedTile {
             decisions,
         })
     }
+
+    /// The warp leaves and the inter leaves of the tile.
+    pub(crate) fn warp_leaves(&self) -> (usize, usize) {
+        self.decisions
+            .superblocks
+            .iter()
+            .map(|(decision, _)| crate::warp::leaf_counts(&decision.tree))
+            .fold((0, 0), |(w, i), (dw, di)| (w + dw, i + di))
+    }
 }
 
 /// The tiles of a frame put together: the bytes and final CDFs of each tile,

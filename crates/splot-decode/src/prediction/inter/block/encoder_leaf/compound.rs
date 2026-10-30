@@ -92,6 +92,7 @@ impl EncoderMotion {
     pub(crate) fn coded_mvds(self) -> Vec<Mv> {
         match self {
             Self::Single(single) if single.mode == SINGLE_MODE_NEWMV => vec![single.mvd],
+            Self::Warp(warp) => warp.mvd.into_iter().collect(),
             Self::Compound(compound) if !compound.skip_mode => match compound.y_mode {
                 CompoundYMode::NearNew => vec![compound.mvd[1]],
                 CompoundYMode::NewNear | CompoundYMode::JointNew => vec![compound.mvd[0]],
@@ -108,6 +109,10 @@ impl EncoderInterTile {
     pub(crate) fn block_precision(&self, motion: EncoderMotion) -> BlockPrecisionRecord {
         match motion {
             EncoderMotion::Single(EncoderSingleMotion {
+                precision: Some(precision),
+                ..
+            })
+            | EncoderMotion::Warp(EncoderWarpMotion {
                 precision: Some(precision),
                 ..
             }) => BlockPrecisionRecord::explicit(precision),
@@ -137,6 +142,7 @@ impl EncoderInterTile {
                     && allowed(single.use_amvd),
                 1,
             ),
+            EncoderMotion::Warp(_) => (false, false, 1),
             EncoderMotion::Compound(compound) => (
                 false,
                 matches!(
@@ -202,7 +208,7 @@ impl EncoderInterTile {
     /// The `use_most_probable_precision` and `pb_mv_precision` symbols that
     /// code `target` for a block that codes `NEWMV` as `has_newmv`, answered
     /// through the decoder's own reads.
-    fn precision_symbols(
+    pub(super) fn precision_symbols(
         &self,
         out: &mut Vec<(TileCdfSelector, u8)>,
         neighbour: &BlockNeighbourContext,
@@ -370,6 +376,7 @@ impl EncoderInterTile {
                 compound.y_mode == CompoundYMode::GlobalGlobal,
                 compound.interp,
             ),
+            EncoderMotion::Warp(_) => return Ok((ReconInterpolationFilter::EightTap, None)),
         };
         let (ref_frame0, ref_frame1) = motion.refs();
         match self.interp_filter_selector(frontier, (ref_frame0, ref_frame1.is_some()), global)? {
@@ -527,9 +534,10 @@ impl EncoderInterTile {
         );
         let tip_pair = match motion {
             EncoderMotion::Compound(_) => self.tip_ref_pair(),
-            EncoderMotion::Single(_) => None,
+            EncoderMotion::Single(_) | EncoderMotion::Warp(_) => None,
         };
-        let new_mv = find_mode_ctx_with_tip(&self.grid, &block, tip_pair).new_mv_context;
+        let mode_ctx = find_mode_ctx_with_tip(&self.grid, &block, tip_pair);
+        let new_mv = mode_ctx.new_mv_context;
         if let EncoderMotion::Compound(compound) = motion
             && compound.skip_mode
         {
@@ -582,17 +590,28 @@ impl EncoderInterTile {
             let compound = matches!(motion, EncoderMotion::Compound(_));
             out.push((TileCdfSelector::CompMode { ctx }, u8::from(compound)));
         }
+        if let (EncoderMotion::Single(_) | EncoderMotion::Warp(_), (ref_frame, _)) =
+            (motion, motion.refs())
+        {
+            for ref_idx in 0..refs.saturating_sub(1) {
+                let ctx = neighbour
+                    .single_ref_ctx(ref_idx, refs)
+                    .ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
+                let value = ref_idx == ref_frame as usize;
+                out.push((TileCdfSelector::SingleRef { ctx, ref_idx }, u8::from(value)));
+                if value {
+                    break;
+                }
+            }
+        }
         match motion {
+            EncoderMotion::Warp(warp) => {
+                self.warp_symbols(&mut out, frontier, (&neighbour, &mode_ctx, max_drl), warp)?;
+            }
             EncoderMotion::Single(single) => {
-                for ref_idx in 0..refs.saturating_sub(1) {
-                    let ctx = neighbour
-                        .single_ref_ctx(ref_idx, refs)
-                        .ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
-                    let value = ref_idx == single.ref_frame as usize;
-                    out.push((TileCdfSelector::SingleRef { ctx, ref_idx }, u8::from(value)));
-                    if value {
-                        break;
-                    }
+                if self.reads_is_warp(frontier)? {
+                    let ctx = mode_ctx.warp_mv_count;
+                    out.push((TileCdfSelector::IsWarp { ctx }, 0));
                 }
                 out.push((TileCdfSelector::SingleMode { ctx: new_mv }, single.mode));
                 let amvd_ctx = neighbour.amvd_ctx(single.ref_frame);
@@ -619,7 +638,12 @@ impl EncoderInterTile {
                 self.compound_symbols(
                     &mut out,
                     &neighbour,
-                    (new_mv, max_drl, refinement.reads_optflow),
+                    (
+                        &mode_ctx,
+                        max_drl,
+                        refinement.reads_optflow,
+                        self.compound_signals_local_warp(frontier, &mode_ctx, compound)?,
+                    ),
                     compound,
                 )?;
             }
@@ -631,9 +655,10 @@ impl EncoderInterTile {
         &self,
         out: &mut Vec<(TileCdfSelector, u8)>,
         neighbour: &BlockNeighbourContext,
-        (new_mv, max_drl, reads_optflow): (usize, usize, bool),
+        (mode_ctx, max_drl, reads_optflow, local_warp): (&ModeContext, usize, bool, bool),
         compound: EncoderCompoundMotion,
     ) -> Result<()> {
+        let new_mv = mode_ctx.new_mv_context;
         let refs = self.num_total_refs();
         let input = self.compound_input(
             compound_ref_contexts(neighbour, refs)?,
@@ -681,6 +706,10 @@ impl EncoderInterTile {
         ) {
             out.push((selector, 0));
         }
+        if local_warp {
+            let ctx = neighbour.use_local_warp_ctx();
+            out.push((TileCdfSelector::UseLocalWarp { ctx }, 0));
+        }
         if y_mode == CompoundYMode::JointNew {
             if compound.jmvd_scale_mode >= JMVD_SCALE_MODES {
                 return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
@@ -703,6 +732,43 @@ impl EncoderInterTile {
         }
         let precision = BlockPrecisionRecord::most_probable(self.precision);
         self.precision_symbols(out, neighbour, y_mode.has_newmv(), (precision, false))
+    }
+
+    /// Whether the decoder reads `use_local_warp` of `compound` (§ 5.20.7.14).
+    fn compound_signals_local_warp(
+        &self,
+        frontier: &DecodeBlockFrontier,
+        mode_ctx: &ModeContext,
+        compound: EncoderCompoundMotion,
+    ) -> Result<bool> {
+        let Some(inter) = self.core.inter.as_ref() else {
+            return Ok(false);
+        };
+        let local = inter
+            .frame_enabled_motion_modes
+            .is_some_and(|modes| modes[splot_core::headers::frame::LOCALWARP]);
+        if !local {
+            return Ok(false);
+        }
+        let (n4w, n4h) = block_size4(frontier)?;
+        Ok(
+            super::super::compound_path::compound_local_warp_signal_allowed(
+                CompoundBlockSyntax {
+                    y_mode: compound.y_mode,
+                    use_optflow: compound.use_optflow,
+                    ref_frame0: compound.ref_frames.0,
+                    ref_frame1: compound.ref_frames.1,
+                    mv0: Mv::ZERO,
+                    mv1: Mv::ZERO,
+                },
+                n4w,
+                n4h,
+                effective_force_integer_mv(&self.core),
+                inter.opfl_refine_type.unwrap_or(0),
+                [mode_ctx.warp_sample_found, mode_ctx.warp_sample_found1],
+                local,
+            ),
+        )
     }
 
     /// The parse record of `compound` at `frontier` and `block`, as the
@@ -796,7 +862,7 @@ fn compound_mode_symbol(selector: TileCdfSelector, y_mode: CompoundYMode) -> u8 
 
 /// The `drl_mode` symbols that read `value` from index `min` on, below `max`
 /// (`read_drl_idx`).
-fn drl_symbols(
+pub(super) fn drl_symbols(
     out: &mut Vec<(TileCdfSelector, u8)>,
     selector: impl Fn(usize) -> TileCdfSelector,
     min: usize,

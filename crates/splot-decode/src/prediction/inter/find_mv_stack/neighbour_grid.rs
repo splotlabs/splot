@@ -333,6 +333,7 @@ pub(crate) type PublishedLeaf = (
     (usize, usize, usize, usize),
     Option<(i8, Option<i8>)>,
     [Mv; 2],
+    [Option<[i32; 6]>; 2],
 );
 
 /// A [`NeighbourMvGrid::checkpoint`].
@@ -889,8 +890,24 @@ impl NeighbourMvGrid {
                     .is_inter()
                     .then_some((leaf.flags.ref_frame0, leaf.flags.ref_frame1)),
                 [leaf.mv, leaf.mv1],
+                self.splat_models(leaf),
             )
         })
+    }
+
+    /// The per-list splat warp models of `leaf`.
+    fn splat_models(&self, leaf: &LeafRecord) -> [Option<[i32; 6]>; 2] {
+        let models = self
+            .planes
+            .models
+            .get(leaf.models as usize..)
+            .unwrap_or_default();
+        let splat0 = leaf.model_bits & LeafRecord::SPLAT0 != 0;
+        let splat1 = leaf.model_bits & LeafRecord::SPLAT1 != 0;
+        [
+            models.first().copied().filter(|_| splat0),
+            models.get(usize::from(splat0)).copied().filter(|_| splat1),
+        ]
     }
 
     /// Moves the window down to the superblock row holding tile row `row`.
@@ -1060,6 +1077,13 @@ impl NeighbourMvGrid {
         let cell = self.get(i32::try_from(r).ok()?, i32::try_from(c).ok()?)?;
         (cell.flags.ref_frame0 == INTRABC_REF_FRAME && cell.flags.ref_frame1.is_none())
             .then_some(cell.motion.mv)
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn warp_model_at(&self, r: usize, c: usize) -> Option<[i32; 6]> {
+        self.get(i32::try_from(r).ok()?, i32::try_from(c).ok()?)?
+            .motion
+            .warp_params()
     }
 
     pub(crate) fn is_non_tip_at(&self, r: i32, c: i32) -> bool {

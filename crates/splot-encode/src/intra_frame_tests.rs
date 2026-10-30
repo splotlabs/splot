@@ -644,8 +644,10 @@ impl Rng {
 /// second-DRL index of list 1; a nonzero `jmvd_scale_mode`; a coded
 /// `interp_filter` other than `EIGHTTAP`; a `NEWMV` below the frame
 /// precision; an adaptive-MVD `NEWMV`; a TIP leaf; a compound leaf coding
-/// `use_optflow = 1`; a compound leaf coding `use_refinemv = 1`.
-type Coverage = [usize; 22];
+/// `use_optflow = 1`; a compound leaf coding `use_refinemv = 1`; a warp leaf;
+/// a `LOCALWARP` and an `EXTENDWARP` leaf; a coded six-parameter and a coded
+/// high-precision `DELTAWARP` leaf; a `WARPMV` leaf with a difference.
+type Coverage = [usize; 28];
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -846,9 +848,31 @@ fn random_modes(
         };
         coverage[16] += usize::from(coarse.precision.is_some());
         coverage[17] += usize::from(coarse.amvd);
-        return LeafChoice::inter(InterPrediction::Single(coarse));
+        return random_warp_or(syntax, leaf, rng, coverage, InterPrediction::Single(coarse));
     }
-    LeafChoice::inter(InterPrediction::Single(modes))
+    random_warp_or(syntax, leaf, rng, coverage, InterPrediction::Single(modes))
+}
+
+/// A random warp leaf in two of three draws of a side generator, which
+/// leaves `rng` as it was, else `single`.
+fn random_warp_or(
+    syntax: &mut IntraTileSyntax,
+    leaf: &LeafBlock,
+    rng: &Rng,
+    coverage: &mut Coverage,
+    single: InterPrediction,
+) -> LeafChoice {
+    let mut side = Rng(rng.0.rotate_left(29));
+    let mv = MotionVector {
+        row: (side.below(161) as i32 - 80) * 2,
+        col: (side.below(161) as i32 - 80) * 2,
+    };
+    let warp = if side.below(3) == 0 {
+        None
+    } else {
+        warp::random_warp(syntax, leaf, &mut side, mv, coverage)
+    };
+    LeafChoice::inter(warp.unwrap_or(single))
 }
 
 /// The first frames of a four-frame mini-GOP with frame 1, which references
@@ -877,6 +901,7 @@ fn inter_stream_with(
         mvd_tools: [true; 3],
         opfl: true,
         refinemv: true,
+        warp: 1,
         ..*config.preset.params()
     }));
     let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();
@@ -907,12 +932,20 @@ fn inter_stream_with(
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let (tx, _, (high_precision_mv, ref_mvs, _, tip, integer_mv, opfl), tiles) =
+    let (tx, _, (high_precision_mv, ref_mvs, _, tip, integer_mv, opfl, warp), tiles) =
         crate::gop::frame_tools(&coder.preset, coder.tiles, qindex);
     let tools = (
         tx,
         true,
-        (high_precision_mv, ref_mvs, true, tip, integer_mv, opfl),
+        (
+            high_precision_mv,
+            ref_mvs,
+            true,
+            tip,
+            integer_mv,
+            opfl,
+            warp,
+        ),
         tiles,
     );
     let filters = FrameFilterParams::default();
@@ -1389,6 +1422,8 @@ mod mvpred;
 mod refine;
 #[path = "intra_frame_tip_tests.rs"]
 mod tip;
+#[path = "intra_frame_warp_tests.rs"]
+mod warp;
 #[path = "intra_frame_wienerns_tests.rs"]
 mod wienerns;
 

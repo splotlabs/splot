@@ -71,6 +71,7 @@ mod parity;
 mod rollback;
 mod tcq;
 mod transform;
+mod warp;
 
 pub use super::cdf::block_context::IntraYMode as IntraMode;
 pub use crate::prediction::chroma::cfl::{CFL_FILTERS_420, CFL_FILTERS_422};
@@ -91,6 +92,9 @@ pub use rollback::SyntaxSnapshot;
 use rollback::{CdfJournal, CdfRow};
 pub use tcq::{TCQ_STATES, tcq_index, tcq_next_state, tcq_quantizer};
 pub use transform::{IST_SETS, Ist, TX_PARTITIONS, TxPartition};
+pub use warp::{
+    WARP_CANDIDATES, WARP_DELTA_HIGH_MAX, WARP_DELTA_LOW_MAX, WarpModel, WarpModes, WarpOptions,
+};
 
 #[path = "encoder_filters.rs"]
 mod filters;
