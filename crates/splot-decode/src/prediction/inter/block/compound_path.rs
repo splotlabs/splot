@@ -1347,7 +1347,7 @@ pub(super) fn compound_refinemv_is_switchable(
             && opfl_refine_type == REFINE_SWITCHABLE)
 }
 
-const fn compound_refinemv_active_after_blend(
+pub(super) const fn compound_refinemv_active_after_blend(
     refinemv_default: bool,
     blend: mc::CompoundBlend,
 ) -> bool {
@@ -1488,7 +1488,7 @@ pub(super) fn compound_ref_distance_signs<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compound_group_idx_context<T: ReconSample>(
+pub(super) fn compound_group_idx_context<T: ReconSample>(
     neighbour_ctx: &BlockNeighbourContext,
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
@@ -1706,24 +1706,24 @@ fn read_compound_jmvd_scale_mode_syntax(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CompoundBlendInput {
-    use_optflow: bool,
-    joint_amvd: bool,
-    switchable_refinemv_on: bool,
-    n4w: usize,
-    n4h: usize,
-    block_size_index: usize,
-    comp_group_idx_ctx: usize,
+pub(super) struct CompoundBlendInput {
+    pub(super) use_optflow: bool,
+    pub(super) joint_amvd: bool,
+    pub(super) switchable_refinemv_on: bool,
+    pub(super) n4w: usize,
+    pub(super) n4h: usize,
+    pub(super) block_size_index: usize,
+    pub(super) comp_group_idx_ctx: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CompoundBlendToolConfig {
-    masked_enabled: bool,
-    implicit_mask: bool,
+pub(super) struct CompoundBlendToolConfig {
+    pub(super) masked_enabled: bool,
+    pub(super) implicit_mask: bool,
 }
 
 impl CompoundBlendToolConfig {
-    fn from_sequence(sequence: &SequenceHeader) -> Self {
+    pub(super) fn from_sequence(sequence: &SequenceHeader) -> Self {
         Self {
             masked_enabled: sequence
                 .inter
@@ -1738,15 +1738,15 @@ impl CompoundBlendToolConfig {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CompoundCwpInput {
-    y_mode: CompoundYMode,
-    jmvd_scale_mode: u8,
-    use_optflow: bool,
-    use_refinemv: bool,
-    motion_simple: bool,
-    ref_frame0: i8,
-    ref_frame1: i8,
-    blend: mc::CompoundBlend,
+pub(super) struct CompoundCwpInput {
+    pub(super) y_mode: CompoundYMode,
+    pub(super) jmvd_scale_mode: u8,
+    pub(super) use_optflow: bool,
+    pub(super) use_refinemv: bool,
+    pub(super) motion_simple: bool,
+    pub(super) ref_frame0: i8,
+    pub(super) ref_frame1: i8,
+    pub(super) blend: mc::CompoundBlend,
 }
 
 #[derive(Clone, Copy)]
@@ -1765,13 +1765,7 @@ fn read_compound_blend_syntax(
     tile_offset: ByteOffset,
 ) -> Result<mc::CompoundBlend> {
     let average_blend = mc::CompoundBlend::average_with_implicit_mask(tools.implicit_mask);
-    let thin = compound_blend_is_thin(input.n4w, input.n4h);
-    if input.use_optflow
-        || input.joint_amvd
-        || input.switchable_refinemv_on
-        || !tools.masked_enabled
-        || thin
-    {
+    if !compound_reads_group_idx(tools, input) {
         return Ok(average_blend);
     }
     let comp_group_idx = cdfs
@@ -1815,6 +1809,18 @@ fn read_compound_blend_syntax(
     }
 }
 
+/// Whether `read_compound_type` (§ 5.20.7.16) reads `comp_group_idx`.
+pub(super) const fn compound_reads_group_idx(
+    tools: CompoundBlendToolConfig,
+    input: CompoundBlendInput,
+) -> bool {
+    !(input.use_optflow
+        || input.joint_amvd
+        || input.switchable_refinemv_on
+        || !tools.masked_enabled
+        || compound_blend_is_thin(input.n4w, input.n4h))
+}
+
 const fn compound_blend_is_thin(n4w: usize, n4h: usize) -> bool {
     (n4w == 1 && n4h >= 4) || (n4h == 1 && n4w >= 4)
 }
@@ -1825,14 +1831,14 @@ enum MaskedCompoundType {
     DiffWeighted,
 }
 
-fn wedge_bits(block_size_index: usize) -> u8 {
+pub(super) fn wedge_bits(block_size_index: usize) -> u8 {
     const WEDGE_BITS: [u8; 29] = [
         0, 0, 0, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 4, 4, 0, 0, 4, 4,
     ];
     WEDGE_BITS.get(block_size_index).copied().unwrap_or(0)
 }
 
-const CWP_WEIGHTING_FACTOR: [[i16; 5]; 2] = [[8, 12, 4, 10, 6], [8, 12, 4, 20, -4]];
+pub(super) const CWP_WEIGHTING_FACTOR: [[i16; 5]; 2] = [[8, 12, 4, 10, 6], [8, 12, 4, 20, -4]];
 
 fn read_compound_cwp_syntax<T: ReconSample>(
     cdfs: &mut TileCdfSubset,
@@ -1872,7 +1878,7 @@ fn read_compound_cwp_syntax<T: ReconSample>(
         .average_with_cwp_weight(CWP_WEIGHTING_FACTOR[usize::from(same_side)][coding_idx]))
 }
 
-fn compound_cwp_signal_allowed(cwp_enabled: bool, input: CompoundCwpInput) -> bool {
+pub(super) fn compound_cwp_signal_allowed(cwp_enabled: bool, input: CompoundCwpInput) -> bool {
     cwp_enabled
         && !input.use_optflow
         && !input.use_refinemv
@@ -1886,7 +1892,7 @@ const fn compound_cwp_mode_allowed(y_mode: CompoundYMode, jmvd_scale_mode: u8) -
         || matches!(y_mode, CompoundYMode::JointNew) && jmvd_scale_mode == 0
 }
 
-fn compound_cwp_same_side<T: ReconSample>(
+pub(super) fn compound_cwp_same_side<T: ReconSample>(
     core: &FrameHeaderCore,
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],

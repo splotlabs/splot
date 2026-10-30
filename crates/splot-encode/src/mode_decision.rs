@@ -28,9 +28,9 @@ use crate::rd::coeff_rate::RateSink;
 use crate::rd::partition::PartitionSearch;
 use crate::rd::{Bits, Lambda, RdCost};
 use crate::tile_writer::{
-    CompoundMode, CompoundModes, INTRA_MODES, InterMode, InterModes, InterPrediction, LeafChoice,
-    MotionVector, PARTITIONS, Partition, PartitionTree, Result, TileWriterError, Walk, snap_mv,
-    snap_prediction,
+    CompoundMode, CompoundModes, CompoundType, INTRA_MODES, InterMode, InterModes, InterPrediction,
+    LeafChoice, MotionVector, PARTITIONS, Partition, PartitionTree, Result, TileWriterError, Walk,
+    snap_mv, snap_prediction,
 };
 
 /// The largest `|AngleDeltaY|` (§ 5.20.5.5).
@@ -55,6 +55,11 @@ const MRL_LINES: [Mrl; 6] = {
     }
     lines
 };
+/// A test-only [`PresetParams::compound_types`] that forces compound types
+/// on the compound candidates by leaf position and makes them a leaf's only
+/// candidates when it has any.
+#[cfg(test)]
+pub(crate) const FORCED_COMPOUND_TYPES: u8 = 3;
 /// The compound shortlist prices the syntax of this many times as many of
 /// its lowest-SATD candidates as it keeps.
 const PRICED_COMPOUND_SHARE: usize = 2;
@@ -468,7 +473,12 @@ impl TrialCoder<'_, '_> {
                     .map(|(.., prediction)| LeafChoice::inter(prediction)),
             );
         }
-        choices.extend(self.compound_candidates(leaf, &searched)?);
+        let compound = self.compound_candidates(leaf, &searched)?;
+        #[cfg(test)]
+        if self.preset.compound_types == FORCED_COMPOUND_TYPES && !compound.is_empty() {
+            return Ok(compound);
+        }
+        choices.extend(compound);
         Ok(choices)
     }
 
@@ -722,6 +732,7 @@ impl TrialCoder<'_, '_> {
                 filter: InterpolationFilter::EightTap,
                 optflow: false,
                 refinemv: false,
+                blend: CompoundType::default(),
             };
             let zero = [MotionVector::default(); 2];
             let mut trials: Vec<CompoundModes> = (0..drls * drls)
@@ -787,9 +798,46 @@ impl TrialCoder<'_, '_> {
         let mut out = Vec::with_capacity(ranked.len());
         for (.., trial) in ranked {
             let trial = self.refined(leaf, motion, trial)?;
+            #[cfg(test)]
+            let trial = self.forced_type(leaf, trial)?;
             out.push(LeafChoice::inter(InterPrediction::Compound(trial)));
         }
         Ok(out)
+    }
+
+    /// With [`FORCED_COMPOUND_TYPES`], `trial` without refinement flags and
+    /// with a wedge, a difference-weighted mask or a `cwp_idx` weight by the
+    /// leaf position, where the block reads it.
+    #[cfg(test)]
+    fn forced_type(&mut self, leaf: &LeafBlock, trial: CompoundModes) -> Result<CompoundModes> {
+        if self.preset.compound_types != FORCED_COMPOUND_TYPES {
+            return Ok(trial);
+        }
+        let base = CompoundModes {
+            optflow: false,
+            refinemv: false,
+            ..trial
+        };
+        let Some(types) = codable(self.syntax.compound_types(leaf, base).map_err(Into::into))?
+        else {
+            return Ok(trial);
+        };
+        let key = leaf.row4() + leaf.col4();
+        let blends = [
+            types.wedge.then_some(CompoundType::Wedge {
+                index: (key % 68) as u8,
+                sign: key % 2 == 1,
+            }),
+            types.masked.then_some(CompoundType::DiffWeighted {
+                inverse: key.is_multiple_of(2),
+            }),
+            types.cwp.then_some(CompoundType::Average {
+                cwp: 1 + (key % 4) as u8,
+            }),
+        ];
+        Ok((0..3)
+            .find_map(|i| blends[(key + i) % 3])
+            .map_or(trial, |blend| CompoundModes { blend, ..base }))
     }
 
     /// `trial` with the `use_optflow` and `use_refinemv` it reads whose
@@ -1093,7 +1141,16 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         )?);
         let (w, h) = leaf.dimensions()?;
         if self.syntax.inter_allowed(&leaf) && (self.preset.large_inter || w.max(h) <= 64) {
-            candidates.extend(self.inter_candidates(&leaf)?);
+            let inter = self.inter_candidates(&leaf)?;
+            #[cfg(test)]
+            if self.preset.compound_types == FORCED_COMPOUND_TYPES
+                && inter
+                    .iter()
+                    .any(|choice| matches!(choice.inter, Some(InterPrediction::Compound(_))))
+            {
+                candidates.clear();
+            }
+            candidates.extend(inter);
         }
         let scored = self.best_scored(&leaf, candidates, ALL, &start)?;
         let choice = self.refine_filter(&leaf, scored, &start)?;
