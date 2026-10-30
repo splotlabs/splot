@@ -335,6 +335,31 @@ impl IntraFrameCoder {
             .map_or(0, |(weight, _)| weight))
     }
 
+    /// The `grain_seed` of `plan` and, for a key frame whose `source` has
+    /// noise, the `OBU_FILM_GRAIN` of its model; nothing without film grain.
+    fn film_grain(&self, source: &SourceFrame, plan: &GopFrame) -> Result<(Option<u16>, Vec<u8>)> {
+        if !self.params.tools.film_grain {
+            return Ok((None, Vec::new()));
+        }
+        let (grain_on, obu) = if plan.frame_type == FrameType::Key {
+            let scalings = grain::estimate(source, self.chroma)?;
+            let [y, cb, cr] = &scalings;
+            if scalings.iter().all(GrainScaling::is_empty) {
+                (false, Vec::new())
+            } else {
+                let model = encoder_film_grain_model(self.params.chroma, [y, cb, cr])
+                    .map_err(coding("film grain"))?;
+                let obu = encode_film_grain_obu(self.params.chroma, &model)
+                    .map_err(coding("film grain"))?;
+                (true, obu)
+            }
+        } else {
+            (self.grain_active, Vec::new())
+        };
+        let seed = (grain_on && plan.show_frame).then(|| gop::coded_grain_seed(plan.frame_index));
+        Ok((seed, obu))
+    }
+
     /// Codes `source` as `plan` at quantizer `qp` against the committed
     /// references; non-empty `sb_offsets`, one entry per superblock in frame
     /// raster order, moves the qindex of each superblock through `delta_q`.
@@ -353,22 +378,8 @@ impl IntraFrameCoder {
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
         tools.0.delta_q_res = (!sb_offsets.is_empty()).then_some(DELTA_Q_RES);
-        let grain_model = if self.params.tools.film_grain && plan.frame_type == FrameType::Key {
-            let scalings = grain::estimate(source, self.chroma)?;
-            let [y, cb, cr] = &scalings;
-            (!scalings.iter().all(GrainScaling::is_empty))
-                .then(|| encoder_film_grain_model(self.params.chroma, [y, cb, cr]))
-                .transpose()
-                .map_err(coding("film grain"))?
-        } else {
-            None
-        };
-        let grain_on = match plan.frame_type {
-            FrameType::Key => grain_model.is_some(),
-            _ => self.grain_active,
-        };
-        tools.0.grain_seed =
-            (grain_on && plan.show_frame).then(|| gop::coded_grain_seed(plan.frame_index));
+        let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
+        tools.0.grain_seed = grain_seed;
         if tools.2.3.is_some() || tools.2.5 != 0 {
             let probe = plan.header(
                 &self.view,
@@ -483,11 +494,6 @@ impl IntraFrameCoder {
             },
         )?;
         let tiles: Vec<&[u8]> = tiles.iter().map(Vec::as_slice).collect();
-        let grain_obu = grain_model
-            .map(|model| encode_film_grain_obu(self.params.chroma, &model))
-            .transpose()
-            .map_err(coding("film grain"))?
-            .unwrap_or_default();
         let temporal_unit = plan.temporal_unit(
             &self.sequence,
             &self.view,
