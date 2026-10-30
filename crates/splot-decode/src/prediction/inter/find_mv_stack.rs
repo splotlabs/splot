@@ -1469,7 +1469,7 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
     drl_reorder: DrlReorder,
     temporal: Option<&TemporalMvContext>,
 ) -> CompoundMvStack {
-    let mut state = CompoundScanState::new();
+    let mut state = CompoundScanState::new(global_mvs);
     let probes = mv_stack_spatial_probes(block);
     for probe in probes.iter().take(6).copied().flatten() {
         scan_compound_mv_stack_probe(grid, block, probe, temporal, &mut state);
@@ -1583,8 +1583,15 @@ fn scan_compound_mv_stack_probe(
     }
     let candidate =
         if cell.flags.ref_frame0 == block.ref_frame0 && cell.flags.ref_frame1 == Some(ref_frame1) {
+            let sub_mvs = [cell.motion.sub_mv, cell.motion.sub_mv1];
             CompoundMvCandidate {
-                mvs: [cell.motion.sub_mv, cell.motion.sub_mv1],
+                mvs: core::array::from_fn(|list| {
+                    if cell.motion.is_global_mv(list) {
+                        state.global_mvs[list]
+                    } else {
+                        sub_mvs[list]
+                    }
+                }),
                 cwp_weight: cell.motion.cwp_weight,
             }
         } else if cell.flags.ref_frame0 == TIP_REF_FRAME {
