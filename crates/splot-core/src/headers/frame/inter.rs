@@ -43,6 +43,9 @@ pub const INTERINTRA: usize = 1;
 /// `LOCALWARP` (AV2 v1.0.0 § 3).
 pub const LOCALWARP: usize = 2;
 
+/// `DELTAWARP` (AV2 v1.0.0 § 3).
+pub const DELTAWARP: usize = 3;
+
 /// `EXTENDWARP` (AV2 v1.0.0 § 3).
 pub const EXTENDWARP: usize = 4;
 

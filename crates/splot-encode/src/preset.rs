@@ -228,8 +228,15 @@ pub struct PresetParams {
     /// TIP refinement (`enable_tip_refinemv`): with `tip` and `opfl` or
     /// `refinemv`, TIP blocks and TIP output frames refine their projected
     /// vectors, and frames with a past and a future reference code no TIP
-    /// weight; the `tip = 2` weight search is skipped.
+    /// weight; the `tip = 2` weight search is skipped. On at p0-p9
+    /// (2026-10-30): p6 measured park_joy -0.92%, paris -0.86%, niklas
+    /// -0.12% over OPFL alone; off at p10, which codes no optical flow.
     pub tip_refinemv: bool,
+    /// Warped motion (`seq_enabled_motion_modes` `LOCALWARP`, `DELTAWARP`,
+    /// `EXTENDWARP`), `0..=1`: `1` inter frames code `allow_warpmv_mode` and
+    /// single-reference leaves try the decoder's warp candidates. Off in
+    /// every row until measured.
+    pub warp: u8,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -337,7 +344,8 @@ impl PresetParams {
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("tip", self.tip, 0, 2, "")?;
-        check("tip_output", self.tip_output, 0, 200, "")
+        check("tip_output", self.tip_output, 0, 200, "")?;
+        check("warp", self.warp, 0, 1, "")
     }
 }
 
@@ -502,7 +510,8 @@ preset_table! {
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         opfl:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         refinemv:              [false, false, false, false, false, false, false, false, false, false, false],
-        tip_refinemv:          [false, false, false, false, false, false, false, false, false, false, false],
+        tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
+        warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -660,7 +669,9 @@ mod tests {
             assert!(fast.inter_ddt <= slow.inter_ddt);
             assert!(fast.inter_ist <= slow.inter_ist);
             assert!(fast.tip <= slow.tip);
+            assert!(fast.warp <= slow.warp);
             assert!(fast.opfl <= slow.opfl);
+            assert!(fast.tip_refinemv <= slow.tip_refinemv);
             assert!(
                 fast.inter_tx_split == 0
                     || (slow.inter_tx_split != 0 && fast.inter_tx_split >= slow.inter_tx_split)
@@ -773,6 +784,7 @@ mod tests {
             (&[("gdf_candidates", "17")], "gdf_candidates"),
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),
+            (&[("warp", "2")], "warp"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {

@@ -70,8 +70,8 @@ pub use info::{
 };
 pub(crate) use info::{init_core_from_prefix, parse_core_body};
 pub use inter::{
-    EXTENDWARP, INTERINTRA, InterControl, InterStop, LOCALWARP, MOTION_MODES, MvPrecision,
-    TipFrameMode,
+    DELTAWARP, EXTENDWARP, INTERINTRA, InterControl, InterStop, LOCALWARP, MOTION_MODES,
+    MvPrecision, TipFrameMode,
 };
 pub(crate) use quant::get_qindex_ignore_delta_q;
 pub use quant::{
