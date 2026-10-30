@@ -150,6 +150,10 @@ pub struct EncoderToolFlags {
     /// `enable_imp_msk_bld` (§ 5.4.6): `COMPOUND_AVERAGE` blends with the
     /// implicit mask (§ 7.13.3.16).
     pub implicit_mask: bool,
+    /// `seq_enabled_motion_modes[INTERINTRA]` with
+    /// `seq_frame_motion_modes_present_flag` (§ 5.4.6): every inter frame
+    /// enables inter-intra blocks (§ 5.20.7.15).
+    pub interintra: bool,
 }
 
 /// Stream-level inputs of [`build_encoder_sequence_header`].
@@ -467,12 +471,13 @@ const NUM_SAME_REF_COMPOUND: u32 = 2;
 /// § 5.4.6 for a non-single-picture header with the motion vector prediction,
 /// difference and compound tools of `tools` and every other inter tool off.
 fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), WriteError> {
-    if tools.warp {
-        w.write_bits(0b0111, 4)?; // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
+    let modes = (u32::from(tools.interintra) << 3) | if tools.warp { 0b0111 } else { 0 };
+    w.write_bits(modes, 4)?; // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
+    if modes != 0 {
         w.write_flag(true)?; // seq_frame_motion_modes_present_flag
+    }
+    if tools.warp {
         w.write_flag(true)?; // enable_six_param_warp_delta
-    } else {
-        w.write_bits(0, 4)?; // seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]
     }
     w.write_flag(tools.masked_compound)?; // enable_masked_compound
     w.write_flag(tools.ref_frame_mvs)?;

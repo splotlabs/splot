@@ -374,6 +374,7 @@ impl TrialCoder<'_, '_> {
         };
         let mut searched = Vec::new();
         let mut warp_base: Option<(u64, usize, MotionVector)> = None;
+        let mut interintra_base: Option<InterModes> = None;
         for ref_frame in 0..self.syntax.reference_count() {
             let mode = |mode, drl| InterModes {
                 ref_frame,
@@ -383,6 +384,7 @@ impl TrialCoder<'_, '_> {
                 filter: InterpolationFilter::EightTap,
                 precision: None,
                 amvd: false,
+                interintra: None,
             };
             let mvs = self.syntax.single_mvs(leaf, ref_frame)?;
             push(mvs.global, mode(InterMode::Global, 0));
@@ -419,7 +421,7 @@ impl TrialCoder<'_, '_> {
             if let Some((_, modes)) = best {
                 let coded = self.mvd_choice(leaf, modes, found)?;
                 push(coded.mv, coded);
-                if self.preset.warp > 0
+                if (self.preset.warp > 0 || self.preset.interintra)
                     && let Some((cost, ..)) = self.newmv_cost(leaf, coded)?
                 {
                     let mut filter = RateSink::adapting();
@@ -431,6 +433,7 @@ impl TrialCoder<'_, '_> {
                     let cost = cost + motion.bits_cost(filter.bits);
                     if warp_base.is_none_or(|(best, ..)| cost < best) {
                         warp_base = Some((cost, ref_frame, found));
+                        interintra_base = Some(coded);
                     }
                 }
             }
@@ -454,11 +457,21 @@ impl TrialCoder<'_, '_> {
                         filter: InterpolationFilter::EightTap,
                         precision: None,
                         amvd: false,
+                        interintra: None,
                     },
                 );
             }
         }
         let mut choices: Vec<LeafChoice> = out.into_iter().map(|(_, choice)| choice).collect();
+        if let (Some(motion), Some(base), true) =
+            (self.motion, interintra_base, self.preset.interintra)
+        {
+            choices.extend(
+                self.interintra_choice(leaf, motion, base)?
+                    .map(|modes| LeafChoice::inter(InterPrediction::Single(modes))),
+            );
+        }
+        let warp_base = warp_base.filter(|_| self.preset.warp > 0);
         if let (Some(motion), Some((cost, ref_frame, found))) = (self.motion, warp_base) {
             let warps = crate::warp::search(
                 self.syntax,
@@ -1208,3 +1221,6 @@ impl PartitionSearch for TrialCoder<'_, '_> {
         Ok(self.syntax.restore(saved)?)
     }
 }
+
+#[path = "interintra_search.rs"]
+mod interintra_search;

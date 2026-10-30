@@ -67,6 +67,7 @@ fn single(mode: InterMode, mv: MotionVector) -> InterPrediction {
         filter: splot_recon::InterpolationFilter::EightTap,
         precision: None,
         amvd: false,
+        interintra: None,
     })
 }
 

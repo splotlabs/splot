@@ -82,8 +82,8 @@ pub use compound::{
 };
 pub use fsc::FSC_MAX_LEVEL;
 pub use inter::{
-    AMVD_STEPS, EncoderReferences, INTERP_FILTERS, InterMode, InterModes, MV_PRECISION_EIGHTH_PEL,
-    MotionVector, SingleMvs,
+    AMVD_STEPS, EncoderReferences, INTERINTRA_MODES, INTERP_FILTERS, InterIntra, InterMode,
+    InterModes, MV_PRECISION_EIGHTH_PEL, MotionVector, SingleMvs,
 };
 pub use intra::{ChromaMode, Dip, IntraModes, MAX_CFL_ALPHA, Mrl, TxType};
 pub use intrabc::{IntrabcModes, IntrabcVectors};

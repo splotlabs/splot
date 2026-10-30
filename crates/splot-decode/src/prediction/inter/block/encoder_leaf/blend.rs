@@ -12,6 +12,7 @@ use super::super::compound_path::{
 };
 use super::super::warp::WEDGE_ANGLE_DIST_TO_INDEX;
 use super::*;
+use splot_recon::InterIntraMode;
 
 /// `MAX_CWP_NUM` (§ 3): the `cwp_idx` values of a weighted block.
 pub(crate) const MAX_CWP_NUM: u8 = 5;
@@ -245,6 +246,82 @@ impl EncoderInterTile {
             }
         }
         Ok(out)
+    }
+}
+
+impl EncoderInterTile {
+    /// Whether a single-reference block at `frontier` reads `inter_intra`,
+    /// and whether it reads `wedge_interintra` (§ 5.20.7.14, § 5.20.7.15).
+    pub(crate) fn interintra_reads(&self, frontier: &DecodeBlockFrontier) -> Result<(bool, bool)> {
+        let (n4w, n4h) = block_size4(frontier)?;
+        let b_size = frontier.b_size.index();
+        let enabled = self
+            .core
+            .inter
+            .as_ref()
+            .and_then(|inter| inter.frame_enabled_motion_modes)
+            .is_some_and(|modes| modes[splot_core::headers::frame::INTERINTRA]);
+        let reads = enabled
+            && b_size >= super::super::BLOCK_8X8
+            && n4w.max(n4h) <= super::super::CHUNK_64_N4;
+        Ok((reads, reads && super::super::WEDGE_USED_BY_BSIZE[b_size]))
+    }
+
+    /// Pushes the `inter_intra`, `interintra_mode`, `wedge_interintra` and
+    /// wedge symbols of a single-reference block at `frontier` with
+    /// `interintra` (§ 5.20.7.15).
+    ///
+    /// # Errors
+    /// Returns the decoder's diagnostic for an inter-intra block the decoder
+    /// does not read.
+    pub(super) fn interintra_symbols(
+        &self,
+        out: &mut Vec<(TileCdfSelector, u8)>,
+        frontier: &DecodeBlockFrontier,
+        interintra: Option<InterIntraPrediction>,
+    ) -> Result<()> {
+        let (reads, reads_wedge) = self.interintra_reads(frontier)?;
+        if !reads {
+            return match interintra {
+                Some(_) => Err(invalid_type()),
+                None => Ok(()),
+            };
+        }
+        let bsize_group = super::super::SIZE_GROUP_LOOKUP[frontier.b_size.index()];
+        out.push((
+            TileCdfSelector::InterIntra { bsize_group },
+            u8::from(interintra.is_some()),
+        ));
+        let Some(prediction) = interintra else {
+            return Ok(());
+        };
+        let mode = match prediction.mode() {
+            InterIntraMode::Dc => 0,
+            InterIntraMode::Vertical => 1,
+            InterIntraMode::Horizontal => 2,
+            InterIntraMode::Smooth => 3,
+        };
+        out.push((TileCdfSelector::InterIntraMode { bsize_group }, mode));
+        let wedge = match prediction {
+            InterIntraPrediction::WedgeMask { wedge_index, .. } => Some(wedge_index),
+            InterIntraPrediction::SmoothMask { .. } => None,
+        };
+        if reads_wedge {
+            out.push((TileCdfSelector::WedgeInterIntra, u8::from(wedge.is_some())));
+        }
+        if let Some(index) = wedge {
+            if !reads_wedge {
+                return Err(invalid_type());
+            }
+            let mut symbols = TypeSymbols::default();
+            wedge_symbols(&mut symbols, index)?;
+            out.extend(
+                symbols
+                    .into_iter()
+                    .filter_map(|(selector, value)| selector.map(|selector| (selector, value))),
+            );
+        }
+        Ok(())
     }
 }
 

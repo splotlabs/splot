@@ -260,6 +260,10 @@ pub struct PresetParams {
     /// (2026-10-30): on alone it measured park_joy +1.26%, paris +0.20% at
     /// p6, as the compound search scores the plain average.
     pub implicit_mask: bool,
+    /// Inter-intra (`seq_enabled_motion_modes[INTERINTRA]`): the cheapest
+    /// single-reference `NEWMV` of a leaf also tries each `interintra_mode`
+    /// with the smooth mask. Off in every row until measured.
+    pub interintra: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -560,6 +564,7 @@ preset_table! {
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         compound_types:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
+        interintra:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -723,6 +728,7 @@ mod tests {
             assert!(fast.warp <= slow.warp);
             assert!(fast.compound_types <= slow.compound_types);
             assert!(fast.implicit_mask <= slow.implicit_mask);
+            assert!(fast.interintra <= slow.interintra);
             assert!(fast.opfl <= slow.opfl);
             assert!(fast.tip_refinemv <= slow.tip_refinemv);
             assert!(

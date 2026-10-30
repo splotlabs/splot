@@ -185,6 +185,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         masked_compound: true,
         cwp: true,
         implicit_mask: true,
+        interintra: true,
     };
     let mut p = params(640, 360, BitDepthIdc::Ten, SuperblockSize::Block64x64);
     p.tools = tools;
@@ -211,7 +212,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert!(inter.enable_adaptive_mvd && !inter.enable_mvd_sign_derive && inter.enable_flex_mvres);
     assert_eq!(
         inter.seq_enabled_motion_modes,
-        [false, false, true, true, true]
+        [false, true, true, true, true]
     );
     assert!(inter.seq_frame_motion_modes_present_flag && inter.enable_six_param_warp_delta);
     assert!(inter.enable_masked_compound && inter.enable_cwp && inter.enable_imp_msk_bld);

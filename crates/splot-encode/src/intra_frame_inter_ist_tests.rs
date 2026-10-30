@@ -34,6 +34,7 @@ fn inter_luma_blocks_code_ist_as_the_decoder_reads_it() {
             filter: splot_recon::InterpolationFilter::EightTap,
             precision: None,
             amvd: false,
+            interintra: None,
         });
         for (size, coded) in [(32, true), (16, true), (8, false)] {
             let leaf = syntax.leaf(top_left(syntax, root, size))?;
@@ -115,6 +116,7 @@ fn ddt_follows_the_planned_leaf() {
             filter: splot_recon::InterpolationFilter::EightTap,
             precision: None,
             amvd: false,
+            interintra: None,
         });
         syntax.plan_inter_leaf(&leaf, prediction)?;
         assert!(syntax.uses_ddt());

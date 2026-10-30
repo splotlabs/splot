@@ -37,6 +37,7 @@ fn inter_tx_partitions_plan_the_decoder_records() {
             filter: splot_recon::InterpolationFilter::EightTap,
             precision: None,
             amvd: false,
+            interintra: None,
         });
         let mut planned = Vec::new();
         for partition in syntax.luma_tx_partitions(&leaf)? {
