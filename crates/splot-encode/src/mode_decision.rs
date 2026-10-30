@@ -985,11 +985,11 @@ fn with_filter(prediction: InterPrediction, filter: InterpolationFilter) -> Inte
     }
 }
 
-/// `Some` result, `None` for a candidate the leaf cannot code.
 /// A `use_refinemv` variant wins only below this percentage of the cost of
 /// the best other variant.
 const REFINEMV_MARGIN_PCT: u64 = 97;
 
+/// `Some` result, `None` for a candidate the leaf cannot code.
 fn codable<T>(result: Result<T>) -> Result<Option<T>> {
     match result {
         Ok(value) => Ok(Some(value)),
