@@ -989,7 +989,7 @@ fn inter_stream_of(
             &coder.references,
             (qindex, &filters, tools),
             &core,
-            &[&tile],
+            (&[&tile], &[]),
         )
         .unwrap();
     let planes = visible_planes(&recon).unwrap();
@@ -1419,6 +1419,8 @@ mod cdef_skip;
 mod delta_q;
 #[path = "intra_frame_gdf_tests.rs"]
 mod gdf;
+#[path = "intra_frame_grain_tests.rs"]
+mod grain_streams;
 #[path = "intra_frame_inter_ist_tests.rs"]
 mod inter_ist;
 #[path = "intra_frame_inter_tx_tests.rs"]

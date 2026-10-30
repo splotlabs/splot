@@ -115,6 +115,9 @@ pub struct EncoderToolFlags {
     pub tcq: bool,
     /// `enable_parity_hiding`.
     pub parity_hiding: bool,
+    /// `film_grain_params_present` (§ 5.4.1): output frames code
+    /// `film_grain_config()` (§ 5.18.10.1).
+    pub film_grain: bool,
     /// `enable_avg_cdf` with `avg_cdf_type` (§ 5.4.8): `Some(true)` averages
     /// the saved CDFs across tiles, `Some(false)` blends the CDFs of two
     /// references; `None` disables averaging.
@@ -232,6 +235,10 @@ pub struct KeyFrameTxParams {
     /// `allow_intrabc` of a key frame, with `allow_global_intrabc = 1` and
     /// `allow_local_intrabc = 0` (§ 5.18.3.4); an inter frame refuses it.
     pub allow_intrabc: bool,
+    /// `grain_seed` of an output frame of a sequence with
+    /// `film_grain_params_present`, which codes `apply_grain = 1` with
+    /// `fgm_id = 0` (§ 5.18.10.1); `None` codes `apply_grain = 0`.
+    pub grain_seed: Option<u16>,
 }
 
 impl Default for KeyFrameTxParams {
@@ -242,6 +249,7 @@ impl Default for KeyFrameTxParams {
             allow_tcq: false,
             delta_q_res: None,
             allow_intrabc: false,
+            grain_seed: None,
         }
     }
 }
@@ -430,7 +438,7 @@ fn sequence_header_bits(params: &EncoderStreamParams) -> Result<Vec<u8>, Encoder
     w.write_bits(DF_PAR_BITS_MINUS_2, 2)?;
 
     w.write_flag(false)?; // seq_tile_info_present_flag
-    w.write_flag(false)?; // film_grain_params_present
+    w.write_flag(tools.film_grain)?; // film_grain_params_present
     w.align_to_byte();
     Ok(w.into_bytes())
 }
@@ -622,8 +630,34 @@ fn key_frame_header_bits(
     )?;
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
+    write_film_grain_config(&mut w, seq, true, tx.grain_seed)?;
     w.align_to_byte();
     Ok(w.into_bytes())
+}
+
+/// § 5.18.10.1 `film_grain_config()` of a frame with `immediate_output_frame`
+/// `output`: `apply_grain`, then `fgm_id = 0` and `grain_seed` when `seed`.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] for a seed that the frame cannot code.
+pub(super) fn write_film_grain_config(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    output: bool,
+    seed: Option<u16>,
+) -> Result<(), EncoderHeaderError> {
+    if seq.film_grain_params_present != Some(true) || !output {
+        return match seed {
+            Some(_) => Err(WriteError::NonCanonicalFrameHeader { what: "grain_seed" }.into()),
+            None => Ok(()),
+        };
+    }
+    w.write_flag(seed.is_some())?; // apply_grain
+    if let Some(seed) = seed {
+        w.write_bits(0, 3)?; // fgm_id
+        w.write_bits(u32::from(seed), 16)?;
+    }
+    Ok(())
 }
 
 /// § 5.18.2 from `tile_info()` through `ccso_params()`: the uniform `tiles`, `base_q_idx`, no
@@ -878,12 +912,14 @@ fn write_uniform_tile_info(
 /// # Errors
 /// Returns [`EncoderHeaderError`] if `seq` has no complete view, a tile is empty or
 /// too long for `TileSizeBytes`, the tile count differs from the header, or an OBU
-/// does not serialize.
+/// does not serialize. The OBUs `film_grain` (empty for none) follow the
+/// sequence header.
 pub fn encode_key_frame_temporal_unit(
     seq: &SequenceHeader,
     core: &FrameHeaderCore,
     with_sequence_header: bool,
     tiles: &[&[u8]],
+    film_grain: &[u8],
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     let view = CoreSeqView::from_sequence(seq).ok_or(EncoderHeaderError::Incomplete)?;
     let mut unit = encode_temporal_delimiter_obu()?;
@@ -902,6 +938,9 @@ pub fn encode_key_frame_temporal_unit(
             &payload.into_bytes(),
         )?;
     }
+    unit.extend_from_slice(&w.into_bytes());
+    unit.extend_from_slice(film_grain);
+    let mut w = BitWriter::new();
     let mut payload = BitWriter::new();
     write_tile_group_obu(
         &mut payload,
