@@ -411,8 +411,10 @@ pub fn encode_inter_frame_obu(
 ///
 /// # Errors
 /// Returns [`EncoderHeaderError`] for a sequence without TIP output, the
-/// tools the header does not write, a missing `tip_weight`, or bits that do
-/// not parse to a complete TIP output header with `refs`.
+/// tools the header does not write, a missing `tip_weight`, a `grain_seed`
+/// in a sequence without film grain or in a frame that is not shown
+/// ([`WriteError::NonCanonicalFrameHeader`]), or bits that do not parse to a
+/// complete TIP output header with `refs`.
 pub fn build_tip_output_frame_header(
     seq: &CoreSeqView,
     refs: &FrameReferenceStateView<'_>,
