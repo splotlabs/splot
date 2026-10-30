@@ -106,6 +106,9 @@ pub struct EncoderToolFlags {
     pub opfl_refine: bool,
     /// `enable_refinemv`: compound blocks may refine their vectors (DMVR).
     pub refinemv: bool,
+    /// With `tip` and `opfl_refine` or `refinemv`, `enable_tip_refinemv`:
+    /// TIP blocks and TIP output frames refine their projected vectors.
+    pub tip_refinemv: bool,
     /// `enable_cctx`.
     pub cctx: bool,
     /// `enable_tcq` with `choose_tcq_per_frame = 1`: each frame codes `allow_tcq`.
@@ -492,7 +495,7 @@ fn write_inter_config(w: &mut BitWriter, tools: EncoderToolFlags) -> Result<(), 
     w.write_bits(if tools.opfl_refine { 3 } else { 0 }, 2)?; // enable_opfl_refine
     w.write_flag(tools.refinemv)?; // enable_refinemv
     if tools.tip && (tools.opfl_refine || tools.refinemv) {
-        w.write_flag(false)?; // enable_tip_refinemv
+        w.write_flag(tools.tip_refinemv)?; // enable_tip_refinemv
     }
     w.write_flag(false)?; // enable_bru
     for flag in tools.mvd_tools {

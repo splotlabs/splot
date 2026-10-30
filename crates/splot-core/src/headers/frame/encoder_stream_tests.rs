@@ -170,6 +170,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         tip_output: true,
         opfl_refine: true,
         refinemv: true,
+        tip_refinemv: false,
         cctx: true,
         tcq: true,
         parity_hiding: false,
