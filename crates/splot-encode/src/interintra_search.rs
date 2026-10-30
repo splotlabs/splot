@@ -11,8 +11,8 @@ use super::*;
 
 impl TrialCoder<'_, '_> {
     /// `base` with the `interintra_mode` whose decoder luma prediction SATD
-    /// plus mode rate is lowest, when it is lower than that of `base`
-    /// itself; `None` where the leaf reads no `inter_intra`.
+    /// plus mode rate is lowest, for the full RD trial of the leaf; `None`
+    /// where the leaf reads no `inter_intra`.
     pub(super) fn interintra_choice(
         &mut self,
         leaf: &LeafBlock,
@@ -23,9 +23,9 @@ impl TrialCoder<'_, '_> {
             return Ok(None);
         }
         let mut best: Option<(u64, InterModes)> = None;
-        for mode in (0..=INTERINTRA_MODES).map(|m| m.checked_sub(1)) {
+        for mode in 0..INTERINTRA_MODES {
             let modes = InterModes {
-                interintra: mode.map(|mode| InterIntra { mode, wedge: None }),
+                interintra: Some(InterIntra { mode, wedge: None }),
                 ..base
             };
             let prediction = InterPrediction::Single(modes);
@@ -48,8 +48,6 @@ impl TrialCoder<'_, '_> {
                 best = Some((cost, modes));
             }
         }
-        Ok(best
-            .map(|(_, modes)| modes)
-            .filter(|modes| modes.interintra.is_some()))
+        Ok(best.map(|(_, modes)| modes))
     }
 }

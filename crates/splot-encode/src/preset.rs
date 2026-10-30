@@ -265,8 +265,11 @@ pub struct PresetParams {
     /// p6, as the compound search scores the plain average.
     pub implicit_mask: bool,
     /// Inter-intra (`seq_enabled_motion_modes[INTERINTRA]`): the cheapest
-    /// single-reference `NEWMV` of a leaf also tries each `interintra_mode`
-    /// with the smooth mask. Off in every row until measured.
+    /// single-reference `NEWMV` of a leaf adds its best smooth-mask
+    /// `interintra_mode` by luma SATD to the RD trials. Off in every row
+    /// (2026-10-30): at p6 it measured park_joy +0.39% Y (-0.05% YUV) and
+    /// paris +0.13% Y for 3% more CPU, largely the `inter_intra` flag every
+    /// eligible block codes.
     pub interintra: bool,
 }
 
