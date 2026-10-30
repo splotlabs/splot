@@ -74,7 +74,9 @@ pub struct PresetParams {
     pub loop_filter_search: u8,
     /// Frames per mini-GOP, `1..=8`: `1` codes every frame shown (IPPP);
     /// larger sizes code the last frame first as a hidden alt-ref and the
-    /// frames between hierarchically.
+    /// frames between hierarchically. `8` at p4 (2026-10-31): p4 with `4`
+    /// equalled p5 on paris f30 (Y +0.06%); with `8` it gains -0.69% vs p5
+    /// at the same CPU.
     pub mini_gop_size: u8,
     /// Frames the lookahead analyses before the next mini-GOP is coded, at
     /// least `mini_gop_size`; scene cuts and the temporal model see this far.
@@ -602,8 +604,8 @@ preset_table! {
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {
-        mini_gop_size:         [    8,     8,     8,     8,     4,     4,     4,     4,     2,     2,     1],
-        lookahead_frames:      [   16,    16,    16,    16,     8,     8,     8,     8,     4,     4,     2],
+        mini_gop_size:         [    8,     8,     8,     8,     8,     4,     4,     4,     2,     2,     1],
+        lookahead_frames:      [   16,    16,    16,    16,    16,     8,     8,     8,     4,     4,     2],
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
