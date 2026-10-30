@@ -23,6 +23,7 @@ pub mod encoder;
 pub mod error;
 pub mod frame;
 mod gop;
+mod grain;
 mod intra_frame;
 mod intrabc;
 pub mod ivf;

@@ -107,6 +107,7 @@ fn headers_round_trip_for_every_size_bit_depth_and_superblock() {
                         allow_tcq: false,
                         delta_q_res: [None, Some(0), Some(3)][index],
                         allow_intrabc: index == 1,
+                        grain_seed: None,
                     };
                     let core = build_key_frame_header(
                         &view,
@@ -172,6 +173,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         cctx: true,
         tcq: true,
         parity_hiding: false,
+        film_grain: false,
         avg_cdf: Some(false),
         ref_frame_mvs: true,
         refmvbank: true,
@@ -710,7 +712,7 @@ fn temporal_unit_carries_delimiter_sequence_and_frame() {
             vec![ObuType::TemporalDelimiter, ObuType::ClosedLoopKey],
         ),
     ] {
-        let unit = encode_key_frame_temporal_unit(&seq, &core, with_seq, &[&tile]).unwrap();
+        let unit = encode_key_frame_temporal_unit(&seq, &core, with_seq, &[&tile], &[]).unwrap();
         let parsed = parse_annex_b_obus_partial(&unit);
         assert!(parsed.error.is_none());
         let types: Vec<_> = parsed.obus.iter().map(|o| o.header.obu_type).collect();
@@ -718,7 +720,7 @@ fn temporal_unit_carries_delimiter_sequence_and_frame() {
         let frame = parsed.obus.last().unwrap();
         assert!(frame.payload.ends_with(&tile));
     }
-    assert!(encode_key_frame_temporal_unit(&seq, &core, true, &[&[]]).is_err());
+    assert!(encode_key_frame_temporal_unit(&seq, &core, true, &[&[]], &[]).is_err());
 }
 
 /// A 200x136 frame with 64x64 superblocks has 4 superblock columns and 3 rows,
@@ -766,7 +768,7 @@ fn uniform_tiles_round_trip_through_header_and_tile_group() {
             .map(|tile| vec![tile as u8 + 1; 3 + 70 * tile as usize])
             .collect();
         let slices: Vec<&[u8]> = data.iter().map(Vec::as_slice).collect();
-        let unit = encode_key_frame_temporal_unit(&seq, &core, false, &slices).unwrap();
+        let unit = encode_key_frame_temporal_unit(&seq, &core, false, &slices, &[]).unwrap();
         let parsed = parse_annex_b_obus_partial(&unit);
         assert!(parsed.error.is_none());
         let payload = parsed.obus.last().unwrap().payload;

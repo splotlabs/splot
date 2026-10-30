@@ -41,8 +41,9 @@ pub use encoder_input::{
     encode_temporal_delimiter_obu,
 };
 pub use encoder_inter_stream::{
-    EncodedFrameHeader, InterFrameParams, build_inter_frame_header, build_tip_output_frame_header,
-    encode_inter_frame_obu, encode_show_existing_frame_obu, encode_tip_output_frame_obu,
+    EncodedFrameHeader, GrainScaling, InterFrameParams, build_inter_frame_header,
+    build_tip_output_frame_header, encode_film_grain_obu, encode_inter_frame_obu,
+    encode_show_existing_frame_obu, encode_tip_output_frame_obu, encoder_film_grain_model,
 };
 pub use encoder_stream::{
     EncoderHeaderError, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameGdf,

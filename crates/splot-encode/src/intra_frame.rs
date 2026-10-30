@@ -7,7 +7,7 @@
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
-    UniformTiles, build_encoder_sequence_header,
+    UniformTiles, build_encoder_sequence_header, encode_film_grain_obu, encoder_film_grain_model,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -27,6 +27,7 @@ use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::gop::{self, GopFrame};
+use crate::grain;
 use crate::intrabc::BvSearch;
 use crate::kernels::rdoq::{RdoqBlock, hide_parity, parity_moves, rdoq};
 use crate::kernels::tcq::{TcqScratch, tcq};
@@ -36,6 +37,7 @@ use crate::mode_decision::TrialCoder;
 use crate::motion_search::MotionSearch;
 use crate::palette::PaletteSearch;
 use crate::preset::{PresetParams, TcqFrames};
+use crate::rate_control::FrameType;
 use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, RowCaches, block_rate};
 use crate::rd::partition::search_partition;
 use crate::rd::{Bits, Lambda, RdCost};
@@ -77,6 +79,8 @@ pub(crate) struct IntraFrameCoder {
     tiles: UniformTiles,
     /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
     pool: Option<WorkerPool>,
+    /// Show-existing frames output so far, which seed their film grain.
+    shown_existing: u64,
 }
 
 impl IntraFrameCoder {
@@ -126,7 +130,10 @@ impl IntraFrameCoder {
                 inter_ddt: preset.inter_ddt,
                 inter_ist: preset.inter_ist,
                 tip: preset.tip > 0 && preset.mv_prediction,
-                tip_output: preset.tip > 0 && preset.mv_prediction && preset.tip_output > 0,
+                tip_output: preset.tip > 0
+                    && preset.mv_prediction
+                    && preset.tip_output > 0
+                    && !config.film_grain,
                 opfl_refine: preset.opfl,
                 refinemv: preset.refinemv,
                 cctx: preset.cctx,
@@ -145,6 +152,7 @@ impl IntraFrameCoder {
                 mvd_tools: preset.mvd_tools,
                 parity_hiding: preset.parity_hiding,
                 tcq: preset.tcq != TcqFrames::Off,
+                film_grain: config.film_grain,
                 ..EncoderToolFlags::default()
             },
         };
@@ -168,6 +176,7 @@ impl IntraFrameCoder {
                 .then(|| WorkerPool::new(config.threads))
                 .transpose()
                 .map_err(coding("worker pool"))?,
+            shown_existing: 0,
         })
     }
 }
@@ -195,7 +204,11 @@ impl FrameCoder for IntraFrameCoder {
     }
 
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
-        let unit = gop::show_existing_unit(&self.view, slot)?;
+        let seed = self.params.tools.film_grain.then(|| {
+            self.shown_existing += 1;
+            gop::grain_seed(self.shown_existing << 32)
+        });
+        let unit = gop::show_existing_unit(&self.view, slot, seed)?;
         self.references
             .show_existing(slot)
             .map_err(coding("show-existing frame"))?;
@@ -329,6 +342,9 @@ impl IntraFrameCoder {
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
         tools.0.delta_q_res = (!sb_offsets.is_empty()).then_some(DELTA_Q_RES);
+        let film_grain = self.params.tools.film_grain;
+        tools.0.grain_seed =
+            (film_grain && plan.show_frame).then(|| gop::grain_seed(plan.frame_index));
         if tools.2.3.is_some() || tools.2.5 != 0 {
             let probe = plan.header(
                 &self.view,
@@ -439,13 +455,20 @@ impl IntraFrameCoder {
             },
         )?;
         let tiles: Vec<&[u8]> = tiles.iter().map(Vec::as_slice).collect();
+        let grain_obu = if film_grain && plan.frame_type == FrameType::Key {
+            let [y, cb, cr] = grain::estimate(source);
+            let model = encoder_film_grain_model(self.params.chroma, [&y, &cb, &cr]);
+            encode_film_grain_obu(self.params.chroma, &model).map_err(coding("film grain"))?
+        } else {
+            Vec::new()
+        };
         let temporal_unit = plan.temporal_unit(
             &self.sequence,
             &self.view,
             &self.references,
             (qindex, &filters, tools),
             &core,
-            &tiles,
+            (&tiles, &grain_obu),
         )?;
         let coded = CodedFrame {
             temporal_unit,

@@ -402,11 +402,22 @@ pub(crate) type FrameTools = (
     UniformTiles,
 );
 
-/// A temporal delimiter and the `OBU_REGULAR_SEF` that outputs `slot`.
-pub(crate) fn show_existing_unit(view: &CoreSeqView, slot: u32) -> Result<Vec<u8>> {
+/// A temporal delimiter and the `OBU_REGULAR_SEF` that outputs `slot` with
+/// the film grain of `grain_seed`.
+pub(crate) fn show_existing_unit(
+    view: &CoreSeqView,
+    slot: u32,
+    grain_seed: Option<u16>,
+) -> Result<Vec<u8>> {
     let mut unit = encode_temporal_delimiter_obu().map_err(header_error)?;
-    unit.extend(encode_show_existing_frame_obu(view, slot).map_err(header_error)?);
+    unit.extend(encode_show_existing_frame_obu(view, slot, grain_seed).map_err(header_error)?);
     Ok(unit)
+}
+
+/// A nonzero `grain_seed` for output number `n`; a zero seed would keep the
+/// § 7.21.7.2 random register at zero.
+pub(crate) fn grain_seed(n: u64) -> u16 {
+    (1 + n.wrapping_mul(7919) % 65535) as u16
 }
 
 impl GopFrame {
@@ -446,8 +457,9 @@ impl GopFrame {
     /// The OBUs of the frame `core` built by [`Self::header`] with
     /// `(qindex, filters, tools)`, whose tile group carries
     /// `tiles`, after a temporal delimiter when the frame opens its temporal
-    /// unit; a key frame repeats the sequence header. The header codes the
-    /// smallest `TileSizeBytes` that fits the tiles.
+    /// unit; a key frame repeats the sequence header, followed by the
+    /// `film_grain` OBUs. The header codes the smallest `TileSizeBytes` that
+    /// fits the tiles.
     pub(crate) fn temporal_unit(
         &self,
         seq: &SequenceHeader,
@@ -455,7 +467,7 @@ impl GopFrame {
         refs: &EncoderReferences,
         (qindex, filters, (tx, compound, mv_tools, layout)): (u32, &FrameFilterParams, FrameTools),
         core: &FrameHeaderCore,
-        tiles: &[&[u8]],
+        (tiles, film_grain): (&[&[u8]], &[u8]),
     ) -> Result<Vec<u8>> {
         let longest = tiles.split_last().map_or(0, |(_, rest)| {
             rest.iter()
@@ -480,7 +492,8 @@ impl GopFrame {
             }
             let tools = (tx, compound, mv_tools, layout);
             let core = self.header(view, refs, qindex, filters, tools)?;
-            return encode_key_frame_temporal_unit(seq, &core, true, tiles).map_err(header_error);
+            return encode_key_frame_temporal_unit(seq, &core, true, tiles, film_grain)
+                .map_err(header_error);
         }
         let header = build_inter_frame_header(
             view,

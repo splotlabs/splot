@@ -93,6 +93,10 @@ pub struct Config {
     pub tiles: TileLayout,
     /// Distance between key frames, in frames.
     pub keyint: NonZeroU32,
+    /// Film grain: every key frame codes a grain model fitted to the noise of
+    /// its source (none under a threshold), and every output frame applies it
+    /// (§ 5.14, § 5.18.10.1). Off by default; TIP output frames stay off.
+    pub film_grain: bool,
 }
 
 impl Config {
@@ -121,6 +125,7 @@ impl Config {
             threads: ThreadCount::Auto,
             tiles: TileLayout::default(),
             keyint: Self::DEFAULT_KEYINT,
+            film_grain: false,
         }
     }
 
