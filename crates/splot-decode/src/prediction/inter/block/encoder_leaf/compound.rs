@@ -364,9 +364,6 @@ impl EncoderInterTile {
         if motion.skip_mode() || matches!(motion, EncoderMotion::Single(single) if single.tip) {
             return Ok((ReconInterpolationFilter::EightTapSharp, None));
         }
-        let (EncoderMotion::Single(_) | EncoderMotion::Compound(_)) = motion else {
-            return Ok((ReconInterpolationFilter::EightTap, None));
-        };
         if let EncoderMotion::Compound(compound) = motion {
             let refinement = self.compound_refinement(frontier, compound)?;
             if refinement.use_optflow || refinement.refinemv_signalled {

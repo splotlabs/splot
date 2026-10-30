@@ -9,7 +9,7 @@ use splot_decode::encoder_syntax::{
     EncoderSyntaxError, IntraTileSyntax, LeafBlock, MotionVector, WarpModel, WarpModes,
 };
 
-use crate::tile_writer::{InterPrediction, Result, snap_mv};
+use crate::tile_writer::{InterPrediction, PartitionTree, Result, snap_mv};
 
 /// The warp predictions `leaf` can code from list reference `ref_frame`: the
 /// first `WARPMV` candidate, and the `LOCALWARP`, `EXTENDWARP` and zero-delta
@@ -57,4 +57,22 @@ pub(crate) fn candidates(
         out.push(InterPrediction::Warp(modes));
     }
     Ok(out)
+}
+
+/// The warp leaves and the inter leaves of `tree`.
+pub(crate) fn leaf_counts(tree: &PartitionTree) -> (usize, usize) {
+    match tree {
+        PartitionTree::Leaf(choice) => (
+            usize::from(matches!(choice.inter, Some(InterPrediction::Warp(_)))),
+            usize::from(choice.inter.is_some()),
+        ),
+        PartitionTree::Split { children, .. } => children
+            .iter()
+            .map(leaf_counts)
+            .fold((0, 0), |(w, i), (dw, di)| (w + dw, i + di)),
+        PartitionTree::Sdp { luma, chroma } => {
+            let (a, b) = (leaf_counts(luma), leaf_counts(chroma));
+            (a.0 + b.0, a.1 + b.1)
+        }
+    }
 }

@@ -6550,7 +6550,7 @@ avm_diff = "done"
 perf = "pending"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_warp_tests.rs::warp_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_warp_tests.rs::warp_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_warp_tests.rs::zoom_search_picks_warp_leaves", "crates/splot-encode/src/intra_frame_warp_tests.rs::avm_decodes_warp_streams_like_splot", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::warp_frames_code_their_motion_modes_and_allow_warpmv_mode"]
+tests = ["crates/splot-encode/src/intra_frame_warp_tests.rs::warp_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_warp_tests.rs::warp_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_warp_tests.rs::zoom_frames_code_warp_leaves", "crates/splot-encode/src/intra_frame_warp_tests.rs::integer_mv_warp_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_warp_tests.rs::avm_decodes_warp_streams_like_splot", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::warp_frames_code_their_motion_modes_and_allow_warpmv_mode"]
 commands = ["cargo test -p splot-encode warp --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_warp --locked -- --ignored"]
 fixtures = []
 diagnostics = []

@@ -749,8 +749,10 @@ impl EncoderInterTile {
     }
 
     /// The § 7.19 motion records of the published leaves, in coding order,
-    /// which the decoder stores into the frame's motion field; a warp block
-    /// of a `force_integer_mv` frame stores its translation (§ 7.13.3.14).
+    /// which the decoder stores into the frame's motion field. A
+    /// single-reference block stores a warp model only as a warp block, and
+    /// a warp block of a `force_integer_mv` frame stores its translation
+    /// (§ 7.13.3.14).
     pub(crate) fn temporal_records(&self) -> Vec<TemporalMotionBlock> {
         if self.intrabc.is_some() {
             return Vec::new();
@@ -795,7 +797,11 @@ impl EncoderInterTile {
                     ref_frame1,
                     mvs[0],
                     mvs[1],
-                    if integer_mv { [None, None] } else { splat },
+                    if integer_mv && ref_frame1.is_none() {
+                        [None, None]
+                    } else {
+                        splat
+                    },
                 )
             })
             .chain(self.tip_records.iter().copied())
