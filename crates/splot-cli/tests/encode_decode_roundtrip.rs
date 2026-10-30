@@ -190,8 +190,8 @@ fn low_delay_clips_code_every_frame_in_input_order() {
         "--preset-set",
         "lookahead_frames=1",
     ];
-    assert!(encode(&overrides).1 == low_delay);
-    assert!(encode(&[]).1 != low_delay);
+    assert_eq!(encode(&overrides).1, low_delay);
+    assert_ne!(encode(&[]).1, low_delay);
     let _ = std::fs::remove_file(input);
 }
 
