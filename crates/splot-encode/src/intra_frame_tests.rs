@@ -1356,5 +1356,7 @@ mod wienerns;
 
 #[path = "ext_partition_tests.rs"]
 mod ext_partitions;
+#[path = "sb256_tests.rs"]
+mod sb256;
 #[path = "sdp_tests.rs"]
 mod sdp;

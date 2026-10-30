@@ -107,10 +107,12 @@ impl IntraFrameCoder {
                     chroma: config.chroma,
                 },
             )?,
-            sb_size: if preset.max_block_log2 >= 7 {
-                SuperblockSize::Block128x128
-            } else {
-                SuperblockSize::Block64x64
+            sb_size: match preset.max_block_log2 {
+                8.. if config.height >= u32::from(preset.sb256_min_height) => {
+                    SuperblockSize::Block256x256
+                }
+                7.. => SuperblockSize::Block128x128,
+                _ => SuperblockSize::Block64x64,
             },
             tools: EncoderToolFlags {
                 cdef: true,

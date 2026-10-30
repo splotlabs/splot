@@ -35,7 +35,7 @@ use splot_recon::SecondaryTransformLayout;
 /// An invalid kernel argument.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub(crate) enum KernelError {
-    /// The block width or height is not a power of two in `4..=128`.
+    /// The block width or height is not a power of two in `4..=256`.
     #[error("invalid kernel block size {width}x{height}")]
     InvalidBlockDims {
         /// Requested width in samples.
@@ -103,9 +103,9 @@ impl BlockDims {
     ///
     /// # Errors
     /// Returns [`KernelError::InvalidBlockDims`] if a side is not a power of two
-    /// in `4..=128`.
+    /// in `4..=256`.
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, KernelError> {
-        let valid = |side: usize| side.is_power_of_two() && (4..=128).contains(&side);
+        let valid = |side: usize| side.is_power_of_two() && (4..=256).contains(&side);
         if valid(width) && valid(height) {
             Ok(Self { width, height })
         } else {
