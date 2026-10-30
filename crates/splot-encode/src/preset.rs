@@ -276,8 +276,9 @@ pub struct PresetParams {
     pub interintra: bool,
     /// Block adaptive weighted prediction (`enable_bawp`, every inter frame
     /// codes `allow_bawp = 1`): the cheapest single-reference `NEWMV` of a
-    /// leaf adds its best BAWP scale by luma SATD to the RD trials. Off in
-    /// every row until measured.
+    /// leaf adds its best BAWP scale by luma SATD to the RD trials. On at
+    /// p0-p6 (2026-10-30, p6 vs main): park_joy -0.28%, paris -0.11%, niklas
+    /// -0.26% for about 3% more CPU; p7-p10 are not measured.
     pub bawp: bool,
 }
 
@@ -582,7 +583,7 @@ preset_table! {
         compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
-        bawp:                  [false, false, false, false, false, false, false, false, false, false, false],
+        bawp:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
