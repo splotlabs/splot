@@ -589,7 +589,7 @@ impl IntraFrameCoder {
                 frame_type: plan.frame_type,
                 reference: None,
                 tip_output: Some(core),
-                warp: coded.warp,
+                warp: None,
             }),
         )
     }

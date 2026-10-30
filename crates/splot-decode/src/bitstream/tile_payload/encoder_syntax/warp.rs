@@ -131,36 +131,53 @@ impl IntraTileSyntax {
             .saturating_sub(precision.unwrap_or_else(|| self.mv_precision()))
     }
 
-    /// The decoder's row-major luma prediction of `modes` at `leaf`, for a
-    /// warp search. The prediction overwrites the leaf's samples and drops
-    /// the planned leaf.
+    /// Writes into `out` the decoder's row-major luma prediction of `modes`
+    /// at `leaf`, for a warp search. The prediction overwrites the leaf's
+    /// luma samples and drops the planned leaf.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code or a leaf
     /// that leaves the frame storage.
-    pub fn warp_prediction(&mut self, leaf: &LeafBlock, modes: WarpModes) -> Result<Vec<u16>> {
-        let motion = EncoderMotion::Warp(self.warp_motion(leaf, modes)?);
+    pub fn warp_prediction(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: WarpModes,
+        out: &mut Vec<u16>,
+    ) -> Result<()> {
+        let motion = self.warp_motion(leaf, modes)?;
         self.clear_inter_plan();
         let (width, height) = leaf.dimensions()?;
         let rect = PlaneRect::new(leaf.frontier.c * 4, leaf.frontier.r * 4, width, height)
             .map_err(rule("warp prediction rect"))?;
+        let outside = |_| EncoderSyntaxError::Unsupported("a warp leaf outside the frame");
+        let size = self
+            .recon
+            .workspace
+            .plane(PlaneId::Y)
+            .map_err(rule("warp prediction plane"))?
+            .storage_size();
+        if rect.x() + width > size.width() || rect.y() + height > size.height() {
+            return Err(EncoderSyntaxError::Unsupported(
+                "a warp leaf outside the frame",
+            ));
+        }
         let state = self.inter.as_mut().ok_or(EncoderSyntaxError::Unsupported(
             "inter syntax in an intra frame",
         ))?;
         state
             .tile
-            .predict(&leaf.frontier, motion, &mut self.recon.workspace)
+            .predict_warp_luma(&leaf.frontier, motion, &mut self.recon.workspace)
             .map_err(rule("warp prediction"))?;
-        let mut out = Vec::with_capacity(width * height);
+        out.clear();
         for row in self
             .recon
             .workspace
             .rect_rows(PlaneId::Y, rect)
-            .map_err(|_| EncoderSyntaxError::Unsupported("a warp leaf outside the frame"))?
+            .map_err(outside)?
         {
             out.extend_from_slice(row);
         }
-        Ok(out)
+        Ok(())
     }
 
     /// The decoder's warp syntax of `modes` at `leaf`, its symbols checked.

@@ -38,14 +38,14 @@ const WARP_LAYERS: usize = 4;
 
 /// The warp predictions of `leaf` from list reference `ref_frame` whose luma
 /// SATD plus rate beats `beat`, the cost of the leaf's translational `NEWMV`
-/// at `found`, best first and at most `keep`.
+/// at `found`, each with that cost, cheapest first and at most `keep`.
 pub(crate) fn search(
     syntax: &mut IntraTileSyntax,
     motion: &MotionSearch,
     leaf: &LeafBlock,
     (ref_frame, found, beat): (usize, MotionVector, u64),
     keep: usize,
-) -> Result<Vec<InterPrediction>> {
+) -> Result<Vec<(u64, InterPrediction)>> {
     let Some(options) = syntax.warp_options(leaf, ref_frame)? else {
         return Ok(Vec::new());
     };
@@ -56,6 +56,8 @@ pub(crate) fn search(
         rect: crate::mode_decision::leaf_rect(leaf)?,
         found,
         scored: Vec::new(),
+        bases: Vec::new(),
+        predicted: Vec::new(),
     };
     let base = WarpModes {
         ref_frame,
@@ -103,11 +105,11 @@ pub(crate) fn search(
     }
     let mut scored = scorer.scored;
     scored.sort_by_key(|&(cost, _)| cost);
-    let mut out: Vec<InterPrediction> = Vec::new();
-    for (_, modes) in scored.into_iter().filter(|&(cost, _)| cost < beat) {
+    let mut out: Vec<(u64, InterPrediction)> = Vec::new();
+    for (cost, modes) in scored.into_iter().filter(|&(cost, _)| cost < beat) {
         let prediction = InterPrediction::Warp(modes);
-        if out.len() < keep && !out.contains(&prediction) {
-            out.push(prediction);
+        if out.len() < keep && out.iter().all(|&(_, seen)| seen != prediction) {
+            out.push((cost, prediction));
         }
     }
     Ok(out)
@@ -121,6 +123,10 @@ struct Scorer<'a, 'b> {
     rect: (usize, usize, usize, usize),
     found: MotionVector,
     scored: Vec<(u64, WarpModes)>,
+    /// The difference base of each base key, see [`base_key`].
+    bases: Vec<(WarpModes, MotionVector)>,
+    /// The luma prediction buffer, reused across candidates.
+    predicted: Vec<u16>,
 }
 
 impl Scorer<'_, '_> {
@@ -143,7 +149,14 @@ impl Scorer<'_, '_> {
         modes: &mut WarpModes,
     ) -> core::result::Result<u64, EncoderSyntaxError> {
         if let Some(target) = modes.mv {
-            let base = self.syntax.warp_base(self.leaf, *modes)?;
+            let key = base_key(*modes);
+            let base = if let Some(&(_, base)) = self.bases.iter().find(|(seen, _)| *seen == key) {
+                base
+            } else {
+                let base = self.syntax.warp_base(self.leaf, *modes)?;
+                self.bases.push((key, base));
+                base
+            };
             modes.mv = Some(snap_mv(target, base, self.syntax.warp_step(modes)));
         }
         let prediction = InterPrediction::Warp(*modes);
@@ -152,10 +165,11 @@ impl Scorer<'_, '_> {
             .price_inter_modes(self.leaf, prediction, &mut sink)?;
         self.syntax
             .price_interp_filter(self.leaf, prediction, &mut sink)?;
-        let predicted = self.syntax.warp_prediction(self.leaf, *modes)?;
+        self.syntax
+            .warp_prediction(self.leaf, *modes, &mut self.predicted)?;
         let satd = self
             .motion
-            .satd(self.rect, &predicted)
+            .satd(self.rect, &self.predicted)
             .map_err(|_| EncoderSyntaxError::Unsupported("a warp leaf outside the source"))?;
         Ok(satd + self.motion.bits_cost(sink.bits))
     }
@@ -255,6 +269,23 @@ impl Scorer<'_, '_> {
             }
         }
         Ok(())
+    }
+}
+
+/// `modes` with only what its difference base depends on: the `WARPMV`
+/// candidate, or the `RefMvIdx` and precision every `WARP_NEWMV` model
+/// shares.
+fn base_key(modes: WarpModes) -> WarpModes {
+    let candidate = modes.model == WarpModel::Candidate;
+    WarpModes {
+        model: if candidate {
+            WarpModel::Candidate
+        } else {
+            WarpModel::Local
+        },
+        warp_idx: if candidate { modes.warp_idx } else { 0 },
+        mv: None,
+        ..modes
     }
 }
 

@@ -55,7 +55,8 @@ pub(crate) struct CodedFrame {
     /// The header of a `TIP_FRAME_AS_OUTPUT` frame, which
     /// [`FrameCoder::commit`] records in place of `reference`.
     pub(crate) tip_output: Option<FrameHeaderCore>,
-    /// How an inter frame used warped motion.
+    /// How the inter frame used warped motion; `None` for key frames and for
+    /// `TIP_FRAME_AS_OUTPUT` frames, which code no leaves.
     pub(crate) warp: Option<crate::warp::WarpUse>,
 }
 

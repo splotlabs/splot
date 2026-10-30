@@ -416,9 +416,17 @@ impl TrialCoder<'_, '_> {
                 push(coded.mv, coded);
                 if self.preset.warp > 0
                     && let Some((cost, ..)) = self.newmv_cost(leaf, coded)?
-                    && warp_base.is_none_or(|(best, ..)| cost < best)
                 {
-                    warp_base = Some((cost, ref_frame, found));
+                    let mut filter = RateSink::adapting();
+                    self.syntax.price_interp_filter(
+                        leaf,
+                        InterPrediction::Single(coded),
+                        &mut filter,
+                    )?;
+                    let cost = cost + motion.bits_cost(filter.bits);
+                    if warp_base.is_none_or(|(best, ..)| cost < best) {
+                        warp_base = Some((cost, ref_frame, found));
+                    }
                 }
             }
         }
@@ -454,7 +462,7 @@ impl TrialCoder<'_, '_> {
                 (ref_frame, found, cost),
                 usize::from(self.preset.warp),
             )?;
-            choices.extend(warps.into_iter().map(LeafChoice::inter));
+            choices.extend(warps.into_iter().map(|(_, warp)| LeafChoice::inter(warp)));
         }
         if self.preset.compound_candidates > 0 && self.syntax.skip_mode_allowed(leaf) {
             let mut cheapest: Vec<([MotionVector; 2], Bits, InterPrediction)> = Vec::new();
