@@ -249,17 +249,19 @@ impl KeyFrameTileWriter {
 thread_local! {
     /// Compound leaves of the final passes on this thread: weighted
     /// `COMPOUND_AVERAGE`, wedge, difference-weighted, and masked
-    /// `NEAR_NEARMV`; then inter-intra and BAWP leaves.
-    pub(crate) static CODED_TYPES: core::cell::Cell<[usize; 6]> =
-        const { core::cell::Cell::new([0; 6]) };
+    /// `NEAR_NEARMV`; then inter-intra leaves, those of them at the left
+    /// edge of a tile that does not start the frame, and BAWP leaves.
+    pub(crate) static CODED_TYPES: core::cell::Cell<[usize; 7]> =
+        const { core::cell::Cell::new([0; 7]) };
 }
 
 #[cfg(test)]
-fn count_coded_type(prediction: InterPrediction) {
+fn count_coded_type(prediction: InterPrediction, tile_edge: bool) {
     let mut counts = CODED_TYPES.get();
     if let InterPrediction::Single(single) = prediction {
         counts[4] += usize::from(single.interintra.is_some());
-        counts[5] += usize::from(single.bawp.is_some());
+        counts[5] += usize::from(single.interintra.is_some() && tile_edge);
+        counts[6] += usize::from(single.bawp.is_some());
         CODED_TYPES.set(counts);
     }
     let InterPrediction::Compound(modes) = prediction else {
@@ -376,7 +378,8 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         if let Some(modes) = choice.inter {
             #[cfg(test)]
             if self.filters.is_some() {
-                count_coded_type(modes);
+                let cols = self.syntax.tile_ranges().1;
+                count_coded_type(modes, cols.start > 0 && leaf.col4() == cols.start);
             }
             return self.write_inter_leaf(leaf, (modes, choice.tx_partition), coder);
         }

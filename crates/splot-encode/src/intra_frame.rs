@@ -162,8 +162,8 @@ impl IntraFrameCoder {
                 mvd_tools: preset.mvd_tools,
                 warp: preset.warp > 0,
                 global_motion: preset.global_motion > 0,
-                masked_compound: preset.compound_types >= 2,
-                cwp: preset.compound_types >= 1,
+                masked_compound: preset.compound_types >= 1,
+                cwp: preset.compound_types >= 2,
                 implicit_mask: preset.implicit_mask,
                 interintra: preset.interintra,
                 bawp: preset.bawp,
@@ -861,7 +861,7 @@ pub(crate) fn codable_children(
 pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) source: &'a PaddedSource,
     qindex: u32,
-    bit_depth: BitDepth,
+    pub(crate) bit_depth: BitDepth,
     preset: &'a PresetParams,
     lambda: Lambda,
     /// A candidate trial without `full_trials`: quantize with the deadzone and
