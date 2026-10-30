@@ -22,6 +22,7 @@ pub mod config;
 pub mod encoder;
 pub mod error;
 pub mod frame;
+mod global_motion;
 mod gop;
 mod grain;
 mod intra_frame;

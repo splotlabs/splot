@@ -99,6 +99,7 @@ impl Case {
                 max_drl_bits_minus_1: 0,
                 mvd_tools: [false; 3],
                 warp: false,
+                global_motion: false,
                 masked_compound: false,
                 cwp: false,
                 implicit_mask: false,
