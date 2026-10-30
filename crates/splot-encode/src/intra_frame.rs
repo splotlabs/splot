@@ -134,10 +134,7 @@ impl IntraFrameCoder {
                 inter_ddt: preset.inter_ddt,
                 inter_ist: preset.inter_ist,
                 tip: preset.tip > 0 && preset.mv_prediction,
-                tip_output: preset.tip > 0
-                    && preset.mv_prediction
-                    && preset.tip_output > 0
-                    && !config.film_grain,
+                tip_output: preset.tip > 0 && preset.mv_prediction && preset.tip_output > 0,
                 opfl_refine: preset.opfl,
                 refinemv: preset.refinemv,
                 tip_refinemv: preset.tip > 0 && preset.mv_prediction && preset.tip_refinemv,
@@ -522,7 +519,7 @@ impl IntraFrameCoder {
                     && plan.show_frame =>
             {
                 Ok(self
-                    .tip_output_frame(source, plan, qindex, weight, &coded)
+                    .tip_output_frame(source, plan, (qindex, weight, grain_seed), &coded)
                     .ok()
                     .flatten()
                     .unwrap_or(coded))
@@ -532,7 +529,8 @@ impl IntraFrameCoder {
     }
 
     /// The frame `plan`, coded normally at `qindex` with TIP weight `weight`
-    /// as `coded`, as a `TIP_FRAME_AS_OUTPUT` frame when its RD cost times 100
+    /// and film grain seed `grain_seed` as `coded`, as a `TIP_FRAME_AS_OUTPUT`
+    /// frame with the same seed when its RD cost times 100
     /// is at most `PresetParams::tip_output` times that of `coded`; both
     /// distortions are the squared error of every plane. The caller keeps
     /// `coded` when this fails.
@@ -540,8 +538,7 @@ impl IntraFrameCoder {
         &self,
         source: &SourceFrame,
         plan: &GopFrame,
-        qindex: u32,
-        weight: u8,
+        (qindex, weight, grain_seed): (u32, u8, Option<u16>),
         coded: &CodedFrame,
     ) -> Result<Option<CodedFrame>> {
         let ref_frame_idx = coded
@@ -552,8 +549,12 @@ impl IntraFrameCoder {
             .ok_or(Error::Unsupported {
                 what: "a TIP frame without references",
             })?;
-        let (core, temporal_unit) =
-            plan.tip_output_unit(&self.view, &self.references, ref_frame_idx, weight)?;
+        let (core, temporal_unit) = plan.tip_output_unit(
+            &self.view,
+            &self.references,
+            ref_frame_idx,
+            (weight, grain_seed),
+        )?;
         let (core, frame) = self
             .references
             .tip_output(&core)

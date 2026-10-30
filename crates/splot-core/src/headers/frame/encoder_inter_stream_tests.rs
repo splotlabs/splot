@@ -509,6 +509,9 @@ fn rejects_out_of_range_inter_inputs() {
     assert!(build_inter_frame_header(&view, &slots.view(), &integer_mv).is_err());
 }
 
+/// A TIP output header parses complete, needs TIP output, two references
+/// and a weight, and codes `apply_grain` with the seed only in a film-grain
+/// sequence (§ 5.18.2, § 5.18.10.1).
 #[test]
 fn tip_output_header_parses_complete_and_needs_tip_output() {
     let mut stream = EncoderStreamParams {
@@ -558,6 +561,30 @@ fn tip_output_header_parses_complete_and_needs_tip_output() {
     };
     assert!(build_tip_output_frame_header(&view, &slots.view(), &no_weight, &[0, 1]).is_err());
     assert!(build_tip_output_frame_header(&view, &slots.view(), &params, &[0]).is_err());
+    let seeded = InterFrameParams {
+        tx: KeyFrameTxParams {
+            grain_seed: Some(0x5a3c),
+            ..KeyFrameTxParams::default()
+        },
+        ..params
+    };
+    assert!(build_tip_output_frame_header(&view, &slots.view(), &seeded, &[0, 1]).is_err());
+    stream.tools.film_grain = true;
+    let grain_view =
+        CoreSeqView::from_sequence(&build_encoder_sequence_header(&stream).unwrap()).unwrap();
+    for (params, expected) in [
+        (seeded, (true, Some(0), Some(0x5a3c))),
+        (params, (false, None, None)),
+    ] {
+        let header =
+            build_tip_output_frame_header(&grain_view, &slots.view(), &params, &[0, 1]).unwrap();
+        let grain = header.core.inter.unwrap().tip_film_grain.unwrap();
+        assert_eq!(
+            (grain.apply_grain, grain.fgm_id, grain.grain_seed),
+            expected
+        );
+    }
+    stream.tools.film_grain = false;
     stream.tools.tip_output = false;
     let seq = build_encoder_sequence_header(&stream).unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();

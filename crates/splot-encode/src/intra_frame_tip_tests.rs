@@ -7,7 +7,13 @@
 
 use super::*;
 use crate::preset::PresetParams;
-use splot_core::headers::frame::TipFrameMode;
+use splot_core::headers::FilmGrainModel;
+use splot_core::headers::frame::{FrameHeaderCore, TipFrameMode};
+use splot_core::headers::sequence::ChromaFormatIdc;
+use splot_recon::{
+    DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, Plane, PlaneRect, PlaneSize,
+    apply_film_grain,
+};
 
 /// Preset 6 with `tip`.
 fn with_tip(tip: u8) -> &'static PresetParams {
@@ -426,4 +432,105 @@ fn refined_tip_units_match_the_decoder_in_a_zooming_frame() {
         assert_same_samples(&decode(&units.concat()), &expected, &format!("seed {seed}"));
     }
     assert!(leaves > 0);
+}
+
+/// A noisy panning frame for the film grain tests.
+fn grainy_panning_frame(config: &Config, index: u32) -> SourceFrame {
+    super::grain_streams::with_noise(config, &panning_frame(config, index), 5 + index)
+}
+
+/// A 72x40 4:2:0 8-bit stream of [`grainy_panning_frame`] at a coarse
+/// quantizer with TIP output preferred and film grain.
+fn tip_grain_stream() -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>) {
+    let mut config = config(72, 40, BitDepth::Eight, 6, 250);
+    config.film_grain = true;
+    let coder = IntraFrameCoder::with_preset(&config, with_tip_output(1, 200)).unwrap();
+    let (units, recon, cores, _) =
+        super::carry::planned_stream_of(&config, coder, grainy_panning_frame, 250);
+    (units, recon, cores)
+}
+
+/// The 72x40 4:2:0 8-bit frame `bytes` plus the § 7.21.7 grain of `model`
+/// and `seed`.
+fn with_grain(bytes: &[u8], model: &FilmGrainModel, seed: u16) -> Vec<u8> {
+    let plane = |offset: usize, (width, height): (usize, usize)| {
+        let samples = bytes[offset..offset + width * height]
+            .iter()
+            .map(|&sample| u16::from(sample))
+            .collect();
+        let size = PlaneSize::new(width, height).unwrap();
+        let rect = PlaneRect::new(0, 0, width, height).unwrap();
+        Plane::from_vec(size, width, rect, samples).unwrap()
+    };
+    let planes = FramePlanes::new(
+        plane(0, (72, 40)),
+        Some(plane(72 * 40, (36, 20))),
+        Some(plane(72 * 40 + 36 * 20, (36, 20))),
+    );
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Eight,
+        PixelFormat::Yuv420,
+        PlaneSize::new(72, 40).unwrap(),
+        PlaneRect::new(0, 0, 72, 40).unwrap(),
+    )
+    .unwrap();
+    let frame = DecodedFrame::try_new(info, planes).unwrap();
+    let grained = visible_planes(&apply_film_grain(&frame, model, seed).unwrap()).unwrap();
+    raw_bytes(grained.iter().map(Vec::as_slice), BitDepth::Eight)
+}
+
+/// With film grain, TIP output frames code `apply_grain` with a seed and
+/// decode to the TIP recon plus the § 7.21.7 grain of the key frame's model
+/// and that seed, so grain never reaches the recon.
+#[test]
+fn tip_output_frames_decode_with_film_grain() {
+    let (units, recon, cores) = tip_grain_stream();
+    let config = config(72, 40, BitDepth::Eight, 6, 250);
+    let [y, cb, cr] = grain::estimate(&grainy_panning_frame(&config, 0), config.chroma).unwrap();
+    let model = encoder_film_grain_model(ChromaFormatIdc::Yuv420, [&y, &cb, &cr]).unwrap();
+    let decoded = decode(&units);
+    assert_eq!(decoded.len(), recon.len());
+    let frame_len = 72 * 40 * 3 / 2;
+    let mut tips = 0;
+    for core in &cores {
+        let Some(grain) = core.inter.as_ref().and_then(|inter| inter.tip_film_grain) else {
+            continue;
+        };
+        assert_eq!((grain.apply_grain, grain.fgm_id), (true, Some(0)));
+        let index = core.display_order_hint().unwrap() as usize;
+        let span = index * frame_len..(index + 1) * frame_len;
+        let expected = with_grain(&recon[span.clone()], &model, grain.grain_seed.unwrap());
+        assert_ne!(
+            expected,
+            recon[span.clone()],
+            "TIP output {index} has no grain"
+        );
+        assert!(decoded[span] == expected[..], "TIP output {index}");
+        tips += 1;
+    }
+    assert!(tips > 0);
+}
+
+/// AVM decodes TIP output frames with film grain like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_grain_tip_output_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, _, cores) = tip_grain_stream();
+    assert!(cores.iter().any(|core| {
+        core.inter
+            .as_ref()
+            .is_some_and(|inter| inter.tip_film_grain.is_some())
+    }));
+    let avm = avm_decode(
+        &avmdec,
+        std::slice::from_ref(&units),
+        (72, 40),
+        BitDepth::Eight,
+        "tip-grain",
+    );
+    assert!(avm == decode(&units), "AVM output differs");
 }
