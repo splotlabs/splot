@@ -782,8 +782,15 @@ impl EncoderInterTile {
         let refinement = self.compound_refinement(frontier, compound)?;
         let (ref0, ref1) = compound.ref_frames;
         let global = compound.y_mode == CompoundYMode::GlobalGlobal;
-        let warp =
-            |ref_frame| global_motion_warp(&self.core, ref_frame, false, block.bw4, block.bh4);
+        let warp = |ref_frame| {
+            global_motion_warp(
+                &self.core,
+                ref_frame,
+                effective_force_integer_mv(&self.core),
+                block.bw4,
+                block.bh4,
+            )
+        };
         Ok(CompoundMotionSyntax {
             y_mode: compound.y_mode,
             ref_frame1: ref1,

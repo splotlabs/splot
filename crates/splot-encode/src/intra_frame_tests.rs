@@ -917,6 +917,7 @@ fn inter_stream_of(
         opfl: true,
         refinemv: true,
         warp: 1,
+        global_motion: 1,
         ..*config.preset.params()
     }));
     let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();
@@ -943,22 +944,9 @@ fn inter_stream_of(
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let (tx, _, (high_precision_mv, ref_mvs, _, tip, integer_mv, opfl, warp), tiles) =
-        crate::gop::frame_tools(&coder.preset, coder.tiles, qindex);
-    let tools = (
-        tx,
-        true,
-        (
-            high_precision_mv,
-            ref_mvs,
-            true,
-            tip,
-            integer_mv,
-            opfl,
-            warp,
-        ),
-        tiles,
-    );
+    let mut tools = crate::gop::frame_tools(&coder.preset, coder.tiles, qindex);
+    (tools.1, tools.2.2) = (true, true);
+    tools.2.7 = gm::random_models(seed);
     let filters = FrameFilterParams::default();
     let core = plan
         .header(&coder.view, &coder.references, qindex, &filters, tools)
@@ -1419,6 +1407,8 @@ mod cdef_skip;
 mod delta_q;
 #[path = "intra_frame_gdf_tests.rs"]
 mod gdf;
+#[path = "intra_frame_gm_tests.rs"]
+mod gm;
 #[path = "intra_frame_grain_tests.rs"]
 mod grain_streams;
 #[path = "intra_frame_inter_ist_tests.rs"]

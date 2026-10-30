@@ -5,6 +5,8 @@
 
 use super::*;
 use crate::annexb::parse_annex_b_obus_partial;
+use crate::headers::frame::GmType;
+use crate::headers::frame::global_motion::DEFAULT_WARP_PARAMS;
 use crate::headers::frame::{
     CcsoPlaneParams, CdefStrengthSet, CdefStrengthSets, EncoderStreamParams, EncoderToolFlags,
     FrameHeaderParseInput, FrameHeaderParseMode, FrameType, InterpolationFilter, MvPrecision,
@@ -148,6 +150,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         opfl_refine_type: 0,
                         force_integer_mv: sb == SuperblockSize::Block128x128 && !high_precision_mv,
                         warp: false,
+                        global_motion: [None; 7],
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
                     let core = &header.core;
@@ -233,6 +236,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         opfl_refine_type: 0,
         force_integer_mv: false,
         warp: false,
+        global_motion: [None; 7],
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
     let inter = header.core.inter.as_ref().unwrap();
@@ -331,6 +335,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             opfl_refine_type: 0,
             force_integer_mv: false,
             warp: false,
+            global_motion: [None; 7],
         },
     )
     .unwrap();
@@ -486,6 +491,7 @@ fn rejects_out_of_range_inter_inputs() {
         opfl_refine_type: 0,
         force_integer_mv: false,
         warp: false,
+        global_motion: [None; 7],
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),
@@ -503,6 +509,7 @@ fn rejects_out_of_range_inter_inputs() {
     let integer_mv = InterFrameParams {
         force_integer_mv: true,
         warp: false,
+        global_motion: [None; 7],
         ..params
     };
     let slots = Slots::after_key(64, 64, 0);
@@ -756,4 +763,91 @@ fn warp_frames_code_their_motion_modes_and_allow_warpmv_mode() {
         ..InterFrameParams::default()
     };
     assert!(build_inter_frame_header(&plain, &slots.view(), &params).is_err());
+}
+
+#[test]
+fn global_motion_models_round_trip_through_the_parser() {
+    let stream = EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            global_motion: true,
+            ..EncoderToolFlags::default()
+        },
+    };
+    let seq = build_encoder_sequence_header(&stream).unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let mut slots = Slots::after_key(64, 64, 4);
+    slots.valid[1] = true;
+    slots.hints[1] = 8;
+    slots.counters[1] = 1;
+    let rotzoom = [
+        3 << 13,
+        -5 << 13,
+        (1 << 16) + (17 << 6),
+        -9 << 6,
+        9 << 6,
+        (1 << 16) + (17 << 6),
+    ];
+    let affine = [
+        -(2 << 13),
+        1 << 13,
+        (1 << 16) - (3 << 6),
+        4 << 6,
+        -(5 << 6),
+        (1 << 16) + (6 << 6),
+    ];
+    for models in [
+        [None; 7],
+        [Some(rotzoom), None, None, None, None, None, None],
+        {
+            let mut both = [None; 7];
+            (both[0], both[1]) = (Some(rotzoom), Some(affine));
+            both
+        },
+    ] {
+        let params = InterFrameParams {
+            base_q_idx: 90,
+            order_hint: 6,
+            show_frame: true,
+            global_motion: models,
+            ..InterFrameParams::default()
+        };
+        let (counts, hints, saved) = ([0; 8], [[0; 7]; 8], [[DEFAULT_WARP_PARAMS; 7]; 8]);
+        let refs = slots
+            .view()
+            .with_global_motion_state(&counts, &hints, &saved);
+        let header = build_inter_frame_header(&view, &refs, &params).unwrap();
+        let gm = header.core.inter_tail.unwrap().global_motion;
+        assert_eq!(gm.use_global_motion, models.iter().any(Option::is_some));
+        for (reference, model) in gm.references.iter().zip(models) {
+            match model {
+                Some(params) => assert_eq!(reference.gm_params, params),
+                None => assert_eq!(reference.gm_type, GmType::Identity),
+            }
+        }
+    }
+    let off_lattice = InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 6,
+        show_frame: true,
+        global_motion: [
+            Some([1, 0, 1 << 16, 0, 0, 1 << 16]),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ],
+        ..InterFrameParams::default()
+    };
+    let (counts, hints, saved) = ([0; 8], [[0; 7]; 8], [[DEFAULT_WARP_PARAMS; 7]; 8]);
+    let refs = slots
+        .view()
+        .with_global_motion_state(&counts, &hints, &saved);
+    assert!(build_inter_frame_header(&view, &refs, &off_lattice).is_err());
 }

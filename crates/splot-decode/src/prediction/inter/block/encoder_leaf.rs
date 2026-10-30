@@ -207,10 +207,6 @@ impl EncoderInterTile {
             ),
             (tail.allow_bawp, "BAWP"),
             (
-                seq_inter.enable_ref_frame_mvs && seq_inter.enable_global_motion,
-                "global motion with reference frame motion vectors",
-            ),
-            (
                 !matches!(
                     inter.interpolation_filter,
                     Some(FrameInterpolationFilter::Eighttap | FrameInterpolationFilter::Switchable)
@@ -774,7 +770,7 @@ impl EncoderInterTile {
             .published_leaves()
             .filter(|(_, refs, ..)| refs.is_none_or(|(ref_frame0, _)| ref_frame0 != TIP_REF_FRAME))
             .filter(|((r, c, ..), ..)| unit_leaves.binary_search(&(*r, *c)).is_err())
-            .map(|((r, c, n4w, n4h), refs, mvs, splat)| {
+            .map(|((r, c, n4w, n4h), refs, mvs, splat, global)| {
                 let (ref_frame0, ref_frame1) = refs.unwrap_or((-1, None));
                 if refs.is_none() {
                     return TemporalMotionBlock::new(
@@ -804,10 +800,13 @@ impl EncoderInterTile {
                     ref_frame1,
                     mvs[0],
                     mvs[1],
-                    if integer_mv && ref_frame1.is_none() {
-                        [None, None]
-                    } else {
-                        splat
+                    match (ref_frame1, global) {
+                        (None, [true, _]) => [
+                            global_motion_warp(&self.core, ref_frame0, integer_mv, n4w, n4h),
+                            None,
+                        ],
+                        (None, _) if integer_mv => [None, None],
+                        _ => splat,
                     },
                 )
             })
@@ -1064,7 +1063,13 @@ impl EncoderInterTile {
             use_temporal_first: !motion.tip && self.temporal_first(motion.ref_frame),
             global_warp: (!motion.tip && motion.mode == SINGLE_MODE_GLOBALMV)
                 .then(|| {
-                    global_motion_warp(&self.core, motion.ref_frame, false, block.bw4, block.bh4)
+                    global_motion_warp(
+                        &self.core,
+                        motion.ref_frame,
+                        effective_force_integer_mv(&self.core),
+                        block.bw4,
+                        block.bh4,
+                    )
                 })
                 .flatten(),
         }

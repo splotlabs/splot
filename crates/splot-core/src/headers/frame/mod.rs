@@ -17,7 +17,7 @@ mod encoder_inter_stream;
 mod encoder_stream;
 mod filtering;
 mod get_ref_frames;
-mod global_motion;
+pub(crate) mod global_motion;
 mod info;
 mod inter;
 mod inter_shared_tail;

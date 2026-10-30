@@ -84,7 +84,7 @@ pub(super) fn random_warp(
 
 /// Frame `index` of a smooth texture zooming in by `1/64` and turning by
 /// about `1/128` radian per frame around the frame centre.
-fn zooming_frame(config: &Config, index: u32) -> SourceFrame {
+pub(super) fn zooming_frame(config: &Config, index: u32) -> SourceFrame {
     let max = i64::from(config.bit_depth.max_sample());
     let sizes = config.plane_sizes().unwrap();
     let (scale, turn) = (1024 - 16 * i64::from(index), 8 * i64::from(index));

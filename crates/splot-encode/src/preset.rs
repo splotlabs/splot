@@ -237,6 +237,10 @@ pub struct PresetParams {
     /// single-reference leaves try the decoder's warp candidates. Off in
     /// every row until measured.
     pub warp: u8,
+    /// Global motion (`enable_global_motion`), `0..=1`: inter frames code
+    /// `use_global_motion` with the models the encoder estimates. Off in
+    /// every row until the estimator lands and is measured.
+    pub global_motion: u8,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -352,7 +356,8 @@ impl PresetParams {
             u8::from(self.opfl || self.refinemv),
             " (1 needs opfl or refinemv)",
         )?;
-        check("warp", self.warp, 0, 1, "")
+        check("warp", self.warp, 0, 1, "")?;
+        check("global_motion", self.global_motion, 0, 1, "")
     }
 }
 
@@ -519,6 +524,7 @@ preset_table! {
         refinemv:              [false, false, false, false, false, false, false, false, false, false, false],
         tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        global_motion:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -677,6 +683,7 @@ mod tests {
             assert!(fast.inter_ist <= slow.inter_ist);
             assert!(fast.tip <= slow.tip);
             assert!(fast.warp <= slow.warp);
+            assert!(fast.global_motion <= slow.global_motion);
             assert!(fast.opfl <= slow.opfl);
             assert!(fast.tip_refinemv <= slow.tip_refinemv);
             assert!(
@@ -793,6 +800,7 @@ mod tests {
             (&[("tip_output", "201")], "tip_output"),
             (&[("opfl", "false")], "tip_refinemv"),
             (&[("warp", "2")], "warp"),
+            (&[("global_motion", "2")], "global_motion"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {

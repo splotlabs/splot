@@ -27,6 +27,7 @@ pub mod frame_restoration;
 pub mod frame_segmentation;
 pub mod frame_tail;
 pub mod frame_tiling;
+pub mod global_motion;
 pub mod layer_config_record;
 pub mod metadata;
 pub mod msdo;

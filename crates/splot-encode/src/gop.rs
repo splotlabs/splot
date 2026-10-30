@@ -380,6 +380,7 @@ pub(crate) fn frame_tools(preset: &PresetParams, tiles: UniformTiles, qindex: u3
             preset.integer_mv,
             if preset.opfl { REFINE_SWITCHABLE } else { 0 },
             preset.warp > 0,
+            [None; 7],
         ),
         tiles,
     )
@@ -395,11 +396,20 @@ const TIP_EQUAL_WEIGHT: u8 = 0;
 
 /// `(tx, compound, (high_precision_mv, use_ref_frame_mvs,
 /// switchable_interp_filter, tip_weight, force_integer_mv,
-/// opfl_refine_type, warp), tiles)` of [`frame_tools`].
+/// opfl_refine_type, warp, global_motion), tiles)` of [`frame_tools`].
 pub(crate) type FrameTools = (
     KeyFrameTxParams,
     bool,
-    (bool, bool, bool, Option<u8>, bool, u8, bool),
+    (
+        bool,
+        bool,
+        bool,
+        Option<u8>,
+        bool,
+        u8,
+        bool,
+        [Option<[i32; 6]>; 7],
+    ),
     UniformTiles,
 );
 
@@ -582,6 +592,7 @@ impl GopFrame {
                 force_integer_mv,
                 opfl_refine_type,
                 warp,
+                global_motion,
             ),
             tiles,
         ): FrameTools,
@@ -607,6 +618,7 @@ impl GopFrame {
             force_integer_mv,
             opfl_refine_type,
             warp,
+            global_motion,
         }
     }
 }

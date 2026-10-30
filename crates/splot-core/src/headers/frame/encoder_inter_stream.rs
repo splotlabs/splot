@@ -17,6 +17,7 @@ use crate::headers::frame::encoder_stream::{
     MAX_REDUCED_TX_SET, UniformTiles, obu_header, tile_framing, write_film_grain_config,
     write_quant_and_filters,
 };
+use crate::headers::frame::global_motion::{REFS_PER_FRAME, default_base_prediction};
 use crate::headers::frame::info::build_inter_seq_view;
 use crate::headers::frame::inter::tip_weight_coded;
 use crate::headers::frame::inter_shared_tail::{
@@ -34,8 +35,8 @@ use crate::headers::tile_group::{RecordedFrameHeaderBits, TileGroupLayout, TileG
 use crate::span::ByteOffset;
 use crate::types::ObuType;
 use crate::write::{
-    BitWriter, LrReferenceFilters, WriteError, write_annexb_obu, write_tile_group_payload,
-    write_tile_group_structure,
+    BitWriter, LrReferenceFilters, WriteError, global_motion::write_global_param, write_annexb_obu,
+    write_tile_group_payload, write_tile_group_structure,
 };
 
 /// `PRIMARY_REF_NONE` (§ 3).
@@ -98,6 +99,11 @@ pub struct InterFrameParams {
     /// `allow_warpmv_mode` (§ 5.18.2) in a sequence that lets each frame
     /// choose them; off, the frame codes them disabled.
     pub warp: bool,
+    /// The `gm_params` of each list reference with a `ROTZOOM` or `AFFINE`
+    /// global motion model (§ 5.18.9.1), coded with `our_ref =
+    /// NumTotalRefs`; `None` codes `IDENTITY`, and all `None` codes
+    /// `use_global_motion = 0`. Needs `enable_global_motion`.
+    pub global_motion: [Option<[i32; 6]>; REFS_PER_FRAME],
 }
 
 /// A parsed frame header and the exact bits it was parsed from.
@@ -135,6 +141,7 @@ pub fn build_inter_frame_header(
 ) -> Result<EncodedFrameHeader, EncoderHeaderError> {
     let plain = InterFrameParams {
         use_ref_frame_mvs: false,
+        global_motion: [None; REFS_PER_FRAME],
         filters: FrameFilterParams {
             lr_luma_wiener_ns: None,
             lr_chroma_wiener_ns: [None; 2],
@@ -156,7 +163,11 @@ pub fn build_inter_frame_header(
             .position(|(&index, &hint)| index == slot && hint != u32::MAX)?;
         u32::try_from(position).ok()
     });
-    if position.is_none() && !params.use_ref_frame_mvs && params.filters == plain.filters {
+    if position.is_none()
+        && !params.use_ref_frame_mvs
+        && params.filters == plain.filters
+        && params.global_motion == plain.global_motion
+    {
         return Ok(header);
     }
     let num_total_refs = inter.num_total_refs.unwrap_or(0);
@@ -194,7 +205,16 @@ fn parse_inter_frame_header(
         u32::from(params.opfl_refine_type),
     )
     .unwrap_or(true);
-    let (bytes, bit_len) = inter_frame_header_bits(seq, params, map, lr_refs, weight_coded)?;
+    let gm_predictions: Vec<Option<[i32; 6]>> = ref_frame_idx
+        .iter()
+        .take(map.1 as usize)
+        .map(|&slot| {
+            let hint = refs.ref_order_hint?.get(slot as usize).copied()?;
+            default_base_prediction(params.order_hint, hint)
+        })
+        .collect();
+    let (bytes, bit_len) =
+        inter_frame_header_bits(seq, params, map, (lr_refs, &gm_predictions), weight_coded)?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
@@ -219,7 +239,7 @@ fn inter_frame_header_bits(
     seq: &CoreSeqView,
     params: &InterFrameParams,
     (primary_ref_frame, num_total_refs): (Option<u32>, u32),
-    lr_refs: LrReferenceFilters<'_>,
+    (lr_refs, gm_predictions): (LrReferenceFilters<'_>, &[Option<[i32; 6]>]),
     weight_coded: bool,
 ) -> Result<(Vec<u8>, u64), EncoderHeaderError> {
     if seq.single_picture_header_flag {
@@ -343,10 +363,58 @@ fn inter_frame_header_bits(
         w.write_flag(true)?; // allow_warpmv_mode
     }
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
+    write_global_motion(&mut w, seq, params, (num_total_refs, gm_predictions))?;
     write_film_grain_config(&mut w, seq, params.show_frame, tx.grain_seed)?;
     let bit_len = w.bit_len();
     w.align_to_byte();
     Ok((w.into_bytes(), bit_len))
+}
+
+/// Writes `global_motion_params()` (§ 5.18.9.1) of `params` over a map of
+/// `num_total_refs` references whose `PrevGmParams` are `predictions`, `None`
+/// for a reference that reads no model.
+fn write_global_motion(
+    w: &mut BitWriter,
+    seq: &CoreSeqView,
+    params: &InterFrameParams,
+    (num_total_refs, predictions): (u32, &[Option<[i32; 6]>]),
+) -> Result<(), EncoderHeaderError> {
+    let used = params.global_motion.iter().any(Option::is_some);
+    if !seq.inter.enable_global_motion {
+        return if used {
+            Err(unsupported("global motion without enable_global_motion"))
+        } else {
+            Ok(())
+        };
+    }
+    w.write_flag(used)?; // use_global_motion
+    if !used {
+        return Ok(());
+    }
+    w.write_ns(num_total_refs, num_total_refs + 1)?; // our_ref
+    for (index, &model) in params.global_motion.iter().enumerate() {
+        let Some(&Some(prev)) = predictions.get(index) else {
+            if model.is_some() {
+                return Err(unsupported("global motion of a reference that reads none"));
+            }
+            continue;
+        };
+        w.write_flag(model.is_some())?; // is_global
+        let Some(model) = model else {
+            continue;
+        };
+        let rotzoom = model[4] == -model[3] && model[5] == model[2];
+        w.write_flag(rotzoom)?; // is_rot_zoom
+        let coded: &[usize] = if rotzoom {
+            &[2, 3, 0, 1]
+        } else {
+            &[2, 3, 4, 5, 0, 1]
+        };
+        for &idx in coded {
+            write_global_param(w, idx, prev[idx], model[idx])?;
+        }
+    }
+    Ok(())
 }
 
 /// Serializes the `OBU_REGULAR_TILE_GROUP` OBU of `header` whose one tile group

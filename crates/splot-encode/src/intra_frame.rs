@@ -80,6 +80,9 @@ pub(crate) struct IntraFrameCoder {
     tiles: UniformTiles,
     /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
     pool: Option<WorkerPool>,
+    /// The global motion models every inter frame codes, set by tests.
+    #[cfg(test)]
+    global_motion: [Option<[i32; 6]>; 7],
     /// Show-existing frames output so far, which seed their film grain.
     shown_existing: u64,
     /// The last committed key frame coded a film grain model, which the
@@ -153,6 +156,7 @@ impl IntraFrameCoder {
                 max_drl_bits_minus_1: u32::from(preset.drl_bits.saturating_sub(1)),
                 mvd_tools: preset.mvd_tools,
                 warp: preset.warp > 0,
+                global_motion: preset.global_motion > 0,
                 parity_hiding: preset.parity_hiding,
                 tcq: preset.tcq != TcqFrames::Off,
                 film_grain: config.film_grain,
@@ -179,6 +183,8 @@ impl IntraFrameCoder {
                 .then(|| WorkerPool::new(config.threads))
                 .transpose()
                 .map_err(coding("worker pool"))?,
+            #[cfg(test)]
+            global_motion: [None; 7],
             shown_existing: 0,
             grain_active: false,
         })
@@ -375,6 +381,10 @@ impl IntraFrameCoder {
         let qindex = u32::from(qp);
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
+        #[cfg(test)]
+        {
+            tools.2.7 = self.global_motion;
+        }
         tools.0.delta_q_res = (!sb_offsets.is_empty()).then_some(DELTA_Q_RES);
         let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
         tools.0.grain_seed = grain_seed;
