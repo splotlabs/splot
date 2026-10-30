@@ -93,6 +93,11 @@ impl Lookahead {
         (self.cols, self.rows)
     }
 
+    /// The side of a block in full-resolution luma samples.
+    pub(crate) const fn block_luma(&self) -> usize {
+        BLOCK << self.shift
+    }
+
     /// Analyses `frame`, the frame after the last one pushed. Returns whether
     /// it is a scene cut against that frame.
     pub(crate) fn push(&mut self, frame: &SourceFrame, display_index: u64) -> bool {

@@ -369,7 +369,7 @@ impl MotionSearch {
     }
 
     /// SATD between the source luma of `block` and the row-major `predicted`.
-    fn satd(
+    pub(crate) fn satd(
         &self,
         (left, top, width, height): (usize, usize, usize, usize),
         predicted: &[u16],

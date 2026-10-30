@@ -45,14 +45,16 @@ pub(super) struct CompoundScanState {
     pub(super) entries: FixedStack<CompoundMvStackEntry, MAX_REF_MV_STACK_SIZE>,
     pub(super) prune_count: usize,
     pub(super) derived: CompoundDerivedMvState,
+    pub(super) global_mvs: [Mv; 2],
 }
 
 impl CompoundScanState {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(global_mvs: [Mv; 2]) -> Self {
         Self {
             entries: FixedStack::new(),
             prune_count: 0,
             derived: CompoundDerivedMvState::new(),
+            global_mvs,
         }
     }
 }

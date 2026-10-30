@@ -392,3 +392,22 @@ fn snapshot_restores_the_facade() {
 
 #[path = "partition_tests.rs"]
 mod partition_tests;
+
+/// `scaled` multiplies by a power of two, exactly at whole octaves and
+/// within 0.6% between them, and grows with its argument.
+#[test]
+fn lambda_scaling_follows_powers_of_two() {
+    let lambda = Lambda::from_qindex(120, BitDepth::Eight).unwrap();
+    let rate = |l: Lambda| l.sse_per_bit_q16();
+    assert_eq!(lambda.scaled(0), lambda);
+    assert!(rate(lambda.scaled(512)).abs_diff(rate(lambda) * 4) <= 4);
+    assert!(rate(lambda.scaled(-256)).abs_diff(rate(lambda) / 2) <= 1);
+    let half = rate(lambda.scaled(128)) as f64 / rate(lambda) as f64;
+    assert!((half - core::f64::consts::SQRT_2).abs() < 0.006, "{half}");
+    let mut last = 0;
+    for log2 in (-700..700).step_by(7) {
+        let next = rate(lambda.scaled(log2));
+        assert!(next >= last, "{log2}");
+        last = next;
+    }
+}

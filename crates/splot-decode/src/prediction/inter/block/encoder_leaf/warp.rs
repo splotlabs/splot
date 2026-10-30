@@ -316,6 +316,44 @@ const fn delta_limit(high_precision: bool) -> u8 {
 }
 
 impl EncoderInterTile {
+    /// Predicts the luma of `warp` at `frontier` into `workspace`, as the
+    /// decoder predicts its luma (§ 7.11.3, § 7.13.3.14).
+    pub(crate) fn predict_warp_luma(
+        &mut self,
+        frontier: &DecodeBlockFrontier,
+        warp: EncoderWarpMotion,
+        workspace: &mut CurrentFrameWorkspace<u16>,
+    ) -> Result<()> {
+        let syntax = self.inter_syntax(frontier, EncoderMotion::Warp(warp), true)?;
+        let mut resolved = self.resolve_motion(&syntax)?;
+        predict_by_translation_under_integer_mv(&syntax, &self.core, &mut resolved);
+        let geometry = prediction::placed_inter_geometry_at(
+            frontier,
+            (0, 0),
+            (syntax.block_ctx.bw4, syntax.block_ctx.bh4),
+            false,
+        )?;
+        let placed = geometry.place(single_inter_block(syntax, &resolved));
+        prediction::reconstruct_pure_inter_block(
+            &mut mc::WorkspaceSink::Frame(workspace),
+            &mut self.residual_scratch,
+            &placed,
+            &[],
+            &[],
+            None,
+            false,
+            false,
+            &self.ref_frame_idx,
+            &self.reference,
+            self.qindex,
+            false,
+            false,
+            self.bit_depth,
+            ByteOffset::new(0),
+        )?;
+        Ok(())
+    }
+
     /// The warp bank and the warp model of each 4x4 unit of a warp frame,
     /// for the debug rollback check.
     #[cfg(debug_assertions)]

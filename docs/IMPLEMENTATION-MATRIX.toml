@@ -5161,7 +5161,7 @@ module = "crates/splot-encode/src/tpl.rs"
 change_id = "encoder-m4-lookahead-tpl"
 owner = "encoder"
 risk = "medium"
-notes = "Encoder strategy. The lookahead (lookahead.rs) holds the preset's lookahead_frames frames as luma downscaled by 2 (by 4 above 1080p) in 8-bit, with per-8x8-block intra SATD (best of DC, V, H) and inter SATD from a full-sample search (exhaustive radius 4, then logarithmic). The model (tpl.rs) plans the window with a copy of the GOP planner, takes each block's best of intra and the closest past and future coded frames, and propagates (intra + received) * (intra - best) / intra to the reference blocks under the vector, split on ties. Frame importance (intra + received) / intra gives a qindex offset of -12 * log2(importance), at most -32, plus 3 per mini-GOP layer. The rate controller gets the window and the offsets."
+notes = "Encoder strategy. The lookahead (lookahead.rs) holds the preset's lookahead_frames frames as luma downscaled by 2 (by 4 above 1080p) in 8-bit, with per-8x8-block intra SATD (best of DC, V, H) and inter SATD from a full-sample search (exhaustive radius 4, then logarithmic). The model (tpl.rs) plans the window with a copy of the GOP planner, takes each block's best of intra and the closest past and future coded frames, and propagates (intra + received) * (intra - best) / intra to the reference blocks under the vector, split on ties. Frame importance (intra + received) / intra gives a qindex offset of -12 * log2(importance), at most -32, plus 3 per mini-GOP layer. The rate controller gets the window and the offsets; the block-level pass of ENC-DELTA-Q reuses the propagation."
 
 [feature.status]
 mapped = "done"
@@ -6272,14 +6272,14 @@ id = "ENC-DELTA-Q"
 name = "Encoder superblock quantizer index deltas"
 category = "encoder"
 kind = "encoder-tool"
-spec_sections = ["5.18.7.8", "5.20.5.11", "6.19.5.11", "7.14.1", "7.17.5"]
+spec_sections = ["5.18.7.8", "5.20.5.11", "6.19.5.11", "7.14.1", "7.17.5", "7.17.6"]
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/intra_frame.rs"
-change_id = "enc-delta-q"
+change_id = "enc-tpl-delta-q"
 owner = "encoder"
 risk = "medium"
-notes = "A frame coded with superblock qindex offsets sets delta_q_present with delta_q_res = 2. Before each superblock's search the encoder asks splot_decode::encoder_syntax for the codable CurrentQIndex nearest base_q_idx plus the offset (IntraTileSyntax::set_superblock_qindex, which resolves with the decoder's own clip and delta_q_res rule); the search, the quantizer and the RD lambda of that superblock use it. The facade writes delta_q_abs, its escape bits and its sign after ccso_blk on the first leaf that reads them, keeps the previous CurrentQIndex for a superblock-sized skipped leaf, and dequantizes and records deblocking levels (LumaQIndex, § 7.17.5) with the block qindex, so deblocking follows delta-q (AV2 has no per-block loop-filter delta syntax). Nothing in the encoder sets offsets yet; a frame without offsets codes delta_q_present = 0 byte-identically. Segmentation and quantizer matrices stay refused."
+notes = "PresetParams::tpl_delta_q (strength in percent) drives superblock qindex and lambda from the block-level temporal model (ENC-LOOKAHEAD-TPL): the propagation over the coded mini-GOP plus one frame, with each inter cost raised by the modelled quantization noise of a reference coded at the last frame qindex (recrf; 50% of uniform noise of the § 7.14.2 step), gives every lookahead block (16x16 luma, 32x32 above 1920x1088) an importance (intra + received) / intra. A superblock's log2 beta is the mean over its blocks of log2 importance less that of the frame sums; its lambda is the frame lambda times 2^(-log2 beta * strength / 100), and its qindex offset is 12 qindex per octave of the same value, both bounded by 32 qindex; a qindex clipped to 1..=MaxQ bounds the lambda change to the applied offset. Frames whose offsets all snap to 0 at the delta_q_res step code delta_q_present = 0 and keep the frame lambda. The frame writes delta_q_present with delta_q_res = PresetParams::delta_q_res; before each superblock's search the encoder asks splot_decode::encoder_syntax for the codable CurrentQIndex nearest base_q_idx plus the offset (IntraTileSyntax::set_superblock_qindex, the decoder's own clip and delta_q_res rule), and that superblock's search, quantizer and RD trials use it with the scaled lambda; motion search keeps the frame lambda. The facade writes delta_q_abs, its escape bits and its sign after ccso_blk on the first leaf that reads them, keeps the previous CurrentQIndex for a superblock-sized skipped leaf, and dequantizes and records deblocking levels (LumaQIndex, § 7.17.5) with the block qindex. AV2 has no per-block loop-filter delta syntax: deblocking follows delta-q through LumaQIndex (§ 7.17.6), checked by encoder recon == splot decode == avmdec on delta-q streams with every loop filter on. Placement (2026-10-31, CRF 22/30/37/45, vs main 9fc3b4b90): strength 100 and delta_q_res 1 in every row; p6 niklas f30 Y -0.90%, paris f30 -2.02%, park_joy f10 (the clip has 10 frames; 8 CRF points) -0.88%, mean -1.27%; p10 paris -1.13%, park_joy -0.46%; CPU 0.97-1.01x; per-frame PSNR spread lower than off. Zero-mean SB offsets per frame measured worse (2026-10-31: park -0.91%, paris -0.94%). The A9 target of -4% on niklas is not met: the clip gives 30 frames for the model and the lookahead model is a SATD model of a 2x downscaled source. delta_q_res 2 lost 0.8% on park_joy p6. Segmentation and quantizer matrices stay refused."
 
 [feature.status]
 mapped = "done"
@@ -6287,15 +6287,15 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "partial"
+encode = "done"
 decode_check = "done"
 tests = "done"
 avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_delta_q_tests.rs::superblock_offsets_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::empty_offsets_code_no_delta_q", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::avm_decodes_delta_q_frames_like_splot", "crates/splot-encode/src/tile_writer/tests.rs::superblock_qindex_deltas_round_trip", "crates/splot-encode/src/tile_writer/tests.rs::superblock_qindex_needs_delta_q_present", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::headers_round_trip_for_every_size_bit_depth_and_superblock"]
-commands = ["cargo test -p splot-encode delta_q --locked", "cargo test -p splot-encode superblock_qindex --locked"]
+tests = ["crates/splot-encode/src/intra_frame_delta_q_tests.rs::superblock_offsets_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::empty_offsets_code_no_delta_q", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::avm_decodes_delta_q_frames_like_splot", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::tpl_delta_q_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/tpl.rs::tests::superblocks_follow_the_importance_of_their_blocks", "crates/splot-encode/src/tpl.rs::tests::recon_noise_grows_with_qindex_and_shrinks_with_the_block", "crates/splot-encode/src/kernels/tpl.rs::tests::simd_matches_scalar", "crates/splot-encode/src/rd/tests.rs::lambda_scaling_follows_powers_of_two", "crates/splot-encode/src/tile_writer/tests.rs::superblock_sized_skipped_leaf_keeps_current_qindex", "crates/splot-encode/src/tile_writer/tests.rs::superblock_qindex_deltas_round_trip", "crates/splot-encode/src/tile_writer/tests.rs::superblock_qindex_needs_delta_q_present", "crates/splot-core/src/headers/frame/encoder_stream_tests.rs::headers_round_trip_for_every_size_bit_depth_and_superblock"]
+commands = ["cargo test -p splot-encode delta_q --locked", "cargo test -p splot-encode superblock_qindex --locked", "cargo test -p splot-encode tpl --locked"]
 fixtures = []
 diagnostics = []
 
@@ -6564,10 +6564,10 @@ spec_sections = ["5.4.6", "5.18.2", "5.20.7.7", "5.20.7.11", "5.20.7.14", "7.13.
 sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
 crate = "splot-encode"
 module = "crates/splot-encode/src/warp.rs"
-change_id = "enc-warp-facade"
+change_id = "enc-warp-search"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::warp 1 enables LOCALWARP, DELTAWARP and EXTENDWARP with six-parameter deltas in the sequence and allow_warpmv_mode in each inter frame. The encoder_syntax facade codes WARPMV and WARP_NEWMV leaves with the decoder's symbols and § 7.12 / § 7.13.3 models (no encoder-side fit), writes is_warp = 0 for other single-reference leaves and use_local_warp = 0 for compound NEW_NEWMV, predicts warp blocks of force_integer_mv frames by translation (§ 7.13.3.14), and stores warp models in the § 7.19 motion field. Leaves try the first WARPMV candidate and the zero-delta, local and extended models at the searched vector. Off in every preset row until the search lands and is measured."
+notes = "PresetParams::warp (0..=2) enables LOCALWARP, DELTAWARP and EXTENDWARP with six-parameter deltas in the sequence and allow_warpmv_mode in each inter frame of a temporal layer whose frames pick warp (a decaying per-layer warp-win table, re-probed every 4 frames). The encoder_syntax facade codes WARPMV and WARP_NEWMV leaves with the decoder's symbols and § 7.12 / § 7.13.3 models (no encoder-side fit), writes is_warp = 0 for other single-reference leaves and use_local_warp = 0 for compound NEW_NEWMV, predicts warp blocks of force_integer_mv frames by translation (§ 7.13.3.14), and stores warp models in the § 7.19 motion field. The search ranks the WARPMV candidates and the local, extended and zero-delta models of the best translational reference by luma SATD plus exact rate, steps each delta parameter once and the best WARP_NEWMV vector up to twice, and gives the best warp models that beat NEWMV an RD trial. Off in every row (2026-10-30): against main f08937565, warp = 1, f10, p6 paris Y -0.57% at 1.097x CPU, park_joy (8 qps) +0.63% at 1.088x, niklas 720p +0.02% at 1.080x; p0 park_joy +0.20% at 1.019x. The gain sits at the ladder edge for about +10% CPU, park_joy loses at p0 and p6, and niklas misses the -2% target; revisit with open-loop hierarchical ME (B1), which makes warp candidates cheaper."
 
 [feature.status]
 mapped = "done"
@@ -6582,7 +6582,7 @@ avm_diff = "done"
 perf = "pending"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/intra_frame_warp_tests.rs::warp_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_warp_tests.rs::warp_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_warp_tests.rs::zoom_frames_code_warp_leaves", "crates/splot-encode/src/intra_frame_warp_tests.rs::integer_mv_warp_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_warp_tests.rs::avm_decodes_warp_streams_like_splot", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::warp_frames_code_their_motion_modes_and_allow_warpmv_mode"]
+tests = ["crates/splot-encode/src/intra_frame_warp_tests.rs::warp_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_warp_tests.rs::warp_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_warp_tests.rs::zoom_frames_code_warp_leaves", "crates/splot-encode/src/intra_frame_warp_tests.rs::warp_search_keeps_the_cheapest_models_under_the_bar", "crates/splot-encode/src/intra_frame_warp_tests.rs::two_model_warp_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/warp.rs::tests::the_gate_follows_the_warp_win_ratio", "crates/splot-encode/src/intra_frame_warp_tests.rs::integer_mv_warp_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_warp_tests.rs::avm_decodes_warp_streams_like_splot", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::warp_frames_code_their_motion_modes_and_allow_warpmv_mode"]
 commands = ["cargo test -p splot-encode warp --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_warp --locked -- --ignored"]
 fixtures = []
 diagnostics = []

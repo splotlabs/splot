@@ -79,6 +79,16 @@ pub struct PresetParams {
     /// Frames the lookahead analyses before the next mini-GOP is coded, at
     /// least `mini_gop_size`; scene cuts and the temporal model see this far.
     pub lookahead_frames: u8,
+    /// Strength in percent of the block-level temporal model: each
+    /// superblock's qindex and lambda move with the importance of its
+    /// lookahead blocks over the frame's, coded as `delta_q`. `0` is off.
+    /// `100` in every row (2026-10-26, CRF, vs main 9ec81da32): p6 niklas
+    /// f30 Y -0.86%, paris f30 -1.92%, park_joy f10 +0.06% at 0.95-1.0x CPU.
+    pub tpl_delta_q: u8,
+    /// `delta_q_res` of a frame with superblock qindex offsets: the qindex
+    /// moves in steps of `1 << delta_q_res`, `0..=3`. `1` in every row:
+    /// `2` lost 0.8% on park_joy p6 and gained 0.5% on paris.
+    pub delta_q_res: u8,
     /// Compound candidates of an inter leaf that get a full RD trial, best
     /// prediction SATD first; skip-mode candidates are tried besides them.
     /// `0` codes neither compound nor skip-mode blocks.
@@ -233,9 +243,12 @@ pub struct PresetParams {
     /// -0.12% over OPFL alone; off at p10, which codes no optical flow.
     pub tip_refinemv: bool,
     /// Warped motion (`seq_enabled_motion_modes` `LOCALWARP`, `DELTAWARP`,
-    /// `EXTENDWARP`), `0..=1`: `1` inter frames code `allow_warpmv_mode` and
-    /// single-reference leaves try the decoder's warp candidates. Off in
-    /// every row until measured.
+    /// `EXTENDWARP`), `0..=2`: inter frames of a layer that picks warp code
+    /// `allow_warpmv_mode`, and a leaf gives this many warp models of its best
+    /// translational reference an RD trial when their luma SATD plus rate
+    /// beats its `NEWMV`. Off in every row (2026-10-30): at `1` p6 measured
+    /// paris -0.57%, park_joy +0.63%, niklas +0.02% at about +9% CPU, and
+    /// p0 park_joy +0.20%.
     pub warp: u8,
     /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` enables wedge
     /// and difference-weighted masks (`enable_masked_compound`), `2` also
@@ -354,6 +367,8 @@ impl PresetParams {
             " (mini_gop_size..)",
         )?;
         check("drl_bits", self.drl_bits, 1, 5, "")?;
+        check("tpl_delta_q", self.tpl_delta_q, 0, 200, "")?;
+        check("delta_q_res", self.delta_q_res, 0, 3, "")?;
         check("interp_filter_search", self.interp_filter_search, 0, 2, "")?;
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
@@ -367,7 +382,7 @@ impl PresetParams {
             u8::from(self.opfl || self.refinemv),
             " (1 needs opfl or refinemv)",
         )?;
-        check("warp", self.warp, 0, 1, "")?;
+        check("warp", self.warp, 0, 2, "")?;
         check(
             "compound_types",
             self.compound_types,
@@ -571,6 +586,8 @@ preset_table! {
     gop {
         mini_gop_size:         [    8,     8,     8,     8,     4,     4,     4,     4,     2,     2,     1],
         lookahead_frames:      [   16,    16,    16,    16,     8,     8,     8,     8,     4,     4,     2],
+        tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
+        delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
 }
 
@@ -673,6 +690,7 @@ mod tests {
             assert!(fast.loop_filter_search <= slow.loop_filter_search);
             assert!(fast.mini_gop_size <= slow.mini_gop_size);
             assert!(fast.lookahead_frames <= slow.lookahead_frames);
+            assert!(fast.tpl_delta_q <= slow.tpl_delta_q);
             assert!(fast.compound_candidates <= slow.compound_candidates);
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.mv_prediction <= slow.mv_prediction);
@@ -827,7 +845,7 @@ mod tests {
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),
             (&[("opfl", "false")], "tip_refinemv"),
-            (&[("warp", "2")], "warp"),
+            (&[("warp", "3")], "warp"),
             (&[("compound_types", "4")], "compound_types"),
         ] {
             let mut params = PRESETS[6];
