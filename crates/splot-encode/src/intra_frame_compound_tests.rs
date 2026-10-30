@@ -427,13 +427,10 @@ fn bawp_templates_fit_only_inside_the_reference() {
                 interintra: None,
                 bawp: None,
             };
-            let snapped = match crate::tile_writer::snap_prediction(
-                syntax,
-                &leaf,
-                InterPrediction::Single(base),
-            )? {
-                InterPrediction::Single(modes) => modes,
-                other => panic!("{other:?}"),
+            let InterPrediction::Single(snapped) =
+                crate::tile_writer::snap_prediction(syntax, &leaf, InterPrediction::Single(base))?
+            else {
+                unreachable!("a single-reference prediction snaps to one")
             };
             assert!(syntax.bawp_reads(&leaf, snapped)?);
             let with = |chroma| InterModes {
