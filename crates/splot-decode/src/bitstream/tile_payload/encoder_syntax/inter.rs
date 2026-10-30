@@ -38,7 +38,9 @@ use super::{
 };
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{frame_ref_update_from_core, is_key_or_switch};
+pub use crate::prediction::inter::Bawp;
 use crate::prediction::inter::read_mv::AMVD_INDEX_TO_MVD;
+
 use crate::prediction::inter::{
     EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile, EncoderMotion,
     EncoderSingleMotion, EncoderSingleMvs, FrameCdfHandle, InterIntraPrediction,
@@ -375,6 +377,10 @@ pub struct InterModes {
     /// The inter-intra prediction, where [`IntraTileSyntax::interintra_reads`]
     /// says the block reads it.
     pub interintra: Option<InterIntra>,
+    /// The block adaptive weighted prediction, where
+    /// [`IntraTileSyntax::bawp_reads`] says the block reads it; a BAWP block
+    /// codes no inter-intra.
+    pub bawp: Option<Bawp>,
 }
 
 /// `INTERINTRA_MODES` (§ 3): the `interintra_mode` values.
@@ -545,6 +551,7 @@ impl IntraTileSyntax {
             precision: None,
             amvd: false,
             interintra: None,
+            bawp: None,
         };
         let previous = self.inter_state()?.tile.set_tip_weight(Some(weight));
         let predicted = self.luma_prediction(leaf, InterPrediction::Single(modes));
@@ -582,6 +589,48 @@ impl IntraTileSyntax {
             .tile
             .interintra_reads(&leaf.frontier)
             .map_err(rule("inter_intra"))
+    }
+
+    /// Whether the single-reference leaf `leaf` coding `modes` reads
+    /// `use_bawp` (§ 5.20.7.6); `modes` itself is coded without BAWP.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code.
+    pub fn bawp_reads(&mut self, leaf: &LeafBlock, modes: InterModes) -> Result<bool> {
+        let single = self.single_motion(
+            leaf,
+            InterModes {
+                bawp: None,
+                interintra: None,
+                ..modes
+            },
+        )?;
+        self.inter_ref()?
+            .tile
+            .bawp_reads(&leaf.frontier, single)
+            .map_err(rule("use_bawp"))
+    }
+
+    /// Whether the BAWP of the single-reference `modes` at `leaf` keeps its
+    /// § 7.13.3.25 template inside the reference; `true` without BAWP.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code.
+    pub fn bawp_fits(&mut self, leaf: &LeafBlock, modes: InterModes) -> Result<bool> {
+        let Some(bawp) = modes.bawp else {
+            return Ok(true);
+        };
+        let single = self.single_motion(
+            leaf,
+            InterModes {
+                bawp: None,
+                ..modes
+            },
+        )?;
+        self.inter_state()?
+            .tile
+            .bawp_conformant(&leaf.frontier, single, bawp.chroma)
+            .map_err(rule("BAWP"))
     }
 
     /// `NumTotalRefs`; `0` in an intra frame.
@@ -665,6 +714,7 @@ impl IntraTileSyntax {
     pub fn newmv_base(&mut self, leaf: &LeafBlock, modes: InterModes) -> Result<MotionVector> {
         let near = InterModes {
             mode: InterMode::Near,
+            bawp: None,
             ..modes
         };
         let motion = EncoderSingleMotion {
@@ -1497,6 +1547,7 @@ impl IntraTileSyntax {
             use_amvd: modes.amvd && mode == SINGLE_MODE_NEWMV,
             tip,
             interintra: modes.interintra.map(InterIntra::prediction).transpose()?,
+            bawp: None,
         };
         if mode == SINGLE_MODE_NEWMV {
             let step = self.newmv_step(&modes);
@@ -1524,6 +1575,18 @@ impl IntraTileSyntax {
                 ));
             }
             motion.mvd = mvd;
+        }
+        if let Some(bawp) = modes.bawp {
+            let tile = &mut self.inter_state()?.tile;
+            if !tile
+                .bawp_conformant(&leaf.frontier, motion, bawp.chroma)
+                .map_err(rule("BAWP"))?
+            {
+                return Err(EncoderSyntaxError::Unsupported(
+                    "a BAWP template outside the reference",
+                ));
+            }
+            motion.bawp = Some(bawp);
         }
         Ok(motion)
     }

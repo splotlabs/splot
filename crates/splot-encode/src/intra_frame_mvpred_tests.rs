@@ -169,6 +169,7 @@ fn rollback_restores_the_reference_mv_bank() {
                     precision: None,
                     amvd: false,
                     interintra: None,
+                    bawp: None,
                 }));
                 Walk::trial(syntax, &mut RateSink::adapting()).write_leaf(
                     &leaf,

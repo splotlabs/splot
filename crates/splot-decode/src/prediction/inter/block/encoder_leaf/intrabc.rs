@@ -106,6 +106,7 @@ impl EncoderInterTile {
             use_amvd: false,
             tip: false,
             interintra: None,
+            bawp: None,
         })
     }
 

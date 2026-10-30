@@ -96,6 +96,20 @@ pub(crate) struct EncoderSingleMotion {
     /// The inter-intra prediction (§ 5.20.7.15) of a block that codes
     /// `inter_intra = 1`.
     pub(crate) interintra: Option<InterIntraPrediction>,
+    /// The block adaptive weighted prediction of a block that codes
+    /// `use_bawp = 1` (§ 5.20.7.6).
+    pub(crate) bawp: Option<Bawp>,
+}
+
+/// The block adaptive weighted prediction of a single-reference block
+/// (§ 5.20.7.6, § 7.13.3.25).
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub struct Bawp {
+    /// `explicit_bawp_scale` of a block that codes `explicit_bawp = 1`;
+    /// `None` codes `explicit_bawp = 0`.
+    pub explicit_scale: Option<bool>,
+    /// `use_bawp_chroma`, where the block has chroma.
+    pub chroma: bool,
 }
 
 /// Whether `motion` predicts from the TIP frame.
@@ -209,7 +223,6 @@ impl EncoderInterTile {
             return Err("incomplete inter frame header");
         };
         let refused = [
-            (tail.allow_bawp, "BAWP"),
             (
                 !matches!(
                     inter.interpolation_filter,
@@ -474,6 +487,7 @@ impl EncoderInterTile {
                     use_amvd: false,
                     tip,
                     interintra: None,
+                    bawp: None,
                 },
             )
         };
@@ -521,7 +535,7 @@ impl EncoderInterTile {
             predicted?;
             return Ok(mvs);
         }
-        if placed.block.interintra.is_some() {
+        if placed.block.interintra.is_some() || placed.block.bawp.enabled {
             prediction::reconstruct_placed_inter_block(
                 &mut self.interintra_scratch,
                 &mut self.residual_scratch,
@@ -920,7 +934,10 @@ impl EncoderInterTile {
                     self.tip_refinemv(),
                 ),
             blend,
-            bawp: BawpSyntax::default(),
+            bawp: match motion {
+                EncoderMotion::Single(single) => self.bawp_syntax(frontier, single)?,
+                EncoderMotion::Compound(_) | EncoderMotion::Warp(_) => BawpSyntax::default(),
+            },
             interintra: match motion {
                 EncoderMotion::Single(single) => single.interintra,
                 EncoderMotion::Compound(_) | EncoderMotion::Warp(_) => None,

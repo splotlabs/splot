@@ -2157,7 +2157,7 @@ pub(crate) mod read_mv;
 pub(crate) mod reference;
 mod single_ref;
 
-pub use block::encoder_leaf::CompoundType;
+pub use block::encoder_leaf::{Bawp, CompoundType};
 pub(crate) use block::encoder_leaf::{
     EncoderCompoundMotion, EncoderInterCheckpoint, EncoderInterResidual, EncoderInterTile,
     EncoderMotion, EncoderSingleMotion, EncoderSingleMvs, EncoderWarpMotion, EncoderWarpSource,

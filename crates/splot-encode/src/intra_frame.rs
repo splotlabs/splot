@@ -166,6 +166,7 @@ impl IntraFrameCoder {
                 cwp: preset.compound_types >= 2,
                 implicit_mask: preset.implicit_mask,
                 interintra: preset.interintra,
+                bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,
                 tcq: preset.tcq != TcqFrames::Off,
                 film_grain: config.film_grain,

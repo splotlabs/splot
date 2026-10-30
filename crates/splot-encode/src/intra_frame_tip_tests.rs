@@ -393,6 +393,7 @@ fn tip_tree(
                     precision: None,
                     amvd: false,
                     interintra: None,
+                    bawp: None,
                 }),
             )));
         }

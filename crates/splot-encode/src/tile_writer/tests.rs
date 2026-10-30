@@ -104,6 +104,7 @@ impl Case {
                 cwp: false,
                 implicit_mask: false,
                 interintra: false,
+                bawp: false,
             },
             max_level: 12,
             chroma: ChromaFormatIdc::Yuv420,

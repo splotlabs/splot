@@ -249,10 +249,10 @@ impl KeyFrameTileWriter {
 thread_local! {
     /// Compound leaves of the final passes on this thread: weighted
     /// `COMPOUND_AVERAGE`, wedge, difference-weighted, and masked
-    /// `NEAR_NEARMV`; then inter-intra leaves, and those of them at the left
-    /// edge of a tile that does not start the frame.
-    pub(crate) static CODED_TYPES: core::cell::Cell<[usize; 6]> =
-        const { core::cell::Cell::new([0; 6]) };
+    /// `NEAR_NEARMV`; then inter-intra leaves, those of them at the left
+    /// edge of a tile that does not start the frame, and BAWP leaves.
+    pub(crate) static CODED_TYPES: core::cell::Cell<[usize; 7]> =
+        const { core::cell::Cell::new([0; 7]) };
 }
 
 #[cfg(test)]
@@ -261,6 +261,7 @@ fn count_coded_type(prediction: InterPrediction, tile_edge: bool) {
     if let InterPrediction::Single(single) = prediction {
         counts[4] += usize::from(single.interintra.is_some());
         counts[5] += usize::from(single.interintra.is_some() && tile_edge);
+        counts[6] += usize::from(single.bawp.is_some());
         CODED_TYPES.set(counts);
     }
     let InterPrediction::Compound(modes) = prediction else {
@@ -696,14 +697,15 @@ fn chroma_partner(blocks: &[TransformBlock], u: &TransformBlock) -> Option<usize
 
 /// `prediction` with each coded vector moved onto the lattice of its base. A
 /// `LOCALWARP` or `EXTENDWARP` model the leaf cannot code, which a memoized
-/// subtree recoded under other neighbours meets, codes the zero `DELTAWARP`.
+/// subtree recoded under other neighbours meets, codes the zero `DELTAWARP`;
+/// a BAWP whose § 7.13.3.25 template no longer fits is dropped.
 pub(crate) fn snap_prediction(
     syntax: &mut IntraTileSyntax,
     leaf: &LeafBlock,
     prediction: InterPrediction,
 ) -> Result<InterPrediction> {
     let step = syntax.mv_step();
-    Ok(match prediction {
+    let snapped = match prediction {
         InterPrediction::Single(mut modes) if modes.mode == InterMode::New => {
             let base = syntax.newmv_base(leaf, modes)?;
             let target = modes.mv;
@@ -745,6 +747,15 @@ pub(crate) fn snap_prediction(
                 modes.mv = Some(snap_mv(target, base, syntax.warp_step(&modes)));
             }
             InterPrediction::Warp(modes)
+        }
+        other => other,
+    };
+    Ok(match snapped {
+        InterPrediction::Single(modes) if !syntax.bawp_fits(leaf, modes)? => {
+            InterPrediction::Single(InterModes {
+                bawp: None,
+                ..modes
+            })
         }
         other => other,
     })

@@ -98,7 +98,7 @@ fn forced_compound_types_decode_on_any_thread_count() {
         let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
         super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200)
     };
-    crate::tile_writer::CODED_TYPES.set([0; 6]);
+    crate::tile_writer::CODED_TYPES.set([0; 7]);
     let (one, expected, cores, _) = stream(1);
     let [weighted, wedges, diffs, masked_near, ..] = crate::tile_writer::CODED_TYPES.get();
     assert!(
@@ -160,7 +160,7 @@ fn searched_stream(
     };
     config.threads = splot_parallel::ThreadCount::from(threads);
     let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
-    crate::tile_writer::CODED_TYPES.set([0; 6]);
+    crate::tile_writer::CODED_TYPES.set([0; 7]);
     let (units, expected, cores, _) =
         super::carry::planned_stream_of(&config, coder, noisy_panning_frame, qp);
     let [weighted, wedges, diffs, ..] = crate::tile_writer::CODED_TYPES.get();
@@ -232,7 +232,7 @@ fn interintra_streams_decode_on_any_thread_count() {
         let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
         super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200)
     };
-    crate::tile_writer::CODED_TYPES.set([0; 6]);
+    crate::tile_writer::CODED_TYPES.set([0; 7]);
     let (one, expected, cores, coder) = stream(1);
     assert!(coder.sequence.inter.unwrap().seq_enabled_motion_modes[1]);
     let interintra = crate::tile_writer::CODED_TYPES.get()[4];
@@ -271,12 +271,12 @@ fn forced_interintra_at_tile_edges_decodes() {
     };
     config.threads = splot_parallel::ThreadCount::from(1);
     let coder = IntraFrameCoder::with_preset(&config, interintra_preset()).unwrap();
-    crate::tile_writer::CODED_TYPES.set([0; 6]);
+    crate::tile_writer::CODED_TYPES.set([0; 7]);
     crate::mode_decision::FORCE_INTERINTRA.set(true);
     let (units, expected, ..) =
         super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
     crate::mode_decision::FORCE_INTERINTRA.set(false);
-    let [.., interintra, at_tile_edge] = crate::tile_writer::CODED_TYPES.get();
+    let [.., interintra, at_tile_edge, _] = crate::tile_writer::CODED_TYPES.get();
     assert!(
         at_tile_edge > 0,
         "{interintra} inter-intra leaves, none at a tile edge"
@@ -309,7 +309,7 @@ fn avm_decodes_interintra_like_splot() {
     };
     config.threads = splot_parallel::ThreadCount::from(1);
     let coder = IntraFrameCoder::with_preset(&config, interintra_preset()).unwrap();
-    crate::tile_writer::CODED_TYPES.set([0; 6]);
+    crate::tile_writer::CODED_TYPES.set([0; 7]);
     let (units, ..) = super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
     assert!(
         crate::tile_writer::CODED_TYPES.get()[4] > 0,
@@ -323,4 +323,135 @@ fn avm_decodes_interintra_like_splot() {
         "interintra",
     );
     assert!(avm == decode(&units), "AVM output differs");
+}
+
+/// A noisy 10-bit mini-GOP stream of `width`x`height` in two tiles with the
+/// BAWP search on `threads` threads: the units, the recon, the headers and
+/// the BAWP leaves of the final pass (counted on one thread).
+fn bawp_stream(
+    (width, height): (u32, u32),
+    threads: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, usize) {
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        bawp: true,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let mut config = config(width, height, BitDepth::Ten, 6, 200);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    assert!(coder.sequence.inter.unwrap().enable_bawp);
+    crate::tile_writer::CODED_TYPES.set([0; 7]);
+    let (units, expected, cores, _) =
+        super::carry::planned_stream_of(&config, coder, noisy_panning_frame, 200);
+    (
+        units,
+        expected,
+        cores,
+        crate::tile_writer::CODED_TYPES.get()[6],
+    )
+}
+
+/// The BAWP search codes BAWP leaves in a deblocked two-tile stream that
+/// decodes to the encoder recon with the same bytes on 1, 2 and 8 threads,
+/// and in a 130x70 stream, whose planes end inside a 4x4 unit.
+#[test]
+fn bawp_streams_decode_on_any_thread_count() {
+    let (one, expected, cores, bawp) = bawp_stream((136, 72), 1);
+    assert!(bawp > 0, "no BAWP leaf");
+    assert!(cores.iter().any(|core| {
+        core.deblocking_filter_params
+            .as_ref()
+            .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
+    }));
+    assert_same_samples(&decode(&one), &expected, "BAWP");
+    for threads in [2, 8] {
+        assert!(
+            bawp_stream((136, 72), threads).0 == one,
+            "{threads} threads"
+        );
+    }
+    let (odd, expected, _, bawp) = bawp_stream((130, 70), 1);
+    assert!(bawp > 0, "no BAWP leaf at 130x70");
+    assert_same_samples(&decode(&odd), &expected, "BAWP 130x70");
+}
+
+/// AVM decodes the BAWP streams, which code BAWP leaves, like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_bawp_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for size in [(136, 72), (130, 70)] {
+        let (units, _, _, bawp) = bawp_stream(size, 1);
+        assert!(bawp > 0, "no BAWP leaf at {size:?}");
+        let avm = avm_decode(
+            &avmdec,
+            std::slice::from_ref(&units),
+            size,
+            BitDepth::Ten,
+            "bawp",
+        );
+        assert!(avm == decode(&units), "{size:?}: AVM output differs");
+    }
+}
+
+/// A BAWP `NEWMV` at a superblock root whose luma template starts at
+/// `refX = refY = 1` fits without chroma weighting but not with it, as the
+/// 4:2:0 chroma template starts at 0 (§ 7.13.3.25 applies the requirement
+/// to chroma only with `use_bawp_chroma`); `snap_prediction` drops the BAWP
+/// that no longer fits instead of failing the frame.
+#[test]
+fn bawp_templates_fit_only_inside_the_reference() {
+    let mut config = config(272, 200, BitDepth::Eight, 6, 140);
+    config.chroma = PixelFormat::Yuv420;
+    let mut checked = 0;
+    let tree = |syntax: &mut IntraTileSyntax,
+                node: PartitionNode,
+                rng: &mut Rng,
+                coverage: &mut Coverage| {
+        let leaf = syntax.leaf(node)?;
+        if checked == 0 && leaf.row4() == 0 && leaf.col4() == 0 && syntax.inter_allowed(&leaf) {
+            let base = InterModes {
+                ref_frame: 0,
+                mode: InterMode::New,
+                drl: 0,
+                mv: MotionVector { row: 8, col: 8 },
+                filter: splot_recon::InterpolationFilter::EightTap,
+                precision: None,
+                amvd: false,
+                interintra: None,
+                bawp: None,
+            };
+            let InterPrediction::Single(snapped) =
+                crate::tile_writer::snap_prediction(syntax, &leaf, InterPrediction::Single(base))?
+            else {
+                unreachable!("a single-reference prediction snaps to one")
+            };
+            assert!(syntax.bawp_reads(&leaf, snapped)?);
+            let with = |chroma| InterModes {
+                bawp: Some(Bawp {
+                    explicit_scale: None,
+                    chroma,
+                }),
+                ..snapped
+            };
+            assert!(syntax.bawp_fits(&leaf, with(false))?);
+            assert!(!syntax.bawp_fits(&leaf, with(true))?);
+            let dropped = crate::tile_writer::snap_prediction(
+                syntax,
+                &leaf,
+                InterPrediction::Single(with(true)),
+            )?;
+            assert_eq!(dropped, InterPrediction::Single(snapped));
+            checked += 1;
+        }
+        super::random_tree(syntax, node, rng, coverage)
+    };
+    super::inter_stream_with(&config, 0xBA3F, tree);
+    assert_eq!(checked, 1);
 }
