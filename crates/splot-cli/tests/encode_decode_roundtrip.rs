@@ -158,6 +158,43 @@ fn chroma_422_and_444_clips_encode_validate_and_decode_to_the_encoder_stats() {
     }
 }
 
+/// `--low-delay` is the `mini_gop_size=1` and `lookahead_frames=1`
+/// overrides: every frame is coded and shown in input order.
+#[test]
+fn low_delay_clips_code_every_frame_in_input_order() {
+    round_trip(8, YUV420, &["--qp", "90", "--low-delay"]);
+    let (y4m, _) = synthetic_y4m(8, YUV420, FRAMES);
+    let input = temp_input("y4m", &y4m);
+    let encode = |flags: &[&str]| {
+        let ivf = temp_output("ivf");
+        let mut args = vec!["encode", input.to_str().unwrap(), "-o"];
+        args.push(ivf.to_str().unwrap());
+        args.extend(["--keyint", "16", "--stats"]);
+        args.extend(flags);
+        let out = splot(&args);
+        assert!(out.status.success(), "{out:?}");
+        let bytes = std::fs::read(&ivf).unwrap();
+        let _ = std::fs::remove_file(ivf);
+        (String::from_utf8(out.stdout).unwrap(), bytes)
+    };
+    let (stats, low_delay) = encode(&["--low-delay"]);
+    let pts: Vec<&str> = stats
+        .lines()
+        .skip(1)
+        .map(|line| line.split(',').nth(1).unwrap())
+        .collect();
+    assert_eq!(pts, ["0", "1", "2", "3", "4", "5"]);
+    let overrides = [
+        "--preset-set",
+        "mini_gop_size=1",
+        "--preset-set",
+        "lookahead_frames=1",
+    ];
+    assert_eq!(encode(&overrides).1, low_delay);
+    assert_ne!(encode(&[]).1, low_delay);
+    let _ = std::fs::remove_file(input);
+}
+
 #[test]
 fn crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats() {
     round_trip(8, YUV420, &["--crf", "25"]);

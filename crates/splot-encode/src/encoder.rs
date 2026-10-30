@@ -529,6 +529,26 @@ mod tests {
         Ok(())
     }
 
+    /// The low-delay overrides: every frame is coded and shown as soon as it
+    /// is sent, in display order.
+    #[test]
+    fn mini_gop_and_lookahead_of_one_emit_each_frame_at_once() -> Result<()> {
+        let mut config = encoder(None, 6)?.config().clone();
+        config.keyint = Config::DEFAULT_KEYINT;
+        config.preset_overrides = vec![
+            ("mini_gop_size".into(), "1".into()),
+            ("lookahead_frames".into(), "1".into()),
+        ];
+        let mut encoder = Encoder::with_coder(config, Box::new(FakeCoder { fail_at: None }))?;
+        for pts in 0..6 {
+            encoder.send_frame(frame(&encoder, pts)?)?;
+            let packet = encoder.receive_packet()?.ok_or(Error::Failed)?;
+            assert_eq!((packet.pts, packet.data[1]), (pts, pts as u8));
+            assert!(encoder.receive_packet()?.is_none());
+        }
+        Ok(())
+    }
+
     /// The stream of three flat 40x24 frames at preset 6 with `overrides`.
     fn stream_with(overrides: &[(&str, &str)]) -> Result<Vec<u8>> {
         let mut config = Config::new(40, 24);
