@@ -2139,7 +2139,12 @@ mod frame_parse;
 pub(in crate::prediction::inter) use frame_parse::prepare_scheduled_recon;
 pub(crate) use frame_parse::{InterFrameParse, InterFrameParser, PendingFilterAttach};
 pub(crate) use tile::{ScheduledTileRecon, ScheduledTileWorkspace};
+mod bawp_syntax;
 mod interintra;
+pub(super) use bawp_syntax::{
+    BawpParseInput, bawp_signal_allowed, bawp_with_ref_distance, block_reference_is_scaled,
+    explicit_bawp_context, read_bawp_syntax,
+};
 mod intrabc;
 pub(crate) use intrabc::global_intrabc_enabled;
 mod pixel_commit;
@@ -2233,150 +2238,6 @@ fn read_inter_intra_syntax_enabled(
     }
 
     warp::read_active_inter_intra_tail(cdfs, symbols, bsize_group, b_size, tile_offset)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct BawpParseInput {
-    pub(super) allow_bawp: bool,
-    pub(super) reference_scaled: bool,
-    pub(super) frame_is_switch: bool,
-    pub(super) single_mode: u8,
-    pub(super) use_amvd: bool,
-    pub(super) n4w: usize,
-    pub(super) n4h: usize,
-    pub(super) has_chroma: bool,
-    pub(super) avail_up: bool,
-    pub(super) avail_left: bool,
-}
-
-/// Whether a single-reference block of `input` reads `use_bawp`
-/// (§ 5.20.7.6).
-pub(super) const fn bawp_signal_allowed(input: BawpParseInput) -> bool {
-    input.allow_bawp
-        && !input.reference_scaled
-        && !input.frame_is_switch
-        && input.single_mode != SINGLE_MODE_GLOBALMV
-        && input.n4w >= 2
-        && input.n4h >= 2
-}
-
-/// `bawp` with `ref_dist_gt4` of list reference `ref_frame0` at
-/// `current_order_hint` (§ 7.13.3.25).
-pub(super) fn bawp_with_ref_distance<T: ReconSample>(
-    bawp: BawpSyntax,
-    ref_frame0: i8,
-    ref_frame_idx: &[u32],
-    reference: &InterReferenceState<T>,
-    current_order_hint: u32,
-) -> BawpSyntax {
-    if !bawp.enabled {
-        return bawp;
-    }
-    let slot = usize::try_from(ref_frame0)
-        .ok()
-        .and_then(|list_ref| ref_frame_idx.get(list_ref).copied())
-        .unwrap_or(0);
-    let ref_hint = reference
-        .ref_order_hint
-        .get(slot as usize)
-        .copied()
-        .map_or(0, |hint| i32::try_from(hint).unwrap_or(i32::MAX));
-    BawpSyntax {
-        ref_dist_gt4: super::get_relative_dist(ref_hint, current_order_hint as i32).abs() > 4,
-        ..bawp
-    }
-}
-
-fn read_bawp_syntax(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: BawpParseInput,
-    tile_offset: ByteOffset,
-) -> Result<BawpSyntax> {
-    if !bawp_signal_allowed(input) {
-        return Ok(BawpSyntax::default());
-    }
-
-    let use_bawp = cdfs
-        .read_block_symbol_trace(TileCdfSelector::UseBawp, symbols)
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    if use_bawp.get() == 0 {
-        return Ok(BawpSyntax::default());
-    }
-
-    let list_index = explicit_bawp_context(input.single_mode, input.use_amvd);
-    let explicit_bawp = cdfs
-        .read_block_symbol_trace(TileCdfSelector::ExplicitBawp { ctx: list_index }, symbols)
-        .map_err(|error| symbol_read_error(error, tile_offset))?;
-    let explicit = explicit_bawp.get() != 0;
-    let explicit_scale_positive = if explicit {
-        cdfs.read_block_symbol_trace(TileCdfSelector::ExplicitBawpScale, symbols)
-            .map_err(|error| symbol_read_error(error, tile_offset))?
-            .get()
-            != 0
-    } else {
-        false
-    };
-    let chroma = if input.has_chroma {
-        cdfs.read_block_symbol_trace(TileCdfSelector::UseBawpChroma, symbols)
-            .map_err(|error| symbol_read_error(error, tile_offset))?
-            .get()
-            != 0
-    } else {
-        false
-    };
-
-    Ok(BawpSyntax {
-        enabled: true,
-        explicit,
-        explicit_scale_positive,
-        list_index: list_index as u8,
-        ref_dist_gt4: false,
-        chroma,
-        avail_up: input.avail_up,
-        avail_left: input.avail_left,
-    })
-}
-
-pub(super) fn block_reference_is_scaled<T: ReconSample>(
-    core: &FrameHeaderCore,
-    reference: &InterReferenceState<T>,
-    ref_frame_idx: &[u32],
-    ref_frame: i8,
-) -> Result<bool> {
-    let frame_size = core
-        .frame_size
-        .ok_or(crate::DecodeHeaderStateError::MissingFrameSize)?;
-    let slot = usize::try_from(super::block_reference_slot(ref_frame_idx, ref_frame)?)
-        .unwrap_or(usize::MAX);
-    let width = reference.ref_frame_width.get(slot).copied().ok_or(
-        crate::DecodeReferenceStateError::SlotOutOfRange {
-            slot,
-            slot_count: reference.ref_frame_width.len(),
-        },
-    )?;
-    let height = reference.ref_frame_height.get(slot).copied().ok_or(
-        crate::DecodeReferenceStateError::SlotOutOfRange {
-            slot,
-            slot_count: reference.ref_frame_height.len(),
-        },
-    )?;
-    Ok(super::mv_scaling::reference_is_scaled(
-        width as i32,
-        height as i32,
-        frame_size.width as i32,
-        frame_size.height as i32,
-    ))
-}
-
-pub(super) fn explicit_bawp_context(single_mode: u8, use_amvd: bool) -> usize {
-    if single_mode == SINGLE_MODE_NEARMV {
-        0
-    } else if single_mode == SINGLE_MODE_NEWMV && use_amvd {
-        1
-    } else {
-        2
-    }
 }
 
 fn single_inter_needs_interp_filter(n4w: usize, n4h: usize, single_mode: u8) -> bool {
