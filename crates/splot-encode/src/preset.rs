@@ -240,6 +240,16 @@ pub struct PresetParams {
     /// paris -0.57%, park_joy +0.63%, niklas +0.02% at about +9% CPU, and
     /// p0 park_joy +0.20%.
     pub warp: u8,
+    /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` enables
+    /// `cwp_idx` weights (`enable_cwp`), `2` also wedge and
+    /// difference-weighted masks (`enable_masked_compound`). Off in every
+    /// row until the search is measured.
+    pub compound_types: u8,
+    /// `enable_imp_msk_bld`: `COMPOUND_AVERAGE` and TIP blocks blend with the
+    /// implicit mask the decoder derives; no search. Off in every row
+    /// (2026-10-30): on alone it measured park_joy +1.26%, paris +0.20% at
+    /// p6, as the compound search scores the plain average.
+    pub implicit_mask: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -355,9 +365,23 @@ impl PresetParams {
             u8::from(self.opfl || self.refinemv),
             " (1 needs opfl or refinemv)",
         )?;
-        check("warp", self.warp, 0, 2, "")
+        check("warp", self.warp, 0, 2, "")?;
+        check(
+            "compound_types",
+            self.compound_types,
+            0,
+            MAX_COMPOUND_TYPES,
+            "",
+        )
     }
 }
+
+/// The largest [`PresetParams::compound_types`]; tests also take
+/// [`crate::mode_decision::FORCED_COMPOUND_TYPES`].
+#[cfg(not(test))]
+const MAX_COMPOUND_TYPES: u8 = 2;
+#[cfg(test)]
+const MAX_COMPOUND_TYPES: u8 = crate::mode_decision::FORCED_COMPOUND_TYPES;
 
 /// A [`PresetParams`] field type that [`PresetParams::set`] parses.
 trait FieldValue: Sized {
@@ -522,6 +546,8 @@ preset_table! {
         refinemv:              [false, false, false, false, false, false, false, false, false, false, false],
         tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        compound_types:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -680,6 +706,8 @@ mod tests {
             assert!(fast.inter_ist <= slow.inter_ist);
             assert!(fast.tip <= slow.tip);
             assert!(fast.warp <= slow.warp);
+            assert!(fast.compound_types <= slow.compound_types);
+            assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.opfl <= slow.opfl);
             assert!(fast.tip_refinemv <= slow.tip_refinemv);
             assert!(
@@ -796,6 +824,7 @@ mod tests {
             (&[("tip_output", "201")], "tip_output"),
             (&[("opfl", "false")], "tip_refinemv"),
             (&[("warp", "3")], "warp"),
+            (&[("compound_types", "4")], "compound_types"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {
