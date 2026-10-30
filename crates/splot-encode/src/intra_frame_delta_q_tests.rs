@@ -203,7 +203,7 @@ fn tpl_stream(
     let frames = frames.lock().unwrap();
     let recon = frames
         .values()
-        .flat_map(|(recon, _)| recon.clone())
+        .flat_map(|(recon, _)| recon.iter().copied())
         .collect();
     (
         units,
