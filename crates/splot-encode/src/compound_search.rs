@@ -63,18 +63,20 @@ const fn inverse_cost(dd: i64, (sde, see): (i64, i64), [mde, mee, mmee]: [i64; 3
 }
 
 impl TrialCoder<'_, '_> {
-    /// The compound types of the survivor `trial` that beat its
+    /// The compound types of the candidate `trial` that beat its
     /// `COMPOUND_AVERAGE` in closed form: the best `cwp_idx` weight, the best
     /// wedge with its sign and the better difference-weighted mask, each
-    /// without optical flow or vector refinement.
+    /// without optical flow or vector refinement, with `4096` times their
+    /// squared error; and that of the average.
     pub(super) fn typed_variants(
         &mut self,
         leaf: &LeafBlock,
         motion: &MotionSearch,
         trial: CompoundModes,
-    ) -> Result<Vec<CompoundModes>> {
+    ) -> Result<(i64, Vec<(i64, CompoundModes)>)> {
+        let none = || Ok((0, Vec::new()));
         if self.preset.compound_types == 0 {
-            return Ok(Vec::new());
+            return none();
         }
         let base = CompoundModes {
             optflow: false,
@@ -84,15 +86,15 @@ impl TrialCoder<'_, '_> {
         };
         let Some(types) = codable(self.syntax.compound_types(leaf, base).map_err(Into::into))?
         else {
-            return Ok(Vec::new());
+            return none();
         };
         if !types.masked && types.cwp.is_none() {
-            return Ok(Vec::new());
+            return none();
         }
         let prediction = InterPrediction::Compound(base);
         let Some(mvs) = codable(self.syntax.inter_mvs(leaf, prediction).map_err(Into::into))?
         else {
-            return Ok(Vec::new());
+            return none();
         };
         let rect = leaf_rect(leaf)?;
         let lists = [(base.refs.0, mvs[0]), (base.refs.1, mvs[1])];
@@ -140,10 +142,12 @@ impl TrialCoder<'_, '_> {
             keep(inverse_cost(dd, totals, moments), inverse, &mut best);
             out.extend(best.take());
         }
-        Ok(out
-            .into_iter()
-            .map(|(_, blend)| CompoundModes { blend, ..base })
-            .collect())
+        Ok((
+            average,
+            out.into_iter()
+                .map(|(cost, blend)| (cost, CompoundModes { blend, ..base }))
+                .collect(),
+        ))
     }
 }
 

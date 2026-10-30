@@ -787,18 +787,29 @@ impl TrialCoder<'_, '_> {
         let keep = usize::from(self.preset.compound_candidates);
         ranked.sort_by_key(|&(satd, ..)| satd);
         ranked.truncate(keep * PRICED_COMPOUND_SHARE);
-        for (cost, _, trial) in &mut ranked {
+        let mut priced = Vec::with_capacity(ranked.len());
+        for (mut cost, _, trial) in ranked {
             let mut sink = RateSink::adapting();
             self.syntax
-                .price_inter_modes(leaf, InterPrediction::Compound(*trial), &mut sink)?;
-            *cost += motion.bits_cost(sink.bits);
+                .price_inter_modes(leaf, InterPrediction::Compound(trial), &mut sink)?;
+            cost += motion.bits_cost(sink.bits);
+            let (average, typed) = self.typed_variants(leaf, motion, trial)?;
+            if let Some(best) = typed.iter().map(|&(sse, _)| sse).min() {
+                cost = scaled_cost(cost, best, average);
+            }
+            priced.push((cost, trial, typed));
         }
-        ranked.sort_by_key(|&(cost, ..)| cost);
-        ranked.truncate(keep);
-        let mut out = Vec::with_capacity(ranked.len());
-        for (.., trial) in ranked {
-            let trial = self.joint_refined(leaf, motion, trial)?;
-            let trial = self.refined(leaf, motion, trial)?;
+        priced.sort_by_key(|&(cost, ..)| cost);
+        priced.truncate(keep);
+        let mut out = Vec::with_capacity(priced.len());
+        for (_, trial, typed) in priced {
+            let joint = self.joint_refined(leaf, motion, trial)?;
+            let typed = if joint == trial {
+                typed
+            } else {
+                self.typed_variants(leaf, motion, joint)?.1
+            };
+            let trial = self.refined(leaf, motion, joint, &typed)?;
             #[cfg(test)]
             let trial = self.forced_type(leaf, trial)?;
             out.push(LeafChoice::inter(InterPrediction::Compound(trial)));
@@ -850,6 +861,7 @@ impl TrialCoder<'_, '_> {
         leaf: &LeafBlock,
         motion: &MotionSearch,
         trial: CompoundModes,
+        typed: &[(i64, CompoundModes)],
     ) -> Result<CompoundModes> {
         let mut variants = vec![trial];
         if self.preset.opfl || self.preset.refinemv {
@@ -871,8 +883,7 @@ impl TrialCoder<'_, '_> {
                 }
             }
         }
-        let typed = self.typed_variants(leaf, motion, trial)?;
-        variants.extend(typed);
+        variants.extend(typed.iter().map(|&(_, variant)| variant));
         if variants.len() == 1 {
             return Ok(trial);
         }
@@ -1028,6 +1039,18 @@ pub(crate) fn quadrant_sse(
 fn leaf_rect(leaf: &LeafBlock) -> Result<(usize, usize, usize, usize)> {
     let (w, h) = leaf.dimensions()?;
     Ok((leaf.col4() * 4, leaf.row4() * 4, w, h))
+}
+
+/// The shortlist cost `cost` of a compound candidate scaled by the ratio of
+/// the squared error `best` of its best compound type to that of its
+/// average, `average`.
+fn scaled_cost(cost: u64, best: i64, average: i64) -> u64 {
+    match (u128::try_from(best), u128::try_from(average)) {
+        (Ok(best), Ok(average)) if average > 0 => {
+            u64::try_from(u128::from(cost) * best / average).unwrap_or(cost)
+        }
+        _ => cost,
+    }
 }
 
 /// The cheaper of `a` and `b`; a tie keeps `a`.
