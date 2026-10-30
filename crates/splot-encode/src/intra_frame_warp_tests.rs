@@ -274,7 +274,8 @@ fn warp_streams_match_on_any_thread_count() {
 #[test]
 fn zoom_frames_code_warp_leaves() {
     let config = config(96, 64, BitDepth::Eight, 6, 90);
-    let mut coder = IntraFrameCoder::with_preset(&config, with_warp(|_| {})).unwrap();
+    let preset = with_warp(|params| params.compound_types = 0);
+    let mut coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
     let mut units = Vec::new();
     let mut expected = Vec::new();
     let mut warps = 0;

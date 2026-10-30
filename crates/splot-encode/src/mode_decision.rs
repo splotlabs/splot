@@ -90,6 +90,7 @@ pub(crate) struct TrialCoder<'a, 'b> {
     /// The partition of each node of the coded luma tree, by key, while a
     /// chroma tree is searched.
     luma: HashMap<u64, Partition>,
+    compound: compound_search::CompoundScratch,
 }
 
 impl<'a, 'b> TrialCoder<'a, 'b> {
@@ -107,6 +108,7 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             lambda,
             motion,
             luma: HashMap::new(),
+            compound: compound_search::CompoundScratch::default(),
         }
     }
 
@@ -826,17 +828,23 @@ impl TrialCoder<'_, '_> {
         let keep = usize::from(self.preset.compound_candidates);
         ranked.sort_by_key(|&(satd, ..)| satd);
         ranked.truncate(keep * PRICED_COMPOUND_SHARE);
-        for (cost, _, trial) in &mut ranked {
+        let mut priced = Vec::with_capacity(ranked.len());
+        for (mut cost, _, trial) in ranked {
             let mut sink = RateSink::adapting();
             self.syntax
-                .price_inter_modes(leaf, InterPrediction::Compound(*trial), &mut sink)?;
-            *cost += motion.bits_cost(sink.bits);
+                .price_inter_modes(leaf, InterPrediction::Compound(trial), &mut sink)?;
+            cost += motion.bits_cost(sink.bits);
+            let (average, typed) = self.typed_variants(leaf, motion, trial)?;
+            if let Some(best) = typed.iter().map(|&(sse, _)| sse).min() {
+                cost = scaled_cost(cost, best, average);
+            }
+            priced.push((cost, trial, typed));
         }
-        ranked.sort_by_key(|&(cost, ..)| cost);
-        ranked.truncate(keep);
-        let mut out = Vec::with_capacity(ranked.len());
-        for (.., trial) in ranked {
-            let trial = self.refined(leaf, motion, trial)?;
+        priced.sort_by_key(|&(cost, ..)| cost);
+        priced.truncate(keep);
+        let mut out = Vec::with_capacity(priced.len());
+        for (_, trial, typed) in priced {
+            let trial = self.refined(leaf, motion, trial, &typed)?;
             #[cfg(test)]
             let trial = self.forced_type(leaf, trial)?;
             out.push(LeafChoice::inter(InterPrediction::Compound(trial)));
@@ -870,7 +878,7 @@ impl TrialCoder<'_, '_> {
             types.masked.then_some(CompoundType::DiffWeighted {
                 inverse: key.is_multiple_of(2),
             }),
-            types.cwp.then_some(CompoundType::Average {
+            types.cwp.is_some().then_some(CompoundType::Average {
                 cwp: 1 + (key % 4) as u8,
             }),
         ];
@@ -879,36 +887,38 @@ impl TrialCoder<'_, '_> {
             .map_or(trial, |blend| CompoundModes { blend, ..base }))
     }
 
-    /// `trial` with the `use_optflow` and `use_refinemv` it reads whose
-    /// decoder prediction has the least luma SATD plus mode and filter rate;
-    /// each variant is predicted once, by the decoder's own refinement.
+    /// `trial` with the `use_optflow` and `use_refinemv` it reads, or one of
+    /// its [`Self::typed_variants`], whose decoder prediction has the least
+    /// luma SATD plus mode and filter rate; each variant is predicted once,
+    /// by the decoder's own refinement and blend.
     fn refined(
         &mut self,
         leaf: &LeafBlock,
         motion: &MotionSearch,
         trial: CompoundModes,
+        typed: &[(i64, CompoundModes)],
     ) -> Result<CompoundModes> {
-        if !self.preset.opfl && !self.preset.refinemv {
-            return Ok(trial);
-        }
-        let (reads_optflow, _) = self.syntax.compound_refinements(leaf, trial)?;
         let mut variants = vec![trial];
-        if reads_optflow {
-            variants.push(CompoundModes {
-                optflow: true,
-                ..trial
-            });
-        }
-        let base = variants.len();
-        for index in 0..base {
-            let variant = variants[index];
-            if self.syntax.compound_refinements(leaf, variant)?.1 {
+        if self.preset.opfl || self.preset.refinemv {
+            let (reads_optflow, _) = self.syntax.compound_refinements(leaf, trial)?;
+            if reads_optflow {
                 variants.push(CompoundModes {
-                    refinemv: true,
-                    ..variant
+                    optflow: true,
+                    ..trial
                 });
             }
+            let base = variants.len();
+            for index in 0..base {
+                let variant = variants[index];
+                if self.syntax.compound_refinements(leaf, variant)?.1 {
+                    variants.push(CompoundModes {
+                        refinemv: true,
+                        ..variant
+                    });
+                }
+            }
         }
+        variants.extend(typed.iter().map(|&(_, variant)| variant));
         if variants.len() == 1 {
             return Ok(trial);
         }
@@ -1064,6 +1074,18 @@ pub(crate) fn quadrant_sse(
 pub(crate) fn leaf_rect(leaf: &LeafBlock) -> Result<(usize, usize, usize, usize)> {
     let (w, h) = leaf.dimensions()?;
     Ok((leaf.col4() * 4, leaf.row4() * 4, w, h))
+}
+
+/// The shortlist cost `cost` of a compound candidate scaled by the ratio of
+/// the squared error `best` of its best compound type to that of its
+/// average, `average`.
+fn scaled_cost(cost: u64, best: i64, average: i64) -> u64 {
+    match (u128::try_from(best), u128::try_from(average)) {
+        (Ok(best), Ok(average)) if average > 0 => {
+            u64::try_from(u128::from(cost) * best / average).unwrap_or(cost)
+        }
+        _ => cost,
+    }
 }
 
 /// The cheaper of `a` and `b`; a tie keeps `a`.
@@ -1237,5 +1259,7 @@ impl PartitionSearch for TrialCoder<'_, '_> {
     }
 }
 
+#[path = "compound_search.rs"]
+mod compound_search;
 #[path = "interintra_search.rs"]
 mod interintra_search;

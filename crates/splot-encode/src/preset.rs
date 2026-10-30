@@ -255,10 +255,12 @@ pub struct PresetParams {
     /// every row (2026-10-30): at `1` p6 measured paris +0.01%, niklas
     /// +0.00%, park_joy +0.49%; the lookahead vectors are too coarse.
     pub global_motion: u8,
-    /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` enables
-    /// `cwp_idx` weights (`enable_cwp`), `2` also wedge and
-    /// difference-weighted masks (`enable_masked_compound`). Off in every
-    /// row until the search is measured.
+    /// Compound types beyond `COMPOUND_AVERAGE`, `0..=2`: `1` searches wedge
+    /// and difference-weighted masks (`enable_masked_compound`), `2` also
+    /// `cwp_idx` weights (`enable_cwp`). `1` on p0-p8, the rows with compound
+    /// candidates (2026-10-30, p6 vs main): park_joy -5.70%, paris -0.82%,
+    /// niklas -1.04% for 11% more CPU. `2` measured paris -1.00% and
+    /// park_joy -5.51% at the same CPU, so the weights stay off.
     pub compound_types: u8,
     /// `enable_imp_msk_bld`: `COMPOUND_AVERAGE` and TIP blocks blend with the
     /// implicit mask the decoder derives; no search. Off in every row
@@ -572,7 +574,7 @@ preset_table! {
         tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         global_motion:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        compound_types:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
         interintra:            [false, false, false, false, false, false, false, false, false, false, false],
     }

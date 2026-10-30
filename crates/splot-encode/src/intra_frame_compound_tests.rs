@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Compound types (§ 5.20.7.16, § 5.20.7.6 `cwp_idx`) and the implicit mask
-//! blend (§ 7.13.3.16). Random wedge, difference-weighted and weighted leaves
+//! blend (§ 7.13.3.14). Random wedge, difference-weighted and weighted leaves
 //! are covered by `random_inter_leaves_decode_to_the_writer_recon`.
 
 use super::*;
@@ -65,7 +65,7 @@ fn compound_types_off_disable_the_sequence_tools() {
     assert!(!inter.enable_masked_compound && !inter.enable_cwp && !inter.enable_imp_msk_bld);
     let coder = IntraFrameCoder::with_preset(&config, with_compound(1, false)).unwrap();
     let inter = coder.sequence.inter.unwrap();
-    assert!(!inter.enable_masked_compound && inter.enable_cwp);
+    assert!(inter.enable_masked_compound && !inter.enable_cwp);
 }
 
 /// A panning frame with noise, which averaging two references removes.
@@ -140,6 +140,77 @@ fn avm_decodes_compound_types_like_splot() {
         "compound-types",
     );
     assert!(avm == decode(&units), "AVM output differs");
+}
+
+/// A tiled 10-bit noisy mini-GOP stream with the compound type search at
+/// level 2 at `qp` on `threads` threads: the units, the recon, the headers
+/// and the weighted, wedge and difference-weighted leaves of the final pass.
+fn searched_stream(
+    qp: u16,
+    threads: usize,
+) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, [usize; 3]) {
+    let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        compound_types: 2,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    let mut config = config(136, 72, BitDepth::Ten, 6, qp);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let coder = IntraFrameCoder::with_preset(&config, preset).unwrap();
+    crate::tile_writer::CODED_TYPES.set([0; 6]);
+    let (units, expected, cores, _) =
+        super::carry::planned_stream_of(&config, coder, noisy_panning_frame, qp);
+    let [weighted, wedges, diffs, ..] = crate::tile_writer::CODED_TYPES.get();
+    (units, expected, cores, [weighted, wedges, diffs])
+}
+
+/// The compound type search at level 2 codes weighted, wedge and
+/// difference-weighted leaves in frames that later frames reference with
+/// compound blocks, with CDEF on; at a coarser quantizer it codes masked
+/// leaves under deblocking and loop restoration. Both streams decode to the
+/// encoder recon, the first with the same bytes on 1, 2 and 8 threads.
+#[test]
+fn searched_compound_types_decode_on_any_thread_count() {
+    let (one, expected, cores, coded) = searched_stream(150, 1);
+    assert!(coded.iter().all(|&count| count > 0), "{coded:?}");
+    let compound_frames = cores
+        .iter()
+        .filter(|core| {
+            core.inter_tail
+                .as_ref()
+                .is_some_and(|tail| tail.reference_select)
+        })
+        .count();
+    assert!(compound_frames > 1, "{compound_frames} compound frames");
+    assert!(
+        cores
+            .iter()
+            .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
+    );
+    assert_same_samples(&decode(&one), &expected, "searched compound types");
+    for threads in [2, 8] {
+        assert!(searched_stream(150, threads).0 == one, "{threads} threads");
+    }
+    let (coarse, expected, cores, coded) = searched_stream(240, 1);
+    assert!(coded[1] + coded[2] > 0, "{coded:?}");
+    assert!(cores.iter().any(|core| {
+        core.deblocking_filter_params
+            .as_ref()
+            .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
+    }));
+    assert!(
+        cores
+            .iter()
+            .any(|core| core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr))
+    );
+    assert_same_samples(
+        &decode(&coarse),
+        &expected,
+        "coarse searched compound types",
+    );
 }
 
 /// A noisy mini-GOP stream with the inter-intra search codes inter-intra
