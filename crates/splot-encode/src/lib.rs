@@ -44,6 +44,7 @@ mod test_support;
 mod tile_writer;
 mod tpl;
 mod tx_choice;
+mod warp;
 pub mod y4m;
 
 pub use config::{Config, MAX_FRAME_DIMENSION, RateControlMode, TileLayout};

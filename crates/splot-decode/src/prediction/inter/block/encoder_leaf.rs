@@ -12,7 +12,8 @@
 
 use super::super::compound::CompoundYMode;
 use super::super::find_mv_stack::{
-    GridCheckpoint, OrderHintMvContext, RefMvBank, WarpParamBank, reference_order_hints,
+    GridCheckpoint, ModeContext, OrderHintMvContext, RefMvBank, WarpParamBank,
+    reference_order_hints,
 };
 use splot_core::headers::sequence::{SequencePartitionConfig, SuperblockSize};
 
@@ -20,8 +21,9 @@ use super::filter_records::record_inter_deblock_geometry;
 use super::residual::{InterLumaTxTypeMap, push_inter_residual_block};
 use super::resolve::{
     InterBlockSyntax, InterMotionSyntax, MvResolutionState, ResolvedInterBlock,
-    compound_inter_block, compound_motion, resolve_inter_block, resolve_single, single_inter_block,
-    single_mode_mv, single_mv_stack,
+    compound_inter_block, compound_motion, predict_by_translation_under_integer_mv,
+    resolve_inter_block, resolve_single, single_inter_block, single_mode_mv, single_mv_stack,
+    warp_motion,
 };
 use super::temporal::temporal_motion_block;
 #[allow(clippy::wildcard_imports)]
@@ -29,16 +31,20 @@ use super::*;
 
 mod compound;
 mod intrabc;
+mod warp;
 
 pub(crate) use compound::{EncoderCompoundMotion, JMVD_SCALE_MODES, MvdCoding};
+pub(crate) use warp::{EncoderWarpMotion, EncoderWarpSource};
 
 /// The motion of one inter leaf.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EncoderMotion {
     /// A single-reference block (§ 5.20.7.11).
     Single(EncoderSingleMotion),
-    /// A compound or skip-mode block (§ 5.20.7.10, § 5.20.7.12).
+    /// A compound or skip-mode block (§ 5.20.7.6, § 5.20.7.10).
     Compound(EncoderCompoundMotion),
+    /// A `WARPMV` or `WARP_NEWMV` block (§ 5.20.7.11).
+    Warp(EncoderWarpMotion),
 }
 
 impl EncoderMotion {
@@ -46,6 +52,7 @@ impl EncoderMotion {
     pub(crate) const fn refs(self) -> (i8, Option<i8>) {
         match self {
             Self::Single(single) => (single.ref_frame, None),
+            Self::Warp(warp) => (warp.ref_frame, None),
             Self::Compound(compound) => (compound.ref_frames.0, Some(compound.ref_frames.1)),
         }
     }
@@ -198,10 +205,7 @@ impl EncoderInterTile {
                         || seq_inter.enable_imp_msk_bld),
                 "masked or weighted compound prediction",
             ),
-            (
-                tail.allow_warpmv_mode || tail.allow_bawp,
-                "warped motion or BAWP",
-            ),
+            (tail.allow_bawp, "BAWP"),
             (
                 seq_inter.enable_ref_frame_mvs && seq_inter.enable_global_motion,
                 "global motion with reference frame motion vectors",
@@ -222,10 +226,11 @@ impl EncoderInterTile {
                 "TIP output, refined TIP or motion vector trajectories",
             ),
             (
-                inter
-                    .frame_enabled_motion_modes
-                    .is_some_and(|modes| modes.iter().any(|&on| on)),
-                "inter-intra or a motion mode",
+                inter.frame_enabled_motion_modes.is_some_and(|modes| {
+                    modes[splot_core::headers::frame::INTERINTRA]
+                        || !modes[splot_core::headers::frame::DELTAWARP] && modes.contains(&true)
+                }),
+                "inter-intra or a warp mode without DELTAWARP",
             ),
             (core.frame_type == Some(FrameType::Switch), "a switch frame"),
         ];
@@ -496,7 +501,8 @@ impl EncoderInterTile {
     ) -> Result<[Mv; 2]> {
         let syntax = self.inter_syntax(frontier, motion, true)?;
         let refine = refinemv_flags(&syntax.motion);
-        let resolved = self.resolve_motion(&syntax)?;
+        let mut resolved = self.resolve_motion(&syntax)?;
+        predict_by_translation_under_integer_mv(&syntax, &self.core, &mut resolved);
         let mvs = resolved.mv;
         let placed = self.placed(frontier, syntax, &resolved)?;
         if is_tip(motion) {
@@ -710,9 +716,7 @@ impl EncoderInterTile {
         match &syntax.motion {
             InterMotionSyntax::Single(single) => Ok(resolve_single(syntax, single, &state)),
             InterMotionSyntax::Compound(compound) => compound_motion(syntax, compound, &state),
-            InterMotionSyntax::Warp(_) => {
-                Err(DecodeHeaderStateError::InvalidInterBlockModeState.into())
-            }
+            InterMotionSyntax::Warp(warp) => warp_motion(syntax, warp, &state),
         }
     }
 
@@ -745,11 +749,15 @@ impl EncoderInterTile {
     }
 
     /// The § 7.19 motion records of the published leaves, in coding order,
-    /// which the decoder stores into the frame's motion field.
+    /// which the decoder stores into the frame's motion field. A
+    /// single-reference block stores a warp model only as a warp block, and
+    /// a warp block of a `force_integer_mv` frame stores its translation
+    /// (§ 7.13.3.14).
     pub(crate) fn temporal_records(&self) -> Vec<TemporalMotionBlock> {
         if self.intrabc.is_some() {
             return Vec::new();
         }
+        let integer_mv = effective_force_integer_mv(&self.core);
         let mut unit_leaves: Vec<(usize, usize)> = Vec::new();
         if self.refines_compound() {
             unit_leaves.extend(self.tip_records.iter().map(TemporalMotionBlock::origin));
@@ -757,9 +765,9 @@ impl EncoderInterTile {
         }
         self.grid
             .published_leaves()
-            .filter(|(_, refs, _)| refs.is_none_or(|(ref_frame0, _)| ref_frame0 != TIP_REF_FRAME))
+            .filter(|(_, refs, ..)| refs.is_none_or(|(ref_frame0, _)| ref_frame0 != TIP_REF_FRAME))
             .filter(|((r, c, ..), ..)| unit_leaves.binary_search(&(*r, *c)).is_err())
-            .map(|((r, c, n4w, n4h), refs, mvs)| {
+            .map(|((r, c, n4w, n4h), refs, mvs, splat)| {
                 let (ref_frame0, ref_frame1) = refs.unwrap_or((-1, None));
                 if refs.is_none() {
                     return TemporalMotionBlock::new(
@@ -789,7 +797,11 @@ impl EncoderInterTile {
                     ref_frame1,
                     mvs[0],
                     mvs[1],
-                    [None, None],
+                    if integer_mv && ref_frame1.is_none() {
+                        [None, None]
+                    } else {
+                        splat
+                    },
                 )
             })
             .chain(self.tip_records.iter().copied())
@@ -807,6 +819,10 @@ impl EncoderInterTile {
         let (syntax, optflow_distances) = match motion {
             EncoderMotion::Single(single) => (
                 InterMotionSyntax::Single(self.single_syntax(&block, single)),
+                None,
+            ),
+            EncoderMotion::Warp(warp) => (
+                InterMotionSyntax::Warp(self.warp_syntax(&block, warp)?),
                 None,
             ),
             EncoderMotion::Compound(compound) => {
@@ -938,7 +954,7 @@ impl EncoderInterTile {
                     if units16 { 16 } else { 8 },
                 ))
             }
-            EncoderMotion::Single(_) => None,
+            EncoderMotion::Single(_) | EncoderMotion::Warp(_) => None,
             EncoderMotion::Compound(compound) => {
                 let refinement = self.compound_refinement(frontier, compound)?;
                 super::compound_path::compound_deblock_sub_pu_size(

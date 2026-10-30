@@ -368,6 +368,7 @@ impl TrialCoder<'_, '_> {
             }
         };
         let mut searched = Vec::new();
+        let mut warps = Vec::new();
         for ref_frame in 0..self.syntax.reference_count() {
             let mode = |mode, drl| InterModes {
                 ref_frame,
@@ -397,6 +398,14 @@ impl TrialCoder<'_, '_> {
             let pred = bases.first().copied().unwrap_or_default();
             let found = motion.search(self.syntax, ref_frame, leaf_rect(leaf)?, &seeds, pred)?;
             searched.push(found);
+            if self.preset.warp > 0 {
+                warps.extend(crate::warp::candidates(
+                    self.syntax,
+                    leaf,
+                    ref_frame,
+                    found,
+                )?);
+            }
             let mut best: Option<(Bits, InterModes)> = None;
             for (drl, &base) in bases.iter().enumerate() {
                 let modes = InterModes {
@@ -439,6 +448,7 @@ impl TrialCoder<'_, '_> {
             }
         }
         let mut choices: Vec<LeafChoice> = out.into_iter().map(|(_, choice)| choice).collect();
+        choices.extend(warps.into_iter().map(LeafChoice::inter));
         if self.preset.compound_candidates > 0 && self.syntax.skip_mode_allowed(leaf) {
             let mut cheapest: Vec<([MotionVector; 2], Bits, InterPrediction)> = Vec::new();
             for drl in 0..self.syntax.drl_count() {
@@ -569,7 +579,7 @@ impl TrialCoder<'_, '_> {
         let refs = match *prediction {
             InterPrediction::Single(modes) => vec![modes.ref_frame],
             InterPrediction::Compound(modes) => vec![modes.refs.0, modes.refs.1],
-            InterPrediction::SkipMode { .. } => return Ok(()),
+            InterPrediction::SkipMode { .. } | InterPrediction::Warp(_) => return Ok(()),
         };
         let mvs = self.syntax.inter_mvs(leaf, *prediction)?;
         let lists: Vec<_> = refs.into_iter().zip(mvs).collect();
@@ -774,10 +784,77 @@ impl TrialCoder<'_, '_> {
         }
         ranked.sort_by_key(|&(cost, ..)| cost);
         ranked.truncate(keep);
-        Ok(ranked
-            .into_iter()
-            .map(|(.., trial)| LeafChoice::inter(InterPrediction::Compound(trial)))
-            .collect())
+        let mut out = Vec::with_capacity(ranked.len());
+        for (.., trial) in ranked {
+            let trial = self.refined(leaf, motion, trial)?;
+            out.push(LeafChoice::inter(InterPrediction::Compound(trial)));
+        }
+        Ok(out)
+    }
+
+    /// `trial` with the `use_optflow` and `use_refinemv` it reads whose
+    /// decoder prediction has the least luma SATD plus mode and filter rate;
+    /// each variant is predicted once, by the decoder's own refinement.
+    fn refined(
+        &mut self,
+        leaf: &LeafBlock,
+        motion: &MotionSearch,
+        trial: CompoundModes,
+    ) -> Result<CompoundModes> {
+        if !self.preset.opfl && !self.preset.refinemv {
+            return Ok(trial);
+        }
+        let (reads_optflow, _) = self.syntax.compound_refinements(leaf, trial)?;
+        let mut variants = vec![trial];
+        if reads_optflow {
+            variants.push(CompoundModes {
+                optflow: true,
+                ..trial
+            });
+        }
+        let base = variants.len();
+        for index in 0..base {
+            let variant = variants[index];
+            if self.syntax.compound_refinements(leaf, variant)?.1 {
+                variants.push(CompoundModes {
+                    refinemv: true,
+                    ..variant
+                });
+            }
+        }
+        if variants.len() == 1 {
+            return Ok(trial);
+        }
+        let mut best = (u64::MAX, trial);
+        for variant in variants {
+            let prediction = InterPrediction::Compound(variant);
+            let Some(blocks) = codable(
+                self.syntax
+                    .luma_prediction(leaf, prediction)
+                    .map_err(Into::into),
+            )?
+            else {
+                continue;
+            };
+            let mut cost = 0;
+            for (tx, samples) in &blocks {
+                cost += self.coder.source.satd(tx, samples)?;
+            }
+            let mut sink = RateSink::adapting();
+            self.syntax.price_inter_modes(leaf, prediction, &mut sink)?;
+            self.syntax
+                .price_interp_filter(leaf, prediction, &mut sink)?;
+            cost += motion.bits_cost(sink.bits);
+            let cost = if variant.refinemv {
+                cost.saturating_mul(100) / REFINEMV_MARGIN_PCT
+            } else {
+                cost
+            };
+            if cost < best.0 {
+                best = (cost, variant);
+            }
+        }
+        Ok(best.1)
     }
 
     /// The best chroma mode of the `CHROMA_PART` leaf `leaf` over its
@@ -914,9 +991,13 @@ fn with_filter(prediction: InterPrediction, filter: InterpolationFilter) -> Inte
         InterPrediction::Compound(modes) => {
             InterPrediction::Compound(CompoundModes { filter, ..modes })
         }
-        skip @ InterPrediction::SkipMode { .. } => skip,
+        other @ (InterPrediction::SkipMode { .. } | InterPrediction::Warp(_)) => other,
     }
 }
+
+/// A `use_refinemv` variant wins only below this percentage of the cost of
+/// the best other variant.
+const REFINEMV_MARGIN_PCT: u64 = 97;
 
 /// `Some` result, `None` for a candidate the leaf cannot code.
 fn codable<T>(result: Result<T>) -> Result<Option<T>> {

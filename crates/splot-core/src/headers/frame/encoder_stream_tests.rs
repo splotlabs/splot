@@ -180,6 +180,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         drl_reorder: Some(true),
         max_drl_bits_minus_1: 3,
         mvd_tools: [true, false, true],
+        warp: true,
     };
     let mut p = params(640, 360, BitDepthIdc::Ten, SuperblockSize::Block64x64);
     p.tools = tools;
@@ -204,6 +205,11 @@ fn every_tool_flag_reaches_the_parsed_header() {
     assert_eq!(inter.seq_max_drl_bits_minus_1, 3);
     assert!(inter.enable_tip && inter.enable_tip_output && !inter.enable_tip_hole_fill);
     assert!(inter.enable_adaptive_mvd && !inter.enable_mvd_sign_derive && inter.enable_flex_mvres);
+    assert_eq!(
+        inter.seq_enabled_motion_modes,
+        [false, false, true, true, true]
+    );
+    assert!(inter.seq_frame_motion_modes_present_flag && inter.enable_six_param_warp_delta);
     let filter = seq.filter.unwrap();
     assert!(filter.enable_cdef && filter.enable_gdf && filter.enable_restoration);
     assert!(filter.enable_ccso);

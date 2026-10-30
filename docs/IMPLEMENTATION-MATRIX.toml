@@ -5801,7 +5801,7 @@ module = "crates/splot-encode/src/mode_decision.rs"
 change_id = "enc-opfl-refinemv"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::opfl and refinemv (A6 PR1, off in every row): the sequence codes enable_opfl_refine = REFINE_AUTO and enable_refinemv; inter frames with a TIP reference pair code opfl_refine_type REFINE_SWITCHABLE, others REFINE_NONE. CompoundModes::optflow and refinemv set use_optflow and use_refinemv where IntraTileSyntax::compound_refinements says the block reads them; the facade takes every reachability rule, the use_optflow and use_refinemv contexts, the single DRL of optical-flow blocks and the optical-flow distances from the decoder's compound path, predicts through the decoder's refinement grid, records the decoder's deblocking sub-PU size (compound_deblock_sub_pu_size; deblock sub-PU records match the decoder, df_sub_pu not coded yet), and stores the grid's 8x8 temporal records in place of the leaf's. The mode decision does not choose refinement yet. Off writes the old stream byte-identically."
+notes = "PresetParams::opfl (on at p0-p9) and refinemv (off in every row; alone it measured niklas +0.23% at p6): the sequence codes enable_opfl_refine = REFINE_AUTO and enable_refinemv; inter frames with a TIP reference pair code opfl_refine_type REFINE_SWITCHABLE, others REFINE_NONE. CompoundModes::optflow and refinemv set use_optflow and use_refinemv where IntraTileSyntax::compound_refinements says the block reads them; the facade takes every reachability rule, the use_optflow and use_refinemv contexts, the single DRL of optical-flow blocks and the optical-flow distances from the decoder's compound path, predicts through the decoder's refinement grid, records the decoder's deblocking sub-PU size (compound_deblock_sub_pu_size; deblock sub-PU records match the decoder, df_sub_pu not coded yet), and stores the grid's 8x8 temporal records in place of the leaf's. The mode decision (A6 PR2) gives each of the final compound_candidates survivors the use_optflow and use_refinemv variants it reads, predicts each once through IntraTileSyntax::luma_prediction (the decoder's own refinement), and keeps the least luma SATD plus mode and filter rate; a use_refinemv variant must cost 3% less (REFINEMV_MARGIN_PCT). Off writes the old stream byte-identically."
 
 [feature.status]
 mapped = "done"
@@ -5809,7 +5809,7 @@ types = "done"
 parse = "not-applicable"
 validate = "not-applicable"
 write = "done"
-encode = "partial"
+encode = "done"
 decode_check = "done"
 tests = "done"
 avm_diff = "done"
@@ -6552,6 +6552,38 @@ perf = "not-applicable"
 [feature.proof]
 tests = ["crates/splot-encode/src/resize.rs::tests::same_size_is_a_copy", "crates/splot-encode/src/resize.rs::tests::flat_planes_stay_flat_at_every_ratio", "crates/splot-encode/src/resize.rs::tests::ramps_land_on_the_mapped_centres", "crates/splot-encode/src/config.rs::tests::resize_scales_the_coded_size_by_8_over_the_denominator", "crates/splot-encode/src/encoder.rs::tests::resized_streams_code_input_frames_at_the_scaled_size", "crates/splot-cli/tests/encode_decode_roundtrip.rs::resized_clips_code_and_decode_at_the_scaled_size"]
 commands = ["cargo test -p splot-encode resize --locked", "cargo test -p splot-cli --test encode_decode_roundtrip resized --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-WARP"
+name = "Encoder warped motion"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.6", "5.18.2", "5.20.7.7", "5.20.7.11", "5.20.7.14", "7.13.3.14", "7.13.3.23", "7.13.3.24", "7.19"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/warp.rs"
+change_id = "enc-warp-facade"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::warp 1 enables LOCALWARP, DELTAWARP and EXTENDWARP with six-parameter deltas in the sequence and allow_warpmv_mode in each inter frame. The encoder_syntax facade codes WARPMV and WARP_NEWMV leaves with the decoder's symbols and § 7.12 / § 7.13.3 models (no encoder-side fit), writes is_warp = 0 for other single-reference leaves and use_local_warp = 0 for compound NEW_NEWMV, predicts warp blocks of force_integer_mv frames by translation (§ 7.13.3.14), and stores warp models in the § 7.19 motion field. Leaves try the first WARPMV candidate and the zero-delta, local and extended models at the searched vector. Off in every preset row until the search lands and is measured."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "pending"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_warp_tests.rs::warp_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_warp_tests.rs::warp_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_warp_tests.rs::zoom_frames_code_warp_leaves", "crates/splot-encode/src/intra_frame_warp_tests.rs::integer_mv_warp_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_warp_tests.rs::avm_decodes_warp_streams_like_splot", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::warp_frames_code_their_motion_modes_and_allow_warpmv_mode"]
+commands = ["cargo test -p splot-encode warp --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_warp --locked -- --ignored"]
 fixtures = []
 diagnostics = []
 

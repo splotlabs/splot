@@ -26,6 +26,7 @@ use crate::headers::frame::{
     FrameReferenceStateView, KeyFrameTxParams, TipFrameMode, TxMode, init_core_from_prefix,
     parse_core_body, parse_frame_header_prefix,
 };
+use crate::headers::frame::{DELTAWARP, INTERINTRA, LOCALWARP};
 use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 use crate::headers::tile_group::{RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructure};
 use crate::span::ByteOffset;
@@ -91,6 +92,10 @@ pub struct InterFrameParams {
     /// content tools: whole-sample motion vectors; `high_precision_mv` must
     /// then be off.
     pub force_integer_mv: bool,
+    /// The `LOCALWARP`, `DELTAWARP` and `EXTENDWARP` motion modes with
+    /// `allow_warpmv_mode` (§ 5.18.2) in a sequence that lets each frame
+    /// choose them; off, the frame codes them disabled.
+    pub warp: bool,
 }
 
 /// A parsed frame header and the exact bits it was parsed from.
@@ -284,6 +289,21 @@ fn inter_frame_header_bits(
     if !params.switchable_interp_filter {
         w.write_bits(EIGHTTAP, 2)?; // interpolation_filter
     }
+    let modes = seq.inter.seq_enabled_motion_modes;
+    if modes[INTERINTRA]
+        || (!seq.inter.seq_frame_motion_modes_present_flag && modes.contains(&true))
+    {
+        return Err(unsupported(
+            "inter-intra or motion modes every frame enables",
+        ));
+    }
+    let warp = params.warp && modes[DELTAWARP];
+    if params.warp && !warp {
+        return Err(unsupported("warped motion the sequence does not enable"));
+    }
+    for _ in modes.iter().skip(LOCALWARP).filter(|&&on| on) {
+        w.write_flag(warp)?; // frame_enabled_motion_modes[mode]
+    }
     w.write_flag(false)?; // disable_cdf_update
     let tx = params.tx;
     if tx.allow_intrabc {
@@ -305,6 +325,12 @@ fn inter_frame_header_bits(
     w.write_flag(tx.tx_mode == TxMode::Select)?; // tx_mode_select
     w.write_flag(params.reference_select)?;
     w.write_flag(params.skip_mode_present)?;
+    if seq.inter.enable_bawp {
+        return Err(unsupported("block adaptive weighted prediction"));
+    }
+    if warp {
+        w.write_flag(true)?; // allow_warpmv_mode
+    }
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
     write_film_grain_config(&mut w, seq, params.show_frame, tx.grain_seed)?;
     let bit_len = w.bit_len();
