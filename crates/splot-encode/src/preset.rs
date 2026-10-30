@@ -821,7 +821,7 @@ mod tests {
             (&[("tip_output", "201")], "tip_output"),
             (&[("opfl", "false")], "tip_refinemv"),
             (&[("warp", "2")], "warp"),
-            (&[("compound_types", "3")], "compound_types"),
+            (&[("compound_types", "4")], "compound_types"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {
