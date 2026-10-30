@@ -62,6 +62,18 @@ const fn inverse_cost(dd: i64, (sde, see): (i64, i64), [mde, mee, mmee]: [i64; 3
     blend_cost(dd, 64 * sde - mde, 4096 * see - 128 * mee + mmee)
 }
 
+/// The reused buffers of [`TrialCoder::typed_variants`]: the source and the
+/// two predictions of a block, their per-sample terms and a mask.
+#[derive(Default)]
+pub(super) struct CompoundScratch {
+    source: Vec<u16>,
+    p0: Vec<u16>,
+    p1: Vec<u16>,
+    de: Vec<i32>,
+    ee: Vec<i32>,
+    mask: Vec<u8>,
+}
+
 impl TrialCoder<'_, '_> {
     /// The compound types of the candidate `trial` that beat its
     /// `COMPOUND_AVERAGE` in closed form: the best `cwp_idx` weight, the best
@@ -98,9 +110,20 @@ impl TrialCoder<'_, '_> {
         };
         let rect = leaf_rect(leaf)?;
         let lists = [(base.refs.0, mvs[0]), (base.refs.1, mvs[1])];
-        let [s, p0, p1] = motion.compound_inputs(self.syntax, lists, base.filter, rect)?;
-        let (mut de, mut ee) = (vec![0; s.len()], vec![0; s.len()]);
-        let [dd, sde, see] = kernels().compound_terms(&s, (&p0, &p1), &mut de, &mut ee);
+        let CompoundScratch {
+            source: s,
+            p0,
+            p1,
+            de,
+            ee,
+            mask,
+        } = &mut self.compound;
+        motion.compound_inputs(self.syntax, (lists, base.filter), rect, [s, p0, p1])?;
+        de.clear();
+        de.resize(s.len(), 0);
+        ee.clear();
+        ee.resize(s.len(), 0);
+        let [dd, sde, see] = kernels().compound_terms(s, (p0, p1), de, ee);
         let average = blend_cost(dd, 32 * sde, 1024 * see);
         let mut out = Vec::new();
         let keep = |cost: i64, blend: CompoundType, best: &mut Option<(i64, CompoundType)>| {
@@ -120,8 +143,8 @@ impl TrialCoder<'_, '_> {
         out.extend(best.take());
         let totals = (sde, see);
         if let Some(masks) = types.wedge.then(|| wedge_masks(rect.2, rect.3)).flatten() {
-            for (index, mask) in (0u8..).zip(masks.chunks_exact(s.len())) {
-                let moments = kernels().mask_moments(mask, &de, &ee);
+            for (index, wedge) in (0u8..).zip(masks.chunks_exact(s.len())) {
+                let moments = kernels().mask_moments(wedge, de, ee);
                 let [mde, _, mmee] = moments;
                 let plain = CompoundType::Wedge { index, sign: false };
                 keep(blend_cost(dd, mde, mmee), plain, &mut best);
@@ -131,10 +154,11 @@ impl TrialCoder<'_, '_> {
             out.extend(best.take());
         }
         if types.masked {
-            let mut mask = vec![0u8; s.len()];
+            mask.clear();
+            mask.resize(s.len(), 0);
             let shift = u32::from(self.coder.bit_depth.bits() - 8);
-            kernels().diff_mask(&p0, &p1, shift, &mut mask);
-            let moments = kernels().mask_moments(&mask, &de, &ee);
+            kernels().diff_mask(p0, p1, shift, mask);
+            let moments = kernels().mask_moments(mask, de, ee);
             let [mde, _, mmee] = moments;
             let plain = CompoundType::DiffWeighted { inverse: false };
             keep(blend_cost(dd, mde, mmee), plain, &mut best);
@@ -151,92 +175,77 @@ impl TrialCoder<'_, '_> {
     }
 }
 
-/// Half a luma sample in `1/8` units: the step of the joint refinement.
-const HALF_PEL: i32 = 4;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl TrialCoder<'_, '_> {
-    /// The `NEW_NEWMV` survivor `trial` after the joint refinement: in each
-    /// round, each list in turn moves its vector by one step of half a sample
-    /// (or the frame's difference step) to the neighbour with the least luma
-    /// SATD of the average plus vector rate, keeping the other list's
-    /// prediction; the rounds stop when no list moves, after two at most.
-    pub(super) fn joint_refined(
-        &mut self,
-        leaf: &LeafBlock,
-        motion: &MotionSearch,
-        trial: CompoundModes,
-    ) -> Result<CompoundModes> {
-        if !self.preset.joint_newmv || trial.mode != CompoundMode::NewNew {
-            return Ok(trial);
-        }
-        let bases = codable(self.syntax.compound_bases(leaf, &trial).map_err(Into::into))?;
-        let Some([Some(base0), Some(base1)]) = bases else {
-            return Ok(trial);
+    /// `Σ(64·s - (m·p0 + (64 - m)·p1))²`: 4096 times the squared error of
+    /// the blend that gives `p0` the weight `m / 64`.
+    fn explicit(s: &[u16], (p0, p1): (&[u16], &[u16]), weight: impl Fn(usize) -> i64) -> i64 {
+        (0..s.len())
+            .map(|i| {
+                let m = weight(i);
+                let r = 64 * i64::from(s[i]) - (m * i64::from(p0[i]) + (64 - m) * i64::from(p1[i]));
+                r * r
+            })
+            .sum()
+    }
+
+    /// The closed-form cost of every wedge with both signs, both
+    /// difference-weighted masks and every `cwp_idx` weight of both
+    /// `Cwp_Weighting_Factor` rows equals the squared error of the blend the
+    /// decoder's mask or weight gives (§ 7.13.3.14, § 7.13.3.27,
+    /// § 7.13.3.28), on asymmetric 10-bit samples of a 16x8 block.
+    #[test]
+    fn closed_form_costs_equal_the_blend_error() {
+        let (width, height) = (16, 8);
+        let mut state = 0x9E37_79B9u32;
+        let mut next = |range: u32| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state % range) as u16
         };
-        let bases = [base0, base1];
-        let rect = leaf_rect(leaf)?;
-        let step = self.syntax.mv_step().max(HALF_PEL);
-        let refs = [trial.refs.0, trial.refs.1];
-        let predict = |syntax: &IntraTileSyntax, list: usize, mv: MotionVector| {
-            MotionSearch::luma_prediction(syntax, refs[list], rect, (mv, trial.filter))
-        };
-        let mut mvs = trial.mvs;
-        let mut preds = [
-            predict(self.syntax, 0, mvs[0])?,
-            predict(self.syntax, 1, mvs[1])?,
-        ];
-        let rate =
-            |mvs: &[MotionVector; 2]| motion.rate(mvs[0], bases[0]) + motion.rate(mvs[1], bases[1]);
-        let mut best = motion.average_satd((&preds[0], &preds[1]), rect)? + rate(&mvs);
-        for _ in 0..2 {
-            let mut moved = false;
-            for list in 0..2 {
-                let mut pick = None;
-                for (dr, dc) in [
-                    (-1, -1),
-                    (-1, 0),
-                    (-1, 1),
-                    (0, -1),
-                    (0, 1),
-                    (1, -1),
-                    (1, 0),
-                    (1, 1),
-                ] {
-                    let mut moved_mvs = mvs;
-                    moved_mvs[list] = MotionVector {
-                        row: mvs[list].row + dr * step,
-                        col: mvs[list].col + dc * step,
-                    };
-                    let p = predict(self.syntax, list, moved_mvs[list])?;
-                    let pair: (&[u16], &[u16]) = if list == 0 {
-                        (&p, &preds[1])
-                    } else {
-                        (&preds[0], &p)
-                    };
-                    let cost = motion.average_satd(pair, rect)? + rate(&moved_mvs);
-                    if cost < best {
-                        best = cost;
-                        pick = Some((moved_mvs, p));
-                    }
-                }
-                if let Some((picked, p)) = pick {
-                    (mvs, preds[list], moved) = (picked, p, true);
-                }
+        let s: Vec<u16> = (0..width * height).map(|_| 200 + next(600)).collect();
+        let p0: Vec<u16> = (0..width * height).map(|_| next(1024)).collect();
+        let p1: Vec<u16> = (0..width * height).map(|_| 300 + next(500)).collect();
+        let (mut de, mut ee) = (vec![0; s.len()], vec![0; s.len()]);
+        let [dd, sde, see] = kernels().compound_terms(&s, (&p0, &p1), &mut de, &mut ee);
+        let preds = (&p0[..], &p1[..]);
+        let masks = wedge_masks(width, height).unwrap();
+        for (index, mask) in masks.chunks_exact(s.len()).enumerate() {
+            for (i, &m) in mask.iter().enumerate() {
+                let decoder = |sign| {
+                    splot_recon::wedge_mask_plane_sample(
+                        width,
+                        height,
+                        index,
+                        sign,
+                        0,
+                        0,
+                        i % width,
+                        i / width,
+                    )
+                    .unwrap()
+                };
+                assert_eq!(u16::from(m), decoder(false));
+                assert_eq!(64 - u16::from(m), decoder(true));
             }
-            if !moved {
-                break;
-            }
+            let moments = kernels().mask_moments(mask, &de, &ee);
+            let plain = explicit(&s, preds, |i| i64::from(mask[i]));
+            assert_eq!(blend_cost(dd, moments[0], moments[2]), plain, "{index}");
+            let signed = explicit(&s, preds, |i| 64 - i64::from(mask[i]));
+            assert_eq!(inverse_cost(dd, (sde, see), moments), signed, "{index}");
         }
-        let refined = CompoundModes { mvs, ..trial };
-        let codable_mvs = codable(
-            self.syntax
-                .inter_mvs(leaf, InterPrediction::Compound(refined))
-                .map_err(Into::into),
-        )?;
-        Ok(if codable_mvs == Some(mvs) {
-            refined
-        } else {
-            trial
-        })
+        let mut mask = vec![0u8; s.len()];
+        kernels().diff_mask(&p0, &p1, 2, &mut mask);
+        let moments = kernels().mask_moments(&mask, &de, &ee);
+        let inverse = explicit(&s, preds, |i| 64 - i64::from(mask[i]));
+        assert_eq!(inverse_cost(dd, (sde, see), moments), inverse);
+        for weight in [8i64, 12, 4, 10, 6, 20, -4] {
+            let blend = explicit(&s, preds, |_| 4 * weight);
+            let m = 4 * weight;
+            assert_eq!(blend_cost(dd, m * sde, m * m * see), blend, "{weight}");
+        }
     }
 }

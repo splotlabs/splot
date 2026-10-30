@@ -27,11 +27,21 @@ pub(crate) fn terms_scalar(
     de: &mut [i32],
     ee: &mut [i32],
 ) -> [i64; 3] {
+    terms_tail(s, (p0, p1), de, ee)
+}
+
+/// [`terms_scalar`] one sample at a time; the tail of [`terms_simd`].
+fn terms_tail(s: &[u16], (p0, p1): (&[u16], &[u16]), de: &mut [i32], ee: &mut [i32]) -> [i64; 3] {
     let mut sums = [0i64; 3];
-    for (i, ((&s, &a), &b)) in s.iter().zip(p0).zip(p1).enumerate() {
+    let samples = s
+        .iter()
+        .zip(p0)
+        .zip(p1)
+        .zip(de.iter_mut().zip(ee.iter_mut()));
+    for (((&s, &a), &b), (de, ee)) in samples {
         let d = i32::from(s) - i32::from(b);
         let e = i32::from(a) - i32::from(b);
-        (de[i], ee[i]) = (d * e, e * e);
+        (*de, *ee) = (d * e, e * e);
         sums[0] += i64::from(d * d);
         sums[1] += i64::from(d * e);
         sums[2] += i64::from(e * e);
@@ -67,30 +77,21 @@ pub(crate) fn terms_simd(
         acc[2] += eev.cast();
         start += LANES;
     }
-    let mut sums = acc.map(SimdInt::reduce_sum);
-    for j in start..len {
-        let d = i32::from(s[j]) - i32::from(p1[j]);
-        let e = i32::from(p0[j]) - i32::from(p1[j]);
-        (de[j], ee[j]) = (d * e, e * e);
-        sums[0] += i64::from(d * d);
-        sums[1] += i64::from(d * e);
-        sums[2] += i64::from(e * e);
-    }
-    sums
+    let tail = terms_tail(
+        &s[start..len],
+        (&p0[start..len], &p1[start..len]),
+        &mut de[start..len],
+        &mut ee[start..len],
+    );
+    let sums = acc.map(SimdInt::reduce_sum);
+    [sums[0] + tail[0], sums[1] + tail[1], sums[2] + tail[2]]
 }
 
 /// `[Σm·de, Σm·ee, Σm²·ee]` of the mask `mask` over the terms of
 /// [`terms_scalar`].
 #[cfg(test)]
 pub(crate) fn mask_moments_scalar(mask: &[u8], de: &[i32], ee: &[i32]) -> [i64; 3] {
-    mask.iter()
-        .zip(de)
-        .zip(ee)
-        .fold([0; 3], |[a, b, c], ((&m, &de), &ee)| {
-            let m = i64::from(m);
-            let (de, ee) = (i64::from(de), i64::from(ee));
-            [a + m * de, b + m * ee, c + m * m * ee]
-        })
+    mask_moments_tail(mask, de, ee)
 }
 
 /// [`mask_moments_scalar`] in eight lanes.
@@ -113,6 +114,8 @@ pub(crate) fn mask_moments_simd(mask: &[u8], de: &[i32], ee: &[i32]) -> [i64; 3]
     [sums[0] + tail[0], sums[1] + tail[1], sums[2] + tail[2]]
 }
 
+/// [`mask_moments_scalar`] one sample at a time; the tail of
+/// [`mask_moments_simd`].
 fn mask_moments_tail(mask: &[u8], de: &[i32], ee: &[i32]) -> [i64; 3] {
     mask.iter()
         .zip(de)

@@ -83,6 +83,7 @@ pub(crate) struct TrialCoder<'a, 'b> {
     /// The partition of each node of the coded luma tree, by key, while a
     /// chroma tree is searched.
     luma: HashMap<u64, Partition>,
+    compound: compound_search::CompoundScratch,
 }
 
 impl<'a, 'b> TrialCoder<'a, 'b> {
@@ -100,6 +101,7 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             lambda,
             motion,
             luma: HashMap::new(),
+            compound: compound_search::CompoundScratch::default(),
         }
     }
 
@@ -818,13 +820,7 @@ impl TrialCoder<'_, '_> {
         priced.truncate(keep);
         let mut out = Vec::with_capacity(priced.len());
         for (_, trial, typed) in priced {
-            let joint = self.joint_refined(leaf, motion, trial)?;
-            let typed = if joint == trial {
-                typed
-            } else {
-                self.typed_variants(leaf, motion, joint)?.1
-            };
-            let trial = self.refined(leaf, motion, joint, &typed)?;
+            let trial = self.refined(leaf, motion, trial, &typed)?;
             #[cfg(test)]
             let trial = self.forced_type(leaf, trial)?;
             out.push(LeafChoice::inter(InterPrediction::Compound(trial)));

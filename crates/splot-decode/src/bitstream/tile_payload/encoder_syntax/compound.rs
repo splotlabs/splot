@@ -30,7 +30,7 @@ pub struct CompoundTypes {
     /// `Wedge_Bits` is not `0`).
     pub wedge: bool,
     /// [`CompoundType::Average`] with any `cwp` below [`MAX_CWP_NUM`]: the
-    /// `cwpWeight` of `p0` in sixteenths for each `cwp` (§ 7.13.3.16).
+    /// `cwpWeight` of `p0` in sixteenths for each `cwp` (§ 7.13.3.14).
     pub cwp: Option<[i16; MAX_CWP_NUM as usize]>,
 }
 

@@ -106,7 +106,7 @@ impl EncoderInterTile {
         self.blend_tools.0
     }
 
-    /// The `COMPOUND_AVERAGE` blend of the sequence (§ 7.13.3.16).
+    /// The `COMPOUND_AVERAGE` blend of the sequence (§ 7.13.3.14).
     pub(super) const fn average_blend(&self) -> mc::CompoundBlend {
         mc::CompoundBlend::average_with_implicit_mask(self.blend_tools.1)
     }

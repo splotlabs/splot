@@ -266,11 +266,6 @@ pub struct PresetParams {
     /// (2026-10-30): on alone it measured park_joy +1.26%, paris +0.20% at
     /// p6, as the compound search scores the plain average.
     pub implicit_mask: bool,
-    /// Joint `NEW_NEWMV` refinement: each compound `NEW_NEWMV` survivor
-    /// moves its two vectors by half-sample steps, one list at a time, while
-    /// the SATD of their average plus the vector rate drops. Off in every row
-    /// (2026-10-30): alone it measured paris +0.13% at p6 for 2.7% more CPU.
-    pub joint_newmv: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -573,7 +568,6 @@ preset_table! {
         global_motion:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
         implicit_mask:         [false, false, false, false, false, false, false, false, false, false, false],
-        joint_newmv:           [false, false, false, false, false, false, false, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
@@ -738,7 +732,6 @@ mod tests {
             assert!(fast.global_motion <= slow.global_motion);
             assert!(fast.compound_types <= slow.compound_types);
             assert!(fast.implicit_mask <= slow.implicit_mask);
-            assert!(fast.joint_newmv <= slow.joint_newmv);
             assert!(fast.opfl <= slow.opfl);
             assert!(fast.tip_refinemv <= slow.tip_refinemv);
             assert!(
