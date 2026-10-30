@@ -13,9 +13,10 @@ use super::super::super::compound::{
 };
 use super::super::compound_path::{
     compound_all_opfl_reachable, compound_joint_mv_projection, compound_needs_interp_filter,
-    compound_ref_contexts, compound_ref_distance_signs, compound_refinemv_is_switchable,
-    compound_refinemv_reachable, compound_switchable_opfl_reachable, compound_use_amvd_selector,
-    skip_mode_reference_pair, use_optflow_ctx, use_refinemv_ctx,
+    compound_ref_contexts, compound_ref_distance_signs, compound_refinemv_active_after_blend,
+    compound_refinemv_is_switchable, compound_refinemv_reachable,
+    compound_switchable_opfl_reachable, compound_use_amvd_selector, skip_mode_reference_pair,
+    use_optflow_ctx, use_refinemv_ctx,
 };
 use super::super::resolve::CompoundMotionSyntax;
 use super::super::syntax::{
@@ -25,6 +26,7 @@ use super::super::warp::{
     inter_mv_read_config, inter_mvd_sign_derivation_allowed,
     mvd_sign_derivation_block_scope_allowed,
 };
+use super::blend::{CompoundType, CompoundTypeReads, TypeSymbol};
 use super::*;
 
 /// `JOINT_NEWMV_SCALE_FACTOR_CNT` (§ 3): the `jmvd_scale_mode` values without
@@ -70,6 +72,9 @@ pub(crate) struct EncoderCompoundMotion {
     /// `use_refinemv`, where the decoder reads it (§ 5.20.7.17); where it
     /// infers the flag, the block refines whenever refinement is reachable.
     pub(crate) use_refinemv: bool,
+    /// The compound type and weight (§ 5.20.7.16, § 5.20.7.6); a skip-mode
+    /// block codes the default.
+    pub(crate) blend: CompoundType,
 }
 
 /// The decoder's refinement of a compound block (§ 5.20.7.6, § 5.20.7.17).
@@ -85,6 +90,18 @@ pub(crate) struct CompoundRefinement {
     pub(crate) refinemv_signalled: bool,
     /// `refinemv_switchable` of the decoder's motion syntax.
     pub(crate) refinemv_switchable: bool,
+    /// The compound type syntax the block reads after `use_refinemv`.
+    pub(crate) type_reads: CompoundTypeReads,
+    /// The decoder's blend of the block.
+    pub(crate) blend: mc::CompoundBlend,
+}
+
+impl CompoundRefinement {
+    /// `use_refinemv` after the compound type: a masked block does not
+    /// refine (§ 5.20.7.16 `DecidedAgainstRefinemv`).
+    pub(crate) const fn use_refinemv(&self) -> bool {
+        compound_refinemv_active_after_blend(self.refinemv_signalled, self.blend)
+    }
 }
 
 impl EncoderMotion {
@@ -273,7 +290,26 @@ impl EncoderInterTile {
             if compound.use_optflow || compound.use_refinemv {
                 return Err(invalid());
             }
-            return Ok(CompoundRefinement::default());
+            if compound.skip_mode {
+                if compound.blend != CompoundType::default() {
+                    return Err(invalid());
+                }
+                let implicit = self
+                    .sequence
+                    .inter
+                    .as_ref()
+                    .is_some_and(|inter| inter.enable_imp_msk_bld);
+                return Ok(CompoundRefinement {
+                    blend: mc::CompoundBlend::average_with_implicit_mask(implicit),
+                    ..CompoundRefinement::default()
+                });
+            }
+            let type_reads = self.compound_type_reads(frontier, compound, (false, false))?;
+            return Ok(CompoundRefinement {
+                type_reads,
+                blend: self.compound_type_blend(compound, type_reads)?,
+                ..CompoundRefinement::default()
+            });
         }
         let (n4w, n4h) = block_size4(frontier)?;
         let opfl = self
@@ -317,24 +353,25 @@ impl EncoderInterTile {
         if compound.use_refinemv && !reads_refinemv {
             return Err(invalid());
         }
-        let all = compound_all_opfl_reachable(
-            opfl,
-            refs.0,
-            refs.1,
-            refs.2,
-            block,
-            n4w,
-            n4h,
-            super::super::mc::CompoundBlend::default(),
+        let refinemv_signalled = reached && (!refinemv_switchable || compound.use_refinemv);
+        let type_reads = self.compound_type_reads(
+            frontier,
+            compound,
+            (refinemv_signalled, refinemv_switchable),
         )?;
+        let blend = self.compound_type_blend(compound, type_reads)?;
+        let all =
+            compound_all_opfl_reachable(opfl, refs.0, refs.1, refs.2, block, n4w, n4h, blend)?;
         Ok(CompoundRefinement {
             reads_optflow,
             refinemv_selector: reads_refinemv.then(|| TileCdfSelector::UseRefinemv {
                 ctx: use_refinemv_ctx(compound.y_mode, compound.use_optflow),
             }),
             use_optflow: compound.use_optflow || all,
-            refinemv_signalled: reached && (!refinemv_switchable || compound.use_refinemv),
+            refinemv_signalled,
             refinemv_switchable,
+            type_reads,
+            blend,
         })
     }
 
@@ -352,6 +389,25 @@ impl EncoderInterTile {
             .compound_refinement(frontier, compound)?
             .refinemv_selector
             .map(|selector| (selector, u8::from(compound.use_refinemv))))
+    }
+
+    /// The compound type elements `motion` at `frontier` codes after its
+    /// `use_refinemv` (§ 5.20.7.16, § 5.20.7.6); none for a block that is not
+    /// compound or is skip mode.
+    pub(crate) fn compound_type_tail(
+        &self,
+        frontier: &DecodeBlockFrontier,
+        motion: EncoderMotion,
+    ) -> Result<Vec<TypeSymbol>> {
+        match motion {
+            EncoderMotion::Compound(compound)
+                if !compound.skip_mode && self.codes_compound_types() =>
+            {
+                let reads = self.compound_refinement(frontier, compound)?.type_reads;
+                self.compound_type_symbols(compound, reads)
+            }
+            _ => Ok(Vec::new()),
+        }
     }
 
     /// The filter the decoder predicts `motion` at `frontier` with, and the
@@ -771,20 +827,20 @@ impl EncoderInterTile {
         )
     }
 
-    /// The parse record of `compound` at `frontier` and `block`, as the
-    /// decoder builds it with every masked, weighted and warped tool off.
+    /// The parse record of `compound` at `frontier` and `block` without local
+    /// warp, as the decoder builds it, and its blend.
     pub(super) fn compound_syntax(
         &self,
         frontier: &DecodeBlockFrontier,
         block: &MvBlockContext,
         compound: EncoderCompoundMotion,
-    ) -> Result<CompoundMotionSyntax> {
+    ) -> Result<(CompoundMotionSyntax, mc::CompoundBlend)> {
         let refinement = self.compound_refinement(frontier, compound)?;
         let (ref0, ref1) = compound.ref_frames;
         let global = compound.y_mode == CompoundYMode::GlobalGlobal;
         let warp =
             |ref_frame| global_motion_warp(&self.core, ref_frame, false, block.bw4, block.bh4);
-        Ok(CompoundMotionSyntax {
+        let syntax = CompoundMotionSyntax {
             y_mode: compound.y_mode,
             ref_frame1: ref1,
             skip_mode: compound.skip_mode,
@@ -808,9 +864,10 @@ impl EncoderInterTile {
             } else {
                 [self.temporal_first(ref0), self.temporal_first(ref1)]
             },
-            use_refinemv: refinement.refinemv_signalled,
+            use_refinemv: refinement.use_refinemv(),
             refinemv_switchable: refinement.refinemv_switchable,
-        })
+        };
+        Ok((syntax, refinement.blend))
     }
 
     fn joint_projection(

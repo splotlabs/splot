@@ -25,9 +25,9 @@ use splot_decode::encoder_syntax::{
 use splot_recon::{DecodedFrame, ReconError};
 
 pub(crate) use decision::{
-    CompoundMode, CompoundModes, INTRA_MODES, InterMode, InterModes, InterPrediction, IntrabcModes,
-    Ist, LeafChoice, MotionVector, Partition, PartitionTree, ResidualCoder, SuperblockDecision,
-    TransformDecision, TxType,
+    CompoundMode, CompoundModes, CompoundType, INTRA_MODES, InterMode, InterModes, InterPrediction,
+    IntrabcModes, Ist, LeafChoice, MotionVector, Partition, PartitionTree, ResidualCoder,
+    SuperblockDecision, TransformDecision, TxType,
 };
 
 /// Output byte cap of one tile; larger than any 4096x2160 tile of 10-bit levels needs.

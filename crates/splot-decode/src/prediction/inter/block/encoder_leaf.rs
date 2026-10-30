@@ -29,10 +29,13 @@ use super::temporal::temporal_motion_block;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
+mod blend;
 mod compound;
 mod intrabc;
 mod warp;
 
+pub use blend::CompoundType;
+pub(crate) use blend::MAX_CWP_NUM;
 pub(crate) use compound::{EncoderCompoundMotion, JMVD_SCALE_MODES, MvdCoding};
 pub(crate) use warp::{EncoderWarpMotion, EncoderWarpSource};
 
@@ -198,13 +201,6 @@ impl EncoderInterTile {
             return Err("incomplete inter frame header");
         };
         let refused = [
-            (
-                (tail.reference_select || tail.skip_mode_present)
-                    && (seq_inter.enable_masked_compound
-                        || seq_inter.enable_cwp
-                        || seq_inter.enable_imp_msk_bld),
-                "masked or weighted compound prediction",
-            ),
             (tail.allow_bawp, "BAWP"),
             (
                 seq_inter.enable_ref_frame_mvs && seq_inter.enable_global_motion,
@@ -823,6 +819,7 @@ impl EncoderInterTile {
         skip: bool,
     ) -> Result<InterBlockSyntax> {
         let block = self.block(frontier, motion.refs())?;
+        let mut blend = mc::CompoundBlend::default();
         let (syntax, optflow_distances) = match motion {
             EncoderMotion::Single(single) => (
                 InterMotionSyntax::Single(self.single_syntax(&block, single)),
@@ -833,7 +830,8 @@ impl EncoderInterTile {
                 None,
             ),
             EncoderMotion::Compound(compound) => {
-                let syntax = self.compound_syntax(frontier, &block, compound)?;
+                let syntax;
+                (syntax, blend) = self.compound_syntax(frontier, &block, compound)?;
                 let distances = super::compound_path::compound_optflow_distances(
                     &self.core,
                     &self.reference,
@@ -857,7 +855,7 @@ impl EncoderInterTile {
                     block.bh4,
                     self.tip_refinemv(),
                 ),
-            blend: mc::CompoundBlend::default(),
+            blend,
             bawp: BawpSyntax::default(),
             interintra: None,
             optflow_distances,
@@ -970,7 +968,7 @@ impl EncoderInterTile {
                 let refinement = self.compound_refinement(frontier, compound)?;
                 super::compound_path::compound_deblock_sub_pu_size(
                     refinement.use_optflow,
-                    refinement.refinemv_signalled,
+                    refinement.use_refinemv(),
                     n4w * MI_SIZE,
                     n4h * MI_SIZE,
                 )

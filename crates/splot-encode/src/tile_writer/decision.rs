@@ -4,8 +4,8 @@
 //! Coding decisions of one superblock, the input of the key-frame tile writer.
 
 pub(crate) use splot_decode::encoder_syntax::{
-    CompoundMode, CompoundModes, InterMode, InterModes, InterPrediction, IntraMode, IntraModes,
-    IntrabcModes, Ist, MotionVector, Partition, TxPartition, TxType,
+    CompoundMode, CompoundModes, CompoundType, InterMode, InterModes, InterPrediction, IntraMode,
+    IntraModes, IntrabcModes, Ist, MotionVector, Partition, TxPartition, TxType,
 };
 use splot_decode::encoder_syntax::{IntraTileSyntax, LeafBlock, Palette, TransformBlock};
 

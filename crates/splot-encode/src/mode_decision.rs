@@ -28,9 +28,9 @@ use crate::rd::coeff_rate::RateSink;
 use crate::rd::partition::PartitionSearch;
 use crate::rd::{Bits, Lambda, RdCost};
 use crate::tile_writer::{
-    CompoundMode, CompoundModes, INTRA_MODES, InterMode, InterModes, InterPrediction, LeafChoice,
-    MotionVector, PARTITIONS, Partition, PartitionTree, Result, TileWriterError, Walk, snap_mv,
-    snap_prediction,
+    CompoundMode, CompoundModes, CompoundType, INTRA_MODES, InterMode, InterModes, InterPrediction,
+    LeafChoice, MotionVector, PARTITIONS, Partition, PartitionTree, Result, TileWriterError, Walk,
+    snap_mv, snap_prediction,
 };
 
 /// The largest `|AngleDeltaY|` (§ 5.20.5.5).
@@ -722,6 +722,7 @@ impl TrialCoder<'_, '_> {
                 filter: InterpolationFilter::EightTap,
                 optflow: false,
                 refinemv: false,
+                blend: CompoundType::default(),
             };
             let zero = [MotionVector::default(); 2];
             let mut trials: Vec<CompoundModes> = (0..drls * drls)

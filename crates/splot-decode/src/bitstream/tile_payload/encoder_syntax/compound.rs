@@ -2,19 +2,36 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Compound and skip-mode inter leaves of the encoder facade (§ 5.20.7.6,
-//! § 5.20.7.10, § 5.20.7.11) with `COMPOUND_AVERAGE` prediction: the masked,
-//! weighted and warped compound tools stay off at sequence level; optical
-//! flow and vector refinement are set per block (§ 5.20.7.17).
+//! § 5.20.7.10, § 5.20.7.11): the compound type and weight of each block
+//! (§ 5.20.7.16), optical flow and vector refinement (§ 5.20.7.17); local
+//! warp stays off.
 
 use splot_recon::InterpolationFilter;
 
 use super::inter::{InterModes, MotionVector};
 use super::{EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, rule};
+pub use crate::prediction::inter::CompoundType;
 use crate::prediction::inter::{CompoundYMode, EncoderCompoundMotion, EncoderMotion, Mv};
 
 /// `JOINT_NEWMV_SCALE_FACTOR_CNT` (§ 3): the `jmvd_scale_mode` values a
 /// `JOINT_NEWMV` block codes.
 pub const JMVD_SCALE_MODES: u8 = crate::prediction::inter::JMVD_SCALE_MODES;
+
+/// `MAX_CWP_NUM` (§ 3): the `cwp` values of [`CompoundType::Average`].
+pub const MAX_CWP_NUM: u8 = crate::prediction::inter::MAX_CWP_NUM;
+
+/// The compound types a block may code after its refinement (§ 5.20.7.16,
+/// § 5.20.7.6); [`CompoundType::Average`] with `cwp = 0` is always codable.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CompoundTypes {
+    /// [`CompoundType::DiffWeighted`] (`comp_group_idx` is read).
+    pub masked: bool,
+    /// [`CompoundType::Wedge`] (`comp_group_idx` is read and
+    /// `Wedge_Bits` is not `0`).
+    pub wedge: bool,
+    /// [`CompoundType::Average`] with any `cwp` below [`MAX_CWP_NUM`].
+    pub cwp: bool,
+}
 
 /// The candidate failure of a prediction whose vectors the decoder cannot derive.
 const UNDERIVED: &str = "a prediction whose vectors the decoder cannot derive";
@@ -71,6 +88,8 @@ pub struct CompoundModes {
     /// `use_refinemv`, where [`IntraTileSyntax::compound_refinements`] says
     /// the block reads it.
     pub refinemv: bool,
+    /// The compound type, one [`IntraTileSyntax::compound_types`] allows.
+    pub blend: CompoundType,
 }
 
 /// The prediction of one inter leaf.
@@ -209,6 +228,7 @@ impl IntraTileSyntax {
                     interp: InterpolationFilter::EightTapSharp,
                     use_optflow: false,
                     use_refinemv: false,
+                    blend: CompoundType::default(),
                 })
             }
         })
@@ -253,6 +273,7 @@ impl IntraTileSyntax {
             interp: modes.filter,
             use_optflow: modes.optflow,
             use_refinemv: modes.refinemv,
+            blend: modes.blend,
         };
         let tile = &self.inter_ref()?.tile;
         tile.mode_symbols(&leaf.frontier, EncoderMotion::Compound(motion))
@@ -276,6 +297,7 @@ impl IntraTileSyntax {
         let plain = CompoundModes {
             optflow: false,
             refinemv: false,
+            blend: CompoundType::default(),
             ..modes
         };
         let motion = EncoderCompoundMotion {
@@ -291,6 +313,37 @@ impl IntraTileSyntax {
             refinement.reads_optflow,
             refinement.refinemv_selector.is_some(),
         ))
+    }
+
+    /// The compound types the block `modes` at `leaf` may code with its
+    /// `use_optflow` and `use_refinemv`; its own type is ignored.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code.
+    pub fn compound_types(
+        &mut self,
+        leaf: &LeafBlock,
+        modes: CompoundModes,
+    ) -> Result<CompoundTypes> {
+        let motion = self.compound_choice(
+            leaf,
+            &CompoundModes {
+                blend: CompoundType::default(),
+                ..modes
+            },
+        )?;
+        let reads = self
+            .inter_ref()?
+            .tile
+            .compound_refinement(&leaf.frontier, motion)
+            .map_err(rule("compound type"))?
+            .type_reads;
+        let masked = reads.group_idx_ctx.is_some();
+        Ok(CompoundTypes {
+            masked,
+            wedge: masked && reads.wedge,
+            cwp: reads.cwp_same_side.is_some(),
+        })
     }
 
     fn compound_tool(&self, leaf: &LeafBlock, tool: impl Fn((bool, bool)) -> bool) -> bool {
