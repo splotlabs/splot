@@ -6663,7 +6663,7 @@ module = "crates/splot-encode/src/global_motion.rs"
 change_id = "enc-gm-facade"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::global_motion 1 enables enable_global_motion; inter frames write global_motion_params() with our_ref = NumTotalRefs, each ROTZOOM or AFFINE gm_params coded by the inverse of read_global_param (sub-exponential difference from the scale_warp_model prediction). The encoder_syntax facade codes frames with global motion and reference frame motion vectors, derives GLOBALMV and GLOBAL_GLOBALMV models with the frame's force_integer_mv, and stores the GLOBALMV models in the § 7.19 motion records as the decoder does. No estimator yet: frames code use_global_motion = 0. Off in every preset row."
+notes = "PresetParams::global_motion 1 enables enable_global_motion; inter frames write global_motion_params() with our_ref = NumTotalRefs, each ROTZOOM gm_params coded by the inverse of read_global_param (sub-exponential difference from the scale_warp_model prediction). The encoder_syntax facade codes frames with global motion and reference frame motion vectors, derives GLOBALMV and GLOBAL_GLOBALMV models with the frame's force_integer_mv, and stores the GLOBALMV models in the § 7.19 motion records as the decoder does. The estimator fits a translation or rotation-zoom by RANSAC to the lookahead 8x8 vectors of each frame against its nearest past and future coded frames. Off in every preset row: against main 36076e467 (2026-10-30) p6 park_joy measured +0.89%, p2 park_joy +1.22%, p2 paris +0.03%; acceptance tuning follows."
 
 [feature.status]
 mapped = "done"
@@ -6674,11 +6674,11 @@ write = "done"
 encode = "partial"
 decode_check = "done"
 tests = "done"
-avm_diff = "partial"
+avm_diff = "done"
 perf = "pending"
 
 [feature.proof]
-tests = ["crates/splot-core/src/write/global_motion.rs::tests::global_params_round_trip_through_the_reader", "crates/splot-core/src/write/global_motion.rs::tests::rejects_values_the_reader_cannot_produce", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::global_motion_models_round_trip_through_the_parser", "crates/splot-encode/src/intra_frame_gm_tests.rs::global_motion_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_gm_tests.rs::avm_decodes_global_motion_streams_like_splot", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon"]
+tests = ["crates/splot-core/src/write/global_motion.rs::tests::global_params_round_trip_through_the_reader", "crates/splot-core/src/write/global_motion.rs::tests::rejects_values_the_reader_cannot_produce", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::global_motion_models_round_trip_through_the_parser", "crates/splot-encode/src/intra_frame_gm_tests.rs::global_motion_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_gm_tests.rs::avm_decodes_global_motion_streams_like_splot", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-encode/src/global_motion.rs::tests::ransac_recovers_a_rotation_zoom_among_outliers", "crates/splot-encode/src/global_motion.rs::tests::ransac_refuses_noise_and_the_identity"]
 commands = ["cargo test -p splot-core global_motion --locked", "cargo test -p splot-encode global_motion --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_global_motion --locked -- --ignored"]
 fixtures = []
 diagnostics = []
