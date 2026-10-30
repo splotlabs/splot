@@ -147,6 +147,7 @@ fn inter_headers_parse_with_the_reference_state() {
                         tip_weight: None,
                         opfl_refine_type: 0,
                         force_integer_mv: sb == SuperblockSize::Block128x128 && !high_precision_mv,
+                        warp: false,
                     };
                     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
                     let core = &header.core;
@@ -231,6 +232,7 @@ fn order_hints_unwrap_against_the_reference_slots() {
         tip_weight: None,
         opfl_refine_type: 0,
         force_integer_mv: false,
+        warp: false,
     };
     let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
     let inter = header.core.inter.as_ref().unwrap();
@@ -328,6 +330,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
             tip_weight: None,
             opfl_refine_type: 0,
             force_integer_mv: false,
+            warp: false,
         },
     )
     .unwrap();
@@ -408,6 +411,7 @@ fn rejects_out_of_range_inter_inputs() {
         tip_weight: None,
         opfl_refine_type: 0,
         force_integer_mv: false,
+        warp: false,
     };
     assert!(matches!(
         build_inter_frame_header(&view, &slots.view(), &params),
@@ -424,6 +428,7 @@ fn rejects_out_of_range_inter_inputs() {
     assert!(build_inter_frame_header(&view, &no_valid_slot.view(), &params).is_err());
     let integer_mv = InterFrameParams {
         force_integer_mv: true,
+        warp: false,
         ..params
     };
     let slots = Slots::after_key(64, 64, 0);
@@ -535,4 +540,55 @@ fn opfl_refine_type_parses_with_and_without_tip() {
         };
         assert!(build_inter_frame_header(&view, &slots.view(), &bad).is_err());
     }
+}
+
+#[test]
+fn warp_frames_code_their_motion_modes_and_allow_warpmv_mode() {
+    let stream = EncoderStreamParams {
+        width: 64,
+        height: 64,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            warp: true,
+            ..EncoderToolFlags::default()
+        },
+    };
+    let seq = build_encoder_sequence_header(&stream).unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    let slots = Slots::after_key(64, 64, 4);
+    for warp in [false, true] {
+        let params = InterFrameParams {
+            base_q_idx: 90,
+            order_hint: 5,
+            show_frame: true,
+            warp,
+            ..InterFrameParams::default()
+        };
+        let header = build_inter_frame_header(&view, &slots.view(), &params).unwrap();
+        let modes = header
+            .core
+            .inter
+            .as_ref()
+            .unwrap()
+            .frame_enabled_motion_modes;
+        assert_eq!(modes, Some([false, false, warp, warp, warp]));
+        assert_eq!(header.core.inter_tail.unwrap().allow_warpmv_mode, warp);
+    }
+    let plain = CoreSeqView::from_sequence(&sequence(
+        64,
+        64,
+        BitDepthIdc::Eight,
+        SuperblockSize::Block64x64,
+    ))
+    .unwrap();
+    let params = InterFrameParams {
+        base_q_idx: 90,
+        order_hint: 5,
+        show_frame: true,
+        warp: true,
+        ..InterFrameParams::default()
+    };
+    assert!(build_inter_frame_header(&plain, &slots.view(), &params).is_err());
 }

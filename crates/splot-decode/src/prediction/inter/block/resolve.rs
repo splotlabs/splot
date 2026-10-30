@@ -291,10 +291,7 @@ fn resolve_pending_inter(
     } = pending;
     state.frame_precision = frame_precision;
     let mut resolved = resolve_inter_block(&syntax, state)?;
-    if matches!(syntax.motion, InterMotionSyntax::Warp(_)) && effective_force_integer_mv(state.core)
-    {
-        resolved.warp_params = [None, None];
-    }
+    predict_by_translation_under_integer_mv(&syntax, state.core, &mut resolved);
     let compound = match &syntax.motion {
         InterMotionSyntax::Compound(compound) => Some(*compound),
         InterMotionSyntax::Single(_) | InterMotionSyntax::Warp(_) => None,
@@ -343,6 +340,19 @@ fn resolve_pending_inter(
         qindex,
         state.tile_offset,
     ))
+}
+
+/// Drops the warp model a warp block of a `force_integer_mv` frame predicts
+/// with: it keeps the stored model but predicts by translation (`useWarp = 0`,
+/// § 7.13.3.14). The encoder facade predicts through it too.
+pub(super) fn predict_by_translation_under_integer_mv(
+    syntax: &InterBlockSyntax,
+    core: &FrameHeaderCore,
+    resolved: &mut ResolvedInterBlock,
+) {
+    if matches!(syntax.motion, InterMotionSyntax::Warp(_)) && effective_force_integer_mv(core) {
+        resolved.warp_params = [None, None];
+    }
 }
 
 /// Per-leaf § 5.20.7 inter syntax, before any § 7.12 candidate is resolved.
@@ -731,6 +741,22 @@ fn resolve_warp(
     warp: &WarpMotionSyntax,
     state: &mut MvResolutionState<'_>,
 ) -> Result<ResolvedInterBlock> {
+    let resolved = warp_motion(syntax, warp, state)?;
+    if let Some(params) = resolved.warp_params[0] {
+        state
+            .warp_param_bank
+            .update(syntax.block_ctx.ref_frame0, params);
+    }
+    Ok(resolved)
+}
+
+/// The § 7.12 motion and § 7.13.3 model of a warp block, before the warp bank
+/// update; the encoder facade calls it too.
+pub(super) fn warp_motion(
+    syntax: &InterBlockSyntax,
+    warp: &WarpMotionSyntax,
+    state: &MvResolutionState<'_>,
+) -> Result<ResolvedInterBlock> {
     let block = &syntax.block_ctx;
     let global_mv = global_motion_mv(state.core, block.ref_frame0, block, state.frame_precision);
     let stack = find_mv_stack_with_temporal(
@@ -777,7 +803,6 @@ fn resolve_warp(
             (mv, params)
         }
     };
-    state.warp_param_bank.update(block.ref_frame0, params);
     Ok(ResolvedInterBlock {
         mv: [mv, Mv::ZERO],
         warp_params: [Some(params), None],

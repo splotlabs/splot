@@ -79,6 +79,8 @@ pub enum InterPrediction {
     Single(InterModes),
     /// A compound block.
     Compound(CompoundModes),
+    /// A `WARPMV` or `WARP_NEWMV` block.
+    Warp(super::WarpModes),
     /// A skip-mode block: `NEAR_NEARMV` over the `skip_mode_frames` pair with
     /// skip-DRL index `drl`.
     SkipMode {
@@ -187,6 +189,7 @@ impl IntraTileSyntax {
                 }
                 EncoderMotion::Compound(motion)
             }
+            InterPrediction::Warp(modes) => EncoderMotion::Warp(self.warp_motion(leaf, modes)?),
             InterPrediction::SkipMode { drl } => {
                 if !self.skip_mode_allowed(leaf) || drl >= self.drl_count() {
                     return Err(EncoderSyntaxError::Unsupported("a skip-mode block here"));

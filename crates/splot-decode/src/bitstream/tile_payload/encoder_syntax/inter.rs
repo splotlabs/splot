@@ -1045,8 +1045,10 @@ impl IntraTileSyntax {
     }
 
     /// Prices into `symbols` the `use_refinemv` and the `interp_filter` that
-    /// `prediction` codes at `leaf` (§ 5.20.7.17, § 5.20.7.6), as
-    /// [`Self::write_interp_filter`] writes them, then puts the CDFs back.
+    /// `prediction` codes at `leaf` (§ 5.20.7.17, § 5.20.7.6), or the warp
+    /// deltas and `warp_inter_intra` of a warp block (§ 5.20.7.7,
+    /// § 5.20.7.15), as [`Self::write_interp_filter`] writes them, then puts
+    /// the CDFs back. A warp block reads no `interp_filter`.
     /// Returns whether the decoder reads `interp_filter`: a skip-mode block,
     /// a TIP block, a refined compound block, a large global block and a
     /// frame without `SWITCHABLE` filters read none.
@@ -1078,6 +1080,21 @@ impl IntraTileSyntax {
                 modes.filter,
             ),
             InterPrediction::SkipMode { .. } => return Ok(false),
+            InterPrediction::Warp(_) => {
+                let motion = self.motion(leaf, prediction)?;
+                let EncoderMotion::Warp(warp) = motion else {
+                    return Err(NO_INTER_LEAF);
+                };
+                let tail = (self.inter_ref()?.tile)
+                    .warp_tail_symbols(&leaf.frontier, warp)
+                    .map_err(rule("warp syntax"))?;
+                let mark = self.journal.mark();
+                let written = tail.into_iter().try_for_each(|(selector, value)| {
+                    self.put(symbols, selector, usize::from(value))
+                });
+                self.journal.rollback(&mut self.cdfs, mark)?;
+                return written.map(|()| false);
+            }
         };
         let ref_frame0 =
             i8::try_from(refs.0).map_err(|_| EncoderSyntaxError::Unsupported("reference index"))?;
@@ -1100,8 +1117,9 @@ impl IntraTileSyntax {
     }
 
     /// Writes the `use_refinemv` and the `interp_filter` of the planned inter
-    /// leaf `leaf`, after its motion vector differences (§ 5.20.7.17,
-    /// § 5.20.7.6); a leaf that reads neither writes nothing.
+    /// leaf `leaf`, or the warp deltas and `warp_inter_intra` of a warp leaf,
+    /// after its motion vector differences (§ 5.20.7.17, § 5.20.7.6,
+    /// § 5.20.7.7, § 5.20.7.15); a leaf that reads none writes nothing.
     ///
     /// # Errors
     /// Returns [`EncoderSyntaxError`] without a planned inter leaf or for a
@@ -1121,7 +1139,14 @@ impl IntraTileSyntax {
             .tile
             .interp_filter(&leaf.frontier, motion)
             .map_err(rule("interp_filter"))?;
-        for (selector, value) in refinemv.into_iter().chain(interp) {
+        let tail = match motion {
+            EncoderMotion::Warp(warp) => state
+                .tile
+                .warp_tail_symbols(&leaf.frontier, warp)
+                .map_err(rule("warp syntax"))?,
+            _ => Vec::new(),
+        };
+        for (selector, value) in refinemv.into_iter().chain(interp).chain(tail) {
             self.put(symbols, selector, usize::from(value))?;
         }
         Ok(())

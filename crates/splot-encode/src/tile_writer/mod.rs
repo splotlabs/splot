@@ -20,7 +20,7 @@ use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig, SymbolSink}
 use splot_core::write::WriteError;
 use splot_decode::encoder_syntax::{
     AMVD_STEPS, EncoderReferences, EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock,
-    PartitionNode, TileEnd, TransformBlock, TxPartition,
+    PartitionNode, TileEnd, TransformBlock, TxPartition, WarpModel,
 };
 use splot_recon::{DecodedFrame, ReconError};
 
@@ -686,6 +686,27 @@ pub(crate) fn snap_prediction(
                 }
             }
             InterPrediction::Compound(modes)
+        }
+        InterPrediction::Warp(mut modes) => {
+            let options = syntax.warp_options(leaf, modes.ref_frame)?;
+            let reachable = match modes.model {
+                WarpModel::Local => options.is_some_and(|options| options.local),
+                WarpModel::Extend => options.is_some_and(|options| options.extend),
+                _ => true,
+            };
+            if !reachable {
+                // A memoized subtree recoded under other neighbours may lose
+                // the warp samples LOCALWARP and EXTENDWARP need.
+                modes.model = WarpModel::Delta {
+                    high_precision: false,
+                    values: [0; 4],
+                };
+            }
+            if let Some(target) = modes.mv {
+                let base = syntax.warp_base(leaf, modes)?;
+                modes.mv = Some(snap_mv(target, base, syntax.warp_step(&modes)));
+            }
+            InterPrediction::Warp(modes)
         }
         other => other,
     })

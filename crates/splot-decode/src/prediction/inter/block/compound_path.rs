@@ -495,7 +495,7 @@ pub(super) fn compound_needs_interp_filter(
     !local_warp && (n4w < 2 || n4h < 2 || y_mode != CompoundYMode::GlobalGlobal)
 }
 
-fn compound_local_warp_signal_allowed(
+pub(super) fn compound_local_warp_signal_allowed(
     compound: super::super::compound::CompoundBlockSyntax,
     n4w: usize,
     n4h: usize,

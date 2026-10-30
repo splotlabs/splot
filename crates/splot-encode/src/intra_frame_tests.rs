@@ -602,8 +602,8 @@ impl Rng {
 /// second-DRL index of list 1; a nonzero `jmvd_scale_mode`; a coded
 /// `interp_filter` other than `EIGHTTAP`; a `NEWMV` below the frame
 /// precision; an adaptive-MVD `NEWMV`; a TIP leaf; a compound leaf coding
-/// `use_optflow = 1`; a compound leaf coding `use_refinemv = 1`.
-type Coverage = [usize; 22];
+/// `use_optflow = 1`; a compound leaf coding `use_refinemv = 1`; a warp leaf.
+type Coverage = [usize; 23];
 
 /// A random partition tree of `node`: single-reference, compound and
 /// skip-mode inter leaves of every mode, DRL index and random vectors of up
@@ -806,6 +806,13 @@ fn random_modes(
         coverage[17] += usize::from(coarse.amvd);
         return LeafChoice::inter(InterPrediction::Single(coarse));
     }
+    let mut side = Rng(rng.0.rotate_left(29));
+    if side.below(2) == 0
+        && let Some(warp) = warp::random_warp(syntax, leaf, &mut side, mvs[0])
+    {
+        coverage[22] += 1;
+        return LeafChoice::inter(warp);
+    }
     LeafChoice::inter(InterPrediction::Single(modes))
 }
 
@@ -835,6 +842,7 @@ fn inter_stream_with(
         mvd_tools: [true; 3],
         opfl: true,
         refinemv: true,
+        warp: 1,
         ..*config.preset.params()
     }));
     let mut coder = IntraFrameCoder::with_preset(config, preset).unwrap();
@@ -865,12 +873,20 @@ fn inter_stream_with(
         units.push(coded.temporal_unit);
     }
     let plan = plan.unwrap();
-    let (tx, _, (high_precision_mv, ref_mvs, _, tip, integer_mv, opfl), tiles) =
+    let (tx, _, (high_precision_mv, ref_mvs, _, tip, integer_mv, opfl, warp), tiles) =
         crate::gop::frame_tools(&coder.preset, coder.tiles, qindex);
     let tools = (
         tx,
         true,
-        (high_precision_mv, ref_mvs, true, tip, integer_mv, opfl),
+        (
+            high_precision_mv,
+            ref_mvs,
+            true,
+            tip,
+            integer_mv,
+            opfl,
+            warp,
+        ),
         tiles,
     );
     let filters = FrameFilterParams::default();
@@ -1347,6 +1363,8 @@ mod mvpred;
 mod refine;
 #[path = "intra_frame_tip_tests.rs"]
 mod tip;
+#[path = "intra_frame_warp_tests.rs"]
+mod warp;
 #[path = "intra_frame_wienerns_tests.rs"]
 mod wienerns;
 

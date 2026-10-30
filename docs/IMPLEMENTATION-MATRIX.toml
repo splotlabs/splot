@@ -6459,6 +6459,38 @@ commands = ["cargo test -p splot-encode sb256 --locked", "SPLOT_AVM_DECODER=avmd
 fixtures = []
 diagnostics = []
 
+[[feature]]
+id = "ENC-WARP"
+name = "Encoder warped motion"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.4.6", "5.18.2", "5.20.7.7", "5.20.7.11", "5.20.7.14", "7.13.3.14", "7.13.3.23", "7.13.3.24", "7.19"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/warp.rs"
+change_id = "enc-warp-facade"
+owner = "encoder"
+risk = "medium"
+notes = "PresetParams::warp 1 enables LOCALWARP, DELTAWARP and EXTENDWARP with six-parameter deltas in the sequence and allow_warpmv_mode in each inter frame. The encoder_syntax facade codes WARPMV and WARP_NEWMV leaves with the decoder's symbols and § 7.12 / § 7.13.3 models (no encoder-side fit), writes is_warp = 0 for other single-reference leaves and use_local_warp = 0 for compound NEW_NEWMV, predicts warp blocks of force_integer_mv frames by translation (§ 7.13.3.14), and stores warp models in the § 7.19 motion field. Leaves try the first WARPMV candidate and the zero-delta, local and extended models at the searched vector. Off in every preset row until the search lands and is measured."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "pending"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_warp_tests.rs::warp_streams_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_warp_tests.rs::warp_streams_match_on_any_thread_count", "crates/splot-encode/src/intra_frame_warp_tests.rs::zoom_search_picks_warp_leaves", "crates/splot-encode/src/intra_frame_warp_tests.rs::avm_decodes_warp_streams_like_splot", "crates/splot-encode/src/intra_frame_tests.rs::random_inter_leaves_decode_to_the_writer_recon", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::warp_frames_code_their_motion_modes_and_allow_warpmv_mode"]
+commands = ["cargo test -p splot-encode warp --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_warp --locked -- --ignored"]
+fixtures = []
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------
