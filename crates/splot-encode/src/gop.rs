@@ -528,21 +528,25 @@ impl GopFrame {
     }
 
     /// The header and OBUs of the frame as a `TIP_FRAME_AS_OUTPUT` frame with
-    /// `tip_global_wtd_index` `weight` over the reference map `ref_frame_idx`
-    /// references, after a temporal delimiter when the frame opens its
-    /// temporal unit.
+    /// `tip_global_wtd_index` `weight` and the film grain of `grain_seed` over
+    /// the reference map `ref_frame_idx` references, after a temporal
+    /// delimiter when the frame opens its temporal unit.
     pub(crate) fn tip_output_unit(
         &self,
         view: &CoreSeqView,
         refs: &EncoderReferences,
         ref_frame_idx: &[u32],
-        weight: u8,
+        (weight, grain_seed): (u8, Option<u16>),
     ) -> Result<(FrameHeaderCore, Vec<u8>)> {
         let params = InterFrameParams {
             order_hint: self.order_hint,
             refresh_frame_flags: self.refresh_frame_flags,
             show_frame: self.show_frame,
             tip_weight: Some(weight),
+            tx: KeyFrameTxParams {
+                grain_seed,
+                ..KeyFrameTxParams::default()
+            },
             ..InterFrameParams::default()
         };
         let header =
