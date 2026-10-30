@@ -819,7 +819,8 @@ pub(super) fn motion<T: ReconSample>(
     let grid = plan
         .use_optflow
         .then(|| tip_motion_grid(scratch, &plan, sink, reference, tile_offset))
-        .transpose()?;
+        .transpose()?
+        .flatten();
     temporal_records
         .try_reserve(plan.unit_count)
         .map_err(|_| inter_allocation!("TIP temporal records"))?;
@@ -857,14 +858,16 @@ pub(super) fn motion<T: ReconSample>(
     Ok(grid)
 }
 
-/// Builds the optical-flow motion grid the block's units share.
+/// Builds the optical-flow motion grid the block's units share; `None` for a
+/// one-unit block whose two predictions are close enough that § 7.13.3.8
+/// skips the refinement.
 fn tip_motion_grid<T: ReconSample>(
     scratch: &mut TipReconstructScratch<T>,
     plan: &TipBlockPlan,
     sink: &mc::WorkspaceSink<'_, '_, T>,
     reference: &InterReferenceState<T>,
     tile_offset: ByteOffset,
-) -> Result<mc::CompoundMotionGrid> {
+) -> Result<Option<mc::CompoundMotionGrid>> {
     let held = plan.hold(reference)?;
     let prediction = held.prediction(&plan.plan)?;
     let first = scratch.units.first().ok_or(ReconError::ZeroDimension {
@@ -875,8 +878,7 @@ fn tip_motion_grid<T: ReconSample>(
         .into_compound()
         .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
     if scratch.units.len() == 1 {
-        return mc::compound_block_motion_grid(sink, compound, Some(8), tile_offset)?
-            .ok_or_else(|| DecodeHeaderStateError::InvalidInterTipPredictionState.into());
+        return mc::compound_block_motion_grid(sink, compound, Some(8), tile_offset);
     }
     mc::tip_batch_motion_grid(
         sink,
@@ -890,6 +892,7 @@ fn tip_motion_grid<T: ReconSample>(
         tile_offset,
         core::mem::take(&mut scratch.grid_candidates),
     )
+    .map(Some)
 }
 
 /// Keeps the largest candidate list a published unit hands back.

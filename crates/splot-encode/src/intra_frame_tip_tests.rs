@@ -255,3 +255,82 @@ fn tip_output_zero_codes_the_stream_with_tip_output_disabled() {
     let (disabled, ..) = super::carry::planned_stream_of(&config, disabled, panning_frame, 180);
     assert_eq!(off, disabled);
 }
+
+/// Preset 6 with TIP output preferred and TIP refinement over optical flow.
+fn with_tip_refinement() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        tip: 1,
+        tip_output: 200,
+        opfl: true,
+        tip_refinemv: true,
+        ..*Preset::new(6).unwrap().params()
+    }))
+}
+
+/// With TIP refinement, TIP blocks and TIP output frames refine their
+/// projected vectors, frames with a past and a future reference code no TIP
+/// weight, and panning streams at a fine and a coarse quantizer decode to the
+/// encoder recon in 4:2:0 10-bit, 4:2:2 8-bit and 4:4:4 10-bit.
+#[test]
+fn refined_tip_streams_decode_to_the_encoder_recon() {
+    for (chroma, bit_depth) in [
+        (PixelFormat::Yuv420, BitDepth::Ten),
+        (PixelFormat::Yuv422, BitDepth::Eight),
+        (PixelFormat::Yuv444, BitDepth::Ten),
+    ] {
+        for qp in [110, 250] {
+            let mut config = config(72, 40, bit_depth, 6, qp);
+            config.chroma = chroma;
+            let coder = IntraFrameCoder::with_preset(&config, with_tip_refinement()).unwrap();
+            let (units, expected, cores, coder) =
+                super::carry::planned_stream_of(&config, coder, panning_frame, qp);
+            assert!(coder.sequence.inter.unwrap().enable_tip_refinemv);
+            let tips: Vec<_> = cores
+                .iter()
+                .filter_map(|core| core.inter.as_ref())
+                .filter(|inter| {
+                    inter
+                        .tip_frame_mode
+                        .is_some_and(|mode| mode != TipFrameMode::Disabled)
+                })
+                .collect();
+            assert!(!tips.is_empty(), "{chroma:?} {qp}");
+            assert!(
+                tips.iter()
+                    .all(|inter| inter.tip_global_wtd_index == Some(0))
+            );
+            let name = format!("{chroma:?} qp {qp}");
+            assert_same_samples(&decode(&units), &expected, &name);
+        }
+    }
+}
+
+/// AVM decodes refined TIP streams like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_refined_tip_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for chroma in [
+        PixelFormat::Yuv420,
+        PixelFormat::Yuv422,
+        PixelFormat::Yuv444,
+    ] {
+        for qp in [110, 250] {
+            let mut config = config(72, 40, BitDepth::Ten, 6, qp);
+            config.chroma = chroma;
+            let coder = IntraFrameCoder::with_preset(&config, with_tip_refinement()).unwrap();
+            let (units, expected, ..) =
+                super::carry::planned_stream_of(&config, coder, panning_frame, qp);
+            let avm = avm_decode(
+                &avmdec,
+                &[units],
+                (config.width, config.height),
+                config.bit_depth,
+                &format!("tiprefine{chroma:?}{qp}"),
+            );
+            assert!(avm == expected, "{chroma:?} {qp}: AVM output differs");
+        }
+    }
+}

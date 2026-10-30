@@ -426,6 +426,34 @@ fn tip_ref_counts(
     Some((num_past_refs, num_future_refs))
 }
 
+/// Whether a TIP frame over `ref_frame_idx` at `order_hint` codes
+/// `tip_global_wtd_index` (§ 5.18.2): a `TIP_FRAME_AS_OUTPUT` frame with
+/// `as_output`, else a `TIP_FRAME_AS_REF` frame whose coded
+/// `opfl_refine_type` is `frame_opfl`; `None` when `refs` cannot count its
+/// past and future references.
+pub(crate) fn tip_weight_coded(
+    seq: &InterSeqView,
+    refs: &FrameReferenceStateView<'_>,
+    (ref_frame_idx, order_hint): (&[u32], u32),
+    as_output: bool,
+    frame_opfl: u32,
+) -> Option<bool> {
+    let (past, future) = tip_ref_counts(refs, ref_frame_idx, order_hint)?;
+    let opfl_refine_type = if as_output {
+        tip_output_opfl_refine_type(seq)
+    } else if seq.enable_opfl_refine == REFINE_AUTO {
+        frame_opfl
+    } else {
+        u32::from(seq.enable_opfl_refine)
+    };
+    Some(tip_unequal_weighted_allowed(
+        seq,
+        past,
+        future,
+        opfl_refine_type,
+    ))
+}
+
 fn tip_unequal_weighted_allowed(
     seq: &InterSeqView,
     num_past_refs: usize,

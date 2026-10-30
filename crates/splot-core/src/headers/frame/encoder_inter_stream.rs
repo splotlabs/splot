@@ -13,6 +13,8 @@ use crate::bitio::BitReader;
 use crate::headers::frame::encoder_stream::{
     MAX_REDUCED_TX_SET, UniformTiles, obu_header, tile_framing, write_quant_and_filters,
 };
+use crate::headers::frame::info::build_inter_seq_view;
+use crate::headers::frame::inter::tip_weight_coded;
 use crate::headers::frame::inter_shared_tail::{
     lr_reference_filter_counts, lr_reference_filter_entries,
 };
@@ -175,7 +177,15 @@ fn parse_inter_frame_header(
         counts,
         taps: [&entries[0], &entries[1], &entries[2]],
     };
-    let (bytes, bit_len) = inter_frame_header_bits(seq, params, map, lr_refs)?;
+    let weight_coded = tip_weight_coded(
+        &build_inter_seq_view(seq),
+        refs,
+        (ref_frame_idx, params.order_hint),
+        false,
+        u32::from(params.opfl_refine_type),
+    )
+    .unwrap_or(true);
+    let (bytes, bit_len) = inter_frame_header_bits(seq, params, map, lr_refs, weight_coded)?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
@@ -201,6 +211,7 @@ fn inter_frame_header_bits(
     params: &InterFrameParams,
     (primary_ref_frame, num_total_refs): (Option<u32>, u32),
     lr_refs: LrReferenceFilters<'_>,
+    weight_coded: bool,
 ) -> Result<(Vec<u8>, u64), EncoderHeaderError> {
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
@@ -257,7 +268,7 @@ fn inter_frame_header_bits(
         if seq.inter.enable_tip_hole_fill {
             w.write_flag(false)?; // allow_tip_hole_fill
         }
-        w.write_bits(u32::from(weight), 3)?; // tip_global_wtd_index
+        write_tip_weight(&mut w, weight, weight_coded)?;
     }
     let coded_integer_mv = seq.seq_force_screen_content_tools == 2 && seq.seq_force_integer_mv == 2;
     if params.force_integer_mv && (!coded_integer_mv || params.high_precision_mv) {
@@ -361,7 +372,7 @@ pub fn encode_inter_frame_obu(
 }
 
 /// Builds the `OBU_REGULAR_TIP` header of a `TIP_FRAME_AS_OUTPUT` frame
-/// (§ 5.18.2) over a map of `num_total_refs` references for `seq` and the
+/// (§ 5.18.2) over the reference map `ref_frame_idx` for `seq` and the
 /// § 7.23 reference state `refs`: the `order_hint`, `refresh_frame_flags`,
 /// `show_frame` and `tip_weight` of `params`, `PRIMARY_REF_NONE`,
 /// `use_ref_frame_mvs = 1`, a zero `tip_global_mv` and the `EIGHTTAP_SHARP`
@@ -375,9 +386,10 @@ pub fn build_tip_output_frame_header(
     seq: &CoreSeqView,
     refs: &FrameReferenceStateView<'_>,
     params: &InterFrameParams,
-    num_total_refs: u32,
+    ref_frame_idx: &[u32],
 ) -> Result<EncodedFrameHeader, EncoderHeaderError> {
     let inter = &seq.inter;
+    let num_total_refs = ref_frame_idx.len();
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
     }
@@ -414,7 +426,14 @@ pub fn build_tip_output_frame_header(
     if seq.tile.frame_sb_size(false) != SuperblockSize::Block64x64 {
         w.write_flag(false)?; // tmvp_sample_step_minus_1
     }
-    w.write_bits(u32::from(weight), 3)?; // tip_global_wtd_index
+    let weight_coded = tip_weight_coded(
+        &build_inter_seq_view(seq),
+        refs,
+        (ref_frame_idx, params.order_hint),
+        true,
+        0,
+    );
+    write_tip_weight(&mut w, weight, weight_coded.unwrap_or(true))?;
     w.write_flag(true)?; // tip_global_mv_zero
     w.write_flag(true)?; // tip_sharp
     let bit_len = w.bit_len();
@@ -511,6 +530,16 @@ pub fn encode_show_existing_frame_obu(
     let mut obu = BitWriter::new();
     write_annexb_obu(&mut obu, &obu_header(ObuType::RegularSef), &payload)?;
     Ok(obu.into_bytes())
+}
+
+/// Writes `tip_global_wtd_index` = `weight` where the frame codes it; a
+/// frame that does not code it infers `0`.
+fn write_tip_weight(w: &mut BitWriter, weight: u8, coded: bool) -> Result<(), EncoderHeaderError> {
+    match (coded, weight) {
+        (true, _) => Ok(w.write_bits(u32::from(weight), 3)?), // tip_global_wtd_index
+        (false, 0) => Ok(()),
+        (false, _) => Err(unsupported("a TIP weight the frame infers as 0")),
+    }
 }
 
 fn unsupported(what: &'static str) -> EncoderHeaderError {

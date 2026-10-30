@@ -457,7 +457,7 @@ fn tip_output_header_parses_complete_and_needs_tip_output() {
     };
     let seq = build_encoder_sequence_header(&stream).unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let header = build_tip_output_frame_header(&view, &slots.view(), &params, 2).unwrap();
+    let header = build_tip_output_frame_header(&view, &slots.view(), &params, &[0, 1]).unwrap();
     assert_eq!(header.core.obu_type, ObuType::RegularTip);
     let inter = header.core.inter.as_ref().unwrap();
     assert_eq!(inter.tip_frame_mode, Some(TipFrameMode::AsOutput));
@@ -477,12 +477,12 @@ fn tip_output_header_parses_complete_and_needs_tip_output() {
         opfl_refine_type: 0,
         ..params
     };
-    assert!(build_tip_output_frame_header(&view, &slots.view(), &no_weight, 2).is_err());
-    assert!(build_tip_output_frame_header(&view, &slots.view(), &params, 1).is_err());
+    assert!(build_tip_output_frame_header(&view, &slots.view(), &no_weight, &[0, 1]).is_err());
+    assert!(build_tip_output_frame_header(&view, &slots.view(), &params, &[0]).is_err());
     stream.tools.tip_output = false;
     let seq = build_encoder_sequence_header(&stream).unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    assert!(build_tip_output_frame_header(&view, &slots.view(), &params, 2).is_err());
+    assert!(build_tip_output_frame_header(&view, &slots.view(), &params, &[0, 1]).is_err());
 }
 
 #[test]
@@ -534,5 +534,69 @@ fn opfl_refine_type_parses_with_and_without_tip() {
             ..InterFrameParams::default()
         };
         assert!(build_inter_frame_header(&view, &slots.view(), &bad).is_err());
+    }
+}
+
+#[test]
+fn tip_weight_follows_tip_refinement() {
+    for tip_refinemv in [false, true] {
+        let stream = EncoderStreamParams {
+            width: 64,
+            height: 64,
+            bit_depth: BitDepthIdc::Eight,
+            chroma: ChromaFormatIdc::Yuv420,
+            sb_size: SuperblockSize::Block64x64,
+            tools: EncoderToolFlags {
+                ref_frame_mvs: true,
+                tip: true,
+                tip_output: true,
+                opfl_refine: true,
+                tip_refinemv,
+                ..EncoderToolFlags::default()
+            },
+        };
+        let seq = build_encoder_sequence_header(&stream).unwrap();
+        assert_eq!(
+            seq.inter.as_ref().unwrap().enable_tip_refinemv,
+            tip_refinemv
+        );
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let mut slots = Slots::after_key(64, 64, 4);
+        slots.valid[1] = true;
+        slots.hints[1] = 8;
+        slots.counters[1] = 1;
+        let params = |weight| InterFrameParams {
+            base_q_idx: 90,
+            order_hint: 6,
+            show_frame: true,
+            use_ref_frame_mvs: true,
+            tip_weight: Some(weight),
+            opfl_refine_type: 1,
+            ..InterFrameParams::default()
+        };
+        let header = build_inter_frame_header(&view, &slots.view(), &params(0)).unwrap();
+        let inter = header.core.inter.as_ref().unwrap();
+        assert_eq!(inter.tip_global_wtd_index, Some(0));
+        assert_eq!(
+            build_inter_frame_header(&view, &slots.view(), &params(3)).is_ok(),
+            !tip_refinemv
+        );
+        let output = InterFrameParams {
+            refresh_frame_flags: 0,
+            ..params(0)
+        };
+        let header = build_tip_output_frame_header(&view, &slots.view(), &output, &[0, 1]).unwrap();
+        assert_eq!(
+            header.core.inter.as_ref().unwrap().tip_frame_mode,
+            Some(TipFrameMode::AsOutput)
+        );
+        let weighted = InterFrameParams {
+            tip_weight: Some(3),
+            ..output
+        };
+        assert_eq!(
+            build_tip_output_frame_header(&view, &slots.view(), &weighted, &[0, 1]).is_ok(),
+            !tip_refinemv
+        );
     }
 }

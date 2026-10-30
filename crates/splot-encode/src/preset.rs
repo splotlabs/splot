@@ -225,6 +225,11 @@ pub struct PresetParams {
     /// every row (2026-10-30): alone it measured niklas +0.23% at p6, largely
     /// from the refinement the decoder infers on `NEAR_NEARMV` blocks.
     pub refinemv: bool,
+    /// TIP refinement (`enable_tip_refinemv`): with `tip` and `opfl` or
+    /// `refinemv`, TIP blocks and TIP output frames refine their projected
+    /// vectors, and frames with a past and a future reference code no TIP
+    /// weight; the `tip = 2` weight search is skipped.
+    pub tip_refinemv: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -497,6 +502,7 @@ preset_table! {
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         opfl:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         refinemv:              [false, false, false, false, false, false, false, false, false, false, false],
+        tip_refinemv:          [false, false, false, false, false, false, false, false, false, false, false],
     }
     filters {
         loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],

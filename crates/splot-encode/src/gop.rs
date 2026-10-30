@@ -503,14 +503,14 @@ impl GopFrame {
     }
 
     /// The header and OBUs of the frame as a `TIP_FRAME_AS_OUTPUT` frame with
-    /// `tip_global_wtd_index` `weight` over a map of `num_total_refs`
+    /// `tip_global_wtd_index` `weight` over the reference map `ref_frame_idx`
     /// references, after a temporal delimiter when the frame opens its
     /// temporal unit.
     pub(crate) fn tip_output_unit(
         &self,
         view: &CoreSeqView,
         refs: &EncoderReferences,
-        num_total_refs: u32,
+        ref_frame_idx: &[u32],
         weight: u8,
     ) -> Result<(FrameHeaderCore, Vec<u8>)> {
         let params = InterFrameParams {
@@ -521,7 +521,7 @@ impl GopFrame {
             ..InterFrameParams::default()
         };
         let header =
-            build_tip_output_frame_header(view, &refs.header_view(), &params, num_total_refs)
+            build_tip_output_frame_header(view, &refs.header_view(), &params, ref_frame_idx)
                 .map_err(header_error)?;
         if header.core.display_order_hint() != Some(self.order_hint) {
             return Err(Error::OrderHintMismatch {

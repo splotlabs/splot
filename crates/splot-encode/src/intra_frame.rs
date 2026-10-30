@@ -129,6 +129,7 @@ impl IntraFrameCoder {
                 tip_output: preset.tip > 0 && preset.mv_prediction && preset.tip_output > 0,
                 opfl_refine: preset.opfl,
                 refinemv: preset.refinemv,
+                tip_refinemv: preset.tip > 0 && preset.mv_prediction && preset.tip_refinemv,
                 cctx: preset.cctx,
                 mhccp: preset.mhccp,
                 fsc: preset.fsc,
@@ -339,7 +340,8 @@ impl IntraFrameCoder {
             )?;
             if !self.references.tip_pair_available(&probe) {
                 (tools.2.3, tools.2.5) = (None, 0);
-            } else if tools.2.3.is_some() && self.preset.tip >= 2 {
+            } else if tools.2.3.is_some() && self.preset.tip >= 2 && !self.params.tools.tip_refinemv
+            {
                 tools.2.3 = Some(self.tip_weight(source, &probe)?);
             }
         }
@@ -483,15 +485,15 @@ impl IntraFrameCoder {
         weight: u8,
         coded: &CodedFrame,
     ) -> Result<Option<CodedFrame>> {
-        let num_total_refs = coded
+        let ref_frame_idx = coded
             .reference
             .as_ref()
-            .and_then(|(core, ..)| core.inter.as_ref()?.num_total_refs)
+            .and_then(|(core, ..)| Some(core.inter.as_ref()?.ref_frame_idx.to_vec()))
             .ok_or(Error::Unsupported {
                 what: "a TIP frame without references",
             })?;
         let (core, temporal_unit) =
-            plan.tip_output_unit(&self.view, &self.references, num_total_refs, weight)?;
+            plan.tip_output_unit(&self.view, &self.references, &ref_frame_idx, weight)?;
         let (core, frame) = self
             .references
             .tip_output(&core)
