@@ -198,6 +198,14 @@ spec_sections = ["5.4.3", "5.18.2", "5.20.2.1"]
 notes = "The sequence enables 256x256 superblocks, while the intra frame uses the AV2 effective 128x128 superblock geometry across a 129-pixel width."
 
 [[capability]]
+id = "residual.offframe_chunk"
+name = "Residual chunk starting outside the frame"
+category = "residual"
+fixtureable = true
+spec_sections = ["5.20.7.23"]
+notes = "A 256x256 inter block whose last 64x64 residual chunk row starts below the frame codes no transform block there."
+
+[[capability]]
 id = "frame.bridge"
 name = "Bridge frame"
 category = "frame"
@@ -624,6 +632,14 @@ name = "Local-warp sample using a compound block's list-1 MV"
 category = "inter"
 fixtureable = true
 spec_sections = ["7.12.3.1", "7.12.3.2", "7.13.3.23"]
+
+[[capability]]
+id = "inter.warp.integer_mv_translation"
+name = "Warp block of a force_integer_mv frame predicted by translation"
+category = "inter"
+fixtureable = true
+spec_sections = ["7.13.3.14"]
+notes = "A WARPMV block of a frame with force_integer_mv keeps its warp model but predicts with useWarp = 0."
 
 [[capability]]
 id = "transform.cctx"

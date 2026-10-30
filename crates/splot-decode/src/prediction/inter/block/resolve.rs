@@ -275,6 +275,9 @@ fn resolve_pending_intrabc(
     Ok(command)
 }
 
+/// Resolves a pending block's motion and assembles its reconstruction. A
+/// warp block of a `force_integer_mv` frame keeps its stored warp model but
+/// predicts by translation (`useWarp = 0`, § 7.13.3.14).
 fn resolve_pending_inter(
     pending: PendingInterBlock,
     state: &mut MvResolutionState<'_>,
@@ -287,7 +290,11 @@ fn resolve_pending_inter(
         frame_precision,
     } = pending;
     state.frame_precision = frame_precision;
-    let resolved = resolve_inter_block(&syntax, state)?;
+    let mut resolved = resolve_inter_block(&syntax, state)?;
+    if matches!(syntax.motion, InterMotionSyntax::Warp(_)) && effective_force_integer_mv(state.core)
+    {
+        resolved.warp_params = [None, None];
+    }
     let compound = match &syntax.motion {
         InterMotionSyntax::Compound(compound) => Some(*compound),
         InterMotionSyntax::Single(_) | InterMotionSyntax::Warp(_) => None,
