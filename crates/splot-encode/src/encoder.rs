@@ -197,7 +197,7 @@ impl Encoder {
             State::Failed => return Err(Error::Failed),
         }
         if frame.bit_depth() != self.config.bit_depth
-            || frame.plane_sizes() != self.config.plane_sizes()?
+            || frame.plane_sizes() != self.config.plane_sizes()?.as_slice()
         {
             return Err(Error::FrameConfigMismatch);
         }
@@ -701,8 +701,9 @@ mod tests {
             Encoder::with_coder(config.clone(), Box::new(FakeCoder { fail_at: None }))?;
         let mut random = xorshift(5);
         for pts in 0..12 {
-            let planes = config.plane_sizes()?.map(|size| {
-                (0..size.width() * size.height())
+            let sizes = config.plane_sizes()?;
+            let planes = core::array::from_fn(|plane| {
+                (0..sizes[plane].width() * sizes[plane].height())
                     .map(|_| 16 + 37 * random() as u16)
                     .collect()
             });

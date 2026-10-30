@@ -19,7 +19,7 @@ pub enum Error {
     },
 
     /// The chroma format is not supported.
-    #[error("chroma format {chroma:?} is not supported; only 4:2:0, 4:2:2 and 4:4:4 are")]
+    #[error("chroma format {chroma:?} is not supported")]
     UnsupportedChroma {
         /// Configured chroma format.
         chroma: PixelFormat,
