@@ -362,7 +362,7 @@ fn inter_obu_carries_the_recorded_header_and_tile() {
 fn show_existing_frame_obu_parses_complete() {
     let seq = sequence(17, 9, BitDepthIdc::Eight, SuperblockSize::Block64x64);
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let obu = encode_show_existing_frame_obu(&view, 5).unwrap();
+    let obu = encode_show_existing_frame_obu(&view, 5, None).unwrap();
     let parsed = parse_annex_b_obus_partial(&obu);
     assert!(parsed.error.is_none());
     assert_eq!(parsed.obus.len(), 1);
@@ -386,7 +386,81 @@ fn show_existing_frame_obu_parses_complete() {
     );
     assert_eq!(core.frame_to_show_map_idx, Some(5));
     assert_eq!(core.order_hint, Some(7));
-    assert!(encode_show_existing_frame_obu(&view, 8).is_err());
+    assert!(encode_show_existing_frame_obu(&view, 8, None).is_err());
+}
+
+/// A film-grain sequence codes `apply_grain` with the seed of each output
+/// key or show-existing frame, refuses a seed without film grain, refuses
+/// models that break § 6.17.10.2, and its grain OBU parses back to the model.
+#[test]
+fn film_grain_headers_code_the_seed_and_the_model() {
+    let mut params = EncoderStreamParams {
+        width: 17,
+        height: 9,
+        bit_depth: BitDepthIdc::Eight,
+        chroma: ChromaFormatIdc::Yuv420,
+        sb_size: SuperblockSize::Block64x64,
+        tools: EncoderToolFlags {
+            film_grain: true,
+            ..EncoderToolFlags::default()
+        },
+    };
+    let seq = build_encoder_sequence_header(&params).unwrap();
+    let view = CoreSeqView::from_sequence(&seq).unwrap();
+    assert_eq!(view.film_grain_params_present, Some(true));
+    let tx = KeyFrameTxParams {
+        grain_seed: Some(0xa5c3),
+        ..KeyFrameTxParams::default()
+    };
+    let core = crate::headers::frame::build_key_frame_header(
+        &view,
+        90,
+        0,
+        &FrameFilterParams::default(),
+        tx,
+        UniformTiles::default(),
+    )
+    .unwrap();
+    let grain = core.intra_tail.unwrap().film_grain;
+    assert_eq!(
+        (grain.apply_grain, grain.fgm_id, grain.grain_seed),
+        (true, Some(0), Some(0xa5c3))
+    );
+    let sef = encode_show_existing_frame_obu(&view, 2, Some(0x0f0f)).unwrap();
+    assert!(parse_annex_b_obus_partial(&sef).error.is_none());
+    params.tools.film_grain = false;
+    let plain =
+        CoreSeqView::from_sequence(&build_encoder_sequence_header(&params).unwrap()).unwrap();
+    assert!(encode_show_existing_frame_obu(&plain, 2, Some(1)).is_err());
+    assert!(
+        crate::headers::frame::build_key_frame_header(
+            &plain,
+            90,
+            0,
+            &FrameFilterParams::default(),
+            tx,
+            UniformTiles::default()
+        )
+        .is_err()
+    );
+    let points = GrainScaling::new(vec![(16, 40), (112, 64), (240, 9)]).unwrap();
+    let cb = GrainScaling::new(vec![(128, 20)]).unwrap();
+    let none = GrainScaling::default();
+    assert!(GrainScaling::new(vec![(16, 1), (16, 2)]).is_err());
+    assert!(GrainScaling::new((0..15).map(|v| (v, 1)).collect()).is_err());
+    assert!(encoder_film_grain_model(ChromaFormatIdc::Yuv420, [&points, &cb, &none]).is_err());
+    assert!(encoder_film_grain_model(ChromaFormatIdc::Monochrome, [&points, &cb, &cb]).is_err());
+    assert!(encoder_film_grain_model(ChromaFormatIdc::Yuv444, [&points, &cb, &none]).is_ok());
+    let model = encoder_film_grain_model(ChromaFormatIdc::Yuv420, [&points, &cb, &cb]).unwrap();
+    let obu = encode_film_grain_obu(ChromaFormatIdc::Yuv420, &model).unwrap();
+    let parsed = parse_annex_b_obus_partial(&obu);
+    assert!(parsed.error.is_none());
+    let fg = crate::headers::film_grain::parse_film_grain(&mut BitReader::new(
+        parsed.obus[0].payload,
+        ByteOffset::new(0),
+    ))
+    .unwrap();
+    assert_eq!((fg.update_flags, &fg.models[0].model), (1, &model));
 }
 
 #[test]
@@ -435,6 +509,9 @@ fn rejects_out_of_range_inter_inputs() {
     assert!(build_inter_frame_header(&view, &slots.view(), &integer_mv).is_err());
 }
 
+/// A TIP output header parses complete, needs TIP output, two references
+/// and a weight, and codes `apply_grain` with the seed only in a film-grain
+/// sequence (§ 5.18.2, § 5.18.10.1).
 #[test]
 fn tip_output_header_parses_complete_and_needs_tip_output() {
     let mut stream = EncoderStreamParams {
@@ -462,7 +539,7 @@ fn tip_output_header_parses_complete_and_needs_tip_output() {
     };
     let seq = build_encoder_sequence_header(&stream).unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    let header = build_tip_output_frame_header(&view, &slots.view(), &params, 2).unwrap();
+    let header = build_tip_output_frame_header(&view, &slots.view(), &params, &[0, 1]).unwrap();
     assert_eq!(header.core.obu_type, ObuType::RegularTip);
     let inter = header.core.inter.as_ref().unwrap();
     assert_eq!(inter.tip_frame_mode, Some(TipFrameMode::AsOutput));
@@ -482,12 +559,36 @@ fn tip_output_header_parses_complete_and_needs_tip_output() {
         opfl_refine_type: 0,
         ..params
     };
-    assert!(build_tip_output_frame_header(&view, &slots.view(), &no_weight, 2).is_err());
-    assert!(build_tip_output_frame_header(&view, &slots.view(), &params, 1).is_err());
+    assert!(build_tip_output_frame_header(&view, &slots.view(), &no_weight, &[0, 1]).is_err());
+    assert!(build_tip_output_frame_header(&view, &slots.view(), &params, &[0]).is_err());
+    let seeded = InterFrameParams {
+        tx: KeyFrameTxParams {
+            grain_seed: Some(0x5a3c),
+            ..KeyFrameTxParams::default()
+        },
+        ..params
+    };
+    assert!(build_tip_output_frame_header(&view, &slots.view(), &seeded, &[0, 1]).is_err());
+    stream.tools.film_grain = true;
+    let grain_view =
+        CoreSeqView::from_sequence(&build_encoder_sequence_header(&stream).unwrap()).unwrap();
+    for (params, expected) in [
+        (seeded, (true, Some(0), Some(0x5a3c))),
+        (params, (false, None, None)),
+    ] {
+        let header =
+            build_tip_output_frame_header(&grain_view, &slots.view(), &params, &[0, 1]).unwrap();
+        let grain = header.core.inter.unwrap().tip_film_grain.unwrap();
+        assert_eq!(
+            (grain.apply_grain, grain.fgm_id, grain.grain_seed),
+            expected
+        );
+    }
+    stream.tools.film_grain = false;
     stream.tools.tip_output = false;
     let seq = build_encoder_sequence_header(&stream).unwrap();
     let view = CoreSeqView::from_sequence(&seq).unwrap();
-    assert!(build_tip_output_frame_header(&view, &slots.view(), &params, 2).is_err());
+    assert!(build_tip_output_frame_header(&view, &slots.view(), &params, &[0, 1]).is_err());
 }
 
 #[test]
@@ -539,6 +640,70 @@ fn opfl_refine_type_parses_with_and_without_tip() {
             ..InterFrameParams::default()
         };
         assert!(build_inter_frame_header(&view, &slots.view(), &bad).is_err());
+    }
+}
+
+#[test]
+fn tip_weight_follows_tip_refinement() {
+    for tip_refinemv in [false, true] {
+        let stream = EncoderStreamParams {
+            width: 64,
+            height: 64,
+            bit_depth: BitDepthIdc::Eight,
+            chroma: ChromaFormatIdc::Yuv420,
+            sb_size: SuperblockSize::Block64x64,
+            tools: EncoderToolFlags {
+                ref_frame_mvs: true,
+                tip: true,
+                tip_output: true,
+                opfl_refine: true,
+                tip_refinemv,
+                ..EncoderToolFlags::default()
+            },
+        };
+        let seq = build_encoder_sequence_header(&stream).unwrap();
+        assert_eq!(
+            seq.inter.as_ref().unwrap().enable_tip_refinemv,
+            tip_refinemv
+        );
+        let view = CoreSeqView::from_sequence(&seq).unwrap();
+        let mut slots = Slots::after_key(64, 64, 4);
+        slots.valid[1] = true;
+        slots.hints[1] = 8;
+        slots.counters[1] = 1;
+        let params = |weight| InterFrameParams {
+            base_q_idx: 90,
+            order_hint: 6,
+            show_frame: true,
+            use_ref_frame_mvs: true,
+            tip_weight: Some(weight),
+            opfl_refine_type: 1,
+            ..InterFrameParams::default()
+        };
+        let header = build_inter_frame_header(&view, &slots.view(), &params(0)).unwrap();
+        let inter = header.core.inter.as_ref().unwrap();
+        assert_eq!(inter.tip_global_wtd_index, Some(0));
+        assert_eq!(
+            build_inter_frame_header(&view, &slots.view(), &params(3)).is_ok(),
+            !tip_refinemv
+        );
+        let output = InterFrameParams {
+            refresh_frame_flags: 0,
+            ..params(0)
+        };
+        let header = build_tip_output_frame_header(&view, &slots.view(), &output, &[0, 1]).unwrap();
+        assert_eq!(
+            header.core.inter.as_ref().unwrap().tip_frame_mode,
+            Some(TipFrameMode::AsOutput)
+        );
+        let weighted = InterFrameParams {
+            tip_weight: Some(3),
+            ..output
+        };
+        assert_eq!(
+            build_tip_output_frame_header(&view, &slots.view(), &weighted, &[0, 1]).is_ok(),
+            !tip_refinemv
+        );
     }
 }
 

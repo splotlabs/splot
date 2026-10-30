@@ -7,7 +7,8 @@
 
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
-    UniformTiles, build_encoder_sequence_header,
+    GrainScaling, UniformTiles, build_encoder_sequence_header, encode_film_grain_obu,
+    encoder_film_grain_model,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_decode::encoder_syntax::{
@@ -27,6 +28,7 @@ use crate::encoder::{CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::gop::{self, GopFrame};
+use crate::grain;
 use crate::intrabc::BvSearch;
 use crate::kernels::rdoq::{RdoqBlock, hide_parity, parity_moves, rdoq};
 use crate::kernels::tcq::{TcqScratch, tcq};
@@ -36,6 +38,7 @@ use crate::mode_decision::TrialCoder;
 use crate::motion_search::MotionSearch;
 use crate::palette::PaletteSearch;
 use crate::preset::{PresetParams, TcqFrames};
+use crate::rate_control::FrameType;
 use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, RowCaches, block_rate};
 use crate::rd::partition::search_partition;
 use crate::rd::{Bits, Lambda, RdCost};
@@ -78,6 +81,11 @@ pub(crate) struct IntraFrameCoder {
     pool: Option<WorkerPool>,
     /// The block importances of the next frames to code.
     importance: tpl::BlockImportance,
+    /// Show-existing frames output so far, which seed their film grain.
+    shown_existing: u64,
+    /// The last committed key frame coded a film grain model, which the
+    /// output frames after it apply.
+    grain_active: bool,
 }
 
 impl IntraFrameCoder {
@@ -130,6 +138,7 @@ impl IntraFrameCoder {
                 tip_output: preset.tip > 0 && preset.mv_prediction && preset.tip_output > 0,
                 opfl_refine: preset.opfl,
                 refinemv: preset.refinemv,
+                tip_refinemv: preset.tip > 0 && preset.mv_prediction && preset.tip_refinemv,
                 cctx: preset.cctx,
                 mhccp: preset.mhccp,
                 fsc: preset.fsc,
@@ -147,6 +156,7 @@ impl IntraFrameCoder {
                 warp: preset.warp > 0,
                 parity_hiding: preset.parity_hiding,
                 tcq: preset.tcq != TcqFrames::Off,
+                film_grain: config.film_grain,
                 ..EncoderToolFlags::default()
             },
         };
@@ -171,6 +181,8 @@ impl IntraFrameCoder {
                 .transpose()
                 .map_err(coding("worker pool"))?,
             importance: tpl::BlockImportance::default(),
+            shown_existing: 0,
+            grain_active: false,
         })
     }
 }
@@ -196,13 +208,22 @@ impl FrameCoder for IntraFrameCoder {
         let (core, recon, initial, cdfs) = frame.reference.take().ok_or(Error::Unsupported {
             what: "a frame committed twice",
         })?;
+        if frame.frame_type == FrameType::Key {
+            self.grain_active = core
+                .intra_tail
+                .is_some_and(|tail| tail.film_grain.apply_grain);
+        }
         self.references
             .update(&core, recon, &initial, &cdfs)
             .map_err(coding("reference update"))
     }
 
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
-        let unit = gop::show_existing_unit(&self.view, slot)?;
+        let seed = self.grain_active.then(|| {
+            self.shown_existing += 1;
+            gop::shown_grain_seed(self.shown_existing)
+        });
+        let unit = gop::show_existing_unit(&self.view, slot, seed)?;
         self.references
             .show_existing(slot)
             .map_err(coding("show-existing frame"))?;
@@ -345,6 +366,31 @@ impl IntraFrameCoder {
             .map_or(0, |(weight, _)| weight))
     }
 
+    /// The `grain_seed` of `plan` and, for a key frame whose `source` has
+    /// noise, the `OBU_FILM_GRAIN` of its model; nothing without film grain.
+    fn film_grain(&self, source: &SourceFrame, plan: &GopFrame) -> Result<(Option<u16>, Vec<u8>)> {
+        if !self.params.tools.film_grain {
+            return Ok((None, Vec::new()));
+        }
+        let (grain_on, obu) = if plan.frame_type == FrameType::Key {
+            let scalings = grain::estimate(source, self.chroma)?;
+            let [y, cb, cr] = &scalings;
+            if scalings.iter().all(GrainScaling::is_empty) {
+                (false, Vec::new())
+            } else {
+                let model = encoder_film_grain_model(self.params.chroma, [y, cb, cr])
+                    .map_err(coding("film grain"))?;
+                let obu = encode_film_grain_obu(self.params.chroma, &model)
+                    .map_err(coding("film grain"))?;
+                (true, obu)
+            }
+        } else {
+            (self.grain_active, Vec::new())
+        };
+        let seed = (grain_on && plan.show_frame).then(|| gop::coded_grain_seed(plan.frame_index));
+        Ok((seed, obu))
+    }
+
     /// Codes `source` as `plan` at quantizer `qp` against the committed
     /// references; non-empty `sb_quant`, one `(qindex offset, lambda log2
     /// Q8)` per superblock in frame raster order, moves the qindex of each
@@ -364,6 +410,8 @@ impl IntraFrameCoder {
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
         tools.0.delta_q_res = (!sb_quant.is_empty()).then_some(self.preset.delta_q_res);
+        let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
+        tools.0.grain_seed = grain_seed;
         if tools.2.3.is_some() || tools.2.5 != 0 {
             let probe = plan.header(
                 &self.view,
@@ -374,7 +422,8 @@ impl IntraFrameCoder {
             )?;
             if !self.references.tip_pair_available(&probe) {
                 (tools.2.3, tools.2.5) = (None, 0);
-            } else if tools.2.3.is_some() && self.preset.tip >= 2 {
+            } else if tools.2.3.is_some() && self.preset.tip >= 2 && !self.params.tools.tip_refinemv
+            {
                 tools.2.3 = Some(self.tip_weight(source, &probe)?);
             }
         }
@@ -489,7 +538,7 @@ impl IntraFrameCoder {
             &self.references,
             (qindex, &filters, tools),
             &core,
-            &tiles,
+            (&tiles, &grain_obu),
         )?;
         let coded = CodedFrame {
             temporal_unit,
@@ -506,7 +555,7 @@ impl IntraFrameCoder {
                     && plan.show_frame =>
             {
                 Ok(self
-                    .tip_output_frame(source, plan, qindex, weight, &coded)
+                    .tip_output_frame(source, plan, (qindex, weight, grain_seed), &coded)
                     .ok()
                     .flatten()
                     .unwrap_or(coded))
@@ -516,7 +565,8 @@ impl IntraFrameCoder {
     }
 
     /// The frame `plan`, coded normally at `qindex` with TIP weight `weight`
-    /// as `coded`, as a `TIP_FRAME_AS_OUTPUT` frame when its RD cost times 100
+    /// and film grain seed `grain_seed` as `coded`, as a `TIP_FRAME_AS_OUTPUT`
+    /// frame with the same seed when its RD cost times 100
     /// is at most `PresetParams::tip_output` times that of `coded`; both
     /// distortions are the squared error of every plane. The caller keeps
     /// `coded` when this fails.
@@ -524,19 +574,23 @@ impl IntraFrameCoder {
         &self,
         source: &SourceFrame,
         plan: &GopFrame,
-        qindex: u32,
-        weight: u8,
+        (qindex, weight, grain_seed): (u32, u8, Option<u16>),
         coded: &CodedFrame,
     ) -> Result<Option<CodedFrame>> {
-        let num_total_refs = coded
+        let ref_frame_idx = coded
             .reference
             .as_ref()
-            .and_then(|(core, ..)| core.inter.as_ref()?.num_total_refs)
+            .and_then(|(core, ..)| core.inter.as_ref())
+            .map(|inter| &inter.ref_frame_idx[..])
             .ok_or(Error::Unsupported {
                 what: "a TIP frame without references",
             })?;
-        let (core, temporal_unit) =
-            plan.tip_output_unit(&self.view, &self.references, num_total_refs, weight)?;
+        let (core, temporal_unit) = plan.tip_output_unit(
+            &self.view,
+            &self.references,
+            ref_frame_idx,
+            (weight, grain_seed),
+        )?;
         let (core, frame) = self
             .references
             .tip_output(&core)

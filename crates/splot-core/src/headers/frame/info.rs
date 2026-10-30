@@ -1012,7 +1012,9 @@ fn finish_inter_control_with_tail(
 /// Builds the [`InterSeqView`](crate::headers::frame::inter::InterSeqView) the inter
 /// control region consumes from the parsed sequence configuration. Shared by the
 /// non-bridge inter path and the bridge path.
-fn build_inter_seq_view(seq: &CoreSeqView) -> crate::headers::frame::inter::InterSeqView {
+pub(crate) fn build_inter_seq_view(
+    seq: &CoreSeqView,
+) -> crate::headers::frame::inter::InterSeqView {
     use crate::headers::frame::inter::InterSeqView;
     InterSeqView {
         num_ref_frames: seq.num_ref_frames,

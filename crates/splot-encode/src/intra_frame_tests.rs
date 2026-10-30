@@ -890,6 +890,21 @@ fn random_inter_stream(config: &Config, seed: u64) -> (Vec<Vec<u8>>, Vec<u8>, Co
 fn inter_stream_with(
     config: &Config,
     seed: u64,
+    tree: impl FnMut(
+        &mut IntraTileSyntax,
+        PartitionNode,
+        &mut Rng,
+        &mut Coverage,
+    ) -> core::result::Result<PartitionTree, TileWriterError>,
+) -> (Vec<Vec<u8>>, Vec<u8>, Coverage) {
+    inter_stream_of(config, seed, panning_frame, tree)
+}
+
+/// [`inter_stream_with`] of the frames `frame(config, display_index)`.
+fn inter_stream_of(
+    config: &Config,
+    seed: u64,
+    frame: fn(&Config, u32) -> SourceFrame,
     mut tree: impl FnMut(
         &mut IntraTileSyntax,
         PartitionNode,
@@ -916,21 +931,17 @@ fn inter_stream_with(
     let mut expected = Vec::new();
     let mut plan = None;
     for step in steps {
-        let crate::gop::GopStep::Code(frame) = step else {
+        let crate::gop::GopStep::Code(planned) = step else {
             continue;
         };
-        if frame.display_index == 1 {
-            plan = Some(frame);
+        if planned.display_index == 1 {
+            plan = Some(planned);
             break;
         }
         let coded = coder
-            .encode_frame(
-                &panning_frame(config, frame.display_index as u32),
-                &frame,
-                qp,
-            )
+            .encode_frame(&frame(config, planned.display_index as u32), &planned, qp)
             .unwrap();
-        if frame.show_frame {
+        if planned.show_frame {
             expected.extend(recon_bytes(&coded, config.bit_depth));
         }
         units.push(coded.temporal_unit);
@@ -959,7 +970,7 @@ fn inter_stream_with(
     let mut writer = KeyFrameTileWriter::new(&coder.sequence, &core, &coder.references, 0).unwrap();
     let (mi_rows, mi_cols) = writer.syntax().mi_dimensions();
     let sb = writer.syntax().superblock_size4() * 4;
-    let source = panning_frame(config, 1);
+    let source = frame(config, 1);
     let padded = PaddedSource::new(&source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
     let lambda = Lambda::from_qindex(qindex, config.bit_depth).unwrap();
     let mut residual =
@@ -982,7 +993,7 @@ fn inter_stream_with(
             &coder.references,
             (qindex, &filters, tools),
             &core,
-            &[&tile],
+            (&[&tile], &[]),
         )
         .unwrap();
     let planes = visible_planes(&recon).unwrap();
@@ -1412,6 +1423,8 @@ mod cdef_skip;
 mod delta_q;
 #[path = "intra_frame_gdf_tests.rs"]
 mod gdf;
+#[path = "intra_frame_grain_tests.rs"]
+mod grain_streams;
 #[path = "intra_frame_inter_ist_tests.rs"]
 mod inter_ist;
 #[path = "intra_frame_inter_tx_tests.rs"]

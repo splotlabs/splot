@@ -10,9 +10,15 @@
 //! bits, and [`encode_inter_frame_obu`] copies them into the tile group.
 
 use crate::bitio::BitReader;
-use crate::headers::frame::encoder_stream::{
-    MAX_REDUCED_TX_SET, UniformTiles, obu_header, tile_framing, write_quant_and_filters,
+use crate::headers::film_grain::{
+    FilmGrainModel, FilmGrainObu, FilmGrainScalingPoint, FilmGrainSlotUpdate,
 };
+use crate::headers::frame::encoder_stream::{
+    MAX_REDUCED_TX_SET, UniformTiles, obu_header, tile_framing, write_film_grain_config,
+    write_quant_and_filters,
+};
+use crate::headers::frame::info::build_inter_seq_view;
+use crate::headers::frame::inter::tip_weight_coded;
 use crate::headers::frame::inter_shared_tail::{
     lr_reference_filter_counts, lr_reference_filter_entries,
 };
@@ -23,7 +29,7 @@ use crate::headers::frame::{
     parse_core_body, parse_frame_header_prefix,
 };
 use crate::headers::frame::{DELTAWARP, INTERINTRA, LOCALWARP};
-use crate::headers::sequence::SuperblockSize;
+use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 use crate::headers::tile_group::{RecordedFrameHeaderBits, TileGroupLayout, TileGroupStructure};
 use crate::span::ByteOffset;
 use crate::types::ObuType;
@@ -180,7 +186,15 @@ fn parse_inter_frame_header(
         counts,
         taps: [&entries[0], &entries[1], &entries[2]],
     };
-    let (bytes, bit_len) = inter_frame_header_bits(seq, params, map, lr_refs)?;
+    let weight_coded = tip_weight_coded(
+        &build_inter_seq_view(seq),
+        refs,
+        (ref_frame_idx, params.order_hint),
+        false,
+        u32::from(params.opfl_refine_type),
+    )
+    .unwrap_or(true);
+    let (bytes, bit_len) = inter_frame_header_bits(seq, params, map, lr_refs, weight_coded)?;
     let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
     let prefix = parse_frame_header_prefix(&mut reader, ObuType::RegularTileGroup, Some(true))?;
     let mut core = init_core_from_prefix(&prefix, ObuType::RegularTileGroup, true);
@@ -206,6 +220,7 @@ fn inter_frame_header_bits(
     params: &InterFrameParams,
     (primary_ref_frame, num_total_refs): (Option<u32>, u32),
     lr_refs: LrReferenceFilters<'_>,
+    weight_coded: bool,
 ) -> Result<(Vec<u8>, u64), EncoderHeaderError> {
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
@@ -262,7 +277,7 @@ fn inter_frame_header_bits(
         if seq.inter.enable_tip_hole_fill {
             w.write_flag(false)?; // allow_tip_hole_fill
         }
-        w.write_bits(u32::from(weight), 3)?; // tip_global_wtd_index
+        write_tip_weight(&mut w, weight, weight_coded)?;
     }
     let coded_integer_mv = seq.seq_force_screen_content_tools == 2 && seq.seq_force_integer_mv == 2;
     if params.force_integer_mv && (!coded_integer_mv || params.high_precision_mv) {
@@ -328,6 +343,7 @@ fn inter_frame_header_bits(
         w.write_flag(true)?; // allow_warpmv_mode
     }
     w.write_bits(u32::from(tx.reduced_tx_set), 2)?;
+    write_film_grain_config(&mut w, seq, params.show_frame, tx.grain_seed)?;
     let bit_len = w.bit_len();
     w.align_to_byte();
     Ok((w.into_bytes(), bit_len))
@@ -387,23 +403,26 @@ pub fn encode_inter_frame_obu(
 }
 
 /// Builds the `OBU_REGULAR_TIP` header of a `TIP_FRAME_AS_OUTPUT` frame
-/// (§ 5.18.2) over a map of `num_total_refs` references for `seq` and the
+/// (§ 5.18.2) over the reference map `ref_frame_idx` for `seq` and the
 /// § 7.23 reference state `refs`: the `order_hint`, `refresh_frame_flags`,
 /// `show_frame` and `tip_weight` of `params`, `PRIMARY_REF_NONE`,
-/// `use_ref_frame_mvs = 1`, a zero `tip_global_mv` and the `EIGHTTAP_SHARP`
-/// filter.
+/// `use_ref_frame_mvs = 1`, a zero `tip_global_mv`, the `EIGHTTAP_SHARP`
+/// filter and the `film_grain_config()` of `params.tx.grain_seed`.
 ///
 /// # Errors
 /// Returns [`EncoderHeaderError`] for a sequence without TIP output, the
-/// tools the header does not write, a missing `tip_weight`, or bits that do
-/// not parse to a complete TIP output header with `refs`.
+/// tools the header does not write, a missing `tip_weight`, a `grain_seed`
+/// in a sequence without film grain or in a frame that is not shown
+/// ([`WriteError::NonCanonicalFrameHeader`]), or bits that do not parse to a
+/// complete TIP output header with `refs`.
 pub fn build_tip_output_frame_header(
     seq: &CoreSeqView,
     refs: &FrameReferenceStateView<'_>,
     params: &InterFrameParams,
-    num_total_refs: u32,
+    ref_frame_idx: &[u32],
 ) -> Result<EncodedFrameHeader, EncoderHeaderError> {
     let inter = &seq.inter;
+    let num_total_refs = ref_frame_idx.len();
     if seq.single_picture_header_flag {
         return Err(EncoderHeaderError::SinglePictureView);
     }
@@ -416,7 +435,6 @@ pub fn build_tip_output_frame_header(
         || inter.enable_tip_hole_fill
         || inter.enable_tip_explicit_qp
         || seq.filter.enable_df_sub_pu
-        || seq.film_grain_params_present != Some(false)
     {
         return Err(unsupported("TIP output header tools"));
     }
@@ -440,9 +458,17 @@ pub fn build_tip_output_frame_header(
     if seq.tile.frame_sb_size(false) != SuperblockSize::Block64x64 {
         w.write_flag(false)?; // tmvp_sample_step_minus_1
     }
-    w.write_bits(u32::from(weight), 3)?; // tip_global_wtd_index
+    let weight_coded = tip_weight_coded(
+        &build_inter_seq_view(seq),
+        refs,
+        (ref_frame_idx, params.order_hint),
+        true,
+        0,
+    );
+    write_tip_weight(&mut w, weight, weight_coded.unwrap_or(true))?;
     w.write_flag(true)?; // tip_global_mv_zero
     w.write_flag(true)?; // tip_sharp
+    write_film_grain_config(&mut w, seq, params.show_frame, params.tx.grain_seed)?;
     let bit_len = w.bit_len();
     w.write_trailing_bits(8 - bit_len % 8)?;
     let bytes = w.into_bytes();
@@ -493,30 +519,30 @@ pub fn encode_tip_output_frame_obu(
 }
 
 /// Serializes an `OBU_REGULAR_SEF` OBU that shows reference slot
-/// `frame_to_show_map_idx` with `derive_sef_order_hint = 1` (§ 5.18.2).
+/// `frame_to_show_map_idx` with `derive_sef_order_hint = 1` (§ 5.18.2) and
+/// the `film_grain_config()` of `grain_seed` (see [`KeyFrameTxParams::grain_seed`]).
 ///
 /// # Errors
 /// Returns [`EncoderHeaderError`] for a slot outside the sequence's reference
-/// slots, a sequence without a known `film_grain_params_present`, or bits that
-/// do not parse to a complete show-existing frame.
+/// slots, a sequence without a known `film_grain_params_present`, a seed
+/// without film grain, or bits that do not parse to a complete show-existing
+/// frame.
 pub fn encode_show_existing_frame_obu(
     seq: &CoreSeqView,
     frame_to_show_map_idx: u32,
+    grain_seed: Option<u16>,
 ) -> Result<Vec<u8>, EncoderHeaderError> {
     if frame_to_show_map_idx >= seq.num_ref_frames {
         return Err(unsupported("frame_to_show_map_idx"));
     }
-    let film_grain = seq
-        .film_grain_params_present
+    seq.film_grain_params_present
         .ok_or(EncoderHeaderError::Incomplete)?;
     let mut w = BitWriter::new();
     w.write_uvlc(0)?; // cur_mfh_id
     w.write_uvlc(0)?; // seq_header_id_in_frame_header
     w.write_bits(frame_to_show_map_idx, ceil_log2(seq.num_ref_frames))?;
     w.write_flag(true)?; // derive_sef_order_hint
-    if film_grain {
-        w.write_flag(false)?; // apply_grain
-    }
+    write_film_grain_config(&mut w, seq, true, grain_seed)?;
     w.write_trailing_bits(8 - w.bit_len() % 8)?;
     let payload = w.into_bytes();
     let mut reader = BitReader::new(&payload, ByteOffset::new(0));
@@ -537,6 +563,155 @@ pub fn encode_show_existing_frame_obu(
     let mut obu = BitWriter::new();
     write_annexb_obu(&mut obu, &obu_header(ObuType::RegularSef), &payload)?;
     Ok(obu.into_bytes())
+}
+
+/// Writes `tip_global_wtd_index` = `weight` where the frame codes it; a
+/// frame that does not code it infers `0`.
+fn write_tip_weight(w: &mut BitWriter, weight: u8, coded: bool) -> Result<(), EncoderHeaderError> {
+    match (coded, weight) {
+        (true, _) => Ok(w.write_bits(u32::from(weight), 3)?), // tip_global_wtd_index
+        (false, 0) => Ok(()),
+        (false, _) => Err(unsupported("a TIP weight the frame infers as 0")),
+    }
+}
+
+/// One piecewise-linear `film_grain_model()` scaling function (§ 5.18.10.2):
+/// at most [`Self::MAX_POINTS`] `(point value, scaling)` pairs with strictly
+/// increasing values.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct GrainScaling(Vec<(u8, u8)>);
+
+impl GrainScaling {
+    /// The largest `num_*_points` (§ 6.17.10.2).
+    pub const MAX_POINTS: usize = 14;
+
+    /// Checks `points` against the § 6.17.10.2 point rules.
+    ///
+    /// # Errors
+    /// Returns [`EncoderHeaderError`] for more than [`Self::MAX_POINTS`]
+    /// points or values that do not increase.
+    pub fn new(points: Vec<(u8, u8)>) -> Result<Self, EncoderHeaderError> {
+        if points.len() > Self::MAX_POINTS || points.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            return Err(unsupported("film grain scaling points"));
+        }
+        Ok(Self(points))
+    }
+
+    /// The `(point value, scaling)` pairs.
+    #[must_use]
+    pub fn points(&self) -> &[(u8, u8)] {
+        &self.0
+    }
+
+    /// Whether the function has no points (the plane gets no grain).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// The `film_grain_model()` (§ 5.18.10.2) of the encoder for `chroma`: the
+/// `[Y, Cb, Cr]` scaling functions, `grain_scaling_minus_8 = 0`,
+/// `ar_coeff_lag = 0` with zero coefficients, and each chroma scaling indexed
+/// by its own sample (`*_mult = 192`, `*_luma_mult = 128`, `*_offset = 256`).
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] for chroma points in a monochrome model, or
+/// 4:2:0 chroma with points in one of Cb and Cr only (§ 6.17.10.2).
+pub fn encoder_film_grain_model(
+    chroma: ChromaFormatIdc,
+    [y, cb, cr]: [&GrainScaling; 3],
+) -> Result<FilmGrainModel, EncoderHeaderError> {
+    let monochrome = chroma.is_monochrome();
+    if (monochrome && !(cb.is_empty() && cr.is_empty()))
+        || (chroma == ChromaFormatIdc::Yuv420 && cb.is_empty() != cr.is_empty())
+    {
+        return Err(unsupported("film grain chroma points"));
+    }
+    let points = |points: &GrainScaling| {
+        let points: Vec<FilmGrainScalingPoint> = points
+            .points()
+            .iter()
+            .map(|&(value, scaling)| FilmGrainScalingPoint {
+                value: value.into(),
+                scaling: scaling.into(),
+            })
+            .collect();
+        u8::try_from(points.len())
+            .map(|count| (count, points))
+            .map_err(|_| unsupported("film grain scaling points"))
+    };
+    let (num_y_points, point_y) = points(y)?;
+    let (num_cb_points, point_cb) = points(cb)?;
+    let (num_cr_points, point_cr) = points(cr)?;
+    let chroma_coeffs = |num: u8| vec![0; usize::from(num > 0 && num_y_points > 0)];
+    Ok(FilmGrainModel {
+        chroma_scaling_from_luma: false,
+        num_y_points,
+        point_y,
+        num_cb_points,
+        point_cb,
+        num_cr_points,
+        point_cr,
+        grain_scaling_minus_8: 0,
+        ar_coeff_lag: 0,
+        ar_coeffs_y: Vec::new(),
+        ar_coeffs_cb: chroma_coeffs(num_cb_points),
+        ar_coeffs_cr: chroma_coeffs(num_cr_points),
+        ar_coeff_shift_minus_6: 0,
+        grain_scale_shift: 0,
+        cb_mult: (num_cb_points > 0).then_some(192),
+        cb_luma_mult: (num_cb_points > 0).then_some(128),
+        cb_offset: (num_cb_points > 0).then_some(256),
+        cr_mult: (num_cr_points > 0).then_some(192),
+        cr_luma_mult: (num_cr_points > 0).then_some(128),
+        cr_offset: (num_cr_points > 0).then_some(256),
+        overlap_flag: false,
+        clip_to_restricted_range: false,
+        mc_identity: false,
+        film_grain_block_size: false,
+    })
+}
+
+/// Serializes an `OBU_FILM_GRAIN` (§ 5.14) that saves `model` in slot 0 for
+/// `chroma`.
+///
+/// # Errors
+/// Returns [`EncoderHeaderError`] for a model the OBU cannot code.
+pub fn encode_film_grain_obu(
+    chroma: ChromaFormatIdc,
+    model: &FilmGrainModel,
+) -> Result<Vec<u8>, EncoderHeaderError> {
+    let (sub_x, sub_y) = match chroma {
+        ChromaFormatIdc::Yuv444 => (false, false),
+        ChromaFormatIdc::Yuv422 => (true, false),
+        ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Monochrome => (true, true),
+    };
+    let obu = FilmGrainObu {
+        update_flags: 1,
+        chroma_idc: chroma.get().into(),
+        sub_x,
+        sub_y,
+        monochrome: chroma.is_monochrome(),
+        models: vec![FilmGrainSlotUpdate {
+            slot: 0,
+            model: model.clone(),
+        }],
+    };
+    let mut payload = BitWriter::new();
+    crate::write::write_obu_payload(
+        &mut payload,
+        &crate::obu::ParsedObu::FilmGrain(Box::new(obu)),
+        ObuType::FilmGrain.is_extensible_obu(),
+        &[],
+    )?;
+    let mut w = BitWriter::new();
+    write_annexb_obu(
+        &mut w,
+        &obu_header(ObuType::FilmGrain),
+        &payload.into_bytes(),
+    )?;
+    Ok(w.into_bytes())
 }
 
 fn unsupported(what: &'static str) -> EncoderHeaderError {

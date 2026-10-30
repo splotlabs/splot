@@ -94,12 +94,16 @@ if_not_else = "allow"
 [profile.release]
 overflow-checks = false
 
-# One unit keeps the decode kernels' code generation independent of unrelated
-# edits; with 16 units the same decode source moved 1T time by 0.5-0.9%.
+# One unit keeps the codec kernels' code generation independent of unrelated
+# edits; with 16 units the same decode source moved 1T time by 0.5-0.9%, and
+# an unused encoder module moved encode instruction counts by 0.3-0.6%.
 [profile.release.package.splot-decode]
 codegen-units = 1
 
 [profile.release.package.splot-recon]
+codegen-units = 1
+
+[profile.release.package.splot-encode]
 codegen-units = 1
 
 [profile.dev]

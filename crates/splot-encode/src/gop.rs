@@ -403,11 +403,33 @@ pub(crate) type FrameTools = (
     UniformTiles,
 );
 
-/// A temporal delimiter and the `OBU_REGULAR_SEF` that outputs `slot`.
-pub(crate) fn show_existing_unit(view: &CoreSeqView, slot: u32) -> Result<Vec<u8>> {
+/// A temporal delimiter and the `OBU_REGULAR_SEF` that outputs `slot` with
+/// the film grain of `grain_seed`.
+pub(crate) fn show_existing_unit(
+    view: &CoreSeqView,
+    slot: u32,
+    grain_seed: Option<u16>,
+) -> Result<Vec<u8>> {
     let mut unit = encode_temporal_delimiter_obu().map_err(header_error)?;
-    unit.extend(encode_show_existing_frame_obu(view, slot).map_err(header_error)?);
+    unit.extend(encode_show_existing_frame_obu(view, slot, grain_seed).map_err(header_error)?);
     Ok(unit)
+}
+
+/// The `grain_seed` of coded frame `frame_index`. Coded and show-existing
+/// frames take the even and odd steps of one bijection of `0..65535`, so no
+/// two output frames within 32768 of each other share a seed, and no seed is
+/// zero, which would keep the § 7.21.7.2 random register at zero.
+pub(crate) fn coded_grain_seed(frame_index: u64) -> u16 {
+    grain_seed(frame_index.wrapping_mul(2))
+}
+
+/// The `grain_seed` of the `n`-th show-existing frame; see [`coded_grain_seed`].
+pub(crate) fn shown_grain_seed(n: u64) -> u16 {
+    grain_seed(n.wrapping_mul(2).wrapping_add(1))
+}
+
+fn grain_seed(step: u64) -> u16 {
+    (1 + step % 65535 * 7919 % 65535) as u16
 }
 
 impl GopFrame {
@@ -447,8 +469,9 @@ impl GopFrame {
     /// The OBUs of the frame `core` built by [`Self::header`] with
     /// `(qindex, filters, tools)`, whose tile group carries
     /// `tiles`, after a temporal delimiter when the frame opens its temporal
-    /// unit; a key frame repeats the sequence header. The header codes the
-    /// smallest `TileSizeBytes` that fits the tiles.
+    /// unit; a key frame repeats the sequence header, followed by the
+    /// `film_grain` OBUs. The header codes the smallest `TileSizeBytes` that
+    /// fits the tiles.
     pub(crate) fn temporal_unit(
         &self,
         seq: &SequenceHeader,
@@ -456,7 +479,7 @@ impl GopFrame {
         refs: &EncoderReferences,
         (qindex, filters, (tx, compound, mv_tools, layout)): (u32, &FrameFilterParams, FrameTools),
         core: &FrameHeaderCore,
-        tiles: &[&[u8]],
+        (tiles, film_grain): (&[&[u8]], &[u8]),
     ) -> Result<Vec<u8>> {
         let longest = tiles.split_last().map_or(0, |(_, rest)| {
             rest.iter()
@@ -481,7 +504,8 @@ impl GopFrame {
             }
             let tools = (tx, compound, mv_tools, layout);
             let core = self.header(view, refs, qindex, filters, tools)?;
-            return encode_key_frame_temporal_unit(seq, &core, true, tiles).map_err(header_error);
+            return encode_key_frame_temporal_unit(seq, &core, true, tiles, film_grain)
+                .map_err(header_error);
         }
         let header = build_inter_frame_header(
             view,
@@ -504,25 +528,29 @@ impl GopFrame {
     }
 
     /// The header and OBUs of the frame as a `TIP_FRAME_AS_OUTPUT` frame with
-    /// `tip_global_wtd_index` `weight` over a map of `num_total_refs`
-    /// references, after a temporal delimiter when the frame opens its
-    /// temporal unit.
+    /// `tip_global_wtd_index` `weight` and the film grain of `grain_seed` over
+    /// the reference map `ref_frame_idx` references, after a temporal
+    /// delimiter when the frame opens its temporal unit.
     pub(crate) fn tip_output_unit(
         &self,
         view: &CoreSeqView,
         refs: &EncoderReferences,
-        num_total_refs: u32,
-        weight: u8,
+        ref_frame_idx: &[u32],
+        (weight, grain_seed): (u8, Option<u16>),
     ) -> Result<(FrameHeaderCore, Vec<u8>)> {
         let params = InterFrameParams {
             order_hint: self.order_hint,
             refresh_frame_flags: self.refresh_frame_flags,
             show_frame: self.show_frame,
             tip_weight: Some(weight),
+            tx: KeyFrameTxParams {
+                grain_seed,
+                ..KeyFrameTxParams::default()
+            },
             ..InterFrameParams::default()
         };
         let header =
-            build_tip_output_frame_header(view, &refs.header_view(), &params, num_total_refs)
+            build_tip_output_frame_header(view, &refs.header_view(), &params, ref_frame_idx)
                 .map_err(header_error)?;
         if header.core.display_order_hint() != Some(self.order_hint) {
             return Err(Error::OrderHintMismatch {
