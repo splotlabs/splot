@@ -226,9 +226,10 @@ pub struct PresetParams {
     /// from the refinement the decoder infers on `NEAR_NEARMV` blocks.
     pub refinemv: bool,
     /// Warped motion (`seq_enabled_motion_modes` `LOCALWARP`, `DELTAWARP`,
-    /// `EXTENDWARP`), `0..=1`: `1` inter frames code `allow_warpmv_mode` and
-    /// single-reference leaves try the decoder's warp candidates. Off in
-    /// every row until measured.
+    /// `EXTENDWARP`), `0..=2`: inter frames of a layer that picks warp code
+    /// `allow_warpmv_mode`, and a leaf gives this many warp models of its best
+    /// translational reference an RD trial when their luma SATD plus rate
+    /// beats its `NEWMV`. Off in every row until measured.
     pub warp: u8,
 }
 
@@ -338,7 +339,7 @@ impl PresetParams {
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
-        check("warp", self.warp, 0, 1, "")
+        check("warp", self.warp, 0, 2, "")
     }
 }
 
@@ -775,7 +776,7 @@ mod tests {
             (&[("gdf_candidates", "17")], "gdf_candidates"),
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),
-            (&[("warp", "2")], "warp"),
+            (&[("warp", "3")], "warp"),
         ] {
             let mut params = PRESETS[6];
             for (name, value) in overrides {

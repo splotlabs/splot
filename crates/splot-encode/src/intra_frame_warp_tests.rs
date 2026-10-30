@@ -148,7 +148,7 @@ fn warp_stream(config: &Config, preset: &PresetParams) -> WarpStream {
                         .tip_output
                         .clone()
                         .unwrap_or_else(|| coded.reference.as_ref().unwrap().0.clone());
-                    frames.push((core, coded.warp_leaves));
+                    frames.push((core, coded.warp.map_or((0, 0), |used| used.leaves)));
                     coder.commit(&mut coded).unwrap();
                     recons.insert(plan.display_index, recon_bytes(&coded, config.bit_depth));
                     units.extend(coded.temporal_unit);
@@ -268,7 +268,7 @@ fn zoom_frames_code_warp_leaves() {
         let mut coded = coder
             .code_frame(&zooming_frame(&config, frame), &plan, 90, &[])
             .unwrap();
-        warps += coded.warp_leaves.0;
+        warps += coded.warp.map_or(0, |used| used.leaves.0);
         expected.extend(recon_bytes(&coded, config.bit_depth));
         coder.commit(&mut coded).unwrap();
         units.extend(coded.temporal_unit);

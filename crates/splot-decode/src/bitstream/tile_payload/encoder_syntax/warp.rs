@@ -6,6 +6,8 @@
 //! § 5.20.7.14, § 5.20.7.7). The decoder's § 7.12 warp stack and § 7.13.3
 //! derivations build every model; the encoder only names the choice.
 
+use splot_recon::{PlaneId, PlaneRect};
+
 use super::inter::MotionVector;
 use super::{EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, rule};
 use crate::prediction::inter::{EncoderMotion, EncoderWarpMotion, EncoderWarpSource, Mv};
@@ -127,6 +129,38 @@ impl IntraTileSyntax {
         };
         1 << super::MV_PRECISION_EIGHTH_PEL
             .saturating_sub(precision.unwrap_or_else(|| self.mv_precision()))
+    }
+
+    /// The decoder's row-major luma prediction of `modes` at `leaf`, for a
+    /// warp search. The prediction overwrites the leaf's samples and drops
+    /// the planned leaf.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] for modes `leaf` cannot code or a leaf
+    /// that leaves the frame storage.
+    pub fn warp_prediction(&mut self, leaf: &LeafBlock, modes: WarpModes) -> Result<Vec<u16>> {
+        let motion = EncoderMotion::Warp(self.warp_motion(leaf, modes)?);
+        self.clear_inter_plan();
+        let (width, height) = leaf.dimensions()?;
+        let rect = PlaneRect::new(leaf.frontier.c * 4, leaf.frontier.r * 4, width, height)
+            .map_err(rule("warp prediction rect"))?;
+        let state = self.inter.as_mut().ok_or(EncoderSyntaxError::Unsupported(
+            "inter syntax in an intra frame",
+        ))?;
+        state
+            .tile
+            .predict(&leaf.frontier, motion, &mut self.recon.workspace)
+            .map_err(rule("warp prediction"))?;
+        let mut out = Vec::with_capacity(width * height);
+        for row in self
+            .recon
+            .workspace
+            .rect_rows(PlaneId::Y, rect)
+            .map_err(|_| EncoderSyntaxError::Unsupported("a warp leaf outside the frame"))?
+        {
+            out.extend_from_slice(row);
+        }
+        Ok(out)
     }
 
     /// The decoder's warp syntax of `modes` at `leaf`, its symbols checked.
