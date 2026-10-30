@@ -34,7 +34,7 @@ pub(crate) const LAYER_QINDEX_OFFSET: i32 = 3;
 /// mode and vector bits.
 const MIN_BLOCK_COMPLEXITY: u32 = 128;
 /// qindex change per octave of importance: half of the 24 per step octave.
-const QINDEX_PER_IMPORTANCE_OCTAVE: u64 = 12;
+pub(crate) const QINDEX_PER_IMPORTANCE_OCTAVE: u64 = 12;
 /// The share of the uniform quantization noise [`recon_noise`] adds to an
 /// inter cost, in percent.
 const RECON_NOISE_PERCENT: u64 = 50;

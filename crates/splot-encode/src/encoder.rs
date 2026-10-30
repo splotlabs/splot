@@ -297,32 +297,34 @@ impl Encoder {
             ),
         });
         let model = tpl::analyze(&mut self.lookahead, &plan, coded_before, blocks);
+        let mut costs = std::collections::BTreeMap::new();
+        self.window = plan
+            .iter()
+            .zip(model)
+            .map(|(frame, model)| {
+                if !model.block_costs.is_empty() {
+                    costs.insert(frame.display_index, model.block_costs);
+                }
+                FramePlanInfo {
+                    frame_index: frame.frame_index,
+                    display_index: frame.display_index,
+                    frame_type: frame.frame_type,
+                    layer: frame.layer,
+                    complexity: model.complexity,
+                    min_complexity: model.min_complexity,
+                    qindex_offset: model.qindex_offset,
+                    bit_depth: self.config.bit_depth,
+                }
+            })
+            .collect();
         if blocks.is_some() {
             let (cols, rows) = self.lookahead.grid();
             self.coder.set_block_importance(tpl::BlockImportance {
                 grid: (cols, rows, self.lookahead.block_luma()),
                 strength: self.tpl_delta_q,
-                frames: model
-                    .iter()
-                    .filter(|frame| !frame.block_costs.is_empty())
-                    .map(|frame| (frame.display_index, frame.block_costs.clone()))
-                    .collect(),
+                frames: costs,
             });
         }
-        self.window = plan
-            .iter()
-            .zip(model)
-            .map(|(frame, model)| FramePlanInfo {
-                frame_index: frame.frame_index,
-                display_index: frame.display_index,
-                frame_type: frame.frame_type,
-                layer: frame.layer,
-                complexity: model.complexity,
-                min_complexity: model.min_complexity,
-                qindex_offset: model.qindex_offset,
-                bit_depth: self.config.bit_depth,
-            })
-            .collect();
         self.rate_control.plan_window(&self.window);
         Ok(())
     }

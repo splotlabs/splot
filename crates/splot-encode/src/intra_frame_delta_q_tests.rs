@@ -119,18 +119,104 @@ fn empty_offsets_code_no_delta_q() {
     assert_ne!(off.temporal_unit, on.temporal_unit);
 }
 
-/// `config` at constant quality with the block-level temporal model at
-/// `strength` percent on `threads` threads, through the [`Encoder`].
-fn tpl_stream(mut config: Config, strength: u8, threads: usize) -> (Vec<Vec<u8>>, Vec<u8>) {
-    config.rate_control = RateControlMode::Crf { crf: 30 };
+/// Each frame's decoder output and `[delta_q_present, deblock, CDEF, LR,
+/// CCSO, GDF]` by display index.
+type FrameTools = Arc<Mutex<BTreeMap<u64, (Vec<u8>, [bool; 6])>>>;
+
+/// Forwards to the frame coder and records [`FrameTools`].
+struct ToolRecording {
+    coder: IntraFrameCoder,
+    bit_depth: BitDepth,
+    frames: FrameTools,
+}
+
+impl FrameCoder for ToolRecording {
+    fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>> {
+        let coded = self.coder.encode_wave(wave)?;
+        for ((_, plan, _), frame) in wave.iter().zip(&coded) {
+            let core = &frame.reference.as_ref().unwrap().0;
+            let tools = [
+                core.delta_q_params.is_some_and(|dq| dq.delta_q_present),
+                core.deblocking_filter_params
+                    .is_some_and(|df| df.apply_deblocking_filter.contains(&true)),
+                core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable),
+                core.lr_params.as_ref().is_some_and(|lr| lr.uses_lr),
+                core.ccso_params
+                    .as_ref()
+                    .is_some_and(|ccso| ccso.ccso_frame_flag == Some(true)),
+                core.gdf_params.is_some_and(|gdf| gdf.gdf_frame_enable),
+            ];
+            let recon = recon_bytes(frame, self.bit_depth);
+            self.frames
+                .lock()
+                .unwrap()
+                .insert(plan.display_index, (recon, tools));
+        }
+        Ok(coded)
+    }
+
+    fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
+        self.coder.commit(frame)
+    }
+
+    fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
+        self.coder.show_existing_frame(slot)
+    }
+
+    fn set_block_importance(&mut self, importance: crate::tpl::BlockImportance) {
+        self.coder.set_block_importance(importance);
+    }
+}
+
+/// Nine frames of a texture that pans every second frame, at constant
+/// quality with the block-level temporal model at `strength` percent on
+/// `threads` threads, through the [`Encoder`]: the units, the encoder recon
+/// in display order, and the coded tools of each frame.
+fn tpl_stream(
+    mut config: Config,
+    strength: u8,
+    threads: usize,
+) -> (Vec<Vec<u8>>, Vec<u8>, Vec<[bool; 6]>) {
+    config.rate_control = RateControlMode::Crf { crf: 50 };
     config.threads = splot_parallel::ThreadCount::from(threads);
     config.preset_overrides = vec![("tpl_delta_q".into(), strength.to_string())];
-    encode_stream(&config, 9)
+    let frames = Arc::default();
+    let coder = ToolRecording {
+        coder: IntraFrameCoder::new(&config).unwrap(),
+        bit_depth: config.bit_depth,
+        frames: Arc::clone(&frames),
+    };
+    let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
+    let mut units = Vec::new();
+    for index in 0..9 {
+        encoder
+            .send_frame(panning_frame(&config, index / 2))
+            .unwrap();
+        while let Some(packet) = encoder.receive_packet().unwrap() {
+            units.push(packet.data);
+        }
+    }
+    encoder.flush().unwrap();
+    while let Some(packet) = encoder.receive_packet().unwrap() {
+        units.push(packet.data);
+    }
+    let frames = frames.lock().unwrap();
+    let recon = frames
+        .values()
+        .flat_map(|(recon, _)| recon.clone())
+        .collect();
+    (
+        units,
+        recon,
+        frames.values().map(|&(_, tools)| tools).collect(),
+    )
 }
 
 /// The temporal model's superblock qindex and lambda change the stream, which
 /// decodes to the encoder recon in mini-GOPs at both superblock sizes and
-/// every chroma format, with the same bytes on 1, 2 and 8 threads.
+/// every chroma format, with the same bytes on 1, 2 and 8 threads. Some
+/// frames code `delta_q_present` and some do not, and every loop filter
+/// codes in some frame.
 #[test]
 fn tpl_delta_q_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     for (index, (preset, bit_depth)) in [
@@ -141,11 +227,14 @@ fn tpl_delta_q_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     .into_iter()
     .enumerate()
     {
-        let mut config = config(136, 72, bit_depth, preset, 0);
+        let mut config = config(200, 136, bit_depth, preset, 0);
         config.chroma = CHROMAS[index];
         let name = format!("preset {preset} {bit_depth:?} {:?}", config.chroma);
-        let (units, recon) = tpl_stream(config.clone(), 100, 1);
+        let (units, recon, tools) = tpl_stream(config.clone(), 100, 1);
         assert_same_samples(&decode(&units.concat()), &recon, &name);
+        let used: [bool; 6] = core::array::from_fn(|i| tools.iter().any(|t| t[i]));
+        assert_eq!(used, [true; 6], "{name}: {tools:?}");
+        assert!(tools.iter().any(|t| !t[0]), "{name}: {tools:?}");
         assert!(
             units != tpl_stream(config.clone(), 0, 1).0,
             "{name}: no change"
@@ -157,6 +246,33 @@ fn tpl_delta_q_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             );
         }
     }
+}
+
+/// A frame whose superblock offsets all snap to 0 at the `delta_q_res` step
+/// codes no `delta_q_present`; one offset beyond half a step codes it.
+#[test]
+fn offsets_that_snap_to_zero_code_no_delta_q() {
+    let config = config(200, 136, BitDepth::Eight, 9, 150);
+    let mut coder = IntraFrameCoder::new(&config).unwrap();
+    let plan = crate::gop::plan(1, config.keyint);
+    let (cols, rows) = (13, 9);
+    let mut costs = vec![(1000, 0); cols * rows];
+    costs[0] = (1000, 1_000_000);
+    let grid = (cols, rows, 16);
+    let (mut empty, mut coded) = (false, false);
+    for strength in 1..=100 {
+        coder.set_block_importance(crate::tpl::BlockImportance {
+            grid,
+            strength,
+            frames: [(plan.display_index, costs.clone())].into(),
+        });
+        let quant = coder.superblock_quant(&plan);
+        let model = crate::tpl::superblock_quant(&costs, grid, (4, 3, 64), strength);
+        let snaps_to_zero = model.iter().all(|&(offset, _)| offset.abs() <= 1);
+        assert_eq!(quant.is_empty(), snaps_to_zero, "{strength}: {model:?}");
+        (empty, coded) = (empty || snaps_to_zero, coded || !snaps_to_zero);
+    }
+    assert!(empty && coded);
 }
 
 /// AVM decodes frames with superblock qindex deltas to the splot output.
@@ -171,7 +287,7 @@ fn avm_decodes_delta_q_frames_like_splot() {
         let (units, recon, _) = delta_q_stream(config.clone(), 2);
         let avm = avm_decode(&avmdec, &units, (200, 136), bit_depth, "delta-q");
         assert!(avm == recon, "{bit_depth:?}: AVM output differs");
-        let (units, recon) = tpl_stream(config, 100, 2);
+        let (units, recon, _) = tpl_stream(config, 100, 2);
         let avm = avm_decode(&avmdec, &units, (200, 136), bit_depth, "tpl-delta-q");
         assert!(
             avm == recon,

@@ -255,8 +255,9 @@ impl IntraFrameCoder {
     }
 
     /// The `(qindex offset, lambda log2 Q8)` of each superblock of `plan`
-    /// from its block importances; empty without them or when no offset is
-    /// nonzero, which codes no `delta_q_present`.
+    /// from its block importances; empty without them or when every offset
+    /// snaps to 0 at the `delta_q_res` step, which codes no `delta_q_present`
+    /// and keeps the frame lambda.
     fn superblock_quant(&self, plan: &GopFrame) -> Vec<(i16, i16)> {
         let Some(costs) = self.importance.frames.get(&plan.display_index) else {
             return Vec::new();
@@ -273,7 +274,8 @@ impl IntraFrameCoder {
             (width.div_ceil(sb), height.div_ceil(sb), sb),
             self.importance.strength,
         );
-        if quant.iter().all(|&(offset, _)| offset == 0) {
+        let half_step = (1 << self.preset.delta_q_res) >> 1;
+        if quant.iter().all(|&(offset, _)| offset.abs() <= half_step) {
             return Vec::new();
         }
         quant
@@ -429,7 +431,14 @@ impl IntraFrameCoder {
                         let sb_qindex = writer
                             .set_superblock_qindex(target)
                             .map_err(coding("delta-q"))?;
-                        let lambda = lambda.scaled(i32::from(lambda_log2));
+                        let applied = 2 * (sb_qindex as i32 - qindex as i32);
+                        let clip_slack = (1 << self.preset.delta_q_res) + 1;
+                        let per_octave = tpl::QINDEX_PER_IMPORTANCE_OCTAVE as i32;
+                        let lambda_log2 = i32::from(lambda_log2).clamp(
+                            (applied - clip_slack) * 128 / per_octave,
+                            (applied + clip_slack) * 128 / per_octave,
+                        );
+                        let lambda = lambda.scaled(lambda_log2);
                         coder.set_quantizer(sb_qindex, lambda);
                         (lambda, Some(target))
                     }
