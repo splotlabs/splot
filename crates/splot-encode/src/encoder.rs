@@ -88,6 +88,8 @@ enum State {
 /// [`Config::threads`] never changes it.
 pub struct Encoder {
     config: Config,
+    /// [`Config::coded`] when the configuration resizes its frames.
+    resized: Option<Config>,
     coder: Box<dyn FrameCoder + Send>,
     rate_control: Box<dyn RateController + Send>,
     stats_sink: Option<StatsSink>,
@@ -138,7 +140,7 @@ impl Encoder {
         rate_control: Box<dyn RateController + Send>,
     ) -> Result<Self> {
         config.validate()?;
-        let coder = frame_coder(&config)?;
+        let coder = frame_coder(&config.coded())?;
         Self::with_parts(config, coder, rate_control)
     }
 
@@ -160,9 +162,10 @@ impl Encoder {
             stats_sink: None,
             pending: VecDeque::new(),
             planner,
-            lookahead: Lookahead::new(&config),
+            lookahead: Lookahead::new(&config.coded()),
             lookahead_frames: usize::from(params.lookahead_frames),
             window: Vec::new(),
+            resized: config.resize_denominator.map(|_| config.coded()),
             config,
             coder,
             ready: VecDeque::new(),
@@ -182,7 +185,8 @@ impl Encoder {
     }
 
     /// Queues a frame for coding and analyses it in the lookahead; a scene cut
-    /// makes it a key frame. The encoder keeps every queued frame until
+    /// makes it a key frame. A frame of the input size is resized to the
+    /// [`Config::coded`] size first. The encoder keeps every queued frame until
     /// [`Self::receive_packet`] codes it.
     ///
     /// # Errors
@@ -197,10 +201,14 @@ impl Encoder {
             State::Failed => return Err(Error::Failed),
         }
         if frame.bit_depth() != self.config.bit_depth
-            || frame.plane_sizes() != self.config.plane_sizes()?
+            || frame.plane_sizes() != self.config.plane_sizes()?.as_slice()
         {
             return Err(Error::FrameConfigMismatch);
         }
+        let frame = match &self.resized {
+            Some(coded) => frame.resized(coded)?,
+            None => frame,
+        };
         let display_index = self.planner.next_display() + self.pending.len() as u64;
         if self.lookahead.push(&frame, display_index) {
             self.planner.force_key(display_index);
@@ -529,6 +537,70 @@ mod tests {
         Ok(())
     }
 
+    /// The low-delay overrides: every frame is coded and shown as soon as it
+    /// is sent, in display order.
+    #[test]
+    fn mini_gop_and_lookahead_of_one_emit_each_frame_at_once() -> Result<()> {
+        let mut config = encoder(None, 6)?.config().clone();
+        config.keyint = Config::DEFAULT_KEYINT;
+        config.preset_overrides = vec![
+            ("mini_gop_size".into(), "1".into()),
+            ("lookahead_frames".into(), "1".into()),
+        ];
+        let mut encoder = Encoder::with_coder(config, Box::new(FakeCoder { fail_at: None }))?;
+        for pts in 0..6 {
+            encoder.send_frame(frame(&encoder, pts)?)?;
+            let packet = encoder.receive_packet()?.ok_or(Error::Failed)?;
+            assert_eq!((packet.pts, packet.data[1]), (pts, pts as u8));
+            assert!(encoder.receive_packet()?.is_none());
+        }
+        Ok(())
+    }
+
+    /// A resized stream takes input-size frames, codes them at 8/16 of the
+    /// size with every loop filter, and decodes to the coded size; the stats
+    /// compare the recon with the resized source.
+    #[test]
+    fn resized_streams_code_input_frames_at_the_scaled_size() -> Result<()> {
+        let mut config = Config::new(67, 48);
+        config.resize_denominator = Some(16);
+        config.keyint = core::num::NonZeroU32::MIN.saturating_add(1);
+        let coded = config.coded();
+        assert_eq!((coded.width, coded.height), (34, 24));
+        let mut encoder = Encoder::new(config.clone())?;
+        let small = SourceFrame::new(
+            &coded,
+            0,
+            [vec![0; 34 * 24], vec![0; 17 * 12], vec![0; 17 * 12]],
+        )?;
+        assert!(matches!(
+            encoder.send_frame(small),
+            Err(Error::FrameConfigMismatch)
+        ));
+        let sizes = config.plane_sizes()?;
+        for pts in 0..3u16 {
+            let planes = core::array::from_fn(|plane| {
+                let (w, h) = (sizes[plane].width(), sizes[plane].height());
+                (0..w * h)
+                    .map(|i| (60 + i % w + (i / w) * 2 + usize::from(pts) * 5) as u16)
+                    .collect()
+            });
+            encoder.send_frame(SourceFrame::new(&config, u64::from(pts), planes)?)?;
+        }
+        encoder.flush()?;
+        let packets = drain(&mut encoder)?;
+        let stream: Vec<u8> = packets.iter().flat_map(|p| p.data.clone()).collect();
+        assert_eq!(
+            crate::test_support::decode(&stream).len(),
+            3 * (34 * 24 + 2 * 17 * 12)
+        );
+        assert!(
+            packets.iter().all(|p| p.stats[0].psnr_y > 35.0),
+            "{packets:?}"
+        );
+        Ok(())
+    }
+
     /// The stream of three flat 40x24 frames at preset 6 with `overrides`.
     fn stream_with(overrides: &[(&str, &str)]) -> Result<Vec<u8>> {
         let mut config = Config::new(40, 24);
@@ -681,8 +753,9 @@ mod tests {
             Encoder::with_coder(config.clone(), Box::new(FakeCoder { fail_at: None }))?;
         let mut random = xorshift(5);
         for pts in 0..12 {
-            let planes = config.plane_sizes()?.map(|size| {
-                (0..size.width() * size.height())
+            let sizes = config.plane_sizes()?;
+            let planes = core::array::from_fn(|plane| {
+                (0..sizes[plane].width() * sizes[plane].height())
                     .map(|_| 16 + 37 * random() as u16)
                     .collect()
             });

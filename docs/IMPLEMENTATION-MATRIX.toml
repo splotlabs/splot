@@ -5417,7 +5417,7 @@ module = "crates/splot-encode/src/intra_frame.rs"
 change_id = "encoder-chroma-formats"
 owner = "encoder"
 risk = "medium"
-notes = "Config::chroma accepts 4:2:0, 4:2:2 and 4:4:4 at 8 and 10 bits (monochrome is UnsupportedChroma); the Y4M reader maps C422, C444 and their p10 forms. The sequence header carries chroma_format_idc and seq_profile_idc 0, 3 or 4 (Table A.1). The encoder_syntax facade takes SubsamplingX/Y from the sequence header for its frame workspace, BlockDecoded state, chroma smooth grid and rollback rectangles (coefficient contexts per axis), so key and inter frames reuse the decoder's prediction, CfL, transform and context logic. 4:2:0 output is byte-identical to before."
+notes = "Config::chroma accepts 4:2:0, 4:2:2 and 4:4:4 at 8 and 10 bits (monochrome is ENC-MONOCHROME); the Y4M reader maps C422, C444 and their p10 forms. The sequence header carries chroma_format_idc and seq_profile_idc 0, 3 or 4 (Table A.1). The encoder_syntax facade takes SubsamplingX/Y from the sequence header for its frame workspace, BlockDecoded state, chroma smooth grid and rollback rectangles (coefficient contexts per axis), so key and inter frames reuse the decoder's prediction, CfL, transform and context logic. 4:2:0 output is byte-identical to before."
 
 [feature.status]
 mapped = "done"
@@ -6456,6 +6456,102 @@ perf = "pending"
 [feature.proof]
 tests = ["crates/splot-encode/src/sb256_tests.rs::sb256_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/sb256_tests.rs::sb256_search_codes_256_wide_inter_leaves", "crates/splot-encode/src/sb256_tests.rs::avm_decodes_sb256_streams_like_splot", "crates/splot-core/src/headers/frame/encoder_inter_stream_tests.rs::inter_headers_parse_with_the_reference_state"]
 commands = ["cargo test -p splot-encode sb256 --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_sb256 --locked -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-MONOCHROME"
+name = "Encoder monochrome coding"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["6.4.1", "5.18.5.2", "5.18.7.10", "5.20.4.1"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_frame.rs"
+change_id = "enc-monochrome"
+owner = "encoder"
+risk = "low"
+notes = "Config::chroma accepts PixelFormat::Monochrome (chroma_format_idc = CHROMA_FORMAT_400, NumPlanes = 1, § 6.4.1) at 8 and 10 bits; Config::plane_sizes and SourceFrame::plane_sizes give the Y plane alone and the U and V planes stay empty (Y4M Cmono). The sequence header builder already omits the chroma tools. The encoder_syntax facade builds a one-plane frame workspace, BlockDecoded state and rollback snapshot; HasChroma is 0 in every leaf (§ 5.20.4.1), so no chroma mode or residual is searched or coded. Deblocking codes apply_deblocking_filter[2..4] = 0 (§ 5.18.5.2) and CDEF zero chroma strengths, which § 5.18.7.10 does not code; CCSO and Wiener-NS search luma alone. Chroma PSNR in FrameStats is NaN. Off-format output (4:2:0, 4:2:2, 4:4:4) is byte-identical to before."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_tests.rs::monochrome_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_tests.rs::coded_frames_decode_to_the_encoder_recon", "crates/splot-encode/src/intra_frame_tests.rs::inter_frames_decode_to_the_encoder_recon_over_several_gops", "crates/splot-encode/src/config.rs::tests::odd_sizes_round_chroma_up"]
+commands = ["cargo test -p splot-encode monochrome --locked", "cargo test -p splot-encode decode_to_the_encoder_recon --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-LOW-DELAY"
+name = "Encoder low-delay mode"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "6.17.2", "7.7"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-cli"
+module = "crates/splot-cli/src/commands/encode.rs"
+change_id = "enc-low-delay"
+owner = "encoder"
+risk = "low"
+notes = "splot encode --low-delay (off by default) sets the preset fields mini_gop_size=1 and lookahead_frames=1 before --preset-set: every frame is an IPPP frame with immediate_output_frame = 1, coded in display order, and Encoder::receive_packet returns its packet right after send_frame (zero frame latency). References use the implicit get_ref_frames() map (§ 7.7); explicit_ref_frame_map is not needed because the implicit map already picks the latest past frames of an IPPP stream. Deferred (2026-10-26): use_bru backwards reference update (§ 5.18.2, § 5.20.5.2 bru_mode_info), because splot-decode parses the BRU header fields but does not decode BRU superblocks or the reference update, so encoder recon == decode cannot be checked."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "done"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/encoder.rs::tests::mini_gop_and_lookahead_of_one_emit_each_frame_at_once", "crates/splot-cli/tests/encode_decode_roundtrip.rs::low_delay_clips_code_every_frame_in_input_order"]
+commands = ["cargo test -p splot-encode mini_gop_and_lookahead --locked", "cargo test -p splot-cli --test encode_decode_roundtrip low_delay --locked"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-RESIZE"
+name = "Encoder fixed-ratio resize"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["7.13.3.18", "5.4.1"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/resize.rs"
+change_id = "enc-resize"
+owner = "encoder"
+risk = "low"
+notes = "Config::resize_denominator (CLI --resize-denominator D, D in 9..=16, off by default) codes every frame at 8/D of the input size per axis (rounded, at least 1): Encoder::send_frame takes input-size frames and resamples each plane with the § 7.13.3.18 stepped EIGHTTAP_SMOOTH convolution of scaled references (splot_recon::subpel_predict_block_strided_into, sample centres aligned, at most a 2x step), and the sequence header, IVF header and decode carry the coded size (AV2 has no superres or render size). FrameStats compare the recon with the resized source. Deferred (2026-10-30): a per-frame or key-frame-only ratio, which needs frame_size_override_flag and scaled-reference motion compensation through the encoder_syntax facade."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/resize.rs::tests::same_size_is_a_copy", "crates/splot-encode/src/resize.rs::tests::flat_planes_stay_flat_at_every_ratio", "crates/splot-encode/src/resize.rs::tests::ramps_land_on_the_mapped_centres", "crates/splot-encode/src/config.rs::tests::resize_scales_the_coded_size_by_8_over_the_denominator", "crates/splot-encode/src/encoder.rs::tests::resized_streams_code_input_frames_at_the_scaled_size", "crates/splot-cli/tests/encode_decode_roundtrip.rs::resized_clips_code_and_decode_at_the_scaled_size"]
+commands = ["cargo test -p splot-encode resize --locked", "cargo test -p splot-cli --test encode_decode_roundtrip resized --locked"]
 fixtures = []
 diagnostics = []
 

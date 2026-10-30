@@ -21,7 +21,9 @@ const SCREEN_SHARE_64: usize = 6;
 /// Whether `frame` looks like screen content by the luma of its whole 8x8
 /// blocks.
 pub(crate) fn is_screen_content(frame: &SourceFrame) -> bool {
-    let [luma, ..] = frame.plane_sizes();
+    let Some(luma) = frame.plane_sizes().first() else {
+        return false;
+    };
     let (width, height) = (luma.width(), luma.height());
     let samples = &frame.planes()[0];
     let flat = FLAT_RANGE_8BIT << (frame.bit_depth().max_sample().count_ones() - 8);

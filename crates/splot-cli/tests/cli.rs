@@ -755,7 +755,7 @@ fn encode_rejects_conflicting_rate_control_flags() {
 fn encode_rejects_malformed_and_unsupported_y4m_without_writing_output() {
     let cases: [(&[u8], &str); 2] = [
         (b"YUV4MPEG2 W16 F30:1\n", "no H tag"),
-        (b"YUV4MPEG2 W16 H16 F30:1 Cmono\n", "Monochrome"),
+        (b"YUV4MPEG2 W16 H16 F30:1 C420p12\n", "12-bit input"),
     ];
     for (input, expected) in cases {
         let input = temp_input("y4m", input);

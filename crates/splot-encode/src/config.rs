@@ -75,7 +75,7 @@ pub struct Config {
     pub height: u32,
     /// Sample bit depth.
     pub bit_depth: BitDepth,
-    /// Chroma format: 4:2:0, 4:2:2 or 4:4:4.
+    /// Chroma format: 4:2:0, 4:2:2, 4:4:4 or monochrome (`mono_chrome`, luma alone).
     pub chroma: PixelFormat,
     /// Frame rate as `(numerator, denominator)` frames per second.
     pub frame_rate: (u32, u32),
@@ -93,6 +93,10 @@ pub struct Config {
     pub tiles: TileLayout,
     /// Distance between key frames, in frames.
     pub keyint: NonZeroU32,
+    /// Fixed-ratio resize: every frame is coded at `8 / denominator` of the
+    /// input size per axis, `9..=16`; `None` codes the input size. AV2 has no
+    /// superres, so the stream decodes to the coded size.
+    pub resize_denominator: Option<u8>,
 }
 
 impl Config {
@@ -103,6 +107,10 @@ impl Config {
         Some(keyint) => keyint,
         None => NonZeroU32::MIN,
     };
+
+    /// The `resize_denominator` range: down to half size, the largest step
+    /// of the § 7.13.3.18 resampler.
+    pub const RESIZE_DENOMINATORS: core::ops::RangeInclusive<u8> = 9..=16;
 
     /// Creates an 8-bit 4:2:0 configuration at 30 fps with default settings.
     #[must_use]
@@ -121,13 +129,14 @@ impl Config {
             threads: ThreadCount::Auto,
             tiles: TileLayout::default(),
             keyint: Self::DEFAULT_KEYINT,
+            resize_denominator: None,
         }
     }
 
     /// Checks that the encoder supports this configuration.
     ///
     /// # Errors
-    /// Returns [`Error::InvalidDimensions`], [`Error::UnsupportedChroma`],
+    /// Returns [`Error::InvalidDimensions`], [`Error::InvalidResize`],
     /// [`Error::InvalidFrameRate`], [`Error::InvalidTiles`], [`Error::InvalidQp`],
     /// [`Error::InvalidCrf`], [`Error::InvalidBitrate`] or [`Error::Preset`].
     pub fn validate(&self) -> Result<()> {
@@ -140,10 +149,10 @@ impl Config {
                 height: self.height,
             });
         }
-        if self.chroma.is_monochrome() {
-            return Err(Error::UnsupportedChroma {
-                chroma: self.chroma,
-            });
+        if let Some(denominator) = self.resize_denominator
+            && !Self::RESIZE_DENOMINATORS.contains(&denominator)
+        {
+            return Err(Error::InvalidResize { denominator });
         }
         if self.frame_rate.0 == 0 || self.frame_rate.1 == 0 {
             return Err(Error::InvalidFrameRate {
@@ -177,6 +186,31 @@ impl Config {
         }
     }
 
+    /// The configuration of the coded frames: the frame size after
+    /// [`Self::resize_denominator`], which it clears. A denominator outside
+    /// [`Self::RESIZE_DENOMINATORS`], which [`Self::validate`] rejects, keeps
+    /// the input size.
+    #[must_use]
+    pub fn coded(&self) -> Self {
+        let Some(denominator) = self
+            .resize_denominator
+            .filter(|denominator| Self::RESIZE_DENOMINATORS.contains(denominator))
+        else {
+            return self.clone();
+        };
+        let scale = |value: u32| {
+            let scaled =
+                (u64::from(value) * 8 + u64::from(denominator / 2)) / u64::from(denominator);
+            u32::try_from(scaled).unwrap_or(value).max(1)
+        };
+        Self {
+            width: scale(self.width),
+            height: scale(self.height),
+            resize_denominator: None,
+            ..self.clone()
+        }
+    }
+
     /// `row` with [`Self::preset_overrides`] applied, checked by
     /// [`PresetParams::validate`].
     pub(crate) fn override_preset(&self, row: &PresetParams) -> Result<PresetParams> {
@@ -188,26 +222,19 @@ impl Config {
         Ok(row)
     }
 
-    /// Returns the Y, U and V plane sizes of one frame.
+    /// Returns the Y, U and V plane sizes of one frame; monochrome has Y alone.
     ///
     /// # Errors
-    /// Returns [`Error::InvalidDimensions`] for a zero dimension and
-    /// [`Error::UnsupportedChroma`] for monochrome.
-    pub fn plane_sizes(&self) -> Result<[PlaneSize; 3]> {
+    /// Returns [`Error::InvalidDimensions`] for a zero dimension.
+    pub fn plane_sizes(&self) -> Result<Vec<PlaneSize>> {
         let invalid = || Error::InvalidDimensions {
             width: self.width,
             height: self.height,
         };
         let luma =
             PlaneSize::new(self.width as usize, self.height as usize).map_err(|_| invalid())?;
-        let chroma = self
-            .chroma
-            .chroma_size(luma)
-            .map_err(|_| invalid())?
-            .ok_or(Error::UnsupportedChroma {
-                chroma: self.chroma,
-            })?;
-        Ok([luma, chroma, chroma])
+        let chroma = self.chroma.chroma_size(luma).map_err(|_| invalid())?;
+        Ok(chroma.map_or(vec![luma], |chroma| vec![luma, chroma, chroma]))
     }
 }
 
@@ -231,12 +258,6 @@ mod tests {
         assert!(matches!(
             config.validate(),
             Err(Error::InvalidDimensions { .. })
-        ));
-        config = Config::new(64, 64);
-        config.chroma = PixelFormat::Monochrome;
-        assert!(matches!(
-            config.validate(),
-            Err(Error::UnsupportedChroma { .. })
         ));
         config = Config::new(64, 64);
         config.tiles.rows_log2 = TileLayout::MAX_LOG2 + 1;
@@ -314,10 +335,42 @@ mod tests {
 
     #[test]
     fn odd_sizes_round_chroma_up() -> Result<()> {
-        let [y, u, v] = Config::new(5, 3).plane_sizes()?;
+        let mut config = Config::new(5, 3);
+        let &[y, u, v] = config.plane_sizes()?.as_slice() else {
+            unreachable!("4:2:0 has three planes")
+        };
         assert_eq!((y.width(), y.height()), (5, 3));
         assert_eq!((u.width(), u.height()), (3, 2));
         assert_eq!(u, v);
+        config.chroma = PixelFormat::Monochrome;
+        assert!(config.validate().is_ok());
+        assert_eq!(config.plane_sizes()?, [y]);
         Ok(())
+    }
+
+    #[test]
+    fn resize_scales_the_coded_size_by_8_over_the_denominator() {
+        let mut config = Config::new(160, 90);
+        assert_eq!(config.coded(), config);
+        for (denominator, size) in [(9, (142, 80)), (12, (107, 60)), (16, (80, 45))] {
+            config.resize_denominator = Some(denominator);
+            assert!(config.validate().is_ok());
+            let coded = config.coded();
+            assert_eq!(
+                ((coded.width, coded.height), coded.resize_denominator),
+                (size, None)
+            );
+        }
+        config.width = 1;
+        assert_eq!(config.coded().width, 1);
+        config.width = 160;
+        for denominator in [0, 8, 17] {
+            config.resize_denominator = Some(denominator);
+            assert_eq!((config.coded().width, config.coded().height), (160, 90));
+            assert!(matches!(
+                config.validate(),
+                Err(Error::InvalidResize { denominator: d }) if d == denominator
+            ));
+        }
     }
 }

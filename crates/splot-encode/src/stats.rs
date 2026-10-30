@@ -19,9 +19,9 @@ pub struct FrameStats {
     pub bits: u64,
     /// Luma PSNR in dB; infinite for an exact reconstruction.
     pub psnr_y: f64,
-    /// Cb PSNR in dB.
+    /// Cb PSNR in dB; NaN for monochrome.
     pub psnr_u: f64,
-    /// Cr PSNR in dB.
+    /// Cr PSNR in dB; NaN for monochrome.
     pub psnr_v: f64,
     /// Luma SSIM, when computed.
     pub ssim_y: Option<f64>,

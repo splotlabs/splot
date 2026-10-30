@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Owned source frames: three tightly packed `u16` planes for every bit depth.
+//! Owned source frames: three tightly packed `u16` planes for every bit depth;
+//! the chroma planes of a monochrome frame are empty.
 
 use splot_recon::{BitDepth, PlaneSize};
 
@@ -14,12 +15,13 @@ use crate::error::{Error, Result};
 pub struct SourceFrame {
     pts: u64,
     bit_depth: BitDepth,
-    sizes: [PlaneSize; 3],
+    sizes: Vec<PlaneSize>,
     planes: [Vec<u16>; 3],
 }
 
 impl SourceFrame {
-    /// Takes ownership of tightly packed Y, U and V planes.
+    /// Takes ownership of tightly packed Y, U and V planes; U and V are empty
+    /// for monochrome.
     ///
     /// # Errors
     /// Returns [`Error::PlaneSizeMismatch`] when a plane does not hold exactly
@@ -29,8 +31,10 @@ impl SourceFrame {
     pub fn new(config: &Config, pts: u64, planes: [Vec<u16>; 3]) -> Result<Self> {
         let sizes = config.plane_sizes()?;
         let max = config.bit_depth.max_sample();
-        for (plane, (samples, size)) in planes.iter().zip(sizes).enumerate() {
-            let expected = size.width() * size.height();
+        for (plane, samples) in planes.iter().enumerate() {
+            let expected = sizes
+                .get(plane)
+                .map_or(0, |size| size.width() * size.height());
             if samples.len() != expected {
                 return Err(Error::PlaneSizeMismatch {
                     plane,
@@ -50,7 +54,8 @@ impl SourceFrame {
         })
     }
 
-    /// Copies strided 8-bit planes given as `(samples, stride)`; needs an 8-bit `config`.
+    /// Copies strided 8-bit planes given as `(samples, stride)`; needs an 8-bit
+    /// `config`. Monochrome ignores the U and V planes.
     ///
     /// # Errors
     /// Returns [`Error::BitDepthMismatch`] for a non-8-bit `config`,
@@ -66,7 +71,8 @@ impl SourceFrame {
         Self::from_strided(config, pts, planes)
     }
 
-    /// Copies strided 16-bit planes given as `(samples, stride)`.
+    /// Copies strided 16-bit planes given as `(samples, stride)`. Monochrome
+    /// ignores the U and V planes.
     ///
     /// # Errors
     /// Returns [`Error::InvalidStride`] or [`Error::PlaneSizeMismatch`] for a
@@ -82,7 +88,7 @@ impl SourceFrame {
     ) -> Result<Self> {
         let sizes = config.plane_sizes()?;
         let mut owned: [Vec<u16>; 3] = Default::default();
-        for (plane, ((samples, stride), size)) in planes.into_iter().zip(sizes).enumerate() {
+        for (plane, ((samples, stride), size)) in planes.into_iter().zip(sizes.iter()).enumerate() {
             let (width, height) = (size.width(), size.height());
             if stride < width {
                 return Err(Error::InvalidStride {
@@ -120,10 +126,10 @@ impl SourceFrame {
         self.bit_depth
     }
 
-    /// Sizes of the Y, U and V planes.
+    /// Sizes of the Y, U and V planes; Y alone for monochrome.
     #[must_use]
-    pub fn plane_sizes(&self) -> [PlaneSize; 3] {
-        self.sizes
+    pub fn plane_sizes(&self) -> &[PlaneSize] {
+        &self.sizes
     }
 
     /// The Y, U and V planes, each packed with stride equal to its width.
