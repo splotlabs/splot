@@ -21,11 +21,11 @@ pub(crate) const WARPEDMODEL_PREC_BITS: u32 = 16;
 
 /// `GM_ALPHA_PREC_BITS` (AV2 v1.0.0 § 3): fractional bits for the non-translational
 /// (`idx >= 2`) warp coefficients (mirror :7990).
-const GM_ALPHA_PREC_BITS: u32 = 10;
+pub(crate) const GM_ALPHA_PREC_BITS: u32 = 10;
 
 /// `GM_TRANS_PREC_BITS` (AV2 v1.0.0 § 3): fractional bits for the translational
 /// (`idx < 2`) warp coefficients (mirror :7996).
-const GM_TRANS_PREC_BITS: u32 = 3;
+pub(crate) const GM_TRANS_PREC_BITS: u32 = 3;
 
 /// `GM_ABS_ALPHA_BITS` (AV2 v1.0.0 § 3): bits encoded for non-translational components.
 const GM_ABS_ALPHA_BITS: u32 = 9;
@@ -35,15 +35,15 @@ const GM_ABS_TRANS_BITS: u32 = 14;
 
 /// `GM_ALPHA_MAX = (1 << GM_ABS_ALPHA_BITS) - 1` (AV2 v1.0.0 § 3): the `mx` bound for
 /// `idx >= 2` (mirror :7992).
-const GM_ALPHA_MAX: i32 = (1i32 << GM_ABS_ALPHA_BITS) - 1;
+pub(crate) const GM_ALPHA_MAX: i32 = (1i32 << GM_ABS_ALPHA_BITS) - 1;
 
 /// `GM_TRANS_MAX = (1 << GM_ABS_TRANS_BITS) - 1` (AV2 v1.0.0 § 3): the `mx` bound for
 /// `idx < 2` (mirror :7998).
-const GM_TRANS_MAX: i32 = (1i32 << GM_ABS_TRANS_BITS) - 1;
+pub(crate) const GM_TRANS_MAX: i32 = (1i32 << GM_ABS_TRANS_BITS) - 1;
 
 /// The fixed subexp parameter `k = 3` used by every `read_global_param()` call (mirror
 /// :8012, `decode_signed_subexp_with_ref( -mx, mx + 1, r, 3 )`).
-const GLOBAL_PARAM_K: u32 = 3;
+pub(crate) const GLOBAL_PARAM_K: u32 = 3;
 
 /// `IDENTITY` (AV2 v1.0.0 § 3): warp model is the identity transform (`GmType` value `0`).
 const IDENTITY: u8 = 0;
@@ -57,7 +57,7 @@ const AFFINE: u8 = 2;
 /// `REFS_PER_FRAME` (AV2 v1.0.0 § 3): the per-frame `GmType` / `gm_params` table size
 /// (mirror :7778). Every reference is initialised to the identity warp before the inter
 /// arm overwrites the active `0..NumTotalRefs` entries.
-pub(crate) const REFS_PER_FRAME: usize = 7;
+pub const REFS_PER_FRAME: usize = 7;
 
 /// One frame's § 7.23 `SavedGmParams[slot]` table.
 pub type SavedGlobalMotionParams = [[i32; 6]; REFS_PER_FRAME];
@@ -84,7 +84,7 @@ pub struct GlobalMotionReferenceState<'a> {
 /// `Default_Warp_Params[6]` (AV2 v1.0.0 § 7, mirror :4702): the identity warp model. Index
 /// `i % 3 == 2` (the diagonal scale terms 2 and 5) is `1 << WARPEDMODEL_PREC_BITS`; every
 /// other term is `0` (mirror :7784-7786 derives the same identity initialiser).
-const DEFAULT_WARP_PARAMS: [i32; 6] = [
+pub(crate) const DEFAULT_WARP_PARAMS: [i32; 6] = [
     0,
     0,
     1 << WARPEDMODEL_PREC_BITS,
@@ -435,6 +435,17 @@ fn order_hint_to_spec(reader: &BitReader<'_>, raw: u32) -> Result<i32> {
         i32::try_from(raw)
             .map_err(|_| invalid_global_motion(reader, GlobalMotionErrorKind::OrderHintOutOfRange))
     }
+}
+
+/// `PrevGmParams` of a reference with order hint `ref_hint` (`u32::MAX` is
+/// `RESTRICTED_OH`) in a frame with order hint `order_hint` that codes
+/// `our_ref = NumTotalRefs` (§ 5.18.9.1); `None` where the reference reads no
+/// model.
+pub(crate) fn default_base_prediction(order_hint: u32, ref_hint: u32) -> Option<[i32; 6]> {
+    let current = i32::try_from(order_hint).ok()?;
+    let hint = i32::try_from(ref_hint).ok()?;
+    let dist = get_relative_dist(current, hint);
+    (dist != 0 && hint != RESTRICTED_OH).then(|| scale_warp_model(DEFAULT_WARP_PARAMS, 1, dist))
 }
 
 /// `scale_warp_model()` from AV2 § 5.18.9.1.

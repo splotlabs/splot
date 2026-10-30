@@ -217,13 +217,29 @@ impl CodedTile {
         })
     }
 
-    /// The warp leaves and the inter leaves of the tile.
-    pub(crate) fn warp_leaves(&self) -> (usize, usize) {
+    /// The leaves of the tile that `keep` accepts.
+    pub(crate) fn count_leaves(
+        &self,
+        keep: &impl Fn(&crate::tile_writer::LeafChoice) -> bool,
+    ) -> usize {
         self.decisions
             .superblocks
             .iter()
-            .map(|(decision, _)| crate::warp::leaf_counts(&decision.tree))
-            .fold((0, 0), |(w, i), (dw, di)| (w + dw, i + di))
+            .map(|(decision, _)| decision.tree.count_leaves(keep))
+            .sum()
+    }
+
+    /// The warp leaves and the inter leaves of the tile.
+    pub(crate) fn warp_leaves(&self) -> (usize, usize) {
+        (
+            self.count_leaves(&|choice| {
+                matches!(
+                    choice.inter,
+                    Some(crate::tile_writer::InterPrediction::Warp(_))
+                )
+            }),
+            self.count_leaves(&|choice| choice.inter.is_some()),
+        )
     }
 }
 

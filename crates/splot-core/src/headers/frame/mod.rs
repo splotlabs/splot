@@ -17,7 +17,7 @@ mod encoder_inter_stream;
 mod encoder_stream;
 mod filtering;
 mod get_ref_frames;
-mod global_motion;
+pub(crate) mod global_motion;
 mod info;
 mod inter;
 mod inter_shared_tail;
@@ -60,7 +60,7 @@ pub use filtering::{
 pub use get_ref_frames::{RESTRICTED_OH, RefIdxBuf, get_relative_dist};
 pub use global_motion::{
     GlobalMotionInput, GlobalMotionParams, GlobalMotionRef, GlobalMotionReferenceState,
-    GlobalMotionStop, GmType, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
+    GlobalMotionStop, GmType, REFS_PER_FRAME, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
     decode_signed_subexp_with_ref, decode_subexp, decode_unsigned_subexp_with_ref,
     inverse_recenter, parse_global_motion_params, read_global_param, scale_warp_model,
 };

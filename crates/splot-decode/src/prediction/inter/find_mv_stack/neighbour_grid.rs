@@ -334,6 +334,7 @@ pub(crate) type PublishedLeaf = (
     Option<(i8, Option<i8>)>,
     [Mv; 2],
     [Option<[i32; 6]>; 2],
+    [bool; 2],
 );
 
 /// A [`NeighbourMvGrid::checkpoint`].
@@ -891,6 +892,7 @@ impl NeighbourMvGrid {
                     .then_some((leaf.flags.ref_frame0, leaf.flags.ref_frame1)),
                 [leaf.mv, leaf.mv1],
                 self.splat_models(leaf),
+                [0, 1].map(|list| leaf.global_mv_lists & (1 << list) != 0),
             )
         })
     }

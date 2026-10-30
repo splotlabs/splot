@@ -79,6 +79,11 @@ pub(crate) struct IntraFrameCoder {
     tiles: UniformTiles,
     /// Codes the frames of a wave and the tiles of a frame; `None` with one thread.
     pool: Option<WorkerPool>,
+    /// The global motion models every inter frame codes, set by tests.
+    #[cfg(test)]
+    global_motion: [Option<[i32; 6]>; splot_core::headers::frame::REFS_PER_FRAME],
+    /// The global motion models of the next frames to code.
+    global_models: crate::global_motion::GlobalModels,
     /// The block importances of the next frames to code.
     importance: tpl::BlockImportance,
     /// Show-existing frames output so far, which seed their film grain.
@@ -156,6 +161,7 @@ impl IntraFrameCoder {
                 max_drl_bits_minus_1: u32::from(preset.drl_bits.saturating_sub(1)),
                 mvd_tools: preset.mvd_tools,
                 warp: preset.warp > 0,
+                global_motion: preset.global_motion > 0,
                 masked_compound: preset.compound_types >= 2,
                 cwp: preset.compound_types >= 1,
                 implicit_mask: preset.implicit_mask,
@@ -186,7 +192,10 @@ impl IntraFrameCoder {
                 .then(|| WorkerPool::new(config.threads))
                 .transpose()
                 .map_err(coding("worker pool"))?,
+            #[cfg(test)]
+            global_motion: [None; splot_core::headers::frame::REFS_PER_FRAME],
             importance: tpl::BlockImportance::default(),
+            global_models: crate::global_motion::GlobalModels::new(),
             shown_existing: 0,
             grain_active: false,
             warp_gate: crate::warp::WarpGate::default(),
@@ -203,6 +212,14 @@ impl FrameCoder for IntraFrameCoder {
 
     fn set_block_importance(&mut self, importance: tpl::BlockImportance) {
         self.importance = importance;
+    }
+
+    fn wants_global_motion(&self) -> bool {
+        self.preset.global_motion > 0
+    }
+
+    fn set_global_motion(&mut self, models: crate::global_motion::GlobalModels) {
+        self.global_models = models;
     }
 
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
@@ -419,6 +436,33 @@ impl IntraFrameCoder {
         let qindex = u32::from(qp);
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
+        #[cfg(test)]
+        {
+            tools.2.7 = self.global_motion;
+        }
+        if plan.frame_type == FrameType::Inter && !self.global_models.is_empty() {
+            let probe = plan.header(
+                &self.view,
+                &self.references,
+                qindex,
+                &FrameFilterParams::default(),
+                tools,
+            )?;
+            let key_display = plan.display_index - u64::from(plan.order_hint);
+            let hints = probe
+                .inter
+                .as_ref()
+                .map_or(&[][..], |inter| &inter.order_hints[..]);
+            for (model, &hint) in tools.2.7.iter_mut().zip(hints) {
+                *model = (hint != u32::MAX)
+                    .then(|| {
+                        let reference = key_display + u64::from(hint);
+                        self.global_models.get(&(plan.display_index, reference))
+                    })
+                    .flatten()
+                    .copied();
+            }
+        }
         tools.2.6 &= self.warp_gate.allows(plan.layer);
         tools.0.delta_q_res = (!sb_quant.is_empty()).then_some(self.preset.delta_q_res);
         let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
@@ -521,6 +565,11 @@ impl IntraFrameCoder {
             }
             CodedTile::finish(writer, decisions).map_err(coding("tile finish"))
         })?;
+        #[cfg(test)]
+        let global_leaves = tiles
+            .iter()
+            .map(|tile| tile.count_leaves(&tests::is_global))
+            .sum();
         let warp_leaves = tiles
             .iter()
             .map(CodedTile::warp_leaves)
@@ -564,6 +613,8 @@ impl IntraFrameCoder {
                     leaves: warp_leaves,
                 },
             ),
+            #[cfg(test)]
+            global_leaves,
         };
         match tools.2.3 {
             Some(weight)
@@ -634,6 +685,8 @@ impl IntraFrameCoder {
                 reference: None,
                 tip_output: Some(core),
                 warp: None,
+                #[cfg(test)]
+                global_leaves: 0,
             }),
         )
     }

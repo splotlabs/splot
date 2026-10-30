@@ -182,6 +182,7 @@ fn every_tool_flag_reaches_the_parsed_header() {
         max_drl_bits_minus_1: 3,
         mvd_tools: [true, false, true],
         warp: true,
+        global_motion: true,
         masked_compound: true,
         cwp: true,
         implicit_mask: true,
