@@ -539,6 +539,16 @@ impl IntraFrameCoder {
     /// references; non-empty `sb_quant`, one `(qindex offset, lambda log2
     /// Q8)` per superblock in frame raster order, moves the qindex of each
     /// superblock through `delta_q` and scales its lambda.
+    /// The context of the [`crate::preset::Levels`] fields for `plan` coded
+    /// at `qindex`.
+    pub(crate) const fn preset_context(&self, plan: &GopFrame, qindex: u32) -> PresetContext {
+        PresetContext {
+            resolution: ResolutionClass::of(self.params.width, self.params.height),
+            frame: FrameKind::of(plan.frame_type, plan.layer, plan.refresh_frame_flags),
+            coeff: CoeffLevel::of(qindex),
+        }
+    }
+
     fn code_frame(
         &self,
         source: &SourceFrame,
@@ -551,11 +561,7 @@ impl IntraFrameCoder {
             ..*plan
         };
         let qindex = u32::from(qp);
-        let context = PresetContext {
-            resolution: ResolutionClass::of(self.params.width, self.params.height),
-            frame: FrameKind::of(plan.frame_type, plan.layer, plan.refresh_frame_flags),
-            coeff: CoeffLevel::of(qindex),
-        };
+        let context = self.preset_context(plan, qindex);
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.at(context);
         #[cfg(test)]

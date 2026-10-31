@@ -383,9 +383,9 @@ pub enum FrameKind {
     Key,
     /// An inter frame of mini-GOP layer 0.
     Base,
-    /// An inter frame above layer 0 that later frames reference.
+    /// An inter frame above layer 0 that refreshes a reference slot.
     Mid,
-    /// An inter frame above layer 0 that no frame references.
+    /// An inter frame above layer 0 that refreshes no reference slot.
     Leaf,
 }
 

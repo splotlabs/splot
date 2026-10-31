@@ -1109,6 +1109,7 @@ fn inter_stream_of(
     let lambda = Lambda::from_qindex(qindex, config.bit_depth).unwrap();
     let mut residual =
         SourceResidualCoder::new(&padded, qindex, config.bit_depth, &coder.preset, lambda);
+    residual.context = coder.preset_context(&plan, qindex);
     let mut rng = Rng(seed);
     let mut coverage = [0; COVERAGE_SLOTS];
     while writer.next_superblock_root().is_some() {
@@ -1297,6 +1298,7 @@ fn search_frame_counting(
     let motion =
         MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda, Vec::new()).unwrap();
     let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, &coder.preset, lambda);
+    residual.context = coder.preset_context(plan, 90);
     let (luma, stride, width, height) = padded.luma();
     let bv_search = crate::intrabc::BvSearch::new(luma, stride, (width, height));
     residual.intrabc = (core.allow_intrabc == Some(true)).then_some(&bv_search);

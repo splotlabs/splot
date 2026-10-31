@@ -349,6 +349,9 @@ fn warp_search_keeps_the_cheapest_models_under_the_bar() {
     let motion = MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda, Vec::new())
         .unwrap()
         .unwrap();
+    let mut residual =
+        SourceResidualCoder::new(&padded, 90, config.bit_depth, &coder.preset, lambda);
+    residual.context = coder.preset_context(&plan, 90);
     let mut found = 0;
     while writer.next_superblock_root().is_some() {
         writer
@@ -392,7 +395,7 @@ fn warp_search_keeps_the_cheapest_models_under_the_bar() {
                 &SuperblockDecision {
                     tree: PartitionTree::Leaf(LeafChoice::DC),
                 },
-                &mut SourceResidualCoder::new(&padded, 90, config.bit_depth, &coder.preset, lambda),
+                &mut residual,
             )
             .unwrap();
     }
