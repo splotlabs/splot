@@ -6971,6 +6971,38 @@ commands = ["cargo test -p splot-encode wavefront --locked", "SPLOT_AVM_DECODER=
 fixtures = []
 diagnostics = []
 
+[[feature]]
+id = "ENC-FRAME-OVERLAP"
+name = "Frame overlap on superblock-row readiness"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["7.9.8"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-decode/src/prediction/inter/block/encoder_leaf.rs"
+change_id = "enc-frame-overlap"
+owner = "encoder"
+risk = "medium"
+notes = "B7 part 2 (2026-10-31 design): frame N+1 searches row r once frame N's writer has finished rows up to r plus a margin, against N's samples before filtering and approximated start CDFs; N+1's writer waits for N's filters and end CDFs. Step 1 shipped: the encoder builds the projected motion field band by band (one superblock row per band, § 7.9.8 keeps a projection inside its band) through the decoder's banded projection; streams are byte-identical to main 58aa454d7 at p0, p6 and p10. Not done: frame header decisions from finished data, the provisional row-ready reference and the scheduler."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "partial"
+decode_check = "done"
+tests = "partial"
+avm_diff = "not-applicable"
+perf = "todo"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_tests.rs::multi_tile_output_does_not_depend_on_the_thread_count", "crates/splot-encode/src/intra_frame_tip_tests.rs::refined_tip_units_match_the_decoder_in_a_zooming_frame"]
+commands = ["cargo test -p splot-encode --locked"]
+fixtures = []
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------

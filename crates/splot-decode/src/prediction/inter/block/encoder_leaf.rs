@@ -1263,18 +1263,22 @@ pub(crate) fn encoder_temporal_context(
         &reference.ref_valid,
         &reference.ref_order_hint,
     );
+    let (mi_rows, mi_cols) = geometry.mi_dimensions();
+    let prelude = TemporalPrelude {
+        geometry,
+        motion_layout: MotionFieldLayout::new(mi_rows, mi_cols, geometry.sb_h4())
+            .ok_or(DecodeHeaderStateError::InvalidInterTemporalMotionState)?,
+        current_order_hint: core.display_order_hint().unwrap_or(0),
+        config: temporal_projection_config(sequence, core, geometry),
+        expected_tip_pair: derived_tip_reference_pair(core, &hints),
+    };
     let mut context = TemporalMvContext::empty();
-    frame_temporal_context(
-        &mut context,
-        core,
-        geometry.sb_h4(),
-        geometry.mi_dimensions(),
-        core.display_order_hint().unwrap_or(0),
-        temporal_projection_config(sequence, core, geometry),
-        ref_frame_idx,
-        reference,
-        derived_tip_reference_pair(core, &hints),
-    )?;
+    let plan = prelude.begin_scheduled(&mut context, core, ref_frame_idx, reference)?;
+    for band in 0..plan.len() {
+        plan.project(&context, band, |slot, band| {
+            reference.ref_motion_fields.get(slot)?.as_ref()?.band(band)
+        })?;
+    }
     Ok(Some(Arc::new(context)))
 }
 
