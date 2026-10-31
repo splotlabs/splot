@@ -5,7 +5,10 @@
 
 use std::collections::HashMap;
 
+use std::sync::Arc;
+
 use super::{Bits, Lambda, RdCost};
+use crate::hme::FrameMotion;
 use crate::preset::PresetParams;
 use crate::tile_writer::{LeafChoice, Partition, PartitionTree, TileWriterError};
 
@@ -43,6 +46,8 @@ pub(crate) trait PartitionSearch {
     fn key(&self, node: Self::Node) -> u64;
     /// Luma `(log2 width, log2 height)` of `node`.
     fn block_log2(&self, node: Self::Node) -> Result<(u32, u32), Self::Error>;
+    /// The luma `(left, top)` sample of `node`.
+    fn origin(&self, node: Self::Node) -> (usize, usize);
     /// Codes `node` as a leaf into the live state; returns its cost and decision.
     fn evaluate_leaf(&mut self, node: Self::Node) -> Result<(RdCost, LeafChoice), Self::Error>;
     /// Codes `node` as a leaf with `choice` into the live state; returns its cost.
@@ -92,13 +97,82 @@ pub(crate) trait PartitionSearch {
 ///
 /// # Errors
 /// Returns the coder's errors.
+#[cfg(test)]
 pub(crate) fn search_partition<S: PartitionSearch>(
     coder: &mut S,
     node: S::Node,
     preset: &PresetParams,
     lambda: Lambda,
 ) -> Result<(PartitionTree, RdCost), S::Error> {
-    search(coder, node, preset, lambda, &mut Memo::new(), true)
+    search_guided(coder, node, preset, lambda, None)
+}
+
+/// [`search_partition`] limited to the partitions `levels` allows, when
+/// given.
+///
+/// # Errors
+/// Returns the coder's errors.
+pub(crate) fn search_guided<S: PartitionSearch>(
+    coder: &mut S,
+    node: S::Node,
+    preset: &PresetParams,
+    lambda: Lambda,
+    levels: Option<&Levels>,
+) -> Result<(PartitionTree, RdCost), S::Error> {
+    let mut memo = Memo::new();
+    search(coder, node, preset, lambda, (&mut memo, levels), true)
+}
+
+/// The partition levels of a first pass (PD0) over a superblock: each 8x8
+/// luma cell holds twice the log2 side of the square that covers it, and a
+/// guided search tries a block of `log2 width + log2 height` level `l` only
+/// when `l` is within `window` of the levels of its cells, and splits it only
+/// while a deeper block can be.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Levels {
+    /// The luma sample of cell 0.
+    pub(crate) origin: (usize, usize),
+    /// Cells per row.
+    pub(crate) stride: usize,
+    /// One level per cell, row-major.
+    pub(crate) cells: Vec<u8>,
+    /// The binary partition levels tried around the cell levels.
+    pub(crate) window: u8,
+}
+
+impl Levels {
+    /// Whether a block at `origin` of luma log2 size `(w, h)` may code
+    /// `NONE` (`children` is `None`), or a split whose largest child has
+    /// level `children`; a block over no cell may code any.
+    fn allows(&self, (x, y): (usize, usize), (w, h): (u32, u32), children: Option<u8>) -> bool {
+        let (Some(left), Some(top)) = (x.checked_sub(self.origin.0), y.checked_sub(self.origin.1))
+        else {
+            return true;
+        };
+        let rows = self.cells.len() / self.stride.max(1);
+        let (cols, rows) = (
+            (left >> 3)..((left + (1 << w)).div_ceil(8)).min(self.stride),
+            (top >> 3)..((top + (1 << h)).div_ceil(8)).min(rows),
+        );
+        let mut range: Option<(u8, u8)> = None;
+        for row in rows {
+            for col in cols.clone() {
+                let level = self.cells[row * self.stride + col];
+                range =
+                    Some(range.map_or((level, level), |(lo, hi)| (lo.min(level), hi.max(level))));
+            }
+        }
+        let Some((lo, hi)) = range else {
+            return true;
+        };
+        let level = (w + h) as u8;
+        match children {
+            None => {
+                level <= hi.saturating_add(self.window) && level.saturating_add(self.window) >= lo
+            }
+            Some(child) => child.saturating_add(self.window) >= lo,
+        }
+    }
 }
 
 /// The tree each searched node chose, by node key and extended-shape mode.
@@ -109,7 +183,7 @@ fn search<S: PartitionSearch>(
     node: S::Node,
     preset: &PresetParams,
     lambda: Lambda,
-    memo: &mut Memo<S::Node>,
+    (memo, levels): (&mut Memo<S::Node>, Option<&Levels>),
     extended: bool,
 ) -> Result<(PartitionTree, RdCost), S::Error> {
     if !coder.in_frame(node) {
@@ -125,9 +199,9 @@ fn search<S: PartitionSearch>(
         return Ok((tree, cost));
     }
     if let Some((luma_root, chroma_root)) = coder.sdp_roots(node) {
-        let (luma, luma_cost) = search(coder, luma_root, preset, lambda, memo, extended)?;
+        let (luma, luma_cost) = search(coder, luma_root, preset, lambda, (memo, levels), extended)?;
         coder.follow_luma(Some((luma_root, &luma)))?;
-        let chroma = search(coder, chroma_root, preset, lambda, memo, extended);
+        let chroma = search(coder, chroma_root, preset, lambda, (memo, levels), extended);
         coder.follow_luma(None)?;
         let (chroma, chroma_cost) = chroma?;
         let tree = PartitionTree::Sdp {
@@ -137,7 +211,31 @@ fn search<S: PartitionSearch>(
         memo.entry(key).or_default().push((node, tree.clone()));
         return Ok((tree, luma_cost + chroma_cost));
     }
-    let candidates = candidates(coder, node, preset, extended)?;
+    let mut candidates = candidates(coder, node, preset, extended)?;
+    if let Some(levels) = levels {
+        let (origin, size) = (coder.origin(node), coder.block_log2(node)?);
+        let mut allowed = Vec::with_capacity(candidates.len());
+        for (partition, children) in &candidates {
+            let mut largest = None;
+            for &child in children {
+                let (w, h) = coder.block_log2(child)?;
+                largest = largest.max(Some((w + h) as u8));
+            }
+            allowed.push(levels.allows(
+                origin,
+                size,
+                largest.filter(|_| *partition != Partition::None),
+            ));
+        }
+        let none_only = !allowed.contains(&true);
+        let mut allowed = allowed.into_iter();
+        candidates.retain(|&(partition, _)| {
+            allowed.next().unwrap_or(false) || none_only && partition == Partition::None
+        });
+        if candidates.is_empty() {
+            candidates = self::candidates(coder, node, preset, extended)?;
+        }
+    }
     let start = if candidates.len() > 1 {
         Some(coder.save(node, None)?)
     } else {
@@ -173,7 +271,8 @@ fn search<S: PartitionSearch>(
             let mut cost = RdCost::default();
             for &child in children {
                 let nested = extended && extended_shape(*partition).is_none();
-                let (tree, child_cost) = search(coder, child, preset, lambda, memo, nested)?;
+                let (tree, child_cost) =
+                    search(coder, child, preset, lambda, (memo, levels), nested)?;
                 trees.push(tree);
                 cost = cost + child_cost;
             }
@@ -248,6 +347,88 @@ fn recode<S: PartitionSearch>(
     };
     cost.rate += rate;
     Ok(cost)
+}
+
+/// The first-pass (PD0) partition levels of the square superblock `(left,
+/// top, side)` from the lookahead motion `fields` alone: each square of side
+/// 64 down to 8 costs its least open-loop SAD over the references plus
+/// `preset.pd0_leaf_bits` at the SAD-domain `lambda` (scaled to 8-bit SAD by
+/// `depth` bits), and splits when its four quadrants cost less. `None` when
+/// a reference lacks motion for a square.
+pub(crate) fn first_pass_levels(
+    fields: &[Option<Arc<FrameMotion>>],
+    (left, top, side): (usize, usize, usize),
+    (lambda, depth): (Lambda, u32),
+    preset: &PresetParams,
+) -> Option<Levels> {
+    let fields: Vec<&FrameMotion> = fields.iter().flatten().map(AsRef::as_ref).collect();
+    if fields.is_empty() {
+        return None;
+    }
+    let leaf_cost =
+        (u64::from(preset.pd0_leaf_bits) * lambda.sse_per_bit_q16().isqrt()) >> (8 + depth);
+    let stride = side / 8;
+    let mut levels = Levels {
+        origin: (left, top),
+        stride,
+        cells: vec![0; stride * stride],
+        window: preset.pd_window,
+    };
+    let quarter = side.min(64);
+    for y in (top..top + side).step_by(quarter) {
+        for x in (left..left + side).step_by(quarter) {
+            first_pass_square(&fields, (x, y, quarter), leaf_cost, &mut levels)?;
+        }
+    }
+    Some(levels)
+}
+
+/// The first-pass cost of the square `(x, y, s)` and its best subdivision
+/// into squares down to 8, whose levels it writes into `levels` (a leaf
+/// overwrites what its quadrants wrote); `None` when a reference lacks
+/// motion for a square.
+fn first_pass_square(
+    fields: &[&FrameMotion],
+    (x, y, s): (usize, usize, usize),
+    leaf_cost: u64,
+    levels: &mut Levels,
+) -> Option<u64> {
+    let size = s.ilog2() as usize - 3;
+    let mut sad = u64::MAX;
+    for field in fields {
+        let (stride, blocks) = field.blocks(size);
+        let found = blocks
+            .get((y / s) * stride + x / s)
+            .filter(|_| x / s < stride)?;
+        if found.sad != u32::MAX {
+            sad = sad.min(u64::from(found.sad));
+        }
+    }
+    let leaf = sad.checked_add(leaf_cost);
+    if s > 8 {
+        let half = s / 2;
+        let mut split = 0u64;
+        for (dx, dy) in [(0, 0), (half, 0), (0, half), (half, half)] {
+            split = split.saturating_add(first_pass_square(
+                fields,
+                (x + dx, y + dy, half),
+                leaf_cost,
+                levels,
+            )?);
+        }
+        if leaf.is_none_or(|leaf| split < leaf) {
+            return Some(split);
+        }
+    }
+    let leaf = leaf?;
+    let (origin, stride) = (levels.origin, levels.stride);
+    let level = 2 * s.ilog2() as u8;
+    for row in (y - origin.1) / 8..(y - origin.1 + s) / 8 {
+        for col in (x - origin.0) / 8..(x - origin.0 + s) / 8 {
+            levels.cells[row * stride + col] = level;
+        }
+    }
+    Some(leaf)
 }
 
 type Candidates<N> = Vec<(Partition, Vec<N>)>;

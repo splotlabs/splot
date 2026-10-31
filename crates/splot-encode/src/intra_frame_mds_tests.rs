@@ -5,14 +5,16 @@
 //! shortlist.
 
 use super::*;
-use crate::mode_decision::{MDS0_PRUNED, MDS1_PRUNED};
+use crate::mode_decision::{MDS0_PRUNED, MDS1_PRUNED, PD0_PASSES};
 use crate::preset::PresetParams;
 
-/// Preset 6 with MDS0 `budgets` and an inter-frame intra shortlist of `intra`.
+/// Preset 6 searched in one pass, with MDS0 `budgets` and an inter-frame
+/// intra shortlist of `intra`.
 fn staged(budgets: [u8; 3], intra: u8) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         mds0_budgets: budgets,
         mds_inter_frame_intra: intra,
+        pd_window: u8::MAX,
         ..*Preset::new(6).unwrap().params()
     }))
 }
@@ -139,6 +141,7 @@ const FULL_GOLDEN: (usize, u64) = (2963, 0x19dd_6acc_4a12_1993);
 fn full_trials_255_code_the_old_full_trial_stream() {
     let preset = Box::leak(Box::new(PresetParams {
         full_trials: u8::MAX,
+        pd_window: u8::MAX,
         ..*Preset::new(6).unwrap().params()
     }));
     MDS1_PRUNED.set(0);
@@ -152,6 +155,56 @@ fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
     })
+}
+
+/// A noisy two-tile 10-bit stream of 9 frames at preset 6 through the
+/// encoder, whose lookahead gives the open-loop motion, on `threads`
+/// threads: the units, the recon and the first-pass superblocks (counted on
+/// one thread).
+fn two_pass_stream(preset: u8, threads: usize) -> (Vec<u8>, Vec<u8>, usize) {
+    let mut config = config(136, 72, BitDepth::Ten, preset, 200);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    PD0_PASSES.set(0);
+    let frames = (0..9).map(|index| super::compound::noisy_panning_frame(&config, index));
+    let (units, recon) = super::encode_frames(&config, frames);
+    (units.concat(), recon, PD0_PASSES.get())
+}
+
+/// The two-pass partition decision of preset 6 takes first-pass levels from
+/// the lookahead motion in inter-frame superblocks; the stream decodes to
+/// the encoder recon and codes the same bytes on 1, 2 and 8 threads.
+#[test]
+fn two_pass_streams_decode_on_any_thread_count() {
+    assert!(Preset::new(6).unwrap().params().pd_window != u8::MAX);
+    let (one, expected, passes) = two_pass_stream(6, 1);
+    assert!(passes > 0, "no first pass ran");
+    assert_same_samples(&decode(&one), &expected, "two-pass partition");
+    for threads in [2, 8] {
+        assert!(two_pass_stream(6, threads).0 == one, "{threads} threads");
+    }
+}
+
+/// AVM decodes the two-pass stream, whose first pass ran, like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_two_pass_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, _, passes) = two_pass_stream(6, 1);
+    assert!(passes > 0);
+    let avm = avm_decode(
+        &avmdec,
+        std::slice::from_ref(&units),
+        (136, 72),
+        BitDepth::Ten,
+        "two-pass",
+    );
+    assert!(avm == decode(&units), "AVM output differs");
 }
 
 /// AVM decodes the staged stream like splot.

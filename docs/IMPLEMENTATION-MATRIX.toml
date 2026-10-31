@@ -5257,7 +5257,7 @@ module = "crates/splot-encode/src/rd/partition.rs"
 change_id = "enc-ext-partitions"
 owner = "encoder"
 risk = "medium"
-notes = "PresetParams::ext_partitions sets enable_ext_partitions (1) and enable_uneven_4way_partitions (2); the encoder_syntax facade supplies the allowed shapes and their children. The RD partition search tries HORZ_3/VERT_3 only when the NONE cost is within ext_three_way_margin/256 of the best cost so far, and HORZ_4A/4B/VERT_4A/4B only when the three-way shape of the same axis is within ext_four_way_margin/256 (255 tries every shape). The children of an extended shape search without extended shapes. Implemented, off in every preset (level 0, presets write the old stream byte-identically): the measured gain per CPU is below the preset ladder (p6 margin 26: -0.26%/-0.43% at 1.20x; p0 level 2 margin 26: -0.47% at 1.69x on park_joy; full search at p0: -1.52% at 5.6x)."
+notes = "PresetParams::ext_partitions sets enable_ext_partitions (1) and enable_uneven_4way_partitions (2); the encoder_syntax facade supplies the allowed shapes and their children. The RD partition search tries HORZ_3/VERT_3 only when the NONE cost is within ext_three_way_margin/256 of the best cost so far, and HORZ_4A/4B/VERT_4A/4B only when the three-way shape of the same axis is within ext_four_way_margin/256 (255 tries every shape). The children of an extended shape search without extended shapes. Implemented, off in every preset (level 0, presets write the old stream byte-identically): the measured gain per CPU is below the preset ladder (p6 margin 26: -0.26%/-0.43% at 1.20x; p0 level 2 margin 26: -0.47% at 1.69x on park_joy; full search at p0: -1.52% at 5.6x). p0 placement declined (2026-10-31): ext_partitions 1 with ext_three_way_margin 255 measured park_joy f10 p0 -1.04% at 3.137x CPU against main 336b8b726, while the ladder near p0 buys about 0.55% per 10% CPU (3.1x would need about -11%)."
 
 [feature.status]
 mapped = "done"
@@ -6808,6 +6808,38 @@ perf = "partial"
 [feature.proof]
 tests = ["crates/splot-encode/src/rd/stages.rs::tests::budgets_keep_the_cheapest_of_each_class_and_ties_keep_the_earlier", "crates/splot-encode/src/rd/stages.rs::tests::open_limits_keep_everything", "crates/splot-encode/src/intra_frame_mds_tests.rs::staged_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_mds_tests.rs::open_limits_drop_no_candidate", "crates/splot-encode/src/intra_frame_mds_tests.rs::open_budgets_code_the_unstaged_stream", "crates/splot-encode/src/intra_frame_mds_tests.rs::mds1_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_mds_tests.rs::full_trials_255_code_the_old_full_trial_stream", "crates/splot-encode/src/intra_frame_mds_tests.rs::avm_decodes_staged_streams_like_splot", "crates/splot-encode/src/intra_frame_compound_tests.rs::batched_near_near_vectors_match_the_decoder", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
 commands = ["cargo test -p splot-encode mds --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_staged --locked -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-TWO-PASS-PARTITION"
+name = "Encoder two-pass partition decision"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/rd/partition.rs"
+change_id = "enc-pd"
+owner = "encoder"
+risk = "medium"
+notes = "B4 part 1 (2026-10-31). First pass (PD0) from estimates only: an inter-frame superblock with lookahead motion costs each square of side 64 down to 8 its least open-loop SAD over the references (the hme fields of B1) plus PresetParams::pd0_leaf_bits at the SAD-domain lambda, splits a square when its quadrants cost less, and records the level (log2 width + log2 height) of each 8x8 cell (rd::partition::first_pass_levels). The regular search (rd::partition::search_guided, Levels) then codes a block only within pd_window binary levels of the levels of its cells and splits it only while a deeper block can be; a block outside every window codes as a leaf. Intra frames, superblocks without lookahead motion and pd_window 255 search every partition. p6 takes window 3, p7-p10 window 2, all 8 bits; p0-p5 code the old stream. Measured f10 against main 336b8b726 (2026-10-31): p6 window 3 park_joy -0.02% at 0.957x CPU, paris +0.67% at 0.79x, niklas +0.11% at 0.897x; window 2 measured park_joy -0.79% at 0.914x, paris +0.15% at 0.766x, niklas +1.19% at 0.852x and was declined for niklas; park_joy p7 -0.52% at 0.932x, p8 +0.71% at 0.901x, p9 +1.44% at 0.891x, p10 +0.18% at 0.903x; niklas p10 +1.25% at 0.746x, and 60 niklas frames at p10, qp 140, 1 thread take 165.6 s instead of 231.7 s (0.36 fps instead of 0.26). B4 target missed (2026-10-31): p6 about -12% CPU instead of -35% (at BD-rate up to paris +0.67%), p10 0.36 fps instead of 30 (niklas p10 +1.25%). A first pass with trials at a lighter row (the earlier design) measured p6 +1.42% at 0.74x and was dropped; 24 bits per square measured paris +1.66% at 0.68x, window 1 park_joy +1.97% at 0.65x. Not done: the B4 targets (p6 -35% CPU at <= +0.5%; p10 30 fps on niklas 720p at 1 thread), NSQ gating from quadrant energy, an estimate-only pass for intra frames, and the ext_partitions placement at p0."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "partial"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/rd/partition_tests.rs::levels_limit_the_searched_blocks", "crates/splot-encode/src/rd/partition_tests.rs::first_pass_levels_split_where_the_quadrants_cost_less", "crates/splot-encode/src/rd/partition_tests.rs::a_forced_partition_outside_the_window_still_codes", "crates/splot-encode/src/intra_frame_mds_tests.rs::two_pass_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_mds_tests.rs::avm_decodes_two_pass_streams_like_splot", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
+commands = ["cargo test -p splot-encode two_pass --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_two_pass --locked -- --ignored"]
 fixtures = []
 diagnostics = []
 

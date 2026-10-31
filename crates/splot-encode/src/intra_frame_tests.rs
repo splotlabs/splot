@@ -13,8 +13,10 @@ use splot_decode::encoder_syntax::LeafBlock;
 use crate::config::{RateControlMode, TileLayout};
 use crate::encoder::Encoder;
 use crate::gop::{GopFrame, GopStep};
+use crate::mode_decision::TrialCoder;
 use crate::preset::{PRESETS, Preset, PresetParams, TcqFrames};
 use crate::rate_control::FrameType;
+use crate::rd::partition::search_partition;
 use crate::test_support::{
     assert_same_samples, avm_decode, avm_decoder, decode, raw_bytes, refs_for,
 };
