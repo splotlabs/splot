@@ -25,6 +25,7 @@ pub mod frame;
 mod global_motion;
 mod gop;
 mod grain;
+mod hme;
 mod intra_frame;
 mod intrabc;
 pub mod ivf;

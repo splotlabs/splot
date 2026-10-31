@@ -443,6 +443,10 @@ impl FrameCoder for Recording {
     fn set_block_importance(&mut self, importance: crate::tpl::BlockImportance) {
         self.coder.set_block_importance(importance);
     }
+
+    fn pool(&self) -> Option<splot_parallel::WorkerPool> {
+        self.coder.pool()
+    }
 }
 
 /// Codes `frames` frames through the [`Encoder`]; returns the temporal units

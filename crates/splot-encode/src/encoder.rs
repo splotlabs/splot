@@ -88,6 +88,10 @@ pub(crate) trait FrameCoder {
     /// Receives the global motion models of the next frames to code, which
     /// replace the previous ones.
     fn set_global_motion(&mut self, _models: crate::global_motion::GlobalModels) {}
+    /// The worker pool the coder runs on, which the lookahead shares.
+    fn pool(&self) -> Option<splot_parallel::WorkerPool> {
+        None
+    }
 }
 
 /// Callback that receives the statistics of every coded frame.
@@ -182,7 +186,7 @@ impl Encoder {
             stats_sink: None,
             pending: VecDeque::new(),
             planner,
-            lookahead: Lookahead::new(&config.coded()),
+            lookahead: Lookahead::new(&config.coded(), &params, coder.pool()),
             lookahead_frames: usize::from(params.lookahead_frames),
             window: Vec::new(),
             tpl_delta_q: params.tpl_delta_q,

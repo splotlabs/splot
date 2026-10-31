@@ -23,6 +23,7 @@ mod forward_transform;
 pub(crate) mod gdf;
 mod hash;
 mod ist;
+pub(crate) mod motion;
 mod quantize;
 pub(crate) mod rdoq;
 pub(crate) mod tcq;
@@ -284,6 +285,29 @@ pub(crate) trait EncoderKernels: Sync {
         noise: u32,
         out: &mut [u64],
     );
+    /// The 8x8 SADs of a block grid at four horizontal positions
+    /// ([`motion::sad8x8_x4_simd`]).
+    fn sad8x8_x4(
+        &self,
+        src: (&[u8], usize),
+        refs: (&[u8], usize),
+        cols: usize,
+        out: &mut [[u32; motion::WAYS]],
+    );
+
+    /// The 2x2 sums of a grid of four-position SADs ([`motion::sad_quads_simd`]).
+    fn sad_quads(
+        &self,
+        input: &[[u32; motion::WAYS]],
+        cols: usize,
+        out: &mut [[u32; motion::WAYS]],
+    );
+
+    /// Keeps each block's best of four positions ([`motion::keep_best_simd`]).
+    fn keep_best(&self, sads: &[[u32; motion::WAYS]], mv: [i16; 2], best: &mut [motion::Motion]);
+
+    /// One row of a plane halved by 2x2 means ([`motion::downscale_row_simd`]).
+    fn downscale_row(&self, top: &[u8], bottom: &[u8], out: &mut [u8]);
 }
 
 /// The scalar reference kernels.
@@ -441,6 +465,33 @@ impl EncoderKernels for ScalarKernels {
     ) {
         tpl::propagate_scalar(intra, best, received, noise, out);
     }
+
+    fn sad8x8_x4(
+        &self,
+        src: (&[u8], usize),
+        refs: (&[u8], usize),
+        cols: usize,
+        out: &mut [[u32; motion::WAYS]],
+    ) {
+        motion::sad8x8_x4_scalar(src, refs, cols, out);
+    }
+
+    fn sad_quads(
+        &self,
+        input: &[[u32; motion::WAYS]],
+        cols: usize,
+        out: &mut [[u32; motion::WAYS]],
+    ) {
+        motion::sad_quads_scalar(input, cols, out);
+    }
+
+    fn keep_best(&self, sads: &[[u32; motion::WAYS]], mv: [i16; 2], best: &mut [motion::Motion]) {
+        motion::keep_best_scalar(sads, mv, best);
+    }
+
+    fn downscale_row(&self, top: &[u8], bottom: &[u8], out: &mut [u8]) {
+        motion::downscale_row_scalar(top, bottom, out);
+    }
 }
 
 impl EncoderKernels for SimdKernels {
@@ -584,5 +635,32 @@ impl EncoderKernels for SimdKernels {
         out: &mut [u64],
     ) {
         tpl::propagate_simd(intra, best, received, noise, out);
+    }
+
+    fn sad8x8_x4(
+        &self,
+        src: (&[u8], usize),
+        refs: (&[u8], usize),
+        cols: usize,
+        out: &mut [[u32; motion::WAYS]],
+    ) {
+        motion::sad8x8_x4_simd(src, refs, cols, out);
+    }
+
+    fn sad_quads(
+        &self,
+        input: &[[u32; motion::WAYS]],
+        cols: usize,
+        out: &mut [[u32; motion::WAYS]],
+    ) {
+        motion::sad_quads_simd(input, cols, out);
+    }
+
+    fn keep_best(&self, sads: &[[u32; motion::WAYS]], mv: [i16; 2], best: &mut [motion::Motion]) {
+        motion::keep_best_simd(sads, mv, best);
+    }
+
+    fn downscale_row(&self, top: &[u8], bottom: &[u8], out: &mut [u8]) {
+        motion::downscale_row_simd(top, bottom, out);
     }
 }
