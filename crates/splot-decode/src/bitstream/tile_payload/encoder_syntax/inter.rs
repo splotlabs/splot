@@ -131,24 +131,75 @@ impl EncoderReferences {
         tiles: &[TileEnd],
     ) -> Result<()> {
         let cdfs = Arc::new(saved_cdfs(&self.sequence, core, initial, tiles)?);
+        let motion = tiles.iter().map(|tile| tile.motion.as_slice());
+        let motion = self.motion_field(core, frame.bit_depth(), motion)?;
+        self.store(core, frame, cdfs, motion)
+    }
+
+    /// These references after the frame `core`, still being coded, as if it
+    /// were stored: `frame` stands for its filtered reconstruction, the CDFs
+    /// of `initial` (its [`Self::frame_start`]) for its saved CDFs, and
+    /// `motion`, the records its single tile published so far, for its motion
+    /// field. A frame that predicts from them reads approximate data, so its
+    /// decisions must not depend on what `frame` and `motion` do not settle.
+    ///
+    /// # Errors
+    /// As [`Self::update`].
+    pub fn with_provisional(
+        &self,
+        core: &FrameHeaderCore,
+        frame: DecodedFrame<u16>,
+        initial: &FrameStart,
+        motion: &super::TileMotion,
+    ) -> Result<Self> {
+        let frames: Vec<Option<SettledFrame>> = self
+            .frames
+            .iter()
+            .map(|slot| {
+                slot.as_ref()
+                    .map(|(frame, cdfs, field)| (frame.share(), Arc::clone(cdfs), field.clone()))
+            })
+            .collect();
+        let buffer = self.buffer.fork();
+        let mut refs = Self {
+            sequence: self.sequence.clone(),
+            state: settled_state(&buffer, &frames)?,
+            buffer,
+            frames,
+        };
+        let field =
+            refs.motion_field(core, frame.bit_depth(), core::iter::once(motion.0.as_slice()))?;
+        refs.store(core, frame, Arc::clone(&initial.cdfs), field)?;
+        Ok(refs)
+    }
+
+    /// The motion field of the frame `core` from the records of its tiles; none
+    /// when it refreshes no slot or the sequence stores no motion.
+    fn motion_field<'a>(
+        &self,
+        core: &FrameHeaderCore,
+        bit_depth: splot_recon::BitDepth,
+        records: impl IntoIterator<Item = &'a [crate::prediction::inter::TemporalMotionBlock]>,
+    ) -> Result<Option<MotionFieldHandle>> {
         let stores_motion = core.refresh_frame_flags.is_some_and(|flags| flags != 0)
             && self
                 .sequence
                 .inter
                 .as_ref()
                 .is_some_and(|inter| inter.enable_ref_frame_mvs);
-        let motion = stores_motion
-            .then(|| {
-                encoder_motion_field(
-                    &self.sequence,
-                    core,
-                    &self.state,
-                    frame.bit_depth(),
-                    tiles.iter().map(|tile| tile.motion.as_slice()),
-                )
-            })
+        stores_motion
+            .then(|| encoder_motion_field(&self.sequence, core, &self.state, bit_depth, records))
             .transpose()
-            .map_err(rule("motion field"))?;
+            .map_err(rule("motion field"))
+    }
+
+    fn store(
+        &mut self,
+        core: &FrameHeaderCore,
+        frame: DecodedFrame<u16>,
+        cdfs: Arc<FrameCdfSubset>,
+        motion: Option<MotionFieldHandle>,
+    ) -> Result<()> {
         self.buffer.prepare_for_frame(core.obu_type, true);
         let update =
             frame_ref_update_from_core(core, ByteOffset::new(0), EmbeddedLayerId::from_bits(0))

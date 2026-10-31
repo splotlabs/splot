@@ -1039,6 +1039,58 @@ impl IntraTileSyntax {
         ))
     }
 
+    /// A copy of the reconstruction whose luma rows from `luma_rows` on (and
+    /// the chroma rows they cover) repeat the last row above them, and the
+    /// motion records published so far: a provisional reference that depends
+    /// on the first `luma_rows` rows alone.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] if the copy cannot be built.
+    pub fn provisional_frame(
+        &self,
+        luma_rows: usize,
+    ) -> Result<(DecodedFrame<u16>, super::TileMotion)> {
+        let source = &self.recon.workspace;
+        let mut copy = splot_recon::CurrentFrameWorkspace::new(source.info(), 0)
+            .map_err(rule("provisional frame"))?;
+        let sub_y = usize::from(chroma_subsampling(self.chroma).1);
+        let planes = [PlaneId::Y, PlaneId::U, PlaneId::V];
+        for (index, plane) in planes.into_iter().enumerate() {
+            let Ok(size) = source.plane(plane).map(|plane| plane.storage_size()) else {
+                continue;
+            };
+            let shift = if index == 0 { 0 } else { sub_y };
+            let kept = luma_rows.div_ceil(1 << shift).clamp(1, size.height());
+            let width = size.width();
+            let rect = splot_recon::PlaneRect::new(0, 0, width, kept)
+                .map_err(rule("provisional rect"))?;
+            let mut samples = Vec::with_capacity(width * size.height());
+            for row in source
+                .rect_rows(plane, rect)
+                .map_err(rule("provisional rows"))?
+            {
+                samples.extend_from_slice(row);
+            }
+            let last = samples.len() - width;
+            for _ in kept..size.height() {
+                samples.extend_from_within(last..last + width);
+            }
+            let whole = splot_recon::PlaneRect::new(0, 0, width, size.height())
+                .map_err(rule("provisional rect"))?;
+            copy.write_rect(plane, whole, &samples, width)
+                .map_err(rule("provisional rows"))?;
+        }
+        let motion = self
+            .inter
+            .as_ref()
+            .map(|inter| inter.tile.temporal_records())
+            .unwrap_or_default();
+        Ok((
+            copy.freeze().map_err(rule("provisional frame"))?,
+            super::TileMotion(motion),
+        ))
+    }
+
     fn reconstruct_with(
         &mut self,
         index: usize,

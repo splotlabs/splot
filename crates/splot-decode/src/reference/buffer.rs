@@ -163,6 +163,18 @@ impl RuntimeReferenceBuffer {
         self.slots.len()
     }
 
+    /// A copy whose updates leave this buffer as it is.
+    pub(crate) fn fork(&self) -> Self {
+        Self {
+            slots: self.slots.clone(),
+            lr_frame_filter_taps: self.lr_frame_filter_taps.clone(),
+            lr_frame_filter_spares: Vec::new(),
+            frame_counter: self.frame_counter,
+            started: self.started,
+            open_loop: self.open_loop.clone(),
+        }
+    }
+
     pub(crate) fn prepare_for_frame(&mut self, obu_type: ObuType, first_picture_in_tu: bool) {
         if first_picture_in_tu && (obu_type == ObuType::OpenLoopKey || is_regular_non_olk(obu_type))
         {
