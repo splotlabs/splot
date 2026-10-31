@@ -39,7 +39,7 @@ use crate::loop_filter::{CodedTile, FilteredFrame, FirstPass, FrameDecisions, fi
 use crate::mode_decision::two_pass_partition;
 use crate::motion_search::MotionSearch;
 use crate::palette::PaletteSearch;
-use crate::preset::{PresetParams, TcqFrames};
+use crate::preset::{CoeffLevel, FrameKind, PresetContext, PresetParams, ResolutionClass};
 use crate::rate_control::FrameType;
 use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, RowCaches, block_rate};
 use crate::rd::{Bits, Lambda, RdCost};
@@ -268,7 +268,7 @@ impl IntraFrameCoder {
                 interintra: preset.interintra,
                 bawp: preset.bawp,
                 parity_hiding: preset.parity_hiding,
-                tcq: preset.tcq != TcqFrames::Off,
+                tcq: preset.tcq.values().contains(&true),
                 film_grain: config.film_grain,
                 ..EncoderToolFlags::default()
             },
@@ -551,8 +551,13 @@ impl IntraFrameCoder {
             ..*plan
         };
         let qindex = u32::from(qp);
+        let context = PresetContext {
+            resolution: ResolutionClass::of(self.params.width, self.params.height),
+            frame: FrameKind::of(plan.frame_type, plan.layer, plan.refresh_frame_flags),
+            coeff: CoeffLevel::of(qindex),
+        };
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
-        tools.0.allow_tcq = self.preset.tcq.allows(plan.layer);
+        tools.0.allow_tcq = self.preset.tcq.at(context);
         #[cfg(test)]
         {
             tools.2.7 = self.global_motion;
@@ -663,6 +668,7 @@ impl IntraFrameCoder {
         let coded_tiles = map_tiles(self.pool.as_ref(), writers, |mut writer| {
             let mut coder = SourceResidualCoder::new(padded, qindex, bit_depth, preset, lambda);
             coder.intrabc = bv_search;
+            coder.context = context;
             let mut decisions = FrameDecisions::default();
             let mut intra = Vec::new();
             while let Some(root) = writer.next_superblock_root() {
@@ -1064,6 +1070,8 @@ pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) palette: PaletteSearch,
     /// The block hashes of the frame source, in a frame with IntraBC.
     pub(crate) intrabc: Option<&'a BvSearch>,
+    /// The context of the frame's [`crate::preset::Levels`] fields.
+    pub(crate) context: PresetContext,
 }
 
 impl<'a> SourceResidualCoder<'a> {
@@ -1096,6 +1104,7 @@ impl<'a> SourceResidualCoder<'a> {
             recon: tx_choice::ReconScratch::default(),
             palette: PaletteSearch::default(),
             intrabc: None,
+            context: PresetContext::default(),
         }
     }
 }

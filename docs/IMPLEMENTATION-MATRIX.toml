@@ -5382,10 +5382,10 @@ spec_sections = []
 sources = []
 crate = "splot-encode"
 module = "crates/splot-encode/src/preset.rs"
-change_id = "enc-ladder-p4"
+change_id = "enc-preset-levels"
 owner = "encoder"
 risk = "medium"
-notes = "Preset accepts 0..=10 (default 6) and maps to one column of the PRESETS table, one named line per PresetParams field. Every field is monotone from slow to fast. The same table generates PresetParams::set: Config::preset_overrides (CLI --preset-set FIELD=VALUE) sets any field by name after the preset and its screen-content switch; an unknown name, a value outside the field type, or a row outside the ranges of PresetParams::validate is a typed PresetError."
+notes = "Preset accepts 0..=10 (default 6) and maps to one column of the PRESETS table, one named line per PresetParams field. Every field is monotone from slow to fast. The same table generates PresetParams::set: Config::preset_overrides (CLI --preset-set FIELD=VALUE) sets any field by name after the preset and its screen-content switch; an unknown name, a value outside the field type, or a row outside the ranges of PresetParams::validate is a typed PresetError. B6 part 1 (2026-10-31): a field may be a Levels<T>, one value per PresetContext (frame kind key/base/mid/leaf x resolution class <=480p/<=1080p/>1080p by luma area x coefficient level low/normal/high from the frame qindex, split at 128 and 192), read with Levels::at; the frame coder builds the context of each frame. intra_modes (with the old mds_inter_frame_intra as its base, mid and leaf values), tcq (the old TcqFrames), tf_frames and tf_strength (the old tf_key_* and tf_base_* fields) are per frame kind, byte-identical; --preset-set takes one value or four (key, base, mid, leaf) for them."
 
 [feature.status]
 mapped = "done"
@@ -5400,7 +5400,7 @@ avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/preset.rs::tests", "crates/splot-encode/src/encoder.rs::tests::preset_overrides_change_the_stream", "crates/splot-encode/src/screen.rs::tests::the_encoder_enables_fsc_for_screen_content"]
+tests = ["crates/splot-encode/src/preset.rs::tests::contexts_classify_frames", "crates/splot-encode/src/preset.rs::tests", "crates/splot-encode/src/encoder.rs::tests::preset_overrides_change_the_stream", "crates/splot-encode/src/screen.rs::tests::the_encoder_enables_fsc_for_screen_content"]
 commands = ["cargo test -p splot-encode preset --locked"]
 fixtures = []
 diagnostics = []

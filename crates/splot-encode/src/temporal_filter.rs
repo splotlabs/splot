@@ -4,8 +4,9 @@
 //! Temporal filtering of key frames and hidden mini-GOP base frames before
 //! they are coded.
 //!
-//! A key frame takes up to the preset's `tf_key_frames` later neighbours and
-//! a base frame up to `tf_base_frames` neighbours on each side, nearest
+//! A key frame takes up to the preset's key-frame `tf_frames` later
+//! neighbours and a base frame up to its base-frame `tf_frames` neighbours
+//! on each side, nearest
 //! first, among the frames `sources` gives (the encoder gives the lookahead
 //! window before the next planned key frame). A frame whose noise is below
 //! [`CLEAN_NOISE`] takes one neighbour per side. The noise is the mean
@@ -25,7 +26,7 @@
 //! mean squared error that the vector's SAD implies. `distance` is 16 up to
 //! [`FREE_MV`] samples of vector length, then grows with it. `decay` grows
 //! with the noise, the square of the 8-bit-equivalent qindex and the
-//! preset's `tf_key_strength` or `tf_base_strength`, so errors below
+//! preset's `tf_strength` of the frame kind, so errors below
 //! `decay / 8 / distance` keep the full weight.
 //!
 //! The filtered frame replaces the source for coding only: statistics and the
