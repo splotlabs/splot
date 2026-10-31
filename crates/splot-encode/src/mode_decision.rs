@@ -26,6 +26,7 @@ use crate::motion_search::MotionSearch;
 use crate::preset::PresetParams;
 use crate::rd::coeff_rate::RateSink;
 use crate::rd::partition::PartitionSearch;
+use crate::rd::stages::{CandidateClass, StageLimits};
 use crate::rd::{Bits, Lambda, RdCost};
 use crate::tile_writer::{
     CompoundMode, CompoundModes, CompoundType, INTRA_MODES, InterMode, InterModes, InterPrediction,
@@ -67,6 +68,11 @@ thread_local! {
     pub(crate) static FORCE_INTERINTRA: core::cell::Cell<bool> =
         const { core::cell::Cell::new(false) };
 }
+#[cfg(test)]
+thread_local! {
+    /// Inter candidates that MDS0 dropped on this thread.
+    pub(crate) static MDS0_PRUNED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
 /// The compound shortlist prices the syntax of this many times as many of
 /// its lowest-SATD candidates as it keeps.
 const PRICED_COMPOUND_SHARE: usize = 2;
@@ -91,6 +97,9 @@ pub(crate) struct TrialCoder<'a, 'b> {
     /// chroma tree is searched.
     luma: HashMap<u64, Partition>,
     compound: compound_search::CompoundScratch,
+    /// The luma prediction SATD and mode and filter rate of the inter
+    /// candidates of the current leaf whose search measured them.
+    scored: Vec<(InterPrediction, u64, Bits)>,
 }
 
 impl<'a, 'b> TrialCoder<'a, 'b> {
@@ -109,6 +118,7 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             motion,
             luma: HashMap::new(),
             compound: compound_search::CompoundScratch::default(),
+            scored: Vec::new(),
         }
     }
 
@@ -176,11 +186,17 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         Ok(())
     }
 
-    /// The `preset.intra_modes` entries of `ranked` with the lowest SATD, best
-    /// first; ties keep candidate order, so the ranking is deterministic.
+    /// The entries of `ranked` with the lowest SATD, best first: as many as
+    /// `preset.intra_modes` in an intra frame and `mds_inter_frame_intra` in
+    /// an inter frame; ties keep candidate order, so the ranking is
+    /// deterministic.
     fn shortlist(&self, mut ranked: Vec<(u64, IntraModes)>) -> Vec<LeafChoice> {
         ranked.sort_by_key(|&(satd, _)| satd);
-        ranked.truncate(usize::from(self.preset.intra_modes.max(1)));
+        let budget = match self.motion {
+            Some(_) => self.preset.mds_inter_frame_intra,
+            None => self.preset.intra_modes,
+        };
+        ranked.truncate(usize::from(budget.max(1)));
         ranked
             .into_iter()
             .map(|(_, modes)| LeafChoice::largest(modes))
@@ -374,6 +390,7 @@ impl TrialCoder<'_, '_> {
     /// listed are dropped); then, per distinct skip-mode vector pair, the
     /// skip-DRL index of the lowest exact price, and the compound shortlist.
     fn inter_candidates(&mut self, leaf: &LeafBlock) -> Result<Vec<LeafChoice>> {
+        self.scored.clear();
         let mut out: Vec<((usize, MotionVector), LeafChoice)> = Vec::new();
         let mut push = |mv: MotionVector, modes: InterModes| {
             let key = (modes.ref_frame, mv);
@@ -802,13 +819,21 @@ impl TrialCoder<'_, '_> {
                 }
             }
             for trial in trials {
-                let Some(InterPrediction::Compound(trial)) = codable(snap_prediction(
-                    self.syntax,
-                    leaf,
-                    InterPrediction::Compound(trial),
-                ))?
-                else {
-                    continue;
+                let trial = if matches!(
+                    trial.mode,
+                    CompoundMode::NearNear | CompoundMode::GlobalGlobal
+                ) {
+                    trial
+                } else {
+                    let Some(InterPrediction::Compound(trial)) = codable(snap_prediction(
+                        self.syntax,
+                        leaf,
+                        InterPrediction::Compound(trial),
+                    ))?
+                    else {
+                        continue;
+                    };
+                    trial
                 };
                 let Some(mvs) = codable(
                     self.syntax
@@ -930,7 +955,7 @@ impl TrialCoder<'_, '_> {
         if variants.len() == 1 {
             return Ok(trial);
         }
-        let mut best = (u64::MAX, trial);
+        let mut best = (u64::MAX, trial, 0, Bits::default());
         for variant in variants {
             let prediction = InterPrediction::Compound(variant);
             let Some(blocks) = codable(
@@ -941,6 +966,67 @@ impl TrialCoder<'_, '_> {
             else {
                 continue;
             };
+            let mut satd = 0;
+            for (tx, samples) in &blocks {
+                satd += self.coder.source.satd(tx, samples)?;
+            }
+            let mut sink = RateSink::adapting();
+            self.syntax.price_inter_modes(leaf, prediction, &mut sink)?;
+            self.syntax
+                .price_interp_filter(leaf, prediction, &mut sink)?;
+            let cost = satd + motion.bits_cost(sink.bits);
+            let cost = if variant.refinemv {
+                cost.saturating_mul(100) / REFINEMV_MARGIN_PCT
+            } else {
+                cost
+            };
+            if cost < best.0 {
+                best = (cost, variant, satd, sink.bits);
+            }
+        }
+        if best.0 < u64::MAX {
+            self.scored
+                .push((InterPrediction::Compound(best.1), best.2, best.3));
+        }
+        Ok(best.1)
+    }
+
+    /// The `candidates` of `leaf` that survive the preset's MDS0 limits by
+    /// luma prediction SATD plus mode rate, in order; intra, IntraBC and
+    /// palette candidates always survive. The rate counts the SATD tile
+    /// side times, as the SATD kernel's Hadamard tiles scale a sample error
+    /// by their side.
+    fn mds0(&mut self, leaf: &LeafBlock, candidates: Vec<LeafChoice>) -> Result<Vec<LeafChoice>> {
+        let limits = StageLimits {
+            budgets: self.preset.mds0_budgets,
+        };
+        let Some(motion) = self.motion.filter(|_| !limits.keeps_all()) else {
+            return Ok(candidates);
+        };
+        let (w, h) = leaf.dimensions()?;
+        let rate_scale = if w.min(h) >= 8 { 8 } else { 4 };
+        let mut scored = Vec::with_capacity(candidates.len());
+        for choice in &candidates {
+            let Some(prediction) = choice.inter else {
+                scored.push(None);
+                continue;
+            };
+            if let Some(&(_, satd, bits)) = self.scored.iter().find(|(p, ..)| *p == prediction) {
+                scored.push(Some((
+                    candidate_class(prediction),
+                    satd + rate_scale * motion.bits_cost(bits),
+                )));
+                continue;
+            }
+            let Some(blocks) = codable(
+                self.syntax
+                    .luma_prediction(leaf, prediction)
+                    .map_err(Into::into),
+            )?
+            else {
+                scored.push(None);
+                continue;
+            };
             let mut cost = 0;
             for (tx, samples) in &blocks {
                 cost += self.coder.source.satd(tx, samples)?;
@@ -949,17 +1035,19 @@ impl TrialCoder<'_, '_> {
             self.syntax.price_inter_modes(leaf, prediction, &mut sink)?;
             self.syntax
                 .price_interp_filter(leaf, prediction, &mut sink)?;
-            cost += motion.bits_cost(sink.bits);
-            let cost = if variant.refinemv {
-                cost.saturating_mul(100) / REFINEMV_MARGIN_PCT
-            } else {
-                cost
-            };
-            if cost < best.0 {
-                best = (cost, variant);
-            }
+            scored.push(Some((
+                candidate_class(prediction),
+                cost + rate_scale * motion.bits_cost(sink.bits),
+            )));
         }
-        Ok(best.1)
+        let keep = limits.survivors(&scored);
+        #[cfg(test)]
+        MDS0_PRUNED.set(MDS0_PRUNED.get() + keep.iter().filter(|&&keep| !keep).count());
+        Ok(candidates
+            .into_iter()
+            .zip(keep)
+            .filter_map(|(choice, keep)| keep.then_some(choice))
+            .collect())
     }
 
     /// The best chroma mode of the `CHROMA_PART` leaf `leaf` over its
@@ -1096,6 +1184,16 @@ fn scaled_cost(cost: u64, best: i64, average: i64) -> u64 {
     }
 }
 
+/// The [`CandidateClass`] of `prediction`.
+fn candidate_class(prediction: InterPrediction) -> CandidateClass {
+    match prediction {
+        InterPrediction::Single(modes) if modes.mode != InterMode::New => CandidateClass::Mvp,
+        InterPrediction::SkipMode { .. } => CandidateClass::Mvp,
+        InterPrediction::Single(_) | InterPrediction::Warp(_) => CandidateClass::Newmv,
+        InterPrediction::Compound(_) => CandidateClass::Compound,
+    }
+}
+
 /// The cheaper of `a` and `b`; a tie keeps `a`.
 fn cheaper(a: NewmvCost, b: NewmvCost) -> NewmvCost {
     if b.0 < a.0 { b } else { a }
@@ -1225,6 +1323,7 @@ impl PartitionSearch for TrialCoder<'_, '_> {
             }
             candidates.extend(inter);
         }
+        let candidates = self.mds0(&leaf, candidates)?;
         let scored = self.best_scored(&leaf, candidates, ALL, &start)?;
         let choice = self.refine_filter(&leaf, scored, &start)?;
         self.coder.quadrants = self.measures_quadrants(&leaf, choice)?.then_some([0; 4]);

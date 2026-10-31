@@ -69,7 +69,7 @@ fn compound_types_off_disable_the_sequence_tools() {
 }
 
 /// A panning frame with noise, which averaging two references removes.
-fn noisy_panning_frame(config: &Config, index: u32) -> SourceFrame {
+pub(super) fn noisy_panning_frame(config: &Config, index: u32) -> SourceFrame {
     super::grain_streams::with_noise(config, &panning_frame(config, index), 3 + index)
 }
 

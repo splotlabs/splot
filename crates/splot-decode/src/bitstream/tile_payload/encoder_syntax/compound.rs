@@ -243,14 +243,13 @@ impl IntraTileSyntax {
         modes: &CompoundModes,
     ) -> Result<EncoderCompoundMotion> {
         let pair = (modes.refs.0, modes.refs.1);
-        let codable = self.inter.as_ref().is_some_and(|inter| {
-            inter
-                .tile
-                .compound_pairs()
-                .iter()
-                .any(|&(first, second)| (first as usize, second as usize) == pair)
-        });
-        if !self.compound_allowed(leaf) || !codable {
+        let coded = i8::try_from(pair.0).and_then(|first| Ok((first, i8::try_from(pair.1)?)));
+        let codes = |pair| {
+            self.inter
+                .as_ref()
+                .is_some_and(|inter| inter.tile.codes_pair(pair))
+        };
+        if !self.compound_allowed(leaf) || !coded.is_ok_and(codes) {
             return Err(EncoderSyntaxError::Unsupported("a compound block here"));
         }
         let y_mode = match modes.mode {
