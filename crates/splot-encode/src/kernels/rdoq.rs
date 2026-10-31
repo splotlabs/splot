@@ -190,6 +190,54 @@ pub(crate) fn rdoq<R: CoeffRates + ?Sized>(
     levels: &mut [i32],
     dequant: &mut [i32],
 ) -> Result<usize, KernelError> {
+    let mut scratch = RDOQ_SCRATCH.take();
+    let eob = rdoq_in(
+        &mut scratch,
+        kernels,
+        block,
+        coeffs,
+        (rates, lambda_q8),
+        levels,
+        dequant,
+    );
+    RDOQ_SCRATCH.set(scratch);
+    eob
+}
+
+/// The per-block buffers of [`rdoq`].
+#[derive(Default)]
+struct RdoqScratch {
+    probe: Vec<i32>,
+    lower: Vec<i32>,
+    lower_dq: Vec<i32>,
+    pick: Vec<u8>,
+    kept: Vec<u128>,
+    as_last: Vec<Option<u128>>,
+    zeroed: Vec<u128>,
+}
+
+std::thread_local! {
+    /// [`RdoqScratch`] kept between blocks; a nested call finds it empty.
+    static RDOQ_SCRATCH: core::cell::Cell<RdoqScratch> = core::cell::Cell::default();
+}
+
+/// `buffer` as `len` copies of `value`, reusing its allocation.
+fn refill<T: Clone>(buffer: &mut Vec<T>, len: usize, value: T) -> &mut Vec<T> {
+    buffer.clear();
+    buffer.resize(len, value);
+    buffer
+}
+
+/// [`rdoq`] with its buffers in `scratch`.
+fn rdoq_in<R: CoeffRates + ?Sized>(
+    scratch: &mut RdoqScratch,
+    kernels: &dyn EncoderKernels,
+    block: &RdoqBlock,
+    coeffs: &[i32],
+    (rates, lambda_q8): (&mut R, u64),
+    levels: &mut [i32],
+    dequant: &mut [i32],
+) -> Result<usize, KernelError> {
     let mut walk = Walk::new(block)?;
     let n = walk.width * walk.height;
     if coeffs.len() != n {
@@ -217,22 +265,25 @@ pub(crate) fn rdoq<R: CoeffRates + ?Sized>(
 
     // A floor quantizer maps `recon(L) - 1` to `L - 1`: recon rises by at least one per level.
     let limit = (1u32 << (7 + u32::from(block.bit_depth.bits()))) - 1;
-    let probe: Vec<i32> = levels
-        .iter()
-        .zip(&*dequant)
-        .map(|(&l, &dq)| l.signum() * (dq.unsigned_abs().min(limit) as i32 - 1))
-        .collect();
-    let mut lower = vec![0; n];
-    let mut lower_dq = vec![0; n];
-    kernels.quantize(&quantizer(0)?, &probe, &mut lower, &mut lower_dq)?;
+    let probe = &mut scratch.probe;
+    probe.clear();
+    probe.extend(
+        levels
+            .iter()
+            .zip(&*dequant)
+            .map(|(&l, &dq)| l.signum() * (dq.unsigned_abs().min(limit) as i32 - 1)),
+    );
+    let lower = refill(&mut scratch.lower, n, 0);
+    let lower_dq = refill(&mut scratch.lower_dq, n, 0);
+    kernels.quantize(&quantizer(0)?, probe, lower, lower_dq)?;
 
     let lambda = u128::from(lambda_q8);
     let cost = |d: u64, rate: u32| (u128::from(d) << 16) + lambda * u128::from(rate);
     let empty = walk.grid()?;
-    let mut pick = vec![0u8; eob];
-    let mut kept = vec![0u128; eob];
-    let mut as_last = vec![None; eob];
-    let mut zeroed = vec![0u128; eob];
+    let pick = refill(&mut scratch.pick, eob, 0);
+    let kept = refill(&mut scratch.kept, eob, 0);
+    let as_last = refill(&mut scratch.as_last, eob, None);
+    let zeroed = refill(&mut scratch.zeroed, eob, 0);
     for c in (0..eob).rev() {
         let pos = usize::from(scan[c]);
         let is_last = c + 1 == eob;

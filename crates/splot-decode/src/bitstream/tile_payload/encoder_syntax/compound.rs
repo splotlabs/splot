@@ -282,11 +282,13 @@ impl IntraTileSyntax {
             use_refinemv: modes.refinemv,
             blend: modes.blend,
         };
+        let mut coded = core::mem::take(&mut self.mode_symbols);
         let tile = &self.inter_ref()?.tile;
-        tile.mode_symbols(&leaf.frontier, EncoderMotion::Compound(motion))
+        tile.mode_symbols(&leaf.frontier, EncoderMotion::Compound(motion), &mut coded)
             .map_err(|_| {
                 EncoderSyntaxError::Unsupported("compound modes this block cannot code")
             })?;
+        self.mode_symbols = coded;
         Ok(motion)
     }
 

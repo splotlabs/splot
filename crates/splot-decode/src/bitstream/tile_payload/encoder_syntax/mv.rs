@@ -26,6 +26,11 @@ enum MvStep {
     Literal(u32, u32),
 }
 
+std::thread_local! {
+    /// The [`MvWriter`] step list, reused by the next differences on this thread.
+    static MV_STEPS: core::cell::Cell<Vec<MvStep>> = const { core::cell::Cell::new(Vec::new()) };
+}
+
 /// Answers each `read_mv` symbol for the differences `targets` and records it.
 struct MvWriter {
     targets: [Mv; 2],
@@ -194,8 +199,9 @@ pub(super) fn write_mvds_with(
         vector: 0,
         precision,
         greater: 0,
-        steps: Vec::new(),
+        steps: MV_STEPS.take(),
     };
+    writer.steps.clear();
     let offset = ByteOffset::new(0);
     let mut magnitudes = [Mv::default(); 2];
     for (vector, magnitude) in magnitudes.iter_mut().take(mvds.len()).enumerate() {
@@ -244,7 +250,7 @@ pub(super) fn write_mvds_with(
         }
     }
     let (base, _) = cdfs.rows_span();
-    for step in writer.steps {
+    for &step in &writer.steps {
         match step {
             MvStep::Symbol(selector, value) => {
                 let selector = TileCdfSelector::ReadMv(selector);
@@ -256,6 +262,7 @@ pub(super) fn write_mvds_with(
         }
         .map_err(rule("motion vector write"))?;
     }
+    MV_STEPS.set(writer.steps);
     Ok(())
 }
 

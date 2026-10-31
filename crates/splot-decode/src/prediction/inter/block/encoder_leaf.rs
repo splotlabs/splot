@@ -1329,10 +1329,36 @@ pub(crate) fn chroma_inter_tx_type(
     frontier: &DecodeBlockFrontier,
     chroma: ChromaFormatIdc,
     luma: impl IntoIterator<Item = (usize, usize, usize, usize)>,
+    at: (usize, usize),
+) -> Result<usize> {
+    LUMA_TX_TYPES.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut map) => chroma_tx_type_from(&mut map, frontier, chroma, luma, at),
+        Err(_) => chroma_tx_type_from(
+            &mut InterLumaTxTypeMap::default(),
+            frontier,
+            chroma,
+            luma,
+            at,
+        ),
+    })
+}
+
+std::thread_local! {
+    /// The luma type map [`chroma_inter_tx_type`] builds for each chroma
+    /// block, kept so its storage is reused.
+    static LUMA_TX_TYPES: core::cell::RefCell<InterLumaTxTypeMap> =
+        core::cell::RefCell::default();
+}
+
+/// [`chroma_inter_tx_type`] with the luma types written into `map`.
+fn chroma_tx_type_from(
+    map: &mut InterLumaTxTypeMap,
+    frontier: &DecodeBlockFrontier,
+    chroma: ChromaFormatIdc,
+    luma: impl IntoIterator<Item = (usize, usize, usize, usize)>,
     (x, y): (usize, usize),
 ) -> Result<usize> {
     let (n4w, n4h) = block_size4(frontier)?;
-    let mut map = InterLumaTxTypeMap::default();
     map.reset(frontier.r, frontier.c, n4h, n4w)?;
     for (luma_x, luma_y, tx_size, tx_type) in luma {
         map.update(luma_y / MI_SIZE, luma_x / MI_SIZE, tx_size, tx_type)?;
