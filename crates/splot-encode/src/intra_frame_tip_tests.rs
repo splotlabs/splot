@@ -347,7 +347,7 @@ fn avm_decodes_refined_tip_streams_like_splot() {
 
 /// Frame `index` of a texture zooming about the frame centre by 4% a frame,
 /// so neighbouring 8x8 units move differently.
-fn zooming_frame(config: &Config, index: u32) -> SourceFrame {
+pub(super) fn zooming_frame(config: &Config, index: u32) -> SourceFrame {
     let max = u32::from(config.bit_depth.max_sample());
     let sizes = config.plane_sizes().unwrap();
     let planes = core::array::from_fn(|plane| {

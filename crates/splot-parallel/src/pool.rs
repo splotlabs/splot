@@ -55,6 +55,16 @@ impl WorkerPool {
     {
         self.inner.install(f)
     }
+
+    /// Runs `f` with a scope on the pool: the tasks `f` and its tasks spawn
+    /// run on the pool, and the call returns when all of them have finished.
+    pub fn scope<'scope, F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&rayon::Scope<'scope>) -> R + Send,
+        R: Send,
+    {
+        self.inner.scope(f)
+    }
 }
 
 #[cfg(test)]
@@ -69,5 +79,22 @@ mod tests {
         assert_eq!(pool.threads().get(), 3);
         let sum: usize = pool.install(|| (0..1000usize).into_par_iter().sum());
         assert_eq!(sum, 499_500);
+    }
+
+    #[test]
+    fn scope_waits_for_nested_spawns() {
+        let pool = WorkerPool::new(ThreadCount::from(2usize)).unwrap();
+        let count = core::sync::atomic::AtomicUsize::new(0);
+        pool.scope(|s| {
+            for _ in 0..4 {
+                s.spawn(|s| {
+                    count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    s.spawn(|_| {
+                        count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                    });
+                });
+            }
+        });
+        assert_eq!(count.into_inner(), 8);
     }
 }

@@ -307,6 +307,20 @@ impl TileCdfSubset {
         self.rows.clone_from(&frame.rows);
     }
 
+    /// Copies every row of `other` in place.
+    pub(crate) fn copy_from(&mut self, other: &Self) {
+        self.rows.clone_from(&other.rows);
+    }
+
+    /// Averages every row as the tile-average update averages four tiles:
+    /// three of them these rows and one `other`.
+    pub(crate) fn blend_three_to_one(&mut self, other: &Self) {
+        let own = self.rows.clone();
+        for (tile_num, rows) in (0..).zip([&*own, &*own, &*own, &*other.rows]) {
+            self.rows.avg_from_tile(tile_num, rows, 2);
+        }
+    }
+
     /// The address and `u16` length of the row table, so the encoder facade
     /// can key a row by its offset.
     pub(crate) fn rows_span(&self) -> (usize, usize) {

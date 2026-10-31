@@ -89,8 +89,8 @@ pub use intra::{ChromaMode, Dip, IntraModes, MAX_CFL_ALPHA, Mrl, TxType};
 pub use intrabc::{IntrabcModes, IntrabcVectors};
 pub use palette::{PALETTE_COLORS, Palette};
 pub use parity::ParityHiding;
-pub use rollback::SyntaxSnapshot;
 use rollback::{CdfJournal, CdfRow};
+pub use rollback::{SuperblockEdge, SyntaxSnapshot};
 pub use tcq::{TCQ_STATES, tcq_index, tcq_next_state, tcq_quantizer};
 pub use transform::{IST_SETS, Ist, TX_PARTITIONS, TxPartition};
 pub use warp::{

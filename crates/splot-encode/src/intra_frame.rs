@@ -48,6 +48,7 @@ use crate::tile_writer::{
 };
 use crate::tpl;
 use crate::tx_choice;
+use crate::wavefront;
 
 /// The TCQ trellis multiplier in percent of the RDOQ one: measured best near
 /// 60 on park_joy and paris (100 loses 0.7-1.1% BD-rate), while RDOQ itself
@@ -539,49 +540,78 @@ impl IntraFrameCoder {
                 what: "superblock offsets that do not cover the superblock grid",
             });
         }
-        let tiles = map_tiles(self.pool.as_ref(), writers, |mut writer| {
+        let wavefront = self.preset.wavefront && bv_search.is_none() && !self.preset.palette;
+        let search = |writer: &mut KeyFrameTileWriter, coder: &mut SourceResidualCoder| {
+            let root = writer.next_superblock_root().ok_or(Error::Unsupported {
+                what: "a search past its tile",
+            })?;
+            let index = root.row4() / (sb / 4) * sb_cols + root.col4() / (sb / 4);
+            let (lambda, target) = match sb_quant.get(index) {
+                Some(&(offset, lambda_log2)) => {
+                    let mut target = qindex.saturating_add_signed(i32::from(offset));
+                    if wavefront {
+                        // A row facade starts at `base_q_idx`: targets that never clip keep
+                        // every `CurrentQIndex` on its step, so the writer reaches each one.
+                        let step = 1 << self.preset.delta_q_res;
+                        let max_q = splot_recon::max_quantizer_index(bit_depth);
+                        target =
+                            target.clamp(1 + (qindex - 1) % step, max_q - (max_q - qindex) % step);
+                    }
+                    let sb_qindex = writer
+                        .set_superblock_qindex(target)
+                        .map_err(coding("delta-q"))?;
+                    let applied = 2 * (sb_qindex as i32 - qindex as i32);
+                    let clip_slack = (1 << self.preset.delta_q_res) + 1;
+                    let per_octave = tpl::QINDEX_PER_IMPORTANCE_OCTAVE as i32;
+                    let lambda_log2 = i32::from(lambda_log2).clamp(
+                        (applied - clip_slack) * 128 / per_octave,
+                        (applied + clip_slack) * 128 / per_octave,
+                    );
+                    let lambda = lambda.scaled(lambda_log2);
+                    coder.set_quantizer(sb_qindex, lambda);
+                    (lambda, Some(sb_qindex))
+                }
+                None => (lambda, None),
+            };
+            let tree = writer
+                .search_superblock(|syntax, root| {
+                    two_pass_partition(syntax, coder, (preset, lambda), (motion, &open_loop), root)
+                })
+                .map_err(coding("superblock search"))?;
+            Ok((SuperblockDecision { tree }, target))
+        };
+        let new_coder = || {
             let mut coder = SourceResidualCoder::new(padded, qindex, bit_depth, preset, lambda);
             coder.intrabc = bv_search;
-            let mut decisions = FrameDecisions::default();
-            while let Some(root) = writer.next_superblock_root() {
-                let index = root.row4() / (sb / 4) * sb_cols + root.col4() / (sb / 4);
-                let lambda = match sb_quant.get(index) {
-                    Some(&(offset, lambda_log2)) => {
-                        let target = qindex.saturating_add_signed(i32::from(offset));
-                        let sb_qindex = writer
-                            .set_superblock_qindex(target)
-                            .map_err(coding("delta-q"))?;
-                        let applied = 2 * (sb_qindex as i32 - qindex as i32);
-                        let clip_slack = (1 << self.preset.delta_q_res) + 1;
-                        let per_octave = tpl::QINDEX_PER_IMPORTANCE_OCTAVE as i32;
-                        let lambda_log2 = i32::from(lambda_log2).clamp(
-                            (applied - clip_slack) * 128 / per_octave,
-                            (applied + clip_slack) * 128 / per_octave,
-                        );
-                        let lambda = lambda.scaled(lambda_log2);
-                        coder.set_quantizer(sb_qindex, lambda);
-                        (lambda, Some(target))
-                    }
-                    None => (lambda, None),
-                };
-                let (lambda, target) = lambda;
-                let tree = writer
-                    .search_superblock(|syntax, root| {
-                        two_pass_partition(
-                            syntax,
-                            &mut coder,
-                            (preset, lambda),
-                            (motion, &open_loop),
-                            root,
-                        )
-                    })
-                    .map_err(coding("superblock search"))?;
-                decisions
-                    .write_superblock(
-                        &mut writer,
-                        (SuperblockDecision { tree }, target),
-                        &mut coder,
+            coder
+        };
+        let writers = writers.into_iter().enumerate().collect();
+        let tiles = map_tiles(self.pool.as_ref(), writers, |(tile, mut writer)| {
+            if wavefront && writer.superblock_grid().0 > 1 {
+                let row_writer = || {
+                    KeyFrameTileWriter::with_start(
+                        &self.sequence,
+                        &core,
+                        &self.references,
+                        &initial,
+                        tile,
                     )
+                    .map_err(coding("tile setup"))
+                };
+                return wavefront::code_tile(
+                    self.pool.as_ref(),
+                    writer,
+                    row_writer,
+                    new_coder,
+                    search,
+                );
+            }
+            let mut coder = new_coder();
+            let mut decisions = FrameDecisions::default();
+            while writer.next_superblock_root().is_some() {
+                let decided = search(&mut writer, &mut coder)?;
+                decisions
+                    .write_superblock(&mut writer, decided, &mut coder)
                     .map_err(coding("superblock"))?;
             }
             CodedTile::finish(writer, decisions).map_err(coding("tile finish"))
@@ -745,7 +775,7 @@ pub(crate) fn map_tiles<T: Send, R: Send>(
     }
 }
 
-fn coding<E: std::error::Error + Send + Sync + 'static>(
+pub(crate) fn coding<E: std::error::Error + Send + Sync + 'static>(
     stage: &'static str,
 ) -> impl FnOnce(E) -> Error {
     move |source| Error::Coding {
