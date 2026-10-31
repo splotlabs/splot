@@ -144,6 +144,18 @@ pub(crate) trait EncoderKernels: Sync {
         dims: BlockDims,
     ) -> u32;
 
+    /// The SADs of `src` against the blocks of `pred` at each of the
+    /// `out.len()` horizontal offsets `0, 1, ..` ([`distortion::sad_row_simd`]).
+    fn sad_row(
+        &self,
+        src: &[u16],
+        src_stride: usize,
+        pred: &[u16],
+        pred_stride: usize,
+        dims: BlockDims,
+        out: &mut [u32],
+    );
+
     /// Sum of squared differences.
     fn sse(
         &self,
@@ -354,6 +366,18 @@ impl EncoderKernels for ScalarKernels {
         distortion::sad_scalar(src, src_stride, pred, pred_stride, dims)
     }
 
+    fn sad_row(
+        &self,
+        src: &[u16],
+        src_stride: usize,
+        pred: &[u16],
+        pred_stride: usize,
+        dims: BlockDims,
+        out: &mut [u32],
+    ) {
+        distortion::sad_row_scalar(src, src_stride, pred, pred_stride, dims, out);
+    }
+
     fn sse(
         &self,
         src: &[u16],
@@ -541,6 +565,18 @@ impl EncoderKernels for SimdKernels {
         dims: BlockDims,
     ) -> u32 {
         distortion::sad_simd(src, src_stride, pred, pred_stride, dims)
+    }
+
+    fn sad_row(
+        &self,
+        src: &[u16],
+        src_stride: usize,
+        pred: &[u16],
+        pred_stride: usize,
+        dims: BlockDims,
+        out: &mut [u32],
+    ) {
+        distortion::sad_row_simd(src, src_stride, pred, pred_stride, dims, out);
     }
 
     fn sse(

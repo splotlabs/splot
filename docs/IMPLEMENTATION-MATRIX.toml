@@ -5318,10 +5318,10 @@ spec_sections = []
 sources = []
 crate = "splot-encode"
 module = "crates/splot-encode/src/kernels/mod.rs"
-change_id = "enc-coefrate"
+change_id = "enc-simd-b10"
 owner = "encoder"
 risk = "low"
-notes = "Encoder strategy. Every encoder-side hot kernel has a scalar reference and a std::simd implementation, and property tests compare the two bit for bit (distortion kernels also on short slices): SAD, SSE, SATD and the residual (EncoderKernels: ScalarKernels and SimdKernels), the forward DCT/ADST/identity transforms, quantization and the RDOQ level costs. Prediction, interpolation, inverse transforms, CDEF and loop restoration are the decoder's own splot-recon kernels through encoder_syntax. cargo xtask encode-perf --coverage samples a release encode: 93.6% of the samples in the hot-kernel symbol set are in SIMD code. The coefficient level symbols of a transform block come from one facade walk, IntraTileSyntax::code_coeff_levels, that the writer and the RD rate sink share (byte-identical; the level contexts and CDF rows inline inside splot-decode, and symbol_split_q12 and adapt_cdf_u16 are #[inline] across the crate boundary). Instructions at qp 140, 10 frames, 1 thread: 10-bit park_joy p6 -2.17%, 8-bit park_joy p6 -1.09% and p10 -1.82%, niklas p10 -1.01%. The per-symbol cost and CDF adaptation stay sequential, so the walk has no SIMD lane to fill."
+notes = "Encoder strategy. Every encoder-side hot kernel has a scalar reference and a std::simd implementation, and property tests compare the two bit for bit (distortion kernels also on short slices): SAD, SSE, SATD and the residual (EncoderKernels: ScalarKernels and SimdKernels), the forward DCT/ADST/identity transforms, quantization and the RDOQ level costs. Prediction, interpolation, inverse transforms, CDEF and loop restoration are the decoder's own splot-recon kernels through encoder_syntax. cargo xtask encode-perf --coverage samples a release encode: 93.6% of the samples in the hot-kernel symbol set are in SIMD code. The coefficient level symbols of a transform block come from one facade walk, IntraTileSyntax::code_coeff_levels, that the writer and the RD rate sink share (byte-identical; the level contexts and CDF rows inline inside splot-decode, and symbol_split_q12 and adapt_cdf_u16 are #[inline] across the crate boundary). Instructions at qp 140, 10 frames, 1 thread: 10-bit park_joy p6 -2.17%, 8-bit park_joy p6 -1.09% and p10 -1.82%, niklas p10 -1.01%. The per-symbol cost and CDF adaptation stay sequential, so the walk has no SIMD lane to fill. The motion search scores each row of its search windows with one multi-candidate SAD (sad_row: 8 candidates in lanes, used for 4-wide blocks with at least 6 candidates; 2026-10-31: byte-identical, instructions -1.0% on niklas 720p p6/p10, -5% on paris and park_joy p6)."
 
 [feature.status]
 mapped = "done"
@@ -5336,7 +5336,7 @@ avm_diff = "not-applicable"
 perf = "done"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/rd/tests.rs::the_level_walk_matches_the_per_position_walk", "crates/splot-encode/src/kernels/distortion.rs::tests::simd_matches_scalar", "crates/splot-encode/src/kernels/distortion.rs::tests::simd_matches_scalar_on_short_slices", "crates/splot-encode/src/kernels/forward_transform_tests.rs::simd_matches_scalar", "crates/splot-encode/src/kernels/quantize_tests.rs::simd_matches_scalar_exhaustively", "crates/splot-encode/src/kernels/rdoq_tests.rs::simd_matches_scalar"]
+tests = ["crates/splot-encode/src/rd/tests.rs::the_level_walk_matches_the_per_position_walk", "crates/splot-encode/src/kernels/distortion.rs::tests::simd_matches_scalar", "crates/splot-encode/src/kernels/distortion.rs::tests::simd_matches_scalar_on_short_slices", "crates/splot-encode/src/kernels/distortion.rs::tests::row_sad_simd_matches_scalar", "crates/splot-encode/src/kernels/forward_transform_tests.rs::simd_matches_scalar", "crates/splot-encode/src/kernels/quantize_tests.rs::simd_matches_scalar_exhaustively", "crates/splot-encode/src/kernels/rdoq_tests.rs::simd_matches_scalar"]
 commands = ["cargo test -p splot-encode kernels --locked"]
 fixtures = []
 diagnostics = []
