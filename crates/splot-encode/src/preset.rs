@@ -22,7 +22,9 @@ pub struct PresetParams {
     /// The smallest frame height, at least 64, that codes 256x256
     /// superblocks when `max_block_log2` is `8`.
     pub sb256_min_height: u16,
-    /// Number of luma intra modes tried per block, best-ranked first.
+    /// Number of luma intra modes, and of chroma modes, tried per block of
+    /// an intra frame, best-ranked first; inter frames take
+    /// `mds_inter_frame_intra`.
     pub intra_modes: u8,
     /// Partition search skips a block's remaining partitions once its unsplit
     /// cost does not exceed the best split cost so far.
@@ -386,6 +388,9 @@ impl PresetParams {
             " (max_block_log2)",
         )?;
         check("intra_modes", self.intra_modes, 1, u8::MAX, "")?;
+        for budget in self.mds0_budgets {
+            check("mds0_budgets", budget, 1, u8::MAX, " per class")?;
+        }
         check(
             "mds_inter_frame_intra",
             self.mds_inter_frame_intra,
@@ -537,8 +542,9 @@ macro_rules! preset_table {
 
             /// Sets the field `name` to `value`: an integer in the field's
             /// type range, `0`, `1`, `false` or `true` for a flag, a
-            /// [`TcqFrames`] variant name for `tcq`, and three comma-separated
-            /// flags for `mvd_tools`.
+            /// [`TcqFrames`] variant name for `tcq`, three comma-separated
+            /// flags for `mvd_tools`, and three comma-separated integers for
+            /// `mds0_budgets`.
             ///
             /// # Errors
             /// Returns [`PresetError::UnknownField`] when no field has this
@@ -906,6 +912,8 @@ mod tests {
             (&[("mini_gop_size", "0")], "mini_gop_size"),
             (&[("mini_gop_size", "9")], "mini_gop_size"),
             (&[("intra_modes", "0")], "intra_modes"),
+            (&[("mds0_budgets", "4,0,2")], "mds0_budgets"),
+            (&[("mds_inter_frame_intra", "0")], "mds_inter_frame_intra"),
             (&[("gdf_candidates", "17")], "gdf_candidates"),
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),

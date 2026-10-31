@@ -501,18 +501,17 @@ impl EncoderInterTile {
     /// The reference pairs `read_compound_ref` can code.
     pub(crate) fn compound_pairs(&self) -> Vec<(i8, i8)> {
         let refs = self.num_total_refs() as i8;
+        let input = self.compound_input([0; 7], [true; 7]);
         (0..refs)
             .flat_map(|first| (first..refs).map(move |second| (first, second)))
-            .filter(|&pair| self.codes_pair(pair))
+            .filter(|&pair| codes_pair(input, pair))
             .collect()
     }
 
     /// Whether `pair` is one of [`Self::compound_pairs`].
     pub(crate) fn codes_pair(&self, pair: (i8, i8)) -> bool {
-        let input = self.compound_input([0; 7], [true; 7]);
         (0 <= pair.0 && pair.0 <= pair.1 && pair.1 < self.num_total_refs() as i8)
-            && compound_reference_pair(input, |selector| Ok(comp_ref_bit(selector, pair)))
-                .is_ok_and(|coded| coded == pair)
+            && codes_pair(self.compound_input([0; 7], [true; 7]), pair)
     }
 
     /// The `skip_mode_frames` pair of a skip-mode block at `frontier`.
@@ -909,6 +908,12 @@ impl EncoderInterTile {
             ref_distance_nonnegative,
         }
     }
+}
+
+/// Whether the § 5.20.7.11 walk of `input` can end on `pair`.
+fn codes_pair(input: CompoundParseInput, pair: (i8, i8)) -> bool {
+    compound_reference_pair(input, |selector| Ok(comp_ref_bit(selector, pair)))
+        .is_ok_and(|coded| coded == pair)
 }
 
 /// The `comp_ref` value that keeps the § 5.20.7.11 walk on `pair`.

@@ -39,7 +39,7 @@ fn staged_stream(
 }
 
 /// Tight MDS0 budgets drop inter candidates in frames that later frames
-/// reference, with every loop filter on; the stream decodes to the encoder
+/// reference, with deblocking and CDEF on; the stream decodes to the encoder
 /// recon and codes the same bytes on 1, 2 and 8 threads.
 #[test]
 fn staged_streams_decode_on_any_thread_count() {
@@ -66,10 +66,29 @@ fn staged_streams_decode_on_any_thread_count() {
     }
 }
 
-/// Open MDS0 limits with the intra-frame shortlist drop nothing, and code
-/// a stream other than the tight limits.
+/// The length and FNV-1a hash of the p5 stream of [`staged_stream`] at qp
+/// 200, recorded from main e20662669 before the staged mode decision.
+const P5_GOLDEN: (usize, u64) = (3028, 0xb309_6d3f_f798_d7c8);
+
+/// The p5 row, whose MDS0 budgets are open and whose inter-frame intra
+/// shortlist is `intra_modes`, codes the stream of the unstaged search.
 #[test]
-fn open_limits_keep_every_candidate() {
+fn open_budgets_code_the_unstaged_stream() {
+    let p5 = Preset::new(5).unwrap().params();
+    assert_eq!(p5.mds0_budgets, [u8::MAX; 3]);
+    assert_eq!(p5.mds_inter_frame_intra, p5.intra_modes);
+    let (units, _, _, pruned) = staged_stream(p5, 200, 1);
+    assert_eq!(pruned, 0);
+    let hash = units.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    assert_eq!((units.len(), hash), P5_GOLDEN);
+}
+
+/// Open MDS0 limits drop no candidate, and tight limits code another
+/// stream.
+#[test]
+fn open_limits_drop_no_candidate() {
     let (units, _, _, pruned) = staged_stream(staged([u8::MAX; 3], 6), 200, 1);
     assert_eq!(pruned, 0);
     assert_ne!(staged_stream(staged([1, 1, 1], 1), 200, 1).0, units);
