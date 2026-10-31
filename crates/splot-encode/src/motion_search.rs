@@ -21,7 +21,11 @@ use std::cell::RefCell;
 use splot_decode::encoder_syntax::{IntraTileSyntax, MotionVector};
 use splot_recon::{InterpolationFilter, ReferencePlaneView, subpel_predict_block_strided_into};
 
+use std::sync::Arc;
+
+use crate::hme::FrameMotion;
 use crate::intra_frame::PaddedSource;
+use crate::kernels::motion::Motion;
 use crate::kernels::{BlockDims, kernels};
 use crate::preset::PresetParams;
 use crate::rd::{Bits, Lambda, log2_q8};
@@ -135,6 +139,21 @@ pub(crate) struct MotionSearch {
     mv_step: u32,
     /// `sqrt(lambda)` in Q8, the SAD-domain multiplier of a bit.
     sad_lambda_q8: u64,
+    /// The lookahead's open-loop motion against each list reference, where
+    /// it has some.
+    open_loop: Vec<Option<Arc<FrameMotion>>>,
+    /// [`PresetParams::me_seeds`] and [`PresetParams::compound_skip_sad`].
+    me_seeds: u32,
+    compound_skip_sad: u64,
+}
+
+/// The open-loop view of one leaf against one reference: the vectors of its
+/// square, the parent and the four children, and the SAD and sample count of
+/// its square.
+struct OpenLoopLeaf {
+    seeds: [Option<MotionVector>; 6],
+    sad: u32,
+    samples: u32,
 }
 
 thread_local! {
@@ -160,6 +179,7 @@ impl MotionSearch {
         source: &PaddedSource,
         preset: &PresetParams,
         lambda: Lambda,
+        open_loop: Vec<Option<Arc<FrameMotion>>>,
     ) -> Result<Option<Self>> {
         if syntax.reference_count() == 0 {
             return Ok(None);
@@ -188,7 +208,27 @@ impl MotionSearch {
             subpel_depth: preset.subpel_depth.min(3 - mv_step.ilog2().min(3) as u8),
             mv_step,
             sad_lambda_q8: lambda.sse_per_bit_q16().isqrt(),
+            open_loop,
+            me_seeds: u32::from(preset.me_seeds),
+            compound_skip_sad: u64::from(preset.compound_skip_sad),
         }))
+    }
+
+    /// The open-loop view of luma `block` against list reference
+    /// `ref_frame`; `None` without lookahead motion for the pair.
+    fn open_loop_leaf(
+        &self,
+        ref_frame: usize,
+        block: (usize, usize, usize, usize),
+    ) -> Option<OpenLoopLeaf> {
+        leaf_view(self.open_loop.get(ref_frame)?.as_ref()?, block)
+    }
+
+    /// Whether `block` skips the compound search: one reference with
+    /// lookahead motion predicts its square with a mean open-loop SAD per
+    /// sample of at most [`PresetParams::compound_skip_sad`] / 16.
+    pub(crate) fn skips_compound(&self, block: (usize, usize, usize, usize)) -> bool {
+        predicts_alone(&self.open_loop, self.compound_skip_sad, block)
     }
 
     /// The vector, in `1/8` samples, that predicts the luma `block` (`left,
@@ -237,11 +277,25 @@ impl MotionSearch {
                 *best = (cost, mv);
             }
         };
+        let open_loop = (self.me_seeds > 0)
+            .then(|| self.open_loop_leaf(ref_frame, block))
+            .flatten();
+        let open_seeds = open_loop
+            .iter()
+            .flat_map(|leaf| leaf.seeds.iter().flatten());
+        let zero = [MotionVector::default()];
         let mut best = (u64::MAX, (0, 0));
-        for &seed in seeds.iter().chain(&[MotionVector::default()]) {
+        for &seed in seeds.iter().chain(&zero).chain(open_seeds.clone()) {
             consider(&mut best, coarse, at_level(seed, coarse));
         }
-        let radius = (self.range >> coarse).clamp(1, 32);
+        let confident = open_loop
+            .as_ref()
+            .is_some_and(|leaf| leaf.sad <= self.me_seeds.saturating_mul(leaf.samples));
+        let radius = if confident {
+            1
+        } else {
+            (self.range >> coarse).clamp(1, 32)
+        };
         let (cx, cy) = best.1;
         for dy in -radius..=radius {
             for dx in -radius..=radius {
@@ -258,7 +312,7 @@ impl MotionSearch {
             }
         }
         if coarse > 0 {
-            for &seed in seeds {
+            for &seed in seeds.iter().chain(open_seeds) {
                 consider(&mut best, 0, at_level(seed, 0));
             }
         }
@@ -387,6 +441,58 @@ impl MotionSearch {
     }
 }
 
+/// The open-loop view of luma `block` in `field`: the square is the
+/// largest one of 8 to 64 samples at the block's corner; `None` when its
+/// cell is outside the field or has no vector.
+fn leaf_view(
+    field: &FrameMotion,
+    (left, top, width, height): (usize, usize, usize, usize),
+) -> Option<OpenLoopLeaf> {
+    let side = width.min(height).clamp(8, 64);
+    let size = side.ilog2() as usize - 3;
+    let at = |size: usize, (col, row): (usize, usize)| {
+        let (stride, blocks) = field.blocks(size);
+        (col < stride)
+            .then(|| blocks.get(row * stride + col))
+            .flatten()
+            .filter(|found| found.sad != u32::MAX)
+    };
+    let (col, row) = (left / side, top / side);
+    let own = at(size, (col, row))?;
+    let vector = |found: &Motion| MotionVector {
+        row: i32::from(found.mv[1]) * FULL,
+        col: i32::from(found.mv[0]) * FULL,
+    };
+    let parent = (size < 3)
+        .then(|| at(size + 1, (col / 2, row / 2)))
+        .flatten();
+    let child = |i: usize| {
+        (size > 0)
+            .then(|| at(size - 1, (2 * col + i % 2, 2 * row + i / 2)))
+            .flatten()
+    };
+    let seeds = [Some(own), parent, child(0), child(1), child(2), child(3)];
+    Some(OpenLoopLeaf {
+        seeds: seeds.map(|found| found.map(vector)),
+        sad: own.sad,
+        samples: (side * side) as u32,
+    })
+}
+
+/// Whether one of `fields` predicts the square of `block` with a mean
+/// open-loop SAD per sample of at most `threshold` / 16; `threshold` 0 never.
+fn predicts_alone(
+    fields: &[Option<Arc<FrameMotion>>],
+    threshold: u64,
+    block: (usize, usize, usize, usize),
+) -> bool {
+    threshold > 0
+        && fields
+            .iter()
+            .filter_map(|field| leaf_view(field.as_ref()?, block))
+            .any(|leaf| u64::from(leaf.sad) * 16 <= threshold * u64::from(leaf.samples))
+}
+
 /// The decoder's row-major luma prediction of `block` from list reference
 /// `ref_frame` with `(mv, filter)` into `predicted`, reusing its allocation.
 fn predict_into(
@@ -403,4 +509,119 @@ fn predict_into(
         subpel_predict_block_strided_into(view, params, predicted, width)
     })??;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    /// A field of 2x2 superblocks whose cells tell their size and position:
+    /// vector `[col + 10 * size, row]`, SAD `1000 * size + 100 * row + col`;
+    /// the 8x8 cell `(15, 15)` has no vector.
+    fn field() -> FrameMotion {
+        FrameMotion::from_fn((2, 2), |size, col, row| {
+            if (size, col, row) == (0, 15, 15) {
+                return Motion::NONE;
+            }
+            Motion {
+                sad: (1000 * size + 100 * row + col) as u32,
+                mv: [(col + 10 * size) as i16, row as i16],
+            }
+        })
+    }
+
+    fn cell(size: usize, col: usize, row: usize) -> MotionVector {
+        MotionVector {
+            row: row as i32 * FULL,
+            col: (col + 10 * size) as i32 * FULL,
+        }
+    }
+
+    #[test]
+    fn leaves_read_their_square_parent_and_children() {
+        let field = field();
+        let leaf = leaf_view(&field, (32, 48, 16, 32)).unwrap();
+        assert_eq!((leaf.sad, leaf.samples), (1302, 256));
+        let children = [
+            Some(cell(0, 4, 6)),
+            Some(cell(0, 5, 6)),
+            Some(cell(0, 4, 7)),
+            Some(cell(0, 5, 7)),
+        ];
+        let expected = [
+            Some(cell(1, 2, 3)),
+            Some(cell(2, 1, 1)),
+            children[0],
+            children[1],
+            children[2],
+            children[3],
+        ];
+        assert_eq!(leaf.seeds, expected);
+        let thin = leaf_view(&field, (8, 0, 32, 8)).unwrap();
+        assert_eq!(
+            thin.seeds,
+            [
+                Some(cell(0, 1, 0)),
+                Some(cell(1, 0, 0)),
+                None,
+                None,
+                None,
+                None
+            ]
+        );
+        for block in [(64, 64, 64, 64), (64, 64, 128, 128)] {
+            let large = leaf_view(&field, block).unwrap();
+            assert_eq!((large.sad, large.samples), (3101, 4096));
+            let quarter = [
+                Some(cell(2, 2, 2)),
+                Some(cell(2, 3, 2)),
+                Some(cell(2, 2, 3)),
+                Some(cell(2, 3, 3)),
+            ];
+            assert_eq!(large.seeds[..2], [Some(cell(3, 1, 1)), None]);
+            assert_eq!(large.seeds[2..], quarter);
+        }
+        let edge = (120, 120, 8, 8);
+        assert!(leaf_view(&field, edge).is_none(), "a cell without a vector");
+        assert!(
+            leaf_view(&field, (128, 0, 64, 64)).is_none(),
+            "right of the field"
+        );
+        assert!(
+            leaf_view(&field, (0, 128, 8, 8)).is_none(),
+            "below the field"
+        );
+    }
+
+    /// The skip takes the best reference and compares its SAD per sample
+    /// with the threshold in 1/16, inclusive.
+    #[test]
+    fn compound_skip_needs_one_good_reference() {
+        let flat = |sad: u32| {
+            Some(Arc::new(FrameMotion::from_fn((1, 1), move |size, _, _| {
+                Motion {
+                    sad: sad << (2 * size),
+                    mv: [1, -1],
+                }
+            })))
+        };
+        let block = (16, 16, 16, 8);
+        let fields = [None, flat(640), flat(160)];
+        assert!(
+            predicts_alone(&fields, 40, block),
+            "160 per 64 samples is 40/16"
+        );
+        assert!(!predicts_alone(&fields, 39, block));
+        assert!(
+            !predicts_alone(&fields[..2], 40, block),
+            "only the worse reference"
+        );
+        assert!(!predicts_alone(&fields, 0, block), "off");
+        assert!(
+            !predicts_alone(&[None, None], 255, block),
+            "no lookahead motion"
+        );
+    }
 }
