@@ -868,8 +868,8 @@ pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) bit_depth: BitDepth,
     preset: &'a PresetParams,
     lambda: Lambda,
-    /// A deadzone candidate trial (`full_trials`): quantize with the deadzone and
-    /// code `DCT_DCT`.
+    /// A deadzone candidate trial, used when `full_trials` is 0 or to rank
+    /// (MDS1): quantize with the deadzone and code `DCT_DCT`.
     pub(crate) candidate: bool,
     /// A mode trial of the search: a block that hides the other parity moves
     /// its scan index 0 level instead of pricing every move.

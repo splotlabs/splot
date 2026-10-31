@@ -344,7 +344,10 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         planes: Range<usize>,
         start: &SyntaxSnapshot,
     ) -> Result<Vec<LeafChoice>> {
-        let keep = usize::from(self.preset.full_trials);
+        let keep = match self.preset.full_trials {
+            u8::MAX => usize::MAX,
+            keep => usize::from(keep),
+        };
         if keep == 0 || candidates.len() <= keep {
             return Ok(candidates);
         }
@@ -364,8 +367,9 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             .collect())
     }
 
-    /// The candidate-trial `D + lambda * R` of `choice` over `planes` from
-    /// `start`; the state is the trial's after.
+    /// The trial `D + lambda * R` of `choice` over `planes` from `start`,
+    /// a deadzone trial when `preset.full_trials` is 0 and a full trial
+    /// otherwise; the state is the trial's after.
     fn trial_cost(
         &mut self,
         leaf: &LeafBlock,

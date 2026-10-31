@@ -879,6 +879,7 @@ mod tests {
             ("gdf_candidates", "-1"),
             ("motion_range", "65536"),
             ("rdoq", "2"),
+            ("full_trials", "true"),
             ("rdoq", "yes"),
             ("tcq", "base"),
             ("mvd_tools", "1,0"),

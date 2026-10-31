@@ -79,10 +79,7 @@ fn open_budgets_code_the_unstaged_stream() {
     assert_eq!(p5.mds_inter_frame_intra, p5.intra_modes);
     let (units, _, _, pruned) = staged_stream(p5, 200, 1);
     assert_eq!(pruned, 0);
-    let hash = units.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
-    });
-    assert_eq!((units.len(), hash), P5_GOLDEN);
+    assert_eq!((units.len(), fnv(&units)), P5_GOLDEN);
 }
 
 /// Open MDS0 limits drop no candidate, and tight limits code another
@@ -111,6 +108,7 @@ fn mds1_streams_decode_on_any_thread_count() {
     MDS1_PRUNED.set(0);
     let (one, expected, cores, _) = staged_stream(full_staged(), 200, 1);
     assert!(MDS1_PRUNED.get() > 0, "MDS1 dropped no candidate");
+    assert!(cores.len() > 2 && cores.iter().any(|core| core.inter.is_some()));
     assert!(cores.iter().any(|core| {
         core.deblocking_filter_params
             .as_ref()
@@ -128,6 +126,32 @@ fn mds1_streams_decode_on_any_thread_count() {
             "{threads} threads"
         );
     }
+}
+
+/// The length and FNV-1a hash of the [`staged_stream`] at qp 200 of preset
+/// 6 with every candidate on a full trial, recorded from main 36451046e with
+/// `full_trials: true`.
+const FULL_GOLDEN: (usize, u64) = (2963, 0x19dd_6acc_4a12_1993);
+
+/// `full_trials` 255 gives every candidate a full trial: it codes the
+/// stream of the old `full_trials: true`, and MDS1 drops nothing.
+#[test]
+fn full_trials_255_code_the_old_full_trial_stream() {
+    let preset = Box::leak(Box::new(PresetParams {
+        full_trials: u8::MAX,
+        ..*Preset::new(6).unwrap().params()
+    }));
+    MDS1_PRUNED.set(0);
+    let (units, ..) = staged_stream(preset, 200, 1);
+    assert_eq!(MDS1_PRUNED.get(), 0);
+    assert_eq!((units.len(), fnv(&units)), FULL_GOLDEN);
+}
+
+/// FNV-1a over `bytes`.
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 /// AVM decodes the staged stream like splot.
