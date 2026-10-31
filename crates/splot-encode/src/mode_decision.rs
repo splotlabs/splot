@@ -27,7 +27,7 @@ use crate::kernels::{BlockDims, kernels};
 use crate::motion_search::MotionSearch;
 use crate::preset::PresetParams;
 use crate::rd::coeff_rate::RateSink;
-use crate::rd::partition::{Levels, PartitionSearch, search_guided};
+use crate::rd::partition::{PartitionSearch, first_pass_levels, search_guided};
 use crate::rd::stages::{CandidateClass, StageLimits};
 use crate::rd::{Bits, Lambda, RdCost};
 use crate::tile_writer::{
@@ -1302,89 +1302,6 @@ pub(crate) fn two_pass_partition(
     PD0_PASSES.set(PD0_PASSES.get() + usize::from(levels.is_some()));
     let mut trial = TrialCoder::new(syntax, coder, preset, lambda, motion);
     Ok(search_guided(&mut trial, root, preset, lambda, levels.as_ref())?.0)
-}
-
-/// The first-pass (PD0) partition levels of the square superblock `(left,
-/// top, side)` from the lookahead motion `fields` alone: each square of side
-/// 64 down to 8 costs its least open-loop SAD over the references plus
-/// `preset.pd0_leaf_bits` at the SAD-domain `lambda` (scaled to 8-bit SAD by
-/// `depth` bits), and splits when its four quadrants cost less. `None` when
-/// a reference lacks motion for a square.
-fn first_pass_levels(
-    fields: &[Option<Arc<FrameMotion>>],
-    (left, top, side): (usize, usize, usize),
-    (lambda, depth): (Lambda, u32),
-    preset: &PresetParams,
-) -> Option<Levels> {
-    let fields: Vec<&FrameMotion> = fields.iter().flatten().map(AsRef::as_ref).collect();
-    if fields.is_empty() {
-        return None;
-    }
-    let leaf_cost =
-        (u64::from(preset.pd0_leaf_bits) * lambda.sse_per_bit_q16().isqrt()) >> (8 + depth);
-    let stride = side / 8;
-    let mut levels = Levels {
-        origin: (left, top),
-        stride,
-        cells: vec![0; stride * stride],
-        window: preset.pd_window,
-    };
-    let quarter = side.min(64);
-    for y in (top..top + side).step_by(quarter) {
-        for x in (left..left + side).step_by(quarter) {
-            first_pass_square(&fields, (x, y, quarter), leaf_cost, &mut levels)?;
-        }
-    }
-    Some(levels)
-}
-
-/// The first-pass cost of the square `(x, y, s)` and its best subdivision
-/// into squares down to 8, whose levels it writes into `levels`; `None`
-/// when a reference lacks motion for a square.
-fn first_pass_square(
-    fields: &[&FrameMotion],
-    (x, y, s): (usize, usize, usize),
-    leaf_cost: u64,
-    levels: &mut Levels,
-) -> Option<u64> {
-    let size = s.ilog2() as usize - 3;
-    let mut sad = u64::MAX;
-    for field in fields {
-        let (stride, blocks) = field.blocks(size);
-        let found = blocks
-            .get((y / s) * stride + x / s)
-            .filter(|_| x / s < stride)?;
-        if found.sad != u32::MAX {
-            sad = sad.min(u64::from(found.sad));
-        }
-    }
-    let leaf = sad.checked_add(leaf_cost);
-    if s > 8 {
-        let half = s / 2;
-        let mut split = 0u64;
-        let saved = levels.cells.clone();
-        for (dx, dy) in [(0, 0), (half, 0), (0, half), (half, half)] {
-            split = split.saturating_add(first_pass_square(
-                fields,
-                (x + dx, y + dy, half),
-                leaf_cost,
-                levels,
-            )?);
-        }
-        if leaf.is_none_or(|leaf| split < leaf) {
-            return Some(split);
-        }
-        levels.cells = saved;
-    }
-    let leaf = leaf?;
-    let (origin, stride) = (levels.origin, levels.stride);
-    let level = 2 * s.ilog2() as u8;
-    for row in (y - origin.1) / 8..(y - origin.1 + s) / 8 {
-        for col in (x - origin.0) / 8..(x - origin.0 + s) / 8 {
-            levels.cells[row * stride + col] = level;
-        }
-    }
-    Some(leaf)
 }
 
 /// The luma rectangle `(x, y, width, height)` of `leaf`.
