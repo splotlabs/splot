@@ -249,18 +249,21 @@ impl<const N: usize> WienerClassAccumulator<N> {
 pub(crate) fn pair_features(plus: &[u16], minus: &[u16], centre: &[u16], out: &mut Vec<i32>) {
     let n = plus.len().min(minus.len()).min(centre.len());
     out.clear();
-    out.resize(n, 0);
-    let (outs, out_tail) = out.as_chunks_mut::<16>();
+    out.reserve(n);
     let (p, p_tail) = plus[..n].as_chunks::<16>();
     let (m, m_tail) = minus[..n].as_chunks::<16>();
     let (c, c_tail) = centre[..n].as_chunks::<16>();
     let wide = |v: &[u16; 16]| Simd::from_array(*v).cast::<i32>();
-    for (((out, p), m), c) in outs.iter_mut().zip(p).zip(m).zip(c) {
-        *out = (wide(p) + wide(m) - wide(c) * Simd::splat(2)).to_array();
+    for ((p, m), c) in p.iter().zip(m).zip(c) {
+        out.extend_from_slice(&(wide(p) + wide(m) - wide(c) * Simd::splat(2)).to_array());
     }
-    for (((out, &p), &m), &c) in out_tail.iter_mut().zip(p_tail).zip(m_tail).zip(c_tail) {
-        *out = i32::from(p) + i32::from(m) - 2 * i32::from(c);
-    }
+    out.extend(
+        p_tail
+            .iter()
+            .zip(m_tail)
+            .zip(c_tail)
+            .map(|((&p, &m), &c)| i32::from(p) + i32::from(m) - 2 * i32::from(c)),
+    );
 }
 
 #[cfg(test)]
@@ -278,17 +281,19 @@ fn pair_features_scalar(plus: &[u16], minus: &[u16], centre: &[u16], out: &mut V
 pub(crate) fn differences(a: &[u16], b: &[u16], out: &mut Vec<i32>) {
     let n = a.len().min(b.len());
     out.clear();
-    out.resize(n, 0);
-    let (outs, out_tail) = out.as_chunks_mut::<16>();
+    out.reserve(n);
     let (a, a_tail) = a[..n].as_chunks::<16>();
     let (b, b_tail) = b[..n].as_chunks::<16>();
-    for ((out, a), b) in outs.iter_mut().zip(a).zip(b) {
+    for (a, b) in a.iter().zip(b) {
         let (a, b) = (Simd::from_array(*a), Simd::from_array(*b));
-        *out = (a.cast::<i32>() - b.cast::<i32>()).to_array();
+        out.extend_from_slice(&(a.cast::<i32>() - b.cast::<i32>()).to_array());
     }
-    for ((out, &a), &b) in out_tail.iter_mut().zip(a_tail).zip(b_tail) {
-        *out = i32::from(a) - i32::from(b);
-    }
+    out.extend(
+        a_tail
+            .iter()
+            .zip(b_tail)
+            .map(|(&a, &b)| i32::from(a) - i32::from(b)),
+    );
 }
 
 #[cfg(test)]
