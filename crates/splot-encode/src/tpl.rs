@@ -312,7 +312,7 @@ mod tests {
 
     fn model(shift: usize) -> Vec<TplFrame> {
         let config = Config::new(64, 64);
-        let mut lookahead = Lookahead::new(&config);
+        let mut lookahead = Lookahead::new(&config, config.preset.params(), None);
         for index in 0..5 {
             lookahead.push(&frame(&config, index, shift * index as usize, 0), index);
         }

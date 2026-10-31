@@ -3,27 +3,30 @@
 
 //! Lookahead analysis of source frames before they are coded.
 //!
-//! Each frame's luma is averaged down by 2 per side (by 4 above 1080p area),
-//! scaled to 8 bits, and split into 8x8 blocks. A block's intra cost is the
-//! SATD of the best of a DC, a vertical and a horizontal prediction from the
-//! downscaled source samples above and left of it. Its inter cost against
-//! another frame is the SATD at the best full-sample vector of a SAD search:
-//! every vector within [`EXHAUSTIVE`] samples, the left block's vector, then
-//! a logarithmic search around the best. Costs are integers, so the analysis
-//! is deterministic.
+//! Each frame's luma becomes an [`hme::Pyramid`]; the analysis works on its
+//! half level (quarter level above 1080p area) in 8x8 blocks. A block's intra
+//! cost is the SATD of the best of a DC, a vertical and a horizontal
+//! prediction from the samples above and left of it. Its inter cost against
+//! another frame comes from the open-loop motion estimation of the pair: the
+//! full-resolution vectors of the block's luma area, of its four quadrants
+//! and the left block's choice, scaled down to the analysis level, seed a
+//! SAD search one sample around each, and the SATD of the best position is
+//! the cost. Costs are integers, so the analysis is
+//! deterministic.
 
 use std::collections::{BTreeMap, VecDeque};
 
+use splot_parallel::WorkerPool;
+
 use crate::config::Config;
 use crate::frame::SourceFrame;
+use crate::hme::{self, FrameMotion, Plane, Pyramid};
+use crate::kernels::motion::Motion;
 use crate::kernels::{BlockDims, kernels};
+use crate::preset::PresetParams;
 
 /// Side of an analysis block, in downscaled samples.
 pub(crate) const BLOCK: usize = 8;
-/// Replicated samples around each downscaled plane; it bounds the vectors.
-const PAD: usize = 32;
-/// Radius of the exhaustive part of the search, in downscaled samples.
-const EXHAUSTIVE: i32 = 4;
 /// A frame is a scene cut when its blocks' best costs against the previous
 /// frame sum to at least this percentage of their intra costs (its ratio) ...
 const SCENE_CUT_PERCENT: u64 = 70;
@@ -47,18 +50,17 @@ pub(crate) struct BlockMotion {
 /// One analysed frame.
 struct Analysis {
     display_index: u64,
-    plane: Vec<u16>,
+    pyramid: Pyramid,
     intra: Vec<u32>,
 }
 
-/// Downscaled frames and their block costs, by display index.
+/// Analysed frames and the open-loop motion of frame pairs, by display index.
 pub(crate) struct Lookahead {
     shift: u32,
-    bit_shift: u32,
     cols: usize,
     rows: usize,
-    stride: usize,
-    dims: BlockDims,
+    ranges: hme::Ranges,
+    pool: Option<WorkerPool>,
     frames: VecDeque<Analysis>,
     motion: BTreeMap<(u64, u64), Vec<BlockMotion>>,
     /// The scene-cut ratio of the last frame pushed, in percent.
@@ -66,22 +68,21 @@ pub(crate) struct Lookahead {
 }
 
 impl Lookahead {
-    /// An empty lookahead for frames of `config`.
-    pub(crate) fn new(config: &Config) -> Self {
+    /// An empty lookahead for frames of `config`, searching with the ranges
+    /// of `preset` on `pool` when there is one.
+    pub(crate) fn new(config: &Config, preset: &PresetParams, pool: Option<WorkerPool>) -> Self {
         let shift = if u64::from(config.width) * u64::from(config.height) > QUARTER_SCALE_ABOVE {
             2
         } else {
             1
         };
-        let side = |luma: u32| (luma as usize).div_ceil(1 << shift).div_ceil(BLOCK);
-        let (cols, rows) = (side(config.width), side(config.height));
+        let side = |luma: u32| (luma as usize).div_ceil(BLOCK << shift);
         Self {
             shift,
-            bit_shift: u32::from(config.bit_depth.bits() - 8),
-            cols,
-            rows,
-            stride: cols * BLOCK + 2 * PAD,
-            dims: BlockDims::SQUARE_8,
+            cols: side(config.width),
+            rows: side(config.height),
+            ranges: hme::Ranges::new(preset),
+            pool,
             frames: VecDeque::new(),
             motion: BTreeMap::new(),
             last_ratio: 0,
@@ -101,11 +102,11 @@ impl Lookahead {
     /// Analyses `frame`, the frame after the last one pushed. Returns whether
     /// it is a scene cut against that frame.
     pub(crate) fn push(&mut self, frame: &SourceFrame, display_index: u64) -> bool {
-        let plane = self.downscale(frame);
-        let intra = self.intra_costs(&plane);
+        let pyramid = Pyramid::new(frame);
+        let intra = self.intra_costs(pyramid.level(self.shift as usize));
         self.frames.push_back(Analysis {
             display_index,
-            plane,
+            pyramid,
             intra,
         });
         let Some(previous) = display_index.checked_sub(1) else {
@@ -154,11 +155,22 @@ impl Lookahead {
     }
 
     /// The best inter prediction of each block of frame `current` from frame
-    /// `reference`; `None` when either frame is not held.
+    /// `reference`; `None` when either frame is not held. The open-loop
+    /// motion of the pair is searched once and its blocks kept.
     pub(crate) fn motion(&mut self, current: u64, reference: u64) -> Option<&[BlockMotion]> {
         if !self.motion.contains_key(&(current, reference)) {
-            let blocks =
-                self.search_frame(&self.frame(current)?.plane, &self.frame(reference)?.plane);
+            let (now, then) = (self.frame(current)?, self.frame(reference)?);
+            let distance = current.abs_diff(reference);
+            let motion = hme::search(
+                &now.pyramid,
+                &then.pyramid,
+                distance,
+                self.ranges,
+                self.pool.as_ref(),
+            );
+            let level = self.shift as usize;
+            let planes = (now.pyramid.level(level), then.pyramid.level(level));
+            let blocks = self.block_motion(planes, &motion);
             self.motion.insert((current, reference), blocks);
         }
         self.motion.get(&(current, reference)).map(Vec::as_slice)
@@ -173,49 +185,20 @@ impl Lookahead {
             .filter(|frame| frame.display_index == display_index)
     }
 
-    /// The padded, downscaled, 8-bit luma of `frame`.
-    fn downscale(&self, frame: &SourceFrame) -> Vec<u16> {
-        let size = frame.plane_sizes()[0];
-        let luma = &frame.planes()[0];
-        let scale = 1usize << self.shift;
-        let (width, height) = (size.width().div_ceil(scale), size.height().div_ceil(scale));
-        let mut small = Vec::with_capacity(width * height);
-        for y in 0..height {
-            for x in 0..width {
-                let mut sum = 0u32;
-                for dy in 0..scale {
-                    let row = (y * scale + dy).min(size.height() - 1) * size.width();
-                    for dx in 0..scale {
-                        sum += u32::from(luma[row + (x * scale + dx).min(size.width() - 1)]);
-                    }
-                }
-                small.push((sum >> (2 * self.shift + self.bit_shift)) as u16);
-            }
-        }
-        let padded_rows = self.rows * BLOCK + 2 * PAD;
-        let mut plane = Vec::with_capacity(self.stride * padded_rows);
-        for y in 0..padded_rows {
-            let row = &small[y.saturating_sub(PAD).min(height - 1) * width..][..width];
-            plane.extend((0..self.stride).map(|x| row[x.saturating_sub(PAD).min(width - 1)]));
-        }
-        plane
-    }
-
-    /// The offset of block `(col, row)` in a padded plane.
-    fn block_at(&self, col: usize, row: usize) -> usize {
-        (PAD + row * BLOCK) * self.stride + PAD + col * BLOCK
-    }
-
-    fn intra_costs(&self, plane: &[u16]) -> Vec<u32> {
+    fn intra_costs(&self, plane: &Plane) -> Vec<u32> {
         let mut costs = Vec::with_capacity(self.cols * self.rows);
         let mut prediction = [0u16; BLOCK * BLOCK];
         for row in 0..self.rows {
             for col in 0..self.cols {
-                let at = self.block_at(col, row);
-                let above = &plane[at - self.stride..][..BLOCK];
-                let left: Vec<u16> = (0..BLOCK)
-                    .map(|y| plane[at + y * self.stride - 1])
-                    .collect();
+                let (x, y) = ((col * BLOCK) as i32, (row * BLOCK) as i32);
+                let Some(source) = plane.block8(x, y) else {
+                    costs.push(0);
+                    continue;
+                };
+                let above: [u16; BLOCK] =
+                    core::array::from_fn(|i| u16::from(plane.sample(x + i as i32, y - 1)));
+                let left: [u16; BLOCK] =
+                    core::array::from_fn(|i| u16::from(plane.sample(x - 1, y + i as i32)));
                 let dc = (above
                     .iter()
                     .chain(&left)
@@ -234,7 +217,7 @@ impl Lookahead {
                         };
                     }
                     let satd =
-                        kernels().satd(&plane[at..], self.stride, &prediction, BLOCK, self.dims);
+                        kernels().satd(&source, BLOCK, &prediction, BLOCK, BlockDims::SQUARE_8);
                     best = best.min(satd);
                 }
                 costs.push(u32::try_from(best).unwrap_or(u32::MAX));
@@ -243,81 +226,61 @@ impl Lookahead {
         costs
     }
 
-    fn search_frame(&self, current: &[u16], reference: &[u16]) -> Vec<BlockMotion> {
-        let mut blocks: Vec<BlockMotion> = Vec::with_capacity(self.cols * self.rows);
+    /// Each analysis block's prediction from the open-loop `motion`: the
+    /// SATD at the lowest SAD within one sample of the vectors of its luma
+    /// area, of its quadrants and of the left block, the first on a tie.
+    fn block_motion(&self, planes: (&Plane, &Plane), motion: &FrameMotion) -> Vec<BlockMotion> {
+        let size = self.shift as usize;
+        let ((stride, blocks), (sub_stride, sub_blocks)) =
+            (motion.blocks(size), motion.blocks(size - 1));
+        let scaled = |found: &Motion| found.mv.map(|v| i32::from(v) >> self.shift);
+        let mut out: Vec<BlockMotion> = Vec::with_capacity(self.cols * self.rows);
         for row in 0..self.rows {
             for col in 0..self.cols {
-                let seed = if col > 0 {
-                    blocks[blocks.len() - 1].mv
-                } else {
-                    (0, 0)
-                };
-                blocks.push(self.search_block(current, reference, (col, row), seed));
-            }
-        }
-        blocks
-    }
-
-    /// The search of one block; its logarithmic part halves the step from 8
-    /// down to 1, moving to the best of the four neighbours while one improves.
-    fn search_block(
-        &self,
-        current: &[u16],
-        reference: &[u16],
-        (col, row): (usize, usize),
-        seed: (i32, i32),
-    ) -> BlockMotion {
-        let dims = self.dims;
-        let source = &current[self.block_at(col, row)..];
-        let start = |position: usize, mv: i32, extent: usize| {
-            usize::try_from(position as i32 + mv)
-                .ok()
-                .filter(|&start| start + BLOCK <= extent)
-        };
-        let padded_rows = self.rows * BLOCK + 2 * PAD;
-        let candidate = |(x, y): (i32, i32)| {
-            let x = start(PAD + col * BLOCK, x, self.stride)?;
-            let y = start(PAD + row * BLOCK, y, padded_rows)?;
-            Some(&reference[y * self.stride + x..])
-        };
-        let sad = |mv: (i32, i32)| {
-            candidate(mv).map(|block| kernels().sad(source, self.stride, block, self.stride, dims))
-        };
-        let mut best = (u32::MAX, (0, 0));
-        let near = (-EXHAUSTIVE..=EXHAUSTIVE)
-            .flat_map(|y| (-EXHAUSTIVE..=EXHAUSTIVE).map(move |x| (x, y)));
-        for mv in near.chain([seed]) {
-            if let Some(cost) = sad(mv)
-                && cost < best.0
-            {
-                best = (cost, mv);
-            }
-        }
-        let mut step = 8;
-        while step > 0 {
-            for _ in 0..PAD {
-                let center = best.1;
-                for (dx, dy) in [(step, 0), (-step, 0), (0, step), (0, -step)] {
-                    let mv = (center.0 + dx, center.1 + dy);
-                    if let Some(cost) = sad(mv)
-                        && cost < best.0
-                    {
-                        best = (cost, mv);
+                let at = ((col * BLOCK) as i32, (row * BLOCK) as i32);
+                let sub =
+                    |i: usize| sub_blocks.get((2 * row + i / 2) * sub_stride + 2 * col + i % 2);
+                let found = [blocks.get(row * stride + col)]
+                    .into_iter()
+                    .chain((0..4).map(sub));
+                let left = (col > 0)
+                    .then(|| out[out.len() - 1].mv)
+                    .map(|(x, y)| [x, y]);
+                let (mut centres, mut count) = ([[0; 2]; 6], 0);
+                for centre in found.flatten().map(scaled).chain(left) {
+                    if !centres[..count].contains(&centre) {
+                        centres[count] = centre;
+                        count += 1;
                     }
                 }
-                if best.1 == center {
-                    break;
+                let mut chosen: Option<(u32, [i32; 2])> = None;
+                for &centre in &centres[..count] {
+                    if let Some(near) = hme::best_near(planes, at, centre)
+                        && chosen.is_none_or(|(sad, _)| near.0 < sad)
+                    {
+                        chosen = Some(near);
+                    }
                 }
+                let cost = chosen.and_then(|(_, mv)| {
+                    let source = planes.0.block8(at.0, at.1)?;
+                    let prediction = planes.1.block8(at.0 + mv[0], at.1 + mv[1])?;
+                    let satd =
+                        kernels().satd(&source, BLOCK, &prediction, BLOCK, BlockDims::SQUARE_8);
+                    Some((u32::try_from(satd).unwrap_or(u32::MAX), mv))
+                });
+                out.push(cost.map_or(
+                    BlockMotion {
+                        cost: u32::MAX,
+                        mv: (0, 0),
+                    },
+                    |(cost, mv)| BlockMotion {
+                        cost,
+                        mv: (mv[0], mv[1]),
+                    },
+                ));
             }
-            step /= 2;
         }
-        let cost = candidate(best.1).map_or(u64::MAX, |block| {
-            kernels().satd(source, self.stride, block, self.stride, dims)
-        });
-        BlockMotion {
-            cost: u32::try_from(cost).unwrap_or(u32::MAX),
-            mv: best.1,
-        }
+        out
     }
 }
 
@@ -350,7 +313,7 @@ pub(crate) mod tests {
     #[test]
     fn finds_motion_and_scene_cuts() {
         let config = Config::new(96, 64);
-        let mut lookahead = Lookahead::new(&config);
+        let mut lookahead = Lookahead::new(&config, config.preset.params(), None);
         assert_eq!(lookahead.grid(), (6, 4));
         assert!(!lookahead.push(&frame(&config, 0, 0, 0), 0));
         assert!(
