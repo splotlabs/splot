@@ -22,7 +22,7 @@ use splot_recon::{BitDepth, PlaneId};
 
 use crate::gop::GopFrame;
 use crate::kernels::kernels;
-use crate::lookahead::{BLOCK, Lookahead};
+use crate::lookahead::{BLOCK, Lookahead, Sources};
 use crate::rate_control::FrameType;
 use crate::rd::log2_q8;
 
@@ -107,12 +107,13 @@ struct Node {
 /// Runs the model over `plan`, the coded frames of the window in coding
 /// order; `coded_before` is the last frame coded before the window. Returns
 /// one entry per frame of `plan`, in the same order, with block importances
-/// for the frames of `blocks_model`.
+/// for the frames of `blocks_model`. The motion search reads `sources`.
 pub(crate) fn analyze(
     lookahead: &mut Lookahead,
     plan: &[GopFrame],
     coded_before: Option<u64>,
     blocks_model: Option<BlockModel>,
+    sources: Sources<'_>,
 ) -> Vec<TplFrame> {
     let (cols, rows) = lookahead.grid();
     let blocks = cols * rows;
@@ -132,7 +133,7 @@ pub(crate) fn analyze(
         let mut best = intra.clone();
         let mut source = vec![[None; 2]; blocks];
         for reference in past.into_iter().chain(future) {
-            let Some(motion) = lookahead.motion(display, reference) else {
+            let Some(motion) = lookahead.motion(display, reference, sources) else {
                 continue;
             };
             for (index, block) in motion.iter().enumerate() {
@@ -313,8 +314,11 @@ mod tests {
     fn model(shift: usize) -> Vec<TplFrame> {
         let config = Config::new(64, 64);
         let mut lookahead = Lookahead::new(&config, config.preset.params(), None);
-        for index in 0..5 {
-            lookahead.push(&frame(&config, index, shift * index as usize, 0), index);
+        let frames: Vec<_> = (0..5)
+            .map(|index| frame(&config, index, shift * index as usize, 0))
+            .collect();
+        for (index, frame) in (0..).zip(&frames) {
+            lookahead.push(frame, index);
         }
         let mut planner = GopPlanner::new(NonZeroU32::new(100).unwrap(), 4);
         let plan: Vec<GopFrame> = [1, 4]
@@ -325,7 +329,8 @@ mod tests {
                 GopStep::ShowExisting { .. } => None,
             })
             .collect();
-        analyze(&mut lookahead, &plan, None, None)
+        let sources = |display: u64| frames.get(usize::try_from(display).ok()?);
+        analyze(&mut lookahead, &plan, None, None, &sources)
     }
 
     /// A superblock whose blocks later frames predict from gets a lower

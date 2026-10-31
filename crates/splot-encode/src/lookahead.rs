@@ -11,8 +11,7 @@
 //! full-resolution vectors of the block's luma area, of its four quadrants
 //! and the left block's choice, scaled down to the analysis level, seed a
 //! SAD search one sample around each, and the SATD of the best position is
-//! the cost. Costs are integers, so the analysis is
-//! deterministic.
+//! the cost. Costs are integers, so the analysis is deterministic.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -24,6 +23,9 @@ use crate::hme::{self, FrameMotion, Plane, Pyramid};
 use crate::kernels::motion::Motion;
 use crate::kernels::{BlockDims, kernels};
 use crate::preset::PresetParams;
+
+/// The source frames the encoder still holds, by display index.
+pub(crate) type Sources<'a> = &'a dyn Fn(u64) -> Option<&'a SourceFrame>;
 
 /// Side of an analysis block, in downscaled samples.
 pub(crate) const BLOCK: usize = 8;
@@ -63,6 +65,8 @@ pub(crate) struct Lookahead {
     pool: Option<WorkerPool>,
     frames: VecDeque<Analysis>,
     motion: BTreeMap<(u64, u64), Vec<BlockMotion>>,
+    /// The full level of the last frame pushed, for its scene-cut pair.
+    last_full: Option<(u64, Plane)>,
     /// The scene-cut ratio of the last frame pushed, in percent.
     last_ratio: u64,
 }
@@ -85,6 +89,7 @@ impl Lookahead {
             pool,
             frames: VecDeque::new(),
             motion: BTreeMap::new(),
+            last_full: None,
             last_ratio: 0,
         }
     }
@@ -102,19 +107,28 @@ impl Lookahead {
     /// Analyses `frame`, the frame after the last one pushed. Returns whether
     /// it is a scene cut against that frame.
     pub(crate) fn push(&mut self, frame: &SourceFrame, display_index: u64) -> bool {
-        let pyramid = Pyramid::new(frame);
+        let full = hme::full_level(frame);
+        let pyramid = Pyramid::new(&full);
         let intra = self.intra_costs(pyramid.level(self.shift as usize));
         self.frames.push_back(Analysis {
             display_index,
             pyramid,
             intra,
         });
+        let previous_full = self.last_full.replace((display_index, full));
         let Some(previous) = display_index.checked_sub(1) else {
             return false;
         };
-        if self.motion(display_index, previous).is_none() {
+        let blocks = match (&previous_full, &self.last_full) {
+            (Some((index, previous_full)), Some((_, full))) if *index == previous => {
+                self.searched((display_index, previous), (full, previous_full))
+            }
+            _ => None,
+        };
+        let Some(blocks) = blocks else {
             return false;
-        }
+        };
+        self.motion.insert((display_index, previous), blocks);
         let (Some(intra), Some(motion)) = (
             self.intra(display_index),
             self.motion.get(&(display_index, previous)),
@@ -156,24 +170,51 @@ impl Lookahead {
 
     /// The best inter prediction of each block of frame `current` from frame
     /// `reference`; `None` when either frame is not held. The open-loop
-    /// motion of the pair is searched once and its blocks kept.
-    pub(crate) fn motion(&mut self, current: u64, reference: u64) -> Option<&[BlockMotion]> {
+    /// motion of the pair is searched once and its blocks kept; the search
+    /// reads the full levels of frames other than the last one pushed from
+    /// their `sources`.
+    pub(crate) fn motion(
+        &mut self,
+        current: u64,
+        reference: u64,
+        sources: Sources<'_>,
+    ) -> Option<&[BlockMotion]> {
         if !self.motion.contains_key(&(current, reference)) {
-            let (now, then) = (self.frame(current)?, self.frame(reference)?);
-            let distance = current.abs_diff(reference);
-            let motion = hme::search(
-                &now.pyramid,
-                &then.pyramid,
-                distance,
-                self.ranges,
-                self.pool.as_ref(),
-            );
-            let level = self.shift as usize;
-            let planes = (now.pyramid.level(level), then.pyramid.level(level));
-            let blocks = self.block_motion(planes, &motion);
+            let built = [current, reference].map(|display| match &self.last_full {
+                Some((last, _)) if *last == display => None,
+                _ => sources(display).map(hme::full_level),
+            });
+            let full = |i: usize, display: u64| {
+                built[i].as_ref().or_else(|| {
+                    let (last, plane) = self.last_full.as_ref()?;
+                    (*last == display).then_some(plane)
+                })
+            };
+            let fulls = (full(0, current)?, full(1, reference)?);
+            let blocks = self.searched((current, reference), fulls)?;
             self.motion.insert((current, reference), blocks);
         }
         self.motion.get(&(current, reference)).map(Vec::as_slice)
+    }
+
+    /// The blocks of the open-loop motion of `current` against `reference`,
+    /// whose full levels are `fulls`.
+    fn searched(
+        &self,
+        (current, reference): (u64, u64),
+        fulls: (&Plane, &Plane),
+    ) -> Option<Vec<BlockMotion>> {
+        let (now, then) = (self.frame(current)?, self.frame(reference)?);
+        let motion = hme::search(
+            (fulls.0, &now.pyramid),
+            (fulls.1, &then.pyramid),
+            current.abs_diff(reference),
+            self.ranges,
+            self.pool.as_ref(),
+        );
+        let level = self.shift as usize;
+        let planes = (now.pyramid.level(level), then.pyramid.level(level));
+        Some(self.block_motion(planes, &motion))
     }
 
     /// Frame `display_index`; the held frames have consecutive indices.
@@ -320,7 +361,7 @@ pub(crate) mod tests {
             !lookahead.push(&frame(&config, 1, 4, 0), 1),
             "a pan is no cut"
         );
-        let motion = lookahead.motion(1, 0).unwrap();
+        let motion = lookahead.motion(1, 0, &|_| None).unwrap();
         assert!(
             motion.iter().filter(|block| block.mv == (-2, 0)).count() >= 18,
             "{motion:?}"
@@ -330,7 +371,51 @@ pub(crate) mod tests {
             "a new texture is a cut"
         );
         lookahead.retain_from(1);
-        assert!(lookahead.intra(0).is_none() && lookahead.motion(1, 0).is_none());
-        assert!(lookahead.motion(2, 1).is_some());
+        assert!(lookahead.intra(0).is_none() && lookahead.motion(1, 0, &|_| None).is_none());
+        assert!(lookahead.motion(2, 1, &|_| None).is_some());
+    }
+
+    /// Above 1080p the analysis runs on the quarter level in blocks of 32
+    /// luma samples; each quadrant of the frame moves differently, so a block
+    /// takes its own vector, not a neighbour's.
+    #[test]
+    fn quarter_level_blocks_take_their_own_vectors() {
+        let config = Config::new(2048, 1088);
+        let mut lookahead = Lookahead::new(&config, config.preset.params(), None);
+        assert_eq!((lookahead.grid(), lookahead.block_luma()), ((64, 34), 32));
+        let quadrant = |x: usize, y: usize| {
+            let dx = if x < 1024 { 8.0 } else { -16.0 };
+            (dx, if y < 544 { 0.0 } else { 8.0 })
+        };
+        lookahead.push(&crate::hme::tests::smooth(&config, 0), 0);
+        lookahead.push(&crate::hme::tests::moved(&config, quadrant), 1);
+        let intra = lookahead.intra(1).unwrap().to_vec();
+        let motion = lookahead.motion(1, 0, &|_| None).unwrap();
+        let clear = |v: usize, edge: usize, split: usize| {
+            v >= 128 && v + 32 + 128 <= edge && (v + 32 + 128 <= split || v >= split + 128)
+        };
+        let mut checked = 0;
+        for (index, block) in motion.iter().enumerate() {
+            let (x, y) = (index % 64 * 32, index / 64 * 32);
+            if clear(x, 2048, 1024) && clear(y, 1088, 544) {
+                let (dx, dy) = quadrant(x, y);
+                assert_eq!(block.mv, (-dx as i32 / 4, -dy as i32 / 4), "block {index}");
+                assert!(block.cost < intra[index], "block {index}");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 200, "{checked}");
+    }
+
+    /// A frame smaller than one block is one analysis block.
+    #[test]
+    fn frames_smaller_than_a_block_are_one_block() {
+        let config = Config::new(5, 3);
+        let mut lookahead = Lookahead::new(&config, config.preset.params(), None);
+        lookahead.push(&frame(&config, 0, 0, 0), 0);
+        lookahead.push(&frame(&config, 1, 1, 0), 1);
+        assert_eq!(lookahead.grid(), (1, 1));
+        let motion = lookahead.motion(1, 0, &|_| None).unwrap();
+        assert!(motion.len() == 1 && motion[0].cost < u32::MAX, "{motion:?}");
     }
 }

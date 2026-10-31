@@ -114,6 +114,9 @@ pub struct Encoder {
     rate_control: Box<dyn RateController + Send>,
     stats_sink: Option<StatsSink>,
     pending: VecDeque<SourceFrame>,
+    /// The last frame of the last coded mini-GOP, the past reference that the
+    /// lookahead's motion search of the next window reads.
+    last_coded: Option<SourceFrame>,
     planner: GopPlanner,
     lookahead: Lookahead,
     lookahead_frames: usize,
@@ -185,6 +188,7 @@ impl Encoder {
             rate_control,
             stats_sink: None,
             pending: VecDeque::new(),
+            last_coded: None,
             planner,
             lookahead: Lookahead::new(&config.coded(), &params, coder.pool()),
             lookahead_frames: usize::from(params.lookahead_frames),
@@ -311,9 +315,16 @@ impl Encoder {
                 self.lookahead.block_luma(),
             ),
         });
-        let model = tpl::analyze(&mut self.lookahead, &plan, coded_before, blocks);
+        let next = self.planner.next_display();
+        let (pending, last_coded) = (&self.pending, &self.last_coded);
+        let sources = |display: u64| match display.checked_sub(next) {
+            Some(index) => pending.get(usize::try_from(index).ok()?),
+            None => last_coded.as_ref().filter(|_| display + 1 == next),
+        };
+        let model = tpl::analyze(&mut self.lookahead, &plan, coded_before, blocks, &sources);
         if self.coder.wants_global_motion() {
-            let models = crate::global_motion::estimate(&mut self.lookahead, &plan, coded_before);
+            let models =
+                crate::global_motion::estimate(&mut self.lookahead, &plan, coded_before, &sources);
             self.coder.set_global_motion(models);
         }
         let mut costs = std::collections::BTreeMap::new();
@@ -408,6 +419,7 @@ impl Encoder {
         }
         self.lookahead
             .retain_from(self.planner.next_display().saturating_sub(1));
+        self.last_coded = frames.into_iter().last();
         Ok(())
     }
 
@@ -854,6 +866,46 @@ mod tests {
             assert!(alt_ref < middle && middle < leaf, "{qp:?}");
         }
         assert!(qp[&0] < qp[&2], "{qp:?}");
+        Ok(())
+    }
+
+    /// The motion search of a window reads the last coded frame, the past
+    /// reference of the window's first coded frame. A window of six frames
+    /// over mini-GOPs of four plans frame 11 against frame 8 only after 8 is
+    /// coded; on a pan frame 11 then costs far less than intra.
+    #[test]
+    fn a_window_searches_against_the_last_coded_frame() -> Result<()> {
+        let mut config = Config::new(64, 64);
+        config.preset_overrides = vec![("lookahead_frames".to_owned(), "6".to_owned())];
+        let mut encoder =
+            Encoder::with_coder(config.clone(), Box::new(FakeCoder { fail_at: None }))?;
+        for pts in 0..12 {
+            encoder.send_frame(crate::lookahead::tests::frame(
+                &config,
+                pts,
+                2 * pts as usize,
+                0,
+            ))?;
+        }
+        encoder.flush()?;
+        drain(&mut encoder)?;
+        let last = encoder
+            .window
+            .iter()
+            .max_by_key(|info| info.display_index)
+            .copied();
+        let last = last.ok_or(Error::Failed)?;
+        assert_eq!(
+            (last.display_index, last.frame_type),
+            (11, FrameType::Inter)
+        );
+        let intra = encoder.lookahead.intra(11).ok_or(Error::Failed)?;
+        let intra: u64 = intra.iter().map(|&cost| u64::from(cost.max(128))).sum();
+        assert!(
+            last.complexity * 2 < intra,
+            "{} vs intra {intra}",
+            last.complexity
+        );
         Ok(())
     }
 

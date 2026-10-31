@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 
 use crate::gop::GopFrame;
-use crate::lookahead::{BLOCK, BlockMotion, Lookahead};
+use crate::lookahead::{BLOCK, BlockMotion, Lookahead, Sources};
 use crate::rate_control::FrameType;
 
 /// The `ROTZOOM` `gm_params` of each `(frame, reference)` pair of display
@@ -54,11 +54,12 @@ const TRANS_MAX: i32 = 16383;
 
 /// The models of the frames of `plan`, in coding order, against their
 /// nearest past and future coded frames; `coded_before` is the last frame
-/// coded before the plan.
+/// coded before the plan. The motion search reads `sources`.
 pub(crate) fn estimate(
     lookahead: &mut Lookahead,
     plan: &[GopFrame],
     coded_before: Option<u64>,
+    sources: Sources<'_>,
 ) -> GlobalModels {
     let (cols, rows) = lookahead.grid();
     let block = lookahead.block_luma();
@@ -76,7 +77,7 @@ pub(crate) fn estimate(
             continue;
         };
         for reference in past.into_iter().chain(future) {
-            let Some(motion) = lookahead.motion(display, reference) else {
+            let Some(motion) = lookahead.motion(display, reference, sources) else {
                 continue;
             };
             let pairs = pairs(motion, &intra, (cols, rows), block);
