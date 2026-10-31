@@ -194,7 +194,8 @@ impl Pyramid {
         }
     }
 
-    /// Level `level`: `1` half, `2` quarter per side.
+    /// Level `level`: `1` half, `2` quarter per side. The pyramid holds no
+    /// full level, so `0` clamps to half and larger values to quarter.
     pub(crate) fn level(&self, level: usize) -> &Plane {
         &self.levels[level.clamp(1, 2) - 1]
     }
