@@ -58,6 +58,9 @@ pub(crate) struct CodedFrame {
     /// How the inter frame used warped motion; `None` for key frames and for
     /// `TIP_FRAME_AS_OUTPUT` frames, which code no leaves.
     pub(crate) warp: Option<crate::warp::WarpUse>,
+    /// The 8x8 cells the intra leaves of the coded trees cover, which later
+    /// frames read from their primary reference; `None` without leaves.
+    pub(crate) intra_cells: Option<std::sync::Arc<crate::intra_frame::IntraCells>>,
     /// The `GLOBALMV` and `GLOBAL_GLOBALMV` leaves of the coded trees.
     #[cfg(test)]
     pub(crate) global_leaves: usize,
@@ -636,6 +639,7 @@ mod tests {
                 reference: None,
                 tip_output: None,
                 warp: None,
+                intra_cells: None,
                 global_leaves: 0,
             })
         }
