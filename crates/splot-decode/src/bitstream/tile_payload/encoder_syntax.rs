@@ -701,6 +701,8 @@ pub struct IntraTileSyntax {
     palette_map: Vec<u8>,
     /// The color map of one transform block of the planned palette leaf.
     palette_unit: Vec<u8>,
+    /// The mode symbols of the last inter leaf priced or written, reused.
+    mode_symbols: Vec<(TileCdfSelector, u8)>,
 }
 
 impl IntraTileSyntax {
@@ -816,6 +818,7 @@ impl IntraTileSyntax {
             fsc_leaf: false,
             palette_map: Vec::new(),
             palette_unit: Vec::new(),
+            mode_symbols: Vec::new(),
         })
     }
 

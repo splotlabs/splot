@@ -351,6 +351,8 @@ pub(super) struct Recon {
     pub(super) y_smooth: TileSmoothGrid,
     pub(super) chroma_smooth: TileSmoothGrid,
     pub(super) leaf: Option<PlannedLeaf>,
+    /// The `plan_index` and `units` buffers of the leaf planned before, reused.
+    spare_units: (Vec<usize>, Vec<TransformBlock>),
 }
 
 impl Recon {
@@ -411,6 +413,7 @@ impl Recon {
                 sb_size4 >> usize::from(sub_y),
             )?,
             leaf: None,
+            spare_units: (Vec::new(), Vec::new()),
         })
     }
 }
@@ -694,7 +697,10 @@ impl IntraTileSyntax {
         let angle_delta_uv = inherited_chroma_angle_delta(uv_mode, modes.y_mode, modes.angle_delta);
         let (sub_x, sub_y) = chroma_subsampling(self.chroma);
         let (mi_rows, mi_cols) = (self.frame.mi_rows(), self.frame.mi_cols());
-        let (plan_index, units): (Vec<usize>, Vec<_>) = plan
+        let (mut plan_index, mut units) = core::mem::take(&mut self.recon.spare_units);
+        plan_index.clear();
+        units.clear();
+        let planned = plan
             .transform_blocks()
             .enumerate()
             .filter(|&(_, (plane, x, y, ..))| {
@@ -735,20 +741,23 @@ impl IntraTileSyntax {
                         cctx: 0,
                     },
                 ))
-            })
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .unzip();
+            });
+        for unit in planned {
+            let (index, unit) = unit?;
+            plan_index.push(index);
+            units.push(unit);
+        }
         let (above_smooth, left_smooth) = self
             .recon
             .y_smooth
             .block_smoothness(leaf.frontier.c, leaf.frontier.r);
         let (chroma_above_smooth, chroma_left_smooth) =
             chroma_edge_smoothness(Some(&self.recon.chroma_smooth), block_ctx);
-        self.recon.leaf = Some(PlannedLeaf {
+        let planned = units.clone();
+        let replaced = self.recon.leaf.replace(PlannedLeaf {
             plan,
             palette,
-            units: units.clone(),
+            units,
             plan_index,
             intra_edge: IntraEdgeCtx {
                 enable_ibp: self.tools.enable_ibp,
@@ -760,7 +769,10 @@ impl IntraTileSyntax {
             },
             luma_context: luma_transform_type_context(&block_modes),
         });
-        Ok(units)
+        if let Some(old) = replaced {
+            self.recon.spare_units = (old.plan_index, old.units);
+        }
+        Ok(planned)
     }
 
     /// Predicts planned transform block `index` into the frame and returns the
@@ -772,11 +784,21 @@ impl IntraTileSyntax {
     /// # Errors
     /// Returns [`EncoderSyntaxError`] without a planned block `index`.
     pub fn predict(&mut self, index: usize) -> Result<Vec<u16>> {
+        let mut out = Vec::new();
+        self.predict_into(index, &mut out)?;
+        Ok(out)
+    }
+
+    /// [`Self::predict`] into `out`, reusing its allocation.
+    ///
+    /// # Errors
+    /// As [`Self::predict`].
+    pub fn predict_into(&mut self, index: usize, out: &mut Vec<u16>) -> Result<()> {
         let tx = self.unit(index)?;
         let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let zeros = &ZERO_LEVELS[..1 << (log2_w.min(5) + log2_h.min(5))];
         self.reconstruct_with(index, zeros, 0, &tx)?;
-        self.reconstruction(&tx)
+        self.reconstruction_into(&tx, out)
     }
 
     /// The row-major samples the frame holds over `tx`; samples past the frame
@@ -785,6 +807,17 @@ impl IntraTileSyntax {
     /// # Errors
     /// Returns [`EncoderSyntaxError`] for a block outside the planes.
     pub fn reconstruction(&self, tx: &TransformBlock) -> Result<Vec<u16>> {
+        let mut out = Vec::new();
+        self.reconstruction_into(tx, &mut out)?;
+        Ok(out)
+    }
+
+    /// [`Self::reconstruction`] into `out`, reusing its allocation.
+    ///
+    /// # Errors
+    /// As [`Self::reconstruction`].
+    pub fn reconstruction_into(&self, tx: &TransformBlock, out: &mut Vec<u16>) -> Result<()> {
+        out.clear();
         let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
         let (width, height) = (1usize << log2_w, 1usize << log2_h);
         let plane = plane_id(tx.plane)?;
@@ -797,11 +830,12 @@ impl IntraTileSyntax {
         let visible_w = width.min(storage.width().saturating_sub(tx.x));
         let visible_h = height.min(storage.height().saturating_sub(tx.y));
         if visible_w == 0 || visible_h == 0 {
-            return Ok(vec![0; width * height]);
+            out.resize(width * height, 0);
+            return Ok(());
         }
         let rect =
             PlaneRect::new(tx.x, tx.y, visible_w, visible_h).map_err(rule("sample readback"))?;
-        let mut out = Vec::with_capacity(width * height);
+        out.reserve(width * height);
         for row in self
             .recon
             .workspace
@@ -815,7 +849,7 @@ impl IntraTileSyntax {
             let start = out.len() - width;
             out.extend_from_within(start..start + width);
         }
-        Ok(out)
+        Ok(())
     }
 
     /// Reconstructs planned transform block `index` from its row-major adjusted
