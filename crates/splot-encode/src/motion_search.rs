@@ -16,6 +16,8 @@
 //! two lists. The search predicts with `EIGHTTAP`; a block's final vectors
 //! then score every switchable filter.
 
+use std::cell::RefCell;
+
 use splot_decode::encoder_syntax::{IntraTileSyntax, MotionVector};
 use splot_recon::{InterpolationFilter, ReferencePlaneView, subpel_predict_block_strided_into};
 
@@ -152,6 +154,21 @@ struct OpenLoopLeaf {
     seeds: [Option<MotionVector>; 6],
     sad: u32,
     samples: u32,
+}
+
+thread_local! {
+    /// The two predictions and their average that SATD queries reuse; tiles
+    /// share one [`MotionSearch`] across threads.
+    static PREDICTIONS: RefCell<[Vec<u16>; 3]> = RefCell::default();
+}
+
+/// Runs `f` on this thread's prediction buffers, or on new ones if they are
+/// in use.
+fn with_predictions<T>(f: impl FnOnce(&mut [Vec<u16>; 3]) -> T) -> T {
+    PREDICTIONS.with(|cell| match cell.try_borrow_mut() {
+        Ok(mut buffers) => f(&mut buffers),
+        Err(_) => f(&mut Default::default()),
+    })
 }
 
 impl MotionSearch {
@@ -367,13 +384,12 @@ impl MotionSearch {
         mv: MotionVector,
         pred: MotionVector,
     ) -> Result<u64> {
-        let predicted = predict(
-            syntax,
-            ref_frame,
-            block,
-            (mv, InterpolationFilter::EightTap),
-        )?;
-        Ok(self.satd(block, &predicted)? + self.rate(mv, pred))
+        let motion = (mv, InterpolationFilter::EightTap);
+        let satd = with_predictions(|[predicted, ..]| {
+            predict_into(syntax, ref_frame, block, motion, predicted)?;
+            self.satd(block, predicted)
+        })?;
+        Ok(satd + self.rate(mv, pred))
     }
 
     /// SATD of the luma prediction of the block with `filter` from the one or
@@ -387,15 +403,24 @@ impl MotionSearch {
         filter: InterpolationFilter,
         block: (usize, usize, usize, usize),
     ) -> Result<u64> {
-        match *lists {
+        with_predictions(|[p0, p1, average]| match *lists {
             [(ref0, mv0), (ref1, mv1)] => {
-                let p0 = predict(syntax, ref0, block, (mv0, filter))?;
-                let p1 = predict(syntax, ref1, block, (mv1, filter))?;
-                self.average_satd((&p0, &p1), block)
+                predict_into(syntax, ref0, block, (mv0, filter), p0)?;
+                predict_into(syntax, ref1, block, (mv1, filter), p1)?;
+                average.clear();
+                average.extend(
+                    p0.iter()
+                        .zip(p1.iter())
+                        .map(|(&a, &b)| ((u32::from(a) + u32::from(b) + 1) >> 1) as u16),
+                );
+                self.satd(block, average)
             }
-            [(ref0, mv0)] => self.satd(block, &predict(syntax, ref0, block, (mv0, filter))?),
+            [(ref0, mv0)] => {
+                predict_into(syntax, ref0, block, (mv0, filter), p0)?;
+                self.satd(block, p0)
+            }
             _ => Err(TileWriterError::Unsupported("one or two prediction lists")),
-        }
+        })
     }
 
     /// Fills `[source, p0, p1]` with the row-major source luma of `block`
@@ -420,21 +445,6 @@ impl MotionSearch {
         let [(ref0, mv0), (ref1, mv1)] = lists;
         predict_into(syntax, ref0, block, (mv0, filter), p0)?;
         predict_into(syntax, ref1, block, (mv1, filter), p1)
-    }
-
-    /// SATD of the rounded average of the row-major predictions `p0` and
-    /// `p1` of `block`, as [`Self::prediction_satd`] of two lists.
-    fn average_satd(
-        &self,
-        (p0, p1): (&[u16], &[u16]),
-        block: (usize, usize, usize, usize),
-    ) -> Result<u64> {
-        let average: Vec<u16> = p0
-            .iter()
-            .zip(p1)
-            .map(|(&a, &b)| ((u32::from(a) + u32::from(b) + 1) >> 1) as u16)
-            .collect();
-        self.satd(block, &average)
     }
 
     /// The cost of `bits` in SAD units.
@@ -466,19 +476,7 @@ impl MotionSearch {
 }
 
 /// The decoder's row-major luma prediction of `block` from list reference
-/// `ref_frame` with `(mv, filter)`.
-fn predict(
-    syntax: &IntraTileSyntax,
-    ref_frame: usize,
-    block: (usize, usize, usize, usize),
-    motion: (MotionVector, InterpolationFilter),
-) -> Result<Vec<u16>> {
-    let mut predicted = Vec::new();
-    predict_into(syntax, ref_frame, block, motion, &mut predicted)?;
-    Ok(predicted)
-}
-
-/// [`predict`] into `predicted`, reusing its allocation.
+/// `ref_frame` with `(mv, filter)` into `predicted`, reusing its allocation.
 fn predict_into(
     syntax: &IntraTileSyntax,
     ref_frame: usize,
