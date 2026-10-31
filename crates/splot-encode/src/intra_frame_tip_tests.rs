@@ -345,6 +345,63 @@ fn avm_decodes_refined_tip_streams_like_splot() {
     }
 }
 
+/// AVM decodes TIP output frames of a zooming texture like splot, in 4:4:4
+/// and 4:2:0. Their projected motion differs per 8x8 unit, so § 7.10.6 optical
+/// flow refines it, and § 7.13.3.7 clips each chroma read to the
+/// § 7.13.3.4 reference area of the unrefined vector.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_refined_tip_output_chroma_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    for chroma in [PixelFormat::Yuv444, PixelFormat::Yuv420] {
+        let mut config = config(128, 80, BitDepth::Eight, 6, 250);
+        config.chroma = chroma;
+        let coder = IntraFrameCoder::with_preset(&config, with_tip_refinement()).unwrap();
+        let (units, expected, cores, coder) =
+            super::carry::planned_stream_of(&config, coder, zooming_frame, 250);
+        assert!(coder.sequence.inter.unwrap().enable_tip_refinemv);
+        let refined_outputs: Vec<usize> = cores
+            .iter()
+            .filter(|core| {
+                let current = core.display_order_hint().unwrap();
+                core.inter.as_ref().is_some_and(|inter| {
+                    inter.tip_frame_mode == Some(TipFrameMode::AsOutput)
+                        && inter.opfl_refine_type.is_some_and(|kind| kind != 0)
+                        && inter.tip_interpolation_filter
+                            == Some(splot_core::headers::frame::InterpolationFilter::EighttapSharp)
+                        && inter.order_hints.iter().any(|&hint| hint < current)
+                        && inter.order_hints.iter().any(|&hint| hint > current)
+                })
+            })
+            .map(|core| core.display_order_hint().unwrap() as usize)
+            .collect();
+        assert!(
+            !refined_outputs.is_empty(),
+            "{chroma:?}: no refined TIP output"
+        );
+        let avm = avm_decode(
+            &avmdec,
+            std::slice::from_ref(&units),
+            (config.width, config.height),
+            config.bit_depth,
+            &format!("tipoutchroma{chroma:?}"),
+        );
+        let splot = decode(&units);
+        assert_same_samples(&splot, &expected, &format!("{chroma:?}"));
+        let frame_len = splot.len() / 9;
+        for index in refined_outputs {
+            let span = index * frame_len..(index + 1) * frame_len;
+            assert!(
+                avm[span.clone()] == splot[span],
+                "{chroma:?}: AVM differs in TIP output {index}"
+            );
+        }
+        assert!(avm == splot, "{chroma:?}: AVM output differs");
+    }
+}
+
 /// Frame `index` of a texture zooming about the frame centre by 4% a frame,
 /// so neighbouring 8x8 units move differently.
 pub(super) fn zooming_frame(config: &Config, index: u32) -> SourceFrame {
