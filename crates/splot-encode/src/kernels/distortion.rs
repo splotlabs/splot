@@ -167,6 +167,75 @@ fn sad_lanes<const L: usize>(
     acc.reduce_sum()
 }
 
+/// The SAD of `src` against each block of `pred` starting at `pred[k]` for
+/// `k` in `0..out.len()`, one sample apart horizontally.
+#[cfg(test)]
+pub(super) fn sad_row_scalar(
+    src: &[u16],
+    src_stride: usize,
+    pred: &[u16],
+    pred_stride: usize,
+    dims: BlockDims,
+    out: &mut [u32],
+) {
+    for (k, out) in out.iter_mut().enumerate() {
+        *out = sad_scalar(
+            src,
+            src_stride,
+            pred.get(k..).unwrap_or_default(),
+            pred_stride,
+            dims,
+        );
+    }
+}
+
+/// [`sad_row_scalar`] with 8 candidates per lane group: each source sample
+/// is splat against 8 consecutive candidate samples. Lanes across candidates
+/// only beat lanes across a row in 4-wide blocks with enough candidates, so
+/// other calls, and slices that do not hold every row, take one SAD per
+/// candidate.
+pub(super) fn sad_row_simd(
+    src: &[u16],
+    src_stride: usize,
+    pred: &[u16],
+    pred_stride: usize,
+    dims: BlockDims,
+    out: &mut [u32],
+) {
+    const L: usize = 8;
+    let (w, h) = (dims.width(), dims.height());
+    let full = w == 4
+        && out.len() >= 6
+        && src_stride >= w
+        && pred_stride >= w
+        && src.len() >= (h - 1) * src_stride + w
+        && pred.len() >= (h - 1) * pred_stride + w + out.len().div_ceil(L) * L - 1;
+    if !full {
+        for (k, out) in out.iter_mut().enumerate() {
+            *out = sad_simd(
+                src,
+                src_stride,
+                pred.get(k..).unwrap_or_default(),
+                pred_stride,
+                dims,
+            );
+        }
+        return;
+    }
+    for (group, out) in out.chunks_mut(L).enumerate() {
+        let mut acc = Simd::<u32, L>::splat(0);
+        for y in 0..h {
+            let row = &pred[y * pred_stride + group * L..];
+            for (x, &s) in src[y * src_stride..][..w].iter().enumerate() {
+                let c = Simd::<u16, L>::from_slice(&row[x..x + L]);
+                let s = Simd::splat(s);
+                acc += (c.simd_max(s) - c.simd_min(s)).cast::<u32>();
+            }
+        }
+        out.copy_from_slice(&acc.to_array()[..out.len()]);
+    }
+}
+
 pub(super) fn sse_simd(
     src: &[u16],
     src_stride: usize,
@@ -468,6 +537,24 @@ mod tests {
             let (mut simd, mut scalar) = (vec![0; len], vec![1; len]);
             SimdKernels.residual(&a, sa, &b, sb, dims, &mut simd);
             ScalarKernels.residual(&a, sa, &b, sb, dims, &mut scalar);
+            prop_assert_eq!(simd, scalar);
+        }
+
+        /// SADs at consecutive horizontal candidates, with slices that hold
+        /// every candidate or fewer.
+        #[test]
+        fn row_sad_simd_matches_scalar(
+            (dims, sa, a, sb, b) in blocks(),
+            extra in 0usize..40,
+            count in 0usize..20,
+            short in any::<prop::sample::Index>(),
+        ) {
+            let mut b = b;
+            b.extend((0..extra + count).map(|i| (i * 37 % 1021) as u16));
+            let b = if count % 3 == 0 { &b[..short.index(b.len() + 1)] } else { &b[..] };
+            let (mut simd, mut scalar) = (vec![0; count], vec![1; count]);
+            SimdKernels.sad_row(&a, sa, b, sb, dims, &mut simd);
+            ScalarKernels.sad_row(&a, sa, b, sb, dims, &mut scalar);
             prop_assert_eq!(simd, scalar);
         }
 

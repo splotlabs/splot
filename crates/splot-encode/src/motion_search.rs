@@ -242,6 +242,7 @@ impl MotionSearch {
         seeds: &[MotionVector],
         pred: MotionVector,
     ) -> Result<MotionVector> {
+        let pred_mv = pred;
         let reference = self
             .references
             .get(ref_frame)
@@ -277,6 +278,42 @@ impl MotionSearch {
                 *best = (cost, mv);
             }
         };
+        let mut sads = Vec::new();
+        let mut consider_row = |best: &mut (u64, (i32, i32)), level: usize, (cx, y), radius| {
+            let Ok(dims) = BlockDims::new(width >> level, height >> level) else {
+                return;
+            };
+            let (w, h) = (dims.width(), dims.height());
+            let (sx, sy) = ((left >> level) as i32, (top >> level) as i32);
+            let (source, candidate) = (&self.source.levels[level], &reference.levels[level]);
+            let Some(src) = source.at(sx, sy, w, h) else {
+                return;
+            };
+            let valid = |x: i32| candidate.at(sx + x, sy + y, w, h).is_some();
+            let Some(first) = (cx - radius..=cx + radius).find(|&x| valid(x)) else {
+                return;
+            };
+            let last = (first..=cx + radius)
+                .take_while(|&x| valid(x))
+                .last()
+                .unwrap_or(first);
+            let Some(pred) = candidate.at(sx + first, sy + y, w, h) else {
+                return;
+            };
+            sads.clear();
+            sads.resize((last - first + 1) as usize, 0);
+            kernels().sad_row(src, source.stride, pred, candidate.stride, dims, &mut sads);
+            for (x, &sad) in (first..).zip(&sads) {
+                let mv = MotionVector {
+                    row: (y * FULL) << level,
+                    col: (x * FULL) << level,
+                };
+                let cost = u64::from(sad) + self.rate(mv, pred_mv);
+                if cost < best.0 {
+                    *best = (cost, (x, y));
+                }
+            }
+        };
         let open_loop = (self.me_seeds > 0)
             .then(|| self.open_loop_leaf(ref_frame, block))
             .flatten();
@@ -298,17 +335,13 @@ impl MotionSearch {
         };
         let (cx, cy) = best.1;
         for dy in -radius..=radius {
-            for dx in -radius..=radius {
-                consider(&mut best, coarse, (cx + dx, cy + dy));
-            }
+            consider_row(&mut best, coarse, (cx, cy + dy), radius);
         }
         for level in (0..coarse).rev() {
             let (cx, cy) = (best.1.0 * 2, best.1.1 * 2);
             best = (u64::MAX, (cx, cy));
             for dy in -2..=2 {
-                for dx in -2..=2 {
-                    consider(&mut best, level, (cx + dx, cy + dy));
-                }
+                consider_row(&mut best, level, (cx, cy + dy), 2);
             }
         }
         if coarse > 0 {
