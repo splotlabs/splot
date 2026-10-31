@@ -445,4 +445,28 @@ pub(crate) mod tests {
         let motion = lookahead.motion(1, 0, &|_| None).unwrap();
         assert!(motion.len() == 1 && motion[0].cost < u32::MAX, "{motion:?}");
     }
+
+    /// The lookahead keeps the open-loop motion of a pair for the frame coder
+    /// only when the preset reads it, and drops it once the frame is coded.
+    #[test]
+    fn keeps_open_loop_motion_only_for_readers() {
+        let config = Config::new(96, 64);
+        let off = PresetParams {
+            me_seeds: 0,
+            compound_skip_sad: 0,
+            ..*config.preset.params()
+        };
+        for (preset, kept) in [(off, false), (*config.preset.params(), true)] {
+            let mut lookahead = Lookahead::new(&config, &preset, None);
+            lookahead.push(&frame(&config, 0, 0, 0), 0);
+            lookahead.push(&frame(&config, 1, 4, 0), 1);
+            let fields = lookahead.fields();
+            assert_eq!(
+                fields.as_ref().map(|f| f.contains_key(&(1, 0))),
+                kept.then_some(true)
+            );
+            lookahead.retain_from(1);
+            assert!(lookahead.fields().is_none_or(|fields| fields.is_empty()));
+        }
+    }
 }
