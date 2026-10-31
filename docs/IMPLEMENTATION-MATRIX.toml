@@ -6806,7 +6806,7 @@ avm_diff = "done"
 perf = "partial"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/rd/stages.rs::tests::budgets_keep_the_cheapest_of_each_class_and_ties_keep_the_earlier", "crates/splot-encode/src/rd/stages.rs::tests::open_limits_keep_everything", "crates/splot-encode/src/intra_frame_mds_tests.rs::staged_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_mds_tests.rs::open_limits_keep_every_candidate", "crates/splot-encode/src/intra_frame_mds_tests.rs::avm_decodes_staged_streams_like_splot", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
+tests = ["crates/splot-encode/src/rd/stages.rs::tests::budgets_keep_the_cheapest_of_each_class_and_ties_keep_the_earlier", "crates/splot-encode/src/rd/stages.rs::tests::open_limits_keep_everything", "crates/splot-encode/src/intra_frame_mds_tests.rs::staged_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_mds_tests.rs::open_limits_drop_no_candidate", "crates/splot-encode/src/intra_frame_mds_tests.rs::open_budgets_code_the_unstaged_stream", "crates/splot-encode/src/intra_frame_mds_tests.rs::avm_decodes_staged_streams_like_splot", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
 commands = ["cargo test -p splot-encode mds --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_staged --locked -- --ignored"]
 fixtures = []
 diagnostics = []
