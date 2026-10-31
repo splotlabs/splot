@@ -14,7 +14,7 @@ fn staged(budgets: [u8; 3], intra: u8) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         mds0_budgets: budgets,
         mds_inter_frame_intra: intra,
-        pd0_row: u8::MAX,
+        pd_window: u8::MAX,
         ..*Preset::new(6).unwrap().params()
     }))
 }
@@ -141,7 +141,7 @@ const FULL_GOLDEN: (usize, u64) = (2963, 0x19dd_6acc_4a12_1993);
 fn full_trials_255_code_the_old_full_trial_stream() {
     let preset = Box::leak(Box::new(PresetParams {
         full_trials: u8::MAX,
-        pd0_row: u8::MAX,
+        pd_window: u8::MAX,
         ..*Preset::new(6).unwrap().params()
     }));
     MDS1_PRUNED.set(0);
@@ -157,40 +157,54 @@ fn fnv(bytes: &[u8]) -> u64 {
     })
 }
 
-/// The two-pass partition decision of preset 6 runs a first pass in every
-/// inter-frame superblock, in frames that later frames reference, with
-/// deblocking and CDEF on; the stream decodes to the encoder recon and codes
-/// the same bytes on 1, 2 and 8 threads.
+/// A noisy two-tile 10-bit stream of 9 frames at preset 6 through the
+/// encoder, whose lookahead gives the open-loop motion, on `threads`
+/// threads: the units, the recon and the first-pass superblocks (counted on
+/// one thread).
+fn two_pass_stream(preset: u8, threads: usize) -> (Vec<u8>, Vec<u8>, usize) {
+    let mut config = config(136, 72, BitDepth::Ten, preset, 200);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    PD0_PASSES.set(0);
+    let frames = (0..9).map(|index| super::compound::noisy_panning_frame(&config, index));
+    let (units, recon) = super::encode_frames(&config, frames);
+    (units.concat(), recon, PD0_PASSES.get())
+}
+
+/// The two-pass partition decision of preset 6 takes first-pass levels from
+/// the lookahead motion in inter-frame superblocks; the stream decodes to
+/// the encoder recon and codes the same bytes on 1, 2 and 8 threads.
 #[test]
 fn two_pass_streams_decode_on_any_thread_count() {
-    let p6 = Preset::new(6).unwrap().params();
-    assert!(p6.pd0_row != u8::MAX);
-    PD0_PASSES.set(0);
-    let (one, expected, cores, _) = staged_stream(p6, 200, 1);
-    assert!(PD0_PASSES.get() > 0, "no first pass ran");
-    assert!(cores.len() > 2 && cores.iter().any(|core| core.inter.is_some()));
-    assert!(cores.iter().any(|core| {
-        core.deblocking_filter_params
-            .as_ref()
-            .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
-    }));
-    assert!(
-        cores
-            .iter()
-            .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
-    );
+    assert!(Preset::new(6).unwrap().params().pd_window != u8::MAX);
+    let (one, expected, passes) = two_pass_stream(6, 1);
+    assert!(passes > 0, "no first pass ran");
     assert_same_samples(&decode(&one), &expected, "two-pass partition");
     for threads in [2, 8] {
-        assert!(
-            staged_stream(p6, 200, threads).0 == one,
-            "{threads} threads"
-        );
+        assert!(two_pass_stream(6, threads).0 == one, "{threads} threads");
     }
-    let single = Box::leak(Box::new(PresetParams {
-        pd0_row: u8::MAX,
-        ..*p6
-    }));
-    assert_ne!(staged_stream(single, 200, 1).0, one);
+}
+
+/// AVM decodes the two-pass stream, whose first pass ran, like splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_two_pass_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, _, passes) = two_pass_stream(6, 1);
+    assert!(passes > 0);
+    let avm = avm_decode(
+        &avmdec,
+        std::slice::from_ref(&units),
+        (136, 72),
+        BitDepth::Ten,
+        "two-pass",
+    );
+    assert!(avm == decode(&units), "AVM output differs");
 }
 
 /// AVM decodes the staged stream like splot.

@@ -12,6 +12,7 @@
 
 use core::ops::Range;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use splot_decode::encoder_syntax::{
     ChromaMode, Dip, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax, LeafBlock,
@@ -19,13 +20,14 @@ use splot_decode::encoder_syntax::{
 };
 use splot_recon::InterpolationFilter;
 
+use crate::hme::FrameMotion;
 use crate::intra_frame::codable_children;
 use crate::intra_frame::{PaddedSource, SourceResidualCoder};
 use crate::kernels::{BlockDims, kernels};
 use crate::motion_search::MotionSearch;
-use crate::preset::{PRESETS, PresetParams};
+use crate::preset::PresetParams;
 use crate::rd::coeff_rate::RateSink;
-use crate::rd::partition::{Guide, PartitionSearch, search_guided, search_partition};
+use crate::rd::partition::{Levels, PartitionSearch, search_guided};
 use crate::rd::stages::{CandidateClass, StageLimits};
 use crate::rd::{Bits, Lambda, RdCost};
 use crate::tile_writer::{
@@ -1225,39 +1227,115 @@ pub(crate) fn quadrant_sse(
 }
 
 /// The partition tree of the superblock at `root`, searched with `preset`
-/// at `lambda`. With `preset.pd0_row`, a superblock of an inter frame first
-/// searches every partition with that row's leaf search, and that tree
-/// guides the regular search; intra frames search once, as a guided search
-/// lost 1.2% on park_joy p6 there.
-pub(crate) fn two_pass_partition<'b>(
+/// at `lambda`. With `preset.pd_window`, a superblock of an inter frame
+/// with lookahead motion `open_loop` searches only the partitions near the
+/// levels of [`first_pass_levels`]; intra frames search every partition.
+pub(crate) fn two_pass_partition(
     syntax: &mut IntraTileSyntax,
-    coder: &mut SourceResidualCoder<'b>,
-    (preset, lambda): (&'b PresetParams, Lambda),
-    motion: Option<&MotionSearch>,
+    coder: &mut SourceResidualCoder<'_>,
+    (preset, lambda): (&PresetParams, Lambda),
+    (motion, open_loop): (Option<&MotionSearch>, &[Option<Arc<FrameMotion>>]),
     root: PartitionNode,
 ) -> Result<PartitionTree> {
-    let Some(light) = PRESETS
-        .get(usize::from(preset.pd0_row))
-        .filter(|_| motion.is_some())
-        .map(|light| preset.first_pass(light))
-    else {
-        let mut trial = TrialCoder::new(syntax, coder, preset, lambda, motion);
-        return Ok(search_partition(&mut trial, root, preset, lambda)?.0);
-    };
-    let light = &light;
-    let start = syntax.snapshot(root)?;
+    let levels = motion
+        .filter(|_| preset.pd_window != u8::MAX)
+        .and_then(|_| {
+            let (w, _) = root.dimensions().ok()?;
+            let depth = u32::from(coder.bit_depth.bits()) - 8;
+            first_pass_levels(
+                open_loop,
+                (root.col4() * 4, root.row4() * 4, w),
+                (lambda, depth),
+                preset,
+            )
+        });
     #[cfg(test)]
-    PD0_PASSES.set(PD0_PASSES.get() + 1);
-    let own = core::mem::replace(&mut coder.preset, *light);
-    let first = {
-        let mut trial = TrialCoder::new(syntax, coder, light, lambda, motion);
-        search_partition(&mut trial, root, preset, lambda)
-    };
-    coder.preset = own;
-    let first = first?.0;
-    syntax.restore(&start)?;
+    PD0_PASSES.set(PD0_PASSES.get() + usize::from(levels.is_some()));
     let mut trial = TrialCoder::new(syntax, coder, preset, lambda, motion);
-    Ok(search_guided(&mut trial, root, preset, lambda, Guide::Tree(&first))?.0)
+    Ok(search_guided(&mut trial, root, preset, lambda, levels.as_ref())?.0)
+}
+
+/// The first-pass (PD0) partition levels of the square superblock `(left,
+/// top, side)` from the lookahead motion `fields` alone: each square of side
+/// 64 down to 8 costs its least open-loop SAD over the references plus
+/// `preset.pd0_leaf_bits` at the SAD-domain `lambda` (scaled to 8-bit SAD by
+/// `depth` bits), and splits when its four quadrants cost less. `None` when
+/// a reference lacks motion for a square.
+fn first_pass_levels(
+    fields: &[Option<Arc<FrameMotion>>],
+    (left, top, side): (usize, usize, usize),
+    (lambda, depth): (Lambda, u32),
+    preset: &PresetParams,
+) -> Option<Levels> {
+    let fields: Vec<&FrameMotion> = fields.iter().flatten().map(AsRef::as_ref).collect();
+    if fields.is_empty() {
+        return None;
+    }
+    let leaf_cost =
+        (u64::from(preset.pd0_leaf_bits) * lambda.sse_per_bit_q16().isqrt()) >> (8 + depth);
+    let stride = side / 8;
+    let mut levels = Levels {
+        origin: (left, top),
+        stride,
+        cells: vec![0; stride * stride],
+        window: preset.pd_window,
+    };
+    let quarter = side.min(64);
+    for y in (top..top + side).step_by(quarter) {
+        for x in (left..left + side).step_by(quarter) {
+            first_pass_square(&fields, (x, y, quarter), leaf_cost, &mut levels)?;
+        }
+    }
+    Some(levels)
+}
+
+/// The first-pass cost of the square `(x, y, s)` and its best subdivision
+/// into squares down to 8, whose levels it writes into `levels`; `None`
+/// when a reference lacks motion for a square.
+fn first_pass_square(
+    fields: &[&FrameMotion],
+    (x, y, s): (usize, usize, usize),
+    leaf_cost: u64,
+    levels: &mut Levels,
+) -> Option<u64> {
+    let size = s.ilog2() as usize - 3;
+    let mut sad = u64::MAX;
+    for field in fields {
+        let (stride, blocks) = field.blocks(size);
+        let found = blocks
+            .get((y / s) * stride + x / s)
+            .filter(|_| x / s < stride)?;
+        if found.sad != u32::MAX {
+            sad = sad.min(u64::from(found.sad));
+        }
+    }
+    let leaf = sad.checked_add(leaf_cost);
+    if s > 8 {
+        let half = s / 2;
+        let mut split = 0u64;
+        let saved = levels.cells.clone();
+        for (dx, dy) in [(0, 0), (half, 0), (0, half), (half, half)] {
+            split = split.saturating_add(first_pass_square(
+                fields,
+                (x + dx, y + dy, half),
+                leaf_cost,
+                levels,
+            )?);
+        }
+        if leaf.is_none_or(|leaf| split < leaf) {
+            return Some(split);
+        }
+        levels.cells = saved;
+    }
+    let leaf = leaf?;
+    let (origin, stride) = (levels.origin, levels.stride);
+    let level = 2 * s.ilog2() as u8;
+    for row in (y - origin.1) / 8..(y - origin.1 + s) / 8 {
+        for col in (x - origin.0) / 8..(x - origin.0 + s) / 8 {
+            levels.cells[row * stride + col] = level;
+        }
+    }
+    Some(leaf)
 }
 
 /// The luma rectangle `(x, y, width, height)` of `leaf`.
@@ -1380,6 +1458,10 @@ impl PartitionSearch for TrialCoder<'_, '_> {
     fn block_log2(&self, node: PartitionNode) -> Result<(u32, u32)> {
         let (w, h) = node.dimensions()?;
         Ok((w.ilog2(), h.ilog2()))
+    }
+
+    fn origin(&self, node: PartitionNode) -> (usize, usize) {
+        (node.col4() * 4, node.row4() * 4)
     }
 
     /// RD-chooses the intra choice of the leaf, then compares it with the

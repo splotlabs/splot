@@ -519,8 +519,14 @@ impl IntraFrameCoder {
                 .collect(),
             _ => Vec::new(),
         };
-        let motion = MotionSearch::new(first.syntax(), &padded, &self.preset, lambda, open_loop)
-            .map_err(coding("motion search"))?;
+        let motion = MotionSearch::new(
+            first.syntax(),
+            &padded,
+            &self.preset,
+            lambda,
+            open_loop.clone(),
+        )
+        .map_err(coding("motion search"))?;
         let bv_search = (core.allow_intrabc == Some(true)).then(|| {
             let (luma, stride, width, height) = padded.luma();
             BvSearch::new(luma, stride, (width, height))
@@ -561,7 +567,13 @@ impl IntraFrameCoder {
                 let (lambda, target) = lambda;
                 let tree = writer
                     .search_superblock(|syntax, root| {
-                        two_pass_partition(syntax, &mut coder, (preset, lambda), motion, root)
+                        two_pass_partition(
+                            syntax,
+                            &mut coder,
+                            (preset, lambda),
+                            (motion, &open_loop),
+                            root,
+                        )
                     })
                     .map_err(coding("superblock search"))?;
                 decisions

@@ -6823,7 +6823,7 @@ module = "crates/splot-encode/src/rd/partition.rs"
 change_id = "enc-pd"
 owner = "encoder"
 risk = "medium"
-notes = "B4 part 1 (2026-10-31). PresetParams::pd0_row names the PRESETS row whose leaf search codes a first pass (PD0) over every partition of an inter-frame superblock; the superblock state is restored, and rd::partition::search_guided runs the regular search over that tree (Guide): a node follows the first-pass partition, tries NONE only within pd_window binary levels above a first-pass leaf, and tries the other partitions, with leaf-only children, only there or below a first-pass leaf. The guide's partition is tried right after NONE so that the early exit weighs it, and the memo keys a node by its guide. Intra frames search once: a guided search lost 1.2% on park_joy p6 there. The first pass takes the search effort of row pd0_row (PresetParams::first_pass: each effort field the smaller of the two rows, so it never searches a tool the frame lacks). p6 takes row 10 with window 1; other rows code the old stream. Measured f10 against main ca5c88233: park_joy p6 +0.08% at 0.714x CPU, paris p6 +1.60% at 0.714x. Not done: the B4 targets (p6 -35% CPU at <= +0.5%, p10 30 fps on niklas 720p at 1 thread; p10 runs about 0.2 fps), a PD0 cost-deviation band (a 10-25% band between the first-pass NONE and split costs lost 0.9-3.8% on park_joy p6), depth removal from the open-loop ME cost, and the ext_partitions placement at p0."
+notes = "B4 part 1 (2026-10-31). First pass (PD0) from estimates only: an inter-frame superblock with lookahead motion costs each square of side 64 down to 8 its least open-loop SAD over the references (the hme fields of B1) plus PresetParams::pd0_leaf_bits at the SAD-domain lambda, splits a square when its quadrants cost less, and records the level (log2 width + log2 height) of each 8x8 cell (mode_decision::first_pass_levels). The regular search (rd::partition::search_guided, Levels) then codes a block only within pd_window binary levels of the levels of its cells and splits it only while a deeper block can be; a block outside every window codes as a leaf. Intra frames, superblocks without lookahead motion and pd_window 255 search every partition. p6-p10 take window 2 and 8 bits; p0-p5 code the old stream. MEASUREMENTS Not done: the B4 targets (p6 -35% CPU at <= +0.5%; p10 30 fps on niklas 720p at 1 thread), NSQ gating from quadrant energy, an estimate-only pass for intra frames, and the ext_partitions placement at p0."
 
 [feature.status]
 mapped = "done"
@@ -6838,8 +6838,8 @@ avm_diff = "done"
 perf = "partial"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/rd/partition_tests.rs::a_guide_limits_the_searched_partitions", "crates/splot-encode/src/intra_frame_mds_tests.rs::two_pass_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_mds_tests.rs::avm_decodes_staged_streams_like_splot", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
-commands = ["cargo test -p splot-encode two_pass --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_staged --locked -- --ignored"]
+tests = ["crates/splot-encode/src/rd/partition_tests.rs::levels_limit_the_searched_blocks", "crates/splot-encode/src/intra_frame_mds_tests.rs::two_pass_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_mds_tests.rs::avm_decodes_two_pass_streams_like_splot", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
+commands = ["cargo test -p splot-encode two_pass --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_two_pass --locked -- --ignored"]
 fixtures = []
 diagnostics = []
 

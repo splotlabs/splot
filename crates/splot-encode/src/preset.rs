@@ -149,14 +149,14 @@ pub struct PresetParams {
     /// An uneven four-way shape is tried only when the three-way shape of its
     /// axis costs within this margin, in 1/256, of the best; `255` always.
     pub ext_four_way_margin: u8,
-    /// Two-pass partition decision: the [`PRESETS`] row whose leaf search
-    /// codes a first pass (PD0) over every partition of an inter-frame
-    /// superblock, which then limits the regular search to `pd_window`
-    /// levels around its tree; `255` searches once. `10` at p6 (2026-10-31).
-    pub pd0_row: u8,
-    /// The binary partition levels the second pass tries below and above a
-    /// leaf of the first-pass tree.
+    /// Two-pass partition decision: an inter-frame superblock with
+    /// lookahead motion takes first-pass levels from the open-loop motion
+    /// alone, and searches a block only within this many binary partition
+    /// levels of them; `255` searches every partition.
     pub pd_window: u8,
+    /// The first pass charges each square this many bits besides its
+    /// open-loop SAD.
+    pub pd0_leaf_bits: u8,
     /// Semi-decoupled partitioning (`enable_sdp`): each 64x64 node of an
     /// intra frame searches its luma tree on luma alone, then a chroma tree
     /// that only merges luma leaves. On in every row: intra frames gain luma
@@ -380,41 +380,6 @@ pub enum PresetError {
 }
 
 impl PresetParams {
-    /// This row with the search effort of `light` for a first partition
-    /// pass: each effort field takes the smaller of the two, so the pass
-    /// never searches a tool this row's frames do not enable.
-    #[must_use]
-    pub(crate) fn first_pass(&self, light: &Self) -> Self {
-        let mut mds0_budgets = self.mds0_budgets;
-        for (budget, light) in mds0_budgets.iter_mut().zip(light.mds0_budgets) {
-            *budget = (*budget).min(light);
-        }
-        Self {
-            intra_modes: self.intra_modes.min(light.intra_modes),
-            mds_inter_frame_intra: self.mds_inter_frame_intra.min(light.mds_inter_frame_intra),
-            mds0_budgets,
-            mrl_trials: self.mrl_trials.min(light.mrl_trials),
-            compound_candidates: self.compound_candidates.min(light.compound_candidates),
-            full_trials: self.full_trials.min(light.full_trials),
-            tx_type_depth: self.tx_type_depth.min(light.tx_type_depth),
-            tx_partition_search: self.tx_partition_search && light.tx_partition_search,
-            inter_tx_split: if light.inter_tx_split == 0 {
-                0
-            } else {
-                self.inter_tx_split
-            },
-            rdoq: self.rdoq && light.rdoq,
-            rdoq_every_type: self.rdoq_every_type && light.rdoq_every_type,
-            tcq_search_trellis: self.tcq_search_trellis && light.tcq_search_trellis,
-            tcq_type_trellis: self.tcq_type_trellis && light.tcq_type_trellis,
-            bawp: self.bawp && light.bawp,
-            interintra: self.interintra && light.interintra,
-            warp: self.warp.min(light.warp),
-            dip: self.dip && light.dip,
-            ..*self
-        }
-    }
-
     /// Checks the ranges the encoder supports, per field and across fields;
     /// every [`PRESETS`] row passes, a row with overrides may not.
     ///
@@ -476,9 +441,6 @@ impl PresetParams {
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
         check("tip", self.tip, 0, 2, "")?;
-        if self.pd0_row != u8::MAX {
-            check("pd0_row", self.pd0_row, 0, Preset::MAX, " or 255")?;
-        }
         check("tip_output", self.tip_output, 0, 200, "")?;
         check(
             "tip_refinemv",
@@ -637,8 +599,8 @@ preset_table! {
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        pd0_row:               [  255,   255,   255,   255,   255,   255,    10,   255,   255,   255,   255],
-        pd_window:             [  255,   255,   255,   255,   255,   255,     1,     1,     1,     1,     1],
+        pd_window:             [  255,   255,   255,   255,   255,   255,     2,     2,     2,     2,     2],
+        pd0_leaf_bits:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
     }
     intra {
@@ -838,10 +800,8 @@ mod tests {
             assert!(fast.ext_partitions <= slow.ext_partitions);
             assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
-            assert!(
-                fast.pd0_row >= slow.pd0_row || fast.pd0_row == u8::MAX || slow.pd0_row == u8::MAX
-            );
             assert!(fast.pd_window <= slow.pd_window);
+            assert!(fast.pd0_leaf_bits >= slow.pd0_leaf_bits);
             assert!(fast.ccso_candidates <= slow.ccso_candidates);
             assert!(fast.wiener_ns <= slow.wiener_ns);
             assert!(fast.wiener_ns_chroma <= slow.wiener_ns_chroma);

@@ -110,6 +110,10 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
         Ok((w, h))
     }
 
+    fn origin(&self, (x, y, ..): Rect) -> (usize, usize) {
+        (x as usize, y as usize)
+    }
+
     fn evaluate_leaf(&mut self, node: Rect) -> Result<(RdCost, LeafChoice), Self::Error> {
         self.coded.push(node);
         self.leaf_evaluations += 1;
@@ -450,49 +454,46 @@ fn early_exit_leaves_extended_shapes_to_the_margins() {
     );
 }
 
-/// A guided search with window 0 codes the guide tree and evaluates only
-/// its leaves; an open window evaluates the leaves of the unguided search.
+/// The first-pass levels limit a guided search to blocks near them: with
+/// window 0 and the level of a 16x16 block over the frame, the search codes
+/// blocks of that level, and the blocks next to it that only an extended
+/// shape reaches as leaves; a wider window evaluates more, the full search
+/// most.
 #[test]
-fn a_guide_limits_the_searched_partitions() {
-    use crate::rd::partition::{Guide, search_guided};
+fn levels_limit_the_searched_blocks() {
+    use crate::rd::partition::{Levels, search_guided};
     let cost = |(x, y, w, h): Rect| RdCost {
         distortion: u64::from(((x * 7 + y * 13) % 29 + 3) << (w + h)),
         rate: Bits::whole(w + h),
     };
-    let guide = PartitionTree::Split {
-        kind: Partition::Vert,
-        children: vec![
-            PartitionTree::Leaf(LeafChoice::DC),
-            PartitionTree::Split {
-                kind: Partition::Horz,
-                children: vec![
-                    PartitionTree::Leaf(LeafChoice::DC),
-                    PartitionTree::Leaf(LeafChoice::DC),
-                ],
-            },
-        ],
+    let levels = |window| Levels {
+        origin: (0, 0),
+        stride: 4,
+        cells: vec![8; 16],
+        window,
     };
-    let root = (0, 0, 4, 4);
-    let exact = PresetParams {
-        pd_window: 0,
-        ..full_search()
+    let root = (0, 0, 5, 5);
+    let evaluate = |window: Option<u8>| {
+        let mut coder = Synthetic::new(32, cost);
+        let levels = window.map(levels);
+        search_guided(
+            &mut coder,
+            root,
+            &full_search(),
+            unit_lambda(),
+            levels.as_ref(),
+        )
+        .unwrap();
+        let mut sizes: Vec<u32> = coder.evaluated.keys().map(|&(_, _, w, h)| w + h).collect();
+        sizes.sort_unstable();
+        sizes.dedup();
+        (coder.leaf_evaluations, sizes)
     };
-    let mut coder = Synthetic::new(16, cost);
-    let (tree, _) =
-        search_guided(&mut coder, root, &exact, unit_lambda(), Guide::Tree(&guide)).unwrap();
-    assert_eq!(tree, guide);
-    let mut evaluated: Vec<Rect> = coder.evaluated.keys().copied().collect();
-    evaluated.sort_unstable();
-    assert_eq!(evaluated, [(0, 0, 3, 4), (8, 0, 3, 3), (8, 8, 3, 3)]);
-
-    let open = PresetParams {
-        pd_window: 1,
-        ..exact
-    };
-    let mut guided = Synthetic::new(16, cost);
-    search_guided(&mut guided, root, &open, unit_lambda(), Guide::Tree(&guide)).unwrap();
-    let mut full = Synthetic::new(16, cost);
-    search_partition(&mut full, root, &full_search(), unit_lambda()).unwrap();
-    assert!(guided.leaf_evaluations > 3);
-    assert!(guided.leaf_evaluations < full.leaf_evaluations);
+    let (exact, exact_sizes) = evaluate(Some(0));
+    let (near, near_sizes) = evaluate(Some(1));
+    let (full, full_sizes) = evaluate(None);
+    assert!(exact_sizes.contains(&8) && exact_sizes.iter().all(|size| (6..=9).contains(size)));
+    assert!(near_sizes.iter().all(|size| (5..=10).contains(size)));
+    assert_eq!(full_sizes.first(), Some(&4));
+    assert!(exact < near && near < full, "{exact} {near} {full}");
 }
