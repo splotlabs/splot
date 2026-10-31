@@ -670,6 +670,9 @@ pub struct TileEnd {
     motion: Vec<crate::prediction::inter::TemporalMotionBlock>,
 }
 
+/// The § 7.19 motion records a tile published so far.
+pub struct TileMotion(Vec<crate::prediction::inter::TemporalMotionBlock>);
+
 /// One tile's CDF rows, neighbour state, and reconstruction.
 pub struct IntraTileSyntax {
     frame: TilePartitionFrameFacts,
