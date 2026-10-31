@@ -2,9 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Speed presets. Each preset is one column of [`PRESETS`]; encoder stages read the
-//! preset's fields instead of comparing preset numbers.
+//! preset's fields instead of comparing preset numbers. A [`Levels`] field
+//! holds one value per [`PresetContext`] and is read with [`Levels::at`].
 
 use crate::error::{Error, Result};
+use crate::rate_control::FrameType;
 
 /// Search limits of one speed preset. These are encoder policy, not AV2 syntax.
 ///
@@ -22,10 +24,10 @@ pub struct PresetParams {
     /// The smallest frame height, at least 64, that codes 256x256
     /// superblocks when `max_block_log2` is `8`.
     pub sb256_min_height: u16,
-    /// Number of luma intra modes, and of chroma modes, tried per block of
-    /// an intra frame, best-ranked first; inter frames take
-    /// `mds_inter_frame_intra`.
-    pub intra_modes: u8,
+    /// Number of luma intra modes, and of chroma modes, tried per block,
+    /// best-ranked first: in key (intra) frames the intra search, in the
+    /// other frame kinds the intra shortlist of a leaf in an inter frame.
+    pub intra_modes: Levels<u8>,
     /// Partition search skips a block's remaining partitions once its unsplit
     /// cost does not exceed the best split cost so far.
     pub partition_early_exit: bool,
@@ -39,9 +41,10 @@ pub struct PresetParams {
     /// in every row: its gain per CPU does not beat the next slower row.
     pub parity_hiding: bool,
     /// The frames that quantize with TCQ (`allow_tcq`); they code no parity
-    /// hiding. `Base` in every row: its BD-rate per CPU beats the next slower
-    /// row at every measured preset, and TCQ on the upper mini-GOP layers loses.
-    pub tcq: TcqFrames,
+    /// hiding. Key and base frames in every row: its BD-rate per CPU beats
+    /// the next slower row at every measured preset, and TCQ on the upper
+    /// mini-GOP layers loses.
+    pub tcq: Levels<bool>,
     /// The final trial of each leaf in the partition search runs the TCQ
     /// trellis; off, it prices TCQ blocks as plain levels and only the frame
     /// write runs the trellis. Mode trials always price plain levels.
@@ -112,27 +115,25 @@ pub struct PresetParams {
     /// `100` in every row (2026-10-26, CRF, vs main 9ec81da32): p6 niklas
     /// f30 Y -0.86%, paris f30 -1.92%, park_joy f10 +0.06% at 0.95-1.0x CPU.
     pub tpl_delta_q: u8,
-    /// Temporal filtering of key frames: the most later neighbours, `0..=8`,
-    /// that a key frame is filtered from before it is coded; the lookahead
-    /// bounds them. `0` is off. `4` at p0-p9 (2026-10-31, p6 vs main
+    /// Temporal filtering, `0..=8` per frame kind, `0` off; the lookahead
+    /// reads it at the normal coefficient level. Key frames: the most later
+    /// neighbours that a key frame is filtered from before it is coded; the
+    /// lookahead bounds them. Base frames: the most neighbours per side of a
+    /// hidden mini-GOP base frame, which its show-existing frame outputs
+    /// filtered. Mid and leaf frames are not filtered. Key frames: `4` at p0-p9 (2026-10-31, p6 vs main
     /// 5530d5de2): paris f30 -1.37%, niklas f30 +0.11% (-0.28% before the
     /// two-pass partition decision), park_joy f10 -0.04% at 0.99-1.01x CPU;
     /// vs 336b8b726: paris p2 -1.60%, park_joy p0 +0.64%, p8 +0.53%. Off at
     /// p10: park_joy -0.82% for +3.4% CPU (+5.3% instructions), under the
-    /// fast-row slope.
-    pub tf_key_frames: u8,
-    /// The strength of `tf_key_frames` in percent: it scales the weight
-    /// decay, so larger values keep more of the neighbours. `0` is off.
-    pub tf_key_strength: u8,
-    /// Temporal filtering of hidden mini-GOP base frames, which their
-    /// show-existing frames output filtered: the most neighbours per side,
-    /// `0..=8`. `0` is off. Off in every row (2026-10-31): with two per
-    /// side at `tf_base_strength` 25 on top of the key frames, paris p6 f30
-    /// went from -1.74% to -1.42%; the filtered frame is shown without an
-    /// overlay frame.
-    pub tf_base_frames: u8,
-    /// The strength of `tf_base_frames` in percent. `0` is off.
-    pub tf_base_strength: u8,
+    /// fast-row slope. Base frames: off in every row (2026-10-31): with two
+    /// per side at strength 25 on top of the key frames, paris p6 f30 went
+    /// from -1.74% to -1.42%; the filtered frame is shown without an overlay
+    /// frame.
+    pub tf_frames: Levels<u8>,
+    /// The strength of `tf_frames` in percent per frame kind: it scales the
+    /// weight decay, so larger values keep more of the neighbours. `0` is
+    /// off.
+    pub tf_strength: Levels<u8>,
     /// `delta_q_res` of a frame with superblock qindex offsets: the qindex
     /// moves in steps of `1 << delta_q_res`, `0..=3`. `1` in every row:
     /// `2` lost 0.8% on park_joy p6 and gained 0.5% on paris.
@@ -348,9 +349,6 @@ pub struct PresetParams {
     /// (`[MVP, NEWMV, compound]`) keeps for the all-plane trials, lowest
     /// luma prediction SATD plus mode rate first. `255` keeps every one.
     pub mds0_budgets: [u8; 3],
-    /// The luma and chroma intra shortlists of a leaf in an inter frame,
-    /// as `intra_modes` is for intra frames.
-    pub mds_inter_frame_intra: u8,
     /// Wavefront search: the superblocks of one tile search in parallel, each
     /// once its left and top-right neighbours are committed, and price from
     /// CDFs averaged three to one from those two neighbours; one writer codes
@@ -362,27 +360,142 @@ pub struct PresetParams {
     pub wavefront: bool,
 }
 
-/// The frames of [`PresetParams::tcq`], from none to all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum TcqFrames {
-    /// No frame.
-    Off,
-    /// Key frames and the frames of mini-GOP layer 0.
-    Base,
-    /// Every frame.
-    All,
+/// The resolution class of a frame, by luma area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResolutionClass {
+    /// At most 480p (854x480).
+    #[default]
+    Sd,
+    /// At most 1080p (1920x1088).
+    Hd,
+    /// Larger than 1080p.
+    Uhd,
 }
 
-impl TcqFrames {
-    /// Whether a frame of mini-GOP `layer` quantizes with TCQ.
+impl ResolutionClass {
+    /// The class of a `width` x `height` frame.
     #[must_use]
-    pub const fn allows(self, layer: u8) -> bool {
-        match self {
-            Self::Off => false,
-            Self::Base => layer == 0,
-            Self::All => true,
+    pub const fn of(width: u32, height: u32) -> Self {
+        match width as u64 * height as u64 {
+            ..=409_920 => Self::Sd,
+            409_921..=2_088_960 => Self::Hd,
+            _ => Self::Uhd,
         }
     }
+}
+
+/// The kind of a frame in the mini-GOP hierarchy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FrameKind {
+    /// A key frame.
+    #[default]
+    Key,
+    /// An inter frame of mini-GOP layer 0.
+    Base,
+    /// An inter frame above layer 0 that refreshes a reference slot.
+    Mid,
+    /// An inter frame above layer 0 that refreshes no reference slot.
+    Leaf,
+}
+
+impl FrameKind {
+    /// The kind of a frame of `frame_type` on mini-GOP `layer` that
+    /// refreshes the slots of `refresh_frame_flags`.
+    #[must_use]
+    pub const fn of(frame_type: FrameType, layer: u8, refresh_frame_flags: u32) -> Self {
+        match (frame_type, layer, refresh_frame_flags) {
+            (FrameType::Key, ..) => Self::Key,
+            (_, 0, _) => Self::Base,
+            (_, _, 0) => Self::Leaf,
+            _ => Self::Mid,
+        }
+    }
+}
+
+/// The coefficient level of a frame, from its qindex: a fine quantizer
+/// leaves high levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CoeffLevel {
+    /// qindex above 192.
+    Low,
+    /// qindex 129..=192.
+    #[default]
+    Normal,
+    /// qindex at most 128.
+    High,
+}
+
+impl CoeffLevel {
+    /// The level of a frame coded at `qindex`.
+    #[must_use]
+    pub const fn of(qindex: u32) -> Self {
+        match qindex {
+            ..=128 => Self::High,
+            129..=192 => Self::Normal,
+            _ => Self::Low,
+        }
+    }
+}
+
+/// The context a [`Levels`] field takes its value for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PresetContext {
+    /// The resolution class.
+    pub resolution: ResolutionClass,
+    /// The frame kind.
+    pub frame: FrameKind,
+    /// The coefficient level.
+    pub coeff: CoeffLevel,
+}
+
+/// One value of a preset field per [`PresetContext`]: 4 frame kinds by 3
+/// resolution classes by 3 coefficient levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Levels<T>([T; 36]);
+
+impl<T: Copy> Levels<T> {
+    /// `value` in every context.
+    #[must_use]
+    pub const fn all(value: T) -> Self {
+        Self([value; 36])
+    }
+
+    /// One value per frame kind (key, base, mid, leaf).
+    #[must_use]
+    pub const fn by_frame(values: [T; 4]) -> Self {
+        let mut out = [values[0]; 36];
+        let mut i = 0;
+        while i < out.len() {
+            out[i] = values[i / 9];
+            i += 1;
+        }
+        Self(out)
+    }
+
+    /// The value in `context`.
+    #[must_use]
+    pub const fn at(&self, context: PresetContext) -> T {
+        self.0
+            [context.frame as usize * 9 + context.resolution as usize * 3 + context.coeff as usize]
+    }
+
+    /// The values of every context.
+    #[must_use]
+    pub const fn values(&self) -> &[T; 36] {
+        &self.0
+    }
+}
+
+/// One [`Levels::by_frame`] per preset from one row of 11 values per frame
+/// kind (key, base, mid, leaf).
+const fn frames<T: Copy>(rows: [[T; 11]; 4]) -> [Levels<T>; 11] {
+    let mut out = [Levels::all(rows[0][0]); 11];
+    let mut i = 0;
+    while i < out.len() {
+        out[i] = Levels::by_frame([rows[0][i], rows[1][i], rows[2][i], rows[3][i]]);
+        i += 1;
+    }
+    out
 }
 
 /// A preset field override that [`PresetParams::set`] rejects.
@@ -450,17 +563,12 @@ impl PresetParams {
             self.max_block_log2,
             " (max_block_log2)",
         )?;
-        check("intra_modes", self.intra_modes, 1, u8::MAX, "")?;
+        for &modes in self.intra_modes.values() {
+            check("intra_modes", modes, 1, u8::MAX, "")?;
+        }
         for budget in self.mds0_budgets {
             check("mds0_budgets", budget, 1, u8::MAX, " per class")?;
         }
-        check(
-            "mds_inter_frame_intra",
-            self.mds_inter_frame_intra,
-            1,
-            u8::MAX,
-            "",
-        )?;
         check("subpel_depth", self.subpel_depth, 0, 3, "")?;
         check("loop_filter_search", self.loop_filter_search, 0, 3, "")?;
         check("mini_gop_size", self.mini_gop_size, 1, 8, "")?;
@@ -473,8 +581,9 @@ impl PresetParams {
         )?;
         check("drl_bits", self.drl_bits, 1, 5, "")?;
         check("tpl_delta_q", self.tpl_delta_q, 0, 200, "")?;
-        check("tf_key_frames", self.tf_key_frames, 0, 8, "")?;
-        check("tf_base_frames", self.tf_base_frames, 0, 8, "")?;
+        for &frames in self.tf_frames.values() {
+            check("tf_frames", frames, 0, 8, "")?;
+        }
         check("delta_q_res", self.delta_q_res, 0, 3, "")?;
         check("interp_filter_search", self.interp_filter_search, 0, 2, "")?;
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
@@ -549,13 +658,13 @@ impl FieldValue for [u8; 3] {
     }
 }
 
-impl FieldValue for TcqFrames {
-    const EXPECTED: &'static str = "Off, Base or All";
+impl<T: FieldValue + Copy> FieldValue for Levels<T> {
+    const EXPECTED: &'static str = "one value for every frame, or four comma-separated values for key, base, mid and leaf frames";
     fn parse(value: &str) -> Option<Self> {
-        match value {
-            "Off" => Some(Self::Off),
-            "Base" => Some(Self::Base),
-            "All" => Some(Self::All),
+        let values: Vec<T> = value.split(',').map(T::parse).collect::<Option<_>>()?;
+        match values[..] {
+            [all] => Some(Self::all(all)),
+            [key, base, mid, leaf] => Some(Self::by_frame([key, base, mid, leaf])),
             _ => None,
         }
     }
@@ -606,9 +715,10 @@ macro_rules! preset_table {
             pub const FIELDS: &'static [&'static str] = &[$($(stringify!($field),)*)*];
 
             /// Sets the field `name` to `value`: an integer in the field's
-            /// type range, `0`, `1`, `false` or `true` for a flag, a
-            /// [`TcqFrames`] variant name for `tcq`, three comma-separated
-            /// flags for `mvd_tools`, and three comma-separated integers for
+            /// type range, `0`, `1`, `false` or `true` for a flag, one value
+            /// or four comma-separated values (key, base, mid, leaf frames)
+            /// for a [`Levels`] field, three comma-separated flags for
+            /// `mvd_tools`, and three comma-separated integers for
             /// `mds0_budgets`.
             ///
             /// # Errors
@@ -625,8 +735,6 @@ macro_rules! preset_table {
         }
     };
 }
-
-use TcqFrames::Base;
 
 #[rustfmt::skip]
 preset_table! {
@@ -646,7 +754,11 @@ preset_table! {
         sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
     }
     intra {
-        intra_modes:           [   13,    13,    12,    10,     9,     8,     6,     5,     4,     3,     2],
+        intra_modes:           frames([
+                               [   13,    13,    12,    10,     9,     8,     6,     5,     4,     3,     2],
+                               [   13,    13,    12,    10,     9,     8,     3,     3,     3,     3,     2],
+                               [   13,    13,    12,    10,     9,     8,     3,     3,     3,     3,     2],
+                               [   13,    13,    12,    10,     9,     8,     3,     3,     3,     3,     2]]),
         mrl_trials:            [    2,     2,     2,     2,     2,     2,     2,     0,     0,     0,     0],
         cfl_filter:            [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mhccp:                 [false, false, false, false, false, false, false, false, false, false, false],
@@ -657,7 +769,7 @@ preset_table! {
         rdoq:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
         rdoq_every_type:       [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
         parity_hiding:         [false, false, false, false, false, false, false, false, false, false, false],
-        tcq:                   [ Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base,  Base],
+        tcq:                   frames([[true; 11], [true; 11], [false; 11], [false; 11]]),
         tcq_search_trellis:    [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         tcq_type_trellis:      [ true,  true,  true,  true, false, false, false, false, false, false, false],
         tx_type_depth:         [    3,     3,     3,     2,     2,     2,     1,     1,     1,     0,     0],
@@ -715,15 +827,14 @@ preset_table! {
         mini_gop_size:         [    8,     8,     8,     8,     8,     4,     4,     4,     2,     2,     1],
         lookahead_frames:      [   16,    16,    16,    16,    16,     8,     8,     8,     4,     4,     2],
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
-        tf_key_frames:         [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     0],
-        tf_key_strength:       [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
-        tf_base_frames:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        tf_base_strength:      [   25,    25,    25,    25,    25,    25,    25,    25,    25,    25,    25],
+        tf_frames:             frames([
+                               [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     0],
+                               [0; 11], [0; 11], [0; 11]]),
+        tf_strength:           frames([[100; 11], [25; 11], [25; 11], [25; 11]]),
         delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
     mode_decision {
         mds0_budgets:          [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
-        mds_inter_frame_intra: [   13,    13,    12,    10,     9,     8,     3,     3,     3,     3,     2],
     }
     threading {
         wavefront:             [false, false, false, false, false, false, false,  true,  true,  true,  true],
@@ -802,6 +913,11 @@ mod tests {
     use super::*;
     use crate::{Config, Encoder, SourceFrame};
 
+    /// `fast` is at most `slow` in every context.
+    fn at_most<T: PartialOrd + Copy>(fast: &Levels<T>, slow: &Levels<T>) -> bool {
+        fast.values().iter().zip(slow.values()).all(|(f, s)| f <= s)
+    }
+
     #[test]
     fn every_field_is_monotone_from_slow_to_fast() {
         for pair in PRESETS.windows(2) {
@@ -809,13 +925,13 @@ mod tests {
             assert!(fast.min_block_log2 >= slow.min_block_log2);
             assert!(fast.max_block_log2 <= slow.max_block_log2);
             assert!(fast.min_block_log2 <= fast.max_block_log2);
-            assert!(fast.intra_modes <= slow.intra_modes);
+            assert!(at_most(&fast.intra_modes, &slow.intra_modes));
             assert!(fast.partition_early_exit >= slow.partition_early_exit);
             assert!(fast.sdp <= slow.sdp);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
             assert!(fast.parity_hiding <= slow.parity_hiding);
-            assert!(fast.tcq <= slow.tcq);
+            assert!(at_most(&fast.tcq, &slow.tcq));
             assert!(fast.tcq_search_trellis <= slow.tcq_search_trellis);
             assert!(fast.tcq_type_trellis <= slow.tcq_type_trellis);
             assert!(fast.tcq_search_trellis || !fast.tcq_type_trellis);
@@ -835,8 +951,7 @@ mod tests {
             assert!(fast.mini_gop_size <= slow.mini_gop_size);
             assert!(fast.lookahead_frames <= slow.lookahead_frames);
             assert!(fast.tpl_delta_q <= slow.tpl_delta_q);
-            assert!(fast.tf_key_frames <= slow.tf_key_frames);
-            assert!(fast.tf_base_frames <= slow.tf_base_frames);
+            assert!(at_most(&fast.tf_frames, &slow.tf_frames));
             assert!(fast.compound_candidates <= slow.compound_candidates);
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.mv_prediction <= slow.mv_prediction);
@@ -889,7 +1004,6 @@ mod tests {
                     .zip(slow.mds0_budgets)
                     .all(|(&f, s)| f <= s)
             );
-            assert!(fast.mds_inter_frame_intra <= slow.mds_inter_frame_intra);
             assert!(fast.opfl <= slow.opfl);
             assert!(fast.tip_refinemv <= slow.tip_refinemv);
             assert!(
@@ -934,12 +1048,14 @@ mod tests {
         let mut params = PRESETS[6];
         params.set("gdf_candidates", "4")?;
         params.set("rdoq", "false")?;
-        params.set("tcq", "All")?;
+        params.set("tcq", "true")?;
+        params.set("intra_modes", "5,4,3,2")?;
         params.set("mvd_tools", "1,0,true")?;
         let expected = PresetParams {
             gdf_candidates: 4,
             rdoq: false,
-            tcq: TcqFrames::All,
+            tcq: Levels::all(true),
+            intra_modes: Levels::by_frame([5, 4, 3, 2]),
             mvd_tools: [true, false, true],
             ..PRESETS[6]
         };
@@ -966,6 +1082,8 @@ mod tests {
             ("full_trials", "true"),
             ("rdoq", "yes"),
             ("tcq", "base"),
+            ("tcq", "1,1"),
+            ("intra_modes", "1,2,3,4,5"),
             ("mvd_tools", "1,0"),
             ("mvd_tools", "1,0,1,1"),
         ] {
@@ -978,6 +1096,36 @@ mod tests {
             );
         }
         assert_eq!(params, PRESETS[6]);
+    }
+
+    /// Each context axis splits where its type documents.
+    #[test]
+    fn contexts_classify_frames() {
+        use FrameType::{Inter, Key};
+        assert_eq!(ResolutionClass::of(854, 480), ResolutionClass::Sd);
+        assert_eq!(ResolutionClass::of(1280, 720), ResolutionClass::Hd);
+        assert_eq!(ResolutionClass::of(1920, 1088), ResolutionClass::Hd);
+        assert_eq!(ResolutionClass::of(2048, 1088), ResolutionClass::Uhd);
+        assert_eq!(FrameKind::of(Key, 0, 0xff), FrameKind::Key);
+        assert_eq!(FrameKind::of(Inter, 0, 1), FrameKind::Base);
+        assert_eq!(FrameKind::of(Inter, 0, 0), FrameKind::Base);
+        assert_eq!(FrameKind::of(Inter, 1, 2), FrameKind::Mid);
+        assert_eq!(FrameKind::of(Inter, 2, 0), FrameKind::Leaf);
+        assert_eq!(CoeffLevel::of(128), CoeffLevel::High);
+        assert_eq!(CoeffLevel::of(129), CoeffLevel::Normal);
+        assert_eq!(CoeffLevel::of(193), CoeffLevel::Low);
+        let mut values = [0u8; 36];
+        for (i, value) in values.iter_mut().enumerate() {
+            *value = i as u8;
+        }
+        let levels = Levels(values);
+        let context = PresetContext {
+            resolution: ResolutionClass::Uhd,
+            frame: FrameKind::Mid,
+            coeff: CoeffLevel::Low,
+        };
+        assert_eq!(levels.at(context), 2 * 9 + 2 * 3);
+        assert_eq!(Levels::by_frame([1, 2, 3, 4]).at(context), 3);
     }
 
     #[test]
@@ -1003,7 +1151,8 @@ mod tests {
             (&[("mini_gop_size", "9")], "mini_gop_size"),
             (&[("intra_modes", "0")], "intra_modes"),
             (&[("mds0_budgets", "4,0,2")], "mds0_budgets"),
-            (&[("mds_inter_frame_intra", "0")], "mds_inter_frame_intra"),
+            (&[("intra_modes", "3,3,0,3")], "intra_modes"),
+            (&[("tf_frames", "9")], "tf_frames"),
             (&[("gdf_candidates", "17")], "gdf_candidates"),
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),
@@ -1024,8 +1173,8 @@ mod tests {
     }
 
     /// Values at the type extremes and around the supported bounds.
-    const PROBE_VALUES: [&str; 17] = [
-        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "16", "17", "255", "65535", "All", "Off",
+    const PROBE_VALUES: [&str; 16] = [
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "16", "17", "255", "65535", "1,1,0,0",
         "1,1,1",
     ];
 
@@ -1079,7 +1228,7 @@ mod tests {
         let mut params = PRESETS[10];
         for &field in PresetParams::FIELDS {
             assert!(
-                ["1", "Base", "1,1,1"]
+                ["1", "1,1,1"]
                     .iter()
                     .any(|value| params.set(field, value).is_ok()),
                 "{field}"

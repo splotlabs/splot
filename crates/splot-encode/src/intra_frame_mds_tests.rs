@@ -8,16 +8,18 @@ use super::*;
 use crate::mode_decision::{
     CHAINED_REFERENCES, INTRA_SKIPPED, MDS0_PRUNED, MDS1_PRUNED, PD0_PASSES,
 };
-use crate::preset::PresetParams;
+use crate::preset::{FrameKind, Levels, PresetContext, PresetParams};
 
 /// Preset 6 searched in one pass, with MDS0 `budgets` and an inter-frame
 /// intra shortlist of `intra`.
 fn staged(budgets: [u8; 3], intra: u8) -> &'static PresetParams {
+    let p6 = Preset::new(6).unwrap().params();
+    let key = p6.intra_modes.at(PresetContext::default());
     Box::leak(Box::new(PresetParams {
         mds0_budgets: budgets,
-        mds_inter_frame_intra: intra,
+        intra_modes: Levels::by_frame([key, intra, intra, intra]),
         pd_window: u8::MAX,
-        ..*Preset::new(6).unwrap().params()
+        ..*p6
     }))
 }
 
@@ -84,7 +86,14 @@ fn open_budgets_code_the_unstaged_stream() {
         ..*Preset::new(5).unwrap().params()
     }));
     assert_eq!(p5.mds0_budgets, [u8::MAX; 3]);
-    assert_eq!(p5.mds_inter_frame_intra, p5.intra_modes);
+    let inter = PresetContext {
+        frame: FrameKind::Leaf,
+        ..PresetContext::default()
+    };
+    assert_eq!(
+        p5.intra_modes.at(inter),
+        p5.intra_modes.at(PresetContext::default())
+    );
     let (units, _, _, pruned) = staged_stream(p5, 200, 1);
     assert_eq!(pruned, 0);
     assert_eq!((units.len(), fnv(&units)), P5_GOLDEN);

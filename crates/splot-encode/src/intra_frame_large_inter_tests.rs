@@ -52,6 +52,7 @@ pub(super) fn in_first_inter_frame<R>(
     let lambda = Lambda::from_qindex(110, config.bit_depth).unwrap();
     let mut residual =
         SourceResidualCoder::new(&padded, 110, config.bit_depth, &coder.preset, lambda);
+    residual.context = coder.preset_context(&plan, 110);
     writer
         .search_superblock(|syntax, root| test(syntax, root, &mut residual))
         .unwrap()
