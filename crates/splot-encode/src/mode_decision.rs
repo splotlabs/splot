@@ -72,6 +72,8 @@ thread_local! {
 thread_local! {
     /// Inter candidates that MDS0 dropped on this thread.
     pub(crate) static MDS0_PRUNED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// Candidates that MDS1 dropped on this thread.
+    pub(crate) static MDS1_PRUNED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 /// The compound shortlist prices the syntax of this many times as many of
 /// its lowest-SATD candidates as it keeps.
@@ -315,9 +317,11 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         if let [only] = candidates.as_slice() {
             return Ok((None, *only));
         }
+        let candidates = self.mds1(leaf, candidates, planes.clone(), start)?;
+        let candidate = self.preset.full_trials == 0;
         let mut best: Option<(u128, LeafChoice)> = None;
         for choice in candidates {
-            let j = self.trial_cost(leaf, choice, planes.clone(), start)?;
+            let j = self.staged_trial_cost(leaf, choice, planes.clone(), start, candidate)?;
             if best.is_none_or(|(best_j, _)| j < best_j) {
                 best = Some((j, choice));
             }
@@ -325,6 +329,37 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         self.syntax.restore(start)?;
         best.map(|(j, choice)| (Some(j), choice))
             .ok_or(TileWriterError::Shape("no leaf candidate"))
+    }
+
+    /// The `preset.full_trials` of `candidates` with the least
+    /// `D + lambda * R` over `planes` in a `DCT_DCT` deadzone trial, in
+    /// order; every candidate when there are no more or the preset gives
+    /// none a full trial.
+    fn mds1(
+        &mut self,
+        leaf: &LeafBlock,
+        candidates: Vec<LeafChoice>,
+        planes: Range<usize>,
+        start: &SyntaxSnapshot,
+    ) -> Result<Vec<LeafChoice>> {
+        let keep = usize::from(self.preset.full_trials);
+        if keep == 0 || candidates.len() <= keep {
+            return Ok(candidates);
+        }
+        let mut ranked = Vec::with_capacity(candidates.len());
+        for (index, &choice) in candidates.iter().enumerate() {
+            let cost = self.staged_trial_cost(leaf, choice, planes.clone(), start, true)?;
+            ranked.push((cost, index));
+        }
+        ranked.sort_unstable();
+        #[cfg(test)]
+        MDS1_PRUNED.set(MDS1_PRUNED.get() + ranked.len() - keep);
+        ranked.truncate(keep);
+        ranked.sort_unstable_by_key(|&(_, index)| index);
+        Ok(ranked
+            .into_iter()
+            .map(|(_, index)| candidates[index])
+            .collect())
     }
 
     /// The candidate-trial `D + lambda * R` of `choice` over `planes` from
@@ -336,8 +371,21 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         planes: Range<usize>,
         start: &SyntaxSnapshot,
     ) -> Result<u128> {
+        let candidate = self.preset.full_trials == 0;
+        self.staged_trial_cost(leaf, choice, planes, start, candidate)
+    }
+
+    /// [`Self::trial_cost`], a `DCT_DCT` deadzone trial when `candidate`.
+    fn staged_trial_cost(
+        &mut self,
+        leaf: &LeafBlock,
+        choice: LeafChoice,
+        planes: Range<usize>,
+        start: &SyntaxSnapshot,
+        candidate: bool,
+    ) -> Result<u128> {
         self.syntax.restore(start)?;
-        self.coder.candidate = !self.preset.full_trials;
+        self.coder.candidate = candidate;
         self.coder.trial = true;
         let cost = self.trial(leaf, choice, planes);
         (self.coder.candidate, self.coder.trial) = (false, false);

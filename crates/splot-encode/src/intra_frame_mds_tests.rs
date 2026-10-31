@@ -5,7 +5,7 @@
 //! shortlist.
 
 use super::*;
-use crate::mode_decision::MDS0_PRUNED;
+use crate::mode_decision::{MDS0_PRUNED, MDS1_PRUNED};
 use crate::preset::PresetParams;
 
 /// Preset 6 with MDS0 `budgets` and an inter-frame intra shortlist of `intra`.
@@ -94,6 +94,42 @@ fn open_limits_drop_no_candidate() {
     assert_ne!(staged_stream(staged([1, 1, 1], 1), 200, 1).0, units);
 }
 
+/// Preset 6 with two full trials per choice.
+fn full_staged() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        full_trials: 2,
+        ..*Preset::new(6).unwrap().params()
+    }))
+}
+
+/// MDS1 gives only the two cheapest candidates of a choice by a `DCT_DCT`
+/// deadzone trial the full trial, in frames that later frames reference,
+/// with deblocking and CDEF on; the stream decodes to the encoder recon and
+/// codes the same bytes on 1, 2 and 8 threads.
+#[test]
+fn mds1_streams_decode_on_any_thread_count() {
+    MDS1_PRUNED.set(0);
+    let (one, expected, cores, _) = staged_stream(full_staged(), 200, 1);
+    assert!(MDS1_PRUNED.get() > 0, "MDS1 dropped no candidate");
+    assert!(cores.iter().any(|core| {
+        core.deblocking_filter_params
+            .as_ref()
+            .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
+    }));
+    assert!(
+        cores
+            .iter()
+            .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
+    );
+    assert_same_samples(&decode(&one), &expected, "MDS1");
+    for threads in [2, 8] {
+        assert!(
+            staged_stream(full_staged(), 200, threads).0 == one,
+            "{threads} threads"
+        );
+    }
+}
+
 /// AVM decodes the staged stream like splot.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
@@ -101,8 +137,16 @@ fn avm_decodes_staged_streams_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    let (units, _, _, pruned) = staged_stream(staged([1, 1, 1], 1), 200, 1);
-    assert!(pruned > 0);
+    MDS1_PRUNED.set(0);
+    let (units, _, _, pruned) = staged_stream(
+        Box::leak(Box::new(PresetParams {
+            mds0_budgets: [1, 1, 1],
+            ..*full_staged()
+        })),
+        200,
+        1,
+    );
+    assert!(pruned > 0 && MDS1_PRUNED.get() > 0);
     let avm = avm_decode(
         &avmdec,
         std::slice::from_ref(&units),
