@@ -59,6 +59,7 @@ use super::partition_traversal::{
 use super::tile_frontier::minimal_partition_frame_facts;
 
 mod cctx;
+mod coeff_walk;
 mod compound;
 mod delta_q;
 mod fsc;

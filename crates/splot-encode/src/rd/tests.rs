@@ -411,3 +411,160 @@ fn lambda_scaling_follows_powers_of_two() {
         last = next;
     }
 }
+
+/// The level-pass symbols of the reference per-position walk: each position
+/// asks the facade for its row in turn, as the writer did before the walk
+/// moved into the facade.
+fn per_position_symbols(
+    syntax: &mut IntraTileSyntax,
+    tx: &TransformBlock,
+    grid: &mut splot_decode::encoder_syntax::CoeffLevels,
+    (levels, width, eob): (&[i32], usize, usize),
+) -> Vec<(Vec<u16>, usize)> {
+    use splot_core::coefficient::{LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
+    let (log2_w, height) = (width.trailing_zeros(), levels.len() / width);
+    let scan = grid.scan();
+    let mut out = Vec::new();
+    for c in (0..eob).rev() {
+        let pos = usize::from(scan[c]);
+        let (row, col) = (pos >> log2_w, pos & (width - 1));
+        let is_lf = grid.is_low_frequency(row, col, tx.plane);
+        let shift = u32::from(grid.hides(c));
+        let (level, _) = grid.split(c, levels[pos].unsigned_abs() >> shift, is_lf, tx.plane);
+        let base_levels = if is_lf {
+            LF_NUM_BASE_LEVELS
+        } else {
+            NUM_BASE_LEVELS
+        };
+        let base = level.min(base_levels + 1);
+        if c == eob - 1 {
+            let cdf = syntax
+                .coeff_base_eob_cdf(tx.plane, tx.tx_size, c, (log2_w, height), is_lf)
+                .unwrap();
+            out.push((cdf.to_vec(), base as usize - 1));
+        } else {
+            let cdf = syntax
+                .coeff_base_cdf(grid, tx.plane, tx.tx_size, (row, col, c), is_lf)
+                .unwrap();
+            out.push((cdf.to_vec(), base as usize));
+        }
+        if base > base_levels && !(is_lf && tx.plane > 0) {
+            let cdf = syntax
+                .coeff_br_cdf(grid, tx.plane, (row, col), is_lf)
+                .unwrap();
+            out.push((cdf.to_vec(), (level - base) as usize));
+        }
+        grid.set(row, col, level).unwrap();
+        if let Some(state) = grid.tcq_state() {
+            grid.set_tcq_state(splot_decode::encoder_syntax::tcq_next_state(state, level));
+        }
+    }
+    out
+}
+
+/// The facade's one-call level pass sends the rows and values of the
+/// per-position walk, for random asymmetric levels of every transform size,
+/// several types and every plane, with and without hidden parity and TCQ.
+#[test]
+fn the_level_walk_matches_the_per_position_walk() {
+    use splot_decode::encoder_syntax::CoeffLevels;
+    let (seq, core) = headers(64, 64, BitDepthIdc::Ten, 120);
+    let mut syntax = IntraTileSyntax::new(&seq, &core, &refs_for(&seq), 0).unwrap();
+    let root = syntax.superblock_root(0, 0);
+    syntax.begin_superblock(root);
+    let leaf = syntax.leaf(root).unwrap();
+    let planned = syntax.plan_leaf(&leaf, IntraModes::DC).unwrap()[0];
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let mut checked = 0;
+    for tx_size in 0..19 {
+        let Ok((log2_w, log2_h)) = adjusted_log2(tx_size) else {
+            continue;
+        };
+        let width = 1usize << log2_w;
+        for (plane, tx_type) in [
+            (0, TxType::DctDct),
+            (0, TxType::Idtx),
+            (0, TxType::VDct),
+            (0, TxType::HDct),
+            (0, TxType::AdstDct),
+            (1, TxType::DctDct),
+            (2, TxType::DctAdst),
+        ] {
+            for (hidden, tcq) in [(false, false), (true, false), (false, true)] {
+                let tx = TransformBlock {
+                    tx_size,
+                    tx_type,
+                    plane,
+                    ..planned
+                };
+                let Ok(mut walked) = CoeffLevels::for_block(&tx) else {
+                    continue;
+                };
+                let mut reference = CoeffLevels::for_block(&tx).unwrap();
+                let levels: Vec<i32> = (0..width << log2_h)
+                    .map(|pos| {
+                        let keep = rng.below(5) < 2 || pos < 3;
+                        let big = rng.below(4) == 0;
+                        let magnitude = (1 + rng.below(if big { 40 } else { 4 })) as i32;
+                        if !keep {
+                            0
+                        } else if (pos * 7 + 3) % 5 < 2 {
+                            -magnitude
+                        } else {
+                            magnitude
+                        }
+                    })
+                    .collect();
+                let scan = walked.scan();
+                let eob = scan
+                    .iter()
+                    .rposition(|&pos| levels[usize::from(pos)] != 0)
+                    .map_or(0, |last| last + 1);
+                if eob == 0 {
+                    continue;
+                }
+                for grid in [&mut walked, &mut reference] {
+                    grid.set_hidden(hidden);
+                    if tcq {
+                        grid.set_tcq_state(0);
+                    }
+                }
+                let mut symbols = Vec::new();
+                syntax
+                    .code_coeff_levels(&tx, &mut walked, (&levels, width, eob), |row, value| {
+                        symbols.push((row.to_vec(), value));
+                        Ok::<(), splot_decode::encoder_syntax::EncoderSyntaxError>(())
+                    })
+                    .unwrap();
+                let expected =
+                    per_position_symbols(&mut syntax, &tx, &mut reference, (&levels, width, eob));
+                assert_eq!(
+                    symbols, expected,
+                    "tx_size {tx_size} {tx_type:?} plane {plane}"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 200, "{checked} blocks checked");
+    let mut grid = CoeffLevels::for_block(&planned).unwrap();
+    let levels = vec![0i32; grid.scan().len()];
+    let width = 1usize << adjusted_log2(planned.tx_size).unwrap().0;
+    let ignore =
+        |_: &mut [u16], _: usize| Ok::<(), splot_decode::encoder_syntax::EncoderSyntaxError>(());
+    for (width, eob) in [(width, levels.len() + 1), (width, 1), (3, 1)] {
+        assert!(
+            syntax
+                .code_coeff_levels(&planned, &mut grid, (&levels, width, eob), ignore)
+                .is_err(),
+            "width {width} eob {eob}"
+        );
+    }
+    let short = &levels[..levels.len() - 1];
+    assert!(
+        syntax
+            .code_coeff_levels(&planned, &mut grid, (short, width, 1), ignore)
+            .is_err(),
+        "a width that does not divide the levels"
+    );
+}
