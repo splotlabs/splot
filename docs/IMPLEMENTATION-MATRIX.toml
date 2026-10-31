@@ -6908,6 +6908,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-REF-STATS"
+name = "Encoder reference statistics feedback"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/intra_frame.rs"
+change_id = "enc-refstats"
+owner = "encoder"
+risk = "medium"
+notes = "B5 part 1 (2026-10-31). Each coded frame publishes the 8x8 luma cells its intra leaves cover (IntraCells, marked from the coded partition trees, the luma tree of SDP nodes), and commit stores them with every reference slot the frame refreshes, so the statistics follow the coded result and the coding order, never thread timing. An inter frame reads the cells of its primary reference (the CDF-carry slot): a leaf that can code inter skips the intra search when no intra cell lies within PresetParams::ref_intra_margin cells of its collocated area (255 off). Published cells carry their age, the frames since a full intra search in their reference chain, and a frame reads them only while the age is below PresetParams::ref_intra_refresh, so a chain of skipping frames cannot stop searching intra for good. Every row takes margin 1 (margin 0 lost 1.1% on park_joy p6) and refresh 4. With the skip off no cells are built or published. Measured against main 082110790 (2026-10-31): p6 park_joy f10 +0.17% at 0.844x CPU, paris f30 +0.12% at 0.753x, niklas f10 +0.46% at 0.824x (mean +0.25% at about 0.81x); park_joy p0 -0.03% at 0.866x, p10 +0.17% at 0.758x. One key frame then 60 niklas frames at p6 (--keyint 1000): +0.43% at 0.81x, and without the refresh +0.69% at 0.74x; paris f30 the same way +0.12% at 0.76x (without the refresh -0.13% at 0.70x). The B5 target (p6 -10% CPU at <= +0.2%) is missed (2026-10-31): the three-clip mean is +0.25% and niklas alone +0.46%. Not done: the skip of the interpolation-filter search by the reference skip share (interp_filter_search is 0 in every row), reuse of the reference filter parameters (the loop-filter searches take about 1% of p6 time), tx-type pruning by a histogram (the type search runs only in a leaf's final trial at p4-p10) and high-precision MV statistics."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "partial"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_mds_tests.rs::reference_intra_skip_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_mds_tests.rs::avm_decodes_reference_intra_skip_streams_like_splot", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
+commands = ["cargo test -p splot-encode reference_intra --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_reference_intra --locked -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-WAVEFRONT-SEARCH"
 name = "Wavefront superblock search inside one tile"
 category = "encoder"
