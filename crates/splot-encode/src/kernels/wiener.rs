@@ -10,7 +10,7 @@
 //! rows of a unit, and moves them to `i64` sums before they can overflow.
 
 use std::simd::Simd;
-use std::simd::num::SimdInt as _;
+use std::simd::num::{SimdInt as _, SimdUint as _};
 
 const LANES: usize = 8;
 type V = Simd<i32, LANES>;
@@ -244,6 +244,64 @@ impl<const N: usize> WienerClassAccumulator<N> {
     }
 }
 
+/// `plus + minus - 2 * centre` per sample into `out`, the length of the
+/// shortest input: the symmetric tap pair feature of the Wiener-NS fit.
+pub(crate) fn pair_features(plus: &[u16], minus: &[u16], centre: &[u16], out: &mut Vec<i32>) {
+    let n = plus.len().min(minus.len()).min(centre.len());
+    out.clear();
+    out.reserve(n);
+    let (p, p_tail) = plus[..n].as_chunks::<16>();
+    let (m, m_tail) = minus[..n].as_chunks::<16>();
+    let (c, c_tail) = centre[..n].as_chunks::<16>();
+    let wide = |v: &[u16; 16]| Simd::from_array(*v).cast::<i32>();
+    for ((p, m), c) in p.iter().zip(m).zip(c) {
+        out.extend_from_slice(&(wide(p) + wide(m) - wide(c) * Simd::splat(2)).to_array());
+    }
+    out.extend(
+        p_tail
+            .iter()
+            .zip(m_tail)
+            .zip(c_tail)
+            .map(|((&p, &m), &c)| i32::from(p) + i32::from(m) - 2 * i32::from(c)),
+    );
+}
+
+#[cfg(test)]
+fn pair_features_scalar(plus: &[u16], minus: &[u16], centre: &[u16], out: &mut Vec<i32>) {
+    out.clear();
+    out.extend(
+        plus.iter()
+            .zip(minus)
+            .zip(centre)
+            .map(|((&p, &m), &c)| i32::from(p) + i32::from(m) - 2 * i32::from(c)),
+    );
+}
+
+/// `a - b` per sample into `out`, the length of the shorter input.
+pub(crate) fn differences(a: &[u16], b: &[u16], out: &mut Vec<i32>) {
+    let n = a.len().min(b.len());
+    out.clear();
+    out.reserve(n);
+    let (a, a_tail) = a[..n].as_chunks::<16>();
+    let (b, b_tail) = b[..n].as_chunks::<16>();
+    for (a, b) in a.iter().zip(b) {
+        let (a, b) = (Simd::from_array(*a), Simd::from_array(*b));
+        out.extend_from_slice(&(a.cast::<i32>() - b.cast::<i32>()).to_array());
+    }
+    out.extend(
+        a_tail
+            .iter()
+            .zip(b_tail)
+            .map(|(&a, &b)| i32::from(a) - i32::from(b)),
+    );
+}
+
+#[cfg(test)]
+fn differences_scalar(a: &[u16], b: &[u16], out: &mut Vec<i32>) {
+    out.clear();
+    out.extend(a.iter().zip(b).map(|(&a, &b)| i32::from(a) - i32::from(b)));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,6 +309,24 @@ mod tests {
 
     /// `(coefficients, bound, rows of (features, target))`.
     type Case = (usize, i32, Vec<(Vec<Vec<i32>>, Vec<i32>)>);
+
+    proptest! {
+        /// Asymmetric rows of different lengths, any sample value.
+        #[test]
+        fn feature_rows_match_scalar(
+            a in proptest::collection::vec(any::<u16>(), 0..80),
+            b in proptest::collection::vec(any::<u16>(), 0..80),
+            c in proptest::collection::vec(any::<u16>(), 0..80),
+        ) {
+            let (mut simd, mut scalar) = (vec![5], vec![6]);
+            pair_features(&a, &b, &c, &mut simd);
+            pair_features_scalar(&a, &b, &c, &mut scalar);
+            prop_assert_eq!(&simd, &scalar);
+            differences(&a, &c, &mut simd);
+            differences_scalar(&a, &c, &mut scalar);
+            prop_assert_eq!(simd, scalar);
+        }
+    }
 
     fn case() -> impl Strategy<Value = Case> {
         (

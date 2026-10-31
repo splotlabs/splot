@@ -136,13 +136,7 @@ impl Padded {
     /// `source - m` over the columns `span` of row `y`, `source` from column `0`.
     fn target(&self, y: usize, span: Range<usize>, source: &[u16], out: &mut Vec<i32>) {
         let centre = &self.row(y, 0)[self.radius..];
-        out.clear();
-        out.extend(
-            source[span.clone()]
-                .iter()
-                .zip(&centre[span])
-                .map(|(&s, &m)| i32::from(s) - i32::from(m)),
-        );
+        crate::kernels::wiener::differences(&source[span.clone()], &centre[span], out);
     }
 
     /// The pair feature `s(dy, dx) + s(-dy, -dx) - 2m` over `span` of row `y`.
@@ -150,19 +144,25 @@ impl Padded {
         let radius = self.radius as isize;
         let (plus, minus, centre) = (self.row(y, dy), self.row(y, -dy), self.row(y, 0));
         let (ahead, behind) = ((radius + dx) as usize, (radius - dx) as usize);
-        out.clear();
-        out.extend(span.map(|x| {
-            i32::from(plus[x + ahead]) + i32::from(minus[x + behind])
-                - 2 * i32::from(centre[x + self.radius])
-        }));
+        let (start, len) = (span.start, span.len());
+        crate::kernels::wiener::pair_features(
+            &plus[start + ahead..][..len],
+            &minus[start + behind..][..len],
+            &centre[start + self.radius..][..len],
+            out,
+        );
     }
 
     /// The tap difference `s(dy, dx) - m` over `span` of row `y`.
     fn diff(&self, y: usize, span: Range<usize>, (dy, dx): (isize, isize), out: &mut Vec<i32>) {
         let (tap, centre) = (self.row(y, dy), self.row(y, 0));
         let (p, c) = ((self.radius as isize + dx) as usize, self.radius);
-        out.clear();
-        out.extend(span.map(|x| i32::from(tap[x + p]) - i32::from(centre[x + c])));
+        let (start, len) = (span.start, span.len());
+        crate::kernels::wiener::differences(
+            &tap[start + p..][..len],
+            &centre[start + c..][..len],
+            out,
+        );
     }
 }
 
