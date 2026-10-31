@@ -550,8 +550,6 @@ impl IntraFrameCoder {
                 Some(&(offset, lambda_log2)) => {
                     let mut target = qindex.saturating_add_signed(i32::from(offset));
                     if wavefront {
-                        // A row facade starts at `base_q_idx`: targets that never clip keep
-                        // every `CurrentQIndex` on its step, so the writer reaches each one.
                         let step = 1 << self.preset.delta_q_res;
                         let max_q = splot_recon::max_quantizer_index(bit_depth);
                         target =

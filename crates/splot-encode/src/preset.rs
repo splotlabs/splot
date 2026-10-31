@@ -346,8 +346,9 @@ pub struct PresetParams {
     /// Wavefront search: the superblocks of one tile search in parallel, each
     /// once its left and top-right neighbours are committed, and price from
     /// CDFs averaged three to one from those two neighbours; one writer codes
-    /// them in raster order with the exact CDFs. Off searches in raster order
-    /// from the exact running CDFs.
+    /// them in raster order with the exact CDFs. Superblock qindex targets
+    /// stay on the `delta_q_res` steps of `base_q_idx`, where each row starts.
+    /// Off searches in raster order from the exact running CDFs.
     pub wavefront: bool,
 }
 
