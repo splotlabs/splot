@@ -238,6 +238,24 @@ impl FrameMotion {
     }
 }
 
+#[cfg(test)]
+impl FrameMotion {
+    /// A field over `sb_cols x sb_rows` superblocks whose block of side
+    /// `8 << size` at `(col, row)` holds `motion(size, col, row)`.
+    pub(crate) fn from_fn(
+        (sb_cols, sb_rows): (usize, usize),
+        motion: impl Fn(usize, usize, usize) -> Motion,
+    ) -> Self {
+        let blocks = core::array::from_fn(|size| {
+            let (cols, rows) = (sb_cols << (3 - size), sb_rows << (3 - size));
+            (0..cols * rows)
+                .map(|i| motion(size, i % cols, i / cols))
+                .collect()
+        });
+        Self { sb_cols, blocks }
+    }
+}
+
 /// The motion of `current` against `reference`, `distance` frames apart, on
 /// `pool` by superblock rows when there is one.
 pub(crate) fn search(

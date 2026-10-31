@@ -12,7 +12,7 @@ use splot_decode::encoder_syntax::LeafBlock;
 
 use crate::config::{RateControlMode, TileLayout};
 use crate::encoder::Encoder;
-use crate::gop::GopFrame;
+use crate::gop::{GopFrame, GopStep};
 use crate::preset::{PRESETS, Preset, PresetParams, TcqFrames};
 use crate::rate_control::FrameType;
 use crate::test_support::{
@@ -1590,3 +1590,32 @@ mod ext_partitions;
 mod sb256;
 #[path = "sdp_tests.rs"]
 mod sdp;
+
+/// The list references of a frame map to display indices from its order
+/// hints, which count from the last key frame; an unused reference maps to
+/// none.
+#[test]
+fn order_hints_map_references_to_display_pairs() {
+    let mut planner = crate::gop::GopPlanner::new(core::num::NonZeroU32::new(5).unwrap(), 4);
+    let plans: Vec<GopFrame> = [1, 4, 4]
+        .into_iter()
+        .flat_map(|len| planner.plan(len).unwrap())
+        .filter_map(|step| match step {
+            GopStep::Code(plan) => Some(plan),
+            GopStep::ShowExisting { .. } => None,
+        })
+        .collect();
+    let plan = |display| {
+        plans
+            .iter()
+            .find(|plan| plan.display_index == display)
+            .unwrap()
+    };
+    let pairs = |display, hints: &[u32]| reference_pairs(plan(display), hints).collect::<Vec<_>>();
+    assert_eq!(
+        pairs(3, &[2, 4, 0, u32::MAX]),
+        [Some((3, 2)), Some((3, 4)), Some((3, 0)), None]
+    );
+    assert_eq!(plan(7).order_hint, 2, "frame 5 is a key frame");
+    assert_eq!(pairs(7, &[1, 3]), [Some((7, 6)), Some((7, 8))]);
+}

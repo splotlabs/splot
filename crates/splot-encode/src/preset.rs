@@ -79,6 +79,8 @@ pub struct PresetParams {
     /// Compound skip by open-loop SAD: a leaf skips the compound search when
     /// one reference with lookahead motion predicts its square with a mean
     /// open-loop SAD per sample of at most this value / 16. `0` is off.
+    /// 16 at p0-p4 and 24 at p5-p10 (2026-10-31): 48 lost paris p6 +0.92%
+    /// over 30 frames at 0.84x CPU; 24 measured +0.29% at 0.87x.
     pub compound_skip_sad: u8,
     /// Sub-pel refinement depth: `0` full-pel, `1` half, `2` quarter, `3` eighth.
     pub subpel_depth: u8,
@@ -616,7 +618,7 @@ preset_table! {
         hme_range:             [   16,    16,    16,    12,    12,     8,     8,     8,     8,     8,     8],
         me_range:              [   16,    16,    16,    12,    12,     8,     8,     8,     6,     4,     4],
         me_seeds:              [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
-        compound_skip_sad:     [   32,    32,    32,    32,    32,    48,    48,    48,    48,    48,    48],
+        compound_skip_sad:     [   16,    16,    16,    16,    16,    24,    24,    24,    24,    24,    24],
         subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     0],
         eighth_pel_max_qindex: [  128,   128,   128,     0,     0,     0,     0,     0,     0,     0,     0],
         compound_candidates:   [    8,     8,     6,     6,     4,     4,     3,     2,     1,     0,     0],
