@@ -32,6 +32,9 @@ use super::*;
 /// `JOINT_NEWMV_SCALE_FACTOR_CNT` (§ 3): the `jmvd_scale_mode` values without
 /// adaptive MVD.
 pub(crate) const JMVD_SCALE_MODES: u8 = 5;
+/// The symbols one leaf's mode syntax takes at most in practice, so the
+/// list of [`EncoderInterTile::mode_symbols`] allocates once.
+const MODE_SYMBOLS_CAPACITY: usize = 32;
 
 /// The `pb_mv_precision` values a block codes.
 const PB_MV_PRECISION_SYMBOLS: u8 =
@@ -499,7 +502,12 @@ impl EncoderInterTile {
     }
 
     /// The reference pairs `read_compound_ref` can code.
-    pub(crate) fn compound_pairs(&self) -> Vec<(i8, i8)> {
+    pub(crate) fn compound_pairs(&self) -> &[(i8, i8)] {
+        &self.compound_pairs
+    }
+
+    /// [`Self::compound_pairs`] from the § 5.20.7.11 walk of every pair.
+    pub(super) fn derive_compound_pairs(&self) -> Vec<(i8, i8)> {
         let refs = self.num_total_refs() as i8;
         let input = self.compound_input([0; 7], [true; 7]);
         let mut pairs = Vec::new();
@@ -581,7 +589,7 @@ impl EncoderInterTile {
         frontier: &DecodeBlockFrontier,
         motion: EncoderMotion,
     ) -> Result<Vec<(TileCdfSelector, u8)>> {
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(MODE_SYMBOLS_CAPACITY);
         let refs = self.num_total_refs();
         let max_drl = self.max_drl_bits_minus_1 as usize + 1;
         let block = self.block(frontier, motion.refs())?;
