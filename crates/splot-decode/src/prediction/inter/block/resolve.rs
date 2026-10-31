@@ -17,9 +17,9 @@
 
 use super::super::compound::{CompoundBlockSyntax, CompoundYMode};
 use super::super::find_mv_stack::{
-    CompoundMvCandidate, INTRABC_REF_FRAME, MvStack, NeighbourFlagSyntax, NeighbourMotionValues,
-    OrderHintMvContext, RefMvBank, WarpParamBank, compound_motion_mode, find_warp_samples,
-    reduce_warp_model,
+    CompoundMvCandidate, CompoundMvStack, INTRABC_REF_FRAME, MvStack, NeighbourFlagSyntax,
+    NeighbourMotionValues, OrderHintMvContext, RefMvBank, WarpParamBank, compound_motion_mode,
+    find_warp_samples, reduce_warp_model,
 };
 use super::compound_path::{
     add_mv_clamped, compound_local_warp_models, project_joint_mvd, scale_joint_projected_mvd,
@@ -970,6 +970,18 @@ fn single_list_candidate(
     idx: usize,
     use_temporal_first: bool,
 ) -> Mv {
+    single_list_stack(state, block, ref_frame, global_mv, use_temporal_first).candidate(idx)
+}
+
+/// The single-reference stack of list reference `ref_frame` that
+/// [`single_list_candidate`] indexes.
+fn single_list_stack(
+    state: &MvResolutionState<'_>,
+    block: &MvBlockContext,
+    ref_frame: i8,
+    global_mv: Mv,
+    use_temporal_first: bool,
+) -> MvStack {
     let mut single = *block;
     single.ref_frame0 = ref_frame;
     single.ref_frame1 = None;
@@ -986,7 +998,74 @@ fn single_list_candidate(
         Some(state.order_hints),
         use_temporal_first,
     )
-    .candidate(idx)
+}
+
+/// The `NEAR_NEARMV` vectors [`compound_motion`] resolves for each of
+/// `syntaxes`, compound blocks at one position with one reference pair
+/// that differ in DRL indices, from one paired stack and one stack per list
+/// instead of one per block; `None` for any other block.
+pub(super) fn near_near_mvs(
+    syntaxes: &[Option<InterBlockSyntax>],
+    state: &MvResolutionState<'_>,
+) -> Vec<Option<[Mv; 2]>> {
+    let mut paired: Vec<((MvBlockContext, bool), CompoundMvStack)> = Vec::new();
+    let mut lists: Vec<((MvBlockContext, i8, bool), MvStack)> = Vec::new();
+    let mut out = Vec::with_capacity(syntaxes.len());
+    for syntax in syntaxes {
+        let Some((block, compound)) = syntax.as_ref().and_then(|syntax| match &syntax.motion {
+            InterMotionSyntax::Compound(compound)
+                if compound.y_mode == CompoundYMode::NearNear
+                    && !compound.skip_mode
+                    && !compound.local_warp =>
+            {
+                Some((syntax.block_ctx, compound))
+            }
+            _ => None,
+        }) else {
+            out.push(None);
+            continue;
+        };
+        let precision = state.frame_precision;
+        let refs = [block.ref_frame0, compound.ref_frame1];
+        let global_mvs =
+            refs.map(|ref_frame| global_motion_mv(state.core, ref_frame, &block, precision));
+        let mvs = if let Some(indices) = compound.independent_idx {
+            core::array::from_fn(|list| {
+                let key = (block, refs[list], compound.temporal_first[list]);
+                let index = lists
+                    .iter()
+                    .position(|(seen, _)| *seen == key)
+                    .unwrap_or_else(|| {
+                        let stack =
+                            single_list_stack(state, &block, key.1, global_mvs[list], key.2);
+                        lists.push((key, stack));
+                        lists.len() - 1
+                    });
+                lists[index].1.candidate(indices[list])
+            })
+        } else {
+            let key = (block, compound.temporal_allowed);
+            let index = paired
+                .iter()
+                .position(|(seen, _)| *seen == key)
+                .unwrap_or_else(|| {
+                    let temporal = if key.1 { state.temporal } else { None };
+                    let stack = find_compound_mv_stack_with_temporal(
+                        state.grid,
+                        &block,
+                        global_mvs,
+                        state.bank(),
+                        state.drl_reorder,
+                        temporal,
+                    );
+                    paired.push((key, stack));
+                    paired.len() - 1
+                });
+            paired[index].1.candidate(compound.ref_mv_idx).mvs
+        };
+        out.push(Some(mvs));
+    }
+    out
 }
 
 /// AV2 § 7.12.2 compound predictors combined with the parsed MVD pair.

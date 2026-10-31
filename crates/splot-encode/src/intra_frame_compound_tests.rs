@@ -151,6 +151,7 @@ fn searched_stream(
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, [usize; 3]) {
     let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
         compound_types: 2,
+        pd_window: u8::MAX,
         ..*Preset::new(6).unwrap().params()
     }));
     let mut config = config(136, 72, BitDepth::Ten, 6, qp);
@@ -454,4 +455,15 @@ fn bawp_templates_fit_only_inside_the_reference() {
     };
     super::inter_stream_with(&config, 0xBA3F, tree);
     assert_eq!(checked, 1);
+}
+
+/// The compound search derives the `NEAR_NEARMV` vectors of a reference
+/// pair in one batch; every batched pair is checked against the decoder's
+/// one-at-a-time derivation while the stream codes.
+#[test]
+fn batched_near_near_vectors_match_the_decoder() {
+    crate::mode_decision::NEAR_NEAR_CHECKED.set(0);
+    let (units, expected, ..) = searched_stream(150, 1);
+    assert!(crate::mode_decision::NEAR_NEAR_CHECKED.get() > 0);
+    assert_same_samples(&decode(&units), &expected, "batched NEAR_NEARMV");
 }

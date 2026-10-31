@@ -12,6 +12,7 @@
 
 use core::ops::Range;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use splot_decode::encoder_syntax::{
     ChromaMode, Dip, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax, LeafBlock,
@@ -19,13 +20,14 @@ use splot_decode::encoder_syntax::{
 };
 use splot_recon::InterpolationFilter;
 
+use crate::hme::FrameMotion;
 use crate::intra_frame::codable_children;
 use crate::intra_frame::{PaddedSource, SourceResidualCoder};
 use crate::kernels::{BlockDims, kernels};
 use crate::motion_search::MotionSearch;
 use crate::preset::PresetParams;
 use crate::rd::coeff_rate::RateSink;
-use crate::rd::partition::PartitionSearch;
+use crate::rd::partition::{PartitionSearch, first_pass_levels, search_guided};
 use crate::rd::stages::{CandidateClass, StageLimits};
 use crate::rd::{Bits, Lambda, RdCost};
 use crate::tile_writer::{
@@ -70,8 +72,13 @@ thread_local! {
 }
 #[cfg(test)]
 thread_local! {
+    /// `NEAR_NEARMV` DRL pairs whose batched vectors were checked on this
+    /// thread.
+    pub(crate) static NEAR_NEAR_CHECKED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// Inter candidates that MDS0 dropped on this thread.
     pub(crate) static MDS0_PRUNED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// First partition passes run on this thread.
+    pub(crate) static PD0_PASSES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// Candidates that MDS1 dropped on this thread.
     pub(crate) static MDS1_PRUNED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
@@ -839,7 +846,6 @@ impl TrialCoder<'_, '_> {
         {
             return Ok(Vec::new());
         }
-        let drls = self.syntax.drl_count();
         let mut ranked: Vec<(u64, [MotionVector; 2], CompoundModes)> = Vec::new();
         for refs in self.syntax.compound_pairs() {
             if refs.1 >= COMPOUND_REFS {
@@ -857,9 +863,15 @@ impl TrialCoder<'_, '_> {
                 blend: CompoundType::default(),
             };
             let zero = [MotionVector::default(); 2];
-            let mut trials: Vec<CompoundModes> = (0..drls * drls)
-                .map(|i| modes(CompoundMode::NearNear, [i / drls, i % drls], zero))
+            let mut derived: Vec<(CompoundModes, Option<[MotionVector; 2]>)> = self
+                .syntax
+                .near_near_mvs(leaf, refs)?
+                .into_iter()
+                .map(|(drl, mvs)| (modes(CompoundMode::NearNear, drl, zero), Some(mvs)))
                 .collect();
+            #[cfg(test)]
+            self.check_near_near(leaf, &derived)?;
+            let mut trials = Vec::new();
             if refs.0 != refs.1 {
                 trials.push(modes(CompoundMode::GlobalGlobal, [0; 2], zero));
                 if let (Some(&first), Some(&second)) = (searched.get(refs.0), searched.get(refs.1))
@@ -874,11 +886,9 @@ impl TrialCoder<'_, '_> {
                     }
                 }
             }
-            for trial in trials {
-                let trial = if matches!(
-                    trial.mode,
-                    CompoundMode::NearNear | CompoundMode::GlobalGlobal
-                ) {
+            derived.extend(trials.into_iter().map(|trial| (trial, None)));
+            for (trial, mvs) in derived {
+                let trial = if mvs.is_some() || trial.mode == CompoundMode::GlobalGlobal {
                     trial
                 } else {
                     let Some(InterPrediction::Compound(trial)) = codable(snap_prediction(
@@ -891,13 +901,16 @@ impl TrialCoder<'_, '_> {
                     };
                     trial
                 };
-                let Some(mvs) = codable(
-                    self.syntax
-                        .inter_mvs(leaf, InterPrediction::Compound(trial))
-                        .map_err(Into::into),
-                )?
-                else {
-                    continue;
+                let mvs = match mvs {
+                    Some(mvs) => mvs,
+                    None => match codable(
+                        self.syntax
+                            .inter_mvs(leaf, InterPrediction::Compound(trial))
+                            .map_err(Into::into),
+                    )? {
+                        Some(mvs) => mvs,
+                        None => continue,
+                    },
                 };
                 if ranked
                     .iter()
@@ -939,6 +952,46 @@ impl TrialCoder<'_, '_> {
             out.push(LeafChoice::inter(InterPrediction::Compound(trial)));
         }
         Ok(out)
+    }
+
+    /// The facade's batched `NEAR_NEARMV` vectors `derived` of one reference
+    /// pair agree with [`IntraTileSyntax::inter_mvs`] of each DRL pair, and
+    /// no codable DRL pair is missing; counts the checked pairs.
+    #[cfg(test)]
+    fn check_near_near(
+        &mut self,
+        leaf: &LeafBlock,
+        derived: &[(CompoundModes, Option<[MotionVector; 2]>)],
+    ) -> Result<()> {
+        let Some((first, _)) = derived.first() else {
+            return Ok(());
+        };
+        let drls = self.syntax.drl_count();
+        let mut listed = derived.iter();
+        for index in 0..drls * drls {
+            let modes = CompoundModes {
+                drl: [index / drls, index % drls],
+                ..*first
+            };
+            let one = codable(
+                self.syntax
+                    .inter_mvs(leaf, InterPrediction::Compound(modes))
+                    .map_err(Into::into),
+            )?;
+            if let Some(mvs) = one {
+                let batched = listed.next().filter(|(seen, _)| seen.drl == modes.drl);
+                if batched.and_then(|&(_, mvs)| mvs) != Some(mvs) {
+                    return Err(TileWriterError::Shape("batched NEAR_NEARMV vectors differ"));
+                }
+                NEAR_NEAR_CHECKED.set(NEAR_NEAR_CHECKED.get() + 1);
+            }
+        }
+        if listed.next().is_some() {
+            return Err(TileWriterError::Shape(
+                "a batched NEAR_NEARMV pair is not codable",
+            ));
+        }
+        Ok(())
     }
 
     /// With [`FORCED_COMPOUND_TYPES`], `trial` without refinement flags and
@@ -1222,6 +1275,35 @@ pub(crate) fn quadrant_sse(
     Ok(out)
 }
 
+/// The partition tree of the superblock at `root`, searched with `preset`
+/// at `lambda`. With `preset.pd_window`, a superblock of an inter frame
+/// with lookahead motion `open_loop` searches only the partitions near the
+/// levels of [`first_pass_levels`]; intra frames search every partition.
+pub(crate) fn two_pass_partition(
+    syntax: &mut IntraTileSyntax,
+    coder: &mut SourceResidualCoder<'_>,
+    (preset, lambda): (&PresetParams, Lambda),
+    (motion, open_loop): (Option<&MotionSearch>, &[Option<Arc<FrameMotion>>]),
+    root: PartitionNode,
+) -> Result<PartitionTree> {
+    let levels = motion
+        .filter(|_| preset.pd_window != u8::MAX)
+        .and_then(|_| {
+            let (w, _) = root.dimensions().ok()?;
+            let depth = u32::from(coder.bit_depth.bits()) - 8;
+            first_pass_levels(
+                open_loop,
+                (root.col4() * 4, root.row4() * 4, w),
+                (lambda, depth),
+                preset,
+            )
+        });
+    #[cfg(test)]
+    PD0_PASSES.set(PD0_PASSES.get() + usize::from(levels.is_some()));
+    let mut trial = TrialCoder::new(syntax, coder, preset, lambda, motion);
+    Ok(search_guided(&mut trial, root, preset, lambda, levels.as_ref())?.0)
+}
+
 /// The luma rectangle `(x, y, width, height)` of `leaf`.
 pub(crate) fn leaf_rect(leaf: &LeafBlock) -> Result<(usize, usize, usize, usize)> {
     let (w, h) = leaf.dimensions()?;
@@ -1342,6 +1424,10 @@ impl PartitionSearch for TrialCoder<'_, '_> {
     fn block_log2(&self, node: PartitionNode) -> Result<(u32, u32)> {
         let (w, h) = node.dimensions()?;
         Ok((w.ilog2(), h.ilog2()))
+    }
+
+    fn origin(&self, node: PartitionNode) -> (usize, usize) {
+        (node.col4() * 4, node.row4() * 4)
     }
 
     /// RD-chooses the intra choice of the leaf, then compares it with the

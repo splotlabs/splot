@@ -157,6 +157,48 @@ impl IntraTileSyntax {
             .map(MotionVector::from))
     }
 
+    /// Every `NEAR_NEARMV` DRL index pair of reference pair `refs` that
+    /// `leaf` can code, in DRL order of the first list, then the second,
+    /// with the vectors the decoder derives for it, as [`Self::inter_mvs`]
+    /// derives them one at a time; the decoder's motion vector stacks are
+    /// built once for all pairs.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError`] in an intra frame.
+    pub fn near_near_mvs(
+        &mut self,
+        leaf: &LeafBlock,
+        refs: (usize, usize),
+    ) -> Result<Vec<([usize; 2], [MotionVector; 2])>> {
+        let drls = self.drl_count();
+        let mut coded = Vec::with_capacity(drls * drls);
+        for index in 0..drls * drls {
+            let drl = [index / drls, index % drls];
+            let modes = CompoundModes {
+                refs,
+                mode: CompoundMode::NearNear,
+                drl,
+                mvs: [MotionVector::default(); 2],
+                jmvd_scale_mode: 0,
+                filter: InterpolationFilter::EightTap,
+                optflow: false,
+                refinemv: false,
+                blend: CompoundType::default(),
+            };
+            if let Ok(motion) = self.compound_choice(leaf, &modes) {
+                coded.push((drl, motion));
+            }
+        }
+        let motions: Vec<_> = coded.iter().map(|&(_, motion)| motion).collect();
+        let tile = &mut self.inter_state()?.tile;
+        let mvs = tile.near_near_vectors(&leaf.frontier, &motions);
+        Ok(coded
+            .into_iter()
+            .zip(mvs)
+            .filter_map(|((drl, _), mvs)| Some((drl, mvs?.map(MotionVector::from))))
+            .collect())
+    }
+
     /// The base vector of each list of `modes` that codes a difference at
     /// `leaf`: its vector is this plus a multiple of [`Self::mv_step`] per
     /// component. `JOINT_NEWMV` codes the difference of one list only.
