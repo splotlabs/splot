@@ -84,6 +84,8 @@ pub(crate) struct IntraFrameCoder {
     global_motion: [Option<[i32; 6]>; splot_core::headers::frame::REFS_PER_FRAME],
     /// The global motion models of the next frames to code.
     global_models: crate::global_motion::GlobalModels,
+    /// The lookahead's open-loop motion of the frames of the current window.
+    open_loop: crate::lookahead::OpenLoopMotion,
     /// The block importances of the next frames to code.
     importance: tpl::BlockImportance,
     /// Show-existing frames output so far, which seed their film grain.
@@ -197,6 +199,7 @@ impl IntraFrameCoder {
             global_motion: [None; splot_core::headers::frame::REFS_PER_FRAME],
             importance: tpl::BlockImportance::default(),
             global_models: crate::global_motion::GlobalModels::new(),
+            open_loop: crate::lookahead::OpenLoopMotion::new(),
             shown_existing: 0,
             grain_active: false,
             warp_gate: crate::warp::WarpGate::default(),
@@ -221,6 +224,10 @@ impl FrameCoder for IntraFrameCoder {
 
     fn set_global_motion(&mut self, models: crate::global_motion::GlobalModels) {
         self.global_models = models;
+    }
+
+    fn set_open_loop_motion(&mut self, motion: crate::lookahead::OpenLoopMotion) {
+        self.open_loop = motion;
     }
 
     fn pool(&self) -> Option<WorkerPool> {
@@ -514,7 +521,17 @@ impl IntraFrameCoder {
         let sb = first.syntax().superblock_size4() * 4;
         let padded = PaddedSource::new(source, self.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
         let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
-        let motion = MotionSearch::new(first.syntax(), &padded, &self.preset, lambda)
+        let key_display = plan.display_index - u64::from(plan.order_hint);
+        let open_loop = core.inter.as_ref().map_or_else(Vec::new, |inter| {
+            let field = |hint: u32| {
+                let pair = (plan.display_index, key_display + u64::from(hint));
+                (hint != u32::MAX)
+                    .then(|| self.open_loop.get(&pair).cloned())
+                    .flatten()
+            };
+            inter.order_hints.iter().map(|&hint| field(hint)).collect()
+        });
+        let motion = MotionSearch::new(first.syntax(), &padded, &self.preset, lambda, open_loop)
             .map_err(coding("motion search"))?;
         let bv_search = (core.allow_intrabc == Some(true)).then(|| {
             let (luma, stride, width, height) = padded.luma();

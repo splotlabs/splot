@@ -14,6 +14,7 @@
 //! the cost. Costs are integers, so the analysis is deterministic.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 
 use splot_parallel::WorkerPool;
 
@@ -23,6 +24,9 @@ use crate::hme::{self, FrameMotion, Plane, Pyramid};
 use crate::kernels::motion::Motion;
 use crate::kernels::{BlockDims, kernels};
 use crate::preset::PresetParams;
+
+/// The open-loop motion of `(frame, reference)` pairs of display indices.
+pub(crate) type OpenLoopMotion = BTreeMap<(u64, u64), Arc<FrameMotion>>;
 
 /// The source frames the encoder still holds, by display index.
 pub(crate) type Sources<'a> = &'a dyn Fn(u64) -> Option<&'a SourceFrame>;
@@ -65,6 +69,9 @@ pub(crate) struct Lookahead {
     pool: Option<WorkerPool>,
     frames: VecDeque<Analysis>,
     motion: BTreeMap<(u64, u64), Vec<BlockMotion>>,
+    /// The open-loop motion of each searched pair whose current frame is not
+    /// coded yet, kept for the frame coder when it reads it.
+    fields: Option<OpenLoopMotion>,
     /// The full level of the last frame pushed, for its scene-cut pair.
     last_full: Option<(u64, Plane)>,
     /// The scene-cut ratio of the last frame pushed, in percent.
@@ -89,6 +96,7 @@ impl Lookahead {
             pool,
             frames: VecDeque::new(),
             motion: BTreeMap::new(),
+            fields: (preset.me_seeds > 0 || preset.compound_skip_sad > 0).then(OpenLoopMotion::new),
             last_full: None,
             last_ratio: 0,
         }
@@ -125,10 +133,10 @@ impl Lookahead {
             }
             _ => None,
         };
-        let Some(blocks) = blocks else {
+        let Some(searched) = blocks else {
             return false;
         };
-        self.motion.insert((display_index, previous), blocks);
+        self.keep((display_index, previous), searched);
         let (Some(intra), Some(motion)) = (
             self.intra(display_index),
             self.motion.get(&(display_index, previous)),
@@ -149,7 +157,8 @@ impl Lookahead {
         cut
     }
 
-    /// Drops the frames before `display_index`.
+    /// Drops the frames before `display_index`, the last coded frame, and the
+    /// open-loop motion of the frames up to it.
     pub(crate) fn retain_from(&mut self, display_index: u64) {
         while self
             .frames
@@ -160,6 +169,9 @@ impl Lookahead {
         }
         self.motion
             .retain(|&(current, reference), _| current.min(reference) >= display_index);
+        if let Some(fields) = &mut self.fields {
+            fields.retain(|&(current, _), _| current > display_index);
+        }
     }
 
     /// The intra cost of each block of frame `display_index`, row by row.
@@ -191,19 +203,19 @@ impl Lookahead {
                 })
             };
             let fulls = (full(0, current)?, full(1, reference)?);
-            let blocks = self.searched((current, reference), fulls)?;
-            self.motion.insert((current, reference), blocks);
+            let searched = self.searched((current, reference), fulls)?;
+            self.keep((current, reference), searched);
         }
         self.motion.get(&(current, reference)).map(Vec::as_slice)
     }
 
-    /// The blocks of the open-loop motion of `current` against `reference`,
-    /// whose full levels are `fulls`.
+    /// The open-loop motion of `current` against `reference`, whose full
+    /// levels are `fulls`, and its analysis blocks.
     fn searched(
         &self,
         (current, reference): (u64, u64),
         fulls: (&Plane, &Plane),
-    ) -> Option<Vec<BlockMotion>> {
+    ) -> Option<(FrameMotion, Vec<BlockMotion>)> {
         let (now, then) = (self.frame(current)?, self.frame(reference)?);
         let motion = hme::search(
             (fulls.0, &now.pyramid),
@@ -214,7 +226,22 @@ impl Lookahead {
         );
         let level = self.shift as usize;
         let planes = (now.pyramid.level(level), then.pyramid.level(level));
-        Some(self.block_motion(planes, &motion))
+        let blocks = self.block_motion(planes, &motion);
+        Some((motion, blocks))
+    }
+
+    /// Stores the search of `pair`.
+    fn keep(&mut self, pair: (u64, u64), (motion, blocks): (FrameMotion, Vec<BlockMotion>)) {
+        if let Some(fields) = &mut self.fields {
+            fields.insert(pair, Arc::new(motion));
+        }
+        self.motion.insert(pair, blocks);
+    }
+
+    /// The open-loop motion of the searched pairs whose current frame is not
+    /// coded yet; `None` when the preset reads none.
+    pub(crate) fn fields(&self) -> Option<OpenLoopMotion> {
+        self.fields.clone()
     }
 
     /// Frame `display_index`; the held frames have consecutive indices.
@@ -388,7 +415,7 @@ pub(crate) mod tests {
             (dx, if y < 544 { 0.0 } else { 8.0 })
         };
         lookahead.push(&crate::hme::tests::smooth(&config, 0), 0);
-        lookahead.push(&crate::hme::tests::moved(&config, quadrant), 1);
+        lookahead.push(&crate::hme::tests::moved(&config, 1, quadrant), 1);
         let intra = lookahead.intra(1).unwrap().to_vec();
         let motion = lookahead.motion(1, 0, &|_| None).unwrap();
         let clear = |v: usize, edge: usize, split: usize| {

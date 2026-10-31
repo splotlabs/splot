@@ -19,7 +19,11 @@
 use splot_decode::encoder_syntax::{IntraTileSyntax, MotionVector};
 use splot_recon::{InterpolationFilter, ReferencePlaneView, subpel_predict_block_strided_into};
 
+use std::sync::Arc;
+
+use crate::hme::FrameMotion;
 use crate::intra_frame::PaddedSource;
+use crate::kernels::motion::Motion;
 use crate::kernels::{BlockDims, kernels};
 use crate::preset::PresetParams;
 use crate::rd::{Bits, Lambda, log2_q8};
@@ -133,6 +137,21 @@ pub(crate) struct MotionSearch {
     mv_step: u32,
     /// `sqrt(lambda)` in Q8, the SAD-domain multiplier of a bit.
     sad_lambda_q8: u64,
+    /// The lookahead's open-loop motion against each list reference, where
+    /// it has some.
+    open_loop: Vec<Option<Arc<FrameMotion>>>,
+    /// [`PresetParams::me_seeds`] and [`PresetParams::compound_skip_sad`].
+    me_seeds: u32,
+    compound_skip_sad: u64,
+}
+
+/// The open-loop view of one leaf against one reference: the vectors of its
+/// square, the parent and the four children, and the SAD and sample count of
+/// its square.
+struct OpenLoopLeaf {
+    seeds: [Option<MotionVector>; 6],
+    sad: u32,
+    samples: u32,
 }
 
 impl MotionSearch {
@@ -143,6 +162,7 @@ impl MotionSearch {
         source: &PaddedSource,
         preset: &PresetParams,
         lambda: Lambda,
+        open_loop: Vec<Option<Arc<FrameMotion>>>,
     ) -> Result<Option<Self>> {
         if syntax.reference_count() == 0 {
             return Ok(None);
@@ -171,7 +191,61 @@ impl MotionSearch {
             subpel_depth: preset.subpel_depth.min(3 - mv_step.ilog2().min(3) as u8),
             mv_step,
             sad_lambda_q8: lambda.sse_per_bit_q16().isqrt(),
+            open_loop,
+            me_seeds: u32::from(preset.me_seeds),
+            compound_skip_sad: u64::from(preset.compound_skip_sad),
         }))
+    }
+
+    /// The open-loop view of luma `block` against list reference
+    /// `ref_frame`; `None` without lookahead motion for the pair. The square
+    /// is the largest one, 8 to 64 samples, at the block's corner.
+    fn open_loop_leaf(
+        &self,
+        ref_frame: usize,
+        (left, top, width, height): (usize, usize, usize, usize),
+    ) -> Option<OpenLoopLeaf> {
+        let field = self.open_loop.get(ref_frame)?.as_ref()?;
+        let side = width.min(height).clamp(8, 64);
+        let size = side.ilog2() as usize - 3;
+        let at = |size: usize, (col, row): (usize, usize)| {
+            let (stride, blocks) = field.blocks(size);
+            blocks
+                .get(row * stride + col)
+                .filter(|found| found.sad != u32::MAX)
+        };
+        let (col, row) = (left / side, top / side);
+        let own = at(size, (col, row))?;
+        let vector = |found: &Motion| MotionVector {
+            row: i32::from(found.mv[1]) * FULL,
+            col: i32::from(found.mv[0]) * FULL,
+        };
+        let parent = (size < 3)
+            .then(|| at(size + 1, (col / 2, row / 2)))
+            .flatten();
+        let child = |i: usize| {
+            (size > 0)
+                .then(|| at(size - 1, (2 * col + i % 2, 2 * row + i / 2)))
+                .flatten()
+        };
+        let seeds = [Some(own), parent, child(0), child(1), child(2), child(3)];
+        Some(OpenLoopLeaf {
+            seeds: seeds.map(|found| found.map(vector)),
+            sad: own.sad,
+            samples: (side * side) as u32,
+        })
+    }
+
+    /// Whether `block` skips the compound search: one reference with
+    /// lookahead motion predicts its square with a mean open-loop SAD per
+    /// sample of at most [`PresetParams::compound_skip_sad`] / 16.
+    pub(crate) fn skips_compound(&self, block: (usize, usize, usize, usize)) -> bool {
+        self.compound_skip_sad > 0
+            && (0..self.open_loop.len())
+                .filter_map(|ref_frame| self.open_loop_leaf(ref_frame, block))
+                .any(|leaf| {
+                    u64::from(leaf.sad) * 16 <= self.compound_skip_sad * u64::from(leaf.samples)
+                })
     }
 
     /// The vector, in `1/8` samples, that predicts the luma `block` (`left,
@@ -220,11 +294,25 @@ impl MotionSearch {
                 *best = (cost, mv);
             }
         };
+        let open_loop = (self.me_seeds > 0)
+            .then(|| self.open_loop_leaf(ref_frame, block))
+            .flatten();
+        let open_seeds = open_loop
+            .iter()
+            .flat_map(|leaf| leaf.seeds.iter().flatten());
+        let zero = [MotionVector::default()];
         let mut best = (u64::MAX, (0, 0));
-        for &seed in seeds.iter().chain(&[MotionVector::default()]) {
+        for &seed in seeds.iter().chain(&zero).chain(open_seeds.clone()) {
             consider(&mut best, coarse, at_level(seed, coarse));
         }
-        let radius = (self.range >> coarse).clamp(1, 32);
+        let confident = open_loop
+            .as_ref()
+            .is_some_and(|leaf| leaf.sad <= self.me_seeds.saturating_mul(leaf.samples));
+        let radius = if confident {
+            1
+        } else {
+            (self.range >> coarse).clamp(1, 32)
+        };
         let (cx, cy) = best.1;
         for dy in -radius..=radius {
             for dx in -radius..=radius {
@@ -241,7 +329,7 @@ impl MotionSearch {
             }
         }
         if coarse > 0 {
-            for &seed in seeds {
+            for &seed in seeds.iter().chain(open_seeds) {
                 consider(&mut best, 0, at_level(seed, 0));
             }
         }

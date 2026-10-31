@@ -447,11 +447,28 @@ impl FrameCoder for Recording {
     fn pool(&self) -> Option<splot_parallel::WorkerPool> {
         self.coder.pool()
     }
+
+    fn set_open_loop_motion(&mut self, motion: crate::lookahead::OpenLoopMotion) {
+        self.coder.set_open_loop_motion(motion);
+    }
 }
 
 /// Codes `frames` frames through the [`Encoder`]; returns the temporal units
 /// and the encoder reconstructions in display order.
 fn encode_stream(config: &Config, frames: u32) -> (Vec<Vec<u8>>, Vec<u8>) {
+    encode_frames(
+        config,
+        (0..frames).map(|seed| synthetic_frame(config, seed)),
+    )
+}
+
+/// [`encode_stream`] of `frames`.
+fn encode_frames(
+    config: &Config,
+    frames: impl Iterator<Item = SourceFrame>,
+) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let frames: Vec<SourceFrame> = frames.collect();
+    let count = frames.len() as u32;
     let recons = Arc::default();
     let coder = Recording {
         coder: IntraFrameCoder::new(config).unwrap(),
@@ -460,20 +477,19 @@ fn encode_stream(config: &Config, frames: u32) -> (Vec<Vec<u8>>, Vec<u8>) {
     };
     let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
     let mut packets = Vec::new();
-    for seed in 0..=frames {
-        if seed == frames {
-            encoder.flush().unwrap();
-        } else {
-            encoder.send_frame(synthetic_frame(config, seed)).unwrap();
+    for frame in frames.into_iter().map(Some).chain([None]) {
+        match frame {
+            Some(frame) => encoder.send_frame(frame).unwrap(),
+            None => encoder.flush().unwrap(),
         }
         while let Some(packet) = encoder.receive_packet().unwrap() {
             packets.push(packet);
         }
     }
     let pts: Vec<u64> = packets.iter().map(|packet| packet.pts).collect();
-    assert_eq!(pts, (0..u64::from(frames)).collect::<Vec<_>>());
+    assert_eq!(pts, (0..u64::from(count)).collect::<Vec<_>>());
     let coded: usize = packets.iter().map(|packet| packet.stats.len()).sum();
-    assert_eq!(coded, frames as usize);
+    assert_eq!(coded, count as usize);
     let expected = recons.lock().unwrap().values().flatten().copied().collect();
     let units = packets.into_iter().map(|packet| packet.data).collect();
     (units, expected)
@@ -1277,7 +1293,8 @@ fn search_frame_counting(
     let sb = writer.syntax().superblock_size4() * 4;
     let padded = PaddedSource::new(source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
     let lambda = Lambda::from_qindex(90, bit_depth).unwrap();
-    let motion = MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda).unwrap();
+    let motion =
+        MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda, Vec::new()).unwrap();
     let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, &coder.preset, lambda);
     let (luma, stride, width, height) = padded.luma();
     let bv_search = crate::intrabc::BvSearch::new(luma, stride, (width, height));

@@ -389,13 +389,14 @@ pub(crate) mod tests {
     /// A frame of smooth, non-repeating texture moved right by `shift`
     /// samples, so that the coarse levels keep its structure.
     pub(crate) fn smooth(config: &Config, shift: usize) -> SourceFrame {
-        moved(config, |_, _| (shift as f64, 0.0))
+        moved(config, 0, |_, _| (shift as f64, 0.0))
     }
 
-    /// The texture of [`smooth`] with the sample at `(x, y)` moved right and
-    /// down by `motion(x, y)`.
+    /// The texture of [`smooth`] at `pts`, with the luma sample at `(x, y)`
+    /// moved right and down by `motion(x, y)` and chroma moved alike.
     pub(crate) fn moved(
         config: &Config,
+        pts: u64,
         motion: impl Fn(usize, usize) -> (f64, f64),
     ) -> SourceFrame {
         let sizes = config.plane_sizes().unwrap();
@@ -404,8 +405,12 @@ pub(crate) mod tests {
             (0..size.width() * size.height())
                 .map(|i| {
                     let (x, y) = (i % size.width(), i / size.width());
-                    let (dx, dy) = motion(x << usize::from(plane > 0), y << usize::from(plane > 0));
-                    let (x, y) = (x as f64 - dx, y as f64 - dy);
+                    let sub = usize::from(plane > 0);
+                    let (dx, dy) = motion(x << sub, y << sub);
+                    let (x, y) = (
+                        x as f64 - dx / (1 << sub) as f64,
+                        y as f64 - dy / (1 << sub) as f64,
+                    );
                     let v = 120.0
                         + 50.0 * (0.21 * x + 0.05 * y).sin()
                         + 40.0 * (0.13 * y - 0.04 * x).cos()
@@ -414,7 +419,7 @@ pub(crate) mod tests {
                 })
                 .collect()
         });
-        SourceFrame::new(config, 0, planes).unwrap()
+        SourceFrame::new(config, pts, planes).unwrap()
     }
 
     /// The full level and the pyramid of `frame`.

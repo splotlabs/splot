@@ -780,7 +780,7 @@ impl TrialCoder<'_, '_> {
         let (Some(motion), true) = (self.motion, self.syntax.compound_allowed(leaf)) else {
             return Ok(Vec::new());
         };
-        if self.preset.compound_candidates == 0 {
+        if self.preset.compound_candidates == 0 || motion.skips_compound(leaf_rect(leaf)?) {
             return Ok(Vec::new());
         }
         let drls = self.syntax.drl_count();
