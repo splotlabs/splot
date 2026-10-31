@@ -5,12 +5,12 @@
 //! forward skip coding, including TCQ, parity hiding, and the § 5.20.8.2 luma
 //! transform type.
 
-use splot_core::coefficient::{LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
+use splot_core::coefficient::NUM_BASE_LEVELS;
 use splot_core::symbol::Symbol;
 use splot_core::symbol_encoder::SymbolSink;
 use splot_decode::encoder_syntax::{
     CoeffLevels, FSC_MAX_LEVEL, IntraTileSyntax, MAX_GOLOMB_PREFIX_BITS, MAX_QUANT_MAGNITUDE,
-    TransformBlock, coefficient_scan, tcq_next_state, tx_log2,
+    TransformBlock, coefficient_scan, tx_log2,
 };
 
 use super::{Result, TileWriterError};
@@ -124,36 +124,9 @@ pub(crate) fn code_coeffs(
     if syntax.uses_tcq(tx) {
         grid.set_tcq_state(0);
     }
-    for c in (0..eob).rev() {
-        let (pos, row, col) = position(c);
-        let is_lf = grid.is_low_frequency(row, col, plane);
-        let shift = u32::from(grid.hides(c));
-        let (level, _) = grid.split(c, levels[pos].unsigned_abs() >> shift, is_lf, plane);
-        let base_levels = if is_lf {
-            LF_NUM_BASE_LEVELS
-        } else {
-            NUM_BASE_LEVELS
-        };
-        let base = if c == eob - 1 {
-            let base = level.min(base_levels + 1);
-            let cdf = syntax.coeff_base_eob_cdf(plane, tx.tx_size, c, (log2_w, height), is_lf)?;
-            write_symbol(symbols, cdf, base as usize - 1)?;
-            base
-        } else {
-            let base = level.min(base_levels + 1);
-            let cdf = syntax.coeff_base_cdf(&grid, plane, tx.tx_size, (row, col, c), is_lf)?;
-            write_symbol(symbols, cdf, base as usize)?;
-            base
-        };
-        if base > base_levels && !(is_lf && plane > 0) {
-            let cdf = syntax.coeff_br_cdf(&grid, plane, (row, col), is_lf)?;
-            write_symbol(symbols, cdf, (level - base) as usize)?;
-        }
-        grid.set(row, col, level)?;
-        if let Some(state) = grid.tcq_state() {
-            grid.set_tcq_state(tcq_next_state(state, level));
-        }
-    }
+    syntax.code_coeff_levels(tx, &mut grid, (levels, width, eob), |row, value| {
+        write_symbol(symbols, row, value)
+    })?;
 
     let mut cul_level = 0u32;
     let mut dc_category = 0u8;
