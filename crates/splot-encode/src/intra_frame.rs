@@ -890,8 +890,8 @@ pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) bit_depth: BitDepth,
     preset: &'a PresetParams,
     lambda: Lambda,
-    /// A candidate trial without `full_trials`: quantize with the deadzone and
-    /// code `DCT_DCT`.
+    /// A deadzone candidate trial, used when `full_trials` is 0 or to rank
+    /// (MDS1): quantize with the deadzone and code `DCT_DCT`.
     pub(crate) candidate: bool,
     /// A mode trial of the search: a block that hides the other parity moves
     /// its scan index 0 level instead of pricing every move.
@@ -907,6 +907,8 @@ pub(crate) struct SourceResidualCoder<'a> {
     pair: [Vec<i32>; 2],
     /// The row costs and the trellis buffers reused across blocks.
     rates: (RowCaches, TcqScratch),
+    /// The reconstruction buffers of the transform-type and CCTX costs.
+    recon: tx_choice::ReconScratch,
     pub(crate) palette: PaletteSearch,
     /// The block hashes of the frame source, in a frame with IntraBC.
     pub(crate) intrabc: Option<&'a BvSearch>,
@@ -939,6 +941,7 @@ impl<'a> SourceResidualCoder<'a> {
             scratch: Default::default(),
             pair: Default::default(),
             rates: Default::default(),
+            recon: tx_choice::ReconScratch::default(),
             palette: PaletteSearch::default(),
             intrabc: None,
         }
@@ -1168,40 +1171,31 @@ impl SourceResidualCoder<'_> {
     /// `D + lambda * R` of chroma blocks `u` and `v` coded as `levels`, with
     /// the decoder's cross-chroma reconstruction when `cctx` is `Some`.
     fn pair_cost(
-        &self,
+        &mut self,
         syntax: &mut IntraTileSyntax,
         [u, v]: [&TransformBlock; 2],
         predictions: [&[u16]; 2],
         levels: [&[i32]; 2],
         cctx: Option<()>,
     ) -> core::result::Result<u128, TileWriterError> {
-        let recon = match cctx {
-            Some(()) => syntax.cctx_reconstruction([u, v], predictions, levels)?,
-            None => [
-                tx_choice::reconstruct(
-                    syntax,
-                    predictions[0],
-                    u,
-                    levels[0],
-                    (self.qindex, self.bit_depth),
-                )?,
-                tx_choice::reconstruct(
-                    syntax,
-                    predictions[1],
-                    v,
-                    levels[1],
-                    (self.qindex, self.bit_depth),
-                )?,
-            ],
+        let distortion = if let Some(()) = cctx {
+            let recon = syntax.cctx_reconstruction([u, v], predictions, levels)?;
+            self.source.sse(u, &recon[0])? + self.source.sse(v, &recon[1])?
+        } else {
+            let mut distortion = 0;
+            for (index, tx) in [u, v].into_iter().enumerate() {
+                let quant = (self.qindex, self.bit_depth);
+                let (prediction, levels) = (predictions[index], levels[index]);
+                tx_choice::reconstruct(syntax, prediction, tx, levels, quant, &mut self.recon)?;
+                distortion += self.source.sse(tx, &self.recon.recon)?;
+            }
+            distortion
         };
         let u_eob = eob(u, levels[0])?;
         let mut sink = RateSink::frozen();
         let rate = block_rate(syntax, &mut sink, u, levels[0], false)?;
         let rate = rate + block_rate(syntax, &mut sink, v, levels[1], u_eob != 0)?;
-        let cost = RdCost {
-            distortion: self.source.sse(u, &recon[0])? + self.source.sse(v, &recon[1])?,
-            rate,
-        };
+        let cost = RdCost { distortion, rate };
         Ok(cost.cost(self.lambda))
     }
 
@@ -1376,7 +1370,7 @@ impl SourceResidualCoder<'_> {
     /// reconstruction and the frozen CDF rows; `None` when the decoder would
     /// infer another type for the levels.
     fn luma_cost(
-        &self,
+        &mut self,
         syntax: &mut IntraTileSyntax,
         tx: &TransformBlock,
         prediction: &[u16],
@@ -1391,15 +1385,16 @@ impl SourceResidualCoder<'_> {
         {
             return Ok(None);
         }
-        let recon = tx_choice::reconstruct(
+        tx_choice::reconstruct(
             syntax,
             prediction,
             tx,
             levels,
             (self.qindex, self.bit_depth),
+            &mut self.recon,
         )?;
         let cost = RdCost {
-            distortion: self.source.sse(tx, &recon)?,
+            distortion: self.source.sse(tx, &self.recon.recon)?,
             rate: block_rate(syntax, &mut RateSink::frozen(), tx, levels, false)?,
         };
         Ok(Some(cost.cost(self.lambda)))

@@ -32,9 +32,6 @@ use super::*;
 /// `JOINT_NEWMV_SCALE_FACTOR_CNT` (§ 3): the `jmvd_scale_mode` values without
 /// adaptive MVD.
 pub(crate) const JMVD_SCALE_MODES: u8 = 5;
-/// The symbols one leaf's mode syntax takes at most in practice, so the
-/// list of [`EncoderInterTile::mode_symbols`] allocates once.
-const MODE_SYMBOLS_CAPACITY: usize = 32;
 
 /// The `pb_mv_precision` values a block codes.
 const PB_MV_PRECISION_SYMBOLS: u8 =
@@ -579,14 +576,15 @@ impl EncoderInterTile {
         Ok(mvd)
     }
 
-    /// The mode symbols of `motion` at `frontier` in coding order, from
-    /// `comp_mode` to the DRL indices, with the values the decoder reads.
+    /// The mode symbols of `motion` at `frontier` into `out` in coding order,
+    /// from `comp_mode` to the DRL indices, with the values the decoder reads.
     pub(crate) fn mode_symbols(
         &self,
         frontier: &DecodeBlockFrontier,
         motion: EncoderMotion,
-    ) -> Result<Vec<(TileCdfSelector, u8)>> {
-        let mut out = Vec::with_capacity(MODE_SYMBOLS_CAPACITY);
+        out: &mut Vec<(TileCdfSelector, u8)>,
+    ) -> Result<()> {
+        out.clear();
         let refs = self.num_total_refs();
         let max_drl = self.max_drl_bits_minus_1 as usize + 1;
         let block = self.block(frontier, motion.refs())?;
@@ -604,13 +602,13 @@ impl EncoderInterTile {
             && compound.skip_mode
         {
             drl_symbols(
-                &mut out,
+                out,
                 |idx| TileCdfSelector::SkipDrlMode { idx },
                 0,
                 max_drl,
                 compound.ref_mv_idx,
             )?;
-            return Ok(out);
+            return Ok(());
         }
         let tip = matches!(motion, EncoderMotion::Single(single) if single.tip);
         if self.tip_allowed(frontier)? {
@@ -634,14 +632,14 @@ impl EncoderInterTile {
                 return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
             }
             let selector = |idx| TileCdfSelector::TipDrlMode { idx };
-            drl_symbols(&mut out, selector, 0, max_drl, single.ref_mv_idx)?;
+            drl_symbols(out, selector, 0, max_drl, single.ref_mv_idx)?;
             self.precision_symbols(
-                &mut out,
+                out,
                 &neighbour,
                 new,
                 (self.block_precision(motion), single.use_amvd),
             )?;
-            return Ok(out);
+            return Ok(());
         }
         if self.reads_compound_syntax(frontier)?.0 {
             let ctx = neighbour.comp_mode_ctx(
@@ -668,7 +666,7 @@ impl EncoderInterTile {
         }
         match motion {
             EncoderMotion::Warp(warp) => {
-                self.warp_symbols(&mut out, frontier, (&neighbour, &mode_ctx, max_drl), warp)?;
+                self.warp_symbols(out, frontier, (&neighbour, &mode_ctx, max_drl), warp)?;
             }
             EncoderMotion::Single(single) => {
                 if self.reads_is_warp(frontier)? {
@@ -684,19 +682,19 @@ impl EncoderInterTile {
                 } else if single.use_amvd {
                     return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
                 }
-                self.bawp_symbols(&mut out, frontier, single)?;
+                self.bawp_symbols(out, frontier, single)?;
                 if single.bawp.is_some() && single.interintra.is_some() {
                     return Err(DecodeHeaderStateError::InvalidInterBlockModeState.into());
                 }
                 if single.bawp.is_none() {
-                    self.interintra_symbols(&mut out, frontier, single.interintra)?;
+                    self.interintra_symbols(out, frontier, single.interintra)?;
                 }
                 if single.mode != SINGLE_MODE_GLOBALMV {
                     let selector = |idx| TileCdfSelector::DrlMode { idx, ctx: new_mv };
-                    drl_symbols(&mut out, selector, 0, max_drl, single.ref_mv_idx)?;
+                    drl_symbols(out, selector, 0, max_drl, single.ref_mv_idx)?;
                 }
                 self.precision_symbols(
-                    &mut out,
+                    out,
                     &neighbour,
                     single.mode == SINGLE_MODE_NEWMV,
                     (self.block_precision(motion), single.use_amvd),
@@ -705,7 +703,7 @@ impl EncoderInterTile {
             EncoderMotion::Compound(compound) => {
                 let refinement = self.compound_refinement(frontier, compound)?;
                 self.compound_symbols(
-                    &mut out,
+                    out,
                     &neighbour,
                     (
                         &mode_ctx,
@@ -717,7 +715,7 @@ impl EncoderInterTile {
                 )?;
             }
         }
-        Ok(out)
+        Ok(())
     }
 
     fn compound_symbols(

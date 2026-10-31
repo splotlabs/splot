@@ -34,19 +34,35 @@ pub(crate) const fn tx_type_candidates(preset: &PresetParams) -> usize {
     2 * preset.tx_type_depth as usize + 1
 }
 
-/// The row-major reconstruction of block `tx` (with its `tx_type` and
-/// `ist`) coded as `levels` over `prediction`, with the decoder's
-/// dequantization and inverse transforms.
+/// The buffers of [`reconstruct`]: the row-major reconstruction, then the
+/// dequantized coefficients and the residual it reuses.
+#[derive(Default)]
+pub(crate) struct ReconScratch {
+    pub(crate) recon: Vec<u16>,
+    dequant: Vec<i32>,
+    residual: Vec<i32>,
+}
+
+/// Writes into `scratch.recon` the row-major reconstruction of block `tx`
+/// (with its `tx_type` and `ist`) coded as `levels` over `prediction`, with
+/// the decoder's dequantization and inverse transforms.
 pub(crate) fn reconstruct(
     syntax: &IntraTileSyntax,
     prediction: &[u16],
     tx: &TransformBlock,
     levels: &[i32],
     (qindex, bit_depth): (u32, BitDepth),
-) -> Result<Vec<u16>> {
-    let mut recon = prediction.to_vec();
+    scratch: &mut ReconScratch,
+) -> Result<()> {
+    let ReconScratch {
+        recon,
+        dequant,
+        residual,
+    } = scratch;
+    recon.clear();
+    recon.extend_from_slice(prediction);
     if levels.iter().all(|&level| level == 0) {
-        return Ok(recon);
+        return Ok(());
     }
     let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
     let (adj_w, adj_h) = adjusted_log2(tx.tx_size)?;
@@ -58,17 +74,19 @@ pub(crate) fn reconstruct(
         (tx.tx_type, tcq, syntax.uses_ddt()),
         bit_depth,
     )?;
-    let mut dequant = vec![0; 1 << (adj_w + adj_h)];
-    let mut residual = vec![0; prediction.len()];
+    dequant.clear();
+    dequant.resize(1 << (adj_w + adj_h), 0);
+    residual.clear();
+    residual.resize(prediction.len(), 0);
     reconstruct_transform_block_residual_with_secondary(
         prediction,
         &syntax.decoder_quant(tx, levels)?,
         &params,
         &transform,
         syntax.secondary_transform(tx)?.as_ref(),
-        &mut dequant,
-        &mut residual,
-        &mut recon,
+        dequant,
+        residual,
+        recon,
     )?;
-    Ok(recon)
+    Ok(())
 }
