@@ -241,6 +241,15 @@ const fn tip_uses_refinemv(
     !output && enable_refinemv && enable_tip_refinemv && weight == mc::CWP_EQUAL
 }
 
+#[doc = "AV2 § 7.13.3.1 optical-flow gate: equal weight for a TIP block (§ 7.10.6 output skips it) and `opfl_allowed_for_refs` (§ 5.20.7.6) always."]
+const fn tip_optflow_weight_and_references_allowed(
+    output: bool,
+    weight: i16,
+    references_allowed: bool,
+) -> bool {
+    (output || weight == mc::CWP_EQUAL) && references_allowed
+}
+
 #[doc = "AV2 § 5.20.7.17 equal-distance reference gate for refine-MV search."]
 const fn tip_refinemv_offsets_allowed(past_offset: i32, future_offset: i32) -> bool {
     past_offset != 0 && past_offset == -future_offset
@@ -632,17 +641,19 @@ fn tip_block_plan<T: ReconSample>(
         && enable_tip_refinemv
         && interpolation_filter == ReconInterpolationFilter::EightTapSharp
         && two_references
-        && (output
-            || weight == mc::CWP_EQUAL
-                && tip_optflow_references_allowed(
-                    core.frame_type,
-                    core.frame_size,
-                    ref_frame_idx,
-                    &reference.ref_order_hint,
-                    &reference.ref_frame_width,
-                    &reference.ref_frame_height,
-                    offsets,
-                ));
+        && tip_optflow_weight_and_references_allowed(
+            output,
+            weight,
+            tip_optflow_references_allowed(
+                core.frame_type,
+                core.frame_size,
+                ref_frame_idx,
+                &reference.ref_order_hint,
+                &reference.ref_frame_width,
+                &reference.ref_frame_height,
+                offsets,
+            ),
+        );
     let frame_size = info.storage_luma_size();
     let block_w = placed.luma_w.min(
         frame_size
@@ -1528,9 +1539,9 @@ mod tests {
     use super::{
         TipHeldReferences, TipReferencePlan, output_interpolation_filter,
         output_prediction_unit_size, prediction_unit_extent, prediction_unit_size,
-        tip_optflow_references_allowed, tip_prediction_controls, tip_refinemv_offsets_allowed,
-        tip_refinemv_references_allowed, tip_uses_refinemv, tip_uses_two_references,
-        tmvp_unit_size8,
+        tip_optflow_references_allowed, tip_optflow_weight_and_references_allowed,
+        tip_prediction_controls, tip_refinemv_offsets_allowed, tip_refinemv_references_allowed,
+        tip_uses_refinemv, tip_uses_two_references, tmvp_unit_size8,
     };
     use crate::prediction::inter::mc;
     use crate::prediction::inter::reference::HeldFrameSamples;
@@ -1820,6 +1831,15 @@ mod tests {
             &[64, 64],
             [(0, 1), (1, -2)],
         ));
+    }
+
+    #[test]
+    fn tip_output_optflow_needs_references_on_both_sides() {
+        assert!(tip_optflow_weight_and_references_allowed(true, 12, true));
+        assert!(!tip_optflow_weight_and_references_allowed(true, 8, false));
+        assert!(tip_optflow_weight_and_references_allowed(false, 8, true));
+        assert!(!tip_optflow_weight_and_references_allowed(false, 12, true));
+        assert!(!tip_optflow_weight_and_references_allowed(false, 8, false));
     }
 
     #[test]
