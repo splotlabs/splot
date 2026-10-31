@@ -5129,7 +5129,7 @@ module = "crates/splot-encode/src/rate_control.rs"
 change_id = "encoder-m4-rate-control"
 owner = "encoder"
 risk = "medium"
-notes = "Encoder strategy. Config::rate_control selects ConstantQp, Crf { crf } (base qindex 4 * crf plus the ENC-LOOKAHEAD-TPL offset), Vbr { bitrate_kbps } or Cbr { bitrate_kbps, buffer_ms }. Vbr and Cbr pick one base qindex per lookahead window so that the predicted bits of the window meet the budget, with the model bits = k * complexity / step(qindex) per key frame and mini-GOP layer class; k is learnt from coded bits. The step is the § 7.14.2 qlookup, which doubles every 24 qindex. VBR bounds its drift to 8 frame budgets; CBR wraps the VBR model, bounds drift to half the buffer and raises a frame's qindex until it fits the buffer. Encoder::with_rate_controller plugs in a custom RateController. Integer arithmetic only. CLI: --crf, --bitrate, --rc vbr|cbr. Frame-level only: no delta-q."
+notes = "Encoder strategy. Config::rate_control selects ConstantQp, Crf { crf } (base qindex 4 * crf plus the ENC-RATE-CONTROL-V2 frame offset), Vbr { bitrate_kbps } or Cbr { bitrate_kbps, buffer_ms }. Vbr and Cbr pick one base qindex per lookahead window so that the predicted bits of the window meet the budget, with the model bits = k * complexity / step(qindex) per key frame and mini-GOP layer class; k is learnt from coded bits. The step is the § 7.14.2 qlookup, which doubles every 24 qindex. VBR bounds its underspend to 8 frame budgets and its overspend to 32, predicts flat frames by their mean coded size, and repays the whole drift over the last window of the input; CBR wraps the VBR model, bounds drift to half the buffer and raises a frame's qindex until it fits the buffer. Encoder::with_rate_controller plugs in a custom RateController. Integer arithmetic only. CLI: --crf, --bitrate, --rc vbr|cbr. Frame-level only: no delta-q."
 
 [feature.status]
 mapped = "done"
@@ -5161,7 +5161,7 @@ module = "crates/splot-encode/src/tpl.rs"
 change_id = "encoder-m4-lookahead-tpl"
 owner = "encoder"
 risk = "medium"
-notes = "Encoder strategy. The lookahead (lookahead.rs) holds the preset's lookahead_frames frames as luma downscaled by 2 (by 4 above 1080p) in 8-bit, with per-8x8-block intra SATD (best of DC, V, H) and inter SATD at the best SAD within one downscaled sample of the ENC-OPEN-LOOP-ME vectors of the block's luma area, of its quadrants and of the left block. The model (tpl.rs) plans the window with a copy of the GOP planner, takes each block's best of intra and the closest past and future coded frames, and propagates (intra + received) * (intra - best) / intra to the reference blocks under the vector, split on ties. Frame importance (intra + received) / intra gives a qindex offset of -12 * log2(importance), at most -32, plus 3 per mini-GOP layer. The rate controller gets the window and the offsets; the block-level pass of ENC-DELTA-Q reuses the propagation."
+notes = "Encoder strategy. The lookahead (lookahead.rs) holds the preset's lookahead_frames frames as luma downscaled by 2 (by 4 above 1080p) in 8-bit, with per-8x8-block intra SATD (best of DC, V, H) and inter SATD at the best SAD within one downscaled sample of the ENC-OPEN-LOOP-ME vectors of the block's luma area, of its quadrants and of the left block. The model (tpl.rs) plans the window with a copy of the GOP planner, takes each block's best of intra and the closest past and future coded frames, and propagates (intra + received) * (intra - best) / intra to the reference blocks under the vector, split on ties. Frame importance (intra + received) / intra gives a boost of 12 * log2(importance) qindex; ENC-RATE-CONTROL-V2 turns the boosts into per-frame offsets. The rate controller gets the window and the offsets; the block-level pass of ENC-DELTA-Q reuses the propagation."
 
 [feature.status]
 mapped = "done"
@@ -6808,6 +6808,38 @@ perf = "partial"
 [feature.proof]
 tests = ["crates/splot-encode/src/rd/stages.rs::tests::budgets_keep_the_cheapest_of_each_class_and_ties_keep_the_earlier", "crates/splot-encode/src/rd/stages.rs::tests::open_limits_keep_everything", "crates/splot-encode/src/intra_frame_mds_tests.rs::staged_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_mds_tests.rs::open_limits_drop_no_candidate", "crates/splot-encode/src/intra_frame_mds_tests.rs::open_budgets_code_the_unstaged_stream", "crates/splot-encode/src/intra_frame_mds_tests.rs::mds1_streams_decode_on_any_thread_count", "crates/splot-encode/src/intra_frame_mds_tests.rs::full_trials_255_code_the_old_full_trial_stream", "crates/splot-encode/src/intra_frame_mds_tests.rs::avm_decodes_staged_streams_like_splot", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
 commands = ["cargo test -p splot-encode mds --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_staged --locked -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-RATE-CONTROL-V2"
+name = "Key-frame group, mini-GOP and layer qindex allocation"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["7.14.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/rate_control.rs"
+change_id = "enc-rc-v2"
+owner = "encoder"
+risk = "medium"
+notes = "B9 part 1. Encoder strategy; qindex only through base_q_idx (no new syntax). rate_control::frame_offsets spreads each lookahead window from the ENC-LOOKAHEAD-TPL boosts: a key frame and each mini-GOP base frame move below the CRF base qindex by their boost (at most 64); the leaves of a mini-GOP of depth d sit at the CRF level, 3 * d above it; a frame at layer l moves from its base frame's offset to the CRF level by l / d, and never below a frame of the window it predicts from. The key frame's importance is extended from the window to its key-frame group (keyint frames): tpl::group_importance fits a geometric decay 1 + p + ... + p^n to the window's importance and sums it to the end of the group, so a slowly fading dependency (static content) gets a larger boost and a fast one keeps its own. VBR keeps the window model and adds the mean coded size of flat frames per class, remembers 32 frame budgets of overspend (8 of underspend), and repays the whole drift over the last, shorter window of the input. Constant-qp streams are unchanged. Not done: capped CRF with a mode-decision re-encode, CBR buffer changes, dynamic or 16/32-frame mini-GOPs (B9 part 2). Measurements in the PR body."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/rate_control_tests.rs::frame_offsets_step_from_the_base_frame_to_the_crf_level_by_layer", "crates/splot-encode/src/rate_control_tests.rs::frame_offsets_never_go_below_a_reference", "crates/splot-encode/src/tpl.rs::tests::key_frame_importance_extends_over_its_group", "crates/splot-encode/src/rate_control_tests.rs::vbr_meets_targets_within_three_percent", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_do_not_depend_on_the_thread_count", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_meet_targets_and_decode_to_the_recon", "crates/splot-encode/src/rate_control_tests.rs::avm_decodes_rate_controlled_streams_like_splot"]
+commands = ["cargo test -p splot-encode rate_control --locked", "cargo test -p splot-encode tpl --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored"]
 fixtures = []
 diagnostics = []
 

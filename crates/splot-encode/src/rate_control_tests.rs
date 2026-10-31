@@ -53,6 +53,68 @@ fn crf_adds_the_offset_and_clamps() {
     );
 }
 
+fn window_frame(
+    display_index: u64,
+    layer: u8,
+    boost: i32,
+    references: [Option<u64>; 2],
+) -> WindowFrame {
+    WindowFrame {
+        display_index,
+        frame_type: if display_index == 0 {
+            FrameType::Key
+        } else {
+            FrameType::Inter
+        },
+        layer,
+        boost,
+        references,
+    }
+}
+
+/// A key frame, a mini-GOP of 8 and one of 2 in coding order: the key frame
+/// and each base frame move down by their boost, at most 64, the leaves sit
+/// at the CRF level (3 per layer of depth above the base qindex), and the
+/// layers between move to it by thirds (depth 3) or at once (depth 1).
+#[test]
+fn frame_offsets_step_from_the_base_frame_to_the_crf_level_by_layer() {
+    let frames = [
+        window_frame(0, 0, 30, [None, None]),
+        window_frame(8, 0, 24, [Some(0), None]),
+        window_frame(4, 1, 11, [Some(0), Some(8)]),
+        window_frame(2, 2, 5, [Some(0), Some(4)]),
+        window_frame(1, 3, 0, [Some(0), Some(2)]),
+        window_frame(3, 3, 0, [Some(2), Some(4)]),
+        window_frame(6, 2, 4, [Some(4), Some(8)]),
+        window_frame(5, 3, 0, [Some(4), Some(6)]),
+        window_frame(7, 3, 0, [Some(6), Some(8)]),
+        window_frame(10, 0, 7, [Some(8), None]),
+        window_frame(9, 1, 0, [Some(8), Some(10)]),
+    ];
+    let offsets = frame_offsets(&frames);
+    assert_eq!(offsets, [-30, -24, -13, -2, 9, 9, -2, 9, 9, -7, 3]);
+    let mut strong = frames;
+    strong[0].boost = 60;
+    strong[1].boost = 90;
+    assert_eq!(frame_offsets(&strong)[..3], [-60, -64, -40]);
+}
+
+/// A frame is never coded finer than a frame it predicts from: a weak key
+/// frame lifts the middle frame, which in turn lifts the frames above it.
+#[test]
+fn frame_offsets_never_go_below_a_reference() {
+    let frames = [
+        window_frame(0, 0, 4, [None, None]),
+        window_frame(4, 0, 30, [Some(0), None]),
+        window_frame(2, 1, 0, [Some(0), Some(4)]),
+        window_frame(1, 2, 0, [Some(0), Some(2)]),
+        window_frame(3, 2, 0, [Some(2), Some(4)]),
+    ];
+    assert_eq!(frame_offsets(&frames), [-4, -30, -4, 6, 6]);
+    let unseen_reference = [window_frame(6, 1, 0, [Some(5), Some(7)])];
+    assert_eq!(frame_offsets(&unseen_reference), [0]);
+}
+
 /// A coder whose frames cost `k * complexity / step` bits, with `k` far from
 /// the initial model: the controllers meet the target within a few windows.
 #[test]
@@ -223,6 +285,73 @@ fn rate_controlled_streams_meet_targets_and_decode_to_the_recon() {
         kbps[0] > crf_kbps[0] && crf_kbps[0] > kbps[1],
         "{kbps:?} {crf_kbps:?}"
     );
+}
+
+/// CRF and VBR streams of 24 panning frames in two tiles are the same bytes
+/// at 1, 2 and 8 threads.
+#[test]
+fn rate_controlled_streams_do_not_depend_on_the_thread_count() {
+    for mode in &cases()[..2] {
+        let stream = |threads: usize| {
+            let mut config = Config::new(144, 32);
+            config.preset = Preset::new(9).unwrap();
+            config.rate_control = *mode;
+            config.tiles.cols_log2 = 1;
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let mut encoder = Encoder::new(config.clone()).unwrap();
+            let mut bytes = Vec::new();
+            for index in 0..24 {
+                let source = frame(&config, index, 2 * index as usize, u32::from(index >= 17));
+                encoder.send_frame(source).unwrap();
+                while let Some(packet) = encoder.receive_packet().unwrap() {
+                    bytes.extend(packet.data);
+                }
+            }
+            encoder.flush().unwrap();
+            while let Some(packet) = encoder.receive_packet().unwrap() {
+                bytes.extend(packet.data);
+            }
+            bytes
+        };
+        let one = stream(1);
+        assert!(!one.is_empty());
+        for threads in [2, 8] {
+            assert!(stream(threads) == one, "{mode:?} at {threads} threads");
+        }
+    }
+}
+
+/// VBR meets three targets within 3% over 60 frames of a 96x64 pan, key
+/// frames every 30.
+#[test]
+fn vbr_meets_targets_within_three_percent() {
+    for target in [40, 100, 250] {
+        let mut config = Config::new(96, 64);
+        config.preset = Preset::new(9).unwrap();
+        config.rate_control = RateControlMode::Vbr {
+            bitrate_kbps: target,
+        };
+        config.keyint = core::num::NonZeroU32::new(30).unwrap();
+        let mut encoder = Encoder::new(config.clone()).unwrap();
+        let mut bits = 0;
+        for index in 0..=60 {
+            if index == 60 {
+                encoder.flush().unwrap();
+            } else {
+                encoder
+                    .send_frame(frame(&config, index, 2 * index as usize, 0))
+                    .unwrap();
+            }
+            while let Some(packet) = encoder.receive_packet().unwrap() {
+                bits += packet.data.len() as u64 * 8;
+            }
+        }
+        let budget = u64::from(target) * 2000;
+        assert!(
+            bits.abs_diff(budget) * 100 <= budget * 3,
+            "{target}: {bits} bits"
+        );
+    }
 }
 
 /// AVM decodes the rate-controlled streams to the encoder recon.

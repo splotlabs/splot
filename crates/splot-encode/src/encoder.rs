@@ -324,7 +324,14 @@ impl Encoder {
             Some(index) => pending.get(usize::try_from(index).ok()?),
             None => last_coded.as_ref().filter(|_| display + 1 == next),
         };
-        let model = tpl::analyze(&mut self.lookahead, &plan, coded_before, blocks, &sources);
+        let model = tpl::analyze(
+            &mut self.lookahead,
+            &plan,
+            coded_before,
+            blocks,
+            u64::from(self.config.keyint.get()),
+            &sources,
+        );
         if let Some(fields) = self.lookahead.fields() {
             self.coder.set_open_loop_motion(fields);
         }

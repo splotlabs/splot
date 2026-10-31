@@ -9,11 +9,11 @@
 //! block passes `(intra + received) * (intra - best) / intra` to the blocks its
 //! vector covers in that reference, split by overlap area, and split evenly
 //! between both references when they tie. A frame's
-//! importance is `(intra + received) / intra` over all its blocks. Its qindex
-//! offset is `-12 * log2(importance)`, bounded: the § 7.14.2 quantizer step
-//! doubles every 24 qindex, so the step shrinks by `sqrt(importance)` and
-//! `lambda`, which goes with the squared step, by `importance`. Deeper layers
-//! of the mini-GOP add [`LAYER_QINDEX_OFFSET`] per layer.
+//! importance is `(intra + received) / intra` over all its blocks, and its
+//! boost `12 * log2(importance)`: the § 7.14.2 quantizer step doubles every
+//! 24 qindex, so a qindex that much lower shrinks the step by
+//! `sqrt(importance)` and `lambda`, which goes with the squared step, by
+//! `importance`. [`frame_offsets`] turns the boosts into qindex offsets.
 
 use std::collections::BTreeMap;
 
@@ -23,13 +23,11 @@ use splot_recon::{BitDepth, PlaneId};
 use crate::gop::GopFrame;
 use crate::kernels::kernels;
 use crate::lookahead::{BLOCK, Lookahead, Sources};
-use crate::rate_control::FrameType;
+use crate::rate_control::{FrameType, MAX_FRAME_BOOST, WindowFrame, frame_offsets};
 use crate::rd::log2_q8;
 
-/// The largest qindex decrease the model gives a frame.
+/// The largest qindex change the block-level model gives a superblock.
 pub(crate) const MAX_TPL_QINDEX_DECREASE: i32 = 32;
-/// The qindex increase per mini-GOP layer below the top one.
-pub(crate) const LAYER_QINDEX_OFFSET: i32 = 3;
 /// The smallest complexity a block adds: even a perfect prediction costs
 /// mode and vector bits.
 const MIN_BLOCK_COMPLEXITY: u32 = 128;
@@ -97,6 +95,7 @@ type Source = (u64, (i32, i32));
 /// One frame's block choices.
 struct Node {
     frame: GopFrame,
+    references: [Option<u64>; 2],
     intra: Vec<u32>,
     best: Vec<u32>,
     /// The references and vectors of each block that predict better than
@@ -113,6 +112,7 @@ pub(crate) fn analyze(
     plan: &[GopFrame],
     coded_before: Option<u64>,
     blocks_model: Option<BlockModel>,
+    key_group: u64,
     sources: Sources<'_>,
 ) -> Vec<TplFrame> {
     let (cols, rows) = lookahead.grid();
@@ -147,6 +147,7 @@ pub(crate) fn analyze(
             }
         }
         nodes.push(Node {
+            references: [past, future],
             frame: *frame,
             intra,
             best,
@@ -159,25 +160,44 @@ pub(crate) fn analyze(
         let frames = model.frames.min(nodes.len());
         propagate(&nodes[..frames], (cols, rows), model.noise)
     });
+    let window: Vec<WindowFrame> = nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            let intra: u64 = node.intra.iter().map(|&c| u64::from(c)).sum();
+            let gained: u64 = received
+                .get(&node.frame.display_index)
+                .map_or(0, |values| values.iter().sum());
+            let mut importance_q8 = (((intra + gained) << 8) / intra.max(1)).max(1 << 8);
+            if node.frame.frame_type == FrameType::Key {
+                let seen = nodes[index + 1..]
+                    .iter()
+                    .take_while(|next| next.frame.frame_type != FrameType::Key)
+                    .count() as u64;
+                importance_q8 = group_importance(importance_q8, seen, key_group);
+            }
+            let octaves_q8 =
+                u64::from(log2_q8(u32::try_from(importance_q8).unwrap_or(u32::MAX))) - (8 << 8);
+            WindowFrame {
+                display_index: node.frame.display_index,
+                frame_type: node.frame.frame_type,
+                layer: node.frame.layer,
+                boost: ((octaves_q8 * QINDEX_PER_IMPORTANCE_OCTAVE + 128) >> 8) as i32,
+                references: node.references,
+            }
+        })
+        .collect();
+    let offsets = frame_offsets(&window);
     nodes
         .iter()
-        .map(|node| {
-            let intra: u64 = node.intra.iter().map(|&c| u64::from(c)).sum();
+        .zip(offsets)
+        .map(|(node, qindex_offset)| {
             let floored = |costs: &[u32]| -> u64 {
                 costs
                     .iter()
                     .map(|&c| u64::from(c.max(MIN_BLOCK_COMPLEXITY)))
                     .sum()
             };
-            let gained: u64 = received
-                .get(&node.frame.display_index)
-                .map_or(0, |values| values.iter().sum());
-            let importance_q8 = (((intra + gained) << 8) / intra.max(1)).max(1 << 8);
-            let octaves_q8 =
-                u64::from(log2_q8(u32::try_from(importance_q8).unwrap_or(u32::MAX))) - (8 << 8);
-            let decrease = ((octaves_q8 * QINDEX_PER_IMPORTANCE_OCTAVE + 128) >> 8) as i32;
-            let offset = -decrease.min(MAX_TPL_QINDEX_DECREASE)
-                + i32::from(node.frame.layer) * LAYER_QINDEX_OFFSET;
             TplFrame {
                 display_index: node.frame.display_index,
                 complexity: floored(if node.frame.frame_type == FrameType::Key {
@@ -186,7 +206,7 @@ pub(crate) fn analyze(
                     &node.best
                 }),
                 min_complexity: blocks as u64 * u64::from(MIN_BLOCK_COMPLEXITY),
-                qindex_offset: offset as i16,
+                qindex_offset,
                 block_costs: block_received
                     .as_ref()
                     .and_then(|received| received.get(&node.frame.display_index))
@@ -197,6 +217,40 @@ pub(crate) fn analyze(
             }
         })
         .collect()
+}
+
+/// The importance in Q8 of a key frame over its key-frame group of `group`
+/// frames, from `importance_q8` over the `seen` frames after it in the
+/// window: the importance a frame passes on shrinks by a factor `p` per
+/// frame, so over `n` frames it is `1 + p + ... + p^n`; `p` fits the window
+/// and the sum runs to the end of the group, at most to the importance of
+/// [`MAX_FRAME_BOOST`].
+fn group_importance(importance_q8: u64, seen: u64, group: u64) -> u64 {
+    if seen == 0 {
+        return importance_q8;
+    }
+    let max_q8 = 256 << (MAX_FRAME_BOOST as u64 / QINDEX_PER_IMPORTANCE_OCTAVE + 1);
+    let sum_q8 = |p_q16: u64, frames: u64| {
+        let (mut sum, mut term) = (1u64 << 16, 1u64 << 16);
+        for _ in 0..frames {
+            term = term * p_q16 >> 16;
+            sum += term;
+            if term == 0 || sum >= max_q8 << 8 {
+                break;
+            }
+        }
+        sum >> 8
+    };
+    let (mut low, mut high) = (0u64, 1 << 16);
+    while low + 1 < high {
+        let mid = (low + high) / 2;
+        if sum_q8(mid, seen) <= importance_q8 {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    sum_q8(low, group.saturating_sub(1).max(seen)).clamp(importance_q8, max_q8)
 }
 
 /// The amount each block of `nodes` receives from the later nodes that
@@ -330,7 +384,7 @@ mod tests {
             })
             .collect();
         let sources = |display: u64| frames.get(usize::try_from(display).ok()?);
-        analyze(&mut lookahead, &plan, None, None, &sources)
+        analyze(&mut lookahead, &plan, None, None, 100, &sources)
     }
 
     /// A superblock whose blocks later frames predict from gets a lower
@@ -367,6 +421,22 @@ mod tests {
         assert_eq!(superblock_quant(&costs, grid, (2, 1, 32), 0), [(0, 0); 2]);
     }
 
+    /// The window's importance extends to the key-frame group: a lot for a
+    /// slowly fading dependency, little for a fast one, nothing without a
+    /// frame after the key frame or a group beyond the window, and at most
+    /// the importance of the largest boost.
+    #[test]
+    fn key_frame_importance_extends_over_its_group() {
+        let static_scene = group_importance(1449, 7, 30);
+        assert!((2400..2500).contains(&static_scene), "{static_scene}");
+        let moving = group_importance(968, 7, 30);
+        assert!((1080..1130).contains(&moving), "{moving}");
+        assert!((484..490).contains(&group_importance(484, 7, 30)));
+        assert_eq!(group_importance(1449, 0, 30), 1449);
+        assert_eq!(group_importance(1449, 7, 8), 1449);
+        assert_eq!(group_importance(2048, 7, 1000), 256 << 6);
+    }
+
     #[test]
     fn recon_noise_grows_with_qindex_and_shrinks_with_the_block() {
         let noise = |qindex, bit_depth, block| recon_noise(qindex, bit_depth, block);
@@ -397,7 +467,7 @@ mod tests {
                 "shift {shift}: {frames:?}"
             );
             assert!(offset(0) < leaf, "shift {shift}: {frames:?}");
-            assert_eq!(leaf, 2 * LAYER_QINDEX_OFFSET as i16);
+            assert_eq!(leaf, 2 * crate::rate_control::LAYER_QINDEX_STEP as i16);
             assert!(
                 frames[1].complexity < frames[0].complexity / 2,
                 "{frames:?}"
