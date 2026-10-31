@@ -356,7 +356,12 @@ fn open_loop_seed_streams_decode_alike_on_any_thread_count() {
         );
     }
     let bytes = |units: &[Vec<u8>]| units.iter().map(Vec::len).sum::<usize>();
-    let plain = panning_stream(1, &[("motion_range", "2")]).0;
+    let off = [
+        ("me_seeds", "0"),
+        ("compound_skip_sad", "0"),
+        ("motion_range", "2"),
+    ];
+    let plain = panning_stream(1, &off).0;
     assert!(
         bytes(&one) * 100 < bytes(&plain) * 95,
         "seeded {} vs plain {} bytes",
