@@ -16,6 +16,33 @@ use crate::rate_control::{Crf, check_bitrate, max_qindex};
 /// 16 bits (§ 5.4.1, `docs/spec/av2/1.0.0/05-syntax-structures.md`).
 pub const MAX_FRAME_DIMENSION: u32 = 1 << 16;
 
+/// The quality metric the encoder tunes its choices for; each takes
+/// [`Tune::overrides`] before [`Config::preset_overrides`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tune {
+    /// PSNR: plain squared error everywhere, no overrides.
+    #[default]
+    Psnr,
+    /// SSIM: `ssim_aq`, so superblocks move their lambda and qindex with the
+    /// variance of their 16x16 luma blocks.
+    Ssim,
+    /// Visual quality: `ssim_aq` and `psy_rd`, so trials also keep the AC
+    /// energy of the source.
+    Vq,
+}
+
+impl Tune {
+    /// The preset overrides of this tune.
+    #[must_use]
+    pub const fn overrides(self) -> &'static [(&'static str, &'static str)] {
+        match self {
+            Self::Psnr => &[],
+            Self::Ssim => &[("ssim_aq", "50")],
+            Self::Vq => &[("ssim_aq", "30"), ("psy_rd", "50")],
+        }
+    }
+}
+
 /// How the encoder picks the quantizer of each frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -101,6 +128,8 @@ pub struct Config {
     /// its source (none under a threshold), and every output frame applies it
     /// (§ 5.14, § 5.18.10.1). Off by default; TIP output frames stay off.
     pub film_grain: bool,
+    /// The metric the encoder tunes for; [`Tune::Psnr`] by default.
+    pub tune: Tune,
 }
 
 impl Config {
@@ -135,6 +164,7 @@ impl Config {
             keyint: Self::DEFAULT_KEYINT,
             resize_denominator: None,
             film_grain: false,
+            tune: Tune::Psnr,
         }
     }
 
@@ -216,10 +246,14 @@ impl Config {
         }
     }
 
-    /// `row` with [`Self::preset_overrides`] applied, checked by
+    /// `row` with [`Tune::overrides`] of [`Self::tune`] and then
+    /// [`Self::preset_overrides`] applied, checked by
     /// [`PresetParams::validate`].
     pub(crate) fn override_preset(&self, row: &PresetParams) -> Result<PresetParams> {
         let mut row = *row;
+        for (name, value) in self.tune.overrides() {
+            row.set(name, value)?;
+        }
         for (name, value) in &self.preset_overrides {
             row.set(name, value)?;
         }

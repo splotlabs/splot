@@ -21,7 +21,7 @@ use splot_decode::encoder_syntax::dct_recon_params;
 use splot_recon::{BitDepth, PlaneId};
 
 use crate::gop::GopFrame;
-use crate::kernels::kernels;
+use crate::kernels::{BlockDims, kernels};
 use crate::lookahead::{BLOCK, Lookahead, Sources};
 use crate::rate_control::FrameType;
 use crate::rd::log2_q8;
@@ -250,7 +250,6 @@ pub(crate) fn superblock_quant(
     strength: u8,
 ) -> Vec<(i16, i16)> {
     let per_sb = (sb_luma / block_luma).max(1);
-    let max_log2 = MAX_TPL_QINDEX_DECREASE * 256 / QINDEX_PER_IMPORTANCE_OCTAVE as i32;
     let (intra, received) = costs.iter().fold((0, 0), |(i, r), &(intra, received)| {
         (i + u64::from(intra), r + received)
     });
@@ -265,10 +264,72 @@ pub(crate) fn superblock_quant(
                     (sum + log2_importance(u64::from(intra), received), count + 1)
                 });
             let log2_beta = if count == 0 { 0 } else { sum / count - frame };
-            let lambda = (-log2_beta * i64::from(strength) / 100) as i32;
-            let lambda = lambda.clamp(-max_log2, max_log2);
-            let offset = (lambda * QINDEX_PER_IMPORTANCE_OCTAVE as i32 + 128).div_euclid(256);
-            (offset as i16, lambda as i16)
+            quant_of((-log2_beta * i64::from(strength) / 100) as i32)
+        })
+        .collect()
+}
+
+/// The `(qindex offset, lambda log2 Q8)` of a superblock whose lambda moves
+/// by `lambda_log2` octaves in Q8: both bounded by
+/// [`MAX_TPL_QINDEX_DECREASE`], the qindex by 12 per octave.
+pub(crate) fn quant_of(lambda_log2: i32) -> (i16, i16) {
+    let max_log2 = MAX_TPL_QINDEX_DECREASE * 256 / QINDEX_PER_IMPORTANCE_OCTAVE as i32;
+    let lambda = lambda_log2.clamp(-max_log2, max_log2);
+    let offset = (lambda * QINDEX_PER_IMPORTANCE_OCTAVE as i32 + 128).div_euclid(256);
+    (offset as i16, lambda as i16)
+}
+
+/// The luma side of an SSIM variance block.
+const SSIM_BLOCK: usize = 16;
+
+/// The lambda move in Q8 octaves of each superblock of a `(sb_cols,
+/// sb_rows)` grid of `sb_luma` samples for SSIM: SSIM weighs the error of a
+/// block by `1 / (2 * variance + C2)`, so a 16x16 block takes the lambda
+/// `log2(2 * variance + C2)` (8-bit variance, `C2 = (0.03 * 255)^2 = 58.5`,
+/// both in Q4), less
+/// its mean over the frame; a superblock takes `strength` percent of the
+/// mean of its blocks.
+/// Blocks that cross the frame edge count as the frame mean.
+pub(crate) fn ssim_lambda_log2(
+    luma: &[u16],
+    (width, height): (usize, usize),
+    bit_depth: BitDepth,
+    (sb_cols, sb_rows, sb_luma): (usize, usize, usize),
+    strength: u8,
+) -> Vec<i32> {
+    const ZERO: [u16; SSIM_BLOCK * SSIM_BLOCK] = [0; SSIM_BLOCK * SSIM_BLOCK];
+    let Ok(dims) = BlockDims::new(SSIM_BLOCK, SSIM_BLOCK) else {
+        return vec![0; sb_cols * sb_rows];
+    };
+    let (cols, rows) = (width / SSIM_BLOCK, height / SSIM_BLOCK);
+    let shift = 2 * (bit_depth.bits() - 8);
+    let n = (SSIM_BLOCK * SSIM_BLOCK) as u64;
+    let logs: Vec<i64> = (0..rows * cols)
+        .map(|index| {
+            let at = index / cols * SSIM_BLOCK * width + index % cols * SSIM_BLOCK;
+            let block = luma.get(at..).unwrap_or_default();
+            let sum = u64::from(kernels().sad(block, width, &ZERO, SSIM_BLOCK, dims));
+            let squares = kernels().sse(block, width, &ZERO, SSIM_BLOCK, dims);
+            let variance_q4 = ((squares * n - sum * sum) * 32 / (n * n)) >> shift;
+            i64::from(log2_q8(
+                u32::try_from(variance_q4 + 936).unwrap_or(u32::MAX),
+            ))
+        })
+        .collect();
+    if logs.is_empty() {
+        return vec![0; sb_cols * sb_rows];
+    }
+    let mean = logs.iter().sum::<i64>() / logs.len() as i64;
+    let per_sb = sb_luma / SSIM_BLOCK;
+    (0..sb_rows * sb_cols)
+        .map(|index| {
+            let (row, col) = (index / sb_cols * per_sb, index % sb_cols * per_sb);
+            let blocks: Vec<i64> = (row..(row + per_sb).min(rows))
+                .flat_map(|r| (col..(col + per_sb).min(cols)).map(move |c| r * cols + c))
+                .map(|i| logs[i])
+                .collect();
+            let sum: i64 = blocks.iter().map(|&l| l - mean).sum();
+            (sum / (per_sb * per_sb) as i64 * i64::from(strength) / 100) as i32
         })
         .collect()
 }
@@ -307,6 +368,40 @@ mod tests {
     use core::num::NonZeroU32;
 
     use super::*;
+
+    /// A textured superblock takes a larger lambda than a flat one, the moves
+    /// sum to about zero, and 10-bit samples four times the 8-bit ones move
+    /// it alike.
+    #[test]
+    fn ssim_lambda_follows_the_block_variance() {
+        let (width, height) = (64, 32);
+        let luma: Vec<u16> = (0..width * height)
+            .map(|i| {
+                let (x, y) = (i % width, i / width);
+                if x < 32 {
+                    100 + (x % 3) as u16
+                } else {
+                    60 + ((x * 7 + y * 13) % 90) as u16
+                }
+            })
+            .collect();
+        let moves = ssim_lambda_log2(&luma, (width, height), BitDepth::Eight, (2, 1, 32), 100);
+        assert!(moves[0] < 0 && moves[1] > 0, "{moves:?}");
+        assert!((moves[0] + moves[1]).abs() <= 2, "{moves:?}");
+        let ten: Vec<u16> = luma.iter().map(|&v| v * 4).collect();
+        assert_eq!(
+            ssim_lambda_log2(&ten, (width, height), BitDepth::Ten, (2, 1, 32), 100),
+            moves
+        );
+        assert_eq!(
+            ssim_lambda_log2(&luma, (width, height), BitDepth::Eight, (2, 1, 32), 0),
+            [0, 0]
+        );
+        assert_eq!(
+            quant_of(i32::MAX),
+            quant_of(MAX_TPL_QINDEX_DECREASE * 256 / 12)
+        );
+    }
     use crate::config::Config;
     use crate::gop::{GopPlanner, GopStep};
     use crate::lookahead::tests::frame;

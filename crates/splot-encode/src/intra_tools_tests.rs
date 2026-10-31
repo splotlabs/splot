@@ -603,3 +603,62 @@ fn search_picks_ist_blocks() {
 fn avm_decodes_ist_frames_like_splot() {
     assert_avm_decodes(ist_preset(), "ist");
 }
+
+/// The AC-energy loss of a flat recon of noise is about its squared error at
+/// 100%, scales with `psy_rd`, and is zero for an exact recon.
+#[test]
+fn ac_energy_loss_charges_lost_texture() {
+    let dims = crate::kernels::BlockDims::new(16, 8).unwrap();
+    let mut state = 0x2545_f491_u32;
+    let source: Vec<u16> = (0..16 * 8)
+        .map(|i| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (300 + i % 7) as u16 + (state % 41) as u16
+        })
+        .collect();
+    let mean = (source.iter().map(|&s| u32::from(s)).sum::<u32>() / 128) as u16;
+    let flat = vec![mean; 16 * 8];
+    let sse: u64 = source
+        .iter()
+        .map(|&s| u64::from(s.abs_diff(mean)).pow(2))
+        .sum();
+    let full = crate::intra_frame::ac_energy_loss((&source, 16), &flat, dims, 100);
+    assert!(full > sse / 2 && full < sse * 2, "{full} vs {sse}");
+    let half = crate::intra_frame::ac_energy_loss((&source, 16), &flat, dims, 50);
+    assert_eq!(half, full / 2);
+    assert_eq!(
+        crate::intra_frame::ac_energy_loss((&source, 16), &source, dims, 100),
+        0
+    );
+    assert_eq!(
+        crate::intra_frame::ac_energy_loss((&source, 16), &flat, dims, 0),
+        0
+    );
+}
+
+/// `Tune::Vq` streams (`ssim_aq` and `psy_rd`) decode to the encoder recon
+/// with the same bytes on 1, 2 and 8 threads; `psy_rd` changes the stream.
+#[test]
+fn vq_tuned_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    let vq = preset_with(|p| (p.ssim_aq, p.psy_rd) = (30, 50));
+    let case = (1, PixelFormat::Yuv420, BitDepth::Ten);
+    let (units, recon, _) = tool_stream(case, vq);
+    assert_same_samples(&decode(&units.concat()), &recon, "vq");
+    for threads in [2, 8] {
+        assert!(
+            tool_stream((threads, case.1, case.2), vq).0 == units,
+            "{threads}"
+        );
+    }
+    let aq_only = preset_with(|p| p.ssim_aq = 30);
+    assert_ne!(tool_stream(case, aq_only).0, units);
+}
+
+/// AVM decodes the `Tune::Vq` key and inter frames to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_vq_tuned_frames_like_splot() {
+    assert_avm_decodes(preset_with(|p| (p.ssim_aq, p.psy_rd) = (30, 50)), "vq");
+}

@@ -20,6 +20,7 @@ Options:
       --preset <PRESET>           Speed preset: 0 is the slowest and best, 10 the fastest [default: 6]
       --preset-set <FIELD=VALUE>  Overrides one field of the preset, as FIELD=VALUE; repeat for more fields. It wins over the screen-content switch. Flags take 0, 1, false or true; a per-frame-kind field (`intra_modes`, `tcq`, `tf_frames`, `tf_strength`) takes one value or four comma-separated values for key, base, mid and leaf frames; `mvd_tools` takes three comma-separated flags. An unknown FIELD lists the valid names
       --low-delay                 Low delay: one packet per input frame, in display order. Sets `mini_gop_size=1` (IPPP, every frame shown) and `lookahead_frames=1` before `--preset-set`; off by default
+      --tune <TUNE>               The metric the encoder tunes for: `psnr` (default), `ssim` (superblock lambda and qindex follow the luma variance) or `vq` (trials keep the AC energy of the source); before `--preset-set` [default: psnr] [possible values: psnr, ssim, vq]
       --threads <THREADS>         Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto) [default: auto]
       --tiles <TILES>             Tile columns x rows, each a power of two up to 64. More tiles code faster on more threads and cost some compression [default: 1x1]
       --limit <LIMIT>             Stop after this many input frames

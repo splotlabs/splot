@@ -115,6 +115,13 @@ pub struct PresetParams {
     /// `100` in every row (2026-10-26, CRF, vs main 9ec81da32): p6 niklas
     /// f30 Y -0.86%, paris f30 -1.92%, park_joy f10 +0.06% at 0.95-1.0x CPU.
     pub tpl_delta_q: u8,
+    /// SSIM adaptive quantization in percent: each superblock moves its
+    /// lambda and qindex by this share of the SSIM weight of its 16x16 luma
+    /// blocks against the frame (`tpl::ssim_lambda_log2`). `0` in every row;
+    /// `Tune::Ssim` sets 50 and `Tune::Vq` 30 (p6 SSIM-BD against
+    /// `Tune::Psnr` at 50: paris -1.15%, park_joy -0.66%, niklas -2.75%; 100
+    /// gained nothing on paris and 200 lost 7%).
+    pub ssim_aq: u8,
     /// Temporal filtering, `0..=8` per frame kind, `0` off; the lookahead
     /// reads it at the normal coefficient level. Key frames: the most later
     /// neighbours that a key frame is filtered from before it is coded; the
@@ -349,6 +356,11 @@ pub struct PresetParams {
     /// (`[MVP, NEWMV, compound]`) keeps for the all-plane trials, lowest
     /// luma prediction SATD plus mode rate first. `255` keeps every one.
     pub mds0_budgets: [u8; 3],
+    /// Psychovisual RD in percent: the trial distortion of a luma block adds
+    /// its AC-energy loss (`PaddedSource::ac_loss`). `0` in every row;
+    /// `Tune::Vq` sets 50 (alone it costs SSIM: paris p6 SSIM-BD +0.11% at
+    /// 50, +0.78% at 100).
+    pub psy_rd: u8,
     /// Wavefront search: the superblocks of one tile search in parallel, each
     /// once its left and top-right neighbours are committed, and price from
     /// CDFs averaged three to one from those two neighbours; one writer codes
@@ -581,6 +593,7 @@ impl PresetParams {
         )?;
         check("drl_bits", self.drl_bits, 1, 5, "")?;
         check("tpl_delta_q", self.tpl_delta_q, 0, 200, "")?;
+        check("ssim_aq", self.ssim_aq, 0, 200, "")?;
         for &frames in self.tf_frames.values() {
             check("tf_frames", frames, 0, 8, "")?;
         }
@@ -827,6 +840,7 @@ preset_table! {
         mini_gop_size:         [    8,     8,     8,     8,     8,     4,     4,     4,     2,     2,     1],
         lookahead_frames:      [   16,    16,    16,    16,    16,     8,     8,     8,     4,     4,     2],
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
+        ssim_aq:               [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tf_frames:             frames([
                                [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     0],
                                [0; 11], [0; 11], [0; 11]]),
@@ -834,6 +848,7 @@ preset_table! {
         delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
     mode_decision {
+        psy_rd:                [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         mds0_budgets:          [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
     }
     threading {
@@ -951,6 +966,8 @@ mod tests {
             assert!(fast.mini_gop_size <= slow.mini_gop_size);
             assert!(fast.lookahead_frames <= slow.lookahead_frames);
             assert!(fast.tpl_delta_q <= slow.tpl_delta_q);
+            assert!(fast.ssim_aq <= slow.ssim_aq);
+            assert!(fast.psy_rd <= slow.psy_rd);
             assert!(at_most(&fast.tf_frames, &slow.tf_frames));
             assert!(fast.compound_candidates <= slow.compound_candidates);
             assert!(fast.cdf_carry <= slow.cdf_carry);
