@@ -1586,6 +1586,8 @@ mod tf;
 mod tip;
 #[path = "intra_frame_warp_tests.rs"]
 mod warp;
+#[path = "intra_frame_wavefront_tests.rs"]
+mod wavefront_search;
 #[path = "intra_frame_wienerns_tests.rs"]
 mod wienerns;
 

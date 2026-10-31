@@ -289,6 +289,17 @@ pub(super) struct GridPlanes {
     models: Vec<[i32; 6]>,
 }
 
+/// The cells of a grid rectangle and the leaf records and models they name,
+/// renumbered from 1 and 0.
+#[derive(Default)]
+pub(crate) struct GridEdge {
+    rows: Range<usize>,
+    cols: Range<usize>,
+    cells: Vec<Option<NonZeroU32>>,
+    leaves: Vec<LeafRecord>,
+    models: Vec<[i32; 6]>,
+}
+
 /// Sizes one tile's grid plane and empties its tables.
 fn reset_grid_planes(
     planes: &mut GridPlanes,
@@ -873,6 +884,72 @@ impl NeighbourMvGrid {
                 && let (Some(cells), Some(saved)) = (self.planes.cells.get_mut(span), saved.next())
             {
                 cells.copy_from_slice(saved);
+            }
+        }
+    }
+
+    /// The cells of tile rows `rows` x columns `cols` with the leaves and
+    /// models they name, for [`Self::import_edge`] on another grid of the
+    /// same tile; a row outside the window reads as unpublished.
+    pub(crate) fn edge(&self, rows: Range<usize>, cols: Range<usize>) -> GridEdge {
+        let end = self.origin_col + self.mi_cols;
+        let cols = cols.start.clamp(self.origin_col, end)..cols.end.clamp(self.origin_col, end);
+        let mut edge = GridEdge {
+            cols: cols.clone(),
+            ..GridEdge::default()
+        };
+        let mut names: Vec<(u32, NonZeroU32)> = Vec::new();
+        for row in rows.clone() {
+            let cells = self
+                .row_span(row, &cols)
+                .and_then(|span| self.planes.cells.get(span));
+            for index in 0..cols.len() {
+                let cell = cells.and_then(|cells| cells.get(index).copied().flatten());
+                edge.cells.push(cell.and_then(|slot| {
+                    if let Some(&(_, name)) = names.iter().find(|(old, _)| *old == slot.get()) {
+                        return Some(name);
+                    }
+                    let mut leaf = *self.planes.leaves.get(slot.get() as usize - 1)?;
+                    let count = (leaf.model_bits
+                        & (LeafRecord::SPLAT0 | LeafRecord::SPLAT1 | LeafRecord::STORED_OWN))
+                        .count_ones() as usize;
+                    let models = self.planes.models.get(leaf.models as usize..)?;
+                    leaf.models = u32::try_from(edge.models.len()).ok()?;
+                    edge.models.extend_from_slice(models.get(..count)?);
+                    edge.leaves.push(leaf);
+                    let name = NonZeroU32::new(u32::try_from(edge.leaves.len()).ok()?)?;
+                    names.push((slot.get(), name));
+                    Some(name)
+                }));
+            }
+        }
+        edge.rows = rows;
+        edge
+    }
+
+    /// Publishes an [`Self::edge`] of another grid over the same cells.
+    pub(crate) fn import_edge(&mut self, edge: &GridEdge) {
+        let (Ok(leaves), Ok(models)) = (
+            u32::try_from(self.planes.leaves.len()),
+            u32::try_from(self.planes.models.len()),
+        ) else {
+            return;
+        };
+        self.planes
+            .leaves
+            .extend(edge.leaves.iter().map(|leaf| LeafRecord {
+                models: leaf.models + models,
+                ..*leaf
+            }));
+        self.planes.models.extend_from_slice(&edge.models);
+        let mut saved = edge.cells.chunks(edge.cols.len().max(1));
+        for row in edge.rows.clone() {
+            if let (Some(span), Some(saved)) = (self.row_span(row, &edge.cols), saved.next())
+                && let Some(cells) = self.planes.cells.get_mut(span)
+            {
+                for (cell, name) in cells.iter_mut().zip(saved) {
+                    *cell = name.and_then(|name| name.checked_add(leaves));
+                }
             }
         }
     }

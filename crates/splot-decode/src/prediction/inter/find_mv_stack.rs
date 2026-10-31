@@ -94,7 +94,7 @@ mod warp_bank;
 use derived::{CompoundScanState, DerivedMvState};
 use extra_search::{compound_extra_search, extra_search};
 pub(crate) use neighbour_grid::{
-    BlockPrecisionRecord, GridCheckpoint, NON_INTER_FLAG_SYNTAX, NeighbourFlagRecord,
+    BlockPrecisionRecord, GridCheckpoint, GridEdge, NON_INTER_FLAG_SYNTAX, NeighbourFlagRecord,
     NeighbourFlagSyntax, NeighbourMotionValues, NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES,
     compound_motion_mode,
 };

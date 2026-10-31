@@ -12,7 +12,7 @@
 
 use super::super::compound::CompoundYMode;
 use super::super::find_mv_stack::{
-    GridCheckpoint, ModeContext, OrderHintMvContext, RefMvBank, WarpParamBank,
+    GridCheckpoint, GridEdge, ModeContext, OrderHintMvContext, RefMvBank, WarpParamBank,
     reference_order_hints,
 };
 use splot_core::headers::sequence::{SequencePartitionConfig, SuperblockSize};
@@ -405,6 +405,21 @@ impl EncoderInterTile {
                 intrabc.checkpoint(r..r + n4h, c..c + n4w)
             }),
         }
+    }
+
+    /// The neighbour cells of tile rows `rows` x columns `cols`, for
+    /// [`Self::import_edge`] on another tile state of the same tile.
+    pub(crate) fn edge(
+        &self,
+        rows: core::ops::Range<usize>,
+        cols: core::ops::Range<usize>,
+    ) -> GridEdge {
+        self.grid.edge(rows, cols)
+    }
+
+    /// Publishes an [`Self::edge`] of another tile state.
+    pub(crate) fn import_edge(&mut self, edge: &GridEdge) {
+        self.grid.import_edge(edge);
     }
 
     /// The reference MV bank, for the debug rollback check.

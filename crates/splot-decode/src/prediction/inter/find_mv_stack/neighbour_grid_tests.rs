@@ -226,3 +226,81 @@ fn a_checkpoint_since_an_older_one_restores_its_own_leaf() {
     grid.rollback(&end);
     assert_eq!(grid.get(3, 3).unwrap().motion.sub_mv, best);
 }
+
+/// Publishes an inter leaf with motion `mv` and, when given, a stored warp
+/// model of its own.
+fn publish(
+    grid: &mut NeighbourMvGrid,
+    (r, c, n4w, n4h): (usize, usize, usize, usize),
+    mv: Mv,
+    model: Option<[i32; 6]>,
+) {
+    let motion_mode = if model.is_some() {
+        MotionMode::LocalWarp
+    } else {
+        MotionMode::Simple
+    };
+    let syntax = NeighbourFlagSyntax {
+        is_inter: true,
+        ref_frame0: 1,
+        motion_mode,
+        ..NON_INTER_FLAG_SYNTAX
+    };
+    grid.record_flags(r, c, n4w, n4h, syntax);
+    let values = NeighbourMotionValues {
+        mv: [mv, Mv::ZERO],
+        cwp_weight: CWP_EQUAL,
+        stored_warp: model,
+        global_mv: [false, false],
+        splat_warp: [None, None],
+    };
+    grid.record_motion(r, c, n4w, n4h, values);
+}
+
+/// An edge taken past the tile's last column keeps only the tile's columns,
+/// and its leaves and warp models land renumbered behind the importing
+/// grid's own, with every other cell of that grid untouched.
+#[test]
+fn an_edge_imports_its_cells_leaves_and_models_into_another_grid() {
+    let (first, second) = (
+        [65_536, 0, 0, 65_536, 12, -4],
+        [65_536, 8, -8, 65_536, 3, 7],
+    );
+    let mut source = NeighbourMvGrid::new_for_tile(0..8, 0..10).unwrap();
+    publish(
+        &mut source,
+        (0, 0, 10, 4),
+        Mv { row: 2, col: -6 },
+        Some(first),
+    );
+    publish(&mut source, (4, 0, 4, 4), Mv { row: -3, col: 5 }, None);
+    publish(
+        &mut source,
+        (4, 4, 6, 4),
+        Mv { row: 9, col: 1 },
+        Some(second),
+    );
+    let edge = source.edge(6..8, 4..16);
+    let mut target = NeighbourMvGrid::new_for_tile(0..8, 0..10).unwrap();
+    publish(
+        &mut target,
+        (0, 0, 4, 2),
+        Mv { row: 1, col: 1 },
+        Some(first),
+    );
+    target.import_edge(&edge);
+    for r in 0..8 {
+        for c in 0..10 {
+            let expected = match (r, c) {
+                (6..8, 4..10) => source.get(r, c),
+                (0..2, 0..4) => target.get(0, 0),
+                _ => None,
+            };
+            assert_eq!(target.get(r, c), expected, "({r}, {c})");
+        }
+    }
+    assert_eq!(
+        target.get(7, 9).and_then(|cell| cell.motion.warp_params()),
+        Some(second)
+    );
+}

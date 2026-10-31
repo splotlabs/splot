@@ -98,11 +98,62 @@ impl FrameDecisions {
         Ok(())
     }
 
+    /// [`Self::write_superblock`] through [`KeyFrameTileWriter::commit_superblock`].
+    pub(crate) fn commit_superblock(
+        &mut self,
+        writer: &mut KeyFrameTileWriter,
+        (decision, qindex): (SuperblockDecision, Option<u32>),
+        coder: &mut impl ResidualCoder,
+    ) -> core::result::Result<(), TileWriterError> {
+        writer.commit_superblock(
+            &decision,
+            &mut Recording {
+                coder,
+                transforms: &mut self.transforms,
+                palette_maps: &mut self.palette_maps,
+            },
+        )?;
+        self.superblocks.push((decision, qindex));
+        Ok(())
+    }
+
+    /// Writes the superblocks `committed` kept through `writer` with the
+    /// transform decisions they kept, and keeps them all.
+    pub(crate) fn write_committed(
+        &mut self,
+        writer: &mut KeyFrameTileWriter,
+        committed: Self,
+    ) -> core::result::Result<(), TileWriterError> {
+        Self::write_kept(
+            writer,
+            &committed.superblocks,
+            committed.transforms.clone(),
+            committed.palette_maps.clone(),
+        )?;
+        self.superblocks.extend(committed.superblocks);
+        self.transforms.extend(committed.transforms);
+        self.palette_maps.extend(committed.palette_maps);
+        Ok(())
+    }
+
     /// Writes the kept decisions again through `writer`.
     fn replay(self, writer: &mut KeyFrameTileWriter) -> core::result::Result<(), TileWriterError> {
-        let maps = self.palette_maps.into_iter();
-        let mut replay = Replay(self.transforms.into_iter(), maps, Vec::new());
-        for (decision, qindex) in &self.superblocks {
+        Self::write_kept(
+            writer,
+            &self.superblocks,
+            self.transforms,
+            self.palette_maps,
+        )
+    }
+
+    fn write_kept(
+        writer: &mut KeyFrameTileWriter,
+        superblocks: &[(SuperblockDecision, Option<u32>)],
+        transforms: Vec<TransformDecision>,
+        palette_maps: Vec<Vec<u8>>,
+    ) -> core::result::Result<(), TileWriterError> {
+        let mut replay = Replay(transforms.into_iter(), palette_maps.into_iter(), Vec::new());
+        for (decision, qindex) in superblocks {
             if let Some(qindex) = *qindex {
                 writer.set_superblock_qindex(qindex)?;
             }
@@ -155,6 +206,20 @@ impl<C: ResidualCoder> ResidualCoder for Recording<'_, C> {
         let decision = self.coder.code(syntax, tx, prediction)?;
         self.transforms.push(decision.clone());
         Ok(decision)
+    }
+
+    fn code_chroma_pair(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        blocks: [&TransformBlock; 2],
+        predictions: [&[u16]; 2],
+    ) -> core::result::Result<[TransformDecision; 2], TileWriterError> {
+        let decisions = self.coder.code_chroma_pair(syntax, blocks, predictions)?;
+        #[cfg(test)]
+        crate::mode_decision::CCTX_RECORDED
+            .set(crate::mode_decision::CCTX_RECORDED.get() + usize::from(decisions[0].cctx != 0));
+        self.transforms.extend(decisions.iter().cloned());
+        Ok(decisions)
     }
 }
 
