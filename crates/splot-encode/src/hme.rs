@@ -3,20 +3,21 @@
 
 //! Open-loop hierarchical motion estimation on source frames.
 //!
-//! Each frame's luma, reduced to 8 bits, becomes a pyramid built once: full
-//! resolution and two 2x2-mean levels (half and quarter per side, rounded down), each
-//! covering whole 64x64 superblocks and padded by replicated samples. The
-//! motion of a frame against another is searched per superblock: a full
-//! search on the quarter level over the preset's `hme_range`, scaled by the
-//! frames' distance; a refinement of [`REFINE`] samples on the half level;
-//! then full searches at full resolution around the zero vector over half
-//! the preset's `me_range` and around that centre over `me_range`, shrunk
-//! when the half-level SAD and vector are small. Each level first scores the zero (or inherited) vector,
-//! so ties keep it. Every
-//! position scores the superblock's 8x8 blocks four horizontal positions at
-//! a time; their SADs sum to 16x16, 32x32 and 64x64 blocks, and each block
-//! keeps its best vector. Scores are integer SADs per superblock, so the
-//! result does not depend on the thread count.
+//! Each frame's luma, reduced to 8 bits, has a full-resolution level and two
+//! 2x2-mean levels (half and quarter per side, rounded down), each covering
+//! whole 64x64 superblocks and padded by replicated samples. The lookahead
+//! keeps the two small levels and builds the full level from the source
+//! frame for each search. The motion of a frame against another is searched
+//! per superblock: a full search on the quarter level over the preset's
+//! `hme_range`, scaled by the frames' distance; a refinement of [`REFINE`]
+//! samples on the half level; then full searches at full resolution around
+//! the zero vector over half the preset's `me_range` and around that centre
+//! over `me_range`, shrunk when the half-level SAD and vector are small.
+//! Each level first scores the zero (or inherited) vector, so ties keep it.
+//! Every position scores the superblock's 8x8 blocks four horizontal
+//! positions at a time; their SADs sum to 16x16, 32x32 and 64x64 blocks, and
+//! each block keeps its best vector. Scores are integer SADs per superblock,
+//! so the result does not depend on the thread count.
 
 use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
@@ -36,8 +37,8 @@ const REFINE: i16 = 2;
 /// The reference distance beyond which the coarse range stops growing.
 const MAX_DISTANCE_SCALE: u64 = 2;
 /// Mean half-level SADs per sample at or below which the full-resolution
-/// range halves, and quarters when the vector is also within
-/// [`STILL_MV`] full samples.
+/// range halves, and quarters when the vector is also within [`STILL_MV`]
+/// full samples.
 const LOW_SAD: u32 = 4;
 const STILL_SAD: u32 = 2;
 const STILL_MV: i16 = 8;
@@ -156,41 +157,52 @@ pub(crate) fn best_near(
     best
 }
 
-/// The full-resolution, half and quarter levels of one frame's luma.
+/// The full-resolution level of `frame`'s luma, shifted down to 8 bits and
+/// covering whole superblocks.
+pub(crate) fn full_level(frame: &SourceFrame) -> Plane {
+    let size = frame.plane_sizes()[0];
+    let (width, height) = (size.width(), size.height());
+    let luma = &frame.planes()[0];
+    let shift = frame.bit_depth().bits() - 8;
+    Plane::build(
+        width.div_ceil(SB) * SB,
+        height.div_ceil(SB) * SB,
+        PAD,
+        |y, out| {
+            let row = &luma[y.min(height - 1) * width..][..width];
+            for (x, out) in out.iter_mut().enumerate() {
+                *out = (row[x.min(width - 1)] >> shift) as u8;
+            }
+        },
+    )
+}
+
+/// The half and quarter levels of one frame's luma. The full level, which
+/// holds most of the samples, is built from the source frame for each search
+/// instead of being kept.
 pub(crate) struct Pyramid {
-    levels: [Plane; 3],
+    levels: [Plane; 2],
 }
 
 impl Pyramid {
-    /// The pyramid of `frame`'s luma, shifted down to 8 bits.
-    pub(crate) fn new(frame: &SourceFrame) -> Self {
-        let size = frame.plane_sizes()[0];
-        let (width, height) = (size.width(), size.height());
-        let luma = &frame.planes()[0];
-        let shift = frame.bit_depth().bits() - 8;
-        let full = Plane::build(
-            width.div_ceil(SB) * SB,
-            height.div_ceil(SB) * SB,
-            PAD,
-            |y, out| {
-                let row = &luma[y.min(height - 1) * width..][..width];
-                for (x, out) in out.iter_mut().enumerate() {
-                    *out = (row[x.min(width - 1)] >> shift) as u8;
-                }
-            },
-        );
+    /// The levels below `full`.
+    pub(crate) fn new(full: &Plane) -> Self {
         let half = full.halved();
         let quarter = half.halved();
         Self {
-            levels: [full, half, quarter],
+            levels: [half, quarter],
         }
     }
 
-    /// Level `level`: `0` full resolution, `1` half, `2` quarter per side.
+    /// Level `level`: `1` half, `2` quarter per side. The pyramid holds no
+    /// full level, so `0` clamps to half and larger values to quarter.
     pub(crate) fn level(&self, level: usize) -> &Plane {
-        &self.levels[level.min(2)]
+        &self.levels[level.clamp(1, 2) - 1]
     }
 }
+
+/// A frame as the search reads it: its full level and its pyramid.
+pub(crate) type Levels<'a> = (&'a Plane, &'a Pyramid);
 
 /// The search radii of a preset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,13 +241,13 @@ impl FrameMotion {
 /// The motion of `current` against `reference`, `distance` frames apart, on
 /// `pool` by superblock rows when there is one.
 pub(crate) fn search(
-    current: &Pyramid,
-    reference: &Pyramid,
+    current: Levels<'_>,
+    reference: Levels<'_>,
     distance: u64,
     ranges: Ranges,
     pool: Option<&WorkerPool>,
 ) -> FrameMotion {
-    let (sb_cols, sb_rows) = (current.levels[0].width / SB, current.levels[0].height / SB);
+    let (sb_cols, sb_rows) = (current.0.width / SB, current.0.height / SB);
     let scale = distance.clamp(1, MAX_DISTANCE_SCALE) as i16;
     let ranges = Ranges {
         coarse: ranges.coarse.saturating_mul(scale),
@@ -267,14 +279,18 @@ pub(crate) fn search(
 
 /// The three-level search of superblock `(sx, sy)`.
 fn search_superblock(
-    current: &Pyramid,
-    reference: &Pyramid,
+    current: Levels<'_>,
+    reference: Levels<'_>,
     (sx, sy): (usize, usize),
     ranges: Ranges,
 ) -> Tree {
     let level = |level: usize, windows: &[([i32; 2], i32)]| {
         let mut tree = [Motion::NONE; 85];
-        let planes = (&current.levels[level], &reference.levels[level]);
+        let planes = if level == 0 {
+            (current.0, reference.0)
+        } else {
+            (current.1.level(level), reference.1.level(level))
+        };
         let origin = (((sx * SB) >> level) as i32, ((sy * SB) >> level) as i32);
         for &(centre, radius) in windows {
             scan(planes, origin, SB >> level, centre, radius, &mut tree);
@@ -359,10 +375,11 @@ fn scan(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::unwrap_used)]
 
     use splot_parallel::ThreadCount;
+    use splot_recon::BitDepth;
 
     use super::*;
     use crate::config::Config;
@@ -371,14 +388,24 @@ mod tests {
 
     /// A frame of smooth, non-repeating texture moved right by `shift`
     /// samples, so that the coarse levels keep its structure.
-    fn smooth(config: &Config, shift: usize) -> SourceFrame {
+    pub(crate) fn smooth(config: &Config, shift: usize) -> SourceFrame {
+        moved(config, |_, _| (shift as f64, 0.0))
+    }
+
+    /// The texture of [`smooth`] with the sample at `(x, y)` moved right and
+    /// down by `motion(x, y)`.
+    pub(crate) fn moved(
+        config: &Config,
+        motion: impl Fn(usize, usize) -> (f64, f64),
+    ) -> SourceFrame {
         let sizes = config.plane_sizes().unwrap();
         let planes = core::array::from_fn(|plane| {
             let size = sizes[plane];
             (0..size.width() * size.height())
                 .map(|i| {
-                    let x = (i % size.width()) as f64 - shift as f64;
-                    let y = (i / size.width()) as f64;
+                    let (x, y) = (i % size.width(), i / size.width());
+                    let (dx, dy) = motion(x << usize::from(plane > 0), y << usize::from(plane > 0));
+                    let (x, y) = (x as f64 - dx, y as f64 - dy);
                     let v = 120.0
                         + 50.0 * (0.21 * x + 0.05 * y).sin()
                         + 40.0 * (0.13 * y - 0.04 * x).cos()
@@ -387,26 +414,42 @@ mod tests {
                 })
                 .collect()
         });
-        SourceFrame::new(config, shift as u64, planes).unwrap()
+        SourceFrame::new(config, 0, planes).unwrap()
     }
 
-    fn pyramids(config: &Config, shift: usize) -> (Pyramid, Pyramid) {
-        let reference = Pyramid::new(&smooth(config, 0));
-        (Pyramid::new(&smooth(config, shift)), reference)
+    /// The full level and the pyramid of `frame`.
+    fn levels(frame: &SourceFrame) -> (Plane, Pyramid) {
+        let full = full_level(frame);
+        let pyramid = Pyramid::new(&full);
+        (full, pyramid)
+    }
+
+    fn pair(config: &Config, shift: usize) -> [(Plane, Pyramid); 2] {
+        [levels(&smooth(config, shift)), levels(&smooth(config, 0))]
+    }
+
+    fn search_pair(
+        [current, reference]: &[(Plane, Pyramid); 2],
+        distance: u64,
+        ranges: Ranges,
+        pool: Option<&WorkerPool>,
+    ) -> FrameMotion {
+        let (current, reference) = ((&current.0, &current.1), (&reference.0, &reference.1));
+        search(current, reference, distance, ranges, pool)
     }
 
     /// A pan of 37 samples, beyond the full-resolution range, is found
-    /// through the coarse levels in every block size of the
-    /// superblocks whose samples all move.
+    /// through the coarse levels in every block size of the superblocks
+    /// whose samples all move.
     #[test]
     fn finds_a_pan_beyond_the_full_resolution_range() {
         let config = Config::new(200, 136);
-        let (current, reference) = pyramids(&config, 37);
+        let frames = pair(&config, 37);
         let ranges = Ranges {
             coarse: 12,
             full: 8,
         };
-        let motion = search(&current, &reference, 1, ranges, None);
+        let motion = search_pair(&frames, 1, ranges, None);
         for size in 0..4 {
             let (cols, blocks) = motion.blocks(size);
             assert_eq!(blocks.len(), cols * (3 << (3 - size)));
@@ -427,12 +470,12 @@ mod tests {
             coarse: 5,
             ..ranges
         };
-        let near = search(&current, &reference, 1, narrow, None);
+        let near = search_pair(&frames, 1, narrow, None);
         assert!(
             near.blocks(1).1.iter().all(|m| m.mv != [-37, 0]),
             "the coarse range bounds the search"
         );
-        let far = search(&current, &reference, 2, narrow, None);
+        let far = search_pair(&frames, 2, narrow, None);
         let found = far.blocks(1).1.iter().filter(|m| m.mv == [-37, 0]).count();
         assert!(found >= 30, "distance scales the range: {found}");
     }
@@ -440,12 +483,12 @@ mod tests {
     #[test]
     fn worker_pools_give_the_same_motion() {
         let config = Config::new(320, 200);
-        let (current, reference) = pyramids(&config, 5);
+        let frames = pair(&config, 5);
         let ranges = Ranges::new(&PRESETS[0]);
-        let serial = search(&current, &reference, 2, ranges, None);
+        let serial = search_pair(&frames, 2, ranges, None);
         for threads in [1usize, 2, 8] {
             let pool = WorkerPool::new(ThreadCount::from(threads)).unwrap();
-            let parallel = search(&current, &reference, 2, ranges, Some(&pool));
+            let parallel = search_pair(&frames, 2, ranges, Some(&pool));
             for size in 0..4 {
                 assert_eq!(
                     serial.blocks(size),
@@ -459,8 +502,8 @@ mod tests {
     #[test]
     fn levels_halve_and_pad() {
         let config = Config::new(70, 10);
-        let pyramid = Pyramid::new(&frame(&config, 0, 0, 0));
-        let (full, half) = (pyramid.level(0), pyramid.level(1));
+        let (full, pyramid) = levels(&frame(&config, 0, 0, 0));
+        let half = pyramid.level(1);
         assert_eq!(
             (full.width, full.height, half.width, pyramid.level(2).height),
             (128, 64, 64, 16)
@@ -472,5 +515,57 @@ mod tests {
         assert_eq!(full.sample(-200, 3), full.sample(0, 3));
         assert_eq!(full.sample(127 + 9, 70), full.sample(127, 63));
         assert!(full.block8(-128, -128).is_some() && full.block8(-129, 0).is_none());
+    }
+
+    /// A 10-bit frame drops its two low bits: with different low bits in
+    /// every sample it gives the levels of the 8-bit frame.
+    #[test]
+    fn ten_bit_frames_shift_to_eight_bits() {
+        let eight = Config::new(72, 40);
+        let mut ten = eight.clone();
+        ten.bit_depth = BitDepth::Ten;
+        let source = frame(&eight, 0, 0, 0);
+        let planes = core::array::from_fn(|plane| {
+            let samples = &source.planes()[plane];
+            samples
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| (v << 2) | (i as u16 * 7 % 4))
+                .collect()
+        });
+        let ten = levels(&SourceFrame::new(&ten, 0, planes).unwrap());
+        let eight = levels(&source);
+        assert_eq!(ten.0.samples, eight.0.samples);
+        for level in 1..=2 {
+            assert_eq!(ten.1.level(level).samples, eight.1.level(level).samples);
+        }
+        assert!(
+            eight.0.samples.iter().any(|&s| s > 63),
+            "the samples use all 8 bits"
+        );
+    }
+
+    /// A frame smaller than one 8x8 block fills a whole superblock with
+    /// copies of its edges and searches like any other.
+    #[test]
+    fn frames_smaller_than_a_block_search_one_superblock() {
+        let config = Config::new(5, 3);
+        let frames = [
+            levels(&frame(&config, 1, 1, 0)),
+            levels(&frame(&config, 0, 0, 0)),
+        ];
+        let full = &frames[0].0;
+        assert_eq!((full.width, full.height), (64, 64));
+        assert_eq!(full.sample(63, 63), full.sample(4, 2));
+        assert_eq!(full.sample(-1, -1), full.sample(0, 0));
+        let motion = search_pair(&frames, 1, Ranges::new(&PRESETS[6]), None);
+        for size in 0..4 {
+            let (cols, blocks) = motion.blocks(size);
+            assert_eq!((cols, blocks.len()), (8 >> size, 64 >> (2 * size)));
+            assert!(
+                blocks.iter().all(|m| m.sad != Motion::NONE.sad),
+                "size {size}"
+            );
+        }
     }
 }
