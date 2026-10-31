@@ -560,4 +560,11 @@ fn the_level_walk_matches_the_per_position_walk() {
             "width {width} eob {eob}"
         );
     }
+    let short = &levels[..levels.len() - 1];
+    assert!(
+        syntax
+            .code_coeff_levels(&planned, &mut grid, (short, width, 1), ignore)
+            .is_err(),
+        "a width that does not divide the levels"
+    );
 }

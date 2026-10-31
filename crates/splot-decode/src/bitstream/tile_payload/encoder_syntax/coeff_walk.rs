@@ -19,8 +19,8 @@ impl IntraTileSyntax {
     ///
     /// # Errors
     /// Returns the errors of `symbol`, [`EncoderSyntaxError::Unsupported`] for
-    /// a `width` that is not a power of two, an `eob` past the scan or a zero
-    /// level at `eob - 1`, and [`EncoderSyntaxError::Rule`] for a CDF table
+    /// a `width` that is not a power of two or does not divide the length of
+    /// `levels`, an `eob` past the scan or a zero level at `eob - 1`, and [`EncoderSyntaxError::Rule`] for a CDF table
     /// defect or a position outside `grid`.
     pub fn code_coeff_levels<E: From<EncoderSyntaxError>>(
         &mut self,
@@ -30,7 +30,7 @@ impl IntraTileSyntax {
         mut symbol: impl FnMut(&mut [u16], usize) -> Result<(), E>,
     ) -> Result<(), E> {
         let (plane, tx_size) = (tx.plane, tx.tx_size);
-        if !width.is_power_of_two() {
+        if !width.is_power_of_two() || levels.len() % width != 0 {
             return Err(EncoderSyntaxError::Unsupported("level row width").into());
         }
         let log2_w = width.trailing_zeros();
