@@ -112,6 +112,27 @@ pub struct PresetParams {
     /// `100` in every row (2026-10-26, CRF, vs main 9ec81da32): p6 niklas
     /// f30 Y -0.86%, paris f30 -1.92%, park_joy f10 +0.06% at 0.95-1.0x CPU.
     pub tpl_delta_q: u8,
+    /// Temporal filtering of key frames: the most later neighbours, `0..=8`,
+    /// that a key frame is filtered from before it is coded; the lookahead
+    /// bounds them. `0` is off. `4` at p0-p9 (2026-10-31, p6 vs main
+    /// 5530d5de2): paris f30 -1.37%, niklas f30 +0.11% (-0.28% before the
+    /// two-pass partition decision), park_joy f10 -0.04% at 0.99-1.01x CPU;
+    /// vs 336b8b726: paris p2 -1.60%, park_joy p0 +0.64%, p8 +0.53%. Off at
+    /// p10: park_joy -0.82% for +3.4% CPU (+5.3% instructions), under the
+    /// fast-row slope.
+    pub tf_key_frames: u8,
+    /// The strength of `tf_key_frames` in percent: it scales the weight
+    /// decay, so larger values keep more of the neighbours. `0` is off.
+    pub tf_key_strength: u8,
+    /// Temporal filtering of hidden mini-GOP base frames, which their
+    /// show-existing frames output filtered: the most neighbours per side,
+    /// `0..=8`. `0` is off. Off in every row (2026-10-31): with two per
+    /// side at `tf_base_strength` 25 on top of the key frames, paris p6 f30
+    /// went from -1.74% to -1.42%; the filtered frame is shown without an
+    /// overlay frame.
+    pub tf_base_frames: u8,
+    /// The strength of `tf_base_frames` in percent. `0` is off.
+    pub tf_base_strength: u8,
     /// `delta_q_res` of a frame with superblock qindex offsets: the qindex
     /// moves in steps of `1 << delta_q_res`, `0..=3`. `1` in every row:
     /// `2` lost 0.8% on park_joy p6 and gained 0.5% on paris.
@@ -439,6 +460,8 @@ impl PresetParams {
         )?;
         check("drl_bits", self.drl_bits, 1, 5, "")?;
         check("tpl_delta_q", self.tpl_delta_q, 0, 200, "")?;
+        check("tf_key_frames", self.tf_key_frames, 0, 8, "")?;
+        check("tf_base_frames", self.tf_base_frames, 0, 8, "")?;
         check("delta_q_res", self.delta_q_res, 0, 3, "")?;
         check("interp_filter_search", self.interp_filter_search, 0, 2, "")?;
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
@@ -678,6 +701,10 @@ preset_table! {
         mini_gop_size:         [    8,     8,     8,     8,     8,     4,     4,     4,     2,     2,     1],
         lookahead_frames:      [   16,    16,    16,    16,    16,     8,     8,     8,     4,     4,     2],
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
+        tf_key_frames:         [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     0],
+        tf_key_strength:       [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
+        tf_base_frames:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        tf_base_strength:      [   25,    25,    25,    25,    25,    25,    25,    25,    25,    25,    25],
         delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
     }
     mode_decision {
@@ -791,6 +818,8 @@ mod tests {
             assert!(fast.mini_gop_size <= slow.mini_gop_size);
             assert!(fast.lookahead_frames <= slow.lookahead_frames);
             assert!(fast.tpl_delta_q <= slow.tpl_delta_q);
+            assert!(fast.tf_key_frames <= slow.tf_key_frames);
+            assert!(fast.tf_base_frames <= slow.tf_base_frames);
             assert!(fast.compound_candidates <= slow.compound_candidates);
             assert!(fast.cdf_carry <= slow.cdf_carry);
             assert!(fast.mv_prediction <= slow.mv_prediction);

@@ -41,6 +41,7 @@ mod rd;
 mod resize;
 mod screen;
 pub mod stats;
+mod temporal_filter;
 #[cfg(test)]
 mod test_support;
 mod tile_writer;

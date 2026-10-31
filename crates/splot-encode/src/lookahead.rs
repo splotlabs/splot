@@ -216,18 +216,36 @@ impl Lookahead {
         (current, reference): (u64, u64),
         fulls: (&Plane, &Plane),
     ) -> Option<(FrameMotion, Vec<BlockMotion>)> {
+        let motion = self.full_motion((current, reference), fulls)?;
         let (now, then) = (self.frame(current)?, self.frame(reference)?);
-        let motion = hme::search(
+        let level = self.shift as usize;
+        let planes = (now.pyramid.level(level), then.pyramid.level(level));
+        let blocks = self.block_motion(planes, &motion);
+        Some((motion, blocks))
+    }
+
+    /// The open-loop motion of `current` against `reference`, whose full
+    /// levels are `fulls`, searched without keeping it; `None` when either
+    /// frame is not held.
+    pub(crate) fn full_motion(
+        &self,
+        (current, reference): (u64, u64),
+        fulls: (&Plane, &Plane),
+    ) -> Option<FrameMotion> {
+        let (now, then) = (self.frame(current)?, self.frame(reference)?);
+        Some(hme::search(
             (fulls.0, &now.pyramid),
             (fulls.1, &then.pyramid),
             current.abs_diff(reference),
             self.ranges,
             self.pool.as_ref(),
-        );
-        let level = self.shift as usize;
-        let planes = (now.pyramid.level(level), then.pyramid.level(level));
-        let blocks = self.block_motion(planes, &motion);
-        Some((motion, blocks))
+        ))
+    }
+
+    /// The kept open-loop motion of `pair`, when the preset keeps it and the
+    /// pair was searched.
+    pub(crate) fn kept_motion(&self, pair: (u64, u64)) -> Option<Arc<FrameMotion>> {
+        self.fields.as_ref()?.get(&pair).cloned()
     }
 
     /// Stores the search of `pair`.
