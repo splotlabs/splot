@@ -233,7 +233,7 @@ fn group_importance(importance_q8: u64, seen: u64, group: u64) -> u64 {
     let sum_q8 = |p_q16: u64, frames: u64| {
         let (mut sum, mut term) = (1u64 << 16, 1u64 << 16);
         for _ in 0..frames {
-            term = term * p_q16 >> 16;
+            term = (term * p_q16) >> 16;
             sum += term;
             if term == 0 || sum >= max_q8 << 8 {
                 break;
