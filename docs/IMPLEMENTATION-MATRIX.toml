@@ -17544,6 +17544,7 @@ tests = [
     "crates/splot-decode/src/filters/deblock_tests.rs::tip_deblocking_handles_yuv422_and_yuv444_chroma_geometry",
     "crates/splot-decode/src/filters/deblock_tests.rs::tip_deblocking_obeys_cross_tile_filtering_flag",
     "crates/splot-decode/src/prediction/inter/block/tip.rs::tests::tip_output_edge_units_keep_nominal_prediction_size",
+    "crates/splot-decode/src/prediction/inter/block/tip.rs::tests::tip_output_optflow_needs_references_on_both_sides",
     "crates/splot-decode/src/prediction/inter/block/tip.rs::tests::tip_output_unit_size_requires_sharp_refinement",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::tip_reference_pair_matches_sort_ref_order_for_equal_future_hints",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal/selection.rs::tests::tip_projection_pair_matches_sort_ref_order_for_equal_future_hints",
