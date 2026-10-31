@@ -5,7 +5,7 @@
 //! shortlist.
 
 use super::*;
-use crate::mode_decision::{MDS0_PRUNED, MDS1_PRUNED, PD0_PASSES};
+use crate::mode_decision::{INTRA_SKIPPED, MDS0_PRUNED, MDS1_PRUNED, PD0_PASSES};
 use crate::preset::PresetParams;
 
 /// Preset 6 searched in one pass, with MDS0 `budgets` and an inter-frame
@@ -73,10 +73,14 @@ fn staged_streams_decode_on_any_thread_count() {
 const P5_GOLDEN: (usize, u64) = (3028, 0xb309_6d3f_f798_d7c8);
 
 /// The p5 row, whose MDS0 budgets are open and whose inter-frame intra
-/// shortlist is `intra_modes`, codes the stream of the unstaged search.
+/// shortlist is `intra_modes`, codes the stream of the unstaged search
+/// without the reference intra skip.
 #[test]
 fn open_budgets_code_the_unstaged_stream() {
-    let p5 = Preset::new(5).unwrap().params();
+    let p5: &'static PresetParams = Box::leak(Box::new(PresetParams {
+        ref_intra_margin: u8::MAX,
+        ..*Preset::new(5).unwrap().params()
+    }));
     assert_eq!(p5.mds0_budgets, [u8::MAX; 3]);
     assert_eq!(p5.mds_inter_frame_intra, p5.intra_modes);
     let (units, _, _, pruned) = staged_stream(p5, 200, 1);
@@ -142,6 +146,7 @@ fn full_trials_255_code_the_old_full_trial_stream() {
     let preset = Box::leak(Box::new(PresetParams {
         full_trials: u8::MAX,
         pd_window: u8::MAX,
+        ref_intra_margin: u8::MAX,
         ..*Preset::new(6).unwrap().params()
     }));
     MDS1_PRUNED.set(0);
@@ -230,6 +235,74 @@ fn avm_decodes_staged_streams_like_splot() {
         (136, 72),
         BitDepth::Ten,
         "staged",
+    );
+    assert!(avm == decode(&units), "AVM output differs");
+}
+
+/// Preset 6 searched in one pass with the reference-statistics intra skip
+/// at a margin of one cell.
+fn reference_intra() -> &'static PresetParams {
+    Box::leak(Box::new(PresetParams {
+        ref_intra_margin: 1,
+        pd_window: u8::MAX,
+        ..*Preset::new(6).unwrap().params()
+    }))
+}
+
+/// Inter leaves away from the intra leaves of their primary reference skip
+/// the intra search, in frames that later frames reference, with deblocking
+/// and CDEF on; the statistics come from the coded trees, so the stream
+/// decodes to the encoder recon and codes the same bytes on 1, 2 and 8
+/// threads. With the skip off no leaf skips.
+#[test]
+fn reference_intra_skip_streams_decode_on_any_thread_count() {
+    INTRA_SKIPPED.set(0);
+    let (one, expected, cores, _) = staged_stream(reference_intra(), 200, 1);
+    assert!(INTRA_SKIPPED.get() > 0, "no leaf skipped the intra search");
+    assert!(cores.len() > 2 && cores.iter().any(|core| core.inter.is_some()));
+    assert!(cores.iter().any(|core| {
+        core.deblocking_filter_params
+            .as_ref()
+            .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
+    }));
+    assert!(
+        cores
+            .iter()
+            .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
+    );
+    assert_same_samples(&decode(&one), &expected, "reference intra skip");
+    for threads in [2, 8] {
+        assert!(
+            staged_stream(reference_intra(), 200, threads).0 == one,
+            "{threads} threads"
+        );
+    }
+    INTRA_SKIPPED.set(0);
+    let off = Box::leak(Box::new(PresetParams {
+        ref_intra_margin: u8::MAX,
+        ..*reference_intra()
+    }));
+    staged_stream(off, 200, 1);
+    assert_eq!(INTRA_SKIPPED.get(), 0);
+}
+
+/// AVM decodes the stream with the reference-statistics intra skip like
+/// splot.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_reference_intra_skip_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    INTRA_SKIPPED.set(0);
+    let (units, ..) = staged_stream(reference_intra(), 200, 1);
+    assert!(INTRA_SKIPPED.get() > 0);
+    let avm = avm_decode(
+        &avmdec,
+        std::slice::from_ref(&units),
+        (136, 72),
+        BitDepth::Ten,
+        "reference-intra",
     );
     assert!(avm == decode(&units), "AVM output differs");
 }

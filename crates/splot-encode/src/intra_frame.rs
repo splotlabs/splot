@@ -5,6 +5,8 @@
 //! intra and single-reference inter leaves, residual coding, and the temporal
 //! unit of a key or inter frame.
 
+use std::sync::Arc;
+
 use splot_core::headers::frame::{
     CoreSeqView, EncoderStreamParams, EncoderToolFlags, FrameFilterParams, FrameHeaderCore,
     GrainScaling, UniformTiles, build_encoder_sequence_header, encode_film_grain_obu,
@@ -44,7 +46,8 @@ use crate::rd::{Bits, Lambda, RdCost};
 use crate::screen::is_screen_content;
 use crate::tile_writer::coeffs::eob;
 use crate::tile_writer::{
-    KeyFrameTileWriter, ResidualCoder, SuperblockDecision, TileWriterError, TransformDecision,
+    KeyFrameTileWriter, PartitionTree, ResidualCoder, SuperblockDecision, TileWriterError,
+    TransformDecision,
 };
 use crate::tpl;
 use crate::tx_choice;
@@ -94,6 +97,80 @@ pub(crate) struct IntraFrameCoder {
     grain_active: bool,
     /// Which temporal layers code warped motion, from the committed frames.
     warp_gate: crate::warp::WarpGate,
+    /// The intra superblocks of the frame in each reference slot.
+    slot_intra: [Option<Arc<IntraCells>>; 8],
+}
+
+/// One flag per 8x8 luma cell of a frame, in raster order: whether an
+/// intra leaf covers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IntraCells {
+    /// Cells per row.
+    cols: usize,
+    /// The flags.
+    flags: Vec<bool>,
+}
+
+impl IntraCells {
+    /// No intra cell over a `width x height` luma frame.
+    fn new(width: usize, height: usize) -> Self {
+        Self {
+            cols: width.div_ceil(8),
+            flags: vec![false; width.div_ceil(8) * height.div_ceil(8)],
+        }
+    }
+
+    /// The flags of the cells of the luma rectangle `(x, y, w, h)` grown by
+    /// `margin` cells; cells outside the frame are skipped.
+    fn cells(
+        &self,
+        (x, y, w, h): (usize, usize, usize, usize),
+        margin: usize,
+    ) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let rows = self.flags.len() / self.cols.max(1);
+        let cols = (x / 8).saturating_sub(margin)..((x + w).div_ceil(8) + margin).min(self.cols);
+        ((y / 8).saturating_sub(margin)..((y + h).div_ceil(8) + margin).min(rows))
+            .flat_map(move |row| cols.clone().map(move |col| (col, row)))
+    }
+
+    /// Whether an intra leaf covers a cell of the luma rectangle `rect`
+    /// grown by `margin` cells.
+    pub(crate) fn near(&self, rect: (usize, usize, usize, usize), margin: u8) -> bool {
+        self.cells(rect, usize::from(margin))
+            .any(|(col, row)| self.flags[row * self.cols + col])
+    }
+
+    /// Marks the cells of each intra leaf of `tree` at `node`.
+    fn mark(
+        &mut self,
+        syntax: &IntraTileSyntax,
+        node: PartitionNode,
+        tree: &PartitionTree,
+    ) -> core::result::Result<(), TileWriterError> {
+        if !syntax.in_frame(node) {
+            return Ok(());
+        }
+        match (tree, syntax.sdp_roots(node)) {
+            (PartitionTree::Sdp { luma, .. }, Some((root, _))) => self.mark(syntax, root, luma),
+            (PartitionTree::Split { kind, children }, _) => {
+                for (child, tree) in syntax.children(node, *kind)?.into_iter().zip(children) {
+                    self.mark(syntax, child, tree)?;
+                }
+                Ok(())
+            }
+            (PartitionTree::Leaf(choice), _) if choice.inter.is_none() => {
+                let (w, h) = node.dimensions()?;
+                let cells: Vec<_> = self
+                    .cells((node.col4() * 4, node.row4() * 4, w, h), 0)
+                    .collect();
+                for (col, row) in cells {
+                    self.flags[row * self.cols + col] = true;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 impl IntraFrameCoder {
@@ -202,6 +279,7 @@ impl IntraFrameCoder {
             shown_existing: 0,
             grain_active: false,
             warp_gate: crate::warp::WarpGate::default(),
+            slot_intra: Default::default(),
         })
     }
 }
@@ -246,6 +324,12 @@ impl FrameCoder for IntraFrameCoder {
         let (core, recon, initial, cdfs) = frame.reference.take().ok_or(Error::Unsupported {
             what: "a frame committed twice",
         })?;
+        let refreshed = core.refresh_frame_flags.unwrap_or(u32::MAX);
+        for (slot, intra) in self.slot_intra.iter_mut().enumerate() {
+            if refreshed >> slot & 1 == 1 {
+                intra.clone_from(&frame.intra_cells);
+            }
+        }
         if frame.frame_type == FrameType::Key {
             self.grain_active = core
                 .intra_tail
@@ -539,10 +623,18 @@ impl IntraFrameCoder {
                 what: "superblock offsets that do not cover the superblock grid",
             });
         }
-        let tiles = map_tiles(self.pool.as_ref(), writers, |mut writer| {
+        let reference_intra = plan
+            .primary_slot
+            .filter(|_| {
+                plan.frame_type == FrameType::Inter && self.preset.ref_intra_margin != u8::MAX
+            })
+            .and_then(|slot| self.slot_intra.get(slot as usize)?.clone())
+            .filter(|cells| cells.cols == (mi_cols * 4).div_ceil(8));
+        let coded_tiles = map_tiles(self.pool.as_ref(), writers, |mut writer| {
             let mut coder = SourceResidualCoder::new(padded, qindex, bit_depth, preset, lambda);
             coder.intrabc = bv_search;
             let mut decisions = FrameDecisions::default();
+            let mut intra = IntraCells::new(mi_cols * 4, mi_rows * 4);
             while let Some(root) = writer.next_superblock_root() {
                 let index = root.row4() / (sb / 4) * sb_cols + root.col4() / (sb / 4);
                 let lambda = match sb_quant.get(index) {
@@ -572,10 +664,13 @@ impl IntraFrameCoder {
                             &mut coder,
                             (preset, lambda),
                             (motion, &open_loop),
-                            root,
+                            (root, reference_intra.as_deref()),
                         )
                     })
                     .map_err(coding("superblock search"))?;
+                intra
+                    .mark(writer.syntax(), root, &tree)
+                    .map_err(coding("intra cells"))?;
                 decisions
                     .write_superblock(
                         &mut writer,
@@ -584,8 +679,19 @@ impl IntraFrameCoder {
                     )
                     .map_err(coding("superblock"))?;
             }
-            CodedTile::finish(writer, decisions).map_err(coding("tile finish"))
+            Ok((
+                CodedTile::finish(writer, decisions).map_err(coding("tile finish"))?,
+                intra,
+            ))
         })?;
+        let mut intra_cells = IntraCells::new(mi_cols * 4, mi_rows * 4);
+        let mut tiles = Vec::with_capacity(coded_tiles.len());
+        for (tile, intra) in coded_tiles {
+            for (cell, flag) in intra_cells.flags.iter_mut().zip(intra.flags) {
+                *cell |= flag;
+            }
+            tiles.push(tile);
+        }
         #[cfg(test)]
         let global_leaves = tiles
             .iter()
@@ -627,6 +733,7 @@ impl IntraFrameCoder {
             frame_type: plan.frame_type,
             reference: Some((core, recon, initial, cdfs)),
             tip_output: None,
+            intra_cells: Some(Arc::new(intra_cells)),
             warp: (plan.frame_type == crate::rate_control::FrameType::Inter).then_some(
                 crate::warp::WarpUse {
                     layer: plan.layer,
@@ -706,6 +813,7 @@ impl IntraFrameCoder {
                 reference: None,
                 tip_output: Some(core),
                 warp: None,
+                intra_cells: None,
                 #[cfg(test)]
                 global_leaves: 0,
             }),

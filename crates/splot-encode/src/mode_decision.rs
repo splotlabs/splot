@@ -21,7 +21,7 @@ use splot_decode::encoder_syntax::{
 use splot_recon::InterpolationFilter;
 
 use crate::hme::FrameMotion;
-use crate::intra_frame::codable_children;
+use crate::intra_frame::{IntraCells, codable_children};
 use crate::intra_frame::{PaddedSource, SourceResidualCoder};
 use crate::kernels::{BlockDims, kernels};
 use crate::motion_search::MotionSearch;
@@ -77,6 +77,9 @@ thread_local! {
     pub(crate) static NEAR_NEAR_CHECKED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// Inter candidates that MDS0 dropped on this thread.
     pub(crate) static MDS0_PRUNED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// Leaves that skipped the intra search by the reference statistics on
+    /// this thread.
+    pub(crate) static INTRA_SKIPPED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// First partition passes run on this thread.
     pub(crate) static PD0_PASSES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// Candidates that MDS1 dropped on this thread.
@@ -111,6 +114,9 @@ pub(crate) struct TrialCoder<'a, 'b> {
     scored: Vec<(InterPrediction, u64, Bits)>,
     /// The samples of one transform block, reused across blocks.
     samples: Vec<u16>,
+    /// The intra cells of the primary reference: a leaf that can code inter
+    /// and has none near skips the intra search.
+    pub(crate) reference_intra: Option<&'a IntraCells>,
 }
 
 impl<'a, 'b> TrialCoder<'a, 'b> {
@@ -131,6 +137,7 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             compound: compound_search::CompoundScratch::default(),
             scored: Vec::new(),
             samples: Vec::new(),
+            reference_intra: None,
         }
     }
 
@@ -1284,7 +1291,7 @@ pub(crate) fn two_pass_partition(
     coder: &mut SourceResidualCoder<'_>,
     (preset, lambda): (&PresetParams, Lambda),
     (motion, open_loop): (Option<&MotionSearch>, &[Option<Arc<FrameMotion>>]),
-    root: PartitionNode,
+    (root, reference_intra): (PartitionNode, Option<&IntraCells>),
 ) -> Result<PartitionTree> {
     let levels = motion
         .filter(|_| preset.pd_window != u8::MAX)
@@ -1301,6 +1308,7 @@ pub(crate) fn two_pass_partition(
     #[cfg(test)]
     PD0_PASSES.set(PD0_PASSES.get() + usize::from(levels.is_some()));
     let mut trial = TrialCoder::new(syntax, coder, preset, lambda, motion);
+    trial.reference_intra = reference_intra;
     Ok(search_guided(&mut trial, root, preset, lambda, levels.as_ref())?.0)
 }
 
@@ -1440,7 +1448,15 @@ impl PartitionSearch for TrialCoder<'_, '_> {
             return Ok((self.code_leaf(node, choice)?, choice));
         }
         let mut candidates = Vec::new();
-        if self.syntax.intra_allowed(&leaf) {
+        let (w, h) = leaf.dimensions()?;
+        let inter = self.syntax.inter_allowed(&leaf) && (self.preset.large_inter || w.max(h) <= 64);
+        let skip_intra = inter
+            && self.reference_intra.is_some_and(|cells| {
+                leaf_rect(&leaf).is_ok_and(|rect| !cells.near(rect, self.preset.ref_intra_margin))
+            });
+        #[cfg(test)]
+        INTRA_SKIPPED.set(INTRA_SKIPPED.get() + usize::from(skip_intra));
+        if self.syntax.intra_allowed(&leaf) && !skip_intra {
             candidates.push(self.intra_choice(node, &leaf, &start)?);
         }
         candidates.extend(crate::intrabc::intrabc_choice(
@@ -1448,8 +1464,7 @@ impl PartitionSearch for TrialCoder<'_, '_> {
             self.coder,
             &leaf,
         )?);
-        let (w, h) = leaf.dimensions()?;
-        if self.syntax.inter_allowed(&leaf) && (self.preset.large_inter || w.max(h) <= 64) {
+        if inter {
             let inter = self.inter_candidates(&leaf)?;
             #[cfg(test)]
             if self.preset.compound_types == FORCED_COMPOUND_TYPES
