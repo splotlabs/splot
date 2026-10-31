@@ -14,7 +14,6 @@
 //! raster order with the exact CDFs, replaying those decisions, so its
 //! reconstruction is the row facades'.
 
-use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -119,8 +118,16 @@ pub(crate) fn code_tile<C: ResidualCoder + Send>(
         kept.write_committed(writer, decisions)
             .map_err(coding("superblock"))?;
         #[cfg(test)]
-        if let (Some(root), Some(worker)) = (root, lock(&checks[index])?.take()) {
-            let edge = writer.syntax_mut().superblock_edge(root);
+        {
+            let missing = Error::Unsupported {
+                what: "a wavefront superblock without its check",
+            };
+            let worker = lock(&checks[index])?.take().ok_or(missing)?;
+            let edge = writer
+                .syntax_mut()
+                .superblock_edge(root.ok_or(Error::Unsupported {
+                    what: "a write past its tile",
+                })?);
             if !edge
                 .map_err(coding("superblock edge"))?
                 .same_reconstruction(&worker)
@@ -134,10 +141,10 @@ pub(crate) fn code_tile<C: ResidualCoder + Send>(
     };
     let preds = predecessors(rows, cols);
     run_graph(pool, &preds, |node| {
-        if node < count {
-            superblock(node)
+        if node % 2 == 0 {
+            superblock(node / 2)
         } else {
-            write(node - count)
+            write(node / 2)
         }
     })?;
     let (writer, kept) = master.into_inner().map_err(|_| poisoned())?;
@@ -145,28 +152,29 @@ pub(crate) fn code_tile<C: ResidualCoder + Send>(
 }
 
 /// The predecessors of each node of a `rows x cols` superblock wavefront:
-/// node `i < rows * cols` searches superblock `i` in raster order after its
-/// left and top-right (or, in the last column, top) neighbours; node
-/// `rows * cols + i` writes it after the superblocks before it.
+/// node `2 * i` searches superblock `i` in raster order after its left and
+/// top-right (or, in the last column, top) neighbours; node `2 * i + 1`
+/// writes it after the superblocks before it. Every predecessor has a
+/// smaller index, so index order runs one superblock row at a time.
 fn predecessors(rows: usize, cols: usize) -> Vec<Vec<usize>> {
-    let count = rows * cols;
-    let search = (0..count).map(|i| {
-        let (r, c) = (i / cols, i % cols);
-        let left = (c > 0).then(|| i - 1);
-        let above = (r > 0).then(|| (r - 1) * cols + (c + 1).min(cols - 1));
-        left.into_iter().chain(above).collect()
-    });
-    let write = (0..count).map(|i| {
-        core::iter::once(i)
-            .chain(i.checked_sub(1).map(|w| count + w))
-            .collect()
-    });
-    search.chain(write).collect()
+    (0..rows * cols)
+        .flat_map(|i| {
+            let (r, c) = (i / cols, i % cols);
+            let left = (c > 0).then(|| 2 * (i - 1));
+            let above = (r > 0).then(|| 2 * ((r - 1) * cols + (c + 1).min(cols - 1)));
+            let previous = i.checked_sub(1).map(|w| 2 * w + 1);
+            [
+                left.into_iter().chain(above).collect(),
+                core::iter::once(2 * i).chain(previous).collect(),
+            ]
+        })
+        .collect()
 }
 
 /// Runs `node` on every node of the graph whose predecessors are `preds`,
 /// each once all its predecessors have run: on `pool` as they become ready,
-/// else in turn. Stops at the first error.
+/// else in index order, which must have every predecessor first. Stops at
+/// the first error.
 fn run_graph(
     pool: Option<&WorkerPool>,
     preds: &[Vec<usize>],
@@ -184,16 +192,13 @@ fn run_graph(
         .filter(|(_, p)| p.is_empty())
         .map(|(i, _)| i);
     let Some(pool) = pool else {
-        let mut waiting: Vec<usize> = preds.iter().map(Vec::len).collect();
-        let mut ready: VecDeque<usize> = roots.collect();
-        while let Some(index) = ready.pop_front() {
-            node(index)?;
-            for &succ in &succs[index] {
-                waiting[succ] -= 1;
-                if waiting[succ] == 0 {
-                    ready.push_back(succ);
-                }
+        for (index, preds) in preds.iter().enumerate() {
+            if preds.iter().any(|&pred| pred >= index) {
+                return Err(Error::Unsupported {
+                    what: "a wavefront graph out of index order",
+                });
             }
+            node(index)?;
         }
         return Ok(());
     };
@@ -266,9 +271,9 @@ mod tests {
     #[test]
     fn graph_runs_each_node_after_its_predecessors_on_any_pool() {
         let preds = predecessors(3, 4);
-        assert_eq!(preds[5], vec![4, 2]);
-        assert_eq!(preds[7], vec![6, 3]);
-        assert_eq!(preds[12 + 5], vec![5, 12 + 4]);
+        assert_eq!(preds[10], vec![8, 4]);
+        assert_eq!(preds[14], vec![12, 6]);
+        assert_eq!(preds[11], vec![10, 9]);
         for threads in [None, Some(1), Some(3)] {
             let pool = threads.map(|n: usize| WorkerPool::new(n.into()).unwrap());
             let done: Vec<AtomicUsize> = (0..preds.len()).map(|_| AtomicUsize::new(0)).collect();

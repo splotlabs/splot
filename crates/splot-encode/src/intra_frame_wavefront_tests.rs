@@ -22,8 +22,10 @@ fn wavefront_stream(
     preset: &'static PresetParams,
     case: WavefrontCase,
 ) -> (Vec<Vec<u8>>, Vec<u8>) {
-    let (preset_index, (width, height, qp), bit_depth, (cols_log2, rows_log2), delta_q) = case;
+    let (preset_index, (width, height, qp), (bit_depth, chroma), (cols_log2, rows_log2), delta_q) =
+        case;
     let mut config = config(width, height, bit_depth, preset_index, qp);
+    config.chroma = chroma;
     config.tiles = TileLayout {
         cols_log2,
         rows_log2,
@@ -53,16 +55,43 @@ fn wavefront_stream(
     (units, recon)
 }
 
-/// `(preset, (width, height, qp), bit depth, tiles, superblock offsets)`.
-type WavefrontCase = (u8, (u32, u32, u16), BitDepth, (u8, u8), bool);
+/// `(preset, (width, height, qp), (bit depth, chroma), tiles, superblock
+/// offsets)`.
+type WavefrontCase = (u8, (u32, u32, u16), (BitDepth, PixelFormat), (u8, u8), bool);
 
-/// 64x64 superblocks in 4x3, in two tiles of 3x3, and with offsets that clip
-/// at `MaxQ`; 128x128 superblocks in 3x2 with offsets.
-const WAVEFRONT_CASES: [WavefrontCase; 4] = [
-    (9, (200, 136, 120), BitDepth::Ten, (0, 0), false),
-    (9, (384, 136, 160), BitDepth::Ten, (1, 0), false),
-    (10, (200, 136, 240), BitDepth::Eight, (0, 0), true),
-    (6, (300, 200, 140), BitDepth::Ten, (0, 0), true),
+const TEN_420: (BitDepth, PixelFormat) = (BitDepth::Ten, PixelFormat::Yuv420);
+
+/// 64x64 superblocks in 4x3, in two tile columns of 3x3, in two tile rows
+/// (the second starts below the frame top), with offsets that clip at
+/// `MaxQ`, and in 4:2:2 and 4:4:4; 128x128 superblocks in 3x2 with offsets
+/// and in two tile columns of 3x2 and 2x2.
+const WAVEFRONT_CASES: [WavefrontCase; 8] = [
+    (9, (200, 136, 120), TEN_420, (0, 0), false),
+    (9, (384, 136, 160), TEN_420, (1, 0), false),
+    (10, (200, 264, 150), TEN_420, (0, 1), false),
+    (
+        10,
+        (200, 136, 240),
+        (BitDepth::Eight, PixelFormat::Yuv420),
+        (0, 0),
+        true,
+    ),
+    (
+        10,
+        (200, 136, 130),
+        (BitDepth::Ten, PixelFormat::Yuv422),
+        (0, 0),
+        false,
+    ),
+    (
+        10,
+        (200, 136, 130),
+        (BitDepth::Eight, PixelFormat::Yuv444),
+        (0, 0),
+        true,
+    ),
+    (6, (300, 200, 140), TEN_420, (0, 0), true),
+    (6, (520, 200, 140), TEN_420, (1, 0), false),
 ];
 
 /// Wavefront key and inter frames, with every loop filter of the preset row,
@@ -93,14 +122,14 @@ fn avm_decodes_wavefront_streams_like_splot() {
     let Some(avmdec) = avm_decoder() else {
         return;
     };
-    for case in WAVEFRONT_CASES {
+    for (index, case) in WAVEFRONT_CASES.into_iter().enumerate() {
         let (units, recon) = wavefront_stream(4, with_wavefront(case.0, true), case);
         let avm = avm_decode(
             &avmdec,
             &units,
             (case.1.0, case.1.1),
-            case.2,
-            &format!("wavefront{}{}", case.0, case.1.2),
+            case.2.0,
+            &format!("wavefront{index}"),
         );
         assert!(avm == recon, "{case:?}: AVM output differs");
     }
