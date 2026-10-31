@@ -357,8 +357,8 @@ pub struct PresetParams {
     /// them in raster order with the exact CDFs. Superblock qindex targets
     /// stay on the `delta_q_res` steps of `base_q_idx`, where each row starts.
     /// Off searches in raster order from the exact running CDFs. On at
-    /// p6-p10 (2026-10-31, p6 vs main): niklas +0.27%, paris +0.25% BD at the
-    /// same 1-thread CPU for 2x wall time at 8 threads on niklas 720p.
+    /// p6-p10 (2026-10-31, p6 vs main d2bedf697): niklas +0.51%, paris +0.19%
+    /// BD at the same 1-thread CPU for 2x wall time at 8 threads on niklas 720p.
     pub wavefront: bool,
 }
 
