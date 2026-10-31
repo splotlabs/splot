@@ -119,14 +119,14 @@ fn check(keyint: u32, mini_gop_size: u8, frames: u64) {
 
 #[test]
 fn every_plan_shows_frames_in_input_order_from_the_right_slots() {
-    for keyint in [1, 2, 3, 5, 7, 8, 9, 16, 17, 30] {
-        for mini_gop_size in 1..=8 {
-            for frames in 1..=40 {
+    for keyint in [1, 2, 3, 5, 7, 8, 9, 16, 17, 30, 64] {
+        for mini_gop_size in (1..=8).chain([15, 16, 31, 32]) {
+            for frames in 1..=70 {
                 check(keyint, mini_gop_size, frames);
             }
         }
     }
-    for mini_gop_size in 1..=8 {
+    for mini_gop_size in (1..=8).chain([16, 32]) {
         check(600, mini_gop_size, 520);
     }
 }

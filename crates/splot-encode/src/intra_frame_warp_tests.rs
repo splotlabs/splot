@@ -146,7 +146,8 @@ pub(super) fn zooming_stream(
     mut coder: IntraFrameCoder,
     count: impl Fn(&CodedFrame) -> (usize, usize),
 ) -> WarpStream {
-    let mut planner = crate::gop::GopPlanner::new(config.keyint, coder.preset.mini_gop_size);
+    let mini_gop = coder.preset.mini_gop_size.min(4);
+    let mut planner = crate::gop::GopPlanner::new(config.keyint, mini_gop);
     let (mut units, mut recons, mut frames) = (Vec::new(), BTreeMap::new(), Vec::new());
     let mut queued = 9;
     while let Some(len) = planner.next_len(queued, true) {

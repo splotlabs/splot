@@ -188,7 +188,13 @@ impl Encoder {
         rate_control: Box<dyn RateController + Send>,
     ) -> Result<Self> {
         let params = config.override_preset(config.preset.params())?;
-        let planner = GopPlanner::new(config.keyint, params.mini_gop_size);
+        let mini_gop_size = match config.rate_control {
+            RateControlMode::Vbr { .. } | RateControlMode::Cbr { .. } => {
+                params.bitrate_mini_gop_size.min(params.mini_gop_size)
+            }
+            _ => params.mini_gop_size,
+        };
+        let planner = GopPlanner::new(config.keyint, mini_gop_size);
         Ok(Self {
             rate_control,
             stats_sink: None,
@@ -880,13 +886,13 @@ mod tests {
 
     #[test]
     fn a_scene_cut_starts_a_key_frame() -> Result<()> {
-        let packets = textured(RateControlMode::ConstantQp { qp: 40 }, 2, 7)?;
+        let packets = textured(RateControlMode::ConstantQp { qp: 40 }, 2, 9)?;
         let keys: Vec<u64> = packets
             .iter()
             .filter(|packet| packet.frame_type == FrameType::Key)
             .map(|packet| packet.pts)
             .collect();
-        assert_eq!(keys, [0, 7]);
+        assert_eq!(keys, [0, 9]);
         Ok(())
     }
 
@@ -916,8 +922,9 @@ mod tests {
         Ok(())
     }
 
-    /// On static content the alt-ref of each mini-GOP of 4 gets a finer
-    /// quantizer than its middle frame, and that one than the leaves.
+    /// On static content the alt-ref of each mini-GOP of 8 gets a finer
+    /// quantizer than its middle frame, that one than the quarter frames, and
+    /// those than the leaves.
     #[test]
     fn crf_gives_referenced_frames_lower_qindex_on_static_content() -> Result<()> {
         let packets = textured(RateControlMode::Crf { crf: 30 }, 0, u64::MAX)?;
@@ -926,11 +933,9 @@ mod tests {
             .flat_map(|packet| &packet.stats)
             .map(|stats| (stats.pts, stats.qp))
             .collect();
-        for base in [0, 4] {
-            let (leaf, middle, alt_ref) = (qp[&(base + 1)], qp[&(base + 2)], qp[&(base + 4)]);
-            assert_eq!(leaf, qp[&(base + 3)], "{qp:?}");
-            assert!(alt_ref < middle && middle < leaf, "{qp:?}");
-        }
+        let layers = [8, 4, 2, 1].map(|display| qp[&display]);
+        assert!(layers.is_sorted_by(|a, b| a < b), "{qp:?}");
+        assert_eq!(qp[&1], qp[&3], "{qp:?}");
         assert!(qp[&0] < qp[&2], "{qp:?}");
         Ok(())
     }
@@ -942,7 +947,9 @@ mod tests {
     #[test]
     fn a_window_searches_against_the_last_coded_frame() -> Result<()> {
         let mut config = Config::new(64, 64);
-        config.preset_overrides = vec![("lookahead_frames".to_owned(), "6".to_owned())];
+        config.preset_overrides = [("lookahead_frames", "6"), ("mini_gop_size", "4")]
+            .map(|(field, value)| (field.to_owned(), value.to_owned()))
+            .into();
         let mut encoder =
             Encoder::with_coder(config.clone(), Box::new(FakeCoder { fail_at: None }))?;
         for pts in 0..12 {

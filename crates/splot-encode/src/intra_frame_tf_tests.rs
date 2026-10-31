@@ -28,9 +28,9 @@ fn noisy_frame(config: &Config, index: u32) -> SourceFrame {
     SourceFrame::new(config, u64::from(index), planes).unwrap()
 }
 
-/// Each frame's decoder output, `[deblock, CDEF, LR, CCSO, GDF]` and the
-/// source it was coded from, by display index.
-type Coded = Arc<Mutex<BTreeMap<u64, (Vec<u8>, [bool; 5], [Vec<u16>; 3])>>>;
+/// Each frame's decoder output, `[deblock, CDEF, LR, CCSO, GDF]`, the
+/// source it was coded from and its mini-GOP layer, by display index.
+type Coded = Arc<Mutex<BTreeMap<u64, (Vec<u8>, [bool; 5], [Vec<u16>; 3], u8)>>>;
 
 struct SourceRecording {
     coder: IntraFrameCoder,
@@ -62,6 +62,7 @@ impl FrameCoder for SourceRecording {
                 recon_bytes(frame, self.bit_depth),
                 tools,
                 source.planes().clone(),
+                plan.layer,
             );
             self.frames
                 .lock()
@@ -94,27 +95,29 @@ impl FrameCoder for SourceRecording {
 
 /// A filtered stream: its units, the encoder recon in display order, the
 /// loop filters coded in some frame, the display indices coded from a
-/// filtered source, and the source each frame was coded from.
+/// filtered source, the source each frame was coded from, and the display
+/// indices of the mini-GOP base frames (layer 0).
 struct Stream {
     units: Vec<Vec<u8>>,
     recon: Vec<u8>,
     tools: [bool; 5],
     filtered: Vec<u64>,
     sources: BTreeMap<u64, [Vec<u16>; 3]>,
+    bases: Vec<u64>,
 }
 
 /// Nine noisy panning frames with the preset fields `sets` on `threads`
 /// threads, in two tiles, received after each send.
 fn tf_stream(config: Config, sets: &[(&str, &str)], threads: usize) -> Stream {
-    tf_stream_of(config, sets, threads, false, &noisy_frame)
+    tf_stream_of(config, sets, (threads, 9), false, &noisy_frame)
 }
 
-/// Nine frames of `make` as [`tf_stream`] codes them; a `bulk` caller sends
-/// every frame before it receives.
+/// `frames` frames of `make` as [`tf_stream`] codes them; a `bulk` caller
+/// sends every frame before it receives.
 fn tf_stream_of(
     mut config: Config,
     sets: &[(&str, &str)],
-    threads: usize,
+    (threads, frames): (usize, u32),
     bulk: bool,
     make: &dyn Fn(&Config, u32) -> SourceFrame,
 ) -> Stream {
@@ -127,15 +130,15 @@ fn tf_stream_of(
         .iter()
         .map(|&(field, value)| (field.into(), value.into()))
         .collect();
-    let frames = Arc::default();
+    let coded = Arc::default();
     let coder = SourceRecording {
         coder: IntraFrameCoder::new(&config).unwrap(),
         bit_depth: config.bit_depth,
-        frames: Arc::clone(&frames),
+        frames: Arc::clone(&coded),
     };
     let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
     let mut units = Vec::new();
-    for index in 0..9 {
+    for index in 0..frames {
         encoder.send_frame(make(&config, index)).unwrap();
         while !bulk && let Some(packet) = encoder.receive_packet().unwrap() {
             units.push(packet.data);
@@ -145,10 +148,10 @@ fn tf_stream_of(
     while let Some(packet) = encoder.receive_packet().unwrap() {
         units.push(packet.data);
     }
-    let frames = frames.lock().unwrap();
+    let frames = coded.lock().unwrap();
     let filtered = frames
         .iter()
-        .filter(|&(&display, (_, _, source))| source != make(&config, display as u32).planes())
+        .filter(|&(&display, (_, _, source, _))| source != make(&config, display as u32).planes())
         .map(|(&display, _)| display)
         .collect();
     Stream {
@@ -157,6 +160,11 @@ fn tf_stream_of(
         tools: core::array::from_fn(|i| frames.values().any(|f| f.1[i])),
         filtered,
         sources: frames.iter().map(|(&d, f)| (d, f.2.clone())).collect(),
+        bases: frames
+            .iter()
+            .filter(|f| f.1.3 == 0)
+            .map(|(&d, _)| d)
+            .collect(),
     }
 }
 
@@ -165,24 +173,33 @@ const ON: [(&str, &str); 2] = [("tf_key_frames", "2"), ("tf_base_frames", "2")];
 /// With the filter on, the key frame and the hidden base frames code a
 /// filtered source; the frames between them predict from those frames, every
 /// loop filter codes in some frame, and the stream decodes to the encoder
-/// recon with the same bytes on 1, 2 and 8 threads, in mini-GOPs of 4 and 2
+/// recon with the same bytes on 1, 2 and 8 threads, in mini-GOPs of 8 and 2
 /// and in 4:2:0 8-bit and 4:2:2 10-bit.
 #[test]
 fn filtered_streams_decode_to_the_encoder_recon_on_any_thread_count() {
-    for (preset, bit_depth, chroma, qp, bases) in [
-        (6, BitDepth::Eight, PixelFormat::Yuv420, 160, vec![0, 4, 8]),
+    for (preset, bit_depth, chroma, qp, mini_gop, bases) in [
+        (
+            6,
+            BitDepth::Eight,
+            PixelFormat::Yuv420,
+            160,
+            "8",
+            vec![0, 8],
+        ),
         (
             9,
             BitDepth::Ten,
             PixelFormat::Yuv422,
             240,
+            "2",
             vec![0, 2, 4, 6, 8],
         ),
     ] {
+        let on = [ON[0], ON[1], ("mini_gop_size", mini_gop)];
         let mut config = config(200, 136, bit_depth, preset, qp);
         config.chroma = chroma;
         let name = format!("preset {preset} {bit_depth:?} {chroma:?}");
-        let stream = tf_stream(config.clone(), &ON, 1);
+        let stream = tf_stream(config.clone(), &on, 1);
         assert_eq!(stream.filtered, bases, "{name}");
         assert_eq!(stream.tools, [true; 5], "{name}");
         assert_same_samples(&decode(&stream.units.concat()), &stream.recon, &name);
@@ -191,7 +208,7 @@ fn filtered_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             "{name}"
         );
         for threads in [2, 8] {
-            let other = tf_stream(config.clone(), &ON, threads);
+            let other = tf_stream(config.clone(), &on, threads);
             assert!(other.units == stream.units, "{name}: {threads} threads");
         }
     }
@@ -205,7 +222,8 @@ fn a_zero_count_or_strength_codes_the_unfiltered_stream() {
         |sets: &[(&str, &str)]| tf_stream(config(72, 40, BitDepth::Eight, 9, 255), sets, 1);
     let off = stream(&[("tf_key_frames", "0")]);
     assert!(off.filtered.is_empty());
-    assert_eq!(stream(&[]).filtered, [0], "preset 9 row");
+    let row = tf_stream(config(200, 136, BitDepth::Eight, 9, 255), &[], 1);
+    assert_eq!(row.filtered, [0], "preset 9 row");
     assert!(stream(&ON).units != off.units, "the filter is on");
     let zero_strength = [
         ON[0],
@@ -231,8 +249,8 @@ fn bulk_and_interleaved_callers_code_the_same_stream() {
     for (preset, keys) in [(9, "4"), (6, "4"), (9, "8")] {
         let config = config(96, 64, BitDepth::Eight, preset, 200);
         let sets = [("tf_key_frames", keys), ON[1]];
-        let interleaved = tf_stream_of(config.clone(), &sets, 1, false, &noisy_frame);
-        let bulk = tf_stream_of(config, &sets, 1, true, &noisy_frame);
+        let interleaved = tf_stream_of(config.clone(), &sets, (1, 9), false, &noisy_frame);
+        let bulk = tf_stream_of(config, &sets, (1, 9), true, &noisy_frame);
         assert!(!interleaved.filtered.is_empty(), "preset {preset}");
         assert!(
             bulk.units == interleaved.units,
@@ -252,14 +270,15 @@ fn cut_frame(config: &Config, index: u32, variant: u32) -> SourceFrame {
 }
 
 /// A key frame before a scene cut reads no frame of the next scene: with
-/// either scene after the cut it codes the same filtered source.
+/// either scene after the cut it codes the same filtered source. Mini-GOPs
+/// of 2 let a cut 3 frames after the key frame make a key frame.
 #[test]
 fn key_frames_do_not_read_across_a_scene_cut() {
     let config = config(96, 64, BitDepth::Eight, 9, 200);
-    let sets = [("tf_key_frames", "4")];
+    let sets = [("tf_key_frames", "4"), ("mini_gop_size", "2")];
     let streams: Vec<Stream> = [1, 2]
         .map(|variant| {
-            tf_stream_of(config.clone(), &sets, 1, false, &|c, i| {
+            tf_stream_of(config.clone(), &sets, (1, 9), false, &|c, i| {
                 cut_frame(c, i, variant)
             })
         })
@@ -288,3 +307,6 @@ fn avm_decodes_filtered_streams_like_splot() {
         assert!(avm == stream.recon, "preset {preset}: AVM output differs");
     }
 }
+
+#[path = "intra_frame_mini_gop_tests.rs"]
+mod mini_gop;

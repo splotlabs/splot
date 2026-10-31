@@ -6907,6 +6907,38 @@ commands = ["cargo test -p splot-encode rate_control --locked", "SPLOT_AVM_DECOD
 fixtures = []
 diagnostics = []
 
+[[feature]]
+id = "ENC-DYNAMIC-MINI-GOP"
+name = "Mini-GOP size table and dynamic mini-GOPs"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "7.20"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/gop.rs"
+change_id = "enc-dynamic-minigop"
+owner = "encoder"
+risk = "medium"
+notes = "NOTES_PLACEHOLDER"
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "partial"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/gop_tests.rs::every_plan_shows_frames_in_input_order_from_the_right_slots", "crates/splot-encode/src/intra_frame_mini_gop_tests.rs::long_mini_gops_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_mini_gop_tests.rs::avm_decodes_32_frame_mini_gops_like_splot", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
+commands = ["cargo test -p splot-encode gop --locked", "cargo test -p splot-encode mini_gop --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored"]
+fixtures = []
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------
