@@ -114,11 +114,12 @@ pub struct PresetParams {
     pub tpl_delta_q: u8,
     /// Temporal filtering of key frames: the most later neighbours, `0..=8`,
     /// that a key frame is filtered from before it is coded; the lookahead
-    /// bounds them. `0` is off. `4` at p0-p9 (2026-10-31, vs main
-    /// 336b8b726): p6 paris f30 -1.33%, niklas f30 -0.28%, park_joy f10
-    /// -0.43% at 0.98-1.01x CPU; paris p2 -1.60%; park_joy p0 +0.64%, p8
-    /// +0.53%. Off at p10: park_joy -0.82% for +3.4% CPU (+5.3%
-    /// instructions), under the fast-row slope.
+    /// bounds them. `0` is off. `4` at p0-p9 (2026-10-31, p6 vs main
+    /// 5530d5de2): paris f30 -1.37%, niklas f30 +0.11% (-0.28% before the
+    /// two-pass partition decision), park_joy f10 -0.04% at 0.99-1.01x CPU;
+    /// vs 336b8b726: paris p2 -1.60%, park_joy p0 +0.64%, p8 +0.53%. Off at
+    /// p10: park_joy -0.82% for +3.4% CPU (+5.3% instructions), under the
+    /// fast-row slope.
     pub tf_key_frames: u8,
     /// The strength of `tf_key_frames` in percent: it scales the weight
     /// decay, so larger values keep more of the neighbours. `0` is off.
