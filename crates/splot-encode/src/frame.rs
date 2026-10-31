@@ -137,6 +137,17 @@ impl SourceFrame {
     pub fn planes(&self) -> &[Vec<u16>; 3] {
         &self.planes
     }
+
+    /// The frame with the planes `planes`, which have its plane sizes and
+    /// sample range.
+    pub(crate) fn with_planes(&self, planes: [Vec<u16>; 3]) -> Self {
+        Self {
+            pts: self.pts,
+            bit_depth: self.bit_depth,
+            sizes: self.sizes.clone(),
+            planes,
+        }
+    }
 }
 
 #[cfg(test)]

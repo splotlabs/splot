@@ -127,6 +127,8 @@ pub struct Encoder {
     window: Vec<FramePlanInfo>,
     /// The preset's `tpl_delta_q` strength in percent.
     tpl_delta_q: u8,
+    /// The preset's temporal filter frames and strengths of key and base frames.
+    temporal_filter: [(u8, u8); 2],
     /// The last frame qindex, which estimates the next ones.
     last_qindex: Option<u16>,
     ready: VecDeque<Packet>,
@@ -197,6 +199,10 @@ impl Encoder {
             lookahead_frames: usize::from(params.lookahead_frames),
             window: Vec::new(),
             tpl_delta_q: params.tpl_delta_q,
+            temporal_filter: [
+                (params.tf_key_frames, params.tf_key_strength),
+                (params.tf_base_frames, params.tf_base_strength),
+            ],
             last_qindex: None,
             resized: config.resize_denominator.map(|_| config.coded()),
             config,
@@ -324,14 +330,7 @@ impl Encoder {
             Some(index) => pending.get(usize::try_from(index).ok()?),
             None => last_coded.as_ref().filter(|_| display + 1 == next),
         };
-        let model = tpl::analyze(
-            &mut self.lookahead,
-            &plan,
-            coded_before,
-            blocks,
-            u64::from(self.config.keyint.get()),
-            &sources,
-        );
+        let model = tpl::analyze(&mut self.lookahead, &plan, coded_before, blocks, &sources);
         if let Some(fields) = self.lookahead.fields() {
             self.coder.set_open_loop_motion(fields);
         }
@@ -395,20 +394,30 @@ impl Encoder {
         let (mut data, mut stats) = (Vec::new(), Vec::new());
         let steps = self.planner.plan(frames.len())?;
         for wave in gop::waves(&steps) {
-            let mut jobs = Vec::new();
+            let mut planned = Vec::new();
             for step in wave {
                 if let GopStep::Code(plan) = *step {
-                    jobs.push((source(plan.display_index)?, plan, self.frame_qp(&plan)?));
+                    planned.push((plan, self.frame_qp(&plan)?));
                 }
+            }
+            let filtered = self.temporal_filter(&planned, &frames, first);
+            let mut jobs = Vec::new();
+            for (&(plan, qp), filtered) in planned.iter().zip(&filtered) {
+                let frame = match filtered {
+                    Some(filtered) => filtered,
+                    None => source(plan.display_index)?,
+                };
+                jobs.push((frame, plan, qp));
             }
             let mut coded = jobs.iter().zip(self.coder.encode_wave(&jobs)?);
             for step in wave {
                 match *step {
                     GopStep::Code(_) => {
-                        let (&(frame, plan, qp), mut coded) =
+                        let (&(_, plan, qp), mut coded) =
                             coded.next().ok_or(Error::Unsupported {
                                 what: "a wave with fewer coded frames than planned",
                             })?;
+                        let frame = source(plan.display_index)?;
                         stats.push(self.commit(frame, &plan, qp, &mut coded)?);
                         frame_types[(plan.display_index - first) as usize] = coded.frame_type;
                         data.extend(coded.temporal_unit);
@@ -434,6 +443,50 @@ impl Encoder {
             .retain_from(self.planner.next_display().saturating_sub(1));
         self.last_coded = frames.into_iter().last();
         Ok(())
+    }
+
+    /// The temporally filtered source of each `(plan, qp)` of a wave of the
+    /// mini-GOP `frames`, whose first display index is `first`. The filter
+    /// reads the frames of the lookahead window before the next planned key
+    /// frame, so the output does not depend on how the caller interleaves
+    /// sends and receives, nor does a frame read across a scene cut.
+    fn temporal_filter(
+        &self,
+        planned: &[(GopFrame, u16)],
+        frames: &[SourceFrame],
+        first: u64,
+    ) -> Vec<Option<SourceFrame>> {
+        let (pending, last_coded) = (&self.pending, &self.last_coded);
+        let end = (first + self.lookahead_frames as u64).min(self.planner.next_key());
+        let sources = |display: u64| match display.checked_sub(first) {
+            Some(index) if display < end => {
+                let index = usize::try_from(index).ok()?;
+                frames
+                    .get(index)
+                    .or_else(|| pending.get(index.checked_sub(frames.len())?))
+            }
+            Some(_) => None,
+            None => last_coded.as_ref().filter(|_| display + 1 == first),
+        };
+        let subsampling = [
+            self.config.chroma.subsampling_x(),
+            self.config.chroma.subsampling_y(),
+        ];
+        let pool = self.coder.pool();
+        planned
+            .iter()
+            .map(|(plan, qp)| {
+                crate::temporal_filter::filter_frame(
+                    &self.lookahead,
+                    &sources,
+                    plan,
+                    *qp,
+                    self.temporal_filter,
+                    subsampling,
+                    pool.as_ref(),
+                )
+            })
+            .collect()
     }
 
     fn frame_qp(&mut self, gop_frame: &GopFrame) -> Result<u16> {

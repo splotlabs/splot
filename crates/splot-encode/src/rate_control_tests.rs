@@ -53,68 +53,6 @@ fn crf_adds_the_offset_and_clamps() {
     );
 }
 
-fn window_frame(
-    display_index: u64,
-    layer: u8,
-    boost: i32,
-    references: [Option<u64>; 2],
-) -> WindowFrame {
-    WindowFrame {
-        display_index,
-        frame_type: if display_index == 0 {
-            FrameType::Key
-        } else {
-            FrameType::Inter
-        },
-        layer,
-        boost,
-        references,
-    }
-}
-
-/// A key frame, a mini-GOP of 8 and one of 2 in coding order: the key frame
-/// and each base frame move down by their boost, at most 64, the leaves sit
-/// at the CRF level (3 per layer of depth above the base qindex), and the
-/// layers between move to it by thirds (depth 3) or at once (depth 1).
-#[test]
-fn frame_offsets_step_from_the_base_frame_to_the_crf_level_by_layer() {
-    let frames = [
-        window_frame(0, 0, 30, [None, None]),
-        window_frame(8, 0, 24, [Some(0), None]),
-        window_frame(4, 1, 11, [Some(0), Some(8)]),
-        window_frame(2, 2, 5, [Some(0), Some(4)]),
-        window_frame(1, 3, 0, [Some(0), Some(2)]),
-        window_frame(3, 3, 0, [Some(2), Some(4)]),
-        window_frame(6, 2, 4, [Some(4), Some(8)]),
-        window_frame(5, 3, 0, [Some(4), Some(6)]),
-        window_frame(7, 3, 0, [Some(6), Some(8)]),
-        window_frame(10, 0, 7, [Some(8), None]),
-        window_frame(9, 1, 0, [Some(8), Some(10)]),
-    ];
-    let offsets = frame_offsets(&frames);
-    assert_eq!(offsets, [-30, -24, -13, -2, 9, 9, -2, 9, 9, -7, 3]);
-    let mut strong = frames;
-    strong[0].boost = 60;
-    strong[1].boost = 90;
-    assert_eq!(frame_offsets(&strong)[..3], [-60, -64, -40]);
-}
-
-/// A frame is never coded finer than a frame it predicts from: a weak key
-/// frame lifts the middle frame, which in turn lifts the frames above it.
-#[test]
-fn frame_offsets_never_go_below_a_reference() {
-    let frames = [
-        window_frame(0, 0, 4, [None, None]),
-        window_frame(4, 0, 30, [Some(0), None]),
-        window_frame(2, 1, 0, [Some(0), Some(4)]),
-        window_frame(1, 2, 0, [Some(0), Some(2)]),
-        window_frame(3, 2, 0, [Some(2), Some(4)]),
-    ];
-    assert_eq!(frame_offsets(&frames), [-4, -30, -4, 6, 6]);
-    let unseen_reference = [window_frame(6, 1, 0, [Some(5), Some(7)])];
-    assert_eq!(frame_offsets(&unseen_reference), [0]);
-}
-
 /// A coder whose frames cost `k * complexity / step` bits, with `k` far from
 /// the initial model: the controllers meet the target within a few windows.
 #[test]

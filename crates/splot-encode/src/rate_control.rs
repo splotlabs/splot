@@ -5,9 +5,7 @@
 //!
 //! [`ConstantQp`] codes every frame at one `base_q_idx`. [`Crf`] starts from a
 //! quality level and adds each frame's lookahead offset, so frames that later
-//! frames predict from get a finer quantizer: the offsets spread the
-//! window over key frames, mini-GOP base frames and the layers between them
-//! and the leaves. [`Vbr`] and [`Cbr`] pick a base
+//! frames predict from get a finer quantizer. [`Vbr`] and [`Cbr`] pick a base
 //! qindex per lookahead window so that the predicted bits of the window meet
 //! the budget, and add the same offsets. Their frame-size model is
 //! `bits = k * complexity / step(qindex)` with one `k` for key frames and one
@@ -108,60 +106,6 @@ pub fn max_qindex(bit_depth: BitDepth) -> u16 {
 /// `base` moved by `offset`, clamped to `1..=max_qindex(bit_depth)`.
 pub(crate) fn with_offset(base: u16, offset: i16, bit_depth: BitDepth) -> u16 {
     (i32::from(base) + i32::from(offset)).clamp(1, i32::from(max_qindex(bit_depth))) as u16
-}
-
-/// The largest qindex decrease [`frame_offsets`] gives a frame for its boost.
-pub(crate) const MAX_FRAME_BOOST: i32 = 64;
-/// The qindex above the base qindex of [`Crf`] at which the leaves of a
-/// mini-GOP sit, per layer of its depth.
-pub(crate) const LAYER_QINDEX_STEP: i32 = 3;
-
-/// A planned frame of a lookahead window as [`frame_offsets`] reads it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct WindowFrame {
-    pub(crate) display_index: u64,
-    pub(crate) frame_type: FrameType,
-    pub(crate) layer: u8,
-    /// The temporal model's qindex decrease: 12 per octave of importance.
-    pub(crate) boost: i32,
-    /// The display indices of the past and future frames it predicts from.
-    pub(crate) references: [Option<u64>; 2],
-}
-
-/// The qindex offset of each frame of `frames`, in coding order, from the
-/// base qindex of [`Crf`]. The leaves of a mini-GOP of depth `d` sit at the
-/// CRF level, [`LAYER_QINDEX_STEP`] per layer above the base qindex; a key
-/// frame or a frame at layer 0 moves below the base qindex by its boost, at
-/// most [`MAX_FRAME_BOOST`]; a frame at layer `l` moves from its base
-/// frame's offset to the CRF level by `l / d`, and never below a frame it
-/// predicts from.
-pub(crate) fn frame_offsets(frames: &[WindowFrame]) -> Vec<i16> {
-    let mut offsets: Vec<i32> = Vec::with_capacity(frames.len());
-    let (mut base, mut depth) = (0, 0);
-    for (index, frame) in frames.iter().enumerate() {
-        if frame.layer == 0 {
-            depth = frames[index + 1..]
-                .iter()
-                .take_while(|next| next.layer > 0)
-                .map(|next| i32::from(next.layer))
-                .max()
-                .unwrap_or(0);
-            base = -frame.boost.clamp(0, MAX_FRAME_BOOST);
-            offsets.push(base);
-            continue;
-        }
-        let layer = i32::from(frame.layer).min(depth);
-        let level = LAYER_QINDEX_STEP * depth;
-        let interpolated = base + (level - base) * layer / depth.max(1);
-        let references = frame.references.iter().flatten().filter_map(|display| {
-            let coded = frames[..index]
-                .iter()
-                .position(|f| f.display_index == *display);
-            coded.map(|position| offsets[position])
-        });
-        offsets.push(references.fold(interpolated, i32::max));
-    }
-    offsets.into_iter().map(|offset| offset as i16).collect()
 }
 
 /// Constant quality: the base qindex is `4 * crf` at 8 bits, plus each
@@ -374,10 +318,9 @@ impl RateController for Vbr {
         let max = window
             .first()
             .map_or(u16::MAX, |info| max_qindex(info.bit_depth));
-        let b = (1..=max)
+        self.base = (1..=max)
             .find(|&base| predicted(base) <= budget as u64)
             .unwrap_or(max);
-        self.base = b;
     }
 
     fn frame_qp(&mut self, info: &FramePlanInfo) -> u16 {

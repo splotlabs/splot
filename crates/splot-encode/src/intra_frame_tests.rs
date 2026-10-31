@@ -1579,6 +1579,8 @@ mod mds;
 mod mvpred;
 #[path = "intra_frame_refine_tests.rs"]
 mod refine;
+#[path = "intra_frame_tf_tests.rs"]
+mod tf;
 #[path = "intra_frame_tip_tests.rs"]
 mod tip;
 #[path = "intra_frame_warp_tests.rs"]

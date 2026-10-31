@@ -5129,7 +5129,7 @@ module = "crates/splot-encode/src/rate_control.rs"
 change_id = "encoder-m4-rate-control"
 owner = "encoder"
 risk = "medium"
-notes = "Encoder strategy. Config::rate_control selects ConstantQp, Crf { crf } (base qindex 4 * crf plus the ENC-RATE-CONTROL-V2 frame offset), Vbr { bitrate_kbps } or Cbr { bitrate_kbps, buffer_ms }. Vbr and Cbr pick one base qindex per lookahead window so that the predicted bits of the window meet the budget, with the model bits = k * complexity / step(qindex) per key frame and mini-GOP layer class; k is learnt from coded bits. The step is the § 7.14.2 qlookup, which doubles every 24 qindex. VBR bounds its underspend to 8 frame budgets and its overspend to 32, predicts flat frames by their mean coded size, and repays the whole drift over the last window of the input; CBR wraps the VBR model, bounds drift to half the buffer and raises a frame's qindex until it fits the buffer. Encoder::with_rate_controller plugs in a custom RateController. Integer arithmetic only. CLI: --crf, --bitrate, --rc vbr|cbr. Frame-level only: no delta-q."
+notes = "Encoder strategy. Config::rate_control selects ConstantQp, Crf { crf } (base qindex 4 * crf plus the ENC-LOOKAHEAD-TPL offset), Vbr { bitrate_kbps } or Cbr { bitrate_kbps, buffer_ms }. Vbr and Cbr pick one base qindex per lookahead window so that the predicted bits of the window meet the budget, with the model bits = k * complexity / step(qindex) per key frame and mini-GOP layer class; k is learnt from coded bits. The step is the § 7.14.2 qlookup, which doubles every 24 qindex. VBR bounds its underspend to 8 frame budgets and its overspend to 32, predicts flat frames by their mean coded size, and repays the whole drift over the last window of the input (ENC-RATE-CONTROL-V2); CBR wraps the VBR model, bounds drift to half the buffer and raises a frame's qindex until it fits the buffer. Encoder::with_rate_controller plugs in a custom RateController. Integer arithmetic only. CLI: --crf, --bitrate, --rc vbr|cbr. Frame-level only: no delta-q."
 
 [feature.status]
 mapped = "done"
@@ -5161,7 +5161,7 @@ module = "crates/splot-encode/src/tpl.rs"
 change_id = "encoder-m4-lookahead-tpl"
 owner = "encoder"
 risk = "medium"
-notes = "Encoder strategy. The lookahead (lookahead.rs) holds the preset's lookahead_frames frames as luma downscaled by 2 (by 4 above 1080p) in 8-bit, with per-8x8-block intra SATD (best of DC, V, H) and inter SATD at the best SAD within one downscaled sample of the ENC-OPEN-LOOP-ME vectors of the block's luma area, of its quadrants and of the left block. The model (tpl.rs) plans the window with a copy of the GOP planner, takes each block's best of intra and the closest past and future coded frames, and propagates (intra + received) * (intra - best) / intra to the reference blocks under the vector, split on ties. Frame importance (intra + received) / intra gives a boost of 12 * log2(importance) qindex; ENC-RATE-CONTROL-V2 turns the boosts into per-frame offsets. The rate controller gets the window and the offsets; the block-level pass of ENC-DELTA-Q reuses the propagation."
+notes = "Encoder strategy. The lookahead (lookahead.rs) holds the preset's lookahead_frames frames as luma downscaled by 2 (by 4 above 1080p) in 8-bit, with per-8x8-block intra SATD (best of DC, V, H) and inter SATD at the best SAD within one downscaled sample of the ENC-OPEN-LOOP-ME vectors of the block's luma area, of its quadrants and of the left block. The model (tpl.rs) plans the window with a copy of the GOP planner, takes each block's best of intra and the closest past and future coded frames, and propagates (intra + received) * (intra - best) / intra to the reference blocks under the vector, split on ties. Frame importance (intra + received) / intra gives a qindex offset of -12 * log2(importance), at most -32, plus 3 per mini-GOP layer. The rate controller gets the window and the offsets; the block-level pass of ENC-DELTA-Q reuses the propagation."
 
 [feature.status]
 mapped = "done"
@@ -6844,8 +6844,40 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-TEMPORAL-FILTER"
+name = "Encoder temporal filtering of key and base frames"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/temporal_filter.rs"
+change_id = "enc-temporal-filter"
+owner = "encoder"
+risk = "medium"
+notes = "B2 part 1. Encoder strategy, no syntax. Key frames (PresetParams::tf_key_frames later neighbours) and hidden mini-GOP base frames (tf_base_frames per side) are filtered before coding; the filtered frame replaces the source for coding only (statistics keep the source). Motion is the B1 open-loop HME of each centre/neighbour pair (Lookahead::full_motion), no second search. Per 64x64 block, each 16x16 luma quadrant takes the 16x16 vector when the four 16x16 SADs beat the 32x32 SAD by 1/8, else the 32x32 vector; its weight is exp(-error * distance / decay) from a table (EncoderKernels::tf_weights, 16 lanes), error = 3/4 quadrant window MSE + 1/4 SAD-implied MSE, distance grows past 16 samples, decay grows with the noise, the 8-bit-equivalent qindex and the strength; chroma reuses the luma weights; tf_accumulate and tf_normalize are std::simd kernels with scalar twins. Noise = MSE implied by the lower-quartile 8x8 SAD against the nearest neighbour (no extra pass); below 4/16 a frame takes one neighbour per side. Keep/drop decision: a filtered frame whose luma MSE against the source exceeds qindex^2/512 codes its source; show-existing outputs hidden frames either way (overlay frames not coded). Rows: tf_key_frames 4 at p0-p9, 0 at p10 (park_joy -0.82% for +3.4% CPU, +5.3% CI instructions, under the fast-row slope); base filtering off everywhere (two per side at strength 25 on top of the key frames took paris p6 f30 from -1.74% to -1.42% against ca5c88233: the filtered base frame is shown without an overlay). Measured 2026-10-31 at p6 vs main 5530d5de2: paris f30 -1.37%, niklas f30 +0.11%, park_joy f10 -0.04% at 0.99x-1.01x CPU; #1659 (two-pass partition) removed the niklas gain (-0.28%) and most of the park_joy gain (-0.43%) measured vs 336b8b726. Vs 336b8b726: paris p2 f10 -1.60%; park_joy p0 +0.64%, p8 +0.53%. CI instructions inter p6 +2.71% (re-blessed). B2 target missed (2026-10-31): -0.0% to -1.4% at p6 against -4%; base filtering needs overlay frames (part 2)."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "partial"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/temporal_filter_tests.rs::filtering_removes_noise_along_the_motion", "crates/splot-encode/src/temporal_filter_tests.rs::neighbours_follow_the_frame_kind_and_the_noise", "crates/splot-encode/src/temporal_filter_tests.rs::only_key_and_hidden_base_frames_are_filtered", "crates/splot-encode/src/temporal_filter_tests.rs::a_filter_that_moves_the_frame_too_far_is_not_used", "crates/splot-encode/src/temporal_filter_tests.rs::worker_pools_filter_alike", "crates/splot-encode/src/temporal_filter_tests.rs::the_noise_level_grows_with_the_noise", "crates/splot-encode/src/kernels/temporal_filter.rs::tests::weights_match_scalar", "crates/splot-encode/src/kernels/temporal_filter.rs::tests::accumulate_matches_scalar", "crates/splot-encode/src/kernels/temporal_filter.rs::tests::normalize_matches_scalar", "crates/splot-encode/src/intra_frame_tf_tests.rs::filtered_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_tf_tests.rs::a_zero_count_or_strength_codes_the_unfiltered_stream", "crates/splot-encode/src/intra_frame_tf_tests.rs::avm_decodes_filtered_streams_like_splot", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
+commands = ["cargo test -p splot-encode temporal_filter --locked", "cargo test -p splot-encode tf:: --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_filtered --locked -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-RATE-CONTROL-V2"
-name = "Key-frame group, mini-GOP and layer qindex allocation"
+name = "Rate control v2: VBR accuracy"
 category = "encoder"
 kind = "encoder-tool"
 spec_sections = ["7.14.2"]
@@ -6855,7 +6887,7 @@ module = "crates/splot-encode/src/rate_control.rs"
 change_id = "enc-rc-v2"
 owner = "encoder"
 risk = "medium"
-notes = "B9 part 1. Encoder strategy; qindex only through base_q_idx (no new syntax). rate_control::frame_offsets spreads each lookahead window from the ENC-LOOKAHEAD-TPL boosts: a key frame and each mini-GOP base frame move below the CRF base qindex by their boost (at most 64); the leaves of a mini-GOP of depth d sit at the CRF level, 3 * d above it; a frame at layer l moves from its base frame's offset to the CRF level by l / d, and never below a frame of the window it predicts from. The key frame's importance is extended from the window to its key-frame group (keyint frames): tpl::group_importance fits a geometric decay 1 + p + ... + p^n to the window's importance and sums it to the end of the group, so a slowly fading dependency (static content) gets a larger boost and a fast one keeps its own. VBR keeps the window model and adds the mean coded size of flat frames per class, remembers 32 frame budgets of overspend (8 of underspend), and repays the whole drift over the last, shorter window of the input. Constant-qp streams are unchanged. Not done: capped CRF with a mode-decision re-encode, CBR buffer changes, dynamic or 16/32-frame mini-GOPs (B9 part 2). Measurements in the PR body."
+notes = "B9 part 1. Encoder strategy; no new syntax. Shipped: VBR predicts flat frames (complexity under twice the floor) by the mean coded size of their class instead of a k it never learns, remembers 32 frame budgets of overspend (8 of underspend: a key frame can cost more than 8 budgets), and repays the whole drift over the last, shorter window of the input. CBR keeps its half-buffer limits. Constant-qp and CRF streams are unchanged. Measured 2026-10-31: niklas 720p, all 60 frames, p9 VBR 1000/2500/6000 kbps within 1% of the target; synthetic 96x64 pan, 60 frames, within 1.1% (was +14%). Tried and not shipped (2026-10-31): a CRF allocation by key-frame group, mini-GOP and layer (key and base frames from the TPL boost, layers interpolated to the CRF level, never below a reference, the key frame's importance extended over its key-frame group by a fitted geometric decay). The brief's design alone (leaves at 4 * crf) measured paris +1.06% and park_joy +0.51% at p9 (mini-GOP 4); the final version measured paris -1.45%, park_joy +0.82% (10 frames) and niklas +0.25% at p6, CRF 22/30/37/45 vs main 5530d5de2. The B9 CRF target (BD-rate <= -3% vs main) is missed; the only lever found, a stronger key-frame boost, helps static content only. Not done: capped CRF with a mode-decision re-encode, 2-pass, dynamic and 16/32-frame mini-GOPs (B9 part 2)."
 
 [feature.status]
 mapped = "done"
@@ -6870,8 +6902,8 @@ avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-encode/src/rate_control_tests.rs::frame_offsets_step_from_the_base_frame_to_the_crf_level_by_layer", "crates/splot-encode/src/rate_control_tests.rs::frame_offsets_never_go_below_a_reference", "crates/splot-encode/src/tpl.rs::tests::key_frame_importance_extends_over_its_group", "crates/splot-encode/src/rate_control_tests.rs::vbr_meets_targets_within_three_percent", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_do_not_depend_on_the_thread_count", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_meet_targets_and_decode_to_the_recon", "crates/splot-encode/src/rate_control_tests.rs::avm_decodes_rate_controlled_streams_like_splot"]
-commands = ["cargo test -p splot-encode rate_control --locked", "cargo test -p splot-encode tpl --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored"]
+tests = ["crates/splot-encode/src/rate_control_tests.rs::vbr_meets_targets_within_three_percent", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_do_not_depend_on_the_thread_count", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_meet_targets_and_decode_to_the_recon", "crates/splot-encode/src/rate_control_tests.rs::avm_decodes_rate_controlled_streams_like_splot"]
+commands = ["cargo test -p splot-encode rate_control --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored"]
 fixtures = []
 diagnostics = []
 
