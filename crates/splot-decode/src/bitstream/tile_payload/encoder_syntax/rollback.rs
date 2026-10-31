@@ -27,6 +27,7 @@ use super::super::intra_joint_modes::{LumaPalette, TileIntraYModeFacts};
 use super::super::tile_frontier::chroma_subsampling;
 use super::intra::Recon;
 use super::{EncoderSyntaxError, IntraTileSyntax, PartitionNode, Result, rule};
+use crate::tile::SB_ROW_WINDOW_ABOVE_ROWS;
 
 /// A CDF row of the tile, by the accessor that reaches it.
 #[derive(Clone, Copy, Debug)]
@@ -521,6 +522,89 @@ impl IntraTileSyntax {
                 .inter
                 .as_ref()
                 .and_then(|inter| inter.tile.intrabc_debug_state()),
+        }
+    }
+}
+
+/// What the superblock row below reads of a coded superblock, taken from
+/// one facade and published into another facade of the same tile: the
+/// neighbour cells of its last luma 4x4 rows that the row window keeps, its
+/// reconstruction, and its CDFs after its last leaf.
+pub struct SuperblockEdge {
+    rows: Range<usize>,
+    cols: Range<usize>,
+    cells: Cells,
+    samples: Vec<(PlaneId, PlaneRect, Vec<u16>)>,
+    inter: Option<crate::prediction::inter::GridEdge>,
+    cdfs: TileCdfSubset,
+}
+
+impl SuperblockEdge {
+    /// Whether `other` holds the same reconstruction.
+    #[must_use]
+    pub fn same_reconstruction(&self, other: &Self) -> bool {
+        self.samples == other.samples
+    }
+}
+
+impl IntraTileSyntax {
+    /// The [`SuperblockEdge`] of the coded superblock of `root`; call it
+    /// before the next superblock begins.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] for a node outside the frame.
+    pub fn superblock_edge(&mut self, root: PartitionNode) -> Result<SuperblockEdge> {
+        let (w, h) = root.dimensions()?;
+        let (row4, col4) = (root.row4(), root.col4());
+        let end = row4 + h / 4;
+        let rows = end.saturating_sub(SB_ROW_WINDOW_ABOVE_ROWS).max(row4)..end;
+        let cols = col4..col4 + w / 4;
+        let mut cells = Cells::default();
+        self.visit_cells(&rows, &cols, Some(&mut cells), &Cells::default());
+        Ok(SuperblockEdge {
+            samples: self
+                .recon
+                .save_samples((col4 * 4, row4 * 4, w, h), self.subsampling())?,
+            inter: self
+                .inter
+                .as_ref()
+                .map(|inter| inter.tile.edge(rows.clone(), cols.clone())),
+            cdfs: self.cdfs.clone(),
+            rows,
+            cols,
+            cells,
+        })
+    }
+
+    /// Publishes `edge`, taken from another facade of the same tile, as if
+    /// this facade had coded its superblock; call it after
+    /// [`Self::begin_superblock`] of a superblock in the next superblock row,
+    /// before any leaf of it. The CDFs stay.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Unsupported`] when the edge does not fit
+    /// this facade's row windows.
+    pub fn import_edge(&mut self, edge: &SuperblockEdge) -> Result<()> {
+        self.enter_rows(edge.rows.end);
+        if !self.visit_cells(&edge.rows, &edge.cols, None, &edge.cells) {
+            return Err(EncoderSyntaxError::Unsupported(
+                "a superblock edge outside the row windows",
+            ));
+        }
+        self.recon.restore_samples(&edge.samples)?;
+        if let (Some(inter), Some(grid)) = (&mut self.inter, &edge.inter) {
+            inter.tile.import_edge(grid);
+        }
+        Ok(())
+    }
+
+    /// Sets the CDFs to those of `edge`, or with `blend` to three parts the
+    /// current CDFs and one part those of `edge`; call it between superblocks.
+    pub fn take_edge_cdfs(&mut self, edge: &SuperblockEdge, blend: bool) {
+        if blend {
+            self.cdfs.blend_three_to_one(&edge.cdfs);
+        } else {
+            self.cdfs.copy_from(&edge.cdfs);
         }
     }
 }

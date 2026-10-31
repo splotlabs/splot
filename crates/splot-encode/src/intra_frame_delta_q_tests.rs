@@ -9,7 +9,7 @@ use super::*;
 /// Asymmetric qindex offsets, with the matching lambda log2, for each
 /// superblock of `config`: large jumps both ways, zeros, and offsets that
 /// the `delta_q_res` step does not divide.
-fn offsets(config: &Config, seed: usize) -> Vec<(i16, i16)> {
+pub(super) fn offsets(config: &Config, seed: usize) -> Vec<(i16, i16)> {
     let sb = if config.preset.params().max_block_log2 >= 7 {
         128
     } else {

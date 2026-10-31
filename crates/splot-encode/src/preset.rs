@@ -351,6 +351,15 @@ pub struct PresetParams {
     /// The luma and chroma intra shortlists of a leaf in an inter frame,
     /// as `intra_modes` is for intra frames.
     pub mds_inter_frame_intra: u8,
+    /// Wavefront search: the superblocks of one tile search in parallel, each
+    /// once its left and top-right neighbours are committed, and price from
+    /// CDFs averaged three to one from those two neighbours; one writer codes
+    /// them in raster order with the exact CDFs. Superblock qindex targets
+    /// stay on the `delta_q_res` steps of `base_q_idx`, where each row starts.
+    /// Off searches in raster order from the exact running CDFs. On at
+    /// p7-p10 only (2026-10-31, vs main d2bedf697, niklas f10): p8 +0.72% BD
+    /// for 2x wall time at 8 threads; p6 +0.51% with no 1-thread saving.
+    pub wavefront: bool,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -716,6 +725,9 @@ preset_table! {
         mds0_budgets:          [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
         mds_inter_frame_intra: [   13,    13,    12,    10,     9,     8,     3,     3,     3,     3,     2],
     }
+    threading {
+        wavefront:             [false, false, false, false, false, false, false,  true,  true,  true,  true],
+    }
 }
 
 /// [`PRESETS`] with the screen-content tools on and SDP off, for a sequence
@@ -870,6 +882,7 @@ mod tests {
             assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.interintra <= slow.interintra);
             assert!(fast.bawp <= slow.bawp);
+            assert!(fast.wavefront >= slow.wavefront);
             assert!(
                 fast.mds0_budgets
                     .iter()

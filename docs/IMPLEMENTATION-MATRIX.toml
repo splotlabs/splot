@@ -6939,6 +6939,38 @@ commands = ["cargo test -p splot-encode reference_intra --locked", "SPLOT_AVM_DE
 fixtures = []
 diagnostics = []
 
+[[feature]]
+id = "ENC-WAVEFRONT-SEARCH"
+name = "Wavefront superblock search inside one tile"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.20.2.1", "8.2.4"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/wavefront.rs"
+change_id = "enc-wavefront"
+owner = "encoder"
+risk = "medium"
+notes = "B7 part 1. Encoder strategy; no new syntax. Preset field `wavefront`, on at p7-p10 and off at p0-p6 (2026-10-31 decision: with the reference intra skip it costs niklas p6 +0.51%, no 1-thread saving, and p6 is the mission metric; fast rows take it for wall time): each superblock row searches on a fresh facade once its left and top-right neighbours are committed, imports the bottom edge (row-window cells, reconstruction, end CDFs) of the row above through `SuperblockEdge`, and prices from its own CDFs averaged 3:1 with the top-right superblock's by the tile-average arithmetic of § 8.2.4. One writer codes the tile in raster order with the exact CDFs and replays the committed transform decisions; tests check its reconstruction equals the row facade's for every superblock. Output does not depend on the thread count. Measured 2026-10-31 vs main 64d029cef, f10 p6 single tile: niklas +0.27% BD (CPU 0.995x), paris +0.25% (1.003x), park_joy +0.00% (one superblock row), paris p10 -0.10%; after the reference intra skip (vs main d2bedf697, rows on at p6): niklas +0.51% (CPU 1.005x), paris +0.19% (1.009x). niklas p6 by `ref_intra_margin`, wavefront off/on: margin 1 (default) 0.00%/+0.51%, margin 255 0.00%/+0.27%: the extra +0.24% is the skip chaining the changed intra choices, not a lost handover. niklas p8 +0.72% (CPU 1.003x). niklas 720p 60 frames p6 qp 140 wall time, threads 1/2/4/8: wavefront 1313/666/513/472 s, main 1248/935/1020/969 s (one run each, machine load 5-12; the 1-thread wall gap is load noise, user CPU was +1.6% and measure.py CPU 0.995-1.009x): 2.78x at 8 threads over 1 thread (2.65x over main 1 thread), 2.05x over main at 8 threads. The B7 target (>= 5x) is missed (2026-10-31: 2.78x at 8 threads): 10x6 superblocks of 128x128 give a critical path of 20 of 60 superblocks, so one frame gets at most about 3x; frames whose references are partly coded (B7 part 2) are needed. Off rows are byte-identical. Observed 2026-10-31, not fixed: `loop_filter::Recording` does not override `code_chroma_pair`, so the final write may code chroma without CCTX (CCTX is off in every row)."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "partial"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_frame_wavefront_tests.rs::wavefront_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_wavefront_tests.rs::avm_decodes_wavefront_streams_like_splot", "crates/splot-encode/src/wavefront.rs::tests::graph_runs_each_node_after_its_predecessors_on_any_pool", "crates/splot-encode/src/wavefront.rs::tests::graph_stops_at_an_error", "crates/splot-parallel/src/pool.rs::tests::scope_waits_for_nested_spawns", "crates/splot-decode/src/prediction/inter/find_mv_stack/neighbour_grid_tests.rs::an_edge_imports_its_cells_leaves_and_models_into_another_grid", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
+commands = ["cargo test -p splot-encode wavefront --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored"]
+fixtures = []
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------

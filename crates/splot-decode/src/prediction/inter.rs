@@ -2175,10 +2175,10 @@ pub(crate) use block::{
 };
 pub(crate) use compound::CompoundYMode;
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
-pub(crate) use find_mv_stack::TIP_REF_FRAME;
 pub(crate) use find_mv_stack::{
     FixedStack, MotionFieldLayout, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
 };
+pub(crate) use find_mv_stack::{GridEdge, TIP_REF_FRAME};
 #[cfg(debug_assertions)]
 pub(crate) use find_mv_stack::{RefMvBank, WarpParamBank};
 pub(crate) use frame_products::{
