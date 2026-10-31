@@ -181,6 +181,8 @@ pub(crate) struct EncoderInterTile {
     /// `interpolation_filter == SWITCHABLE`.
     interp_switchable: bool,
     num_same_ref_compound: u8,
+    /// The reference pairs a compound block can code, derived once.
+    compound_pairs: Vec<(i8, i8)>,
     sb_h4: usize,
     mi_rows: usize,
     mi_cols: usize,
@@ -288,7 +290,7 @@ impl EncoderInterTile {
             current_order_hint,
             ref_frame_idx.len(),
         );
-        Ok(Self {
+        let mut tile = Self {
             grid,
             warp_bank: WarpParamBank::new(),
             ref_mv_bank: seq_inter.enable_refmvbank.then(RefMvBank::new),
@@ -314,6 +316,7 @@ impl EncoderInterTile {
             interp_switchable: inter.interpolation_filter
                 == Some(FrameInterpolationFilter::Switchable),
             num_same_ref_compound: seq_inter.num_same_ref_compound,
+            compound_pairs: Vec::new(),
             sb_h4,
             mi_rows,
             mi_cols,
@@ -327,7 +330,9 @@ impl EncoderInterTile {
             tip_trial_records: Vec::new(),
             tip_scratch: super::tip::TipReconstructScratch::default(),
             intrabc: None,
-        })
+        };
+        tile.compound_pairs = tile.derive_compound_pairs();
+        Ok(tile)
     }
 
     /// Sets `tip_global_wtd_index` and returns the previous value.

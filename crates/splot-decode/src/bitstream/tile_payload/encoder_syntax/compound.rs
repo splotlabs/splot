@@ -132,8 +132,8 @@ impl IntraTileSyntax {
             inter
                 .tile
                 .compound_pairs()
-                .into_iter()
-                .map(|(first, second)| (first as usize, second as usize))
+                .iter()
+                .map(|&(first, second)| (first as usize, second as usize))
                 .collect()
         })
     }

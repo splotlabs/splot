@@ -77,6 +77,7 @@ impl EncoderInterTile {
             blend_tools: (false, false),
             interp_switchable: false,
             num_same_ref_compound: 0,
+            compound_pairs: Vec::new(),
             sb_h4,
             mi_rows,
             mi_cols,
