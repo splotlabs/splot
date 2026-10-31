@@ -102,6 +102,8 @@ pub(crate) struct TrialCoder<'a, 'b> {
     /// The luma prediction SATD and mode and filter rate of the inter
     /// candidates of the current leaf whose search measured them.
     scored: Vec<(InterPrediction, u64, Bits)>,
+    /// The samples of one transform block, reused across blocks.
+    samples: Vec<u16>,
 }
 
 impl<'a, 'b> TrialCoder<'a, 'b> {
@@ -121,6 +123,7 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             luma: HashMap::new(),
             compound: compound_search::CompoundScratch::default(),
             scored: Vec::new(),
+            samples: Vec::new(),
         }
     }
 
@@ -140,10 +143,8 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         )?;
         let mut distortion = 0;
         for tx in blocks.iter().filter(|tx| planes.contains(&tx.plane)) {
-            distortion += self
-                .coder
-                .source
-                .sse(tx, &self.syntax.reconstruction(tx)?)?;
+            self.syntax.reconstruction_into(tx, &mut self.samples)?;
+            distortion += self.coder.source.sse(tx, &self.samples)?;
         }
         Ok(RdCost {
             distortion,
@@ -168,7 +169,8 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
             if let Some(slot) = cost.get_mut(tx.plane)
                 && planes.contains(&tx.plane)
             {
-                *slot += self.coder.source.satd(tx, &self.syntax.predict(index)?)?;
+                self.syntax.predict_into(index, &mut self.samples)?;
+                *slot += self.coder.source.satd(tx, &self.samples)?;
             }
         }
         Ok(cost)
