@@ -148,26 +148,66 @@ impl KeyFrameTileWriter {
         })
     }
 
+    /// The facade, for superblocks coded on several facades.
+    pub(crate) const fn syntax_mut(&mut self) -> &mut IntraTileSyntax {
+        &mut self.syntax
+    }
+
+    /// The `(rows, columns)` of superblocks of the tile.
+    pub(crate) const fn superblock_grid(&self) -> (usize, usize) {
+        (self.superblocks / self.sb_cols, self.sb_cols)
+    }
+
+    /// Moves to the first superblock of superblock row `row`, for a writer
+    /// that only commits ([`Self::commit_superblock`]) from there on.
+    pub(crate) const fn start_at_row(&mut self, row: usize) {
+        self.written = row * self.sb_cols;
+    }
+
     /// Writes the next superblock. After an error the writer state is partial; drop it.
     pub(crate) fn write_superblock(
         &mut self,
         decision: &SuperblockDecision,
         coder: &mut impl ResidualCoder,
     ) -> Result<()> {
+        self.code_superblock(decision, coder, true)
+    }
+
+    /// Codes the next superblock into the facade alone: adapting rates in
+    /// place of symbols, and no filter syntax.
+    pub(crate) fn commit_superblock(
+        &mut self,
+        decision: &SuperblockDecision,
+        coder: &mut impl ResidualCoder,
+    ) -> Result<()> {
+        self.code_superblock(decision, coder, false)
+    }
+
+    fn code_superblock(
+        &mut self,
+        decision: &SuperblockDecision,
+        coder: &mut impl ResidualCoder,
+        write: bool,
+    ) -> Result<()> {
         let root = self
             .next_superblock_root()
             .ok_or(TileWriterError::TileComplete)?;
         self.syntax.begin_superblock(root);
-        if self.syntax.sdp_roots(root).is_none() {
-            self.filters
-                .write_lr_units(&mut self.syntax, &mut self.symbols, root)?;
+        if write {
+            if self.syntax.sdp_roots(root).is_none() {
+                self.filters
+                    .write_lr_units(&mut self.syntax, &mut self.symbols, root)?;
+            }
+            Walk {
+                syntax: &mut self.syntax,
+                sink: &mut self.symbols,
+                filters: Some(&mut self.filters),
+            }
+            .write_node(root, &decision.tree, coder)?;
+        } else {
+            let mut sink = crate::rd::coeff_rate::RateSink::adapting();
+            Walk::trial(&mut self.syntax, &mut sink).write_node(root, &decision.tree, coder)?;
         }
-        Walk {
-            syntax: &mut self.syntax,
-            sink: &mut self.symbols,
-            filters: Some(&mut self.filters),
-        }
-        .write_node(root, &decision.tree, coder)?;
         self.written += 1;
         Ok(())
     }

@@ -33,6 +33,7 @@
 //! # Ok(()) }
 //! ```
 
+pub use rayon::Scope;
 pub use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
     IntoParallelRefMutIterator, ParallelBridge, ParallelIterator,
