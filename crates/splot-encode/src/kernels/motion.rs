@@ -239,26 +239,29 @@ mod tests {
 
     proptest! {
         /// Different source and reference samples and strides, every grid
-        /// shape up to 3x3, and slices one sample short of the grid.
+        /// shape up to 3x3, and a source or reference slice one sample short
+        /// of the grid.
         #[test]
         fn sads_match_scalar(
             (cols, rows, src_stride, ref_stride) in (1usize..4, 1usize..4, 0usize..5, 0usize..9),
             seed in samples(4096),
-            short in any::<bool>(),
+            short in 0u8..3,
         ) {
             let src_stride = cols * 8 + src_stride;
             let ref_stride = cols * 8 + WAYS - 1 + ref_stride;
-            let src: Vec<u8> = seed.iter().take(rows * 8 * src_stride).copied().collect();
+            let mut src: Vec<u8> = seed.iter().take(rows * 8 * src_stride).copied().collect();
             let mut refs: Vec<u8> =
                 seed.iter().rev().map(|s| s.wrapping_mul(7) ^ 0x5a).take(rows * 8 * ref_stride).collect();
-            if short {
-                refs.truncate((rows * 8 - 1) * ref_stride + cols * 8 + WAYS - 2);
+            match short {
+                1 => src.truncate((rows * 8 - 1) * src_stride + cols * 8 - 1),
+                2 => refs.truncate((rows * 8 - 1) * ref_stride + cols * 8 + WAYS - 2),
+                _ => {}
             }
             let (mut scalar, mut simd) = (vec![[1; WAYS]; cols * rows], vec![[2; WAYS]; cols * rows]);
             sad8x8_x4_scalar((&src, src_stride), (&refs, ref_stride), cols, &mut scalar);
             sad8x8_x4_simd((&src, src_stride), (&refs, ref_stride), cols, &mut simd);
             prop_assert_eq!(&scalar, &simd);
-            prop_assert_eq!(short, scalar[0][0] == u32::MAX);
+            prop_assert_eq!(short > 0, scalar.iter().all(|sads| *sads == [u32::MAX; WAYS]));
         }
 
         /// Odd grid sides, short outputs, and sums that wrap.
