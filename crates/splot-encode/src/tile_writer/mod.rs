@@ -458,6 +458,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                 coeffs::write_symbol(sink, cdf, value)
             })?;
         let eobs = self.write_residual(&blocks, &levels, &planes)?;
+        coder.recycle_levels(levels);
         if planes == (0..3) {
             self.syntax.publish_intra_leaf(leaf, modes)?;
             if let Some(filters) = self.filters.as_deref_mut() {
@@ -499,6 +500,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                 })?;
             self.write_residual(&blocks, &levels, &(0..3))?;
         }
+        coder.recycle_levels(levels);
         if let Some(filters) = self.filters.as_deref_mut() {
             filters.record_inter_leaf(self.syntax, leaf, skip)?;
         }
@@ -530,6 +532,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                 })?;
             self.write_residual(&blocks, &levels, &(0..3))?;
         }
+        coder.recycle_levels(levels);
         if let Some(filters) = self.filters.as_deref_mut() {
             filters.record_inter_leaf(self.syntax, leaf, skip)?;
         }

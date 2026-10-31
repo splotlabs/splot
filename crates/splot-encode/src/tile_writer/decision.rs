@@ -169,6 +169,10 @@ pub(crate) trait ResidualCoder {
         ])
     }
 
+    /// Takes back the level buffers of a written leaf for later blocks; the
+    /// default drops them.
+    fn recycle_levels(&mut self, _levels: Vec<Vec<i32>>) {}
+
     /// The row-major color map of `palette` over the luma of `leaf`, one
     /// index per sample; the default refuses palette leaves.
     fn palette_map(&mut self, _leaf: &LeafBlock, _palette: &Palette) -> Result<&[u8]> {

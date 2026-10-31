@@ -56,6 +56,8 @@ use crate::tx_choice;
 const TCQ_LAMBDA_PERCENT: u64 = 60;
 /// Quantizer deadzone in Q8 (`128` rounds to nearest).
 const DEADZONE_ROUNDING_Q8: u32 = 96;
+/// The most unused level buffers a coder keeps.
+const SPARE_LEVEL_BUFFERS: usize = 16;
 /// `avg_cdf_type` of a stream that carries CDFs: `true` averages the saved
 /// CDFs across tiles, `false` blends the primary reference's CDFs with a
 /// second reference's.
@@ -879,6 +881,8 @@ pub(crate) struct SourceResidualCoder<'a> {
     scratch: [Vec<i32>; 3],
     /// The U and V coefficients of a CCTX trial.
     pair: [Vec<i32>; 2],
+    /// Level buffers of decisions that lost a trial, for the next blocks.
+    spare_levels: Vec<Vec<i32>>,
     /// The row costs and the trellis buffers reused across blocks.
     rates: (RowCaches, TcqScratch),
     pub(crate) palette: PaletteSearch,
@@ -912,6 +916,7 @@ impl<'a> SourceResidualCoder<'a> {
             quadrants: None,
             scratch: Default::default(),
             pair: Default::default(),
+            spare_levels: Vec::new(),
             rates: Default::default(),
             palette: PaletteSearch::default(),
             intrabc: None,
@@ -920,6 +925,12 @@ impl<'a> SourceResidualCoder<'a> {
 }
 
 impl ResidualCoder for SourceResidualCoder<'_> {
+    fn recycle_levels(&mut self, levels: Vec<Vec<i32>>) {
+        for levels in levels {
+            self.recycle(levels);
+        }
+    }
+
     fn palette_map(
         &mut self,
         leaf: &LeafBlock,
@@ -967,42 +978,46 @@ impl ResidualCoder for SourceResidualCoder<'_> {
             if count == 1 && !ist {
                 self.scalar = scalar;
                 if scalar_types {
+                    self.recycle(decision.levels);
                     return self.code(syntax, &tx, prediction);
                 }
                 return Ok(decision);
             }
-            let mut trials = vec![decision];
+            let mut ist_trial = None;
             if ist {
                 let ist = self.ist_choice(syntax, &tx, prediction, ist_sets)?;
                 if ist != Ist::OFF {
                     let tx = TransformBlock { ist, ..tx };
-                    trials.push(self.code(syntax, &tx, prediction)?);
+                    ist_trial = Some(self.code(syntax, &tx, prediction)?);
                 }
             }
-            for decision in trials {
+            for decision in core::iter::once(decision).chain(ist_trial) {
                 let coded = TransformBlock {
                     ist: decision.ist,
                     ..tx
                 };
-                if let Some(cost) = self.luma_cost(syntax, &coded, prediction, &decision.levels)?
-                    && best.as_ref().is_none_or(|(best_cost, _)| cost < *best_cost)
-                {
-                    best = Some((cost, decision));
+                let cost = self.luma_cost(syntax, &coded, prediction, &decision.levels)?;
+                let lost = match cost {
+                    Some(cost) if best.as_ref().is_none_or(|(best_cost, _)| cost < *best_cost) => {
+                        best.replace((cost, decision)).map(|(_, old)| old)
+                    }
+                    _ => Some(decision),
+                };
+                if let Some(lost) = lost {
+                    self.recycle(lost.levels);
                 }
             }
         }
         self.scalar = scalar;
         let (_, decision) = best.ok_or(TileWriterError::Shape("no luma transform type"))?;
         if scalar_types {
-            return self.code(
-                syntax,
-                &TransformBlock {
-                    tx_type: decision.tx_type,
-                    ist: decision.ist,
-                    ..*tx
-                },
-                prediction,
-            );
+            let tx = TransformBlock {
+                tx_type: decision.tx_type,
+                ist: decision.ist,
+                ..*tx
+            };
+            self.recycle(decision.levels);
+            return self.code(syntax, &tx, prediction);
         }
         Ok(decision)
     }
@@ -1097,6 +1112,13 @@ impl ResidualCoder for SourceResidualCoder<'_> {
 }
 
 impl SourceResidualCoder<'_> {
+    /// Keeps the buffer of levels no decision holds for a later block.
+    fn recycle(&mut self, levels: Vec<i32>) {
+        if self.spare_levels.len() < SPARE_LEVEL_BUFFERS {
+            self.spare_levels.push(levels);
+        }
+    }
+
     /// The levels of `u` and `v` rotated by the CCTX that leaves V the least
     /// energy, and that `cctx_type` (as `[u, v, [cctx]]`); `None` when no
     /// rotation leaves less than the smaller plain plane.
@@ -1194,7 +1216,9 @@ impl SourceResidualCoder<'_> {
         let len = coeffs.len();
         dequant.resize(len, 0);
         let use_tcq = syntax.uses_tcq(tx);
-        let mut levels = vec![0; len];
+        let mut levels = self.spare_levels.pop().unwrap_or_default();
+        levels.clear();
+        levels.resize(len, 0);
         let block = RdoqBlock {
             dc_q2: params.dc_quant,
             ac_q2: params.ac_quant,
