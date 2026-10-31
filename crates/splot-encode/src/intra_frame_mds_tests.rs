@@ -5,7 +5,9 @@
 //! shortlist.
 
 use super::*;
-use crate::mode_decision::{INTRA_SKIPPED, MDS0_PRUNED, MDS1_PRUNED, PD0_PASSES};
+use crate::mode_decision::{
+    CHAINED_REFERENCES, INTRA_SKIPPED, MDS0_PRUNED, MDS1_PRUNED, PD0_PASSES,
+};
 use crate::preset::PresetParams;
 
 /// Preset 6 searched in one pass, with MDS0 `budgets` and an inter-frame
@@ -253,12 +255,18 @@ fn reference_intra() -> &'static PresetParams {
 /// the intra search, in frames that later frames reference, with deblocking
 /// and CDEF on; the statistics come from the coded trees, so the stream
 /// decodes to the encoder recon and codes the same bytes on 1, 2 and 8
-/// threads. With the skip off no leaf skips.
+/// threads. Frames read references that themselves skipped; with the skip
+/// off no leaf skips and the stream differs.
 #[test]
 fn reference_intra_skip_streams_decode_on_any_thread_count() {
     INTRA_SKIPPED.set(0);
-    let (one, expected, cores, _) = staged_stream(reference_intra(), 200, 1);
+    CHAINED_REFERENCES.set(0);
+    let (one, expected, cores, _) = staged_stream(reference_intra(), 230, 1);
     assert!(INTRA_SKIPPED.get() > 0, "no leaf skipped the intra search");
+    assert!(
+        CHAINED_REFERENCES.get() > 0,
+        "no frame read a reference that skipped"
+    );
     assert!(cores.len() > 2 && cores.iter().any(|core| core.inter.is_some()));
     assert!(cores.iter().any(|core| {
         core.deblocking_filter_params
@@ -273,7 +281,7 @@ fn reference_intra_skip_streams_decode_on_any_thread_count() {
     assert_same_samples(&decode(&one), &expected, "reference intra skip");
     for threads in [2, 8] {
         assert!(
-            staged_stream(reference_intra(), 200, threads).0 == one,
+            staged_stream(reference_intra(), 230, threads).0 == one,
             "{threads} threads"
         );
     }
@@ -282,8 +290,9 @@ fn reference_intra_skip_streams_decode_on_any_thread_count() {
         ref_intra_margin: u8::MAX,
         ..*reference_intra()
     }));
-    staged_stream(off, 200, 1);
+    let (unskipped, ..) = staged_stream(off, 230, 1);
     assert_eq!(INTRA_SKIPPED.get(), 0);
+    assert!(unskipped != one, "the skip coded the same stream");
 }
 
 /// AVM decodes the stream with the reference-statistics intra skip like
@@ -295,7 +304,7 @@ fn avm_decodes_reference_intra_skip_streams_like_splot() {
         return;
     };
     INTRA_SKIPPED.set(0);
-    let (units, ..) = staged_stream(reference_intra(), 200, 1);
+    let (units, ..) = staged_stream(reference_intra(), 230, 1);
     assert!(INTRA_SKIPPED.get() > 0);
     let avm = avm_decode(
         &avmdec,

@@ -80,6 +80,9 @@ thread_local! {
     /// Leaves that skipped the intra search by the reference statistics on
     /// this thread.
     pub(crate) static INTRA_SKIPPED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// Frames on this thread that read reference intra cells of a frame
+    /// that itself skipped intra searches.
+    pub(crate) static CHAINED_REFERENCES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// First partition passes run on this thread.
     pub(crate) static PD0_PASSES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// Candidates that MDS1 dropped on this thread.
@@ -1455,7 +1458,8 @@ impl PartitionSearch for TrialCoder<'_, '_> {
                 leaf_rect(&leaf).is_ok_and(|rect| !cells.near(rect, self.preset.ref_intra_margin))
             });
         #[cfg(test)]
-        INTRA_SKIPPED.set(INTRA_SKIPPED.get() + usize::from(skip_intra));
+        INTRA_SKIPPED
+            .set(INTRA_SKIPPED.get() + usize::from(self.syntax.intra_allowed(&leaf) && skip_intra));
         if self.syntax.intra_allowed(&leaf) && !skip_intra {
             candidates.push(self.intra_choice(node, &leaf, &start)?);
         }
