@@ -87,6 +87,8 @@ thread_local! {
     pub(crate) static PD0_PASSES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// Candidates that MDS1 dropped on this thread.
     pub(crate) static MDS1_PRUNED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// Chroma pairs that the final write coded with CCTX on this thread.
+    pub(crate) static CCTX_RECORDED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 /// The compound shortlist prices the syntax of this many times as many of
 /// its lowest-SATD candidates as it keeps.

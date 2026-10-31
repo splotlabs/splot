@@ -186,6 +186,16 @@ fn ist_frames_decode_to_the_encoder_recon_on_any_thread_count() {
 /// monochrome sequence has no chroma to code it for.
 #[test]
 fn cctx_frames_decode_to_the_encoder_recon_on_any_thread_count() {
+    crate::mode_decision::CCTX_RECORDED.set(0);
+    let (units, recon, _) = tool_stream(
+        (1, PixelFormat::Yuv420, BitDepth::Ten),
+        preset_with(|p| p.cctx = true),
+    );
+    assert!(
+        crate::mode_decision::CCTX_RECORDED.get() > 0,
+        "the final write coded no CCTX pair"
+    );
+    assert_same_samples(&decode(&units.concat()), &recon, "cctx");
     assert_tool_streams(preset_with(|p| p.cctx = true), preset_with(|_| {}), |seq| {
         seq.transform_quant_entropy.unwrap().enable_cctx
             || seq.general.chroma_format_idc.is_monochrome()
