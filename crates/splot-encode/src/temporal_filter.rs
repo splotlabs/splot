@@ -28,6 +28,8 @@
 //! its show-existing frame either way. Arithmetic is integer and per block,
 //! so the result does not depend on the thread count.
 
+use std::sync::Arc;
+
 use splot_parallel::WorkerPool;
 use splot_parallel::prelude::*;
 use splot_recon::BitDepth;
@@ -61,7 +63,7 @@ const MAX_ERROR: u32 = 1 << 20;
 /// One neighbour of the centre frame and the motion of the centre against it.
 struct Neighbour<'a> {
     frame: &'a SourceFrame,
-    motion: FrameMotion,
+    motion: Arc<FrameMotion>,
 }
 
 /// Whether frames of `plan` are filtered: key frames and hidden frames of
@@ -96,8 +98,12 @@ pub(crate) fn filter_frame(
     let centre_full = hme::full_level(centre);
     let neighbour = |other: u64| {
         let frame = sources(other)?;
-        let full = hme::full_level(frame);
-        let motion = lookahead.full_motion((display, other), (&centre_full, &full))?;
+        let motion = if let Some(kept) = lookahead.kept_motion((display, other)) {
+            kept
+        } else {
+            let full = hme::full_level(frame);
+            Arc::new(lookahead.full_motion((display, other), (&centre_full, &full))?)
+        };
         Some(Neighbour { frame, motion })
     };
     let mut open = [true, !key];

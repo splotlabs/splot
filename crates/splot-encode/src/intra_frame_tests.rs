@@ -12,7 +12,7 @@ use splot_decode::encoder_syntax::LeafBlock;
 
 use crate::config::{RateControlMode, TileLayout};
 use crate::encoder::Encoder;
-use crate::gop::GopFrame;
+use crate::gop::{GopFrame, GopStep};
 use crate::preset::{PRESETS, Preset, PresetParams, TcqFrames};
 use crate::rate_control::FrameType;
 use crate::test_support::{
@@ -447,11 +447,28 @@ impl FrameCoder for Recording {
     fn pool(&self) -> Option<splot_parallel::WorkerPool> {
         self.coder.pool()
     }
+
+    fn set_open_loop_motion(&mut self, motion: crate::lookahead::OpenLoopMotion) {
+        self.coder.set_open_loop_motion(motion);
+    }
 }
 
 /// Codes `frames` frames through the [`Encoder`]; returns the temporal units
 /// and the encoder reconstructions in display order.
 fn encode_stream(config: &Config, frames: u32) -> (Vec<Vec<u8>>, Vec<u8>) {
+    encode_frames(
+        config,
+        (0..frames).map(|seed| synthetic_frame(config, seed)),
+    )
+}
+
+/// [`encode_stream`] of `frames`.
+fn encode_frames(
+    config: &Config,
+    frames: impl Iterator<Item = SourceFrame>,
+) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let frames: Vec<SourceFrame> = frames.collect();
+    let count = frames.len() as u32;
     let recons = Arc::default();
     let coder = Recording {
         coder: IntraFrameCoder::new(config).unwrap(),
@@ -460,20 +477,19 @@ fn encode_stream(config: &Config, frames: u32) -> (Vec<Vec<u8>>, Vec<u8>) {
     };
     let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
     let mut packets = Vec::new();
-    for seed in 0..=frames {
-        if seed == frames {
-            encoder.flush().unwrap();
-        } else {
-            encoder.send_frame(synthetic_frame(config, seed)).unwrap();
+    for frame in frames.into_iter().map(Some).chain([None]) {
+        match frame {
+            Some(frame) => encoder.send_frame(frame).unwrap(),
+            None => encoder.flush().unwrap(),
         }
         while let Some(packet) = encoder.receive_packet().unwrap() {
             packets.push(packet);
         }
     }
     let pts: Vec<u64> = packets.iter().map(|packet| packet.pts).collect();
-    assert_eq!(pts, (0..u64::from(frames)).collect::<Vec<_>>());
+    assert_eq!(pts, (0..u64::from(count)).collect::<Vec<_>>());
     let coded: usize = packets.iter().map(|packet| packet.stats.len()).sum();
-    assert_eq!(coded, frames as usize);
+    assert_eq!(coded, count as usize);
     let expected = recons.lock().unwrap().values().flatten().copied().collect();
     let units = packets.into_iter().map(|packet| packet.data).collect();
     (units, expected)
@@ -1277,7 +1293,8 @@ fn search_frame_counting(
     let sb = writer.syntax().superblock_size4() * 4;
     let padded = PaddedSource::new(source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
     let lambda = Lambda::from_qindex(90, bit_depth).unwrap();
-    let motion = MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda).unwrap();
+    let motion =
+        MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda, Vec::new()).unwrap();
     let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, &coder.preset, lambda);
     let (luma, stride, width, height) = padded.luma();
     let bv_search = crate::intrabc::BvSearch::new(luma, stride, (width, height));
@@ -1575,3 +1592,32 @@ mod ext_partitions;
 mod sb256;
 #[path = "sdp_tests.rs"]
 mod sdp;
+
+/// The list references of a frame map to display indices from its order
+/// hints, which count from the last key frame; an unused reference maps to
+/// none.
+#[test]
+fn order_hints_map_references_to_display_pairs() {
+    let mut planner = crate::gop::GopPlanner::new(core::num::NonZeroU32::new(5).unwrap(), 4);
+    let plans: Vec<GopFrame> = [1, 4, 4]
+        .into_iter()
+        .flat_map(|len| planner.plan(len).unwrap())
+        .filter_map(|step| match step {
+            GopStep::Code(plan) => Some(plan),
+            GopStep::ShowExisting { .. } => None,
+        })
+        .collect();
+    let plan = |display| {
+        plans
+            .iter()
+            .find(|plan| plan.display_index == display)
+            .unwrap()
+    };
+    let pairs = |display, hints: &[u32]| reference_pairs(plan(display), hints).collect::<Vec<_>>();
+    assert_eq!(
+        pairs(3, &[2, 4, 0, u32::MAX]),
+        [Some((3, 2)), Some((3, 4)), Some((3, 0)), None]
+    );
+    assert_eq!(plan(7).order_hint, 2, "frame 5 is a key frame");
+    assert_eq!(pairs(7, &[1, 3]), [Some((7, 6)), Some((7, 8))]);
+}
