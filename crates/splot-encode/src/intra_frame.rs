@@ -898,8 +898,7 @@ pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) source: &'a PaddedSource,
     qindex: u32,
     pub(crate) bit_depth: BitDepth,
-    /// The search limits; a first partition pass swaps in lighter ones.
-    pub(crate) preset: PresetParams,
+    preset: &'a PresetParams,
     lambda: Lambda,
     /// A deadzone candidate trial, used when `full_trials` is 0 or to rank
     /// (MDS1): quantize with the deadzone and code `DCT_DCT`.
@@ -943,7 +942,7 @@ impl<'a> SourceResidualCoder<'a> {
             source,
             qindex,
             bit_depth,
-            preset: *preset,
+            preset,
             lambda,
             candidate: false,
             trial: false,
@@ -985,7 +984,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let count = if self.candidate {
             1
         } else {
-            tx_choice::tx_type_candidates(&self.preset).min(tx_types.len())
+            tx_choice::tx_type_candidates(self.preset).min(tx_types.len())
         };
         let inter = syntax.leaf_is_inter();
         let ist_sets = match (self.candidate, inter) {

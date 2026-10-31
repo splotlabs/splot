@@ -599,7 +599,7 @@ preset_table! {
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
-        pd_window:             [  255,   255,   255,   255,   255,   255,     2,     2,     2,     2,     2],
+        pd_window:             [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
         pd0_leaf_bits:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
     }
