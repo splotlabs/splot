@@ -99,9 +99,10 @@ pub struct PresetParams {
     pub loop_filter_search: u8,
     /// Frames per mini-GOP, `1..=32`: `1` codes every frame shown (IPPP);
     /// larger sizes code the last frame first as a hidden alt-ref and the
-    /// frames between hierarchically. `8` at p0-p9 (2026-11-01, CRF, keyint
-    /// 64, vs main 8de875fa1): p6 paris f30 -4.21% (16: -3.69%, 32: -3.58%)
-    /// at 0.94x CPU; p9 niklas f60 -1.31% (16: -1.27%, 32: +0.08%).
+    /// frames between hierarchically. `8` in every row (2026-11-01, CRF,
+    /// keyint 64, vs main 8de875fa1): p6 paris f30 -4.21% (16: -3.69%, 32:
+    /// -3.58%) at 0.94x CPU; p9 niklas f60 -1.31% (16: -1.27%, 32: +0.08%);
+    /// p10 paris f30 -31.27% against IPPP at 0.90x CPU.
     pub mini_gop_size: u8,
     /// The mini-GOP of VBR and CBR, at most `mini_gop_size`: their rate
     /// controllers pick one base qindex per mini-GOP, and niklas p9 VBR
@@ -715,9 +716,9 @@ preset_table! {
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {
-        mini_gop_size:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     1],
+        mini_gop_size:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         bitrate_mini_gop_size: [    8,     8,     8,     8,     8,     4,     4,     4,     2,     2,     1],
-        lookahead_frames:      [   16,    16,    16,    16,    16,     8,     8,     8,     8,     8,     2],
+        lookahead_frames:      [   16,    16,    16,    16,    16,     8,     8,     8,     8,     8,     8],
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         tf_key_frames:         [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     0],
         tf_key_strength:       [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
