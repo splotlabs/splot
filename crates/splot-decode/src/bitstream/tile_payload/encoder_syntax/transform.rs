@@ -29,6 +29,7 @@ use super::{
     EncoderSyntaxError, IntraTileSyntax, LeafBlock, Result, TransformBlock, TxType, rule, tx_log2,
 };
 use crate::pipeline::general_intra::luma_tx_partition_context;
+use crate::prediction::inter::FixedStack;
 
 pub use super::super::general_intra_residual::LumaTxPartition as TxPartition;
 
@@ -87,6 +88,25 @@ type Steps = [Option<Step>; MAX_STEPS];
 /// The most symbols one transform partition or type takes.
 const MAX_STEPS: usize = 3;
 const NO_STEPS: Steps = [None; MAX_STEPS];
+/// The distinct luma types a block can code with their symbols; at most one
+/// entry per [`TxType`].
+type TxTypeOptions = FixedStack<(TxType, Steps), 16>;
+
+/// `options` with `tx_type` and its `steps` when the type is not in it yet.
+fn push_new_type(options: &mut TxTypeOptions, tx_type: TxType, steps: Steps) -> Result<()> {
+    if options.iter().any(|&(seen, _)| seen == tx_type) || options.try_push((tx_type, steps)) {
+        Ok(())
+    } else {
+        Err(EncoderSyntaxError::Unsupported("transform type count"))
+    }
+}
+
+/// [`TxTypeOptions`] of the single type `tx_type` that codes no symbol.
+fn only_type(tx_type: TxType) -> TxTypeOptions {
+    let mut options = TxTypeOptions::filled((tx_type, NO_STEPS));
+    options.try_push((tx_type, NO_STEPS));
+    options
+}
 
 /// `steps` inline.
 fn inline_steps(steps: &[Step]) -> Result<Steps> {
@@ -150,13 +170,9 @@ impl IntraTileSyntax {
 
     /// The luma types of `tx` with `eob`: only an inferred IDTX for an intra
     /// FSC leaf.
-    fn luma_type_options(
-        &mut self,
-        tx: &TransformBlock,
-        eob: usize,
-    ) -> Result<Vec<(TxType, Steps)>> {
+    fn luma_type_options(&mut self, tx: &TransformBlock, eob: usize) -> Result<TxTypeOptions> {
         if self.planned_fsc() && !self.leaf_is_inter() {
-            return Ok(vec![(TxType::Idtx, NO_STEPS)]);
+            return Ok(only_type(TxType::Idtx));
         }
         self.luma_tx_type_options(tx, eob)
     }
@@ -169,8 +185,8 @@ impl IntraTileSyntax {
     pub fn allowed_luma_tx_types(&mut self, tx: &TransformBlock) -> Result<Vec<TxType>> {
         Ok(self
             .luma_type_options(tx, 2)?
-            .into_iter()
-            .map(|(tx_type, _)| tx_type)
+            .iter()
+            .map(|&(tx_type, _)| tx_type)
             .collect())
     }
 
@@ -185,7 +201,7 @@ impl IntraTileSyntax {
         eob: usize,
     ) -> Result<Option<TxType>> {
         let options = self.luma_type_options(tx, eob)?;
-        Ok(match options.as_slice() {
+        Ok(match &options[..] {
             [(tx_type, steps)] if steps.iter().all(Option::is_none) => Some(*tx_type),
             _ => None,
         })
@@ -206,7 +222,8 @@ impl IntraTileSyntax {
     ) -> core::result::Result<(), E> {
         let (_, steps) = self
             .luma_type_options(tx, eob)?
-            .into_iter()
+            .iter()
+            .copied()
             .find(|&(tx_type, _)| tx_type == tx.tx_type)
             .ok_or(EncoderSyntaxError::Unsupported(
                 "luma transform type for this block and eob",
@@ -438,11 +455,7 @@ impl IntraTileSyntax {
     /// Every type luma block `tx` with `eob` can carry and the symbols that
     /// select it, inverting `read_active_luma_transform_type`; one inferred
     /// `DCT_DCT` without symbols when `dct_forced`.
-    fn luma_tx_type_options(
-        &mut self,
-        tx: &TransformBlock,
-        eob: usize,
-    ) -> Result<Vec<(TxType, Steps)>> {
+    fn luma_tx_type_options(&mut self, tx: &TransformBlock, eob: usize) -> Result<TxTypeOptions> {
         if tx.plane != 0 {
             return Err(EncoderSyntaxError::Unsupported(
                 "coded transform type of a chroma block",
@@ -453,26 +466,33 @@ impl IntraTileSyntax {
         let tx_set = transform_set_from_flags(reduced, false, 0, tx.tx_size, is_inter)
             .map_err(rule("transform set"))?;
         if dct_forced(is_inter, 0, eob, false, reduced, tx_set) {
-            return Ok(vec![(TxType::DctDct, NO_STEPS)]);
+            return Ok(only_type(TxType::DctDct));
         }
+        let mut out = TxTypeOptions::filled((TxType::DctDct, NO_STEPS));
         if is_inter {
             let mut row_error = None;
-            let paths = inter_tx_type_symbols(tx.tx_size, tx_set, eob, |row| {
-                self.arity(row).unwrap_or_else(|error| {
-                    row_error.get_or_insert(error);
-                    0
-                })
-            })
+            let mut type_error = None;
+            inter_tx_type_symbols(
+                tx.tx_size,
+                tx_set,
+                eob,
+                |row| {
+                    self.arity(row).unwrap_or_else(|error| {
+                        row_error.get_or_insert(error);
+                        0
+                    })
+                },
+                |tx_type, steps| {
+                    let pushed = TxType::from_value(tx_type)
+                        .and_then(|tx_type| push_new_type(&mut out, tx_type, inline_steps(steps)?));
+                    if let Err(error) = pushed {
+                        type_error.get_or_insert(error);
+                    }
+                },
+            )
             .map_err(rule("transform type"))?;
-            if let Some(error) = row_error {
+            if let Some(error) = row_error.or(type_error) {
                 return Err(error);
-            }
-            let mut out: Vec<(TxType, Steps)> = Vec::new();
-            for (tx_type, steps) in paths {
-                let tx_type = TxType::from_value(tx_type)?;
-                if out.iter().all(|&(seen, _)| seen != tx_type) {
-                    out.push((tx_type, inline_steps(&steps)?));
-                }
             }
             if let Some(dct) = out
                 .iter()
@@ -483,13 +503,8 @@ impl IntraTileSyntax {
             return Ok(out);
         }
         let tx_size_sqr = tx_size_sqr(tx.tx_size)?;
-        let mut out: Vec<(TxType, Steps)> = Vec::new();
         let mut push = |tx_type: usize, steps: Steps| -> Result<()> {
-            let tx_type = TxType::from_value(tx_type)?;
-            if out.iter().all(|&(seen, _)| seen != tx_type) {
-                out.push((tx_type, steps));
-            }
-            Ok(())
+            push_new_type(&mut out, TxType::from_value(tx_type)?, steps)
         };
         if matches!(
             tx_set,

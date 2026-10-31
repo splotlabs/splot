@@ -1554,6 +1554,8 @@ mod inter_tx;
 mod intra_tools;
 #[path = "intra_frame_large_inter_tests.rs"]
 mod large_inter;
+#[path = "intra_frame_mds_tests.rs"]
+mod mds;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
 #[path = "intra_frame_refine_tests.rs"]

@@ -22,7 +22,9 @@ pub struct PresetParams {
     /// The smallest frame height, at least 64, that codes 256x256
     /// superblocks when `max_block_log2` is `8`.
     pub sb256_min_height: u16,
-    /// Number of luma intra modes tried per block, best-ranked first.
+    /// Number of luma intra modes, and of chroma modes, tried per block of
+    /// an intra frame, best-ranked first; inter frames take
+    /// `mds_inter_frame_intra`.
     pub intra_modes: u8,
     /// Partition search skips a block's remaining partitions once its unsplit
     /// cost does not exceed the best split cost so far.
@@ -82,7 +84,9 @@ pub struct PresetParams {
     pub loop_filter_search: u8,
     /// Frames per mini-GOP, `1..=8`: `1` codes every frame shown (IPPP);
     /// larger sizes code the last frame first as a hidden alt-ref and the
-    /// frames between hierarchically.
+    /// frames between hierarchically. `8` at p4 (2026-10-31): p4 with `4`
+    /// equalled p5 on paris f30 (Y +0.06%); with `8` it gains -0.69% vs p5
+    /// at the same CPU.
     pub mini_gop_size: u8,
     /// Frames the lookahead analyses before the next mini-GOP is coded, at
     /// least `mini_gop_size`; scene cuts and the temporal model see this far.
@@ -288,6 +292,13 @@ pub struct PresetParams {
     /// p0-p6 (2026-10-30, p6 vs main): park_joy -0.28%, paris -0.11%, niklas
     /// -0.26% for about 3% more CPU; p7-p10 are not measured.
     pub bawp: bool,
+    /// Staged mode decision: the inter candidates of a leaf that each class
+    /// (`[MVP, NEWMV, compound]`) keeps for the all-plane trials, lowest
+    /// luma prediction SATD plus mode rate first. `255` keeps every one.
+    pub mds0_budgets: [u8; 3],
+    /// The luma and chroma intra shortlists of a leaf in an inter frame,
+    /// as `intra_modes` is for intra frames.
+    pub mds_inter_frame_intra: u8,
 }
 
 /// The frames of [`PresetParams::tcq`], from none to all.
@@ -379,6 +390,16 @@ impl PresetParams {
             " (max_block_log2)",
         )?;
         check("intra_modes", self.intra_modes, 1, u8::MAX, "")?;
+        for budget in self.mds0_budgets {
+            check("mds0_budgets", budget, 1, u8::MAX, " per class")?;
+        }
+        check(
+            "mds_inter_frame_intra",
+            self.mds_inter_frame_intra,
+            1,
+            u8::MAX,
+            "",
+        )?;
         check("subpel_depth", self.subpel_depth, 0, 3, "")?;
         check("loop_filter_search", self.loop_filter_search, 0, 3, "")?;
         check("mini_gop_size", self.mini_gop_size, 1, 8, "")?;
@@ -456,6 +477,15 @@ impl FieldValue for bool {
     }
 }
 
+impl FieldValue for [u8; 3] {
+    const EXPECTED: &'static str = "three comma-separated integers in 0..=255, such as 6,2,4";
+    fn parse(value: &str) -> Option<Self> {
+        let mut values = value.split(',').map(u8::parse);
+        let parsed = [values.next()??, values.next()??, values.next()??];
+        values.next().is_none().then_some(parsed)
+    }
+}
+
 impl FieldValue for TcqFrames {
     const EXPECTED: &'static str = "Off, Base or All";
     fn parse(value: &str) -> Option<Self> {
@@ -514,8 +544,9 @@ macro_rules! preset_table {
 
             /// Sets the field `name` to `value`: an integer in the field's
             /// type range, `0`, `1`, `false` or `true` for a flag, a
-            /// [`TcqFrames`] variant name for `tcq`, and three comma-separated
-            /// flags for `mvd_tools`.
+            /// [`TcqFrames`] variant name for `tcq`, three comma-separated
+            /// flags for `mvd_tools`, and three comma-separated integers for
+            /// `mds0_budgets`.
             ///
             /// # Errors
             /// Returns [`PresetError::UnknownField`] when no field has this
@@ -612,10 +643,14 @@ preset_table! {
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {
-        mini_gop_size:         [    8,     8,     8,     8,     4,     4,     4,     4,     2,     2,     1],
-        lookahead_frames:      [   16,    16,    16,    16,     8,     8,     8,     8,     4,     4,     2],
+        mini_gop_size:         [    8,     8,     8,     8,     8,     4,     4,     4,     2,     2,     1],
+        lookahead_frames:      [   16,    16,    16,    16,    16,     8,     8,     8,     4,     4,     2],
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
+    }
+    mode_decision {
+        mds0_budgets:          [[255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [255; 3], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2], [4, 2, 2]],
+        mds_inter_frame_intra: [   13,    13,    12,    10,     9,     8,     3,     3,     3,     3,     2],
     }
 }
 
@@ -761,6 +796,13 @@ mod tests {
             assert!(fast.implicit_mask <= slow.implicit_mask);
             assert!(fast.interintra <= slow.interintra);
             assert!(fast.bawp <= slow.bawp);
+            assert!(
+                fast.mds0_budgets
+                    .iter()
+                    .zip(slow.mds0_budgets)
+                    .all(|(&f, s)| f <= s)
+            );
+            assert!(fast.mds_inter_frame_intra <= slow.mds_inter_frame_intra);
             assert!(fast.opfl <= slow.opfl);
             assert!(fast.tip_refinemv <= slow.tip_refinemv);
             assert!(
@@ -872,6 +914,8 @@ mod tests {
             (&[("mini_gop_size", "0")], "mini_gop_size"),
             (&[("mini_gop_size", "9")], "mini_gop_size"),
             (&[("intra_modes", "0")], "intra_modes"),
+            (&[("mds0_budgets", "4,0,2")], "mds0_budgets"),
+            (&[("mds_inter_frame_intra", "0")], "mds_inter_frame_intra"),
             (&[("gdf_candidates", "17")], "gdf_candidates"),
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),

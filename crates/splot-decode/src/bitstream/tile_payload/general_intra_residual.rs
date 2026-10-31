@@ -2229,21 +2229,19 @@ pub(crate) fn inter_chroma_plane_tx_type(
     )
 }
 
-/// One way to code a transform type: its `(CDF row, value)` symbols.
-pub(crate) type TxTypeSymbols = Vec<(TileCdfSelector, usize)>;
-
-/// Every type [`read_active_inter_transform_type`] returns for luma block
-/// `tx_size` of set `tx_set` with `eob`, and the symbols that select it, in
-/// symbol order; `arity` gives the symbol count of a row.
+/// Sends every type [`read_active_inter_transform_type`] returns for luma
+/// block `tx_size` of set `tx_set` with `eob`, and the `(CDF row, value)`
+/// symbols that select it, to `emit` in symbol order; `arity` gives the symbol
+/// count of a row.
 pub(crate) fn inter_tx_type_symbols(
     tx_size: usize,
     tx_set: usize,
     eob: usize,
     mut arity: impl FnMut(TileCdfSelector) -> usize,
-) -> Result<Vec<(usize, TxTypeSymbols)>, GeneralIntraResidualError> {
+    mut emit: impl FnMut(usize, &[(TileCdfSelector, usize)]),
+) -> Result<(), GeneralIntraResidualError> {
     let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
     let ctx = inter_tx_type_long_ctx(tx_size, eob)?;
-    let mut out = Vec::new();
     match tx_set {
         TX_SET_WIDE_64 | TX_SET_WIDE_32 | TX_SET_HIGH_64 | TX_SET_HIGH_32 => {
             let shape = long_tx_set_shape(tx_set);
@@ -2253,12 +2251,15 @@ pub(crate) fn inter_tx_type_symbols(
                     continue;
                 }
                 for index in 0..arity(row) {
-                    let mut steps = Vec::with_capacity(2);
-                    if !shape.long_side_dct_is_forced {
-                        steps.push((TileCdfSelector::IsLongSideDct { is_inter: 1 }, long_side));
-                    }
-                    steps.push((row, index));
-                    out.push((long_tx_type_from_index(shape, long_side, index), steps));
+                    let steps = [
+                        (TileCdfSelector::IsLongSideDct { is_inter: 1 }, long_side),
+                        (row, index),
+                    ];
+                    let skip = usize::from(shape.long_side_dct_is_forced);
+                    emit(
+                        long_tx_type_from_index(shape, long_side, index),
+                        &steps[skip..],
+                    );
                 }
             }
         }
@@ -2283,7 +2284,7 @@ pub(crate) fn inter_tx_type_symbols(
                 for value in 0..arity(second) {
                     if let Some(&tx_type) = inversion.get(first * INTER_TX_TYPE_INDEX_COUNT + value)
                     {
-                        out.push((tx_type, vec![(set, first), (second, value)]));
+                        emit(tx_type, &[(set, first), (second, value)]);
                     }
                 }
             }
@@ -2302,12 +2303,12 @@ pub(crate) fn inter_tx_type_symbols(
             };
             for value in 0..arity(row) {
                 if let Some(&tx_type) = inversion.get(value) {
-                    out.push((tx_type, vec![(row, value)]));
+                    emit(tx_type, &[(row, value)]);
                 }
             }
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 pub(crate) fn txb_skip_tx_size_ctx(tx_size: usize) -> usize {

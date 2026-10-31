@@ -37,6 +37,16 @@ impl<T: Default, const N: usize> FixedStack<T, N> {
     }
 }
 
+impl<T: Copy, const N: usize> FixedStack<T, N> {
+    /// An empty stack whose unused slots hold `fill`.
+    pub(crate) const fn filled(fill: T) -> Self {
+        Self {
+            entries: [fill; N],
+            len: 0,
+        }
+    }
+}
+
 impl<T, const N: usize> FixedStack<T, N> {
     pub(crate) fn try_push(&mut self, entry: T) -> bool {
         let Some(slot) = self.entries.get_mut(self.len) else {

@@ -8,6 +8,7 @@
 
 pub(crate) mod coeff_rate;
 pub(crate) mod partition;
+pub(crate) mod stages;
 
 use core::ops::{Add, AddAssign};
 
