@@ -49,10 +49,13 @@ pub struct PresetParams {
     /// The luma transform-type search and the luma trial before the chroma
     /// search run the TCQ trellis; off, they price TCQ blocks as plain levels.
     pub tcq_type_trellis: bool,
-    /// Candidate trials of the mode and transform-partition search run RDOQ
-    /// and the transform-type search too; off, they quantize with a deadzone
-    /// and code `DCT_DCT`, and only a leaf's final trial runs both.
-    pub full_trials: bool,
+    /// The candidates of a mode, transform-partition or leaf choice that
+    /// get a full trial, with RDOQ and the transform-type search: `0` gives
+    /// every candidate a `DCT_DCT` deadzone trial and only a leaf's final
+    /// trial runs both; `255` gives every candidate a full trial; between,
+    /// MDS1 ranks every candidate by the deadzone trial and this many of
+    /// the best get the full trial (MDS2) that decides.
+    pub full_trials: u8,
     /// Luma transform-type search depth: depth `d` tries the first `2 * d + 1`
     /// types a block offers, most probable first. `0` codes every intra luma
     /// block with `DCT_DCT` and signals no type (`reduced_tx_set = 2`).
@@ -586,7 +589,7 @@ preset_table! {
         dip:                   [false, false, false, false, false, false, false, false, false, false, false],
     }
     transform {
-        full_trials:           [ true,  true,  true,  true, false, false, false, false, false, false, false],
+        full_trials:           [    6,     6,     6,     4,     0,     0,     0,     0,     0,     0,     0],
         rdoq:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
         rdoq_every_type:       [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
         parity_hiding:         [false, false, false, false, false, false, false, false, false, false, false],
@@ -876,6 +879,7 @@ mod tests {
             ("gdf_candidates", "-1"),
             ("motion_range", "65536"),
             ("rdoq", "2"),
+            ("full_trials", "true"),
             ("rdoq", "yes"),
             ("tcq", "base"),
             ("mvd_tools", "1,0"),
