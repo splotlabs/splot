@@ -5,14 +5,16 @@
 //! shortlist.
 
 use super::*;
-use crate::mode_decision::{MDS0_PRUNED, MDS1_PRUNED};
+use crate::mode_decision::{MDS0_PRUNED, MDS1_PRUNED, PD0_PASSES};
 use crate::preset::PresetParams;
 
-/// Preset 6 with MDS0 `budgets` and an inter-frame intra shortlist of `intra`.
+/// Preset 6 searched in one pass, with MDS0 `budgets` and an inter-frame
+/// intra shortlist of `intra`.
 fn staged(budgets: [u8; 3], intra: u8) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         mds0_budgets: budgets,
         mds_inter_frame_intra: intra,
+        pd0_row: u8::MAX,
         ..*Preset::new(6).unwrap().params()
     }))
 }
@@ -139,6 +141,7 @@ const FULL_GOLDEN: (usize, u64) = (2963, 0x19dd_6acc_4a12_1993);
 fn full_trials_255_code_the_old_full_trial_stream() {
     let preset = Box::leak(Box::new(PresetParams {
         full_trials: u8::MAX,
+        pd0_row: u8::MAX,
         ..*Preset::new(6).unwrap().params()
     }));
     MDS1_PRUNED.set(0);
@@ -152,6 +155,42 @@ fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, &byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
     })
+}
+
+/// The two-pass partition decision of preset 6 runs a first pass in every
+/// inter-frame superblock, in frames that later frames reference, with
+/// deblocking and CDEF on; the stream decodes to the encoder recon and codes
+/// the same bytes on 1, 2 and 8 threads.
+#[test]
+fn two_pass_streams_decode_on_any_thread_count() {
+    let p6 = Preset::new(6).unwrap().params();
+    assert!(p6.pd0_row != u8::MAX);
+    PD0_PASSES.set(0);
+    let (one, expected, cores, _) = staged_stream(p6, 200, 1);
+    assert!(PD0_PASSES.get() > 0, "no first pass ran");
+    assert!(cores.len() > 2 && cores.iter().any(|core| core.inter.is_some()));
+    assert!(cores.iter().any(|core| {
+        core.deblocking_filter_params
+            .as_ref()
+            .is_some_and(|params| params.apply_deblocking_filter.iter().any(|&on| on))
+    }));
+    assert!(
+        cores
+            .iter()
+            .any(|core| core.cdef_params.is_some_and(|cdef| cdef.cdef_frame_enable))
+    );
+    assert_same_samples(&decode(&one), &expected, "two-pass partition");
+    for threads in [2, 8] {
+        assert!(
+            staged_stream(p6, 200, threads).0 == one,
+            "{threads} threads"
+        );
+    }
+    let single = Box::leak(Box::new(PresetParams {
+        pd0_row: u8::MAX,
+        ..*p6
+    }));
+    assert_ne!(staged_stream(single, 200, 1).0, one);
 }
 
 /// AVM decodes the staged stream like splot.

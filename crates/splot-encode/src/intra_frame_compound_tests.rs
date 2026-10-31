@@ -151,6 +151,7 @@ fn searched_stream(
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, [usize; 3]) {
     let preset: &'static PresetParams = Box::leak(Box::new(PresetParams {
         compound_types: 2,
+        pd0_row: u8::MAX,
         ..*Preset::new(6).unwrap().params()
     }));
     let mut config = config(136, 72, BitDepth::Ten, 6, qp);

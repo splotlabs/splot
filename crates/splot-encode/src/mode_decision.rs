@@ -23,9 +23,9 @@ use crate::intra_frame::codable_children;
 use crate::intra_frame::{PaddedSource, SourceResidualCoder};
 use crate::kernels::{BlockDims, kernels};
 use crate::motion_search::MotionSearch;
-use crate::preset::PresetParams;
+use crate::preset::{PRESETS, PresetParams};
 use crate::rd::coeff_rate::RateSink;
-use crate::rd::partition::PartitionSearch;
+use crate::rd::partition::{Guide, PartitionSearch, search_guided, search_partition};
 use crate::rd::stages::{CandidateClass, StageLimits};
 use crate::rd::{Bits, Lambda, RdCost};
 use crate::tile_writer::{
@@ -72,6 +72,8 @@ thread_local! {
 thread_local! {
     /// Inter candidates that MDS0 dropped on this thread.
     pub(crate) static MDS0_PRUNED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// First partition passes run on this thread.
+    pub(crate) static PD0_PASSES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// Candidates that MDS1 dropped on this thread.
     pub(crate) static MDS1_PRUNED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
@@ -1218,6 +1220,42 @@ pub(crate) fn quadrant_sse(
         *sse = kernels().sse(source, stride, predicted, w, dims);
     }
     Ok(out)
+}
+
+/// The partition tree of the superblock at `root`, searched with `preset`
+/// at `lambda`. With `preset.pd0_row`, a superblock of an inter frame first
+/// searches every partition with that row's leaf search, and that tree
+/// guides the regular search; intra frames search once, as a guided search
+/// lost 1.2% on park_joy p6 there.
+pub(crate) fn two_pass_partition<'b>(
+    syntax: &mut IntraTileSyntax,
+    coder: &mut SourceResidualCoder<'b>,
+    (preset, lambda): (&'b PresetParams, Lambda),
+    motion: Option<&MotionSearch>,
+    root: PartitionNode,
+) -> Result<PartitionTree> {
+    let Some(light) = PRESETS
+        .get(usize::from(preset.pd0_row))
+        .filter(|_| motion.is_some())
+        .map(|light| preset.first_pass(light))
+    else {
+        let mut trial = TrialCoder::new(syntax, coder, preset, lambda, motion);
+        return Ok(search_partition(&mut trial, root, preset, lambda)?.0);
+    };
+    let light = &light;
+    let start = syntax.snapshot(root)?;
+    #[cfg(test)]
+    PD0_PASSES.set(PD0_PASSES.get() + 1);
+    let own = core::mem::replace(&mut coder.preset, *light);
+    let first = {
+        let mut trial = TrialCoder::new(syntax, coder, light, lambda, motion);
+        search_partition(&mut trial, root, preset, lambda)
+    };
+    coder.preset = own;
+    let first = first?.0;
+    syntax.restore(&start)?;
+    let mut trial = TrialCoder::new(syntax, coder, preset, lambda, motion);
+    Ok(search_guided(&mut trial, root, preset, lambda, Guide::Tree(&first))?.0)
 }
 
 /// The luma rectangle `(x, y, width, height)` of `leaf`.

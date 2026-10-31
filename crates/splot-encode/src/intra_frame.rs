@@ -34,13 +34,12 @@ use crate::kernels::rdoq::{RdoqBlock, hide_parity, parity_moves, rdoq};
 use crate::kernels::tcq::{TcqScratch, tcq};
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
 use crate::loop_filter::{CodedTile, FilteredFrame, FirstPass, FrameDecisions, finish_frame};
-use crate::mode_decision::TrialCoder;
+use crate::mode_decision::two_pass_partition;
 use crate::motion_search::MotionSearch;
 use crate::palette::PaletteSearch;
 use crate::preset::{PresetParams, TcqFrames};
 use crate::rate_control::FrameType;
 use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, RowCaches, block_rate};
-use crate::rd::partition::search_partition;
 use crate::rd::{Bits, Lambda, RdCost};
 use crate::screen::is_screen_content;
 use crate::tile_writer::coeffs::eob;
@@ -556,8 +555,7 @@ impl IntraFrameCoder {
                 let (lambda, target) = lambda;
                 let tree = writer
                     .search_superblock(|syntax, root| {
-                        let mut trial = TrialCoder::new(syntax, &mut coder, preset, lambda, motion);
-                        Ok(search_partition(&mut trial, root, preset, lambda)?.0)
+                        two_pass_partition(syntax, &mut coder, (preset, lambda), motion, root)
                     })
                     .map_err(coding("superblock search"))?;
                 decisions
@@ -866,7 +864,8 @@ pub(crate) struct SourceResidualCoder<'a> {
     pub(crate) source: &'a PaddedSource,
     qindex: u32,
     pub(crate) bit_depth: BitDepth,
-    preset: &'a PresetParams,
+    /// The search limits; a first partition pass swaps in lighter ones.
+    pub(crate) preset: PresetParams,
     lambda: Lambda,
     /// A deadzone candidate trial, used when `full_trials` is 0 or to rank
     /// (MDS1): quantize with the deadzone and code `DCT_DCT`.
@@ -910,7 +909,7 @@ impl<'a> SourceResidualCoder<'a> {
             source,
             qindex,
             bit_depth,
-            preset,
+            preset: *preset,
             lambda,
             candidate: false,
             trial: false,
@@ -952,7 +951,7 @@ impl ResidualCoder for SourceResidualCoder<'_> {
         let count = if self.candidate {
             1
         } else {
-            tx_choice::tx_type_candidates(self.preset).min(tx_types.len())
+            tx_choice::tx_type_candidates(&self.preset).min(tx_types.len())
         };
         let inter = syntax.leaf_is_inter();
         let ist_sets = match (self.candidate, inter) {

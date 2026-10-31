@@ -449,3 +449,50 @@ fn early_exit_leaves_extended_shapes_to_the_margins() {
         "HORZ was tried"
     );
 }
+
+/// A guided search with window 0 codes the guide tree and evaluates only
+/// its leaves; an open window evaluates the leaves of the unguided search.
+#[test]
+fn a_guide_limits_the_searched_partitions() {
+    use crate::rd::partition::{Guide, search_guided};
+    let cost = |(x, y, w, h): Rect| RdCost {
+        distortion: u64::from(((x * 7 + y * 13) % 29 + 3) << (w + h)),
+        rate: Bits::whole(w + h),
+    };
+    let guide = PartitionTree::Split {
+        kind: Partition::Vert,
+        children: vec![
+            PartitionTree::Leaf(LeafChoice::DC),
+            PartitionTree::Split {
+                kind: Partition::Horz,
+                children: vec![
+                    PartitionTree::Leaf(LeafChoice::DC),
+                    PartitionTree::Leaf(LeafChoice::DC),
+                ],
+            },
+        ],
+    };
+    let root = (0, 0, 4, 4);
+    let exact = PresetParams {
+        pd_window: 0,
+        ..full_search()
+    };
+    let mut coder = Synthetic::new(16, cost);
+    let (tree, _) =
+        search_guided(&mut coder, root, &exact, unit_lambda(), Guide::Tree(&guide)).unwrap();
+    assert_eq!(tree, guide);
+    let mut evaluated: Vec<Rect> = coder.evaluated.keys().copied().collect();
+    evaluated.sort_unstable();
+    assert_eq!(evaluated, [(0, 0, 3, 4), (8, 0, 3, 3), (8, 8, 3, 3)]);
+
+    let open = PresetParams {
+        pd_window: 1,
+        ..exact
+    };
+    let mut guided = Synthetic::new(16, cost);
+    search_guided(&mut guided, root, &open, unit_lambda(), Guide::Tree(&guide)).unwrap();
+    let mut full = Synthetic::new(16, cost);
+    search_partition(&mut full, root, &full_search(), unit_lambda()).unwrap();
+    assert!(guided.leaf_evaluations > 3);
+    assert!(guided.leaf_evaluations < full.leaf_evaluations);
+}

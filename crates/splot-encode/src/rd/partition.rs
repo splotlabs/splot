@@ -98,11 +98,93 @@ pub(crate) fn search_partition<S: PartitionSearch>(
     preset: &PresetParams,
     lambda: Lambda,
 ) -> Result<(PartitionTree, RdCost), S::Error> {
-    search(coder, node, preset, lambda, &mut Memo::new(), true)
+    search_guided(coder, node, preset, lambda, Guide::Free(u8::MAX))
 }
 
-/// The tree each searched node chose, by node key and extended-shape mode.
-type Memo<N> = HashMap<(u64, bool), Vec<(N, PartitionTree)>>;
+/// [`search_partition`] limited by `guide`, the tree of a first pass (PD0):
+/// a node follows the guide's partition, and tries the others only within
+/// `preset.pd_window` binary levels of a guide leaf, below or above it.
+///
+/// # Errors
+/// Returns the coder's errors.
+pub(crate) fn search_guided<S: PartitionSearch>(
+    coder: &mut S,
+    node: S::Node,
+    preset: &PresetParams,
+    lambda: Lambda,
+    guide: Guide<'_>,
+) -> Result<(PartitionTree, RdCost), S::Error> {
+    search(coder, node, preset, lambda, &mut Memo::new(), true, guide)
+}
+
+/// What a guided search may try at a node.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Guide<'t> {
+    /// The first-pass tree of the node.
+    Tree(&'t PartitionTree),
+    /// Every partition, with this many binary levels of splits below; `u8::MAX`
+    /// is unlimited.
+    Free(u8),
+}
+
+impl Guide<'_> {
+    /// The guide of child `index` of `partition`, or `None` when the node may
+    /// not try `partition`.
+    fn child(self, partition: Partition, index: usize, window: u8) -> Option<Self> {
+        let free = |levels: u8| match levels {
+            u8::MAX => Some(Guide::Free(u8::MAX)),
+            0 => None,
+            levels => Some(Guide::Free(levels - 1)),
+        };
+        match self {
+            Guide::Free(levels) => free(levels),
+            Guide::Tree(PartitionTree::Split { kind, children }) if *kind == partition => Some(
+                children
+                    .get(index)
+                    .map_or(Guide::Free(u8::MAX), Guide::Tree),
+            ),
+            Guide::Tree(tree @ PartitionTree::Split { .. }) => {
+                (leaf_depth(tree) <= u32::from(window)).then_some(Guide::Free(0))
+            }
+            Guide::Tree(PartitionTree::Leaf(_)) => free(window),
+            Guide::Tree(PartitionTree::Sdp { .. }) => Some(Guide::Free(u8::MAX)),
+        }
+    }
+
+    /// A key that tells the guides of a node apart: the first-pass subtree
+    /// by address, a level budget by value.
+    fn memo_key(self) -> usize {
+        match self {
+            Guide::Tree(tree) => core::ptr::from_ref(tree).addr(),
+            Guide::Free(levels) => usize::from(levels),
+        }
+    }
+
+    /// Whether the node may code `NONE`.
+    fn allows_none(self, window: u8) -> bool {
+        match self {
+            Guide::Tree(tree @ PartitionTree::Split { .. }) => {
+                leaf_depth(tree) <= u32::from(window)
+            }
+            _ => true,
+        }
+    }
+}
+
+/// The binary levels from `tree` to its shallowest leaf.
+fn leaf_depth(tree: &PartitionTree) -> u32 {
+    match tree {
+        PartitionTree::Leaf(_) => 0,
+        PartitionTree::Split { children, .. } => {
+            1 + children.iter().map(leaf_depth).min().unwrap_or(0)
+        }
+        PartitionTree::Sdp { luma, .. } => leaf_depth(luma),
+    }
+}
+
+/// The tree each searched node chose, by node key, extended-shape mode and
+/// guide.
+type Memo<N> = HashMap<(u64, bool, usize), Vec<(N, PartitionTree)>>;
 
 fn search<S: PartitionSearch>(
     coder: &mut S,
@@ -111,11 +193,12 @@ fn search<S: PartitionSearch>(
     lambda: Lambda,
     memo: &mut Memo<S::Node>,
     extended: bool,
+    guide: Guide<'_>,
 ) -> Result<(PartitionTree, RdCost), S::Error> {
     if !coder.in_frame(node) {
         return Ok((PartitionTree::Leaf(LeafChoice::DC), RdCost::default()));
     }
-    let key = (coder.key(node), extended);
+    let key = (coder.key(node), extended, guide.memo_key());
     if let Some((_, tree)) = memo
         .get(&key)
         .and_then(|seen| seen.iter().find(|(seen, _)| *seen == node))
@@ -125,9 +208,24 @@ fn search<S: PartitionSearch>(
         return Ok((tree, cost));
     }
     if let Some((luma_root, chroma_root)) = coder.sdp_roots(node) {
-        let (luma, luma_cost) = search(coder, luma_root, preset, lambda, memo, extended)?;
+        let (luma_guide, chroma_guide) = match guide {
+            Guide::Tree(PartitionTree::Sdp { luma, chroma }) => {
+                (Guide::Tree(luma), Guide::Tree(chroma))
+            }
+            _ => (guide, guide),
+        };
+        let (luma, luma_cost) =
+            search(coder, luma_root, preset, lambda, memo, extended, luma_guide)?;
         coder.follow_luma(Some((luma_root, &luma)))?;
-        let chroma = search(coder, chroma_root, preset, lambda, memo, extended);
+        let chroma = search(
+            coder,
+            chroma_root,
+            preset,
+            lambda,
+            memo,
+            extended,
+            chroma_guide,
+        );
         coder.follow_luma(None)?;
         let (chroma, chroma_cost) = chroma?;
         let tree = PartitionTree::Sdp {
@@ -137,7 +235,11 @@ fn search<S: PartitionSearch>(
         memo.entry(key).or_default().push((node, tree.clone()));
         return Ok((tree, luma_cost + chroma_cost));
     }
-    let candidates = candidates(coder, node, preset, extended)?;
+    let candidates = guided(
+        candidates(coder, node, preset, extended)?,
+        guide,
+        preset.pd_window,
+    );
     let start = if candidates.len() > 1 {
         Some(coder.save(node, None)?)
     } else {
@@ -171,9 +273,13 @@ fn search<S: PartitionSearch>(
         } else {
             let mut trees = Vec::with_capacity(children.len());
             let mut cost = RdCost::default();
-            for &child in children {
+            for (index, &child) in children.iter().enumerate() {
                 let nested = extended && extended_shape(*partition).is_none();
-                let (tree, child_cost) = search(coder, child, preset, lambda, memo, nested)?;
+                let child_guide = guide
+                    .child(*partition, index, preset.pd_window)
+                    .unwrap_or(Guide::Free(0));
+                let (tree, child_cost) =
+                    search(coder, child, preset, lambda, memo, nested, child_guide)?;
                 trees.push(tree);
                 cost = cost + child_cost;
             }
@@ -251,6 +357,36 @@ fn recode<S: PartitionSearch>(
 }
 
 type Candidates<N> = Vec<(Partition, Vec<N>)>;
+
+/// The `candidates` that `guide` allows, `NONE` first and the guide's
+/// partition second so that the early exit weighs it, or all of them when
+/// it allows none or its partition is not among them.
+fn guided<N>(candidates: Candidates<N>, guide: Guide<'_>, window: u8) -> Candidates<N> {
+    if let Guide::Tree(PartitionTree::Split { kind, .. }) = guide
+        && !candidates.iter().any(|(partition, _)| partition == kind)
+    {
+        return candidates;
+    }
+    let allowed = |partition: Partition| match partition {
+        Partition::None => guide.allows_none(window),
+        _ => guide.child(partition, 0, window).is_some(),
+    };
+    if !candidates.iter().any(|&(partition, _)| allowed(partition)) {
+        return candidates;
+    }
+    let mut kept: Candidates<N> = candidates
+        .into_iter()
+        .filter(|&(partition, _)| allowed(partition))
+        .collect();
+    if let Guide::Tree(PartitionTree::Split { kind, .. }) = guide {
+        kept.sort_by_key(|(partition, _)| match partition {
+            Partition::None => 0,
+            partition if partition == kind => 1,
+            _ => 2,
+        });
+    }
+    kept
+}
 
 /// The codable partitions of `node` inside the preset's block limits, `NONE`
 /// first and `SPLIT` second, with their children; extended shapes only when
