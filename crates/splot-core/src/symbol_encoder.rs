@@ -64,6 +64,7 @@ macro_rules! write_symbol_to_cdf {
 /// Returns `None` for a row of fewer than two symbols or more than
 /// [`PROB_INC`] covers, and for a symbol past the end of the row.
 #[must_use]
+#[inline]
 pub fn symbol_split_q12(cdf: &[u16], symbol: usize) -> Option<u32> {
     let n = cdf.len().checked_sub(1)?;
     PROB_INC.get(n.checked_sub(2)?)?;
@@ -92,6 +93,7 @@ fn split_q12<T: CdfStorage>(cdf: &[T], n: usize, symbol: usize) -> u32 {
 /// Returns [`WriteError::InvalidSymbolCdf`] for a row of unsupported length
 /// or adaptation-rate index and [`WriteError::SymbolOutOfRange`] for a symbol
 /// outside it.
+#[inline]
 pub fn adapt_cdf_u16(cdf: &mut [u16], symbol: Symbol) -> WriteResult<()> {
     let shape = trusted_cdf_shape(cdf).map_err(|kind| WriteError::InvalidSymbolCdf { kind })?;
     let index = usize::from(symbol.get());
