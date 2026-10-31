@@ -5382,7 +5382,7 @@ spec_sections = []
 sources = []
 crate = "splot-encode"
 module = "crates/splot-encode/src/preset.rs"
-change_id = "enc-preset-set"
+change_id = "enc-ladder-p4"
 owner = "encoder"
 risk = "medium"
 notes = "Preset accepts 0..=10 (default 6) and maps to one column of the PRESETS table, one named line per PresetParams field. Every field is monotone from slow to fast. The same table generates PresetParams::set: Config::preset_overrides (CLI --preset-set FIELD=VALUE) sets any field by name after the preset and its screen-content switch; an unknown name, a value outside the field type, or a row outside the ranges of PresetParams::validate is a typed PresetError."
