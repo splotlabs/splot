@@ -5129,7 +5129,7 @@ module = "crates/splot-encode/src/rate_control.rs"
 change_id = "encoder-m4-rate-control"
 owner = "encoder"
 risk = "medium"
-notes = "Encoder strategy. Config::rate_control selects ConstantQp, Crf { crf } (base qindex 4 * crf plus the ENC-LOOKAHEAD-TPL offset), Vbr { bitrate_kbps } or Cbr { bitrate_kbps, buffer_ms }. Vbr and Cbr pick one base qindex per lookahead window so that the predicted bits of the window meet the budget, with the model bits = k * complexity / step(qindex) per key frame and mini-GOP layer class; k is learnt from coded bits. The step is the § 7.14.2 qlookup, which doubles every 24 qindex. VBR bounds its drift to 8 frame budgets; CBR wraps the VBR model, bounds drift to half the buffer and raises a frame's qindex until it fits the buffer. Encoder::with_rate_controller plugs in a custom RateController. Integer arithmetic only. CLI: --crf, --bitrate, --rc vbr|cbr. Frame-level only: no delta-q."
+notes = "Encoder strategy. Config::rate_control selects ConstantQp, Crf { crf } (base qindex 4 * crf plus the ENC-LOOKAHEAD-TPL offset), Vbr { bitrate_kbps } or Cbr { bitrate_kbps, buffer_ms }. Vbr and Cbr pick one base qindex per lookahead window so that the predicted bits of the window meet the budget, with the model bits = k * complexity / step(qindex) per key frame and mini-GOP layer class; k is learnt from coded bits. The step is the § 7.14.2 qlookup, which doubles every 24 qindex. VBR bounds its underspend to 8 frame budgets and its overspend to 32, predicts flat frames by their mean coded size, and repays the whole drift over the last window of the input (ENC-RATE-CONTROL-V2); CBR wraps the VBR model, bounds drift to half the buffer and raises a frame's qindex until it fits the buffer. Encoder::with_rate_controller plugs in a custom RateController. Integer arithmetic only. CLI: --crf, --bitrate, --rc vbr|cbr. Frame-level only: no delta-q."
 
 [feature.status]
 mapped = "done"
@@ -6872,6 +6872,38 @@ perf = "partial"
 [feature.proof]
 tests = ["crates/splot-encode/src/temporal_filter_tests.rs::filtering_removes_noise_along_the_motion", "crates/splot-encode/src/temporal_filter_tests.rs::neighbours_follow_the_frame_kind_and_the_noise", "crates/splot-encode/src/temporal_filter_tests.rs::only_key_and_hidden_base_frames_are_filtered", "crates/splot-encode/src/temporal_filter_tests.rs::a_filter_that_moves_the_frame_too_far_is_not_used", "crates/splot-encode/src/temporal_filter_tests.rs::worker_pools_filter_alike", "crates/splot-encode/src/temporal_filter_tests.rs::the_noise_level_grows_with_the_noise", "crates/splot-encode/src/kernels/temporal_filter.rs::tests::weights_match_scalar", "crates/splot-encode/src/kernels/temporal_filter.rs::tests::accumulate_matches_scalar", "crates/splot-encode/src/kernels/temporal_filter.rs::tests::normalize_matches_scalar", "crates/splot-encode/src/intra_frame_tf_tests.rs::filtered_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_tf_tests.rs::a_zero_count_or_strength_codes_the_unfiltered_stream", "crates/splot-encode/src/intra_frame_tf_tests.rs::avm_decodes_filtered_streams_like_splot", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
 commands = ["cargo test -p splot-encode temporal_filter --locked", "cargo test -p splot-encode tf:: --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_filtered --locked -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
+id = "ENC-RATE-CONTROL-V2"
+name = "Rate control v2: VBR accuracy"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["7.14.2"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/rate_control.rs"
+change_id = "enc-rc-v2"
+owner = "encoder"
+risk = "medium"
+notes = "B9 part 1. Encoder strategy; no new syntax. Shipped: VBR predicts flat frames (complexity under twice the floor) by the mean coded size of their class instead of a k it never learns, remembers 32 frame budgets of overspend (8 of underspend: a key frame can cost more than 8 budgets), and repays the whole drift over the last, shorter window of the input. CBR keeps its half-buffer limits. Constant-qp and CRF streams are unchanged. Measured 2026-10-31: niklas 720p, all 60 frames, p9 VBR 1000/2500/6000 kbps within 1% of the target; synthetic 96x64 pan, 60 frames, within 1.1% (was +14%). Tried and not shipped (2026-10-31): a CRF allocation by key-frame group, mini-GOP and layer (key and base frames from the TPL boost, layers interpolated to the CRF level, never below a reference, the key frame's importance extended over its key-frame group by a fitted geometric decay). The brief's design alone (leaves at 4 * crf) measured paris +1.06% and park_joy +0.51% at p9 (mini-GOP 4); the final version measured paris -1.45%, park_joy +0.82% (10 frames) and niklas +0.25% at p6, CRF 22/30/37/45 vs main 5530d5de2. The B9 CRF target (BD-rate <= -3% vs main) is missed; the only lever found, a stronger key-frame boost, helps static content only. Not done: capped CRF with a mode-decision re-encode, 2-pass, dynamic and 16/32-frame mini-GOPs (B9 part 2)."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/rate_control_tests.rs::vbr_meets_targets_within_three_percent", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_do_not_depend_on_the_thread_count", "crates/splot-encode/src/rate_control_tests.rs::rate_controlled_streams_meet_targets_and_decode_to_the_recon", "crates/splot-encode/src/rate_control_tests.rs::avm_decodes_rate_controlled_streams_like_splot"]
+commands = ["cargo test -p splot-encode rate_control --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored"]
 fixtures = []
 diagnostics = []
 
