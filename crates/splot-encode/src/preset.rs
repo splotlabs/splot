@@ -157,6 +157,10 @@ pub struct PresetParams {
     /// The first pass charges each square this many bits besides its
     /// open-loop SAD.
     pub pd0_leaf_bits: u8,
+    /// Reference statistics: a leaf of an inter frame skips the intra search
+    /// when no intra leaf of its primary reference covers its collocated
+    /// area grown by this many 8x8 cells; `255` is off.
+    pub ref_intra_margin: u8,
     /// Semi-decoupled partitioning (`enable_sdp`): each 64x64 node of an
     /// intra frame searches its luma tree on luma alone, then a chroma tree
     /// that only merges luma leaves. On in every row: intra frames gain luma
@@ -601,6 +605,7 @@ preset_table! {
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         pd_window:             [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
         pd0_leaf_bits:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
+        ref_intra_margin:      [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
     }
     intra {
@@ -802,6 +807,7 @@ mod tests {
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
             assert!(fast.pd_window <= slow.pd_window);
             assert!(fast.pd0_leaf_bits >= slow.pd0_leaf_bits);
+            assert!(fast.ref_intra_margin <= slow.ref_intra_margin);
             assert!(fast.ccso_candidates <= slow.ccso_candidates);
             assert!(fast.wiener_ns <= slow.wiener_ns);
             assert!(fast.wiener_ns_chroma <= slow.wiener_ns_chroma);
