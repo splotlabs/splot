@@ -233,8 +233,8 @@ impl IntraTileSyntax {
         };
         let tile = &self.inter_ref()?.tile;
         let checked = tile
-            .mode_symbols(&leaf.frontier, EncoderMotion::Warp(motion))
-            .and_then(|_| tile.warp_tail_symbols(&leaf.frontier, motion));
+            .mode_symbols(&leaf.frontier, EncoderMotion::Warp(motion), &mut Vec::new())
+            .and_then(|()| tile.warp_tail_symbols(&leaf.frontier, motion));
         checked
             .map_err(|_| EncoderSyntaxError::Unsupported("warp modes this block cannot code"))?;
         Ok(motion)

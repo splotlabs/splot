@@ -1067,13 +1067,7 @@ impl IntraTileSyntax {
     ) -> Result<Vec<MotionVector>> {
         let state = self.inter_ref()?;
         let motion = state.planned.as_ref().ok_or(NO_INTER_LEAF)?.motion;
-        let coded = state
-            .tile
-            .mode_symbols(&leaf.frontier, motion)
-            .map_err(rule("inter mode syntax"))?;
-        for (selector, value) in coded {
-            self.put(symbols, selector, usize::from(value))?;
-        }
+        self.put_mode_symbols(leaf, motion, symbols)?;
         Ok(motion
             .coded_mvds()
             .into_iter()
@@ -1133,20 +1127,32 @@ impl IntraTileSyntax {
         written
     }
 
+    /// Sends the mode symbols of `motion` at `leaf` to `symbols`.
+    fn put_mode_symbols(
+        &mut self,
+        leaf: &LeafBlock,
+        motion: EncoderMotion,
+        symbols: &mut impl SymbolSink,
+    ) -> Result<()> {
+        let mut coded = core::mem::take(&mut self.mode_symbols);
+        self.inter_ref()?
+            .tile
+            .mode_symbols(&leaf.frontier, motion, &mut coded)
+            .map_err(rule("inter mode syntax"))?;
+        for &(selector, value) in &coded {
+            self.put(symbols, selector, usize::from(value))?;
+        }
+        self.mode_symbols = coded;
+        Ok(())
+    }
+
     fn write_motion_modes(
         &mut self,
         leaf: &LeafBlock,
         motion: EncoderMotion,
         symbols: &mut impl SymbolSink,
     ) -> Result<()> {
-        let coded = self
-            .inter_ref()?
-            .tile
-            .mode_symbols(&leaf.frontier, motion)
-            .map_err(rule("inter mode syntax"))?;
-        for (selector, value) in coded {
-            self.put(symbols, selector, usize::from(value))?;
-        }
+        self.put_mode_symbols(leaf, motion, symbols)?;
         let mvds: Vec<MotionVector> = motion
             .coded_mvds()
             .into_iter()

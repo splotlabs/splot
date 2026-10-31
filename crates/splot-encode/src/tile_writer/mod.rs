@@ -279,6 +279,12 @@ fn count_coded_type(prediction: InterPrediction, tile_edge: bool) {
     CODED_TYPES.set(counts);
 }
 
+std::thread_local! {
+    /// The prediction buffers of the leaf writers, kept across leaves and
+    /// trials (a [`Walk`] lives for one trial); a nested walk finds them empty.
+    static PREDICTIONS: core::cell::Cell<[Vec<u16>; 2]> = core::cell::Cell::default();
+}
+
 /// One syntax pass over a tile: the facade, a symbol sink, and the filter
 /// state. The final pass codes into the [`SymbolEncoder`] with the filters; an
 /// RD trial prices into a rate sink without them, because the filter syntax
@@ -399,6 +405,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             .syntax
             .plan_leaf_partitioned(leaf, modes, tx_partition)?;
         let mut levels = vec![Vec::new(); blocks.len()];
+        let [mut prediction, mut v_prediction] = PREDICTIONS.take();
         // Luma first: the decoder reconstructs CFL chroma after the whole luma.
         for luma in [true, false] {
             for index in 0..blocks.len() {
@@ -409,10 +416,10 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                 {
                     continue;
                 }
-                let prediction = self.syntax.predict(index)?;
+                self.syntax.predict_into(index, &mut prediction)?;
                 if let Some(v_index) = chroma_partner(&blocks, &tx) {
                     let v = blocks[v_index];
-                    let v_prediction = self.syntax.predict(v_index)?;
+                    self.syntax.predict_into(v_index, &mut v_prediction)?;
                     let [u_decision, v_decision] =
                         self.code_chroma_pair(coder, [&tx, &v], [&prediction, &v_prediction])?;
                     blocks[index].cctx = u_decision.cctx;
@@ -445,6 +452,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                 levels[index] = decision.levels;
             }
         }
+        PREDICTIONS.set([prediction, v_prediction]);
         self.syntax.write_is_inter(leaf, false, self.sink)?;
         self.syntax.write_use_intrabc(leaf, None, self.sink)?;
         if let Some(filters) = self.filters.as_deref_mut() {
@@ -547,6 +555,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
         coder: &mut impl ResidualCoder,
     ) -> Result<(Vec<Vec<i32>>, bool)> {
         let mut levels = vec![Vec::new(); blocks.len()];
+        let [mut prediction, v_prediction] = PREDICTIONS.take();
         for index in 0..blocks.len() {
             let mut tx = blocks[index];
             if tx.plane > 0 {
@@ -554,7 +563,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
                     .syntax
                     .inter_chroma_tx_type(leaf, &blocks[..index], &tx)?;
             }
-            let prediction = self.syntax.reconstruction(&tx)?;
+            self.syntax.reconstruction_into(&tx, &mut prediction)?;
             let decision = if tx.plane == 0 {
                 self.code_luma(coder, &tx, &prediction)?
             } else {
@@ -564,6 +573,7 @@ impl<'a, S: SymbolSink> Walk<'a, S> {
             blocks[index] = tx;
             levels[index] = decision.levels;
         }
+        PREDICTIONS.set([prediction, v_prediction]);
         let skip = levels.iter().flatten().all(|&level| level == 0);
         if !skip {
             self.syntax.reconstruct_inter(blocks, &levels)?;
