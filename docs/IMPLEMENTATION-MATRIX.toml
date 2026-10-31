@@ -6811,6 +6811,38 @@ commands = ["cargo test -p splot-encode mds --locked", "SPLOT_AVM_DECODER=avmdec
 fixtures = []
 diagnostics = []
 
+[[feature]]
+id = "ENC-TEMPORAL-FILTER"
+name = "Encoder temporal filtering of key and base frames"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/temporal_filter.rs"
+change_id = "enc-temporal-filter"
+owner = "encoder"
+risk = "medium"
+notes = "B2 part 1. Encoder strategy, no syntax. Key frames (PresetParams::tf_key_frames later neighbours) and hidden mini-GOP base frames (tf_base_frames per side) are filtered before coding; the filtered frame replaces the source for coding only (statistics keep the source). Motion is the B1 open-loop HME of each centre/neighbour pair (Lookahead::full_motion), no second search. Per 64x64 block, each 16x16 luma quadrant takes the 16x16 vector when the four 16x16 SADs beat the 32x32 SAD by 1/8, else the 32x32 vector; its weight is exp(-error * distance / decay) from a table (EncoderKernels::tf_weights, 16 lanes), error = 3/4 quadrant window MSE + 1/4 SAD-implied MSE, distance grows past 16 samples, decay grows with the noise, the 8-bit-equivalent qindex and the strength; chroma reuses the luma weights; tf_accumulate and tf_normalize are std::simd kernels with scalar twins. Noise = MSE implied by the lower-quartile 8x8 SAD against the nearest neighbour (no extra pass); below 4/16 a frame takes one neighbour per side. Keep/drop decision: a filtered frame whose luma MSE against the source exceeds qindex^2/512 codes its source; show-existing outputs hidden frames either way (overlay frames not coded). Rows: tf_key_frames 4 everywhere, base filtering off everywhere (two per side at strength 25 on top of the key frames took paris p6 f30 from -1.74% to -1.42%: the filtered base frame is shown without an overlay). Measured 2026-10-31 vs main (p6 streams of 36451046e and ca5c88233 are byte-identical): p6 paris f30 -1.74% (f10 -1.80%), niklas f10 -0.83%, park_joy f10 +0.01%; park_joy p10 -0.74%; CPU 0.98x-1.02x. B2 target missed: inter BD-rate -4% on paris and niklas needs overlay frames for filtered base frames (part 2)."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "partial"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/temporal_filter_tests.rs::filtering_removes_noise_along_the_motion", "crates/splot-encode/src/temporal_filter_tests.rs::neighbours_follow_the_frame_kind_and_the_noise", "crates/splot-encode/src/temporal_filter_tests.rs::only_key_and_hidden_base_frames_are_filtered", "crates/splot-encode/src/temporal_filter_tests.rs::a_filter_that_moves_the_frame_too_far_is_not_used", "crates/splot-encode/src/temporal_filter_tests.rs::worker_pools_filter_alike", "crates/splot-encode/src/temporal_filter_tests.rs::the_noise_level_grows_with_the_noise", "crates/splot-encode/src/kernels/temporal_filter.rs::tests::weights_match_scalar", "crates/splot-encode/src/kernels/temporal_filter.rs::tests::accumulate_matches_scalar", "crates/splot-encode/src/kernels/temporal_filter.rs::tests::normalize_matches_scalar", "crates/splot-encode/src/intra_frame_tf_tests.rs::filtered_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_tf_tests.rs::a_zero_count_or_strength_codes_the_unfiltered_stream", "crates/splot-encode/src/intra_frame_tf_tests.rs::avm_decodes_filtered_streams_like_splot", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
+commands = ["cargo test -p splot-encode temporal_filter --locked", "cargo test -p splot-encode tf:: --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_filtered --locked -- --ignored"]
+fixtures = []
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------

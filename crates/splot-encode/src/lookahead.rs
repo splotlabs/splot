@@ -204,17 +204,29 @@ impl Lookahead {
         (current, reference): (u64, u64),
         fulls: (&Plane, &Plane),
     ) -> Option<Vec<BlockMotion>> {
+        let motion = self.full_motion((current, reference), fulls)?;
         let (now, then) = (self.frame(current)?, self.frame(reference)?);
-        let motion = hme::search(
+        let level = self.shift as usize;
+        let planes = (now.pyramid.level(level), then.pyramid.level(level));
+        Some(self.block_motion(planes, &motion))
+    }
+
+    /// The open-loop motion of `current` against `reference`, whose full
+    /// levels are `fulls`, searched without keeping it; `None` when either
+    /// frame is not held.
+    pub(crate) fn full_motion(
+        &self,
+        (current, reference): (u64, u64),
+        fulls: (&Plane, &Plane),
+    ) -> Option<FrameMotion> {
+        let (now, then) = (self.frame(current)?, self.frame(reference)?);
+        Some(hme::search(
             (fulls.0, &now.pyramid),
             (fulls.1, &then.pyramid),
             current.abs_diff(reference),
             self.ranges,
             self.pool.as_ref(),
-        );
-        let level = self.shift as usize;
-        let planes = (now.pyramid.level(level), then.pyramid.level(level));
-        Some(self.block_motion(planes, &motion))
+        ))
     }
 
     /// Frame `display_index`; the held frames have consecutive indices.
