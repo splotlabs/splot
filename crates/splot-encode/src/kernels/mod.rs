@@ -27,6 +27,7 @@ pub(crate) mod motion;
 mod quantize;
 pub(crate) mod rdoq;
 pub(crate) mod tcq;
+pub(crate) mod temporal_filter;
 mod tpl;
 pub(crate) mod wiener;
 
@@ -308,6 +309,24 @@ pub(crate) trait EncoderKernels: Sync {
 
     /// One row of a plane halved by 2x2 means ([`motion::downscale_row_simd`]).
     fn downscale_row(&self, top: &[u8], bottom: &[u8], out: &mut [u8]);
+
+    /// The weight of each 16x16 quadrant of a temporal-filter neighbour
+    /// ([`temporal_filter::weights_simd`]).
+    fn tf_weights(
+        &self,
+        errors: &[u32; temporal_filter::QUADRANTS],
+        distances: &[u32; temporal_filter::QUADRANTS],
+        decay: u32,
+        out: &mut [u32; temporal_filter::QUADRANTS],
+    );
+
+    /// Adds `weight` times each sample of `pred` to `accum`
+    /// ([`temporal_filter::accumulate_simd`]).
+    fn tf_accumulate(&self, pred: &[u16], weight: u32, accum: &mut [u32]);
+
+    /// The rounded quotients of `accum` by `count`
+    /// ([`temporal_filter::normalize_simd`]).
+    fn tf_normalize(&self, accum: &[u32], count: u32, out: &mut [u16]);
 }
 
 /// The scalar reference kernels.
@@ -492,6 +511,24 @@ impl EncoderKernels for ScalarKernels {
     fn downscale_row(&self, top: &[u8], bottom: &[u8], out: &mut [u8]) {
         motion::downscale_row_scalar(top, bottom, out);
     }
+
+    fn tf_weights(
+        &self,
+        errors: &[u32; temporal_filter::QUADRANTS],
+        distances: &[u32; temporal_filter::QUADRANTS],
+        decay: u32,
+        out: &mut [u32; temporal_filter::QUADRANTS],
+    ) {
+        temporal_filter::weights_scalar(errors, distances, decay, out);
+    }
+
+    fn tf_accumulate(&self, pred: &[u16], weight: u32, accum: &mut [u32]) {
+        temporal_filter::accumulate_scalar(pred, weight, accum);
+    }
+
+    fn tf_normalize(&self, accum: &[u32], count: u32, out: &mut [u16]) {
+        temporal_filter::normalize_scalar(accum, count, out);
+    }
 }
 
 impl EncoderKernels for SimdKernels {
@@ -662,5 +699,23 @@ impl EncoderKernels for SimdKernels {
 
     fn downscale_row(&self, top: &[u8], bottom: &[u8], out: &mut [u8]) {
         motion::downscale_row_simd(top, bottom, out);
+    }
+
+    fn tf_weights(
+        &self,
+        errors: &[u32; temporal_filter::QUADRANTS],
+        distances: &[u32; temporal_filter::QUADRANTS],
+        decay: u32,
+        out: &mut [u32; temporal_filter::QUADRANTS],
+    ) {
+        temporal_filter::weights_simd(errors, distances, decay, out);
+    }
+
+    fn tf_accumulate(&self, pred: &[u16], weight: u32, accum: &mut [u32]) {
+        temporal_filter::accumulate_simd(pred, weight, accum);
+    }
+
+    fn tf_normalize(&self, accum: &[u32], count: u32, out: &mut [u16]) {
+        temporal_filter::normalize_simd(accum, count, out);
     }
 }
