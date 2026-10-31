@@ -71,8 +71,21 @@ fn source(config: &Config, seed: u32) -> SourceFrame {
 }
 
 fn code(case: (u32, u32, BitDepth, u8, u16), seed: u32) -> (Config, CodedFrame) {
+    code_with(case, seed, &[])
+}
+
+/// [`code`] with the preset `overrides`.
+fn code_with(
+    case: (u32, u32, BitDepth, u8, u16),
+    seed: u32,
+    overrides: &[(&str, &str)],
+) -> (Config, CodedFrame) {
     let (width, height, bit_depth, preset, qp) = case;
     let mut config = Config::new(width, height);
+    config.preset_overrides = overrides
+        .iter()
+        .map(|&(field, value)| (field.into(), value.into()))
+        .collect();
     config.bit_depth = bit_depth;
     config.preset = Preset::new(preset).unwrap();
     config.rate_control = RateControlMode::ConstantQp { qp };
@@ -142,6 +155,29 @@ fn filtered_frames_decode_to_the_encoder_recon() {
         used[..3].iter().all(|&count| count >= 2) && used[3] >= 1,
         "filters used {used:?}"
     );
+}
+
+/// `cdef_strengths` caps the CDEF strength sets of a frame; uncapped, some
+/// case codes more than one.
+#[test]
+fn cdef_strengths_cap_the_coded_sets() {
+    let sets = |overrides: &[(&str, &str)]| -> Vec<u8> {
+        CASES
+            .into_iter()
+            .enumerate()
+            .map(|(index, case)| {
+                let (_, coded) = code_with(case, index as u32, overrides);
+                let core = headers(&coded.temporal_unit).1;
+                core.cdef_params
+                    .and_then(|cdef| cdef.cdef_strengths)
+                    .unwrap_or(0)
+            })
+            .collect()
+    };
+    let open = sets(&[]);
+    assert!(open.iter().any(|&count| count > 1), "{open:?}");
+    let capped = sets(&[("cdef_strengths", "1")]);
+    assert!(capped.iter().all(|&count| count <= 1), "{capped:?}");
 }
 
 /// Every GDF pair is tried once; the first takes the largest
