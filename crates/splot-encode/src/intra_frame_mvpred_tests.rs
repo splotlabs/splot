@@ -317,3 +317,67 @@ fn mvd_tool_streams_match_on_any_thread_count() {
         assert!(stream(threads) == one, "{threads} threads");
     }
 }
+
+/// A panning mini-GOP stream of 136x72 in 2x2 tiles at preset 6 with
+/// `overrides` on `threads` threads: its temporal units and the encoder recon.
+fn panning_stream(threads: usize, overrides: &[(&str, &str)]) -> (Vec<Vec<u8>>, Vec<u8>) {
+    let mut config = config(136, 72, BitDepth::Eight, 6, 100);
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 1,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    config.preset_overrides = overrides
+        .iter()
+        .map(|&(name, value)| (name.to_owned(), value.to_owned()))
+        .collect();
+    let pan = |pts: u64| crate::hme::tests::moved(&config, pts, |_, _| (5.0 * pts as f64, 0.0));
+    encode_frames(&config, (0..9).map(pan))
+}
+
+/// Open-loop seeds and compound skip, with a motion range far below the pan.
+const SEEDED: [(&str, &str); 3] = [
+    ("me_seeds", "4"),
+    ("compound_skip_sad", "32"),
+    ("motion_range", "2"),
+];
+
+/// With [`SEEDED`], a panning stream with every loop filter of preset 6
+/// decodes to the encoder recon and codes the same bytes on 1, 2 and 8
+/// threads; the seeds find the pan beyond the motion range and save bits.
+#[test]
+fn open_loop_seed_streams_decode_alike_on_any_thread_count() {
+    let (one, expected) = panning_stream(1, &SEEDED);
+    assert_same_samples(&decode(&one.concat()), &expected, "open-loop seeds");
+    for threads in [2, 8] {
+        assert!(
+            panning_stream(threads, &SEEDED).0 == one,
+            "{threads} threads"
+        );
+    }
+    let bytes = |units: &[Vec<u8>]| units.iter().map(Vec::len).sum::<usize>();
+    let off = [
+        ("me_seeds", "0"),
+        ("compound_skip_sad", "0"),
+        ("motion_range", "2"),
+    ];
+    let plain = panning_stream(1, &off).0;
+    assert!(
+        bytes(&one) * 100 < bytes(&plain) * 95,
+        "seeded {} vs plain {} bytes",
+        bytes(&one),
+        bytes(&plain)
+    );
+}
+
+/// AVM decodes the [`SEEDED`] panning stream to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_open_loop_seed_streams_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, expected) = panning_stream(2, &SEEDED);
+    let avm = avm_decode(&avmdec, &units, (136, 72), BitDepth::Eight, "seeded");
+    assert!(avm == expected, "AVM output differs");
+}

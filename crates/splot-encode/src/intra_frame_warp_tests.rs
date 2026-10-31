@@ -346,7 +346,7 @@ fn warp_search_keeps_the_cheapest_models_under_the_bar() {
     let source = zooming_frame(&config, 1);
     let padded = PaddedSource::new(&source, coder.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
     let lambda = Lambda::from_qindex(90, config.bit_depth).unwrap();
-    let motion = MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda)
+    let motion = MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda, Vec::new())
         .unwrap()
         .unwrap();
     let mut found = 0;

@@ -83,6 +83,8 @@ pub(crate) struct IntraFrameCoder {
     global_motion: [Option<[i32; 6]>; splot_core::headers::frame::REFS_PER_FRAME],
     /// The global motion models of the next frames to code.
     global_models: crate::global_motion::GlobalModels,
+    /// The lookahead's open-loop motion of the frames of the current window.
+    open_loop: crate::lookahead::OpenLoopMotion,
     /// The block importances of the next frames to code.
     importance: tpl::BlockImportance,
     /// Show-existing frames output so far, which seed their film grain.
@@ -196,6 +198,7 @@ impl IntraFrameCoder {
             global_motion: [None; splot_core::headers::frame::REFS_PER_FRAME],
             importance: tpl::BlockImportance::default(),
             global_models: crate::global_motion::GlobalModels::new(),
+            open_loop: crate::lookahead::OpenLoopMotion::new(),
             shown_existing: 0,
             grain_active: false,
             warp_gate: crate::warp::WarpGate::default(),
@@ -220,6 +223,10 @@ impl FrameCoder for IntraFrameCoder {
 
     fn set_global_motion(&mut self, models: crate::global_motion::GlobalModels) {
         self.global_models = models;
+    }
+
+    fn set_open_loop_motion(&mut self, motion: crate::lookahead::OpenLoopMotion) {
+        self.open_loop = motion;
     }
 
     fn pool(&self) -> Option<WorkerPool> {
@@ -452,19 +459,12 @@ impl IntraFrameCoder {
                 &FrameFilterParams::default(),
                 tools,
             )?;
-            let key_display = plan.display_index - u64::from(plan.order_hint);
             let hints = probe
                 .inter
                 .as_ref()
                 .map_or(&[][..], |inter| &inter.order_hints[..]);
-            for (model, &hint) in tools.2.7.iter_mut().zip(hints) {
-                *model = (hint != u32::MAX)
-                    .then(|| {
-                        let reference = key_display + u64::from(hint);
-                        self.global_models.get(&(plan.display_index, reference))
-                    })
-                    .flatten()
-                    .copied();
+            for (model, pair) in tools.2.7.iter_mut().zip(reference_pairs(plan, hints)) {
+                *model = pair.and_then(|pair| self.global_models.get(&pair)).copied();
             }
         }
         tools.2.6 &= self.warp_gate.allows(plan.layer);
@@ -513,7 +513,13 @@ impl IntraFrameCoder {
         let sb = first.syntax().superblock_size4() * 4;
         let padded = PaddedSource::new(source, self.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
         let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
-        let motion = MotionSearch::new(first.syntax(), &padded, &self.preset, lambda)
+        let open_loop = match &core.inter {
+            Some(inter) if !self.open_loop.is_empty() => reference_pairs(plan, &inter.order_hints)
+                .map(|pair| pair.and_then(|pair| self.open_loop.get(&pair).cloned()))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let motion = MotionSearch::new(first.syntax(), &padded, &self.preset, lambda, open_loop)
             .map_err(coding("motion search"))?;
         let bv_search = (core.allow_intrabc == Some(true)).then(|| {
             let (luma, stride, width, height) = padded.luma();
@@ -693,6 +699,22 @@ impl IntraFrameCoder {
             }),
         )
     }
+}
+
+/// The `(frame, reference)` display indices of each list reference of
+/// `plan` from the frame's `order_hints`, which count from the last key
+/// frame; `None` for an unused reference.
+pub(crate) fn reference_pairs<'a>(
+    plan: &GopFrame,
+    order_hints: &'a [u32],
+) -> impl Iterator<Item = Option<(u64, u64)>> + 'a {
+    let (display, key) = (
+        plan.display_index,
+        plan.display_index - u64::from(plan.order_hint),
+    );
+    order_hints
+        .iter()
+        .map(move |&hint| (hint != u32::MAX).then(|| (display, key + u64::from(hint))))
 }
 
 /// `f` of each item, in order: on `pool` when there is one, else in turn.

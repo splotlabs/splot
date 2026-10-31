@@ -88,6 +88,9 @@ pub(crate) trait FrameCoder {
     /// Receives the global motion models of the next frames to code, which
     /// replace the previous ones.
     fn set_global_motion(&mut self, _models: crate::global_motion::GlobalModels) {}
+    /// Receives the open-loop motion of the next frames to code, which
+    /// replaces the previous one.
+    fn set_open_loop_motion(&mut self, _motion: crate::lookahead::OpenLoopMotion) {}
     /// The worker pool the coder runs on, which the lookahead shares.
     fn pool(&self) -> Option<splot_parallel::WorkerPool> {
         None
@@ -322,6 +325,9 @@ impl Encoder {
             None => last_coded.as_ref().filter(|_| display + 1 == next),
         };
         let model = tpl::analyze(&mut self.lookahead, &plan, coded_before, blocks, &sources);
+        if let Some(fields) = self.lookahead.fields() {
+            self.coder.set_open_loop_motion(fields);
+        }
         if self.coder.wants_global_motion() {
             let models =
                 crate::global_motion::estimate(&mut self.lookahead, &plan, coded_before, &sources);
