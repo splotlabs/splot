@@ -156,6 +156,20 @@ impl<C: ResidualCoder> ResidualCoder for Recording<'_, C> {
         self.transforms.push(decision.clone());
         Ok(decision)
     }
+
+    fn code_chroma_pair(
+        &mut self,
+        syntax: &mut IntraTileSyntax,
+        blocks: [&TransformBlock; 2],
+        predictions: [&[u16]; 2],
+    ) -> core::result::Result<[TransformDecision; 2], TileWriterError> {
+        let decisions = self.coder.code_chroma_pair(syntax, blocks, predictions)?;
+        #[cfg(test)]
+        crate::mode_decision::CCTX_RECORDED
+            .set(crate::mode_decision::CCTX_RECORDED.get() + usize::from(decisions[0].cctx != 0));
+        self.transforms.extend(decisions.iter().cloned());
+        Ok(decisions)
+    }
 }
 
 /// Replays the kept transform decisions and palette maps in coding order.
