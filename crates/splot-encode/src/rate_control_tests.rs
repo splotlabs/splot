@@ -225,6 +225,73 @@ fn rate_controlled_streams_meet_targets_and_decode_to_the_recon() {
     );
 }
 
+/// CRF and VBR streams of 24 panning frames in two tiles are the same bytes
+/// at 1, 2 and 8 threads.
+#[test]
+fn rate_controlled_streams_do_not_depend_on_the_thread_count() {
+    for mode in &cases()[..2] {
+        let stream = |threads: usize| {
+            let mut config = Config::new(144, 32);
+            config.preset = Preset::new(9).unwrap();
+            config.rate_control = *mode;
+            config.tiles.cols_log2 = 1;
+            config.threads = splot_parallel::ThreadCount::from(threads);
+            let mut encoder = Encoder::new(config.clone()).unwrap();
+            let mut bytes = Vec::new();
+            for index in 0..24 {
+                let source = frame(&config, index, 2 * index as usize, u32::from(index >= 17));
+                encoder.send_frame(source).unwrap();
+                while let Some(packet) = encoder.receive_packet().unwrap() {
+                    bytes.extend(packet.data);
+                }
+            }
+            encoder.flush().unwrap();
+            while let Some(packet) = encoder.receive_packet().unwrap() {
+                bytes.extend(packet.data);
+            }
+            bytes
+        };
+        let one = stream(1);
+        assert!(!one.is_empty());
+        for threads in [2, 8] {
+            assert!(stream(threads) == one, "{mode:?} at {threads} threads");
+        }
+    }
+}
+
+/// VBR meets three targets within 3% over 60 frames of a 96x64 pan, key
+/// frames every 30.
+#[test]
+fn vbr_meets_targets_within_three_percent() {
+    for target in [40, 100, 250] {
+        let mut config = Config::new(96, 64);
+        config.preset = Preset::new(9).unwrap();
+        config.rate_control = RateControlMode::Vbr {
+            bitrate_kbps: target,
+        };
+        config.keyint = core::num::NonZeroU32::new(30).unwrap();
+        let mut encoder = Encoder::new(config.clone()).unwrap();
+        let mut bits = 0;
+        for index in 0..=60 {
+            if index == 60 {
+                encoder.flush().unwrap();
+            } else {
+                encoder
+                    .send_frame(frame(&config, index, 2 * index as usize, 0))
+                    .unwrap();
+            }
+            while let Some(packet) = encoder.receive_packet().unwrap() {
+                bits += packet.data.len() as u64 * 8;
+            }
+        }
+        let budget = u64::from(target) * 2000;
+        assert!(
+            bits.abs_diff(budget) * 100 <= budget * 3,
+            "{target}: {bits} bits"
+        );
+    }
+}
+
 /// AVM decodes the rate-controlled streams to the encoder recon.
 #[test]
 #[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]

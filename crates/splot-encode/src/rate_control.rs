@@ -146,8 +146,11 @@ impl RateController for Crf {
 }
 
 /// Frames over which VBR spreads its overspend or underspend; VBR remembers
-/// at most this many frame budgets of either.
+/// at most this many frame budgets of underspend.
 const VBR_HORIZON_FRAMES: i64 = 8;
+/// Frame budgets of overspend VBR remembers: a key frame can cost more than
+/// [`VBR_HORIZON_FRAMES`] budgets, and its key-frame group repays it.
+const VBR_DEBT_FRAMES: i64 = 32;
 /// Largest frame budget in bits; it keeps the window sums far from overflow.
 const MAX_FRAME_BITS: u64 = 1 << 40;
 /// Largest bitrate of [`Vbr`] and [`Cbr`]: 1 Gbit/s.
@@ -158,6 +161,12 @@ pub const MAX_BUFFER_MS: u32 = 600_000;
 const INITIAL_MODEL_Q8: [u64; CLASSES] = [40 << 8, 40 << 8, 32 << 8, 24 << 8];
 /// Model classes: key frames, then inter layers `0`, `1` and `2` or deeper.
 const CLASSES: usize = 4;
+
+/// Whether the lookahead sees a frame as flat: see
+/// [`FramePlanInfo::min_complexity`].
+fn is_flat(info: &FramePlanInfo) -> bool {
+    info.complexity < info.min_complexity.saturating_mul(2)
+}
 
 /// The model class of a frame.
 fn class(info: &FramePlanInfo) -> usize {
@@ -210,13 +219,18 @@ pub struct Vbr {
     frame_bits: u64,
     /// Smallest number of frames that repay the drift.
     horizon: i64,
-    /// Largest drift magnitude.
-    drift_limit: i64,
+    /// Largest underspend and overspend the drift holds.
+    drift_limits: (i64, i64),
     model_q8: [u64; CLASSES],
     learnt: [bool; CLASSES],
-    /// Bits spent minus bits budgeted so far, within `drift_limit`.
+    /// The mean coded size of the flat frames of each class, once one is
+    /// coded: mostly headers, whatever the qindex.
+    flat_bits: [Option<u64>; CLASSES],
+    /// Bits spent minus bits budgeted so far, within `drift_limits`.
     drift: i64,
     base: u16,
+    /// The most frames a window has held.
+    longest_window: usize,
     /// Frame index, model class, complexity (`0` for a flat frame) and bit
     /// depth of the planned frames.
     planned: VecDeque<(u64, usize, u64, BitDepth)>,
@@ -232,27 +246,33 @@ impl Vbr {
     pub fn new(bitrate_kbps: u32, frame_rate: (u32, u32)) -> Result<Self> {
         check_bitrate(bitrate_kbps, None, frame_rate)?;
         let frame_bits = frame_bits(bitrate_kbps, frame_rate);
+        let limit = |frames: i64| frames.saturating_mul(frame_bits as i64);
         Ok(Self::with_limits(
             frame_bits,
             VBR_HORIZON_FRAMES,
-            VBR_HORIZON_FRAMES * frame_bits as i64,
+            (limit(VBR_HORIZON_FRAMES), limit(VBR_DEBT_FRAMES)),
         ))
     }
 
-    fn with_limits(frame_bits: u64, horizon: i64, drift_limit: i64) -> Self {
+    fn with_limits(frame_bits: u64, horizon: i64, drift_limits: (i64, i64)) -> Self {
         Self {
             frame_bits,
             horizon,
-            drift_limit,
+            drift_limits,
             model_q8: INITIAL_MODEL_Q8,
             learnt: [false; CLASSES],
+            flat_bits: [None; CLASSES],
             drift: 0,
             base: 128,
+            longest_window: 0,
             planned: VecDeque::new(),
         }
     }
 
     fn predict(&self, info: &FramePlanInfo, qindex: u16) -> u64 {
+        if let Some(bits) = self.flat_bits[class(info)].filter(|_| is_flat(info)) {
+            return bits;
+        }
         let model = u128::from(self.model_q8[class(info)]);
         let bits = (model * u128::from(info.complexity.max(1))
             / u128::from(step(qindex, info.bit_depth)))
@@ -267,19 +287,27 @@ impl Vbr {
             .drift
             .saturating_add(bits)
             .saturating_sub(budget as i64)
-            .clamp(-self.drift_limit, self.drift_limit);
+            .clamp(-self.drift_limits.0, self.drift_limits.1);
     }
 }
 
 impl RateController for Vbr {
     /// Picks the smallest base qindex whose predicted window bits fit the
     /// budget: the window's target minus the drift spread over at least
-    /// `horizon` frames, within a quarter and twice the target.
+    /// `horizon` frames, within a quarter and twice the target. A window
+    /// shorter than an earlier one holds the last frames of the input, which
+    /// repay the whole drift.
     fn plan_window(&mut self, window: &[FramePlanInfo]) {
+        let ending = window.len() < self.longest_window;
+        self.longest_window = self.longest_window.max(window.len());
         let frames = i64::try_from(window.len()).unwrap_or(i64::MAX);
         let target = (self.frame_bits as i64).saturating_mul(frames);
-        let repaid = i128::from(self.drift) * i128::from(frames)
-            / i128::from(frames.max(self.horizon).max(1));
+        let horizon = if ending {
+            frames
+        } else {
+            frames.max(self.horizon)
+        };
+        let repaid = i128::from(self.drift) * i128::from(frames) / i128::from(horizon.max(1));
         let budget = (target - repaid as i64).clamp(target / 4, target.saturating_mul(2));
         let predicted = |base: u16| {
             window.iter().fold(0u64, |sum, info| {
@@ -299,7 +327,7 @@ impl RateController for Vbr {
         if self.planned.len() >= 64 {
             self.planned.pop_front();
         }
-        let flat = info.complexity < info.min_complexity.saturating_mul(2);
+        let flat = is_flat(info);
         self.planned.push_back((
             info.frame_index,
             class(info),
@@ -309,8 +337,8 @@ impl RateController for Vbr {
         with_offset(self.base, info.qindex_offset, info.bit_depth)
     }
 
-    /// Adds the frame to the drift, and learns its class's `k` unless the
-    /// frame is flat.
+    /// Adds the frame to the drift, and learns its class's `k`, or the mean
+    /// size of the class's flat frames for a flat frame.
     fn update(&mut self, stats: &FrameStats) {
         self.spend(stats.bits, self.frame_bits);
         let Some(&(_, class, complexity, bit_depth)) = self
@@ -321,6 +349,10 @@ impl RateController for Vbr {
             return;
         };
         if complexity == 0 {
+            let mean = self.flat_bits[class].map_or(stats.bits, |bits| {
+                (bits.saturating_mul(3).saturating_add(stats.bits)) / 4
+            });
+            self.flat_bits[class] = Some(mean);
             return;
         }
         let observed = ((u128::from(stats.bits) * u128::from(step(stats.qp, bit_depth))) << 8)
@@ -364,7 +396,11 @@ impl Cbr {
         let buffer_bits = u64::from(bitrate_kbps) * u64::from(buffer_ms);
         let frame_bits = frame_bits(bitrate_kbps, frame_rate);
         Ok(Self {
-            vbr: Vbr::with_limits(frame_bits, 1, buffer_bits as i64 / 2),
+            vbr: Vbr::with_limits(
+                frame_bits,
+                1,
+                (buffer_bits as i64 / 2, buffer_bits as i64 / 2),
+            ),
             buffer_bits,
             pending: 0,
         })
