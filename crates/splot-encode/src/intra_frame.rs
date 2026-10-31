@@ -225,6 +225,10 @@ impl FrameCoder for IntraFrameCoder {
         self.global_models = models;
     }
 
+    fn pool(&self) -> Option<WorkerPool> {
+        self.pool.clone()
+    }
+
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
         if let Some(used) = frame.warp {
             self.warp_gate.record(used);

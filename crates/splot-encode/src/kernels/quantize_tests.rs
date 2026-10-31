@@ -171,3 +171,31 @@ fn simd_matches_scalar_exhaustively() {
         }
     }
 }
+
+/// Vectors of one magnitude around the first reconstruction level, at every
+/// deadzone edge case, so the all-zero vector shortcut meets its bound.
+#[test]
+fn simd_matches_scalar_at_the_zero_bound() {
+    for (bd, dc, ac) in [
+        (BitDepth::Eight, 40, 41),
+        (BitDepth::Eight, 1600, 1336),
+        (BitDepth::Ten, 57, 245_760),
+    ] {
+        for (denom, rounding) in [(1, 0), (1, 1), (2, 64), (4, 127), (8, 128)] {
+            let Ok(q) = Quantizer::new(dc, ac, denom, bd, rounding) else {
+                continue;
+            };
+            let top = 3 * dc.max(ac) as i32 / 8 + 3;
+            let coeffs: Vec<i32> = (0..=top)
+                .flat_map(|a| [a; 8].into_iter().chain([-a; 8]))
+                .collect();
+            for chunk in coeffs.chunks(1024) {
+                assert_eq!(
+                    run(&SimdKernels, &q, chunk),
+                    run(&ScalarKernels, &q, chunk),
+                    "{dc} {ac} {denom} {rounding}"
+                );
+            }
+        }
+    }
+}
