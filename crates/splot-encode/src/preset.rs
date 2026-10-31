@@ -149,6 +149,14 @@ pub struct PresetParams {
     /// An uneven four-way shape is tried only when the three-way shape of its
     /// axis costs within this margin, in 1/256, of the best; `255` always.
     pub ext_four_way_margin: u8,
+    /// Two-pass partition decision: an inter-frame superblock with
+    /// lookahead motion takes first-pass levels from the open-loop motion
+    /// alone, and searches a block only within this many binary partition
+    /// levels of them; `255` searches every partition.
+    pub pd_window: u8,
+    /// The first pass charges each square this many bits besides its
+    /// open-loop SAD.
+    pub pd0_leaf_bits: u8,
     /// Semi-decoupled partitioning (`enable_sdp`): each 64x64 node of an
     /// intra frame searches its luma tree on luma alone, then a chroma tree
     /// that only merges luma leaves. On in every row: intra frames gain luma
@@ -591,6 +599,8 @@ preset_table! {
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
+        pd_window:             [  255,   255,   255,   255,   255,   255,     3,     2,     2,     2,     2],
+        pd0_leaf_bits:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         sdp:                   [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
     }
     intra {
@@ -790,6 +800,8 @@ mod tests {
             assert!(fast.ext_partitions <= slow.ext_partitions);
             assert!(fast.ext_three_way_margin <= slow.ext_three_way_margin);
             assert!(fast.ext_four_way_margin <= slow.ext_four_way_margin);
+            assert!(fast.pd_window <= slow.pd_window);
+            assert!(fast.pd0_leaf_bits >= slow.pd0_leaf_bits);
             assert!(fast.ccso_candidates <= slow.ccso_candidates);
             assert!(fast.wiener_ns <= slow.wiener_ns);
             assert!(fast.wiener_ns_chroma <= slow.wiener_ns_chroma);

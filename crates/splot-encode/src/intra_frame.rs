@@ -34,13 +34,12 @@ use crate::kernels::rdoq::{RdoqBlock, hide_parity, parity_moves, rdoq};
 use crate::kernels::tcq::{TcqScratch, tcq};
 use crate::kernels::{BlockDims, ForwardTransform2d, Quantizer, kernels};
 use crate::loop_filter::{CodedTile, FilteredFrame, FirstPass, FrameDecisions, finish_frame};
-use crate::mode_decision::TrialCoder;
+use crate::mode_decision::two_pass_partition;
 use crate::motion_search::MotionSearch;
 use crate::palette::PaletteSearch;
 use crate::preset::{PresetParams, TcqFrames};
 use crate::rate_control::FrameType;
 use crate::rd::coeff_rate::{CdfCoeffRates, RateSink, RowCaches, block_rate};
-use crate::rd::partition::search_partition;
 use crate::rd::{Bits, Lambda, RdCost};
 use crate::screen::is_screen_content;
 use crate::tile_writer::coeffs::eob;
@@ -520,8 +519,14 @@ impl IntraFrameCoder {
                 .collect(),
             _ => Vec::new(),
         };
-        let motion = MotionSearch::new(first.syntax(), &padded, &self.preset, lambda, open_loop)
-            .map_err(coding("motion search"))?;
+        let motion = MotionSearch::new(
+            first.syntax(),
+            &padded,
+            &self.preset,
+            lambda,
+            open_loop.clone(),
+        )
+        .map_err(coding("motion search"))?;
         let bv_search = (core.allow_intrabc == Some(true)).then(|| {
             let (luma, stride, width, height) = padded.luma();
             BvSearch::new(luma, stride, (width, height))
@@ -562,8 +567,13 @@ impl IntraFrameCoder {
                 let (lambda, target) = lambda;
                 let tree = writer
                     .search_superblock(|syntax, root| {
-                        let mut trial = TrialCoder::new(syntax, &mut coder, preset, lambda, motion);
-                        Ok(search_partition(&mut trial, root, preset, lambda)?.0)
+                        two_pass_partition(
+                            syntax,
+                            &mut coder,
+                            (preset, lambda),
+                            (motion, &open_loop),
+                            root,
+                        )
                     })
                     .map_err(coding("superblock search"))?;
                 decisions

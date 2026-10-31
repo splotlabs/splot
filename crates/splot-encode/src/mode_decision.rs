@@ -12,6 +12,7 @@
 
 use core::ops::Range;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use splot_decode::encoder_syntax::{
     ChromaMode, Dip, EncoderSyntaxError, INTERP_FILTERS, IntraModes, IntraTileSyntax, LeafBlock,
@@ -19,13 +20,14 @@ use splot_decode::encoder_syntax::{
 };
 use splot_recon::InterpolationFilter;
 
+use crate::hme::FrameMotion;
 use crate::intra_frame::codable_children;
 use crate::intra_frame::{PaddedSource, SourceResidualCoder};
 use crate::kernels::{BlockDims, kernels};
 use crate::motion_search::MotionSearch;
 use crate::preset::PresetParams;
 use crate::rd::coeff_rate::RateSink;
-use crate::rd::partition::PartitionSearch;
+use crate::rd::partition::{PartitionSearch, first_pass_levels, search_guided};
 use crate::rd::stages::{CandidateClass, StageLimits};
 use crate::rd::{Bits, Lambda, RdCost};
 use crate::tile_writer::{
@@ -75,6 +77,8 @@ thread_local! {
     pub(crate) static NEAR_NEAR_CHECKED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// Inter candidates that MDS0 dropped on this thread.
     pub(crate) static MDS0_PRUNED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    /// First partition passes run on this thread.
+    pub(crate) static PD0_PASSES: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// Candidates that MDS1 dropped on this thread.
     pub(crate) static MDS1_PRUNED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
@@ -1271,6 +1275,35 @@ pub(crate) fn quadrant_sse(
     Ok(out)
 }
 
+/// The partition tree of the superblock at `root`, searched with `preset`
+/// at `lambda`. With `preset.pd_window`, a superblock of an inter frame
+/// with lookahead motion `open_loop` searches only the partitions near the
+/// levels of [`first_pass_levels`]; intra frames search every partition.
+pub(crate) fn two_pass_partition(
+    syntax: &mut IntraTileSyntax,
+    coder: &mut SourceResidualCoder<'_>,
+    (preset, lambda): (&PresetParams, Lambda),
+    (motion, open_loop): (Option<&MotionSearch>, &[Option<Arc<FrameMotion>>]),
+    root: PartitionNode,
+) -> Result<PartitionTree> {
+    let levels = motion
+        .filter(|_| preset.pd_window != u8::MAX)
+        .and_then(|_| {
+            let (w, _) = root.dimensions().ok()?;
+            let depth = u32::from(coder.bit_depth.bits()) - 8;
+            first_pass_levels(
+                open_loop,
+                (root.col4() * 4, root.row4() * 4, w),
+                (lambda, depth),
+                preset,
+            )
+        });
+    #[cfg(test)]
+    PD0_PASSES.set(PD0_PASSES.get() + usize::from(levels.is_some()));
+    let mut trial = TrialCoder::new(syntax, coder, preset, lambda, motion);
+    Ok(search_guided(&mut trial, root, preset, lambda, levels.as_ref())?.0)
+}
+
 /// The luma rectangle `(x, y, width, height)` of `leaf`.
 pub(crate) fn leaf_rect(leaf: &LeafBlock) -> Result<(usize, usize, usize, usize)> {
     let (w, h) = leaf.dimensions()?;
@@ -1391,6 +1424,10 @@ impl PartitionSearch for TrialCoder<'_, '_> {
     fn block_log2(&self, node: PartitionNode) -> Result<(u32, u32)> {
         let (w, h) = node.dimensions()?;
         Ok((w.ilog2(), h.ilog2()))
+    }
+
+    fn origin(&self, node: PartitionNode) -> (usize, usize) {
+        (node.col4() * 4, node.row4() * 4)
     }
 
     /// RD-chooses the intra choice of the leaf, then compares it with the

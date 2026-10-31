@@ -110,6 +110,10 @@ impl<F: Fn(Rect) -> RdCost> PartitionSearch for Synthetic<F> {
         Ok((w, h))
     }
 
+    fn origin(&self, (x, y, ..): Rect) -> (usize, usize) {
+        (x as usize, y as usize)
+    }
+
     fn evaluate_leaf(&mut self, node: Rect) -> Result<(RdCost, LeafChoice), Self::Error> {
         self.coded.push(node);
         self.leaf_evaluations += 1;
@@ -447,5 +451,139 @@ fn early_exit_leaves_extended_shapes_to_the_margins() {
     assert!(
         !coder.evaluated.contains_key(&(0, 0, 5, 4)),
         "HORZ was tried"
+    );
+}
+
+/// The first-pass levels limit a guided search to blocks near them: with
+/// window 0 and the level of a 16x16 block over the frame, the search codes
+/// blocks of that level, and the blocks next to it that only an extended
+/// shape reaches as leaves; a wider window evaluates more, the full search
+/// most.
+#[test]
+fn levels_limit_the_searched_blocks() {
+    use crate::rd::partition::{Levels, search_guided};
+    let cost = |(x, y, w, h): Rect| RdCost {
+        distortion: u64::from(((x * 7 + y * 13) % 29 + 3) << (w + h)),
+        rate: Bits::whole(w + h),
+    };
+    let levels = |window| Levels {
+        origin: (0, 0),
+        stride: 4,
+        cells: vec![8; 16],
+        window,
+    };
+    let root = (0, 0, 5, 5);
+    let evaluate = |window: Option<u8>| {
+        let mut coder = Synthetic::new(32, cost);
+        let levels = window.map(levels);
+        search_guided(
+            &mut coder,
+            root,
+            &full_search(),
+            unit_lambda(),
+            levels.as_ref(),
+        )
+        .unwrap();
+        let mut sizes: Vec<u32> = coder.evaluated.keys().map(|&(_, _, w, h)| w + h).collect();
+        sizes.sort_unstable();
+        sizes.dedup();
+        (coder.leaf_evaluations, sizes)
+    };
+    let (exact, exact_sizes) = evaluate(Some(0));
+    let (near, near_sizes) = evaluate(Some(1));
+    let (full, full_sizes) = evaluate(None);
+    assert!(exact_sizes.contains(&8) && exact_sizes.iter().all(|size| (6..=9).contains(size)));
+    assert!(near_sizes.iter().all(|size| (5..=10).contains(size)));
+    assert_eq!(full_sizes.first(), Some(&4));
+    assert!(exact < near && near < full, "{exact} {near} {full}");
+}
+
+/// One open-loop field over a 64x64 superblock whose block of side
+/// `8 << size` at `(col, row)` has SAD `sad(size, col, row)`.
+fn field(sad: impl Fn(usize, usize, usize) -> u32) -> std::sync::Arc<crate::hme::FrameMotion> {
+    std::sync::Arc::new(crate::hme::FrameMotion::from_fn(
+        (1, 1),
+        |size, col, row| crate::kernels::motion::Motion {
+            sad: sad(size, col, row),
+            mv: [0, 0],
+        },
+    ))
+}
+
+/// The first pass splits the one quadrant whose 16x16 blocks predict far
+/// better than it, keeps the others whole, and gives up without motion.
+#[test]
+fn first_pass_levels_split_where_the_quadrants_cost_less() {
+    use crate::rd::partition::first_pass_levels;
+    let preset = PresetParams {
+        pd_window: 2,
+        pd0_leaf_bits: 8,
+        ..PRESETS[6]
+    };
+    let in_first = |size: usize, col: usize, row: usize| {
+        let side = 8usize << size;
+        col * side < 32 && row * side < 32
+    };
+    let fields = [Some(field(|size, col, row| {
+        match (size, in_first(size, col, row)) {
+            (3, _) => 1_000_000,
+            (2, true) => 100_000,
+            (2, false) => 1000,
+            (1, true) => 10,
+            (1, false) => 400,
+            _ => 200,
+        }
+    }))];
+    let levels = first_pass_levels(&fields, (0, 0, 64), (unit_lambda(), 0), &preset).unwrap();
+    assert_eq!(
+        (levels.origin, levels.stride, levels.window),
+        ((0, 0), 8, 2)
+    );
+    for (index, &level) in levels.cells.iter().enumerate() {
+        let (col, row) = (index % 8, index / 8);
+        let expected = if col < 4 && row < 4 { 8 } else { 10 };
+        assert_eq!(level, expected, "cell ({col}, {row})");
+    }
+    let missing = [Some(field(
+        |size, _, _| if size == 0 { u32::MAX } else { 50 },
+    ))];
+    assert!(first_pass_levels(&missing, (0, 0, 64), (unit_lambda(), 0), &preset).is_none());
+    assert!(first_pass_levels(&[None], (0, 0, 64), (unit_lambda(), 0), &preset).is_none());
+}
+
+/// A block whose only partition falls outside the window still codes it:
+/// the frame-edge root of a 24x24 frame can only split, which window 0 over
+/// the level of a 32x32 block rejects.
+#[test]
+fn a_forced_partition_outside_the_window_still_codes() {
+    use crate::rd::partition::{Levels, search_guided};
+    let cost = |(_, _, w, h): Rect| RdCost {
+        distortion: u64::from(3u32 << (w + h)),
+        rate: Bits::whole(1),
+    };
+    let levels = Levels {
+        origin: (0, 0),
+        stride: 4,
+        cells: vec![10; 16],
+        window: 0,
+    };
+    let mut coder = Synthetic::new(24, cost);
+    let (tree, _) = search_guided(
+        &mut coder,
+        (0, 0, 5, 5),
+        &full_search(),
+        unit_lambda(),
+        Some(&levels),
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            tree,
+            PartitionTree::Split {
+                kind: Partition::Split,
+                ..
+            }
+        ),
+        "{tree:?}"
     );
 }
