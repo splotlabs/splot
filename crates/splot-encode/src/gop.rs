@@ -173,7 +173,7 @@ impl GopPlanner {
     }
 
     /// The display index of the next key frame.
-    fn next_key(&self) -> u64 {
+    pub(crate) fn next_key(&self) -> u64 {
         self.cuts
             .first()
             .map_or(self.scheduled_key, |&cut| cut.min(self.scheduled_key))

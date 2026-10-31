@@ -446,7 +446,10 @@ impl Encoder {
     }
 
     /// The temporally filtered source of each `(plan, qp)` of a wave of the
-    /// mini-GOP `frames`, whose first display index is `first`.
+    /// mini-GOP `frames`, whose first display index is `first`. The filter
+    /// reads the frames of the lookahead window before the next planned key
+    /// frame, so the output does not depend on how the caller interleaves
+    /// sends and receives, nor does a frame read across a scene cut.
     fn temporal_filter(
         &self,
         planned: &[(GopFrame, u16)],
@@ -454,13 +457,15 @@ impl Encoder {
         first: u64,
     ) -> Vec<Option<SourceFrame>> {
         let (pending, last_coded) = (&self.pending, &self.last_coded);
+        let end = (first + self.lookahead_frames as u64).min(self.planner.next_key());
         let sources = |display: u64| match display.checked_sub(first) {
-            Some(index) => {
+            Some(index) if display < end => {
                 let index = usize::try_from(index).ok()?;
                 frames
                     .get(index)
                     .or_else(|| pending.get(index.checked_sub(frames.len())?))
             }
+            Some(_) => None,
             None => last_coded.as_ref().filter(|_| display + 1 == first),
         };
         let subsampling = [

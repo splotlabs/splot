@@ -42,7 +42,12 @@ impl FrameCoder for SourceRecording {
     fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>> {
         let coded = self.coder.encode_wave(wave)?;
         for ((source, plan, _), frame) in wave.iter().zip(&coded) {
-            let core = &frame.reference.as_ref().unwrap().0;
+            let core = frame
+                .reference
+                .as_ref()
+                .map(|reference| &reference.0)
+                .or(frame.tip_output.as_ref())
+                .unwrap();
             let tools = [
                 core.deblocking_filter_params
                     .is_some_and(|df| df.apply_deblocking_filter.contains(&true)),
@@ -81,21 +86,38 @@ impl FrameCoder for SourceRecording {
     fn pool(&self) -> Option<splot_parallel::WorkerPool> {
         self.coder.pool()
     }
+
+    fn set_open_loop_motion(&mut self, motion: crate::lookahead::OpenLoopMotion) {
+        self.coder.set_open_loop_motion(motion);
+    }
 }
 
 /// A filtered stream: its units, the encoder recon in display order, the
-/// loop filters coded in some frame, and the display indices coded from a
-/// filtered source.
+/// loop filters coded in some frame, the display indices coded from a
+/// filtered source, and the source each frame was coded from.
 struct Stream {
     units: Vec<Vec<u8>>,
     recon: Vec<u8>,
     tools: [bool; 5],
     filtered: Vec<u64>,
+    sources: BTreeMap<u64, [Vec<u16>; 3]>,
 }
 
 /// Nine noisy panning frames with the preset fields `sets` on `threads`
-/// threads, in two tiles.
-fn tf_stream(mut config: Config, sets: &[(&str, &str)], threads: usize) -> Stream {
+/// threads, in two tiles, received after each send.
+fn tf_stream(config: Config, sets: &[(&str, &str)], threads: usize) -> Stream {
+    tf_stream_of(config, sets, threads, false, &noisy_frame)
+}
+
+/// Nine frames of `make` as [`tf_stream`] codes them; a `bulk` caller sends
+/// every frame before it receives.
+fn tf_stream_of(
+    mut config: Config,
+    sets: &[(&str, &str)],
+    threads: usize,
+    bulk: bool,
+    make: &dyn Fn(&Config, u32) -> SourceFrame,
+) -> Stream {
     config.threads = splot_parallel::ThreadCount::from(threads);
     config.tiles = TileLayout {
         cols_log2: 1,
@@ -114,8 +136,8 @@ fn tf_stream(mut config: Config, sets: &[(&str, &str)], threads: usize) -> Strea
     let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
     let mut units = Vec::new();
     for index in 0..9 {
-        encoder.send_frame(noisy_frame(&config, index)).unwrap();
-        while let Some(packet) = encoder.receive_packet().unwrap() {
+        encoder.send_frame(make(&config, index)).unwrap();
+        while !bulk && let Some(packet) = encoder.receive_packet().unwrap() {
             units.push(packet.data);
         }
     }
@@ -126,9 +148,7 @@ fn tf_stream(mut config: Config, sets: &[(&str, &str)], threads: usize) -> Strea
     let frames = frames.lock().unwrap();
     let filtered = frames
         .iter()
-        .filter(|&(&display, (_, _, source))| {
-            source != noisy_frame(&config, display as u32).planes()
-        })
+        .filter(|&(&display, (_, _, source))| source != make(&config, display as u32).planes())
         .map(|(&display, _)| display)
         .collect();
     Stream {
@@ -136,6 +156,7 @@ fn tf_stream(mut config: Config, sets: &[(&str, &str)], threads: usize) -> Strea
         recon: frames.values().flat_map(|f| f.0.iter().copied()).collect(),
         tools: core::array::from_fn(|i| frames.values().any(|f| f.1[i])),
         filtered,
+        sources: frames.iter().map(|(&d, f)| (d, f.2.clone())).collect(),
     }
 }
 
@@ -199,6 +220,57 @@ fn a_zero_count_or_strength_codes_the_unfiltered_stream() {
         ("tf_base_strength", "255"),
     ];
     assert!(stream(&zero_count).units == off.units, "zero count");
+}
+
+/// A caller that sends every frame before it receives codes the same bytes
+/// as one that receives after each send: the filter reads only the
+/// lookahead window, also with as many key-frame neighbours as the window
+/// holds frames.
+#[test]
+fn bulk_and_interleaved_callers_code_the_same_stream() {
+    for (preset, keys) in [(9, "4"), (6, "4"), (9, "8")] {
+        let config = config(96, 64, BitDepth::Eight, preset, 200);
+        let sets = [("tf_key_frames", keys), ON[1]];
+        let interleaved = tf_stream_of(config.clone(), &sets, 1, false, &noisy_frame);
+        let bulk = tf_stream_of(config, &sets, 1, true, &noisy_frame);
+        assert!(!interleaved.filtered.is_empty(), "preset {preset}");
+        assert!(
+            bulk.units == interleaved.units,
+            "preset {preset} keys {keys}"
+        );
+    }
+}
+
+/// Frame `index` of a noisy pan that cuts to another scene at frame 3: the
+/// scene is `variant` from there on.
+fn cut_frame(config: &Config, index: u32, variant: u32) -> SourceFrame {
+    if index < 3 {
+        return noisy_frame(config, index);
+    }
+    let scene = synthetic_frame(config, 100 * variant + index);
+    SourceFrame::new(config, u64::from(index), scene.planes().clone()).unwrap()
+}
+
+/// A key frame before a scene cut reads no frame of the next scene: with
+/// either scene after the cut it codes the same filtered source.
+#[test]
+fn key_frames_do_not_read_across_a_scene_cut() {
+    let config = config(96, 64, BitDepth::Eight, 9, 200);
+    let sets = [("tf_key_frames", "4")];
+    let streams: Vec<Stream> = [1, 2]
+        .map(|variant| {
+            tf_stream_of(config.clone(), &sets, 1, false, &|c, i| {
+                cut_frame(c, i, variant)
+            })
+        })
+        .into();
+    for stream in &streams {
+        assert!(stream.filtered.contains(&0), "{:?}", stream.filtered);
+    }
+    assert!(
+        streams[0].sources[&0] == streams[1].sources[&0],
+        "the next scene reached the key frame"
+    );
 }
 
 /// AVM decodes filtered streams to the encoder recon.

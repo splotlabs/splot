@@ -6,28 +6,37 @@
 //!
 //! A key frame takes up to the preset's `tf_key_frames` later neighbours and
 //! a base frame up to `tf_base_frames` neighbours on each side, nearest
-//! first, while the encoder holds them; a frame whose estimated noise is
-//! below [`CLEAN_NOISE`] takes one per side. The motion of the frame against each neighbour comes from
-//! the lookahead's open-loop search. Each 64x64 block of every plane is a
-//! weighted mean of the frame (weight [`MAX_WEIGHT`]) and the
-//! motion-compensated neighbours. A neighbour's weight is the same in all
-//! planes of a 16x16 luma quadrant: the 16x16 vectors when their SADs beat
-//! the 32x32 vector's by [`SPLIT_EIGHTHS`], else the 32x32 vector, and
-//! `exp(-error * distance / decay)` from a table, where `error` mixes the
-//! quadrant's mean squared prediction error with the mean squared error that
-//! the block's SAD implies, `distance` grows with the vector beyond
-//! [`FREE_MV`] samples, and `decay` grows with the noise, the qindex and the
-//! preset's `tf_key_strength` or `tf_base_strength`. The noise is the mean squared error that the
-//! lower quartile of the 8x8 SADs against the nearest neighbour implies.
+//! first, among the frames `sources` gives (the encoder gives the lookahead
+//! window before the next planned key frame). A frame whose noise is below
+//! [`CLEAN_NOISE`] takes one neighbour per side. The noise is the mean
+//! squared error that the lower quartile of the 8x8 SADs against the first
+//! neighbour found implies. The motion of the frame against each neighbour
+//! is the lookahead's open-loop motion: the kept search of the pair, else a
+//! new one.
+//!
+//! Each 64x64 block of every plane is the rounded weighted mean of the frame
+//! (weight [`MAX_WEIGHT`]) and the motion-compensated neighbours. A
+//! neighbour's weight is the same in all planes of a 16x16 luma quadrant.
+//! The quadrant takes the 16x16 vector when the four 16x16 SADs sum to at
+//! most [`SPLIT_EIGHTHS`] eighths of the 32x32 SAD, else the 32x32 vector.
+//! Its weight is `MAX_WEIGHT * exp(-floor(error * distance / decay) / 8)`
+//! from a table, zero beyond `exp(-8)`. `error` (in 1/16) is three quarters
+//! of the quadrant's mean squared prediction error plus a quarter of the
+//! mean squared error that the vector's SAD implies. `distance` is 16 up to
+//! [`FREE_MV`] samples of vector length, then grows with it. `decay` grows
+//! with the noise, the square of the 8-bit-equivalent qindex and the
+//! preset's `tf_key_strength` or `tf_base_strength`, so errors below
+//! `decay / 8 / distance` keep the full weight.
 //!
 //! The filtered frame replaces the source for coding only: statistics and the
 //! rest of the encoder keep the source. A filtered frame whose luma mean
-//! squared error against the source is above `qindex² / KEEP_DIVISOR / 16`,
-//! with a high-bit-depth qindex moved down to the 8-bit step,
-//! is not used; the frame codes its source, and a hidden frame is output by
-//! its show-existing frame either way. Arithmetic is integer and per block,
-//! so the result does not depend on the thread count.
+//! squared error against the source is above `qindex² / KEEP_DIVISOR / 16`
+//! (the 8-bit-equivalent qindex) is not used: the frame codes its source,
+//! and a hidden frame is output by its show-existing frame either way.
+//! Arithmetic is integer and per block, so the result does not depend on the
+//! thread count.
 
+use std::cell::OnceCell;
 use std::sync::Arc;
 
 use splot_parallel::WorkerPool;
@@ -95,14 +104,15 @@ pub(crate) fn filter_frame(
     let centre = sources(display)?;
     let extra = max_qindex(centre.bit_depth()) - max_qindex(BitDepth::Eight);
     let qindex = qindex.saturating_sub(extra);
-    let centre_full = hme::full_level(centre);
+    let centre_full = OnceCell::new();
     let neighbour = |other: u64| {
         let frame = sources(other)?;
         let motion = if let Some(kept) = lookahead.kept_motion((display, other)) {
             kept
         } else {
+            let centre_full = centre_full.get_or_init(|| hme::full_level(centre));
             let full = hme::full_level(frame);
-            Arc::new(lookahead.full_motion((display, other), (&centre_full, &full))?)
+            Arc::new(lookahead.full_motion((display, other), (centre_full, &full))?)
         };
         Some(Neighbour { frame, motion })
     };
@@ -183,20 +193,35 @@ fn filter(
     subsampling: [u8; 2],
     pool: Option<&WorkerPool>,
 ) -> ([Vec<u16>; 3], u64) {
-    let rows = centre.plane_sizes()[0].height().div_ceil(SB);
-    let row = |by: usize| filter_row(centre, neighbours, decay, subsampling, by);
-    let strips: Vec<([Vec<u16>; 3], u64)> = match pool {
-        Some(pool) => pool.install(|| (0..rows).into_par_iter().map(row).collect()),
-        None => (0..rows).map(row).collect(),
-    };
-    let mut planes: [Vec<u16>; 3] = Default::default();
-    let mut sse = 0;
-    for (strip, strip_sse) in strips {
-        for (plane, rows) in planes.iter_mut().zip(strip) {
-            plane.extend(rows);
-        }
-        sse += strip_sse;
+    let sizes = centre.plane_sizes();
+    let mut planes: [Vec<u16>; 3] = core::array::from_fn(|p| {
+        sizes
+            .get(p)
+            .map_or(Vec::new(), |s| vec![0; s.width() * s.height()])
+    });
+    let mut rests: [&mut [u16]; 3] = planes.each_mut().map(Vec::as_mut_slice);
+    let mut strips = Vec::new();
+    for by in 0..sizes[0].height().div_ceil(SB) {
+        let strip: [&mut [u16]; 3] = core::array::from_fn(|p| {
+            let rest = core::mem::take(&mut rests[p]);
+            let Some(size) = sizes.get(p) else {
+                return rest;
+            };
+            let sy = if p == 0 { 0 } else { subsampling[1] };
+            let rows = (((by + 1) * SB) >> sy).min(size.height()) - ((by * SB) >> sy);
+            let (strip, after) = rest.split_at_mut(rows * size.width());
+            rests[p] = after;
+            strip
+        });
+        strips.push((by, strip));
     }
+    let row = |(by, mut out): (usize, [&mut [u16]; 3])| {
+        filter_row(centre, neighbours, decay, subsampling, by, &mut out)
+    };
+    let sse = match pool {
+        Some(pool) => pool.install(|| strips.into_par_iter().map(row).sum()),
+        None => strips.into_iter().map(row).sum(),
+    };
     (planes, sse)
 }
 
@@ -213,27 +238,20 @@ fn planes(frame: &SourceFrame) -> Vec<PlaneRef<'_>> {
         .collect()
 }
 
-/// The filtered rows of block row `by` of each plane and their luma SSE.
+/// Writes the filtered rows of block row `by` of each plane into `out`;
+/// returns their luma SSE.
 fn filter_row(
     centre: &SourceFrame,
     neighbours: &[Neighbour<'_>],
     decay: u32,
     subsampling: [u8; 2],
     by: usize,
-) -> ([Vec<u16>; 3], u64) {
+    out: &mut [&mut [u16]; 3],
+) -> u64 {
     let centre_planes = planes(centre);
     let neighbour_planes: Vec<_> = neighbours.iter().map(|n| planes(n.frame)).collect();
     let shift = 2 * u32::from(centre.bit_depth().bits() - 8);
     let cols = centre_planes[0].1.div_ceil(SB);
-    let mut out: [Vec<u16>; 3] = Default::default();
-    let mut spans = [(0, 0); 3];
-    for (p, &(_, width, height)) in centre_planes.iter().enumerate() {
-        let sy = if p == 0 { 0 } else { subsampling[1] };
-        let top = (by * SB) >> sy;
-        let bottom = (((by + 1) * SB) >> sy).min(height);
-        spans[p] = (top, bottom);
-        out[p] = vec![0; (bottom - top) * width];
-    }
     let (mut own, mut pred) = (vec![0u16; SB * SB], vec![0u16; SB * SB]);
     let mut accum = vec![0u32; SB * SB];
     let mut weights = vec![[0u32; QUADRANTS]; neighbours.len()];
@@ -285,8 +303,7 @@ fn filter_row(
                     }
                 }
             }
-            let (top, bottom) = spans[p];
-            for row in 0..bottom - top {
+            for row in 0..out[p].len() / width {
                 let line = &mut out[p][row * width..][..width];
                 for (q, &count) in counts.iter().enumerate().skip(row / qh * GRID).take(GRID) {
                     let x = x0 + q % GRID * qw;
@@ -301,13 +318,14 @@ fn filter_row(
         }
     }
     let (luma, width, _) = centre_planes[0];
-    let (top, _) = spans[0];
     let sse = out[0]
         .chunks(width)
         .enumerate()
-        .map(|(row, filtered)| kernels().sse_row(filtered, &luma[(top + row) * width..][..width]))
+        .map(|(row, filtered)| {
+            kernels().sse_row(filtered, &luma[(by * SB + row) * width..][..width])
+        })
         .sum::<u64>();
-    (out, sse >> shift)
+    sse >> shift
 }
 
 /// The vector and SAD-implied error (in 1/16) of each 16x16 quadrant of
