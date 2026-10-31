@@ -72,6 +72,9 @@ thread_local! {
 }
 #[cfg(test)]
 thread_local! {
+    /// `NEAR_NEARMV` DRL pairs whose batched vectors were checked on this
+    /// thread.
+    pub(crate) static NEAR_NEAR_CHECKED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// Inter candidates that MDS0 dropped on this thread.
     pub(crate) static MDS0_PRUNED: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
     /// First partition passes run on this thread.
@@ -843,7 +846,6 @@ impl TrialCoder<'_, '_> {
         {
             return Ok(Vec::new());
         }
-        let drls = self.syntax.drl_count();
         let mut ranked: Vec<(u64, [MotionVector; 2], CompoundModes)> = Vec::new();
         for refs in self.syntax.compound_pairs() {
             if refs.1 >= COMPOUND_REFS {
@@ -861,9 +863,15 @@ impl TrialCoder<'_, '_> {
                 blend: CompoundType::default(),
             };
             let zero = [MotionVector::default(); 2];
-            let mut trials: Vec<CompoundModes> = (0..drls * drls)
-                .map(|i| modes(CompoundMode::NearNear, [i / drls, i % drls], zero))
+            let mut derived: Vec<(CompoundModes, Option<[MotionVector; 2]>)> = self
+                .syntax
+                .near_near_mvs(leaf, refs)?
+                .into_iter()
+                .map(|(drl, mvs)| (modes(CompoundMode::NearNear, drl, zero), Some(mvs)))
                 .collect();
+            #[cfg(test)]
+            self.check_near_near(leaf, &derived)?;
+            let mut trials = Vec::new();
             if refs.0 != refs.1 {
                 trials.push(modes(CompoundMode::GlobalGlobal, [0; 2], zero));
                 if let (Some(&first), Some(&second)) = (searched.get(refs.0), searched.get(refs.1))
@@ -878,11 +886,9 @@ impl TrialCoder<'_, '_> {
                     }
                 }
             }
-            for trial in trials {
-                let trial = if matches!(
-                    trial.mode,
-                    CompoundMode::NearNear | CompoundMode::GlobalGlobal
-                ) {
+            derived.extend(trials.into_iter().map(|trial| (trial, None)));
+            for (trial, mvs) in derived {
+                let trial = if mvs.is_some() || trial.mode == CompoundMode::GlobalGlobal {
                     trial
                 } else {
                     let Some(InterPrediction::Compound(trial)) = codable(snap_prediction(
@@ -895,13 +901,16 @@ impl TrialCoder<'_, '_> {
                     };
                     trial
                 };
-                let Some(mvs) = codable(
-                    self.syntax
-                        .inter_mvs(leaf, InterPrediction::Compound(trial))
-                        .map_err(Into::into),
-                )?
-                else {
-                    continue;
+                let mvs = match mvs {
+                    Some(mvs) => mvs,
+                    None => match codable(
+                        self.syntax
+                            .inter_mvs(leaf, InterPrediction::Compound(trial))
+                            .map_err(Into::into),
+                    )? {
+                        Some(mvs) => mvs,
+                        None => continue,
+                    },
                 };
                 if ranked
                     .iter()
@@ -943,6 +952,46 @@ impl TrialCoder<'_, '_> {
             out.push(LeafChoice::inter(InterPrediction::Compound(trial)));
         }
         Ok(out)
+    }
+
+    /// The facade's batched `NEAR_NEARMV` vectors `derived` of one reference
+    /// pair agree with [`IntraTileSyntax::inter_mvs`] of each DRL pair, and
+    /// no codable DRL pair is missing; counts the checked pairs.
+    #[cfg(test)]
+    fn check_near_near(
+        &mut self,
+        leaf: &LeafBlock,
+        derived: &[(CompoundModes, Option<[MotionVector; 2]>)],
+    ) -> Result<()> {
+        let Some((first, _)) = derived.first() else {
+            return Ok(());
+        };
+        let drls = self.syntax.drl_count();
+        let mut listed = derived.iter();
+        for index in 0..drls * drls {
+            let modes = CompoundModes {
+                drl: [index / drls, index % drls],
+                ..*first
+            };
+            let one = codable(
+                self.syntax
+                    .inter_mvs(leaf, InterPrediction::Compound(modes))
+                    .map_err(Into::into),
+            )?;
+            if let Some(mvs) = one {
+                let batched = listed.next().filter(|(seen, _)| seen.drl == modes.drl);
+                if batched.and_then(|&(_, mvs)| mvs) != Some(mvs) {
+                    return Err(TileWriterError::Shape("batched NEAR_NEARMV vectors differ"));
+                }
+                NEAR_NEAR_CHECKED.set(NEAR_NEAR_CHECKED.get() + 1);
+            }
+        }
+        if listed.next().is_some() {
+            return Err(TileWriterError::Shape(
+                "a batched NEAR_NEARMV pair is not codable",
+            ));
+        }
+        Ok(())
     }
 
     /// With [`FORCED_COMPOUND_TYPES`], `trial` without refinement flags and

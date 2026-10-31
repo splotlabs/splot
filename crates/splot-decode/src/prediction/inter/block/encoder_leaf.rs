@@ -21,7 +21,7 @@ use super::filter_records::record_inter_deblock_geometry;
 use super::residual::{InterLumaTxTypeMap, push_inter_residual_block};
 use super::resolve::{
     InterBlockSyntax, InterMotionSyntax, MvResolutionState, ResolvedInterBlock,
-    compound_inter_block, compound_motion, predict_by_translation_under_integer_mv,
+    compound_inter_block, compound_motion, near_near_mvs, predict_by_translation_under_integer_mv,
     resolve_inter_block, resolve_single, single_inter_block, single_mode_mv, single_mv_stack,
     warp_motion,
 };
@@ -465,6 +465,34 @@ impl EncoderInterTile {
     ) -> Result<[Mv; 2]> {
         let syntax = self.inter_syntax(frontier, motion, true)?;
         Ok(self.resolve_motion(&syntax)?.mv)
+    }
+
+    /// The vectors the decoder resolves for each `NEAR_NEARMV` motion of
+    /// `motions` at `frontier`, which share one reference pair, from one
+    /// paired stack and one stack per list; `None` for a motion the block
+    /// cannot code.
+    pub(crate) fn near_near_vectors(
+        &mut self,
+        frontier: &DecodeBlockFrontier,
+        motions: &[EncoderCompoundMotion],
+    ) -> Vec<Option<[Mv; 2]>> {
+        let syntaxes: Vec<Option<InterBlockSyntax>> = motions
+            .iter()
+            .map(|&motion| {
+                self.inter_syntax(frontier, EncoderMotion::Compound(motion), true)
+                    .ok()
+            })
+            .collect();
+        let Some(block) = syntaxes
+            .iter()
+            .flatten()
+            .map(|syntax| syntax.block_ctx)
+            .next()
+        else {
+            return vec![None; motions.len()];
+        };
+        let state = self.resolution_state(&block);
+        near_near_mvs(&syntaxes, &state)
     }
 
     /// The vectors `GLOBALMV`, then `NEARMV` and the `NEWMV` bases of the
