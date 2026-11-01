@@ -173,9 +173,19 @@ impl FrameCoder for ToolRecording {
 /// `threads` threads, through the [`Encoder`]: the units, the encoder recon
 /// in display order, and the coded tools of each frame.
 fn tpl_stream(
+    config: Config,
+    strength: u8,
+    threads: usize,
+) -> (Vec<Vec<u8>>, Vec<u8>, Vec<[bool; 6]>) {
+    tpl_stream_of(config, strength, threads, panning_frame)
+}
+
+/// [`tpl_stream`] of the frames `frame` gives.
+fn tpl_stream_of(
     mut config: Config,
     strength: u8,
     threads: usize,
+    frame: fn(&Config, u32) -> SourceFrame,
 ) -> (Vec<Vec<u8>>, Vec<u8>, Vec<[bool; 6]>) {
     config.rate_control = RateControlMode::Crf { crf: 50 };
     config.threads = splot_parallel::ThreadCount::from(threads);
@@ -191,9 +201,7 @@ fn tpl_stream(
     let mut encoder = Encoder::with_coder(config.clone(), Box::new(coder)).unwrap();
     let mut units = Vec::new();
     for index in 0..9 {
-        encoder
-            .send_frame(panning_frame(&config, index / 2))
-            .unwrap();
+        encoder.send_frame(frame(&config, index / 2)).unwrap();
         while let Some(packet) = encoder.receive_packet().unwrap() {
             units.push(packet.data);
         }
@@ -250,6 +258,55 @@ fn tpl_delta_q_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     }
 }
 
+/// [`panning_frame`] with flat luma on its left half.
+fn half_flat_frame(config: &Config, index: u32) -> SourceFrame {
+    let mut planes = panning_frame(config, index).planes().clone();
+    let width = config.width as usize;
+    for (i, sample) in planes[0].iter_mut().enumerate() {
+        if i % width < width / 2 {
+            *sample = config.bit_depth.max_sample().div_ceil(2);
+        }
+    }
+    SourceFrame::new(config, u64::from(index), planes).unwrap()
+}
+
+/// `Tune::Ssim` alone (the temporal model off) moves superblock qindex and
+/// lambda: frames code `delta_q_present`, every loop filter codes in some
+/// frame, the stream decodes to the encoder recon with the same bytes on 1,
+/// 2 and 8 threads, and `Tune::Psnr` codes no `delta_q_present`.
+#[test]
+fn ssim_tuned_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    let mut config = config(200, 136, BitDepth::Ten, 6, 0);
+    let (_, _, psnr) = tpl_stream_of(config.clone(), 0, 1, half_flat_frame);
+    assert!(psnr.iter().all(|t| !t[0]), "{psnr:?}");
+    config.tune = crate::Tune::Ssim;
+    let stream = |threads| tpl_stream_of(config.clone(), 0, threads, half_flat_frame);
+    let (units, recon, tools) = stream(1);
+    assert_same_samples(&decode(&units.concat()), &recon, "ssim");
+    let used: [bool; 6] = core::array::from_fn(|i| tools.iter().any(|t| t[i]));
+    assert_eq!(used, [true; 6], "{tools:?}");
+    for threads in [2, 8] {
+        assert!(stream(threads).0 == units, "{threads}");
+    }
+}
+
+/// `Tune::Ssim` and `Tune::Vq` with the temporal model at a wavefront preset
+/// write the same bytes on 1, 2 and 8 threads.
+#[test]
+fn tuned_wavefront_streams_are_thread_count_invariant() {
+    for tune in [crate::Tune::Ssim, crate::Tune::Vq] {
+        let config = Config {
+            tune,
+            ..config(200, 136, BitDepth::Eight, 8, 0)
+        };
+        let stream = |threads| tpl_stream_of(config.clone(), 100, threads, half_flat_frame);
+        let (units, ..) = stream(1);
+        for threads in [2, 8] {
+            assert!(stream(threads).0 == units, "{tune:?}: {threads} threads");
+        }
+    }
+}
+
 /// With 256x256 sequence superblocks the key frame takes its superblock
 /// offsets on the 128x128 grid it codes, so the temporal model codes and
 /// decodes to the encoder recon.
@@ -283,7 +340,7 @@ fn offsets_that_snap_to_zero_code_no_delta_q() {
             strength,
             frames: [(plan.display_index, costs.clone())].into(),
         });
-        let quant = coder.superblock_quant(&plan);
+        let quant = coder.superblock_quant(&plan, &synthetic_frame(&config, 1));
         let model = crate::tpl::superblock_quant(&costs, grid, (4, 3, 64), strength);
         let snaps_to_zero = model.iter().all(|&(offset, _)| offset.abs() <= 1);
         assert_eq!(quant.is_empty(), snaps_to_zero, "{strength}: {model:?}");
@@ -304,11 +361,21 @@ fn avm_decodes_delta_q_frames_like_splot() {
         let (units, recon, _) = delta_q_stream(config.clone(), 2);
         let avm = avm_decode(&avmdec, &units, (200, 136), bit_depth, "delta-q");
         assert!(avm == recon, "{bit_depth:?}: AVM output differs");
-        let (units, recon, _) = tpl_stream(config, 100, 2);
+        let (units, recon, _) = tpl_stream(config.clone(), 100, 2);
         let avm = avm_decode(&avmdec, &units, (200, 136), bit_depth, "tpl-delta-q");
         assert!(
             avm == recon,
             "{bit_depth:?}: AVM output of the temporal model differs"
+        );
+        let ssim = Config {
+            tune: crate::Tune::Ssim,
+            ..config
+        };
+        let (units, recon, _) = tpl_stream_of(ssim, 0, 2, half_flat_frame);
+        let avm = avm_decode(&avmdec, &units, (200, 136), bit_depth, "ssim-delta-q");
+        assert!(
+            avm == recon,
+            "{bit_depth:?}: AVM output of the SSIM tune differs"
         );
     }
 }
