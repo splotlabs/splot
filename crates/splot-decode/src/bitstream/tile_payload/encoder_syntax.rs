@@ -75,6 +75,7 @@ mod transform;
 mod warp;
 
 pub use super::cdf::block_context::IntraYMode as IntraMode;
+use super::tile_frontier;
 pub use crate::prediction::chroma::cfl::{CFL_FILTERS_420, CFL_FILTERS_422};
 pub use cctx::CCTX_ROTATIONS;
 pub use compound::{
@@ -672,6 +673,89 @@ pub struct TileEnd {
 
 /// The § 7.19 motion records a tile published so far.
 pub struct TileMotion(Vec<crate::prediction::inter::TemporalMotionBlock>);
+
+impl TileMotion {
+    /// The records of the leaves that start above luma row `luma_rows`.
+    fn prefix(mut self, luma_rows: usize) -> Self {
+        self.0.retain(|block| block.origin().0 * 4 < luma_rows);
+        self
+    }
+}
+
+/// A frame as a later frame may read it before it is finished: the
+/// reconstruction of its first rows before loop filtering, the rows below
+/// repeating the last of them, and the motion records of the leaves above.
+pub struct ProvisionalFrame {
+    frame: splot_recon::DecodedFrame<u16>,
+    motion: TileMotion,
+    chroma: ChromaFormatIdc,
+}
+
+impl ProvisionalFrame {
+    /// The same frame as of its first `luma_rows` luma rows, equal to the
+    /// [`IntraTileSyntax::provisional_frame`] taken when those were coded.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] if the copy cannot be built.
+    pub fn rows(&self, luma_rows: usize) -> Result<Self> {
+        let view = self.frame.as_frame_ref();
+        let frame = replicated(self.frame.info(), self.chroma, luma_rows, |plane, rect| {
+            let plane = view
+                .plane(plane)
+                .ok_or(EncoderSyntaxError::Unsupported("a provisional plane"))?;
+            let (samples, stride) = (plane.samples(), plane.stride_samples());
+            let mut out = Vec::with_capacity(rect.width() * rect.height());
+            for y in 0..rect.height() {
+                out.extend_from_slice(
+                    samples
+                        .get(y * stride..y * stride + rect.width())
+                        .ok_or(EncoderSyntaxError::Unsupported("a provisional row"))?,
+                );
+            }
+            Ok(out)
+        })?;
+        Ok(Self {
+            frame,
+            motion: TileMotion(self.motion.0.clone()).prefix(luma_rows),
+            chroma: self.chroma,
+        })
+    }
+}
+
+/// A frame of `info` whose planes hold the rows `kept(plane, rect)` returns
+/// for the top `luma_rows` luma rows (and the chroma rows they cover), each
+/// lower row repeating the last of them.
+fn replicated(
+    info: splot_recon::DecodedFrameInfo,
+    chroma: ChromaFormatIdc,
+    luma_rows: usize,
+    mut kept: impl FnMut(PlaneId, splot_recon::PlaneRect) -> Result<Vec<u16>>,
+) -> Result<splot_recon::DecodedFrame<u16>> {
+    let mut copy =
+        splot_recon::CurrentFrameWorkspace::new(info, 0).map_err(rule("provisional frame"))?;
+    let sub_y = usize::from(tile_frontier::chroma_subsampling(chroma).1);
+    for (index, plane) in [PlaneId::Y, PlaneId::U, PlaneId::V].into_iter().enumerate() {
+        let Ok(size) = copy.plane(plane).map(|plane| plane.storage_size()) else {
+            continue;
+        };
+        let shift = if index == 0 { 0 } else { sub_y };
+        let rows = luma_rows.div_ceil(1 << shift).clamp(1, size.height());
+        let width = size.width();
+        let rect =
+            splot_recon::PlaneRect::new(0, 0, width, rows).map_err(rule("provisional rect"))?;
+        let mut samples = kept(plane, rect)?;
+        samples.reserve(width * (size.height() - rows));
+        let last = samples.len().saturating_sub(width);
+        for _ in rows..size.height() {
+            samples.extend_from_within(last..last + width);
+        }
+        let whole = splot_recon::PlaneRect::new(0, 0, width, size.height())
+            .map_err(rule("provisional rect"))?;
+        copy.write_rect(plane, whole, &samples, width)
+            .map_err(rule("provisional rows"))?;
+    }
+    copy.freeze().map_err(rule("provisional frame"))
+}
 
 /// One tile's CDF rows, neighbour state, and reconstruction.
 pub struct IntraTileSyntax {

@@ -98,6 +98,11 @@ impl FrameDecisions {
         Ok(())
     }
 
+    /// The decision and target qindex of the one superblock kept.
+    pub(crate) fn into_decision(self) -> Option<(SuperblockDecision, Option<u32>)> {
+        self.superblocks.into_iter().next()
+    }
+
     /// [`Self::write_superblock`] through [`KeyFrameTileWriter::commit_superblock`].
     pub(crate) fn commit_superblock(
         &mut self,

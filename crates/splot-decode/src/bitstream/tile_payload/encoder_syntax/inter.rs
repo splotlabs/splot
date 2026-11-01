@@ -136,22 +136,11 @@ impl EncoderReferences {
         self.store(core, frame, cdfs, motion)
     }
 
-    /// These references after the frame `core`, still being coded, as if it
-    /// were stored: `frame` stands for its filtered reconstruction, the CDFs
-    /// of `initial` (its [`Self::frame_start`]) for its saved CDFs, and
-    /// `motion`, the records its single tile published so far, for its motion
-    /// field. A frame that predicts from them reads approximate data, so its
-    /// decisions must not depend on what `frame` and `motion` do not settle.
+    /// A copy of these references that later updates leave as they are.
     ///
     /// # Errors
-    /// As [`Self::update`].
-    pub fn with_provisional(
-        &self,
-        core: &FrameHeaderCore,
-        frame: DecodedFrame<u16>,
-        initial: &FrameStart,
-        motion: &super::TileMotion,
-    ) -> Result<Self> {
+    /// Returns [`EncoderSyntaxError::Rule`] if the copy cannot be built.
+    pub fn fork(&self) -> Result<Self> {
         let frames: Vec<Option<SettledFrame>> = self
             .frames
             .iter()
@@ -161,16 +150,34 @@ impl EncoderReferences {
             })
             .collect();
         let buffer = self.buffer.fork();
-        let mut refs = Self {
+        Ok(Self {
             sequence: self.sequence.clone(),
             state: settled_state(&buffer, &frames)?,
             buffer,
             frames,
-        };
-        let field =
-            refs.motion_field(core, frame.bit_depth(), core::iter::once(motion.0.as_slice()))?;
-        refs.store(core, frame, Arc::clone(&initial.cdfs), field)?;
-        Ok(refs)
+        })
+    }
+
+    /// Stores the frame `core`, still being coded, as if it were finished:
+    /// `frame` stands for its filtered reconstruction and motion field, and
+    /// the CDFs of `initial` (its [`Self::frame_start`]) for its saved CDFs.
+    /// A frame that predicts from these references reads approximate data.
+    ///
+    /// # Errors
+    /// As [`Self::update`].
+    pub fn store_provisional(
+        &mut self,
+        core: &FrameHeaderCore,
+        frame: super::ProvisionalFrame,
+        initial: &FrameStart,
+    ) -> Result<()> {
+        let (recon, motion) = (frame.frame, &frame.motion);
+        let field = self.motion_field(
+            core,
+            recon.bit_depth(),
+            core::iter::once(motion.0.as_slice()),
+        )?;
+        self.store(core, recon, Arc::clone(&initial.cdfs), field)
     }
 
     /// The motion field of the frame `core` from the records of its tiles; none

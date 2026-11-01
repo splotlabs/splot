@@ -364,44 +364,18 @@ impl FrameCoder for IntraFrameCoder {
     }
 
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
-        if let Some(used) = frame.warp {
-            self.warp_gate.record(used);
-        }
-        if let Some(core) = frame.tip_output.take() {
-            return self
-                .references
-                .update_tip_output(&core)
-                .map_err(coding("TIP output update"));
-        }
-        let (core, recon, initial, cdfs) = frame.reference.take().ok_or(Error::Unsupported {
-            what: "a frame committed twice",
-        })?;
-        let refreshed = core.refresh_frame_flags.unwrap_or(u32::MAX);
-        for (slot, intra) in self.slot_intra.iter_mut().enumerate() {
-            if refreshed >> slot & 1 == 1 {
-                intra.clone_from(&frame.intra_cells);
-            }
-        }
-        if frame.frame_type == FrameType::Key {
-            self.grain_active = core
-                .intra_tail
-                .is_some_and(|tail| tail.film_grain.apply_grain);
-        }
-        self.references
-            .update(&core, recon, &initial, &cdfs)
-            .map_err(coding("reference update"))
+        self.committed().commit(frame)
     }
 
     fn show_existing_frame(&mut self, slot: u32) -> Result<Vec<u8>> {
-        let seed = self.grain_active.then(|| {
-            self.shown_existing += 1;
-            gop::shown_grain_seed(self.shown_existing)
-        });
-        let unit = gop::show_existing_unit(&self.view, slot, seed)?;
-        self.references
-            .show_existing(slot)
-            .map_err(coding("show-existing frame"))?;
-        Ok(unit)
+        let mut committed = Committed {
+            references: &mut self.references,
+            slot_intra: &mut self.slot_intra,
+            warp_gate: &mut self.warp_gate,
+            grain_active: &mut self.grain_active,
+            shown_existing: &mut self.shown_existing,
+        };
+        committed.show_existing(&self.view, slot)
     }
 
     fn start_sequence(&mut self, first: &SourceFrame) -> Result<()> {
@@ -1046,6 +1020,72 @@ pub(crate) struct FramePrep<'a> {
     frame_size: (usize, usize),
     reference_intra: Option<Arc<IntraCells>>,
     wavefront: bool,
+}
+
+/// The coder state that committing a frame changes.
+pub(crate) struct Committed<'a> {
+    references: &'a mut EncoderReferences,
+    slot_intra: &'a mut [Option<Arc<IntraCells>>; 8],
+    warp_gate: &'a mut crate::warp::WarpGate,
+    grain_active: &'a mut bool,
+    shown_existing: &'a mut u64,
+}
+
+impl Committed<'_> {
+    /// Stores `frame` in the references.
+    fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
+        if let Some(used) = frame.warp {
+            self.warp_gate.record(used);
+        }
+        if let Some(core) = frame.tip_output.take() {
+            return self
+                .references
+                .update_tip_output(&core)
+                .map_err(coding("TIP output update"));
+        }
+        let (core, recon, initial, cdfs) = frame.reference.take().ok_or(Error::Unsupported {
+            what: "a frame committed twice",
+        })?;
+        let refreshed = core.refresh_frame_flags.unwrap_or(u32::MAX);
+        for (slot, intra) in self.slot_intra.iter_mut().enumerate() {
+            if refreshed >> slot & 1 == 1 {
+                intra.clone_from(&frame.intra_cells);
+            }
+        }
+        if frame.frame_type == FrameType::Key {
+            *self.grain_active = core
+                .intra_tail
+                .is_some_and(|tail| tail.film_grain.apply_grain);
+        }
+        self.references
+            .update(&core, recon, &initial, &cdfs)
+            .map_err(coding("reference update"))
+    }
+
+    /// A temporal delimiter and the show-existing frame of `slot`.
+    fn show_existing(&mut self, view: &CoreSeqView, slot: u32) -> Result<Vec<u8>> {
+        let seed = self.grain_active.then(|| {
+            *self.shown_existing += 1;
+            gop::shown_grain_seed(*self.shown_existing)
+        });
+        let unit = gop::show_existing_unit(view, slot, seed)?;
+        self.references
+            .show_existing(slot)
+            .map_err(coding("show-existing frame"))?;
+        Ok(unit)
+    }
+}
+
+impl IntraFrameCoder {
+    fn committed(&mut self) -> Committed<'_> {
+        Committed {
+            references: &mut self.references,
+            slot_intra: &mut self.slot_intra,
+            warp_gate: &mut self.warp_gate,
+            grain_active: &mut self.grain_active,
+            shown_existing: &mut self.shown_existing,
+        }
+    }
 }
 
 /// The `(frame, reference)` display indices of each list reference of

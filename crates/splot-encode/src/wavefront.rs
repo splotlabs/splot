@@ -26,42 +26,94 @@ use crate::intra_frame::coding;
 use crate::loop_filter::{CodedTile, FrameDecisions};
 use crate::tile_writer::{KeyFrameTileWriter, ResidualCoder, SuperblockDecision};
 
-/// The facade, coder and import position of one superblock row.
-struct Row<C> {
+/// The facade, coder, row context and import position of one superblock row.
+struct Row<C, X> {
     writer: KeyFrameTileWriter,
     coder: C,
+    context: X,
     imported: usize,
 }
 
-/// Codes the tile of `writer` by a wavefront search. `row_writer(row)` is a
-/// fresh writer of the same tile, `coder()` a fresh residual coder, and
-/// `search` plans and searches the next superblock of a writer.
-pub(crate) fn code_tile<C: ResidualCoder + Send>(
-    pool: Option<&WorkerPool>,
-    writer: KeyFrameTileWriter,
-    row_writer: impl Fn() -> Result<KeyFrameTileWriter> + Sync,
-    coder: impl Fn() -> C + Sync,
-    search: impl Fn(&mut KeyFrameTileWriter, &mut C) -> Result<(SuperblockDecision, Option<u32>)> + Sync,
-) -> Result<CodedTile> {
-    let (rows, cols) = writer.superblock_grid();
-    let count = rows * cols;
-    let row_state: Vec<Mutex<Option<Row<C>>>> = slots(rows);
-    let edges: Vec<Mutex<Option<SuperblockEdge>>> = slots(count);
-    let committed: Vec<Mutex<Option<FrameDecisions>>> = slots(count);
+/// The superblock search of one tile on row facades: in a wavefront, a
+/// superblock waits for its left and top-right neighbours and prices from
+/// CDFs averaged from them; in raster order, a row waits for the row above
+/// and starts from the CDFs it ended with. `row_writer(row)` is a fresh
+/// writer of the tile with the row's context, `coder()` a fresh residual
+/// coder, and `search` plans and searches the next superblock of a writer.
+pub(crate) struct TileSearch<C, X, W, N, S> {
+    rows: usize,
+    cols: usize,
+    raster: bool,
+    row_writer: W,
+    coder: N,
+    search: S,
+    row_state: Vec<Mutex<Option<Row<C, X>>>>,
+    edges: Vec<Mutex<Option<SuperblockEdge>>>,
+    row_ends: Vec<Mutex<Option<SuperblockEdge>>>,
+    committed: Vec<Mutex<Option<FrameDecisions>>>,
     #[cfg(test)]
-    let checks: Vec<Mutex<Option<SuperblockEdge>>> = slots(count);
-    let master = Mutex::new((writer, FrameDecisions::default()));
-    let superblock = |index: usize| -> Result<()> {
+    checks: Vec<Mutex<Option<SuperblockEdge>>>,
+}
+
+impl<C, X, W, N, S> TileSearch<C, X, W, N, S>
+where
+    C: ResidualCoder + Send,
+    X: Send,
+    W: Fn(usize) -> Result<(KeyFrameTileWriter, X)> + Sync,
+    N: Fn() -> C + Sync,
+    S: Fn(&mut KeyFrameTileWriter, &mut C, &X) -> Result<(SuperblockDecision, Option<u32>)> + Sync,
+{
+    pub(crate) fn new(
+        (rows, cols): (usize, usize),
+        raster: bool,
+        row_writer: W,
+        coder: N,
+        search: S,
+    ) -> Self {
+        Self {
+            rows,
+            cols,
+            raster,
+            row_writer,
+            coder,
+            search,
+            row_state: slots(rows),
+            edges: slots(rows * cols),
+            row_ends: slots(rows),
+            committed: slots(rows * cols),
+            #[cfg(test)]
+            checks: slots(rows * cols),
+        }
+    }
+
+    /// The superblocks the search of superblock `index` waits for.
+    pub(crate) fn predecessors(&self, index: usize) -> Vec<usize> {
+        let (r, c) = (index / self.cols, index % self.cols);
+        let left = (c > 0).then(|| index - 1);
+        let above = (r > 0).then(|| {
+            if self.raster {
+                r * self.cols - 1
+            } else {
+                (r - 1) * self.cols + (c + 1).min(self.cols - 1)
+            }
+        });
+        left.into_iter().chain(above).collect()
+    }
+
+    /// Searches superblock `index` and commits it into its row facade.
+    pub(crate) fn superblock(&self, index: usize) -> Result<()> {
+        let (rows, cols) = (self.rows, self.cols);
         let (r, c) = (index / cols, index % cols);
-        let mut state = lock(&row_state[r])?;
+        let mut state = lock(&self.row_state[r])?;
         let row = match &mut *state {
             Some(row) => row,
             empty => {
-                let mut writer = row_writer()?;
+                let (mut writer, context) = (self.row_writer)(r)?;
                 writer.start_at_row(r);
                 empty.insert(Row {
                     writer,
-                    coder: coder(),
+                    coder: (self.coder)(),
+                    context,
                     imported: 0,
                 })
             }
@@ -76,73 +128,125 @@ pub(crate) fn code_tile<C: ResidualCoder + Send>(
         syntax.begin_superblock(root);
         if r > 0 {
             while row.imported <= (c + 1).min(cols - 1) {
-                let edge = lock(&edges[index - cols - c + row.imported])?
+                let edge = lock(&self.edges[index - cols - c + row.imported])?
                     .take()
                     .ok_or(Error::Unsupported {
                         what: "a superblock edge imported twice",
                     })?;
                 syntax.import_edge(&edge).map_err(coding("edge import"))?;
-                if row.imported == c + 1 {
+                if !self.raster && row.imported == c + 1 {
                     syntax.take_edge_cdfs(&edge, c > 0);
                 }
                 row.imported += 1;
             }
+            if self.raster && c == 0 {
+                let end = lock(&self.row_ends[r - 1])?
+                    .take()
+                    .ok_or(Error::Unsupported {
+                        what: "a superblock row read twice",
+                    })?;
+                syntax.take_edge_cdfs(&end, false);
+            }
         }
-        let decided = search(&mut row.writer, &mut row.coder)?;
+        let decided = (self.search)(&mut row.writer, &mut row.coder, &row.context)?;
         let mut decisions = FrameDecisions::default();
         decisions
             .commit_superblock(&mut row.writer, decided, &mut row.coder)
             .map_err(coding("superblock commit"))?;
         if r + 1 < rows {
             let edge = row.writer.syntax_mut().superblock_edge(root);
-            *lock(&edges[index])? = Some(edge.map_err(coding("superblock edge"))?);
+            *lock(&self.edges[index])? = Some(edge.map_err(coding("superblock edge"))?);
+            if self.raster && c + 1 == cols {
+                let edge = row.writer.syntax_mut().superblock_edge(root);
+                *lock(&self.row_ends[r])? = Some(edge.map_err(coding("superblock edge"))?);
+            }
         }
         #[cfg(test)]
         {
             let edge = row.writer.syntax_mut().superblock_edge(root);
-            *lock(&checks[index])? = Some(edge.map_err(coding("superblock edge"))?);
+            *lock(&self.checks[index])? = Some(edge.map_err(coding("superblock edge"))?);
         }
-        *lock(&committed[index])? = Some(decisions);
+        *lock(&self.committed[index])? = Some(decisions);
         if c + 1 == cols {
             *state = None;
         }
         Ok(())
-    };
+    }
+
+    /// The committed decisions of superblock `index`, once.
+    pub(crate) fn take(&self, index: usize) -> Result<FrameDecisions> {
+        lock(&self.committed[index])?
+            .take()
+            .ok_or(Error::Unsupported {
+                what: "a superblock written twice",
+            })
+    }
+
+    /// Checks in tests that `writer`, which just wrote superblock `index` at
+    /// `root`, reconstructed it as its row facade did.
+    #[cfg(test)]
+    pub(crate) fn check(
+        &self,
+        index: usize,
+        writer: &mut KeyFrameTileWriter,
+        root: Option<splot_decode::encoder_syntax::PartitionNode>,
+    ) -> Result<()> {
+        let missing = Error::Unsupported {
+            what: "a wavefront superblock without its check",
+        };
+        let worker = lock(&self.checks[index])?.take().ok_or(missing)?;
+        let edge = writer
+            .syntax_mut()
+            .superblock_edge(root.ok_or(Error::Unsupported {
+                what: "a write past its tile",
+            })?);
+        if edge
+            .map_err(coding("superblock edge"))?
+            .same_reconstruction(&worker)
+        {
+            Ok(())
+        } else {
+            Err(Error::Unsupported {
+                what: "a wavefront reconstruction that differs from the writer's",
+            })
+        }
+    }
+}
+
+/// Codes the tile of `writer` by a wavefront search. `row_writer()` is a
+/// fresh writer of the same tile, `coder()` a fresh residual coder, and
+/// `search` plans and searches the next superblock of a writer.
+pub(crate) fn code_tile<C: ResidualCoder + Send>(
+    pool: Option<&WorkerPool>,
+    writer: KeyFrameTileWriter,
+    row_writer: impl Fn() -> Result<KeyFrameTileWriter> + Sync,
+    coder: impl Fn() -> C + Sync,
+    search: impl Fn(&mut KeyFrameTileWriter, &mut C) -> Result<(SuperblockDecision, Option<u32>)> + Sync,
+) -> Result<CodedTile> {
+    let grid = writer.superblock_grid();
+    let tile = TileSearch::new(
+        grid,
+        false,
+        |_| Ok((row_writer()?, ())),
+        coder,
+        |writer: &mut KeyFrameTileWriter, coder: &mut C, (): &()| search(writer, coder),
+    );
+    let master = Mutex::new((writer, FrameDecisions::default()));
     let write = |index: usize| -> Result<()> {
-        let decisions = lock(&committed[index])?.take().ok_or(Error::Unsupported {
-            what: "a superblock written twice",
-        })?;
+        let decisions = tile.take(index)?;
         let (writer, kept) = &mut *lock(&master)?;
         #[cfg(test)]
         let root = writer.next_superblock_root();
         kept.write_committed(writer, decisions)
             .map_err(coding("superblock"))?;
         #[cfg(test)]
-        {
-            let missing = Error::Unsupported {
-                what: "a wavefront superblock without its check",
-            };
-            let worker = lock(&checks[index])?.take().ok_or(missing)?;
-            let edge = writer
-                .syntax_mut()
-                .superblock_edge(root.ok_or(Error::Unsupported {
-                    what: "a write past its tile",
-                })?);
-            if !edge
-                .map_err(coding("superblock edge"))?
-                .same_reconstruction(&worker)
-            {
-                return Err(Error::Unsupported {
-                    what: "a wavefront reconstruction that differs from the writer's",
-                });
-            }
-        }
+        tile.check(index, writer, root)?;
         Ok(())
     };
-    let preds = predecessors(rows, cols);
+    let preds = predecessors(grid.0, grid.1);
     run_graph(pool, &preds, |node| {
         if node % 2 == 0 {
-            superblock(node / 2)
+            tile.superblock(node / 2)
         } else {
             write(node / 2)
         }
@@ -175,7 +279,7 @@ fn predecessors(rows: usize, cols: usize) -> Vec<Vec<usize>> {
 /// each once all its predecessors have run: on `pool` as they become ready,
 /// else in index order, which must have every predecessor first. Stops at
 /// the first error.
-fn run_graph(
+pub(crate) fn run_graph(
     pool: Option<&WorkerPool>,
     preds: &[Vec<usize>],
     node: impl Fn(usize) -> Result<()> + Sync,
