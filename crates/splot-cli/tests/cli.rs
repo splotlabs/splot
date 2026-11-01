@@ -734,6 +734,11 @@ fn encode_rejects_conflicting_rate_control_flags() {
         (&["--qp", "10", "--crf", "20"][..], "cannot be used with"),
         (&["--crf", "20", "--bitrate", "100"], "cannot be used with"),
         (&["--rc", "cbr"], "--bitrate <BITRATE>"),
+        (&["--two-pass"], "--bitrate <BITRATE>"),
+        (
+            &["--bitrate", "100", "--rc", "cbr", "--two-pass"],
+            "--two-pass needs VBR",
+        ),
         (&["--crf", "64"], "crf 64 is outside 1..=63"),
     ] {
         let mut args = vec![

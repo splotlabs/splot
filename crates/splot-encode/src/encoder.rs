@@ -573,7 +573,7 @@ fn rate_controller(config: &Config) -> Result<Box<dyn RateController + Send>> {
         RateControlMode::ConstantQp { qp } => Box::new(ConstantQp { qp }),
         RateControlMode::Crf { crf } => Box::new(Crf { crf }),
         RateControlMode::Vbr { bitrate_kbps } => {
-            Box::new(Vbr::new(bitrate_kbps, config.frame_rate)?)
+            Box::new(Vbr::new(bitrate_kbps, config.frame_rate)?.with_first_pass(&config.first_pass))
         }
         RateControlMode::Cbr {
             bitrate_kbps,

@@ -272,7 +272,7 @@ fn vbr_meets_targets_within_three_percent() {
         config.keyint = core::num::NonZeroU32::new(30).unwrap();
         let mut encoder = Encoder::new(config.clone()).unwrap();
         let mut bits = 0;
-        for index in 0..=60 {
+        for index in 0..=60u64 {
             if index == 60 {
                 encoder.flush().unwrap();
             } else {
@@ -481,4 +481,66 @@ fn cbr_keeps_a_whole_wave_inside_the_buffer() {
             );
         }
     }
+}
+
+/// Sixty frames of a 96x64 texture that holds still for 30 frames and then
+/// pans 6 samples a frame, through VBR at preset 9 with `first_pass`, and
+/// the bits of each output packet.
+fn still_then_pan(config: &Config) -> Vec<u64> {
+    let mut encoder = Encoder::new(config.clone()).unwrap();
+    let mut bits = Vec::new();
+    for index in 0..=60u64 {
+        if index == 60 {
+            encoder.flush().unwrap();
+        } else {
+            let shift = 6 * index.saturating_sub(30) as usize;
+            encoder.send_frame(frame(config, index, shift, 0)).unwrap();
+        }
+        while let Some(packet) = encoder.receive_packet().unwrap() {
+            bits.push(packet.data.len() as u64 * 8);
+        }
+    }
+    bits
+}
+
+/// The first pass codes the frames at half size in the second pass's
+/// mini-GOPs, gives the same bits on 1 and 8 threads, and costs the panning
+/// half more than the still half; two-pass VBR then spends a larger share of
+/// the same budget on the pan than one pass does.
+#[test]
+fn two_pass_vbr_follows_the_first_pass() {
+    let mut config = Config::new(96, 64);
+    config.preset = Preset::new(9).unwrap();
+    config.rate_control = RateControlMode::Vbr { bitrate_kbps: 100 };
+    let first = config.first_pass_config().unwrap();
+    assert_eq!(first.coded().width, 48);
+    assert_eq!(
+        first.preset_overrides.last().unwrap(),
+        &("mini_gop_size".to_owned(), "2".to_owned())
+    );
+    let pass = |threads: usize| {
+        let mut config = config.clone();
+        config.threads = splot_parallel::ThreadCount::from(threads);
+        let mut pass = FirstPass::new(&config).unwrap();
+        for index in 0..60u64 {
+            let shift = 6 * index.saturating_sub(30) as usize;
+            pass.send_frame(frame(&config, index, shift, 0)).unwrap();
+        }
+        pass.finish().unwrap()
+    };
+    let bits = pass(1);
+    assert_eq!(bits, pass(8));
+    let half = |bits: &[u64]| -> (u64, u64) { (bits[..30].iter().sum(), bits[30..].iter().sum()) };
+    let (still, pan) = half(&bits);
+    assert!(pan > 2 * still, "{still} {pan}");
+    let one = still_then_pan(&config);
+    config.first_pass = bits;
+    let two = still_then_pan(&config);
+    let share = |bits: &[u64]| half(bits).1 * 1000 / bits.iter().sum::<u64>();
+    assert!(
+        share(&two) > share(&one),
+        "{} vs {}",
+        share(&two),
+        share(&one)
+    );
 }
