@@ -85,6 +85,11 @@ pub(crate) struct TileFilters {
 }
 
 impl TileFilters {
+    /// The records of the leaves coded so far.
+    pub(crate) fn recorder(&self) -> &FilterRecorder {
+        &self.recorder
+    }
+
     /// The state of tile `tile` of the frame `core` coded with `seq`; it codes
     /// every `cdef_idx` as `0` and every restoration unit off until
     /// [`Self::set_syntax`].

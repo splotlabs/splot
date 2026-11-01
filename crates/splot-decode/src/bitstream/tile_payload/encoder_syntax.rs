@@ -694,6 +694,26 @@ pub struct ProvisionalFrame {
 }
 
 impl ProvisionalFrame {
+    /// The same frame with the luma of its first `luma_rows` rows deblocked
+    /// as the frame `core` deblocks it, over the leaves of `recorder`.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] if a filter rejects its inputs.
+    pub fn deblocked(
+        self,
+        seq: &SequenceHeader,
+        core: &FrameHeaderCore,
+        recorder: &FilterRecorder,
+        luma_rows: usize,
+    ) -> Result<Self> {
+        let facts = super::tile_frontier::minimal_partition_frame_facts(seq, core)
+            .map_err(rule("frame facts"))?;
+        let mi = (facts.mi_rows(), facts.mi_cols());
+        let recorder = recorder.luma_above(luma_rows.div_ceil(4).min(mi.0), mi);
+        let frame = apply_loop_filters(seq, core, &recorder, &self.frame, (&[], &[], None), &[])?;
+        Ok(Self { frame, ..self })
+    }
+
     /// The same frame as of its first `luma_rows` luma rows, equal to the
     /// [`IntraTileSyntax::provisional_frame`] taken when those were coded.
     ///

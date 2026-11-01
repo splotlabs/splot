@@ -350,6 +350,37 @@ impl FilterRecorder {
         Ok(())
     }
 
+    /// The luma deblocking records of the MI rows above `mi_row`, the rows
+    /// from it down to `mi_rows` covered by lossless 64x64 units, which no
+    /// edge filters.
+    pub(crate) fn luma_above(&self, mi_row: usize, (mi_rows, mi_cols): (usize, usize)) -> Self {
+        let mut blocks = self.deblock_blocks.clone();
+        let (mut chroma, mut tx_skip) = (ChromaDeblockRecords::new(), Vec::new());
+        for r in (mi_row..mi_rows).step_by(16) {
+            for c in (0..mi_cols).step_by(16) {
+                let mut recorder = crate::residual::pipeline::DeblockRecorder {
+                    blocks: &mut blocks,
+                    chroma_blocks: &mut chroma,
+                    tx_skip_records: &mut tx_skip,
+                    block_r: r,
+                    block_c: c,
+                    chroma_tx: None,
+                    chroma_subsampling: self.subsampling,
+                    qindex: self.qindex,
+                    lossless: true,
+                };
+                recorder.record_luma_unit(r, c, 16, 16, 4, 0);
+            }
+        }
+        Self {
+            qindex: self.qindex,
+            subsampling: self.subsampling,
+            deblock_blocks: blocks,
+            chroma_blocks: ChromaDeblockRecords::new(),
+            tx_skip: Vec::new(),
+        }
+    }
+
     /// Adds the records of `other`, a later tile of the same frame.
     pub fn append(&mut self, mut other: Self) {
         self.deblock_blocks.append(&mut other.deblock_blocks);

@@ -31,6 +31,10 @@ use crate::wavefront::{TileSearch, run_graph};
 /// Superblock rows of the read frame finished past the row a frame searches.
 const MARGIN: usize = 1;
 
+fn margin() -> usize {
+    std::env::var("SPLOT_OVERLAP_MARGIN").ok().and_then(|v| v.parse().ok()).unwrap_or(MARGIN)
+}
+
 /// Whether `coder` codes batches with frame overlap: the preset asks for it
 /// and the frame reads no tool that needs its references finished as a
 /// whole (warped motion, the TIP weight probe), nor anything the overlap
@@ -293,7 +297,7 @@ impl<'c, 'a> Pipeline<'c, 'a> {
         let mut preds = vec![Vec::new(); commits_base + self.waves.len()];
         let row_end = |job: usize, row: usize| write(job, (row + 1) * self.grid.1 - 1);
         for (j, job) in self.jobs.iter().enumerate() {
-            let read_rows = |r: usize| (r + MARGIN).min(self.grid.0 - 1);
+            let read_rows = |r: usize| (r + margin()).min(self.grid.0 - 1);
             match job.read {
                 Source::Batch(p) => {
                     preds[prep(j)].push(reads_base + job.wave);
@@ -472,7 +476,7 @@ impl<'c, 'a> Pipeline<'c, 'a> {
     /// The read frame of job `j` and its snapshot as of read row `row`.
     fn snapshot(&self, j: usize, row: usize) -> Result<Option<(Arc<Read>, Arc<Snapshot>)>> {
         let job = &self.jobs[j];
-        let row = (row + MARGIN).min(self.grid.0 - 1);
+        let row = (row + margin()).min(self.grid.0 - 1);
         match job.read {
             Source::None => Ok(None),
             Source::Batch(p) => {
@@ -696,10 +700,27 @@ impl<'c, 'a> Pipeline<'c, 'a> {
         if index % cols == cols - 1 {
             let row = index / cols;
             let rows = (row + 1) * self.sb;
-            let frame = writer
+            let mut frame = writer
                 .syntax()
                 .provisional_frame(rows)
                 .map_err(coding("provisional frame"))?;
+            if std::env::var("SPLOT_OVERLAP_DEBLOCK").is_ok() {
+                let (_, waved) = job.exact.get().ok_or(missing("a started writer"))?;
+                let deblock = splot_core::headers::frame::FrameFilterParams {
+                    deblocking: [true, true, false, false],
+                    ..Default::default()
+                };
+                let core = prep.plan.header(
+                    &self.coder.view,
+                    &waved.refs,
+                    prep.qindex,
+                    &deblock,
+                    prep.tools,
+                )?;
+                frame = frame
+                    .deblocked(&self.coder.sequence, &core, writer.filter_recorder(), rows)
+                    .map_err(coding("provisional deblocking"))?;
+            }
             let intra = prep.publishes.then(|| {
                 let leaves = lock(&job.intra)
                     .map(|leaves| leaves.clone())

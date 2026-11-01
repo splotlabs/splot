@@ -253,6 +253,11 @@ impl KeyFrameTileWriter {
     }
 
     /// Sets the loop-filter choices the following superblocks code.
+    /// The filter records of the leaves written so far.
+    pub(crate) fn filter_recorder(&self) -> &splot_decode::encoder_syntax::FilterRecorder {
+        self.filters.recorder()
+    }
+
     pub(crate) fn set_filter_syntax(&mut self, syntax: filters::FilterSyntax) {
         self.filters.set_syntax(syntax);
     }
