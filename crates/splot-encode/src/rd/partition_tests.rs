@@ -157,7 +157,7 @@ fn full_search() -> PresetParams {
     PresetParams {
         min_block_log2: 2,
         max_block_log2: 7,
-        partition_early_exit: false,
+        partition_early_exit: crate::preset::Levels::all(false),
         ext_three_way_margin: u8::MAX,
         ext_four_way_margin: u8::MAX,
         ..PRESETS[0]
@@ -338,7 +338,7 @@ fn early_exit_skips_rectangles_when_unsplit_is_close() {
     let root = (0, 0, 5, 5);
     let (_, full) = search_partition(&mut exhaustive, root, &full_search(), unit_lambda()).unwrap();
     let preset = PresetParams {
-        partition_early_exit: true,
+        partition_early_exit: crate::preset::Levels::all(true),
         ..full_search()
     };
     let mut fast = Synthetic::new(32, near_flat);
@@ -436,7 +436,7 @@ fn early_exit_leaves_extended_shapes_to_the_margins() {
         rate: Bits::whole(1),
     };
     let preset = PresetParams {
-        partition_early_exit: true,
+        partition_early_exit: crate::preset::Levels::all(true),
         ext_three_way_margin: 0,
         ..full_search()
     };
