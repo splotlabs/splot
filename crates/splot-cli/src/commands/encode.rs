@@ -53,6 +53,10 @@ pub(crate) struct EncodeArgs {
     /// shown) and `lookahead_frames=1` before `--preset-set`; off by default.
     #[arg(long)]
     low_delay: bool,
+    /// Fast decode: 64x64 superblocks, no Wiener-NS or GDF, and at most two
+    /// CDEF strength sets, before `--preset-set`; off by default.
+    #[arg(long)]
+    fast_decode: bool,
     /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
     #[arg(long, default_value_t = ThreadCount::Auto)]
     threads: ThreadCount,
@@ -185,6 +189,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.keyint = args.keyint;
     config.resize_denominator = args.resize_denominator;
     config.film_grain = args.film_grain;
+    config.fast_decode = args.fast_decode;
     if u16::try_from(header.width).is_err() || u16::try_from(header.height).is_err() {
         bail!("IVF output supports at most 65535 samples per side");
     }
