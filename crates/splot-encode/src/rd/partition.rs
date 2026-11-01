@@ -472,7 +472,7 @@ fn candidates<S: PartitionSearch>(
             let mut fits = true;
             for &child in children.iter().filter(|&&child| coder.in_frame(child)) {
                 let (w, h) = coder.block_log2(child)?;
-                fits &= w.min(h) >= u32::from(preset.min_block_log2);
+                fits &= w.min(h) >= u32::from(preset.min_block_log2.at(coder.context()));
             }
             fits
         };

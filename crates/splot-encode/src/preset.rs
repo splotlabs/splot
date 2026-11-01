@@ -14,8 +14,9 @@ use crate::rate_control::FrameType;
 /// take effect as mode, transform, motion and loop-filter search land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PresetParams {
-    /// log2 of the smallest square block size searched (2 = 4x4).
-    pub min_block_log2: u8,
+    /// log2 of the smallest square block size searched (2 = 4x4), per frame
+    /// kind.
+    pub min_block_log2: Levels<u8>,
     /// log2 of the largest square block size searched (7 = 128x128); `8`
     /// also codes 256x256 superblocks in frames at least `sb256_min_height`
     /// tall, whose inter frames search 256x256 leaves (intra frames keep
@@ -584,13 +585,15 @@ impl PresetParams {
                 allowed: "64..=65535".to_owned(),
             });
         }
-        check(
-            "min_block_log2",
-            self.min_block_log2,
-            2,
-            self.max_block_log2,
-            " (max_block_log2)",
-        )?;
+        for &min in self.min_block_log2.values() {
+            check(
+                "min_block_log2",
+                min,
+                2,
+                self.max_block_log2,
+                " (max_block_log2)",
+            )?;
+        }
         for &modes in self.intra_modes.values() {
             check("intra_modes", modes, 1, u8::MAX, "")?;
         }
@@ -778,7 +781,11 @@ macro_rules! preset_table {
 preset_table! {
     preset:                    [   p0,    p1,    p2,    p3,    p4,    p5,    p6,    p7,    p8,    p9,   p10],
     partition {
-        min_block_log2:        [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
+        min_block_log2:        frames([
+                               [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
+                               [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
+                               [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
+                               [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4]]),
         max_block_log2:        [    8,     8,     8,     7,     7,     7,     7,     6,     6,     6,     6],
         sb256_min_height:      [  720,   720,   720,   720,   720,   720,   720,   720,   720,   720,   720],
         partition_early_exit:  frames([
@@ -968,9 +975,14 @@ mod tests {
     fn every_field_is_monotone_from_slow_to_fast() {
         for pair in PRESETS.windows(2) {
             let (slow, fast) = (&pair[0], &pair[1]);
-            assert!(fast.min_block_log2 >= slow.min_block_log2);
+            assert!(at_most(&slow.min_block_log2, &fast.min_block_log2));
             assert!(fast.max_block_log2 <= slow.max_block_log2);
-            assert!(fast.min_block_log2 <= fast.max_block_log2);
+            assert!(
+                fast.min_block_log2
+                    .values()
+                    .iter()
+                    .all(|&m| m <= fast.max_block_log2)
+            );
             assert!(at_most(&fast.intra_modes, &slow.intra_modes));
             assert!(at_most(
                 &slow.partition_early_exit,

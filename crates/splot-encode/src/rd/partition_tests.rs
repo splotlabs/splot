@@ -155,7 +155,7 @@ fn unit_lambda() -> Lambda {
 
 fn full_search() -> PresetParams {
     PresetParams {
-        min_block_log2: 2,
+        min_block_log2: crate::preset::Levels::all(2),
         max_block_log2: 7,
         partition_early_exit: crate::preset::Levels::all(false),
         ext_three_way_margin: u8::MAX,
@@ -317,7 +317,7 @@ fn block_limits_bound_the_searched_sizes() {
         rate: Bits::whole(1),
     };
     let preset = PresetParams {
-        min_block_log2: 4,
+        min_block_log2: crate::preset::Levels::all(4),
         ..full_search()
     };
     let mut coder = Synthetic::new(32, busy);
