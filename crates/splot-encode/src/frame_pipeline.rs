@@ -116,6 +116,9 @@ pub(super) fn encode_batch(
     coder: &mut IntraFrameCoder,
     batch: &[Vec<Vec<BatchStep<'_>>>],
 ) -> Result<Vec<BatchOutput>> {
+    if !eligible(coder) {
+        return encode_in_turn(coder, batch);
+    }
     let placeholder = EncoderReferences::new(&coder.sequence).map_err(coding("references"))?;
     let state = State {
         references: core::mem::replace(&mut coder.references, placeholder),
@@ -133,6 +136,37 @@ pub(super) fn encode_batch(
     coder.grain_active = state.grain_active;
     coder.shown_existing = state.shown_existing;
     coder.trail = trail;
+    Ok(outputs)
+}
+
+/// Codes `batch` one wave at a time, as without the overlap.
+fn encode_in_turn(
+    coder: &mut IntraFrameCoder,
+    batch: &[Vec<Vec<BatchStep<'_>>>],
+) -> Result<Vec<BatchOutput>> {
+    let mut outputs = Vec::new();
+    for wave in batch.iter().flatten() {
+        let jobs: Vec<_> = wave
+            .iter()
+            .filter_map(|step| match *step {
+                BatchStep::Code(source, plan, qp) => Some((source, plan, qp)),
+                BatchStep::ShowExisting(_) => None,
+            })
+            .collect();
+        let mut coded = crate::encoder::FrameCoder::encode_wave(coder, &jobs)?.into_iter();
+        for step in wave {
+            outputs.push(match *step {
+                BatchStep::Code(..) => {
+                    let mut frame = coded.next().ok_or(missing("a wave frame"))?;
+                    crate::encoder::FrameCoder::commit(coder, &mut frame)?;
+                    BatchOutput::Coded(frame)
+                }
+                BatchStep::ShowExisting(slot) => BatchOutput::Unit(
+                    crate::encoder::FrameCoder::show_existing_frame(coder, slot)?,
+                ),
+            });
+        }
+    }
     Ok(outputs)
 }
 

@@ -1578,6 +1578,8 @@ mod large_inter;
 mod mds;
 #[path = "intra_frame_mvpred_tests.rs"]
 mod mvpred;
+#[path = "intra_frame_overlap_tests.rs"]
+mod overlap;
 #[path = "intra_frame_refine_tests.rs"]
 mod refine;
 #[path = "intra_frame_tf_tests.rs"]
