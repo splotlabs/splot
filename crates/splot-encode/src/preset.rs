@@ -138,14 +138,15 @@ pub struct PresetParams {
     /// neighbours that a key frame is filtered from before it is coded; the
     /// lookahead bounds them. Base frames: the most neighbours per side of a
     /// hidden mini-GOP base frame, which its show-existing frame outputs
-    /// filtered. Mid and leaf frames are not filtered. Key frames: `4` at p0-p9 (2026-10-31, p6 vs main
-    /// 5530d5de2): paris f30 -1.37%, niklas f30 +0.11% (-0.28% before the
-    /// two-pass partition decision), park_joy f10 -0.04% at 0.99-1.01x CPU;
-    /// vs 336b8b726: paris p2 -1.60%, park_joy p0 +0.64%, p8 +0.53%; at p9
-    /// off lost paris f10 +1.52% for 0.98x CPU, so p10 keeps it. Base frames: off in every row (2026-10-31): with two
-    /// per side at strength 25 on top of the key frames, paris p6 f30 went
-    /// from -1.74% to -1.42%; the filtered frame is shown without an overlay
-    /// frame.
+    /// filtered. Mid and leaf frames are not filtered. Key frames: `4` in
+    /// every row (2026-10-31, p6 vs main 5530d5de2): paris f30 -1.37%,
+    /// niklas f30 +0.11% (-0.28% before the two-pass partition decision),
+    /// park_joy f10 -0.04% at 0.99-1.01x CPU; vs 336b8b726: paris p2
+    /// -1.60%, park_joy p0 +0.64%, p8 +0.53%; off at p9 lost paris f10
+    /// +1.52% for 0.98x CPU. Base frames: off in every row (2026-10-31):
+    /// with two per side at strength 25 on top of the key frames, paris p6
+    /// f30 went from -1.74% to -1.42%; the filtered frame is shown without an
+    /// overlay frame.
     pub tf_frames: Levels<u8>,
     /// The strength of `tf_frames` in percent per frame kind: it scales the
     /// weight decay, so larger values keep more of the neighbours. `0` is
