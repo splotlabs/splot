@@ -161,6 +161,13 @@ pub(crate) struct Lambda {
 }
 
 impl Lambda {
+    /// `threshold` in bits moved to the SAD domain of this lambda, in Q8: it
+    /// grows with the quantizer step, so thresholds keep their meaning at
+    /// every qindex.
+    pub(crate) fn qp_scaled(self, threshold: u64) -> u64 {
+        threshold * self.sse_per_bit_q16().isqrt()
+    }
+
     /// `2 * ln(2) / 12 = 0.1155` in Q16: the high-rate slope `dD/dR` of a uniform
     /// quantizer with step `q`, whose distortion `q^2 / 12` halves per half bit.
     pub(crate) const DEFAULT_SCALE_Q16: u32 = 7_570;

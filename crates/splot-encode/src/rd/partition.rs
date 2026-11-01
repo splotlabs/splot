@@ -365,8 +365,7 @@ pub(crate) fn first_pass_levels(
     if fields.is_empty() {
         return None;
     }
-    let leaf_cost =
-        (u64::from(preset.pd0_leaf_bits) * lambda.sse_per_bit_q16().isqrt()) >> (8 + depth);
+    let leaf_cost = lambda.qp_scaled(u64::from(preset.pd0_leaf_bits)) >> (8 + depth);
     let stride = side / 8;
     let mut levels = Levels {
         origin: (left, top),

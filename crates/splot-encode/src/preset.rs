@@ -198,6 +198,8 @@ pub struct PresetParams {
     /// Luma Wiener-NS bank fits per frame, each on the units the previous fit
     /// took; `0` searches PC-Wiener alone.
     pub wiener_ns: u8,
+    /// The most CDEF strength sets a frame codes, `1..=8`.
+    pub cdef_strengths: u8,
     /// Wiener-NS bank fits per frame of each chroma plane; `0` codes chroma
     /// restoration off.
     pub wiener_ns_chroma: u8,
@@ -589,6 +591,7 @@ impl PresetParams {
         check("ext_partitions", self.ext_partitions, 0, 2, "")?;
         check("wiener_ns_classes", self.wiener_ns_classes, 1, u8::MAX, "")?;
         check("gdf_candidates", self.gdf_candidates, 0, 16, "")?;
+        check("cdef_strengths", self.cdef_strengths, 1, 8, "")?;
         check("tip", self.tip, 0, 2, "")?;
         check("tip_output", self.tip_output, 0, 200, "")?;
         check(
@@ -814,6 +817,7 @@ preset_table! {
         wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
         gdf_candidates:        [   16,    16,    16,    16,    16,    16,    16,    16,    16,    16,    16],
+        cdef_strengths:        [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
         cdef_on_skip:          [false, false, false, false, false, false, false, false, false, false, false],
     }
     screen_content {
@@ -987,6 +991,7 @@ mod tests {
             assert!(fast.dip <= slow.dip);
             assert!(fast.large_inter <= slow.large_inter);
             assert!(fast.gdf_candidates <= slow.gdf_candidates);
+            assert!(fast.cdef_strengths <= slow.cdef_strengths);
             assert!(fast.cdef_on_skip <= slow.cdef_on_skip);
             assert!(fast.inter_ddt <= slow.inter_ddt);
             assert!(fast.inter_ist <= slow.inter_ist);
@@ -1154,6 +1159,7 @@ mod tests {
             (&[("intra_modes", "3,3,0,3")], "intra_modes"),
             (&[("tf_frames", "9")], "tf_frames"),
             (&[("gdf_candidates", "17")], "gdf_candidates"),
+            (&[("cdef_strengths", "0")], "cdef_strengths"),
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),
             (&[("opfl", "false")], "tip_refinemv"),
