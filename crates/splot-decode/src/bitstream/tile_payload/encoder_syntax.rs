@@ -735,7 +735,10 @@ fn replicated(
         splot_recon::CurrentFrameWorkspace::new(info, 0).map_err(rule("provisional frame"))?;
     let sub_y = usize::from(tile_frontier::chroma_subsampling(chroma).1);
     for (index, plane) in [PlaneId::Y, PlaneId::U, PlaneId::V].into_iter().enumerate() {
-        let Ok(size) = copy.plane(plane).map(|plane| plane.storage_size()) else {
+        let Ok(size) = copy
+            .plane(plane)
+            .map(splot_recon::CurrentFramePlane::storage_size)
+        else {
             continue;
         };
         let shift = if index == 0 { 0 } else { sub_y };

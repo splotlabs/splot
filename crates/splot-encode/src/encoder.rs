@@ -126,9 +126,13 @@ pub(crate) enum BatchStep<'a> {
 
 /// The output of one [`BatchStep`].
 pub(crate) enum BatchOutput {
-    Coded(CodedFrame),
+    Coded(Box<CodedFrame>),
     Unit(Vec<u8>),
 }
+
+/// The jobs of one planned wave: `(frame index in the mini-GOP, plan, qp,
+/// temporally filtered source)`.
+type PlannedWave = Vec<(usize, GopFrame, u16, Option<SourceFrame>)>;
 
 /// Lookahead windows queued before a batch codes, and mini-GOPs per batch:
 /// the frames of one batch overlap, and each batch boundary waits.
@@ -370,7 +374,7 @@ impl Encoder {
             frames: Vec<SourceFrame>,
             first: u64,
             steps: Vec<GopStep>,
-            waves: Vec<Vec<(usize, GopFrame, u16, Option<SourceFrame>)>>,
+            waves: Vec<PlannedWave>,
         }
         let mut planned = Vec::new();
         while planned.len() < BATCH_WINDOWS

@@ -19,9 +19,9 @@ fn with_overlap(preset: u8, on: bool) -> &'static PresetParams {
 /// `(preset, (width, height, qp), frames)`.
 type OverlapCase = (u8, (u32, u32, u16), u32);
 
-/// 64x64 superblocks in a wavefront (3 rows), 128x128 superblocks in raster
-/// order (3 rows).
-const OVERLAP_CASES: [OverlapCase; 2] = [(9, (200, 136, 150), 20), (6, (300, 264, 140), 12)];
+/// 64x64 superblocks in a wavefront (4x3), 128x128 superblocks in raster
+/// order (2x3); both span two batches of mini-GOPs.
+const OVERLAP_CASES: [OverlapCase; 2] = [(9, (200, 136, 150), 12), (6, (136, 264, 140), 10)];
 
 /// The frames of `case` coded on `threads` threads with `params`, in batches
 /// of `per_batch` mini-GOPs: the stream units in step order and the encoder
@@ -78,7 +78,7 @@ fn overlap_stream(
                     units.extend(coded.temporal_unit);
                 }
                 (GopStep::ShowExisting { .. }, BatchOutput::Unit(unit)) => units.extend(unit),
-                _ => panic!("an output of another kind than its step"),
+                _ => unreachable!("an output of another kind than its step"),
             }
             if let Some(display) = step.output() {
                 outputs_in_order.push(display);
@@ -138,7 +138,7 @@ fn ineligible_presets_keep_the_stream_without_overlap() {
         }
         bytes
     };
-    assert!(stream(true) == stream(false));
+    assert_eq!(stream(true), stream(false));
 }
 
 /// AVM decodes overlapped batches like splot.

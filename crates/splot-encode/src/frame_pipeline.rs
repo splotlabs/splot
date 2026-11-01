@@ -159,7 +159,7 @@ fn encode_in_turn(
                 BatchStep::Code(..) => {
                     let mut frame = coded.next().ok_or(missing("a wave frame"))?;
                     crate::encoder::FrameCoder::commit(coder, &mut frame)?;
-                    BatchOutput::Coded(frame)
+                    BatchOutput::Coded(Box::new(frame))
                 }
                 BatchStep::ShowExisting(slot) => BatchOutput::Unit(
                     crate::encoder::FrameCoder::show_existing_frame(coder, slot)?,
@@ -305,11 +305,10 @@ impl<'c, 'a> Pipeline<'c, 'a> {
                     }
                 }
             }
-            let tile = self.tile_order(j);
             for index in 0..count {
                 let node = search(j, index);
                 preds[node].push(prep(j));
-                preds[node].extend(tile(index).into_iter().map(|i| search(j, i)));
+                preds[node].extend(self.tile_order(index).into_iter().map(|i| search(j, i)));
                 if let (Source::Batch(p), 0) = (&job.read, index % self.grid.1) {
                     preds[node].push(row_end(*p, read_rows(index / self.grid.1)));
                 }
@@ -331,10 +330,10 @@ impl<'c, 'a> Pipeline<'c, 'a> {
                 let p_wave = self.jobs[p].wave;
                 preds[reads_base + w].push(writer_start(p));
                 for &step in &self.waves[p_wave] {
-                    if let Ok(j) = step {
-                        if j != p {
-                            preds[reads_base + w].push(prep(j));
-                        }
+                    if let Ok(j) = step
+                        && j != p
+                    {
+                        preds[reads_base + w].push(prep(j));
                     }
                 }
             }
@@ -366,24 +365,20 @@ impl<'c, 'a> Pipeline<'c, 'a> {
         })
     }
 
-    /// The search predecessors of superblock `index` of job `j`, local.
-    fn tile_order(&self, j: usize) -> impl Fn(usize) -> Vec<usize> + '_ {
-        let (rows, cols) = self.grid;
-        let raster = !self.coder.preset.wavefront;
-        let _ = j;
-        move |index| {
-            let (r, c) = (index / cols, index % cols);
-            let left = (c > 0).then(|| index - 1);
-            let above = (r > 0).then(|| {
-                if raster {
-                    r * cols - 1
-                } else {
-                    (r - 1) * cols + (c + 1).min(cols - 1)
-                }
-            });
-            let _ = rows;
-            left.into_iter().chain(above).collect()
-        }
+    /// The search predecessors of superblock `index` of a job, local: the
+    /// left and top-right neighbours in a wavefront, else the previous one.
+    fn tile_order(&self, index: usize) -> Vec<usize> {
+        let cols = self.grid.1;
+        let (r, c) = (index / cols, index % cols);
+        let left = (c > 0).then(|| index - 1);
+        let above = (r > 0).then(|| {
+            if self.coder.preset.wavefront {
+                (r - 1) * cols + (c + 1).min(cols - 1)
+            } else {
+                r * cols - 1
+            }
+        });
+        left.into_iter().chain(above).collect()
     }
 
     /// The batch job of the read frame of wave `w`.
@@ -408,12 +403,21 @@ impl<'c, 'a> Pipeline<'c, 'a> {
         }
     }
 
-    /// The read frame of wave `w` from the batch: the references after every
-    /// step before it and the show-existing slots after it.
+    /// The read frame of wave `w` from the batch.
     fn read(&self, w: usize) -> Result<()> {
         let Some(p) = self.read_job(w) else {
             return Ok(());
         };
+        let read = self.read_frame(p, w)?;
+        self.reads[w]
+            .set(read)
+            .map_err(|_| missing("a read frame set twice"))
+    }
+
+    /// Job `p` as the waves before wave `until` leave it for a reader: the
+    /// references after every step before it, and the show-existing slots
+    /// between it and `until`.
+    fn read_frame(&self, p: usize, until: usize) -> Result<Arc<Read>> {
         let p_wave = self.jobs[p].wave;
         let base = self.waved(p_wave.checked_sub(1))?;
         let mut before = base.refs.fork().map_err(coding("references"))?;
@@ -422,17 +426,12 @@ impl<'c, 'a> Pipeline<'c, 'a> {
         for &step in &self.waves[p_wave] {
             match step {
                 Ok(j) if j == p => seen = true,
+                Ok(_) if seen => {}
                 Ok(j) => {
-                    let core = &self.jobs[j]
-                        .prep
-                        .get()
-                        .ok_or(missing("a prepared frame"))?
-                        .core;
-                    if !seen {
-                        before
-                            .update_tip_output(core)
-                            .map_err(coding("reference update"))?;
-                    }
+                    let prep = self.jobs[j].prep.get().ok_or(missing("a prepared frame"))?;
+                    before
+                        .update_tip_output(&prep.core)
+                        .map_err(coding("reference update"))?;
                 }
                 Err(slot) if seen => after.push(slot),
                 Err(slot) => before
@@ -440,23 +439,20 @@ impl<'c, 'a> Pipeline<'c, 'a> {
                     .map_err(coding("show-existing frame"))?,
             }
         }
-        for steps in &self.waves[p_wave + 1..w] {
+        for steps in &self.waves[p_wave + 1..until] {
             after.extend(steps.iter().filter_map(|step| step.err()));
         }
         let (exact, _) = self.jobs[p]
             .exact
             .get()
             .ok_or(missing("a started writer"))?;
-        let read = Arc::new(Read {
+        Ok(Arc::new(Read {
             core: exact.core.clone(),
             initial: exact.initial.clone(),
             before,
             slot_intra: base.slot_intra.clone(),
             after,
-        });
-        self.reads[w]
-            .set(read)
-            .map_err(|_| missing("a read frame set twice"))
+        }))
     }
 
     /// The read frame of job `j` and its snapshot as of read row `row`.
@@ -673,53 +669,15 @@ impl<'c, 'a> Pipeline<'c, 'a> {
         Ok(())
     }
 
-    /// Keeps job `j`, a reference frame, as the trail the next batch reads
-    /// when it is the batch's last reference frame.
+    /// Keeps job `j`, the batch's last reference frame, as the trail the
+    /// next batch reads.
     fn keep_trail(&self, j: usize) -> Result<()> {
-        let job = &self.jobs[j];
-        let full = job
+        let full = self.jobs[j]
             .rows
             .last()
             .and_then(OnceLock::get)
             .ok_or(missing("a row"))?;
-        let mut before = self
-            .waved(job.wave.checked_sub(1))?
-            .refs
-            .fork()
-            .map_err(coding("references"))?;
-        let mut after = Vec::new();
-        let mut seen = false;
-        for &step in &self.waves[job.wave] {
-            match step {
-                Ok(other) if other == j => seen = true,
-                Ok(other) if !seen => {
-                    let core = &self.jobs[other]
-                        .prep
-                        .get()
-                        .ok_or(missing("a prepared frame"))?
-                        .core;
-                    before
-                        .update_tip_output(core)
-                        .map_err(coding("reference update"))?;
-                }
-                Ok(_) => {}
-                Err(slot) if seen => after.push(slot),
-                Err(slot) => before
-                    .show_existing(slot)
-                    .map_err(coding("show-existing frame"))?,
-            }
-        }
-        for steps in &self.waves[job.wave + 1..] {
-            after.extend(steps.iter().filter_map(|step| step.err()));
-        }
-        let (exact, _) = job.exact.get().ok_or(missing("a started writer"))?;
-        let read = Arc::new(Read {
-            core: exact.core.clone(),
-            initial: exact.initial.clone(),
-            before,
-            slot_intra: self.waved(job.wave.checked_sub(1))?.slot_intra.clone(),
-            after,
-        });
+        let read = self.read_frame(j, self.waves.len())?;
         *lock(&self.next_trail)? = Some(Trail {
             read,
             full: Arc::clone(full),
@@ -763,7 +721,7 @@ impl<'c, 'a> Pipeline<'c, 'a> {
                         .take()
                         .ok_or(missing("a finished frame"))?;
                     committed.commit(&mut coded)?;
-                    BatchOutput::Coded(coded)
+                    BatchOutput::Coded(Box::new(coded))
                 }
                 Err(slot) => BatchOutput::Unit(committed.show_existing(&self.coder.view, slot)?),
             });
