@@ -205,6 +205,23 @@ pub(crate) fn check_bitrate(
     Ok(())
 }
 
+/// Checks the settings of CBR: the bitrate, the buffer and the initial
+/// level, at most the buffer.
+pub(crate) fn check_cbr(
+    bitrate_kbps: u32,
+    (buffer_ms, initial_ms): (u32, u32),
+    frame_rate: (u32, u32),
+) -> Result<()> {
+    check_bitrate(bitrate_kbps, Some(buffer_ms), frame_rate)?;
+    if initial_ms > buffer_ms {
+        return Err(Error::InvalidInitialBuffer {
+            initial_ms,
+            buffer_ms,
+        });
+    }
+    Ok(())
+}
+
 /// The budget of one frame: `bitrate_kbps * 1000 / frame_rate` bits.
 fn frame_bits(bitrate_kbps: u32, (numerator, denominator): (u32, u32)) -> u64 {
     let bits =
@@ -409,9 +426,11 @@ impl RateController for Vbr {
     }
 }
 
-/// Constant bitrate: every window meets the target, and no frame overflows a
-/// buffer that starts half full. The drift is the buffer level minus half the
-/// buffer, so it stays within half the buffer either way.
+/// Constant bitrate: every window meets the target, and no frame overflows
+/// the encoder buffer, the buffer size minus the decoder buffer level. The
+/// drift is the encoder level minus half the buffer, so it stays within half
+/// the buffer either way; it starts from the initial decoder level, and the
+/// windows steer it back to half the buffer.
 #[derive(Debug, Clone)]
 pub struct Cbr {
     vbr: Vbr,
@@ -421,23 +440,29 @@ pub struct Cbr {
 }
 
 impl Cbr {
-    /// A CBR controller for `bitrate_kbps` with a buffer of `buffer_ms` at
-    /// that bitrate, at `frame_rate` frames per second.
+    /// A CBR controller for `bitrate_kbps` with a decoder buffer of
+    /// `buffer_ms` at that bitrate that holds `initial_ms` before the first
+    /// frame, at `frame_rate` frames per second.
     ///
     /// # Errors
     /// Returns [`Error::InvalidBitrate`] for a bitrate outside
     /// `1..=`[`MAX_BITRATE_KBPS`] or a buffer outside `1..=`[`MAX_BUFFER_MS`],
+    /// [`Error::InvalidInitialBuffer`] for an initial level above the buffer,
     /// and [`Error::InvalidFrameRate`] for a zero frame-rate term.
-    pub fn new(bitrate_kbps: u32, buffer_ms: u32, frame_rate: (u32, u32)) -> Result<Self> {
-        check_bitrate(bitrate_kbps, Some(buffer_ms), frame_rate)?;
+    pub fn new(
+        bitrate_kbps: u32,
+        (buffer_ms, initial_ms): (u32, u32),
+        frame_rate: (u32, u32),
+    ) -> Result<Self> {
+        check_cbr(bitrate_kbps, (buffer_ms, initial_ms), frame_rate)?;
         let buffer_bits = u64::from(bitrate_kbps) * u64::from(buffer_ms);
+        let initial_bits = u64::from(bitrate_kbps) * u64::from(initial_ms);
         let frame_bits = frame_bits(bitrate_kbps, frame_rate);
+        let half = buffer_bits as i64 / 2;
+        let mut vbr = Vbr::with_limits(frame_bits, 1, (half, half));
+        vbr.drift = (half - initial_bits as i64).clamp(-half, half);
         Ok(Self {
-            vbr: Vbr::with_limits(
-                frame_bits,
-                1,
-                (buffer_bits as i64 / 2, buffer_bits as i64 / 2),
-            ),
+            vbr,
             buffer_bits,
             pending: 0,
         })

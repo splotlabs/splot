@@ -233,6 +233,12 @@ fn resized_clips_code_and_decode_at_the_scaled_size() {
 fn crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats() {
     round_trip(8, YUV420, &["--crf", "25"]);
     round_trip(10, YUV420, &["--bitrate", "200", "--rc", "cbr"]);
+    let small = ["--buffer", "250", "--initial-buffer", "50"];
+    round_trip(
+        8,
+        YUV420,
+        &[&["--bitrate", "200", "--rc", "cbr"][..], &small].concat(),
+    );
     round_trip(8, YUV420, &["--bitrate", "200", "--two-pass"]);
 }
 

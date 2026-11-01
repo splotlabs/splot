@@ -59,7 +59,7 @@ fn crf_adds_the_offset_and_clamps() {
 fn bitrate_controllers_meet_a_simulated_target() {
     for cbr in [false, true] {
         let mut control = if cbr {
-            Box::new(Cbr::new(200, 500, (30, 1)).unwrap()) as Box<dyn RateController>
+            Box::new(Cbr::new(200, (500, 250), (30, 1)).unwrap()) as Box<dyn RateController>
         } else {
             Box::new(Vbr::new(200, (30, 1)).unwrap())
         };
@@ -181,6 +181,7 @@ fn cases() -> [RateControlMode; 3] {
         RateControlMode::Cbr {
             bitrate_kbps: 60,
             buffer_ms: 1000,
+            initial_ms: 500,
         },
     ]
 }
@@ -358,7 +359,11 @@ fn static_content_banks_no_unbounded_credit() {
     };
     let frame_bits = 200_000 / 30;
     let buffer = 200 * 1000;
-    let cbr = simulate(&mut Cbr::new(200, 1000, (30, 1)).unwrap(), 100, frame);
+    let cbr = simulate(
+        &mut Cbr::new(200, (1000, 500), (30, 1)).unwrap(),
+        100,
+        frame,
+    );
     let mut level = buffer / 2;
     for (index, &bits) in cbr.iter().enumerate() {
         level = (level + bits).saturating_sub(frame_bits);
@@ -390,7 +395,7 @@ fn extreme_inputs_do_not_overflow() {
         Err(Error::InvalidBitrate { .. })
     ));
     assert!(matches!(
-        Cbr::new(100, MAX_BUFFER_MS + 1, (30, 1)),
+        Cbr::new(100, (MAX_BUFFER_MS + 1, 0), (30, 1)),
         Err(Error::InvalidBitrate { .. })
     ));
     assert!(matches!(
@@ -400,8 +405,15 @@ fn extreme_inputs_do_not_overflow() {
     let controllers: [Box<dyn RateController>; 4] = [
         Box::new(Vbr::new(MAX_BITRATE_KBPS, (1, u32::MAX)).unwrap()),
         Box::new(Vbr::new(1, (u32::MAX, 1)).unwrap()),
-        Box::new(Cbr::new(MAX_BITRATE_KBPS, MAX_BUFFER_MS, (1, u32::MAX)).unwrap()),
-        Box::new(Cbr::new(1, 1, (u32::MAX, 1)).unwrap()),
+        Box::new(
+            Cbr::new(
+                MAX_BITRATE_KBPS,
+                (MAX_BUFFER_MS, MAX_BUFFER_MS),
+                (1, u32::MAX),
+            )
+            .unwrap(),
+        ),
+        Box::new(Cbr::new(1, (1, 0), (u32::MAX, 1)).unwrap()),
     ];
     for mut control in controllers {
         for complexity in [0, u64::MAX] {
@@ -467,7 +479,7 @@ fn cbr_keeps_a_whole_wave_inside_the_buffer() {
             complexity: (1 << 16) + step * (1 << 18),
             ..plan(1, FrameType::Inter, 0)
         };
-        let mut cbr = Cbr::new(200, 500, (30, 1)).unwrap();
+        let mut cbr = Cbr::new(200, (500, 250), (30, 1)).unwrap();
         for index in 0..30 {
             cbr.update(&stats(index, 100, 0));
         }
@@ -481,6 +493,35 @@ fn cbr_keeps_a_whole_wave_inside_the_buffer() {
             );
         }
     }
+}
+
+/// A CBR decoder buffer of half a second that starts at a fifth, half,
+/// four fifths or all of its size: simulated frames, with a key frame every 30,
+/// never underflow or overflow it, and the first second spends more the
+/// fuller the buffer starts.
+#[test]
+fn cbr_keeps_the_decoder_buffer_from_any_initial_level() {
+    let (frame_bits, buffer) = (200_000 / 30, 200 * 500);
+    let mut first_second = Vec::new();
+    for initial_ms in [100, 250, 400, 500] {
+        let mut cbr = Cbr::new(200, (500, initial_ms), (30, 1)).unwrap();
+        let sizes = simulate(&mut cbr, 30, |index| {
+            let kind = if index % 30 == 0 {
+                FrameType::Key
+            } else {
+                FrameType::Inter
+            };
+            plan(index, kind, -4 * (index % 4) as i16)
+        });
+        let mut level = 200 * u64::from(initial_ms);
+        for (index, &bits) in sizes.iter().enumerate() {
+            assert!(bits <= level, "{initial_ms} ms: frame {index} underflows");
+            level = level - bits + frame_bits;
+            assert!(level <= buffer, "{initial_ms} ms: frame {index} overflows");
+        }
+        first_second.push(sizes[..30].iter().sum::<u64>());
+    }
+    assert!(first_second.is_sorted_by(|a, b| a < b), "{first_second:?}");
 }
 
 /// Sixty frames of a 96x64 texture that holds still for 30 frames and then
