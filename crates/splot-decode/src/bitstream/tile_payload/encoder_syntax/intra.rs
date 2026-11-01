@@ -1039,6 +1039,36 @@ impl IntraTileSyntax {
         ))
     }
 
+    /// The reconstruction and motion records of the first `luma_rows` luma
+    /// rows: rows below repeat the last of them, and the records of leaves
+    /// that start lower are left out. The result depends on those rows alone.
+    ///
+    /// # Errors
+    /// Returns [`EncoderSyntaxError::Rule`] if the copy cannot be built.
+    pub fn provisional_frame(&self, luma_rows: usize) -> Result<super::ProvisionalFrame> {
+        let source = &self.recon.workspace;
+        let frame = super::replicated(source.info(), self.chroma, luma_rows, |plane, rect| {
+            let mut samples = Vec::with_capacity(rect.width() * rect.height());
+            for row in source
+                .rect_rows(plane, rect)
+                .map_err(rule("provisional rows"))?
+            {
+                samples.extend_from_slice(row);
+            }
+            Ok(samples)
+        })?;
+        let motion = self
+            .inter
+            .as_ref()
+            .map(|inter| inter.tile.temporal_records())
+            .unwrap_or_default();
+        Ok(super::ProvisionalFrame {
+            frame,
+            motion: super::TileMotion(motion).prefix(luma_rows),
+            chroma: self.chroma,
+        })
+    }
+
     fn reconstruct_with(
         &mut self,
         index: usize,
