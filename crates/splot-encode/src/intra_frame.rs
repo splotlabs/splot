@@ -434,6 +434,18 @@ impl IntraFrameCoder {
         })
     }
 
+    /// The `(mi_rows, mi_cols)` of the coded frames and the superblock side
+    /// of a frame of `frame_type`.
+    fn geometry(&self, frame_type: FrameType) -> ((usize, usize), usize) {
+        let mi = |side: u32| (side as usize).div_ceil(8) * 2;
+        let sb = match self.view.frame_sb_size(frame_type == FrameType::Key) {
+            SuperblockSize::Block64x64 => 64,
+            SuperblockSize::Block128x128 => 128,
+            SuperblockSize::Block256x256 => 256,
+        };
+        ((mi(self.params.height), mi(self.params.width)), sb)
+    }
+
     /// The `(qindex offset, lambda log2 Q8)` of each superblock of `plan`
     /// from its block importances, plus [`tpl::ssim_lambda_log2`] of `source`
     /// at `ssim_aq`; empty without either or when every offset
@@ -444,11 +456,7 @@ impl IntraFrameCoder {
         if costs.is_none() && self.preset.ssim_aq == 0 {
             return Vec::new();
         }
-        let sb = match self.view.frame_sb_size(plan.frame_type == FrameType::Key) {
-            SuperblockSize::Block64x64 => 64,
-            SuperblockSize::Block128x128 => 128,
-            SuperblockSize::Block256x256 => 256,
-        };
+        let (_, sb) = self.geometry(plan.frame_type);
         let (width, height) = (self.params.width as usize, self.params.height as usize);
         let grid = (width.div_ceil(sb), height.div_ceil(sb), sb);
         let mut quant = costs.map_or_else(
@@ -638,10 +646,7 @@ impl IntraFrameCoder {
         }
         let core = probe(tools)?;
         let initial = refs.frame_start(&core).map_err(coding("initial CDFs"))?;
-        let first = KeyFrameTileWriter::with_start(&self.sequence, &core, refs, &initial, 0)
-            .map_err(coding("tile setup"))?;
-        let (mi_rows, mi_cols) = first.syntax().mi_dimensions();
-        let sb = first.syntax().superblock_size4() * 4;
+        let ((mi_rows, mi_cols), sb) = self.geometry(plan.frame_type);
         let padded = PaddedSource::new(source, self.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
         let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
         let open_loop = match &core.inter {

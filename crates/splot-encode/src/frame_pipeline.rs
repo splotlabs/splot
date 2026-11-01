@@ -536,7 +536,7 @@ impl<'c, 'a> Pipeline<'c, 'a> {
             &refs,
             &slot_intra,
             (job.source, &job.plan, job.qp),
-            self.coder.superblock_quant(&job.plan),
+            self.coder.superblock_quant(&job.plan, job.source),
         )?;
         job.prep
             .set(prep)
@@ -599,7 +599,7 @@ impl<'c, 'a> Pipeline<'c, 'a> {
             &waved.refs,
             &waved.slot_intra,
             (job.source, &job.plan, job.qp),
-            self.coder.superblock_quant(&job.plan),
+            self.coder.superblock_quant(&job.plan, job.source),
         )?;
         let prep = job.prep.get().ok_or(missing("a prepared frame"))?;
         if exact.core != prep.core {
