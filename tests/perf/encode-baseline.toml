@@ -14,7 +14,7 @@ ir_stable = 16394445660
 [[row]]
 clip = "inter-128x96"
 preset = 10
-ir_stable = 2585606489
+ir_stable = 2690391637
 
 [[row]]
 clip = "intra-176x144"
