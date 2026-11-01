@@ -38,14 +38,13 @@ struct Row<C, X> {
 /// superblock waits for its left and top-right neighbours and prices from
 /// CDFs averaged from them; in raster order, a row waits for the row above
 /// and starts from the CDFs it ended with. `row_writer(row)` is a fresh
-/// writer of the tile with the row's context, `coder()` a fresh residual
-/// coder, and `search` plans and searches the next superblock of a writer.
-pub(crate) struct TileSearch<C, X, W, N, S> {
+/// writer of the tile with a residual coder and the row's context, and
+/// `search` plans and searches the next superblock of a writer.
+pub(crate) struct TileSearch<C, X, W, S> {
     rows: usize,
     cols: usize,
     raster: bool,
     row_writer: W,
-    coder: N,
     search: S,
     row_state: Vec<Mutex<Option<Row<C, X>>>>,
     edges: Vec<Mutex<Option<SuperblockEdge>>>,
@@ -55,19 +54,17 @@ pub(crate) struct TileSearch<C, X, W, N, S> {
     checks: Vec<Mutex<Option<SuperblockEdge>>>,
 }
 
-impl<C, X, W, N, S> TileSearch<C, X, W, N, S>
+impl<C, X, W, S> TileSearch<C, X, W, S>
 where
     C: ResidualCoder + Send,
     X: Send,
-    W: Fn(usize) -> Result<(KeyFrameTileWriter, X)> + Sync,
-    N: Fn() -> C + Sync,
+    W: Fn(usize) -> Result<(KeyFrameTileWriter, C, X)> + Sync,
     S: Fn(&mut KeyFrameTileWriter, &mut C, &X) -> Result<(SuperblockDecision, Option<u32>)> + Sync,
 {
     pub(crate) fn new(
         (rows, cols): (usize, usize),
         raster: bool,
         row_writer: W,
-        coder: N,
         search: S,
     ) -> Self {
         Self {
@@ -75,7 +72,6 @@ where
             cols,
             raster,
             row_writer,
-            coder,
             search,
             row_state: slots(rows),
             edges: slots(rows * cols),
@@ -86,20 +82,6 @@ where
         }
     }
 
-    /// The superblocks the search of superblock `index` waits for.
-    pub(crate) fn predecessors(&self, index: usize) -> Vec<usize> {
-        let (r, c) = (index / self.cols, index % self.cols);
-        let left = (c > 0).then(|| index - 1);
-        let above = (r > 0).then(|| {
-            if self.raster {
-                r * self.cols - 1
-            } else {
-                (r - 1) * self.cols + (c + 1).min(self.cols - 1)
-            }
-        });
-        left.into_iter().chain(above).collect()
-    }
-
     /// Searches superblock `index` and commits it into its row facade.
     pub(crate) fn superblock(&self, index: usize) -> Result<()> {
         let (rows, cols) = (self.rows, self.cols);
@@ -108,11 +90,11 @@ where
         let row = match &mut *state {
             Some(row) => row,
             empty => {
-                let (mut writer, context) = (self.row_writer)(r)?;
+                let (mut writer, coder, context) = (self.row_writer)(r)?;
                 writer.start_at_row(r);
                 empty.insert(Row {
                     writer,
-                    coder: (self.coder)(),
+                    coder,
                     context,
                     imported: 0,
                 })
@@ -227,8 +209,7 @@ pub(crate) fn code_tile<C: ResidualCoder + Send>(
     let tile = TileSearch::new(
         grid,
         false,
-        |_| Ok((row_writer()?, ())),
-        coder,
+        |_| Ok((row_writer()?, coder(), ())),
         |writer: &mut KeyFrameTileWriter, coder: &mut C, (): &()| search(writer, coder),
     );
     let master = Mutex::new((writer, FrameDecisions::default()));
@@ -277,8 +258,8 @@ fn predecessors(rows: usize, cols: usize) -> Vec<Vec<usize>> {
 
 /// Runs `node` on every node of the graph whose predecessors are `preds`,
 /// each once all its predecessors have run: on `pool` as they become ready,
-/// else in index order, which must have every predecessor first. Stops at
-/// the first error.
+/// else lowest ready index first, which is plain index order when every
+/// predecessor comes first. Stops at the first error.
 pub(crate) fn run_graph(
     pool: Option<&WorkerPool>,
     preds: &[Vec<usize>],
@@ -296,13 +277,21 @@ pub(crate) fn run_graph(
         .filter(|(_, p)| p.is_empty())
         .map(|(i, _)| i);
     let Some(pool) = pool else {
-        for (index, preds) in preds.iter().enumerate() {
-            if preds.iter().any(|&pred| pred >= index) {
-                return Err(Error::Unsupported {
-                    what: "a wavefront graph out of index order",
-                });
-            }
+        let mut waiting: Vec<usize> = preds.iter().map(Vec::len).collect();
+        let mut ready: std::collections::BinaryHeap<core::cmp::Reverse<usize>> = preds
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.is_empty())
+            .map(|(i, _)| core::cmp::Reverse(i))
+            .collect();
+        while let Some(core::cmp::Reverse(index)) = ready.pop() {
             node(index)?;
+            for &succ in &succs[index] {
+                waiting[succ] -= 1;
+                if waiting[succ] == 0 {
+                    ready.push(core::cmp::Reverse(succ));
+                }
+            }
         }
         return Ok(());
     };

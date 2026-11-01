@@ -98,6 +98,8 @@ pub(crate) struct IntraFrameCoder {
     grain_active: bool,
     /// Which temporal layers code warped motion, from the committed frames.
     warp_gate: crate::warp::WarpGate,
+    /// The last reference frame of the last frame-overlap batch.
+    trail: Option<frame_pipeline::Trail>,
     /// The intra superblocks of the frame in each reference slot.
     slot_intra: [Option<Arc<IntraCells>>; 8],
 }
@@ -140,6 +142,14 @@ impl IntraCells {
                 }
             }
         }
+        cells
+    }
+
+    /// These cells with every cell from luma row `luma_rows` down cleared.
+    fn above(&self, luma_rows: usize) -> Self {
+        let mut cells = self.clone();
+        let first = luma_rows.div_ceil(8).min(cells.rows) * cells.cols;
+        cells.flags[first..].fill(false);
         cells
     }
 
@@ -302,6 +312,7 @@ impl IntraFrameCoder {
             shown_existing: 0,
             grain_active: false,
             warp_gate: crate::warp::WarpGate::default(),
+            trail: None,
             slot_intra: Default::default(),
         })
     }
@@ -631,14 +642,7 @@ impl IntraFrameCoder {
         }
         let publishes = self.preset.ref_intra_margin != u8::MAX;
         let frame_size = (mi_cols * 4, mi_rows * 4);
-        let reference_intra = plan
-            .primary_slot
-            .filter(|_| plan.frame_type == FrameType::Inter && publishes)
-            .and_then(|slot| slot_intra.get(slot as usize)?.clone())
-            .filter(|cells| {
-                (cells.cols, cells.rows) == (frame_size.0.div_ceil(8), frame_size.1.div_ceil(8))
-                    && cells.age < self.preset.ref_intra_refresh
-            });
+        let reference_intra = self.slot_reference_intra((&plan, publishes, frame_size), slot_intra);
         #[cfg(test)]
         if reference_intra.as_ref().is_some_and(|cells| cells.age > 0) {
             crate::mode_decision::CHAINED_REFERENCES
@@ -667,6 +671,31 @@ impl IntraFrameCoder {
             reference_intra,
             wavefront,
         })
+    }
+
+    /// The intra cells the primary slot of `plan` holds in `slot_intra` when
+    /// they still steer the intra search of a frame of `frame_size`.
+    fn slot_reference_intra(
+        &self,
+        (plan, publishes, frame_size): (&GopFrame, bool, (usize, usize)),
+        slot_intra: &[Option<Arc<IntraCells>>],
+    ) -> Option<Arc<IntraCells>> {
+        plan.primary_slot
+            .filter(|_| plan.frame_type == FrameType::Inter && publishes)
+            .and_then(|slot| slot_intra.get(slot as usize)?.clone())
+            .filter(|cells| {
+                (cells.cols, cells.rows) == (frame_size.0.div_ceil(8), frame_size.1.div_ceil(8))
+                    && cells.age < self.preset.ref_intra_refresh
+            })
+    }
+
+    /// [`Self::slot_reference_intra`] of `prep`.
+    fn reference_intra(
+        &self,
+        prep: &FramePrep<'_>,
+        slot_intra: &[Option<Arc<IntraCells>>],
+    ) -> Option<Arc<IntraCells>> {
+        self.slot_reference_intra((&prep.plan, prep.publishes, prep.frame_size), slot_intra)
     }
 
     /// Plans the qindex of the next superblock of `writer` and searches it,
