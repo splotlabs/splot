@@ -177,6 +177,9 @@ impl EncodeArgs {
 /// Returns an error for unreadable or malformed input, an unsupported input
 /// format or setting, an encoder failure, or an output write failure.
 pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
+    if args.rc != Some(RcMode::Cbr) && (args.buffer.is_some() || args.initial_buffer.is_some()) {
+        bail!("--buffer and --initial-buffer need --rc cbr");
+    }
     let input: Box<dyn Read> = if args.input.as_os_str() == "-" {
         Box::new(io::stdin().lock())
     } else {

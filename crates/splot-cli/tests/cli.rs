@@ -736,6 +736,10 @@ fn encode_rejects_conflicting_rate_control_flags() {
         (&["--rc", "cbr"], "--bitrate <BITRATE>"),
         (&["--buffer", "500"], "--rc <RC>"),
         (
+            &["--bitrate", "100", "--rc", "vbr", "--buffer", "2000"],
+            "--buffer and --initial-buffer need --rc cbr",
+        ),
+        (
             &[
                 "--bitrate",
                 "100",
