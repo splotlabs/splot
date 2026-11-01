@@ -189,7 +189,9 @@ fn tpl_stream_of(
 ) -> (Vec<Vec<u8>>, Vec<u8>, Vec<[bool; 6]>) {
     config.rate_control = RateControlMode::Crf { crf: 50 };
     config.threads = splot_parallel::ThreadCount::from(threads);
-    config.preset_overrides = vec![("tpl_delta_q".into(), strength.to_string())];
+    config
+        .preset_overrides
+        .push(("tpl_delta_q".into(), strength.to_string()));
     let frames = Arc::default();
     let coder = ToolRecording {
         coder: IntraFrameCoder::new(&config).unwrap(),
@@ -303,6 +305,21 @@ fn tuned_wavefront_streams_are_thread_count_invariant() {
             assert!(stream(threads).0 == units, "{tune:?}: {threads} threads");
         }
     }
+}
+
+/// With 256x256 sequence superblocks the key frame takes its superblock
+/// offsets on the 128x128 grid it codes, so the temporal model codes and
+/// decodes to the encoder recon.
+#[test]
+fn sb256_sequences_take_key_frame_offsets_on_the_128_grid() {
+    let mut config = config(200, 136, BitDepth::Eight, 6, 0);
+    config.preset_overrides = vec![
+        ("max_block_log2".into(), "8".into()),
+        ("sb256_min_height".into(), "64".into()),
+    ];
+    let (units, recon, tools) = tpl_stream(config, 100, 1);
+    assert_same_samples(&decode(&units.concat()), &recon, "sb256");
+    assert!(tools.iter().any(|t| t[0]), "{tools:?}");
 }
 
 /// A frame whose superblock offsets all snap to 0 at the `delta_q_res` step

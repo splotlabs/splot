@@ -430,7 +430,7 @@ impl IntraFrameCoder {
         if costs.is_none() && self.preset.ssim_aq == 0 {
             return Vec::new();
         }
-        let sb = match self.params.sb_size {
+        let sb = match self.view.frame_sb_size(plan.frame_type == FrameType::Key) {
             SuperblockSize::Block64x64 => 64,
             SuperblockSize::Block128x128 => 128,
             SuperblockSize::Block256x256 => 256,
