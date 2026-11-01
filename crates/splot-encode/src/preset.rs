@@ -160,7 +160,8 @@ pub struct PresetParams {
     pub delta_q_res: u8,
     /// Compound candidates of an inter leaf that get a full RD trial, best
     /// prediction SATD first; skip-mode candidates are tried besides them.
-    /// `0` codes neither compound nor skip-mode blocks.
+    /// `0` codes neither compound nor skip-mode blocks. At least `1` in every
+    /// row: `0` at p9 cost niklas f10 +9.8% BD-rate for 0.85x instructions.
     pub compound_candidates: u8,
     /// Inter frames start from the saved CDFs of a reference frame instead of
     /// the default CDFs, and the sequence enables CDF averaging.
@@ -830,7 +831,7 @@ preset_table! {
         compound_skip_sad:     [   16,    16,    16,    16,    16,    24,    24,    24,    24,    24,    24],
         subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     1],
         eighth_pel_max_qindex: [  128,   128,   128,     0,     0,     0,     0,     0,     0,     0,     0],
-        compound_candidates:   [    8,     6,     6,     6,     4,     4,     3,     2,     1,     0,     0],
+        compound_candidates:   [    8,     6,     6,     6,     4,     4,     3,     2,     1,     1,     1],
         large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mv_prediction:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         drl_bits:              [    3,     3,     3,     3,     3,     3,     3,     1,     1,     1,     1],
