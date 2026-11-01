@@ -289,13 +289,20 @@ fn ccso_plane(
 /// on and deblocking and CDEF off, the decoder output minus its input sums,
 /// over each class the search counts, to the count times the class offset,
 /// in every plane and for edge, edge-classifier and band-only parameters.
+/// The decoder clamps each output sample to the sample range, so a sample
+/// whose applied change differs from its class offset ends on a range
+/// limit; a class may miss at most the largest offset per output sample on
+/// a limit. The p9 key frame with RDOQ clamps one chroma sample.
 #[test]
 fn ccso_search_classes_match_the_decoder_output() {
     let (width, height, qp) = (300, 270, 150);
     let mut config = Config::new(width, height);
     config.bit_depth = BitDepth::Ten;
     config.preset = Preset::new(9).unwrap();
-    config.preset_overrides = vec![("wavefront".into(), "false".into())];
+    config.preset_overrides = vec![
+        ("wavefront".into(), "false".into()),
+        ("rdoq".into(), "true".into()),
+    ];
     let mut coded = IntraFrameCoder::new(&config)
         .unwrap()
         .encode_wave(&[(&source(&config, 5), crate::gop::plan(0, config.keyint), qp)])
@@ -341,6 +348,7 @@ fn ccso_search_classes_match_the_decoder_output() {
             lambda: Lambda::from_qindex(u32::from(qp), config.bit_depth).unwrap(),
             pool: None,
         };
+        let max = config.bit_depth.max_sample();
         for plane in 0..3 {
             let sums = class_sums(&input, plane, &params).unwrap();
             let samples = source.plane_sizes()[plane];
@@ -348,18 +356,33 @@ fn ccso_search_classes_match_the_decoder_output() {
                 sums.iter().map(|&(_, count)| count as usize).sum::<usize>(),
                 samples.width() * samples.height()
             );
+            let clamped = source.planes()[plane]
+                .iter()
+                .filter(|&&out| out == max || out == 0)
+                .count() as i64;
+            assert!(
+                clamped <= 2,
+                "case {index} plane {plane}: {clamped} clamped"
+            );
+            let offsets: Vec<i64> = (0..sums.len())
+                .map(|class| {
+                    ccso_offset(params.ccso_offset_idx[class], 0)
+                        .map(|base| base * (i32::from(params.ccso_scale_idx.unwrap()) + 1))
+                        .map(i64::from)
+                        .unwrap()
+                })
+                .collect();
+            let slack = clamped * offsets.iter().map(|o| o.abs()).max().unwrap_or(0);
             let mut moved = 0;
+            let mut missed = 0;
             for (class, &(sum, count)) in sums.iter().enumerate() {
-                let offset = ccso_offset(params.ccso_offset_idx[class], 0)
-                    .map(|base| base * (i32::from(params.ccso_scale_idx.unwrap()) + 1))
-                    .unwrap();
-                assert_eq!(
-                    sum,
-                    i64::from(offset) * i64::from(count),
-                    "case {index} plane {plane} class {class}"
-                );
+                missed += (sum - offsets[class] * i64::from(count)).abs();
                 moved += usize::from(sum != 0);
             }
+            assert!(
+                missed <= slack,
+                "case {index} plane {plane}: {missed} off with {clamped} clamped: {sums:?}"
+            );
             assert!(moved >= 2, "case {index} plane {plane}: {sums:?}");
         }
     }
