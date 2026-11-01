@@ -310,7 +310,7 @@ impl IntraFrameCoder {
 impl FrameCoder for IntraFrameCoder {
     fn encode_wave(&self, wave: &[(&SourceFrame, GopFrame, u16)]) -> Result<Vec<CodedFrame>> {
         map_tiles(self.pool.as_ref(), wave.to_vec(), |(source, plan, qp)| {
-            self.code_frame(source, &plan, qp, &self.superblock_quant(&plan))
+            self.code_frame(source, &plan, qp, &self.superblock_quant(&plan, source))
         })
     }
 
@@ -421,25 +421,41 @@ impl IntraFrameCoder {
     }
 
     /// The `(qindex offset, lambda log2 Q8)` of each superblock of `plan`
-    /// from its block importances; empty without them or when every offset
+    /// from its block importances, plus [`tpl::ssim_lambda_log2`] of `source`
+    /// at `ssim_aq`; empty without either or when every offset
     /// snaps to 0 at the `delta_q_res` step, which codes no `delta_q_present`
     /// and keeps the frame lambda.
-    fn superblock_quant(&self, plan: &GopFrame) -> Vec<(i16, i16)> {
-        let Some(costs) = self.importance.frames.get(&plan.display_index) else {
+    fn superblock_quant(&self, plan: &GopFrame, source: &SourceFrame) -> Vec<(i16, i16)> {
+        let costs = self.importance.frames.get(&plan.display_index);
+        if costs.is_none() && self.preset.ssim_aq == 0 {
             return Vec::new();
-        };
+        }
         let sb = match self.view.frame_sb_size(plan.frame_type == FrameType::Key) {
             SuperblockSize::Block64x64 => 64,
             SuperblockSize::Block128x128 => 128,
             SuperblockSize::Block256x256 => 256,
         };
         let (width, height) = (self.params.width as usize, self.params.height as usize);
-        let quant = tpl::superblock_quant(
-            costs,
-            self.importance.grid,
-            (width.div_ceil(sb), height.div_ceil(sb), sb),
-            self.importance.strength,
+        let grid = (width.div_ceil(sb), height.div_ceil(sb), sb);
+        let mut quant = costs.map_or_else(
+            || vec![(0, 0); grid.0 * grid.1],
+            |costs| {
+                tpl::superblock_quant(costs, self.importance.grid, grid, self.importance.strength)
+            },
         );
+        if self.preset.ssim_aq > 0 {
+            let size = source.plane_sizes()[0];
+            let ssim = tpl::ssim_lambda_log2(
+                &source.planes()[0],
+                (size.width(), size.height()),
+                self.bit_depth,
+                grid,
+                self.preset.ssim_aq,
+            );
+            for (sb_quant, lambda_log2) in quant.iter_mut().zip(ssim) {
+                *sb_quant = tpl::quant_of(i32::from(sb_quant.1) + lambda_log2);
+            }
+        }
         let half_step = (1 << self.preset.delta_q_res) >> 1;
         if quant.iter().all(|&(offset, _)| offset.abs() <= half_step) {
             return Vec::new();
@@ -1056,6 +1072,53 @@ impl PaddedSource {
             .map(|(&s, &r)| u64::from(s.abs_diff(r)).pow(2))
             .sum())
     }
+
+    /// The AC-energy loss of the row-major `recon` of the fully visible block
+    /// `tx` in squared-error units at `psy_rd` percent: the AC energy is the
+    /// SATD against zero less the SAD (the Hadamard DC terms). White noise of
+    /// deviation `a` over `n` samples has about `6.4 * n * a` on 8x8 tiles
+    /// and half that on the 4x4 tiles of a block with a side under 8, which
+    /// the loss doubles, so 100% charges a flat recon of noise its own
+    /// squared error at every block shape. `0` for a block that crosses the
+    /// frame edge.
+    pub(crate) fn ac_loss(
+        &self,
+        tx: &TransformBlock,
+        recon: &[u16],
+        psy_rd: u8,
+    ) -> core::result::Result<u64, TileWriterError> {
+        let (log2_w, log2_h) = tx_log2(tx.tx_size)?;
+        let (w, h) = (1usize << log2_w, 1usize << log2_h);
+        let size = self
+            .visible
+            .get(tx.plane)
+            .ok_or(TileWriterError::Unsupported("plane index"))?;
+        if tx.x + w > size.width() || tx.y + h > size.height() {
+            return Ok(0);
+        }
+        let (source, stride) = self.at(tx);
+        let dims = BlockDims::new(w, h).map_err(kernel)?;
+        Ok(ac_energy_loss((source, stride), recon, dims, psy_rd))
+    }
+}
+
+/// [`PaddedSource::ac_loss`] of the strided `source` block and the row-major
+/// `recon` of `dims` (sides at most 64).
+pub(crate) fn ac_energy_loss(
+    (source, stride): (&[u16], usize),
+    recon: &[u16],
+    dims: BlockDims,
+    psy_rd: u8,
+) -> u64 {
+    const ZERO: [u16; 64 * 64] = [0; 64 * 64];
+    let w = dims.width();
+    let ac = |block: &[u16], stride: usize| {
+        let satd = kernels().satd(block, stride, &ZERO, w, dims);
+        satd.saturating_sub(u64::from(kernels().sad(block, stride, &ZERO, w, dims)))
+    };
+    let tile_gain = if w.min(dims.height()) < 8 { 2 } else { 1 };
+    let loss = ac(source, stride).abs_diff(ac(recon, w)) * tile_gain;
+    u64::from(psy_rd) * loss * loss / (41 * (w * dims.height()) as u64 * 100)
 }
 
 /// Whether every in-frame leaf of `partition` of `node` (`node` itself for
