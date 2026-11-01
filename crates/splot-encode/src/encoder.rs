@@ -99,7 +99,40 @@ pub(crate) trait FrameCoder {
     fn pool(&self) -> Option<splot_parallel::WorkerPool> {
         None
     }
+    /// Whether the coder codes several mini-GOPs at once
+    /// ([`Self::encode_batch`]).
+    fn overlaps(&self) -> bool {
+        false
+    }
+    /// Codes and commits, in order, the steps of several mini-GOPs, each a
+    /// list of waves (the frames of a wave read the same references); a
+    /// frame may start before the frames it reads are finished. Returns one
+    /// output per step: the coded frame, already committed, or the
+    /// show-existing unit.
+    fn encode_batch(&mut self, _batch: &[Vec<Vec<BatchStep<'_>>>]) -> Result<Vec<BatchOutput>> {
+        Err(Error::Unsupported {
+            what: "a coder without frame overlap",
+        })
+    }
 }
+
+/// One step of [`FrameCoder::encode_batch`].
+pub(crate) enum BatchStep<'a> {
+    /// A frame coded as `plan` at `qp` from `source`.
+    Code(&'a SourceFrame, GopFrame, u16),
+    /// The show-existing frame of `slot`.
+    ShowExisting(u32),
+}
+
+/// The output of one [`BatchStep`].
+pub(crate) enum BatchOutput {
+    Coded(CodedFrame),
+    Unit(Vec<u8>),
+}
+
+/// Lookahead windows queued before a batch codes, and mini-GOPs per batch:
+/// the frames of one batch overlap, and each batch boundary waits.
+const BATCH_WINDOWS: usize = 3;
 
 /// Callback that receives the statistics of every coded frame.
 pub type StatsSink = Box<dyn FnMut(&FrameStats) + Send>;
@@ -297,15 +330,172 @@ impl Encoder {
         }
         let ended = self.state == State::Flushed;
         let queued = self.pending.len();
-        if self.ready.is_empty()
+        let coded = if self.batches() {
+            if self.ready.is_empty() && (ended || queued >= BATCH_WINDOWS * self.lookahead_frames) {
+                self.code_batch(ended)
+            } else {
+                Ok(())
+            }
+        } else if self.ready.is_empty()
             && (ended || queued >= self.lookahead_frames)
             && let Some(len) = self.planner.next_len(queued, ended)
-            && let Err(error) = self.code_mini_gop(len)
         {
+            self.code_mini_gop(len)
+        } else {
+            Ok(())
+        };
+        if let Err(error) = coded {
             self.state = State::Failed;
             return Err(error);
         }
         Ok(self.ready.pop_front())
+    }
+
+    /// Whether mini-GOPs code in batches: the coder overlaps frames and the
+    /// rate control picks each quantizer before any frame is coded.
+    fn batches(&self) -> bool {
+        self.coder.overlaps()
+            && matches!(
+                self.config.rate_control,
+                RateControlMode::ConstantQp { .. } | RateControlMode::Crf { .. }
+            )
+    }
+
+    /// Plans every mini-GOP whose lookahead window is queued (all of them
+    /// after the flush), then codes them as one batch into ready packets.
+    /// Planning does not read coded frames, so the output does not depend on
+    /// how the frames split into batches.
+    fn code_batch(&mut self, ended: bool) -> Result<()> {
+        struct Planned {
+            frames: Vec<SourceFrame>,
+            first: u64,
+            steps: Vec<GopStep>,
+            waves: Vec<Vec<(usize, GopFrame, u16, Option<SourceFrame>)>>,
+        }
+        let mut planned = Vec::new();
+        while planned.len() < BATCH_WINDOWS
+            && (ended || self.pending.len() >= self.lookahead_frames)
+            && let Some(len) = self.planner.next_len(self.pending.len(), ended)
+        {
+            self.plan_window()?;
+            let frames: Vec<SourceFrame> = self.pending.drain(..len).collect();
+            let first = self.planner.next_display();
+            if first == 0
+                && let Some(frame) = frames.first()
+            {
+                self.coder.start_sequence(frame)?;
+            }
+            let steps = self.planner.plan(frames.len())?;
+            let mut waves = Vec::new();
+            for wave in gop::waves(&steps) {
+                let mut jobs = Vec::new();
+                for step in wave {
+                    if let GopStep::Code(plan) = *step {
+                        jobs.push((plan, self.frame_qp(&plan)?));
+                    }
+                }
+                let filtered = self.temporal_filter(&jobs, &frames, first);
+                waves.push(
+                    jobs.into_iter()
+                        .zip(filtered)
+                        .map(|((plan, qp), filtered)| {
+                            ((plan.display_index - first) as usize, plan, qp, filtered)
+                        })
+                        .collect(),
+                );
+            }
+            self.lookahead
+                .retain_from(self.planner.next_display().saturating_sub(1));
+            self.last_coded = frames.last().cloned();
+            planned.push(Planned {
+                frames,
+                first,
+                steps,
+                waves,
+            });
+        }
+        let batch: Vec<Vec<Vec<BatchStep<'_>>>> = planned
+            .iter()
+            .map(|mini_gop| {
+                let mut jobs = mini_gop.waves.iter().flatten();
+                gop::waves(&mini_gop.steps)
+                    .map(|wave| {
+                        wave.iter()
+                            .map(|step| match *step {
+                                GopStep::Code(_) => {
+                                    let (index, plan, qp, filtered) =
+                                        jobs.next().ok_or(Error::Unsupported {
+                                            what: "a batch with fewer jobs than frames",
+                                        })?;
+                                    let source = filtered
+                                        .as_ref()
+                                        .or_else(|| mini_gop.frames.get(*index))
+                                        .ok_or(Error::Unsupported {
+                                            what: "a plan outside its mini-GOP",
+                                        })?;
+                                    Ok(BatchStep::Code(source, *plan, *qp))
+                                }
+                                GopStep::ShowExisting { slot, .. } => {
+                                    Ok(BatchStep::ShowExisting(slot))
+                                }
+                            })
+                            .collect::<Result<Vec<_>>>()
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })
+            .collect::<Result<_>>()?;
+        let outputs = self.coder.encode_batch(&batch)?;
+        drop(batch);
+        let mut outputs = outputs.into_iter();
+        for mini_gop in &planned {
+            let source = |display_index: u64| {
+                usize::try_from(display_index - mini_gop.first)
+                    .ok()
+                    .and_then(|index| mini_gop.frames.get(index))
+                    .ok_or(Error::Unsupported {
+                        what: "a plan outside its mini-GOP",
+                    })
+            };
+            let mut frame_types = vec![FrameType::Inter; mini_gop.frames.len()];
+            let (mut data, mut stats) = (Vec::new(), Vec::new());
+            let mut jobs = mini_gop.waves.iter().flatten();
+            for step in &mini_gop.steps {
+                let output = outputs.next().ok_or(Error::Unsupported {
+                    what: "a batch with fewer outputs than steps",
+                })?;
+                match (step, output) {
+                    (GopStep::Code(_), BatchOutput::Coded(coded)) => {
+                        let &(_, plan, qp, _) = jobs.next().ok_or(Error::Unsupported {
+                            what: "a batch with fewer jobs than frames",
+                        })?;
+                        let frame = source(plan.display_index)?;
+                        stats.push(self.record_stats(frame, &plan, qp, &coded)?);
+                        frame_types[(plan.display_index - mini_gop.first) as usize] =
+                            coded.frame_type;
+                        data.extend(coded.temporal_unit);
+                    }
+                    (GopStep::ShowExisting { .. }, BatchOutput::Unit(unit)) => {
+                        self.rate_control
+                            .update_show_existing(unit.len() as u64 * 8);
+                        data.extend(unit);
+                    }
+                    _ => {
+                        return Err(Error::Unsupported {
+                            what: "a batch output of another kind than its step",
+                        });
+                    }
+                }
+                if let Some(display_index) = step.output() {
+                    self.ready.push_back(Packet {
+                        data: core::mem::take(&mut data),
+                        pts: source(display_index)?.pts(),
+                        frame_type: frame_types[(display_index - mini_gop.first) as usize],
+                        stats: core::mem::take(&mut stats),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Plans the first `lookahead_frames` queued frames, runs the temporal
@@ -541,6 +731,18 @@ impl Encoder {
         coded: &mut CodedFrame,
     ) -> Result<FrameStats> {
         self.coder.commit(coded)?;
+        self.record_stats(frame, gop_frame, qp, coded)
+    }
+
+    /// The statistics of `coded`, the frame `frame` coded as `gop_frame` at
+    /// `qp`, reported to the rate controller and the stats sink.
+    fn record_stats(
+        &mut self,
+        frame: &SourceFrame,
+        gop_frame: &GopFrame,
+        qp: u16,
+        coded: &CodedFrame,
+    ) -> Result<FrameStats> {
         let bit_depth = frame.bit_depth();
         let [source_y, source_u, source_v] = frame.planes();
         let [recon_y, recon_u, recon_v] = &coded.recon;

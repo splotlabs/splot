@@ -26,7 +26,7 @@ use splot_recon::{
 
 use crate::cfl_filter::cfl_ds_filter;
 use crate::config::Config;
-use crate::encoder::{CodedFrame, FrameCoder};
+use crate::encoder::{BatchOutput, BatchStep, CodedFrame, FrameCoder};
 use crate::error::{Error, Result};
 use crate::frame::SourceFrame;
 use crate::gop::{self, GopFrame};
@@ -315,7 +315,16 @@ impl FrameCoder for IntraFrameCoder {
     }
 
     fn set_block_importance(&mut self, importance: tpl::BlockImportance) {
-        self.importance = importance;
+        if self.overlaps() {
+            let mut frames = core::mem::take(&mut self.importance.frames);
+            frames.extend(importance.frames);
+            self.importance = tpl::BlockImportance {
+                frames,
+                ..importance
+            };
+        } else {
+            self.importance = importance;
+        }
     }
 
     fn wants_global_motion(&self) -> bool {
@@ -323,15 +332,35 @@ impl FrameCoder for IntraFrameCoder {
     }
 
     fn set_global_motion(&mut self, models: crate::global_motion::GlobalModels) {
-        self.global_models = models;
+        if self.overlaps() {
+            self.global_models.extend(models);
+        } else {
+            self.global_models = models;
+        }
     }
 
     fn set_open_loop_motion(&mut self, motion: crate::lookahead::OpenLoopMotion) {
-        self.open_loop = motion;
+        if self.overlaps() {
+            self.open_loop.extend(motion);
+        } else {
+            self.open_loop = motion;
+        }
     }
 
     fn pool(&self) -> Option<WorkerPool> {
         self.pool.clone()
+    }
+
+    fn overlaps(&self) -> bool {
+        frame_pipeline::eligible(self)
+    }
+
+    fn encode_batch(&mut self, batch: &[Vec<Vec<BatchStep<'_>>>]) -> Result<Vec<BatchOutput>> {
+        let outputs = frame_pipeline::encode_batch(self, batch);
+        self.importance.frames.clear();
+        self.global_models.clear();
+        self.open_loop.clear();
+        outputs
     }
 
     fn commit(&mut self, frame: &mut CodedFrame) -> Result<()> {
@@ -1633,6 +1662,9 @@ pub(crate) fn visible_planes(recon: &DecodedFrame<u16>) -> Result<[Vec<u16>; 3]>
     }
     Ok(planes)
 }
+
+#[path = "frame_pipeline.rs"]
+mod frame_pipeline;
 
 #[cfg(test)]
 #[path = "intra_frame_tests.rs"]

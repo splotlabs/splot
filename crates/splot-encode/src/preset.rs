@@ -366,6 +366,11 @@ pub struct PresetParams {
     /// p7-p10 only (2026-10-31, vs main d2bedf697, niklas f10): p8 +0.72% BD
     /// for 2x wall time at 8 threads; p6 +0.51% with no 1-thread saving.
     pub wavefront: bool,
+    /// Frame overlap: the frames of a batch of mini-GOPs search while the
+    /// frame they read is still being written, from its superblock rows
+    /// finished so far before loop filtering; a frame's writer waits for the
+    /// frames it reads and quantizes again. Off codes one mini-GOP at a time.
+    pub frame_overlap: bool,
 }
 
 /// The resolution class of a frame, by luma area.
@@ -856,6 +861,7 @@ preset_table! {
     }
     threading {
         wavefront:             [false, false, false, false, false, false, false,  true,  true,  true,  true],
+        frame_overlap:         [false, false, false, false, false, false, false, false, false, false, false],
     }
 }
 
@@ -1018,6 +1024,7 @@ mod tests {
             assert!(fast.interintra <= slow.interintra);
             assert!(fast.bawp <= slow.bawp);
             assert!(fast.wavefront >= slow.wavefront);
+            assert!(fast.frame_overlap >= slow.frame_overlap);
             assert!(
                 fast.mds0_budgets
                     .iter()
