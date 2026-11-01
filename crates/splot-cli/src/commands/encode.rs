@@ -58,6 +58,10 @@ pub(crate) struct EncodeArgs {
     /// (trials keep the AC energy of the source); before `--preset-set`.
     #[arg(long, value_enum, default_value_t = TuneArg::Psnr)]
     tune: TuneArg,
+    /// Fast decode: 64x64 superblocks, no Wiener-NS or GDF, and at most two
+    /// CDEF strength sets, before `--preset-set`; off by default.
+    #[arg(long)]
+    fast_decode: bool,
     /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
     #[arg(long, default_value_t = ThreadCount::Auto)]
     threads: ThreadCount,
@@ -199,6 +203,7 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
         TuneArg::Ssim => Tune::Ssim,
         TuneArg::Vq => Tune::Vq,
     };
+    config.fast_decode = args.fast_decode;
     if u16::try_from(header.width).is_err() || u16::try_from(header.height).is_err() {
         bail!("IVF output supports at most 65535 samples per side");
     }

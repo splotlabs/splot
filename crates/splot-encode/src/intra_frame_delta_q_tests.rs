@@ -288,6 +288,23 @@ fn ssim_tuned_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     }
 }
 
+/// `Tune::Ssim` and `Tune::Vq` with the temporal model at a wavefront preset
+/// write the same bytes on 1, 2 and 8 threads.
+#[test]
+fn tuned_wavefront_streams_are_thread_count_invariant() {
+    for tune in [crate::Tune::Ssim, crate::Tune::Vq] {
+        let config = Config {
+            tune,
+            ..config(200, 136, BitDepth::Eight, 8, 0)
+        };
+        let stream = |threads| tpl_stream_of(config.clone(), 100, threads, half_flat_frame);
+        let (units, ..) = stream(1);
+        for threads in [2, 8] {
+            assert!(stream(threads).0 == units, "{tune:?}: {threads} threads");
+        }
+    }
+}
+
 /// A frame whose superblock offsets all snap to 0 at the `delta_q_res` step
 /// codes no `delta_q_present`; one offset beyond half a step codes it.
 #[test]

@@ -7004,6 +7004,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-FAST-DECODE"
+name = "Encoder fast-decode mode"
+category = "encoder"
+kind = "encoder-api"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/config.rs"
+change_id = "enc-fast-decode"
+owner = "encoder"
+risk = "low"
+notes = "B6 part 2 (2026-10-31). Encoder strategy, no syntax. Config::fast_decode (CLI --fast-decode, off by default) applies Config::FAST_DECODE before the preset overrides: max_block_log2 6 (64x64 superblocks), wiener_ns 0 and wiener_ns_chroma 0 (PC-Wiener only), gdf_candidates 0 (GDF off in the sequence) and cdef_strengths 2. PresetParams::cdef_strengths (new, 8 in every row, so every row codes the old stream) caps the CDEF strength sets of a frame. Lambda::qp_scaled is the one QP scaling of thresholds; the pd0 leaf cost uses it (byte-identical). Measured p6 against the same binary without the flag (10 frames, qp 85-190): paris BD-rate +2.30% at 0.882x encode CPU, niklas +4.78% at 0.916x. 1-thread splot decode user time, 30 frames at qp 110: niklas 0.417 s to 0.345 s (-17%), paris 0.060 s to 0.055 s (-9%)."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "done"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/intra_tools_tests.rs::fast_decode_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_fast_decode_frames_like_splot", "crates/splot-encode/src/loop_filter_tests.rs::cdef_strengths_cap_the_coded_sets", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
+commands = ["cargo test -p splot-encode fast_decode --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_fast_decode --locked -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-TUNE"
 name = "Encoder metric tuning"
 category = "encoder"

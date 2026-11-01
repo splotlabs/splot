@@ -710,7 +710,7 @@ impl Search<'_> {
         };
         let mut sets: Vec<(usize, usize)> = Vec::new();
         let mut best_total = u128::MAX;
-        while sets.len() < MAX_CDEF_STRENGTH_SETS {
+        while sets.len() < MAX_CDEF_STRENGTH_SETS.min(usize::from(preset.cdef_strengths)) {
             let mut trial = sets.clone();
             trial.push((0, 0));
             let pick = pairs

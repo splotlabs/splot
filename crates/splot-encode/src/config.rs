@@ -130,6 +130,9 @@ pub struct Config {
     pub film_grain: bool,
     /// The metric the encoder tunes for; [`Tune::Psnr`] by default.
     pub tune: Tune,
+    /// Fast decode: the preset takes [`Self::FAST_DECODE`] before
+    /// [`Self::preset_overrides`]. Off by default.
+    pub fast_decode: bool,
 }
 
 impl Config {
@@ -144,6 +147,16 @@ impl Config {
     /// The `resize_denominator` range: down to half size, the largest step
     /// of the § 7.13.3.18 resampler.
     pub const RESIZE_DENOMINATORS: core::ops::RangeInclusive<u8> = 9..=16;
+
+    /// The preset overrides of [`Self::fast_decode`]: 64x64 superblocks, no
+    /// Wiener-NS or GDF, and at most two CDEF strength sets.
+    pub const FAST_DECODE: [(&str, &str); 5] = [
+        ("max_block_log2", "6"),
+        ("wiener_ns", "0"),
+        ("wiener_ns_chroma", "0"),
+        ("gdf_candidates", "0"),
+        ("cdef_strengths", "2"),
+    ];
 
     /// Creates an 8-bit 4:2:0 configuration at 30 fps with default settings.
     #[must_use]
@@ -165,6 +178,7 @@ impl Config {
             resize_denominator: None,
             film_grain: false,
             tune: Tune::Psnr,
+            fast_decode: false,
         }
     }
 
@@ -246,12 +260,19 @@ impl Config {
         }
     }
 
-    /// `row` with [`Tune::overrides`] of [`Self::tune`] and then
+    /// `row` with [`Tune::overrides`] of [`Self::tune`], then
+    /// [`Self::FAST_DECODE`] (when [`Self::fast_decode`]), then
     /// [`Self::preset_overrides`] applied, checked by
     /// [`PresetParams::validate`].
     pub(crate) fn override_preset(&self, row: &PresetParams) -> Result<PresetParams> {
         let mut row = *row;
-        for (name, value) in self.tune.overrides() {
+        let fast_decode = self.fast_decode.then_some(&Self::FAST_DECODE[..]);
+        for (name, value) in self
+            .tune
+            .overrides()
+            .iter()
+            .chain(fast_decode.into_iter().flatten())
+        {
             row.set(name, value)?;
         }
         for (name, value) in &self.preset_overrides {
@@ -280,6 +301,32 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `preset_overrides` win over the tune and fast-decode overrides:
+    /// `--tune ssim` with `ssim_aq=0` codes the `--tune psnr` row, and
+    /// `max_block_log2=7` undoes the 64x64 superblocks of `--fast-decode`.
+    #[test]
+    fn preset_overrides_win_over_tune_and_fast_decode() -> Result<()> {
+        let mut config = Config::new(64, 64);
+        let psnr = config.override_preset(config.preset.params())?;
+        config.tune = Tune::Ssim;
+        config.fast_decode = true;
+        let tuned = config.override_preset(config.preset.params())?;
+        assert_eq!((tuned.ssim_aq, tuned.max_block_log2), (30, 6));
+        config.fast_decode = false;
+        config.preset_overrides = vec![("ssim_aq".into(), "0".into())];
+        assert_eq!(config.override_preset(config.preset.params())?, psnr);
+        config.fast_decode = true;
+        config
+            .preset_overrides
+            .push(("max_block_log2".into(), "7".into()));
+        let row = config.override_preset(config.preset.params())?;
+        assert_eq!(
+            (row.ssim_aq, row.max_block_log2, row.gdf_candidates),
+            (0, 7, 0)
+        );
+        Ok(())
+    }
 
     #[test]
     fn default_config_is_valid() {

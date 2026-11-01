@@ -662,3 +662,92 @@ fn vq_tuned_frames_decode_to_the_encoder_recon_on_any_thread_count() {
 fn avm_decodes_vq_tuned_frames_like_splot() {
     assert_avm_decodes(preset_with(|p| (p.ssim_aq, p.psy_rd) = (30, 50)), "vq");
 }
+
+/// The units, the encoder recon and the frame headers of a key frame and
+/// three inter frames of panning content at preset 6 and qp 220 in two
+/// tiles, with
+/// `fast_decode`, on `threads` threads.
+fn fast_decode_stream(
+    fast_decode: bool,
+    threads: usize,
+) -> (Vec<Vec<u8>>, Vec<u8>, SequenceHeader, Vec<FrameHeaderCore>) {
+    let mut config = config(136, 72, BitDepth::Ten, 6, 220);
+    config.fast_decode = fast_decode;
+    config.tiles = TileLayout {
+        cols_log2: 1,
+        rows_log2: 0,
+    };
+    config.threads = splot_parallel::ThreadCount::from(threads);
+    let mut coder = IntraFrameCoder::new(&config).unwrap();
+    let (mut units, mut recon, mut cores) = (Vec::new(), Vec::new(), Vec::new());
+    for index in 0..4 {
+        let plan = crate::gop::plan(u64::from(index), config.keyint);
+        let mut coded = coder
+            .code_frame(&panning_frame(&config, index), &plan, 220, &[])
+            .unwrap();
+        cores.push(coded.reference.as_ref().unwrap().0.clone());
+        coder.commit(&mut coded).unwrap();
+        recon.extend(recon_bytes(&coded, config.bit_depth));
+        units.push(coded.temporal_unit);
+    }
+    (units, recon, coder.sequence.clone(), cores)
+}
+
+/// Fast decode codes 64x64 superblocks, no GDF, no Wiener-NS unit and at
+/// most two CDEF strength sets; its key frame and the inter frames that
+/// reference it decode to the encoder recon with deblocking, CDEF, CCSO and
+/// PC-Wiener on, and
+/// 1, 2 and 8 threads write the same bytes. Off codes another stream.
+#[test]
+fn fast_decode_streams_decode_to_the_encoder_recon_on_any_thread_count() {
+    use splot_core::headers::frame::FrameRestorationType;
+    let (units, recon, seq, cores) = fast_decode_stream(true, 1);
+    let partition = seq.partition.unwrap();
+    assert!(!partition.use_256x256_superblock && !partition.use_128x128_superblock);
+    assert!(!seq.filter.unwrap().enable_gdf);
+    let cdef = |core: &FrameHeaderCore| core.cdef_params.as_ref().and_then(|c| c.cdef_strengths);
+    let restoration = |core: &FrameHeaderCore| {
+        core.lr_params.as_ref().map_or(Vec::new(), |lr| {
+            lr.planes.iter().map(|p| p.restoration_type).collect()
+        })
+    };
+    assert!(cores.iter().all(|core| cdef(core).unwrap_or(0) <= 2));
+    assert!(cores.iter().any(|core| cdef(core).is_some()));
+    assert!(cores.iter().any(|core| {
+        core.deblocking_filter_params
+            .as_ref()
+            .is_some_and(|df| df.apply_deblocking_filter.iter().any(|&on| on))
+    }));
+    assert!(cores.iter().any(|core| {
+        core.ccso_params
+            .as_ref()
+            .is_some_and(|ccso| ccso.ccso_frame_flag == Some(true))
+    }));
+    let types: Vec<_> = cores.iter().flat_map(restoration).collect();
+    assert!(types.contains(&FrameRestorationType::PcWiener), "{types:?}");
+    assert!(!types.iter().any(|t| matches!(
+        t,
+        FrameRestorationType::WienerNonsep | FrameRestorationType::Switchable
+    )));
+    assert_same_samples(&decode(&units.concat()), &recon, "fast decode");
+    for threads in [2, 8] {
+        assert!(
+            fast_decode_stream(true, threads).0 == units,
+            "{threads} threads"
+        );
+    }
+    let (off, ..) = fast_decode_stream(false, 1);
+    assert_ne!(off, units);
+}
+
+/// AVM decodes the fast-decode key and inter frames to the encoder recon.
+#[test]
+#[ignore = "needs an AVM decoder build at SPLOT_AVM_DECODER"]
+fn avm_decodes_fast_decode_frames_like_splot() {
+    let Some(avmdec) = avm_decoder() else {
+        return;
+    };
+    let (units, recon, ..) = fast_decode_stream(true, 2);
+    let avm = avm_decode(&avmdec, &units, (136, 72), BitDepth::Ten, "fast-decode");
+    assert!(avm == recon, "fast decode: AVM output differs");
+}
