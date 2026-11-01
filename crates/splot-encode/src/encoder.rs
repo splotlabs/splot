@@ -18,6 +18,7 @@ use crate::frame::SourceFrame;
 use crate::gop::{self, GopFrame, GopPlanner, GopStep};
 use crate::intra_frame::IntraFrameCoder;
 use crate::lookahead::Lookahead;
+use crate::preset::{FrameKind, PresetContext, ResolutionClass};
 use crate::rate_control::{
     Cbr, ConstantQp, Crf, FramePlanInfo, FrameType, RateController, Vbr, max_qindex,
 };
@@ -208,10 +209,15 @@ impl Encoder {
             lookahead_frames: usize::from(params.lookahead_frames),
             window: Vec::new(),
             tpl_delta_q: params.tpl_delta_q,
-            temporal_filter: [
-                (params.tf_key_frames, params.tf_key_strength),
-                (params.tf_base_frames, params.tf_base_strength),
-            ],
+            temporal_filter: [FrameKind::Key, FrameKind::Base].map(|frame| {
+                let coded = config.coded();
+                let context = PresetContext {
+                    resolution: ResolutionClass::of(coded.width, coded.height),
+                    frame,
+                    ..PresetContext::default()
+                };
+                (params.tf_frames.at(context), params.tf_strength.at(context))
+            }),
             last_qindex: None,
             resized: config.resize_denominator.map(|_| config.coded()),
             config,

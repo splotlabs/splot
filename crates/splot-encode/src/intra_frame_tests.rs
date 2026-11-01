@@ -14,7 +14,7 @@ use crate::config::{RateControlMode, TileLayout};
 use crate::encoder::Encoder;
 use crate::gop::{GopFrame, GopStep};
 use crate::mode_decision::TrialCoder;
-use crate::preset::{PRESETS, Preset, PresetParams, TcqFrames};
+use crate::preset::{Levels, PRESETS, Preset, PresetParams};
 use crate::rate_control::FrameType;
 use crate::rd::partition::search_partition;
 use crate::test_support::{
@@ -267,7 +267,7 @@ fn tcq_streams_decode_to_the_encoder_recon_on_any_thread_count() {
         (6, 40, 24, BitDepth::Eight, PixelFormat::Yuv444),
     ] {
         let params: &'static PresetParams = Box::leak(Box::new(PresetParams {
-            tcq: TcqFrames::All,
+            tcq: Levels::all(true),
             ..*Preset::new(preset).unwrap().params()
         }));
         let mut config = config(width, height, bit_depth, preset, 60);
@@ -304,13 +304,13 @@ fn tcq_streams_decode_to_the_encoder_recon_on_any_thread_count() {
     }
 }
 
-/// TCQ off codes no TCQ syntax; `Base` turns TCQ on in key frames and the
-/// base layer only.
+/// TCQ off codes no TCQ syntax; every row turns TCQ on in key and base
+/// frames only.
 #[test]
 fn tcq_frames_follow_the_preset() {
     let config = config(16, 16, BitDepth::Eight, 6, 60);
     let off: &'static PresetParams = Box::leak(Box::new(PresetParams {
-        tcq: TcqFrames::Off,
+        tcq: Levels::all(false),
         ..*Preset::new(6).unwrap().params()
     }));
     let tq = IntraFrameCoder::with_preset(&config, off)
@@ -319,9 +319,8 @@ fn tcq_frames_follow_the_preset() {
         .transform_quant_entropy
         .unwrap();
     assert!(!tq.enable_tcq && !tq.choose_tcq_per_frame);
-    assert!(PRESETS.iter().all(|params| params.tcq == TcqFrames::Base));
-    assert!(TcqFrames::Base.allows(0) && !TcqFrames::Base.allows(1));
-    assert!(!TcqFrames::Off.allows(0) && TcqFrames::All.allows(3));
+    let base = Levels::by_frame([true, true, false, false]);
+    assert!(PRESETS.iter().all(|params| params.tcq == base));
 }
 
 #[test]
@@ -1110,6 +1109,7 @@ fn inter_stream_of(
     let lambda = Lambda::from_qindex(qindex, config.bit_depth).unwrap();
     let mut residual =
         SourceResidualCoder::new(&padded, qindex, config.bit_depth, &coder.preset, lambda);
+    residual.context = coder.preset_context(&plan, qindex);
     let mut rng = Rng(seed);
     let mut coverage = [0; COVERAGE_SLOTS];
     while writer.next_superblock_root().is_some() {
@@ -1298,6 +1298,7 @@ fn search_frame_counting(
     let motion =
         MotionSearch::new(writer.syntax(), &padded, &coder.preset, lambda, Vec::new()).unwrap();
     let mut residual = SourceResidualCoder::new(&padded, 90, bit_depth, &coder.preset, lambda);
+    residual.context = coder.preset_context(plan, 90);
     let (luma, stride, width, height) = padded.luma();
     let bv_search = crate::intrabc::BvSearch::new(luma, stride, (width, height));
     residual.intrabc = (core.allow_intrabc == Some(true)).then_some(&bv_search);

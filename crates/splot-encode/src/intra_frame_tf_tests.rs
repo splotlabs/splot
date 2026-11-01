@@ -168,7 +168,7 @@ fn tf_stream_of(
     }
 }
 
-const ON: [(&str, &str); 2] = [("tf_key_frames", "2"), ("tf_base_frames", "2")];
+const ON: [(&str, &str); 1] = [("tf_frames", "2,2,0,0")];
 
 /// With the filter on, the key frame and the hidden base frames code a
 /// filtered source; the frames between them predict from those frames, every
@@ -195,7 +195,7 @@ fn filtered_streams_decode_to_the_encoder_recon_on_any_thread_count() {
             vec![0, 2, 4, 6, 8],
         ),
     ] {
-        let on = [ON[0], ON[1], ("mini_gop_size", mini_gop)];
+        let on = [ON[0], ("mini_gop_size", mini_gop)];
         let mut config = config(200, 136, bit_depth, preset, qp);
         config.chroma = chroma;
         let name = format!("preset {preset} {bit_depth:?} {chroma:?}");
@@ -220,23 +220,14 @@ fn filtered_streams_decode_to_the_encoder_recon_on_any_thread_count() {
 fn a_zero_count_or_strength_codes_the_unfiltered_stream() {
     let stream =
         |sets: &[(&str, &str)]| tf_stream(config(72, 40, BitDepth::Eight, 9, 255), sets, 1);
-    let off = stream(&[("tf_key_frames", "0")]);
+    let off = stream(&[("tf_frames", "0")]);
     assert!(off.filtered.is_empty());
     let row = tf_stream(config(200, 136, BitDepth::Eight, 9, 255), &[], 1);
     assert_eq!(row.filtered, [0], "preset 9 row");
     assert!(stream(&ON).units != off.units, "the filter is on");
-    let zero_strength = [
-        ON[0],
-        ON[1],
-        ("tf_key_strength", "0"),
-        ("tf_base_strength", "0"),
-    ];
+    let zero_strength = [ON[0], ("tf_strength", "0")];
     assert!(stream(&zero_strength).units == off.units, "zero strength");
-    let zero_count = [
-        ("tf_key_frames", "0"),
-        ("tf_key_strength", "255"),
-        ("tf_base_strength", "255"),
-    ];
+    let zero_count = [("tf_frames", "0"), ("tf_strength", "255")];
     assert!(stream(&zero_count).units == off.units, "zero count");
 }
 
@@ -246,9 +237,9 @@ fn a_zero_count_or_strength_codes_the_unfiltered_stream() {
 /// holds frames.
 #[test]
 fn bulk_and_interleaved_callers_code_the_same_stream() {
-    for (preset, keys) in [(9, "4"), (6, "4"), (9, "8")] {
+    for (preset, keys) in [(9, "4,2,0,0"), (6, "4,2,0,0"), (9, "8,2,0,0")] {
         let config = config(96, 64, BitDepth::Eight, preset, 200);
-        let sets = [("tf_key_frames", keys), ON[1]];
+        let sets = [("tf_frames", keys)];
         let interleaved = tf_stream_of(config.clone(), &sets, (1, 9), false, &noisy_frame);
         let bulk = tf_stream_of(config, &sets, (1, 9), true, &noisy_frame);
         assert!(!interleaved.filtered.is_empty(), "preset {preset}");
@@ -275,7 +266,7 @@ fn cut_frame(config: &Config, index: u32, variant: u32) -> SourceFrame {
 #[test]
 fn key_frames_do_not_read_across_a_scene_cut() {
     let config = config(96, 64, BitDepth::Eight, 9, 200);
-    let sets = [("tf_key_frames", "4"), ("mini_gop_size", "2")];
+    let sets = [("tf_frames", "4,0,0,0"), ("mini_gop_size", "2")];
     let streams: Vec<Stream> = [1, 2]
         .map(|variant| {
             tf_stream_of(config.clone(), &sets, (1, 9), false, &|c, i| {

@@ -151,6 +151,7 @@ fn rollback_restores_the_reference_mv_bank() {
     let lambda = Lambda::from_qindex(110, config.bit_depth).unwrap();
     let mut residual =
         SourceResidualCoder::new(&padded, 110, config.bit_depth, &coder.preset, lambda);
+    residual.context = coder.preset_context(&plan, 110);
     let (with_trial, without, trial) = writer
         .search_superblock(|syntax, root| {
             let sb4 = syntax.superblock_size4();

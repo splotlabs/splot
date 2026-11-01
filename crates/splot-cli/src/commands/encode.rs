@@ -42,7 +42,9 @@ pub(crate) struct EncodeArgs {
     preset: u8,
     /// Overrides one field of the preset, as FIELD=VALUE; repeat for more
     /// fields. It wins over the screen-content switch. Flags take 0, 1,
-    /// false or true, `tcq` takes Off, Base or All, `mvd_tools` takes three
+    /// false or true; a per-frame-kind field (`intra_modes`, `tcq`,
+    /// `tf_frames`, `tf_strength`) takes one value or four comma-separated
+    /// values for key, base, mid and leaf frames; `mvd_tools` takes three
     /// comma-separated flags. An unknown FIELD lists the valid names.
     #[arg(long, value_name = "FIELD=VALUE", value_parser = parse_preset_set)]
     preset_set: Vec<(String, String)>,

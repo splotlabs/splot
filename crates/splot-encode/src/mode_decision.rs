@@ -210,15 +210,11 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
     }
 
     /// The entries of `ranked` with the lowest SATD, best first: as many as
-    /// `preset.intra_modes` in an intra frame and `mds_inter_frame_intra` in
-    /// an inter frame; ties keep candidate order, so the ranking is
-    /// deterministic.
+    /// `preset.intra_modes` gives the frame; ties keep candidate order, so
+    /// the ranking is deterministic.
     fn shortlist(&self, mut ranked: Vec<(u64, IntraModes)>) -> Vec<LeafChoice> {
         ranked.sort_by_key(|&(satd, _)| satd);
-        let budget = match self.motion {
-            Some(_) => self.preset.mds_inter_frame_intra,
-            None => self.preset.intra_modes,
-        };
+        let budget = self.preset.intra_modes.at(self.coder.context);
         ranked.truncate(usize::from(budget.max(1)));
         ranked
             .into_iter()
