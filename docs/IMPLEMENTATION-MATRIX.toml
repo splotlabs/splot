@@ -7036,6 +7036,38 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "ENC-DYNAMIC-MINI-GOP"
+name = "Mini-GOP size table and long mini-GOPs"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = ["5.18.2", "7.20"]
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/gop.rs"
+change_id = "enc-dynamic-minigop"
+owner = "encoder"
+risk = "medium"
+notes = "B9 part 2. Encoder strategy; no new syntax. Shipped: PresetParams::mini_gop_size accepts 1..=32 and is 8 in every row (was 4 at p5-p7, 2 at p8-p9, 1 at p10); bitrate_mini_gop_size keeps the old sizes for VBR and CBR, which pick one base qindex per mini-GOP (niklas p9 VBR missed its targets by up to +3.3% with 8 and by +29..36% with 32). The planner never evicts the newest frame shown when coded: with mini-GOPs of 16 and more every slot fills and the § 5.18.2 OrderHint derivation lost its showable reference. Measured 2026-11-01, keyint 64, vs main d2bedf697 (p6 and p10 streams equal on 35072e487): CRF 22/30/37/45 p6 paris f30 -4.44% (0.93x CPU), niklas f60 -2.70% (0.94x), park_joy f10 -0.13% (0.98x); qp 85..190 p6 paris +0.03%, niklas +0.62%, park_joy -0.79%, so the CRF gain comes from the deeper layer qindex offsets, not the prediction structure; p10 paris CRF -31.06% (0.90x), qp -10.88% (1.05x); p0 byte-identical. VBR niklas p9 f60 1000/2500/6000 kbps within 0.73%. The B9 CRF target (<= -3% vs main) holds on paris only. Tried and not shipped: mini-GOPs of 16 and 32 (paris p6 CRF -3.69% and -3.58% vs -4.21% for 8; niklas p9 -1.27% and +0.08% vs -1.31%; a 32-frame base reference is past MAX_FRAME_DISTANCE, so § 7.9.1/§ 7.9.3 skip its motion field projection); a dynamic 32/16/8 choice from the lookahead's open-loop costs of the TPL pairs: a distortion-growth split (far pair cost above the sum of the two half pairs) never fired on the three clips (ratio 0.53-0.63, the half-resolution SATD is noise-bound), and a split on the far pair's cost over its intra cost above 40% chose 14-15-frame mini-GOPs on paris (-2.80%). Not done: variance AQ, ME-cost lambda modulation, VBR re-planning within a mini-GOP."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "partial"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "partial"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/gop_tests.rs::every_plan_shows_frames_in_input_order_from_the_right_slots", "crates/splot-encode/src/intra_frame_mini_gop_tests.rs::long_mini_gops_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_mini_gop_tests.rs::avm_decodes_32_frame_mini_gops_like_splot", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
+commands = ["cargo test -p splot-encode gop --locked", "cargo test -p splot-encode mini_gop --locked", "SPLOT_AVM_DECODER=<avm>/build/avmdec cargo test --release -p splot-encode --lib avm -- --ignored"]
+fixtures = []
+diagnostics = []
+
+[[feature]]
 id = "ENC-TUNE"
 name = "Encoder metric tuning"
 category = "encoder"

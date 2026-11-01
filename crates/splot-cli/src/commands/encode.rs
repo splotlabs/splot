@@ -49,8 +49,8 @@ pub(crate) struct EncodeArgs {
     #[arg(long, value_name = "FIELD=VALUE", value_parser = parse_preset_set)]
     preset_set: Vec<(String, String)>,
     /// Low delay: one packet per input frame, in display order. Sets
-    /// `mini_gop_size=1` (IPPP, every frame shown) and `lookahead_frames=1`
-    /// before `--preset-set`; off by default.
+    /// `mini_gop_size=1` and `bitrate_mini_gop_size=1` (IPPP, every frame
+    /// shown) and `lookahead_frames=1` before `--preset-set`; off by default.
     #[arg(long)]
     low_delay: bool,
     /// The metric the encoder tunes for: `psnr` (default), `ssim`
@@ -136,7 +136,11 @@ enum TuneArg {
 }
 
 /// The preset overrides of `--low-delay`.
-const LOW_DELAY: [(&str, &str); 2] = [("mini_gop_size", "1"), ("lookahead_frames", "1")];
+const LOW_DELAY: [(&str, &str); 3] = [
+    ("mini_gop_size", "1"),
+    ("bitrate_mini_gop_size", "1"),
+    ("lookahead_frames", "1"),
+];
 
 /// Buffer of `--rc cbr`, in milliseconds.
 const CBR_BUFFER_MS: u32 = 1000;

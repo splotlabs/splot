@@ -100,12 +100,18 @@ pub struct PresetParams {
     /// `df_par_bits` 3) per plane, by SSE after deblocking. CDEF tries 8, 12
     /// or 16 strengths at depth 0, 1 or 2; depth 3 tries 16, as depth 2 does.
     pub loop_filter_search: u8,
-    /// Frames per mini-GOP, `1..=8`: `1` codes every frame shown (IPPP);
+    /// Frames per mini-GOP, `1..=32`: `1` codes every frame shown (IPPP);
     /// larger sizes code the last frame first as a hidden alt-ref and the
-    /// frames between hierarchically. `8` at p4 (2026-10-31): p4 with `4`
-    /// equalled p5 on paris f30 (Y +0.06%); with `8` it gains -0.69% vs p5
-    /// at the same CPU.
+    /// frames between hierarchically. `8` in every row (2026-11-01, CRF,
+    /// keyint 64, vs main 8de875fa1): p6 paris f30 -4.21% (16: -3.69%, 32:
+    /// -3.58%) at 0.94x CPU; p9 niklas f60 -1.31% (16: -1.27%, 32: +0.08%);
+    /// p10 paris f30 -31.27% against IPPP at 0.90x CPU.
     pub mini_gop_size: u8,
+    /// The mini-GOP of VBR and CBR, at most `mini_gop_size`: their rate
+    /// controllers pick one base qindex per mini-GOP, and niklas p9 VBR
+    /// missed its targets by up to +3.3% with mini-GOPs of 8 (+29..36% with
+    /// 32, within 1% with 2). It can go once they re-plan within a mini-GOP.
+    pub bitrate_mini_gop_size: u8,
     /// Frames the lookahead analyses before the next mini-GOP is coded, at
     /// least `mini_gop_size`; scene cuts and the temporal model see this far.
     pub lookahead_frames: u8,
@@ -585,7 +591,14 @@ impl PresetParams {
         }
         check("subpel_depth", self.subpel_depth, 0, 3, "")?;
         check("loop_filter_search", self.loop_filter_search, 0, 3, "")?;
-        check("mini_gop_size", self.mini_gop_size, 1, 8, "")?;
+        check("mini_gop_size", self.mini_gop_size, 1, 32, "")?;
+        check(
+            "bitrate_mini_gop_size",
+            self.bitrate_mini_gop_size,
+            1,
+            self.mini_gop_size,
+            " (..mini_gop_size)",
+        )?;
         check(
             "lookahead_frames",
             self.lookahead_frames,
@@ -842,8 +855,9 @@ preset_table! {
         integer_mv:            [false, false, false, false, false, false, false, false, false, false, false],
     }
     gop {
-        mini_gop_size:         [    8,     8,     8,     8,     8,     4,     4,     4,     2,     2,     1],
-        lookahead_frames:      [   16,    16,    16,    16,    16,     8,     8,     8,     4,     4,     2],
+        mini_gop_size:         [    8,     8,     8,     8,     8,     8,     8,     8,     8,     8,     8],
+        bitrate_mini_gop_size: [    8,     8,     8,     8,     8,     4,     4,     4,     2,     2,     1],
+        lookahead_frames:      [   16,    16,    16,    16,    16,     8,     8,     8,     8,     8,     8],
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         ssim_aq:               [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tf_frames:             frames([
@@ -969,6 +983,7 @@ mod tests {
             assert!(fast.eighth_pel_max_qindex <= slow.eighth_pel_max_qindex);
             assert!(fast.loop_filter_search <= slow.loop_filter_search);
             assert!(fast.mini_gop_size <= slow.mini_gop_size);
+            assert!(fast.bitrate_mini_gop_size <= slow.bitrate_mini_gop_size);
             assert!(fast.lookahead_frames <= slow.lookahead_frames);
             assert!(fast.tpl_delta_q <= slow.tpl_delta_q);
             assert!(fast.ssim_aq <= slow.ssim_aq);
@@ -1035,7 +1050,8 @@ mod tests {
             );
         }
         for params in PRESETS {
-            assert!((1..=8).contains(&params.mini_gop_size));
+            assert!((1..=32).contains(&params.mini_gop_size));
+            assert!(params.bitrate_mini_gop_size <= params.mini_gop_size);
             assert!(params.lookahead_frames >= params.mini_gop_size);
             assert!((1..=5).contains(&params.drl_bits));
         }
@@ -1171,7 +1187,9 @@ mod tests {
             (&[("drl_bits", "0")], "drl_bits"),
             (&[("lookahead_frames", "3")], "lookahead_frames"),
             (&[("mini_gop_size", "0")], "mini_gop_size"),
-            (&[("mini_gop_size", "9")], "mini_gop_size"),
+            (&[("mini_gop_size", "33")], "mini_gop_size"),
+            (&[("bitrate_mini_gop_size", "0")], "bitrate_mini_gop_size"),
+            (&[("bitrate_mini_gop_size", "9")], "bitrate_mini_gop_size"),
             (&[("intra_modes", "0")], "intra_modes"),
             (&[("mds0_budgets", "4,0,2")], "mds0_budgets"),
             (&[("intra_modes", "3,3,0,3")], "intra_modes"),
