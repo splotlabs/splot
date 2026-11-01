@@ -29,8 +29,8 @@ pub struct PresetParams {
     /// other frame kinds the intra shortlist of a leaf in an inter frame.
     pub intra_modes: Levels<u8>,
     /// Partition search skips a block's remaining partitions once its unsplit
-    /// cost does not exceed the best split cost so far.
-    pub partition_early_exit: bool,
+    /// cost does not exceed the best split cost so far, per frame kind.
+    pub partition_early_exit: Levels<bool>,
     /// Rate-distortion optimized quantization.
     pub rdoq: bool,
     /// RDOQ also quantizes the identity and 1D transform types outside mode
@@ -773,7 +773,11 @@ preset_table! {
         min_block_log2:        [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
         max_block_log2:        [    8,     8,     8,     7,     7,     7,     7,     6,     6,     6,     6],
         sb256_min_height:      [  720,   720,   720,   720,   720,   720,   720,   720,   720,   720,   720],
-        partition_early_exit:  [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+        partition_early_exit:  frames([
+                               [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+                               [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+                               [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
+                               [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true]]),
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
@@ -960,7 +964,7 @@ mod tests {
             assert!(fast.max_block_log2 <= slow.max_block_log2);
             assert!(fast.min_block_log2 <= fast.max_block_log2);
             assert!(at_most(&fast.intra_modes, &slow.intra_modes));
-            assert!(fast.partition_early_exit >= slow.partition_early_exit);
+            assert!(at_most(&slow.partition_early_exit, &fast.partition_early_exit));
             assert!(fast.sdp <= slow.sdp);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);

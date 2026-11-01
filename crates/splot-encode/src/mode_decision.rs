@@ -1381,6 +1381,10 @@ impl PartitionSearch for TrialCoder<'_, '_> {
     type Saved = SyntaxSnapshot;
     type Error = TileWriterError;
 
+    fn context(&self) -> crate::preset::PresetContext {
+        self.coder.context
+    }
+
     fn in_frame(&self, node: PartitionNode) -> bool {
         self.syntax.in_frame(node)
     }
