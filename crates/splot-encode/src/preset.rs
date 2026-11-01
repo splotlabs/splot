@@ -594,6 +594,7 @@ impl PresetParams {
         check("drl_bits", self.drl_bits, 1, 5, "")?;
         check("tpl_delta_q", self.tpl_delta_q, 0, 200, "")?;
         check("ssim_aq", self.ssim_aq, 0, 200, "")?;
+        check("psy_rd", self.psy_rd, 0, 200, "")?;
         for &frames in self.tf_frames.values() {
             check("tf_frames", frames, 0, 8, "")?;
         }
@@ -1171,6 +1172,8 @@ mod tests {
             (&[("intra_modes", "3,3,0,3")], "intra_modes"),
             (&[("tf_frames", "9")], "tf_frames"),
             (&[("gdf_candidates", "17")], "gdf_candidates"),
+            (&[("ssim_aq", "201")], "ssim_aq"),
+            (&[("psy_rd", "201")], "psy_rd"),
             (&[("tip", "3")], "tip"),
             (&[("tip_output", "201")], "tip_output"),
             (&[("opfl", "false")], "tip_refinemv"),

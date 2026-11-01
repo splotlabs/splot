@@ -605,37 +605,37 @@ fn avm_decodes_ist_frames_like_splot() {
 }
 
 /// The AC-energy loss of a flat recon of noise is about its squared error at
-/// 100%, scales with `psy_rd`, and is zero for an exact recon.
+/// 100% on 8x8 and on 4x4 Hadamard tiles alike, scales with `psy_rd`, and is
+/// zero for an exact recon.
 #[test]
 fn ac_energy_loss_charges_lost_texture() {
-    let dims = crate::kernels::BlockDims::new(16, 8).unwrap();
-    let mut state = 0x2545_f491_u32;
-    let source: Vec<u16> = (0..16 * 8)
-        .map(|i| {
-            state ^= state << 13;
-            state ^= state >> 17;
-            state ^= state << 5;
-            (300 + i % 7) as u16 + (state % 41) as u16
-        })
-        .collect();
-    let mean = (source.iter().map(|&s| u32::from(s)).sum::<u32>() / 128) as u16;
-    let flat = vec![mean; 16 * 8];
-    let sse: u64 = source
-        .iter()
-        .map(|&s| u64::from(s.abs_diff(mean)).pow(2))
-        .sum();
-    let full = crate::intra_frame::ac_energy_loss((&source, 16), &flat, dims, 100);
-    assert!(full > sse / 2 && full < sse * 2, "{full} vs {sse}");
-    let half = crate::intra_frame::ac_energy_loss((&source, 16), &flat, dims, 50);
-    assert_eq!(half, full / 2);
-    assert_eq!(
-        crate::intra_frame::ac_energy_loss((&source, 16), &source, dims, 100),
-        0
-    );
-    assert_eq!(
-        crate::intra_frame::ac_energy_loss((&source, 16), &flat, dims, 0),
-        0
-    );
+    use crate::intra_frame::ac_energy_loss;
+    for (w, h) in [(16, 8), (4, 32), (32, 4)] {
+        let dims = crate::kernels::BlockDims::new(w, h).unwrap();
+        let mut state = 0x2545_f491_u32;
+        let source: Vec<u16> = (0..w * h)
+            .map(|i| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (300 + i % 7) as u16 + (state % 41) as u16
+            })
+            .collect();
+        let mean = (source.iter().map(|&s| u32::from(s)).sum::<u32>() / (w * h) as u32) as u16;
+        let flat = vec![mean; w * h];
+        let sse: u64 = source
+            .iter()
+            .map(|&s| u64::from(s.abs_diff(mean)).pow(2))
+            .sum();
+        let full = ac_energy_loss((&source, w), &flat, dims, 100);
+        assert!(
+            full > sse * 2 / 3 && full < sse * 3 / 2,
+            "{w}x{h}: {full} vs {sse}"
+        );
+        assert_eq!(ac_energy_loss((&source, w), &flat, dims, 50), full / 2);
+        assert_eq!(ac_energy_loss((&source, w), &source, dims, 100), 0);
+        assert_eq!(ac_energy_loss((&source, w), &flat, dims, 0), 0);
+    }
 }
 
 /// `Tune::Vq` streams (`ssim_aq` and `psy_rd`) decode to the encoder recon

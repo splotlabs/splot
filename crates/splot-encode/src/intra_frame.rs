@@ -1075,10 +1075,12 @@ impl PaddedSource {
 
     /// The AC-energy loss of the row-major `recon` of the fully visible block
     /// `tx` in squared-error units at `psy_rd` percent: the AC energy is the
-    /// SATD against zero less the SAD (the Hadamard DC terms), and white
-    /// noise of deviation `a` over `n` samples has about `6.4 * n * a`, so
-    /// 100% charges a flat recon of noise its own squared error. `0` for a
-    /// block that crosses the frame edge.
+    /// SATD against zero less the SAD (the Hadamard DC terms). White noise of
+    /// deviation `a` over `n` samples has about `6.4 * n * a` on 8x8 tiles
+    /// and half that on the 4x4 tiles of a block with a side under 8, which
+    /// the loss doubles, so 100% charges a flat recon of noise its own
+    /// squared error at every block shape. `0` for a block that crosses the
+    /// frame edge.
     pub(crate) fn ac_loss(
         &self,
         tx: &TransformBlock,
@@ -1114,7 +1116,8 @@ pub(crate) fn ac_energy_loss(
         let satd = kernels().satd(block, stride, &ZERO, w, dims);
         satd.saturating_sub(u64::from(kernels().sad(block, stride, &ZERO, w, dims)))
     };
-    let loss = ac(source, stride).abs_diff(ac(recon, w));
+    let tile_gain = if w.min(dims.height()) < 8 { 2 } else { 1 };
+    let loss = ac(source, stride).abs_diff(ac(recon, w)) * tile_gain;
     u64::from(psy_rd) * loss * loss / (41 * (w * dims.height()) as u64 * 100)
 }
 

@@ -369,6 +369,10 @@ mod tests {
 
     use super::*;
 
+    use crate::config::Config;
+    use crate::gop::{GopPlanner, GopStep};
+    use crate::lookahead::tests::frame;
+
     /// A textured superblock takes a larger lambda than a flat one, the moves
     /// sum to about zero, and 10-bit samples four times the 8-bit ones move
     /// it alike.
@@ -402,9 +406,6 @@ mod tests {
             quant_of(MAX_TPL_QINDEX_DECREASE * 256 / 12)
         );
     }
-    use crate::config::Config;
-    use crate::gop::{GopPlanner, GopStep};
-    use crate::lookahead::tests::frame;
 
     fn model(shift: usize) -> Vec<TplFrame> {
         let config = Config::new(64, 64);
