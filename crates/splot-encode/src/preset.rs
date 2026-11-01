@@ -15,7 +15,10 @@ use crate::rate_control::FrameType;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PresetParams {
     /// log2 of the smallest square block size searched (2 = 4x4), per frame
-    /// kind.
+    /// kind. p9 searches 16x16 and up on mid and leaf frames, so the p9 and
+    /// p10 steps split the old p9 to p10 step (paris f10: p9 +6.10% BD-rate
+    /// at 0.79x instructions, p10 +22.49% at 0.51x, both against the old
+    /// p9).
     pub min_block_log2: Levels<u8>,
     /// log2 of the largest square block size searched (7 = 128x128); `8`
     /// also codes 256x256 superblocks in frames at least `sb256_min_height`
@@ -784,8 +787,8 @@ preset_table! {
         min_block_log2:        frames([
                                [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
                                [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
-                               [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4],
-                               [    2,     2,     2,     2,     2,     2,     3,     3,     3,     3,     4]]),
+                               [    2,     2,     2,     2,     2,     2,     3,     3,     3,     4,     4],
+                               [    2,     2,     2,     2,     2,     2,     3,     3,     3,     4,     4]]),
         max_block_log2:        [    8,     8,     8,     7,     7,     7,     7,     6,     6,     6,     6],
         sb256_min_height:      [  720,   720,   720,   720,   720,   720,   720,   720,   720,   720,   720],
         partition_early_exit:  frames([
