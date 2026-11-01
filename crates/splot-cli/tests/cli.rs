@@ -734,6 +734,24 @@ fn encode_rejects_conflicting_rate_control_flags() {
         (&["--qp", "10", "--crf", "20"][..], "cannot be used with"),
         (&["--crf", "20", "--bitrate", "100"], "cannot be used with"),
         (&["--rc", "cbr"], "--bitrate <BITRATE>"),
+        (&["--buffer", "500"], "--rc <RC>"),
+        (
+            &["--bitrate", "100", "--rc", "vbr", "--buffer", "2000"],
+            "--buffer and --initial-buffer need --rc cbr",
+        ),
+        (
+            &[
+                "--bitrate",
+                "100",
+                "--rc",
+                "cbr",
+                "--buffer",
+                "500",
+                "--initial-buffer",
+                "600",
+            ],
+            "initial buffer 600 ms is above the buffer of 500 ms",
+        ),
         (&["--crf", "64"], "crf 64 is outside 1..=63"),
     ] {
         let mut args = vec![

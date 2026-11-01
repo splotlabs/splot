@@ -34,7 +34,7 @@ ir_stable = 6921429
 [[fixture]]
 path = "tests/conformance/vectors/valid/syn-2sb-deblockwide-intra-128x64-q100.ivf"
 targets = "deblock-cdef"
-ir_stable = 595774
+ir_stable = 600204
 
 [[fixture]]
 path = "tests/conformance/vectors/valid/syn-8frame-opfl-refine-all-64x64-q120.ivf"

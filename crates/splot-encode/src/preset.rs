@@ -29,9 +29,12 @@ pub struct PresetParams {
     /// other frame kinds the intra shortlist of a leaf in an inter frame.
     pub intra_modes: Levels<u8>,
     /// Partition search skips a block's remaining partitions once its unsplit
-    /// cost does not exceed the best split cost so far, per frame kind.
+    /// cost does not exceed the best split cost so far, per frame kind. p1
+    /// exits on leaf frames only: paris f10 +0.84% BD-rate at 0.80x the p0
+    /// instructions, half of the p0 to p2 BD step (p2 exits everywhere).
     pub partition_early_exit: Levels<bool>,
-    /// Rate-distortion optimized quantization.
+    /// Rate-distortion optimized quantization. On in every row: off at p7-p10
+    /// lost 8-9% BD-rate on paris f10 at the same instruction count.
     pub rdoq: bool,
     /// RDOQ also quantizes the identity and 1D transform types outside mode
     /// trials; off, they take the deadzone quantizer.
@@ -64,9 +67,13 @@ pub struct PresetParams {
     /// block with `DCT_DCT` and signals no type (`reduced_tx_set = 2`).
     pub tx_type_depth: u8,
     /// Luma transform-partition search (`TX_MODE_SELECT`); off codes every
-    /// block with its largest transform (`TX_MODE_LARGEST`).
+    /// block with its largest transform (`TX_MODE_LARGEST`). Off from p8
+    /// (paris p6 f10: +2.99% BD-rate at 0.77x CPU), so p6, p7 and p8 step
+    /// more evenly.
     pub tx_partition_search: bool,
-    /// Full-pel motion search radius in luma samples.
+    /// Full-pel motion search radius in luma samples. The search clamps it
+    /// to 32 samples at its coarsest (quarter) level, so values from 128 up
+    /// search alike.
     pub motion_range: u16,
     /// Open-loop motion estimation of the lookahead: the radius of the
     /// quarter-resolution search against the adjacent frame, in quarter
@@ -133,15 +140,15 @@ pub struct PresetParams {
     /// neighbours that a key frame is filtered from before it is coded; the
     /// lookahead bounds them. Base frames: the most neighbours per side of a
     /// hidden mini-GOP base frame, which its show-existing frame outputs
-    /// filtered. Mid and leaf frames are not filtered. Key frames: `4` at p0-p9 (2026-10-31, p6 vs main
-    /// 5530d5de2): paris f30 -1.37%, niklas f30 +0.11% (-0.28% before the
-    /// two-pass partition decision), park_joy f10 -0.04% at 0.99-1.01x CPU;
-    /// vs 336b8b726: paris p2 -1.60%, park_joy p0 +0.64%, p8 +0.53%. Off at
-    /// p10: park_joy -0.82% for +3.4% CPU (+5.3% instructions), under the
-    /// fast-row slope. Base frames: off in every row (2026-10-31): with two
-    /// per side at strength 25 on top of the key frames, paris p6 f30 went
-    /// from -1.74% to -1.42%; the filtered frame is shown without an overlay
-    /// frame.
+    /// filtered. Mid and leaf frames are not filtered. Key frames: `4` in
+    /// every row (2026-10-31, p6 vs main 5530d5de2): paris f30 -1.37%,
+    /// niklas f30 +0.11% (-0.28% before the two-pass partition decision),
+    /// park_joy f10 -0.04% at 0.99-1.01x CPU; vs 336b8b726: paris p2
+    /// -1.60%, park_joy p0 +0.64%, p8 +0.53%; off at p9 lost paris f10
+    /// +1.52% for 0.98x CPU. Base frames: off in every row (2026-10-31):
+    /// with two per side at strength 25 on top of the key frames, paris p6
+    /// f30 went from -1.74% to -1.42%; the filtered frame is shown without an
+    /// overlay frame.
     pub tf_frames: Levels<u8>,
     /// The strength of `tf_frames` in percent per frame kind: it scales the
     /// weight decay, so larger values keep more of the neighbours. `0` is
@@ -308,7 +315,8 @@ pub struct PresetParams {
     /// frames with a past and a future reference code `REFINE_SWITCHABLE`,
     /// so compound blocks may code `use_optflow`; others code `REFINE_NONE`.
     /// On at p0-p9 (2026-10-30): p6 measured park_joy -0.05%, paris -0.92%,
-    /// niklas -0.22%; off at p10, which codes no compound blocks.
+    /// niklas -0.22%. On in every row: off at p9 lost paris f10 +2.75% for
+    /// 0.98x CPU.
     pub opfl: bool,
     /// Decoder-side vector refinement (`enable_refinemv`): compound blocks
     /// with a past and a future reference may code `use_refinemv`. Off in
@@ -320,7 +328,7 @@ pub struct PresetParams {
     /// vectors, and frames with a past and a future reference code no TIP
     /// weight; the `tip = 2` weight search is skipped. On at p0-p9
     /// (2026-10-30): p6 measured park_joy -0.92%, paris -0.86%, niklas
-    /// -0.12% over OPFL alone; off at p10, which codes no optical flow.
+    /// -0.12% over OPFL alone; on wherever `opfl` is.
     pub tip_refinemv: bool,
     /// Warped motion (`seq_enabled_motion_modes` `LOCALWARP`, `DELTAWARP`,
     /// `EXTENDWARP`), `0..=2`: inter frames of a layer that picks warp code
@@ -777,7 +785,7 @@ preset_table! {
                                [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
                                [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
                                [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true],
-                               [false, false,  true,  true,  true,  true,  true,  true,  true,  true,  true]]),
+                               [false,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true]]),
         ext_partitions:        [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_three_way_margin:  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         ext_four_way_margin:   [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
@@ -789,10 +797,10 @@ preset_table! {
     }
     intra {
         intra_modes:           frames([
-                               [   13,    13,    12,    10,     9,     8,     6,     5,     4,     3,     2],
-                               [   13,    13,    12,    10,     9,     8,     3,     3,     3,     3,     2],
-                               [   13,    13,    12,    10,     9,     8,     3,     3,     3,     3,     2],
-                               [   13,    13,    12,    10,     9,     8,     3,     3,     3,     3,     2]]),
+                               [   13,    12,    12,    10,     9,     8,     6,     5,     4,     3,     2],
+                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     2],
+                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     2],
+                               [   13,    12,    12,    10,     9,     8,     3,     3,     3,     3,     2]]),
         mrl_trials:            [    2,     2,     2,     2,     2,     2,     2,     0,     0,     0,     0],
         cfl_filter:            [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mhccp:                 [false, false, false, false, false, false, false, false, false, false, false],
@@ -800,14 +808,14 @@ preset_table! {
     }
     transform {
         full_trials:           [    6,     6,     6,     4,     0,     0,     0,     0,     0,     0,     0],
-        rdoq:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
+        rdoq:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         rdoq_every_type:       [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
         parity_hiding:         [false, false, false, false, false, false, false, false, false, false, false],
         tcq:                   frames([[true; 11], [true; 11], [false; 11], [false; 11]]),
         tcq_search_trellis:    [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
         tcq_type_trellis:      [ true,  true,  true,  true, false, false, false, false, false, false, false],
         tx_type_depth:         [    3,     3,     3,     2,     2,     2,     1,     1,     1,     0,     0],
-        tx_partition_search:   [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
+        tx_partition_search:   [ true,  true,  true,  true,  true,  true,  true,  true, false, false, false],
         inter_tx_split:        [   24,    24,    24,    24,    24,    24,    24,     0,     0,     0,     0],
         ist_sets:              [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         cctx:                  [false, false, false, false, false, false, false, false, false, false, false],
@@ -820,9 +828,9 @@ preset_table! {
         me_range:              [   16,    16,    16,    12,    12,     8,     8,     8,     6,     4,     4],
         me_seeds:              [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     4],
         compound_skip_sad:     [   16,    16,    16,    16,    16,    24,    24,    24,    24,    24,    24],
-        subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     0],
+        subpel_depth:          [    3,     3,     3,     2,     2,     2,     2,     1,     1,     1,     1],
         eighth_pel_max_qindex: [  128,   128,   128,     0,     0,     0,     0,     0,     0,     0,     0],
-        compound_candidates:   [    8,     8,     6,     6,     4,     4,     3,     2,     1,     0,     0],
+        compound_candidates:   [    8,     6,     6,     6,     4,     4,     3,     2,     1,     0,     0],
         large_inter:           [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         mv_prediction:         [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         drl_bits:              [    3,     3,     3,     3,     3,     3,     3,     1,     1,     1,     1],
@@ -831,9 +839,9 @@ preset_table! {
         cdf_carry:             [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         tip:                   [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
         tip_output:            [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
-        opfl:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
+        opfl:                  [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         refinemv:              [false, false, false, false, false, false, false, false, false, false, false],
-        tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true, false],
+        tip_refinemv:          [ true,  true,  true,  true,  true,  true,  true,  true,  true,  true,  true],
         warp:                  [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         global_motion:         [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         compound_types:        [    1,     1,     1,     1,     1,     1,     1,     1,     1,     0,     0],
@@ -842,8 +850,8 @@ preset_table! {
         bawp:                  [ true,  true,  true,  true,  true,  true,  true, false, false, false, false],
     }
     filters {
-        loop_filter_search:    [    3,     3,     2,     2,     2,     1,     1,     1,     0,     0,     0],
-        ccso_candidates:       [    8,     8,     6,     6,     4,     4,     4,     2,     2,     1,     1],
+        loop_filter_search:    [    3,     2,     2,     2,     2,     1,     1,     1,     0,     0,     0],
+        ccso_candidates:       [    8,     6,     6,     6,     4,     4,     4,     2,     2,     1,     1],
         wiener_ns:             [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         wiener_ns_chroma:      [    2,     2,     2,     2,     2,     2,     2,     1,     1,     1,     1],
         wiener_ns_classes:     [   16,    16,    16,    16,    16,    16,    16,     4,     4,     4,     4],
@@ -865,7 +873,7 @@ preset_table! {
         tpl_delta_q:           [  100,   100,   100,   100,   100,   100,   100,   100,   100,   100,   100],
         ssim_aq:               [    0,     0,     0,     0,     0,     0,     0,     0,     0,     0,     0],
         tf_frames:             frames([
-                               [    4,     4,     4,     4,     4,     4,     4,     4,     4,     4,     0],
+                               [4; 11],
                                [0; 11], [0; 11], [0; 11]]),
         tf_strength:           frames([[100; 11], [25; 11], [25; 11], [25; 11]]),
         delta_q_res:           [    1,     1,     1,     1,     1,     1,     1,     1,     1,     1,     1],
@@ -964,7 +972,10 @@ mod tests {
             assert!(fast.max_block_log2 <= slow.max_block_log2);
             assert!(fast.min_block_log2 <= fast.max_block_log2);
             assert!(at_most(&fast.intra_modes, &slow.intra_modes));
-            assert!(at_most(&slow.partition_early_exit, &fast.partition_early_exit));
+            assert!(at_most(
+                &slow.partition_early_exit,
+                &fast.partition_early_exit
+            ));
             assert!(fast.sdp <= slow.sdp);
             assert!(fast.rdoq <= slow.rdoq);
             assert!(fast.rdoq_every_type <= slow.rdoq_every_type);
