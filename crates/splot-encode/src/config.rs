@@ -37,7 +37,7 @@ impl Tune {
     pub const fn overrides(self) -> &'static [(&'static str, &'static str)] {
         match self {
             Self::Psnr => &[],
-            Self::Ssim => &[("ssim_aq", "50")],
+            Self::Ssim => &[("ssim_aq", "30")],
             Self::Vq => &[("ssim_aq", "30"), ("psy_rd", "50")],
         }
     }

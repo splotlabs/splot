@@ -118,9 +118,9 @@ pub struct PresetParams {
     /// SSIM adaptive quantization in percent: each superblock moves its
     /// lambda and qindex by this share of the SSIM weight of its 16x16 luma
     /// blocks against the frame (`tpl::ssim_lambda_log2`). `0` in every row;
-    /// `Tune::Ssim` sets 50 and `Tune::Vq` 30 (p6 SSIM-BD against
-    /// `Tune::Psnr` at 50: paris -1.15%, park_joy -0.66%, niklas -2.75%; 100
-    /// gained nothing on paris and 200 lost 7%).
+    /// `Tune::Ssim` and `Tune::Vq` set 30 (p6 against `Tune::Psnr` at 30:
+    /// niklas SSIM-BD -2.70% for PSNR-BD +2.95%; 50 gave -2.75% for +7.61%,
+    /// and 200 lost 7% SSIM-BD on paris).
     pub ssim_aq: u8,
     /// Temporal filtering, `0..=8` per frame kind, `0` off; the lookahead
     /// reads it at the normal coefficient level. Key frames: the most later
