@@ -31,6 +31,7 @@ fn with_global_motion(integer_mv: bool) -> &'static PresetParams {
     Box::leak(Box::new(PresetParams {
         global_motion: 1,
         mini_gop_size: 1,
+        bitrate_mini_gop_size: 1,
         lookahead_frames: 1,
         integer_mv,
         ..*Preset::new(6).unwrap().params()

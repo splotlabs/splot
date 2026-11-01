@@ -158,8 +158,8 @@ fn chroma_422_and_444_clips_encode_validate_and_decode_to_the_encoder_stats() {
     }
 }
 
-/// `--low-delay` is the `mini_gop_size=1` and `lookahead_frames=1`
-/// overrides: every frame is coded and shown in input order.
+/// `--low-delay` is the `mini_gop_size=1`, `bitrate_mini_gop_size=1` and
+/// `lookahead_frames=1` overrides: every frame is coded and shown in input order.
 #[test]
 fn low_delay_clips_code_every_frame_in_input_order() {
     round_trip(8, YUV420, &["--qp", "90", "--low-delay"]);
@@ -187,6 +187,8 @@ fn low_delay_clips_code_every_frame_in_input_order() {
     let overrides = [
         "--preset-set",
         "mini_gop_size=1",
+        "--preset-set",
+        "bitrate_mini_gop_size=1",
         "--preset-set",
         "lookahead_frames=1",
     ];
