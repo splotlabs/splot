@@ -17,7 +17,7 @@ use splot_core::headers::sequence::{SequenceHeader, parse_sequence_header};
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_decode::encoder_syntax::{CcsoGrid, FilterRecorder, apply_loop_filters, ccso_offset};
-use splot_recon::{BitDepth, PlaneId};
+use splot_recon::BitDepth;
 
 use super::ccso::{CcsoInput, class_sums};
 use super::cdef_rate;
@@ -289,9 +289,10 @@ fn ccso_plane(
 /// on and deblocking and CDEF off, the decoder output minus its input sums,
 /// over each class the search counts, to the count times the class offset,
 /// in every plane and for edge, edge-classifier and band-only parameters.
-/// The decoder clamps each output sample to the sample range, so a class may
-/// miss at most the largest offset per clamped sample; the p9 key frame with
-/// RDOQ clamps one chroma sample.
+/// The decoder clamps each output sample to the sample range, so a sample
+/// whose applied change differs from its class offset ends on a range
+/// limit; a class may miss at most the largest offset per output sample on
+/// a limit. The p9 key frame with RDOQ clamps one chroma sample.
 #[test]
 fn ccso_search_classes_match_the_decoder_output() {
     let (width, height, qp) = (300, 270, 150);
@@ -348,21 +349,16 @@ fn ccso_search_classes_match_the_decoder_output() {
             pool: None,
         };
         let max = config.bit_depth.max_sample();
-        for (plane, id) in [PlaneId::Y, PlaneId::U, PlaneId::V].into_iter().enumerate() {
+        for plane in 0..3 {
             let sums = class_sums(&input, plane, &params).unwrap();
             let samples = source.plane_sizes()[plane];
             assert_eq!(
                 sums.iter().map(|&(_, count)| count as usize).sum::<usize>(),
                 samples.width() * samples.height()
             );
-            let pre = recon.plane(id).unwrap();
-            let clamped = (0..samples.height() * samples.width())
-                .filter(|&i| {
-                    let (y, x) = (i / samples.width(), i % samples.width());
-                    let out = source.planes()[plane][i];
-                    let input = pre.samples()[y * pre.stride_samples() + x];
-                    (out == max || out == 0) && out != input
-                })
+            let clamped = source.planes()[plane]
+                .iter()
+                .filter(|&&out| out == max || out == 0)
                 .count() as i64;
             assert!(
                 clamped <= 2,
