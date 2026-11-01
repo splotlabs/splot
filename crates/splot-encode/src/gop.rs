@@ -25,7 +25,9 @@
 //! frames coded after a non-reference frame up to the next reference frame
 //! read the same references: they form one wave and can code at the same
 //! time. Any other frame refreshes one slot: an empty one, else the one
-//! with the oldest display index that no show-existing frame waits for. The
+//! with the oldest display index that no show-existing frame waits for,
+//! other than the newest frame shown when coded, which the § 5.18.2
+//! derivation reads (mini-GOPs of 16 and more fill every slot). The
 //! § 7.7 implicit reference map ranks the valid slots by display distance and
 //! `base_q_idx`, so at one quantizer the closest frames rank first.
 //!
@@ -111,6 +113,7 @@ struct Slot {
     display_index: u64,
     layer: u8,
     awaiting_show: bool,
+    shown: bool,
 }
 
 /// Plans key frames and mini-GOPs over the input frames.
@@ -298,6 +301,7 @@ impl GopPlanner {
                 display_index,
                 layer,
                 awaiting_show: !show_frame,
+                shown: show_frame,
             });
         }
         let frame = GopFrame {
@@ -318,15 +322,22 @@ impl GopPlanner {
     }
 
     /// An empty slot, else the slot of the oldest frame no show-existing
-    /// frame waits for.
+    /// frame waits for, other than the newest frame shown when coded.
     fn refresh_slot(&self) -> Result<usize> {
         if let Some(empty) = self.slots.iter().position(Option::is_none) {
             return Ok(empty);
         }
+        let newest_shown = self
+            .slots
+            .iter()
+            .flatten()
+            .filter(|held| held.shown)
+            .map(|held| held.display_index)
+            .max();
         (0..REF_SLOTS)
             .filter_map(|slot| {
                 self.slots[slot]
-                    .filter(|held| !held.awaiting_show)
+                    .filter(|held| !held.awaiting_show && Some(held.display_index) != newest_shown)
                     .map(|held| (held.display_index, slot))
             })
             .min()

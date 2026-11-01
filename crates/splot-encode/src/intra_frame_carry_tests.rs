@@ -29,7 +29,8 @@ pub(super) fn planned_stream_of(
     frame: fn(&Config, u32) -> SourceFrame,
     qp: u16,
 ) -> (Vec<u8>, Vec<u8>, Vec<FrameHeaderCore>, IntraFrameCoder) {
-    let mut planner = GopPlanner::new(config.keyint, coder.preset.mini_gop_size);
+    let mini_gop = coder.preset.mini_gop_size.min(4);
+    let mut planner = GopPlanner::new(config.keyint, mini_gop);
     let (mut units, mut recons, mut cores) = (Vec::new(), BTreeMap::new(), Vec::new());
     let mut queued = 9;
     while let Some(len) = planner.next_len(queued, true) {
