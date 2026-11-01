@@ -160,7 +160,8 @@ impl EncoderReferences {
 
     /// Stores the frame `core`, still being coded, as if it were finished:
     /// `frame` stands for its filtered reconstruction and motion field, and
-    /// the CDFs of `initial` (its [`Self::frame_start`]) for its saved CDFs.
+    /// its writer CDFs saved over `initial` (its [`Self::frame_start`]) for
+    /// its saved CDFs.
     /// A frame that predicts from these references reads approximate data.
     ///
     /// # Errors
@@ -177,7 +178,12 @@ impl EncoderReferences {
             recon.bit_depth(),
             core::iter::once(motion.0.as_slice()),
         )?;
-        self.store(core, recon, Arc::clone(&initial.cdfs), field)
+        let end = TileEnd {
+            cdfs: frame.cdfs,
+            motion: Vec::new(),
+        };
+        let cdfs = Arc::new(saved_cdfs(&self.sequence, core, initial, &[end])?);
+        self.store(core, recon, cdfs, field)
     }
 
     /// The motion field of the frame `core` from the records of its tiles; none

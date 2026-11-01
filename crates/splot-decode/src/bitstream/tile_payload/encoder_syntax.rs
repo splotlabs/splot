@@ -684,11 +684,13 @@ impl TileMotion {
 
 /// A frame as a later frame may read it before it is finished: the
 /// reconstruction of its first rows before loop filtering, the rows below
-/// repeating the last of them, and the motion records of the leaves above.
+/// repeating the last of them, the motion records of the leaves above, and
+/// the CDFs of its writer after those rows.
 pub struct ProvisionalFrame {
     frame: splot_recon::DecodedFrame<u16>,
     motion: TileMotion,
     chroma: ChromaFormatIdc,
+    cdfs: TileCdfSubset,
 }
 
 impl ProvisionalFrame {
@@ -718,6 +720,7 @@ impl ProvisionalFrame {
             frame,
             motion: TileMotion(self.motion.0.clone()).prefix(luma_rows),
             chroma: self.chroma,
+            cdfs: self.cdfs.clone(),
         })
     }
 }

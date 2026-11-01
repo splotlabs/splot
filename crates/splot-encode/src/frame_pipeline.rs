@@ -52,7 +52,7 @@ pub(super) fn eligible(coder: &IntraFrameCoder) -> bool {
 /// references it was stored into.
 pub(super) struct Trail {
     read: Arc<Read>,
-    full: Arc<Snapshot>,
+    rows: Vec<Arc<Snapshot>>,
 }
 
 /// A reference frame still being written, as the frames that read it see it.
@@ -475,21 +475,8 @@ impl<'c, 'a> Pipeline<'c, 'a> {
             }
             Source::Trail => {
                 let trail = self.trail.as_ref().ok_or(missing("a trail"))?;
-                let rows = (row + 1) * self.sb;
-                let frame = trail
-                    .full
-                    .frame
-                    .rows(rows)
-                    .map_err(coding("provisional frame"))?;
-                let intra = trail
-                    .full
-                    .intra
-                    .as_ref()
-                    .map(|cells| Arc::new(cells.above(rows)));
-                Ok(Some((
-                    Arc::clone(&trail.read),
-                    Arc::new(Snapshot { frame, intra }),
-                )))
+                let snapshot = trail.rows.get(row).ok_or(missing("a row"))?;
+                Ok(Some((Arc::clone(&trail.read), Arc::clone(snapshot))))
             }
         }
     }
@@ -628,12 +615,15 @@ impl<'c, 'a> Pipeline<'c, 'a> {
     fn write(&self, j: usize, index: usize, tile: &dyn SearchTile) -> Result<()> {
         let job = &self.jobs[j];
         let (prep, _) = job.exact.get().ok_or(missing("a started writer"))?;
-        let (decision, target) = tile
-            .take(index)?
-            .into_decision()
-            .ok_or(missing("a decision"))?;
+        let searched = tile.take(index)?;
         let mut guard = lock(&job.writer)?;
         let (writer, kept) = guard.as_mut().ok_or(missing("a started writer"))?;
+        if matches!(job.read, Source::None) {
+            kept.write_committed(writer, searched)
+                .map_err(coding("superblock"))?;
+            return self.publish(j, index, writer, prep);
+        }
+        let (decision, target) = searched.into_decision().ok_or(missing("a decision"))?;
         let mut coder: SourceResidualCoder = self.coder.residual_coder(prep, None);
         let qindex = match (target, prep.sb_quant.get(index)) {
             (Some(target), Some(&(_, lambda_log2))) => {
@@ -647,6 +637,19 @@ impl<'c, 'a> Pipeline<'c, 'a> {
         };
         kept.write_superblock(writer, (decision, qindex), &mut coder)
             .map_err(coding("superblock"))?;
+        self.publish(j, index, writer, prep)
+    }
+
+    /// Publishes the row snapshot of job `j` once superblock `index` ends
+    /// its row.
+    fn publish(
+        &self,
+        j: usize,
+        index: usize,
+        writer: &KeyFrameTileWriter,
+        prep: &FramePrep,
+    ) -> Result<()> {
+        let job = &self.jobs[j];
         let cols = self.grid.1;
         if index % cols == cols - 1 {
             let row = index / cols;
@@ -673,16 +676,13 @@ impl<'c, 'a> Pipeline<'c, 'a> {
     /// Keeps job `j`, the batch's last reference frame, as the trail the
     /// next batch reads.
     fn keep_trail(&self, j: usize) -> Result<()> {
-        let full = self.jobs[j]
+        let rows = self.jobs[j]
             .rows
-            .last()
-            .and_then(OnceLock::get)
-            .ok_or(missing("a row"))?;
+            .iter()
+            .map(|row| row.get().cloned().ok_or(missing("a row")))
+            .collect::<Result<_>>()?;
         let read = self.read_frame(j, self.waves.len())?;
-        *lock(&self.next_trail)? = Some(Trail {
-            read,
-            full: Arc::clone(full),
-        });
+        *lock(&self.next_trail)? = Some(Trail { read, rows });
         Ok(())
     }
 
