@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use super::{Bits, Lambda, RdCost};
 use crate::hme::FrameMotion;
-use crate::preset::PresetParams;
+use crate::preset::{PresetContext, PresetParams};
 use crate::tile_writer::{LeafChoice, Partition, PartitionTree, TileWriterError};
 
 /// What the partition search needs from a coder. Trials code into live state:
@@ -67,6 +67,10 @@ pub(crate) trait PartitionSearch {
     ) -> Result<Self::Saved, Self::Error>;
     /// Restores a state saved for the same node.
     fn restore(&mut self, saved: &Self::Saved) -> Result<(), Self::Error>;
+    /// The frame context of the preset's [`crate::preset::Levels`] fields.
+    fn context(&self) -> PresetContext {
+        PresetContext::default()
+    }
 }
 
 /// Finds the partition tree of `node` with the lowest `J = D + lambda * R` and
@@ -301,7 +305,8 @@ fn search<S: PartitionSearch>(
         }
         let split = best_split.map_or(j, |b: u128| b.min(j));
         best_split = Some(split);
-        exited |= preset.partition_early_exit && unsplit.is_some_and(|none| none <= split);
+        exited |= preset.partition_early_exit.at(coder.context())
+            && unsplit.is_some_and(|none| none <= split);
     }
     let Some((_, tree, cost, end)) = best else {
         return Ok((PartitionTree::Leaf(LeafChoice::DC), RdCost::default()));
