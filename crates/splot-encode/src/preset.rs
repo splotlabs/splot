@@ -582,8 +582,8 @@ impl PresetParams {
             "bitrate_mini_gop_size",
             self.bitrate_mini_gop_size,
             1,
-            32,
-            "",
+            self.mini_gop_size,
+            " (..mini_gop_size)",
         )?;
         check(
             "lookahead_frames",
@@ -1166,6 +1166,7 @@ mod tests {
             (&[("mini_gop_size", "0")], "mini_gop_size"),
             (&[("mini_gop_size", "33")], "mini_gop_size"),
             (&[("bitrate_mini_gop_size", "0")], "bitrate_mini_gop_size"),
+            (&[("bitrate_mini_gop_size", "9")], "bitrate_mini_gop_size"),
             (&[("intra_modes", "0")], "intra_modes"),
             (&[("mds0_budgets", "4,0,2")], "mds0_budgets"),
             (&[("intra_modes", "3,3,0,3")], "intra_modes"),

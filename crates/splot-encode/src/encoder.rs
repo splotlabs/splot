@@ -194,7 +194,7 @@ impl Encoder {
         let params = config.override_preset(config.preset.params())?;
         let mini_gop_size = match config.rate_control {
             RateControlMode::Vbr { .. } | RateControlMode::Cbr { .. } => {
-                params.bitrate_mini_gop_size.min(params.mini_gop_size)
+                params.bitrate_mini_gop_size
             }
             _ => params.mini_gop_size,
         };
@@ -707,6 +707,7 @@ mod tests {
         config.keyint = Config::DEFAULT_KEYINT;
         config.preset_overrides = vec![
             ("mini_gop_size".into(), "1".into()),
+            ("bitrate_mini_gop_size".into(), "1".into()),
             ("lookahead_frames".into(), "1".into()),
         ];
         let mut encoder = Encoder::with_coder(config, Box::new(FakeCoder { fail_at: None }))?;
@@ -794,7 +795,8 @@ mod tests {
             plain
         );
         assert_ne!(stream_with(&[("max_block_log2", "6")])?, plain);
-        assert_ne!(stream_with(&[("mini_gop_size", "1")])?, plain);
+        let ippp = [("mini_gop_size", "1"), ("bitrate_mini_gop_size", "1")];
+        assert_ne!(stream_with(&ippp)?, plain);
         assert!(matches!(
             stream_with(&[("mini_gop", "1")]),
             Err(Error::Preset(PresetError::UnknownField { .. }))
