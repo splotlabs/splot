@@ -16,7 +16,7 @@ use crate::headers::frame::quant::CoreSeqQuantView;
 use crate::headers::frame::restoration::{CoreSeqCcsoView, CoreSeqRestorationView};
 use crate::headers::frame::segmentation::{CoreSeqSegView, MfhSegView};
 use crate::headers::frame::tiling::CoreSeqTileView;
-use crate::headers::sequence::{ChromaFormatIdc, SequenceHeader};
+use crate::headers::sequence::{ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use crate::hls::MultiFrameHeaderRecord;
 
 /// `MOTION_MODES` (AV2 v1.0.0 § 3): the motion-mode array length carried for the
@@ -115,6 +115,13 @@ pub struct CoreSeqView {
 }
 
 impl CoreSeqView {
+    /// The frame `SbSize` (§ 5.18.2) of an intra or inter frame of this
+    /// sequence: 256x256 sequence superblocks code intra frames in 128x128.
+    #[must_use]
+    pub const fn frame_sb_size(&self, frame_is_intra: bool) -> SuperblockSize {
+        self.tile.frame_sb_size(frame_is_intra)
+    }
+
     /// The § 5.4.10 loop-restoration tool flags `lr_params()` reads.
     #[must_use]
     pub const fn restoration(&self) -> CoreSeqRestorationView {
