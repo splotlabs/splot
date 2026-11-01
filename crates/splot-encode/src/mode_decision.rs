@@ -164,6 +164,12 @@ impl<'a, 'b> TrialCoder<'a, 'b> {
         for tx in blocks.iter().filter(|tx| planes.contains(&tx.plane)) {
             self.syntax.reconstruction_into(tx, &mut self.samples)?;
             distortion += self.coder.source.sse(tx, &self.samples)?;
+            if self.preset.psy_rd > 0 && tx.plane == 0 {
+                distortion += self
+                    .coder
+                    .source
+                    .ac_loss(tx, &self.samples, self.preset.psy_rd)?;
+            }
         }
         Ok(RdCost {
             distortion,
