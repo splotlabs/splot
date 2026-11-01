@@ -174,7 +174,19 @@ fn kernel_matches(symbol: &str, key: &str) -> bool {
         return true;
     }
     symbol.match_indices(&mangled).any(|(at, found)| {
-        !key.ends_with("::") || symbol[at + found.len()..].starts_with(|c: char| c.is_ascii_digit())
+        let rest = &symbol[at + found.len()..];
+        !key.ends_with("::")
+            || (rest.starts_with(|c: char| c.is_ascii_digit()) && !is_legacy_hash(rest))
+    })
+}
+
+/// Whether `rest` starts with the hash that legacy mangling appends to every
+/// name, `17h` and 16 hex digits then `E`: it ends the name.
+fn is_legacy_hash(rest: &str) -> bool {
+    rest.strip_prefix("17h").is_some_and(|hash| {
+        hash.len() > 16
+            && hash.as_bytes()[..16].iter().all(u8::is_ascii_hexdigit)
+            && hash.as_bytes()[16] == b'E'
     })
 }
 
@@ -515,9 +527,12 @@ mod tests {
         ));
         let quantize = "_RNvNtNtCs1_12splot_encode7kernels8quantize13quantize_simd";
         assert!(kernel_matches(quantize, "quantize::"));
+        let legacy = "_ZN12splot_encode7kernels8quantize13quantize_simd17h0123456789abcdefE";
+        assert!(kernel_matches(legacy, "quantize::"));
         for function in [
             "_RNvMs5_NtCs1_12splot_encode11intra_frameNtB5_19SourceResidualCoder8quantize",
             "_RNvXs_NtCs1_12splot_encode7kernelsNtB4_11SimdKernelsNtB4_14EncoderKernels8quantize",
+            "_ZN12splot_encode11intra_frame19SourceResidualCoder8quantize17h0123456789abcdefE",
         ] {
             assert!(!kernel_matches(function, "quantize::"), "{function}");
         }
