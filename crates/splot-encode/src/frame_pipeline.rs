@@ -45,6 +45,7 @@ pub(super) fn eligible(coder: &IntraFrameCoder) -> bool {
         && !coder.params.tools.film_grain
         && coder.tiles.cols_log2 == 0
         && coder.tiles.rows_log2 == 0
+        && coder.view.frame_sb_size(true) == coder.view.frame_sb_size(false)
 }
 
 /// The frame a later batch reads first: its snapshot of every row and the
@@ -197,7 +198,7 @@ impl<'c, 'a> Pipeline<'c, 'a> {
             refs: state.references.fork().map_err(coding("references"))?,
             slot_intra: state.slot_intra.clone(),
         });
-        let sb = match coder.params.sb_size {
+        let sb = match coder.view.frame_sb_size(false) {
             splot_core::headers::sequence::SuperblockSize::Block64x64 => 64,
             splot_core::headers::sequence::SuperblockSize::Block128x128 => 128,
             splot_core::headers::sequence::SuperblockSize::Block256x256 => 256,
