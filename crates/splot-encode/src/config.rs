@@ -271,10 +271,6 @@ impl Config {
         }
     }
 
-    /// `row` with [`Tune::overrides`] of [`Self::tune`], then
-    /// [`Self::FAST_DECODE`] (when [`Self::fast_decode`]), then
-    /// [`Self::preset_overrides`] applied, checked by
-    /// [`PresetParams::validate`].
     /// The constant qindex of [`Self::first_pass_config`].
     pub const FIRST_PASS_QP: u16 = 128;
 
@@ -302,6 +298,10 @@ impl Config {
         Ok(first)
     }
 
+    /// `row` with [`Tune::overrides`] of [`Self::tune`], then
+    /// [`Self::FAST_DECODE`] (when [`Self::fast_decode`]), then
+    /// [`Self::preset_overrides`] applied, checked by
+    /// [`PresetParams::validate`].
     pub(crate) fn override_preset(&self, row: &PresetParams) -> Result<PresetParams> {
         let mut row = *row;
         let fast_decode = self.fast_decode.then_some(&Self::FAST_DECODE[..]);
