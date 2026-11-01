@@ -164,7 +164,7 @@ fn avm_decodes_sb256_streams_like_splot() {
 
 /// [`SB256`] that codes no leaf smaller than 256x256 where it can.
 static FORCED: PresetParams = PresetParams {
-    min_block_log2: 8,
+    min_block_log2: crate::preset::Levels::all(8),
     ..SB256
 };
 
