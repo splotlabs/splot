@@ -14,7 +14,7 @@ use clap::{Args, ValueEnum};
 use splot_encode::ivf::IvfWriter;
 use splot_encode::y4m::Y4mReader;
 use splot_encode::{
-    BitDepth, Config, Encoder, Preset, RateControlMode, SourceFrame, ThreadCount, TileLayout,
+    BitDepth, Config, Encoder, Preset, RateControlMode, SourceFrame, ThreadCount, TileLayout, Tune,
 };
 
 /// Arguments for `splot encode`.
@@ -59,6 +59,11 @@ pub(crate) struct EncodeArgs {
     /// shown) and `lookahead_frames=1` before `--preset-set`; off by default.
     #[arg(long)]
     low_delay: bool,
+    /// The metric the encoder tunes for: `psnr` (default), `ssim`
+    /// (superblock lambda and qindex follow the luma variance) or `vq`
+    /// (trials keep the AC energy of the source); before `--preset-set`.
+    #[arg(long, value_enum, default_value_t = TuneArg::Psnr)]
+    tune: TuneArg,
     /// Fast decode: 64x64 superblocks, no Wiener-NS or GDF, and at most two
     /// CDEF strength sets, before `--preset-set`; off by default.
     #[arg(long)]
@@ -126,6 +131,14 @@ fn parse_preset_set(value: &str) -> Result<(String, String), String> {
 enum RcMode {
     Vbr,
     Cbr,
+}
+
+/// Metrics of `splot encode --tune`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum TuneArg {
+    Psnr,
+    Ssim,
+    Vq,
 }
 
 /// The preset overrides of `--low-delay`.
@@ -199,6 +212,11 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     config.keyint = args.keyint;
     config.resize_denominator = args.resize_denominator;
     config.film_grain = args.film_grain;
+    config.tune = match args.tune {
+        TuneArg::Psnr => Tune::Psnr,
+        TuneArg::Ssim => Tune::Ssim,
+        TuneArg::Vq => Tune::Vq,
+    };
     config.fast_decode = args.fast_decode;
     if u16::try_from(header.width).is_err() || u16::try_from(header.height).is_err() {
         bail!("IVF output supports at most 65535 samples per side");

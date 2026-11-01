@@ -7067,6 +7067,38 @@ commands = ["cargo test -p splot-encode gop --locked", "cargo test -p splot-enco
 fixtures = []
 diagnostics = []
 
+[[feature]]
+id = "ENC-TUNE"
+name = "Encoder metric tuning"
+category = "encoder"
+kind = "encoder-api"
+spec_sections = []
+sources = []
+crate = "splot-encode"
+module = "crates/splot-encode/src/config.rs"
+change_id = "enc-tune"
+owner = "encoder"
+risk = "medium"
+notes = "B6 part 2b (2026-11-01). Encoder strategy, no syntax. Config::tune (CLI --tune psnr|ssim|vq, psnr by default and byte-identical) applies Tune::overrides before the preset overrides. ssim sets PresetParams::ssim_aq 30: each superblock moves its lambda and qindex (the delta_q path of the temporal model, added to it) by that share of the mean over its 16x16 luma blocks of log2(2 * variance + C2) less the frame mean (tpl::ssim_lambda_log2; the variance from the SAD and SSE kernels against zero). vq sets ssim_aq 30 and PresetParams::psy_rd 50: the trial distortion of a fully visible luma block adds its AC-energy loss (SATD less SAD against zero, squared and scaled to squared-error units). A softer key-frame filter (tf_strength 50) did not help SSIM on paris, so TF, CDEF and RDOQ keep the preset values. Measured p6, 10 frames, qp 85-190 against --tune psnr (luma SSIM over 8x8 windows): ssim paris PSNR-BD +0.49% SSIM-BD -0.59%, park_joy -0.04% / +0.04%, niklas +2.95% / -2.70% (at ssim_aq 50: niklas +7.61% / -2.75%); vq paris +1.05% / -1.57%, park_joy +0.10% / -0.18%, niklas +2.73% / -3.23%, at 0.93-1.07x CPU. The delta_q grid is one superblock (128x128 at p6), so the 16x16 weights act as superblock means; a per-16x16 lambda inside the mode decision is out of scope."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "done"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/tpl.rs::tests::ssim_lambda_follows_the_block_variance", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::ssim_tuned_streams_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_frame_delta_q_tests.rs::avm_decodes_delta_q_frames_like_splot", "crates/splot-encode/src/intra_tools_tests.rs::ac_energy_loss_charges_lost_texture", "crates/splot-encode/src/intra_tools_tests.rs::vq_tuned_frames_decode_to_the_encoder_recon_on_any_thread_count", "crates/splot-encode/src/intra_tools_tests.rs::avm_decodes_vq_tuned_frames_like_splot", "crates/splot-encode/src/preset.rs::tests::every_field_is_monotone_from_slow_to_fast"]
+commands = ["cargo test -p splot-encode tuned --locked", "SPLOT_AVM_DECODER=avmdec cargo test -p splot-encode avm_decodes_vq --locked -- --ignored"]
+fixtures = []
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------
