@@ -57,7 +57,7 @@ pub use error::{Error, Result};
 pub use frame::SourceFrame;
 pub use preset::{PRESETS, Preset, PresetError, PresetParams};
 pub use rate_control::{
-    Cbr, ConstantQp, Crf, FramePlanInfo, FrameType, RateController, Vbr, max_qindex,
+    Cbr, ConstantQp, Crf, FirstPass, FramePlanInfo, FrameType, RateController, Vbr, max_qindex,
 };
 pub use splot_parallel::ThreadCount;
 pub use splot_recon::{BitDepth, PixelFormat, PlaneSize};

@@ -7131,6 +7131,38 @@ commands = ["cargo test -p splot-encode rate_control --locked", "cargo test -p s
 fixtures = []
 diagnostics = []
 
+[[feature]]
+id = "ENC-TWO-PASS-VBR"
+name = "Two-pass VBR with a half-size first pass"
+category = "encoder"
+kind = "encoder-tool"
+spec_sections = []
+sources = ["https://av2.aomedia.org/v1.0.0/index.html"]
+crate = "splot-encode"
+module = "crates/splot-encode/src/rate_control.rs"
+change_id = "enc-two-pass-vbr"
+owner = "encoder"
+risk = "medium"
+notes = "B9 item: two-pass VBR. Encoder strategy; no new syntax. Config::first_pass holds the coded bits of each input frame in a first pass; Config::first_pass_config codes it at half size (resize_denominator 16), constant qindex 128 (Config::FIRST_PASS_QP), in VBR's mini-GOPs (mini_gop_size = bitrate_mini_gop_size), without film grain; rate_control::FirstPass runs it frame by frame. Vbr::with_first_pass splits the budget over the input frames in proportion to those bits: a window's target is the sum of its frames' budgets and the drift counts each frame against its own budget; frames past the list and an empty list take the mean budget, so one pass is byte-identical. CLI: --two-pass (VBR, file input; it reads the input twice). Measured 2026-11-01, p9, keyint 64, vs one-pass VBR of the same binary (one pass byte-identical to main a3c44f73c): paris f30 200/400/800/1600 kbps BD-rate -7.89% at 1.24x CPU; niklas 720p f60 1000/2500/6000/12000 kbps -2.32% at 1.19x CPU; niklas rate within 0.5% of the target at every rate in both modes (paris overshoots +21% in both: a 30-frame clip). Not done: a faster first-pass preset, and first-pass statistics other than the bits."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "done"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-encode/src/rate_control_tests.rs::two_pass_vbr_follows_the_first_pass", "crates/splot-cli/tests/cli.rs::encode_rejects_conflicting_rate_control_flags", "crates/splot-cli/tests/encode_decode_roundtrip.rs::crf_and_bitrate_clips_encode_validate_and_decode_to_the_encoder_stats"]
+commands = ["cargo test -p splot-encode two_pass --locked", "cargo test -p splot-cli --test encode_decode_roundtrip --locked"]
+fixtures = []
+diagnostics = []
+
 # ---------------------------------------------------------------------------
 # Conformance and differential testing
 # ---------------------------------------------------------------------------

@@ -248,9 +248,11 @@ pub struct Vbr {
     base: u16,
     /// The most frames a window has held.
     longest_window: usize,
-    /// Frame index, model class, complexity (`0` for a flat frame) and bit
-    /// depth of the planned frames.
-    planned: VecDeque<(u64, usize, u64, BitDepth)>,
+    /// Frame index, model class, complexity (`0` for a flat frame), bit
+    /// depth and budget of the planned frames.
+    planned: VecDeque<(u64, usize, u64, BitDepth, u64)>,
+    /// The first-pass bits of each input frame and their sum.
+    first_pass: (Vec<u64>, u64),
 }
 
 impl Vbr {
@@ -283,6 +285,37 @@ impl Vbr {
             base: 128,
             longest_window: 0,
             planned: VecDeque::new(),
+            first_pass: (Vec::new(), 0),
+        }
+    }
+
+    /// Splits the budget over the input frames in proportion to their
+    /// `first_pass` bits instead of evenly; frames past its end, and every
+    /// frame when it sums to zero, take the mean budget.
+    #[must_use]
+    pub fn with_first_pass(mut self, first_pass: &[u64]) -> Self {
+        let total = first_pass
+            .iter()
+            .fold(0u64, |sum, &bits| sum.saturating_add(bits));
+        self.first_pass = (first_pass.to_vec(), total);
+        self
+    }
+
+    /// The budget of input frame `display_index`.
+    fn budget(&self, display_index: u64) -> u64 {
+        let (bits, total) = (&self.first_pass.0, self.first_pass.1);
+        match usize::try_from(display_index)
+            .ok()
+            .and_then(|i| bits.get(i))
+        {
+            Some(&own) if total > 0 => {
+                let share = u128::from(self.frame_bits) * bits.len() as u128 * u128::from(own)
+                    / u128::from(total);
+                u64::try_from(share)
+                    .unwrap_or(MAX_FRAME_BITS)
+                    .min(MAX_FRAME_BITS)
+            }
+            _ => self.frame_bits,
         }
     }
 
@@ -318,7 +351,9 @@ impl RateController for Vbr {
         let ending = window.len() < self.longest_window;
         self.longest_window = self.longest_window.max(window.len());
         let frames = i64::try_from(window.len()).unwrap_or(i64::MAX);
-        let target = (self.frame_bits as i64).saturating_mul(frames);
+        let target = window.iter().fold(0i64, |sum, info| {
+            sum.saturating_add(self.budget(info.display_index) as i64)
+        });
         let horizon = if ending {
             frames
         } else {
@@ -350,6 +385,7 @@ impl RateController for Vbr {
             class(info),
             if flat { 0 } else { info.complexity },
             info.bit_depth,
+            self.budget(info.display_index),
         ));
         with_offset(self.base, info.qindex_offset, info.bit_depth)
     }
@@ -357,12 +393,13 @@ impl RateController for Vbr {
     /// Adds the frame to the drift, and learns its class's `k`, or the mean
     /// size of the class's flat frames for a flat frame.
     fn update(&mut self, stats: &FrameStats) {
-        self.spend(stats.bits, self.frame_bits);
-        let Some(&(_, class, complexity, bit_depth)) = self
+        let planned = self
             .planned
             .iter()
             .find(|planned| planned.0 == stats.frame_index)
-        else {
+            .copied();
+        self.spend(stats.bits, planned.map_or(self.frame_bits, |p| p.4));
+        let Some((_, class, complexity, bit_depth, _)) = planned else {
             return;
         };
         if complexity == 0 {
@@ -465,6 +502,68 @@ impl RateController for Cbr {
 
     fn update_show_existing(&mut self, bits: u64) {
         self.vbr.update_show_existing(bits);
+    }
+}
+
+/// The first pass of a two-pass VBR encode: send it every input frame in
+/// order, then [`Self::finish`] gives the bits of each, for
+/// [`crate::Config::first_pass`].
+pub struct FirstPass {
+    encoder: crate::Encoder,
+    /// The input index of each sent frame, by `pts`.
+    index: std::collections::BTreeMap<u64, usize>,
+    bits: Vec<u64>,
+}
+
+impl FirstPass {
+    /// A first pass of `config` ([`crate::Config::first_pass_config`]).
+    ///
+    /// # Errors
+    /// Returns a configuration error, or a coding error when the frame coder
+    /// cannot be set up.
+    pub fn new(config: &crate::Config) -> Result<Self> {
+        Ok(Self {
+            encoder: crate::Encoder::new(config.first_pass_config()?)?,
+            index: std::collections::BTreeMap::new(),
+            bits: Vec::new(),
+        })
+    }
+
+    /// Codes `frame`, the next input frame, built for the second pass's
+    /// configuration.
+    ///
+    /// # Errors
+    /// Returns the encoder's error.
+    pub fn send_frame(&mut self, frame: crate::SourceFrame) -> Result<()> {
+        self.index.insert(frame.pts(), self.bits.len());
+        self.bits.push(0);
+        self.encoder.send_frame(frame)?;
+        self.drain()
+    }
+
+    /// The bits of each sent frame, in input order.
+    ///
+    /// # Errors
+    /// Returns the encoder's error.
+    pub fn finish(mut self) -> Result<Vec<u64>> {
+        self.encoder.flush()?;
+        self.drain()?;
+        Ok(self.bits)
+    }
+
+    fn drain(&mut self) -> Result<()> {
+        while let Some(packet) = self.encoder.receive_packet()? {
+            for stats in packet.stats {
+                if let Some(bits) = self
+                    .index
+                    .get(&stats.pts)
+                    .and_then(|&at| self.bits.get_mut(at))
+                {
+                    *bits = bits.saturating_add(stats.bits);
+                }
+            }
+        }
+        Ok(())
     }
 }
 

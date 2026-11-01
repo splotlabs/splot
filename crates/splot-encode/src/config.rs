@@ -137,6 +137,11 @@ pub struct Config {
     /// Fast decode: the preset takes [`Self::FAST_DECODE`] before
     /// [`Self::preset_overrides`]. Off by default.
     pub fast_decode: bool,
+    /// The coded bits of each input frame in a first pass, in input order
+    /// ([`Self::first_pass_config`]); [`RateControlMode::Vbr`] splits its
+    /// budget over the frames in proportion to them. Empty (the default) is
+    /// one pass; frames past the end take the mean budget.
+    pub first_pass: Vec<u64>,
 }
 
 impl Config {
@@ -182,6 +187,7 @@ impl Config {
             resize_denominator: None,
             film_grain: false,
             tune: Tune::Psnr,
+            first_pass: Vec::new(),
             fast_decode: false,
         }
     }
@@ -263,6 +269,33 @@ impl Config {
             resize_denominator: None,
             ..self.clone()
         }
+    }
+
+    /// The constant qindex of [`Self::first_pass_config`].
+    pub const FIRST_PASS_QP: u16 = 128;
+
+    /// The first pass of a two-pass VBR encode of this configuration: the
+    /// frames at half size, at the constant qindex [`Self::FIRST_PASS_QP`],
+    /// in the mini-GOPs that VBR codes (the preset's
+    /// `bitrate_mini_gop_size`), so the first pass sees the second pass's
+    /// prediction structure; no film grain and no first pass of its own.
+    ///
+    /// # Errors
+    /// Returns [`Error::Preset`] when the preset overrides do not apply.
+    pub fn first_pass_config(&self) -> Result<Self> {
+        let params = self.override_preset(self.preset.params())?;
+        let mut first = self.clone();
+        first.resize_denominator = Some(16);
+        first.rate_control = RateControlMode::ConstantQp {
+            qp: Self::FIRST_PASS_QP,
+        };
+        first.film_grain = false;
+        first.first_pass = Vec::new();
+        first.preset_overrides.push((
+            "mini_gop_size".to_owned(),
+            params.bitrate_mini_gop_size.to_string(),
+        ));
+        Ok(first)
     }
 
     /// `row` with [`Tune::overrides`] of [`Self::tune`], then

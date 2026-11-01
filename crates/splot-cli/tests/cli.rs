@@ -734,6 +734,11 @@ fn encode_rejects_conflicting_rate_control_flags() {
         (&["--qp", "10", "--crf", "20"][..], "cannot be used with"),
         (&["--crf", "20", "--bitrate", "100"], "cannot be used with"),
         (&["--rc", "cbr"], "--bitrate <BITRATE>"),
+        (&["--two-pass"], "--bitrate <BITRATE>"),
+        (
+            &["--bitrate", "100", "--rc", "cbr", "--two-pass"],
+            "--two-pass needs VBR",
+        ),
         (&["--buffer", "500"], "--rc <RC>"),
         (
             &["--bitrate", "100", "--rc", "vbr", "--buffer", "2000"],

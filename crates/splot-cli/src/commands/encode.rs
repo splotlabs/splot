@@ -14,7 +14,8 @@ use clap::{Args, ValueEnum};
 use splot_encode::ivf::IvfWriter;
 use splot_encode::y4m::Y4mReader;
 use splot_encode::{
-    BitDepth, Config, Encoder, Preset, RateControlMode, SourceFrame, ThreadCount, TileLayout, Tune,
+    BitDepth, Config, Encoder, FirstPass, Preset, RateControlMode, SourceFrame, ThreadCount,
+    TileLayout, Tune,
 };
 
 /// Arguments for `splot encode`.
@@ -43,6 +44,9 @@ pub(crate) struct EncodeArgs {
     /// CBR decoder buffer level before the first frame, in milliseconds at the bitrate [default: half of `--buffer`].
     #[arg(long, value_name = "MS", requires = "rc")]
     initial_buffer: Option<u32>,
+    /// Two-pass VBR: a first pass at half size and constant qindex reads the input once more and sets each frame's share of the budget. Needs a file input.
+    #[arg(long, requires = "bitrate")]
+    two_pass: bool,
     /// Speed preset: 0 is the slowest and best, 10 the fastest.
     #[arg(long, default_value_t = Preset::default().get())]
     preset: u8,
@@ -224,6 +228,9 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
     if u16::try_from(header.width).is_err() || u16::try_from(header.height).is_err() {
         bail!("IVF output supports at most 65535 samples per side");
     }
+    if args.two_pass {
+        config.first_pass = first_pass(args, &config)?;
+    }
     let mut encoder = Encoder::new(config.clone()).context("failed to create the encoder")?;
 
     // The output file is created at the first packet, so bad input never truncates it.
@@ -273,4 +280,26 @@ pub(crate) fn run(args: &EncodeArgs) -> Result<ExitCode> {
         None => bail!("the input has no frames"),
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The first-pass bits of each input frame of `args` for `config`, reading
+/// the input file once more.
+fn first_pass(args: &EncodeArgs, config: &Config) -> Result<Vec<u64>> {
+    if args.rc == Some(RcMode::Cbr) {
+        bail!("--two-pass needs VBR, not --rc cbr");
+    }
+    if args.input.as_os_str() == "-" {
+        bail!("--two-pass reads the input twice and needs a file, not stdin");
+    }
+    let input = File::open(&args.input)
+        .with_context(|| format!("failed to open input file: {}", args.input.display()))?;
+    let mut reader = Y4mReader::new(BufReader::new(input)).context("failed to read Y4M input")?;
+    let mut first = FirstPass::new(config).context("failed to create the first pass")?;
+    for pts in 0..args.limit.map_or(u64::MAX, NonZeroU64::get) {
+        let Some(planes) = reader.read_frame().context("failed to read Y4M input")? else {
+            break;
+        };
+        first.send_frame(SourceFrame::new(config, pts, planes)?)?;
+    }
+    Ok(first.finish()?)
 }
