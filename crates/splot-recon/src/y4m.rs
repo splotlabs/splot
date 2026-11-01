@@ -13,7 +13,7 @@ use std::{
     num::NonZeroU32,
 };
 
-use crate::{BitDepth, DecodedFrame, PixelFormat, Plane, PlaneSize, ReconSample};
+use crate::{BitDepth, DecodedFrame, DecodedFrameHashInput, PixelFormat, PlaneSize, ReconSample};
 
 /// Result alias used by Y4M writer APIs.
 pub type Y4mResult<T> = core::result::Result<T, Y4mError>;
@@ -382,7 +382,7 @@ impl<W: Write> Y4mWriter<W> {
         }
 
         Y4mFrameHeader::new().write_to(&mut self.writer)?;
-        write_frame_payload(frame, &mut self.writer)?;
+        DecodedFrameHashInput::new(frame).write_to(&mut self.writer)?;
         self.frames_written += 1;
         Ok(())
     }
@@ -393,71 +393,11 @@ impl<W: Write> Y4mWriter<W> {
     }
 }
 
-fn write_frame_payload<T: ReconSample, W: Write + ?Sized>(
-    frame: &DecodedFrame<T>,
-    writer: &mut W,
-) -> Y4mResult<()> {
-    let bit_depth = frame.bit_depth();
-    write_visible_plane(bit_depth, frame.y(), writer)?;
-    if let Some(u) = frame.u() {
-        write_visible_plane(bit_depth, u, writer)?;
-    }
-    if let Some(v) = frame.v() {
-        write_visible_plane(bit_depth, v, writer)?;
-    }
-    Ok(())
-}
-
-fn write_visible_plane<T: ReconSample, W: Write + ?Sized>(
-    bit_depth: BitDepth,
-    plane: &Plane<T>,
-    writer: &mut W,
-) -> Y4mResult<()> {
-    let row_byte_len = plane
-        .visible_size()
-        .width()
-        .checked_mul(bytes_per_sample(bit_depth))
-        .ok_or(Y4mError::ArithmeticOverflow {
-            context: "Y4M visible row byte length",
-        })?;
-    let mut row_bytes = Vec::new();
-    row_bytes
-        .try_reserve_exact(row_byte_len)
-        .map_err(|err| Y4mError::Io {
-            source: io::Error::other(format!("Y4M row buffer allocation failed: {err}")),
-        })?;
-
-    for row in plane.visible_rows() {
-        row_bytes.clear();
-        for sample in row {
-            push_sample(bit_depth, sample.to_u16(), &mut row_bytes);
-        }
-        writer.write_all(&row_bytes)?;
-    }
-
-    Ok(())
-}
-
-const fn bytes_per_sample(bit_depth: BitDepth) -> usize {
-    match bit_depth {
-        BitDepth::Eight => 1,
-        BitDepth::Ten => 2,
-    }
-}
-
-fn push_sample(bit_depth: BitDepth, sample: u16, row_bytes: &mut Vec<u8>) {
-    match bit_depth {
-        BitDepth::Eight => row_bytes.push(sample as u8),
-        // splot-copy-ok: serialize a decoded sample into the Y4M output byte row
-        BitDepth::Ten => row_bytes.extend_from_slice(&sample.to_le_bytes()),
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::{DecodedFrameInfo, FramePlanes, OutputIndex, PlaneRect};
+    use crate::{DecodedFrameInfo, FramePlanes, OutputIndex, Plane, PlaneRect};
 
     fn size(width: usize, height: usize) -> PlaneSize {
         PlaneSize::new(width, height).unwrap()
