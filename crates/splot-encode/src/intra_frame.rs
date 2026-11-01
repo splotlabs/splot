@@ -326,9 +326,11 @@ impl FrameCoder for IntraFrameCoder {
     }
 
     fn set_block_importance(&mut self, importance: tpl::BlockImportance) {
+        // In a batch a frame keeps the entry of the first window that plans
+        // it, which is the window that codes it; the same for the maps below.
         if self.overlaps() {
-            let mut frames = core::mem::take(&mut self.importance.frames);
-            frames.extend(importance.frames);
+            let mut frames = importance.frames;
+            frames.extend(core::mem::take(&mut self.importance.frames));
             self.importance = tpl::BlockImportance {
                 frames,
                 ..importance
@@ -344,7 +346,9 @@ impl FrameCoder for IntraFrameCoder {
 
     fn set_global_motion(&mut self, models: crate::global_motion::GlobalModels) {
         if self.overlaps() {
-            self.global_models.extend(models);
+            let mut models = models;
+            models.extend(core::mem::take(&mut self.global_models));
+            self.global_models = models;
         } else {
             self.global_models = models;
         }
@@ -352,7 +356,9 @@ impl FrameCoder for IntraFrameCoder {
 
     fn set_open_loop_motion(&mut self, motion: crate::lookahead::OpenLoopMotion) {
         if self.overlaps() {
-            self.open_loop.extend(motion);
+            let mut motion = motion;
+            motion.extend(core::mem::take(&mut self.open_loop));
+            self.open_loop = motion;
         } else {
             self.open_loop = motion;
         }

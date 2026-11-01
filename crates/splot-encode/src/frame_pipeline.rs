@@ -306,6 +306,11 @@ impl<'c, 'a> Pipeline<'c, 'a> {
                     }
                 }
             }
+            if diag() != 0
+                && let Some(w) = job.wave.checked_sub(1)
+            {
+                preds[prep(j)].push(commits_base + w);
+            }
             for index in 0..count {
                 let node = search(j, index);
                 preds[node].push(prep(j));
@@ -348,22 +353,30 @@ impl<'c, 'a> Pipeline<'c, 'a> {
             }
         }
         let tiles: Vec<Box<dyn SearchTile + '_>> = (0..jobs).map(|j| self.tile(j)).collect();
-        run_graph(self.coder.pool.as_ref(), &preds, |node| {
-            if node >= commits_base {
-                return self.commit(node - commits_base);
-            }
-            if node >= reads_base {
-                return self.read(node - reads_base);
-            }
-            let (j, local) = (node / per_job, node % per_job);
-            match local {
-                0 => self.prepare(j),
-                l if l <= count => tiles[j].superblock(l - 1),
-                l if l == count + 1 => self.writer_start(j),
-                l if l < 2 * count + 2 => self.write(j, l - count - 2, &*tiles[j]),
-                _ => self.finish(j),
-            }
-        })
+        let out = run_graph(self.coder.pool.as_ref(), &preds, |node| {
+            let t = std::time::Instant::now();
+            let (kind, r) = if node >= commits_base {
+                (6, self.commit(node - commits_base))
+            } else if node >= reads_base {
+                (5, self.read(node - reads_base))
+            } else {
+                let (j, local) = (node / per_job, node % per_job);
+                match local {
+                    0 => (0, self.prepare(j)),
+                    l if l <= count => (1, tiles[j].superblock(l - 1)),
+                    l if l == count + 1 => (2, self.writer_start(j)),
+                    l if l < 2 * count + 2 => (3, self.write(j, l - count - 2, &*tiles[j])),
+                    _ => (4, self.finish(j)),
+                }
+            };
+            DIAG_TIME[kind].fetch_add(t.elapsed().as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+            r
+        });
+        if std::env::var("SPLOT_OVERLAP_TIME").is_ok() {
+            let v: Vec<u64> = DIAG_TIME.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed) / 1000).collect();
+            eprintln!("DIAG ms prep {} search {} wstart {} write {} finish {} read {} commit {}", v[0], v[1], v[2], v[3], v[4], v[5], v[6]);
+        }
+        out
     }
 
     /// The search predecessors of superblock `index` of a job, local: the
@@ -501,6 +514,35 @@ impl<'c, 'a> Pipeline<'c, 'a> {
         j: usize,
         row: usize,
     ) -> Result<(EncoderReferences, [Option<Arc<IntraCells>>; 8])> {
+        let mode = diag();
+        if matches!(mode, 1 | 2 | 4) {
+            let waved = self.waved(self.jobs[j].wave.checked_sub(1))?;
+            let mut refs = waved.refs.fork().map_err(coding("references"))?;
+            if mode == 2
+                && let Some((read, _)) = self.snapshot(j, row)?
+            {
+                refs.diag_slot_cdfs(&read.core, None, &read.initial)
+                    .map_err(coding("diag"))?;
+            }
+            return Ok((refs, waved.slot_intra.clone()));
+        }
+        if mode == 3 {
+            let (mut refs, slot_intra) = self.search_refs_provisional(j, row)?;
+            if let Some((read, _)) = self.snapshot(j, row)? {
+                let waved = self.waved(self.jobs[j].wave.checked_sub(1))?;
+                refs.diag_slot_cdfs(&read.core, Some(&waved.refs), &read.initial)
+                    .map_err(coding("diag"))?;
+            }
+            return Ok((refs, slot_intra));
+        }
+        self.search_refs_provisional(j, row)
+    }
+
+    fn search_refs_provisional(
+        &self,
+        j: usize,
+        row: usize,
+    ) -> Result<(EncoderReferences, [Option<Arc<IntraCells>>; 8])> {
         let Some((read, snapshot)) = self.snapshot(j, row)? else {
             let waved = self.waved(self.jobs[j].wave.checked_sub(1))?;
             return Ok((
@@ -628,25 +670,28 @@ impl<'c, 'a> Pipeline<'c, 'a> {
     fn write(&self, j: usize, index: usize, tile: &dyn SearchTile) -> Result<()> {
         let job = &self.jobs[j];
         let (prep, _) = job.exact.get().ok_or(missing("a started writer"))?;
-        let (decision, target) = tile
-            .take(index)?
-            .into_decision()
-            .ok_or(missing("a decision"))?;
+        let searched = tile.take(index)?;
         let mut guard = lock(&job.writer)?;
         let (writer, kept) = guard.as_mut().ok_or(missing("a started writer"))?;
-        let mut coder: SourceResidualCoder = self.coder.residual_coder(prep, None);
-        let qindex = match (target, prep.sb_quant.get(index)) {
-            (Some(target), Some(&(_, lambda_log2))) => {
-                let (lambda, qindex) =
-                    self.coder
-                        .superblock_quantizer(prep, writer, target, lambda_log2)?;
-                coder.set_quantizer(qindex, lambda);
-                Some(qindex)
-            }
-            _ => None,
-        };
-        kept.write_superblock(writer, (decision, qindex), &mut coder)
-            .map_err(coding("superblock"))?;
+        if matches!(job.read, Source::None) || matches!(diag(), 1 | 2) {
+            kept.write_committed(writer, searched)
+                .map_err(coding("superblock"))?;
+        } else {
+            let (decision, target) = searched.into_decision().ok_or(missing("a decision"))?;
+            let mut coder: SourceResidualCoder = self.coder.residual_coder(prep, None);
+            let qindex = match (target, prep.sb_quant.get(index)) {
+                (Some(target), Some(&(_, lambda_log2))) => {
+                    let (lambda, qindex) =
+                        self.coder
+                            .superblock_quantizer(prep, writer, target, lambda_log2)?;
+                    coder.set_quantizer(qindex, lambda);
+                    Some(qindex)
+                }
+                _ => None,
+            };
+            kept.write_superblock(writer, (decision, qindex), &mut coder)
+                .map_err(coding("superblock"))?;
+        }
         let cols = self.grid.1;
         if index % cols == cols - 1 {
             let row = index / cols;
@@ -770,6 +815,18 @@ where
     fn take(&self, index: usize) -> Result<FrameDecisions> {
         Self::take(self, index)
     }
+}
+
+/// DIAGNOSTIC mode: 0 off, 1 exact references, 2 exact samples with start
+/// CDFs, 3 provisional samples with saved CDFs, 4 exact references with the
+/// writer quantizing again.
+static DIAG_TIME: [std::sync::atomic::AtomicU64; 7] = [const { std::sync::atomic::AtomicU64::new(0) }; 7];
+
+fn diag() -> u8 {
+    std::env::var("SPLOT_OVERLAP_DIAG")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {

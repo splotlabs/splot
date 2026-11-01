@@ -1066,6 +1066,7 @@ impl IntraTileSyntax {
             frame,
             motion: super::TileMotion(motion).prefix(luma_rows),
             chroma: self.chroma,
+            cdfs: self.cdfs.clone(),
         })
     }
 

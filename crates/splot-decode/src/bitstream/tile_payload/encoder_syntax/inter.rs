@@ -160,7 +160,8 @@ impl EncoderReferences {
 
     /// Stores the frame `core`, still being coded, as if it were finished:
     /// `frame` stands for its filtered reconstruction and motion field, and
-    /// the CDFs of `initial` (its [`Self::frame_start`]) for its saved CDFs.
+    /// its writer CDFs saved over `initial` (its [`Self::frame_start`]) for
+    /// its saved CDFs.
     /// A frame that predicts from these references reads approximate data.
     ///
     /// # Errors
@@ -177,7 +178,50 @@ impl EncoderReferences {
             recon.bit_depth(),
             core::iter::once(motion.0.as_slice()),
         )?;
-        self.store(core, recon, Arc::clone(&initial.cdfs), field)
+        let end = TileEnd {
+            cdfs: frame.cdfs,
+            motion: Vec::new(),
+        };
+        let cdfs = Arc::new(saved_cdfs(&self.sequence, core, initial, &[end])?);
+        self.store(core, recon, cdfs, field)
+    }
+
+    /// DIAGNOSTIC: the saved CDFs of the slots `core` refreshes become those
+    /// of `from`, or the CDFs of `initial` without it.
+    ///
+    /// # Errors
+    /// On a slot without a frame.
+    pub fn diag_slot_cdfs(
+        &mut self,
+        core: &FrameHeaderCore,
+        from: Option<&Self>,
+        initial: &FrameStart,
+    ) -> Result<()> {
+        let refreshed = core.refresh_frame_flags.unwrap_or(0);
+        for slot in 0..self.buffer.len() as u32 {
+            if refreshed >> slot & 1 == 0 {
+                continue;
+            }
+            let Ok(index) = self.buffer.frame_index_for_slot(slot) else {
+                eprintln!("DIAG skip self slot {slot}");
+                continue;
+            };
+            let cdfs = match from {
+                Some(other) => {
+                    let Ok(at) = other.buffer.frame_index_for_slot(slot) else {
+                        eprintln!("DIAG skip other slot {slot}");
+                        continue;
+                    };
+                    other.frames.get(at).and_then(Option::as_ref).map(|f| Arc::clone(&f.1))
+                }
+                None => Some(Arc::clone(&initial.cdfs)),
+            };
+            if let (Some(Some(frame)), Some(cdfs)) = (self.frames.get_mut(index), cdfs) {
+                frame.1 = cdfs;
+            }
+        }
+        self.state = settled_state(&self.buffer, &self.frames)?;
+        Ok(())
     }
 
     /// The motion field of the frame `core` from the records of its tiles; none
