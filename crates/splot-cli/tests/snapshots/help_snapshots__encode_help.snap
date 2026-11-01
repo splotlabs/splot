@@ -19,6 +19,7 @@ Options:
       --rc <RC>                   Bitrate mode for `--bitrate`: `vbr` (default) or `cbr` (decoder buffer of `--buffer`) [possible values: vbr, cbr]
       --buffer <MS>               CBR decoder buffer in milliseconds at the bitrate [default: 1000]
       --initial-buffer <MS>       CBR decoder buffer level before the first frame, in milliseconds at the bitrate [default: half of `--buffer`]
+      --two-pass                  Two-pass VBR: a first pass at half size and constant qindex reads the input once more and sets each frame's share of the budget. Needs a file input
       --preset <PRESET>           Speed preset: 0 is the slowest and best, 10 the fastest [default: 6]
       --preset-set <FIELD=VALUE>  Overrides one field of the preset, as FIELD=VALUE; repeat for more fields. It wins over the screen-content switch. Flags take 0, 1, false or true; a per-frame-kind field (`intra_modes`, `tcq`, `tf_frames`, `tf_strength`) takes one value or four comma-separated values for key, base, mid and leaf frames; `mvd_tools` takes three comma-separated flags. An unknown FIELD lists the valid names
       --low-delay                 Low delay: one packet per input frame, in display order. Sets `mini_gop_size=1` and `bitrate_mini_gop_size=1` (IPPP, every frame shown) and `lookahead_frames=1` before `--preset-set`; off by default
