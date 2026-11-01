@@ -579,107 +579,76 @@ impl IntraFrameCoder {
         }
     }
 
-    fn code_frame(
+    /// The frame-level decisions of `source` coded as `plan` at `qp` over
+    /// `refs`, whose slots hold the intra cells `slot_intra`; non-empty
+    /// `sb_quant`, one `(qindex offset, lambda log2 Q8)` per superblock in
+    /// frame raster order, moves the qindex of each superblock through
+    /// `delta_q` and scales its lambda.
+    fn prepare<'a>(
         &self,
-        source: &SourceFrame,
-        plan: &GopFrame,
-        qp: u16,
-        sb_quant: &[(i16, i16)],
-    ) -> Result<CodedFrame> {
-        let plan = &GopFrame {
+        refs: &EncoderReferences,
+        slot_intra: &[Option<Arc<IntraCells>>],
+        (source, plan, qp): (&'a SourceFrame, &GopFrame, u16),
+        sb_quant: Vec<(i16, i16)>,
+    ) -> Result<FramePrep<'a>> {
+        let plan = GopFrame {
             primary_slot: plan.primary_slot.filter(|_| self.preset.cdf_carry),
             ..*plan
         };
         let qindex = u32::from(qp);
-        let context = self.preset_context(plan, qindex);
+        let context = self.preset_context(&plan, qindex);
         let mut tools = gop::frame_tools(&self.preset, self.tiles, qindex);
         tools.0.allow_tcq = self.preset.tcq.at(context);
         #[cfg(test)]
         {
             tools.2.7 = self.global_motion;
         }
-        if plan.frame_type == FrameType::Inter && !self.global_models.is_empty() {
-            let probe = plan.header(
+        let probe = |tools| {
+            plan.header(
                 &self.view,
-                &self.references,
+                refs,
                 qindex,
                 &FrameFilterParams::default(),
                 tools,
-            )?;
+            )
+        };
+        if plan.frame_type == FrameType::Inter && !self.global_models.is_empty() {
+            let probe = probe(tools)?;
             let hints = probe
                 .inter
                 .as_ref()
                 .map_or(&[][..], |inter| &inter.order_hints[..]);
-            for (model, pair) in tools.2.7.iter_mut().zip(reference_pairs(plan, hints)) {
+            for (model, pair) in tools.2.7.iter_mut().zip(reference_pairs(&plan, hints)) {
                 *model = pair.and_then(|pair| self.global_models.get(&pair)).copied();
             }
         }
         tools.2.6 &= self.warp_gate.allows(plan.layer);
         tools.0.delta_q_res = (!sb_quant.is_empty()).then_some(self.preset.delta_q_res);
-        let (grain_seed, grain_obu) = self.film_grain(source, plan)?;
+        let (grain_seed, grain_obu) = self.film_grain(source, &plan)?;
         tools.0.grain_seed = grain_seed;
         if tools.2.3.is_some() || tools.2.5 != 0 {
-            let probe = plan.header(
-                &self.view,
-                &self.references,
-                qindex,
-                &FrameFilterParams::default(),
-                tools,
-            )?;
-            if !self.references.tip_pair_available(&probe) {
+            let probe = probe(tools)?;
+            if !refs.tip_pair_available(&probe) {
                 (tools.2.3, tools.2.5) = (None, 0);
             } else if tools.2.3.is_some() && self.preset.tip >= 2 && !self.params.tools.tip_refinemv
             {
                 tools.2.3 = Some(self.tip_weight(source, &probe)?);
             }
         }
-        let header = |filters: &FrameFilterParams| {
-            plan.header(&self.view, &self.references, qindex, filters, tools)
-        };
-        let core = header(&FrameFilterParams::default())?;
-        let initial = self
-            .references
-            .frame_start(&core)
-            .map_err(coding("initial CDFs"))?;
-        let writers = (0..tile_count(&core))
-            .map(|tile| {
-                KeyFrameTileWriter::with_start(
-                    &self.sequence,
-                    &core,
-                    &self.references,
-                    &initial,
-                    tile,
-                )
-            })
-            .collect::<core::result::Result<Vec<_>, _>>()
+        let core = probe(tools)?;
+        let initial = refs.frame_start(&core).map_err(coding("initial CDFs"))?;
+        let first = KeyFrameTileWriter::with_start(&self.sequence, &core, refs, &initial, 0)
             .map_err(coding("tile setup"))?;
-        let first = writers.first().ok_or(Error::Unsupported {
-            what: "a frame without tiles",
-        })?;
         let (mi_rows, mi_cols) = first.syntax().mi_dimensions();
         let sb = first.syntax().superblock_size4() * 4;
         let padded = PaddedSource::new(source, self.chroma, mi_cols * 4 + sb, mi_rows * 4 + sb);
         let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
         let open_loop = match &core.inter {
-            Some(inter) if !self.open_loop.is_empty() => reference_pairs(plan, &inter.order_hints)
+            Some(inter) if !self.open_loop.is_empty() => reference_pairs(&plan, &inter.order_hints)
                 .map(|pair| pair.and_then(|pair| self.open_loop.get(&pair).cloned()))
                 .collect(),
             _ => Vec::new(),
         };
-        let motion = MotionSearch::new(
-            first.syntax(),
-            &padded,
-            &self.preset,
-            lambda,
-            open_loop.clone(),
-        )
-        .map_err(coding("motion search"))?;
-        let bv_search = (core.allow_intrabc == Some(true)).then(|| {
-            let (luma, stride, width, height) = padded.luma();
-            BvSearch::new(luma, stride, (width, height))
-        });
-        let (padded, motion, bv_search) = (&padded, motion.as_ref(), bv_search.as_ref());
-        let (bit_depth, preset) = (self.bit_depth, &self.preset);
         let sb_cols = mi_cols.div_ceil(sb / 4);
         if !sb_quant.is_empty() && sb_quant.len() != sb_cols * mi_rows.div_ceil(sb / 4) {
             return Err(Error::Unsupported {
@@ -691,7 +660,7 @@ impl IntraFrameCoder {
         let reference_intra = plan
             .primary_slot
             .filter(|_| plan.frame_type == FrameType::Inter && publishes)
-            .and_then(|slot| self.slot_intra.get(slot as usize)?.clone())
+            .and_then(|slot| slot_intra.get(slot as usize)?.clone())
             .filter(|cells| {
                 (cells.cols, cells.rows) == (frame_size.0.div_ceil(8), frame_size.1.div_ceil(8))
                     && cells.age < self.preset.ref_intra_refresh
@@ -701,102 +670,153 @@ impl IntraFrameCoder {
             crate::mode_decision::CHAINED_REFERENCES
                 .set(crate::mode_decision::CHAINED_REFERENCES.get() + 1);
         }
-        let intra = std::sync::Mutex::new(Vec::new());
-        let wavefront = self.preset.wavefront && bv_search.is_none() && !self.preset.palette;
-        let search = |writer: &mut KeyFrameTileWriter, coder: &mut SourceResidualCoder| {
-            let root = writer.next_superblock_root().ok_or(Error::Unsupported {
-                what: "a search past its tile",
-            })?;
-            let index = root.row4() / (sb / 4) * sb_cols + root.col4() / (sb / 4);
-            let (lambda, target) = match sb_quant.get(index) {
-                Some(&(offset, lambda_log2)) => {
-                    let mut target = qindex.saturating_add_signed(i32::from(offset));
-                    if wavefront {
-                        let step = 1 << self.preset.delta_q_res;
-                        let max_q = splot_recon::max_quantizer_index(bit_depth);
-                        target =
-                            target.clamp(1 + (qindex - 1) % step, max_q - (max_q - qindex) % step);
-                    }
-                    let sb_qindex = writer
-                        .set_superblock_qindex(target)
-                        .map_err(coding("delta-q"))?;
-                    let applied = 2 * (sb_qindex as i32 - qindex as i32);
-                    let clip_slack = (1 << self.preset.delta_q_res) + 1;
-                    let per_octave = tpl::QINDEX_PER_IMPORTANCE_OCTAVE as i32;
-                    let lambda_log2 = i32::from(lambda_log2).clamp(
-                        (applied - clip_slack) * 128 / per_octave,
-                        (applied + clip_slack) * 128 / per_octave,
-                    );
-                    let lambda = lambda.scaled(lambda_log2);
-                    coder.set_quantizer(sb_qindex, lambda);
-                    (lambda, Some(sb_qindex))
+        let wavefront =
+            self.preset.wavefront && core.allow_intrabc != Some(true) && !self.preset.palette;
+        Ok(FramePrep {
+            source,
+            plan,
+            qindex,
+            context,
+            tools,
+            grain_seed,
+            grain_obu,
+            core,
+            initial,
+            padded,
+            lambda,
+            open_loop,
+            sb,
+            sb_cols,
+            sb_quant,
+            publishes,
+            frame_size,
+            reference_intra,
+            wavefront,
+        })
+    }
+
+    /// Plans the qindex of the next superblock of `writer` and searches it,
+    /// predicting with `motion` and skipping intra search by
+    /// `reference_intra`; adds the intra leaves of the decision to `intra`.
+    /// Returns the decision, its qindex and its lambda.
+    fn search_next(
+        &self,
+        prep: &FramePrep<'_>,
+        (writer, coder): (&mut KeyFrameTileWriter, &mut SourceResidualCoder),
+        (motion, reference_intra): (Option<&MotionSearch>, Option<&IntraCells>),
+        intra: &std::sync::Mutex<Vec<(usize, usize, usize, usize)>>,
+    ) -> Result<(SuperblockDecision, Option<u32>)> {
+        let (sb, qindex) = (prep.sb, prep.qindex);
+        let root = writer.next_superblock_root().ok_or(Error::Unsupported {
+            what: "a search past its tile",
+        })?;
+        let index = root.row4() / (sb / 4) * prep.sb_cols + root.col4() / (sb / 4);
+        let (lambda, target) = match prep.sb_quant.get(index) {
+            Some(&(offset, lambda_log2)) => {
+                let mut target = qindex.saturating_add_signed(i32::from(offset));
+                if prep.wavefront {
+                    let step = 1 << self.preset.delta_q_res;
+                    let max_q = splot_recon::max_quantizer_index(self.bit_depth);
+                    target = target.clamp(1 + (qindex - 1) % step, max_q - (max_q - qindex) % step);
                 }
-                None => (lambda, None),
-            };
-            let tree = writer
-                .search_superblock(|syntax, root| {
-                    two_pass_partition(
-                        syntax,
-                        coder,
-                        (preset, lambda),
-                        (motion, &open_loop),
-                        (root, reference_intra.as_deref()),
-                    )
-                })
-                .map_err(coding("superblock search"))?;
-            if publishes {
-                let mut leaves = Vec::new();
-                intra_leaves(writer.syntax(), root, &tree, &mut leaves)
-                    .map_err(coding("intra cells"))?;
-                intra
-                    .lock()
-                    .map_err(|_| Error::Unsupported {
-                        what: "intra cells of a search that panicked",
-                    })?
-                    .extend(leaves);
+                let (lambda, sb_qindex) =
+                    self.superblock_quantizer(prep, writer, target, lambda_log2)?;
+                coder.set_quantizer(sb_qindex, lambda);
+                (lambda, Some(sb_qindex))
             }
-            Ok((SuperblockDecision { tree }, target))
+            None => (prep.lambda, None),
         };
-        let new_coder = || {
-            let mut coder = SourceResidualCoder::new(padded, qindex, bit_depth, preset, lambda);
-            coder.intrabc = bv_search;
-            coder.context = context;
-            coder
-        };
-        let writers = writers.into_iter().enumerate().collect();
-        let tiles = map_tiles(self.pool.as_ref(), writers, |(tile, mut writer)| {
-            if wavefront && writer.superblock_grid().0 > 1 {
-                let row_writer = || {
-                    KeyFrameTileWriter::with_start(
-                        &self.sequence,
-                        &core,
-                        &self.references,
-                        &initial,
-                        tile,
-                    )
-                    .map_err(coding("tile setup"))
-                };
-                return wavefront::code_tile(
-                    self.pool.as_ref(),
-                    writer,
-                    row_writer,
-                    new_coder,
-                    search,
-                );
-            }
-            let mut coder = new_coder();
-            let mut decisions = FrameDecisions::default();
-            while writer.next_superblock_root().is_some() {
-                let decided = search(&mut writer, &mut coder)?;
-                decisions
-                    .write_superblock(&mut writer, decided, &mut coder)
-                    .map_err(coding("superblock"))?;
-            }
-            CodedTile::finish(writer, decisions).map_err(coding("tile finish"))
-        })?;
-        let intra = intra.into_inner().map_err(|_| Error::Unsupported {
-            what: "intra cells of a search that panicked",
-        })?;
+        let tree = writer
+            .search_superblock(|syntax, root| {
+                two_pass_partition(
+                    syntax,
+                    coder,
+                    (&self.preset, lambda),
+                    (motion, &prep.open_loop),
+                    (root, reference_intra),
+                )
+            })
+            .map_err(coding("superblock search"))?;
+        if prep.publishes {
+            let mut leaves = Vec::new();
+            intra_leaves(writer.syntax(), root, &tree, &mut leaves)
+                .map_err(coding("intra cells"))?;
+            intra
+                .lock()
+                .map_err(|_| Error::Unsupported {
+                    what: "intra cells of a search that panicked",
+                })?
+                .extend(leaves);
+        }
+        Ok((SuperblockDecision { tree }, target))
+    }
+
+    /// The `(lambda, qindex)` of a superblock of `prep` that `writer` plans
+    /// at the codable qindex nearest `target`, its lambda moved by
+    /// `lambda_log2` within the clip slack of the qindex step.
+    fn superblock_quantizer(
+        &self,
+        prep: &FramePrep<'_>,
+        writer: &mut KeyFrameTileWriter,
+        target: u32,
+        lambda_log2: i16,
+    ) -> Result<(Lambda, u32)> {
+        let qindex = prep.qindex;
+        let sb_qindex = writer
+            .set_superblock_qindex(target)
+            .map_err(coding("delta-q"))?;
+        let applied = 2 * (sb_qindex as i32 - qindex as i32);
+        let clip_slack = (1 << self.preset.delta_q_res) + 1;
+        let per_octave = tpl::QINDEX_PER_IMPORTANCE_OCTAVE as i32;
+        let lambda_log2 = i32::from(lambda_log2).clamp(
+            (applied - clip_slack) * 128 / per_octave,
+            (applied + clip_slack) * 128 / per_octave,
+        );
+        Ok((prep.lambda.scaled(lambda_log2), sb_qindex))
+    }
+
+    /// A residual coder of `prep`.
+    fn residual_coder<'a>(
+        &'a self,
+        prep: &'a FramePrep<'_>,
+        intrabc: Option<&'a BvSearch>,
+    ) -> SourceResidualCoder<'a> {
+        let mut coder = SourceResidualCoder::new(
+            &prep.padded,
+            prep.qindex,
+            self.bit_depth,
+            &self.preset,
+            prep.lambda,
+        );
+        coder.intrabc = intrabc;
+        coder.context = prep.context;
+        coder
+    }
+
+    /// Filters the coded `tiles` of `prep` over `refs`, and builds its
+    /// temporal unit and its reference record with the intra cells of its
+    /// `intra` leaves; a `TIP_FRAME_AS_OUTPUT` frame replaces it when cheaper.
+    fn finish(
+        &self,
+        refs: &EncoderReferences,
+        prep: FramePrep<'_>,
+        tiles: Vec<CodedTile>,
+        intra: Vec<(usize, usize, usize, usize)>,
+    ) -> Result<CodedFrame> {
+        let FramePrep {
+            source,
+            plan,
+            qindex,
+            tools,
+            grain_seed,
+            grain_obu,
+            core,
+            initial,
+            publishes,
+            frame_size,
+            reference_intra,
+            ..
+        } = prep;
         let intra_cells = publishes.then(|| {
             let age = reference_intra
                 .as_ref()
@@ -812,6 +832,8 @@ impl IntraFrameCoder {
             .iter()
             .map(CodedTile::warp_leaves)
             .fold((0, 0), |(w, i), (dw, di)| (w + dw, i + di));
+        let header =
+            |filters: &FrameFilterParams| plan.header(&self.view, refs, qindex, filters, tools);
         let FilteredFrame {
             core,
             filters,
@@ -822,7 +844,7 @@ impl IntraFrameCoder {
             &self.sequence,
             &header,
             &self.preset,
-            (source, &self.references, self.pool.as_ref()),
+            (source, refs, self.pool.as_ref()),
             FirstPass {
                 core,
                 start: initial.clone(),
@@ -833,7 +855,7 @@ impl IntraFrameCoder {
         let temporal_unit = plan.temporal_unit(
             &self.sequence,
             &self.view,
-            &self.references,
+            refs,
             (qindex, &filters, tools),
             &core,
             (&tiles, &grain_obu),
@@ -862,13 +884,90 @@ impl IntraFrameCoder {
                     && plan.show_frame =>
             {
                 Ok(self
-                    .tip_output_frame(source, plan, (qindex, weight, grain_seed), &coded)
+                    .tip_output_frame(refs, source, &plan, (qindex, weight, grain_seed), &coded)
                     .ok()
                     .flatten()
                     .unwrap_or(coded))
             }
             _ => Ok(coded),
         }
+    }
+
+    /// Codes `source` as `plan` at quantizer `qp` against the committed
+    /// references, with the superblock offsets `sb_quant` of
+    /// [`Self::prepare`].
+    fn code_frame(
+        &self,
+        source: &SourceFrame,
+        plan: &GopFrame,
+        qp: u16,
+        sb_quant: &[(i16, i16)],
+    ) -> Result<CodedFrame> {
+        let refs = &self.references;
+        let prep = self.prepare(
+            refs,
+            &self.slot_intra,
+            (source, plan, qp),
+            sb_quant.to_vec(),
+        )?;
+        let core = &prep.core;
+        let writers = (0..tile_count(core))
+            .map(|tile| {
+                KeyFrameTileWriter::with_start(&self.sequence, core, refs, &prep.initial, tile)
+            })
+            .collect::<core::result::Result<Vec<_>, _>>()
+            .map_err(coding("tile setup"))?;
+        let first = writers.first().ok_or(Error::Unsupported {
+            what: "a frame without tiles",
+        })?;
+        let motion = MotionSearch::new(
+            first.syntax(),
+            &prep.padded,
+            &self.preset,
+            prep.lambda,
+            prep.open_loop.clone(),
+        )
+        .map_err(coding("motion search"))?;
+        let bv_search = (core.allow_intrabc == Some(true)).then(|| {
+            let (luma, stride, width, height) = prep.padded.luma();
+            BvSearch::new(luma, stride, (width, height))
+        });
+        let (motion, bv_search) = (motion.as_ref(), bv_search.as_ref());
+        let intra = std::sync::Mutex::new(Vec::new());
+        let reference_intra = prep.reference_intra.as_deref();
+        let search = |writer: &mut KeyFrameTileWriter, coder: &mut SourceResidualCoder| {
+            self.search_next(&prep, (writer, coder), (motion, reference_intra), &intra)
+        };
+        let new_coder = || self.residual_coder(&prep, bv_search);
+        let writers = writers.into_iter().enumerate().collect();
+        let tiles = map_tiles(self.pool.as_ref(), writers, |(tile, mut writer)| {
+            if prep.wavefront && writer.superblock_grid().0 > 1 {
+                let row_writer = || {
+                    KeyFrameTileWriter::with_start(&self.sequence, core, refs, &prep.initial, tile)
+                        .map_err(coding("tile setup"))
+                };
+                return wavefront::code_tile(
+                    self.pool.as_ref(),
+                    writer,
+                    row_writer,
+                    new_coder,
+                    search,
+                );
+            }
+            let mut coder = new_coder();
+            let mut decisions = FrameDecisions::default();
+            while writer.next_superblock_root().is_some() {
+                let decided = search(&mut writer, &mut coder)?;
+                decisions
+                    .write_superblock(&mut writer, decided, &mut coder)
+                    .map_err(coding("superblock"))?;
+            }
+            CodedTile::finish(writer, decisions).map_err(coding("tile finish"))
+        })?;
+        let intra = intra.into_inner().map_err(|_| Error::Unsupported {
+            what: "intra cells of a search that panicked",
+        })?;
+        self.finish(refs, prep, tiles, intra)
     }
 
     /// The frame `plan`, coded normally at `qindex` with TIP weight `weight`
@@ -879,6 +978,7 @@ impl IntraFrameCoder {
     /// `coded` when this fails.
     fn tip_output_frame(
         &self,
+        refs: &EncoderReferences,
         source: &SourceFrame,
         plan: &GopFrame,
         (qindex, weight, grain_seed): (u32, u8, Option<u16>),
@@ -892,16 +992,9 @@ impl IntraFrameCoder {
             .ok_or(Error::Unsupported {
                 what: "a TIP frame without references",
             })?;
-        let (core, temporal_unit) = plan.tip_output_unit(
-            &self.view,
-            &self.references,
-            ref_frame_idx,
-            (weight, grain_seed),
-        )?;
-        let (core, frame) = self
-            .references
-            .tip_output(&core)
-            .map_err(coding("TIP output"))?;
+        let (core, temporal_unit) =
+            plan.tip_output_unit(&self.view, refs, ref_frame_idx, (weight, grain_seed))?;
+        let (core, frame) = refs.tip_output(&core).map_err(coding("TIP output"))?;
         let recon = visible_planes(&frame)?;
         let lambda = Lambda::from_qindex(qindex, self.bit_depth).map_err(coding("lambda"))?;
         let cost = |planes: &[Vec<u16>; 3], bytes: usize| {
@@ -930,6 +1023,29 @@ impl IntraFrameCoder {
             }),
         )
     }
+}
+
+/// The frame-level decisions of one frame, before any superblock.
+pub(crate) struct FramePrep<'a> {
+    source: &'a SourceFrame,
+    plan: GopFrame,
+    qindex: u32,
+    context: PresetContext,
+    tools: gop::FrameTools,
+    grain_seed: Option<u16>,
+    grain_obu: Vec<u8>,
+    core: FrameHeaderCore,
+    initial: splot_decode::encoder_syntax::FrameStart,
+    padded: PaddedSource,
+    lambda: Lambda,
+    open_loop: Vec<Option<Arc<crate::hme::FrameMotion>>>,
+    sb: usize,
+    sb_cols: usize,
+    sb_quant: Vec<(i16, i16)>,
+    publishes: bool,
+    frame_size: (usize, usize),
+    reference_intra: Option<Arc<IntraCells>>,
+    wavefront: bool,
 }
 
 /// The `(frame, reference)` display indices of each list reference of
