@@ -578,7 +578,12 @@ fn rate_controller(config: &Config) -> Result<Box<dyn RateController + Send>> {
         RateControlMode::Cbr {
             bitrate_kbps,
             buffer_ms,
-        } => Box::new(Cbr::new(bitrate_kbps, buffer_ms, config.frame_rate)?),
+            initial_ms,
+        } => Box::new(Cbr::new(
+            bitrate_kbps,
+            (buffer_ms, initial_ms),
+            config.frame_rate,
+        )?),
     })
 }
 
@@ -1056,6 +1061,7 @@ mod tests {
         let cbr = RateControlMode::Cbr {
             bitrate_kbps: 60,
             buffer_ms: 1000,
+            initial_ms: 500,
         };
         for mode in [
             (RateControlMode::Crf { crf: 30 }, 48, one),

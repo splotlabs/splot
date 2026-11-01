@@ -68,6 +68,15 @@ pub enum Error {
         max: u32,
     },
 
+    /// The initial CBR buffer level is above the buffer size.
+    #[error("initial buffer {initial_ms} ms is above the buffer of {buffer_ms} ms")]
+    InvalidInitialBuffer {
+        /// The initial level in milliseconds.
+        initial_ms: u32,
+        /// The buffer size in milliseconds.
+        buffer_ms: u32,
+    },
+
     /// A tile layout asks for more than 64 tile columns or rows.
     #[error("tile layout {tiles:?} asks for more than 64 tile columns or rows")]
     InvalidTiles {

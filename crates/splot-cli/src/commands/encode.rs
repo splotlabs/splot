@@ -34,9 +34,15 @@ pub(crate) struct EncodeArgs {
     /// Target bitrate in kilobits per second.
     #[arg(long)]
     bitrate: Option<u32>,
-    /// Bitrate mode for `--bitrate`: `vbr` (default) or `cbr` (one-second buffer).
+    /// Bitrate mode for `--bitrate`: `vbr` (default) or `cbr` (decoder buffer of `--buffer`).
     #[arg(long, value_enum, requires = "bitrate")]
     rc: Option<RcMode>,
+    /// CBR decoder buffer in milliseconds at the bitrate [default: 1000].
+    #[arg(long, value_name = "MS", requires = "rc")]
+    buffer: Option<u32>,
+    /// CBR decoder buffer level before the first frame, in milliseconds at the bitrate [default: half of `--buffer`].
+    #[arg(long, value_name = "MS", requires = "rc")]
+    initial_buffer: Option<u32>,
     /// Speed preset: 0 is the slowest and best, 10 the fastest.
     #[arg(long, default_value_t = Preset::default().get())]
     preset: u8,
@@ -136,10 +142,14 @@ impl EncodeArgs {
     fn rate_control(&self) -> RateControlMode {
         match (self.qp, self.crf, self.bitrate) {
             (_, Some(crf), _) => RateControlMode::Crf { crf },
-            (_, _, Some(bitrate_kbps)) if self.rc == Some(RcMode::Cbr) => RateControlMode::Cbr {
-                bitrate_kbps,
-                buffer_ms: CBR_BUFFER_MS,
-            },
+            (_, _, Some(bitrate_kbps)) if self.rc == Some(RcMode::Cbr) => {
+                let buffer_ms = self.buffer.unwrap_or(CBR_BUFFER_MS);
+                RateControlMode::Cbr {
+                    bitrate_kbps,
+                    buffer_ms,
+                    initial_ms: self.initial_buffer.unwrap_or(buffer_ms / 2),
+                }
+            }
             (_, _, Some(bitrate_kbps)) => RateControlMode::Vbr { bitrate_kbps },
             (qp, None, None) => RateControlMode::ConstantQp {
                 qp: qp.unwrap_or(Config::DEFAULT_QP),
