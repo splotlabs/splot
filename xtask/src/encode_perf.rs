@@ -162,13 +162,32 @@ const KERNELS: &[(&str, Kind)] = &[
     ("reconstruct::add_residual_u16", Kind::Simd),
 ];
 
-/// Whether `symbol` (demangled or mangled) names the allow-listed `key`.
+/// Whether `symbol` (demangled or mangled) names the allow-listed `key`. A
+/// module key (a trailing `::`) matches a mangled name only when a nested
+/// name follows it, so a function of that name (`...8quantize`) does not.
 fn kernel_matches(symbol: &str, key: &str) -> bool {
     let mut mangled = String::new();
     for segment in key.split("::").filter(|segment| !segment.is_empty()) {
         let _ = write!(mangled, "{}{segment}", segment.len());
     }
-    symbol.contains(key) || symbol.contains(&mangled)
+    if symbol.contains(key) {
+        return true;
+    }
+    symbol.match_indices(&mangled).any(|(at, found)| {
+        let rest = &symbol[at + found.len()..];
+        !key.ends_with("::")
+            || (rest.starts_with(|c: char| c.is_ascii_digit()) && !is_legacy_hash(rest))
+    })
+}
+
+/// Whether `rest` starts with the hash that legacy mangling appends to every
+/// name, `17h` and 16 hex digits then `E`: it ends the name.
+fn is_legacy_hash(rest: &str) -> bool {
+    rest.strip_prefix("17h").is_some_and(|hash| {
+        hash.len() > 16
+            && hash.as_bytes()[..16].iter().all(u8::is_ascii_hexdigit)
+            && hash.as_bytes()[16] == b'E'
+    })
 }
 
 /// The `tests/perf/encode-baseline.toml` document.
@@ -506,6 +525,17 @@ mod tests {
             "_RNvCs1_11splot_recon23intra_directional_angle",
             "intra_directional::"
         ));
+        let quantize = "_RNvNtNtCs1_12splot_encode7kernels8quantize13quantize_simd";
+        assert!(kernel_matches(quantize, "quantize::"));
+        let legacy = "_ZN12splot_encode7kernels8quantize13quantize_simd17h0123456789abcdefE";
+        assert!(kernel_matches(legacy, "quantize::"));
+        for function in [
+            "_RNvMs5_NtCs1_12splot_encode11intra_frameNtB5_19SourceResidualCoder8quantize",
+            "_RNvXs_NtCs1_12splot_encode7kernelsNtB4_11SimdKernelsNtB4_14EncoderKernels8quantize",
+            "_ZN12splot_encode11intra_frame19SourceResidualCoder8quantize17h0123456789abcdefE",
+        ] {
+            assert!(!kernel_matches(function, "quantize::"), "{function}");
+        }
     }
 
     #[test]
