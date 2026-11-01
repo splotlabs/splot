@@ -295,7 +295,10 @@ fn ccso_search_classes_match_the_decoder_output() {
     let mut config = Config::new(width, height);
     config.bit_depth = BitDepth::Ten;
     config.preset = Preset::new(9).unwrap();
-    config.preset_overrides = vec![("wavefront".into(), "false".into())];
+    config.preset_overrides = vec![
+        ("wavefront".into(), "false".into()),
+        ("rdoq".into(), "false".into()),
+    ];
     let mut coded = IntraFrameCoder::new(&config)
         .unwrap()
         .encode_wave(&[(&source(&config, 5), crate::gop::plan(0, config.keyint), qp)])
