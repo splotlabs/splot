@@ -136,6 +136,10 @@ jobs:
 
   ewouth-av2-samples:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        threads: [1, 8]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -158,7 +162,8 @@ jobs:
       - name: Verify complete sample output against AVM hashes
         env:
           TEST_DATA_DIR: ${{ runner.temp }}/ewouth-av2
-        run: python3 scripts/check-external-vectors.py ewouth-av2 "$TEST_DATA_DIR"
+          THREADS: ${{ matrix.threads }}
+        run: python3 scripts/check-external-vectors.py ewouth-av2 "$TEST_DATA_DIR" --threads "$THREADS"
 
   encoder-avm-oracle:
     runs-on: ubuntu-latest

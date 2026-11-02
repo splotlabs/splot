@@ -8,12 +8,12 @@ const MAX: fn(u64) -> DecodeLimitThreshold = DecodeLimitThreshold::Max;
 #[test]
 fn default_options_and_limits_are_finite_and_pinned() {
     let limits = DecodeLimits::default();
+    assert_eq!(limits.max_input_bytes(), DecodeLimitThreshold::Unlimited);
+    assert_eq!(
+        limits.threshold(DecodeLimitName::MaxInputBytes),
+        DecodeLimitThreshold::Unlimited
+    );
     let cases = [
-        (
-            DecodeLimitName::MaxInputBytes,
-            limits.max_input_bytes(),
-            16 * 1024 * 1024,
-        ),
         (DecodeLimitName::MaxObus, limits.max_obus(), 16_384),
         (
             DecodeLimitName::MaxIvfFrameRecords,

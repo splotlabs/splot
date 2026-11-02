@@ -185,6 +185,55 @@ fn compound_global_globalmv_neighbour_substitutes_only_non_identity_lists() {
 }
 
 #[test]
+fn compound_derived_single_mv_substitutes_current_global_mv() {
+    let mut grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
+    let model = [-73_728, 90_112, 65_152, 3_584, -3_584, 65_152];
+    grid.record_warp_block(
+        0,
+        8,
+        N4_32,
+        N4_32,
+        0,
+        false,
+        Mv { row: 6, col: 8 },
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        MotionMode::Simple,
+        model,
+        BlockPrecisionRecord::default(),
+    );
+    grid.record_warp_block(
+        8,
+        0,
+        N4_32,
+        N4_32,
+        1,
+        false,
+        Mv { row: -16, col: 24 },
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        MotionMode::Simple,
+        model,
+        BlockPrecisionRecord::default(),
+    );
+    let mut block = block_at(8, 8);
+    block.ref_frame1 = Some(1);
+    let global_mvs = [Mv { row: 12, col: -10 }, Mv { row: 2, col: -8 }];
+    let stack = find_compound_mv_stack_with_temporal(
+        &grid,
+        &block,
+        global_mvs,
+        None,
+        DrlReorder::Disabled,
+        None,
+    );
+
+    assert_eq!(stack.candidate(0).mvs, global_mvs);
+}
+
+#[test]
 fn nonmatching_globalmv_neighbour_derives_from_its_stored_sub_mv() {
     let mut grid = NeighbourMvGrid::new_for_tile(0..MI_DIM, 0..MI_DIM).unwrap();
     let neighbour_mv = Mv { row: 8, col: 12 };
