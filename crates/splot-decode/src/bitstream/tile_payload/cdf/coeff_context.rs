@@ -43,6 +43,7 @@ const fn tx_class_idx(tx_class: usize) -> usize {
 /// `TransformCoeffBlockState`; the `LEVEL_GRID_PAD` zero rows and columns
 /// below and right of the block absorb every § 8.3.2 neighbor offset, so no
 /// per-axis boundary handling is needed.
+#[inline]
 fn clamped_level_at(level: &[u8], stride: usize, row: usize, col: usize, limit: u32) -> u32 {
     level
         .get(row.wrapping_mul(stride).wrapping_add(col))
@@ -51,6 +52,7 @@ fn clamped_level_at(level: &[u8], stride: usize, row: usize, col: usize, limit: 
 
 /// [`clamped_level_at`] for the neighbour `(dr, dc)` of the flat position
 /// `base`, with the same wrapping index arithmetic.
+#[inline]
 fn level_near(level: &[u8], base: usize, stride: usize, dr: usize, dc: usize, limit: u32) -> u32 {
     level
         .get(base.wrapping_add(dr.wrapping_mul(stride)).wrapping_add(dc))
@@ -135,6 +137,7 @@ impl CoeffBrContext {
     }
 }
 
+#[inline]
 fn idtx_neighbour_mag(level: &[u8], row: usize, col: usize, stride: usize, clamp: u32) -> u32 {
     let mut mag = 0u32;
     if col > 0 {
@@ -146,10 +149,12 @@ fn idtx_neighbour_mag(level: &[u8], row: usize, col: usize, stride: usize, clamp
     mag
 }
 
+#[inline]
 pub(crate) fn coeff_base_idtx_ctx(level: &[u8], row: usize, col: usize, stride: usize) -> usize {
     idtx_neighbour_mag(level, row, col, stride, 3) as usize
 }
 
+#[inline]
 pub(crate) fn coeff_br_idtx_ctx(level: &[u8], row: usize, col: usize, stride: usize) -> usize {
     let mag = idtx_neighbour_mag(level, row, col, stride, MAX_BASE_BR_RANGE - 1);
     mag.min(6) as usize
@@ -307,6 +312,7 @@ pub(crate) const fn dc_sign_ctx(
     }
 }
 
+#[inline]
 pub(crate) const fn idtx_sign_ctx(
     quant_sign: &[i8],
     level: &[u8],

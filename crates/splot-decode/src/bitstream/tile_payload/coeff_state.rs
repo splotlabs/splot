@@ -28,12 +28,15 @@ const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
 
 use core::cell::Cell;
 
+#[inline]
 fn zero_buffer<T: Default + Copy>(
     mut buffer: Vec<T>,
     len: usize,
 ) -> Result<Vec<T>, TryReserveError> {
     buffer.clear();
-    buffer.try_reserve_exact(len)?;
+    if buffer.capacity() < len {
+        buffer.try_reserve_exact(len)?;
+    }
     buffer.resize(len, T::default());
     Ok(buffer)
 }
@@ -158,6 +161,7 @@ impl TransformCoeffBlockState {
         &self.quant[..self.quant_end]
     }
 
+    #[inline]
     pub(crate) fn set_level(
         &mut self,
         row: usize,
@@ -170,6 +174,7 @@ impl TransformCoeffBlockState {
         Ok(())
     }
 
+    #[inline]
     pub(crate) fn set_quant_sign(
         &mut self,
         row: usize,
@@ -182,6 +187,7 @@ impl TransformCoeffBlockState {
         Ok(())
     }
 
+    #[inline]
     pub(crate) fn set_quant(&mut self, pos: usize, value: i32) -> Result<(), TileCoeffStateError> {
         let idx = self.quant_index(pos)?;
         self.quant[idx] = value;
@@ -206,6 +212,7 @@ impl TransformCoeffBlockState {
         Ok(self.quant[self.quant_index(pos)?])
     }
 
+    #[inline]
     fn index(&self, row: usize, col: usize) -> Result<usize, TileCoeffStateError> {
         let width = self.width();
         if row >= self.height || col >= width {
@@ -216,15 +223,10 @@ impl TransformCoeffBlockState {
                 width,
             });
         }
-        row.checked_mul(self.stride)
-            .and_then(|base| base.checked_add(col))
-            .ok_or(TileCoeffStateError::ArithmeticOverflow {
-                operation: "row * stride + col",
-                left: row,
-                right: self.stride,
-            })
+        Ok(row * self.stride + col)
     }
 
+    #[inline]
     fn quant_index(&self, pos: usize) -> Result<usize, TileCoeffStateError> {
         if pos >= self.quant.len() {
             return Err(TileCoeffStateError::QuantPositionOutOfBounds {
@@ -741,7 +743,9 @@ fn zero_plane_lines<T: Default>(
 
 fn zero_line<T: Default>(values: &mut Vec<T>, len: usize) -> Result<(), TileCoeffStateError> {
     values.clear();
-    values.try_reserve_exact(len)?;
+    if values.capacity() < len {
+        values.try_reserve_exact(len)?;
+    }
     values.resize_with(len, T::default);
     Ok(())
 }

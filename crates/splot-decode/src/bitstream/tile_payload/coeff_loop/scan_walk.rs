@@ -67,6 +67,7 @@ impl NonZeroCoeffScanWalk<'_> {
         self.scan.len()
     }
 
+    #[inline]
     pub(crate) fn entry(&self, index: usize) -> CoeffScanEntry {
         let scan_index = self.scan.len() - index - 1;
         let pos = usize::from(self.scan[scan_index]);
@@ -78,7 +79,7 @@ impl NonZeroCoeffScanWalk<'_> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FscCoeffScanWalk {
     scan: &'static [u16],
-    width: usize,
+    width_log2: u32,
     coeff_count: usize,
     bob: usize,
     seg_eob: usize,
@@ -100,7 +101,7 @@ impl FscCoeffScanWalk {
     /// buffers in range, and its row and column give back its position.
     #[must_use]
     pub(crate) fn matches_block(&self, block: &TransformCoeffBlockState) -> bool {
-        self.width == block.width() && self.coeff_count == block.coeff_count()
+        (1usize << self.width_log2) == block.width() && self.coeff_count == block.coeff_count()
     }
 
     #[must_use]
@@ -113,9 +114,16 @@ impl FscCoeffScanWalk {
         self.scan.len()
     }
 
+    #[inline]
     fn entry(&self, index: usize) -> CoeffScanEntry {
         let pos = usize::from(self.scan[index]);
-        CoeffScanEntry::new(self.bob + index, pos, pos / self.width, pos % self.width)
+        let col_mask = (1 << self.width_log2) - 1;
+        CoeffScanEntry::new(
+            self.bob + index,
+            pos,
+            pos >> self.width_log2,
+            pos & col_mask,
+        )
     }
 }
 
@@ -179,6 +187,9 @@ pub(crate) fn walk_fsc_coeff_scan(
     let bob = seg_eob - eob;
     let block = start.block();
     let width = block.width();
+    if !width.is_power_of_two() {
+        return Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width });
+    }
     let coeff_count = block.coeff_count();
     let scan = &scan[bob..seg_eob];
     for (offset, scan_pos) in scan.iter().copied().enumerate() {
@@ -194,7 +205,7 @@ pub(crate) fn walk_fsc_coeff_scan(
 
     Ok(FscCoeffScanWalk {
         scan,
-        width,
+        width_log2: width.trailing_zeros(),
         coeff_count,
         bob,
         seg_eob,

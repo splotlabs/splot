@@ -1300,11 +1300,26 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
             let Some(entries) = row.entries.get_mut(superblock.entries.clone()) else {
                 break;
             };
+            let mut skipped_any = false;
             for (offset, entry) in entries.iter_mut().enumerate() {
                 let safe = matches!(
                     entry.command(),
                     Some(ReconCommand::Inter(command))
                         if !command.reads_current_frame()
+                            && (!skipped_any
+                                || (command.placed().luma_w >= 8
+                                    && command.placed().luma_h >= 8
+                                    && [
+                                        command.placed().chroma_luma_x,
+                                        command.placed().chroma_luma_y,
+                                        command.placed().chroma_luma_w,
+                                        command.placed().chroma_luma_h,
+                                    ] == [
+                                        command.placed().luma_x,
+                                        command.placed().luma_y,
+                                        command.placed().luma_w,
+                                        command.placed().luma_h,
+                                    ]))
                             && command.prepass_write_is_contained(
                                 superblock.origin,
                                 sb_h4,
@@ -1313,15 +1328,61 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                             )
                 );
                 if !safe {
-                    break 'superblocks;
+                    match entry.take_command() {
+                        Some(ReconCommand::Inter(mut command)) => {
+                            let start = row.temporal.len();
+                            let result = scratch.derive_motion_logged(
+                                &mut command,
+                                surface,
+                                &mut row.temporal,
+                                temporal_context,
+                                reference,
+                                ref_frame_idx,
+                                sequence,
+                                core,
+                                mi_rows,
+                                mi_cols,
+                                current_order_hint,
+                                luma_use_tcq,
+                                residual_use_ddt,
+                                bit_depth,
+                            );
+                            entry.store_command(ReconCommand::Inter(command));
+                            match result {
+                                Ok(()) => {
+                                    entry.temporal = start..row.temporal.len();
+                                }
+                                Err(error) => {
+                                    row.temporal.truncate(start);
+                                    row.record_precompute_error(entry_start + offset, error);
+                                    break 'superblocks;
+                                }
+                            }
+                        }
+                        command => {
+                            if let Some(command) = command {
+                                entry.store_command(command);
+                            }
+                            if let Some(clear) =
+                                entry.temporal_clear_record(mi_rows, mi_cols, current_order_hint)
+                            {
+                                let start = row.temporal.len();
+                                row.temporal.push(clear);
+                                entry.temporal = start..row.temporal.len();
+                            }
+                        }
+                    }
+                    skipped_any = true;
+                    continue;
                 }
-                let command = match entry.take_command() {
+                let mut command = match entry.take_command() {
                     Some(ReconCommand::Inter(command)) => command,
                     command => {
                         if let Some(command) = command {
                             entry.store_command(command);
                         }
-                        break 'superblocks;
+                        skipped_any = true;
+                        continue;
                     }
                 };
                 if !coefficients_loaded && let Some(source) = &row.residual_source {
@@ -1334,7 +1395,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                 let start = row.temporal.len();
                 let result = {
                     scratch.reconstruct_logged(
-                        &command,
+                        &mut command,
                         surface,
                         block_decoded,
                         &mut row.temporal,
@@ -1369,20 +1430,8 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                 }
             }
         }
-        row.motion_folded = row
-            .entries
-            .iter()
-            .all(|entry| !matches!(entry.command(), Some(ReconCommand::Inter(_))));
+        row.motion_folded = matches!(row.failure, ReconRowFailure::None);
         if row.motion_folded && !row.superblocks.is_empty() {
-            for entry in &mut row.entries {
-                if let Some(clear) =
-                    entry.temporal_clear_record(mi_rows, mi_cols, current_order_hint)
-                {
-                    let start = row.temporal.len();
-                    row.temporal.push(clear);
-                    entry.temporal = start..row.temporal.len();
-                }
-            }
             if let Err(error) = motion.fold_unit(row.ordinal, &row.temporal) {
                 row.record_terminal_error(error);
             } else {
