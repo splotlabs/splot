@@ -39,3 +39,4 @@ Paeth = "Paeth"  # Rust type names for PAETH prediction helpers
 PAETH = "PAETH"  # AV2 PAETH_PRED mode name and feature identifiers
 thr = "thr"  # qThr / q_thr — AV2 §7.17.7 deblocking-filter threshold variable
 Thr = "Thr"  # qThr / sideThr — AV2 §7.17.7 deblocking-filter threshold variables
+DOTA = "DOTA"  # DOTA2_1920x1080_60_8bit_420_*.ivf external conformance stream name

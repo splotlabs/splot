@@ -1630,6 +1630,8 @@ fn scan_compound_mv_stack_probe(
                     Some((cell.flags.ref_frame0, cell.motion.sub_mv)),
                     cell.flags.ref_frame1.map(|r| (r, cell.motion.sub_mv1)),
                 ],
+                [cell.motion.is_global_mv(0), cell.motion.is_global_mv(1)],
+                state.global_mvs,
                 temporal,
             );
             return;

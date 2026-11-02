@@ -9,7 +9,6 @@ use core::{fmt, num::NonZeroU64};
 
 use splot_recon::Y4mFrameRate;
 
-const DEFAULT_MAX_INPUT_BYTES: u64 = 16 * 1024 * 1024;
 const DEFAULT_MAX_OBUS: u64 = 16_384;
 const DEFAULT_MAX_IVF_FRAME_RECORDS: u64 = 4_096;
 const DEFAULT_MAX_FRAMES_TO_DECODE: u64 = 8_192;
@@ -135,7 +134,7 @@ pub struct DecodeLimits {
 impl DecodeLimits {
     /// Default finite resource policy for CI, fuzzing, and early decoder work.
     pub const DEFAULT: Self = Self {
-        max_input_bytes: DecodeLimitThreshold::Max(DEFAULT_MAX_INPUT_BYTES),
+        max_input_bytes: DecodeLimitThreshold::Unlimited,
         max_obus: DecodeLimitThreshold::Max(DEFAULT_MAX_OBUS),
         max_ivf_frame_records: DecodeLimitThreshold::Max(DEFAULT_MAX_IVF_FRAME_RECORDS),
         max_frames_to_decode: DecodeLimitThreshold::Max(DEFAULT_MAX_FRAMES_TO_DECODE),

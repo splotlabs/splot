@@ -589,8 +589,11 @@ pub(super) fn resolve_inter_block(
             stored_warp,
             global_mv,
             splat_warp: match &syntax.motion {
-                InterMotionSyntax::Single(_) => [None, None],
-                InterMotionSyntax::Warp(_) | InterMotionSyntax::Compound(_) => resolved.warp_params,
+                InterMotionSyntax::Warp(_) => resolved.warp_params,
+                InterMotionSyntax::Compound(compound) if compound.local_warp => {
+                    resolved.warp_params
+                }
+                InterMotionSyntax::Single(_) | InterMotionSyntax::Compound(_) => [None, None],
             },
         },
     );
@@ -859,13 +862,15 @@ fn resolve_compound(
     state: &mut MvResolutionState<'_>,
 ) -> Result<ResolvedInterBlock> {
     let resolved = compound_motion(syntax, compound, state)?;
-    if let Some(params) = resolved.warp_params[0] {
-        state
-            .warp_param_bank
-            .update(syntax.block_ctx.ref_frame0, params);
-    }
-    if let Some(params) = resolved.warp_params[1] {
-        state.warp_param_bank.update(compound.ref_frame1, params);
+    if compound.local_warp {
+        if let Some(params) = resolved.warp_params[0] {
+            state
+                .warp_param_bank
+                .update(syntax.block_ctx.ref_frame0, params);
+        }
+        if let Some(params) = resolved.warp_params[1] {
+            state.warp_param_bank.update(compound.ref_frame1, params);
+        }
     }
     Ok(resolved)
 }

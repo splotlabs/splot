@@ -73,6 +73,8 @@ impl CompoundDerivedMvState {
         &mut self,
         block: &MvBlockContext,
         candidates: [Option<(i8, Mv)>; 2],
+        global_mv: [bool; 2],
+        global_mvs: [Mv; 2],
         temporal: Option<&TemporalMvContext>,
     ) {
         let Some(ref_frame1) = block.ref_frame1 else {
@@ -113,12 +115,18 @@ impl CompoundDerivedMvState {
         } else {
             return;
         };
-        let Some((_, candidate_mv)) = candidates
+        let Some((cand_list, &(_, sub_mv))) = candidates
             .iter()
-            .flatten()
-            .find(|(r, _)| *r == target_refs[target])
+            .enumerate()
+            .filter_map(|(list, entry)| entry.as_ref().map(|entry| (list, entry)))
+            .find(|(_, (r, _))| *r == target_refs[target])
         else {
             return;
+        };
+        let candidate_mv = if global_mv[cand_list] {
+            global_mvs[target]
+        } else {
+            sub_mv
         };
         let other = 1 - target;
         if let Some(single) = self
@@ -127,7 +135,7 @@ impl CompoundDerivedMvState {
             .find(|single| single.ref_frame == target_refs[other])
         {
             let mut pair = [single.mv; 2];
-            pair[target] = *candidate_mv;
+            pair[target] = candidate_mv;
             push_bounded_unique(&mut self.entries, &mut self.prune_count, pair);
         }
         push_bounded_unique(
@@ -135,7 +143,7 @@ impl CompoundDerivedMvState {
             &mut self.single_prune_count,
             SingleMvCandidate {
                 ref_frame: target_refs[target],
-                mv: *candidate_mv,
+                mv: candidate_mv,
             },
         );
     }

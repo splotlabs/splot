@@ -5,9 +5,11 @@
 # -DDynamoRIO_DIR=<DynamoRIO release>/cmake.
 cmake_minimum_required(VERSION 3.14)
 project(splot_inscount C CXX)
+set(CMAKE_C_STANDARD 11)
 find_package(DynamoRIO REQUIRED)
 add_library(splotinscount SHARED splotinscount.c)
 configure_DynamoRIO_client(splotinscount)
+target_compile_options(splotinscount PRIVATE -std=gnu11)
 use_DynamoRIO_extension(splotinscount drmgr)
 use_DynamoRIO_extension(splotinscount drreg)
 use_DynamoRIO_extension(splotinscount drx)

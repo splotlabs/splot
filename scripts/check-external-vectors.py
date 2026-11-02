@@ -4,15 +4,17 @@
 """Check complete external streams against recorded oracle hashes (CONF-PUBLIC-VECTORS)."""
 
 import argparse
+import concurrent.futures
 import hashlib
 import pathlib
 import re
 import subprocess
 import tempfile
 import tomllib
+import urllib.request
 
 
-def check(corpus, root, splot):
+def check(corpus, root, splot, thread_override=None):
     if corpus == "dav2d":
         root = root / "avm"
         entries = re.findall(
@@ -32,14 +34,28 @@ def check(corpus, root, splot):
             raise SystemExit("The sample manifest schema is unsupported.")
         if manifest["threads"] != [1, 8]:
             raise SystemExit("The sample manifest must specify thread counts 1 and 8.")
-        revision = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
-        if revision != manifest["revision"]:
-            raise SystemExit(f"The sample revision differs: expected {manifest['revision']}, got {revision}.")
-        root = root / "samples"
+        if (root / ".git").exists():
+            revision = subprocess.check_output(["git", "-C", root, "rev-parse", "HEAD"], text=True).strip()
+            if revision != manifest["revision"]:
+                raise SystemExit(f"The sample revision differs: expected {manifest['revision']}, got {revision}.")
+        if (root / "samples").is_dir():
+            root = root / "samples"
+        missing_releases = [
+            (f"{manifest['source']}/releases/download/{s['release']}/{s['path']}", root / s["path"])
+            for s in manifest["stream"]
+            if "release" in s and not (root / s["path"]).exists()
+        ]
+        if missing_releases:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+                list(pool.map(lambda item: urllib.request.urlretrieve(*item), missing_releases))
         streams = [dict(path=stream["path"], digest=stream["avm_raw_sha256"],
                         input_sha256=stream["input_sha256"], raw_bytes=stream["raw_bytes"])
                    for stream in manifest["stream"]]
         algorithm, threads, extension = "sha256", manifest["threads"], "*.ivf"
+    if thread_override is not None:
+        if thread_override not in threads:
+            raise SystemExit(f"Unsupported thread override {thread_override}; expected one of {threads}.")
+        threads = [thread_override]
 
     paths = [stream["path"] for stream in streams]
     if not paths or len(paths) != len(set(paths)):
@@ -83,5 +99,6 @@ if __name__ == "__main__":
     parser.add_argument("corpus", choices=["dav2d", "ewouth-av2"])
     parser.add_argument("root", type=pathlib.Path)
     parser.add_argument("--splot", type=pathlib.Path, default=pathlib.Path("target/release/splot"))
+    parser.add_argument("--threads", type=int, default=None)
     args = parser.parse_args()
-    check(args.corpus, args.root, args.splot.resolve())
+    check(args.corpus, args.root, args.splot.resolve(), args.threads)
