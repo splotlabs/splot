@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use crate::tables::conversion::PROB_INC;
 
 fn default_binary_cdf() -> [i32; 3] {
     [16_384, 0, 0]

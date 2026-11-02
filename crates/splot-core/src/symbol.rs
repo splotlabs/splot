@@ -15,7 +15,7 @@ use core::simd::{Select, Simd};
 use crate::bitio::be_window;
 use crate::error::{Error, Result, SymbolCdfErrorKind, SymbolDecoderErrorKind};
 use crate::span::{BitOffset, ByteOffset};
-use crate::tables::conversion::{PARA_ADJUSTMENT_LIST, PROB_INC};
+use crate::tables::conversion::PARA_ADJUSTMENT_LIST;
 
 pub(crate) const CDF_PROB_SCALE: u32 = 1 << 15;
 pub(crate) const CDF_PROB_MAX: i32 = (1 << 15) - 1;
@@ -28,10 +28,23 @@ pub(crate) const MAX_CDF_COUNT: i32 = 32;
 const BYPASS_LITERAL_CHUNK_BITS: u32 = 8;
 /// A const copy of the static table, so per-arity reads fold to immediates
 /// in the crates that instantiate the generic decode.
-const PROB_INC_CONST: [[i32; 8]; 7] = PROB_INC;
+/// A const copy of the static table, so per-arity reads fold to immediates
+/// in the crates that instantiate the generic decode.
+const PROB_INC_U32: [[u32; 8]; 7] = [
+    [8, 0, 0, 0, 0, 0, 0, 0],
+    [10, 5, 0, 0, 0, 0, 0, 0],
+    [12, 8, 4, 0, 0, 0, 0, 0],
+    [12, 9, 6, 3, 0, 0, 0, 0],
+    [13, 10, 8, 5, 2, 0, 0, 0],
+    [13, 11, 9, 6, 4, 2, 0, 0],
+    [14, 12, 10, 8, 6, 4, 2, 0],
+];
 
 pub(crate) trait CdfStorage: Copy {
     fn to_i32(self) -> i32;
+    fn to_u32(self) -> u32 {
+        self.to_i32() as u32
+    }
     fn from_i32(value: i32) -> Self;
 
     /// Adapts the `n - 1` probability entries of a row (§ 8.2.6).
@@ -57,6 +70,10 @@ impl CdfStorage for u16 {
         i32::from(self)
     }
 
+    fn to_u32(self) -> u32 {
+        u32::from(self)
+    }
+
     fn from_i32(value: i32) -> Self {
         debug_assert!((0..=i32::from(u16::MAX)).contains(&value));
         value as u16
@@ -68,6 +85,17 @@ impl CdfStorage for u16 {
     #[inline(always)]
     fn adapt_probabilities(cdf: &mut [u16], n: usize, rate: u32, symbol: usize) {
         match n {
+            2 => {
+                if let Some(entry) = cdf.first_mut() {
+                    let value = i32::from(*entry);
+                    let adapted = if symbol == 0 {
+                        value + (((CDF_PROB_SCALE as i32) - value) >> rate)
+                    } else {
+                        value - (value >> rate)
+                    };
+                    *entry = adapted as u16;
+                }
+            }
             3..=5 => adapt_probability_lanes::<4>(cdf, 0, n - 1, rate, symbol),
             6 => {
                 adapt_probabilities_scalar(cdf, 0..1, rate, symbol);
@@ -105,6 +133,16 @@ fn adapt_probabilities_scalar<T: CdfStorage>(
     }
 }
 
+const fn make_base_indices<const L: usize>() -> Simd<u16, L> {
+    let mut arr = [0u16; L];
+    let mut i = 0;
+    while i < L {
+        arr[i] = i as u16;
+        i += 1;
+    }
+    Simd::from_array(arr)
+}
+
 /// The § 8.2.6 step on the `L` entries from `first`, of which those below
 /// `probabilities` are probabilities. Equal to the scalar step for entries up
 /// to `CDF_PROB_SCALE`.
@@ -120,7 +158,12 @@ fn adapt_probability_lanes<const L: usize>(
     let Some(lanes) = cdf.get_mut(first..first + L) else {
         return;
     };
-    let index = Simd::<u16, L>::from_array(core::array::from_fn(|lane| (first + lane) as u16));
+    let base = make_base_indices::<L>();
+    let index = if first == 0 {
+        base
+    } else {
+        Simd::splat(first as u16) + base
+    };
     let value = Simd::<u16, L>::from_slice(lanes);
     let rate = Simd::splat(rate as u16);
     let shrunk = value - (value >> rate);
@@ -599,33 +642,45 @@ impl<'a> SymbolDecoder<'a> {
         self.ensure_buffered(15);
         let symbol_value = (self.dif >> SV_SHIFT) as u32;
         let range8 = self.symbol_range >> 8;
-        let mut prev = self.symbol_range;
-        let mut cur = 0;
-        let mut symbol = 0;
-        while symbol < N - 1 {
-            let f = CDF_PROB_SCALE.saturating_sub(cdf[symbol].to_i32() as u32);
-            let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC_CONST[N - 2][symbol] as u32;
+        let (symbol, cur, prev) = if N == 2 {
+            let f = CDF_PROB_SCALE.saturating_sub(cdf[0].to_u32());
+            let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC_U32[0][0];
             let next_cur = ((range8 * pp) >> 7) << 3;
             if symbol_value >= next_cur {
-                cur = next_cur;
-                break;
+                (0, next_cur, self.symbol_range)
+            } else {
+                (1, 0, next_cur)
             }
-            prev = next_cur;
-            symbol += 1;
-        }
+        } else {
+            let mut prev = self.symbol_range;
+            let mut cur = 0;
+            let mut symbol = 0;
+            while symbol < N - 1 {
+                let f = CDF_PROB_SCALE.saturating_sub(cdf[symbol].to_u32());
+                let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC_U32[N - 2][symbol];
+                let next_cur = ((range8 * pp) >> 7) << 3;
+                if symbol_value >= next_cur {
+                    cur = next_cur;
+                    break;
+                }
+                prev = next_cur;
+                symbol += 1;
+            }
+            (symbol, cur, prev)
+        };
 
         let new_range = prev.saturating_sub(cur);
         if new_range == 0 {
             return Err(self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
         }
-        let bits = 15 - floor_log2(new_range);
+        let bits = (new_range as u16).leading_zeros();
         self.symbol_range = new_range << bits;
         self.dif = (self.dif - (u64::from(cur) << SV_SHIFT)) << bits;
         self.buffered -= bits as i32;
         self.frame_symbol_count = self.frame_symbol_count.wrapping_add(1);
 
         if self.config.cdf_update == CdfUpdateMode::Enabled {
-            update_cdf(cdf, shape, symbol);
+            update_cdf_arity::<T>(cdf, shape, N, symbol);
         }
 
         Ok(Symbol::new(symbol as u8))
@@ -940,19 +995,33 @@ pub(crate) fn floor_log2(value: u32) -> u32 {
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 pub(crate) fn update_cdf<T: CdfStorage>(cdf: &mut [T], shape: CdfShape, symbol: usize) {
+    update_cdf_arity::<T>(cdf, shape, shape.n, symbol);
+}
+
+/// Applies the AV2 § 8.2.6 adaptation step with compile-time or explicit arity `n`.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+pub(crate) fn update_cdf_arity<T: CdfStorage>(
+    cdf: &mut [T],
+    shape: CdfShape,
+    n: usize,
+    symbol: usize,
+) {
     let time_interval = if shape.count > 31 {
         2usize
     } else {
         usize::from(shape.count > 15)
     };
-    let rate = 3
-        + time_interval as i32
-        + floor_log2(shape.n as u32).min(2) as i32
-        + PARA_ADJUSTMENT_LIST[shape.rate_index][time_interval];
-    T::adapt_probabilities(cdf, shape.n, rate as u32, symbol);
-    let count = cdf[shape.n].to_i32();
+    let n_term = match n {
+        2 | 3 => 1,
+        _ => 2,
+    };
+    let rate =
+        3 + time_interval as i32 + n_term + PARA_ADJUSTMENT_LIST[shape.rate_index][time_interval];
+    T::adapt_probabilities(cdf, n, rate as u32, symbol);
+    let count = cdf[n].to_i32();
     if count < MAX_CDF_COUNT {
-        cdf[shape.n] = T::from_i32(count + 1);
+        cdf[n] = T::from_i32(count + 1);
     }
 }
 
