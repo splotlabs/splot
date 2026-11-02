@@ -58,15 +58,7 @@ std::thread_local! {
 
 pub(crate) struct RecycledIntraSamples<T: Send + 'static>(Vec<T>);
 
-impl<T: Clone + Send + 'static> RecycledIntraSamples<T> {
-    pub(crate) fn filled(len: usize, value: T) -> Self {
-        let mut samples =
-            HOT_INTRA_VECTORS.with(crate::support::reusable_scratch::take_reusable_vec);
-        samples.clear();
-        samples.resize(len, value);
-        Self(samples)
-    }
-
+impl<T: Send + 'static> RecycledIntraSamples<T> {
     pub(crate) fn with_capacity(capacity: usize) -> Self {
         let mut samples =
             HOT_INTRA_VECTORS.with(crate::support::reusable_scratch::take_reusable_vec);
@@ -219,6 +211,16 @@ pub(crate) struct GeneralIntraReconCommand {
     tile_offset: ByteOffset,
 }
 
+pub(crate) fn swap_general_intra_scratch<T: ReconSample>(
+    scratch: &mut GeneralIntraReconScratch<T>,
+    workspace: &mut CurrentFrameWorkspace<T>,
+) {
+    workspace.swap_intra_prediction_scratch(&mut scratch.intra_prediction);
+    HOT_INTRA_VECTORS.with(|vectors| {
+        std::mem::swap(&mut *vectors.borrow_mut(), &mut scratch.hot_vectors.slots);
+    });
+}
+
 impl GeneralIntraReconCommand {
     pub(crate) fn reconstruct<T: ReconSample>(
         self,
@@ -231,22 +233,13 @@ impl GeneralIntraReconCommand {
         let _qm_segment_scope = crate::bitstream::tile_payload::FrameQmSegmentScope::install(
             usize::from(self.segment_id),
         );
-        workspace.swap_intra_prediction_scratch(&mut scratch.intra_prediction);
-        HOT_INTRA_VECTORS.with(|vectors| {
-            std::mem::swap(&mut *vectors.borrow_mut(), &mut scratch.hot_vectors.slots);
-        });
-        let result = self.reconstruct_with_installed_quantizer(
+        self.reconstruct_with_installed_quantizer(
             arena,
             coeffs_arena,
             scratch,
             workspace,
             block_decoded,
-        );
-        HOT_INTRA_VECTORS.with(|vectors| {
-            std::mem::swap(&mut *vectors.borrow_mut(), &mut scratch.hot_vectors.slots);
-        });
-        workspace.swap_intra_prediction_scratch(&mut scratch.intra_prediction);
-        result
+        )
     }
 
     fn reconstruct_with_installed_quantizer<T: ReconSample>(

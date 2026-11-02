@@ -838,7 +838,7 @@ impl RowResiduals {
     pub(super) fn copy_into(&self, target: &mut Vec<i32>) -> Result<()> {
         target.clear();
         target
-            .try_reserve_exact(self.capacity)
+            .try_reserve(self.capacity)
             .map_err(|_| inter_allocation!("coefficient row snapshot"))?;
         let frame = self.frame.lock();
         let samples = frame
@@ -1638,13 +1638,13 @@ impl ParseProgress {
             buffers.resize_with(slots, || Some(ReconRowBuffers::default()));
         }
         let capacity = coefficients
-            .checked_mul(slots.saturating_sub(1))
+            .checked_mul(slots)
             .ok_or(crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
         let mut residuals = self.residuals.lock();
         let additional = capacity.saturating_sub(residuals.coefficients.len());
         residuals
             .coefficients
-            .try_reserve_exact(additional)
+            .try_reserve(additional)
             .map_err(|_| inter_allocation!("frame coefficients"))?;
         residuals
             .planes
@@ -1825,7 +1825,7 @@ impl<'payload> TileParser<'payload> {
             let start = residuals.coefficients.len();
             residuals
                 .coefficients
-                .try_reserve_exact(row.residual_coeffs.len())
+                .try_reserve(row.residual_coeffs.len())
                 .map_err(|_| inter_allocation!("frame coefficient publication"))?;
             residuals
                 .coefficients
