@@ -33,7 +33,11 @@ impl TileCdfSubset {
 
     /// Reads a coefficient symbol from the coefficient rows directly,
     /// skipping the generic tile-selector dispatch.
-    #[inline]
+    #[allow(
+        clippy::inline_always,
+        reason = "constant selectors fold into a direct row read"
+    )]
+    #[inline(always)]
     pub(crate) fn read_coeff_symbol(
         &mut self,
         selector: CoeffCdfSelector,

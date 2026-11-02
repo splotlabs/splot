@@ -171,9 +171,10 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                                 workspace,
                             )?;
                         }
-                        ReconCommand::Inter(command) => {
+                        ReconCommand::Inter(mut command) => {
+                            let prederived_motion = command.has_derived_motion();
                             scratch.reconstruct(
-                                &command,
+                                &mut command,
                                 workspace,
                                 block_decoded,
                                 motion,
@@ -196,6 +197,12 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                                 residual_use_ddt,
                                 bit_depth,
                             )?;
+                            if prederived_motion && motion_owed {
+                                let records = temporal.get(entry.temporal.clone()).ok_or(
+                                    crate::DecodeHeaderStateError::InvalidInterTileSchedulingState,
+                                )?;
+                                motion.fold_unit(ordinal, records)?;
+                            }
                         }
                     }
                 } else {

@@ -452,6 +452,13 @@ impl<'a> SymbolDecoder<'a> {
         }
 
         self.frame_symbol_count = self.frame_symbol_count.saturating_add(u64::from(n));
+        if n <= BYPASS_LITERAL_CHUNK_BITS {
+            return if n == 0 {
+                Ok(0)
+            } else {
+                self.read_bypass_bits(n)
+            };
+        }
         let mut value = 0u32;
         let mut remaining = n;
         while remaining > 0 {
@@ -711,6 +718,8 @@ impl<'a> SymbolDecoder<'a> {
         self.exit_symbol()
     }
 
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
     fn validate_cdf<T: CdfStorage>(&self, cdf: &[T]) -> Result<CdfShape> {
         match self.config.cdf_validation {
             CdfValidationMode::Validated => validate_cdf_shape(cdf),
@@ -824,6 +833,8 @@ pub(crate) struct CdfShape {
 /// (see [`CdfValidationMode::Trusted`]): the length bound that keeps every
 /// row and `PROB_INC` access in range, and the adaptation-rate bound that
 /// keeps the `PARA_ADJUSTMENT_LIST` lookup in range.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
 pub(crate) fn trusted_cdf_shape<T: CdfStorage>(
     cdf: &[T],
 ) -> core::result::Result<CdfShape, SymbolCdfErrorKind> {
@@ -920,6 +931,7 @@ fn mask_for_bits(bits: u32) -> u64 {
     if bits == 0 { 0 } else { (1u64 << bits) - 1 }
 }
 
+#[inline]
 pub(crate) fn floor_log2(value: u32) -> u32 {
     u32::BITS - 1 - value.leading_zeros()
 }

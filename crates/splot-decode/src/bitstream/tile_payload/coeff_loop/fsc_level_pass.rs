@@ -30,17 +30,6 @@ impl CoeffFscLevelPassConfig {
         self.tx_size_ctx.min(TX_16X16_CONTEXT)
     }
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoeffFscLevelSymbolSource {
-    BaseBob { selector: CoeffCdfSelector },
-    BaseIdtx { selector: CoeffCdfSelector },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CoeffFscLevelReadInput {
-    pub(crate) base: CoeffFscLevelSymbolSource,
-    pub(crate) base_range: CoeffCdfSelector,
-}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffFscLevelPass {
     walk: FscCoeffScanWalk,
@@ -84,13 +73,56 @@ pub(crate) fn apply_nonzero_coeff_fsc_level_pass(
     preflight_pass(eob_read, &block, &walk, config)?;
     block.ensure_quant_sign()?;
 
-    for (index, entry) in walk.entries().enumerate() {
-        let input = derive_fsc_level_input(index, entry, &walk, &block, config);
-        let level = read_fsc_level_symbol(cdfs, symbols, input)?;
-        block.set_level(entry.row(), entry.col(), level)?;
+    let tx_size_ctx = config.fsc_tx_size_ctx();
+    let mut entries = walk.entries();
+    if let Some(entry) = entries.next() {
+        let selector = CoeffCdfSelector::BaseBob {
+            tx_size_ctx,
+            ctx: coeff_base_bob_ctx(walk.bob(), walk.seg_eob()),
+        };
+        let level = u32::from(cdfs.read_coeff_symbol(selector, symbols)?) + 1;
+        finish_fsc_level(cdfs, symbols, entry, level, tx_size_ctx, &mut block)?;
+    }
+    for entry in entries {
+        let selector = CoeffCdfSelector::BaseIdtx {
+            tx_size_ctx,
+            ctx: coeff_base_idtx_ctx(
+                block.level(),
+                entry.row(),
+                entry.col(),
+                block.level_stride(),
+            ),
+        };
+        let level = u32::from(cdfs.read_coeff_symbol(selector, symbols)?);
+        if level != 0 {
+            finish_fsc_level(cdfs, symbols, entry, level, tx_size_ctx, &mut block)?;
+        }
     }
 
     Ok(NonZeroCoeffFscLevelPass { walk, block })
+}
+
+#[inline]
+fn finish_fsc_level(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    entry: CoeffScanEntry,
+    mut level: u32,
+    tx_size_ctx: usize,
+    block: &mut TransformCoeffBlockState,
+) -> Result<(), CoeffFscLevelPassError> {
+    if level > NUM_BASE_LEVELS {
+        let ctx = coeff_br_idtx_ctx(
+            block.level(),
+            entry.row(),
+            entry.col(),
+            block.level_stride(),
+        );
+        let selector = CoeffCdfSelector::BrIdtx { tx_size_ctx, ctx };
+        level += u32::from(cdfs.read_coeff_symbol(selector, symbols)?);
+    }
+    block.set_level(entry.row(), entry.col(), level)?;
+    Ok(())
 }
 
 fn preflight_pass(
@@ -118,68 +150,4 @@ fn preflight_pass(
         return Err(CoeffFscLevelPassError::WalkBlockMismatch);
     }
     Ok(())
-}
-
-fn derive_fsc_level_input(
-    index: usize,
-    entry: CoeffScanEntry,
-    walk: &FscCoeffScanWalk,
-    block: &TransformCoeffBlockState,
-    config: CoeffFscLevelPassConfig,
-) -> CoeffFscLevelReadInput {
-    let tx_size_ctx = config.fsc_tx_size_ctx();
-    let base = if index == 0 {
-        CoeffFscLevelSymbolSource::BaseBob {
-            selector: CoeffCdfSelector::BaseBob {
-                tx_size_ctx,
-                ctx: coeff_base_bob_ctx(walk.bob(), walk.seg_eob()),
-            },
-        }
-    } else {
-        CoeffFscLevelSymbolSource::BaseIdtx {
-            selector: CoeffCdfSelector::BaseIdtx {
-                tx_size_ctx,
-                ctx: coeff_base_idtx_ctx(
-                    block.level(),
-                    entry.row(),
-                    entry.col(),
-                    block.level_stride(),
-                ),
-            },
-        }
-    };
-    let br_ctx = coeff_br_idtx_ctx(
-        block.level(),
-        entry.row(),
-        entry.col(),
-        block.level_stride(),
-    );
-    CoeffFscLevelReadInput {
-        base,
-        base_range: CoeffCdfSelector::BrIdtx {
-            tx_size_ctx,
-            ctx: br_ctx,
-        },
-    }
-}
-
-fn read_fsc_level_symbol(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffFscLevelReadInput,
-) -> Result<u32, CoeffFscLevelPassError> {
-    let mut read_symbol = |selector| -> Result<u8, CoeffFscLevelPassError> {
-        Ok(cdfs.read_coeff_symbol(selector, symbols)?)
-    };
-    let (selector, base_offset) = match input.base {
-        CoeffFscLevelSymbolSource::BaseBob { selector } => (selector, 1),
-        CoeffFscLevelSymbolSource::BaseIdtx { selector } => (selector, 0),
-    };
-    let base_symbol = read_symbol(selector)?;
-    let mut level = u32::from(base_symbol) + base_offset;
-    if level > NUM_BASE_LEVELS {
-        let symbol = read_symbol(input.base_range)?;
-        level += u32::from(symbol);
-    }
-    Ok(level)
 }

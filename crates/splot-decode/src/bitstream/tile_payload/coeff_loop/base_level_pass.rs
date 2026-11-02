@@ -54,6 +54,7 @@ impl CoeffBaseFirstPassSummary {
         self.is_hidden
     }
 
+    #[inline]
     pub(crate) fn update_after_level(
         &mut self,
         entry: CoeffScanEntry,
@@ -69,13 +70,11 @@ impl CoeffBaseFirstPassSummary {
             };
             self.tcq_state = tcq_state;
         }
-        if config.parity_hiding && entry.scan_index() > 0 {
+        if level != 0 && config.parity_hiding && entry.scan_index() > 0 {
             let clipped = level.min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);
             self.sum_abs1 ^= clipped & 1;
-            if level != 0 {
-                self.num_nonzero += 1;
-                self.is_hidden = self.num_nonzero >= PHTHRESH;
-            }
+            self.num_nonzero += 1;
+            self.is_hidden = self.num_nonzero >= PHTHRESH;
         }
         Ok(())
     }
@@ -94,6 +93,7 @@ pub(crate) struct CoeffLevelMasks {
 }
 
 impl CoeffLevelMasks {
+    #[inline]
     fn record(&mut self, scan_index: usize, level: u32, tcq_state: usize) {
         let word = (scan_index >> 6) & (SCAN_MASK_WORDS - 1);
         let shift = scan_index & 63;
@@ -101,6 +101,7 @@ impl CoeffLevelMasks {
         self.tcq_q0[word] |= (((tcq_state >> 1) & 1) as u64) << shift;
     }
 
+    #[inline]
     pub(crate) fn tcq_q0(&self, scan_index: usize) -> bool {
         (self.tcq_q0[(scan_index >> 6) & (SCAN_MASK_WORDS - 1)] >> (scan_index & 63)) & 1 != 0
     }
@@ -254,17 +255,19 @@ fn finish_level(
     masks: &mut CoeffLevelMasks,
     config: CoeffBaseDerivedLevelPassConfig,
 ) -> Result<(), CoeffBaseDerivedLevelPassError> {
-    let base_levels = if is_lf {
-        LF_NUM_BASE_LEVELS
-    } else {
-        NUM_BASE_LEVELS
-    };
-    if level > base_levels && !(is_lf && config.plane > 0) {
-        level += read_br_symbol(cdfs, symbols, entry, is_lf, block, config)?;
+    if level != 0 {
+        let base_levels = if is_lf {
+            LF_NUM_BASE_LEVELS
+        } else {
+            NUM_BASE_LEVELS
+        };
+        if level > base_levels && !(is_lf && config.plane > 0) {
+            level += read_br_symbol(cdfs, symbols, entry, is_lf, block, config)?;
+        }
+        masks.record(entry.scan_index(), level, first_pass.tcq_state);
+        block.set_level(entry.row(), entry.col(), level)?;
     }
-    masks.record(entry.scan_index(), level, first_pass.tcq_state);
     first_pass.update_after_level(entry, level, config)?;
-    block.set_level(entry.row(), entry.col(), level)?;
     Ok(())
 }
 

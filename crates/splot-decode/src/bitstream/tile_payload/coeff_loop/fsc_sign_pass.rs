@@ -60,6 +60,7 @@ pub(crate) fn checked_fsc_sign_walk(
     Ok(())
 }
 
+#[inline]
 pub(crate) fn derive_fsc_sign_input(
     entry: CoeffScanEntry,
     block: &TransformCoeffBlockState,
@@ -85,6 +86,7 @@ pub(crate) fn derive_fsc_sign_input(
     Ok(CoeffFscSignReadInput { level, source })
 }
 
+#[inline]
 pub(crate) fn read_fsc_sign_symbol(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,

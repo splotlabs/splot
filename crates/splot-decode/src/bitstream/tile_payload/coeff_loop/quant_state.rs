@@ -23,6 +23,7 @@ const TCQ_NEXT_STATE: [[usize; TCQ_PARITIES]; TCQ_STATES] = [
     [3, 7],
 ];
 
+#[inline]
 pub(crate) fn next_tcq_state(tcq_state: usize, parity: u32) -> Option<usize> {
     TCQ_NEXT_STATE
         .get(tcq_state)
@@ -130,10 +131,12 @@ impl CoeffQuantStateAccumulator {
     /// that skips zero levels and takes each entry's state from the base
     /// pass. [`Self::apply_entry`] reads only that bit before the next call
     /// sets it again.
+    #[inline]
     pub(crate) fn set_tcq_q0(&mut self, q0: bool) {
         self.tcq_state = usize::from(q0) << 1;
     }
 
+    #[inline]
     pub(crate) fn apply_entry(
         &mut self,
         index: usize,
@@ -179,6 +182,7 @@ impl CoeffQuantStateAccumulator {
     }
 }
 
+#[inline]
 pub(crate) fn apply_derived_nonzero_coeff_quant_state_step(
     block: &mut TransformCoeffBlockState,
     state: &mut CoeffQuantStateAccumulator,

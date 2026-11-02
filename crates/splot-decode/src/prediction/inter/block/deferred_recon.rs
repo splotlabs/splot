@@ -43,6 +43,8 @@ pub(super) struct InterReconCommand {
     kind: PendingKind,
     segment_id: usize,
     qindex: u32,
+    motion_derived: bool,
+    derived_motion: Option<Box<mc::CompoundMotionGrid>>,
     tile_offset: ByteOffset,
 }
 
@@ -96,8 +98,14 @@ impl InterReconCommand {
             kind,
             segment_id,
             qindex,
+            motion_derived: false,
+            derived_motion: None,
             tile_offset,
         }
+    }
+
+    pub(super) const fn has_derived_motion(&self) -> bool {
+        self.motion_derived
     }
 
     /// The placed block this command reconstructs.
@@ -358,7 +366,7 @@ impl InterReconCommand {
 
     #[allow(clippy::too_many_arguments)]
     fn reconstruct_ordered<T: ReconSample>(
-        &self,
+        &mut self,
         sink: &mut WorkspaceSink<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
         temporal_records: &mut Vec<TemporalMotionBlock>,
@@ -369,7 +377,11 @@ impl InterReconCommand {
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
         residual_scratch: &mut InterResidualReconScratch<T>,
     ) -> Result<()> {
-        let motion = self.derive_motion(sink, temporal_records, shared, tip_scratch)?;
+        let motion = if self.motion_derived {
+            self.derived_motion.take().map(|grid| *grid)
+        } else {
+            self.derive_motion(sink, temporal_records, shared, tip_scratch)?
+        };
         self.reconstruct_from_motion(
             sink,
             block_decoded,
@@ -416,9 +428,54 @@ impl<T: ReconSample> InterReconScratch<T> {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(super) fn derive_motion_logged(
+        &mut self,
+        command: &mut InterReconCommand,
+        sink: &WorkspaceSink<'_, '_, T>,
+        temporal_records: &mut Vec<TemporalMotionBlock>,
+        temporal_context: &TemporalMvContext,
+        reference: &InterReferenceState<T>,
+        ref_frame_idx: &[u32],
+        sequence: &SequenceHeader,
+        core: &FrameHeaderCore,
+        mi_rows: usize,
+        mi_cols: usize,
+        current_order_hint: u32,
+        luma_use_tcq: bool,
+        residual_use_ddt: bool,
+        bit_depth: BitDepth,
+    ) -> Result<()> {
+        let Self { tip, mc, .. } = self;
+        mc.with_installed(|| {
+            let _segment_scope = FrameQmSegmentScope::install(command.segment_id);
+            let grid = command.derive_motion(
+                sink,
+                temporal_records,
+                &ReconShared {
+                    reference,
+                    ref_frame_idx,
+                    temporal_context,
+                    sequence,
+                    core,
+                    luma_use_tcq,
+                    residual_use_ddt,
+                    bit_depth,
+                    mi_rows,
+                    mi_cols,
+                    current_order_hint,
+                },
+                tip,
+            )?;
+            command.motion_derived = true;
+            command.derived_motion = grid.map(Box::new);
+            Ok(())
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn reconstruct_logged(
         &mut self,
-        command: &InterReconCommand,
+        command: &mut InterReconCommand,
         sink: &mut WorkspaceSink<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
         temporal_records: &mut Vec<TemporalMotionBlock>,
@@ -473,7 +530,7 @@ impl<T: ReconSample> InterReconScratch<T> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reconstruct(
         &mut self,
-        command: &InterReconCommand,
+        command: &mut InterReconCommand,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &TileBlockDecodedState,
         motion: &MotionFieldUnits,
@@ -513,7 +570,7 @@ impl<T: ReconSample> InterReconScratch<T> {
             residual_use_ddt,
             bit_depth,
         );
-        if result.is_ok() {
+        if result.is_ok() && !temporal.is_empty() {
             result = motion.fold_unit(ordinal, &temporal);
         }
         temporal.clear();
