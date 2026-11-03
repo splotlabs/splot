@@ -29,6 +29,8 @@ use crate::math::round2;
 use crate::math::{round2_i32, round2_signed, round2_signed_i32};
 use crate::subpel_mc::{ReferencePlaneView, reference_lanes};
 
+mod ext_unit;
+
 /// AV2 § 7.13.3.19 block-warp predictor side length in samples.
 pub const WARPED_BLOCK_SIZE: usize = 8;
 
@@ -474,49 +476,41 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
             context: "extended-warp projected y",
         })?;
     let sy4 = (y4 & ((1 << WARPEDMODEL_PREC_BITS) - 1)) as i32;
-    let phase = |s: i32| -> Result<&'static [i32; EXT_WARP_TAPS]> {
+    let phase = |s: i32| -> Result<usize> {
         let offs = round2_i32(s, EXT_WARP_ROUND_BITS);
         usize::try_from(offs)
             .ok()
-            .and_then(|offs| EXT_WARPED_FILTERS.get(offs))
+            .filter(|&offs| offs < EXT_WARPED_FILTERS.len())
             .ok_or(ReconError::WarpFilterOffsetOutOfRange { offset: offs })
     };
-    let taps_x = phase(sx4)?;
-    let taps_y = phase(sy4)?;
-    let mut intermediate = [Simd::<i32, 4>::splat(0); 9];
+    let phase_x = phase(sx4)?;
+    let phase_y = phase(sy4)?;
+    let mut intermediate = [0i16; 36];
     let (x, y) = (i64::from(ix4), i64::from(iy4));
     let interior = x - 4 >= i64::from(params.first_x.max(0))
         && x + 4 <= i64::from(params.last_x)
         && x + 5 <= reference.width() as i64
         && y - 4 >= i64::from(params.first_y.max(0))
         && y + 4 <= i64::from(params.last_y);
+    let rounded = |sum: Simd<i32, 4>| {
+        ((sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32).cast::<i16>()
+    };
     if interior {
         let col = (ix4 - 4) as usize;
-        for (k, intermediate) in intermediate.iter_mut().enumerate() {
+        for (k, intermediate) in intermediate.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let row = reference.row((iy4 + k as i32 - 4) as usize);
-            let lo = warp_source_lanes::<T, 8>(row, col);
-            let hi = warp_source_lanes::<T, 8>(row, col + 1);
-            let windows = [
-                simd_swizzle!(lo, [0, 1, 2, 3]),
-                simd_swizzle!(lo, [1, 2, 3, 4]),
-                simd_swizzle!(lo, [2, 3, 4, 5]),
-                simd_swizzle!(lo, [3, 4, 5, 6]),
-                simd_swizzle!(lo, [4, 5, 6, 7]),
-                simd_swizzle!(lo, hi, [5, 6, 7, 15]),
-            ];
-            let mut sum = Simd::splat(0);
-            for (&tap, window) in taps_x.iter().zip(windows) {
-                sum += Simd::splat(tap) * window.cast::<i32>();
-            }
-            *intermediate = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
+            let first = warp_source_lanes::<T, 8>(row, col);
+            let second = warp_source_lanes::<T, 8>(row, col + 1);
+            *intermediate = rounded(ext_unit::horizontal(first, second, phase_x)).to_array();
         }
     } else {
+        let taps_x = &EXT_WARPED_FILTERS[phase_x];
         let mut cols = [0usize; 9];
         for (offset, col) in cols.iter_mut().enumerate() {
             let x = (ix4 - 4 + offset as i32).clamp(params.first_x, params.last_x);
             *col = (x as usize).min(reference.width() - 1);
         }
-        for (k, intermediate) in intermediate.iter_mut().enumerate() {
+        for (k, intermediate) in intermediate.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let row = (iy4 + k as i32 - 4).clamp(params.first_y, params.last_y) as usize;
             let (row, mut window) = (reference.row(row), [0i32; 9]);
             for (sample, &col) in window.iter_mut().zip(&cols) {
@@ -526,18 +520,10 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
             for (m, &tap) in taps_x.iter().enumerate() {
                 sum += Simd::splat(tap) * Simd::from_slice(&window[m..]);
             }
-            *intermediate = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
+            *intermediate = rounded(sum).to_array();
         }
     }
-    let mut output = [0i32; 16];
-    for (k, output) in output.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-        let mut sum = Simd::splat(0);
-        for (m, &tap) in taps_y.iter().enumerate() {
-            sum += Simd::splat(tap) * intermediate[k + m];
-        }
-        *output = ((sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32).to_array();
-    }
-    Ok(output)
+    Ok(ext_unit::vertical(&intermediate, phase_y, round1))
 }
 
 fn ext_warp_predict_scaled<T: ReconSample>(
