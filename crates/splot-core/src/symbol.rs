@@ -119,12 +119,10 @@ impl CdfStorage for u16 {
             2 => {
                 if let Some(entry) = cdf.first_mut() {
                     let value = i32::from(*entry);
-                    let adapted = if symbol == 0 {
-                        value + (((CDF_PROB_SCALE as i32) - value) >> rate)
-                    } else {
-                        value - (value >> rate)
-                    };
-                    *entry = adapted as u16;
+                    let grown = value + (((CDF_PROB_SCALE as i32) - value) >> rate);
+                    let shrunk = value - (value >> rate);
+                    let keep = -i32::from(symbol == 0);
+                    *entry = (shrunk ^ ((shrunk ^ grown) & keep)) as u16;
                 }
             }
             3..=5 => adapt_probability_lanes::<4>(cdf, 0, n - 1, rate, symbol),
@@ -723,11 +721,10 @@ impl<'a> SymbolDecoder<'a> {
             let f = CDF_PROB_SCALE.saturating_sub(cdf[0].to_u32());
             let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC_U32[0][0];
             let next_cur = ((range8 * pp) >> 7) << 3;
-            if symbol_value >= next_cur {
-                (0, next_cur, self.symbol_range)
-            } else {
-                (1, 0, next_cur)
-            }
+            let one = u32::from(symbol_value < next_cur);
+            let keep = one.wrapping_sub(1);
+            let prev = next_cur ^ ((next_cur ^ self.symbol_range) & keep);
+            (one as usize, next_cur & keep, prev)
         } else {
             multi_symbol_search::<N>(
                 T::probability_lanes::<N>(cdf),
