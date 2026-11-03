@@ -14,7 +14,7 @@
 //! Feature tracking: `RECON-WIENERNS-FILTER-PRIMITIVE`.
 
 use std::ops::Range;
-use std::simd::{Simd, ToBytes, cmp::SimdOrd, num::SimdInt, num::SimdUint, simd_swizzle};
+use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint, simd_swizzle};
 
 use crate::PlaneId;
 use crate::intra_dc_math::validate_sample_type;
@@ -133,7 +133,7 @@ struct PreparedLumaClass {
     nonzero: u16,
     /// The coefficients as `pmaddwd` pairs, then the center scale paired
     /// with the rounding offset when the scale fits `i16`.
-    madd_pairs: Option<[u32; MADD_PAIRS + 1]>,
+    madd_pairs: Option<[[i16; 8]; MADD_PAIRS + 1]>,
 }
 
 /// `pmaddwd` pairs over the 16 symmetric tap sums.
@@ -547,7 +547,7 @@ fn prepare_luma_padded<T: ReconSample>(
                             .map_or((center_scale, 1 << (WIENER_NS_PREC_BITS - 1)), |pair| {
                                 (pair[0], pair[1])
                             });
-                        u32::from(low as u16) | u32::from(high as u16) << 16
+                        [low, high, low, high, low, high, low, high]
                     })
                 }),
             }
@@ -902,7 +902,7 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
     max_sample: u16,
 ) -> Result<usize> {
     const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
-    let cell_class = |cell: usize| -> Option<&[u32; MADD_PAIRS + 1]> {
+    let cell_class = |cell: usize| -> Option<&[[i16; 8]; MADD_PAIRS + 1]> {
         let class = match subclasses {
             LumaSubclassLayout::Uniform => 0,
             LumaSubclassLayout::Cells { values, cols } => {
@@ -914,15 +914,17 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
     };
     let mut x = 0;
     while x + 16 <= width {
-        let classes: [Option<&[u32; MADD_PAIRS + 1]>; 4] =
+        let classes: [Option<&[[i16; 8]; MADD_PAIRS + 1]>; 4] =
             core::array::from_fn(|cell| cell_class(x / 4 + cell));
         let [Some(c0), Some(c1), Some(c2), Some(c3)] = classes else {
             break;
         };
         let weights: [[Simd<i16, 16>; 2]; MADD_PAIRS + 1] = core::array::from_fn(|pair| {
-            let halves = |a: u32, b: u32| {
-                Simd::<i16, 16>::from_ne_bytes(
-                    Simd::<u32, 8>::from_array([a, a, a, a, b, b, b, b]).to_ne_bytes(),
+            let halves = |a: [i16; 8], b: [i16; 8]| {
+                simd_swizzle!(
+                    Simd::from_array(a),
+                    Simd::from_array(b),
+                    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
                 )
             };
             [halves(c0[pair], c2[pair]), halves(c1[pair], c3[pair])]
