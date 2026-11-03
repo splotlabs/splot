@@ -24,9 +24,12 @@ pub(crate) const LEVEL_GRID_PAD: usize = 4;
 /// constants.
 pub(crate) const LEVEL_STRIDE: usize = MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD;
 const MAX_PADDED_COEFF_LEN: usize = LEVEL_STRIDE * (MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD);
-/// Length of every level grid: a power of two at least
-/// [`MAX_PADDED_COEFF_LEN`], so masked indices need no bounds checks.
-pub(crate) const LEVEL_GRID_LEN: usize = MAX_PADDED_COEFF_LEN.next_power_of_two();
+/// Mask that keeps a block position or a neighbour offset below half the
+/// grid, a power of two at least [`MAX_PADDED_COEFF_LEN`].
+pub(crate) const LEVEL_INDEX_MASK: usize = MAX_PADDED_COEFF_LEN.next_power_of_two() - 1;
+/// Length of every level grid: a masked position plus a masked offset
+/// always indexes it, so neighbour reads need no bounds checks.
+pub(crate) const LEVEL_GRID_LEN: usize = 2 * (LEVEL_INDEX_MASK + 1);
 /// A block's level grid; entries past its padded extent are zero.
 pub(crate) type LevelGrid = [u8; LEVEL_GRID_LEN];
 static ZERO_LEVEL_GRID: LevelGrid = [0; LEVEL_GRID_LEN];

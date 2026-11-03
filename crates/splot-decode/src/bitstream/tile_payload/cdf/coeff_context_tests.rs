@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use crate::bitstream::tile_payload::coeff_state::LEVEL_GRID_LEN;
 
 const PAD: usize = super::super::super::coeff_state::LEVEL_GRID_PAD;
 
