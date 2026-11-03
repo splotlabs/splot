@@ -263,7 +263,8 @@ fn gather_pair<T: crate::ReconSample>(
 /// block's window range selects the kernel: the linear kernel, which skips
 /// `constrain`, when `cdef_window_linear` admits the range; its `CLAMP`
 /// mode, which clips each tap to the centre -/+ strength, when
-/// `cdef_window_clamped` admits it; else the general kernel. The taps of
+/// `cdef_window_clamped` admits it; else the 32-lane kernel when
+/// `cdef_wide8_fits` admits the filter, or the general kernel. The taps of
 /// one lane all come from one plane, so the larger plane range bounds every
 /// tap difference. Returns `false` when `block` is not below
 /// [`CDEF_SEGMENT_BLOCKS`].
@@ -298,6 +299,16 @@ pub fn cdef_filter_block_chroma_pair_segment(
     if cdef_window_clamped(filter, range) {
         return clamped!(true);
     }
+    if cdef_wide8_fits(filter) {
+        return cdef_by_families!(
+            filter,
+            cdef_filter_rows_wide8::<CDEF_PAIR_SEGMENT_STRIDE, 4, 4, SPAN, AREA>(
+                pad, filter, starts, out, 8
+            ),
+            cdef_copy_centre_rows::<8, CDEF_PAIR_SEGMENT_STRIDE, 4, 4, AREA>(pad, 4, out, 8)
+        )
+        .is_some();
+    }
     cdef_filter_block_rows::<8, 16, false, CDEF_PAIR_SEGMENT_STRIDE, 4, 4, SPAN, AREA>(
         pad, 4, filter, starts, out, 8,
     )
@@ -312,8 +323,8 @@ fn cdef_wide8_fits(filter: &CdefBlockFilter) -> bool {
     cdef_i8_diffs_fit(filter) && filter.pri_str <= 21 && filter.sec_str <= 10
 }
 
-/// [`cdef_filter_rows_diff8`] over a segment's 8x8 block four rows per
-/// 32-lane vector, for filters [`cdef_wide8_fits`] admits. The constrained
+/// [`cdef_filter_rows_diff8`] over a segment's `ROWS`-row block, 8 lanes
+/// wide, four rows per 32-lane vector, for filters [`cdef_wide8_fits`] admits. The constrained
 /// taps are summed in `i8` per family, the primary as `2 * pair0 + pair1`
 /// for `Cdef_Pri_Taps` `[4, 2]` or `pair0 + pair1` for `[3, 3]`, then widen
 /// once and take the remaining weight 2 or 3.
@@ -325,6 +336,8 @@ fn cdef_wide8_fits(filter: &CdefBlockFilter) -> bool {
 #[inline(never)]
 fn cdef_filter_rows_wide8<
     const STRIDE: usize,
+    const CENTER: usize,
+    const ROWS: usize,
     const SPAN: usize,
     const AREA: usize,
     const PRI: bool,
@@ -337,7 +350,7 @@ fn cdef_filter_rows_wide8<
     out_stride: usize,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
-        cdef_tap_views::<STRIDE, 2, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
+        cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
     let heavy_first = (filter.pri_str >> filter.coeff_shift) & 1 == 0;
     let pri_double = Simd::<i8, 32>::splat(if heavy_first { -1 } else { 0 });
     let pri_weight = Simd::<i16, 16>::splat(if heavy_first { 2 } else { 3 });
@@ -371,7 +384,7 @@ fn cdef_filter_rows_wide8<
             .cast(),
         ]
     };
-    for first in [0, 4] {
+    for first in (0..ROWS).step_by(4) {
         let quad = |view: &[u16; SPAN]| -> Option<[Simd<i16, 16>; 2]> {
             let row = |row: usize| {
                 let lanes = view.get((first + row) * STRIDE..)?.first_chunk::<8>()?;
@@ -441,8 +454,9 @@ fn cdef_filter_rows_wide8<
 /// With `use_range`, the block's window range selects the kernel: the
 /// linear kernel, which skips `constrain`, when `cdef_window_linear` admits
 /// the range; its `CLAMP` mode, which clips each tap to the centre -/+
-/// strength, when `cdef_window_clamped` admits it; else `u8` lanes when the
-/// range is below 256 and the filter fits them. Other blocks take the
+/// strength, when `cdef_window_clamped` admits it; else the 32-lane kernel
+/// when `cdef_wide8_fits` admits the filter, or `u8` lanes when the range is
+/// below 256 and the filter fits them. Other blocks take the
 /// kernel of [`cdef_filter_block_interior_to`]. Returns `false` without
 /// writing when `block` is not below [`CDEF_SEGMENT_BLOCKS`], `out_stride` is
 /// below 8, or `out` cannot hold the block at `out_stride`.
@@ -499,7 +513,7 @@ pub fn cdef_filter_block_segment(
     if cdef_wide8_fits(filter) {
         return cdef_by_families!(
             filter,
-            cdef_filter_rows_wide8::<CDEF_SEGMENT_STRIDE, SPAN, AREA>(
+            cdef_filter_rows_wide8::<CDEF_SEGMENT_STRIDE, 2, 8, SPAN, AREA>(
                 pad, filter, starts, out, out_stride
             ),
             copy!()
