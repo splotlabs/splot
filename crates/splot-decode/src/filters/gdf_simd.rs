@@ -666,25 +666,50 @@ const _: () = {
     }
 };
 
-/// Class-0 taps paired for one multiply-add of two taps.
-const SYM_PAIRS: [(usize, usize); 9] = [
-    (0, 12),
-    (1, 13),
-    (2, 14),
-    (3, 15),
-    (5, 16),
-    (9, 17),
-    (8, 10),
-    (4, 6),
-    (7, 11),
+/// Class-0 tap pairs and the sum that each pair's multiply-add feeds.
+const SYM_PAIRS: [(usize, usize, usize); 15] = [
+    (0, 1, 0),
+    (12, 13, 1),
+    (2, 3, 0),
+    (14, 15, 1),
+    (3, 15, 2),
+    (4, 6, 0),
+    (7, 11, 1),
+    (8, 10, 0),
+    (8, 10, 1),
+    (9, 17, 0),
+    (9, 17, 1),
+    (9, 17, 2),
+    (5, 16, 0),
+    (5, 16, 1),
+    (5, 16, 2),
 ];
 const CLASS0_ZERO_WEIGHTS: u64 = zero_weight_taps(0b0001);
+
+/// `SYM_PAIRS` adds every class-0 weight that some table makes nonzero once.
+const _: () = {
+    let mut bit = 0;
+    while bit < 3 * GDF_COORDS.len() {
+        let (sum, k) = (bit / GDF_COORDS.len(), bit % GDF_COORDS.len());
+        let mut uses = 0;
+        let mut pair = 0;
+        while pair < SYM_PAIRS.len() {
+            let (a, b, target) = SYM_PAIRS[pair];
+            if target == sum && (a == k || b == k) {
+                uses += 1;
+            }
+            pair += 1;
+        }
+        assert!(uses == 1 || (uses == 0 && CLASS0_ZERO_WEIGHTS >> bit & 1 != 0));
+        bit += 1;
+    }
+};
 
 /// Class-0 clip bounds and weights of one GDF table, the weights scaled by
 /// `gdf_index_scale` and packed per `SYM_PAIRS` entry as two i16 lanes.
 pub(super) struct GdfSymParams {
     alpha: [i16; GDF_COORDS.len()],
-    pair_weights: [[u32; 3]; SYM_PAIRS.len()],
+    pair_weights: [Simd<i16, 16>; SYM_PAIRS.len()],
     bias: [i32; 3],
     scale: i32,
     /// Whether a flat window with gradient bias 0 keeps its samples.
@@ -699,11 +724,11 @@ impl GdfSymParams {
         let bias = GDF_BIAS[block.ref_dst_idx][block.qp_idx].map(|bias| bias * i32::from(scale));
         Self {
             alpha: core::array::from_fn(|k| alpha[k][0] as i16),
-            pair_weights: SYM_PAIRS.map(|(a, b)| {
-                core::array::from_fn(|sum| {
-                    let weight = |k: usize| u32::from((table[sum][k][0] * scale) as u16);
-                    weight(a) | weight(b) << 16
-                })
+            pair_weights: SYM_PAIRS.map(|(a, b, sum)| {
+                let weight = |k: usize| table[sum][k][0] * scale;
+                Simd::from_array(core::array::from_fn(|lane| {
+                    weight(if lane & 1 == 0 { a } else { b })
+                }))
             }),
             bias,
             scale: i32::from(scale),
@@ -730,12 +755,13 @@ fn interleave_pairs(a: Simd<i16, 16>, b: Simd<i16, 16>) -> [Simd<i16, 16>; 2] {
     ]
 }
 
-/// Sums of adjacent products; compiles to one `pmaddwd`.
+/// Sums of adjacent products. Written as a product and a pairwise add so that
+/// LLVM still emits one `pmaddwd` after folding the interleave into it.
 #[inline]
 fn multiply_add_pairs(x: Simd<i16, 16>, w: Simd<i16, 16>) -> Simd<i32, 8> {
-    let even = |v: Simd<i16, 16>| simd_swizzle!(v, [0, 2, 4, 6, 8, 10, 12, 14]).cast::<i32>();
-    let odd = |v: Simd<i16, 16>| simd_swizzle!(v, [1, 3, 5, 7, 9, 11, 13, 15]).cast::<i32>();
-    even(x) * even(w) + odd(x) * odd(w)
+    let product = x.cast::<i32>() * w.cast::<i32>();
+    simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
+        + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15])
 }
 
 /// The clipped sum of class-0 tap `K` for every lane of row `ROW`, each lane
@@ -776,15 +802,16 @@ fn sym_comb<const K: usize, const ROW: usize>(
         let plain = pick(mirrored, diffs(K), diffs(m));
         pick(transposed, plain, pick(mirrored, diffs(t), diffs(tm)))
     };
-    let alpha = Simd::splat(alpha);
-    (above.simd_clamp(-alpha, alpha) + below.simd_clamp(-alpha, alpha))
-        .simd_clamp(Simd::splat(-512), Simd::splat(511))
+    let (low, high) = (Simd::splat(-alpha), Simd::splat(alpha));
+    (above.simd_max(low).simd_min(high) + below.simd_max(low).simd_min(high))
+        .simd_max(Simd::splat(-512))
+        .simd_min(Simd::splat(511))
 }
 
 /// Expands `$body` once per `SYM_PAIRS` entry with `$p` bound as a constant.
 macro_rules! for_each_sym_pair {
     ($p:ident => $body:block) => {
-        for_each_sym_pair!(@ $p $body; 0 1 2 3 4 5 6 7 8);
+        for_each_sym_pair!(@ $p $body; 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
     };
     (@ $p:ident $body:block; $($pair:literal)*) => {
         $({
@@ -822,18 +849,9 @@ fn sym_row<const ROW: usize>(
         const B: usize = SYM_PAIRS[P].1;
         let a = sym_comb::<A, ROW>(window, center, masks, params.alpha[A]);
         let b = sym_comb::<B, ROW>(window, center, masks, params.alpha[B]);
-        let halves = interleave_pairs(a, b);
-        for (index, sum) in sums.iter_mut().enumerate() {
-            let zero = |k: usize| CLASS0_ZERO_WEIGHTS >> (index * GDF_COORDS.len() + k) & 1 != 0;
-            if zero(A) && zero(B) {
-                continue;
-            }
-            let weights = Simd::<i16, 16>::from_ne_bytes(
-                Simd::<u32, 8>::splat(params.pair_weights[P][index]).to_ne_bytes(),
-            );
-            for (sum, half) in sum.iter_mut().zip(halves) {
-                *sum += multiply_add_pairs(half, weights);
-            }
+        let weights = params.pair_weights[P];
+        for (sum, half) in sums[SYM_PAIRS[P].2].iter_mut().zip(interleave_pairs(a, b)) {
+            *sum += multiply_add_pairs(half, weights);
         }
     });
     let sums = sums.map(|[low, high]| {
