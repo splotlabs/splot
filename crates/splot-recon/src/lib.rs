@@ -140,7 +140,7 @@ pub use inverse_transform::{
 pub use inverse_transform_2d::{InverseTransform2d, InverseTransform2dDim, inverse_transform_2d};
 pub use inverse_transform_2d_outer::{
     DpcmDirection, InverseTransform2dOuter, inverse_transform_2d_outer,
-    inverse_transform_2d_outer_adjusted,
+    inverse_transform_2d_outer_adjusted, inverse_transform_2d_outer_with_scratch,
 };
 pub use loop_restoration::{
     LoopRestorationPlaneBounds, LoopRestorationSource, LoopRestorationSourceBounds,
