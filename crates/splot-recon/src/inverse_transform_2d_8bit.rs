@@ -175,11 +175,21 @@ pub(crate) fn inverse_transform_2d_8bit(
         return false;
     };
     let (row_shift, rows) = (u32::from(t.row_shift), (t.h, split));
-    let mask = match row {
-        PairKernel::N4(k) => row_pass_4(k, dequant, t.rescale, row_shift, rows, scratch),
-        PairKernel::N8(k) => row_pass::<8, 4>(k, dequant, t.rescale, row_shift, rows, scratch),
-        PairKernel::N16(k) => row_pass::<16, 8>(k, dequant, t.rescale, row_shift, rows, scratch),
-        PairKernel::N32(k) => row_pass::<32, 16>(k, dequant, t.rescale, row_shift, rows, scratch),
+    let (rescale, input) = (t.rescale, dequant);
+    let mask = match (row, t.row == InverseTransform1dType::Dct) {
+        (PairKernel::N4(k), _) => row_pass_4(k, input, rescale, row_shift, rows, scratch),
+        (PairKernel::N8(k), _) => {
+            row_pass::<8, 4, false>(k, input, rescale, row_shift, rows, scratch)
+        }
+        (PairKernel::N16(_), true) => {
+            row_pass::<16, 8, true>(&DCT16_SPLIT, input, rescale, row_shift, rows, scratch)
+        }
+        (PairKernel::N16(k), false) => {
+            row_pass::<16, 8, false>(k, input, rescale, row_shift, rows, scratch)
+        }
+        (PairKernel::N32(_), _) => {
+            row_pass::<32, 16, true>(&DCT32_SPLIT, input, rescale, row_shift, rows, scratch)
+        }
     };
     let (shift, w) = (u32::from(t.col_shift), t.w);
     match (col, split) {
@@ -231,9 +241,10 @@ fn pack_rows(a: Sum, b: Sum, shift: u32) -> Simd<i32, 8> {
 }
 
 /// The row input clamp (after the optional rescale) of up to 32 row samples
-/// as packed column pairs, with one past the last non-zero pair.
+/// as packed pairs, with one past the last non-zero pair: adjacent samples,
+/// or with `split` samples `4m + j` and `4m + j + 2` as pair `2m + j`.
 #[inline]
-fn row_input_pairs(row: &[i32], rescale: bool) -> ([u32; 16], usize) {
+fn row_input_pairs(row: &[i32], rescale: bool, split: bool) -> ([u32; 16], usize) {
     let mut out = [0u32; 16];
     let mut nonzero = 0u32;
     let clamp = |v: Simd<i32, 8>| {
@@ -242,9 +253,15 @@ fn row_input_pairs(row: &[i32], rescale: bool) -> ([u32; 16], usize) {
         } else {
             v
         };
-        v.simd_max(Simd::splat(i32::from(i16::MIN)))
+        let v = v
+            .simd_max(Simd::splat(i32::from(i16::MIN)))
             .simd_min(Simd::splat(i32::from(i16::MAX)))
-            .cast::<i16>()
+            .cast::<i16>();
+        if split {
+            simd_swizzle!(v, [0, 2, 1, 3, 4, 6, 5, 7])
+        } else {
+            v
+        }
     };
     let (chunks, tail) = row.as_chunks::<8>();
     for (index, (chunk, slot)) in chunks.iter().zip(out.chunks_exact_mut(4)).enumerate() {
@@ -282,7 +299,7 @@ const fn pair_rows(q: usize, split: bool) -> (usize, usize) {
     reason = "measured § 7.15.4.1 row-pass hot path"
 )]
 #[inline(always)]
-fn row_pass<const N: usize, const H: usize>(
+fn row_pass<const N: usize, const H: usize, const SPLIT: bool>(
     kernel: &[[u32; N]; H],
     dequant: &[i32],
     rescale: bool,
@@ -293,7 +310,7 @@ fn row_pass<const N: usize, const H: usize>(
     let rows = dequant.as_chunks::<N>().0;
     let input = |row: usize| {
         rows.get(row)
-            .map_or(([0; 16], 0), |row| row_input_pairs(row, rescale))
+            .map_or(([0; 16], 0), |row| row_input_pairs(row, rescale, SPLIT))
     };
     let mut mask = 0u32;
     for (q, out) in scratch.chunks_exact_mut(N).take(h / 2).enumerate() {
@@ -307,6 +324,10 @@ fn row_pass<const N: usize, const H: usize>(
             continue;
         }
         mask |= 1 << q;
+        if SPLIT {
+            row_pair_split(kernel, (&a, &b), used, shift, out);
+            continue;
+        }
         let mut sum_a = [Sum::splat(0); 4];
         let mut sum_b = [Sum::splat(0); 4];
         for ((weights, &a), &b) in kernel[..used].iter().zip(&a).zip(&b) {
@@ -336,6 +357,52 @@ fn row_pass<const N: usize, const H: usize>(
     mask
 }
 
+/// One row pair of a split `DCT` [`row_pass`]: the even-sample pairs sum `E`
+/// and the odd-sample pairs `O` over the first `N / 2` outputs, and output
+/// `N - 1 - i` is `E - O` where output `i` is `E + O`.
+#[allow(
+    clippy::inline_always,
+    reason = "measured § 7.15.4.1 row-pass hot path"
+)]
+#[inline(always)]
+fn row_pair_split<const N: usize, const H: usize>(
+    kernel: &[[u32; N]; H],
+    (a, b): (&[u32; 16], &[u32; 16]),
+    used: usize,
+    shift: u32,
+    out: &mut [i32],
+) {
+    let chunks = N / 16;
+    let mut sums = [[[Sum::splat(0); 2]; 2]; 2];
+    let used = used.next_multiple_of(2).min(H);
+    for (p, weights) in kernel[..used].as_chunks::<2>().0.iter().enumerate() {
+        for (parity, weights) in weights.iter().enumerate() {
+            let inputs = [a[2 * p + parity], b[2 * p + parity]].map(splat_pair);
+            for (row, &input) in inputs.iter().enumerate() {
+                for (sum, weights) in sums[row][parity]
+                    .iter_mut()
+                    .zip(weights.as_chunks::<8>().0)
+                    .take(chunks)
+                {
+                    *sum += madd(input, pairs(Simd::from_array(*weights)));
+                }
+            }
+        }
+    }
+    let out = out.as_chunks_mut::<8>().0;
+    let [[a_even, a_odd], [b_even, b_odd]] = sums;
+    for chunk in 0..chunks {
+        let reverse = |v: Sum| simd_swizzle!(v, [7, 6, 5, 4, 3, 2, 1, 0]);
+        let (a_e, a_o, b_e, b_o) = (a_even[chunk], a_odd[chunk], b_even[chunk], b_odd[chunk]);
+        if let Some(out) = out.get_mut(chunk) {
+            *out = pack_rows(a_e + a_o, b_e + b_o, shift).to_array();
+        }
+        if let Some(out) = out.get_mut(N / 8 - 1 - chunk) {
+            *out = pack_rows(reverse(a_e - a_o), reverse(b_e - b_o), shift).to_array();
+        }
+    }
+}
+
 /// [`row_pass`] for a 4-wide block: each sum holds row `a` in its low half and
 /// row `b` in its high half.
 fn row_pass_4(
@@ -362,7 +429,7 @@ fn row_pass_4(
             break;
         };
         let [b0, b1, b2, b3] = rows.get(row_b).copied().unwrap_or([0; 4]);
-        let (pair, used) = row_input_pairs(&[a0, a1, a2, a3, b0, b1, b2, b3], rescale);
+        let (pair, used) = row_input_pairs(&[a0, a1, a2, a3, b0, b1, b2, b3], rescale, false);
         if used == 0 {
             continue;
         }
