@@ -669,26 +669,49 @@ fn unit_8x8_sums(weighted: &[i16; 64], difference: &[i16; 64]) -> [i32; 5] {
 #[allow(clippy::inline_always, reason = "per-unit optical-flow hot path")]
 #[inline(always)]
 fn rows_8x8_sums(weighted: &[Simd<i16, 8>; 8], difference: &[Simd<i16, 8>; 8]) -> [i32; 5] {
+    let gradients = [
+        row_8x8_gradients::<0>(weighted),
+        row_8x8_gradients::<1>(weighted),
+        row_8x8_gradients::<2>(weighted),
+        row_8x8_gradients::<3>(weighted),
+        row_8x8_gradients::<4>(weighted),
+        row_8x8_gradients::<5>(weighted),
+        row_8x8_gradients::<6>(weighted),
+        row_8x8_gradients::<7>(weighted),
+    ];
     let mut sums = [Simd::<i32, 8>::splat(0); 5];
-    row_8x8_sums::<0>(&mut sums, weighted, difference);
-    row_8x8_sums::<1>(&mut sums, weighted, difference);
-    row_8x8_sums::<2>(&mut sums, weighted, difference);
-    row_8x8_sums::<3>(&mut sums, weighted, difference);
-    row_8x8_sums::<4>(&mut sums, weighted, difference);
-    row_8x8_sums::<5>(&mut sums, weighted, difference);
-    row_8x8_sums::<6>(&mut sums, weighted, difference);
-    row_8x8_sums::<7>(&mut sums, weighted, difference);
+    for pair in 0..4 {
+        let join = |a: Simd<i16, 8>, b: Simd<i16, 8>| -> Simd<i16, 16> {
+            simd_swizzle!(a, b, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+        };
+        let (top, bottom) = (gradients[2 * pair], gradients[2 * pair + 1]);
+        let u = join(top.0, bottom.0);
+        let v = join(top.1, bottom.1);
+        let w = join(difference[2 * pair], difference[2 * pair + 1]);
+        sums[0] += multiply_add_pairs(u, u);
+        sums[1] += multiply_add_pairs(v, v);
+        sums[2] += multiply_add_pairs(u, v);
+        sums[3] += multiply_add_pairs(u, w);
+        sums[4] += multiply_add_pairs(v, w);
+    }
     reduce_unit_sums(sums)
 }
 
-/// A doubled edge tap rounds by 6 bits instead of doubling before 7.
+/// Adjacent `i16` products summed in `i32` (`pmaddwd`). The unit sums only
+/// need every lane's product once, so pairing lanes leaves them unchanged.
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
-fn row_8x8_sums<const ROW: usize>(
-    sums: &mut [Simd<i32, 8>; 5],
-    rows: &[Simd<i16, 8>; 8],
-    difference: &[Simd<i16, 8>; 8],
-) {
+fn multiply_add_pairs(a: Simd<i16, 16>, b: Simd<i16, 16>) -> Simd<i32, 8> {
+    let product = a.cast::<i32>() * b.cast::<i32>();
+    simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
+        + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15])
+}
+
+/// The horizontal and vertical gradients of one row of an 8x8 unit; a doubled
+/// edge tap rounds by 6 bits instead of doubling before 7.
+#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
+#[inline(always)]
+fn row_8x8_gradients<const ROW: usize>(rows: &[Simd<i16, 8>; 8]) -> (Simd<i16, 8>, Simd<i16, 8>) {
     let samples = rows[ROW];
     let (first, last) = (Simd::splat(samples[0]), Simd::splat(samples[7]));
     let u = gradient_i16(
@@ -707,7 +730,7 @@ fn row_8x8_sums<const ROW: usize>(
         [rows[(ROW + 2).min(7)], rows[ROW.saturating_sub(2)]],
         Simd::splat(if ROW == 0 || ROW == 7 { 6 } else { 7 }),
     );
-    accumulate_unit_sums(sums, u.cast(), v.cast(), difference[ROW].cast());
+    (u, v)
 }
 
 /// `Round2Signed(42 * (near[0] - near[1]) - 5 * (far[0] - far[1]), shift)` in
