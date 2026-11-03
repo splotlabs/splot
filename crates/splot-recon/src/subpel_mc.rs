@@ -12,12 +12,13 @@
 use crate::error::{ReconError, Result};
 use crate::format::{BitDepth, ReconSample};
 use crate::math::round2_i32;
-use std::simd::{Simd, ToBytes, cmp::SimdOrd, num::SimdInt, num::SimdUint, simd_swizzle};
+use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint, simd_swizzle};
 mod clipped_edges;
 mod copy;
 mod fullpel_u8;
 mod narrow;
 mod output;
+mod pairs;
 mod slide;
 mod small_compound;
 mod tip_overlap;
@@ -248,6 +249,48 @@ const fn active_tap_spans() -> [[(usize, usize); NUM_PHASES]; NUM_FILTER_TYPES] 
 }
 
 const ACTIVE_TAP_SPANS: [[(usize, usize); NUM_PHASES]; NUM_FILTER_TYPES] = active_tap_spans();
+
+/// The first tap and the even tap count, 2, 4, 6 or 8, of a filter row's
+/// active span, for kernels with a constant vertical tap count.
+const fn even_tap_span(filter: usize, phase: usize) -> (usize, usize) {
+    let (start, end) = ACTIVE_TAP_SPANS[filter][phase];
+    let count = match end - start {
+        0..=2 => 2,
+        3..=4 => 4,
+        5..=6 => 6,
+        _ => NUM_TAPS,
+    };
+    let start = if start < NUM_TAPS - count {
+        start
+    } else {
+        NUM_TAPS - count
+    };
+    (start, count)
+}
+
+/// Taps `start + 2j, start + 2j + 1` of every [`even_tap_span`] repeated
+/// across 8 lanes, zero past the span. Loading them from a table keeps the
+/// weights opaque, which keeps [`multiply_add_pairs`] one `pmaddwd`.
+const PAIRED_TAPS: [[[[i16; 8]; NUM_TAPS / 2]; NUM_PHASES]; NUM_FILTER_TYPES] = {
+    let mut pairs = [[[[0; 8]; NUM_TAPS / 2]; NUM_PHASES]; NUM_FILTER_TYPES];
+    let mut filter = 0;
+    while filter < NUM_FILTER_TYPES {
+        let mut phase = 0;
+        while phase < NUM_PHASES {
+            let (start, count) = even_tap_span(filter, phase);
+            let mut lane = 0;
+            while lane < count * 4 {
+                let tap = start + 2 * (lane / 8) + lane % 2;
+                pairs[filter][phase][lane / 8][lane % 8] =
+                    SUBPEL_FILTERS[filter][phase][tap] as i16;
+                lane += 1;
+            }
+            phase += 1;
+        }
+        filter += 1;
+    }
+    pairs
+};
 
 /// AV2 § 6 interpolation filter for the inter prediction (`interp_filter`).
 ///
@@ -2050,19 +2093,14 @@ fn tap_mac<const LANES: usize>(
     accumulator + samples.cast::<i32>() * Simd::<i16, LANES>::splat(tap as i16).cast::<i32>()
 }
 
-/// Tap pairs `2j, 2j + 1` of `taps` repeated across 16 lanes, the weights of
-/// [`paired_tap_sum`]; taps past `taps.len()` are zero.
+/// The [`PAIRED_TAPS`] of a filter row as 16-lane weights.
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
-fn paired_taps(taps: &[i32]) -> [Simd<i16, 16>; NUM_TAPS / 2] {
-    let mut pairs = [Simd::splat(0); NUM_TAPS / 2];
-    for (pair, taps) in pairs.iter_mut().zip(taps.chunks(2)) {
-        let [a, b] =
-            [taps[0], taps.get(1).copied().unwrap_or(0)].map(|tap| (tap as i16).to_ne_bytes());
-        let lanes = Simd::<u32, 8>::splat(u32::from_ne_bytes([a[0], a[1], b[0], b[1]]));
-        *pair = Simd::from_ne_bytes(lanes.to_ne_bytes());
-    }
-    pairs
+fn paired_taps(filter: usize, phase: usize) -> [Simd<i16, 16>; NUM_TAPS / 2] {
+    PAIRED_TAPS[filter][phase].map(|pair| {
+        let pair = Simd::from_array(pair);
+        simd_swizzle!(pair, [0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7])
+    })
 }
 
 /// Adjacent `i16` products summed in `i32`, which lowers to `pmaddwd`.

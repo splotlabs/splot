@@ -12,16 +12,12 @@
 //! their blend fit `i16`. Clamped columns and wider samples take the generic
 //! [`Cell8`] and repack its rows.
 
+use super::super::pairs::{Pair, horizontal, join, weigh, widen};
 use super::*;
-use std::simd::{Mask, Select, Swizzle, cmp::SimdPartialOrd};
-
-type Pair = Simd<i16, 16>;
-type Sums = Simd<i32, 8>;
+use std::simd::{Mask, Select, cmp::SimdPartialOrd};
 
 pub(super) struct Bytes8<'a, T> {
     cell: Cell8<'a, T>,
-    /// The tap pairs of `cell.v_taps` for [`paired_tap_sum`]-style sums.
-    v_pairs: [Simd<i16, 16>; NUM_TAPS / 2],
     /// Clamped columns of a window that starts inside its row.
     edges: Option<Edges>,
 }
@@ -62,139 +58,6 @@ impl Edges {
             self.before.select(Simd::splat(left), lanes),
         ))
     }
-}
-
-/// Lane `i` of each half reads lane `i + K` of the half's concatenated
-/// `(low, high)`: one in-lane `palignr`.
-struct Slide<const K: usize>;
-
-impl<const K: usize> Swizzle<16> for Slide<K> {
-    const INDEX: [usize; 16] = {
-        let mut index = [0; 16];
-        let mut lane = 0;
-        while lane < 16 {
-            let (half, i) = (lane / 8, lane % 8 + K);
-            index[lane] = if i < 8 {
-                half * 8 + i
-            } else {
-                16 + half * 8 + i - 8
-            };
-            lane += 1;
-        }
-        index
-    };
-}
-
-/// In-lane interleave of the low (`HIGH == 0`) or high four lanes of each
-/// half of two vectors: `punpcklwd` / `punpckhwd`.
-struct Interleave<const HIGH: usize>;
-
-impl<const HIGH: usize> Swizzle<16> for Interleave<HIGH> {
-    const INDEX: [usize; 16] = {
-        let mut index = [0; 16];
-        let mut lane = 0;
-        while lane < 16 {
-            let source = (lane / 8) * 8 + HIGH * 4 + (lane % 8) / 2;
-            index[lane] = source + (lane % 2) * 16;
-            lane += 1;
-        }
-        index
-    };
-}
-
-/// `packssdw`: each half's four `low` lanes, then its four `high` lanes.
-#[allow(clippy::inline_always, reason = "measured subpel hot path")]
-#[inline(always)]
-fn pack(low: Sums, high: Sums) -> Pair {
-    let lanes: Simd<i32, 16> = simd_swizzle!(
-        low,
-        high,
-        [0, 1, 2, 3, 8, 9, 10, 11, 4, 5, 6, 7, 12, 13, 14, 15]
-    );
-    lanes
-        .simd_max(Simd::splat(i32::from(i16::MIN)))
-        .simd_min(Simd::splat(i32::from(i16::MAX)))
-        .cast()
-}
-
-/// `Round2(Σ weights * (a, b), shift)` of interleaved lanes, packed back to
-/// the lane order of `a`.
-#[allow(clippy::inline_always, reason = "measured subpel hot path")]
-#[inline(always)]
-fn weigh<const SHIFT: u32>(pairs: &[(Pair, Pair, Pair)]) -> Pair {
-    let bias = Sums::splat(1 << (SHIFT - 1));
-    let (mut low, mut high) = (bias, bias);
-    for &(a, b, weights) in pairs {
-        low += multiply_add_pairs(Interleave::<0>::concat_swizzle(a, b), weights);
-        high += multiply_add_pairs(Interleave::<1>::concat_swizzle(a, b), weights);
-    }
-    pack(low >> SHIFT as i32, high >> SHIFT as i32)
-}
-
-/// The two 16-byte source windows as one vector, one row per half.
-#[allow(clippy::inline_always, reason = "measured subpel hot path")]
-#[inline(always)]
-fn join(first: Simd<u8, 16>, second: Simd<u8, 16>) -> Simd<u8, 32> {
-    simd_swizzle!(
-        first,
-        second,
-        [
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
-            24, 25, 26, 27, 28, 29, 30, 31
-        ]
-    )
-}
-
-/// Each half's samples `0..8` and `8..16` as `i16` lanes.
-#[allow(clippy::inline_always, reason = "measured subpel hot path")]
-#[inline(always)]
-fn widen(bytes: Simd<u8, 32>) -> (Pair, Pair) {
-    let zero = Simd::splat(0);
-    let (bytes, zero) = if cfg!(target_endian = "big") {
-        (zero, bytes)
-    } else {
-        (bytes, zero)
-    };
-    let low: Simd<u8, 32> = simd_swizzle!(
-        bytes,
-        zero,
-        [
-            0, 32, 1, 33, 2, 34, 3, 35, 4, 36, 5, 37, 6, 38, 7, 39, 16, 48, 17, 49, 18, 50, 19, 51,
-            20, 52, 21, 53, 22, 54, 23, 55
-        ]
-    );
-    let high: Simd<u8, 32> = simd_swizzle!(
-        bytes,
-        zero,
-        [
-            8, 40, 9, 41, 10, 42, 11, 43, 12, 44, 13, 45, 14, 46, 15, 47, 24, 56, 25, 57, 26, 58,
-            27, 59, 28, 60, 29, 61, 30, 62, 31, 63
-        ]
-    );
-    let lanes = |bytes| Simd::<u16, 16>::from_ne_bytes(bytes).cast::<i16>();
-    (lanes(low), lanes(high))
-}
-
-/// The halved-tap horizontal pass of a pair of rows, as in [`eight_bit_row`].
-#[allow(clippy::inline_always, reason = "measured subpel hot path")]
-#[inline(always)]
-fn horizontal(bytes: Simd<u8, 32>, taps: Simd<i16, NUM_TAPS>) -> Pair {
-    let (low, high) = widen(bytes);
-    macro_rules! tap {
-        ($k:literal) => {
-            Slide::<$k>::concat_swizzle(low, high) * Simd::splat(taps[$k])
-        };
-    }
-    let half = Pair::splat(1 << (INTER_ROUND0 - 2))
-        + low * Simd::splat(taps[0])
-        + tap!(1)
-        + tap!(2)
-        + tap!(3)
-        + tap!(4)
-        + tap!(5)
-        + tap!(6)
-        + tap!(7);
-    half >> (INTER_ROUND0 - 1) as i16
 }
 
 impl<T: ReconSample> Bytes8<'_, T> {
@@ -242,7 +105,7 @@ impl<T: ReconSample> Bytes8<'_, T> {
             let mut pairs = [(Pair::splat(0), Pair::splat(0), Pair::splat(0)); NUM_TAPS / 2];
             for (j, pair) in pairs.iter_mut().enumerate().take(TAPS / 2) {
                 let k = (2 * p + 2 * j).min(lines.len() - 2);
-                *pair = (lines[k], lines[k + 1], self.v_pairs[j]);
+                *pair = (lines[k], lines[k + 1], self.cell.v_pairs[j]);
             }
             *out = weigh::<SHIFT>(&pairs[..TAPS / 2]);
         }
@@ -327,7 +190,7 @@ impl<T: ReconSample> Bytes8<'_, T> {
             }
             return Some(out);
         }
-        match cell.v_taps.len() {
+        match cell.v_count {
             2 => self.two_pass::<2, 5, 9>(),
             4 => self.two_pass::<4, 6, 11>(),
             6 => self.two_pass::<6, 7, 13>(),
@@ -343,13 +206,8 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Bytes8<'a, T> {
     #[inline(always)]
     fn new(reference: &ReferencePlaneView<'a, T>, params: &SubpelPredictParams) -> Option<Self> {
         let cell = Cell8::new(reference, params)?;
-        let v_pairs = paired_taps(cell.v_taps);
         let edges = cell.gather.and_then(|_| Edges::new(params));
-        Some(Self {
-            cell,
-            v_pairs,
-            edges,
-        })
+        Some(Self { cell, edges })
     }
 
     #[allow(clippy::inline_always, reason = "measured subpel hot path")]
@@ -357,7 +215,6 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Bytes8<'a, T> {
     fn rebind(&self, reference: &ReferencePlaneView<'a, T>) -> Self {
         Self {
             cell: self.cell.rebind(reference),
-            v_pairs: self.v_pairs,
             edges: self.edges,
         }
     }

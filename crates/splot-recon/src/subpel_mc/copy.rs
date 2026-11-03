@@ -493,7 +493,7 @@ fn vertical_interior_top<T: ReconSample>(
 /// registers across the column loop.
 fn subpel_vertical_rows_into<'a, T: ReconSample + 'a, O>(
     params: &SubpelPredictParams,
-    taps: &[i32; NUM_TAPS],
+    (filter, phase): (usize, usize),
     inter_round1: u32,
     output: &mut [O],
     output_stride: usize,
@@ -501,7 +501,9 @@ fn subpel_vertical_rows_into<'a, T: ReconSample + 'a, O>(
     rows_of: impl Fn(usize) -> [&'a [T]; NUM_TAPS],
 ) {
     let w = params.w;
-    let pairs = paired_taps(taps);
+    let taps = &SUBPEL_FILTERS[filter][phase];
+    let pairs = paired_taps(filter, phase);
+    let start = even_tap_span(filter, phase).0;
     for r in 0..params.h {
         let rows = rows_of(r);
         let row_out = &mut output[r * output_stride..][..w];
@@ -510,7 +512,7 @@ fn subpel_vertical_rows_into<'a, T: ReconSample + 'a, O>(
             ($lanes:literal) => {
                 while c + $lanes <= w {
                     let sum = paired_tap_sum::<$lanes, NUM_TAPS>(&pairs, |t| {
-                        reference_lanes::<$lanes, T>(rows[t], c).cast()
+                        reference_lanes::<$lanes, T>(rows[(start + t).min(NUM_TAPS - 1)], c).cast()
                     });
                     let prescale = FILTER_BITS - INTER_ROUND0;
                     finish.rounded(sum, prescale, inter_round1, &mut row_out[c..c + $lanes]);
@@ -553,7 +555,7 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
             let prefetch = prefetches(source);
             subpel_vertical_rows_into(
                 params,
-                full_taps,
+                (v_filter, phase),
                 inter_round1,
                 output,
                 output_stride,
@@ -571,7 +573,7 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
             let last = reference.readable_rows - 1;
             subpel_vertical_rows_into(
                 params,
-                full_taps,
+                (v_filter, phase),
                 inter_round1,
                 output,
                 output_stride,
