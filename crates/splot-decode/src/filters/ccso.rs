@@ -149,7 +149,7 @@ struct CcsoPlaneConfig {
     max_sample: i32,
     band_shift: u8,
     offset_lut: Vec<i32>,
-    offset_lut_simd: [[u8; 16]; 5],
+    offset_lut_bytes: [u8; 256],
 }
 
 pub(crate) fn prepare_ccso(
@@ -234,13 +234,12 @@ fn prepare_ccso_plane(
             CcsoError::Allocation(_) => CcsoError::Allocation(plane_id(plane)),
             other => other,
         })?;
-    let mut offset_lut_simd = [[0u8; 16]; 5];
-    if offset_lut.len() > offset_lut_simd.len() * 16 {
+    let mut offset_lut_bytes = [0u8; 256];
+    if offset_lut.len() > 80 {
         return Err(CcsoError::Params);
     }
-    for (index, &offset) in offset_lut.iter().enumerate() {
-        let value = i8::try_from(offset).map_err(|_| CcsoError::Params)?;
-        offset_lut_simd[index / 16][index % 16] = value as u8;
+    for (byte, &offset) in offset_lut_bytes.iter_mut().zip(&offset_lut) {
+        *byte = i8::try_from(offset).map_err(|_| CcsoError::Params)? as u8;
     }
     Ok(CcsoPlaneConfig {
         sub_x,
@@ -260,7 +259,7 @@ fn prepare_ccso_plane(
             .checked_sub(max_band_log2)
             .ok_or(CcsoError::Params)?,
         offset_lut,
-        offset_lut_simd,
+        offset_lut_bytes,
     })
 }
 
@@ -663,7 +662,6 @@ fn ccso_lanes_span<L: ReconSample, const SUB_X: usize>(
         };
         Some(class * Simd::splat(config.max_band as u8) + band)
     };
-    let chunks = config.offset_lut.len().div_ceil(CCSO_LANES);
     let max_sample = Simd::<i16, CCSO_LANES>::splat(config.max_sample as i16);
     let filter = |rows: [&[L]; 3], output: &[u16; CCSO_LANES]| -> Option<Simd<u16, CCSO_LANES>> {
         let lut_index = if L::u8_slice(rows[0]).is_some() {
@@ -671,11 +669,10 @@ fn ccso_lanes_span<L: ReconSample, const SUB_X: usize>(
         } else {
             index_u16(rows)
         }?;
-        let mut offset = Simd::<u8, CCSO_LANES>::splat(0);
-        for (chunk, values) in config.offset_lut_simd.iter().take(chunks).enumerate() {
-            offset |= Simd::from_array(*values)
-                .swizzle_dyn(lut_index - Simd::splat((chunk * CCSO_LANES) as u8));
-        }
+        let lut_index = lut_index.to_array();
+        let offset = Simd::<u8, CCSO_LANES>::from_array(core::array::from_fn(|lane| {
+            config.offset_lut_bytes[usize::from(lut_index[lane])]
+        }));
         Some(
             (Simd::from_array(*output).cast::<i16>() + offset.cast::<i8>().cast())
                 .simd_max(Simd::splat(0))
