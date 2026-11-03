@@ -304,6 +304,139 @@ pub fn cdef_filter_block_chroma_pair_segment(
     .is_some()
 }
 
+/// Whether [`cdef_filter_rows_wide8`] computes `filter` exactly: besides
+/// [`cdef_i8_diffs_fit`], the primary sum `2 * pair0 + pair1`, at most
+/// `6 * pri_str`, and the secondary sum `2 * family0 + family1`, at most
+/// `12 * sec_str`, fit `i8`.
+fn cdef_wide8_fits(filter: &CdefBlockFilter) -> bool {
+    cdef_i8_diffs_fit(filter) && filter.pri_str <= 21 && filter.sec_str <= 10
+}
+
+/// [`cdef_filter_rows_diff8`] over a segment's 8x8 block four rows per
+/// 32-lane vector, for filters [`cdef_wide8_fits`] admits. The constrained
+/// taps are summed in `i8` per family, the primary as `2 * pair0 + pair1`
+/// for `Cdef_Pri_Taps` `[4, 2]` or `pair0 + pair1` for `[3, 3]`, then widen
+/// once and take the remaining weight 2 or 3.
+///
+/// The `i8` lanes of a quad are rows 0, 2, 1, 3, the order in which a
+/// saturating pack of the `i16` row pairs `(0, 1)` and `(2, 3)` leaves them.
+/// Kept out of line: inlined into the kernel dispatch it ran more
+/// instructions.
+#[inline(never)]
+fn cdef_filter_rows_wide8<
+    const STRIDE: usize,
+    const SPAN: usize,
+    const AREA: usize,
+    const PRI: bool,
+    const SEC: bool,
+>(
+    pad: &[u16; AREA],
+    filter: &CdefBlockFilter,
+    starts: &CdefTapStarts,
+    out: &mut [u16],
+    out_stride: usize,
+) -> Option<()> {
+    let (center_view, pri_views, sec_views) =
+        cdef_tap_views::<STRIDE, 2, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
+    let heavy_first = (filter.pri_str >> filter.coeff_shift) & 1 == 0;
+    let pri_double = Simd::<i8, 32>::splat(if heavy_first { -1 } else { 0 });
+    let pri_weight = Simd::<i16, 16>::splat(if heavy_first { 2 } else { 3 });
+    let pri = CdefConstrain8::<32>::new(filter.pri_str, filter.damping);
+    let sec = CdefConstrain8::<32>::new(filter.sec_str, filter.damping);
+    let narrow = |[low, high]: [Simd<i16, 16>; 2]| -> Simd<i8, 32> {
+        let lanes: Simd<i16, 32> = simd_swizzle!(
+            low,
+            high,
+            [
+                0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23, 8, 9, 10, 11, 12, 13, 14,
+                15, 24, 25, 26, 27, 28, 29, 30, 31
+            ]
+        );
+        lanes
+            .simd_max(Simd::splat(i16::from(i8::MIN)))
+            .simd_min(Simd::splat(i16::from(i8::MAX)))
+            .cast()
+    };
+    let widen = |lanes: Simd<i8, 32>| -> [Simd<i16, 16>; 2] {
+        [
+            simd_swizzle!(
+                lanes,
+                [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]
+            )
+            .cast(),
+            simd_swizzle!(
+                lanes,
+                [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]
+            )
+            .cast(),
+        ]
+    };
+    for first in [0, 4] {
+        let quad = |view: &[u16; SPAN]| -> Option<[Simd<i16, 16>; 2]> {
+            let row = |row: usize| {
+                let lanes = view.get((first + row) * STRIDE..)?.first_chunk::<8>()?;
+                Some(Simd::<u16, 8>::from_array(*lanes))
+            };
+            let pair = |row0, row1| -> Option<Simd<i16, 16>> {
+                Some(
+                    simd_swizzle!(
+                        row(row0)?,
+                        row(row1)?,
+                        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+                    )
+                    .cast(),
+                )
+            };
+            Some([pair(0, 1)?, pair(2, 3)?])
+        };
+        let center = quad(center_view)?;
+        let (mut min, mut max) = (Simd::<i8, 32>::splat(0), Simd::<i8, 32>::splat(0));
+        macro_rules! tap {
+            ($view:expr, $constrain:expr) => {{
+                let [low, high] = quad($view)?;
+                let diff = narrow([low - center[0], high - center[1]]);
+                if PRI && SEC {
+                    min = min.simd_min(diff);
+                    max = max.simd_max(diff);
+                }
+                $constrain.apply_diff(diff)
+            }};
+        }
+        let mut sum = [Simd::<i16, 16>::splat(0); 2];
+        if PRI {
+            let pair0 = tap!(pri_views[0], pri) + tap!(pri_views[1], pri);
+            let pair1 = tap!(pri_views[2], pri) + tap!(pri_views[3], pri);
+            let primary = widen(pair0 + pair1 + (pair0 & pri_double));
+            sum = [primary[0] * pri_weight, primary[1] * pri_weight];
+        }
+        if SEC {
+            let family0 = tap!(sec_views[0], sec)
+                + tap!(sec_views[1], sec)
+                + tap!(sec_views[2], sec)
+                + tap!(sec_views[3], sec);
+            let family1 = tap!(sec_views[4], sec)
+                + tap!(sec_views[5], sec)
+                + tap!(sec_views[6], sec)
+                + tap!(sec_views[7], sec);
+            let secondary = widen(family0 + family0 + family1);
+            sum = [sum[0] + secondary[0], sum[1] + secondary[1]];
+        }
+        let offset = sum.map(|sum| (sum + Simd::splat(8) + (sum >> 15)) >> 4);
+        let offset = if PRI && SEC {
+            widen(narrow(offset).simd_max(min).simd_min(max))
+        } else {
+            offset
+        };
+        for half in 0..2 {
+            let filtered = (center[half] + offset[half]).cast::<u16>().to_array();
+            let row = first + 2 * half;
+            cdef_output_row::<8>(out, out_stride, row)?.copy_from_slice(&filtered[..8]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+            cdef_output_row::<8>(out, out_stride, row + 1)?.copy_from_slice(&filtered[8..]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+        }
+    }
+    Some(())
+}
+
 /// AV2 § 7.18.3 CDEF over interior 8x8 luma block `block` of `segment`.
 /// With `use_range`, the block's window range selects the kernel: the
 /// linear kernel, which skips `constrain`, when `cdef_window_linear` admits
@@ -362,6 +495,16 @@ pub fn cdef_filter_block_segment(
     }
     if cdef_window_clamped(filter, range) {
         return clamped!(true);
+    }
+    if cdef_wide8_fits(filter) {
+        return cdef_by_families!(
+            filter,
+            cdef_filter_rows_wide8::<CDEF_SEGMENT_STRIDE, SPAN, AREA>(
+                pad, filter, starts, out, out_stride
+            ),
+            copy!()
+        )
+        .is_some();
     }
     if range <= 255 && cdef_u8_lanes_fit(filter) {
         return cdef_by_families!(
