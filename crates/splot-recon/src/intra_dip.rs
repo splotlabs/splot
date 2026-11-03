@@ -129,7 +129,7 @@ pub fn predict_intra_dip_rect_into<T: ReconSample>(
         output,
         stride_samples,
     )?;
-    interpolate_grid(bit_depth, size, edges, output, stride_samples)?;
+    interpolate_grid(size, edges, output, stride_samples)?;
     Ok(())
 }
 
@@ -302,71 +302,89 @@ fn split_dip_scale_log2(log2_quarter_len: u8) -> (u8, u8) {
 }
 
 fn interpolate_grid<T: ReconSample>(
-    bit_depth: BitDepth,
     size: IntraRectBlockSize,
     edges: IntraDipEdges<'_, T>,
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
     let grid = dip_grid(size);
+    let shape_error = || ReconError::ArithmeticOverflow {
+        context: "DIP intra prediction interpolation shape",
+    };
+    macro_rules! interpolate {
+        ($view:ident, $view_mut:ident, $sample:ty) => {
+            if let (Some(left), Some(above), Some(output)) = (
+                T::$view(edges.left),
+                T::$view(edges.above),
+                T::$view_mut(output),
+            ) {
+                return interpolate_samples::<$sample>(
+                    size,
+                    grid,
+                    left,
+                    above,
+                    output,
+                    stride_samples,
+                )
+                .ok_or_else(shape_error);
+            }
+        };
+    }
+    interpolate!(u8_slice, u8_slice_mut, u8);
+    interpolate!(u16_slice, u16_slice_mut, u16);
+    Err(shape_error())
+}
+
+/// Fills the samples between the coarse grid: each sampled row horizontally
+/// from the left edge, then the rows between sampled rows from the row or
+/// above edge before them. Every result is a convex combination of two
+/// samples with power-of-two weights, so it needs no clipping.
+fn interpolate_samples<P: Copy + Into<u16> + TryFrom<u16> + Default>(
+    size: IntraRectBlockSize,
+    grid: DipGrid,
+    left: &[P],
+    above: &[P],
+    output: &mut [P],
+    stride: usize,
+) -> Option<()> {
+    let narrow = |value: u16| P::try_from(value).unwrap_or_default();
+    let width = size.width();
     if grid.step_x > 1 {
-        horizontal_interpolate(bit_depth, edges, grid, output, stride_samples)?;
+        for band in 0..grid.height {
+            let y = band * grid.step_y + grid.step_y - 1;
+            let row = output.get_mut(y * stride..)?.get_mut(..width)?;
+            let mut p1: u16 = (*left.get(y)?).into();
+            for segment in row.chunks_exact_mut(grid.step_x) {
+                let (p0, last) = (p1, segment.len() - 1);
+                p1 = segment[last].into();
+                for (z, sample) in segment[..last].iter_mut().enumerate() {
+                    let z1 = z as u16 + 1;
+                    *sample = narrow((p0 * (grid.step_x as u16 - z1) + p1 * z1) >> grid.up_log2_x);
+                }
+            }
+        }
     }
     if grid.step_y > 1 {
-        vertical_interpolate(bit_depth, size, edges, grid, output, stride_samples)?;
-    }
-    Ok(())
-}
-
-fn horizontal_interpolate<T: ReconSample>(
-    bit_depth: BitDepth,
-    edges: IntraDipEdges<'_, T>,
-    grid: DipGrid,
-    output: &mut [T],
-    stride_samples: usize,
-) -> Result<()> {
-    let mut y = grid.step_y - 1;
-    for _ in 0..grid.height {
-        let mut p1 = i32::from(edges.left[y].to_u16());
-        let mut x = 0usize;
-        for _ in 0..grid.width {
-            let p0 = p1;
-            p1 = i32::from(output[y * stride_samples + x + grid.step_x - 1].to_u16());
-            for z in 0..grid.step_x - 1 {
-                let z1 = z + 1;
-                let value = (p0 * (grid.step_x - z1) as i32 + p1 * z1 as i32) >> grid.up_log2_x;
-                output[y * stride_samples + x + z] = clip_to_sample(bit_depth, value)?;
-            }
-            x += grid.step_x;
-        }
-        y += grid.step_y;
-    }
-    Ok(())
-}
-
-fn vertical_interpolate<T: ReconSample>(
-    bit_depth: BitDepth,
-    size: IntraRectBlockSize,
-    edges: IntraDipEdges<'_, T>,
-    grid: DipGrid,
-    output: &mut [T],
-    stride_samples: usize,
-) -> Result<()> {
-    for x in 0..size.width() {
-        let mut p1 = i32::from(edges.above[x].to_u16());
-        let mut y = 0usize;
-        for _ in 0..grid.height {
-            let p0 = p1;
-            p1 = i32::from(output[(y + grid.step_y - 1) * stride_samples + x].to_u16());
+        for band in 0..grid.height {
+            let top = band * grid.step_y;
+            let (before, rest) = output.split_at_mut_checked(top * stride)?;
+            let p0 = if band == 0 {
+                above.get(..width)?
+            } else {
+                before.get((top - 1) * stride..)?.get(..width)?
+            };
+            let (between, last) = rest.split_at_mut_checked((grid.step_y - 1) * stride)?;
+            let p1 = last.get(..width)?;
             for z in 0..grid.step_y - 1 {
-                let z1 = z + 1;
-                let value = (p0 * (grid.step_y - z1) as i32 + p1 * z1 as i32) >> grid.up_log2_y;
-                output[(y + z) * stride_samples + x] = clip_to_sample(bit_depth, value)?;
+                let (w0, w1) = ((grid.step_y - z - 1) as u16, z as u16 + 1);
+                let row = between.get_mut(z * stride..)?.get_mut(..width)?;
+                for ((sample, &a), &b) in row.iter_mut().zip(p0).zip(p1) {
+                    *sample = narrow((a.into() * w0 + b.into() * w1) >> grid.up_log2_y);
+                }
             }
-            y += grid.step_y;
         }
     }
-    Ok(())
+    Some(())
 }
 
 #[cfg(test)]
