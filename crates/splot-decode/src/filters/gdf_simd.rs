@@ -621,3 +621,268 @@ fn residual_with_error<const WIDTH: usize, const SCALE: i32, const ERROR_LEN: us
         (scaled_error + Simd::splat(1 << (rounding - 1)) + (scaled_error >> 15)) >> rounding
     }
 }
+
+/// The tap that class `class` reads in place of class-0 tap `k`: class bit 0
+/// transposes the tap and bit 1 mirrors it horizontally. A tap and its
+/// negation are the same tap. `GDF_COORDS.len()` marks a missing tap.
+const fn class_tap(k: usize, class: usize) -> usize {
+    let (mut dy, mut dx) = GDF_COORDS[k];
+    if class & 1 != 0 {
+        (dy, dx) = (dx, dy);
+    }
+    if class & 2 != 0 {
+        dx = -dx;
+    }
+    if dy < 0 || (dy == 0 && dx < 0) {
+        (dy, dx) = (-dy, -dx);
+    }
+    let mut tap = 0;
+    while tap < GDF_COORDS.len() && (GDF_COORDS[tap].0 != dy || GDF_COORDS[tap].1 != dx) {
+        tap += 1;
+    }
+    tap
+}
+
+/// Every table's weights and clip bounds of class `c` are those of class 0
+/// with the taps moved by `class_tap`, so one class-0 table serves all lanes.
+const _: () = {
+    let mut index = 0;
+    while index < 6 * 6 * 4 * GDF_COORDS.len() {
+        let (reference, qp) = (
+            index / (6 * 4 * GDF_COORDS.len()),
+            index / (4 * GDF_COORDS.len()) % 6,
+        );
+        let (class, k) = (index / GDF_COORDS.len() % 4, index % GDF_COORDS.len());
+        let tap = class_tap(k, class);
+        assert!(tap < GDF_COORDS.len());
+        assert!(GDF_ALPHA[reference][qp][tap][class] == GDF_ALPHA[reference][qp][k][0]);
+        let mut sum = 0;
+        while sum < 3 {
+            let weights = &GDF_WEIGHT[reference][qp][sum];
+            assert!(weights[tap][class] == weights[k][0]);
+            sum += 1;
+        }
+        index += 1;
+    }
+};
+
+/// Class-0 taps paired for one multiply-add of two taps.
+const SYM_PAIRS: [(usize, usize); 9] = [
+    (0, 12),
+    (1, 13),
+    (2, 14),
+    (3, 15),
+    (5, 16),
+    (9, 17),
+    (8, 10),
+    (4, 6),
+    (7, 11),
+];
+const CLASS0_ZERO_WEIGHTS: u64 = zero_weight_taps(0b0001);
+
+/// Class-0 clip bounds and weights of one GDF table, the weights scaled by
+/// `gdf_index_scale` and packed per `SYM_PAIRS` entry as two i16 lanes.
+pub(super) struct GdfSymParams {
+    alpha: [i16; GDF_COORDS.len()],
+    pair_weights: [[u32; 3]; SYM_PAIRS.len()],
+    bias: [i32; 3],
+    scale: i32,
+    /// Whether a flat window with gradient bias 0 keeps its samples.
+    keeps_flat: bool,
+}
+
+impl GdfSymParams {
+    pub(super) fn new(block: &GdfBlock) -> Self {
+        let alpha = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
+        let table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
+        let scale = gdf_index_scale(block);
+        let bias = GDF_BIAS[block.ref_dst_idx][block.qp_idx].map(|bias| bias * i32::from(scale));
+        Self {
+            alpha: core::array::from_fn(|k| alpha[k][0] as i16),
+            pair_weights: SYM_PAIRS.map(|(a, b)| {
+                core::array::from_fn(|sum| {
+                    let weight = |k: usize| u32::from((table[sum][k][0] * scale) as u16);
+                    weight(a) | weight(b) << 16
+                })
+            }),
+            bias,
+            scale: i32::from(scale),
+            keeps_flat: flat_residual(bias.map(Simd::splat), block) == Simd::splat(0),
+        }
+    }
+}
+
+/// Lanes `0..4, 8..12` and `4..8, 12..16` of two vectors interleaved, as an
+/// in-lane AVX2 unpack gives them.
+#[inline]
+fn interleave_pairs(a: Simd<i16, 16>, b: Simd<i16, 16>) -> [Simd<i16, 16>; 2] {
+    [
+        simd_swizzle!(
+            a,
+            b,
+            [0, 16, 1, 17, 2, 18, 3, 19, 8, 24, 9, 25, 10, 26, 11, 27]
+        ),
+        simd_swizzle!(
+            a,
+            b,
+            [4, 20, 5, 21, 6, 22, 7, 23, 12, 28, 13, 29, 14, 30, 15, 31]
+        ),
+    ]
+}
+
+/// Sums of adjacent products; compiles to one `pmaddwd`.
+#[inline]
+fn multiply_add_pairs(x: Simd<i16, 16>, w: Simd<i16, 16>) -> Simd<i32, 8> {
+    let even = |v: Simd<i16, 16>| simd_swizzle!(v, [0, 2, 4, 6, 8, 10, 12, 14]).cast::<i32>();
+    let odd = |v: Simd<i16, 16>| simd_swizzle!(v, [1, 3, 5, 7, 9, 11, 13, 15]).cast::<i32>();
+    even(x) * even(w) + odd(x) * odd(w)
+}
+
+/// The clipped sum of class-0 tap `K` for every lane of row `ROW`, each lane
+/// reading the tap its class moves `K` to.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn sym_comb<const K: usize, const ROW: usize>(
+    window: &[&[u16; 28]; WINDOW_ROWS],
+    center: Simd<i16, 16>,
+    (transposed, mirrored): (Mask<i16, 16>, Mask<i16, 16>),
+    alpha: i16,
+) -> Simd<i16, 16> {
+    let diffs = |tap: usize| {
+        let (dy, dx) = GDF_COORDS[tap];
+        let row = TAP_REACH + ROW;
+        [
+            tap_samples::<16, 28>(
+                window[row - dy as usize],
+                (TAP_REACH as isize - dx) as usize,
+            ) - center,
+            tap_samples::<16, 28>(
+                window[row + dy as usize],
+                (TAP_REACH as isize + dx) as usize,
+            ) - center,
+        ]
+    };
+    let pick = |mask: Mask<i16, 16>, [a, b]: [Simd<i16, 16>; 2], [c, d]: [Simd<i16, 16>; 2]| {
+        [mask.select(c, a), mask.select(d, b)]
+    };
+    let (t, m, tm) = (class_tap(K, 1), class_tap(K, 2), class_tap(K, 3));
+    let [above, below] = if t == K && m == K {
+        diffs(K)
+    } else if t == K {
+        pick(mirrored, diffs(K), diffs(m))
+    } else if m == K {
+        pick(transposed, diffs(K), diffs(t))
+    } else {
+        let plain = pick(mirrored, diffs(K), diffs(m));
+        pick(transposed, plain, pick(mirrored, diffs(t), diffs(tm)))
+    };
+    let alpha = Simd::splat(alpha);
+    (above.simd_clamp(-alpha, alpha) + below.simd_clamp(-alpha, alpha))
+        .simd_clamp(Simd::splat(-512), Simd::splat(511))
+}
+
+/// Expands `$body` once per `SYM_PAIRS` entry with `$p` bound as a constant.
+macro_rules! for_each_sym_pair {
+    ($p:ident => $body:block) => {
+        for_each_sym_pair!(@ $p $body; 0 1 2 3 4 5 6 7 8);
+    };
+    (@ $p:ident $body:block; $($pair:literal)*) => {
+        $({
+            const $p: usize = $pair;
+            $body
+        })*
+    };
+}
+
+/// Filters in place row `ROW` of 16 samples of any class mix.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn sym_row<const ROW: usize>(
+    window: &[&[u16; 28]; WINDOW_ROWS],
+    output: &mut [u16; 16],
+    masks: (Mask<i16, 16>, Mask<i16, 16>),
+    gradient: Simd<i32, 16>,
+    block: &GdfBlock,
+    params: &GdfSymParams,
+) {
+    let center = tap_samples::<16, 28>(window[TAP_REACH + ROW], TAP_REACH);
+    let split = |v: Simd<i32, 16>| {
+        [
+            simd_swizzle!(v, [0, 1, 2, 3, 8, 9, 10, 11]),
+            simd_swizzle!(v, [4, 5, 6, 7, 12, 13, 14, 15]),
+        ]
+    };
+    let mut sums = [
+        split(Simd::splat(params.bias[0])),
+        split(Simd::splat(params.bias[1])),
+        split(gradient),
+    ];
+    for_each_sym_pair!(P => {
+        const A: usize = SYM_PAIRS[P].0;
+        const B: usize = SYM_PAIRS[P].1;
+        let a = sym_comb::<A, ROW>(window, center, masks, params.alpha[A]);
+        let b = sym_comb::<B, ROW>(window, center, masks, params.alpha[B]);
+        let halves = interleave_pairs(a, b);
+        for (index, sum) in sums.iter_mut().enumerate() {
+            let zero = |k: usize| CLASS0_ZERO_WEIGHTS >> (index * GDF_COORDS.len() + k) & 1 != 0;
+            if zero(A) && zero(B) {
+                continue;
+            }
+            let weights = Simd::<i16, 16>::from_ne_bytes(
+                Simd::<u32, 8>::splat(params.pair_weights[P][index]).to_ne_bytes(),
+            );
+            for (sum, half) in sum.iter_mut().zip(halves) {
+                *sum += multiply_add_pairs(half, weights);
+            }
+        }
+    });
+    let sums = sums.map(|[low, high]| {
+        simd_swizzle!(
+            low,
+            high,
+            [0, 1, 2, 3, 8, 9, 10, 11, 4, 5, 6, 7, 12, 13, 14, 15]
+        )
+    });
+    let base = Simd::from_array(*output);
+    *output = if block.ref_dst_idx == GDF_INTRA_REF_DST {
+        let error = &GDF_INTRA_ERROR[block.qp_idx];
+        finish_gdf_width_simd::<16, 8, 4096>(base, block, error, sums, None)
+    } else {
+        let error = &GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx];
+        finish_gdf_width_simd::<16, 5, 1000>(base, block, error, sums, None)
+    }
+    .to_array();
+}
+
+/// Filters in place a row pair of 16 samples whose class changes every two
+/// samples, reading class-0 weights and moving each lane's taps by its class.
+#[inline(never)]
+pub(super) fn sym_rows(
+    window: &[&[u16; 28]; WINDOW_ROWS],
+    [top, bottom]: [&mut [u16; 16]; 2],
+    classes: &[GdfClass; 8],
+    block: &GdfBlock,
+    params: &GdfSymParams,
+) {
+    let bias = Simd::from_array(classes.map(GdfClass::gradient_bias));
+    if tap_range::<16, 28>(window, 1) == Some(0) {
+        if params.keeps_flat && bias == Simd::splat(0) {
+            return;
+        }
+        let [first, second, gradient] = params.bias.map(Simd::splat);
+        let init = [first, second, bias * Simd::splat(params.scale) + gradient];
+        flat_rows([top, bottom], &init, block);
+        return;
+    }
+    let index = (Simd::from_array(classes.map(|class| class.0)) & Simd::splat(3)).cast::<i16>();
+    let lanes: Simd<i16, 16> =
+        simd_swizzle!(index, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7]);
+    let masks = (
+        (lanes & Simd::splat(1)).simd_ne(Simd::splat(0)),
+        (lanes & Simd::splat(2)).simd_ne(Simd::splat(0)),
+    );
+    let gradient = bias * Simd::splat(params.scale) + Simd::splat(params.bias[2]);
+    let gradient = simd_swizzle!(gradient, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7]);
+    sym_row::<0>(window, top, masks, gradient, block, params);
+    sym_row::<1>(window, bottom, masks, gradient, block, params);
+}

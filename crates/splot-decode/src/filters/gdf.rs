@@ -29,8 +29,8 @@ mod simd;
 
 use simd::{
     EVEN_CLASS_ZERO_WEIGHTS, GDF_CLIP_TAPS, GDF_WEIGHT_SUMS, GdfClipTaps, GdfLowRange,
-    GdfMixedParams, GdfTapWeights, ODD_CLASS_ZERO_WEIGHTS, TAP_REACH, WINDOW_ROWS, class_bias,
-    flat_residual, flat_rows, gdf_index_scale, gdf_rows, mixed_class_rows, source_rows, tap_range,
+    GdfMixedParams, GdfSymParams, GdfTapWeights, ODD_CLASS_ZERO_WEIGHTS, TAP_REACH, WINDOW_ROWS,
+    class_bias, gdf_index_scale, gdf_rows, mixed_class_rows, source_rows, sym_rows,
     uniform_gdf_class, window_at,
 };
 
@@ -584,11 +584,6 @@ struct GdfUniformParams {
     clip_taps: &'static GdfClipTaps,
     bias: [i32; 3],
     scale: i32,
-    /// Whether `flat_rows` keeps the samples when every class block has
-    /// gradient bias 0: the error table gives a zero residual at `bias`. The
-    /// skip relies on every base sample already lying in `[0, max_sample]`,
-    /// as reconstruction and the earlier filters leave it.
-    keeps_flat: bool,
 }
 
 impl GdfUniformParams {
@@ -601,7 +596,6 @@ impl GdfUniformParams {
             class,
             bias,
             scale: i32::from(scale),
-            keeps_flat: flat_residual(bias.map(Simd::splat), block) == Simd::splat(0),
             weight_sums: &GDF_WEIGHT_SUMS[block.ref_dst_idx][block.qp_idx][class],
             clip_taps: &GDF_CLIP_TAPS[block.ref_dst_idx][block.qp_idx][class],
             bounds: core::array::from_fn(|tap| {
@@ -613,17 +607,6 @@ impl GdfUniformParams {
                 [weight(0), weight(1), weight(2), 0]
             }),
         }
-    }
-
-    /// Filters in place a 16-sample row pair of this class through `flat_rows`.
-    fn flat_rows(&self, output: [&mut [u16; 16]; 2], classes: &[GdfClass; 8], block: &GdfBlock) {
-        let bias = Simd::from_array(classes.map(GdfClass::gradient_bias));
-        if self.keeps_flat && bias == Simd::splat(0) {
-            return;
-        }
-        let [first, second, gradient] = self.bias.map(Simd::splat);
-        let init = [first, second, bias * Simd::splat(self.scale) + gradient];
-        flat_rows(output, &init, block);
     }
 
     /// Filters in place a row pair of `W` samples that all have this class.
@@ -820,6 +803,7 @@ fn compute_enabled_segment(
     let uniform_params: [GdfUniformParams; 4] =
         core::array::from_fn(|class| GdfUniformParams::new(block, class));
     let mixed_params = GdfMixedParams::new(block);
+    let sym_params = GdfSymParams::new(block);
     let run = cols.len();
     for row in (0..block.height).step_by(2) {
         let class_row = (row >> 1)
@@ -847,21 +831,14 @@ fn compute_enabled_segment(
         let mut x = 0;
         while x < run {
             let width = run - x;
-            let uniform_16 = row_classes
+            let classes_16 = row_classes
                 .get(x >> 1..)
                 .and_then(<[GdfClass]>::first_chunk::<8>)
-                .filter(|_| width >= 16)
-                .and_then(|classes| uniform_gdf_class(classes).map(|index| (classes, index)));
-            if let Some((classes, class_index)) = uniform_16 {
+                .filter(|_| width >= 16);
+            if let Some(classes) = classes_16 {
                 let window = window_at::<28>(&window_rows, x).ok_or_else(geometry_error)?;
                 let output = output_pair::<16>(top, bottom, x).ok_or_else(geometry_error)?;
-                let params = &uniform_params[class_index as usize];
-                let range = tap_range::<16, 28>(&window, params.clip_taps.limit);
-                if range == Some(0) {
-                    params.flat_rows(output, classes, block);
-                } else {
-                    params.rows(&window, output, classes, block, range);
-                }
+                sym_rows(&window, output, classes, block, &sym_params);
                 x += 16;
             } else if width >= 8 {
                 let classes = row_classes
