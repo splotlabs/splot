@@ -733,7 +733,7 @@ fn cfl_predict_lanes_match_scalar_over_random_inputs() {
                 .map(|_| (lcg(&mut state) % (16 * max as usize + 1)) as i32 - 8 * max)
                 .collect();
             let mut actual = vec![0u16; len];
-            cfl_predict_lanes_u16(dc, alpha_q3, max, &luma_ac, &mut actual);
+            cfl_predict_lanes(dc, alpha_q3, max, &luma_ac, &mut actual);
             let expected: Vec<u16> = luma_ac
                 .iter()
                 .map(|&ac| cfl_predict(dc, alpha_q3, max, ac) as u16)
@@ -796,7 +796,7 @@ fn cfl_luma_edge_sums_match_per_sample_q3_over_random_planes() {
                         .step_by(step)
                         .map(|r| luma.q3(x - 1, y + r, false, r == 0, None).unwrap() as u32)
                         .sum();
-                    if let Some(lanes) = cfl_420_column_sum_u16(&luma, x - 1, y, rows, step) {
+                    if let Some(lanes) = cfl_420_column_sum(&luma, x - 1, y, rows, step) {
                         assert_eq!(lanes, column, "x={x} y={y} side={side} step={step}");
                         lane_columns += 1;
                     }
