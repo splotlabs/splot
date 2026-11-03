@@ -155,7 +155,8 @@ pub(crate) fn predict_intra_smooth_over_available_edges_into<T: ReconSample>(
     } = request;
     let width = block_size.width();
     let height = block_size.height();
-    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    let mut edges = splot_recon::CurrentFrameIntraEdges::default();
+    workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
     let left_len =
         available_left_samples.unwrap_or_else(|| edges.left_samples().map_or(0, <[T]>::len));
     let above_len =

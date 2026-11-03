@@ -320,7 +320,8 @@ fn cfl_prediction_into<T: ReconSample>(
         u8::try_from(log2_width).unwrap_or(u8::MAX),
         u8::try_from(log2_height).unwrap_or(u8::MAX),
     )?;
-    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    let mut edges = splot_recon::CurrentFrameIntraEdges::default();
+    workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
     let dc_edges = IntraDcEdges::new(
         neighbours
             .has_left()
