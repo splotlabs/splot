@@ -504,6 +504,7 @@ fn subpel_vertical_rows_into<'a, T: ReconSample + 'a, O>(
     let taps = &SUBPEL_FILTERS[filter][phase];
     let pairs = paired_taps(filter, phase);
     let start = even_tap_span(filter, phase).0;
+    let halved = slide::intermediate_taps::<u8>(taps);
     for r in 0..params.h {
         let rows = rows_of(r);
         let row_out = &mut output[r * output_stride..][..w];
@@ -511,11 +512,22 @@ fn subpel_vertical_rows_into<'a, T: ReconSample + 'a, O>(
         macro_rules! vectors {
             ($lanes:literal) => {
                 while c + $lanes <= w {
-                    let sum = paired_tap_sum::<$lanes, NUM_TAPS>(&pairs, |t| {
-                        reference_lanes::<$lanes, T>(rows[(start + t).min(NUM_TAPS - 1)], c).cast()
-                    });
                     let prescale = FILTER_BITS - INTER_ROUND0;
-                    finish.rounded(sum, prescale, inter_round1, &mut row_out[c..c + $lanes]);
+                    let row_out = &mut row_out[c..c + $lanes];
+                    if T::u8_slice(rows[0]).is_some() {
+                        let mut half = Simd::<i16, $lanes>::splat(0);
+                        for (t, row) in rows.iter().enumerate() {
+                            let lanes = reference_lanes::<$lanes, T>(row, c).cast::<i16>();
+                            half += lanes * Simd::splat(halved[t]);
+                        }
+                        finish.rounded(half.cast(), prescale + 1, inter_round1, row_out);
+                    } else {
+                        let sum = paired_tap_sum::<$lanes, NUM_TAPS>(&pairs, |t| {
+                            let row = rows[(start + t).min(NUM_TAPS - 1)];
+                            reference_lanes::<$lanes, T>(row, c).cast()
+                        });
+                        finish.rounded(sum, prescale, inter_round1, row_out);
+                    }
                     c += $lanes;
                 }
             };
