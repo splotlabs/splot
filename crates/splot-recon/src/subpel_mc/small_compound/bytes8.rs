@@ -9,55 +9,14 @@
 //! consecutive source rows and multiplies adjacent rows with one tap pair, so
 //! the low half yields output row `i` and the high half row `i + 1` with the
 //! same taps. 8-bit predictor rows stay below 9300 in magnitude, so they and
-//! their blend fit `i16`. Clamped columns and wider samples take the generic
-//! [`Cell8`] and repack its rows.
+//! their blend fit `i16`. A window that leaves the plane storage takes the
+//! generic [`Cell8`] and repacks its rows.
 
 use super::super::pairs::{Pair, horizontal, join, weigh, widen};
 use super::*;
-use std::simd::{Mask, Select, cmp::SimdPartialOrd};
 
 pub(super) struct Bytes8<'a, T> {
     cell: Cell8<'a, T>,
-    /// Clamped columns of a window that starts inside its row.
-    edges: Option<Edges>,
-}
-
-/// A window whose columns `first + i` are clamped to `[left, right]`: it
-/// loads from `first` and replaces the lanes past either bound with that
-/// bound's sample, which is the `Clip3` read.
-#[derive(Clone, Copy)]
-struct Edges {
-    first: usize,
-    left: usize,
-    right: usize,
-    before: Mask<i8, 16>,
-    after: Mask<i8, 16>,
-}
-
-impl Edges {
-    fn new(params: &SubpelPredictParams) -> Option<Self> {
-        let horizontal = (params.start_x >> 6) & SUBPEL_MASK != 0;
-        let first = (params.start_x >> SCALE_SUBPEL_BITS) - if horizontal { 3 } else { 0 };
-        let columns = Simd::splat(first) + Simd::from_array(LANE_INDEX);
-        Some(Self {
-            first: usize::try_from(first).ok()?,
-            left: usize::try_from(params.first_x).ok()?,
-            right: usize::try_from(params.last_x).ok()?,
-            before: columns.simd_lt(Simd::splat(params.first_x)).cast(),
-            after: columns.simd_gt(Simd::splat(params.last_x)).cast(),
-        })
-    }
-
-    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
-    #[inline(always)]
-    fn window(&self, row: &[u8]) -> Option<Simd<u8, 16>> {
-        let lanes = Simd::from_array(*row.get(self.first..)?.first_chunk::<16>()?);
-        let (left, right) = (*row.get(self.left)?, *row.get(self.right)?);
-        Some(self.after.select(
-            Simd::splat(right),
-            self.before.select(Simd::splat(left), lanes),
-        ))
-    }
 }
 
 impl<T: ReconSample> Bytes8<'_, T> {
@@ -67,10 +26,9 @@ impl<T: ReconSample> Bytes8<'_, T> {
     #[inline(always)]
     fn windows<const ROWS: usize>(&self) -> Option<[Simd<u8, 16>; ROWS]> {
         let samples = T::u8_slice(self.cell.samples)?;
-        match (self.cell.gather, self.edges) {
-            (None, _) => self.rows::<ROWS, false>(samples),
-            (Some(_), Some(_)) => self.rows::<ROWS, true>(samples),
-            (Some(_), None) => None,
+        match self.cell.clamp {
+            None => self.rows::<ROWS, false>(samples),
+            Some(_) => self.rows::<ROWS, true>(samples),
         }
     }
 
@@ -83,13 +41,13 @@ impl<T: ReconSample> Bytes8<'_, T> {
         samples: &[u8],
     ) -> Option<[Simd<u8, 16>; ROWS]> {
         let cell = &self.cell;
-        let edges = if EDGES { self.edges } else { None };
+        let clamp = if EDGES { cell.clamp } else { None };
         let mut windows = [Simd::splat(0); ROWS];
         for (row, window) in windows.iter_mut().enumerate() {
             let y = (cell.top + row as i32).max(cell.first_y).min(cell.last_y) as usize;
             let row = samples.get(y * cell.stride..)?;
-            *window = match edges {
-                Some(edges) => edges.window(row)?,
+            *window = match clamp {
+                Some(clamp) => clamp.bytes(row)?,
                 None => Simd::from_array(*row.get(cell.column..)?.first_chunk()?),
             };
         }
@@ -205,9 +163,9 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Bytes8<'a, T> {
     #[allow(clippy::inline_always, reason = "measured subpel hot path")]
     #[inline(always)]
     fn new(reference: &ReferencePlaneView<'a, T>, params: &SubpelPredictParams) -> Option<Self> {
-        let cell = Cell8::new(reference, params)?;
-        let edges = cell.gather.and_then(|_| Edges::new(params));
-        Some(Self { cell, edges })
+        Some(Self {
+            cell: Cell8::new(reference, params)?,
+        })
     }
 
     #[allow(clippy::inline_always, reason = "measured subpel hot path")]
@@ -215,7 +173,6 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Bytes8<'a, T> {
     fn rebind(&self, reference: &ReferencePlaneView<'a, T>) -> Self {
         Self {
             cell: self.cell.rebind(reference),
-            edges: self.edges,
         }
     }
 
