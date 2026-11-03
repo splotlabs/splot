@@ -8,7 +8,7 @@ use super::super::partition_allowed::PartitionTreeType;
 use super::super::partition_size::{BlockSize, h_partition_midsize};
 use super::{
     BLOCK_8X32, BLOCK_32X8, ChromaRefGeometry, TilePartitionCall, TilePartitionFrameFacts,
-    TilePartitionTraversalError, checked_add, checked_scaled_add, valid_subsize,
+    TilePartitionTraversalError, valid_subsize,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -144,30 +144,11 @@ impl ChildAxis {
         }
     }
 
-    fn offset(
-        self,
-        call: TilePartitionCall,
-        scale: usize,
-        step: usize,
-    ) -> Result<(usize, usize), TilePartitionTraversalError> {
-        let (coordinate, _) = self.facts();
+    const fn offset(self, call: TilePartitionCall, scale: usize, step: usize) -> (usize, usize) {
         match self {
-            Self::Row => Ok((scaled_coordinate(coordinate, call.r, scale, step)?, call.c)),
-            Self::Col => Ok((call.r, scaled_coordinate(coordinate, call.c, scale, step)?)),
+            Self::Row => (call.r + scale * step, call.c),
+            Self::Col => (call.r, call.c + scale * step),
         }
-    }
-}
-
-fn scaled_coordinate(
-    coordinate: &'static str,
-    base: usize,
-    scale: usize,
-    step: usize,
-) -> Result<usize, TilePartitionTraversalError> {
-    match scale {
-        0 => Ok(base),
-        1 => checked_add(coordinate, base, step),
-        _ => checked_scaled_add(coordinate, base, scale, step),
     }
 }
 
@@ -193,7 +174,7 @@ fn push_two_way_children(
     has_chroma_before_offset: bool,
 ) -> Result<(), TilePartitionTraversalError> {
     children.push(call.r, call.c, sub_size, has_chroma_before_offset)?;
-    let (r, c) = axis.offset(call, 1, step)?;
+    let (r, c) = axis.offset(call, 1, step);
     children.push(r, c, sub_size, call.has_chroma)
 }
 
@@ -204,15 +185,16 @@ fn push_split_children(
     half_w: usize,
     half_h: usize,
 ) -> Result<(), TilePartitionTraversalError> {
-    for (row_scale, col_scale) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
-        children.push_with_chroma_offset(
-            scaled_coordinate("r", call.r, row_scale, half_h)?,
-            scaled_coordinate("c", call.c, col_scale, half_w)?,
-            sub_size,
-            false,
-            call.has_chroma,
-        )?;
-    }
+    children.push_with_chroma_offset(call.r, call.c, sub_size, false, call.has_chroma)?;
+    children.push_with_chroma_offset(call.r, call.c + half_w, sub_size, false, call.has_chroma)?;
+    children.push_with_chroma_offset(call.r + half_h, call.c, sub_size, false, call.has_chroma)?;
+    children.push_with_chroma_offset(
+        call.r + half_h,
+        call.c + half_w,
+        sub_size,
+        false,
+        call.has_chroma,
+    )?;
     Ok(())
 }
 
@@ -235,13 +217,13 @@ fn push_four_way_children(
     };
     children.push(call.r, call.c, sub_size, has_chroma_before_offset)?;
 
-    let (r, c) = axis.offset(call, 1, step)?;
+    let (r, c) = axis.offset(call, 1, step);
     children.push(r, c, second, has_chroma_before_offset)?;
 
-    let (r, c) = axis.offset(call, third_scale, step)?;
+    let (r, c) = axis.offset(call, third_scale, step);
     children.push(r, c, third, has_chroma_before_offset)?;
 
-    let (r, c) = axis.offset(call, 7, step)?;
+    let (r, c) = axis.offset(call, 7, step);
     children.push(r, c, sub_size, call.has_chroma)
 }
 
@@ -289,7 +271,7 @@ pub(crate) fn child_calls(
                 call.b_size.index() == BLOCK_8X32 && call.has_chroma && frame.subsampling_x;
             let middle_chroma_ref = if middle_chroma {
                 Some(ChromaRefGeometry::new(
-                    checked_add("r", call.r, half_h >> 1)?,
+                    call.r + (half_h >> 1),
                     call.c,
                     valid_subsize(PartitionType::Horz, call.b_size)?,
                 ))
@@ -298,7 +280,7 @@ pub(crate) fn child_calls(
             };
             children.push(call.r, call.c, sub_size, has_chroma_before_offset)?;
             children.push_with_chroma_ref(
-                checked_add("r", call.r, half_h >> 1)?,
+                call.r + (half_h >> 1),
                 call.c,
                 middle,
                 chroma_offset || middle_chroma,
@@ -306,15 +288,15 @@ pub(crate) fn child_calls(
                 middle_chroma_ref,
             )?;
             children.push_with_chroma_ref(
-                checked_add("r", call.r, half_h >> 1)?,
-                checked_add("c", call.c, half_w)?,
+                call.r + (half_h >> 1),
+                call.c + half_w,
                 middle,
                 chroma_offset || middle_chroma,
                 has_chroma_before_offset,
                 middle_chroma_ref,
             )?;
             children.push(
-                checked_scaled_add("r", call.r, 3, half_h >> 1)?,
+                call.r + 3 * (half_h >> 1),
                 call.c,
                 sub_size,
                 call.has_chroma,
@@ -328,7 +310,7 @@ pub(crate) fn child_calls(
             let middle_chroma_ref = if middle_chroma {
                 Some(ChromaRefGeometry::new(
                     call.r,
-                    checked_add("c", call.c, half_w >> 1)?,
+                    call.c + (half_w >> 1),
                     valid_subsize(PartitionType::Vert, call.b_size)?,
                 ))
             } else {
@@ -337,15 +319,15 @@ pub(crate) fn child_calls(
             children.push(call.r, call.c, sub_size, has_chroma_before_offset)?;
             children.push_with_chroma_ref(
                 call.r,
-                checked_add("c", call.c, half_w >> 1)?,
+                call.c + (half_w >> 1),
                 middle,
                 chroma_offset || middle_chroma,
                 has_chroma_before_offset && !middle_chroma,
                 middle_chroma_ref,
             )?;
             children.push_with_chroma_ref(
-                checked_add("r", call.r, half_h)?,
-                checked_add("c", call.c, half_w >> 1)?,
+                call.r + half_h,
+                call.c + (half_w >> 1),
                 middle,
                 chroma_offset || middle_chroma,
                 has_chroma_before_offset,
@@ -353,7 +335,7 @@ pub(crate) fn child_calls(
             )?;
             children.push(
                 call.r,
-                checked_scaled_add("c", call.c, 3, half_w >> 1)?,
+                call.c + 3 * (half_w >> 1),
                 sub_size,
                 call.has_chroma,
             )?;
