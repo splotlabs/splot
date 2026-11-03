@@ -708,10 +708,22 @@ impl<'a> SymbolDecoder<'a> {
         &mut self,
         cdf: &mut [T],
     ) -> Result<Symbol> {
-        let shape = CdfShape {
-            n: N,
-            ..self.validate_cdf(cdf)?
+        if self.config.cdf_validation == CdfValidationMode::Validated {
+            validate_cdf_shape(cdf).map_err(|kind| self.cdf_error(kind))?;
+        }
+        let rate_index = cdf[N - 1].to_i32();
+        let Some(rate) = usize::try_from(rate_index)
+            .ok()
+            .and_then(|index| PARA_ADJUSTMENT_LIST.get(index))
+        else {
+            return Err(
+                self.cdf_error(SymbolCdfErrorKind::AdaptationRateOutOfRange {
+                    index: N - 1,
+                    value: rate_index,
+                }),
+            );
         };
+        let count = cdf[N].to_i32();
         self.ensure_buffered(15);
         let symbol_value = (self.dif >> SV_SHIFT) as u32;
         let range8 = self.symbol_range >> 8;
@@ -742,7 +754,7 @@ impl<'a> SymbolDecoder<'a> {
         self.frame_symbol_count = self.frame_symbol_count.wrapping_add(1);
 
         if self.config.cdf_update == CdfUpdateMode::Enabled {
-            update_cdf_arity::<T>(cdf, shape, N, symbol);
+            update_cdf_with_rates::<T>(cdf, rate, count, N, symbol);
         }
 
         Ok(Symbol::new(symbol as u8))
@@ -833,16 +845,6 @@ impl<'a> SymbolDecoder<'a> {
     /// Returns the same errors as [`Self::exit_symbol`].
     pub fn finish(self) -> Result<SymbolDecoderSummary> {
         self.exit_symbol()
-    }
-
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-    #[inline(always)]
-    fn validate_cdf<T: CdfStorage>(&self, cdf: &[T]) -> Result<CdfShape> {
-        match self.config.cdf_validation {
-            CdfValidationMode::Validated => validate_cdf_shape(cdf),
-            CdfValidationMode::Trusted => trusted_cdf_shape(cdf),
-        }
-        .map_err(|kind| self.cdf_error(kind))
     }
 
     #[inline]
@@ -1069,19 +1071,37 @@ pub(crate) fn update_cdf_arity<T: CdfStorage>(
     n: usize,
     symbol: usize,
 ) {
-    let time_interval = if shape.count > 31 {
+    update_cdf_with_rates(
+        cdf,
+        &PARA_ADJUSTMENT_LIST[shape.rate_index],
+        shape.count,
+        n,
+        symbol,
+    );
+}
+
+/// [`update_cdf_arity`] with the row's `Para_Adjustment_List` entry and
+/// use count already read.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+fn update_cdf_with_rates<T: CdfStorage>(
+    cdf: &mut [T],
+    rates: &[i32; 3],
+    count: i32,
+    n: usize,
+    symbol: usize,
+) {
+    let time_interval = if count > 31 {
         2usize
     } else {
-        usize::from(shape.count > 15)
+        usize::from(count > 15)
     };
     let n_term = match n {
         2 | 3 => 1,
         _ => 2,
     };
-    let rate =
-        3 + time_interval as i32 + n_term + PARA_ADJUSTMENT_LIST[shape.rate_index][time_interval];
+    let rate = 3 + time_interval as i32 + n_term + rates[time_interval];
     T::adapt_probabilities(cdf, n, rate as u32, symbol);
-    let count = cdf[n].to_i32();
     if count < MAX_CDF_COUNT {
         cdf[n] = T::from_i32(count + 1);
     }
