@@ -235,10 +235,20 @@ pub(crate) fn secondary_inverse_transform_prefix(
     dequant[..len].fill(0);
     let mut sums = [0i32; IST_8X8_WIDTH];
     let coefs = &coefs[..layout.n];
+    let stx = params.sec_tx_type - 1;
     if layout.width == IST_8X8_WIDTH {
-        accumulate_kernel_rows(layout.kernel.as_chunks().0, coefs, &mut sums);
-    } else if let Some(sums) = sums.first_chunk_mut::<IST_4X4_WIDTH>() {
-        accumulate_kernel_rows(layout.kernel.as_chunks().0, coefs, sums);
+        if let Some(rows) = IST_8X8_BYTES
+            .get(params.kernel)
+            .and_then(|set| set.get(stx))
+        {
+            accumulate_kernel_rows(rows, coefs, &mut sums);
+        }
+    } else if let Some(sums) = sums.first_chunk_mut::<IST_4X4_WIDTH>()
+        && let Some(rows) = IST_4X4_BYTES
+            .get(params.kernel)
+            .and_then(|set| set.get(stx))
+    {
+        accumulate_kernel_rows(rows, coefs, sums);
     }
     let output = &mut dequant[..len];
     for (sums, positions) in sums[..layout.width]
@@ -262,15 +272,40 @@ pub(crate) fn secondary_inverse_transform_prefix(
     Ok(len)
 }
 
+/// The § 9.7 IST kernels as bytes: every weight is below 128 in magnitude,
+/// and the quarter-size tables keep the inverse transform's working set in
+/// cache.
+static IST_8X8_BYTES: [[[[i8; IST_8X8_WIDTH]; IST_8X8_HEIGHT]; STX_TYPES - 1]; IST_SET_SIZE_8X8] =
+    narrow_kernels(&IST_8X8_KERNEL);
+static IST_4X4_BYTES: [[[[i8; IST_4X4_WIDTH]; IST_4X4_HEIGHT]; STX_TYPES - 1]; IST_SET_SIZE_4X4] =
+    narrow_kernels(&IST_4X4_KERNEL);
+
+const fn narrow_kernels<const W: usize, const H: usize, const T: usize, const S: usize>(
+    kernels: &[[[[i32; W]; H]; T]; S],
+) -> [[[[i8; W]; H]; T]; S] {
+    let mut out = [[[[0i8; W]; H]; T]; S];
+    let mut index = 0;
+    while index < S * T * H * W {
+        let (set, rest) = (index / (T * H * W), index % (T * H * W));
+        let (kind, rest) = (rest / (H * W), rest % (H * W));
+        let (row, col) = (rest / W, rest % W);
+        let weight = kernels[set][kind][row][col];
+        assert!(weight == weight as i8 as i32);
+        out[set][kind][row][col] = weight as i8;
+        index += 1;
+    }
+    out
+}
+
 /// Adds `coef * row` over the kernel rows of the nonzero input coefficients,
 /// keeping the `W <= 48` sums in vector registers.
-fn accumulate_kernel_rows<const W: usize>(rows: &[[i32; W]], coefs: &[i32], sums: &mut [i32; W]) {
+fn accumulate_kernel_rows<const W: usize>(rows: &[[i8; W]], coefs: &[i32], sums: &mut [i32; W]) {
     let mut acc = [Simd::<i32, 8>::splat(0); IST_8X8_WIDTH / 8];
     for (row, &coef) in rows.iter().zip(coefs) {
         if coef != 0 {
             let coef = Simd::splat(coef);
             for (acc, weights) in acc.iter_mut().zip(row.as_chunks::<8>().0) {
-                *acc += Simd::from_array(*weights) * coef;
+                *acc += Simd::from_array(*weights).cast::<i32>() * coef;
             }
         }
     }
