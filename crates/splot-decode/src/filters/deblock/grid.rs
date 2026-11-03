@@ -704,7 +704,7 @@ fn on_sub_pu_line(mi: usize, (luma_base, chroma_base): (u32, u32), size: u16, su
     let line = |base: u32, sub: usize| {
         let at = (mi * MI_SIZE) >> sub;
         let base = (base as usize * MI_SIZE) >> sub;
-        at > base && (at - base).is_multiple_of((usize::from(size) >> sub).max(1))
+        at > base && super::round_down(at - base, (usize::from(size) >> sub).max(1)) == at - base
     };
     line(luma_base, 0) || line(chroma_base, sub)
 }

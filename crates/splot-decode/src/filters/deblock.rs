@@ -12,6 +12,7 @@ use splot_recon::{
     deblock_filter_max_width, deblock_sample_filter, deblock_sample_filter_strided,
     deblock_sample_filter_strided_4, deblock_side_threshold_index, max_quantizer_index,
 };
+use std::simd::{Simd, cmp::SimdPartialEq as _};
 use std::{cell::Cell, num::NonZeroUsize, ops::Range};
 
 mod grid;
@@ -1067,6 +1068,8 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
             if PASS == 0 && start == 0 {
                 any &= !1;
             }
+            let [candidates, follows_columns] = [0, VERTICAL_WALK_ROWS]
+                .map(|first| Simd::<u64, VERTICAL_WALK_ROWS>::from_slice(&rows_masks[first..]));
             while any != 0 {
                 let bit = any.trailing_zeros();
                 let col = start + bit as usize;
@@ -1084,11 +1087,13 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
                     any &= !(((1u64 << (repeated * step)) - 1) << bit << 1);
                     continue;
                 }
-                let both = rows_masks.iter().enumerate().fold(0u32, |both, (i, mask)| {
-                    both | ((mask >> bit & 1) as u32) << i
-                });
-                let mut present = both & live_rows;
-                let column = (both >> VERTICAL_WALK_ROWS) & live_rows;
+                let column_bits = |masks: Simd<u64, VERTICAL_WALK_ROWS>| {
+                    ((masks >> Simd::splat(u64::from(bit))) & Simd::splat(1))
+                        .simd_ne(Simd::splat(0))
+                        .to_bitmask() as u32
+                };
+                let mut present = column_bits(candidates) & live_rows;
+                let column = column_bits(follows_columns) & live_rows;
                 while present != 0 {
                     let i = present.trailing_zeros() as usize;
                     let chain = (!(column >> (i + 1))).trailing_zeros() as usize;
@@ -1552,9 +1557,20 @@ fn sub_pu_base(
     let width = (usize::from(size.width) >> sub_x).max(1);
     let height = (usize::from(size.height) >> sub_y).max(1);
     (
-        block_x + x.saturating_sub(block_x) / width * width,
-        block_y + y.saturating_sub(block_y) / height * height,
+        block_x + round_down(x.saturating_sub(block_x), width),
+        block_y + round_down(y.saturating_sub(block_y), height),
     )
+}
+
+/// `value / step * step`, without the divide for the power-of-two sub-PU
+/// sizes.
+#[inline]
+const fn round_down(value: usize, step: usize) -> usize {
+    if step.is_power_of_two() {
+        value & !(step - 1)
+    } else {
+        value / step * step
+    }
 }
 
 fn sub_pu_filter_dimension(tx_size: usize, sub_pu_size: usize, is_tx_edge: bool) -> (usize, bool) {
@@ -2061,7 +2077,7 @@ fn same_record_decision<const PLANE: usize, const PASS: usize>(
     };
     let base = (base as usize * MI_SIZE) >> sub;
     let sub_pu_size = (usize::from(size) >> sub).max(1);
-    if at <= base || !(at - base).is_multiple_of(sub_pu_size) {
+    if at <= base || round_down(at - base, sub_pu_size) != at - base {
         return None;
     }
     let tx = record.tx(PLANE);
