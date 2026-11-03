@@ -5,26 +5,27 @@
 
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_SIG_COEF_CONTEXTS_2D, SIG_REF_DIFF_OFFSET_NUM};
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
+use std::simd::cmp::SimdPartialEq as _;
 
 use super::super::coeff_state::{LEVEL_INDEX_MASK, LevelGrid};
 
 const SIG_COEF_CONTEXTS_EOB: usize = 4;
 
-const LF_SIG_COEF_CONTEXTS_2D_UV: usize = 8;
+pub(crate) const LF_SIG_COEF_CONTEXTS_2D_UV: usize = 8;
 
-const SIG_OFFSETS: [[[i32; 2]; SIG_REF_DIFF_OFFSET_NUM]; 3] = SIG_REF_DIFF_OFFSET;
+pub(crate) const SIG_OFFSETS: [[[i32; 2]; SIG_REF_DIFF_OFFSET_NUM]; 3] = SIG_REF_DIFF_OFFSET;
 
-const MAX_BASE_BR_RANGE: u32 = 6;
+pub(crate) const MAX_BASE_BR_RANGE: u32 = 6;
 
-const MAG_REF_OFFSET_WITH_TX_CLASS: [[[usize; 2]; 3]; 3] = [
+pub(crate) const MAG_REF_OFFSET_WITH_TX_CLASS: [[[usize; 2]; 3]; 3] = [
     [[0, 1], [1, 0], [1, 1]], // TX_CLASS_2D
     [[0, 1], [1, 0], [0, 2]], // TX_CLASS_HORIZ
     [[0, 1], [1, 0], [2, 0]], // TX_CLASS_VERT
 ];
 
-const CHROMA_2D_PLANE_CONTEXT_OFFSET: [usize; 3] = [4, 0, 4];
-const LF_2D_CONTEXT_CAP_AND_OFFSET: [(usize, usize); 3] = [(8, 0), (6, 9), (4, 16)];
-const HF_2D_CONTEXT_OFFSET: [usize; 3] = [0, 5, 10];
+pub(crate) const CHROMA_2D_PLANE_CONTEXT_OFFSET: [usize; 3] = [4, 0, 4];
+pub(crate) const LF_2D_CONTEXT_CAP_AND_OFFSET: [(usize, usize); 3] = [(8, 0), (6, 9), (4, 16)];
+pub(crate) const HF_2D_CONTEXT_OFFSET: [usize; 3] = [0, 5, 10];
 
 /// Every neighbour offset `[row, col]` the `coeff_base` and `coeff_br`
 /// contexts of class index `tx_class` read.
@@ -298,12 +299,63 @@ pub(crate) fn dc_sign_ctx(
 /// Net sign of the `len` DC categories from `start`; categories are random
 /// per block, so the sum is branchless.
 fn dc_sign_votes(line: &[u8], start: usize, len: usize) -> i32 {
-    line.get(start..)
-        .unwrap_or_default()
-        .iter()
-        .take(len)
-        .map(|&category| i32::from(category == 2) - i32::from(category == 1))
-        .sum()
+    let Some(slice) = start.checked_add(len).and_then(|end| line.get(start..end)) else {
+        return line
+            .get(start..)
+            .unwrap_or_default()
+            .iter()
+            .take(len)
+            .map(|&category| i32::from(category == 2) - i32::from(category == 1))
+            .sum();
+    };
+    match len {
+        0 => 0,
+        1 => i32::from(slice[0] == 2) - i32::from(slice[0] == 1),
+        2 => {
+            (i32::from(slice[0] == 2) - i32::from(slice[0] == 1))
+                + (i32::from(slice[1] == 2) - i32::from(slice[1] == 1))
+        }
+        4 => {
+            let v = std::simd::Simd::<u8, 4>::from_slice(slice);
+            v.simd_eq(std::simd::Simd::splat(2))
+                .to_bitmask()
+                .count_ones() as i32
+                - v.simd_eq(std::simd::Simd::splat(1))
+                    .to_bitmask()
+                    .count_ones() as i32
+        }
+        8 => {
+            let v = std::simd::Simd::<u8, 8>::from_slice(slice);
+            v.simd_eq(std::simd::Simd::splat(2))
+                .to_bitmask()
+                .count_ones() as i32
+                - v.simd_eq(std::simd::Simd::splat(1))
+                    .to_bitmask()
+                    .count_ones() as i32
+        }
+        16 => {
+            let v = std::simd::Simd::<u8, 16>::from_slice(slice);
+            v.simd_eq(std::simd::Simd::splat(2))
+                .to_bitmask()
+                .count_ones() as i32
+                - v.simd_eq(std::simd::Simd::splat(1))
+                    .to_bitmask()
+                    .count_ones() as i32
+        }
+        32 => {
+            let v = std::simd::Simd::<u8, 32>::from_slice(slice);
+            v.simd_eq(std::simd::Simd::splat(2))
+                .to_bitmask()
+                .count_ones() as i32
+                - v.simd_eq(std::simd::Simd::splat(1))
+                    .to_bitmask()
+                    .count_ones() as i32
+        }
+        _ => slice
+            .iter()
+            .map(|&category| i32::from(category == 2) - i32::from(category == 1))
+            .sum(),
+    }
 }
 
 #[inline]
