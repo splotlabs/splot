@@ -193,6 +193,16 @@ impl TransformCoeffBlockState {
         Ok(())
     }
 
+    /// [`Self::set_level`] for a position a scan walk validated against
+    /// this block, so it is in range by construction.
+    #[inline]
+    pub(crate) fn set_walked_level(&mut self, row: usize, col: usize, value: u32) {
+        debug_assert!(row < self.height && col < self.width());
+        if let Some(grid) = self.level.first_chunk_mut::<LEVEL_GRID_LEN>() {
+            grid[(row * self.stride + col) & (LEVEL_GRID_LEN - 1)] = value as u8;
+        }
+    }
+
     #[inline]
     pub(crate) fn set_quant_sign(
         &mut self,

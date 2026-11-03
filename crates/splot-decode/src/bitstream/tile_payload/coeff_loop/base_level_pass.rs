@@ -298,7 +298,7 @@ fn finish_level(
             level += read_br_symbol(cdfs, symbols, entry, is_lf, block, config)?;
         }
         masks.record(entry.scan_index(), level, first_pass.tcq_state);
-        block.set_level(entry.row(), entry.col(), level)?;
+        block.set_walked_level(entry.row(), entry.col(), level);
     }
     first_pass.update_after_level(entry, level, config)?;
     Ok(())
