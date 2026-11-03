@@ -90,7 +90,11 @@ impl TransformCoeffBlockState {
         checked_mul_usize("width * height", width, height)
     }
 
-    #[inline]
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: an out-of-line return spills the state through memory"
+    )]
+    #[inline(always)]
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, TileCoeffStateError> {
         let allocation = Self::allocation(width, height)?;
         let stride = width + LEVEL_GRID_PAD;
