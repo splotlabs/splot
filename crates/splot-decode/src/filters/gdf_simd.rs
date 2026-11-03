@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use std::simd::{
-    Mask, Select, Simd,
-    cmp::{SimdOrd, SimdPartialEq},
+    Simd,
+    cmp::SimdOrd,
     num::{SimdInt, SimdUint},
     simd_swizzle,
 };
@@ -397,7 +397,7 @@ fn multiply_add_pairs(x: Simd<i16, 16>, w: Simd<i16, 16>) -> Simd<i32, 8> {
 fn sym_comb<const K: usize, const ROW: usize>(
     window: &[&[u16; 28]; WINDOW_ROWS],
     center: Simd<i16, 16>,
-    (transposed, mirrored): (Mask<i16, 16>, Mask<i16, 16>),
+    (transposed, mirrored): (Simd<i16, 16>, Simd<i16, 16>),
     alpha: i16,
 ) -> Simd<i16, 16> {
     let diffs = |tap: usize| {
@@ -414,8 +414,8 @@ fn sym_comb<const K: usize, const ROW: usize>(
             ) - center,
         ]
     };
-    let pick = |mask: Mask<i16, 16>, [a, b]: [Simd<i16, 16>; 2], [c, d]: [Simd<i16, 16>; 2]| {
-        [mask.select(c, a), mask.select(d, b)]
+    let pick = |mask: Simd<i16, 16>, [a, b]: [Simd<i16, 16>; 2], [c, d]: [Simd<i16, 16>; 2]| {
+        [a ^ ((a ^ c) & mask), b ^ ((b ^ d) & mask)]
     };
     let (t, m, tm) = (class_tap(K, 1), class_tap(K, 2), class_tap(K, 3));
     let [above, below] = if t == K && m == K {
@@ -453,7 +453,7 @@ macro_rules! for_each_sym_pair {
 fn sym_row<const ROW: usize>(
     window: &[&[u16; 28]; WINDOW_ROWS],
     output: &mut [u16; 16],
-    masks: (Mask<i16, 16>, Mask<i16, 16>),
+    masks: (Simd<i16, 16>, Simd<i16, 16>),
     gradient: Simd<i32, 16>,
     block: &GdfBlock,
     params: &GdfSymParams,
@@ -521,10 +521,7 @@ pub(super) fn sym_rows(
     let index = (Simd::from_array(classes.map(|class| class.0)) & Simd::splat(3)).cast::<i16>();
     let lanes: Simd<i16, 16> =
         simd_swizzle!(index, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7]);
-    let masks = (
-        (lanes & Simd::splat(1)).simd_ne(Simd::splat(0)),
-        (lanes & Simd::splat(2)).simd_ne(Simd::splat(0)),
-    );
+    let masks = (-(lanes & Simd::splat(1)), -((lanes >> 1) & Simd::splat(1)));
     let gradient = bias * Simd::splat(params.scale) + Simd::splat(params.bias[2]);
     let gradient = simd_swizzle!(gradient, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7]);
     sym_row::<0>(window, top, masks, gradient, block, params);
