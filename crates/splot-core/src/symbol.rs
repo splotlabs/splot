@@ -10,6 +10,7 @@
 //! `decode_tile()`, reconstruction, and encoder range writing.
 
 use core::simd::cmp::{SimdOrd, SimdPartialOrd};
+use core::simd::num::SimdUint;
 use core::simd::simd_swizzle;
 use core::simd::{Select, Simd};
 
@@ -239,17 +240,11 @@ fn multi_symbol_search<const N: usize>(
     let boundaries = scaled << 3;
     let above = boundaries.simd_gt(Simd::splat(symbol_value as u16));
     let symbol = (above.to_bitmask().count_ones() as usize).min(N - 1);
-    let bounds: Simd<u16, 16> = simd_swizzle!(
-        boundaries,
-        Simd::splat(range as u16),
-        [8, 0, 1, 2, 3, 4, 5, 6, 7, 8, 8, 8, 8, 8, 8, 8]
-    );
-    let bounds = bounds.to_array();
-    (
-        symbol,
-        u32::from(bounds[symbol + 1]),
-        u32::from(bounds[symbol]),
-    )
+    let cur = above.select(Simd::splat(0), boundaries).reduce_max();
+    let prev = above
+        .select(boundaries, Simd::splat(range as u16))
+        .reduce_min();
+    (symbol, u32::from(cur), u32::from(prev))
 }
 
 /// Relative bit position inside the tile payload consumed by a symbol decoder.
