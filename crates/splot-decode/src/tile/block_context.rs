@@ -36,43 +36,43 @@ impl ChromaSampling {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockRect {
-    row4: usize,
-    col4: usize,
-    width4: usize,
-    height4: usize,
+    row4: u32,
+    col4: u32,
+    width4: u32,
+    height4: u32,
 }
 
 impl BlockRect {
     pub(crate) const fn new(row4: usize, col4: usize, width4: usize, height4: usize) -> Self {
         Self {
-            row4,
-            col4,
-            width4,
-            height4,
+            row4: row4 as u32,
+            col4: col4 as u32,
+            width4: width4 as u32,
+            height4: height4 as u32,
         }
     }
 
     pub(crate) const fn row4(self) -> usize {
-        self.row4
+        self.row4 as usize
     }
 
     pub(crate) const fn col4(self) -> usize {
-        self.col4
+        self.col4 as usize
     }
 
     pub(crate) const fn width4(self) -> usize {
-        self.width4
+        self.width4 as usize
     }
 
     pub(crate) const fn height4(self) -> usize {
-        self.height4
+        self.height4 as usize
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TxShape {
-    width_log2: u32,
-    height_log2: u32,
+    width_log2: u8,
+    height_log2: u8,
 }
 
 impl TxShape {
@@ -80,8 +80,8 @@ impl TxShape {
         let width4 = NUM_4X4_BLOCKS_WIDE[block_size.index()];
         let height4 = NUM_4X4_BLOCKS_HIGH[block_size.index()];
         Self {
-            width_log2: width4.trailing_zeros() + 2,
-            height_log2: height4.trailing_zeros() + 2,
+            width_log2: width4.trailing_zeros() as u8 + 2,
+            height_log2: height4.trailing_zeros() as u8 + 2,
         }
     }
 
@@ -90,17 +90,17 @@ impl TxShape {
             return None;
         }
         Some(Self {
-            width_log2: width4.trailing_zeros() + 2,
-            height_log2: height4.trailing_zeros() + 2,
+            width_log2: width4.trailing_zeros() as u8 + 2,
+            height_log2: height4.trailing_zeros() as u8 + 2,
         })
     }
 
     pub(crate) const fn width_log2(self) -> u32 {
-        self.width_log2
+        self.width_log2 as u32
     }
 
     pub(crate) const fn height_log2(self) -> u32 {
-        self.height_log2
+        self.height_log2 as u32
     }
 
     pub(crate) const fn width4(self) -> usize {
@@ -112,8 +112,8 @@ impl TxShape {
     }
 
     pub(crate) const fn subsampled(self, sub_x: u32, sub_y: u32) -> Self {
-        let width_log2 = self.width_log2.saturating_sub(sub_x);
-        let height_log2 = self.height_log2.saturating_sub(sub_y);
+        let width_log2 = self.width_log2.saturating_sub(sub_x as u8);
+        let height_log2 = self.height_log2.saturating_sub(sub_y as u8);
         Self {
             width_log2: if width_log2 < 2 { 2 } else { width_log2 },
             height_log2: if height_log2 < 2 { 2 } else { height_log2 },
@@ -123,28 +123,28 @@ impl TxShape {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PlaneBlock {
-    x: usize,
-    y: usize,
-    width4: usize,
-    height4: usize,
+    x: u32,
+    y: u32,
+    width4: u32,
+    height4: u32,
     tx: TxShape,
 }
 
 impl PlaneBlock {
     pub(crate) const fn x(self) -> usize {
-        self.x
+        self.x as usize
     }
 
     pub(crate) const fn y(self) -> usize {
-        self.y
+        self.y as usize
     }
 
     pub(crate) const fn width4(self) -> usize {
-        self.width4
+        self.width4 as usize
     }
 
     pub(crate) const fn height4(self) -> usize {
-        self.height4
+        self.height4 as usize
     }
 
     pub(crate) const fn tx(self) -> TxShape {
@@ -221,11 +221,11 @@ pub(crate) struct BlockCtx {
     block: BlockRect,
     tx: TxShape,
     chroma_ref: Option<(BlockRect, TxShape)>,
-    frame_mi_cols: usize,
-    frame_mi_rows: usize,
-    tile_mi_col_start: usize,
-    tile_mi_col_end: usize,
-    tile_mi_row_start: usize,
+    frame_mi_cols: u32,
+    frame_mi_rows: u32,
+    tile_mi_col_start: u32,
+    tile_mi_col_end: u32,
+    tile_mi_row_start: u32,
     bit_depth: BitDepth,
     chroma: ChromaSampling,
 }
@@ -243,10 +243,10 @@ impl BlockCtx {
             block,
             tx,
             chroma_ref: None,
-            frame_mi_cols,
-            frame_mi_rows,
+            frame_mi_cols: frame_mi_cols as u32,
+            frame_mi_rows: frame_mi_rows as u32,
             tile_mi_col_start: 0,
-            tile_mi_col_end: frame_mi_cols,
+            tile_mi_col_end: frame_mi_cols as u32,
             tile_mi_row_start: 0,
             bit_depth,
             chroma,
@@ -262,11 +262,11 @@ impl BlockCtx {
     }
 
     pub(crate) const fn frame_mi_cols(self) -> usize {
-        self.frame_mi_cols
+        self.frame_mi_cols as usize
     }
 
     pub(crate) const fn frame_mi_rows(self) -> usize {
-        self.frame_mi_rows
+        self.frame_mi_rows as usize
     }
 
     pub(crate) fn with_tile_bounds(
@@ -275,9 +275,12 @@ impl BlockCtx {
         col_start: usize,
         col_end: usize,
     ) -> Self {
-        self.tile_mi_row_start = row_start.min(self.frame_mi_rows);
-        self.tile_mi_col_start = col_start.min(self.frame_mi_cols);
-        self.tile_mi_col_end = col_end.min(self.frame_mi_cols).max(self.tile_mi_col_start);
+        let frame_mi_rows = self.frame_mi_rows();
+        let frame_mi_cols = self.frame_mi_cols();
+        let col_start = col_start.min(frame_mi_cols);
+        self.tile_mi_row_start = row_start.min(frame_mi_rows) as u32;
+        self.tile_mi_col_start = col_start as u32;
+        self.tile_mi_col_end = col_end.min(frame_mi_cols).max(col_start) as u32;
         self
     }
 
@@ -340,8 +343,8 @@ impl BlockCtx {
         let plane_block = self.plane_block(plane);
         let (sub_x, sub_y) = self.chroma.subsampling(plane);
         let sb_mask = block_decoded.sb_size4().saturating_sub(1);
-        let x4 = (block.col4 & sb_mask) >> sub_x;
-        let y4 = (block.row4 & sb_mask) >> sub_y;
+        let x4 = (block.col4() & sb_mask) >> sub_x;
+        let y4 = (block.row4() & sb_mask) >> sub_y;
         let num_above_right =
             block_decoded.count_top_right_avail(plane.index(), x4, y4, plane_block.width4());
         let num_below_left =
@@ -372,7 +375,8 @@ impl BlockCtx {
         let (block, _) = self.plane_geometry(plane);
         let plane_block = self.plane_block(plane);
         let (sub_x, _) = self.chroma.subsampling(plane);
-        let above_decoded_cols = self.tile_mi_col_end.saturating_sub(block.col4) >> sub_x;
+        let above_decoded_cols =
+            (self.tile_mi_col_end.saturating_sub(block.col4) >> sub_x) as usize;
         above_decoded_cols
             .saturating_sub(plane_block.width4())
             .min(plane_block.width4())

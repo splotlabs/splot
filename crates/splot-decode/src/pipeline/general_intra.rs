@@ -223,7 +223,7 @@ pub(crate) fn swap_general_intra_scratch<T: ReconSample>(
 
 impl GeneralIntraReconCommand {
     pub(crate) fn reconstruct<T: ReconSample>(
-        self,
+        &self,
         arena: &mut crate::residual::pipeline::ResidualPlaneArena,
         coeffs_arena: &[i32],
         scratch: &mut GeneralIntraReconScratch<T>,
@@ -243,7 +243,7 @@ impl GeneralIntraReconCommand {
     }
 
     fn reconstruct_with_installed_quantizer<T: ReconSample>(
-        self,
+        &self,
         arena: &mut crate::residual::pipeline::ResidualPlaneArena,
         coeffs_arena: &[i32],
         scratch: &mut GeneralIntraReconScratch<T>,

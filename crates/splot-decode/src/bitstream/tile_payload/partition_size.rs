@@ -31,18 +31,18 @@ const BLOCK_SIZE_BY_LOG2_4X4: [[u8; MAX_LOG2_4X4 + 1]; MAX_LOG2_4X4 + 1] = {
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct BlockSize(usize);
+pub(crate) struct BlockSize(u8);
 
 impl BlockSize {
     pub(crate) fn new(index: usize) -> Result<Self, PartitionSizeError> {
         if index >= BLOCK_SIZES {
             return Err(block_size_out_of_range("bSize", index));
         }
-        Ok(Self(index))
+        Ok(Self(index as u8))
     }
 
     pub(crate) const fn index(self) -> usize {
-        self.0
+        self.0 as usize
     }
 
     pub(crate) fn num_4x4_wide(self) -> Result<usize, PartitionSizeError> {
@@ -77,7 +77,7 @@ impl BlockSize {
         let index = *BLOCK_SIZE_BY_LOG2_4X4
             .get(width_4x4.trailing_zeros() as usize)?
             .get(height_4x4.trailing_zeros() as usize)?;
-        (usize::from(index) < BLOCK_SIZES).then_some(Self(usize::from(index)))
+        (usize::from(index) < BLOCK_SIZES).then_some(Self(index))
     }
 }
 
