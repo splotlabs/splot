@@ -136,6 +136,30 @@ impl CoeffQuantStateAccumulator {
         self.tcq_state = usize::from(q0) << 1;
     }
 
+    /// [`Self::apply_entry`] for an entry above scan index 0, which is
+    /// neither the DC nor parity-hidden; returns its magnitude.
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient quant step")]
+    #[inline(always)]
+    pub(crate) fn ac_magnitude(
+        &mut self,
+        index: usize,
+        quant: u32,
+        tcq_q0: bool,
+    ) -> Result<u32, CoeffQuantStateWriteError> {
+        self.cul_level = 4.min(u32::from(self.cul_level).saturating_add(quant)) as u8;
+        let mut quant = quant;
+        if !self.lossless && self.use_tcq && quant > 0 {
+            quant = checked_mul_sub(index, quant, 2, u32::from(tcq_q0), "quant * 2 - q0")?;
+        }
+        if quant >= MAX_CONFORMING_QUANT_MAGNITUDE {
+            return Err(CoeffQuantStateWriteError::QuantMagnitudeOutOfRange {
+                index,
+                magnitude: quant,
+            });
+        }
+        Ok(quant)
+    }
+
     #[inline]
     pub(crate) fn apply_entry(
         &mut self,
@@ -182,7 +206,11 @@ impl CoeffQuantStateAccumulator {
     }
 }
 
-#[inline]
+#[allow(
+    clippy::inline_always,
+    reason = "measured: per-coefficient sign and quant step"
+)]
+#[inline(always)]
 pub(crate) fn apply_derived_nonzero_coeff_quant_state_step(
     block: &mut TransformCoeffBlockState,
     state: &mut CoeffQuantStateAccumulator,

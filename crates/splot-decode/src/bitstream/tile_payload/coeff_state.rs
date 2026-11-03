@@ -148,6 +148,17 @@ impl TransformCoeffBlockState {
         self.level.first_chunk().unwrap_or(&ZERO_LEVEL_GRID)
     }
 
+    /// The level grid with the quantised coefficients and their nonzero
+    /// end, for a pass that writes the coefficients directly.
+    #[inline]
+    pub(crate) fn level_and_quant_mut(&mut self) -> (&LevelGrid, &mut [i32], &mut usize) {
+        (
+            self.level.first_chunk().unwrap_or(&ZERO_LEVEL_GRID),
+            &mut self.quant,
+            &mut self.quant_end,
+        )
+    }
+
     /// The level grid, for a pass that reads and writes it directly.
     #[inline]
     pub(crate) fn level_grid_mut(&mut self) -> Option<&mut LevelGrid> {

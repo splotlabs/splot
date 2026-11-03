@@ -105,6 +105,11 @@ impl CoeffLevelMasks {
     }
 
     #[inline]
+    pub(crate) fn is_nonzero(&self, scan_index: usize) -> bool {
+        (self.nonzero[(scan_index >> 6) & (SCAN_MASK_WORDS - 1)] >> (scan_index & 63)) & 1 != 0
+    }
+
+    #[inline]
     pub(crate) fn tcq_q0(&self, scan_index: usize) -> bool {
         (self.tcq_q0[(scan_index >> 6) & (SCAN_MASK_WORDS - 1)] >> (scan_index & 63)) & 1 != 0
     }
