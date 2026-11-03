@@ -163,14 +163,14 @@ impl GeneralIntraResidualPlan {
         let start = u32::try_from(arena.planes.len()).unwrap_or(u32::MAX);
         for plane in &self.planes {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
-            let (role, pass_eob_u_nonzero) = if chroma_pair::can_hold_for_cctx_pair(plane, work_unit)
-            {
-                (CctxRole::HoldU, false)
-            } else if plane.plane_id == PlaneId::V && !plane.defer_reconstruction && pending_u {
-                (CctxRole::PairV, eob_u_nonzero)
-            } else {
-                (CctxRole::None, eob_u_nonzero)
-            };
+            let (role, pass_eob_u_nonzero) =
+                if chroma_pair::can_hold_for_cctx_pair(plane, work_unit) {
+                    (CctxRole::HoldU, false)
+                } else if plane.plane_id == PlaneId::V && !plane.defer_reconstruction && pending_u {
+                    (CctxRole::PairV, eob_u_nonzero)
+                } else {
+                    (CctxRole::None, eob_u_nonzero)
+                };
             plane.parse(
                 work_unit,
                 symbols,
@@ -478,7 +478,7 @@ impl ResidualPlanePlan {
 impl ParsedGeneralIntraResidual {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn reconstruct<T: ReconSample>(
-        self,
+        &self,
         arena: &mut ResidualPlaneArena,
         coeffs_arena: &[i32],
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
@@ -690,7 +690,8 @@ impl ParsedResidualPlane {
 
     fn chroma_pair_parts(
         &self,
-    ) -> core::result::Result<(&ResidualPlanePlan, &LumaCoeffBlock), GeneralIntraResidualError> {
+    ) -> core::result::Result<(&ResidualPlanePlan, &LumaCoeffBlock), GeneralIntraResidualError>
+    {
         match &self.kind {
             ParsedResidualPlaneKind::Single {
                 coeffs,
