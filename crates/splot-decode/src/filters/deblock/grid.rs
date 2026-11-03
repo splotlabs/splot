@@ -412,6 +412,7 @@ impl MiGridStorage {
         order: &RowOrder,
         mi_rows: usize,
         rows: &Range<usize>,
+        allow_sub_pu: bool,
     ) -> Result<(), DeblockError> {
         let Some((dropped, new)) = self.window.slide(rows) else {
             return Ok(());
@@ -443,6 +444,7 @@ impl MiGridStorage {
                 &new,
                 base,
                 self.chroma_subsampling,
+                allow_sub_pu,
             );
         }
         let built = (new.start - base) * self.mi_cols;
@@ -502,6 +504,7 @@ impl ChromaMiGridStorage {
         plane: usize,
         mi_rows: usize,
         rows: &Range<usize>,
+        allow_sub_pu: bool,
     ) -> Result<(), DeblockError> {
         let plane_id = match plane {
             0 => splot_recon::PlaneId::U,
@@ -569,6 +572,7 @@ impl ChromaMiGridStorage {
                 &new,
                 row_base,
                 (sub_x, sub_y),
+                allow_sub_pu,
             );
         }
         if !base.fully_covered {
@@ -719,7 +723,9 @@ fn mark_block_candidates(
     rows: &Range<usize>,
     first: usize,
     (sub_x, sub_y): (usize, usize),
+    allow_sub_pu: bool,
 ) {
+    let sub_pu_size = block.sub_pu_size.filter(|_| allow_sub_pu);
     let (r, c) = (block.r as usize, block.c as usize);
     let row_end = r.saturating_add(block.n4h as usize).min(mi_rows);
     let col_end = c.saturating_add(block.n4w as usize).min(mi_cols);
@@ -728,7 +734,7 @@ fn mark_block_candidates(
     let words = flag_words(mi_cols);
     let (luma, chroma) = (block.luma_prediction, block.chroma_prediction);
     let first_word = col_start & !63;
-    let column_lines = block.sub_pu_size.map(|size| {
+    let column_lines = sub_pu_size.map(|size| {
         (col_start + 1..col_end)
             .filter(|&col| on_sub_pu_line(col, (luma.base_c, chroma.base_c), size.width, sub_x))
             .fold(0u128, |lines, col| {
@@ -754,7 +760,7 @@ fn mark_block_candidates(
                 *word |= lines;
             }
         }
-        if let Some(size) = block.sub_pu_size
+        if let Some(size) = sub_pu_size
             && row > row_start
             && on_sub_pu_line(row, (luma.base_r, chroma.base_r), size.height, sub_y)
             && let Some(sub_pu) =

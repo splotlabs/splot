@@ -573,8 +573,13 @@ impl FrameDeblock {
     fn fill_grids(&mut self, rows: Range<usize>) -> Result<(), DeblockError> {
         let rows = (rows.start & !1)..rows.end.saturating_add(rows.end & 1).min(self.mi_rows);
         let blocks = &self.records.blocks;
-        self.grid
-            .fill(blocks, &self.order[0], self.mi_rows, &rows)?;
+        self.grid.fill(
+            blocks,
+            &self.order[0],
+            self.mi_rows,
+            &rows,
+            self.filter.allow_df_sub_pu,
+        )?;
         for (plane, slot) in self.chroma.iter_mut().enumerate() {
             if let Some(chroma) = slot {
                 chroma.fill(
@@ -584,6 +589,7 @@ impl FrameDeblock {
                     plane,
                     self.mi_rows,
                     &rows,
+                    self.filter.allow_df_sub_pu,
                 )?;
             }
         }
