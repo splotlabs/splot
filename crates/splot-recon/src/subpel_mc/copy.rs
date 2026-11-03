@@ -501,7 +501,7 @@ fn subpel_vertical_rows_into<'a, T: ReconSample + 'a, O>(
     rows_of: impl Fn(usize) -> [&'a [T]; NUM_TAPS],
 ) {
     let w = params.w;
-    let packed = Simd::from_array(*taps).cast::<i16>();
+    let pairs = paired_taps(taps);
     for r in 0..params.h {
         let rows = rows_of(r);
         let row_out = &mut output[r * output_stride..][..w];
@@ -509,11 +509,9 @@ fn subpel_vertical_rows_into<'a, T: ReconSample + 'a, O>(
         macro_rules! vectors {
             ($lanes:literal) => {
                 while c + $lanes <= w {
-                    let mut sum = Simd::<i32, $lanes>::splat(0);
-                    for t in 0..NUM_TAPS {
-                        let lanes = reference_lanes::<$lanes, T>(rows[t], c).cast();
-                        sum = tap_mac(sum, lanes, i32::from(packed[t]));
-                    }
+                    let sum = paired_tap_sum::<$lanes, NUM_TAPS>(&pairs, |t| {
+                        reference_lanes::<$lanes, T>(rows[t], c).cast()
+                    });
                     let prescale = FILTER_BITS - INTER_ROUND0;
                     finish.rounded(sum, prescale, inter_round1, &mut row_out[c..c + $lanes]);
                     c += $lanes;

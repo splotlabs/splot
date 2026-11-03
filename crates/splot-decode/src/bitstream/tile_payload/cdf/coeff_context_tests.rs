@@ -7,9 +7,9 @@ const PAD: usize = super::super::super::coeff_state::LEVEL_GRID_PAD;
 
 /// Re-lays a flat `txw` x `txh` level grid into the padded-stride layout the
 /// production contexts read.
-fn padded(flat: &[u8], txw: usize, txh: usize) -> Vec<u8> {
+fn padded(flat: &[u8], txw: usize, txh: usize) -> Box<LevelGrid> {
     let stride = txw + PAD;
-    let mut out = vec![0u8; stride * (txh + PAD)];
+    let mut out = Box::new([0u8; LEVEL_GRID_LEN]);
     for row in 0..txh {
         for col in 0..txw {
             out[row * stride + col] = flat[row * txw + col];
@@ -116,16 +116,17 @@ fn coeff_br_contexts_cover_neighbour_and_plane_rules() {
 }
 
 #[test]
-fn coeff_br_is_total_for_out_of_bounds_and_short_slices() {
+fn coeff_br_reads_padding_and_low_grid_entries() {
     let full = padded(&[9u8; 16], 4, 4);
     assert_eq!(br(15, 0, false, 0).ctx(&full), 0);
-    let short = [0u8, 9, 0, 0];
-    assert_eq!(br(0, 0, false, 0).ctx(&short), 3);
+    let mut low = [0u8; LEVEL_GRID_LEN];
+    low[1] = 9;
+    assert_eq!(br(0, 0, false, 0).ctx(&low), 3);
 }
 
 #[test]
 fn coeff_br_is_total_for_pathological_geometry() {
-    let level = [0u8; 16];
+    let level = [0u8; LEVEL_GRID_LEN];
     let _ = CoeffBrContext {
         row: usize::MAX,
         col: usize::MAX,
@@ -306,13 +307,14 @@ fn coeff_base_chroma_2d_reads_three_neighbours_not_five() {
 }
 
 #[test]
-fn coeff_base_is_total_for_short_slice_and_pathological_geometry() {
-    let short = [0u8, 9];
+fn coeff_base_is_total_for_low_grid_entries_and_pathological_geometry() {
+    let mut low = [0u8; LEVEL_GRID_LEN];
+    low[1] = 9;
     assert_eq!(
-        cb8(0, 0, false, false, 0, 0).select(&short),
+        cb8(0, 0, false, false, 0, 0).select(&low),
         CoeffBaseSelection::Hf { ctx: 2 }
     );
-    let z = [0u8; 4];
+    let z = [0u8; LEVEL_GRID_LEN];
     let _ = CoeffBaseContext {
         row: usize::MAX,
         col: usize::MAX,
@@ -343,7 +345,7 @@ fn dc_sign_ctx_nets_above_and_left_votes() {
 #[test]
 fn dc_sign_ctx_honours_the_position_offset_and_max_bounds() {
     let above = [1u8, 2, 2]; // index 0 = -1 (skipped), 1,2 = +1 each
-    let z = [0u8; 4];
+    let z = [0u8; LEVEL_GRID_LEN];
     assert_eq!(dc_sign_ctx(&above, &z, 1, 0, 2, 0), 2); // +1+1 = +2 -> ctx 2
     let short = [2u8]; // only index 0 in range
     assert_eq!(dc_sign_ctx(&short, &z, 0, 0, 4, 0), 2); // only above[0]=+1 -> ctx 2

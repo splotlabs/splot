@@ -29,6 +29,7 @@ use crate::inverse_transform::{
     ColumnPass, InverseTransform1dType, RowQuad, inverse_identity_transform, inverse_transform_1d,
     inverse_transform_1d_columns, inverse_transform_1d_row_quad, inverse_walsh_hadamard,
 };
+use crate::inverse_transform_2d_8bit::{Transform8, inverse_transform_2d_8bit};
 use crate::{BitDepth, ReconError, Result};
 
 /// Maximum 1D transform length: the § 7.15.4 adjusted transform size caps each
@@ -146,9 +147,30 @@ pub(super) fn inverse_transform_2d_with_scratch(
             residual_len: residual.len(),
         });
     }
-    let intermediate = &mut intermediate[..expected];
 
     let odd_ratio = log2_w.abs_diff(log2_h) % 2 == 1;
+
+    if params.bit_depth == BitDepth::Eight
+        && !params.lossless
+        && let (InverseTransform2dDim::Kernel(row), InverseTransform2dDim::Kernel(col)) =
+            (params.row_type, params.col_type)
+        && inverse_transform_2d_8bit(
+            Transform8 {
+                row,
+                col,
+                w,
+                h,
+                rescale: odd_ratio,
+                row_shift: params.row_shift,
+                col_shift: params.col_shift,
+            },
+            dequant,
+            residual,
+            intermediate,
+        )
+    {
+        return Ok(());
+    }
 
     let mut buf_in = [0i32; MAX_DIM];
     let mut buf_out = [0i32; MAX_DIM];
@@ -181,6 +203,7 @@ pub(super) fn inverse_transform_2d_with_scratch(
         bit_depth: params.bit_depth,
     };
     let coded_rows = dequant.len() / w;
+    let intermediate = &mut intermediate[..expected];
     let mut nonzero_rows = 0u32;
     let mut row = 0;
     while row < coded_rows {

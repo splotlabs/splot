@@ -23,7 +23,7 @@
 use crate::dequant_process::{DequantBlockParams, dequantize_block};
 use crate::inverse_transform_2d_outer::{InverseTransform2dOuter, inverse_transform_2d_outer};
 use crate::reconstruct::reconstruct_add_residual;
-use crate::secondary_transform::{SecondaryInverseTransform, secondary_inverse_transform};
+use crate::secondary_transform::{SecondaryInverseTransform, secondary_inverse_transform_prefix};
 use crate::{ReconSample, Result};
 
 /// Reconstructs one transform block from its decoded quantized coefficients,
@@ -119,9 +119,7 @@ pub fn dequantize_with_secondary(
     let Some(secondary) = secondary else {
         return Ok(coded);
     };
-    dequant[coded..].fill(0);
-    secondary_inverse_transform(dequant, secondary)?;
-    Ok(dequant.len())
+    secondary_inverse_transform_prefix(dequant, coded, secondary)
 }
 
 #[cfg(test)]

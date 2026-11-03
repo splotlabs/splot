@@ -12,7 +12,7 @@
 use crate::error::{ReconError, Result};
 use crate::format::{BitDepth, ReconSample};
 use crate::math::round2_i32;
-use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
+use std::simd::{Simd, ToBytes, cmp::SimdOrd, num::SimdInt, num::SimdUint, simd_swizzle};
 mod clipped_edges;
 mod copy;
 mod fullpel_u8;
@@ -2048,6 +2048,96 @@ fn tap_mac<const LANES: usize>(
     tap: i32,
 ) -> Simd<i32, LANES> {
     accumulator + samples.cast::<i32>() * Simd::<i16, LANES>::splat(tap as i16).cast::<i32>()
+}
+
+/// Tap pairs `2j, 2j + 1` of `taps` repeated across 16 lanes, the weights of
+/// [`paired_tap_sum`]; taps past `taps.len()` are zero.
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn paired_taps(taps: &[i32]) -> [Simd<i16, 16>; NUM_TAPS / 2] {
+    let mut pairs = [Simd::splat(0); NUM_TAPS / 2];
+    for (pair, taps) in pairs.iter_mut().zip(taps.chunks(2)) {
+        let [a, b] =
+            [taps[0], taps.get(1).copied().unwrap_or(0)].map(|tap| (tap as i16).to_ne_bytes());
+        let lanes = Simd::<u32, 8>::splat(u32::from_ne_bytes([a[0], a[1], b[0], b[1]]));
+        *pair = Simd::from_ne_bytes(lanes.to_ne_bytes());
+    }
+    pairs
+}
+
+/// Adjacent `i16` products summed in `i32`, which lowers to `pmaddwd`.
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn multiply_add_pairs(values: Simd<i16, 16>, weights: Simd<i16, 16>) -> Simd<i32, 8> {
+    let product = values.cast::<i32>() * weights.cast::<i32>();
+    simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
+        + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15])
+}
+
+/// `Σ taps[t] * rows(t)` over `t < TAPS` for `pairs` from [`paired_taps`],
+/// each pair of rows one interleave and one multiply-add. Integer sums are
+/// exact, so the pairing leaves the result of the per-tap order unchanged.
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn paired_tap_sum<const LANES: usize, const TAPS: usize>(
+    pairs: &[Simd<i16, 16>; NUM_TAPS / 2],
+    rows: impl Fn(usize) -> Simd<i16, LANES>,
+) -> Simd<i32, LANES> {
+    let row16 = |t| Simd::<i16, 16>::from_slice(rows(t).as_array());
+    let row8 = |t| Simd::<i16, 8>::from_slice(rows(t).as_array());
+    match LANES {
+        16 => {
+            let (mut low, mut high) = (Simd::splat(0), Simd::splat(0));
+            for (pair, &weights) in pairs.iter().enumerate().take(TAPS / 2) {
+                let (a, b) = (row16(2 * pair), row16(2 * pair + 1));
+                let lo = simd_swizzle!(
+                    a,
+                    b,
+                    [0, 16, 1, 17, 2, 18, 3, 19, 8, 24, 9, 25, 10, 26, 11, 27]
+                );
+                let hi = simd_swizzle!(
+                    a,
+                    b,
+                    [4, 20, 5, 21, 6, 22, 7, 23, 12, 28, 13, 29, 14, 30, 15, 31]
+                );
+                low += multiply_add_pairs(lo, weights);
+                high += multiply_add_pairs(hi, weights);
+            }
+            let sum: Simd<i32, 16> = simd_swizzle!(
+                low,
+                high,
+                [0, 1, 2, 3, 8, 9, 10, 11, 4, 5, 6, 7, 12, 13, 14, 15]
+            );
+            Simd::from_slice(sum.as_array())
+        }
+        8 => {
+            let mut sum = Simd::<i32, 8>::splat(0);
+            for (pair, &weights) in pairs.iter().enumerate().take(TAPS / 2) {
+                let (a, b) = (row8(2 * pair), row8(2 * pair + 1));
+                let x = simd_swizzle!(a, b, [0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15]);
+                sum += multiply_add_pairs(x, weights);
+            }
+            Simd::from_slice(sum.as_array())
+        }
+        4 => {
+            let row4 = |t| Simd::<i16, 4>::from_slice(rows(t).as_array());
+            let mut sum = Simd::<i32, 4>::splat(0);
+            for (pair, &weights) in pairs.iter().enumerate().take(TAPS / 2) {
+                let x = simd_swizzle!(row4(2 * pair), row4(2 * pair + 1), [0, 4, 1, 5, 2, 6, 3, 7]);
+                let weights: Simd<i16, 8> = simd_swizzle!(weights, [0, 1, 2, 3, 4, 5, 6, 7]);
+                let product = x.cast::<i32>() * weights.cast::<i32>();
+                sum += simd_swizzle!(product, [0, 2, 4, 6]) + simd_swizzle!(product, [1, 3, 5, 7]);
+            }
+            Simd::from_slice(sum.as_array())
+        }
+        _ => {
+            let mut sum = Simd::<i32, LANES>::splat(0);
+            for t in 0..TAPS {
+                sum = tap_mac(sum, rows(t), i32::from(pairs[t / 2][t % 2]));
+            }
+            sum
+        }
+    }
 }
 
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]

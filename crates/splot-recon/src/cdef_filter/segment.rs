@@ -40,9 +40,9 @@ impl CdefLumaSegment {
     /// samples wide) and records each block's window range. Returns `false`,
     /// with every range set to `[0, u16::MAX]`, when the tap reach leaves
     /// the rows.
-    pub fn gather(
+    pub fn gather<T: crate::ReconSample>(
         &mut self,
-        samples: &[u16],
+        samples: &[T],
         width: usize,
         stride: usize,
         origin: (usize, usize),
@@ -91,10 +91,10 @@ impl CdefPairSegment {
     /// [`CdefLumaSegment::gather`] for the two chroma planes `u` and `v`,
     /// which share `width` and `stride`. A failed gather sets every range to
     /// `u16::MAX`.
-    pub fn gather(
+    pub fn gather<T: crate::ReconSample>(
         &mut self,
-        u: &[u16],
-        v: &[u16],
+        u: &[T],
+        v: &[T],
         width: usize,
         stride: usize,
         origin: (usize, usize),
@@ -124,13 +124,13 @@ impl CdefPairSegment {
 /// `y0 - TAP_REACH` on, as one slice whose row `r` starts at `r * stride`,
 /// provided they lie inside `width` and `samples` and rows `stride` apart do
 /// not overlap (`stride` is at least `width`).
-fn reach_rows(
-    samples: &[u16],
+fn reach_rows<T>(
+    samples: &[T],
     width: usize,
     stride: usize,
     (x0, y0): (usize, usize),
     (span, rows): (usize, usize),
-) -> Option<&[u16]> {
+) -> Option<&[T]> {
     let left = x0.checked_sub(TAP_REACH)?;
     if stride < width || left.checked_add(span)? > width {
         return None;
@@ -143,10 +143,20 @@ fn reach_rows(
     samples.get(first..)?.get(..len)
 }
 
+/// Eight samples widened to `u16` lanes.
+#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+#[inline(always)]
+fn widen8<T: crate::ReconSample>(samples: &[T]) -> Option<Simd<u16, 8>> {
+    if let Some(samples) = T::u8_slice(samples) {
+        return Some(Simd::<u8, 8>::from_array(*samples.first_chunk()?).cast());
+    }
+    Some(Simd::from_array(*T::u16_slice(samples)?.first_chunk()?))
+}
+
 /// Copies the luma segment's tap rows into `pad` and returns the least and
 /// greatest sample of each block's 12x12 window.
-fn gather_luma(
-    samples: &[u16],
+fn gather_luma<T: crate::ReconSample>(
+    samples: &[T],
     width: usize,
     stride: usize,
     pad: &mut [u16; LUMA_SEGMENT_AREA],
@@ -165,7 +175,7 @@ fn gather_luma(
             .get_mut(row * CDEF_SEGMENT_STRIDE..)?
             .first_chunk_mut::<CDEF_SEGMENT_STRIDE>()?;
         for (chunk, start) in STARTS.into_iter().enumerate() {
-            let lanes = Simd::<u16, 8>::from_slice(&src[start..start + 8]);
+            let lanes = widen8(&src[start..start + 8])?;
             lanes.copy_to_slice(&mut dst[start..start + 8]);
             min[chunk] = min[chunk].simd_min(lanes);
             max[chunk] = max[chunk].simd_max(lanes);
@@ -191,9 +201,9 @@ fn gather_luma(
 /// planes' window ranges. Block `b` covers plane columns `4b..4b + 8`: the
 /// three 8-column chunks of a row hold blocks 0, 2 and 3, and block 1 is the
 /// upper half of chunk 0 and the lower half of chunk 1.
-fn gather_pair(
-    u_samples: &[u16],
-    v_samples: &[u16],
+fn gather_pair<T: crate::ReconSample>(
+    u_samples: &[T],
+    v_samples: &[T],
     width: usize,
     stride: usize,
     pad: &mut [u16; PAIR_SEGMENT_AREA],
@@ -212,8 +222,8 @@ fn gather_pair(
             .first_chunk_mut::<CDEF_PAIR_SEGMENT_STRIDE>()?;
         for (chunk, start) in [0, 8, PAIR_SPAN - 8].into_iter().enumerate() {
             let planes = [
-                Simd::<u16, 8>::from_slice(&u_row[start..start + 8]),
-                Simd::from_slice(&v_row[start..start + 8]),
+                widen8(&u_row[start..start + 8])?,
+                widen8(&v_row[start..start + 8])?,
             ];
             for plane in 0..2 {
                 min[plane][chunk] = min[plane][chunk].simd_min(planes[plane]);
@@ -253,7 +263,8 @@ fn gather_pair(
 /// block's window range selects the kernel: the linear kernel, which skips
 /// `constrain`, when `cdef_window_linear` admits the range; its `CLAMP`
 /// mode, which clips each tap to the centre -/+ strength, when
-/// `cdef_window_clamped` admits it; else the general kernel. The taps of
+/// `cdef_window_clamped` admits it; else the 32-lane kernel when
+/// `cdef_wide8_fits` admits the filter, or the general kernel. The taps of
 /// one lane all come from one plane, so the larger plane range bounds every
 /// tap difference. Returns `false` when `block` is not below
 /// [`CDEF_SEGMENT_BLOCKS`].
@@ -288,18 +299,164 @@ pub fn cdef_filter_block_chroma_pair_segment(
     if cdef_window_clamped(filter, range) {
         return clamped!(true);
     }
+    if cdef_wide8_fits(filter) {
+        return cdef_by_families!(
+            filter,
+            cdef_filter_rows_wide8::<CDEF_PAIR_SEGMENT_STRIDE, 4, 4, SPAN, AREA>(
+                pad, filter, starts, out, 8
+            ),
+            cdef_copy_centre_rows::<8, CDEF_PAIR_SEGMENT_STRIDE, 4, 4, AREA>(pad, 4, out, 8)
+        )
+        .is_some();
+    }
     cdef_filter_block_rows::<8, 16, false, CDEF_PAIR_SEGMENT_STRIDE, 4, 4, SPAN, AREA>(
         pad, 4, filter, starts, out, 8,
     )
     .is_some()
 }
 
+/// Whether [`cdef_filter_rows_wide8`] computes `filter` exactly: besides
+/// [`cdef_i8_diffs_fit`], the primary sum `2 * pair0 + pair1`, at most
+/// `6 * pri_str`, and the secondary sum `2 * family0 + family1`, at most
+/// `12 * sec_str`, fit `i8`.
+fn cdef_wide8_fits(filter: &CdefBlockFilter) -> bool {
+    cdef_i8_diffs_fit(filter) && filter.pri_str <= 21 && filter.sec_str <= 10
+}
+
+/// [`cdef_filter_rows_diff8`] over a segment's `ROWS`-row block, 8 lanes
+/// wide, four rows per 32-lane vector, for filters [`cdef_wide8_fits`] admits. The constrained
+/// taps are summed in `i8` per family, the primary as `2 * pair0 + pair1`
+/// for `Cdef_Pri_Taps` `[4, 2]` or `pair0 + pair1` for `[3, 3]`, then widen
+/// once and take the remaining weight 2 or 3.
+///
+/// The `i8` lanes of a quad are rows 0, 2, 1, 3, the order in which a
+/// saturating pack of the `i16` row pairs `(0, 1)` and `(2, 3)` leaves them.
+/// Kept out of line: inlined into the kernel dispatch it ran more
+/// instructions.
+#[inline(never)]
+fn cdef_filter_rows_wide8<
+    const STRIDE: usize,
+    const CENTER: usize,
+    const ROWS: usize,
+    const SPAN: usize,
+    const AREA: usize,
+    const PRI: bool,
+    const SEC: bool,
+>(
+    pad: &[u16; AREA],
+    filter: &CdefBlockFilter,
+    starts: &CdefTapStarts,
+    out: &mut [u16],
+    out_stride: usize,
+) -> Option<()> {
+    let (center_view, pri_views, sec_views) =
+        cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
+    let heavy_first = (filter.pri_str >> filter.coeff_shift) & 1 == 0;
+    let pri_double = Simd::<i8, 32>::splat(if heavy_first { -1 } else { 0 });
+    let pri_weight = Simd::<i16, 16>::splat(if heavy_first { 2 } else { 3 });
+    let pri = CdefConstrain8::<32>::new(filter.pri_str, filter.damping);
+    let sec = CdefConstrain8::<32>::new(filter.sec_str, filter.damping);
+    let narrow = |[low, high]: [Simd<i16, 16>; 2]| -> Simd<i8, 32> {
+        let lanes: Simd<i16, 32> = simd_swizzle!(
+            low,
+            high,
+            [
+                0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23, 8, 9, 10, 11, 12, 13, 14,
+                15, 24, 25, 26, 27, 28, 29, 30, 31
+            ]
+        );
+        lanes
+            .simd_max(Simd::splat(i16::from(i8::MIN)))
+            .simd_min(Simd::splat(i16::from(i8::MAX)))
+            .cast()
+    };
+    let widen = |lanes: Simd<i8, 32>| -> [Simd<i16, 16>; 2] {
+        [
+            simd_swizzle!(
+                lanes,
+                [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]
+            )
+            .cast(),
+            simd_swizzle!(
+                lanes,
+                [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]
+            )
+            .cast(),
+        ]
+    };
+    for first in (0..ROWS).step_by(4) {
+        let quad = |view: &[u16; SPAN]| -> Option<[Simd<i16, 16>; 2]> {
+            let row = |row: usize| {
+                let lanes = view.get((first + row) * STRIDE..)?.first_chunk::<8>()?;
+                Some(Simd::<u16, 8>::from_array(*lanes))
+            };
+            let pair = |row0, row1| -> Option<Simd<i16, 16>> {
+                Some(
+                    simd_swizzle!(
+                        row(row0)?,
+                        row(row1)?,
+                        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+                    )
+                    .cast(),
+                )
+            };
+            Some([pair(0, 1)?, pair(2, 3)?])
+        };
+        let center = quad(center_view)?;
+        let (mut min, mut max) = (Simd::<i8, 32>::splat(0), Simd::<i8, 32>::splat(0));
+        macro_rules! tap {
+            ($view:expr, $constrain:expr) => {{
+                let [low, high] = quad($view)?;
+                let diff = narrow([low - center[0], high - center[1]]);
+                if PRI && SEC {
+                    min = min.simd_min(diff);
+                    max = max.simd_max(diff);
+                }
+                $constrain.apply_diff(diff)
+            }};
+        }
+        let mut sum = [Simd::<i16, 16>::splat(0); 2];
+        if PRI {
+            let pair0 = tap!(pri_views[0], pri) + tap!(pri_views[1], pri);
+            let pair1 = tap!(pri_views[2], pri) + tap!(pri_views[3], pri);
+            let primary = widen(pair0 + pair1 + (pair0 & pri_double));
+            sum = [primary[0] * pri_weight, primary[1] * pri_weight];
+        }
+        if SEC {
+            let family0 = tap!(sec_views[0], sec)
+                + tap!(sec_views[1], sec)
+                + tap!(sec_views[2], sec)
+                + tap!(sec_views[3], sec);
+            let family1 = tap!(sec_views[4], sec)
+                + tap!(sec_views[5], sec)
+                + tap!(sec_views[6], sec)
+                + tap!(sec_views[7], sec);
+            let secondary = widen(family0 + family0 + family1);
+            sum = [sum[0] + secondary[0], sum[1] + secondary[1]];
+        }
+        let offset = sum.map(|sum| (sum + Simd::splat(8) + (sum >> 15)) >> 4);
+        let offset = if PRI && SEC {
+            widen(narrow(offset).simd_max(min).simd_min(max))
+        } else {
+            offset
+        };
+        for half in 0..2 {
+            let filtered = (center[half] + offset[half]).cast::<u16>().to_array();
+            let row = first + 2 * half;
+            cdef_output_row::<8>(out, out_stride, row)?.copy_from_slice(&filtered[..8]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+            cdef_output_row::<8>(out, out_stride, row + 1)?.copy_from_slice(&filtered[8..]); // splot-copy-ok: publish paired SIMD-filtered rows into output
+        }
+    }
+    Some(())
+}
+
 /// AV2 § 7.18.3 CDEF over interior 8x8 luma block `block` of `segment`.
 /// With `use_range`, the block's window range selects the kernel: the
 /// linear kernel, which skips `constrain`, when `cdef_window_linear` admits
 /// the range; its `CLAMP` mode, which clips each tap to the centre -/+
-/// strength, when `cdef_window_clamped` admits it; else `u8` lanes when the
-/// range is below 256 and the filter fits them. Other blocks take the
+/// strength, when `cdef_window_clamped` admits it; else the 32-lane kernel
+/// when `cdef_wide8_fits` admits the filter, or `u8` lanes when the range is
+/// below 256 and the filter fits them. Other blocks take the
 /// kernel of [`cdef_filter_block_interior_to`]. Returns `false` without
 /// writing when `block` is not below [`CDEF_SEGMENT_BLOCKS`], `out_stride` is
 /// below 8, or `out` cannot hold the block at `out_stride`.
@@ -352,6 +509,16 @@ pub fn cdef_filter_block_segment(
     }
     if cdef_window_clamped(filter, range) {
         return clamped!(true);
+    }
+    if cdef_wide8_fits(filter) {
+        return cdef_by_families!(
+            filter,
+            cdef_filter_rows_wide8::<CDEF_SEGMENT_STRIDE, 2, 8, SPAN, AREA>(
+                pad, filter, starts, out, out_stride
+            ),
+            copy!()
+        )
+        .is_some();
     }
     if range <= 255 && cdef_u8_lanes_fit(filter) {
         return cdef_by_families!(

@@ -48,7 +48,7 @@ fn transform_block_state_is_zero_initialized_and_row_major() {
     assert_eq!(state.height(), 3);
     assert_eq!(stride, 4 + LEVEL_GRID_PAD);
     assert_eq!(state.coeff_count(), 12);
-    assert_eq!(state.level(), vec![0; padded_len].as_slice());
+    assert!(state.level().iter().all(|&level| level == 0));
     assert!(state.quant_sign.is_empty());
     assert_eq!(state.quant_sign(), vec![0; padded_len].as_slice());
     assert!((0..state.coeff_count()).all(|pos| state.quant_at(pos).unwrap() == 0));
@@ -64,6 +64,15 @@ fn transform_block_state_is_zero_initialized_and_row_major() {
     assert_eq!(state.level()[2 * stride + 1], 7);
     assert_eq!(state.quant_sign()[2 * stride + 1], -1);
     assert_eq!(state.quant_at(9).unwrap(), -12);
+}
+
+#[test]
+fn transform_block_state_reuse_after_larger_block_zeroes_whole_grid() {
+    let mut large = TransformCoeffBlockState::new(32, 32).unwrap();
+    large.set_level(31, 31, 5).unwrap();
+    drop(large);
+    let small = TransformCoeffBlockState::new(4, 4).unwrap();
+    assert!(small.level().iter().all(|&level| level == 0));
 }
 
 #[test]

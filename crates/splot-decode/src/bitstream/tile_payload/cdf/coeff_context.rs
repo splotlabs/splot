@@ -6,6 +6,8 @@
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_SIG_COEF_CONTEXTS_2D, SIG_REF_DIFF_OFFSET_NUM};
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
 
+use super::super::coeff_state::{LEVEL_GRID_LEN, LevelGrid};
+
 const SIG_COEF_CONTEXTS_EOB: usize = 4;
 
 const LF_SIG_COEF_CONTEXTS_2D_UV: usize = 8;
@@ -50,13 +52,20 @@ fn clamped_level_at(level: &[u8], stride: usize, row: usize, col: usize, limit: 
         .map_or(0, |&value| u32::from(value).min(limit))
 }
 
-/// [`clamped_level_at`] for the neighbour `(dr, dc)` of the flat position
-/// `base`, with the same wrapping index arithmetic.
+/// The clamped level of the neighbour `(dr, dc)` of the flat position
+/// `base`. Every neighbour of a block position lies inside the grid's
+/// padded extent, so the index mask never changes a valid index.
 #[inline]
-fn level_near(level: &[u8], base: usize, stride: usize, dr: usize, dc: usize, limit: u32) -> u32 {
-    level
-        .get(base.wrapping_add(dr.wrapping_mul(stride)).wrapping_add(dc))
-        .map_or(0, |&value| u32::from(value).min(limit))
+fn level_near(
+    level: &LevelGrid,
+    base: usize,
+    stride: usize,
+    dr: usize,
+    dc: usize,
+    limit: u32,
+) -> u32 {
+    let index = base.wrapping_add(dr.wrapping_mul(stride)).wrapping_add(dc);
+    u32::from(level[index & (LEVEL_GRID_LEN - 1)]).min(limit)
 }
 
 pub(crate) const fn coeff_base_eob_ctx(c: usize, bwl: u32, height: usize) -> usize {
@@ -101,7 +110,7 @@ impl CoeffBrContext {
         reason = "measured: plain inline leaves two out-of-line calls in the level loop"
     )]
     #[inline(always)]
-    pub(crate) fn ctx(self, level: &[u8]) -> usize {
+    pub(crate) fn ctx(self, level: &LevelGrid) -> usize {
         let is_dc = self.row == 0 && self.col == 0;
         let class_idx = tx_class_idx(self.tx_class);
         let mag = match class_idx {
@@ -122,7 +131,7 @@ impl CoeffBrContext {
     /// Clamped neighbour sum for one class; a constant class makes every
     /// offset a constant.
     #[inline]
-    fn neighbour_mag<const CLASS: usize>(self, level: &[u8]) -> u32 {
+    fn neighbour_mag<const CLASS: usize>(self, level: &LevelGrid) -> u32 {
         let base = self.row.wrapping_mul(self.stride).wrapping_add(self.col);
         let at = |[dr, dc]: [usize; 2]| {
             level_near(level, base, self.stride, dr, dc, MAX_BASE_BR_RANGE - 1)
@@ -187,7 +196,7 @@ impl CoeffBaseContext {
         reason = "the coefficient loop calls this per coefficient; keep it inlined beside the encoder facade"
     )]
     #[inline(always)]
-    pub(crate) fn select(&self, level: &[u8]) -> CoeffBaseSelection {
+    pub(crate) fn select(&self, level: &LevelGrid) -> CoeffBaseSelection {
         let class_idx = tx_class_idx(self.tx_class);
         let mag = match class_idx {
             1 => self.neighbour_mag::<1>(level),
@@ -248,7 +257,7 @@ impl CoeffBaseContext {
     /// Clamped neighbour sum for one class; a constant class makes every
     /// offset a constant.
     #[inline]
-    fn neighbour_mag<const CLASS: usize>(&self, level: &[u8]) -> u32 {
+    fn neighbour_mag<const CLASS: usize>(&self, level: &LevelGrid) -> u32 {
         let lf_limit = self.is_lf && !(self.is_hidden && self.c == 0);
         let near_limit = if lf_limit { 5 } else { 3 };
         let far_limit = if lf_limit && CLASS == 0 { 5 } else { 3 };

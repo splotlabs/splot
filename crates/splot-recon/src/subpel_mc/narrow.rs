@@ -205,19 +205,15 @@ fn vertical<const LANES: usize, const TAPS: usize, O, F: SubpelOutput<O>>(
     finish: &mut F,
 ) {
     let width = if LANES == 16 { width } else { LANES };
-    let taps = Simd::<i16, NUM_TAPS>::from_array(core::array::from_fn(|tap| {
-        taps.get(tap).map_or(0, |&tap| tap as i16)
-    }));
+    let pairs = paired_taps(taps);
     let strip_len = (height + TAPS - 1) * LANES;
     for row in 0..height {
         let row_out = &mut output[row * output_stride..][..width];
         for (strip, lanes_out) in row_out.chunks_exact_mut(LANES).enumerate() {
             let window = &intermediate[strip * strip_len + row * LANES..][..TAPS * LANES];
-            let mut sum = Simd::<i32, LANES>::splat(0);
-            for tap in 0..TAPS {
-                let lanes = Simd::from_slice(&window[tap * LANES..]);
-                sum = tap_mac(sum, lanes, i32::from(taps[tap]));
-            }
+            let sum = paired_tap_sum::<LANES, TAPS>(&pairs, |tap| {
+                Simd::from_slice(&window[tap * LANES..])
+            });
             finish.rounded(sum, 0, inter_round1, lanes_out);
         }
     }
