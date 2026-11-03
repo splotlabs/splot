@@ -158,7 +158,13 @@ pub(crate) fn walk_nonzero_coeff_scan<'a>(
         return Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width });
     }
     let coeff_count = block.coeff_count();
-    for (scan_index, scan_pos) in scan[..eob].iter().copied().enumerate().rev() {
+    // A full-size scan table is a permutation of the block's positions.
+    let positions = if scan.len() == coeff_count {
+        &[][..]
+    } else {
+        &scan[..eob]
+    };
+    for (scan_index, scan_pos) in positions.iter().copied().enumerate().rev() {
         let pos = usize::from(scan_pos);
         if pos >= coeff_count {
             return Err(CoeffLoopContextError::ScanWalkPositionOutOfRange {
