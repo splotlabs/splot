@@ -437,7 +437,7 @@ fn reference_plane<T: ReconSample>(
     last_row: i32,
     tile_offset: ByteOffset,
 ) -> Result<(ReferencePlaneView<'_, T>, usize, usize)> {
-    let (view, _, _) = reference.plane_view(plane, last_row, tile_offset)?;
+    let view = reference.plane_view(plane, last_row, tile_offset)?;
     let (width, height) = (view.width(), view.height());
     Ok((view, width, height))
 }

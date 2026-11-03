@@ -149,7 +149,9 @@ struct CcsoPlaneConfig {
     max_sample: i32,
     band_shift: u8,
     offset_lut: Vec<i32>,
-    offset_lut_simd: [[u8; 16]; 5],
+    offset_lut_bytes: [u8; 256],
+    /// Band-only offsets by 8-bit centre sample, `offset_lut_bytes[sample >> band_shift]`.
+    band_offsets: [u8; 256],
 }
 
 pub(crate) fn prepare_ccso(
@@ -234,13 +236,16 @@ fn prepare_ccso_plane(
             CcsoError::Allocation(_) => CcsoError::Allocation(plane_id(plane)),
             other => other,
         })?;
-    let mut offset_lut_simd = [[0u8; 16]; 5];
-    if offset_lut.len() > offset_lut_simd.len() * 16 {
+    let band_shift = bit_depth
+        .bits()
+        .checked_sub(max_band_log2)
+        .ok_or(CcsoError::Params)?;
+    let mut offset_lut_bytes = [0u8; 256];
+    if offset_lut.len() > 80 {
         return Err(CcsoError::Params);
     }
-    for (index, &offset) in offset_lut.iter().enumerate() {
-        let value = i8::try_from(offset).map_err(|_| CcsoError::Params)?;
-        offset_lut_simd[index / 16][index % 16] = value as u8;
+    for (byte, &offset) in offset_lut_bytes.iter_mut().zip(&offset_lut) {
+        *byte = i8::try_from(offset).map_err(|_| CcsoError::Params)? as u8;
     }
     Ok(CcsoPlaneConfig {
         sub_x,
@@ -255,12 +260,15 @@ fn prepare_ccso_plane(
         max_band,
         sample_offsets: ccso_sample_offsets(ext_filter)?,
         max_sample: i32::from(bit_depth.max_sample()),
-        band_shift: bit_depth
-            .bits()
-            .checked_sub(max_band_log2)
-            .ok_or(CcsoError::Params)?,
+        band_shift,
         offset_lut,
-        offset_lut_simd,
+        offset_lut_bytes,
+        band_offsets: core::array::from_fn(|sample| {
+            (sample as u32)
+                .checked_shr(u32::from(band_shift))
+                .and_then(|band| offset_lut_bytes.get(band as usize).copied())
+                .unwrap_or(0)
+        }),
     })
 }
 
@@ -663,41 +671,65 @@ fn ccso_lanes_span<L: ReconSample, const SUB_X: usize>(
         };
         Some(class * Simd::splat(config.max_band as u8) + band)
     };
-    let chunks = config.offset_lut.len().div_ceil(CCSO_LANES);
     let max_sample = Simd::<i16, CCSO_LANES>::splat(config.max_sample as i16);
+    let apply = |output: &[u16; CCSO_LANES], offset: Simd<u8, CCSO_LANES>| {
+        (Simd::from_array(*output).cast::<i16>() + offset.cast::<i8>().cast())
+            .simd_max(Simd::splat(0))
+            .simd_min(max_sample)
+            .cast::<u16>()
+    };
+    let band_offsets = |centers: &[u8]| -> Option<Simd<u8, CCSO_LANES>> {
+        let centers = centers.get(..CCSO_LANES << SUB_X)?;
+        Some(Simd::from_array(core::array::from_fn(|lane| {
+            config.band_offsets[usize::from(centers[lane << SUB_X])]
+        })))
+    };
     let filter = |rows: [&[L]; 3], output: &[u16; CCSO_LANES]| -> Option<Simd<u16, CCSO_LANES>> {
-        let lut_index = if L::u8_slice(rows[0]).is_some() {
-            index_u8(rows)
-        } else {
-            index_u16(rows)
-        }?;
-        let mut offset = Simd::<u8, CCSO_LANES>::splat(0);
-        for (chunk, values) in config.offset_lut_simd.iter().take(chunks).enumerate() {
-            offset |= Simd::from_array(*values)
-                .swizzle_dyn(lut_index - Simd::splat((chunk * CCSO_LANES) as u8));
-        }
-        Some(
-            (Simd::from_array(*output).cast::<i16>() + offset.cast::<i8>().cast())
-                .simd_max(Simd::splat(0))
-                .simd_min(max_sample)
-                .cast::<u16>(),
-        )
+        let offset = match L::u8_slice(rows[0]) {
+            Some(centers) if config.bo_only => band_offsets(centers)?,
+            centers => {
+                let lut_index = if centers.is_some() {
+                    index_u8(rows)
+                } else {
+                    index_u16(rows)
+                }?
+                .to_array();
+                Simd::from_array(core::array::from_fn(|lane| {
+                    config.offset_lut_bytes[usize::from(lut_index[lane])]
+                }))
+            }
+        };
+        Some(apply(output, offset))
     };
     let mut x = first;
-    let lanes = centers
-        .chunks_exact(step)
-        .zip(taps0.chunks_exact(step))
-        .zip(taps1.chunks_exact(step))
-        .zip(outputs.chunks_exact_mut(CCSO_LANES));
-    for (((centers, taps0), taps1), output) in lanes {
-        let Some(output) = output.first_chunk_mut::<CCSO_LANES>() else {
-            break;
-        };
-        let Some(samples) = filter([centers, taps0, taps1], output) else {
-            break;
-        };
-        *output = samples.to_array();
-        x += CCSO_LANES;
+    if let (true, Some(centers)) = (config.bo_only, L::u8_slice(centers)) {
+        for (centers, output) in centers
+            .chunks_exact(step)
+            .zip(outputs.chunks_exact_mut(CCSO_LANES))
+        {
+            let (Some(offset), Some(output)) = (band_offsets(centers), output.first_chunk_mut())
+            else {
+                break;
+            };
+            *output = apply(output, offset).to_array();
+            x += CCSO_LANES;
+        }
+    } else {
+        let lanes = centers
+            .chunks_exact(step)
+            .zip(taps0.chunks_exact(step))
+            .zip(taps1.chunks_exact(step))
+            .zip(outputs.chunks_exact_mut(CCSO_LANES));
+        for (((centers, taps0), taps1), output) in lanes {
+            let Some(output) = output.first_chunk_mut::<CCSO_LANES>() else {
+                break;
+            };
+            let Some(samples) = filter([centers, taps0, taps1], output) else {
+                break;
+            };
+            *output = samples.to_array();
+            x += CCSO_LANES;
+        }
     }
     let tail_end = x_end.min(match usize::try_from(max_luma_x as isize - max_dx) {
         Ok(last) => (last >> SUB_X) + 1,

@@ -711,12 +711,12 @@ fn cdef_filter_rows<
 
 /// Per-block § 7.18.3 `constrain` for 8-bit samples in `u8` lanes.
 #[derive(Clone, Copy)]
-struct CdefConstrain8 {
-    threshold: Simd<u8, 16>,
-    shift: Simd<u8, 16>,
+struct CdefConstrain8<const N: usize> {
+    threshold: Simd<u8, N>,
+    shift: Simd<u8, N>,
 }
 
-impl CdefConstrain8 {
+impl<const N: usize> CdefConstrain8<N> {
     fn new(threshold: i32, damping: i32) -> Self {
         Self {
             threshold: Simd::splat(threshold as u8),
@@ -728,7 +728,7 @@ impl CdefConstrain8 {
     /// clamp to `[-clip, clip]` that [`CdefConstrain::apply`] computes.
     #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
     #[inline(always)]
-    fn apply(self, tap: Simd<u8, 16>, center: Simd<u8, 16>) -> Simd<i8, 16> {
+    fn apply(self, tap: Simd<u8, N>, center: Simd<u8, N>) -> Simd<i8, N> {
         let diff = tap.simd_max(center) - tap.simd_min(center);
         let clip = self.threshold.saturating_sub(diff >> self.shift);
         let magnitude = diff.simd_min(clip).cast::<i8>();
@@ -777,8 +777,8 @@ fn cdef_filter_rows_8bit<
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i8, 16>::splat(tap as i8));
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i8, 16>::splat(tap as i8));
-    let pri = CdefConstrain8::new(filter.pri_str, filter.damping);
-    let sec = CdefConstrain8::new(filter.sec_str, filter.damping);
+    let pri = CdefConstrain8::<16>::new(filter.pri_str, filter.damping);
+    let sec = CdefConstrain8::<16>::new(filter.sec_str, filter.damping);
     let row_pair = |view: &[u16; SPAN], row: usize| -> Option<Simd<u8, 16>> {
         let first = Simd::<u16, 8>::from_array(*view.get(row * STRIDE..)?.first_chunk()?);
         let second = Simd::<u16, 8>::from_array(*view.get((row + 1) * STRIDE..)?.first_chunk()?);
@@ -902,12 +902,12 @@ fn cdef_i8_diffs_fit(filter: &CdefBlockFilter) -> bool {
         })
 }
 
-impl CdefConstrain8 {
+impl<const N: usize> CdefConstrain8<N> {
     /// `constrain(diff)` on a tap difference in `i8` lanes; the wrapping
     /// `abs` read as `u8` is `|diff|` also for `-128`.
     #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
     #[inline(always)]
-    fn apply_diff(self, diff: Simd<i8, 16>) -> Simd<i8, 16> {
+    fn apply_diff(self, diff: Simd<i8, N>) -> Simd<i8, N> {
         let magnitude = diff.abs().cast::<u8>();
         let clip = self
             .threshold
@@ -945,8 +945,8 @@ fn cdef_filter_rows_diff8<
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| Simd::<i8, 16>::splat(tap as i8));
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| Simd::<i8, 16>::splat(tap as i8));
-    let pri = CdefConstrain8::new(filter.pri_str, filter.damping);
-    let sec = CdefConstrain8::new(filter.sec_str, filter.damping);
+    let pri = CdefConstrain8::<16>::new(filter.pri_str, filter.damping);
+    let sec = CdefConstrain8::<16>::new(filter.sec_str, filter.damping);
     let (low, high) = (
         Simd::splat(i16::from(i8::MIN)),
         Simd::splat(i16::from(i8::MAX)),

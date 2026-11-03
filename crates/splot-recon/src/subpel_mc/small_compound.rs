@@ -14,7 +14,10 @@
 //! window with clamped columns gathers them with a byte shuffle; both are the
 //! spec read.
 
+mod bytes8;
+
 use super::*;
+use bytes8::Bytes8;
 use std::simd::{ToBytes, simd_swizzle};
 
 type Row = Simd<i32, 4>;
@@ -157,6 +160,16 @@ trait CellReference<'a, T: ReconSample>: Sized {
     fn rebind(&self, reference: &ReferencePlaneView<'a, T>) -> Self;
 
     fn predict(&self) -> Option<Self::Rows>;
+
+    /// Predicts both references of one cell, then blends and stores it;
+    /// returns `false` without writing when either reference declines.
+    fn store<O: ReconSample>(
+        cells: [&Self; 2],
+        params: &SubpelPredictParams,
+        cwp_weight: i16,
+        output: &mut [O],
+        output_stride: usize,
+    ) -> bool;
 }
 
 impl<T: ReconSample> Cell<'_, T> {
@@ -284,6 +297,18 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell<'a, T> {
         }
         Some(out)
     }
+
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    fn store<O: ReconSample>(
+        cells: [&Self; 2],
+        params: &SubpelPredictParams,
+        cwp_weight: i16,
+        output: &mut [O],
+        output_stride: usize,
+    ) -> bool {
+        store::<T, O, Self, 4, 4>(cells, params, cwp_weight, output, output_stride)
+    }
 }
 
 /// The reference views, output and output stride of a second plane that
@@ -297,30 +322,26 @@ pub(super) type SecondPlane<'s, 'a, T, O> =
 /// `cwp_weight` in `0..=16` a blended value is a weighted mean of predictor
 /// values over 16, so it fits `i16` before its clamp.
 #[inline(never)]
-fn fused<'a, T: ReconSample, O: ReconSample, C, const LANES: usize, const ROWS: usize>(
+fn fused<'a, T: ReconSample, O: ReconSample, C: CellReference<'a, T>>(
     references: [(&ReferencePlaneView<'a, T>, &SubpelPredictParams); 2],
     cwp_weight: i16,
     output: &mut [O],
     output_stride: usize,
     second: Option<SecondPlane<'_, 'a, T, O>>,
-) -> usize
-where
-    C: CellReference<'a, T, Rows = [Simd<i32, LANES>; ROWS]>,
-{
+) -> usize {
     let [(reference0, params0), (reference1, params1)] = references;
     let (Some(cell0), Some(cell1)) = (C::new(reference0, params0), C::new(reference1, params1))
     else {
         return 0;
     };
-    if !store::<T, O, C, LANES, ROWS>([&cell0, &cell1], params0, cwp_weight, output, output_stride)
-    {
+    if !C::store([&cell0, &cell1], params0, cwp_weight, output, output_stride) {
         return 0;
     }
     let Some(([view0, view1], output, output_stride)) = second else {
         return 1;
     };
     let cells = [cell0.rebind(view0), cell1.rebind(view1)];
-    1 + usize::from(store::<T, O, C, LANES, ROWS>(
+    1 + usize::from(C::store(
         [&cells[0], &cells[1]],
         params0,
         cwp_weight,
@@ -329,8 +350,6 @@ where
     ))
 }
 
-/// Predicts both references of one cell, then blends and stores it; returns
-/// `false` without writing when either reference declines.
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
 fn store<'a, T: ReconSample, O: ReconSample, C, const LANES: usize, const ROWS: usize>(
@@ -391,7 +410,8 @@ struct Cell8<'a, T> {
     h_taps: Simd<i16, NUM_TAPS>,
     /// `h_taps` packed for the gathered `u16` lanes.
     gather_taps: Simd<i16, NUM_TAPS>,
-    v_taps: &'static [i32],
+    v_pairs: [Simd<i16, 16>; NUM_TAPS / 2],
+    v_count: usize,
     horizontal: bool,
     vertical: bool,
 }
@@ -493,17 +513,17 @@ fn fill8<T: ReconSample, L, const HORIZONTAL: bool>(
 
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
-fn vertical8<const TAPS: usize>(lines: &[Line8], taps: &[i32], shift: u32) -> Option<[Row8; 8]> {
-    let taps: &[i32; TAPS] = taps.try_into().ok()?;
+fn vertical8<const TAPS: usize>(
+    lines: &[Line8; 8 + NUM_TAPS - 1],
+    pairs: &[Simd<i16, 16>; NUM_TAPS / 2],
+    shift: u32,
+) -> [Row8; 8] {
     let mut out = [Row8::splat(0); 8];
     for (i, out) in out.iter_mut().enumerate() {
-        let mut sum = Row8::splat(1 << (shift - 1));
-        for (&tap, &line) in taps.iter().zip(&lines[i..]) {
-            sum = tap_mac(sum, line, tap);
-        }
-        *out = sum >> shift as i32;
+        let sum = paired_tap_sum::<8, TAPS>(pairs, |tap| lines[(i + tap).min(lines.len() - 1)]);
+        *out = (sum + Row8::splat(1 << (shift - 1))) >> shift as i32;
     }
-    Some(out)
+    out
 }
 
 /// One source-row loop serves every vertical tap count: a loop per count let
@@ -513,18 +533,18 @@ fn vertical8<const TAPS: usize>(lines: &[Line8], taps: &[i32], shift: u32) -> Op
 #[inline(always)]
 fn two_pass8<T: ReconSample, const HORIZONTAL: bool>(cell: &Cell8<'_, T>) -> Option<[Row8; 8]> {
     let mut lines = [Line8::splat(0); 8 + NUM_TAPS - 1];
-    let count = (8 + cell.v_taps.len() - 1).min(lines.len());
+    let count = (8 + cell.v_count - 1).min(lines.len());
     fill8::<T, _, HORIZONTAL>(cell, &mut lines[..count], |line| line)?;
     let shift = if HORIZONTAL {
         INTER_ROUND1_COMPOUND
     } else {
         INTER_ROUND0
     };
-    match cell.v_taps.len() {
-        2 => vertical8::<2>(&lines, cell.v_taps, shift),
-        4 => vertical8::<4>(&lines, cell.v_taps, shift),
-        6 => vertical8::<6>(&lines, cell.v_taps, shift),
-        _ => vertical8::<NUM_TAPS>(&lines, cell.v_taps, shift),
+    match cell.v_count {
+        2 => Some(vertical8::<2>(&lines, &cell.v_pairs, shift)),
+        4 => Some(vertical8::<4>(&lines, &cell.v_pairs, shift)),
+        6 => Some(vertical8::<6>(&lines, &cell.v_pairs, shift)),
+        _ => Some(vertical8::<NUM_TAPS>(&lines, &cell.v_pairs, shift)),
     }
 }
 
@@ -549,14 +569,7 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
             let (column, index) = clamped_window(first, params);
             (column, Some(index))
         };
-        let (v_start, v_end) = ACTIVE_TAP_SPANS[filter][v_phase];
-        let v_count = match v_end - v_start {
-            0..=2 => 2,
-            3..=4 => 4,
-            5..=6 => 6,
-            _ => NUM_TAPS,
-        };
-        let v_start = v_start.min(NUM_TAPS - v_count);
+        let (v_start, v_count) = even_tap_span(filter, v_phase);
         let top = (params.start_y >> SCALE_SUBPEL_BITS) - 3 + v_start as i32;
         let unclamped = (top >= params.first_y && top + 6 + NUM_TAPS as i32 <= params.last_y)
             .then(|| top as usize * reference.stride + column);
@@ -571,7 +584,8 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
             last_y: params.last_y,
             h_taps: slide::intermediate_taps::<T>(&SUBPEL_FILTERS[filter][h_phase]),
             gather_taps: slide::intermediate_taps::<u16>(&SUBPEL_FILTERS[filter][h_phase]),
-            v_taps: &SUBPEL_FILTERS[filter][v_phase][v_start..v_start + v_count],
+            v_pairs: paired_taps(filter, v_phase),
+            v_count,
             horizontal: h_phase != 0,
             vertical: v_phase != 0,
         })
@@ -610,6 +624,18 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
             }
         }
     }
+
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    fn store<O: ReconSample>(
+        cells: [&Self; 2],
+        params: &SubpelPredictParams,
+        cwp_weight: i16,
+        output: &mut [O],
+        output_stride: usize,
+    ) -> bool {
+        store::<T, O, Self, 8, 8>(cells, params, cwp_weight, output, output_stride)
+    }
 }
 
 /// Writes a blended 4x4 or 8x8 cell, then the same cell of `second`, and
@@ -638,11 +664,12 @@ pub(super) fn predict<T: ReconSample, O: ReconSample>(
     }
     let references = [(reference0, params0), (reference1, params1)];
     match (params0.w, params0.h) {
-        (4, 4) => {
-            fused::<T, O, Cell<'_, T>, 4, 4>(references, cwp_weight, output, output_stride, second)
+        (4, 4) => fused::<T, O, Cell<'_, T>>(references, cwp_weight, output, output_stride, second),
+        (8, 8) if T::u8_slice(reference0.samples).is_some() => {
+            fused::<T, O, Bytes8<'_, T>>(references, cwp_weight, output, output_stride, second)
         }
         (8, 8) => {
-            fused::<T, O, Cell8<'_, T>, 8, 8>(references, cwp_weight, output, output_stride, second)
+            fused::<T, O, Cell8<'_, T>>(references, cwp_weight, output, output_stride, second)
         }
         _ => 0,
     }

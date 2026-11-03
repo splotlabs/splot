@@ -201,25 +201,24 @@ fn cfl_420_simd_matches_scalar_at_block_and_frame_edges() {
         .map(|index| ((index * 17 + 11) & 1023) as u16)
         .collect();
     let average_q3 = 37;
-    let fills: [(usize, FillLumaAc); 3] = [
-        (0, fill_cfl_luma_ac_420_u16::<0>),
-        (1, fill_cfl_luma_ac_420_u16::<1>),
-        (2, fill_cfl_luma_ac_420_u16::<2>),
-    ];
-    for (filter, fill) in fills {
+    for filter in 0..3 {
         for (x, y, width, height) in [(0, 0, 32, 4), (1, 1, 64, 3), (31, 2, 32, 3), (50, 4, 16, 2)]
         {
             let mut actual = Vec::new();
-            assert!(fill(
-                &luma,
-                0,
-                plane_width,
+            let geometry = CflAcGeometry {
+                origin_y: 0,
+                stride: plane_width,
                 plane_width,
                 plane_height,
                 x,
                 y,
                 width,
                 height,
+            };
+            assert!(fill_cfl_luma_ac_420_any(
+                Some(filter),
+                &luma,
+                geometry,
                 average_q3,
                 &mut actual,
             ));
@@ -257,9 +256,6 @@ fn cfl_420_simd_matches_scalar_at_block_and_frame_edges() {
         }
     }
 }
-
-type FillLumaAc =
-    fn(&[u16], usize, usize, usize, usize, usize, usize, usize, usize, i32, &mut Vec<i32>) -> bool;
 
 #[test]
 fn cfl_luma_sample_repeats_last_downsampled_row_at_frame_edge() {
@@ -737,7 +733,7 @@ fn cfl_predict_lanes_match_scalar_over_random_inputs() {
                 .map(|_| (lcg(&mut state) % (16 * max as usize + 1)) as i32 - 8 * max)
                 .collect();
             let mut actual = vec![0u16; len];
-            cfl_predict_lanes_u16(dc, alpha_q3, max, &luma_ac, &mut actual);
+            cfl_predict_lanes(dc, alpha_q3, max, &luma_ac, &mut actual);
             let expected: Vec<u16> = luma_ac
                 .iter()
                 .map(|&ac| cfl_predict(dc, alpha_q3, max, ac) as u16)
@@ -800,7 +796,7 @@ fn cfl_luma_edge_sums_match_per_sample_q3_over_random_planes() {
                         .step_by(step)
                         .map(|r| luma.q3(x - 1, y + r, false, r == 0, None).unwrap() as u32)
                         .sum();
-                    if let Some(lanes) = cfl_420_column_sum_u16(&luma, x - 1, y, rows, step) {
+                    if let Some(lanes) = cfl_420_column_sum(&luma, x - 1, y, rows, step) {
                         assert_eq!(lanes, column, "x={x} y={y} side={side} step={step}");
                         lane_columns += 1;
                     }

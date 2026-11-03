@@ -92,6 +92,24 @@ pub(super) trait SubpelOutput<O> {
         self.rounded(values.cast(), super::FILTER_BITS, inter_round1, output);
     }
 
+    /// Stores the `16 / width` rows of `width` lanes of `values`, which are
+    /// already `Round2(.., InterRound1)`.
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    fn rounded_rows(
+        &mut self,
+        values: Simd<i16, 16>,
+        width: usize,
+        output: &mut [O],
+        output_stride: usize,
+    ) {
+        for (row, lanes) in values.to_array().chunks_exact(width).enumerate() {
+            for (output, &value) in output[row * output_stride..][..width].iter_mut().zip(lanes) {
+                *output = self.one(i32::from(value));
+            }
+        }
+    }
+
     fn sixteen(&mut self, values: Simd<i32, 16>, output: &mut [O]) {
         for (output, value) in output.iter_mut().zip(values.to_array()) {
             *output = self.one(value);
@@ -179,6 +197,25 @@ impl SubpelOutput<u16> for ClippedU16SubpelOutput {
 
     #[allow(clippy::inline_always, reason = "direct u16 subpel output hot path")]
     #[inline(always)]
+    fn rounded_rows(
+        &mut self,
+        values: Simd<i16, 16>,
+        width: usize,
+        output: &mut [u16],
+        output_stride: usize,
+    ) {
+        let values = values
+            .simd_max(Simd::splat(0))
+            .simd_min(Simd::splat(self.max_sample as i16))
+            .cast::<u16>()
+            .to_array();
+        for (row, lanes) in values.chunks_exact(width).enumerate() {
+            output[row * output_stride..][..width].copy_from_slice(lanes); // splot-copy-ok: publish clipped SIMD prediction rows
+        }
+    }
+
+    #[allow(clippy::inline_always, reason = "direct u16 subpel output hot path")]
+    #[inline(always)]
     fn sixteen(&mut self, values: Simd<i32, 16>, output: &mut [u16]) {
         output.copy_from_slice(&self.clip(values).to_array()); // splot-copy-ok: publish sixteen clipped SIMD prediction lanes
     }
@@ -245,6 +282,25 @@ impl SubpelOutput<u8> for ClippedU8SubpelOutput {
         let values = ((values + Simd::splat(1 << (shift - 1))) >> shift as i16)
             .simd_clamp(Simd::splat(0), Simd::splat(i16::from(u8::MAX)));
         output[..LANES].copy_from_slice(values.cast::<u8>().as_array()); // splot-copy-ok: publish clipped SIMD prediction lanes
+    }
+
+    #[allow(clippy::inline_always, reason = "direct u8 subpel output hot path")]
+    #[inline(always)]
+    fn rounded_rows(
+        &mut self,
+        values: Simd<i16, 16>,
+        width: usize,
+        output: &mut [u8],
+        output_stride: usize,
+    ) {
+        let values = values
+            .simd_max(Simd::splat(0))
+            .simd_min(Simd::splat(i16::from(u8::MAX)))
+            .cast::<u8>()
+            .to_array();
+        for (row, lanes) in values.chunks_exact(width).enumerate() {
+            output[row * output_stride..][..width].copy_from_slice(lanes); // splot-copy-ok: publish clipped SIMD prediction rows
+        }
     }
 
     #[allow(clippy::inline_always, reason = "direct u8 subpel output hot path")]

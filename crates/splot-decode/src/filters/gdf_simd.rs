@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use std::simd::{
-    Mask, Select, Simd,
-    cmp::{SimdOrd, SimdPartialEq},
+    Simd,
+    cmp::SimdOrd,
     num::{SimdInt, SimdUint},
     simd_swizzle,
 };
@@ -209,22 +209,7 @@ fn tap_samples<const W: usize, const WIN: usize>(row: &[u16; WIN], col: usize) -
     Simd::<u16, W>::from_slice(&row[col..col + W]).cast()
 }
 
-/// Maps the biased gradient sums, already multiplied by `2 * SCALE`, to the
-/// filtered sample.
-fn finish_gdf_width_simd<const WIDTH: usize, const SCALE: i32, const ERROR_LEN: usize>(
-    base: Simd<u16, WIDTH>,
-    block: &GdfBlock,
-    error: &[i32; ERROR_LEN],
-    sums: [Simd<i32, WIDTH>; 3],
-) -> Simd<u16, WIDTH> {
-    add_residual(
-        base,
-        residual_with_error::<WIDTH, SCALE, ERROR_LEN>(block, error, sums),
-        block,
-    )
-}
-
-/// The residual that `finish_gdf_width_simd` adds.
+/// The residual of biased gradient sums, already multiplied by `2 * SCALE`.
 fn residual_with_error<const WIDTH: usize, const SCALE: i32, const ERROR_LEN: usize>(
     block: &GdfBlock,
     error: &[i32; ERROR_LEN],
@@ -334,7 +319,9 @@ const _: () = {
 /// Class-0 clip bounds and weights of one GDF table, the weights scaled by
 /// `gdf_index_scale` and packed per `SYM_PAIRS` entry as two i16 lanes.
 pub(super) struct GdfSymParams {
-    alpha: [i16; GDF_COORDS.len()],
+    /// Each tap's clip bounds `[-alpha, alpha]` as whole vectors, so the
+    /// clamps read them from memory instead of rebuilding them per row.
+    bounds: [[Simd<i16, 16>; 2]; GDF_COORDS.len()],
     pair_weights: [Simd<i16, 16>; SYM_PAIRS.len()],
     bias: [i32; 3],
     scale: i32,
@@ -349,7 +336,10 @@ impl GdfSymParams {
         let scale = gdf_index_scale(block);
         let bias = GDF_BIAS[block.ref_dst_idx][block.qp_idx].map(|bias| bias * i32::from(scale));
         Self {
-            alpha: core::array::from_fn(|k| alpha[k][0] as i16),
+            bounds: core::array::from_fn(|k| {
+                let alpha = alpha[k][0] as i16;
+                [Simd::splat(-alpha), Simd::splat(alpha)]
+            }),
             pair_weights: SYM_PAIRS.map(|(a, b, sum)| {
                 let weight = |k: usize| table[sum][k][0] * scale;
                 Simd::from_array(core::array::from_fn(|lane| {
@@ -397,8 +387,8 @@ fn multiply_add_pairs(x: Simd<i16, 16>, w: Simd<i16, 16>) -> Simd<i32, 8> {
 fn sym_comb<const K: usize, const ROW: usize>(
     window: &[&[u16; 28]; WINDOW_ROWS],
     center: Simd<i16, 16>,
-    (transposed, mirrored): (Mask<i16, 16>, Mask<i16, 16>),
-    alpha: i16,
+    (transposed, mirrored): (Simd<i16, 16>, Simd<i16, 16>),
+    &[low, high]: &[Simd<i16, 16>; 2],
 ) -> Simd<i16, 16> {
     let diffs = |tap: usize| {
         let (dy, dx) = GDF_COORDS[tap];
@@ -414,8 +404,8 @@ fn sym_comb<const K: usize, const ROW: usize>(
             ) - center,
         ]
     };
-    let pick = |mask: Mask<i16, 16>, [a, b]: [Simd<i16, 16>; 2], [c, d]: [Simd<i16, 16>; 2]| {
-        [mask.select(c, a), mask.select(d, b)]
+    let pick = |mask: Simd<i16, 16>, [a, b]: [Simd<i16, 16>; 2], [c, d]: [Simd<i16, 16>; 2]| {
+        [a ^ ((a ^ c) & mask), b ^ ((b ^ d) & mask)]
     };
     let (t, m, tm) = (class_tap(K, 1), class_tap(K, 2), class_tap(K, 3));
     let [above, below] = if t == K && m == K {
@@ -428,7 +418,6 @@ fn sym_comb<const K: usize, const ROW: usize>(
         let plain = pick(mirrored, diffs(K), diffs(m));
         pick(transposed, plain, pick(mirrored, diffs(t), diffs(tm)))
     };
-    let (low, high) = (Simd::splat(-alpha), Simd::splat(alpha));
     (above.simd_max(low).simd_min(high) + below.simd_max(low).simd_min(high))
         .simd_max(Simd::splat(-512))
         .simd_min(Simd::splat(511))
@@ -447,13 +436,14 @@ macro_rules! for_each_sym_pair {
     };
 }
 
-/// Filters in place row `ROW` of 16 samples of any class mix.
-#[allow(clippy::inline_always)]
-#[inline(always)]
+/// Filters in place row `ROW` of 16 samples of any class mix. Not inlined:
+/// across both rows LLVM would hoist the widened weights out of the
+/// multiply-adds and spill them.
+#[inline(never)]
 fn sym_row<const ROW: usize>(
     window: &[&[u16; 28]; WINDOW_ROWS],
     output: &mut [u16; 16],
-    masks: (Mask<i16, 16>, Mask<i16, 16>),
+    masks: (Simd<i16, 16>, Simd<i16, 16>),
     gradient: Simd<i32, 16>,
     block: &GdfBlock,
     params: &GdfSymParams,
@@ -473,29 +463,88 @@ fn sym_row<const ROW: usize>(
     for_each_sym_pair!(P => {
         const A: usize = SYM_PAIRS[P].0;
         const B: usize = SYM_PAIRS[P].1;
-        let a = sym_comb::<A, ROW>(window, center, masks, params.alpha[A]);
-        let b = sym_comb::<B, ROW>(window, center, masks, params.alpha[B]);
+        let a = sym_comb::<A, ROW>(window, center, masks, &params.bounds[A]);
+        let b = sym_comb::<B, ROW>(window, center, masks, &params.bounds[B]);
         let weights = params.pair_weights[P];
         for (sum, half) in sums[SYM_PAIRS[P].2].iter_mut().zip(interleave_pairs(a, b)) {
             *sum += multiply_add_pairs(half, weights);
         }
     });
-    let sums = sums.map(|[low, high]| {
+    let base = Simd::from_array(*output);
+    let residual = if block.ref_dst_idx == GDF_INTRA_REF_DST {
+        sym_residual::<8, 4096>(&GDF_INTRA_ERROR_I16[block.qp_idx], sums, block)
+    } else {
+        sym_residual::<5, 1024>(
+            &GDF_INTER_ERROR_I16[block.ref_dst_idx - 1][block.qp_idx],
+            sums,
+            block,
+        )
+    };
+    *output = add_residual(base, residual, block).to_array();
+}
+
+/// The error tables as `i16`, the inter ones padded to a power of two so
+/// that a masked index needs no bounds check.
+static GDF_INTRA_ERROR_I16: [[i16; 4096]; 6] = {
+    let mut table = [[0; 4096]; 6];
+    let mut index = 0;
+    while index < 6 * 4096 {
+        let value = GDF_INTRA_ERROR[index / 4096][index % 4096];
+        assert!(value == value as i16 as i32);
+        table[index / 4096][index % 4096] = value as i16;
+        index += 1;
+    }
+    table
+};
+static GDF_INTER_ERROR_I16: [[[i16; 1024]; 6]; 5] = {
+    let mut table = [[[0; 1024]; 6]; 5];
+    let mut index = 0;
+    while index < 5 * 6 * 1000 {
+        let (reference, qp, entry) = (index / 6000, index / 1000 % 6, index % 1000);
+        let value = GDF_INTER_ERROR[reference][qp][entry];
+        assert!(value == value as i16 as i32);
+        table[reference][qp][entry] = value as i16;
+        index += 1;
+    }
+    table
+};
+
+/// The residual of `sym_row` from its sums in `interleave_pairs` halves,
+/// already multiplied by `2 * SCALE`: each sum gives one error-table digit.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn sym_residual<const SCALE: i32, const LEN: usize>(
+    error: &[i16; LEN],
+    sums: [[Simd<i32, 8>; 2]; 3],
+    block: &GdfBlock,
+) -> Simd<i16, 16> {
+    const { assert!(LEN.is_power_of_two() && LEN >= (2 * SCALE * 2 * SCALE * 2 * SCALE) as usize) };
+    let digit_offset = Simd::splat((1 << 15) + (SCALE << 16));
+    let [first, second, third] = sums.map(|halves| {
+        let [low, high] = halves.map(|sum| {
+            ((sum + (sum >> 31) + digit_offset) >> 16)
+                .simd_max(Simd::splat(0))
+                .simd_min(Simd::splat(2 * SCALE - 1))
+        });
         simd_swizzle!(
             low,
             high,
             [0, 1, 2, 3, 8, 9, 10, 11, 4, 5, 6, 7, 12, 13, 14, 15]
         )
+        .cast::<i16>()
     });
-    let base = Simd::from_array(*output);
-    *output = if block.ref_dst_idx == GDF_INTRA_REF_DST {
-        let error = &GDF_INTRA_ERROR[block.qp_idx];
-        finish_gdf_width_simd::<16, 8, 4096>(base, block, error, sums)
+    let radix = Simd::splat(2 * SCALE as i16);
+    let pos = ((first * radix + second) * radix + third).to_array();
+    let error = Simd::from_array(core::array::from_fn(|lane| {
+        error[pos[lane] as usize & (LEN - 1)]
+    }));
+    let scaled_error = error * Simd::splat(block.pix_scale as i16);
+    let rounding = 12 - i16::from(block.bit_depth.bits());
+    if rounding == 0 {
+        scaled_error
     } else {
-        let error = &GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx];
-        finish_gdf_width_simd::<16, 5, 1000>(base, block, error, sums)
+        (scaled_error + Simd::splat(1 << (rounding - 1)) + (scaled_error >> 15)) >> rounding
     }
-    .to_array();
 }
 
 /// Filters in place a row pair of 16 samples whose class changes every two
@@ -521,10 +570,7 @@ pub(super) fn sym_rows(
     let index = (Simd::from_array(classes.map(|class| class.0)) & Simd::splat(3)).cast::<i16>();
     let lanes: Simd<i16, 16> =
         simd_swizzle!(index, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7]);
-    let masks = (
-        (lanes & Simd::splat(1)).simd_ne(Simd::splat(0)),
-        (lanes & Simd::splat(2)).simd_ne(Simd::splat(0)),
-    );
+    let masks = (-(lanes & Simd::splat(1)), -((lanes >> 1) & Simd::splat(1)));
     let gradient = bias * Simd::splat(params.scale) + Simd::splat(params.bias[2]);
     let gradient = simd_swizzle!(gradient, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7]);
     sym_row::<0>(window, top, masks, gradient, block, params);

@@ -914,7 +914,7 @@ impl<'a, T: ReconSample> LumaReference<'a, T> {
                 return Ok(view);
             }
         }
-        let (view, _, _) = self.samples.plane_view(PlaneId::Y, last_row, self.offset)?;
+        let view = self.samples.plane_view(PlaneId::Y, last_row, self.offset)?;
         self.view = Some(view);
         Ok(view)
     }

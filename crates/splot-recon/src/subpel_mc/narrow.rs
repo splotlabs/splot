@@ -10,6 +10,7 @@
 
 use super::clipped_edges::{ClampedWindow, WINDOW_STORAGE};
 use super::*;
+use std::simd::simd_swizzle;
 
 /// Runs the convolution when `params.w` is 4, 8 or a multiple of 16; any
 /// other width is left to the general core.
@@ -73,15 +74,8 @@ fn rows<const LANES: usize, T: ReconSample, O, F: SubpelOutput<O>>(
     let packed_taps = slide::intermediate_taps::<T>(h_taps);
     let v_filter = params.interp.pass_index(params.h as u32) as usize;
     let v_phase = ((params.start_y >> 6) & SUBPEL_MASK) as usize;
-    let (v_start, v_end) = ACTIVE_TAP_SPANS[v_filter][v_phase];
-    let v_count = match v_end - v_start {
-        0..=2 => 2,
-        3..=4 => 4,
-        5..=6 => 6,
-        _ => NUM_TAPS,
-    };
-    let v_start = v_start.min(NUM_TAPS - v_count);
-    let v_taps = &SUBPEL_FILTERS[v_filter][v_phase][v_start..v_start + v_count];
+    let (v_start, v_count) = even_tap_span(v_filter, v_phase);
+    let v_taps = paired_taps(v_filter, v_phase);
 
     let window_x = subpel_horizontal_window_x(reference, params);
     let prefetch_x = window_x.filter(|_| prefetches(reference.samples));
@@ -107,7 +101,35 @@ fn rows<const LANES: usize, T: ReconSample, O, F: SubpelOutput<O>>(
         round2_simd(sum, INTER_ROUND0).cast()
     };
     if LANES < 16 {
-        for (row, lanes) in intermediate.chunks_exact_mut(LANES).enumerate() {
+        let mut row = 0;
+        while row < row_count {
+            macro_rules! bytes {
+                ($row:expr) => {
+                    window_bytes(tap_window(
+                        reference,
+                        window_x,
+                        &clamped,
+                        &mut clamped_storage,
+                        source($row),
+                        width,
+                    ))
+                };
+            }
+            if row + 1 < row_count
+                && let Some(first) = bytes!(row)
+                && let Some(second) = bytes!(row + 1)
+            {
+                let pair = pairs::horizontal(pairs::join(first, second), packed_taps);
+                let lanes = &mut intermediate[row * LANES..][..2 * LANES];
+                if LANES == 8 {
+                    lanes.copy_from_slice(&pair.as_array()[..2 * LANES]); // splot-copy-ok: publish two intermediate rows
+                } else {
+                    let rows: Simd<i16, 8> = simd_swizzle!(pair, [0, 1, 2, 3, 8, 9, 10, 11]);
+                    lanes.copy_from_slice(&rows.as_array()[..2 * LANES]); // splot-copy-ok: publish two intermediate rows
+                }
+                row += 2;
+                continue;
+            }
             let window = tap_window(
                 reference,
                 window_x,
@@ -116,7 +138,8 @@ fn rows<const LANES: usize, T: ReconSample, O, F: SubpelOutput<O>>(
                 source(row),
                 width,
             );
-            lanes.copy_from_slice(filter(window, 0).as_array()); // splot-copy-ok: publish one intermediate vector
+            intermediate[row * LANES..][..LANES].copy_from_slice(filter(window, 0).as_array()); // splot-copy-ok: publish one intermediate vector
+            row += 1;
         }
     } else {
         for row in 0..row_count {
@@ -143,6 +166,24 @@ fn rows<const LANES: usize, T: ReconSample, O, F: SubpelOutput<O>>(
         }
     }
 
+    if F::INTER_ROUND1 == Some(INTER_ROUND1_NON_COMPOUND) && params.h.is_multiple_of(16 / LANES) {
+        let vertical = match v_count {
+            2 => paired_vertical::<LANES, 2, O, F>,
+            4 => paired_vertical::<LANES, 4, O, F>,
+            6 => paired_vertical::<LANES, 6, O, F>,
+            _ => paired_vertical::<LANES, NUM_TAPS, O, F>,
+        };
+        vertical(
+            &v_taps,
+            intermediate,
+            width,
+            params.h,
+            output,
+            output_stride,
+            finish,
+        );
+        return;
+    }
     let vertical = match v_count {
         2 => vertical::<LANES, 2, O, F>,
         4 => vertical::<LANES, 4, O, F>,
@@ -150,7 +191,7 @@ fn rows<const LANES: usize, T: ReconSample, O, F: SubpelOutput<O>>(
         _ => vertical::<LANES, NUM_TAPS, O, F>,
     };
     vertical(
-        v_taps,
+        &v_taps,
         intermediate,
         width,
         params.h,
@@ -159,6 +200,13 @@ fn rows<const LANES: usize, T: ReconSample, O, F: SubpelOutput<O>>(
         output_stride,
         finish,
     );
+}
+
+/// The first 16 samples of an 8-bit tap window.
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn window_bytes<T: ReconSample>(window: &[T]) -> Option<Simd<u8, 16>> {
+    Some(Simd::from_array(*T::u8_slice(window)?.first_chunk::<16>()?))
 }
 
 /// The `width + 7`-sample tap window of reference row `row`, read in place
@@ -195,7 +243,7 @@ fn tap_window<'a, T: ReconSample>(
 /// the tap rows of an output vector sit at constant offsets.
 #[allow(clippy::too_many_arguments)]
 fn vertical<const LANES: usize, const TAPS: usize, O, F: SubpelOutput<O>>(
-    taps: &[i32],
+    pairs: &[Simd<i16, 16>; NUM_TAPS / 2],
     intermediate: &[i16],
     width: usize,
     height: usize,
@@ -205,20 +253,48 @@ fn vertical<const LANES: usize, const TAPS: usize, O, F: SubpelOutput<O>>(
     finish: &mut F,
 ) {
     let width = if LANES == 16 { width } else { LANES };
-    let taps = Simd::<i16, NUM_TAPS>::from_array(core::array::from_fn(|tap| {
-        taps.get(tap).map_or(0, |&tap| tap as i16)
-    }));
     let strip_len = (height + TAPS - 1) * LANES;
     for row in 0..height {
         let row_out = &mut output[row * output_stride..][..width];
         for (strip, lanes_out) in row_out.chunks_exact_mut(LANES).enumerate() {
             let window = &intermediate[strip * strip_len + row * LANES..][..TAPS * LANES];
-            let mut sum = Simd::<i32, LANES>::splat(0);
-            for tap in 0..TAPS {
-                let lanes = Simd::from_slice(&window[tap * LANES..]);
-                sum = tap_mac(sum, lanes, i32::from(taps[tap]));
-            }
+            let sum = paired_tap_sum::<LANES, TAPS>(pairs, |tap| {
+                Simd::from_slice(&window[tap * LANES..])
+            });
             finish.rounded(sum, 0, inter_round1, lanes_out);
+        }
+    }
+}
+
+/// The non-compound vertical pass, `16 / LANES` output rows per
+/// [`pairs::weigh`]. Each `LANES`-wide strip keeps its rows contiguous, so a
+/// 16-lane load at row `k` is rows `k..k + 16 / LANES`, and the in-lane
+/// interleave of the loads at `k` and `k + 1` pairs every row with its
+/// successor. A non-compound value fits `i16`.
+#[allow(clippy::too_many_arguments)]
+fn paired_vertical<const LANES: usize, const TAPS: usize, O, F: SubpelOutput<O>>(
+    pairs: &[Simd<i16, 16>; NUM_TAPS / 2],
+    intermediate: &[i16],
+    width: usize,
+    height: usize,
+    output: &mut [O],
+    output_stride: usize,
+    finish: &mut F,
+) {
+    let weights = pairs;
+    let strip_len = (height + TAPS - 1) * LANES;
+    for row in (0..height).step_by(16 / LANES) {
+        for strip in 0..width / LANES {
+            let window =
+                &intermediate[strip * strip_len + row * LANES..][..(TAPS - 1) * LANES + 16];
+            let line = |k: usize| pairs::Pair::from_slice(&window[k * LANES..]);
+            let mut terms = [(line(0), line(1), weights[0]); NUM_TAPS / 2];
+            for (pair, term) in terms.iter_mut().enumerate().take(TAPS / 2) {
+                *term = (line(2 * pair), line(2 * pair + 1), weights[pair]);
+            }
+            let values = pairs::weigh::<INTER_ROUND1_NON_COMPOUND>(&terms[..TAPS / 2]);
+            let output = &mut output[row * output_stride + strip * LANES..];
+            finish.rounded_rows(values, LANES.min(16), output, output_stride);
         }
     }
 }
