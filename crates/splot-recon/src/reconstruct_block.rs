@@ -108,7 +108,7 @@ pub fn reconstruct_transform_block_residual_with_secondary<T: ReconSample>(
 /// zero, and are left unwritten).
 ///
 /// # Errors
-/// Propagates the [`dequantize_block`] or [`secondary_inverse_transform`] error.
+/// Propagates the [`dequantize_block`] or [`secondary_inverse_transform`](crate::secondary_inverse_transform) error.
 pub fn dequantize_with_secondary(
     params: &DequantBlockParams,
     quant: &[i32],
