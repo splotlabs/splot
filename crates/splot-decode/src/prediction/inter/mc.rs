@@ -842,7 +842,7 @@ pub(crate) fn plane_prediction<T: ReconSample>(
         last_y: scaling.last_y,
         bit_depth: info.bit_depth(),
     };
-    let (view, _, _) = reference.plane_view(plane, subpel_last_reference_row(&params), offset)?;
+    let view = reference.plane_view(plane, subpel_last_reference_row(&params), offset)?;
     let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
     Ok((view, rect, params))
 }
@@ -886,7 +886,8 @@ fn predict_warp_plane<T: ReconSample>(
         sub_y,
         scaling,
     );
-    let (view, ref_mi_cols, ref_mi_rows) = reference.plane_view(plane, last_row, offset)?;
+    let (view, ref_mi_cols, ref_mi_rows) =
+        reference.plane_view_with_mi_dims(plane, last_row, offset)?;
     let (ref_width, ref_height) = (view.width(), view.height());
     let params = WarpPredictBlockParams {
         warp_params,
@@ -1593,10 +1594,10 @@ fn compound_plane_views<T: ReconSample>(
     let last_row = |scaling: PlaneScaling| {
         compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y)
     };
-    let (view0, _, _) = block
+    let view0 = block
         .reference0
         .plane_view(plane, last_row(scalings[0]), offset)?;
-    let (view1, _, _) = block
+    let view1 = block
         .reference1
         .plane_view(plane, last_row(scalings[1]), offset)?;
     Ok([view0, view1])
@@ -1775,7 +1776,8 @@ fn compound_ref_intermediate<T: ReconSample>(
             )
         },
     );
-    let (view, ref_mi_cols, ref_mi_rows) = reference.plane_view(plane, last_row, offset)?;
+    let (view, ref_mi_cols, ref_mi_rows) =
+        reference.plane_view_with_mi_dims(plane, last_row, offset)?;
     let Some(warp_params) = warp_params else {
         let params = SubpelPredictParams {
             interp,
