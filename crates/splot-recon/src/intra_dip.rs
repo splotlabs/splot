@@ -6,11 +6,12 @@
 //! Feature tracking: `DECODE-GENERAL-INTRA-FRAME-FRONTIER`.
 
 use crate::intra_dc_math::{
-    IntraEdgeError, validate_intra_edge_samples, validate_output_shape, validate_sample_type,
+    IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
+    validate_sample_type,
 };
 use core::simd::cmp::SimdOrd;
 use core::simd::num::SimdInt;
-use core::simd::{Simd, simd_swizzle};
+use core::simd::{Simd, Swizzle, simd_swizzle};
 
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
@@ -390,7 +391,7 @@ fn interpolate_grid<T: ReconSample>(
 /// from the left edge, then the rows between sampled rows from the row or
 /// above edge before them. Every result is a convex combination of two
 /// samples with power-of-two weights, so it needs no clipping.
-fn interpolate_samples<P: Copy + Into<u16> + TryFrom<u16> + Default>(
+fn interpolate_samples<P: IntraLaneSample>(
     size: IntraRectBlockSize,
     grid: DipGrid,
     left: &[P],
@@ -398,24 +399,35 @@ fn interpolate_samples<P: Copy + Into<u16> + TryFrom<u16> + Default>(
     output: &mut [P],
     stride: usize,
 ) -> Option<()> {
-    let narrow = |value: u16| P::try_from(value).unwrap_or_default();
     let width = size.width();
     if grid.step_x > 1 {
         for band in 0..grid.height {
             let y = band * grid.step_y + grid.step_y - 1;
             let row = output.get_mut(y * stride..)?.get_mut(..width)?;
-            let mut p1: u16 = (*left.get(y)?).into();
-            for segment in row.chunks_exact_mut(grid.step_x) {
-                let (p0, last) = (p1, segment.len() - 1);
-                p1 = segment[last].into();
-                for (z, sample) in segment[..last].iter_mut().enumerate() {
-                    let z1 = z as u16 + 1;
-                    *sample = narrow((p0 * (grid.step_x as u16 - z1) + p1 * z1) >> grid.up_log2_x);
+            let mut points = [0u16; 16];
+            points[0] = left.get(y)?.to_u16();
+            for (gx, point) in points[1..=DIP_GRID_SIDE].iter_mut().enumerate() {
+                *point = row.get(gx * grid.step_x + grid.step_x - 1)?.to_u16();
+            }
+            let points = Simd::from_array(points);
+            match grid.up_log2_x {
+                1 => expand_grid_row::<1, 0, P>(points, row),
+                2 => {
+                    expand_grid_row::<2, 0, P>(points, row);
+                    expand_grid_row::<2, 1, P>(points, row);
                 }
+                3 => {
+                    expand_grid_row::<3, 0, P>(points, row);
+                    expand_grid_row::<3, 1, P>(points, row);
+                    expand_grid_row::<3, 2, P>(points, row);
+                    expand_grid_row::<3, 3, P>(points, row);
+                }
+                _ => return None,
             }
         }
     }
     if grid.step_y > 1 {
+        let shift = Simd::splat(u16::from(grid.up_log2_y));
         for band in 0..grid.height {
             let top = band * grid.step_y;
             let (before, rest) = output.split_at_mut_checked(top * stride)?;
@@ -427,15 +439,84 @@ fn interpolate_samples<P: Copy + Into<u16> + TryFrom<u16> + Default>(
             let (between, last) = rest.split_at_mut_checked((grid.step_y - 1) * stride)?;
             let p1 = last.get(..width)?;
             for z in 0..grid.step_y - 1 {
-                let (w0, w1) = ((grid.step_y - z - 1) as u16, z as u16 + 1);
+                let w0 = Simd::splat((grid.step_y - z - 1) as u16);
+                let w1 = Simd::splat(z as u16 + 1);
                 let row = between.get_mut(z * stride..)?.get_mut(..width)?;
-                for ((sample, &a), &b) in row.iter_mut().zip(p0).zip(p1) {
-                    *sample = narrow((a.into() * w0 + b.into() * w1) >> grid.up_log2_y);
-                }
+                lerp_row(p0, p1, w0, w1, shift, row);
             }
         }
     }
     Some(())
+}
+
+/// Lane `c` of [`expand_grid_row`] chunk `K` reads grid point
+/// `((16 * K + c) >> UP) + B` (point 0 is the left edge sample).
+struct GridPoint<const UP: u32, const K: usize, const B: usize>;
+
+impl<const UP: u32, const K: usize, const B: usize> Swizzle<16> for GridPoint<UP, K, B> {
+    const INDEX: [usize; 16] = {
+        let mut index = [0; 16];
+        let mut lane = 0;
+        while lane < 16 {
+            index[lane] = ((16 * K + lane) >> UP) + B;
+            lane += 1;
+        }
+        index
+    };
+}
+
+/// Interpolates samples `16 * K..16 * K + 16` of a sampled row from its grid
+/// `points`, `1 << UP` samples per grid step.
+#[allow(clippy::inline_always, reason = "keeps the swizzles constant")]
+#[inline(always)]
+fn expand_grid_row<const UP: u32, const K: usize, P: IntraLaneSample>(
+    points: Simd<u16, 16>,
+    row: &mut [P],
+) {
+    let step = 1u16 << UP;
+    let w1 = Simd::from_array(core::array::from_fn(|lane| (lane as u16 & (step - 1)) + 1));
+    let w0 = Simd::splat(step) - w1;
+    let value = (GridPoint::<UP, K, 0>::swizzle(points) * w0
+        + GridPoint::<UP, K, 1>::swizzle(points) * w1)
+        >> Simd::splat(UP as u16);
+    if let Some(out) = row.get_mut(16 * K..).and_then(<[P]>::first_chunk_mut) {
+        P::store_lanes(value, out);
+    }
+}
+
+/// `(p0 * w0 + p1 * w1) >> shift` over a row.
+fn lerp_row<P: IntraLaneSample>(
+    p0: &[P],
+    p1: &[P],
+    w0: Simd<u16, 16>,
+    w1: Simd<u16, 16>,
+    shift: Simd<u16, 16>,
+    row: &mut [P],
+) {
+    let mut out = row.chunks_exact_mut(16);
+    let mut a = p0.chunks_exact(16);
+    let mut b = p1.chunks_exact(16);
+    for ((out, a), b) in out.by_ref().zip(a.by_ref()).zip(b.by_ref()) {
+        if let (Some(out), Some(a), Some(b)) =
+            (out.first_chunk_mut(), a.first_chunk(), b.first_chunk())
+        {
+            P::store_lanes((P::load(a) * w0 + P::load(b) * w1) >> shift, out);
+        }
+    }
+    let narrow = |v: Simd<u16, 16>| simd_swizzle!(v, [0, 1, 2, 3]);
+    for ((out, a), b) in out
+        .into_remainder()
+        .chunks_exact_mut(4)
+        .zip(a.remainder().chunks_exact(4))
+        .zip(b.remainder().chunks_exact(4))
+    {
+        if let (Some(out), Some(a), Some(b)) =
+            (out.first_chunk_mut(), a.first_chunk(), b.first_chunk())
+        {
+            let value = (P::load::<4>(a) * narrow(w0) + P::load(b) * narrow(w1)) >> narrow(shift);
+            P::store_lanes(value, out);
+        }
+    }
 }
 
 #[cfg(test)]
