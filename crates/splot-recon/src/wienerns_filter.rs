@@ -131,8 +131,9 @@ struct PreparedLumaClass {
     center_scale: i32,
     coeffs: [i16; WIENER_NS_LUMA_COEFFS],
     nonzero: u16,
-    /// The coefficients as `pmaddwd` pairs.
-    madd_pairs: [u32; MADD_PAIRS],
+    /// The coefficients as `pmaddwd` pairs, then the center scale paired
+    /// with the rounding offset when the scale fits `i16`.
+    madd_pairs: Option<[u32; MADD_PAIRS + 1]>,
 }
 
 /// `pmaddwd` pairs over the 16 symmetric tap sums.
@@ -539,9 +540,15 @@ fn prepare_luma_padded<T: ReconSample>(
                     .iter()
                     .rev()
                     .fold(0, |mask, &coeff| (mask << 1) | u16::from(coeff != 0)),
-                madd_pairs: core::array::from_fn(|pair| {
-                    u32::from(coeffs[2 * pair] as u16)
-                        | u32::from(coeffs[2 * pair + 1] as u16) << 16
+                madd_pairs: i16::try_from(center_scale).ok().map(|center_scale| {
+                    core::array::from_fn(|pair| {
+                        let (low, high) = coeffs
+                            .get(2 * pair..2 * pair + 2)
+                            .map_or((center_scale, 1 << (WIENER_NS_PREC_BITS - 1)), |pair| {
+                                (pair[0], pair[1])
+                            });
+                        u32::from(low as u16) | u32::from(high as u16) << 16
+                    })
                 }),
             }
         }));
@@ -895,7 +902,7 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
     max_sample: u16,
 ) -> Result<usize> {
     const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
-    let cell_class = |cell: usize| -> Option<&[u32; MADD_PAIRS]> {
+    let cell_class = |cell: usize| -> Option<&[u32; MADD_PAIRS + 1]> {
         let class = match subclasses {
             LumaSubclassLayout::Uniform => 0,
             LumaSubclassLayout::Cells { values, cols } => {
@@ -903,16 +910,16 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
             }
             LumaSubclassLayout::Samples(_) => return None,
         };
-        prepared_classes.get(class).map(|class| &class.madd_pairs)
+        prepared_classes.get(class)?.madd_pairs.as_ref()
     };
     let mut x = 0;
     while x + 16 <= width {
-        let classes: [Option<&[u32; MADD_PAIRS]>; 4] =
+        let classes: [Option<&[u32; MADD_PAIRS + 1]>; 4] =
             core::array::from_fn(|cell| cell_class(x / 4 + cell));
         let [Some(c0), Some(c1), Some(c2), Some(c3)] = classes else {
             break;
         };
-        let weights: [[Simd<i16, 16>; 2]; MADD_PAIRS] = core::array::from_fn(|pair| {
+        let weights: [[Simd<i16, 16>; 2]; MADD_PAIRS + 1] = core::array::from_fn(|pair| {
             let halves = |a: u32, b: u32| {
                 Simd::<i16, 16>::from_ne_bytes(
                     Simd::<u32, 8>::from_array([a, a, a, a, b, b, b, b]).to_ne_bytes(),
@@ -965,12 +972,11 @@ fn multiply_add_pairs(x: Simd<i16, 16>, w: Simd<i16, 16>) -> Simd<i32, 8> {
         + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15])
 }
 
-/// Symmetric tap sum `J` of [`filter_luma_cells16`] less twice the center.
+/// Symmetric tap sum `J` of [`filter_luma_cells16`].
 #[allow(clippy::inline_always, reason = "measured Wiener NS luma hot path")]
 #[inline(always)]
 fn luma_term<const J: usize, T: LumaSimdSource>(
     window: &[&[T]; LUMA_WINDOW_ROWS],
-    center: Simd<i16, 16>,
 ) -> Simd<i16, 16> {
     const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
     let (dy, dx, _) = WIENER_NS_CONFIG_Y_PAIRS[J];
@@ -979,48 +985,48 @@ fn luma_term<const J: usize, T: LumaSimdSource>(
         window[R.wrapping_add_signed(-dy)],
         R.wrapping_add_signed(-dx),
     );
-    plus.cast::<i16>() + minus.cast::<i16>() - center - center
+    plus.cast::<i16>() + minus.cast::<i16>()
 }
 
 /// Filters 16 samples of four 4-sample cells: `weights` holds per pair the
 /// interleaved weights of cells 0 and 2, then of cells 1 and 3, matching
-/// `interleave_pairs`. The center scale `128 - 2 * sum(coeffs)` folds into
-/// the taps: the sum is `center << 7` plus each coefficient times its tap sum
-/// less twice the center, whose 12 bits and the coefficients' fit `pmaddwd`.
-/// The `pmaddwd` sums start from zero, as one that starts from the center
-/// term is reassociated out of the pattern into `vpmulld`, and stay in the
-/// unpack lane order, which the final saturating pack puts back in order.
+/// `interleave_pairs`; the last pair weighs the center by the center scale
+/// and a lane of ones by the rounding offset. Every tap sum, the center and
+/// the weights fit `i16`, so each pair is one `pmaddwd`. The sums stay in
+/// the unpack lane order, which the final saturating pack puts back in order.
 #[allow(clippy::inline_always, reason = "measured Wiener NS luma hot path")]
 #[inline(always)]
 fn filter_luma_cells16<T: LumaSimdSource, O: LumaSimdOutput>(
     filtered: &mut [O],
     window: &[&[T]; LUMA_WINDOW_ROWS],
-    weights: &[[Simd<i16, 16>; 2]; MADD_PAIRS],
+    weights: &[[Simd<i16, 16>; 2]; MADD_PAIRS + 1],
     max_sample: u16,
 ) {
     const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
     let center = T::load::<16>(window[R], R).cast::<i16>();
     let mut sums = [Simd::<i32, 8>::splat(0); 2];
+    let mut add = |halves: [Simd<i16, 16>; 2], weights: &[Simd<i16, 16>; 2]| {
+        for ((sum, half), weight) in sums.iter_mut().zip(halves).zip(weights) {
+            *sum += multiply_add_pairs(half, *weight);
+        }
+    };
     macro_rules! pairs {
-        ($($pair:literal)*) => {$({
-            let halves = interleave_pairs(
-                luma_term::<{ 2 * $pair }, T>(window, center),
-                luma_term::<{ 2 * $pair + 1 }, T>(window, center),
+        ($($pair:literal)*) => {$(
+            add(
+                interleave_pairs(
+                    luma_term::<{ 2 * $pair }, T>(window),
+                    luma_term::<{ 2 * $pair + 1 }, T>(window),
+                ),
+                &weights[$pair],
             );
-            for ((sum, half), weight) in sums.iter_mut().zip(halves).zip(&weights[$pair]) {
-                *sum += multiply_add_pairs(half, *weight);
-            }
-        })*};
+        )*};
     }
     pairs!(0 1 2 3 4 5 6 7);
-    let centers = interleave_pairs(center, Simd::splat(0));
-    let [low, high] = [0, 1].map(|half| {
-        let center = Simd::<i32, 8>::from_ne_bytes(centers[half].to_ne_bytes());
-        (sums[half]
-            + (center << WIENER_NS_PREC_BITS as i32)
-            + Simd::splat(1 << (WIENER_NS_PREC_BITS - 1)))
-            >> Simd::splat(WIENER_NS_PREC_BITS as i32)
-    });
+    add(
+        interleave_pairs(center, Simd::splat(1)),
+        &weights[MADD_PAIRS],
+    );
+    let [low, high] = sums.map(|sum| sum >> Simd::splat(WIENER_NS_PREC_BITS as i32));
     let values = simd_swizzle!(
         low,
         high,
