@@ -55,7 +55,9 @@ fn reference_reads_mi_storage_outside_the_output_crop() {
         .unwrap();
     let frame = workspace.freeze().unwrap();
     let reference = ReferenceSamples::settled(&frame);
-    let (view, cols, rows) = reference.plane_view(PlaneId::Y, ALL_ROWS, OFFSET).unwrap();
+    let (view, cols, rows) = reference
+        .plane_view_with_mi_dims(PlaneId::Y, ALL_ROWS, OFFSET)
+        .unwrap();
     assert_eq!((cols, rows), (68, 68));
     assert_eq!((view.width(), view.height()), (272, 272));
     assert_eq!(view.sample(0, 0), 31);
@@ -88,13 +90,13 @@ fn reference_waits_for_mi_padding_rows_to_be_published() {
         assert!(lease.submit());
         let published = progress.read().unwrap();
         let reference = ReferenceSamples::publishing(&published).unwrap();
-        let (view, _, _) = reference.plane_view(PlaneId::Y, 269, OFFSET).unwrap();
+        let view = reference.plane_view(PlaneId::Y, 269, OFFSET).unwrap();
         assert_eq!((view.width(), view.height()), (272, 272));
         assert_eq!(view.sample(269, 271), 11);
         if stripe == 0 {
             assert!(reference.plane_view(PlaneId::Y, 270, OFFSET).is_err());
         } else {
-            let (view, _, _) = reference.plane_view(PlaneId::Y, ALL_ROWS, OFFSET).unwrap();
+            let view = reference.plane_view(PlaneId::Y, ALL_ROWS, OFFSET).unwrap();
             assert_eq!(view.sample(271, 271), 77);
         }
     }
@@ -191,10 +193,10 @@ fn a_banded_read_inside_the_watermark_returns_the_settled_samples() {
     let banded = held.samples().expect("banded samples");
 
     let (settled_view, settled_cols, settled_rows) = ReferenceSamples::settled(&settled)
-        .plane_view(PlaneId::Y, 63, OFFSET)
+        .plane_view_with_mi_dims(PlaneId::Y, 63, OFFSET)
         .expect("settled view");
     let (banded_view, banded_cols, banded_rows) = banded
-        .plane_view(PlaneId::Y, 63, OFFSET)
+        .plane_view_with_mi_dims(PlaneId::Y, 63, OFFSET)
         .expect("a read inside the watermark is admitted");
 
     assert_eq!((banded_cols, banded_rows), (settled_cols, settled_rows));

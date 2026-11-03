@@ -70,6 +70,9 @@ pub(crate) trait IntraLaneSample: ReconSample {
 
     /// Loads `LANES` samples as `u16` lanes.
     fn load<const LANES: usize>(samples: &[Self; LANES]) -> Simd<u16, LANES>;
+
+    /// Stores in-range `u16` lanes.
+    fn store_lanes<const LANES: usize>(values: Simd<u16, LANES>, output: &mut [Self; LANES]);
 }
 
 impl IntraLaneSample for u16 {
@@ -86,6 +89,11 @@ impl IntraLaneSample for u16 {
     #[inline]
     fn load<const LANES: usize>(samples: &[Self; LANES]) -> Simd<u16, LANES> {
         Simd::from_array(*samples)
+    }
+
+    #[inline]
+    fn store_lanes<const LANES: usize>(values: Simd<u16, LANES>, output: &mut [Self; LANES]) {
+        *output = values.to_array();
     }
 }
 
@@ -105,6 +113,11 @@ impl IntraLaneSample for u8 {
     #[inline]
     fn load<const LANES: usize>(samples: &[Self; LANES]) -> Simd<u16, LANES> {
         Simd::from_array(*samples).cast()
+    }
+
+    #[inline]
+    fn store_lanes<const LANES: usize>(values: Simd<u16, LANES>, output: &mut [Self; LANES]) {
+        *output = values.cast::<u8>().to_array();
     }
 }
 

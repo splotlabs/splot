@@ -6,9 +6,13 @@
 //! Feature tracking: `DECODE-GENERAL-INTRA-FRAME-FRONTIER`.
 
 use crate::intra_dc_math::{
-    IntraEdgeError, validate_intra_edge_samples, validate_output_shape, validate_sample_type,
+    IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
+    validate_sample_type,
 };
-use crate::math::round2_i32;
+use core::simd::cmp::SimdOrd;
+use core::simd::num::SimdInt;
+use core::simd::{Simd, Swizzle, simd_swizzle};
+
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
 const DIP_FEATURE_COUNT: usize = 11;
@@ -129,7 +133,7 @@ pub fn predict_intra_dip_rect_into<T: ReconSample>(
         output,
         stride_samples,
     )?;
-    interpolate_grid(bit_depth, size, edges, output, stride_samples)?;
+    interpolate_grid(size, edges, output, stride_samples)?;
     Ok(())
 }
 
@@ -212,6 +216,56 @@ fn dip_averages<T: ReconSample>(samples: &[T], block_len: usize, log2_len: u8) -
     averages
 }
 
+/// `DIP_WEIGHTS[mode][index]` of one grid row, interleaved for a pairwise
+/// multiply-add: lane `2 * gx + j` of entry `k` holds the weight of feature
+/// `2 * k + j` at grid column `gx` (feature 11 is zero). Indexed
+/// `[transpose][mode][iy][k]`.
+static DIP_ROW_WEIGHTS: [[[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE]; DIP_MODE_COUNT]; 2] =
+    dip_row_weights();
+
+const DIP_FEATURE_PAIRS: usize = DIP_FEATURE_COUNT.div_ceil(2);
+
+#[allow(
+    clippy::large_stack_arrays,
+    reason = "evaluated only at compile time for a static"
+)]
+const fn dip_row_weights() -> [[[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE]; DIP_MODE_COUNT]; 2]
+{
+    let mut table = [[[[[0i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE]; DIP_MODE_COUNT]; 2];
+    let mut transpose = 0;
+    while transpose < 2 {
+        let mut mode = 0;
+        while mode < DIP_MODE_COUNT {
+            let mut iy = 0;
+            while iy < DIP_GRID_SIDE {
+                let mut gx = 0;
+                while gx < DIP_GRID_SIDE {
+                    let index = if transpose == 1 {
+                        gx * DIP_GRID_SIDE + iy
+                    } else {
+                        iy * DIP_GRID_SIDE + gx
+                    };
+                    let weights = &splot_tables::tables::loop_restoration::DIP_WEIGHTS[mode][index];
+                    let mut feature = 0;
+                    while feature < DIP_FEATURE_COUNT {
+                        table[transpose][mode][iy][feature / 2][2 * gx + feature % 2] =
+                            weights[feature] as i16;
+                        feature += 1;
+                    }
+                    gx += 1;
+                }
+                iy += 1;
+            }
+            mode += 1;
+        }
+        transpose += 1;
+    }
+    table
+}
+
+/// Writes the § 7.13.2.3 coarse grid samples: every grid row is eight dot
+/// products of the features with that row's weights, one pairwise
+/// multiply-add per feature pair.
 fn predict_coarse_grid<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
@@ -222,46 +276,48 @@ fn predict_coarse_grid<T: ReconSample>(
     stride_samples: usize,
 ) -> Result<()> {
     let grid = dip_grid(size);
+    let Some(rows) = DIP_ROW_WEIGHTS[usize::from(dip_transpose)].get(dip_mode) else {
+        return Err(ReconError::UnsupportedIntraDipMode {
+            mode: dip_mode,
+            max: DIP_MODE_COUNT - 1,
+        });
+    };
+    let pairs: [Simd<i16, 16>; DIP_FEATURE_PAIRS] = core::array::from_fn(|k| {
+        let low = features[2 * k] as i16;
+        let high = features.get(2 * k + 1).map_or(0, |&f| f as i16);
+        Simd::from_array(core::array::from_fn(
+            |lane| if lane % 2 == 0 { low } else { high },
+        ))
+    });
+    let max = Simd::splat(i32::from(bit_depth.max_sample()));
     let mut y = grid.step_y - 1;
     for gy in 0..grid.height {
-        let iy = gy * grid.down_y;
+        let weights = &rows[gy * grid.down_y];
+        let mut sum = Simd::<i32, 8>::splat(1 << 9);
+        for (pair, weight) in pairs.iter().zip(weights) {
+            let product = pair.cast::<i32>() * Simd::<i16, 16>::from_array(*weight).cast::<i32>();
+            sum += simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
+                + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15]);
+        }
+        let values = (sum >> 10)
+            .simd_max(Simd::splat(0))
+            .simd_min(max)
+            .to_array();
+        let row = output
+            .get_mut(y * stride_samples..)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "DIP intra prediction coarse grid row",
+            })?;
         let mut x = grid.step_x - 1;
         for gx in 0..grid.width {
-            let ix = gx * grid.down_x;
-            let weight_index = if dip_transpose {
-                ix * DIP_GRID_SIDE + iy
-            } else {
-                iy * DIP_GRID_SIDE + ix
-            };
-            let value = dip_weighted_sample(bit_depth, dip_mode, weight_index, features)?;
-            output[y * stride_samples + x] = value;
+            if let Some(slot) = row.get_mut(x) {
+                *slot = T::try_from_u16(values[gx * grid.down_x] as u16)?;
+            }
             x += grid.step_x;
         }
         y += grid.step_y;
     }
     Ok(())
-}
-
-fn dip_weighted_sample<T: ReconSample>(
-    bit_depth: BitDepth,
-    dip_mode: usize,
-    weight_index: usize,
-    features: [i32; DIP_FEATURE_COUNT],
-) -> Result<T> {
-    let weights = &splot_tables::tables::loop_restoration::DIP_WEIGHTS[dip_mode][weight_index];
-    let mut sum = 0i32;
-    for (weight, feature) in weights.iter().zip(features) {
-        sum += *weight * feature;
-    }
-    clip_to_sample(bit_depth, round2_i32(sum, 10))
-}
-
-fn clip_to_sample<T: ReconSample>(bit_depth: BitDepth, value: i32) -> Result<T> {
-    let clipped = value.clamp(0, i32::from(bit_depth.max_sample()));
-    let sample = u16::try_from(clipped).map_err(|_| ReconError::ArithmeticOverflow {
-        context: "DIP intra prediction clipped sample",
-    })?;
-    T::try_from_u16(sample)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -302,71 +358,169 @@ fn split_dip_scale_log2(log2_quarter_len: u8) -> (u8, u8) {
 }
 
 fn interpolate_grid<T: ReconSample>(
-    bit_depth: BitDepth,
     size: IntraRectBlockSize,
     edges: IntraDipEdges<'_, T>,
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
     let grid = dip_grid(size);
+    let shape_error = || ReconError::ArithmeticOverflow {
+        context: "DIP intra prediction interpolation shape",
+    };
+    macro_rules! interpolate {
+        ($view:ident, $view_mut:ident, $sample:ty) => {
+            if let (Some(left), Some(above), Some(output)) = (
+                T::$view(edges.left),
+                T::$view(edges.above),
+                T::$view_mut(output),
+            ) {
+                return interpolate_samples::<$sample>(
+                    size,
+                    grid,
+                    left,
+                    above,
+                    output,
+                    stride_samples,
+                )
+                .ok_or_else(shape_error);
+            }
+        };
+    }
+    interpolate!(u8_slice, u8_slice_mut, u8);
+    interpolate!(u16_slice, u16_slice_mut, u16);
+    Err(shape_error())
+}
+
+/// Fills the samples between the coarse grid: each sampled row horizontally
+/// from the left edge, then the rows between sampled rows from the row or
+/// above edge before them. Every result is a convex combination of two
+/// samples with power-of-two weights, so it needs no clipping.
+fn interpolate_samples<P: IntraLaneSample>(
+    size: IntraRectBlockSize,
+    grid: DipGrid,
+    left: &[P],
+    above: &[P],
+    output: &mut [P],
+    stride: usize,
+) -> Option<()> {
+    let width = size.width();
     if grid.step_x > 1 {
-        horizontal_interpolate(bit_depth, edges, grid, output, stride_samples)?;
+        for band in 0..grid.height {
+            let y = band * grid.step_y + grid.step_y - 1;
+            let row = output.get_mut(y * stride..)?.get_mut(..width)?;
+            let mut points = [0u16; 16];
+            points[0] = left.get(y)?.to_u16();
+            for (gx, point) in points[1..=DIP_GRID_SIDE].iter_mut().enumerate() {
+                *point = row.get(gx * grid.step_x + grid.step_x - 1)?.to_u16();
+            }
+            let points = Simd::from_array(points);
+            match grid.up_log2_x {
+                1 => expand_grid_row::<1, 0, P>(points, row),
+                2 => {
+                    expand_grid_row::<2, 0, P>(points, row);
+                    expand_grid_row::<2, 1, P>(points, row);
+                }
+                3 => {
+                    expand_grid_row::<3, 0, P>(points, row);
+                    expand_grid_row::<3, 1, P>(points, row);
+                    expand_grid_row::<3, 2, P>(points, row);
+                    expand_grid_row::<3, 3, P>(points, row);
+                }
+                _ => return None,
+            }
+        }
     }
     if grid.step_y > 1 {
-        vertical_interpolate(bit_depth, size, edges, grid, output, stride_samples)?;
-    }
-    Ok(())
-}
-
-fn horizontal_interpolate<T: ReconSample>(
-    bit_depth: BitDepth,
-    edges: IntraDipEdges<'_, T>,
-    grid: DipGrid,
-    output: &mut [T],
-    stride_samples: usize,
-) -> Result<()> {
-    let mut y = grid.step_y - 1;
-    for _ in 0..grid.height {
-        let mut p1 = i32::from(edges.left[y].to_u16());
-        let mut x = 0usize;
-        for _ in 0..grid.width {
-            let p0 = p1;
-            p1 = i32::from(output[y * stride_samples + x + grid.step_x - 1].to_u16());
-            for z in 0..grid.step_x - 1 {
-                let z1 = z + 1;
-                let value = (p0 * (grid.step_x - z1) as i32 + p1 * z1 as i32) >> grid.up_log2_x;
-                output[y * stride_samples + x + z] = clip_to_sample(bit_depth, value)?;
-            }
-            x += grid.step_x;
-        }
-        y += grid.step_y;
-    }
-    Ok(())
-}
-
-fn vertical_interpolate<T: ReconSample>(
-    bit_depth: BitDepth,
-    size: IntraRectBlockSize,
-    edges: IntraDipEdges<'_, T>,
-    grid: DipGrid,
-    output: &mut [T],
-    stride_samples: usize,
-) -> Result<()> {
-    for x in 0..size.width() {
-        let mut p1 = i32::from(edges.above[x].to_u16());
-        let mut y = 0usize;
-        for _ in 0..grid.height {
-            let p0 = p1;
-            p1 = i32::from(output[(y + grid.step_y - 1) * stride_samples + x].to_u16());
+        let shift = Simd::splat(u16::from(grid.up_log2_y));
+        for band in 0..grid.height {
+            let top = band * grid.step_y;
+            let (before, rest) = output.split_at_mut_checked(top * stride)?;
+            let p0 = if band == 0 {
+                above.get(..width)?
+            } else {
+                before.get((top - 1) * stride..)?.get(..width)?
+            };
+            let (between, last) = rest.split_at_mut_checked((grid.step_y - 1) * stride)?;
+            let p1 = last.get(..width)?;
             for z in 0..grid.step_y - 1 {
-                let z1 = z + 1;
-                let value = (p0 * (grid.step_y - z1) as i32 + p1 * z1 as i32) >> grid.up_log2_y;
-                output[(y + z) * stride_samples + x] = clip_to_sample(bit_depth, value)?;
+                let w0 = Simd::splat((grid.step_y - z - 1) as u16);
+                let w1 = Simd::splat(z as u16 + 1);
+                let row = between.get_mut(z * stride..)?.get_mut(..width)?;
+                lerp_row(p0, p1, w0, w1, shift, row);
             }
-            y += grid.step_y;
         }
     }
-    Ok(())
+    Some(())
+}
+
+/// Lane `c` of [`expand_grid_row`] chunk `K` reads grid point
+/// `((16 * K + c) >> UP) + B` (point 0 is the left edge sample).
+struct GridPoint<const UP: u32, const K: usize, const B: usize>;
+
+impl<const UP: u32, const K: usize, const B: usize> Swizzle<16> for GridPoint<UP, K, B> {
+    const INDEX: [usize; 16] = {
+        let mut index = [0; 16];
+        let mut lane = 0;
+        while lane < 16 {
+            index[lane] = ((16 * K + lane) >> UP) + B;
+            lane += 1;
+        }
+        index
+    };
+}
+
+/// Interpolates samples `16 * K..16 * K + 16` of a sampled row from its grid
+/// `points`, `1 << UP` samples per grid step.
+#[allow(clippy::inline_always, reason = "keeps the swizzles constant")]
+#[inline(always)]
+fn expand_grid_row<const UP: u32, const K: usize, P: IntraLaneSample>(
+    points: Simd<u16, 16>,
+    row: &mut [P],
+) {
+    let step = 1u16 << UP;
+    let w1 = Simd::from_array(core::array::from_fn(|lane| (lane as u16 & (step - 1)) + 1));
+    let w0 = Simd::splat(step) - w1;
+    let value = (GridPoint::<UP, K, 0>::swizzle(points) * w0
+        + GridPoint::<UP, K, 1>::swizzle(points) * w1)
+        >> Simd::splat(UP as u16);
+    if let Some(out) = row.get_mut(16 * K..).and_then(<[P]>::first_chunk_mut) {
+        P::store_lanes(value, out);
+    }
+}
+
+/// `(p0 * w0 + p1 * w1) >> shift` over a row.
+fn lerp_row<P: IntraLaneSample>(
+    p0: &[P],
+    p1: &[P],
+    w0: Simd<u16, 16>,
+    w1: Simd<u16, 16>,
+    shift: Simd<u16, 16>,
+    row: &mut [P],
+) {
+    let mut out = row.chunks_exact_mut(16);
+    let mut a = p0.chunks_exact(16);
+    let mut b = p1.chunks_exact(16);
+    for ((out, a), b) in out.by_ref().zip(a.by_ref()).zip(b.by_ref()) {
+        if let (Some(out), Some(a), Some(b)) =
+            (out.first_chunk_mut(), a.first_chunk(), b.first_chunk())
+        {
+            P::store_lanes((P::load(a) * w0 + P::load(b) * w1) >> shift, out);
+        }
+    }
+    let narrow = |v: Simd<u16, 16>| simd_swizzle!(v, [0, 1, 2, 3]);
+    for ((out, a), b) in out
+        .into_remainder()
+        .chunks_exact_mut(4)
+        .zip(a.remainder().chunks_exact(4))
+        .zip(b.remainder().chunks_exact(4))
+    {
+        if let (Some(out), Some(a), Some(b)) =
+            (out.first_chunk_mut(), a.first_chunk(), b.first_chunk())
+        {
+            let value = (P::load::<4>(a) * narrow(w0) + P::load(b) * narrow(w1)) >> narrow(shift);
+            P::store_lanes(value, out);
+        }
+    }
 }
 
 #[cfg(test)]

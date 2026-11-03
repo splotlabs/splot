@@ -9,7 +9,9 @@
 //! before § 8.3 syntax-element CDF selection, tile CDF bank ownership,
 //! `decode_tile()`, reconstruction, and encoder range writing.
 
-use core::simd::cmp::SimdPartialOrd;
+use core::simd::cmp::{SimdOrd, SimdPartialOrd};
+use core::simd::num::SimdUint;
+use core::simd::simd_swizzle;
 use core::simd::{Select, Simd};
 
 use crate::bitio::be_window;
@@ -28,8 +30,6 @@ pub(crate) const MAX_CDF_COUNT: i32 = 32;
 const BYPASS_LITERAL_CHUNK_BITS: u32 = 8;
 /// A const copy of the static table, so per-arity reads fold to immediates
 /// in the crates that instantiate the generic decode.
-/// A const copy of the static table, so per-arity reads fold to immediates
-/// in the crates that instantiate the generic decode.
 const PROB_INC_U32: [[u32; 8]; 7] = [
     [8, 0, 0, 0, 0, 0, 0, 0],
     [10, 5, 0, 0, 0, 0, 0, 0],
@@ -46,6 +46,18 @@ pub(crate) trait CdfStorage: Copy {
         self.to_i32() as u32
     }
     fn from_i32(value: i32) -> Self;
+
+    /// The `N - 1` probability entries of a row, capped at `CDF_PROB_SCALE`,
+    /// with `CDF_PROB_SCALE` in the lanes past them.
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn probability_lanes<const N: usize>(cdf: &[Self]) -> Simd<u16, 8> {
+        let mut lanes = [CDF_PROB_SCALE as u16; 8];
+        for (lane, entry) in lanes.iter_mut().zip(&cdf[..N - 1]) {
+            *lane = entry.to_u32().min(CDF_PROB_SCALE) as u16;
+        }
+        Simd::from_array(lanes)
+    }
 
     /// Adapts the `n - 1` probability entries of a row (§ 8.2.6).
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
@@ -79,6 +91,26 @@ impl CdfStorage for u16 {
         value as u16
     }
 
+    /// Loads the row in at most two vector reads; `N` is a constant at
+    /// every inlined read, so the arity branches fold away.
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn probability_lanes<const N: usize>(cdf: &[u16]) -> Simd<u16, 8> {
+        let lo = Simd::<u16, 4>::from_slice(&cdf[..4]);
+        let hi = if N >= 7 {
+            Simd::<u16, 4>::from_slice(&cdf[4..8])
+        } else if N == 6 {
+            Simd::from_array([cdf[4], 0, 0, 0])
+        } else {
+            Simd::splat(0)
+        };
+        let raw: Simd<u16, 8> = simd_swizzle!(lo, hi, [0, 1, 2, 3, 4, 5, 6, 7]);
+        let scale = Simd::splat(CDF_PROB_SCALE as u16);
+        make_base_indices::<8>()
+            .simd_lt(Simd::splat(N as u16 - 1))
+            .select(raw.simd_min(scale), scale)
+    }
+
     /// Adapts whole rows in vector lanes; `n` is a constant at every inlined
     /// read, so the arity match folds away.
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
@@ -88,12 +120,10 @@ impl CdfStorage for u16 {
             2 => {
                 if let Some(entry) = cdf.first_mut() {
                     let value = i32::from(*entry);
-                    let adapted = if symbol == 0 {
-                        value + (((CDF_PROB_SCALE as i32) - value) >> rate)
-                    } else {
-                        value - (value >> rate)
-                    };
-                    *entry = adapted as u16;
+                    let grown = value + (((CDF_PROB_SCALE as i32) - value) >> rate);
+                    let shrunk = value - (value >> rate);
+                    let keep = -i32::from(symbol == 0);
+                    *entry = (shrunk ^ ((shrunk ^ grown) & keep)) as u16;
                 }
             }
             3..=5 => adapt_probability_lanes::<4>(cdf, 0, n - 1, rate, symbol),
@@ -175,6 +205,49 @@ fn adapt_probability_lanes<const L: usize>(
         .simd_lt(Simd::splat(probabilities as u16))
         .select(adapted, value)
         .copy_to_slice(lanes);
+}
+
+/// `Prob_Inc` of an `N`-ary row in vector lanes.
+const fn prob_inc_lanes<const N: usize>() -> Simd<u16, 8> {
+    let mut lanes = [0u16; 8];
+    let mut i = 0;
+    while i < 8 {
+        lanes[i] = PROB_INC_U32[N - 2][i] as u16;
+        i += 1;
+    }
+    Simd::from_array(lanes)
+}
+
+/// The § 8.2.6 boundary search over all `N - 1` boundaries at once. For
+/// non-decreasing rows the boundaries are non-increasing, so the number of
+/// boundaries above `symbol_value` is the symbol the sequential search
+/// stops at; lanes past the row hold a boundary of 0 and never count.
+/// With `a = r * (f >> 7)` and `b = r * inc` (`r = range >> 8`), both of
+/// which fit 16 bits, `(r * pp) >> 7 = (16a + b) >> 7` is
+/// `(a >> 3) + ((16 (a & 7) + b) >> 7)`, so every lane stays in 16 bits;
+/// below 2^13 it compares signed against `symbol_value >> 3`.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+fn multi_symbol_search<const N: usize>(
+    probabilities: Simd<u16, 8>,
+    symbol_value: u32,
+    range: u32,
+) -> (usize, u32, u32) {
+    let f = Simd::splat(CDF_PROB_SCALE as u16) - probabilities;
+    let range8 = Simd::splat((range >> 8) as u16);
+    let a = range8 * (f >> EC_PROB_SHIFT as u16);
+    let b = range8 * const { prob_inc_lanes::<N>() };
+    let scaled = (a >> 3) + ((((a & Simd::splat(7)) << 4) + b) >> 7);
+    let boundaries = scaled << 3;
+    let above = scaled
+        .cast::<i16>()
+        .simd_gt(Simd::splat((symbol_value >> 3) as i16));
+    let symbol = (above.to_bitmask().count_ones() as usize).min(N - 1);
+    let cur = above.select(Simd::splat(0), boundaries).reduce_max();
+    let prev = above
+        .select(boundaries, Simd::splat(range as u16))
+        .reduce_min();
+    (symbol, u32::from(cur), u32::from(prev))
 }
 
 /// Relative bit position inside the tile payload consumed by a symbol decoder.
@@ -646,27 +719,16 @@ impl<'a> SymbolDecoder<'a> {
             let f = CDF_PROB_SCALE.saturating_sub(cdf[0].to_u32());
             let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC_U32[0][0];
             let next_cur = ((range8 * pp) >> 7) << 3;
-            if symbol_value >= next_cur {
-                (0, next_cur, self.symbol_range)
-            } else {
-                (1, 0, next_cur)
-            }
+            let one = u32::from(symbol_value < next_cur);
+            let keep = one.wrapping_sub(1);
+            let prev = next_cur ^ ((next_cur ^ self.symbol_range) & keep);
+            (one as usize, next_cur & keep, prev)
         } else {
-            let mut prev = self.symbol_range;
-            let mut cur = 0;
-            let mut symbol = 0;
-            while symbol < N - 1 {
-                let f = CDF_PROB_SCALE.saturating_sub(cdf[symbol].to_u32());
-                let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC_U32[N - 2][symbol];
-                let next_cur = ((range8 * pp) >> 7) << 3;
-                if symbol_value >= next_cur {
-                    cur = next_cur;
-                    break;
-                }
-                prev = next_cur;
-                symbol += 1;
-            }
-            (symbol, cur, prev)
+            multi_symbol_search::<N>(
+                T::probability_lanes::<N>(cdf),
+                symbol_value,
+                self.symbol_range,
+            )
         };
 
         let new_range = prev.saturating_sub(cur);

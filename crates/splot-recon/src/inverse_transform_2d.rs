@@ -29,6 +29,7 @@ use crate::inverse_transform::{
     ColumnPass, InverseTransform1dType, RowQuad, inverse_identity_transform, inverse_transform_1d,
     inverse_transform_1d_columns, inverse_transform_1d_row_quad, inverse_walsh_hadamard,
 };
+use crate::inverse_transform_2d_8bit::{Transform8, inverse_transform_2d_8bit};
 use crate::{BitDepth, ReconError, Result};
 
 /// Maximum 1D transform length: the § 7.15.4 adjusted transform size caps each
@@ -146,9 +147,28 @@ pub(super) fn inverse_transform_2d_with_scratch(
             residual_len: residual.len(),
         });
     }
-    let intermediate = &mut intermediate[..expected];
 
     let odd_ratio = log2_w.abs_diff(log2_h) % 2 == 1;
+
+    if params.bit_depth == BitDepth::Eight
+        && !params.lossless
+        && inverse_transform_2d_8bit(
+            Transform8 {
+                row: params.row_type,
+                col: params.col_type,
+                w,
+                h,
+                rescale: odd_ratio,
+                row_shift: params.row_shift,
+                col_shift: params.col_shift,
+            },
+            dequant,
+            residual,
+            intermediate,
+        )
+    {
+        return Ok(());
+    }
 
     let mut buf_in = [0i32; MAX_DIM];
     let mut buf_out = [0i32; MAX_DIM];
@@ -181,6 +201,7 @@ pub(super) fn inverse_transform_2d_with_scratch(
         bit_depth: params.bit_depth,
     };
     let coded_rows = dequant.len() / w;
+    let intermediate = &mut intermediate[..expected];
     let mut nonzero_rows = 0u32;
     let mut row = 0;
     while row < coded_rows {
@@ -759,6 +780,42 @@ mod tests {
                             );
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// A whole-row prefix of the coefficients transforms like the block with
+    /// its omitted rows zero, for every kernel pair at 8 bits.
+    #[test]
+    fn coded_row_prefix_matches_the_zero_padded_block() {
+        use InverseTransform1dType::{Adst, Dct, Fddt};
+        let mut state = 0x0bad_5eed_1234_5678u64;
+        for (log2_w, log2_h) in [(2u32, 2u32), (2, 4), (3, 3), (4, 3), (4, 5), (5, 4), (5, 5)] {
+            for (row, col) in [(Dct, Dct), (Adst, Dct), (Dct, Adst), (Fddt, Dct)] {
+                let (w, h) = (1usize << log2_w, 1usize << log2_h);
+                let p = params(
+                    log2_w,
+                    log2_h,
+                    false,
+                    InverseTransform2dDim::Kernel(row),
+                    InverseTransform2dDim::Kernel(col),
+                    6,
+                    12,
+                );
+                for coded in 1..=h {
+                    let mut full = vec![0i32; w * h];
+                    for slot in &mut full[..coded * w] {
+                        state ^= state << 13;
+                        state ^= state >> 7;
+                        state ^= state << 17;
+                        *slot = (state % 4001) as i32 - 2000;
+                    }
+                    let mut expected = vec![0i32; w * h];
+                    inverse_transform_2d(&p, &full, &mut expected).unwrap();
+                    let mut got = vec![0i32; w * h];
+                    inverse_transform_2d(&p, &full[..coded * w], &mut got).unwrap();
+                    assert_eq!(got, expected, "{w}x{h} {row:?} {col:?} coded {coded}");
                 }
             }
         }

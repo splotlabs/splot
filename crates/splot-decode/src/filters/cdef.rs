@@ -870,7 +870,7 @@ struct CdefSegmentScratch {
 
 /// CDEF over the `CDEF_SEGMENT_BLOCKS` blocks of the row segment at `(r, c)`
 /// with one gather per plane. Returns `false`, having written nothing, when a
-/// plane's tap reach is not interior, the planes are not `u16`, or chroma is
+/// plane's tap reach is not interior, the planes hold neither `u16` nor `u8` samples, or chroma is
 /// not 4:2:0; the caller then takes the per-block path.
 #[inline(never)]
 fn cdef_segment<S: ReconSample>(
@@ -884,9 +884,10 @@ fn cdef_segment<S: ReconSample>(
     let luma_used = params.y_pri != 0 || params.y_sec != 0 || params.uv_pri != 0;
     let chroma_used = params.uv_pri != 0 || params.uv_sec != 0;
     let y_plane = frame.deblocked_y;
-    let Some(y_samples) = S::u16_slice(y_plane.samples()) else {
+    let y_samples = y_plane.samples();
+    if S::u16_slice(y_samples).is_none() && S::u8_slice(y_samples).is_none() {
         return Ok(false);
-    };
+    }
     let (col_start, col_end) = tile_span(lookup.tile_col_starts, c, lookup.mi_cols);
     let start = (col_start * MI_SIZE, row_span.0 * MI_SIZE);
     let end = (col_end * MI_SIZE, row_span.1 * MI_SIZE);
@@ -905,9 +906,8 @@ fn cdef_segment<S: ReconSample>(
                 half(start),
                 half(end),
             );
-            let (Some(u), Some(v), (1, 1), true, Some((left, top))) = (
-                S::u16_slice(u_plane.samples()),
-                S::u16_slice(v_plane.samples()),
+            let (u, v) = (u_plane.samples(), v_plane.samples());
+            let ((1, 1), true, Some((left, top))) = (
                 (lookup.sub_x, lookup.sub_y),
                 u_plane.stride() == v_plane.stride(),
                 window,
@@ -926,17 +926,31 @@ fn cdef_segment<S: ReconSample>(
         left + CDEF_TAP_REACH,
         top + CDEF_TAP_REACH - y_plane.origin_y(),
     );
-    if luma_used
-        && !scratch
-            .luma
-            .gather(y_samples, y_plane.width(), y_plane.stride(), luma_origin)
-    {
-        return Err(CdefError::Workspace);
+    if luma_used {
+        let (width, stride) = (y_plane.width(), y_plane.stride());
+        let gathered = match (S::u16_slice(y_samples), S::u8_slice(y_samples)) {
+            (Some(y), _) => scratch.luma.gather(y, width, stride, luma_origin),
+            (_, Some(y)) => scratch.luma.gather(y, width, stride, luma_origin),
+            _ => false,
+        };
+        if !gathered {
+            return Err(CdefError::Workspace);
+        }
     }
-    if let Some((u, v, width, stride, origin)) = chroma
-        && !scratch.pair.gather(u, v, width, stride, origin)
-    {
-        return Err(CdefError::Workspace);
+    if let Some((u, v, width, stride, origin)) = chroma {
+        let gathered = match (
+            S::u16_slice(u),
+            S::u16_slice(v),
+            S::u8_slice(u),
+            S::u8_slice(v),
+        ) {
+            (Some(u), Some(v), _, _) => scratch.pair.gather(u, v, width, stride, origin),
+            (_, _, Some(u), Some(v)) => scratch.pair.gather(u, v, width, stride, origin),
+            _ => false,
+        };
+        if !gathered {
+            return Err(CdefError::Workspace);
+        }
     }
     for block in 0..CDEF_SEGMENT_BLOCKS {
         if let Some(ctx) = lookup.at(r, c + STEP4 * block, Some(params), row_span)? {
@@ -959,8 +973,7 @@ fn compute_cdef_segment_block<S>(
     let (x0, y0) = (ctx.c * MI_SIZE, ctx.r * MI_SIZE);
     let pri_base = ctx.params.y_pri << ctx.coeff_shift;
     let uv_pri = ctx.params.uv_pri << ctx.coeff_shift;
-    let use_range =
-        !ctx.luma_lossless && (ctx.params.y_sec != 0 || pri_base != 0) && ctx.coeff_shift > 0;
+    let use_range = !ctx.luma_lossless && (ctx.params.y_sec != 0 || pri_base != 0);
     let luma_flat = use_range
         && scratch
             .luma

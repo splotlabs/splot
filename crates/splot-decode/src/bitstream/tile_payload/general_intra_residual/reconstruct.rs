@@ -8,7 +8,7 @@ use splot_recon::{
     BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, DequantBlockParams, DpcmDirection,
     IntraRectBlockSize, InverseTransform2dOuter, PlaneId, ReconSample, SecondaryInverseTransform,
     ac_quantizer, dc_quantizer, dequant_coefficient, dequantize_block, dequantize_with_secondary,
-    inverse_transform_2d_outer, inverse_transform_2d_outer_adjusted, tx_class,
+    inverse_transform_2d_outer_adjusted, inverse_transform_2d_outer_with_scratch, tx_class,
 };
 
 use super::super::coeff_loop::max_level::CoeffTransformClass;
@@ -202,7 +202,12 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
             let coded =
                 dequantize_with_secondary(&setup.params, block.quant, secondary.as_ref(), dequant)?;
             let residual = &mut scratch.residual[..setup.samples];
-            inverse_transform_2d_outer(&setup.transform, &dequant[..coded], residual)?;
+            inverse_transform_2d_outer_with_scratch(
+                &setup.transform,
+                &dequant[..coded],
+                residual,
+                &mut scratch.dequant_pair,
+            )?;
             rows.add_block_residual(prediction, residual)
         })
         .map_err(|source| GeneralIntraResidualError::Reconstruct { source })
@@ -402,6 +407,7 @@ pub(super) fn dequantize_coeff_block(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use splot_recon::inverse_transform_2d_outer;
 
     #[test]
     fn dct_dc_residual_matches_full_transform_for_every_shape_and_bit_depth() {

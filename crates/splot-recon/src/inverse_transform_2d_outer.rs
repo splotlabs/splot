@@ -223,6 +223,25 @@ pub fn inverse_transform_2d_outer(
     dequant: &[i32],
     residual: &mut [i32],
 ) -> Result<()> {
+    inverse_transform_2d_outer_with_scratch(
+        params,
+        dequant,
+        residual,
+        &mut [0i32; MAX_ADJ_DIM * MAX_ADJ_DIM],
+    )
+}
+
+/// [`inverse_transform_2d_outer`] with a caller-supplied 32x32 matrix-transform
+/// scratch block, whose contents need not be initialised.
+///
+/// # Errors
+/// Returns the [`inverse_transform_2d_outer`] errors.
+pub fn inverse_transform_2d_outer_with_scratch(
+    params: &InverseTransform2dOuter,
+    dequant: &[i32],
+    residual: &mut [i32],
+    transform_scratch: &mut [i32; MAX_ADJ_DIM * MAX_ADJ_DIM],
+) -> Result<()> {
     let (adj_w, adj_h, orig_w, orig_h) = transform_dimensions(params)?;
     let adj_pels = adj_w * adj_h;
     let orig_pels = orig_w * orig_h;
@@ -235,13 +254,12 @@ pub fn inverse_transform_2d_outer(
         });
     }
 
-    let mut transform_scratch = [0i32; MAX_ADJ_DIM * MAX_ADJ_DIM];
     if orig_pels == adj_pels {
         return inverse_transform_2d_outer_adjusted_inner(
             params,
             dequant,
             residual,
-            &mut transform_scratch,
+            transform_scratch,
             adj_w,
             adj_h,
         );
@@ -253,7 +271,7 @@ pub fn inverse_transform_2d_outer(
         params,
         dequant,
         adj,
-        &mut transform_scratch,
+        transform_scratch,
         adj_w,
         adj_h,
     )?;

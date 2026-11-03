@@ -6,6 +6,8 @@
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_SIG_COEF_CONTEXTS_2D, SIG_REF_DIFF_OFFSET_NUM};
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
 
+use super::super::coeff_state::{LEVEL_GRID_LEN, LevelGrid};
+
 const SIG_COEF_CONTEXTS_EOB: usize = 4;
 
 const LF_SIG_COEF_CONTEXTS_2D_UV: usize = 8;
@@ -50,13 +52,20 @@ fn clamped_level_at(level: &[u8], stride: usize, row: usize, col: usize, limit: 
         .map_or(0, |&value| u32::from(value).min(limit))
 }
 
-/// [`clamped_level_at`] for the neighbour `(dr, dc)` of the flat position
-/// `base`, with the same wrapping index arithmetic.
+/// The clamped level of the neighbour `(dr, dc)` of the flat position
+/// `base`. Every neighbour of a block position lies inside the grid's
+/// padded extent, so the index mask never changes a valid index.
 #[inline]
-fn level_near(level: &[u8], base: usize, stride: usize, dr: usize, dc: usize, limit: u32) -> u32 {
-    level
-        .get(base.wrapping_add(dr.wrapping_mul(stride)).wrapping_add(dc))
-        .map_or(0, |&value| u32::from(value).min(limit))
+fn level_near(
+    level: &LevelGrid,
+    base: usize,
+    stride: usize,
+    dr: usize,
+    dc: usize,
+    limit: u32,
+) -> u32 {
+    let index = base.wrapping_add(dr.wrapping_mul(stride)).wrapping_add(dc);
+    u32::from(level[index & (LEVEL_GRID_LEN - 1)]).min(limit)
 }
 
 pub(crate) const fn coeff_base_eob_ctx(c: usize, bwl: u32, height: usize) -> usize {
@@ -101,7 +110,7 @@ impl CoeffBrContext {
         reason = "measured: plain inline leaves two out-of-line calls in the level loop"
     )]
     #[inline(always)]
-    pub(crate) fn ctx(self, level: &[u8]) -> usize {
+    pub(crate) fn ctx(self, level: &LevelGrid) -> usize {
         let is_dc = self.row == 0 && self.col == 0;
         let class_idx = tx_class_idx(self.tx_class);
         let mag = match class_idx {
@@ -122,7 +131,7 @@ impl CoeffBrContext {
     /// Clamped neighbour sum for one class; a constant class makes every
     /// offset a constant.
     #[inline]
-    fn neighbour_mag<const CLASS: usize>(self, level: &[u8]) -> u32 {
+    fn neighbour_mag<const CLASS: usize>(self, level: &LevelGrid) -> u32 {
         let base = self.row.wrapping_mul(self.stride).wrapping_add(self.col);
         let at = |[dr, dc]: [usize; 2]| {
             level_near(level, base, self.stride, dr, dc, MAX_BASE_BR_RANGE - 1)
@@ -187,7 +196,7 @@ impl CoeffBaseContext {
         reason = "the coefficient loop calls this per coefficient; keep it inlined beside the encoder facade"
     )]
     #[inline(always)]
-    pub(crate) fn select(&self, level: &[u8]) -> CoeffBaseSelection {
+    pub(crate) fn select(&self, level: &LevelGrid) -> CoeffBaseSelection {
         let class_idx = tx_class_idx(self.tx_class);
         let mag = match class_idx {
             1 => self.neighbour_mag::<1>(level),
@@ -248,7 +257,7 @@ impl CoeffBaseContext {
     /// Clamped neighbour sum for one class; a constant class makes every
     /// offset a constant.
     #[inline]
-    fn neighbour_mag<const CLASS: usize>(&self, level: &[u8]) -> u32 {
+    fn neighbour_mag<const CLASS: usize>(&self, level: &LevelGrid) -> u32 {
         let lf_limit = self.is_lf && !(self.is_hidden && self.c == 0);
         let near_limit = if lf_limit { 5 } else { 3 };
         let far_limit = if lf_limit && CLASS == 0 { 5 } else { 3 };
@@ -268,7 +277,7 @@ impl CoeffBaseContext {
     }
 }
 
-pub(crate) const fn dc_sign_ctx(
+pub(crate) fn dc_sign_ctx(
     above_dc: &[u8],
     left_dc: &[u8],
     x4: usize,
@@ -276,40 +285,23 @@ pub(crate) const fn dc_sign_ctx(
     w4: usize,
     h4: usize,
 ) -> usize {
-    let mut dc_sign: isize = 0;
-    let mut k = 0;
-    while k < w4 {
-        let idx = x4.saturating_add(k);
-        if idx >= above_dc.len() {
-            break;
-        }
-        match above_dc[idx] {
-            1 => dc_sign -= 1,
-            2 => dc_sign += 1,
-            _ => {}
-        }
-        k += 1;
+    let dc_sign = dc_sign_votes(above_dc, x4, w4) + dc_sign_votes(left_dc, y4, h4);
+    match dc_sign.cmp(&0) {
+        core::cmp::Ordering::Less => 1,
+        core::cmp::Ordering::Greater => 2,
+        core::cmp::Ordering::Equal => 0,
     }
-    let mut k = 0;
-    while k < h4 {
-        let idx = y4.saturating_add(k);
-        if idx >= left_dc.len() {
-            break;
-        }
-        match left_dc[idx] {
-            1 => dc_sign -= 1,
-            2 => dc_sign += 1,
-            _ => {}
-        }
-        k += 1;
-    }
-    if dc_sign < 0 {
-        1
-    } else if dc_sign > 0 {
-        2
-    } else {
-        0
-    }
+}
+
+/// Net sign of the `len` DC categories from `start`; categories are random
+/// per block, so the sum is branchless.
+fn dc_sign_votes(line: &[u8], start: usize, len: usize) -> i32 {
+    line.get(start..)
+        .unwrap_or_default()
+        .iter()
+        .take(len)
+        .map(|&category| i32::from(category == 2) - i32::from(category == 1))
+        .sum()
 }
 
 #[inline]

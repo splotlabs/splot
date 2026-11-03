@@ -18,6 +18,7 @@ mod copy;
 mod fullpel_u8;
 mod narrow;
 mod output;
+mod pairs;
 mod slide;
 mod small_compound;
 mod tip_overlap;
@@ -35,6 +36,7 @@ pub use fullpel_u8::{
     subpel_predict_block_strided_into_u8,
 };
 use output::*;
+use pairs::{even_tap_span, paired_tap_sum, paired_taps};
 use slide::SlideLanes;
 pub use tip_overlap::{BilinearOverlapCarry, subpel_predict_12x12_bilinear_overlap_into};
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample

@@ -13,12 +13,13 @@
 //!
 //! Feature tracking: `RECON-SECONDARY-INVERSE-TRANSFORM`.
 
-use std::simd::Simd;
+use std::simd::cmp::SimdOrd as _;
+use std::simd::num::SimdInt as _;
+use std::simd::{Select as _, Simd};
 
 use splot_tables::tables::secondary_transform::{IST_4X4_KERNEL, IST_8X8_KERNEL, STX_SCAN_MAP};
 
 use crate::coefficient_scan::TransformClass;
-use crate::math::round2_signed_i32;
 use crate::{BitDepth, ReconError, Result};
 
 /// AV2 § 3 `IST_4X4_HEIGHT`: rows in the 4x4 secondary-transform matrix.
@@ -202,9 +203,21 @@ pub fn secondary_inverse_transform(
     dequant: &mut [i32],
     params: &SecondaryInverseTransform,
 ) -> Result<()> {
+    let coded = dequant.len();
+    secondary_inverse_transform_prefix(dequant, coded, params).map(|_| ())
+}
+
+/// [`secondary_inverse_transform`] of a block whose samples from `coded` on
+/// are zero and may be unwritten: zeroes only the whole-row prefix that may
+/// be non-zero afterwards, and returns its length.
+pub(crate) fn secondary_inverse_transform_prefix(
+    dequant: &mut [i32],
+    coded: usize,
+    params: &SecondaryInverseTransform,
+) -> Result<usize> {
     let layout = secondary_transform_layout(params)?;
     let expected = params.w * params.h;
-    if dequant.len() != expected {
+    if dequant.len() != expected || coded > expected {
         return Err(ReconError::SecondaryTransformBufferMismatch {
             expected,
             actual: dequant.len(),
@@ -213,9 +226,13 @@ pub fn secondary_inverse_transform(
     let bound = layout.bound;
     let mut coefs = [0i32; IST_8X8_HEIGHT];
     for (slot, &pos) in coefs[..layout.n].iter_mut().zip(&layout.inputs) {
-        *slot = dequant[usize::from(pos)].clamp(-bound, bound - 1);
+        if let Some(&coeff) = dequant[..coded].get(usize::from(pos)) {
+            *slot = coeff.clamp(-bound, bound - 1);
+        }
     }
-    dequant.fill(0);
+    let output_rows = if layout.width == IST_8X8_WIDTH { 8 } else { 4 };
+    let len = coded.max((output_rows * params.w).min(expected));
+    dequant[..len].fill(0);
     let mut sums = [0i32; IST_8X8_WIDTH];
     let coefs = &coefs[..layout.n];
     if layout.width == IST_8X8_WIDTH {
@@ -223,26 +240,42 @@ pub fn secondary_inverse_transform(
     } else if let Some(sums) = sums.first_chunk_mut::<IST_4X4_WIDTH>() {
         accumulate_kernel_rows(layout.kernel.as_chunks().0, coefs, sums);
     }
-    for (&t, &pos) in sums[..layout.width].iter().zip(&layout.outputs) {
-        dequant[usize::from(pos)] = round2_signed_i32(t, 7).clamp(-bound, bound - 1);
+    let output = &mut dequant[..len];
+    for (sums, positions) in sums[..layout.width]
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .zip(layout.outputs.as_chunks::<8>().0)
+    {
+        let t = Simd::from_array(*sums);
+        let magnitude = (t.abs() + Simd::splat(1 << 6)) >> Simd::splat(7);
+        let rounded = t.is_negative().select(-magnitude, magnitude);
+        let clipped = rounded
+            .simd_max(Simd::splat(-bound))
+            .simd_min(Simd::splat(bound - 1));
+        for (&value, &pos) in clipped.as_array().iter().zip(positions) {
+            if let Some(slot) = output.get_mut(usize::from(pos)) {
+                *slot = value;
+            }
+        }
     }
-    Ok(())
+    Ok(len)
 }
 
 /// Adds `coef * row` over the kernel rows of the nonzero input coefficients,
 /// keeping the `W <= 48` sums in vector registers.
 fn accumulate_kernel_rows<const W: usize>(rows: &[[i32; W]], coefs: &[i32], sums: &mut [i32; W]) {
-    let mut acc = [Simd::<i32, 4>::splat(0); IST_8X8_WIDTH / 4];
+    let mut acc = [Simd::<i32, 8>::splat(0); IST_8X8_WIDTH / 8];
     for (row, &coef) in rows.iter().zip(coefs) {
         if coef != 0 {
             let coef = Simd::splat(coef);
-            for (acc, weights) in acc.iter_mut().zip(row.chunks_exact(4)) {
-                *acc += Simd::from_slice(weights) * coef;
+            for (acc, weights) in acc.iter_mut().zip(row.as_chunks::<8>().0) {
+                *acc += Simd::from_array(*weights) * coef;
             }
         }
     }
-    for (sums, acc) in sums.chunks_exact_mut(4).zip(acc) {
-        sums.copy_from_slice(&acc.to_array()); // splot-copy-ok: publish four IST sums
+    for (sums, acc) in sums.as_chunks_mut::<8>().0.iter_mut().zip(acc) {
+        *sums = acc.to_array();
     }
 }
 

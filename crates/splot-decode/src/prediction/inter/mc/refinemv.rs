@@ -492,7 +492,7 @@ impl<'a, T: ReconSample> TipFullpelViews<'a, T> {
         };
         let view = |reference: usize| {
             let last_row = rect.luma_y as i32 + (mvs[reference].row >> 3) + reach;
-            let (view, _, _) = references[reference]
+            let view = references[reference]
                 .plane_view(PlaneId::Y, last_row, offset)
                 .ok()?;
             Some(view)
