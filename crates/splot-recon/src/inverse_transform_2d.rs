@@ -152,12 +152,10 @@ pub(super) fn inverse_transform_2d_with_scratch(
 
     if params.bit_depth == BitDepth::Eight
         && !params.lossless
-        && let (InverseTransform2dDim::Kernel(row), InverseTransform2dDim::Kernel(col)) =
-            (params.row_type, params.col_type)
         && inverse_transform_2d_8bit(
             Transform8 {
-                row,
-                col,
+                row: params.row_type,
+                col: params.col_type,
                 w,
                 h,
                 rescale: odd_ratio,
