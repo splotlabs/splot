@@ -4,16 +4,17 @@
 //! AV2 § 7.20.5 guided detail filter application.
 
 use std::simd::{
-    Mask, Select, Simd,
+    Select, Simd,
     cmp::{SimdOrd, SimdPartialOrd},
     num::SimdUint,
     simd_swizzle,
 };
 
 use splot_core::headers::frame::FrameHeaderCore;
-use splot_core::tables::loop_restoration::{
-    GDF_ALPHA, GDF_BIAS, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
-};
+use splot_core::tables::loop_restoration::{GDF_ALPHA, GDF_BIAS, GDF_WEIGHT};
+#[cfg(test)]
+use splot_core::tables::loop_restoration::{GDF_INTER_ERROR, GDF_INTRA_ERROR};
+#[cfg(test)]
 use splot_recon::math::round2_signed_i32;
 use splot_recon::{
     BitDepth, LoopRestorationSource, LoopRestorationSourceBounds, PlaneId, ReconSample,
@@ -27,12 +28,7 @@ use crate::support::reusable_scratch::with_reusable_scratch;
 #[path = "gdf_simd.rs"]
 mod simd;
 
-use simd::{
-    EVEN_CLASS_ZERO_WEIGHTS, GDF_CLIP_TAPS, GDF_WEIGHT_SUMS, GdfClipTaps, GdfLowRange,
-    GdfMixedParams, GdfSymParams, GdfTapWeights, ODD_CLASS_ZERO_WEIGHTS, TAP_REACH, WINDOW_ROWS,
-    class_bias, gdf_index_scale, gdf_rows, mixed_class_rows, source_rows, sym_rows,
-    uniform_gdf_class, window_at,
-};
+use simd::{GdfSymParams, TAP_REACH, source_rows, sym_rows, sym_rows_narrow, window_at};
 
 const MI_SIZE: usize = 4;
 const GDF_TEST_STRIPE_OFF: usize = 8;
@@ -475,7 +471,7 @@ fn apply_stripe_config<T: ReconSample>(
                     continue;
                 }
                 let class_cols = run.len() >> 1;
-                let mixed_params = GdfMixedParams::new(&run_block);
+                let params = GdfSymParams::new(&run_block);
                 for local_y in (0..height).step_by(MI_SIZE) {
                     let block_y = y + local_y;
                     let block_height = MI_SIZE.min(height - local_y);
@@ -508,7 +504,7 @@ fn apply_stripe_config<T: ReconSample>(
                             classes,
                             class_cols,
                             block,
-                            &mixed_params,
+                            &params,
                         )?;
                         preserve_lossless_luma_samples(
                             lossless_grid,
@@ -573,108 +569,6 @@ struct GdfBlock {
     max_sample: i32,
 }
 
-struct GdfUniformParams {
-    class: usize,
-    /// Clip bound and its negation of each tap in every lane, loaded together.
-    bounds: [[Simd<i16, 8>; 2]; GDF_COORDS.len()],
-    /// The three weights of each tap, loaded together; they and `bias` are
-    /// scaled by `gdf_index_scale`.
-    taps: [[i16; 4]; GDF_COORDS.len()],
-    weight_sums: &'static [i16; 3],
-    clip_taps: &'static GdfClipTaps,
-    bias: [i32; 3],
-    scale: i32,
-}
-
-impl GdfUniformParams {
-    fn new(block: &GdfBlock, class: usize) -> Self {
-        let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
-        let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
-        let scale = gdf_index_scale(block);
-        let bias = GDF_BIAS[block.ref_dst_idx][block.qp_idx].map(|bias| bias * i32::from(scale));
-        Self {
-            class,
-            bias,
-            scale: i32::from(scale),
-            weight_sums: &GDF_WEIGHT_SUMS[block.ref_dst_idx][block.qp_idx][class],
-            clip_taps: &GDF_CLIP_TAPS[block.ref_dst_idx][block.qp_idx][class],
-            bounds: core::array::from_fn(|tap| {
-                let alpha = Simd::splat(alpha_table[tap][class] as i16);
-                [alpha, -alpha]
-            }),
-            taps: core::array::from_fn(|tap| {
-                let weight = |index: usize| weight_table[index][tap][class] * scale;
-                [weight(0), weight(1), weight(2), 0]
-            }),
-        }
-    }
-
-    /// Filters in place a row pair of `W` samples that all have this class.
-    /// `range` is the row pair's `tap_range` below this class's limit, when
-    /// the caller measured it.
-    fn rows<const W: usize, const WIN: usize>(
-        &self,
-        window: &[&[u16; WIN]; WINDOW_ROWS],
-        output: [&mut [u16; W]; 2],
-        classes: &[GdfClass],
-        block: &GdfBlock,
-        range: Option<u16>,
-    ) {
-        let weights = |k: usize| {
-            let tap = Simd::from_array(self.taps[k]);
-            let [alpha, low] = self.bounds[k]
-                .map(|bound| Simd::from_array(core::array::from_fn(|lane| bound[lane % 8])));
-            GdfTapWeights {
-                alpha,
-                low,
-                weights: core::array::from_fn(|index| Simd::splat(tap[index])),
-            }
-        };
-        let [first, second, gradient] = self.bias.map(Simd::splat);
-        let init = [
-            first,
-            second,
-            class_bias(classes) * Simd::splat(self.scale) + gradient,
-        ];
-        let low = range.map(|range| GdfLowRange {
-            range: range as i16,
-            weight_sums: self.weight_sums.map(Simd::splat),
-            scale: self.scale,
-            clip_taps: *self.clip_taps,
-        });
-        if self.class & 1 == 0 {
-            let filter = uniform_class_rows::<W, WIN, EVEN_CLASS_ZERO_WEIGHTS>;
-            filter(window, output, &init, block, &weights, low.as_ref());
-        } else {
-            let filter = uniform_class_rows::<W, WIN, ODD_CLASS_ZERO_WEIGHTS>;
-            filter(window, output, &init, block, &weights, low.as_ref());
-        }
-    }
-}
-
-/// Filters in place a uniform-class row pair through `gdf_rows`. Two rows of
-/// 16 lanes need more vector registers than exist, so 16 lanes go one row at
-/// a time.
-fn uniform_class_rows<const W: usize, const WIN: usize, const ZERO_WEIGHTS: u64>(
-    window: &[&[u16; WIN]; WINDOW_ROWS],
-    output: [&mut [u16; W]; 2],
-    init: &[Simd<i32, W>; 3],
-    block: &GdfBlock,
-    weights: &impl Fn(usize) -> GdfTapWeights<W>,
-    low: Option<&GdfLowRange<W>>,
-) {
-    let odd = Mask::splat(false);
-    if W == 16 {
-        for (first_row, output) in output.into_iter().enumerate() {
-            let filter = gdf_rows::<W, WIN, 1, ZERO_WEIGHTS, false>;
-            filter(window, first_row, [output], init, odd, block, weights, low);
-        }
-    } else {
-        let filter = gdf_rows::<W, WIN, 2, ZERO_WEIGHTS, false>;
-        filter(window, 0, output, init, odd, block, weights, low);
-    }
-}
-
 /// Reads the `W` base samples at `start` and in the next frame row.
 fn base_row_pair<const W: usize>(
     base_luma: &[u16],
@@ -708,78 +602,45 @@ fn compute_block<T: ReconSample>(
     classes: &[GdfClass],
     class_cols: usize,
     block: GdfBlock,
-    mixed_params: &GdfMixedParams,
+    params: &GdfSymParams,
 ) -> Result<[T; MI_SIZE * MI_SIZE]> {
     let source_origin = source
         .relative_position(block.x, block.y)
         .ok_or_else(gdf_state_error)?;
-    if source_origin.0 < GDF_READ_RADIUS || source_origin.1 < GDF_READ_RADIUS {
-        return Err(gdf_state_error());
-    }
-    let stride = source.stride;
-    let tap_offsets = gdf_tap_offsets(stride)?;
-    let last_col = source_origin
-        .0
-        .checked_add(block.width)
-        .and_then(|value| value.checked_add(GDF_READ_RADIUS - 1))
-        .ok_or_else(gdf_state_error)?;
-    let window_end = source_origin
-        .1
-        .checked_add(block.height)
-        .and_then(|value| value.checked_add(GDF_READ_RADIUS - 1))
-        .and_then(|last_row| last_row.checked_mul(stride))
-        .and_then(|prefix| prefix.checked_add(last_col))
-        .and_then(|last_index| last_index.checked_add(1))
-        .ok_or_else(gdf_state_error)?;
-    if last_col >= stride || window_end > source.samples.len() {
+    if block.width > MI_SIZE || source_origin.0 < GDF_READ_RADIUS {
         return Err(gdf_state_error());
     }
     let class_col_base = (source_origin.0 - GDF_READ_RADIUS) >> 1;
     let mut output = [T::default(); MI_SIZE * MI_SIZE];
-    if block.width == MI_SIZE {
-        for row in (0..block.height).step_by(2) {
-            let class_base = (row >> 1) * class_cols + class_col_base;
-            let classes = classes
-                .get(class_base..class_base + 2)
-                .ok_or_else(gdf_state_error)?;
-            let base_start = block
-                .y
-                .checked_add(row)
-                .and_then(|y| y.checked_sub(block.base_origin_y))
-                .and_then(|y| y.checked_mul(block.base_stride))
-                .and_then(|index| index.checked_add(block.x))
-                .ok_or_else(gdf_state_error)?;
-            let mut rows = base_row_pair::<MI_SIZE>(base_luma, base_start, block.base_stride)?;
-            let origin = (source_origin.0, source_origin.1 + row);
-            let window_rows = source_rows(source, origin, MI_SIZE + 2 * TAP_REACH)?;
-            let window = window_at::<{ MI_SIZE + 2 * TAP_REACH }>(&window_rows, 0)
-                .ok_or_else(gdf_state_error)?;
-            let [top, bottom] = &mut rows;
-            mixed_class_rows(&window, [top, bottom], classes, &block, mixed_params);
-            for (row_offset, samples) in rows.into_iter().enumerate() {
-                for (col, sample) in samples.into_iter().enumerate() {
-                    output[(row + row_offset) * MI_SIZE + col] =
-                        T::try_from_u16(sample).map_err(|_| gdf_state_error())?;
-                }
+    for row in (0..block.height).step_by(2) {
+        let class_base = (row >> 1) * class_cols + class_col_base;
+        let classes = classes.get(class_base..).ok_or_else(gdf_state_error)?;
+        let base_start = block
+            .y
+            .checked_add(row)
+            .and_then(|y| y.checked_sub(block.base_origin_y))
+            .and_then(|y| y.checked_mul(block.base_stride))
+            .and_then(|index| index.checked_add(block.x))
+            .ok_or_else(gdf_state_error)?;
+        let mut rows = base_row_pair::<MI_SIZE>(base_luma, base_start, block.base_stride)?;
+        let origin = (source_origin.0, source_origin.1 + row);
+        let window_rows = source_rows(source, origin, block.width + 2 * TAP_REACH)?;
+        let [top, bottom] = &mut rows;
+        sym_rows_narrow(
+            &window_rows,
+            0,
+            block.width,
+            [top, bottom],
+            classes,
+            &block,
+            params,
+        )
+        .ok_or_else(gdf_state_error)?;
+        for (row_offset, samples) in rows.into_iter().enumerate() {
+            for (col, sample) in samples.into_iter().take(block.width).enumerate() {
+                output[(row + row_offset) * block.width + col] =
+                    T::try_from_u16(sample).map_err(|_| gdf_state_error())?;
             }
-        }
-        return Ok(output);
-    }
-    for row in 0..block.height {
-        for col in 0..block.width {
-            let class = classes[(row >> 1) * class_cols + class_col_base + (col >> 1)];
-            let sample = gdf_sample(
-                base_luma,
-                source,
-                &tap_offsets,
-                &block,
-                row,
-                col,
-                (source_origin.0 + col, source_origin.1 + row),
-                class,
-            );
-            output[row * block.width + col] =
-                T::try_from_u16(sample).map_err(|_| gdf_state_error())?;
         }
     }
     Ok(output)
@@ -794,16 +655,11 @@ fn compute_enabled_segment(
     cols: core::ops::Range<usize>,
 ) -> Result<()> {
     let geometry_error = || gdf_state_error();
-    let source_error = gdf_state_error;
     if !block.height.is_multiple_of(2) || cols.end > block.width {
         return Err(geometry_error());
     }
     let class_cols = block.width >> 1;
-    let tap_offsets = gdf_tap_offsets(source.stride)?;
-    let uniform_params: [GdfUniformParams; 4] =
-        core::array::from_fn(|class| GdfUniformParams::new(block, class));
-    let mixed_params = GdfMixedParams::new(block);
-    let sym_params = GdfSymParams::new(block);
+    let params = GdfSymParams::new(block);
     let run = cols.len();
     for row in (0..block.height).step_by(2) {
         let class_row = (row >> 1)
@@ -830,72 +686,18 @@ fn compute_enabled_segment(
         };
         let mut x = 0;
         while x < run {
-            let width = run - x;
-            let classes_16 = row_classes
-                .get(x >> 1..)
-                .and_then(<[GdfClass]>::first_chunk::<8>)
-                .filter(|_| width >= 16);
-            if let Some(classes) = classes_16 {
+            let width = (run - x).min(16);
+            let classes = row_classes.get(x >> 1..).ok_or_else(geometry_error)?;
+            if let Some(classes) = classes.first_chunk::<8>().filter(|_| width == 16) {
                 let window = window_at::<28>(&window_rows, x).ok_or_else(geometry_error)?;
                 let output = output_pair::<16>(top, bottom, x).ok_or_else(geometry_error)?;
-                sym_rows(&window, output, classes, block, &sym_params);
-                x += 16;
-            } else if width >= 8 {
-                let classes = row_classes
-                    .get(x >> 1..)
-                    .and_then(<[GdfClass]>::first_chunk::<4>)
-                    .ok_or_else(geometry_error)?;
-                let window = window_at::<20>(&window_rows, x).ok_or_else(geometry_error)?;
-                let output = output_pair::<8>(top, bottom, x).ok_or_else(geometry_error)?;
-                if let Some(class_index) = uniform_gdf_class(classes) {
-                    uniform_params[class_index as usize]
-                        .rows(&window, output, classes, block, None);
-                } else {
-                    mixed_class_rows(&window, output, classes, block, &mixed_params);
-                }
-                x += 8;
-            } else if width >= MI_SIZE {
-                let classes = row_classes
-                    .get(x >> 1..)
-                    .and_then(<[GdfClass]>::first_chunk::<2>)
-                    .ok_or_else(geometry_error)?;
-                let window = window_at::<16>(&window_rows, x).ok_or_else(geometry_error)?;
-                let output = output_pair::<MI_SIZE>(top, bottom, x).ok_or_else(geometry_error)?;
-                mixed_class_rows(&window, output, classes, block, &mixed_params);
-                x += MI_SIZE;
+                sym_rows(&window, output, classes, block, &params);
             } else {
-                let local_x = cols.start + x;
-                let class_start = class_row + (local_x >> 1);
-                let last_col = source_origin.0 + cols.end + GDF_READ_RADIUS - 1;
-                let window_end = (source_origin.1 + row + GDF_READ_RADIUS) * source.stride;
-                if source_origin.0 < GDF_READ_RADIUS
-                    || source_origin.1 < GDF_READ_RADIUS
-                    || last_col >= source.stride
-                    || window_end + last_col >= source.samples.len()
-                {
-                    return Err(source_error());
-                }
-                for sample_row in row..row + 2 {
-                    for col in local_x..cols.end {
-                        let class = *classes
-                            .get(class_start + ((col - local_x) >> 1))
-                            .ok_or_else(geometry_error)?;
-                        let sample = gdf_sample(
-                            base_luma,
-                            source,
-                            &tap_offsets,
-                            block,
-                            sample_row,
-                            col,
-                            (source_origin.0 + col, source_origin.1 + sample_row),
-                            class,
-                        );
-                        let output = sample_row * block.base_stride + block.x + col;
-                        *base_luma.get_mut(output).ok_or_else(source_error)? = sample;
-                    }
-                }
-                break;
+                let output = [&mut top[x..], &mut bottom[x..]];
+                sym_rows_narrow(&window_rows, x, width, output, classes, block, &params)
+                    .ok_or_else(geometry_error)?;
             }
+            x += width;
         }
     }
     Ok(())
@@ -1340,7 +1142,7 @@ impl GdfClass {
         Self((gradient_bias << 2) | i32::from(index))
     }
 
-    #[inline]
+    #[cfg(test)]
     fn index(self) -> u8 {
         (self.0 & 3) as u8
     }
@@ -1603,6 +1405,7 @@ fn classify_eight(
     ((bias << 2) | index).to_array().map(GdfClass)
 }
 
+#[cfg(test)]
 fn gdf_tap_offsets(stride: usize) -> Result<[usize; GDF_COORDS.len()]> {
     let stride = isize::try_from(stride).map_err(|_| gdf_state_error())?;
     let mut offsets = [0_usize; GDF_COORDS.len()];
@@ -1620,6 +1423,7 @@ fn exact_slice<T>(samples: &[T], start: usize, len: usize) -> Option<&[T]> {
     samples.get(start..)?.get(..len)
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn gdf_sample(
     base_luma: &[u16],
@@ -1663,6 +1467,7 @@ fn gdf_sample(
     finish_gdf_sample(base, block, &gdf_idx)
 }
 
+#[cfg(test)]
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn finish_gdf_sample(base: i32, block: &GdfBlock, gdf_idx: &[i32; 3]) -> u16 {
@@ -1683,6 +1488,7 @@ fn finish_gdf_sample(base: i32, block: &GdfBlock, gdf_idx: &[i32; 3]) -> u16 {
     }
 }
 
+#[cfg(test)]
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn finish_gdf_sample_with_error<const SCALE: i32, const ERROR_LEN: usize>(
@@ -2207,15 +2013,9 @@ mod tests {
         );
         assert!(fused_result.is_ok());
         assert_eq!(fused_classes, classes);
-        let mixed_params = super::GdfMixedParams::new(&block);
-        let filtered = compute_block::<u16>(
-            &source,
-            &curr,
-            &classes,
-            block.width >> 1,
-            block,
-            &mixed_params,
-        );
+        let params = super::GdfSymParams::new(&block);
+        let filtered =
+            compute_block::<u16>(&source, &curr, &classes, block.width >> 1, block, &params);
         let filtered = filtered.expect("valid filtered");
         assert!(filtered.iter().all(|&sample| sample <= 1023));
 
@@ -2252,7 +2052,7 @@ mod tests {
             &reused_classes,
             block.width >> 1,
             block,
-            &mixed_params,
+            &params,
         );
         let reused_filtered = reused_filtered.expect("valid reused filtered");
         assert_eq!(reused_filtered, filtered);

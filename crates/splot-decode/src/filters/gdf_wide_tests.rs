@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used)]
 
 use super::*;
+use crate::filters::gdf::simd::{WINDOW_ROWS, sym_rows};
 
 /// A two-row window of `width` samples with the full tap reach around it.
 fn test_source(width: usize, max_sample: u16, case: usize) -> (Vec<u16>, usize) {
@@ -94,108 +95,91 @@ fn filter_both_ways<const W: usize, const WIN: usize>(
     (filtered, scalar)
 }
 
+/// Class patterns of eight class blocks: each class alone, then mixes.
+fn class_patterns() -> [[u8; 8]; 6] {
+    [
+        [0; 8],
+        [1; 8],
+        [2; 8],
+        [3; 8],
+        [0, 1, 2, 3, 3, 2, 1, 0],
+        [3, 0, 2, 1, 1, 3, 0, 2],
+    ]
+}
+
 #[test]
-fn uniform_width_sixteen_matches_scalar_samples_for_all_tables_and_classes() {
-    let (mut low_range, mut clipped) = (0, 0);
+fn sixteen_lanes_match_scalar_samples_for_all_tables_and_classes() {
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        for case in 3..7 {
+        for case in 0..7 {
             let (samples, stride) = test_source(16, bit_depth.max_sample(), case);
-            for (ref_dst_idx, alpha_by_qp) in GDF_ALPHA.iter().enumerate() {
-                for (qp_idx, alpha) in alpha_by_qp.iter().enumerate() {
+            for ref_dst_idx in 0..GDF_ALPHA.len() {
+                for qp_idx in 0..GDF_ALPHA[0].len() {
                     let block = test_block(16, bit_depth, ref_dst_idx, qp_idx);
-                    for class_index in 0..4_u8 {
+                    let params = GdfSymParams::new(&block);
+                    for pattern in class_patterns() {
                         let classes: [GdfClass; 8] = core::array::from_fn(|index| {
                             let delta = i32::try_from(index).unwrap_or_default() * 37;
-                            GdfClass::new(class_index, 511 - delta)
+                            GdfClass::new(pattern[index], 511 - delta)
                         });
-                        let params = GdfUniformParams::new(&block, usize::from(class_index));
                         let (actual, expected) = filter_both_ways::<16, 28>(
                             &samples,
                             stride,
                             &block,
                             &classes,
-                            |window, output| {
-                                let range = tap_range::<16, 28>(window, params.clip_taps.limit);
-                                if let Some(range) = range {
-                                    low_range += 1;
-                                    let class = usize::from(class_index);
-                                    clipped += usize::from(
-                                        alpha[..GDF_COORDS.len()]
-                                            .iter()
-                                            .any(|bounds| bounds[class] < range),
-                                    );
-                                }
-                                params.rows(window, output, &classes, &block, range);
-                            },
+                            |window, output| sym_rows(window, output, &classes, &block, &params),
                         );
                         assert_eq!(
                             actual, expected,
-                            "bit depth {bit_depth:?}, case {case}, reference {ref_dst_idx}, qp \
-                             {qp_idx}, class {class_index}"
+                            "{bit_depth:?}, case {case}, reference {ref_dst_idx}, qp {qp_idx}, \
+                             classes {pattern:?}"
                         );
                     }
                 }
             }
         }
     }
-    assert!(low_range > 0 && clipped > 0 && clipped < low_range);
 }
 
-/// A flat window has range 0 and skips the taps; one sample that the
-/// farthest tap of the last lane reads, one above the rest, keeps the range
-/// at 1. Both match the scalar samples for every table, class and bit depth.
-/// The class gradient biases cross error-table digits, so the class blocks
-/// do not all share one residual. Zero biases also take the `keeps_flat`
-/// skip, and the tables where it does not hold.
+/// A flat window skips the taps; one sample that the farthest tap of the
+/// last lane reads, one above the rest, does not. Both match the scalar
+/// samples for every table and bit depth, with class gradient biases that
+/// cross error-table digits and with zero biases.
 #[test]
-fn flat_uniform_windows_match_scalar_samples() {
+fn flat_windows_match_scalar_samples() {
     let stride = 16 + GDF_READ_RADIUS * 2;
     let far = (ORIGIN.1 + 1 + TAP_REACH) * stride + ORIGIN.0 + 15;
-    let mut keeps_flat = [0; 2];
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
         for (differ, spread) in [0, 1].into_iter().flat_map(|d| [(d, 1500), (d, 0)]) {
             let mut samples = vec![bit_depth.max_sample() / 3; stride * (2 + GDF_READ_RADIUS * 2)];
             samples[far] += differ;
-            for (ref_dst_idx, alpha_by_qp) in GDF_ALPHA.iter().enumerate() {
-                for qp_idx in 0..alpha_by_qp.len() {
+            for ref_dst_idx in 0..GDF_ALPHA.len() {
+                for qp_idx in 0..GDF_ALPHA[0].len() {
                     let block = test_block(16, bit_depth, ref_dst_idx, qp_idx);
-                    for class_index in 0..4_u8 {
-                        let classes: [GdfClass; 8] = core::array::from_fn(|index| {
-                            GdfClass::new(class_index, i32::try_from(index * spread).unwrap_or(0))
-                        });
-                        let params = GdfUniformParams::new(&block, usize::from(class_index));
-                        keeps_flat[usize::from(params.keeps_flat)] += 1;
-                        let (actual, expected) = filter_both_ways::<16, 28>(
-                            &samples,
-                            stride,
-                            &block,
-                            &classes,
-                            |window, output| {
-                                let range = tap_range::<16, 28>(window, params.clip_taps.limit);
-                                let low = differ < params.clip_taps.limit;
-                                assert_eq!(range, low.then_some(differ));
-                                if range == Some(0) {
-                                    params.flat_rows(output, &classes, &block);
-                                } else {
-                                    params.rows(window, output, &classes, &block, range);
-                                }
-                            },
-                        );
-                        assert_eq!(
-                            actual, expected,
-                            "{bit_depth:?}, differ {differ}, spread {spread}, reference \
-                             {ref_dst_idx}, qp {qp_idx}, class {class_index}"
-                        );
-                    }
+                    let params = GdfSymParams::new(&block);
+                    let classes: [GdfClass; 8] = core::array::from_fn(|index| {
+                        let bias = i32::try_from(index * spread).unwrap_or(0);
+                        GdfClass::new((index % 4) as u8, bias)
+                    });
+                    let (actual, expected) = filter_both_ways::<16, 28>(
+                        &samples,
+                        stride,
+                        &block,
+                        &classes,
+                        |window, output| sym_rows(window, output, &classes, &block, &params),
+                    );
+                    assert_eq!(
+                        actual, expected,
+                        "{bit_depth:?}, differ {differ}, spread {spread}, reference \
+                         {ref_dst_idx}, qp {qp_idx}"
+                    );
                 }
             }
         }
     }
-    assert!(keeps_flat.iter().all(|&count| count > 0));
 }
 
 #[test]
-fn mixed_classes_match_scalar_samples_for_all_tables() {
+fn narrow_widths_match_scalar_samples_for_all_tables() {
     let classes = [
         GdfClass::new(0, 511),
         GdfClass::new(1, 389),
@@ -204,39 +188,40 @@ fn mixed_classes_match_scalar_samples_for_all_tables() {
     ];
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
         for case in 0..4 {
-            let (samples_8, stride_8) = test_source(8, bit_depth.max_sample(), case);
-            let (samples_4, stride_4) = test_source(4, bit_depth.max_sample(), case);
-            for (ref_dst_idx, alpha_by_qp) in GDF_ALPHA.iter().enumerate() {
-                for qp_idx in 0..alpha_by_qp.len() {
-                    let block = test_block(8, bit_depth, ref_dst_idx, qp_idx);
-                    let (actual, expected) = filter_both_ways::<8, 20>(
-                        &samples_8,
-                        stride_8,
-                        &block,
-                        &classes,
-                        |window, output| {
-                            let params = GdfMixedParams::new(&block);
-                            mixed_class_rows(window, output, &classes, &block, &params);
-                        },
-                    );
-                    assert_eq!(actual, expected, "width 8, {bit_depth:?}, case {case}");
-                    let block = test_block(4, bit_depth, ref_dst_idx, qp_idx);
+            for ref_dst_idx in 0..GDF_ALPHA.len() {
+                for qp_idx in 0..GDF_ALPHA[0].len() {
+                    narrow_case::<8, 20>(bit_depth, case, ref_dst_idx, qp_idx, &classes);
                     let pair = [classes[3 - case], classes[case]];
-                    let (actual, expected) = filter_both_ways::<4, 16>(
-                        &samples_4,
-                        stride_4,
-                        &block,
-                        &pair,
-                        |window, output| {
-                            let params = GdfMixedParams::new(&block);
-                            mixed_class_rows(window, output, &pair, &block, &params);
-                        },
-                    );
-                    assert_eq!(actual, expected, "width 4, {bit_depth:?}, case {case}");
+                    narrow_case::<4, 16>(bit_depth, case, ref_dst_idx, qp_idx, &pair);
+                    narrow_case::<2, 14>(bit_depth, case, ref_dst_idx, qp_idx, &pair[1..]);
                 }
             }
         }
     }
+}
+
+fn narrow_case<const W: usize, const WIN: usize>(
+    bit_depth: BitDepth,
+    case: usize,
+    ref_dst_idx: usize,
+    qp_idx: usize,
+    classes: &[GdfClass],
+) {
+    let (samples, stride) = test_source(W, bit_depth.max_sample(), case);
+    let block = test_block(W, bit_depth, ref_dst_idx, qp_idx);
+    let params = GdfSymParams::new(&block);
+    let (actual, expected) = filter_both_ways::<W, WIN>(
+        &samples,
+        stride,
+        &block,
+        classes,
+        |window, [top, bottom]| {
+            let rows = window.map(|row| &row[..]);
+            let result = sym_rows_narrow(&rows, 0, W, [top, bottom], classes, &block, &params);
+            assert!(result.is_some());
+        },
+    );
+    assert_eq!(actual, expected, "width {W}, {bit_depth:?}, case {case}");
 }
 
 #[test]
