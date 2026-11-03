@@ -646,19 +646,18 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
     let above_samples = availability.above.then(|| edges.above_samples()).flatten();
     let left_samples = availability.left.then(|| edges.left_samples()).flatten();
-    let synthesized_edge;
+    let mut synthesized_edge = [T::default(); 128];
     let cardinal_edges = match direction {
         IntraCardinalDirection::Vertical => {
             if let Some(above) = above_samples {
                 IntraDirectionalAngleEdges::above(above)
             } else if let Some(left) = left_samples {
                 let fill = *left.first().unwrap_or(&noneighbour_above::<T>(bit_depth));
-                synthesized_edge = RecycledIntraSamples::filled(width, fill);
-                IntraDirectionalAngleEdges::above(&synthesized_edge)
+                synthesized_edge[..width].fill(fill);
+                IntraDirectionalAngleEdges::above(&synthesized_edge[..width])
             } else {
-                synthesized_edge =
-                    RecycledIntraSamples::filled(width, noneighbour_above::<T>(bit_depth));
-                IntraDirectionalAngleEdges::above(&synthesized_edge)
+                synthesized_edge[..width].fill(noneighbour_above::<T>(bit_depth));
+                IntraDirectionalAngleEdges::above(&synthesized_edge[..width])
             }
         }
         IntraCardinalDirection::Horizontal => {
@@ -666,12 +665,11 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
                 IntraDirectionalAngleEdges::left(left)
             } else if let Some(above) = above_samples {
                 let fill = *above.first().unwrap_or(&noneighbour_left::<T>(bit_depth));
-                synthesized_edge = RecycledIntraSamples::filled(height, fill);
-                IntraDirectionalAngleEdges::left(&synthesized_edge)
+                synthesized_edge[..height].fill(fill);
+                IntraDirectionalAngleEdges::left(&synthesized_edge[..height])
             } else {
-                synthesized_edge =
-                    RecycledIntraSamples::filled(height, noneighbour_left::<T>(bit_depth));
-                IntraDirectionalAngleEdges::left(&synthesized_edge)
+                synthesized_edge[..height].fill(noneighbour_left::<T>(bit_depth));
+                IntraDirectionalAngleEdges::left(&synthesized_edge[..height])
             }
         }
     };

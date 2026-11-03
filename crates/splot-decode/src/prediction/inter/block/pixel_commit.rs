@@ -80,6 +80,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     let mut coefficient_scratch = std::mem::take(&mut scratch.coefficients);
     let mut plane_scratch = std::mem::take(&mut scratch.plane_records);
     let mut lists = std::mem::take(&mut scratch.lists);
+    let mut has_intra = false;
     let result = (|| {
         if row.ordinal != *expected_ordinal {
             return Err(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
@@ -112,6 +113,15 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             source.copy_into(&mut coefficient_scratch)?;
             source.take_planes(&mut plane_scratch)?;
         }
+        has_intra = entries
+            .iter()
+            .any(|entry| matches!(entry.command(), Some(ReconCommand::GeneralIntra(_))));
+        if has_intra {
+            crate::pipeline::general_intra::swap_general_intra_scratch(
+                scratch.general_intra_mut(),
+                workspace,
+            );
+        }
         for superblock in &superblocks {
             let superblock_entries = entries
                 .get_mut(superblock.entries.clone())
@@ -121,10 +131,19 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     .iter()
                     .all(|entry| entry.publication.superblock_origin() == superblock.origin)
             );
+            let superblock_needs_decoded = superblock_entries.iter().any(|entry| {
+                matches!(entry.command(), Some(ReconCommand::GeneralIntra(_)))
+                    || matches!(
+                        entry.command(),
+                        Some(ReconCommand::Inter(c)) if c.reads_current_frame()
+                    )
+            });
             for (offset, entry) in superblock_entries.iter_mut().enumerate() {
-                entry
-                    .publication
-                    .prepare_block_decoded(block_decoded, current_superblock);
+                if superblock_needs_decoded {
+                    entry
+                        .publication
+                        .prepare_block_decoded(block_decoded, current_superblock);
+                }
                 if precompute_error
                     .as_ref()
                     .is_some_and(|(index, _)| *index == superblock.entries.start + offset)
@@ -213,11 +232,20 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                         motion.fold_unit(ordinal, records)?;
                     }
                 }
-                entry
-                    .publication
-                    .publish_block_decoded(block_decoded)
-                    .map_err(|_| crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
+                if superblock_needs_decoded {
+                    entry
+                        .publication
+                        .publish_block_decoded(block_decoded)
+                        .map_err(|_| crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
+                }
             }
+        }
+        if has_intra {
+            crate::pipeline::general_intra::swap_general_intra_scratch(
+                scratch.general_intra_mut(),
+                workspace,
+            );
+            has_intra = false;
         }
         if motion_owed {
             motion.unit_landed_for(ordinal);
@@ -245,6 +273,12 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             residual_planes,
         })
     })();
+    if has_intra {
+        crate::pipeline::general_intra::swap_general_intra_scratch(
+            scratch.general_intra_mut(),
+            workspace,
+        );
+    }
     scratch.coefficients = coefficient_scratch;
     plane_scratch.clear();
     scratch.plane_records = plane_scratch;
