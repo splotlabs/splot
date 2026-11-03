@@ -8,7 +8,10 @@
 use crate::intra_dc_math::{
     IntraEdgeError, validate_intra_edge_samples, validate_output_shape, validate_sample_type,
 };
-use crate::math::round2_i32;
+use core::simd::cmp::SimdOrd;
+use core::simd::num::SimdInt;
+use core::simd::{Simd, simd_swizzle};
+
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
 const DIP_FEATURE_COUNT: usize = 11;
@@ -212,6 +215,52 @@ fn dip_averages<T: ReconSample>(samples: &[T], block_len: usize, log2_len: u8) -
     averages
 }
 
+/// `DIP_WEIGHTS[mode][index]` of one grid row, interleaved for a pairwise
+/// multiply-add: lane `2 * gx + j` of entry `k` holds the weight of feature
+/// `2 * k + j` at grid column `gx` (feature 11 is zero). Indexed
+/// `[transpose][mode][iy][k]`.
+static DIP_ROW_WEIGHTS: [[[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE]; DIP_MODE_COUNT]; 2] =
+    dip_row_weights();
+
+const DIP_FEATURE_PAIRS: usize = DIP_FEATURE_COUNT.div_ceil(2);
+
+const fn dip_row_weights() -> [[[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE]; DIP_MODE_COUNT]; 2]
+{
+    let mut table = [[[[[0i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE]; DIP_MODE_COUNT]; 2];
+    let mut transpose = 0;
+    while transpose < 2 {
+        let mut mode = 0;
+        while mode < DIP_MODE_COUNT {
+            let mut iy = 0;
+            while iy < DIP_GRID_SIDE {
+                let mut gx = 0;
+                while gx < DIP_GRID_SIDE {
+                    let index = if transpose == 1 {
+                        gx * DIP_GRID_SIDE + iy
+                    } else {
+                        iy * DIP_GRID_SIDE + gx
+                    };
+                    let weights = &splot_tables::tables::loop_restoration::DIP_WEIGHTS[mode][index];
+                    let mut feature = 0;
+                    while feature < DIP_FEATURE_COUNT {
+                        table[transpose][mode][iy][feature / 2][2 * gx + feature % 2] =
+                            weights[feature] as i16;
+                        feature += 1;
+                    }
+                    gx += 1;
+                }
+                iy += 1;
+            }
+            mode += 1;
+        }
+        transpose += 1;
+    }
+    table
+}
+
+/// Writes the § 7.13.2.3 coarse grid samples: every grid row is eight dot
+/// products of the features with that row's weights, one pairwise
+/// multiply-add per feature pair.
 fn predict_coarse_grid<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
@@ -222,46 +271,48 @@ fn predict_coarse_grid<T: ReconSample>(
     stride_samples: usize,
 ) -> Result<()> {
     let grid = dip_grid(size);
+    let Some(rows) = DIP_ROW_WEIGHTS[usize::from(dip_transpose)].get(dip_mode) else {
+        return Err(ReconError::UnsupportedIntraDipMode {
+            mode: dip_mode,
+            max: DIP_MODE_COUNT - 1,
+        });
+    };
+    let pairs: [Simd<i16, 16>; DIP_FEATURE_PAIRS] = core::array::from_fn(|k| {
+        let low = features[2 * k] as i16;
+        let high = features.get(2 * k + 1).map_or(0, |&f| f as i16);
+        Simd::from_array(core::array::from_fn(
+            |lane| if lane % 2 == 0 { low } else { high },
+        ))
+    });
+    let max = Simd::splat(i32::from(bit_depth.max_sample()));
     let mut y = grid.step_y - 1;
     for gy in 0..grid.height {
-        let iy = gy * grid.down_y;
+        let weights = &rows[gy * grid.down_y];
+        let mut sum = Simd::<i32, 8>::splat(1 << 9);
+        for (pair, weight) in pairs.iter().zip(weights) {
+            let product = pair.cast::<i32>() * Simd::<i16, 16>::from_array(*weight).cast::<i32>();
+            sum += simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
+                + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15]);
+        }
+        let values = (sum >> 10)
+            .simd_max(Simd::splat(0))
+            .simd_min(max)
+            .to_array();
+        let row = output
+            .get_mut(y * stride_samples..)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "DIP intra prediction coarse grid row",
+            })?;
         let mut x = grid.step_x - 1;
         for gx in 0..grid.width {
-            let ix = gx * grid.down_x;
-            let weight_index = if dip_transpose {
-                ix * DIP_GRID_SIDE + iy
-            } else {
-                iy * DIP_GRID_SIDE + ix
-            };
-            let value = dip_weighted_sample(bit_depth, dip_mode, weight_index, features)?;
-            output[y * stride_samples + x] = value;
+            if let Some(slot) = row.get_mut(x) {
+                *slot = T::try_from_u16(values[gx * grid.down_x] as u16)?;
+            }
             x += grid.step_x;
         }
         y += grid.step_y;
     }
     Ok(())
-}
-
-fn dip_weighted_sample<T: ReconSample>(
-    bit_depth: BitDepth,
-    dip_mode: usize,
-    weight_index: usize,
-    features: [i32; DIP_FEATURE_COUNT],
-) -> Result<T> {
-    let weights = &splot_tables::tables::loop_restoration::DIP_WEIGHTS[dip_mode][weight_index];
-    let mut sum = 0i32;
-    for (weight, feature) in weights.iter().zip(features) {
-        sum += *weight * feature;
-    }
-    clip_to_sample(bit_depth, round2_i32(sum, 10))
-}
-
-fn clip_to_sample<T: ReconSample>(bit_depth: BitDepth, value: i32) -> Result<T> {
-    let clipped = value.clamp(0, i32::from(bit_depth.max_sample()));
-    let sample = u16::try_from(clipped).map_err(|_| ReconError::ArithmeticOverflow {
-        context: "DIP intra prediction clipped sample",
-    })?;
-    T::try_from_u16(sample)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
