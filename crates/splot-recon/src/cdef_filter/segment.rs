@@ -143,12 +143,12 @@ fn reach_rows<T>(
     samples.get(first..)?.get(..len)
 }
 
-/// Eight samples widened to `u16` lanes.
+/// The first `N` samples widened to `u16` lanes.
 #[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
 #[inline(always)]
-fn widen8<T: crate::ReconSample>(samples: &[T]) -> Option<Simd<u16, 8>> {
+fn widen<T: crate::ReconSample, const N: usize>(samples: &[T]) -> Option<Simd<u16, N>> {
     if let Some(samples) = T::u8_slice(samples) {
-        return Some(Simd::<u8, 8>::from_array(*samples.first_chunk()?).cast());
+        return Some(Simd::<u8, N>::from_array(*samples.first_chunk()?).cast());
     }
     Some(Simd::from_array(*T::u16_slice(samples)?.first_chunk()?))
 }
@@ -162,11 +162,11 @@ fn gather_luma<T: crate::ReconSample>(
     pad: &mut [u16; LUMA_SEGMENT_AREA],
     origin: (usize, usize),
 ) -> Option<[[u16; 2]; CDEF_SEGMENT_BLOCKS]> {
-    const STARTS: [usize; 5] = [0, 8, 16, 24, CDEF_SEGMENT_STRIDE - 8];
+    const STARTS: [usize; 3] = [0, 16, CDEF_SEGMENT_STRIDE - 16];
     const { assert!(CDEF_SEGMENT_BLOCKS == 4 && CDEF_SEGMENT_STRIDE == 36) };
     let rows = reach_rows(samples, width, stride, origin, (CDEF_SEGMENT_STRIDE, 12))?;
-    let mut min = [Simd::<u16, 8>::splat(u16::MAX); 5];
-    let mut max = [Simd::<u16, 8>::splat(0); 5];
+    let mut wide_min = [Simd::<u16, 16>::splat(u16::MAX); 3];
+    let mut wide_max = [Simd::<u16, 16>::splat(0); 3];
     for row in 0..12 {
         let src = rows
             .get(row * stride..)?
@@ -175,12 +175,18 @@ fn gather_luma<T: crate::ReconSample>(
             .get_mut(row * CDEF_SEGMENT_STRIDE..)?
             .first_chunk_mut::<CDEF_SEGMENT_STRIDE>()?;
         for (chunk, start) in STARTS.into_iter().enumerate() {
-            let lanes = widen8(&src[start..start + 8])?;
-            lanes.copy_to_slice(&mut dst[start..start + 8]);
-            min[chunk] = min[chunk].simd_min(lanes);
-            max[chunk] = max[chunk].simd_max(lanes);
+            let lanes = widen::<T, 16>(&src[start..start + 16])?;
+            lanes.copy_to_slice(&mut dst[start..start + 16]);
+            wide_min[chunk] = wide_min[chunk].simd_min(lanes);
+            wide_max[chunk] = wide_max[chunk].simd_max(lanes);
         }
     }
+    let eighths = |[a, b, c]: [Simd<u16, 16>; 3]| {
+        let low = |v: Simd<u16, 16>| simd_swizzle!(v, [0, 1, 2, 3, 4, 5, 6, 7]);
+        let high = |v: Simd<u16, 16>| simd_swizzle!(v, [8, 9, 10, 11, 12, 13, 14, 15]);
+        [low(a), high(a), low(b), high(b), high(c)]
+    };
+    let (min, max) = (eighths(wide_min), eighths(wide_max));
     let tail = |chunks: &[Simd<u16, 8>; 5], block: usize| {
         if block + 1 < CDEF_SEGMENT_BLOCKS {
             simd_swizzle!(chunks[block + 1], [0, 1, 2, 3, 0, 1, 2, 3])
@@ -222,8 +228,8 @@ fn gather_pair<T: crate::ReconSample>(
             .first_chunk_mut::<CDEF_PAIR_SEGMENT_STRIDE>()?;
         for (chunk, start) in [0, 8, PAIR_SPAN - 8].into_iter().enumerate() {
             let planes = [
-                widen8(&u_row[start..start + 8])?,
-                widen8(&v_row[start..start + 8])?,
+                widen::<T, 8>(&u_row[start..start + 8])?,
+                widen::<T, 8>(&v_row[start..start + 8])?,
             ];
             for plane in 0..2 {
                 min[plane][chunk] = min[plane][chunk].simd_min(planes[plane]);
