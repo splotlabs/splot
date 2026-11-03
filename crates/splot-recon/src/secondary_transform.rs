@@ -215,47 +215,76 @@ pub(crate) fn secondary_inverse_transform_prefix(
     coded: usize,
     params: &SecondaryInverseTransform,
 ) -> Result<usize> {
-    let layout = secondary_transform_layout(params)?;
-    let expected = params.w * params.h;
+    let SecondaryInverseTransform {
+        w,
+        h,
+        n,
+        kernel,
+        sec_tx_type,
+        primary_scan_class,
+        transpose,
+        bit_depth,
+    } = *params;
+    if !is_valid_side(w) || !is_valid_side(h) {
+        return Err(ReconError::SecondaryTransformInvalidShape { w, h });
+    }
+    let large = w >= 8 && h >= 8;
+    let (set_size, kernel_height) = if large {
+        (IST_SET_SIZE_8X8, IST_8X8_HEIGHT)
+    } else {
+        (IST_SET_SIZE_4X4, IST_4X4_HEIGHT)
+    };
+    if n == 0 || n > kernel_height || kernel >= set_size || !(1..STX_TYPES).contains(&sec_tx_type) {
+        return Err(ReconError::SecondaryTransformInvalidParams {
+            n,
+            kernel,
+            sec_tx_type,
+        });
+    }
+    let scan = crate::coefficient_scan_slice(w, h, primary_scan_class)?;
+    let expected = w * h;
     if dequant.len() != expected || coded > expected {
         return Err(ReconError::SecondaryTransformBufferMismatch {
             expected,
             actual: dequant.len(),
         });
     }
-    let bound = layout.bound;
+    let bound = 1i32 << (u32::from(bit_depth.bits()) + 7);
     let mut coefs = [0i32; IST_8X8_HEIGHT];
-    for (slot, &pos) in coefs[..layout.n].iter_mut().zip(&layout.inputs) {
+    for (slot, &pos) in coefs[..n].iter_mut().zip(scan) {
         if let Some(&coeff) = dequant[..coded].get(usize::from(pos)) {
             *slot = coeff.clamp(-bound, bound - 1);
         }
     }
-    let output_rows = if layout.width == IST_8X8_WIDTH { 8 } else { 4 };
-    let len = coded.max((output_rows * params.w).min(expected));
+    let output_rows = if large { 8 } else { 4 };
+    let len = coded.max((output_rows * w).min(expected));
     dequant[..len].fill(0);
     let mut sums = [0i32; IST_8X8_WIDTH];
-    let coefs = &coefs[..layout.n];
-    let stx = params.sec_tx_type - 1;
-    if layout.width == IST_8X8_WIDTH {
-        if let Some(rows) = IST_8X8_BYTES
-            .get(params.kernel)
-            .and_then(|set| set.get(stx))
-        {
+    let coefs = &coefs[..n];
+    let stx = sec_tx_type - 1;
+    let positions: &[u8] = if large {
+        if let Some(rows) = IST_8X8_BYTES.get(kernel).and_then(|set| set.get(stx)) {
             accumulate_kernel_rows(rows, coefs, &mut sums);
         }
-    } else if let Some(sums) = sums.first_chunk_mut::<IST_4X4_WIDTH>()
-        && let Some(rows) = IST_4X4_BYTES
-            .get(params.kernel)
+        OUTPUTS_8X8
+            .get(kernel)
             .and_then(|set| set.get(stx))
-    {
-        accumulate_kernel_rows(rows, coefs, sums);
-    }
+            .map_or(&[], |positions| positions.as_slice())
+    } else {
+        if let Some(sums) = sums.first_chunk_mut::<IST_4X4_WIDTH>()
+            && let Some(rows) = IST_4X4_BYTES.get(kernel).and_then(|set| set.get(stx))
+        {
+            accumulate_kernel_rows(rows, coefs, sums);
+        }
+        &OUTPUTS_4X4
+    };
+    let (scan_bwl, scan_w) = if large { (3, 8) } else { (2, 4) };
     let output = &mut dequant[..len];
-    for (sums, positions) in sums[..layout.width]
+    for (sums, positions) in sums
         .as_chunks::<8>()
         .0
         .iter()
-        .zip(layout.outputs.as_chunks::<8>().0)
+        .zip(positions.as_chunks::<8>().0)
     {
         let t = Simd::from_array(*sums);
         let magnitude = (t.abs() + Simd::splat(1 << 6)) >> Simd::splat(7);
@@ -264,13 +293,48 @@ pub(crate) fn secondary_inverse_transform_prefix(
             .simd_max(Simd::splat(-bound))
             .simd_min(Simd::splat(bound - 1));
         for (&value, &pos) in clipped.as_array().iter().zip(positions) {
-            if let Some(slot) = output.get_mut(usize::from(pos)) {
+            let (x, y) = (
+                usize::from(pos) & (scan_w - 1),
+                usize::from(pos) >> scan_bwl,
+            );
+            let index = if transpose { x * w + y } else { y * w + x };
+            if let Some(slot) = output.get_mut(index) {
                 *slot = value;
             }
         }
     }
     Ok(len)
 }
+
+/// The scan-order position (`y * 8 + x`) of each `Ist_8x8_Kernel` output of
+/// a kernel set and type: `Stx_Scan_Order_8x8[Stx_Scan_Map[kernel][stx][i]]`.
+static OUTPUTS_8X8: [[[u8; IST_8X8_WIDTH]; STX_TYPES - 1]; IST_SET_SIZE_8X8] = {
+    let mut out = [[[0u8; IST_8X8_WIDTH]; STX_TYPES - 1]; IST_SET_SIZE_8X8];
+    let mut index = 0;
+    while index < IST_SET_SIZE_8X8 * (STX_TYPES - 1) * IST_8X8_WIDTH {
+        let (set, rest) = (
+            index / ((STX_TYPES - 1) * IST_8X8_WIDTH),
+            index % ((STX_TYPES - 1) * IST_8X8_WIDTH),
+        );
+        let (kind, i) = (rest / IST_8X8_WIDTH, rest % IST_8X8_WIDTH);
+        let mapped = STX_SCAN_MAP[set][kind][i];
+        assert!(mapped >= 0 && (mapped as usize) < STX_SCAN_ORDER_8X8.len());
+        out[set][kind][i] = STX_SCAN_ORDER_8X8[mapped as usize] as u8;
+        index += 1;
+    }
+    out
+};
+
+/// [`OUTPUTS_8X8`] of `Ist_4x4_Kernel`: `Stx_Scan_Order_4x4[i]`.
+static OUTPUTS_4X4: [u8; IST_4X4_WIDTH] = {
+    let mut out = [0u8; IST_4X4_WIDTH];
+    let mut i = 0;
+    while i < IST_4X4_WIDTH {
+        out[i] = STX_SCAN_ORDER_4X4[i] as u8;
+        i += 1;
+    }
+    out
+};
 
 /// The § 9.7 IST kernels as bytes: every weight is below 128 in magnitude,
 /// and the quarter-size tables keep the inverse transform's working set in
