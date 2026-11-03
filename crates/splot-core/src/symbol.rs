@@ -9,7 +9,7 @@
 //! before § 8.3 syntax-element CDF selection, tile CDF bank ownership,
 //! `decode_tile()`, reconstruction, and encoder range writing.
 
-use core::simd::cmp::{SimdOrd, SimdPartialOrd};
+use core::simd::cmp::SimdPartialOrd;
 use core::simd::num::SimdUint;
 use core::simd::simd_swizzle;
 use core::simd::{Select, Simd};
@@ -47,8 +47,9 @@ pub(crate) trait CdfStorage: Copy {
     }
     fn from_i32(value: i32) -> Self;
 
-    /// The `N - 1` probability entries of a row, capped at `CDF_PROB_SCALE`,
-    /// with `CDF_PROB_SCALE` in the lanes past them.
+    /// The `N - 1` probability entries of a row, with at least
+    /// `CDF_PROB_SCALE` in the lanes past them; [`multi_symbol_search`]
+    /// caps every lane at `CDF_PROB_SCALE`.
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn probability_lanes<const N: usize>(cdf: &[Self]) -> Simd<u16, 8> {
@@ -105,10 +106,7 @@ impl CdfStorage for u16 {
             Simd::splat(0)
         };
         let raw: Simd<u16, 8> = simd_swizzle!(lo, hi, [0, 1, 2, 3, 4, 5, 6, 7]);
-        let scale = Simd::splat(CDF_PROB_SCALE as u16);
-        make_base_indices::<8>()
-            .simd_lt(Simd::splat(N as u16 - 1))
-            .select(raw.simd_min(scale), scale)
+        raw | const { past_row_lanes::<N>() }
     }
 
     /// Adapts whole rows in vector lanes; `n` is a constant at every inlined
@@ -207,6 +205,17 @@ fn adapt_probability_lanes<const L: usize>(
         .copy_to_slice(lanes);
 }
 
+/// `CDF_PROB_SCALE` in the lanes past the `N - 1` probabilities of a row.
+const fn past_row_lanes<const N: usize>() -> Simd<u16, 8> {
+    let mut lanes = [0u16; 8];
+    let mut i = N - 1;
+    while i < 8 {
+        lanes[i] = CDF_PROB_SCALE as u16;
+        i += 1;
+    }
+    Simd::from_array(lanes)
+}
+
 /// `Prob_Inc` of an `N`-ary row in vector lanes.
 const fn prob_inc_lanes<const N: usize>() -> Simd<u16, 8> {
     let mut lanes = [0u16; 8];
@@ -233,7 +242,7 @@ fn multi_symbol_search<const N: usize>(
     symbol_value: u32,
     range: u32,
 ) -> (usize, u32, u32) {
-    let f = Simd::splat(CDF_PROB_SCALE as u16) - probabilities;
+    let f = Simd::splat(CDF_PROB_SCALE as u16).saturating_sub(probabilities);
     let range8 = Simd::splat((range >> 8) as u16);
     let a = range8 * (f >> EC_PROB_SHIFT as u16);
     let b = range8 * const { prob_inc_lanes::<N>() };
