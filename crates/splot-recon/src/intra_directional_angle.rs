@@ -2389,6 +2389,9 @@ pub fn apply_intra_edge_filter<T: ReconSample>(
             context: "intra edge filter strength out of range",
         });
     };
+    if filter_intra_edge_lanes(edge, sz, kernel) {
+        return Ok(());
+    }
     let last = sz - 1;
     let [tap_m2, tap_m1, tap_0, tap_p1, tap_p2] = *kernel;
     let mut two_back = edge[0].to_u16();
@@ -2411,6 +2414,60 @@ pub fn apply_intra_edge_filter<T: ReconSample>(
         one_back = current;
     }
     Ok(())
+}
+
+/// Widest edge [`filter_intra_edge_lanes`] filters.
+const MAX_LANE_EDGE: usize = 256;
+/// Largest 12-bit sample, whose weighted sums fit the `u16` lanes.
+const MAX_LANE_SAMPLE: u16 = 4095;
+
+/// [`apply_intra_edge_filter`] in 16 `u16` lanes over a clamped copy of the
+/// edge, for `u8`/`u16` storage of samples up to 12 bits. The taps are
+/// non-negative and sum to 16, so each output is a weighted average of stored
+/// samples: it fits `u16` lanes (`16 * 4095 + 8`) and needs no range check.
+fn filter_intra_edge_lanes<T: ReconSample>(
+    edge: &mut [T],
+    sz: usize,
+    kernel: &[i32; INTRA_EDGE_TAPS],
+) -> bool {
+    const PAD: usize = 2;
+    let Some(samples) = edge
+        .get(..sz)
+        .filter(|_| sz + 2 * PAD + 16 <= MAX_LANE_EDGE)
+    else {
+        return false;
+    };
+    let mut source = [0u16; MAX_LANE_EDGE];
+    let mut max = 0;
+    for (slot, sample) in source[PAD..].iter_mut().zip(samples) {
+        *slot = sample.to_u16();
+        max = max.max(*slot);
+    }
+    if max > MAX_LANE_SAMPLE {
+        return false;
+    }
+    let (first, last) = (source[PAD], source[PAD + sz - 1]);
+    source[..PAD].fill(first);
+    source[PAD + sz..].fill(last);
+    let taps = kernel.map(|tap| Simd::<u16, 16>::splat(tap as u16));
+    let mut filtered = [0u16; MAX_LANE_EDGE];
+    for start in (0..sz).step_by(16) {
+        let mut sum = Simd::splat(8u16);
+        for (k, tap) in taps.iter().enumerate() {
+            sum += Simd::<u16, 16>::from_slice(&source[start + k..start + k + 16]) * *tap;
+        }
+        (sum >> 4).copy_to_slice(&mut filtered[start..start + 16]);
+    }
+    if let Some(out) = T::u8_slice_mut(&mut edge[1..sz]) {
+        for (slot, &value) in out.iter_mut().zip(&filtered[1..sz]) {
+            *slot = value as u8;
+        }
+    } else if let Some(out) = T::u16_slice_mut(&mut edge[1..sz]) {
+        out.copy_from_slice(&filtered[1..sz]); // splot-copy-ok: publish the filtered edge
+    } else {
+        return false;
+    }
+    true
 }
 
 /// AV2 §7.13.2.14 Filter corner process. Returns the three-tap top-left corner
