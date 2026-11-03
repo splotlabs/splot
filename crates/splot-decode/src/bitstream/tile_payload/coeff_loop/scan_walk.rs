@@ -61,7 +61,15 @@ impl NonZeroCoeffScanWalk<'_> {
     pub(crate) fn entries(
         &self,
     ) -> impl ExactSizeIterator<Item = CoeffScanEntry> + DoubleEndedIterator + '_ {
-        (0..self.len()).map(|index| self.entry(index))
+        let col_mask = (1 << self.width_log2) - 1;
+        self.scan
+            .iter()
+            .enumerate()
+            .rev()
+            .map(move |(scan_index, &pos)| {
+                let pos = usize::from(pos);
+                CoeffScanEntry::new(scan_index, pos, pos >> self.width_log2, pos & col_mask)
+            })
     }
 
     #[must_use]
