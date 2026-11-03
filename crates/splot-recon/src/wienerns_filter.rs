@@ -14,7 +14,7 @@
 //! Feature tracking: `RECON-WIENERNS-FILTER-PRIMITIVE`.
 
 use std::ops::Range;
-use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
+use std::simd::{Simd, ToBytes, cmp::SimdOrd, num::SimdInt, num::SimdUint, simd_swizzle};
 
 use crate::PlaneId;
 use crate::intra_dc_math::validate_sample_type;
@@ -131,7 +131,12 @@ struct PreparedLumaClass {
     center_scale: i32,
     coeffs: [i16; WIENER_NS_LUMA_COEFFS],
     nonzero: u16,
+    /// The coefficients as `pmaddwd` pairs.
+    madd_pairs: [u32; MADD_PAIRS],
 }
+
+/// `pmaddwd` pairs over the 16 symmetric tap sums.
+const MADD_PAIRS: usize = WIENER_NS_LUMA_COEFFS / 2;
 
 /// Padded source rows one § 7.20.3 luma output row reads.
 const LUMA_WINDOW_ROWS: usize = 2 * WIENER_NS_LUMA_TAP_RADIUS + 1;
@@ -525,14 +530,19 @@ fn prepare_luma_padded<T: ReconSample>(
     scratch
         .prepared_classes
         .extend(params.coeffs_by_class.iter().map(|&coeffs| {
+            let center_scale = (1 << WIENER_NS_PREC_BITS)
+                - 2 * coeffs.iter().map(|&coeff| i32::from(coeff)).sum::<i32>();
             PreparedLumaClass {
-                center_scale: (1 << WIENER_NS_PREC_BITS)
-                    - 2 * coeffs.iter().map(|&coeff| i32::from(coeff)).sum::<i32>(),
+                center_scale,
                 coeffs,
                 nonzero: coeffs
                     .iter()
                     .rev()
                     .fold(0, |mask, &coeff| (mask << 1) | u16::from(coeff != 0)),
+                madd_pairs: core::array::from_fn(|pair| {
+                    u32::from(coeffs[2 * pair] as u16)
+                        | u32::from(coeffs[2 * pair + 1] as u16) << 16
+                }),
             }
         }));
     for row_index in 0..padded_rows {
@@ -821,11 +831,28 @@ fn filter_padded_luma_rows_simd<'a, S, T: LumaSimdSource + 'a, O: LumaSimdOutput
             first = end;
             continue;
         }
+        let cells_done = filter_luma_cell_groups(
+            output,
+            output_stride,
+            &source,
+            (first, end, rows.start),
+            params.width,
+            prepared_classes,
+            subclasses,
+            max_sample,
+        )?;
         for_each_luma_segment(
             first,
             params.width,
             subclasses,
             |segment_start, len, subclass| {
+                let (segment_start, len) = if segment_start + len <= cells_done {
+                    return Ok(());
+                } else if segment_start < cells_done {
+                    (cells_done, segment_start + len - cells_done)
+                } else {
+                    (segment_start, len)
+                };
                 let class = prepared_classes
                     .get(subclass)
                     .ok_or_else(|| luma_segment_error(params.width))?;
@@ -851,6 +878,153 @@ fn filter_padded_luma_rows_simd<'a, S, T: LumaSimdSource + 'a, O: LumaSimdOutput
         first = end;
     }
     Ok(())
+}
+
+/// Filters the rows `first..end` of the 4x4 cell row they share in groups of
+/// four cells, 16 columns at a time, with each cell's class weights; returns
+/// the columns done. Sample-subclass layouts are left to the segment filter.
+#[allow(clippy::too_many_arguments)]
+fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
+    output: &mut [O],
+    output_stride: usize,
+    source: &[&[T]; LUMA_WINDOW_ROWS + 3],
+    (first, end, origin): (usize, usize, usize),
+    width: usize,
+    prepared_classes: &[PreparedLumaClass],
+    subclasses: LumaSubclassLayout<'_>,
+    max_sample: u16,
+) -> Result<usize> {
+    const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
+    let cell_class = |cell: usize| -> Option<&[u32; MADD_PAIRS]> {
+        let class = match subclasses {
+            LumaSubclassLayout::Uniform => 0,
+            LumaSubclassLayout::Cells { values, cols } => {
+                usize::from(*values.get((first / 4) * cols + cell)?)
+            }
+            LumaSubclassLayout::Samples(_) => return None,
+        };
+        prepared_classes.get(class).map(|class| &class.madd_pairs)
+    };
+    let mut x = 0;
+    while x + 16 <= width {
+        let classes: [Option<&[u32; MADD_PAIRS]>; 4] =
+            core::array::from_fn(|cell| cell_class(x / 4 + cell));
+        let [Some(c0), Some(c1), Some(c2), Some(c3)] = classes else {
+            break;
+        };
+        let weights: [[Simd<i16, 16>; 2]; MADD_PAIRS] = core::array::from_fn(|pair| {
+            let halves = |a: u32, b: u32| {
+                Simd::<i16, 16>::from_ne_bytes(
+                    Simd::<u32, 8>::from_array([a, a, a, a, b, b, b, b]).to_ne_bytes(),
+                )
+            };
+            [halves(c0[pair], c2[pair]), halves(c1[pair], c3[pair])]
+        });
+        for r in first..end {
+            let start = (r - origin) * output_stride + x;
+            let (Some(window), Some(filtered)) = (
+                source[r - first..].first_chunk::<LUMA_WINDOW_ROWS>(),
+                output.get_mut(start..start + 16),
+            ) else {
+                return Err(luma_segment_error(width));
+            };
+            let window = window.map(|row| row.get(x..x + 16 + 2 * R).unwrap_or(&[]));
+            if window.iter().any(|row| row.len() != 16 + 2 * R) {
+                return Err(luma_segment_error(width));
+            }
+            filter_luma_cells16(filtered, &window, &weights, max_sample);
+        }
+        x += 16;
+    }
+    Ok(x)
+}
+
+/// Lanes `0..4, 8..12` and `4..8, 12..16` of two vectors interleaved, as an
+/// in-lane AVX2 unpack gives them.
+#[inline]
+fn interleave_pairs(a: Simd<i16, 16>, b: Simd<i16, 16>) -> [Simd<i16, 16>; 2] {
+    [
+        simd_swizzle!(
+            a,
+            b,
+            [0, 16, 1, 17, 2, 18, 3, 19, 8, 24, 9, 25, 10, 26, 11, 27]
+        ),
+        simd_swizzle!(
+            a,
+            b,
+            [4, 20, 5, 21, 6, 22, 7, 23, 12, 28, 13, 29, 14, 30, 15, 31]
+        ),
+    ]
+}
+
+/// Sums of adjacent products, written so that LLVM emits one `pmaddwd`.
+#[inline]
+fn multiply_add_pairs(x: Simd<i16, 16>, w: Simd<i16, 16>) -> Simd<i32, 8> {
+    let product = x.cast::<i32>() * w.cast::<i32>();
+    simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
+        + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15])
+}
+
+/// Symmetric tap sum `J` of [`filter_luma_cells16`] less twice the center.
+#[allow(clippy::inline_always, reason = "measured Wiener NS luma hot path")]
+#[inline(always)]
+fn luma_term<const J: usize, T: LumaSimdSource>(
+    window: &[&[T]; LUMA_WINDOW_ROWS],
+    center: Simd<i16, 16>,
+) -> Simd<i16, 16> {
+    const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
+    let (dy, dx, _) = WIENER_NS_CONFIG_Y_PAIRS[J];
+    let plus = T::load::<16>(window[R.wrapping_add_signed(dy)], R.wrapping_add_signed(dx));
+    let minus = T::load::<16>(
+        window[R.wrapping_add_signed(-dy)],
+        R.wrapping_add_signed(-dx),
+    );
+    plus.cast::<i16>() + minus.cast::<i16>() - center - center
+}
+
+/// Filters 16 samples of four 4-sample cells: `weights` holds per pair the
+/// interleaved weights of cells 0 and 2, then of cells 1 and 3, matching
+/// `interleave_pairs`. The center scale `128 - 2 * sum(coeffs)` folds into
+/// the taps: the sum is `center << 7` plus each coefficient times its tap sum
+/// less twice the center, whose 12 bits and the coefficients' fit `pmaddwd`.
+#[allow(clippy::inline_always, reason = "measured Wiener NS luma hot path")]
+#[inline(always)]
+fn filter_luma_cells16<T: LumaSimdSource, O: LumaSimdOutput>(
+    filtered: &mut [O],
+    window: &[&[T]; LUMA_WINDOW_ROWS],
+    weights: &[[Simd<i16, 16>; 2]; MADD_PAIRS],
+    max_sample: u16,
+) {
+    const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
+    let center = T::load::<16>(window[R], R).cast::<i16>();
+    let scaled = (center.cast::<i32>() << WIENER_NS_PREC_BITS as i32)
+        + Simd::splat(1 << (WIENER_NS_PREC_BITS - 1));
+    let mut sums = [
+        simd_swizzle!(scaled, [0, 1, 2, 3, 8, 9, 10, 11]),
+        simd_swizzle!(scaled, [4, 5, 6, 7, 12, 13, 14, 15]),
+    ];
+    macro_rules! pairs {
+        ($($pair:literal)*) => {$({
+            let halves = interleave_pairs(
+                luma_term::<{ 2 * $pair }, T>(window, center),
+                luma_term::<{ 2 * $pair + 1 }, T>(window, center),
+            );
+            for ((sum, half), weight) in sums.iter_mut().zip(halves).zip(&weights[$pair]) {
+                *sum += multiply_add_pairs(half, *weight);
+            }
+        })*};
+    }
+    pairs!(0 1 2 3 4 5 6 7);
+    let [low, high] = sums.map(|sum| sum >> Simd::splat(WIENER_NS_PREC_BITS as i32));
+    let values = simd_swizzle!(
+        low,
+        high,
+        [0, 1, 2, 3, 8, 9, 10, 11, 4, 5, 6, 7, 12, 13, 14, 15]
+    )
+    .simd_max(Simd::splat(0))
+    .simd_min(Simd::splat(i32::from(max_sample)))
+    .cast::<u16>();
+    O::write(filtered, values);
 }
 
 trait LumaSimdOutput: Copy {
