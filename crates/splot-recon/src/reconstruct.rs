@@ -183,9 +183,7 @@ fn add_residual_row<T: ReconSample>(
         && let Some(prediction) = T::u8_slice(prediction)
         && let Some(out) = T::u8_slice_mut(out)
     {
-        for ((slot, &pred), &res) in out.iter_mut().zip(prediction).zip(residual) {
-            *slot = i32::from(pred).saturating_add(res).clamp(0, max) as u8;
-        }
+        add_residual_u8(Some(prediction), residual, max, out);
         return Ok(());
     }
     for ((slot, &pred), &res) in out.iter_mut().zip(prediction).zip(residual) {
@@ -226,9 +224,7 @@ pub(crate) fn add_residual_in_place<T: ReconSample>(
     if max <= i32::from(u8::MAX)
         && let Some(samples) = T::u8_slice_mut(samples)
     {
-        for (sample, &res) in samples.iter_mut().zip(residual) {
-            *sample = i32::from(*sample).saturating_add(res).clamp(0, max) as u8;
-        }
+        add_residual_u8(None, residual, max, samples);
         return Ok(());
     }
     for (sample, &res) in samples.iter_mut().zip(residual) {
@@ -273,6 +269,74 @@ fn add_residual_u16(prediction: &[u16], residual: &[i32], max: i32, out: &mut [u
     }
 }
 
+/// `Clip1(prediction + residual)` over `u8` storage, sixteen, eight, then
+/// four lanes at a time, for `0 <= max <= 255`; `prediction` is `out` itself
+/// when `None`.
+#[allow(clippy::inline_always, reason = "per-row residual add hot path")]
+#[inline(always)]
+fn add_residual_u8(prediction: Option<&[u8]>, residual: &[i32], max: i32, out: &mut [u8]) {
+    let mut done = 0;
+    macro_rules! lanes {
+        ($lanes:literal) => {
+            while let (Some(slot), Some(res)) = (
+                out.get_mut(done..done + $lanes),
+                residual.get(done..done + $lanes),
+            ) {
+                let pred = match prediction {
+                    Some(prediction) => prediction.get(done..done + $lanes),
+                    None => Some(&*slot),
+                };
+                let (Some(pred), Ok(res)) = (
+                    pred.and_then(|p| p.first_chunk::<$lanes>()),
+                    <&[i32; $lanes]>::try_from(res),
+                ) else {
+                    break;
+                };
+                let value = clip_add_u8(*pred, res, max);
+                slot.copy_from_slice(&value); // splot-copy-ok: one residual lane group
+                done += $lanes;
+            }
+        };
+    }
+    lanes!(16);
+    lanes!(8);
+    lanes!(4);
+    for index in done..out.len().min(residual.len()) {
+        let pred = match prediction {
+            Some(prediction) => prediction.get(index).copied(),
+            None => out.get(index).copied(),
+        };
+        if let (Some(pred), Some(&res), Some(slot)) =
+            (pred, residual.get(index), out.get_mut(index))
+        {
+            *slot = i32::from(pred).saturating_add(res).clamp(0, max) as u8;
+        }
+    }
+}
+
+/// One lane group of [`add_residual_u8`]. The residual saturates to `i16` and
+/// the sum saturates in `i16`: a residual past `i16` drives the `i32` sum past
+/// `0..=max` the same way, so every clipped value matches the saturating
+/// `i32` addition.
+#[inline]
+fn clip_add_u8<const LANES: usize>(
+    prediction: [u8; LANES],
+    residual: &[i32; LANES],
+    max: i32,
+) -> [u8; LANES] {
+    let residual = Simd::from_array(*residual)
+        .simd_max(Simd::splat(i32::from(i16::MIN)))
+        .simd_min(Simd::splat(i32::from(i16::MAX)))
+        .cast::<i16>();
+    Simd::from_array(prediction)
+        .cast::<i16>()
+        .saturating_add(residual)
+        .simd_max(Simd::splat(0))
+        .simd_min(Simd::splat(max as i16))
+        .cast::<u8>()
+        .to_array()
+}
+
 /// `Clip1(prediction + residual)` over one lane group, for `max >= 0`.
 #[inline]
 fn add_residual_lanes<const LANES: usize>(
@@ -303,6 +367,49 @@ mod tests {
         let mut wide = [10u16, 10, 0, 1023, 1022, 10, 10, 1020];
         add_residual_in_place(&mut wide, &residual, 1023).unwrap();
         assert_eq!(wide, [0, 0, 0, 1023, 1023, 310, 1023, 1023]);
+    }
+
+    #[test]
+    fn u8_lane_groups_match_the_saturating_scalar_add() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let extremes = [
+            i32::MIN,
+            i32::MIN + 1,
+            -70_000,
+            -32_769,
+            -256,
+            256,
+            32_768,
+            i32::MAX,
+        ];
+        for len in 0..=40 {
+            for max in [255, 200, 0] {
+                let prediction: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+                let residual: Vec<i32> = (0..len)
+                    .map(|_| match next() % 4 {
+                        0 => extremes[(next() % 8) as usize],
+                        _ => (next() % 701) as i32 - 350,
+                    })
+                    .collect();
+                let expected: Vec<u8> = prediction
+                    .iter()
+                    .zip(&residual)
+                    .map(|(&pred, &res)| i32::from(pred).saturating_add(res).clamp(0, max) as u8)
+                    .collect();
+                let mut out = vec![0u8; len];
+                add_residual_u8(Some(&prediction), &residual, max, &mut out);
+                assert_eq!(out, expected, "len {len} max {max}");
+                let mut in_place = prediction.clone();
+                add_residual_u8(None, &residual, max, &mut in_place);
+                assert_eq!(in_place, expected, "in place len {len} max {max}");
+            }
+        }
     }
 
     #[test]
