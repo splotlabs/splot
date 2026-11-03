@@ -6,6 +6,7 @@
 use super::{CurrentFramePlane, CurrentFrameWorkspace, checked_sample_block_rect};
 use crate::math::round2_i32;
 use crate::{IntraRectBlockSize, PlaneId, ReconError, ReconSample, Result};
+use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
 
 /// AV2 § 7.13.3.29 `Ii_Weights_1d[128]` smooth-interintra blending weights.
 const II_WEIGHTS_1D: [u16; 128] = [
@@ -463,22 +464,49 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         max_sample: i32,
     ) -> Result<()> {
         let rect = self.clamp_rect_to_storage(rect)?;
+        macro_rules! scale_lanes {
+            ($row:expr, $ty:ty, $lanes:literal, $vectors:ident) => {
+                let (chunks, _) = $row[$vectors..].as_chunks_mut::<$lanes>();
+                for lanes in chunks {
+                    let orig = Simd::<$ty, $lanes>::from_array(*lanes).cast();
+                    *lanes = bawp_scale(orig, alpha, beta, max_sample)
+                        .cast::<$ty>()
+                        .to_array();
+                    $vectors += $lanes;
+                }
+            };
+        }
         for i in 0..rect.height() {
             let row_start = self.sample_index(rect.x(), rect.y() + i)?;
-            for j in 0..rect.width() {
-                let orig = i32::from(self.samples[row_start + j].to_u16());
+            let row = &mut self.samples[row_start..row_start + rect.width()];
+            let mut vectors = 0;
+            if let Some(row) = T::u8_slice_mut(row) {
+                scale_lanes!(row, u8, 16, vectors);
+                scale_lanes!(row, u8, 8, vectors);
+            } else if let Some(row) = T::u16_slice_mut(row) {
+                scale_lanes!(row, u16, 16, vectors);
+                scale_lanes!(row, u16, 8, vectors);
+            }
+            for sample in &mut row[vectors..] {
+                let orig = i32::from(sample.to_u16());
                 let scaled = ((orig * i32::from(alpha) + beta) >> 8).clamp(0, max_sample);
-                let stored = u16::try_from(scaled)
+                *sample = u16::try_from(scaled)
                     .ok()
                     .and_then(|value| T::try_from_u16(value).ok())
                     .ok_or(ReconError::ArithmeticOverflow {
                         context: "bawp scaled sample storage",
                     })?;
-                self.samples[row_start + j] = stored;
             }
         }
         Ok(())
     }
+}
+
+/// `Clip3(0, max, (orig * alpha + beta) >> 8)` lane-wise, the BAWP scale.
+fn bawp_scale<const N: usize>(orig: Simd<i32, N>, alpha: i16, beta: i32, max: i32) -> Simd<i32, N> {
+    ((orig * Simd::splat(i32::from(alpha)) + Simd::splat(beta)) >> 8)
+        .simd_max(Simd::splat(0))
+        .simd_min(Simd::splat(max))
 }
 
 #[cfg(test)]
