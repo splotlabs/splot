@@ -201,7 +201,7 @@ fn cfl_420_simd_matches_scalar_at_block_and_frame_edges() {
         .map(|index| ((index * 17 + 11) & 1023) as u16)
         .collect();
     let average_q3 = 37;
-    for filter in 0..3 {
+    for (filter, filter_weights) in CFL_FILTERS_420.iter().enumerate() {
         for (x, y, width, height) in [(0, 0, 32, 4), (1, 1, 64, 3), (31, 2, 32, 3), (50, 4, 16, 2)]
         {
             let mut actual = Vec::new();
@@ -241,7 +241,7 @@ fn cfl_420_simd_matches_scalar_at_block_and_frame_edges() {
                     };
                     let right = (luma_x + 1).min(plane_width - 1);
                     let mut total = -average_q3;
-                    for (tap_row, weights) in rows.iter().zip(CFL_FILTERS_420[filter]) {
+                    for (tap_row, weights) in rows.iter().zip(filter_weights) {
                         for (tap_col, weight) in [left, center, right].iter().zip(weights) {
                             total += weight * i32::from(luma[tap_row * plane_width + tap_col]);
                         }

@@ -225,6 +225,10 @@ static DIP_ROW_WEIGHTS: [[[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE]; DIP_M
 
 const DIP_FEATURE_PAIRS: usize = DIP_FEATURE_COUNT.div_ceil(2);
 
+#[allow(
+    clippy::large_stack_arrays,
+    reason = "evaluated only at compile time for a static"
+)]
 const fn dip_row_weights() -> [[[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE]; DIP_MODE_COUNT]; 2]
 {
     let mut table = [[[[[0i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE]; DIP_MODE_COUNT]; 2];
