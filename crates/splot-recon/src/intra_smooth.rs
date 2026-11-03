@@ -136,28 +136,14 @@ pub fn predict_intra_smooth_rect_into<T: ReconSample>(
     {
         return Ok(());
     }
-    if let Some(left) = T::u8_slice(edges.left_samples())
+    if max == i32::from(u8::MAX)
+        && let Some(left) = T::u8_slice(edges.left_samples())
         && let Some(above) = T::u8_slice(edges.above_samples())
         && let Some(target) = T::u8_slice_mut(output)
-        && left.len() <= MAX_SMOOTH_SIDE + 1
-        && above.len() <= MAX_SMOOTH_SIDE + 1
+        && predict_smooth_rect_u8(size, mode, left, above, target, stride_samples)
     {
-        let mut wide = [[0u16; MAX_SMOOTH_SIDE + 1]; 2];
-        for (slot, &sample) in wide[0].iter_mut().zip(left) {
-            *slot = u16::from(sample);
-        }
-        for (slot, &sample) in wide[1].iter_mut().zip(above) {
-            *slot = u16::from(sample);
-        }
-        let edges = SmoothU16Edges {
-            left: &wide[0][..left.len()],
-            above: &wide[1][..above.len()],
-        };
-        if predict_smooth_rect_u16(max, size, mode, edges, target, stride_samples) {
-            return Ok(());
-        }
+        return Ok(());
     }
-
     for row in 0..size.height() {
         let row_start = row
             .checked_mul(stride_samples)
@@ -245,6 +231,182 @@ fn predict_smooth_rect_u16<O: IntraLaneSample>(
         }
     }
     true
+}
+
+/// 8-bit § 7.13.2.13 in `i16` lanes. With samples in `0..=255` and factors
+/// below 64, every product is at most `255 * 63` and every rounding add at
+/// most 32, so no stage leaves `i16`. Blocks narrower than 16 put `16 / W`
+/// rows in each vector.
+#[inline(never)]
+fn predict_smooth_rect_u8(
+    size: IntraRectBlockSize,
+    mode: IntraSmoothMode,
+    left: &[u8],
+    above: &[u8],
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
+    let (width, height) = (size.width(), size.height());
+    if left.len() <= height
+        || above.len() <= width
+        || width > MAX_SMOOTH_SIDE
+        || height > MAX_SMOOTH_SIDE
+        || (height - 1) * stride + width > output.len()
+    {
+        return false;
+    }
+    let scale = round2_i32(size.log2_width() as i32 + size.log2_height() as i32 - 4, 2) as usize;
+    let blend = |index: usize| (BLEND_WEIGHT_MAX >> ((index << 1) >> scale).min(6)) as i16;
+    let mut rows = SmoothRowsI16 {
+        left: [0; MAX_SMOOTH_SIDE],
+        v_factor: [0; MAX_SMOOTH_SIDE],
+        s_top: [0; MAX_SMOOTH_SIDE],
+    };
+    for row in 0..height {
+        rows.left[row] = i16::from(left[row]);
+        rows.v_factor[row] = (height - 1 - row) as i16;
+        rows.s_top[row] = blend(row);
+    }
+    let shape = SmoothShapeI16 {
+        mode,
+        log2_width: i16::from(size.log2_width()),
+        log2_height: i16::from(size.log2_height()),
+        top_right: i16::from(above[width]),
+        bottom_left: i16::from(left[height]),
+    };
+    let column = |index: usize| {
+        let column = index & (width - 1);
+        SmoothColumnsI16 {
+            top: i16::from(above[column]),
+            h_factor: (width - 1 - column) as i16,
+            s_left: blend(column),
+        }
+    };
+    match width {
+        4 => smooth_rows_u8::<4>(&rows, column, shape, height, output, stride),
+        8 => smooth_rows_u8::<8>(&rows, column, shape, height, output, stride),
+        _ => {
+            let mut columns = [SmoothColumnsI16::default(); MAX_SMOOTH_SIDE];
+            for (index, slot) in columns[..width].iter_mut().enumerate() {
+                *slot = column(index);
+            }
+            for chunk in 0..width / 16 {
+                let lanes = columns_i16(|lane| columns[16 * chunk + lane]);
+                for row in 0..height {
+                    let values = smooth_lanes_i16(
+                        lanes,
+                        [rows.left[row], rows.v_factor[row], rows.s_top[row]].map(Simd::splat),
+                        shape,
+                    );
+                    let start = row * stride + 16 * chunk;
+                    values
+                        .cast::<u8>()
+                        .copy_to_slice(&mut output[start..start + 16]);
+                }
+            }
+        }
+    }
+    true
+}
+
+/// `16 / W` rows of a `W`-wide block per vector.
+fn smooth_rows_u8<const W: usize>(
+    rows: &SmoothRowsI16,
+    column: impl Fn(usize) -> SmoothColumnsI16,
+    shape: SmoothShapeI16,
+    height: usize,
+    output: &mut [u8],
+    stride: usize,
+) {
+    let per_vector = 16 / W;
+    let lanes = columns_i16(column);
+    for row0 in (0..height).step_by(per_vector) {
+        let expand = |values: &[i16; MAX_SMOOTH_SIDE]| {
+            Simd::from_array(core::array::from_fn(|lane| {
+                values[(row0 + lane / W) % MAX_SMOOTH_SIDE]
+            }))
+        };
+        let values = smooth_lanes_i16(
+            lanes,
+            [
+                expand(&rows.left),
+                expand(&rows.v_factor),
+                expand(&rows.s_top),
+            ],
+            shape,
+        )
+        .cast::<u8>()
+        .to_array();
+        for (r, samples) in values.chunks_exact(W).enumerate() {
+            let start = (row0 + r) * stride;
+            if let Some(out) = output.get_mut(start..start + W) {
+                out.copy_from_slice(samples); // splot-copy-ok: publish one smooth row
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct SmoothColumnsI16 {
+    top: i16,
+    h_factor: i16,
+    s_left: i16,
+}
+
+struct SmoothRowsI16 {
+    left: [i16; MAX_SMOOTH_SIDE],
+    v_factor: [i16; MAX_SMOOTH_SIDE],
+    s_top: [i16; MAX_SMOOTH_SIDE],
+}
+
+#[derive(Clone, Copy)]
+struct SmoothShapeI16 {
+    mode: IntraSmoothMode,
+    log2_width: i16,
+    log2_height: i16,
+    top_right: i16,
+    bottom_left: i16,
+}
+
+fn columns_i16(column: impl Fn(usize) -> SmoothColumnsI16) -> [Simd<i16, 16>; 3] {
+    let columns: [SmoothColumnsI16; 16] = core::array::from_fn(column);
+    [
+        Simd::from_array(columns.map(|c| c.top)),
+        Simd::from_array(columns.map(|c| c.h_factor)),
+        Simd::from_array(columns.map(|c| c.s_left)),
+    ]
+}
+
+/// [`smooth_scalar`] over 16 lanes of `[top, h_factor, s_left]` and
+/// `[left, v_factor, s_top]`.
+#[allow(clippy::inline_always, reason = "measured § 7.13.2.13 smooth hot path")]
+#[inline(always)]
+fn smooth_lanes_i16(
+    [top, h_factor, s_left]: [Simd<i16, 16>; 3],
+    [left, v_factor, s_top]: [Simd<i16, 16>; 3],
+    shape: SmoothShapeI16,
+) -> Simd<i16, 16> {
+    let round2 =
+        |value: Simd<i16, 16>, n: i16| (value + Simd::splat(1 << (n - 1))) >> Simd::splat(n);
+    let top_right = Simd::splat(shape.top_right);
+    let bottom_left = Simd::splat(shape.bottom_left);
+    match shape.mode {
+        IntraSmoothMode::SmoothHorizontal => {
+            let pred_h = top_right + round2((left - top_right) * h_factor, shape.log2_width);
+            pred_h + round2((left - pred_h) * s_left, 6)
+        }
+        IntraSmoothMode::SmoothVertical => {
+            let pred_v = bottom_left + round2((top - bottom_left) * v_factor, shape.log2_height);
+            pred_v + round2((top - pred_v) * s_top, 6)
+        }
+        IntraSmoothMode::Smooth => {
+            let pred_h = top_right + round2((left - top_right) * h_factor, shape.log2_width);
+            let pred_v = bottom_left + round2((top - bottom_left) * v_factor, shape.log2_height);
+            let pred_h2 = pred_h + round2((left - pred_h) * s_left, 6);
+            let pred_v2 = pred_v + round2((top - pred_v) * s_top, 6);
+            round2(pred_v2 + pred_h2, 1)
+        }
+    }
 }
 
 /// § 7.13.2.13 weights that vary per row of the block.

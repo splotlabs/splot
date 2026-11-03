@@ -201,7 +201,9 @@ pub(crate) fn predict_intra_smooth_over_available_edges_into<T: ReconSample>(
     } else {
         None
     };
-    let (left, above) = build_smooth_edges(
+    let mut left_edge = [T::default(); SMOOTH_EDGE_CAPACITY];
+    let mut above_edge = [T::default(); SMOOTH_EDGE_CAPACITY];
+    build_smooth_edges(
         left,
         above,
         have_left,
@@ -211,12 +213,15 @@ pub(crate) fn predict_intra_smooth_over_available_edges_into<T: ReconSample>(
         above_right_sentinel,
         bottom_left_sentinel,
         bit_depth,
+        [&mut left_edge, &mut above_edge],
     );
-    let smooth_edges = IntraSmoothEdges::new(&left[..=height], &above[..=width]);
+    let smooth_edges = IntraSmoothEdges::new(&left_edge[..=height], &above_edge[..=width]);
     predict_intra_smooth_rect_into(bit_depth, block_size, mode, smooth_edges, prediction, width)?;
     Ok(())
 }
 
+/// Fills the `[left, above]` edges in place, so that no edge array moves
+/// after its sample stores.
 #[allow(clippy::too_many_arguments)]
 fn build_smooth_edges<T: ReconSample>(
     left_neighbour: Option<&[T]>,
@@ -228,37 +233,38 @@ fn build_smooth_edges<T: ReconSample>(
     above_right_sentinel: Option<T>,
     bottom_left_sentinel: Option<T>,
     bit_depth: BitDepth,
-) -> ([T; SMOOTH_EDGE_CAPACITY], [T; SMOOTH_EDGE_CAPACITY]) {
-    let left_len = height + 1;
-    let above_len = width + 1;
-    let left = match (have_left, left_neighbour) {
-        (true, Some(samples)) => fill_edge_from_neighbour(samples, left_len, bit_depth),
-        _ if have_above => {
-            let seed = above_neighbour
-                .and_then(|samples| samples.first().copied())
-                .unwrap_or(noneighbour_left::<T>(bit_depth));
-            [seed; SMOOTH_EDGE_CAPACITY]
+    [left, above]: [&mut [T; SMOOTH_EDGE_CAPACITY]; 2],
+) {
+    let left_len = (height + 1).min(SMOOTH_EDGE_CAPACITY);
+    let above_len = (width + 1).min(SMOOTH_EDGE_CAPACITY);
+    match (have_left, left_neighbour) {
+        (true, Some(samples)) => {
+            fill_edge_from_neighbour(samples, &mut left[..left_len], bit_depth)
         }
-        _ => [noneighbour_left::<T>(bit_depth); SMOOTH_EDGE_CAPACITY],
-    };
-    let mut above = match (have_above, above_neighbour) {
-        (true, Some(samples)) => fill_edge_from_neighbour(samples, above_len, bit_depth),
-        _ if have_left => {
-            let seed = left_neighbour
+        _ if have_above => left.fill(
+            above_neighbour
                 .and_then(|samples| samples.first().copied())
-                .unwrap_or(noneighbour_above::<T>(bit_depth));
-            [seed; SMOOTH_EDGE_CAPACITY]
+                .unwrap_or(noneighbour_left::<T>(bit_depth)),
+        ),
+        _ => left.fill(noneighbour_left::<T>(bit_depth)),
+    }
+    match (have_above, above_neighbour) {
+        (true, Some(samples)) => {
+            fill_edge_from_neighbour(samples, &mut above[..above_len], bit_depth);
         }
-        _ => [noneighbour_above::<T>(bit_depth); SMOOTH_EDGE_CAPACITY],
-    };
+        _ if have_left => above.fill(
+            left_neighbour
+                .and_then(|samples| samples.first().copied())
+                .unwrap_or(noneighbour_above::<T>(bit_depth)),
+        ),
+        _ => above.fill(noneighbour_above::<T>(bit_depth)),
+    }
     if let Some(sentinel) = above_right_sentinel {
         above[width] = sentinel;
     }
-    let mut left = left;
     if let Some(sentinel) = bottom_left_sentinel {
         left[height] = sentinel;
     }
-    (left, above)
 }
 
 #[derive(Clone, Copy)]
@@ -329,18 +335,14 @@ fn resolve_smooth_sentinel<T: ReconSample>(
     }
 }
 
-fn fill_edge_from_neighbour<T: ReconSample>(
-    samples: &[T],
-    edge_len: usize,
-    bit_depth: BitDepth,
-) -> [T; SMOOTH_EDGE_CAPACITY] {
-    let mut edge = [noneighbour_left::<T>(bit_depth); SMOOTH_EDGE_CAPACITY];
-    for (index, slot) in edge[..edge_len].iter_mut().enumerate() {
-        *slot = samples
-            .get(index)
-            .or_else(|| samples.last())
+fn fill_edge_from_neighbour<T: ReconSample>(samples: &[T], edge: &mut [T], bit_depth: BitDepth) {
+    let copied = samples.len().min(edge.len());
+    let (head, tail) = edge.split_at_mut(copied);
+    head.copy_from_slice(&samples[..copied]); // splot-copy-ok: smooth edge from its neighbour
+    tail.fill(
+        samples
+            .last()
             .copied()
-            .unwrap_or(noneighbour_left::<T>(bit_depth));
-    }
-    edge
+            .unwrap_or(noneighbour_left::<T>(bit_depth)),
+    );
 }
