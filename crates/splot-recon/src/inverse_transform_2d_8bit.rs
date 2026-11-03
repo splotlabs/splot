@@ -325,7 +325,10 @@ fn col_pass_identity(
                 continue;
             };
             let packed = Simd::from_array([z0, z1, z2, z3, z0, z1, z2, z3]);
-            let (a, b) = (emit(packed, false).to_array(), emit(packed, true).to_array());
+            let (a, b) = (
+                emit(packed, false).to_array(),
+                emit(packed, true).to_array(),
+            );
             row_a.copy_from_slice(&a[..4]); // splot-copy-ok: one identity output row
             row_b.copy_from_slice(&b[..4]); // splot-copy-ok: one identity output row
             continue;
