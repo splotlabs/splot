@@ -988,21 +988,38 @@ fn refinemv_sad<'a>(
     Ok(sad >> downshift)
 }
 
-/// `Σ |left - right|` over the first `W` samples of each row pair, in
-/// four-lane widening steps that lower to one `uabal` each.
+/// `Σ |left - right|` over the first `W` samples of each row pair: the first
+/// 16 or 8 in one vector step, the rest in four-lane steps.
 fn sad_rows<'a, const W: usize>(rows: impl Iterator<Item = (&'a [u16], &'a [u16])>) -> u32 {
+    let mut wide = Simd::<u32, 16>::splat(0);
+    let mut eight = Simd::<u32, 8>::splat(0);
     let mut sums = Simd::<u32, 4>::splat(0);
+    let head = if W >= 16 { 16 } else { 8 };
     for (left, right) in rows {
         let (Some(left), Some(right)) = (left.first_chunk::<W>(), right.first_chunk::<W>()) else {
             return u32::MAX;
         };
-        for (left, right) in left.as_chunks::<4>().0.iter().zip(right.as_chunks::<4>().0) {
+        if head == 16 {
+            let difference = Simd::<u16, 16>::from_slice(left).abs_diff(Simd::from_slice(right));
+            wide += difference.cast::<u32>();
+        } else {
+            let difference = Simd::<u16, 8>::from_slice(left).abs_diff(Simd::from_slice(right));
+            eight += difference.cast::<u32>();
+        }
+        let tail = (&left[head..], &right[head..]);
+        for (left, right) in tail
+            .0
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(tail.1.as_chunks::<4>().0)
+        {
             sums += Simd::from_array(*left)
                 .abs_diff(Simd::from_array(*right))
                 .cast::<u32>();
         }
     }
-    sums.reduce_sum()
+    wide.reduce_sum() + eight.reduce_sum() + sums.reduce_sum()
 }
 
 #[cfg(test)]

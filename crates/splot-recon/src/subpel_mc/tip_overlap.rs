@@ -101,7 +101,9 @@ type Block12x12<'s, T> = (&'s [T], usize, &'s mut [u16], usize, &'s mut [[u16; 8
 
 /// Filters a 12x12 bilinear block whose 13x13 source window holds every tap
 /// unclamped into the strided output, keeping columns 4..12 in the carry
-/// columns. With `REUSE`, carried columns 8..12 become columns 0..4.
+/// columns. With `REUSE`, carried columns 8..12 become columns 0..4. An 8-bit
+/// horizontal value is at most `16 * 255`, so its vertical blend plus the
+/// rounding bias stays below `2^16` in `u16` lanes.
 #[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
 #[inline(always)]
 fn bilinear_12x12_block<T: ReconSample, const REUSE: bool>(
@@ -126,6 +128,15 @@ fn bilinear_12x12_block<T: ReconSample, const REUSE: bool>(
         (0, v_phase) => bilinear_12x12_rows::<T, REUSE>(block, lanes, |top, bottom| {
             bilinear_u16(top, bottom, v_phase)
         }),
+        (_, v_phase) if u8::try_from(T::MAX_VALUE).is_ok() => {
+            let (top_weight, bottom_weight) = (
+                Simd::splat(16 - v_phase as u16),
+                Simd::splat(v_phase as u16),
+            );
+            bilinear_12x12_rows::<T, REUSE>(block, horizontal, |top, bottom| {
+                (top * top_weight + bottom * bottom_weight + Simd::splat(128)) >> 8
+            });
+        }
         (_, v_phase) => bilinear_12x12_rows::<T, REUSE>(block, horizontal, |top, bottom| {
             let blended = tap_mac(
                 tap_mac(Simd::splat(0), top.cast(), 16 - v_phase),

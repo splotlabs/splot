@@ -208,7 +208,8 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     let Some(size) = morph_dimensions_size(width, height) else {
         return Ok(());
     };
-    let edges = workspace.intra_dc_edges_for_rect(PlaneId::Y, target.x(), target.y(), size)?;
+    let mut edges = splot_recon::CurrentFrameIntraEdges::default();
+    workspace.intra_dc_edges_for_rect_into(PlaneId::Y, target.x(), target.y(), size, &mut edges)?;
 
     let Some(stats) = collect_template_stats(
         &edges,
@@ -314,7 +315,8 @@ fn apply_bawp_plane<T: ReconSample>(
         return Ok(luma_alpha);
     };
 
-    let edges = workspace.intra_dc_edges_for_rect(plane, plane_x, plane_y, size)?;
+    let mut edges = splot_recon::CurrentFrameIntraEdges::default();
+    workspace.intra_dc_edges_for_rect_into(plane, plane_x, plane_y, size, &mut edges)?;
     let ref_at = |row: i32, col: i32| -> Option<i32> {
         let row = usize::try_from(row).ok()?;
         let col = usize::try_from(col).ok()?;

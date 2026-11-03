@@ -40,7 +40,7 @@ fn candidate_mask_covers_sub_pu_lines_of_offset_prediction_units() {
         let mut order = RowOrder::default();
         order.sort(blocks.iter(), 8).unwrap();
         let mut base = MiGridStorage::new(16, subsampling, &mut storage);
-        base.fill(&blocks, &order, 8, &(0..8)).unwrap();
+        base.fill(&blocks, &order, 8, &(0..8), true).unwrap();
         let grid = MiGrid::new(&base, None, &blocks, &EMPTY_CHROMA_RECORDS);
         for (plane, (sub_x, sub_y)) in [(0, (0, 0)), (1, subsampling)] {
             for pass in 0..2 {

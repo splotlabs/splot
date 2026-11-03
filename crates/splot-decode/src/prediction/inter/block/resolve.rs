@@ -48,6 +48,20 @@ pub(super) enum LeafResolveRecord {
     Intrabc(PendingIntrabcBlock),
 }
 
+/// The bank and motion-plane work of a leaf whose command is already final,
+/// kept beside the command so the resolve pass leaves the command in place.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum LeafReset {
+    None,
+    /// [`LeafResolveRecord::Reseed`].
+    Reseed,
+    /// [`LeafResolveRecord::NonInter`].
+    NonInter {
+        n4w: usize,
+        n4h: usize,
+    },
+}
+
 /// One inter leaf's parse output, held until the resolve pass reaches it.
 pub(super) struct PendingInterBlock {
     syntax: InterBlockSyntax,
@@ -109,9 +123,11 @@ pub(super) fn resolve_parsed_leaves(
 ) -> Result<()> {
     let intrabc_sb_h4 = effective_intrabc_sb_h4(sb_h4, state.core.frame_is_intra == Some(true));
     for entry in entries {
-        let Some(resolve) = entry.take_resolve() else {
+        let reset = entry.take_reset();
+        let pending = entry.has_pending_resolve();
+        if reset == LeafReset::None && !pending {
             continue;
-        };
+        }
         let [mi_row, mi_col] = entry.publication.block_origin();
         if let Some(bank) = state.ref_mv_bank.as_mut() {
             bank.reset_for_leaf(
@@ -125,16 +141,20 @@ pub(super) fn resolve_parsed_leaves(
         state
             .warp_param_bank
             .reset_for_leaf(state.grid, mi_row, mi_col, sb_h4);
+        if let LeafReset::NonInter { n4w, n4h } = reset {
+            state
+                .grid
+                .record_motion(mi_row, mi_col, n4w, n4h, ZERO_NEIGHBOUR_MOTION_VALUES);
+            if let Some(bank) = state.ref_mv_bank.as_mut() {
+                bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, intrabc_sb_h4);
+            }
+        }
+        let Some(resolve) = entry.take_resolve() else {
+            continue;
+        };
         match resolve {
-            LeafResolveRecord::Reseed(command) => entry.store_command(command),
-            LeafResolveRecord::NonInter { command, n4w, n4h } => {
-                state
-                    .grid
-                    .record_motion(mi_row, mi_col, n4w, n4h, ZERO_NEIGHBOUR_MOTION_VALUES);
-                if let Some(bank) = state.ref_mv_bank.as_mut() {
-                    bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, intrabc_sb_h4);
-                }
-                entry.store_command(command);
+            LeafResolveRecord::Reseed(_) | LeafResolveRecord::NonInter { .. } => {
+                return Err(invalid_inter_tile_scheduling_state());
             }
             LeafResolveRecord::Inter(block) => {
                 entry.store_command(ReconCommand::Inter(resolve_pending_inter(block, state)?));

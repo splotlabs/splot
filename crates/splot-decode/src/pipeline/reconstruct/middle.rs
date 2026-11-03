@@ -87,7 +87,8 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2)?;
-    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    let mut edges = splot_recon::CurrentFrameIntraEdges::default();
+    workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
     let left_samples = availability.left.then(|| edges.left_samples()).flatten();
     let above_samples = availability.above.then(|| edges.above_samples()).flatten();
     if (availability.left && left_samples.is_none())
@@ -182,7 +183,8 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle)?;
-    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    let mut edges = splot_recon::CurrentFrameIntraEdges::default();
+    workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
     let left_samples = availability.left.then(|| edges.left_samples()).flatten();
     let above_samples = availability.above.then(|| edges.above_samples()).flatten();
     if (availability.left && left_samples.is_none())
@@ -643,7 +645,8 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
-    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    let mut edges = splot_recon::CurrentFrameIntraEdges::default();
+    workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
     let above_samples = availability.above.then(|| edges.above_samples()).flatten();
     let left_samples = availability.left.then(|| edges.left_samples()).flatten();
     let mut synthesized_edge = [T::default(); 128];

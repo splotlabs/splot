@@ -472,13 +472,24 @@ impl<'payload> TileParser<'payload> {
             let mut on_published = |publication: DecodedLeafPublication,
                                     resolve: LeafResolveRecord| {
                 let origin = publication.superblock_origin();
+                let (state, reset) = match resolve {
+                    LeafResolveRecord::Reseed(command) => {
+                        (ReconEntryState::Command(command), LeafReset::Reseed)
+                    }
+                    LeafResolveRecord::NonInter { command, n4w, n4h } => (
+                        ReconEntryState::Command(command),
+                        LeafReset::NonInter { n4w, n4h },
+                    ),
+                    pending => (ReconEntryState::Resolve(pending), LeafReset::None),
+                };
                 push_recon_entry(
                     &mut recon_row.superblocks,
                     &mut recon_row.entries,
                     origin,
                     ReconRowEntry {
                         publication,
-                        state: Some(ReconEntryState::Resolve(resolve)),
+                        state: Some(state),
+                        reset,
                         temporal: 0..0,
                     },
                 );
@@ -633,6 +644,7 @@ fn resolve_parser_step(
 pub(super) struct ReconRowEntry {
     pub(super) publication: DecodedLeafPublication,
     state: Option<ReconEntryState>,
+    reset: LeafReset,
     pub(super) temporal: Range<usize>,
 }
 
@@ -654,7 +666,18 @@ impl ReconRowEntry {
         }
     }
 
+    pub(super) fn take_reset(&mut self) -> LeafReset {
+        core::mem::replace(&mut self.reset, LeafReset::None)
+    }
+
+    pub(super) fn has_pending_resolve(&self) -> bool {
+        matches!(self.state, Some(ReconEntryState::Resolve(_)))
+    }
+
     pub(super) fn take_resolve(&mut self) -> Option<LeafResolveRecord> {
+        if !self.has_pending_resolve() {
+            return None;
+        }
         match self.state.take()? {
             ReconEntryState::Resolve(resolve) => Some(resolve),
             state @ ReconEntryState::Command(_) => {
@@ -666,6 +689,19 @@ impl ReconRowEntry {
 
     pub(super) fn store_command(&mut self, command: ReconCommand) {
         self.state = Some(ReconEntryState::Command(command));
+    }
+
+    /// The final command, for a pass that consumes it in place.
+    pub(super) fn command_mut(&mut self) -> Option<&mut ReconCommand> {
+        match self.state.as_mut()? {
+            ReconEntryState::Command(command) => Some(command),
+            ReconEntryState::Resolve(_) => None,
+        }
+    }
+
+    /// Marks the command consumed, as [`Self::take_command`] would.
+    pub(super) fn drop_command(&mut self) {
+        self.state = None;
     }
 
     pub(super) fn take_command(&mut self) -> Option<ReconCommand> {
@@ -1328,11 +1364,11 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                             )
                 );
                 if !safe {
-                    match entry.take_command() {
-                        Some(ReconCommand::Inter(mut command)) => {
+                    match entry.command_mut() {
+                        Some(ReconCommand::Inter(command)) => {
                             let start = row.temporal.len();
                             let result = scratch.derive_motion_logged(
-                                &mut command,
+                                command,
                                 surface,
                                 &mut row.temporal,
                                 temporal_context,
@@ -1347,7 +1383,6 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                                 residual_use_ddt,
                                 bit_depth,
                             );
-                            entry.store_command(ReconCommand::Inter(command));
                             match result {
                                 Ok(()) => {
                                     entry.temporal = start..row.temporal.len();
@@ -1359,10 +1394,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                                 }
                             }
                         }
-                        command => {
-                            if let Some(command) = command {
-                                entry.store_command(command);
-                            }
+                        _ => {
                             if let Some(clear) =
                                 entry.temporal_clear_record(mi_rows, mi_cols, current_order_hint)
                             {
@@ -1375,15 +1407,9 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                     skipped_any = true;
                     continue;
                 }
-                let mut command = match entry.take_command() {
-                    Some(ReconCommand::Inter(command)) => command,
-                    command => {
-                        if let Some(command) = command {
-                            entry.store_command(command);
-                        }
-                        skipped_any = true;
-                        continue;
-                    }
+                let Some(ReconCommand::Inter(command)) = entry.command_mut() else {
+                    skipped_any = true;
+                    continue;
                 };
                 if !coefficients_loaded && let Some(source) = &row.residual_source {
                     if let Err(error) = source.copy_into(&mut coefficient_scratch) {
@@ -1395,7 +1421,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                 let start = row.temporal.len();
                 let result = {
                     scratch.reconstruct_logged(
-                        &mut command,
+                        command,
                         surface,
                         block_decoded,
                         &mut row.temporal,
@@ -1418,6 +1444,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                         bit_depth,
                     )
                 };
+                entry.drop_command();
                 match result {
                     Ok(()) => {
                         entry.temporal = start..row.temporal.len();

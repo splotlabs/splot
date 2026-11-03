@@ -2166,8 +2166,8 @@ use self::interintra::predict_interintra_planes;
 use self::prediction::placed_inter_geometry;
 use self::resolve::{
     CompoundJointMvProjection, CompoundMotionSyntax, InterBlockSyntax, InterMotionSyntax,
-    LeafResolveRecord, MvResolutionState, PendingIntrabcBlock, SingleMotionSyntax, WarpDeltaSyntax,
-    WarpModelSource, WarpMotionSyntax, pending_inter_leaf, pending_intrabc_leaf,
+    LeafReset, LeafResolveRecord, MvResolutionState, PendingIntrabcBlock, SingleMotionSyntax,
+    WarpDeltaSyntax, WarpModelSource, WarpMotionSyntax, pending_inter_leaf, pending_intrabc_leaf,
     resolve_parsed_leaves,
 };
 use self::syntax::{
