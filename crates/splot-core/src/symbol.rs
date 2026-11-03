@@ -10,7 +10,7 @@
 //! `decode_tile()`, reconstruction, and encoder range writing.
 
 use core::simd::cmp::SimdPartialOrd;
-use core::simd::num::SimdUint;
+use core::simd::num::{SimdInt, SimdUint};
 use core::simd::simd_swizzle;
 use core::simd::{Select, Simd};
 
@@ -216,12 +216,12 @@ const fn past_row_lanes<const N: usize>() -> Simd<u16, 8> {
     Simd::from_array(lanes)
 }
 
-/// `Prob_Inc` of an `N`-ary row in vector lanes.
+/// `Prob_Inc << 2` of an `N`-ary row in vector lanes.
 const fn prob_inc_lanes<const N: usize>() -> Simd<u16, 8> {
     let mut lanes = [0u16; 8];
     let mut i = 0;
     while i < 8 {
-        lanes[i] = PROB_INC_U32[N - 2][i] as u16;
+        lanes[i] = (PROB_INC_U32[N - 2][i] << 2) as u16;
         i += 1;
     }
     Simd::from_array(lanes)
@@ -231,10 +231,9 @@ const fn prob_inc_lanes<const N: usize>() -> Simd<u16, 8> {
 /// non-decreasing rows the boundaries are non-increasing, so the number of
 /// boundaries above `symbol_value` is the symbol the sequential search
 /// stops at; lanes past the row hold a boundary of 0 and never count.
-/// With `a = r * (f >> 7)` and `b = r * inc` (`r = range >> 8`), both of
-/// which fit 16 bits, `(r * pp) >> 7 = (16a + b) >> 7` is
-/// `(a >> 3) + ((16 (a & 7) + b) >> 7)`, so every lane stays in 16 bits;
-/// below 2^13 it compares signed against `symbol_value >> 3`.
+/// `(r * pp) >> 7` (`r = range >> 8`) is the signed high half of
+/// `(r << 7) * (pp << 2)`, whose factors fit 15 bits; the result is below
+/// 2^13, so it compares signed against `symbol_value >> 3`.
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn multi_symbol_search<const N: usize>(
@@ -243,14 +242,12 @@ fn multi_symbol_search<const N: usize>(
     range: u32,
 ) -> (usize, u32, u32) {
     let f = Simd::splat(CDF_PROB_SCALE as u16).saturating_sub(probabilities);
-    let range8 = Simd::splat((range >> 8) as u16);
-    let a = range8 * (f >> EC_PROB_SHIFT as u16);
-    let b = range8 * const { prob_inc_lanes::<N>() };
-    let scaled = (a >> 3) + ((((a & Simd::splat(7)) << 4) + b) >> 7);
-    let boundaries = scaled << 3;
-    let above = scaled
-        .cast::<i16>()
-        .simd_gt(Simd::splat((symbol_value >> 3) as i16));
+    let pp4 = ((f >> EC_PROB_SHIFT as u16) << 6) + const { prob_inc_lanes::<N>() };
+    let range7 = (Simd::splat(range as u16) >> 1) & Simd::splat(0x7f80);
+    let product = range7.cast::<i16>().cast::<i32>() * pp4.cast::<i16>().cast::<i32>();
+    let scaled = (product >> 16).cast::<i16>();
+    let boundaries = scaled.cast::<u16>() << 3;
+    let above = scaled.simd_gt(Simd::splat((symbol_value >> 3) as i16));
     let symbol = (above.to_bitmask().count_ones() as usize).min(N - 1);
     let cur = above.select(Simd::splat(0), boundaries).reduce_max();
     let prev = above
