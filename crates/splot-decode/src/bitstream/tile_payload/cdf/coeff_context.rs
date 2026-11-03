@@ -130,7 +130,8 @@ impl CoeffBrContext {
 
     /// Clamped neighbour sum for one class; a constant class makes every
     /// offset a constant.
-    #[inline]
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[inline(always)]
     fn neighbour_mag<const CLASS: usize>(self, level: &LevelGrid) -> u32 {
         let base = self.row.wrapping_mul(self.stride).wrapping_add(self.col);
         let at = |[dr, dc]: [usize; 2]| {
@@ -256,7 +257,8 @@ impl CoeffBaseContext {
 
     /// Clamped neighbour sum for one class; a constant class makes every
     /// offset a constant.
-    #[inline]
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[inline(always)]
     fn neighbour_mag<const CLASS: usize>(&self, level: &LevelGrid) -> u32 {
         let lf_limit = self.is_lf && !(self.is_hidden && self.c == 0);
         let near_limit = if lf_limit { 5 } else { 3 };

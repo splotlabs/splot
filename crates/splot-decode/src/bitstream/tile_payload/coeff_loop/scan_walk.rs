@@ -58,7 +58,9 @@ pub(crate) struct NonZeroCoeffScanWalk<'a> {
 
 impl NonZeroCoeffScanWalk<'_> {
     #[must_use]
-    pub(crate) fn entries(&self) -> impl ExactSizeIterator<Item = CoeffScanEntry> + '_ {
+    pub(crate) fn entries(
+        &self,
+    ) -> impl ExactSizeIterator<Item = CoeffScanEntry> + DoubleEndedIterator + '_ {
         (0..self.len()).map(|index| self.entry(index))
     }
 
