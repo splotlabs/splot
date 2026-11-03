@@ -198,22 +198,26 @@ impl TilePartitionFrameFacts {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ChromaRefGeometry {
-    row: usize,
-    col: usize,
+    row: u32,
+    col: u32,
     size: BlockSize,
 }
 
 impl ChromaRefGeometry {
     pub(crate) const fn new(row: usize, col: usize, size: BlockSize) -> Self {
-        Self { row, col, size }
+        Self {
+            row: row as u32,
+            col: col as u32,
+            size,
+        }
     }
 
     pub(crate) const fn row(self) -> usize {
-        self.row
+        self.row as usize
     }
 
     pub(crate) const fn col(self) -> usize {
-        self.col
+        self.col as usize
     }
 
     pub(crate) const fn size(self) -> BlockSize {
@@ -295,17 +299,10 @@ impl TilePartitionCall {
 
     pub(crate) fn chroma_ref_geometry(self) -> ChromaRefGeometry {
         if !self.chroma_offset && self.has_chroma {
-            return ChromaRefGeometry {
-                row: self.r,
-                col: self.c,
-                size: self.b_size,
-            };
+            return ChromaRefGeometry::new(self.r, self.c, self.b_size);
         }
-        self.chroma_ref.unwrap_or(ChromaRefGeometry {
-            row: self.r,
-            col: self.c,
-            size: self.b_size,
-        })
+        self.chroma_ref
+            .unwrap_or(ChromaRefGeometry::new(self.r, self.c, self.b_size))
     }
 
     pub(crate) const fn with_tree_type(self, tree_type: PartitionTreeType) -> Self {

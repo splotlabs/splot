@@ -211,7 +211,7 @@ pub(crate) fn publish_intra_leaf_state<E>(
     if frontier.has_chroma || tree_type == PartitionTreeType::ChromaPart {
         let chroma_ref = call.chroma_ref_geometry();
         mi_size_state
-            .update_chroma_block(chroma_ref.row, chroma_ref.col, chroma_ref.size)
+            .update_chroma_block(chroma_ref.row(), chroma_ref.col(), chroma_ref.size())
             .map_err(GeneralIntraTreeWalkError::MiSize)?;
     }
     Ok(())
