@@ -218,18 +218,20 @@ pub(crate) enum CoeffBaseRow<'a> {
 /// The base and base-range rows of one transform-size context, borrowed
 /// once per block so the per-coefficient reads index them directly.
 pub(crate) struct CoeffLevelRows<'a> {
-    base: &'a mut [[[u16; COEFF_BASE_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS]; COEFF_BASE_CONTEXTS],
-    base_lf:
+    pub(crate) base:
+        &'a mut [[[u16; COEFF_BASE_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS]; COEFF_BASE_CONTEXTS],
+    pub(crate) base_lf:
         &'a mut [[[u16; COEFF_BASE_LF_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS]; COEFF_BASE_LF_CONTEXTS],
-    base_ph: &'a mut CoeffBasePhCdfRows,
-    base_uv: &'a mut CoeffBaseUvCdfRows,
-    base_lf_uv: &'a mut CoeffBaseLfUvCdfRows,
-    br: &'a mut CoeffBrCdfRows,
-    br_lf: &'a mut CoeffBrLfCdfRows,
-    br_uv: &'a mut CoeffBrUvCdfRows,
+    pub(crate) base_ph: &'a mut CoeffBasePhCdfRows,
+    pub(crate) base_uv: &'a mut CoeffBaseUvCdfRows,
+    pub(crate) base_lf_uv: &'a mut CoeffBaseLfUvCdfRows,
+    pub(crate) br: &'a mut CoeffBrCdfRows,
+    pub(crate) br_lf: &'a mut CoeffBrLfCdfRows,
+    pub(crate) br_uv: &'a mut CoeffBrUvCdfRows,
 }
 
 impl CoeffLevelRows<'_> {
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn reborrow(&mut self) -> CoeffLevelRows<'_> {
         CoeffLevelRows {

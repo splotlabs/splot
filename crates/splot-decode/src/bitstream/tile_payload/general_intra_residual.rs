@@ -18,6 +18,7 @@ use splot_recon::{
     QmDequant, QmFrameLevels, QmUserPlane, QuantizerDeltas, ReconError, ReconSample,
     SecondaryInverseTransform, reconstruct_transform_block_residual_with_secondary, tx_size_index,
 };
+use std::simd::num::SimdUint as _;
 
 use super::cdf::TileCdfSelector;
 use super::cdf::block_context::IntraYMode;
@@ -39,9 +40,9 @@ use super::coeff_loop::{
     AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffBlockStartInput,
     NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
 };
-use super::coeff_state::{
-    CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
-};
+#[cfg(test)]
+use super::coeff_state::TransformCoeffBlockState;
+use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
 use super::{BlockSize, DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 
 pub(crate) mod cctx;
@@ -487,7 +488,12 @@ impl LumaCoeffBlock {
 
     /// Appends the block's coefficients up to the last nonzero one to
     /// `arena` and records the span they landed in.
-    fn with_coeffs(mut self, arena: &mut Vec<i32>, block: &TransformCoeffBlockState) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_coeffs(
+        mut self,
+        arena: &mut Vec<i32>,
+        block: &TransformCoeffBlockState,
+    ) -> Self {
         let start = arena.len();
         let nonzero = block.nonzero_quant();
         arena.extend_from_slice(nonzero);
@@ -615,7 +621,28 @@ pub(crate) enum GeneralIntraResidualError {
 }
 
 fn or_u8(line: &[u8], start: usize, len: usize) -> u8 {
-    line.iter().skip(start).take(len).fold(0, |acc, &v| acc | v)
+    let Some(slice) = start.checked_add(len).and_then(|end| line.get(start..end)) else {
+        return line.iter().skip(start).take(len).fold(0, |acc, &v| acc | v);
+    };
+    match len {
+        0 => 0,
+        1 => slice[0],
+        2 => slice[0] | slice[1],
+        4 => {
+            let val = u32::from_ne_bytes(slice.try_into().unwrap_or([0; 4]));
+            let v16 = (val | (val >> 16)) as u16;
+            (v16 | (v16 >> 8)) as u8
+        }
+        8 => {
+            let val = u64::from_ne_bytes(slice.try_into().unwrap_or([0; 8]));
+            let v32 = (val | (val >> 32)) as u32;
+            let v16 = (v32 | (v32 >> 16)) as u16;
+            (v16 | (v16 >> 8)) as u8
+        }
+        16 => std::simd::Simd::<u8, 16>::from_slice(slice).reduce_or(),
+        32 => std::simd::Simd::<u8, 32>::from_slice(slice).reduce_or(),
+        _ => slice.iter().fold(0, |acc, &v| acc | v),
+    }
 }
 
 fn coeff_ctx_err(source: TileCoeffStateError) -> GeneralIntraResidualError {
@@ -1237,17 +1264,20 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         )
         .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?
     };
+    let start_idx = arena.len();
+    let nonzero = block.nonzero_quant();
+    arena.extend_from_slice(nonzero);
+    let quant_len = block.quant().len();
     Ok(LumaCoeffBlock {
         eob,
-        quant_range: 0..0,
-        zero_tail: 0,
+        quant_range: start_idx..arena.len(),
+        zero_tail: quant_len - nonzero.len(),
         intra_ist: metadata.intra_ist,
         cctx_type: metadata.cctx_type,
         plane_tx_type,
         use_tcq: base_config.use_tcq,
         lossless,
-    }
-    .with_coeffs(arena, &block))
+    })
 }
 
 fn staged_transform_tool_lossless_base_config(
