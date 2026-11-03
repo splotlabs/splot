@@ -262,8 +262,8 @@ fn predict_smooth_rect_u8(
         v_factor: [0; MAX_SMOOTH_SIDE],
         s_top: [0; MAX_SMOOTH_SIDE],
     };
-    for row in 0..height {
-        rows.left[row] = i16::from(left[row]);
+    for (row, &sample) in left[..height].iter().enumerate() {
+        rows.left[row] = i16::from(sample);
         rows.v_factor[row] = (height - 1 - row) as i16;
         rows.s_top[row] = blend(row);
     }

@@ -239,7 +239,7 @@ fn build_smooth_edges<T: ReconSample>(
     let above_len = (width + 1).min(SMOOTH_EDGE_CAPACITY);
     match (have_left, left_neighbour) {
         (true, Some(samples)) => {
-            fill_edge_from_neighbour(samples, &mut left[..left_len], bit_depth)
+            fill_edge_from_neighbour(samples, &mut left[..left_len], bit_depth);
         }
         _ if have_above => left.fill(
             above_neighbour
