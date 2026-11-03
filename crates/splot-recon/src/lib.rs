@@ -37,6 +37,7 @@ mod intra_ibp_dc;
 mod intra_smooth;
 mod inverse_transform;
 mod inverse_transform_2d;
+mod inverse_transform_2d_8bit;
 mod inverse_transform_2d_outer;
 mod loop_restoration;
 pub mod math;
