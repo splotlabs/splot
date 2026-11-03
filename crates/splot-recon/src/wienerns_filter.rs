@@ -987,6 +987,9 @@ fn luma_term<const J: usize, T: LumaSimdSource>(
 /// `interleave_pairs`. The center scale `128 - 2 * sum(coeffs)` folds into
 /// the taps: the sum is `center << 7` plus each coefficient times its tap sum
 /// less twice the center, whose 12 bits and the coefficients' fit `pmaddwd`.
+/// The `pmaddwd` sums start from zero, as one that starts from the center
+/// term is reassociated out of the pattern into `vpmulld`, and stay in the
+/// unpack lane order, which the final saturating pack puts back in order.
 #[allow(clippy::inline_always, reason = "measured Wiener NS luma hot path")]
 #[inline(always)]
 fn filter_luma_cells16<T: LumaSimdSource, O: LumaSimdOutput>(
@@ -997,12 +1000,7 @@ fn filter_luma_cells16<T: LumaSimdSource, O: LumaSimdOutput>(
 ) {
     const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
     let center = T::load::<16>(window[R], R).cast::<i16>();
-    let scaled = (center.cast::<i32>() << WIENER_NS_PREC_BITS as i32)
-        + Simd::splat(1 << (WIENER_NS_PREC_BITS - 1));
-    let mut sums = [
-        simd_swizzle!(scaled, [0, 1, 2, 3, 8, 9, 10, 11]),
-        simd_swizzle!(scaled, [4, 5, 6, 7, 12, 13, 14, 15]),
-    ];
+    let mut sums = [Simd::<i32, 8>::splat(0); 2];
     macro_rules! pairs {
         ($($pair:literal)*) => {$({
             let halves = interleave_pairs(
@@ -1015,15 +1013,22 @@ fn filter_luma_cells16<T: LumaSimdSource, O: LumaSimdOutput>(
         })*};
     }
     pairs!(0 1 2 3 4 5 6 7);
-    let [low, high] = sums.map(|sum| sum >> Simd::splat(WIENER_NS_PREC_BITS as i32));
+    let centers = interleave_pairs(center, Simd::splat(0));
+    let [low, high] = [0, 1].map(|half| {
+        let center = Simd::<i32, 8>::from_ne_bytes(centers[half].to_ne_bytes());
+        (sums[half]
+            + (center << WIENER_NS_PREC_BITS as i32)
+            + Simd::splat(1 << (WIENER_NS_PREC_BITS - 1)))
+            >> Simd::splat(WIENER_NS_PREC_BITS as i32)
+    });
     let values = simd_swizzle!(
         low,
         high,
         [0, 1, 2, 3, 8, 9, 10, 11, 4, 5, 6, 7, 12, 13, 14, 15]
     )
-    .simd_max(Simd::splat(0))
-    .simd_min(Simd::splat(i32::from(max_sample)))
-    .cast::<u16>();
+    .simd_clamp(Simd::splat(0), Simd::splat(i32::from(u16::MAX)))
+    .cast::<u16>()
+    .simd_min(Simd::splat(max_sample));
     O::write(filtered, values);
 }
 
