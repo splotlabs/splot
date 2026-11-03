@@ -10,9 +10,10 @@
 //! AArch64, which is what turns eight overlapping unaligned loads into two
 //! loads plus seven slides.
 
+use super::pairs::Slide;
 use super::{INTER_ROUND0, NUM_TAPS, reference_lanes, round2_simd, tap_mac};
 use crate::format::ReconSample;
-use std::simd::{Simd, num::SimdInt, num::SimdUint, simd_swizzle};
+use std::simd::{Simd, Swizzle, num::SimdInt, num::SimdUint, simd_swizzle};
 
 /// One accumulator width's full-span horizontal convolution over slid windows.
 pub(super) trait SlideLanes: Sized {
@@ -139,6 +140,8 @@ impl SlideLanes for Simd<i32, 8> {
     }
 }
 
+/// Lanes `first..first + 16` and `first + 8..first + 24` share their middle
+/// eight, so every window is an in-lane slide of the two loads.
 impl SlideLanes for Simd<i32, 16> {
     const SPAN: usize = 32;
     type Intermediate = Simd<i16, 16>;
@@ -151,45 +154,17 @@ impl SlideLanes for Simd<i32, 16> {
         taps: Simd<i16, NUM_TAPS>,
     ) -> Self::Intermediate {
         let lo = lanes_at::<16, T>(source, first);
-        let hi = lanes_at::<16, T>(source, first + 16);
+        let hi = lanes_at::<16, T>(source, first + 8);
         intermediate::<16, T>(
             [
                 lo,
-                simd_swizzle!(
-                    lo,
-                    hi,
-                    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-                ),
-                simd_swizzle!(
-                    lo,
-                    hi,
-                    [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
-                ),
-                simd_swizzle!(
-                    lo,
-                    hi,
-                    [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
-                ),
-                simd_swizzle!(
-                    lo,
-                    hi,
-                    [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-                ),
-                simd_swizzle!(
-                    lo,
-                    hi,
-                    [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
-                ),
-                simd_swizzle!(
-                    lo,
-                    hi,
-                    [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
-                ),
-                simd_swizzle!(
-                    lo,
-                    hi,
-                    [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
-                ),
+                Slide::<1>::concat_swizzle(lo, hi),
+                Slide::<2>::concat_swizzle(lo, hi),
+                Slide::<3>::concat_swizzle(lo, hi),
+                Slide::<4>::concat_swizzle(lo, hi),
+                Slide::<5>::concat_swizzle(lo, hi),
+                Slide::<6>::concat_swizzle(lo, hi),
+                Slide::<7>::concat_swizzle(lo, hi),
             ],
             taps,
         )

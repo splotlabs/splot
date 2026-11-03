@@ -58,8 +58,18 @@ pub(crate) struct NonZeroCoeffScanWalk<'a> {
 
 impl NonZeroCoeffScanWalk<'_> {
     #[must_use]
-    pub(crate) fn entries(&self) -> impl ExactSizeIterator<Item = CoeffScanEntry> + '_ {
-        (0..self.len()).map(|index| self.entry(index))
+    pub(crate) fn entries(
+        &self,
+    ) -> impl ExactSizeIterator<Item = CoeffScanEntry> + DoubleEndedIterator + '_ {
+        let col_mask = (1 << self.width_log2) - 1;
+        self.scan
+            .iter()
+            .enumerate()
+            .rev()
+            .map(move |(scan_index, &pos)| {
+                let pos = usize::from(pos);
+                CoeffScanEntry::new(scan_index, pos, pos >> self.width_log2, pos & col_mask)
+            })
     }
 
     #[must_use]
@@ -148,7 +158,13 @@ pub(crate) fn walk_nonzero_coeff_scan<'a>(
         return Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width });
     }
     let coeff_count = block.coeff_count();
-    for (scan_index, scan_pos) in scan[..eob].iter().copied().enumerate().rev() {
+    // A full-size scan table is a permutation of the block's positions.
+    let positions = if scan.len() == coeff_count {
+        &[][..]
+    } else {
+        &scan[..eob]
+    };
+    for (scan_index, scan_pos) in positions.iter().copied().enumerate().rev() {
         let pos = usize::from(scan_pos);
         if pos >= coeff_count {
             return Err(CoeffLoopContextError::ScanWalkPositionOutOfRange {

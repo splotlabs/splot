@@ -6,7 +6,7 @@
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_SIG_COEF_CONTEXTS_2D, SIG_REF_DIFF_OFFSET_NUM};
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
 
-use super::super::coeff_state::{LEVEL_GRID_LEN, LevelGrid};
+use super::super::coeff_state::{LEVEL_INDEX_MASK, LevelGrid};
 
 const SIG_COEF_CONTEXTS_EOB: usize = 4;
 
@@ -53,8 +53,8 @@ fn clamped_level_at(level: &[u8], stride: usize, row: usize, col: usize, limit: 
 }
 
 /// The clamped level of the neighbour `(dr, dc)` of the flat position
-/// `base`. Every neighbour of a block position lies inside the grid's
-/// padded extent, so the index mask never changes a valid index.
+/// `base`. Block positions and neighbour offsets are below the index
+/// mask, so masking never changes a valid index.
 #[inline]
 fn level_near(
     level: &LevelGrid,
@@ -64,8 +64,8 @@ fn level_near(
     dc: usize,
     limit: u32,
 ) -> u32 {
-    let index = base.wrapping_add(dr.wrapping_mul(stride)).wrapping_add(dc);
-    u32::from(level[index & (LEVEL_GRID_LEN - 1)]).min(limit)
+    let offset = dr.wrapping_mul(stride).wrapping_add(dc);
+    u32::from(level[(base & LEVEL_INDEX_MASK) + (offset & LEVEL_INDEX_MASK)]).min(limit)
 }
 
 pub(crate) const fn coeff_base_eob_ctx(c: usize, bwl: u32, height: usize) -> usize {
@@ -130,7 +130,8 @@ impl CoeffBrContext {
 
     /// Clamped neighbour sum for one class; a constant class makes every
     /// offset a constant.
-    #[inline]
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[inline(always)]
     fn neighbour_mag<const CLASS: usize>(self, level: &LevelGrid) -> u32 {
         let base = self.row.wrapping_mul(self.stride).wrapping_add(self.col);
         let at = |[dr, dc]: [usize; 2]| {
@@ -256,7 +257,8 @@ impl CoeffBaseContext {
 
     /// Clamped neighbour sum for one class; a constant class makes every
     /// offset a constant.
-    #[inline]
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[inline(always)]
     fn neighbour_mag<const CLASS: usize>(&self, level: &LevelGrid) -> u32 {
         let lf_limit = self.is_lf && !(self.is_hidden && self.c == 0);
         let near_limit = if lf_limit { 5 } else { 3 };

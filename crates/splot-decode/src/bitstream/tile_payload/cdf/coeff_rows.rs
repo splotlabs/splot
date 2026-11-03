@@ -71,7 +71,7 @@ pub(crate) type IdtxSignCdfRows =
     [[[u16; IDTX_SIGN_ROW_LEN]; IDTX_SIGN_CONTEXTS]; FSC_TX_SIZE_CONTEXTS];
 
 /// Decode reads the base and base-range rows through the typed
-/// [`CoeffCdfRows::base_row`] and [`CoeffCdfRows::br_row`]; their selector
+/// [`CoeffLevelRows::base_row`] and [`CoeffLevelRows::br_row`]; their selector
 /// variants only address rows in tests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffCdfSelector {
@@ -215,36 +215,62 @@ pub(crate) enum CoeffBaseRow<'a> {
     Lf(&'a mut [u16; COEFF_BASE_LF_ROW_LEN]),
 }
 
-impl CoeffCdfRows {
+/// The base and base-range rows of one transform-size context, borrowed
+/// once per block so the per-coefficient reads index them directly.
+pub(crate) struct CoeffLevelRows<'a> {
+    base: &'a mut [[[u16; COEFF_BASE_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS]; COEFF_BASE_CONTEXTS],
+    base_lf:
+        &'a mut [[[u16; COEFF_BASE_LF_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS]; COEFF_BASE_LF_CONTEXTS],
+    base_ph: &'a mut CoeffBasePhCdfRows,
+    base_uv: &'a mut CoeffBaseUvCdfRows,
+    base_lf_uv: &'a mut CoeffBaseLfUvCdfRows,
+    br: &'a mut CoeffBrCdfRows,
+    br_lf: &'a mut CoeffBrLfCdfRows,
+    br_uv: &'a mut CoeffBrUvCdfRows,
+}
+
+impl CoeffLevelRows<'_> {
+    #[inline]
+    pub(crate) fn reborrow(&mut self) -> CoeffLevelRows<'_> {
+        CoeffLevelRows {
+            base: self.base,
+            base_lf: self.base_lf,
+            base_ph: self.base_ph,
+            base_uv: self.base_uv,
+            base_lf_uv: self.base_lf_uv,
+            br: self.br,
+            br_lf: self.br_lf,
+            br_uv: self.br_uv,
+        }
+    }
+}
+
+impl<'a> CoeffLevelRows<'a> {
     /// Typed row of a derived base selection, so hot reads skip the
     /// selector dispatch and the row-length dispatch.
     #[inline]
     pub(crate) fn base_row(
-        &mut self,
+        self,
         selection: CoeffBaseSelection,
-        tx_size: usize,
         tcq_ctx: usize,
-    ) -> Result<CoeffBaseRow<'_>, TileCdfError> {
+    ) -> Result<CoeffBaseRow<'a>, TileCdfError> {
         use TileCdfArray::{CoeffBase, CoeffBaseLf, CoeffBaseLfUv, CoeffBasePh, CoeffBaseUv};
+        let tcq_ctx = tcq_ctx & 1;
         Ok(match selection {
-            CoeffBaseSelection::Hf { ctx } => CoeffBaseRow::Base(row4(
-                &mut self.coeff_base,
-                CoeffBase,
-                [tx_size, ctx, tcq_ctx],
-            )?),
+            CoeffBaseSelection::Hf { ctx } => {
+                CoeffBaseRow::Base(&mut row2(self.base, CoeffBase, ctx)?[tcq_ctx])
+            }
             CoeffBaseSelection::Ph { ctx } => {
-                CoeffBaseRow::Base(row2(&mut self.coeff_base_ph, CoeffBasePh, ctx)?)
+                CoeffBaseRow::Base(row2(self.base_ph, CoeffBasePh, ctx)?)
             }
             CoeffBaseSelection::Uv { ctx } => {
-                CoeffBaseRow::Base(row2(&mut self.coeff_base_uv, CoeffBaseUv, ctx)?)
+                CoeffBaseRow::Base(row2(self.base_uv, CoeffBaseUv, ctx)?)
             }
-            CoeffBaseSelection::Lf { ctx } => CoeffBaseRow::Lf(row4(
-                &mut self.coeff_base_lf,
-                CoeffBaseLf,
-                [tx_size, ctx, tcq_ctx],
-            )?),
+            CoeffBaseSelection::Lf { ctx } => {
+                CoeffBaseRow::Lf(&mut row2(self.base_lf, CoeffBaseLf, ctx)?[tcq_ctx])
+            }
             CoeffBaseSelection::LfUv { ctx } => {
-                CoeffBaseRow::Lf(row2(&mut self.coeff_base_lf_uv, CoeffBaseLfUv, ctx)?)
+                CoeffBaseRow::Lf(row2(self.base_lf_uv, CoeffBaseLfUv, ctx)?)
             }
         })
     }
@@ -252,18 +278,62 @@ impl CoeffCdfRows {
     /// Typed base-range row for `plane` and `is_lf`.
     #[inline]
     pub(crate) fn br_row(
+        self,
+        plane: usize,
+        is_lf: bool,
+        ctx: usize,
+    ) -> Result<&'a mut [u16; COEFF_BR_ROW_LEN], TileCdfError> {
+        if plane > 0 {
+            row2(self.br_uv, TileCdfArray::CoeffBrUv, ctx)
+        } else if is_lf {
+            row2(self.br_lf, TileCdfArray::CoeffBrLf, ctx)
+        } else {
+            row2(self.br, TileCdfArray::CoeffBr, ctx)
+        }
+    }
+}
+
+impl CoeffCdfRows {
+    /// [`CoeffLevelRows::base_row`] of transform-size context `tx_size`.
+    #[inline]
+    pub(crate) fn base_row(
+        &mut self,
+        selection: CoeffBaseSelection,
+        tx_size: usize,
+        tcq_ctx: usize,
+    ) -> Result<CoeffBaseRow<'_>, TileCdfError> {
+        self.level_rows(tx_size)?.base_row(selection, tcq_ctx)
+    }
+
+    /// [`CoeffLevelRows::br_row`]; base-range rows do not depend on the
+    /// transform size.
+    #[inline]
+    pub(crate) fn br_row(
         &mut self,
         plane: usize,
         is_lf: bool,
         ctx: usize,
     ) -> Result<&mut [u16; COEFF_BR_ROW_LEN], TileCdfError> {
-        if plane > 0 {
-            row2(&mut self.coeff_br_uv, TileCdfArray::CoeffBrUv, ctx)
-        } else if is_lf {
-            row2(&mut self.coeff_br_lf, TileCdfArray::CoeffBrLf, ctx)
-        } else {
-            row2(&mut self.coeff_br, TileCdfArray::CoeffBr, ctx)
-        }
+        self.level_rows(0)?.br_row(plane, is_lf, ctx)
+    }
+
+    /// The level rows of transform-size context `tx_size`.
+    #[inline]
+    pub(crate) fn level_rows(
+        &mut self,
+        tx_size: usize,
+    ) -> Result<CoeffLevelRows<'_>, TileCdfError> {
+        let tx_size = checked_tx_size(TileCdfArray::CoeffBase, tx_size)?;
+        Ok(CoeffLevelRows {
+            base: &mut self.coeff_base[tx_size],
+            base_lf: &mut self.coeff_base_lf[tx_size],
+            base_ph: &mut self.coeff_base_ph,
+            base_uv: &mut self.coeff_base_uv,
+            base_lf_uv: &mut self.coeff_base_lf_uv,
+            br: &mut self.coeff_br,
+            br_lf: &mut self.coeff_br_lf,
+            br_uv: &mut self.coeff_br_uv,
+        })
     }
 
     #[inline]
@@ -431,11 +501,11 @@ impl CoeffCdfRows {
 
 /// Bounds-checked `rows[ctx]`.
 #[inline]
-fn row2<const L: usize, const C: usize>(
-    rows: &mut [[u16; L]; C],
+fn row2<T, const C: usize>(
+    rows: &mut [T; C],
     array: TileCdfArray,
     ctx: usize,
-) -> Result<&mut [u16; L], TileCdfError> {
+) -> Result<&mut T, TileCdfError> {
     let ctx = checked_context(array, "ctx", ctx, C)?;
     Ok(&mut rows[ctx])
 }
@@ -444,7 +514,7 @@ type TcqRows<const L: usize, const C: usize> =
     [[[[u16; L]; COEFF_BASE_TCQ_CONTEXTS]; C]; TX_SIZE_CONTEXTS];
 
 /// Bounds-checked `rows[tx_size][ctx][tcq_ctx]`.
-#[inline]
+#[cfg(test)]
 fn row4<const L: usize, const C: usize>(
     rows: &mut TcqRows<L, C>,
     array: TileCdfArray,

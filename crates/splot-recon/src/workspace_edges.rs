@@ -21,6 +21,15 @@ pub struct CurrentFrameIntraEdges<T: ReconSample> {
     above: Option<([T; CURRENT_FRAME_INTRA_EDGE_CAPACITY], usize)>,
 }
 
+impl<T: ReconSample> Default for CurrentFrameIntraEdges<T> {
+    fn default() -> Self {
+        Self {
+            left: None,
+            above: None,
+        }
+    }
+}
+
 impl<T: ReconSample> CurrentFrameIntraEdges<T> {
     /// Returns left edge samples when they were inside workspace storage.
     pub fn left_samples(&self) -> Option<&[T]> {
@@ -43,11 +52,23 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         &self,
         nominal: PlaneRect,
     ) -> Result<CurrentFrameIntraEdges<T>> {
+        let mut edges = CurrentFrameIntraEdges::default();
+        self.dc_edges_for_rect_into(nominal, &mut edges)?;
+        Ok(edges)
+    }
+
+    /// [`Self::dc_edges_for_rect`] into caller storage, so the sample arrays
+    /// are written where they are read.
+    pub(super) fn dc_edges_for_rect_into(
+        &self,
+        nominal: PlaneRect,
+        edges: &mut CurrentFrameIntraEdges<T>,
+    ) -> Result<()> {
+        edges.left = None;
+        edges.above = None;
         let rect = self.clamp_rect_to_storage(nominal)?;
-        Ok(CurrentFrameIntraEdges {
-            left: self.dc_edge_samples(nominal, rect, IntraDcEdge::Left)?,
-            above: self.dc_edge_samples(nominal, rect, IntraDcEdge::Above)?,
-        })
+        self.dc_edge_samples(nominal, rect, IntraDcEdge::Left, &mut edges.left)?;
+        self.dc_edge_samples(nominal, rect, IntraDcEdge::Above, &mut edges.above)
     }
 
     pub(super) fn dc_edge_sum_for_rect(
@@ -204,9 +225,10 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         nominal: PlaneRect,
         rect: PlaneRect,
         edge: IntraDcEdge,
-    ) -> Result<Option<([T; CURRENT_FRAME_INTRA_EDGE_CAPACITY], usize)>> {
+        slot: &mut Option<([T; CURRENT_FRAME_INTRA_EDGE_CAPACITY], usize)>,
+    ) -> Result<()> {
         if !dc_edge_available(nominal, edge) {
-            return Ok(None);
+            return Ok(());
         }
 
         let nominal_len = dc_edge_len(nominal, edge);
@@ -216,7 +238,10 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             });
         }
 
-        let mut samples = [T::default(); CURRENT_FRAME_INTRA_EDGE_CAPACITY];
+        let (samples, _) = slot.insert((
+            [T::default(); CURRENT_FRAME_INTRA_EDGE_CAPACITY],
+            nominal_len,
+        ));
         let actual_len = match edge {
             IntraDcEdge::Left => {
                 let column = self.left_column_start(rect)?;
@@ -237,7 +262,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             let last = samples[actual_len - 1];
             samples[actual_len..nominal_len].fill(last);
         }
-        Ok(Some((samples, nominal_len)))
+        Ok(())
     }
 
     fn fold_dc_edge_samples<A: Copy>(

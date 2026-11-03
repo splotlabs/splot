@@ -99,7 +99,7 @@ impl ResidualPlanePlan {
     }
 
     pub(super) fn read_palette_color_map(
-        self,
+        &self,
         work_unit: &mut DecodeTileWorkUnit,
         symbols: &mut SymbolDecoder<'_>,
     ) -> core::result::Result<Option<Vec<u8>>, GeneralIntraResidualError> {

@@ -100,8 +100,8 @@ impl GeneralIntraResidualPlan {
             scratch,
             workspace,
             block_decoded,
-            &(u_plane, CoeffBlock::new(&u_coeffs, u.1)?),
-            Some(&(v_plane, CoeffBlock::new(&v_coeffs, v.1)?)),
+            (&u_plane, CoeffBlock::new(&u_coeffs, u.1)?),
+            Some((&v_plane, CoeffBlock::new(&v_coeffs, v.1)?)),
             qindex,
             intra_edge,
             luma_context,
@@ -226,7 +226,7 @@ impl ResidualReconstructionPlan {
 
 impl ResidualPlanePlan {
     pub(super) fn lossless_transform_unit_tx_size(
-        self,
+        &self,
         work_unit: &DecodeTileWorkUnit,
     ) -> Option<usize> {
         if work_unit
@@ -246,7 +246,7 @@ impl ResidualPlanePlan {
         (unit_width4 < self.tx.width4() || unit_height4 < self.tx.height4()).then_some(self.tx_size)
     }
 
-    pub(super) fn lossless_unit_starts_in_frame(self, x: usize, y: usize) -> bool {
+    pub(super) fn lossless_unit_starts_in_frame(&self, x: usize, y: usize) -> bool {
         let (sub_x, sub_y) = self.block_ctx.chroma().subsampling(self.plane_id);
         let max_x = (self.block_ctx.frame_mi_cols() * 4) >> sub_x;
         let max_y = (self.block_ctx.frame_mi_rows() * 4) >> sub_y;
@@ -330,7 +330,7 @@ impl ResidualPlanePlan {
         .with_chroma_ref(chroma_ref, chroma_tx))
     }
 
-    pub(super) const fn tx_fills_residual_block(self) -> bool {
+    pub(super) const fn tx_fills_residual_block(&self) -> bool {
         self.tx.width4() == self.residual_width4 && self.tx.height4() == self.residual_height4
     }
 }

@@ -20,11 +20,16 @@ const MAX_ADJUSTED_TX_EXTENT: usize = 32;
 /// grids so AV2 § 8.3.2 neighbor reads (offsets up to +4 per
 /// `Sig_Ref_Diff_Offset`) never need per-sample bounds handling.
 pub(crate) const LEVEL_GRID_PAD: usize = 4;
-const MAX_PADDED_COEFF_LEN: usize =
-    (MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD) * (MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD);
-/// Length of every level grid: a power of two at least
-/// [`MAX_PADDED_COEFF_LEN`], so masked indices need no bounds checks.
-pub(crate) const LEVEL_GRID_LEN: usize = MAX_PADDED_COEFF_LEN.next_power_of_two();
+/// Row stride of every level and sign grid, so neighbour offsets are
+/// constants.
+pub(crate) const LEVEL_STRIDE: usize = MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD;
+const MAX_PADDED_COEFF_LEN: usize = LEVEL_STRIDE * (MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD);
+/// Mask that keeps a block position or a neighbour offset below half the
+/// grid, a power of two at least [`MAX_PADDED_COEFF_LEN`].
+pub(crate) const LEVEL_INDEX_MASK: usize = MAX_PADDED_COEFF_LEN.next_power_of_two() - 1;
+/// Length of every level grid: a masked position plus a masked offset
+/// always indexes it, so neighbour reads need no bounds checks.
+pub(crate) const LEVEL_GRID_LEN: usize = 2 * (LEVEL_INDEX_MASK + 1);
 /// A block's level grid; entries past its padded extent are zero.
 pub(crate) type LevelGrid = [u8; LEVEL_GRID_LEN];
 static ZERO_LEVEL_GRID: LevelGrid = [0; LEVEL_GRID_LEN];
@@ -71,8 +76,8 @@ impl Drop for TransformCoeffBlockState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TransformCoeffBlockState {
+    width: usize,
     height: usize,
-    stride: usize,
     /// Padded extent of the block inside `level`.
     level_len: usize,
     /// [`LEVEL_GRID_LEN`] entries, zero past `level_len`.
@@ -97,8 +102,7 @@ impl TransformCoeffBlockState {
     #[inline(always)]
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, TileCoeffStateError> {
         let allocation = Self::allocation(width, height)?;
-        let stride = width + LEVEL_GRID_PAD;
-        let level_len = stride * (height + LEVEL_GRID_PAD);
+        let level_len = LEVEL_STRIDE * (height + LEVEL_GRID_PAD);
         let (mut level, used_len, mut quant_sign, quant) =
             COEFF_BLOCK_BUFFERS.with(Cell::take).unwrap_or_default();
         if level.len() == LEVEL_GRID_LEN {
@@ -111,8 +115,8 @@ impl TransformCoeffBlockState {
         let quant = zero_buffer(quant, allocation)?;
         quant_sign.clear();
         Ok(Self {
+            width,
             height,
-            stride,
             level_len,
             level,
             quant_sign,
@@ -130,7 +134,7 @@ impl TransformCoeffBlockState {
 
     #[must_use]
     pub(crate) const fn width(&self) -> usize {
-        self.stride - LEVEL_GRID_PAD
+        self.width
     }
 
     #[must_use]
@@ -144,14 +148,35 @@ impl TransformCoeffBlockState {
         self.level.first_chunk().unwrap_or(&ZERO_LEVEL_GRID)
     }
 
+    /// The level grid with the quantised coefficients and their nonzero
+    /// end, for a pass that writes the coefficients directly.
+    #[inline]
+    pub(crate) fn level_and_quant_mut(&mut self) -> (&LevelGrid, &mut [i32], &mut usize) {
+        (
+            self.level.first_chunk().unwrap_or(&ZERO_LEVEL_GRID),
+            &mut self.quant,
+            &mut self.quant_end,
+        )
+    }
+
+    /// The level grid, for a pass that reads and writes it directly.
+    #[inline]
+    pub(crate) fn level_grid_mut(&mut self) -> Option<&mut LevelGrid> {
+        self.level.first_chunk_mut()
+    }
+
     pub(crate) fn level_mut(&mut self) -> &mut [u8] {
         &mut self.level
     }
 
     /// Row stride of the padded level and sign grids.
     #[must_use]
+    #[allow(
+        clippy::unused_self,
+        reason = "callers stay agnostic of the fixed stride"
+    )]
     pub(crate) const fn level_stride(&self) -> usize {
-        self.stride
+        LEVEL_STRIDE
     }
 
     /// Number of real (unpadded) coefficient positions in the block.
@@ -195,16 +220,6 @@ impl TransformCoeffBlockState {
         debug_assert!(u8::try_from(value).is_ok());
         self.level[idx] = value as u8;
         Ok(())
-    }
-
-    /// [`Self::set_level`] for a position a scan walk validated against
-    /// this block, so it is in range by construction.
-    #[inline]
-    pub(crate) fn set_walked_level(&mut self, row: usize, col: usize, value: u32) {
-        debug_assert!(row < self.height && col < self.width());
-        if let Some(grid) = self.level.first_chunk_mut::<LEVEL_GRID_LEN>() {
-            grid[(row * self.stride + col) & (LEVEL_GRID_LEN - 1)] = value as u8;
-        }
     }
 
     #[inline]
@@ -256,7 +271,7 @@ impl TransformCoeffBlockState {
                 width,
             });
         }
-        Ok(row * self.stride + col)
+        Ok(row * LEVEL_STRIDE + col)
     }
 
     #[inline]

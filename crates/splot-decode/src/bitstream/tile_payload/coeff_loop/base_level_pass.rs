@@ -9,8 +9,10 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::cdf::coeff_context::{CoeffBaseContext, CoeffBrContext, coeff_base_eob_ctx};
-use super::super::cdf::{CoeffBaseRow, CoeffCdfSelector, TileCdfSubset};
-use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
+use super::super::cdf::{CoeffBaseRow, CoeffCdfSelector, CoeffLevelRows, TileCdfSubset};
+use super::super::coeff_state::{
+    LEVEL_GRID_LEN, LEVEL_STRIDE, LevelGrid, TileCoeffStateError, TransformCoeffBlockState,
+};
 use super::NonZeroCoeffEob;
 use super::base_symbol::{CoeffBaseSymbolReadError, read_coeff_symbol};
 use super::branch::NonZeroCoeffBlockStart;
@@ -54,7 +56,8 @@ impl CoeffBaseFirstPassSummary {
         self.is_hidden
     }
 
-    #[inline]
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient update")]
+    #[inline(always)]
     pub(crate) fn update_after_level(
         &mut self,
         entry: CoeffScanEntry,
@@ -99,6 +102,11 @@ impl CoeffLevelMasks {
         let shift = scan_index & 63;
         self.nonzero[word] |= u64::from(level != 0) << shift;
         self.tcq_q0[word] |= (((tcq_state >> 1) & 1) as u64) << shift;
+    }
+
+    #[inline]
+    pub(crate) fn is_nonzero(&self, scan_index: usize) -> bool {
+        (self.nonzero[(scan_index >> 6) & (SCAN_MASK_WORDS - 1)] >> (scan_index & 63)) & 1 != 0
     }
 
     #[inline]
@@ -168,6 +176,8 @@ pub(crate) enum CoeffBaseDerivedLevelPassError {
     },
     #[error("coefficient base/level tx_width_log2 {tx_width_log2} does not match width {tx_width}")]
     TxWidthLog2Mismatch { tx_width_log2: u32, tx_width: usize },
+    #[error("coefficient base/level block has no level grid")]
+    LevelGridUnavailable,
     #[error("coefficient base/level config cannot enable parity hiding and TCQ together")]
     InconsistentParityAndTcq,
     #[error("coefficient base/level entry {entry:?} used invalid tcqState {tcq_state}")]
@@ -230,36 +240,41 @@ fn level_pass<const CLASS: usize, const LUMA: bool>(
     let mut first_pass = CoeffBaseFirstPassSummary::default();
     let mut masks = CoeffLevelMasks::default();
     let mut entries = walk.entries();
-    if let Some(entry) = entries.next() {
-        let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
-        let selector = base_eob_selector(entry, is_lf, config);
-        let level = u32::from(read_coeff_symbol(cdfs, symbols, selector)?) + 1;
-        finish_level(
-            cdfs,
-            symbols,
-            entry,
-            is_lf,
-            level,
-            &mut block,
-            &mut first_pass,
-            &mut masks,
-            config,
-        )?;
-    }
+    let Some(eob_entry) = entries.next() else {
+        return Ok(NonZeroCoeffBaseDerivedLevelPass {
+            first_pass,
+            masks,
+            block,
+        });
+    };
+    let eob_is_lf = coeff_is_low_frequency(eob_entry, config.plane, config.tx_class);
+    let selector = base_eob_selector(eob_entry, eob_is_lf, config);
+    let eob_level = u32::from(read_coeff_symbol(cdfs, symbols, selector)?) + 1;
+
+    let Some(grid) = block.level_grid_mut() else {
+        return Err(CoeffBaseDerivedLevelPassError::LevelGridUnavailable);
+    };
+    let mut rows = cdfs
+        .coeff_rows_mut()
+        .level_rows(config.tx_size_ctx)
+        .map_err(read_error)?;
+    let mut pass = LevelPassState {
+        grid,
+        first_pass: &mut first_pass,
+        masks: &mut masks,
+        config,
+    };
+    pass.finish_level(&mut rows, symbols, eob_entry, eob_is_lf, eob_level)?;
+    let dc = entries.next_back();
     for entry in entries {
         let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
-        let level = read_base_symbol(cdfs, symbols, entry, is_lf, &block, first_pass, config)?;
-        finish_level(
-            cdfs,
-            symbols,
-            entry,
-            is_lf,
-            level,
-            &mut block,
-            &mut first_pass,
-            &mut masks,
-            config,
-        )?;
+        let level = pass.read_base_symbol::<false>(&mut rows, symbols, entry, is_lf)?;
+        pass.finish_level(&mut rows, symbols, entry, is_lf, level)?;
+    }
+    if let Some(entry) = dc {
+        let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
+        let level = pass.read_base_symbol::<true>(&mut rows, symbols, entry, is_lf)?;
+        pass.finish_level(&mut rows, symbols, entry, is_lf, level)?;
     }
 
     Ok(NonZeroCoeffBaseDerivedLevelPass {
@@ -269,39 +284,105 @@ fn level_pass<const CLASS: usize, const LUMA: bool>(
     })
 }
 
-/// Adds the base-range symbol when the base symbol saturates, then records
-/// the level.
-#[allow(clippy::too_many_arguments)]
-#[allow(
-    clippy::inline_always,
-    reason = "measured: keeps the typed symbol reads inside the level loop"
-)]
-#[inline(always)]
-fn finish_level(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    entry: CoeffScanEntry,
-    is_lf: bool,
-    mut level: u32,
-    block: &mut TransformCoeffBlockState,
-    first_pass: &mut CoeffBaseFirstPassSummary,
-    masks: &mut CoeffLevelMasks,
+/// What the level loop reads and writes besides the CDF rows and the
+/// symbol decoder.
+struct LevelPassState<'a> {
+    grid: &'a mut LevelGrid,
+    first_pass: &'a mut CoeffBaseFirstPassSummary,
+    masks: &'a mut CoeffLevelMasks,
     config: CoeffBaseDerivedLevelPassConfig,
-) -> Result<(), CoeffBaseDerivedLevelPassError> {
-    if level != 0 {
-        let base_levels = if is_lf {
-            LF_NUM_BASE_LEVELS
-        } else {
-            NUM_BASE_LEVELS
-        };
-        if level > base_levels && !(is_lf && config.plane > 0) {
-            level += read_br_symbol(cdfs, symbols, entry, is_lf, block, config)?;
+}
+
+impl LevelPassState<'_> {
+    /// Reads the base symbol of a non-EOB coefficient; `DC` is whether it
+    /// is scan index 0, the only one whose context the hidden parity
+    /// changes.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: keeps the typed symbol reads inside the level loop"
+    )]
+    #[inline(always)]
+    fn read_base_symbol<const DC: bool>(
+        &self,
+        rows: &mut CoeffLevelRows<'_>,
+        symbols: &mut SymbolDecoder<'_>,
+        entry: CoeffScanEntry,
+        is_lf: bool,
+    ) -> Result<u32, CoeffBaseDerivedLevelPassError> {
+        let selection = CoeffBaseContext {
+            row: entry.row(),
+            col: entry.col(),
+            stride: LEVEL_STRIDE,
+            plane: self.config.plane,
+            is_lf,
+            is_hidden: DC && self.first_pass.is_hidden,
+            c: usize::from(!DC),
+            tx_class: tx_class_index(self.config.tx_class),
         }
-        masks.record(entry.scan_index(), level, first_pass.tcq_state);
-        block.set_walked_level(entry.row(), entry.col(), level);
+        .select(self.grid);
+        let tcq_ctx = (self.first_pass.tcq_state >> 1) & 1;
+        let symbol = match rows
+            .reborrow()
+            .base_row(selection, tcq_ctx)
+            .map_err(read_error)?
+        {
+            CoeffBaseRow::Base(row) => symbols.read_symbol_u16_array(row),
+            CoeffBaseRow::Lf(row) => symbols.read_symbol_u16_array(row),
+        }
+        .map_err(read_error)?;
+        Ok(u32::from(symbol.get()))
     }
-    first_pass.update_after_level(entry, level, config)?;
-    Ok(())
+
+    /// Adds the base-range symbol when the base symbol saturates, then
+    /// records the level.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: keeps the typed symbol reads inside the level loop"
+    )]
+    #[inline(always)]
+    fn finish_level(
+        &mut self,
+        rows: &mut CoeffLevelRows<'_>,
+        symbols: &mut SymbolDecoder<'_>,
+        entry: CoeffScanEntry,
+        is_lf: bool,
+        mut level: u32,
+    ) -> Result<(), CoeffBaseDerivedLevelPassError> {
+        let config = self.config;
+        if level != 0 {
+            let base_levels = if is_lf {
+                LF_NUM_BASE_LEVELS
+            } else {
+                NUM_BASE_LEVELS
+            };
+            if level > base_levels && !(is_lf && config.plane > 0) {
+                let ctx = CoeffBrContext {
+                    row: entry.row(),
+                    col: entry.col(),
+                    stride: LEVEL_STRIDE,
+                    plane: config.plane,
+                    is_lf,
+                    tx_class: tx_class_index(config.tx_class),
+                }
+                .ctx(self.grid);
+                let row = rows
+                    .reborrow()
+                    .br_row(config.plane, is_lf, ctx)
+                    .map_err(read_error)?;
+                level += u32::from(
+                    symbols
+                        .read_symbol_u16_array(row)
+                        .map_err(read_error)?
+                        .get(),
+                );
+            }
+            self.masks
+                .record(entry.scan_index(), level, self.first_pass.tcq_state);
+            let index = entry.row() * LEVEL_STRIDE + entry.col();
+            self.grid[index & (LEVEL_GRID_LEN - 1)] = level as u8;
+        }
+        self.first_pass.update_after_level(entry, level, config)
+    }
 }
 
 fn preflight_pass(
@@ -366,75 +447,6 @@ fn base_eob_selector(
             ctx,
         }
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-#[allow(
-    clippy::inline_always,
-    reason = "measured: keeps the typed symbol reads inside the level loop"
-)]
-#[inline(always)]
-fn read_base_symbol(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    entry: CoeffScanEntry,
-    is_lf: bool,
-    block: &TransformCoeffBlockState,
-    first_pass: CoeffBaseFirstPassSummary,
-    config: CoeffBaseDerivedLevelPassConfig,
-) -> Result<u32, CoeffBaseDerivedLevelPassError> {
-    let selection = CoeffBaseContext {
-        row: entry.row(),
-        col: entry.col(),
-        stride: block.level_stride(),
-        plane: config.plane,
-        is_lf,
-        is_hidden: first_pass.is_hidden,
-        c: entry.scan_index(),
-        tx_class: tx_class_index(config.tx_class),
-    }
-    .select(block.level());
-    let tcq_ctx = (first_pass.tcq_state >> 1) & 1;
-    let row = cdfs
-        .coeff_rows_mut()
-        .base_row(selection, config.tx_size_ctx, tcq_ctx)
-        .map_err(read_error)?;
-    let symbol = match row {
-        CoeffBaseRow::Base(row) => symbols.read_symbol_u16_array(row),
-        CoeffBaseRow::Lf(row) => symbols.read_symbol_u16_array(row),
-    }
-    .map_err(read_error)?;
-    Ok(u32::from(symbol.get()))
-}
-
-#[allow(
-    clippy::inline_always,
-    reason = "measured: keeps the typed symbol reads inside the level loop"
-)]
-#[inline(always)]
-fn read_br_symbol(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    entry: CoeffScanEntry,
-    is_lf: bool,
-    block: &TransformCoeffBlockState,
-    config: CoeffBaseDerivedLevelPassConfig,
-) -> Result<u32, CoeffBaseDerivedLevelPassError> {
-    let ctx = CoeffBrContext {
-        row: entry.row(),
-        col: entry.col(),
-        stride: block.level_stride(),
-        plane: config.plane,
-        is_lf,
-        tx_class: tx_class_index(config.tx_class),
-    }
-    .ctx(block.level());
-    let row = cdfs
-        .coeff_rows_mut()
-        .br_row(config.plane, is_lf, ctx)
-        .map_err(read_error)?;
-    let symbol = symbols.read_symbol_u16_array(row).map_err(read_error)?;
-    Ok(u32::from(symbol.get()))
 }
 
 fn read_error(error: impl Into<BlockSymbolTraceReadError>) -> CoeffBaseDerivedLevelPassError {

@@ -14,11 +14,13 @@
 //! window with clamped columns gathers them with a byte shuffle; both are the
 //! spec read.
 
+mod bytes4;
 mod bytes8;
 
 use super::*;
+use bytes4::Bytes4;
 use bytes8::Bytes8;
-use std::simd::{ToBytes, simd_swizzle};
+use std::simd::{Mask, Select, ToBytes, cmp::SimdPartialOrd, simd_swizzle};
 
 type Row = Simd<i32, 4>;
 type Taps = Simd<i16, 4>;
@@ -53,8 +55,8 @@ struct Cell<'a, T> {
     last_y: i32,
     /// Whether no source row `y0 - 1 ..= y0 + 5` is clamped.
     unclamped: bool,
-    /// The [`clamped_window`] shuffle when a window column is clamped.
-    gather: Option<Simd<u8, 16>>,
+    /// The clamped columns when a window column is clamped.
+    clamp: Option<Clamp>,
     h_taps: Taps,
     v_taps: Taps,
     horizontal: bool,
@@ -75,43 +77,80 @@ fn horizontal_taps<T: ReconSample>(taps: Taps) -> Taps {
 
 const LANE_INDEX: [i32; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 
-/// Returns the first plane column of a window whose columns from `first` on
-/// are clamped to `[firstX, lastX]`, and, for each byte of the window's `u16`
-/// lanes, the byte of the samples loaded from that column that it copies.
-#[allow(clippy::inline_always, reason = "measured subpel hot path")]
-#[inline(always)]
-fn clamped_window(first: i32, params: &SubpelPredictParams) -> (usize, [Simd<u8, 16>; 2]) {
-    let columns = (Simd::splat(first) + Simd::from_array(LANE_INDEX))
-        .simd_max(Simd::splat(params.first_x))
-        .simd_min(Simd::splat(params.last_x));
-    let bytes = ((columns - Simd::splat(columns[0])) * Simd::splat(2)).cast::<u8>();
-    let (low, high) = bytes.interleave(bytes + Simd::splat(1));
-    (columns[0] as usize, [low, high])
+/// A window whose columns `first + i` are clamped to `[left, right]`.
+///
+/// A window that starts inside its row and does not lie wholly right of
+/// `right` loads from `first` and replaces each lane past a bound with that
+/// bound's sample; other windows read lane by lane. Both are the `Clip3`
+/// read.
+#[derive(Clone, Copy)]
+struct Clamp {
+    first: i32,
+    left: i32,
+    right: i32,
 }
 
-#[allow(clippy::inline_always, reason = "measured subpel hot path")]
-#[inline(always)]
-fn gather8(lanes: Simd<u16, 8>, index: Simd<u8, 16>) -> Simd<u16, 8> {
-    Simd::from_ne_bytes(lanes.to_ne_bytes().swizzle_dyn(index))
-}
-
-/// The 16-lane [`gather8`]. A byte index past one 16-byte half selects zero
-/// from it, so the two half lookups combine with an OR.
-#[allow(clippy::inline_always, reason = "measured subpel hot path")]
-#[inline(always)]
-fn gather16(lanes: Simd<u16, 16>, index: [Simd<u8, 16>; 2]) -> Simd<u16, 16> {
-    let bytes = lanes.to_ne_bytes();
-    let low: Simd<u8, 16> = Simd::from_slice(&bytes.as_array()[..16]);
-    let high: Simd<u8, 16> = Simd::from_slice(&bytes.as_array()[16..]);
-    let half = |index| low.swizzle_dyn(index) | high.swizzle_dyn(index - Simd::splat(16));
-    let (first, second) = (half(index[0]), half(index[1]));
-    Simd::from_ne_bytes(Simd::from_array(core::array::from_fn(|byte| {
-        if byte < 16 {
-            first[byte]
-        } else {
-            second[byte - 16]
+impl Clamp {
+    fn new(first: i32, params: &SubpelPredictParams) -> Self {
+        Self {
+            first,
+            left: params.first_x,
+            right: params.last_x,
         }
-    })))
+    }
+
+    /// Lanes `before` and `after` the bounds.
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    fn masks<const N: usize>(&self) -> (Mask<i8, N>, Mask<i8, N>) {
+        let columns = Simd::splat(self.first) + Simd::from_slice(&LANE_INDEX[..N]);
+        (
+            columns.simd_lt(Simd::splat(self.left)).cast(),
+            columns.simd_gt(Simd::splat(self.right)).cast(),
+        )
+    }
+
+    /// The window of `row`, a slice from the start of a source row.
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    fn lanes<const N: usize, T: ReconSample>(&self, row: &[T]) -> Option<Simd<u16, N>> {
+        if self.first >= 0 && self.right >= self.first {
+            let first = self.first as usize;
+            let lanes = reference_lanes::<N, T>(row.get(first..first + N)?, 0);
+            let left = row.get(self.left.max(0) as usize)?.to_u16();
+            let right = row.get(self.right as usize)?.to_u16();
+            let (before, after) = self.masks::<N>();
+            return Some(after.cast::<i16>().select(
+                Simd::splat(right),
+                before.cast::<i16>().select(Simd::splat(left), lanes),
+            ));
+        }
+        let mut lanes = [0; N];
+        for (lane, column) in lanes.iter_mut().zip(self.first..) {
+            *lane = row
+                .get(column.max(self.left).min(self.right) as usize)?
+                .to_u16();
+        }
+        Some(Simd::from_array(lanes))
+    }
+
+    /// [`Self::lanes`] of an 8-bit row.
+    #[allow(clippy::inline_always, reason = "measured subpel hot path")]
+    #[inline(always)]
+    fn bytes<const N: usize>(&self, row: &[u8]) -> Option<Simd<u8, N>> {
+        if self.first >= 0 && self.right >= self.first {
+            let lanes = Simd::from_array(*row.get(self.first as usize..)?.first_chunk::<N>()?);
+            let left = *row.get(self.left.max(0) as usize)?;
+            let right = *row.get(self.right as usize)?;
+            let (before, after) = self.masks::<N>();
+            return Some(after.select(Simd::splat(right), before.select(Simd::splat(left), lanes)));
+        }
+        let mut lanes = [0; N];
+        for (lane, column) in lanes.iter_mut().zip(self.first..) {
+            *lane = *row.get(column.max(self.left).min(self.right) as usize)?;
+        }
+        Some(Simd::from_array(lanes))
+    }
 }
 
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
@@ -181,7 +220,14 @@ impl<T: ReconSample> Cell<'_, T> {
     #[inline(always)]
     fn lanes<const FIRST: usize, const N: usize>(&self) -> Option<[Simd<u16, 8>; N]> {
         let mut lanes = [Simd::splat(0); N];
-        if self.unclamped && self.stride >= 8 {
+        if let Some(clamp) = self.clamp {
+            for (row, lane) in lanes.iter_mut().enumerate() {
+                let y = (self.top + (FIRST + row) as i32)
+                    .max(self.first_y)
+                    .min(self.last_y) as usize;
+                *lane = clamp.lanes::<8, T>(self.samples.get(y * self.stride..)?)?;
+            }
+        } else if self.unclamped && self.stride >= 8 {
             let start = (self.top as usize + FIRST) * self.stride + self.column;
             let mut rest = self.samples.get(start..)?;
             for (row, lane) in lanes.iter_mut().enumerate() {
@@ -202,11 +248,6 @@ impl<T: ReconSample> Cell<'_, T> {
                 *lane = reference_lanes::<8, T>(self.samples.get(offset..offset + 8)?, 0);
             }
         }
-        if let Some(index) = self.gather {
-            for lane in &mut lanes {
-                *lane = gather8(*lane, index);
-            }
-        }
         Some(lanes)
     }
 }
@@ -223,15 +264,11 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell<'a, T> {
         let (tap_start, tap_end) = ACTIVE_TAP_SPANS[filter][h_phase];
         let x0 = params.start_x >> SCALE_SUBPEL_BITS;
         let first = x0 - i32::from(h_phase != 0);
-        let (column, gather) = if first >= 0
-            && x0 + tap_start as i32 - 3 >= params.first_x
-            && x0 + tap_end as i32 - 1 <= params.last_x
-        {
-            (first as usize, None)
-        } else {
-            let (column, index) = clamped_window(first, params);
-            (column, Some(index[0]))
-        };
+        let clamp = (first < 0
+            || x0 + tap_start as i32 - 3 < params.first_x
+            || x0 + tap_end as i32 - 1 > params.last_x)
+            .then(|| Clamp::new(first, params));
+        let column = first.max(0) as usize;
         let top = (params.start_y >> SCALE_SUBPEL_BITS) - 1;
         Some(Cell {
             samples: reference.samples,
@@ -241,7 +278,7 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell<'a, T> {
             first_y: params.first_y,
             last_y: params.last_y,
             unclamped: top >= params.first_y && top + 6 <= params.last_y,
-            gather,
+            clamp,
             h_taps: horizontal_taps::<T>(Simd::from_array(SMALL_TAPS[filter][h_phase])),
             v_taps: Simd::from_array(SMALL_TAPS[filter][v_phase]),
             horizontal: h_phase != 0,
@@ -400,15 +437,15 @@ struct Cell8<'a, T> {
     samples: &'a [T],
     stride: usize,
     column: usize,
-    /// The [`clamped_window`] shuffle when a window column is clamped.
-    gather: Option<[Simd<u8, 16>; 2]>,
+    /// The clamped columns when a window column is clamped.
+    clamp: Option<Clamp>,
     top: i32,
     /// The offset of row `top` when no row the cell reads is clamped.
     unclamped: Option<usize>,
     first_y: i32,
     last_y: i32,
     h_taps: Simd<i16, NUM_TAPS>,
-    /// `h_taps` packed for the gathered `u16` lanes.
+    /// `h_taps` packed for the clamped `u16` lanes.
     gather_taps: Simd<i16, NUM_TAPS>,
     v_pairs: [Simd<i16, 16>; NUM_TAPS / 2],
     v_count: usize,
@@ -419,6 +456,10 @@ struct Cell8<'a, T> {
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
 fn window8<'a, T>(cell: &Cell8<'a, T>, row: usize, len: usize) -> Option<&'a [T]> {
+    if cell.clamp.is_some() {
+        let y = (cell.top + row as i32).max(cell.first_y).min(cell.last_y) as usize;
+        return cell.samples.get(y * cell.stride..);
+    }
     let offset = cell.unclamped.map_or_else(
         || {
             let y = (cell.top + row as i32).max(cell.first_y).min(cell.last_y) as usize;
@@ -461,25 +502,30 @@ fn eight_bit_row(bytes: Simd<u8, 16>, taps: Simd<i16, NUM_TAPS>) -> Line8 {
     half >> (INTER_ROUND0 - 1) as i16
 }
 
-/// A source row of the cell from its window: the horizontal-pass intermediate
-/// when `HORIZONTAL`, else the samples themselves.
+/// A source row of the cell from its window, which starts at the row when a
+/// column is clamped: the horizontal-pass intermediate when `HORIZONTAL`, else
+/// the samples themselves.
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
-fn line8<T: ReconSample, const HORIZONTAL: bool>(cell: &Cell8<'_, T>, window: &[T]) -> Line8 {
+fn line8<T: ReconSample, const HORIZONTAL: bool>(
+    cell: &Cell8<'_, T>,
+    window: &[T],
+) -> Option<Line8> {
     if HORIZONTAL {
-        let Some(index) = cell.gather else {
+        let Some(clamp) = cell.clamp else {
             if let Some(bytes) = T::u8_slice(window) {
-                return eight_bit_row(Simd::from_slice(bytes), cell.h_taps);
+                return Some(eight_bit_row(Simd::from_slice(bytes), cell.h_taps));
             }
-            return Row8::slid_intermediate(window, 0, cell.h_taps);
+            return Some(Row8::slid_intermediate(window, 0, cell.h_taps));
         };
-        let lanes = gather16(reference_lanes::<16, T>(window, 0), index).to_array();
-        return Row8::slid_intermediate(&lanes[..], 0, cell.gather_taps);
+        let lanes = clamp.lanes::<16, T>(window)?.to_array();
+        return Some(Row8::slid_intermediate(&lanes[..], 0, cell.gather_taps));
     }
-    let lanes = reference_lanes::<8, T>(window, 0);
-    cell.gather
-        .map_or(lanes, |index| gather8(lanes, index[0]))
-        .cast()
+    let lanes = match cell.clamp {
+        Some(clamp) => clamp.lanes::<8, T>(window)?,
+        None => reference_lanes::<8, T>(window, 0),
+    };
+    Some(lanes.cast())
 }
 
 /// Fills `lines` with `line` of source rows `0..lines.len()`. Unclamped rows
@@ -494,6 +540,7 @@ fn fill8<T: ReconSample, L, const HORIZONTAL: bool>(
 ) -> Option<()> {
     let len = if HORIZONTAL { 2 * NUM_TAPS } else { 8 };
     if let Some(top) = cell.unclamped
+        && cell.clamp.is_none()
         && cell.stride >= len
         && let Some(block) = lines
             .len()
@@ -501,12 +548,12 @@ fn fill8<T: ReconSample, L, const HORIZONTAL: bool>(
             .and_then(|size| cell.samples.get(top..)?.get(..size))
     {
         for (slot, row) in lines.iter_mut().zip(block.chunks_exact(cell.stride)) {
-            *slot = line(line8::<T, HORIZONTAL>(cell, &row[..len]));
+            *slot = line(line8::<T, HORIZONTAL>(cell, &row[..len])?);
         }
         return Some(());
     }
     for (row, slot) in lines.iter_mut().enumerate() {
-        *slot = line(line8::<T, HORIZONTAL>(cell, window8(cell, row, len)?));
+        *slot = line(line8::<T, HORIZONTAL>(cell, window8(cell, row, len)?)?);
     }
     Some(())
 }
@@ -560,15 +607,11 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
         let (tap_start, tap_end) = ACTIVE_TAP_SPANS[filter][h_phase];
         let x0 = params.start_x >> SCALE_SUBPEL_BITS;
         let first = x0 - if h_phase != 0 { 3 } else { 0 };
-        let (column, gather) = if first >= 0
-            && x0 + tap_start as i32 - 3 >= params.first_x
-            && x0 + tap_end as i32 + 3 <= params.last_x
-        {
-            (first as usize, None)
-        } else {
-            let (column, index) = clamped_window(first, params);
-            (column, Some(index))
-        };
+        let clamp = (first < 0
+            || x0 + tap_start as i32 - 3 < params.first_x
+            || x0 + tap_end as i32 + 3 > params.last_x)
+            .then(|| Clamp::new(first, params));
+        let column = first.max(0) as usize;
         let (v_start, v_count) = even_tap_span(filter, v_phase);
         let top = (params.start_y >> SCALE_SUBPEL_BITS) - 3 + v_start as i32;
         let unclamped = (top >= params.first_y && top + 6 + NUM_TAPS as i32 <= params.last_y)
@@ -577,7 +620,7 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Cell8<'a, T> {
             samples: reference.samples,
             stride: reference.stride,
             column,
-            gather,
+            clamp,
             top,
             unclamped,
             first_y: params.first_y,
@@ -664,6 +707,9 @@ pub(super) fn predict<T: ReconSample, O: ReconSample>(
     }
     let references = [(reference0, params0), (reference1, params1)];
     match (params0.w, params0.h) {
+        (4, 4) if T::u8_slice(reference0.samples).is_some() => {
+            fused::<T, O, Bytes4<'_, T>>(references, cwp_weight, output, output_stride, second)
+        }
         (4, 4) => fused::<T, O, Cell<'_, T>>(references, cwp_weight, output, output_stride, second),
         (8, 8) if T::u8_slice(reference0.samples).is_some() => {
             fused::<T, O, Bytes8<'_, T>>(references, cwp_weight, output, output_stride, second)

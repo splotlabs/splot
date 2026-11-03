@@ -90,7 +90,8 @@ impl GeneralIntraResidualPlan {
         let mut plan = Self::take(MAX_RESIDUAL_PLANES)
             .map_err(|_| ResidualPlanError::Allocation { plane: PlaneId::U })?;
         let chroma_block = block_ctx.plane_block(PlaneId::U);
-        let chroma = chroma_plans(
+        push_chroma_plans(
+            &mut plan.planes,
             block_ctx,
             reconstruction,
             chroma_block.width4(),
@@ -98,11 +99,11 @@ impl GeneralIntraResidualPlan {
             false,
             false,
         )?;
-        plan.planes.extend(if lossless_luma_fsc {
-            chroma.map(|plane| plane.with_reconstruction_tx_type(IDTX))
-        } else {
-            chroma
-        });
+        if lossless_luma_fsc {
+            for plane in &mut plan.planes {
+                plane.reconstruction_tx_type = Some(IDTX);
+            }
+        }
         Ok(plan)
     }
 
@@ -159,7 +160,8 @@ fn chroma_reconstruction(plan: RectChromaPlan) -> ResidualReconstructionPlan {
 
 impl ResidualPlanePlan {
     #[allow(clippy::too_many_arguments)]
-    fn new(
+    fn push(
+        planes: &mut Vec<Self>,
         block_ctx: BlockCtx,
         plane_id: PlaneId,
         reconstruction: ResidualReconstructionPlan,
@@ -168,17 +170,20 @@ impl ResidualPlanePlan {
         fsc_mode: bool,
         txb_skip_fsc_mode: bool,
         tx_size_override: Option<usize>,
-    ) -> core::result::Result<Self, ResidualPlanError> {
+        defer_reconstruction: bool,
+    ) -> core::result::Result<(), ResidualPlanError> {
         let block = block_ctx.plane_block(plane_id);
         let tx = block.tx();
-        Ok(Self {
+        let tx_size = match tx_size_override {
+            Some(tx_size) => tx_size,
+            None => tx_size_index(tx.width_log2(), tx.height_log2())
+                .map_err(|_| ResidualPlanError::InvalidGeometry)?,
+        };
+        planes.push(Self {
             plane_id,
             block_ctx,
             coeff_plane: coeff_plane(plane_id),
-            tx_size: tx_size_override.unwrap_or(
-                tx_size_index(tx.width_log2(), tx.height_log2())
-                    .map_err(|_| ResidualPlanError::InvalidGeometry)?,
-            ),
+            tx_size,
             x: block.x(),
             y: block.y(),
             tx,
@@ -187,24 +192,11 @@ impl ResidualPlanePlan {
             fsc_mode,
             txb_skip_fsc_mode,
             zero_corners: false,
-            defer_reconstruction: false,
+            defer_reconstruction,
             reconstruction_tx_type: None,
             reconstruction,
-        })
-    }
-
-    pub(super) const fn with_deferred_reconstruction(self) -> Self {
-        Self {
-            defer_reconstruction: true,
-            ..self
-        }
-    }
-
-    const fn with_reconstruction_tx_type(self, plane_tx_type: usize) -> Self {
-        Self {
-            reconstruction_tx_type: Some(plane_tx_type),
-            ..self
-        }
+        });
+        Ok(())
     }
 }
 
@@ -242,7 +234,8 @@ fn push_ordered_planes(
                     }
                     let chunk_luma_reconstruction =
                         luma_reconstruction.for_luma_transform_row(chunk_y == 0);
-                    planes.push(ResidualPlanePlan::new(
+                    ResidualPlanePlan::push(
+                        planes,
                         residual_chunk_ctx(block_ctx, chunk_x, chunk_y, 1, 1)?,
                         PlaneId::Y,
                         chunk_luma_reconstruction,
@@ -251,7 +244,8 @@ fn push_ordered_planes(
                         luma_fsc_mode,
                         luma_fsc_mode,
                         luma_lossless_tx_size,
-                    )?);
+                        false,
+                    )?;
                     if let Some(reconstruction) = chroma_reconstruction
                         && (!double_chroma_w || chunk_x.is_multiple_of(2))
                         && (!double_chroma_h || chunk_y.is_multiple_of(2))
@@ -265,14 +259,15 @@ fn push_ordered_planes(
                             chunk_width,
                             chunk_height,
                         )?;
-                        planes.extend(chroma_plans(
+                        push_chroma_plans(
+                            planes,
                             chroma_ctx,
                             reconstruction,
                             chroma_block.width4(),
                             chroma_block.height4(),
                             luma_fsc_mode,
                             defer_chroma_reconstruction,
-                        )?);
+                        )?;
                     }
                 }
             }
@@ -351,16 +346,18 @@ fn residual_chunk_geometry(
     Ok((BlockRect::new(row4, col4, width4, height4), tx))
 }
 
-fn chroma_plans(
+fn push_chroma_plans(
+    planes: &mut Vec<ResidualPlanePlan>,
     block_ctx: BlockCtx,
     reconstruction: ResidualReconstructionPlan,
     residual_width4: usize,
     residual_height4: usize,
     txb_skip_fsc_mode: bool,
     defer_reconstruction: bool,
-) -> core::result::Result<[ResidualPlanePlan; 2], ResidualPlanError> {
-    let [u, v] = CHROMA_PLANES.map(|plane_id| {
-        let plan = ResidualPlanePlan::new(
+) -> core::result::Result<(), ResidualPlanError> {
+    for plane_id in CHROMA_PLANES {
+        ResidualPlanePlan::push(
+            planes,
             block_ctx,
             plane_id,
             reconstruction,
@@ -369,14 +366,10 @@ fn chroma_plans(
             false,
             txb_skip_fsc_mode,
             None,
+            defer_reconstruction,
         )?;
-        Ok(if defer_reconstruction {
-            plan.with_deferred_reconstruction()
-        } else {
-            plan
-        })
-    });
-    Ok([u?, v?])
+    }
+    Ok(())
 }
 
 pub(super) const fn coeff_plane(plane_id: PlaneId) -> usize {

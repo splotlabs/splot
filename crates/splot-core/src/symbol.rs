@@ -9,8 +9,8 @@
 //! before § 8.3 syntax-element CDF selection, tile CDF bank ownership,
 //! `decode_tile()`, reconstruction, and encoder range writing.
 
-use core::simd::cmp::{SimdOrd, SimdPartialOrd};
-use core::simd::num::SimdUint;
+use core::simd::cmp::SimdPartialOrd;
+use core::simd::num::{SimdInt, SimdUint};
 use core::simd::simd_swizzle;
 use core::simd::{Select, Simd};
 
@@ -47,8 +47,9 @@ pub(crate) trait CdfStorage: Copy {
     }
     fn from_i32(value: i32) -> Self;
 
-    /// The `N - 1` probability entries of a row, capped at `CDF_PROB_SCALE`,
-    /// with `CDF_PROB_SCALE` in the lanes past them.
+    /// The `N - 1` probability entries of a row, with at least
+    /// `CDF_PROB_SCALE` in the lanes past them; [`multi_symbol_search`]
+    /// caps every lane at `CDF_PROB_SCALE`.
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn probability_lanes<const N: usize>(cdf: &[Self]) -> Simd<u16, 8> {
@@ -105,10 +106,7 @@ impl CdfStorage for u16 {
             Simd::splat(0)
         };
         let raw: Simd<u16, 8> = simd_swizzle!(lo, hi, [0, 1, 2, 3, 4, 5, 6, 7]);
-        let scale = Simd::splat(CDF_PROB_SCALE as u16);
-        make_base_indices::<8>()
-            .simd_lt(Simd::splat(N as u16 - 1))
-            .select(raw.simd_min(scale), scale)
+        raw | const { past_row_lanes::<N>() }
     }
 
     /// Adapts whole rows in vector lanes; `n` is a constant at every inlined
@@ -207,12 +205,23 @@ fn adapt_probability_lanes<const L: usize>(
         .copy_to_slice(lanes);
 }
 
-/// `Prob_Inc` of an `N`-ary row in vector lanes.
+/// `CDF_PROB_SCALE` in the lanes past the `N - 1` probabilities of a row.
+const fn past_row_lanes<const N: usize>() -> Simd<u16, 8> {
+    let mut lanes = [0u16; 8];
+    let mut i = N - 1;
+    while i < 8 {
+        lanes[i] = CDF_PROB_SCALE as u16;
+        i += 1;
+    }
+    Simd::from_array(lanes)
+}
+
+/// `Prob_Inc << 2` of an `N`-ary row in vector lanes.
 const fn prob_inc_lanes<const N: usize>() -> Simd<u16, 8> {
     let mut lanes = [0u16; 8];
     let mut i = 0;
     while i < 8 {
-        lanes[i] = PROB_INC_U32[N - 2][i] as u16;
+        lanes[i] = (PROB_INC_U32[N - 2][i] << 2) as u16;
         i += 1;
     }
     Simd::from_array(lanes)
@@ -222,10 +231,9 @@ const fn prob_inc_lanes<const N: usize>() -> Simd<u16, 8> {
 /// non-decreasing rows the boundaries are non-increasing, so the number of
 /// boundaries above `symbol_value` is the symbol the sequential search
 /// stops at; lanes past the row hold a boundary of 0 and never count.
-/// With `a = r * (f >> 7)` and `b = r * inc` (`r = range >> 8`), both of
-/// which fit 16 bits, `(r * pp) >> 7 = (16a + b) >> 7` is
-/// `(a >> 3) + ((16 (a & 7) + b) >> 7)`, so every lane stays in 16 bits;
-/// below 2^13 it compares signed against `symbol_value >> 3`.
+/// `(r * pp) >> 7` (`r = range >> 8`) is the signed high half of
+/// `(r << 7) * (pp << 2)`, whose factors fit 15 bits; the result is below
+/// 2^13, so it compares signed against `symbol_value >> 3`.
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
 fn multi_symbol_search<const N: usize>(
@@ -233,15 +241,13 @@ fn multi_symbol_search<const N: usize>(
     symbol_value: u32,
     range: u32,
 ) -> (usize, u32, u32) {
-    let f = Simd::splat(CDF_PROB_SCALE as u16) - probabilities;
-    let range8 = Simd::splat((range >> 8) as u16);
-    let a = range8 * (f >> EC_PROB_SHIFT as u16);
-    let b = range8 * const { prob_inc_lanes::<N>() };
-    let scaled = (a >> 3) + ((((a & Simd::splat(7)) << 4) + b) >> 7);
-    let boundaries = scaled << 3;
-    let above = scaled
-        .cast::<i16>()
-        .simd_gt(Simd::splat((symbol_value >> 3) as i16));
+    let f = Simd::splat(CDF_PROB_SCALE as u16).saturating_sub(probabilities);
+    let pp4 = ((f >> EC_PROB_SHIFT as u16) << 6) + const { prob_inc_lanes::<N>() };
+    let range7 = (Simd::splat(range as u16) >> 1) & Simd::splat(0x7f80);
+    let product = range7.cast::<i16>().cast::<i32>() * pp4.cast::<i16>().cast::<i32>();
+    let scaled = (product >> 16).cast::<i16>();
+    let boundaries = scaled.cast::<u16>() << 3;
+    let above = scaled.simd_gt(Simd::splat((symbol_value >> 3) as i16));
     let symbol = (above.to_bitmask().count_ones() as usize).min(N - 1);
     let cur = above.select(Simd::splat(0), boundaries).reduce_max();
     let prev = above
@@ -708,10 +714,22 @@ impl<'a> SymbolDecoder<'a> {
         &mut self,
         cdf: &mut [T],
     ) -> Result<Symbol> {
-        let shape = CdfShape {
-            n: N,
-            ..self.validate_cdf(cdf)?
+        if self.config.cdf_validation == CdfValidationMode::Validated {
+            validate_cdf_shape(cdf).map_err(|kind| self.cdf_error(kind))?;
+        }
+        let rate_index = cdf[N - 1].to_i32();
+        let Some(rate) = usize::try_from(rate_index)
+            .ok()
+            .and_then(|index| PARA_ADJUSTMENT_LIST.get(index))
+        else {
+            return Err(
+                self.cdf_error(SymbolCdfErrorKind::AdaptationRateOutOfRange {
+                    index: N - 1,
+                    value: rate_index,
+                }),
+            );
         };
+        let count = cdf[N].to_i32();
         self.ensure_buffered(15);
         let symbol_value = (self.dif >> SV_SHIFT) as u32;
         let range8 = self.symbol_range >> 8;
@@ -742,7 +760,7 @@ impl<'a> SymbolDecoder<'a> {
         self.frame_symbol_count = self.frame_symbol_count.wrapping_add(1);
 
         if self.config.cdf_update == CdfUpdateMode::Enabled {
-            update_cdf_arity::<T>(cdf, shape, N, symbol);
+            update_cdf_with_rates::<T>(cdf, rate, count, N, symbol);
         }
 
         Ok(Symbol::new(symbol as u8))
@@ -833,16 +851,6 @@ impl<'a> SymbolDecoder<'a> {
     /// Returns the same errors as [`Self::exit_symbol`].
     pub fn finish(self) -> Result<SymbolDecoderSummary> {
         self.exit_symbol()
-    }
-
-    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
-    #[inline(always)]
-    fn validate_cdf<T: CdfStorage>(&self, cdf: &[T]) -> Result<CdfShape> {
-        match self.config.cdf_validation {
-            CdfValidationMode::Validated => validate_cdf_shape(cdf),
-            CdfValidationMode::Trusted => trusted_cdf_shape(cdf),
-        }
-        .map_err(|kind| self.cdf_error(kind))
     }
 
     #[inline]
@@ -1069,19 +1077,37 @@ pub(crate) fn update_cdf_arity<T: CdfStorage>(
     n: usize,
     symbol: usize,
 ) {
-    let time_interval = if shape.count > 31 {
+    update_cdf_with_rates(
+        cdf,
+        &PARA_ADJUSTMENT_LIST[shape.rate_index],
+        shape.count,
+        n,
+        symbol,
+    );
+}
+
+/// [`update_cdf_arity`] with the row's `Para_Adjustment_List` entry and
+/// use count already read.
+#[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+#[inline(always)]
+fn update_cdf_with_rates<T: CdfStorage>(
+    cdf: &mut [T],
+    rates: &[i32; 3],
+    count: i32,
+    n: usize,
+    symbol: usize,
+) {
+    let time_interval = if count > 31 {
         2usize
     } else {
-        usize::from(shape.count > 15)
+        usize::from(count > 15)
     };
     let n_term = match n {
         2 | 3 => 1,
         _ => 2,
     };
-    let rate =
-        3 + time_interval as i32 + n_term + PARA_ADJUSTMENT_LIST[shape.rate_index][time_interval];
+    let rate = 3 + time_interval as i32 + n_term + rates[time_interval];
     T::adapt_probabilities(cdf, n, rate as u32, symbol);
-    let count = cdf[n].to_i32();
     if count < MAX_CDF_COUNT {
         cdf[n] = T::from_i32(count + 1);
     }

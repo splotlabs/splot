@@ -7,14 +7,15 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::TileCdfSubset;
 use super::super::coeff_state::{
-    TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
+    LEVEL_INDEX_MASK, LEVEL_STRIDE, TileCoeffContextState, TileCoeffStateError,
+    TransformCoeffBlockState,
 };
 use super::base_level_pass::{
     CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError, CoeffLevelMasks,
     NonZeroCoeffBaseDerivedLevelPass, apply_nonzero_coeff_base_derived_level_pass,
 };
 use super::branch::NonZeroCoeffBlockStart;
-use super::max_level::{CoeffMaxLevelConfig, derive_coeff_max_level};
+use super::max_level::{CoeffMaxLevelConfig, CoeffTransformClass, derive_coeff_max_level};
 use super::quant_pass::{CoeffQuantPassError, validate_coeff_quant_pass_config};
 use super::quant_state::{
     CoeffQuantStateAccumulator, CoeffQuantStateConfig, NonZeroCoeffQuantState,
@@ -234,30 +235,149 @@ struct InterleavedSignQuantPassInput<'a> {
 /// Reads each nonzero coefficient's sign and remainder in scan order. A
 /// zero level (outside the hidden-parity DC) has no sign, no remainder and
 /// a quant of 0, which the block already holds, so the pass skips it and
-/// takes the TCQ state of each entry it visits from the base pass.
+/// takes the TCQ state of each entry it visits from the base pass. Scan
+/// index 0, the only one the hidden parity touches, is read last and apart
+/// from the loop over the others, which is specialised per transform class
+/// and plane type.
 fn apply_interleaved_sign_and_quant_pass(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: InterleavedSignQuantPassInput<'_>,
 ) -> Result<NonZeroCoeffQuantState, CoeffOrdinaryPassError> {
-    let InterleavedSignQuantPassInput {
-        block,
-        walk,
-        masks,
-        sign_config,
-        max_level_config,
-        config,
-    } = input;
+    use CoeffTransformClass::{Horizontal, TwoD, Vertical};
+    let config = input.config;
     validate_coeff_quant_pass_config(config)?;
 
-    let mut read_quant_state = CoeffReadQuantState::new(CoeffReadQuantConfig {
-        is_hidden: config.is_hidden,
-        allow_tcq: config.use_tcq,
-        hr_level_avg: 0,
-    });
-    let mut quant_state = CoeffQuantStateAccumulator::new(config);
+    let mut pass = SignQuantPass {
+        read_quant_state: CoeffReadQuantState::new(CoeffReadQuantConfig {
+            is_hidden: config.is_hidden,
+            allow_tcq: config.use_tcq,
+            hr_level_avg: 0,
+        }),
+        quant_state: CoeffQuantStateAccumulator::new(config),
+        input,
+    };
+    match (
+        pass.input.max_level_config.tx_class,
+        pass.input.max_level_config.plane == 0,
+    ) {
+        (TwoD, true) => pass.ac_entries::<0, true>(cdfs, symbols)?,
+        (TwoD, false) => pass.ac_entries::<0, false>(cdfs, symbols)?,
+        (Horizontal, true) => pass.ac_entries::<1, true>(cdfs, symbols)?,
+        (Horizontal, false) => pass.ac_entries::<1, false>(cdfs, symbols)?,
+        (Vertical, true) => pass.ac_entries::<2, true>(cdfs, symbols)?,
+        (Vertical, false) => pass.ac_entries::<2, false>(cdfs, symbols)?,
+    }
+    if config.is_hidden || pass.input.masks.is_nonzero(0) {
+        let (sign_config, max_level_config) = (pass.input.sign_config, pass.input.max_level_config);
+        pass.entry(cdfs, symbols, 0, sign_config, max_level_config)?;
+    }
+    Ok(NonZeroCoeffQuantState::from_accumulator(pass.quant_state))
+}
 
-    for scan_index in masks.nonzero_scan_indices(walk.len(), config.is_hidden) {
+struct SignQuantPass<'a> {
+    read_quant_state: CoeffReadQuantState,
+    quant_state: CoeffQuantStateAccumulator,
+    input: InterleavedSignQuantPassInput<'a>,
+}
+
+impl SignQuantPass<'_> {
+    /// The nonzero entries above scan index 0, with the class and plane
+    /// fixed so their context branches fold away.
+    #[inline(never)]
+    fn ac_entries<const CLASS: usize, const LUMA: bool>(
+        &mut self,
+        cdfs: &mut TileCdfSubset,
+        symbols: &mut SymbolDecoder<'_>,
+    ) -> Result<(), CoeffOrdinaryPassError> {
+        let tx_class = [
+            CoeffTransformClass::TwoD,
+            CoeffTransformClass::Horizontal,
+            CoeffTransformClass::Vertical,
+        ][CLASS];
+        let plane = if LUMA {
+            0
+        } else {
+            self.input.max_level_config.plane.max(1)
+        };
+        let sign_config = CoeffSignSourceDeriveConfig {
+            plane,
+            tx_class,
+            ..self.input.sign_config
+        };
+        let max_level_config = CoeffMaxLevelConfig {
+            plane,
+            tx_class,
+            ..self.input.max_level_config
+        };
+        let masks = self.input.masks;
+        let walk = self.input.walk;
+        let eob = walk.len();
+        let (grid, quant, quant_end) = self.input.block.level_and_quant_mut();
+        for scan_index in masks.nonzero_scan_indices(eob, false) {
+            let Some(index) = eob.checked_sub(scan_index + 1).filter(|_| scan_index > 0) else {
+                break;
+            };
+            let entry = walk.entry(index);
+            let level =
+                u32::from(grid[(entry.row() * LEVEL_STRIDE + entry.col()) & LEVEL_INDEX_MASK]);
+            let axis_cdf = LUMA
+                && match CLASS {
+                    1 => entry.col() == 0,
+                    2 => entry.row() == 0,
+                    _ => false,
+                };
+            let sign = if axis_cdf {
+                let input = derive_nonzero_coeff_sign_input(entry, level, sign_config);
+                read_preflighted_nonzero_coeff_sign(cdfs, symbols, input)?.sign()
+            } else {
+                symbols
+                    .read_literal(1)
+                    .map_err(|source| CoeffSignReadError::LiteralRead { source })?
+                    != 0
+            };
+            let max_level = derive_coeff_max_level(entry, max_level_config);
+            let read = self
+                .read_quant_state
+                .read_one(
+                    symbols,
+                    index,
+                    CoeffReadQuantInput {
+                        entry,
+                        level,
+                        max_level,
+                    },
+                )
+                .map_err(CoeffQuantPassError::from)?;
+            let magnitude = self
+                .quant_state
+                .ac_magnitude(index, read.quant, masks.tcq_q0(scan_index))
+                .map_err(CoeffQuantPassError::from)? as i32;
+            if let Some(slot) = quant.get_mut(entry.pos()) {
+                *slot = if sign { -magnitude } else { magnitude };
+                if magnitude != 0 {
+                    *quant_end = (*quant_end).max(entry.pos() + 1);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: one copy per specialised loop"
+    )]
+    #[inline(always)]
+    fn entry(
+        &mut self,
+        cdfs: &mut TileCdfSubset,
+        symbols: &mut SymbolDecoder<'_>,
+        scan_index: usize,
+        sign_config: CoeffSignSourceDeriveConfig<'_>,
+        max_level_config: CoeffMaxLevelConfig,
+    ) -> Result<(), CoeffOrdinaryPassError> {
+        let config = self.input.config;
+        let walk = self.input.walk;
         let Some(index) = walk.len().checked_sub(scan_index + 1) else {
             return Err(CoeffLoopContextError::ScanWalkEobOutOfRange {
                 eob: scan_index + 1,
@@ -266,7 +386,7 @@ fn apply_interleaved_sign_and_quant_pass(
             .into());
         };
         let entry = walk.entry(index);
-        let level = block.level_at(entry.row(), entry.col())?;
+        let level = self.input.block.level_at(entry.row(), entry.col())?;
         let sign_input = derive_nonzero_coeff_sign_input(entry, level, sign_config);
         let max_level = derive_coeff_max_level(entry, max_level_config);
         let sign = read_preflighted_nonzero_coeff_sign(cdfs, symbols, sign_input)?;
@@ -277,7 +397,8 @@ fn apply_interleaved_sign_and_quant_pass(
         {
             return Err(CoeffQuantPassError::HiddenParityMissingSign { index, entry }.into());
         }
-        let read_quant = read_quant_state
+        let read_quant = self
+            .read_quant_state
             .read_one(
                 symbols,
                 index,
@@ -288,19 +409,19 @@ fn apply_interleaved_sign_and_quant_pass(
                 },
             )
             .map_err(CoeffQuantPassError::from)?;
-        quant_state.set_tcq_q0(masks.tcq_q0(scan_index));
+        self.quant_state
+            .set_tcq_q0(self.input.masks.tcq_q0(scan_index));
         apply_derived_nonzero_coeff_quant_state_step(
-            block,
-            &mut quant_state,
+            self.input.block,
+            &mut self.quant_state,
             index,
             entry,
             sign,
             read_quant,
         )
         .map_err(CoeffQuantPassError::from)?;
+        Ok(())
     }
-
-    Ok(NonZeroCoeffQuantState::from_accumulator(quant_state))
 }
 
 #[cfg(test)]

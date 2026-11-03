@@ -28,8 +28,26 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         y: usize,
         size: IntraRectBlockSize,
     ) -> Result<CurrentFrameIntraEdges<T>> {
+        let mut edges = CurrentFrameIntraEdges::default();
+        self.intra_dc_edges_for_rect_into(plane, x, y, size, &mut edges)?;
+        Ok(edges)
+    }
+
+    /// [`Self::intra_dc_edges_for_rect`] into caller storage, which avoids
+    /// moving the sample arrays after they are written.
+    ///
+    /// # Errors
+    /// As [`Self::intra_dc_edges_for_rect`].
+    pub fn intra_dc_edges_for_rect_into(
+        &self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        edges: &mut CurrentFrameIntraEdges<T>,
+    ) -> Result<()> {
         let rect = block_rect(x, y, size)?;
-        self.plane(plane)?.dc_edges_for_rect(rect)
+        self.plane(plane)?.dc_edges_for_rect_into(rect, edges)
     }
 
     /// Predicts rectangular DC intra samples into the workspace.

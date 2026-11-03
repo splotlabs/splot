@@ -46,7 +46,7 @@ fn transform_block_state_is_zero_initialized_and_row_major() {
 
     assert_eq!(state.width(), 4);
     assert_eq!(state.height(), 3);
-    assert_eq!(stride, 4 + LEVEL_GRID_PAD);
+    assert_eq!(stride, LEVEL_STRIDE);
     assert_eq!(state.coeff_count(), 12);
     assert!(state.level().iter().all(|&level| level == 0));
     assert!(state.quant_sign.is_empty());

@@ -156,7 +156,11 @@ fn derive_coeff_sign_source(
     CoeffSignReadSource::SignBit
 }
 
-#[inline]
+#[allow(
+    clippy::inline_always,
+    reason = "measured: per-coefficient sign and quant step"
+)]
+#[inline(always)]
 pub(crate) fn read_preflighted_nonzero_coeff_sign(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,

@@ -320,7 +320,8 @@ fn cfl_prediction_into<T: ReconSample>(
         u8::try_from(log2_width).unwrap_or(u8::MAX),
         u8::try_from(log2_height).unwrap_or(u8::MAX),
     )?;
-    let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    let mut edges = splot_recon::CurrentFrameIntraEdges::default();
+    workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
     let dc_edges = IntraDcEdges::new(
         neighbours
             .has_left()
@@ -1005,8 +1006,20 @@ fn mhccp_references<T: ReconSample>(
         } else {
             left.min(reference_width)
         };
-        for col in 1..chroma_cols {
-            chroma[row * ref_width + col] = chroma_plane.clamped(x + col - left, ref_chroma_y)?;
+        if let Some(samples) = chroma_cols
+            .checked_sub(1)
+            .filter(|&cols| cols > 0)
+            .and_then(|_| chroma_plane.row(ref_chroma_y.min(chroma_plane.height.saturating_sub(1))))
+        {
+            let last = samples.len() - 1;
+            for col in 1..chroma_cols {
+                chroma[row * ref_width + col] = samples[(x + col - left).min(last)].to_u16();
+            }
+        } else {
+            for col in 1..chroma_cols {
+                chroma[row * ref_width + col] =
+                    chroma_plane.clamped(x + col - left, ref_chroma_y)?;
+            }
         }
         if luma_ready || row < first_luma_row {
             continue;
@@ -1186,20 +1199,21 @@ impl<'a, T: ReconSample> CflLuma<'a, T> {
             }
             sy.clamp(0, max_y) as usize
         };
-        let sub_y = self.sub_y as isize;
-        let mut rows = Some([&[][..]; 3]);
-        for dy in -sub_y..=sub_y {
-            let row = self.plane.row(tap_row(dy));
-            if let (Some(rows), Some(row)) = (rows.as_mut(), row) {
-                rows[(dy + 1) as usize] = row;
-            } else {
-                rows = None;
+        let tap_rows = [tap_row(-1), tap_row(0), tap_row(1)];
+        let rows = if self.sub_y == 0 {
+            self.plane
+                .row(tap_rows[1])
+                .map(|middle| [&[][..], middle, &[][..]])
+        } else {
+            match tap_rows.map(|row| self.plane.row(row)) {
+                [Some(top), Some(middle), Some(bottom)] => Some([top, middle, bottom]),
+                _ => None,
             }
-        }
+        };
         CflLumaRow {
             luma: self,
             rows,
-            tap_rows: [tap_row(-1), tap_row(0), tap_row(1)],
+            tap_rows,
         }
     }
 }

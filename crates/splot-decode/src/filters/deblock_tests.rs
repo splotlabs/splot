@@ -21,7 +21,7 @@ fn build_mi_grid(
     let mut order = RowOrder::default();
     order.sort(blocks.iter(), mi_rows)?;
     let mut grid = MiGridStorage::new(mi_cols, (1, 1), storage);
-    grid.fill(blocks, &order, mi_rows, &(0..mi_rows))?;
+    grid.fill(blocks, &order, mi_rows, &(0..mi_rows), true)?;
     Ok(grid)
 }
 
@@ -39,7 +39,7 @@ fn overlay_mi_grid(
     let mut order = RowOrder::default();
     order.sort(blocks.blocks.iter().map(|record| &record.block), mi_rows)?;
     let mut grid = ChromaMiGridStorage::new(mi_cols, (sub_x, sub_y), storage);
-    grid.fill(base, blocks, &order, plane, mi_rows, &(0..mi_rows))?;
+    grid.fill(base, blocks, &order, plane, mi_rows, &(0..mi_rows), true)?;
     Ok(grid)
 }
 
@@ -1073,11 +1073,11 @@ fn sliding_grid_windows_match_the_whole_frame_grid() {
             != 0
     };
     for window in [0..4, 2..6, 4..8, 6..9, 2..6, 4..9] {
-        base.fill(&luma, &order[0], mi_rows, &window).unwrap();
+        base.fill(&luma, &order[0], mi_rows, &window, true).unwrap();
         assert_eq!(base.fully_covered, window.end <= 6, "window {window:?}");
         for (plane, overlay) in overlays.iter_mut().enumerate() {
             overlay
-                .fill(&base, &chroma, &order[1], plane, mi_rows, &window)
+                .fill(&base, &chroma, &order[1], plane, mi_rows, &window, true)
                 .unwrap();
             for (index, row, col) in window
                 .clone()

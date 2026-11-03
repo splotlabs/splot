@@ -166,7 +166,7 @@ impl ResidualPlanePlan {
     }
 
     fn luma_corner_neighbours(
-        self,
+        &self,
         block_ctx: BlockCtx,
         block_decoded: &TileBlockDecodedState,
     ) -> NeighbourAvailability {
@@ -179,7 +179,7 @@ impl ResidualPlanePlan {
     }
 
     pub(super) fn plane_neighbours(
-        self,
+        &self,
         block_ctx: BlockCtx,
         block_decoded: &TileBlockDecodedState,
     ) -> NeighbourAvailability {
@@ -188,7 +188,7 @@ impl ResidualPlanePlan {
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reconstruct<T: ReconSample>(
-        self,
+        &self,
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         coeffs: crate::bitstream::tile_payload::CoeffBlock<'_>,
