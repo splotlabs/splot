@@ -277,7 +277,7 @@ impl CoeffBaseContext {
     }
 }
 
-pub(crate) const fn dc_sign_ctx(
+pub(crate) fn dc_sign_ctx(
     above_dc: &[u8],
     left_dc: &[u8],
     x4: usize,
@@ -285,40 +285,23 @@ pub(crate) const fn dc_sign_ctx(
     w4: usize,
     h4: usize,
 ) -> usize {
-    let mut dc_sign: isize = 0;
-    let mut k = 0;
-    while k < w4 {
-        let idx = x4.saturating_add(k);
-        if idx >= above_dc.len() {
-            break;
-        }
-        match above_dc[idx] {
-            1 => dc_sign -= 1,
-            2 => dc_sign += 1,
-            _ => {}
-        }
-        k += 1;
+    let dc_sign = dc_sign_votes(above_dc, x4, w4) + dc_sign_votes(left_dc, y4, h4);
+    match dc_sign.cmp(&0) {
+        core::cmp::Ordering::Less => 1,
+        core::cmp::Ordering::Greater => 2,
+        core::cmp::Ordering::Equal => 0,
     }
-    let mut k = 0;
-    while k < h4 {
-        let idx = y4.saturating_add(k);
-        if idx >= left_dc.len() {
-            break;
-        }
-        match left_dc[idx] {
-            1 => dc_sign -= 1,
-            2 => dc_sign += 1,
-            _ => {}
-        }
-        k += 1;
-    }
-    if dc_sign < 0 {
-        1
-    } else if dc_sign > 0 {
-        2
-    } else {
-        0
-    }
+}
+
+/// Net sign of the `len` DC categories from `start`; categories are random
+/// per block, so the sum is branchless.
+fn dc_sign_votes(line: &[u8], start: usize, len: usize) -> i32 {
+    line.get(start..)
+        .unwrap_or_default()
+        .iter()
+        .take(len)
+        .map(|&category| i32::from(category == 2) - i32::from(category == 1))
+        .sum()
 }
 
 #[inline]
