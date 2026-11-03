@@ -16,7 +16,7 @@
 
 use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
 use std::simd::{
-    Simd, SimdElement,
+    Simd, SimdElement, ToBytes,
     cmp::SimdOrd,
     num::{SimdInt, SimdUint},
     simd_swizzle,
@@ -778,16 +778,11 @@ fn row_invariant_output(
     round1: u32,
     mut store: impl FnMut(usize, Simd<i32, WARPED_BLOCK_SIZE>) -> Result<()>,
 ) -> Result<()> {
-    let taps = transpose_warp_taps(core::array::from_fn(|col| {
+    let weights = paired_column_taps(core::array::from_fn(|col| {
         warp_taps(projected.sy4 + shear.gamma * (col as i32 - 4))
     }));
     for row in 0..WARPED_BLOCK_SIZE {
-        let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
-        for (tap, taps) in taps.into_iter().enumerate() {
-            let samples =
-                Simd::from_slice(&intermediate[(row + tap) * WARPED_BLOCK_SIZE..]).cast::<i32>();
-            sum += taps.cast::<i32>() * samples;
-        }
+        let sum = paired_rows_sum(intermediate, row, &weights);
         store(row, (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32)?;
     }
     Ok(())
@@ -1307,35 +1302,78 @@ fn build_output(
     round1: u32,
     mut store: impl FnMut(usize, Simd<i32, WARPED_BLOCK_SIZE>) -> Result<()>,
 ) -> Result<()> {
-    if shear.gamma == 0 {
-        for row in 0..WARPED_BLOCK_SIZE {
-            let i1 = row as i32 - 4;
-            let taps = warp_taps(projected.sy4 + shear.delta * i1);
-            let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
-            for tap in 0..WARP_FILTER_TAPS {
-                let samples = Simd::from_slice(&intermediate[(row + tap) * WARPED_BLOCK_SIZE..]);
-                sum = warp_tap_mac(sum, samples, taps[tap]);
-            }
-            store(row, (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32)?;
-        }
-        return Ok(());
-    }
     for row in 0..WARPED_BLOCK_SIZE {
         let i1 = row as i32 - 4;
-        let columns = core::array::from_fn(|col| {
-            let i2 = col as i32 - 4;
-            warp_taps(projected.sy4 + shear.gamma * i2 + shear.delta * i1)
-        });
-        let taps_by_tap = transpose_warp_taps(columns);
-        let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
-        for (tap, taps) in taps_by_tap.into_iter().enumerate() {
-            let samples =
-                Simd::from_slice(&intermediate[(row + tap) * WARPED_BLOCK_SIZE..]).cast::<i32>();
-            sum += taps.cast::<i32>() * samples;
-        }
+        let weights = if shear.gamma == 0 {
+            let taps = warp_taps(projected.sy4 + shear.delta * i1);
+            core::array::from_fn(|pair| {
+                let (a, b) = (taps[2 * pair], taps[2 * pair + 1]);
+                Simd::from_array(core::array::from_fn(
+                    |lane| if lane % 2 == 0 { a } else { b },
+                ))
+            })
+        } else {
+            paired_column_taps(core::array::from_fn(|col| {
+                let i2 = col as i32 - 4;
+                warp_taps(projected.sy4 + shear.gamma * i2 + shear.delta * i1)
+            }))
+        };
+        let sum = paired_rows_sum(intermediate, row, &weights);
         store(row, (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32)?;
     }
     Ok(())
+}
+
+/// The vertical sum of output row `row` with [`paired_column_taps`] weights:
+/// each pair of intermediate rows interleaves into one multiply-add.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn paired_rows_sum(
+    intermediate: &[i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+    row: usize,
+    weights: &[Simd<i16, 16>; WARP_FILTER_TAPS / 2],
+) -> Simd<i32, WARPED_BLOCK_SIZE> {
+    let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
+    for (pair, &weights) in weights.iter().enumerate() {
+        let rows: Simd<i16, 16> =
+            Simd::from_slice(&intermediate[(row + 2 * pair) * WARPED_BLOCK_SIZE..]);
+        let rows = simd_swizzle!(rows, [0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15]);
+        let product = rows.cast::<i32>() * weights.cast::<i32>();
+        sum += simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
+            + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15]);
+    }
+    sum
+}
+
+/// Regroups the eight per-column § 7.13.3.20 filters into the weights of tap
+/// pairs `2j, 2j + 1`: lanes `2c, 2c + 1` of pair `j` hold column `c`'s two
+/// taps, so one multiply-add of two interleaved intermediate rows sums both
+/// taps of every column. The regrouping is a 4x4 transpose of 32-bit tap
+/// pairs within each 128-bit half.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn paired_column_taps(
+    columns: [Simd<i16, WARP_FILTER_TAPS>; WARPED_BLOCK_SIZE],
+) -> [Simd<i16, 16>; WARP_FILTER_TAPS / 2] {
+    let words = columns.map(|taps| Simd::<i32, 4>::from_ne_bytes(taps.to_ne_bytes()));
+    let halves: [Simd<i32, 8>; 4] = core::array::from_fn(|col| {
+        simd_swizzle!(words[col], words[col + 4], [0, 1, 2, 3, 4, 5, 6, 7])
+    });
+    let low = [
+        simd_swizzle!(halves[0], halves[1], [0, 8, 1, 9, 4, 12, 5, 13]),
+        simd_swizzle!(halves[2], halves[3], [0, 8, 1, 9, 4, 12, 5, 13]),
+    ];
+    let high = [
+        simd_swizzle!(halves[0], halves[1], [2, 10, 3, 11, 6, 14, 7, 15]),
+        simd_swizzle!(halves[2], halves[3], [2, 10, 3, 11, 6, 14, 7, 15]),
+    ];
+    let pairs = [
+        simd_swizzle!(low[0], low[1], [0, 1, 8, 9, 4, 5, 12, 13]),
+        simd_swizzle!(low[0], low[1], [2, 3, 10, 11, 6, 7, 14, 15]),
+        simd_swizzle!(high[0], high[1], [0, 1, 8, 9, 4, 5, 12, 13]),
+        simd_swizzle!(high[0], high[1], [2, 3, 10, 11, 6, 7, 14, 15]),
+    ];
+    pairs.map(|pair| Simd::from_ne_bytes(pair.to_ne_bytes()))
 }
 
 /// Reads `LANES` consecutive reference samples as `i16` lanes.
