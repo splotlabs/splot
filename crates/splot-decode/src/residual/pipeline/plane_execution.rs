@@ -171,7 +171,7 @@ impl GeneralIntraResidualPlan {
             } else {
                 (CctxRole::None, eob_u_nonzero)
             };
-            let mut parsed = plane.parse(
+            plane.parse(
                 work_unit,
                 symbols,
                 coeff_ctx,
@@ -182,25 +182,21 @@ impl GeneralIntraResidualPlan {
                 pass_eob_u_nonzero,
                 deblock,
                 coeffs_arena,
-                &mut arena.units,
+                role,
+                arena,
             )?;
+            if plane.plane_id == PlaneId::U && role != CctxRole::PairV {
+                u_nonzero = arena
+                    .planes
+                    .last()
+                    .and_then(Option::as_ref)
+                    .is_some_and(|parsed| parsed.u_nonzero(&arena.units));
+            }
             match role {
-                CctxRole::HoldU => {
-                    u_nonzero = parsed.u_nonzero(&arena.units);
-                    pending_u = true;
-                }
+                CctxRole::HoldU => pending_u = true,
                 CctxRole::PairV => pending_u = false,
-                CctxRole::None => {
-                    if plane.plane_id == PlaneId::U {
-                        u_nonzero = parsed.u_nonzero(&arena.units);
-                    }
-                }
+                CctxRole::None => {}
             }
-            if role != CctxRole::None {
-                parsed.plane.defer_reconstruction = true;
-                parsed.cctx_role = role;
-            }
-            arena.planes.push(Some(parsed));
         }
         let end = u32::try_from(arena.planes.len()).unwrap_or(u32::MAX);
         Ok(ParsedGeneralIntraResidual { planes: start..end })
@@ -225,8 +221,10 @@ impl ResidualPlanePlan {
         eob_u_nonzero: bool,
         deblock: &mut DeblockRecorder<'_>,
         coeffs_arena: &mut Vec<i32>,
-        units: &mut Vec<Option<ParsedTransformUnit>>,
-    ) -> core::result::Result<ParsedResidualPlane, GeneralIntraResidualError> {
+        cctx_role: CctxRole,
+        arena: &mut ResidualPlaneArena,
+    ) -> core::result::Result<(), GeneralIntraResidualError> {
+        let units = &mut arena.units;
         let tx_partition_context = (self.plane_id == PlaneId::Y)
             .then_some(luma_tx_partition_context)
             .flatten();
@@ -254,7 +252,8 @@ impl ResidualPlanePlan {
                 units,
             );
             super::palette::recycle_palette_map(palette_color_map);
-            return parsed;
+            arena.planes.push(Some(parsed?.with_cctx_role(cctx_role)));
+            return Ok(());
         }
         if let Some(tx_partition_context) = tx_partition_context {
             let parsed = self.parse_partitioned_luma(
@@ -271,7 +270,8 @@ impl ResidualPlanePlan {
                 units,
             );
             super::palette::recycle_palette_map(palette_color_map);
-            return parsed;
+            arena.planes.push(Some(parsed?.with_cctx_role(cctx_role)));
+            return Ok(());
         }
         let mut coeffs = crate::bitstream::tile_payload::decode_general_intra_plane_coeffs(
             work_unit,
@@ -306,14 +306,18 @@ impl ResidualPlanePlan {
         } else {
             deblock.record_chroma_unit(self.plane_id, self.x, self.y, self.tx_size);
         }
-        Ok(ParsedResidualPlane {
-            plane: *self,
+        arena.planes.push(Some(ParsedResidualPlane {
+            plane: ResidualPlanePlan {
+                defer_reconstruction: self.defer_reconstruction || cctx_role != CctxRole::None,
+                ..*self
+            },
             kind: ParsedResidualPlaneKind::Single {
                 coeffs,
                 palette_color_map,
             },
-            cctx_role: CctxRole::None,
-        })
+            cctx_role,
+        }));
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -571,6 +575,14 @@ impl ResidualPlanePlan {
 }
 
 impl ParsedResidualPlane {
+    fn with_cctx_role(mut self, cctx_role: CctxRole) -> Self {
+        if cctx_role != CctxRole::None {
+            self.plane.defer_reconstruction = true;
+            self.cctx_role = cctx_role;
+        }
+        self
+    }
+
     pub(super) fn u_nonzero(&self, arena: &[Option<ParsedTransformUnit>]) -> bool {
         match &self.kind {
             ParsedResidualPlaneKind::Single { coeffs, .. } => coeffs.eob != 0,
