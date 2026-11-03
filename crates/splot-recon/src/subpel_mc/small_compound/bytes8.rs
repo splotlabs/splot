@@ -204,22 +204,25 @@ impl<'a, T: ReconSample> CellReference<'a, T> for Bytes8<'a, T> {
         output: &mut [O],
         output_stride: usize,
     ) -> bool {
-        store_pairs(cells, params, cwp_weight, output, output_stride)
+        let (Some(pred0), Some(pred1)) = (cells[0].predict(), cells[1].predict()) else {
+            return false;
+        };
+        store_blended::<O, 4, 8>([pred0, pred1], params, cwp_weight, output, output_stride)
     }
 }
 
+/// Blends the predictor rows of both references, `16 / WIDTH` rows of
+/// `WIDTH` lanes per [`Pair`], and stores them; `false` for an unsupported
+/// output.
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
-fn store_pairs<T: ReconSample, O: ReconSample>(
-    cells: [&Bytes8<'_, T>; 2],
+pub(super) fn store_blended<O: ReconSample, const P: usize, const WIDTH: usize>(
+    pred: [[Pair; P]; 2],
     params: &SubpelPredictParams,
     cwp_weight: i16,
     output: &mut [O],
     output_stride: usize,
 ) -> bool {
-    let (Some(pred0), Some(pred1)) = (cells[0].predict(), cells[1].predict()) else {
-        return false;
-    };
     let weights = Pair::from_array(core::array::from_fn(|lane| {
         if lane % 2 == 0 {
             cwp_weight
@@ -229,24 +232,25 @@ fn store_pairs<T: ReconSample, O: ReconSample>(
     }));
     let max_sample = Pair::splat(params.bit_depth.max_sample().min(O::MAX_VALUE) as i16);
     let blend = |p: usize| {
-        weigh::<{ 4 + compound_inter_post_round() }>(&[(pred0[p], pred1[p], weights)])
+        weigh::<{ 4 + compound_inter_post_round() }>(&[(pred[0][p], pred[1][p], weights)])
             .simd_max(Simd::splat(0))
             .simd_min(max_sample)
     };
+    let rows = 16 / WIDTH;
     if let Some(output) = O::u8_slice_mut(output) {
-        for p in 0..4 {
+        for p in 0..P {
             let lanes = blend(p).cast::<u8>().to_array();
-            for (half, row) in lanes.chunks_exact(8).enumerate() {
-                output[(2 * p + half) * output_stride..][..8].copy_from_slice(row); // splot-copy-ok: publish blended SIMD prediction lanes
+            for (row, lanes) in lanes.chunks_exact(WIDTH).enumerate() {
+                output[(rows * p + row) * output_stride..][..WIDTH].copy_from_slice(lanes); // splot-copy-ok: publish blended SIMD prediction lanes
             }
         }
         return true;
     }
     if let Some(output) = O::u16_slice_mut(output) {
-        for p in 0..4 {
+        for p in 0..P {
             let lanes = blend(p).cast::<u16>().to_array();
-            for (half, row) in lanes.chunks_exact(8).enumerate() {
-                output[(2 * p + half) * output_stride..][..8].copy_from_slice(row); // splot-copy-ok: publish blended SIMD prediction lanes
+            for (row, lanes) in lanes.chunks_exact(WIDTH).enumerate() {
+                output[(rows * p + row) * output_stride..][..WIDTH].copy_from_slice(lanes); // splot-copy-ok: publish blended SIMD prediction lanes
             }
         }
         return true;

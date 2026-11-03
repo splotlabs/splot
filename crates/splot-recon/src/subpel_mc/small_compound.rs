@@ -14,9 +14,11 @@
 //! window with clamped columns gathers them with a byte shuffle; both are the
 //! spec read.
 
+mod bytes4;
 mod bytes8;
 
 use super::*;
+use bytes4::Bytes4;
 use bytes8::Bytes8;
 use std::simd::{Mask, Select, ToBytes, cmp::SimdPartialOrd, simd_swizzle};
 
@@ -705,6 +707,9 @@ pub(super) fn predict<T: ReconSample, O: ReconSample>(
     }
     let references = [(reference0, params0), (reference1, params1)];
     match (params0.w, params0.h) {
+        (4, 4) if T::u8_slice(reference0.samples).is_some() => {
+            fused::<T, O, Bytes4<'_, T>>(references, cwp_weight, output, output_stride, second)
+        }
         (4, 4) => fused::<T, O, Cell<'_, T>>(references, cwp_weight, output, output_stride, second),
         (8, 8) if T::u8_slice(reference0.samples).is_some() => {
             fused::<T, O, Bytes8<'_, T>>(references, cwp_weight, output, output_stride, second)
