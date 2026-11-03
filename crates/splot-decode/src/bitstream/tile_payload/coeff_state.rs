@@ -22,6 +22,12 @@ const MAX_ADJUSTED_TX_EXTENT: usize = 32;
 pub(crate) const LEVEL_GRID_PAD: usize = 4;
 const MAX_PADDED_COEFF_LEN: usize =
     (MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD) * (MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD);
+/// Length of every level grid: a power of two at least
+/// [`MAX_PADDED_COEFF_LEN`], so masked indices need no bounds checks.
+pub(crate) const LEVEL_GRID_LEN: usize = MAX_PADDED_COEFF_LEN.next_power_of_two();
+/// A block's level grid; entries past its padded extent are zero.
+pub(crate) type LevelGrid = [u8; LEVEL_GRID_LEN];
+static ZERO_LEVEL_GRID: LevelGrid = [0; LEVEL_GRID_LEN];
 
 static ZERO_QUANT_SIGN: [i8; MAX_PADDED_COEFF_LEN] = [0; MAX_PADDED_COEFF_LEN];
 const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
@@ -41,8 +47,9 @@ fn zero_buffer<T: Default + Copy>(
     Ok(buffer)
 }
 
-/// A transform block's level, sign and quantised-coefficient buffers.
-type CoeffBlockBuffers = (Vec<u8>, Vec<i8>, Vec<i32>);
+/// A transform block's level grid with the length of its last used
+/// extent, and its sign and quantised-coefficient buffers.
+type CoeffBlockBuffers = (Vec<u8>, usize, Vec<i8>, Vec<i32>);
 
 std::thread_local! {
     /// One transform block's buffers, reused by the next block on this worker.
@@ -54,6 +61,7 @@ impl Drop for TransformCoeffBlockState {
         COEFF_BLOCK_BUFFERS.with(|slot| {
             slot.set(Some((
                 core::mem::take(&mut self.level),
+                self.level_len,
                 core::mem::take(&mut self.quant_sign),
                 core::mem::take(&mut self.quant),
             )));
@@ -65,6 +73,9 @@ impl Drop for TransformCoeffBlockState {
 pub(crate) struct TransformCoeffBlockState {
     height: usize,
     stride: usize,
+    /// Padded extent of the block inside `level`.
+    level_len: usize,
+    /// [`LEVEL_GRID_LEN`] entries, zero past `level_len`.
     level: Vec<u8>,
     quant_sign: Vec<i8>,
     quant: Vec<i32>,
@@ -84,14 +95,21 @@ impl TransformCoeffBlockState {
         let allocation = Self::allocation(width, height)?;
         let stride = width + LEVEL_GRID_PAD;
         let level_len = stride * (height + LEVEL_GRID_PAD);
-        let (level, mut quant_sign, quant) =
+        let (mut level, used_len, mut quant_sign, quant) =
             COEFF_BLOCK_BUFFERS.with(Cell::take).unwrap_or_default();
-        let level = zero_buffer(level, level_len)?;
+        if level.len() == LEVEL_GRID_LEN {
+            if let Some(used) = level.get_mut(..used_len.max(level_len)) {
+                used.fill(0);
+            }
+        } else {
+            level = zero_buffer(level, LEVEL_GRID_LEN)?;
+        }
         let quant = zero_buffer(quant, allocation)?;
         quant_sign.clear();
         Ok(Self {
             height,
             stride,
+            level_len,
             level,
             quant_sign,
             quant,
@@ -101,7 +119,7 @@ impl TransformCoeffBlockState {
 
     pub(crate) fn ensure_quant_sign(&mut self) -> Result<(), TileCoeffStateError> {
         if self.quant_sign.is_empty() {
-            self.quant_sign = zero_buffer(core::mem::take(&mut self.quant_sign), self.level.len())?;
+            self.quant_sign = zero_buffer(core::mem::take(&mut self.quant_sign), self.level_len)?;
         }
         Ok(())
     }
@@ -117,8 +135,9 @@ impl TransformCoeffBlockState {
     }
 
     #[must_use]
-    pub(crate) fn level(&self) -> &[u8] {
-        &self.level
+    #[inline]
+    pub(crate) fn level(&self) -> &LevelGrid {
+        self.level.first_chunk().unwrap_or(&ZERO_LEVEL_GRID)
     }
 
     pub(crate) fn level_mut(&mut self) -> &mut [u8] {
@@ -140,7 +159,7 @@ impl TransformCoeffBlockState {
     #[must_use]
     pub(crate) fn quant_sign(&self) -> &[i8] {
         if self.quant_sign.is_empty() {
-            &ZERO_QUANT_SIGN[..self.level.len()]
+            &ZERO_QUANT_SIGN[..self.level_len]
         } else {
             &self.quant_sign
         }

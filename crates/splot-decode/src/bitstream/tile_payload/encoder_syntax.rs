@@ -37,7 +37,9 @@ use super::coeff_loop::sign_symbol::{
     CoeffSignReadSource, CoeffSignSourceDeriveConfig, derive_nonzero_coeff_sign_input,
 };
 use super::coeff_loop::{NonZeroCoeffEobContextInput, nonzero_coeff_eob_symbol_input};
-use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TransformCoeffBlockState};
+use super::coeff_state::{
+    CoeffContextUpdate, LevelGrid, TileCoeffContextState, TransformCoeffBlockState,
+};
 use super::general_intra_residual::{block_recon_params, txb_skip_selector, txb_skip_tx_size_ctx};
 use super::intra_joint_modes::{
     TileFscModeState, TileIntraJointModeState, TileIntraYModeState, TileLumaPaletteState,
@@ -1247,7 +1249,7 @@ impl IntraTileSyntax {
 
 /// The `coeff_base` row selection of a level whose parity the block hides.
 #[inline(never)]
-fn hidden_base_selection(context: CoeffBaseContext, level: &[u8]) -> CoeffBaseSelection {
+fn hidden_base_selection(context: CoeffBaseContext, level: &LevelGrid) -> CoeffBaseSelection {
     CoeffBaseContext {
         is_hidden: true,
         ..context

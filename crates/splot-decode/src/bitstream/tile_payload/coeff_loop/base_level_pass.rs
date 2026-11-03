@@ -191,9 +191,42 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
 ) -> Result<NonZeroCoeffBaseDerivedLevelPass, CoeffBaseDerivedLevelPassError> {
-    let (eob_read, mut block) = start.into_parts();
+    use CoeffTransformClass::{Horizontal, TwoD, Vertical};
+    let (eob_read, block) = start.into_parts();
     preflight_pass(eob_read, &block, walk, config)?;
+    match (config.tx_class, config.plane == 0) {
+        (TwoD, true) => level_pass::<0, true>(cdfs, symbols, block, walk, config),
+        (TwoD, false) => level_pass::<0, false>(cdfs, symbols, block, walk, config),
+        (Horizontal, true) => level_pass::<1, true>(cdfs, symbols, block, walk, config),
+        (Horizontal, false) => level_pass::<1, false>(cdfs, symbols, block, walk, config),
+        (Vertical, true) => level_pass::<2, true>(cdfs, symbols, block, walk, config),
+        (Vertical, false) => level_pass::<2, false>(cdfs, symbols, block, walk, config),
+    }
+}
 
+/// The level loop for one transform class and plane type, so every class
+/// and plane branch of the context derivation folds away.
+#[allow(
+    clippy::inline_always,
+    reason = "measured: one specialised loop per class and plane type"
+)]
+#[inline(always)]
+fn level_pass<const CLASS: usize, const LUMA: bool>(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    mut block: TransformCoeffBlockState,
+    walk: &NonZeroCoeffScanWalk<'_>,
+    config: CoeffBaseDerivedLevelPassConfig,
+) -> Result<NonZeroCoeffBaseDerivedLevelPass, CoeffBaseDerivedLevelPassError> {
+    let config = CoeffBaseDerivedLevelPassConfig {
+        tx_class: [
+            CoeffTransformClass::TwoD,
+            CoeffTransformClass::Horizontal,
+            CoeffTransformClass::Vertical,
+        ][CLASS],
+        plane: if LUMA { 0 } else { config.plane.max(1) },
+        ..config
+    };
     let mut first_pass = CoeffBaseFirstPassSummary::default();
     let mut masks = CoeffLevelMasks::default();
     let mut entries = walk.entries();
