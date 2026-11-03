@@ -787,6 +787,42 @@ mod tests {
         }
     }
 
+    /// A whole-row prefix of the coefficients transforms like the block with
+    /// its omitted rows zero, for every kernel pair at 8 bits.
+    #[test]
+    fn coded_row_prefix_matches_the_zero_padded_block() {
+        use InverseTransform1dType::{Adst, Dct, Fddt};
+        let mut state = 0x0bad_5eed_1234_5678u64;
+        for (log2_w, log2_h) in [(2u32, 2u32), (2, 4), (3, 3), (4, 3), (4, 5), (5, 4), (5, 5)] {
+            for (row, col) in [(Dct, Dct), (Adst, Dct), (Dct, Adst), (Fddt, Dct)] {
+                let (w, h) = (1usize << log2_w, 1usize << log2_h);
+                let p = params(
+                    log2_w,
+                    log2_h,
+                    false,
+                    InverseTransform2dDim::Kernel(row),
+                    InverseTransform2dDim::Kernel(col),
+                    6,
+                    12,
+                );
+                for coded in 1..=h {
+                    let mut full = vec![0i32; w * h];
+                    for slot in &mut full[..coded * w] {
+                        state ^= state << 13;
+                        state ^= state >> 7;
+                        state ^= state << 17;
+                        *slot = (state % 4001) as i32 - 2000;
+                    }
+                    let mut expected = vec![0i32; w * h];
+                    inverse_transform_2d(&p, &full, &mut expected).unwrap();
+                    let mut got = vec![0i32; w * h];
+                    inverse_transform_2d(&p, &full[..coded * w], &mut got).unwrap();
+                    assert_eq!(got, expected, "{w}x{h} {row:?} {col:?} coded {coded}");
+                }
+            }
+        }
+    }
+
     /// The pre-lane-group § 7.15.4.1 orchestration: a per-column gather, one
     /// [`run_1d`] call, then a scatter.
     fn reference_transform_2d(

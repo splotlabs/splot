@@ -67,6 +67,42 @@ static FDST16: [[u32; 16]; 8] = pair_kernel(&FDST_KERNEL16, false);
 static DDTX16: [[u32; 16]; 8] = pair_kernel(&DDTX_KERNEL16, false);
 static FDDT16: [[u32; 16]; 8] = pair_kernel(&DDTX_KERNEL16, true);
 static DCT32: [[u32; 32]; 16] = pair_kernel(&DCT_KERNEL32, false);
+static DCT8_SPLIT: [[u32; 8]; 4] = split_pair_kernel(&DCT_KERNEL8);
+static DCT16_SPLIT: [[u32; 16]; 8] = split_pair_kernel(&DCT_KERNEL16);
+static DCT32_SPLIT: [[u32; 32]; 16] = split_pair_kernel(&DCT_KERNEL32);
+
+/// [`pair_kernel`] over the [`pair_rows`] of a split `DCT` column pass, for
+/// the first `N / 2` outputs.
+const fn split_pair_kernel<const N: usize, const H: usize>(
+    kernel: &[[i32; N]; N],
+) -> [[u32; N]; H] {
+    assert!(2 * H == N);
+    let mut out = [[0u32; N]; H];
+    let mut q = 0;
+    while q < H {
+        let (a, b) = pair_rows(q, true);
+        let mut i = 0;
+        while i < N / 2 {
+            let (low, high) = (kernel[a][i], kernel[b][i]);
+            assert!(low == low as i16 as i32 && high == high as i16 as i32);
+            assert!(kernel[a][N - 1 - i] == low * (1 - 2 * (a % 2) as i32));
+            assert!(kernel[b][N - 1 - i] == high * (1 - 2 * (b % 2) as i32));
+            out[q][i] = (low as u16 as u32) | ((high as u16 as u32) << 16);
+            i += 1;
+        }
+        q += 1;
+    }
+    out
+}
+
+fn select_split(len: usize) -> Option<PairKernel> {
+    Some(match len {
+        8 => PairKernel::N8(&DCT8_SPLIT),
+        16 => PairKernel::N16(&DCT16_SPLIT),
+        32 => PairKernel::N32(&DCT32_SPLIT),
+        _ => return None,
+    })
+}
 
 /// The paired § 7.15.2.1 kernel of one 1D length, with the same dispatch as
 /// the scalar kernel selection.
@@ -133,19 +169,28 @@ pub(crate) fn inverse_transform_2d_8bit(
     let (Some(row), Some(col)) = (select(t.w, t.row), select(t.h, t.col)) else {
         return false;
     };
-    let row_shift = u32::from(t.row_shift);
-    let mask = match row {
-        PairKernel::N4(k) => row_pass_4(k, dequant, t.rescale, row_shift, scratch),
-        PairKernel::N8(k) => row_pass::<8, 4>(k, dequant, t.rescale, row_shift, scratch),
-        PairKernel::N16(k) => row_pass::<16, 8>(k, dequant, t.rescale, row_shift, scratch),
-        PairKernel::N32(k) => row_pass::<32, 16>(k, dequant, t.rescale, row_shift, scratch),
+    let split = t.h >= 8 && (t.col == InverseTransform1dType::Dct || t.h == 32);
+    let col = if split { select_split(t.h) } else { Some(col) };
+    let Some(col) = col else {
+        return false;
     };
-    let col_shift = u32::from(t.col_shift);
-    match col {
-        PairKernel::N4(k) => col_pass::<4, 2>(k, scratch, t.w, mask, col_shift, residual),
-        PairKernel::N8(k) => col_pass::<8, 4>(k, scratch, t.w, mask, col_shift, residual),
-        PairKernel::N16(k) => col_pass::<16, 8>(k, scratch, t.w, mask, col_shift, residual),
-        PairKernel::N32(k) => col_pass::<32, 16>(k, scratch, t.w, mask, col_shift, residual),
+    let (row_shift, rows) = (u32::from(t.row_shift), (t.h, split));
+    let mask = match row {
+        PairKernel::N4(k) => row_pass_4(k, dequant, t.rescale, row_shift, rows, scratch),
+        PairKernel::N8(k) => row_pass::<8, 4>(k, dequant, t.rescale, row_shift, rows, scratch),
+        PairKernel::N16(k) => row_pass::<16, 8>(k, dequant, t.rescale, row_shift, rows, scratch),
+        PairKernel::N32(k) => row_pass::<32, 16>(k, dequant, t.rescale, row_shift, rows, scratch),
+    };
+    let (shift, w) = (u32::from(t.col_shift), t.w);
+    match (col, split) {
+        (PairKernel::N4(k), _) => col_pass::<4, 2, false>(k, scratch, w, mask, shift, residual),
+        (PairKernel::N8(k), false) => col_pass::<8, 4, false>(k, scratch, w, mask, shift, residual),
+        (PairKernel::N8(k), true) => col_pass::<8, 4, true>(k, scratch, w, mask, shift, residual),
+        (PairKernel::N16(k), false) => {
+            col_pass::<16, 8, false>(k, scratch, w, mask, shift, residual);
+        }
+        (PairKernel::N16(k), true) => col_pass::<16, 8, true>(k, scratch, w, mask, shift, residual),
+        (PairKernel::N32(k), _) => col_pass::<32, 16, true>(k, scratch, w, mask, shift, residual),
     }
     true
 }
@@ -216,8 +261,22 @@ fn row_input_pairs(row: &[i32], rescale: bool) -> ([u32; 16], usize) {
     (out, (u32::BITS - nonzero.leading_zeros()) as usize)
 }
 
-/// The row pass of an `N`-wide block, `H = N / 2`, for `N >= 8`: writes row
-/// pair `q` at `scratch[q * N..][..N]` and returns the mask of written pairs.
+/// The two rows the row pass packs as column pair `q`: adjacent rows, or for
+/// a split `DCT` column pass rows `4m + j` and `4m + j + 2` (`q = 2m + j`), so
+/// that every pair holds two even or two odd rows.
+#[inline]
+const fn pair_rows(q: usize, split: bool) -> (usize, usize) {
+    if split {
+        let row = 4 * (q / 2) + q % 2;
+        (row, row + 2)
+    } else {
+        (2 * q, 2 * q + 1)
+    }
+}
+
+/// The row pass of an `N`-wide, `h`-tall block, `H = N / 2`, for `N >= 8`:
+/// writes column pair `q` (rows [`pair_rows`]) at `scratch[q * N..][..N]` and
+/// returns the mask of written pairs.
 #[allow(
     clippy::inline_always,
     reason = "measured § 7.15.4.1 row-pass hot path"
@@ -228,18 +287,21 @@ fn row_pass<const N: usize, const H: usize>(
     dequant: &[i32],
     rescale: bool,
     shift: u32,
+    (h, split): (usize, bool),
     scratch: &mut [i32; 32 * 32],
 ) -> u32 {
     let rows = dequant.as_chunks::<N>().0;
+    let input = |row: usize| {
+        rows.get(row)
+            .map_or(([0; 16], 0), |row| row_input_pairs(row, rescale))
+    };
     let mut mask = 0u32;
-    for (q, (rows, out)) in rows.chunks(2).zip(scratch.chunks_exact_mut(N)).enumerate() {
-        let [first, rest @ ..] = rows else {
-            continue;
-        };
-        let (a, used_a) = row_input_pairs(first, rescale);
-        let (b, used_b) = rest
-            .first()
-            .map_or(([0; 16], 0), |row| row_input_pairs(row, rescale));
+    for (q, out) in scratch.chunks_exact_mut(N).take(h / 2).enumerate() {
+        let (row_a, row_b) = pair_rows(q, split);
+        if row_a >= rows.len() {
+            break;
+        }
+        let ((a, used_a), (b, used_b)) = (input(row_a), input(row_b));
         let used = used_a.max(used_b).min(H);
         if used == 0 {
             continue;
@@ -281,22 +343,26 @@ fn row_pass_4(
     dequant: &[i32],
     rescale: bool,
     shift: u32,
+    (h, split): (usize, bool),
     scratch: &mut [i32; 32 * 32],
 ) -> u32 {
-    let (rows, tail) = dequant.as_chunks::<8>();
-    let tail = tail
-        .first_chunk::<4>()
-        .map(|&[a, b, c, d]| [a, b, c, d, 0, 0, 0, 0]);
+    let rows = dequant.as_chunks::<4>().0;
     let weights =
         kernel.map(|w| pairs(simd_swizzle!(Simd::from_array(w), [0, 1, 2, 3, 0, 1, 2, 3])));
     let mut mask = 0u32;
-    for (q, (rows, out)) in rows
-        .iter()
-        .chain(tail.as_ref())
-        .zip(scratch.as_chunks_mut::<4>().0)
+    for (q, out) in scratch
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .take(h / 2)
         .enumerate()
     {
-        let (pair, used) = row_input_pairs(rows, rescale);
+        let (row_a, row_b) = pair_rows(q, split);
+        let Some(&[a0, a1, a2, a3]) = rows.get(row_a) else {
+            break;
+        };
+        let [b0, b1, b2, b3] = rows.get(row_b).copied().unwrap_or([0; 4]);
+        let (pair, used) = row_input_pairs(&[a0, a1, a2, a3, b0, b1, b2, b3], rescale);
         if used == 0 {
             continue;
         }
@@ -316,14 +382,19 @@ fn row_pass_4(
     mask
 }
 
-/// The column pass of an `M`-tall block, `HM = M / 2`, over the row-pair
+/// The column pass of an `M`-tall block, `HM = M / 2`, over the column-pair
 /// `scratch` of a `w`-wide block, reading only the pairs in `mask`.
+///
+/// `SPLIT` takes the `DCT` symmetry `kernel[r][M - 1 - i] == (-1)^r *
+/// kernel[r][i]`: the even-row pairs sum `E` and the odd-row pairs `O` over
+/// the first `M / 2` outputs, and output `M - 1 - i` is `E - O` where output
+/// `i` is `E + O`.
 #[allow(
     clippy::inline_always,
     reason = "measured § 7.15.4.1 column-pass hot path"
 )]
 #[inline(always)]
-fn col_pass<const M: usize, const HM: usize>(
+fn col_pass<const M: usize, const HM: usize, const SPLIT: bool>(
     kernel: &[[u32; M]; HM],
     scratch: &[i32; 32 * 32],
     w: usize,
@@ -331,27 +402,35 @@ fn col_pass<const M: usize, const HM: usize>(
     shift: u32,
     residual: &mut [i32],
 ) {
-    let mask = mask & ((1 << HM) - 1);
     let emit = |sum: Sum| {
         round(sum, shift)
             .simd_max(Simd::splat(-256))
             .simd_min(Simd::splat(255))
             .to_array()
     };
-    let mut pairs_list = [0usize; 16];
-    let mut count = 0;
-    let mut bits = mask;
-    while bits != 0 {
-        pairs_list[count] = bits.trailing_zeros() as usize;
-        bits &= bits - 1;
-        count += 1;
-    }
-    let pairs_list = &pairs_list[..count];
+    let list = |mask: u32| {
+        let mut list = [0usize; 16];
+        let mut count = 0;
+        let mut bits = mask & ((1 << HM) - 1);
+        while bits != 0 {
+            list[count] = bits.trailing_zeros() as usize;
+            bits &= bits - 1;
+            count += 1;
+        }
+        (list, count)
+    };
+    let (even, odd) = if SPLIT {
+        (list(mask & 0x5555), list(mask & 0xaaaa))
+    } else {
+        (list(mask), ([0; 16], 0))
+    };
+    let (even, odd) = (&even.0[..even.1], &odd.0[..odd.1]);
+    let outputs = if SPLIT { M / 2 } else { M };
     let out = residual.as_chunks_mut::<8>().0;
     if w == 4 {
-        for (r, out) in (0..M).step_by(2).zip(out.iter_mut()) {
+        let pair_sum = |list: &[usize], r: usize| {
             let mut sum = Sum::splat(0);
-            for &q in pairs_list {
+            for &q in list {
                 let Some(z) = scratch.get(q * 4..q * 4 + 4) else {
                     continue;
                 };
@@ -360,26 +439,42 @@ fn col_pass<const M: usize, const HM: usize>(
                 let (a, b) = (kernel[q][r], kernel[q][r + 1]);
                 sum += madd(z, pairs(Simd::from_array([a, a, a, a, b, b, b, b])));
             }
-            *out = emit(sum);
+            sum
+        };
+        for r in (0..outputs).step_by(2) {
+            let (e, o) = (pair_sum(even, r), pair_sum(odd, r));
+            if let Some(out) = out.get_mut(r / 2) {
+                *out = emit(e + o);
+            }
+            if SPLIT && let Some(out) = out.get_mut((M - 2 - r) / 2) {
+                *out = emit(simd_swizzle!(e - o, [4, 5, 6, 7, 0, 1, 2, 3]));
+            }
         }
         return;
     }
     let chunks = w / 8;
-    for c in 0..chunks {
-        for r in (0..M).step_by(4) {
-            let mut sums = [Sum::splat(0); 4];
-            for &q in pairs_list {
-                let Some(z) = scratch.as_chunks::<8>().0.get(q * chunks + c) else {
-                    continue;
-                };
-                let z = pairs(Simd::from_array(*z).cast());
-                for (offset, sum) in sums.iter_mut().enumerate() {
-                    *sum += madd(z, splat_pair(kernel[q][r + offset]));
-                }
+    let sums = |list: &[usize], c: usize, r: usize| {
+        let mut sums = [Sum::splat(0); 4];
+        for &q in list {
+            let Some(z) = scratch.as_chunks::<8>().0.get(q * chunks + c) else {
+                continue;
+            };
+            let z = pairs(Simd::from_array(*z).cast());
+            for (offset, sum) in sums.iter_mut().enumerate() {
+                *sum += madd(z, splat_pair(kernel[q][r + offset]));
             }
-            for (offset, &sum) in sums.iter().enumerate() {
+        }
+        sums
+    };
+    for c in 0..chunks {
+        for r in (0..outputs).step_by(4) {
+            let (e, o) = (sums(even, c, r), sums(odd, c, r));
+            for (offset, (&e, &o)) in e.iter().zip(&o).enumerate() {
                 if let Some(out) = out.get_mut((r + offset) * chunks + c) {
-                    *out = emit(sum);
+                    *out = emit(e + o);
+                }
+                if SPLIT && let Some(out) = out.get_mut((M - 1 - r - offset) * chunks + c) {
+                    *out = emit(e - o);
                 }
             }
         }
