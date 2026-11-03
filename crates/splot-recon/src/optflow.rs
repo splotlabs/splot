@@ -764,12 +764,36 @@ fn unit_16x16_sums(weighted: &[i16; 256], difference: &[i16; 256]) -> [[i32; 5];
         let (u1, v1) = gradient_row(rows, 2 * pair + 1);
         let w0 = Simd::from_array(diff_rows[2 * pair]);
         let w1 = Simd::from_array(diff_rows[2 * pair + 1]);
-        let u_left = simd_swizzle!(u0, u1, [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]);
-        let v_left = simd_swizzle!(v0, v1, [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]);
-        let w_left = simd_swizzle!(w0, w1, [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]);
-        let u_right = simd_swizzle!(u0, u1, [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]);
-        let v_right = simd_swizzle!(v0, v1, [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]);
-        let w_right = simd_swizzle!(w0, w1, [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]);
+        let u_left = simd_swizzle!(
+            u0,
+            u1,
+            [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]
+        );
+        let v_left = simd_swizzle!(
+            v0,
+            v1,
+            [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]
+        );
+        let w_left = simd_swizzle!(
+            w0,
+            w1,
+            [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]
+        );
+        let u_right = simd_swizzle!(
+            u0,
+            u1,
+            [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]
+        );
+        let v_right = simd_swizzle!(
+            v0,
+            v1,
+            [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]
+        );
+        let w_right = simd_swizzle!(
+            w0,
+            w1,
+            [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]
+        );
         let (left, right) = if pair < 4 {
             (&mut top_left, &mut top_right)
         } else {
