@@ -1337,7 +1337,7 @@ pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample>(
         scratch,
         output,
         output_stride,
-        ScalarSubpelOutput(|pred: i32| pred),
+        CompoundI32SubpelOutput,
     )
 }
 
@@ -2072,7 +2072,7 @@ fn compound_first_predictor<'a, T: ReconSample>(
         Some(scratch),
         pred0,
         params.w,
-        ScalarSubpelOutput(|pred: i32| pred),
+        CompoundI32SubpelOutput,
     )?;
     Ok(Some(pred0))
 }

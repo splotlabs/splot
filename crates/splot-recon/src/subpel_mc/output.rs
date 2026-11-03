@@ -137,6 +137,37 @@ impl<O, F: FnMut(i32) -> O> SubpelOutput<O> for ScalarSubpelOutput<F> {
     }
 }
 
+/// The unclipped compound predictors themselves, stored a vector at a time.
+pub(super) struct CompoundI32SubpelOutput;
+
+impl SubpelOutput<i32> for CompoundI32SubpelOutput {
+    const INTER_ROUND1: Option<u32> = Some(INTER_ROUND1_COMPOUND);
+
+    #[allow(clippy::inline_always, reason = "compound intermediate hot path")]
+    #[inline(always)]
+    fn one(&mut self, value: i32) -> i32 {
+        value
+    }
+
+    #[allow(clippy::inline_always, reason = "compound intermediate hot path")]
+    #[inline(always)]
+    fn sixteen(&mut self, values: Simd<i32, 16>, output: &mut [i32]) {
+        output[..16].copy_from_slice(values.as_array()); // splot-copy-ok: publish sixteen compound predictor lanes
+    }
+
+    #[allow(clippy::inline_always, reason = "compound intermediate hot path")]
+    #[inline(always)]
+    fn eight(&mut self, values: Simd<i32, 8>, output: &mut [i32]) {
+        output[..8].copy_from_slice(values.as_array()); // splot-copy-ok: publish eight compound predictor lanes
+    }
+
+    #[allow(clippy::inline_always, reason = "compound intermediate hot path")]
+    #[inline(always)]
+    fn four(&mut self, values: Simd<i32, 4>, output: &mut [i32]) {
+        output[..4].copy_from_slice(values.as_array()); // splot-copy-ok: publish four compound predictor lanes
+    }
+}
+
 pub(super) struct ClippedU16SubpelOutput {
     pub(super) max_sample: i32,
 }
