@@ -11,7 +11,7 @@ use crate::intra_dc_math::{
 };
 use crate::math::round2_i32;
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
-use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
+use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint, simd_swizzle};
 
 const ANGLE_D45: u16 = 45;
 const ANGLE_D67: u16 = 67;
@@ -112,6 +112,23 @@ const DR_INTERP_FILTER: [[i32; DR_INTERP_FILTER_TAPS]; DR_INTERP_FILTER_SHIFTS] 
     [-5, 22, 118, -7],  [-4, 17, 121, -6],  [-3, 13, 123, -5],
     [-2, 8, 125, -3],   [-1, 4, 127, -2],
 ];
+
+/// `DR_INTERP_FILTER[shift]` as two interleaved tap pairs, `[t0, t1]` and
+/// `[t2, t3]` each repeated over 16 lanes, for pairwise multiply-adds.
+static DR_INTERP_PAIRS: [[[i16; 16]; 2]; DR_INTERP_FILTER_SHIFTS] = {
+    let mut pairs = [[[0i16; 16]; 2]; DR_INTERP_FILTER_SHIFTS];
+    let mut shift = 0;
+    while shift < DR_INTERP_FILTER_SHIFTS {
+        let mut lane = 0;
+        while lane < 16 {
+            pairs[shift][0][lane] = DR_INTERP_FILTER[shift][lane % 2] as i16;
+            pairs[shift][1][lane] = DR_INTERP_FILTER[shift][2 + lane % 2] as i16;
+            lane += 1;
+        }
+        shift += 1;
+    }
+    pairs
+};
 
 /// Supported one-sided directional-angle pAngle.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -1540,11 +1557,15 @@ fn write_one_sided_idif_line<O: IntraLaneSample, const CONTIGUOUS: bool>(
         fill_one_sided_idif_line::<O, CONTIGUOUS>(output, step, active, count, last);
         return Ok(());
     }
-    let taps = DR_INTERP_FILTER.get(usize::from(reference.shift)).ok_or(
-        ReconError::ArithmeticOverflow {
-            context: "middle directional angle IDIF shift index",
-        },
-    )?;
+    let shift_error = || ReconError::ArithmeticOverflow {
+        context: "middle directional angle IDIF shift index",
+    };
+    let taps = DR_INTERP_FILTER
+        .get(usize::from(reference.shift))
+        .ok_or_else(shift_error)?;
+    let pairs = DR_INTERP_PAIRS
+        .get(usize::from(reference.shift))
+        .ok_or_else(shift_error)?;
     let first = reference
         .base
         .checked_sub(1)
@@ -1554,7 +1575,7 @@ fn write_one_sided_idif_line<O: IntraLaneSample, const CONTIGUOUS: bool>(
         })?;
     let mut at = 0;
     while active - at >= 8 {
-        let values = idif_above_row_chunk::<8>(edge, first + at, *taps, bit_depth).to_array();
+        let values = idif_row_chunk8(edge, first + at, pairs, bit_depth).to_array();
         store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, &values);
         at += 8;
     }
@@ -1635,7 +1656,7 @@ fn one_sided_idif_line_chunk8(
         let start = logical_idif_edge_offset(reference.base, edge.len())? + at;
         return Ok(Simd::from_slice(&edge[start..start + 8]));
     }
-    let taps = DR_INTERP_FILTER.get(usize::from(reference.shift)).ok_or(
+    let pairs = DR_INTERP_PAIRS.get(usize::from(reference.shift)).ok_or(
         ReconError::ArithmeticOverflow {
             context: "middle directional angle IDIF shift index",
         },
@@ -1647,12 +1668,7 @@ fn one_sided_idif_line_chunk8(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "middle directional angle IDIF tap index",
         })?;
-    Ok(idif_above_row_chunk::<8>(
-        edge,
-        first + at,
-        *taps,
-        bit_depth,
-    ))
+    Ok(idif_row_chunk8(edge, first + at, pairs, bit_depth))
 }
 
 /// Transposes an 8x8 block: three rounds of interleaving row `i` with row
@@ -1709,6 +1725,32 @@ fn fill_one_sided_idif_line<O: IntraLaneSample, const CONTIGUOUS: bool>(
     {
         *slot = value;
     }
+}
+
+/// Eight [`idif_above_row_chunk`] samples as two pairwise multiply-adds of
+/// the interleaved windows `(edge[i], edge[i + 1])` and `(edge[i + 2],
+/// edge[i + 3])` with the tap pairs of [`DR_INTERP_PAIRS`].
+#[inline]
+fn idif_row_chunk8(
+    edge: &[u16],
+    first: usize,
+    pairs: &[[i16; 16]; 2],
+    bit_depth: BitDepth,
+) -> Simd<u16, 8> {
+    const INTERLEAVE: [usize; 16] = [0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15];
+    let window = &edge[first..first + 8 + DR_INTERP_FILTER_TAPS - 1];
+    let load = |tap: usize| Simd::<u16, 8>::from_slice(&window[tap..tap + 8]).cast::<i16>();
+    let madd = |x: Simd<i16, 16>, w: &[i16; 16]| {
+        let product = x.cast::<i32>() * Simd::from_array(*w).cast::<i32>();
+        simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
+            + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15])
+    };
+    let sum = madd(simd_swizzle!(load(0), load(1), INTERLEAVE), &pairs[0])
+        + madd(simd_swizzle!(load(2), load(3), INTERLEAVE), &pairs[1]);
+    ((sum + Simd::splat(1 << (DR_INTERP_FILTER_ROUND - 1))) >> i32::from(DR_INTERP_FILTER_ROUND))
+        .simd_max(Simd::splat(0))
+        .simd_min(Simd::splat(i32::from(bit_depth.max_sample())))
+        .cast()
 }
 
 /// `LANES` adjacent § 7.13.2.8 4-tap IDIF samples over `edge[first..]`.
@@ -2019,14 +2061,18 @@ fn write_middle_idif_run<T: ReconSample, O: IntraLaneSample>(
         O::store(&window[1..=count], out);
         return Ok(());
     }
-    let taps = DR_INTERP_FILTER.get(usize::from(reference.shift)).ok_or(
-        ReconError::ArithmeticOverflow {
-            context: "middle directional angle IDIF shift index",
-        },
-    )?;
+    let shift_error = || ReconError::ArithmeticOverflow {
+        context: "middle directional angle IDIF shift index",
+    };
+    let taps = DR_INTERP_FILTER
+        .get(usize::from(reference.shift))
+        .ok_or_else(shift_error)?;
+    let pairs = DR_INTERP_PAIRS
+        .get(usize::from(reference.shift))
+        .ok_or_else(shift_error)?;
     let mut at = 0;
     while count - at >= 8 {
-        let values = idif_above_row_chunk::<8>(window, at, *taps, params.bit_depth);
+        let values = idif_row_chunk8(window, at, pairs, params.bit_depth);
         O::store(values.as_array(), &mut out[at..at + 8]);
         at += 8;
     }
