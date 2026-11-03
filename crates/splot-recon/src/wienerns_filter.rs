@@ -951,7 +951,7 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
 /// Lanes `0..4, 8..12` and `4..8, 12..16` of two vectors interleaved, as an
 /// in-lane AVX2 unpack gives them.
 #[inline]
-fn interleave_pairs(a: Simd<i16, 16>, b: Simd<i16, 16>) -> [Simd<i16, 16>; 2] {
+pub(crate) fn interleave_pairs(a: Simd<i16, 16>, b: Simd<i16, 16>) -> [Simd<i16, 16>; 2] {
     [
         simd_swizzle!(
             a,
@@ -968,7 +968,7 @@ fn interleave_pairs(a: Simd<i16, 16>, b: Simd<i16, 16>) -> [Simd<i16, 16>; 2] {
 
 /// Sums of adjacent products, written so that LLVM emits one `pmaddwd`.
 #[inline]
-fn multiply_add_pairs(x: Simd<i16, 16>, w: Simd<i16, 16>) -> Simd<i32, 8> {
+pub(crate) fn multiply_add_pairs(x: Simd<i16, 16>, w: Simd<i16, 16>) -> Simd<i32, 8> {
     let product = x.cast::<i32>() * w.cast::<i32>();
     simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
         + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15])
