@@ -40,9 +40,9 @@ impl CdefLumaSegment {
     /// samples wide) and records each block's window range. Returns `false`,
     /// with every range set to `[0, u16::MAX]`, when the tap reach leaves
     /// the rows.
-    pub fn gather(
+    pub fn gather<T: crate::ReconSample>(
         &mut self,
-        samples: &[u16],
+        samples: &[T],
         width: usize,
         stride: usize,
         origin: (usize, usize),
@@ -91,10 +91,10 @@ impl CdefPairSegment {
     /// [`CdefLumaSegment::gather`] for the two chroma planes `u` and `v`,
     /// which share `width` and `stride`. A failed gather sets every range to
     /// `u16::MAX`.
-    pub fn gather(
+    pub fn gather<T: crate::ReconSample>(
         &mut self,
-        u: &[u16],
-        v: &[u16],
+        u: &[T],
+        v: &[T],
         width: usize,
         stride: usize,
         origin: (usize, usize),
@@ -124,13 +124,13 @@ impl CdefPairSegment {
 /// `y0 - TAP_REACH` on, as one slice whose row `r` starts at `r * stride`,
 /// provided they lie inside `width` and `samples` and rows `stride` apart do
 /// not overlap (`stride` is at least `width`).
-fn reach_rows(
-    samples: &[u16],
+fn reach_rows<T>(
+    samples: &[T],
     width: usize,
     stride: usize,
     (x0, y0): (usize, usize),
     (span, rows): (usize, usize),
-) -> Option<&[u16]> {
+) -> Option<&[T]> {
     let left = x0.checked_sub(TAP_REACH)?;
     if stride < width || left.checked_add(span)? > width {
         return None;
@@ -143,10 +143,20 @@ fn reach_rows(
     samples.get(first..)?.get(..len)
 }
 
+/// Eight samples widened to `u16` lanes.
+#[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
+#[inline(always)]
+fn widen8<T: crate::ReconSample>(samples: &[T]) -> Option<Simd<u16, 8>> {
+    if let Some(samples) = T::u8_slice(samples) {
+        return Some(Simd::<u8, 8>::from_array(*samples.first_chunk()?).cast());
+    }
+    Some(Simd::from_array(*T::u16_slice(samples)?.first_chunk()?))
+}
+
 /// Copies the luma segment's tap rows into `pad` and returns the least and
 /// greatest sample of each block's 12x12 window.
-fn gather_luma(
-    samples: &[u16],
+fn gather_luma<T: crate::ReconSample>(
+    samples: &[T],
     width: usize,
     stride: usize,
     pad: &mut [u16; LUMA_SEGMENT_AREA],
@@ -165,7 +175,7 @@ fn gather_luma(
             .get_mut(row * CDEF_SEGMENT_STRIDE..)?
             .first_chunk_mut::<CDEF_SEGMENT_STRIDE>()?;
         for (chunk, start) in STARTS.into_iter().enumerate() {
-            let lanes = Simd::<u16, 8>::from_slice(&src[start..start + 8]);
+            let lanes = widen8(&src[start..start + 8])?;
             lanes.copy_to_slice(&mut dst[start..start + 8]);
             min[chunk] = min[chunk].simd_min(lanes);
             max[chunk] = max[chunk].simd_max(lanes);
@@ -191,9 +201,9 @@ fn gather_luma(
 /// planes' window ranges. Block `b` covers plane columns `4b..4b + 8`: the
 /// three 8-column chunks of a row hold blocks 0, 2 and 3, and block 1 is the
 /// upper half of chunk 0 and the lower half of chunk 1.
-fn gather_pair(
-    u_samples: &[u16],
-    v_samples: &[u16],
+fn gather_pair<T: crate::ReconSample>(
+    u_samples: &[T],
+    v_samples: &[T],
     width: usize,
     stride: usize,
     pad: &mut [u16; PAIR_SEGMENT_AREA],
@@ -212,8 +222,8 @@ fn gather_pair(
             .first_chunk_mut::<CDEF_PAIR_SEGMENT_STRIDE>()?;
         for (chunk, start) in [0, 8, PAIR_SPAN - 8].into_iter().enumerate() {
             let planes = [
-                Simd::<u16, 8>::from_slice(&u_row[start..start + 8]),
-                Simd::from_slice(&v_row[start..start + 8]),
+                widen8(&u_row[start..start + 8])?,
+                widen8(&v_row[start..start + 8])?,
             ];
             for plane in 0..2 {
                 min[plane][chunk] = min[plane][chunk].simd_min(planes[plane]);
