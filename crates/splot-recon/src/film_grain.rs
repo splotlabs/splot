@@ -446,7 +446,7 @@ fn build_noise_image(
                     stripe_row_slice(buffer, stripe_width, stripe_row, plane_widths[plane]);
                 let blended = grain.model.overlap_flag && luma_num > 0 && stripe_row < blend_rows;
                 if !blended {
-                    destination.extend_from_slice(source);
+                    destination.extend_from_slice(source); // splot-copy-ok: assembled film-grain noise plane row
                     continue;
                 }
                 let old_row = stripe_row
@@ -470,12 +470,27 @@ fn build_noise_image(
                 } else {
                     22
                 };
-                for (&old_sample, &new_sample) in old.iter().zip(source) {
+                let mut x = 0;
+                while x + 16 <= plane_widths[plane] {
+                    let lanes = blended_stripe_lanes(
+                        &old[x..],
+                        &source[x..],
+                        old_weight,
+                        new_weight,
+                        grain_min,
+                        grain_max,
+                    );
+                    destination.extend_from_slice(&lanes.to_array()); // splot-copy-ok: blended film-grain stripe-boundary row
+                    x += 16;
+                }
+                for &old_sample in &old[x..] {
+                    let new_sample = source[x];
                     let sample = round2(
                         i32::from(old_sample) * old_weight + i32::from(new_sample) * new_weight,
                         5,
                     );
                     destination.push(sample.clamp(grain_min, grain_max) as i16);
+                    x += 1;
                 }
             }
         }
@@ -489,6 +504,40 @@ fn build_noise_image(
 
 fn stripe_row_slice(stripe: &[i16], stripe_width: usize, row: usize, width: usize) -> &[i16] {
     &stripe[row * stripe_width..row * stripe_width + width]
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn blended_stripe_lanes(
+    old: &[i16],
+    source: &[i16],
+    old_weight: i32,
+    new_weight: i32,
+    grain_min: i32,
+    grain_max: i32,
+) -> Simd<i16, 16> {
+    let weights: Simd<i16, 16> = Simd::from_array(core::array::from_fn(|lane| {
+        if lane % 2 == 0 {
+            old_weight as i16
+        } else {
+            new_weight as i16
+        }
+    }));
+    let old_lanes = Simd::<i16, 16>::from_slice(old);
+    let new_lanes = Simd::<i16, 16>::from_slice(source);
+    let [low, high] = interleave_pairs(old_lanes, new_lanes);
+    let low = multiply_add_pairs(low, weights);
+    let high = multiply_add_pairs(high, weights);
+    let product = simd_swizzle!(
+        low,
+        high,
+        [0, 1, 2, 3, 8, 9, 10, 11, 4, 5, 6, 7, 12, 13, 14, 15]
+    );
+    let blended = (product + Simd::splat(16)) >> Simd::splat(5);
+    let blended = blended
+        .simd_max(Simd::splat(grain_min))
+        .simd_min(Simd::splat(grain_max));
+    blended.cast::<i16>()
 }
 
 struct Stripe {
@@ -600,11 +649,11 @@ fn fill_stripe_plane(
         let destination = row * stripe.widths[plane] + dst_col;
         let target = &mut stripe.planes[plane][destination..destination + block_width];
         if blended_cols == 0 {
-            target.copy_from_slice(source);
+            target.copy_from_slice(source); // splot-copy-ok: grain block template publication
             continue;
         }
         let old = [i32::from(target[0]), i32::from(target[1])];
-        target.copy_from_slice(source);
+        target.copy_from_slice(source); // splot-copy-ok: grain block template publication
         for col in 0..blended_cols {
             let sample = if plane_sub_x == 0 {
                 if col == 0 {
