@@ -380,65 +380,124 @@ fn multiply_add_pairs(x: Simd<i16, 16>, w: Simd<i16, 16>) -> Simd<i32, 8> {
         + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15])
 }
 
-/// The clipped sum of class-0 tap `K` for every lane of row `ROW`, each lane
-/// reading the tap its class moves `K` to.
+/// The samples of tap `TAP` for row `ROW` minus the center samples: the tap's
+/// two mirrored reads.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn sym_comb<const K: usize, const ROW: usize>(
+fn tap_diffs<const TAP: usize, const ROW: usize>(
     window: &[&[u16; 28]; WINDOW_ROWS],
     center: Simd<i16, 16>,
-    (transposed, mirrored): (Simd<i16, 16>, Simd<i16, 16>),
-    &[low, high]: &[Simd<i16, 16>; 2],
+) -> (Simd<i16, 16>, Simd<i16, 16>) {
+    let (dy, dx) = GDF_COORDS[TAP];
+    let row = TAP_REACH + ROW;
+    (
+        tap_samples::<16, 28>(
+            window[row - dy as usize],
+            (TAP_REACH as isize - dx) as usize,
+        ) - center,
+        tap_samples::<16, 28>(
+            window[row + dy as usize],
+            (TAP_REACH as isize + dx) as usize,
+        ) - center,
+    )
+}
+
+/// The clipped sum of `above` and `below`, each within tap `TAP`'s bounds.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn clipped_sum(
+    above: Simd<i16, 16>,
+    below: Simd<i16, 16>,
+    bounds: &[Simd<i16, 16>; 2],
 ) -> Simd<i16, 16> {
-    let diffs = |tap: usize| {
-        let (dy, dx) = GDF_COORDS[tap];
-        let row = TAP_REACH + ROW;
-        [
-            tap_samples::<16, 28>(
-                window[row - dy as usize],
-                (TAP_REACH as isize - dx) as usize,
-            ) - center,
-            tap_samples::<16, 28>(
-                window[row + dy as usize],
-                (TAP_REACH as isize + dx) as usize,
-            ) - center,
-        ]
-    };
-    let pick = |mask: Simd<i16, 16>, [a, b]: [Simd<i16, 16>; 2], [c, d]: [Simd<i16, 16>; 2]| {
-        [a ^ ((a ^ c) & mask), b ^ ((b ^ d) & mask)]
-    };
-    let (t, m, tm) = (class_tap(K, 1), class_tap(K, 2), class_tap(K, 3));
-    let [above, below] = if t == K && m == K {
-        diffs(K)
-    } else if t == K {
-        pick(mirrored, diffs(K), diffs(m))
-    } else if m == K {
-        pick(transposed, diffs(K), diffs(t))
-    } else {
-        let plain = pick(mirrored, diffs(K), diffs(m));
-        pick(transposed, plain, pick(mirrored, diffs(t), diffs(tm)))
-    };
+    let low = bounds[0];
+    let high = bounds[1];
     (above.simd_max(low).simd_min(high) + below.simd_max(low).simd_min(high))
         .simd_max(Simd::splat(-512))
         .simd_min(Simd::splat(511))
 }
 
-/// Expands `$body` once per `SYM_PAIRS` entry with `$p` bound as a constant.
-macro_rules! for_each_sym_pair {
-    ($p:ident => $body:block) => {
-        for_each_sym_pair!(@ $p $body; 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
+/// The clipped sums of taps `K` and `T`, whose candidate samples coincide:
+/// each lane of one reads the tap its class moves `K` to, so the two combs
+/// select between the same two diff pairs. `select` is the class mask that
+/// sends `K`'s lanes to `T` (`transposed`, or `mirrored` when `K`'s transpose
+/// is itself and its mirror is `T`).
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn paired_combs<const K: usize, const T: usize, const ROW: usize>(
+    window: &[&[u16; 28]; WINDOW_ROWS],
+    center: Simd<i16, 16>,
+    select: Simd<i16, 16>,
+    params: &GdfSymParams,
+) -> [Simd<i16, 16>; 2] {
+    let (above, below) = tap_diffs::<K, ROW>(window, center);
+    let (t_above, t_below) = tap_diffs::<T, ROW>(window, center);
+    let pick_k_above = above ^ ((above ^ t_above) & select);
+    let pick_t_above = t_above ^ ((above ^ t_above) & select);
+    let pick_k_below = below ^ ((below ^ t_below) & select);
+    let pick_t_below = t_below ^ ((below ^ t_below) & select);
+    [
+        clipped_sum(pick_k_above, pick_k_below, &params.bounds[K]),
+        clipped_sum(pick_t_above, pick_t_below, &params.bounds[T]),
+    ]
+}
+
+/// The clipped sums of the tap cycle `A`, `B`, `C`, `D`, whose four combs
+/// select among the same four diff pairs: mirroring swaps `A`/`B` and
+/// `C`/`D`, transposing swaps the pairs.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn cycle_combs<const A: usize, const B: usize, const C: usize, const D: usize, const ROW: usize>(
+    window: &[&[u16; 28]; WINDOW_ROWS],
+    center: Simd<i16, 16>,
+    (transposed, mirrored): (Simd<i16, 16>, Simd<i16, 16>),
+    params: &GdfSymParams,
+) -> [Simd<i16, 16>; 4] {
+    let (a_above, a_below) = tap_diffs::<A, ROW>(window, center);
+    let (b_above, b_below) = tap_diffs::<B, ROW>(window, center);
+    let (c_above, c_below) = tap_diffs::<C, ROW>(window, center);
+    let (d_above, d_below) = tap_diffs::<D, ROW>(window, center);
+    let select4 = |a: Simd<i16, 16>, b: Simd<i16, 16>, c: Simd<i16, 16>, d: Simd<i16, 16>| {
+        let pick_ab = a ^ ((a ^ b) & mirrored);
+        let pick_ba = b ^ ((a ^ b) & mirrored);
+        let pick_cd = c ^ ((c ^ d) & mirrored);
+        let pick_dc = d ^ ((c ^ d) & mirrored);
+        let pick_a = pick_ab ^ ((pick_ab ^ pick_cd) & transposed);
+        let pick_c = pick_cd ^ ((pick_ab ^ pick_cd) & transposed);
+        let pick_b = pick_ba ^ ((pick_ba ^ pick_dc) & transposed);
+        let pick_d = pick_dc ^ ((pick_ba ^ pick_dc) & transposed);
+        [pick_a, pick_b, pick_c, pick_d]
     };
-    (@ $p:ident $body:block; $($pair:literal)*) => {
-        $({
-            const $p: usize = $pair;
-            $body
-        })*
-    };
+    let above = select4(a_above, b_above, c_above, d_above);
+    let below = select4(a_below, b_below, c_below, d_below);
+    [
+        clipped_sum(above[0], below[0], &params.bounds[A]),
+        clipped_sum(above[1], below[1], &params.bounds[B]),
+        clipped_sum(above[2], below[2], &params.bounds[C]),
+        clipped_sum(above[3], below[3], &params.bounds[D]),
+    ]
+}
+
+/// Adds the weighted comb pair `a`/`b` of `SYM_PAIRS` entry `P` to its sum.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn add_pair<const P: usize>(
+    sums: &mut [[Simd<i32, 8>; 2]; 3],
+    a: Simd<i16, 16>,
+    b: Simd<i16, 16>,
+    params: &GdfSymParams,
+) {
+    let weights = params.pair_weights[P];
+    for (sum, half) in sums[SYM_PAIRS[P].2].iter_mut().zip(interleave_pairs(a, b)) {
+        *sum += multiply_add_pairs(half, weights);
+    }
 }
 
 /// Filters in place row `ROW` of 16 samples of any class mix. Not inlined:
 /// across both rows LLVM would hoist the widened weights out of the
-/// multiply-adds and spill them.
+/// multiply-adds and spill them. Taps are grouped so that each group's combs
+/// share their candidate samples and selects: a tap and its transpose read
+/// mirrored offsets, and taps `4`, `6`, `7`, `11` form a cycle.
 #[inline(never)]
 fn sym_row<const ROW: usize>(
     window: &[&[u16; 28]; WINDOW_ROWS],
@@ -460,16 +519,30 @@ fn sym_row<const ROW: usize>(
         split(Simd::splat(params.bias[1])),
         split(gradient),
     ];
-    for_each_sym_pair!(P => {
-        const A: usize = SYM_PAIRS[P].0;
-        const B: usize = SYM_PAIRS[P].1;
-        let a = sym_comb::<A, ROW>(window, center, masks, &params.bounds[A]);
-        let b = sym_comb::<B, ROW>(window, center, masks, &params.bounds[B]);
-        let weights = params.pair_weights[P];
-        for (sum, half) in sums[SYM_PAIRS[P].2].iter_mut().zip(interleave_pairs(a, b)) {
-            *sum += multiply_add_pairs(half, weights);
-        }
-    });
+    let (transposed, mirrored) = masks;
+    let [tap0, tap12] = paired_combs::<0, 12, ROW>(window, center, transposed, params);
+    let [tap1, tap13] = paired_combs::<1, 13, ROW>(window, center, transposed, params);
+    add_pair::<0>(&mut sums, tap0, tap1, params);
+    add_pair::<1>(&mut sums, tap12, tap13, params);
+    let [tap2, tap14] = paired_combs::<2, 14, ROW>(window, center, transposed, params);
+    let [tap3, tap15] = paired_combs::<3, 15, ROW>(window, center, transposed, params);
+    add_pair::<2>(&mut sums, tap2, tap3, params);
+    add_pair::<3>(&mut sums, tap14, tap15, params);
+    add_pair::<4>(&mut sums, tap3, tap15, params);
+    let [tap4, tap6, tap7, tap11] = cycle_combs::<4, 6, 7, 11, ROW>(window, center, masks, params);
+    add_pair::<5>(&mut sums, tap4, tap6, params);
+    add_pair::<6>(&mut sums, tap7, tap11, params);
+    let [tap8, tap10] = paired_combs::<8, 10, ROW>(window, center, mirrored, params);
+    add_pair::<7>(&mut sums, tap8, tap10, params);
+    add_pair::<8>(&mut sums, tap8, tap10, params);
+    let [tap9, tap17] = paired_combs::<9, 17, ROW>(window, center, transposed, params);
+    add_pair::<9>(&mut sums, tap9, tap17, params);
+    add_pair::<10>(&mut sums, tap9, tap17, params);
+    add_pair::<11>(&mut sums, tap9, tap17, params);
+    let [tap5, tap16] = paired_combs::<5, 16, ROW>(window, center, transposed, params);
+    add_pair::<12>(&mut sums, tap5, tap16, params);
+    add_pair::<13>(&mut sums, tap5, tap16, params);
+    add_pair::<14>(&mut sums, tap5, tap16, params);
     let base = Simd::from_array(*output);
     let residual = if block.ref_dst_idx == GDF_INTRA_REF_DST {
         sym_residual::<8, 4096>(&GDF_INTRA_ERROR_I16[block.qp_idx], sums, block)
