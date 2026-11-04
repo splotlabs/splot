@@ -54,7 +54,10 @@ fn zero_buffer<T: Default + Copy>(
 
 /// A transform block's level grid with the length of its last used
 /// extent, and its sign and quantised-coefficient buffers.
-type CoeffBlockBuffers = (Vec<u8>, usize, Vec<i8>, Vec<i32>);
+///
+/// The two extents are one past the highest index the last block wrote, so
+/// the next block only re-zeroes that dirt instead of the whole arrays.
+type CoeffBlockBuffers = (Vec<u8>, usize, Vec<i8>, usize, Vec<i32>, usize);
 
 std::thread_local! {
     /// One transform block's buffers, reused by the next block on this worker.
@@ -71,7 +74,9 @@ impl Drop for TransformCoeffBlockState {
                 core::mem::take(&mut self.level),
                 self.level_len,
                 core::mem::take(&mut self.quant_sign),
+                self.sign_end,
                 core::mem::take(&mut self.quant),
+                self.quant_end,
             )));
         });
     }
@@ -89,6 +94,8 @@ pub(crate) struct TransformCoeffBlockState {
     quant: Vec<i32>,
     /// One past the last nonzero entry of `quant`.
     quant_end: usize,
+    /// One past the highest `quant_sign` index the block wrote.
+    sign_end: usize,
 }
 
 impl TransformCoeffBlockState {
@@ -120,7 +127,7 @@ impl TransformCoeffBlockState {
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, TileCoeffStateError> {
         let allocation = Self::allocation(width, height)?;
         let level_len = LEVEL_STRIDE * (height + LEVEL_GRID_PAD);
-        let (mut level, used_len, mut quant_sign, quant) =
+        let (mut level, used_len, mut quant_sign, sign_end, mut quant, quant_end) =
             COEFF_BLOCK_BUFFERS.with(Cell::take).unwrap_or_default();
         if level.len() == LEVEL_GRID_LEN {
             if let Some(used) = level.get_mut(..used_len.max(level_len)) {
@@ -129,7 +136,14 @@ impl TransformCoeffBlockState {
         } else {
             level = zero_buffer(level, LEVEL_GRID_LEN)?;
         }
-        let quant = zero_buffer(quant, allocation)?;
+        if quant.len() > allocation {
+            quant.truncate(allocation);
+        }
+        let dirty = quant_end.min(quant.len());
+        quant[..dirty].fill(0);
+        if quant.len() < allocation {
+            quant.resize(allocation, 0);
+        }
         quant_sign.clear();
         Ok(Self {
             width,
@@ -137,16 +151,26 @@ impl TransformCoeffBlockState {
             level_len,
             level,
             quant_sign,
+            sign_end,
             quant,
             quant_end: 0,
         })
     }
 
-    pub(crate) fn ensure_quant_sign(&mut self) -> Result<(), TileCoeffStateError> {
+    pub(crate) fn ensure_quant_sign(&mut self) {
         if self.quant_sign.is_empty() {
-            self.quant_sign = zero_buffer(core::mem::take(&mut self.quant_sign), self.level_len)?;
+            let mut buffer = core::mem::take(&mut self.quant_sign);
+            if buffer.len() > self.level_len {
+                buffer.truncate(self.level_len);
+            }
+            let dirty = self.sign_end.min(buffer.len());
+            buffer[..dirty].fill(0);
+            if buffer.len() < self.level_len {
+                buffer.resize(self.level_len, 0);
+            }
+            self.quant_sign = buffer;
+            self.sign_end = 0;
         }
-        Ok(())
     }
 
     #[must_use]
@@ -247,8 +271,9 @@ impl TransformCoeffBlockState {
         value: i8,
     ) -> Result<(), TileCoeffStateError> {
         let idx = self.index(row, col)?;
-        self.ensure_quant_sign()?;
+        self.ensure_quant_sign();
         self.quant_sign[idx] = value;
+        self.sign_end = self.sign_end.max(idx + 1);
         Ok(())
     }
 

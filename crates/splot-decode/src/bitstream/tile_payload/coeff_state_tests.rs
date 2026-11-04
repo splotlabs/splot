@@ -81,7 +81,7 @@ fn transform_block_fsc_state_allocates_zeroed_quant_sign() {
     let padded_len = state.level_stride() * (3 + LEVEL_GRID_PAD);
     state.quant_sign.reserve(padded_len);
     let retained = state.quant_sign.as_ptr();
-    state.ensure_quant_sign().unwrap();
+    state.ensure_quant_sign();
     assert_eq!(state.quant_sign.as_ptr(), retained);
 
     assert_eq!(state.quant_sign, vec![0; padded_len]);
