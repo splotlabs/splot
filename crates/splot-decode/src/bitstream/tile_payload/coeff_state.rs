@@ -110,6 +110,7 @@ impl TransformCoeffBlockState {
             quant_sign: Vec::new(),
             quant: Vec::new(),
             quant_end: 0,
+            sign_end: 0,
         }
     }
 
