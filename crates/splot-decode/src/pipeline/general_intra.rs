@@ -633,7 +633,7 @@ fn parse_one_general_intra_chroma_part_block(
     let residual_plan = GeneralIntraResidualPlan::chroma(block_ctx, chroma_plan, lossless_luma_fsc)
         .map_err(general_intra_residual_plan_error)?;
     let command = parse_general_intra_residual_plan(
-        residual_plan,
+        &residual_plan,
         work_unit,
         symbols,
         coeff_ctx,
@@ -694,7 +694,7 @@ fn parse_one_general_intra_rect_block(
     )
     .map_err(general_intra_residual_plan_error)?;
     let command = parse_general_intra_residual_plan(
-        residual_plan,
+        &residual_plan,
         work_unit,
         symbols,
         coeff_ctx,
@@ -1018,9 +1018,9 @@ pub(crate) fn wide_angle_mapped_p_angle(width: usize, height: usize, p_angle: i3
     }
 }
 
-#[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn parse_general_intra_residual_plan(
-    residual_plan: GeneralIntraResidualPlan,
+    residual_plan: &GeneralIntraResidualPlan,
     work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,

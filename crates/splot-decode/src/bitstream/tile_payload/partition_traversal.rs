@@ -747,6 +747,7 @@ fn checked_shl(
     Ok(shifted)
 }
 
+#[cfg(test)]
 pub(crate) fn checked_scaled_add(
     coordinate: &'static str,
     base: usize,

@@ -754,22 +754,63 @@ fn gradient_i16(
 /// is one gradient unit, in the order of [`derive_optflow_mv_deltas_into`].
 fn unit_16x16_sums(weighted: &[i16; 256], difference: &[i16; 256]) -> [[i32; 5]; 4] {
     let (rows, _) = weighted.as_chunks::<16>();
-    let mut sums = [[Simd::<i32, 8>::splat(0); 5]; 4];
-    for (row, w) in difference.as_chunks::<16>().0.iter().enumerate() {
-        let (u, v) = gradient_row(rows, row);
-        let w = Simd::from_array(*w).cast::<i32>();
-        let [top_left, top_right, bottom_left, bottom_right] = &mut sums;
-        let (left, right) = if row < 8 {
-            (top_left, top_right)
+    let (diff_rows, _) = difference.as_chunks::<16>();
+    let mut top_left = [Simd::<i32, 8>::splat(0); 5];
+    let mut top_right = [Simd::<i32, 8>::splat(0); 5];
+    let mut bottom_left = [Simd::<i32, 8>::splat(0); 5];
+    let mut bottom_right = [Simd::<i32, 8>::splat(0); 5];
+    for pair in 0..8 {
+        let (u0, v0) = gradient_row(rows, 2 * pair);
+        let (u1, v1) = gradient_row(rows, 2 * pair + 1);
+        let w0 = Simd::from_array(diff_rows[2 * pair]);
+        let w1 = Simd::from_array(diff_rows[2 * pair + 1]);
+        let u_left = simd_swizzle!(
+            u0,
+            u1,
+            [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]
+        );
+        let v_left = simd_swizzle!(
+            v0,
+            v1,
+            [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]
+        );
+        let w_left = simd_swizzle!(
+            w0,
+            w1,
+            [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 18, 19, 20, 21, 22, 23]
+        );
+        let u_right = simd_swizzle!(
+            u0,
+            u1,
+            [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]
+        );
+        let v_right = simd_swizzle!(
+            v0,
+            v1,
+            [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]
+        );
+        let w_right = simd_swizzle!(
+            w0,
+            w1,
+            [8, 9, 10, 11, 12, 13, 14, 15, 24, 25, 26, 27, 28, 29, 30, 31]
+        );
+        let (left, right) = if pair < 4 {
+            (&mut top_left, &mut top_right)
         } else {
-            (bottom_left, bottom_right)
+            (&mut bottom_left, &mut bottom_right)
         };
-        let low = |lanes: Simd<i32, 16>| simd_swizzle!(lanes, [0, 1, 2, 3, 4, 5, 6, 7]);
-        let high = |lanes: Simd<i32, 16>| simd_swizzle!(lanes, [8, 9, 10, 11, 12, 13, 14, 15]);
-        accumulate_unit_sums(left, low(u), low(v), low(w));
-        accumulate_unit_sums(right, high(u), high(v), high(w));
+        left[0] += multiply_add_pairs(u_left, u_left);
+        left[1] += multiply_add_pairs(v_left, v_left);
+        left[2] += multiply_add_pairs(u_left, v_left);
+        left[3] += multiply_add_pairs(u_left, w_left);
+        left[4] += multiply_add_pairs(v_left, w_left);
+        right[0] += multiply_add_pairs(u_right, u_right);
+        right[1] += multiply_add_pairs(v_right, v_right);
+        right[2] += multiply_add_pairs(u_right, v_right);
+        right[3] += multiply_add_pairs(u_right, w_right);
+        right[4] += multiply_add_pairs(v_right, w_right);
     }
-    sums.map(reduce_unit_sums)
+    [top_left, top_right, bottom_left, bottom_right].map(reduce_unit_sums)
 }
 
 /// The horizontal and vertical § 7.13.3.9 gradients of `row` in one gradient
@@ -779,31 +820,16 @@ fn unit_16x16_sums(weighted: &[i16; 256], difference: &[i16; 256]) -> [[i32; 5];
 /// `±1024` and every gradient fits the `i16` the planes would hold.
 #[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
 #[inline(always)]
-fn gradient_row<const N: usize>(rows: &[[i16; N]], row: usize) -> (Simd<i32, N>, Simd<i32, N>) {
+fn gradient_row<const N: usize>(rows: &[[i16; N]], row: usize) -> (Simd<i16, N>, Simd<i16, N>) {
     let last = rows.len() - 1;
     let lanes = |row: usize| Simd::<i16, N>::from_array(rows[row]).cast::<i32>();
-    let u = Simd::from_array(horizontal_gradient_lanes(&rows[row])).cast::<i32>();
+    let u = Simd::from_array(horizontal_gradient_lanes(&rows[row]));
     let mut value = (lanes((row + 1).min(last)) - lanes(row.saturating_sub(1))) * Simd::splat(42)
         - (lanes((row + 2).min(last)) - lanes(row.saturating_sub(2))) * Simd::splat(5);
     if row == 0 || row == last {
         value += value;
     }
-    (u, round2_signed_simd(value, 7))
-}
-
-#[allow(clippy::inline_always, reason = "per-row optical-flow hot path")]
-#[inline(always)]
-fn accumulate_unit_sums(
-    sums: &mut [Simd<i32, 8>; 5],
-    u: Simd<i32, 8>,
-    v: Simd<i32, 8>,
-    w: Simd<i32, 8>,
-) {
-    sums[0] += u * u;
-    sums[1] += v * v;
-    sums[2] += u * v;
-    sums[3] += u * w;
-    sums[4] += v * w;
+    (u, round2_signed_simd(value, 7).cast::<i16>())
 }
 
 fn reduce_unit_sums(sums: [Simd<i32, 8>; 5]) -> [i32; 5] {

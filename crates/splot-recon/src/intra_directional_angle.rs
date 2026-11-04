@@ -1574,6 +1574,11 @@ fn write_one_sided_idif_line<O: IntraLaneSample, const CONTIGUOUS: bool>(
             context: "middle directional angle IDIF tap index",
         })?;
     let mut at = 0;
+    while active - at >= 16 {
+        let values = idif_row_chunk16(edge, first + at, pairs, bit_depth).to_array();
+        store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, &values);
+        at += 16;
+    }
     while active - at >= 8 {
         let values = idif_row_chunk8(edge, first + at, pairs, bit_depth).to_array();
         store_one_sided_idif_line::<O, CONTIGUOUS>(output, step, at, &values);
@@ -1725,6 +1730,23 @@ fn fill_one_sided_idif_line<O: IntraLaneSample, const CONTIGUOUS: bool>(
     {
         *slot = value;
     }
+}
+
+/// Sixteen [`idif_above_row_chunk`] samples as two pairwise multiply-adds.
+#[inline]
+fn idif_row_chunk16(
+    edge: &[u16],
+    first: usize,
+    pairs: &[[i16; 16]; 2],
+    bit_depth: BitDepth,
+) -> Simd<u16, 16> {
+    let lo = idif_row_chunk8(edge, first, pairs, bit_depth);
+    let hi = idif_row_chunk8(edge, first + 8, pairs, bit_depth);
+    simd_swizzle!(
+        lo,
+        hi,
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    )
 }
 
 /// Eight [`idif_above_row_chunk`] samples as two pairwise multiply-adds of
@@ -2071,6 +2093,11 @@ fn write_middle_idif_run<T: ReconSample, O: IntraLaneSample>(
         .get(usize::from(reference.shift))
         .ok_or_else(shift_error)?;
     let mut at = 0;
+    while count - at >= 16 {
+        let values = idif_row_chunk16(window, at, pairs, params.bit_depth);
+        O::store(values.as_array(), &mut out[at..at + 16]);
+        at += 16;
+    }
     while count - at >= 8 {
         let values = idif_row_chunk8(window, at, pairs, params.bit_depth);
         O::store(values.as_array(), &mut out[at..at + 8]);
