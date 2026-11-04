@@ -3,9 +3,14 @@
 
 //! AV2 § 7.21.7 display film-grain synthesis.
 
+use std::simd::{Mask, Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint, simd_swizzle};
+
 use splot_core::headers::film_grain::{FilmGrainModel, FilmGrainScalingPoint};
 use splot_core::tables::conversion::GAUSSIAN_SEQUENCE;
 
+use crate::wienerns_filter::{
+    LumaSimdOutput, LumaSimdSource, interleave_pairs, multiply_add_pairs,
+};
 use crate::{
     DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, Plane, PlaneRect, PlaneSize,
     ReconSample, Result,
@@ -108,15 +113,6 @@ impl<T: ReconSample> GrainDestination<T> {
             samples.resize(padded, T::default());
         }
         Self { samples, stride }
-    }
-
-    fn get(&self, row: usize, col: usize) -> i32 {
-        i32::from(self.samples[row * self.stride + col].to_u16())
-    }
-
-    fn set(&mut self, row: usize, col: usize, value: u16) -> Result<()> {
-        self.samples[row * self.stride + col] = T::try_from_u16(value)?;
-        Ok(())
     }
 }
 
@@ -333,8 +329,10 @@ fn ar_neighbor_offsets(lag: u8, stride: usize) -> ([isize; MAX_AR_COEFFICIENTS],
     (offsets, count)
 }
 
-fn scaling_luts(grain: &ActiveFilmGrain<'_>, num_planes: usize) -> Vec<[i32; 256]> {
-    let mut luts = vec![[0; 256]; num_planes];
+const SCALING_LUT_LEN: usize = 257;
+
+fn scaling_luts(grain: &ActiveFilmGrain<'_>, num_planes: usize) -> Vec<[i32; SCALING_LUT_LEN]> {
+    let mut luts = vec![[0; SCALING_LUT_LEN]; num_planes];
     for (plane, lut) in luts.iter_mut().enumerate() {
         let points = scaling_points_for_plane(grain.model, plane);
         init_scaling_lut(points, lut);
@@ -352,13 +350,13 @@ fn scaling_points_for_plane(model: &FilmGrainModel, plane: usize) -> &[FilmGrain
     }
 }
 
-fn init_scaling_lut(points: &[FilmGrainScalingPoint], lut: &mut [i32; 256]) {
+fn init_scaling_lut(points: &[FilmGrainScalingPoint], lut: &mut [i32; SCALING_LUT_LEN]) {
     if points.is_empty() {
         return;
     }
     let first_x = points[0].value.min(255) as usize;
     let first_y = points[0].scaling as i32;
-    for value in lut.iter_mut().take(first_x) {
+    for value in lut[..256].iter_mut().take(first_x) {
         *value = first_y;
     }
     for pair in points.windows(2) {
@@ -377,9 +375,10 @@ fn init_scaling_lut(points: &[FilmGrainScalingPoint], lut: &mut [i32; 256]) {
         }
     }
     let last = points[points.len() - 1];
-    for value in lut.iter_mut().skip(last.value.min(255) as usize) {
+    for value in lut[..256].iter_mut().skip(last.value.min(255) as usize) {
         *value = last.scaling as i32;
     }
+    lut[256] = lut[255];
 }
 
 struct NoiseImage {
@@ -641,7 +640,7 @@ fn add_noise_to_samples<T: ReconSample>(
     bit_depth: u8,
     num_planes: usize,
     grain: &ActiveFilmGrain<'_>,
-    scaling: &[[i32; 256]],
+    scaling: &[[i32; SCALING_LUT_LEN]],
     noise: &NoiseImage,
 ) -> Result<()> {
     let (min_value, max_luma, max_chroma) = output_ranges(grain, bit_depth);
@@ -671,16 +670,98 @@ fn add_noise_to_samples<T: ReconSample>(
     }
     if grain.model.num_y_points > 0 {
         for row in 0..height {
-            for col in 0..width {
-                let orig = y.get(row, col);
-                let scaled = scale_lut(&scaling[0], orig, bit_depth);
-                let noise_sample = i32::from(noise.planes[0][row * noise.widths[0] + col]);
-                let delta = round2(scaled * noise_sample, scaling_shift);
-                y.set(row, col, (orig + delta).clamp(min_value, max_luma) as u16)?;
-            }
+            add_luma_noise_row(
+                &mut y.samples[row * y.stride..][..width],
+                &noise.planes[0][row * noise.widths[0]..][..width],
+                &scaling[0],
+                bit_depth,
+                scaling_shift,
+                min_value,
+                max_luma,
+            )?;
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_luma_noise_row<T: ReconSample>(
+    row: &mut [T],
+    noise_row: &[i16],
+    lut: &[i32; SCALING_LUT_LEN],
+    bit_depth: u8,
+    scaling_shift: u8,
+    min_value: i32,
+    max_luma: i32,
+) -> Result<()> {
+    if i32::from(T::MAX_VALUE) >= max_luma {
+        if let Some(row) = T::u8_slice_mut(row) {
+            add_luma_noise_row_lanes::<u8>(
+                row,
+                noise_row,
+                lut,
+                bit_depth,
+                scaling_shift,
+                min_value,
+                max_luma,
+            );
+            return Ok(());
+        }
+        if let Some(row) = T::u16_slice_mut(row) {
+            add_luma_noise_row_lanes::<u16>(
+                row,
+                noise_row,
+                lut,
+                bit_depth,
+                scaling_shift,
+                min_value,
+                max_luma,
+            );
+            return Ok(());
+        }
+    }
+    for (col, &noise_sample) in noise_row.iter().enumerate() {
+        let orig = i32::from(row[col].to_u16());
+        let scaled = scale_lut(lut, orig, bit_depth);
+        let delta = round2(scaled * i32::from(noise_sample), scaling_shift);
+        row[col] = T::try_from_u16((orig + delta).clamp(min_value, max_luma) as u16)?;
+    }
+    Ok(())
+}
+
+fn add_luma_noise_row_lanes<S: LumaSimdSource + LumaSimdOutput>(
+    row: &mut [S],
+    noise_row: &[i16],
+    lut: &[i32; SCALING_LUT_LEN],
+    bit_depth: u8,
+    scaling_shift: u8,
+    min_value: i32,
+    max_luma: i32,
+) {
+    let shift = bit_depth - 8;
+    let mut x = 0;
+    while x + 16 <= row.len() {
+        let orig = S::load::<16>(row, x);
+        let scaled = scaling_lut_lanes(lut, orig.cast::<i32>(), shift);
+        let lanes = Simd::<i16, 16>::from_slice(&noise_row[x..]);
+        add_scaled_noise_lanes::<S>(
+            row,
+            x,
+            orig,
+            scaled,
+            lanes,
+            scaling_shift,
+            min_value,
+            max_luma,
+        );
+        x += 16;
+    }
+    for (col, &noise_sample) in noise_row.iter().enumerate().skip(x) {
+        let orig = i32::from(S::scalar(row, col));
+        let scaled = scale_lut(lut, orig, bit_depth);
+        let delta = round2(scaled * i32::from(noise_sample), scaling_shift);
+        row[col] = S::from_u16((orig + delta).clamp(min_value, max_luma) as u16);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -698,61 +779,295 @@ fn add_chroma_noise<T: ReconSample>(
     min_value: i32,
     scaling_shift: u8,
     grain: &ActiveFilmGrain<'_>,
-    scaling: &[[i32; 256]],
+    scaling: &[[i32; SCALING_LUT_LEN]],
     noise: &NoiseImage,
 ) -> Result<()> {
     let model = grain.model;
-    let sample_max = (1_i32 << bit_depth) - 1;
     for row in 0..chroma_height {
-        for col in 0..chroma_width {
-            let luma_x = col << sub_x;
-            let luma_y = row << sub_y;
-            let luma_next_x = (luma_x + 1).min(luma_width - 1);
-            let average_luma = if sub_x == 1 {
-                round2(y.get(luma_y, luma_x) + y.get(luma_y, luma_next_x), 1)
-            } else {
-                y.get(luma_y, luma_x)
-            };
-            let index = row * chroma_width + col;
-            if model.num_cb_points > 0 || model.chroma_scaling_from_luma {
-                let orig = u.get(row, col);
-                let merged = chroma_merged_sample(
-                    average_luma,
-                    orig,
-                    model.cb_luma_mult,
-                    model.cb_mult,
-                    model.cb_offset,
-                    model.chroma_scaling_from_luma,
-                    bit_depth,
-                    sample_max,
-                );
-                let delta = round2(
-                    scale_lut(&scaling[1], merged, bit_depth) * i32::from(noise.planes[1][index]),
-                    scaling_shift,
-                );
-                u.set(row, col, (orig + delta).clamp(min_value, max_chroma) as u16)?;
-            }
-            if model.num_cr_points > 0 || model.chroma_scaling_from_luma {
-                let orig = v.get(row, col);
-                let merged = chroma_merged_sample(
-                    average_luma,
-                    orig,
-                    model.cr_luma_mult,
-                    model.cr_mult,
-                    model.cr_offset,
-                    model.chroma_scaling_from_luma,
-                    bit_depth,
-                    sample_max,
-                );
-                let delta = round2(
-                    scale_lut(&scaling[2], merged, bit_depth) * i32::from(noise.planes[2][index]),
-                    scaling_shift,
-                );
-                v.set(row, col, (orig + delta).clamp(min_value, max_chroma) as u16)?;
-            }
+        let luma_row = &y.samples[(row << sub_y) * y.stride..];
+        if model.num_cb_points > 0 || model.chroma_scaling_from_luma {
+            add_chroma_noise_row(
+                &mut u.samples[row * u.stride..][..chroma_width],
+                luma_row,
+                &noise.planes[1][row * noise.widths[1]..][..chroma_width],
+                &scaling[1],
+                luma_width,
+                sub_x,
+                bit_depth,
+                scaling_shift,
+                min_value,
+                max_chroma,
+                model.cb_luma_mult,
+                model.cb_mult,
+                model.cb_offset,
+                model.chroma_scaling_from_luma,
+            )?;
+        }
+        if model.num_cr_points > 0 || model.chroma_scaling_from_luma {
+            add_chroma_noise_row(
+                &mut v.samples[row * v.stride..][..chroma_width],
+                luma_row,
+                &noise.planes[2][row * noise.widths[2]..][..chroma_width],
+                &scaling[2],
+                luma_width,
+                sub_x,
+                bit_depth,
+                scaling_shift,
+                min_value,
+                max_chroma,
+                model.cr_luma_mult,
+                model.cr_mult,
+                model.cr_offset,
+                model.chroma_scaling_from_luma,
+            )?;
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_chroma_noise_row<T: ReconSample>(
+    chroma_row: &mut [T],
+    luma_row: &[T],
+    noise_row: &[i16],
+    lut: &[i32; SCALING_LUT_LEN],
+    luma_width: usize,
+    sub_x: usize,
+    bit_depth: u8,
+    scaling_shift: u8,
+    min_value: i32,
+    max_chroma: i32,
+    luma_mult: Option<u8>,
+    mult: Option<u8>,
+    offset: Option<u16>,
+    from_luma: bool,
+) -> Result<()> {
+    if i32::from(T::MAX_VALUE) >= max_chroma {
+        if let (Some(chroma), Some(luma)) =
+            (T::u8_slice_mut(&mut *chroma_row), T::u8_slice(luma_row))
+        {
+            add_chroma_noise_row_lanes::<u8>(
+                chroma,
+                luma,
+                noise_row,
+                lut,
+                luma_width,
+                sub_x,
+                bit_depth,
+                scaling_shift,
+                min_value,
+                max_chroma,
+                luma_mult,
+                mult,
+                offset,
+                from_luma,
+            );
+            return Ok(());
+        }
+        if let (Some(chroma), Some(luma)) =
+            (T::u16_slice_mut(&mut *chroma_row), T::u16_slice(luma_row))
+        {
+            add_chroma_noise_row_lanes::<u16>(
+                chroma,
+                luma,
+                noise_row,
+                lut,
+                luma_width,
+                sub_x,
+                bit_depth,
+                scaling_shift,
+                min_value,
+                max_chroma,
+                luma_mult,
+                mult,
+                offset,
+                from_luma,
+            );
+            return Ok(());
+        }
+    }
+    let sample_max = (1_i32 << bit_depth) - 1;
+    for col in 0..chroma_row.len() {
+        let luma_x = col << sub_x;
+        let luma_next_x = (luma_x + 1).min(luma_width - 1);
+        let average_luma = if sub_x == 1 {
+            round2(
+                i32::from(luma_row[luma_x].to_u16()) + i32::from(luma_row[luma_next_x].to_u16()),
+                1,
+            )
+        } else {
+            i32::from(luma_row[luma_x].to_u16())
+        };
+        let orig = i32::from(chroma_row[col].to_u16());
+        let merged = chroma_merged_sample(
+            average_luma,
+            orig,
+            luma_mult,
+            mult,
+            offset,
+            from_luma,
+            bit_depth,
+            sample_max,
+        );
+        let scaled = scale_lut(lut, merged, bit_depth);
+        let delta = round2(scaled * i32::from(noise_row[col]), scaling_shift);
+        chroma_row[col] = T::try_from_u16((orig + delta).clamp(min_value, max_chroma) as u16)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_chroma_noise_row_lanes<S: LumaSimdSource + LumaSimdOutput>(
+    chroma_row: &mut [S],
+    luma_row: &[S],
+    noise_row: &[i16],
+    lut: &[i32; SCALING_LUT_LEN],
+    luma_width: usize,
+    sub_x: usize,
+    bit_depth: u8,
+    scaling_shift: u8,
+    min_value: i32,
+    max_chroma: i32,
+    luma_mult: Option<u8>,
+    mult: Option<u8>,
+    offset: Option<u16>,
+    from_luma: bool,
+) {
+    let shift = bit_depth - 8;
+    let weights: Simd<i16, 16> = Simd::from_array(core::array::from_fn(|lane| {
+        if lane % 2 == 0 {
+            i16::from(luma_mult.unwrap_or(128)) - 128
+        } else {
+            i16::from(mult.unwrap_or(128)) - 128
+        }
+    }));
+    let mut x = 0;
+    while x + 16 <= chroma_row.len() && (sub_x == 0 || x * 2 + 32 <= luma_width) {
+        let orig = S::load::<16>(chroma_row, x);
+        let average_luma = if sub_x == 1 {
+            let pairs = S::load::<32>(luma_row, x * 2);
+            let even: Simd<u16, 16> = simd_swizzle!(
+                pairs,
+                [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]
+            );
+            let odd: Simd<u16, 16> = simd_swizzle!(
+                pairs,
+                [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31]
+            );
+            (even.cast::<i32>() + odd.cast::<i32>() + Simd::splat(1)) >> Simd::splat(1)
+        } else {
+            S::load::<16>(luma_row, x).cast::<i32>()
+        };
+        let merged = if from_luma {
+            average_luma
+        } else {
+            let combined =
+                merged_combined_lanes(average_luma.cast::<i16>(), orig.cast::<i16>(), weights);
+            ((combined >> Simd::splat(6)) + Simd::splat(chroma_offset_term(offset, bit_depth)))
+                .simd_max(Simd::splat(0))
+                .simd_min(Simd::splat((1_i32 << bit_depth) - 1))
+        };
+        let scaled = scaling_lut_lanes(lut, merged, shift);
+        let lanes = Simd::<i16, 16>::from_slice(&noise_row[x..]);
+        add_scaled_noise_lanes::<S>(
+            chroma_row,
+            x,
+            orig,
+            scaled,
+            lanes,
+            scaling_shift,
+            min_value,
+            max_chroma,
+        );
+        x += 16;
+    }
+    let sample_max = (1_i32 << bit_depth) - 1;
+    for col in x..chroma_row.len() {
+        let luma_x = col << sub_x;
+        let luma_next_x = (luma_x + 1).min(luma_width - 1);
+        let average_luma = if sub_x == 1 {
+            round2(
+                i32::from(S::scalar(luma_row, luma_x))
+                    + i32::from(S::scalar(luma_row, luma_next_x)),
+                1,
+            )
+        } else {
+            i32::from(S::scalar(luma_row, luma_x))
+        };
+        let orig = i32::from(S::scalar(chroma_row, col));
+        let merged = chroma_merged_sample(
+            average_luma,
+            orig,
+            luma_mult,
+            mult,
+            offset,
+            from_luma,
+            bit_depth,
+            sample_max,
+        );
+        let scaled = scale_lut(lut, merged, bit_depth);
+        let delta = round2(scaled * i32::from(noise_row[col]), scaling_shift);
+        chroma_row[col] = S::from_u16((orig + delta).clamp(min_value, max_chroma) as u16);
+    }
+}
+
+#[inline]
+fn merged_combined_lanes(
+    average: Simd<i16, 16>,
+    orig: Simd<i16, 16>,
+    weights: Simd<i16, 16>,
+) -> Simd<i32, 16> {
+    let [low, high] = interleave_pairs(average, orig);
+    let low = multiply_add_pairs(low, weights);
+    let high = multiply_add_pairs(high, weights);
+    simd_swizzle!(
+        low,
+        high,
+        [0, 1, 2, 3, 8, 9, 10, 11, 4, 5, 6, 7, 12, 13, 14, 15]
+    )
+}
+
+fn chroma_offset_term(offset: Option<u16>, bit_depth: u8) -> i32 {
+    (i32::from(offset.unwrap_or(256)) - 256) << (bit_depth - 8)
+}
+
+#[inline]
+fn scaling_lut_lanes(
+    lut: &[i32; SCALING_LUT_LEN],
+    index: Simd<i32, 16>,
+    shift: u8,
+) -> Simd<i32, 16> {
+    let shift_lanes = Simd::splat(i32::from(shift));
+    let x = index >> shift_lanes;
+    let x = x.simd_max(Simd::splat(0)).simd_min(Simd::splat(255));
+    let rem = index - (x << shift_lanes);
+    let empty = Simd::<i32, 16>::splat(0);
+    let select = Mask::<isize, 16>::splat(true);
+    let start = Simd::<i32, 16>::gather_select(lut, select, x.cast::<usize>(), empty);
+    let end = Simd::<i32, 16>::gather_select(&lut[1..], select, x.cast::<usize>(), empty);
+    let half = Simd::splat((1_i32 << shift) >> 1);
+    start + (((end - start) * rem + half) >> shift_lanes)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn add_scaled_noise_lanes<T: LumaSimdOutput>(
+    row: &mut [T],
+    x: usize,
+    orig: Simd<u16, 16>,
+    scaled: Simd<i32, 16>,
+    noise: Simd<i16, 16>,
+    scaling_shift: u8,
+    min_value: i32,
+    max_value: i32,
+) {
+    let delta = (scaled * noise.cast::<i32>() + Simd::splat((1_i32 << scaling_shift) >> 1))
+        >> Simd::splat(i32::from(scaling_shift));
+    let out = orig.cast::<i32>() + delta;
+    let out = out
+        .simd_max(Simd::splat(min_value))
+        .simd_min(Simd::splat(max_value));
+    T::write(&mut row[x..], out.cast::<u16>());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -802,14 +1117,12 @@ fn plane_axis_lengths(length: usize, subsampling: usize) -> [usize; 3] {
     [length, chroma, chroma]
 }
 
-fn scale_lut(lut: &[i32; 256], index: i32, bit_depth: u8) -> i32 {
+fn scale_lut(lut: &[i32; SCALING_LUT_LEN], index: i32, bit_depth: u8) -> i32 {
     let shift = bit_depth - 8;
     let x = (index >> shift).clamp(0, 255) as usize;
-    if shift == 0 || x == 255 {
-        return lut[x];
-    }
     let rem = index - ((x as i32) << shift);
-    lut[x] + round2((lut[x + 1] - lut[x]) * rem, shift)
+    let start = lut[x];
+    start + round2((lut[x + 1] - start) * rem, shift)
 }
 
 fn round2(value: i32, shift: u8) -> i32 {
