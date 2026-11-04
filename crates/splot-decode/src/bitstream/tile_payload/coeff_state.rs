@@ -63,6 +63,9 @@ std::thread_local! {
 
 impl Drop for TransformCoeffBlockState {
     fn drop(&mut self) {
+        if self.level.len() != LEVEL_GRID_LEN {
+            return;
+        }
         COEFF_BLOCK_BUFFERS.with(|slot| {
             slot.set(Some((
                 core::mem::take(&mut self.level),
@@ -89,6 +92,20 @@ pub(crate) struct TransformCoeffBlockState {
 }
 
 impl TransformCoeffBlockState {
+    /// An unallocated state, written over by the first block that fills it.
+    #[must_use]
+    pub(crate) fn empty() -> Self {
+        Self {
+            width: 0,
+            height: 0,
+            level_len: 0,
+            level: Vec::new(),
+            quant_sign: Vec::new(),
+            quant: Vec::new(),
+            quant_end: 0,
+        }
+    }
+
     pub(crate) fn allocation(width: usize, height: usize) -> Result<usize, TileCoeffStateError> {
         validate_adjusted_extent("width", width)?;
         validate_adjusted_extent("height", height)?;

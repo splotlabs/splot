@@ -708,6 +708,8 @@ impl<'a> SymbolDecoder<'a> {
     /// `next_cur` is 0 (`f = 0` and `Prob_Inc` 0), so a search that passes
     /// every other boundary ends there. Both validation modes return
     /// `n = N`; restating it keeps `n` constant in the adaptation step.
+    /// The validation branch stays out of the hot body: a conditional call
+    /// there spills every loop register even when the mode is trusted.
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn read_symbol_arity<T: CdfStorage, const N: usize>(
@@ -716,7 +718,17 @@ impl<'a> SymbolDecoder<'a> {
     ) -> Result<Symbol> {
         if self.config.cdf_validation == CdfValidationMode::Validated {
             validate_cdf_shape(cdf).map_err(|kind| self.cdf_error(kind))?;
+            return self.read_symbol_arity_hot::<T, N>(cdf);
         }
+        self.read_symbol_arity_hot::<T, N>(cdf)
+    }
+
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn read_symbol_arity_hot<T: CdfStorage, const N: usize>(
+        &mut self,
+        cdf: &mut [T],
+    ) -> Result<Symbol> {
         let rate_index = cdf[N - 1].to_i32();
         let Some(rate) = usize::try_from(rate_index)
             .ok()
