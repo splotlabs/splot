@@ -819,15 +819,25 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
     if num_left > 0 {
         let step = height.checked_div(num_left).unwrap_or(0).max(1);
         let start = if step == 1 { 0 } else { step >> 1 };
-        for row in (start..height).step_by(step) {
-            let chroma_y = y.saturating_add(row);
-            let luma = luma.q3(x - 1, chroma_y, false, row == 0, None)? >> 3;
-            let chroma = i32::from(chroma_plane.clamped(x - 1, chroma_y)?);
-            sum_x += luma;
-            sum_y += chroma;
-            sum_xy += luma * chroma;
-            sum_xx += luma * luma;
-            count += 1;
+        if let Some((lx, ly, lxy, lxx, lcount)) =
+            cfl_420_left_accumulate(&luma, &chroma_plane, x - 1, y, height, start, step)
+        {
+            sum_x += lx;
+            sum_y += ly;
+            sum_xy += lxy;
+            sum_xx += lxx;
+            count += lcount;
+        } else {
+            for row in (start..height).step_by(step) {
+                let chroma_y = y.saturating_add(row);
+                let luma = luma.q3(x - 1, chroma_y, false, row == 0, None)? >> 3;
+                let chroma = i32::from(chroma_plane.clamped(x - 1, chroma_y)?);
+                sum_x += luma;
+                sum_y += chroma;
+                sum_xy += luma * chroma;
+                sum_xx += luma * luma;
+                count += 1;
+            }
         }
     }
     if count == 0 {
@@ -1472,6 +1482,120 @@ fn cfl_420_column_sum_in<T: ReconSample, S: CflLaneSample>(
         }
     }
     Some(acc.reduce_sum() as u32)
+}
+
+fn cfl_420_left_accumulate<T: ReconSample>(
+    luma: &CflLuma<'_, T>,
+    chroma_plane: &PlaneSamples<'_, T>,
+    chroma_x: usize,
+    y: usize,
+    height: usize,
+    start: usize,
+    step: usize,
+) -> Option<(i32, i32, i32, i32, i32)> {
+    if let (Some(luma_samples), Some(chroma_samples)) = (
+        T::u8_slice(luma.plane.samples),
+        T::u8_slice(chroma_plane.samples),
+    ) {
+        cfl_420_left_accumulate_in(
+            luma,
+            chroma_plane,
+            luma_samples,
+            chroma_samples,
+            chroma_x,
+            y,
+            height,
+            start,
+            step,
+        )
+    } else {
+        cfl_420_left_accumulate_in(
+            luma,
+            chroma_plane,
+            T::u16_slice(luma.plane.samples)?,
+            T::u16_slice(chroma_plane.samples)?,
+            chroma_x,
+            y,
+            height,
+            start,
+            step,
+        )
+    }
+}
+
+#[inline(never)]
+fn cfl_420_left_accumulate_in<T: ReconSample, S: CflLaneSample>(
+    luma: &CflLuma<'_, T>,
+    chroma_plane: &PlaneSamples<'_, T>,
+    luma_samples: &[S],
+    chroma_samples: &[S],
+    chroma_x: usize,
+    y: usize,
+    height: usize,
+    start: usize,
+    step: usize,
+) -> Option<(i32, i32, i32, i32, i32)> {
+    let plane = &luma.plane;
+    let weights = CFL_FILTERS_420[luma.filter_index?];
+    let max_y = plane.height.checked_sub(1)?;
+    let luma_x = clamped_cfl_luma_coordinate(chroma_x, 1, plane.width.checked_sub(1)?);
+    if luma.sub_x != 1 || luma.sub_y != 1 || luma_x == 0 || luma_x + 2 >= plane.width {
+        return None;
+    }
+    let tap_row = |y: usize| {
+        let local = y.checked_sub(plane.origin_y)?;
+        let start = (local < plane.stored_rows).then_some(local * plane.stride + luma_x - 1)?;
+        let taps = luma_samples.get(start..start + 4)?;
+        Some(S::load::<4>(taps, 0).cast::<i32>())
+    };
+    let weights = weights.map(|[left, center, right]| Simd::from_array([left, center, right, 0]));
+
+    let chroma_local_origin = chroma_plane.origin_y;
+    let chroma_stride = chroma_plane.stride;
+    let chroma_stored = chroma_plane.stored_rows;
+    let max_chroma_y = chroma_plane.height.checked_sub(1)?;
+    if chroma_x >= chroma_plane.width {
+        return None;
+    }
+
+    let mut sum_x = 0i32;
+    let mut sum_y = 0i32;
+    let mut sum_xy = 0i32;
+    let mut sum_xx = 0i32;
+    let mut count = 0i32;
+
+    for row in (start..height).step_by(step) {
+        let chroma_y = y.checked_add(row)?;
+        let luma_y = clamped_cfl_luma_coordinate(chroma_y, 1, max_y);
+        let top = if row == 0 {
+            luma_y
+        } else {
+            luma_y.saturating_sub(1)
+        };
+        let mut acc = Simd::<i32, 4>::splat(0);
+        for (sy, w) in [top, luma_y, (luma_y + 1).min(max_y)]
+            .into_iter()
+            .zip(weights)
+        {
+            acc += tap_row(sy)? * w;
+        }
+        let luma_val = acc.reduce_sum() >> 3;
+
+        let cy = chroma_y.min(max_chroma_y);
+        let clocal = cy.checked_sub(chroma_local_origin)?;
+        if clocal >= chroma_stored {
+            return None;
+        }
+        let sample = chroma_samples.get(clocal * chroma_stride + chroma_x)?;
+        let chroma_val = i32::from((*sample).into());
+
+        sum_x += luma_val;
+        sum_y += chroma_val;
+        sum_xy += luma_val * chroma_val;
+        sum_xx += luma_val * luma_val;
+        count += 1;
+    }
+    Some((sum_x, sum_y, sum_xy, sum_xx, count))
 }
 
 /// Eight § 7.13.5 4:2:0 Q3 luma samples of filter `F` from luma column
