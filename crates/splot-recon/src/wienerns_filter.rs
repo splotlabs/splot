@@ -134,6 +134,9 @@ struct PreparedLumaClass {
     /// The coefficients as `pmaddwd` pairs, then the center scale paired
     /// with the rounding offset when the scale fits `i16`.
     madd_pairs: Option<[[i16; 8]; MADD_PAIRS + 1]>,
+    /// [`PreparedLumaClass::madd_pairs`] as the 16-lane cell weights of one
+    /// class filling both cell halves, reused whenever four cells share it.
+    cell_weights: Option<[[Simd<i16, 16>; 2]; MADD_PAIRS + 1]>,
 }
 
 /// `pmaddwd` pairs over the 16 symmetric tap sums.
@@ -533,6 +536,23 @@ fn prepare_luma_padded<T: ReconSample>(
         .extend(params.coeffs_by_class.iter().map(|&coeffs| {
             let center_scale = (1 << WIENER_NS_PREC_BITS)
                 - 2 * coeffs.iter().map(|&coeff| i32::from(coeff)).sum::<i32>();
+            let madd_pairs = i16::try_from(center_scale).ok().map(|center_scale| {
+                core::array::from_fn(|pair| {
+                    let (low, high) = coeffs
+                        .get(2 * pair..2 * pair + 2)
+                        .map_or((center_scale, 1 << (WIENER_NS_PREC_BITS - 1)), |pair| {
+                            (pair[0], pair[1])
+                        });
+                    [low, high, low, high, low, high, low, high]
+                })
+            });
+            let cell_weights = madd_pairs.as_ref().map(|madd_pairs| {
+                core::array::from_fn(|pair| {
+                    let half = core::array::from_fn(|lane| madd_pairs[pair][lane % 8]);
+                    let half = Simd::<i16, 16>::from_array(half);
+                    [half, half]
+                })
+            });
             PreparedLumaClass {
                 center_scale,
                 coeffs,
@@ -540,16 +560,8 @@ fn prepare_luma_padded<T: ReconSample>(
                     .iter()
                     .rev()
                     .fold(0, |mask, &coeff| (mask << 1) | u16::from(coeff != 0)),
-                madd_pairs: i16::try_from(center_scale).ok().map(|center_scale| {
-                    core::array::from_fn(|pair| {
-                        let (low, high) = coeffs
-                            .get(2 * pair..2 * pair + 2)
-                            .map_or((center_scale, 1 << (WIENER_NS_PREC_BITS - 1)), |pair| {
-                                (pair[0], pair[1])
-                            });
-                        [low, high, low, high, low, high, low, high]
-                    })
-                }),
+                madd_pairs,
+                cell_weights,
             }
         }));
     for row_index in 0..padded_rows {
@@ -902,7 +914,7 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
     max_sample: u16,
 ) -> Result<usize> {
     const R: usize = WIENER_NS_LUMA_TAP_RADIUS;
-    let cell_class = |cell: usize| -> Option<&[[i16; 8]; MADD_PAIRS + 1]> {
+    let cell_class = |cell: usize| -> Option<usize> {
         let class = match subclasses {
             LumaSubclassLayout::Uniform => 0,
             LumaSubclassLayout::Cells { values, cols } => {
@@ -910,25 +922,41 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
             }
             LumaSubclassLayout::Samples(_) => return None,
         };
-        prepared_classes.get(class)?.madd_pairs.as_ref()
+        prepared_classes.get(class).map(|_| class)
     };
     let mut x = 0;
     while x + 16 <= width {
-        let classes: [Option<&[[i16; 8]; MADD_PAIRS + 1]>; 4] =
-            core::array::from_fn(|cell| cell_class(x / 4 + cell));
+        let classes: [Option<usize>; 4] = core::array::from_fn(|cell| cell_class(x / 4 + cell));
         let [Some(c0), Some(c1), Some(c2), Some(c3)] = classes else {
             break;
         };
-        let weights: [[Simd<i16, 16>; 2]; MADD_PAIRS + 1] = core::array::from_fn(|pair| {
-            let halves = |a: [i16; 8], b: [i16; 8]| {
-                simd_swizzle!(
-                    Simd::from_array(a),
-                    Simd::from_array(b),
-                    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-                )
+        let mixed;
+        let weights: &[[Simd<i16, 16>; 2]; MADD_PAIRS + 1] =
+            match if c0 == c1 && c1 == c2 && c2 == c3 {
+                prepared_classes[c0].cell_weights.as_ref()
+            } else {
+                mixed = (|| {
+                    let [Some(m0), Some(m1), Some(m2), Some(m3)] =
+                        [c0, c1, c2, c3].map(|class| prepared_classes[class].madd_pairs.as_ref())
+                    else {
+                        return None;
+                    };
+                    let halves = |a: [i16; 8], b: [i16; 8]| {
+                        simd_swizzle!(
+                            Simd::from_array(a),
+                            Simd::from_array(b),
+                            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+                        )
+                    };
+                    Some(core::array::from_fn(|pair| {
+                        [halves(m0[pair], m2[pair]), halves(m1[pair], m3[pair])]
+                    }))
+                })();
+                mixed.as_ref()
+            } {
+                Some(weights) => weights,
+                None => break,
             };
-            [halves(c0[pair], c2[pair]), halves(c1[pair], c3[pair])]
-        });
         for r in first..end {
             let start = (r - origin) * output_stride + x;
             let (Some(window), Some(filtered)) = (
@@ -941,7 +969,7 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
             if window.iter().any(|row| row.len() != 16 + 2 * R) {
                 return Err(luma_segment_error(width));
             }
-            filter_luma_cells16(filtered, &window, &weights, max_sample);
+            filter_luma_cells16(filtered, &window, weights, max_sample);
         }
         x += 16;
     }
