@@ -156,9 +156,9 @@ fn synthesize_into<T: ReconSample>(
 }
 
 struct GrainTemplates {
-    y: Vec<i32>,
-    cb: Vec<i32>,
-    cr: Vec<i32>,
+    y: Vec<i16>,
+    cb: Vec<i16>,
+    cr: Vec<i16>,
     chroma_width: usize,
 }
 
@@ -220,11 +220,17 @@ fn generate_grain(
     );
 
     GrainTemplates {
-        y: luma,
-        cb,
-        cr,
+        y: narrow_grain(luma),
+        cb: narrow_grain(cb),
+        cr: narrow_grain(cr),
         chroma_width,
     }
+}
+
+/// Packs filtered grain into `i16` lanes; filtered samples are clamped to the
+/// grain range and white-noise samples stay within the Gaussian magnitude.
+fn narrow_grain(planes: Vec<i32>) -> Vec<i16> {
+    planes.into_iter().map(|sample| sample as i16).collect()
 }
 
 fn apply_luma_ar(model: &FilmGrainModel, luma: &mut [i32], grain_min: i32, grain_max: i32) {
@@ -377,7 +383,7 @@ fn init_scaling_lut(points: &[FilmGrainScalingPoint], lut: &mut [i32; 256]) {
 }
 
 struct NoiseImage {
-    planes: Vec<Vec<i32>>,
+    planes: Vec<Vec<i16>>,
     widths: [usize; 3],
 }
 
@@ -401,57 +407,77 @@ fn build_noise_image(
     let stripe_count = stripe_count(height, luma_size);
     let plane_widths = plane_axis_lengths(width, sub_x);
     let plane_heights = plane_axis_lengths(height, sub_y);
-    let mut stripes = (0..stripe_count)
-        .map(|_| Stripe::new(&plane_widths, luma_size, sub_x, sub_y))
-        .collect::<Vec<_>>();
+    let mut planes: Vec<Vec<i16>> = (0..num_planes)
+        .map(|plane| Vec::with_capacity(plane_widths[plane] * plane_heights[plane]))
+        .collect();
+    let mut stripes = [
+        Stripe::new(&plane_widths, luma_size, sub_x, sub_y),
+        Stripe::new(&plane_widths, luma_size, sub_x, sub_y),
+    ];
 
-    for (luma_num, stripe) in stripes.iter_mut().enumerate() {
+    for luma_num in 0..stripe_count {
+        let current = luma_num & 1;
         fill_stripe(
-            stripe, luma_num, width, sub_x, sub_y, num_planes, luma_size, grain, templates,
-            grain_min, grain_max,
+            &mut stripes[current],
+            luma_num,
+            width,
+            sub_x,
+            sub_y,
+            num_planes,
+            luma_size,
+            grain,
+            templates,
+            grain_min,
+            grain_max,
         );
-    }
-
-    let mut planes = Vec::with_capacity(num_planes);
-    for plane in 0..num_planes {
-        planes.push(vec![0; plane_widths[plane] * plane_heights[plane]]);
-    }
-    for plane in 0..num_planes {
-        let plane_sub_y = if plane > 0 { sub_y } else { 0 };
-        let stripe_shift = 4 + usize::from(grain.model.film_grain_block_size) - plane_sub_y;
-        if !grain.model.overlap_flag {
-            for row in 0..plane_heights[plane] {
-                let luma_num = row >> stripe_shift;
-                let stripe_row = row - (luma_num << stripe_shift);
-                let stripe = &stripes[luma_num];
-                let source = stripe_row * stripe.widths[plane];
-                let destination = row * plane_widths[plane];
-                planes[plane][destination..destination + plane_widths[plane]]
-                    .copy_from_slice(&stripe.planes[plane][source..source + plane_widths[plane]]); // splot-copy-ok: assembled film-grain noise image
-            }
-            continue;
-        }
-        for row in 0..plane_heights[plane] {
-            let luma_num = row >> stripe_shift;
-            let stripe_row = row - (luma_num << stripe_shift);
-            for col in 0..plane_widths[plane] {
-                let mut sample = stripes[luma_num].get(plane, stripe_row, col);
-                if luma_num > 0 {
-                    if plane_sub_y == 0 && stripe_row < 2 {
-                        let old = stripes[luma_num - 1].get(plane, stripe_row + luma_size, col);
-                        sample = if stripe_row == 0 {
-                            round2(old * 27 + sample * 17, 5)
-                        } else {
-                            round2(old * 17 + sample * 27, 5)
-                        };
-                        sample = sample.clamp(grain_min, grain_max);
-                    } else if plane_sub_y == 1 && stripe_row < 1 {
-                        let old =
-                            stripes[luma_num - 1].get(plane, stripe_row + (luma_size >> 1), col);
-                        sample = round2(old * 23 + sample * 22, 5).clamp(grain_min, grain_max);
-                    }
+        for plane in 0..num_planes {
+            let plane_sub_y = if plane > 0 { sub_y } else { 0 };
+            let stripe_shift = 4 + usize::from(grain.model.film_grain_block_size) - plane_sub_y;
+            let blend_rows = if plane_sub_y == 0 { 2 } else { 1 };
+            let stripe_width = stripes[current].widths[plane];
+            let buffer = &stripes[current].planes[plane];
+            let previous = &stripes[current ^ 1].planes[plane];
+            let destination = &mut planes[plane];
+            for stripe_row in 0..(1 << stripe_shift) {
+                let row = (luma_num << stripe_shift) + stripe_row;
+                if row >= plane_heights[plane] {
+                    break;
                 }
-                planes[plane][row * plane_widths[plane] + col] = sample;
+                let source =
+                    stripe_row_slice(buffer, stripe_width, stripe_row, plane_widths[plane]);
+                let blended = grain.model.overlap_flag && luma_num > 0 && stripe_row < blend_rows;
+                if !blended {
+                    destination.extend_from_slice(source);
+                    continue;
+                }
+                let old_row = stripe_row
+                    + if plane_sub_y == 0 {
+                        luma_size
+                    } else {
+                        luma_size >> 1
+                    };
+                let old = stripe_row_slice(previous, stripe_width, old_row, plane_widths[plane]);
+                let old_weight = if plane_sub_y == 0 && stripe_row == 0 {
+                    27
+                } else if plane_sub_y == 0 {
+                    17
+                } else {
+                    23
+                };
+                let new_weight = if plane_sub_y == 0 && stripe_row == 0 {
+                    17
+                } else if plane_sub_y == 0 {
+                    27
+                } else {
+                    22
+                };
+                for (&old_sample, &new_sample) in old.iter().zip(source) {
+                    let sample = round2(
+                        i32::from(old_sample) * old_weight + i32::from(new_sample) * new_weight,
+                        5,
+                    );
+                    destination.push(sample.clamp(grain_min, grain_max) as i16);
+                }
             }
         }
     }
@@ -462,45 +488,28 @@ fn build_noise_image(
     }
 }
 
+fn stripe_row_slice(stripe: &[i16], stripe_width: usize, row: usize, width: usize) -> &[i16] {
+    &stripe[row * stripe_width..row * stripe_width + width]
+}
+
 struct Stripe {
-    planes: Vec<Vec<i32>>,
+    planes: Vec<Vec<i16>>,
     widths: Vec<usize>,
-    heights: Vec<usize>,
 }
 
 impl Stripe {
     fn new(plane_widths: &[usize], luma_size: usize, sub_x: usize, sub_y: usize) -> Self {
         let mut planes = Vec::with_capacity(plane_widths.len());
         let mut widths = Vec::with_capacity(plane_widths.len());
-        let mut heights = Vec::with_capacity(plane_widths.len());
         for (plane, &width) in plane_widths.iter().enumerate() {
             let plane_sub_x = if plane > 0 { sub_x } else { 0 };
             let plane_sub_y = if plane > 0 { sub_y } else { 0 };
             let stripe_width = width + ((luma_size + 2) >> plane_sub_x) + 2;
             let stripe_height = (luma_size + 2) >> plane_sub_y;
             widths.push(stripe_width);
-            heights.push(stripe_height);
             planes.push(vec![0; stripe_width * stripe_height]);
         }
-        Self {
-            planes,
-            widths,
-            heights,
-        }
-    }
-
-    fn get(&self, plane: usize, row: usize, col: usize) -> i32 {
-        if row >= self.heights[plane] || col >= self.widths[plane] {
-            0
-        } else {
-            self.planes[plane][row * self.widths[plane] + col]
-        }
-    }
-
-    fn set(&mut self, plane: usize, row: usize, col: usize, value: i32) {
-        if row < self.heights[plane] && col < self.widths[plane] {
-            self.planes[plane][row * self.widths[plane] + col] = value;
-        }
+        Self { planes, widths }
     }
 }
 
@@ -573,58 +582,50 @@ fn fill_stripe_plane(
     };
     let block_height = (luma_size + 2) >> plane_sub_y;
     let block_width = (luma_size + 2) >> plane_sub_x;
-    if !grain.model.overlap_flag {
-        let (template, template_width) = match plane {
-            0 => (&templates.y, LUMA_GRAIN_WIDTH),
-            1 => (&templates.cb, templates.chroma_width),
-            _ => (&templates.cr, templates.chroma_width),
-        };
-        let dst_col = if plane_sub_x == 0 {
-            block_x * 2
-        } else {
-            block_x
-        };
-        for row in 0..block_height {
-            let source = (plane_offset_y + row) * template_width + plane_offset_x;
-            let destination = row * stripe.widths[plane] + dst_col;
-            stripe.planes[plane][destination..destination + block_width]
-                .copy_from_slice(&template[source..source + block_width]); // splot-copy-ok: no-overlap grain block publication
-        }
-        return;
-    }
+    let (template, template_width) = template_plane(templates, plane);
+    let dst_col = if plane_sub_x == 0 {
+        block_x * 2
+    } else {
+        block_x
+    };
+    let blended_cols = if !grain.model.overlap_flag || block_x == 0 {
+        0
+    } else if plane_sub_x == 0 {
+        2
+    } else {
+        1
+    };
     for row in 0..block_height {
-        for col in 0..block_width {
-            let mut sample =
-                template_sample(templates, plane, plane_offset_y + row, plane_offset_x + col);
-            let dst_col = if plane_sub_x == 0 {
-                block_x * 2 + col
-            } else {
-                block_x + col
-            };
-            if block_x > 0 {
-                if plane_sub_x == 0 && col < 2 {
-                    let old = stripe.get(plane, row, dst_col);
-                    sample = if col == 0 {
-                        round2(old * 27 + sample * 17, 5)
-                    } else {
-                        round2(old * 17 + sample * 27, 5)
-                    };
-                    sample = sample.clamp(grain_min, grain_max);
-                } else if plane_sub_x == 1 && col == 0 {
-                    let old = stripe.get(plane, row, dst_col);
-                    sample = round2(old * 23 + sample * 22, 5).clamp(grain_min, grain_max);
+        let source =
+            &template[(plane_offset_y + row) * template_width + plane_offset_x..][..block_width];
+        let destination = row * stripe.widths[plane] + dst_col;
+        let target = &mut stripe.planes[plane][destination..destination + block_width];
+        if blended_cols == 0 {
+            target.copy_from_slice(source);
+            continue;
+        }
+        let old = [i32::from(target[0]), i32::from(target[1])];
+        target.copy_from_slice(source);
+        for col in 0..blended_cols {
+            let sample = if plane_sub_x == 0 {
+                if col == 0 {
+                    round2(old[0] * 27 + i32::from(source[col]) * 17, 5)
+                } else {
+                    round2(old[1] * 17 + i32::from(source[col]) * 27, 5)
                 }
-            }
-            stripe.set(plane, row, dst_col, sample);
+            } else {
+                round2(old[0] * 23 + i32::from(source[col]) * 22, 5)
+            };
+            target[col] = sample.clamp(grain_min, grain_max) as i16;
         }
     }
 }
 
-fn template_sample(templates: &GrainTemplates, plane: usize, row: usize, col: usize) -> i32 {
+fn template_plane(templates: &GrainTemplates, plane: usize) -> (&[i16], usize) {
     match plane {
-        0 => templates.y[row * LUMA_GRAIN_WIDTH + col],
-        1 => templates.cb[row * templates.chroma_width + col],
-        _ => templates.cr[row * templates.chroma_width + col],
+        0 => (&templates.y, LUMA_GRAIN_WIDTH),
+        1 => (&templates.cb, templates.chroma_width),
+        _ => (&templates.cr, templates.chroma_width),
     }
 }
 
@@ -673,7 +674,7 @@ fn add_noise_to_samples<T: ReconSample>(
             for col in 0..width {
                 let orig = y.get(row, col);
                 let scaled = scale_lut(&scaling[0], orig, bit_depth);
-                let noise_sample = noise.planes[0][row * noise.widths[0] + col];
+                let noise_sample = i32::from(noise.planes[0][row * noise.widths[0] + col]);
                 let delta = round2(scaled * noise_sample, scaling_shift);
                 y.set(row, col, (orig + delta).clamp(min_value, max_luma) as u16)?;
             }
@@ -726,7 +727,7 @@ fn add_chroma_noise<T: ReconSample>(
                     sample_max,
                 );
                 let delta = round2(
-                    scale_lut(&scaling[1], merged, bit_depth) * noise.planes[1][index],
+                    scale_lut(&scaling[1], merged, bit_depth) * i32::from(noise.planes[1][index]),
                     scaling_shift,
                 );
                 u.set(row, col, (orig + delta).clamp(min_value, max_chroma) as u16)?;
@@ -744,7 +745,7 @@ fn add_chroma_noise<T: ReconSample>(
                     sample_max,
                 );
                 let delta = round2(
-                    scale_lut(&scaling[2], merged, bit_depth) * noise.planes[2][index],
+                    scale_lut(&scaling[2], merged, bit_depth) * i32::from(noise.planes[2][index]),
                     scaling_shift,
                 );
                 v.set(row, col, (orig + delta).clamp(min_value, max_chroma) as u16)?;
