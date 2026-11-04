@@ -1523,6 +1523,7 @@ fn cfl_420_left_accumulate<T: ReconSample>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn cfl_420_left_accumulate_in<T: ReconSample, S: CflLaneSample>(
     luma: &CflLuma<'_, T>,
