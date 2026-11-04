@@ -930,15 +930,14 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
         let [Some(c0), Some(c1), Some(c2), Some(c3)] = classes else {
             break;
         };
-        let cached;
-        let weights: &[[Simd<i16, 16>; 2]; MADD_PAIRS + 1] = {
-            let built = if c0 == c1 && c1 == c2 && c2 == c3 {
-                cached = None;
+        let mixed;
+        let weights: &[[Simd<i16, 16>; 2]; MADD_PAIRS + 1] =
+            match if c0 == c1 && c1 == c2 && c2 == c3 {
                 prepared_classes[c0].cell_weights.as_ref()
             } else {
-                cached = (|| {
-                    let [Some(m0), Some(m1), Some(m2), Some(m3)] = [c0, c1, c2, c3]
-                        .map(|class| prepared_classes[class].madd_pairs.as_ref())
+                mixed = (|| {
+                    let [Some(m0), Some(m1), Some(m2), Some(m3)] =
+                        [c0, c1, c2, c3].map(|class| prepared_classes[class].madd_pairs.as_ref())
                     else {
                         return None;
                     };
@@ -953,13 +952,11 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
                         [halves(m0[pair], m2[pair]), halves(m1[pair], m3[pair])]
                     }))
                 })();
-                cached.as_ref()
-            };
-            match built {
+                mixed.as_ref()
+            } {
                 Some(weights) => weights,
                 None => break,
-            }
-        };
+            };
         for r in first..end {
             let start = (r - origin) * output_stride + x;
             let (Some(window), Some(filtered)) = (
@@ -972,7 +969,7 @@ fn filter_luma_cell_groups<T: LumaSimdSource, O: LumaSimdOutput>(
             if window.iter().any(|row| row.len() != 16 + 2 * R) {
                 return Err(luma_segment_error(width));
             }
-            filter_luma_cells16(filtered, &window, &weights, max_sample);
+            filter_luma_cells16(filtered, &window, weights, max_sample);
         }
         x += 16;
     }
