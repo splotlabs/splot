@@ -1295,10 +1295,8 @@ impl<'a> EdgeKernel<'a> {
         let left = simd_swizzle!(s, t, [5, 6, 7, 8, 21, 22, 23, 24]);
         let right = simd_swizzle!(s, t, [7, 8, 9, 10, 23, 24, 25, 26]);
         let derivatives = combine_line_derivatives((left - centre - centre + right).abs());
-        let (s, t) = (s.to_array(), t.to_array());
-        let width = deblock_filter_choice_cascade(self.choice, derivatives, |offset| {
-            let index = (EDGE_REACH as isize + offset) as usize;
-            (i32::from(s[index]), i32::from(t[index]))
+        let width = deblock_filter_choice_cascade(self.choice, derivatives, || {
+            row_cascade_derivatives(s, t)
         });
         if width == 0 {
             return 0;
@@ -1457,9 +1455,11 @@ impl<'a> EdgeKernel<'a> {
         stride: usize,
         derivatives: [i32; 4],
     ) -> usize {
-        deblock_filter_choice_cascade(self.choice, derivatives, |offset| {
-            let values = column_row::<E, MI_LINES>(samples, stride, offset);
-            (i32::from(values[0]), i32::from(values[MI_LINES - 1]))
+        deblock_filter_choice_cascade(self.choice, derivatives, || {
+            cascade_reach(|offset| {
+                let values = column_row::<E, MI_LINES>(samples, stride, offset);
+                (i32::from(values[0]), i32::from(values[MI_LINES - 1]))
+            })
         })
     }
 
@@ -1499,6 +1499,31 @@ impl<'a> EdgeKernel<'a> {
             }
         }
     }
+}
+
+/// The [`CascadeDerivatives`] of one edge's first and last sample rows, held
+/// in registers: the neg-side pair for tap `n` reads the edge's `m1`, `m2`
+/// and the sample `n + 1` rows before it, the pos-side pair its `q0`, `p1`
+/// and the sample `n` rows past it.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn row_cascade_derivatives(s: Simd<i16, 16>, t: Simd<i16, 16>) -> CascadeDerivatives {
+    let taps = Simd::from_array([3, 4, 6, 7]);
+    let neg = |line: Simd<i16, 16>| {
+        let edge = simd_swizzle!(line, [7, 7, 7, 7]);
+        let inner = simd_swizzle!(line, [6, 6, 6, 6]);
+        let outer = simd_swizzle!(line, [4, 3, 1, 0]);
+        (edge - outer - (edge - inner) * taps).abs()
+    };
+    let pos = |line: Simd<i16, 16>| {
+        let edge = simd_swizzle!(line, [8, 8, 8, 8]);
+        let inner = simd_swizzle!(line, [9, 9, 9, 9]);
+        let outer = simd_swizzle!(line, [11, 12, 14, 15]);
+        (edge - outer - (edge - inner) * taps).abs()
+    };
+    let neg = (neg(s).cast::<i32>() + neg(t).cast::<i32>() + Simd::splat(1)) >> Simd::splat(1);
+    let pos = (pos(s).cast::<i32>() + pos(t).cast::<i32>() + Simd::splat(1)) >> Simd::splat(1);
+    core::array::from_fn(|index| (neg[index], pos[index]))
 }
 
 /// Reads `N` samples of the line `offset` rows from the edge of a column
@@ -1566,17 +1591,49 @@ fn deblock_filter_choice_progressive(
         choice_second_deriv(m1, zero, p1),
         choice_second_deriv(zero, p1, p2),
     ];
-    deblock_filter_choice_cascade(params, derivatives, load)
+    deblock_filter_choice_cascade(params, derivatives, || cascade_reach(&mut load))
 }
 
-/// The § 7.17.7.2 threshold cascade over `secondDeriv[-2..=1]`; `load` reads
-/// the two lines' samples at an offset from the edge for the end terms.
+/// The directional derivative pairs the § 7.17.7.2 cascade consumes past its
+/// second-derivative stage, indexed by tap `n`: lane 0 holds the pre-loop
+/// `n = 3` pair and lanes 1..4 the `n = 4, 6, 7` pairs the widths
+/// `dist = 4, 6, 8` read (`n = Min(dist, 7)`).
+type CascadeDerivatives = [(i32, i32); 4];
+
+/// The [`CascadeDerivatives`] a `load` closure produces over the two lines'
+/// samples at an offset from the edge. Only the cascade's wide stage calls
+/// this, so an edge that stops at a narrower width never reads them.
+fn cascade_reach(mut load: impl FnMut(isize) -> (i32, i32)) -> CascadeDerivatives {
+    let (m2, m1, zero, p1) = (load(-2), load(-1), load(0), load(1));
+    [
+        (
+            choice_directional(m1, load(-4), m2, 3),
+            choice_directional(zero, load(3), p1, 3),
+        ),
+        (
+            choice_directional(m1, load(-5), m2, 4),
+            choice_directional(zero, load(4), p1, 4),
+        ),
+        (
+            choice_directional(m1, load(-7), m2, 6),
+            choice_directional(zero, load(6), p1, 6),
+        ),
+        (
+            choice_directional(m1, load(-8), m2, 7),
+            choice_directional(zero, load(7), p1, 7),
+        ),
+    ]
+}
+
+/// The § 7.17.7.2 threshold cascade over `secondDeriv[-2..=1]`. `reach`
+/// produces the directional derivatives of the wide stage; it runs only when
+/// the cascade gets there, so an edge that stops earlier never pays for it.
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn deblock_filter_choice_cascade(
     params: &DeblockFilterChoice,
     [sd_m2, sd_m1, sd_0, sd_1]: [i32; 4],
-    mut load: impl FnMut(isize) -> (i32, i32),
+    reach: impl FnOnce() -> CascadeDerivatives,
 ) -> usize {
     let DeblockFilterChoice {
         q_thr,
@@ -1601,29 +1658,30 @@ fn deblock_filter_choice_cascade(
         return 2;
     }
 
-    let (m2, m1, zero, p1) = (load(-2), load(-1), load(0), load(1));
+    let [dir3, wide0, wide1, wide2] = reach();
     let end_thr = (side_thr * 3) >> 4;
-    if max_width_neg > 2 && choice_directional(m1, load(-4), m2, 3) > end_thr {
+    if max_width_neg > 2 && dir3.0 > end_thr {
         return 2;
     }
-    if choice_directional(zero, load(3), p1, 3) > end_thr {
+    if dir3.1 > end_thr {
         return 2;
     }
     if max_width_pos == 3 {
         return 3;
     }
-    deblock_filter_choice_wide(params, sd_m1 + sd_0, [m2, m1, zero, p1], load)
+    deblock_filter_choice_wide(params, sd_m1 + sd_0, [wide0, wide1, wide2])
 }
 
-/// The widths past 3 of [`deblock_filter_choice_cascade`]. Kept out of line:
-/// inlined, its per-width threshold products were hoisted into the setup of
-/// every edge run, which most runs never reach.
+/// The widths past 3 of [`deblock_filter_choice_cascade`]. `wide` holds the
+/// directional pairs for `dist = 4, 6, 8`; indexes past `max_width_pos` are
+/// never read. Kept out of line: inlined, its per-width threshold products
+/// were hoisted into the setup of every edge run, which most runs never
+/// reach.
 #[inline(never)]
 fn deblock_filter_choice_wide(
     params: &DeblockFilterChoice,
     inner: i32,
-    [m2, m1, zero, p1]: [(i32, i32); 4],
-    mut load: impl FnMut(isize) -> (i32, i32),
+    wide: [(i32, i32); 3],
 ) -> usize {
     let DeblockFilterChoice {
         q_thr,
@@ -1635,25 +1693,23 @@ fn deblock_filter_choice_wide(
     } = *params;
     let transition = inner << 4;
     let mut prev_dist = 3usize;
-    let mut dist = 4usize;
-    while dist <= max_width_pos {
+    for (index, dist) in [4usize, 6, 8].into_iter().enumerate() {
+        if dist > max_width_pos {
+            break;
+        }
         let q_thr4 = q_thr.saturating_mul(q_first[dist - 4]);
         let end_thr4 = side_thr.saturating_mul(dist as i32) >> 4;
         if transition > q_thr4 {
             return prev_dist;
         }
         let dist2 = dist.min(7);
-        let n = dist2 as i32;
-        if max_width_neg >= dist2
-            && choice_directional(m1, load(-(n as isize + 1)), m2, n) > end_thr4
-        {
+        if max_width_neg >= dist2 && wide[index].0 > end_thr4 {
             return prev_dist;
         }
-        if choice_directional(zero, load(n as isize), p1, n) > end_thr4 {
+        if wide[index].1 > end_thr4 {
             return prev_dist;
         }
         prev_dist = dist;
-        dist += 2;
     }
     max_width_pos
 }
