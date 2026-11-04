@@ -168,9 +168,6 @@ pub(crate) enum CoeffBaseDerivedLevelPassError {
 /// Kept out of line: inlined into the ordinary-branch function, the level
 /// loop shares that function's registers and spills its context state.
 ///
-/// The block state and level masks are written into caller-owned slots so
-/// the per-block pipeline moves neither the 256-byte masks nor the block
-/// through return values.
 #[inline(never)]
 pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     cdfs: &mut TileCdfSubset,

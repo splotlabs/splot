@@ -63,8 +63,6 @@ std::thread_local! {
 
 impl Drop for TransformCoeffBlockState {
     fn drop(&mut self) {
-        // An empty state is the `empty` placeholder; dropping it must not
-        // evict the recycled buffers.
         if self.level.len() != LEVEL_GRID_LEN {
             return;
         }
@@ -95,7 +93,6 @@ pub(crate) struct TransformCoeffBlockState {
 
 impl TransformCoeffBlockState {
     /// An unallocated state, written over by the first block that fills it.
-    /// Cheaper than a real `new`: no buffer recycling round-trip.
     #[must_use]
     pub(crate) fn empty() -> Self {
         Self {

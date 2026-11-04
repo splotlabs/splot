@@ -47,9 +47,7 @@ pub(crate) struct CoeffOrdinaryStateContextPassInput<'a> {
     pub(crate) lossless: bool,
 }
 
-/// One per-block set of coefficient loop slots, reused across the base and
-/// sign/quant passes so neither the 256-byte masks nor the block state move
-/// after the base pass fills them.
+/// Per-block slots the base and sign/quant passes share by reference.
 struct CoeffOrdinaryBlockSlots {
     block: TransformCoeffBlockState,
     masks: CoeffLevelMasks,
