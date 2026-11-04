@@ -118,42 +118,35 @@ const TAP_COLUMN_REACH: [usize; TAP_REACH + 1] = {
     reach
 };
 
-/// The largest minus the smallest sample that the taps of a row pair read
-/// from `window`, when it is below `limit`. The two center rows go first:
-/// in textured windows they alone usually reach `limit`.
+/// Whether every sample that the row pair's taps read equals the center
+/// sample, i.e. the window's `tap_range` is zero. The center rows go first:
+/// in textured windows they alone usually prove the window uneven.
 #[inline]
-pub(super) fn tap_range<const W: usize, const WIN: usize>(
+pub(super) fn window_is_flat<const W: usize, const WIN: usize>(
     window: &[&[u16; WIN]; WINDOW_ROWS],
-    limit: u16,
-) -> Option<u16> {
+) -> bool {
     const { assert!(WIN == W + 2 * TAP_REACH && W >= 4 && WINDOW_ROWS == 14) };
-    let (mut high, mut low) = ([Simd::<u16, 8>::splat(0); 2], [Simd::splat(u16::MAX); 2]);
-    let mut range = 0;
-    for center_rows in [true, false] {
-        for_each_window_row!(ROW => {
-            const REACH: usize = {
-                let above = ROW.abs_diff(TAP_REACH);
-                let below = ROW.abs_diff(TAP_REACH + 1);
-                TAP_COLUMN_REACH[if above < below { above } else { below }]
-            };
-            if (ROW == TAP_REACH || ROW == TAP_REACH + 1) == center_rows {
-                let end = TAP_REACH + W + REACH;
-                let mut col = TAP_REACH - REACH;
-                while col < end {
-                    let at = col.min(end - 8);
-                    let samples = Simd::<u16, 8>::from_slice(&window[ROW][at..at + 8]);
-                    high[ROW & 1] = high[ROW & 1].simd_max(samples);
-                    low[ROW & 1] = low[ROW & 1].simd_min(samples);
-                    col += 8;
-                }
+    let expected = Simd::<u16, 16>::splat(window[TAP_REACH][TAP_REACH]);
+    for_each_window_row!(@ ROW {
+        const REACH: usize = {
+            let above = ROW.abs_diff(TAP_REACH);
+            let below = ROW.abs_diff(TAP_REACH + 1);
+            TAP_COLUMN_REACH[if above < below { above } else { below }]
+        };
+        let start = TAP_REACH - REACH;
+        let end = TAP_REACH + W + REACH;
+        let mut col = start;
+        while end - col > 16 {
+            if Simd::<u16, 16>::from_slice(&window[ROW][col..col + 16]) != expected {
+                return false;
             }
-        });
-        range = high[0].simd_max(high[1]).reduce_max() - low[0].simd_min(low[1]).reduce_min();
-        if range >= limit {
-            return None;
+            col += 16;
         }
-    }
-    Some(range)
+        if Simd::<u16, 16>::from_slice(&window[ROW][end - 16..end]) != expected {
+            return false;
+        }
+    } ; 6 7 0 1 2 3 4 5 8 9 10 11 12 13);
+    true
 }
 
 /// Multiplier of the gradient sums: twice the error-index scale, so that each
@@ -631,7 +624,7 @@ pub(super) fn sym_rows(
     params: &GdfSymParams,
 ) {
     let bias = Simd::from_array(classes.map(GdfClass::gradient_bias));
-    if tap_range::<16, 28>(window, 1) == Some(0) {
+    if window_is_flat::<16, 28>(window) {
         if params.keeps_flat && bias == Simd::splat(0) {
             return;
         }
