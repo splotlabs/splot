@@ -12,7 +12,7 @@ use super::super::coeff_state::{
 };
 use super::base_level_pass::{
     CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError, CoeffLevelMasks,
-    NonZeroCoeffBaseDerivedLevelPass, apply_nonzero_coeff_base_derived_level_pass,
+    apply_nonzero_coeff_base_derived_level_pass,
 };
 use super::branch::NonZeroCoeffBlockStart;
 use super::max_level::{CoeffMaxLevelConfig, CoeffTransformClass, derive_coeff_max_level};
@@ -123,18 +123,21 @@ fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffOrdinaryDerivedBasePassInput<'_>,
-) -> Result<(NonZeroCoeffBaseDerivedLevelPass, NonZeroCoeffQuantState), CoeffOrdinaryPassError> {
+) -> Result<(TransformCoeffBlockState, NonZeroCoeffQuantState), CoeffOrdinaryPassError> {
     let base_config = input.base_config;
     let sign_config = input.sign_config;
     let walk = walk_nonzero_coeff_scan(&input.start, input.scan)?;
-    let mut base_level_pass = apply_nonzero_coeff_base_derived_level_pass(
+    let mut block = TransformCoeffBlockState::empty();
+    let mut masks = CoeffLevelMasks::default();
+    let first_pass = apply_nonzero_coeff_base_derived_level_pass(
         cdfs,
         symbols,
         input.start,
         &walk,
         base_config,
+        &mut block,
+        &mut masks,
     )?;
-    let first_pass = base_level_pass.first_pass();
     let sign_derive_config = CoeffSignSourceDeriveConfig {
         plane: base_config.plane,
         plane_type: sign_config.plane_type,
@@ -154,14 +157,13 @@ fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
         use_tcq: base_config.use_tcq,
         lossless: input.lossless,
     };
-    let (block, masks) = base_level_pass.block_and_masks_mut();
     let quant_state = apply_interleaved_sign_and_quant_pass(
         cdfs,
         symbols,
         InterleavedSignQuantPassInput {
-            block,
+            block: &mut block,
             walk: &walk,
-            masks,
+            masks: &masks,
             sign_config: sign_derive_config,
             max_level_config: CoeffMaxLevelConfig {
                 plane: base_config.plane,
@@ -171,7 +173,7 @@ fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
             config: quant_config,
         },
     )?;
-    Ok((base_level_pass, quant_state))
+    Ok((block, quant_state))
 }
 
 pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
@@ -190,7 +192,7 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
     let plane = base_config.plane;
     let local_x4 = state.local_x4(plane, state_context.x4)?;
     let local_y4 = state.local_y4(plane, state_context.y4)?;
-    let (base_level_pass, quant_state) = apply_nonzero_coeff_ordinary_pass_with_derived_base(
+    let (block, quant_state) = apply_nonzero_coeff_ordinary_pass_with_derived_base(
         cdfs,
         symbols,
         CoeffOrdinaryDerivedBasePassInput {
@@ -220,7 +222,7 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
         },
         &quant_state,
     )?;
-    Ok(base_level_pass.into_block())
+    Ok(block)
 }
 
 struct InterleavedSignQuantPassInput<'a> {

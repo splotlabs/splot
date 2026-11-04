@@ -133,32 +133,6 @@ impl CoeffLevelMasks {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct NonZeroCoeffBaseDerivedLevelPass {
-    first_pass: CoeffBaseFirstPassSummary,
-    masks: CoeffLevelMasks,
-    block: TransformCoeffBlockState,
-}
-
-impl NonZeroCoeffBaseDerivedLevelPass {
-    #[must_use]
-    pub(crate) const fn first_pass(&self) -> CoeffBaseFirstPassSummary {
-        self.first_pass
-    }
-
-    #[must_use]
-    pub(crate) const fn block_and_masks_mut(
-        &mut self,
-    ) -> (&mut TransformCoeffBlockState, &CoeffLevelMasks) {
-        (&mut self.block, &self.masks)
-    }
-
-    #[must_use]
-    pub(crate) fn into_block(self) -> TransformCoeffBlockState {
-        self.block
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffBaseDerivedLevelPassError {
     #[error("coefficient base/level scan entries {entries} do not match eob {eob}")]
@@ -193,6 +167,10 @@ pub(crate) enum CoeffBaseDerivedLevelPassError {
 
 /// Kept out of line: inlined into the ordinary-branch function, the level
 /// loop shares that function's registers and spills its context state.
+///
+/// The block state and level masks are written into caller-owned slots so
+/// the per-block pipeline moves neither the 256-byte masks nor the block
+/// through return values.
 #[inline(never)]
 pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     cdfs: &mut TileCdfSubset,
@@ -200,17 +178,20 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     start: NonZeroCoeffBlockStart,
     walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
-) -> Result<NonZeroCoeffBaseDerivedLevelPass, CoeffBaseDerivedLevelPassError> {
+    block: &mut TransformCoeffBlockState,
+    masks: &mut CoeffLevelMasks,
+) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
     use CoeffTransformClass::{Horizontal, TwoD, Vertical};
-    let (eob_read, block) = start.into_parts();
-    preflight_pass(eob_read, &block, walk, config)?;
+    let (eob_read, owned_block) = start.into_parts();
+    *block = owned_block;
+    preflight_pass(eob_read, block, walk, config)?;
     match (config.tx_class, config.plane == 0) {
-        (TwoD, true) => level_pass::<0, true>(cdfs, symbols, block, walk, config),
-        (TwoD, false) => level_pass::<0, false>(cdfs, symbols, block, walk, config),
-        (Horizontal, true) => level_pass::<1, true>(cdfs, symbols, block, walk, config),
-        (Horizontal, false) => level_pass::<1, false>(cdfs, symbols, block, walk, config),
-        (Vertical, true) => level_pass::<2, true>(cdfs, symbols, block, walk, config),
-        (Vertical, false) => level_pass::<2, false>(cdfs, symbols, block, walk, config),
+        (TwoD, true) => level_pass::<0, true>(cdfs, symbols, block, walk, config, masks),
+        (TwoD, false) => level_pass::<0, false>(cdfs, symbols, block, walk, config, masks),
+        (Horizontal, true) => level_pass::<1, true>(cdfs, symbols, block, walk, config, masks),
+        (Horizontal, false) => level_pass::<1, false>(cdfs, symbols, block, walk, config, masks),
+        (Vertical, true) => level_pass::<2, true>(cdfs, symbols, block, walk, config, masks),
+        (Vertical, false) => level_pass::<2, false>(cdfs, symbols, block, walk, config, masks),
     }
 }
 
@@ -224,10 +205,11 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
 fn level_pass<const CLASS: usize, const LUMA: bool>(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    mut block: TransformCoeffBlockState,
+    block: &mut TransformCoeffBlockState,
     walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
-) -> Result<NonZeroCoeffBaseDerivedLevelPass, CoeffBaseDerivedLevelPassError> {
+    masks: &mut CoeffLevelMasks,
+) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
     let config = CoeffBaseDerivedLevelPassConfig {
         tx_class: [
             CoeffTransformClass::TwoD,
@@ -238,14 +220,10 @@ fn level_pass<const CLASS: usize, const LUMA: bool>(
         ..config
     };
     let mut first_pass = CoeffBaseFirstPassSummary::default();
-    let mut masks = CoeffLevelMasks::default();
+    *masks = CoeffLevelMasks::default();
     let mut entries = walk.entries();
     let Some(eob_entry) = entries.next() else {
-        return Ok(NonZeroCoeffBaseDerivedLevelPass {
-            first_pass,
-            masks,
-            block,
-        });
+        return Ok(first_pass);
     };
     let eob_is_lf = coeff_is_low_frequency(eob_entry, config.plane, config.tx_class);
     let selector = base_eob_selector(eob_entry, eob_is_lf, config);
@@ -261,7 +239,7 @@ fn level_pass<const CLASS: usize, const LUMA: bool>(
     let mut pass = LevelPassState {
         grid,
         first_pass: &mut first_pass,
-        masks: &mut masks,
+        masks,
         config,
     };
     pass.finish_level(&mut rows, symbols, eob_entry, eob_is_lf, eob_level)?;
@@ -277,11 +255,7 @@ fn level_pass<const CLASS: usize, const LUMA: bool>(
         pass.finish_level(&mut rows, symbols, entry, is_lf, level)?;
     }
 
-    Ok(NonZeroCoeffBaseDerivedLevelPass {
-        first_pass,
-        masks,
-        block,
-    })
+    Ok(first_pass)
 }
 
 /// What the level loop reads and writes besides the CDF rows and the
