@@ -1068,7 +1068,7 @@ fn filter_luma_cells16<T: LumaSimdSource, O: LumaSimdOutput>(
     O::write(filtered, values);
 }
 
-trait LumaSimdOutput: Copy {
+pub(crate) trait LumaSimdOutput: Copy {
     fn from_u16(value: u16) -> Self;
 
     fn write<const LANES: usize>(output: &mut [Self], values: Simd<u16, LANES>);

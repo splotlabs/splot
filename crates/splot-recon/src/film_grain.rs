@@ -3,9 +3,14 @@
 
 //! AV2 § 7.21.7 display film-grain synthesis.
 
+use std::simd::{Mask, Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint, simd_swizzle};
+
 use splot_core::headers::film_grain::{FilmGrainModel, FilmGrainScalingPoint};
 use splot_core::tables::conversion::GAUSSIAN_SEQUENCE;
 
+use crate::wienerns_filter::{
+    LumaSimdOutput, LumaSimdSource, interleave_pairs, multiply_add_pairs,
+};
 use crate::{
     DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, Plane, PlaneRect, PlaneSize,
     ReconSample, Result,
@@ -109,15 +114,6 @@ impl<T: ReconSample> GrainDestination<T> {
         }
         Self { samples, stride }
     }
-
-    fn get(&self, row: usize, col: usize) -> i32 {
-        i32::from(self.samples[row * self.stride + col].to_u16())
-    }
-
-    fn set(&mut self, row: usize, col: usize, value: u16) -> Result<()> {
-        self.samples[row * self.stride + col] = T::try_from_u16(value)?;
-        Ok(())
-    }
 }
 
 fn plane_from_visible<T: ReconSample>(
@@ -156,9 +152,9 @@ fn synthesize_into<T: ReconSample>(
 }
 
 struct GrainTemplates {
-    y: Vec<i32>,
-    cb: Vec<i32>,
-    cr: Vec<i32>,
+    y: Vec<i16>,
+    cb: Vec<i16>,
+    cr: Vec<i16>,
     chroma_width: usize,
 }
 
@@ -220,11 +216,17 @@ fn generate_grain(
     );
 
     GrainTemplates {
-        y: luma,
-        cb,
-        cr,
+        y: narrow_grain(luma),
+        cb: narrow_grain(cb),
+        cr: narrow_grain(cr),
         chroma_width,
     }
+}
+
+/// Packs filtered grain into `i16` lanes; filtered samples are clamped to the
+/// grain range and white-noise samples stay within the Gaussian magnitude.
+fn narrow_grain(planes: Vec<i32>) -> Vec<i16> {
+    planes.into_iter().map(|sample| sample as i16).collect()
 }
 
 fn apply_luma_ar(model: &FilmGrainModel, luma: &mut [i32], grain_min: i32, grain_max: i32) {
@@ -327,8 +329,10 @@ fn ar_neighbor_offsets(lag: u8, stride: usize) -> ([isize; MAX_AR_COEFFICIENTS],
     (offsets, count)
 }
 
-fn scaling_luts(grain: &ActiveFilmGrain<'_>, num_planes: usize) -> Vec<[i32; 256]> {
-    let mut luts = vec![[0; 256]; num_planes];
+const SCALING_LUT_LEN: usize = 257;
+
+fn scaling_luts(grain: &ActiveFilmGrain<'_>, num_planes: usize) -> Vec<[i32; SCALING_LUT_LEN]> {
+    let mut luts = vec![[0; SCALING_LUT_LEN]; num_planes];
     for (plane, lut) in luts.iter_mut().enumerate() {
         let points = scaling_points_for_plane(grain.model, plane);
         init_scaling_lut(points, lut);
@@ -346,13 +350,13 @@ fn scaling_points_for_plane(model: &FilmGrainModel, plane: usize) -> &[FilmGrain
     }
 }
 
-fn init_scaling_lut(points: &[FilmGrainScalingPoint], lut: &mut [i32; 256]) {
+fn init_scaling_lut(points: &[FilmGrainScalingPoint], lut: &mut [i32; SCALING_LUT_LEN]) {
     if points.is_empty() {
         return;
     }
     let first_x = points[0].value.min(255) as usize;
     let first_y = points[0].scaling as i32;
-    for value in lut.iter_mut().take(first_x) {
+    for value in lut[..256].iter_mut().take(first_x) {
         *value = first_y;
     }
     for pair in points.windows(2) {
@@ -371,13 +375,14 @@ fn init_scaling_lut(points: &[FilmGrainScalingPoint], lut: &mut [i32; 256]) {
         }
     }
     let last = points[points.len() - 1];
-    for value in lut.iter_mut().skip(last.value.min(255) as usize) {
+    for value in lut[..256].iter_mut().skip(last.value.min(255) as usize) {
         *value = last.scaling as i32;
     }
+    lut[256] = lut[255];
 }
 
 struct NoiseImage {
-    planes: Vec<Vec<i32>>,
+    planes: Vec<Vec<i16>>,
     widths: [usize; 3],
 }
 
@@ -401,57 +406,92 @@ fn build_noise_image(
     let stripe_count = stripe_count(height, luma_size);
     let plane_widths = plane_axis_lengths(width, sub_x);
     let plane_heights = plane_axis_lengths(height, sub_y);
-    let mut stripes = (0..stripe_count)
-        .map(|_| Stripe::new(&plane_widths, luma_size, sub_x, sub_y))
-        .collect::<Vec<_>>();
+    let mut planes: Vec<Vec<i16>> = (0..num_planes)
+        .map(|plane| Vec::with_capacity(plane_widths[plane] * plane_heights[plane]))
+        .collect();
+    let mut stripes = [
+        Stripe::new(&plane_widths, luma_size, sub_x, sub_y),
+        Stripe::new(&plane_widths, luma_size, sub_x, sub_y),
+    ];
 
-    for (luma_num, stripe) in stripes.iter_mut().enumerate() {
+    for luma_num in 0..stripe_count {
+        let current = luma_num & 1;
         fill_stripe(
-            stripe, luma_num, width, sub_x, sub_y, num_planes, luma_size, grain, templates,
-            grain_min, grain_max,
+            &mut stripes[current],
+            luma_num,
+            width,
+            sub_x,
+            sub_y,
+            num_planes,
+            luma_size,
+            grain,
+            templates,
+            grain_min,
+            grain_max,
         );
-    }
-
-    let mut planes = Vec::with_capacity(num_planes);
-    for plane in 0..num_planes {
-        planes.push(vec![0; plane_widths[plane] * plane_heights[plane]]);
-    }
-    for plane in 0..num_planes {
-        let plane_sub_y = if plane > 0 { sub_y } else { 0 };
-        let stripe_shift = 4 + usize::from(grain.model.film_grain_block_size) - plane_sub_y;
-        if !grain.model.overlap_flag {
-            for row in 0..plane_heights[plane] {
-                let luma_num = row >> stripe_shift;
-                let stripe_row = row - (luma_num << stripe_shift);
-                let stripe = &stripes[luma_num];
-                let source = stripe_row * stripe.widths[plane];
-                let destination = row * plane_widths[plane];
-                planes[plane][destination..destination + plane_widths[plane]]
-                    .copy_from_slice(&stripe.planes[plane][source..source + plane_widths[plane]]); // splot-copy-ok: assembled film-grain noise image
-            }
-            continue;
-        }
-        for row in 0..plane_heights[plane] {
-            let luma_num = row >> stripe_shift;
-            let stripe_row = row - (luma_num << stripe_shift);
-            for col in 0..plane_widths[plane] {
-                let mut sample = stripes[luma_num].get(plane, stripe_row, col);
-                if luma_num > 0 {
-                    if plane_sub_y == 0 && stripe_row < 2 {
-                        let old = stripes[luma_num - 1].get(plane, stripe_row + luma_size, col);
-                        sample = if stripe_row == 0 {
-                            round2(old * 27 + sample * 17, 5)
-                        } else {
-                            round2(old * 17 + sample * 27, 5)
-                        };
-                        sample = sample.clamp(grain_min, grain_max);
-                    } else if plane_sub_y == 1 && stripe_row < 1 {
-                        let old =
-                            stripes[luma_num - 1].get(plane, stripe_row + (luma_size >> 1), col);
-                        sample = round2(old * 23 + sample * 22, 5).clamp(grain_min, grain_max);
-                    }
+        for plane in 0..num_planes {
+            let plane_sub_y = if plane > 0 { sub_y } else { 0 };
+            let stripe_shift = 4 + usize::from(grain.model.film_grain_block_size) - plane_sub_y;
+            let blend_rows = if plane_sub_y == 0 { 2 } else { 1 };
+            let stripe_width = stripes[current].widths[plane];
+            let buffer = &stripes[current].planes[plane];
+            let previous = &stripes[current ^ 1].planes[plane];
+            let destination = &mut planes[plane];
+            for stripe_row in 0..(1 << stripe_shift) {
+                let row = (luma_num << stripe_shift) + stripe_row;
+                if row >= plane_heights[plane] {
+                    break;
                 }
-                planes[plane][row * plane_widths[plane] + col] = sample;
+                let source =
+                    stripe_row_slice(buffer, stripe_width, stripe_row, plane_widths[plane]);
+                let blended = grain.model.overlap_flag && luma_num > 0 && stripe_row < blend_rows;
+                if !blended {
+                    destination.extend_from_slice(source); // splot-copy-ok: assembled film-grain noise plane row
+                    continue;
+                }
+                let old_row = stripe_row
+                    + if plane_sub_y == 0 {
+                        luma_size
+                    } else {
+                        luma_size >> 1
+                    };
+                let old = stripe_row_slice(previous, stripe_width, old_row, plane_widths[plane]);
+                let old_weight = if plane_sub_y == 0 && stripe_row == 0 {
+                    27
+                } else if plane_sub_y == 0 {
+                    17
+                } else {
+                    23
+                };
+                let new_weight = if plane_sub_y == 0 && stripe_row == 0 {
+                    17
+                } else if plane_sub_y == 0 {
+                    27
+                } else {
+                    22
+                };
+                let mut x = 0;
+                while x + 16 <= plane_widths[plane] {
+                    let lanes = blended_stripe_lanes(
+                        &old[x..],
+                        &source[x..],
+                        old_weight,
+                        new_weight,
+                        grain_min,
+                        grain_max,
+                    );
+                    destination.extend_from_slice(&lanes.to_array()); // splot-copy-ok: blended film-grain stripe-boundary row
+                    x += 16;
+                }
+                for &old_sample in &old[x..] {
+                    let new_sample = source[x];
+                    let sample = round2(
+                        i32::from(old_sample) * old_weight + i32::from(new_sample) * new_weight,
+                        5,
+                    );
+                    destination.push(sample.clamp(grain_min, grain_max) as i16);
+                    x += 1;
+                }
             }
         }
     }
@@ -462,45 +502,62 @@ fn build_noise_image(
     }
 }
 
+fn stripe_row_slice(stripe: &[i16], stripe_width: usize, row: usize, width: usize) -> &[i16] {
+    &stripe[row * stripe_width..row * stripe_width + width]
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn blended_stripe_lanes(
+    old: &[i16],
+    source: &[i16],
+    old_weight: i32,
+    new_weight: i32,
+    grain_min: i32,
+    grain_max: i32,
+) -> Simd<i16, 16> {
+    let weights: Simd<i16, 16> = Simd::from_array(core::array::from_fn(|lane| {
+        if lane % 2 == 0 {
+            old_weight as i16
+        } else {
+            new_weight as i16
+        }
+    }));
+    let old_lanes = Simd::<i16, 16>::from_slice(old);
+    let new_lanes = Simd::<i16, 16>::from_slice(source);
+    let [low, high] = interleave_pairs(old_lanes, new_lanes);
+    let low = multiply_add_pairs(low, weights);
+    let high = multiply_add_pairs(high, weights);
+    let product = simd_swizzle!(
+        low,
+        high,
+        [0, 1, 2, 3, 8, 9, 10, 11, 4, 5, 6, 7, 12, 13, 14, 15]
+    );
+    let blended = (product + Simd::splat(16)) >> Simd::splat(5);
+    let blended = blended
+        .simd_max(Simd::splat(grain_min))
+        .simd_min(Simd::splat(grain_max));
+    blended.cast::<i16>()
+}
+
 struct Stripe {
-    planes: Vec<Vec<i32>>,
+    planes: Vec<Vec<i16>>,
     widths: Vec<usize>,
-    heights: Vec<usize>,
 }
 
 impl Stripe {
     fn new(plane_widths: &[usize], luma_size: usize, sub_x: usize, sub_y: usize) -> Self {
         let mut planes = Vec::with_capacity(plane_widths.len());
         let mut widths = Vec::with_capacity(plane_widths.len());
-        let mut heights = Vec::with_capacity(plane_widths.len());
         for (plane, &width) in plane_widths.iter().enumerate() {
             let plane_sub_x = if plane > 0 { sub_x } else { 0 };
             let plane_sub_y = if plane > 0 { sub_y } else { 0 };
             let stripe_width = width + ((luma_size + 2) >> plane_sub_x) + 2;
             let stripe_height = (luma_size + 2) >> plane_sub_y;
             widths.push(stripe_width);
-            heights.push(stripe_height);
             planes.push(vec![0; stripe_width * stripe_height]);
         }
-        Self {
-            planes,
-            widths,
-            heights,
-        }
-    }
-
-    fn get(&self, plane: usize, row: usize, col: usize) -> i32 {
-        if row >= self.heights[plane] || col >= self.widths[plane] {
-            0
-        } else {
-            self.planes[plane][row * self.widths[plane] + col]
-        }
-    }
-
-    fn set(&mut self, plane: usize, row: usize, col: usize, value: i32) {
-        if row < self.heights[plane] && col < self.widths[plane] {
-            self.planes[plane][row * self.widths[plane] + col] = value;
-        }
+        Self { planes, widths }
     }
 }
 
@@ -573,58 +630,50 @@ fn fill_stripe_plane(
     };
     let block_height = (luma_size + 2) >> plane_sub_y;
     let block_width = (luma_size + 2) >> plane_sub_x;
-    if !grain.model.overlap_flag {
-        let (template, template_width) = match plane {
-            0 => (&templates.y, LUMA_GRAIN_WIDTH),
-            1 => (&templates.cb, templates.chroma_width),
-            _ => (&templates.cr, templates.chroma_width),
-        };
-        let dst_col = if plane_sub_x == 0 {
-            block_x * 2
-        } else {
-            block_x
-        };
-        for row in 0..block_height {
-            let source = (plane_offset_y + row) * template_width + plane_offset_x;
-            let destination = row * stripe.widths[plane] + dst_col;
-            stripe.planes[plane][destination..destination + block_width]
-                .copy_from_slice(&template[source..source + block_width]); // splot-copy-ok: no-overlap grain block publication
-        }
-        return;
-    }
+    let (template, template_width) = template_plane(templates, plane);
+    let dst_col = if plane_sub_x == 0 {
+        block_x * 2
+    } else {
+        block_x
+    };
+    let blended_cols = if !grain.model.overlap_flag || block_x == 0 {
+        0
+    } else if plane_sub_x == 0 {
+        2
+    } else {
+        1
+    };
     for row in 0..block_height {
-        for col in 0..block_width {
-            let mut sample =
-                template_sample(templates, plane, plane_offset_y + row, plane_offset_x + col);
-            let dst_col = if plane_sub_x == 0 {
-                block_x * 2 + col
-            } else {
-                block_x + col
-            };
-            if block_x > 0 {
-                if plane_sub_x == 0 && col < 2 {
-                    let old = stripe.get(plane, row, dst_col);
-                    sample = if col == 0 {
-                        round2(old * 27 + sample * 17, 5)
-                    } else {
-                        round2(old * 17 + sample * 27, 5)
-                    };
-                    sample = sample.clamp(grain_min, grain_max);
-                } else if plane_sub_x == 1 && col == 0 {
-                    let old = stripe.get(plane, row, dst_col);
-                    sample = round2(old * 23 + sample * 22, 5).clamp(grain_min, grain_max);
+        let source =
+            &template[(plane_offset_y + row) * template_width + plane_offset_x..][..block_width];
+        let destination = row * stripe.widths[plane] + dst_col;
+        let target = &mut stripe.planes[plane][destination..destination + block_width];
+        if blended_cols == 0 {
+            target.copy_from_slice(source); // splot-copy-ok: grain block template publication
+            continue;
+        }
+        let old = [i32::from(target[0]), i32::from(target[1])];
+        target.copy_from_slice(source); // splot-copy-ok: grain block template publication
+        for col in 0..blended_cols {
+            let sample = if plane_sub_x == 0 {
+                if col == 0 {
+                    round2(old[0] * 27 + i32::from(source[col]) * 17, 5)
+                } else {
+                    round2(old[1] * 17 + i32::from(source[col]) * 27, 5)
                 }
-            }
-            stripe.set(plane, row, dst_col, sample);
+            } else {
+                round2(old[0] * 23 + i32::from(source[col]) * 22, 5)
+            };
+            target[col] = sample.clamp(grain_min, grain_max) as i16;
         }
     }
 }
 
-fn template_sample(templates: &GrainTemplates, plane: usize, row: usize, col: usize) -> i32 {
+fn template_plane(templates: &GrainTemplates, plane: usize) -> (&[i16], usize) {
     match plane {
-        0 => templates.y[row * LUMA_GRAIN_WIDTH + col],
-        1 => templates.cb[row * templates.chroma_width + col],
-        _ => templates.cr[row * templates.chroma_width + col],
+        0 => (&templates.y, LUMA_GRAIN_WIDTH),
+        1 => (&templates.cb, templates.chroma_width),
+        _ => (&templates.cr, templates.chroma_width),
     }
 }
 
@@ -640,7 +689,7 @@ fn add_noise_to_samples<T: ReconSample>(
     bit_depth: u8,
     num_planes: usize,
     grain: &ActiveFilmGrain<'_>,
-    scaling: &[[i32; 256]],
+    scaling: &[[i32; SCALING_LUT_LEN]],
     noise: &NoiseImage,
 ) -> Result<()> {
     let (min_value, max_luma, max_chroma) = output_ranges(grain, bit_depth);
@@ -670,16 +719,98 @@ fn add_noise_to_samples<T: ReconSample>(
     }
     if grain.model.num_y_points > 0 {
         for row in 0..height {
-            for col in 0..width {
-                let orig = y.get(row, col);
-                let scaled = scale_lut(&scaling[0], orig, bit_depth);
-                let noise_sample = noise.planes[0][row * noise.widths[0] + col];
-                let delta = round2(scaled * noise_sample, scaling_shift);
-                y.set(row, col, (orig + delta).clamp(min_value, max_luma) as u16)?;
-            }
+            add_luma_noise_row(
+                &mut y.samples[row * y.stride..][..width],
+                &noise.planes[0][row * noise.widths[0]..][..width],
+                &scaling[0],
+                bit_depth,
+                scaling_shift,
+                min_value,
+                max_luma,
+            )?;
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_luma_noise_row<T: ReconSample>(
+    row: &mut [T],
+    noise_row: &[i16],
+    lut: &[i32; SCALING_LUT_LEN],
+    bit_depth: u8,
+    scaling_shift: u8,
+    min_value: i32,
+    max_luma: i32,
+) -> Result<()> {
+    if i32::from(T::MAX_VALUE) >= max_luma {
+        if let Some(row) = T::u8_slice_mut(row) {
+            add_luma_noise_row_lanes::<u8>(
+                row,
+                noise_row,
+                lut,
+                bit_depth,
+                scaling_shift,
+                min_value,
+                max_luma,
+            );
+            return Ok(());
+        }
+        if let Some(row) = T::u16_slice_mut(row) {
+            add_luma_noise_row_lanes::<u16>(
+                row,
+                noise_row,
+                lut,
+                bit_depth,
+                scaling_shift,
+                min_value,
+                max_luma,
+            );
+            return Ok(());
+        }
+    }
+    for (col, &noise_sample) in noise_row.iter().enumerate() {
+        let orig = i32::from(row[col].to_u16());
+        let scaled = scale_lut(lut, orig, bit_depth);
+        let delta = round2(scaled * i32::from(noise_sample), scaling_shift);
+        row[col] = T::try_from_u16((orig + delta).clamp(min_value, max_luma) as u16)?;
+    }
+    Ok(())
+}
+
+fn add_luma_noise_row_lanes<S: LumaSimdSource + LumaSimdOutput>(
+    row: &mut [S],
+    noise_row: &[i16],
+    lut: &[i32; SCALING_LUT_LEN],
+    bit_depth: u8,
+    scaling_shift: u8,
+    min_value: i32,
+    max_luma: i32,
+) {
+    let shift = bit_depth - 8;
+    let mut x = 0;
+    while x + 16 <= row.len() {
+        let orig = S::load::<16>(row, x);
+        let scaled = scaling_lut_lanes(lut, orig.cast::<i32>(), shift);
+        let lanes = Simd::<i16, 16>::from_slice(&noise_row[x..]);
+        add_scaled_noise_lanes::<S>(
+            row,
+            x,
+            orig,
+            scaled,
+            lanes,
+            scaling_shift,
+            min_value,
+            max_luma,
+        );
+        x += 16;
+    }
+    for (col, &noise_sample) in noise_row.iter().enumerate().skip(x) {
+        let orig = i32::from(S::scalar(row, col));
+        let scaled = scale_lut(lut, orig, bit_depth);
+        let delta = round2(scaled * i32::from(noise_sample), scaling_shift);
+        row[col] = S::from_u16((orig + delta).clamp(min_value, max_luma) as u16);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -697,61 +828,295 @@ fn add_chroma_noise<T: ReconSample>(
     min_value: i32,
     scaling_shift: u8,
     grain: &ActiveFilmGrain<'_>,
-    scaling: &[[i32; 256]],
+    scaling: &[[i32; SCALING_LUT_LEN]],
     noise: &NoiseImage,
 ) -> Result<()> {
     let model = grain.model;
-    let sample_max = (1_i32 << bit_depth) - 1;
     for row in 0..chroma_height {
-        for col in 0..chroma_width {
-            let luma_x = col << sub_x;
-            let luma_y = row << sub_y;
-            let luma_next_x = (luma_x + 1).min(luma_width - 1);
-            let average_luma = if sub_x == 1 {
-                round2(y.get(luma_y, luma_x) + y.get(luma_y, luma_next_x), 1)
-            } else {
-                y.get(luma_y, luma_x)
-            };
-            let index = row * chroma_width + col;
-            if model.num_cb_points > 0 || model.chroma_scaling_from_luma {
-                let orig = u.get(row, col);
-                let merged = chroma_merged_sample(
-                    average_luma,
-                    orig,
-                    model.cb_luma_mult,
-                    model.cb_mult,
-                    model.cb_offset,
-                    model.chroma_scaling_from_luma,
-                    bit_depth,
-                    sample_max,
-                );
-                let delta = round2(
-                    scale_lut(&scaling[1], merged, bit_depth) * noise.planes[1][index],
-                    scaling_shift,
-                );
-                u.set(row, col, (orig + delta).clamp(min_value, max_chroma) as u16)?;
-            }
-            if model.num_cr_points > 0 || model.chroma_scaling_from_luma {
-                let orig = v.get(row, col);
-                let merged = chroma_merged_sample(
-                    average_luma,
-                    orig,
-                    model.cr_luma_mult,
-                    model.cr_mult,
-                    model.cr_offset,
-                    model.chroma_scaling_from_luma,
-                    bit_depth,
-                    sample_max,
-                );
-                let delta = round2(
-                    scale_lut(&scaling[2], merged, bit_depth) * noise.planes[2][index],
-                    scaling_shift,
-                );
-                v.set(row, col, (orig + delta).clamp(min_value, max_chroma) as u16)?;
-            }
+        let luma_row = &y.samples[(row << sub_y) * y.stride..];
+        if model.num_cb_points > 0 || model.chroma_scaling_from_luma {
+            add_chroma_noise_row(
+                &mut u.samples[row * u.stride..][..chroma_width],
+                luma_row,
+                &noise.planes[1][row * noise.widths[1]..][..chroma_width],
+                &scaling[1],
+                luma_width,
+                sub_x,
+                bit_depth,
+                scaling_shift,
+                min_value,
+                max_chroma,
+                model.cb_luma_mult,
+                model.cb_mult,
+                model.cb_offset,
+                model.chroma_scaling_from_luma,
+            )?;
+        }
+        if model.num_cr_points > 0 || model.chroma_scaling_from_luma {
+            add_chroma_noise_row(
+                &mut v.samples[row * v.stride..][..chroma_width],
+                luma_row,
+                &noise.planes[2][row * noise.widths[2]..][..chroma_width],
+                &scaling[2],
+                luma_width,
+                sub_x,
+                bit_depth,
+                scaling_shift,
+                min_value,
+                max_chroma,
+                model.cr_luma_mult,
+                model.cr_mult,
+                model.cr_offset,
+                model.chroma_scaling_from_luma,
+            )?;
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_chroma_noise_row<T: ReconSample>(
+    chroma_row: &mut [T],
+    luma_row: &[T],
+    noise_row: &[i16],
+    lut: &[i32; SCALING_LUT_LEN],
+    luma_width: usize,
+    sub_x: usize,
+    bit_depth: u8,
+    scaling_shift: u8,
+    min_value: i32,
+    max_chroma: i32,
+    luma_mult: Option<u8>,
+    mult: Option<u8>,
+    offset: Option<u16>,
+    from_luma: bool,
+) -> Result<()> {
+    if i32::from(T::MAX_VALUE) >= max_chroma {
+        if let (Some(chroma), Some(luma)) =
+            (T::u8_slice_mut(&mut *chroma_row), T::u8_slice(luma_row))
+        {
+            add_chroma_noise_row_lanes::<u8>(
+                chroma,
+                luma,
+                noise_row,
+                lut,
+                luma_width,
+                sub_x,
+                bit_depth,
+                scaling_shift,
+                min_value,
+                max_chroma,
+                luma_mult,
+                mult,
+                offset,
+                from_luma,
+            );
+            return Ok(());
+        }
+        if let (Some(chroma), Some(luma)) =
+            (T::u16_slice_mut(&mut *chroma_row), T::u16_slice(luma_row))
+        {
+            add_chroma_noise_row_lanes::<u16>(
+                chroma,
+                luma,
+                noise_row,
+                lut,
+                luma_width,
+                sub_x,
+                bit_depth,
+                scaling_shift,
+                min_value,
+                max_chroma,
+                luma_mult,
+                mult,
+                offset,
+                from_luma,
+            );
+            return Ok(());
+        }
+    }
+    let sample_max = (1_i32 << bit_depth) - 1;
+    for col in 0..chroma_row.len() {
+        let luma_x = col << sub_x;
+        let luma_next_x = (luma_x + 1).min(luma_width - 1);
+        let average_luma = if sub_x == 1 {
+            round2(
+                i32::from(luma_row[luma_x].to_u16()) + i32::from(luma_row[luma_next_x].to_u16()),
+                1,
+            )
+        } else {
+            i32::from(luma_row[luma_x].to_u16())
+        };
+        let orig = i32::from(chroma_row[col].to_u16());
+        let merged = chroma_merged_sample(
+            average_luma,
+            orig,
+            luma_mult,
+            mult,
+            offset,
+            from_luma,
+            bit_depth,
+            sample_max,
+        );
+        let scaled = scale_lut(lut, merged, bit_depth);
+        let delta = round2(scaled * i32::from(noise_row[col]), scaling_shift);
+        chroma_row[col] = T::try_from_u16((orig + delta).clamp(min_value, max_chroma) as u16)?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_chroma_noise_row_lanes<S: LumaSimdSource + LumaSimdOutput>(
+    chroma_row: &mut [S],
+    luma_row: &[S],
+    noise_row: &[i16],
+    lut: &[i32; SCALING_LUT_LEN],
+    luma_width: usize,
+    sub_x: usize,
+    bit_depth: u8,
+    scaling_shift: u8,
+    min_value: i32,
+    max_chroma: i32,
+    luma_mult: Option<u8>,
+    mult: Option<u8>,
+    offset: Option<u16>,
+    from_luma: bool,
+) {
+    let shift = bit_depth - 8;
+    let weights: Simd<i16, 16> = Simd::from_array(core::array::from_fn(|lane| {
+        if lane % 2 == 0 {
+            i16::from(luma_mult.unwrap_or(128)) - 128
+        } else {
+            i16::from(mult.unwrap_or(128)) - 128
+        }
+    }));
+    let mut x = 0;
+    while x + 16 <= chroma_row.len() && (sub_x == 0 || x * 2 + 32 <= luma_width) {
+        let orig = S::load::<16>(chroma_row, x);
+        let average_luma = if sub_x == 1 {
+            let pairs = S::load::<32>(luma_row, x * 2);
+            let even: Simd<u16, 16> = simd_swizzle!(
+                pairs,
+                [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30]
+            );
+            let odd: Simd<u16, 16> = simd_swizzle!(
+                pairs,
+                [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31]
+            );
+            (even.cast::<i32>() + odd.cast::<i32>() + Simd::splat(1)) >> Simd::splat(1)
+        } else {
+            S::load::<16>(luma_row, x).cast::<i32>()
+        };
+        let merged = if from_luma {
+            average_luma
+        } else {
+            let combined =
+                merged_combined_lanes(average_luma.cast::<i16>(), orig.cast::<i16>(), weights);
+            ((combined >> Simd::splat(6)) + Simd::splat(chroma_offset_term(offset, bit_depth)))
+                .simd_max(Simd::splat(0))
+                .simd_min(Simd::splat((1_i32 << bit_depth) - 1))
+        };
+        let scaled = scaling_lut_lanes(lut, merged, shift);
+        let lanes = Simd::<i16, 16>::from_slice(&noise_row[x..]);
+        add_scaled_noise_lanes::<S>(
+            chroma_row,
+            x,
+            orig,
+            scaled,
+            lanes,
+            scaling_shift,
+            min_value,
+            max_chroma,
+        );
+        x += 16;
+    }
+    let sample_max = (1_i32 << bit_depth) - 1;
+    for col in x..chroma_row.len() {
+        let luma_x = col << sub_x;
+        let luma_next_x = (luma_x + 1).min(luma_width - 1);
+        let average_luma = if sub_x == 1 {
+            round2(
+                i32::from(S::scalar(luma_row, luma_x))
+                    + i32::from(S::scalar(luma_row, luma_next_x)),
+                1,
+            )
+        } else {
+            i32::from(S::scalar(luma_row, luma_x))
+        };
+        let orig = i32::from(S::scalar(chroma_row, col));
+        let merged = chroma_merged_sample(
+            average_luma,
+            orig,
+            luma_mult,
+            mult,
+            offset,
+            from_luma,
+            bit_depth,
+            sample_max,
+        );
+        let scaled = scale_lut(lut, merged, bit_depth);
+        let delta = round2(scaled * i32::from(noise_row[col]), scaling_shift);
+        chroma_row[col] = S::from_u16((orig + delta).clamp(min_value, max_chroma) as u16);
+    }
+}
+
+#[inline]
+fn merged_combined_lanes(
+    average: Simd<i16, 16>,
+    orig: Simd<i16, 16>,
+    weights: Simd<i16, 16>,
+) -> Simd<i32, 16> {
+    let [low, high] = interleave_pairs(average, orig);
+    let low = multiply_add_pairs(low, weights);
+    let high = multiply_add_pairs(high, weights);
+    simd_swizzle!(
+        low,
+        high,
+        [0, 1, 2, 3, 8, 9, 10, 11, 4, 5, 6, 7, 12, 13, 14, 15]
+    )
+}
+
+fn chroma_offset_term(offset: Option<u16>, bit_depth: u8) -> i32 {
+    (i32::from(offset.unwrap_or(256)) - 256) << (bit_depth - 8)
+}
+
+#[inline]
+fn scaling_lut_lanes(
+    lut: &[i32; SCALING_LUT_LEN],
+    index: Simd<i32, 16>,
+    shift: u8,
+) -> Simd<i32, 16> {
+    let shift_lanes = Simd::splat(i32::from(shift));
+    let x = index >> shift_lanes;
+    let x = x.simd_max(Simd::splat(0)).simd_min(Simd::splat(255));
+    let rem = index - (x << shift_lanes);
+    let empty = Simd::<i32, 16>::splat(0);
+    let select = Mask::<isize, 16>::splat(true);
+    let start = Simd::<i32, 16>::gather_select(lut, select, x.cast::<usize>(), empty);
+    let end = Simd::<i32, 16>::gather_select(&lut[1..], select, x.cast::<usize>(), empty);
+    let half = Simd::splat((1_i32 << shift) >> 1);
+    start + (((end - start) * rem + half) >> shift_lanes)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn add_scaled_noise_lanes<T: LumaSimdOutput>(
+    row: &mut [T],
+    x: usize,
+    orig: Simd<u16, 16>,
+    scaled: Simd<i32, 16>,
+    noise: Simd<i16, 16>,
+    scaling_shift: u8,
+    min_value: i32,
+    max_value: i32,
+) {
+    let delta = (scaled * noise.cast::<i32>() + Simd::splat((1_i32 << scaling_shift) >> 1))
+        >> Simd::splat(i32::from(scaling_shift));
+    let out = orig.cast::<i32>() + delta;
+    let out = out
+        .simd_max(Simd::splat(min_value))
+        .simd_min(Simd::splat(max_value));
+    T::write(&mut row[x..], out.cast::<u16>());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -801,14 +1166,12 @@ fn plane_axis_lengths(length: usize, subsampling: usize) -> [usize; 3] {
     [length, chroma, chroma]
 }
 
-fn scale_lut(lut: &[i32; 256], index: i32, bit_depth: u8) -> i32 {
+fn scale_lut(lut: &[i32; SCALING_LUT_LEN], index: i32, bit_depth: u8) -> i32 {
     let shift = bit_depth - 8;
     let x = (index >> shift).clamp(0, 255) as usize;
-    if shift == 0 || x == 255 {
-        return lut[x];
-    }
     let rem = index - ((x as i32) << shift);
-    lut[x] + round2((lut[x + 1] - lut[x]) * rem, shift)
+    let start = lut[x];
+    start + round2((lut[x + 1] - start) * rem, shift)
 }
 
 fn round2(value: i32, shift: u8) -> i32 {
