@@ -33,7 +33,7 @@ pub(crate) mod geometry;
 
 struct CoeffOrdinaryDerivedBasePassInput<'a> {
     start: NonZeroCoeffBlockStart,
-    scan: &'a [u16],
+    walk: &'a NonZeroCoeffScanWalk<'a>,
     base_config: CoeffBaseDerivedLevelPassConfig,
     sign_config: CoeffOrdinaryDerivedSignPassConfig<'a>,
     lossless: bool,
@@ -45,6 +45,14 @@ pub(crate) struct CoeffOrdinaryStateContextPassInput<'a> {
     pub(crate) base_config: CoeffBaseDerivedLevelPassConfig,
     pub(crate) state_context: CoeffOrdinaryStateContextConfig,
     pub(crate) lossless: bool,
+}
+
+/// One per-block set of coefficient loop slots, reused across the base and
+/// sign/quant passes so neither the 256-byte masks nor the block state move
+/// after the base pass fills them.
+struct CoeffOrdinaryBlockSlots {
+    block: TransformCoeffBlockState,
+    masks: CoeffLevelMasks,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -123,20 +131,19 @@ fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffOrdinaryDerivedBasePassInput<'_>,
-) -> Result<(TransformCoeffBlockState, NonZeroCoeffQuantState), CoeffOrdinaryPassError> {
+    slots: &mut CoeffOrdinaryBlockSlots,
+) -> Result<NonZeroCoeffQuantState, CoeffOrdinaryPassError> {
     let base_config = input.base_config;
     let sign_config = input.sign_config;
-    let walk = walk_nonzero_coeff_scan(&input.start, input.scan)?;
-    let mut block = TransformCoeffBlockState::empty();
-    let mut masks = CoeffLevelMasks::default();
+    let CoeffOrdinaryBlockSlots { block, masks } = slots;
     let first_pass = apply_nonzero_coeff_base_derived_level_pass(
         cdfs,
         symbols,
         input.start,
-        &walk,
+        input.walk,
         base_config,
-        &mut block,
-        &mut masks,
+        block,
+        masks,
     )?;
     let sign_derive_config = CoeffSignSourceDeriveConfig {
         plane: base_config.plane,
@@ -157,13 +164,14 @@ fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
         use_tcq: base_config.use_tcq,
         lossless: input.lossless,
     };
+    let walk = input.walk;
     let quant_state = apply_interleaved_sign_and_quant_pass(
         cdfs,
         symbols,
         InterleavedSignQuantPassInput {
-            block: &mut block,
-            walk: &walk,
-            masks: &masks,
+            block,
+            walk,
+            masks,
             sign_config: sign_derive_config,
             max_level_config: CoeffMaxLevelConfig {
                 plane: base_config.plane,
@@ -173,7 +181,7 @@ fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
             config: quant_config,
         },
     )?;
-    Ok((block, quant_state))
+    Ok(quant_state)
 }
 
 pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
@@ -192,12 +200,17 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
     let plane = base_config.plane;
     let local_x4 = state.local_x4(plane, state_context.x4)?;
     let local_y4 = state.local_y4(plane, state_context.y4)?;
-    let (block, quant_state) = apply_nonzero_coeff_ordinary_pass_with_derived_base(
+    let walk = walk_nonzero_coeff_scan(&start, scan)?;
+    let mut slots = CoeffOrdinaryBlockSlots {
+        block: TransformCoeffBlockState::empty(),
+        masks: CoeffLevelMasks::default(),
+    };
+    let quant_state = apply_nonzero_coeff_ordinary_pass_with_derived_base(
         cdfs,
         symbols,
         CoeffOrdinaryDerivedBasePassInput {
             start,
-            scan,
+            walk: &walk,
             base_config,
             sign_config: CoeffOrdinaryDerivedSignPassConfig {
                 plane_type: state_context.plane_type,
@@ -210,6 +223,7 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
             },
             lossless,
         },
+        &mut slots,
     )?;
     commit_nonzero_coeff_context(
         state,
@@ -222,7 +236,7 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
         },
         &quant_state,
     )?;
-    Ok(block)
+    Ok(slots.block)
 }
 
 struct InterleavedSignQuantPassInput<'a> {
