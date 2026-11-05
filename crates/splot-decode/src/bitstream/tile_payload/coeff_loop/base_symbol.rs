@@ -16,6 +16,11 @@ pub(crate) enum CoeffBaseSymbolReadError {
     SymbolRead(#[from] BlockSymbolTraceReadError),
 }
 
+#[allow(
+    clippy::inline_always,
+    reason = "measured: an out-of-line &mut decoder handoff stack-homes the pass's owned snapshot"
+)]
+#[inline(always)]
 pub(crate) fn read_coeff_symbol(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
