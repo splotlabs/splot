@@ -69,6 +69,22 @@ pub(crate) fn apply_nonzero_coeff_fsc_level_pass(
     walk: FscCoeffScanWalk,
     config: CoeffFscLevelPassConfig,
 ) -> Result<NonZeroCoeffFscLevelPass, CoeffFscLevelPassError> {
+    let mut owned = symbols.snapshot();
+    let result = fsc_level_pass_on_snapshot(cdfs, &mut owned, start, walk, config);
+    symbols.restore(owned);
+    result
+}
+
+/// The level loop over an owned decoder, so the arithmetic state stays in
+/// registers instead of behind a pointer.
+#[inline(never)]
+fn fsc_level_pass_on_snapshot(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    start: NonZeroCoeffBlockStart,
+    walk: FscCoeffScanWalk,
+    config: CoeffFscLevelPassConfig,
+) -> Result<NonZeroCoeffFscLevelPass, CoeffFscLevelPassError> {
     let (eob_read, mut block) = start.into_parts();
     preflight_pass(eob_read, &block, &walk, config)?;
     block.ensure_quant_sign();

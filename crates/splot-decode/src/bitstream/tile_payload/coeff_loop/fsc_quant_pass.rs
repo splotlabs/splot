@@ -284,6 +284,22 @@ fn apply_interleaved_fsc_quant_pass(
     walk: &FscCoeffScanWalk,
     config: CoeffFscLevelPassConfig,
 ) -> Result<NonZeroCoeffQuantState, CoeffFscQuantPassError> {
+    let mut owned = symbols.snapshot();
+    let result = fsc_quant_pass_on_snapshot(cdfs, &mut owned, block, walk, config);
+    symbols.restore(owned);
+    result
+}
+
+/// The FSC quant loop over an owned decoder, so the arithmetic state stays
+/// in registers instead of behind a pointer.
+#[inline(never)]
+fn fsc_quant_pass_on_snapshot(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    block: &mut TransformCoeffBlockState,
+    walk: &FscCoeffScanWalk,
+    config: CoeffFscLevelPassConfig,
+) -> Result<NonZeroCoeffQuantState, CoeffFscQuantPassError> {
     let mut read_quant_state = CoeffReadQuantState::new(CoeffReadQuantConfig {
         is_hidden: false,
         allow_tcq: false,

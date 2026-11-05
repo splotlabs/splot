@@ -517,6 +517,30 @@ impl<'a> SymbolDecoder<'a> {
         self.frame_symbol_count
     }
 
+    /// Copies the decoder state by value, for hot loops that keep the
+    /// arithmetic registers (`dif`, range, buffered bits) in machine
+    /// registers instead of behind a pointer. [`Self::restore`] writes the
+    /// state back.
+    #[must_use]
+    pub const fn snapshot(&self) -> Self {
+        Self {
+            data: self.data,
+            base: self.base,
+            dif: self.dif,
+            buffered: self.buffered,
+            fed_bits: self.fed_bits,
+            symbol_range: self.symbol_range,
+            payload_bits: self.payload_bits,
+            frame_symbol_count: self.frame_symbol_count,
+            config: self.config,
+        }
+    }
+
+    /// Replaces the decoder state with [`Self::snapshot`] output.
+    pub const fn restore(&mut self, snapshot: Self) {
+        *self = snapshot;
+    }
+
     /// Returns the current relative bit position in the tile payload.
     ///
     /// `SymbolMaxBits` starts at `8 * sz - 15` and every read consumes

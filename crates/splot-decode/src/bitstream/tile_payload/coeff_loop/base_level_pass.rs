@@ -37,23 +37,32 @@ pub(crate) struct CoeffBaseDerivedLevelPassConfig {
     pub(crate) use_tcq: bool,
 }
 
+/// The base pass's cross-coefficient state packed into one register-sized
+/// value: bits 0-2 `tcqState`, bit 3 the `sumAbs1` parity, bits 4-7 the
+/// nonzero count capped below `is_hidden`'s threshold decision.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CoeffBaseFirstPassSummary {
-    sum_abs1: u32,
-    num_nonzero: usize,
-    is_hidden: bool,
-    tcq_state: usize,
+    packed: u32,
 }
+
+const SUMMARY_TCQ_MASK: u32 = 0b111;
+const SUMMARY_PARITY_SHIFT: u32 = 3;
+const SUMMARY_COUNT_SHIFT: u32 = 4;
+const SUMMARY_COUNT_MASK: u32 = 0b1111;
 
 impl CoeffBaseFirstPassSummary {
     #[must_use]
     pub(crate) const fn sum_abs1(self) -> u32 {
-        self.sum_abs1
+        (self.packed >> SUMMARY_PARITY_SHIFT) & 1
     }
 
     #[must_use]
     pub(crate) const fn is_hidden(self) -> bool {
-        self.is_hidden
+        ((self.packed >> SUMMARY_COUNT_SHIFT) & SUMMARY_COUNT_MASK) >= PHTHRESH as u32
+    }
+
+    const fn tcq_state(self) -> usize {
+        (self.packed & SUMMARY_TCQ_MASK) as usize
     }
 
     #[allow(clippy::inline_always, reason = "measured: per-coefficient update")]
@@ -65,19 +74,24 @@ impl CoeffBaseFirstPassSummary {
         config: CoeffBaseDerivedLevelPassConfig,
     ) -> Result<(), CoeffBaseDerivedLevelPassError> {
         if config.use_tcq {
-            let Some(tcq_state) = next_tcq_state(self.tcq_state, level) else {
+            let Some(tcq_state) = next_tcq_state(self.tcq_state(), level) else {
                 return Err(CoeffBaseDerivedLevelPassError::InvalidTcqState {
                     entry,
-                    tcq_state: self.tcq_state,
+                    tcq_state: self.tcq_state(),
                 });
             };
-            self.tcq_state = tcq_state;
+            self.packed = (self.packed & !SUMMARY_TCQ_MASK) | tcq_state as u32;
         }
         if level != 0 && config.parity_hiding && entry.scan_index() > 0 {
             let clipped = level.min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);
-            self.sum_abs1 ^= clipped & 1;
-            self.num_nonzero += 1;
-            self.is_hidden = self.num_nonzero >= PHTHRESH;
+            let parity = ((self.packed >> SUMMARY_PARITY_SHIFT) & 1) ^ (clipped & 1);
+            let count = ((self.packed >> SUMMARY_COUNT_SHIFT) & SUMMARY_COUNT_MASK)
+                .min(SUMMARY_COUNT_MASK - 1);
+            self.packed = (self.packed
+                & !(SUMMARY_COUNT_MASK << SUMMARY_COUNT_SHIFT)
+                & !(1 << SUMMARY_PARITY_SHIFT))
+                | (parity << SUMMARY_PARITY_SHIFT)
+                | ((count + 1) << SUMMARY_COUNT_SHIFT);
         }
         Ok(())
     }
@@ -207,6 +221,28 @@ fn level_pass<const CLASS: usize, const LUMA: bool>(
     config: CoeffBaseDerivedLevelPassConfig,
     masks: &mut CoeffLevelMasks,
 ) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
+    let mut owned = symbols.snapshot();
+    let result =
+        level_pass_on_snapshot::<CLASS, LUMA>(cdfs, &mut owned, block, walk, config, masks);
+    symbols.restore(owned);
+    result
+}
+
+/// The loop body over an owned decoder, so the arithmetic state stays in
+/// registers instead of behind a pointer.
+#[allow(
+    clippy::inline_always,
+    reason = "measured: merges the owned decoder into the specialised loop"
+)]
+#[inline(always)]
+fn level_pass_on_snapshot<const CLASS: usize, const LUMA: bool>(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    block: &mut TransformCoeffBlockState,
+    walk: &NonZeroCoeffScanWalk<'_>,
+    config: CoeffBaseDerivedLevelPassConfig,
+    masks: &mut CoeffLevelMasks,
+) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
     let config = CoeffBaseDerivedLevelPassConfig {
         tx_class: [
             CoeffTransformClass::TwoD,
@@ -286,12 +322,12 @@ impl LevelPassState<'_> {
             stride: LEVEL_STRIDE,
             plane: self.config.plane,
             is_lf,
-            is_hidden: DC && self.first_pass.is_hidden,
+            is_hidden: DC && self.first_pass.is_hidden(),
             c: usize::from(!DC),
             tx_class: tx_class_index(self.config.tx_class),
         }
         .select(self.grid);
-        let tcq_ctx = (self.first_pass.tcq_state >> 1) & 1;
+        let tcq_ctx = (self.first_pass.tcq_state() >> 1) & 1;
         let symbol = match rows
             .reborrow()
             .base_row(selection, tcq_ctx)
@@ -348,7 +384,7 @@ impl LevelPassState<'_> {
                 );
             }
             self.masks
-                .record(entry.scan_index(), level, self.first_pass.tcq_state);
+                .record(entry.scan_index(), level, self.first_pass.tcq_state());
             let index = entry.row() * LEVEL_STRIDE + entry.col();
             self.grid[index & (LEVEL_GRID_LEN - 1)] = level as u8;
         }
