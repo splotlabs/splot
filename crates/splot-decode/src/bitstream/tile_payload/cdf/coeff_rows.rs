@@ -43,10 +43,16 @@ const COEFF_BASE_EOB_ROW_LEN: usize = 4;
 const COEFF_BASE_BOB_ROW_LEN: usize = 4;
 const COEFF_BASE_LF_ROW_LEN: usize = 7;
 const COEFF_BASE_LF_EOB_ROW_LEN: usize = 6;
-const COEFF_BR_ROW_LEN: usize = 5;
+pub(crate) const COEFF_BR_ROW_LEN: usize = 5;
 const IDTX_SIGN_ROW_LEN: usize = 3;
 
 pub(crate) type CoeffBaseCdfRows = TcqRows<COEFF_BASE_ROW_LEN, COEFF_BASE_CONTEXTS>;
+/// The base rows of one transform-size context: `rows[ctx][tcq_ctx]`.
+pub(crate) type CoeffBaseLevelRows =
+    [[[u16; COEFF_BASE_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS]; COEFF_BASE_CONTEXTS];
+/// The low-frequency base rows of one transform-size context.
+pub(crate) type CoeffBaseLfLevelRows =
+    [[[u16; COEFF_BASE_LF_ROW_LEN]; COEFF_BASE_TCQ_CONTEXTS]; COEFF_BASE_LF_CONTEXTS];
 pub(crate) type CoeffBasePhCdfRows = [[u16; COEFF_BASE_ROW_LEN]; COEFF_BASE_PH_CONTEXTS];
 pub(crate) type CoeffBaseUvCdfRows = [[u16; COEFF_BASE_ROW_LEN]; COEFF_BASE_UV_CONTEXTS];
 pub(crate) type CoeffBaseLfCdfRows = TcqRows<COEFF_BASE_LF_ROW_LEN, COEFF_BASE_LF_CONTEXTS>;
@@ -503,7 +509,7 @@ impl CoeffCdfRows {
 
 /// Bounds-checked `rows[ctx]`.
 #[inline]
-fn row2<T, const C: usize>(
+pub(crate) fn row2<T, const C: usize>(
     rows: &mut [T; C],
     array: TileCdfArray,
     ctx: usize,

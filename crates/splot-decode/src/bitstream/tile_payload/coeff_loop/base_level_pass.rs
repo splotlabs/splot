@@ -7,9 +7,18 @@
 
 use splot_core::symbol::SymbolDecoder;
 
+use super::super::cdf::TileCdfArray::{
+    CoeffBase, CoeffBaseLf, CoeffBaseLfUv, CoeffBasePh, CoeffBaseUv, CoeffBr, CoeffBrLf, CoeffBrUv,
+};
 use super::super::cdf::block_read::BlockSymbolTraceReadError;
-use super::super::cdf::coeff_context::{CoeffBaseContext, CoeffBrContext, coeff_base_eob_ctx};
-use super::super::cdf::{CoeffBaseRow, CoeffCdfSelector, CoeffLevelRows, TileCdfSubset};
+use super::super::cdf::coeff_context::{
+    CoeffBaseContext, CoeffBaseSelection, CoeffBrContext, coeff_base_eob_ctx,
+};
+use super::super::cdf::{
+    COEFF_BR_ROW_LEN, CoeffBaseLevelRows, CoeffBaseLfLevelRows, CoeffBaseLfUvCdfRows,
+    CoeffBasePhCdfRows, CoeffBaseRow, CoeffBaseUvCdfRows, CoeffBrCdfRows, CoeffBrLfCdfRows,
+    CoeffBrUvCdfRows, CoeffCdfSelector, CoeffLevelRows, TileCdfError, TileCdfSubset, row2,
+};
 use super::super::coeff_state::{
     LEVEL_GRID_LEN, LEVEL_STRIDE, LevelGrid, TileCoeffStateError, TransformCoeffBlockState,
 };
@@ -184,8 +193,12 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     *block = owned_block;
     preflight_pass(eob_read, block, walk, config)?;
     match (config.use_tcq, config.parity_hiding) {
-        (false, false) => dispatch_level_pass::<false, false>(cdfs, symbols, block, walk, config, masks),
-        (false, true) => dispatch_level_pass::<false, true>(cdfs, symbols, block, walk, config, masks),
+        (false, false) => {
+            dispatch_level_pass::<false, false>(cdfs, symbols, block, walk, config, masks)
+        }
+        (false, true) => {
+            dispatch_level_pass::<false, true>(cdfs, symbols, block, walk, config, masks)
+        }
         (true, _) => dispatch_level_pass::<true, false>(cdfs, symbols, block, walk, config, masks),
     }
 }
@@ -211,7 +224,9 @@ fn dispatch_level_pass<const TCQ: bool, const PH: bool>(
         (Horizontal, false) => {
             level_pass::<1, false, TCQ, PH>(cdfs, symbols, block, walk, config, masks)
         }
-        (Vertical, true) => level_pass::<2, true, TCQ, PH>(cdfs, symbols, block, walk, config, masks),
+        (Vertical, true) => {
+            level_pass::<2, true, TCQ, PH>(cdfs, symbols, block, walk, config, masks)
+        }
         (Vertical, false) => {
             level_pass::<2, false, TCQ, PH>(cdfs, symbols, block, walk, config, masks)
         }
@@ -235,12 +250,7 @@ fn level_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: b
 ) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
     let mut owned = symbols.snapshot();
     let result = level_pass_on_snapshot::<CLASS, LUMA, TCQ, PH>(
-        cdfs,
-        &mut owned,
-        block,
-        walk,
-        config,
-        masks,
+        cdfs, &mut owned, block, walk, config, masks,
     );
     symbols.restore(owned);
     result
@@ -253,12 +263,7 @@ fn level_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: b
     reason = "measured: merges the owned decoder into the specialised loop"
 )]
 #[inline(always)]
-fn level_pass_on_snapshot<
-    const CLASS: usize,
-    const LUMA: bool,
-    const TCQ: bool,
-    const PH: bool,
->(
+fn level_pass_on_snapshot<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     block: &mut TransformCoeffBlockState,
@@ -288,7 +293,16 @@ fn level_pass_on_snapshot<
     let Some(grid) = block.level_grid_mut() else {
         return Err(CoeffBaseDerivedLevelPassError::LevelGridUnavailable);
     };
-    let mut rows = cdfs
+    let CoeffLevelRows {
+        base,
+        base_lf,
+        base_ph,
+        base_uv,
+        base_lf_uv,
+        br,
+        br_lf,
+        br_uv,
+    } = cdfs
         .coeff_rows_mut()
         .level_rows(config.tx_size_ctx)
         .map_err(read_error)?;
@@ -297,30 +311,47 @@ fn level_pass_on_snapshot<
         first_pass: &mut first_pass,
         masks,
         config,
+        base,
+        base_lf,
+        base_ph,
+        base_uv,
+        base_lf_uv,
+        br,
+        br_lf,
+        br_uv,
     };
-    pass.finish_level::<TCQ, PH>(&mut rows, symbols, eob_entry, eob_is_lf, eob_level)?;
+    pass.finish_level::<TCQ, PH>(symbols, eob_entry, eob_is_lf, eob_level)?;
     let dc = entries.next_back();
     for entry in entries {
         let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
-        let level = pass.read_base_symbol::<false>(&mut rows, symbols, entry, is_lf)?;
-        pass.finish_level::<TCQ, PH>(&mut rows, symbols, entry, is_lf, level)?;
+        let level = pass.read_base_symbol::<false>(symbols, entry, is_lf)?;
+        pass.finish_level::<TCQ, PH>(symbols, entry, is_lf, level)?;
     }
     if let Some(entry) = dc {
         let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
-        let level = pass.read_base_symbol::<true>(&mut rows, symbols, entry, is_lf)?;
-        pass.finish_level::<TCQ, PH>(&mut rows, symbols, entry, is_lf, level)?;
+        let level = pass.read_base_symbol::<true>(symbols, entry, is_lf)?;
+        pass.finish_level::<TCQ, PH>(symbols, entry, is_lf, level)?;
     }
 
     Ok(first_pass)
 }
 
-/// What the level loop reads and writes besides the CDF rows and the
-/// symbol decoder.
+/// What the level loop reads and writes besides the symbol decoder: the
+/// level grid, the pass summary, the masks, and the CDF row arrays it
+/// selects rows from, each a register-resident pointer.
 struct LevelPassState<'a> {
     grid: &'a mut LevelGrid,
     first_pass: &'a mut CoeffBaseFirstPassSummary,
     masks: &'a mut CoeffLevelMasks,
     config: CoeffBaseDerivedLevelPassConfig,
+    base: &'a mut CoeffBaseLevelRows,
+    base_lf: &'a mut CoeffBaseLfLevelRows,
+    base_ph: &'a mut CoeffBasePhCdfRows,
+    base_uv: &'a mut CoeffBaseUvCdfRows,
+    base_lf_uv: &'a mut CoeffBaseLfUvCdfRows,
+    br: &'a mut CoeffBrCdfRows,
+    br_lf: &'a mut CoeffBrLfCdfRows,
+    br_uv: &'a mut CoeffBrUvCdfRows,
 }
 
 impl LevelPassState<'_> {
@@ -333,8 +364,7 @@ impl LevelPassState<'_> {
     )]
     #[inline(always)]
     fn read_base_symbol<const DC: bool>(
-        &self,
-        rows: &mut CoeffLevelRows<'_>,
+        &mut self,
         symbols: &mut SymbolDecoder<'_>,
         entry: CoeffScanEntry,
         is_lf: bool,
@@ -351,16 +381,48 @@ impl LevelPassState<'_> {
         }
         .select(self.grid);
         let tcq_ctx = (self.first_pass.tcq_state() >> 1) & 1;
-        let symbol = match rows
-            .reborrow()
-            .base_row(selection, tcq_ctx)
+        let row = self
+            .base_selection_row(selection, tcq_ctx)
+            .map_err(read_error)?;
+        Ok(u32::from(
+            match row {
+                CoeffBaseRow::Base(row) => symbols.read_symbol_u16_array(row),
+                CoeffBaseRow::Lf(row) => symbols.read_symbol_u16_array(row),
+            }
             .map_err(read_error)?
-        {
-            CoeffBaseRow::Base(row) => symbols.read_symbol_u16_array(row),
-            CoeffBaseRow::Lf(row) => symbols.read_symbol_u16_array(row),
-        }
-        .map_err(read_error)?;
-        Ok(u32::from(symbol.get()))
+            .get(),
+        ))
+    }
+
+    /// The base row of a derived selection, over the register-resident row
+    /// pointers instead of a moved row-set struct.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: per-coefficient row fetch in the level loop"
+    )]
+    #[inline(always)]
+    fn base_selection_row(
+        &mut self,
+        selection: CoeffBaseSelection,
+        tcq_ctx: usize,
+    ) -> Result<CoeffBaseRow<'_>, TileCdfError> {
+        Ok(match selection {
+            CoeffBaseSelection::Hf { ctx } => {
+                CoeffBaseRow::Base(&mut row2(self.base, CoeffBase, ctx)?[tcq_ctx])
+            }
+            CoeffBaseSelection::Ph { ctx } => {
+                CoeffBaseRow::Base(row2(self.base_ph, CoeffBasePh, ctx)?)
+            }
+            CoeffBaseSelection::Uv { ctx } => {
+                CoeffBaseRow::Base(row2(self.base_uv, CoeffBaseUv, ctx)?)
+            }
+            CoeffBaseSelection::Lf { ctx } => {
+                CoeffBaseRow::Lf(&mut row2(self.base_lf, CoeffBaseLf, ctx)?[tcq_ctx])
+            }
+            CoeffBaseSelection::LfUv { ctx } => {
+                CoeffBaseRow::Lf(row2(self.base_lf_uv, CoeffBaseLfUv, ctx)?)
+            }
+        })
     }
 
     /// Adds the base-range symbol when the base symbol saturates, then
@@ -372,7 +434,6 @@ impl LevelPassState<'_> {
     #[inline(always)]
     fn finish_level<const TCQ: bool, const PH: bool>(
         &mut self,
-        rows: &mut CoeffLevelRows<'_>,
         symbols: &mut SymbolDecoder<'_>,
         entry: CoeffScanEntry,
         is_lf: bool,
@@ -395,10 +456,7 @@ impl LevelPassState<'_> {
                     tx_class: tx_class_index(config.tx_class),
                 }
                 .ctx(self.grid);
-                let row = rows
-                    .reborrow()
-                    .br_row(config.plane, is_lf, ctx)
-                    .map_err(read_error)?;
+                let row = self.br_row(config.plane, is_lf, ctx).map_err(read_error)?;
                 level += u32::from(
                     symbols
                         .read_symbol_u16_array(row)
@@ -413,6 +471,23 @@ impl LevelPassState<'_> {
         }
         self.first_pass.update_after_level::<TCQ, PH>(entry, level);
         Ok(())
+    }
+
+    /// The base-range row for `plane` and `is_lf`, over the
+    /// register-resident row pointers.
+    fn br_row(
+        &mut self,
+        plane: usize,
+        is_lf: bool,
+        ctx: usize,
+    ) -> Result<&mut [u16; COEFF_BR_ROW_LEN], TileCdfError> {
+        if plane > 0 {
+            row2(self.br_uv, CoeffBrUv, ctx)
+        } else if is_lf {
+            row2(self.br_lf, CoeffBrLf, ctx)
+        } else {
+            row2(self.br, CoeffBr, ctx)
+        }
     }
 }
 
