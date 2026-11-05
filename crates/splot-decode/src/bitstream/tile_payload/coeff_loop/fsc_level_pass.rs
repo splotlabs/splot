@@ -118,7 +118,11 @@ fn fsc_level_pass_on_snapshot(
     Ok(NonZeroCoeffFscLevelPass { walk, block })
 }
 
-#[inline]
+#[allow(
+    clippy::inline_always,
+    reason = "measured: an out-of-line &mut decoder handoff stack-homes the pass's owned snapshot"
+)]
+#[inline(always)]
 fn finish_fsc_level(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
