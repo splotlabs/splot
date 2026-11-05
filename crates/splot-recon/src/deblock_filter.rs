@@ -40,7 +40,7 @@ use crate::math::round2_i32;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 use core::num::NonZeroUsize;
 use std::simd::{
-    Select, Simd, SimdElement,
+    Mask, Select, Simd, SimdElement,
     cmp::{SimdOrd, SimdPartialOrd},
     num::SimdInt,
     num::SimdUint,
@@ -1043,15 +1043,10 @@ pub fn deblock_edge_rows<T: ReconSample>(
                 .is_some_and(|end| end <= len)
         })
         .ok_or_else(|| edge.too_short(len))?;
-    let step = MI_LINES * stride;
     if let Some(samples) = T::u16_slice_mut(samples) {
-        for index in 0..edges {
-            edge.rows(samples, first + index * step, stride);
-        }
+        edge.rows(samples, first, stride, edges);
     } else if let Some(samples) = T::u8_slice_mut(samples) {
-        for index in 0..edges {
-            edge.rows(samples, first + index * step, stride);
-        }
+        edge.rows(samples, first, stride, edges);
     } else {
         return Err(edge.too_short(len));
     }
@@ -1274,41 +1269,139 @@ impl<'a> EdgeKernel<'a> {
             .cast::<i32>()
     }
 
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
-    #[inline(always)]
-    fn rows<E: EdgeSample>(&self, samples: &mut [E], first: usize, stride: usize) -> usize {
-        let samples = &mut samples[first..first + (MI_LINES - 1) * stride + 2 * EDGE_REACH];
-        let line =
-            |start: usize| E::widen::<{ 2 * EDGE_REACH }>(&samples[start..start + 2 * EDGE_REACH]);
-        let (s, t) = (line(0), line((MI_LINES - 1) * stride));
-        let (u, v) = (line(stride), line(2 * stride));
-        let taps = Simd::from_array([1, -3, 3, -1, 1, -3, 3, -1]);
-        let top = simd_swizzle!(s, u, [6, 7, 8, 9, 22, 23, 24, 25]) * taps;
-        let bottom = simd_swizzle!(v, t, [6, 7, 8, 9, 22, 23, 24, 25]) * taps;
-        let pairs = simd_swizzle!(top, bottom, [0, 2, 4, 6, 8, 10, 12, 14])
-            + simd_swizzle!(top, bottom, [1, 3, 5, 7, 9, 11, 13, 15]);
-        let deltas = simd_swizzle!(pairs, [0, 2, 4, 6]) + simd_swizzle!(pairs, [1, 3, 5, 7]);
-        if self.unchanged(deltas) {
-            return 0;
+    /// Filters `edges` consecutive row edges in four-edge chunks. The chunk
+    /// derives every edge's width from vector compares, so the per-edge
+    /// `unchanged` / `width == 0` exits of a scalar walk become mask bits and
+    /// the cascade runs once per four edges.
+    fn rows<E: EdgeSample>(&self, samples: &mut [E], first: usize, stride: usize, edges: usize) {
+        let mut done = 0;
+        while done < edges {
+            let count = (edges - done).min(MI_LINES);
+            self.rows_chunk::<E>(samples, first + done * MI_LINES * stride, stride, count);
+            done += count;
         }
-        let centre = simd_swizzle!(s, t, [6, 7, 8, 9, 22, 23, 24, 25]);
-        let left = simd_swizzle!(s, t, [5, 6, 7, 8, 21, 22, 23, 24]);
-        let right = simd_swizzle!(s, t, [7, 8, 9, 10, 23, 24, 25, 26]);
-        let derivatives = combine_line_derivatives((left - centre - centre + right).abs());
-        let width = deblock_filter_choice_cascade(self.choice, derivatives, || {
-            row_cascade_derivatives(s, t)
-        });
-        if width == 0 {
-            return 0;
+    }
+
+    /// Filters up to [`MI_LINES`] consecutive row edges starting at `first`.
+    ///
+    /// Each edge contributes one lane of the cascade vectors; lanes at or
+    /// past `count` hold values that fail every test, so they are never
+    /// filtered and nothing past the run is read.
+    fn rows_chunk<E: EdgeSample>(
+        &self,
+        samples: &mut [E],
+        first: usize,
+        stride: usize,
+        count: usize,
+    ) {
+        let mut deltas = [Simd::<i16, MI_LINES>::splat(0); MI_LINES];
+        let mut second = [Simd::<i32, MI_LINES>::splat(i32::MAX); 4];
+        for (edge, slot) in deltas.iter_mut().enumerate().take(count) {
+            let base = first + edge * MI_LINES * stride;
+            let line =
+                |row: usize| E::widen::<{ 2 * EDGE_REACH }>(&samples[base + row * stride..]);
+            let (s, u, v, t) = (line(0), line(1), line(2), line(3));
+            *slot = row_line_deltas(s, u, v, t);
+            let [sd_m2, sd_m1, sd_0, sd_1] = row_second_derivatives(s, t);
+            second[0].as_mut_array()[edge] = sd_m2;
+            second[1].as_mut_array()[edge] = sd_m1;
+            second[2].as_mut_array()[edge] = sd_0;
+            second[3].as_mut_array()[edge] = sd_1;
         }
-        let weights = self.weights(width);
-        let delta = Self::delta_m2(deltas, weights.2);
-        if weights.0.max(weights.1) <= EDGE_REACH / 2 {
-            self.filter_rows::<E, EDGE_REACH>(samples, EDGE_REACH / 2, stride, weights, delta);
-        } else {
-            self.filter_rows::<E, { 2 * EDGE_REACH }>(samples, 0, stride, weights, delta);
+        let noop = Simd::splat(self.noop_delta);
+        let mut changes = 0u8;
+        for (edge, deltas) in deltas.iter().enumerate() {
+            changes |= (u8::from(!deltas.abs().simd_le(noop).all())) << edge;
         }
-        width
+        if changes == 0 {
+            return;
+        }
+        let (mut widths, survivors) = self.cascade_widths(&second, count);
+        if self.choice.max_width_pos > 2 {
+            let mut left = survivors;
+            while left != 0 {
+                let edge = left.trailing_zeros() as usize;
+                left &= left - 1;
+                let base = first + edge * MI_LINES * stride;
+                let s = E::widen::<{ 2 * EDGE_REACH }>(&samples[base..]);
+                let t = E::widen::<{ 2 * EDGE_REACH }>(&samples[base + 3 * stride..]);
+                widths[edge] = deblock_filter_choice_cascade(
+                    self.choice,
+                    [
+                        second[0].as_array()[edge],
+                        second[1].as_array()[edge],
+                        second[2].as_array()[edge],
+                        second[3].as_array()[edge],
+                    ],
+                    || row_cascade_derivatives(s, t),
+                );
+            }
+        }
+        let mut filter = 0u8;
+        for (edge, width) in widths.iter().enumerate() {
+            filter |= (u8::from(*width > 0)) << edge;
+        }
+        filter &= changes;
+        while filter != 0 {
+            let edge = filter.trailing_zeros() as usize;
+            filter &= filter - 1;
+            let width = widths[edge];
+            let weights = self.weights(width);
+            let delta = Self::delta_m2(deltas[edge], weights.2);
+            let base = first + edge * MI_LINES * stride;
+            if weights.0.max(weights.1) <= EDGE_REACH / 2 {
+                self.filter_rows::<E, EDGE_REACH>(
+                    samples,
+                    base + EDGE_REACH / 2,
+                    stride,
+                    weights,
+                    delta,
+                );
+            } else {
+                self.filter_rows::<E, { 2 * EDGE_REACH }>(samples, base, stride, weights, delta);
+            }
+        }
+    }
+
+    /// The § 7.17.7.2 width of up to [`MI_LINES`] edges from their
+    /// second-derivative lanes, without branches: lane `edge` of each vector
+    /// is that edge's value. Returns the widths capped at `max_width_pos` and
+    /// a bitmask of the edges that passed the second-derivative stage and so
+    /// owe the directional cascade their final width.
+    fn cascade_widths(
+        &self,
+        second: &[Simd<i32, MI_LINES>; 4],
+        count: usize,
+    ) -> ([usize; MI_LINES], u32) {
+        let DeblockFilterChoice {
+            q_thr,
+            side_thr,
+            max_width_pos,
+            ..
+        } = *self.choice;
+        let outer = second[0].simd_max(second[3]);
+        let inner = second[1] + second[2];
+        let pass0 = outer.simd_le(Simd::splat(side_thr));
+        let mut width = pass0.select(Simd::splat(1), Simd::splat(0));
+        let mut pass2: Mask<i32, MI_LINES> = Mask::splat(false);
+        if max_width_pos > 1 {
+            let pass1 = pass0
+                & outer.simd_le(Simd::splat(side_thr >> 2))
+                & inner.simd_le(Simd::splat(q_thr * 4));
+            width = pass1.select(Simd::splat(2), width);
+            if max_width_pos > 2 {
+                pass2 = pass1
+                    & outer.simd_le(Simd::splat(side_thr >> 3))
+                    & inner.simd_le(Simd::splat(q_thr * 3));
+                width = pass2.select(Simd::splat(2), width);
+            }
+        }
+        let capped = width.simd_min(Simd::splat(max_width_pos as i32));
+        let mut widths = [0usize; MI_LINES];
+        for (edge, width) in capped.as_array()[..count].iter().enumerate() {
+            widths[edge] = *width as usize;
+        }
+        (widths, (pass2.to_bitmask() & ((1u64 << count) - 1)) as u32)
     }
 
     /// Applies § 7.17.7.1 to four rows of `N` samples centred on the edge.
@@ -1347,9 +1440,8 @@ impl<'a> EdgeKernel<'a> {
         }
     }
 
-    /// Filters `edges` column edges two at a time, then any last one.
-    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
-    #[inline(always)]
+    /// Filters `edges` column edges in four-edge chunks, then any last two
+    /// (a pair) or one.
     fn column_run<E: EdgeSample>(
         &self,
         samples: &mut [E],
@@ -1357,11 +1449,138 @@ impl<'a> EdgeKernel<'a> {
         stride: usize,
         edges: usize,
     ) {
-        for pair in 0..edges / 2 {
+        let mut done = 0;
+        while edges - done >= MI_LINES {
+            self.columns4::<E>(samples, first + done * MI_LINES, stride);
+            done += MI_LINES;
+        }
+        let mut pair = done / 2;
+        while 2 * (pair + 1) <= edges {
             self.column_pair(samples, first + 2 * pair * MI_LINES, stride);
+            pair += 1;
         }
         if !edges.is_multiple_of(2) {
             self.columns(samples, first + (edges - 1) * MI_LINES, stride);
+        }
+    }
+
+    /// Filters four consecutive column edges side by side at `first`, the
+    /// four-edge analogue of [`Self::column_pair`]: the shared sample rows
+    /// load once for all four, the widths come from vector compares, and
+    /// each distinct chosen width applies in one sixteen-lane pass whose
+    /// mask leaves the other edges' samples unchanged.
+    fn columns4<E: EdgeSample>(&self, samples: &mut [E], first: usize, stride: usize) {
+        let win = &mut samples[first..first + (2 * EDGE_REACH - 1) * stride + 4 * MI_LINES];
+        let inner: [Simd<i16, { 4 * MI_LINES }>; 4] = core::array::from_fn(|k| {
+            column_row::<E, { 4 * MI_LINES }>(win, stride, k as isize - 2)
+        });
+        let deltas = inner[0] - inner[3] + (inner[2] - inner[1]) * Simd::splat(3);
+        let changed_lanes = deltas
+            .abs()
+            .simd_gt(Simd::splat(self.noop_delta))
+            .to_bitmask();
+        let mut changes = 0u8;
+        for edge in 0..MI_LINES {
+            changes |= (u8::from(changed_lanes >> (4 * edge) & 0xF != 0)) << edge;
+        }
+        if changes == 0 {
+            return;
+        }
+        let above = column_row::<E, { 4 * MI_LINES }>(win, stride, -3);
+        let below = column_row::<E, { 4 * MI_LINES }>(win, stride, 2);
+        let rows = [above, inner[0], inner[1], inner[2], inner[3], below];
+        let second = |k: usize| (rows[k] - rows[k + 1] - rows[k + 1] + rows[k + 2]).abs();
+        let ends = |a: Simd<i16, { 4 * MI_LINES }>, b: Simd<i16, { 4 * MI_LINES }>| {
+            simd_swizzle!(
+                a, b,
+                [0, 16, 3, 19, 4, 20, 7, 23, 8, 24, 11, 27, 12, 28, 15, 31]
+            )
+        };
+        let firsts = ends(second(0), second(1)).to_array();
+        let lasts = ends(second(2), second(3)).to_array();
+        let mut derivatives = [Simd::<i32, MI_LINES>::splat(i32::MAX); 4];
+        for edge in 0..MI_LINES {
+            let (m2, m1, s0, s1) = (
+                i32::from((firsts[4 * edge] + firsts[4 * edge + 2] + 1) >> 1),
+                i32::from((firsts[4 * edge + 1] + firsts[4 * edge + 3] + 1) >> 1),
+                i32::from((lasts[4 * edge] + lasts[4 * edge + 2] + 1) >> 1),
+                i32::from((lasts[4 * edge + 1] + lasts[4 * edge + 3] + 1) >> 1),
+            );
+            let lanes = derivatives.as_mut();
+            (lanes[0].as_mut_array()[edge], lanes[1].as_mut_array()[edge], lanes[2].as_mut_array()[edge], lanes[3].as_mut_array()[edge]) =
+                (m2, m1, s0, s1);
+        }
+        let (mut widths, survivors) = self.cascade_widths(&derivatives, MI_LINES);
+        if self.choice.max_width_pos > 2 {
+            let mut left = survivors;
+            while left != 0 {
+                let edge = left.trailing_zeros() as usize;
+                left &= left - 1;
+                widths[edge] = deblock_filter_choice_cascade(
+                    self.choice,
+                    [
+                        derivatives[0].as_array()[edge],
+                        derivatives[1].as_array()[edge],
+                        derivatives[2].as_array()[edge],
+                        derivatives[3].as_array()[edge],
+                    ],
+                    || {
+                        cascade_reach(|offset| {
+                            let values =
+                                column_row::<E, MI_LINES>(&win[edge * MI_LINES..], stride, offset);
+                            (i32::from(values[0]), i32::from(values[MI_LINES - 1]))
+                        })
+                    },
+                );
+            }
+        }
+        for (edge, width) in widths.iter_mut().enumerate() {
+            if changes & (1 << edge) == 0 {
+                *width = 0;
+            }
+        }
+        let mut present = 0u8;
+        for width in widths.iter() {
+            if *width > 0 {
+                present |= 1 << (*width - 1);
+            }
+        }
+        let mut left = present;
+        while left != 0 {
+            let width = left.trailing_zeros() as usize + 1;
+            left &= left - 1;
+            let mut pass = 0u8;
+            for (edge, edge_width) in widths.iter().enumerate() {
+                pass |= (u8::from(*edge_width == width)) << edge;
+            }
+            let mut lane_flags = [false; { 4 * MI_LINES }];
+            for (lane, flag) in lane_flags.iter_mut().enumerate() {
+                *flag = pass >> (lane / MI_LINES) & 1 != 0;
+            }
+            let lanes = Mask::<i16, { 4 * MI_LINES }>::from_array(lane_flags);
+            let (wn, wp, qtc, wneg, wpos) = self.weights(width);
+            let delta = Self::delta_m2(deltas, qtc);
+            let zero = Simd::splat(0i16);
+            let high = Simd::splat(self.max_sample);
+            let mut filter = |offset: isize, coefficient: i32, round: i32| {
+                let start = (EDGE_REACH as isize + offset) as usize * stride;
+                let line = &mut win[start..start + 4 * MI_LINES];
+                let values = E::widen::<{ 4 * MI_LINES }>(line);
+                let diff =
+                    ((delta * Simd::splat(coefficient) + Simd::splat(round)) >> 11).cast::<i16>();
+                let diff = lanes.select(diff, zero);
+                E::narrow((values + diff).simd_max(zero).simd_min(high), line);
+            };
+            if wpos != 0 {
+                for i in 0..wp {
+                    filter(i as isize, -i32::from(wpos) * (wp - i) as i32, 1023);
+                }
+            }
+            if wneg != 0 {
+                for i in 0..wn {
+                    filter(-(i as isize) - 1, i32::from(wneg) * (wn - i) as i32, 1024);
+                }
+            }
         }
     }
 
@@ -1499,6 +1718,38 @@ impl<'a> EdgeKernel<'a> {
             }
         }
     }
+}
+
+/// The `p1 - q1 + 3 * (q0 - p0)` of the four lines of one row edge, held in
+/// lanes.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn row_line_deltas(
+    s: Simd<i16, { 2 * EDGE_REACH }>,
+    u: Simd<i16, { 2 * EDGE_REACH }>,
+    v: Simd<i16, { 2 * EDGE_REACH }>,
+    t: Simd<i16, { 2 * EDGE_REACH }>,
+) -> Simd<i16, MI_LINES> {
+    let taps = Simd::from_array([1, -3, 3, -1, 1, -3, 3, -1]);
+    let top = simd_swizzle!(s, u, [6, 7, 8, 9, 22, 23, 24, 25]) * taps;
+    let bottom = simd_swizzle!(v, t, [6, 7, 8, 9, 22, 23, 24, 25]) * taps;
+    let pairs = simd_swizzle!(top, bottom, [0, 2, 4, 6, 8, 10, 12, 14])
+        + simd_swizzle!(top, bottom, [1, 3, 5, 7, 9, 11, 13, 15]);
+    simd_swizzle!(pairs, [0, 2, 4, 6]) + simd_swizzle!(pairs, [1, 3, 5, 7])
+}
+
+/// `secondDeriv[-2..=1]` of one row edge's first and last lines, per the
+/// § 7.17.7.2 cascade's second-derivative stage.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn row_second_derivatives(
+    s: Simd<i16, { 2 * EDGE_REACH }>,
+    t: Simd<i16, { 2 * EDGE_REACH }>,
+) -> [i32; 4] {
+    let centre = simd_swizzle!(s, t, [6, 7, 8, 9, 22, 23, 24, 25]);
+    let left = simd_swizzle!(s, t, [5, 6, 7, 8, 21, 22, 23, 24]);
+    let right = simd_swizzle!(s, t, [7, 8, 9, 10, 23, 24, 25, 26]);
+    combine_line_derivatives((left - centre - centre + right).abs())
 }
 
 /// The [`CascadeDerivatives`] of one edge's first and last sample rows, held
