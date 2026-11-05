@@ -1852,6 +1852,9 @@ fn fill_temporal_sampling_gap(
     }
     let mut sum = Mv::ZERO;
     let mut count = 0i32;
+    debug_assert!(tmvp_unit_size8.is_power_of_two());
+    let unit_shift = tmvp_unit_size8.trailing_zeros();
+    let same_unit = |a: usize, b: usize| (a >> unit_shift) == (b >> unit_shift);
     for candidate_y in 0..=1 {
         for candidate_x in 0..=1 {
             if dy < candidate_y || dx < candidate_x {
@@ -1859,9 +1862,7 @@ fn fill_temporal_sampling_gap(
             }
             let source_y = y8 + 2 * candidate_y;
             let source_x = x8 + 2 * candidate_x;
-            if source_y / tmvp_unit_size8 != y8 / tmvp_unit_size8
-                || source_x / tmvp_unit_size8 != x8 / tmvp_unit_size8
-            {
+            if !same_unit(source_y, y8) || !same_unit(source_x, x8) {
                 continue;
             }
             let Some(source) = field.cell(source_y, source_x).filter(|cell| cell.valid) else {

@@ -483,6 +483,15 @@ impl GridRows {
             .and_then(PackedTrajectoryMv::unpack)
     }
 
+    /// Whether two positions share a TMVP unit. The unit is a power of two
+    /// (8 or 16 luma samples), so the comparison is a shift pair.
+    fn same_unit(self, a: usize, b: usize) -> bool {
+        let unit = self.unit_size8;
+        debug_assert!(unit.is_power_of_two());
+        let shift = unit.trailing_zeros();
+        (a >> shift) == (b >> shift)
+    }
+
     /// One reference's vector at `(y8, x8)`. A step-2 projection writes only
     /// the even cells of a row pair; any other cell reads as the average of its
     /// anchor and the anchor's written neighbours in the same TMVP unit, so the
@@ -505,15 +514,14 @@ impl GridRows {
         let (y8, x8) = (y8 - dy, x8 - dx);
         let mut sum = self.stored(cells, reference, y8, x8)?;
         let mut count = 1;
-        let unit = self.unit_size8;
         for (source_y, source_x, enabled) in [
             (y8, x8 + 2, dx > 0),
             (y8 + 2, x8, dy > 0),
             (y8 + 2, x8 + 2, dy & dx > 0),
         ] {
             if enabled
-                && source_y / unit == y8 / unit
-                && source_x / unit == x8 / unit
+                && self.same_unit(source_y, y8)
+                && self.same_unit(source_x, x8)
                 && let Some(mv) = self.stored(cells, reference, source_y, source_x)
             {
                 sum = add_mv(sum, mv);
