@@ -1298,8 +1298,7 @@ impl<'a> EdgeKernel<'a> {
         let mut second = [Simd::<i32, MI_LINES>::splat(i32::MAX); 4];
         for (edge, slot) in deltas.iter_mut().enumerate().take(count) {
             let base = first + edge * MI_LINES * stride;
-            let line =
-                |row: usize| E::widen::<{ 2 * EDGE_REACH }>(&samples[base + row * stride..]);
+            let line = |row: usize| E::widen::<{ 2 * EDGE_REACH }>(&samples[base + row * stride..]);
             let (s, u, v, t) = (line(0), line(1), line(2), line(3));
             *slot = row_line_deltas(s, u, v, t);
             let [sd_m2, sd_m1, sd_0, sd_1] = row_second_derivatives(s, t);
@@ -1492,7 +1491,8 @@ impl<'a> EdgeKernel<'a> {
         let second = |k: usize| (rows[k] - rows[k + 1] - rows[k + 1] + rows[k + 2]).abs();
         let ends = |a: Simd<i16, { 4 * MI_LINES }>, b: Simd<i16, { 4 * MI_LINES }>| {
             simd_swizzle!(
-                a, b,
+                a,
+                b,
                 [0, 16, 3, 19, 4, 20, 7, 23, 8, 24, 11, 27, 12, 28, 15, 31]
             )
         };
@@ -1507,8 +1507,12 @@ impl<'a> EdgeKernel<'a> {
                 i32::from((lasts[4 * edge + 1] + lasts[4 * edge + 3] + 1) >> 1),
             );
             let lanes = derivatives.as_mut();
-            (lanes[0].as_mut_array()[edge], lanes[1].as_mut_array()[edge], lanes[2].as_mut_array()[edge], lanes[3].as_mut_array()[edge]) =
-                (m2, m1, s0, s1);
+            (
+                lanes[0].as_mut_array()[edge],
+                lanes[1].as_mut_array()[edge],
+                lanes[2].as_mut_array()[edge],
+                lanes[3].as_mut_array()[edge],
+            ) = (m2, m1, s0, s1);
         }
         let (mut widths, survivors) = self.cascade_widths(&derivatives, MI_LINES);
         if self.choice.max_width_pos > 2 {
@@ -1540,7 +1544,7 @@ impl<'a> EdgeKernel<'a> {
             }
         }
         let mut present = 0u8;
-        for width in widths.iter() {
+        for width in &widths {
             if *width > 0 {
                 present |= 1 << (*width - 1);
             }
