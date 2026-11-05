@@ -1596,7 +1596,7 @@ impl TemporalMvContext {
         grid: &NeighbourMvGrid,
         block: &MvBlockContext,
         probe: RelativeProbe,
-        cell: NeighbourCell,
+        cell: &NeighbourCell,
     ) -> Option<[Mv; 2]> {
         if cell.flags.ref_frame0 != TIP_REF_FRAME || cell.flags.ref_frame1.is_some() {
             return None;
@@ -1617,7 +1617,7 @@ impl TemporalMvContext {
         grid: &NeighbourMvGrid,
         block: &MvBlockContext,
         probe: RelativeProbe,
-        cell: NeighbourCell,
+        cell: &NeighbourCell,
     ) -> Option<[(i8, Mv); 2]> {
         let refs = self.tip_references()?;
         let mvs = self.tip_spatial_mvs(grid, block, probe, cell)?;
