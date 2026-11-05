@@ -487,7 +487,10 @@ fn write_projection(
 
 /// Reads the sampled cells of one chunk and computes, for each, its
 /// decompressed vector, its projection, its sampled position and its band
-/// cell; a `TRACKED` scan also places the § 7.9.8 trajectory end.
+/// cell; a `TRACKED` scan also places the § 7.9.8 trajectory end. The lane
+/// window only needs the scanned list's `count * step` cells: a step-1 group
+/// spans one six-byte list per cell and a step-2 group skips every other
+/// cell, so lanes past that read stale bytes that the walk mask drops.
 #[inline(never)]
 fn chunk_lanes<const TRACKED: bool>(
     lanes: &mut ChunkLanes,
@@ -504,7 +507,8 @@ fn chunk_lanes<const TRACKED: bool>(
         .get(side * size_of::<StoredTemporalCell>() / 2..)
         .unwrap_or_default();
     let window = lanes.window.0.as_flattened_mut();
-    let copied = stored.len().min(window.len());
+    let needed = count * geometry.step * size_of::<StoredTemporalCell>();
+    let copied = stored.len().min(window.len()).min(needed);
     window[..copied].copy_from_slice(&stored[..copied]);
     let track = geometry.track;
     let iota = Lanes::from_array(core::array::from_fn(|lane| lane as i32));
