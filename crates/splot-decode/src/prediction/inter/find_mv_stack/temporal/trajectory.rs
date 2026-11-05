@@ -790,7 +790,11 @@ impl TrajectoryBand<'_> {
             .fields
             .get_mut(index * self.reference_count + reference)
         {
-            *slot = PackedTrajectoryMv::new(mv);
+            // `mv` is clamped, so only `PackedTrajectoryMv::INVALID` has this row.
+            *slot = PackedTrajectoryMv {
+                row: mv.row as i16,
+                col: mv.col as i16,
+            };
         }
         mv
     }
