@@ -24,10 +24,8 @@ const TCQ_NEXT_STATE: [[usize; TCQ_PARITIES]; TCQ_STATES] = [
 ];
 
 #[inline]
-pub(crate) fn next_tcq_state(tcq_state: usize, parity: u32) -> Option<usize> {
-    TCQ_NEXT_STATE
-        .get(tcq_state)
-        .map(|row| row[(parity & 1) as usize])
+pub(crate) fn next_tcq_state(tcq_state: usize, parity: u32) -> usize {
+    TCQ_NEXT_STATE[tcq_state & (TCQ_STATES - 1)][(parity & 1) as usize]
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,8 +93,6 @@ pub(crate) enum CoeffQuantStateWriteError {
     },
     #[error("coefficient quant state error: {0}")]
     State(#[from] TileCoeffStateError),
-    #[error("coefficient quant input {index} used invalid tcqState {tcq_state}")]
-    InvalidTcqState { index: usize, tcq_state: usize },
     #[error(
         "coefficient quant input {index} has nonconforming magnitude {magnitude}; expected less than 1 << 20"
     )]
@@ -180,12 +176,7 @@ impl CoeffQuantStateAccumulator {
 
         if !self.lossless && self.use_tcq {
             let q0 = ((self.tcq_state >> 1) & 1) as u32;
-            self.tcq_state = next_tcq_state(self.tcq_state, quant).ok_or(
-                CoeffQuantStateWriteError::InvalidTcqState {
-                    index,
-                    tcq_state: self.tcq_state,
-                },
-            )?;
+            self.tcq_state = next_tcq_state(self.tcq_state, quant);
             if quant > 0 {
                 quant = checked_mul_sub(index, quant, 2, q0, "quant * 2 - q0")?;
             }

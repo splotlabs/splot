@@ -67,22 +67,16 @@ impl CoeffBaseFirstPassSummary {
 
     #[allow(clippy::inline_always, reason = "measured: per-coefficient update")]
     #[inline(always)]
-    pub(crate) fn update_after_level(
+    pub(crate) fn update_after_level<const TCQ: bool, const PH: bool>(
         &mut self,
         entry: CoeffScanEntry,
         level: u32,
-        config: CoeffBaseDerivedLevelPassConfig,
-    ) -> Result<(), CoeffBaseDerivedLevelPassError> {
-        if config.use_tcq {
-            let Some(tcq_state) = next_tcq_state(self.tcq_state(), level) else {
-                return Err(CoeffBaseDerivedLevelPassError::InvalidTcqState {
-                    entry,
-                    tcq_state: self.tcq_state(),
-                });
-            };
+    ) {
+        if TCQ {
+            let tcq_state = next_tcq_state(self.tcq_state(), level);
             self.packed = (self.packed & !SUMMARY_TCQ_MASK) | tcq_state as u32;
         }
-        if level != 0 && config.parity_hiding && entry.scan_index() > 0 {
+        if PH && level != 0 && entry.scan_index() > 0 {
             let clipped = level.min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);
             let parity = ((self.packed >> SUMMARY_PARITY_SHIFT) & 1) ^ (clipped & 1);
             let count = ((self.packed >> SUMMARY_COUNT_SHIFT) & SUMMARY_COUNT_MASK)
@@ -93,7 +87,6 @@ impl CoeffBaseFirstPassSummary {
                 | (parity << SUMMARY_PARITY_SHIFT)
                 | ((count + 1) << SUMMARY_COUNT_SHIFT);
         }
-        Ok(())
     }
 }
 
@@ -168,11 +161,6 @@ pub(crate) enum CoeffBaseDerivedLevelPassError {
     LevelGridUnavailable,
     #[error("coefficient base/level config cannot enable parity hiding and TCQ together")]
     InconsistentParityAndTcq,
-    #[error("coefficient base/level entry {entry:?} used invalid tcqState {tcq_state}")]
-    InvalidTcqState {
-        entry: CoeffScanEntry,
-        tcq_state: usize,
-    },
     #[error("coefficient base/level base symbol read failed: {0}")]
     Base(#[from] CoeffBaseSymbolReadError),
     #[error("coefficient base/level state error: {0}")]
@@ -192,17 +180,41 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     block: &mut TransformCoeffBlockState,
     masks: &mut CoeffLevelMasks,
 ) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
-    use CoeffTransformClass::{Horizontal, TwoD, Vertical};
     let (eob_read, owned_block) = start.into_parts();
     *block = owned_block;
     preflight_pass(eob_read, block, walk, config)?;
+    match (config.use_tcq, config.parity_hiding) {
+        (false, false) => dispatch_level_pass::<false, false>(cdfs, symbols, block, walk, config, masks),
+        (false, true) => dispatch_level_pass::<false, true>(cdfs, symbols, block, walk, config, masks),
+        (true, _) => dispatch_level_pass::<true, false>(cdfs, symbols, block, walk, config, masks),
+    }
+}
+
+/// Splits the class and plane dispatch so each pass instantiation folds the
+/// context derivation and the summary update to one straight-line body.
+#[inline(always)]
+fn dispatch_level_pass<const TCQ: bool, const PH: bool>(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    block: &mut TransformCoeffBlockState,
+    walk: &NonZeroCoeffScanWalk<'_>,
+    config: CoeffBaseDerivedLevelPassConfig,
+    masks: &mut CoeffLevelMasks,
+) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
+    use CoeffTransformClass::{Horizontal, TwoD, Vertical};
     match (config.tx_class, config.plane == 0) {
-        (TwoD, true) => level_pass::<0, true>(cdfs, symbols, block, walk, config, masks),
-        (TwoD, false) => level_pass::<0, false>(cdfs, symbols, block, walk, config, masks),
-        (Horizontal, true) => level_pass::<1, true>(cdfs, symbols, block, walk, config, masks),
-        (Horizontal, false) => level_pass::<1, false>(cdfs, symbols, block, walk, config, masks),
-        (Vertical, true) => level_pass::<2, true>(cdfs, symbols, block, walk, config, masks),
-        (Vertical, false) => level_pass::<2, false>(cdfs, symbols, block, walk, config, masks),
+        (TwoD, true) => level_pass::<0, true, TCQ, PH>(cdfs, symbols, block, walk, config, masks),
+        (TwoD, false) => level_pass::<0, false, TCQ, PH>(cdfs, symbols, block, walk, config, masks),
+        (Horizontal, true) => {
+            level_pass::<1, true, TCQ, PH>(cdfs, symbols, block, walk, config, masks)
+        }
+        (Horizontal, false) => {
+            level_pass::<1, false, TCQ, PH>(cdfs, symbols, block, walk, config, masks)
+        }
+        (Vertical, true) => level_pass::<2, true, TCQ, PH>(cdfs, symbols, block, walk, config, masks),
+        (Vertical, false) => {
+            level_pass::<2, false, TCQ, PH>(cdfs, symbols, block, walk, config, masks)
+        }
     }
 }
 
@@ -213,7 +225,7 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     reason = "measured: one specialised loop per class and plane type"
 )]
 #[inline(always)]
-fn level_pass<const CLASS: usize, const LUMA: bool>(
+fn level_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool>(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     block: &mut TransformCoeffBlockState,
@@ -222,8 +234,14 @@ fn level_pass<const CLASS: usize, const LUMA: bool>(
     masks: &mut CoeffLevelMasks,
 ) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
     let mut owned = symbols.snapshot();
-    let result =
-        level_pass_on_snapshot::<CLASS, LUMA>(cdfs, &mut owned, block, walk, config, masks);
+    let result = level_pass_on_snapshot::<CLASS, LUMA, TCQ, PH>(
+        cdfs,
+        &mut owned,
+        block,
+        walk,
+        config,
+        masks,
+    );
     symbols.restore(owned);
     result
 }
@@ -235,7 +253,12 @@ fn level_pass<const CLASS: usize, const LUMA: bool>(
     reason = "measured: merges the owned decoder into the specialised loop"
 )]
 #[inline(always)]
-fn level_pass_on_snapshot<const CLASS: usize, const LUMA: bool>(
+fn level_pass_on_snapshot<
+    const CLASS: usize,
+    const LUMA: bool,
+    const TCQ: bool,
+    const PH: bool,
+>(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     block: &mut TransformCoeffBlockState,
@@ -275,17 +298,17 @@ fn level_pass_on_snapshot<const CLASS: usize, const LUMA: bool>(
         masks,
         config,
     };
-    pass.finish_level(&mut rows, symbols, eob_entry, eob_is_lf, eob_level)?;
+    pass.finish_level::<TCQ, PH>(&mut rows, symbols, eob_entry, eob_is_lf, eob_level)?;
     let dc = entries.next_back();
     for entry in entries {
         let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
         let level = pass.read_base_symbol::<false>(&mut rows, symbols, entry, is_lf)?;
-        pass.finish_level(&mut rows, symbols, entry, is_lf, level)?;
+        pass.finish_level::<TCQ, PH>(&mut rows, symbols, entry, is_lf, level)?;
     }
     if let Some(entry) = dc {
         let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
         let level = pass.read_base_symbol::<true>(&mut rows, symbols, entry, is_lf)?;
-        pass.finish_level(&mut rows, symbols, entry, is_lf, level)?;
+        pass.finish_level::<TCQ, PH>(&mut rows, symbols, entry, is_lf, level)?;
     }
 
     Ok(first_pass)
@@ -347,7 +370,7 @@ impl LevelPassState<'_> {
         reason = "measured: keeps the typed symbol reads inside the level loop"
     )]
     #[inline(always)]
-    fn finish_level(
+    fn finish_level<const TCQ: bool, const PH: bool>(
         &mut self,
         rows: &mut CoeffLevelRows<'_>,
         symbols: &mut SymbolDecoder<'_>,
@@ -388,7 +411,8 @@ impl LevelPassState<'_> {
             let index = entry.row() * LEVEL_STRIDE + entry.col();
             self.grid[index & (LEVEL_GRID_LEN - 1)] = level as u8;
         }
-        self.first_pass.update_after_level(entry, level, config)
+        self.first_pass.update_after_level::<TCQ, PH>(entry, level);
+        Ok(())
     }
 }
 
