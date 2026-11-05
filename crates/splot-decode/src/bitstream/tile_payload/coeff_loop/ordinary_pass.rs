@@ -304,6 +304,24 @@ impl SignQuantPass<'_> {
         cdfs: &mut TileCdfSubset,
         symbols: &mut SymbolDecoder<'_>,
     ) -> Result<(), CoeffOrdinaryPassError> {
+        let mut owned = symbols.snapshot();
+        let result = self.ac_entries_on_snapshot::<CLASS, LUMA>(cdfs, &mut owned);
+        symbols.restore(owned);
+        result
+    }
+
+    /// The loop body over an owned decoder, so the arithmetic state stays
+    /// in registers instead of behind a pointer.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: merges the owned decoder into the specialised loop"
+    )]
+    #[inline(always)]
+    fn ac_entries_on_snapshot<const CLASS: usize, const LUMA: bool>(
+        &mut self,
+        cdfs: &mut TileCdfSubset,
+        symbols: &mut SymbolDecoder<'_>,
+    ) -> Result<(), CoeffOrdinaryPassError> {
         let tx_class = [
             CoeffTransformClass::TwoD,
             CoeffTransformClass::Horizontal,

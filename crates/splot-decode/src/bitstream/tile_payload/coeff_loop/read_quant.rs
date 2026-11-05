@@ -71,7 +71,8 @@ impl CoeffReadQuantState {
     }
 
     /// Inlined for the common level below the remainder threshold, which
-    /// reads nothing; the Golomb remainder stays out of line.
+    /// reads nothing; the Golomb remainder stays out of line and takes the
+    /// decoder by value so hot loops keep theirs in registers.
     #[inline]
     pub(crate) fn read_one(
         &mut self,
@@ -83,15 +84,37 @@ impl CoeffReadQuantState {
         if input.level < threshold {
             return Ok(CoeffQuantReadInput { quant: input.level });
         }
-        self.read_remainder(symbols, index, input)
+        let owned = symbols.snapshot();
+        let (owned, read) = self.read_remainder(owned, index, input);
+        symbols.restore(owned);
+        read
     }
 
     #[inline(never)]
-    fn read_remainder(
+    fn read_remainder<'a>(
         &mut self,
-        symbols: &mut SymbolDecoder<'_>,
+        symbols: SymbolDecoder<'a>,
         index: usize,
         input: CoeffReadQuantInput,
+    ) -> (
+        SymbolDecoder<'a>,
+        Result<CoeffQuantReadInput, CoeffReadQuantError>,
+    ) {
+        let mut owned = symbols;
+        let read = self.read_remainder_on_snapshot(index, input, &mut owned);
+        (owned, read)
+    }
+
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: merges the owned decoder into the cold remainder read"
+    )]
+    #[inline(always)]
+    fn read_remainder_on_snapshot(
+        &mut self,
+        index: usize,
+        input: CoeffReadQuantInput,
+        symbols: &mut SymbolDecoder<'_>,
     ) -> Result<CoeffQuantReadInput, CoeffReadQuantError> {
         let lvl_shift = u32::from(input.entry.pos() == 0 && self.is_hidden);
         let pred_level = self.hr_level_avg >> lvl_shift;
