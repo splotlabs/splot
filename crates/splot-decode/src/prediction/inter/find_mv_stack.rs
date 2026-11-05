@@ -173,11 +173,11 @@ impl RelativeProbe {
         self,
         grid: &NeighbourMvGrid,
         block: &MvBlockContext,
-    ) -> Option<(NeighbourCell, u32)> {
+    ) -> Option<(NeighbourCell, u32, i32)> {
         let (row, col, delta_col) = self.stack_target(block);
         let zero_weight = (self.delta_row == -1 && delta_col == -1) || delta_col < -1;
         let weight = u32::from(!zero_weight);
-        grid.get(row, col).map(|cell| (cell, weight))
+        grid.get(row, col).map(|cell| (cell, weight, delta_col))
     }
 
     fn stack_target(self, block: &MvBlockContext) -> (i32, i32, i32) {
@@ -1582,7 +1582,7 @@ fn scan_compound_mv_stack_probe(
     temporal: Option<&TemporalMvContext>,
     state: &mut CompoundScanState,
 ) {
-    let Some((cell, weight)) = probe.stack_cell(grid, block) else {
+    let Some((cell, weight, _)) = probe.stack_cell(grid, block) else {
         return;
     };
     let Some(ref_frame1) = block.ref_frame1 else {
@@ -1616,7 +1616,7 @@ fn scan_compound_mv_stack_probe(
             {
                 return;
             }
-            let Some(mvs) = temporal.tip_spatial_mvs(grid, block, probe, cell) else {
+            let Some(mvs) = temporal.tip_spatial_mvs(grid, block, probe, &cell) else {
                 return;
             };
             CompoundMvCandidate {
@@ -1767,25 +1767,24 @@ fn scan_mv_stack_probe(
     derived: &mut DerivedMvState<'_>,
     warp: Option<&mut WarpParamStack>,
 ) {
-    let Some((cell, weight)) = probe.stack_cell(grid, block) else {
+    let Some((cell, weight, adjusted_delta_col)) = probe.stack_cell(grid, block) else {
         return;
     };
 
     if let Some(warp) = warp {
-        warp.add_scan_point(cell, block);
+        warp.add_scan_point(&cell, block);
     }
 
     if entries.len() >= MAX_REF_MV_STACK_SIZE {
         return;
     }
 
-    let (_, _, adjusted_delta_col) = probe.stack_target(block);
     let offsets = (probe.delta_row, adjusted_delta_col);
     if cell.flags.ref_frame0 == TIP_REF_FRAME
         && cell.flags.ref_frame1.is_none()
         && block.ref_frame0 != TIP_REF_FRAME
         && let Some(temporal) = derived.temporal()
-        && let Some(candidates) = temporal.tip_spatial_single_candidates(grid, block, probe, cell)
+        && let Some(candidates) = temporal.tip_spatial_single_candidates(grid, block, probe, &cell)
     {
         for (candidate_ref, candidate_mv) in candidates {
             if candidate_ref == block.ref_frame0 {

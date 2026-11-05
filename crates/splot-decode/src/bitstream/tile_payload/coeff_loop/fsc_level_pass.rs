@@ -71,7 +71,7 @@ pub(crate) fn apply_nonzero_coeff_fsc_level_pass(
 ) -> Result<NonZeroCoeffFscLevelPass, CoeffFscLevelPassError> {
     let (eob_read, mut block) = start.into_parts();
     preflight_pass(eob_read, &block, &walk, config)?;
-    block.ensure_quant_sign()?;
+    block.ensure_quant_sign();
 
     let tx_size_ctx = config.fsc_tx_size_ctx();
     let mut entries = walk.entries();

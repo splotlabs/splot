@@ -1596,7 +1596,7 @@ impl TemporalMvContext {
         grid: &NeighbourMvGrid,
         block: &MvBlockContext,
         probe: RelativeProbe,
-        cell: NeighbourCell,
+        cell: &NeighbourCell,
     ) -> Option<[Mv; 2]> {
         if cell.flags.ref_frame0 != TIP_REF_FRAME || cell.flags.ref_frame1.is_some() {
             return None;
@@ -1617,7 +1617,7 @@ impl TemporalMvContext {
         grid: &NeighbourMvGrid,
         block: &MvBlockContext,
         probe: RelativeProbe,
-        cell: NeighbourCell,
+        cell: &NeighbourCell,
     ) -> Option<[(i8, Mv); 2]> {
         let refs = self.tip_references()?;
         let mvs = self.tip_spatial_mvs(grid, block, probe, cell)?;
@@ -1852,6 +1852,9 @@ fn fill_temporal_sampling_gap(
     }
     let mut sum = Mv::ZERO;
     let mut count = 0i32;
+    debug_assert!(tmvp_unit_size8.is_power_of_two());
+    let unit_shift = tmvp_unit_size8.trailing_zeros();
+    let same_unit = |a: usize, b: usize| (a >> unit_shift) == (b >> unit_shift);
     for candidate_y in 0..=1 {
         for candidate_x in 0..=1 {
             if dy < candidate_y || dx < candidate_x {
@@ -1859,9 +1862,7 @@ fn fill_temporal_sampling_gap(
             }
             let source_y = y8 + 2 * candidate_y;
             let source_x = x8 + 2 * candidate_x;
-            if source_y / tmvp_unit_size8 != y8 / tmvp_unit_size8
-                || source_x / tmvp_unit_size8 != x8 / tmvp_unit_size8
-            {
+            if !same_unit(source_y, y8) || !same_unit(source_x, x8) {
                 continue;
             }
             let Some(source) = field.cell(source_y, source_x).filter(|cell| cell.valid) else {
@@ -2079,7 +2080,12 @@ impl TemporalProjectionSource {
                     .map_or(0, |&scale| {
                         (if ref_offset < 0 { -scale } else { scale }) as i16
                     }),
-                end_factor: clamped_tmvp_factor(ref_offset.abs() - numerator, ref_offset.abs()),
+                end_divisor: DIV_MULT
+                    .get(ref_offset.unsigned_abs() as usize)
+                    .map_or(0, |&scale| scale as i16),
+                end_numerator: ((ref_offset.abs() - numerator)
+                    .clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE))
+                    as i16,
                 end_is_target: target_ref.is_some() && end_ref == target_ref,
                 flags: if factor.is_some() { scan::PROJECTS } else { 0 }
                     | if end_ref.is_some() {

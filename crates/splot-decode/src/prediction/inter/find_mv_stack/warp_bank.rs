@@ -116,7 +116,7 @@ impl WarpParamStack {
         }
     }
 
-    pub(super) fn add_scan_point(&mut self, cell: NeighbourCell, block: &MvBlockContext) {
+    pub(super) fn add_scan_point(&mut self, cell: &NeighbourCell, block: &MvBlockContext) {
         if cell.flags.is_inter()
             && cell.flags.is_warp()
             && cell.flags.ref_frame0 == block.ref_frame0

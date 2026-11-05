@@ -14,6 +14,10 @@
 rustflags = ["-C", "target-cpu=x86-64-v3"]
 
 [alias]
+# AVX2-optimized release decoder: rebuilds std with the same target-cpu so
+# std::simd internals (swizzle_dyn, filters) compile to native AVX2 code.
+# Output lands in target/x86_64-unknown-linux-gnu/release/splot.
+fast = "build --release -p splot-cli --locked -Zbuild-std --target x86_64-unknown-linux-gnu"
 xtask = "run --package xtask --"
 ci = "run --package xtask -- ci"
 cov = "run --package xtask -- coverage"

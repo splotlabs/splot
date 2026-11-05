@@ -293,7 +293,8 @@ fn visible_source_samples_are_copied_directly_in_destination_type() {
 
 #[test]
 fn scale_lut_maps_out_of_range_samples_to_the_last_entry() {
-    let lut: [i32; 256] = core::array::from_fn(|index| index as i32 * 3);
+    let mut lut: [i32; 257] = core::array::from_fn(|index| index as i32 * 3);
+    lut[256] = lut[255];
     assert_eq!(scale_lut(&lut, 1023, 10), lut[255]);
     assert_eq!(scale_lut(&lut, 4095, 10), lut[255]);
     assert_eq!(scale_lut(&lut, u16::MAX.into(), 10), lut[255]);
