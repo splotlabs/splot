@@ -35,9 +35,14 @@ pub(super) struct ProjectionTarget {
     /// projection factor with the offset sign folded in, which projects the
     /// stored vector exactly as the factor projects its negation.
     pub(super) divisor: i16,
-    /// The factor that projects the stored vector onto the § 7.9.8 trajectory
-    /// end, the vector `observe_projection_at` records for `end_ref`.
-    pub(super) end_factor: i32,
+    /// `DIV_MULT[|ref_offset|]` when the offset is a frame distance, else 0.
+    /// With `end_numerator` it is the factor that projects the stored vector
+    /// onto the § 7.9.8 trajectory end, the vector `observe_projection_at`
+    /// records for `end_ref`.
+    pub(super) end_divisor: i16,
+    /// `clamp(|ref_offset| - observed, ±MAX_FRAME_DISTANCE)`, the numerator of
+    /// the same projection.
+    pub(super) end_numerator: i16,
     /// Whether `end_ref` is the projection's target reference.
     pub(super) end_is_target: bool,
     /// [`PROJECTS`] when the reference admits a projection factor, and
@@ -74,7 +79,10 @@ const TRAJECTORY_CELL: usize = 7;
 /// The trajectory band cell where the unprojected vector lands, the end of a
 /// § 7.9.8 trajectory.
 const END_CELL: usize = 8;
-const INT_ROWS: usize = 9;
+/// The § 7.9.8 trajectory-end projection of the decompressed vector (two
+/// rows), tracked scans only.
+const END_MV: usize = 10;
+const INT_ROWS: usize = 12;
 /// One lane's view of [`ChunkLanes::ints`], from its first row to its last.
 const LANE_SPAN: usize = (INT_ROWS - 1) * CHUNK + 1;
 
@@ -123,6 +131,8 @@ impl LaneInts<'_> {
 struct TargetTables {
     flags: Simd<u8, LANES>,
     divisor: [Simd<u8, LANES>; 2],
+    end_divisor: [Simd<u8, LANES>; 2],
+    end_numerator: Simd<u8, LANES>,
     source_to_current: i32,
 }
 
@@ -130,6 +140,8 @@ impl TargetTables {
     fn new(prepared: &TemporalProjectionSource, trajectory_refs: usize) -> Self {
         let entry = |index: usize| prepared.targets.get(index).copied().unwrap_or_default();
         let byte = |index: usize, shift: u32| (entry(index).divisor >> shift) as u8;
+        let end_byte = |index: usize, shift: u32| (entry(index).end_divisor >> shift) as u8;
+        let end_num = |index: usize| entry(index).end_numerator as u8;
         let tracked = |target: ProjectionTarget| {
             prepared.source_ref < trajectory_refs
                 && target.end_ref.is_some_and(|end| end < trajectory_refs)
@@ -146,18 +158,27 @@ impl TargetTables {
         Self {
             flags: Simd::from_array(core::array::from_fn(flags)),
             divisor: [0, 8].map(|shift| Simd::from_array(core::array::from_fn(|i| byte(i, shift)))),
+            end_divisor: [0, 8]
+                .map(|shift| Simd::from_array(core::array::from_fn(|i| end_byte(i, shift)))),
+            end_numerator: Simd::from_array(core::array::from_fn(end_num)),
             source_to_current: prepared.source_to_current,
         }
     }
 
-    /// The flags and the folded projection factor of each lane's reference.
-    fn lookup(&self, refs: Simd<u8, LANES>) -> (Simd<u8, LANES>, Lanes) {
-        let [low, high] = self
-            .divisor
-            .map(|table| table.swizzle_dyn(refs).cast::<u16>());
-        let divisor: Lanes = (low | high << 8).cast::<i16>().cast();
-        let factor = divisor * Lanes::splat(self.source_to_current);
-        (self.flags.swizzle_dyn(refs), factor)
+    /// The folded factor of `table` at each lane's reference, signed bytes
+    /// reassembled into one `i16` per lane.
+    fn folded(table: [Simd<u8, LANES>; 2], refs: Simd<u8, LANES>) -> Lanes {
+        let [low, high] = table.map(|table| table.swizzle_dyn(refs).cast::<u16>());
+        (low | high << 8).cast::<i16>().cast()
+    }
+
+    /// The flags, the folded projection factor and the § 7.9.8 trajectory-end
+    /// factor of each lane's reference.
+    fn lookup(&self, refs: Simd<u8, LANES>) -> (Simd<u8, LANES>, Lanes, Lanes) {
+        let factor = Self::folded(self.divisor, refs) * Lanes::splat(self.source_to_current);
+        let end_numerator = self.end_numerator.swizzle_dyn(refs).cast::<i8>().cast();
+        let end_factor = Self::folded(self.end_divisor, refs) * end_numerator;
+        (self.flags.swizzle_dyn(refs), factor, end_factor)
     }
 }
 
@@ -410,9 +431,9 @@ impl<'a> ChunkWalk<'a> {
                     source_slot,
                     ints.cell(TRAJECTORY_CELL),
                     Mv { row, col },
-                    || Mv {
-                        row: project_component(mv.row, target.end_factor),
-                        col: project_component(mv.col, target.end_factor),
+                    || {
+                        let (row, col) = ints.pair(END_MV);
+                        Mv { row, col }
                     },
                     (y8 as usize, x8 as usize),
                     end_slot,
@@ -497,7 +518,7 @@ fn chunk_lanes<const TRACKED: bool>(
         let x = Lanes::splat(first) + iota * Lanes::splat(geometry.step as i32);
         let [refs, saved_rows, saved_cols] = deinterleave(&lanes.window.0, group, geometry.step);
         lanes.refs[group] = refs.to_array();
-        let (flags, factor) = tables.lookup(refs);
+        let (flags, factor, end_factor) = tables.lookup(refs);
         let (mut sampled, mut ended) = (Mask::splat(true), Mask::splat(true));
         let mut base = [Lanes::splat(0); 2];
         let mut position = [Lanes::splat(0); 2];
@@ -507,6 +528,9 @@ fn chunk_lanes<const TRACKED: bool>(
             lanes.ints[MV + component][group] = mv.to_array();
             let projected = project(mv, factor);
             lanes.ints[PROJECTED + component][group] = projected.to_array();
+            if TRACKED {
+                lanes.ints[END_MV + component][group] = project(mv, end_factor).to_array();
+            }
             let (origin, limit) = if component == 0 {
                 (y, geometry.height8)
             } else {
@@ -657,6 +681,7 @@ fn project(component: Lanes, factor: Lanes) -> Lanes {
 }
 
 /// [`project`] for one component.
+#[cfg(test)]
 fn project_component(component: i32, factor: i32) -> i32 {
     let scaled = component * factor;
     (scaled + (scaled >> 31) + (1 << 13)) >> 14
@@ -696,6 +721,7 @@ mod tests {
                         Narrow::from_array(core::array::from_fn(|lane| chunk[lane] as i16));
                     let decompressed: Lanes = decompress(narrow).cast();
                     let projected = project(decompressed, Lanes::splat(folded));
+                    let end_projected = project(decompressed, Lanes::splat(end_factor));
                     for (lane, &value) in chunk.iter().enumerate() {
                         let component = value as i8;
                         let mv = uncompress_tmvp_mv(CompressedTemporalMv {
@@ -704,6 +730,7 @@ mod tests {
                         });
                         let end = project_tmvp_mv(mv, end_numerator, ref_offset.abs());
                         assert_eq!(project_component(mv.row, end_factor), end.row);
+                        assert_eq!(end_projected[lane], end.row);
                         let mv = if ref_offset < 0 {
                             Mv {
                                 row: -mv.row,
@@ -886,6 +913,18 @@ mod tests {
                 );
                 if let Some((_, position)) = expected {
                     assert_eq!(bits & OBSERVE != 0, x8 < width8);
+                    let observed = if side == 1 {
+                        -source_to_current
+                    } else {
+                        source_to_current
+                    };
+                    let offset = offset.unwrap();
+                    let observed_end = project_tmvp_mv(mv, offset.abs() - observed, offset.abs());
+                    let lane_end = Mv {
+                        row: lanes.ints[END_MV].as_flattened()[lane],
+                        col: lanes.ints[END_MV + 1].as_flattened()[lane],
+                    };
+                    assert_eq!(lane_end, observed_end, "case {case} lane {lane}");
                     let cell = |row: usize| lanes.ints[row].as_flattened()[lane] as u32 as usize;
                     assert_eq!(cell(OUTPUT_CELL), cell_index(position, output_base));
                     assert_eq!(cell(TRAJECTORY_CELL), cell_index(position, band_base));

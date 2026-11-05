@@ -2079,7 +2079,12 @@ impl TemporalProjectionSource {
                     .map_or(0, |&scale| {
                         (if ref_offset < 0 { -scale } else { scale }) as i16
                     }),
-                end_factor: clamped_tmvp_factor(ref_offset.abs() - numerator, ref_offset.abs()),
+                end_divisor: DIV_MULT
+                    .get(ref_offset.unsigned_abs() as usize)
+                    .map_or(0, |&scale| scale as i16),
+                end_numerator: ((ref_offset.abs() - numerator)
+                    .clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE))
+                    as i16,
                 end_is_target: target_ref.is_some() && end_ref == target_ref,
                 flags: if factor.is_some() { scan::PROJECTS } else { 0 }
                     | if end_ref.is_some() {
