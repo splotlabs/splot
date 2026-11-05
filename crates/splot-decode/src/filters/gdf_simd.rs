@@ -452,13 +452,13 @@ fn cycle_combs<const A: usize, const B: usize, const C: usize, const D: usize, c
     let (d_above, d_below) = tap_diffs::<D, ROW>(window, center);
     let select4 = |a: Simd<i16, 16>, b: Simd<i16, 16>, c: Simd<i16, 16>, d: Simd<i16, 16>| {
         let pick_ab = a ^ ((a ^ b) & mirrored);
-        let pick_ba = b ^ ((a ^ b) & mirrored);
+        let pick_ab_alt = b ^ ((a ^ b) & mirrored);
         let pick_cd = c ^ ((c ^ d) & mirrored);
         let pick_dc = d ^ ((c ^ d) & mirrored);
         let pick_a = pick_ab ^ ((pick_ab ^ pick_cd) & transposed);
         let pick_c = pick_cd ^ ((pick_ab ^ pick_cd) & transposed);
-        let pick_b = pick_ba ^ ((pick_ba ^ pick_dc) & transposed);
-        let pick_d = pick_dc ^ ((pick_ba ^ pick_dc) & transposed);
+        let pick_b = pick_ab_alt ^ ((pick_ab_alt ^ pick_dc) & transposed);
+        let pick_d = pick_dc ^ ((pick_ab_alt ^ pick_dc) & transposed);
         [pick_a, pick_b, pick_c, pick_d]
     };
     let above = select4(a_above, b_above, c_above, d_above);
