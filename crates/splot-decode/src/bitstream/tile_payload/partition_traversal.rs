@@ -37,7 +37,9 @@ pub(crate) use lr_records::{WienerNsLrSourceBlock, WienerNsLrUnitFilter};
 #[cfg(test)]
 use lr_syntax::{WienerNsUnitFilterState, read_wiener_ns_unit_filter};
 pub(crate) use lr_syntax::{pc_wiener_unit_source_blocks, superblock_lr_units};
-pub(crate) use partition_children::child_calls;
+pub(crate) use partition_children::{
+    ChildCallSink, MAX_CHILD_CALLS, child_calls, child_calls_into,
+};
 pub(crate) use state_publication::DecodedLeafPublication;
 pub(crate) use state_publication::publish_intra_leaf_state;
 use tree_walk::extended_sdp_allowed_for_child;

@@ -48,18 +48,23 @@ struct PlaneGrid {
 const ROW_WORDS: usize = 3;
 type BitRow = [u64; ROW_WORDS];
 
-/// Sets bits `start..end` of `row`, `end <= 64 * ROW_WORDS`.
+/// The words with bits `start..end` set, `end <= 64 * ROW_WORDS`.
+#[inline]
+fn run_mask(start: usize, end: usize) -> BitRow {
+    core::array::from_fn(|index| {
+        let base = index * 64;
+        let lo = start.clamp(base, base + 64) - base;
+        let hi = end.clamp(base, base + 64) - base;
+        let below = |bits: usize| u64::MAX.checked_shl(bits as u32).map_or(u64::MAX, |v| !v);
+        below(hi) & !below(lo)
+    })
+}
+
 #[inline]
 fn set_run(row: &mut BitRow, start: usize, end: usize) {
-    for (index, word) in row.iter_mut().enumerate() {
-        let base = index * 64;
-        let lo = start.max(base);
-        let hi = end.min(base + 64);
-        if lo < hi {
-            let len = hi - lo;
-            let ones = if len == 64 { u64::MAX } else { (1 << len) - 1 };
-            *word |= ones << (lo - base);
-        }
+    let mask = run_mask(start, end);
+    for (word, bits) in row.iter_mut().zip(mask) {
+        *word |= bits;
     }
 }
 
@@ -276,8 +281,11 @@ impl TileBlockDecodedState {
             .saturating_add(1)
             .min(grid.height);
         if start_x < end_x {
+            let mask = run_mask(start_x, end_x);
             for row in &mut grid.rows[base_y.saturating_add(1).min(end_y)..end_y] {
-                set_run(row, start_x, end_x);
+                for (word, bits) in row.iter_mut().zip(mask) {
+                    *word |= bits;
+                }
             }
         }
     }
