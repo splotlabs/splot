@@ -97,7 +97,7 @@ pub(crate) struct GeneralIntraReconScratch<T: ReconSample> {
     hot_vectors: HotIntraVectors,
     pub(crate) cfl_luma_ac: Vec<i32>,
     pub(crate) cfl_prediction: Vec<T>,
-    pub(crate) mhccp_refs: [Vec<u16>; 2],
+    pub(crate) mhccp_refs: [Vec<u16>; 3],
     pub(crate) paeth_edges: [Vec<T>; 2],
     cctx: Option<Box<CctxReconScratch<T>>>,
 }

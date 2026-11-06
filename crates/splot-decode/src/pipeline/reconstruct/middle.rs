@@ -117,33 +117,58 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
         bit_depth,
     )?;
     let angle = middle_directional_angle(mode);
+    let idif = if matches!(plane_id, PlaneId::Y) {
+        Some(extend_directional_middle_idif_edges(
+            &left, &above, bit_depth,
+        )?)
+    } else {
+        None
+    };
+    let predict = |output: &mut [T], stride: usize| {
+        if let Some((left_idif, above_idif)) = &idif {
+            predict_intra_middle_directional_angle_rect_idif_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraMiddleDirectionalAngleIdifEdges::both(left_idif, above_idif),
+                output,
+                stride,
+            )?;
+        } else {
+            predict_intra_middle_directional_angle_rect_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraMiddleDirectionalAngleEdges::both(&left, &above),
+                output,
+                stride,
+            )?;
+        }
+        Ok(())
+    };
+    if predict_intra_in_frame(
+        workspace,
+        block,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        None,
+        bit_depth,
+        predict,
+    )? {
+        return Ok(());
+    }
     let mut prediction = workspace.take_intra_prediction_buffer(
         IntraPredictionScratchBuffer::Primary,
         plane_id,
         side * side,
         T::default(),
     )?;
-    if matches!(plane_id, PlaneId::Y) {
-        let (left_idif, above_idif) =
-            extend_directional_middle_idif_edges(&left, &above, bit_depth)?;
-        predict_intra_middle_directional_angle_rect_idif_into(
-            bit_depth,
-            block_size,
-            angle,
-            IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
-            &mut prediction,
-            side,
-        )?;
-    } else {
-        predict_intra_middle_directional_angle_rect_into(
-            bit_depth,
-            block_size,
-            angle,
-            IntraMiddleDirectionalAngleEdges::both(&left, &above),
-            &mut prediction,
-            side,
-        )?;
-    }
+    predict(&mut prediction, side)?;
     write_intra_prediction_block(
         workspace,
         block,
@@ -696,20 +721,40 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
             }
         }
     };
+    let predict = |output: &mut [T], stride: usize| {
+        predict_intra_cardinal_directional_rect_into(
+            bit_depth,
+            block_size,
+            direction,
+            cardinal_edges,
+            output,
+            stride,
+        )
+        .map_err(Into::into)
+    };
+    if predict_intra_in_frame(
+        workspace,
+        block,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        dpcm,
+        bit_depth,
+        predict,
+    )? {
+        return Ok(());
+    }
     let mut prediction = workspace.take_intra_prediction_buffer(
         IntraPredictionScratchBuffer::Primary,
         plane_id,
         width * height,
         T::default(),
     )?;
-    predict_intra_cardinal_directional_rect_into(
-        bit_depth,
-        block_size,
-        direction,
-        cardinal_edges,
-        &mut prediction,
-        width,
-    )?;
+    predict(&mut prediction, width)?;
     write_intra_prediction_block(
         workspace,
         block,

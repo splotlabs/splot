@@ -161,6 +161,7 @@ pub(super) fn inverse_transform_2d_with_scratch(
                 rescale: odd_ratio,
                 row_shift: params.row_shift,
                 col_shift: params.col_shift,
+                dequant: None,
             },
             dequant,
             residual,

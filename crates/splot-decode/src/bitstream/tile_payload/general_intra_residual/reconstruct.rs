@@ -8,7 +8,8 @@ use splot_recon::{
     BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, DequantBlockParams, DpcmDirection,
     IntraRectBlockSize, InverseTransform2dOuter, PlaneId, ReconSample, SecondaryInverseTransform,
     ac_quantizer, dc_quantizer, dequant_coefficient, dequantize_block, dequantize_with_secondary,
-    inverse_transform_2d_outer_adjusted, inverse_transform_2d_outer_with_scratch, tx_class,
+    inverse_transform_2d_outer_add_u8, inverse_transform_2d_outer_adjusted,
+    inverse_transform_2d_outer_with_scratch, tx_class,
 };
 
 use super::super::coeff_loop::max_level::CoeffTransformClass;
@@ -177,6 +178,20 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
     )?;
     let written = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
         super::with_residual_scratch(|scratch| {
+            let width = block_size.width();
+            if secondary.is_none()
+                && let (Some((dst, stride)), Some(pred)) =
+                    (rows.u8_samples_mut(), T::u8_slice(prediction))
+            {
+                for (row, pred) in pred.chunks_exact(width).enumerate() {
+                    if let Some(out) = dst.get_mut(row * stride..row * stride + width) {
+                        out.copy_from_slice(pred); // splot-copy-ok: prediction row into the frame
+                    }
+                }
+                if add_intra_residual_u8(block, &setup, None, dst, stride, scratch)? {
+                    return Ok(());
+                }
+            }
             let residual = intra_residual(block, &setup, secondary.as_ref(), scratch)?;
             rows.add_block_residual(prediction, residual)
         })
@@ -212,9 +227,14 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place<T: ReconSample>(
         bit_depth,
     )?;
     super::with_residual_scratch(|scratch| {
+        let mut surface = splot_recon::CurrentFrameSurface::Frame(&mut *workspace);
+        if let Some((dst, stride)) = surface.u8_residual_rect_mut(plane_id, x, y, block_size)?
+            && add_intra_residual_u8(block, &setup, secondary.as_ref(), dst, stride, scratch)?
+        {
+            return Ok(());
+        }
         let residual = intra_residual(block, &setup, secondary.as_ref(), scratch)?;
-        splot_recon::CurrentFrameSurface::Frame(&mut *workspace)
-            .add_residual_rect_block(plane_id, x, y, block_size, residual)
+        surface.add_residual_rect_block(plane_id, x, y, block_size, residual)
     })
     .map_err(|source| GeneralIntraResidualError::Reconstruct { source })
 }
@@ -283,6 +303,29 @@ fn intra_residual<'s>(
     Ok(residual)
 }
 
+/// Adds the residual of an 8-bit block without a secondary transform onto
+/// `dst` through the fused inverse transform; `false` when it does not apply.
+fn add_intra_residual_u8(
+    block: CoeffBlock<'_>,
+    setup: &ReconstructBlockSetup,
+    secondary: Option<&SecondaryInverseTransform>,
+    dst: &mut [u8],
+    stride: usize,
+    scratch: &mut super::ResidualScratch,
+) -> splot_recon::Result<bool> {
+    if secondary.is_some() {
+        return Ok(false);
+    }
+    inverse_transform_2d_outer_add_u8(
+        &setup.transform,
+        block.quant,
+        Some(&setup.params),
+        dst,
+        stride,
+        &mut scratch.dequant_pair,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
     sink: &mut CurrentFrameSurface<'_, '_, T>,
@@ -326,6 +369,19 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
     }
     super::with_residual_scratch(|scratch| {
         let dequant = &mut scratch.dequant[..setup.adjusted];
+        if secondary.is_none()
+            && let Some((dst, stride)) = sink.u8_residual_rect_mut(plane_id, x, y, block_size)?
+            && inverse_transform_2d_outer_add_u8(
+                &setup.transform,
+                block.quant,
+                Some(&setup.params),
+                dst,
+                stride,
+                &mut scratch.dequant_pair,
+            )?
+        {
+            return Ok(());
+        }
         let coded =
             dequantize_with_secondary(&setup.params, block.quant, secondary.as_ref(), dequant)?;
         let residual = &mut scratch.residual[..setup.adjusted];

@@ -666,6 +666,30 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         Ok(())
     }
 
+    /// The 8-bit samples of a residual block from its origin and their row
+    /// stride, for a reconstruction added in place, after the same checks as
+    /// [`Self::add_residual_rect_block`]; `None` when the samples are not
+    /// 8-bit or the block overhangs storage.
+    ///
+    /// # Errors
+    /// Returns the [`Self::add_residual_rect_block`] geometry errors.
+    pub fn u8_residual_rect_mut(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+    ) -> Result<Option<(&mut [u8], usize)>> {
+        let rect = block_rect(x, y, size)?;
+        let target = self.residual_rect_target(plane, rect, size.width())?;
+        if target.rect != rect {
+            return Ok(None);
+        }
+        let stride = target.stride;
+        let samples = target.samples.get_mut(target.base..).unwrap_or_default();
+        Ok(T::u8_slice_mut(samples).map(|samples| (samples, stride)))
+    }
+
     /// Adds an adjusted-size signed residual block directly to reconstructed
     /// samples, applying the AV2 § 7.15.4 sample duplication for a 64-sample
     /// transform side while writing.
