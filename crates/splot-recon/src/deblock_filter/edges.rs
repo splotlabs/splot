@@ -336,13 +336,13 @@ fn run<E: Chunk, const VERTICAL: bool>(
         return;
     }
     let mut padded = [DeblockEdge::NONE; SEGMENTS];
-    padded[..tail.len()].copy_from_slice(tail);
+    padded[..tail.len()].copy_from_slice(tail); // splot-copy-ok: pad the last chunk's edges
     let lines = tail.len() * LINES;
     let origin = first + chunks.len() * step;
     let mut window = [E::default(); ROWS * LANES];
     for (line, copy) in window.chunks_exact_mut(ROWS).enumerate() {
         let (start, len) = window_line::<VERTICAL>(origin, stride, line, lines);
-        copy[..len].copy_from_slice(&samples[start..start + len]);
+        copy[..len].copy_from_slice(&samples[start..start + len]); // splot-copy-ok: stage a partial chunk's window
     }
     let (window_first, window_stride) = if VERTICAL {
         (REACH, ROWS)
@@ -358,7 +358,7 @@ fn run<E: Chunk, const VERTICAL: bool>(
     );
     for (line, copy) in window.chunks_exact(ROWS).enumerate() {
         let (start, len) = window_line::<VERTICAL>(origin, stride, line, lines);
-        samples[start..start + len].copy_from_slice(&copy[..len]);
+        samples[start..start + len].copy_from_slice(&copy[..len]); // splot-copy-ok: publish a partial chunk's window
     }
 }
 
@@ -856,8 +856,8 @@ mod avx2 {
             }
             let low = transpose8(token, low);
             let high = transpose8(token, high);
-            v[..8].copy_from_slice(&low);
-            v[8..].copy_from_slice(&high);
+            v[..8].copy_from_slice(&low); // splot-copy-ok: transposed vectors stay in registers
+            v[8..].copy_from_slice(&high); // splot-copy-ok: transposed vectors stay in registers
         }
     );
 

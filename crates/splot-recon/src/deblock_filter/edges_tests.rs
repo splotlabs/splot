@@ -193,8 +193,8 @@ fn check_portable(
         } else {
             first + index * LANES
         };
-        let mut portable = original.to_vec();
-        let mut dispatched = original.to_vec();
+        let mut portable = original.to_vec(); // splot-copy-ok: per-path test copies
+        let mut dispatched = original.to_vec(); // splot-copy-ok: per-path test copies
         if vertical {
             portable_chunk::<_, u16, true>(simd, &mut portable, stride, start, chunk, max_sample);
             u16::chunk::<true>(&mut dispatched, stride, start, chunk, max_sample);

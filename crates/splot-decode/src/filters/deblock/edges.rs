@@ -30,6 +30,9 @@ pub(crate) struct PassEdges {
     first_row: usize,
     /// One cell row's transform edges, 64 cells per word.
     words: Vec<u64>,
+    /// Whether each column (vertical pass) or row (horizontal pass) holds
+    /// an edge to filter.
+    live: Vec<bool>,
 }
 
 /// Where one plane pass's edges sit: its plane geometry and the frame
@@ -160,6 +163,9 @@ impl PassEdges {
                 context: "deblock edge decisions",
             })?;
         self.edges.resize(len, DeblockEdge::NONE);
+        let lines = if PASS == 0 { self.cols } else { self.rows };
+        self.live.clear();
+        self.live.resize(lines, false);
         let strengths = StrengthCache::new(
             plane_pass.quant_delta,
             plane_pass.df_delta_q,
@@ -182,12 +188,13 @@ impl PassEdges {
                     geometry,
                     &strengths,
                 )?;
-                let slot = if PASS == 0 {
-                    col_index * self.rows + row_index
+                let (line, slot) = if PASS == 0 {
+                    (col_index, col_index * self.rows + row_index)
                 } else {
-                    row_index * self.cols + col_index
+                    (row_index, row_index * self.cols + col_index)
                 };
                 self.edges[slot] = edge;
+                self.live[line] |= !edge.is_none();
             }
         }
         Ok(())
@@ -266,12 +273,13 @@ impl PassEdges {
                             limit,
                             &shapes[usize::from(sb_row || tile)],
                         );
-                        let slot = if PASS == 0 {
-                            col * rows + row_index
+                        let (line, slot) = if PASS == 0 {
+                            (col, col * rows + row_index)
                         } else {
-                            row_index * cols + col
+                            (row_index, row_index * cols + col)
                         };
                         self.edges[slot] = edge;
+                        self.live[line] |= !edge.is_none();
                     }
                 }
             }
@@ -302,7 +310,7 @@ impl PassEdges {
         };
         for line in 0..outer {
             let edges = &self.edges[line * inner..(line + 1) * inner];
-            if edges.iter().all(|edge| edge.is_none()) {
+            if !self.live.get(line).copied().unwrap_or(true) {
                 continue;
             }
             let (x_p, y_p) = if PASS == 0 {
