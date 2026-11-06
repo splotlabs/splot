@@ -374,7 +374,7 @@ fn read_inter_residual_luma_chunk(
                 residual_tool_policy,
                 tile_offset,
             )?;
-            luma_tx_types.update(y4, x4, tx_size, coeffs.plane_tx_type)?;
+            luma_tx_types.update(y4, x4, tx_size, coeffs.plane_tx_type())?;
             push_inter_residual_block(blocks, ReconPlaneId::Y, x4, y4, tx_size, coeffs)?;
             x4 = x4.checked_add(tx_w4).ok_or_else(residual_geometry_error)?;
         }
@@ -426,7 +426,12 @@ fn read_inter_residual_luma_records_for_chunk(
             residual_tool_policy,
             tile_offset,
         )?;
-        luma_tx_types.update(record.row, record.col, record.tx_size, coeffs.plane_tx_type)?;
+        luma_tx_types.update(
+            record.row,
+            record.col,
+            record.tx_size,
+            coeffs.plane_tx_type(),
+        )?;
         push_inter_residual_block(
             blocks,
             ReconPlaneId::Y,

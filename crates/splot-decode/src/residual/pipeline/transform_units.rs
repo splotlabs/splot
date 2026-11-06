@@ -43,9 +43,10 @@ impl GeneralIntraResidualPlan {
             .rposition(|&q| q != 0)
             .map_or(0, |last| last + 1);
         let mut coeffs = LumaCoeffBlock {
-            eob,
-            quant_range: 0..nonzero,
-            zero_tail: quant.len() - nonzero,
+            eob: eob as u16,
+            quant_start: 0,
+            quant_len: nonzero as u16,
+            zero_tail: (quant.len() - nonzero) as u16,
             use_tcq,
             intra_ist,
             ..LumaCoeffBlock::empty(plane_tx_type, false)
@@ -85,16 +86,17 @@ impl GeneralIntraResidualPlan {
                 .rposition(|&q| q != 0)
                 .map_or(0, |last| last + 1);
             let mut coeffs = LumaCoeffBlock {
-                eob,
-                quant_range: 0..nonzero,
-                zero_tail: quant.len() - nonzero,
+                eob: eob as u16,
+                quant_start: 0,
+                quant_len: nonzero as u16,
+                zero_tail: (quant.len() - nonzero) as u16,
                 cctx_type,
                 ..LumaCoeffBlock::empty(plane_tx_type, false)
             };
             plane.apply_reconstruction_tx_type(&mut coeffs);
             Ok::<_, GeneralIntraResidualError>((plane, coeffs))
         };
-        let (u_plane, u_coeffs) = block(u, Some(cctx_type))?;
+        let (u_plane, u_coeffs) = block(u, Some(cctx_type as u8))?;
         let (v_plane, v_coeffs) = block(v, None)?;
         super::chroma_pair::reconstruct_chroma_pair_or_planes(
             scratch,

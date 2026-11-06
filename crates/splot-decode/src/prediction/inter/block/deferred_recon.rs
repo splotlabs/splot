@@ -820,7 +820,8 @@ mod tests {
             cctx_pair_delta: 0,
             coeffs: LumaCoeffBlock {
                 eob: 0,
-                quant_range: 0..0,
+                quant_start: 0,
+                quant_len: 0,
                 zero_tail: 0,
                 intra_ist: None,
                 cctx_type: None,
