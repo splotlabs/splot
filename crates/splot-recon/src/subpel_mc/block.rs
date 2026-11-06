@@ -188,7 +188,7 @@ const fn even_tap_span(row: &[i32; NUM_TAPS]) -> (usize, usize) {
 }
 
 /// The [`Taps`] of every nonzero `Subpel_Filters` phase.
-pub(super) const TAPS: [[Option<Taps>; NUM_PHASES]; NUM_FILTER_TYPES] = {
+pub(super) static TAPS: [[Option<Taps>; NUM_PHASES]; NUM_FILTER_TYPES] = {
     let mut table = [[None; NUM_PHASES]; NUM_FILTER_TYPES];
     let mut filter = 0;
     while filter < NUM_FILTER_TYPES {
@@ -233,8 +233,8 @@ pub(super) struct Block<'a, T> {
     pub(super) origin: usize,
     pub(super) w: usize,
     pub(super) h: usize,
-    pub(super) horizontal: Option<Taps>,
-    pub(super) vertical: Option<Taps>,
+    pub(super) horizontal: Option<&'static Taps>,
+    pub(super) vertical: Option<&'static Taps>,
 }
 
 /// Window columns every kernel may read past the window origin of a row.
@@ -310,9 +310,10 @@ fn unscaled_block<T: Sample>(
     let (w, h) = (params.w, params.h);
     let taps = |size: usize, start: i32| {
         TAPS[params.interp.pass_index(size as u32) as usize][((start >> 6) & SUBPEL_MASK) as usize]
+            .as_ref()
     };
     let (horizontal, vertical) = (taps(w, params.start_x), taps(h, params.start_y));
-    let window = |start: i32, size: usize, taps: Option<Taps>| {
+    let window = |start: i32, size: usize, taps: Option<&Taps>| {
         let base = start >> SCALE_SUBPEL_BITS;
         match taps {
             Some(taps) => (base - 3 + taps.start as i32, size + taps.span() - 1),
@@ -360,27 +361,31 @@ fn unscaled_block<T: Sample>(
         ..(params.last_x - column + 1).clamp(0, columns as i32) as usize;
     T::with_storage(rows * stride, |storage| {
         for (r, line) in storage.chunks_exact_mut(stride).enumerate() {
-            let line = &mut line[..columns];
-            let source = view.row((row + r as i32).clamp(params.first_y, params.last_y) as usize);
+            let y = (row + r as i32).clamp(params.first_y, params.last_y) as usize;
+            let source = view.row(y);
             let edge = |x: i32| source[(x as usize).min(source.len() - 1)];
             let (left, right) = (edge(params.first_x), edge(params.last_x));
-            let (before, rest) = line.split_at_mut(inside.start.min(inside.end));
-            let (middle, after) = rest.split_at_mut(inside.end - before.len());
-            before.fill(left);
-            after.fill(right);
-            let start = (column + before.len() as i32) as usize;
-            if let Some(span) = source.get(start..start + middle.len()) {
-                for (slot, span) in middle.chunks_mut(16).zip(span.chunks(16)) {
-                    match (slot.first_chunk_mut::<16>(), span.first_chunk::<16>()) {
-                        (Some(slot), Some(span)) => *slot = *span,
-                        _ => {
-                            for (slot, &sample) in slot.iter_mut().zip(span) {
-                                *slot = sample;
-                            }
+            let (start, end) = (inside.start.min(inside.end), inside.end);
+            let from = y * view.stride + (column + start as i32) as usize;
+            for at in (start..end).step_by(16) {
+                let span = view
+                    .samples
+                    .get(from + at - start..)
+                    .and_then(<[T]>::first_chunk::<16>);
+                match (
+                    line.get_mut(at..).and_then(<[T]>::first_chunk_mut::<16>),
+                    span,
+                ) {
+                    (Some(slot), Some(span)) => *slot = *span,
+                    _ => {
+                        for (offset, slot) in line[at..end.min(at + 16)].iter_mut().enumerate() {
+                            *slot = source[(column + (at + offset) as i32) as usize];
                         }
                     }
                 }
             }
+            line[..start].fill(left);
+            line[end..columns].fill(right);
         }
         run_staged(&Block {
             source: storage,
