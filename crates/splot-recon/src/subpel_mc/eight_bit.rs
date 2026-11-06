@@ -29,9 +29,9 @@ pub(super) fn predict<T: ReconSample>(
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = fearless_simd::Level::baseline().as_avx2()
         && let Some(source) = T::u8_slice(block.source)
-        && (matches!(block.w, 4 | 8) || block.w.is_multiple_of(16))
+        && block.w.is_multiple_of(4)
         && block.h.is_multiple_of(16 / width(block.w))
-        && !(block.w == 4 && block.horizontal.is_some_and(|taps| taps.count > 2))
+        && !(width(block.w) == 4 && block.horizontal.is_some_and(|taps| taps.count > 2))
         && match sink {
             Sink::PutWide { max, .. } => *max == u16::from(u8::MAX),
             Sink::AverageWide { .. } => false,
@@ -57,9 +57,16 @@ pub(super) fn predict<T: ReconSample>(
     false
 }
 
-/// The strip width of a block: whole 4- and 8-wide rows, else 16 columns.
+/// The strip width of a block: 16 columns, else strips of 8 columns in
+/// pairs of rows, else strips of 4 in quads of rows.
 const fn width(w: usize) -> usize {
-    if w <= 8 { w } else { 16 }
+    if w.is_multiple_of(16) {
+        16
+    } else if w.is_multiple_of(8) {
+        8
+    } else {
+        4
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -377,19 +384,21 @@ mod avx2 {
         });
         let source = block.source;
         let rows = block.h + 2 * P - 1;
-        if W < 16 {
-            for (row, slot) in stage.chunks_exact_mut(W / 2).take(rows).enumerate() {
-                let Some(bytes) = source.get(block.start(row)..).and_then(|row| row.get(..W))
-                else {
-                    return;
-                };
-                for (slot, pair) in slot.iter_mut().zip(bytes.chunks_exact(2)) {
-                    *slot = i16::from_le_bytes([pair[0], pair[1]]);
-                }
-            }
-        }
         let zero = [0i16; 8];
         for strip in 0..block.w / W {
+            if W < 16 {
+                for (row, slot) in stage.chunks_exact_mut(W / 2).take(rows).enumerate() {
+                    let Some(bytes) = source
+                        .get(block.start(row) + strip * W..)
+                        .and_then(|row| row.get(..W))
+                    else {
+                        return;
+                    };
+                    for (slot, pair) in slot.iter_mut().zip(bytes.chunks_exact(2)) {
+                        *slot = i16::from_le_bytes([pair[0], pair[1]]);
+                    }
+                }
+            }
             let line = |row: usize| -> __m256i {
                 let lanes = if W < 16 {
                     i16x8::load_array_ref(t, chunk::<8, i16>(stage, row * W / 2).unwrap_or(&zero))
