@@ -15,8 +15,8 @@ use splot_recon::{
 use super::grid::{CellFacts, MiGrid};
 use super::{
     DeblockError, EdgeContext, GATHER_HALF, MAX_WIDTHS, MI_SIZE, PerpLine, PlaneCtx, PlanePass,
-    SB_SIZE, StrengthCache, apply_edge_samples, choose_filter_width, combine_strengths,
-    edge_blocks, edge_decision, starts_tile,
+    SB_SIZE, StrengthCache, apply_edge_samples, choose_filter_width, edge_blocks, edge_decision,
+    starts_tile,
 };
 
 /// The edges of one plane pass over the mode-info rows it owes, by plane
@@ -28,6 +28,150 @@ pub(crate) struct PassEdges {
     rows: usize,
     cols: usize,
     first_row: usize,
+    /// The previous and current cell rows of a pass without sub-PU edges.
+    sides: [SideRow; 2],
+    /// One row of vertical-pass edges before they go to their columns.
+    line: Vec<DeblockEdge>,
+}
+
+/// One cell row's [`CellFacts`] across one pass, with the cells'
+/// strengths, laid out field by field.
+#[derive(Default)]
+struct SideRow {
+    tx_base: Vec<u32>,
+    /// The prediction unit's origin across the pass, in plane samples.
+    origin: Vec<u16>,
+    /// The transform size across the pass.
+    size: Vec<u8>,
+    flags: Vec<u8>,
+    q_thr: Vec<u16>,
+    side: Vec<u16>,
+}
+
+/// One cell of a [`SideRow`].
+#[derive(Clone, Copy)]
+struct Side {
+    tx_base: u32,
+    origin: u16,
+    size: u8,
+    flags: u8,
+    q_thr: u16,
+    side: u16,
+}
+
+impl SideRow {
+    /// Lays `facts` out across pass `PASS`, failing on an uncovered cell.
+    fn load<const PASS: usize>(
+        &mut self,
+        facts: &[CellFacts],
+        strength: &mut impl FnMut(u16) -> (i32, i32),
+    ) -> Result<(), DeblockError> {
+        self.tx_base.clear();
+        self.origin.clear();
+        self.size.clear();
+        self.flags.clear();
+        self.q_thr.clear();
+        self.side.clear();
+        let mut covered = CellFacts::COVERED;
+        for facts in facts {
+            let (q_thr, side) = strength(facts.qindex);
+            self.tx_base.push(facts.tx_base);
+            self.origin.push(facts.prediction[PASS]);
+            self.size.push(facts.tx_size[PASS]);
+            self.flags.push(facts.flags);
+            self.q_thr.push(q_thr.clamp(0, i32::from(u16::MAX)) as u16);
+            self.side.push(side.clamp(0, i32::from(u16::MAX)) as u16);
+            covered &= facts.flags;
+        }
+        if covered == 0 {
+            let col = facts
+                .iter()
+                .position(|facts| facts.flags & CellFacts::COVERED == 0)
+                .unwrap_or(0);
+            return Err(DeblockError::UncoveredMi { row: 0, col });
+        }
+        Ok(())
+    }
+
+    fn side(&self, col: usize) -> Side {
+        Side {
+            tx_base: self.tx_base[col],
+            origin: self.origin[col],
+            size: self.size[col],
+            flags: self.flags[col],
+            q_thr: self.q_thr[col],
+            side: self.side[col],
+        }
+    }
+}
+
+/// [`deblock_filter_max_width`](splot_recon::deblock_filter_max_width) as
+/// edge shapes, by chroma plane, super-block edge and filter size.
+const SHAPES: [[[DeblockEdge; 65]; 2]; 2] = {
+    let mut table = [[[DeblockEdge::NONE; 65]; 2]; 2];
+    let mut entry = 0;
+    while entry < 4 * 65 {
+        let (chroma, sb_edge, size) = (entry / 130, entry / 65 % 2, entry % 65);
+        let (neg, pos) = MAX_WIDTHS[chroma][sb_edge][size];
+        if let Some(edge) = DeblockEdge::new(1, 1, neg as usize, pos as usize, false, false) {
+            table[chroma][sb_edge][size] = edge;
+        }
+        entry += 1;
+    }
+    table
+};
+
+/// The § 7.17.2 decision of the edge between `prev` and `curr` at plane
+/// sample position `at` across it: filtered when it is a transform edge, the
+/// current side is coded or starts its prediction unit, and either side's
+/// strengths are both nonzero.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[allow(clippy::needless_bitwise_bool, reason = "branch-free edge decisions")]
+#[inline(always)]
+fn decide(curr: Side, prev: Side, at: usize, limit: u8, shapes: &[DeblockEdge; 65]) -> DeblockEdge {
+    let coded = (usize::from(curr.origin) == at) | (curr.flags & CellFacts::SKIP == 0);
+    let strong = |side: Side| (side.q_thr != 0) & (side.side != 0);
+    let apply = (curr.tx_base != prev.tx_base) & coded & (strong(curr) | strong(prev));
+    let size = curr.size.min(prev.size).min(limit).min(64);
+    let mean = |a: u16, b: u16| {
+        if (a != 0) & (b != 0) {
+            ((u32::from(a) + u32::from(b) + 1) >> 1) as u16
+        } else {
+            a.max(b)
+        }
+    };
+    let edge = shapes[usize::from(size)]
+        .with_lossless(
+            prev.flags & CellFacts::LOSSLESS != 0,
+            curr.flags & CellFacts::LOSSLESS != 0,
+        )
+        .with_thresholds(mean(curr.q_thr, prev.q_thr), mean(curr.side, prev.side));
+    core::hint::select_unpredictable(apply, edge, DeblockEdge::NONE)
+}
+
+/// Decides every edge of one cell row into `out`: between horizontal
+/// neighbours of `curr` (vertical pass, `prev` absent) from column 1 on, or
+/// between `curr` and the row `prev` above it, at plane row `y_p`.
+fn decide_row(
+    curr: &SideRow,
+    prev: Option<(&SideRow, usize)>,
+    limit: u8,
+    shapes: &[DeblockEdge; 65],
+    out: &mut [DeblockEdge],
+) {
+    match prev {
+        Some((prev, y_p)) => {
+            for (col, out) in out.iter_mut().enumerate() {
+                *out = decide(curr.side(col), prev.side(col), y_p, limit, shapes);
+            }
+        }
+        None => {
+            for (col, out) in out.iter_mut().enumerate().skip(1) {
+                let at = col * MI_SIZE;
+                *out = decide(curr.side(col), curr.side(col - 1), at, limit, shapes);
+            }
+        }
+    }
 }
 
 /// Where one plane pass's edges sit: its plane geometry and the frame
@@ -123,8 +267,10 @@ impl PassEdges {
 
     /// [`Self::build_specialized`] for a frame without sub-PU edges, where an
     /// edge's decision reads only the [`CellFacts`] of its two sides, which
-    /// the grid resolved once per cell.
-    #[allow(clippy::needless_bitwise_bool, reason = "branch-free edge decisions")]
+    /// the grid resolved once per cell. Each row of cells is first laid out
+    /// as one [`SideRow`], and every edge of the row then decides without a
+    /// branch; the few edges at a tile start or near the plane's far edge,
+    /// whose widths their position changes, decide again on their own.
     fn build_without_sub_pu<const PLANE: usize, const PASS: usize>(
         &mut self,
         grid: &MiGrid<'_>,
@@ -136,7 +282,9 @@ impl PassEdges {
         let sub_x = plane_pass.plane_sub_x;
         let (rows, cols) = (self.rows, self.cols);
         let reach = if PLANE == 0 { 16 } else { 8 };
-        let chroma = usize::from(PLANE != 0);
+        let shapes = &SHAPES[usize::from(PLANE != 0)];
+        let mut sides = core::mem::take(&mut self.sides);
+        let mut line = core::mem::take(&mut self.line);
         let mut last = (u16::MAX, (0, 0));
         let mut strength = |qindex: u16| {
             if qindex != last.0 {
@@ -144,73 +292,77 @@ impl PassEdges {
             }
             last.1
         };
-        for row_index in 0..rows {
-            let cell_row = self.first_row + row_index;
-            let r = first + row_index * plane_pass.row_step;
-            let y_p = cell_row * MI_SIZE;
-            let uncovered = |col| DeblockError::UncoveredMi { row: r, col };
-            let curr = grid.facts_row(cell_row).ok_or_else(|| uncovered(0))?;
-            let prev = if PASS == 1 {
-                grid.facts_row(cell_row - 1).ok_or_else(|| uncovered(0))?
-            } else {
-                curr
-            };
-            if curr.len() < cols || prev.len() < cols {
-                return Err(uncovered(0));
+        let mut load = |side: &mut SideRow, row: usize| {
+            let facts = grid
+                .facts_row(row)
+                .filter(|facts| facts.len() >= cols)
+                .ok_or(DeblockError::UncoveredMi { row, col: 0 })?;
+            side.load::<PASS>(&facts[..cols], &mut strength)
+        };
+        let result = (|| {
+            if PASS == 1 {
+                load(&mut sides[0], self.first_row - 1)?;
             }
-            let row_tile_edge = PASS == 1 && starts_tile(geometry.tile_starts, r);
-            if PASS == 1 && geometry.disable_loopfilters_across_tiles && row_tile_edge {
-                continue;
-            }
-            let row_clamped = PASS == 1 && y_p + reach > geometry.height;
-            let row_sb_edge = PASS == 1 && (r * MI_SIZE).is_multiple_of(SB_SIZE);
-            for col_index in usize::from(PASS == 0)..cols {
-                let (a, b) = if PASS == 0 {
-                    (curr[col_index], curr[col_index - 1])
+            for row_index in 0..rows {
+                let cell_row = self.first_row + row_index;
+                let r = first + row_index * plane_pass.row_step;
+                let y_p = cell_row * MI_SIZE;
+                let (prev, curr) = sides.split_at_mut(1);
+                let (prev, curr) = (&mut prev[0], &mut curr[0]);
+                load(curr, cell_row)?;
+                let tile_row = PASS == 1 && starts_tile(geometry.tile_starts, r);
+                let sb_row = PASS == 1 && (r * MI_SIZE).is_multiple_of(SB_SIZE);
+                let limit = if PASS == 1 && y_p + reach > geometry.height {
+                    reach as u8
                 } else {
-                    (curr[col_index], prev[col_index])
+                    64
                 };
-                if (a.flags & b.flags & CellFacts::COVERED) == 0 {
-                    return Err(uncovered(col_index << sub_x));
+                let shapes = &shapes[usize::from(sb_row)];
+                if PASS == 1 {
+                    let out = &mut self.edges[row_index * cols..(row_index + 1) * cols];
+                    decide_row(curr, Some((&*prev, y_p)), limit, shapes, out);
+                    if geometry.disable_loopfilters_across_tiles && tile_row {
+                        out.fill(DeblockEdge::NONE);
+                    }
+                } else {
+                    line.clear();
+                    line.resize(cols, DeblockEdge::NONE);
+                    decide_row(curr, None, limit, shapes, &mut line);
+                    let tail = geometry
+                        .width
+                        .checked_sub(reach)
+                        .map_or(0, |width| width / MI_SIZE + 1)
+                        .max(1)
+                        .min(cols);
+                    let tiles = geometry.tile_starts.unwrap_or_default().iter();
+                    let tile_cols = tiles.map(|&col| col as usize >> sub_x);
+                    for col in tile_cols.chain(tail..cols) {
+                        if col == 0 || col >= cols {
+                            continue;
+                        }
+                        let tile = starts_tile(geometry.tile_starts, col << sub_x);
+                        let near = col * MI_SIZE + reach > geometry.width;
+                        let limit = if near { reach as u8 } else { 64 };
+                        let shapes = &SHAPES[usize::from(PLANE != 0)][usize::from(tile)];
+                        let at = col * MI_SIZE;
+                        let edge = decide(curr.side(col), curr.side(col - 1), at, limit, shapes);
+                        line[col] = if tile && geometry.disable_loopfilters_across_tiles {
+                            DeblockEdge::NONE
+                        } else {
+                            edge
+                        };
+                    }
+                    for (col, &edge) in line.iter().enumerate() {
+                        self.edges[col * rows + row_index] = edge;
+                    }
                 }
-                let x_p = col_index * MI_SIZE;
-                let block_edge = if PASS == 0 {
-                    usize::from(a.prediction[0]) == x_p
-                } else {
-                    usize::from(a.prediction[1]) == y_p
-                };
-                let (a_q, a_side) = strength(a.qindex);
-                let (b_q, b_side) = strength(b.qindex);
-                let tile_edge = row_tile_edge
-                    || PASS == 0 && starts_tile(geometry.tile_starts, col_index << sub_x);
-                let apply = (a.tx_base != b.tx_base)
-                    & (block_edge | (a.flags & CellFacts::SKIP == 0))
-                    & ((a_q != 0) & (a_side != 0) | (b_q != 0) & (b_side != 0))
-                    & !(geometry.disable_loopfilters_across_tiles & tile_edge);
-                let clamped = row_clamped | (PASS == 0) & (x_p + reach > geometry.width);
-                let limit = if clamped { reach } else { 64 };
-                let filter_size = usize::from(a.tx_size[PASS].min(b.tx_size[PASS])).min(limit);
-                let sb_edge = usize::from(row_sb_edge | (PASS == 0) & tile_edge);
-                let (max_width_neg, max_width_pos) = MAX_WIDTHS[chroma][sb_edge][filter_size];
-                let (q_thr, side) = combine_strengths(a_q, b_q, a_side, b_side);
-                let slot = if PASS == 0 {
-                    col_index * rows + row_index
-                } else {
-                    row_index * cols + col_index
-                };
-                let edge = DeblockEdge::new(
-                    q_thr,
-                    side,
-                    max_width_neg.into(),
-                    max_width_pos.into(),
-                    b.flags & CellFacts::LOSSLESS != 0,
-                    a.flags & CellFacts::LOSSLESS != 0,
-                )
-                .ok_or(DeblockError::SampleFilter)?;
-                self.edges[slot] = core::hint::select_unpredictable(apply, edge, DeblockEdge::NONE);
+                core::mem::swap(prev, curr);
             }
-        }
-        Ok(())
+            Ok(())
+        })();
+        self.sides = sides;
+        self.line = line;
+        result
     }
 
     /// Filters every decided edge: whole columns or rows through the batched
