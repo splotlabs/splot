@@ -5,9 +5,10 @@
 //! tell screen content from camera content, and the nearest palette color of
 //! each sample.
 
-use std::simd::cmp::{SimdOrd as _, SimdPartialEq as _, SimdPartialOrd as _};
-use std::simd::num::SimdUint as _;
-use std::simd::{Select as _, Simd};
+use fearless_simd::{
+    Level, Select as _, Simd, SimdBase as _, SimdMask as _, SimdNarrow as _, SimdSplit as _,
+    dispatch, u16x8, u16x16,
+};
 
 /// The most distinct values [`colours_simd`] tracks.
 pub(crate) const MAX_COLOURS: usize = 16;
@@ -34,30 +35,34 @@ pub(crate) fn colours_scalar(block: &[u16], limit: usize) -> (usize, u16) {
 /// [`colours_scalar`] with the range in eight lanes and the distinct values
 /// in one vector compare per sample.
 pub(crate) fn colours_simd(block: &[u16], limit: usize) -> (usize, u16) {
+    dispatch!(Level::baseline(), simd => colours_kernel(simd, block, limit))
+}
+
+#[inline]
+fn colours_kernel<S: Simd>(simd: S, block: &[u16], limit: usize) -> (usize, u16) {
     let Some(&first) = block.first() else {
         return (0, 0);
     };
     let limit = limit.min(MAX_COLOURS - 1);
-    let (mut low, mut high) = (Simd::<u16, LANES>::splat(first), Simd::splat(first));
-    let chunks = block.chunks_exact(LANES);
-    let tail = chunks.remainder();
+    let (mut low, mut high) = (u16x8::splat(simd, first), u16x8::splat(simd, first));
+    let (chunks, tail) = block.as_chunks::<LANES>();
     for chunk in chunks {
-        let v = Simd::from_slice(chunk);
-        low = low.simd_min(v);
-        high = high.simd_max(v);
+        let v = u16x8::load_array_ref(simd, chunk);
+        low = low.min(v);
+        high = high.max(v);
     }
     let (mut low, mut high) = (low.reduce_min(), high.reduce_max());
     for &sample in tail {
         low = low.min(sample);
         high = high.max(sample);
     }
-    let mut palette = Simd::<u16, MAX_COLOURS>::splat(first);
+    let mut palette = u16x16::splat(simd, first);
     let mut count = 1;
     for &sample in &block[1..] {
         if count > limit {
             break;
         }
-        if !palette.simd_eq(Simd::splat(sample)).any() {
+        if !palette.simd_eq(sample).any_true() {
             palette[count] = sample;
             count += 1;
         }
@@ -83,6 +88,11 @@ pub(crate) fn nearest_scalar(samples: &[u16], colors: &[u16], out: &mut [u8]) {
 
 /// [`nearest_scalar`] over sixteen samples per step.
 pub(crate) fn nearest_simd(samples: &[u16], colors: &[u16], out: &mut [u8]) {
+    dispatch!(Level::baseline(), simd => nearest_kernel(simd, samples, colors, out));
+}
+
+#[inline]
+fn nearest_kernel<S: Simd>(simd: S, samples: &[u16], colors: &[u16], out: &mut [u8]) {
     const WIDE: usize = 16;
     let Some((&first, rest)) = colors.split_first() else {
         out.iter_mut()
@@ -94,20 +104,18 @@ pub(crate) fn nearest_simd(samples: &[u16], colors: &[u16], out: &mut [u8]) {
     let tail = chunks.remainder();
     let mut outs = out.chunks_exact_mut(WIDE);
     for (chunk, out) in chunks.zip(&mut outs) {
-        let v = Simd::<u16, WIDE>::from_slice(chunk);
-        let distance = |color: u16| {
-            let color = Simd::splat(color);
-            v.simd_max(color) - v.simd_min(color)
-        };
+        let v = u16x16::from_slice(simd, chunk);
+        let distance = |color: u16| v.max(color) - v.min(color);
         let mut best = distance(first);
-        let mut index = Simd::<u8, WIDE>::splat(0);
+        let mut index = u16x16::splat(simd, 0);
         for (i, &color) in rest.iter().enumerate() {
             let d = distance(color);
             let closer = d.simd_lt(best);
             best = closer.select(d, best);
-            index = closer.cast::<i8>().select(Simd::splat(i as u8 + 1), index);
+            index = closer.select(u16x16::splat(simd, u16::from(i as u8 + 1)), index);
         }
-        index.copy_to_slice(out);
+        let (lo, hi) = index.split();
+        lo.narrow(hi).store_slice(out);
     }
     let done = samples.len() - tail.len();
     for (&sample, out) in tail.iter().zip(&mut out[done..]) {
