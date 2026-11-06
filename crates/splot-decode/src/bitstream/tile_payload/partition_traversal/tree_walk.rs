@@ -126,6 +126,11 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         self.y_modes.window_violated()
     }
 
+    /// Whether the next superblock starts a new superblock row.
+    pub(crate) const fn at_row_start(&self) -> bool {
+        self.next_sb_col == self.tile_bounds.mi_col_start
+    }
+
     /// The superblock mask the walk publishes its leaves under.
     pub(crate) const fn sb_mask(&self) -> usize {
         self.sb_mask
@@ -931,11 +936,22 @@ mod row_cursor_tests {
                 .with_tree_type(PartitionTreeType::LumaPart)
                 .with_intra_region(true);
         let sub_size = valid_subsize(PartitionType::Horz, luma_call.b_size).unwrap();
-        let children = child_calls(luma_call, PartitionType::Horz, sub_size, frame, false).unwrap();
+        let children =
+            super::super::child_calls(luma_call, PartitionType::Horz, sub_size, frame, false)
+                .unwrap();
         let chroma_call = extended_sdp_chroma_call(luma_call);
         let mut stack = Vec::new();
 
-        schedule_partition_children(&mut stack, children.as_slice(), Some(chroma_call)).unwrap();
+        schedule_partition_children(
+            &mut stack,
+            luma_call,
+            PartitionType::Horz,
+            sub_size,
+            frame,
+            false,
+            Some(chroma_call),
+        )
+        .unwrap();
 
         let first = stack.pop().unwrap();
         let second = stack.pop().unwrap();
