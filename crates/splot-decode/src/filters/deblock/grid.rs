@@ -23,12 +23,11 @@ pub(super) struct ChromaMiCell {
 }
 
 /// What one plane 4x4 cell's records give the § 7.17.2 decisions of the
-/// edges it is a side of: its transform block's base and size, its
-/// prediction unit's plane origin, and its skip, lossless and `qindex`.
+/// edges it is a side of: its transform block's size, its prediction unit's
+/// plane origin, and its skip, lossless and `qindex`. The transform base
+/// sits apart in its grid's `bases`, so that rows compare as vectors.
 #[derive(Clone, Copy, Default, Eq, PartialEq)]
 pub(super) struct CellFacts {
-    /// Transform base mode-info row and column, packed `row << 16 | col`.
-    pub(super) tx_base: u32,
     /// Prediction unit origin in plane samples, `x` then `y`.
     pub(super) prediction: [u16; 2],
     /// `Tx_Width` then `Tx_Height` of the transform.
@@ -40,29 +39,33 @@ pub(super) struct CellFacts {
 impl CellFacts {
     pub(super) const SKIP: u8 = 1;
     pub(super) const LOSSLESS: u8 = 2;
-    pub(super) const COVERED: u8 = 4;
 
-    /// The facts `cell` gives plane `plane` with subsampling (`sub_x`, `sub_y`).
-    fn of(cell: EdgeBlock<'_>, plane: usize, (sub_x, sub_y): (usize, usize)) -> Self {
+    /// The transform base and facts `cell` gives plane `plane` with
+    /// subsampling (`sub_x`, `sub_y`); the base packs mode-info row and column
+    /// as `row << 16 | col`.
+    fn of(cell: EdgeBlock<'_>, plane: usize, (sub_x, sub_y): (usize, usize)) -> (u32, Self) {
         let (tx_row, tx_col) = cell.tx_base(plane);
         let prediction = cell.prediction(plane);
         let tx = cell.tx(plane);
         let dimension = |table: &[i32]| table.get(tx).map_or(0, |&size| size.clamp(0, 255) as u8);
         let block = cell.block;
-        Self {
-            tx_base: (tx_row as u32) << 16 | (tx_col as u32 & 0xffff),
+        let base = (tx_row as u32) << 16 | (tx_col as u32 & 0xffff);
+        let facts = Self {
             prediction: [
                 ((prediction.base_c as usize * MI_SIZE) >> sub_x) as u16,
                 ((prediction.base_r as usize * MI_SIZE) >> sub_y) as u16,
             ],
             tx_size: [dimension(&TX_WIDTH), dimension(&TX_HEIGHT)],
             qindex: block.qindex.min(u32::from(u16::MAX)) as u16,
-            flags: Self::COVERED
-                | if block.skip { Self::SKIP } else { 0 }
+            flags: if block.skip { Self::SKIP } else { 0 }
                 | if block.lossless { Self::LOSSLESS } else { 0 },
-        }
+        };
+        (base.min(UNCOVERED - 1), facts)
     }
 }
+
+/// The transform base of a cell no record covers.
+pub(super) const UNCOVERED: u32 = u32::MAX;
 
 /// The record a cell value names; an empty cell names none.
 const fn record(cell: u32) -> usize {
@@ -77,6 +80,8 @@ pub(super) struct MiGridStorage {
     pub(super) cells: Vec<MiCell>,
     /// The luma [`CellFacts`] of every cell.
     pub(super) facts: Vec<CellFacts>,
+    /// The luma transform base of every cell, [`UNCOVERED`] when none.
+    pub(super) bases: Vec<u32>,
 }
 
 pub(super) struct ChromaMiGridStorage {
@@ -86,6 +91,8 @@ pub(super) struct ChromaMiGridStorage {
     pub(super) cells: Vec<ChromaMiCell>,
     /// The chroma [`CellFacts`] of every cell.
     pub(super) facts: Vec<CellFacts>,
+    /// The chroma transform base of every cell.
+    pub(super) bases: Vec<u32>,
     pub(super) cell_cols: usize,
     pub(super) window: Window,
     pub(super) sub_x: usize,
@@ -168,23 +175,27 @@ impl MiGrid<'_> {
         })
     }
 
-    /// The [`CellFacts`] of plane cell row `row`: luma cells, or chroma cells
-    /// when the grid has a chroma overlay. `None` outside the window.
-    pub(super) fn facts_row(&self, row: usize) -> Option<&[CellFacts]> {
-        let (facts, cols, first) = match self.chroma {
+    /// The transform bases and [`CellFacts`] of plane cell row `row`: luma
+    /// cells, or chroma cells when the grid has a chroma overlay. `None`
+    /// outside the window.
+    pub(super) fn facts_row(&self, row: usize) -> Option<(&[u32], &[CellFacts])> {
+        let (bases, facts, cols, first) = match self.chroma {
             Some(grid) => (
+                &grid.bases,
                 &grid.facts,
                 grid.cell_cols,
                 grid.window.row_base >> grid.sub_y,
             ),
             None => (
+                &self.base.bases,
                 &self.base.facts,
                 self.base.mi_cols,
                 self.base.window.row_base,
             ),
         };
         let start = row.checked_sub(first)?.checked_mul(cols)?;
-        facts.get(start..start.checked_add(cols)?)
+        let end = start.checked_add(cols)?;
+        Some((bases.get(start..end)?, facts.get(start..end)?))
     }
 }
 
@@ -224,14 +235,17 @@ pub(crate) struct RowOrder {
     /// `ends[row]` is the end of bucket `row` in `entries`; the last bucket
     /// holds every record starting at or past the frame bottom.
     ends: Vec<u32>,
-    entries: Vec<u32>,
+    /// Record index, then its end row past its last mode-info row shifted
+    /// over its two plane bits, so that a scan skips records without
+    /// reading them.
+    entries: Vec<[u32; 2]>,
     tallest: usize,
 }
 
 impl RowOrder {
     pub(super) fn sort<'a>(
         &mut self,
-        blocks: impl ExactSizeIterator<Item = &'a DeblockBlock> + Clone,
+        blocks: impl ExactSizeIterator<Item = (&'a DeblockBlock, u8)> + Clone,
         mi_rows: usize,
     ) -> Result<(), DeblockError> {
         let allocation = |_| DeblockError::Allocation {
@@ -246,21 +260,23 @@ impl RowOrder {
         self.ends.resize(mi_rows + 2, 0);
         self.entries.clear();
         self.entries.try_reserve(blocks.len()).map_err(allocation)?;
-        self.entries.resize(blocks.len(), 0);
+        self.entries.resize(blocks.len(), [0; 2]);
         self.tallest = 0;
-        for block in blocks.clone() {
+        for (block, _) in blocks.clone() {
             self.ends[bucket(block) + 1] += 1;
             self.tallest = self.tallest.max(block.n4h as usize);
         }
         for row in 1..self.ends.len() {
             self.ends[row] += self.ends[row - 1];
         }
-        for (index, block) in blocks.enumerate() {
+        for (index, (block, planes)) in blocks.enumerate() {
             let slot = &mut self.ends[bucket(block)];
+            let end = block.r.saturating_add(block.n4h).min(u32::MAX >> 2);
             *self
                 .entries
                 .get_mut(*slot as usize)
-                .ok_or(DeblockError::Workspace)? = mi_block_index(index)?;
+                .ok_or(DeblockError::Workspace)? =
+                [mi_block_index(index)?, end << 2 | u32::from(planes)];
             *slot += 1;
         }
         Ok(())
@@ -268,7 +284,7 @@ impl RowOrder {
 
     /// Records whose rows, or whose bottom edge, fall in `rows`, in no
     /// particular order.
-    fn reaching(&self, rows: &Range<usize>) -> &[u32] {
+    fn reaching(&self, rows: &Range<usize>) -> &[[u32; 2]] {
         let begin = |row: usize| match row.checked_sub(1) {
             Some(previous) => self
                 .ends
@@ -295,18 +311,22 @@ impl RowOrder {
 pub(crate) struct DeblockGridStorage {
     pub(super) cells: Vec<MiCell>,
     pub(super) facts: Vec<CellFacts>,
-    pub(super) chroma: [(Vec<ChromaMiCell>, Vec<CellFacts>); 2],
+    pub(super) bases: Vec<u32>,
+    pub(super) chroma: [ChromaGridVecs; 2],
     pub(super) order: [RowOrder; 2],
 }
 
+/// One chroma plane's grid vectors: cells, facts and transform bases.
+pub(super) type ChromaGridVecs = (Vec<ChromaMiCell>, Vec<CellFacts>, Vec<u32>);
+
 /// Drops `dropped` rows of `row_len` cells off the front (all on `None`) and
-/// appends `rows` default rows.
-fn slide_cells<T: Clone + Default>(
+/// appends `rows` rows of `fill`.
+fn slide_cells<T: Clone>(
     cells: &mut Vec<T>,
     dropped: Option<usize>,
     row_len: usize,
     rows: usize,
-    plane: splot_recon::PlaneId,
+    (plane, fill): (splot_recon::PlaneId, T),
 ) -> Result<(), DeblockError> {
     match dropped {
         Some(dropped) => drop(cells.drain(..(dropped * row_len).min(cells.len()))),
@@ -319,7 +339,7 @@ fn slide_cells<T: Clone + Default>(
             plane,
             context: "deblock MI grid",
         })?;
-    cells.resize(cells.len() + count, T::default());
+    cells.resize(cells.len() + count, fill);
     Ok(())
 }
 
@@ -336,6 +356,7 @@ impl MiGridStorage {
             window: Window::default(),
             cells: core::mem::take(&mut storage.cells),
             facts: core::mem::take(&mut storage.facts),
+            bases: core::mem::take(&mut storage.bases),
         }
     }
 
@@ -352,31 +373,47 @@ impl MiGridStorage {
             return Ok(());
         };
         let plane = splot_recon::PlaneId::Y;
-        slide_cells(&mut self.cells, dropped, self.mi_cols, new.len(), plane)?;
-        slide_cells(&mut self.facts, dropped, self.mi_cols, new.len(), plane)?;
+        let (cols, rows) = (self.mi_cols, new.len());
+        slide_cells(
+            &mut self.cells,
+            dropped,
+            cols,
+            rows,
+            (plane, MiCell::default()),
+        )?;
+        slide_cells(
+            &mut self.facts,
+            dropped,
+            cols,
+            rows,
+            (plane, CellFacts::default()),
+        )?;
+        slide_cells(&mut self.bases, dropped, cols, rows, (plane, UNCOVERED))?;
         let base = self.window.row_base;
-        for &index in order.reaching(&new) {
-            let block = blocks.get(index as usize).ok_or(DeblockError::Workspace)?;
-            if ends_above(block, new.start) {
+        for &[index, end] in order.reaching(&new) {
+            if ends_above(end, new.start) {
                 continue;
             }
+            let block = blocks.get(index as usize).ok_or(DeblockError::Workspace)?;
             let edge = EdgeBlock {
                 block,
                 chroma_transform: None,
             };
-            let facts = CellFacts::of(edge, 0, (0, 0));
+            let (tx_base, facts) = CellFacts::of(edge, 0, (0, 0));
             for (start, end) in block_row_spans(block, mi_rows, self.mi_cols, &new, base) {
-                let (Some(cells), Some(cell_facts)) = (
+                let (Some(cells), Some(cell_facts), Some(bases)) = (
                     self.cells.get_mut(start..end),
                     self.facts.get_mut(start..end),
+                    self.bases.get_mut(start..end),
                 ) else {
                     continue;
                 };
-                for (cell, cell_facts) in cells.iter_mut().zip(cell_facts) {
+                for ((cell, cell_facts), cell_base) in cells.iter_mut().zip(cell_facts).zip(bases) {
                     let later = later(cell.base, index);
                     if later != cell.base {
                         cell.base = later;
                         *cell_facts = facts;
+                        *cell_base = tx_base;
                     }
                 }
             }
@@ -389,11 +426,12 @@ impl ChromaMiGridStorage {
     pub(super) fn new(
         mi_cols: usize,
         (sub_x, sub_y): (usize, usize),
-        storage: &mut (Vec<ChromaMiCell>, Vec<CellFacts>),
+        storage: &mut ChromaGridVecs,
     ) -> Self {
         Self {
             cells: core::mem::take(&mut storage.0),
             facts: core::mem::take(&mut storage.1),
+            bases: core::mem::take(&mut storage.2),
             cell_cols: mi_cols.div_ceil(1 << sub_x),
             window: Window::default(),
             sub_x,
@@ -427,28 +465,29 @@ impl ChromaMiGridStorage {
         let (mi_cols, sub_x, sub_y) = (base.mi_cols, self.sub_x, self.sub_y);
         let row_base = self.window.row_base;
         let cell_rows = (new.start >> sub_y)..new.end.div_ceil(1 << sub_y);
-        slide_cells(
-            &mut self.cells,
+        let (dropped, cols, rows) = (
             dropped.map(|rows| rows >> sub_y),
             self.cell_cols,
             cell_rows.len(),
-            plane_id,
-        )?;
+        );
+        let fill = (plane_id, ChromaMiCell::default());
+        slide_cells(&mut self.cells, dropped, cols, rows, fill)?;
         slide_cells(
             &mut self.facts,
-            dropped.map(|rows| rows >> sub_y),
-            self.cell_cols,
-            cell_rows.len(),
-            plane_id,
+            dropped,
+            cols,
+            rows,
+            (plane_id, CellFacts::default()),
         )?;
-        for &index in order.reaching(&new) {
+        slide_cells(&mut self.bases, dropped, cols, rows, (plane_id, UNCOVERED))?;
+        for &[index, end] in order.reaching(&new) {
+            if end & u32::from(mask) == 0 || ends_above(end, new.start) {
+                continue;
+            }
             let record = records
                 .blocks
                 .get(index as usize)
                 .ok_or(DeblockError::Workspace)?;
-            if record.planes & mask == 0 || ends_above(&record.block, new.start) {
-                continue;
-            }
             let block = &record.block;
             let spans = block_chroma_spans(
                 block,
@@ -487,19 +526,24 @@ impl ChromaMiGridStorage {
     ) -> Result<(), DeblockError> {
         let (sub_x, sub_y, cols) = (self.sub_x, self.sub_y, self.cell_cols);
         let first = self.window.row_base >> sub_y;
-        let mut last = ((NO_BLOCK, NO_BLOCK, NO_BLOCK), CellFacts::default());
+        let mut last = (
+            (NO_BLOCK, NO_BLOCK, NO_BLOCK),
+            (UNCOVERED, CellFacts::default()),
+        );
         for row in cell_rows.clone() {
             let luma_row = (row << sub_y)
                 .checked_sub(base.window.row_base)
                 .ok_or(DeblockError::Workspace)?;
             let at = (row - first) * cols;
-            let (Some(cells), Some(facts)) = (
+            let (Some(cells), Some(facts), Some(bases)) = (
                 self.cells.get(at..at + cols),
                 self.facts.get_mut(at..at + cols),
+                self.bases.get_mut(at..at + cols),
             ) else {
                 return Err(DeblockError::Workspace);
             };
-            for (col, (cell, facts)) in cells.iter().zip(facts).enumerate() {
+            for (col, ((cell, facts), cell_base)) in cells.iter().zip(facts).zip(bases).enumerate()
+            {
                 let luma = base
                     .cells
                     .get(luma_row * base.mi_cols + (col << sub_x))
@@ -516,7 +560,7 @@ impl ChromaMiGridStorage {
                     } else {
                         None
                     };
-                    let facts = block.map_or_else(CellFacts::default, |block| {
+                    let facts = block.map_or((UNCOVERED, CellFacts::default()), |block| {
                         let edge = EdgeBlock {
                             block,
                             chroma_transform,
@@ -525,7 +569,7 @@ impl ChromaMiGridStorage {
                     });
                     last = (key, facts);
                 }
-                *facts = last.1;
+                (*cell_base, *facts) = last.1;
             }
         }
         Ok(())
@@ -535,8 +579,8 @@ impl ChromaMiGridStorage {
 /// Whether `block` ends above mode-info row `row`: a window built from `row`
 /// on holds neither its cells nor its bottom edge. [`RowOrder::reaching`]
 /// finds such records when a taller record of the frame widens its reach.
-fn ends_above(block: &DeblockBlock, row: usize) -> bool {
-    (block.r as usize).saturating_add(block.n4h as usize) < row
+fn ends_above(end: u32, row: usize) -> bool {
+    ((end >> 2) as usize) < row
 }
 
 /// The chroma-resolution cell spans one block covers in chroma `cell_rows`,
