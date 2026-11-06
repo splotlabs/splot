@@ -5,7 +5,6 @@
 
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_SIG_COEF_CONTEXTS_2D, SIG_REF_DIFF_OFFSET_NUM};
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
-use std::simd::cmp::SimdPartialEq as _;
 
 use super::super::coeff_state::{LEVEL_INDEX_MASK, LevelGrid};
 
@@ -296,6 +295,13 @@ pub(crate) fn dc_sign_ctx(
     }
 }
 
+/// The number of zero bytes in `word`; padding bytes past a short slice
+/// are zero before the category xor, so they never count.
+const fn zero_bytes(word: u64) -> i32 {
+    const LOW7: u64 = 0x7f7f_7f7f_7f7f_7f7f;
+    (!((word & LOW7).wrapping_add(LOW7) | word | LOW7)).count_ones() as i32
+}
+
 /// Net sign of the `len` DC categories from `start`; categories are random
 /// per block, so the sum is branchless.
 fn dc_sign_votes(line: &[u8], start: usize, len: usize) -> i32 {
@@ -315,42 +321,15 @@ fn dc_sign_votes(line: &[u8], start: usize, len: usize) -> i32 {
             (i32::from(slice[0] == 2) - i32::from(slice[0] == 1))
                 + (i32::from(slice[1] == 2) - i32::from(slice[1] == 1))
         }
-        4 => {
-            let v = std::simd::Simd::<u8, 4>::from_slice(slice);
-            v.simd_eq(std::simd::Simd::splat(2))
-                .to_bitmask()
-                .count_ones() as i32
-                - v.simd_eq(std::simd::Simd::splat(1))
-                    .to_bitmask()
-                    .count_ones() as i32
-        }
-        8 => {
-            let v = std::simd::Simd::<u8, 8>::from_slice(slice);
-            v.simd_eq(std::simd::Simd::splat(2))
-                .to_bitmask()
-                .count_ones() as i32
-                - v.simd_eq(std::simd::Simd::splat(1))
-                    .to_bitmask()
-                    .count_ones() as i32
-        }
-        16 => {
-            let v = std::simd::Simd::<u8, 16>::from_slice(slice);
-            v.simd_eq(std::simd::Simd::splat(2))
-                .to_bitmask()
-                .count_ones() as i32
-                - v.simd_eq(std::simd::Simd::splat(1))
-                    .to_bitmask()
-                    .count_ones() as i32
-        }
-        32 => {
-            let v = std::simd::Simd::<u8, 32>::from_slice(slice);
-            v.simd_eq(std::simd::Simd::splat(2))
-                .to_bitmask()
-                .count_ones() as i32
-                - v.simd_eq(std::simd::Simd::splat(1))
-                    .to_bitmask()
-                    .count_ones() as i32
-        }
+        4 | 8 | 16 | 32 => slice
+            .chunks_exact(len.min(8))
+            .map(|word| {
+                let mut bytes = [0u8; 8];
+                bytes[..word.len()].copy_from_slice(word);
+                let word = u64::from_ne_bytes(bytes);
+                zero_bytes(word ^ 0x0202_0202_0202_0202) - zero_bytes(word ^ 0x0101_0101_0101_0101)
+            })
+            .sum(),
         _ => slice
             .iter()
             .map(|&category| i32::from(category == 2) - i32::from(category == 1))

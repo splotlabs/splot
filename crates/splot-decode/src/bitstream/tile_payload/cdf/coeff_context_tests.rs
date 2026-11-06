@@ -402,3 +402,25 @@ fn idtx_sign_ctx_is_total_for_short_slices_and_pathological_geometry() {
     let _ = idtx_sign_ctx(&q, &l, 1, 1, 4);
     let _ = idtx_sign_ctx(&q, &l, usize::MAX, usize::MAX, usize::MAX);
 }
+
+#[test]
+fn dc_sign_votes_match_the_per_category_count() {
+    let line: Vec<u8> = (0..80u32)
+        .map(|i| ((i * 2_654_435_761) >> 13) as u8 % 5)
+        .collect();
+    for len in [0, 1, 2, 4, 8, 16, 32, 5] {
+        for start in [0, 3, 40, 70] {
+            let want: i32 = line
+                .iter()
+                .skip(start)
+                .take(len)
+                .map(|&category| i32::from(category == 2) - i32::from(category == 1))
+                .sum();
+            assert_eq!(
+                super::dc_sign_votes(&line, start, len),
+                want,
+                "len {len} start {start}"
+            );
+        }
+    }
+}
