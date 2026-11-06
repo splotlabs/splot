@@ -3,13 +3,6 @@
 
 //! AV2 § 7.20.5 guided detail filter application.
 
-use std::simd::{
-    Select, Simd,
-    cmp::{SimdOrd, SimdPartialOrd},
-    num::SimdUint,
-    simd_swizzle,
-};
-
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::tables::loop_restoration::{GDF_ALPHA, GDF_BIAS, GDF_WEIGHT};
 #[cfg(test)]
@@ -28,7 +21,9 @@ use crate::support::reusable_scratch::with_reusable_scratch;
 #[path = "gdf_simd.rs"]
 mod simd;
 
-use simd::{GdfSymParams, TAP_REACH, source_rows, sym_rows, sym_rows_narrow, window_at};
+use simd::{
+    ClassScratch, GdfSymParams, TAP_REACH, source_rows, sym_rows, sym_rows_narrow, window_at,
+};
 
 const MI_SIZE: usize = 4;
 const GDF_TEST_STRIPE_OFF: usize = 8;
@@ -119,8 +114,7 @@ pub(crate) fn stripe_ranges_into(
 struct GdfScratch {
     source: Vec<u16>,
     classes: Vec<GdfClass>,
-    gradient_pairs: [Vec<[u16; GDF_DIRECTIONS]>; 2],
-    gradient_tmp: Vec<[u16; GDF_DIRECTIONS]>,
+    class_scratch: ClassScratch,
 }
 
 std::thread_local! {
@@ -456,8 +450,7 @@ fn apply_stripe_config<T: ReconSample>(
                     band_origin,
                     &run_block,
                     &mut scratch.classes,
-                    &mut scratch.gradient_pairs,
-                    &mut scratch.gradient_tmp,
+                    &mut scratch.class_scratch,
                 )?;
                 if lossless_grid.is_none() {
                     compute_enabled_segment(
@@ -1202,105 +1195,12 @@ fn band_classes(
     Ok(())
 }
 
-fn gradient_pair_row(
-    source: &GdfSource<'_>,
-    source_origin: (usize, usize),
-    row_pair: usize,
-    class_cols: usize,
-    output: &mut Vec<[u16; GDF_DIRECTIONS]>,
-    tmp: &mut Vec<[u16; GDF_DIRECTIONS]>,
-) -> Result<()> {
-    resize_overwrite_scratch(tmp, class_cols + 1)?;
-    resize_overwrite_scratch(output, class_cols)?;
-    let base_row = source_origin.1 - 1 + row_pair * 2;
-    let base_col = source_origin.0 - 1;
-    let source_error = gdf_state_error;
-    let window_col = base_col.checked_sub(1).ok_or_else(source_error)?;
-    let window_len = class_cols
-        .checked_mul(2)
-        .and_then(|width| width.checked_add(4))
-        .ok_or_else(source_error)?;
-    let first_row = base_row.checked_sub(1).ok_or_else(source_error)?;
-    let row_window = |row: usize| {
-        row.checked_mul(source.stride)
-            .and_then(|start| start.checked_add(window_col))
-            .and_then(|start| exact_slice(source.samples, start, window_len))
-            .ok_or_else(source_error)
-    };
-    let rows = [
-        row_window(first_row)?,
-        row_window(first_row + 1)?,
-        row_window(first_row + 2)?,
-        row_window(first_row + 3)?,
-    ];
-    let row0 = gradient_pair_chunks(rows[0]).ok_or_else(source_error)?;
-    let row1 = gradient_pair_chunks(rows[1]).ok_or_else(source_error)?;
-    let row2 = gradient_pair_chunks(rows[2]).ok_or_else(source_error)?;
-    let row3 = gradient_pair_chunks(rows[3]).ok_or_else(source_error)?;
-    let row_pairs = row0
-        .0
-        .iter()
-        .zip(row0.1)
-        .zip(row1.0.iter().zip(row1.1))
-        .zip(row2.0.iter().zip(row2.1))
-        .zip(row3.0.iter().zip(row3.1));
-    for (
-        sums,
-        (
-            (((row0_left, row0_right), (row1_left, row1_right)), (row2_left, row2_right)),
-            (row3_left, row3_right),
-        ),
-    ) in tmp.iter_mut().zip(row_pairs)
-    {
-        *sums = [
-            gdf_gradient(row0_left[1], row1_left[1], row2_left[1])
-                + gdf_gradient(row0_right[0], row1_right[0], row2_right[0])
-                + gdf_gradient(row1_left[1], row2_left[1], row3_left[1])
-                + gdf_gradient(row1_right[0], row2_right[0], row3_right[0]),
-            gdf_gradient(row1_left[0], row1_left[1], row1_right[0])
-                + gdf_gradient(row1_left[1], row1_right[0], row1_right[1])
-                + gdf_gradient(row2_left[0], row2_left[1], row2_right[0])
-                + gdf_gradient(row2_left[1], row2_right[0], row2_right[1]),
-            gdf_gradient(row0_left[0], row1_left[1], row2_right[0])
-                + gdf_gradient(row0_left[1], row1_right[0], row2_right[1])
-                + gdf_gradient(row1_left[0], row2_left[1], row3_right[0])
-                + gdf_gradient(row1_left[1], row2_right[0], row3_right[1]),
-            gdf_gradient(row2_left[0], row1_left[1], row0_right[0])
-                + gdf_gradient(row2_left[1], row1_right[0], row0_right[1])
-                + gdf_gradient(row3_left[0], row2_left[1], row1_right[0])
-                + gdf_gradient(row3_left[1], row2_right[0], row1_right[1]),
-        ];
-    }
-    for (col, pair) in output.iter_mut().enumerate() {
-        for direction in 0..GDF_DIRECTIONS {
-            pair[direction] = tmp[col][direction] + tmp[col + 1][direction];
-        }
-    }
-    Ok(())
-}
-
-#[allow(clippy::type_complexity)]
-fn gradient_pair_chunks(row: &[u16]) -> Option<(&[[u16; 2]], &[[u16; 2]])> {
-    let left_end = row.len().checked_sub(2)?;
-    let (left, left_remainder) = row.get(..left_end)?.as_chunks::<2>();
-    let (right, right_remainder) = row.get(2..)?.as_chunks::<2>();
-    (left_remainder.is_empty() && right_remainder.is_empty()).then_some((left, right))
-}
-
-/// Second difference of three samples; samples have at most 12 bits, so it fits in i16.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn gdf_gradient(before: u16, center: u16, after: u16) -> u16 {
-    (center as i16 * 2 - before as i16 - after as i16).unsigned_abs()
-}
-
 fn band_classes_from_source(
     source: &GdfSource<'_>,
     source_origin: (usize, usize),
     block: &GdfBlock,
     classes: &mut Vec<GdfClass>,
-    gradient_pairs: &mut [Vec<[u16; GDF_DIRECTIONS]>; 2],
-    gradient_tmp: &mut Vec<[u16; GDF_DIRECTIONS]>,
+    scratch: &mut ClassScratch,
 ) -> Result<()> {
     if source_origin.0 == 0
         || source_origin.1 == 0
@@ -1311,46 +1211,12 @@ fn band_classes_from_source(
         return Err(gdf_state_error());
     }
     let class_cols = block.width >> 1;
-    let class_rows = block.height >> 1;
-    let len = class_rows
+    let len = (block.height >> 1)
         .checked_mul(class_cols)
         .ok_or_else(gdf_state_error)?;
     resize_overwrite_scratch(classes, len)?;
-    let [previous, current] = gradient_pairs;
-    gradient_pair_row(source, source_origin, 0, class_cols, previous, gradient_tmp)?;
-    let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx][GDF_COORDS.len()..];
-    let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx][2][GDF_COORDS.len()..];
-    let tables: [(i16, i16); GDF_DIRECTIONS] =
-        core::array::from_fn(|d| (alpha_table[d][0] as i16, weight_table[d][0]));
-    for (row, classes) in classes.chunks_exact_mut(class_cols).enumerate() {
-        gradient_pair_row(
-            source,
-            source_origin,
-            row + 1,
-            class_cols,
-            current,
-            gradient_tmp,
-        )?;
-        let (previous_chunks, previous_tail) = previous.as_chunks::<8>();
-        let (current_chunks, current_tail) = current.as_chunks::<8>();
-        let (class_chunks, class_tail) = classes.as_chunks_mut::<8>();
-        for ((classes, previous), current) in class_chunks
-            .iter_mut()
-            .zip(previous_chunks)
-            .zip(current_chunks)
-        {
-            *classes = classify_eight(previous, current, &tables);
-        }
-        if !class_tail.is_empty() {
-            let mut tail = [[[0; GDF_DIRECTIONS]; 8]; 2];
-            tail[0][..previous_tail.len()].copy_from_slice(previous_tail);
-            tail[1][..current_tail.len()].copy_from_slice(current_tail);
-            let tail_classes = classify_eight(&tail[0], &tail[1], &tables);
-            class_tail.copy_from_slice(&tail_classes[..class_tail.len()]);
-        }
-        core::mem::swap(previous, current);
-    }
-    Ok(())
+    resize_overwrite_scratch(&mut scratch.strengths, 4 * class_cols.div_ceil(8) * 8)?;
+    simd::band_classes(source, source_origin, block, classes, scratch).ok_or_else(gdf_state_error)
 }
 
 /// Every table gives the gradient taps one clip bound and weight for all classes.
@@ -1372,38 +1238,6 @@ const _: () = {
         index += 1;
     }
 };
-
-/// Classifies eight 2x2 blocks from their direction strengths in two
-/// gradient row pairs; `tables` holds each direction's clip bound and weight.
-fn classify_eight(
-    previous: &[[u16; GDF_DIRECTIONS]; 8],
-    current: &[[u16; GDF_DIRECTIONS]; 8],
-    tables: &[(i16, i16); GDF_DIRECTIONS],
-) -> [GdfClass; 8] {
-    let directions = |pairs: &[[u16; GDF_DIRECTIONS]; 8]| {
-        let all = Simd::<u16, 32>::from_slice(pairs.as_flattened());
-        [
-            simd_swizzle!(all, [0, 4, 8, 12, 16, 20, 24, 28]),
-            simd_swizzle!(all, [1, 5, 9, 13, 17, 21, 25, 29]),
-            simd_swizzle!(all, [2, 6, 10, 14, 18, 22, 26, 30]),
-            simd_swizzle!(all, [3, 7, 11, 15, 19, 23, 27, 31]),
-        ]
-    };
-    let (previous, current) = (directions(previous), directions(current));
-    let strengths: [Simd<u32, 8>; GDF_DIRECTIONS] =
-        core::array::from_fn(|d| previous[d].cast::<u32>() + current[d].cast::<u32>());
-    let bit =
-        |a: Simd<u32, 8>, b, value: i32| a.simd_le(b).select(Simd::splat(value), Simd::splat(0));
-    let index = bit(strengths[0], strengths[1], 1) | bit(strengths[2], strengths[3], 2);
-    let mut bias = Simd::<i32, 8>::splat(0);
-    for (strength, &(alpha, weight)) in strengths.into_iter().zip(tables) {
-        let comb = (strength >> 4)
-            .simd_min(Simd::splat(alpha as u32))
-            .cast::<i32>();
-        bias += comb * Simd::splat(i32::from(weight));
-    }
-    ((bias << 2) | index).to_array().map(GdfClass)
-}
 
 #[cfg(test)]
 fn gdf_tap_offsets(stride: usize) -> Result<[usize; GDF_COORDS.len()]> {
@@ -1603,7 +1437,7 @@ mod wide_tests;
 mod tests {
     #![allow(clippy::expect_used)]
     use super::{
-        GDF_COORDS, GDF_READ_RADIUS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfClass,
+        ClassScratch, GDF_COORDS, GDF_READ_RADIUS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfClass,
         GdfReferenceContext, GdfSource, RESTRICTED_ORDER_HINT, band_classes,
         band_classes_from_source, band_gradients, compute_block, gdf_band_segment,
         gdf_band_segments, gdf_inter_ref_dst_idx, gdf_inter_ref_dst_idx_from_max_dist,
@@ -2001,15 +1835,13 @@ mod tests {
         let classes_result = band_classes(&grad, grad_cols, &block, &mut classes);
         assert!(classes_result.is_ok());
         let mut fused_classes = Vec::new();
-        let mut gradient_pairs = [Vec::new(), Vec::new()];
-        let mut gradient_tmp = Vec::new();
+        let mut class_scratch = ClassScratch::default();
         let fused_result = band_classes_from_source(
             &source,
             origin,
             &block,
             &mut fused_classes,
-            &mut gradient_pairs,
-            &mut gradient_tmp,
+            &mut class_scratch,
         );
         assert!(fused_result.is_ok());
         assert_eq!(fused_classes, classes);
@@ -2031,18 +1863,15 @@ mod tests {
         assert_eq!(reused_source.samples, source.samples);
 
         let mut reused_classes = vec![GdfClass(i32::MAX); classes.len() + 4];
-        let mut reused_gradient_pairs = [
-            vec![[u16::MAX; 4]; gradient_pairs[0].len() + 3],
-            vec![[u16::MAX; 4]; gradient_pairs[1].len() + 3],
-        ];
-        let mut reused_gradient_tmp = vec![[u16::MAX; 4]; gradient_tmp.len() + 3];
+        let mut reused_class_scratch = ClassScratch {
+            strengths: vec![u32::MAX; class_scratch.strengths.len() + 3],
+        };
         let reused_result = band_classes_from_source(
             &reused_source,
             origin,
             &block,
             &mut reused_classes,
-            &mut reused_gradient_pairs,
-            &mut reused_gradient_tmp,
+            &mut reused_class_scratch,
         );
         assert!(reused_result.is_ok());
         assert_eq!(reused_classes, classes);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use std::simd::{Mask, Simd, SimdElement, cmp::SimdPartialEq, simd_swizzle};
+use fearless_simd::{prelude::*, u8x16, u16x16};
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
@@ -749,8 +749,21 @@ fn flat_window<S: ReconSample, const W: usize, const H: usize>(
     for row in top..top + H + 2 * CDEF_TAP_REACH {
         let samples = plane.row(row)?.get(left..)?.get(..W + 2 * CDEF_TAP_REACH)?;
         let flat = match (S::u16_slice(samples), S::u8_slice(samples)) {
-            (Some(samples), _) => lanes_repeat(samples, value),
-            (_, Some(samples)) => lanes_repeat(samples, u8::try_from(value).ok()?),
+            (Some(samples), _) => baseline_simd!(simd => {
+                let value = u16x16::splat(simd, value);
+                chunks_repeat(samples, |lanes| {
+                    u16x16::from_slice(simd, lanes).simd_eq(value).all_true()
+                })
+            }),
+            (_, Some(samples)) => {
+                let value = u8::try_from(value).ok()?;
+                baseline_simd!(simd => {
+                    let value = u8x16::splat(simd, value);
+                    chunks_repeat(samples, |lanes| {
+                        u8x16::from_slice(simd, lanes).simd_eq(value).all_true()
+                    })
+                })
+            }
             _ => false,
         };
         if !flat {
@@ -760,18 +773,14 @@ fn flat_window<S: ReconSample, const W: usize, const H: usize>(
     Some(value)
 }
 
-/// Whether every sample of `samples`, at least 16 long, equals `value`.
-fn lanes_repeat<T: SimdElement>(samples: &[T], value: T) -> bool
-where
-    Simd<T, 16>: SimdPartialEq<Mask = Mask<T::Mask, 16>>,
-{
-    let value = Simd::splat(value);
+/// Whether every 16-sample chunk of `samples`, at least 16 long, passes
+/// `even`; the last chunk overlaps the one before it.
+fn chunks_repeat<T>(samples: &[T], mut even: impl FnMut(&[T]) -> bool) -> bool {
     let last = samples.len().saturating_sub(16);
-    (0..last).step_by(16).chain([last]).all(|start| {
-        samples
-            .get(start..start + 16)
-            .is_some_and(|lanes| Simd::from_slice(lanes).simd_eq(value).all())
-    })
+    (0..last)
+        .step_by(16)
+        .chain([last])
+        .all(|start| samples.get(start..start + 16).is_some_and(&mut even))
 }
 
 /// Writes a flat segment's values into the planes `lookup.fill_flat` marks.
@@ -830,19 +839,15 @@ fn window_flat<
     {
         return false;
     }
-    let lanes = if PLANES == 1 {
-        Simd::splat(pad[0])
-    } else {
-        simd_swizzle!(
-            Simd::from_array([pad[0], pad[1]]),
-            [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1]
-        )
-    };
-    let diff = (0..ROWS).fold(Simd::splat(0), |diff, row| {
-        diff | (Simd::<u16, 16>::from_slice(&pad[row * STRIDE..row * STRIDE + 16]) ^ lanes)
-    });
-    let width = Simd::from_array(core::array::from_fn(|lane| u16::from(lane < WIDTH)));
-    (diff & (width * Simd::splat(u16::MAX))) == Simd::splat(0)
+    let lanes: [u16; 16] = core::array::from_fn(|lane| pad[lane % PLANES]);
+    let width: [u16; 16] = core::array::from_fn(|lane| if lane < WIDTH { u16::MAX } else { 0 });
+    baseline_simd!(simd => {
+        let lanes = u16x16::from_slice(simd, &lanes);
+        let diff = (0..ROWS).fold(u16x16::splat(simd, 0), |diff, row| {
+            diff | (u16x16::from_slice(simd, &pad[row * STRIDE..row * STRIDE + 16]) ^ lanes)
+        });
+        (diff & u16x16::from_slice(simd, &width)).simd_eq(u16x16::splat(simd, 0)).all_true()
+    })
 }
 
 fn fill_rect(
@@ -1265,21 +1270,18 @@ fn write_chroma_pair(
     let (u_out, u_stride) = stripe_rows_from(filtered_u, x0, y0).ok_or(CdefError::Workspace)?;
     let (v_out, v_stride) = stripe_rows_from(filtered_v, x0, y0).ok_or(CdefError::Workspace)?;
     for (row, lanes) in output.chunks_exact(2 * CHROMA_PAIR_SIDE).enumerate() {
-        let planes = simd_swizzle!(
-            Simd::<u16, CHROMA_PAIR_SPAN>::from_slice(lanes),
-            [0, 2, 4, 6, 1, 3, 5, 7]
-        );
-        let (u_lanes, v_lanes) = planes.as_array().split_at(CHROMA_PAIR_SIDE);
+        let u_lanes: [u16; CHROMA_PAIR_SIDE] = core::array::from_fn(|lane| lanes[2 * lane]);
+        let v_lanes: [u16; CHROMA_PAIR_SIDE] = core::array::from_fn(|lane| lanes[2 * lane + 1]);
         u_out
             .get_mut(row * u_stride..)
             .and_then(|row| row.get_mut(..CHROMA_PAIR_SIDE))
             .ok_or(CdefError::Workspace)?
-            .copy_from_slice(u_lanes); // splot-copy-ok: publish the pair's U samples
+            .copy_from_slice(&u_lanes); // splot-copy-ok: publish the pair's U samples
         v_out
             .get_mut(row * v_stride..)
             .and_then(|row| row.get_mut(..CHROMA_PAIR_SIDE))
             .ok_or(CdefError::Workspace)?
-            .copy_from_slice(v_lanes); // splot-copy-ok: publish the pair's V samples
+            .copy_from_slice(&v_lanes); // splot-copy-ok: publish the pair's V samples
     }
     Ok(())
 }
@@ -1321,20 +1323,13 @@ where
         let v_row = v_samples
             .get(base..base + CHROMA_PAIR_SPAN)
             .ok_or(CdefError::Workspace)?;
-        let widen = |row: &[T]| {
-            let mut lanes = [0u16; CHROMA_PAIR_SPAN];
-            for (lane, &sample) in lanes.iter_mut().zip(row) {
-                *lane = u16::from(sample);
-            }
-            Simd::from_array(lanes)
-        };
-        let (low, high) = widen(u_row).interleave(widen(v_row));
         let lanes = pad
             .get_mut(row * CDEF_PAIR_STRIDE..)
             .and_then(<[u16]>::first_chunk_mut::<{ 2 * CHROMA_PAIR_SPAN }>)
             .ok_or(CdefError::Workspace)?;
-        lanes[..CHROMA_PAIR_SPAN].copy_from_slice(low.as_array()); // splot-copy-ok: interleave the chroma pair's taps
-        lanes[CHROMA_PAIR_SPAN..].copy_from_slice(high.as_array()); // splot-copy-ok: interleave the chroma pair's taps
+        for (pair, (&u, &v)) in lanes.chunks_exact_mut(2).zip(u_row.iter().zip(v_row)) {
+            pair.copy_from_slice(&[u16::from(u), u16::from(v)]); // splot-copy-ok: interleave the chroma pair's taps
+        }
         base += stride;
     }
     Ok(())
