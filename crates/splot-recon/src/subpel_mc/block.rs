@@ -356,10 +356,11 @@ fn unscaled_block<T: Sample>(
         });
     }
     let stride = reach(w);
-    let inside = (params.first_x - column).clamp(0, stride as i32) as usize
-        ..(params.last_x - column + 1).clamp(0, stride as i32) as usize;
+    let inside = (params.first_x - column).clamp(0, columns as i32) as usize
+        ..(params.last_x - column + 1).clamp(0, columns as i32) as usize;
     T::with_storage(rows * stride, |storage| {
         for (r, line) in storage.chunks_exact_mut(stride).enumerate() {
+            let line = &mut line[..columns];
             let source = view.row((row + r as i32).clamp(params.first_y, params.last_y) as usize);
             let edge = |x: i32| source[(x as usize).min(source.len() - 1)];
             let (left, right) = (edge(params.first_x), edge(params.last_x));
