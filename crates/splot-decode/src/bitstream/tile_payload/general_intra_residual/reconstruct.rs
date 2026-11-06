@@ -46,7 +46,7 @@ pub(crate) fn resolve_secondary_inverse_transform(
     let large = w >= 8 && h >= 8;
     let n = if !large {
         IST_4X4_HEIGHT
-    } else if (tx_width == 8 && tx_height == 8) || block.plane_tx_type == ADST_ADST {
+    } else if (tx_width == 8 && tx_height == 8) || block.plane_tx_type() == ADST_ADST {
         IST_8X8_HEIGHT_RED
     } else {
         IST_8X8_HEIGHT
@@ -59,15 +59,15 @@ pub(crate) fn resolve_secondary_inverse_transform(
         (
             intra_secondary_transform_kernel(
                 mode,
-                block.plane_tx_type,
-                most_probable_stx_set,
+                block.plane_tx_type(),
+                most_probable_stx_set.into(),
                 tx_width,
                 tx_height,
             )?,
             matches!(mode, H_PRED | D157_PRED | D67_PRED | SMOOTH_H_PRED),
         )
     } else {
-        if block.plane_tx_type != DCT_DCT
+        if block.plane_tx_type() != DCT_DCT
             || tx_width < 16
             || tx_height < 16
             || ist.most_probable_stx_set.is_some()
@@ -81,8 +81,8 @@ pub(crate) fn resolve_secondary_inverse_transform(
         h,
         n,
         kernel,
-        sec_tx_type: ist.sec_tx_type,
-        primary_scan_class: tx_class(block.plane_tx_type),
+        sec_tx_type: ist.sec_tx_type.into(),
+        primary_scan_class: tx_class(block.plane_tx_type()),
         transpose,
         bit_depth,
     }))
@@ -125,7 +125,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
         plane_id,
         log2_width,
         log2_height,
-        block.plane_tx_type,
+        block.plane_tx_type(),
         use_tcq && block.use_tcq,
         false,
         block.lossless,
@@ -188,7 +188,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
         quant_plane,
         log2_width,
         log2_height,
-        block.plane_tx_type,
+        block.plane_tx_type(),
         use_tcq && block.use_tcq,
         false,
         block.lossless,
@@ -238,7 +238,7 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
         plane_id,
         log2_width,
         log2_height,
-        block.plane_tx_type,
+        block.plane_tx_type(),
         use_tcq && block.use_tcq,
         use_ddt,
         block.lossless,
@@ -247,7 +247,7 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
     )?;
     check_dense_len(block, &setup)?;
     if block.eob == 1
-        && block.plane_tx_type == DCT_DCT
+        && block.plane_tx_type() == DCT_DCT
         && !block.lossless
         && secondary.is_none()
         && setup.params.qm.is_none()

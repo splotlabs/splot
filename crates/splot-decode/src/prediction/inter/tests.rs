@@ -461,11 +461,12 @@ fn unsupported_reason(error: DecodeError) -> &'static str {
 
 fn luma_coeff_block(quant: &[i32], eob: usize, cctx_type: Option<usize>) -> LumaCoeffBlock {
     LumaCoeffBlock {
-        eob,
-        quant_range: 0..quant.len(),
+        eob: eob as u16,
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
-        cctx_type,
+        cctx_type: cctx_type.map(|cctx| cctx as u8),
         plane_tx_type: 0,
         use_tcq: false,
         lossless: false,

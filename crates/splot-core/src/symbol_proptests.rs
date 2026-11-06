@@ -139,6 +139,86 @@ proptest! {
         prop_assert_eq!(validated.checkpoint(), trusted.checkpoint());
     }
 
+    /// `read_trusted` must decode, adapt and advance exactly like the checked
+    /// read on well-formed rows of every arity, in both update modes, over a
+    /// run of reads that keeps adapting the same row.
+    #[test]
+    fn read_trusted_matches_checked_reads(
+        n in MIN_SYMBOLS..=MAX_SYMBOLS,
+        gaps in proptest::collection::vec(1u16..=4000, MAX_SYMBOLS - 1),
+        rate_index in 0u16..PARA_ADJUSTMENT_LIST.len() as u16,
+        count in 0u16..=MAX_CDF_COUNT as u16,
+        update in any::<bool>(),
+        data in proptest::collection::vec(any::<u8>(), 2..24),
+    ) {
+        let mut row = [0u16; MAX_SYMBOLS + 1];
+        let mut acc = 0u16;
+        for (entry, gap) in row.iter_mut().take(n - 1).zip(&gaps) {
+            acc += gap;
+            *entry = acc;
+        }
+        row[n - 1] = rate_index;
+        row[n] = count;
+        let mode = if update { CdfUpdateMode::Enabled } else { CdfUpdateMode::Disabled };
+        let config = SymbolDecoderConfig::new().with_cdf_update_mode(mode);
+        let mut checked = SymbolDecoder::with_config(&data, config).unwrap();
+        let mut trusted = SymbolDecoder::with_config(&data, config).unwrap();
+        let (mut checked_row, mut trusted_row) = (row, row);
+        for _ in 0..12 {
+            let expected = checked.read_symbol_u16(&mut checked_row[..=n]).unwrap();
+            let got = match (n, update) {
+                (2, true) => trusted_read::<3, true>(&mut trusted, &mut trusted_row),
+                (2, false) => trusted_read::<3, false>(&mut trusted, &mut trusted_row),
+                (3, true) => trusted_read::<4, true>(&mut trusted, &mut trusted_row),
+                (3, false) => trusted_read::<4, false>(&mut trusted, &mut trusted_row),
+                (4, true) => trusted_read::<5, true>(&mut trusted, &mut trusted_row),
+                (4, false) => trusted_read::<5, false>(&mut trusted, &mut trusted_row),
+                (5, true) => trusted_read::<6, true>(&mut trusted, &mut trusted_row),
+                (5, false) => trusted_read::<6, false>(&mut trusted, &mut trusted_row),
+                (6, true) => trusted_read::<7, true>(&mut trusted, &mut trusted_row),
+                (6, false) => trusted_read::<7, false>(&mut trusted, &mut trusted_row),
+                (7, true) => trusted_read::<8, true>(&mut trusted, &mut trusted_row),
+                (7, false) => trusted_read::<8, false>(&mut trusted, &mut trusted_row),
+                (_, true) => trusted_read::<9, true>(&mut trusted, &mut trusted_row),
+                (_, false) => trusted_read::<9, false>(&mut trusted, &mut trusted_row),
+            };
+            prop_assert_eq!(u32::from(expected.get()), got);
+            prop_assert_eq!(checked_row, trusted_row);
+            prop_assert_eq!(checked.checkpoint(), trusted.checkpoint());
+        }
+    }
+
+    /// `read_bool_trusted` must match the checked one-bit literal read.
+    #[test]
+    fn read_bool_trusted_matches_read_literal(
+        data in proptest::collection::vec(any::<u8>(), 2..24),
+        skew in 0usize..8,
+    ) {
+        let mut checked = SymbolDecoder::new(&data).unwrap();
+        let mut trusted = SymbolDecoder::new(&data).unwrap();
+        let mut row = [16384u16, 0, 0];
+        for step in 0..40 {
+            if step % 8 == skew {
+                checked.read_symbol_u16(&mut row.clone()).unwrap();
+                trusted.read_symbol_u16(&mut row).unwrap();
+            }
+            prop_assert_eq!(checked.read_literal(1).unwrap() != 0, trusted.read_bool_trusted());
+            prop_assert_eq!(checked.checkpoint(), trusted.checkpoint());
+        }
+    }
+
+    /// `read_trusted` must stay panic-free on arbitrary row contents.
+    #[test]
+    fn read_trusted_never_panics_on_hostile_rows(
+        mut row in proptest::array::uniform6(any::<u16>()),
+        data in proptest::collection::vec(any::<u8>(), 2..16),
+    ) {
+        let mut decoder = SymbolDecoder::new(&data).unwrap();
+        for _ in 0..8 {
+            prop_assert!(decoder.read_trusted::<6, true>(&mut row) < 5);
+        }
+    }
+
     /// Trusted-mode decoding must never panic and only ever return a typed
     /// error when the shape gates pass but the probability entries and count
     /// are hostile — the case that actually reaches the arithmetic loop and
@@ -222,4 +302,15 @@ proptest! {
             Err(other) => prop_assert!(false, "unexpected error kind: {other:?}"),
         }
     }
+}
+
+/// The first `L` entries of `row` as a fixed-length row for `read_trusted`.
+fn trusted_read<const L: usize, const UPDATE: bool>(
+    decoder: &mut SymbolDecoder<'_>,
+    row: &mut [u16; MAX_SYMBOLS + 1],
+) -> u32 {
+    let Some(prefix) = row.first_chunk_mut::<L>() else {
+        return u32::MAX;
+    };
+    decoder.read_trusted::<L, UPDATE>(prefix)
 }

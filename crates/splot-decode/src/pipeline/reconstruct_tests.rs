@@ -31,7 +31,8 @@ impl IntraEdgeAvailability {
 fn all_zero_luma_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob: 0,
-        quant_range: 0..0,
+        quant_start: 0,
+        quant_len: 0,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
@@ -50,7 +51,8 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
     quant[96] = 2;
     let block = LumaCoeffBlock {
         eob: 7,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: Some(crate::bitstream::tile_payload::IntraIstSyntax {
             sec_tx_type: 3,
@@ -108,7 +110,8 @@ fn cardinal_mrl_luma_applies_intra_secondary_transform() {
     quant[96] = 2;
     let block = LumaCoeffBlock {
         eob: 7,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: Some(crate::bitstream::tile_payload::IntraIstSyntax {
             sec_tx_type: 3,
@@ -164,7 +167,8 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
@@ -229,7 +233,7 @@ fn inter_residual_bit_depth_mismatch_is_atomic_and_all_zero_is_noop() {
     quant[0] = 1;
     let mut block = all_zero_luma_block();
     block.eob = 1;
-    block.quant_range = 0..quant.len();
+    block.quant_len = quant.len() as u16;
     assert!(matches!(
         reconstruct_inter_block_residual_rect_into(
             &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
@@ -288,7 +292,8 @@ fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
@@ -2106,7 +2111,8 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
     quant[9] = 12;
     let block = LumaCoeffBlock {
         eob: 10,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
