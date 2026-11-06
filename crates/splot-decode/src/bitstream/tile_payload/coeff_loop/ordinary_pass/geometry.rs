@@ -66,6 +66,7 @@ const TX_TYPE_IN_SET_INTER: [[u8; 16]; 9] = [
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
 ];
 
+#[derive(Clone, Copy)]
 struct CoeffOrdinaryStagedTxSizeDimensionsInput {
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
     start: NonZeroCoeffBlockStart,
@@ -73,6 +74,7 @@ struct CoeffOrdinaryStagedTxSizeDimensionsInput {
     lossless: bool,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct CoeffOrdinaryStagedLosslessNonZeroInput {
     pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
     pub(crate) start: NonZeroCoeffBlockStart,
@@ -240,7 +242,8 @@ pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffOrdinaryStagedLosslessNonZeroInput,
-) -> Result<TransformCoeffBlockState, CoeffOrdinaryBranchError> {
+    block: &mut TransformCoeffBlockState,
+) -> Result<(), CoeffOrdinaryBranchError> {
     let CoeffOrdinaryStagedLosslessNonZeroInput {
         geometry,
         start,
@@ -266,6 +269,7 @@ pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         cdfs,
         symbols,
         derived.state_context_input(input),
+        block,
     )
     .map_err(CoeffOrdinaryBranchError::from)
 }

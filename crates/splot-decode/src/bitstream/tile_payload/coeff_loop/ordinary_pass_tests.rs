@@ -215,11 +215,13 @@ fn staged_ordinary_live_path_reads_base_br_sign_quant_and_commits() {
     let mut state =
         TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444).unwrap();
 
-    let block = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+    let mut block = TransformCoeffBlockState::empty();
+    apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         &mut state,
         &mut tile,
         &mut symbols,
         staged_input(start, TX_4X4, 4, true, base_config(true, true)),
+        &mut block,
     )
     .unwrap();
 
@@ -244,11 +246,13 @@ fn staged_ordinary_live_path_applies_evolving_tcq_state() {
     let mut state =
         TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444).unwrap();
 
-    let block = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+    let mut block = TransformCoeffBlockState::empty();
+    apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         &mut state,
         &mut tile,
         &mut symbols,
         staged_input(start, TX_4X4, 4, false, base_config(false, true)),
+        &mut block,
     )
     .unwrap();
 
@@ -308,6 +312,7 @@ fn staged_ordinary_preflights_geometry_and_bounds_without_consumption() {
             &mut tile,
             &mut symbols,
             staged_input(start, tx_size, start_x, true, base_config(false, false)),
+            &mut TransformCoeffBlockState::empty(),
         );
 
         assert!(result.is_err());
@@ -332,6 +337,7 @@ fn staged_ordinary_context_commit_failure_preserves_context_after_reads() {
         &mut tile,
         &mut symbols,
         staged_input(start, TX_4X4, usize::MAX, true, base_config(false, false)),
+        &mut TransformCoeffBlockState::empty(),
     );
 
     assert!(matches!(
