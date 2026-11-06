@@ -682,7 +682,10 @@ mod avx2 {
 
     /// Filters the chunk whose sample rows across the edge are `$rows`: row
     /// `REACH + j` holds `s[j]` of every line. Rows past `$reach` either side
-    /// are neither read nor written. A macro rather than a kernel so that the
+    /// are neither read nor written. Evaluates to `false`, having changed
+    /// nothing, when no line can move: § 7.17.7.1 rounds a ramp step to zero
+    /// below `|deltaM2 * W_Mult[w - 1] * w| = 1024`, which needs
+    /// `|p1 - q1 + 3 * (q0 - p0)| > 3` at width 1 and `> 2` otherwise. A macro rather than a kernel so that the
     /// rows stay in registers in each kernel that loads them.
     macro_rules! filter_rows {
         ($token:ident, $rows:ident, $packed:expr, $reach:expr) => {{
@@ -724,96 +727,107 @@ mod avx2 {
                 le(high, side),
                 _mm256_and_si256(gt(q, zero), gt(side, zero)),
             );
-            let two = _mm256_and_si256(
-                _mm256_and_si256(one, gt(max_pos, one_v)),
-                _mm256_and_si256(
-                    le(high, _mm256_srai_epi16::<2>(side)),
-                    le(transition, _mm256_slli_epi16::<2>(q)),
-                ),
-            );
-            let mut index = _mm256_sub_epi16(_mm256_sub_epi16(zero, one), two);
-            if reach > 3 {
-                let three = _mm256_and_si256(
-                    two,
-                    _mm256_and_si256(
-                        le(high, _mm256_srai_epi16::<3>(side)),
-                        le(transition, _mm256_mullo_epi16(q, _mm256_set1_epi16(3))),
-                    ),
-                );
-                let neg_ok = |at: i16, deriv, threshold| {
-                    _mm256_andnot_si256(
-                        _mm256_and_si256(
-                            gt(max_neg, _mm256_set1_epi16(at - 1)),
-                            gt(deriv, threshold),
-                        ),
-                        ones,
-                    )
-                };
-                let end = _mm256_srai_epi16::<4>(_mm256_mullo_epi16(side, _mm256_set1_epi16(3)));
-                let three = _mm256_and_si256(
-                    three,
-                    _mm256_and_si256(
-                        neg_ok(3, directional(-1, -2, -4, 3), end),
-                        le(directional(0, 1, 3, 3), end),
-                    ),
-                );
-                let wide = |previous, dist: i16, q_first: i32, end| {
-                    let dist2 = dist.min(7);
-                    let q_limit = _mm256_srai_epi16::<4>(_mm256_mullo_epi16(
-                        q,
-                        _mm256_set1_epi16(q_first as i16),
-                    ));
-                    let outer = dist2 as isize;
-                    _mm256_and_si256(
-                        _mm256_and_si256(previous, gt(max_pos, _mm256_set1_epi16(dist - 1))),
-                        _mm256_and_si256(
-                            le(transition, q_limit),
-                            _mm256_and_si256(
-                                neg_ok(dist2, directional(-1, -2, -outer - 1, dist2), end),
-                                le(directional(0, 1, outer, dist2), end),
-                            ),
-                        ),
-                    )
-                };
-                let four = wide(three, 4, Q_FIRST[0], _mm256_srai_epi16::<2>(side));
-                index = _mm256_sub_epi16(_mm256_sub_epi16(index, three), four);
-                if reach > 5 {
-                    let six_end =
-                        _mm256_srai_epi16::<4>(_mm256_mullo_epi16(side, _mm256_set1_epi16(6)));
-                    let six = wide(four, 6, Q_FIRST[2], six_end);
-                    let eight = wide(six, 8, Q_FIRST[4], _mm256_srai_epi16::<1>(side));
-                    index = _mm256_sub_epi16(_mm256_sub_epi16(index, six), eight);
-                }
-            }
-            let neg_width = _mm256_add_epi16(
-                max_neg,
-                _mm256_add_epi16(
-                    gt(max_neg, _mm256_set1_epi16(4)),
-                    gt(max_neg, _mm256_set1_epi16(6)),
-                ),
-            );
-            let pos_bytes = table_bytes(token, index);
-            let neg_bytes = table_bytes(token, _mm256_min_epi16(index, neg_width));
-            let q_clamp = _mm256_mullo_epi16(q, table(token, CLAMP, pos_bytes));
             let inner = _mm256_add_epi16(
                 _mm256_sub_epi16(s(-2), s(1)),
                 _mm256_mullo_epi16(_mm256_sub_epi16(s(0), s(-1)), _mm256_set1_epi16(3)),
             );
-            let delta = _mm256_min_epi16(
-                _mm256_max_epi16(
-                    _mm256_slli_epi16::<2>(inner),
-                    _mm256_sub_epi16(zero, q_clamp),
-                ),
-                q_clamp,
-            );
-            let ramp = |weight| {
-                _mm256_srai_epi16::<1>(_mm256_add_epi16(_mm256_mulhi_epi16(delta, weight), one_v))
-            };
-            for j in 0..super::chunk_writes(reach) {
-                let pos = _mm256_andnot_si256(lossless_curr, table(token, RAMP[j], pos_bytes));
-                let neg = _mm256_andnot_si256(lossless_prev, table(token, RAMP[j], neg_bytes));
-                $rows[REACH + j] = _mm256_sub_epi16($rows[REACH + j], ramp(pos));
-                $rows[REACH - 1 - j] = _mm256_add_epi16($rows[REACH - 1 - j], ramp(neg));
+            let noop = _mm256_sub_epi16(_mm256_set1_epi16(2), _mm256_cmpeq_epi16(max_pos, one_v));
+            let moves = _mm256_and_si256(one, gt(_mm256_abs_epi16(inner), noop));
+            if _mm256_testz_si256(moves, moves) != 0 {
+                false
+            } else {
+                let two = _mm256_and_si256(
+                    _mm256_and_si256(one, gt(max_pos, one_v)),
+                    _mm256_and_si256(
+                        le(high, _mm256_srai_epi16::<2>(side)),
+                        le(transition, _mm256_slli_epi16::<2>(q)),
+                    ),
+                );
+                let mut index = _mm256_sub_epi16(_mm256_sub_epi16(zero, one), two);
+                if reach > 3 {
+                    let three = _mm256_and_si256(
+                        two,
+                        _mm256_and_si256(
+                            le(high, _mm256_srai_epi16::<3>(side)),
+                            le(transition, _mm256_mullo_epi16(q, _mm256_set1_epi16(3))),
+                        ),
+                    );
+                    let neg_ok = |at: i16, deriv, threshold| {
+                        _mm256_andnot_si256(
+                            _mm256_and_si256(
+                                gt(max_neg, _mm256_set1_epi16(at - 1)),
+                                gt(deriv, threshold),
+                            ),
+                            ones,
+                        )
+                    };
+                    let end =
+                        _mm256_srai_epi16::<4>(_mm256_mullo_epi16(side, _mm256_set1_epi16(3)));
+                    let three = _mm256_and_si256(
+                        three,
+                        _mm256_and_si256(
+                            neg_ok(3, directional(-1, -2, -4, 3), end),
+                            le(directional(0, 1, 3, 3), end),
+                        ),
+                    );
+                    let wide = |previous, dist: i16, q_first: i32, end| {
+                        let dist2 = dist.min(7);
+                        let q_limit = _mm256_srai_epi16::<4>(_mm256_mullo_epi16(
+                            q,
+                            _mm256_set1_epi16(q_first as i16),
+                        ));
+                        let outer = dist2 as isize;
+                        _mm256_and_si256(
+                            _mm256_and_si256(previous, gt(max_pos, _mm256_set1_epi16(dist - 1))),
+                            _mm256_and_si256(
+                                le(transition, q_limit),
+                                _mm256_and_si256(
+                                    neg_ok(dist2, directional(-1, -2, -outer - 1, dist2), end),
+                                    le(directional(0, 1, outer, dist2), end),
+                                ),
+                            ),
+                        )
+                    };
+                    let four = wide(three, 4, Q_FIRST[0], _mm256_srai_epi16::<2>(side));
+                    index = _mm256_sub_epi16(_mm256_sub_epi16(index, three), four);
+                    if reach > 5 {
+                        let six_end =
+                            _mm256_srai_epi16::<4>(_mm256_mullo_epi16(side, _mm256_set1_epi16(6)));
+                        let six = wide(four, 6, Q_FIRST[2], six_end);
+                        let eight = wide(six, 8, Q_FIRST[4], _mm256_srai_epi16::<1>(side));
+                        index = _mm256_sub_epi16(_mm256_sub_epi16(index, six), eight);
+                    }
+                }
+                let neg_width = _mm256_add_epi16(
+                    max_neg,
+                    _mm256_add_epi16(
+                        gt(max_neg, _mm256_set1_epi16(4)),
+                        gt(max_neg, _mm256_set1_epi16(6)),
+                    ),
+                );
+                let pos_bytes = table_bytes(token, index);
+                let neg_bytes = table_bytes(token, _mm256_min_epi16(index, neg_width));
+                let q_clamp = _mm256_mullo_epi16(q, table(token, CLAMP, pos_bytes));
+                let delta = _mm256_min_epi16(
+                    _mm256_max_epi16(
+                        _mm256_slli_epi16::<2>(inner),
+                        _mm256_sub_epi16(zero, q_clamp),
+                    ),
+                    q_clamp,
+                );
+                let ramp = |weight| {
+                    _mm256_srai_epi16::<1>(_mm256_add_epi16(
+                        _mm256_mulhi_epi16(delta, weight),
+                        one_v,
+                    ))
+                };
+                for j in 0..super::chunk_writes(reach) {
+                    let pos = _mm256_andnot_si256(lossless_curr, table(token, RAMP[j], pos_bytes));
+                    let neg = _mm256_andnot_si256(lossless_prev, table(token, RAMP[j], neg_bytes));
+                    $rows[REACH + j] = _mm256_sub_epi16($rows[REACH + j], ramp(pos));
+                    $rows[REACH - 1 - j] = _mm256_add_epi16($rows[REACH - 1 - j], ramp(neg));
+                }
+                true
             }
         }};
     }
@@ -930,7 +944,9 @@ mod avx2 {
                             *row = $load(token, samples, origin + line * stride);
                         }
                         transpose(token, &mut rows);
-                        filter_rows!(token, rows, packed, $reach);
+                        if !filter_rows!(token, rows, packed, $reach) {
+                            return;
+                        }
                         transpose(token, &mut rows);
                         for (line, row) in rows.iter().enumerate() {
                             $store(token, samples, origin + line * stride, *row, max);
@@ -940,7 +956,9 @@ mod avx2 {
                         for j in REACH - $reach..REACH + $reach {
                             rows[j] = $load(token, samples, origin + j * stride);
                         }
-                        filter_rows!(token, rows, packed, $reach);
+                        if !filter_rows!(token, rows, packed, $reach) {
+                            return;
+                        }
                         let writes = super::chunk_writes($reach);
                         for j in REACH - writes..REACH + writes {
                             $store(token, samples, origin + j * stride, rows[j], max);

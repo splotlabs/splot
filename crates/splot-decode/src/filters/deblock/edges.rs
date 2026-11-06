@@ -67,32 +67,79 @@ impl SideRow {
         strength: &mut impl FnMut(u16) -> (i32, i32),
     ) -> Result<(), DeblockError> {
         self.tx_base.clear();
+        self.tx_base.extend(facts.iter().map(|facts| facts.tx_base));
         self.origin.clear();
+        self.origin
+            .extend(facts.iter().map(|facts| facts.prediction[PASS]));
         self.size.clear();
+        self.size
+            .extend(facts.iter().map(|facts| facts.tx_size[PASS]));
         self.flags.clear();
+        self.flags.extend(facts.iter().map(|facts| facts.flags));
         self.q_thr.clear();
         self.side.clear();
-        let mut covered = CellFacts::COVERED;
         for facts in facts {
             let (q_thr, side) = strength(facts.qindex);
-            self.tx_base.push(facts.tx_base);
-            self.origin.push(facts.prediction[PASS]);
-            self.size.push(facts.tx_size[PASS]);
-            self.flags.push(facts.flags);
             self.q_thr.push(q_thr.clamp(0, i32::from(u16::MAX)) as u16);
             self.side.push(side.clamp(0, i32::from(u16::MAX)) as u16);
-            covered &= facts.flags;
         }
+        let covered = self
+            .flags
+            .iter()
+            .fold(CellFacts::COVERED, |all, &flags| all & flags);
         if covered == 0 {
-            let col = facts
+            let col = self
+                .flags
                 .iter()
-                .position(|facts| facts.flags & CellFacts::COVERED == 0)
+                .position(|flags| flags & CellFacts::COVERED == 0)
                 .unwrap_or(0);
             return Err(DeblockError::UncoveredMi { row: 0, col });
         }
         Ok(())
     }
 
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn side(&self, col: usize) -> Side {
+        Side {
+            tx_base: self.tx_base[col],
+            origin: self.origin[col],
+            size: self.size[col],
+            flags: self.flags[col],
+            q_thr: self.q_thr[col],
+            side: self.side[col],
+        }
+    }
+
+    /// The row's fields cut to its first `len` cells, so that indexing them
+    /// below `len` needs no bounds check.
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn fields(&self, len: usize) -> Option<SideFields<'_>> {
+        Some(SideFields {
+            tx_base: self.tx_base.get(..len)?,
+            origin: self.origin.get(..len)?,
+            size: self.size.get(..len)?,
+            flags: self.flags.get(..len)?,
+            q_thr: self.q_thr.get(..len)?,
+            side: self.side.get(..len)?,
+        })
+    }
+}
+
+/// A [`SideRow`]'s fields, all of one length.
+struct SideFields<'a> {
+    tx_base: &'a [u32],
+    origin: &'a [u16],
+    size: &'a [u8],
+    flags: &'a [u8],
+    q_thr: &'a [u16],
+    side: &'a [u16],
+}
+
+impl SideFields<'_> {
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
     fn side(&self, col: usize) -> Side {
         Side {
             tx_base: self.tx_base[col],
@@ -159,8 +206,15 @@ fn decide_row(
     shapes: &[DeblockEdge; 65],
     out: &mut [DeblockEdge],
 ) {
+    let len = out.len();
+    let Some(curr) = curr.fields(len) else {
+        return;
+    };
     match prev {
         Some((prev, y_p)) => {
+            let Some(prev) = prev.fields(len) else {
+                return;
+            };
             for (col, out) in out.iter_mut().enumerate() {
                 *out = decide(curr.side(col), prev.side(col), y_p, limit, shapes);
             }
