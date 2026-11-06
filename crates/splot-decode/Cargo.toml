@@ -51,6 +51,7 @@ wildcard_imports = "allow"
 if_not_else = "allow"
 
 [dependencies]
+fearless_simd.workspace = true
 parking_lot.workspace = true
 splot-core.workspace = true
 splot-parallel.workspace = true

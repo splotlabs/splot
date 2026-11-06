@@ -5,7 +5,7 @@
 //!
 //! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`.
 
-use std::simd::{Simd, cmp::SimdOrd, num::SimdUint};
+use fearless_simd::{Level, Simd, SimdBase, dispatch, u16x16};
 
 use crate::ReconSample;
 
@@ -31,15 +31,17 @@ pub(crate) fn samples_exceed<T: ReconSample>(samples: &[T], max_sample: u16) -> 
 /// by sample to name the offender. A ragged tail rereads the last full lane
 /// group instead of walking sample by sample.
 pub(crate) fn u16_samples_exceed(samples: &[u16], max_sample: u16) -> bool {
-    const LANES: usize = 16;
-    let (chunks, remainder) = samples.as_chunks::<LANES>();
-    let Some(&tail) = samples.last_chunk::<LANES>() else {
+    dispatch!(Level::baseline(), simd => u16_peak_exceeds(simd, samples, max_sample))
+}
+
+#[inline]
+fn u16_peak_exceeds<S: Simd>(simd: S, samples: &[u16], max_sample: u16) -> bool {
+    let (chunks, remainder) = samples.as_chunks::<16>();
+    let Some(tail) = samples.last_chunk::<16>() else {
         return remainder.iter().any(|&sample| sample > max_sample);
     };
-    let peak = chunks
-        .iter()
-        .fold(Simd::<u16, LANES>::from_array(tail), |peak, chunk| {
-            peak.simd_max(Simd::from_array(*chunk))
-        });
+    let peak = chunks.iter().fold(u16x16::from_slice(simd, tail), |peak, chunk| {
+        peak.max(u16x16::from_slice(simd, chunk))
+    });
     peak.reduce_max() > max_sample
 }

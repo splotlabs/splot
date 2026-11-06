@@ -53,6 +53,8 @@ proptest = "1"
 # Dev-only: golden snapshot tests of the `splot inspect` JSON output (CONF-INSPECT-SNAPSHOTS).
 insta = "1"
 rayon = "1"
+# Safe portable SIMD and token-gated arch intrinsics on stable Rust.
+fearless_simd = "1.2"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

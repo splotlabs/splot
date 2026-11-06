@@ -16,6 +16,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+fearless_simd.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 # Fixed-layout IVF container wire header parsing only (AV2-IVF-CONTAINER); see

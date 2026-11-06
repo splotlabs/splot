@@ -46,6 +46,7 @@ wildcard_imports = "allow"
 if_not_else = "allow"
 
 [dependencies]
+fearless_simd.workspace = true
 sha2.workspace = true
 splot-core.workspace = true
 splot-tables.workspace = true
