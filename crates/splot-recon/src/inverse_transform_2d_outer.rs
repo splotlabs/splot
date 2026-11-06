@@ -21,11 +21,13 @@
 //! `Adjusted_Tx_Size` cap) and the original size as `1 << log2` (the
 //! `Tx_Width` / `Tx_Height` of `txSz`), so no conversion tables are needed.
 
+use crate::dequant_process::DequantBlockParams;
 #[cfg(test)]
 use crate::inverse_transform_2d::inverse_transform_2d;
 use crate::inverse_transform_2d::{
     InverseTransform2d, InverseTransform2dDim, inverse_transform_2d_with_scratch,
 };
+use crate::inverse_transform_2d_8bit::{FlatDequant, Transform8, inverse_transform_add_8bit};
 use crate::transform_params::{TransformPass, get_transform_1d_type, transform_shift};
 use crate::{BitDepth, ReconError, Result};
 
@@ -326,6 +328,84 @@ pub fn inverse_transform_2d_outer_adjusted(
         adj_w,
         adj_h,
     )
+}
+
+/// [`inverse_transform_2d_outer`] added in place to the 8-bit block at the
+/// start of `dst`, whose rows are `stride` apart, as the § 7.14.3
+/// `Clip1(prediction + Residual)` without an intermediate residual.
+///
+/// With `quantized`, `dequant` holds instead the quantized coefficients up
+/// to the last nonzero one, which are dequantized with those parameters as
+/// they load; only the flat (`useQm == 0`, power-of-two `dq_denom`) 8-bit
+/// dequantization folds this way.
+///
+/// Returns `Ok(false)` with `dst` untouched when the block has no fused
+/// form (another bit depth, a lossless or DPCM block, a 64-sample side, a
+/// dequantization that does not fold, or a shape without a paired kernel),
+/// for the caller's residual path.
+///
+/// # Errors
+/// Returns the [`inverse_transform_2d_outer`] shape and buffer errors.
+pub fn inverse_transform_2d_outer_add_u8(
+    params: &InverseTransform2dOuter,
+    dequant: &[i32],
+    quantized: Option<&DequantBlockParams>,
+    dst: &mut [u8],
+    stride: usize,
+    transform_scratch: &mut [i32; MAX_ADJ_DIM * MAX_ADJ_DIM],
+) -> Result<bool> {
+    let (adj_w, adj_h, orig_w, orig_h) = transform_dimensions(params)?;
+    let adj_pels = adj_w * adj_h;
+    let prefix = match quantized {
+        Some(_) => dequant.len() <= adj_pels,
+        None => is_row_prefix(dequant.len(), adj_w, adj_pels),
+    };
+    if !prefix {
+        return Err(ReconError::InverseTransform2dBufferMismatch {
+            expected: adj_pels,
+            dequant_len: dequant.len(),
+            residual_len: adj_pels,
+        });
+    }
+    if params.bit_depth != BitDepth::Eight
+        || params.lossless
+        || params.dpcm.is_some()
+        || (orig_w, orig_h) != (adj_w, adj_h)
+    {
+        return Ok(false);
+    }
+    let flat = match quantized {
+        None => None,
+        Some(dq) => {
+            if dq.qm.is_some() || !dq.dq_denom.is_power_of_two() || dq.bit_depth != BitDepth::Eight
+            {
+                return Ok(false);
+            }
+            Some(FlatDequant {
+                dc: dq.dc_quant,
+                ac: dq.ac_quant,
+                denom_shift: dq.dq_denom.trailing_zeros(),
+                bound: 1 << (7 + u32::from(BitDepth::Eight.bits())),
+            })
+        }
+    };
+    let transform = Transform8 {
+        row: params.row_type,
+        col: params.col_type,
+        w: adj_w,
+        h: adj_h,
+        rescale: params.log2_width.abs_diff(params.log2_height) % 2 == 1,
+        row_shift: params.row_shift,
+        col_shift: params.col_shift,
+        dequant: flat,
+    };
+    Ok(inverse_transform_add_8bit(
+        transform,
+        dequant,
+        dst,
+        stride,
+        transform_scratch,
+    ))
 }
 
 fn inverse_transform_2d_outer_adjusted_inner(
@@ -1027,3 +1107,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "inverse_transform_2d_outer_add_tests.rs"]
+mod add_tests;

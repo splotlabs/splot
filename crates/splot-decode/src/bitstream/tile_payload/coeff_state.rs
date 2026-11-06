@@ -513,6 +513,7 @@ impl TileCoeffContextState {
         }
     }
 
+    #[inline]
     pub(crate) fn update_after_coeffs(
         &mut self,
         input: CoeffContextUpdate,
@@ -820,6 +821,7 @@ fn shifted(value: usize, shift: u32) -> Result<usize, TileCoeffStateError> {
         })
 }
 
+#[inline]
 fn fill_context_line(
     level: &mut [u8],
     dc: &mut [u8],
