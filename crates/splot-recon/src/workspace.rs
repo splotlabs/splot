@@ -2010,6 +2010,7 @@ fn select_plane_mut<'a, P>(
     }
 }
 
+#[inline]
 fn clamp_rect_to_storage(plane: PlaneId, storage: PlaneSize, rect: PlaneRect) -> Result<PlaneRect> {
     if rect.x() >= storage.width() || rect.y() >= storage.height() {
         return Err(ReconError::WorkspaceRectOutOfBounds {

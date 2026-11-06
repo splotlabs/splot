@@ -838,9 +838,7 @@ mod tests {
                 lossless: false,
             },
         });
-        InterResidual {
-            block_range: start..blocks.len(),
-        }
+        InterResidual::new(start..blocks.len())
     }
 
     fn tx_size_for(width: usize, height: usize) -> usize {

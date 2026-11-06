@@ -101,7 +101,7 @@ impl GeneralIntraResidualPlan {
         )?;
         if lossless_luma_fsc {
             for plane in &mut plan.planes {
-                plane.reconstruction_tx_type = Some(IDTX);
+                plane.reconstruction_tx_type = Some(IDTX as u8);
             }
         }
         Ok(plan)
@@ -114,7 +114,7 @@ impl GeneralIntraResidualPlan {
     ) -> impl Iterator<Item = (usize, usize, usize, usize, bool)> + '_ {
         self.planes.iter().map(|plane| {
             (
-                plane.coeff_plane,
+                usize::from(plane.coeff_plane),
                 plane.x,
                 plane.y,
                 plane.tx_size,
@@ -182,13 +182,13 @@ impl ResidualPlanePlan {
         planes.push(Self {
             plane_id,
             block_ctx,
-            coeff_plane: coeff_plane(plane_id),
+            coeff_plane: coeff_plane(plane_id) as u8,
             tx_size,
             x: block.x(),
             y: block.y(),
             tx,
-            residual_width4,
-            residual_height4,
+            residual_width4: residual_width4 as u16,
+            residual_height4: residual_height4 as u16,
             fsc_mode,
             txb_skip_fsc_mode,
             zero_corners: false,

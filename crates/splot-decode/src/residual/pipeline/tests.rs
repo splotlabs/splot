@@ -291,7 +291,7 @@ fn chroma_part_applies_lossless_luma_fsc_only_to_reconstruction() {
         let plane = plan.plane_plan(plane_id).expect("chroma plane");
         assert!(!plane.fsc_mode);
         assert!(!plane.txb_skip_fsc_mode);
-        assert_eq!(plane.reconstruction_tx_type, Some(IDTX));
+        assert_eq!(plane.reconstruction_tx_type, Some(IDTX as u8));
         let mut coeffs = empty_luma_coeffs();
         plane.apply_reconstruction_tx_type(&mut coeffs);
         assert_eq!(coeffs.plane_tx_type, IDTX);
@@ -1371,7 +1371,12 @@ fn assert_case(case: Case) {
         "{}",
         case.label
     );
-    assert_eq!(plane.coeff_plane, coeff_plane(case.plane), "{}", case.label);
+    assert_eq!(
+        usize::from(plane.coeff_plane),
+        coeff_plane(case.plane),
+        "{}",
+        case.label
+    );
 }
 
 fn ctx(block: BlockRect, bit_depth: BitDepth) -> BlockCtx {
