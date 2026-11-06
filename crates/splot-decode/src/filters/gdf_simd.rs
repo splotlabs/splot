@@ -962,7 +962,7 @@ pub(super) fn band_classes(
     classes: &mut [GdfClass],
     scratch: &mut ClassScratch,
 ) -> Option<()> {
-    dispatch!(Level::baseline(), simd => band_classes_with(simd, source, origin, block, classes, scratch))
+    baseline_simd!(simd => band_classes_with(simd, source, origin, block, classes, scratch))
 }
 
 #[allow(clippy::inline_always)]

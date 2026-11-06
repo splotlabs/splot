@@ -33,6 +33,27 @@
 //!
 //! Feature tracking: `RECON-CDEF-FILTER`.
 
+/// Runs `$body` with `$simd` bound to the baseline SIMD token: the AVX2
+/// token directly where the baseline has it, since the closure `dispatch!`
+/// wraps its body in is not inlined, else through `dispatch!`.
+#[cfg(target_arch = "x86_64")]
+macro_rules! baseline_simd {
+    ($simd:ident => $body:expr) => {
+        match fearless_simd::Level::baseline().as_avx2() {
+            Some($simd) => $body,
+            None => fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body),
+        }
+    };
+}
+
+/// [`baseline_simd`] for targets without an AVX2 baseline.
+#[cfg(not(target_arch = "x86_64"))]
+macro_rules! baseline_simd {
+    ($simd:ident => $body:expr) => {
+        fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body)
+    };
+}
+
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{Avx2, SimdInto, i32x8};
 use fearless_simd::{
@@ -1309,7 +1330,7 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
     const SPAN: usize = 7 * CDEF_PADDED_SIDE + 8;
     let args = (pad, h.min(8), filter, &CDEF_TAP_STARTS, out, out_stride);
     match w.min(8) {
-        8 => dispatch!(Level::baseline(), simd => cdef_filter_block_rows::<
+        8 => baseline_simd!(simd => cdef_filter_block_rows::<
             _,
             8,
             HAS_UNAVAILABLE,
@@ -1319,7 +1340,7 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
             SPAN,
             CDEF_PADDED_AREA,
         >(simd, args)),
-        4 => dispatch!(Level::baseline(), simd => cdef_filter_block_rows::<
+        4 => baseline_simd!(simd => cdef_filter_block_rows::<
             _,
             4,
             HAS_UNAVAILABLE,
@@ -1365,7 +1386,7 @@ pub fn cdef_filter_block_chroma_pair(
         return false;
     }
     let args = (pad, h, filter, &CDEF_PAIR_TAP_STARTS, &mut out[..], 8);
-    dispatch!(Level::baseline(), simd => cdef_filter_block_rows::<
+    baseline_simd!(simd => cdef_filter_block_rows::<
         _,
         8,
         false,

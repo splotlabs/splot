@@ -181,7 +181,7 @@ fn gather_luma<T: crate::ReconSample>(
     pad: &mut [u16; LUMA_SEGMENT_AREA],
     origin: (usize, usize),
 ) -> Option<[[u16; 2]; CDEF_SEGMENT_BLOCKS]> {
-    dispatch!(Level::baseline(), simd => gather_luma_with(simd, samples, width, stride, pad, origin))
+    baseline_simd!(simd => gather_luma_with(simd, samples, width, stride, pad, origin))
 }
 
 #[allow(clippy::inline_always, reason = "measured CDEF gather hot path")]
@@ -256,7 +256,7 @@ fn gather_pair<T: crate::ReconSample>(
     pad: &mut [u16; PAIR_SEGMENT_AREA],
     origin: (usize, usize),
 ) -> Option<[u16; CDEF_SEGMENT_BLOCKS]> {
-    dispatch!(Level::baseline(), simd => gather_pair_with(
+    baseline_simd!(simd => gather_pair_with(
         simd, u_samples, v_samples, width, stride, pad, origin,
     ))
 }
