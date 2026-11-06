@@ -217,7 +217,10 @@ impl TileMiSizeState {
         let stride = self.mi_size_stride;
         let left_base = self.left_base(plane);
         let above_base = self.above_base(plane);
-        self.storage[left_base + region.r..left_base + region.row_end].fill(left_partition_context);
+        crate::support::fill_mi_run(
+            &mut self.storage[left_base + region.r..left_base + region.row_end],
+            left_partition_context,
+        );
         if plane == LUMA_PLANE {
             let last = region.row_end - 1;
             let first_plane_row = self.window.plane_row(region.r);

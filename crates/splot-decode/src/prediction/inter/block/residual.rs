@@ -27,7 +27,7 @@ pub(super) struct InterLumaTxTypeMap {
     col: usize,
     rows: usize,
     cols: usize,
-    values: Vec<usize>,
+    values: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,8 +70,8 @@ impl InterLumaTxTypeMap {
         self.values
             .try_reserve_exact(len.saturating_sub(self.values.len()))
             .map_err(|_| inter_allocation!("inter residual luma transform-type map"))?;
-        self.values.resize(len, DCT_DCT);
-        self.values.fill(DCT_DCT);
+        self.values.clear();
+        self.values.resize(len, DCT_DCT as u8);
         self.row = row;
         self.col = col;
         self.rows = rows;
@@ -88,6 +88,7 @@ impl InterLumaTxTypeMap {
     ) -> Result<()> {
         let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size)? / MI_SIZE;
         let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size)? / MI_SIZE;
+        let tx_type = u8::try_from(tx_type).map_err(|_| residual_geometry_error())?;
         for dy in (0..tx_h4).step_by(TX_TYPE_MAP_UNIT_4X4) {
             for dx in (0..tx_w4).step_by(TX_TYPE_MAP_UNIT_4X4) {
                 let map_row = row.checked_add(dy).ok_or_else(residual_geometry_error)?;
@@ -119,7 +120,7 @@ impl InterLumaTxTypeMap {
             )
         };
         self.index(luma_row, luma_col)
-            .map_or(DCT_DCT, |index| self.values[index])
+            .map_or(DCT_DCT, |index| usize::from(self.values[index]))
     }
 
     fn index(&self, row: usize, col: usize) -> Option<usize> {
