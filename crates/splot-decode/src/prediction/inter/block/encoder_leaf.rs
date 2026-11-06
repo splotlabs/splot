@@ -1344,9 +1344,10 @@ impl EncoderInterResidual {
         let start = self.coeffs.len();
         self.coeffs.extend_from_slice(&levels[..nonzero]);
         let coeffs = LumaCoeffBlock {
-            eob,
-            quant_range: start..start + nonzero,
-            zero_tail: levels.len() - nonzero,
+            eob: eob as u16,
+            quant_start: start as u32,
+            quant_len: nonzero as u16,
+            zero_tail: (levels.len() - nonzero) as u16,
             use_tcq,
             intra_ist,
             ..LumaCoeffBlock::empty(tx_type, false)

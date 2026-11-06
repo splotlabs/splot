@@ -913,7 +913,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
         if block.cctx_pair_delta < 0 {
             continue;
         }
-        let cctx_type = block.coeffs.cctx_type.unwrap_or(0);
+        let cctx_type = block.coeffs.cctx_type().unwrap_or(0);
         if block.plane == ReconPlaneId::U && cctx_type != 0 {
             let v_block = inter_residual_chroma_pair(blocks, index, block)
                 .ok_or(DecodeHeaderStateError::MissingInterResidualCctxPair)?;
