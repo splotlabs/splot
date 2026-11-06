@@ -172,7 +172,7 @@ mod avx2 {
 
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn load4(samples: &[u16; 4]) -> i64 {
+    fn load4(samples: [u16; 4]) -> i64 {
         i64::from(samples[0])
             | i64::from(samples[1]) << 16
             | i64::from(samples[2]) << 32
@@ -196,10 +196,10 @@ mod avx2 {
     ) -> Option<__m256i> {
         Some(match W {
             4 => _mm256_set_epi64x(
-                load4(chunk(source, starts[3])?),
-                load4(chunk(source, starts[2])?),
-                load4(chunk(source, starts[1])?),
-                load4(chunk(source, starts[0])?),
+                load4(*chunk(source, starts[3])?),
+                load4(*chunk(source, starts[2])?),
+                load4(*chunk(source, starts[1])?),
+                load4(*chunk(source, starts[0])?),
             ),
             8 => _mm256_set_m128i(
                 load8(t, chunk(source, starts[1])?),
