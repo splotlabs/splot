@@ -817,8 +817,8 @@ fn fill_context_line(
             len,
         });
     };
-    level.fill(level_value);
-    dc.fill(dc_value);
+    crate::support::fill_mi_run(level, level_value);
+    crate::support::fill_mi_run(dc, dc_value);
     Ok(())
 }
 

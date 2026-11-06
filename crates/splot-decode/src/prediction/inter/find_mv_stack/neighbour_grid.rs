@@ -525,7 +525,7 @@ impl NeighbourMvGrid {
                 continue;
             };
             if let Some(cells) = self.planes.cells.get_mut(span) {
-                cells.fill(Some(slot));
+                crate::support::fill_mi_run(cells, Some(slot));
             }
         }
     }
