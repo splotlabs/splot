@@ -12,7 +12,9 @@ use splot_recon::{
     deblock_vertical_edges,
 };
 
-use super::grid::{CellFacts, MiGrid};
+use fearless_simd::{prelude::*, u32x8};
+
+use super::grid::{CellFacts, MiGrid, UNCOVERED};
 use super::{
     DeblockError, EdgeContext, GATHER_HALF, MAX_WIDTHS, MI_SIZE, PerpLine, PlaneCtx, PlanePass,
     SB_SIZE, StrengthCache, apply_edge_samples, choose_filter_width, combine_strengths,
@@ -102,18 +104,28 @@ fn decide(
 /// The bitmask of the cells of `curr` whose transform base differs from
 /// `prev`'s at the same index, 64 cells per word, with whether every cell
 /// of both rows is covered.
-fn transform_edges(curr: &[CellFacts], prev: &[CellFacts], words: &mut Vec<u64>) -> bool {
+fn transform_edges(curr: &[u32], prev: &[u32], words: &mut Vec<u64>) -> bool {
     words.clear();
-    let mut covered = CellFacts::COVERED;
-    for (curr, prev) in curr.chunks(64).zip(prev.chunks(64)) {
-        let mut word = 0u64;
-        for (bit, (curr, prev)) in curr.iter().zip(prev).enumerate() {
-            word |= u64::from(curr.tx_base != prev.tx_base) << bit;
-            covered &= curr.flags & prev.flags;
+    baseline_simd!(simd => {
+        let uncovered = u32x8::splat(simd, UNCOVERED);
+        let mut covered = true;
+        for (curr, prev) in curr.chunks(64).zip(prev.chunks(64)) {
+            let (curr_lanes, curr_tail) = curr.as_chunks::<8>();
+            let mut word = 0u64;
+            for (index, (curr, prev)) in curr_lanes.iter().zip(prev.chunks_exact(8)).enumerate() {
+                let (curr, prev) = (u32x8::from_slice(simd, curr), u32x8::from_slice(simd, prev));
+                word |= (!curr.simd_eq(prev).to_bitmask() & 0xff) << (8 * index);
+                covered &= !(curr.simd_eq(uncovered) | prev.simd_eq(uncovered)).any_true();
+            }
+            let tail = curr_lanes.len() * 8;
+            for (bit, (&curr, &prev)) in curr_tail.iter().zip(prev.get(tail..).unwrap_or_default()).enumerate() {
+                word |= u64::from(curr != prev) << (tail + bit);
+                covered &= curr != UNCOVERED && prev != UNCOVERED;
+            }
+            words.push(word);
         }
-        words.push(word);
-    }
-    covered != 0
+        covered
+    })
 }
 
 impl PassEdges {
@@ -233,16 +245,19 @@ impl PassEdges {
                 let uncovered = || DeblockError::UncoveredMi { row: r, col: 0 };
                 let row = |at: usize| {
                     grid.facts_row(at)
-                        .and_then(|facts| facts.get(..cols))
+                        .and_then(|(bases, facts)| Some((bases.get(..cols)?, facts.get(..cols)?)))
                         .ok_or_else(uncovered)
                 };
-                let curr = row(cell_row)?;
-                let (curr_cells, prev_cells) = if PASS == 0 {
-                    (&curr[1..], &curr[..cols - 1])
+                let (curr_bases, curr) = row(cell_row)?;
+                let ((curr_bases, curr_cells), (prev_bases, prev_cells)) = if PASS == 0 {
+                    (
+                        (&curr_bases[1..], &curr[1..]),
+                        (&curr_bases[..cols - 1], &curr[..cols - 1]),
+                    )
                 } else {
-                    (curr, row(cell_row - 1)?)
+                    ((curr_bases, curr), row(cell_row - 1)?)
                 };
-                if !transform_edges(curr_cells, prev_cells, &mut words) {
+                if !transform_edges(curr_bases, prev_bases, &mut words) {
                     return Err(uncovered());
                 }
                 let tile_row = PASS == 1 && starts_tile(geometry.tile_starts, r);
@@ -251,6 +266,7 @@ impl PassEdges {
                 }
                 let sb_row = PASS == 1 && (r * MI_SIZE).is_multiple_of(SB_SIZE);
                 let row_limit = PASS == 1 && y_p + reach > geometry.height;
+                let mut row_live = false;
                 for (word_index, &word) in words.iter().enumerate() {
                     let mut word = word;
                     while word != 0 {
@@ -279,8 +295,15 @@ impl PassEdges {
                             (row_index, row_index * cols + col)
                         };
                         self.edges[slot] = edge;
-                        self.live[line] |= !edge.is_none();
+                        if PASS == 0 {
+                            self.live[line] |= !edge.is_none();
+                        } else {
+                            row_live |= !edge.is_none();
+                        }
                     }
+                }
+                if PASS == 1 {
+                    self.live[row_index] |= row_live;
                 }
             }
             Ok(())
