@@ -54,7 +54,10 @@ impl ParityHiding {
             }
             let entry = CoeffScanEntry::new(1, pos, pos >> log2_w, pos & ((1 << log2_w) - 1));
             let max = visible_max_level(coeff_is_low_frequency(entry, 0, tx_class), 0);
-            summary.update_after_level::<false, true>(entry, level.unsigned_abs().min(max));
+            summary.update_after_level::<false, true>(
+                entry.scan_index(),
+                level.unsigned_abs().min(max),
+            );
         }
         Ok(summary.is_hidden().then_some(summary.sum_abs1()))
     }

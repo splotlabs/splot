@@ -10,22 +10,13 @@ use super::scan_walk::CoeffScanEntry;
 use super::sign_symbol::CoeffSignRead;
 
 const TCQ_STATES: usize = 8;
-const TCQ_PARITIES: usize = 2;
 pub(crate) const MAX_CONFORMING_QUANT_MAGNITUDE: u32 = 1 << 20;
-const TCQ_NEXT_STATE: [[usize; TCQ_PARITIES]; TCQ_STATES] = [
-    [0, 4],
-    [4, 0],
-    [1, 5],
-    [5, 1],
-    [6, 2],
-    [2, 6],
-    [7, 3],
-    [3, 7],
-];
-
+/// `Tcq_Next_State[ tcqState ][ parity & 1 ]` (§ 5.20.7.27) in bit form:
+/// the state shifts right by one and bit 2 becomes `s0 ^ s2 ^ parity`.
 #[inline]
-pub(crate) fn next_tcq_state(tcq_state: usize, parity: u32) -> usize {
-    TCQ_NEXT_STATE[tcq_state & (TCQ_STATES - 1)][(parity & 1) as usize]
+pub(crate) const fn next_tcq_state(tcq_state: usize, parity: u32) -> usize {
+    let state = tcq_state & (TCQ_STATES - 1);
+    (state >> 1) | ((((state >> 2) ^ state ^ parity as usize) & 1) << 2)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
