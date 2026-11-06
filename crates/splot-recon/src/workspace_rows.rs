@@ -290,6 +290,13 @@ impl<T: ReconSample> CurrentFrameRectRowsMut<'_, T> {
         self.rect
     }
 
+    /// The rectangle's 8-bit samples from its origin and their row stride,
+    /// for a reconstruction added in place; `None` for wider samples.
+    pub fn u8_samples_mut(&mut self) -> Option<(&mut [u8], usize)> {
+        let stride = self.stride_samples;
+        T::u8_slice_mut(self.samples).map(|samples| (samples, stride))
+    }
+
     /// Reconstructs the rectangle from a contiguous block prediction and its
     /// AV2 § 7.14.3 residual, writing `Clip1(prediction + residual)` straight
     /// into the frame.
