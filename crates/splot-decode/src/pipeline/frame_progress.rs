@@ -898,10 +898,10 @@ impl<T: ReconSample> FrontierRows<T> {
             self.progress.planes[plane.index()]?.stride,
         );
         if width == stride {
-            out.extend_from_slice(rows);
+            out.append_samples(rows);
         } else {
             for row in rows.chunks_exact(stride) {
-                out.extend_from_slice(row.get(..width)?);
+                out.append_samples(row.get(..width)?);
             }
         }
         Some(())
