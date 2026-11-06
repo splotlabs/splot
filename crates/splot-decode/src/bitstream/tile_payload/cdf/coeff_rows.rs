@@ -503,7 +503,7 @@ impl CoeffCdfRows {
 
 /// Bounds-checked `rows[ctx]`.
 #[inline]
-pub(crate) fn row2<T, const C: usize>(
+fn row2<T, const C: usize>(
     rows: &mut [T; C],
     array: TileCdfArray,
     ctx: usize,

@@ -264,11 +264,18 @@ fearless_simd::kernel!(
 
 /// `3 + timeInterval + Para_Adjustment_List[ index ][ timeInterval ]`
 /// (§ 8.2.6) for every rate index and use count below 64, so a read takes
-/// the count-dependent part of its adaptation rate with one load.
-static ADAPTATION_RATES: [[u8; 2 * MAX_CDF_COUNT as usize]; PARA_ADJUSTMENT_LIST.len()] = {
-    let mut rates = [[0; 2 * MAX_CDF_COUNT as usize]; PARA_ADJUSTMENT_LIST.len()];
+/// the count-dependent part of its adaptation rate with one load. The rows
+/// past the list repeat row 0, so a masked index is always in bounds.
+const RATE_ROWS: usize = PARA_ADJUSTMENT_LIST.len().next_power_of_two();
+static ADAPTATION_RATES: [[u8; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS] = {
+    let mut rates = [[0; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS];
     let mut index = 0;
     while index < rates.len() {
+        let list = if index < PARA_ADJUSTMENT_LIST.len() {
+            index
+        } else {
+            0
+        };
         let mut count = 0;
         while count < rates[index].len() {
             let time_interval = if count > 31 {
@@ -279,7 +286,7 @@ static ADAPTATION_RATES: [[u8; 2 * MAX_CDF_COUNT as usize]; PARA_ADJUSTMENT_LIST
                 0
             };
             rates[index][count] =
-                (3 + time_interval as i32 + PARA_ADJUSTMENT_LIST[index][time_interval]) as u8;
+                (3 + time_interval as i32 + PARA_ADJUSTMENT_LIST[list][time_interval]) as u8;
             count += 1;
         }
         index += 1;
@@ -890,6 +897,7 @@ impl<'a> SymbolDecoder<'a> {
         let rate_index = cdf[N - 1].to_i32();
         let Some(rates) = usize::try_from(rate_index)
             .ok()
+            .filter(|&index| index < PARA_ADJUSTMENT_LIST.len())
             .and_then(|index| ADAPTATION_RATES.get(index))
         else {
             return Err(
@@ -935,6 +943,67 @@ impl<'a> SymbolDecoder<'a> {
         }
 
         Ok(Symbol::new(symbol as u8))
+    }
+
+    /// The configured CDF update mode, the `UPDATE` of [`Self::read_trusted`].
+    #[must_use]
+    pub const fn cdf_update_mode(&self) -> CdfUpdateMode {
+        self.config.cdf_update
+    }
+
+    /// Decodes one symbol of an `L`-entry row the caller owns and keeps
+    /// within the § 8.2.6 invariants (spec defaults adapted only by reads),
+    /// with `UPDATE` equal to [`Self::cdf_update_mode`] being enabled. It
+    /// skips every per-read check in either validation mode; a row outside
+    /// the invariants decodes panic-free to an arbitrary symbol.
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    pub fn read_trusted<const L: usize, const UPDATE: bool>(&mut self, cdf: &mut [u16; L]) -> u32 {
+        match L {
+            3 => self.read_trusted_arity::<2, UPDATE>(cdf),
+            4 => self.read_trusted_arity::<3, UPDATE>(cdf),
+            5 => self.read_trusted_arity::<4, UPDATE>(cdf),
+            6 => self.read_trusted_arity::<5, UPDATE>(cdf),
+            7 => self.read_trusted_arity::<6, UPDATE>(cdf),
+            8 => self.read_trusted_arity::<7, UPDATE>(cdf),
+            _ => self.read_trusted_arity::<8, UPDATE>(cdf),
+        }
+    }
+
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn read_trusted_arity<const N: usize, const UPDATE: bool>(&mut self, cdf: &mut [u16]) -> u32 {
+        if cdf.len() <= N {
+            return 0;
+        }
+        self.ensure_buffered(15);
+        let symbol_value = (self.dif >> SV_SHIFT) as u32;
+        let (symbol, cur, prev) = if N == 2 {
+            let f = CDF_PROB_SCALE.saturating_sub(u32::from(cdf[0]));
+            let pp = ((f >> EC_PROB_SHIFT) << 4) + PROB_INC_U32[0][0];
+            let next_cur = (((self.symbol_range >> 8) * pp) >> 7) << 3;
+            let one = u32::from(symbol_value < next_cur);
+            let keep = one.wrapping_sub(1);
+            let prev = next_cur ^ ((next_cur ^ self.symbol_range) & keep);
+            (one as usize, next_cur & keep, prev)
+        } else {
+            multi_symbol_search::<u16, N>(cdf, symbol_value, self.symbol_range)
+        };
+        let new_range = prev.wrapping_sub(cur) & 0xffff;
+        let bits = (new_range as u16).leading_zeros();
+        self.symbol_range = new_range << bits;
+        self.dif = self.dif.wrapping_sub(u64::from(cur) << SV_SHIFT) << bits;
+        self.buffered -= bits as i32;
+        self.frame_symbol_count = self.frame_symbol_count.wrapping_add(1);
+        if UPDATE {
+            let count = cdf[N];
+            let rates = &ADAPTATION_RATES[usize::from(cdf[N - 1]) & (RATE_ROWS - 1)];
+            let n_term = if N <= 3 { 1 } else { 2 };
+            let rate = u32::from(rates[usize::from(count) & (2 * MAX_CDF_COUNT as usize - 1)]);
+            u16::adapt_probabilities(cdf, N, rate + n_term, symbol);
+            cdf[N] = count + u16::from(count < MAX_CDF_COUNT as u16);
+        }
+        symbol as u32
     }
 
     /// Validates AV2 § 8.2.4 `exit_symbol()` and returns the final decoder summary.
