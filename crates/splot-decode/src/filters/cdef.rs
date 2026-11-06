@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use fearless_simd::{Level, dispatch, prelude::*, u8x16, u16x16};
+use fearless_simd::{prelude::*, u8x16, u16x16};
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
@@ -749,7 +749,7 @@ fn flat_window<S: ReconSample, const W: usize, const H: usize>(
     for row in top..top + H + 2 * CDEF_TAP_REACH {
         let samples = plane.row(row)?.get(left..)?.get(..W + 2 * CDEF_TAP_REACH)?;
         let flat = match (S::u16_slice(samples), S::u8_slice(samples)) {
-            (Some(samples), _) => dispatch!(Level::baseline(), simd => {
+            (Some(samples), _) => baseline_simd!(simd => {
                 let value = u16x16::splat(simd, value);
                 chunks_repeat(samples, |lanes| {
                     u16x16::from_slice(simd, lanes).simd_eq(value).all_true()
@@ -757,7 +757,7 @@ fn flat_window<S: ReconSample, const W: usize, const H: usize>(
             }),
             (_, Some(samples)) => {
                 let value = u8::try_from(value).ok()?;
-                dispatch!(Level::baseline(), simd => {
+                baseline_simd!(simd => {
                     let value = u8x16::splat(simd, value);
                     chunks_repeat(samples, |lanes| {
                         u8x16::from_slice(simd, lanes).simd_eq(value).all_true()
@@ -841,7 +841,7 @@ fn window_flat<
     }
     let lanes: [u16; 16] = core::array::from_fn(|lane| pad[lane % PLANES]);
     let width: [u16; 16] = core::array::from_fn(|lane| if lane < WIDTH { u16::MAX } else { 0 });
-    dispatch!(Level::baseline(), simd => {
+    baseline_simd!(simd => {
         let lanes = u16x16::from_slice(simd, &lanes);
         let diff = (0..ROWS).fold(u16x16::splat(simd, 0), |diff, row| {
             diff | (u16x16::from_slice(simd, &pad[row * STRIDE..row * STRIDE + 16]) ^ lanes)

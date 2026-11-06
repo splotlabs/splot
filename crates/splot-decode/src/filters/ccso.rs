@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use fearless_simd::{Level, Simd, dispatch, i8x16, i16x16, prelude::*, u8x16, u16x16};
+use fearless_simd::{Simd, i8x16, i16x16, prelude::*, u8x16, u16x16};
 
 use splot_core::headers::frame::{CcsoPlaneParams, FrameHeaderCore, ccso_quant_step};
 use splot_recon::{BitDepth, PlaneId, ReconSample};
@@ -537,7 +537,7 @@ fn ccso_simd_row<L: ReconSample>(
     config: &CcsoPlaneConfig,
 ) -> (usize, usize) {
     let args = (destination, center_row, offset_rows, x_start, x_end);
-    dispatch!(Level::baseline(), simd => match config.sub_x {
+    baseline_simd!(simd => match config.sub_x {
         0 => ccso_lanes_span::<_, L, 0>(simd, args, tile_clamp, config),
         1 => ccso_lanes_span::<_, L, 1>(simd, args, tile_clamp, config),
         _ => (x_end, x_end),
@@ -616,15 +616,24 @@ fn ccso_lanes_span<S: Simd, L: ReconSample, const SUB_X: usize>(
     let lookup = |index: u8x16<S>| {
         let low = index & 15;
         let signed = index.bitcast::<i8x16<S>>();
-        let mut offset = simd.swizzle_dyn_within_blocks_u8x16(tables[0], low);
-        for (block, &table) in tables.iter().enumerate().skip(1) {
-            if block >= blocks {
-                break;
-            }
-            let entries = simd.swizzle_dyn_within_blocks_u8x16(table, low);
-            offset = signed
+        let block = |offset: u8x16<S>, block: usize| {
+            let entries = simd.swizzle_dyn_within_blocks_u8x16(tables[block], low);
+            signed
                 .simd_gt(i8x16::splat(simd, 16 * block as i8 - 1))
-                .select(entries, offset);
+                .select(entries, offset)
+        };
+        let mut offset = simd.swizzle_dyn_within_blocks_u8x16(tables[0], low);
+        if blocks > 1 {
+            offset = block(offset, 1);
+            if blocks > 2 {
+                offset = block(offset, 2);
+                if blocks > 3 {
+                    offset = block(offset, 3);
+                    if blocks > 4 {
+                        offset = block(offset, 4);
+                    }
+                }
+            }
         }
         offset
     };
