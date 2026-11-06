@@ -358,6 +358,7 @@ impl<'payload> TileParser<'payload> {
         tile: &mut DecodeTileWorkUnit,
         context: &TileDecodeContext<'_, T>,
         buffers: Option<ReconRowBuffers>,
+        row_units: bool,
     ) -> ParserStep<ReconRow> {
         let tile_offset = tile.tile_byte_span().start;
         let mut buffers = buffers.unwrap_or_default();
@@ -459,8 +460,12 @@ impl<'payload> TileParser<'payload> {
                     Ok((leaf, ()))
                 };
             let mut on_published = |_: DecodedLeafPublication, ()| {};
-            walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published)
-                .map(|superblock| superblock.is_some())
+            loop {
+                match walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published) {
+                    Ok(Some(_)) if row_units && !walk.at_row_start() => {}
+                    other => break other.map(|superblock| superblock.is_some()),
+                }
+            }
         };
         recon_row.residual_planes = core::mem::take(&mut self.residual_planes);
         self.mv_grid.take_flag_log(&mut recon_row.flag_log);
@@ -514,7 +519,6 @@ impl<'payload> TileParser<'payload> {
                 chroma_smooth: self.chroma_smooth,
                 row_buffers: ReconRowBufferPool::default(),
                 traversal: crate::bitstream::tile_payload::TileTraversalStorage::default(),
-                block_decoded: TileBlockDecodedState::default(),
                 commit_block_decoded: TileBlockDecodedState::default(),
                 spent_filters: None,
             },
@@ -1190,8 +1194,7 @@ pub(in crate::prediction::inter) struct TileParseState {
     /// The smooth-mode grids this tile's intra edges are recorded in.
     y_smooth: crate::prediction::intra_edge::TileYSmoothGrid,
     chroma_smooth: crate::prediction::intra_edge::TileChromaSmoothGrid,
-    /// The tile's block-decoded grid, and the copy the commit spine reads.
-    block_decoded: TileBlockDecodedState,
+    /// The block-decoded grid the commit spine reads.
     commit_block_decoded: TileBlockDecodedState,
     /// The CDEF, GDF and CCSO tile states the last tile merged, whose grids
     /// the next tile's states are laid out on.
@@ -1206,7 +1209,8 @@ pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     surface_source: Option<std::sync::Arc<Mutex<admission::SurfaceSource<T>>>>,
     ordered: deferred_recon::InterReconScratch<T>,
     workers: InterReconScratchPool<T>,
-    batches: admission::BatchRowSlots<T>,
+    /// The ordinary walk's parsed rows waiting for their replay.
+    pending_rows: Vec<ReconRow>,
     scheduled_rows: admission::ScheduledRowSlots<T>,
     /// The decode's reusable storage, for the row sets.
     pub(in crate::prediction::inter) buffers:
@@ -1220,7 +1224,7 @@ impl<T: ReconSample> TileDecodeScratch<T> {
             surface_source: None,
             ordered,
             workers: InterReconScratchPool::default(),
-            batches: admission::BatchRowSlots::default(),
+            pending_rows: Vec::new(),
             scheduled_rows: admission::ScheduledRowSlots::default(),
             buffers: None,
         }
@@ -1850,7 +1854,7 @@ impl<'payload> TileParser<'payload> {
             .residual_planes
             .reserve_records(capacity / 16)
             .map_err(|_| inter_allocation!("producer residual records"))?;
-        let (mut row, last) = match self.next_unit(tile, context, Some(row_set)) {
+        let (mut row, last) = match self.next_unit(tile, context, Some(row_set), false) {
             ParserStep::More(row) => (row, false),
             ParserStep::Last(row) => (row, true),
         };
@@ -2067,7 +2071,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         surface_source: mut spent_surface_source,
         mut ordered,
         workers,
-        mut batches,
+        mut pending_rows,
         scheduled_rows,
         buffers,
     } = scratch;
@@ -2099,31 +2103,21 @@ pub(super) fn decode_tiles<T: ReconSample>(
             .ok_or_else(invalid_inter_tile_scheduling_state)?;
         let tile_offset = tile.tile_byte_span().start;
         reset_tile_block_decoded(
-            &mut parse_state.block_decoded,
+            &mut parse_state.commit_block_decoded,
             context.sequence.general.chroma_format_idc,
             &context.params,
             tile.mi_col_range().end as usize,
             tile.mi_row_range().end as usize,
         )?;
-        parse_state
-            .commit_block_decoded
-            .clone_from(&parse_state.block_decoded);
         let commit_block_decoded = core::mem::take(&mut parse_state.commit_block_decoded);
-        workers.ensure_workers(1);
         let reusable_surface_source = spent_surface_source.take();
-        let block_decoded = core::mem::take(&mut parse_state.block_decoded);
         let quantizer = FrameQuantizerSnapshot::capture();
         let rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
         let cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
         let unit_count = tile_unit_capacity(&rows, &cols, mi_rows, mi_cols, sb_h4);
-        let units_per_row = cols
-            .end
-            .min(mi_cols)
-            .saturating_sub(cols.start)
-            .div_ceil(sb_h4);
         let tile_mi_rows = rows;
         let tile_mi_cols = cols;
-        parse_state.row_buffers.reset(3);
+        parse_state.row_buffers.reset(admission::PARSE_AHEAD_ROWS);
         let row_buffers = core::mem::take(&mut parse_state.row_buffers);
         let (spent_cdef, spent_gdf, spent_ccso) = match parse_state.spent_filters.take() {
             Some((cdef, gdf, ccso)) => (Some(cdef), Some(gdf), Some(ccso)),
@@ -2167,18 +2161,14 @@ pub(super) fn decode_tiles<T: ReconSample>(
             tile,
             &mut resolve_state,
             tile_offset,
-            &surface_source,
             unit_count,
-            units_per_row,
             &context,
             temporal_context,
             &quantizer,
             &row_gate,
             &row_buffers,
-            &workers,
-            &block_decoded,
             &motion,
-            &mut batches,
+            &mut pending_rows,
             commit,
         )?;
         let (next_ordered, next_workspace, next_decoded, next_records, spent_block_decoded) =
@@ -2193,7 +2183,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
             frame_filter_records,
             &mut parse_state.filter_records,
         );
-        parse_state.block_decoded = block_decoded;
         parse_state.commit_block_decoded = spent_block_decoded;
         parse_state.row_buffers = row_buffers;
         spent_surface_source = Some(surface_source);
@@ -2227,7 +2216,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             surface_source: spent_surface_source,
             ordered,
             workers,
-            batches,
+            pending_rows,
             scheduled_rows,
         },
         workspace,

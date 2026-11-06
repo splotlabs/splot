@@ -168,6 +168,11 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
         self.tree.sb_mask()
     }
 
+    /// Whether the next superblock starts a new superblock row.
+    pub(crate) const fn at_row_start(&self) -> bool {
+        self.tree.at_row_start()
+    }
+
     /// Whether a neighbour grid touched a row its window had already reused.
     pub(crate) fn window_violated(&self) -> bool {
         self.tree.window_violated()
