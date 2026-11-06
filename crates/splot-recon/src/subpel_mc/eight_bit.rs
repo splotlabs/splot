@@ -43,6 +43,26 @@ pub(super) fn predict<T: ReconSample>(
     false
 }
 
+/// Stores the `Clip1` single-reference prediction of `block` into `output`
+/// rows `stride` apart, or returns `false` without writing when the block is
+/// outside the byte-lane subset.
+pub(super) fn put(
+    block: &Block<'_, u8>,
+    stage: &mut [i16],
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_avx2()
+        && fits(block)
+    {
+        avx2::put(token, block, stage, output, stride);
+        return true;
+    }
+    let _ = (block, stage, output, stride);
+    false
+}
+
 /// Predicts both blocks of a compound cell of at most four groups and
 /// stores their COMPOUND_AVERAGE into `output`, or returns `false` without
 /// writing when a block is outside the byte-lane subset.
@@ -163,13 +183,7 @@ pub(super) mod avx2 {
         ) {
             let w = block.w;
             match sink {
-                Sink::Put { output, stride } => {
-                    let stride = *stride;
-                    passes(t, block, true, stage, &mut |width, row, strip, values| {
-                        let at = row * stride + strip * width;
-                        by_width!(width, store_bytes(t, output, at, stride, values));
-                    });
-                }
+                Sink::Put { output, stride } => put_rows(t, block, stage, output, *stride),
                 Sink::PutWide { output, stride, .. } => {
                     let stride = *stride;
                     passes(t, block, true, stage, &mut |width, row, strip, values| {
@@ -203,6 +217,35 @@ pub(super) mod avx2 {
             }
         }
     );
+
+    fearless_simd::kernel!(
+        #[inline]
+        pub(super) fn put(
+            t: Avx2,
+            block: &Block<'_, u8>,
+            stage: &mut [i16],
+            output: &mut [u8],
+            stride: usize,
+        ) {
+            put_rows(t, block, stage, output, stride);
+        }
+    );
+
+    /// The `Clip1` single-reference prediction of `block` into `output`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn put_rows(
+        t: Avx2,
+        block: &Block<'_, u8>,
+        stage: &mut [i16],
+        output: &mut [u8],
+        stride: usize,
+    ) {
+        passes(t, block, true, stage, &mut |width, row, strip, values| {
+            let at = row * stride + strip * width;
+            by_width!(width, store_bytes(t, output, at, stride, values));
+        });
+    }
 
     fearless_simd::kernel!(
         #[inline]

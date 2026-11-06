@@ -18,6 +18,11 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
     output: &mut [u8],
     output_stride: usize,
 ) -> Result<()> {
+    if let Some(view) = reference.as_u8()
+        && block::put_u8(&view, params, output, output_stride)
+    {
+        return Ok(());
+    }
     validate_subpel_u8_output(params, output, output_stride)?;
     let sink = Sink::Put {
         output,
