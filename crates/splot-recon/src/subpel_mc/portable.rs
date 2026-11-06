@@ -80,9 +80,8 @@ impl Jobs {
         }
     }
 
-    /// The job pairs as job indices and coordinates; the second is `None`
-    /// past the last job.
-    fn pairs(self) -> impl Iterator<Item = (usize, usize, (usize, usize), Option<(usize, usize)>)> {
+    /// The job pairs as coordinates; the second is `None` past the last job.
+    fn pairs(self) -> impl Iterator<Item = ((usize, usize), Option<(usize, usize)>)> {
         let mut cursor = (0, 0);
         let step = move |(row, col): (usize, usize)| {
             if col + 8 < self.chunks * 8 {
@@ -95,13 +94,7 @@ impl Jobs {
             let first = cursor;
             let second = step(first);
             cursor = step(second);
-            let second_job = if job + 1 < self.count { job + 1 } else { job };
-            (
-                job,
-                second_job,
-                first,
-                (job + 1 < self.count).then_some(second),
-            )
+            (first, (job + 1 < self.count).then_some(second))
         })
     }
 }
@@ -231,7 +224,7 @@ fn copy<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>) {
     let shift = if sink.is_put() { 0 } else { 4 };
     let jobs = Jobs::new(block.w, block.h);
     let start = |(row, col): (usize, usize)| block.start(row) + col;
-    for (_, _, a, second) in jobs.pairs() {
+    for (a, second) in jobs.pairs() {
         let b = second.unwrap_or(a);
         let (low, high) = job_lanes(simd, block.source, start(a), start(b)).widen();
         let (first_lanes, second_lanes) = ((low << shift).split(), (high << shift).split());
@@ -253,7 +246,7 @@ fn horizontal<S: Simd, T: Lanes, const P: usize>(
     let put = sink.is_put();
     let jobs = Jobs::new(block.w, block.h);
     let start = |(row, col): (usize, usize)| block.start(row) + col;
-    for (_, _, a, second) in jobs.pairs() {
+    for (a, second) in jobs.pairs() {
         let b = second.unwrap_or(a);
         let sums = horizontal_sums::<S, T, P>(simd, block.source, (start(a), start(b)), &weights);
         let intermediate = round(sums, 4, 3);
@@ -277,7 +270,7 @@ fn vertical<S: Simd, T: Lanes, const P: usize>(
     let (bias, shift) = if sink.is_put() { (64, 7) } else { (4, 3) };
     let jobs = Jobs::new(block.w, block.h);
     let start = |(row, col): (usize, usize)| block.start(row) + col;
-    for (_, _, a, second) in jobs.pairs() {
+    for (a, second) in jobs.pairs() {
         let b = second.unwrap_or(a);
         let line = |k: usize| {
             job_lanes(
@@ -311,7 +304,7 @@ fn stage_rows<S: Simd, T: Lanes, const P: usize>(
     let weights = weights(simd, taps);
     let jobs = Jobs::new(block.w, rows);
     let start = |(row, col): (usize, usize)| block.start(row) + col;
-    for (_, _, a, second) in jobs.pairs() {
+    for (a, second) in jobs.pairs() {
         let b = second.unwrap_or(a);
         let (low, high) = round(
             horizontal_sums::<S, T, P>(simd, block.source, (start(a), start(b)), &weights),
@@ -358,7 +351,7 @@ fn filter_stage<S: Simd, const P: usize>(
             .and_then(<[i16]>::first_chunk::<64>)
             .unwrap_or(&zero)
     };
-    for (_, _, a, second) in jobs.pairs() {
+    for (a, second) in jobs.pairs() {
         let (first, other) = (window(a), window(second.unwrap_or(a)));
         let line = |k: usize| {
             let lanes = |window: &[i16; 64]| {

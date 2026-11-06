@@ -60,7 +60,7 @@ impl<T> PlaneBuf<T> {
 
 impl<T: Copy> PlaneBuf<T> {
     const SAMPLES_PER_BLOCK: usize = {
-        assert!(size_of::<T>() > 0 && PLANE_ALIGNMENT % size_of::<T>() == 0);
+        assert!(size_of::<T>() > 0 && PLANE_ALIGNMENT.is_multiple_of(size_of::<T>()));
         assert!(align_of::<T>() <= PLANE_ALIGNMENT);
         PLANE_ALIGNMENT / size_of::<T>()
     };
@@ -222,8 +222,7 @@ mod tests {
         want.extend_from_slice(&[1, 2]);
         assert_eq!(ten.as_slice(), want.as_slice());
         assert!(ten.capacity() >= 42);
-        ten.try_reserve_exact(1000)
-            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(ten.try_reserve_exact(1000).is_ok());
         assert!(ten.capacity() >= 1042);
     }
 }
