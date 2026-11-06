@@ -26,25 +26,6 @@ use crate::Result;
 use splot_core::span::ByteOffset;
 use splot_recon::math::{clip3, round2_i32};
 
-/// Runs `$body` with the baseline SIMD token bound to `$simd`. On x86-64 the
-/// AVX2 token is taken directly, so a small per-row kernel inlines into its
-/// caller instead of going through the out-of-line `dispatch!` trampoline.
-#[cfg(target_arch = "x86_64")]
-macro_rules! baseline_simd {
-    ($simd:ident => $body:expr) => {
-        match fearless_simd::Level::baseline().as_avx2() {
-            Some($simd) => $body,
-            None => fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body),
-        }
-    };
-}
-#[cfg(not(target_arch = "x86_64"))]
-macro_rules! baseline_simd {
-    ($simd:ident => $body:expr) => {
-        fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body)
-    };
-}
-
 mod blend;
 mod compound_average;
 mod optflow;

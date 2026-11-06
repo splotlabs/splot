@@ -75,35 +75,101 @@ fn derived_alpha() -> CflParams {
     CflParams::DerivedAlpha
 }
 
-#[test]
-fn missing_cfl_luma_ac_preserves_prediction() {
-    let frame = workspace(PixelFormat::Yuv420);
-    let mut prediction = vec![21, 22];
-    let before = prediction.clone();
+/// Binds `$luma` to the [`CflLuma`] of `$frame` and filter `$filter`.
+macro_rules! with_luma {
+    ($frame:expr, $filter:expr, |$luma:ident| $body:expr) => {{
+        let frame = $frame;
+        let plane = frame.plane(PlaneId::Y).unwrap();
+        let filter = cfl_filter_index($filter).unwrap();
+        if let Some(samples) = ReconSample::u8_slice(plane.samples()) {
+            let $luma = CflLuma::<_, RUNTIME_WEIGHTS>::new(frame, samples, filter).unwrap();
+            $body
+        } else {
+            let samples = ReconSample::u16_slice(plane.samples()).unwrap();
+            let $luma = CflLuma::<_, RUNTIME_WEIGHTS>::new(frame, samples, filter).unwrap();
+            $body
+        }
+    }};
+}
 
-    let result = cfl_prediction_into(
-        &frame,
-        PlaneId::U,
+#[allow(clippy::too_many_arguments)]
+fn q3<T: ReconSample>(
+    frame: &CurrentFrameWorkspace<T>,
+    filter: u8,
+    chroma_x: usize,
+    chroma_y: usize,
+    clamp_x: bool,
+    clamp_y: bool,
+    min_luma_ref_y: Option<isize>,
+) -> i32 {
+    with_luma!(frame, filter, |luma| {
+        let rows = luma.row(chroma_y, clamp_y, min_luma_ref_y).unwrap();
+        luma.q3(&rows, chroma_x, clamp_x)
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cfl_block(
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    sb_mib: usize,
+    bit_depth: BitDepth,
+) -> CflBlock {
+    CflBlock::new(
+        x,
+        y,
+        width.trailing_zeros(),
+        height.trailing_zeros(),
         0,
-        0,
-        2,
-        2,
-        derived_alpha(),
-        0,
-        4,
-        NeighbourAvailability::new(false, false, 0, 0),
-        BitDepth::Eight,
-        None,
+        sb_mib,
+        bit_depth,
+    )
+    .unwrap()
+}
+
+/// The luma edges, `lumaAvg` and luma AC of a block.
+#[allow(clippy::too_many_arguments)]
+fn analyse<T: ReconSample>(
+    frame: &CurrentFrameWorkspace<T>,
+    block: CflBlock,
+    filter: u8,
+    neighbours: NeighbourAvailability,
+) -> (CflLumaEdges, i32, Vec<i32>) {
+    let coeffs = zero_block();
+    let planes = [(PlaneId::U, coeffs.view(&[]), neighbours)];
+    let mut edges = CflLumaEdges::default();
+    let mut ac = Vec::new();
+    let average = with_luma!(frame, filter, |luma| baseline_simd!(simd => {
+        edges.gather(simd, &luma, &planes, block).unwrap();
+        let average = edges.average_q3(block, neighbours).unwrap();
+        luma.fill_ac(simd, block, average, &mut ac).unwrap();
+        average
+    }));
+    (edges, average, ac)
+}
+
+fn explicit_prediction(
+    dc: i32,
+    alpha: i8,
+    ac: &[i32],
+    width: usize,
+    bit_depth: BitDepth,
+) -> Vec<u16> {
+    let mut prediction = vec![0u16; ac.len()];
+    let max = i32::from(bit_depth.max_sample());
+    cfl_predict_block(
+        dc,
+        i32::from(alpha) * CFL_ALPHA_SCALE,
+        max,
+        ac,
+        width,
         &mut prediction,
-    );
-
-    assert!(matches!(
-        result,
-        Err(GeneralIntraResidualError::InvalidReconstructionState {
-            context: "CfL luma AC"
-        })
-    ));
-    assert_eq!(prediction, before);
+        width,
+    )
+    .unwrap();
+    prediction
 }
 
 #[test]
@@ -196,33 +262,29 @@ fn invalid_mhccp_filter_preserves_prediction_scratch() {
 
 #[test]
 fn cfl_420_simd_matches_scalar_at_block_and_frame_edges() {
-    let plane_width = 130;
-    let plane_height = 9;
+    let mut frame = workspace_10bit_420(130, 10);
+    let size = frame.plane(PlaneId::Y).unwrap().storage_size();
+    let (plane_width, plane_height) = (size.width(), size.height());
     let luma: Vec<u16> = (0..plane_width * plane_height)
         .map(|index| ((index * 17 + 11) & 1023) as u16)
         .collect();
+    for y in 0..plane_height {
+        for x in 0..plane_width {
+            frame
+                .set_reconstructed_sample(PlaneId::Y, x, y, luma[y * plane_width + x])
+                .unwrap();
+        }
+    }
     let average_q3 = 37;
     for (filter, filter_weights) in CFL_FILTERS_420.iter().enumerate() {
-        for (x, y, width, height) in [(0, 0, 32, 4), (1, 1, 64, 3), (31, 2, 32, 3), (50, 4, 16, 2)]
+        for (x, y, width, height) in [(0, 0, 32, 4), (1, 1, 64, 4), (31, 2, 32, 4), (50, 4, 16, 4)]
         {
+            let block = cfl_block(x, y, width, height, 16, BitDepth::Ten);
             let mut actual = Vec::new();
-            let geometry = CflAcGeometry {
-                origin_y: 0,
-                stride: plane_width,
-                plane_width,
-                plane_height,
-                x,
-                y,
-                width,
-                height,
-            };
-            assert!(fill_cfl_luma_ac_420_any(
-                Some(filter),
-                &luma,
-                geometry,
-                average_q3,
-                &mut actual,
-            ));
+            with_luma!(&frame, filter as u8, |luma| baseline_simd!(simd => {
+                luma.fill_ac(simd, block, average_q3, &mut actual)
+            }))
+            .unwrap();
             let mut expected = Vec::with_capacity(width * height);
             for row in 0..height {
                 let luma_y = 2 * (y + row).min((plane_height - 1) >> 1);
@@ -257,7 +319,6 @@ fn cfl_420_simd_matches_scalar_at_block_and_frame_edges() {
         }
     }
 }
-
 #[test]
 fn cfl_luma_sample_repeats_last_downsampled_row_at_frame_edge() {
     let mut frame = workspace_sized(PixelFormat::Yuv420, 8, 6);
@@ -268,12 +329,10 @@ fn cfl_luma_sample_repeats_last_downsampled_row_at_frame_edge() {
         .fill_rect(PlaneId::Y, PlaneRect::new(0, 5, 8, 1).unwrap(), 200)
         .unwrap();
 
-    let luma = CflLuma::new(&frame, 1).unwrap();
-    let last = luma.q3(1, 2, false, false, None).unwrap();
+    let last = q3(&frame, 1, 1, 2, false, false, None);
     assert_eq!(last, 1_200);
-    assert_eq!(luma.q3(1, 3, false, false, None).unwrap(), last);
+    assert_eq!(q3(&frame, 1, 1, 3, false, false, None), last);
 }
-
 #[test]
 fn cfl_above_average_uses_block_left_not_internal_64_pixel_boundaries() {
     let mut frame = workspace_10bit_420(256, 256);
@@ -291,78 +350,24 @@ fn cfl_above_average_uses_block_left_not_internal_64_pixel_boundaries() {
         .unwrap();
 
     let min_luma_ref_y = cfl_above_min_luma_ref_y(33, 32, PixelFormat::Yuv420);
-    let luma = CflLuma::new(&frame, 1).unwrap();
-    assert_eq!(luma.q3(32, 32, true, false, min_luma_ref_y).unwrap(), 800);
-    assert_eq!(luma.q3(64, 32, false, false, min_luma_ref_y).unwrap(), 833);
+    assert_eq!(q3(&frame, 1, 32, 32, true, false, min_luma_ref_y), 800);
+    assert_eq!(q3(&frame, 1, 64, 32, false, false, min_luma_ref_y), 833);
 
-    let average =
-        cfl_luma_average_q3(&luma, 32, 33, 64, 32, 32, interior(), BitDepth::Ten).unwrap();
+    let block = cfl_block(32, 33, 64, 32, 32, BitDepth::Ten);
+    let (_, average, luma_ac) = analyse(&frame, block, 1, interior());
     assert_eq!(average, 801);
-
-    let tile_start = cfl_luma_average_q3(
-        &luma,
-        32,
-        33,
-        64,
-        32,
-        32,
-        NeighbourAvailability::new(false, false, 0, 0),
-        BitDepth::Ten,
-    )
-    .unwrap();
+    let none = NeighbourAvailability::new(false, false, 0, 0);
+    let (_, tile_start, _) = analyse(&frame, block, 1, none);
     assert_eq!(tile_start, i32::from(8u16 << (BitDepth::Ten.bits() - 1)));
-    let left_only = cfl_luma_average_q3(
-        &luma,
-        32,
-        33,
-        64,
-        32,
-        32,
-        NeighbourAvailability::new(false, true, 0, 0),
-        BitDepth::Ten,
-    )
-    .unwrap();
+    let left = NeighbourAvailability::new(false, true, 0, 0);
+    let (_, left_only, _) = analyse(&frame, block, 1, left);
     assert_ne!(left_only, average);
 
-    let mut luma_ac = Vec::new();
-    prepare_cfl_luma_ac_into(
-        &frame,
-        32,
-        33,
-        64,
-        32,
-        1,
-        32,
-        interior(),
-        BitDepth::Ten,
-        &mut luma_ac,
-    )
-    .unwrap();
     assert_eq!(luma_ac[65], 31);
-
-    let params = CflParams::Explicit {
-        alpha_u: -1,
-        alpha_v: 0,
-    };
-    let mut prediction = Vec::new();
-    apply_cfl_prediction(
-        &frame,
-        PlaneId::U,
-        32,
-        33,
-        64,
-        32,
-        params,
-        1,
-        32,
-        interior(),
-        BitDepth::Ten,
-        508,
-        &luma_ac,
-        &mut prediction,
-    )
-    .unwrap();
-    assert_eq!(prediction[65], 508);
+    assert_eq!(
+        explicit_prediction(508, -1, &luma_ac, 64, BitDepth::Ten)[65],
+        508
+    );
 }
 
 #[test]
@@ -384,57 +389,23 @@ fn cfl_left_average_uses_block_top_not_internal_64_pixel_boundaries() {
         .set_reconstructed_sample(PlaneId::U, 32, 32, 200)
         .unwrap();
 
-    let luma = CflLuma::new(&frame, 2).unwrap();
-    assert_eq!(luma.q3(32, 28, false, true, None).unwrap(), 800);
-    assert_eq!(luma.q3(32, 32, false, false, None).unwrap(), 1_600);
+    assert_eq!(q3(&frame, 2, 32, 28, false, true, None), 800);
+    assert_eq!(q3(&frame, 2, 32, 32, false, false, None), 1_600);
 
-    let average =
-        cfl_luma_average_q3(&luma, 33, 28, 16, 64, 32, interior(), BitDepth::Ten).unwrap();
+    let block = cfl_block(33, 28, 16, 64, 32, BitDepth::Ten);
+    let (edges, average, luma_ac) = analyse(&frame, block, 2, interior());
     assert_eq!(average, 816);
-
-    let mut luma_ac = Vec::new();
-    prepare_cfl_luma_ac_into(
-        &frame,
-        33,
-        28,
-        16,
-        64,
-        2,
-        32,
-        interior(),
-        BitDepth::Ten,
-        &mut luma_ac,
-    )
-    .unwrap();
     assert_eq!(luma_ac[4 * 16], -16);
     assert_eq!(
-        derive_cfl_alpha_q3(&frame, PlaneId::U, 33, 28, 16, 64, 2, 32, interior()).unwrap(),
+        edges
+            .derive_alpha_q3(&frame, PlaneId::U, block, interior())
+            .unwrap(),
         255
     );
-
-    let params = CflParams::Explicit {
-        alpha_u: -16,
-        alpha_v: 0,
-    };
-    let mut prediction = Vec::new();
-    apply_cfl_prediction(
-        &frame,
-        PlaneId::U,
-        33,
-        28,
-        16,
-        64,
-        params,
-        2,
-        32,
-        interior(),
-        BitDepth::Ten,
-        508,
-        &luma_ac,
-        &mut prediction,
-    )
-    .unwrap();
-    assert_eq!(prediction[4 * 16], 512);
+    assert_eq!(
+        explicit_prediction(508, -16, &luma_ac, 16, BitDepth::Ten)[4 * 16],
+        512
+    );
 }
 
 #[test]
@@ -457,11 +428,14 @@ fn cfl_derived_alpha_above_uses_transform_local_boundary() {
         .unwrap();
 
     let min_luma_ref_y = cfl_above_min_luma_ref_y(33, 32, PixelFormat::Yuv420);
-    let luma = CflLuma::new(&frame, 1).unwrap();
-    assert_eq!(luma.q3(28, 32, true, false, min_luma_ref_y).unwrap(), 800);
-    assert_eq!(luma.q3(32, 32, false, false, min_luma_ref_y).unwrap(), 900);
+    assert_eq!(q3(&frame, 1, 28, 32, true, false, min_luma_ref_y), 800);
+    assert_eq!(q3(&frame, 1, 32, 32, false, false, min_luma_ref_y), 900);
+    let block = cfl_block(28, 33, 64, 16, 32, BitDepth::Ten);
+    let (edges, _, _) = analyse(&frame, block, 1, interior());
     assert_eq!(
-        derive_cfl_alpha_q3(&frame, PlaneId::U, 28, 33, 64, 16, 1, 32, interior()).unwrap(),
+        edges
+            .derive_alpha_q3(&frame, PlaneId::U, block, interior())
+            .unwrap(),
         255
     );
 }
@@ -518,110 +492,52 @@ fn cfl_luma_sample_uses_422_and_444_filters() {
             )
             .unwrap();
 
-        assert_eq!(
-            CflLuma::new(&frame, 0)
-                .unwrap()
-                .q3(1, 1, false, false, None)
-                .unwrap(),
-            expected
-        );
+        assert_eq!(q3(&frame, 0, 1, 1, false, false, None), expected);
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mhccp_geometry<T: ReconSample>(
+    frame: &CurrentFrameWorkspace<T>,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    sb_mib: usize,
+    neighbours: NeighbourAvailability,
+) -> core::result::Result<(usize, usize, usize, usize), GeneralIntraResidualError> {
+    let block = cfl_block(x, y, width, height, sb_mib, BitDepth::Eight);
+    MhccpGeometry::new(frame, PlaneId::U, block, neighbours)
+        .map(|refs| (refs.ref_width, refs.ref_height, refs.above, refs.left))
 }
 
 #[test]
 fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
     let frame = workspace_sized(PixelFormat::Yuv420, 128, 128);
-
-    let bottom_extended = mhccp_references(
-        &frame,
-        PlaneId::U,
-        32,
-        0,
-        16,
-        4,
-        0,
-        16,
-        NeighbourAvailability::new(false, true, 0, 1),
-        0,
-        &mut Default::default(),
-        false,
-    )
-    .unwrap();
+    let bottom = NeighbourAvailability::new(false, true, 0, 1);
+    let right = NeighbourAvailability::new(true, false, 1, 0);
     assert_eq!(
-        (
-            bottom_extended.width,
-            bottom_extended.height,
-            bottom_extended.above,
-            bottom_extended.left
-        ),
+        mhccp_geometry(&frame, 32, 0, 16, 4, 16, bottom).unwrap(),
         (18, 8, 0, 2)
     );
-
-    let right_extended = mhccp_references(
-        &frame,
-        PlaneId::U,
-        0,
-        4,
-        4,
-        16,
-        0,
-        16,
-        NeighbourAvailability::new(true, false, 1, 0),
-        0,
-        &mut Default::default(),
-        false,
-    )
-    .unwrap();
     assert_eq!(
-        (
-            right_extended.width,
-            right_extended.height,
-            right_extended.above,
-            right_extended.left
-        ),
+        mhccp_geometry(&frame, 0, 4, 4, 16, 16, right).unwrap(),
         (8, 18, 2, 0)
     );
-
-    let threshold_not_extended = mhccp_references(
-        &frame,
-        PlaneId::U,
-        8,
-        0,
-        8,
-        2,
-        0,
-        16,
-        NeighbourAvailability::new(false, true, 0, 1),
-        0,
-        &mut Default::default(),
-        false,
-    )
-    .unwrap();
-    assert_eq!(threshold_not_extended.height, 2);
+    let yuv444 = workspace_sized(PixelFormat::Yuv444, 128, 128);
+    assert_eq!(
+        mhccp_geometry(&yuv444, 8, 0, 8, 4, 16, bottom).unwrap().1,
+        4
+    );
 }
 
 #[test]
 fn mhccp_reference_extensions_use_non_420_subsampling() {
     for pixel_format in [PixelFormat::Yuv422, PixelFormat::Yuv444] {
         let frame = workspace_sized(pixel_format, 128, 128);
-        let refs = mhccp_references(
-            &frame,
-            PlaneId::U,
-            32,
-            0,
-            16,
-            8,
-            0,
-            16,
-            NeighbourAvailability::new(false, true, 0, 1),
-            0,
-            &mut Default::default(),
-            false,
-        )
-        .unwrap();
-
+        let bottom = NeighbourAvailability::new(false, true, 0, 1);
         assert_eq!(
-            (refs.width, refs.height, refs.above, refs.left),
+            mhccp_geometry(&frame, 32, 0, 16, 8, 16, bottom).unwrap(),
             (18, 12, 0, 2)
         );
     }
@@ -629,89 +545,47 @@ fn mhccp_reference_extensions_use_non_420_subsampling() {
 
 #[test]
 fn mhccp_bottom_edge_keeps_full_prediction_with_clipped_reference_extent() {
-    let frame = workspace_sized(PixelFormat::Yuv420, 1920, 1080);
-    let mut prediction = Vec::new();
-    let mut references = Default::default();
-
-    mhccp_prediction_into(
-        &frame,
+    let mut frame = workspace_sized(PixelFormat::Yuv420, 1920, 1080);
+    let mut scratch = crate::pipeline::general_intra::GeneralIntraReconScratch::default();
+    frame
+        .fill_rect(PlaneId::U, PlaneRect::new(128, 528, 32, 12).unwrap(), 77)
+        .unwrap();
+    reconstruct_general_intra_chroma_cfl_block_into(
+        &mut scratch,
+        &mut frame,
+        zero_block().view(&[]),
         PlaneId::U,
         128,
         528,
-        32,
-        16,
-        CflMultiDirection::Direct,
+        5,
+        4,
+        0,
+        CflParams::Multi {
+            direction: CflMultiDirection::Direct,
+        },
         0,
         32,
-        NeighbourAvailability::new(true, true, 0, 0),
+        interior(),
         BitDepth::Eight,
-        &mut prediction,
-        &mut references,
-        false,
     )
     .unwrap();
-
-    assert_eq!(prediction.len(), 32 * 16);
-    assert_eq!(prediction, vec![0; 32 * 16]);
+    for y in 528..540 {
+        for x in 128..160 {
+            assert_eq!(frame.reconstructed_sample(PlaneId::U, x, y).unwrap(), 0);
+        }
+    }
 }
 
 #[test]
 fn mhccp_rejects_reference_origin_outside_frame() {
     let frame = workspace_sized(PixelFormat::Yuv420, 1920, 1080);
-    let mut references = [vec![11, 12], vec![21, 22]];
-    let before = references.clone();
-    let result = mhccp_references(
-        &frame,
-        PlaneId::U,
-        960,
-        0,
-        32,
-        16,
-        0,
-        32,
-        NeighbourAvailability::new(false, true, 0, 0),
-        0,
-        &mut references,
-        false,
-    );
-
+    let left = NeighbourAvailability::new(false, true, 0, 0);
     assert!(matches!(
-        result,
+        mhccp_geometry(&frame, 960, 0, 32, 16, 32, left),
         Err(GeneralIntraResidualError::InvalidReconstructionState {
             context: "MHCCP reference geometry"
         })
     ));
-    assert_eq!(references, before);
-}
-
-#[test]
-fn mhccp_v_plane_reuses_u_plane_luma_references() {
-    let mut frame = workspace_10bit_420(64, 64);
-    for (plane, rect, value) in [
-        (PlaneId::Y, PlaneRect::new(0, 0, 64, 64).unwrap(), 300),
-        (PlaneId::Y, PlaneRect::new(10, 0, 7, 64).unwrap(), 700),
-        (PlaneId::Y, PlaneRect::new(0, 13, 64, 5).unwrap(), 90),
-        (PlaneId::U, PlaneRect::new(0, 0, 32, 32).unwrap(), 400),
-        (PlaneId::V, PlaneRect::new(0, 0, 32, 32).unwrap(), 600),
-        (PlaneId::V, PlaneRect::new(5, 0, 3, 32).unwrap(), 650),
-    ] {
-        frame.fill_rect(plane, rect, value).unwrap();
-    }
-    let neighbours = NeighbourAvailability::new(true, true, 1, 1);
-    for mh_dir in 0..3 {
-        let refs = |plane, scratch: &mut [Vec<u16>; 2], luma_ready| {
-            mhccp_references(
-                &frame, plane, 8, 8, 8, 8, 2, 16, neighbours, mh_dir, scratch, luma_ready,
-            )
-            .unwrap()
-        };
-        let mut scratch = Default::default();
-        let u = refs(PlaneId::U, &mut scratch, false);
-        scratch = [u.luma, u.chroma];
-        let reused = refs(PlaneId::V, &mut scratch, true);
-        let fresh = refs(PlaneId::V, &mut Default::default(), false);
-        assert_eq!((reused.luma, reused.chroma), (fresh.luma, fresh.chroma));
-    }
 }
 
 fn lcg(state: &mut u64) -> usize {
@@ -721,20 +595,111 @@ fn lcg(state: &mut u64) -> usize {
     (*state >> 33) as usize
 }
 
+fn random_frame_10bit(state: &mut u64, width: usize, height: usize) -> CurrentFrameWorkspace<u16> {
+    let mut frame = workspace_10bit_420(width, height);
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let size = frame.plane(plane).unwrap().storage_size();
+        for y in 0..size.height() {
+            for x in 0..size.width() {
+                let sample = (lcg(state) % 1024) as u16;
+                frame.set_reconstructed_sample(plane, x, y, sample).unwrap();
+            }
+        }
+    }
+    frame
+}
+
+#[test]
+fn cfl_pair_matches_single_plane_reconstruction() {
+    let source = || random_frame_10bit(&mut 5, 96, 80);
+    let neighbours = NeighbourAvailability::new(true, true, 2, 1);
+    let mut scratch = crate::pipeline::general_intra::GeneralIntraReconScratch::default();
+    let block = zero_block();
+    for params in [
+        CflParams::Explicit {
+            alpha_u: 5,
+            alpha_v: -3,
+        },
+        CflParams::DerivedAlpha,
+        CflParams::Multi {
+            direction: CflMultiDirection::Direct,
+        },
+        CflParams::Multi {
+            direction: CflMultiDirection::Above,
+        },
+        CflParams::Multi {
+            direction: CflMultiDirection::Left,
+        },
+    ] {
+        for (x, y, log2_width, log2_height) in [(8, 8, 3, 3), (4, 12, 2, 3), (16, 4, 4, 2)] {
+            let mut pair = source();
+            reconstruct_general_intra_chroma_cfl_pair_into(
+                &mut scratch,
+                &mut pair,
+                block.view(&[]),
+                block.view(&[]),
+                x,
+                y,
+                log2_width,
+                log2_height,
+                0,
+                params,
+                1,
+                16,
+                neighbours,
+                neighbours,
+                BitDepth::Ten,
+            )
+            .unwrap();
+            let mut single = source();
+            for plane in [PlaneId::U, PlaneId::V] {
+                reconstruct_general_intra_chroma_cfl_block_into(
+                    &mut scratch,
+                    &mut single,
+                    block.view(&[]),
+                    plane,
+                    x,
+                    y,
+                    log2_width,
+                    log2_height,
+                    0,
+                    params,
+                    1,
+                    16,
+                    neighbours,
+                    BitDepth::Ten,
+                )
+                .unwrap();
+            }
+            for plane in [PlaneId::U, PlaneId::V] {
+                assert_eq!(
+                    pair.plane(plane).unwrap().samples(),
+                    single.plane(plane).unwrap().samples(),
+                    "{params:?} {plane:?} x={x} y={y}"
+                );
+            }
+            assert_ne!(
+                pair.plane(PlaneId::U).unwrap().samples(),
+                source().plane(PlaneId::U).unwrap().samples()
+            );
+        }
+    }
+}
+
 #[test]
 fn cfl_predict_lanes_match_scalar_over_random_inputs() {
     let mut state = 7;
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
         let max = i32::from(bit_depth.max_sample());
         for _ in 0..400 {
-            let len = lcg(&mut state) % 70;
+            let len = 1 + lcg(&mut state) % 70;
             let dc = (lcg(&mut state) % (max as usize + 1)) as i32;
             let alpha_q3 = (lcg(&mut state) % 65_536) as i32 - 32_768;
             let luma_ac: Vec<i32> = (0..len)
                 .map(|_| (lcg(&mut state) % (16 * max as usize + 1)) as i32 - 8 * max)
                 .collect();
             let mut actual = vec![0u16; len];
-            cfl_predict_lanes(dc, alpha_q3, max, &luma_ac, &mut actual);
+            cfl_predict_block(dc, alpha_q3, max, &luma_ac, len, &mut actual, len).unwrap();
             let expected: Vec<u16> = luma_ac
                 .iter()
                 .map(|&ac| cfl_predict(dc, alpha_q3, max, ac) as u16)
@@ -744,66 +709,75 @@ fn cfl_predict_lanes_match_scalar_over_random_inputs() {
     }
 }
 
+/// [`CflLuma::q3_run`] over chroma row `y - 1` with the 4:2:0 filter `F`.
+#[allow(clippy::too_many_arguments)]
+fn specialised_run<const F: usize>(
+    frame: &CurrentFrameWorkspace<u16>,
+    y: usize,
+    clamp_y: bool,
+    min_luma_ref_y: Option<isize>,
+    x0: usize,
+    clamp_first: bool,
+    offset: i32,
+    len: usize,
+) -> Vec<i32> {
+    let samples = frame.plane(PlaneId::Y).unwrap().samples();
+    let luma = CflLuma::<_, F>::new(frame, samples, F).unwrap();
+    let rows = luma.row(y - 1, clamp_y, min_luma_ref_y).unwrap();
+    let mut run = vec![0; len];
+    baseline_simd!(simd => luma.q3_run(simd, &rows, x0, clamp_first, offset, &mut run));
+    run
+}
+
 #[test]
-fn cfl_luma_edge_sums_match_per_sample_q3_over_random_planes() {
+fn cfl_luma_runs_match_per_sample_q3_over_random_planes() {
     let mut state = 11;
-    let mut lane_columns = 0;
-    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
-        for _ in 0..40 {
-            let width = 8 + 2 * (lcg(&mut state) % 70);
-            let height = 8 + 2 * (lcg(&mut state) % 70);
-            let size = PlaneSize::new(width, height).unwrap();
-            let visible = PlaneRect::new(0, 0, width, height).unwrap();
-            let format = PixelFormat::Yuv420;
-            let info = DecodedFrameInfo::new(OutputIndex::new(0), bit_depth, format, size, visible)
-                .unwrap();
-            let mut frame = CurrentFrameWorkspace::<u16>::new(info, 0).unwrap();
-            let levels = usize::from(bit_depth.max_sample()) + 1;
-            for y in 0..height {
-                for x in 0..width {
-                    let sample = (lcg(&mut state) % levels) as u16;
-                    frame
-                        .set_reconstructed_sample(PlaneId::Y, x, y, sample)
-                        .unwrap();
-                }
-            }
-            for filter in 0..3u8 {
-                let luma = CflLuma::new(&frame, filter).unwrap();
+    let mut lane_runs = 0;
+    for _ in 0..40 {
+        let width = 8 + 2 * (lcg(&mut state) % 70);
+        let height = 8 + 2 * (lcg(&mut state) % 70);
+        let frame = random_frame_10bit(&mut state, width, height);
+        for filter in 0..3u8 {
+            with_luma!(&frame, filter, |luma| {
                 for _ in 0..20 {
-                    let x = 1 + lcg(&mut state) % (width / 2 - 1);
                     let y = 1 + lcg(&mut state) % (height / 2 - 1);
-                    let side = 1 << (1 + lcg(&mut state) % 6);
-                    let step = 1 + lcg(&mut state) % 2;
                     let min_luma_ref_y = lcg(&mut state)
                         .is_multiple_of(2)
                         .then_some(2 * y as isize - 1);
-
-                    let row = luma.row(y - 1, false, min_luma_ref_y);
-                    let (mut sum, mut count) = (0u32, 0u32);
-                    for col in (0..side).step_by(step) {
-                        sum += row.q3(x + col, col == 0).unwrap() as u32;
-                        count += 1;
-                    }
-                    assert_eq!(row.q3_sum(x, side, step).unwrap(), (sum, count));
+                    let clamp_y = lcg(&mut state).is_multiple_of(2);
+                    let rows = luma.row(y - 1, clamp_y, min_luma_ref_y).unwrap();
                     let x0 = lcg(&mut state) % (width / 2);
-                    let mut run = vec![0; (width / 2 - x0).min(side + 3)];
-                    row.q3_run(x0, false, &mut run).unwrap();
+                    let clamp_first = lcg(&mut state).is_multiple_of(2);
+                    let offset = (lcg(&mut state) % 100) as i32;
+                    let mut run = vec![0; (width / 2 - x0).min(70)];
+                    baseline_simd!(simd => luma.q3_run(simd, &rows, x0, clamp_first, offset, &mut run));
                     for (i, &q3) in run.iter().enumerate() {
-                        assert_eq!(q3, row.q3(x0 + i, false).unwrap(), "x0={x0} i={i}");
+                        let expected = luma.q3(&rows, x0 + i, clamp_first && i == 0) - offset;
+                        assert_eq!(q3, expected, "x0={x0} i={i}");
                     }
-
-                    let rows = side.div_ceil(step);
-                    let column: u32 = (0..side)
-                        .step_by(step)
-                        .map(|r| luma.q3(x - 1, y + r, false, r == 0, None).unwrap() as u32)
-                        .sum();
-                    if let Some(lanes) = cfl_420_column_sum(&luma, x - 1, y, rows, step) {
-                        assert_eq!(lanes, column, "x={x} y={y} side={side} step={step}");
-                        lane_columns += 1;
-                    }
+                    lane_runs += usize::from(x0 > 0 && run.len() > 8);
+                    let args = (
+                        y,
+                        clamp_y,
+                        min_luma_ref_y,
+                        x0,
+                        clamp_first,
+                        offset,
+                        run.len(),
+                    );
+                    let specialised = match filter {
+                        0 => specialised_run::<0>,
+                        1 => specialised_run::<1>,
+                        _ => specialised_run::<2>,
+                    };
+                    let (y, clamp_y, min, x0, clamp_first, offset, len) = args;
+                    assert_eq!(
+                        specialised(&frame, y, clamp_y, min, x0, clamp_first, offset, len),
+                        run
+                    );
                 }
-            }
+            });
         }
     }
-    assert!(lane_columns > 1_000, "{lane_columns}");
+    assert!(lane_runs > 500, "{lane_runs}");
 }
