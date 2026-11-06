@@ -6,29 +6,19 @@
 use super::*;
 
 #[test]
-fn level_masks_list_nonzero_scan_indices_in_walk_order() {
-    let mut masks = CoeffLevelMasks::default();
-    let levels = [
-        (1023, 2, 6),
-        (700, 0, 3),
-        (64, 1, 2),
-        (63, 3, 0),
-        (5, 1, 7),
-        (0, 0, 1),
-    ];
-    for (scan_index, level, tcq_state) in levels {
-        masks.record(scan_index, level, (tcq_state >> 1) & 1);
-    }
-
-    let visited: Vec<usize> = masks.nonzero_scan_indices(1024, false).collect();
-    assert_eq!(visited, [1023, 64, 63, 5]);
-    let with_dc: Vec<usize> = masks.nonzero_scan_indices(1024, true).collect();
-    assert_eq!(with_dc, [1023, 64, 63, 5, 0]);
-    let short: Vec<usize> = masks.nonzero_scan_indices(64, true).collect();
-    assert_eq!(short, [63, 5, 0]);
-
-    for (scan_index, _, tcq_state) in levels {
-        assert_eq!(masks.tcq_q0(scan_index), tcq_state & 2 != 0, "{scan_index}");
+fn nonzero_entries_round_trip_their_fields() {
+    for (pos, scan_index, level, tcq_q0, is_lf) in [
+        (0, 0, 1, 0, true),
+        (1023, 1023, 255, 1, false),
+        (37, 600, 8, 1, true),
+    ] {
+        let entry =
+            NonzeroEntry::from_raw(NonzeroEntry::new(pos, scan_index, level, tcq_q0, is_lf).0);
+        assert_eq!(entry.pos(), pos);
+        assert_eq!(entry.scan_index(), scan_index);
+        assert_eq!(entry.level(), level);
+        assert_eq!(entry.tcq_q0(), tcq_q0 == 1);
+        assert_eq!(entry.is_lf(), is_lf);
     }
 }
 

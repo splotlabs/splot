@@ -85,7 +85,7 @@ fn fsc_level_pass_on_snapshot(
     walk: FscCoeffScanWalk,
     config: CoeffFscLevelPassConfig,
 ) -> Result<NonZeroCoeffFscLevelPass, CoeffFscLevelPassError> {
-    let (eob_read, mut block) = start.into_parts();
+    let (eob_read, mut block) = start.into_parts()?;
     preflight_pass(eob_read, &block, &walk, config)?;
     block.ensure_quant_sign();
 

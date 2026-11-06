@@ -18,8 +18,8 @@ use super::super::cdf::coeff_context::{
 };
 use super::super::cdf::{CoeffCdfSelector, CoeffLevelRows, TileCdfSubset, row2};
 use super::super::coeff_state::{
-    LEVEL_GRID_LEN, LEVEL_INDEX_MASK, LEVEL_STRIDE, LevelGrid, TileCoeffStateError,
-    TransformCoeffBlockState,
+    LEVEL_GRID_LEN, LEVEL_INDEX_MASK, LEVEL_STRIDE, LevelGrid, NONZERO_LIST_LEN, NonzeroList,
+    TileCoeffStateError, TransformCoeffBlockState,
 };
 use super::NonZeroCoeffEob;
 use super::base_symbol::{CoeffBaseSymbolReadError, read_coeff_symbol};
@@ -68,6 +68,7 @@ pub(crate) struct CoeffBaseDerivedLevelPassConfig {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CoeffBaseFirstPassSummary {
     packed: u32,
+    nonzero: usize,
 }
 
 const SUMMARY_TCQ_MASK: u32 = 0b111;
@@ -84,6 +85,12 @@ impl CoeffBaseFirstPassSummary {
     #[must_use]
     pub(crate) const fn is_hidden(self) -> bool {
         ((self.packed >> SUMMARY_COUNT_SHIFT) & SUMMARY_COUNT_MASK) >= PHTHRESH as u32
+    }
+
+    /// How many leading entries of the block's nonzero list the pass wrote.
+    #[must_use]
+    pub(crate) const fn nonzero_count(self) -> usize {
+        self.nonzero
     }
 
     const fn tcq_state(self) -> usize {
@@ -115,53 +122,47 @@ impl CoeffBaseFirstPassSummary {
     }
 }
 
-/// One bit per scan index, enough for the 32x32 coefficient maximum.
-const SCAN_MASK_WORDS: usize = 16;
+/// One nonzero level of the base pass, packed for the sign and quant pass:
+/// bits 0-9 the position, 10-19 the scan index, 20-27 the level, bit 28
+/// `(tcqState >> 1) & 1` before it and bit 29 whether it is low frequency.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NonzeroEntry(u32);
 
-/// Per-scan-index facts the base pass hands to the sign and quant pass, so
-/// that pass visits only the nonzero levels.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct CoeffLevelMasks {
-    nonzero: [u64; SCAN_MASK_WORDS],
-    /// `(tcqState >> 1) & 1` before each scan index.
-    tcq_q0: [u64; SCAN_MASK_WORDS],
-}
-
-impl CoeffLevelMasks {
-    #[inline]
-    fn record(&mut self, scan_index: usize, level: u32, tcq_q0: usize) {
-        let word = (scan_index >> 6) & (SCAN_MASK_WORDS - 1);
-        let shift = scan_index & 63;
-        self.nonzero[word] |= u64::from(level != 0) << shift;
-        self.tcq_q0[word] |= (tcq_q0 as u64) << shift;
+impl NonzeroEntry {
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient record")]
+    #[inline(always)]
+    fn new(pos: usize, scan_index: usize, level: u32, tcq_q0: usize, is_lf: bool) -> Self {
+        Self(
+            (pos & 0x3ff) as u32
+                | (((scan_index & 0x3ff) as u32) << 10)
+                | ((level & 0xff) << 20)
+                | (((tcq_q0 & 1) as u32) << 28)
+                | (u32::from(is_lf) << 29),
+        )
     }
 
-    #[inline]
-    pub(crate) fn is_nonzero(&self, scan_index: usize) -> bool {
-        (self.nonzero[(scan_index >> 6) & (SCAN_MASK_WORDS - 1)] >> (scan_index & 63)) & 1 != 0
+    pub(crate) const fn from_raw(raw: u32) -> Self {
+        Self(raw)
     }
 
-    #[inline]
-    pub(crate) fn tcq_q0(&self, scan_index: usize) -> bool {
-        (self.tcq_q0[(scan_index >> 6) & (SCAN_MASK_WORDS - 1)] >> (scan_index & 63)) & 1 != 0
+    pub(crate) const fn pos(self) -> usize {
+        (self.0 & 0x3ff) as usize
     }
 
-    /// The nonzero scan indices below `eob` from high to low (the walk
-    /// order), plus scan index 0 when `with_dc`.
-    pub(crate) fn nonzero_scan_indices(
-        &self,
-        eob: usize,
-        with_dc: bool,
-    ) -> impl Iterator<Item = usize> + '_ {
-        let words = eob.div_ceil(64).min(SCAN_MASK_WORDS);
-        (0..words).rev().flat_map(move |word| {
-            let mut bits = self.nonzero[word] | u64::from(with_dc && word == 0);
-            core::iter::from_fn(move || {
-                let top = 63_u32.checked_sub(bits.leading_zeros())?;
-                bits &= !(1 << top);
-                Some(word * 64 + top as usize)
-            })
-        })
+    pub(crate) const fn scan_index(self) -> usize {
+        ((self.0 >> 10) & 0x3ff) as usize
+    }
+
+    pub(crate) const fn level(self) -> u32 {
+        (self.0 >> 20) & 0xff
+    }
+
+    pub(crate) const fn tcq_q0(self) -> bool {
+        (self.0 >> 28) & 1 != 0
+    }
+
+    pub(crate) const fn is_lf(self) -> bool {
+        (self.0 >> 29) & 1 != 0
     }
 }
 
@@ -203,19 +204,14 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
     block: &mut TransformCoeffBlockState,
-    masks: &mut CoeffLevelMasks,
 ) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
-    let (eob_read, owned_block) = start.into_parts();
+    let (eob_read, owned_block) = start.into_parts()?;
     *block = owned_block;
     preflight_pass(eob_read, block, walk, config)?;
     match (config.use_tcq, config.parity_hiding) {
-        (false, false) => {
-            dispatch_level_pass::<false, false>(cdfs, symbols, block, walk, config, masks)
-        }
-        (false, true) => {
-            dispatch_level_pass::<false, true>(cdfs, symbols, block, walk, config, masks)
-        }
-        (true, _) => dispatch_level_pass::<true, false>(cdfs, symbols, block, walk, config, masks),
+        (false, false) => dispatch_level_pass::<false, false>(cdfs, symbols, block, walk, config),
+        (false, true) => dispatch_level_pass::<false, true>(cdfs, symbols, block, walk, config),
+        (true, _) => dispatch_level_pass::<true, false>(cdfs, symbols, block, walk, config),
     }
 }
 
@@ -228,24 +224,15 @@ fn dispatch_level_pass<const TCQ: bool, const PH: bool>(
     block: &mut TransformCoeffBlockState,
     walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
-    masks: &mut CoeffLevelMasks,
 ) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
     use CoeffTransformClass::{Horizontal, TwoD, Vertical};
     match (config.tx_class, config.plane == 0) {
-        (TwoD, true) => level_pass::<0, true, TCQ, PH>(cdfs, symbols, block, walk, config, masks),
-        (TwoD, false) => level_pass::<0, false, TCQ, PH>(cdfs, symbols, block, walk, config, masks),
-        (Horizontal, true) => {
-            level_pass::<1, true, TCQ, PH>(cdfs, symbols, block, walk, config, masks)
-        }
-        (Horizontal, false) => {
-            level_pass::<1, false, TCQ, PH>(cdfs, symbols, block, walk, config, masks)
-        }
-        (Vertical, true) => {
-            level_pass::<2, true, TCQ, PH>(cdfs, symbols, block, walk, config, masks)
-        }
-        (Vertical, false) => {
-            level_pass::<2, false, TCQ, PH>(cdfs, symbols, block, walk, config, masks)
-        }
+        (TwoD, true) => level_pass::<0, true, TCQ, PH>(cdfs, symbols, block, walk, config),
+        (TwoD, false) => level_pass::<0, false, TCQ, PH>(cdfs, symbols, block, walk, config),
+        (Horizontal, true) => level_pass::<1, true, TCQ, PH>(cdfs, symbols, block, walk, config),
+        (Horizontal, false) => level_pass::<1, false, TCQ, PH>(cdfs, symbols, block, walk, config),
+        (Vertical, true) => level_pass::<2, true, TCQ, PH>(cdfs, symbols, block, walk, config),
+        (Vertical, false) => level_pass::<2, false, TCQ, PH>(cdfs, symbols, block, walk, config),
     }
 }
 
@@ -262,12 +249,10 @@ fn level_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: b
     block: &mut TransformCoeffBlockState,
     walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
-    masks: &mut CoeffLevelMasks,
 ) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
     let mut owned = symbols.snapshot();
-    let result = level_pass_on_snapshot::<CLASS, LUMA, TCQ, PH>(
-        cdfs, &mut owned, block, walk, config, masks,
-    );
+    let result =
+        level_pass_on_snapshot::<CLASS, LUMA, TCQ, PH>(cdfs, &mut owned, block, walk, config);
     symbols.restore(owned);
     result
 }
@@ -288,7 +273,6 @@ fn level_pass_on_snapshot<const CLASS: usize, const LUMA: bool, const TCQ: bool,
     block: &mut TransformCoeffBlockState,
     walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
-    masks: &mut CoeffLevelMasks,
 ) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
     let config = CoeffBaseDerivedLevelPassConfig {
         tx_class: [
@@ -299,7 +283,6 @@ fn level_pass_on_snapshot<const CLASS: usize, const LUMA: bool, const TCQ: bool,
         plane: if LUMA { 0 } else { config.plane.max(1) },
         ..config
     };
-    *masks = CoeffLevelMasks::default();
     let scan = walk.scan();
     let Some((&eob_pos, rest)) = scan.split_last() else {
         return Ok(CoeffBaseFirstPassSummary::default());
@@ -309,7 +292,7 @@ fn level_pass_on_snapshot<const CLASS: usize, const LUMA: bool, const TCQ: bool,
     let selector = base_eob_selector(eob_entry, eob_is_lf, config);
     let eob_level = u32::from(read_coeff_symbol(cdfs, symbols, selector)?) + 1;
 
-    let Some(grid) = block.level_grid_mut() else {
+    let Some((grid, list)) = block.level_grid_and_nonzero_mut() else {
         return Err(CoeffBaseDerivedLevelPassError::LevelGridUnavailable);
     };
     let rows = cdfs
@@ -320,7 +303,8 @@ fn level_pass_on_snapshot<const CLASS: usize, const LUMA: bool, const TCQ: bool,
         grid,
         first_pass: CoeffBaseFirstPassSummary::default(),
         tcq_q0: 0,
-        masks,
+        list,
+        count: 0,
         width_log2: config.tx_width_log2,
         plane: config.plane,
         rows,
@@ -332,10 +316,16 @@ fn level_pass_on_snapshot<const CLASS: usize, const LUMA: bool, const TCQ: bool,
     } else {
         pass.add_range::<CLASS, LUMA, false>(symbols, eob_grid, false, eob_level)?
     };
-    pass.finish::<TCQ, PH>(eob_index, eob_grid, eob_level);
+    pass.finish::<TCQ, PH>(
+        eob_index,
+        usize::from(eob_pos),
+        eob_grid,
+        eob_level,
+        eob_is_lf,
+    );
 
     let Some((&dc_pos, ac)) = rest.split_first() else {
-        return Ok(pass.first_pass);
+        return Ok(pass.summary());
     };
     let lf_end = lf_scan_end::<CLASS, LUMA>(config.tx_width, config.tx_height).max(1);
     let (lf, hf) = ac.split_at(ac.len().min(lf_end - 1));
@@ -354,8 +344,8 @@ fn level_pass_on_snapshot<const CLASS: usize, const LUMA: bool, const TCQ: bool,
         let level = pass.read_lf_base::<CLASS, LUMA, true>(symbols, dc_grid, 0)?;
         pass.add_range::<CLASS, LUMA, true>(symbols, dc_grid, true, level)?
     };
-    pass.finish::<TCQ, PH>(0, dc_grid, level);
-    Ok(pass.first_pass)
+    pass.finish::<TCQ, PH>(0, usize::from(dc_pos), dc_grid, level, true);
+    Ok(pass.summary())
 }
 
 /// One past the last low-frequency scan index of `get_lf_limits`
@@ -390,7 +380,7 @@ fn read_row<const L: usize>(
 }
 
 /// What the level loop reads and writes besides the symbol decoder: the
-/// level grid, the pass summary, the masks, and the CDF row arrays of the
+/// level grid, the pass summary, the nonzero list, and the CDF row arrays of the
 /// block's transform-size context.
 struct LevelPassState<'a> {
     grid: &'a mut LevelGrid,
@@ -398,13 +388,21 @@ struct LevelPassState<'a> {
     /// `(tcqState >> 1) & 1` of the next coefficient, taken from the state
     /// before the previous update so it does not wait on the last symbol.
     tcq_q0: usize,
-    masks: &'a mut CoeffLevelMasks,
+    list: &'a mut NonzeroList,
+    count: usize,
     width_log2: u32,
     plane: usize,
     rows: CoeffLevelRows<'a>,
 }
 
 impl LevelPassState<'_> {
+    fn summary(&self) -> CoeffBaseFirstPassSummary {
+        CoeffBaseFirstPassSummary {
+            nonzero: self.count,
+            ..self.first_pass
+        }
+    }
+
     #[allow(clippy::inline_always, reason = "measured: per-coefficient index")]
     #[inline(always)]
     fn grid_index(&self, pos: usize) -> usize {
@@ -592,7 +590,7 @@ impl LevelPassState<'_> {
             read_row(symbols, row)?
         };
         let level = self.add_range::<CLASS, LUMA, LF>(symbols, grid, false, level)?;
-        self.finish::<TCQ, PH>(scan_index, grid, level);
+        self.finish::<TCQ, PH>(scan_index, pos, grid, level, LF);
         Ok(())
     }
 
@@ -602,11 +600,15 @@ impl LevelPassState<'_> {
     fn finish<const TCQ: bool, const PH: bool>(
         &mut self,
         scan_index: usize,
+        pos: usize,
         grid: usize,
         level: u32,
+        is_lf: bool,
     ) {
         if level != 0 {
-            self.masks.record(scan_index, level, self.tcq_q0);
+            self.list[self.count & (NONZERO_LIST_LEN - 1)] =
+                NonzeroEntry::new(pos, scan_index, level, self.tcq_q0, is_lf).0;
+            self.count += 1;
             self.grid[grid & (LEVEL_GRID_LEN - 1)] = level as u8;
         }
         if TCQ {
@@ -642,7 +644,7 @@ fn preflight_pass(
     }
 
     let eob = eob_read.eob();
-    if walk.len() > SCAN_MASK_WORDS * 64 {
+    if walk.len() > NONZERO_LIST_LEN {
         return Err(CoeffBaseDerivedLevelPassError::ScanTooLong {
             entries: walk.len(),
         });

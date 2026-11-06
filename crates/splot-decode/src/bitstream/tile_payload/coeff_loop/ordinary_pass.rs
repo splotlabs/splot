@@ -7,22 +7,23 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::TileCdfSubset;
 use super::super::coeff_state::{
-    LEVEL_INDEX_MASK, LEVEL_STRIDE, TileCoeffContextState, TileCoeffStateError,
-    TransformCoeffBlockState,
+    TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
 };
 use super::base_level_pass::{
-    CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError, CoeffLevelMasks,
+    CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError, NonzeroEntry,
     apply_nonzero_coeff_base_derived_level_pass,
 };
 use super::branch::NonZeroCoeffBlockStart;
-use super::max_level::{CoeffMaxLevelConfig, CoeffTransformClass, derive_coeff_max_level};
+use super::max_level::{
+    CoeffMaxLevelConfig, CoeffTransformClass, derive_coeff_max_level, visible_max_level,
+};
 use super::quant_pass::{CoeffQuantPassError, validate_coeff_quant_pass_config};
 use super::quant_state::{
     CoeffQuantStateAccumulator, CoeffQuantStateConfig, NonZeroCoeffQuantState,
     apply_derived_nonzero_coeff_quant_state_step,
 };
 use super::read_quant::{CoeffReadQuantConfig, CoeffReadQuantInput, CoeffReadQuantState};
-use super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
+use super::scan_walk::{CoeffScanEntry, NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
 use super::sign_symbol::{
     CoeffSignReadError, CoeffSignReadSymbol, CoeffSignSourceDeriveConfig,
     derive_nonzero_coeff_sign_input, read_preflighted_nonzero_coeff_sign,
@@ -31,6 +32,7 @@ use super::{AllZeroCoeffBlockInput, CoeffLoopContextError, commit_nonzero_coeff_
 
 pub(crate) mod geometry;
 
+#[derive(Clone, Copy)]
 struct CoeffOrdinaryDerivedBasePassInput<'a> {
     start: NonZeroCoeffBlockStart,
     walk: &'a NonZeroCoeffScanWalk<'a>,
@@ -39,6 +41,7 @@ struct CoeffOrdinaryDerivedBasePassInput<'a> {
     lossless: bool,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct CoeffOrdinaryStateContextPassInput<'a> {
     pub(crate) start: NonZeroCoeffBlockStart,
     pub(crate) scan: &'a [u16],
@@ -50,7 +53,6 @@ pub(crate) struct CoeffOrdinaryStateContextPassInput<'a> {
 /// Per-block slots the base and sign/quant passes share by reference.
 struct CoeffOrdinaryBlockSlots {
     block: TransformCoeffBlockState,
-    masks: CoeffLevelMasks,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -133,7 +135,7 @@ fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
 ) -> Result<NonZeroCoeffQuantState, CoeffOrdinaryPassError> {
     let base_config = input.base_config;
     let sign_config = input.sign_config;
-    let CoeffOrdinaryBlockSlots { block, masks } = slots;
+    let block = &mut slots.block;
     let first_pass = apply_nonzero_coeff_base_derived_level_pass(
         cdfs,
         symbols,
@@ -141,7 +143,6 @@ fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
         input.walk,
         base_config,
         block,
-        masks,
     )?;
     let sign_derive_config = CoeffSignSourceDeriveConfig {
         plane: base_config.plane,
@@ -169,7 +170,7 @@ fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
         InterleavedSignQuantPassInput {
             block,
             walk,
-            masks,
+            nonzero: first_pass.nonzero_count(),
             sign_config: sign_derive_config,
             max_level_config: CoeffMaxLevelConfig {
                 plane: base_config.plane,
@@ -201,7 +202,6 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
     let walk = walk_nonzero_coeff_scan(&start, scan)?;
     let mut slots = CoeffOrdinaryBlockSlots {
         block: TransformCoeffBlockState::empty(),
-        masks: CoeffLevelMasks::default(),
     };
     let quant_state = apply_nonzero_coeff_ordinary_pass_with_derived_base(
         cdfs,
@@ -240,7 +240,8 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
 struct InterleavedSignQuantPassInput<'a> {
     block: &'a mut TransformCoeffBlockState,
     walk: &'a NonZeroCoeffScanWalk<'a>,
-    masks: &'a CoeffLevelMasks,
+    /// Entries the base pass wrote to the block's nonzero list.
+    nonzero: usize,
     sign_config: CoeffSignSourceDeriveConfig<'a>,
     max_level_config: CoeffMaxLevelConfig,
     config: CoeffQuantStateConfig,
@@ -282,9 +283,11 @@ fn apply_interleaved_sign_and_quant_pass(
         (Vertical, true) => pass.ac_entries::<2, true>(cdfs, symbols)?,
         (Vertical, false) => pass.ac_entries::<2, false>(cdfs, symbols)?,
     }
-    if config.is_hidden || pass.input.masks.is_nonzero(0) {
+    let dc = pass.dc_entry();
+    if config.is_hidden || dc.is_some() {
         let (sign_config, max_level_config) = (pass.input.sign_config, pass.input.max_level_config);
-        pass.entry(cdfs, symbols, 0, sign_config, max_level_config)?;
+        let tcq_q0 = dc.is_some_and(NonzeroEntry::tcq_q0);
+        pass.entry(cdfs, symbols, 0, tcq_q0, sign_config, max_level_config)?;
     }
     Ok(NonZeroCoeffQuantState::from_accumulator(pass.quant_state))
 }
@@ -296,6 +299,14 @@ struct SignQuantPass<'a> {
 }
 
 impl SignQuantPass<'_> {
+    /// The base pass lists scan index 0 last, when it is nonzero.
+    fn dc_entry(&mut self) -> Option<NonzeroEntry> {
+        let count = self.input.nonzero;
+        let (list, _, _) = self.input.block.nonzero_and_quant_mut();
+        let last = NonzeroEntry::from_raw(*list.get(count.checked_sub(1)?)?);
+        (last.scan_index() == 0).then_some(last)
+    }
+
     /// The nonzero entries above scan index 0, with the class and plane
     /// fixed so their context branches fold away.
     #[inline(never)]
@@ -342,25 +353,33 @@ impl SignQuantPass<'_> {
             tx_class,
             ..self.input.max_level_config
         };
-        let masks = self.input.masks;
         let walk = self.input.walk;
         let eob = walk.len();
-        let (grid, quant, quant_end) = self.input.block.level_and_quant_mut();
-        for scan_index in masks.nonzero_scan_indices(eob, false) {
+        let width_log2 = walk.width_log2();
+        let count = self.input.nonzero;
+        let (list, quant, quant_end) = self.input.block.nonzero_and_quant_mut();
+        let listed = list.get(..count).unwrap_or_default();
+        for entry in listed.iter().map(|&raw| NonzeroEntry::from_raw(raw)) {
+            let scan_index = entry.scan_index();
             let Some(index) = eob.checked_sub(scan_index + 1).filter(|_| scan_index > 0) else {
                 break;
             };
-            let entry = walk.entry(index);
-            let level =
-                u32::from(grid[(entry.row() * LEVEL_STRIDE + entry.col()) & LEVEL_INDEX_MASK]);
+            let pos = entry.pos();
+            let entry_pos = CoeffScanEntry::new(
+                scan_index,
+                pos,
+                pos >> width_log2,
+                pos & ((1 << width_log2) - 1),
+            );
+            let level = entry.level();
             let axis_cdf = LUMA
                 && match CLASS {
-                    1 => entry.col() == 0,
-                    2 => entry.row() == 0,
+                    1 => entry_pos.col() == 0,
+                    2 => entry_pos.row() == 0,
                     _ => false,
                 };
             let sign = if axis_cdf {
-                let input = derive_nonzero_coeff_sign_input(entry, level, sign_config);
+                let input = derive_nonzero_coeff_sign_input(entry_pos, level, sign_config);
                 read_preflighted_nonzero_coeff_sign(cdfs, symbols, input)?.sign()
             } else {
                 symbols
@@ -368,14 +387,14 @@ impl SignQuantPass<'_> {
                     .map_err(|source| CoeffSignReadError::LiteralRead { source })?
                     != 0
             };
-            let max_level = derive_coeff_max_level(entry, max_level_config);
+            let max_level = visible_max_level(entry.is_lf(), max_level_config.plane);
             let read = self
                 .read_quant_state
                 .read_one(
                     symbols,
                     index,
                     CoeffReadQuantInput {
-                        entry,
+                        entry: entry_pos,
                         level,
                         max_level,
                     },
@@ -383,12 +402,12 @@ impl SignQuantPass<'_> {
                 .map_err(CoeffQuantPassError::from)?;
             let magnitude = self
                 .quant_state
-                .ac_magnitude(index, read.quant, masks.tcq_q0(scan_index))
+                .ac_magnitude(index, read.quant, entry.tcq_q0())
                 .map_err(CoeffQuantPassError::from)? as i32;
-            if let Some(slot) = quant.get_mut(entry.pos()) {
+            if let Some(slot) = quant.get_mut(pos) {
                 *slot = if sign { -magnitude } else { magnitude };
                 if magnitude != 0 {
-                    *quant_end = (*quant_end).max(entry.pos() + 1);
+                    *quant_end = (*quant_end).max(pos + 1);
                 }
             }
         }
@@ -405,6 +424,7 @@ impl SignQuantPass<'_> {
         cdfs: &mut TileCdfSubset,
         symbols: &mut SymbolDecoder<'_>,
         scan_index: usize,
+        tcq_q0: bool,
         sign_config: CoeffSignSourceDeriveConfig<'_>,
         max_level_config: CoeffMaxLevelConfig,
     ) -> Result<(), CoeffOrdinaryPassError> {
@@ -441,8 +461,7 @@ impl SignQuantPass<'_> {
                 },
             )
             .map_err(CoeffQuantPassError::from)?;
-        self.quant_state
-            .set_tcq_q0(self.input.masks.tcq_q0(scan_index));
+        self.quant_state.set_tcq_q0(tcq_q0);
         apply_derived_nonzero_coeff_quant_state_step(
             self.input.block,
             &mut self.quant_state,

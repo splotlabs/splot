@@ -66,6 +66,7 @@ const TX_TYPE_IN_SET_INTER: [[u8; 16]; 9] = [
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
 ];
 
+#[derive(Clone, Copy)]
 struct CoeffOrdinaryStagedTxSizeDimensionsInput {
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
     start: NonZeroCoeffBlockStart,
@@ -73,6 +74,7 @@ struct CoeffOrdinaryStagedTxSizeDimensionsInput {
     lossless: bool,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct CoeffOrdinaryStagedLosslessNonZeroInput {
     pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
     pub(crate) start: NonZeroCoeffBlockStart,
