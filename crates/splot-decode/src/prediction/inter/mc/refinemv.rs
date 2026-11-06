@@ -207,7 +207,8 @@ fn search_window<T: ReconSample, const N: usize, const G: usize, const M: usize>
     let max_sample = params.bit_depth.max_sample();
     baseline_simd!(simd => {
         let horizontal = |span: &[T]| -> [u16x8<_>; G] {
-            core::array::from_fn(|group| {
+            let mut lanes = [u16x8::splat(simd, 0); G];
+            for (group, lanes) in lanes.iter_mut().enumerate() {
                 let (left, right) = if group == 0 {
                     let samples = sample_lanes(simd, span, 0).to_array();
                     let shifted = core::array::from_fn(|lane| samples[lane.saturating_sub(1)]);
@@ -219,8 +220,9 @@ fn search_window<T: ReconSample, const N: usize, const G: usize, const M: usize>
                 } else {
                     (sample_lanes(simd, span, 8 * group - 1), sample_lanes(simd, span, 8 * group))
                 };
-                left * (16 - h) + right * h
-            })
+                *lanes = left * (16 - h) + right * h;
+            }
+            lanes
         };
         let mut write = |row: usize, top: [u16x8<_>; G], bottom: [u16x8<_>; G]| {
             for group in 0..G {
@@ -1025,6 +1027,10 @@ fn refinemv_sad<'a>(
     Ok(sad >> downshift)
 }
 
+/// Lanes 4..8 of a `u16x8`: the last four of the final eight samples of a
+/// row, past the samples of the full vectors.
+const HIGH_HALF: [u16; 8] = [0, 0, 0, 0, u16::MAX, u16::MAX, u16::MAX, u16::MAX];
+
 /// `Σ |left - right|` over the first `W` samples of each row pair, `W % 8`
 /// being 4: each column's differences add up in `u16` lanes for up to 16
 /// rows at a time, which 12-bit samples keep below `2^16`.
@@ -1058,7 +1064,9 @@ fn sad_row_lanes<'a, S: Simd, const W: usize>(
             .and_then(<[u16]>::first_chunk::<8>)
         {
             Some(lanes) => u16x8::load_array_ref(simd, lanes),
-            None => u16x8::from_fn(simd, |lane| samples.get(at + lane).copied().unwrap_or(0)),
+            None => samples.last_chunk::<8>().map_or(zero, |lanes| {
+                u16x8::load_array_ref(simd, lanes) & u16x8::load_array_ref(simd, &HIGH_HALF)
+            }),
         };
         for (vector, lanes) in lanes.iter_mut().enumerate().take(W.div_ceil(8)) {
             let (left, right) = (load(left, 8 * vector), load(right, 8 * vector));
