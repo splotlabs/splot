@@ -17,6 +17,7 @@ mod copy;
 mod eight_bit;
 mod fullpel_u8;
 mod portable;
+mod sixteen_bit;
 mod tip_overlap;
 use block::Sink;
 pub use copy::{
