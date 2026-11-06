@@ -18,7 +18,6 @@ use splot_recon::{
     QmDequant, QmFrameLevels, QmUserPlane, QuantizerDeltas, ReconError, ReconSample,
     SecondaryInverseTransform, reconstruct_transform_block_residual_with_secondary, tx_size_index,
 };
-use std::simd::num::SimdUint as _;
 
 use super::cdf::TileCdfSelector;
 use super::cdf::block_context::IntraYMode;
@@ -638,8 +637,15 @@ fn or_u8(line: &[u8], start: usize, len: usize) -> u8 {
             let v16 = (v32 | (v32 >> 16)) as u16;
             (v16 | (v16 >> 8)) as u8
         }
-        16 => std::simd::Simd::<u8, 16>::from_slice(slice).reduce_or(),
-        32 => std::simd::Simd::<u8, 32>::from_slice(slice).reduce_or(),
+        16 | 32 => {
+            let val = slice
+                .chunks_exact(8)
+                .map(|word| u64::from_ne_bytes(word.try_into().unwrap_or([0; 8])))
+                .fold(0, |acc, word| acc | word);
+            let v32 = (val | (val >> 32)) as u32;
+            let v16 = (v32 | (v32 >> 16)) as u16;
+            (v16 | (v16 >> 8)) as u8
+        }
         _ => slice.iter().fold(0, |acc, &v| acc | v),
     }
 }
