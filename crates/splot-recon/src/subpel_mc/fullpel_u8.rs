@@ -20,6 +20,15 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
 ) -> Result<()> {
     let intermediate_height = validate_subpel_u8_output(params, output, output_stride)?;
     let params = &plane_bounded(reference, params);
+    if let Some(view) = reference.as_u8() {
+        let sink = eight_bit::Sink::Put {
+            output: &mut *output,
+            stride: output_stride,
+        };
+        if eight_bit::predict(&view, params, sink, None) {
+            return Ok(());
+        }
+    }
     if params.step_x == 1 << SCALE_SUBPEL_BITS
         && params.step_y == 1 << SCALE_SUBPEL_BITS
         && (params.start_x >> 6) & SUBPEL_MASK == 0
