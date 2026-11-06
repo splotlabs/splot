@@ -13,11 +13,10 @@
 //!
 //! Feature tracking: `RECON-PC-WIENER-CLASSIFICATION`.
 
+use fearless_simd::{Simd, SimdBase, i16x16, i32x4, prelude::*, u8x16, u16x8, u16x16, u32x8};
 use splot_tables::tables::loop_restoration::{
     PC_WIENER_FILTERS, PC_WIENER_LUT_TO_CLASS, PC_WIENER_SUB_CLASSIFY, PC_WIENER_SUB_CLASSIFY2,
 };
-use std::simd::cmp::{SimdOrd, SimdPartialEq, SimdPartialOrd};
-use std::simd::{Mask, Select, Simd, num::SimdInt, num::SimdUint, simd_swizzle};
 
 use crate::PlaneId;
 use crate::dequant::quantizer_value;
@@ -901,11 +900,11 @@ where
             ),
         };
         let mut skips = TxSkipSums::new(params, first_col, lanes, bounds)?;
-        let mut carry = skips.next(&mut tx_skip)? + skips.next(&mut tx_skip)?;
+        let mut carry = add_skips(skips.next(&mut tx_skip)?, skips.next(&mut tx_skip)?);
         for row_sums in skip_sums[first_col..].chunks_mut(cell_cols).take(cell_rows) {
-            let near = skips.next(&mut tx_skip)? + skips.next(&mut tx_skip)?;
-            let far = skips.next(&mut tx_skip)? + skips.next(&mut tx_skip)?;
-            let sums = (carry + near + far).to_array();
+            let near = add_skips(skips.next(&mut tx_skip)?, skips.next(&mut tx_skip)?);
+            let far = add_skips(skips.next(&mut tx_skip)?, skips.next(&mut tx_skip)?);
+            let sums = add_skips(add_skips(carry, near), far);
             match row_sums.first_chunk_mut::<TX_SKIP_LANES>() {
                 Some(full) if lanes == TX_SKIP_LANES => *full = sums,
                 _ => {
@@ -949,20 +948,21 @@ where
         build_row(feature_rows, 2 * cell_row + 1)?;
         build_row(feature_rows, 2 * cell_row + 2)?;
         let mut window_rows: [&[[u16; 8]]; 3] = [&[]; 3];
-        let mut leading = Simd::<u16, 4>::splat(0);
+        let mut leading = [0u16; 4];
         for (row, groups) in window_rows.iter_mut().enumerate() {
             let start = (2 * cell_row + row) % 3 * pooled_width;
             let (head, tail) = pooled_row_window(feature_rows, start, cell_cols)?;
-            leading += Simd::from_array(head);
+            for (leading, head) in leading.iter_mut().zip(head) {
+                *leading = leading.wrapping_add(head);
+            }
             *groups = tail;
         }
-        let mut shared = leading.cast::<i32>();
+        let mut shared = leading.map(i32::from);
         let [top, mid, bot] = window_rows.map(<[_]>::iter);
         let pairs = top.zip(mid).zip(bot);
         for ((cell, &skip_sum), ((top, mid), bot)) in cells.iter_mut().zip(row_sums).zip(pairs) {
-            let pair = Simd::from_array(*top) + Simd::from_array(*mid) + Simd::from_array(*bot);
-            let last = simd_swizzle!(pair, [4, 5, 6, 7]).cast::<i32>();
-            let sums = (shared + simd_swizzle!(pair, [0, 1, 2, 3]).cast::<i32>() + last).to_array();
+            let (sums, last) =
+                crate::lr_madd::lr_simd!(simd => pooled_window_sums(simd, shared, [top, mid, bot]));
             let Some(rounding) = offsets_cache.get(usize::from(skip_sum)) else {
                 return Err(ReconError::ArithmeticOverflow {
                     context: "PC-Wiener tx-skip cache index",
@@ -980,14 +980,35 @@ where
     Ok(())
 }
 
+/// The feature sums of one cell's 3x3 pooled window from its leading column
+/// sums `shared` and the three rows' two-column groups, and the trailing
+/// column sums the next cell shares.
+#[inline]
+fn pooled_window_sums<S: Simd>(
+    simd: S,
+    shared: [i32; 4],
+    [top, mid, bot]: [&[u16; 8]; 3],
+) -> ([i32; 4], [i32; 4]) {
+    let load = |row: &[u16; 8]| u16x8::load_array_ref(simd, row);
+    let (lead, trail) = (load(top) + load(mid) + load(bot)).widen();
+    let trail: i32x4<S> = trail.bitcast();
+    let lead: i32x4<S> = lead.bitcast();
+    let sums = i32x4::load_array(simd, shared) + lead + trail;
+    (sums.into(), trail.into())
+}
+
+/// Lane-wise sum of two [`TxSkipSums`] rows.
+#[inline]
+fn add_skips(a: [u8; TX_SKIP_LANES], b: [u8; TX_SKIP_LANES]) -> [u8; TX_SKIP_LANES] {
+    crate::lr_madd::lr_simd!(simd => (u8x16::load_array(simd, a) + u8x16::load_array(simd, b)).into())
+}
+
 /// Cells per [`TxSkipSums`] chunk.
 const TX_SKIP_LANES: usize = 16;
 /// `LrTxSkip` columns one chunk row reads: its cells and one neighbor each side.
 const TX_SKIP_RUN_CELLS: usize = TX_SKIP_LANES + 2;
 /// Storage a per-lookup `tx_skip` fills for one [`PcWienerTxSkipRun`].
 type TxSkipCells = [u8; TX_SKIP_RUN_CELLS];
-const TX_SKIP_LANE_INDEX: Simd<u8, TX_SKIP_LANES> =
-    Simd::from_array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
 
 /// Per-feature-row sums of the § 7.20.4 `get_tx_skip` values that the 6x6
 /// windows of up to sixteen adjacent cells read, one row down the grid at a
@@ -1007,8 +1028,7 @@ struct TxSkipSums {
     tile: [usize; 2],
     block_start_x: usize,
     weights: [u8; 3],
-    lane_masks: [Mask<i8, TX_SKIP_LANES>; 2],
-    cached: Option<(usize, Simd<u8, TX_SKIP_LANES>)>,
+    cached: Option<(usize, [u8; TX_SKIP_LANES])>,
 }
 
 impl TxSkipSums {
@@ -1033,16 +1053,12 @@ impl TxSkipSums {
             tile: [params.tile_start_y, params.tile_end_y],
             block_start_x,
             weights: [left, 5 - phase - left, phase + 1],
-            lane_masks: [
-                TX_SKIP_LANE_INDEX.simd_lt(Simd::splat(lanes as u8)),
-                TX_SKIP_LANE_INDEX.simd_eq(Simd::splat(lanes as u8 - 1)),
-            ],
             cached: None,
         })
     }
 
     #[inline]
-    fn next<'g, FT>(&mut self, tx_skip: &mut FT) -> Result<Simd<u8, TX_SKIP_LANES>>
+    fn next<'g, FT>(&mut self, tx_skip: &mut FT) -> Result<[u8; TX_SKIP_LANES]>
     where
         FT: FnMut(PcWienerTxSkipRun, &mut TxSkipCells) -> Result<Option<&'g [u8]>>,
     {
@@ -1057,7 +1073,7 @@ impl TxSkipSums {
     }
 
     #[inline(never)]
-    fn fetch<'g, FT>(&mut self, y: usize, tx_skip: &mut FT) -> Result<Simd<u8, TX_SKIP_LANES>>
+    fn fetch<'g, FT>(&mut self, y: usize, tx_skip: &mut FT) -> Result<[u8; TX_SKIP_LANES]>
     where
         FT: FnMut(PcWienerTxSkipRun, &mut TxSkipCells) -> Result<Option<&'g [u8]>>,
     {
@@ -1083,42 +1099,40 @@ impl TxSkipSums {
             });
         }
         let [left_weight, center_weight, right_weight] = self.weights;
-        let sums = if self.first >= lo && last <= hi {
-            let load = |at: usize| {
-                cells.get(at..at + TX_SKIP_LANES).map_or_else(
-                    || Simd::load_or_default(cells.get(at..).unwrap_or_default()),
-                    Simd::<u8, TX_SKIP_LANES>::from_slice,
-                )
-            };
-            let (left, center, mut right) = if self.first > lo {
-                (load(0), load(1), load(2))
-            } else {
-                let center = load(0);
-                let left = simd_swizzle!(
-                    center,
-                    [0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
-                );
-                (left, center, load(1))
-            };
-            let [valid, last_lane] = self.lane_masks;
-            if last == hi {
-                right = last_lane.select(center, right);
-            }
-            if (valid & (left | center | right).simd_gt(Simd::splat(1))).any() {
-                check_tx_skip_cells(run, &cells[..len])?;
-            }
-            left * Simd::splat(left_weight)
-                + center * Simd::splat(center_weight)
-                + right * Simd::splat(right_weight)
-        } else {
+        if cells[..len].iter().fold(0, |any, &cell| any | cell) > 1 {
             check_tx_skip_cells(run, &cells[..len])?;
+        }
+        let sums = if self.first >= lo && last <= hi {
+            let mut padded = [0u8; TX_SKIP_RUN_CELLS + 1];
+            let copied = cells.len().min(TX_SKIP_RUN_CELLS);
+            padded[1..=copied].copy_from_slice(&cells[..copied]); // splot-copy-ok: a zero-padded run lets every lane read without a branch
+            padded[0] = padded[1];
+            let base = usize::from(self.first > lo);
+            let window = |offset: usize| -> [u8; TX_SKIP_LANES] {
+                padded[offset..].first_chunk().copied().unwrap_or_default()
+            };
+            let (left, center) = (window(base), window(base + 1));
+            let mut right = window(base + 2);
+            if last == hi
+                && let Some(lane) = self.lanes.checked_sub(1)
+            {
+                right[lane] = center[lane];
+            }
+            crate::lr_madd::lr_simd!(simd => {
+                let weigh = |cells: [u8; TX_SKIP_LANES], weight: u8| {
+                    (u8x16::splat(simd, 0) - u8x16::load_array(simd, cells)) & weight
+                };
+                (weigh(left, left_weight) + weigh(center, center_weight) + weigh(right, right_weight))
+                    .into()
+            })
+        } else {
             let mut sums = [0; TX_SKIP_LANES];
             for (lane, sum) in sums.iter_mut().take(self.lanes).enumerate() {
                 let c = self.first + lane as isize;
                 let cell = |k: isize| cells[((c + k).max(lo).min(hi) - first_col) as usize];
                 *sum = left_weight * cell(-1) + center_weight * cell(0) + right_weight * cell(1);
             }
-            Simd::from_array(sums)
+            sums
         };
         self.cached = Some((row, sums));
         Ok(sums)
@@ -1246,39 +1260,35 @@ fn pooled_feature_row(
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn pooled_features_simd(rows: [&[u16]; 4], grid: &mut [[u16; 4]]) {
-    const ZIP_LOW: [usize; 8] = [0, 8, 1, 9, 2, 10, 3, 11];
-    const ZIP_HIGH: [usize; 8] = [4, 12, 5, 13, 6, 14, 7, 15];
+    crate::lr_madd::lr_simd!(simd => pooled_features_lanes(simd, rows, grid));
+}
+
+/// [`pooled_features_simd`]: a deinterleave pools adjacent columns of two
+/// features at once, and two interleaves place each entry's features.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn pooled_features_lanes<S: Simd>(simd: S, rows: [&[u16]; 4], grid: &mut [[u16; 4]]) {
     let [top_vertical, top_anti_diag, top_diag] =
-        second_derivative_lanes(rows[0], rows[1], rows[2]);
-    let [vertical, anti_diag, diag] = second_derivative_lanes(rows[1], rows[2], rows[3]);
-    let pool = |top: Simd<u16, 16>, bottom: Simd<u16, 16>| {
-        let rows = top + bottom;
-        simd_swizzle!(rows, [0, 2, 4, 6, 8, 10, 12, 14])
-            + simd_swizzle!(rows, [1, 3, 5, 7, 9, 11, 13, 15])
+        second_derivative_lanes(simd, rows[0], rows[1], rows[2]);
+    let [vertical, anti_diag, diag] = second_derivative_lanes(simd, rows[1], rows[2], rows[3]);
+    let zero = u16x16::splat(simd, 0);
+    let (even, odd) = (top_vertical + vertical).deinterleave(top_anti_diag + anti_diag);
+    let (vertical, anti_diag) = (even + odd).split();
+    let (even, odd) = (top_diag + diag).deinterleave(zero);
+    let (diag, zero) = (even + odd).split();
+    let (low, high) = vertical.interleave(anti_diag);
+    let pairs: u32x8<S> = low.combine(high).bitcast();
+    let (low, high) = diag.interleave(zero);
+    let diag: u32x8<S> = low.combine(high).bitcast();
+    let (first, second) = pairs.interleave(diag);
+    let Some((first_half, second_half)) = grid.get_mut(..8).map(|entries| entries.split_at_mut(4))
+    else {
+        return;
     };
-    let vertical = pool(top_vertical, vertical);
-    let anti_diag = pool(top_anti_diag, anti_diag);
-    let diag = pool(top_diag, diag);
-    let zero = Simd::<u16, 8>::splat(0);
-    let first = [
-        simd_swizzle!(vertical, anti_diag, ZIP_LOW),
-        simd_swizzle!(vertical, anti_diag, ZIP_HIGH),
-    ];
-    let second = [
-        simd_swizzle!(diag, zero, ZIP_LOW),
-        simd_swizzle!(diag, zero, ZIP_HIGH),
-    ];
-    for (half, (first, second)) in grid[..8]
-        .as_chunks_mut::<4>()
-        .0
-        .iter_mut()
-        .zip(first.into_iter().zip(second))
-    {
-        let flat = half.as_flattened_mut();
-        let low = simd_swizzle!(first, second, [0, 1, 8, 9, 2, 3, 10, 11]);
-        let high = simd_swizzle!(first, second, [4, 5, 12, 13, 6, 7, 14, 15]);
-        flat[..8].copy_from_slice(&low.to_array()); // splot-copy-ok: publish interleaved PC-Wiener SIMD features
-        flat[8..].copy_from_slice(&high.to_array()); // splot-copy-ok: publish interleaved PC-Wiener SIMD features
+    for (half, entries) in [(first, first_half), (second, second_half)] {
+        if let Some(flat) = entries.as_flattened_mut().first_chunk_mut::<16>() {
+            half.bitcast::<u16x16<S>>().store_array(flat);
+        }
     }
 }
 
@@ -1286,13 +1296,26 @@ fn pooled_features_simd(rows: [&[u16]; 4], grid: &mut [[u16; 4]]) {
 /// diagonal) for sixteen consecutive centers `up[1..17]`.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn second_derivative_lanes(up: &[u16], cur: &[u16], down: &[u16]) -> [Simd<u16, 16>; 3] {
-    let load = |row: &[u16], start: usize| Simd::<u16, 16>::from_slice(&row[start..]).cast::<i16>();
-    let twice_center = load(cur, 1) * Simd::splat(2);
+fn second_derivative_lanes<S: Simd>(
+    simd: S,
+    up: &[u16],
+    cur: &[u16],
+    down: &[u16],
+) -> [u16x16<S>; 3] {
+    let load = |row: &[u16], start: usize| -> i16x16<S> {
+        row.get(start..)
+            .and_then(<[u16]>::first_chunk::<16>)
+            .map_or_else(
+                || i16x16::splat(simd, 0),
+                |lanes| u16x16::load_array_ref(simd, lanes).bitcast(),
+            )
+    };
+    let center = load(cur, 1);
+    let twice_center = center + center;
     [
-        (load(up, 1) - twice_center + load(down, 1)).abs().cast(),
-        (load(up, 2) - twice_center + load(down, 0)).abs().cast(),
-        (load(up, 0) - twice_center + load(down, 2)).abs().cast(),
+        (load(up, 1) - twice_center + load(down, 1)).abs().bitcast(),
+        (load(up, 2) - twice_center + load(down, 0)).abs().bitcast(),
+        (load(up, 0) - twice_center + load(down, 2)).abs().bitcast(),
     ]
 }
 
@@ -1477,11 +1500,13 @@ fn rounded_lut_input(
     bit_depth: BitDepth,
 ) -> u16 {
     let shift = (PC_WIENER_PREC_FEATURE + 5) as i32 + i32::from(bit_depth.bits() - 8);
-    let [n0, n1, n2, n3, _] = PC_WIENER_NORMALIZER;
-    let products = Simd::from_array(raw_features) * Simd::from_array([n0, n1, n2, n3]);
-    let qval = ((products + Simd::from_array(*rounding)) >> Simd::splat(shift))
-        .simd_clamp(Simd::splat(0), Simd::splat(7));
-    (qval << Simd::from_array([9, 6, 3, 0])).reduce_sum() as u16
+    let mut input = 0;
+    for (feature, (&raw, &rounding)) in raw_features.iter().zip(rounding).enumerate() {
+        let product = raw.wrapping_mul(PC_WIENER_NORMALIZER[feature]);
+        let qval = (product.wrapping_add(rounding) >> shift).clamp(0, 7);
+        input += qval << (9 - 3 * feature);
+    }
+    input as u16
 }
 
 /// § 7.20.4 `nf[i] = Round2(f[i] * Pc_Wiener_Normalizer[i], BitDepth - 8)`.
@@ -1495,9 +1520,12 @@ fn normalized_features(
     bit_depth: BitDepth,
 ) -> [i32; PC_WIENER_NUM_FEATURES] {
     let scale_shift = i32::from(bit_depth.bits() - 8);
-    let [n0, n1, n2, n3, _] = PC_WIENER_NORMALIZER;
-    let products = Simd::from_array(raw_features) * Simd::from_array([n0, n1, n2, n3]);
-    ((products + Simd::splat((1 << scale_shift) >> 1)) >> Simd::splat(scale_shift)).to_array()
+    core::array::from_fn(|feature| {
+        raw_features[feature]
+            .wrapping_mul(PC_WIENER_NORMALIZER[feature])
+            .wrapping_add((1 << scale_shift) >> 1)
+            >> scale_shift
+    })
 }
 
 #[allow(
@@ -1717,34 +1745,10 @@ impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
     }
 }
 
-/// § 9.8 `Pc_Wiener_Filters` with each tap narrowed to `i16`, splat across
-/// the four columns of one 4x4 cell and packed in a `u64`, and the center tap
-/// pre-folded with the § 3 `PC_WIENER_PREC_BITS` unit scale.
-static PC_WIENER_TAP_WORDS: std::sync::LazyLock<Vec<[TapWords; PC_WIENER_FULL_CLASSES]>> =
-    std::sync::LazyLock::new(|| {
-        PC_WIENER_FILTERS
-            .iter()
-            .map(|set| {
-                set.map(|coeffs| {
-                    std::array::from_fn(|tap| {
-                        let coeff = coeffs[tap] + (i32::from(tap == 12) << PC_WIENER_PREC_BITS);
-                        u64::from(coeff as i16 as u16) * 0x0001_0001_0001_0001
-                    })
-                })
-            })
-            .collect()
-    });
-
-/// One class's taps as four-lane `i16` splats.
-type TapWords = [u64; 13];
-
-/// Per-lane `i16` tap factors of one output column group.
-type LaneTaps<const LANES: usize> = [Simd<i16, LANES>; 13];
-
 struct PcWienerPaddedFilterSetup {
     sample_count: usize,
     filters: &'static [[i32; 13]; PC_WIENER_FULL_CLASSES],
-    words: &'static [TapWords; PC_WIENER_FULL_CLASSES],
+    pairs: &'static [ClassPairs; PC_WIENER_FULL_CLASSES],
     max_sample: u16,
     /// Whether the cell-lane kernel applies: 4x4 subclass cells over a source
     /// inside the active bit depth.
@@ -1758,11 +1762,12 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
 ) -> Result<PcWienerPaddedFilterSetup> {
     validate_sample_type::<T>(params.bit_depth)?;
     let (sample_count, filters) = validate_pc_wiener_filter(output_len, params)?;
-    let words = PC_WIENER_TAP_WORDS.get(params.filter_set_index).ok_or(
-        ReconError::PcWienerInvalidBounds {
-            field: "PC-Wiener filter set index",
-        },
-    )?;
+    let pairs =
+        PC_WIENER_PAIRS
+            .get(params.filter_set_index)
+            .ok_or(ReconError::PcWienerInvalidBounds {
+                field: "PC-Wiener filter set index",
+            })?;
     source.validate_cover(params.width, params.height)?;
 
     let max_sample = params.bit_depth.max_sample();
@@ -1779,7 +1784,7 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
     Ok(PcWienerPaddedFilterSetup {
         sample_count,
         filters,
-        words,
+        pairs,
         max_sample,
         lanes,
     })
@@ -1872,27 +1877,11 @@ pub fn pc_wiener_filter_block_padded_u16_into<T: ReconSample>(
     })
 }
 
-trait PcWienerPaddedSample: ReconSample {
-    fn load_lanes<const LANES: usize>(samples: &[Self], start: usize) -> Simd<i16, LANES>;
-}
-
-impl PcWienerPaddedSample for u16 {
-    fn load_lanes<const LANES: usize>(samples: &[Self], start: usize) -> Simd<i16, LANES> {
-        Simd::<u16, LANES>::from_slice(&samples[start..]).cast()
-    }
-}
-
-impl PcWienerPaddedSample for u8 {
-    fn load_lanes<const LANES: usize>(samples: &[Self], start: usize) -> Simd<i16, LANES> {
-        Simd::<u8, LANES>::from_slice(&samples[start..]).cast()
-    }
-}
-
 /// Filters a cell row in column groups of up to four 4x4 cells, each lane with
 /// its cell's taps; a 32-column chunk whose whole tap reach in the group holds
 /// one value takes it, as every `Pc_Wiener_Filters` row sums to zero (checked
 /// at compile time below).
-fn filter_pc_wiener_padded_u16<'a, S, T: PcWienerPaddedSample + LumaSimdSource + 'a>(
+fn filter_pc_wiener_padded_u16<'a, S, T: ReconSample + LumaSimdSource + 'a>(
     destination: &mut [u16],
     params: &PcWienerFilter<'_>,
     source: PaddedRows<'a, S>,
@@ -1938,41 +1927,34 @@ fn filter_pc_wiener_padded_u16<'a, S, T: PcWienerPaddedSample + LumaSimdSource +
                 continue;
             }
             let mut col = c0;
-            macro_rules! filter_chunks {
-                ($cells:literal, $lanes:literal, $reach:literal) => {
-                    while col + $lanes <= end {
-                        let cells = &row_subclasses[col / PC_WIENER_BLOCK_SIZE..];
-                        let taps = cell_taps::<$cells, $lanes>(setup.words, cells);
-                        let lanes =
-                            chunk_rows::<_, $reach, { PC_WIENER_BLOCK_SIZE + 2 * R }>(&window, col)
-                                .ok_or_else(rows_error)?;
-                        filter_pc_wiener_group_simd::<$lanes, $reach, T>(
-                            &mut destination[row * params.output_stride + col..],
-                            (params.output_stride, group),
-                            &lanes,
-                            &taps,
-                            setup.max_sample,
-                        );
-                        col += $lanes;
-                    }
-                };
-            }
-            while col + 16 <= end {
-                let cells = &row_subclasses[col / PC_WIENER_BLOCK_SIZE..];
-                let taps = cell_taps::<4, 16>(setup.words, cells);
+            let mut weights = [[[0; 16]; 2]; 7];
+            let mut group16 = |col: usize| -> Result<()> {
+                let cells = row_subclasses
+                    .get(col / PC_WIENER_BLOCK_SIZE..)
+                    .and_then(<[u8]>::first_chunk::<4>)
+                    .ok_or_else(rows_error)?;
                 let lanes = chunk_rows::<_, 22, { PC_WIENER_BLOCK_SIZE + 2 * R }>(&window, col)
                     .ok_or_else(rows_error)?;
                 filter_pc_wiener_group16::<T>(
                     &mut destination[row * params.output_stride + col..],
                     (params.output_stride, group),
                     &lanes,
-                    &pc_wiener_madd_weights(&taps),
+                    {
+                        group_weights::<T>(&mut weights, setup.pairs, *cells);
+                        &weights
+                    },
                     setup.max_sample,
                 );
+                Ok(())
+            };
+            while col + 16 <= end {
+                group16(col)?;
                 col += 16;
             }
-            filter_chunks!(2, 8, 14);
-            filter_chunks!(1, 4, 10);
+            if col < end && end >= c0 + 16 && end.is_multiple_of(PC_WIENER_BLOCK_SIZE) {
+                group16(end - 16)?;
+                col = end;
+            }
             for row in group_rows.clone() {
                 let output = &mut destination[row * params.output_stride..][..params.width];
                 let rows = window[row % PC_WIENER_BLOCK_SIZE..]
@@ -2024,90 +2006,6 @@ const _: () = {
 
 /// Padded source rows one § 7.20.4 PC-Wiener output row reads.
 const PC_WIENER_WINDOW_ROWS: usize = 2 * PC_WIENER_FILTER_TAP_RADIUS + 1;
-
-/// The first `rows` rows of a 4x4-cell row group of one column group,
-/// unrolled so the row addresses stay in registers.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn filter_pc_wiener_group_simd<const LANES: usize, const REACH: usize, T: PcWienerPaddedSample>(
-    output: &mut [u16],
-    (stride, rows): (usize, usize),
-    lanes: &[&[T; REACH]; PC_WIENER_BLOCK_SIZE + 2 * PC_WIENER_FILTER_TAP_RADIUS],
-    taps: &LaneTaps<LANES>,
-    max_sample: u16,
-) {
-    let [r0, r1, r2, r3, r4, r5, r6, r7, r8, r9] = *lanes;
-    let mut filter = |k: usize, rows| {
-        let values = filter_pc_wiener_padded_u16_simd::<LANES, REACH, T>(&rows, taps, max_sample);
-        output[k * stride..][..LANES].copy_from_slice(&values); // splot-copy-ok: publish PC-Wiener SIMD lanes
-    };
-    filter(0, [r0, r1, r2, r3, r4, r5, r6]);
-    if rows > 1 {
-        filter(1, [r1, r2, r3, r4, r5, r6, r7]);
-    }
-    if rows > 2 {
-        filter(2, [r2, r3, r4, r5, r6, r7, r8]);
-    }
-    if rows > 3 {
-        filter(3, [r3, r4, r5, r6, r7, r8, r9]);
-    }
-}
-
-/// One `LANES`-wide row of [`filter_pc_wiener_padded_u16`], each lane with its
-/// cell's § 7.20.4 factors paired as `i16`: `Pc_Wiener_Filters` spans
-/// `-208..=127` and § 6 Table 6.3 caps `BitDepth` at 10 over a validated
-/// source, so `plus + minus` is at most 2046; tap 12 folds in the
-/// `1 << PC_WIENER_PREC_BITS` scale. Rows are fixed-size, so no tap read checks.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn filter_pc_wiener_padded_u16_simd<
-    const LANES: usize,
-    const REACH: usize,
-    T: PcWienerPaddedSample,
->(
-    window: &[&[T; REACH]; PC_WIENER_WINDOW_ROWS],
-    taps: &LaneTaps<LANES>,
-    max_sample: u16,
-) -> [u16; LANES] {
-    const R: usize = PC_WIENER_FILTER_TAP_RADIUS;
-    let mut sum = Simd::<i32, LANES>::splat(1 << (PC_WIENER_PREC_BITS - 1))
-        + T::load_lanes::<LANES>(window[R], R).cast::<i32>() * taps[12].cast::<i32>();
-    macro_rules! tap_pairs {
-        ($($j:literal)*) => {
-            $(add_pc_wiener_tap_pair::<LANES, REACH, $j, T>(&mut sum, window, taps[$j]);)*
-        };
-    }
-    tap_pairs!(0 1 2 3 4 5 6 7 8 9 10 11);
-    (sum >> Simd::splat(PC_WIENER_PREC_BITS as i32))
-        .simd_clamp(Simd::splat(0), Simd::splat(i32::from(u16::MAX)))
-        .cast::<u16>()
-        .simd_min(Simd::splat(max_sample))
-        .to_array()
-}
-
-/// Adds § 7.20.4 symmetric tap pair `J` of a
-/// [`filter_pc_wiener_padded_u16_simd`] group.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn add_pc_wiener_tap_pair<
-    const LANES: usize,
-    const REACH: usize,
-    const J: usize,
-    T: PcWienerPaddedSample,
->(
-    sum: &mut Simd<i32, LANES>,
-    window: &[&[T; REACH]; PC_WIENER_WINDOW_ROWS],
-    taps: Simd<i16, LANES>,
-) {
-    const R: usize = PC_WIENER_FILTER_TAP_RADIUS;
-    let (dy, dx) = PC_WIENER_CONFIG[J];
-    let plus = T::load_lanes::<LANES>(window[R.wrapping_add_signed(dy)], R.wrapping_add_signed(dx));
-    let minus = T::load_lanes::<LANES>(
-        window[R.wrapping_add_signed(-dy)],
-        R.wrapping_add_signed(-dx),
-    );
-    *sum += (plus + minus).cast::<i32>() * taps.cast::<i32>();
-}
 
 fn validate_pc_wiener_filter(
     output_len: usize,
@@ -2355,12 +2253,16 @@ fn pc_wiener_lut_input(
     features: [i32; PC_WIENER_NUM_FEATURES],
     qval_offsets: &[i32; PC_WIENER_NUM_FEATURES],
 ) -> u16 {
-    let adjusted = Simd::from_array(features) + Simd::from_array(*qval_offsets);
-    let rounded =
-        (adjusted + Simd::splat(1 << (PC_WIENER_PREC_FEATURE - 1)) + (adjusted >> Simd::splat(31)))
-            >> Simd::splat(PC_WIENER_PREC_FEATURE as i32);
-    let qval = rounded.simd_clamp(Simd::splat(0), Simd::splat(255)) >> Simd::splat(5);
-    (qval << Simd::from_array([9, 6, 3, 0])).reduce_sum() as u16
+    let mut input = 0;
+    for (feature, (&value, &offset)) in features.iter().zip(qval_offsets).enumerate() {
+        let adjusted = value.wrapping_add(offset);
+        let rounded = adjusted
+            .wrapping_add(1 << (PC_WIENER_PREC_FEATURE - 1))
+            .wrapping_add(adjusted >> 31)
+            >> PC_WIENER_PREC_FEATURE;
+        input += (rounded.clamp(0, 255) >> 5) << (9 - 3 * feature);
+    }
+    input as u16
 }
 
 /// Feature-independent § 7.20.4 `get_qval_given_tskip` terms, derived once per
@@ -2481,4 +2383,4 @@ fn checked_area(width: usize, height: usize, context: &'static str) -> Result<us
 mod tests;
 
 mod cells16;
-use cells16::{cell_taps, chunk_rows, filter_pc_wiener_group16, pc_wiener_madd_weights};
+use cells16::{ClassPairs, PC_WIENER_PAIRS, chunk_rows, filter_pc_wiener_group16, group_weights};
