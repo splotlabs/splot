@@ -124,6 +124,7 @@ impl PassEdges {
     /// [`Self::build_specialized`] for a frame without sub-PU edges, where an
     /// edge's decision reads only the [`CellFacts`] of its two sides, which
     /// the grid resolved once per cell.
+    #[allow(clippy::needless_bitwise_bool, reason = "branch-free edge decisions")]
     fn build_without_sub_pu<const PLANE: usize, const PASS: usize>(
         &mut self,
         grid: &MiGrid<'_>,
@@ -172,45 +173,32 @@ impl PassEdges {
                 if (a.flags & b.flags & CellFacts::COVERED) == 0 {
                     return Err(uncovered(col_index << sub_x));
                 }
-                if a.tx_base == b.tx_base {
-                    continue;
-                }
                 let x_p = col_index * MI_SIZE;
                 let block_edge = if PASS == 0 {
                     usize::from(a.prediction[0]) == x_p
                 } else {
                     usize::from(a.prediction[1]) == y_p
                 };
-                if !block_edge && a.flags & CellFacts::SKIP != 0 {
-                    continue;
-                }
                 let (a_q, a_side) = strength(a.qindex);
                 let (b_q, b_side) = strength(b.qindex);
-                if (a_q == 0 || a_side == 0) && (b_q == 0 || b_side == 0) {
-                    continue;
-                }
                 let tile_edge = row_tile_edge
                     || PASS == 0 && starts_tile(geometry.tile_starts, col_index << sub_x);
-                if geometry.disable_loopfilters_across_tiles && tile_edge {
-                    continue;
-                }
-                let mut filter_size = usize::from(a.tx_size[PASS].min(b.tx_size[PASS]));
-                if row_clamped || PASS == 0 && x_p + reach > geometry.width {
-                    filter_size = filter_size.min(reach);
-                }
-                let sb_edge = usize::from(row_sb_edge || PASS == 0 && tile_edge);
-                let (max_width_neg, max_width_pos) =
-                    MAX_WIDTHS[chroma][sb_edge][filter_size.min(64)];
-                if max_width_neg == 0 || max_width_pos == 0 {
-                    continue;
-                }
+                let apply = (a.tx_base != b.tx_base)
+                    & (block_edge | (a.flags & CellFacts::SKIP == 0))
+                    & ((a_q != 0) & (a_side != 0) | (b_q != 0) & (b_side != 0))
+                    & !(geometry.disable_loopfilters_across_tiles & tile_edge);
+                let clamped = row_clamped | (PASS == 0) & (x_p + reach > geometry.width);
+                let limit = if clamped { reach } else { 64 };
+                let filter_size = usize::from(a.tx_size[PASS].min(b.tx_size[PASS])).min(limit);
+                let sb_edge = usize::from(row_sb_edge | (PASS == 0) & tile_edge);
+                let (max_width_neg, max_width_pos) = MAX_WIDTHS[chroma][sb_edge][filter_size];
                 let (q_thr, side) = combine_strengths(a_q, b_q, a_side, b_side);
                 let slot = if PASS == 0 {
                     col_index * rows + row_index
                 } else {
                     row_index * cols + col_index
                 };
-                self.edges[slot] = DeblockEdge::new(
+                let edge = DeblockEdge::new(
                     q_thr,
                     side,
                     max_width_neg.into(),
@@ -219,6 +207,7 @@ impl PassEdges {
                     a.flags & CellFacts::LOSSLESS != 0,
                 )
                 .ok_or(DeblockError::SampleFilter)?;
+                self.edges[slot] = core::hint::select_unpredictable(apply, edge, DeblockEdge::NONE);
             }
         }
         Ok(())
