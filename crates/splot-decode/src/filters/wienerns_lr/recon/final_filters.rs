@@ -1023,28 +1023,43 @@ impl<'a> LrSourceRows<'a> {
 
 /// The one value that the `width` columns from `col` of every row hold.
 fn flat_lr_window(rows: &[&[u16]], col: usize, width: usize) -> Option<u16> {
-    use std::simd::{Simd, num::SimdUint};
-    const LANES: usize = 16;
+    use fearless_simd::{Level, dispatch};
     let value = *rows.first()?.get(col)?;
-    let splat = Simd::<u16, LANES>::splat(value);
-    rows.iter()
-        .all(|row| {
-            let Some(row) = col.checked_add(width).and_then(|end| row.get(col..end)) else {
-                return false;
-            };
-            let Some(last) = row.last_chunk::<LANES>() else {
-                return row.iter().all(|&sample| sample == value);
-            };
-            let diff = row
-                .as_chunks::<LANES>()
-                .0
-                .iter()
-                .fold(Simd::from_array(*last) ^ splat, |diff, chunk| {
-                    diff | (Simd::from_array(*chunk) ^ splat)
-                });
-            diff.reduce_or() == 0
-        })
-        .then_some(value)
+    #[cfg(target_arch = "x86_64")]
+    if let Some(simd) = Level::baseline().as_avx2() {
+        return rows_hold(simd, rows, col, width, value).then_some(value);
+    }
+    let flat = dispatch!(Level::baseline(), simd => rows_hold(simd, rows, col, width, value));
+    flat.then_some(value)
+}
+
+#[inline]
+fn rows_hold<S: fearless_simd::Simd>(
+    simd: S,
+    rows: &[&[u16]],
+    col: usize,
+    width: usize,
+    value: u16,
+) -> bool {
+    use fearless_simd::{SimdBase, u16x16};
+    const LANES: usize = 16;
+    let splat = u16x16::splat(simd, value);
+    rows.iter().all(|row| {
+        let Some(row) = col.checked_add(width).and_then(|end| row.get(col..end)) else {
+            return false;
+        };
+        let Some(last) = row.last_chunk::<LANES>() else {
+            return row.iter().all(|&sample| sample == value);
+        };
+        let diff = row
+            .as_chunks::<LANES>()
+            .0
+            .iter()
+            .fold(u16x16::load_array_ref(simd, last) ^ splat, |diff, chunk| {
+                diff | (u16x16::load_array_ref(simd, chunk) ^ splat)
+            });
+        diff.reduce_max() == 0
+    })
 }
 
 /// Walks the `width` output columns of a luma LR block in 64-column strips
