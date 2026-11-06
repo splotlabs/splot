@@ -399,6 +399,11 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
         i32::from(self.samples[row * self.stride + col].to_u16())
     }
 
+    /// The samples from row `row` on, rows `stride` apart, and the stride.
+    pub(crate) fn rows_from(&self, row: usize) -> Option<(&'a [T], usize)> {
+        Some((self.samples.get(row * self.stride..)?, self.stride))
+    }
+
     /// This view of eight-bit storage as `u8` samples.
     pub(crate) fn as_u8(&self) -> Option<ReferencePlaneView<'a, u8>> {
         Some(ReferencePlaneView {

@@ -1025,17 +1025,50 @@ fn refinemv_sad<'a>(
     Ok(sad >> downshift)
 }
 
-/// `Σ |left - right|` over the first `W` samples of each row pair: the first
-/// 16 or 8 in one vector step, the rest in four-lane steps.
+/// `Σ |left - right|` over the first `W` samples of each row pair, `W % 8`
+/// being 4: each column's differences add up in `u16` lanes for up to 16
+/// rows at a time, which 12-bit samples keep below `2^16`.
 fn sad_rows<'a, const W: usize>(rows: impl Iterator<Item = (&'a [u16], &'a [u16])>) -> u32 {
+    baseline_simd!(simd => sad_row_lanes::<_, W>(simd, rows))
+}
+
+#[inline]
+fn sad_row_lanes<'a, S: Simd, const W: usize>(
+    simd: S,
+    rows: impl Iterator<Item = (&'a [u16], &'a [u16])>,
+) -> u32 {
+    let zero = u16x8::splat(simd, 0);
+    let mut lanes = [zero; 3];
     let mut sad = 0;
-    for (left, right) in rows {
+    let flush = |lanes: &mut [u16x8<S>; 3]| -> u32 {
+        let total = lanes
+            .iter()
+            .flat_map(|lanes| lanes.to_array())
+            .map(u32::from)
+            .sum::<u32>();
+        *lanes = [zero; 3];
+        total
+    };
+    for (row, (left, right)) in rows.enumerate() {
         let (Some(left), Some(right)) = (left.first_chunk::<W>(), right.first_chunk::<W>()) else {
             return u32::MAX;
         };
-        sad += abs_diff_sum(left, right);
+        let load = |samples: &[u16; W], at: usize| match samples
+            .get(at..)
+            .and_then(<[u16]>::first_chunk::<8>)
+        {
+            Some(lanes) => u16x8::load_array_ref(simd, lanes),
+            None => u16x8::from_fn(simd, |lane| samples.get(at + lane).copied().unwrap_or(0)),
+        };
+        for (vector, lanes) in lanes.iter_mut().enumerate().take(W.div_ceil(8)) {
+            let (left, right) = (load(left, 8 * vector), load(right, 8 * vector));
+            *lanes = *lanes + (left.max(right) - left.min(right));
+        }
+        if row % 16 == 15 {
+            sad += flush(&mut lanes);
+        }
     }
-    sad
+    sad + flush(&mut lanes)
 }
 
 #[cfg(test)]
