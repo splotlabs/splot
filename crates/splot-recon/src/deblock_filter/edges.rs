@@ -108,6 +108,31 @@ impl DeblockEdge {
         ))
     }
 
+    /// This edge with `qThr` and `sideThr` replaced, each capped at the
+    /// largest value [`DeblockEdge::new`] accepts. A zero threshold makes the
+    /// edge filter nothing, as § 7.17.7.2 then chooses width 0.
+    #[must_use]
+    pub const fn with_thresholds(self, q_thr: u16, side: u16) -> Self {
+        let q_thr = if q_thr as i32 > MAX_Q_THR {
+            MAX_Q_THR as u16
+        } else {
+            q_thr
+        };
+        let side = if side as i32 > MAX_SIDE {
+            MAX_SIDE as u16
+        } else {
+            side
+        };
+        Self(self.0 & !0xffff_ffff | q_thr as u64 | (side as u64) << 16)
+    }
+
+    /// This edge with its two lossless flags replaced.
+    #[must_use]
+    pub const fn with_lossless(self, prev_lossless: bool, curr_lossless: bool) -> Self {
+        let flags = prev_lossless as u64 | (curr_lossless as u64) << 1;
+        Self(self.0 & !(3 << 48) | flags << 48)
+    }
+
     /// Whether the edge filters nothing.
     pub const fn is_none(self) -> bool {
         self.0 == 0
