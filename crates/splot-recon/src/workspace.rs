@@ -419,7 +419,8 @@ struct CurrentFrameResidualTarget<'surface, T: ReconSample> {
 
 impl<T: ReconSample> CurrentFrameResidualTarget<'_, T> {
     /// Adds one residual row, which spans at least the clipped target width.
-    #[inline]
+    #[allow(clippy::inline_always, reason = "per-row residual add hot path")]
+    #[inline(always)]
     fn add_row(&mut self, row: usize, residual: &[i32]) -> Result<()> {
         let target_start = self.base + row * self.stride;
         let samples = &mut self.samples[target_start..target_start + self.rect.width()];

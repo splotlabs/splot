@@ -821,6 +821,40 @@ mod tests {
         }
     }
 
+    /// A block whose only non-zero coefficient is the DC one matches the
+    /// per-row and per-column reference for every 8-bit shape and type pair.
+    #[test]
+    fn dc_only_blocks_match_the_reference() {
+        use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
+        let types = [
+            InverseTransform2dDim::Identity,
+            InverseTransform2dDim::Kernel(Dct),
+            InverseTransform2dDim::Kernel(Adst),
+            InverseTransform2dDim::Kernel(Fdst),
+            InverseTransform2dDim::Kernel(Ddtx),
+            InverseTransform2dDim::Kernel(Fddt),
+        ];
+        for (log2_w, log2_h) in (2..=5u32).flat_map(|w| (2..=5u32).map(move |h| (w, h))) {
+            let (w, h) = (1usize << log2_w, 1usize << log2_h);
+            for (row, col) in types
+                .into_iter()
+                .flat_map(|row| types.map(|col| (row, col)))
+            {
+                for (dc, shifts) in [(40_000, (1, 20)), (-517, (6, 12)), (3, (3, 1))] {
+                    let p = params(log2_w, log2_h, false, row, col, shifts.0, shifts.1);
+                    let mut dequant = vec![0i32; w];
+                    dequant[0] = dc;
+                    let mut got = vec![0i32; w * h];
+                    inverse_transform_2d(&p, &dequant, &mut got).unwrap();
+                    let mut scratch = [0i32; MAX_DIM * MAX_DIM];
+                    let mut expected = vec![0i32; w * h];
+                    reference_transform_2d(&p, &dequant, &mut expected, &mut scratch);
+                    assert_eq!(got, expected, "{w}x{h} {row:?} {col:?} dc {dc}");
+                }
+            }
+        }
+    }
+
     /// The pre-lane-group § 7.15.4.1 orchestration: a per-column gather, one
     /// [`run_1d`] call, then a scatter.
     fn reference_transform_2d(

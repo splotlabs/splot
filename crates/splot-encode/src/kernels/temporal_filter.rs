@@ -5,9 +5,9 @@
 //! motion-compensated neighbour in one 64x64 block, the weighted sum of its
 //! samples, and the normalized result.
 
-use std::simd::Simd;
-use std::simd::cmp::SimdOrd as _;
-use std::simd::num::SimdUint as _;
+use fearless_simd::{Level, SimdBase as _, SimdWiden as _, dispatch, u32x8, u32x16};
+
+use super::load_u16_as_u32;
 
 /// The 16x16 quadrants of a 64x64 block.
 pub(crate) const QUADRANTS: usize = 16;
@@ -47,16 +47,24 @@ pub(crate) fn weights_scalar(
     }
 }
 
-/// [`weights_scalar`] in sixteen `u64` lanes and a table gather.
+/// [`weights_scalar`] with the products in sixteen `u64` lanes; the
+/// quotients and the table lookups go one lane at a time.
 pub(crate) fn weights_simd(
     errors: &[u32; QUADRANTS],
     distances: &[u32; QUADRANTS],
     decay: u32,
     out: &mut [u32; QUADRANTS],
 ) {
-    let product = Simd::from_array(*errors).cast::<u64>() * Simd::from_array(*distances).cast();
-    let index = (product / Simd::splat(u64::from(decay.max(1)))).simd_min(Simd::splat(STEPS));
-    *out = Simd::gather_or_default(&WEIGHTS, index.cast::<usize>()).to_array();
+    let decay = u64::from(decay.max(1));
+    dispatch!(Level::baseline(), simd => {
+        let e = u32x16::load_array_ref(simd, errors).widen();
+        let d = u32x16::load_array_ref(simd, distances).widen();
+        let ((e_lo, e_hi), (d_lo, d_hi)) = (e, d);
+        let products = [*(e_lo * d_lo), *(e_hi * d_hi)];
+        for (out, &product) in out.iter_mut().zip(products.as_flattened()) {
+            *out = WEIGHTS[(product / decay).min(STEPS) as usize];
+        }
+    });
 }
 
 /// `accum[i] += weight * pred[i]`, wrapping, over the shorter slice.
@@ -71,13 +79,13 @@ pub(crate) fn accumulate_scalar(pred: &[u16], weight: u32, accum: &mut [u32]) {
 pub(crate) fn accumulate_simd(pred: &[u16], weight: u32, accum: &mut [u32]) {
     let len = pred.len().min(accum.len());
     let (pred, accum) = (&pred[..len], &mut accum[..len]);
-    let weight_v = Simd::<u32, LANES>::splat(weight);
     let mut chunks = accum.chunks_exact_mut(LANES);
-    for (acc, samples) in (&mut chunks).zip(pred.chunks_exact(LANES)) {
-        let sum = Simd::<u32, LANES>::from_slice(acc)
-            + weight_v * Simd::<u16, LANES>::from_slice(samples).cast();
-        sum.copy_to_slice(acc);
-    }
+    dispatch!(Level::baseline(), simd => {
+        for (acc, samples) in (&mut chunks).zip(pred.chunks_exact(LANES)) {
+            let sum = u32x8::from_slice(simd, acc) + load_u16_as_u32(simd, samples) * weight;
+            sum.store_slice(acc);
+        }
+    });
     let done = len - chunks.into_remainder().len();
     for (accum, &sample) in accum[done..].iter_mut().zip(&pred[done..]) {
         *accum = accum.wrapping_add(weight.wrapping_mul(u32::from(sample)));
@@ -95,27 +103,27 @@ pub(crate) fn normalize_scalar(accum: &[u32], count: u32, out: &mut [u16]) {
     }
 }
 
-/// [`normalize_scalar`] in eight `u64` lanes.
+/// [`normalize_scalar`] with the rounded sums in eight `u64` lanes; the
+/// quotients go one lane at a time.
 pub(crate) fn normalize_simd(accum: &[u32], count: u32, out: &mut [u16]) {
     let len = accum.len().min(out.len());
     let (accum, out) = (&accum[..len], &mut out[..len]);
     let count = count.max(1);
-    let (half, divisor) = (
-        Simd::<u64, LANES>::splat(u64::from(count / 2)),
-        Simd::<u64, LANES>::splat(u64::from(count)),
-    );
+    let (half, divisor) = (u64::from(count / 2), u64::from(count));
+    let quotient = |sum: u64| u16::try_from(sum / divisor).unwrap_or(u16::MAX);
     let mut chunks = out.chunks_exact_mut(LANES);
-    for (out, sums) in (&mut chunks).zip(accum.chunks_exact(LANES)) {
-        let value = (Simd::<u32, LANES>::from_slice(sums).cast::<u64>() + half) / divisor;
-        value
-            .simd_min(Simd::splat(u64::from(u16::MAX)))
-            .cast::<u16>()
-            .copy_to_slice(out);
-    }
+    dispatch!(Level::baseline(), simd => {
+        for (out, sums) in (&mut chunks).zip(accum.chunks_exact(LANES)) {
+            let (lo, hi) = u32x8::from_slice(simd, sums).widen();
+            let sums = [*(lo + half), *(hi + half)];
+            for (out, &sum) in out.iter_mut().zip(sums.as_flattened()) {
+                *out = quotient(sum);
+            }
+        }
+    });
     let done = len - chunks.into_remainder().len();
     for (out, &sum) in out[done..].iter_mut().zip(&accum[done..]) {
-        let value = (u64::from(sum) + half[0]) / u64::from(count);
-        *out = u16::try_from(value).unwrap_or(u16::MAX);
+        *out = quotient(u64::from(sum) + half);
     }
 }
 
