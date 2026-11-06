@@ -149,15 +149,19 @@ pub(super) fn resolve_parsed_leaves(
                 bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, intrabc_sb_h4);
             }
         }
+        if let Some(LeafResolveRecord::Inter(block)) = entry.pending_resolve_mut() {
+            let command = resolve_pending_inter(block, state)?;
+            entry.store_command(ReconCommand::Inter(command));
+            continue;
+        }
         let Some(resolve) = entry.take_resolve() else {
             continue;
         };
         match resolve {
-            LeafResolveRecord::Reseed(_) | LeafResolveRecord::NonInter { .. } => {
+            LeafResolveRecord::Reseed(_)
+            | LeafResolveRecord::NonInter { .. }
+            | LeafResolveRecord::Inter(_) => {
                 return Err(invalid_inter_tile_scheduling_state());
-            }
-            LeafResolveRecord::Inter(block) => {
-                entry.store_command(ReconCommand::Inter(resolve_pending_inter(block, state)?));
             }
             LeafResolveRecord::Intrabc(block) => {
                 entry.store_command(ReconCommand::Intrabc(resolve_pending_intrabc(
@@ -299,7 +303,7 @@ fn resolve_pending_intrabc(
 /// warp block of a `force_integer_mv` frame keeps its stored warp model but
 /// predicts by translation (`useWarp = 0`, § 7.13.3.14).
 fn resolve_pending_inter(
-    pending: PendingInterBlock,
+    pending: &mut PendingInterBlock,
     state: &mut MvResolutionState<'_>,
 ) -> Result<deferred_recon::InterReconCommand> {
     let PendingInterBlock {
@@ -309,9 +313,10 @@ fn resolve_pending_inter(
         qindex,
         frame_precision,
     } = pending;
-    state.frame_precision = frame_precision;
-    let mut resolved = resolve_inter_block(&syntax, state)?;
-    predict_by_translation_under_integer_mv(&syntax, state.core, &mut resolved);
+    let (geometry, segment_id, qindex) = (*geometry, *segment_id, *qindex);
+    state.frame_precision = *frame_precision;
+    let mut resolved = resolve_inter_block(syntax, state)?;
+    predict_by_translation_under_integer_mv(syntax, state.core, &mut resolved);
     let compound = match &syntax.motion {
         InterMotionSyntax::Compound(compound) => Some(*compound),
         InterMotionSyntax::Single(_) | InterMotionSyntax::Warp(_) => None,
@@ -637,7 +642,7 @@ pub(super) fn resolve_inter_block(
 /// § 7.13 single-reference reconstruction input, assembled from the parsed
 /// syntax and its resolved motion.
 pub(super) fn single_inter_block(
-    syntax: InterBlockSyntax,
+    syntax: &mut InterBlockSyntax,
     resolved: &ResolvedInterBlock,
 ) -> InterBlock {
     InterBlock {
@@ -651,14 +656,14 @@ pub(super) fn single_inter_block(
         interintra: syntax.interintra,
         compound_blend: resolved.blend,
         optflow_distances: syntax.optflow_distances,
-        residual: syntax.residual,
+        residual: syntax.residual.take(),
     }
 }
 
 /// § 7.13 compound reconstruction input, assembled from the parsed syntax and
 /// its resolved motion.
 pub(super) fn compound_inter_block(
-    syntax: InterBlockSyntax,
+    syntax: &mut InterBlockSyntax,
     compound: &CompoundMotionSyntax,
     resolved: &ResolvedInterBlock,
 ) -> InterBlock {
@@ -673,7 +678,7 @@ pub(super) fn compound_inter_block(
         interintra: None,
         compound_blend: resolved.blend,
         optflow_distances: syntax.optflow_distances,
-        residual: syntax.residual,
+        residual: syntax.residual.take(),
     }
 }
 

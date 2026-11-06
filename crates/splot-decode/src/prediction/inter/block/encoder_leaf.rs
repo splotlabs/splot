@@ -1221,7 +1221,7 @@ impl EncoderInterTile {
     fn placed(
         &self,
         frontier: &DecodeBlockFrontier,
-        syntax: InterBlockSyntax,
+        mut syntax: InterBlockSyntax,
         resolved: &ResolvedInterBlock,
     ) -> Result<PlacedInterBlock> {
         let geometry = prediction::placed_inter_geometry_at(
@@ -1235,8 +1235,8 @@ impl EncoderInterTile {
                 interintra_chroma: false,
                 ..geometry
             }
-            .place(compound_inter_block(syntax, &compound, resolved)),
-            _ => geometry.place(single_inter_block(syntax, resolved)),
+            .place(compound_inter_block(&mut syntax, &compound, resolved)),
+            _ => geometry.place(single_inter_block(&mut syntax, resolved)),
         })
     }
 }
