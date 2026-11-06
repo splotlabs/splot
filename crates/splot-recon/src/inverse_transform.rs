@@ -19,7 +19,7 @@
 //! Feature tracking: `RECON-INVERSE-TRANSFORM-1D`,
 //! `RECON-INVERSE-TRANSFORM-MATRIX-FREE`.
 
-use fearless_simd::{Level, Simd, SimdBase, SimdInt, dispatch, i32x4, i32x8};
+use fearless_simd::{Simd, SimdBase, SimdInt, i32x4, i32x8};
 
 use splot_tables::tables::transform_1d::{
     ADST_KERNEL4, ADST_KERNEL8, ADST_KERNEL16, DCT_KERNEL4, DCT_KERNEL8, DCT_KERNEL16,
@@ -186,7 +186,7 @@ pub(crate) fn inverse_transform_1d_columns<const LANES: usize>(
     let Some(kernel) = select_kernel(pass.len, tx_type) else {
         return false;
     };
-    dispatch!(Level::baseline(), simd => {
+    baseline_simd!(simd => {
         if LANES == 8 {
             columns_in::<_, i32x8<_>>(simd, src, out, kernel, dct, pass);
         } else {
@@ -264,7 +264,7 @@ fn kernel_row_quad<const N: usize>(
     ) else {
         return false;
     };
-    dispatch!(Level::baseline(), simd => row_quad_lanes(simd, rows, out_rows, kernel, reversed, pass));
+    baseline_simd!(simd => row_quad_lanes(simd, rows, out_rows, kernel, reversed, pass));
     true
 }
 

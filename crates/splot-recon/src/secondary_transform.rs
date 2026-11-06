@@ -14,8 +14,7 @@
 //! Feature tracking: `RECON-SECONDARY-INVERSE-TRANSFORM`.
 
 use fearless_simd::{
-    Bytes as _, Level, Select as _, Simd, SimdBase as _, SimdIntWiden as _, SimdWiden as _,
-    dispatch, i8x32, i16x16, i32x8,
+    Bytes as _, Simd, SimdBase as _, SimdIntWiden as _, SimdWiden as _, i8x32, i16x16, i32x8,
 };
 
 use splot_tables::tables::secondary_transform::{IST_4X4_KERNEL, IST_8X8_KERNEL, STX_SCAN_MAP};
@@ -273,7 +272,7 @@ pub(crate) fn secondary_inverse_transform_prefix(
     } else {
         &OUTPUTS_4X4
     };
-    dispatch!(Level::baseline(), simd => {
+    let clipped: [i32; IST_8X8_WIDTH] = baseline_simd!(simd => {
         let mut sums = [i32x8::splat(simd, 0); IST_8X8_WIDTH / 8];
         if large {
             if let Some(pairs) = IST_8X8_PAIRS.get(kernel).and_then(|set| set.get(stx)) {
@@ -282,27 +281,32 @@ pub(crate) fn secondary_inverse_transform_prefix(
         } else if let Some(pairs) = IST_4X4_PAIRS.get(kernel).and_then(|set| set.get(stx)) {
             accumulate_kernel_pairs(simd, pairs, coefs, wide, &mut sums);
         }
-        for (&t, positions) in sums.iter().zip(positions.as_chunks::<8>().0) {
-            let magnitude = (t.abs() + (1 << 6)) >> 7;
-            let rounded = t
-                .simd_lt(i32x8::splat(simd, 0))
-                .select(-magnitude, magnitude);
-            let clipped: [i32; 8] = rounded
+        let mut clipped = [0i32; IST_8X8_WIDTH];
+        for (&t, out) in sums.iter().zip(clipped.as_chunks_mut::<8>().0) {
+            ((t + (1 << 6) + (t >> 31)) >> 7)
                 .max(i32x8::splat(simd, -bound))
                 .min(i32x8::splat(simd, bound - 1))
-                .into();
-            for (&value, &pos) in clipped.iter().zip(positions) {
-                let (x, y) = (
-                    usize::from(pos) & (scan_w - 1),
-                    usize::from(pos) >> scan_bwl,
-                );
-                let index = if transpose { x * w + y } else { y * w + x };
-                if let Some(slot) = output.get_mut(index) {
-                    *slot = value;
-                }
+                .store_slice(out);
+        }
+        clipped
+    });
+    for (clipped, positions) in clipped
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .zip(positions.as_chunks::<8>().0)
+    {
+        for (&value, &pos) in clipped.iter().zip(positions) {
+            let (x, y) = (
+                usize::from(pos) & (scan_w - 1),
+                usize::from(pos) >> scan_bwl,
+            );
+            let index = if transpose { x * w + y } else { y * w + x };
+            if let Some(slot) = output.get_mut(index) {
+                *slot = value;
             }
         }
-    });
+    }
     Ok(len)
 }
 
