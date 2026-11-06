@@ -3,7 +3,6 @@
 
 #![feature(portable_simd)]
 #![feature(hint_prefetch)]
-#![feature(allocator_api)]
 
 //! `splot-recon` owns AV2 reconstruction primitives and frame/workspace storage.
 //!
@@ -48,9 +47,7 @@ mod pc_wiener;
 mod plane;
 mod plane_buf;
 mod plane_pool;
-pub use plane_buf::{
-    PLANE_ALIGNMENT, PlaneAlloc, PlaneBuf, plane_buf, plane_buf_from, plane_stride,
-};
+pub use plane_buf::{PLANE_ALIGNMENT, PlaneBuf, plane_buf, plane_buf_from, plane_stride};
 pub use plane_pool::PlanePool;
 mod reconstruct;
 mod reconstruct_block;
