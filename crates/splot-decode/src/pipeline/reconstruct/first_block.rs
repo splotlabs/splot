@@ -14,7 +14,7 @@ use super::middle::middle_directional_angle;
 use super::one_sided::{gather_column_clamped, gather_row_clamped};
 use super::sink::{
     IntraEdgeAvailability, invalid_directional_edge_state, noneighbour_above, noneighbour_corner,
-    noneighbour_left, write_intra_prediction_block,
+    noneighbour_left, predict_intra_in_frame, write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedDirectionalLumaMode,
@@ -61,21 +61,41 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
         &mut above_buf,
         &mut left_buf,
     )?;
+    let predict = |output: &mut [T], stride: usize| {
+        predict_intra_dip_rect_into(
+            bit_depth,
+            block_size,
+            usize::from(dip_mode),
+            dip_transpose,
+            IntraDipEdges::new(left, above, top_left),
+            output,
+            stride,
+        )
+        .map_err(Into::into)
+    };
+    if predict_intra_in_frame(
+        workspace,
+        block,
+        PlaneId::Y,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        Some(luma_context),
+        None,
+        bit_depth,
+        predict,
+    )? {
+        return Ok(());
+    }
     let mut prediction = workspace.take_intra_prediction_buffer(
         IntraPredictionScratchBuffer::Primary,
         PlaneId::Y,
         width * height,
         T::default(),
     )?;
-    predict_intra_dip_rect_into(
-        bit_depth,
-        block_size,
-        usize::from(dip_mode),
-        dip_transpose,
-        IntraDipEdges::new(left, above, top_left),
-        &mut prediction,
-        width,
-    )?;
+    predict(&mut prediction, width)?;
     write_intra_prediction_block(
         workspace,
         block,
@@ -353,19 +373,29 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
             above,
             left,
         )?;
+        let predict = |output: &mut [T], stride: usize| {
+            predict_intra_paeth_rect_into(
+                bit_depth,
+                block_size,
+                IntraPaethEdges::new(left, above, top_left),
+                output,
+                stride,
+            )
+            .map_err(Into::into)
+        };
+        if predict_intra_in_frame(
+            workspace, block, plane_id, x, y, block_size, qindex, use_tcq, None, None, bit_depth,
+            predict,
+        )? {
+            return Ok(());
+        }
         let mut prediction = workspace.take_intra_prediction_buffer(
             IntraPredictionScratchBuffer::Primary,
             plane_id,
             width * height,
             T::default(),
         )?;
-        predict_intra_paeth_rect_into(
-            bit_depth,
-            block_size,
-            IntraPaethEdges::new(left, above, top_left),
-            &mut prediction,
-            width,
-        )?;
+        predict(&mut prediction, width)?;
         write_intra_prediction_block(
             workspace, block, prediction, plane_id, x, y, block_size, qindex, use_tcq, None, None,
             bit_depth,
