@@ -399,8 +399,8 @@ fn level_pass_on_snapshot<
     }
     let dc_grid = pass.grid_index(usize::from(dc_pos));
     let level = if PH && pass.first_pass.is_hidden() {
-        let ctx = (pass.base_mag::<CLASS, LUMA>(dc_grid, 3, 3) + 1) >> 1;
-        symbols.read(row_at(pass.rows.base_ph, ctx as usize))
+        let mag = pass.base_mag::<CLASS, LUMA>(dc_grid, 3, 3);
+        symbols.read(row_at(pass.rows.base_ph, half_capped(mag, 4)))
     } else {
         let level = pass.read_lf_base::<CLASS, LUMA, true, UPD>(symbols, dc_grid, 0);
         pass.add_range::<CLASS, LUMA, true, UPD>(symbols, dc_grid, true, level)
@@ -409,12 +409,27 @@ fn level_pass_on_snapshot<
     Ok(pass.summary())
 }
 
-/// `value.min(limit)` as a conditional move: the clamped neighbour levels
-/// are data-dependent, so a branch would mispredict.
+/// `HALF_CAPPED[cap][mag]` is `min((mag + 1) >> 1, cap)`, the capped
+/// context of a neighbour sum, as a load instead of a data-dependent branch.
+static HALF_CAPPED: [[u8; 32]; 16] = {
+    let mut table = [[0; 32]; 16];
+    let mut cap = 0;
+    while cap < 16 {
+        let mut mag = 0;
+        while mag < 32 {
+            let half = (mag + 1) >> 1;
+            table[cap][mag] = if half < cap { half } else { cap } as u8;
+            mag += 1;
+        }
+        cap += 1;
+    }
+    table
+};
+
 #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
 #[inline(always)]
-fn clamp<T: Ord + Copy>(value: T, limit: T) -> T {
-    core::hint::select_unpredictable(value < limit, value, limit)
+fn half_capped(mag: u32, cap: usize) -> usize {
+    usize::from(HALF_CAPPED[cap & 15][mag as usize & 31])
 }
 
 /// One past the last low-frequency scan index of `get_lf_limits`
@@ -470,14 +485,25 @@ impl LevelPassState<'_> {
         (pos >> self.width_log2) * LEVEL_STRIDE + (pos & col_mask)
     }
 
+    /// The sum of the neighbour levels at `offsets`, each capped at its
+    /// entry of `limits`, with one level per byte of a word: levels and
+    /// limits stay below `0x80`, so a byte-wise subtract finds the levels
+    /// above their limits without a data-dependent branch.
     #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
     #[inline(always)]
-    fn at(&self, grid: usize, [dr, dc]: [usize; 2], limit: u32) -> u32 {
-        let offset = dr * LEVEL_STRIDE + dc;
-        clamp(
-            u32::from(self.grid[(grid & LEVEL_INDEX_MASK) + (offset & LEVEL_INDEX_MASK)]),
-            limit,
-        )
+    fn capped_sum(&self, grid: usize, offsets: &[[usize; 2]], limits: &[u8]) -> u32 {
+        const HIGH: u64 = 0x8080_8080_8080_8080;
+        const ONES: u64 = 0x0101_0101_0101_0101;
+        let (mut levels, mut caps) = (0u64, 0u64);
+        for (k, (&[dr, dc], &limit)) in offsets.iter().zip(limits).enumerate() {
+            let offset = dr * LEVEL_STRIDE + dc;
+            let level = self.grid[(grid & LEVEL_INDEX_MASK) + (offset & LEVEL_INDEX_MASK)];
+            levels |= u64::from(level & 0x7f) << (8 * k);
+            caps |= u64::from(limit) << (8 * k);
+        }
+        let over = ((levels | HIGH) - (caps + ONES)) & HIGH;
+        let capped = levels ^ ((levels ^ caps) & ((over >> 7) * 0xff));
+        (capped.wrapping_mul(ONES) >> 56) as u32
     }
 
     /// The clamped `coeff_base` neighbour sum (§ 8.3.2) with the limits of
@@ -490,17 +516,19 @@ impl LevelPassState<'_> {
         near: u32,
         far: u32,
     ) -> u32 {
-        let offsets = CONTEXT_OFFSETS[CLASS];
-        let mag = self.at(grid, offsets[0], near) + self.at(grid, offsets[1], near);
-        if LUMA {
-            mag + self.at(grid, offsets[2], far)
-                + self.at(grid, offsets[3], far)
-                + self.at(grid, offsets[4], far)
+        let count = if LUMA {
+            5
         } else if CLASS == 0 {
-            mag + self.at(grid, offsets[2], far)
+            3
         } else {
-            mag
-        }
+            2
+        };
+        let [near, far] = [near as u8, far as u8];
+        self.capped_sum(
+            grid,
+            &CONTEXT_OFFSETS[CLASS][..count],
+            &[near, near, far, far, far][..count],
+        )
     }
 
     /// The `coeff_br` context (§ 8.3.2); `LF_BUMP` is whether the context
@@ -508,19 +536,17 @@ impl LevelPassState<'_> {
     #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
     #[inline(always)]
     fn br_ctx<const CLASS: usize, const LUMA: bool>(&self, grid: usize, lf_bump: bool) -> usize {
-        let offsets = MAG_REF_OFFSET_WITH_TX_CLASS[CLASS];
-        let limit = MAX_BASE_BR_RANGE - 1;
-        let mut mag = self.at(grid, offsets[0], limit) + self.at(grid, offsets[1], limit);
-        if LUMA || CLASS == 0 {
-            mag += self.at(grid, offsets[2], limit);
-        }
-        let mag = clamp((mag + 1) >> 1, MAX_BASE_BR_RANGE) as usize;
+        let count = if LUMA || CLASS == 0 { 3 } else { 2 };
+        let limit = (MAX_BASE_BR_RANGE - 1) as u8;
+        let mag = self.capped_sum(
+            grid,
+            &MAG_REF_OFFSET_WITH_TX_CLASS[CLASS][..count],
+            &[limit; 3][..count],
+        );
         if !LUMA {
-            clamp(mag, 3)
-        } else if lf_bump {
-            mag + 7
+            half_capped(mag, 3)
         } else {
-            mag
+            half_capped(mag, MAX_BASE_BR_RANGE as usize) + if lf_bump { 7 } else { 0 }
         }
     }
 
@@ -571,7 +597,7 @@ impl LevelPassState<'_> {
         pos: usize,
     ) -> u32 {
         let far = if CLASS == 0 { 5 } else { 3 };
-        let ctx = ((self.base_mag::<CLASS, LUMA>(grid, 5, far) + 1) >> 1) as usize;
+        let mag = self.base_mag::<CLASS, LUMA>(grid, 5, far);
         if LUMA {
             let lf_ctx = if CLASS == 0 {
                 let (cap, offset) = if DC {
@@ -581,7 +607,7 @@ impl LevelPassState<'_> {
                 } else {
                     LF_2D_CONTEXT_CAP_AND_OFFSET[2]
                 };
-                clamp(ctx, cap) + offset
+                half_capped(mag, cap) + offset
             } else {
                 let col_mask = (1usize << self.width_log2) - 1;
                 let line = if CLASS == 1 {
@@ -590,22 +616,22 @@ impl LevelPassState<'_> {
                     pos >> self.width_log2
                 };
                 if DC || line == 0 {
-                    LF_SIG_COEF_CONTEXTS_2D + clamp(ctx, 6)
+                    LF_SIG_COEF_CONTEXTS_2D + half_capped(mag, 6)
                 } else {
-                    LF_SIG_COEF_CONTEXTS_2D + 7 + clamp(ctx, 4)
+                    LF_SIG_COEF_CONTEXTS_2D + 7 + half_capped(mag, 4)
                 }
             };
             symbols.read(&mut row_at(self.rows.base_lf, lf_ctx)[self.tcq_q0 & 1])
         } else {
-            let uv_ctx = self.uv_ctx::<CLASS>(ctx);
+            let uv_ctx = self.uv_ctx::<CLASS>(mag);
             symbols.read(row_at(self.rows.base_lf_uv, uv_ctx))
         }
     }
 
     #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
     #[inline(always)]
-    fn uv_ctx<const CLASS: usize>(&self, ctx: usize) -> usize {
-        clamp(ctx, 3)
+    fn uv_ctx<const CLASS: usize>(&self, mag: u32) -> usize {
+        half_capped(mag, 3)
             + if CLASS != 0 {
                 LF_SIG_COEF_CONTEXTS_2D_UV
             } else {
@@ -634,7 +660,7 @@ impl LevelPassState<'_> {
         let level = if LF {
             self.read_lf_base::<CLASS, LUMA, false, UPD>(symbols, grid, pos)
         } else {
-            let ctx = ((self.base_mag::<CLASS, LUMA>(grid, 3, 3) + 1) >> 1) as usize;
+            let mag = self.base_mag::<CLASS, LUMA>(grid, 3, 3);
             if LUMA {
                 let offset = if CLASS == 0 {
                     let diagonal =
@@ -643,9 +669,11 @@ impl LevelPassState<'_> {
                 } else {
                     15
                 };
-                symbols.read(&mut row_at(self.rows.base, clamp(ctx, 4) + offset)[self.tcq_q0 & 1])
+                symbols.read(
+                    &mut row_at(self.rows.base, half_capped(mag, 4) + offset)[self.tcq_q0 & 1],
+                )
             } else {
-                let uv_ctx = self.uv_ctx::<CLASS>(ctx);
+                let uv_ctx = self.uv_ctx::<CLASS>(mag);
                 symbols.read(row_at(self.rows.base_uv, uv_ctx))
             }
         };
@@ -664,12 +692,10 @@ impl LevelPassState<'_> {
         level: u32,
         is_lf: bool,
     ) {
-        if level != 0 {
-            self.list[self.count & (NONZERO_LIST_LEN - 1)] =
-                NonzeroEntry::new(pos, scan_index, level, self.tcq_q0, is_lf).0;
-            self.count += 1;
-            self.grid[grid & (LEVEL_GRID_LEN - 1)] = level as u8;
-        }
+        self.list[self.count & (NONZERO_LIST_LEN - 1)] =
+            NonzeroEntry::new(pos, scan_index, level, self.tcq_q0, is_lf).0;
+        self.count += usize::from(level != 0);
+        self.grid[grid & (LEVEL_GRID_LEN - 1)] = level as u8;
         if TCQ {
             self.tcq_q0 = (self.first_pass.tcq_state() >> 2) & 1;
         }
