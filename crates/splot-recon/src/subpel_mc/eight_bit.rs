@@ -132,10 +132,10 @@ mod avx2 {
                     _ => copy::<16>(t, block, sink),
                 },
                 (Some(taps), None) => {
-                    specialize!(width, taps.count, horizontal(t, block, &taps, sink));
+                    specialize!(width, taps.count, horizontal(t, block, taps, sink));
                 }
                 (None, Some(taps)) => {
-                    specialize!(width, taps.count, vertical(t, block, &taps, stage, sink));
+                    specialize!(width, taps.count, vertical(t, block, taps, stage, sink));
                 }
                 (Some(h_taps), Some(v_taps)) => {
                     let rows = block.h + v_taps.span() - 1;
@@ -143,12 +143,12 @@ mod avx2 {
                         specialize!(
                             width,
                             h_taps.count,
-                            stage_rows(t, block, &h_taps, rows, strip, stage)
+                            stage_rows(t, block, h_taps, rows, strip, stage)
                         );
                         specialize!(
                             width,
                             v_taps.count,
-                            filter_stage(t, block, &v_taps, strip, stage, sink)
+                            filter_stage(t, block, v_taps, strip, stage, sink)
                         );
                     }
                 }

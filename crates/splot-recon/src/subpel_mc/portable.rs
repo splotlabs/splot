@@ -110,17 +110,17 @@ impl Jobs {
 fn run<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>, stage: &mut [i16]) {
     match (block.horizontal, block.vertical) {
         (None, None) => copy(simd, block, sink),
-        (Some(taps), None) => with_pairs!(taps.count, horizontal::<S, T>(simd, block, &taps, sink)),
-        (None, Some(taps)) => with_pairs!(taps.count, vertical::<S, T>(simd, block, &taps, sink)),
+        (Some(taps), None) => with_pairs!(taps.count, horizontal::<S, T>(simd, block, taps, sink)),
+        (None, Some(taps)) => with_pairs!(taps.count, vertical::<S, T>(simd, block, taps, sink)),
         (Some(h_taps), Some(v_taps)) => {
             let rows = block.h + v_taps.span() - 1;
             with_pairs!(
                 h_taps.count,
-                stage_rows::<S, T>(simd, block, &h_taps, rows, stage)
+                stage_rows::<S, T>(simd, block, h_taps, rows, stage)
             );
             with_pairs!(
                 v_taps.count,
-                filter_stage::<S>(simd, block.w, block.h, &v_taps, stage, sink)
+                filter_stage::<S>(simd, block.w, block.h, v_taps, stage, sink)
             );
         }
     }
