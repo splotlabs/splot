@@ -919,6 +919,10 @@ fn filter_padded_luma_rows_simd<'a, S, T: LumaSimdSource + 'a, O: LumaSimdOutput
             subclasses,
             (max_sample, &flat),
         )?;
+        if cells_done >= params.width {
+            first = end;
+            continue;
+        }
         for_each_luma_segment(
             first,
             params.width,
