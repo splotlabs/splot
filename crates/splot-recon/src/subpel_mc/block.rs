@@ -328,7 +328,7 @@ fn unscaled_block<T: Sample>(
         && last(column, columns) <= params.last_x
         && last(row, rows) <= params.last_y
         && origin + (rows - 1) * view.stride + reach(w) <= view.samples.len();
-    let stage_len = rows.next_multiple_of(4) * 16;
+    let stage_len = (rows.next_multiple_of(4) * 16).max(rows * w.div_ceil(8) * 8 + 16);
     let mut run = |block: &Block<'_, T>, stage: &mut [i16]| {
         if !super::eight_bit::predict(block, &mut sink, stage) {
             super::portable::predict(block, &mut sink, stage);
@@ -350,12 +350,20 @@ fn unscaled_block<T: Sample>(
         });
     }
     let stride = reach(w);
+    let inside = (params.first_x - column).clamp(0, stride as i32) as usize
+        ..(params.last_x - column + 1).clamp(0, stride as i32) as usize;
     T::with_storage(rows * stride, |storage| {
         for (r, line) in storage.chunks_exact_mut(stride).enumerate() {
             let source = view.row((row + r as i32).clamp(params.first_y, params.last_y) as usize);
-            for (c, sample) in line.iter_mut().enumerate() {
-                let x = (column + c as i32).clamp(params.first_x, params.last_x) as usize;
-                *sample = source[x.min(source.len() - 1)];
+            let edge = |x: i32| source[(x as usize).min(source.len() - 1)];
+            let (left, right) = (edge(params.first_x), edge(params.last_x));
+            let (before, rest) = line.split_at_mut(inside.start.min(inside.end));
+            let (middle, after) = rest.split_at_mut(inside.end - before.len());
+            before.fill(left);
+            after.fill(right);
+            let start = (column + before.len() as i32) as usize;
+            if let Some(span) = source.get(start..start + middle.len()) {
+                middle.copy_from_slice(span); // splot-copy-ok: unclamped columns of an emulated-edge tap window
             }
         }
         run_staged(&Block {

@@ -12,7 +12,7 @@
 //! horizontal value fits `i16`.
 
 use super::block::{Block, Sink, Taps};
-use fearless_simd::{Simd, i16x8, i32x4, prelude::*, u8x16, u16x8};
+use fearless_simd::{Simd, i16x8, i16x16, i32x4, i32x8, prelude::*, u8x16, u16x8};
 
 /// Samples the kernels widen to `i16` lanes.
 pub(super) trait Lanes: Copy {
@@ -58,10 +58,39 @@ macro_rules! with_pairs {
     };
 }
 
-/// Predicts the block into `sink`; `stage` holds eight columns of every
-/// intermediate row.
+/// Predicts the block into `sink`; `stage` holds every intermediate row.
 pub(super) fn predict<T: Lanes>(block: &Block<'_, T>, sink: &mut Sink<'_>, stage: &mut [i16]) {
     baseline_simd!(simd => run(simd, block, sink, stage));
+}
+
+/// Eight output columns of one row: a job. A vector runs two jobs, one per
+/// 128-bit half, so every lane operation stays inside its half.
+#[derive(Clone, Copy)]
+struct Jobs {
+    chunks: usize,
+    count: usize,
+}
+
+impl Jobs {
+    const fn new(w: usize, rows: usize) -> Self {
+        let chunks = w.div_ceil(8);
+        Self {
+            chunks,
+            count: rows * chunks,
+        }
+    }
+
+    /// `(row, col)` of job `job`.
+    const fn at(&self, job: usize) -> (usize, usize) {
+        (job / self.chunks, (job % self.chunks) * 8)
+    }
+
+    /// The job pairs: the second is `None` past the last job.
+    fn pairs(self) -> impl Iterator<Item = (usize, Option<usize>)> {
+        (0..self.count)
+            .step_by(2)
+            .map(move |job| (job, (job + 1 < self.count).then_some(job + 1)))
+    }
 }
 
 #[inline]
@@ -72,82 +101,118 @@ fn run<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>, st
         (None, Some(taps)) => with_pairs!(taps.count, vertical::<S, T>(simd, block, &taps, sink)),
         (Some(h_taps), Some(v_taps)) => {
             let rows = block.h + v_taps.span() - 1;
-            for col in (0..block.w).step_by(8) {
-                with_pairs!(
-                    h_taps.count,
-                    stage_rows::<S, T>(simd, block, &h_taps, col, rows, stage)
-                );
-                with_pairs!(
-                    v_taps.count,
-                    filter_stage::<S>(simd, block.w, block.h, &v_taps, col, stage, sink)
-                );
-            }
+            with_pairs!(h_taps.count, stage_rows::<S, T>(simd, block, &h_taps, rows, stage));
+            with_pairs!(v_taps.count, filter_stage::<S>(simd, block.w, block.h, &v_taps, stage, sink));
         }
     }
 }
 
 /// The pair weights of `taps` as `i16` lane pairs.
 #[inline]
-fn weights<S: Simd>(simd: S, taps: &Taps) -> [i16x8<S>; 4] {
-    taps.full.map(|pair| i32x4::splat(simd, pair).bitcast())
+fn weights<S: Simd>(simd: S, taps: &Taps) -> [i16x16<S>; 4] {
+    taps.full.map(|pair| i32x8::splat(simd, pair).bitcast())
+}
+
+/// The two jobs' eight lanes from `at`, one per half.
+#[inline]
+fn job_lanes<S: Simd, T: Lanes>(simd: S, source: &[T], first: usize, second: usize) -> i16x16<S> {
+    T::lanes(simd, source, first).combine(T::lanes(simd, source, second))
+}
+
+/// Interleaves the low (`HIGH == false`) or high four lanes of each half of
+/// `a` and `b`.
+#[inline]
+fn zip_halves<S: Simd, const HIGH: bool>(a: i16x16<S>, b: i16x16<S>) -> i16x16<S> {
+    let ((a0, a1), (b0, b1)) = (a.split(), b.split());
+    if HIGH {
+        a0.zip_high(b0).combine(a1.zip_high(b1))
+    } else {
+        a0.zip_low(b0).combine(a1.zip_low(b1))
+    }
 }
 
 /// `Σ` over `P` pairs of the interleaved `rows(2j)`, `rows(2j + 1)` times the
-/// pair weights, for lanes `0..4` and `4..8`.
+/// pair weights: each half's lanes `0..4` and `4..8`.
 #[inline]
 fn pair_sums<S: Simd, const P: usize>(
     simd: S,
-    weights: &[i16x8<S>; 4],
-    rows: impl Fn(usize) -> i16x8<S>,
-) -> (i32x4<S>, i32x4<S>) {
-    let (mut low, mut high) = (i32x4::splat(simd, 0), i32x4::splat(simd, 0));
+    weights: &[i16x16<S>; 4],
+    rows: impl Fn(usize) -> i16x16<S>,
+) -> (i32x8<S>, i32x8<S>) {
+    let (mut low, mut high) = (i32x8::splat(simd, 0), i32x8::splat(simd, 0));
     for (pair, &weight) in weights.iter().enumerate().take(P) {
         let (a, b) = (rows(2 * pair), rows(2 * pair + 1));
-        low += a.zip_low(b).pairwise_dot_product(weight);
-        high += a.zip_high(b).pairwise_dot_product(weight);
+        low += zip_halves::<S, false>(a, b).pairwise_dot_product(weight);
+        high += zip_halves::<S, true>(a, b).pairwise_dot_product(weight);
     }
     (low, high)
 }
 
-/// The horizontal sums of the eight outputs whose windows start at `at`.
+/// The horizontal sums of two jobs whose windows start at `first` and
+/// `second`.
 #[inline]
 fn horizontal_sums<S: Simd, T: Lanes, const P: usize>(
     simd: S,
     source: &[T],
-    at: usize,
-    weights: &[i16x8<S>; 4],
-) -> (i32x4<S>, i32x4<S>) {
-    let (a, b) = (T::lanes(simd, source, at), T::lanes(simd, source, at + 8));
+    (first, second): (usize, usize),
+    weights: &[i16x16<S>; 4],
+) -> (i32x8<S>, i32x8<S>) {
+    let a = job_lanes(simd, source, first, second);
+    let b = job_lanes(simd, source, first + 8, second + 8);
     let windows = [
         a,
-        a.slide::<1>(b),
-        a.slide::<2>(b),
-        a.slide::<3>(b),
-        a.slide::<4>(b),
-        a.slide::<5>(b),
-        a.slide::<6>(b),
-        a.slide::<7>(b),
+        a.slide_within_blocks::<1>(b),
+        a.slide_within_blocks::<2>(b),
+        a.slide_within_blocks::<3>(b),
+        a.slide_within_blocks::<4>(b),
+        a.slide_within_blocks::<5>(b),
+        a.slide_within_blocks::<6>(b),
+        a.slide_within_blocks::<7>(b),
     ];
     pair_sums::<S, P>(simd, weights, |window| windows[window])
 }
 
 #[inline]
 fn round<S: Simd>(
-    (low, high): (i32x4<S>, i32x4<S>),
+    (low, high): (i32x8<S>, i32x8<S>),
     bias: i32,
     shift: u32,
-) -> (i32x4<S>, i32x4<S>) {
+) -> (i32x8<S>, i32x8<S>) {
     ((low + bias) >> shift, (high + bias) >> shift)
+}
+
+/// Stores the two jobs' values: each half of `low` and `high` is one job's
+/// lanes `0..4` and `4..8`.
+#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[inline(always)]
+fn emit_pair<S: Simd>(
+    simd: S,
+    sink: &mut Sink<'_>,
+    w: usize,
+    jobs: [Option<(usize, usize)>; 2],
+    (low, high): (i32x8<S>, i32x8<S>),
+) {
+    let ((low0, low1), (high0, high1)) = (low.split(), high.split());
+    if let Some((row, col)) = jobs[0] {
+        emit(simd, sink, w, row, col, (low0, high0));
+    }
+    if let Some((row, col)) = jobs[1] {
+        emit(simd, sink, w, row, col, (low1, high1));
+    }
 }
 
 #[inline]
 fn copy<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>) {
     let shift = if sink.is_put() { 0 } else { 4 };
-    for row in 0..block.h {
-        let start = block.origin + row * block.stride;
-        for col in (0..block.w).step_by(8) {
-            let (low, high) = T::lanes(simd, block.source, start + col).widen();
-            emit(simd, sink, block.w, row, col, (low << shift, high << shift));
+    let jobs = Jobs::new(block.w, block.h);
+    let start = |(row, col): (usize, usize)| block.origin + row * block.stride + col;
+    for (first, second) in jobs.pairs() {
+        let (a, b) = (jobs.at(first), jobs.at(second.unwrap_or(first)));
+        let (low, high) = job_lanes(simd, block.source, start(a), start(b)).widen();
+        let (first_lanes, second_lanes) = ((low << shift).split(), (high << shift).split());
+        emit(simd, sink, block.w, a.0, a.1, first_lanes);
+        if second.is_some() {
+            emit(simd, sink, block.w, b.0, b.1, second_lanes);
         }
     }
 }
@@ -161,18 +226,18 @@ fn horizontal<S: Simd, T: Lanes, const P: usize>(
 ) {
     let weights = weights(simd, taps);
     let put = sink.is_put();
-    for row in 0..block.h {
-        let start = block.origin + row * block.stride;
-        for col in (0..block.w).step_by(8) {
-            let sums = horizontal_sums::<S, T, P>(simd, block.source, start + col, &weights);
-            let intermediate = round(sums, 4, 3);
-            let values = if put {
-                round(intermediate, 8, 4)
-            } else {
-                intermediate
-            };
-            emit(simd, sink, block.w, row, col, values);
-        }
+    let jobs = Jobs::new(block.w, block.h);
+    let start = |(row, col): (usize, usize)| block.origin + row * block.stride + col;
+    for (first, second) in jobs.pairs() {
+        let (a, b) = (jobs.at(first), jobs.at(second.unwrap_or(first)));
+        let sums = horizontal_sums::<S, T, P>(simd, block.source, (start(a), start(b)), &weights);
+        let intermediate = round(sums, 4, 3);
+        let values = if put {
+            round(intermediate, 8, 4)
+        } else {
+            intermediate
+        };
+        emit_pair(simd, sink, block.w, [Some(a), second.map(|_| b)], values);
     }
 }
 
@@ -185,79 +250,80 @@ fn vertical<S: Simd, T: Lanes, const P: usize>(
 ) {
     let weights = weights(simd, taps);
     let (bias, shift) = if sink.is_put() { (64, 7) } else { (4, 3) };
-    for row in 0..block.h {
-        for col in (0..block.w).step_by(8) {
-            let line = |k: usize| {
-                T::lanes(
-                    simd,
-                    block.source,
-                    block.origin + (row + k) * block.stride + col,
-                )
-            };
-            let sums = pair_sums::<S, P>(simd, &weights, line);
-            emit(simd, sink, block.w, row, col, round(sums, bias, shift));
-        }
+    let jobs = Jobs::new(block.w, block.h);
+    let start = |(row, col): (usize, usize)| block.origin + row * block.stride + col;
+    for (first, second) in jobs.pairs() {
+        let (a, b) = (jobs.at(first), jobs.at(second.unwrap_or(first)));
+        let line = |k: usize| {
+            let step = k * block.stride;
+            job_lanes(simd, block.source, start(a) + step, start(b) + step)
+        };
+        let sums = pair_sums::<S, P>(simd, &weights, line);
+        emit_pair(simd, sink, block.w, [Some(a), second.map(|_| b)], round(sums, bias, shift));
     }
 }
 
-/// The horizontal pass of columns `col..col + 8`: `rows` intermediate rows
-/// of eight lanes into `stage`.
+/// The horizontal pass: `rows` intermediate rows, eight lanes per job, into
+/// `stage` in job order.
 #[inline]
 fn stage_rows<S: Simd, T: Lanes, const P: usize>(
     simd: S,
     block: &Block<'_, T>,
     taps: &Taps,
-    col: usize,
     rows: usize,
     stage: &mut [i16],
 ) {
     let weights = weights(simd, taps);
-    for (row, slot) in stage.chunks_exact_mut(8).take(rows).enumerate() {
-        let at = block.origin + row * block.stride + col;
+    let jobs = Jobs::new(block.w, rows);
+    let start = |(row, col): (usize, usize)| block.origin + row * block.stride + col;
+    for ((first, second), slot) in jobs.pairs().zip(stage.chunks_exact_mut(16)) {
+        let (a, b) = (jobs.at(first), jobs.at(second.unwrap_or(first)));
         let (low, high) = round(
-            horizontal_sums::<S, T, P>(simd, block.source, at, &weights),
+            horizontal_sums::<S, T, P>(simd, block.source, (start(a), start(b)), &weights),
             4,
             3,
         );
-        if let Some(slot) = slot.first_chunk_mut::<8>() {
-            low.narrow(high).store_array(slot);
+        let ((low0, low1), (high0, high1)) = (low.split(), high.split());
+        if let Some(slot) = slot.first_chunk_mut::<16>() {
+            low0.narrow(high0).combine(low1.narrow(high1)).store_array(slot);
         }
     }
 }
 
-/// The vertical pass of columns `col..col + 8` over [`stage_rows`].
+/// The vertical pass over [`stage_rows`].
 #[inline]
 fn filter_stage<S: Simd, const P: usize>(
     simd: S,
     w: usize,
     h: usize,
     taps: &Taps,
-    col: usize,
     stage: &[i16],
     sink: &mut Sink<'_>,
 ) {
     let weights = weights(simd, taps);
-    let (bias, shift) = if sink.is_put() {
-        (1 << 10, 11)
-    } else {
-        (1 << 6, 7)
-    };
+    let (bias, shift) = if sink.is_put() { (1 << 10, 11) } else { (1 << 6, 7) };
+    let jobs = Jobs::new(w, h);
     let zero = [0; 8];
-    for row in 0..h {
+    let lanes = |job: usize| {
+        let lanes = stage.get(job * 8..).and_then(<[i16]>::first_chunk::<8>);
+        i16x8::load_array_ref(simd, lanes.unwrap_or(&zero))
+    };
+    for (first, second) in jobs.pairs() {
+        let second_job = second.unwrap_or(first);
         let line = |k: usize| {
-            let lanes = stage
-                .get((row + k) * 8..)
-                .and_then(<[i16]>::first_chunk::<8>);
-            i16x8::load_array_ref(simd, lanes.unwrap_or(&zero))
+            let step = k * jobs.chunks;
+            lanes(first + step).combine(lanes(second_job + step))
         };
         let sums = pair_sums::<S, P>(simd, &weights, line);
-        emit(simd, sink, w, row, col, round(sums, bias, shift));
+        let pair = [Some(jobs.at(first)), second.map(|job| jobs.at(job))];
+        emit_pair(simd, sink, w, pair, round(sums, bias, shift));
     }
 }
 
 /// Stores the eight values of output row `row`, columns `col..`, of a
 /// `w`-wide block; columns past `w` are dropped.
-#[inline]
+#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[inline(always)]
 fn emit<S: Simd>(
     simd: S,
     sink: &mut Sink<'_>,
