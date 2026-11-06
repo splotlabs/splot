@@ -446,8 +446,8 @@ pub(crate) struct TransformToolResidualPolicy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntraIstSyntax {
-    pub(crate) sec_tx_type: usize,
-    pub(crate) most_probable_stx_set: Option<usize>,
+    pub(crate) sec_tx_type: u8,
+    pub(crate) most_probable_stx_set: Option<u8>,
 }
 
 /// One transform block's parsed coefficients, as a span of its row's arena.
@@ -456,15 +456,18 @@ pub(crate) struct IntraIstSyntax {
 /// context and gives each block an index into it. The reconstruction row is
 /// splot's equivalent span -- it already carries a block's parse across the
 /// handoff to the pass that replays it -- so a row's blocks share one arena and
-/// keep a range, and a steady-state row costs no allocation.
+/// keep a range, and a steady-state row costs no allocation. Every field is
+/// as narrow as its AV2 range so the per-block records it travels in stay
+/// small.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LumaCoeffBlock {
-    pub(crate) eob: usize,
-    pub(crate) quant_range: core::ops::Range<usize>,
-    pub(crate) zero_tail: usize,
+    pub(crate) quant_start: u32,
+    pub(crate) quant_len: u16,
+    pub(crate) eob: u16,
+    pub(crate) zero_tail: u16,
+    pub(crate) plane_tx_type: u8,
+    pub(crate) cctx_type: Option<u8>,
     pub(crate) intra_ist: Option<IntraIstSyntax>,
-    pub(crate) cctx_type: Option<usize>,
-    pub(crate) plane_tx_type: usize,
     pub(crate) use_tcq: bool,
     pub(crate) lossless: bool,
 }
@@ -473,31 +476,65 @@ impl LumaCoeffBlock {
     /// A block with no coefficients of its own.
     pub(crate) const fn empty(plane_tx_type: usize, lossless: bool) -> Self {
         Self {
+            quant_start: 0,
+            quant_len: 0,
             eob: 0,
-            quant_range: 0..0,
             zero_tail: 0,
-            intra_ist: None,
+            plane_tx_type: plane_tx_type as u8,
             cctx_type: None,
-            plane_tx_type,
+            intra_ist: None,
             use_tcq: false,
             lossless,
         }
+    }
+
+    /// The end of block, at most 1024.
+    pub(crate) const fn eob(&self) -> usize {
+        self.eob as usize
+    }
+
+    /// The § 7.13.3 `PlaneTxType`.
+    pub(crate) const fn plane_tx_type(&self) -> usize {
+        self.plane_tx_type as usize
+    }
+
+    /// The `cctx_type` of a block that coded one.
+    pub(crate) fn cctx_type(&self) -> Option<usize> {
+        self.cctx_type.map(usize::from)
+    }
+
+    /// The block's span of its row's arena.
+    pub(crate) fn quant_range(&self) -> core::ops::Range<usize> {
+        let start = self.quant_start as usize;
+        start..start + usize::from(self.quant_len)
+    }
+
+    /// Records the arena span of a block's nonzero prefix and its dense
+    /// length; `None` when the arena outgrows the narrow fields.
+    pub(crate) fn with_span(
+        mut self,
+        span: core::ops::Range<usize>,
+        dense_len: usize,
+    ) -> Option<Self> {
+        self.quant_start = u32::try_from(span.start).ok()?;
+        self.quant_len = u16::try_from(span.len()).ok()?;
+        self.zero_tail = u16::try_from(dense_len.checked_sub(span.len())?).ok()?;
+        Some(self)
     }
 
     /// Appends the block's coefficients up to the last nonzero one to
     /// `arena` and records the span they landed in.
     #[cfg(test)]
     pub(crate) fn with_coeffs(
-        mut self,
+        self,
         arena: &mut Vec<i32>,
         block: &TransformCoeffBlockState,
     ) -> Self {
         let start = arena.len();
-        let nonzero = block.nonzero_quant();
-        arena.extend_from_slice(nonzero);
-        self.quant_range = start..arena.len();
-        self.zero_tail = block.quant().len() - nonzero.len();
-        self
+        arena.extend_from_slice(block.nonzero_quant());
+        self.clone()
+            .with_span(start..arena.len(), block.quant().len())
+            .unwrap_or(self)
     }
 }
 
@@ -524,14 +561,14 @@ impl<'a> CoeffBlock<'a> {
         block: &'a LumaCoeffBlock,
         arena: &'a [i32],
     ) -> Result<Self, GeneralIntraResidualError> {
-        let Some(quant) = arena.get(block.quant_range.clone()) else {
+        let Some(quant) = arena.get(block.quant_range()) else {
             return Err(GeneralIntraResidualError::CoeffSpanOutOfRange);
         };
         Ok(Self { block, quant })
     }
     /// The block's coefficient count with its zero tail restored.
     fn dense_len(self) -> usize {
-        self.quant.len().saturating_add(self.zero_tail)
+        self.quant.len().saturating_add(usize::from(self.zero_tail))
     }
 }
 
@@ -541,7 +578,7 @@ impl LumaCoeffBlock {
     pub(crate) fn view<'a>(&'a self, arena: &'a [i32]) -> CoeffBlock<'a> {
         CoeffBlock {
             block: self,
-            quant: arena.get(self.quant_range.clone()).unwrap_or(&[]),
+            quant: arena.get(self.quant_range()).unwrap_or(&[]),
         }
     }
 }
@@ -1276,19 +1313,16 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
     }
     let start_idx = arena.len();
-    let nonzero = coeffs.nonzero_quant();
-    arena.extend_from_slice(nonzero);
-    let quant_len = coeffs.quant().len();
-    Ok(LumaCoeffBlock {
-        eob,
-        quant_range: start_idx..arena.len(),
-        zero_tail: quant_len - nonzero.len(),
+    arena.extend_from_slice(coeffs.nonzero_quant());
+    LumaCoeffBlock {
+        eob: eob as u16,
         intra_ist: metadata.intra_ist,
-        cctx_type: metadata.cctx_type,
-        plane_tx_type,
+        cctx_type: metadata.cctx_type.map(|cctx| cctx as u8),
         use_tcq: base_config.use_tcq,
-        lossless,
-    })
+        ..LumaCoeffBlock::empty(plane_tx_type, lossless)
+    }
+    .with_span(start_idx..arena.len(), coeffs.quant().len())
+    .ok_or_else(|| invalid_reconstruction_state_error("coefficient arena span"))
 }
 
 fn staged_transform_tool_lossless_base_config(
@@ -1464,7 +1498,7 @@ fn ensure_transform_tool_residual_handoff(
             },
         )?;
         metadata.intra_ist = Some(IntraIstSyntax {
-            sec_tx_type,
+            sec_tx_type: sec_tx_type as u8,
             most_probable_stx_set: None,
         });
     }
@@ -1539,8 +1573,8 @@ fn read_intra_ist_sec_tx(
         )?)
     };
     let syntax = IntraIstSyntax {
-        sec_tx_type,
-        most_probable_stx_set,
+        sec_tx_type: sec_tx_type as u8,
+        most_probable_stx_set: most_probable_stx_set.map(|set| set as u8),
     };
     Ok(Some(syntax))
 }

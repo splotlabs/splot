@@ -107,11 +107,12 @@ fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
-        plane_tx_type: DCT_DCT,
+        plane_tx_type: DCT_DCT as u8,
         use_tcq: false,
         lossless: false,
     };
@@ -149,11 +150,12 @@ fn reconstruct_into_reuses_rectangular_u16_output_storage() {
         quant[0] = 1;
         let block = LumaCoeffBlock {
             eob: 1,
-            quant_range: 0..quant.len(),
+            quant_start: 0,
+            quant_len: quant.len() as u16,
             zero_tail: 0,
             intra_ist: None,
             cctx_type: None,
-            plane_tx_type: DCT_DCT,
+            plane_tx_type: DCT_DCT as u8,
             use_tcq: false,
             lossless: false,
         };
@@ -190,11 +192,12 @@ fn reconstruct_into_supports_maximum_u8_transform_geometry() {
     quant[0] = 1;
     let block = LumaCoeffBlock {
         eob: 1,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
-        plane_tx_type: DCT_DCT,
+        plane_tx_type: DCT_DCT as u8,
         use_tcq: false,
         lossless: false,
     };
@@ -228,11 +231,12 @@ fn reconstruct_into_keeps_output_on_truncated_inputs() {
     quant[0] = 1;
     let invalid_quant = LumaCoeffBlock {
         eob: 1,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
-        plane_tx_type: DCT_DCT,
+        plane_tx_type: DCT_DCT as u8,
         use_tcq: false,
         lossless: false,
     };
@@ -261,7 +265,7 @@ fn reconstruct_into_keeps_output_on_truncated_inputs() {
     assert_eq!(out, vec![91; 7]);
 
     let mut valid_quant = invalid_quant;
-    valid_quant.quant_range = 0..quant.len();
+    valid_quant.quant_len = quant.len() as u16;
     let prediction_result = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
         valid_quant.view(&quant),
         &prediction[..15],
@@ -1059,14 +1063,15 @@ fn invalid_ist_shape_is_reconstruction_state() {
     let quant = vec![0; 16];
     let block = LumaCoeffBlock {
         eob: 2,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: Some(IntraIstSyntax {
             sec_tx_type: 1,
             most_probable_stx_set: Some(0),
         }),
         cctx_type: None,
-        plane_tx_type: DCT_DCT,
+        plane_tx_type: DCT_DCT as u8,
         use_tcq: false,
         lossless: false,
     };
@@ -1774,11 +1779,12 @@ fn fsc_idtx_block_reconstructs_without_tcq_dequant_shift() {
     let quant = vec![0, 0, 0, 3, 0, 0, 2, 9, 0, 0, 0, 6, 0, 0, 0, 6];
     let block = LumaCoeffBlock {
         eob: 16,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
-        plane_tx_type: IDTX,
+        plane_tx_type: IDTX as u8,
         use_tcq: false,
         lossless: false,
     };
@@ -1882,21 +1888,23 @@ fn cctx_pair_uses_u_transform_type_for_all_zero_v_block() {
     let quant = vec![-2, -1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
     let u_block = LumaCoeffBlock {
         eob: 7,
-        quant_range: 0..quant.len(),
+        quant_start: 0,
+        quant_len: quant.len() as u16,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: Some(5),
-        plane_tx_type: DCT_ADST,
+        plane_tx_type: DCT_ADST as u8,
         use_tcq: false,
         lossless: false,
     };
     let v_block = LumaCoeffBlock {
         eob: 0,
-        quant_range: 0..0,
+        quant_start: 0,
+        quant_len: 0,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,
-        plane_tx_type: DCT_DCT,
+        plane_tx_type: DCT_DCT as u8,
         use_tcq: false,
         lossless: false,
     };
@@ -1944,11 +1952,12 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         quant[5] = 9;
         let block = LumaCoeffBlock {
             eob: 6,
-            quant_range: 0..quant.len(),
+            quant_start: 0,
+            quant_len: quant.len() as u16,
             zero_tail: 0,
             intra_ist: None,
             cctx_type: None,
-            plane_tx_type: DCT_DCT,
+            plane_tx_type: DCT_DCT as u8,
             use_tcq: false,
             lossless: false,
         };
@@ -1976,11 +1985,12 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         quant[9] = 61;
         let block = LumaCoeffBlock {
             eob: 10,
-            quant_range: 0..quant.len(),
+            quant_start: 0,
+            quant_len: quant.len() as u16,
             zero_tail: 0,
             intra_ist: None,
             cctx_type: None,
-            plane_tx_type: DCT_DCT,
+            plane_tx_type: DCT_DCT as u8,
             use_tcq: false,
             lossless: false,
         };
@@ -2104,7 +2114,7 @@ fn compact_coefficient_tails_restore_dense_values_and_validate_spans() {
                 state.set_quant(last, -17).unwrap();
             }
             let block = LumaCoeffBlock::empty(DCT_DCT, false).with_coeffs(&mut arena, &state);
-            assert_eq!(block.quant_range.len(), last.map_or(0, |i| i + 1));
+            assert_eq!(block.quant_range().len(), last.map_or(0, |i| i + 1));
             let view = CoeffBlock::new(&block, &arena).unwrap();
             assert_eq!(view.dense_len(), len);
             let (coded, tail) = dense.split_at(view.quant.len());
@@ -2113,12 +2123,12 @@ fn compact_coefficient_tails_restore_dense_values_and_validate_spans() {
         }
     }
     let mut invalid = LumaCoeffBlock::empty(DCT_DCT, false);
-    invalid.quant_range = arena.len()..arena.len() + 1;
+    (invalid.quant_start, invalid.quant_len) = (arena.len() as u32, 1);
     assert!(CoeffBlock::new(&invalid, &arena).is_err());
-    invalid.quant_range = 0..0;
-    invalid.zero_tail = usize::MAX;
+    invalid.quant_len = 0;
+    invalid.zero_tail = u16::MAX;
     assert_eq!(
         CoeffBlock::new(&invalid, &arena).unwrap().dense_len(),
-        usize::MAX
+        usize::from(u16::MAX)
     );
 }

@@ -163,7 +163,7 @@ pub(crate) fn record_inter_deblock_geometry(
                         rows: tx_h4,
                         cols: tx_w4,
                         skip_flag: false,
-                        eob: block.coeffs.eob,
+                        eob: block.coeffs.eob(),
                     },
                 );
             }

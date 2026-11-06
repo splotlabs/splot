@@ -294,7 +294,7 @@ fn chroma_part_applies_lossless_luma_fsc_only_to_reconstruction() {
         assert_eq!(plane.reconstruction_tx_type, Some(IDTX as u8));
         let mut coeffs = empty_luma_coeffs();
         plane.apply_reconstruction_tx_type(&mut coeffs);
-        assert_eq!(coeffs.plane_tx_type, IDTX);
+        assert_eq!(coeffs.plane_tx_type(), IDTX);
     }
 }
 
@@ -734,7 +734,7 @@ fn lossless_v_handoff_uses_final_u_unit_flag() {
         let mut coeffs = empty_luma_coeffs();
         if !all_zero {
             coeffs.eob = 1;
-            coeffs.quant_range = 0..16;
+            coeffs.quant_len = 16;
         }
         ParsedTransformUnit {
             block: PositionedLumaCoeffBlock {
@@ -1391,7 +1391,8 @@ fn ctx_with_chroma(block: BlockRect, bit_depth: BitDepth, chroma: ChromaSampling
 fn empty_luma_coeffs() -> crate::bitstream::tile_payload::LumaCoeffBlock {
     crate::bitstream::tile_payload::LumaCoeffBlock {
         eob: 0,
-        quant_range: 0..0,
+        quant_start: 0,
+        quant_len: 0,
         zero_tail: 0,
         intra_ist: None,
         cctx_type: None,

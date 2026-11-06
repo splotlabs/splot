@@ -205,9 +205,9 @@ impl GeneralIntraResidualPlan {
 
 impl ResidualPlanePlan {
     pub(super) fn apply_reconstruction_tx_type(&self, coeffs: &mut LumaCoeffBlock) {
-        coeffs.plane_tx_type = self
-            .reconstruction_tx_type
-            .map_or(coeffs.plane_tx_type, usize::from);
+        if let Some(tx_type) = self.reconstruction_tx_type {
+            coeffs.plane_tx_type = tx_type;
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -303,7 +303,7 @@ impl ResidualPlanePlan {
                 self.tx.width4(),
                 self.tx.height4(),
                 self.tx_size,
-                coeffs.eob,
+                coeffs.eob(),
             );
         } else {
             deblock.record_chroma_unit(self.plane_id, self.x, self.y, self.tx_size);
@@ -389,7 +389,7 @@ impl ResidualPlanePlan {
                         unit_width4,
                         unit_height4,
                         block.tx_size,
-                        block.coeffs.eob,
+                        block.coeffs.eob(),
                     );
                 } else {
                     deblock.record_chroma_unit(unit.plane_id, block.x, block.y, block.tx_size);
@@ -462,7 +462,7 @@ impl ResidualPlanePlan {
                 width4,
                 height4,
                 block.tx_size,
-                block.coeffs.eob,
+                block.coeffs.eob(),
             );
             units.push(Some(ParsedTransformUnit {
                 block,
