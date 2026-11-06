@@ -298,13 +298,8 @@ mod avx2 {
                         average(pred_second, second, forward),
                         i32::from(max),
                     );
-                    match width {
-                        4 => store_words::<4>(t, output, row * stride + strip * 4, stride, values),
-                        8 => store_words::<8>(t, output, row * stride + strip * 8, stride, values),
-                        _ => {
-                            store_words::<16>(t, output, row * stride + strip * 16, stride, values)
-                        }
-                    }
+                    let at = row * stride + strip * width;
+                    by_width!(width, store_words(t, output, at, stride, values));
                 },
             );
         }
