@@ -7,15 +7,16 @@ use super::lr_records::{WienerNsLrSourceBlock, WienerNsLrUnitActivity, WienerNsL
 use super::lr_syntax::read_loop_restoration_for_call;
 use super::state_publication::{DecodedLeafPublication, publish_intra_leaf_state};
 use super::{
-    BLOCK_8X32, BlockSize, ChromaRefGeometry, DecodeBlockFrontier, DecodeBlockPart,
+    BLOCK_8X32, BlockSize, ChildCallSink, ChromaRefGeometry, DecodeBlockFrontier, DecodeBlockPart,
     DecodeLimitName, DecodeLimits, DecodeTileWorkUnit, GeneralIntraLeafMode, IsCflContext,
-    PartitionAllowedInput, PartitionContextInput, PartitionDecisionMemo, PartitionTreeType,
-    PartitionType, ROOT_HAS_CHROMA, SquareSplitContextInput, SymbolDecoder, TileFscModeState,
-    TileIntraJointModeState, TileIntraYModeState, TileLumaPaletteState, TileMiSizeState,
-    TileMiSizeStateError, TilePartitionBounds, TilePartitionCall, TilePartitionContextState,
-    TilePartitionFrameFacts, TilePartitionTraversalError, TileUseDipState, TileUsesMrlsState,
-    TileUvCflState, call_in_frame, checked_mul, child_calls, ensure_supported_traversal_frame,
-    h_partition_midsize, partition_subsize, symbol_decoder_for_work_unit,
+    MAX_CHILD_CALLS, PartitionAllowedInput, PartitionContextInput, PartitionDecisionMemo,
+    PartitionTreeType, PartitionType, ROOT_HAS_CHROMA, SquareSplitContextInput, SymbolDecoder,
+    TileFscModeState, TileIntraJointModeState, TileIntraYModeState, TileLumaPaletteState,
+    TileMiSizeState, TileMiSizeStateError, TilePartitionBounds, TilePartitionCall,
+    TilePartitionContextState, TilePartitionFrameFacts, TilePartitionTraversalError,
+    TileUseDipState, TileUsesMrlsState, TileUvCflState, call_in_frame, checked_mul,
+    child_calls_into, ensure_supported_traversal_frame, h_partition_midsize, partition_subsize,
+    symbol_decoder_for_work_unit,
 };
 
 const BLOCK_64X64: usize = 12;
@@ -291,11 +292,13 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                     let chroma_offset =
                         updated_chroma_offset(call, partition, sub_size, self.frame)?;
                     if partition != PartitionType::None {
-                        let children =
-                            child_calls(call, partition, sub_size, self.frame, chroma_offset)?;
                         schedule_partition_children(
                             &mut self.stack,
-                            children.as_slice(),
+                            call,
+                            partition,
+                            sub_size,
+                            self.frame,
+                            chroma_offset,
                             using_extended_sdp.then(|| extended_sdp_chroma_call(call)),
                         )?;
                     }
@@ -374,22 +377,33 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
     }
 }
 
+impl ChildCallSink for Vec<TilePartitionStackEntry> {
+    #[inline]
+    fn push_call(&mut self, call: TilePartitionCall) -> Result<(), TilePartitionTraversalError> {
+        self.push(TilePartitionStackEntry::Partition(call));
+        Ok(())
+    }
+}
+
+/// Pushes the children straight onto the walk stack, last child deepest, so
+/// they pop in syntax order with the extended-SDP chroma block after them.
+#[allow(clippy::too_many_arguments)]
 fn schedule_partition_children(
     stack: &mut Vec<TilePartitionStackEntry>,
-    children: &[TilePartitionCall],
+    call: TilePartitionCall,
+    partition: PartitionType,
+    sub_size: BlockSize,
+    frame: TilePartitionFrameFacts,
+    chroma_offset: bool,
     extended_sdp_chroma: Option<TilePartitionCall>,
 ) -> Result<(), TilePartitionTraversalError> {
-    stack.try_reserve(children.len() + usize::from(extended_sdp_chroma.is_some()))?;
+    stack.try_reserve(MAX_CHILD_CALLS + 1)?;
     if let Some(call) = extended_sdp_chroma {
         stack.push(TilePartitionStackEntry::ExtendedSdpChromaBlock(call));
     }
-    stack.extend(
-        children
-            .iter()
-            .rev()
-            .copied()
-            .map(TilePartitionStackEntry::Partition),
-    );
+    let first_child = stack.len();
+    child_calls_into(stack, call, partition, sub_size, frame, chroma_offset)?;
+    stack[first_child..].reverse();
     Ok(())
 }
 
