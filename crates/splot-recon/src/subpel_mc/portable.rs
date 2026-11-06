@@ -127,20 +127,23 @@ fn run<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>, st
 }
 
 /// The pair weights of `taps` as `i16` lane pairs.
-#[inline]
+#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[inline(always)]
 fn weights<S: Simd>(simd: S, taps: &Taps) -> [i16x16<S>; 4] {
     taps.full.map(|pair| i32x8::splat(simd, pair).bitcast())
 }
 
 /// The two jobs' eight lanes from `at`, one per half.
-#[inline]
+#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[inline(always)]
 fn job_lanes<S: Simd, T: Lanes>(simd: S, source: &[T], first: usize, second: usize) -> i16x16<S> {
     T::lanes(simd, source, first).combine(T::lanes(simd, source, second))
 }
 
 /// Interleaves the low (`HIGH == false`) or high four lanes of each half of
 /// `a` and `b`.
-#[inline]
+#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[inline(always)]
 fn zip_halves<S: Simd, const HIGH: bool>(a: i16x16<S>, b: i16x16<S>) -> i16x16<S> {
     let ((a0, a1), (b0, b1)) = (a.split(), b.split());
     if HIGH {
@@ -152,7 +155,8 @@ fn zip_halves<S: Simd, const HIGH: bool>(a: i16x16<S>, b: i16x16<S>) -> i16x16<S
 
 /// `Σ` over `P` pairs of the interleaved `rows(2j)`, `rows(2j + 1)` times the
 /// pair weights: each half's lanes `0..4` and `4..8`.
-#[inline]
+#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[inline(always)]
 fn pair_sums<S: Simd, const P: usize>(
     simd: S,
     weights: &[i16x16<S>; 4],
@@ -169,7 +173,8 @@ fn pair_sums<S: Simd, const P: usize>(
 
 /// The horizontal sums of two jobs whose windows start at `first` and
 /// `second`.
-#[inline]
+#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[inline(always)]
 fn horizontal_sums<S: Simd, T: Lanes, const P: usize>(
     simd: S,
     source: &[T],
@@ -191,7 +196,8 @@ fn horizontal_sums<S: Simd, T: Lanes, const P: usize>(
     pair_sums::<S, P>(simd, weights, |window| windows[window])
 }
 
-#[inline]
+#[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+#[inline(always)]
 fn round<S: Simd>(
     (low, high): (i32x8<S>, i32x8<S>),
     bias: i32,
