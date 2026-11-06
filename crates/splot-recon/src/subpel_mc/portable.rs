@@ -373,7 +373,7 @@ fn emit<S: Simd>(
         let at = row * w + col;
         let first =
             |offset: usize| match pred0.get(at + offset..).and_then(<[i32]>::first_chunk::<4>) {
-                Some(lanes) if count == 8 => i32x4::load_array_ref(simd, lanes),
+                Some(lanes) if count >= offset + 4 => i32x4::load_array_ref(simd, lanes),
                 _ => i32x4::from_fn(simd, |lane| {
                     if offset + lane < count {
                         pred0.get(at + offset + lane).copied().unwrap_or(0)
@@ -477,16 +477,24 @@ fn store_wide<S: Simd>(output: &mut [u16], at: usize, count: usize, lanes: u16x8
     }
 }
 
-/// Stores the first `count` of `lanes` at `at`.
+/// Stores the first `count` of `lanes` at `at`: a whole vector or half of
+/// one in one store, else lane by lane.
 #[inline]
 fn store<T: Copy>(output: &mut [T], at: usize, count: usize, lanes: [T; 8]) {
+    let slot = output.get_mut(at..).unwrap_or(&mut []);
     if count == 8
-        && let Some(slot) = output.get_mut(at..).and_then(<[T]>::first_chunk_mut::<8>)
+        && let Some(slot) = slot.first_chunk_mut::<8>()
     {
         *slot = lanes;
         return;
     }
-    for (slot, lane) in output.iter_mut().skip(at).zip(lanes).take(count) {
+    if count == 4
+        && let (Some(slot), Some(lanes)) = (slot.first_chunk_mut::<4>(), lanes.first_chunk::<4>())
+    {
+        *slot = *lanes;
+        return;
+    }
+    for (slot, lane) in slot.iter_mut().zip(lanes).take(count) {
         *slot = lane;
     }
 }

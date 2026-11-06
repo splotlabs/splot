@@ -328,7 +328,10 @@ fn unscaled_block<T: Sample>(
         && last(column, columns) <= params.last_x
         && last(row, rows) <= params.last_y
         && origin + (rows - 1) * view.stride + reach(w) <= view.samples.len();
-    let stage_len = (rows.next_multiple_of(4) * 16).max(rows * w.div_ceil(8) * 8 + 16);
+    let stage_len = match vertical {
+        Some(_) => (rows.next_multiple_of(4) * 16).max(rows * w.div_ceil(8) * 8 + 16),
+        None => 0,
+    };
     let mut run = |block: &Block<'_, T>, stage: &mut [i16]| {
         if !super::eight_bit::predict(block, &mut sink, stage) {
             super::portable::predict(block, &mut sink, stage);
@@ -336,6 +339,7 @@ fn unscaled_block<T: Sample>(
     };
     let run_staged = |block: &Block<'_, T>| match scratch {
         Some(scratch) if scratch.len() >= stage_len => run(block, &mut scratch[..stage_len]),
+        _ if stage_len == 0 => run(block, &mut []),
         _ => with_subpel_intermediate(stage_len, |stage| run(block, stage)),
     };
     if direct {
