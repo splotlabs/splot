@@ -655,6 +655,7 @@ pub(crate) enum GeneralIntraResidualError {
     InvalidDirectionalEdgeState,
 }
 
+#[inline]
 fn or_u8(line: &[u8], start: usize, len: usize) -> u8 {
     let Some(slice) = start.checked_add(len).and_then(|end| line.get(start..end)) else {
         return line.iter().skip(start).take(len).fold(0, |acc, &v| acc | v);
@@ -1112,10 +1113,8 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     let all_zero = work_unit
         .cdf_mut()
         .tile_cdfs_mut()
-        .read_block_symbol_trace(selector, symbols)
-        .map_err(|source| GeneralIntraResidualError::AllZeroRead { source })?
-        .get()
-        != 0;
+        .read_all_zero(selector, symbols)
+        .map_err(|source| GeneralIntraResidualError::AllZeroRead { source })?;
     if all_zero {
         context
             .update_after_coeffs(CoeffContextUpdate {
