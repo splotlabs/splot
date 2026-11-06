@@ -59,6 +59,7 @@ mod inverse_transform_2d;
 mod inverse_transform_2d_8bit;
 mod inverse_transform_2d_outer;
 mod loop_restoration;
+mod lr_madd;
 pub mod math;
 #[doc(hidden)]
 pub mod mhccp;

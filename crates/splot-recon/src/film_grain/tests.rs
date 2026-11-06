@@ -6,7 +6,12 @@ use splot_core::obu::{ParsedObu, PayloadStatus};
 use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_core::types::ObuType;
 
-use super::{GrainDestination, apply_film_grain, plane_from_visible, scale_lut};
+use super::{
+    ActiveFilmGrain, GrainDestination, GrainGeometry, SCALING_LUT_LEN, Stripe, apply_film_grain,
+    fill_stripe, generate_grain, init_scaling_lut, output_ranges, plane_axis_lengths,
+    plane_from_visible, round2, scale_lut, scaling_points_for_plane, stripe_count,
+    stripe_row_slice,
+};
 use crate::{
     BitDepth, DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane,
     PlaneRect, PlaneSize, ReconSample,
@@ -41,11 +46,21 @@ fn frame<T: ReconSample>(
     pixel_format: PixelFormat,
     samples: &[u8],
 ) -> DecodedFrame<T> {
-    let convert = |values: &[u8]| {
+    let samples = samples.iter().copied().map(u16::from).collect::<Vec<_>>();
+    frame_at_depth(width, height, pixel_format, BitDepth::Eight, &samples)
+}
+
+fn frame_at_depth<T: ReconSample>(
+    width: usize,
+    height: usize,
+    pixel_format: PixelFormat,
+    bit_depth: BitDepth,
+    samples: &[u16],
+) -> DecodedFrame<T> {
+    let convert = |values: &[u16]| {
         values
             .iter()
             .copied()
-            .map(u16::from)
             .map(T::try_from_u16)
             .collect::<crate::Result<Vec<_>>>()
             .unwrap()
@@ -75,7 +90,7 @@ fn frame<T: ReconSample>(
     let rect = PlaneRect::new(0, 0, width, height).unwrap();
     let info = DecodedFrameInfo::new(
         OutputIndex::new(7),
-        BitDepth::Eight,
+        bit_depth,
         pixel_format,
         luma_size,
         rect,
@@ -273,25 +288,6 @@ fn u8_plane_uses_its_single_final_sample_allocation() {
 }
 
 #[test]
-fn visible_source_samples_are_copied_directly_in_destination_type() {
-    let storage = PlaneSize::new(4, 3).unwrap();
-    let visible = PlaneRect::new(1, 1, 2, 2).unwrap();
-    let source = Plane::from_vec(
-        storage,
-        4,
-        visible,
-        vec![0_u8, 1, 2, 3, 10, 11, 12, 13, 20, 21, 22, 23],
-    )
-    .unwrap();
-    let destination = GrainDestination::from_visible(&source);
-
-    assert_eq!(destination.stride, crate::PLANE_ALIGNMENT);
-    assert_eq!(destination.samples.len(), 2 * crate::PLANE_ALIGNMENT);
-    assert_eq!(destination.samples[..2], [11, 12]);
-    assert_eq!(destination.samples[crate::PLANE_ALIGNMENT..][..2], [21, 22]);
-}
-
-#[test]
 fn scale_lut_maps_out_of_range_samples_to_the_last_entry() {
     let mut lut: [i32; 257] = core::array::from_fn(|index| index as i32 * 3);
     lut[256] = lut[255];
@@ -299,4 +295,242 @@ fn scale_lut_maps_out_of_range_samples_to_the_last_entry() {
     assert_eq!(scale_lut(&lut, 4095, 10), lut[255]);
     assert_eq!(scale_lut(&lut, u16::MAX.into(), 10), lut[255]);
     assert_eq!(scale_lut(&lut, 6, 10), lut[1] + 2);
+}
+
+/// The § 7.21.7.5 process as written: the whole noise image first, then the
+/// noise of every chroma sample from the source luma, then luma.
+fn reference_output<T: ReconSample>(
+    frame: &DecodedFrame<T>,
+    model: &FilmGrainModel,
+    seed: u16,
+) -> Vec<u16> {
+    let grain = ActiveFilmGrain {
+        model,
+        grain_seed: seed,
+    };
+    let bit_depth = frame.bit_depth().bits();
+    let format = frame.pixel_format();
+    let (width, height) = (
+        frame.y().visible_size().width(),
+        frame.y().visible_size().height(),
+    );
+    let (sub_x, sub_y) = (
+        usize::from(format.subsampling_x()),
+        usize::from(format.subsampling_y()),
+    );
+    let geometry = GrainGeometry {
+        widths: plane_axis_lengths(width, sub_x),
+        heights: plane_axis_lengths(height, sub_y),
+        sub_x,
+        sub_y,
+        bit_depth,
+    };
+    let num_planes = format.num_planes();
+    let range = (-(1 << (bit_depth - 1)), (1 << (bit_depth - 1)) - 1);
+    let templates = generate_grain(&grain, sub_x, sub_y, bit_depth, range);
+    let luma_size = if model.film_grain_block_size { 32 } else { 16 };
+    let mut stripes =
+        [0, 1].map(|_| Stripe::new(&geometry.widths[..num_planes], luma_size, sub_x, sub_y));
+    let mut noise: Vec<Vec<Vec<i32>>> = (0..num_planes).map(|_| Vec::new()).collect();
+    for luma_num in 0..stripe_count(height, luma_size) {
+        let current = luma_num & 1;
+        fill_stripe(
+            &mut stripes[current],
+            luma_num,
+            &geometry,
+            [true; 3],
+            luma_size,
+            &grain,
+            &templates,
+            range,
+        );
+        for (plane, noise) in noise.iter_mut().enumerate() {
+            let plane_sub_y = if plane > 0 { sub_y } else { 0 };
+            let shift = 4 + usize::from(model.film_grain_block_size) - plane_sub_y;
+            let stripe_width = stripes[current].widths[plane];
+            for i in 0..1 << shift {
+                if (luma_num << shift) + i >= geometry.heights[plane] {
+                    break;
+                }
+                let row = stripe_row_slice(
+                    &stripes[current].planes[plane],
+                    stripe_width,
+                    i,
+                    geometry.widths[plane],
+                );
+                let old_row = i + (luma_size >> plane_sub_y);
+                let blend =
+                    model.overlap_flag && luma_num > 0 && i < if plane_sub_y == 0 { 2 } else { 1 };
+                noise.push(
+                    row.iter()
+                        .enumerate()
+                        .map(|(x, &g)| {
+                            let g = i32::from(g);
+                            if !blend {
+                                return g;
+                            }
+                            let old = i32::from(
+                                stripes[current ^ 1].planes[plane][old_row * stripe_width + x],
+                            );
+                            let (wo, wn) = match (plane_sub_y, i) {
+                                (0, 0) => (27, 17),
+                                (0, _) => (17, 27),
+                                _ => (23, 22),
+                            };
+                            round2(old * wo + g * wn, 5).clamp(range.0, range.1)
+                        })
+                        .collect(),
+                );
+            }
+        }
+    }
+    let (min_value, max_luma, max_chroma) = output_ranges(&grain, bit_depth);
+    let scaling_shift = model.grain_scaling_minus_8 + 8;
+    let luts: Vec<[i32; SCALING_LUT_LEN]> = (0..num_planes)
+        .map(|plane| {
+            let mut lut = [0; SCALING_LUT_LEN];
+            init_scaling_lut(scaling_points_for_plane(model, plane), &mut lut);
+            lut
+        })
+        .collect();
+    let rows = |plane: &Plane<T>| -> Vec<Vec<i32>> {
+        plane
+            .visible_rows()
+            .map(|row| row.iter().map(|s| i32::from(s.to_u16())).collect())
+            .collect()
+    };
+    let luma = rows(frame.y());
+    let mut planes = vec![luma.clone()];
+    let mults = [
+        (
+            model.cb_luma_mult,
+            model.cb_mult,
+            model.cb_offset,
+            model.num_cb_points,
+        ),
+        (
+            model.cr_luma_mult,
+            model.cr_mult,
+            model.cr_offset,
+            model.num_cr_points,
+        ),
+    ];
+    for (index, chroma) in [frame.u(), frame.v()]
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .take(num_planes - 1)
+    {
+        let plane = index + 1;
+        let (luma_mult, mult, offset, points) = mults[index];
+        let mut out = rows(chroma);
+        if points > 0 || model.chroma_scaling_from_luma {
+            for (y, row) in out.iter_mut().enumerate() {
+                for (x, sample) in row.iter_mut().enumerate() {
+                    let lx = x << sub_x;
+                    let ly = y << sub_y;
+                    let next = (lx + 1).min(width - 1);
+                    let average = if sub_x == 1 {
+                        round2(luma[ly][lx] + luma[ly][next], 1)
+                    } else {
+                        luma[ly][lx]
+                    };
+                    let orig = *sample;
+                    let merged = if model.chroma_scaling_from_luma {
+                        average
+                    } else {
+                        let combined = average * (i32::from(luma_mult.unwrap_or(128)) - 128)
+                            + orig * (i32::from(mult.unwrap_or(128)) - 128);
+                        ((combined >> 6)
+                            + ((i32::from(offset.unwrap_or(256)) - 256) << (bit_depth - 8)))
+                            .clamp(0, (1 << bit_depth) - 1)
+                    };
+                    let delta = round2(
+                        scale_lut(&luts[plane], merged, bit_depth) * noise[plane][y][x],
+                        scaling_shift,
+                    );
+                    *sample = (orig + delta).clamp(min_value, max_chroma);
+                }
+            }
+        }
+        planes.push(out);
+    }
+    if model.num_y_points > 0 {
+        for (y, row) in planes[0].iter_mut().enumerate() {
+            for (x, sample) in row.iter_mut().enumerate() {
+                let delta = round2(
+                    scale_lut(&luts[0], *sample, bit_depth) * noise[0][y][x],
+                    scaling_shift,
+                );
+                *sample = (*sample + delta).clamp(min_value, max_luma);
+            }
+        }
+    }
+    planes
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|sample| sample as u16)
+        .collect()
+}
+
+#[test]
+fn streamed_synthesis_matches_the_whole_noise_image_reference() {
+    let mut rng = TestRng(0x51a7_e0c3_9b2d_4f61);
+    for case in 0..96 {
+        let width = (rng.next() as usize % 90) + 1;
+        let height = (rng.next() as usize % 80) + 1;
+        let pixel_format = match case % 4 {
+            0 => PixelFormat::Yuv420,
+            1 => PixelFormat::Yuv422,
+            2 => PixelFormat::Yuv444,
+            _ => PixelFormat::Monochrome,
+        };
+        let mut model = film_grain_model();
+        model.overlap_flag = rng.next() & 1 != 0;
+        model.film_grain_block_size = rng.next() & 1 != 0;
+        model.clip_to_restricted_range = rng.next() & 1 != 0;
+        model.mc_identity = model.clip_to_restricted_range && rng.next() & 1 != 0;
+        model.chroma_scaling_from_luma = rng.next().is_multiple_of(3);
+        model.grain_scaling_minus_8 = (rng.next() % 4) as u8;
+        model.cb_mult = Some(rng.next() as u8);
+        model.cb_luma_mult = Some(rng.next() as u8);
+        model.cb_offset = Some((rng.next() % 512) as u16);
+        model.cr_mult = Some(rng.next() as u8);
+        model.cr_luma_mult = Some(rng.next() as u8);
+        model.cr_offset = Some((rng.next() % 512) as u16);
+        for point in model
+            .point_y
+            .iter_mut()
+            .chain(&mut model.point_cb)
+            .chain(&mut model.point_cr)
+        {
+            point.scaling = rng.next() % 256;
+        }
+        let seed = rng.next() as u16;
+        let count = sample_count(width, height, pixel_format);
+        let eight = (0..count)
+            .map(|_| (rng.next() % 256) as u16)
+            .collect::<Vec<_>>();
+        let ten = (0..count)
+            .map(|_| (rng.next() % 1024) as u16)
+            .collect::<Vec<_>>();
+        for (bit_depth, samples) in [(BitDepth::Eight, &eight), (BitDepth::Ten, &ten)] {
+            let wide = frame_at_depth::<u16>(width, height, pixel_format, bit_depth, samples);
+            let expected = reference_output(&wide, &model, seed);
+            assert_eq!(
+                output_samples(&apply_film_grain(&wide, &model, seed).unwrap()),
+                expected,
+                "case {case} {bit_depth:?}"
+            );
+            if bit_depth == BitDepth::Eight {
+                let narrow = frame_at_depth::<u8>(width, height, pixel_format, bit_depth, samples);
+                assert_eq!(
+                    output_samples(&apply_film_grain(&narrow, &model, seed).unwrap()),
+                    expected,
+                    "case {case} u8"
+                );
+            }
+        }
+    }
 }
