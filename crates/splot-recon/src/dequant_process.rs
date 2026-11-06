@@ -27,7 +27,7 @@
 
 use std::sync::Arc;
 
-use fearless_simd::{Bytes as _, Level, Simd, SimdBase as _, dispatch, i32x8, u32x8};
+use fearless_simd::{Bytes as _, Simd, SimdBase as _, i32x8, u32x8};
 
 use splot_tables::tables::quantizer::QUANTIZER_MATRIX;
 
@@ -221,9 +221,8 @@ fn dequantize_flat_block(params: &DequantBlockParams, quant: &[i32], out: &mut [
     }
     let denom_shift = denom.trailing_zeros();
     let bound = 1i32 << (7 + u32::from(params.bit_depth.bits()));
-    let len = quant.len();
     let mut index = 0usize;
-    dispatch!(Level::baseline(), simd => {
+    baseline_simd!(simd => {
         while let (Some(out), Some(quant)) = (
             out.get_mut(index..index + 8),
             quant.get(index..index + 8),
@@ -231,17 +230,12 @@ fn dequantize_flat_block(params: &DequantBlockParams, quant: &[i32], out: &mut [
             dequant_flat_lanes(simd, out, quant, params.ac_quant, denom_shift, bound);
             index += 8;
         }
-        if index + 4 <= len {
-            let mut lanes = [0i32; 8];
-            let mut padded = [0i32; 8];
-            padded[..4].copy_from_slice(&quant[index..index + 4]); // splot-copy-ok: pad a § 7.14.4 lane group
-            dequant_flat_lanes(simd, &mut lanes, &padded, params.ac_quant, denom_shift, bound);
-            out[index..index + 4].copy_from_slice(&lanes[..4]); // splot-copy-ok: publish a § 7.14.4 lane group
-            index += 4;
-        }
     });
     for (slot, &coeff) in out[index..].iter_mut().zip(&quant[index..]) {
-        *slot = dequant_coefficient(coeff, params.ac_quant, denom, params.bit_depth);
+        let magnitude = coeff.unsigned_abs().wrapping_mul(params.ac_quant) & 0x00FF_FFFF;
+        let scaled = (round2_u32(magnitude, QUANT_TABLE_BITS as u8) >> denom_shift) as i32;
+        let signed = if coeff < 0 { -scaled } else { scaled };
+        *slot = signed.clamp(-bound, bound - 1);
     }
     if let (Some(slot), Some(&coeff)) = (out.first_mut(), quant.first()) {
         *slot = dequant_coefficient(coeff, params.dc_quant, denom, params.bit_depth);

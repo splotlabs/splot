@@ -18,9 +18,13 @@
 
 use fearless_simd::{
     Bytes as _, Level, Simd, SimdBase as _, SimdIntWiden as _, SimdMask as _, SimdNarrow as _,
-    dispatch, i16x16, i32x8, u8x32, u32x8,
+    i16x16, i32x4, i32x8, u8x32, u32x8,
 };
 
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::{__m256i, _mm256_packs_epi32, _mm256_setr_epi8, _mm256_shuffle_epi8};
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::{Avx2, SimdInto as _};
 use splot_tables::tables::transform_1d::{
     ADST_KERNEL4, ADST_KERNEL8, ADST_KERNEL16, DCT_KERNEL4, DCT_KERNEL8, DCT_KERNEL16,
     DCT_KERNEL32, DDTX_KERNEL8, DDTX_KERNEL16, FDST_KERNEL4, FDST_KERNEL8, FDST_KERNEL16,
@@ -181,6 +185,14 @@ pub(crate) fn inverse_transform_2d_8bit(
     let Some(col) = col else {
         return false;
     };
+    if let Some((&dc, rest)) = dequant.split_first()
+        && rest.len() + 1 == t.w
+        && rest.iter().all(|&coeff| coeff == 0)
+    {
+        let flat = dct(t.row) && dct(t.col);
+        baseline_simd!(simd => dc_only(simd, t, dc, flat, residual));
+        return true;
+    }
     let plan = Plan {
         t,
         row,
@@ -188,7 +200,7 @@ pub(crate) fn inverse_transform_2d_8bit(
         col,
         split,
     };
-    dispatch!(Level::baseline(), simd => transform(simd, plan, dequant, residual, scratch));
+    baseline_simd!(simd => transform(simd, plan, dequant, residual, scratch));
     true
 }
 
@@ -272,14 +284,95 @@ const fn identity_scale(len: usize) -> i32 {
     }
 }
 
-/// The optional `Round2(x * 2896, 12)` rescale and the row input clamp.
+/// Row 0 of the paired § 7.15.2.1 kernel of `dim` at length `len` (the
+/// identity scale at index 0 for the § 7.15.2.3 identity), as packed
+/// multiply-add pairs `(k, 0)`.
+fn first_kernel_row(dim: InverseTransform2dDim, len: usize) -> [u32; 32] {
+    let mut row = [0u32; 32];
+    let kernel: &[u32] = match dim {
+        InverseTransform2dDim::Identity => {
+            row[0] = identity_scale(len) as u32;
+            return row;
+        }
+        InverseTransform2dDim::Kernel(tx_type) => match select(len, tx_type) {
+            Some(PairKernel::N4(k)) => &k[0],
+            Some(PairKernel::N8(k)) => &k[0],
+            Some(PairKernel::N16(k)) => &k[0],
+            Some(PairKernel::N32(k)) => &k[0],
+            None => &[],
+        },
+    };
+    for (slot, &pair) in row.iter_mut().zip(kernel) {
+        *slot = pair & 0xffff;
+    }
+    row
+}
+
+/// The transform of a block whose only non-zero coefficient is `dc`: the
+/// row pass leaves only row 0, `Clip3(Round2(dc * kr[c], rowShift))` for
+/// row-kernel row 0 `kr`, and every column sum has the one term
+/// `kc[r] * row0[c]` for column-kernel row 0 `kc`. With `flat` (`DCT` both
+/// ways) every kernel row 0 is constant and so is the residual.
+fn dc_only<S: Simd>(simd: S, t: Transform8, dc: i32, flat: bool, residual: &mut [i32]) {
+    let dc = row_input(i32x8::splat(simd, dc), t.rescale).bitcast::<i16x16<S>>();
+    let (row_shift, col_shift) = (u32::from(t.row_shift), u32::from(t.col_shift));
+    let row = first_kernel_row(t.row, t.w);
+    let col = first_kernel_row(t.col, t.h);
+    let row0 = |c: usize| {
+        let k = row.as_chunks::<8>().0.get(c).map_or([0; 8], |k| *k);
+        clip_row(madd(dc, pairs(simd, &k)), row_shift).bitcast::<i16x16<S>>()
+    };
+    if flat {
+        let value: [i32; 8] = clip_col(madd(row0(0), splat_pair(simd, col[0])), col_shift).into();
+        residual.fill(value[0]);
+        return;
+    }
+    if t.w == 4 {
+        let row0 = row0(0).bitcast::<i32x8<S>>();
+        let (row0, _) = simd.split_i32x8(row0);
+        let row0 = simd.combine_i32x4(row0, row0).bitcast();
+        for (out, k) in residual
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .zip(col.as_chunks::<2>().0)
+        {
+            let [a, b] = *k;
+            clip_col(
+                madd(row0, pairs(simd, &[a, a, a, a, b, b, b, b])),
+                col_shift,
+            )
+            .store_slice(out);
+        }
+        return;
+    }
+    let chunks = t.w / 8;
+    let mut row0s = [i16x16::splat(simd, 0); 4];
+    for (c, slot) in row0s.iter_mut().enumerate().take(chunks) {
+        *slot = row0(c);
+    }
+    for (out, &k) in residual.chunks_exact_mut(t.w).zip(&col) {
+        let k = splat_pair(simd, k);
+        for (out, &row0) in out.as_chunks_mut::<8>().0.iter_mut().zip(&row0s) {
+            clip_col(madd(row0, k), col_shift).store_slice(out);
+        }
+    }
+}
+
+/// The optional `Round2(x * 2896, 12)` rescale.
 #[inline]
-fn row_input<S: Simd>(v: i32x8<S>, rescale: bool) -> i32x8<S> {
-    let v = if rescale {
+fn rescaled<S: Simd>(v: i32x8<S>, rescale: bool) -> i32x8<S> {
+    if rescale {
         (v * 2896 + (1 << 11)) >> 12
     } else {
         v
-    };
+    }
+}
+
+/// The optional rescale and the row input clamp.
+#[inline]
+fn row_input<S: Simd>(v: i32x8<S>, rescale: bool) -> i32x8<S> {
+    let v = rescaled(v, rescale);
     v.max(i32x8::splat(v.simd, i32::from(i16::MIN)))
         .min(i32x8::splat(v.simd, i32::from(i16::MAX)))
 }
@@ -430,8 +523,33 @@ fn clip_col<S: Simd>(sum: i32x8<S>, shift: u32) -> i32x8<S> {
 /// Rows `a` and `b` of the row `Clip3`, packed `a` low and `b` high.
 #[inline]
 fn pack_rows<S: Simd>(a: i32x8<S>, b: i32x8<S>, shift: u32) -> i32x8<S> {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = Level::baseline().as_avx2() {
+        let (a, b) = (round(a, shift), round(b, shift));
+        let packed = pack_rows_avx2(
+            token,
+            i32x8::from_slice(token, a.as_slice()).into(),
+            i32x8::from_slice(token, b.as_slice()).into(),
+        );
+        let packed: i32x8<Avx2> = packed.simd_into(token);
+        return i32x8::from_slice(a.simd, packed.as_slice());
+    }
     (clip_row(a, shift) & 0xffff) | (clip_row(b, shift) << 16)
 }
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    /// `packssdw` saturates both rows to the row `Clip3` within each 128-bit
+    /// lane, and `pshufb` interleaves them column by column.
+    #[inline]
+    fn pack_rows_avx2(token: Avx2, a: __m256i, b: __m256i) -> __m256i {
+        let order = _mm256_setr_epi8(
+            0, 1, 8, 9, 2, 3, 10, 11, 4, 5, 12, 13, 6, 7, 14, 15, 0, 1, 8, 9, 2, 3, 10, 11, 4, 5,
+            12, 13, 6, 7, 14, 15,
+        );
+        _mm256_shuffle_epi8(_mm256_packs_epi32(a, b), order)
+    }
+);
 
 /// The `pshufb` that swaps the middle two samples of every four.
 const SPLIT_ORDER: [u8; 32] = {
@@ -450,8 +568,8 @@ const SPLIT_ORDER: [u8; 32] = {
     order
 };
 
-/// The row input clamp (after the optional rescale) of up to 32 row samples
-/// as packed pairs, with one past the last non-zero pair: adjacent samples,
+/// The row input clamp (after the optional rescale, as the `packssdw`
+/// saturation) of up to 32 row samples as packed pairs, with one past the last non-zero pair: adjacent samples,
 /// or with `split` samples `4m + j` and `4m + j + 2` as pair `2m + j`.
 #[inline]
 fn row_input_pairs<S: Simd>(
@@ -464,13 +582,13 @@ fn row_input_pairs<S: Simd>(
     let mut nonzero = 0u64;
     let lanes = |i: usize| {
         if let Some(chunk) = row.get(8 * i..8 * i + 8) {
-            return row_input(i32x8::from_slice(simd, chunk), rescale);
+            return rescaled(i32x8::from_slice(simd, chunk), rescale);
         }
         let mut padded = [0i32; 8];
         if let Some(tail) = row.get(8 * i..8 * i + 4) {
             padded[..4].copy_from_slice(tail); // splot-copy-ok: pad a 4-sample row
         }
-        row_input(i32x8::from_slice(simd, &padded), rescale)
+        rescaled(i32x8::from_slice(simd, &padded), rescale)
     };
     for (index, slot) in out
         .as_chunks_mut::<8>()
@@ -694,44 +812,34 @@ fn col_pass<S: Simd, const M: usize, const HM: usize, const SPLIT: bool>(
     ColPass { w, mask, shift }: ColPass,
     residual: &mut [i32],
 ) {
-    let list = |mask: u32| {
-        let mut list = [0usize; 16];
-        let mut count = 0;
-        let mut bits = mask & ((1 << HM) - 1);
-        while bits != 0 {
-            list[count] = bits.trailing_zeros() as usize;
-            bits &= bits - 1;
-            count += 1;
-        }
-        (list, count)
-    };
-    let (even, odd) = if SPLIT {
-        (list(mask & 0x5555), list(mask & 0xaaaa))
-    } else {
-        (list(mask), ([0; 16], 0))
-    };
-    let (even, odd) = (&even.0[..even.1], &odd.0[..odd.1]);
+    let mask = mask & ((1 << HM) - 1);
+    let kernel = &kernel[..(u32::BITS - mask.leading_zeros()) as usize];
+    let (pair_kernels, last) = kernel.as_chunks::<2>();
     let outputs = if SPLIT { M / 2 } else { M };
     let out = residual.as_chunks_mut::<8>().0;
     let zero = i32x8::splat(simd, 0);
+    let written = |q: usize| mask & (1 << q) != 0;
     if w == 4 {
-        let pair_sum = |list: &[usize], r: usize| {
-            let mut sum = zero;
-            for &q in list {
-                let Some(&[z0, z1, z2, z3]) = scratch
-                    .get(q * 4..q * 4 + 4)
-                    .and_then(|z| z.first_chunk::<4>())
-                else {
-                    continue;
-                };
-                let z = i32x8::from_slice(simd, &[z0, z1, z2, z3, z0, z1, z2, z3]).bitcast();
-                let (a, b) = (kernel[q][r], kernel[q][r + 1]);
-                sum += madd(z, pairs(simd, &[a, a, a, a, b, b, b, b]));
-            }
-            sum
+        let step = |q: usize, k: &[u32; M], r: usize, sum: &mut i32x8<S>| {
+            let (Some(z), true) = (scratch.get(q * 4..q * 4 + 4), written(q)) else {
+                return;
+            };
+            let z = i32x4::from_slice(simd, z);
+            let (a, b) = (k[r], k[r + 1]);
+            *sum += madd(
+                simd.combine_i32x4(z, z).bitcast(),
+                pairs(simd, &[a, a, a, a, b, b, b, b]),
+            );
         };
         for r in (0..outputs).step_by(2) {
-            let (e, o) = (pair_sum(even, r), pair_sum(odd, r));
+            let (mut e, mut o) = (zero, zero);
+            for (p, [k0, k1]) in pair_kernels.iter().enumerate() {
+                step(2 * p, k0, r, &mut e);
+                step(2 * p + 1, k1, r, if SPLIT { &mut o } else { &mut e });
+            }
+            if let [k0] = last {
+                step(kernel.len() - 1, k0, r, &mut e);
+            }
             if let Some(out) = out.get_mut(r / 2) {
                 clip_col(e + o, shift).store_slice(out);
             }
@@ -744,22 +852,27 @@ fn col_pass<S: Simd, const M: usize, const HM: usize, const SPLIT: bool>(
         return;
     }
     let chunks = w / 8;
-    let sums = |list: &[usize], c: usize, r: usize| {
-        let mut sums = [zero; 4];
-        for &q in list {
-            let Some(z) = scratch.as_chunks::<8>().0.get(q * chunks + c) else {
-                continue;
-            };
-            let z = i32x8::from_slice(simd, z).bitcast();
-            for (offset, sum) in sums.iter_mut().enumerate() {
-                *sum += madd(z, splat_pair(simd, kernel[q][r + offset]));
-            }
+    let columns = scratch.as_chunks::<8>().0;
+    let step = |q: usize, k: &[u32; M], c: usize, r: usize, sums: &mut [i32x8<S>; 4]| {
+        let (Some(z), Some(k), true) = (columns.get(q * chunks + c), k.get(r..r + 4), written(q))
+        else {
+            return;
+        };
+        let z = i32x8::from_slice(simd, z).bitcast();
+        for (sum, &k) in sums.iter_mut().zip(k) {
+            *sum += madd(z, splat_pair(simd, k));
         }
-        sums
     };
     for c in 0..chunks {
         for r in (0..outputs).step_by(4) {
-            let (e, o) = (sums(even, c, r), sums(odd, c, r));
+            let (mut e, mut o) = ([zero; 4], [zero; 4]);
+            for (p, [k0, k1]) in pair_kernels.iter().enumerate() {
+                step(2 * p, k0, c, r, &mut e);
+                step(2 * p + 1, k1, c, r, if SPLIT { &mut o } else { &mut e });
+            }
+            if let [k0] = last {
+                step(kernel.len() - 1, k0, c, r, &mut e);
+            }
             for (offset, (&e, &o)) in e.iter().zip(&o).enumerate() {
                 if let Some(out) = out.get_mut((r + offset) * chunks + c) {
                     clip_col(e + o, shift).store_slice(out);

@@ -13,9 +13,18 @@
 //! Feature tracking: `RECON-RESIDUAL-ADDITION`.
 
 use fearless_simd::{
-    Bytes as _, Level, Simd, SimdBase as _, SimdInt as _, SimdNarrow as _, SimdWiden as _,
-    dispatch, i16x16, i32x8, u8x32, u16x16,
+    Bytes as _, Level, Simd, SimdBase as _, SimdInt as _, SimdNarrow as _, SimdWiden as _, i16x16,
+    i32x4, i32x8, u8x16, u16x8, u16x16, u32x4, u32x8, u64x2,
 };
+
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::{
+    __m128i, __m256i, _mm_adds_epi16, _mm_cvtepu8_epi16, _mm_min_epu8, _mm_packs_epi32,
+    _mm_packus_epi16, _mm256_adds_epi16, _mm256_castsi256_si128, _mm256_cvtepu8_epi16,
+    _mm256_extracti128_si256, _mm256_packs_epi32, _mm256_packus_epi16, _mm256_permute4x64_epi64,
+};
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::{Avx2, SimdInto as _};
 
 use crate::intra_dc_math::validate_sample_type;
 use crate::{BitDepth, ReconError, ReconSample, Result};
@@ -213,7 +222,7 @@ pub(crate) fn add_residual_in_place<T: ReconSample>(
     if let Some(samples) = T::u16_slice_mut(samples) {
         let len = samples.len().min(residual.len());
         let (samples, residual) = (&mut samples[..len], &residual[..len]);
-        dispatch!(Level::baseline(), simd => {
+        baseline_simd!(simd => {
             let (groups, samples) = samples.as_chunks_mut::<8>();
             let (residual_groups, residual) = residual.as_chunks::<8>();
             for (group, residual) in groups.iter_mut().zip(residual_groups) {
@@ -247,7 +256,7 @@ pub(crate) fn add_residual_in_place<T: ReconSample>(
 fn add_residual_u16(prediction: &[u16], residual: &[i32], max: i32, out: &mut [u16]) {
     let len = out.len().min(prediction.len()).min(residual.len());
     let (out, prediction, residual) = (&mut out[..len], &prediction[..len], &residual[..len]);
-    dispatch!(Level::baseline(), simd => add_residual_u16_lanes(simd, prediction, residual, max, out));
+    baseline_simd!(simd => add_residual_u16_lanes(simd, prediction, residual, max, out));
 }
 
 #[inline]
@@ -287,8 +296,10 @@ fn add_residual_u16_lanes<S: Simd>(
 /// `Clip1(prediction + residual)` over `u8` storage, sixteen, eight, then
 /// four lanes at a time, for `0 <= max <= 255`; `prediction` is `out` itself
 /// when `None`.
+#[allow(clippy::inline_always, reason = "per-row residual add hot path")]
+#[inline(always)]
 fn add_residual_u8(prediction: Option<&[u8]>, residual: &[i32], max: i32, out: &mut [u8]) {
-    dispatch!(Level::baseline(), simd => add_residual_u8_lanes(simd, prediction, residual, max, out));
+    baseline_simd!(simd => add_residual_u8_lanes(simd, prediction, residual, max, out));
 }
 
 #[allow(clippy::inline_always, reason = "per-row residual add hot path")]
@@ -350,15 +361,66 @@ fn clip_add_u8<S: Simd, const LANES: usize>(
     residual: &[i32; LANES],
     max: i32,
 ) -> [u8; LANES] {
-    let mut res = [0i32; 16];
-    let mut pred = [0u8; 32];
-    res[..LANES].copy_from_slice(residual); // splot-copy-ok: pad a residual lane group
-    pred[..LANES].copy_from_slice(prediction); // splot-copy-ok: pad a prediction lane group
-    let ([res_lo, res_hi], _) = res.as_chunks::<8>() else {
+    let (pred, res) = (&prediction[..], &residual[..]);
+    #[cfg(target_arch = "x86_64")]
+    if let (Some(token), Ok(pred), Some((lo, hi))) = (
+        Level::baseline().as_avx2(),
+        <&[u8; 16]>::try_from(pred),
+        res.split_at_checked(8),
+    ) {
+        let sum = clip_add_u8x16_avx2(
+            token,
+            u8x16::from_slice(token, pred).into(),
+            i32x8::from_slice(token, lo).into(),
+            i32x8::from_slice(token, hi).into(),
+            u8x16::splat(token, max as u8).into(),
+        );
+        let sum: u8x16<Avx2> = sum.simd_into(token);
+        let mut out = [0u8; LANES];
+        out.copy_from_slice(&sum.as_slice()[..LANES]); // splot-copy-ok: one residual lane group
+        return out;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if let (Some(token), Ok(pred), Ok(res)) = (
+        Level::baseline().as_avx2(),
+        <[u8; 8]>::try_from(pred),
+        <&[i32; 8]>::try_from(res),
+    ) {
+        let sum = clip_add_u8x8_avx2(
+            token,
+            u64x2::from_slice(token, &[u64::from_le_bytes(pred), 0]).into(),
+            i32x8::from_slice(token, res).into(),
+            u8x16::splat(token, max as u8).into(),
+        );
+        let sum: u8x16<Avx2> = sum.simd_into(token);
+        let mut out = [0u8; LANES];
+        out.copy_from_slice(&sum.as_slice()[..LANES]); // splot-copy-ok: one residual lane group
+        return out;
+    }
+    let (pred, res) = if let (Ok(pred), Some((lo, hi))) =
+        (<&[u8; 16]>::try_from(pred), res.split_at_checked(8))
+    {
+        (
+            u8x16::from_slice(simd, pred),
+            i32x8::from_slice(simd, lo).saturating_narrow(i32x8::from_slice(simd, hi)),
+        )
+    } else if let (Ok(pred), Ok(res)) = (<[u8; 8]>::try_from(pred), <&[i32; 8]>::try_from(res)) {
+        (
+            u64x2::from_slice(simd, &[u64::from_le_bytes(pred), 0]).bitcast(),
+            i32x8::from_slice(simd, res).saturating_narrow(i32x8::splat(simd, 0)),
+        )
+    } else if let (Ok(pred), Ok(res)) = (<[u8; 4]>::try_from(pred), <&[i32; 4]>::try_from(res)) {
+        let res = i32x4::from_slice(simd, res);
+        (
+            u32x4::from_slice(simd, &[u32::from_le_bytes(pred), 0, 0, 0]).bitcast(),
+            simd.combine_i32x4(res, res)
+                .saturating_narrow(i32x8::splat(simd, 0)),
+        )
+    } else {
         return [0; LANES];
     };
-    let res = i32x8::from_slice(simd, res_lo).saturating_narrow(i32x8::from_slice(simd, res_hi));
-    let pred: i16x16<S> = u8x32::from_slice(simd, &pred).widen().0.bitcast();
+    let (lo, hi) = pred.widen();
+    let pred: i16x16<S> = simd.combine_u16x8(lo, hi).bitcast();
     let sum = pred
         .saturating_add(res)
         .max(i16x16::splat(simd, 0))
@@ -370,7 +432,47 @@ fn clip_add_u8<S: Simd, const LANES: usize>(
     out
 }
 
-/// `Clip1(prediction + residual)` over one lane group, `LANES <= 8`, for
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    /// Sixteen lanes of [`clip_add_u8`]: `packssdw` saturates the residual
+    /// to `i16`, `paddsw` adds the widened prediction, and `packuswb` clips
+    /// to `0..=255` before the `max` bound.
+    #[inline]
+    fn clip_add_u8x16_avx2(
+        token: Avx2,
+        prediction: __m128i,
+        lo: __m256i,
+        hi: __m256i,
+        max: __m128i,
+    ) -> __m128i {
+        let residual = _mm256_permute4x64_epi64::<0xd8>(_mm256_packs_epi32(lo, hi));
+        let sum = _mm256_adds_epi16(_mm256_cvtepu8_epi16(prediction), residual);
+        let packed = _mm256_packus_epi16(sum, sum);
+        let packed = _mm256_castsi256_si128(_mm256_permute4x64_epi64::<0x08>(packed));
+        _mm_min_epu8(packed, max)
+    }
+);
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    /// Eight lanes of [`clip_add_u8`], as [`clip_add_u8x16_avx2`] on halves.
+    #[inline]
+    fn clip_add_u8x8_avx2(
+        token: Avx2,
+        prediction: __m128i,
+        residual: __m256i,
+        max: __m128i,
+    ) -> __m128i {
+        let residual = _mm_packs_epi32(
+            _mm256_castsi256_si128(residual),
+            _mm256_extracti128_si256::<1>(residual),
+        );
+        let sum = _mm_adds_epi16(_mm_cvtepu8_epi16(prediction), residual);
+        _mm_min_epu8(_mm_packus_epi16(sum, sum), max)
+    }
+);
+
+/// `Clip1(prediction + residual)` over one lane group of 8 or 4 lanes, for
 /// `max >= 0`.
 #[inline]
 fn add_residual_lanes<S: Simd, const LANES: usize>(
@@ -379,16 +481,28 @@ fn add_residual_lanes<S: Simd, const LANES: usize>(
     residual: &[i32; LANES],
     max: i32,
 ) -> [u16; LANES] {
-    let mut res = [0i32; 8];
-    let mut pred = [0u16; 16];
-    res[..LANES].copy_from_slice(residual); // splot-copy-ok: pad a residual lane group
-    pred[..LANES].copy_from_slice(&prediction); // splot-copy-ok: pad a prediction lane group
-    let pred: i32x8<S> = u16x16::from_slice(simd, &pred).widen().0.bitcast();
+    let (pred, res) = (&prediction[..], &residual[..]);
+    let (pred, res) =
+        if let (Ok(pred), Ok(res)) = (<&[u16; 8]>::try_from(pred), <&[i32; 8]>::try_from(res)) {
+            (u16x8::from_slice(simd, pred), i32x8::from_slice(simd, res))
+        } else if let (Ok(&[p0, p1, p2, p3]), Ok(res)) =
+            (<&[u16; 4]>::try_from(pred), <&[i32; 4]>::try_from(res))
+        {
+            let res = i32x4::from_slice(simd, res);
+            (
+                u16x8::from_slice(simd, &[p0, p1, p2, p3, 0, 0, 0, 0]),
+                simd.combine_i32x4(res, res),
+            )
+        } else {
+            return [0; LANES];
+        };
+    let (lo, hi) = pred.widen();
+    let pred: i32x8<S> = simd.combine_u32x4(lo, hi).bitcast();
     let sum = pred
-        .saturating_add(i32x8::from_slice(simd, &res))
+        .saturating_add(res)
         .max(i32x8::splat(simd, 0))
         .min(i32x8::splat(simd, max))
-        .bitcast::<fearless_simd::u32x8<S>>();
+        .bitcast::<u32x8<S>>();
     let sum: [u16; 16] = sum.narrow(sum).into();
     let mut out = [0u16; LANES];
     out.copy_from_slice(&sum[..LANES]); // splot-copy-ok: one residual lane group
