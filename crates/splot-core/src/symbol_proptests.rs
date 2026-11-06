@@ -188,6 +188,25 @@ proptest! {
         }
     }
 
+    /// `read_bool_trusted` must match the checked one-bit literal read.
+    #[test]
+    fn read_bool_trusted_matches_read_literal(
+        data in proptest::collection::vec(any::<u8>(), 2..24),
+        skew in 0usize..8,
+    ) {
+        let mut checked = SymbolDecoder::new(&data).unwrap();
+        let mut trusted = SymbolDecoder::new(&data).unwrap();
+        let mut row = [16384u16, 0, 0];
+        for step in 0..40 {
+            if step % 8 == skew {
+                checked.read_symbol_u16(&mut row.clone()).unwrap();
+                trusted.read_symbol_u16(&mut row).unwrap();
+            }
+            prop_assert_eq!(checked.read_literal(1).unwrap() != 0, trusted.read_bool_trusted());
+            prop_assert_eq!(checked.checkpoint(), trusted.checkpoint());
+        }
+    }
+
     /// `read_trusted` must stay panic-free on arbitrary row contents.
     #[test]
     fn read_trusted_never_panics_on_hostile_rows(
