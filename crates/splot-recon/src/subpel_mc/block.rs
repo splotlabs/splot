@@ -376,6 +376,9 @@ pub(super) fn put_u8(
     if !admitted {
         return false;
     }
+    if super::cell::put(view, params, output, stride) {
+        return true;
+    }
     let params = plane_bounded(view, params);
     let layout = Layout::new(&params);
     let Some(block) = layout.in_place(view, &params) else {
