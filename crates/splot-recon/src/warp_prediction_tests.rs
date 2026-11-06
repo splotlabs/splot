@@ -201,8 +201,8 @@ fn masked_tap_rows_match_the_filter_rows_over_every_table_phase() {
     let first = -(WARP_FILTER_CENTER << WARPEDDIFF_PREC_BITS) - 512;
     let last = ((WARPED_FILTERS.len() as i32 - WARP_FILTER_CENTER) << WARPEDDIFF_PREC_BITS) - 513;
     for phase in first..=last {
-        let want = Simd::<i8, WARP_FILTER_TAPS>::from_array(*warped_filter_row(phase));
-        assert_eq!(warp_taps(phase), want.cast(), "phase {phase}");
+        let want = warped_filter_row(phase).map(i16::from);
+        assert_eq!(WARPED_TAPS[filter_index(phase)], want, "phase {phase}");
     }
 }
 
@@ -249,14 +249,11 @@ fn compound_intermediate_affine_matches_round7_spec_trace() {
 
     let shear = setup_shear(params.warp_params).unwrap();
     let projected = project_section_center(&params).unwrap();
-    let mut intermediate = [0i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
-    build_intermediate(
-        &view,
-        params.bounds(),
-        &shear,
-        &projected,
-        &mut intermediate,
-    );
+    let mut intermediate = [[0i16; WARPED_BLOCK_SIZE]; WARP_INTERMEDIATE_ROWS];
+    let bounds = params.bounds();
+    baseline_simd!(simd => {
+        build_intermediate(simd, &view, bounds, &shear, &projected, &mut intermediate);
+    });
     let mut want = vec![0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
     for i1 in -4i32..4 {
         for i2 in -4i32..4 {
@@ -266,8 +263,7 @@ fn compound_intermediate_affine_matches_round7_spec_trace() {
             let mut sum = 0i64;
             for (i3, &tap) in taps.iter().enumerate() {
                 let row = (i1 + i3 as i32 + 4) as usize;
-                sum += i64::from(tap)
-                    * i64::from(intermediate[row * WARPED_BLOCK_SIZE + (i2 + 4) as usize]);
+                sum += i64::from(tap) * i64::from(intermediate[row][(i2 + 4) as usize]);
             }
             want[(i1 + 4) as usize * WARPED_BLOCK_SIZE + (i2 + 4) as usize] =
                 round2(sum, INTER_ROUND1_COMPOUND) as i32;
@@ -430,23 +426,28 @@ fn interior_intermediate_matches_the_clamped_pass_over_the_ten_bit_range() {
                 covered.1 = true;
             }
 
-            let mut fast = [0i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
-            build_interior_intermediate(&view, &shear, &projected, origin, &mut fast);
-            let mut want = [0i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
-            build_intermediate(&view, params.bounds(), &shear, &projected, &mut want);
+            let mut fast = [[0i16; WARPED_BLOCK_SIZE]; WARP_INTERMEDIATE_ROWS];
+            let mut want = fast;
+            let bounds = params.bounds();
+            baseline_simd!(simd => {
+                build_interior_intermediate(simd, &view, &shear, &projected, origin, &mut fast);
+                build_intermediate(simd, &view, bounds, &shear, &projected, &mut want);
+            });
             assert_eq!(
                 fast, want,
                 "model {warp_params:?} at ({block_x}, {block_y})"
             );
-            build_interior_intermediate(&view8, &shear, &projected, origin, &mut fast);
-            build_intermediate(&view8, params.bounds(), &shear, &projected, &mut want);
+            baseline_simd!(simd => {
+                build_interior_intermediate(simd, &view8, &shear, &projected, origin, &mut fast);
+                build_intermediate(simd, &view8, bounds, &shear, &projected, &mut want);
+            });
             assert_eq!(fast, want, "8-bit model {warp_params:?}");
         }
     }
     assert_eq!(covered, (true, true), "both shear column cases exercised");
 }
 
-/// [`warp_windows`] reads a whole vector past `first_col + WARPED_BLOCK_SIZE`,
+/// [`warp_span`] reads a whole vector past `first_col + WARPED_BLOCK_SIZE`,
 /// one sample beyond the taps' own reach, so admission must reserve the
 /// column after `last_col`. Without the reservation the admitted section at
 /// the final column reads off the end of its row.
@@ -903,9 +904,11 @@ fn block_matches_sections<T: ReconSample + PartialEq>(
         }
     }
     let mut got = vec![sentinel; stride * height];
-    let taken = prepared
-        .translation_two_tap_into(view, [x, y, width, height], &mut got, stride, max_sample)
-        .unwrap();
+    let block = [x, y, width, height];
+    let max_sample = max_sample as i16;
+    let taken = baseline_simd!(simd => prepared
+        .translation_two_tap_into(simd, view, block, &mut got, stride, max_sample))
+    .unwrap();
     if taken {
         assert!(got == want, "block {params:?} {width}x{height}");
     } else {
@@ -1012,4 +1015,64 @@ fn translation_two_tap_block_declines_clipped_and_ragged_blocks() {
         &params,
         [8, 8, 32, 8]
     ));
+}
+
+/// The byte-lane section kernel against the § 7.13.3.19 trace for models
+/// with every shear term nonzero, on noise and on extreme-contrast rows that
+/// reach the `pmaddubsw` pair and half bounds.
+#[test]
+fn eight_bit_sections_with_full_shear_match_the_spec_trace() {
+    let (ref_w, ref_h) = (64usize, 64usize);
+    let unit = 1 << WARPEDMODEL_PREC_BITS;
+    let textures = [
+        noise_samples(ref_w * ref_h, 255, 5),
+        (0..ref_w * ref_h)
+            .map(|index| {
+                if (index * 7 + index / ref_w) % 5 < 2 {
+                    255
+                } else {
+                    0
+                }
+            })
+            .collect::<Vec<u16>>(),
+    ];
+    let models = [
+        [
+            translation(2, 77, 0),
+            translation(-1, 901, 0),
+            unit + 700,
+            -900,
+            1100,
+            unit - 600,
+        ],
+        [
+            translation(0, 3, 0),
+            translation(1, 512, 0),
+            unit - 1500,
+            1300,
+            -1200,
+            unit + 900,
+        ],
+        [0, 0, unit + 64, 4000, -3000, unit - 64],
+        [translation(1, 0, 0), 0, unit, 0, 0, unit + 2000],
+    ];
+    for samples in &textures {
+        let bytes = samples.iter().map(|&s| s as u8).collect::<Vec<u8>>();
+        let view = ReferencePlaneView::new(&bytes, ref_w, ref_h).unwrap();
+        for warp_params in models {
+            for (block_x, block_y) in [(24, 24), (16, 32), (32, 16)] {
+                let mut params = default_params(block_x, block_y, ref_w as i32, ref_h as i32);
+                params.warp_params = warp_params;
+                for round1 in [INTER_ROUND1_NON_COMPOUND, INTER_ROUND1_COMPOUND] {
+                    let want = reference_warp_rounded(samples, ref_w, ref_h, &params, round1);
+                    let got = warp_predict_block(&view, &params, round1 == INTER_ROUND1_COMPOUND)
+                        .unwrap();
+                    assert!(
+                        got.iter().map(|&v| i64::from(v)).eq(want),
+                        "{warp_params:?} at ({block_x}, {block_y}) round {round1}"
+                    );
+                }
+            }
+        }
+    }
 }

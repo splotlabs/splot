@@ -2,7 +2,6 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 #![feature(portable_simd)]
-#![feature(hint_prefetch)]
 #![feature(allocator_api)]
 
 //! `splot-recon` owns AV2 reconstruction primitives and frame/workspace storage.
@@ -13,6 +12,25 @@
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
+
+/// Runs `$body` with the baseline SIMD token bound to `$simd`. On x86-64 the
+/// AVX2 token is taken directly, so a small per-row kernel inlines into its
+/// caller instead of going through the out-of-line `dispatch!` trampoline.
+#[cfg(target_arch = "x86_64")]
+macro_rules! baseline_simd {
+    ($simd:ident => $body:expr) => {
+        match fearless_simd::Level::baseline().as_avx2() {
+            Some($simd) => $body,
+            None => fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body),
+        }
+    };
+}
+#[cfg(not(target_arch = "x86_64"))]
+macro_rules! baseline_simd {
+    ($simd:ident => $body:expr) => {
+        fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body)
+    };
+}
 
 mod cdef_filter;
 mod coefficient_scan;

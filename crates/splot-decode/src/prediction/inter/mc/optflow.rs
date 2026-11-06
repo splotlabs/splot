@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use std::simd::{Simd, num::SimdUint};
-
 use splot_recon::math::round2_signed_i32;
 use splot_recon::{
     BilinearOverlapCarry, OptflowScratch, derive_optflow_mv_delta_8x8_strided_into,
@@ -493,14 +491,16 @@ pub(super) fn tip_optflow_motion_cell_strided(
     base_mvs: [Mv; 2],
 ) -> Result<MotionCell> {
     if sad_threshold.is_some_and(|threshold| {
-        let mut sad = Simd::<u32, 8>::splat(0);
-        for row in 0..8 {
-            let offset = row * stride;
-            let left = Simd::<u16, 8>::from_slice(&pred0[start0 + offset..]);
-            let right = Simd::<u16, 8>::from_slice(&pred1[start1 + offset..]);
-            sad += left.abs_diff(right).cast();
-        }
-        sad.reduce_sum() >> bit_depth.bits().saturating_sub(8) < threshold
+        let sad = (0..8)
+            .map(|row| {
+                let offset = row * stride;
+                super::refinemv::abs_diff_sum(
+                    &pred0[start0 + offset..][..8],
+                    &pred1[start1 + offset..][..8],
+                )
+            })
+            .sum::<u32>();
+        sad >> bit_depth.bits().saturating_sub(8) < threshold
     }) {
         return Ok(MotionCell::from_refinemv(base_mvs));
     }
