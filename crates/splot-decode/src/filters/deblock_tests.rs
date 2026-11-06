@@ -20,26 +20,26 @@ fn build_mi_grid(
 ) -> Result<MiGridStorage, DeblockError> {
     let mut order = RowOrder::default();
     order.sort(blocks.iter(), mi_rows)?;
-    let mut grid = MiGridStorage::new(mi_cols, (1, 1), storage);
-    grid.fill(blocks, &order, mi_rows, &(0..mi_rows), true)?;
+    let mut grid = MiGridStorage::new(mi_cols, storage);
+    grid.fill(blocks, &order, mi_rows, &(0..mi_rows))?;
     Ok(grid)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn overlay_mi_grid(
-    base: &MiGridStorage,
+    (base, luma): (&MiGridStorage, &[DeblockBlock]),
     blocks: &ChromaDeblockRecords,
     plane: usize,
     mi_rows: usize,
     mi_cols: usize,
     sub_x: usize,
     sub_y: usize,
-    storage: &mut (Vec<grid::ChromaMiCell>, Vec<u64>),
+    storage: &mut (Vec<grid::ChromaMiCell>, Vec<grid::CellFacts>),
 ) -> Result<ChromaMiGridStorage, DeblockError> {
     let mut order = RowOrder::default();
     order.sort(blocks.blocks.iter().map(|record| &record.block), mi_rows)?;
     let mut grid = ChromaMiGridStorage::new(mi_cols, (sub_x, sub_y), storage);
-    grid.fill(base, blocks, &order, plane, mi_rows, &(0..mi_rows), true)?;
+    grid.fill(base, luma, blocks, &order, plane, mi_rows, &(0..mi_rows))?;
     Ok(grid)
 }
 
@@ -498,11 +498,11 @@ fn owned_deblock_records_return_on_finish_and_keep_their_storage() {
     let addresses = |storage: &DeblockGridStorage| {
         (
             storage.cells.as_ptr(),
-            storage.candidates.as_ptr(),
+            storage.facts.as_ptr(),
             storage
                 .chroma
                 .each_ref()
-                .map(|(cells, flags)| (cells.as_ptr(), flags.as_ptr())),
+                .map(|(cells, facts)| (cells.as_ptr(), facts.as_ptr())),
         )
     };
     let original = addresses(&records.grids);
@@ -888,94 +888,10 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
     let storage = Box::leak(Box::new(MiGridStorage {
         mi_cols: 16,
         window: Window::default(),
-        fully_covered: false,
         cells,
-        chroma_subsampling: (1, 1),
-        candidates: vec![0; 4 * grid::FLAG_PLANES * grid::flag_words(16)],
+        facts: Vec::new(),
     }));
     MiGrid::new(storage, None, blocks, &EMPTY_CHROMA_RECORDS)
-}
-
-pub(super) fn assert_candidate_mask_superset(
-    grid: &MiGrid,
-    mi_rows: usize,
-    mi_cols: usize,
-    plane: usize,
-    pass: usize,
-    sub_x: usize,
-    sub_y: usize,
-) {
-    let (dx, dy) = if pass == 0 { (1, 0) } else { (0, 1) };
-    let row_step = 1 << sub_y;
-    let col_step = 1 << sub_x;
-    for row in (0..mi_rows).step_by(row_step) {
-        for col in (0..mi_cols).step_by(col_step) {
-            if pass == 0 && col == 0 || pass == 1 && row == 0 {
-                continue;
-            }
-            let prev_row = row - (dy << sub_y);
-            let prev_col = col - (dx << sub_x);
-            let curr = grid.get_edge(row, col).unwrap();
-            let prev = grid.get_edge(prev_row, prev_col).unwrap();
-            let curr_tx_base = curr.tx_base(plane);
-            let prev_tx_base = prev.tx_base(plane);
-            let x_p = (col * MI_SIZE) >> sub_x;
-            let y_p = (row * MI_SIZE) >> sub_y;
-            let curr_sub_pu = sub_pu_base(curr, plane, x_p, y_p, sub_x, sub_y);
-            let prev_sub_pu = sub_pu_base(
-                prev,
-                plane,
-                x_p.saturating_sub(dx),
-                y_p.saturating_sub(dy),
-                sub_x,
-                sub_y,
-            );
-            if curr_tx_base != prev_tx_base || curr_sub_pu != prev_sub_pu {
-                assert!(
-                    grid.is_candidate(row, col, pass, true, sub_x, sub_y),
-                    "candidate mask missed plane={plane} pass={pass} row={row} col={col}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn candidate_mask_is_a_superset_for_mixed_transform_and_sub_pu_edges() {
-    let block = |r, c, n4w, n4h, sub_pu_size| DeblockBlock {
-        r: r as u32,
-        c: c as u32,
-        luma_prediction: prediction(r, c, 3),
-        chroma_prediction: prediction(r, c, 2),
-        chroma_base_r: r as u32,
-        chroma_base_c: c as u32,
-        n4w: n4w as u32,
-        n4h: n4h as u32,
-        luma_tx: 3,
-        chroma_tx: Some(2),
-        sub_pu_size,
-        chroma_transform_only: false,
-        qindex: 100,
-        skip: false,
-        lossless: false,
-    };
-    let blocks = [
-        block(0, 0, 1, 1, None),
-        block(0, 1, 5, 1, None),
-        block(1, 0, 1, 3, None),
-        block(1, 1, 2, 3, Some(DeblockSubPuSize::square(8))),
-        block(1, 3, 3, 3, None),
-    ];
-    let storage = build_mi_grid(&blocks, 4, 6, &mut DeblockGridStorage::default()).unwrap();
-    let grid = MiGrid::new(&storage, None, &blocks, &EMPTY_CHROMA_RECORDS);
-
-    for (plane, sub_x, sub_y) in [(0, 0, 0), (1, 1, 1)] {
-        for pass in 0..2 {
-            assert_candidate_mask_superset(&grid, 4, 6, plane, pass, sub_x, sub_y);
-        }
-    }
-    assert!(!grid.is_candidate(3, 5, 0, false, 0, 0));
-    assert!(!grid.is_candidate(3, 5, 1, false, 0, 0));
 }
 
 #[test]
@@ -1000,9 +916,18 @@ fn twin_chroma_record_lists_give_v_the_grid_of_u() {
     let whole = build_mi_grid(&luma, mi_rows, mi_cols, &mut DeblockGridStorage::default()).unwrap();
     let overlays = [0, 1].map(|plane| {
         let storage = &mut DeblockGridStorage::default().chroma[0];
-        overlay_mi_grid(&whole, &chroma, plane, mi_rows, mi_cols, 1, 1, storage).unwrap()
+        overlay_mi_grid(
+            (&whole, &luma),
+            &chroma,
+            plane,
+            mi_rows,
+            mi_cols,
+            1,
+            1,
+            storage,
+        )
+        .unwrap()
     });
-    assert_eq!(overlays[0].candidates, overlays[1].candidates);
     let edges = |plane: usize| {
         let grid = MiGrid::new(&whole, Some(&overlays[plane]), &luma, &chroma);
         let position = |block: &DeblockBlock| {
@@ -1063,43 +988,17 @@ fn sliding_grid_windows_match_the_whole_frame_grid() {
         .sort(chroma.blocks.iter().map(|record| &record.block), mi_rows)
         .unwrap();
     let mut storage = DeblockGridStorage::default();
-    let mut base = MiGridStorage::new(mi_cols, (1, 1), &mut storage);
+    let mut base = MiGridStorage::new(mi_cols, &mut storage);
     let mut overlays =
         [0, 1].map(|plane| ChromaMiGridStorage::new(mi_cols, (1, 1), &mut storage.chroma[plane]));
-    let words = grid::flag_words(mi_cols);
-    let covered = |flags: &[u64], index: usize| {
-        let (at, col) = (index / mi_cols, index % mi_cols);
-        flags[(at * grid::FLAG_PLANES + grid::COVERED_PLANE) * words + col / 64] >> (col % 64) & 1
-            != 0
-    };
     for window in [0..4, 2..6, 4..8, 6..9, 2..6, 4..9] {
-        base.fill(&luma, &order[0], mi_rows, &window, true).unwrap();
-        assert_eq!(base.fully_covered, window.end <= 6, "window {window:?}");
+        base.fill(&luma, &order[0], mi_rows, &window).unwrap();
         for (plane, overlay) in overlays.iter_mut().enumerate() {
             overlay
-                .fill(&base, &chroma, &order[1], plane, mi_rows, &window, true)
+                .fill(&base, &luma, &chroma, &order[1], plane, mi_rows, &window)
                 .unwrap();
-            for (index, row, col) in window
-                .clone()
-                .enumerate()
-                .flat_map(|(at, row)| (0..mi_cols).map(move |col| (at * mi_cols + col, row, col)))
-                .filter(|_| !base.fully_covered)
-            {
-                let luma_covered = base.cells[index].base != 0;
-                assert_eq!(covered(&base.candidates, index), luma_covered);
-                let record_covered = chroma.iter_plane(plane).any(|(_, block)| {
-                    let rows = block.r as usize..(block.r + block.n4h) as usize;
-                    let cols = block.c as usize..(block.c + block.n4w) as usize;
-                    !block.chroma_transform_only && rows.contains(&row) && cols.contains(&col)
-                });
-                assert_eq!(
-                    covered(&overlay.candidates, index),
-                    luma_covered || record_covered,
-                    "window {window:?} plane {plane} ({row}, {col})"
-                );
-            }
             let expected = overlay_mi_grid(
-                &whole,
+                (&whole, &luma),
                 &chroma,
                 plane,
                 mi_rows,
@@ -1126,15 +1025,6 @@ fn sliding_grid_windows_match_the_whole_frame_grid() {
                         edge(&full),
                         "window {window:?} ({row}, {col})"
                     );
-                    if row > window.start {
-                        for (pass, sub) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
-                            assert_eq!(
-                                sliding.is_candidate(row, col, pass, true, sub, sub),
-                                full.is_candidate(row, col, pass, true, sub, sub),
-                                "window {window:?} ({row}, {col}) pass {pass}"
-                            );
-                        }
-                    }
                 }
             }
             assert!(sliding.get_edge(window.start.wrapping_sub(1), 0).is_none());
@@ -1143,96 +1033,7 @@ fn sliding_grid_windows_match_the_whole_frame_grid() {
 }
 
 #[test]
-fn candidate_masks_match_per_cell_candidates() {
-    let block = |r: usize, c: usize, n4w: usize, n4h: usize| DeblockBlock {
-        r: r as u32,
-        c: c as u32,
-        luma_prediction: prediction(r, c, 3),
-        chroma_prediction: prediction(r, c, 2),
-        chroma_base_r: r as u32,
-        chroma_base_c: c as u32,
-        n4w: n4w as u32,
-        n4h: n4h as u32,
-        luma_tx: 3,
-        chroma_tx: Some(2),
-        sub_pu_size: (n4w > 4).then(|| DeblockSubPuSize::new(8, 16)),
-        chroma_transform_only: false,
-        qindex: 100,
-        skip: false,
-        lossless: false,
-    };
-    let (mi_rows, mi_cols) = (6, 45);
-    let luma = [
-        block(0, 0, 3, 2),
-        block(0, 3, 30, 2),
-        block(0, 33, 12, 4),
-        block(2, 0, 7, 4),
-        block(2, 7, 1, 1),
-        block(3, 7, 1, 3),
-        block(2, 8, 25, 4),
-        block(4, 33, 8, 2),
-    ];
-    let mut chroma = ChromaDeblockRecords::default();
-    chroma.push_both(block(0, 30, 6, 4));
-    let mut storage = DeblockGridStorage::default();
-    let base = build_mi_grid(&luma, mi_rows, mi_cols, &mut storage).unwrap();
-    let overlay = overlay_mi_grid(
-        &base,
-        &chroma,
-        0,
-        mi_rows,
-        mi_cols,
-        1,
-        1,
-        &mut DeblockGridStorage::default().chroma[0],
-    )
-    .unwrap();
-    for (grid, sub) in [
-        (MiGrid::new(&base, None, &luma, &chroma), 0),
-        (MiGrid::new(&base, Some(&overlay), &luma, &chroma), 1),
-    ] {
-        assert!(!grid.fully_covered);
-        for (allow_df_sub_pu, row) in [false, true]
-            .into_iter()
-            .flat_map(|allow| (0..mi_rows).map(move |row| (allow, row)))
-        {
-            for pass in 0..2 {
-                let plane_pass = PlanePass {
-                    plane: sub,
-                    mi_row_range: (0, mi_rows),
-                    pass,
-                    plane_sub_x: sub,
-                    plane_sub_y: sub,
-                    row_step: 1 << sub,
-                    df_delta_q: 0,
-                    quant_delta: 0,
-                    bit_depth: BitDepth::Eight,
-                    allow_df_sub_pu,
-                };
-                for start in (0..mi_cols).step_by(CANDIDATE_CHUNK) {
-                    let mask = if pass == 0 {
-                        candidate_mask::<0>(&grid, row, start, &plane_pass)
-                    } else {
-                        candidate_mask::<1>(&grid, row, start, &plane_pass)
-                    }
-                    .unwrap();
-                    for col in start..(start + CANDIDATE_CHUNK).min(mi_cols) {
-                        let expected = col % (1 << sub) == 0
-                            && grid.is_candidate(row, col, pass, allow_df_sub_pu, sub, sub);
-                        assert_eq!(
-                            mask >> (col - start) & 1 != 0,
-                            expected,
-                            "sub {sub} allow {allow_df_sub_pu} pass {pass} ({row}, {col})"
-                        );
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn memoized_candidate_walk_matches_every_edge_in_spec_order() {
+fn batched_passes_match_every_edge_alone_in_spec_order() {
     #[allow(clippy::too_many_arguments)]
     let block = |r: usize, c: usize, n4w, n4h, tx: u8, pu: (usize, usize), sub_pu, skip, qindex| {
         DeblockBlock {
@@ -1278,7 +1079,7 @@ fn memoized_candidate_walk_matches_every_edge_in_spec_order() {
 }
 
 #[test]
-fn repeated_edges_match_every_edge_across_chunks_frame_edges_and_chroma() {
+fn batched_passes_match_every_edge_alone_across_frame_edges_and_chroma() {
     #[allow(clippy::too_many_arguments)]
     let block = |r: usize, c: usize, n4w, n4h, tx: u8, pu: (usize, usize), sub_pu, skip, qindex| {
         DeblockBlock {
@@ -1350,7 +1151,7 @@ fn repeated_edges_match_every_edge_across_chunks_frame_edges_and_chroma() {
     transform.chroma_transform_only = true;
     chroma.push_both(transform);
     let overlay = overlay_mi_grid(
-        &storage,
+        (&storage, &blocks),
         &chroma,
         0,
         mi_rows,
@@ -1385,7 +1186,8 @@ fn walk_test_workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u8>
     workspace
 }
 
-/// Filters one edge on its own, as the § 7.17 pass loops visit it.
+/// Filters one edge on its own, as the § 7.17 pass loops visit it, through
+/// the per-line spec primitives.
 fn filter_edge_alone<const PLANE: usize, const PASS: usize>(
     ctx: &mut PlaneCtx<'_, '_, u8>,
     grid: &MiGrid<'_>,
@@ -1396,30 +1198,52 @@ fn filter_edge_alone<const PLANE: usize, const PASS: usize>(
     if PASS == 0 && col == 0 || PASS == 1 && row == 0 {
         return;
     }
-    let (sub_x, sub_y) = (plane_pass.plane_sub_x, plane_pass.plane_sub_y);
-    let blocks = edge_blocks::<PLANE, PASS>(grid, row, col, sub_x, sub_y).unwrap();
-    let mut run = None;
+    let geometry = PassGeometry {
+        mi_rows: usize::MAX,
+        mi_cols: usize::MAX,
+        tile_starts: None,
+        disable_loopfilters_across_tiles: false,
+        width: ctx.width,
+        height: ctx.height,
+    };
     let strengths = StrengthCache::new(0, 0, BitDepth::Eight);
-    let edge = plane_pass.edge_context(row, col, false);
-    deblock_filter_edge_specialized::<u8, PLANE, PASS>(
-        ctx, blocks, edge, false, &strengths, &mut run,
-    )
-    .unwrap();
-    flush_run::<u8, PASS>(&mut run, ctx, BitDepth::Eight).unwrap();
+    let context = plane_pass.edge_context(row, col, false);
+    let edge = edges::edge_at::<PLANE, PASS>(grid, context, &geometry, &strengths).unwrap();
+    if !edge.is_none() {
+        let (x_p, y_p) = (
+            (col * MI_SIZE) >> plane_pass.plane_sub_x,
+            (row * MI_SIZE) >> plane_pass.plane_sub_y,
+        );
+        edges::LoneEdge { x_p, y_p, edge }
+            .filter_lines::<u8, PASS>(ctx, BitDepth::Eight)
+            .unwrap();
+    }
 }
 
-/// Asserts that both pass walks over `plane` filter exactly what visiting
-/// every on-screen edge alone in pass order does, and that this filters a
-/// meaningful share of the plane.
+/// Asserts that both batched passes over `plane` filter exactly what
+/// visiting every on-screen edge alone in pass order does, with and without
+/// sub-PU edges, and that this filters a meaningful share of the plane.
 fn assert_walk_matches_every_edge(
+    grid: &MiGrid<'_>,
+    plane: usize,
+    frame: (usize, usize),
+    mi: (usize, usize),
+) {
+    for allow_df_sub_pu in [false, true] {
+        assert_passes_match_every_edge(grid, plane, frame, mi, allow_df_sub_pu);
+    }
+}
+
+fn assert_passes_match_every_edge(
     grid: &MiGrid<'_>,
     plane: usize,
     (width, height): (usize, usize),
     (mi_rows, mi_cols): (usize, usize),
+    allow_df_sub_pu: bool,
 ) {
     let plane_id = plane_index_to_id(plane);
     let mut filter = filter([true, true, true, true]);
-    filter.allow_df_sub_pu = true;
+    filter.allow_df_sub_pu = allow_df_sub_pu;
     let pass = |pass| {
         PlanePass::active(
             plane,
@@ -1434,9 +1258,23 @@ fn assert_walk_matches_every_edge(
     };
     let mut walked = walk_test_workspace(width, height);
     with_plane_band(&mut walked, plane_id, |band| {
+        let mut edges = PassEdges::default();
         for plane_pass in [pass(0), pass(1)] {
-            deblock_plane_pass_serial(band, grid, plane_pass, mi_rows, mi_cols, None, false)
-                .unwrap();
+            let geometry = PassGeometry {
+                mi_rows,
+                mi_cols,
+                tile_starts: None,
+                disable_loopfilters_across_tiles: false,
+                width: band.width,
+                height: band.height,
+            };
+            edges.build(grid, &plane_pass, &geometry).unwrap();
+            let mut ctx = PlaneCtx::new(band).unwrap();
+            if plane_pass.pass == 0 {
+                edges.apply::<u8, 0>(&mut ctx, BitDepth::Eight).unwrap();
+            } else {
+                edges.apply::<u8, 1>(&mut ctx, BitDepth::Eight).unwrap();
+            }
         }
     });
     let mut reference = walk_test_workspace(width, height);
@@ -1459,7 +1297,11 @@ fn assert_walk_matches_every_edge(
     let samples = |workspace: &CurrentFrameWorkspace<u8>| {
         workspace.plane(plane_id).unwrap().samples().to_vec()
     };
-    assert_eq!(samples(&walked), samples(&reference), "plane {plane}");
+    assert_eq!(
+        samples(&walked),
+        samples(&reference),
+        "plane {plane} sub-PU {allow_df_sub_pu}"
+    );
     let changed = samples(&reference)
         .iter()
         .zip(samples(&original))
@@ -2039,7 +1881,7 @@ fn inherited_chroma_residual_transform_retains_prediction_metadata() {
     chroma.push(0, metadata);
     chroma.push(0, transform);
     let storage = overlay_mi_grid(
-        &base,
+        (&base, &luma),
         &chroma,
         0,
         8,
@@ -2103,7 +1945,7 @@ fn ordinary_chroma_overlay_replaces_full_block_metadata() {
     let mut chroma = ChromaDeblockRecords::default();
     chroma.push(0, ordinary);
     let storage = overlay_mi_grid(
-        &base,
+        (&base, &luma),
         &chroma,
         0,
         8,
@@ -2160,7 +2002,7 @@ fn ordinary_chroma_transform_record_keeps_scaled_prediction_origin() {
     let mut chroma = ChromaDeblockRecords::default();
     chroma.push(0, record);
     let storage = overlay_mi_grid(
-        &base,
+        (&base, &luma),
         &chroma,
         0,
         16,
@@ -2191,7 +2033,6 @@ fn skip_suppresses_internal_tx_edge_filtering() {
                 col: 5,
                 plane_sub_x: 0,
                 plane_sub_y: 0,
-                bit_depth: BitDepth::Eight,
                 allow_df_sub_pu: false,
                 tile_edge: false,
             },
@@ -2222,7 +2063,6 @@ fn skip_suppresses_internal_tx_edge_filtering() {
                 col: 5,
                 plane_sub_x: 0,
                 plane_sub_y: 0,
-                bit_depth: BitDepth::Eight,
                 allow_df_sub_pu: false,
                 tile_edge: false,
             },
@@ -2252,7 +2092,6 @@ fn tile_boundary_filtering_obeys_sequence_flag() {
                     col: 5,
                     plane_sub_x: 0,
                     plane_sub_y: 0,
-                    bit_depth: BitDepth::Eight,
                     allow_df_sub_pu: false,
                     tile_edge: true,
                 },
@@ -2291,7 +2130,6 @@ fn allow_df_sub_pu_gates_prediction_boundary_filtering() {
                     col: 5,
                     plane_sub_x: 0,
                     plane_sub_y: 0,
-                    bit_depth: BitDepth::Eight,
                     allow_df_sub_pu,
                     tile_edge: false,
                 },
