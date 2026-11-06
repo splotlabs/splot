@@ -265,7 +265,30 @@ fn dequant_flat_lanes<S: Simd>(
     denom_shift: u32,
     bound: i32,
 ) {
-    let coeff = i32x8::from_slice(simd, quant);
+    dequant_lanes(
+        simd,
+        i32x8::from_slice(simd, quant),
+        u32x8::splat(simd, q2),
+        denom_shift,
+        bound,
+    )
+    .store_slice(out);
+}
+
+/// [`dequant_coefficient`] of eight lanes with per-lane quantizers `q2`, a
+/// power-of-two `dq_denom` of `1 << denom_shift` and the clamp bound.
+#[allow(
+    clippy::inline_always,
+    reason = "measured § 7.14.4 dequantization hot path"
+)]
+#[inline(always)]
+pub(crate) fn dequant_lanes<S: Simd>(
+    simd: S,
+    coeff: i32x8<S>,
+    q2: u32x8<S>,
+    denom_shift: u32,
+    bound: i32,
+) -> i32x8<S> {
     let sign = coeff >> (i32::BITS - 1);
     let magnitude: u32x8<S> = ((coeff ^ sign) - sign).bitcast();
     let product = (magnitude * q2) & 0x00FF_FFFF;
@@ -276,7 +299,6 @@ fn dequant_flat_lanes<S: Simd>(
     signed
         .max(i32x8::splat(simd, -bound))
         .min(i32x8::splat(simd, bound - 1))
-        .store_slice(out);
 }
 
 fn user_quantization_matrix_weight(
