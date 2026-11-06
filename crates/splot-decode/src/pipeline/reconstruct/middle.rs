@@ -23,7 +23,8 @@ use super::one_sided::{
 };
 use super::sink::{
     IntraEdgeAvailability, build_mrl_luma_prediction, invalid_directional_edge_state,
-    noneighbour_above, noneighbour_corner, noneighbour_left, write_intra_prediction_block,
+    noneighbour_above, noneighbour_corner, noneighbour_left, predict_intra_in_frame,
+    write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedDirectionalLumaMode,
@@ -192,13 +193,6 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
     {
         return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
     }
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        width * height,
-        T::default(),
-    )?;
-
     let (left_idif, above_idif) = if left_samples.is_some() && above_samples.is_some() {
         let above_row = y
             .checked_sub(1)
@@ -249,27 +243,53 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         };
         (left_idif, above_idif)
     };
-    if matches!(plane_id, PlaneId::Y) {
-        predict_intra_middle_directional_angle_rect_idif_into(
-            bit_depth,
-            block_size,
-            angle,
-            IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
-            &mut prediction,
-            width,
-        )?;
-    } else {
-        let left = &left_idif[1..height + 2];
-        let above = &above_idif[1..width + 2];
-        predict_intra_middle_directional_angle_rect_into(
-            bit_depth,
-            block_size,
-            angle,
-            IntraMiddleDirectionalAngleEdges::both(left, above),
-            &mut prediction,
-            width,
-        )?;
+    let predict = |output: &mut [T], stride: usize| {
+        if matches!(plane_id, PlaneId::Y) {
+            predict_intra_middle_directional_angle_rect_idif_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraMiddleDirectionalAngleIdifEdges::both(&left_idif, &above_idif),
+                output,
+                stride,
+            )?;
+        } else {
+            let left = &left_idif[1..height + 2];
+            let above = &above_idif[1..width + 2];
+            predict_intra_middle_directional_angle_rect_into(
+                bit_depth,
+                block_size,
+                angle,
+                IntraMiddleDirectionalAngleEdges::both(left, above),
+                output,
+                stride,
+            )?;
+        }
+        Ok(())
+    };
+    if predict_intra_in_frame(
+        workspace,
+        block,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        dpcm,
+        bit_depth,
+        predict,
+    )? {
+        return Ok(());
     }
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        width * height,
+        T::default(),
+    )?;
+    predict(&mut prediction, width)?;
     write_intra_prediction_block(
         workspace,
         block,

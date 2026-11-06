@@ -165,6 +165,71 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
     if bit_depth != workspace.info().bit_depth() {
         return Ok(false);
     }
+    let (setup, secondary) = intra_residual_setup(
+        block,
+        plane_id,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        dpcm,
+        bit_depth,
+    )?;
+    let written = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
+        super::with_residual_scratch(|scratch| {
+            let residual = intra_residual(block, &setup, secondary.as_ref(), scratch)?;
+            rows.add_block_residual(prediction, residual)
+        })
+        .map_err(|source| GeneralIntraResidualError::Reconstruct { source })
+    })?;
+    Ok(written.is_some())
+}
+
+/// Adds an intra block's residual onto the prediction already written into
+/// the frame rows, the destination inter residuals are added into as well.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_general_intra_coeff_block_residual_in_place<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: CoeffBlock<'_>,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    block_size: IntraRectBlockSize,
+    qindex: u32,
+    use_tcq: bool,
+    luma_context: Option<LumaTransformTypeContext>,
+    dpcm: Option<DpcmDirection>,
+    bit_depth: BitDepth,
+) -> Result<(), GeneralIntraResidualError> {
+    let (setup, secondary) = intra_residual_setup(
+        block,
+        plane_id,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        dpcm,
+        bit_depth,
+    )?;
+    super::with_residual_scratch(|scratch| {
+        let residual = intra_residual(block, &setup, secondary.as_ref(), scratch)?;
+        splot_recon::CurrentFrameSurface::Frame(&mut *workspace)
+            .add_residual_rect_block(plane_id, x, y, block_size, residual)
+    })
+    .map_err(|source| GeneralIntraResidualError::Reconstruct { source })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn intra_residual_setup(
+    block: CoeffBlock<'_>,
+    plane_id: PlaneId,
+    block_size: IntraRectBlockSize,
+    qindex: u32,
+    use_tcq: bool,
+    luma_context: Option<LumaTransformTypeContext>,
+    dpcm: Option<DpcmDirection>,
+    bit_depth: BitDepth,
+) -> Result<(ReconstructBlockSetup, Option<SecondaryInverseTransform>), GeneralIntraResidualError> {
     let log2_width = u32::from(block_size.log2_width());
     let log2_height = u32::from(block_size.log2_height());
     let (quant_plane, dpcm, secondary) = if let Some(luma_context) = luma_context {
@@ -183,7 +248,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
         (plane_id, dpcm, None)
     };
     let setup = reconstruct_block_setup(
-        prediction.len(),
+        block_size.sample_count(),
         qindex,
         quant_plane,
         log2_width,
@@ -196,23 +261,26 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
         bit_depth,
     )?;
     check_dense_len(block, &setup)?;
-    let written = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
-        super::with_residual_scratch(|scratch| {
-            let dequant = &mut scratch.dequant[..setup.adjusted];
-            let coded =
-                dequantize_with_secondary(&setup.params, block.quant, secondary.as_ref(), dequant)?;
-            let residual = &mut scratch.residual[..setup.samples];
-            inverse_transform_2d_outer_with_scratch(
-                &setup.transform,
-                &dequant[..coded],
-                residual,
-                &mut scratch.dequant_pair,
-            )?;
-            rows.add_block_residual(prediction, residual)
-        })
-        .map_err(|source| GeneralIntraResidualError::Reconstruct { source })
-    })?;
-    Ok(written.is_some())
+    Ok((setup, secondary))
+}
+
+/// Dequantizes and inverse-transforms one intra block into `scratch`.
+fn intra_residual<'s>(
+    block: CoeffBlock<'_>,
+    setup: &ReconstructBlockSetup,
+    secondary: Option<&SecondaryInverseTransform>,
+    scratch: &'s mut super::ResidualScratch,
+) -> splot_recon::Result<&'s [i32]> {
+    let dequant = &mut scratch.dequant[..setup.adjusted];
+    let coded = dequantize_with_secondary(&setup.params, block.quant, secondary, dequant)?;
+    let residual = &mut scratch.residual[..setup.samples];
+    inverse_transform_2d_outer_with_scratch(
+        &setup.transform,
+        &dequant[..coded],
+        residual,
+        &mut scratch.dequant_pair,
+    )?;
+    Ok(residual)
 }
 
 #[allow(clippy::too_many_arguments)]

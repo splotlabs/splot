@@ -14,6 +14,7 @@ use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSi
 use crate::Result;
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaPalette, LumaTransformTypeContext,
+    add_general_intra_coeff_block_residual_in_place,
     reconstruct_general_intra_coeff_block_rect_into_frame,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
     reconstruct_inter_coeff_block_residual_rect_into,
@@ -85,6 +86,32 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
         availability.above.then(|| edges.above_samples()).flatten(),
     );
     let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
+    let predict_dc = |output: &mut [T], stride: usize| {
+        for row in output.chunks_mut(stride) {
+            let filled = width.min(row.len());
+            row[..filled].fill(dc);
+        }
+        if ibp_dc {
+            apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, output, stride)?;
+        }
+        Ok(())
+    };
+    if predict_intra_in_frame(
+        workspace,
+        block,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        None,
+        bit_depth,
+        predict_dc,
+    )? {
+        return Ok(());
+    }
     let mut prediction = workspace.take_intra_prediction_buffer(
         IntraPredictionScratchBuffer::Primary,
         plane_id,
@@ -310,6 +337,59 @@ pub(crate) fn write_intra_prediction_block<T: ReconSample>(
     );
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
     result
+}
+
+/// Whether coded blocks also predict in place and add their residual there.
+const RESIDUAL_ADDS_IN_PLACE: bool = false;
+
+/// Predicts an in-frame block straight into its frame rows, then adds any
+/// coded residual there, so no staging buffer is copied into the frame.
+///
+/// Returns `false` without predicting when the block overhangs the frame edge,
+/// the workspace has another bit depth, or the block codes a residual: until
+/// the residual add runs in place in one pass, the write-through
+/// prediction-plus-residual add is cheaper for coded blocks.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn predict_intra_in_frame<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: CoeffBlock<'_>,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    block_size: IntraRectBlockSize,
+    qindex: u32,
+    use_tcq: bool,
+    luma_context: Option<LumaTransformTypeContext>,
+    dpcm: Option<DpcmDirection>,
+    bit_depth: BitDepth,
+    predict: impl FnOnce(&mut [T], usize) -> core::result::Result<(), GeneralIntraResidualError>,
+) -> core::result::Result<bool, GeneralIntraResidualError> {
+    if block.eob != 0 && !RESIDUAL_ADDS_IN_PLACE || bit_depth != workspace.info().bit_depth() {
+        return Ok(false);
+    }
+    let predicted = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
+        let (samples, stride) = rows.prediction_target();
+        predict(samples, stride)
+    })?;
+    if predicted.is_none() {
+        return Ok(false);
+    }
+    if block.eob != 0 {
+        add_general_intra_coeff_block_residual_in_place(
+            workspace,
+            block,
+            plane_id,
+            x,
+            y,
+            block_size,
+            qindex,
+            use_tcq,
+            luma_context,
+            dpcm,
+            bit_depth,
+        )?;
+    }
+    Ok(true)
 }
 
 /// Commits one intra block's prediction and residual into the current frame.
