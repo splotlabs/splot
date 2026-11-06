@@ -1114,3 +1114,117 @@ fn rejects_u8_storage_for_ten_bit() {
     );
     assert_eq!(output, [77]);
 }
+
+/// The 8-bit byte-lane kernel matches the per-sample callback reference for
+/// random coefficients across the § 5.20.2.1 tap ranges, including classes
+/// past its exactness bounds that fall back, random cell maps of up to 16
+/// classes, extreme samples, and both output types.
+#[test]
+fn eight_bit_byte_lanes_match_the_callback_reference() {
+    const MIN: [i16; WIENER_NS_LUMA_COEFFS] = [
+        -24, -24, -14, -14, -16, -16, -8, -8, -8, -8, -8, -8, -8, -8, -8, -8,
+    ];
+    const K: [u32; WIENER_NS_LUMA_COEFFS] = [6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4];
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    let mut next = move |limit: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % limit
+    };
+    for case in 0..40 {
+        let classes = 1 + next(16) as usize;
+        let coeffs: Vec<[i16; WIENER_NS_LUMA_COEFFS]> = (0..classes)
+            .map(|_| {
+                let extreme = next(4) == 0;
+                core::array::from_fn(|j| {
+                    let span = 1u64 << K[j];
+                    let value = if extreme { span - 1 } else { next(span) };
+                    MIN[j] + value as i16
+                })
+            })
+            .collect();
+        let width = [32, 64, 96, 100, 128, 256, 47][case % 7];
+        let height = 1 + next(16) as usize;
+        let stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS + next(3) as usize;
+        let style = next(3);
+        let padded: Vec<u16> = padded_from(height, stride, |x, y| match style {
+            0 => (x * 7 + y * 13).rem_euclid(256) as u16,
+            1 => [0, 255][((x ^ y) & 1) as usize],
+            _ => ((x * x + 3 * y) * 11).rem_euclid(256) as u16,
+        });
+        let cell_cols = width.div_ceil(4);
+        let cells: Vec<u8> = (0..cell_cols * height.div_ceil(4))
+            .map(|index| {
+                if next(3) == 0 {
+                    0
+                } else {
+                    (index * 5 / 3 % classes) as u8
+                }
+            })
+            .collect();
+        let expanded: Vec<usize> = (0..width * height)
+            .map(|index| usize::from(cells[(index / width / 4) * cell_cols + index % width / 4]))
+            .collect();
+        let radius = WIENER_NS_LUMA_TAP_RADIUS as isize;
+        let source_at =
+            |x: isize, y: isize| padded[((y + radius) as usize) * stride + (x + radius) as usize];
+        let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
+        let mut scratch = WienerNsLumaScratch::default();
+        for layout in 0..2 {
+            let subclasses = (layout == 1).then_some(expanded.as_slice());
+            let used = if layout == 1 {
+                &coeffs[..]
+            } else {
+                &coeffs[..1]
+            };
+            let mut reference = vec![0u16; width * height];
+            let reference_params = params(width, height, width, BitDepth::Eight, used, subclasses);
+            wiener_ns_filter_luma_block(&mut reference, &reference_params, source_at).unwrap();
+            let block = params(width, height, width, BitDepth::Eight, used, None);
+            let mut wide = vec![0u16; width * height];
+            let mut narrow = vec![0u8; width * height];
+            if layout == 1 {
+                wiener_ns_filter_luma_block_padded_cells_into(
+                    &mut wide,
+                    &block,
+                    &source,
+                    &cells,
+                    &mut scratch,
+                )
+                .unwrap();
+                wiener_ns_filter_luma_block_padded_cells_u8_into(
+                    &mut narrow,
+                    &block,
+                    &source,
+                    &cells,
+                    &mut scratch,
+                )
+                .unwrap();
+            } else {
+                wiener_ns_filter_luma_block_padded_into(&mut wide, &block, &source, &mut scratch)
+                    .unwrap();
+                wiener_ns_filter_luma_block_padded_u8_into(
+                    &mut narrow,
+                    &block,
+                    &source,
+                    &mut scratch,
+                )
+                .unwrap();
+            }
+            assert_eq!(wide, reference, "case {case} layout {layout} u16");
+            let narrow: Vec<u16> = narrow.into_iter().map(u16::from).collect();
+            assert_eq!(narrow, reference, "case {case} layout {layout} u8");
+        }
+    }
+}
+
+/// The byte-lane exactness bounds accept every class of the § 5.20.2.1
+/// ranges whose taps stay near a low-pass filter, and reject the extremes.
+#[test]
+fn eight_bit_unit_weights_bound_the_extreme_classes() {
+    let low_pass = [20, 18, 4, 3, -2, -1, 1, 0, 0, 1, -1, 0, 0, 0, 0, 0];
+    assert!(eight_bit::unit_weights(&low_pass).is_some());
+    let extreme = [39, 39, 17, 17, 15, 15, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7];
+    assert!(eight_bit::unit_weights(&extreme).is_none());
+}

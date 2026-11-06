@@ -11,7 +11,7 @@
 //! overlaps it: a flat chunk needs only its new rows checked, and a row that
 //! shows two values keeps the chunk uneven while the window holds it.
 
-use std::simd::{Simd, num::SimdUint};
+use fearless_simd::{Simd, prelude::*, u16x16};
 
 use super::{
     LUMA_WINDOW_ROWS, LumaSimdOutput, LumaSimdSource, LumaSubclassLayout, PreparedLumaClass,
@@ -25,7 +25,7 @@ const CHUNK: usize = 32;
 /// Chunks a row may hold; later chunks are never flat.
 const MAX_CHUNKS: usize = 32;
 /// Lanes of the flatness check; a narrower partial chunk is never flat.
-const LANES: usize = 8;
+const LANES: usize = 16;
 
 /// The flat chunks of consecutive row groups whose tap reach extends `R`
 /// columns past each side of the output.
@@ -51,6 +51,14 @@ impl<const R: usize> FlatChunks<R> {
             rough_until: [0; MAX_CHUNKS],
             mask: 0,
         }
+    }
+
+    /// The value of chunk `chunk` when the last row group found it flat.
+    pub(crate) fn chunk_value(&self, chunk: usize) -> Option<u16> {
+        let bit = u32::try_from(chunk)
+            .ok()
+            .and_then(|chunk| 1u32.checked_shl(chunk))?;
+        (self.mask & bit != 0).then(|| self.values.get(chunk).copied())?
     }
 
     /// Whether the last row group has a flat chunk.
@@ -168,13 +176,7 @@ impl<T: LumaSimdSource> LumaFlatGroup<'_, '_, '_, T> {
                             ) else {
                                 return Err(error());
                             };
-                            filter_luma_segment_simd::<_, _, 1>(
-                                filtered,
-                                window,
-                                col,
-                                class,
-                                self.max_sample,
-                            );
+                            filter_luma_segment_simd(filtered, window, col, class, self.max_sample);
                         }
                         if let Some((value, run_end)) = run {
                             output
@@ -195,12 +197,23 @@ impl<T: LumaSimdSource> LumaFlatGroup<'_, '_, '_, T> {
 /// hold, given that the first `known` rows hold `value`; otherwise the
 /// window row that every window holding it shows two values in. Rows go
 /// bottom up, so that row stays in the next windows longest.
+fn flat_value<T: LumaSimdSource>(
+    window: &[&[T]],
+    start: usize,
+    width: usize,
+    known: usize,
+    value: u16,
+) -> core::result::Result<u16, usize> {
+    crate::lr_madd::lr_simd!(simd => flat_value_lanes(simd, window, start, width, known, value))
+}
+
 #[allow(
     clippy::inline_always,
     reason = "a constant width unrolls the row check"
 )]
 #[inline(always)]
-fn flat_value<T: LumaSimdSource>(
+fn flat_value_lanes<S: Simd, T: LumaSimdSource>(
+    simd: S,
     window: &[&[T]],
     start: usize,
     width: usize,
@@ -209,13 +222,18 @@ fn flat_value<T: LumaSimdSource>(
 ) -> core::result::Result<u16, usize> {
     let mut reference = (known > 0).then(|| (value, known - 1));
     for (index, row) in window.iter().enumerate().skip(known).rev() {
-        let row = &row[start..start + width];
+        let row = row.get(start..start + width).ok_or(index)?;
         let sample = T::scalar(row, 0);
-        let splat = Simd::<u16, LANES>::splat(sample);
-        let mut diff = T::load::<LANES>(row, width - LANES) ^ splat;
+        let splat = u16x16::splat(simd, sample);
+        let lanes = |at: usize| {
+            row.get(at..)
+                .and_then(<[T]>::first_chunk::<LANES>)
+                .map_or(splat, |lanes| T::widen16(simd, lanes))
+        };
+        let mut diff = lanes(width - LANES) ^ splat;
         let mut x = 0;
         while x + LANES < width {
-            diff |= T::load::<LANES>(row, x) ^ splat;
+            diff |= lanes(x) ^ splat;
             x += LANES;
         }
         if diff.reduce_max() != 0 {
