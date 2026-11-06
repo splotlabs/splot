@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use super::eight_bit::Sink;
 use super::{
     INTER_ROUND1_COMPOUND, INTER_ROUND1_NON_COMPOUND, compound_inter_post_round, round2_i32,
 };
@@ -52,6 +53,11 @@ pub(super) trait SubpelOutput<O> {
     const INTER_ROUND1: Option<u32> = None;
 
     fn one(&mut self, value: i32) -> O;
+
+    /// The byte-lane sink of an eight-bit output, when it has one.
+    fn eight_bit<'a>(&'a self, _output: &'a mut [O], _stride: usize) -> Option<Sink<'a>> {
+        None
+    }
 
     /// Stores `Round2(sums << prescale, InterRound1)`, which is
     /// `Round2(sums, InterRound1 - prescale)` exactly. Kernels pass the sums of
@@ -149,6 +155,10 @@ impl SubpelOutput<i32> for CompoundI32SubpelOutput {
         value
     }
 
+    fn eight_bit<'a>(&'a self, output: &'a mut [i32], stride: usize) -> Option<Sink<'a>> {
+        Some(Sink::Prep { output, stride })
+    }
+
     #[allow(clippy::inline_always, reason = "compound intermediate hot path")]
     #[inline(always)]
     fn sixteen(&mut self, values: Simd<i32, 16>, output: &mut [i32]) {
@@ -185,6 +195,10 @@ impl ClippedU16SubpelOutput {
 
 impl SubpelOutput<u16> for ClippedU16SubpelOutput {
     const INTER_ROUND1: Option<u32> = Some(INTER_ROUND1_NON_COMPOUND);
+
+    fn eight_bit<'a>(&'a self, output: &'a mut [u16], stride: usize) -> Option<Sink<'a>> {
+        (self.max_sample == i32::from(u8::MAX)).then_some(Sink::PutWide { output, stride })
+    }
 
     #[allow(clippy::inline_always, reason = "direct u16 subpel output hot path")]
     #[inline(always)]
@@ -283,6 +297,10 @@ impl SubpelOutput<u8> for ClippedU8SubpelOutput {
     #[inline(always)]
     fn one(&mut self, value: i32) -> u8 {
         value.clamp(0, i32::from(u8::MAX)) as u8
+    }
+
+    fn eight_bit<'a>(&'a self, output: &'a mut [u8], stride: usize) -> Option<Sink<'a>> {
+        Some(Sink::Put { output, stride })
     }
 
     #[allow(clippy::inline_always, reason = "direct u8 subpel output hot path")]
@@ -569,6 +587,15 @@ impl CompoundAverageSubpelOutputU8<'_> {
 
 impl SubpelOutput<u8> for CompoundAverageSubpelOutputU8<'_> {
     const INTER_ROUND1: Option<u32> = Some(INTER_ROUND1_COMPOUND);
+
+    fn eight_bit<'a>(&'a self, output: &'a mut [u8], stride: usize) -> Option<Sink<'a>> {
+        Some(Sink::Average {
+            pred0: self.pred0.get(self.index..)?,
+            forward: self.forward,
+            output,
+            stride,
+        })
+    }
 
     #[allow(
         clippy::inline_always,

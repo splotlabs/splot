@@ -15,6 +15,7 @@ use crate::math::round2_i32;
 use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
 mod clipped_edges;
 mod copy;
+mod eight_bit;
 mod fullpel_u8;
 mod narrow;
 mod output;
@@ -439,6 +440,17 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
         i32::from(self.samples[row * self.stride + col].to_u16())
     }
 
+    /// This view of eight-bit storage as `u8` samples.
+    pub(crate) fn as_u8(&self) -> Option<ReferencePlaneView<'a, u8>> {
+        Some(ReferencePlaneView {
+            samples: T::u8_slice(self.samples)?,
+            stride: self.stride,
+            width: self.width,
+            height: self.height,
+            readable_rows: self.readable_rows,
+        })
+    }
+
     pub(crate) fn row(&self, row: usize) -> &[T] {
         let row = row.min(self.readable_rows - 1);
         let start = row * self.stride;
@@ -551,6 +563,18 @@ pub fn subpel_predict_block_strided_into<T: ReconSample>(
     output_stride: usize,
 ) -> Result<()> {
     let intermediate_height = validate_subpel_params(params)?;
+    if params.bit_depth == BitDepth::Eight
+        && let Some(view) = reference.as_u8()
+    {
+        subpel_output_len(params, output_stride)?;
+        let sink = eight_bit::Sink::PutWide {
+            output: &mut *output,
+            stride: output_stride,
+        };
+        if eight_bit::predict(&view, &plane_bounded(reference, params), sink, None) {
+            return Ok(());
+        }
+    }
     if params.step_x == 1 << SCALE_SUBPEL_BITS
         && params.step_y == 1 << SCALE_SUBPEL_BITS
         && (params.start_x >> 6) & SUBPEL_MASK == 0
@@ -1477,11 +1501,25 @@ fn prefetch_reference_row<T: ReconSample>(
 #[allow(clippy::inline_always, reason = "per-row hint in the MC hot loops")]
 #[inline(always)]
 fn prefetch_samples<T>(samples: &[T], start: usize, w: usize) {
-    let row = samples.as_ptr().wrapping_add(start);
-    for offset in [0, w / 2, w.saturating_sub(1)] {
-        std::hint::prefetch_read(row.wrapping_add(offset), std::hint::Locality::L2);
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
+        let row = samples.as_ptr().wrapping_add(start);
+        let lines = [0, w / 2, w.saturating_sub(1)].map(|offset| row.wrapping_add(offset).cast());
+        prefetch_lines(token, lines);
     }
+    let _ = (samples, start, w);
 }
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    /// `prefetcht1` of each line: a hint that never faults, whatever the address.
+    #[inline]
+    fn prefetch_lines(t: Avx2, lines: [*const i8; 3]) {
+        for line in lines {
+            core::arch::x86_64::_mm_prefetch::<{ core::arch::x86_64::_MM_HINT_T1 }>(line);
+        }
+    }
+);
 
 /// Blends two zero-phase unscaled predictors into 10-bit output. The
 /// parameters are plane-bounded (see [`plane_bounded`]), so every row inside
@@ -2216,6 +2254,13 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O, F: SubpelOutp
         });
     }
 
+    let mut scratch = scratch;
+    if let Some(view) = reference.as_u8()
+        && let Some(sink) = finish.eight_bit(output, output_stride)
+        && eight_bit::predict(&view, params, sink, scratch.as_deref_mut())
+    {
+        return Ok(());
+    }
     let SubpelPredictParams {
         interp,
         w,
