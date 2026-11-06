@@ -883,18 +883,18 @@ mod avx2 {
     );
 
     /// One chunk kernel: filters the four segments at `first` of a run of
-    /// vertical or horizontal edges over `$sample` storage.
+    /// vertical or horizontal edges over `$sample` storage whose widest edge
+    /// needs `$reach` rows either side.
     macro_rules! chunk_kernel {
-        ($name:ident, $sample:ty, $load:ident, $store:ident, $vertical:expr) => {
+        ($name:ident, $sample:ty, $load:ident, $store:ident, $vertical:expr, $reach:expr) => {
             kernel!(
                 #[inline]
-                pub(super) fn $name(
+                fn $name(
                     token: Avx2,
                     samples: &mut [$sample],
                     stride: usize,
                     first: usize,
                     packed: [i64; 4],
-                    reach: usize,
                     max_sample: i16,
                 ) {
                     let max = _mm256_set1_epi16(max_sample);
@@ -905,18 +905,18 @@ mod avx2 {
                             *row = $load(token, samples, origin + line * stride);
                         }
                         transpose(token, &mut rows);
-                        filter_rows!(token, rows, packed, reach);
+                        filter_rows!(token, rows, packed, $reach);
                         transpose(token, &mut rows);
                         for (line, row) in rows.iter().enumerate() {
                             $store(token, samples, origin + line * stride, *row, max);
                         }
                     } else {
                         let origin = first - REACH * stride;
-                        for j in REACH - reach..REACH + reach {
+                        for j in REACH - $reach..REACH + $reach {
                             rows[j] = $load(token, samples, origin + j * stride);
                         }
-                        filter_rows!(token, rows, packed, reach);
-                        let writes = super::chunk_writes(reach);
+                        filter_rows!(token, rows, packed, $reach);
+                        let writes = super::chunk_writes($reach);
                         for j in REACH - writes..REACH + writes {
                             $store(token, samples, origin + j * stride, rows[j], max);
                         }
@@ -926,10 +926,35 @@ mod avx2 {
         };
     }
 
-    chunk_kernel!(vertical_u8, u8, load_u8, store_u8, true);
-    chunk_kernel!(vertical_u16, u16, load_u16, store_u16, true);
-    chunk_kernel!(horizontal_u8, u8, load_u8, store_u8, false);
-    chunk_kernel!(horizontal_u16, u16, load_u16, store_u16, false);
+    /// The chunk kernels of one storage type and direction, by reach.
+    macro_rules! chunk_dispatch {
+        ($name:ident, $sample:ty, $load:ident, $store:ident, $vertical:expr) => {
+            #[inline]
+            pub(super) fn $name(
+                token: fearless_simd::Avx2,
+                samples: &mut [$sample],
+                stride: usize,
+                first: usize,
+                packed: [i64; 4],
+                reach: usize,
+                max_sample: i16,
+            ) {
+                chunk_kernel!(narrow, $sample, $load, $store, $vertical, 3);
+                chunk_kernel!(middle, $sample, $load, $store, $vertical, 5);
+                chunk_kernel!(wide, $sample, $load, $store, $vertical, REACH);
+                match reach {
+                    3 => narrow(token, samples, stride, first, packed, max_sample),
+                    5 => middle(token, samples, stride, first, packed, max_sample),
+                    _ => wide(token, samples, stride, first, packed, max_sample),
+                }
+            }
+        };
+    }
+
+    chunk_dispatch!(vertical_u8, u8, load_u8, store_u8, true);
+    chunk_dispatch!(vertical_u16, u16, load_u16, store_u16, true);
+    chunk_dispatch!(horizontal_u8, u8, load_u8, store_u8, false);
+    chunk_dispatch!(horizontal_u16, u16, load_u16, store_u16, false);
 }
 
 #[cfg(test)]
