@@ -142,6 +142,17 @@ mod avx2 {
         };
     }
 
+    /// Calls `$f::<W>` for the strip width of a group.
+    macro_rules! by_width {
+        ($width:expr, $f:ident($($arg:expr),*)) => {
+            match $width {
+                4 => $f::<4>($($arg),*),
+                8 => $f::<8>($($arg),*),
+                _ => $f::<16>($($arg),*),
+            }
+        };
+    }
+
     fearless_simd::kernel!(
         #[inline]
         pub(super) fn predict(
@@ -150,18 +161,46 @@ mod avx2 {
             sink: &mut Sink<'_>,
             stage: &mut [i16],
         ) {
-            let (put, w) = (sink.is_put(), block.w);
-            passes(
-                t,
-                block,
-                put,
-                stage,
-                &mut |width, row, strip, values| match width {
-                    4 => emit::<4>(t, sink, w, row, strip, values),
-                    8 => emit::<8>(t, sink, w, row, strip, values),
-                    _ => emit::<16>(t, sink, w, row, strip, values),
-                },
-            );
+            let w = block.w;
+            match sink {
+                Sink::Put { output, stride } => {
+                    let stride = *stride;
+                    passes(t, block, true, stage, &mut |width, row, strip, values| {
+                        let at = row * stride + strip * width;
+                        by_width!(width, store_bytes(t, output, at, stride, values));
+                    });
+                }
+                Sink::PutWide { output, stride, .. } => {
+                    let stride = *stride;
+                    passes(t, block, true, stage, &mut |width, row, strip, values| {
+                        let at = row * stride + strip * width;
+                        by_width!(width, store_wide(t, output, at, stride, values));
+                    });
+                }
+                Sink::Prep { output, stride } => {
+                    let stride = *stride;
+                    passes(t, block, false, stage, &mut |width, row, strip, values| {
+                        let at = row * stride + strip * width;
+                        by_width!(width, store_prep(t, output, at, stride, values));
+                    });
+                }
+                Sink::Average {
+                    pred0,
+                    forward,
+                    output,
+                    stride,
+                } => {
+                    let (pred0, forward, stride) = (&**pred0, *forward, *stride);
+                    passes(t, block, false, stage, &mut |width, row, strip, values| {
+                        let first =
+                            by_width!(width, first_group(t, pred0, row * w + strip * width, w));
+                        let at = row * stride + strip * width;
+                        let blended = average(first, values, forward);
+                        by_width!(width, store_bytes(t, output, at, stride, blended));
+                    });
+                }
+                Sink::AverageWide { .. } => {}
+            }
         }
     );
 
@@ -608,130 +647,121 @@ mod avx2 {
         }
     }
 
-    /// Stores the 16 final-pass values of the group at `row`, `strip`: one
-    /// strip row of `W == 16`, else `16 / W` whole rows.
+    /// `Clip1` of the 16 values of a group into `u16` storage from `at`.
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn emit<const W: usize>(
+    fn store_wide<const W: usize>(
         t: Avx2,
-        sink: &mut Sink<'_>,
-        w: usize,
-        row: usize,
-        strip: usize,
+        output: &mut [u16],
+        at: usize,
+        stride: usize,
         values: __m256i,
     ) {
-        let column = strip * W;
-        match sink {
-            Sink::Put { output, stride } => {
-                store_bytes::<W>(t, output, row * *stride + column, *stride, values);
-            }
-            Sink::PutWide { output, stride, .. } => {
-                let stride = *stride;
-                let at = row * stride + column;
-                let values = _mm256_min_epi16(
-                    _mm256_max_epi16(values, _mm256_setzero_si256()),
-                    _mm256_set1_epi16(255),
-                );
-                let lanes = |half: __m128i| -> [u16; 8] {
-                    let mut lanes = [0; 8];
-                    fearless_simd::u16x8::<Avx2>::simd_from(t, half).store_array(&mut lanes);
-                    lanes
-                };
-                let (low, high) = (
-                    lanes(_mm256_castsi256_si128(values)),
-                    lanes(_mm256_extracti128_si256::<1>(values)),
-                );
-                let mut put = |at: usize, lanes: &[u16]| {
-                    if let Some(slot) = output.get_mut(at..at + lanes.len()) {
-                        for (slot, &lane) in slot.iter_mut().zip(lanes) {
-                            *slot = lane;
-                        }
-                    }
-                };
-                match W {
-                    4 => {
-                        put(at, &low[..4]);
-                        put(at + stride, &low[4..]);
-                        put(at + 2 * stride, &high[..4]);
-                        put(at + 3 * stride, &high[4..]);
-                    }
-                    8 => {
-                        put(at, &low);
-                        put(at + stride, &high);
-                    }
-                    _ => {
-                        put(at, &low);
-                        put(at + 8, &high);
-                    }
+        let values = _mm256_min_epi16(
+            _mm256_max_epi16(values, _mm256_setzero_si256()),
+            _mm256_set1_epi16(255),
+        );
+        let lanes = |half: __m128i| -> [u16; 8] {
+            let mut lanes = [0; 8];
+            fearless_simd::u16x8::<Avx2>::simd_from(t, half).store_array(&mut lanes);
+            lanes
+        };
+        let (low, high) = (
+            lanes(_mm256_castsi256_si128(values)),
+            lanes(_mm256_extracti128_si256::<1>(values)),
+        );
+        let mut put = |at: usize, lanes: &[u16]| {
+            if let Some(slot) = output.get_mut(at..at + lanes.len()) {
+                for (slot, &lane) in slot.iter_mut().zip(lanes) {
+                    *slot = lane;
                 }
             }
-            Sink::Prep { output, stride } => {
-                let stride = *stride;
-                let at = row * stride + column;
-                let low = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(values));
-                let high = _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(values));
-                let mut put8 = |at: usize, lanes: __m256i| {
-                    if let Some(slot) = output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<8>)
-                    {
-                        i32x8::<Avx2>::simd_from(t, lanes).store_array(slot);
-                    }
-                };
-                match W {
-                    4 => {
-                        let mut put4 = |at: usize, lanes: __m128i| {
-                            if let Some(slot) =
-                                output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<4>)
-                            {
-                                i32x4::<Avx2>::simd_from(t, lanes).store_array(slot);
-                            }
-                        };
-                        put4(at, _mm256_castsi256_si128(low));
-                        put4(at + stride, _mm256_extracti128_si256::<1>(low));
-                        put4(at + 2 * stride, _mm256_castsi256_si128(high));
-                        put4(at + 3 * stride, _mm256_extracti128_si256::<1>(high));
-                    }
-                    8 => {
-                        put8(at, low);
-                        put8(at + stride, high);
-                    }
-                    _ => {
-                        put8(at, low);
-                        put8(at + 8, high);
-                    }
-                }
+        };
+        match W {
+            4 => {
+                put(at, &low[..4]);
+                put(at + stride, &low[4..]);
+                put(at + 2 * stride, &high[..4]);
+                put(at + 3 * stride, &high[4..]);
             }
-            Sink::Average {
-                pred0,
-                forward,
-                output,
-                stride,
-            } => {
-                let at = row * w + column;
-                let first = if W == 4 {
-                    let load4 = |at: usize| -> __m128i {
-                        chunk::<4, i32>(pred0, at).map_or(_mm_setzero_si128(), |lanes| {
-                            i32x4::load_array_ref(t, lanes).into()
-                        })
-                    };
-                    _mm256_packs_epi32(
-                        _mm256_set_m128i(load4(at + w), load4(at)),
-                        _mm256_set_m128i(load4(at + 3 * w), load4(at + 2 * w)),
-                    )
-                } else {
-                    let load8 = |at: usize| -> __m256i {
-                        chunk::<8, i32>(pred0, at).map_or(_mm256_setzero_si256(), |lanes| {
-                            i32x8::load_array_ref(t, lanes).into()
-                        })
-                    };
-                    let next = if W == 8 { at + w } else { at + 8 };
-                    _mm256_packs_epi32(load8(at), load8(next))
-                };
-                let first = _mm256_permute4x64_epi64::<0b11_01_10_00>(first);
-                let blended = average(first, values, *forward);
-                store_bytes::<W>(t, output, row * *stride + column, *stride, blended);
+            8 => {
+                put(at, &low);
+                put(at + stride, &high);
             }
-            Sink::AverageWide { .. } => {}
+            _ => {
+                put(at, &low);
+                put(at + 8, &high);
+            }
         }
+    }
+
+    /// The 16 compound predictors of a group as `i32` into `output` from
+    /// `at`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn store_prep<const W: usize>(
+        t: Avx2,
+        output: &mut [i32],
+        at: usize,
+        stride: usize,
+        values: __m256i,
+    ) {
+        let low = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(values));
+        let high = _mm256_cvtepi16_epi32(_mm256_extracti128_si256::<1>(values));
+        let mut put8 = |at: usize, lanes: __m256i| {
+            if let Some(slot) = output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<8>) {
+                i32x8::<Avx2>::simd_from(t, lanes).store_array(slot);
+            }
+        };
+        match W {
+            4 => {
+                let mut put4 = |at: usize, lanes: __m128i| {
+                    if let Some(slot) = output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<4>)
+                    {
+                        i32x4::<Avx2>::simd_from(t, lanes).store_array(slot);
+                    }
+                };
+                put4(at, _mm256_castsi256_si128(low));
+                put4(at + stride, _mm256_extracti128_si256::<1>(low));
+                put4(at + 2 * stride, _mm256_castsi256_si128(high));
+                put4(at + 3 * stride, _mm256_extracti128_si256::<1>(high));
+            }
+            8 => {
+                put8(at, low);
+                put8(at + stride, high);
+            }
+            _ => {
+                put8(at, low);
+                put8(at + 8, high);
+            }
+        }
+    }
+
+    /// The first predictors of the group at `at` of the contiguous `w`-wide
+    /// `pred0`, in the layout of a group's values.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn first_group<const W: usize>(t: Avx2, pred0: &[i32], at: usize, w: usize) -> __m256i {
+        let first = if W == 4 {
+            let load4 = |at: usize| -> __m128i {
+                chunk::<4, i32>(pred0, at).map_or(_mm_setzero_si128(), |lanes| {
+                    i32x4::load_array_ref(t, lanes).into()
+                })
+            };
+            _mm256_packs_epi32(
+                _mm256_set_m128i(load4(at + w), load4(at)),
+                _mm256_set_m128i(load4(at + 3 * w), load4(at + 2 * w)),
+            )
+        } else {
+            let load8 = |at: usize| -> __m256i {
+                chunk::<8, i32>(pred0, at).map_or(_mm256_setzero_si256(), |lanes| {
+                    i32x8::load_array_ref(t, lanes).into()
+                })
+            };
+            let next = if W == 8 { at + w } else { at + 8 };
+            _mm256_packs_epi32(load8(at), load8(next))
+        };
+        _mm256_permute4x64_epi64::<0b11_01_10_00>(first)
     }
 
     /// `Clip1` of the 16 values of a group into `output` from `at`.
