@@ -301,7 +301,7 @@ fn stage_rows<S: Simd, T: Lanes, const P: usize>(
     let weights = weights(simd, taps);
     let jobs = Jobs::new(block.w, rows);
     let start = |(row, col): (usize, usize)| block.origin + row * block.stride + col;
-    for ((_, _, a, second), slot) in jobs.pairs().zip(stage.chunks_exact_mut(16)) {
+    for (_, _, a, second) in jobs.pairs() {
         let b = second.unwrap_or(a);
         let (low, high) = round(
             horizontal_sums::<S, T, P>(simd, block.source, (start(a), start(b)), &weights),
@@ -309,10 +309,15 @@ fn stage_rows<S: Simd, T: Lanes, const P: usize>(
             3,
         );
         let ((low0, low1), (high0, high1)) = (low.split(), high.split());
-        if let Some(slot) = slot.first_chunk_mut::<16>() {
-            low0.narrow(high0)
-                .combine(low1.narrow(high1))
-                .store_array(slot);
+        let mut put = |(row, col): (usize, usize), lanes: i16x8<S>| {
+            let at = (col / 8 * rows + row) * 8;
+            if let Some(slot) = stage.get_mut(at..).and_then(<[i16]>::first_chunk_mut::<8>) {
+                lanes.store_array(slot);
+            }
+        };
+        put(a, low0.narrow(high0));
+        if second.is_some() {
+            put(b, low1.narrow(high1));
         }
     }
 }
@@ -334,19 +339,28 @@ fn filter_stage<S: Simd, const P: usize>(
         (1 << 6, 7)
     };
     let jobs = Jobs::new(w, h);
-    let zero = [0; 8];
-    let lanes = |job: usize| {
-        let lanes = stage.get(job * 8..).and_then(<[i16]>::first_chunk::<8>);
-        i16x8::load_array_ref(simd, lanes.unwrap_or(&zero))
+    let rows = h + 2 * P - 1;
+    let zero = [0; 64];
+    let window = |(row, col): (usize, usize)| {
+        let at = (col / 8 * rows + row) * 8;
+        stage
+            .get(at..)
+            .and_then(<[i16]>::first_chunk::<64>)
+            .unwrap_or(&zero)
     };
-    for (first, second_job, a, second) in jobs.pairs() {
+    for (_, _, a, second) in jobs.pairs() {
+        let (first, other) = (window(a), window(second.unwrap_or(a)));
         let line = |k: usize| {
-            let step = k * jobs.chunks;
-            lanes(first + step).combine(lanes(second_job + step))
+            let lanes = |window: &[i16; 64]| {
+                let lanes = window[k * 8..k * 8 + 8]
+                    .first_chunk::<8>()
+                    .unwrap_or(&[0; 8]);
+                i16x8::load_array_ref(simd, lanes)
+            };
+            lanes(first).combine(lanes(other))
         };
         let sums = pair_sums::<S, P>(simd, &weights, line);
-        let pair = [Some(a), second];
-        emit_pair(simd, sink, w, pair, round(sums, bias, shift));
+        emit_pair(simd, sink, w, [Some(a), second], round(sums, bias, shift));
     }
 }
 

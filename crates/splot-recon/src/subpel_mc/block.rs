@@ -329,7 +329,7 @@ fn unscaled_block<T: Sample>(
         && last(row, rows) <= params.last_y
         && origin + (rows - 1) * view.stride + reach(w) <= view.samples.len();
     let stage_len = match vertical {
-        Some(_) => (rows.next_multiple_of(4) * 16).max(rows * w.div_ceil(8) * 8 + 16),
+        Some(_) => (rows.next_multiple_of(4) * 16).max(rows * w.div_ceil(8) * 8 + 64),
         None => 0,
     };
     let mut run = |block: &Block<'_, T>, stage: &mut [i16]| {
