@@ -5,7 +5,7 @@
 //!
 //! The vector layout is the byte-lane one: 16 outputs per vector, one strip
 //! row of a block 16 columns wide, two rows of an 8-column strip or four rows
-//! of a 4-wide block. Each tap pair interleaves two windows, or two rows,
+//! of a 4-column strip. Each tap pair interleaves two windows, or two rows,
 //! into one `pmaddwd`, so every sum is exact in `i32`; a horizontal value
 //! fits `i16` for 8- and 10-bit samples. Other widths and targets without
 //! AVX2 decline to the portable kernels.
@@ -23,9 +23,9 @@ pub(super) fn predict<T: ReconSample>(
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = fearless_simd::Level::baseline().as_avx2()
         && let Some(source) = T::u16_slice(block.source)
-        && (block.w == 4 || block.w.is_multiple_of(8))
+        && block.w.is_multiple_of(4)
         && block.h.is_multiple_of(16 / width(block.w))
-        && !(block.w == 4 && block.horizontal.is_some_and(|taps| taps.count > 2))
+        && !(width(block.w) == 4 && block.horizontal.is_some_and(|taps| taps.count > 2))
     {
         let block = Block {
             source,
@@ -46,7 +46,7 @@ pub(super) fn predict<T: ReconSample>(
 }
 
 /// The strip width of a block: 16 columns, else strips of 8 columns in
-/// pairs of rows, else whole 4-wide rows.
+/// pairs of rows, else strips of 4 in quads of rows.
 const fn width(w: usize) -> usize {
     if w.is_multiple_of(16) {
         16
