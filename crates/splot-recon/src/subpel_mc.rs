@@ -774,8 +774,8 @@ fn validate_compound_output<O>(
 /// Validating entry to the compound-average fast dispatch for unscaled blocks.
 ///
 /// Returns `Ok(false)` without writing when either reference is scaled, the
-/// blocks differ in size or bit depth, a clipping range is inverted, or the
-/// block is outside the fast subset; the caller then uses the two-call path.
+/// blocks differ in size or bit depth, or a clipping range is inverted; the
+/// caller then uses the two-call path.
 ///
 /// # Errors
 /// Returns the parameter errors of [`subpel_predict_block`], a sample-type
@@ -811,8 +811,8 @@ pub fn subpel_predict_block_compound_average_unscaled_strided_into<
 /// Fast compound dispatch for unscaled blocks of one shape. Returns
 /// `Ok(false)` without writing when a step is not unscaled, the two blocks
 /// differ in size or bit depth, a size is outside `1..=MAX_BLOCK_DIM`, a
-/// clipping range is inverted, the last column overflows, or no fast kernel
-/// takes the block; the checked
+/// clipping range is inverted, the last column overflows, or `O` is neither
+/// 8- nor 16-bit storage; the checked
 /// two-call path then predicts it or reports the parameter error.
 ///
 /// # Errors
@@ -916,12 +916,11 @@ fn with_compound_pred0<R>(len: usize, f: impl FnOnce(&mut [i32]) -> R) -> R {
 
 /// The fast compound dispatch of
 /// [`subpel_predict_block_compound_average_fast_validated_strided_into`] for
-/// a 4x4 or 8x8 cell of two planes that share its parameters (U and V): it
-/// writes the cell of `output`, then of `second`, and returns the number of
-/// planes written. It writes none when that function would decline or for
-/// another size, none when the `second` views differ from the first in width
-/// or readable rows, and only the first when a `second` window leaves the
-/// plane storage; the caller predicts the rest.
+/// a cell of two planes that share its parameters (U and V): it writes the
+/// cell of `output`, then of `second`, and returns the number of planes
+/// written. It writes none when that function would decline, when the
+/// `second` views differ from the first in width or readable rows, or when
+/// `O` is neither 8- nor 16-bit storage; the caller predicts the rest.
 ///
 /// # Errors
 /// Returns the errors of
