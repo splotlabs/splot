@@ -125,6 +125,11 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         self.y_modes.window_violated()
     }
 
+    /// The superblock mask the walk publishes its leaves under.
+    pub(crate) const fn sb_mask(&self) -> usize {
+        self.sb_mask
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
         work_unit: &DecodeTileWorkUnit,

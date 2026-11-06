@@ -405,6 +405,7 @@ impl<'payload> TileParser<'payload> {
                 return ParserStep::Last(recon_row);
             }
         };
+        let sb_mask = walk.sb_mask();
         let decoded_row = {
             let mut decode_leaf =
                 |work_unit: &mut DecodeTileWorkUnit,
@@ -416,7 +417,7 @@ impl<'payload> TileParser<'payload> {
                  fsc_modes: &TileFscModeState,
                  palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
                  is_cfl_ctx: IsCflContext| {
-                    decode_block(
+                    let (leaf, resolve) = decode_block(
                         work_unit,
                         symbols,
                         frontier,
@@ -467,33 +468,16 @@ impl<'payload> TileParser<'payload> {
                         context.params.current_order_hint,
                         context.params.temporal_first_frame,
                         tile_offset,
-                    )
+                    )?;
+                    push_leaf_entry(
+                        &mut recon_row.superblocks,
+                        &mut recon_row.entries,
+                        DecodedLeafPublication::from_frontier(frontier, sb_mask),
+                        resolve,
+                    );
+                    Ok((leaf, ()))
                 };
-            let mut on_published = |publication: DecodedLeafPublication,
-                                    resolve: LeafResolveRecord| {
-                let origin = publication.superblock_origin();
-                let (state, reset) = match resolve {
-                    LeafResolveRecord::Reseed(command) => {
-                        (ReconEntryState::Command(command), LeafReset::Reseed)
-                    }
-                    LeafResolveRecord::NonInter { command, n4w, n4h } => (
-                        ReconEntryState::Command(command),
-                        LeafReset::NonInter { n4w, n4h },
-                    ),
-                    pending => (ReconEntryState::Resolve(pending), LeafReset::None),
-                };
-                push_recon_entry(
-                    &mut recon_row.superblocks,
-                    &mut recon_row.entries,
-                    origin,
-                    ReconRowEntry {
-                        publication,
-                        state: Some(state),
-                        reset,
-                        temporal: 0..0,
-                    },
-                );
-            };
+            let mut on_published = |_: DecodedLeafPublication, ()| {};
             walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published)
                 .map(|superblock| superblock.is_some())
         };
@@ -670,6 +654,13 @@ impl ReconRowEntry {
         core::mem::replace(&mut self.reset, LeafReset::None)
     }
 
+    pub(super) fn pending_resolve_mut(&mut self) -> Option<&mut LeafResolveRecord> {
+        match self.state.as_mut()? {
+            ReconEntryState::Resolve(resolve) => Some(resolve),
+            ReconEntryState::Command(_) => None,
+        }
+    }
+
     pub(super) fn has_pending_resolve(&self) -> bool {
         matches!(self.state, Some(ReconEntryState::Resolve(_)))
     }
@@ -749,6 +740,35 @@ pub(super) struct ReconSuperblock {
     pub(super) entries: Range<usize>,
 }
 
+fn push_leaf_entry(
+    superblocks: &mut Vec<ReconSuperblock>,
+    entries: &mut Vec<ReconRowEntry>,
+    publication: DecodedLeafPublication,
+    resolve: LeafResolveRecord,
+) {
+    let origin = publication.superblock_origin();
+    let (state, reset) = match resolve {
+        LeafResolveRecord::Reseed(command) => (ReconEntryState::Command(command), LeafReset::Reseed),
+        LeafResolveRecord::NonInter { command, n4w, n4h } => (
+            ReconEntryState::Command(command),
+            LeafReset::NonInter { n4w, n4h },
+        ),
+        pending => (ReconEntryState::Resolve(pending), LeafReset::None),
+    };
+    push_recon_entry(
+        superblocks,
+        entries,
+        origin,
+        ReconRowEntry {
+            publication,
+            state: Some(state),
+            reset,
+            temporal: 0..0,
+        },
+    );
+}
+
+#[inline]
 fn push_recon_entry<Entry>(
     superblocks: &mut Vec<ReconSuperblock>,
     entries: &mut Vec<Entry>,
