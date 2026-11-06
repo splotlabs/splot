@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use fearless_simd::{Simd, SimdBase, SimdNarrow, SimdWiden, u16x8, u32x4};
 
 /// Output columns 4..12 of the last block that
 /// [`subpel_predict_12x12_bilinear_overlap_into`] predicted, with the reference
@@ -86,11 +87,11 @@ pub fn subpel_predict_12x12_bilinear_overlap_into<'a, T: ReconSample>(
                 && [x + 8, y, h, v] == geometry
         });
     let block = (window, ref_stride, output, stride, &mut carry.columns);
-    if reuse {
-        bilinear_12x12_block::<T, true>(block, (h_phase, v_phase));
+    baseline_simd!(simd => if reuse {
+        bilinear_12x12_block::<_, T, true>(simd, block, (h_phase, v_phase));
     } else {
-        bilinear_12x12_block::<T, false>(block, (h_phase, v_phase));
-    }
+        bilinear_12x12_block::<_, T, false>(simd, block, (h_phase, v_phase));
+    });
     carry.source = Some((reference.samples, ref_stride, geometry));
     Ok(true)
 }
@@ -106,46 +107,50 @@ type Block12x12<'s, T> = (&'s [T], usize, &'s mut [u16], usize, &'s mut [[u16; 8
 /// rounding bias stays below `2^16` in `u16` lanes.
 #[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
 #[inline(always)]
-fn bilinear_12x12_block<T: ReconSample, const REUSE: bool>(
+fn bilinear_12x12_block<S: Simd, T: ReconSample, const REUSE: bool>(
+    simd: S,
     block: Block12x12<'_, T>,
     (h_phase, v_phase): (i32, i32),
 ) {
-    let lanes = |line: &[T], col: usize| reference_lanes::<8, T>(line, col);
-    let (left_weight, right_weight) = (
-        Simd::splat(16 - h_phase as u16),
-        Simd::splat(h_phase as u16),
-    );
+    let lanes = |line: &[T], col: usize| sample_lanes(simd, line, col);
+    let (left_weight, right_weight) = (16 - h_phase as u16, h_phase as u16);
     let horizontal = |line: &[T], col: usize| {
         lanes(line, col) * left_weight + lanes(line, col + 1) * right_weight
     };
+    let (top_weight, bottom_weight) = (16 - v_phase as u16, v_phase as u16);
     match (h_phase, v_phase) {
-        (0, 0) => bilinear_12x12_rows::<T, REUSE>(block, lanes, |top, _| top),
+        (0, 0) => bilinear_12x12_rows::<S, T, REUSE>(block, lanes, |top, _| top),
         (_, 0) => {
-            bilinear_12x12_rows::<T, REUSE>(block, horizontal, |top, _| {
-                (top + Simd::splat(8)) >> 4
-            });
+            bilinear_12x12_rows::<S, T, REUSE>(block, horizontal, |top, _| (top + 8) >> 4);
         }
-        (0, v_phase) => bilinear_12x12_rows::<T, REUSE>(block, lanes, |top, bottom| {
-            bilinear_u16(top, bottom, v_phase)
+        (0, _) => bilinear_12x12_rows::<S, T, REUSE>(block, lanes, |top, bottom| {
+            (top * top_weight + bottom * bottom_weight + 8) >> 4
         }),
-        (_, v_phase) if u8::try_from(T::MAX_VALUE).is_ok() => {
-            let (top_weight, bottom_weight) = (
-                Simd::splat(16 - v_phase as u16),
-                Simd::splat(v_phase as u16),
-            );
-            bilinear_12x12_rows::<T, REUSE>(block, horizontal, |top, bottom| {
-                (top * top_weight + bottom * bottom_weight + Simd::splat(128)) >> 8
+        _ if u8::try_from(T::MAX_VALUE).is_ok() => {
+            bilinear_12x12_rows::<S, T, REUSE>(block, horizontal, |top, bottom| {
+                (top * top_weight + bottom * bottom_weight + 128) >> 8
             });
         }
-        (_, v_phase) => bilinear_12x12_rows::<T, REUSE>(block, horizontal, |top, bottom| {
-            let blended = tap_mac(
-                tap_mac(Simd::splat(0), top.cast(), 16 - v_phase),
-                bottom.cast(),
-                v_phase,
-            );
-            round2_simd(blended, 8).cast::<u16>()
+        _ => bilinear_12x12_rows::<S, T, REUSE>(block, horizontal, |top, bottom| {
+            let ((top_low, top_high), (bottom_low, bottom_high)) = (top.widen(), bottom.widen());
+            let blend = |top: u32x4<S>, bottom: u32x4<S>| {
+                (top * u32::from(top_weight) + bottom * u32::from(bottom_weight) + 128) >> 8
+            };
+            blend(top_low, bottom_low).narrow(blend(top_high, bottom_high))
         }),
     }
+}
+
+/// Eight samples from `col` as `u16` lanes.
+#[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
+#[inline(always)]
+fn sample_lanes<S: Simd, T: ReconSample>(simd: S, line: &[T], col: usize) -> u16x8<S> {
+    if let Some(lanes) = T::u16_slice(line).and_then(|line| line.get(col..)?.first_chunk::<8>()) {
+        return u16x8::load_array_ref(simd, lanes);
+    }
+    u16x8::from_fn(simd, |lane| {
+        line.get(col + lane).map_or(0, |sample| sample.to_u16())
+    })
 }
 
 /// Runs the rows of [`bilinear_12x12_block`] in one pass: `horizontal`
@@ -153,10 +158,10 @@ fn bilinear_12x12_block<T: ReconSample, const REUSE: bool>(
 /// results.
 #[allow(clippy::inline_always, reason = "measured TIP predictor hot path")]
 #[inline(always)]
-fn bilinear_12x12_rows<T: ReconSample, const REUSE: bool>(
+fn bilinear_12x12_rows<S: Simd, T: ReconSample, const REUSE: bool>(
     (window, ref_stride, output, stride, columns): Block12x12<'_, T>,
-    horizontal: impl Fn(&[T], usize) -> Simd<u16, 8>,
-    vertical: impl Fn(Simd<u16, 8>, Simd<u16, 8>) -> Simd<u16, 8>,
+    horizontal: impl Fn(&[T], usize) -> u16x8<S>,
+    vertical: impl Fn(u16x8<S>, u16x8<S>) -> u16x8<S>,
 ) {
     let line = |row: usize| &window[row * ref_stride..row * ref_stride + 13];
     let mut top = [horizontal(line(0), 0), horizontal(line(0), 4)];
@@ -166,12 +171,14 @@ fn bilinear_12x12_rows<T: ReconSample, const REUSE: bool>(
         let output = &mut output[row * stride..row * stride + 12];
         if REUSE {
             output[..4].copy_from_slice(&carried[4..]); // splot-copy-ok: the left neighbour's last four filtered columns
-        } else {
-            vertical(top[0], bottom[0]).copy_to_slice(&mut output[..8]);
+        } else if let Some(left) = output.first_chunk_mut::<8>() {
+            vertical(top[0], bottom[0]).store_array(left);
         }
-        let right = vertical(top[1], bottom[1]);
-        right.copy_to_slice(&mut output[4..]);
-        *carried = right.to_array();
+        let right = vertical(top[1], bottom[1]).to_array();
+        if let Some(slot) = output.last_chunk_mut::<8>() {
+            *slot = right;
+        }
+        *carried = right;
         top = bottom;
     }
 }

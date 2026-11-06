@@ -18,54 +18,13 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
     output: &mut [u8],
     output_stride: usize,
 ) -> Result<()> {
-    let intermediate_height = validate_subpel_u8_output(params, output, output_stride)?;
-    let params = &plane_bounded(reference, params);
-    if let Some(view) = reference.as_u8() {
-        let sink = eight_bit::Sink::Put {
-            output: &mut *output,
-            stride: output_stride,
-        };
-        if eight_bit::predict(&view, params, sink, None) {
-            return Ok(());
-        }
-    }
-    if params.step_x == 1 << SCALE_SUBPEL_BITS
-        && params.step_y == 1 << SCALE_SUBPEL_BITS
-        && (params.start_x >> 6) & SUBPEL_MASK == 0
-        && (params.start_y >> 6) & SUBPEL_MASK == 0
-    {
-        return subpel_copy_block_u8_into(reference, params, output, output_stride);
-    }
-    if params.interp == InterpolationFilter::Bilinear
-        && params.step_x == 1 << SCALE_SUBPEL_BITS
-        && params.step_y == 1 << SCALE_SUBPEL_BITS
-    {
-        match (
-            (params.start_x >> 6) & SUBPEL_MASK == 0,
-            (params.start_y >> 6) & SUBPEL_MASK == 0,
-        ) {
-            (false, true) => {
-                return subpel_bilinear_horizontal_into(reference, params, output, output_stride);
-            }
-            (true, false) => {
-                return subpel_bilinear_vertical_into(reference, params, output, output_stride);
-            }
-            (false, false) => {
-                return subpel_bilinear_2d_into(reference, params, output, output_stride);
-            }
-            (true, true) => {}
-        }
-    }
-    subpel_predict_block_internal_into_validated(
-        reference,
-        params,
-        INTER_ROUND1_NON_COMPOUND,
-        intermediate_height,
-        None,
+    validate_subpel_u8_output(params, output, output_stride)?;
+    let sink = Sink::Put {
         output,
-        output_stride,
-        ClippedU8SubpelOutput,
-    )
+        stride: output_stride,
+    };
+    block::predict(reference, params, sink, None);
+    Ok(())
 }
 
 fn validate_subpel_u8_output(
@@ -93,49 +52,6 @@ fn validate_subpel_u8_output(
     Ok(intermediate_height)
 }
 
-fn subpel_copy_block_u8_into<T: ReconSample>(
-    reference: &ReferencePlaneView<'_, T>,
-    params: &SubpelPredictParams,
-    output: &mut [u8],
-    output_stride: usize,
-) -> Result<()> {
-    let output_len = subpel_output_len(params, output_stride)?;
-    if output.len() < output_len {
-        return Err(ReconError::BufferLengthMismatch {
-            expected: output_len,
-            actual: output.len(),
-        });
-    }
-    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
-    let y0 = params.start_y >> SCALE_SUBPEL_BITS;
-    let direct_x = subpel_direct_copy_x(reference, params);
-    for r in 0..params.h {
-        let row = (y0 + r as i32)
-            .clamp(params.first_y, params.last_y)
-            .clamp(0, reference.readable_rows as i32 - 1) as usize;
-        let output = &mut output[r * output_stride..][..params.w];
-        if let Some(x) = direct_x {
-            let source = &reference.samples
-                [row * reference.stride + x..row * reference.stride + x + params.w];
-            if let Some(source) = T::u8_slice(source) {
-                output.copy_from_slice(source); // splot-copy-ok: direct full-pel prediction into canonical u8 storage
-            } else {
-                for (output, sample) in output.iter_mut().zip(source) {
-                    *output = sample.to_u16().min(u16::from(u8::MAX)) as u8;
-                }
-            }
-        } else {
-            for (c, output) in output.iter_mut().enumerate() {
-                let col = (x0 + c as i32)
-                    .clamp(params.first_x, params.last_x)
-                    .clamp(0, reference.width as i32 - 1) as usize;
-                *output = reference.sample(row, col).min(i32::from(u8::MAX)) as u8;
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Directly blends two zero-phase unscaled predictors into eight-bit output,
 /// returning `Ok(false)` outside the direct source-window subset.
 ///
@@ -159,74 +75,15 @@ pub fn subpel_predict_block_compound_average_fullpel_strided_into_u8<T: ReconSam
     if params0.w != params1.w || params0.h != params1.h || params0.bit_depth != params1.bit_depth {
         return Ok(false);
     }
-    if subpel_direct_copy_x(reference0, params0).is_none()
-        || subpel_direct_copy_x(reference1, params1).is_none()
-    {
-        return Ok(false);
-    }
     validate_compound_output(params0, output, output_stride)?;
-    Ok(blend_fullpel_u8_validated(
-        reference0,
-        params0,
-        reference1,
-        params1,
+    Ok(compound_average(
+        [reference0, reference1],
+        [params0, params1],
         cwp_weight,
+        &mut [],
         output,
         output_stride,
     ))
-}
-
-/// Blends two zero-phase unscaled predictors whose rows are direct source
-/// slices into eight-bit output whose geometry the caller has validated.
-/// Returns `false`, having written nothing, when a source window is clipped
-/// or the reference storage is not eight-bit.
-pub(super) fn blend_fullpel_u8_validated<T: ReconSample>(
-    reference0: &ReferencePlaneView<'_, T>,
-    params0: &SubpelPredictParams,
-    reference1: &ReferencePlaneView<'_, T>,
-    params1: &SubpelPredictParams,
-    cwp_weight: i16,
-    output: &mut [u8],
-    output_stride: usize,
-) -> bool {
-    let (Some(x0), Some(x1)) = (
-        subpel_direct_copy_x(reference0, params0),
-        subpel_direct_copy_x(reference1, params1),
-    ) else {
-        return false;
-    };
-    if T::u8_slice(reference0.row(0)).is_none() {
-        return false;
-    }
-    let y0 = [
-        params0.start_y >> SCALE_SUBPEL_BITS,
-        params1.start_y >> SCALE_SUBPEL_BITS,
-    ];
-    let forward = i32::from(cwp_weight);
-    let backward = 16 - forward;
-    for row in 0..params0.h {
-        let source_row = [
-            (y0[0] + row as i32).clamp(params0.first_y, params0.last_y) as usize,
-            (y0[1] + row as i32).clamp(params1.first_y, params1.last_y) as usize,
-        ];
-        let left = &reference0.row(source_row[0])[x0..x0 + params0.w];
-        let right = &reference1.row(source_row[1])[x1..x1 + params0.w];
-        let (Some(left), Some(right)) = (T::u8_slice(left), T::u8_slice(right)) else {
-            return false;
-        };
-        let destination = &mut output[row * output_stride..][..params0.w];
-        if forward == 8 {
-            for ((slot, &left), &right) in destination.iter_mut().zip(left).zip(right) {
-                *slot = ((u16::from(left) + u16::from(right) + 1) >> 1) as u8;
-            }
-        } else {
-            for ((slot, &left), &right) in destination.iter_mut().zip(left).zip(right) {
-                *slot = round2_i32(forward * i32::from(left) + backward * i32::from(right), 4)
-                    .clamp(0, 255) as u8;
-            }
-        }
-    }
-    true
 }
 
 #[cfg(test)]

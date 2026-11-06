@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![feature(portable_simd)]
-
 //! `splot-recon` owns AV2 reconstruction primitives and frame/workspace storage.
 //!
 //! The crate exposes checked media buffers, view-first frame access, intra/inter
