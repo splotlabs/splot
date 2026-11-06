@@ -290,6 +290,13 @@ impl<T: ReconSample> CurrentFrameRectRowsMut<'_, T> {
         self.rect
     }
 
+    /// The rows as one strided slice, `(samples, stride)`, for a predictor that
+    /// writes the block in place; every sample it writes must already lie
+    /// within the active bit depth.
+    pub fn prediction_target(&mut self) -> (&mut [T], usize) {
+        (&mut *self.samples, self.stride_samples)
+    }
+
     /// Reconstructs the rectangle from a contiguous block prediction and its
     /// AV2 § 7.14.3 residual, writing `Clip1(prediction + residual)` straight
     /// into the frame.

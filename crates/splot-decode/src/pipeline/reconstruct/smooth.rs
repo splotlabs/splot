@@ -9,7 +9,8 @@ use splot_recon::{
 };
 
 use super::sink::{
-    IntraEdgeAvailability, noneighbour_above, noneighbour_left, write_intra_prediction_block,
+    IntraEdgeAvailability, noneighbour_above, noneighbour_left, predict_intra_in_frame,
+    write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedNonDcLumaMode,
@@ -84,28 +85,42 @@ pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: Reco
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    let request = SmoothIntraPredictionRequest {
+        plane_id,
+        x,
+        y,
+        block_size,
+        mode: smooth_mode,
+        available_left_samples,
+        available_above_samples,
+        num4_above_right,
+        num4_below_left,
+        bit_depth,
+    };
+    let edges = smooth_prediction_edges(workspace, request)?;
+    if predict_intra_in_frame(
+        workspace,
+        block,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        None,
+        bit_depth,
+        |output, stride| predict_smooth_from_edges(request, &edges, output, stride),
+    )? {
+        return Ok(());
+    }
     let mut prediction = workspace.take_intra_prediction_buffer(
         IntraPredictionScratchBuffer::Primary,
         plane_id,
         block_size.width() * block_size.height(),
         T::default(),
     )?;
-    predict_intra_smooth_over_available_edges_into(
-        workspace,
-        SmoothIntraPredictionRequest {
-            plane_id,
-            x,
-            y,
-            block_size,
-            mode: smooth_mode,
-            available_left_samples,
-            available_above_samples,
-            num4_above_right,
-            num4_below_left,
-            bit_depth,
-        },
-        &mut prediction,
-    )?;
+    predict_smooth_from_edges(request, &edges, &mut prediction, block_size.width())?;
     write_intra_prediction_block(
         workspace,
         block,
@@ -141,12 +156,43 @@ pub(crate) fn predict_intra_smooth_over_available_edges_into<T: ReconSample>(
     request: SmoothIntraPredictionRequest,
     prediction: &mut [T],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let edges = smooth_prediction_edges(workspace, request)?;
+    predict_smooth_from_edges(request, &edges, prediction, request.block_size.width())
+}
+
+/// The `[left, above]` § 7.13.2.13 edges, sentinels included.
+type SmoothEdgeArrays<T> = [[T; SMOOTH_EDGE_CAPACITY]; 2];
+
+fn predict_smooth_from_edges<T: ReconSample>(
+    request: SmoothIntraPredictionRequest,
+    [left_edge, above_edge]: &SmoothEdgeArrays<T>,
+    output: &mut [T],
+    stride: usize,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let size = request.block_size;
+    let smooth_edges =
+        IntraSmoothEdges::new(&left_edge[..=size.height()], &above_edge[..=size.width()]);
+    predict_intra_smooth_rect_into(
+        request.bit_depth,
+        size,
+        request.mode,
+        smooth_edges,
+        output,
+        stride,
+    )?;
+    Ok(())
+}
+
+fn smooth_prediction_edges<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    request: SmoothIntraPredictionRequest,
+) -> core::result::Result<SmoothEdgeArrays<T>, GeneralIntraResidualError> {
     let SmoothIntraPredictionRequest {
         plane_id,
         x,
         y,
         block_size,
-        mode,
+        mode: _,
         available_left_samples,
         available_above_samples,
         num4_above_right,
@@ -215,9 +261,7 @@ pub(crate) fn predict_intra_smooth_over_available_edges_into<T: ReconSample>(
         bit_depth,
         [&mut left_edge, &mut above_edge],
     );
-    let smooth_edges = IntraSmoothEdges::new(&left_edge[..=height], &above_edge[..=width]);
-    predict_intra_smooth_rect_into(bit_depth, block_size, mode, smooth_edges, prediction, width)?;
-    Ok(())
+    Ok([left_edge, above_edge])
 }
 
 /// Fills the `[left, above]` edges in place, so that no edge array moves
