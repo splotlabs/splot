@@ -3,10 +3,10 @@
 
 //! AV2 § 7.13.6 MHCCP parameter derivation helpers.
 
-use fearless_simd::{Bytes as _, Level, Select as _, Simd, SimdBase, dispatch, i32x8, u16x8};
+use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i32x8, u16x8};
 
-use crate::BitDepth;
 use crate::math::{round2_i32, round2_signed_i32};
+use crate::{BitDepth, ReconSample};
 
 #[doc = "AV2 § 3 symbols and § 7.13.6 MHCCP process constants."]
 pub const MHCCP_BITS: u32 = 16;
@@ -20,8 +20,10 @@ const DIVISION_POW2_W: [i32; 8] = [214, 153, 113, 86, 67, 53, 43, 35];
 const DIVISION_POW2_O: [i32; 8] = [4822, 5952, 6624, 6792, 6408, 5424, 3792, 1466];
 const DIVISION_POW2_B: [i32; 8] = [12784, 12054, 11670, 11583, 11764, 12195, 12870, 13782];
 
-/// Reference samples used to derive AV2 § 7.13.6 MHCCP parameters.
-pub struct MhccpRefs {
+/// The luma references of an AV2 § 7.13.6 MHCCP block (`CflRef[0]`), shared
+/// by both chroma planes, whose `CflRef[1]` buffers use the same layout.
+#[derive(Clone, Copy)]
+pub struct MhccpRefs<'a> {
     /// Reference-buffer row stride.
     pub width: usize,
     /// Reference-buffer row count.
@@ -35,12 +37,10 @@ pub struct MhccpRefs {
     /// Number of left-reference columns.
     pub left: usize,
     /// Luma reference samples.
-    pub luma: Vec<u16>,
-    /// Chroma reference samples.
-    pub chroma: Vec<u16>,
+    pub luma: &'a [u16],
 }
 
-impl MhccpRefs {
+impl MhccpRefs<'_> {
     fn has_edge_refs(&self) -> bool {
         self.above != 0 || self.left != 0
     }
@@ -59,16 +59,17 @@ impl NormalEquations {
     /// The § 7.13.7 statistics with `v[2]` fixed at `mid`. Each product of
     /// two `BitDepth`-bit samples is below `2^(2 * BitDepth)`, so the sums of
     /// at most `2^(31 - 2 * BitDepth)` samples are exact in `i32`.
-    fn from_sums(sums: &EdgeSums, mid: i32) -> Self {
-        let count = sums.count as i32;
+    fn from_sums(luma: &LumaSums, cross: [i32; 3], mid: i32) -> Self {
+        let [s00, s01, s11, s0, s1] = luma.sums;
+        let count = luma.count as i32;
         Self {
             ata: [
-                [sums.s00, sums.s01, sums.s0.wrapping_mul(mid)],
-                [0, sums.s11, sums.s1.wrapping_mul(mid)],
+                [s00, s01, s0.wrapping_mul(mid)],
+                [0, s11, s1.wrapping_mul(mid)],
                 [0, 0, count.wrapping_mul(mid).wrapping_mul(mid)],
             ],
-            b: [sums.s0t, sums.s1t, sums.st.wrapping_mul(mid)],
-            samples: sums.count,
+            b: [cross[0], cross[1], cross[2].wrapping_mul(mid)],
+            samples: luma.count,
         }
     }
 
@@ -94,143 +95,140 @@ impl NormalEquations {
     }
 }
 
-/// Derives the three MHCCP model parameters for a reference sample set.
+/// Derives the three MHCCP model parameters of each chroma plane in
+/// `chroma`; the luma statistics are gathered once for all planes.
 #[must_use]
-pub fn derive_mhccp_params(
-    refs: &MhccpRefs,
+pub fn derive_mhccp_params<const N: usize>(
+    refs: &MhccpRefs<'_>,
+    chroma: [&[u16]; N],
     mh_dir: u8,
     bit_depth: BitDepth,
-) -> [i32; MHCCP_PARAM_COUNT] {
+) -> [[i32; MHCCP_PARAM_COUNT]; N] {
     let bits = u32::from(bit_depth.bits());
-    let mut sums = EdgeSums::default();
+    let mut luma = LumaSums::default();
+    let mut cross = [[0i32; 3]; N];
     if refs.has_edge_refs() {
         let stride = refs.width;
         let reference_width = refs.reference_width.min(refs.width);
         let reference_height = refs.reference_height.min(refs.height);
-        for row in 1..reference_height.saturating_sub(1) {
-            let cols = if row < refs.above {
-                reference_width.saturating_sub(1)
-            } else {
-                refs.left.min(reference_width.saturating_sub(1))
-            };
-            if cols <= 1 {
-                continue;
-            }
-            let start = row * stride;
-            let linear_start = match mh_dir {
-                0 => start + 1,
-                1 => start - stride + 1,
-                _ => start,
-            };
-            let linear = &refs.luma[linear_start..linear_start + cols - 1];
-            let center = &refs.luma[start + 1..start + cols];
-            let target = &refs.chroma[start + 1..start + cols];
-            if cols > 8 {
-                sums.add_run(linear, center, target, bits);
-            } else {
-                for ((&linear, &center), &target) in linear.iter().zip(center).zip(target) {
-                    sums.add(linear, center, target, bits);
+        baseline_simd!(simd => {
+            for row in 1..reference_height.saturating_sub(1) {
+                let cols = if row < refs.above {
+                    reference_width.saturating_sub(1)
+                } else {
+                    refs.left.min(reference_width.saturating_sub(1))
+                };
+                if cols <= 1 {
+                    continue;
                 }
+                let start = row * stride;
+                let linear_start = match mh_dir {
+                    0 => start + 1,
+                    1 => start - stride + 1,
+                    _ => start,
+                };
+                let linear = &refs.luma[linear_start..linear_start + cols - 1];
+                let center = &refs.luma[start + 1..start + cols];
+                let targets = chroma.map(|plane| &plane[start + 1..start + cols]);
+                add_run(simd, &mut luma, &mut cross, linear, center, targets, bits);
             }
+        });
+    }
+    let mid = 1i32 << (bits - 1);
+    cross.map(|cross| {
+        let mut equations = NormalEquations::from_sums(&luma, cross, mid);
+        if equations.samples == 0 {
+            return [0, 0, 1i32 << MHCCP_BITS];
         }
-    }
-    let mut equations = NormalEquations::from_sums(&sums, 1i32 << (bits - 1));
-    if equations.samples == 0 {
-        return [0, 0, 1i32 << MHCCP_BITS];
-    }
-    let bit_depth_bits = i32::from(bit_depth.bits());
-    let matrix_shift =
-        MHCCP_BITS as i32 + 6 - 2 * bit_depth_bits - ceil_log2_usize(equations.samples) as i32;
-    equations.apply_matrix_shift(matrix_shift);
-    solve_mhccp(equations, bit_depth)
+        let bit_depth_bits = i32::from(bit_depth.bits());
+        let matrix_shift =
+            MHCCP_BITS as i32 + 6 - 2 * bit_depth_bits - ceil_log2_usize(equations.samples) as i32;
+        equations.apply_matrix_shift(matrix_shift);
+        solve_mhccp(equations, bit_depth)
+    })
 }
 
-/// Wrapping sums of the § 7.13.7 products over the edge samples.
+/// Wrapping sums of the § 7.13.7 luma products `v0 * v0`, `v0 * v1`,
+/// `v1 * v1`, `v0` and `v1` over the edge samples.
 #[derive(Debug, Default)]
-struct EdgeSums {
-    s00: i32,
-    s01: i32,
-    s11: i32,
-    s0: i32,
-    s1: i32,
-    s0t: i32,
-    s1t: i32,
-    st: i32,
+struct LumaSums {
+    sums: [i32; 5],
     count: usize,
 }
 
-impl EdgeSums {
-    /// Adds one row run of `v[0]` (`linear`), centre luma and target chroma.
-    fn add_run(&mut self, linear: &[u16], center: &[u16], target: &[u16], bits: u32) {
-        let done = dispatch!(Level::baseline(), simd => self.add_lanes(simd, linear, center, target, bits));
-        for ((&linear, &center), &target) in linear[done..]
-            .iter()
-            .zip(&center[done..])
-            .zip(&target[done..])
-        {
-            self.add(linear, center, target, bits);
-        }
-    }
-
-    /// The 8-lane groups of [`Self::add_run`]; returns how many samples they
-    /// covered.
-    #[inline]
-    fn add_lanes<S: Simd>(
-        &mut self,
-        simd: S,
-        linear: &[u16],
-        center: &[u16],
-        target: &[u16],
-        bits: u32,
-    ) -> usize {
+/// Adds one row run of `v[0]` (`linear`) and centre luma, and of each plane's
+/// target chroma, to the luma sums and each plane's `v0 * t`, `v1 * t`, `t`
+/// sums.
+#[inline]
+fn add_run<S: Simd, const N: usize>(
+    simd: S,
+    luma: &mut LumaSums,
+    cross: &mut [[i32; 3]; N],
+    linear: &[u16],
+    center: &[u16],
+    targets: [&[u16]; N],
+    bits: u32,
+) {
+    let groups = linear.len() / 8;
+    if groups > 0 {
         let half = 1i32 << (bits - 1);
-        let mut acc = [i32x8::splat(simd, 0); 8];
-        let groups = linear.len() / 8;
+        let zero = i32x8::splat(simd, 0);
+        let mut luma_acc = [zero; 5];
+        let mut cross_acc = [[zero; 3]; N];
         for group in 0..groups {
             let at = 8 * group;
             let v0 = widen_lanes(simd, &linear[at..]);
             let c = widen_lanes(simd, &center[at..]);
-            let t = widen_lanes(simd, &target[at..]);
             let v1 = (c * c + half) >> bits;
-            for (acc, term) in
-                acc.iter_mut()
-                    .zip([v0 * v0, v0 * v1, v1 * v1, v0, v1, v0 * t, v1 * t, t])
-            {
+            for (acc, term) in luma_acc.iter_mut().zip([v0 * v0, v0 * v1, v1 * v1, v0, v1]) {
                 *acc += term;
             }
+            for (acc, target) in cross_acc.iter_mut().zip(targets) {
+                let t = widen_lanes(simd, &target[at..]);
+                for (acc, term) in acc.iter_mut().zip([v0 * t, v1 * t, t]) {
+                    *acc += term;
+                }
+            }
         }
-        let [s00, s01, s11, s0, s1, s0t, s1t, st] = acc.map(|lanes| {
+        let reduce = |lanes: i32x8<S>| {
             lanes
                 .as_slice()
                 .iter()
                 .fold(0i32, |sum, &lane| sum.wrapping_add(lane))
-        });
-        self.count += 8 * groups;
-        self.s00 = self.s00.wrapping_add(s00);
-        self.s01 = self.s01.wrapping_add(s01);
-        self.s11 = self.s11.wrapping_add(s11);
-        self.s0 = self.s0.wrapping_add(s0);
-        self.s1 = self.s1.wrapping_add(s1);
-        self.s0t = self.s0t.wrapping_add(s0t);
-        self.s1t = self.s1t.wrapping_add(s1t);
-        self.st = self.st.wrapping_add(st);
-        8 * groups
+        };
+        for (sum, acc) in luma.sums.iter_mut().zip(luma_acc) {
+            *sum = sum.wrapping_add(reduce(acc));
+        }
+        for (sums, acc) in cross.iter_mut().zip(cross_acc) {
+            for (sum, acc) in sums.iter_mut().zip(acc) {
+                *sum = sum.wrapping_add(reduce(acc));
+            }
+        }
+        luma.count += 8 * groups;
     }
-
-    /// Adds one sample's `v[0]` (`linear`), centre luma and target chroma.
-    fn add(&mut self, linear: u16, center: u16, target: u16, bits: u32) {
-        let (v0, t) = (i32::from(linear), i32::from(target));
-        let center = i32::from(center);
+    for i in 8 * groups..linear.len() {
+        let v0 = i32::from(linear[i]);
+        let center = i32::from(center[i]);
         let v1 = round2_i32(center.wrapping_mul(center), bits);
-        self.s00 = self.s00.wrapping_add(v0.wrapping_mul(v0));
-        self.s01 = self.s01.wrapping_add(v0.wrapping_mul(v1));
-        self.s11 = self.s11.wrapping_add(v1.wrapping_mul(v1));
-        self.s0 = self.s0.wrapping_add(v0);
-        self.s1 = self.s1.wrapping_add(v1);
-        self.s0t = self.s0t.wrapping_add(v0.wrapping_mul(t));
-        self.s1t = self.s1t.wrapping_add(v1.wrapping_mul(t));
-        self.st = self.st.wrapping_add(t);
-        self.count += 1;
+        for (sum, term) in luma.sums.iter_mut().zip([
+            v0.wrapping_mul(v0),
+            v0.wrapping_mul(v1),
+            v1.wrapping_mul(v1),
+            v0,
+            v1,
+        ]) {
+            *sum = sum.wrapping_add(term);
+        }
+        for (sums, target) in cross.iter_mut().zip(targets) {
+            let t = i32::from(target[i]);
+            for (sum, term) in sums
+                .iter_mut()
+                .zip([v0.wrapping_mul(t), v1.wrapping_mul(t), t])
+            {
+                *sum = sum.wrapping_add(term);
+            }
+        }
+        luma.count += 1;
     }
 }
 
@@ -371,32 +369,85 @@ impl MhccpPredictor {
             .clamp(0, self.max) as u16
     }
 
-    /// Predicts `out.len()` samples; `linear` and `center` must be as long.
-    pub fn row(&self, linear: &[u16], center: &[u16], out: &mut [u16]) {
-        let done = if self.narrow {
-            dispatch!(Level::baseline(), simd => self.row_lanes(simd, linear, center, out))
-        } else {
-            0
-        };
-        for ((out, &linear), &center) in out[done..]
-            .iter_mut()
-            .zip(&linear[done..])
-            .zip(&center[done..])
+    /// Predicts the `width` x `height` block of `refs` in direction `mh_dir`
+    /// into `out`, row `r` at `out[r * stride..]`; `false` when `out` or the
+    /// references are too short for the block.
+    #[must_use]
+    pub fn predict_block<T: ReconSample>(
+        &self,
+        refs: &MhccpRefs<'_>,
+        mh_dir: u8,
+        width: usize,
+        height: usize,
+        out: &mut [T],
+        stride: usize,
+    ) -> bool {
+        if width == 0
+            || height == 0
+            || (height - 1) * stride + width > out.len()
+            || (refs.above + height) * refs.width > refs.luma.len()
+            || refs.left + width > refs.width
         {
-            *out = self.sample(linear, center);
+            return false;
+        }
+        if let Some(out) = T::u16_slice_mut(out) {
+            baseline_simd!(simd => self.predict_rows(simd, refs, mh_dir, width, height, out, stride));
+        } else if let Some(out) = T::u8_slice_mut(out) {
+            baseline_simd!(simd => self.predict_rows(simd, refs, mh_dir, width, height, out, stride));
+        }
+        true
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    fn predict_rows<S: Simd, P: PredictedSample>(
+        &self,
+        simd: S,
+        refs: &MhccpRefs<'_>,
+        mh_dir: u8,
+        width: usize,
+        height: usize,
+        out: &mut [P],
+        stride: usize,
+    ) {
+        let luma = refs.luma;
+        for row in 0..height {
+            let out = &mut out[row * stride..row * stride + width];
+            let center_start = (refs.above + row) * refs.width + refs.left;
+            let center = &luma[center_start..center_start + width];
+            match mh_dir {
+                0 => self.row(simd, center, center, out),
+                1 => {
+                    let top = (refs.above + row).saturating_sub(1) * refs.width + refs.left;
+                    self.row(simd, &luma[top..top + width], center, out);
+                }
+                _ if refs.left == 0 => {
+                    out[0] = P::from_clipped(i32::from(self.sample(center[0], center[0])));
+                    self.row(simd, &center[..width - 1], &center[1..], &mut out[1..]);
+                }
+                _ => {
+                    let left = center_start - 1;
+                    self.row(simd, &luma[left..left + width], center, out);
+                }
+            }
         }
     }
 
-    /// The 8-lane groups of a narrow [`Self::row`]; returns how many samples
-    /// they wrote.
+    /// Predicts `out.len()` samples; `linear` and `center` must be as long.
     #[inline]
-    fn row_lanes<S: Simd>(
+    fn row<S: Simd, P: PredictedSample>(
         &self,
         simd: S,
         linear: &[u16],
         center: &[u16],
-        out: &mut [u16],
-    ) -> usize {
+        out: &mut [P],
+    ) {
+        if !self.narrow {
+            for ((out, &linear), &center) in out.iter_mut().zip(linear).zip(center) {
+                *out = P::from_clipped(i32::from(self.sample(linear, center)));
+            }
+            return;
+        }
         let half = 1i32 << (MHCCP_BITS - 1);
         let square_half = 1i32 << (self.bits - 1);
         let zero = i32x8::splat(simd, 0);
@@ -411,12 +462,52 @@ impl MhccpPredictor {
             let center = widen_lanes(simd, &center[at..]);
             let square = (center * center + square_half) >> self.bits;
             let t = round(linear * self.params[0]) + round(square * self.params[1]) + self.offset;
-            let t = t.max(zero).min(self.max);
-            let (low, high) = simd.split_u32x8(t.bitcast());
-            simd.relaxed_narrow_u32x4(low, high)
-                .store_slice(&mut out[at..at + 8]);
+            P::store8(simd, &mut out[at..at + 8], t.max(zero).min(self.max));
         }
-        8 * groups
+        for ((out, &linear), &center) in out.iter_mut().zip(linear).zip(center).skip(8 * groups) {
+            let center = i32::from(center);
+            let square = (center * center + square_half) >> self.bits;
+            let t = round2_signed_i32(i32::from(linear) * self.params[0], MHCCP_BITS)
+                + round2_signed_i32(square * self.params[1], MHCCP_BITS)
+                + self.offset;
+            *out = P::from_clipped(t.clamp(0, self.max));
+        }
+    }
+}
+
+/// A predicted sample type the MHCCP lanes store into.
+trait PredictedSample: Copy {
+    /// Stores eight samples already clipped to the sample range.
+    fn store8<S: Simd>(simd: S, out: &mut [Self], v: i32x8<S>);
+    fn from_clipped(v: i32) -> Self;
+}
+
+impl PredictedSample for u8 {
+    #[inline]
+    fn store8<S: Simd>(simd: S, out: &mut [Self], v: i32x8<S>) {
+        let (low, high) = simd.split_u32x8(v.bitcast());
+        let words = simd.relaxed_narrow_u32x4(low, high);
+        let bytes: [u8; 16] = simd.relaxed_narrow_u16x8(words, words).into();
+        out[..8].copy_from_slice(&bytes[..8]); // splot-copy-ok: publish eight MHCCP samples
+    }
+
+    #[inline]
+    fn from_clipped(v: i32) -> Self {
+        v as u8
+    }
+}
+
+impl PredictedSample for u16 {
+    #[inline]
+    fn store8<S: Simd>(simd: S, out: &mut [Self], v: i32x8<S>) {
+        let (low, high) = simd.split_u32x8(v.bitcast());
+        simd.relaxed_narrow_u32x4(low, high)
+            .store_slice(&mut out[..8]);
+    }
+
+    #[inline]
+    fn from_clipped(v: i32) -> Self {
+        v as u16
     }
 }
 
@@ -482,11 +573,10 @@ mod tests {
             reference_height: 64,
             above: 2,
             left: 2,
-            luma: vec![1023; 64 * 64],
-            chroma: vec![1023; 64 * 64],
+            luma: &[1023; 64 * 64],
         };
 
-        let params = derive_mhccp_params(&refs, 0, BitDepth::Ten);
+        let [params] = derive_mhccp_params(&refs, [&[1023; 64 * 64]], 0, BitDepth::Ten);
         assert_eq!(params, [-162, 64_418, 2_689]);
     }
 
@@ -500,8 +590,18 @@ mod tests {
             [1 << 22, -(1 << 21), 1 << 20],
         ] {
             let predictor = MhccpPredictor::new(params, bit_depth);
-            let mut out = vec![0; 36];
-            predictor.row(&luma[1..], &luma[..36], &mut out);
+            let rows: Vec<u16> = luma[1..].iter().chain(&luma[..36]).copied().collect();
+            let refs = MhccpRefs {
+                width: 36,
+                height: 2,
+                reference_width: 36,
+                reference_height: 2,
+                above: 1,
+                left: 0,
+                luma: &rows,
+            };
+            let mut out = vec![0u16; 36];
+            assert!(predictor.predict_block(&refs, 1, 36, 1, &mut out, 36));
             for (i, &got) in out.iter().enumerate() {
                 let center = i32::from(luma[i]);
                 let vector = [i32::from(luma[i + 1]), round2_i32(center * center, 10), 512];
@@ -526,40 +626,37 @@ mod tests {
             reference_height: 3,
             above: 0,
             left: 0,
-            luma: vec![0; 9],
-            chroma: vec![0; 9],
+            luma: &[0; 9],
         };
 
         assert_eq!(
-            derive_mhccp_params(&refs, 0, BitDepth::Eight),
-            [0, 0, 1 << MHCCP_BITS]
+            derive_mhccp_params(&refs, [&[0; 9]], 0, BitDepth::Eight),
+            [[0, 0, 1 << MHCCP_BITS]]
         );
     }
 
     #[test]
     fn parameter_derivation_ignores_uncaptured_prediction_padding() {
-        let refs = |padding| {
+        let params = |padding| {
             let mut luma = vec![64; 16];
             let mut chroma = vec![96; 16];
             luma[12..].fill(padding);
             chroma[12..].fill(padding);
-            MhccpRefs {
+            let refs = MhccpRefs {
                 width: 4,
                 height: 4,
                 reference_width: 4,
                 reference_height: 3,
                 above: 2,
                 left: 2,
-                luma,
-                chroma,
-            }
+                luma: &luma,
+            };
+            derive_mhccp_params(&refs, [&chroma, &chroma], 0, BitDepth::Eight)
         };
 
-        let expected = derive_mhccp_params(&refs(0), 0, BitDepth::Eight);
+        let [expected, v] = params(0);
         assert_ne!(expected, [0, 0, 1 << MHCCP_BITS]);
-        assert_eq!(
-            derive_mhccp_params(&refs(u8::MAX.into()), 0, BitDepth::Eight),
-            expected
-        );
+        assert_eq!(v, expected);
+        assert_eq!(params(u8::MAX.into()), [expected; 2]);
     }
 }
