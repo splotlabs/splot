@@ -19,7 +19,7 @@
 //! Feature tracking: `RECON-INVERSE-TRANSFORM-1D`,
 //! `RECON-INVERSE-TRANSFORM-MATRIX-FREE`.
 
-use std::simd::{Simd, cmp::SimdOrd as _};
+use fearless_simd::{Simd, SimdBase, SimdInt, i32x4, i32x8};
 
 use splot_tables::tables::transform_1d::{
     ADST_KERNEL4, ADST_KERNEL8, ADST_KERNEL16, DCT_KERNEL4, DCT_KERNEL8, DCT_KERNEL16,
@@ -183,14 +183,38 @@ pub(crate) fn inverse_transform_1d_columns<const LANES: usize>(
     pass: ColumnPass,
 ) -> bool {
     let dct = tx_type == InverseTransform1dType::Dct;
-    match select_kernel(pass.len, tx_type) {
-        Some(Kernel1d::N4(k)) => kernel_columns::<4, LANES>(src, out, k, false, false, pass),
-        Some(Kernel1d::N8(k, rev)) => kernel_columns::<8, LANES>(src, out, k, rev, dct, pass),
-        Some(Kernel1d::N16(k, rev)) => kernel_columns::<16, LANES>(src, out, k, rev, dct, pass),
-        Some(Kernel1d::N32(k)) => kernel_columns::<32, LANES>(src, out, k, false, true, pass),
-        None => return false,
-    }
+    let Some(kernel) = select_kernel(pass.len, tx_type) else {
+        return false;
+    };
+    baseline_simd!(simd => {
+        if LANES == 8 {
+            columns_in::<_, i32x8<_>>(simd, src, out, kernel, dct, pass);
+        } else {
+            columns_in::<_, i32x4<_>>(simd, src, out, kernel, dct, pass);
+        }
+    });
     true
+}
+
+#[allow(
+    clippy::inline_always,
+    reason = "measured § 7.15.4.1 column-pass hot path"
+)]
+#[inline(always)]
+fn columns_in<S: Simd, V: SimdInt<S, Element = i32>>(
+    simd: S,
+    src: &[i32],
+    out: &mut [i32],
+    kernel: Kernel1d,
+    dct: bool,
+    pass: ColumnPass,
+) {
+    match kernel {
+        Kernel1d::N4(k) => kernel_columns::<_, V, 4>(simd, src, out, k, false, false, pass),
+        Kernel1d::N8(k, rev) => kernel_columns::<_, V, 8>(simd, src, out, k, rev, dct, pass),
+        Kernel1d::N16(k, rev) => kernel_columns::<_, V, 16>(simd, src, out, k, rev, dct, pass),
+        Kernel1d::N32(k) => kernel_columns::<_, V, 32>(simd, src, out, k, false, true, pass),
+    }
 }
 
 /// One § 7.15.4.1 row pass over four consecutive rows at once.
@@ -240,24 +264,40 @@ fn kernel_row_quad<const N: usize>(
     ) else {
         return false;
     };
-    let input_bound = Simd::splat(transform_input_bound(pass.bit_depth));
-    let zero = Simd::<i32, 4>::splat(0);
-    let mut columns: [Simd<i32, 4>; N] = core::array::from_fn(|column| {
-        Simd::from_array(core::array::from_fn(|lane| rows[lane][column]))
-    });
+    baseline_simd!(simd => row_quad_lanes(simd, rows, out_rows, kernel, reversed, pass));
+    true
+}
+
+#[inline]
+fn row_quad_lanes<S: Simd, const N: usize>(
+    simd: S,
+    rows: &[[i32; N]; 4],
+    out_rows: &mut [[i32; N]; 4],
+    kernel: &[[i32; N]; N],
+    reversed: bool,
+    pass: RowQuad,
+) {
+    let input_bound = transform_input_bound(pass.bit_depth);
+    let zero = i32x4::splat(simd, 0);
+    let mut columns: [i32x4<S>; N] =
+        core::array::from_fn(|column| i32x4::from_fn(simd, |lane| rows[lane][column]));
     if pass.rescale {
         for coeff in &mut columns {
-            *coeff = (*coeff * Simd::splat(2896) + Simd::splat(1 << 11)) >> Simd::splat(12);
+            *coeff = (*coeff * 2896 + (1 << 11)) >> 12;
         }
     }
+    let (low, high) = (
+        i32x4::splat(simd, -input_bound),
+        i32x4::splat(simd, input_bound - 1),
+    );
     let mut acc = [zero; N];
     for (&coeff, kernel_row) in columns.iter().zip(kernel) {
-        if coeff == zero {
+        if *coeff == [0; 4] {
             continue;
         }
-        let coeff = coeff.simd_clamp(-input_bound, input_bound - Simd::splat(1));
+        let coeff = coeff.max(low).min(high);
         for (slot, &k) in acc.iter_mut().zip(kernel_row) {
-            *slot += Simd::splat(k) * coeff;
+            *slot += coeff * k;
         }
     }
     let (lo, hi) = transform_clip_bounds(false, pass.bit_depth);
@@ -265,24 +305,22 @@ fn kernel_row_quad<const N: usize>(
         let value = acc[if reversed { N - 1 - index } else { index }];
         let rounded = round2_lanes(value, u32::from(pass.shift));
         let clamped = rounded
-            .simd_clamp(Simd::splat(lo), Simd::splat(hi))
-            .to_array();
-        for (row, &sample) in out_rows.iter_mut().zip(&clamped) {
+            .max(i32x4::splat(simd, lo))
+            .min(i32x4::splat(simd, hi));
+        for (row, &sample) in out_rows.iter_mut().zip(clamped.iter()) {
             row[index] = sample;
         }
     }
-    true
 }
 
 /// The scalar [`round2_i32`] of every lane.
-fn round2_lanes<const LANES: usize>(value: Simd<i32, LANES>, n: u32) -> Simd<i32, LANES> {
+fn round2_lanes<S: Simd>(value: i32x4<S>, n: u32) -> i32x4<S> {
     if n == 0 {
         value
     } else if n >= i32::BITS {
-        Simd::splat(0)
+        i32x4::splat(value.simd, 0)
     } else {
-        let n = n as i32;
-        (value >> Simd::splat(n)) + ((value >> Simd::splat(n - 1)) & Simd::splat(1))
+        (value >> n) + ((value >> (n - 1)) & 1)
     }
 }
 
@@ -308,7 +346,8 @@ fn round2_lanes<const LANES: usize>(value: Simd<i32, LANES>, n: u32) -> Simd<i32
     reason = "measured § 7.15.4.1 column-pass hot path"
 )]
 #[inline(always)]
-fn kernel_columns<const N: usize, const LANES: usize>(
+fn kernel_columns<S: Simd, V: SimdInt<S, Element = i32>, const N: usize>(
+    simd: S,
     src: &[i32],
     out: &mut [i32],
     kernel: &[[i32; N]; N],
@@ -316,23 +355,23 @@ fn kernel_columns<const N: usize, const LANES: usize>(
     dct: bool,
     pass: ColumnPass,
 ) {
+    let lanes = V::LEN;
     let (lo, hi) = transform_clip_bounds(true, pass.bit_depth);
+    let (lo, hi) = (V::splat(simd, lo), V::splat(simd, hi));
     let shift = u32::from(pass.shift).min(i32::BITS - 1);
-    let round_shift = Simd::<i32, LANES>::splat(shift as i32);
-    let round_add = Simd::<i32, LANES>::splat(((1u32 << shift) >> 1) as i32);
-    let zero = Simd::<i32, LANES>::splat(0);
-    let mut emit = |index: usize, value: Simd<i32, LANES>| {
-        let rounded = (value + round_add) >> round_shift;
-        let clamped = rounded.simd_clamp(Simd::splat(lo), Simd::splat(hi));
+    let round_add = ((1u32 << shift) >> 1) as i32;
+    let zero = V::splat(simd, 0);
+    let mut emit = |index: usize, value: V| {
+        let rounded = (value + round_add) >> shift;
         let start = index * pass.stride;
-        if let Some(dst) = out.get_mut(start..start + LANES) {
-            dst.copy_from_slice(&clamped.to_array()); // splot-copy-ok: a column lane group
+        if let Some(dst) = out.get_mut(start..start + lanes) {
+            rounded.max(lo).min(hi).store_slice(dst);
         }
     };
     let coeff_at = |row: usize| {
         let start = row * pass.stride;
-        src.get(start..start + LANES)
-            .map(Simd::<i32, LANES>::from_slice)
+        src.get(start..start + lanes)
+            .map(|lanes| V::from_slice(simd, lanes))
     };
     let mask = if N >= 32 {
         pass.nonzero_rows
@@ -352,7 +391,7 @@ fn kernel_columns<const N: usize, const LANES: usize>(
                         break;
                     };
                     for (slot, &k) in half.iter_mut().zip(&kernel[row][base..]) {
-                        *slot += Simd::splat(k) * coeff;
+                        *slot += coeff * k;
                     }
                 }
             }
@@ -373,7 +412,7 @@ fn kernel_columns<const N: usize, const LANES: usize>(
             break;
         };
         for (slot, &k) in acc.iter_mut().zip(kernel[row].iter()) {
-            *slot += Simd::splat(k) * coeff;
+            *slot += coeff * k;
         }
     }
     for index in 0..N {
