@@ -13,9 +13,9 @@ use crate::intra_dc_math::{DIV_LUT_BITS, IntraLaneSample, resolve_divisor_32, ro
 use crate::intra_directional_angle::{
     DR_INTRA_DERIVATIVE, ZONE_1_MAX, ZONE_3_INDEX_BASE, ZONE_3_MIN,
 };
+use crate::intra_ibp_dc::blend_ibp_lanes;
 use crate::{ReconError, ReconSample, Result};
-use std::simd::Simd;
-use std::simd::num::SimdUint;
+use fearless_simd::{Level, Simd, SimdBase, dispatch, u16x16};
 use std::sync::OnceLock;
 
 const IBP_WEIGHT_SIZE_LOG2: u32 = 4;
@@ -171,11 +171,27 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
     if width <= 64 && height <= 64 && width.is_multiple_of(4) {
         let (primary, second) = (&mut primary[..needed], &second[..needed]);
         if let (Some(primary), Some(second)) = (T::u16_slice_mut(primary), T::u16_slice(second)) {
-            blend_rows_lanes(weights, zone1, (c_shift, r_shift), width, primary, second);
+            blend_rows_lanes(
+                weights,
+                zone1,
+                (c_shift, r_shift),
+                width,
+                true,
+                primary,
+                second,
+            );
             return Ok(());
         }
         if let (Some(primary), Some(second)) = (T::u8_slice_mut(primary), T::u8_slice(second)) {
-            blend_rows_lanes(weights, zone1, (c_shift, r_shift), width, primary, second);
+            blend_rows_lanes(
+                weights,
+                zone1,
+                (c_shift, r_shift),
+                width,
+                false,
+                primary,
+                second,
+            );
             return Ok(());
         }
     }
@@ -210,64 +226,84 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
     Ok(())
 }
 
-/// The lane form of the blend: each row's weights expand once per weight row
-/// and the samples blend in `u32` lanes. Every `(row, column) >> shift` index
+/// The lane form of the blend over `width`-sample rows, 16 lanes at a time:
+/// 16 columns of one row, or `16 / w` rows of a narrower block. The weights of
+/// each distinct weight row expand once. Every `(row, column) >> shift` index
 /// is below `IBP_WEIGHT_SIZE` because the shifts scale a side of at most 64.
 #[inline(never)]
 fn blend_rows_lanes<O: IntraLaneSample>(
     weights: &IbpWeights,
     zone1: bool,
-    (c_shift, r_shift): (u32, u32),
+    shifts: (u32, u32),
     width: usize,
+    wide: bool,
     primary: &mut [O],
     second: &[O],
 ) {
-    let mut row_weights = [0u16; 64];
-    let mut last_row_idx = usize::MAX;
-    for (row, (primary_row, second_row)) in primary
-        .chunks_exact_mut(width)
-        .zip(second.chunks_exact(width))
-        .enumerate()
-    {
-        let row_idx = (row as u32 >> r_shift) as usize & (IBP_WEIGHT_SIZE - 1);
-        if row_idx != last_row_idx {
-            last_row_idx = row_idx;
-            for (column, slot) in row_weights.iter_mut().take(width).enumerate() {
-                let col_idx = (column as u32 >> c_shift) as usize & (IBP_WEIGHT_SIZE - 1);
-                *slot = if zone1 {
-                    weights[row_idx][col_idx]
-                } else {
-                    weights[col_idx][row_idx]
-                };
-            }
-        }
-        if width.is_multiple_of(8) {
-            blend_row_lanes::<O, 8>(primary_row, second_row, &row_weights[..width]);
-        } else {
-            blend_row_lanes::<O, 4>(primary_row, second_row, &row_weights[..width]);
-        }
-    }
+    dispatch!(Level::baseline(), simd => blend_rows(simd, weights, zone1, shifts, width, wide, primary, second));
 }
 
-fn blend_row_lanes<O: IntraLaneSample, const LANES: usize>(
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn blend_rows<S: Simd, O: IntraLaneSample>(
+    simd: S,
+    weights: &IbpWeights,
+    zone1: bool,
+    (c_shift, r_shift): (u32, u32),
+    width: usize,
+    wide: bool,
     primary: &mut [O],
     second: &[O],
-    weights: &[u16],
 ) {
-    for ((target, source), weight) in primary
-        .as_chunks_mut::<LANES>()
+    let rows_per_group = (16 / width).max(1);
+    let height = primary.len() / width;
+    let mut expanded = [[0u16; 64]; IBP_WEIGHT_SIZE];
+    for (row_idx, row) in expanded
+        .iter_mut()
+        .enumerate()
+        .take(((height - 1) >> r_shift) + 1)
+    {
+        for (column, slot) in row.iter_mut().take(width).enumerate() {
+            let col_idx = (column as u32 >> c_shift) as usize & (IBP_WEIGHT_SIZE - 1);
+            *slot = if zone1 {
+                weights[row_idx][col_idx]
+            } else {
+                weights[col_idx][row_idx]
+            };
+        }
+    }
+    let row_weights = |row: usize| &expanded[(row >> r_shift) & (IBP_WEIGHT_SIZE - 1)];
+    let mut group = [0u16; 16];
+    for (index, (target, source)) in primary
+        .as_chunks_mut::<16>()
         .0
         .iter_mut()
-        .zip(second.as_chunks::<LANES>().0)
-        .zip(weights.as_chunks::<LANES>().0)
+        .zip(second.as_chunks::<16>().0)
+        .enumerate()
     {
-        let s = Simd::from_array(*weight).cast::<u32>();
-        let p = O::load(target).cast::<u32>();
-        let q = O::load(source).cast::<u32>();
-        let sum = p * s + q * (Simd::splat(u32::from(IBP_WEIGHT_MAX)) - s);
-        let blended =
-            (sum + Simd::splat(1 << (IBP_WEIGHT_SHIFT - 1))) >> u32::from(IBP_WEIGHT_SHIFT);
-        O::store(blended.cast::<u16>().as_array(), target);
+        let first = index * 16;
+        let row = first / width;
+        let weight = if width >= 16 {
+            let column = first % width;
+            u16x16::from_slice(simd, &row_weights(row)[column..column + 16])
+        } else {
+            for (r, lanes) in group
+                .chunks_exact_mut(width)
+                .enumerate()
+                .take(rows_per_group)
+            {
+                lanes.copy_from_slice(&row_weights(row + r)[..width]); // splot-copy-ok: expand IBP weights
+            }
+            u16x16::from_slice(simd, &group)
+        };
+        let blended = blend_ibp_lanes(
+            simd,
+            wide,
+            O::load16(simd, target),
+            O::load16(simd, source),
+            weight,
+        );
+        O::store16(simd, blended, target);
     }
 }
 

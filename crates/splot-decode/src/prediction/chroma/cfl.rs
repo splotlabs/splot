@@ -10,9 +10,9 @@
 //! `DECODE-GENERAL-INTRA-CFL-NON-420`,
 //! `DECODE-MHCCP-FRAME-EDGE-REFERENCE-EXTENT`.
 
-use std::simd::cmp::{SimdOrd, SimdPartialOrd};
-use std::simd::num::{SimdInt, SimdUint};
-use std::simd::{Select, Simd, ToBytes, simd_swizzle};
+use fearless_simd::{
+    Bytes as _, Level, Select as _, Simd, SimdBase, dispatch, i32x8, u16x16, u32x8,
+};
 
 use splot_recon::math::{approx_divide, resolve_division, round2_signed_i32};
 use splot_recon::mhccp::{MhccpPredictor, MhccpRefs, derive_mhccp_params};
@@ -423,28 +423,38 @@ fn cfl_predict(dc: i32, alpha_q3: i32, max: i32, ac: i32) -> i32 {
 /// rounds the magnitude, so each lane rounds `|alpha * L|` and restores the
 /// sign.
 #[inline(never)]
-fn cfl_predict_lanes<S: CflLaneSample>(
+fn cfl_predict_lanes<P: CflLaneSample>(
     dc: i32,
     alpha_q3: i32,
     max: i32,
     luma_ac: &[i32],
-    out: &mut [S],
+    out: &mut [P],
+) {
+    dispatch!(Level::baseline(), simd => cfl_predict_groups(simd, dc, alpha_q3, max, luma_ac, out));
+}
+
+#[inline]
+fn cfl_predict_groups<S: Simd, P: CflLaneSample>(
+    simd: S,
+    dc: i32,
+    alpha_q3: i32,
+    max: i32,
+    luma_ac: &[i32],
+    out: &mut [P],
 ) {
     const LANES: usize = 8;
     let mut groups = out.chunks_exact_mut(LANES);
     let mut acs = luma_ac.chunks_exact(LANES);
+    let zero = i32x8::splat(simd, 0);
     for (out, ac) in groups.by_ref().zip(acs.by_ref()) {
-        let scaled = Simd::<i32, LANES>::from_slice(ac) * Simd::splat(alpha_q3);
-        let rounded =
-            (scaled.abs() + Simd::splat(1 << (CFL_ALPHA_SHIFT - 1))) >> CFL_ALPHA_SHIFT as i32;
-        let signed = scaled.simd_lt(Simd::splat(0)).select(-rounded, rounded);
-        let predicted = (Simd::splat(dc) + signed)
-            .simd_max(Simd::splat(0))
-            .simd_min(Simd::splat(max));
-        S::store8(out, predicted);
+        let scaled = i32x8::from_slice(simd, ac) * alpha_q3;
+        let rounded = (scaled.abs() + (1 << (CFL_ALPHA_SHIFT - 1))) >> CFL_ALPHA_SHIFT;
+        let signed = scaled.simd_lt(zero).select(zero - rounded, rounded);
+        let predicted = (signed + dc).max(0).min(max);
+        P::store8(simd, out, predicted);
     }
     for (slot, &ac) in groups.into_remainder().iter_mut().zip(acs.remainder()) {
-        *slot = S::from_clipped(cfl_predict(dc, alpha_q3, max, ac));
+        *slot = P::from_clipped(cfl_predict(dc, alpha_q3, max, ac));
     }
 }
 
@@ -568,7 +578,6 @@ fn fill_cfl_luma_ac_420<const F: usize, S: CflLaneSample>(
     output.resize(sample_count, 0);
     let max_x = plane_width - 1;
     let max_y = plane_height - 1;
-    let average = Simd::<i32, 8>::splat(average_q3);
     let weights = CFL_FILTERS_420[F];
     for row in 0..height {
         let Some(chroma_y) = y.checked_add(row) else {
@@ -599,43 +608,45 @@ fn fill_cfl_luma_ac_420<const F: usize, S: CflLaneSample>(
             *slot = samples;
         }
         let out = &mut output[row * width..(row + 1) * width];
-        let mut col = 0usize;
-        while col < width {
-            let Some(chroma_x) = x.checked_add(col) else {
-                return false;
-            };
+        let Some(last_x) = x.checked_add(width) else {
+            return false;
+        };
+        let sample = |chroma_x: usize, clamp_x: bool| {
             let luma_x = clamped_cfl_luma_coordinate(chroma_x, 1, max_x);
-            let offset_in_64 = luma_x & 63;
-            if col + 8 <= width
-                && col != 0
-                && luma_x > 0
-                && luma_x + 15 < plane_width
-                && offset_in_64 != 0
-                && offset_in_64 + 14 < 64
-            {
-                let samples = cfl_420_chunk::<F, _>(rows, luma_x) - average;
-                out[col..col + 8].copy_from_slice(&samples.to_array()); // splot-copy-ok: publish eight CfL luma-AC samples
-                col += 8;
-                continue;
-            }
-            let clamp_x = col == 0 || luma_x.is_multiple_of(64);
-            let columns = [
-                if clamp_x {
-                    luma_x
-                } else {
-                    luma_x.saturating_sub(1)
-                },
-                luma_x,
-                luma_x.saturating_add(1).min(max_x),
-            ];
+            let left = if clamp_x {
+                luma_x
+            } else {
+                luma_x.saturating_sub(1)
+            };
+            let columns = [left, luma_x, luma_x.saturating_add(1).min(max_x)];
             let mut total = 0;
             for (row, weights) in rows.iter().zip(weights) {
                 for (&column, weight) in columns.iter().zip(weights) {
                     total += weight * i32::from(row[column].into());
                 }
             }
-            out[col] = total - average_q3;
+            total - average_q3
+        };
+        let mut col = 0usize;
+        while col < width {
+            let luma_x = clamped_cfl_luma_coordinate(x + col, 1, max_x);
+            if luma_x > 0 && luma_x + 15 < plane_width {
+                let samples = cfl_420_chunk8::<F, _>(rows, luma_x);
+                let take = (width - col).min(8);
+                for (slot, sample) in out[col..col + take].iter_mut().zip(samples) {
+                    *slot = sample - average_q3;
+                }
+                col += take;
+                continue;
+            }
+            out[col] = sample(x + col, col == 0 || luma_x.is_multiple_of(64));
             col += 1;
+        }
+        out[0] = sample(x, true);
+        for chroma_x in ((x / 32 + 1) * 32..last_x).step_by(32) {
+            if 2 * chroma_x <= max_x {
+                out[chroma_x - x] = sample(chroma_x, true);
+            }
         }
     }
     true
@@ -1021,10 +1032,14 @@ fn mhccp_references<T: ReconSample>(
             .filter(|&cols| cols > 0)
             .and_then(|_| chroma_plane.row(ref_chroma_y.min(chroma_plane.height.saturating_sub(1))))
         {
-            let last = samples.len() - 1;
-            for col in 1..chroma_cols {
-                chroma[row * ref_width + col] = samples[(x + col - left).min(last)].to_u16();
+            let fill = samples[samples.len() - 1].to_u16();
+            let run = &mut chroma[row * ref_width + 1..row * ref_width + chroma_cols];
+            let source = samples.get(x + 1 - left..).unwrap_or_default();
+            let copied = source.len().min(run.len());
+            for (slot, sample) in run.iter_mut().zip(&source[..copied]) {
+                *slot = sample.to_u16();
             }
+            run[copied..].fill(fill);
         } else {
             for col in 1..chroma_cols {
                 chroma[row * ref_width + col] =
@@ -1329,21 +1344,29 @@ enum CflLaneRows<'a> {
 
 /// A luma sample type the CfL lane forms load as `u16` lanes.
 trait CflLaneSample: Copy + Into<u16> {
-    fn load<const N: usize>(row: &[Self], start: usize) -> Simd<u16, N>;
+    /// Loads `row[start..start + 16]`.
+    fn load16<S: Simd>(simd: S, row: &[Self], start: usize) -> u16x16<S>;
     /// Stores eight samples already clipped to the sample range.
-    fn store8(out: &mut [Self], v: Simd<i32, 8>);
+    fn store8<S: Simd>(simd: S, out: &mut [Self], v: i32x8<S>);
     fn from_clipped(v: i32) -> Self;
 }
 
 impl CflLaneSample for u8 {
     #[inline]
-    fn load<const N: usize>(row: &[Self], start: usize) -> Simd<u16, N> {
-        Simd::<u8, N>::from_slice(&row[start..start + N]).cast()
+    fn load16<S: Simd>(simd: S, row: &[Self], start: usize) -> u16x16<S> {
+        let (low, high) = simd.widen_u8x16(fearless_simd::u8x16::from_slice(
+            simd,
+            &row[start..start + 16],
+        ));
+        simd.combine_u16x8(low, high)
     }
 
     #[inline]
-    fn store8(out: &mut [Self], v: Simd<i32, 8>) {
-        v.cast::<u8>().copy_to_slice(out);
+    fn store8<S: Simd>(simd: S, out: &mut [Self], v: i32x8<S>) {
+        let (low, high) = simd.split_u32x8(v.bitcast());
+        let words = simd.relaxed_narrow_u32x4(low, high);
+        let bytes: [u8; 16] = simd.relaxed_narrow_u16x8(words, words).into();
+        out[..8].copy_from_slice(&bytes[..8]); // splot-copy-ok: publish eight CfL samples
     }
 
     #[inline]
@@ -1354,13 +1377,15 @@ impl CflLaneSample for u8 {
 
 impl CflLaneSample for u16 {
     #[inline]
-    fn load<const N: usize>(row: &[Self], start: usize) -> Simd<u16, N> {
-        Simd::from_slice(&row[start..start + N])
+    fn load16<S: Simd>(simd: S, row: &[Self], start: usize) -> u16x16<S> {
+        u16x16::from_slice(simd, &row[start..start + 16])
     }
 
     #[inline]
-    fn store8(out: &mut [Self], v: Simd<i32, 8>) {
-        v.cast::<u16>().copy_to_slice(out);
+    fn store8<S: Simd>(simd: S, out: &mut [Self], v: i32x8<S>) {
+        let (low, high) = simd.split_u32x8(v.bitcast());
+        simd.relaxed_narrow_u32x4(low, high)
+            .store_slice(&mut out[..8]);
     }
 
     #[inline]
@@ -1377,42 +1402,43 @@ fn cfl_q3_lanes<T: ReconSample, S: CflLaneSample>(
     luma: &CflLuma<'_, T>,
     rows: [&[S]; 3],
     chroma_x0: usize,
+    done: usize,
+    out: &mut [i32],
+) -> usize {
+    dispatch!(Level::baseline(), simd => cfl_q3_groups(simd, luma, rows, chroma_x0, done, out))
+}
+
+#[inline]
+fn cfl_q3_groups<S: Simd, T: ReconSample, P: CflLaneSample>(
+    simd: S,
+    luma: &CflLuma<'_, T>,
+    rows: [&[P]; 3],
+    chroma_x0: usize,
     mut done: usize,
     out: &mut [i32],
 ) -> usize {
     const LANES: usize = 8;
     let width = luma.plane.width;
-    while done + LANES <= out.len() && 2 * (chroma_x0 + done) + 2 * LANES < width {
+    while done + 4 <= out.len() && 2 * (chroma_x0 + done) + 2 * LANES < width {
         let luma_x = 2 * (chroma_x0 + done);
         let acc = match (luma.sub_y, luma.filter_index) {
-            (1, Some(0)) => cfl_420_chunk::<0, S>(rows, luma_x),
-            (1, Some(1)) => cfl_420_chunk::<1, S>(rows, luma_x),
-            (1, Some(2)) => cfl_420_chunk::<2, S>(rows, luma_x),
+            (1, Some(0)) => cfl_420_chunk::<0, S, P>(simd, rows, luma_x),
+            (1, Some(1)) => cfl_420_chunk::<1, S, P>(simd, rows, luma_x),
+            (1, Some(2)) => cfl_420_chunk::<2, S, P>(simd, rows, luma_x),
             _ => {
-                let mut acc = Simd::<i32, LANES>::splat(0);
+                let mut acc = i32x8::splat(simd, 0);
                 for &(dx, dy, weight) in &luma.taps[..luma.tap_count] {
                     let start = luma_x.wrapping_add_signed(dx);
-                    let row = rows[(dy + 1) as usize];
-                    let v = S::load::<16>(row, start);
-                    let even = simd_swizzle!(v, [0, 2, 4, 6, 8, 10, 12, 14]).cast::<i32>();
-                    acc += even * Simd::splat(weight);
+                    let v = P::load16(simd, rows[(dy + 1) as usize], start).bitcast::<u32x8<S>>();
+                    acc += (v & 0xffff).bitcast::<i32x8<S>>() * weight;
                 }
                 acc
             }
         };
-        out[done..done + LANES].copy_from_slice(&acc.to_array()); // splot-copy-ok: publish eight CfL luma samples
-        done += LANES;
-    }
-    while done + 4 <= out.len() && 2 * (chroma_x0 + done) + 8 < width {
-        let luma_x = 2 * (chroma_x0 + done);
-        let mut acc = Simd::<i32, 4>::splat(0);
-        for &(dx, dy, weight) in &luma.taps[..luma.tap_count] {
-            let start = luma_x.wrapping_add_signed(dx);
-            let v = S::load::<8>(rows[(dy + 1) as usize], start);
-            acc += simd_swizzle!(v, [0, 2, 4, 6]).cast::<i32>() * Simd::splat(weight);
-        }
-        out[done..done + 4].copy_from_slice(&acc.to_array()); // splot-copy-ok: publish four CfL luma samples
-        done += 4;
+        let take = (out.len() - done).min(LANES) & !3;
+        let lanes: [i32; LANES] = acc.into();
+        out[done..done + take].copy_from_slice(&lanes[..take]); // splot-copy-ok: publish CfL luma samples
+        done += take;
     }
     done
 }
@@ -1459,14 +1485,18 @@ fn cfl_420_column_sum_in<T: ReconSample, S: CflLaneSample>(
     if luma.sub_x != 1 || luma.sub_y != 1 || luma_x == 0 || luma_x + 2 >= plane.width {
         return None;
     }
-    let tap_row = |y: usize| {
+    let tap_row = |y: usize, weights: [i32; 3]| {
         let local = y.checked_sub(plane.origin_y)?;
         let start = (local < plane.stored_rows).then_some(local * plane.stride + luma_x - 1)?;
-        let taps = samples.get(start..start + 4)?;
-        Some(S::load::<4>(taps, 0).cast::<i32>())
+        let taps = samples.get(start..start + 3)?;
+        Some(
+            taps.iter()
+                .zip(weights)
+                .map(|(&tap, weight)| weight * i32::from(tap.into()))
+                .sum::<i32>(),
+        )
     };
-    let weights = weights.map(|[left, center, right]| Simd::from_array([left, center, right, 0]));
-    let mut acc = Simd::<i32, 4>::splat(0);
+    let mut acc = 0i32;
     for k in 0..count {
         let luma_y = clamped_cfl_luma_coordinate(chroma_y0.checked_add(k * step)?, 1, max_y);
         let top = if k == 0 {
@@ -1478,10 +1508,10 @@ fn cfl_420_column_sum_in<T: ReconSample, S: CflLaneSample>(
             .into_iter()
             .zip(weights)
         {
-            acc += tap_row(y)? * weights;
+            acc += tap_row(y, weights)?;
         }
     }
-    Some(acc.reduce_sum() as u32)
+    Some(acc as u32)
 }
 
 fn cfl_420_left_accumulate<T: ReconSample>(
@@ -1543,13 +1573,17 @@ fn cfl_420_left_accumulate_in<T: ReconSample, S: CflLaneSample>(
     if luma.sub_x != 1 || luma.sub_y != 1 || luma_x == 0 || luma_x + 2 >= plane.width {
         return None;
     }
-    let tap_row = |y: usize| {
+    let tap_row = |y: usize, weights: [i32; 3]| {
         let local = y.checked_sub(plane.origin_y)?;
         let start = (local < plane.stored_rows).then_some(local * plane.stride + luma_x - 1)?;
-        let taps = luma_samples.get(start..start + 4)?;
-        Some(S::load::<4>(taps, 0).cast::<i32>())
+        let taps = luma_samples.get(start..start + 3)?;
+        Some(
+            taps.iter()
+                .zip(weights)
+                .map(|(&tap, weight)| weight * i32::from(tap.into()))
+                .sum::<i32>(),
+        )
     };
-    let weights = weights.map(|[left, center, right]| Simd::from_array([left, center, right, 0]));
 
     let chroma_local_origin = chroma_plane.origin_y;
     let chroma_stride = chroma_plane.stride;
@@ -1573,14 +1607,14 @@ fn cfl_420_left_accumulate_in<T: ReconSample, S: CflLaneSample>(
         } else {
             luma_y.saturating_sub(1)
         };
-        let mut acc = Simd::<i32, 4>::splat(0);
+        let mut acc = 0i32;
         for (sy, w) in [top, luma_y, (luma_y + 1).min(max_y)]
             .into_iter()
             .zip(weights)
         {
-            acc += tap_row(sy)? * w;
+            acc += tap_row(sy, w)?;
         }
-        let luma_val = acc.reduce_sum() >> 3;
+        let luma_val = acc >> 3;
 
         let cy = chroma_y.min(max_chroma_y);
         let clocal = cy.checked_sub(chroma_local_origin)?;
@@ -1599,38 +1633,52 @@ fn cfl_420_left_accumulate_in<T: ReconSample, S: CflLaneSample>(
     Some((sum_x, sum_y, sum_xy, sum_xx, count))
 }
 
+/// [`cfl_420_chunk`] as an array.
+#[inline]
+fn cfl_420_chunk8<const F: usize, P: CflLaneSample>(rows: [&[P]; 3], luma_x: usize) -> [i32; 8] {
+    dispatch!(Level::baseline(), simd => cfl_420_chunk::<F, _, P>(simd, rows, luma_x).into())
+}
+
 /// Eight § 7.13.5 4:2:0 Q3 luma samples of filter `F` from luma column
 /// `luma_x` (at least 1, with 17 more samples in each row). Each `u32` lane
 /// of a row read from `luma_x - 1` holds the left and centre taps, and one
 /// from `luma_x` holds the centre and right taps.
 #[allow(clippy::inline_always, reason = "measured: unrolls the constant taps")]
 #[inline(always)]
-fn cfl_420_chunk<const F: usize, S: CflLaneSample>(rows: [&[S]; 3], luma_x: usize) -> Simd<i32, 8> {
+fn cfl_420_chunk<const F: usize, S: Simd, P: CflLaneSample>(
+    simd: S,
+    rows: [&[P]; 3],
+    luma_x: usize,
+) -> i32x8<S> {
     let [top, middle, bottom] = CFL_FILTERS_420[F];
-    cfl_420_row_taps(rows[0], luma_x, top)
-        + cfl_420_row_taps(rows[1], luma_x, middle)
-        + cfl_420_row_taps(rows[2], luma_x, bottom)
+    cfl_420_row_taps(simd, rows[0], luma_x, top)
+        + cfl_420_row_taps(simd, rows[1], luma_x, middle)
+        + cfl_420_row_taps(simd, rows[2], luma_x, bottom)
 }
 
 /// One luma row's left, centre and right taps of [`cfl_420_chunk`].
 #[allow(clippy::inline_always, reason = "measured: folds the constant weights")]
 #[inline(always)]
-fn cfl_420_row_taps<S: CflLaneSample>(row: &[S], luma_x: usize, weights: [i32; 3]) -> Simd<i32, 8> {
+fn cfl_420_row_taps<S: Simd, P: CflLaneSample>(
+    simd: S,
+    row: &[P],
+    luma_x: usize,
+    weights: [i32; 3],
+) -> i32x8<S> {
     let pairs = |start: usize| {
-        let v = S::load::<16>(row, start);
-        let pairs = Simd::<u32, 8>::from_le_bytes(v.to_le_bytes());
+        let pairs = P::load16(simd, row, start).bitcast::<u32x8<S>>();
         (
-            (pairs & Simd::splat(0xffff)).cast::<i32>(),
-            (pairs >> 16).cast::<i32>(),
+            (pairs & 0xffff).bitcast::<i32x8<S>>(),
+            (pairs >> 16).bitcast::<i32x8<S>>(),
         )
     };
-    let mut acc = Simd::splat(0);
+    let mut acc = i32x8::splat(simd, 0);
     if weights[1] != 0 || weights[2] != 0 {
         let (center, right) = pairs(luma_x);
-        acc = center * Simd::splat(weights[1]) + right * Simd::splat(weights[2]);
+        acc = center * weights[1] + right * weights[2];
     }
     if weights[0] != 0 {
-        acc += pairs(luma_x - 1).0 * Simd::splat(weights[0]);
+        acc += pairs(luma_x - 1).0 * weights[0];
     }
     acc
 }
