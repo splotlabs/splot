@@ -13,8 +13,8 @@ impl TileBlockDecodedState {
     }
 
     fn force_decoded(&mut self, plane: usize, x: isize, y: isize) {
-        if let Some(index) = self.planes[plane].index(x, y) {
-            self.planes[plane].cells[index] = true;
+        if let Some((row, bit)) = self.planes[plane].index(x, y) {
+            set_run(&mut self.planes[plane].rows[row], bit, bit + 1);
         }
     }
 }
@@ -117,6 +117,17 @@ fn set_block_marks_thin_subsampled_chroma_transform_unit() {
 }
 
 #[test]
+fn wide_superblock_runs_cross_bit_row_words() {
+    let mut state = TileBlockDecodedState::new(1, 0, 0, 64, 128, 64).unwrap();
+    state.clear_superblock(0, 0);
+    assert_eq!(state.count_top_right_avail(0, 32, 0, 64), 32);
+    state.set_block(0, 0, 60, 70, 1);
+    assert!(state.flag(0, 60, 0) && state.flag(0, 128, 0) && !state.flag(0, 59, 0));
+    assert_eq!(state.count_top_right_avail(0, 0, 1, 60), 60);
+    assert_eq!(state.count_top_right_avail(0, 30, 1, 30), 30);
+}
+
+#[test]
 fn count_bottom_left_scans_left_column_below() {
     let mut state = TileBlockDecodedState::new(3, 1, 1, SB_SIZE4, 16, 16).unwrap();
     state.clear_superblock(0, 0);
@@ -148,8 +159,8 @@ fn clear_overrides_below_left_corner_for_interior_superblock() {
 fn tile_slot_reset_and_commit_copy_reuse_grids_without_stale_flags() {
     let mut prepass = TileBlockDecodedState::new(3, 1, 1, 32, 64, 64).unwrap();
     let mut commit = prepass.clone();
-    let prepass_addresses = prepass.planes.each_ref().map(|plane| plane.cells.as_ptr());
-    let commit_addresses = commit.planes.each_ref().map(|plane| plane.cells.as_ptr());
+    let prepass_addresses = prepass.planes.each_ref().map(|plane| plane.rows.as_ptr());
+    let commit_addresses = commit.planes.each_ref().map(|plane| plane.rows.as_ptr());
     for iteration in 0..1200 {
         let size = if iteration % 2 == 0 { 16 } else { 32 };
         commit.clear_superblock(0, 0);
@@ -161,11 +172,11 @@ fn tile_slot_reset_and_commit_copy_reuse_grids_without_stale_flags() {
             TileBlockDecodedState::new(3, 1, 1, size, 48, 48).unwrap()
         );
         assert_eq!(
-            prepass.planes.each_ref().map(|plane| plane.cells.as_ptr()),
+            prepass.planes.each_ref().map(|plane| plane.rows.as_ptr()),
             prepass_addresses
         );
         assert_eq!(
-            commit.planes.each_ref().map(|plane| plane.cells.as_ptr()),
+            commit.planes.each_ref().map(|plane| plane.rows.as_ptr()),
             commit_addresses
         );
         assert!(!commit.flag(0, 0, 0));

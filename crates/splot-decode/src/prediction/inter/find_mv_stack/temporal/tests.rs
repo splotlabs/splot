@@ -127,7 +127,7 @@ fn odd_origin_warp_block_stores_round2_cells_sampled_at_its_own_rows() {
     };
     let mut cells = Vec::new();
     visit_temporal_block_cells(block, refs, 16, 16, |y8, x8, cell, _| {
-        cells.push((y8, x8, cell.mvs[0]));
+        cells.extend(x8.map(|x8| (y8, x8, cell.mvs[0])));
     });
     let expected: Vec<_> = [(1, 2, 3, 5), (1, 3, 3, 7), (2, 2, 5, 5), (2, 3, 5, 7)]
         .map(|(y8, x8, row, col)| {

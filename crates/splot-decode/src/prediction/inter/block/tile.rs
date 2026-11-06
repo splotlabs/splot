@@ -434,18 +434,9 @@ impl<'payload> TileParser<'payload> {
                         &mut self.intrabc_state,
                         &mut self.output.segment_id_state,
                         &mut self.mv_grid,
-                        context.params.tip_ref_pair,
                         &mut self.y_smooth,
                         &mut self.chroma_smooth,
-                        context.params.sb_h4,
-                        context.params.mi_rows,
-                        context.params.mi_cols,
-                        context.params.max_drl_bits_minus_1,
-                        context.params.frame_interpolation_filter,
-                        context.params.residual_tool_policy,
-                        context.params.num_total_refs,
-                        context.params.reference_select,
-                        context.params.num_same_ref_compound,
+                        &context.params,
                         joint_modes,
                         uses_mrls,
                         use_dip,
@@ -456,17 +447,8 @@ impl<'payload> TileParser<'payload> {
                         &mut self.filter_records.chroma_deblock_blocks,
                         &mut self.filter_records.tx_skip_records,
                         &mut self.residual_planes,
-                        context.params.luma_use_tcq,
-                        context.params.residual_use_ddt,
                         context.ref_frame_idx,
                         context.reference,
-                        context.params.bit_depth,
-                        context.params.enable_adaptive_mvd,
-                        context.params.allow_bawp,
-                        context.params.allow_warpmv_mode,
-                        context.params.frame_is_switch,
-                        context.params.current_order_hint,
-                        context.params.temporal_first_frame,
                         tile_offset,
                     )?;
                     push_leaf_entry(
@@ -748,7 +730,9 @@ fn push_leaf_entry(
 ) {
     let origin = publication.superblock_origin();
     let (state, reset) = match resolve {
-        LeafResolveRecord::Reseed(command) => (ReconEntryState::Command(command), LeafReset::Reseed),
+        LeafResolveRecord::Reseed(command) => {
+            (ReconEntryState::Command(command), LeafReset::Reseed)
+        }
         LeafResolveRecord::NonInter { command, n4w, n4h } => (
             ReconEntryState::Command(command),
             LeafReset::NonInter { n4w, n4h },

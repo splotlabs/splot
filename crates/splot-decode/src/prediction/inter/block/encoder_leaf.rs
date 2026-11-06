@@ -1363,9 +1363,7 @@ impl EncoderInterResidual {
     }
 
     fn range(&self) -> InterResidual {
-        InterResidual {
-            block_range: 0..self.blocks.len(),
-        }
+        InterResidual::new(0..self.blocks.len())
     }
 }
 
