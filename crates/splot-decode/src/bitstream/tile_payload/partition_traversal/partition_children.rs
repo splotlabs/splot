@@ -11,16 +11,19 @@ use super::{
     TilePartitionTraversalError, valid_subsize,
 };
 
+/// The most child calls one § 5.20.3.1 partition makes.
+pub(crate) const MAX_CHILD_CALLS: usize = 4;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionChildCalls {
-    calls: [TilePartitionCall; 4],
+    calls: [TilePartitionCall; MAX_CHILD_CALLS],
     len: usize,
 }
 
 impl TilePartitionChildCalls {
     fn new(fill: TilePartitionCall) -> Self {
         Self {
-            calls: [fill; 4],
+            calls: [fill; MAX_CHILD_CALLS],
             len: 0,
         }
     }
@@ -39,8 +42,19 @@ impl TilePartitionChildCalls {
     }
 }
 
-struct ChildCallBuilder {
-    calls: TilePartitionChildCalls,
+/// Where a partition's child calls go, in syntax order.
+pub(crate) trait ChildCallSink {
+    fn push_call(&mut self, call: TilePartitionCall) -> Result<(), TilePartitionTraversalError>;
+}
+
+impl ChildCallSink for TilePartitionChildCalls {
+    fn push_call(&mut self, call: TilePartitionCall) -> Result<(), TilePartitionTraversalError> {
+        self.push(call)
+    }
+}
+
+struct ChildCallBuilder<'s, S: ChildCallSink> {
+    calls: &'s mut S,
     parent_size: Option<BlockSize>,
     inherited_chroma_ref: Option<ChromaRefGeometry>,
     chroma_offset: bool,
@@ -50,8 +64,9 @@ struct ChildCallBuilder {
     intra_region: bool,
 }
 
-impl ChildCallBuilder {
+impl<'s, S: ChildCallSink> ChildCallBuilder<'s, S> {
     fn new(
+        calls: &'s mut S,
         call: TilePartitionCall,
         partition: PartitionType,
         sub_size: BlockSize,
@@ -59,7 +74,7 @@ impl ChildCallBuilder {
         chroma_offset: bool,
     ) -> Self {
         Self {
-            calls: TilePartitionChildCalls::new(call),
+            calls,
             parent_size: Some(call.b_size),
             inherited_chroma_ref: Some(call.chroma_ref_geometry()),
             chroma_offset,
@@ -122,11 +137,7 @@ impl ChildCallBuilder {
             self.intra_region,
         );
         call.set_cfl_allowed_in_sdp(self.cfl_allowed_in_sdp);
-        self.calls.push(call)
-    }
-
-    fn finish(self) -> TilePartitionChildCalls {
-        self.calls
+        self.calls.push_call(call)
     }
 }
 
@@ -165,8 +176,8 @@ fn middle_partition_size(
     Ok(midsize)
 }
 
-fn push_two_way_children(
-    children: &mut ChildCallBuilder,
+fn push_two_way_children<S: ChildCallSink>(
+    children: &mut ChildCallBuilder<'_, S>,
     call: TilePartitionCall,
     sub_size: BlockSize,
     axis: ChildAxis,
@@ -178,8 +189,8 @@ fn push_two_way_children(
     children.push(r, c, sub_size, call.has_chroma)
 }
 
-fn push_split_children(
-    children: &mut ChildCallBuilder,
+fn push_split_children<S: ChildCallSink>(
+    children: &mut ChildCallBuilder<'_, S>,
     call: TilePartitionCall,
     sub_size: BlockSize,
     half_w: usize,
@@ -198,8 +209,8 @@ fn push_split_children(
     Ok(())
 }
 
-fn push_four_way_children(
-    children: &mut ChildCallBuilder,
+fn push_four_way_children<S: ChildCallSink>(
+    children: &mut ChildCallBuilder<'_, S>,
     call: TilePartitionCall,
     sub_size: BlockSize,
     axis: ChildAxis,
@@ -234,12 +245,27 @@ pub(crate) fn child_calls(
     frame: TilePartitionFrameFacts,
     chroma_offset: bool,
 ) -> Result<TilePartitionChildCalls, TilePartitionTraversalError> {
+    let mut calls = TilePartitionChildCalls::new(call);
+    child_calls_into(&mut calls, call, partition, sub_size, frame, chroma_offset)?;
+    Ok(calls)
+}
+
+/// Pushes `call`'s § 5.20.3.1 child calls onto `sink` in syntax order.
+#[inline]
+pub(crate) fn child_calls_into<S: ChildCallSink>(
+    sink: &mut S,
+    call: TilePartitionCall,
+    partition: PartitionType,
+    sub_size: BlockSize,
+    frame: TilePartitionFrameFacts,
+    chroma_offset: bool,
+) -> Result<(), TilePartitionTraversalError> {
     let num4x4wide = call.b_size.num_4x4_wide()?;
     let num4x4high = call.b_size.num_4x4_high()?;
     let half_w = num4x4wide >> 1;
     let half_h = num4x4high >> 1;
     let has_chroma_before_offset = call.has_chroma && !chroma_offset;
-    let mut children = ChildCallBuilder::new(call, partition, sub_size, frame, chroma_offset);
+    let mut children = ChildCallBuilder::new(sink, call, partition, sub_size, frame, chroma_offset);
     match partition {
         PartitionType::None => {}
         PartitionType::Horz => {
@@ -363,5 +389,5 @@ pub(crate) fn child_calls(
             )?;
         }
     }
-    Ok(children.finish())
+    Ok(())
 }
