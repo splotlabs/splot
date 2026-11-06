@@ -348,6 +348,7 @@ pub(super) fn predict<T: ReconSample>(
 
 /// The window of an unscaled block: its taps and the first source column
 /// and row each pass reads, with their counts.
+#[derive(Clone, Copy)]
 struct Layout {
     horizontal: Option<&'static Taps>,
     vertical: Option<&'static Taps>,
@@ -442,8 +443,8 @@ impl Layout {
 /// 16 columns and stores their COMPOUND_AVERAGE clipped to `max`, or returns
 /// `false` without writing when a window must be emulated or the cell is
 /// outside the vector subset.
-pub(super) fn small_compound<'a, T: ReconSample, O: ReconSample>(
-    references: [&ReferencePlaneView<'a, T>; 2],
+pub(super) fn small_compound<T: ReconSample, O: ReconSample>(
+    references: [&ReferencePlaneView<'_, T>; 2],
     params: [&SubpelPredictParams; 2],
     forward: i32,
     scratch: &mut [i16],
@@ -454,33 +455,48 @@ pub(super) fn small_compound<'a, T: ReconSample, O: ReconSample>(
     if w > 16 || w * h > 64 || output.len() < (h - 1) * stride + w {
         return false;
     }
-    let block = |reference: &ReferencePlaneView<'a, T>, params: &SubpelPredictParams| {
-        let params = plane_bounded(reference, params);
-        let layout = Layout::new(&params);
-        let len = stage_len(layout.rows, params.w, layout.vertical);
-        Some((layout.in_place(reference, &params)?, len))
-    };
-    let (Some((first, first_len)), Some((second, second_len))) = (
-        block(references[0], params[0]),
-        block(references[1], params[1]),
-    ) else {
-        return false;
-    };
-    let mut cell = [0; CELL_STAGE];
-    let stage = match scratch.get_mut(..first_len.max(second_len)) {
+    let bounded = [
+        plane_bounded(references[0], params[0]),
+        plane_bounded(references[1], params[1]),
+    ];
+    let layouts = [Layout::new(&bounded[0]), Layout::new(&bounded[1])];
+    let len = stage_len(layouts[0].rows, w, layouts[0].vertical).max(stage_len(
+        layouts[1].rows,
+        w,
+        layouts[1].vertical,
+    ));
+    let mut cell;
+    let stage = match scratch.get_mut(..len) {
         Some(stage) => stage,
-        None => &mut cell,
+        None => {
+            cell = [0; CELL_STAGE];
+            &mut cell[..]
+        }
     };
-    let as_u8 = |block: &Block<'a, T>| Some(block.with_source(T::u8_slice(block.source)?));
-    let as_u16 = |block: &Block<'a, T>| Some(block.with_source(T::u16_slice(block.source)?));
-    if let (Some(first), Some(second), Some(output)) =
-        (as_u8(&first), as_u8(&second), O::u8_slice_mut(output))
-    {
+    if let (Some(first), Some(second), Some(output)) = (
+        references[0].as_u8(),
+        references[1].as_u8(),
+        O::u8_slice_mut(output),
+    ) {
+        let (Some(first), Some(second)) = (
+            layouts[0].in_place(&first, &bounded[0]),
+            layouts[1].in_place(&second, &bounded[1]),
+        ) else {
+            return false;
+        };
         return super::eight_bit::compound([&first, &second], forward, stage, output, stride);
     }
-    if let (Some(first), Some(second), Some(output)) =
-        (as_u16(&first), as_u16(&second), O::u16_slice_mut(output))
-    {
+    if let (Some(first), Some(second), Some(output)) = (
+        references[0].as_u16(),
+        references[1].as_u16(),
+        O::u16_slice_mut(output),
+    ) {
+        let (Some(first), Some(second)) = (
+            layouts[0].in_place(&first, &bounded[0]),
+            layouts[1].in_place(&second, &bounded[1]),
+        ) else {
+            return false;
+        };
         let max = params[0].bit_depth.max_sample();
         return super::sixteen_bit::compound(
             [&first, &second],
@@ -503,8 +519,31 @@ fn unscaled_block<T: Sample>(
     mut sink: Sink<'_>,
     scratch: Option<&mut [i16]>,
 ) {
-    let (w, h) = (params.w, params.h);
     let layout = Layout::new(params);
+    let len = stage_len(layout.rows, params.w, layout.vertical);
+    let sink = &mut sink;
+    match scratch {
+        Some(scratch) if scratch.len() >= len => {
+            staged(view, params, &layout, sink, &mut scratch[..len]);
+        }
+        _ if len == 0 => staged(view, params, &layout, sink, &mut []),
+        _ => with_subpel_intermediate(len, |stage| staged(view, params, &layout, sink, stage)),
+    }
+}
+
+/// Predicts the block of `layout` in place, else from an emulated window.
+fn staged<T: Sample>(
+    view: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    layout: &Layout,
+    sink: &mut Sink<'_>,
+    stage: &mut [i16],
+) {
+    if let Some(block) = layout.in_place(view, params)
+        && kernels(&block, sink, stage)
+    {
+        return;
+    }
     let Layout {
         horizontal,
         vertical,
@@ -513,31 +552,8 @@ fn unscaled_block<T: Sample>(
         row,
         rows,
         ..
-    } = layout;
-    let stage_len = stage_len(rows, w, vertical);
-    let mut run = |block: &Block<'_, T>, stage: &mut [i16]| {
-        if super::eight_bit::predict(block, &mut sink, stage)
-            || super::sixteen_bit::predict(block, &mut sink, stage)
-        {
-            return true;
-        }
-        if block.remap.is_some() {
-            return false;
-        }
-        super::portable::predict(block, &mut sink, stage);
-        true
-    };
-    let mut scratch = scratch;
-    let mut run_staged = |block: &Block<'_, T>| match scratch.as_deref_mut() {
-        Some(scratch) if scratch.len() >= stage_len => run(block, &mut scratch[..stage_len]),
-        _ if stage_len == 0 => run(block, &mut []),
-        _ => with_subpel_intermediate(stage_len, |stage| run(block, stage)),
-    };
-    if let Some(block) = layout.in_place(view, params)
-        && run_staged(&block)
-    {
-        return;
-    }
+    } = *layout;
+    let (w, h) = (params.w, params.h);
     let stride = reach(w);
     let inside = (params.first_x - column).clamp(0, columns as i32) as usize
         ..(params.last_x - column + 1).clamp(0, columns as i32) as usize;
@@ -569,19 +585,38 @@ fn unscaled_block<T: Sample>(
             line[..start].fill(left);
             line[end..columns].fill(right);
         }
-        run_staged(&Block {
-            source: storage,
-            stride,
-            origin: 0,
-            top: 0,
-            rows: [0, rows as isize - 1],
-            w,
-            h,
-            horizontal,
-            vertical,
-            remap: None,
-        });
+        kernels(
+            &Block {
+                source: storage,
+                stride,
+                origin: 0,
+                top: 0,
+                rows: [0, rows as isize - 1],
+                w,
+                h,
+                horizontal,
+                vertical,
+                remap: None,
+            },
+            sink,
+            stage,
+        );
     });
+}
+
+/// Runs the first vector kernel that covers `block`; `false`, having
+/// written nothing, when none covers a remapped block.
+fn kernels<T: Sample>(block: &Block<'_, T>, sink: &mut Sink<'_>, stage: &mut [i16]) -> bool {
+    if super::eight_bit::predict(block, sink, stage)
+        || super::sixteen_bit::predict(block, sink, stage)
+    {
+        return true;
+    }
+    if block.remap.is_some() {
+        return false;
+    }
+    super::portable::predict(block, sink, stage);
+    true
 }
 
 /// The § 7.13.3.18 two-pass convolution sample by sample, for scaled
