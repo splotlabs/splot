@@ -40,7 +40,6 @@ use super::coeff_loop::{
     AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffBlockStartInput,
     NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
 };
-#[cfg(test)]
 use super::coeff_state::TransformCoeffBlockState;
 use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
 use super::{BlockSize, DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
@@ -1236,8 +1235,9 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     }
     let plane_tx_type =
         staged_transform_tool_plane_tx_type(geometry, is_inter, lossless, base_config)?;
-    let block = if use_fsc {
-        apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
+    let mut coeffs = TransformCoeffBlockState::empty();
+    if use_fsc {
+        coeffs = apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
             context,
             work_unit.cdf_mut().tile_cdfs_mut(),
             symbols,
@@ -1248,7 +1248,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
                 plane_tx_type: metadata.luma_tx_type,
             },
         )
-        .map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?
+        .map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
     } else {
         apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
             context,
@@ -1261,13 +1261,14 @@ fn decode_staged_transform_tool_nonzero_coeffs(
                 base_config,
                 lossless,
             },
+            &mut coeffs,
         )
-        .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?
-    };
+        .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
+    }
     let start_idx = arena.len();
-    let nonzero = block.nonzero_quant();
+    let nonzero = coeffs.nonzero_quant();
     arena.extend_from_slice(nonzero);
-    let quant_len = block.quant().len();
+    let quant_len = coeffs.quant().len();
     Ok(LumaCoeffBlock {
         eob,
         quant_range: start_idx..arena.len(),

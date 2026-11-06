@@ -250,9 +250,31 @@ fn level_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: b
     walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
 ) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
+    let config = CoeffBaseDerivedLevelPassConfig {
+        tx_class: [
+            CoeffTransformClass::TwoD,
+            CoeffTransformClass::Horizontal,
+            CoeffTransformClass::Vertical,
+        ][CLASS],
+        plane: if LUMA { 0 } else { config.plane.max(1) },
+        ..config
+    };
+    if walk.len() == 0 {
+        return Ok(CoeffBaseFirstPassSummary::default());
+    }
+    let eob_entry = walk.entry(0);
+    let eob_is_lf = coeff_is_low_frequency(eob_entry, config.plane, config.tx_class);
+    let selector = base_eob_selector(eob_entry, eob_is_lf, config);
+    let eob_level = u32::from(read_coeff_symbol(cdfs, symbols, selector)?) + 1;
     let mut owned = symbols.snapshot();
-    let result =
-        level_pass_on_snapshot::<CLASS, LUMA, TCQ, PH>(cdfs, &mut owned, block, walk, config);
+    let result = level_pass_on_snapshot::<CLASS, LUMA, TCQ, PH>(
+        cdfs,
+        &mut owned,
+        block,
+        walk,
+        config,
+        (eob_is_lf, eob_level),
+    );
     symbols.restore(owned);
     result
 }
@@ -273,25 +295,11 @@ fn level_pass_on_snapshot<const CLASS: usize, const LUMA: bool, const TCQ: bool,
     block: &mut TransformCoeffBlockState,
     walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
+    (eob_is_lf, eob_level): (bool, u32),
 ) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
-    let config = CoeffBaseDerivedLevelPassConfig {
-        tx_class: [
-            CoeffTransformClass::TwoD,
-            CoeffTransformClass::Horizontal,
-            CoeffTransformClass::Vertical,
-        ][CLASS],
-        plane: if LUMA { 0 } else { config.plane.max(1) },
-        ..config
-    };
-    let scan = walk.scan();
-    let Some((&eob_pos, rest)) = scan.split_last() else {
+    let Some((&eob_pos, rest)) = walk.scan().split_last() else {
         return Ok(CoeffBaseFirstPassSummary::default());
     };
-    let eob_entry = walk.entry(0);
-    let eob_is_lf = coeff_is_low_frequency(eob_entry, config.plane, config.tx_class);
-    let selector = base_eob_selector(eob_entry, eob_is_lf, config);
-    let eob_level = u32::from(read_coeff_symbol(cdfs, symbols, selector)?) + 1;
-
     let Some((grid, list)) = block.level_grid_and_nonzero_mut() else {
         return Err(CoeffBaseDerivedLevelPassError::LevelGridUnavailable);
     };
@@ -346,6 +354,14 @@ fn level_pass_on_snapshot<const CLASS: usize, const LUMA: bool, const TCQ: bool,
     };
     pass.finish::<TCQ, PH>(0, usize::from(dc_pos), dc_grid, level, true);
     Ok(pass.summary())
+}
+
+/// `value.min(limit)` as a conditional move: the clamped neighbour levels
+/// are data-dependent, so a branch would mispredict.
+#[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+#[inline(always)]
+fn clamp<T: Ord + Copy>(value: T, limit: T) -> T {
+    core::hint::select_unpredictable(value < limit, value, limit)
 }
 
 /// One past the last low-frequency scan index of `get_lf_limits`
@@ -414,7 +430,10 @@ impl LevelPassState<'_> {
     #[inline(always)]
     fn at(&self, grid: usize, [dr, dc]: [usize; 2], limit: u32) -> u32 {
         let offset = dr * LEVEL_STRIDE + dc;
-        u32::from(self.grid[(grid & LEVEL_INDEX_MASK) + (offset & LEVEL_INDEX_MASK)]).min(limit)
+        clamp(
+            u32::from(self.grid[(grid & LEVEL_INDEX_MASK) + (offset & LEVEL_INDEX_MASK)]),
+            limit,
+        )
     }
 
     /// The clamped `coeff_base` neighbour sum (§ 8.3.2) with the limits of
@@ -451,9 +470,9 @@ impl LevelPassState<'_> {
         if LUMA || CLASS == 0 {
             mag += self.at(grid, offsets[2], limit);
         }
-        let mag = ((mag + 1) >> 1).min(MAX_BASE_BR_RANGE) as usize;
+        let mag = clamp((mag + 1) >> 1, MAX_BASE_BR_RANGE) as usize;
         if !LUMA {
-            mag.min(3)
+            clamp(mag, 3)
         } else if lf_bump {
             mag + 7
         } else {
@@ -519,7 +538,7 @@ impl LevelPassState<'_> {
                 } else {
                     LF_2D_CONTEXT_CAP_AND_OFFSET[2]
                 };
-                ctx.min(cap) + offset
+                clamp(ctx, cap) + offset
             } else {
                 let col_mask = (1usize << self.width_log2) - 1;
                 let line = if CLASS == 1 {
@@ -528,9 +547,9 @@ impl LevelPassState<'_> {
                     pos >> self.width_log2
                 };
                 if DC || line == 0 {
-                    LF_SIG_COEF_CONTEXTS_2D + ctx.min(6)
+                    LF_SIG_COEF_CONTEXTS_2D + clamp(ctx, 6)
                 } else {
-                    LF_SIG_COEF_CONTEXTS_2D + 7 + ctx.min(4)
+                    LF_SIG_COEF_CONTEXTS_2D + 7 + clamp(ctx, 4)
                 }
             };
             &mut row2(self.rows.base_lf, CoeffBaseLf, lf_ctx).map_err(read_error)?[self.tcq_q0 & 1]
@@ -544,7 +563,7 @@ impl LevelPassState<'_> {
     #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
     #[inline(always)]
     fn uv_ctx<const CLASS: usize>(&self, ctx: usize) -> usize {
-        ctx.min(3)
+        clamp(ctx, 3)
             + if CLASS != 0 {
                 LF_SIG_COEF_CONTEXTS_2D_UV
             } else {
@@ -581,7 +600,7 @@ impl LevelPassState<'_> {
                 } else {
                     15
                 };
-                &mut row2(self.rows.base, CoeffBase, ctx.min(4) + offset).map_err(read_error)?
+                &mut row2(self.rows.base, CoeffBase, clamp(ctx, 4) + offset).map_err(read_error)?
                     [self.tcq_q0 & 1]
             } else {
                 let uv_ctx = self.uv_ctx::<CLASS>(ctx);
