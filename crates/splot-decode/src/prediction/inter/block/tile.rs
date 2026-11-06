@@ -377,7 +377,6 @@ impl<'payload> TileParser<'payload> {
             residual_planes,
         } = buffers;
         self.mv_grid.take_flag_log(&mut flag_log);
-        self.filter_records = filter_records;
         self.residual_planes = residual_planes;
         let mut recon_row = ReconRow {
             ordinal: self.parser_ordinal,
@@ -388,7 +387,7 @@ impl<'payload> TileParser<'payload> {
             residual_blocks,
             temporal,
             flag_log,
-            filter_records: TileFilterRecords::default(),
+            filter_records,
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
             motion_folded: false,
             failure: ReconRowFailure::None,
@@ -463,7 +462,6 @@ impl<'payload> TileParser<'payload> {
             walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published)
                 .map(|superblock| superblock.is_some())
         };
-        recon_row.filter_records = core::mem::take(&mut self.filter_records);
         recon_row.residual_planes = core::mem::take(&mut self.residual_planes);
         self.mv_grid.take_flag_log(&mut recon_row.flag_log);
         if decoded_row.is_ok()
@@ -638,13 +636,20 @@ impl ReconRowEntry {
 
     pub(super) fn pending_resolve_mut(&mut self) -> Option<&mut LeafResolveRecord> {
         match self.state.as_mut()? {
-            ReconEntryState::Resolve(resolve) => Some(resolve),
-            ReconEntryState::Command(_) => None,
+            ReconEntryState::Resolve(
+                resolve @ (LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_)),
+            ) => Some(resolve),
+            ReconEntryState::Resolve(_) | ReconEntryState::Command(_) => None,
         }
     }
 
     pub(super) fn has_pending_resolve(&self) -> bool {
-        matches!(self.state, Some(ReconEntryState::Resolve(_)))
+        matches!(
+            self.state,
+            Some(ReconEntryState::Resolve(
+                LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_)
+            ))
+        )
     }
 
     pub(super) fn take_resolve(&mut self) -> Option<LeafResolveRecord> {
@@ -653,10 +658,7 @@ impl ReconRowEntry {
         }
         match self.state.take()? {
             ReconEntryState::Resolve(resolve) => Some(resolve),
-            state @ ReconEntryState::Command(_) => {
-                self.state = Some(state);
-                None
-            }
+            ReconEntryState::Command(_) => None,
         }
     }
 
@@ -667,8 +669,13 @@ impl ReconRowEntry {
     /// The final command, for a pass that consumes it in place.
     pub(super) fn command_mut(&mut self) -> Option<&mut ReconCommand> {
         match self.state.as_mut()? {
-            ReconEntryState::Command(command) => Some(command),
-            ReconEntryState::Resolve(_) => None,
+            ReconEntryState::Command(command)
+            | ReconEntryState::Resolve(
+                LeafResolveRecord::Reseed(command) | LeafResolveRecord::NonInter { command, .. },
+            ) => Some(command),
+            ReconEntryState::Resolve(
+                LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_),
+            ) => None,
         }
     }
 
@@ -678,12 +685,15 @@ impl ReconRowEntry {
     }
 
     pub(super) fn take_command(&mut self) -> Option<ReconCommand> {
+        self.command_mut()?;
         match self.state.take()? {
-            ReconEntryState::Command(command) => Some(command),
-            state @ ReconEntryState::Resolve(_) => {
-                self.state = Some(state);
-                None
-            }
+            ReconEntryState::Command(command)
+            | ReconEntryState::Resolve(
+                LeafResolveRecord::Reseed(command) | LeafResolveRecord::NonInter { command, .. },
+            ) => Some(command),
+            ReconEntryState::Resolve(
+                LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_),
+            ) => None,
         }
     }
 
@@ -728,24 +738,18 @@ fn push_leaf_entry(
     publication: DecodedLeafPublication,
     resolve: LeafResolveRecord,
 ) {
-    let origin = publication.superblock_origin();
-    let (state, reset) = match resolve {
-        LeafResolveRecord::Reseed(command) => {
-            (ReconEntryState::Command(command), LeafReset::Reseed)
-        }
-        LeafResolveRecord::NonInter { command, n4w, n4h } => (
-            ReconEntryState::Command(command),
-            LeafReset::NonInter { n4w, n4h },
-        ),
-        pending => (ReconEntryState::Resolve(pending), LeafReset::None),
+    let reset = match resolve {
+        LeafResolveRecord::Reseed(_) => LeafReset::Reseed,
+        LeafResolveRecord::NonInter { n4w, n4h, .. } => LeafReset::NonInter { n4w, n4h },
+        LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_) => LeafReset::None,
     };
     push_recon_entry(
         superblocks,
         entries,
-        origin,
+        publication.superblock_origin(),
         ReconRowEntry {
             publication,
-            state: Some(state),
+            state: Some(ReconEntryState::Resolve(resolve)),
             reset,
             temporal: 0..0,
         },
@@ -1850,6 +1854,7 @@ impl<'payload> TileParser<'payload> {
             ParserStep::More(row) => (row, false),
             ParserStep::Last(row) => (row, true),
         };
+        std::mem::swap(&mut row.filter_records, &mut self.filter_records);
         let publication = (|| {
             row.return_terminal_error()?;
             let mut residuals = parse_progress.residuals.lock();
@@ -2184,6 +2189,10 @@ pub(super) fn decode_tiles<T: ReconSample>(
         *frame_filter_records = next_records;
         let (output, next_parse_state) = parser.into_output();
         parse_state = next_parse_state;
+        pixel_commit::take_tile_filter_records(
+            frame_filter_records,
+            &mut parse_state.filter_records,
+        );
         parse_state.block_decoded = block_decoded;
         parse_state.commit_block_decoded = spent_block_decoded;
         parse_state.row_buffers = row_buffers;

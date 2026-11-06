@@ -40,6 +40,31 @@ fn append_row_filter_records(
         .append(&mut row_filter_records.tx_skip_records);
 }
 
+pub(super) fn take_tile_filter_records(
+    filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+    tile_records: &mut TileFilterRecords,
+) {
+    if filter_records.deblock_blocks.is_empty()
+        && filter_records.chroma_deblock_blocks.is_empty()
+        && filter_records.tx_skip_records.is_empty()
+    {
+        core::mem::swap(
+            &mut filter_records.deblock_blocks,
+            &mut tile_records.deblock_blocks,
+        );
+        core::mem::swap(
+            &mut filter_records.chroma_deblock_blocks,
+            &mut tile_records.chroma_deblock_blocks,
+        );
+        core::mem::swap(
+            &mut filter_records.tx_skip_records,
+            &mut tile_records.tx_skip_records,
+        );
+    } else {
+        append_row_filter_records(filter_records, tile_records);
+    }
+}
+
 /// Moves one parsed row's filter geometry into the frame owner before that row
 /// enters the scheduled reconstruction graph.
 ///
