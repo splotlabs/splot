@@ -363,7 +363,7 @@ impl<T: ReconSample> DeblockedWindow<T> {
                         .map_err(alloc)?;
                     if let Some((kept, rows)) = carry.rows[index].and_then(shared) {
                         next = kept;
-                        samples.extend_from_slice(carry.planes[index].get(rows).ok_or_else(state)?);
+                        samples.append_samples(carry.planes[index].get(rows).ok_or_else(state)?);
                     }
                 }
                 None => match held.and_then(shared) {
@@ -390,7 +390,7 @@ impl<T: ReconSample> DeblockedWindow<T> {
                 let carried = &mut carry.planes[index];
                 carried.clear();
                 carried.try_reserve_exact(kept.len()).map_err(alloc)?;
-                carried.extend_from_slice(kept);
+                carried.append_samples(kept);
                 carry.rows[index] = Some((tail, end));
             }
             self.rows[index] = Some((start, end));
