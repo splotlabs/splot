@@ -125,6 +125,11 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         self.y_modes.window_violated()
     }
 
+    /// The superblock mask the walk publishes its leaves under.
+    pub(crate) const fn sb_mask(&self) -> usize {
+        self.sb_mask
+    }
+
     #[cfg(test)]
     pub(crate) fn new(
         work_unit: &DecodeTileWorkUnit,
@@ -226,15 +231,20 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             .try_reserve(1)
             .map_err(TilePartitionTraversalError::from)?;
         self.stack.push(TilePartitionStackEntry::Partition(root));
+        let step_limit = self
+            .limits
+            .threshold(DecodeLimitName::MaxTilePartitionSteps);
         while let Some(entry) = self.stack.pop() {
             let (call, forced_extended_sdp_chroma_block) = match entry {
                 TilePartitionStackEntry::Partition(call) => (call, false),
                 TilePartitionStackEntry::ExtendedSdpChromaBlock(call) => (call, true),
             };
             self.step_count += 1;
-            self.limits
-                .ensure(DecodeLimitName::MaxTilePartitionSteps, self.step_count)
-                .map_err(TilePartitionTraversalError::from)?;
+            if !step_limit.allows(self.step_count) {
+                self.limits
+                    .ensure(DecodeLimitName::MaxTilePartitionSteps, self.step_count)
+                    .map_err(TilePartitionTraversalError::from)?;
+            }
             if !call_in_frame(self.frame, call) {
                 continue;
             }

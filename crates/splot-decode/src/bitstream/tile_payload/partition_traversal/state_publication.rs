@@ -34,6 +34,20 @@ impl DecodedLeafPublication {
         }
     }
 
+    /// The publication the walk makes for `frontier`'s leaf.
+    pub(crate) const fn from_frontier(frontier: &DecodeBlockFrontier, sb_mask: usize) -> Self {
+        let sub_block_origin = [frontier.r & sb_mask, frontier.c & sb_mask];
+        Self {
+            superblock_origin: [
+                frontier.r - sub_block_origin[0],
+                frontier.c - sub_block_origin[1],
+            ],
+            sub_block_origin,
+            block_size: frontier.b_size,
+            tree_type: frontier.tree_type(),
+        }
+    }
+
     pub(crate) const fn superblock_origin(self) -> [usize; 2] {
         self.superblock_origin
     }

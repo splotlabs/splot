@@ -268,9 +268,9 @@ fn luma_tx_type_map_updates_on_16x16_units() {
     let mut map = InterLumaTxTypeMap::new(0, 0, 8, 8).unwrap();
     map.update(0, 0, tx_size_for(32, 16), V_DCT).unwrap();
 
-    assert_eq!(map.values[map.index(0, 0).unwrap()], V_DCT);
-    assert_eq!(map.values[map.index(0, 4).unwrap()], V_DCT);
-    assert_eq!(map.values[map.index(0, 7).unwrap()], DCT_DCT);
+    assert_eq!(usize::from(map.values[map.index(0, 0).unwrap()]), V_DCT);
+    assert_eq!(usize::from(map.values[map.index(0, 4).unwrap()]), V_DCT);
+    assert_eq!(usize::from(map.values[map.index(0, 7).unwrap()]), DCT_DCT);
 }
 
 /// AV2 § 5.20.7.23 parses each chroma group once at the `atStart` (top-left)
@@ -332,7 +332,7 @@ fn selectable_inter_luma_tx_records_skip_lossless_blocks() {
 fn inter_residual_parse_scratch_reuses_tile_local_storage() {
     let mut scratch = InterResidualParseScratch::default();
     scratch.luma_tx_types.reset(0, 0, 8, 8).unwrap();
-    scratch.luma_tx_types.values[0] = V_DCT;
+    scratch.luma_tx_types.values[0] = V_DCT as u8;
     scratch.chroma_reads.reserve(4);
     scratch.chroma_reads.push(InterChromaURead {
         unit: InterChromaUnit {
@@ -351,7 +351,7 @@ fn inter_residual_parse_scratch_reuses_tile_local_storage() {
     scratch.luma_tx_types.reset(4, 8, 4, 4).unwrap();
     scratch.chroma_reads.clear();
 
-    assert_eq!(scratch.luma_tx_types.values, vec![DCT_DCT; 16]);
+    assert_eq!(scratch.luma_tx_types.values, vec![DCT_DCT as u8; 16]);
     assert_eq!(scratch.luma_tx_types.values.capacity(), luma_capacity);
     assert!(core::ptr::eq(
         scratch.luma_tx_types.values.as_ptr(),

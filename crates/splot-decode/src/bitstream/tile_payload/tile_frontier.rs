@@ -164,6 +164,10 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
         .map_err(GeneralIntraMultiblockError::Walk)
     }
 
+    pub(crate) const fn sb_mask(&self) -> usize {
+        self.tree.sb_mask()
+    }
+
     /// Whether a neighbour grid touched a row its window had already reused.
     pub(crate) fn window_violated(&self) -> bool {
         self.tree.window_violated()

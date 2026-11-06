@@ -36,11 +36,51 @@ pub(crate) struct TileBlockDecodedState {
     planes: [PlaneGrid; MAX_PLANES],
 }
 
+/// One bit per cell, bit `x` of `rows[y]`: a bordered superblock row is at
+/// most `2 * 64 + 2` cells wide.
 #[derive(Debug, Eq, PartialEq, Default)]
 struct PlaneGrid {
     width: usize,
     height: usize,
-    cells: Vec<bool>,
+    rows: Vec<BitRow>,
+}
+
+const ROW_WORDS: usize = 3;
+type BitRow = [u64; ROW_WORDS];
+
+/// Sets bits `start..end` of `row`, `end <= 64 * ROW_WORDS`.
+#[inline]
+fn set_run(row: &mut BitRow, start: usize, end: usize) {
+    for (index, word) in row.iter_mut().enumerate() {
+        let base = index * 64;
+        let lo = start.max(base);
+        let hi = end.min(base + 64);
+        if lo < hi {
+            let len = hi - lo;
+            let ones = if len == 64 { u64::MAX } else { (1 << len) - 1 };
+            *word |= ones << (lo - base);
+        }
+    }
+}
+
+const fn bit(row: &BitRow, x: usize) -> bool {
+    row[(x / 64) % ROW_WORDS] >> (x % 64) & 1 != 0
+}
+
+/// Set bits of `row` from `start`, at most `len` of them.
+#[inline]
+fn leading_run(row: &BitRow, start: usize, len: usize) -> usize {
+    let mut count = 0;
+    while count < len {
+        let x = start + count;
+        let word = row[(x / 64) % ROW_WORDS] >> (x % 64);
+        let ones = (!word).trailing_zeros() as usize;
+        count += ones.min(64 - x % 64);
+        if ones < 64 - x % 64 {
+            break;
+        }
+    }
+    count.min(len)
 }
 
 impl Clone for PlaneGrid {
@@ -48,7 +88,7 @@ impl Clone for PlaneGrid {
         Self {
             width: self.width,
             height: self.height,
-            cells: self.cells.clone(),
+            rows: self.rows.clone(),
         }
     }
 
@@ -60,7 +100,7 @@ impl Clone for PlaneGrid {
     fn clone_from(&mut self, source: &Self) {
         self.width = source.width;
         self.height = source.height;
-        self.cells.clone_from(&source.cells);
+        self.rows.clone_from(&source.rows);
     }
 }
 
@@ -157,21 +197,20 @@ impl TileBlockDecodedState {
             let height = (sb_size4 >> sub_y)
                 .checked_add(2)
                 .ok_or(TileBlockDecodedStateError::Overflow)?;
-            let cells_len = width
-                .checked_mul(height)
-                .ok_or(TileBlockDecodedStateError::Overflow)?;
-            let mut cells = core::mem::take(&mut grid.cells);
-            cells.clear();
-            if cells.capacity() < cells_len {
-                cells
-                    .try_reserve_exact(cells_len)
+            if width > 64 * ROW_WORDS {
+                return Err(TileBlockDecodedStateError::Overflow);
+            }
+            let mut rows = core::mem::take(&mut grid.rows);
+            rows.clear();
+            if rows.capacity() < height {
+                rows.try_reserve_exact(height)
                     .map_err(|source| TileBlockDecodedStateError::Allocation { source })?;
             }
-            cells.resize(cells_len, false);
+            rows.resize(height, [0; ROW_WORDS]);
             *grid = PlaneGrid {
                 width,
                 height,
-                cells,
+                rows,
             };
         }
         self.subsampling_x = subsampling_x;
@@ -198,14 +237,18 @@ impl TileBlockDecodedState {
             let sb_width4 = self.mi_col_end.saturating_sub(c) >> sub_x;
             let sb_height4 = self.mi_row_end.saturating_sub(r) >> sub_y;
             let grid = &mut self.planes[plane];
-            grid.cells.fill(false);
             let top_len = sb_width4.saturating_add(1).min(grid.width);
-            grid.cells[..top_len].fill(true);
             let left_rows = sb_height4.saturating_add(1).min(grid.height);
-            for y in 1..left_rows {
-                grid.cells[y * grid.width] = true;
+            for (y, row) in grid.rows.iter_mut().enumerate() {
+                *row = [u64::from(y < left_rows), 0, 0];
             }
-            grid.cells[(grid.height - 1) * grid.width] = false;
+            if let Some(top) = grid.rows.first_mut() {
+                *top = [0; ROW_WORDS];
+                set_run(top, 0, top_len);
+            }
+            if let Some(bottom) = grid.rows.last_mut() {
+                bottom[0] &= !1;
+            }
         }
     }
 
@@ -233,9 +276,8 @@ impl TileBlockDecodedState {
             .saturating_add(1)
             .min(grid.height);
         if start_x < end_x {
-            for y in base_y.saturating_add(1)..end_y {
-                let row = y * grid.width;
-                crate::support::fill_mi_run(&mut grid.cells[row + start_x..row + end_x], true);
+            for row in &mut grid.rows[base_y.saturating_add(1).min(end_y)..end_y] {
+                set_run(row, start_x, end_x);
             }
         }
     }
@@ -245,6 +287,8 @@ impl TileBlockDecodedState {
         self.set_block(0, (y >> 2) & sb_mask, (x >> 2) & sb_mask, width4, height4);
     }
 
+    /// Leading decoded cells of the row above, right of the block (grid row
+    /// `y4`, columns from `x4 + w4 + 1` in bordered grid coordinates).
     pub(crate) fn count_top_right_avail(
         &self,
         plane: usize,
@@ -252,10 +296,18 @@ impl TileBlockDecodedState {
         y4: usize,
         w4: usize,
     ) -> usize {
-        let row = (y4 as isize) - 1;
-        self.count_decoded_run(plane, w4, |i| ((x4 + w4 + i) as isize, row))
+        let Some(grid) = self.plane_grid(plane) else {
+            return 0;
+        };
+        let start = x4 + w4 + 1;
+        if y4 >= grid.height || start >= grid.width {
+            return 0;
+        }
+        let len = w4.min(grid.width - start);
+        leading_run(&grid.rows[y4], start, len)
     }
 
+    /// Leading decoded cells of the column left of the block, below it.
     pub(crate) fn count_bottom_left_avail(
         &self,
         plane: usize,
@@ -263,30 +315,25 @@ impl TileBlockDecodedState {
         y4: usize,
         h4: usize,
     ) -> usize {
-        let col = (x4 as isize) - 1;
-        self.count_decoded_run(plane, h4, |i| (col, (y4 + h4 + i) as isize))
-    }
-
-    fn count_decoded_run(
-        &self,
-        plane: usize,
-        len: usize,
-        mut coord: impl FnMut(usize) -> (isize, isize),
-    ) -> usize {
-        if plane >= self.num_planes {
+        let Some(grid) = self.plane_grid(plane) else {
+            return 0;
+        };
+        let start = y4 + h4 + 1;
+        if x4 >= grid.width || start >= grid.height {
             return 0;
         }
-        let grid = &self.planes[plane];
-        let mut decoded = 0;
-        for i in 0..len {
-            let (x, y) = coord(i);
-            if grid.get(x, y) {
-                decoded = i + 1;
-            } else {
-                break;
-            }
+        let end = (start + h4).min(grid.height);
+        grid.rows[start..end]
+            .iter()
+            .take_while(|row| bit(row, x4))
+            .count()
+    }
+
+    fn plane_grid(&self, plane: usize) -> Option<&PlaneGrid> {
+        if plane >= self.num_planes {
+            return None;
         }
-        decoded
+        self.planes.get(plane)
     }
 
     pub(crate) const fn sb_size4(&self) -> usize {
@@ -294,23 +341,18 @@ impl TileBlockDecodedState {
     }
 }
 
+#[cfg(test)]
 impl PlaneGrid {
-    fn index(&self, x: isize, y: isize) -> Option<usize> {
-        let sx = x.checked_add(1)?;
-        let sy = y.checked_add(1)?;
-        if sx < 0 || sy < 0 {
-            return None;
-        }
-        let sx = sx as usize;
-        let sy = sy as usize;
-        if sx >= self.width || sy >= self.height {
-            return None;
-        }
-        sy.checked_mul(self.width)?.checked_add(sx)
+    /// The bordered `(row, bit)` of superblock cell `(x, y)`.
+    fn index(&self, x: isize, y: isize) -> Option<(usize, usize)> {
+        let sx = usize::try_from(x.checked_add(1)?).ok()?;
+        let sy = usize::try_from(y.checked_add(1)?).ok()?;
+        (sx < self.width && sy < self.height).then_some((sy, sx))
     }
 
     fn get(&self, x: isize, y: isize) -> bool {
-        self.index(x, y).is_some_and(|index| self.cells[index])
+        self.index(x, y)
+            .is_some_and(|(row, x)| bit(&self.rows[row], x))
     }
 }
 

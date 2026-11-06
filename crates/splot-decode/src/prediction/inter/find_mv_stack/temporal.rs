@@ -503,12 +503,18 @@ impl TemporalMotionField {
         for &block in blocks {
             let resolved = BlockRefs::reuse(&mut refs, &block, &self.ref_order_hints);
             visit_temporal_block_cells(block, resolved, width8, height8, |y8, x8, cell, hints| {
-                let index = y8 * width8 + x8;
-                if let Some(pending) = pending.as_mut().and_then(|pending| pending.get_mut(index)) {
-                    *pending = hints.map(|hint| hint.unwrap_or(u32::MAX));
+                let run = y8 * width8 + x8.start..y8 * width8 + x8.end;
+                if let Some(pending) = pending
+                    .as_mut()
+                    .and_then(|pending| pending.get_mut(run.clone()))
+                {
+                    crate::support::fill_mi_run(
+                        pending,
+                        hints.map(|hint| hint.unwrap_or(u32::MAX)),
+                    );
                 }
-                if let Some(target) = cells.get_mut(index) {
-                    *target = cell.store();
+                if let Some(target) = cells.get_mut(run) {
+                    crate::support::fill_mi_run(target, cell.store());
                 }
             });
         }
@@ -537,7 +543,7 @@ fn visit_temporal_block_cells(
     refs: BlockRefs,
     width8: usize,
     height8: usize,
-    mut visit: impl FnMut(usize, usize, TemporalMotionCell, [Option<u32>; 2]),
+    mut visit: impl FnMut(usize, Range<usize>, TemporalMotionCell, [Option<u32>; 2]),
 ) {
     let Some(row_end) = block.mi_row.checked_add(block.n4h) else {
         return;
@@ -557,9 +563,7 @@ fn visit_temporal_block_cells(
     if matches!(block.motion, TemporalBlockMotion::Mvs(_)) {
         let (cell, hints) = derive_temporal_cell(&block, refs, block.mi_row, block.mi_col);
         for y8 in row8_start..row8_end {
-            for x8 in col8_start..col8_end {
-                visit(y8, x8, cell, hints);
-            }
+            visit(y8, col8_start..col8_end, cell, hints);
         }
         return;
     }
@@ -571,7 +575,7 @@ fn visit_temporal_block_cells(
                 block.mi_row + 2 * (y8 - row8_start),
                 block.mi_col + 2 * (x8 - col8_start),
             );
-            visit(y8, x8, cell, hints);
+            visit(y8, x8..x8 + 1, cell, hints);
         }
     }
 }

@@ -205,7 +205,9 @@ impl GeneralIntraResidualPlan {
 
 impl ResidualPlanePlan {
     pub(super) fn apply_reconstruction_tx_type(&self, coeffs: &mut LumaCoeffBlock) {
-        coeffs.plane_tx_type = self.reconstruction_tx_type.unwrap_or(coeffs.plane_tx_type);
+        coeffs.plane_tx_type = self
+            .reconstruction_tx_type
+            .map_or(coeffs.plane_tx_type, usize::from);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -278,7 +280,7 @@ impl ResidualPlanePlan {
             symbols,
             coeff_ctx,
             coeffs_arena,
-            self.coeff_plane,
+            usize::from(self.coeff_plane),
             self.tx_size,
             self.x,
             self.y,
@@ -352,7 +354,7 @@ impl ResidualPlanePlan {
                     symbols,
                     coeff_ctx,
                     coeffs_arena,
-                    self.coeff_plane,
+                    usize::from(self.coeff_plane),
                     unit_tx_size,
                     x,
                     y,
