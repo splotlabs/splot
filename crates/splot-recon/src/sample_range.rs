@@ -40,8 +40,10 @@ fn u16_peak_exceeds<S: Simd>(simd: S, samples: &[u16], max_sample: u16) -> bool 
     let Some(tail) = samples.last_chunk::<16>() else {
         return remainder.iter().any(|&sample| sample > max_sample);
     };
-    let peak = chunks.iter().fold(u16x16::from_slice(simd, tail), |peak, chunk| {
-        peak.max(u16x16::from_slice(simd, chunk))
-    });
+    let peak = chunks
+        .iter()
+        .fold(u16x16::from_slice(simd, tail), |peak, chunk| {
+            peak.max(u16x16::from_slice(simd, chunk))
+        });
     peak.reduce_max() > max_sample
 }

@@ -47,6 +47,10 @@ use std::simd::{
     simd_swizzle,
 };
 
+mod edges;
+
+pub use edges::{DeblockEdge, deblock_horizontal_edges, deblock_vertical_edges};
+
 /// AV2 § 3 `DF_SHIFT`: the deblocking-filter ramp shift
 /// (`docs/spec/av2/1.0.0/03-symbols.md`, `DF_SHIFT = 8`).
 const DF_SHIFT: u32 = 8;

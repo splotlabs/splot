@@ -81,11 +81,12 @@ pub use coefficient_scan::{
     TransformClass, coefficient_scan_order, coefficient_scan_slice, tx_class,
 };
 pub use deblock_filter::{
-    DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,
+    DeblockEdge, DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,
     deblock_edge_columns, deblock_edge_rows, deblock_filter_choice,
     deblock_filter_choice_and_sample_strided_4, deblock_filter_choice_strided,
-    deblock_filter_max_width, deblock_sample_filter, deblock_sample_filter_strided,
-    deblock_sample_filter_strided_4, deblock_side_threshold_index,
+    deblock_filter_max_width, deblock_horizontal_edges, deblock_sample_filter,
+    deblock_sample_filter_strided, deblock_sample_filter_strided_4, deblock_side_threshold_index,
+    deblock_vertical_edges,
 };
 pub use dequant::{
     QuantizerDeltas, ac_quantizer, dc_quantizer, max_quantizer_index, quantizer_index,
