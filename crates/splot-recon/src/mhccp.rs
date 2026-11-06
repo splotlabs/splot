@@ -3,9 +3,7 @@
 
 //! AV2 § 7.13.6 MHCCP parameter derivation helpers.
 
-use std::simd::cmp::{SimdOrd, SimdPartialOrd};
-use std::simd::num::{SimdInt, SimdUint};
-use std::simd::{Select, Simd};
+use fearless_simd::{Bytes as _, Level, Select as _, Simd, SimdBase, dispatch, i32x8, u16x8};
 
 use crate::BitDepth;
 use crate::math::{round2_i32, round2_signed_i32};
@@ -164,52 +162,7 @@ struct EdgeSums {
 impl EdgeSums {
     /// Adds one row run of `v[0]` (`linear`), centre luma and target chroma.
     fn add_run(&mut self, linear: &[u16], center: &[u16], target: &[u16], bits: u32) {
-        let half16 = Simd::<i32, 16>::splat(1 << (bits - 1));
-        let shift16 = Simd::<i32, 16>::splat(bits as i32);
-        let mut acc16 = [Simd::<i32, 16>::splat(0); 8];
-        let mut done = 0;
-        while linear.len() - done >= 16 {
-            let v0 = Simd::<u16, 16>::from_slice(&linear[done..done + 16]).cast::<i32>();
-            let c = Simd::<u16, 16>::from_slice(&center[done..done + 16]).cast::<i32>();
-            let t = Simd::<u16, 16>::from_slice(&target[done..done + 16]).cast::<i32>();
-            let v1 = (c * c + half16) >> shift16;
-            for (acc, term) in
-                acc16
-                    .iter_mut()
-                    .zip([v0 * v0, v0 * v1, v1 * v1, v0, v1, v0 * t, v1 * t, t])
-            {
-                *acc += term;
-            }
-            done += 16;
-        }
-        let half8 = Simd::<i32, 8>::splat(1 << (bits - 1));
-        let shift8 = Simd::<i32, 8>::splat(bits as i32);
-        let mut acc8 = [Simd::<i32, 8>::splat(0); 8];
-        while linear.len() - done >= 8 {
-            let v0 = Simd::<u16, 8>::from_slice(&linear[done..done + 8]).cast::<i32>();
-            let c = Simd::<u16, 8>::from_slice(&center[done..done + 8]).cast::<i32>();
-            let t = Simd::<u16, 8>::from_slice(&target[done..done + 8]).cast::<i32>();
-            let v1 = (c * c + half8) >> shift8;
-            for (acc, term) in
-                acc8.iter_mut()
-                    .zip([v0 * v0, v0 * v1, v1 * v1, v0, v1, v0 * t, v1 * t, t])
-            {
-                *acc += term;
-            }
-            done += 8;
-        }
-        let [s00_16, s01_16, s11_16, s0_16, s1_16, s0t_16, s1t_16, st_16] =
-            acc16.map(SimdInt::reduce_sum);
-        let [s00_8, s01_8, s11_8, s0_8, s1_8, s0t_8, s1t_8, st_8] = acc8.map(SimdInt::reduce_sum);
-        self.count += done;
-        self.s00 = self.s00.wrapping_add(s00_16).wrapping_add(s00_8);
-        self.s01 = self.s01.wrapping_add(s01_16).wrapping_add(s01_8);
-        self.s11 = self.s11.wrapping_add(s11_16).wrapping_add(s11_8);
-        self.s0 = self.s0.wrapping_add(s0_16).wrapping_add(s0_8);
-        self.s1 = self.s1.wrapping_add(s1_16).wrapping_add(s1_8);
-        self.s0t = self.s0t.wrapping_add(s0t_16).wrapping_add(s0t_8);
-        self.s1t = self.s1t.wrapping_add(s1t_16).wrapping_add(s1t_8);
-        self.st = self.st.wrapping_add(st_16).wrapping_add(st_8);
+        let done = dispatch!(Level::baseline(), simd => self.add_lanes(simd, linear, center, target, bits));
         for ((&linear, &center), &target) in linear[done..]
             .iter()
             .zip(&center[done..])
@@ -217,6 +170,51 @@ impl EdgeSums {
         {
             self.add(linear, center, target, bits);
         }
+    }
+
+    /// The 8-lane groups of [`Self::add_run`]; returns how many samples they
+    /// covered.
+    #[inline]
+    fn add_lanes<S: Simd>(
+        &mut self,
+        simd: S,
+        linear: &[u16],
+        center: &[u16],
+        target: &[u16],
+        bits: u32,
+    ) -> usize {
+        let half = 1i32 << (bits - 1);
+        let mut acc = [i32x8::splat(simd, 0); 8];
+        let groups = linear.len() / 8;
+        for group in 0..groups {
+            let at = 8 * group;
+            let v0 = widen_lanes(simd, &linear[at..]);
+            let c = widen_lanes(simd, &center[at..]);
+            let t = widen_lanes(simd, &target[at..]);
+            let v1 = (c * c + half) >> bits;
+            for (acc, term) in
+                acc.iter_mut()
+                    .zip([v0 * v0, v0 * v1, v1 * v1, v0, v1, v0 * t, v1 * t, t])
+            {
+                *acc += term;
+            }
+        }
+        let [s00, s01, s11, s0, s1, s0t, s1t, st] = acc.map(|lanes| {
+            lanes
+                .as_slice()
+                .iter()
+                .fold(0i32, |sum, &lane| sum.wrapping_add(lane))
+        });
+        self.count += 8 * groups;
+        self.s00 = self.s00.wrapping_add(s00);
+        self.s01 = self.s01.wrapping_add(s01);
+        self.s11 = self.s11.wrapping_add(s11);
+        self.s0 = self.s0.wrapping_add(s0);
+        self.s1 = self.s1.wrapping_add(s1);
+        self.s0t = self.s0t.wrapping_add(s0t);
+        self.s1t = self.s1t.wrapping_add(s1t);
+        self.st = self.st.wrapping_add(st);
+        8 * groups
     }
 
     /// Adds one sample's `v[0]` (`linear`), centre luma and target chroma.
@@ -375,53 +373,11 @@ impl MhccpPredictor {
 
     /// Predicts `out.len()` samples; `linear` and `center` must be as long.
     pub fn row(&self, linear: &[u16], center: &[u16], out: &mut [u16]) {
-        let mut done = 0;
-        if self.narrow {
-            let p0_16 = Simd::<i32, 16>::splat(self.params[0]);
-            let p1_16 = Simd::<i32, 16>::splat(self.params[1]);
-            let half_16 = Simd::<i32, 16>::splat(1i32 << (MHCCP_BITS - 1));
-            let square_half_16 = Simd::<i32, 16>::splat(1i32 << (self.bits - 1));
-            let bits_16 = Simd::<i32, 16>::splat(self.bits as i32);
-            let shift_16 = Simd::<i32, 16>::splat(MHCCP_BITS as i32);
-            let offset_16 = Simd::<i32, 16>::splat(self.offset);
-            let zero_16 = Simd::<i32, 16>::splat(0);
-            let max_16 = Simd::<i32, 16>::splat(self.max);
-            let round_16 = |x: Simd<i32, 16>| {
-                let r = (x.abs() + half_16) >> shift_16;
-                x.simd_lt(zero_16).select(-r, r)
-            };
-            while out.len() - done >= 16 {
-                let linear_v = Simd::<u16, 16>::from_slice(&linear[done..done + 16]).cast::<i32>();
-                let center_v = Simd::<u16, 16>::from_slice(&center[done..done + 16]).cast::<i32>();
-                let square = (center_v * center_v + square_half_16) >> bits_16;
-                let t = round_16(p0_16 * linear_v) + round_16(p1_16 * square) + offset_16;
-                let t = t.simd_max(zero_16).simd_min(max_16);
-                t.cast::<u16>().copy_to_slice(&mut out[done..done + 16]);
-                done += 16;
-            }
-            let p0_8 = Simd::<i32, 8>::splat(self.params[0]);
-            let p1_8 = Simd::<i32, 8>::splat(self.params[1]);
-            let half_8 = Simd::<i32, 8>::splat(1i32 << (MHCCP_BITS - 1));
-            let square_half_8 = Simd::<i32, 8>::splat(1i32 << (self.bits - 1));
-            let bits_8 = Simd::<i32, 8>::splat(self.bits as i32);
-            let shift_8 = Simd::<i32, 8>::splat(MHCCP_BITS as i32);
-            let offset_8 = Simd::<i32, 8>::splat(self.offset);
-            let zero_8 = Simd::<i32, 8>::splat(0);
-            let max_8 = Simd::<i32, 8>::splat(self.max);
-            let round_8 = |x: Simd<i32, 8>| {
-                let r = (x.abs() + half_8) >> shift_8;
-                x.simd_lt(zero_8).select(-r, r)
-            };
-            while out.len() - done >= 8 {
-                let linear_v = Simd::<u16, 8>::from_slice(&linear[done..done + 8]).cast::<i32>();
-                let center_v = Simd::<u16, 8>::from_slice(&center[done..done + 8]).cast::<i32>();
-                let square = (center_v * center_v + square_half_8) >> bits_8;
-                let t = round_8(p0_8 * linear_v) + round_8(p1_8 * square) + offset_8;
-                let t = t.simd_max(zero_8).simd_min(max_8);
-                t.cast::<u16>().copy_to_slice(&mut out[done..done + 8]);
-                done += 8;
-            }
-        }
+        let done = if self.narrow {
+            dispatch!(Level::baseline(), simd => self.row_lanes(simd, linear, center, out))
+        } else {
+            0
+        };
         for ((out, &linear), &center) in out[done..]
             .iter_mut()
             .zip(&linear[done..])
@@ -430,6 +386,45 @@ impl MhccpPredictor {
             *out = self.sample(linear, center);
         }
     }
+
+    /// The 8-lane groups of a narrow [`Self::row`]; returns how many samples
+    /// they wrote.
+    #[inline]
+    fn row_lanes<S: Simd>(
+        &self,
+        simd: S,
+        linear: &[u16],
+        center: &[u16],
+        out: &mut [u16],
+    ) -> usize {
+        let half = 1i32 << (MHCCP_BITS - 1);
+        let square_half = 1i32 << (self.bits - 1);
+        let zero = i32x8::splat(simd, 0);
+        let round = |x: i32x8<S>| {
+            let r = (x.abs() + half) >> MHCCP_BITS;
+            x.simd_lt(zero).select(zero - r, r)
+        };
+        let groups = out.len() / 8;
+        for group in 0..groups {
+            let at = 8 * group;
+            let linear = widen_lanes(simd, &linear[at..]);
+            let center = widen_lanes(simd, &center[at..]);
+            let square = (center * center + square_half) >> self.bits;
+            let t = round(linear * self.params[0]) + round(square * self.params[1]) + self.offset;
+            let t = t.max(zero).min(self.max);
+            let (low, high) = simd.split_u32x8(t.bitcast());
+            simd.relaxed_narrow_u32x4(low, high)
+                .store_slice(&mut out[at..at + 8]);
+        }
+        8 * groups
+    }
+}
+
+/// The first eight samples of `samples` as `i32` lanes.
+#[inline]
+fn widen_lanes<S: Simd>(simd: S, samples: &[u16]) -> i32x8<S> {
+    let (low, high) = simd.widen_u16x8(u16x8::from_slice(simd, &samples[..8]));
+    simd.combine_u32x4(low, high).bitcast()
 }
 
 /// Multiplies fixed-point values with adaptive down-shifting to avoid overflow.

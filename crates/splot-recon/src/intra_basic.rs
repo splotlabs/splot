@@ -5,9 +5,7 @@
 //!
 //! Feature tracking: `RECON-INTRA-BASIC-PAETH-PREDICTION`.
 
-use std::simd::cmp::SimdPartialOrd as _;
-use std::simd::num::{SimdInt as _, SimdUint as _};
-use std::simd::{Mask, Select as _, Simd};
+use fearless_simd::{Bytes as _, Level, Select as _, Simd, SimdBase, dispatch, i16x16};
 
 use crate::intra_dc_math::{
     IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
@@ -169,8 +167,8 @@ pub fn predict_intra_paeth_rect_into<T: ReconSample>(
     Ok(())
 }
 
-/// Writes the § 7.13.2.2 PAETH prediction in `i16` lanes, 8 or 4 columns at a
-/// time (every block width is a multiple of 4).
+/// Writes the § 7.13.2.2 PAETH prediction in 16 `i16` lanes: 16 columns of
+/// a row, or `16 / w` rows of a narrower block.
 ///
 /// With `base = above + left - topLeft`, `pLeft = |above - topLeft|`,
 /// `pTop = |left - topLeft|` and `pTopLeft = |above + left - 2 * topLeft|`.
@@ -183,45 +181,64 @@ fn predict_paeth_lanes<O: IntraLaneSample>(
     output: &mut [O],
     stride_samples: usize,
 ) {
-    let top_left = top_left as i16;
-    for (row, &left) in left.iter().take(size.height()).enumerate() {
-        let left = left.to_u16() as i16;
-        let p_top = (left - top_left).abs();
-        let target = &mut output[row * stride_samples..row * stride_samples + size.width()];
-        let above = &above[..size.width()];
-        let (target_groups, target) = target.as_chunks_mut::<8>();
-        let (above_groups, above) = above.as_chunks::<8>();
-        for (target, above) in target_groups.iter_mut().zip(above_groups) {
-            let values = paeth_lanes(O::load(above).cast(), left, p_top, top_left);
-            O::store(values.cast::<u16>().as_array(), target);
+    dispatch!(Level::baseline(), simd => paeth_rows(simd, size, left, above, top_left, output, stride_samples));
+}
+
+#[inline]
+fn paeth_rows<S: Simd, O: IntraLaneSample>(
+    simd: S,
+    size: IntraRectBlockSize,
+    left: &[O],
+    above: &[O],
+    top_left: u16,
+    output: &mut [O],
+    stride_samples: usize,
+) {
+    let (width, height) = (size.width(), size.height());
+    let top_left = i16x16::splat(simd, top_left as i16);
+    let lane = |value: O| value.to_u16() as i16;
+    if width < 16 {
+        let above = i16x16::from_fn(simd, |j| lane(above[j % width]));
+        let rows = 16 / width;
+        for row in (0..height).step_by(rows) {
+            let left = i16x16::from_fn(simd, |j| lane(left[row + j / width]));
+            let mut values = [O::default(); 16];
+            O::store16(
+                simd,
+                paeth_lanes(above, left, top_left).bitcast(),
+                &mut values,
+            );
+            for (r, samples) in values.chunks_exact(width).enumerate() {
+                let start = (row + r) * stride_samples;
+                output[start..start + width].copy_from_slice(samples); // splot-copy-ok: publish one PAETH row
+            }
         }
+        return;
+    }
+    for (row, &left) in left.iter().take(height).enumerate() {
+        let left = i16x16::splat(simd, lane(left));
+        let target = &mut output[row * stride_samples..row * stride_samples + width];
         for (target, above) in target
-            .as_chunks_mut::<4>()
+            .as_chunks_mut::<16>()
             .0
             .iter_mut()
-            .zip(above.as_chunks::<4>().0)
+            .zip(above.as_chunks::<16>().0)
         {
-            let values = paeth_lanes(O::load(above).cast(), left, p_top, top_left);
-            O::store(values.cast::<u16>().as_array(), target);
+            let above = O::load16(simd, above).bitcast::<i16x16<S>>();
+            O::store16(simd, paeth_lanes(above, left, top_left).bitcast(), target);
         }
     }
 }
 
 /// One lane group of [`predict_paeth_lanes`].
 #[inline]
-fn paeth_lanes<const LANES: usize>(
-    above: Simd<i16, LANES>,
-    left: i16,
-    p_top: i16,
-    top_left: i16,
-) -> Simd<i16, LANES> {
-    let (left_lanes, top_left_lanes) = (Simd::splat(left), Simd::splat(top_left));
-    let p_left = (above - top_left_lanes).abs();
-    let p_top_left = (above + left_lanes - top_left_lanes - top_left_lanes).abs();
-    let take_left: Mask<i16, LANES> =
-        p_left.simd_le(Simd::splat(p_top)) & p_left.simd_le(p_top_left);
-    let take_top = Simd::splat(p_top).simd_le(p_top_left);
-    take_left.select(left_lanes, take_top.select(above, top_left_lanes))
+fn paeth_lanes<S: Simd>(above: i16x16<S>, left: i16x16<S>, top_left: i16x16<S>) -> i16x16<S> {
+    let p_left = (above - top_left).abs();
+    let p_top = (left - top_left).abs();
+    let p_top_left = (above + left - top_left - top_left).abs();
+    let take_left = p_left.simd_le(p_top) & p_left.simd_le(p_top_left);
+    let take_top = p_top.simd_le(p_top_left);
+    take_left.select(left, take_top.select(above, top_left))
 }
 
 pub(crate) fn predict_paeth_sample<T: ReconSample>(left: T, above: T, top_left: T) -> T {
