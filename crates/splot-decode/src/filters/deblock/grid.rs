@@ -360,29 +360,26 @@ impl MiGridStorage {
             if ends_above(block, new.start) {
                 continue;
             }
+            let edge = EdgeBlock {
+                block,
+                chroma_transform: None,
+            };
+            let facts = CellFacts::of(edge, 0, (0, 0));
             for (start, end) in block_row_spans(block, mi_rows, self.mi_cols, &new, base) {
-                if let Some(cells) = self.cells.get_mut(start..end) {
-                    for cell in cells {
-                        cell.base = later(cell.base, index);
+                let (Some(cells), Some(cell_facts)) = (
+                    self.cells.get_mut(start..end),
+                    self.facts.get_mut(start..end),
+                ) else {
+                    continue;
+                };
+                for (cell, cell_facts) in cells.iter_mut().zip(cell_facts) {
+                    let later = later(cell.base, index);
+                    if later != cell.base {
+                        cell.base = later;
+                        *cell_facts = facts;
                     }
                 }
             }
-        }
-        let built = (new.start - base) * self.mi_cols;
-        let mut last = (NO_BLOCK, CellFacts::default());
-        for (cell, facts) in self.cells[built..].iter().zip(&mut self.facts[built..]) {
-            if cell.base != last.0 {
-                let Some(block) = blocks.get(record(cell.base)) else {
-                    *facts = CellFacts::default();
-                    continue;
-                };
-                let edge = EdgeBlock {
-                    block,
-                    chroma_transform: None,
-                };
-                last = (cell.base, CellFacts::of(edge, 0, (0, 0)));
-            }
-            *facts = last.1;
         }
         Ok(())
     }
