@@ -25,9 +25,9 @@
 //! beyond the `Min(32, ·)` block are caller-resolved. User-defined `UserQm`
 //! planes are carried by [`QmDequant`] when `useUserQm` is true.
 
-use std::simd::num::{SimdInt as _, SimdUint as _};
-use std::simd::{Simd, cmp::SimdOrd as _};
 use std::sync::Arc;
+
+use fearless_simd::{Bytes as _, Level, Simd, SimdBase as _, dispatch, i32x8, u32x8};
 
 use splot_tables::tables::quantizer::QUANTIZER_MATRIX;
 
@@ -223,23 +223,23 @@ fn dequantize_flat_block(params: &DequantBlockParams, quant: &[i32], out: &mut [
     let bound = 1i32 << (7 + u32::from(params.bit_depth.bits()));
     let len = quant.len();
     let mut index = 0usize;
-    macro_rules! dequant_lane_group {
-        ($lanes:literal) => {
-            while index + $lanes <= len {
-                dequant_flat_lanes::<$lanes>(
-                    &mut out[index..],
-                    &quant[index..],
-                    params.ac_quant,
-                    denom_shift,
-                    bound,
-                );
-                index += $lanes;
-            }
-        };
-    }
-    dequant_lane_group!(16);
-    dequant_lane_group!(8);
-    dequant_lane_group!(4);
+    dispatch!(Level::baseline(), simd => {
+        while let (Some(out), Some(quant)) = (
+            out.get_mut(index..index + 8),
+            quant.get(index..index + 8),
+        ) {
+            dequant_flat_lanes(simd, out, quant, params.ac_quant, denom_shift, bound);
+            index += 8;
+        }
+        if index + 4 <= len {
+            let mut lanes = [0i32; 8];
+            let mut padded = [0i32; 8];
+            padded[..4].copy_from_slice(&quant[index..index + 4]); // splot-copy-ok: pad a § 7.14.4 lane group
+            dequant_flat_lanes(simd, &mut lanes, &padded, params.ac_quant, denom_shift, bound);
+            out[index..index + 4].copy_from_slice(&lanes[..4]); // splot-copy-ok: publish a § 7.14.4 lane group
+            index += 4;
+        }
+    });
     for (slot, &coeff) in out[index..].iter_mut().zip(&quant[index..]) {
         *slot = dequant_coefficient(coeff, params.ac_quant, denom, params.bit_depth);
     }
@@ -249,7 +249,7 @@ fn dequantize_flat_block(params: &DequantBlockParams, quant: &[i32], out: &mut [
     true
 }
 
-/// One `LANES`-wide group of [`dequantize_flat_block`].
+/// One eight-lane group of [`dequantize_flat_block`].
 ///
 /// Each lane repeats [`dequant_coefficient`] literally: `sign`/`unsigned_abs`
 /// as the two's-complement `(c ^ s) - s` pair (exact for `i32::MIN`), the
@@ -263,24 +263,26 @@ fn dequantize_flat_block(params: &DequantBlockParams, quant: &[i32], out: &mut [
     reason = "measured § 7.14.4 dequantization hot path"
 )]
 #[inline(always)]
-fn dequant_flat_lanes<const LANES: usize>(
+fn dequant_flat_lanes<S: Simd>(
+    simd: S,
     out: &mut [i32],
     quant: &[i32],
     q2: u32,
     denom_shift: u32,
     bound: i32,
 ) {
-    let coeff = Simd::<i32, LANES>::from_slice(quant);
-    let sign = coeff >> Simd::splat(i32::BITS as i32 - 1);
-    let magnitude = (coeff ^ sign) - sign;
-    let product = (magnitude.cast::<u32>() * Simd::splat(q2)) & Simd::splat(0x00FF_FFFF);
+    let coeff = i32x8::from_slice(simd, quant);
+    let sign = coeff >> (i32::BITS - 1);
+    let magnitude: u32x8<S> = ((coeff ^ sign) - sign).bitcast();
+    let product = (magnitude * q2) & 0x00FF_FFFF;
     let shift = QUANT_TABLE_BITS;
-    let rounded =
-        (product >> Simd::splat(shift)) + ((product >> Simd::splat(shift - 1)) & Simd::splat(1));
-    let scaled = (rounded >> Simd::splat(denom_shift)).cast::<i32>();
+    let rounded = (product >> shift) + ((product >> (shift - 1)) & 1);
+    let scaled: i32x8<S> = (rounded >> denom_shift).bitcast();
     let signed = (scaled ^ sign) - sign;
-    let clamped = signed.simd_clamp(Simd::splat(-bound), Simd::splat(bound - 1));
-    out[..LANES].copy_from_slice(&clamped.to_array()); // splot-copy-ok: publish a § 7.14.4 dequant lane group
+    signed
+        .max(i32x8::splat(simd, -bound))
+        .min(i32x8::splat(simd, bound - 1))
+        .store_slice(out);
 }
 
 fn user_quantization_matrix_weight(

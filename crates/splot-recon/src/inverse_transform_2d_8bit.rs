@@ -16,9 +16,10 @@
 //! per column (row `2q` low, row `2q + 1` high), which is already the operand
 //! of the column pass's multiply-add over rows `2q` and `2q + 1`.
 
-use std::simd::cmp::{SimdOrd as _, SimdPartialEq as _};
-use std::simd::num::SimdInt as _;
-use std::simd::{Simd, ToBytes as _, simd_swizzle};
+use fearless_simd::{
+    Bytes as _, Level, Simd, SimdBase as _, SimdIntWiden as _, SimdMask as _, SimdNarrow as _,
+    dispatch, i16x16, i32x8, u8x32, u32x8,
+};
 
 use splot_tables::tables::transform_1d::{
     ADST_KERNEL4, ADST_KERNEL8, ADST_KERNEL16, DCT_KERNEL4, DCT_KERNEL8, DCT_KERNEL16,
@@ -27,9 +28,6 @@ use splot_tables::tables::transform_1d::{
 
 use crate::inverse_transform::InverseTransform1dType;
 use crate::inverse_transform_2d::InverseTransform2dDim;
-
-type Sum = Simd<i32, 8>;
-type Pairs = Simd<i16, 16>;
 
 /// Entry `[q][i]` packs `kernel[2q][i]` (low half) and `kernel[2q + 1][i]`
 /// (high half), with the output index reversed for `FDDT`.
@@ -183,40 +181,84 @@ pub(crate) fn inverse_transform_2d_8bit(
     let Some(col) = col else {
         return false;
     };
+    let plan = Plan {
+        t,
+        row,
+        row_dct: dct(t.row),
+        col,
+        split,
+    };
+    dispatch!(Level::baseline(), simd => transform(simd, plan, dequant, residual, scratch));
+    true
+}
+
+/// The resolved kernels of one [`Transform8`].
+#[derive(Clone, Copy)]
+struct Plan {
+    t: Transform8,
+    row: Option<PairKernel>,
+    row_dct: bool,
+    col: Option<PairKernel>,
+    split: bool,
+}
+
+#[inline]
+fn transform<S: Simd>(
+    simd: S,
+    plan: Plan,
+    dequant: &[i32],
+    residual: &mut [i32],
+    scratch: &mut [i32; 32 * 32],
+) {
+    let Plan {
+        t,
+        row,
+        row_dct,
+        col,
+        split,
+    } = plan;
     let (row_shift, rows) = (u32::from(t.row_shift), (t.h, split));
     let (rescale, input) = (t.rescale, dequant);
-    let mask = match (row, dct(t.row)) {
-        (None, _) => row_pass_identity(t.w, input, rescale, row_shift, rows, scratch),
-        (Some(PairKernel::N4(k)), _) => row_pass_4(k, input, rescale, row_shift, rows, scratch),
+    let mask = match (row, row_dct) {
+        (None, _) => row_pass_identity(simd, t.w, input, rescale, row_shift, rows, scratch),
+        (Some(PairKernel::N4(k)), _) => {
+            row_pass_4(simd, k, input, rescale, row_shift, rows, scratch)
+        }
         (Some(PairKernel::N8(k)), _) => {
-            row_pass::<8, 4, false>(k, input, rescale, row_shift, rows, scratch)
+            row_pass::<_, 8, 4, false>(simd, k, input, rescale, row_shift, rows, scratch)
         }
         (Some(PairKernel::N16(_)), true) => {
-            row_pass::<16, 8, true>(&DCT16_SPLIT, input, rescale, row_shift, rows, scratch)
+            row_pass::<_, 16, 8, true>(simd, &DCT16_SPLIT, input, rescale, row_shift, rows, scratch)
         }
         (Some(PairKernel::N16(k)), false) => {
-            row_pass::<16, 8, false>(k, input, rescale, row_shift, rows, scratch)
+            row_pass::<_, 16, 8, false>(simd, k, input, rescale, row_shift, rows, scratch)
         }
-        (Some(PairKernel::N32(_)), _) => {
-            row_pass::<32, 16, true>(&DCT32_SPLIT, input, rescale, row_shift, rows, scratch)
-        }
+        (Some(PairKernel::N32(_)), _) => row_pass::<_, 32, 16, true>(
+            simd,
+            &DCT32_SPLIT,
+            input,
+            rescale,
+            row_shift,
+            rows,
+            scratch,
+        ),
     };
     let (shift, w) = (u32::from(t.col_shift), t.w);
     let Some(col) = col else {
-        col_pass_identity((w, t.h), scratch, mask, shift, residual);
-        return true;
+        col_pass_identity(simd, (w, t.h), scratch, mask, shift, residual);
+        return;
     };
+    let pass = ColPass { w, mask, shift };
     match (col, split) {
-        (PairKernel::N4(k), _) => col_pass::<4, 2, false>(k, scratch, w, mask, shift, residual),
-        (PairKernel::N8(k), false) => col_pass::<8, 4, false>(k, scratch, w, mask, shift, residual),
-        (PairKernel::N8(k), true) => col_pass::<8, 4, true>(k, scratch, w, mask, shift, residual),
+        (PairKernel::N4(k), _) => col_pass::<_, 4, 2, false>(simd, k, scratch, pass, residual),
+        (PairKernel::N8(k), false) => col_pass::<_, 8, 4, false>(simd, k, scratch, pass, residual),
+        (PairKernel::N8(k), true) => col_pass::<_, 8, 4, true>(simd, k, scratch, pass, residual),
         (PairKernel::N16(k), false) => {
-            col_pass::<16, 8, false>(k, scratch, w, mask, shift, residual);
+            col_pass::<_, 16, 8, false>(simd, k, scratch, pass, residual);
         }
-        (PairKernel::N16(k), true) => col_pass::<16, 8, true>(k, scratch, w, mask, shift, residual),
-        (PairKernel::N32(k), _) => col_pass::<32, 16, true>(k, scratch, w, mask, shift, residual),
+        (PairKernel::N16(k), true) => col_pass::<_, 16, 8, true>(simd, k, scratch, pass, residual),
+        (PairKernel::N32(k), _) => col_pass::<_, 32, 16, true>(simd, k, scratch, pass, residual),
     }
-    true
 }
 
 /// § 7.15.4.1 `get_identity_scale` of an adjusted side `len`, which a
@@ -230,9 +272,22 @@ const fn identity_scale(len: usize) -> i32 {
     }
 }
 
+/// The optional `Round2(x * 2896, 12)` rescale and the row input clamp.
+#[inline]
+fn row_input<S: Simd>(v: i32x8<S>, rescale: bool) -> i32x8<S> {
+    let v = if rescale {
+        (v * 2896 + (1 << 11)) >> 12
+    } else {
+        v
+    };
+    v.max(i32x8::splat(v.simd, i32::from(i16::MIN)))
+        .min(i32x8::splat(v.simd, i32::from(i16::MAX)))
+}
+
 /// [`row_pass`] for the § 7.15.2.3 identity transform: each row output is
 /// its own clamped input times the identity scale, in the row `Clip3`.
-fn row_pass_identity(
+fn row_pass_identity<S: Simd>(
+    simd: S,
     w: usize,
     dequant: &[i32],
     rescale: bool,
@@ -240,19 +295,11 @@ fn row_pass_identity(
     (h, split): (usize, bool),
     scratch: &mut [i32; 32 * 32],
 ) -> u32 {
-    let scale = Simd::splat(identity_scale(w));
-    let scaled = |v: Sum| {
-        let v = if rescale {
-            (v * Simd::splat(2896) + Simd::splat(1 << 11)) >> Simd::splat(12)
-        } else {
-            v
-        };
-        v.simd_max(Simd::splat(i32::from(i16::MIN)))
-            .simd_min(Simd::splat(i32::from(i16::MAX)))
-            * scale
-    };
+    let scale = identity_scale(w);
+    let scaled = |v: i32x8<S>| row_input(v, rescale) * scale;
     let coded = dequant.len() / w;
     let mut mask = 0u32;
+    let mut padded = [0i32; 8];
     for (q, out) in scratch.chunks_exact_mut(w).take(h / 2).enumerate() {
         let (row_a, row_b) = pair_rows(q, split);
         if row_a >= coded {
@@ -264,25 +311,23 @@ fn row_pass_identity(
             continue;
         }
         mask |= 1 << q;
-        let lanes =
-            |row: &[i32], c: usize| row.get(c..c + 8).map_or(Simd::splat(0), Simd::from_slice);
+        let lanes = |row: &[i32], c: usize| {
+            row.get(c..c + 8)
+                .map_or(i32x8::splat(simd, 0), |row| i32x8::from_slice(simd, row))
+        };
         if w == 4 {
             let pick = |row: &[i32]| row.first_chunk::<4>().copied().unwrap_or([0; 4]);
-            let ([a0, a1, a2, a3], [b0, b1, b2, b3]) = (pick(a), pick(b));
-            let sum = scaled(Simd::from_array([a0, a1, a2, a3, b0, b1, b2, b3]));
-            let packed = pack_rows(
-                simd_swizzle!(sum, [0, 1, 2, 3, 0, 1, 2, 3]),
-                simd_swizzle!(sum, [4, 5, 6, 7, 4, 5, 6, 7]),
-                shift,
-            );
-            if let Some(out) = out.first_chunk_mut::<4>() {
-                *out = simd_swizzle!(packed, [0, 1, 2, 3]).to_array();
+            padded[..4].copy_from_slice(&pick(a)); // splot-copy-ok: one identity row pair
+            padded[4..].copy_from_slice(&pick(b)); // splot-copy-ok: one identity row pair
+            let sum: [i32; 8] = clip_row(scaled(i32x8::from_slice(simd, &padded)), shift).into();
+            for (i, out) in out.iter_mut().take(4).enumerate() {
+                *out = (sum[i] & 0xffff) | (sum[4 + i] << 16);
             }
             continue;
         }
         for (c, out) in out.as_chunks_mut::<8>().0.iter_mut().enumerate() {
             let (a, b) = (scaled(lanes(a, 8 * c)), scaled(lanes(b, 8 * c)));
-            *out = pack_rows(a, b, shift).to_array();
+            pack_rows(a, b, shift).store_slice(out);
         }
     }
     mask
@@ -291,7 +336,8 @@ fn row_pass_identity(
 /// [`col_pass`] for the § 7.15.2.3 identity transform over the adjacent row
 /// pairs of `scratch`: each output is its own row-pass sample times the
 /// identity scale, in the column `Clip3`.
-fn col_pass_identity(
+fn col_pass_identity<S: Simd>(
+    simd: S,
     (w, h): (usize, usize),
     scratch: &[i32; 32 * 32],
     mask: u32,
@@ -299,15 +345,13 @@ fn col_pass_identity(
     residual: &mut [i32],
 ) {
     let scale = identity_scale(h);
-    let emit = |packed: Simd<i32, 8>, high: bool| {
+    let emit = |packed: i32x8<S>, high: bool| {
         let v = if high {
-            packed >> Simd::splat(16)
+            packed >> 16
         } else {
-            (packed << Simd::splat(16)) >> Simd::splat(16)
+            (packed << 16) >> 16
         };
-        round(v * Simd::splat(scale), shift)
-            .simd_max(Simd::splat(-256))
-            .simd_min(Simd::splat(255))
+        clip_col(v * scale, shift)
     };
     for (q, (pair, out)) in scratch
         .chunks_exact(w)
@@ -324,11 +368,9 @@ fn col_pass_identity(
             let Some(&[z0, z1, z2, z3]) = pair.first_chunk::<4>() else {
                 continue;
             };
-            let packed = Simd::from_array([z0, z1, z2, z3, z0, z1, z2, z3]);
-            let (a, b) = (
-                emit(packed, false).to_array(),
-                emit(packed, true).to_array(),
-            );
+            let packed = i32x8::from_slice(simd, &[z0, z1, z2, z3, z0, z1, z2, z3]);
+            let (a, b): ([i32; 8], [i32; 8]) =
+                (emit(packed, false).into(), emit(packed, true).into());
             row_a.copy_from_slice(&a[..4]); // splot-copy-ok: one identity output row
             row_b.copy_from_slice(&b[..4]); // splot-copy-ok: one identity output row
             continue;
@@ -340,84 +382,114 @@ fn col_pass_identity(
             .zip(row_a.as_chunks_mut::<8>().0)
             .zip(row_b.as_chunks_mut::<8>().0)
         {
-            let packed = Simd::from_array(*packed);
-            *a = emit(packed, false).to_array();
-            *b = emit(packed, true).to_array();
+            let packed = i32x8::from_slice(simd, packed);
+            emit(packed, false).store_slice(a);
+            emit(packed, true).store_slice(b);
         }
     }
 }
 
 /// `pmaddwd`: the sum of each adjacent pair of `i16` products.
 #[inline]
-fn madd(x: Pairs, w: Pairs) -> Sum {
-    let product = x.cast::<i32>() * w.cast::<i32>();
-    simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
-        + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15])
+fn madd<S: Simd>(x: i16x16<S>, w: i16x16<S>) -> i32x8<S> {
+    x.pairwise_dot_product(w)
 }
 
 #[inline]
-fn pairs(packed: Simd<u32, 8>) -> Pairs {
-    Pairs::from_ne_bytes(packed.to_ne_bytes())
+fn pairs<S: Simd>(simd: S, packed: &[u32; 8]) -> i16x16<S> {
+    u32x8::from_slice(simd, packed).bitcast()
 }
 
 #[inline]
-fn splat_pair(packed: u32) -> Pairs {
-    pairs(Simd::splat(packed))
+fn splat_pair<S: Simd>(simd: S, packed: u32) -> i16x16<S> {
+    u32x8::splat(simd, packed).bitcast()
 }
 
 /// `Round2(sum, shift)` for `1 <= shift <= 20` and `|sum| < 2^28`.
 #[inline]
-fn round(sum: Sum, shift: u32) -> Sum {
-    (sum + Simd::splat(1 << (shift - 1))) >> Simd::splat(shift as i32)
+fn round<S: Simd>(sum: i32x8<S>, shift: u32) -> i32x8<S> {
+    (sum + (1 << (shift - 1))) >> shift
+}
+
+/// The row `Clip3` of `Round2(sum, shift)`.
+#[inline]
+fn clip_row<S: Simd>(sum: i32x8<S>, shift: u32) -> i32x8<S> {
+    round(sum, shift)
+        .max(i32x8::splat(sum.simd, i32::from(i16::MIN)))
+        .min(i32x8::splat(sum.simd, i32::from(i16::MAX)))
+}
+
+/// The column `Clip3` of `Round2(sum, shift)`.
+#[inline]
+fn clip_col<S: Simd>(sum: i32x8<S>, shift: u32) -> i32x8<S> {
+    round(sum, shift)
+        .max(i32x8::splat(sum.simd, -256))
+        .min(i32x8::splat(sum.simd, 255))
 }
 
 /// Rows `a` and `b` of the row `Clip3`, packed `a` low and `b` high.
 #[inline]
-fn pack_rows(a: Sum, b: Sum, shift: u32) -> Simd<i32, 8> {
-    let clip = |sum| {
-        round(sum, shift)
-            .simd_max(Simd::splat(i32::from(i16::MIN)))
-            .simd_min(Simd::splat(i32::from(i16::MAX)))
-    };
-    (clip(a) & Simd::splat(0xffff)) | (clip(b) << Simd::splat(16))
+fn pack_rows<S: Simd>(a: i32x8<S>, b: i32x8<S>, shift: u32) -> i32x8<S> {
+    (clip_row(a, shift) & 0xffff) | (clip_row(b, shift) << 16)
 }
+
+/// The `pshufb` that swaps the middle two samples of every four.
+const SPLIT_ORDER: [u8; 32] = {
+    let mut order = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        let sample = i / 2;
+        let swapped = match sample % 4 {
+            1 => sample + 1,
+            2 => sample - 1,
+            _ => sample,
+        };
+        order[i] = (2 * swapped + i % 2) as u8;
+        i += 1;
+    }
+    order
+};
 
 /// The row input clamp (after the optional rescale) of up to 32 row samples
 /// as packed pairs, with one past the last non-zero pair: adjacent samples,
 /// or with `split` samples `4m + j` and `4m + j + 2` as pair `2m + j`.
 #[inline]
-fn row_input_pairs(row: &[i32], rescale: bool, split: bool) -> ([u32; 16], usize) {
+fn row_input_pairs<S: Simd>(
+    simd: S,
+    row: &[i32],
+    rescale: bool,
+    split: bool,
+) -> ([u32; 16], usize) {
     let mut out = [0u32; 16];
-    let mut nonzero = 0u32;
-    let clamp = |v: Simd<i32, 8>| {
-        let v = if rescale {
-            (v * Simd::splat(2896) + Simd::splat(1 << 11)) >> Simd::splat(12)
-        } else {
-            v
-        };
-        let v = v
-            .simd_max(Simd::splat(i32::from(i16::MIN)))
-            .simd_min(Simd::splat(i32::from(i16::MAX)))
-            .cast::<i16>();
-        if split {
-            simd_swizzle!(v, [0, 2, 1, 3, 4, 6, 5, 7])
-        } else {
-            v
+    let mut nonzero = 0u64;
+    let lanes = |i: usize| {
+        if let Some(chunk) = row.get(8 * i..8 * i + 8) {
+            return row_input(i32x8::from_slice(simd, chunk), rescale);
         }
+        let mut padded = [0i32; 8];
+        if let Some(tail) = row.get(8 * i..8 * i + 4) {
+            padded[..4].copy_from_slice(tail); // splot-copy-ok: pad a 4-sample row
+        }
+        row_input(i32x8::from_slice(simd, &padded), rescale)
     };
-    let (chunks, tail) = row.as_chunks::<8>();
-    for (index, (chunk, slot)) in chunks.iter().zip(out.chunks_exact_mut(4)).enumerate() {
-        let packed = Simd::<u32, 4>::from_ne_bytes(clamp(Simd::from_array(*chunk)).to_ne_bytes());
-        nonzero |= (packed.simd_ne(Simd::splat(0)).to_bitmask() as u32) << (4 * index);
-        slot.copy_from_slice(packed.as_array()); // splot-copy-ok: packed row pairs
+    for (index, slot) in out
+        .as_chunks_mut::<8>()
+        .0
+        .iter_mut()
+        .take(row.len().div_ceil(16))
+        .enumerate()
+    {
+        let mut packed = lanes(2 * index)
+            .saturating_narrow(lanes(2 * index + 1))
+            .bitcast::<u8x32<S>>();
+        if split {
+            packed = packed.swizzle_dyn_within_blocks(u8x32::from_slice(simd, &SPLIT_ORDER));
+        }
+        let packed = packed.bitcast::<u32x8<S>>();
+        nonzero |= packed.simd_ne(u32x8::splat(simd, 0)).to_bitmask() << (8 * index);
+        packed.store_slice(slot);
     }
-    if let Some(&[a, b, c, d]) = tail.first_chunk::<4>() {
-        let wide = Simd::from_array([a, b, c, d, 0, 0, 0, 0]);
-        let packed = Simd::<u32, 4>::from_ne_bytes(clamp(wide).to_ne_bytes());
-        nonzero |= packed.simd_ne(Simd::splat(0)).to_bitmask() as u32 & 0b11;
-        out[..2].copy_from_slice(&packed.as_array()[..2]); // splot-copy-ok: packed row pairs
-    }
-    (out, (u32::BITS - nonzero.leading_zeros()) as usize)
+    (out, (u64::BITS - nonzero.leading_zeros()) as usize)
 }
 
 /// The two rows the row pass packs as column pair `q`: adjacent rows, or for
@@ -441,7 +513,8 @@ const fn pair_rows(q: usize, split: bool) -> (usize, usize) {
     reason = "measured § 7.15.4.1 row-pass hot path"
 )]
 #[inline(always)]
-fn row_pass<const N: usize, const H: usize, const SPLIT: bool>(
+fn row_pass<S: Simd, const N: usize, const H: usize, const SPLIT: bool>(
+    simd: S,
     kernel: &[[u32; N]; H],
     dequant: &[i32],
     rescale: bool,
@@ -451,9 +524,11 @@ fn row_pass<const N: usize, const H: usize, const SPLIT: bool>(
 ) -> u32 {
     let rows = dequant.as_chunks::<N>().0;
     let input = |row: usize| {
-        rows.get(row)
-            .map_or(([0; 16], 0), |row| row_input_pairs(row, rescale, SPLIT))
+        rows.get(row).map_or(([0; 16], 0), |row| {
+            row_input_pairs(simd, row, rescale, SPLIT)
+        })
     };
+    let zero = i32x8::splat(simd, 0);
     let mut mask = 0u32;
     for (q, out) in scratch.chunks_exact_mut(N).take(h / 2).enumerate() {
         let (row_a, row_b) = pair_rows(q, split);
@@ -467,13 +542,13 @@ fn row_pass<const N: usize, const H: usize, const SPLIT: bool>(
         }
         mask |= 1 << q;
         if SPLIT {
-            row_pair_split(kernel, (&a, &b), used, shift, out);
+            row_pair_split(simd, kernel, (&a, &b), used, shift, out);
             continue;
         }
-        let mut sum_a = [Sum::splat(0); 4];
-        let mut sum_b = [Sum::splat(0); 4];
+        let mut sum_a = [zero; 4];
+        let mut sum_b = [zero; 4];
         for ((weights, &a), &b) in kernel[..used].iter().zip(&a).zip(&b) {
-            let (a, b) = (splat_pair(a), splat_pair(b));
+            let (a, b) = (splat_pair(simd, a), splat_pair(simd, b));
             for ((weights, sum_a), sum_b) in weights
                 .as_chunks::<8>()
                 .0
@@ -481,7 +556,7 @@ fn row_pass<const N: usize, const H: usize, const SPLIT: bool>(
                 .zip(&mut sum_a)
                 .zip(&mut sum_b)
             {
-                let weights = pairs(Simd::from_array(*weights));
+                let weights = pairs(simd, weights);
                 *sum_a += madd(a, weights);
                 *sum_b += madd(b, weights);
             }
@@ -493,7 +568,7 @@ fn row_pass<const N: usize, const H: usize, const SPLIT: bool>(
             .zip(&sum_a)
             .zip(&sum_b)
         {
-            *out = pack_rows(a, b, shift).to_array();
+            pack_rows(a, b, shift).store_slice(out);
         }
     }
     mask
@@ -507,7 +582,8 @@ fn row_pass<const N: usize, const H: usize, const SPLIT: bool>(
     reason = "measured § 7.15.4.1 row-pass hot path"
 )]
 #[inline(always)]
-fn row_pair_split<const N: usize, const H: usize>(
+fn row_pair_split<S: Simd, const N: usize, const H: usize>(
+    simd: S,
     kernel: &[[u32; N]; H],
     (a, b): (&[u32; 16], &[u32; 16]),
     used: usize,
@@ -515,18 +591,18 @@ fn row_pair_split<const N: usize, const H: usize>(
     out: &mut [i32],
 ) {
     let chunks = N / 16;
-    let mut sums = [[[Sum::splat(0); 2]; 2]; 2];
+    let mut sums = [[[i32x8::splat(simd, 0); 2]; 2]; 2];
     let used = used.next_multiple_of(2).min(H);
     for (p, weights) in kernel[..used].as_chunks::<2>().0.iter().enumerate() {
         for (parity, weights) in weights.iter().enumerate() {
-            let inputs = [a[2 * p + parity], b[2 * p + parity]].map(splat_pair);
+            let inputs = [a[2 * p + parity], b[2 * p + parity]].map(|x| splat_pair(simd, x));
             for (row, &input) in inputs.iter().enumerate() {
                 for (sum, weights) in sums[row][parity]
                     .iter_mut()
                     .zip(weights.as_chunks::<8>().0)
                     .take(chunks)
                 {
-                    *sum += madd(input, pairs(Simd::from_array(*weights)));
+                    *sum += madd(input, pairs(simd, weights));
                 }
             }
         }
@@ -534,20 +610,20 @@ fn row_pair_split<const N: usize, const H: usize>(
     let out = out.as_chunks_mut::<8>().0;
     let [[a_even, a_odd], [b_even, b_odd]] = sums;
     for chunk in 0..chunks {
-        let reverse = |v: Sum| simd_swizzle!(v, [7, 6, 5, 4, 3, 2, 1, 0]);
         let (a_e, a_o, b_e, b_o) = (a_even[chunk], a_odd[chunk], b_even[chunk], b_odd[chunk]);
         if let Some(out) = out.get_mut(chunk) {
-            *out = pack_rows(a_e + a_o, b_e + b_o, shift).to_array();
+            pack_rows(a_e + a_o, b_e + b_o, shift).store_slice(out);
         }
         if let Some(out) = out.get_mut(N / 8 - 1 - chunk) {
-            *out = pack_rows(reverse(a_e - a_o), reverse(b_e - b_o), shift).to_array();
+            pack_rows((a_e - a_o).reverse(), (b_e - b_o).reverse(), shift).store_slice(out);
         }
     }
 }
 
 /// [`row_pass`] for a 4-wide block: each sum holds row `a` in its low half and
 /// row `b` in its high half.
-fn row_pass_4(
+fn row_pass_4<S: Simd>(
+    simd: S,
     kernel: &[[u32; 4]; 2],
     dequant: &[i32],
     rescale: bool,
@@ -556,8 +632,7 @@ fn row_pass_4(
     scratch: &mut [i32; 32 * 32],
 ) -> u32 {
     let rows = dequant.as_chunks::<4>().0;
-    let weights =
-        kernel.map(|w| pairs(simd_swizzle!(Simd::from_array(w), [0, 1, 2, 3, 0, 1, 2, 3])));
+    let weights = kernel.map(|[w0, w1, w2, w3]| pairs(simd, &[w0, w1, w2, w3, w0, w1, w2, w3]));
     let mut mask = 0u32;
     for (q, out) in scratch
         .as_chunks_mut::<4>()
@@ -571,24 +646,33 @@ fn row_pass_4(
             break;
         };
         let [b0, b1, b2, b3] = rows.get(row_b).copied().unwrap_or([0; 4]);
-        let (pair, used) = row_input_pairs(&[a0, a1, a2, a3, b0, b1, b2, b3], rescale, false);
+        let (pair, used) = row_input_pairs(simd, &[a0, a1, a2, a3, b0, b1, b2, b3], rescale, false);
         if used == 0 {
             continue;
         }
         mask |= 1 << q;
-        let mut sum = Sum::splat(0);
+        let mut sum = i32x8::splat(simd, 0);
         for (p, weights) in weights.iter().enumerate() {
             let (a, b) = (pair[p], pair[2 + p]);
-            sum += madd(pairs(Simd::from_array([a, a, a, a, b, b, b, b])), *weights);
+            sum += madd(pairs(simd, &[a, a, a, a, b, b, b, b]), *weights);
         }
-        let packed = pack_rows(
-            simd_swizzle!(sum, [0, 1, 2, 3, 0, 1, 2, 3]),
-            simd_swizzle!(sum, [4, 5, 6, 7, 4, 5, 6, 7]),
-            shift,
-        );
-        *out = simd_swizzle!(packed, [0, 1, 2, 3]).to_array();
+        let sum: [i32; 8] = clip_row(sum, shift).into();
+        for (i, out) in out.iter_mut().enumerate() {
+            *out = (sum[i] & 0xffff) | (sum[4 + i] << 16);
+        }
     }
     mask
+}
+
+/// The column-pair geometry of one [`col_pass`].
+#[derive(Clone, Copy)]
+struct ColPass {
+    /// Block width.
+    w: usize,
+    /// The written column pairs of the row pass.
+    mask: u32,
+    /// Column-pass down-shift.
+    shift: u32,
 }
 
 /// The column pass of an `M`-tall block, `HM = M / 2`, over the column-pair
@@ -603,20 +687,13 @@ fn row_pass_4(
     reason = "measured § 7.15.4.1 column-pass hot path"
 )]
 #[inline(always)]
-fn col_pass<const M: usize, const HM: usize, const SPLIT: bool>(
+fn col_pass<S: Simd, const M: usize, const HM: usize, const SPLIT: bool>(
+    simd: S,
     kernel: &[[u32; M]; HM],
     scratch: &[i32; 32 * 32],
-    w: usize,
-    mask: u32,
-    shift: u32,
+    ColPass { w, mask, shift }: ColPass,
     residual: &mut [i32],
 ) {
-    let emit = |sum: Sum| {
-        round(sum, shift)
-            .simd_max(Simd::splat(-256))
-            .simd_min(Simd::splat(255))
-            .to_array()
-    };
     let list = |mask: u32| {
         let mut list = [0usize; 16];
         let mut count = 0;
@@ -636,41 +713,46 @@ fn col_pass<const M: usize, const HM: usize, const SPLIT: bool>(
     let (even, odd) = (&even.0[..even.1], &odd.0[..odd.1]);
     let outputs = if SPLIT { M / 2 } else { M };
     let out = residual.as_chunks_mut::<8>().0;
+    let zero = i32x8::splat(simd, 0);
     if w == 4 {
         let pair_sum = |list: &[usize], r: usize| {
-            let mut sum = Sum::splat(0);
+            let mut sum = zero;
             for &q in list {
-                let Some(z) = scratch.get(q * 4..q * 4 + 4) else {
+                let Some(&[z0, z1, z2, z3]) = scratch
+                    .get(q * 4..q * 4 + 4)
+                    .and_then(|z| z.first_chunk::<4>())
+                else {
                     continue;
                 };
-                let z = Simd::<i32, 4>::from_slice(z);
-                let z = pairs(simd_swizzle!(z, [0, 1, 2, 3, 0, 1, 2, 3]).cast());
+                let z = i32x8::from_slice(simd, &[z0, z1, z2, z3, z0, z1, z2, z3]).bitcast();
                 let (a, b) = (kernel[q][r], kernel[q][r + 1]);
-                sum += madd(z, pairs(Simd::from_array([a, a, a, a, b, b, b, b])));
+                sum += madd(z, pairs(simd, &[a, a, a, a, b, b, b, b]));
             }
             sum
         };
         for r in (0..outputs).step_by(2) {
             let (e, o) = (pair_sum(even, r), pair_sum(odd, r));
             if let Some(out) = out.get_mut(r / 2) {
-                *out = emit(e + o);
+                clip_col(e + o, shift).store_slice(out);
             }
             if SPLIT && let Some(out) = out.get_mut((M - 2 - r) / 2) {
-                *out = emit(simd_swizzle!(e - o, [4, 5, 6, 7, 0, 1, 2, 3]));
+                let d: [i32; 8] = clip_col(e - o, shift).into();
+                out[..4].copy_from_slice(&d[4..]); // splot-copy-ok: one mirrored output row
+                out[4..].copy_from_slice(&d[..4]); // splot-copy-ok: one mirrored output row
             }
         }
         return;
     }
     let chunks = w / 8;
     let sums = |list: &[usize], c: usize, r: usize| {
-        let mut sums = [Sum::splat(0); 4];
+        let mut sums = [zero; 4];
         for &q in list {
             let Some(z) = scratch.as_chunks::<8>().0.get(q * chunks + c) else {
                 continue;
             };
-            let z = pairs(Simd::from_array(*z).cast());
+            let z = i32x8::from_slice(simd, z).bitcast();
             for (offset, sum) in sums.iter_mut().enumerate() {
-                *sum += madd(z, splat_pair(kernel[q][r + offset]));
+                *sum += madd(z, splat_pair(simd, kernel[q][r + offset]));
             }
         }
         sums
@@ -680,10 +762,10 @@ fn col_pass<const M: usize, const HM: usize, const SPLIT: bool>(
             let (e, o) = (sums(even, c, r), sums(odd, c, r));
             for (offset, (&e, &o)) in e.iter().zip(&o).enumerate() {
                 if let Some(out) = out.get_mut((r + offset) * chunks + c) {
-                    *out = emit(e + o);
+                    clip_col(e + o, shift).store_slice(out);
                 }
                 if SPLIT && let Some(out) = out.get_mut((M - 1 - r - offset) * chunks + c) {
-                    *out = emit(e - o);
+                    clip_col(e - o, shift).store_slice(out);
                 }
             }
         }
