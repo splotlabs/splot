@@ -14,21 +14,21 @@
 //! Feature tracking: `DECODE-FIRST-INTER-FRAME-FRONTIER`,
 //! `DECODE-INTER-COMPOUND-LOCALWARP`.
 
-use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
-use std::simd::{
-    Simd, SimdElement, ToBytes,
-    cmp::SimdOrd,
-    num::{SimdInt, SimdUint},
-    simd_swizzle,
+#[cfg(target_arch = "x86_64")]
+use fearless_simd::Avx2;
+use fearless_simd::{
+    Level, i16x8, i16x16, i32x4, i32x8, i64x2, prelude::*, u8x16, u16x8, u16x16, u64x2,
 };
+use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
 
 use crate::error::{ReconError, Result};
 use crate::format::{BitDepth, ReconSample};
 use crate::intra_dc_math::resolve_divisor_32;
 use crate::math::round2;
 use crate::math::{round2_i32, round2_signed, round2_signed_i32};
-use crate::subpel_mc::{ReferencePlaneView, reference_lanes};
+use crate::subpel_mc::ReferencePlaneView;
 
+mod eight_bit;
 mod ext_unit;
 
 /// AV2 § 7.13.3.19 block-warp predictor side length in samples.
@@ -49,6 +49,8 @@ const WARP_FILTER_TAPS: usize = 8;
 const WARP_PARAM_CLIP_LOW: i32 = -32_768;
 const WARP_PARAM_CLIP_HIGH: i32 = 32_767 - (1 << (WARP_PARAM_REDUCE_BITS - 1));
 const WARP_SHEAR_LIMIT: i32 = 3i32 << WARPEDMODEL_PREC_BITS;
+
+type Intermediate = [[i16; WARPED_BLOCK_SIZE]; WARP_INTERMEDIATE_ROWS];
 
 /// AV2 `Default_Warp_Params[6]` identity affine model (§ 7.12.2.11 / § 7.13.3.19).
 pub const IDENTITY_WARP_PARAMS: [i32; 6] = [
@@ -206,8 +208,25 @@ impl PreparedWarpPrediction {
                 actual: output.len(),
             })?;
         let output = &mut output[..span];
-        let max_sample = i32::from(self.params.bit_depth.max_sample());
+        let max_sample = self.params.bit_depth.max_sample() as i16;
+        let block = [x, y, width, height];
+        baseline_simd!(simd => {
+            self.clipped_sections(simd, reference, block, output, stride, max_sample)
+        })
+    }
+
+    #[inline]
+    fn clipped_sections<S: Simd, T: ReconSample>(
+        &self,
+        simd: S,
+        reference: &ReferencePlaneView<'_, T>,
+        [x, y, width, height]: [usize; 4],
+        output: &mut [T],
+        stride: usize,
+        max_sample: i16,
+    ) -> Result<()> {
         if self.translation_two_tap_into(
+            simd,
             reference,
             [x, y, width, height],
             output,
@@ -225,14 +244,17 @@ impl PreparedWarpPrediction {
                 };
                 let section_w = (width - local_x).min(WARPED_BLOCK_SIZE);
                 let section_h = (height - local_y).min(WARPED_BLOCK_SIZE);
-                let store = |row: usize, rounded: Simd<i32, WARPED_BLOCK_SIZE>| {
+                let store = |row: usize, rounded: i32x8<S>| {
                     if row >= section_h {
                         return Ok(());
                     }
                     let start = (local_y + row) * stride + local_x;
-                    store_clipped_row(&mut output[start..start + section_w], rounded, max_sample)
+                    let (low, high) = rounded.split();
+                    let target = &mut output[start..start + section_w];
+                    store_clipped_row(simd, target, low.saturating_narrow(high), max_sample)
                 };
                 warp_predict_section(
+                    simd,
                     reference,
                     &params,
                     &self.shear,
@@ -252,13 +274,15 @@ impl PreparedWarpPrediction {
     /// section's source window eight samples after its neighbour's, so the
     /// sections tile one block-wide two-tap filter: each source row is
     /// filtered once for the block instead of once per section.
-    fn translation_two_tap_into<T: ReconSample>(
+    #[inline]
+    fn translation_two_tap_into<S: Simd, T: ReconSample>(
         &self,
+        simd: S,
         reference: &ReferencePlaneView<'_, T>,
         [x, y, width, height]: [usize; 4],
         output: &mut [T],
         stride: usize,
-        max_sample: i32,
+        max_sample: i16,
     ) -> Result<bool> {
         if self.params.warp_params[2..] != IDENTITY_WARP_PARAMS[2..]
             || !width.is_multiple_of(WARPED_BLOCK_SIZE)
@@ -289,41 +313,58 @@ impl PreparedWarpPrediction {
             return Ok(false);
         }
         let (first_col, first_row) = (first_col as usize, first_row as usize);
+        let lanes = |row, col| warp_source_lanes(simd, reference.row(row), col);
+        let wide = |row, col| lanes(row, col).combine(lanes(row, col + 8));
         let mut col = 0;
         while col + 16 <= width {
             let strip = [first_col + col, first_row, height, high];
             let target = &mut output[col..];
-            two_tap_strip::<T, 16>(reference, strip, vertical_high, target, stride, max_sample)?;
+            two_tap_strip(simd, wide, strip, vertical_high, target, stride, max_sample)?;
             col += 16;
         }
         if col < width {
             let strip = [first_col + col, first_row, height, high];
             let target = &mut output[col..];
-            two_tap_strip::<T, 8>(reference, strip, vertical_high, target, stride, max_sample)?;
+            two_tap_strip(
+                simd,
+                lanes,
+                strip,
+                vertical_high,
+                target,
+                stride,
+                max_sample,
+            )?;
         }
         Ok(true)
     }
 }
 
-/// Filters one `LANES`-column strip of a translation block down all `height`
+/// Filters one `N`-column strip of a translation block down all `height`
 /// rows from `[first_col, first_row, height, high]`, keeping the previous
 /// horizontal row in registers for the vertical taps.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn two_tap_strip<T: ReconSample, const LANES: usize>(
-    reference: &ReferencePlaneView<'_, T>,
+fn two_tap_strip<S, T, V, const N: usize>(
+    simd: S,
+    load: impl Fn(usize, usize) -> V,
     [first_col, first_row, height, high]: [usize; 4],
     vertical_high: usize,
     output: &mut [T],
     stride: usize,
-    max_sample: i32,
-) -> Result<()> {
-    let mut top = two_tap_horizontal::<T, LANES>(reference.row(first_row), first_col, high);
+    max_sample: i16,
+) -> Result<()>
+where
+    S: Simd,
+    T: ReconSample,
+    V: SimdInt<S, Element = i16, Array = [i16; N]>,
+{
+    let horizontal = |row| two_tap_horizontal(|col| load(row, col), first_col, high);
+    let mut top = horizontal(first_row);
     for row in 0..height {
-        let bottom = two_tap_horizontal(reference.row(first_row + row + 1), first_col, high);
+        let bottom = horizontal(first_row + row + 1);
         let rounded = two_tap_vertical(top, bottom, vertical_high, INTER_ROUND1_NON_COMPOUND);
         let at = row * stride;
-        store_clipped_row(&mut output[at..at + LANES], rounded.cast(), max_sample)?;
+        store_clipped_row(simd, &mut output[at..at + N], rounded, max_sample)?;
         top = bottom;
     }
     Ok(())
@@ -337,35 +378,41 @@ fn two_tap_strip<T: ReconSample, const LANES: usize>(
 /// narrowing the row to `i16` before the clamp is exact.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn store_clipped_row<T: ReconSample, const LANES: usize>(
+fn store_clipped_row<S: Simd, T: ReconSample, V: SimdInt<S, Element = i16>>(
+    simd: S,
     target: &mut [T],
-    rounded: Simd<i32, LANES>,
-    max_sample: i32,
+    rounded: V,
+    max_sample: i16,
 ) -> Result<()> {
-    let clipped = rounded
-        .cast::<i16>()
-        .simd_clamp(Simd::splat(0), Simd::splat(max_sample as i16));
-    if let Some(target) = T::u16_slice_mut(target) {
-        store_lanes(target, clipped.cast());
-    } else if let Some(target) = T::u8_slice_mut(target) {
-        store_lanes(target, clipped.cast());
-    } else {
-        for (target, &sample) in target.iter_mut().zip(&clipped.to_array()) {
-            *target = T::try_from_u16(sample as u16)?;
+    let clipped = rounded.clamp(0, max_sample);
+    let rows = clipped.as_slice().as_chunks::<WARPED_BLOCK_SIZE>().0;
+    for (target, lanes) in target.chunks_mut(WARPED_BLOCK_SIZE).zip(rows) {
+        let lanes = i16x8::load_array_ref(simd, lanes).bitcast::<u16x8<S>>();
+        if let Some(target) = T::u16_slice_mut(target) {
+            match target.first_chunk_mut() {
+                Some(target) => lanes.store_array(target),
+                None => store_lanes(target, lanes.to_array()),
+            }
+        } else if let Some(target) = T::u8_slice_mut(target) {
+            let bytes = lanes.narrow(lanes).bitcast::<u64x2<S>>()[0].to_le_bytes();
+            match target.first_chunk_mut() {
+                Some(target) => *target = bytes,
+                None => store_lanes(target, bytes),
+            }
+        } else {
+            for (target, sample) in target.iter_mut().zip(lanes.to_array()) {
+                *target = T::try_from_u16(sample)?;
+            }
         }
     }
     Ok(())
 }
 
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
-#[inline(always)]
-fn store_lanes<S: SimdElement, const LANES: usize>(target: &mut [S], lanes: Simd<S, LANES>) {
-    if target.len() == LANES {
-        lanes.copy_to_slice(target);
-    } else {
-        for (target, lane) in target.iter_mut().zip(lanes.to_array()) {
-            *target = lane;
-        }
+#[cold]
+#[inline(never)]
+fn store_lanes<E: Copy, const N: usize>(target: &mut [E], lanes: [E; N]) {
+    for (target, lane) in target.iter_mut().zip(lanes) {
+        *target = lane;
     }
 }
 
@@ -485,6 +532,20 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
     };
     let phase_x = phase(sx4)?;
     let phase_y = phase(sy4)?;
+    Ok(baseline_simd!(simd => {
+        let intermediate = ext_warp_intermediate(simd, reference, params, [ix4, iy4], phase_x);
+        ext_unit::vertical(simd, &intermediate, phase_y, round1)
+    }))
+}
+
+#[inline]
+fn ext_warp_intermediate<S: Simd, T: ReconSample>(
+    simd: S,
+    reference: &ReferencePlaneView<'_, T>,
+    params: &WarpPredictBlockParams,
+    [ix4, iy4]: [i32; 2],
+    phase_x: usize,
+) -> [i16; 36] {
     let mut intermediate = [0i16; 36];
     let (x, y) = (i64::from(ix4), i64::from(iy4));
     let interior = x - 4 >= i64::from(params.first_x.max(0))
@@ -492,16 +553,18 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
         && x + 5 <= reference.width() as i64
         && y - 4 >= i64::from(params.first_y.max(0))
         && y + 4 <= i64::from(params.last_y);
-    let rounded = |sum: Simd<i32, 4>| {
-        ((sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32).cast::<i16>()
+    let rounded = |sum: i32x4<S>| {
+        let sum = (sum + (1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0;
+        let lanes = sum.saturating_narrow(sum).to_array();
+        [lanes[0], lanes[1], lanes[2], lanes[3]]
     };
     if interior {
         let col = (ix4 - 4) as usize;
         for (k, intermediate) in intermediate.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let row = reference.row((iy4 + k as i32 - 4) as usize);
-            let first = warp_source_lanes::<T, 8>(row, col);
-            let second = warp_source_lanes::<T, 8>(row, col + 1);
-            *intermediate = rounded(ext_unit::horizontal(first, second, phase_x)).to_array();
+            let first = warp_source_lanes(simd, row, col);
+            let second = warp_source_lanes(simd, row, col + 1);
+            *intermediate = rounded(ext_unit::horizontal(simd, first, second, phase_x));
         }
     } else {
         let taps_x = &EXT_WARPED_FILTERS[phase_x];
@@ -516,14 +579,16 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
             for (sample, &col) in window.iter_mut().zip(&cols) {
                 *sample = i32::from(row[col].to_u16());
             }
-            let mut sum = Simd::splat(0);
+            let mut sum = i32x4::splat(simd, 0);
             for (m, &tap) in taps_x.iter().enumerate() {
-                sum += Simd::splat(tap) * Simd::from_slice(&window[m..]);
+                if let Some(lanes) = window[m..].first_chunk::<4>() {
+                    sum += i32x4::load_array_ref(simd, lanes) * tap;
+                }
             }
-            *intermediate = rounded(sum).to_array();
+            *intermediate = rounded(sum);
         }
     }
-    Ok(ext_unit::vertical(&intermediate, phase_y, round1))
+    intermediate
 }
 
 fn ext_warp_predict_scaled<T: ReconSample>(
@@ -667,32 +732,49 @@ fn warp_predict_block_prepared_into<T: ReconSample>(
     } else {
         INTER_ROUND1_NON_COMPOUND
     };
-    warp_predict_section(reference, params, shear, round1, |row, rounded| {
-        output[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE]
-            .copy_from_slice(&rounded.to_array()); // splot-copy-ok: publish row-wide SIMD warp output
-        Ok(())
+    let rows = output.as_chunks_mut::<WARPED_BLOCK_SIZE>().0;
+    baseline_simd!(simd => {
+        warp_predict_section(simd, reference, params, shear, round1, |row, rounded| {
+            rounded.store_array(&mut rows[row]);
+            Ok(())
+        })
     })
 }
 
 /// Runs both § 7.13.3.19 passes for one 8x8 section and hands each rounded
 /// output row to `store`.
-fn warp_predict_section<T: ReconSample>(
+#[inline]
+fn warp_predict_section<S: Simd, T: ReconSample>(
+    simd: S,
     reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
     shear: &Shear,
     round1: u32,
-    store: impl FnMut(usize, Simd<i32, WARPED_BLOCK_SIZE>) -> Result<()>,
+    store: impl FnMut(usize, i32x8<S>) -> Result<()>,
 ) -> Result<()> {
     let projected = project_section_center(params)?;
-    let mut intermediate = [0i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
-    if let Some(source_origin) = interior_warp_source_origin(reference, params, &projected) {
+    let mut intermediate = [[0i16; WARPED_BLOCK_SIZE]; WARP_INTERMEDIATE_ROWS];
+    let origin = interior_warp_source_origin(reference, params, &projected);
+    if let Some(source_origin) = origin
+        && !(shear.alpha == 0 && shear.beta == 0 && two_tap_phase(projected.sx4).is_some())
+        && let Some(reference) = reference.as_u8()
+        && let Some(rows) = eight_bit::section(&reference, shear, &projected, source_origin, round1)
+    {
+        let mut store = store;
+        for (row, values) in rows.into_iter().enumerate() {
+            store(row, i32x8::load_array(simd, values))?;
+        }
+        return Ok(());
+    }
+    if let Some(source_origin) = origin {
         if shear.alpha == 0
             && shear.beta == 0
             && let Some(high) = two_tap_phase(projected.sx4)
         {
-            two_tap_intermediate(reference, source_origin, high, &mut intermediate);
+            two_tap_intermediate(simd, reference, source_origin, high, &mut intermediate);
         } else if shear.alpha != 0 && shear.beta == 0 {
             row_invariant_intermediate(
+                simd,
                 reference,
                 shear,
                 &projected,
@@ -701,6 +783,7 @@ fn warp_predict_section<T: ReconSample>(
             );
         } else {
             build_interior_intermediate(
+                simd,
                 reference,
                 shear,
                 &projected,
@@ -710,6 +793,7 @@ fn warp_predict_section<T: ReconSample>(
         }
     } else {
         build_intermediate(
+            simd,
             reference,
             params.bounds(),
             shear,
@@ -721,55 +805,57 @@ fn warp_predict_section<T: ReconSample>(
         && shear.delta == 0
         && let Some(high) = two_tap_phase(projected.sy4)
     {
-        return two_tap_output(high, &intermediate, round1, store);
+        return two_tap_output(simd, high, &intermediate, round1, store);
     }
     if shear.gamma != 0 && shear.delta == 0 {
-        return row_invariant_output(shear, &projected, &intermediate, round1, store);
+        return row_invariant_output(simd, shear, &projected, &intermediate, round1, store);
     }
-    build_output(shear, &projected, &intermediate, round1, store)
+    build_output(simd, shear, &projected, &intermediate, round1, store)
 }
 
 /// Runs the § 7.13.3.19 horizontal pass of a section with `beta == 0`, whose
 /// rows all use the same eight column filters: they are transposed once for
 /// the section instead of once per row.
-fn row_invariant_intermediate<T: ReconSample>(
+#[inline]
+fn row_invariant_intermediate<S: Simd, T: ReconSample>(
+    simd: S,
     reference: &ReferencePlaneView<'_, T>,
     shear: &Shear,
     projected: &ProjectedCenter,
     (first_col, first_row): (usize, usize),
-    intermediate: &mut [i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+    intermediate: &mut Intermediate,
 ) {
     let taps = transpose_warp_taps(core::array::from_fn(|col| {
-        warp_taps(projected.sx4 + shear.alpha * (col as i32 - 4))
+        warp_taps(simd, projected.sx4 + shear.alpha * (col as i32 - 4))
     }));
-    for row in 0..WARP_INTERMEDIATE_ROWS {
-        let windows = warp_windows(reference.row(first_row + row), first_col);
-        let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
-        for (window, taps) in windows.into_iter().zip(taps) {
-            sum += window.cast::<i32>() * taps.cast::<i32>();
-        }
-        let rounded = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
-        rounded.cast::<i16>().copy_to_slice(
-            &mut intermediate[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE],
-        );
+    let weights: [_; WARP_FILTER_TAPS / 2] =
+        core::array::from_fn(|pair| interleave_columns(taps[2 * pair], taps[2 * pair + 1]));
+    for (row, intermediate) in intermediate.iter_mut().enumerate() {
+        let [lo, hi] = warp_span(simd, reference.row(first_row + row), first_col);
+        let windows = sliding_windows(lo, hi);
+        let sum = paired_sum(windows, &weights);
+        *intermediate = round_intermediate(sum).to_array();
     }
 }
 
 /// Runs the § 7.13.3.19 vertical pass of a section with `delta == 0`, whose
 /// output rows all use the same eight column filters.
-fn row_invariant_output(
+#[inline]
+fn row_invariant_output<S: Simd>(
+    simd: S,
     shear: &Shear,
     projected: &ProjectedCenter,
-    intermediate: &[i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+    intermediate: &Intermediate,
     round1: u32,
-    mut store: impl FnMut(usize, Simd<i32, WARPED_BLOCK_SIZE>) -> Result<()>,
+    mut store: impl FnMut(usize, i32x8<S>) -> Result<()>,
 ) -> Result<()> {
-    let weights = paired_column_taps(core::array::from_fn(|col| {
-        warp_taps(projected.sy4 + shear.gamma * (col as i32 - 4))
-    }));
+    let weights = paired_column_taps(
+        simd,
+        core::array::from_fn(|col| warp_taps(simd, projected.sy4 + shear.gamma * (col as i32 - 4))),
+    );
     for row in 0..WARPED_BLOCK_SIZE {
-        let sum = paired_rows_sum(intermediate, row, &weights);
-        store(row, (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32)?;
+        let sum = paired_rows_sum(simd, intermediate, row, &weights);
+        store(row, (sum + (1 << (round1 - 1))) >> round1)?;
     }
     Ok(())
 }
@@ -799,51 +885,48 @@ fn two_tap_phase(phase: i32) -> Option<usize> {
 /// `i16`; `high` selects which of the two samples carries the 127.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn two_tap_horizontal<T: ReconSample, const LANES: usize>(
-    source: &[T],
+fn two_tap_horizontal<S: Simd, V: SimdInt<S, Element = i16>>(
+    load: impl Fn(usize) -> V,
     start: usize,
     high: usize,
-) -> Simd<i16, LANES> {
-    let main = warp_source_lanes(source, start + high);
-    let side = warp_source_lanes(source, start + 1 - high);
-    (main << (7 - INTER_ROUND0) as i16)
-        + ((side - main + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i16)
+) -> V {
+    let (main, side) = (load(start + high), load(start + 1 - high));
+    (main << (7 - INTER_ROUND0)) + ((side - main + (1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0)
 }
 
 /// Runs the § 7.13.3.19 horizontal pass of a two-tap phase over the interior
 /// window at `(first_col, first_row)`.
-fn two_tap_intermediate<T: ReconSample>(
+#[inline]
+fn two_tap_intermediate<S: Simd, T: ReconSample>(
+    simd: S,
     reference: &ReferencePlaneView<'_, T>,
     (first_col, first_row): (usize, usize),
     high: usize,
-    intermediate: &mut [i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+    intermediate: &mut Intermediate,
 ) {
-    for row in 0..WARP_INTERMEDIATE_ROWS {
+    for (row, intermediate) in intermediate.iter_mut().enumerate() {
         let source = reference.row(first_row + row);
-        two_tap_horizontal::<T, WARPED_BLOCK_SIZE>(source, first_col + TWO_TAP_FIRST, high)
-            .copy_to_slice(
-                &mut intermediate[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE],
-            );
+        let start = first_col + TWO_TAP_FIRST;
+        let load = |col| warp_source_lanes(simd, source, col);
+        *intermediate = two_tap_horizontal(load, start, high).into();
     }
 }
 
 /// Runs the § 7.13.3.19 vertical pass of a two-tap phase, which reads only
 /// intermediate rows [`TWO_TAP_FIRST`] through `TWO_TAP_FIRST + 8`.
-fn two_tap_output(
+#[inline]
+fn two_tap_output<S: Simd>(
+    simd: S,
     high: usize,
-    intermediate: &[i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+    intermediate: &Intermediate,
     round1: u32,
-    mut store: impl FnMut(usize, Simd<i32, WARPED_BLOCK_SIZE>) -> Result<()>,
+    mut store: impl FnMut(usize, i32x8<S>) -> Result<()>,
 ) -> Result<()> {
     for row in 0..WARPED_BLOCK_SIZE {
-        let top = (row + TWO_TAP_FIRST) * WARPED_BLOCK_SIZE;
-        let top_samples = Simd::<i16, WARPED_BLOCK_SIZE>::from_slice(&intermediate[top..]);
-        let bottom_samples =
-            Simd::<i16, WARPED_BLOCK_SIZE>::from_slice(&intermediate[top + WARPED_BLOCK_SIZE..]);
-        store(
-            row,
-            two_tap_vertical(top_samples, bottom_samples, high, round1).cast(),
-        )?;
+        let top = i16x8::load_array_ref(simd, &intermediate[row + TWO_TAP_FIRST]);
+        let bottom = i16x8::load_array_ref(simd, &intermediate[row + TWO_TAP_FIRST + 1]);
+        let rounded = two_tap_vertical(top, bottom, high, round1);
+        store(row, rounded.combine(rounded).widen().0)?;
     }
     Ok(())
 }
@@ -857,24 +940,24 @@ fn two_tap_output(
 /// Intermediates lie in `-6010..=22378`, so every step stays within `i16`.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn two_tap_vertical<const LANES: usize>(
-    top: Simd<i16, LANES>,
-    bottom: Simd<i16, LANES>,
+fn two_tap_vertical<S: Simd, V: SimdInt<S, Element = i16>>(
+    top: V,
+    bottom: V,
     high: usize,
     round1: u32,
-) -> Simd<i16, LANES> {
+) -> V {
     let (main, side) = if high == 0 {
         (top, bottom)
     } else {
         (bottom, top)
     };
-    let side = (side - main + Simd::splat(1 << (round1 - 1))) >> 7;
-    (main + side) >> (round1 - 7) as i16
+    let side = (side - main + (1 << (round1 - 1))) >> 7;
+    (main + side) >> (round1 - 7)
 }
 
 /// Admits the unclamped interior source origin for one 8x8 warp section.
 ///
-/// The taps reach `last_col`, but [`warp_windows`] reads one whole vector past
+/// The taps reach `last_col`, but [`warp_span`] reads one whole vector past
 /// `first_col + WARPED_BLOCK_SIZE`, so admission reserves the column after
 /// `last_col` as well. Sections at the final column fall to the clamped
 /// [`build_intermediate`], which yields the same samples.
@@ -1104,12 +1187,14 @@ fn checked_shift_left(value: i32, shift: u8, context: &'static str) -> Result<i3
         .ok_or(ReconError::ArithmeticOverflow { context })
 }
 
-fn build_intermediate<T: ReconSample>(
+#[inline]
+fn build_intermediate<S: Simd, T: ReconSample>(
+    simd: S,
     reference: &ReferencePlaneView<'_, T>,
     [first_x, first_y, last_x, last_y]: [i32; 4],
     shear: &Shear,
     projected: &ProjectedCenter,
-    intermediate: &mut [i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+    intermediate: &mut Intermediate,
 ) {
     const SOURCE_WINDOW: usize = WARPED_BLOCK_SIZE + WARP_FILTER_TAPS - 1;
     let first_col = projected.x4_int.saturating_sub(7);
@@ -1153,31 +1238,27 @@ fn build_intermediate<T: ReconSample>(
             }
             window[copied_end..].fill(source[source_end - 1].to_u16());
         }
-        let (lo, hi) = window.split_at(WARPED_BLOCK_SIZE);
-        let windows = sliding_windows(
-            Simd::<u16, WARPED_BLOCK_SIZE>::from_slice(lo).cast(),
-            Simd::<u16, WARPED_BLOCK_SIZE>::from_slice(hi).cast(),
-        );
-        let row = (i1 + 7) as usize;
-        horizontal_row(windows, projected.sx4 + shear.beta * i1, shear.alpha).copy_to_slice(
-            &mut intermediate[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE],
-        );
+        let (halves, _) = window.as_chunks::<WARPED_BLOCK_SIZE>();
+        let half = |half: usize| u16x8::load_array_ref(simd, &halves[half]).bitcast();
+        let sx = projected.sx4 + shear.beta * i1;
+        let span = [half(0), half(1)];
+        intermediate[(i1 + 7) as usize] = horizontal_row(simd, span, sx, shear.alpha).into();
     }
 }
 
-fn build_interior_intermediate<T: ReconSample>(
+#[inline]
+fn build_interior_intermediate<S: Simd, T: ReconSample>(
+    simd: S,
     reference: &ReferencePlaneView<'_, T>,
     shear: &Shear,
     projected: &ProjectedCenter,
     (first_col, first_row): (usize, usize),
-    intermediate: &mut [i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+    intermediate: &mut Intermediate,
 ) {
-    for row in 0..WARP_INTERMEDIATE_ROWS {
-        let i1 = row as i32 - 7;
-        let windows = warp_windows(reference.row(first_row + row), first_col);
-        horizontal_row(windows, projected.sx4 + shear.beta * i1, shear.alpha).copy_to_slice(
-            &mut intermediate[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE],
-        );
+    for (row, intermediate) in intermediate.iter_mut().enumerate() {
+        let sx = projected.sx4 + shear.beta * (row as i32 - 7);
+        let span = warp_span(simd, reference.row(first_row + row), first_col);
+        *intermediate = horizontal_row(simd, span, sx, shear.alpha).into();
     }
 }
 
@@ -1185,127 +1266,138 @@ fn build_interior_intermediate<T: ReconSample>(
 /// windows, whose column `col` uses the filter of phase `sx + alpha * (col - 4)`.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn horizontal_row(
-    windows: [Simd<i16, WARPED_BLOCK_SIZE>; 8],
-    sx: i32,
-    alpha: i32,
-) -> Simd<i16, WARPED_BLOCK_SIZE> {
-    let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
-    if alpha == 0 {
-        let taps = warp_taps(sx);
-        for (tap, window) in windows.into_iter().enumerate() {
-            sum = warp_tap_mac(sum, window, taps[tap]);
-        }
+fn horizontal_row<S: Simd>(simd: S, [lo, hi]: [i16x8<S>; 2], sx: i32, alpha: i32) -> i16x8<S> {
+    let sum = if alpha == 0 {
+        paired_sum(
+            sliding_windows(lo, hi),
+            &tap_pairs(simd, warp_taps(simd, sx)),
+        )
     } else {
-        sum = column_dot_products(core::array::from_fn(|col| {
-            windows[col].cast::<i32>() * warp_taps(sx + alpha * (col as i32 - 4)).cast::<i32>()
-        }));
-    }
-    ((sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32).cast()
+        let taps = |col: usize| warp_taps(simd, sx + alpha * (col as i32 - 4));
+        let near = lo.combine(lo.slide::<4>(hi));
+        let far = hi.combine(hi.slide::<4>(hi));
+        let quad = |col, windows: i16x16<S>| {
+            windows.pairwise_dot_product(taps(col).combine(taps(col + 4)))
+        };
+        column_dot_products(
+            simd,
+            [
+                quad(0, near),
+                quad(1, near.slide_within_blocks::<1>(far)),
+                quad(2, near.slide_within_blocks::<2>(far)),
+                quad(3, near.slide_within_blocks::<3>(far)),
+            ],
+        )
+    };
+    round_intermediate(sum)
 }
 
-/// Sums the eight lanes of each column's tap products into lane `col`.
-///
-/// Column `col` of a sheared row is the dot product of its own filter with
-/// its own window, so the products reduce with three levels of pairwise adds
-/// (`addp`) instead of transposing the filters first.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn column_dot_products(
-    products: [Simd<i32, WARP_FILTER_TAPS>; WARPED_BLOCK_SIZE],
-) -> Simd<i32, WARPED_BLOCK_SIZE> {
-    let pairwise = |a: Simd<i32, 4>, b: Simd<i32, 4>| {
-        simd_swizzle!(a, b, [0, 2, 4, 6]) + simd_swizzle!(a, b, [1, 3, 5, 7])
-    };
-    let quads: [Simd<i32, 4>; WARPED_BLOCK_SIZE] = core::array::from_fn(|col| {
-        let product = products[col];
-        pairwise(
-            simd_swizzle!(product, [0, 1, 2, 3]),
-            simd_swizzle!(product, [4, 5, 6, 7]),
-        )
-    });
-    let pairs: [Simd<i32, 4>; 4] =
-        core::array::from_fn(|k| pairwise(quads[2 * k], quads[2 * k + 1]));
-    let low = pairwise(pairs[0], pairs[1]);
-    let high = pairwise(pairs[2], pairs[3]);
-    simd_swizzle!(low, high, [0, 1, 2, 3, 4, 5, 6, 7])
+fn round_intermediate<S: Simd>(sum: i32x8<S>) -> i16x8<S> {
+    let (low, high) = ((sum + (1i32 << (INTER_ROUND0 - 1))) >> INTER_ROUND0).split();
+    low.saturating_narrow(high)
 }
+
+/// Sums the pair sums of each column's tap products, `quads[k]` holding columns
+/// `k` and `k + 4` in its two 128-bit blocks, into lane `col`.
+///
+/// Column `col` of a sheared row is the dot product of its own filter with
+/// its own window, so the products reduce with two more levels of pairwise
+/// adds instead of transposing the filters first.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn column_dot_products<S: Simd>(simd: S, quads: [i32x8<S>; WARPED_BLOCK_SIZE / 2]) -> i32x8<S> {
+    let pairs = [
+        hadd_blocks(simd, quads[0], quads[1]),
+        hadd_blocks(simd, quads[2], quads[3]),
+    ];
+    hadd_blocks(simd, pairs[0], pairs[1])
+}
+
+/// The pair sums `[a0 + a1, a2 + a3, b0 + b1, b2 + b3]` of each 128-bit block.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn hadd_blocks<S: Simd>(simd: S, a: i32x8<S>, b: i32x8<S>) -> i32x8<S> {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(avx2) = Level::baseline().as_avx2() {
+        return i32x8::load_array(simd, avx2_hadd_blocks(avx2, a.to_array(), b.to_array()));
+    }
+    let pairwise = |a: i32x4<S>, b: i32x4<S>| a.unzip_low(b) + a.unzip_high(b);
+    let ((a0, a1), (b0, b1)) = (a.split(), b.split());
+    pairwise(a0, b0).combine(pairwise(a1, b1))
+}
+
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    #[inline(always)]
+    fn avx2_hadd_blocks(avx2: Avx2, a: [i32; 8], b: [i32; 8]) -> [i32; 8] {
+        use core::arch::x86_64::{__m256i, _mm256_hadd_epi32};
+        let a: __m256i = i32x8::load_array(avx2, a).into();
+        let b: __m256i = i32x8::load_array(avx2, b).into();
+        i32x8::<Avx2>::simd_from(avx2, _mm256_hadd_epi32(a, b)).to_array()
+    }
+);
 
 /// Transposes the eight per-column § 7.13.3.20 warp filters into per-tap lanes.
 ///
 /// Reading `columns[col][tap]` one element at a time costs 64 scalar byte loads
 /// and 64 vector lane inserts per output row, several times the multiply-
 /// accumulate work they feed. Each column's taps are contiguous, so they load
-/// as one vector; the three swizzle stages below are the standard 8x8 transpose
-/// and lower to `trn1`/`trn2` pairs.
+/// as one vector; the three interleave stages below are the standard 8x8
+/// transpose of 16-, 32- and 64-bit lanes.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn transpose_warp_taps(
-    rows: [Simd<i16, WARP_FILTER_TAPS>; WARPED_BLOCK_SIZE],
-) -> [Simd<i16, WARPED_BLOCK_SIZE>; WARP_FILTER_TAPS] {
-    const TRN1: [usize; 8] = [0, 8, 2, 10, 4, 12, 6, 14];
-    const TRN2: [usize; 8] = [1, 9, 3, 11, 5, 13, 7, 15];
-    const TRN1_PAIRS: [usize; 8] = [0, 1, 8, 9, 4, 5, 12, 13];
-    const TRN2_PAIRS: [usize; 8] = [2, 3, 10, 11, 6, 7, 14, 15];
-    const TRN1_QUADS: [usize; 8] = [0, 1, 2, 3, 8, 9, 10, 11];
-    const TRN2_QUADS: [usize; 8] = [4, 5, 6, 7, 12, 13, 14, 15];
-    let ones = [
-        simd_swizzle!(rows[0], rows[1], TRN1),
-        simd_swizzle!(rows[0], rows[1], TRN2),
-        simd_swizzle!(rows[2], rows[3], TRN1),
-        simd_swizzle!(rows[2], rows[3], TRN2),
-        simd_swizzle!(rows[4], rows[5], TRN1),
-        simd_swizzle!(rows[4], rows[5], TRN2),
-        simd_swizzle!(rows[6], rows[7], TRN1),
-        simd_swizzle!(rows[6], rows[7], TRN2),
-    ];
+fn transpose_warp_taps<S: Simd>(
+    rows: [i16x8<S>; WARPED_BLOCK_SIZE],
+) -> [i16x8<S>; WARP_FILTER_TAPS] {
+    let words = |a: i16x8<S>, b: i16x8<S>| {
+        let (low, high) = a.bitcast::<i32x4<S>>().interleave(b.bitcast::<i32x4<S>>());
+        (low.bitcast::<i16x8<S>>(), high.bitcast::<i16x8<S>>())
+    };
+    let quads = |a: i16x8<S>, b: i16x8<S>| {
+        let (low, high) = a.bitcast::<i64x2<S>>().interleave(b.bitcast::<i64x2<S>>());
+        [low.bitcast::<i16x8<S>>(), high.bitcast::<i16x8<S>>()]
+    };
+    let ones: [(i16x8<S>, i16x8<S>); 4] =
+        core::array::from_fn(|k| rows[2 * k].interleave(rows[2 * k + 1]));
     let pairs = [
-        simd_swizzle!(ones[0], ones[2], TRN1_PAIRS),
-        simd_swizzle!(ones[1], ones[3], TRN1_PAIRS),
-        simd_swizzle!(ones[0], ones[2], TRN2_PAIRS),
-        simd_swizzle!(ones[1], ones[3], TRN2_PAIRS),
-        simd_swizzle!(ones[4], ones[6], TRN1_PAIRS),
-        simd_swizzle!(ones[5], ones[7], TRN1_PAIRS),
-        simd_swizzle!(ones[4], ones[6], TRN2_PAIRS),
-        simd_swizzle!(ones[5], ones[7], TRN2_PAIRS),
+        words(ones[0].0, ones[1].0),
+        words(ones[0].1, ones[1].1),
+        words(ones[2].0, ones[3].0),
+        words(ones[2].1, ones[3].1),
     ];
-    [
-        simd_swizzle!(pairs[0], pairs[4], TRN1_QUADS),
-        simd_swizzle!(pairs[1], pairs[5], TRN1_QUADS),
-        simd_swizzle!(pairs[2], pairs[6], TRN1_QUADS),
-        simd_swizzle!(pairs[3], pairs[7], TRN1_QUADS),
-        simd_swizzle!(pairs[0], pairs[4], TRN2_QUADS),
-        simd_swizzle!(pairs[1], pairs[5], TRN2_QUADS),
-        simd_swizzle!(pairs[2], pairs[6], TRN2_QUADS),
-        simd_swizzle!(pairs[3], pairs[7], TRN2_QUADS),
-    ]
+    let [t0, t1] = quads(pairs[0].0, pairs[2].0);
+    let [t2, t3] = quads(pairs[0].1, pairs[2].1);
+    let [t4, t5] = quads(pairs[1].0, pairs[3].0);
+    let [t6, t7] = quads(pairs[1].1, pairs[3].1);
+    [t0, t1, t2, t3, t4, t5, t6, t7]
 }
 
-fn build_output(
+#[inline]
+fn build_output<S: Simd>(
+    simd: S,
     shear: &Shear,
     projected: &ProjectedCenter,
-    intermediate: &[i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+    intermediate: &Intermediate,
     round1: u32,
-    mut store: impl FnMut(usize, Simd<i32, WARPED_BLOCK_SIZE>) -> Result<()>,
+    mut store: impl FnMut(usize, i32x8<S>) -> Result<()>,
 ) -> Result<()> {
     for row in 0..WARPED_BLOCK_SIZE {
         let i1 = row as i32 - 4;
         let weights = if shear.gamma == 0 {
-            let taps = warp_taps(projected.sy4 + shear.delta * i1);
-            core::array::from_fn(|pair| {
-                let (a, b) = (taps[2 * pair], taps[2 * pair + 1]);
-                Simd::from_array(core::array::from_fn(
-                    |lane| if lane % 2 == 0 { a } else { b },
-                ))
-            })
+            tap_pairs(simd, warp_taps(simd, projected.sy4 + shear.delta * i1))
         } else {
-            paired_column_taps(core::array::from_fn(|col| {
-                let i2 = col as i32 - 4;
-                warp_taps(projected.sy4 + shear.gamma * i2 + shear.delta * i1)
-            }))
+            paired_column_taps(
+                simd,
+                core::array::from_fn(|col| {
+                    let i2 = col as i32 - 4;
+                    warp_taps(simd, projected.sy4 + shear.gamma * i2 + shear.delta * i1)
+                }),
+            )
         };
-        let sum = paired_rows_sum(intermediate, row, &weights);
-        store(row, (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32)?;
+        let sum = paired_rows_sum(simd, intermediate, row, &weights);
+        store(row, (sum + (1i32 << (round1 - 1))) >> round1)?;
     }
     Ok(())
 }
@@ -1314,21 +1406,53 @@ fn build_output(
 /// each pair of intermediate rows interleaves into one multiply-add.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn paired_rows_sum(
-    intermediate: &[i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+fn paired_rows_sum<S: Simd>(
+    simd: S,
+    intermediate: &Intermediate,
     row: usize,
-    weights: &[Simd<i16, 16>; WARP_FILTER_TAPS / 2],
-) -> Simd<i32, WARPED_BLOCK_SIZE> {
-    let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
-    for (pair, &weights) in weights.iter().enumerate() {
-        let rows: Simd<i16, 16> =
-            Simd::from_slice(&intermediate[(row + 2 * pair) * WARPED_BLOCK_SIZE..]);
-        let rows = simd_swizzle!(rows, [0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15]);
-        let product = rows.cast::<i32>() * weights.cast::<i32>();
-        sum += simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
-            + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15]);
-    }
-    sum
+    weights: &[i16x16<S>; WARP_FILTER_TAPS / 2],
+) -> i32x8<S> {
+    let pair = |pair: usize| {
+        let rows = intermediate[row + 2 * pair..]
+            .as_flattened()
+            .first_chunk::<16>();
+        rows.map_or(i16x16::splat(simd, 0), |rows| {
+            i16x16::load_array_ref(simd, rows)
+        })
+        .split()
+    };
+    let [(r0, r1), (r2, r3), (r4, r5), (r6, r7)] = core::array::from_fn(pair);
+    paired_sum([r0, r1, r2, r3, r4, r5, r6, r7], weights)
+}
+
+/// The column sums of `rows[2p][c] * weights[p][2c] + rows[2p + 1][c] *
+/// weights[p][2c + 1]` over the four tap pairs `p`, one multiply-add each.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn paired_sum<S: Simd>(
+    rows: [i16x8<S>; WARP_FILTER_TAPS],
+    weights: &[i16x16<S>; WARP_FILTER_TAPS / 2],
+) -> i32x8<S> {
+    let product = |pair: usize| {
+        interleave_columns(rows[2 * pair], rows[2 * pair + 1]).pairwise_dot_product(weights[pair])
+    };
+    product(0) + product(1) + (product(2) + product(3))
+}
+
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn interleave_columns<S: Simd>(a: i16x8<S>, b: i16x8<S>) -> i16x16<S> {
+    let (low, high) = a.interleave(b);
+    low.combine(high)
+}
+
+/// One `Warped_Filters` row's tap pairs `2j, 2j + 1`, each repeated across
+/// the eight columns.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn tap_pairs<S: Simd>(simd: S, taps: i16x8<S>) -> [i16x16<S>; WARP_FILTER_TAPS / 2] {
+    let pairs = taps.bitcast::<i32x4<S>>().to_array();
+    pairs.map(|pair| i32x8::splat(simd, pair).bitcast())
 }
 
 /// Regroups the eight per-column § 7.13.3.20 filters into the weights of tap
@@ -1338,95 +1462,125 @@ fn paired_rows_sum(
 /// pairs within each 128-bit half.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn paired_column_taps(
-    columns: [Simd<i16, WARP_FILTER_TAPS>; WARPED_BLOCK_SIZE],
-) -> [Simd<i16, 16>; WARP_FILTER_TAPS / 2] {
-    let words = columns.map(|taps| Simd::<i32, 4>::from_ne_bytes(taps.to_ne_bytes()));
-    let halves: [Simd<i32, 8>; 4] = core::array::from_fn(|col| {
-        simd_swizzle!(words[col], words[col + 4], [0, 1, 2, 3, 4, 5, 6, 7])
-    });
-    let low = [
-        simd_swizzle!(halves[0], halves[1], [0, 8, 1, 9, 4, 12, 5, 13]),
-        simd_swizzle!(halves[2], halves[3], [0, 8, 1, 9, 4, 12, 5, 13]),
-    ];
-    let high = [
-        simd_swizzle!(halves[0], halves[1], [2, 10, 3, 11, 6, 14, 7, 15]),
-        simd_swizzle!(halves[2], halves[3], [2, 10, 3, 11, 6, 14, 7, 15]),
-    ];
-    let pairs = [
-        simd_swizzle!(low[0], low[1], [0, 1, 8, 9, 4, 5, 12, 13]),
-        simd_swizzle!(low[0], low[1], [2, 3, 10, 11, 6, 7, 14, 15]),
-        simd_swizzle!(high[0], high[1], [0, 1, 8, 9, 4, 5, 12, 13]),
-        simd_swizzle!(high[0], high[1], [2, 3, 10, 11, 6, 7, 14, 15]),
-    ];
-    pairs.map(|pair| Simd::from_ne_bytes(pair.to_ne_bytes()))
+fn paired_column_taps<S: Simd>(
+    simd: S,
+    columns: [i16x8<S>; WARPED_BLOCK_SIZE],
+) -> [i16x16<S>; WARP_FILTER_TAPS / 2] {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(avx2) = Level::baseline().as_avx2() {
+        let pairs = avx2_paired_column_taps(avx2, columns.map(SimdBase::to_array));
+        return pairs.map(|pair| i16x16::load_array(simd, pair));
+    }
+    let half = |first: usize| {
+        let words = |col: usize| columns[first + col].bitcast::<i32x4<S>>();
+        let pairs = |a: i32x4<S>, b: i32x4<S>| {
+            let (low, high) = a.bitcast::<i64x2<S>>().interleave(b.bitcast::<i64x2<S>>());
+            [low.bitcast::<i32x4<S>>(), high.bitcast::<i32x4<S>>()]
+        };
+        let (zero, one) = words(0).interleave(words(1));
+        let (two, three) = words(2).interleave(words(3));
+        let [p0, p1] = pairs(zero, two);
+        let [p2, p3] = pairs(one, three);
+        [p0, p1, p2, p3]
+    };
+    let (low, high) = (half(0), half(WARPED_BLOCK_SIZE / 2));
+    core::array::from_fn(|pair| low[pair].combine(high[pair]).bitcast())
 }
 
-/// Reads `LANES` consecutive reference samples as `i16` lanes.
+#[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    #[inline(always)]
+    fn avx2_paired_column_taps(
+        avx2: Avx2,
+        columns: [[i16; WARPED_BLOCK_SIZE]; WARPED_BLOCK_SIZE],
+    ) -> [[i16; 16]; WARP_FILTER_TAPS / 2] {
+        use core::arch::x86_64::{
+            __m256i, _mm256_unpackhi_epi32, _mm256_unpackhi_epi64, _mm256_unpacklo_epi32,
+            _mm256_unpacklo_epi64,
+        };
+        let half = |col: usize| -> __m256i {
+            let column = |col| i16x8::load_array(avx2, columns[col]);
+            column(col).combine(column(col + 4)).into()
+        };
+        let (near, far) = ((half(0), half(1)), (half(2), half(3)));
+        let low = (
+            _mm256_unpacklo_epi32(near.0, near.1),
+            _mm256_unpacklo_epi32(far.0, far.1),
+        );
+        let high = (
+            _mm256_unpackhi_epi32(near.0, near.1),
+            _mm256_unpackhi_epi32(far.0, far.1),
+        );
+        [
+            _mm256_unpacklo_epi64(low.0, low.1),
+            _mm256_unpackhi_epi64(low.0, low.1),
+            _mm256_unpacklo_epi64(high.0, high.1),
+            _mm256_unpackhi_epi64(high.0, high.1),
+        ]
+        .map(|pair| i16x16::<Avx2>::simd_from(avx2, pair).to_array())
+    }
+);
+
+/// Reads eight consecutive reference samples as `i16` lanes.
 ///
 /// § 6 Table 6.3 admits only `BitDepth` 8 and 10, so every reference sample is
 /// at most 1023 and the reinterpretation preserves the value. Keeping the lanes
-/// 16-bit is what lets [`warp_tap_mac`] fold its widening into the multiply,
-/// the same narrowing the § 7.13.3.18 sub-pel taps already use.
+/// 16-bit is what lets the multiply-adds take them without widening, the same
+/// narrowing the § 7.13.3.18 sub-pel taps already use.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn warp_source_lanes<T: ReconSample, const LANES: usize>(
-    source: &[T],
-    start: usize,
-) -> Simd<i16, LANES> {
-    reference_lanes::<LANES, T>(source, start).cast()
+fn warp_source_lanes<S: Simd, T: ReconSample>(simd: S, source: &[T], start: usize) -> i16x8<S> {
+    let Some(source) = source.get(start..start.wrapping_add(8)) else {
+        return i16x8::splat(simd, 0);
+    };
+    if let Some(lanes) = T::u16_slice(source).and_then(<[u16]>::first_chunk::<8>) {
+        return u16x8::load_array_ref(simd, lanes).bitcast();
+    }
+    if let Some(lanes) = T::u8_slice(source).and_then(<[u8]>::first_chunk::<8>) {
+        let bytes = u64x2::splat(simd, u64::from_le_bytes(*lanes)).bitcast::<u8x16<S>>();
+        return bytes.widen().0.bitcast();
+    }
+    i16x8::splat(simd, 0)
 }
 
-/// Builds the eight overlapping tap windows from two loads instead of eight.
+/// Reads the 16-sample span `source[first_col..][..16]` whose sliding windows
+/// are the eight tap windows of a row, with one load instead of eight.
 ///
 /// Window `t` is `source[first_col + t ..][..8]`. Reading the whole 16-sample
 /// span once and sliding it by lane leaves each window's values untouched, so
 /// the § 7.13.3.19 sum is unchanged; only the load shape differs.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn warp_windows<T: ReconSample>(
-    source: &[T],
-    first_col: usize,
-) -> [Simd<i16, WARPED_BLOCK_SIZE>; 8] {
-    sliding_windows(
-        warp_source_lanes(source, first_col),
-        warp_source_lanes(source, first_col + WARPED_BLOCK_SIZE),
-    )
+fn warp_span<S: Simd, T: ReconSample>(simd: S, source: &[T], first_col: usize) -> [i16x8<S>; 2] {
+    let zero = i16x8::splat(simd, 0);
+    let Some(source) = source.get(first_col..first_col.wrapping_add(16)) else {
+        return [zero; 2];
+    };
+    if let Some(span) = T::u16_slice(source).and_then(<[u16]>::first_chunk::<16>) {
+        let (lo, hi) = u16x16::load_array_ref(simd, span).split();
+        return [lo.bitcast(), hi.bitcast()];
+    }
+    if let Some(span) = T::u8_slice(source).and_then(<[u8]>::first_chunk::<16>) {
+        let (lo, hi) = u8x16::load_array_ref(simd, span).widen();
+        return [lo.bitcast(), hi.bitcast()];
+    }
+    [zero; 2]
 }
 
 /// The eight windows `[lo, hi][t..t + 8]` of a 16-sample span.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn sliding_windows(
-    lo: Simd<i16, WARPED_BLOCK_SIZE>,
-    hi: Simd<i16, WARPED_BLOCK_SIZE>,
-) -> [Simd<i16, WARPED_BLOCK_SIZE>; 8] {
+fn sliding_windows<S: Simd>(lo: i16x8<S>, hi: i16x8<S>) -> [i16x8<S>; 8] {
     [
         lo,
-        simd_swizzle!(lo, hi, [1, 2, 3, 4, 5, 6, 7, 8]),
-        simd_swizzle!(lo, hi, [2, 3, 4, 5, 6, 7, 8, 9]),
-        simd_swizzle!(lo, hi, [3, 4, 5, 6, 7, 8, 9, 10]),
-        simd_swizzle!(lo, hi, [4, 5, 6, 7, 8, 9, 10, 11]),
-        simd_swizzle!(lo, hi, [5, 6, 7, 8, 9, 10, 11, 12]),
-        simd_swizzle!(lo, hi, [6, 7, 8, 9, 10, 11, 12, 13]),
-        simd_swizzle!(lo, hi, [7, 8, 9, 10, 11, 12, 13, 14]),
+        lo.slide::<1>(hi),
+        lo.slide::<2>(hi),
+        lo.slide::<3>(hi),
+        lo.slide::<4>(hi),
+        lo.slide::<5>(hi),
+        lo.slide::<6>(hi),
+        lo.slide::<7>(hi),
     ]
-}
-
-/// Accumulates one AV2 § 7.13.3.19 warp tap across the eight prediction columns.
-///
-/// Both factors are 16-bit: samples fit `i16` by [`warp_source_lanes`], and
-/// every `Warped_Filters` tap is an `i8`. Sign-extending both sides lets the
-/// target fold the widening into one multiply-accumulate instead of widening
-/// each operand into 32 bits first.
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
-#[inline(always)]
-fn warp_tap_mac(
-    accumulator: Simd<i32, WARPED_BLOCK_SIZE>,
-    samples: Simd<i16, WARPED_BLOCK_SIZE>,
-    tap: i16,
-) -> Simd<i32, WARPED_BLOCK_SIZE> {
-    accumulator + samples.cast::<i32>() * Simd::<i16, WARPED_BLOCK_SIZE>::splat(tap).cast()
 }
 
 #[cfg(test)]
@@ -1457,14 +1611,20 @@ static WARPED_TAPS: [[i16; WARP_FILTER_TAPS]; 512] = {
 /// the mask changes nothing.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-fn warp_taps(phase: i32) -> Simd<i16, WARP_FILTER_TAPS> {
+fn warp_taps<S: Simd>(simd: S, phase: i32) -> i16x8<S> {
+    i16x8::load_array_ref(simd, &WARPED_TAPS[filter_index(phase)])
+}
+
+/// The `Warped_Filters` row of `phase`, masked into the padded table.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn filter_index(phase: i32) -> usize {
     const BIAS: i32 =
         (1 << (WARPEDDIFF_PREC_BITS - 1)) + (WARP_FILTER_CENTER << WARPEDDIFF_PREC_BITS);
     debug_assert!(
         (0..WARPED_FILTERS.len() as i32).contains(&((phase + BIAS) >> WARPEDDIFF_PREC_BITS))
     );
-    let index = ((phase + BIAS) as u32 >> WARPEDDIFF_PREC_BITS) as usize & (WARPED_TAPS.len() - 1);
-    Simd::from_array(WARPED_TAPS[index])
+    ((phase + BIAS) as u32 >> WARPEDDIFF_PREC_BITS) as usize & (WARPED_TAPS.len() - 1)
 }
 
 /// `coefficient_x * src_x + coefficient_y * src_y + translation`, or an

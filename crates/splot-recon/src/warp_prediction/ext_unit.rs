@@ -4,35 +4,32 @@
 //! The two passes of an unscaled § 7.13.3.20 extended-warp 4x4 unit as
 //! `i16` multiply-adds.
 //!
-//! A horizontal output column is the dot product of its six samples with
-//! the phase's taps; two columns share one 16-lane vector whose halves are the
-//! sample windows at the unit's first and second column, and the taps shifted
-//! by two lanes give the third and fourth. An 8- or 10-bit horizontal value
-//! stays below `155 * 1023 / 8`, so the intermediate fits `i16`, and the
-//! vertical pass pairs consecutive intermediate rows as in
+//! A horizontal output column is the dot product of its six samples with the
+//! phase's taps; the window at the unit's first (second) column fills both
+//! halves of a 16-lane vector, and the taps at lane 0 and shifted by two lanes
+//! give its first and third (second and fourth) columns. An 8- or 10-bit
+//! horizontal value stays below `155 * 1023 / 8`, so the intermediate fits
+//! `i16`, and the vertical pass pairs consecutive intermediate rows as in
 //! `subpel_mc::pairs`. Integer sums are exact, so the regrouping leaves the
 //! per-tap result unchanged.
 
-use super::EXT_WARP_TAPS;
+use super::{EXT_WARP_TAPS, hadd_blocks};
+use fearless_simd::{Simd, i16x8, i16x16, i32x4, i32x8, prelude::*};
 use splot_core::tables::warp_filter::EXT_WARPED_FILTERS;
-use std::simd::{Simd, num::SimdInt, simd_swizzle};
 
 const PHASES: usize = EXT_WARPED_FILTERS.len();
 
-/// Each phase's taps at lanes `0..6` (and `8..14`), then shifted to lanes
-/// `2..8` (and `10..16`). Loading them keeps the weights opaque, which keeps
-/// the multiply-add one `pmaddwd`.
-const HORIZONTAL: [[[i16; 16]; 2]; PHASES] = {
-    let mut taps = [[[0; 16]; 2]; PHASES];
+/// Each phase's taps at lanes `0..6`, then shifted to lanes `10..16`. Loading
+/// them keeps the weights opaque, which keeps the multiply-add one `pmaddwd`.
+const HORIZONTAL: [[i16; 16]; PHASES] = {
+    let mut taps = [[0; 16]; PHASES];
     let mut phase = 0;
     while phase < PHASES {
         let mut tap = 0;
         while tap < EXT_WARP_TAPS {
             let value = EXT_WARPED_FILTERS[phase][tap] as i16;
-            taps[phase][0][tap] = value;
-            taps[phase][0][8 + tap] = value;
-            taps[phase][1][2 + tap] = value;
-            taps[phase][1][10 + tap] = value;
+            taps[phase][tap] = value;
+            taps[phase][10 + tap] = value;
             tap += 1;
         }
         phase += 1;
@@ -56,65 +53,59 @@ const VERTICAL: [[[i16; 16]; EXT_WARP_TAPS / 2]; PHASES] = {
     pairs
 };
 
-#[allow(clippy::inline_always, reason = "measured warp hot path")]
-#[inline(always)]
-fn multiply_add_pairs(values: Simd<i16, 16>, weights: Simd<i16, 16>) -> Simd<i32, 8> {
-    let product = values.cast::<i32>() * weights.cast::<i32>();
-    simd_swizzle!(product, [0, 2, 4, 6, 8, 10, 12, 14])
-        + simd_swizzle!(product, [1, 3, 5, 7, 9, 11, 13, 15])
-}
-
 /// The four horizontal sums of a row from its samples at the unit's first
 /// column (`first`) and the next (`second`).
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-pub(super) fn horizontal(first: Simd<i16, 8>, second: Simd<i16, 8>, phase: usize) -> Simd<i32, 4> {
-    let taps = &HORIZONTAL[phase % PHASES];
-    let samples: Simd<i16, 16> = simd_swizzle!(
-        first,
-        second,
-        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-    );
-    let near = multiply_add_pairs(samples, Simd::from_array(taps[0]));
-    let far = multiply_add_pairs(samples, Simd::from_array(taps[1]));
-    let halves = simd_swizzle!(near, far, [0, 2, 8, 10, 4, 6, 12, 14])
-        + simd_swizzle!(near, far, [1, 3, 9, 11, 5, 7, 13, 15]);
-    simd_swizzle!(halves, [0, 4, 2, 6]) + simd_swizzle!(halves, [1, 5, 3, 7])
+pub(super) fn horizontal<S: Simd>(
+    simd: S,
+    first: i16x8<S>,
+    second: i16x8<S>,
+    phase: usize,
+) -> i32x4<S> {
+    let taps = i16x16::load_array_ref(simd, &HORIZONTAL[phase % PHASES]);
+    let sums = |window: i16x8<S>| window.combine(window).pairwise_dot_product(taps);
+    let (low, high) = hadd_blocks(simd, sums(first), sums(second)).split();
+    low.unzip_low(high) + low.unzip_high(high)
 }
 
 /// `Round2` of the vertical sums of the unit's nine intermediate rows of four
 /// lanes, in row-major order.
 #[allow(clippy::inline_always, reason = "measured warp hot path")]
 #[inline(always)]
-pub(super) fn vertical(intermediate: &[i16; 36], phase: usize, round1: u32) -> [i32; 16] {
+pub(super) fn vertical<S: Simd>(
+    simd: S,
+    intermediate: &[i16; 36],
+    phase: usize,
+    round1: u32,
+) -> [i32; 16] {
     let pairs = &VERTICAL[phase % PHASES];
-    let line = |k: usize| Simd::<i16, 16>::from_slice(&intermediate[4 * k..]);
-    let bias = Simd::<i32, 8>::splat(1 << (round1 - 1));
+    let line = |k: usize| {
+        let lanes = intermediate
+            .get(4 * k..)
+            .and_then(<[i16]>::first_chunk::<16>);
+        lanes.map_or(i16x16::splat(simd, 0), |lanes| {
+            i16x16::load_array_ref(simd, lanes)
+        })
+    };
+    let bias = i32x8::splat(simd, 1 << (round1 - 1));
     let (mut low, mut high) = (bias, bias);
     for (pair, weights) in pairs.iter().enumerate() {
-        let (a, b) = (line(2 * pair), line(2 * pair + 1));
-        let weights = Simd::from_array(*weights);
-        low += multiply_add_pairs(
-            simd_swizzle!(
-                a,
-                b,
-                [0, 16, 1, 17, 2, 18, 3, 19, 8, 24, 9, 25, 10, 26, 11, 27]
-            ),
-            weights,
-        );
-        high += multiply_add_pairs(
-            simd_swizzle!(
-                a,
-                b,
-                [4, 20, 5, 21, 6, 22, 7, 23, 12, 28, 13, 29, 14, 30, 15, 31]
-            ),
-            weights,
-        );
+        let ((a0, a1), (b0, b1)) = (line(2 * pair).split(), line(2 * pair + 1).split());
+        let weights = i16x16::load_array_ref(simd, weights);
+        let (near, far) = (a0.interleave(b0), a1.interleave(b1));
+        low += near.0.combine(far.0).pairwise_dot_product(weights);
+        high += near.1.combine(far.1).pairwise_dot_product(weights);
     }
-    let rows: Simd<i32, 16> = simd_swizzle!(
-        low,
-        high,
-        [0, 1, 2, 3, 8, 9, 10, 11, 4, 5, 6, 7, 12, 13, 14, 15]
-    );
-    (rows >> round1 as i32).to_array()
+    let ((row0, row2), (row1, row3)) = ((low >> round1).split(), (high >> round1).split());
+    let mut rows = [0; 16];
+    for (rows, row) in rows
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip([row0, row1, row2, row3])
+    {
+        *rows = row.to_array();
+    }
+    rows
 }
