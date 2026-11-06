@@ -242,7 +242,8 @@ pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffOrdinaryStagedLosslessNonZeroInput,
-) -> Result<TransformCoeffBlockState, CoeffOrdinaryBranchError> {
+    block: &mut TransformCoeffBlockState,
+) -> Result<(), CoeffOrdinaryBranchError> {
     let CoeffOrdinaryStagedLosslessNonZeroInput {
         geometry,
         start,
@@ -268,6 +269,7 @@ pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         cdfs,
         symbols,
         derived.state_context_input(input),
+        block,
     )
     .map_err(CoeffOrdinaryBranchError::from)
 }
