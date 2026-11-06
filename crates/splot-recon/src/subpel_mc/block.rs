@@ -466,12 +466,11 @@ pub(super) fn small_compound<T: ReconSample, O: ReconSample>(
         layouts[1].vertical,
     ));
     let mut cell;
-    let stage = match scratch.get_mut(..len) {
-        Some(stage) => stage,
-        None => {
-            cell = [0; CELL_STAGE];
-            &mut cell[..]
-        }
+    let stage = if let Some(stage) = scratch.get_mut(..len) {
+        stage
+    } else {
+        cell = [0; CELL_STAGE];
+        &mut cell[..]
     };
     if let (Some(first), Some(second), Some(output)) = (
         references[0].as_u8(),

@@ -236,14 +236,9 @@ mod avx2 {
                     let Some(&first) = first.get((strip * h + row) * width / 16) else {
                         return;
                     };
+                    let at = row * stride + strip * width;
                     let blended = average(first, values, forward);
-                    match width {
-                        4 => store_bytes::<4>(t, output, row * stride + strip * 4, stride, blended),
-                        8 => store_bytes::<8>(t, output, row * stride + strip * 8, stride, blended),
-                        _ => {
-                            store_bytes::<16>(t, output, row * stride + strip * 16, stride, blended)
-                        }
-                    }
+                    by_width!(width, store_bytes(t, output, at, stride, blended));
                 },
             );
         }
