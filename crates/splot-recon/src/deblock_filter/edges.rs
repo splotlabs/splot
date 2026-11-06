@@ -499,6 +499,10 @@ mod portable {
 
     /// The § 7.17.7.2 `(derivS + derivT + 1) >> 1` of each segment's first
     /// and last line, over the segment's lanes.
+    #[allow(
+        clippy::inline_always,
+        reason = "keeps the portable lanes in registers"
+    )]
     #[inline(always)]
     fn segment_mean<S: Simd>(simd: S, x: i16x16<S>) -> i16x16<S> {
         let bytes = x.bitcast::<u8x32<S>>();
@@ -510,6 +514,10 @@ mod portable {
     }
 
     /// `Round2(delta * weight / 64, 11)` for the 64-scaled [`RAMP`] weights.
+    #[allow(
+        clippy::inline_always,
+        reason = "keeps the portable lanes in registers"
+    )]
     #[inline(always)]
     fn ramp<S: Simd>(simd: S, delta: i16x16<S>, weight: i16x16<S>) -> i16x16<S> {
         let (low, high) = simd.widening_mul_i16x16(delta, weight);
@@ -529,6 +537,10 @@ mod portable {
 
     /// Filters the chunk whose sample rows across the edge are `rows`: row
     /// `REACH + j` is `s[j]` of every line.
+    #[allow(
+        clippy::inline_always,
+        reason = "keeps the portable lanes in registers"
+    )]
     #[inline(always)]
     pub(super) fn filter<S: Simd>(
         simd: S,
@@ -844,10 +856,8 @@ mod avx2 {
             }
             let low = transpose8(token, low);
             let high = transpose8(token, high);
-            for i in 0..8 {
-                v[i] = low[i];
-                v[i + 8] = high[i];
-            }
+            v[..8].copy_from_slice(&low);
+            v[8..].copy_from_slice(&high);
         }
     );
 
