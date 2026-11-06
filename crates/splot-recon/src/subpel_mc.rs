@@ -13,6 +13,7 @@ use crate::error::{ReconError, Result};
 use crate::format::{BitDepth, ReconSample};
 use crate::math::round2_i32;
 mod block;
+mod cell;
 mod copy;
 mod eight_bit;
 mod fullpel_u8;
@@ -865,6 +866,12 @@ fn compound_average<T: ReconSample, O: ReconSample>(
 ) -> bool {
     let (w, h) = (params[0].w, params[0].h);
     let forward = i32::from(cwp_weight);
+    if let (Some(first), Some(second)) = (references[0].as_u8(), references[1].as_u8())
+        && let Some(output) = O::u8_slice_mut(output)
+        && cell::compound([&first, &second], params, forward, output, output_stride)
+    {
+        return true;
+    }
     if block::small_compound(references, params, forward, scratch, output, output_stride) {
         return true;
     }
