@@ -4,7 +4,14 @@
 #![allow(clippy::expect_used)]
 
 use super::*;
-use crate::filters::gdf::simd::{WINDOW_ROWS, sym_rows};
+use crate::filters::gdf::simd::{WINDOW_ROWS, sym_rows, sym_rows_interleaved};
+
+/// A 16-sample row-pair kernel.
+type Kernel =
+    fn(&[&[u16; 28]; WINDOW_ROWS], [&mut [u16; 16]; 2], &[GdfClass; 8], &GdfBlock, &GdfSymParams);
+
+/// The target's kernel and the portable one.
+const KERNELS: [Kernel; 2] = [sym_rows, sym_rows_interleaved];
 
 /// A two-row window of `width` samples with the full tap reach around it.
 fn test_source(width: usize, max_sample: u16, case: usize) -> (Vec<u16>, usize) {
@@ -116,7 +123,10 @@ fn sixteen_lanes_match_scalar_samples_for_all_tables_and_classes() {
                 for qp_idx in 0..GDF_ALPHA[0].len() {
                     let block = test_block(16, bit_depth, ref_dst_idx, qp_idx);
                     let params = GdfSymParams::new(&block);
-                    for pattern in class_patterns() {
+                    for (pattern, kernel) in class_patterns()
+                        .into_iter()
+                        .flat_map(|pattern| KERNELS.map(|kernel| (pattern, kernel)))
+                    {
                         let classes: [GdfClass; 8] = core::array::from_fn(|index| {
                             let delta = i32::try_from(index).unwrap_or_default() * 37;
                             GdfClass::new(pattern[index], 511 - delta)
@@ -126,7 +136,7 @@ fn sixteen_lanes_match_scalar_samples_for_all_tables_and_classes() {
                             stride,
                             &block,
                             &classes,
-                            |window, output| sym_rows(window, output, &classes, &block, &params),
+                            |window, output| kernel(window, output, &classes, &block, &params),
                         );
                         assert_eq!(
                             actual, expected,
@@ -160,18 +170,20 @@ fn flat_windows_match_scalar_samples() {
                         let bias = i32::try_from(index * spread).unwrap_or(0);
                         GdfClass::new((index % 4) as u8, bias)
                     });
-                    let (actual, expected) = filter_both_ways::<16, 28>(
-                        &samples,
-                        stride,
-                        &block,
-                        &classes,
-                        |window, output| sym_rows(window, output, &classes, &block, &params),
-                    );
-                    assert_eq!(
-                        actual, expected,
-                        "{bit_depth:?}, differ {differ}, spread {spread}, reference \
-                         {ref_dst_idx}, qp {qp_idx}"
-                    );
+                    for kernel in KERNELS {
+                        let (actual, expected) = filter_both_ways::<16, 28>(
+                            &samples,
+                            stride,
+                            &block,
+                            &classes,
+                            |window, output| kernel(window, output, &classes, &block, &params),
+                        );
+                        assert_eq!(
+                            actual, expected,
+                            "{bit_depth:?}, differ {differ}, spread {spread}, reference \
+                             {ref_dst_idx}, qp {qp_idx}"
+                        );
+                    }
                 }
             }
         }
@@ -275,42 +287,40 @@ fn segment_columns_with_two_wide_tail_match_scalar_samples() {
 
 #[test]
 fn band_classes_match_reference_over_chunks_and_tail() {
-    let (width, height) = (20, 4);
-    let stride = width + GDF_READ_RADIUS * 2;
-    let samples: Vec<u16> = (0..stride * (height + GDF_READ_RADIUS * 2))
-        .map(|index| ((index * 73 + index / stride * 29) % 1024) as u16)
-        .collect();
-    let radius = GDF_READ_RADIUS as isize;
-    let source = GdfSource {
-        samples: &samples,
-        stride,
-        origin_x: -radius,
-        origin_y: -radius,
-    };
-    let grad_cols = width + 2;
-    let mut grad = Vec::new();
-    band_gradients(&source, ORIGIN, height + 2, grad_cols, &mut grad).expect("valid gradients");
-    for ref_dst_idx in 0..GDF_ALPHA.len() {
-        for qp_idx in 0..GDF_ALPHA[0].len() {
-            let block = GdfBlock {
-                height,
-                frame_height: height,
-                ..test_block(width, BitDepth::Ten, ref_dst_idx, qp_idx)
-            };
-            let mut expected = Vec::new();
-            band_classes(&grad, grad_cols, &block, &mut expected).expect("valid reference");
-            let mut actual = Vec::new();
-            let mut pairs = [Vec::new(), Vec::new()];
-            let result = band_classes_from_source(
-                &source,
-                ORIGIN,
-                &block,
-                &mut actual,
-                &mut pairs,
-                &mut Vec::new(),
-            );
-            assert!(result.is_ok());
-            assert_eq!(actual, expected, "reference {ref_dst_idx}, qp {qp_idx}");
+    let mut scratch = simd::ClassScratch::default();
+    for (width, height) in [(2, 2), (6, 4), (14, 2), (20, 4), (34, 6), (64, 2)] {
+        let stride = width + GDF_READ_RADIUS * 2;
+        let samples: Vec<u16> = (0..stride * (height + GDF_READ_RADIUS * 2))
+            .map(|index| ((index * 73 + index / stride * 29) % 1024) as u16)
+            .collect();
+        let radius = GDF_READ_RADIUS as isize;
+        let source = GdfSource {
+            samples: &samples,
+            stride,
+            origin_x: -radius,
+            origin_y: -radius,
+        };
+        let grad_cols = width + 2;
+        let mut grad = Vec::new();
+        band_gradients(&source, ORIGIN, height + 2, grad_cols, &mut grad).expect("valid gradients");
+        for ref_dst_idx in 0..GDF_ALPHA.len() {
+            for qp_idx in 0..GDF_ALPHA[0].len() {
+                let block = GdfBlock {
+                    height,
+                    frame_height: height,
+                    ..test_block(width, BitDepth::Ten, ref_dst_idx, qp_idx)
+                };
+                let mut expected = Vec::new();
+                band_classes(&grad, grad_cols, &block, &mut expected).expect("valid reference");
+                let mut actual = Vec::new();
+                let result =
+                    band_classes_from_source(&source, ORIGIN, &block, &mut actual, &mut scratch);
+                assert!(result.is_ok());
+                assert_eq!(
+                    actual, expected,
+                    "width {width}, reference {ref_dst_idx}, qp {qp_idx}"
+                );
+            }
         }
     }
 }
