@@ -23,27 +23,44 @@ pub(super) fn predict<T: ReconSample>(
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = fearless_simd::Level::baseline().as_avx2()
         && let Some(source) = T::u16_slice(block.source)
-        && block.w.is_multiple_of(4)
-        && block.h.is_multiple_of(16 / width(block.w))
-        && !(width(block.w) == 4 && block.horizontal.is_some_and(|taps| taps.count > 2))
+        && fits(block)
     {
-        let block = Block {
-            source,
-            stride: block.stride,
-            origin: block.origin,
-            top: block.top,
-            rows: block.rows,
-            w: block.w,
-            h: block.h,
-            horizontal: block.horizontal,
-            vertical: block.vertical,
-            remap: None,
-        };
-        avx2::predict(token, &block, sink, stage);
+        avx2::predict(token, &block.with_source(source), sink, stage);
         return true;
     }
     let _ = (block, sink, stage);
     false
+}
+
+/// Predicts both blocks of a compound cell of at most four groups and
+/// stores their COMPOUND_AVERAGE, clipped to `max`, into `output`, or returns
+/// `false` without writing when a block is outside the word-lane subset.
+pub(super) fn compound(
+    blocks: [&Block<'_, u16>; 2],
+    forward: i32,
+    max: u16,
+    stage: &mut [i16],
+    output: &mut [u16],
+    stride: usize,
+) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_avx2()
+        && blocks
+            .iter()
+            .all(|block| fits(block) && block.w * block.h <= 64)
+    {
+        avx2::compound(token, blocks, forward, max, stage, output, stride);
+        return true;
+    }
+    let _ = (blocks, forward, max, stage, output, stride);
+    false
+}
+
+/// Whether the word-lane kernels cover the shape of `block`.
+fn fits<T>(block: &Block<'_, T>) -> bool {
+    block.w.is_multiple_of(4)
+        && block.h.is_multiple_of(16 / width(block.w))
+        && !(width(block.w) == 4 && block.horizontal.is_some_and(|taps| taps.count > 2))
 }
 
 /// The strip width of a block: 16 columns, else strips of 8 columns in
@@ -62,7 +79,12 @@ const fn width(w: usize) -> usize {
 mod avx2 {
     use super::super::block::{Block, Sink, Taps};
     use core::arch::x86_64::*;
-    use fearless_simd::{Avx2, SimdBase, SimdFrom, i16x16, i32x4, i32x8, u16x8, u16x16};
+    use fearless_simd::{Avx2, SimdBase, SimdFrom, i16x16, i32x4, i32x8, u8x16, u16x8, u16x16};
+
+    /// `pshufb` patterns of a column-clamped window: for each half of its 16
+    /// columns, the words taken from the first and from the second 8 samples
+    /// loaded from the window origin.
+    type Remap = [[__m128i; 2]; 2];
 
     #[allow(clippy::inline_always, reason = "measured subpel hot path")]
     #[inline(always)]
@@ -101,69 +123,171 @@ mod avx2 {
             sink: &mut Sink<'_>,
             stage: &mut [i16],
         ) {
-            let width = super::width(block.w);
-            let put = sink.is_put();
-            match (block.horizontal, block.vertical) {
-                (None, None) => match width {
-                    4 => copy::<4>(t, block, sink),
-                    8 => copy::<8>(t, block, sink),
-                    _ => copy::<16>(t, block, sink),
+            let (put, w) = (sink.is_put(), block.w);
+            passes(
+                t,
+                block,
+                put,
+                stage,
+                &mut |width, row, strip, first, second| match width {
+                    4 => emit::<4>(t, sink, w, row, strip, first, second),
+                    8 => emit::<8>(t, sink, w, row, strip, first, second),
+                    _ => emit::<16>(t, sink, w, row, strip, first, second),
                 },
-                (Some(taps), None) => {
-                    specialize!(width, taps.count, horizontal(t, block, taps, sink));
-                }
-                (None, Some(taps)) => {
-                    let rounding = if put { (64, 7) } else { (4, 3) };
-                    for strip in 0..block.w / width {
-                        match width {
-                            4 => stage_samples::<4>(
-                                t,
-                                block,
-                                strip,
-                                block.h + taps.span() - 1,
-                                stage,
-                            ),
-                            8 => stage_samples::<8>(
-                                t,
-                                block,
-                                strip,
-                                block.h + taps.span() - 1,
-                                stage,
-                            ),
-                            _ => stage_samples::<16>(
-                                t,
-                                block,
-                                strip,
-                                block.h + taps.span() - 1,
-                                stage,
-                            ),
+            );
+        }
+    );
+
+    fearless_simd::kernel!(
+        #[inline]
+        pub(super) fn compound(
+            t: Avx2,
+            blocks: [&Block<'_, u16>; 2],
+            forward: i32,
+            max: u16,
+            stage: &mut [i16],
+            output: &mut [u16],
+            stride: usize,
+        ) {
+            let zero = _mm256_setzero_si256();
+            let h = blocks[0].h;
+            let mut pred0 = [(zero, zero); 4];
+            passes(
+                t,
+                blocks[0],
+                false,
+                stage,
+                &mut |width, row, strip, first, second| {
+                    if let Some(slot) = pred0.get_mut((strip * h + row) * width / 16) {
+                        *slot = (first, second);
+                    }
+                },
+            );
+            passes(
+                t,
+                blocks[1],
+                false,
+                stage,
+                &mut |width, row, strip, first, second| {
+                    let Some(&(pred_first, pred_second)) =
+                        pred0.get((strip * h + row) * width / 16)
+                    else {
+                        return;
+                    };
+                    let values = clip(
+                        average(pred_first, first, forward),
+                        average(pred_second, second, forward),
+                        i32::from(max),
+                    );
+                    match width {
+                        4 => store_words::<4>(t, output, row * stride + strip * 4, stride, values),
+                        8 => store_words::<8>(t, output, row * stride + strip * 8, stride, values),
+                        _ => {
+                            store_words::<16>(t, output, row * stride + strip * 16, stride, values)
                         }
-                        specialize!(
-                            width,
-                            taps.count,
-                            filter_stage(t, block, taps, strip, rounding, stage, sink)
-                        );
                     }
+                },
+            );
+        }
+    );
+
+    /// Runs the passes of `block`, handing `out` the 16 final-pass values of
+    /// each group as `(W, row, strip, first, second)`, outputs `0..8` in
+    /// `first`: compound predictors, or with `put` single-reference
+    /// predictions before `Clip1`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn passes(
+        t: Avx2,
+        block: &Block<'_, u16>,
+        put: bool,
+        stage: &mut [i16],
+        out: &mut impl FnMut(usize, usize, usize, __m256i, __m256i),
+    ) {
+        let width = super::width(block.w);
+        match (block.horizontal, block.vertical) {
+            (None, None) => match width {
+                4 => copy::<4>(t, block, put, out),
+                8 => copy::<8>(t, block, put, out),
+                _ => copy::<16>(t, block, put, out),
+            },
+            (Some(taps), None) => {
+                specialize!(width, taps.count, horizontal(t, block, taps, put, out));
+            }
+            (None, Some(taps)) => {
+                let rounding = if put { (64, 7) } else { (4, 3) };
+                let rows = block.h + taps.span() - 1;
+                for strip in 0..block.w / width {
+                    match width {
+                        4 => stage_samples::<4>(t, block, strip, rows, stage),
+                        8 => stage_samples::<8>(t, block, strip, rows, stage),
+                        _ => stage_samples::<16>(t, block, strip, rows, stage),
+                    }
+                    specialize!(
+                        width,
+                        taps.count,
+                        filter_stage(t, block, taps, strip, rounding, stage, out)
+                    );
                 }
-                (Some(h_taps), Some(v_taps)) => {
-                    let rows = block.h + v_taps.span() - 1;
-                    let rounding = if put { (1 << 10, 11) } else { (1 << 6, 7) };
-                    for strip in 0..block.w / width {
-                        specialize!(
-                            width,
-                            h_taps.count,
-                            stage_rows(t, block, h_taps, rows, strip, stage)
-                        );
-                        specialize!(
-                            width,
-                            v_taps.count,
-                            filter_stage(t, block, v_taps, strip, rounding, stage, sink)
-                        );
-                    }
+            }
+            (Some(h_taps), Some(v_taps)) => {
+                let rows = block.h + v_taps.span() - 1;
+                let rounding = if put { (1 << 10, 11) } else { (1 << 6, 7) };
+                for strip in 0..block.w / width {
+                    specialize!(
+                        width,
+                        h_taps.count,
+                        stage_rows(t, block, h_taps, rows, strip, stage)
+                    );
+                    specialize!(
+                        width,
+                        v_taps.count,
+                        filter_stage(t, block, v_taps, strip, rounding, stage, out)
+                    );
                 }
             }
         }
-    );
+    }
+
+    /// The COMPOUND_AVERAGE of eight compound predictors of each reference,
+    /// before `Clip1`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn average(pred: __m256i, value: __m256i, forward: i32) -> __m256i {
+        if forward == 8 {
+            return _mm256_srai_epi32::<5>(_mm256_add_epi32(
+                _mm256_add_epi32(pred, value),
+                _mm256_set1_epi32(16),
+            ));
+        }
+        let weighted = _mm256_add_epi32(
+            _mm256_mullo_epi32(pred, _mm256_set1_epi32(forward)),
+            _mm256_mullo_epi32(value, _mm256_set1_epi32(16 - forward)),
+        );
+        _mm256_srai_epi32::<8>(_mm256_add_epi32(weighted, _mm256_set1_epi32(128)))
+    }
+
+    /// `Clip1` to `max` of outputs `0..8` in `first` and `8..16` in `second`,
+    /// as 16 words in output order.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn clip(first: __m256i, second: __m256i, max: i32) -> __m256i {
+        let (zero, max) = (_mm256_setzero_si256(), _mm256_set1_epi32(max));
+        let first = _mm256_min_epi32(_mm256_max_epi32(first, zero), max);
+        let second = _mm256_min_epi32(_mm256_max_epi32(second, zero), max);
+        _mm256_permute4x64_epi64::<0b11_01_10_00>(_mm256_packus_epi32(first, second))
+    }
+
+    /// Each lane's outputs `0..4` (`low`) and `4..8` (`high`) in output
+    /// order: outputs `0..8` and `8..16`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn lanes(low: __m256i, high: __m256i) -> (__m256i, __m256i) {
+        (
+            _mm256_permute2x128_si256::<0x20>(low, high),
+            _mm256_permute2x128_si256::<0x31>(low, high),
+        )
+    }
 
     #[inline]
     #[target_feature(enable = "avx2")]
@@ -178,6 +302,51 @@ mod avx2 {
             | i64::from(samples[1]) << 16
             | i64::from(samples[2]) << 32
             | i64::from(samples[3]) << 48
+    }
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn remap(t: Avx2, block: &Block<'_, u16>) -> Option<Remap> {
+        let columns: __m128i = u8x16::load_array(t, block.remap?).into();
+        let doubled = _mm_add_epi8(columns, columns);
+        let half = |words: __m128i| -> [__m128i; 2] {
+            [
+                _mm_or_si128(words, _mm_cmpgt_epi8(words, _mm_set1_epi8(15))),
+                _mm_sub_epi8(words, _mm_set1_epi8(16)),
+            ]
+        };
+        let high = _mm_add_epi8(doubled, _mm_set1_epi8(1));
+        Some([
+            half(_mm_unpacklo_epi8(doubled, high)),
+            half(_mm_unpackhi_epi8(doubled, high)),
+        ])
+    }
+
+    /// Window columns `0..8` and `8..16` of the row from `start`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn window_row(
+        t: Avx2,
+        source: &[u16],
+        start: usize,
+        remap: Option<&Remap>,
+    ) -> Option<(__m128i, __m128i)> {
+        let (first, second) = (
+            load8(t, chunk(source, start)?),
+            load8(t, chunk(source, start + 8)?),
+        );
+        Some(match remap {
+            None => (first, second),
+            Some(remap) => {
+                let gather = |half: &[__m128i; 2]| {
+                    _mm_or_si128(
+                        _mm_shuffle_epi8(first, half[0]),
+                        _mm_shuffle_epi8(second, half[1]),
+                    )
+                };
+                (gather(&remap[0]), gather(&remap[1]))
+            }
+        })
     }
 
     #[inline]
@@ -219,13 +388,15 @@ mod avx2 {
         source: &[u16],
         starts: [usize; 4],
         weights: &[__m256i; 4],
+        remap: Option<&Remap>,
     ) -> Option<(__m256i, __m256i)> {
         let windows: [__m256i; 8] = if W == 4 {
+            let row = |q: usize| -> Option<__m128i> {
+                let samples = load8(t, chunk(source, starts[q])?);
+                Some(remap.map_or(samples, |remap| _mm_shuffle_epi8(samples, remap[0][0])))
+            };
             let rows = |a: usize, b: usize| -> Option<__m256i> {
-                Some(_mm256_set_m128i(
-                    load8(t, chunk(source, starts[b])?),
-                    load8(t, chunk(source, starts[a])?),
-                ))
+                Some(_mm256_set_m128i(row(b)?, row(a)?))
             };
             let (first, second) = (rows(0, 2)?, rows(1, 3)?);
             let window = |k: i32| -> __m256i {
@@ -249,15 +420,13 @@ mod avx2 {
             ]
         } else {
             let (low, high) = if W == 8 {
+                let (first, second) = (
+                    window_row(t, source, starts[0], remap)?,
+                    window_row(t, source, starts[1], remap)?,
+                );
                 (
-                    _mm256_set_m128i(
-                        load8(t, chunk(source, starts[1])?),
-                        load8(t, chunk(source, starts[0])?),
-                    ),
-                    _mm256_set_m128i(
-                        load8(t, chunk(source, starts[1] + 8)?),
-                        load8(t, chunk(source, starts[0] + 8)?),
-                    ),
+                    _mm256_set_m128i(second.0, first.0),
+                    _mm256_set_m128i(second.1, first.1),
                 )
             } else {
                 (
@@ -311,8 +480,13 @@ mod avx2 {
 
     #[inline(never)]
     #[target_feature(enable = "avx2")]
-    fn copy<const W: usize>(t: Avx2, block: &Block<'_, u16>, sink: &mut Sink<'_>) {
-        let shift = _mm_cvtsi32_si128(if sink.is_put() { 0 } else { 4 });
+    fn copy<const W: usize>(
+        t: Avx2,
+        block: &Block<'_, u16>,
+        put: bool,
+        out: &mut impl FnMut(usize, usize, usize, __m256i, __m256i),
+    ) {
+        let shift = _mm_cvtsi32_si128(if put { 0 } else { 4 });
         for strip in 0..block.w / W {
             for row in (0..block.h).step_by(16 / W) {
                 let starts = starts::<W>(block, row, strip, usize::MAX);
@@ -327,7 +501,7 @@ mod avx2 {
                     _mm256_cvtepu16_epi32(_mm256_extracti128_si256::<1>(samples)),
                     shift,
                 );
-                emit::<W>(t, sink, block.w, row, strip, first, second);
+                out(W, row, strip, first, second);
             }
         }
     }
@@ -338,14 +512,17 @@ mod avx2 {
         t: Avx2,
         block: &Block<'_, u16>,
         taps: &Taps,
-        sink: &mut Sink<'_>,
+        put: bool,
+        out: &mut impl FnMut(usize, usize, usize, __m256i, __m256i),
     ) {
         let weights = weights::<P>(taps);
-        let put = sink.is_put();
+        let remap = remap(t, block);
         for strip in 0..block.w / W {
             for row in (0..block.h).step_by(16 / W) {
                 let starts = starts::<W>(block, row, strip, usize::MAX);
-                let Some(sums) = horizontal_sums::<W, P>(t, block.source, starts, &weights) else {
+                let sums =
+                    horizontal_sums::<W, P>(t, block.source, starts, &weights, remap.as_ref());
+                let Some(sums) = sums else {
                     return;
                 };
                 let intermediate = round(sums, (4, 3));
@@ -354,7 +531,8 @@ mod avx2 {
                 } else {
                     intermediate
                 };
-                emit_lanes::<W>(t, sink, block.w, row, strip, low, high);
+                let (first, second) = lanes(low, high);
+                out(W, row, strip, first, second);
             }
         }
     }
@@ -400,13 +578,15 @@ mod avx2 {
         stage: &mut [i16],
     ) {
         let weights = weights::<P>(taps);
+        let remap = remap(t, block);
         for (group, slot) in stage
             .chunks_exact_mut(16)
             .take(rows.div_ceil(16 / W))
             .enumerate()
         {
             let starts = starts::<W>(block, group * (16 / W), strip, rows - 1);
-            let Some(sums) = horizontal_sums::<W, P>(t, block.source, starts, &weights) else {
+            let sums = horizontal_sums::<W, P>(t, block.source, starts, &weights, remap.as_ref());
+            let Some(sums) = sums else {
                 return;
             };
             let (low, high) = round(sums, (4, 3));
@@ -426,7 +606,7 @@ mod avx2 {
         strip: usize,
         rounding: Rounding,
         stage: &[i16],
-        sink: &mut Sink<'_>,
+        out: &mut impl FnMut(usize, usize, usize, __m256i, __m256i),
     ) {
         let weights = weights::<P>(taps);
         let span = (2 * P - 1) * W + 16;
@@ -450,25 +630,9 @@ mod avx2 {
                     _mm256_add_epi32(high, _mm256_madd_epi16(_mm256_unpackhi_epi16(a, b), weight));
             }
             let (low, high) = round((low, high), rounding);
-            emit_lanes::<W>(t, sink, block.w, row, strip, low, high);
+            let (first, second) = lanes(low, high);
+            out(W, row, strip, first, second);
         }
-    }
-
-    /// [`emit`] of each lane's outputs `0..4` (`low`) and `4..8` (`high`).
-    #[inline]
-    #[target_feature(enable = "avx2")]
-    fn emit_lanes<const W: usize>(
-        t: Avx2,
-        sink: &mut Sink<'_>,
-        w: usize,
-        row: usize,
-        strip: usize,
-        low: __m256i,
-        high: __m256i,
-    ) {
-        let first = _mm256_permute2x128_si256::<0x20>(low, high);
-        let second = _mm256_permute2x128_si256::<0x31>(low, high);
-        emit::<W>(t, sink, w, row, strip, first, second);
     }
 
     /// Stores the 16 final-pass values of the group at `row`, `strip`:
@@ -485,12 +649,6 @@ mod avx2 {
         second: __m256i,
     ) {
         let column = strip * W;
-        let clip = |first: __m256i, second: __m256i, max: i32| -> __m256i {
-            let (zero, max) = (_mm256_setzero_si256(), _mm256_set1_epi32(max));
-            let first = _mm256_min_epi32(_mm256_max_epi32(first, zero), max);
-            let second = _mm256_min_epi32(_mm256_max_epi32(second, zero), max);
-            _mm256_permute4x64_epi64::<0b11_01_10_00>(_mm256_packus_epi32(first, second))
-        };
         let blend = |pred0: &[i32], forward: i32| -> (__m256i, __m256i) {
             let at = row * w + column;
             let zero4 = [0i32; 4];
@@ -509,21 +667,10 @@ mod avx2 {
                 8 => (load8(at), load8(at + w)),
                 _ => (load8(at), load8(at + 8)),
             };
-            let mix = |pred: __m256i, value: __m256i| -> __m256i {
-                if forward == 8 {
-                    _mm256_srai_epi32::<5>(_mm256_add_epi32(
-                        _mm256_add_epi32(pred, value),
-                        _mm256_set1_epi32(16),
-                    ))
-                } else {
-                    let weighted = _mm256_add_epi32(
-                        _mm256_mullo_epi32(pred, _mm256_set1_epi32(forward)),
-                        _mm256_mullo_epi32(value, _mm256_set1_epi32(16 - forward)),
-                    );
-                    _mm256_srai_epi32::<8>(_mm256_add_epi32(weighted, _mm256_set1_epi32(128)))
-                }
-            };
-            (mix(pred_first, first), mix(pred_second, second))
+            (
+                average(pred_first, first, forward),
+                average(pred_second, second, forward),
+            )
         };
         match sink {
             Sink::Put { output, stride } => {

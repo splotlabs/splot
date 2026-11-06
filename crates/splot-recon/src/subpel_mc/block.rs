@@ -238,12 +238,28 @@ pub(super) struct Block<'a, T> {
     pub(super) h: usize,
     pub(super) horizontal: Option<&'static Taps>,
     pub(super) vertical: Option<&'static Taps>,
-    /// For a column-clamped 8-bit window of at most 16 columns read from
-    /// `origin`: the source byte of each window column, the `Clip3` read.
+    /// For a column-clamped window of at most 16 columns read from `origin`:
+    /// the source sample of each window column, the `Clip3` read.
     pub(super) remap: Option<[u8; 16]>,
 }
 
-impl<T> Block<'_, T> {
+impl<'a, T> Block<'a, T> {
+    /// This block read from `source`, the same storage as other samples.
+    pub(super) fn with_source<U>(&self, source: &'a [U]) -> Block<'a, U> {
+        Block {
+            source,
+            stride: self.stride,
+            origin: self.origin,
+            top: self.top,
+            rows: self.rows,
+            w: self.w,
+            h: self.h,
+            horizontal: self.horizontal,
+            vertical: self.vertical,
+            remap: self.remap,
+        }
+    }
+
     /// The source index of column 0 of window row `row`.
     #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
     #[inline(always)]
@@ -256,6 +272,19 @@ impl<T> Block<'_, T> {
 /// Window columns every kernel may read past the window origin of a row.
 pub(super) const fn reach(w: usize) -> usize {
     w.next_multiple_of(16) + 16
+}
+
+/// The intermediate storage the kernels stage `rows` window rows of a
+/// `w`-wide block in, none without a vertical pass.
+pub(super) const fn stage_len(rows: usize, w: usize, vertical: Option<&Taps>) -> usize {
+    match vertical {
+        Some(_) => {
+            let groups = rows.next_multiple_of(4) * 16;
+            let strips = rows * w.div_ceil(8) * 8 + 64;
+            if groups > strips { groups } else { strips }
+        }
+        None => 0,
+    }
 }
 
 /// The samples the vector kernels load: eight-bit and 16-bit storage.
@@ -317,6 +346,157 @@ pub(super) fn predict<T: ReconSample>(
     );
 }
 
+/// The window of an unscaled block: its taps and the first source column
+/// and row each pass reads, with their counts.
+struct Layout {
+    horizontal: Option<&'static Taps>,
+    vertical: Option<&'static Taps>,
+    column: i32,
+    columns: usize,
+    row: i32,
+    rows: usize,
+    last_row: usize,
+}
+
+impl Layout {
+    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[inline(always)]
+    fn new(params: &SubpelPredictParams) -> Self {
+        let taps = |size: usize, start: i32| {
+            TAPS[params.interp.pass_index(size as u32) as usize]
+                [((start >> 6) & SUBPEL_MASK) as usize]
+                .as_ref()
+        };
+        let (horizontal, vertical) = (
+            taps(params.w, params.start_x),
+            taps(params.h, params.start_y),
+        );
+        let window = |start: i32, size: usize, taps: Option<&Taps>| {
+            let base = start >> SCALE_SUBPEL_BITS;
+            match taps {
+                Some(taps) => (base - 3 + taps.start as i32, size + taps.span() - 1),
+                None => (base, size),
+            }
+        };
+        let (column, columns) = window(params.start_x, params.w, horizontal);
+        let (row, rows) = window(params.start_y, params.h, vertical);
+        Self {
+            horizontal,
+            vertical,
+            column,
+            columns,
+            row,
+            rows,
+            last_row: (row + rows as i32 - 1)
+                .min(params.last_y)
+                .max(params.first_y) as usize,
+        }
+    }
+
+    /// The block read from the plane in place: directly when every column
+    /// is inside the clip bounds, else for a horizontally filtered block of
+    /// at most 8 columns through a column remap. `None` when the window must be
+    /// emulated.
+    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[inline(always)]
+    fn in_place<'a, T: ReconSample>(
+        &self,
+        view: &ReferencePlaneView<'a, T>,
+        params: &SubpelPredictParams,
+    ) -> Option<Block<'a, T>> {
+        let block = |origin: usize, remap: Option<[u8; 16]>| Block {
+            source: view.samples,
+            stride: view.stride,
+            origin,
+            top: self.row as isize,
+            rows: [params.first_y as isize, params.last_y as isize],
+            w: params.w,
+            h: params.h,
+            horizontal: self.horizontal,
+            vertical: self.vertical,
+            remap,
+        };
+        let fits = |column: i32, reach: usize| {
+            column >= 0
+                && self.last_row * view.stride + column as usize + reach <= view.samples.len()
+        };
+        if self.column >= params.first_x
+            && self.column + self.columns as i32 - 1 <= params.last_x
+            && fits(self.column, reach(params.w))
+        {
+            return Some(block(self.column as usize, None));
+        }
+        let base = self.column.clamp(params.first_x, params.last_x);
+        (params.w <= 8 && self.horizontal.is_some() && fits(base, 16)).then(|| {
+            block(
+                base as usize,
+                Some(core::array::from_fn(|lane| {
+                    ((self.column + lane as i32).clamp(params.first_x, params.last_x) - base) as u8
+                })),
+            )
+        })
+    }
+}
+
+/// Predicts both references of a compound cell of at most 64 samples and
+/// 16 columns and stores their COMPOUND_AVERAGE clipped to `max`, or returns
+/// `false` without writing when a window must be emulated or the cell is
+/// outside the vector subset.
+pub(super) fn small_compound<'a, T: ReconSample, O: ReconSample>(
+    references: [&ReferencePlaneView<'a, T>; 2],
+    params: [&SubpelPredictParams; 2],
+    forward: i32,
+    scratch: &mut [i16],
+    output: &mut [O],
+    stride: usize,
+) -> bool {
+    let (w, h) = (params[0].w, params[0].h);
+    if w > 16 || w * h > 64 || output.len() < (h - 1) * stride + w {
+        return false;
+    }
+    let block = |reference: &ReferencePlaneView<'a, T>, params: &SubpelPredictParams| {
+        let params = plane_bounded(reference, params);
+        let layout = Layout::new(&params);
+        let len = stage_len(layout.rows, params.w, layout.vertical);
+        Some((layout.in_place(reference, &params)?, len))
+    };
+    let (Some((first, first_len)), Some((second, second_len))) = (
+        block(references[0], params[0]),
+        block(references[1], params[1]),
+    ) else {
+        return false;
+    };
+    let mut cell = [0; CELL_STAGE];
+    let stage = match scratch.get_mut(..first_len.max(second_len)) {
+        Some(stage) => stage,
+        None => &mut cell,
+    };
+    let as_u8 = |block: &Block<'a, T>| Some(block.with_source(T::u8_slice(block.source)?));
+    let as_u16 = |block: &Block<'a, T>| Some(block.with_source(T::u16_slice(block.source)?));
+    if let (Some(first), Some(second), Some(output)) =
+        (as_u8(&first), as_u8(&second), O::u8_slice_mut(output))
+    {
+        return super::eight_bit::compound([&first, &second], forward, stage, output, stride);
+    }
+    if let (Some(first), Some(second), Some(output)) =
+        (as_u16(&first), as_u16(&second), O::u16_slice_mut(output))
+    {
+        let max = params[0].bit_depth.max_sample();
+        return super::sixteen_bit::compound(
+            [&first, &second],
+            forward,
+            max,
+            stage,
+            output,
+            stride,
+        );
+    }
+    false
+}
+
+/// The stage of the tallest compound cell, 4x16.
+const CELL_STAGE: usize = 24 * 16;
+
 fn unscaled_block<T: Sample>(
     view: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
@@ -324,40 +504,27 @@ fn unscaled_block<T: Sample>(
     scratch: Option<&mut [i16]>,
 ) {
     let (w, h) = (params.w, params.h);
-    let taps = |size: usize, start: i32| {
-        TAPS[params.interp.pass_index(size as u32) as usize][((start >> 6) & SUBPEL_MASK) as usize]
-            .as_ref()
-    };
-    let (horizontal, vertical) = (taps(w, params.start_x), taps(h, params.start_y));
-    let window = |start: i32, size: usize, taps: Option<&Taps>| {
-        let base = start >> SCALE_SUBPEL_BITS;
-        match taps {
-            Some(taps) => (base - 3 + taps.start as i32, size + taps.span() - 1),
-            None => (base, size),
-        }
-    };
-    let (column, columns) = window(params.start_x, w, horizontal);
-    let (row, rows) = window(params.start_y, h, vertical);
-    let last = |first: i32, count: usize| first + count as i32 - 1;
-    let columns_inside = column >= params.first_x && last(column, columns) <= params.last_x;
-    let last_row = last(row, rows).min(params.last_y).max(params.first_y) as usize;
-    let direct = columns_inside
-        && column >= 0
-        && last_row * view.stride + column as usize + reach(w) <= view.samples.len();
-    let stage_len = match vertical {
-        Some(_) => (rows.next_multiple_of(4) * 16).max(rows * w.div_ceil(8) * 8 + 64),
-        None => 0,
-    };
+    let layout = Layout::new(params);
+    let Layout {
+        horizontal,
+        vertical,
+        column,
+        columns,
+        row,
+        rows,
+        ..
+    } = layout;
+    let stage_len = stage_len(rows, w, vertical);
     let mut run = |block: &Block<'_, T>, stage: &mut [i16]| {
-        if super::eight_bit::predict(block, &mut sink, stage) {
+        if super::eight_bit::predict(block, &mut sink, stage)
+            || super::sixteen_bit::predict(block, &mut sink, stage)
+        {
             return true;
         }
         if block.remap.is_some() {
             return false;
         }
-        if !super::sixteen_bit::predict(block, &mut sink, stage) {
-            super::portable::predict(block, &mut sink, stage);
-        }
+        super::portable::predict(block, &mut sink, stage);
         true
     };
     let mut scratch = scratch;
@@ -366,41 +533,8 @@ fn unscaled_block<T: Sample>(
         _ if stage_len == 0 => run(block, &mut []),
         _ => with_subpel_intermediate(stage_len, |stage| run(block, stage)),
     };
-    if direct {
-        run_staged(&Block {
-            source: view.samples,
-            stride: view.stride,
-            origin: column as usize,
-            top: row as isize,
-            rows: [params.first_y as isize, params.last_y as isize],
-            w,
-            h,
-            horizontal,
-            vertical,
-            remap: None,
-        });
-        return;
-    }
-    let base = column.clamp(params.first_x, params.last_x);
-    if w <= 8
-        && horizontal.is_some()
-        && T::u8_slice(&[]).is_some()
-        && base >= 0
-        && last_row * view.stride + base as usize + 16 <= view.samples.len()
-        && run_staged(&Block {
-            source: view.samples,
-            stride: view.stride,
-            origin: base as usize,
-            top: row as isize,
-            rows: [params.first_y as isize, params.last_y as isize],
-            w,
-            h,
-            horizontal,
-            vertical,
-            remap: Some(core::array::from_fn(|lane| {
-                ((column + lane as i32).clamp(params.first_x, params.last_x) - base) as u8
-            })),
-        })
+    if let Some(block) = layout.in_place(view, params)
+        && run_staged(&block)
     {
         return;
     }
