@@ -11,7 +11,7 @@
 # at its default: 128-bit NEON is the mandatory aarch64 baseline, so Apple
 # Silicon and ARM servers already vectorize without a floor bump.
 [target.'cfg(target_arch = "x86_64")']
-rustflags = ["-C", "target-cpu=x86-64-v3"]
+rustflags = ["-C", "target-cpu=x86-64-v3", "--cfg", "disable_dispatch_avx512"]
 
 [alias]
 # AVX2-optimized release decoder: rebuilds std with the same target-cpu so

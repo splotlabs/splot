@@ -16,6 +16,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+fearless_simd.workspace = true
 splot-core.workspace = true
 splot-decode.workspace = true
 splot-parallel.workspace = true
