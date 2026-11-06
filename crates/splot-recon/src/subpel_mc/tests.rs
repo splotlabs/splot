@@ -1941,7 +1941,17 @@ fn compound_fast_path_u8_matches_materialized_predictors() {
         .collect::<Vec<_>>();
     let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
     let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
-    for (w, h) in [(4, 4), (8, 8), (4, 8), (8, 4)] {
+    for (w, h) in [
+        (4, 4),
+        (8, 8),
+        (4, 8),
+        (8, 4),
+        (16, 4),
+        (4, 16),
+        (16, 2),
+        (8, 2),
+        (12, 4),
+    ] {
         for (phase0, phase1) in [((5, 11), (13, 3)), ((5, 0), (0, 9)), ((0, 0), (0, 0))] {
             for start in [3i32, -6, 20] {
                 let params0 = SubpelPredictParams {

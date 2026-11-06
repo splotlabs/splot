@@ -29,32 +29,48 @@ pub(super) fn predict<T: ReconSample>(
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = fearless_simd::Level::baseline().as_avx2()
         && let Some(source) = T::u8_slice(block.source)
-        && block.w.is_multiple_of(4)
-        && block.h.is_multiple_of(16 / width(block.w))
-        && !(width(block.w) == 4 && block.horizontal.is_some_and(|taps| taps.count > 2))
+        && fits(block)
         && match sink {
             Sink::PutWide { max, .. } => *max == u16::from(u8::MAX),
             Sink::AverageWide { .. } => false,
             _ => true,
         }
     {
-        let block = Block {
-            source,
-            stride: block.stride,
-            origin: block.origin,
-            top: block.top,
-            rows: block.rows,
-            w: block.w,
-            h: block.h,
-            horizontal: block.horizontal,
-            vertical: block.vertical,
-            remap: block.remap,
-        };
-        avx2::predict(token, &block, sink, stage);
+        avx2::predict(token, &block.with_source(source), sink, stage);
         return true;
     }
     let _ = (block, sink, stage);
     false
+}
+
+/// Predicts both blocks of a compound cell of at most four groups and
+/// stores their COMPOUND_AVERAGE into `output`, or returns `false` without
+/// writing when a block is outside the byte-lane subset.
+pub(super) fn compound(
+    blocks: [&Block<'_, u8>; 2],
+    forward: i32,
+    stage: &mut [i16],
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_avx2()
+        && blocks
+            .iter()
+            .all(|block| fits(block) && block.w * block.h <= 64)
+    {
+        avx2::compound(token, blocks, forward, stage, output, stride);
+        return true;
+    }
+    let _ = (blocks, forward, stage, output, stride);
+    false
+}
+
+/// Whether the byte-lane kernels cover the shape of `block`.
+fn fits<T>(block: &Block<'_, T>) -> bool {
+    block.w.is_multiple_of(4)
+        && block.h.is_multiple_of(16 / width(block.w))
+        && !(width(block.w) == 4 && block.horizontal.is_some_and(|taps| taps.count > 2))
 }
 
 /// The strip width of a block: 16 columns, else strips of 8 columns in
@@ -134,37 +150,129 @@ mod avx2 {
             sink: &mut Sink<'_>,
             stage: &mut [i16],
         ) {
-            let width = super::width(block.w);
-            match (block.horizontal, block.vertical) {
-                (None, None) => match width {
-                    4 => copy::<4>(t, block, sink),
-                    8 => copy::<8>(t, block, sink),
-                    _ => copy::<16>(t, block, sink),
+            let (put, w) = (sink.is_put(), block.w);
+            passes(
+                t,
+                block,
+                put,
+                stage,
+                &mut |width, row, strip, values| match width {
+                    4 => emit::<4>(t, sink, w, row, strip, values),
+                    8 => emit::<8>(t, sink, w, row, strip, values),
+                    _ => emit::<16>(t, sink, w, row, strip, values),
                 },
-                (Some(taps), None) => {
-                    specialize!(width, taps.count, horizontal(t, block, taps, sink));
-                }
-                (None, Some(taps)) => {
-                    specialize!(width, taps.count, vertical(t, block, taps, stage, sink));
-                }
-                (Some(h_taps), Some(v_taps)) => {
-                    let rows = block.h + v_taps.span() - 1;
-                    for strip in 0..block.w / width {
-                        specialize!(
-                            width,
-                            h_taps.count,
-                            stage_rows(t, block, h_taps, rows, strip, stage)
-                        );
-                        specialize!(
-                            width,
-                            v_taps.count,
-                            filter_stage(t, block, v_taps, strip, stage, sink)
-                        );
+            );
+        }
+    );
+
+    fearless_simd::kernel!(
+        #[inline]
+        pub(super) fn compound(
+            t: Avx2,
+            blocks: [&Block<'_, u8>; 2],
+            forward: i32,
+            stage: &mut [i16],
+            output: &mut [u8],
+            stride: usize,
+        ) {
+            let h = blocks[0].h;
+            let mut first = [_mm256_setzero_si256(); 4];
+            passes(
+                t,
+                blocks[0],
+                false,
+                stage,
+                &mut |width, row, strip, values| {
+                    if let Some(slot) = first.get_mut((strip * h + row) * width / 16) {
+                        *slot = values;
                     }
+                },
+            );
+            passes(
+                t,
+                blocks[1],
+                false,
+                stage,
+                &mut |width, row, strip, values| {
+                    let Some(&first) = first.get((strip * h + row) * width / 16) else {
+                        return;
+                    };
+                    let blended = average(first, values, forward);
+                    match width {
+                        4 => store_bytes::<4>(t, output, row * stride + strip * 4, stride, blended),
+                        8 => store_bytes::<8>(t, output, row * stride + strip * 8, stride, blended),
+                        _ => {
+                            store_bytes::<16>(t, output, row * stride + strip * 16, stride, blended)
+                        }
+                    }
+                },
+            );
+        }
+    );
+
+    /// Runs the passes of `block`, handing `out` the 16 final-pass values of
+    /// each group as `(W, row, strip, values)`: compound predictors, or with
+    /// `put` single-reference predictions before `Clip1`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn passes(
+        t: Avx2,
+        block: &Block<'_, u8>,
+        put: bool,
+        stage: &mut [i16],
+        out: &mut impl FnMut(usize, usize, usize, __m256i),
+    ) {
+        let width = super::width(block.w);
+        match (block.horizontal, block.vertical) {
+            (None, None) => match width {
+                4 => copy::<4>(t, block, put, out),
+                8 => copy::<8>(t, block, put, out),
+                _ => copy::<16>(t, block, put, out),
+            },
+            (Some(taps), None) => {
+                specialize!(width, taps.count, horizontal(t, block, taps, put, out));
+            }
+            (None, Some(taps)) => {
+                specialize!(width, taps.count, vertical(t, block, taps, put, stage, out));
+            }
+            (Some(h_taps), Some(v_taps)) => {
+                let rows = block.h + v_taps.span() - 1;
+                for strip in 0..block.w / width {
+                    specialize!(
+                        width,
+                        h_taps.count,
+                        stage_rows(t, block, h_taps, rows, strip, stage)
+                    );
+                    specialize!(
+                        width,
+                        v_taps.count,
+                        filter_stage(t, block, v_taps, put, strip, stage, out)
+                    );
                 }
             }
         }
-    );
+    }
+
+    /// The COMPOUND_AVERAGE of two groups of compound predictors, before
+    /// `Clip1`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn average(first: __m256i, second: __m256i, forward: i32) -> __m256i {
+        if forward == 8 {
+            return _mm256_mulhrs_epi16(
+                _mm256_add_epi16(first, second),
+                _mm256_set1_epi16(1 << 10),
+            );
+        }
+        let weights = _mm256_set1_epi32((forward & 0xffff) | ((16 - forward) << 16));
+        let bias = _mm256_set1_epi32(1 << 7);
+        let low = _mm256_madd_epi16(_mm256_unpacklo_epi16(first, second), weights);
+        let high = _mm256_madd_epi16(_mm256_unpackhi_epi16(first, second), weights);
+        _mm256_packs_epi32(
+            _mm256_srai_epi32::<8>(_mm256_add_epi32(low, bias)),
+            _mm256_srai_epi32::<8>(_mm256_add_epi32(high, bias)),
+        )
+    }
 
     #[inline]
     #[target_feature(enable = "avx2")]
@@ -291,8 +399,12 @@ mod avx2 {
 
     #[inline(never)]
     #[target_feature(enable = "avx2")]
-    fn copy<const W: usize>(t: Avx2, block: &Block<'_, u8>, sink: &mut Sink<'_>) {
-        let put = matches!(sink, Sink::Put { .. } | Sink::PutWide { .. });
+    fn copy<const W: usize>(
+        t: Avx2,
+        block: &Block<'_, u8>,
+        put: bool,
+        out: &mut impl FnMut(usize, usize, usize, __m256i),
+    ) {
         let source = block.source;
         for strip in 0..block.w / W {
             for row in (0..block.h).step_by(16 / W) {
@@ -331,7 +443,7 @@ mod avx2 {
                 } else {
                     _mm256_slli_epi16::<4>(samples)
                 };
-                emit::<W>(t, sink, block.w, row, strip, values);
+                out(W, row, strip, values);
             }
         }
     }
@@ -342,11 +454,11 @@ mod avx2 {
         t: Avx2,
         block: &Block<'_, u8>,
         taps: &Taps,
-        sink: &mut Sink<'_>,
+        put: bool,
+        out: &mut impl FnMut(usize, usize, usize, __m256i),
     ) {
         let filter = Horizontal::new::<W, P>(t, taps);
         let remap = block.remap.map(|remap| u8x16::load_array(t, remap).into());
-        let put = matches!(sink, Sink::Put { .. } | Sink::PutWide { .. });
         let (bias, round) = (_mm256_set1_epi16(34), _mm256_set1_epi16(1 << 13));
         for strip in 0..block.w / W {
             for row in (0..block.h).step_by(16 / W) {
@@ -360,7 +472,7 @@ mod avx2 {
                 } else {
                     _mm256_mulhrs_epi16(sums, round)
                 };
-                emit::<W>(t, sink, block.w, row, strip, values);
+                out(W, row, strip, values);
             }
         }
     }
@@ -373,15 +485,12 @@ mod avx2 {
         t: Avx2,
         block: &Block<'_, u8>,
         taps: &Taps,
+        put: bool,
         stage: &mut [i16],
-        sink: &mut Sink<'_>,
+        out: &mut impl FnMut(usize, usize, usize, __m256i),
     ) {
         let weights = byte_weights::<P>(taps);
-        let round = _mm256_set1_epi16(if matches!(sink, Sink::Put { .. } | Sink::PutWide { .. }) {
-            1 << 9
-        } else {
-            1 << 13
-        });
+        let round = _mm256_set1_epi16(if put { 1 << 9 } else { 1 << 13 });
         let source = block.source;
         let rows = block.h + 2 * P - 1;
         let zero = [0i16; 8];
@@ -416,14 +525,7 @@ mod avx2 {
                         _mm256_unpacklo_epi8(line(row + 2 * pair), line(row + 2 * pair + 1));
                     sums = _mm256_add_epi16(sums, _mm256_maddubs_epi16(pairs, weights));
                 }
-                emit::<W>(
-                    t,
-                    sink,
-                    block.w,
-                    row,
-                    strip,
-                    _mm256_mulhrs_epi16(sums, round),
-                );
+                out(W, row, strip, _mm256_mulhrs_epi16(sums, round));
             }
         }
     }
@@ -468,17 +570,14 @@ mod avx2 {
         t: Avx2,
         block: &Block<'_, u8>,
         taps: &Taps,
+        put: bool,
         strip: usize,
         stage: &[i16],
-        sink: &mut Sink<'_>,
+        out: &mut impl FnMut(usize, usize, usize, __m256i),
     ) {
         let weights: [__m256i; 4] =
             core::array::from_fn(|pair| _mm256_set1_epi32(taps.words[pair.min(P - 1)]));
-        let (bias, shift) = if matches!(sink, Sink::Put { .. } | Sink::PutWide { .. }) {
-            (1 << 9, 10)
-        } else {
-            (1 << 5, 6)
-        };
+        let (bias, shift) = if put { (1 << 9, 10) } else { (1 << 5, 6) };
         let (bias, shift) = (_mm256_set1_epi32(bias), _mm_cvtsi32_si128(shift));
         let span = (2 * P - 1) * W + 16;
         for row in (0..block.h).step_by(16 / W) {
@@ -505,7 +604,7 @@ mod avx2 {
             }
             let values =
                 _mm256_packs_epi32(_mm256_sra_epi32(low, shift), _mm256_sra_epi32(high, shift));
-            emit::<W>(t, sink, block.w, row, strip, values);
+            out(W, row, strip, values);
         }
     }
 
@@ -628,18 +727,7 @@ mod avx2 {
                     _mm256_packs_epi32(load8(at), load8(next))
                 };
                 let first = _mm256_permute4x64_epi64::<0b11_01_10_00>(first);
-                let blended = if *forward == 8 {
-                    _mm256_mulhrs_epi16(_mm256_add_epi16(first, values), _mm256_set1_epi16(1 << 10))
-                } else {
-                    let weights = _mm256_set1_epi32((*forward & 0xffff) | ((16 - *forward) << 16));
-                    let bias = _mm256_set1_epi32(1 << 7);
-                    let low = _mm256_madd_epi16(_mm256_unpacklo_epi16(first, values), weights);
-                    let high = _mm256_madd_epi16(_mm256_unpackhi_epi16(first, values), weights);
-                    _mm256_packs_epi32(
-                        _mm256_srai_epi32::<8>(_mm256_add_epi32(low, bias)),
-                        _mm256_srai_epi32::<8>(_mm256_add_epi32(high, bias)),
-                    )
-                };
+                let blended = average(first, values, *forward);
                 store_bytes::<W>(t, output, row * *stride + column, *stride, blended);
             }
             Sink::AverageWide { .. } => {}

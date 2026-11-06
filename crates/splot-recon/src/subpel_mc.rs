@@ -865,6 +865,9 @@ fn compound_average<T: ReconSample, O: ReconSample>(
 ) -> bool {
     let (w, h) = (params[0].w, params[0].h);
     let forward = i32::from(cwp_weight);
+    if block::small_compound(references, params, forward, scratch, output, output_stride) {
+        return true;
+    }
     if O::u8_slice(&[]).is_none() && O::u16_slice(&[]).is_none() {
         return false;
     }
