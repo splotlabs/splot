@@ -238,6 +238,9 @@ pub(super) struct Block<'a, T> {
     pub(super) h: usize,
     pub(super) horizontal: Option<&'static Taps>,
     pub(super) vertical: Option<&'static Taps>,
+    /// For a column-clamped 8-bit window of at most 16 columns read from
+    /// `origin`: the source byte of each window column, the `Clip3` read.
+    pub(super) remap: Option<[u8; 16]>,
 }
 
 impl<T> Block<'_, T> {
@@ -247,11 +250,6 @@ impl<T> Block<'_, T> {
     pub(super) fn start(&self, row: usize) -> usize {
         self.origin
             + (self.top + row as isize).clamp(self.rows[0], self.rows[1]) as usize * self.stride
-    }
-
-    /// Whether every window row reads its own source row.
-    pub(super) fn unclamped(&self, rows: usize) -> bool {
-        self.top >= self.rows[0] && self.top + rows as isize - 1 <= self.rows[1]
     }
 }
 
@@ -342,11 +340,8 @@ fn unscaled_block<T: Sample>(
     let (row, rows) = window(params.start_y, h, vertical);
     let last = |first: i32, count: usize| first + count as i32 - 1;
     let columns_inside = column >= params.first_x && last(column, columns) <= params.last_x;
-    let rows_inside = row >= params.first_y && last(row, rows) <= params.last_y;
-    let clamp_rows = !rows_inside && T::u16_slice(&[]).is_some();
     let last_row = last(row, rows).min(params.last_y).max(params.first_y) as usize;
     let direct = columns_inside
-        && (rows_inside || clamp_rows)
         && column >= 0
         && last_row * view.stride + column as usize + reach(w) <= view.samples.len();
     let stage_len = match vertical {
@@ -354,19 +349,25 @@ fn unscaled_block<T: Sample>(
         None => 0,
     };
     let mut run = |block: &Block<'_, T>, stage: &mut [i16]| {
-        if !super::eight_bit::predict(block, &mut sink, stage)
-            && !super::sixteen_bit::predict(block, &mut sink, stage)
-        {
+        if super::eight_bit::predict(block, &mut sink, stage) {
+            return true;
+        }
+        if block.remap.is_some() {
+            return false;
+        }
+        if !super::sixteen_bit::predict(block, &mut sink, stage) {
             super::portable::predict(block, &mut sink, stage);
         }
+        true
     };
-    let run_staged = |block: &Block<'_, T>| match scratch {
+    let mut scratch = scratch;
+    let mut run_staged = |block: &Block<'_, T>| match scratch.as_deref_mut() {
         Some(scratch) if scratch.len() >= stage_len => run(block, &mut scratch[..stage_len]),
         _ if stage_len == 0 => run(block, &mut []),
         _ => with_subpel_intermediate(stage_len, |stage| run(block, stage)),
     };
     if direct {
-        return run_staged(&Block {
+        run_staged(&Block {
             source: view.samples,
             stride: view.stride,
             origin: column as usize,
@@ -376,7 +377,32 @@ fn unscaled_block<T: Sample>(
             h,
             horizontal,
             vertical,
+            remap: None,
         });
+        return;
+    }
+    let base = column.clamp(params.first_x, params.last_x);
+    if w <= 8
+        && horizontal.is_some()
+        && T::u8_slice(&[]).is_some()
+        && base >= 0
+        && last_row * view.stride + base as usize + 16 <= view.samples.len()
+        && run_staged(&Block {
+            source: view.samples,
+            stride: view.stride,
+            origin: base as usize,
+            top: row as isize,
+            rows: [params.first_y as isize, params.last_y as isize],
+            w,
+            h,
+            horizontal,
+            vertical,
+            remap: Some(core::array::from_fn(|lane| {
+                ((column + lane as i32).clamp(params.first_x, params.last_x) - base) as u8
+            })),
+        })
+    {
+        return;
     }
     let stride = reach(w);
     let inside = (params.first_x - column).clamp(0, columns as i32) as usize
@@ -419,6 +445,7 @@ fn unscaled_block<T: Sample>(
             h,
             horizontal,
             vertical,
+            remap: None,
         });
     });
 }

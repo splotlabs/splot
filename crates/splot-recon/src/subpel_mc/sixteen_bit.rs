@@ -37,6 +37,7 @@ pub(super) fn predict<T: ReconSample>(
             h: block.h,
             horizontal: block.horizontal,
             vertical: block.vertical,
+            remap: None,
         };
         avx2::predict(token, &block, sink, stage);
         return true;
