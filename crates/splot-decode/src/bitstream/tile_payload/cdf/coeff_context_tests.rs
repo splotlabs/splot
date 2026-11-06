@@ -406,7 +406,7 @@ fn idtx_sign_ctx_is_total_for_short_slices_and_pathological_geometry() {
 #[test]
 fn dc_sign_votes_match_the_per_category_count() {
     let line: Vec<u8> = (0..80u32)
-        .map(|i| ((i * 2_654_435_761) >> 13) as u8 % 5)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8 % 5)
         .collect();
     for len in [0, 1, 2, 4, 8, 16, 32, 5] {
         for start in [0, 3, 40, 70] {
