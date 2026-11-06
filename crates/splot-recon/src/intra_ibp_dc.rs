@@ -10,9 +10,8 @@ use crate::intra_dc_math::{
     IntraLaneSample, round2_u32, validate_dc_edge, validate_output_shape, validate_sample_type,
 };
 use crate::{BitDepth, ReconError, ReconSample, Result};
+use fearless_simd::{Level, Simd, SimdBase, dispatch, u16x16};
 use std::ops::Range;
-use std::simd::Simd;
-use std::simd::num::SimdUint;
 
 const IBP_WEIGHT_MAX: u16 = 128;
 /// Widest IBP DC block side.
@@ -183,52 +182,119 @@ fn blend_ibp_dc_lanes<O: IntraLaneSample>(
                 .is_some_and(|run| run.iter().all(|&value| value.to_u16() <= max))
         })
     };
-    if (above.is_some() && !in_range(0..height >> 2, above_start..width))
-        || (left.is_some() && !in_range(left_start..height, 0..width >> 2))
+    if O::MAX_VALUE > max
+        && ((above.is_some() && !in_range(0..height >> 2, above_start..width))
+            || (left.is_some() && !in_range(left_start..height, 0..width >> 2)))
     {
         return false;
     }
-    if let Some(edge) = above.and_then(|edge| edge.get(above_start..)) {
-        for (row, &weight) in above_weights.iter().enumerate().take(height >> 2) {
-            let Some(out) = pred.get_mut(row * stride + above_start..row * stride + width) else {
+    let wide = max > MAX_NARROW_BLEND_SAMPLE;
+    let zones = IbpDcZones {
+        above: above
+            .and_then(|edge| edge.get(above_start..))
+            .map(|edge| (edge, above_start, above_weights)),
+        left: left.map(|edge| (edge, left_start, left_weights)),
+    };
+    dispatch!(Level::baseline(), simd => blend_ibp_dc_zones(simd, wide, size, zones, pred, stride));
+    true
+}
+
+/// Largest sample whose § 7.13.2.12 blend sum `128 * sample + 64` fits `u16`.
+const MAX_NARROW_BLEND_SAMPLE: u16 = 511;
+
+/// The § 7.13.2.12 above and left zones: edge samples from the zone's first
+/// sample, the first row or column of the zone, and the weights.
+#[derive(Clone, Copy)]
+struct IbpDcZones<'a> {
+    above: Option<(&'a [u16], usize, &'a [u16; 16])>,
+    left: Option<(&'a [u16], usize, &'a [u16])>,
+}
+
+#[inline]
+fn blend_ibp_dc_zones<S: Simd, O: IntraLaneSample>(
+    simd: S,
+    wide: bool,
+    size: IntraRectBlockSize,
+    zones: IbpDcZones<'_>,
+    pred: &mut [O],
+    stride: usize,
+) {
+    let (width, height) = (size.width(), size.height());
+    if let Some((edge, start, weights)) = zones.above {
+        for (row, &weight) in weights.iter().enumerate().take(height >> 2) {
+            let Some(out) = pred.get_mut(row * stride + start..row * stride + width) else {
                 continue;
             };
-            let (runs, out) = out.as_chunks_mut::<4>();
-            let (sources, edge) = edge.as_chunks::<4>();
+            let (runs, out) = out.as_chunks_mut::<16>();
+            let (sources, edge) = edge.as_chunks::<16>();
+            let weight_lanes = u16x16::splat(simd, weight);
             for (run, source) in runs.iter_mut().zip(sources) {
-                blend_ibp_lanes(run, Simd::from_array(*source), Simd::splat(weight));
+                let blended = blend_ibp_lanes(
+                    simd,
+                    wide,
+                    O::load16(simd, run),
+                    u16x16::from_slice(simd, source),
+                    weight_lanes,
+                );
+                O::store16(simd, blended, run);
             }
             for (slot, &source) in out.iter_mut().zip(edge) {
                 *slot = O::from_lane(blend_ibp_value(source, slot.to_u16(), weight));
             }
         }
     }
-    for (row, &edge) in left.into_iter().flatten().enumerate().skip(left_start) {
+    let Some((edge, start, weights)) = zones.left else {
+        return;
+    };
+    for (row, &edge) in edge.iter().enumerate().take(height).skip(start) {
         let Some(out) = pred.get_mut(row * stride..row * stride + (width >> 2)) else {
             continue;
         };
-        let (runs, out) = out.as_chunks_mut::<4>();
-        let (weights, left_weights) = left_weights.as_chunks::<4>();
-        for (run, weight) in runs.iter_mut().zip(weights) {
-            blend_ibp_lanes(run, Simd::splat(edge), Simd::from_array(*weight));
+        let (runs, out) = out.as_chunks_mut::<16>();
+        let (run_weights, weights) = weights.as_chunks::<16>();
+        let edge_lanes = u16x16::splat(simd, edge);
+        for (run, weight) in runs.iter_mut().zip(run_weights) {
+            let blended = blend_ibp_lanes(
+                simd,
+                wide,
+                O::load16(simd, run),
+                edge_lanes,
+                u16x16::from_slice(simd, weight),
+            );
+            O::store16(simd, blended, run);
         }
-        for (slot, &weight) in out.iter_mut().zip(left_weights) {
+        for (slot, &weight) in out.iter_mut().zip(weights) {
             *slot = O::from_lane(blend_ibp_value(edge, slot.to_u16(), weight));
         }
     }
-    true
 }
 
-fn blend_ibp_lanes<O: IntraLaneSample>(
-    pred: &mut [O; 4],
-    edge: Simd<u16, 4>,
-    weight: Simd<u16, 4>,
-) {
-    let weight = weight.cast::<u32>();
-    let sum = edge.cast::<u32>() * (Simd::splat(u32::from(IBP_WEIGHT_MAX)) - weight)
-        + O::load(pred).cast::<u32>() * weight;
-    let blended = (sum + Simd::splat(1 << (IBP_WEIGHT_SHIFT - 1))) >> u32::from(IBP_WEIGHT_SHIFT);
-    O::store(blended.cast::<u16>().as_array(), pred);
+/// `Round2(pred * weight + edge * (128 - weight), 7)` over 16 lanes, in `u16`
+/// lanes unless `wide` samples need `u32`.
+#[inline]
+pub(crate) fn blend_ibp_lanes<S: Simd>(
+    simd: S,
+    wide: bool,
+    pred: u16x16<S>,
+    edge: u16x16<S>,
+    weight: u16x16<S>,
+) -> u16x16<S> {
+    let inverse = u16x16::splat(simd, IBP_WEIGHT_MAX) - weight;
+    let round = 1 << (IBP_WEIGHT_SHIFT - 1);
+    if !wide {
+        return (pred * weight + edge * inverse + round) >> u32::from(IBP_WEIGHT_SHIFT);
+    }
+    let [
+        (pred_low, pred_high),
+        (edge_low, edge_high),
+        (weight_low, weight_high),
+        (inverse_low, inverse_high),
+    ] = [pred, edge, weight, inverse].map(|lanes| simd.widen_u16x16(lanes));
+    let low = (pred_low * weight_low + edge_low * inverse_low + u32::from(round))
+        >> u32::from(IBP_WEIGHT_SHIFT);
+    let high = (pred_high * weight_high + edge_high * inverse_high + u32::from(round))
+        >> u32::from(IBP_WEIGHT_SHIFT);
+    simd.relaxed_narrow_u32x8(low, high)
 }
 
 fn blend_ibp_value(edge: u16, pred: u16, weight: u16) -> u16 {
