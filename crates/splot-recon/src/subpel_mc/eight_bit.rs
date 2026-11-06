@@ -13,233 +13,55 @@
 //! pair stays below the `pmaddubsw` saturation bound.
 //!
 //! A vector covers 16 outputs: one strip row of a block at least 16 wide, two
-//! rows of an 8-wide block or four rows of a 4-wide block. Blocks whose
-//! filter windows need § 7.13.3.18 clipping, other widths, and targets
-//! without AVX2 decline to the general core.
+//! rows of an 8-wide block or four rows of a 4-wide block. Other widths,
+//! 10-bit sinks and targets without AVX2 decline to the portable kernels.
 
-use super::{
-    NUM_FILTER_TYPES, NUM_PHASES, NUM_TAPS, ReferencePlaneView, SCALE_SUBPEL_BITS, SUBPEL_FILTERS,
-    SUBPEL_MASK, SubpelPredictParams, even_tap_span,
-};
+use super::block::{Block, Sink};
+use crate::format::ReconSample;
 
-/// Where the final pass of a block lands.
-pub(super) enum Sink<'a> {
-    /// `Clip1` of a single-reference prediction.
-    Put { output: &'a mut [u8], stride: usize },
-    /// [`Self::Put`] into `u16` storage.
-    PutWide {
-        output: &'a mut [u16],
-        stride: usize,
-    },
-    /// The `InterRound1 == 7` compound predictor.
-    Prep {
-        output: &'a mut [i32],
-        stride: usize,
-    },
-    /// The § 7.13.3.15 COMPOUND_AVERAGE of the contiguous `w * h` first
-    /// predictor `pred0` and this block's compound predictor.
-    Average {
-        pred0: &'a [i32],
-        forward: i32,
-        output: &'a mut [u8],
-        stride: usize,
-    },
-}
-
-/// One pass's halved active taps from tap `start`: `count` pairs, as byte
-/// pairs for `pmaddubsw` and as `i16` pairs for `pmaddwd`.
-#[derive(Clone, Copy)]
-struct Taps {
-    start: usize,
-    count: usize,
-    bytes: [i16; NUM_TAPS / 2],
-    words: [i32; NUM_TAPS / 2],
-}
-
-/// The [`Taps`] of every nonzero `Subpel_Filters` phase.
-const TAPS: [[Option<Taps>; NUM_PHASES]; NUM_FILTER_TYPES] = {
-    let mut table = [[None; NUM_PHASES]; NUM_FILTER_TYPES];
-    let mut filter = 0;
-    while filter < NUM_FILTER_TYPES {
-        let mut phase = 1;
-        while phase < NUM_PHASES {
-            let (start, taps) = even_tap_span(filter, phase);
-            let row = &SUBPEL_FILTERS[filter][phase];
-            let (mut bytes, mut words) = ([0; NUM_TAPS / 2], [0; NUM_TAPS / 2]);
-            let mut pair = 0;
-            while pair < taps / 2 {
-                let (a, b) = (row[start + 2 * pair] / 2, row[start + 2 * pair + 1] / 2);
-                bytes[pair] = i16::from_le_bytes([a as u8, b as u8]);
-                words[pair] = (a & 0xffff) | (b << 16);
-                pair += 1;
-            }
-            table[filter][phase] = Some(Taps {
-                start,
-                count: taps / 2,
-                bytes,
-                words,
-            });
-            phase += 1;
-        }
-        filter += 1;
-    }
-    table
-};
-
-impl Taps {
-    const fn span(&self) -> usize {
-        2 * self.count
-    }
-}
-
-/// Rows and columns of one 16-output vector.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Shape {
-    Rows4,
-    Rows2,
-    Strip,
-}
-
-impl Shape {
-    const fn width(self) -> usize {
-        match self {
-            Self::Rows4 => 4,
-            Self::Rows2 => 8,
-            Self::Strip => 16,
-        }
-    }
-
-    const fn rows(self) -> usize {
-        16 / self.width()
-    }
-}
-
-/// An unclipped block: row `r`, column `c` of its read window is
-/// `source[origin + r * stride + c]`.
-struct Block<'a> {
-    source: &'a [u8],
-    stride: usize,
-    origin: usize,
-    w: usize,
-    h: usize,
-    shape: Shape,
-    horizontal: Option<Taps>,
-    vertical: Option<Taps>,
-}
-
-/// Predicts the block into `sink` and returns `true`, or returns `false`
-/// without writing when the block is outside the byte-lane subset.
-pub(super) fn predict(
-    reference: &ReferencePlaneView<'_, u8>,
-    params: &SubpelPredictParams,
-    sink: Sink<'_>,
-    scratch: Option<&mut [i16]>,
+/// Predicts an eight-bit block in byte lanes and returns `true`, or returns
+/// `false` without writing when the block is outside the byte-lane subset.
+pub(super) fn predict<T: ReconSample>(
+    block: &Block<'_, T>,
+    sink: &mut Sink<'_>,
+    stage: &mut [i16],
 ) -> bool {
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = fearless_simd::Level::baseline().as_avx2()
-        && let Some(block) = Block::new(reference, params)
-        && sink_fits(&sink, params)
-    {
-        let (width, group) = (block.shape.width(), block.shape.rows());
-        let len = match (block.horizontal, block.vertical) {
-            (_, None) => 0,
-            (Some(_), Some(taps)) => (block.h + taps.span() - 1).next_multiple_of(group) * width,
-            (None, Some(_)) if width == 16 => 0,
-            (None, Some(taps)) => (block.h + taps.span() - 1) * width / 2 + 8,
-        };
-        let mut sink = sink;
-        match scratch.and_then(|scratch| scratch.get_mut(..len)) {
-            Some(stage) => avx2::predict(token, &block, &mut sink, stage),
-            None if len == 0 => avx2::predict(token, &block, &mut sink, &mut []),
-            None => super::with_subpel_intermediate(len, |stage| {
-                avx2::predict(token, &block, &mut sink, stage);
-            }),
+        && let Some(source) = T::u8_slice(block.source)
+        && (matches!(block.w, 4 | 8) || block.w.is_multiple_of(16))
+        && block.h.is_multiple_of(16 / width(block.w))
+        && !(block.w == 4 && block.horizontal.is_some_and(|taps| taps.count > 2))
+        && match sink {
+            Sink::PutWide { max, .. } => *max == u16::from(u8::MAX),
+            Sink::AverageWide { .. } => false,
+            _ => true,
         }
+    {
+        let block = Block {
+            source,
+            stride: block.stride,
+            origin: block.origin,
+            w: block.w,
+            h: block.h,
+            horizontal: block.horizontal,
+            vertical: block.vertical,
+        };
+        avx2::predict(token, &block, sink, stage);
         return true;
     }
-    let _ = (reference, params, sink, scratch);
+    let _ = (block, sink, stage);
     false
 }
 
-fn sink_fits(sink: &Sink<'_>, params: &SubpelPredictParams) -> bool {
-    let end = |stride: usize| (params.h - 1) * stride + params.w;
-    match sink {
-        Sink::Put { output, stride } => output.len() >= end(*stride),
-        Sink::PutWide { output, stride } => output.len() >= end(*stride),
-        Sink::Prep { output, stride } => output.len() >= end(*stride),
-        Sink::Average {
-            pred0,
-            output,
-            stride,
-            ..
-        } => output.len() >= end(*stride) && pred0.len() >= params.w * params.h,
-    }
-}
-
-impl<'a> Block<'a> {
-    fn new(reference: &ReferencePlaneView<'a, u8>, params: &SubpelPredictParams) -> Option<Self> {
-        if params.step_x != 1 << SCALE_SUBPEL_BITS || params.step_y != 1 << SCALE_SUBPEL_BITS {
-            return None;
-        }
-        let (w, h) = (params.w, params.h);
-        let shape = match w {
-            4 => Shape::Rows4,
-            8 => Shape::Rows2,
-            w if w % 16 == 0 => Shape::Strip,
-            _ => return None,
-        };
-        if h == 0 || !h.is_multiple_of(shape.rows()) || h > super::MAX_BLOCK_DIM {
-            return None;
-        }
-        let taps = |size: usize, start: i32| {
-            TAPS[params.interp.pass_index(size as u32) as usize]
-                [((start >> 6) & SUBPEL_MASK) as usize]
-        };
-        let horizontal = taps(w, params.start_x);
-        let vertical = taps(h, params.start_y);
-        if shape == Shape::Rows4 && horizontal.is_some_and(|taps| taps.count > 2) {
-            return None;
-        }
-        let window = |start: i32, size: usize, taps: Option<Taps>| {
-            let base = start >> SCALE_SUBPEL_BITS;
-            match taps {
-                Some(taps) => (base - 3 + taps.start as i32, size + taps.span() - 1),
-                None => (base, size),
-            }
-        };
-        let (column, columns) = window(params.start_x, w, horizontal);
-        let (row, rows) = window(params.start_y, h, vertical);
-        let last = |first: i32, count: usize| first + count as i32 - 1;
-        if column < params.first_x.max(0)
-            || row < params.first_y.max(0)
-            || last(column, columns) > params.last_x.min(reference.width as i32 - 1)
-            || last(row, rows) > params.last_y.min(reference.readable_rows as i32 - 1)
-        {
-            return None;
-        }
-        let reach = if horizontal.is_some() {
-            (w + 8).max(16)
-        } else {
-            w
-        };
-        let origin = row as usize * reference.stride + column as usize;
-        let end = origin + (rows - 1) * reference.stride + reach;
-        (end <= reference.samples.len()).then_some(Self {
-            source: reference.samples,
-            stride: reference.stride,
-            origin,
-            w,
-            h,
-            shape,
-            horizontal,
-            vertical,
-        })
-    }
+/// The strip width of a block: whole 4- and 8-wide rows, else 16 columns.
+const fn width(w: usize) -> usize {
+    if w <= 8 { w } else { 16 }
 }
 
 #[cfg(target_arch = "x86_64")]
 mod avx2 {
-    use super::{Block, Sink, Taps};
+    use super::super::block::{Block, Sink, Taps};
     use core::arch::x86_64::*;
     use fearless_simd::{Avx2, SimdBase, SimdFrom, i16x8, i16x16, i32x4, i32x8, u8x16, u8x32};
 
@@ -296,8 +118,13 @@ mod avx2 {
 
     fearless_simd::kernel!(
         #[inline]
-        pub(super) fn predict(t: Avx2, block: &Block<'_>, sink: &mut Sink<'_>, stage: &mut [i16]) {
-            let width = block.shape.width();
+        pub(super) fn predict(
+            t: Avx2,
+            block: &Block<'_, u8>,
+            sink: &mut Sink<'_>,
+            stage: &mut [i16],
+        ) {
+            let width = super::width(block.w);
             match (block.horizontal, block.vertical) {
                 (None, None) => match width {
                     4 => copy::<4>(t, block, sink),
@@ -424,7 +251,7 @@ mod avx2 {
 
     #[inline(never)]
     #[target_feature(enable = "avx2")]
-    fn copy<const W: usize>(t: Avx2, block: &Block<'_>, sink: &mut Sink<'_>) {
+    fn copy<const W: usize>(t: Avx2, block: &Block<'_, u8>, sink: &mut Sink<'_>) {
         let put = matches!(sink, Sink::Put { .. } | Sink::PutWide { .. });
         let (source, stride) = (block.source, block.stride);
         for strip in 0..block.w / W {
@@ -474,7 +301,7 @@ mod avx2 {
     #[target_feature(enable = "avx2")]
     fn horizontal<const W: usize, const P: usize>(
         t: Avx2,
-        block: &Block<'_>,
+        block: &Block<'_, u8>,
         taps: &Taps,
         sink: &mut Sink<'_>,
     ) {
@@ -506,7 +333,7 @@ mod avx2 {
     #[target_feature(enable = "avx2")]
     fn vertical<const W: usize, const P: usize>(
         t: Avx2,
-        block: &Block<'_>,
+        block: &Block<'_, u8>,
         taps: &Taps,
         stage: &mut [i16],
         sink: &mut Sink<'_>,
@@ -570,7 +397,7 @@ mod avx2 {
     #[target_feature(enable = "avx2")]
     fn stage_rows<const W: usize, const P: usize>(
         t: Avx2,
-        block: &Block<'_>,
+        block: &Block<'_, u8>,
         taps: &Taps,
         rows: usize,
         strip: usize,
@@ -600,7 +427,7 @@ mod avx2 {
     #[target_feature(enable = "avx2")]
     fn filter_stage<const W: usize, const P: usize>(
         t: Avx2,
-        block: &Block<'_>,
+        block: &Block<'_, u8>,
         taps: &Taps,
         strip: usize,
         stage: &[i16],
@@ -660,7 +487,7 @@ mod avx2 {
             Sink::Put { output, stride } => {
                 store_bytes::<W>(t, output, row * *stride + column, *stride, values);
             }
-            Sink::PutWide { output, stride } => {
+            Sink::PutWide { output, stride, .. } => {
                 let stride = *stride;
                 let at = row * stride + column;
                 let values = _mm256_min_epi16(
@@ -776,6 +603,7 @@ mod avx2 {
                 };
                 store_bytes::<W>(t, output, row * *stride + column, *stride, blended);
             }
+            Sink::AverageWide { .. } => {}
         }
     }
 
