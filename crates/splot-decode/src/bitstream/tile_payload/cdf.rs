@@ -97,9 +97,7 @@ pub(crate) use self::block_rows::{
     PB_MV_PRECISION_CDF_ROW_LEN,
 };
 pub(crate) use self::coeff_rows::{
-    COEFF_BR_ROW_LEN, CoeffBaseLevelRows, CoeffBaseLfLevelRows, CoeffBaseLfUvCdfRows,
-    CoeffBasePhCdfRows, CoeffBaseRow, CoeffBaseUvCdfRows, CoeffBrCdfRows, CoeffBrLfCdfRows,
-    CoeffBrUvCdfRows, CoeffCdfRows, CoeffCdfSelector, CoeffLevelRows, row2,
+    CoeffBaseRow, CoeffCdfRows, CoeffCdfSelector, CoeffLevelRows, row2,
 };
 pub(in crate::bitstream::tile_payload::cdf) use self::util::{
     avg_cdf_row, avg_cdf_rows, blend_cdf_row, blend_cdf_rows, scale_cdf_count, scale_cdf_rows,

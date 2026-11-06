@@ -12,15 +12,14 @@ use super::super::cdf::TileCdfArray::{
 };
 use super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::cdf::coeff_context::{
-    CoeffBaseContext, CoeffBaseSelection, CoeffBrContext, coeff_base_eob_ctx,
+    CHROMA_2D_PLANE_CONTEXT_OFFSET, HF_2D_CONTEXT_OFFSET, LF_2D_CONTEXT_CAP_AND_OFFSET,
+    LF_SIG_COEF_CONTEXTS_2D_UV, MAG_REF_OFFSET_WITH_TX_CLASS, MAX_BASE_BR_RANGE, SIG_OFFSETS,
+    coeff_base_eob_ctx,
 };
-use super::super::cdf::{
-    COEFF_BR_ROW_LEN, CoeffBaseLevelRows, CoeffBaseLfLevelRows, CoeffBaseLfUvCdfRows,
-    CoeffBasePhCdfRows, CoeffBaseRow, CoeffBaseUvCdfRows, CoeffBrCdfRows, CoeffBrLfCdfRows,
-    CoeffBrUvCdfRows, CoeffCdfSelector, CoeffLevelRows, TileCdfError, TileCdfSubset, row2,
-};
+use super::super::cdf::{CoeffCdfSelector, CoeffLevelRows, TileCdfSubset, row2};
 use super::super::coeff_state::{
-    LEVEL_GRID_LEN, LEVEL_STRIDE, LevelGrid, TileCoeffStateError, TransformCoeffBlockState,
+    LEVEL_GRID_LEN, LEVEL_INDEX_MASK, LEVEL_STRIDE, LevelGrid, NONZERO_LIST_LEN, NonzeroList,
+    TileCoeffStateError, TransformCoeffBlockState,
 };
 use super::NonZeroCoeffEob;
 use super::base_symbol::{CoeffBaseSymbolReadError, read_coeff_symbol};
@@ -31,8 +30,25 @@ use super::max_level::{
 };
 use super::quant_state::next_tcq_state;
 use super::scan_walk::{CoeffScanEntry, NonZeroCoeffScanWalk};
+use splot_core::coefficient::LF_SIG_COEF_CONTEXTS_2D;
 
 const PHTHRESH: usize = 4;
+
+/// `Sig_Ref_Diff_Offset` as unsigned `[row, col]` offsets per class.
+const CONTEXT_OFFSETS: [[[usize; 2]; 5]; 3] = {
+    let mut out = [[[0; 2]; 5]; 3];
+    let mut class = 0;
+    while class < 3 {
+        let mut k = 0;
+        while k < 5 {
+            let [row, col] = SIG_OFFSETS[class][k];
+            out[class][k] = [row as usize, col as usize];
+            k += 1;
+        }
+        class += 1;
+    }
+    out
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffBaseDerivedLevelPassConfig {
@@ -52,6 +68,7 @@ pub(crate) struct CoeffBaseDerivedLevelPassConfig {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct CoeffBaseFirstPassSummary {
     packed: u32,
+    nonzero: usize,
 }
 
 const SUMMARY_TCQ_MASK: u32 = 0b111;
@@ -70,6 +87,12 @@ impl CoeffBaseFirstPassSummary {
         ((self.packed >> SUMMARY_COUNT_SHIFT) & SUMMARY_COUNT_MASK) >= PHTHRESH as u32
     }
 
+    /// How many leading entries of the block's nonzero list the pass wrote.
+    #[must_use]
+    pub(crate) const fn nonzero_count(self) -> usize {
+        self.nonzero
+    }
+
     const fn tcq_state(self) -> usize {
         (self.packed & SUMMARY_TCQ_MASK) as usize
     }
@@ -78,14 +101,14 @@ impl CoeffBaseFirstPassSummary {
     #[inline(always)]
     pub(crate) fn update_after_level<const TCQ: bool, const PH: bool>(
         &mut self,
-        entry: CoeffScanEntry,
+        scan_index: usize,
         level: u32,
     ) {
         if TCQ {
             let tcq_state = next_tcq_state(self.tcq_state(), level);
             self.packed = (self.packed & !SUMMARY_TCQ_MASK) | tcq_state as u32;
         }
-        if PH && level != 0 && entry.scan_index() > 0 {
+        if PH && level != 0 && scan_index > 0 {
             let clipped = level.min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);
             let parity = ((self.packed >> SUMMARY_PARITY_SHIFT) & 1) ^ (clipped & 1);
             let count = ((self.packed >> SUMMARY_COUNT_SHIFT) & SUMMARY_COUNT_MASK)
@@ -99,53 +122,47 @@ impl CoeffBaseFirstPassSummary {
     }
 }
 
-/// One bit per scan index, enough for the 32x32 coefficient maximum.
-const SCAN_MASK_WORDS: usize = 16;
+/// One nonzero level of the base pass, packed for the sign and quant pass:
+/// bits 0-9 the position, 10-19 the scan index, 20-27 the level, bit 28
+/// `(tcqState >> 1) & 1` before it and bit 29 whether it is low frequency.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NonzeroEntry(u32);
 
-/// Per-scan-index facts the base pass hands to the sign and quant pass, so
-/// that pass visits only the nonzero levels.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct CoeffLevelMasks {
-    nonzero: [u64; SCAN_MASK_WORDS],
-    /// `(tcqState >> 1) & 1` before each scan index.
-    tcq_q0: [u64; SCAN_MASK_WORDS],
-}
-
-impl CoeffLevelMasks {
-    #[inline]
-    fn record(&mut self, scan_index: usize, level: u32, tcq_state: usize) {
-        let word = (scan_index >> 6) & (SCAN_MASK_WORDS - 1);
-        let shift = scan_index & 63;
-        self.nonzero[word] |= u64::from(level != 0) << shift;
-        self.tcq_q0[word] |= (((tcq_state >> 1) & 1) as u64) << shift;
+impl NonzeroEntry {
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient record")]
+    #[inline(always)]
+    fn new(pos: usize, scan_index: usize, level: u32, tcq_q0: usize, is_lf: bool) -> Self {
+        Self(
+            (pos & 0x3ff) as u32
+                | (((scan_index & 0x3ff) as u32) << 10)
+                | ((level & 0xff) << 20)
+                | (((tcq_q0 & 1) as u32) << 28)
+                | (u32::from(is_lf) << 29),
+        )
     }
 
-    #[inline]
-    pub(crate) fn is_nonzero(&self, scan_index: usize) -> bool {
-        (self.nonzero[(scan_index >> 6) & (SCAN_MASK_WORDS - 1)] >> (scan_index & 63)) & 1 != 0
+    pub(crate) const fn from_raw(raw: u32) -> Self {
+        Self(raw)
     }
 
-    #[inline]
-    pub(crate) fn tcq_q0(&self, scan_index: usize) -> bool {
-        (self.tcq_q0[(scan_index >> 6) & (SCAN_MASK_WORDS - 1)] >> (scan_index & 63)) & 1 != 0
+    pub(crate) const fn pos(self) -> usize {
+        (self.0 & 0x3ff) as usize
     }
 
-    /// The nonzero scan indices below `eob` from high to low (the walk
-    /// order), plus scan index 0 when `with_dc`.
-    pub(crate) fn nonzero_scan_indices(
-        &self,
-        eob: usize,
-        with_dc: bool,
-    ) -> impl Iterator<Item = usize> + '_ {
-        let words = eob.div_ceil(64).min(SCAN_MASK_WORDS);
-        (0..words).rev().flat_map(move |word| {
-            let mut bits = self.nonzero[word] | u64::from(with_dc && word == 0);
-            core::iter::from_fn(move || {
-                let top = 63_u32.checked_sub(bits.leading_zeros())?;
-                bits &= !(1 << top);
-                Some(word * 64 + top as usize)
-            })
-        })
+    pub(crate) const fn scan_index(self) -> usize {
+        ((self.0 >> 10) & 0x3ff) as usize
+    }
+
+    pub(crate) const fn level(self) -> u32 {
+        (self.0 >> 20) & 0xff
+    }
+
+    pub(crate) const fn tcq_q0(self) -> bool {
+        (self.0 >> 28) & 1 != 0
+    }
+
+    pub(crate) const fn is_lf(self) -> bool {
+        (self.0 >> 29) & 1 != 0
     }
 }
 
@@ -187,19 +204,14 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
     block: &mut TransformCoeffBlockState,
-    masks: &mut CoeffLevelMasks,
 ) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
-    let (eob_read, owned_block) = start.into_parts();
+    let (eob_read, owned_block) = start.into_parts()?;
     *block = owned_block;
     preflight_pass(eob_read, block, walk, config)?;
     match (config.use_tcq, config.parity_hiding) {
-        (false, false) => {
-            dispatch_level_pass::<false, false>(cdfs, symbols, block, walk, config, masks)
-        }
-        (false, true) => {
-            dispatch_level_pass::<false, true>(cdfs, symbols, block, walk, config, masks)
-        }
-        (true, _) => dispatch_level_pass::<true, false>(cdfs, symbols, block, walk, config, masks),
+        (false, false) => dispatch_level_pass::<false, false>(cdfs, symbols, block, walk, config),
+        (false, true) => dispatch_level_pass::<false, true>(cdfs, symbols, block, walk, config),
+        (true, _) => dispatch_level_pass::<true, false>(cdfs, symbols, block, walk, config),
     }
 }
 
@@ -212,24 +224,15 @@ fn dispatch_level_pass<const TCQ: bool, const PH: bool>(
     block: &mut TransformCoeffBlockState,
     walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
-    masks: &mut CoeffLevelMasks,
 ) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
     use CoeffTransformClass::{Horizontal, TwoD, Vertical};
     match (config.tx_class, config.plane == 0) {
-        (TwoD, true) => level_pass::<0, true, TCQ, PH>(cdfs, symbols, block, walk, config, masks),
-        (TwoD, false) => level_pass::<0, false, TCQ, PH>(cdfs, symbols, block, walk, config, masks),
-        (Horizontal, true) => {
-            level_pass::<1, true, TCQ, PH>(cdfs, symbols, block, walk, config, masks)
-        }
-        (Horizontal, false) => {
-            level_pass::<1, false, TCQ, PH>(cdfs, symbols, block, walk, config, masks)
-        }
-        (Vertical, true) => {
-            level_pass::<2, true, TCQ, PH>(cdfs, symbols, block, walk, config, masks)
-        }
-        (Vertical, false) => {
-            level_pass::<2, false, TCQ, PH>(cdfs, symbols, block, walk, config, masks)
-        }
+        (TwoD, true) => level_pass::<0, true, TCQ, PH>(cdfs, symbols, block, walk, config),
+        (TwoD, false) => level_pass::<0, false, TCQ, PH>(cdfs, symbols, block, walk, config),
+        (Horizontal, true) => level_pass::<1, true, TCQ, PH>(cdfs, symbols, block, walk, config),
+        (Horizontal, false) => level_pass::<1, false, TCQ, PH>(cdfs, symbols, block, walk, config),
+        (Vertical, true) => level_pass::<2, true, TCQ, PH>(cdfs, symbols, block, walk, config),
+        (Vertical, false) => level_pass::<2, false, TCQ, PH>(cdfs, symbols, block, walk, config),
     }
 }
 
@@ -246,18 +249,41 @@ fn level_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: b
     block: &mut TransformCoeffBlockState,
     walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
-    masks: &mut CoeffLevelMasks,
 ) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
+    let config = CoeffBaseDerivedLevelPassConfig {
+        tx_class: [
+            CoeffTransformClass::TwoD,
+            CoeffTransformClass::Horizontal,
+            CoeffTransformClass::Vertical,
+        ][CLASS],
+        plane: if LUMA { 0 } else { config.plane.max(1) },
+        ..config
+    };
+    if walk.len() == 0 {
+        return Ok(CoeffBaseFirstPassSummary::default());
+    }
+    let eob_entry = walk.entry(0);
+    let eob_is_lf = coeff_is_low_frequency(eob_entry, config.plane, config.tx_class);
+    let selector = base_eob_selector(eob_entry, eob_is_lf, config);
+    let eob_level = u32::from(read_coeff_symbol(cdfs, symbols, selector)?) + 1;
     let mut owned = symbols.snapshot();
     let result = level_pass_on_snapshot::<CLASS, LUMA, TCQ, PH>(
-        cdfs, &mut owned, block, walk, config, masks,
+        cdfs,
+        &mut owned,
+        block,
+        walk,
+        config,
+        (eob_is_lf, eob_level),
     );
     symbols.restore(owned);
     result
 }
 
 /// The loop body over an owned decoder, so the arithmetic state stays in
-/// registers instead of behind a pointer.
+/// registers instead of behind a pointer. The scan runs in three phases:
+/// the high-frequency indices, the low-frequency indices above 0 (a scan
+/// prefix, see [`lf_scan_end`]), and DC, so each phase reads one row family
+/// with its context arithmetic folded to constants.
 #[allow(
     clippy::inline_always,
     reason = "measured: merges the owned decoder into the specialised loop"
@@ -269,225 +295,346 @@ fn level_pass_on_snapshot<const CLASS: usize, const LUMA: bool, const TCQ: bool,
     block: &mut TransformCoeffBlockState,
     walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
-    masks: &mut CoeffLevelMasks,
+    (eob_is_lf, eob_level): (bool, u32),
 ) -> Result<CoeffBaseFirstPassSummary, CoeffBaseDerivedLevelPassError> {
-    let config = CoeffBaseDerivedLevelPassConfig {
-        tx_class: [
-            CoeffTransformClass::TwoD,
-            CoeffTransformClass::Horizontal,
-            CoeffTransformClass::Vertical,
-        ][CLASS],
-        plane: if LUMA { 0 } else { config.plane.max(1) },
-        ..config
+    let Some((&eob_pos, rest)) = walk.scan().split_last() else {
+        return Ok(CoeffBaseFirstPassSummary::default());
     };
-    let mut first_pass = CoeffBaseFirstPassSummary::default();
-    *masks = CoeffLevelMasks::default();
-    let mut entries = walk.entries();
-    let Some(eob_entry) = entries.next() else {
-        return Ok(first_pass);
-    };
-    let eob_is_lf = coeff_is_low_frequency(eob_entry, config.plane, config.tx_class);
-    let selector = base_eob_selector(eob_entry, eob_is_lf, config);
-    let eob_level = u32::from(read_coeff_symbol(cdfs, symbols, selector)?) + 1;
-
-    let Some(grid) = block.level_grid_mut() else {
+    let Some((grid, list)) = block.level_grid_and_nonzero_mut() else {
         return Err(CoeffBaseDerivedLevelPassError::LevelGridUnavailable);
     };
-    let CoeffLevelRows {
-        base,
-        base_lf,
-        base_ph,
-        base_uv,
-        base_lf_uv,
-        br,
-        br_lf,
-        br_uv,
-    } = cdfs
+    let rows = cdfs
         .coeff_rows_mut()
         .level_rows(config.tx_size_ctx)
         .map_err(read_error)?;
     let mut pass = LevelPassState {
         grid,
-        first_pass: &mut first_pass,
-        masks,
-        config,
-        base,
-        base_lf,
-        base_ph,
-        base_uv,
-        base_lf_uv,
-        br,
-        br_lf,
-        br_uv,
+        first_pass: CoeffBaseFirstPassSummary::default(),
+        tcq_q0: 0,
+        list,
+        count: 0,
+        width_log2: config.tx_width_log2,
+        plane: config.plane,
+        rows,
     };
-    pass.finish_level::<TCQ, PH>(symbols, eob_entry, eob_is_lf, eob_level)?;
-    let dc = entries.next_back();
-    for entry in entries {
-        let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
-        let level = pass.read_base_symbol::<false>(symbols, entry, is_lf)?;
-        pass.finish_level::<TCQ, PH>(symbols, entry, is_lf, level)?;
-    }
-    if let Some(entry) = dc {
-        let is_lf = coeff_is_low_frequency(entry, config.plane, config.tx_class);
-        let level = pass.read_base_symbol::<true>(symbols, entry, is_lf)?;
-        pass.finish_level::<TCQ, PH>(symbols, entry, is_lf, level)?;
-    }
+    let eob_index = rest.len();
+    let eob_grid = pass.grid_index(usize::from(eob_pos));
+    let eob_level = if eob_is_lf {
+        pass.add_range::<CLASS, LUMA, true>(symbols, eob_grid, eob_index == 0, eob_level)?
+    } else {
+        pass.add_range::<CLASS, LUMA, false>(symbols, eob_grid, false, eob_level)?
+    };
+    pass.finish::<TCQ, PH>(
+        eob_index,
+        usize::from(eob_pos),
+        eob_grid,
+        eob_level,
+        eob_is_lf,
+    );
 
-    Ok(first_pass)
+    let Some((&dc_pos, ac)) = rest.split_first() else {
+        return Ok(pass.summary());
+    };
+    let lf_end = lf_scan_end::<CLASS, LUMA>(config.tx_width, config.tx_height).max(1);
+    let (lf, hf) = ac.split_at(ac.len().min(lf_end - 1));
+    for (offset, &pos) in hf.iter().enumerate().rev() {
+        pass.coefficient::<CLASS, LUMA, TCQ, PH, false>(symbols, lf_end + offset, pos)?;
+    }
+    for (offset, &pos) in lf.iter().enumerate().rev() {
+        pass.coefficient::<CLASS, LUMA, TCQ, PH, true>(symbols, 1 + offset, pos)?;
+    }
+    let dc_grid = pass.grid_index(usize::from(dc_pos));
+    let level = if PH && pass.first_pass.is_hidden() {
+        let ctx = (pass.base_mag::<CLASS, LUMA>(dc_grid, 3, 3) + 1) >> 1;
+        let row = row2(pass.rows.base_ph, CoeffBasePh, ctx.min(4) as usize).map_err(read_error)?;
+        read_row(symbols, row)?
+    } else {
+        let level = pass.read_lf_base::<CLASS, LUMA, true>(symbols, dc_grid, 0)?;
+        pass.add_range::<CLASS, LUMA, true>(symbols, dc_grid, true, level)?
+    };
+    pass.finish::<TCQ, PH>(0, usize::from(dc_pos), dc_grid, level, true);
+    Ok(pass.summary())
+}
+
+/// `value.min(limit)` as a conditional move: the clamped neighbour levels
+/// are data-dependent, so a branch would mispredict.
+#[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+#[inline(always)]
+fn clamp<T: Ord + Copy>(value: T, limit: T) -> T {
+    core::hint::select_unpredictable(value < limit, value, limit)
+}
+
+/// One past the last low-frequency scan index of `get_lf_limits`
+/// (§ 5.20.7.27): the 2D diagonal scan visits the ten positions with
+/// `row + col < 4` first, the horizontal-class scan whole columns first and
+/// the vertical-class scan whole rows first.
+const fn lf_scan_end<const CLASS: usize, const LUMA: bool>(width: usize, height: usize) -> usize {
+    let lines = if LUMA { 2 } else { 1 };
+    match CLASS {
+        0 if LUMA => 10,
+        0 => 1,
+        1 => lines * height,
+        _ => lines * width,
+    }
+}
+
+#[allow(
+    clippy::inline_always,
+    reason = "measured: per-coefficient symbol read"
+)]
+#[inline(always)]
+fn read_row<const L: usize>(
+    symbols: &mut SymbolDecoder<'_>,
+    row: &mut [u16; L],
+) -> Result<u32, CoeffBaseDerivedLevelPassError> {
+    Ok(u32::from(
+        symbols
+            .read_symbol_u16_array(row)
+            .map_err(read_error)?
+            .get(),
+    ))
 }
 
 /// What the level loop reads and writes besides the symbol decoder: the
-/// level grid, the pass summary, the masks, and the CDF row arrays it
-/// selects rows from, each a register-resident pointer.
+/// level grid, the pass summary, the nonzero list, and the CDF row arrays of the
+/// block's transform-size context.
 struct LevelPassState<'a> {
     grid: &'a mut LevelGrid,
-    first_pass: &'a mut CoeffBaseFirstPassSummary,
-    masks: &'a mut CoeffLevelMasks,
-    config: CoeffBaseDerivedLevelPassConfig,
-    base: &'a mut CoeffBaseLevelRows,
-    base_lf: &'a mut CoeffBaseLfLevelRows,
-    base_ph: &'a mut CoeffBasePhCdfRows,
-    base_uv: &'a mut CoeffBaseUvCdfRows,
-    base_lf_uv: &'a mut CoeffBaseLfUvCdfRows,
-    br: &'a mut CoeffBrCdfRows,
-    br_lf: &'a mut CoeffBrLfCdfRows,
-    br_uv: &'a mut CoeffBrUvCdfRows,
+    first_pass: CoeffBaseFirstPassSummary,
+    /// `(tcqState >> 1) & 1` of the next coefficient, taken from the state
+    /// before the previous update so it does not wait on the last symbol.
+    tcq_q0: usize,
+    list: &'a mut NonzeroList,
+    count: usize,
+    width_log2: u32,
+    plane: usize,
+    rows: CoeffLevelRows<'a>,
 }
 
 impl LevelPassState<'_> {
-    /// Reads the base symbol of a non-EOB coefficient; `DC` is whether it
-    /// is scan index 0, the only one whose context the hidden parity
-    /// changes.
+    fn summary(&self) -> CoeffBaseFirstPassSummary {
+        CoeffBaseFirstPassSummary {
+            nonzero: self.count,
+            ..self.first_pass
+        }
+    }
+
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient index")]
+    #[inline(always)]
+    fn grid_index(&self, pos: usize) -> usize {
+        let col_mask = (1usize << self.width_log2) - 1;
+        (pos >> self.width_log2) * LEVEL_STRIDE + (pos & col_mask)
+    }
+
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[inline(always)]
+    fn at(&self, grid: usize, [dr, dc]: [usize; 2], limit: u32) -> u32 {
+        let offset = dr * LEVEL_STRIDE + dc;
+        clamp(
+            u32::from(self.grid[(grid & LEVEL_INDEX_MASK) + (offset & LEVEL_INDEX_MASK)]),
+            limit,
+        )
+    }
+
+    /// The clamped `coeff_base` neighbour sum (§ 8.3.2) with the limits of
+    /// the first two and of the remaining `Sig_Ref_Diff_Offset` entries.
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[inline(always)]
+    fn base_mag<const CLASS: usize, const LUMA: bool>(
+        &self,
+        grid: usize,
+        near: u32,
+        far: u32,
+    ) -> u32 {
+        let offsets = CONTEXT_OFFSETS[CLASS];
+        let mag = self.at(grid, offsets[0], near) + self.at(grid, offsets[1], near);
+        if LUMA {
+            mag + self.at(grid, offsets[2], far)
+                + self.at(grid, offsets[3], far)
+                + self.at(grid, offsets[4], far)
+        } else if CLASS == 0 {
+            mag + self.at(grid, offsets[2], far)
+        } else {
+            mag
+        }
+    }
+
+    /// The `coeff_br` context (§ 8.3.2); `LF_BUMP` is whether the context
+    /// takes the low-frequency offset of 7.
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[inline(always)]
+    fn br_ctx<const CLASS: usize, const LUMA: bool>(&self, grid: usize, lf_bump: bool) -> usize {
+        let offsets = MAG_REF_OFFSET_WITH_TX_CLASS[CLASS];
+        let limit = MAX_BASE_BR_RANGE - 1;
+        let mut mag = self.at(grid, offsets[0], limit) + self.at(grid, offsets[1], limit);
+        if LUMA || CLASS == 0 {
+            mag += self.at(grid, offsets[2], limit);
+        }
+        let mag = clamp((mag + 1) >> 1, MAX_BASE_BR_RANGE) as usize;
+        if !LUMA {
+            clamp(mag, 3)
+        } else if lf_bump {
+            mag + 7
+        } else {
+            mag
+        }
+    }
+
+    /// Adds `coeff_br` when the base symbol saturates.
     #[allow(
         clippy::inline_always,
-        reason = "measured: keeps the typed symbol reads inside the level loop"
+        reason = "measured: per-coefficient symbol read"
     )]
     #[inline(always)]
-    fn read_base_symbol<const DC: bool>(
+    fn add_range<const CLASS: usize, const LUMA: bool, const LF: bool>(
         &mut self,
         symbols: &mut SymbolDecoder<'_>,
-        entry: CoeffScanEntry,
-        is_lf: bool,
+        grid: usize,
+        is_dc: bool,
+        level: u32,
     ) -> Result<u32, CoeffBaseDerivedLevelPassError> {
-        let selection = CoeffBaseContext {
-            row: entry.row(),
-            col: entry.col(),
-            stride: LEVEL_STRIDE,
-            plane: self.config.plane,
-            is_lf,
-            is_hidden: DC && self.first_pass.is_hidden(),
-            c: usize::from(!DC),
-            tx_class: tx_class_index(self.config.tx_class),
+        let base_levels = if LF {
+            LF_NUM_BASE_LEVELS
+        } else {
+            NUM_BASE_LEVELS
+        };
+        if level <= base_levels || (LF && !LUMA) {
+            return Ok(level);
         }
-        .select(self.grid);
-        let tcq_ctx = (self.first_pass.tcq_state() >> 1) & 1;
-        let row = self
-            .base_selection_row(selection, tcq_ctx)
-            .map_err(read_error)?;
-        Ok(u32::from(
-            match row {
-                CoeffBaseRow::Base(row) => symbols.read_symbol_u16_array(row),
-                CoeffBaseRow::Lf(row) => symbols.read_symbol_u16_array(row),
-            }
-            .map_err(read_error)?
-            .get(),
-        ))
+        let lf_bump = LF && (!is_dc || CLASS != 0);
+        let ctx = self.br_ctx::<CLASS, LUMA>(grid, lf_bump);
+        let row = if !LUMA {
+            row2(self.rows.br_uv, CoeffBrUv, ctx)
+        } else if LF {
+            row2(self.rows.br_lf, CoeffBrLf, ctx)
+        } else {
+            row2(self.rows.br, CoeffBr, ctx)
+        }
+        .map_err(read_error)?;
+        Ok(level + read_row(symbols, row)?)
     }
 
-    /// The base row of a derived selection, over the register-resident row
-    /// pointers instead of a moved row-set struct.
+    /// Reads a low-frequency base symbol; `DC` is whether the position is
+    /// scan index 0.
     #[allow(
         clippy::inline_always,
-        reason = "measured: per-coefficient row fetch in the level loop"
+        reason = "measured: per-coefficient symbol read"
     )]
     #[inline(always)]
-    fn base_selection_row(
-        &mut self,
-        selection: CoeffBaseSelection,
-        tcq_ctx: usize,
-    ) -> Result<CoeffBaseRow<'_>, TileCdfError> {
-        Ok(match selection {
-            CoeffBaseSelection::Hf { ctx } => {
-                CoeffBaseRow::Base(&mut row2(self.base, CoeffBase, ctx)?[tcq_ctx])
-            }
-            CoeffBaseSelection::Ph { ctx } => {
-                CoeffBaseRow::Base(row2(self.base_ph, CoeffBasePh, ctx)?)
-            }
-            CoeffBaseSelection::Uv { ctx } => {
-                CoeffBaseRow::Base(row2(self.base_uv, CoeffBaseUv, ctx)?)
-            }
-            CoeffBaseSelection::Lf { ctx } => {
-                CoeffBaseRow::Lf(&mut row2(self.base_lf, CoeffBaseLf, ctx)?[tcq_ctx])
-            }
-            CoeffBaseSelection::LfUv { ctx } => {
-                CoeffBaseRow::Lf(row2(self.base_lf_uv, CoeffBaseLfUv, ctx)?)
-            }
-        })
-    }
-
-    /// Adds the base-range symbol when the base symbol saturates, then
-    /// records the level.
-    #[allow(
-        clippy::inline_always,
-        reason = "measured: keeps the typed symbol reads inside the level loop"
-    )]
-    #[inline(always)]
-    fn finish_level<const TCQ: bool, const PH: bool>(
+    fn read_lf_base<const CLASS: usize, const LUMA: bool, const DC: bool>(
         &mut self,
         symbols: &mut SymbolDecoder<'_>,
-        entry: CoeffScanEntry,
-        is_lf: bool,
-        mut level: u32,
-    ) -> Result<(), CoeffBaseDerivedLevelPassError> {
-        let config = self.config;
-        if level != 0 {
-            let base_levels = if is_lf {
-                LF_NUM_BASE_LEVELS
+        grid: usize,
+        pos: usize,
+    ) -> Result<u32, CoeffBaseDerivedLevelPassError> {
+        let far = if CLASS == 0 { 5 } else { 3 };
+        let ctx = ((self.base_mag::<CLASS, LUMA>(grid, 5, far) + 1) >> 1) as usize;
+        let row = if LUMA {
+            let lf_ctx = if CLASS == 0 {
+                let (cap, offset) = if DC {
+                    LF_2D_CONTEXT_CAP_AND_OFFSET[0]
+                } else if grid < 2 || grid == LEVEL_STRIDE {
+                    LF_2D_CONTEXT_CAP_AND_OFFSET[1]
+                } else {
+                    LF_2D_CONTEXT_CAP_AND_OFFSET[2]
+                };
+                clamp(ctx, cap) + offset
             } else {
-                NUM_BASE_LEVELS
-            };
-            if level > base_levels && !(is_lf && config.plane > 0) {
-                let ctx = CoeffBrContext {
-                    row: entry.row(),
-                    col: entry.col(),
-                    stride: LEVEL_STRIDE,
-                    plane: config.plane,
-                    is_lf,
-                    tx_class: tx_class_index(config.tx_class),
+                let col_mask = (1usize << self.width_log2) - 1;
+                let line = if CLASS == 1 {
+                    pos & col_mask
+                } else {
+                    pos >> self.width_log2
+                };
+                if DC || line == 0 {
+                    LF_SIG_COEF_CONTEXTS_2D + clamp(ctx, 6)
+                } else {
+                    LF_SIG_COEF_CONTEXTS_2D + 7 + clamp(ctx, 4)
                 }
-                .ctx(self.grid);
-                let row = self.br_row(config.plane, is_lf, ctx).map_err(read_error)?;
-                level += u32::from(
-                    symbols
-                        .read_symbol_u16_array(row)
-                        .map_err(read_error)?
-                        .get(),
-                );
+            };
+            &mut row2(self.rows.base_lf, CoeffBaseLf, lf_ctx).map_err(read_error)?[self.tcq_q0 & 1]
+        } else {
+            let uv_ctx = self.uv_ctx::<CLASS>(ctx);
+            row2(self.rows.base_lf_uv, CoeffBaseLfUv, uv_ctx).map_err(read_error)?
+        };
+        read_row(symbols, row)
+    }
+
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient context")]
+    #[inline(always)]
+    fn uv_ctx<const CLASS: usize>(&self, ctx: usize) -> usize {
+        clamp(ctx, 3)
+            + if CLASS != 0 {
+                LF_SIG_COEF_CONTEXTS_2D_UV
+            } else {
+                CHROMA_2D_PLANE_CONTEXT_OFFSET[self.plane.min(2)]
             }
-            self.masks
-                .record(entry.scan_index(), level, self.first_pass.tcq_state());
-            let index = entry.row() * LEVEL_STRIDE + entry.col();
-            self.grid[index & (LEVEL_GRID_LEN - 1)] = level as u8;
-        }
-        self.first_pass.update_after_level::<TCQ, PH>(entry, level);
+    }
+
+    /// Reads one coefficient above scan index 0 and below the EOB one.
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient body")]
+    #[inline(always)]
+    fn coefficient<
+        const CLASS: usize,
+        const LUMA: bool,
+        const TCQ: bool,
+        const PH: bool,
+        const LF: bool,
+    >(
+        &mut self,
+        symbols: &mut SymbolDecoder<'_>,
+        scan_index: usize,
+        pos: u16,
+    ) -> Result<(), CoeffBaseDerivedLevelPassError> {
+        let pos = usize::from(pos);
+        let grid = self.grid_index(pos);
+        let level = if LF {
+            self.read_lf_base::<CLASS, LUMA, false>(symbols, grid, pos)?
+        } else {
+            let ctx = ((self.base_mag::<CLASS, LUMA>(grid, 3, 3) + 1) >> 1) as usize;
+            let row = if LUMA {
+                let offset = if CLASS == 0 {
+                    let diagonal =
+                        (pos >> self.width_log2) + (pos & ((1usize << self.width_log2) - 1));
+                    HF_2D_CONTEXT_OFFSET[usize::from(diagonal >= 6) + usize::from(diagonal >= 8)]
+                } else {
+                    15
+                };
+                &mut row2(self.rows.base, CoeffBase, clamp(ctx, 4) + offset).map_err(read_error)?
+                    [self.tcq_q0 & 1]
+            } else {
+                let uv_ctx = self.uv_ctx::<CLASS>(ctx);
+                row2(self.rows.base_uv, CoeffBaseUv, uv_ctx).map_err(read_error)?
+            };
+            read_row(symbols, row)?
+        };
+        let level = self.add_range::<CLASS, LUMA, LF>(symbols, grid, false, level)?;
+        self.finish::<TCQ, PH>(scan_index, pos, grid, level, LF);
         Ok(())
     }
 
-    /// The base-range row for `plane` and `is_lf`, over the
-    /// register-resident row pointers.
-    fn br_row(
+    /// Records a decoded level and advances the pass summary.
+    #[allow(clippy::inline_always, reason = "measured: per-coefficient update")]
+    #[inline(always)]
+    fn finish<const TCQ: bool, const PH: bool>(
         &mut self,
-        plane: usize,
+        scan_index: usize,
+        pos: usize,
+        grid: usize,
+        level: u32,
         is_lf: bool,
-        ctx: usize,
-    ) -> Result<&mut [u16; COEFF_BR_ROW_LEN], TileCdfError> {
-        if plane > 0 {
-            row2(self.br_uv, CoeffBrUv, ctx)
-        } else if is_lf {
-            row2(self.br_lf, CoeffBrLf, ctx)
-        } else {
-            row2(self.br, CoeffBr, ctx)
+    ) {
+        if level != 0 {
+            self.list[self.count & (NONZERO_LIST_LEN - 1)] =
+                NonzeroEntry::new(pos, scan_index, level, self.tcq_q0, is_lf).0;
+            self.count += 1;
+            self.grid[grid & (LEVEL_GRID_LEN - 1)] = level as u8;
         }
+        if TCQ {
+            self.tcq_q0 = (self.first_pass.tcq_state() >> 2) & 1;
+        }
+        self.first_pass
+            .update_after_level::<TCQ, PH>(scan_index, level);
     }
 }
 
@@ -516,7 +663,7 @@ fn preflight_pass(
     }
 
     let eob = eob_read.eob();
-    if walk.len() > SCAN_MASK_WORDS * 64 {
+    if walk.len() > NONZERO_LIST_LEN {
         return Err(CoeffBaseDerivedLevelPassError::ScanTooLong {
             entries: walk.len(),
         });

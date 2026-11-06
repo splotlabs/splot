@@ -58,23 +58,19 @@ pub(crate) struct NonZeroCoeffScanWalk<'a> {
 
 impl NonZeroCoeffScanWalk<'_> {
     #[must_use]
-    pub(crate) fn entries(
-        &self,
-    ) -> impl ExactSizeIterator<Item = CoeffScanEntry> + DoubleEndedIterator + '_ {
-        let col_mask = (1 << self.width_log2) - 1;
-        self.scan
-            .iter()
-            .enumerate()
-            .rev()
-            .map(move |(scan_index, &pos)| {
-                let pos = usize::from(pos);
-                CoeffScanEntry::new(scan_index, pos, pos >> self.width_log2, pos & col_mask)
-            })
+    pub(crate) fn len(&self) -> usize {
+        self.scan.len()
     }
 
     #[must_use]
-    pub(crate) fn len(&self) -> usize {
-        self.scan.len()
+    pub(crate) const fn width_log2(&self) -> u32 {
+        self.width_log2
+    }
+
+    /// The scan positions up to the EOB, in scan order.
+    #[must_use]
+    pub(crate) const fn scan(&self) -> &[u16] {
+        self.scan
     }
 
     #[inline]
@@ -152,12 +148,11 @@ pub(crate) fn walk_nonzero_coeff_scan<'a>(
         });
     }
 
-    let block = start.block();
-    let width = block.width();
+    let width = start.width();
     if !width.is_power_of_two() {
         return Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width });
     }
-    let coeff_count = block.coeff_count();
+    let coeff_count = start.coeff_count();
     // A full-size scan table is a permutation of the block's positions.
     let positions = if scan.len() == coeff_count {
         &[][..]
@@ -201,12 +196,11 @@ pub(crate) fn walk_fsc_coeff_scan(
     }
 
     let bob = seg_eob - eob;
-    let block = start.block();
-    let width = block.width();
+    let width = start.width();
     if !width.is_power_of_two() {
         return Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width });
     }
-    let coeff_count = block.coeff_count();
+    let coeff_count = start.coeff_count();
     let scan = &scan[bob..seg_eob];
     for (offset, scan_pos) in scan.iter().copied().enumerate() {
         let pos = usize::from(scan_pos);
