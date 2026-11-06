@@ -1310,8 +1310,8 @@ impl StripeChain<'_> {
         stripe: &crate::filters::source::StripeOutputPlane,
     ) -> Result<()> {
         let error = || lr_pipeline_state_error();
-        let size = self.plane_sizes[plane.index()].ok_or_else(&error)?;
-        let end_y = stripe.end_y().ok_or_else(&error)?;
+        let size = self.plane_sizes[plane.index()].ok_or_else(error)?;
+        let end_y = stripe.end_y().ok_or_else(error)?;
         if stripe.width() != size.width()
             || stripe.frame_height() != size.height()
             || stripe.origin_y() > end_y
