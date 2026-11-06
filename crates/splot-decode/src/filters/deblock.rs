@@ -579,11 +579,13 @@ impl FrameDeblock {
     pub(crate) fn release_grids(&mut self, storage: &mut DeblockGridStorage) {
         storage.cells = core::mem::take(&mut self.grid.cells);
         storage.facts = core::mem::take(&mut self.grid.facts);
+        storage.bases = core::mem::take(&mut self.grid.bases);
         storage.order = core::mem::take(&mut self.order);
         for (slot, storage) in self.chroma.iter_mut().zip(&mut storage.chroma) {
             if let Some(grid) = slot.as_mut() {
                 storage.0 = core::mem::take(&mut grid.cells);
                 storage.1 = core::mem::take(&mut grid.facts);
+                storage.2 = core::mem::take(&mut grid.bases);
             }
         }
     }
@@ -655,7 +657,7 @@ fn take_grids(
     storage: &mut DeblockGridStorage,
 ) -> Result<FrameGrids, DeblockError> {
     let mut order = core::mem::take(&mut storage.order);
-    order[0].sort(blocks.iter(), mi_rows)?;
+    order[0].sort(blocks.iter().map(|block| (block, 0)), mi_rows)?;
     let mut chroma = [None, None];
     let v_shares_u = filter.apply_deblocking_filter[2..] == [true; 2] && chroma_blocks.uv_twins();
     for (plane, (slot, storage)) in chroma.iter_mut().zip(&mut storage.chroma).enumerate() {
@@ -669,7 +671,10 @@ fn take_grids(
     }
     if chroma.iter().any(Option::is_some) {
         order[1].sort(
-            chroma_blocks.blocks.iter().map(|record| &record.block),
+            chroma_blocks
+                .blocks
+                .iter()
+                .map(|record| (&record.block, record.planes)),
             mi_rows,
         )?;
     }

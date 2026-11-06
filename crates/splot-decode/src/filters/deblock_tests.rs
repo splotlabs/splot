@@ -19,7 +19,7 @@ fn build_mi_grid(
     storage: &mut DeblockGridStorage,
 ) -> Result<MiGridStorage, DeblockError> {
     let mut order = RowOrder::default();
-    order.sort(blocks.iter(), mi_rows)?;
+    order.sort(blocks.iter().map(|block| (block, 0)), mi_rows)?;
     let mut grid = MiGridStorage::new(mi_cols, storage);
     grid.fill(blocks, &order, mi_rows, &(0..mi_rows))?;
     Ok(grid)
@@ -34,10 +34,16 @@ fn overlay_mi_grid(
     mi_cols: usize,
     sub_x: usize,
     sub_y: usize,
-    storage: &mut (Vec<grid::ChromaMiCell>, Vec<grid::CellFacts>),
+    storage: &mut grid::ChromaGridVecs,
 ) -> Result<ChromaMiGridStorage, DeblockError> {
     let mut order = RowOrder::default();
-    order.sort(blocks.blocks.iter().map(|record| &record.block), mi_rows)?;
+    order.sort(
+        blocks
+            .blocks
+            .iter()
+            .map(|record| (&record.block, record.planes)),
+        mi_rows,
+    )?;
     let mut grid = ChromaMiGridStorage::new(mi_cols, (sub_x, sub_y), storage);
     grid.fill(base, luma, blocks, &order, plane, mi_rows, &(0..mi_rows))?;
     Ok(grid)
@@ -502,7 +508,7 @@ fn owned_deblock_records_return_on_finish_and_keep_their_storage() {
             storage
                 .chroma
                 .each_ref()
-                .map(|(cells, facts)| (cells.as_ptr(), facts.as_ptr())),
+                .map(|(cells, facts, bases)| (cells.as_ptr(), facts.as_ptr(), bases.as_ptr())),
         )
     };
     let original = addresses(&records.grids);
@@ -890,6 +896,7 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
         window: Window::default(),
         cells,
         facts: Vec::new(),
+        bases: Vec::new(),
     }));
     MiGrid::new(storage, None, blocks, &EMPTY_CHROMA_RECORDS)
 }
@@ -983,9 +990,17 @@ fn sliding_grid_windows_match_the_whole_frame_grid() {
     chroma.push(1, block(6, 3, 1, 2, true));
     let whole = build_mi_grid(&luma, mi_rows, mi_cols, &mut DeblockGridStorage::default()).unwrap();
     let mut order = [RowOrder::default(), RowOrder::default()];
-    order[0].sort(luma.iter(), mi_rows).unwrap();
+    order[0]
+        .sort(luma.iter().map(|block| (block, 0)), mi_rows)
+        .unwrap();
     order[1]
-        .sort(chroma.blocks.iter().map(|record| &record.block), mi_rows)
+        .sort(
+            chroma
+                .blocks
+                .iter()
+                .map(|record| (&record.block, record.planes)),
+            mi_rows,
+        )
         .unwrap();
     let mut storage = DeblockGridStorage::default();
     let mut base = MiGridStorage::new(mi_cols, &mut storage);
