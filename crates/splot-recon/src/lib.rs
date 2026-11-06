@@ -31,6 +31,7 @@ mod intra_dc_subsampled;
 mod intra_dip;
 mod intra_directional;
 mod intra_directional_angle;
+mod intra_edge_filter;
 mod intra_ibp_angular;
 mod intra_ibp_dc;
 mod intra_smooth;
