@@ -80,16 +80,29 @@ impl Jobs {
         }
     }
 
-    /// `(row, col)` of job `job`.
-    const fn at(&self, job: usize) -> (usize, usize) {
-        (job / self.chunks, (job % self.chunks) * 8)
-    }
-
-    /// The job pairs: the second is `None` past the last job.
-    fn pairs(self) -> impl Iterator<Item = (usize, Option<usize>)> {
-        (0..self.count)
-            .step_by(2)
-            .map(move |job| (job, (job + 1 < self.count).then_some(job + 1)))
+    /// The job pairs as job indices and coordinates; the second is `None`
+    /// past the last job.
+    fn pairs(self) -> impl Iterator<Item = (usize, usize, (usize, usize), Option<(usize, usize)>)> {
+        let mut cursor = (0, 0);
+        let step = move |(row, col): (usize, usize)| {
+            if col + 8 < self.chunks * 8 {
+                (row, col + 8)
+            } else {
+                (row + 1, 0)
+            }
+        };
+        (0..self.count).step_by(2).map(move |job| {
+            let first = cursor;
+            let second = step(first);
+            cursor = step(second);
+            let second_job = if job + 1 < self.count { job + 1 } else { job };
+            (
+                job,
+                second_job,
+                first,
+                (job + 1 < self.count).then_some(second),
+            )
+        })
     }
 }
 
@@ -101,8 +114,14 @@ fn run<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>, st
         (None, Some(taps)) => with_pairs!(taps.count, vertical::<S, T>(simd, block, &taps, sink)),
         (Some(h_taps), Some(v_taps)) => {
             let rows = block.h + v_taps.span() - 1;
-            with_pairs!(h_taps.count, stage_rows::<S, T>(simd, block, &h_taps, rows, stage));
-            with_pairs!(v_taps.count, filter_stage::<S>(simd, block.w, block.h, &v_taps, stage, sink));
+            with_pairs!(
+                h_taps.count,
+                stage_rows::<S, T>(simd, block, &h_taps, rows, stage)
+            );
+            with_pairs!(
+                v_taps.count,
+                filter_stage::<S>(simd, block.w, block.h, &v_taps, stage, sink)
+            );
         }
     }
 }
@@ -206,8 +225,8 @@ fn copy<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>) {
     let shift = if sink.is_put() { 0 } else { 4 };
     let jobs = Jobs::new(block.w, block.h);
     let start = |(row, col): (usize, usize)| block.origin + row * block.stride + col;
-    for (first, second) in jobs.pairs() {
-        let (a, b) = (jobs.at(first), jobs.at(second.unwrap_or(first)));
+    for (_, _, a, second) in jobs.pairs() {
+        let b = second.unwrap_or(a);
         let (low, high) = job_lanes(simd, block.source, start(a), start(b)).widen();
         let (first_lanes, second_lanes) = ((low << shift).split(), (high << shift).split());
         emit(simd, sink, block.w, a.0, a.1, first_lanes);
@@ -228,8 +247,8 @@ fn horizontal<S: Simd, T: Lanes, const P: usize>(
     let put = sink.is_put();
     let jobs = Jobs::new(block.w, block.h);
     let start = |(row, col): (usize, usize)| block.origin + row * block.stride + col;
-    for (first, second) in jobs.pairs() {
-        let (a, b) = (jobs.at(first), jobs.at(second.unwrap_or(first)));
+    for (_, _, a, second) in jobs.pairs() {
+        let b = second.unwrap_or(a);
         let sums = horizontal_sums::<S, T, P>(simd, block.source, (start(a), start(b)), &weights);
         let intermediate = round(sums, 4, 3);
         let values = if put {
@@ -237,7 +256,7 @@ fn horizontal<S: Simd, T: Lanes, const P: usize>(
         } else {
             intermediate
         };
-        emit_pair(simd, sink, block.w, [Some(a), second.map(|_| b)], values);
+        emit_pair(simd, sink, block.w, [Some(a), second], values);
     }
 }
 
@@ -252,14 +271,20 @@ fn vertical<S: Simd, T: Lanes, const P: usize>(
     let (bias, shift) = if sink.is_put() { (64, 7) } else { (4, 3) };
     let jobs = Jobs::new(block.w, block.h);
     let start = |(row, col): (usize, usize)| block.origin + row * block.stride + col;
-    for (first, second) in jobs.pairs() {
-        let (a, b) = (jobs.at(first), jobs.at(second.unwrap_or(first)));
+    for (_, _, a, second) in jobs.pairs() {
+        let b = second.unwrap_or(a);
         let line = |k: usize| {
             let step = k * block.stride;
             job_lanes(simd, block.source, start(a) + step, start(b) + step)
         };
         let sums = pair_sums::<S, P>(simd, &weights, line);
-        emit_pair(simd, sink, block.w, [Some(a), second.map(|_| b)], round(sums, bias, shift));
+        emit_pair(
+            simd,
+            sink,
+            block.w,
+            [Some(a), second],
+            round(sums, bias, shift),
+        );
     }
 }
 
@@ -276,8 +301,8 @@ fn stage_rows<S: Simd, T: Lanes, const P: usize>(
     let weights = weights(simd, taps);
     let jobs = Jobs::new(block.w, rows);
     let start = |(row, col): (usize, usize)| block.origin + row * block.stride + col;
-    for ((first, second), slot) in jobs.pairs().zip(stage.chunks_exact_mut(16)) {
-        let (a, b) = (jobs.at(first), jobs.at(second.unwrap_or(first)));
+    for ((_, _, a, second), slot) in jobs.pairs().zip(stage.chunks_exact_mut(16)) {
+        let b = second.unwrap_or(a);
         let (low, high) = round(
             horizontal_sums::<S, T, P>(simd, block.source, (start(a), start(b)), &weights),
             4,
@@ -285,7 +310,9 @@ fn stage_rows<S: Simd, T: Lanes, const P: usize>(
         );
         let ((low0, low1), (high0, high1)) = (low.split(), high.split());
         if let Some(slot) = slot.first_chunk_mut::<16>() {
-            low0.narrow(high0).combine(low1.narrow(high1)).store_array(slot);
+            low0.narrow(high0)
+                .combine(low1.narrow(high1))
+                .store_array(slot);
         }
     }
 }
@@ -301,21 +328,24 @@ fn filter_stage<S: Simd, const P: usize>(
     sink: &mut Sink<'_>,
 ) {
     let weights = weights(simd, taps);
-    let (bias, shift) = if sink.is_put() { (1 << 10, 11) } else { (1 << 6, 7) };
+    let (bias, shift) = if sink.is_put() {
+        (1 << 10, 11)
+    } else {
+        (1 << 6, 7)
+    };
     let jobs = Jobs::new(w, h);
     let zero = [0; 8];
     let lanes = |job: usize| {
         let lanes = stage.get(job * 8..).and_then(<[i16]>::first_chunk::<8>);
         i16x8::load_array_ref(simd, lanes.unwrap_or(&zero))
     };
-    for (first, second) in jobs.pairs() {
-        let second_job = second.unwrap_or(first);
+    for (first, second_job, a, second) in jobs.pairs() {
         let line = |k: usize| {
             let step = k * jobs.chunks;
             lanes(first + step).combine(lanes(second_job + step))
         };
         let sums = pair_sums::<S, P>(simd, &weights, line);
-        let pair = [Some(jobs.at(first)), second.map(|job| jobs.at(job))];
+        let pair = [Some(a), second];
         emit_pair(simd, sink, w, pair, round(sums, bias, shift));
     }
 }
@@ -333,17 +363,37 @@ fn emit<S: Simd>(
     (low, high): (i32x4<S>, i32x4<S>),
 ) {
     let count = (w - col).min(8);
-    let clipped = |max: i32| {
-        let (low, high) = (low.max(0).min(max), high.max(0).min(max));
-        low.narrow(high)
+    let clipped = |low: i32x4<S>, high: i32x4<S>, max: i32| {
+        low.max(0)
+            .min(max)
+            .narrow(high.max(0).min(max))
+            .bitcast::<u16x8<S>>()
     };
-    let values = || {
-        let (low, high) = (low.to_array(), high.to_array());
-        core::array::from_fn(|lane| if lane < 4 { low[lane] } else { high[lane - 4] })
+    let blended = |pred0: &[i32], forward: i32| {
+        let at = row * w + col;
+        let first =
+            |offset: usize| match pred0.get(at + offset..).and_then(<[i32]>::first_chunk::<4>) {
+                Some(lanes) if count == 8 => i32x4::load_array_ref(simd, lanes),
+                _ => i32x4::from_fn(simd, |lane| {
+                    if offset + lane < count {
+                        pred0.get(at + offset + lane).copied().unwrap_or(0)
+                    } else {
+                        0
+                    }
+                }),
+            };
+        let blend = |first: i32x4<S>, second: i32x4<S>| {
+            if forward == 8 {
+                (first + second + 16) >> 5
+            } else {
+                (first * forward + second * (16 - forward) + 128) >> 8
+            }
+        };
+        (blend(first(0), low), blend(first(4), high))
     };
     match sink {
         Sink::Put { output, stride } => {
-            let lanes = clipped(255).to_array();
+            let lanes = clipped(low, high, 255).to_array();
             store(
                 output,
                 row * *stride + col,
@@ -355,28 +405,49 @@ fn emit<S: Simd>(
             output,
             stride,
             max,
-        } => {
-            let lanes = clipped(i32::from(*max)).to_array();
-            store(
-                output,
-                row * *stride + col,
-                count,
-                lanes.map(|lane| lane as u16),
-            );
+        } => store_wide(
+            output,
+            row * *stride + col,
+            count,
+            clipped(low, high, i32::from(*max)),
+        ),
+        Sink::Prep { output, stride } => {
+            let at = row * *stride + col;
+            match output.get_mut(at..).and_then(<[i32]>::first_chunk_mut::<8>) {
+                Some(slot) if count == 8 => {
+                    let (first, second) = slot.split_at_mut(4);
+                    if let (Some(first), Some(second)) =
+                        (first.first_chunk_mut::<4>(), second.first_chunk_mut::<4>())
+                    {
+                        low.store_array(first);
+                        high.store_array(second);
+                    }
+                }
+                _ => {
+                    let (low, high) = (low.to_array(), high.to_array());
+                    let lanes =
+                        core::array::from_fn(
+                            |lane| {
+                                if lane < 4 { low[lane] } else { high[lane - 4] }
+                            },
+                        );
+                    store(output, at, count, lanes);
+                }
+            }
         }
-        Sink::Prep { output, stride } => store(output, row * *stride + col, count, values()),
         Sink::Average {
             pred0,
             forward,
             output,
             stride,
         } => {
-            let blended = average(simd, pred0, row * w + col, count, *forward, values(), 255);
+            let (first, second) = blended(pred0, *forward);
+            let lanes = clipped(first, second, 255).to_array();
             store(
                 output,
                 row * *stride + col,
                 count,
-                blended.map(|lane| lane as u8),
+                lanes.map(|lane| lane as u8),
             );
         }
         Sink::AverageWide {
@@ -386,50 +457,24 @@ fn emit<S: Simd>(
             stride,
             max,
         } => {
-            let max = i32::from(*max);
-            let blended = average(simd, pred0, row * w + col, count, *forward, values(), max);
-            store(
+            let (first, second) = blended(pred0, *forward);
+            store_wide(
                 output,
                 row * *stride + col,
                 count,
-                blended.map(|lane| lane as u16),
+                clipped(first, second, i32::from(*max)),
             );
         }
     }
 }
 
-/// The COMPOUND_AVERAGE of `count` values with `pred0` from `at`, in
-/// `i32` lanes.
+/// Stores the first `count` of `lanes` at `at`.
 #[inline]
-fn average<S: Simd>(
-    simd: S,
-    pred0: &[i32],
-    at: usize,
-    count: usize,
-    forward: i32,
-    values: [i32; 8],
-    max: i32,
-) -> [i32; 8] {
-    let mut first = [0; 8];
-    for (slot, &value) in first
-        .iter_mut()
-        .zip(pred0.get(at..).unwrap_or(&[]))
-        .take(count)
-    {
-        *slot = value;
+fn store_wide<S: Simd>(output: &mut [u16], at: usize, count: usize, lanes: u16x8<S>) {
+    match output.get_mut(at..).and_then(<[u16]>::first_chunk_mut::<8>) {
+        Some(slot) if count == 8 => lanes.store_array(slot),
+        _ => store(output, at, count, lanes.to_array()),
     }
-    let blend = |offset: usize| {
-        let first = i32x4::from_fn(simd, |lane| first[offset + lane]);
-        let second = i32x4::from_fn(simd, |lane| values[offset + lane]);
-        let blended = if forward == 8 {
-            (first + second + 16) >> 5
-        } else {
-            (first * forward + second * (16 - forward) + 128) >> 8
-        };
-        blended.max(0).min(max).to_array()
-    };
-    let (low, high) = (blend(0), blend(4));
-    core::array::from_fn(|lane| if lane < 4 { low[lane] } else { high[lane - 4] })
 }
 
 /// Stores the first `count` of `lanes` at `at`.
