@@ -225,16 +225,34 @@ impl Taps {
     }
 }
 
-/// An unclipped block: row `r`, column `c` of its read window is
-/// `source[origin + r * stride + c]`, readable for `c < reach(w)`.
+/// A block with unclipped columns: column `c` of window row `r` is
+/// `source[start(r) + c]`, readable for `c < reach(w)`. Window row `r` reads
+/// source row `top + r` clamped to `rows`, the § 7.13.3.18 row `Clip3`.
 pub(super) struct Block<'a, T> {
     pub(super) source: &'a [T],
     pub(super) stride: usize,
     pub(super) origin: usize,
+    pub(super) top: isize,
+    pub(super) rows: [isize; 2],
     pub(super) w: usize,
     pub(super) h: usize,
     pub(super) horizontal: Option<&'static Taps>,
     pub(super) vertical: Option<&'static Taps>,
+}
+
+impl<T> Block<'_, T> {
+    /// The source index of column 0 of window row `row`.
+    #[allow(clippy::inline_always, reason = "measured sub-pel hot path")]
+    #[inline(always)]
+    pub(super) fn start(&self, row: usize) -> usize {
+        self.origin
+            + (self.top + row as isize).clamp(self.rows[0], self.rows[1]) as usize * self.stride
+    }
+
+    /// Whether every window row reads its own source row.
+    pub(super) fn unclamped(&self, rows: usize) -> bool {
+        self.top >= self.rows[0] && self.top + rows as isize - 1 <= self.rows[1]
+    }
 }
 
 /// Window columns every kernel may read past the window origin of a row.
@@ -323,12 +341,14 @@ fn unscaled_block<T: Sample>(
     let (column, columns) = window(params.start_x, w, horizontal);
     let (row, rows) = window(params.start_y, h, vertical);
     let last = |first: i32, count: usize| first + count as i32 - 1;
-    let origin = row.max(0) as usize * view.stride + column.max(0) as usize;
-    let direct = column >= params.first_x
-        && row >= params.first_y
-        && last(column, columns) <= params.last_x
-        && last(row, rows) <= params.last_y
-        && origin + (rows - 1) * view.stride + reach(w) <= view.samples.len();
+    let columns_inside = column >= params.first_x && last(column, columns) <= params.last_x;
+    let rows_inside = row >= params.first_y && last(row, rows) <= params.last_y;
+    let clamp_rows = !rows_inside && T::u16_slice(&[]).is_some();
+    let last_row = last(row, rows).min(params.last_y).max(params.first_y) as usize;
+    let direct = columns_inside
+        && (rows_inside || clamp_rows)
+        && column >= 0
+        && last_row * view.stride + column as usize + reach(w) <= view.samples.len();
     let stage_len = match vertical {
         Some(_) => (rows.next_multiple_of(4) * 16).max(rows * w.div_ceil(8) * 8 + 64),
         None => 0,
@@ -349,7 +369,9 @@ fn unscaled_block<T: Sample>(
         return run_staged(&Block {
             source: view.samples,
             stride: view.stride,
-            origin,
+            origin: column as usize,
+            top: row as isize,
+            rows: [params.first_y as isize, params.last_y as isize],
             w,
             h,
             horizontal,
@@ -391,6 +413,8 @@ fn unscaled_block<T: Sample>(
             source: storage,
             stride,
             origin: 0,
+            top: 0,
+            rows: [0, rows as isize - 1],
             w,
             h,
             horizontal,

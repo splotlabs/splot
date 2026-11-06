@@ -29,6 +29,7 @@ pub(super) fn predict<T: ReconSample>(
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = fearless_simd::Level::baseline().as_avx2()
         && let Some(source) = T::u8_slice(block.source)
+        && block.unclamped(block.h + block.vertical.map_or(0, |taps| taps.span() - 1))
         && (matches!(block.w, 4 | 8) || block.w.is_multiple_of(16))
         && block.h.is_multiple_of(16 / width(block.w))
         && !(block.w == 4 && block.horizontal.is_some_and(|taps| taps.count > 2))
@@ -41,7 +42,9 @@ pub(super) fn predict<T: ReconSample>(
         let block = Block {
             source,
             stride: block.stride,
-            origin: block.origin,
+            origin: block.start(0),
+            top: 0,
+            rows: [0, isize::MAX],
             w: block.w,
             h: block.h,
             horizontal: block.horizontal,
