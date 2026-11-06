@@ -333,7 +333,9 @@ fn unscaled_block<T: Sample>(
         None => 0,
     };
     let mut run = |block: &Block<'_, T>, stage: &mut [i16]| {
-        if !super::eight_bit::predict(block, &mut sink, stage) {
+        if !super::eight_bit::predict(block, &mut sink, stage)
+            && !super::sixteen_bit::predict(block, &mut sink, stage)
+        {
             super::portable::predict(block, &mut sink, stage);
         }
     };
@@ -367,7 +369,16 @@ fn unscaled_block<T: Sample>(
             after.fill(right);
             let start = (column + before.len() as i32) as usize;
             if let Some(span) = source.get(start..start + middle.len()) {
-                middle.copy_from_slice(span); // splot-copy-ok: unclamped columns of an emulated-edge tap window
+                for (slot, span) in middle.chunks_mut(16).zip(span.chunks(16)) {
+                    match (slot.first_chunk_mut::<16>(), span.first_chunk::<16>()) {
+                        (Some(slot), Some(span)) => *slot = *span,
+                        _ => {
+                            for (slot, &sample) in slot.iter_mut().zip(span) {
+                                *slot = sample;
+                            }
+                        }
+                    }
+                }
             }
         }
         run_staged(&Block {
