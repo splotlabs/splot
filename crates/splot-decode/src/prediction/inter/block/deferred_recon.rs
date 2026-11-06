@@ -18,7 +18,7 @@ use super::super::{
     PlacedInterBlock,
 };
 use super::compound_path::append_compound_temporal_motion;
-use super::temporal::{MotionFieldUnits, temporal_motion_block};
+use super::temporal::temporal_motion_block;
 use super::tip::{self, TipReconstructScratch};
 use crate::Result;
 use crate::bitstream::tile_payload::{FrameQmSegmentScope, TileBlockDecodedState};
@@ -56,7 +56,7 @@ pub(super) struct InterReconScratch<T: ReconSample> {
     pub(super) lists: super::tile::UnitLists,
     general_intra: crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     tip: TipReconstructScratch<T>,
-    temporal: Vec<TemporalMotionBlock>,
+    pub(super) temporal: Vec<TemporalMotionBlock>,
     interintra: super::interintra::InterIntraScratch<T>,
     residual: InterResidualReconScratch<T>,
     mc: super::super::mc::McScratch,
@@ -533,8 +533,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         command: &mut InterReconCommand,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &TileBlockDecodedState,
-        motion: &MotionFieldUnits,
-        ordinal: usize,
+        temporal: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         temporal_context: &TemporalMvContext,
@@ -549,13 +548,11 @@ impl<T: ReconSample> InterReconScratch<T> {
         residual_use_ddt: bool,
         bit_depth: BitDepth,
     ) -> Result<()> {
-        let mut temporal = core::mem::take(&mut self.temporal);
-        temporal.clear();
-        let mut result = self.reconstruct_logged(
+        self.reconstruct_logged(
             command,
             &mut WorkspaceSink::Frame(workspace),
             block_decoded,
-            &mut temporal,
+            temporal,
             residual_blocks,
             residual_coeffs,
             temporal_context,
@@ -569,13 +566,7 @@ impl<T: ReconSample> InterReconScratch<T> {
             luma_use_tcq,
             residual_use_ddt,
             bit_depth,
-        );
-        if result.is_ok() && !temporal.is_empty() {
-            result = motion.fold_unit(ordinal, &temporal);
-        }
-        temporal.clear();
-        self.temporal = temporal;
-        result
+        )
     }
 }
 

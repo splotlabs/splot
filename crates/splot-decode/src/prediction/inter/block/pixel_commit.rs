@@ -104,6 +104,8 @@ pub(super) fn replay_recon_row<T: ReconSample>(
 ) -> Result<ReconRowBuffers> {
     let mut coefficient_scratch = std::mem::take(&mut scratch.coefficients);
     let mut plane_scratch = std::mem::take(&mut scratch.plane_records);
+    let mut folded = std::mem::take(&mut scratch.temporal);
+    folded.clear();
     let mut lists = std::mem::take(&mut scratch.lists);
     let mut has_intra = false;
     let result = (|| {
@@ -182,7 +184,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     None
                 };
                 if let Some(clear) = temporal_clear {
-                    motion.fold_unit(ordinal, core::slice::from_ref(&clear))?;
+                    folded.push(clear);
                 }
                 let temporal_records = entry.temporal.clone();
                 match entry.command_mut() {
@@ -223,8 +225,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                             command,
                             workspace,
                             block_decoded,
-                            motion,
-                            ordinal,
+                            &mut folded,
                             &residual_blocks,
                             if shared_coefficients {
                                 &coefficient_scratch
@@ -247,7 +248,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                             let records = temporal.get(temporal_records).ok_or(
                                 crate::DecodeHeaderStateError::InvalidInterTileSchedulingState,
                             )?;
-                            motion.fold_unit(ordinal, records)?;
+                            folded.extend_from_slice(records);
                         }
                     }
                     None => {
@@ -255,7 +256,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                             crate::DecodeHeaderStateError::InvalidInterTileSchedulingState,
                         )?;
                         if motion_owed {
-                            motion.fold_unit(ordinal, records)?;
+                            folded.extend_from_slice(records);
                         }
                     }
                 }
@@ -273,6 +274,9 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                 workspace,
             );
             has_intra = false;
+        }
+        if !folded.is_empty() {
+            motion.fold_unit(ordinal, &folded)?;
         }
         if motion_owed {
             motion.unit_landed_for(ordinal);
@@ -307,6 +311,8 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         );
     }
     scratch.coefficients = coefficient_scratch;
+    folded.clear();
+    scratch.temporal = folded;
     plane_scratch.clear();
     scratch.plane_records = plane_scratch;
     scratch.lists = lists;
