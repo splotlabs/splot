@@ -41,6 +41,7 @@ struct CoeffFscBranchTxSizeFacts {
     context: AllZeroCoeffBlockInput,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct CoeffFscStagedTxSizeNonZeroInput {
     pub(crate) block: AllZeroCoeffBlockInput,
     pub(crate) start: NonZeroCoeffBlockStart,

@@ -35,6 +35,11 @@ pub(crate) type LevelGrid = [u8; LEVEL_GRID_LEN];
 static ZERO_LEVEL_GRID: LevelGrid = [0; LEVEL_GRID_LEN];
 
 static ZERO_QUANT_SIGN: [i8; MAX_PADDED_COEFF_LEN] = [0; MAX_PADDED_COEFF_LEN];
+/// One entry per coefficient of the largest (32x32) coefficient block.
+pub(crate) const NONZERO_LIST_LEN: usize = MAX_ADJUSTED_TX_EXTENT * MAX_ADJUSTED_TX_EXTENT;
+/// A block's packed nonzero levels in decode order, written by the base pass.
+pub(crate) type NonzeroList = [u32; NONZERO_LIST_LEN];
+static EMPTY_NONZERO_LIST: NonzeroList = [0; NONZERO_LIST_LEN];
 const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
 
 use core::cell::Cell;
@@ -57,7 +62,7 @@ fn zero_buffer<T: Default + Copy>(
 ///
 /// The two extents are one past the highest index the last block wrote, so
 /// the next block only re-zeroes that dirt instead of the whole arrays.
-type CoeffBlockBuffers = (Vec<u8>, usize, Vec<i8>, usize, Vec<i32>, usize);
+type CoeffBlockBuffers = (Vec<u8>, usize, Vec<i8>, usize, Vec<i32>, usize, Vec<u32>);
 
 std::thread_local! {
     /// One transform block's buffers, reused by the next block on this worker.
@@ -77,6 +82,7 @@ impl Drop for TransformCoeffBlockState {
                 self.sign_end,
                 core::mem::take(&mut self.quant),
                 self.quant_end,
+                core::mem::take(&mut self.nonzero),
             )));
         });
     }
@@ -92,6 +98,9 @@ pub(crate) struct TransformCoeffBlockState {
     level: Vec<u8>,
     quant_sign: Vec<i8>,
     quant: Vec<i32>,
+    /// [`NONZERO_LIST_LEN`] entries once allocated; only a prefix the base
+    /// pass reports is meaningful.
+    nonzero: Vec<u32>,
     /// One past the last nonzero entry of `quant`.
     quant_end: usize,
     /// One past the highest `quant_sign` index the block wrote.
@@ -109,6 +118,7 @@ impl TransformCoeffBlockState {
             level: Vec::new(),
             quant_sign: Vec::new(),
             quant: Vec::new(),
+            nonzero: Vec::new(),
             quant_end: 0,
             sign_end: 0,
         }
@@ -128,8 +138,11 @@ impl TransformCoeffBlockState {
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, TileCoeffStateError> {
         let allocation = Self::allocation(width, height)?;
         let level_len = LEVEL_STRIDE * (height + LEVEL_GRID_PAD);
-        let (mut level, used_len, mut quant_sign, sign_end, mut quant, quant_end) =
+        let (mut level, used_len, mut quant_sign, sign_end, mut quant, quant_end, mut nonzero) =
             COEFF_BLOCK_BUFFERS.with(Cell::take).unwrap_or_default();
+        if nonzero.len() != NONZERO_LIST_LEN {
+            nonzero = zero_buffer(nonzero, NONZERO_LIST_LEN)?;
+        }
         if level.len() == LEVEL_GRID_LEN {
             if let Some(used) = level.get_mut(..used_len.max(level_len)) {
                 used.fill(0);
@@ -154,6 +167,7 @@ impl TransformCoeffBlockState {
             quant_sign,
             sign_end,
             quant,
+            nonzero,
             quant_end: 0,
         })
     }
@@ -190,21 +204,26 @@ impl TransformCoeffBlockState {
         self.level.first_chunk().unwrap_or(&ZERO_LEVEL_GRID)
     }
 
-    /// The level grid with the quantised coefficients and their nonzero
+    /// The nonzero list with the quantised coefficients and their nonzero
     /// end, for a pass that writes the coefficients directly.
     #[inline]
-    pub(crate) fn level_and_quant_mut(&mut self) -> (&LevelGrid, &mut [i32], &mut usize) {
+    pub(crate) fn nonzero_and_quant_mut(&mut self) -> (&NonzeroList, &mut [i32], &mut usize) {
         (
-            self.level.first_chunk().unwrap_or(&ZERO_LEVEL_GRID),
+            self.nonzero.first_chunk().unwrap_or(&EMPTY_NONZERO_LIST),
             &mut self.quant,
             &mut self.quant_end,
         )
     }
 
-    /// The level grid, for a pass that reads and writes it directly.
+    /// The level grid and the nonzero list, for the pass that writes them.
     #[inline]
-    pub(crate) fn level_grid_mut(&mut self) -> Option<&mut LevelGrid> {
-        self.level.first_chunk_mut()
+    pub(crate) fn level_grid_and_nonzero_mut(
+        &mut self,
+    ) -> Option<(&mut LevelGrid, &mut NonzeroList)> {
+        Some((
+            self.level.first_chunk_mut()?,
+            self.nonzero.first_chunk_mut()?,
+        ))
     }
 
     pub(crate) fn level_mut(&mut self) -> &mut [u8] {
