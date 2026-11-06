@@ -353,6 +353,7 @@ impl SignQuantPass<'_> {
         let listed = list.get(..count).unwrap_or_default();
         let mut read_quant_state = self.read_quant_state;
         let mut quant_state = self.quant_state;
+        let use_tcq = self.input.config.use_tcq;
         let mut end = *quant_end;
         let mut run = || -> Result<(), CoeffOrdinaryPassError> {
             for entry in listed.iter().map(|&raw| NonzeroEntry::from_raw(raw)) {
@@ -378,26 +379,27 @@ impl SignQuantPass<'_> {
                     let input = derive_nonzero_coeff_sign_input(entry_pos, level, sign_config);
                     read_preflighted_nonzero_coeff_sign(cdfs, symbols, input)?.sign()
                 } else {
-                    symbols
-                        .read_literal(1)
-                        .map_err(|source| CoeffSignReadError::LiteralRead { source })?
-                        != 0
+                    symbols.read_bool_trusted()
                 };
                 let max_level = visible_max_level(entry.is_lf(), max_level_config.plane);
-                let read = read_quant_state
-                    .read_one(
-                        symbols,
-                        index,
-                        CoeffReadQuantInput {
-                            entry: entry_pos,
-                            level,
-                            max_level,
-                        },
-                    )
-                    .map_err(CoeffQuantPassError::from)?;
-                let magnitude = quant_state
-                    .ac_magnitude(index, read.quant, entry.tcq_q0())
-                    .map_err(CoeffQuantPassError::from)? as i32;
+                let magnitude = if level + u32::from(use_tcq) < max_level {
+                    quant_state.small_ac_magnitude(level, entry.tcq_q0())
+                } else {
+                    let read = read_quant_state
+                        .read_one(
+                            symbols,
+                            index,
+                            CoeffReadQuantInput {
+                                entry: entry_pos,
+                                level,
+                                max_level,
+                            },
+                        )
+                        .map_err(CoeffQuantPassError::from)?;
+                    quant_state
+                        .ac_magnitude(index, read.quant, entry.tcq_q0())
+                        .map_err(CoeffQuantPassError::from)?
+                } as i32;
                 if let Some(slot) = quant.get_mut(pos) {
                     *slot = if sign { -magnitude } else { magnitude };
                     if magnitude != 0 {

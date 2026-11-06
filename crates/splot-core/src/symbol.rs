@@ -970,6 +970,19 @@ impl<'a> SymbolDecoder<'a> {
         }
     }
 
+    /// [`Self::read_bool`] without its unreachable error path, for hot loops.
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    pub fn read_bool_trusted(&mut self) -> bool {
+        let scaled = self.scaled_bypass_value(1);
+        let split = u64::from(self.symbol_range);
+        let one = scaled < split;
+        let rest = if one { scaled } else { scaled - split };
+        self.advance_bypass(1, rest as u32);
+        self.frame_symbol_count = self.frame_symbol_count.wrapping_add(1);
+        one
+    }
+
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     fn read_trusted_arity<const N: usize, const UPDATE: bool>(&mut self, cdf: &mut [u16]) -> u32 {
