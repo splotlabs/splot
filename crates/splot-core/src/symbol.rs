@@ -205,6 +205,31 @@ fn adapt_probability_lanes<const L: usize>(
         .copy_to_slice(lanes);
 }
 
+/// `3 + timeInterval + Para_Adjustment_List[ index ][ timeInterval ]`
+/// (§ 8.2.6) for every rate index and use count below 64, so a read takes
+/// the count-dependent part of its adaptation rate with one load.
+static ADAPTATION_RATES: [[u8; 2 * MAX_CDF_COUNT as usize]; PARA_ADJUSTMENT_LIST.len()] = {
+    let mut rates = [[0; 2 * MAX_CDF_COUNT as usize]; PARA_ADJUSTMENT_LIST.len()];
+    let mut index = 0;
+    while index < rates.len() {
+        let mut count = 0;
+        while count < rates[index].len() {
+            let time_interval = if count > 31 {
+                2
+            } else if count > 15 {
+                1
+            } else {
+                0
+            };
+            rates[index][count] =
+                (3 + time_interval as i32 + PARA_ADJUSTMENT_LIST[index][time_interval]) as u8;
+            count += 1;
+        }
+        index += 1;
+    }
+    rates
+};
+
 /// `CDF_PROB_SCALE` in the lanes past the `N - 1` probabilities of a row.
 const fn past_row_lanes<const N: usize>() -> Simd<u16, 8> {
     let mut lanes = [0u16; 8];
@@ -754,9 +779,9 @@ impl<'a> SymbolDecoder<'a> {
         cdf: &mut [T],
     ) -> Result<Symbol> {
         let rate_index = cdf[N - 1].to_i32();
-        let Some(rate) = usize::try_from(rate_index)
+        let Some(rates) = usize::try_from(rate_index)
             .ok()
-            .and_then(|index| PARA_ADJUSTMENT_LIST.get(index))
+            .and_then(|index| ADAPTATION_RATES.get(index))
         else {
             return Err(
                 self.cdf_error(SymbolCdfErrorKind::AdaptationRateOutOfRange {
@@ -796,7 +821,12 @@ impl<'a> SymbolDecoder<'a> {
         self.frame_symbol_count = self.frame_symbol_count.wrapping_add(1);
 
         if self.config.cdf_update == CdfUpdateMode::Enabled {
-            update_cdf_with_rates::<T>(cdf, rate, count, N, symbol);
+            let n_term = if N <= 3 { 1 } else { 2 };
+            let rate = u32::from(rates[count.clamp(0, MAX_CDF_COUNT * 2 - 1) as usize]) + n_term;
+            T::adapt_probabilities(cdf, N, rate, symbol);
+            if count < MAX_CDF_COUNT {
+                cdf[N] = T::from_i32(count + 1);
+            }
         }
 
         Ok(Symbol::new(symbol as u8))

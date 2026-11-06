@@ -1085,7 +1085,11 @@ pub(crate) fn decode_general_intra_plane_coeffs(
                 dc_category: 0,
             })
             .map_err(coeff_ctx_err)?;
-        return Ok(LumaCoeffBlock::empty(DCT_DCT, lossless));
+        return Ok(if lossless {
+            const { LumaCoeffBlock::empty(DCT_DCT, true) }
+        } else {
+            const { LumaCoeffBlock::empty(DCT_DCT, false) }
+        });
     }
 
     let geometry = CoeffOrdinaryTxSizeGeometryConfig {
