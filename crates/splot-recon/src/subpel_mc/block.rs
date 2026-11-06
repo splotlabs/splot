@@ -388,7 +388,7 @@ fn unscaled_block<T: Sample>(
             let edge = |x: i32| source[(x as usize).min(source.len() - 1)];
             let (left, right) = (edge(params.first_x), edge(params.last_x));
             let (start, end) = (inside.start.min(inside.end), inside.end);
-            let from = y * view.stride + (column + start as i32) as usize;
+            let from = y * view.stride + (column + start as i32).max(0) as usize;
             for at in (start..end).step_by(16) {
                 let span = view
                     .samples
