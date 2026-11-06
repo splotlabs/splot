@@ -144,7 +144,7 @@ impl<T: ReconSample> GrainDestination<T> {
     /// Appends a copy of `source` as the next row and returns it for its noise.
     fn push_row(&mut self, source: &[T]) -> &mut [T] {
         let start = self.samples.len();
-        self.samples.extend_from_slice(source); // splot-copy-ok: a film-grain output row starts as its source row
+        self.samples.append_samples(source); // splot-copy-ok: a film-grain output row starts as its source row
         self.samples.resize(start + self.stride, T::default());
         &mut self.samples[start..start + source.len()]
     }

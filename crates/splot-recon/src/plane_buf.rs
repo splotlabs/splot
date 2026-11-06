@@ -118,7 +118,7 @@ impl<T: Copy> PlaneBuf<T> {
     }
 
     /// Appends a copy of `samples`.
-    pub fn extend_from_slice(&mut self, samples: &[T]) {
+    pub fn append_samples(&mut self, samples: &[T]) {
         let old = self.len;
         self.grow_to(old + samples.len());
         self[old..].copy_from_slice(samples); // splot-copy-ok: callers outside the decoder hand in plain Vec storage
@@ -143,9 +143,8 @@ impl<T: Copy> core::ops::Deref for PlaneBuf<T> {
     type Target = [T];
 
     fn deref(&self) -> &[T] {
-        // SAFETY: `len` samples fit in the initialized, 64-byte-aligned blocks
-        // (`grow_to`), every one was written as a `T` before `len` covered it,
-        // and `T`'s size divides the block and its alignment is at most 64.
+        // `len` samples fit in the initialized 64-byte-aligned blocks (`grow_to`) and
+        // SAFETY: each was written as a `T`, whose size divides the block and align <= 64.
         unsafe { core::slice::from_raw_parts(self.blocks.as_ptr().cast::<T>(), self.len) }
     }
 }
@@ -185,7 +184,7 @@ pub const fn plane_buf<T>() -> PlaneBuf<T> {
 #[must_use]
 pub fn plane_buf_from<T: Copy>(samples: &[T]) -> PlaneBuf<T> {
     let mut buffer = plane_buf();
-    buffer.extend_from_slice(samples);
+    buffer.append_samples(samples);
     buffer
 }
 
@@ -216,10 +215,11 @@ mod tests {
         ten.resize(5, 7);
         ten.truncate(2);
         ten.resize(40, 9);
-        ten.extend_from_slice(&[1, 2]);
+        ten.append_samples(&[1, 2]);
         let mut want = vec![7u16, 7];
         want.resize(40, 9);
-        want.extend_from_slice(&[1, 2]);
+        want.push(1);
+        want.push(2);
         assert_eq!(ten.as_slice(), want.as_slice());
         assert!(ten.capacity() >= 42);
         assert!(ten.try_reserve_exact(1000).is_ok());
