@@ -6,7 +6,7 @@
 use super::{CurrentFramePlane, CurrentFrameWorkspace, checked_sample_block_rect};
 use crate::math::round2_i32;
 use crate::{IntraRectBlockSize, PlaneId, ReconError, ReconSample, Result};
-use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
+use fearless_simd::{Simd, SimdBase, i32x8, i32x16};
 
 /// AV2 § 7.13.3.29 `Ii_Weights_1d[128]` smooth-interintra blending weights.
 const II_WEIGHTS_1D: [u16; 128] = [
@@ -465,13 +465,12 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     ) -> Result<()> {
         let rect = self.clamp_rect_to_storage(rect)?;
         macro_rules! scale_lanes {
-            ($row:expr, $ty:ty, $lanes:literal, $vectors:ident) => {
+            ($row:expr, $lanes:literal, $vectors:ident) => {
                 let (chunks, _) = $row[$vectors..].as_chunks_mut::<$lanes>();
                 for lanes in chunks {
-                    let orig = Simd::<$ty, $lanes>::from_array(*lanes).cast();
-                    *lanes = bawp_scale(orig, alpha, beta, max_sample)
-                        .cast::<$ty>()
-                        .to_array();
+                    let orig = lanes.map(i32::from);
+                    let scaled = baseline_simd!(simd => bawp_scale(simd, orig, alpha, beta, max_sample));
+                    *lanes = scaled.map(|value| value as _);
                     $vectors += $lanes;
                 }
             };
@@ -481,11 +480,11 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             let row = &mut self.samples[row_start..row_start + rect.width()];
             let mut vectors = 0;
             if let Some(row) = T::u8_slice_mut(row) {
-                scale_lanes!(row, u8, 16, vectors);
-                scale_lanes!(row, u8, 8, vectors);
+                scale_lanes!(row, 16, vectors);
+                scale_lanes!(row, 8, vectors);
             } else if let Some(row) = T::u16_slice_mut(row) {
-                scale_lanes!(row, u16, 16, vectors);
-                scale_lanes!(row, u16, 8, vectors);
+                scale_lanes!(row, 16, vectors);
+                scale_lanes!(row, 8, vectors);
             }
             for sample in &mut row[vectors..] {
                 let orig = i32::from(sample.to_u16());
@@ -503,10 +502,32 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 }
 
 /// `Clip3(0, max, (orig * alpha + beta) >> 8)` lane-wise, the BAWP scale.
-fn bawp_scale<const N: usize>(orig: Simd<i32, N>, alpha: i16, beta: i32, max: i32) -> Simd<i32, N> {
-    ((orig * Simd::splat(i32::from(alpha)) + Simd::splat(beta)) >> 8)
-        .simd_max(Simd::splat(0))
-        .simd_min(Simd::splat(max))
+#[inline]
+fn bawp_scale<S: Simd, const N: usize>(
+    simd: S,
+    orig: [i32; N],
+    alpha: i16,
+    beta: i32,
+    max: i32,
+) -> [i32; N] {
+    let scale8 = |orig: &[i32; 8]| {
+        let lanes = i32x8::load_array_ref(simd, orig);
+        ((lanes * i32::from(alpha) + beta) >> 8)
+            .max(0)
+            .min(max)
+            .to_array()
+    };
+    let mut out = [0; N];
+    if let (Some(orig), Some(slot)) = (orig.first_chunk::<16>(), out.first_chunk_mut::<16>()) {
+        let lanes = i32x16::load_array_ref(simd, orig);
+        *slot = ((lanes * i32::from(alpha) + beta) >> 8)
+            .max(0)
+            .min(max)
+            .to_array();
+    } else if let (Some(orig), Some(slot)) = (orig.first_chunk::<8>(), out.first_chunk_mut::<8>()) {
+        *slot = scale8(orig);
+    }
+    out
 }
 
 #[cfg(test)]
