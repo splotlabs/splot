@@ -253,9 +253,7 @@ pub(crate) fn read_inter_residual(
         blocks.truncate(block_start);
         return Err(error);
     }
-    Ok(InterResidual {
-        block_range: block_start..blocks.len(),
-    })
+    Ok(InterResidual::new(block_start..blocks.len()))
 }
 
 /// Returns the chroma group's top-left chunk position when `(chunk_x, chunk_y)`

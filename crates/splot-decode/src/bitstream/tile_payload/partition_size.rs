@@ -30,6 +30,25 @@ const BLOCK_SIZE_BY_LOG2_4X4: [[u8; MAX_LOG2_4X4 + 1]; MAX_LOG2_4X4 + 1] = {
     table
 };
 
+/// A § 9.2 per-block-size table as `u8`, padded to 32 entries so a masked
+/// [`BlockSize`] index reads it without a bounds check.
+const fn padded_u8_table(values: &[i32; BLOCK_SIZES]) -> [u8; 32] {
+    let mut table = [0; 32];
+    let mut index = 0;
+    while index < BLOCK_SIZES {
+        table[index] = values[index] as u8;
+        index += 1;
+    }
+    table
+}
+
+const NUM_4X4_WIDE: [u8; 32] = padded_u8_table(&NUM_4X4_BLOCKS_WIDE);
+const NUM_4X4_HIGH: [u8; 32] = padded_u8_table(&NUM_4X4_BLOCKS_HIGH);
+const MI_WIDTH_LOG2_U8: [u8; 32] = padded_u8_table(&MI_WIDTH_LOG2);
+const MI_HEIGHT_LOG2_U8: [u8; 32] = padded_u8_table(&MI_HEIGHT_LOG2);
+
+/// A valid `bSize`: every constructor checks the index is below
+/// `BLOCK_SIZES`, so the table reads below cannot fail.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockSize(u8);
 
@@ -45,28 +64,55 @@ impl BlockSize {
         self.0 as usize
     }
 
-    pub(crate) fn num_4x4_wide(self) -> Result<usize, PartitionSizeError> {
-        table_usize("Num_4x4_Blocks_Wide", &NUM_4X4_BLOCKS_WIDE, self)
+    #[inline]
+    const fn entry(self, table: &[u8; 32]) -> usize {
+        table[self.0 as usize & 31] as usize
     }
 
-    pub(crate) fn num_4x4_high(self) -> Result<usize, PartitionSizeError> {
-        table_usize("Num_4x4_Blocks_High", &NUM_4X4_BLOCKS_HIGH, self)
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "callers share the table-error plumbing"
+    )]
+    #[inline]
+    pub(crate) const fn num_4x4_wide(self) -> Result<usize, PartitionSizeError> {
+        Ok(self.entry(&NUM_4X4_WIDE))
     }
 
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "callers share the table-error plumbing"
+    )]
+    #[inline]
+    pub(crate) const fn num_4x4_high(self) -> Result<usize, PartitionSizeError> {
+        Ok(self.entry(&NUM_4X4_HIGH))
+    }
+
+    #[inline]
     pub(crate) fn width_samples(self) -> Result<usize, PartitionSizeError> {
         Ok(self.num_4x4_wide()? * 4)
     }
 
+    #[inline]
     pub(crate) fn height_samples(self) -> Result<usize, PartitionSizeError> {
         Ok(self.num_4x4_high()? * 4)
     }
 
-    pub(crate) fn mi_width_log2(self) -> Result<usize, PartitionSizeError> {
-        table_usize("Mi_Width_Log2", &MI_WIDTH_LOG2, self)
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "callers share the table-error plumbing"
+    )]
+    #[inline]
+    pub(crate) const fn mi_width_log2(self) -> Result<usize, PartitionSizeError> {
+        Ok(self.entry(&MI_WIDTH_LOG2_U8))
     }
 
-    pub(crate) fn mi_height_log2(self) -> Result<usize, PartitionSizeError> {
-        table_usize("Mi_Height_Log2", &MI_HEIGHT_LOG2, self)
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "callers share the table-error plumbing"
+    )]
+    #[inline]
+    pub(crate) const fn mi_height_log2(self) -> Result<usize, PartitionSizeError> {
+        Ok(self.entry(&MI_HEIGHT_LOG2_U8))
     }
 
     /// The block size with these 4x4 dimensions, if any.
@@ -133,15 +179,6 @@ fn table_value(
     let block_size = BlockSize::new(index)
         .map_err(|_| table_value_out_of_range(table, partition, b_size, value))?;
     Ok(Some(block_size))
-}
-
-fn table_usize(
-    table: &'static str,
-    values: &[i32],
-    b_size: BlockSize,
-) -> Result<usize, PartitionSizeError> {
-    let value = table_i32(table, values, b_size)?;
-    usize::try_from(value).map_err(|_| table_value_out_of_range(table, None, b_size, value))
 }
 
 fn partition_table_i32(

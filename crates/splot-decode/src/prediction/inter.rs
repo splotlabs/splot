@@ -1154,15 +1154,22 @@ impl PlacedInterBlock {
 }
 #[derive(Clone, Debug)]
 pub(crate) struct InterResidual {
-    pub(crate) block_range: core::ops::Range<usize>,
+    pub(crate) block_range: core::ops::Range<u32>,
 }
 
 impl InterResidual {
+    /// The arena blocks `range`; a row holds far fewer than `u32::MAX`.
+    pub(crate) fn new(range: core::ops::Range<usize>) -> Self {
+        Self {
+            block_range: range.start as u32..range.end as u32,
+        }
+    }
+
     pub(crate) fn blocks<'a>(
         &self,
         arena: &'a [InterResidualBlock],
     ) -> Option<&'a [InterResidualBlock]> {
-        arena.get(self.block_range.clone())
+        arena.get(self.block_range.start as usize..self.block_range.end as usize)
     }
 }
 

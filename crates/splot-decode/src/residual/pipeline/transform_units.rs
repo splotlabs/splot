@@ -276,8 +276,8 @@ impl ResidualPlanePlan {
             x: block.x,
             y: block.y,
             tx,
-            residual_width4: width4.max(1),
-            residual_height4: height4.max(1),
+            residual_width4: width4.max(1) as u16,
+            residual_height4: height4.max(1) as u16,
             zero_corners: block.middle,
             reconstruction,
             ..*self
@@ -331,7 +331,8 @@ impl ResidualPlanePlan {
     }
 
     pub(super) const fn tx_fills_residual_block(&self) -> bool {
-        self.tx.width4() == self.residual_width4 && self.tx.height4() == self.residual_height4
+        self.tx.width4() == self.residual_width4 as usize
+            && self.tx.height4() == self.residual_height4 as usize
     }
 }
 

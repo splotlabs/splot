@@ -120,8 +120,7 @@ pub(crate) fn derive_plane_scaling(
     let scale_x = scale_dimension(reference_width, frame_width);
     let scale_y = scale_dimension(reference_height, frame_height);
     let plane_bound = |reference_dimension: i32, subsampling: u32| {
-        let sample_scale = 1 << subsampling;
-        ((reference_dimension + sample_scale - 1) / sample_scale - 1).max(0)
+        (((reference_dimension + (1 << subsampling) - 1) >> subsampling) - 1).max(0)
     };
     derive_plane_scaling_from_scale(
         plane_x,
