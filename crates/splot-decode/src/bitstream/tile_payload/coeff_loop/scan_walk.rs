@@ -110,7 +110,6 @@ impl FscCoeffScanWalk {
         (1usize << self.width_log2) == block.width() && self.coeff_count == block.coeff_count()
     }
 
-    #[must_use]
     pub(crate) fn entries(&self) -> impl ExactSizeIterator<Item = CoeffScanEntry> + '_ {
         (0..self.len()).map(|index| self.entry(index))
     }

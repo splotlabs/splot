@@ -1599,15 +1599,19 @@ fn fullpel_compound_average_matches_materialized_predictors() {
             blend_compound_average_weighted(&pred0, &pred1, params0.bit_depth, cwp_weight).unwrap();
         let stride = params0.w + 3;
         let mut actual = vec![u16::MAX; stride * params0.h];
-        assert!(subpel_predict_block_compound_average_fullpel_validated(
-            &view0,
-            &params0,
-            &view1,
-            &params1,
-            cwp_weight,
-            &mut actual,
-            stride,
-        ));
+        assert!(
+            subpel_predict_block_compound_average_fast_validated_strided_into(
+                &view0,
+                &params0,
+                &view1,
+                &params1,
+                cwp_weight,
+                &mut [],
+                &mut actual,
+                stride,
+            )
+            .unwrap()
+        );
         for row in 0..params0.h {
             assert_eq!(
                 &actual[row * stride..row * stride + params0.w],
@@ -1623,7 +1627,7 @@ fn fullpel_compound_average_matches_materialized_predictors() {
 }
 
 #[test]
-fn fullpel_equal_weight_tail_widens_large_u16_samples() {
+fn fullpel_average_of_samples_past_the_bit_depth_stays_clipped() {
     let left = [40_000u16; 9];
     let right = [50_001u16; 9];
     let view0 = ReferencePlaneView::new(&left, 9, 1).unwrap();
@@ -1646,8 +1650,7 @@ fn fullpel_equal_weight_tail_widens_large_u16_samples() {
         )
         .unwrap()
     );
-    let [.., scalar_tail] = output;
-    assert_eq!(scalar_tail, 45_001);
+    assert!(output.iter().all(|&sample| sample <= 1023));
 }
 
 #[test]
@@ -1938,7 +1941,17 @@ fn compound_fast_path_u8_matches_materialized_predictors() {
         .collect::<Vec<_>>();
     let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
     let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
-    for (w, h) in [(4, 4), (8, 8), (4, 8), (8, 4)] {
+    for (w, h) in [
+        (4, 4),
+        (8, 8),
+        (4, 8),
+        (8, 4),
+        (16, 4),
+        (4, 16),
+        (16, 2),
+        (8, 2),
+        (12, 4),
+    ] {
         for (phase0, phase1) in [((5, 11), (13, 3)), ((5, 0), (0, 9)), ((0, 0), (0, 0))] {
             for start in [3i32, -6, 20] {
                 let params0 = SubpelPredictParams {
