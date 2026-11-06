@@ -4,7 +4,7 @@
 //! Unscaled § 7.13.3.18 interpolation of 16-bit storage in AVX2 word lanes.
 //!
 //! The vector layout is the byte-lane one: 16 outputs per vector, one strip
-//! row of a block at least 16 wide, two rows of an 8-wide block or four rows
+//! row of a block 16 columns wide, two rows of an 8-column strip or four rows
 //! of a 4-wide block. Each tap pair interleaves two windows, or two rows,
 //! into one `pmaddwd`, so every sum is exact in `i32`; a horizontal value
 //! fits `i16` for 8- and 10-bit samples. Other widths and targets without
@@ -23,7 +23,7 @@ pub(super) fn predict<T: ReconSample>(
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = fearless_simd::Level::baseline().as_avx2()
         && let Some(source) = T::u16_slice(block.source)
-        && (matches!(block.w, 4 | 8) || block.w.is_multiple_of(16))
+        && (block.w == 4 || block.w.is_multiple_of(8))
         && block.h.is_multiple_of(16 / width(block.w))
         && !(block.w == 4 && block.horizontal.is_some_and(|taps| taps.count > 2))
     {
@@ -45,9 +45,16 @@ pub(super) fn predict<T: ReconSample>(
     false
 }
 
-/// The strip width of a block: whole 4- and 8-wide rows, else 16 columns.
+/// The strip width of a block: 16 columns, else strips of 8 columns in
+/// pairs of rows, else whole 4-wide rows.
 const fn width(w: usize) -> usize {
-    if w <= 8 { w } else { 16 }
+    if w.is_multiple_of(16) {
+        16
+    } else if w.is_multiple_of(8) {
+        8
+    } else {
+        4
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
