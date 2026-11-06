@@ -9,7 +9,7 @@ use crate::intra_dc_math::{
     IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
     validate_sample_type,
 };
-use fearless_simd::{Level, Simd, SimdBase, dispatch, i16x16, i32x8, u8x32, u16x16};
+use fearless_simd::{Simd, SimdBase, i16x16, i32x8, u8x32, u16x16};
 
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
@@ -122,17 +122,80 @@ pub fn predict_intra_dip_rect_into<T: ReconSample>(
     )?;
 
     let features = dip_features(size, edges, dip_transpose);
-    predict_coarse_grid(
-        bit_depth,
+    let Some(rows) = DIP_ROW_WEIGHTS[usize::from(dip_transpose)].get(dip_mode) else {
+        return Err(ReconError::UnsupportedIntraDipMode {
+            mode: dip_mode,
+            max: DIP_MODE_COUNT - 1,
+        });
+    };
+    let shape_error = || ReconError::ArithmeticOverflow {
+        context: "DIP intra prediction output shape",
+    };
+    let block = DipBlock {
         size,
-        dip_mode,
-        dip_transpose,
-        features,
-        output,
-        stride_samples,
-    )?;
-    interpolate_grid(size, edges, output, stride_samples)?;
-    Ok(())
+        grid: dip_grid(size),
+        max: i32::from(bit_depth.max_sample()),
+        stride: stride_samples,
+    };
+    macro_rules! predict {
+        ($view:ident, $view_mut:ident) => {
+            if let (Some(left), Some(above), Some(output)) = (
+                T::$view(edges.left),
+                T::$view(edges.above),
+                T::$view_mut(output),
+            ) {
+                return baseline_simd!(simd => {
+                    predict_dip_samples(simd, block, &features, rows, left, above, output)
+                })
+                .ok_or_else(shape_error);
+            }
+        };
+    }
+    predict!(u8_slice, u8_slice_mut);
+    predict!(u16_slice, u16_slice_mut);
+    Err(shape_error())
+}
+
+/// The geometry of one DIP block.
+#[derive(Clone, Copy)]
+struct DipBlock {
+    size: IntraRectBlockSize,
+    grid: DipGrid,
+    max: i32,
+    stride: usize,
+}
+
+/// Writes the § 7.13.2.3 coarse grid samples, then interpolates the samples
+/// between them.
+#[inline]
+fn predict_dip_samples<S: Simd, P: IntraLaneSample>(
+    simd: S,
+    block: DipBlock,
+    features: &[i32; DIP_FEATURE_COUNT],
+    rows: &[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE],
+    left: &[P],
+    above: &[P],
+    output: &mut [P],
+) -> Option<()> {
+    let DipBlock {
+        size,
+        grid,
+        max,
+        stride,
+    } = block;
+    let mut values = [[0i32; 8]; DIP_GRID_SIDE];
+    coarse_grid_rows(simd, features, rows, grid, max, &mut values);
+    let mut y = grid.step_y - 1;
+    for row_values in values.iter().take(grid.height) {
+        let row = output.get_mut(y * stride..)?;
+        let mut x = grid.step_x - 1;
+        for gx in 0..grid.width {
+            *row.get_mut(x)? = P::from_lane(row_values[gx * grid.down_x] as u16);
+            x += grid.step_x;
+        }
+        y += grid.step_y;
+    }
+    interpolate_lanes(simd, size, grid, left, above, output, stride)
 }
 
 fn validate_dip_mode(dip_mode: usize) -> Result<()> {
@@ -261,48 +324,7 @@ const fn dip_row_weights() -> [[[[[i16; 16]; DIP_FEATURE_PAIRS]; DIP_GRID_SIDE];
     table
 }
 
-/// Writes the § 7.13.2.3 coarse grid samples: every grid row is eight dot
-/// products of the features with that row's weights, one pairwise
-/// multiply-add per feature pair.
-fn predict_coarse_grid<T: ReconSample>(
-    bit_depth: BitDepth,
-    size: IntraRectBlockSize,
-    dip_mode: usize,
-    dip_transpose: bool,
-    features: [i32; DIP_FEATURE_COUNT],
-    output: &mut [T],
-    stride_samples: usize,
-) -> Result<()> {
-    let grid = dip_grid(size);
-    let Some(rows) = DIP_ROW_WEIGHTS[usize::from(dip_transpose)].get(dip_mode) else {
-        return Err(ReconError::UnsupportedIntraDipMode {
-            mode: dip_mode,
-            max: DIP_MODE_COUNT - 1,
-        });
-    };
-    let mut values = [[0i32; 8]; DIP_GRID_SIDE];
-    let max = i32::from(bit_depth.max_sample());
-    dispatch!(Level::baseline(), simd => coarse_grid_rows(simd, &features, rows, grid, max, &mut values));
-    let mut y = grid.step_y - 1;
-    for row_values in values.iter().take(grid.height) {
-        let row = output
-            .get_mut(y * stride_samples..)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "DIP intra prediction coarse grid row",
-            })?;
-        let mut x = grid.step_x - 1;
-        for gx in 0..grid.width {
-            if let Some(slot) = row.get_mut(x) {
-                *slot = T::try_from_u16(row_values[gx * grid.down_x] as u16)?;
-            }
-            x += grid.step_x;
-        }
-        y += grid.step_y;
-    }
-    Ok(())
-}
-
-/// The coarse grid rows of [`predict_coarse_grid`], each `Clip1(Round2(Σ
+/// The coarse grid rows of a DIP block, each `Clip1(Round2(Σ
 /// features * weights, 10))` over its eight columns.
 #[inline]
 fn coarse_grid_rows<S: Simd>(
@@ -365,55 +387,10 @@ fn split_dip_scale_log2(log2_quarter_len: u8) -> (u8, u8) {
     }
 }
 
-fn interpolate_grid<T: ReconSample>(
-    size: IntraRectBlockSize,
-    edges: IntraDipEdges<'_, T>,
-    output: &mut [T],
-    stride_samples: usize,
-) -> Result<()> {
-    let grid = dip_grid(size);
-    let shape_error = || ReconError::ArithmeticOverflow {
-        context: "DIP intra prediction interpolation shape",
-    };
-    macro_rules! interpolate {
-        ($view:ident, $view_mut:ident, $sample:ty) => {
-            if let (Some(left), Some(above), Some(output)) = (
-                T::$view(edges.left),
-                T::$view(edges.above),
-                T::$view_mut(output),
-            ) {
-                return interpolate_samples::<$sample>(
-                    size,
-                    grid,
-                    left,
-                    above,
-                    output,
-                    stride_samples,
-                )
-                .ok_or_else(shape_error);
-            }
-        };
-    }
-    interpolate!(u8_slice, u8_slice_mut, u8);
-    interpolate!(u16_slice, u16_slice_mut, u16);
-    Err(shape_error())
-}
-
 /// Fills the samples between the coarse grid: each sampled row horizontally
 /// from the left edge, then the rows between sampled rows from the row or
 /// above edge before them. Every result is a convex combination of two
 /// samples with power-of-two weights, so it needs no clipping.
-fn interpolate_samples<P: IntraLaneSample>(
-    size: IntraRectBlockSize,
-    grid: DipGrid,
-    left: &[P],
-    above: &[P],
-    output: &mut [P],
-    stride: usize,
-) -> Option<()> {
-    dispatch!(Level::baseline(), simd => interpolate_lanes(simd, size, grid, left, above, output, stride))
-}
-
 #[inline]
 fn interpolate_lanes<S: Simd, P: IntraLaneSample>(
     simd: S,
