@@ -711,8 +711,8 @@ impl<S: SimdToken> CdefConstrain<S> {
 }
 
 /// A block's centre view and its four primary and eight secondary tap views.
-type CdefTapViews<'a, const SPAN: usize> =
-    (&'a [u16; SPAN], [&'a [u16; SPAN]; 4], [&'a [u16; SPAN]; 8]);
+type CdefTapViews<'a, E, const SPAN: usize> =
+    (&'a [E; SPAN], [&'a [E; SPAN]; 4], [&'a [E; SPAN]; 8]);
 
 /// Binds the tap views of direction `dir` for [`cdef_filter_rows`]; an
 /// inactive tap family gets the centre view.
@@ -725,6 +725,7 @@ type CdefTapViews<'a, const SPAN: usize> =
 #[inline(always)]
 fn cdef_tap_views<
     'a,
+    E,
     const STRIDE: usize,
     const CENTER: usize,
     const SPAN: usize,
@@ -732,14 +733,14 @@ fn cdef_tap_views<
     const PRI: bool,
     const SEC: bool,
 >(
-    pad: &'a [u16; AREA],
+    pad: &'a [E; AREA],
     dir: usize,
     starts: &CdefTapStarts,
-) -> Option<CdefTapViews<'a, SPAN>> {
+) -> Option<CdefTapViews<'a, E, SPAN>> {
     const { assert!(u8::MAX as usize + SPAN <= AREA) };
     let starts = &starts[dir & 7];
     let view =
-        |tap: usize| -> Option<&[u16; SPAN]> { pad.get(usize::from(starts[tap])..)?.first_chunk() };
+        |tap: usize| -> Option<&[E; SPAN]> { pad.get(usize::from(starts[tap])..)?.first_chunk() };
     let center_view = pad.get(2 * STRIDE + CENTER..)?.first_chunk()?;
     let pri_views = if PRI {
         [view(0)?, view(1)?, view(2)?, view(3)?]
@@ -800,7 +801,7 @@ fn cdef_filter_rows<
     (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA>,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
-        cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
+        cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
@@ -928,7 +929,7 @@ fn cdef_filter_rows_8bit<
     base: u16,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
-        cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
+        cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
@@ -1066,7 +1067,7 @@ fn cdef_filter_rows_diff8<
     (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA>,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
-        cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
+        cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
@@ -1177,7 +1178,7 @@ fn cdef_filter_rows_clamped<
     (pad, h, filter, starts, out, out_stride): CdefRowsArgs<'_, AREA>,
 ) -> Option<()> {
     let (center_view, pri_views, sec_views) =
-        cdef_tap_views::<STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
+        cdef_tap_views::<_, STRIDE, CENTER, SPAN, AREA, PRI, SEC>(pad, filter.dir, starts)?;
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row].map(|tap| tap as i16);
     let sec_taps = CDEF_SEC_TAPS[tap_row].map(|tap| tap as i16);
