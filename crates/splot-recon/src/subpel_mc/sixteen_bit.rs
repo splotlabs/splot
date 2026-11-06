@@ -31,6 +31,8 @@ pub(super) fn predict<T: ReconSample>(
             source,
             stride: block.stride,
             origin: block.origin,
+            top: block.top,
+            rows: block.rows,
             w: block.w,
             h: block.h,
             horizontal: block.horizontal,
@@ -183,21 +185,20 @@ mod avx2 {
     fn group_samples<const W: usize>(
         t: Avx2,
         source: &[u16],
-        stride: usize,
-        start: usize,
+        starts: [usize; 4],
     ) -> Option<__m256i> {
         Some(match W {
             4 => _mm256_set_epi64x(
-                load4(chunk(source, start + 3 * stride)?),
-                load4(chunk(source, start + 2 * stride)?),
-                load4(chunk(source, start + stride)?),
-                load4(chunk(source, start)?),
+                load4(chunk(source, starts[3])?),
+                load4(chunk(source, starts[2])?),
+                load4(chunk(source, starts[1])?),
+                load4(chunk(source, starts[0])?),
             ),
             8 => _mm256_set_m128i(
-                load8(t, chunk(source, start + stride)?),
-                load8(t, chunk(source, start)?),
+                load8(t, chunk(source, starts[1])?),
+                load8(t, chunk(source, starts[0])?),
             ),
-            _ => u16x16::load_array_ref(t, chunk(source, start)?).into(),
+            _ => u16x16::load_array_ref(t, chunk(source, starts[0])?).into(),
         })
     }
 
@@ -296,7 +297,7 @@ mod avx2 {
         strip: usize,
         last: usize,
     ) -> [usize; 4] {
-        let start = |q: usize| block.origin + (row + q).min(last) * block.stride + strip * W;
+        let start = |q: usize| block.start((row + q).min(last)) + strip * W;
         [start(0), start(1), start(2), start(3)]
     }
 
@@ -306,8 +307,8 @@ mod avx2 {
         let shift = _mm_cvtsi32_si128(if sink.is_put() { 0 } else { 4 });
         for strip in 0..block.w / W {
             for row in (0..block.h).step_by(16 / W) {
-                let start = block.origin + row * block.stride + strip * W;
-                let Some(samples) = group_samples::<W>(t, block.source, block.stride, start) else {
+                let starts = starts::<W>(block, row, strip, usize::MAX);
+                let Some(samples) = group_samples::<W>(t, block.source, starts) else {
                     return;
                 };
                 let first = _mm256_sll_epi32(
@@ -369,24 +370,7 @@ mod avx2 {
         {
             let row = group * (16 / W);
             let starts = starts::<W>(block, row, strip, last);
-            let samples = match W {
-                4 => (|| {
-                    Some(_mm256_set_epi64x(
-                        load4(chunk(block.source, starts[3])?),
-                        load4(chunk(block.source, starts[2])?),
-                        load4(chunk(block.source, starts[1])?),
-                        load4(chunk(block.source, starts[0])?),
-                    ))
-                })(),
-                8 => (|| {
-                    Some(_mm256_set_m128i(
-                        load8(t, chunk(block.source, starts[1])?),
-                        load8(t, chunk(block.source, starts[0])?),
-                    ))
-                })(),
-                _ => chunk::<16, u16>(block.source, starts[0])
-                    .map(|lanes| u16x16::load_array_ref(t, lanes).into()),
-            };
+            let samples = group_samples::<W>(t, block.source, starts);
             let (Some(samples), Some(slot)) = (samples, slot.first_chunk_mut::<16>()) else {
                 return;
             };

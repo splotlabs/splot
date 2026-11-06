@@ -230,7 +230,7 @@ fn emit_pair<S: Simd>(
 fn copy<S: Simd, T: Lanes>(simd: S, block: &Block<'_, T>, sink: &mut Sink<'_>) {
     let shift = if sink.is_put() { 0 } else { 4 };
     let jobs = Jobs::new(block.w, block.h);
-    let start = |(row, col): (usize, usize)| block.origin + row * block.stride + col;
+    let start = |(row, col): (usize, usize)| block.start(row) + col;
     for (_, _, a, second) in jobs.pairs() {
         let b = second.unwrap_or(a);
         let (low, high) = job_lanes(simd, block.source, start(a), start(b)).widen();
@@ -252,7 +252,7 @@ fn horizontal<S: Simd, T: Lanes, const P: usize>(
     let weights = weights(simd, taps);
     let put = sink.is_put();
     let jobs = Jobs::new(block.w, block.h);
-    let start = |(row, col): (usize, usize)| block.origin + row * block.stride + col;
+    let start = |(row, col): (usize, usize)| block.start(row) + col;
     for (_, _, a, second) in jobs.pairs() {
         let b = second.unwrap_or(a);
         let sums = horizontal_sums::<S, T, P>(simd, block.source, (start(a), start(b)), &weights);
@@ -276,12 +276,16 @@ fn vertical<S: Simd, T: Lanes, const P: usize>(
     let weights = weights(simd, taps);
     let (bias, shift) = if sink.is_put() { (64, 7) } else { (4, 3) };
     let jobs = Jobs::new(block.w, block.h);
-    let start = |(row, col): (usize, usize)| block.origin + row * block.stride + col;
+    let start = |(row, col): (usize, usize)| block.start(row) + col;
     for (_, _, a, second) in jobs.pairs() {
         let b = second.unwrap_or(a);
         let line = |k: usize| {
-            let step = k * block.stride;
-            job_lanes(simd, block.source, start(a) + step, start(b) + step)
+            job_lanes(
+                simd,
+                block.source,
+                start((a.0 + k, a.1)),
+                start((b.0 + k, b.1)),
+            )
         };
         let sums = pair_sums::<S, P>(simd, &weights, line);
         emit_pair(
@@ -306,7 +310,7 @@ fn stage_rows<S: Simd, T: Lanes, const P: usize>(
 ) {
     let weights = weights(simd, taps);
     let jobs = Jobs::new(block.w, rows);
-    let start = |(row, col): (usize, usize)| block.origin + row * block.stride + col;
+    let start = |(row, col): (usize, usize)| block.start(row) + col;
     for (_, _, a, second) in jobs.pairs() {
         let b = second.unwrap_or(a);
         let (low, high) = round(
