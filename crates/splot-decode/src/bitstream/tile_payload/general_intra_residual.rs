@@ -36,6 +36,7 @@ use super::coeff_loop::ordinary_pass::geometry::{
     apply_staged_nonzero_coeff_ordinary_branch_from_lossless, lossless_plane_tx_type,
     read_lossless_inter_plane_tx_type, resolve_mode_to_txfm_plane_tx_type,
 };
+use super::coeff_loop::transform_block::scan_extent;
 use super::coeff_loop::{
     AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffBlockStartInput,
     NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
@@ -1322,7 +1323,12 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         .map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
         arena.extend_from_slice(coeffs.nonzero_quant());
     } else {
-        arena.resize(start_idx + coeff_count, 0);
+        let extent = scan_extent(
+            CoeffTransformClass::from_plane_tx_type(plane_tx_type),
+            (tx_width_log2, tx_height_log2),
+            eob,
+        );
+        arena.resize(start_idx + extent, 0);
         let quant_end = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
             context,
             work_unit.cdf_mut().tile_cdfs_mut(),
