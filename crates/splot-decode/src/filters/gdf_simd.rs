@@ -3,7 +3,9 @@
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{Avx2, kernel};
-use fearless_simd::{Level, Simd, dispatch, i8x16, i16x16, i32x8, mask16x16, prelude::*, u16x16};
+use fearless_simd::{
+    Level, Simd, dispatch, i8x16, i16x16, i32x8, mask16x16, prelude::*, u8x16, u16x16,
+};
 
 use splot_core::tables::loop_restoration::{
     GDF_ALPHA, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
@@ -66,6 +68,42 @@ pub(super) fn window_at<'a, const WIN: usize>(
 /// The window of a 16-sample row pair: its rows with the tap reach on both sides.
 type Window<'a> = [&'a [u16; 28]; WINDOW_ROWS];
 
+/// The most columns of one column tile of a run, whose source rows sit
+/// [`TILE_STRIDE`] apart: the tile's rows of a row pair window stay in L1, and
+/// every window row is a constant offset from the window's first sample.
+pub(super) const TILE_COLS: usize = 1024;
+pub(super) const TILE_STRIDE: usize = TILE_COLS + 32;
+const TILE_SPAN: usize = (WINDOW_ROWS - 1) * TILE_STRIDE + 28;
+const _: () =
+    assert!(TILE_STRIDE >= TILE_COLS + 2 * GDF_READ_RADIUS && TILE_COLS.is_multiple_of(16));
+
+/// The rows of a row pair window.
+trait WindowRows {
+    fn row(&self, index: usize) -> &[u16; 28];
+}
+
+impl WindowRows for Window<'_> {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn row(&self, index: usize) -> &[u16; 28] {
+        self.get(index).copied().unwrap_or(&[0; 28])
+    }
+}
+
+/// A row pair window of a column tile, its rows [`TILE_STRIDE`] apart.
+struct TiledWindow<'a>(&'a [u16; TILE_SPAN]);
+
+impl WindowRows for TiledWindow<'_> {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn row(&self, index: usize) -> &[u16; 28] {
+        self.0
+            .get(index * TILE_STRIDE..)
+            .and_then(<[u16]>::first_chunk)
+            .unwrap_or(&[0; 28])
+    }
+}
+
 /// Bit `index * 18 + k` is set when weight `index` of tap `k` is zero in every
 /// GDF table for every class in the `classes` bit set.
 const fn zero_weight_taps(classes: u8) -> u64 {
@@ -111,8 +149,8 @@ const TAP_COLUMN_REACH: [usize; TAP_REACH + 1] = {
 /// in textured windows they alone usually prove the window uneven. The rows
 /// are unrolled so that each row's tap reach is a constant.
 #[inline]
-fn window_is_flat<S: Simd>(simd: S, window: &Window<'_>) -> bool {
-    let expected = u16x16::splat(simd, window[TAP_REACH][TAP_REACH]);
+fn window_is_flat<S: Simd, W: WindowRows>(simd: S, window: &W) -> bool {
+    let expected = u16x16::splat(simd, window.row(TAP_REACH)[TAP_REACH]);
     let even = |row: &[u16; 28], col: usize| {
         u16x16::from_slice(simd, &row[col..col + 16])
             .simd_eq(expected)
@@ -126,7 +164,7 @@ fn window_is_flat<S: Simd>(simd: S, window: &Window<'_>) -> bool {
                     let (above, below) = (ROW.abs_diff(TAP_REACH), ROW.abs_diff(TAP_REACH + 1));
                     TAP_COLUMN_REACH[if above < below { above } else { below }]
                 };
-                even(window[ROW], TAP_REACH - REACH) && even(window[ROW], TAP_REACH + REACH)
+                even(window.row(ROW), TAP_REACH - REACH) && even(window.row(ROW), TAP_REACH + REACH)
             })&&*
         };
     }
@@ -276,22 +314,30 @@ static GDF_INTER_ERROR_I8: [[[i8; 1024]; 6]; 5] = {
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn errors(block: &GdfBlock, pos: &[u16; 16]) -> [i8; 16] {
+    let mut errors = [0; 16];
+    store_errors(block, pos, &mut errors);
+    errors
+}
+
+/// [`errors`] into `errors`.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn store_errors(block: &GdfBlock, pos: &[u16; 16], errors: &mut [i8; 16]) {
     #[allow(clippy::inline_always)]
     #[inline(always)]
-    fn lookup<const LEN: usize>(table: &[i8; LEN], pos: &[u16; 16]) -> [i8; 16] {
-        let mut errors = [0; 16];
+    fn lookup<const LEN: usize>(table: &[i8; LEN], pos: &[u16; 16], errors: &mut [i8; 16]) {
         for (error, &pos) in errors.iter_mut().zip(pos) {
             *error = table[usize::from(pos) & (LEN - 1)];
         }
-        errors
     }
     if block.ref_dst_idx == GDF_INTRA_REF_DST {
-        lookup(&GDF_INTRA_ERROR_I8[block.qp_idx], pos)
+        lookup(&GDF_INTRA_ERROR_I8[block.qp_idx], pos, errors);
     } else {
         lookup(
             &GDF_INTER_ERROR_I8[block.ref_dst_idx - 1][block.qp_idx],
             pos,
-        )
+            errors,
+        );
     }
 }
 
@@ -510,9 +556,9 @@ fn samples<S: Simd>(simd: S, row: &[u16; 28], col: usize) -> u16x16<S> {
 /// `ROW`: the tap's two mirrored reads.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn tap_diffs<S: Simd, const TAP: usize, const ROW: usize>(
+fn tap_diffs<S: Simd, W: WindowRows, const TAP: usize, const ROW: usize>(
     simd: S,
-    window: &Window<'_>,
+    window: &W,
     (above, below): Centers<S>,
 ) -> (u16x16<S>, u16x16<S>) {
     let (dy, dx) = GDF_COORDS[TAP];
@@ -521,13 +567,13 @@ fn tap_diffs<S: Simd, const TAP: usize, const ROW: usize>(
         above
             - samples(
                 simd,
-                window[row - dy as usize],
+                window.row(row - dy as usize),
                 (TAP_REACH as isize - dx) as usize,
             ),
         below
             - samples(
                 simd,
-                window[row + dy as usize],
+                window.row(row + dy as usize),
                 (TAP_REACH as isize + dx) as usize,
             ),
     )
@@ -567,15 +613,15 @@ fn pick<S: Simd>(a: u16x16<S>, b: u16x16<S>, select: mask16x16<S>) -> u16x16<S> 
 /// is itself and its mirror is `T`).
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn paired_combs<S: Simd, const K: usize, const T: usize, const ROW: usize>(
+fn paired_combs<S: Simd, W: WindowRows, const K: usize, const T: usize, const ROW: usize>(
     simd: S,
-    window: &Window<'_>,
+    window: &W,
     centers: Centers<S>,
     select: mask16x16<S>,
     params: &GdfSymParams,
 ) -> [i16x16<S>; 2] {
-    let (above, below) = tap_diffs::<S, K, ROW>(simd, window, centers);
-    let (t_above, t_below) = tap_diffs::<S, T, ROW>(simd, window, centers);
+    let (above, below) = tap_diffs::<S, W, K, ROW>(simd, window, centers);
+    let (t_above, t_below) = tap_diffs::<S, W, T, ROW>(simd, window, centers);
     [
         clipped_sum(
             simd,
@@ -599,6 +645,7 @@ fn paired_combs<S: Simd, const K: usize, const T: usize, const ROW: usize>(
 #[inline(always)]
 fn cycle_combs<
     S: Simd,
+    W: WindowRows,
     const A: usize,
     const B: usize,
     const C: usize,
@@ -606,15 +653,15 @@ fn cycle_combs<
     const ROW: usize,
 >(
     simd: S,
-    window: &Window<'_>,
+    window: &W,
     centers: Centers<S>,
     (transposed, mirrored): (mask16x16<S>, mask16x16<S>),
     params: &GdfSymParams,
 ) -> [i16x16<S>; 4] {
-    let (a_above, a_below) = tap_diffs::<S, A, ROW>(simd, window, centers);
-    let (b_above, b_below) = tap_diffs::<S, B, ROW>(simd, window, centers);
-    let (c_above, c_below) = tap_diffs::<S, C, ROW>(simd, window, centers);
-    let (d_above, d_below) = tap_diffs::<S, D, ROW>(simd, window, centers);
+    let (a_above, a_below) = tap_diffs::<S, W, A, ROW>(simd, window, centers);
+    let (b_above, b_below) = tap_diffs::<S, W, B, ROW>(simd, window, centers);
+    let (c_above, c_below) = tap_diffs::<S, W, C, ROW>(simd, window, centers);
+    let (d_above, d_below) = tap_diffs::<S, W, D, ROW>(simd, window, centers);
     let select4 = |a: u16x16<S>, b: u16x16<S>, c: u16x16<S>, d: u16x16<S>| {
         let (ab, ba) = (pick(a, b, mirrored), pick(b, a, mirrored));
         let (cd, dc) = (pick(c, d, mirrored), pick(d, c, mirrored));
@@ -660,9 +707,25 @@ fn error_index<S: Simd, L: Lanes<S>>(
 /// indices `pos`.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn add_residual<S: Simd>(simd: S, pos: &[u16; 16], output: &mut [u16; 16], block: &GdfBlock) {
+fn add_residual<S: Simd, O: GdfSample>(
+    simd: S,
+    pos: &[u16; 16],
+    output: &mut [O; 16],
+    block: &GdfBlock,
+) {
     let (low, high) = simd.widen_i8x16(i8x16::from_slice(simd, &errors(block, pos)));
-    let error = simd.combine_i16x8(low, high);
+    apply_errors(simd, simd.combine_i16x8(low, high), output, block);
+}
+
+/// Adds the residuals of the `err` lanes `error` to `output`.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn apply_errors<S: Simd, O: GdfSample>(
+    simd: S,
+    error: i16x16<S>,
+    output: &mut [O; 16],
+    block: &GdfBlock,
+) {
     let scaled = error * block.pix_scale as i16;
     let rounding = 12 - u32::from(block.bit_depth.bits());
     let residual = if rounding == 0 {
@@ -670,12 +733,51 @@ fn add_residual<S: Simd>(simd: S, pos: &[u16; 16], output: &mut [u16; 16], block
     } else {
         (scaled + (1 << (rounding - 1)) + (scaled >> 15)) >> rounding
     };
-    let base = u16x16::from_slice(simd, output).bitcast::<i16x16<S>>();
-    (base + residual)
+    let base = O::load(simd, output);
+    let filtered = (base + residual)
         .max(i16x16::splat(simd, 0))
-        .min(i16x16::splat(simd, block.max_sample as i16))
-        .bitcast::<u16x16<S>>()
-        .store_slice(output);
+        .min(i16x16::splat(simd, block.max_sample as i16));
+    O::store(simd, filtered, output);
+}
+
+/// A sample type of the luma rows GDF filters in place.
+pub(super) trait GdfSample: Copy + Default {
+    /// The 16 samples of `samples` as `i16` lanes.
+    fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> i16x16<S>;
+    /// Stores 16 lanes, each within the sample range, into `samples`.
+    fn store<S: Simd>(simd: S, lanes: i16x16<S>, samples: &mut [Self; 16]);
+}
+
+impl GdfSample for u16 {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> i16x16<S> {
+        u16x16::from_slice(simd, samples).bitcast()
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn store<S: Simd>(_simd: S, lanes: i16x16<S>, samples: &mut [Self; 16]) {
+        lanes.bitcast::<u16x16<S>>().store_slice(samples);
+    }
+}
+
+impl GdfSample for u8 {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn load<S: Simd>(simd: S, samples: &[Self; 16]) -> i16x16<S> {
+        let lanes = u8x16::from_slice(simd, samples);
+        simd.widen_u8x32(simd.combine_u8x16(lanes, lanes))
+            .0
+            .bitcast()
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn store<S: Simd>(simd: S, lanes: i16x16<S>, samples: &mut [Self; 16]) {
+        let (low, high) = simd.split_u16x16(lanes.bitcast());
+        simd.narrow_u16x8(low, high).store_slice(samples);
+    }
 }
 
 /// The interleaved negated combs of one row for each `COMB_PAIRS` slot, in
@@ -689,35 +791,35 @@ type RowPairs<S> = [[i16x16<S>; 2]; COMB_PAIRS.len()];
 /// from the multiply-adds, whose six sums would otherwise force LLVM to
 /// spill the combs.
 #[inline(never)]
-fn row_pairs<S: Simd, L: Lanes<S>, const ROW: usize>(
+fn row_pairs<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize>(
     simd: S,
     lanes: L,
-    window: &Window<'_>,
+    window: &W,
     masks: (mask16x16<S>, mask16x16<S>),
     params: &GdfSymParams,
 ) -> RowPairs<S> {
-    let center = samples(simd, window[TAP_REACH + ROW], TAP_REACH);
+    let center = samples(simd, window.row(TAP_REACH + ROW), TAP_REACH);
     let centers = (center + ABOVE_OFFSET, center + BELOW_OFFSET);
     let (transposed, mirrored) = masks;
     let mut out = [[i16x16::splat(simd, 0); 2]; COMB_PAIRS.len()];
-    let [tap0, tap12] = paired_combs::<S, 0, 12, ROW>(simd, window, centers, transposed, params);
-    let [tap1, tap13] = paired_combs::<S, 1, 13, ROW>(simd, window, centers, transposed, params);
+    let [tap0, tap12] = paired_combs::<S, W, 0, 12, ROW>(simd, window, centers, transposed, params);
+    let [tap1, tap13] = paired_combs::<S, W, 1, 13, ROW>(simd, window, centers, transposed, params);
     out[0] = lanes.pairs(simd, tap0, tap1);
     out[1] = lanes.pairs(simd, tap12, tap13);
-    let [tap2, tap14] = paired_combs::<S, 2, 14, ROW>(simd, window, centers, transposed, params);
-    let [tap3, tap15] = paired_combs::<S, 3, 15, ROW>(simd, window, centers, transposed, params);
+    let [tap2, tap14] = paired_combs::<S, W, 2, 14, ROW>(simd, window, centers, transposed, params);
+    let [tap3, tap15] = paired_combs::<S, W, 3, 15, ROW>(simd, window, centers, transposed, params);
     out[2] = lanes.pairs(simd, tap2, tap3);
     out[3] = lanes.pairs(simd, tap14, tap15);
     out[4] = lanes.pairs(simd, tap3, tap15);
     let [tap4, tap6, tap7, tap11] =
-        cycle_combs::<S, 4, 6, 7, 11, ROW>(simd, window, centers, masks, params);
+        cycle_combs::<S, W, 4, 6, 7, 11, ROW>(simd, window, centers, masks, params);
     out[5] = lanes.pairs(simd, tap4, tap6);
     out[6] = lanes.pairs(simd, tap7, tap11);
-    let [tap8, tap10] = paired_combs::<S, 8, 10, ROW>(simd, window, centers, mirrored, params);
+    let [tap8, tap10] = paired_combs::<S, W, 8, 10, ROW>(simd, window, centers, mirrored, params);
     out[7] = lanes.pairs(simd, tap8, tap10);
-    let [tap9, tap17] = paired_combs::<S, 9, 17, ROW>(simd, window, centers, transposed, params);
+    let [tap9, tap17] = paired_combs::<S, W, 9, 17, ROW>(simd, window, centers, transposed, params);
     out[8] = lanes.pairs(simd, tap9, tap17);
-    let [tap5, tap16] = paired_combs::<S, 5, 16, ROW>(simd, window, centers, transposed, params);
+    let [tap5, tap16] = paired_combs::<S, W, 5, 16, ROW>(simd, window, centers, transposed, params);
     out[9] = lanes.pairs(simd, tap5, tap16);
     out
 }
@@ -753,17 +855,18 @@ fn row_index<S: Simd, L: Lanes<S>>(
 /// stay at the bias.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn sym_rows_with<S: Simd, L: Lanes<S>>(
+fn sym_rows_with<S: Simd, L: Lanes<S>, W: WindowRows, R: RowSink>(
     simd: S,
     lanes: L,
-    window: &Window<'_>,
-    [top, bottom]: [&mut [u16; 16]; 2],
+    window: &W,
+    mut sink: R,
     classes: i32x8<S>,
     block: &GdfBlock,
     params: &GdfSymParams,
 ) {
     let flat = window_is_flat(simd, window);
     if flat && params.keeps_flat && (classes >> 2).simd_eq(i32x8::splat(simd, 0)).all_true() {
+        sink.keep(simd);
         return;
     }
     let biases = |bias: [i32; 3]| {
@@ -775,8 +878,8 @@ fn sym_rows_with<S: Simd, L: Lanes<S>>(
     };
     if flat {
         let pos = error_index(simd, lanes, biases(params.bias), params);
-        add_residual(simd, &pos, top, block);
-        add_residual(simd, &pos, bottom, block);
+        sink.row(simd, 0, &pos, block);
+        sink.row(simd, 1, &pos, block);
         return;
     }
     let init = biases(params.tap_bias);
@@ -784,19 +887,76 @@ fn sym_rows_with<S: Simd, L: Lanes<S>>(
     let class = (class | (class << 16)).bitcast::<u16x16<S>>();
     let zero = u16x16::splat(simd, 0);
     let masks = ((class & 1).simd_ne(zero), (class & 2).simd_ne(zero));
-    let pairs = row_pairs::<S, L, 0>(simd, lanes, window, masks, params);
+    let pairs = row_pairs::<S, L, W, 0>(simd, lanes, window, masks, params);
     let pos = row_index(simd, lanes, &pairs, &init, params);
-    add_residual(simd, &pos, top, block);
-    let pairs = row_pairs::<S, L, 1>(simd, lanes, window, masks, params);
+    sink.row(simd, 0, &pos, block);
+    let pairs = row_pairs::<S, L, W, 1>(simd, lanes, window, masks, params);
     let pos = row_index(simd, lanes, &pairs, &init, params);
-    add_residual(simd, &pos, bottom, block);
+    sink.row(simd, 1, &pos, block);
+}
+
+/// Where [`sym_rows_with`] puts a row pair's § 7.20.5 error indices.
+trait RowSink {
+    /// Takes the error indices `pos` of row `row` (0 or 1) of the pair.
+    fn row<S: Simd>(&mut self, simd: S, row: usize, pos: &[u16; 16], block: &GdfBlock);
+    /// Takes a pair whose samples all keep their values.
+    fn keep<S: Simd>(&mut self, simd: S);
+}
+
+/// Adds the residuals to the pair's two output rows at once.
+impl<O: GdfSample> RowSink for [&mut [O; 16]; 2] {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn row<S: Simd>(&mut self, simd: S, row: usize, pos: &[u16; 16], block: &GdfBlock) {
+        if let Some(output) = self.get_mut(row) {
+            add_residual(simd, pos, output, block);
+        }
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn keep<S: Simd>(&mut self, _simd: S) {}
+}
+
+/// Stores the pair's `err` bytes for [`add_errors`]: each is a scalar load
+/// and store, independent of the others, where inserting them into one
+/// vector chains every lookup on the one before.
+struct ErrorRows<'a>([&'a mut [i8; 16]; 2]);
+
+impl RowSink for ErrorRows<'_> {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn row<S: Simd>(&mut self, _simd: S, row: usize, pos: &[u16; 16], block: &GdfBlock) {
+        if let Some(errors) = self.0.get_mut(row) {
+            store_errors(block, pos, errors);
+        }
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn keep<S: Simd>(&mut self, simd: S) {
+        for errors in &mut self.0 {
+            i8x16::splat(simd, 0).store_slice(&mut errors[..]);
+        }
+    }
+}
+
+/// Adds to each sample of `output` the § 7.20.5 residual of its `err` in
+/// `errors`, 16 samples at a time.
+fn add_errors<S: Simd, O: GdfSample>(simd: S, errors: &[i8], output: &mut [O], block: &GdfBlock) {
+    let (errors, _) = errors.as_chunks::<16>();
+    let (output, _) = output.as_chunks_mut::<16>();
+    for (errors, output) in errors.iter().zip(output) {
+        let (low, high) = simd.widen_i8x16(i8x16::from_slice(simd, errors));
+        apply_errors(simd, simd.combine_i16x8(low, high), output, block);
+    }
 }
 
 /// [`sym_rows_with`] through the target's widest kernel.
 #[inline(never)]
-pub(super) fn sym_rows(
+pub(super) fn sym_rows<O: GdfSample>(
     window: &Window<'_>,
-    output: [&mut [u16; 16]; 2],
+    output: [&mut [O; 16]; 2],
     classes: &[GdfClass; 8],
     block: &GdfBlock,
     params: &GdfSymParams,
@@ -810,9 +970,9 @@ pub(super) fn sym_rows(
 }
 
 /// [`sym_rows_with`] through the portable kernel.
-pub(super) fn sym_rows_interleaved(
+pub(super) fn sym_rows_interleaved<O: GdfSample>(
     window: &Window<'_>,
-    output: [&mut [u16; 16]; 2],
+    output: [&mut [O; 16]; 2],
     classes: &[GdfClass; 8],
     block: &GdfBlock,
     params: &GdfSymParams,
@@ -830,11 +990,11 @@ pub(super) fn sym_rows_interleaved(
 
 /// Filters in place `width` samples (at most 16) from column `x` of a row
 /// pair through `sym_rows`, on copies padded to 16 lanes.
-pub(super) fn sym_rows_narrow(
+pub(super) fn sym_rows_narrow<O: GdfSample>(
     rows: &[&[u16]; WINDOW_ROWS],
     x: usize,
     width: usize,
-    [top, bottom]: [&mut [u16]; 2],
+    [top, bottom]: [&mut [O]; 2],
     classes: &[GdfClass],
     block: &GdfBlock,
     params: &GdfSymParams,
@@ -850,7 +1010,7 @@ pub(super) fn sym_rows_narrow(
         .get_mut(..class_count)?
         .copy_from_slice(classes.get(..class_count)?);
     let (top, bottom) = (top.get_mut(..width)?, bottom.get_mut(..width)?);
-    let mut output = [[0; 16]; 2];
+    let mut output = [[O::default(); 16]; 2];
     output[0][..width].copy_from_slice(top);
     output[1][..width].copy_from_slice(bottom);
     let [first, second] = &mut output;
@@ -875,6 +1035,9 @@ type GradChunk = [[u16; 16]; 4];
 #[derive(Default)]
 pub(super) struct ClassScratch {
     pub(super) grads: Vec<GradChunk>,
+    /// A row pair's `err` bytes, two rows of [`ClassScratch::error_row`]
+    /// each, for [`add_errors`].
+    pub(super) errors: Vec<i8>,
 }
 
 impl ClassScratch {
@@ -883,6 +1046,11 @@ impl ClassScratch {
     /// class chunk reads past them.
     pub(super) fn chunks(class_cols: usize) -> usize {
         (2 * class_cols + 2).div_ceil(16) + 1
+    }
+
+    /// The `err` bytes of one row of a run `run` samples wide.
+    pub(super) fn error_row(run: usize) -> usize {
+        run.next_multiple_of(16)
     }
 }
 
@@ -912,27 +1080,44 @@ fn gradients<S: Simd>(simd: S, rows: [&[u16; 18]; 3]) -> [i16x16<S>; 4] {
 fn gradient_row<S: Simd>(simd: S, rows: &[&[u16]; 4], out: &mut [GradChunk]) -> Option<()> {
     for (chunk, out) in out.iter_mut().enumerate() {
         let start = 16 * chunk;
-        let mut padded = [[0; 18]; 4];
-        let chunks = if rows.iter().all(|row| row.len() >= start + 18) {
-            let mut chunks = [&[0; 18]; 4];
-            for (chunk, row) in chunks.iter_mut().zip(rows) {
-                *chunk = row.get(start..)?.first_chunk::<18>()?;
-            }
-            chunks
+        let chunks = rows.map(|row| row.get(start..).and_then(<[u16]>::first_chunk::<18>));
+        if let [Some(a), Some(b), Some(c), Some(d)] = chunks {
+            pair_gradients(simd, [a, b, c, d], out);
         } else {
-            for (padded, row) in padded.iter_mut().zip(rows) {
-                let tail = row.get(start..).unwrap_or_default();
-                padded.get_mut(..tail.len())?.copy_from_slice(tail);
-            }
-            padded.each_ref()
-        };
-        let first = gradients(simd, [chunks[0], chunks[1], chunks[2]]);
-        let second = gradients(simd, [chunks[1], chunks[2], chunks[3]]);
-        for ((out, first), second) in out.iter_mut().zip(first).zip(second) {
-            (first + second).bitcast::<u16x16<S>>().store_array(out);
+            padded_gradients(simd, rows, start, out)?;
         }
     }
     Some(())
+}
+
+/// [`gradient_row`] for one chunk whose rows end before its reach, on
+/// zero-padded copies; out of line, so that the padding is only built here.
+#[inline(never)]
+fn padded_gradients<S: Simd>(
+    simd: S,
+    rows: &[&[u16]; 4],
+    start: usize,
+    out: &mut GradChunk,
+) -> Option<()> {
+    let mut padded = [[0; 18]; 4];
+    for (padded, row) in padded.iter_mut().zip(rows) {
+        let tail = row.get(start..).unwrap_or_default();
+        let tail = tail.get(..tail.len().min(18))?;
+        padded.get_mut(..tail.len())?.copy_from_slice(tail);
+    }
+    pair_gradients(simd, padded.each_ref(), out);
+    Some(())
+}
+
+/// The gradients of one chunk of a gradient row pair, summed over its rows.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn pair_gradients<S: Simd>(simd: S, chunks: [&[u16; 18]; 4], out: &mut GradChunk) {
+    let first = gradients(simd, [chunks[0], chunks[1], chunks[2]]);
+    let second = gradients(simd, [chunks[1], chunks[2], chunks[3]]);
+    for ((out, first), second) in out.iter_mut().zip(first).zip(second) {
+        (first + second).bitcast::<u16x16<S>>().store_array(out);
+    }
 }
 
 /// The direction gradients of a chunk summed over two gradient row pairs.
@@ -1019,11 +1204,11 @@ fn class_tables(block: &GdfBlock) -> [[i16; 16]; 4] {
 /// `block.base_stride` apart, the run at column `block.x`) whose top-left
 /// source sample sits at `origin`: per row pair it fills the next gradient
 /// row pair, then classifies and filters each 16-column chunk in one pass.
-pub(super) fn filter_run(
+pub(super) fn filter_run<O: GdfSample>(
     source: &GdfSource<'_>,
     origin: (usize, usize),
     block: &GdfBlock,
-    output: &mut [u16],
+    output: &mut [O],
     scratch: &mut ClassScratch,
 ) -> Option<()> {
     #[cfg(target_arch = "x86_64")]
@@ -1037,13 +1222,13 @@ pub(super) fn filter_run(
 
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn filter_run_with<S: Simd, L: Lanes<S>>(
+fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
     simd: S,
     lanes: L,
     source: &GdfSource<'_>,
     origin: (usize, usize),
     block: &GdfBlock,
-    output: &mut [u16],
+    output: &mut [O],
     scratch: &mut ClassScratch,
 ) -> Option<()> {
     let (run, class_cols) = (block.width, block.width >> 1);
@@ -1053,6 +1238,8 @@ fn filter_run_with<S: Simd, L: Lanes<S>>(
     let chunks = ClassScratch::chunks(class_cols);
     let (first, second) = scratch.grads.get_mut(..2 * chunks)?.split_at_mut(chunks);
     let buffers = [first, second];
+    let error_row = ClassScratch::error_row(run);
+    let mut errors = scratch.errors.get_mut(..2 * error_row);
     let tables = class_tables(block);
     let params = GdfSymParams::new(block);
     let grad_rows = |row_pair: usize| gradient_source_rows(source, origin, class_cols, row_pair);
@@ -1061,12 +1248,19 @@ fn filter_run_with<S: Simd, L: Lanes<S>>(
         let (current, previous) = ((row_pair + 1) & 1, row_pair & 1);
         gradient_row(simd, &grad_rows(row_pair + 1)?, buffers[current])?;
         let (current, previous) = (&*buffers[current], &*buffers[previous]);
-        let window_rows = source_rows(
-            source,
-            (origin.0, origin.1 + 2 * row_pair),
-            run + 2 * TAP_REACH,
-        )
-        .ok()?;
+        let window_rows = || {
+            source_rows(
+                source,
+                (origin.0, origin.1 + 2 * row_pair),
+                run + 2 * TAP_REACH,
+            )
+            .ok()
+        };
+        let tiled_base = (origin.1 + 2 * row_pair)
+            .checked_sub(TAP_REACH)
+            .zip(origin.0.checked_sub(TAP_REACH))
+            .filter(|_| source.stride == TILE_STRIDE)
+            .map(|(row, col)| row * TILE_STRIDE + col);
         let start = (2 * row_pair * block.base_stride).checked_add(block.x)?;
         let (top, bottom) = output
             .get_mut(start..)?
@@ -1074,14 +1268,55 @@ fn filter_run_with<S: Simd, L: Lanes<S>>(
         let (top, bottom) = (top.get_mut(..run)?, bottom.get_mut(..run)?);
         let mut next = pair_sum(simd, current.first()?, previous.first()?);
         let mut grads = current.iter().zip(previous).skip(1);
+        let mut deferred = errors
+            .as_deref_mut()
+            .map(|errors| errors.split_at_mut(error_row));
+        let mut deferred_end = 0;
         for x in (0..run).step_by(16) {
             let (current, previous) = grads.next()?;
             let sums = next;
             next = pair_sum(simd, current, previous);
             let classes = classify_chunk(simd, sums, next, &tables);
             let width = (run - x).min(16);
+            let tiled = tiled_base
+                .and_then(|base| source.samples.get(base + x..))
+                .and_then(<[u16]>::first_chunk::<TILE_SPAN>);
+            let deferred = deferred
+                .as_mut()
+                .filter(|_| width == 16)
+                .and_then(|(top, bottom)| {
+                    deferred_end = x + 16;
+                    Some([
+                        top.get_mut(x..)?.first_chunk_mut::<16>()?,
+                        bottom.get_mut(x..)?.first_chunk_mut::<16>()?,
+                    ])
+                });
+            match (tiled, deferred) {
+                (Some(span), Some(errors)) => {
+                    let sink = ErrorRows(errors);
+                    sym_rows_with(
+                        simd,
+                        lanes,
+                        &TiledWindow(span),
+                        sink,
+                        classes,
+                        block,
+                        &params,
+                    );
+                    continue;
+                }
+                (None, Some(errors)) => ErrorRows(errors).keep(simd),
+                (_, None) => {}
+            }
             if width == 16
-                && let Some(window) = window_at::<28>(&window_rows, x)
+                && let Some(span) = tiled
+            {
+                let top = top.get_mut(x..)?.first_chunk_mut::<16>()?;
+                let bottom = bottom.get_mut(x..)?.first_chunk_mut::<16>()?;
+                let window = TiledWindow(span);
+                sym_rows_with(simd, lanes, &window, [top, bottom], classes, block, &params);
+            } else if width == 16
+                && let Some(window) = window_at::<28>(&window_rows()?, x)
             {
                 let top = top.get_mut(x..)?.first_chunk_mut::<16>()?;
                 let bottom = bottom.get_mut(x..)?.first_chunk_mut::<16>()?;
@@ -1089,8 +1324,18 @@ fn filter_run_with<S: Simd, L: Lanes<S>>(
             } else {
                 let classes = classes.to_array().map(GdfClass);
                 let output = [&mut top[x..], &mut bottom[x..]];
-                sym_rows_narrow(&window_rows, x, width, output, &classes, block, &params)?;
+                sym_rows_narrow(&window_rows()?, x, width, output, &classes, block, &params)?;
             }
+        }
+        if let Some((top_errors, bottom_errors)) = deferred {
+            let end = deferred_end;
+            add_errors(simd, top_errors.get(..end)?, top.get_mut(..end)?, block);
+            add_errors(
+                simd,
+                bottom_errors.get(..end)?,
+                bottom.get_mut(..end)?,
+                block,
+            );
         }
     }
     Some(())

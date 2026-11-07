@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use fearless_simd::{Simd, i8x16, i16x16, prelude::*, u8x16, u16x16};
+use fearless_simd::{Simd, i8x16, i8x32, i16x16, prelude::*, u8x16, u8x32, u16x16};
 
 use splot_core::headers::frame::{CcsoPlaneParams, FrameHeaderCore, ccso_quant_step};
 use splot_recon::{BitDepth, PlaneId, ReconSample};
@@ -712,11 +712,94 @@ fn ccso_lanes_span<S: Simd, L: ReconSample, const SUB_X: usize>(
         )
     };
     let mut x = first;
+    if L::u8_slice(centers).is_some() && count >= 2 {
+        let tables = tables.map(|table| simd.combine_u8x16(table, table));
+        let quant_step = u8x32::splat(simd, config.quant_step.clamp(0, 255) as u8);
+        let edge = |source: u8x32<S>, centers: u8x32<S>, weight: usize| {
+            let (weight, zero) = (u8x32::splat(simd, weight as u8), u8x32::splat(simd, 0));
+            let class = source
+                .saturating_add(quant_step)
+                .simd_ge(centers)
+                .select(weight, zero);
+            if config.edge_clf {
+                return class;
+            }
+            class
+                + source
+                    .simd_gt(centers.saturating_add(quant_step))
+                    .select(weight, zero)
+        };
+        let luma = |row: &[L]| -> Option<u8x32<S>> {
+            let row = L::u8_slice(row)?;
+            let low = u8x32::from_slice(simd, row.get(..2 * CCSO_LANES)?);
+            if SUB_X == 0 {
+                return Some(low);
+            }
+            let high = u8x32::from_slice(simd, row.get(2 * CCSO_LANES..4 * CCSO_LANES)?);
+            Some(simd.unzip_low_u8x32(low, high))
+        };
+        let wide_lanes = centers
+            .chunks_exact(2 * step)
+            .zip(taps0.chunks_exact(2 * step))
+            .zip(taps1.chunks_exact(2 * step))
+            .zip(outputs.chunks_exact_mut(2 * CCSO_LANES));
+        for (((centers, taps0), taps1), output) in wide_lanes {
+            let (Some(centers), Some(row0), Some(row1)) = (luma(centers), luma(taps0), luma(taps1))
+            else {
+                break;
+            };
+            let mut index = match config.band_shift {
+                shift @ 0..8 => centers >> u32::from(shift),
+                _ => u8x32::splat(simd, 0),
+            };
+            if offset_rows.is_some() {
+                index =
+                    index + edge(row0, centers, class_weight0) + edge(row1, centers, class_weight1);
+            }
+            let (low, signed) = (index & 15, index.bitcast::<i8x32<S>>());
+            let block = |offset: u8x32<S>, block: usize| {
+                let entries = simd.swizzle_dyn_within_blocks_u8x32(tables[block], low);
+                signed
+                    .simd_gt(i8x32::splat(simd, 16 * block as i8 - 1))
+                    .select(entries, offset)
+            };
+            let mut offset = simd.swizzle_dyn_within_blocks_u8x32(tables[0], low);
+            if blocks > 1 {
+                offset = block(offset, 1);
+                if blocks > 2 {
+                    offset = block(offset, 2);
+                    if blocks > 3 {
+                        offset = block(offset, 3);
+                        if blocks > 4 {
+                            offset = block(offset, 4);
+                        }
+                    }
+                }
+            }
+            let (low, high) = simd.widen_i8x32(offset.bitcast::<i8x32<S>>());
+            for (output, offset) in output.chunks_exact_mut(CCSO_LANES).zip([low, high]) {
+                (u16x16::from_slice(simd, output).bitcast::<i16x16<S>>() + offset)
+                    .max(i16x16::splat(simd, 0))
+                    .min(max_sample)
+                    .bitcast::<u16x16<S>>()
+                    .store_slice(output);
+            }
+            x += 2 * CCSO_LANES;
+        }
+    }
+    let done = (x - first) / CCSO_LANES * step;
     let lanes = centers
+        .get(done..)
+        .unwrap_or_default()
         .chunks_exact(step)
-        .zip(taps0.chunks_exact(step))
-        .zip(taps1.chunks_exact(step))
-        .zip(outputs.chunks_exact_mut(CCSO_LANES));
+        .zip(taps0.get(done..).unwrap_or_default().chunks_exact(step))
+        .zip(taps1.get(done..).unwrap_or_default().chunks_exact(step))
+        .zip(
+            outputs
+                .get_mut(x - first..)
+                .unwrap_or_default()
+                .chunks_exact_mut(CCSO_LANES),
+        );
     for (((centers, taps0), taps1), output) in lanes {
         let Some(output) = output.first_chunk_mut::<CCSO_LANES>() else {
             break;
