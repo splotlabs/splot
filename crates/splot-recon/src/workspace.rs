@@ -66,7 +66,6 @@ macro_rules! contiguous_rect_writer {
             if clipped != rect {
                 return Ok(None);
             }
-            self.rect_rows(plane, rect)?;
             let (samples, stride, local_x, local_y) = match self {
                 Self::Frame(workspace) => {
                     let target = workspace.plane_mut(plane)?;
