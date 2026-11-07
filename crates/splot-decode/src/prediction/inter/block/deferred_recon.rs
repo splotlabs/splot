@@ -527,6 +527,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn reconstruct(
         &mut self,
         command: &mut InterReconCommand,

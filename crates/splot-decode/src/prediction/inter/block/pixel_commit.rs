@@ -212,7 +212,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                             workspace,
                             block_decoded,
                             &mut folded,
-                            LeafResiduals {
+                            &mut LeafResiduals {
                                 planes: if shared_coefficients {
                                     &mut plane_scratch
                                 } else {
@@ -311,7 +311,7 @@ pub(super) fn reconstruct_command<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &mut TileBlockDecodedState,
     folded: &mut Vec<super::TemporalMotionBlock>,
-    residuals: LeafResiduals<'_>,
+    residuals: &mut LeafResiduals<'_>,
     shared: &deferred_recon::ReconShared<'_, T>,
 ) -> Result<()> {
     match command {
