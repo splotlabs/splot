@@ -120,7 +120,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     )?;
     block_ctx.ref_frame0 = pair.0;
     block_ctx.ref_frame1 = Some(pair.1);
-    let mode_ctx = find_mode_ctx_with_tip(mv_grid, block_ctx, tip_ref_pair);
+    let mode_ctx = mode_ctx_from_neighbours(mv_grid, block_ctx, tip_ref_pair, neighbour_ctx);
     let mut compound = read_compound_mode_syntax(
         cdfs,
         symbols,

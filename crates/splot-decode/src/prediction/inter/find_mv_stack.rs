@@ -326,12 +326,25 @@ pub(crate) fn find_mode_ctx_with_tip(
     block: &MvBlockContext,
     tip_ref_pair: Option<(i8, i8)>,
 ) -> ModeContext {
+    let neighbours = block_neighbour_ctx(grid, block);
+    mode_ctx_from_neighbours(grid, block, tip_ref_pair, &neighbours)
+}
+
+/// [`find_mode_ctx_with_tip`] reusing the immediate neighbours that
+/// [`block_neighbour_ctx`] read for the same block position.
+pub(crate) fn mode_ctx_from_neighbours(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    tip_ref_pair: Option<(i8, i8)>,
+    neighbours: &BlockNeighbourContext,
+) -> ModeContext {
     let mut new_mv_count = 0usize;
     let mut warp_mv_count = 0usize;
     let mut found = [false; 4];
+    let immediate = neighbours.immediate;
 
-    for (slot, probe) in found.iter_mut().zip(immediate_spatial_probes(block)) {
-        let Some(cell) = probe.flags(grid, block) else {
+    for (slot, cell) in found.iter_mut().zip(immediate.iter()) {
+        let Some(cell) = *cell else {
             continue;
         };
         let Some(is_newmv) = mode_ctx_match_newmv(cell, block, tip_ref_pair) else {
@@ -345,8 +358,18 @@ pub(crate) fn find_mode_ctx_with_tip(
     let mut warp_sample_found = false;
     let mut warp_sample_found1 = false;
     let mut extend_delta = (0, 0);
-    for probe in warp_context_spatial_probes(block).into_iter().flatten() {
-        let Some(cell) = probe.warp_context_flags(grid, block) else {
+    let is_sb_border = block.is_sb_border();
+    let probes = warp_context_spatial_probes(block);
+    for index in 0..4 {
+        let Some(probe) = probes[index] else {
+            continue;
+        };
+        let cell = if index & 1 == 0 || !is_sb_border {
+            immediate[index]
+        } else {
+            probe.warp_context_flags(grid, block)
+        };
+        let Some(cell) = cell else {
             continue;
         };
         if matches_block_ref(cell, block) {
@@ -387,6 +410,8 @@ pub(crate) struct BlockNeighbourContext {
     cell_count: usize,
     npos_cells: [NeighbourFlags; 2],
     npos_count: usize,
+    /// Flags at the four `immediate_spatial_probes`.
+    immediate: [Option<NeighbourFlags>; 4],
 }
 
 impl BlockNeighbourContext {
@@ -652,6 +677,7 @@ pub(crate) fn block_neighbour_ctx(
         cell_count: num_buf,
         npos_cells: lists.npos,
         npos_count: lists.npos_len,
+        immediate: lists.immediate,
     }
 }
 
@@ -681,6 +707,7 @@ struct NeighbourContextLists {
     buf_len: usize,
     npos: [NeighbourFlags; 2],
     npos_len: usize,
+    immediate: [Option<NeighbourFlags>; 4],
 }
 
 fn collect_neighbour_context_cells(
@@ -692,18 +719,22 @@ fn collect_neighbour_context_cells(
         buf_len: 0,
         npos: [EMPTY_NEIGHBOUR_FLAGS; 2],
         npos_len: 0,
+        immediate: [None; 4],
     };
 
-    for probe in immediate_spatial_probes(block) {
+    let probes = immediate_spatial_probes(block);
+    let is_sb_border = block.is_sb_border();
+    for (index, probe) in probes.iter().enumerate() {
         let Some(cell) = probe.flags(grid, block) else {
             continue;
         };
-        if lists.buf_len < lists.buf.len() {
+        lists.immediate[index] = Some(cell);
+        if lists.buf_len < 2 {
             lists.buf[lists.buf_len] = cell;
             lists.buf_len += 1;
         }
-        let above_sb_boundary = probe.delta_row < 0 && block.is_sb_border();
-        if !above_sb_boundary && lists.npos_len < lists.npos.len() {
+        let above_sb_boundary = probe.delta_row < 0 && is_sb_border;
+        if !above_sb_boundary && lists.npos_len < 2 {
             lists.npos[lists.npos_len] = cell;
             lists.npos_len += 1;
         }
@@ -1393,11 +1424,11 @@ pub(crate) fn find_mv_stack_with_temporal(
     }
 
     let probes = mv_stack_spatial_probes(block);
-    for probe in probes.iter().take(6).copied().flatten() {
+    for probe in probes[..6].iter().flatten() {
         scan_mv_stack_probe(
             grid,
             block,
-            probe,
+            *probe,
             &mut entries,
             &mut prune_count,
             &mut derived,
@@ -1582,60 +1613,66 @@ fn scan_compound_mv_stack_probe(
     temporal: Option<&TemporalMvContext>,
     state: &mut CompoundScanState,
 ) {
-    let Some((cell, weight, _)) = probe.stack_cell(grid, block) else {
-        return;
-    };
     let Some(ref_frame1) = block.ref_frame1 else {
         return;
     };
-    if !cell.flags.is_inter() {
+    let (row, col, delta_col) = probe.stack_target(block);
+    let Some(leaf) = grid.scan_leaf(row, col) else {
+        return;
+    };
+    let flags = leaf.flags;
+    if !flags.is_inter() {
         return;
     }
-    let candidate =
-        if cell.flags.ref_frame0 == block.ref_frame0 && cell.flags.ref_frame1 == Some(ref_frame1) {
-            let sub_mvs = [cell.motion.sub_mv, cell.motion.sub_mv1];
-            CompoundMvCandidate {
-                mvs: core::array::from_fn(|list| {
-                    if cell.motion.is_global_mv(list) {
-                        state.global_mvs[list]
-                    } else {
-                        sub_mvs[list]
-                    }
-                }),
-                cwp_weight: cell.motion.cwp_weight,
-            }
-        } else if cell.flags.ref_frame0 == TIP_REF_FRAME {
-            let Some(temporal) = temporal else {
-                return;
-            };
-            let Some(tip_refs) = temporal.tip_references() else {
-                return;
-            };
-            if cell.flags.ref_frame1.is_some()
-                || (tip_refs.past_ref, tip_refs.future_ref) != (block.ref_frame0, ref_frame1)
-            {
-                return;
-            }
-            let Some(mvs) = temporal.tip_spatial_mvs(grid, block, probe, &cell) else {
-                return;
-            };
-            CompoundMvCandidate {
-                mvs,
-                cwp_weight: CWP_EQUAL,
-            }
-        } else {
-            state.derived.add_spatial(
-                block,
-                [
-                    Some((cell.flags.ref_frame0, cell.motion.sub_mv)),
-                    cell.flags.ref_frame1.map(|r| (r, cell.motion.sub_mv1)),
-                ],
-                [cell.motion.is_global_mv(0), cell.motion.is_global_mv(1)],
-                state.global_mvs,
-                temporal,
-            );
+    let zero_weight = (probe.delta_row == -1 && delta_col == -1) || delta_col < -1;
+    let weight = u32::from(!zero_weight);
+    let candidate = if flags.ref_frame0 == block.ref_frame0 && flags.ref_frame1 == Some(ref_frame1)
+    {
+        CompoundMvCandidate {
+            mvs: core::array::from_fn(|list| {
+                if leaf.is_global_mv(list) {
+                    state.global_mvs[list]
+                } else {
+                    leaf.sub_mvs[list]
+                }
+            }),
+            cwp_weight: leaf.cwp_weight,
+        }
+    } else if flags.ref_frame0 == TIP_REF_FRAME {
+        let Some(temporal) = temporal else {
             return;
         };
+        let Some(tip_refs) = temporal.tip_references() else {
+            return;
+        };
+        if flags.ref_frame1.is_some()
+            || (tip_refs.past_ref, tip_refs.future_ref) != (block.ref_frame0, ref_frame1)
+        {
+            return;
+        }
+        let Some(mvs) = grid
+            .get(row, col)
+            .and_then(|cell| temporal.tip_spatial_mvs(grid, block, probe, &cell))
+        else {
+            return;
+        };
+        CompoundMvCandidate {
+            mvs,
+            cwp_weight: CWP_EQUAL,
+        }
+    } else {
+        state.derived.add_spatial(
+            block,
+            [
+                Some((flags.ref_frame0, leaf.sub_mvs[0])),
+                flags.ref_frame1.map(|r| (r, leaf.sub_mvs[1])),
+            ],
+            [leaf.is_global_mv(0), leaf.is_global_mv(1)],
+            state.global_mvs,
+            temporal,
+        );
+        return;
+    };
     insert_compound_mv_stack_entry(
         &mut state.entries,
         &mut state.prune_count,
@@ -1758,6 +1795,11 @@ fn scan_mv_stack_col(
     }
 }
 
+#[allow(
+    clippy::inline_always,
+    reason = "measured: keeps the stack state in registers across probes"
+)]
+#[inline(always)]
 fn scan_mv_stack_probe(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
@@ -1767,11 +1809,17 @@ fn scan_mv_stack_probe(
     derived: &mut DerivedMvState<'_>,
     warp: Option<&mut WarpParamStack>,
 ) {
-    let Some((cell, weight, adjusted_delta_col)) = probe.stack_cell(grid, block) else {
+    let (row, col, adjusted_delta_col) = probe.stack_target(block);
+    let Some(leaf) = grid.scan_leaf(row, col) else {
         return;
     };
-
-    if let Some(warp) = warp {
+    let flags = leaf.flags;
+    if let Some(warp) = warp
+        && flags.is_inter()
+        && flags.is_warp()
+        && flags.ref_frame0 == block.ref_frame0
+        && let Some(cell) = grid.get(row, col)
+    {
         warp.add_scan_point(&cell, block);
     }
 
@@ -1779,37 +1827,64 @@ fn scan_mv_stack_probe(
         return;
     }
 
+    let zero_weight =
+        (probe.delta_row == -1 && adjusted_delta_col == -1) || adjusted_delta_col < -1;
+    let weight = u32::from(!zero_weight);
     let offsets = (probe.delta_row, adjusted_delta_col);
-    if cell.flags.ref_frame0 == TIP_REF_FRAME
-        && cell.flags.ref_frame1.is_none()
+    if flags.ref_frame0 == TIP_REF_FRAME
+        && flags.ref_frame1.is_none()
         && block.ref_frame0 != TIP_REF_FRAME
-        && let Some(temporal) = derived.temporal()
-        && let Some(candidates) = temporal.tip_spatial_single_candidates(grid, block, probe, &cell)
     {
-        for (candidate_ref, candidate_mv) in candidates {
-            if candidate_ref == block.ref_frame0 {
-                insert_mv_stack_entry(entries, prune_count, candidate_mv, weight, offsets);
-            } else {
-                derived.add_spatial(block, candidate_ref, candidate_mv, &cell);
-            }
-        }
+        scan_tip_spatial_probe(grid, block, probe, entries, prune_count, derived, weight);
     }
-    let candidates = [
-        Some((cell.flags.ref_frame0, cell.motion.sub_mv, 0)),
-        cell.flags
-            .ref_frame1
-            .map(|ref_frame1| (ref_frame1, cell.motion.sub_mv1, 1)),
-    ];
-    for (candidate_ref, candidate_mv, list) in candidates.into_iter().flatten() {
+    for (list, candidate_ref) in [(0, Some(flags.ref_frame0)), (1, flags.ref_frame1)] {
+        let Some(candidate_ref) = candidate_ref else {
+            continue;
+        };
+        let candidate_mv = leaf.sub_mvs[list];
         if candidate_ref == block.ref_frame0 {
-            let candidate_mv = if cell.motion.is_global_mv(list) {
+            let candidate_mv = if leaf.is_global_mv(list) {
                 derived.global_mv()
             } else {
                 candidate_mv
             };
             insert_mv_stack_entry(entries, prune_count, candidate_mv, weight, offsets);
         } else if candidate_ref >= 0 && candidate_ref != TIP_REF_FRAME {
-            derived.add_spatial(block, candidate_ref, candidate_mv, &cell);
+            derived.add_spatial(block, candidate_ref, candidate_mv, flags, leaf.sub_mvs);
+        }
+    }
+}
+
+/// The § 7.12.2.15 candidates of a TIP neighbour of a non-TIP block.
+#[inline(never)]
+fn scan_tip_spatial_probe(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    probe: RelativeProbe,
+    entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
+    prune_count: &mut usize,
+    derived: &mut DerivedMvState<'_>,
+    weight: u32,
+) {
+    let Some((cell, _, adjusted_delta_col)) = probe.stack_cell(grid, block) else {
+        return;
+    };
+    let offsets = (probe.delta_row, adjusted_delta_col);
+    if let Some(temporal) = derived.temporal()
+        && let Some(candidates) = temporal.tip_spatial_single_candidates(grid, block, probe, &cell)
+    {
+        for (candidate_ref, candidate_mv) in candidates {
+            if candidate_ref == block.ref_frame0 {
+                insert_mv_stack_entry(entries, prune_count, candidate_mv, weight, offsets);
+            } else {
+                derived.add_spatial(
+                    block,
+                    candidate_ref,
+                    candidate_mv,
+                    cell.flags,
+                    [cell.motion.sub_mv, cell.motion.sub_mv1],
+                );
+            }
         }
     }
 }
@@ -2046,10 +2121,54 @@ pub(crate) fn warp_sub_mv_at(
     let src_x = (block_c * 4 + j8 * 8 + 4) as i32;
     let src_y = (block_r * 4 + i8 * 8 + 4) as i32;
     let (row, col) = projected_warp_mv(params, src_x, src_y);
+    rounded_warp_sub_mv(row, col)
+}
+
+/// [`warp_sub_mv_at`] along one row of 8x8 cells, stepping the projection.
+#[derive(Clone, Copy)]
+pub(super) struct WarpSubMvWalk {
+    row: i64,
+    col: i64,
+    step_row: i64,
+    step_col: i64,
+}
+
+impl WarpSubMvWalk {
+    /// The walk over cell row `i8` of a block at `(block_r, block_c)`.
+    pub(super) fn new(params: [i32; 6], block_r: usize, block_c: usize, i8: usize) -> Self {
+        let src_x = (block_c * 4 + 4) as i32;
+        let src_y = (block_r * 4 + i8 * 8 + 4) as i32;
+        let (row, col) = projected_warp_mv(params, src_x, src_y);
+        Self {
+            row,
+            col,
+            step_row: 8 * i64::from(params[4]),
+            step_col: 8 * (i64::from(params[2]) - (1i64 << WARPEDMODEL_PREC_BITS)),
+        }
+    }
+
+    /// The sub-MV of the next cell.
+    pub(super) fn next(&mut self) -> Mv {
+        let mv = rounded_warp_sub_mv(self.row, self.col);
+        self.row += self.step_row;
+        self.col += self.step_col;
+        mv
+    }
+}
+
+/// `Round2Signed(value, WARPEDMODEL_PREC_BITS - 3)` of a projected position.
+const fn round_warp_projection(value: i64) -> i64 {
+    const SHIFT: u32 = WARPEDMODEL_PREC_BITS - 3;
+    let magnitude = ((value.unsigned_abs() + (1 << (SHIFT - 1))) >> SHIFT) as i64;
+    if value < 0 { -magnitude } else { magnitude }
+}
+
+/// [`round_warp_projection`] of a projected sub-MV, clamped.
+fn rounded_warp_sub_mv(row: i64, col: i64) -> Mv {
     let bound = (1 << 16) - 1;
     Mv {
-        row: round2_signed(row, WARPEDMODEL_PREC_BITS - 3).clamp(-bound, bound) as i32,
-        col: round2_signed(col, WARPEDMODEL_PREC_BITS - 3).clamp(-bound, bound) as i32,
+        row: round_warp_projection(row).clamp(-bound, bound) as i32,
+        col: round_warp_projection(col).clamp(-bound, bound) as i32,
     }
 }
 
@@ -2074,8 +2193,8 @@ fn warp_motion_vector_at(
     let (row, col) = projected_warp_mv(params, x, y);
     clip_and_clamp_projected_mv(
         block,
-        round2_signed(row, WARPEDMODEL_PREC_BITS - 3),
-        round2_signed(col, WARPEDMODEL_PREC_BITS - 3),
+        round_warp_projection(row),
+        round_warp_projection(col),
     )
 }
 
