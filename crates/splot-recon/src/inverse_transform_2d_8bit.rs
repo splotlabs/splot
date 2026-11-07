@@ -22,9 +22,7 @@ use fearless_simd::{
 };
 
 #[cfg(target_arch = "x86_64")]
-use core::arch::x86_64::{__m256i, _mm256_packs_epi32, _mm256_setr_epi8, _mm256_shuffle_epi8};
-#[cfg(target_arch = "x86_64")]
-use fearless_simd::{Avx2, SimdInto as _};
+use fearless_simd::Avx2;
 use splot_tables::tables::transform_1d::{
     ADST_KERNEL4, ADST_KERNEL8, ADST_KERNEL16, DCT_KERNEL4, DCT_KERNEL8, DCT_KERNEL16,
     DCT_KERNEL32, DDTX_KERNEL8, DDTX_KERNEL16, FDST_KERNEL4, FDST_KERNEL8, FDST_KERNEL16,
@@ -33,6 +31,9 @@ use splot_tables::tables::transform_1d::{
 use crate::dequant_process::{dequant_coefficient, dequant_lanes};
 use crate::inverse_transform::InverseTransform1dType;
 use crate::inverse_transform_2d::InverseTransform2dDim;
+
+#[cfg(target_arch = "x86_64")]
+mod avx2;
 
 /// Entry `[q][i]` packs `kernel[2q][i]` (low half) and `kernel[2q + 1][i]`
 /// (high half), with the output index reversed for `FDDT`.
@@ -308,7 +309,14 @@ pub(crate) fn inverse_transform_2d_8bit(
     residual: &mut [i32],
     scratch: &mut [i32; 32 * 32],
 ) -> bool {
-    residual.len() == t.w * t.h && run(t, dequant, residual, scratch)
+    if residual.len() != t.w * t.h {
+        return false;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = Level::baseline().as_avx2() {
+        return run_avx2(token, t, dequant, avx2::Sink::Residual(residual), scratch);
+    }
+    run(t, dequant, residual, scratch)
 }
 
 /// [`inverse_transform_2d_8bit`] added in place to the `w * h` 8-bit block
@@ -324,18 +332,105 @@ pub(crate) fn inverse_transform_add_8bit(
         .checked_mul(stride)
         .and_then(|span| span.checked_add(t.w))
         .is_some_and(|span| stride >= t.w && span <= dst.len());
+    if !fits || t.h < 2 {
+        return false;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = Level::baseline().as_avx2() {
+        return run_avx2(token, t, dequant, avx2::Sink::Add { dst, stride }, scratch);
+    }
     let chunks_log2 = (t.w >= 8).then(|| (t.w / 8).trailing_zeros());
-    fits && t.h >= 2
-        && run(
-            t,
-            dequant,
-            &mut AddU8 {
-                dst,
-                stride,
-                chunks_log2,
-            },
-            scratch,
-        )
+    run(
+        t,
+        dequant,
+        &mut AddU8 {
+            dst,
+            stride,
+            chunks_log2,
+        },
+        scratch,
+    )
+}
+
+/// Whether `t` and `dequant` have a paired form.
+fn valid(t: &Transform8, dequant: &[i32]) -> bool {
+    let shifts = 1..=20u8;
+    shifts.contains(&t.row_shift)
+        && shifts.contains(&t.col_shift)
+        && dequant.len() <= t.w * t.h
+        && matches!(t.w, 4 | 8 | 16 | 32)
+        && matches!(t.h, 4 | 8 | 16 | 32)
+}
+
+/// The DC coefficient of a block whose only non-zero coefficient it is.
+fn dc_only(t: &Transform8, dequant: &[i32]) -> Option<i32> {
+    let (&dc, rest) = dequant.split_first()?;
+    (rest.len() < t.w && rest.iter().all(|&coeff| coeff == 0)).then(|| {
+        t.dequant.map_or(dc, |dq| {
+            dequant_coefficient(dc, dq.dc, 1 << dq.denom_shift, crate::BitDepth::Eight)
+        })
+    })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn run_avx2(
+    token: Avx2,
+    t: Transform8,
+    dequant: &[i32],
+    sink: avx2::Sink<'_>,
+    scratch: &mut [i32; 32 * 32],
+) -> bool {
+    use InverseTransform1dType::Dct;
+    if !valid(&t, dequant) {
+        return false;
+    }
+    let row = match t.row {
+        InverseTransform2dDim::Identity => avx2::Row::Identity(identity_scale(t.w)),
+        InverseTransform2dDim::Kernel(tx) if t.w >= 8 && (tx == Dct || t.w == 32) => avx2::Row::Dct,
+        InverseTransform2dDim::Kernel(tx) => match select(t.w, tx) {
+            Some(k) => avx2::Row::Dense(k),
+            None => return false,
+        },
+    };
+    let col = match t.col {
+        InverseTransform2dDim::Identity => avx2::Col::Identity(identity_scale(t.h)),
+        InverseTransform2dDim::Kernel(tx) if tx == Dct || t.h == 32 => avx2::Col::Dct,
+        InverseTransform2dDim::Kernel(tx) => match select(t.h, tx) {
+            Some(k) => avx2::Col::Dense(k),
+            None => return false,
+        },
+    };
+    let dct = InverseTransform2dDim::Kernel(Dct);
+    let flat = dc_only(&t, dequant)
+        .filter(|_| t.row == dct && t.col == dct)
+        .map(|dc| flat_residual(&t, dc));
+    let plan = avx2::Plan {
+        w: t.w,
+        h: t.h,
+        row,
+        col,
+        rescale: t.rescale,
+        row_shift: u32::from(t.row_shift),
+        col_shift: u32::from(t.col_shift),
+        dequant: t.dequant,
+        flat,
+    };
+    avx2::transform(token, &plan, dequant, sink, scratch);
+    true
+}
+
+/// The constant residual of a `DCT` block with only the dequantized `dc`.
+#[cfg(target_arch = "x86_64")]
+fn flat_residual(t: &Transform8, dc: i32) -> i32 {
+    let round = |v: i32, shift: u8| (v + (1 << (shift - 1))) >> shift;
+    let dc = if t.rescale {
+        dc.wrapping_mul(2896).wrapping_add(1 << 11) >> 12
+    } else {
+        dc
+    };
+    let dc = dc.clamp(i16::MIN.into(), i16::MAX.into());
+    let row = round(dc * 64, t.row_shift).clamp(i16::MIN.into(), i16::MAX.into());
+    round(row * 64, t.col_shift).clamp(-256, 255)
 }
 
 fn run<O: Output + ?Sized>(
@@ -344,13 +439,7 @@ fn run<O: Output + ?Sized>(
     residual: &mut O,
     scratch: &mut [i32; 32 * 32],
 ) -> bool {
-    let shifts = 1..=20u8;
-    if !shifts.contains(&t.row_shift)
-        || !shifts.contains(&t.col_shift)
-        || dequant.len() > t.w * t.h
-        || !matches!(t.w, 4 | 8 | 16 | 32)
-        || !matches!(t.h, 4 | 8 | 16 | 32)
-    {
+    if !valid(&t, dequant) {
         return false;
     }
     let kernel = |dim, len| match dim {
@@ -369,15 +458,9 @@ fn run<O: Output + ?Sized>(
     let Some(col) = col else {
         return false;
     };
-    if let Some((&dc, rest)) = dequant.split_first()
-        && rest.len() < t.w
-        && rest.iter().all(|&coeff| coeff == 0)
-    {
-        let dc = t.dequant.map_or(dc, |dq| {
-            dequant_coefficient(dc, dq.dc, 1 << dq.denom_shift, crate::BitDepth::Eight)
-        });
+    if let Some(dc) = dc_only(&t, dequant) {
         let flat = dct(t.row) && dct(t.col);
-        baseline_simd!(simd => dc_only(simd, t, dc, flat, residual));
+        baseline_simd!(simd => dc_only_transform(simd, t, dc, flat, residual));
         return true;
     }
     let plan = Plan {
@@ -508,7 +591,7 @@ fn first_kernel_row(dim: InverseTransform2dDim, len: usize) -> [u32; 32] {
 /// row-kernel row 0 `kr`, and every column sum has the one term
 /// `kc[r] * row0[c]` for column-kernel row 0 `kc`. With `flat` (`DCT` both
 /// ways) every kernel row 0 is constant and so is the residual.
-fn dc_only<S: Simd, O: Output + ?Sized>(
+fn dc_only_transform<S: Simd, O: Output + ?Sized>(
     simd: S,
     t: Transform8,
     dc: i32,
@@ -711,33 +794,8 @@ fn clip_col<S: Simd>(sum: i32x8<S>, shift: u32) -> i32x8<S> {
 /// Rows `a` and `b` of the row `Clip3`, packed `a` low and `b` high.
 #[inline]
 fn pack_rows<S: Simd>(a: i32x8<S>, b: i32x8<S>, shift: u32) -> i32x8<S> {
-    #[cfg(target_arch = "x86_64")]
-    if let Some(token) = Level::baseline().as_avx2() {
-        let (a, b) = (round(a, shift), round(b, shift));
-        let packed = pack_rows_avx2(
-            token,
-            i32x8::from_slice(token, a.as_slice()).into(),
-            i32x8::from_slice(token, b.as_slice()).into(),
-        );
-        let packed: i32x8<Avx2> = packed.simd_into(token);
-        return i32x8::from_slice(a.simd, packed.as_slice());
-    }
     (clip_row(a, shift) & 0xffff) | (clip_row(b, shift) << 16)
 }
-
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    /// `packssdw` saturates both rows to the row `Clip3` within each 128-bit
-    /// lane, and `pshufb` interleaves them column by column.
-    #[inline]
-    fn pack_rows_avx2(token: Avx2, a: __m256i, b: __m256i) -> __m256i {
-        let order = _mm256_setr_epi8(
-            0, 1, 8, 9, 2, 3, 10, 11, 4, 5, 12, 13, 6, 7, 14, 15, 0, 1, 8, 9, 2, 3, 10, 11, 4, 5,
-            12, 13, 6, 7, 14, 15,
-        );
-        _mm256_shuffle_epi8(_mm256_packs_epi32(a, b), order)
-    }
-);
 
 /// The `pshufb` that swaps the middle two samples of every four.
 const SPLIT_ORDER: [u8; 32] = {
