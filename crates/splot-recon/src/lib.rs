@@ -99,7 +99,8 @@ pub use deblock_filter::{
     DeblockEdge, DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,
     deblock_filter_choice, deblock_filter_choice_strided, deblock_filter_max_width,
     deblock_horizontal_edges, deblock_sample_filter, deblock_sample_filter_strided,
-    deblock_sample_filter_strided_4, deblock_side_threshold_index, deblock_vertical_edges,
+    deblock_sample_filter_strided_4, deblock_side_threshold_index, deblock_vertical_edge_column,
+    deblock_vertical_edges,
 };
 pub use dequant::{
     QuantizerDeltas, ac_quantizer, dc_quantizer, max_quantizer_index, quantizer_index,
