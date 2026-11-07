@@ -545,11 +545,56 @@ fn motion_compensate_single_block_into<T: ReconSample>(
     has_chroma: bool,
     offset: ByteOffset,
 ) -> Result<()> {
-    motion_compensate_planes(sink, has_chroma, |sink, plane, sub_x, sub_y| {
-        predict_plane(
-            sink, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
-        )
-    })
+    let info = sink.info();
+    let reference_info = reference.info();
+    let (reference_size, frame_size) = (reference_info.coded_luma_size(), info.coded_luma_size());
+    let scaled = super::mv_scaling::reference_is_scaled(
+        reference_size.width() as i32,
+        reference_size.height() as i32,
+        frame_size.width() as i32,
+        frame_size.height() as i32,
+    );
+    if scaled || T::u8_slice(&[]).is_none() {
+        return motion_compensate_planes(sink, has_chroma, |sink, plane, sub_x, sub_y| {
+            predict_plane(
+                sink, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
+            )
+        });
+    }
+    let storage = reference_info.storage_luma_size();
+    for (plane, sub_x, sub_y) in mc_planes(info.pixel_format()) {
+        if plane != PlaneId::Y && !has_chroma {
+            continue;
+        }
+        let (x, y, w, h) = rect.plane_rect(plane, sub_x, sub_y);
+        let start =
+            |pos: usize, mv: i32, sub: u32| ((((pos as i32) << 4) + ((2 * mv) >> sub)) << 6) + 32;
+        let params = SubpelPredictParams {
+            interp,
+            w,
+            h,
+            start_x: start(x, mv.col, sub_x),
+            start_y: start(y, mv.row, sub_y),
+            step_x: 1 << 10,
+            step_y: 1 << 10,
+            first_x: 0,
+            first_y: 0,
+            last_x: (storage.width().div_ceil(1 << sub_x) - 1) as i32,
+            last_y: (storage.height().div_ceil(1 << sub_y) - 1) as i32,
+            bit_depth: info.bit_depth(),
+        };
+        let view = reference.plane_view(plane, subpel_last_reference_row(&params), offset)?;
+        let target = PlaneRect::new(x, y, w, h)?;
+        let direct = sink.with_contiguous_u8_rect_mut(plane, target, |output, stride| {
+            subpel_predict_block_strided_into_u8(&view, &params, output, stride)
+        })?;
+        if direct.is_none() {
+            predict_plane(
+                sink, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn motion_compensate_planes<T: ReconSample>(
