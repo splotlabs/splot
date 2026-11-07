@@ -262,15 +262,14 @@ pub(crate) fn secondary_inverse_transform_prefix(
     let coefs = &coefs[..n];
     let stx = sec_tx_type - 1;
     let wide = bound > 1 << 15;
-    let (scan_bwl, scan_w) = if large { (3, 8) } else { (2, 4) };
-    let output = &mut dequant[..len];
     let positions: &[u8] = if large {
         OUTPUTS_8X8
-            .get(kernel)
+            .get(usize::from(transpose))
+            .and_then(|sets| sets.get(kernel))
             .and_then(|set| set.get(stx))
             .map_or(&[], |positions| positions.as_slice())
     } else {
-        &OUTPUTS_4X4
+        &OUTPUTS_4X4[usize::from(transpose)]
     };
     let clipped: [i32; IST_8X8_WIDTH] = baseline_simd!(simd => {
         let mut sums = [i32x8::splat(simd, 0); IST_8X8_WIDTH / 8];
@@ -290,30 +289,33 @@ pub(crate) fn secondary_inverse_transform_prefix(
         }
         clipped
     });
-    for (clipped, positions) in clipped
-        .as_chunks::<8>()
-        .0
-        .iter()
-        .zip(positions.as_chunks::<8>().0)
+    let mut tile = [0i32; 64];
+    for (&value, &pos) in clipped.iter().zip(positions) {
+        tile[usize::from(pos) & 63] = value;
+    }
+    for (row, tile) in dequant[..len]
+        .chunks_mut(w)
+        .zip(tile.as_chunks::<8>().0)
+        .take(output_rows)
     {
-        for (&value, &pos) in clipped.iter().zip(positions) {
-            let (x, y) = (
-                usize::from(pos) & (scan_w - 1),
-                usize::from(pos) >> scan_bwl,
-            );
-            let index = if transpose { x * w + y } else { y * w + x };
-            if let Some(slot) = output.get_mut(index) {
-                *slot = value;
+        if large {
+            if let Some(row) = row.first_chunk_mut::<8>() {
+                *row = *tile;
             }
+        } else if let (Some(row), Some(tile)) =
+            (row.first_chunk_mut::<4>(), tile.first_chunk::<4>())
+        {
+            *row = *tile;
         }
     }
     Ok(len)
 }
 
-/// The scan-order position (`y * 8 + x`) of each `Ist_8x8_Kernel` output of
-/// a kernel set and type: `Stx_Scan_Order_8x8[Stx_Scan_Map[kernel][stx][i]]`.
-static OUTPUTS_8X8: [[[u8; IST_8X8_WIDTH]; STX_TYPES - 1]; IST_SET_SIZE_8X8] = {
-    let mut out = [[[0u8; IST_8X8_WIDTH]; STX_TYPES - 1]; IST_SET_SIZE_8X8];
+/// The output-block position, `row * 8 + column` with `[1]` transposed, of
+/// each `Ist_8x8_Kernel` output of a kernel set and type:
+/// `Stx_Scan_Order_8x8[Stx_Scan_Map[kernel][stx][i]]`.
+static OUTPUTS_8X8: [[[[u8; IST_8X8_WIDTH]; STX_TYPES - 1]; IST_SET_SIZE_8X8]; 2] = {
+    let mut out = [[[[0u8; IST_8X8_WIDTH]; STX_TYPES - 1]; IST_SET_SIZE_8X8]; 2];
     let mut index = 0;
     while index < IST_SET_SIZE_8X8 * (STX_TYPES - 1) * IST_8X8_WIDTH {
         let (set, rest) = (
@@ -323,18 +325,23 @@ static OUTPUTS_8X8: [[[u8; IST_8X8_WIDTH]; STX_TYPES - 1]; IST_SET_SIZE_8X8] = {
         let (kind, i) = (rest / IST_8X8_WIDTH, rest % IST_8X8_WIDTH);
         let mapped = STX_SCAN_MAP[set][kind][i];
         assert!(mapped >= 0 && (mapped as usize) < STX_SCAN_ORDER_8X8.len());
-        out[set][kind][i] = STX_SCAN_ORDER_8X8[mapped as usize] as u8;
+        let pos = STX_SCAN_ORDER_8X8[mapped as usize];
+        out[0][set][kind][i] = pos as u8;
+        out[1][set][kind][i] = ((pos % 8) * 8 + pos / 8) as u8;
         index += 1;
     }
     out
 };
 
-/// [`OUTPUTS_8X8`] of `Ist_4x4_Kernel`: `Stx_Scan_Order_4x4[i]`.
-static OUTPUTS_4X4: [u8; IST_4X4_WIDTH] = {
-    let mut out = [0u8; IST_4X4_WIDTH];
+/// [`OUTPUTS_8X8`] of `Ist_4x4_Kernel`, from `Stx_Scan_Order_4x4[i]`
+/// (`y * 4 + x`).
+static OUTPUTS_4X4: [[u8; IST_4X4_WIDTH]; 2] = {
+    let mut out = [[0u8; IST_4X4_WIDTH]; 2];
     let mut i = 0;
     while i < IST_4X4_WIDTH {
-        out[i] = STX_SCAN_ORDER_4X4[i] as u8;
+        let (y, x) = (STX_SCAN_ORDER_4X4[i] / 4, STX_SCAN_ORDER_4X4[i] % 4);
+        out[0][i] = (y * 8 + x) as u8;
+        out[1][i] = (x * 8 + y) as u8;
         i += 1;
     }
     out

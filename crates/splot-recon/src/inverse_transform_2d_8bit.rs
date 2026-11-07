@@ -356,7 +356,12 @@ impl InverseTransformAdd8 {
     /// [`InverseTransform2dOuter::resolve`]: crate::InverseTransform2dOuter::resolve
     #[inline]
     #[must_use]
-    pub fn new(plane_tx_type: usize, log2_width: u32, log2_height: u32, use_ddt: bool) -> Option<Self> {
+    pub fn new(
+        plane_tx_type: usize,
+        log2_width: u32,
+        log2_height: u32,
+        use_ddt: bool,
+    ) -> Option<Self> {
         *FUSED
             .get(log2_width.wrapping_sub(2) as usize)?
             .get(log2_height.wrapping_sub(2) as usize)?
@@ -364,7 +369,12 @@ impl InverseTransformAdd8 {
             .get(usize::from(use_ddt))?
     }
 
-    const fn resolve(plane_tx_type: usize, log2_width: u32, log2_height: u32, use_ddt: bool) -> Option<Self> {
+    const fn resolve(
+        plane_tx_type: usize,
+        log2_width: u32,
+        log2_height: u32,
+        use_ddt: bool,
+    ) -> Option<Self> {
         let Ok(outer) = crate::InverseTransform2dOuter::resolve(
             plane_tx_type,
             log2_width,
@@ -414,7 +424,13 @@ impl InverseTransformAdd8 {
             row_shift,
             col_shift,
             rescale,
-            flat: matches!((row, col), (InverseTransform2dDim::Kernel(InverseTransform1dType::Dct), InverseTransform2dDim::Kernel(InverseTransform1dType::Dct))),
+            flat: matches!(
+                (row, col),
+                (
+                    InverseTransform2dDim::Kernel(InverseTransform1dType::Dct),
+                    InverseTransform2dDim::Kernel(InverseTransform1dType::Dct)
+                )
+            ),
             #[cfg(target_arch = "x86_64")]
             passes: (row_pass, col_pass),
         })
@@ -457,7 +473,14 @@ impl InverseTransformAdd8 {
         }
         #[cfg(target_arch = "x86_64")]
         if let Some(token) = Level::baseline().as_avx2() {
-            avx2::transform(token, &self, dequant, coeffs, avx2::Sink::Add { dst, stride }, scratch);
+            avx2::transform(
+                token,
+                &self,
+                dequant,
+                coeffs,
+                avx2::Sink::Add { dst, stride },
+                scratch,
+            );
             return true;
         }
         let chunks_log2 = (w >= 8).then(|| (w / 8).trailing_zeros());
@@ -473,7 +496,6 @@ impl InverseTransformAdd8 {
         )
     }
 
-    #[cfg_attr(target_arch = "x86_64", allow(dead_code))]
     const fn transform8(self, dequant: Option<FlatDequant>) -> Transform8 {
         Transform8 {
             row: self.row,
@@ -565,7 +587,6 @@ fn dc_only(t: &Transform8, dequant: &[i32]) -> Option<i32> {
         })
     })
 }
-
 
 fn run<O: Output + ?Sized>(
     t: Transform8,
