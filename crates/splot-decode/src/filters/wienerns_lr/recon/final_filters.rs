@@ -582,7 +582,7 @@ pub(crate) fn lr_initializations(
 ) -> [StripeInitialization; 3] {
     core::array::from_fn(|index| {
         let plane = [PlaneId::Y, PlaneId::U, PlaneId::V][index];
-        let Some(target) = target.get(plane).filter(|target| target.is_u16()) else {
+        let Some(target) = target.get(plane) else {
             return StripeInitialization::CopyAll;
         };
         if !active_planes[index] {
