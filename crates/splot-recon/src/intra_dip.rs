@@ -9,7 +9,7 @@ use crate::intra_dc_math::{
     IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
     validate_sample_type,
 };
-use fearless_simd::{Simd, SimdBase, i16x16, i32x8, u8x32, u16x16};
+use fearless_simd::{Bytes as _, Simd, SimdBase, i16x16, i32x8, u8x32, u16x8, u16x16, u32x8};
 
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
@@ -252,19 +252,25 @@ fn dip_features<T: ReconSample>(
 }
 
 fn dip_averages<T: ReconSample>(samples: &[T], block_len: usize, log2_len: u8) -> [i32; 5] {
-    let group_len = block_len >> 2;
-    let group_log2 = log2_len - 2;
-    let round = block_len >> 3;
-    let mut averages = [0i32; 5];
-    for (group, average) in averages.iter_mut().enumerate() {
-        let start = group * group_len;
-        let end = start + group_len;
-        let sum = samples[start..end]
-            .iter()
-            .fold(0i32, |acc, sample| acc + i32::from(sample.to_u16()));
-        *average = (sum + round as i32) >> group_log2;
+    /// The sums of the first five `N`-sample groups of `samples`.
+    #[inline]
+    fn group_sums<T: ReconSample, const N: usize>(samples: &[T]) -> [i32; 5] {
+        let mut sums = [0i32; 5];
+        for (sum, group) in sums.iter_mut().zip(samples.as_chunks::<N>().0) {
+            *sum = group.iter().map(|&sample| i32::from(sample.to_u16())).sum();
+        }
+        sums
     }
-    averages
+    let sums = match block_len >> 2 {
+        1 => group_sums::<T, 1>(samples),
+        2 => group_sums::<T, 2>(samples),
+        4 => group_sums::<T, 4>(samples),
+        8 => group_sums::<T, 8>(samples),
+        _ => group_sums::<T, 16>(samples),
+    };
+    let group_log2 = log2_len - 2;
+    let round = (block_len >> 3) as i32;
+    sums.map(|sum| (sum + round) >> group_log2)
 }
 
 /// `DIP_WEIGHTS[mode][index]` of one grid row, interleaved for a pairwise
@@ -326,9 +332,9 @@ fn coarse_grid_rows<S: Simd>(
     values: &mut [[i32; 8]; DIP_GRID_SIDE],
 ) {
     let pairs: [i16x16<S>; DIP_FEATURE_PAIRS] = core::array::from_fn(|k| {
-        let low = features[2 * k] as i16;
-        let high = features.get(2 * k + 1).map_or(0, |&f| f as i16);
-        i16x16::from_fn(simd, |lane| if lane % 2 == 0 { low } else { high })
+        let low = u32::from(features[2 * k] as u16);
+        let high = features.get(2 * k + 1).map_or(0, |&f| u32::from(f as u16));
+        u32x8::splat(simd, low | high << 16).bitcast()
     });
     for (gy, out) in values.iter_mut().take(grid.height).enumerate() {
         let weights = &rows[gy * grid.down_y];
@@ -402,6 +408,31 @@ fn interpolate_lanes<S: Simd, P: IntraLaneSample>(
     for (band, row_values) in values.iter().enumerate().take(grid.height) {
         let y = band * grid.step_y + grid.step_y - 1;
         let row = output.get_mut(y * stride..)?.get_mut(..width)?;
+        let grid_row = || {
+            let (low, high) = simd.split_u32x8(i32x8::from_slice(simd, row_values).bitcast());
+            simd.relaxed_narrow_u32x4(low, high)
+        };
+        if grid.down_x == 1
+            && let Some(row) = row.first_chunk_mut::<8>()
+            && width == 8
+        {
+            P::store8(simd, grid_row(), row);
+            continue;
+        }
+        if grid.up_log2_x == 1
+            && let Some(row) = row.first_chunk_mut::<16>()
+            && width == 16
+        {
+            let right = grid_row();
+            let before = simd.slide_u16x8::<7>(u16x8::splat(simd, left.get(y)?.to_u16()), right);
+            let between = (before + right) >> 1;
+            let samples = simd.combine_u16x8(
+                simd.zip_low_u16x8(between, right),
+                simd.zip_high_u16x8(between, right),
+            );
+            P::store16(simd, samples, row);
+            continue;
+        }
         if grid.step_x == 1 {
             for (x, slot) in row.iter_mut().enumerate() {
                 *slot = P::from_lane(*row_values.get(x * grid.down_x)? as u16);
@@ -491,12 +522,20 @@ fn lerp_row<S: Simd, P: IntraLaneSample>(
             );
         }
     }
-    for ((out, &a), &b) in out
-        .into_remainder()
-        .iter_mut()
-        .zip(a.remainder())
-        .zip(b.remainder())
+    let (out, a, b) = (out.into_remainder(), a.remainder(), b.remainder());
+    let done = if let (Some(out), Some(a), Some(b)) =
+        (out.first_chunk_mut(), a.first_chunk(), b.first_chunk())
     {
+        P::store8(
+            simd,
+            (P::load8(simd, a) * w0 + P::load8(simd, b) * w1) >> shift,
+            out,
+        );
+        8
+    } else {
+        0
+    };
+    for ((out, &a), &b) in out.iter_mut().zip(a).zip(b).skip(done) {
         *out = P::from_lane((a.to_u16() * w0 + b.to_u16() * w1) >> shift);
     }
 }
