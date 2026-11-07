@@ -45,9 +45,14 @@ pub(super) struct CellPlane {
 }
 
 impl CellPlane {
+    /// Marks every cell uncovered. The info words keep whatever they held:
+    /// no decision reads the info of an uncovered cell.
     fn reset(&mut self, len: usize, plane: splot_recon::PlaneId) -> Result<(), DeblockError> {
         reset(&mut self.bases, len, UNCOVERED, plane)?;
-        reset(&mut self.info, len, 0, plane)
+        if self.info.len() != len {
+            reset(&mut self.info, len, 0, plane)?;
+        }
+        Ok(())
     }
 
     /// The bases and info of cells `start..end`.

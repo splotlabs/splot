@@ -24,7 +24,9 @@ use super::{
 };
 
 /// The edges of one plane pass over the mode-info rows it owes, row-major by
-/// plane 4x4 cell; a vertical-pass column is read at a stride of one row.
+/// plane 4x4 cell, plus eight spare ones a row's last lane group stores past
+/// the row (a lane there compares two zero bases: no edge); a vertical-pass
+/// column is read at a stride of one row.
 #[derive(Default)]
 pub(crate) struct PassEdges {
     edges: Vec<DeblockEdge>,
@@ -109,13 +111,10 @@ fn load<S: Simd>(simd: S, cells: &[u32], at: usize) -> u32x8<S> {
 }
 
 /// The cells from `at` padded with zero past the row: a zero base on both
-/// sides of an edge is no transform edge.
-#[cold]
+/// sides of an edge is no transform edge. Every vertical-pass row ends here,
+/// so the lanes are picked one by one rather than through a `memcpy` call.
 fn pad<S: Simd>(simd: S, cells: &[u32], at: usize) -> u32x8<S> {
-    let mut lanes = [0; 8];
-    for (lane, &cell) in lanes.iter_mut().zip(cells.get(at..).unwrap_or_default()) {
-        *lane = cell;
-    }
+    let lanes: [u32; 8] = core::array::from_fn(|lane| cells.get(at + lane).copied().unwrap_or(0));
     u32x8::from_slice(simd, &lanes)
 }
 
@@ -219,12 +218,12 @@ impl PassEdges {
         self.edges.clear();
         let len = self.rows * self.cols;
         self.edges
-            .try_reserve(len)
+            .try_reserve(len + 8)
             .map_err(|_| DeblockError::Allocation {
                 plane: splot_recon::PlaneId::Y,
                 context: "deblock edge decisions",
             })?;
-        self.edges.resize(len, DeblockEdge::NONE);
+        self.edges.resize(len + 8, DeblockEdge::NONE);
         let lines = if PASS == 0 { self.cols } else { self.rows };
         self.live.clear();
         self.live.resize(lines, false);
@@ -288,7 +287,7 @@ impl PassEdges {
                 control(col * MI_SIZE + reach > geometry.width, false, tile)
             }));
             self.marks.clear();
-            self.marks.resize(cols, 0);
+            self.marks.resize(cols + 8, 0);
         }
         let offset = usize::from(PASS == 0);
         baseline_simd!(simd => {
@@ -351,26 +350,18 @@ impl PassEdges {
                         return Err(uncovered());
                     }
                     let edges = DeblockEdge::from_lanes(simd, low, high);
-                    let count = (lanes - at).min(8);
-                    let out = self
+                    *self
                         .edges
-                        .get_mut(out + at..out + at + count)
-                        .ok_or(DeblockError::Workspace)?;
-                    match out.first_chunk_mut::<8>() {
-                        Some(out) => *out = edges,
-                        None => out.copy_from_slice(&edges[..count]),
-                    }
+                        .get_mut(out + at..)
+                        .and_then(<[DeblockEdge]>::first_chunk_mut::<8>)
+                        .ok_or(DeblockError::Workspace)? = edges;
                     if PASS == 0 {
-                        let marks = self.marks.get_mut(offset..).unwrap_or_default();
-                        let merged = load(simd, marks, at) | low;
-                        match marks.get_mut(at..at + 8) {
-                            Some(marks) => merged.store_slice(marks),
-                            None => {
-                                for (mark, value) in marks.iter_mut().skip(at).zip(merged.to_array()) {
-                                    *mark = value;
-                                }
-                            }
-                        }
+                        let marks = self
+                            .marks
+                            .get_mut(offset + at..)
+                            .and_then(<[u32]>::first_chunk_mut::<8>)
+                            .ok_or(DeblockError::Workspace)?;
+                        (u32x8::from_slice(simd, marks) | low).store_array(marks);
                     } else {
                         row_marks |= low;
                     }
@@ -399,9 +390,7 @@ impl PassEdges {
     ) -> Result<(), DeblockError> {
         let (width, height, y_origin) = (ctx.width, ctx.height, ctx.y_origin);
         let lines = |count: usize, first: usize, limit: usize| {
-            (0..count)
-                .take_while(|&k| (first + k) * MI_SIZE + MI_SIZE <= limit)
-                .count()
+            count.min((limit / MI_SIZE).saturating_sub(first))
         };
         let (outer, inner) = if PASS == 0 {
             (self.cols, self.rows)

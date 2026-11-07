@@ -44,9 +44,10 @@ std::thread_local! {
         const { core::cell::RefCell::new([const { Vec::new() }; STRIPE_STAGING_SLOTS]) };
 }
 
-/// Takes this worker's largest free staging buffer, or a fresh one.
-fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopyError> {
-    let mut buffer = STRIPE_STAGING.with(|slots| {
+/// Takes this worker's largest free staging buffer, or a fresh one, as it
+/// was left.
+fn pooled_stripe_buffer() -> Vec<u16> {
+    STRIPE_STAGING.with(|slots| {
         slots
             .try_borrow_mut()
             .ok()
@@ -57,7 +58,12 @@ fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopy
                     .map(core::mem::take)
                     .unwrap_or_default()
             })
-    });
+    })
+}
+
+/// Takes this worker's largest free staging buffer, or a fresh one.
+fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopyError> {
+    let mut buffer = pooled_stripe_buffer();
     buffer.clear();
     // Counted from the cleared length, not from the capacity: a reused buffer
     // that already holds some of the request would otherwise be grown short of
@@ -65,6 +71,18 @@ fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopy
     buffer
         .try_reserve_exact(sample_count)
         .map_err(|_| StripeCopyError::Allocation(PlaneId::Y))?;
+    Ok(buffer)
+}
+
+/// [`take_stripe_sample_buffer`] holding `sample_count` samples of whatever
+/// it last held, for a caller that overwrites every one before reading it.
+fn take_stripe_sample_buffer_overwritten(sample_count: usize) -> Result<Vec<u16>, StripeCopyError> {
+    let mut buffer = pooled_stripe_buffer();
+    buffer.truncate(sample_count);
+    buffer
+        .try_reserve_exact(sample_count - buffer.len())
+        .map_err(|_| StripeCopyError::Allocation(PlaneId::Y))?;
+    buffer.resize(sample_count, 0);
     Ok(buffer)
 }
 
@@ -491,8 +509,8 @@ impl StripeSamples {
     fn direct_u8_from_frame<T: ReconSample>(
         mut target: crate::pipeline::frame_progress::DirectPlaneTarget,
         source: FramePlane<'_, T>,
-        origin_y: usize,
-        end_y: usize,
+        (origin_y, end_y): (usize, usize),
+        initialization: StripeInitialization,
     ) -> Result<Self, StripeCopyError> {
         if target.u8_samples_mut().is_none() {
             return Err(StripeCopyError::Geometry);
@@ -503,6 +521,14 @@ impl StripeSamples {
             .ok_or(StripeCopyError::Geometry)?;
         if target.end_y() != Some(end_y) {
             return Err(StripeCopyError::Geometry);
+        }
+        if initialization == StripeInitialization::FullyOverwritten {
+            let mut staging = take_stripe_sample_buffer_overwritten(sample_count)?;
+            let pointer = core::ptr::NonNull::from(staging.as_mut_slice());
+            return Ok(Self {
+                samples: pointer,
+                owner: StripeOwner::DirectU8 { target, staging },
+            });
         }
         let mut staging = take_stripe_sample_buffer(sample_count)?;
         let initialized = (|| {
@@ -696,8 +722,7 @@ impl StripePlane {
             Some(target) => (target.width() == source.width()
                 && target.frame_height() == source.frame_height()
                 && target.origin_y() == origin_y
-                && target.end_y() == Some(end_y)
-                && (initialization == StripeInitialization::CopyAll || target.is_u16()))
+                && target.end_y() == Some(end_y))
             .then_some(())
             .ok_or(geometry),
             None if initialization == StripeInitialization::FullyOverwritten => Err(geometry),
@@ -727,7 +752,12 @@ impl StripePlane {
                     stride: source.width(),
                     frame_height: source.frame_height(),
                     origin_y,
-                    samples: StripeSamples::direct_u8_from_frame(target, source, origin_y, end_y)?,
+                    samples: StripeSamples::direct_u8_from_frame(
+                        target,
+                        source,
+                        (origin_y, end_y),
+                        initialization,
+                    )?,
                 });
             }
         } else {
