@@ -1215,7 +1215,7 @@ fn band_classes_from_source(
         .checked_mul(class_cols)
         .ok_or_else(gdf_state_error)?;
     resize_overwrite_scratch(classes, len)?;
-    resize_overwrite_scratch(&mut scratch.strengths, 4 * class_cols.div_ceil(8) * 8)?;
+    resize_overwrite_scratch(&mut scratch.grads, 2 * ClassScratch::chunks(class_cols))?;
     simd::band_classes(source, source_origin, block, classes, scratch).ok_or_else(gdf_state_error)
 }
 
@@ -1864,7 +1864,7 @@ mod tests {
 
         let mut reused_classes = vec![GdfClass(i32::MAX); classes.len() + 4];
         let mut reused_class_scratch = ClassScratch {
-            strengths: vec![u32::MAX; class_scratch.strengths.len() + 3],
+            grads: vec![[[u16::MAX; 16]; 4]; class_scratch.grads.len() + 3],
         };
         let reused_result = band_classes_from_source(
             &reused_source,
