@@ -50,38 +50,6 @@ impl CoeffScanEntry {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct NonZeroCoeffScanWalk<'a> {
-    scan: &'a [u16],
-    width_log2: u32,
-}
-
-impl NonZeroCoeffScanWalk<'_> {
-    #[must_use]
-    pub(crate) fn len(&self) -> usize {
-        self.scan.len()
-    }
-
-    #[must_use]
-    pub(crate) const fn width_log2(&self) -> u32 {
-        self.width_log2
-    }
-
-    /// The scan positions up to the EOB, in scan order.
-    #[must_use]
-    pub(crate) const fn scan(&self) -> &[u16] {
-        self.scan
-    }
-
-    #[inline]
-    pub(crate) fn entry(&self, index: usize) -> CoeffScanEntry {
-        let scan_index = self.scan.len() - index - 1;
-        let pos = usize::from(self.scan[scan_index]);
-        let col_mask = (1 << self.width_log2) - 1;
-        CoeffScanEntry::new(scan_index, pos, pos >> self.width_log2, pos & col_mask)
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FscCoeffScanWalk {
     scan: &'static [u16],
@@ -130,49 +98,6 @@ impl FscCoeffScanWalk {
             pos & col_mask,
         )
     }
-}
-
-pub(crate) fn walk_nonzero_coeff_scan<'a>(
-    start: &NonZeroCoeffBlockStart,
-    scan: &'a [u16],
-) -> Result<NonZeroCoeffScanWalk<'a>, CoeffLoopContextError> {
-    let eob = start.eob_read().eob();
-    if eob == 0 {
-        return Err(CoeffLoopContextError::InvalidScanWalkEob { eob });
-    }
-    if eob > scan.len() {
-        return Err(CoeffLoopContextError::ScanWalkEobOutOfRange {
-            eob,
-            scan_len: scan.len(),
-        });
-    }
-
-    let width = start.width();
-    if !width.is_power_of_two() {
-        return Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width });
-    }
-    let coeff_count = start.coeff_count();
-    // A full-size scan table is a permutation of the block's positions.
-    let positions = if scan.len() == coeff_count {
-        &[][..]
-    } else {
-        &scan[..eob]
-    };
-    for (scan_index, scan_pos) in positions.iter().copied().enumerate().rev() {
-        let pos = usize::from(scan_pos);
-        if pos >= coeff_count {
-            return Err(CoeffLoopContextError::ScanWalkPositionOutOfRange {
-                scan_index,
-                pos,
-                coeff_count,
-            });
-        }
-    }
-
-    Ok(NonZeroCoeffScanWalk {
-        scan: &scan[..eob],
-        width_log2: width.trailing_zeros(),
-    })
 }
 
 pub(crate) fn walk_fsc_coeff_scan(
