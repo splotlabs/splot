@@ -95,6 +95,7 @@ pub(super) struct TileFilterRecords {
     pub(super) deblock_blocks: Vec<crate::filters::deblock::DeblockBlock>,
     pub(super) chroma_deblock_blocks: crate::filters::deblock::ChromaDeblockRecords,
     pub(super) tx_skip_records: Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
+    pub(super) inter_leaves: Vec<super::filter_records::InterDeblockLeaf>,
 }
 
 /// The frame-level facts every tile phase reads, all owned so a resolve pass
@@ -388,6 +389,7 @@ impl<'payload> TileParser<'payload> {
             temporal,
             mut flag_log,
             residual_planes,
+            filter_records,
         } = buffers;
         self.mv_grid.take_flag_log(&mut flag_log);
         self.residual_planes = residual_planes;
@@ -400,6 +402,7 @@ impl<'payload> TileParser<'payload> {
             temporal,
             flag_log,
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
+            filter_records,
             motion_folded: false,
             failure: ReconRowFailure::None,
         };
@@ -414,6 +417,7 @@ impl<'payload> TileParser<'payload> {
                 entries,
                 residual_blocks,
                 residual_coeffs,
+                filter_records,
                 ..
             } = &mut recon_row;
             self.walk_leaves(
@@ -421,6 +425,7 @@ impl<'payload> TileParser<'payload> {
                 context,
                 residual_blocks,
                 residual_coeffs,
+                filter_records,
                 if row_units {
                     WalkSpan::Row
                 } else {
@@ -450,12 +455,14 @@ impl<'payload> TileParser<'payload> {
     /// This is the split point between the passes: the consumer decides
     /// whether a record is stored for the resolve and reconstruction stages
     /// or acted on at once. Returns whether superblocks remain.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn walk_leaves<T: ReconSample>(
         &mut self,
         tile: &mut DecodeTileWorkUnit,
         context: &TileDecodeContext<'_, T>,
         residual_blocks: &mut Vec<InterResidualBlock>,
         residual_arena: &mut Vec<i32>,
+        filter_records: &mut TileFilterRecords,
         span: WalkSpan,
         mut consume: impl FnMut(
             &mut super::BlockDecodeContext<'_, T>,
@@ -486,9 +493,7 @@ impl<'payload> TileParser<'payload> {
             mv_grid: &mut self.mv_grid,
             y_smooth: &mut self.y_smooth,
             chroma_smooth: &mut self.chroma_smooth,
-            deblock_blocks: &mut self.filter_records.deblock_blocks,
-            chroma_deblock_blocks: &mut self.filter_records.chroma_deblock_blocks,
-            tx_skip_records: &mut self.filter_records.tx_skip_records,
+            filter_records,
             arena: &mut self.residual_planes,
         };
         let mut decode_leaf =
@@ -823,6 +828,8 @@ pub(super) struct ReconRow {
     /// on a grid of its own. Empty unless the parser was logging.
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
+    /// The unit's deblock and tx-skip records, published by its resolve.
+    pub(super) filter_records: TileFilterRecords,
     /// Whether the prepass already folded this unit's records into the frame's
     /// motion field, which it does for a unit it reconstructed in full.
     pub(super) motion_folded: bool,
@@ -914,6 +921,7 @@ pub(crate) struct ReconRowBuffers {
     pub(super) temporal: Vec<TemporalMotionBlock>,
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
+    pub(super) filter_records: TileFilterRecords,
 }
 
 impl ReconRowBuffers {
@@ -1470,14 +1478,31 @@ impl ParseProgress {
     /// The frame's § 7.17 and loop-restoration records leave the unit here, in
     /// parse order, because the scheduler claims units on its own schedule and
     /// the frame-level detach must not depend on when it does.
-    pub(super) fn publish_row(&self, row: ReconRow, records: &mut TileFilterRecords) {
-        pixel_commit::append_row_filter_records(&mut self.records.lock(), records);
+    pub(super) fn publish_row(&self, row: ReconRow) {
         let finished = {
             let mut rows = self.rows.lock();
             rows.push(Some(row));
             rows.len()
         };
         self.finished.publish(finished);
+    }
+
+    /// Publishes a unit's deblock and tx-skip records; units are pulled in
+    /// order, so the frame's lists stay in leaf order.
+    pub(super) fn publish_records(
+        &self,
+        row: &mut ReconRow,
+        chroma_format: ChromaFormatIdc,
+    ) -> Result<()> {
+        let mut records = self.records.lock();
+        let records = &mut *records;
+        row.filter_records.publish_into(
+            &mut records.deblock_blocks,
+            &mut records.chroma_deblock_blocks,
+            &mut records.tx_skip_records,
+            &row.residual_blocks,
+            chroma_format,
+        )
     }
 
     /// Takes the unit at `index`, which a caller may claim exactly once.
@@ -1664,7 +1689,7 @@ impl<'payload> TileParser<'payload> {
             ParserStep::Last(row) => (row, true),
         };
         row.return_terminal_error()?;
-        parse_progress.publish_row(row, &mut self.filter_records);
+        parse_progress.publish_row(row);
         Ok(last)
     }
 

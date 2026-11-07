@@ -661,7 +661,15 @@ pub(super) fn run_ordinary_tile<T: ReconSample>(
             let _quantizer_scopes = quantizer.install_frame();
             let step = parser.next_unit(tile, context, Some(row_buffers.take()), true);
             let step = resolve_parser_step(step, |row| {
-                resolve.resolve_unit(&mut parser.mv_grid, context, temporal, row, tile_offset)
+                resolve.resolve_unit(&mut parser.mv_grid, context, temporal, row, tile_offset)?;
+                let records = &mut parser.filter_records;
+                row.filter_records.publish_into(
+                    &mut records.deblock_blocks,
+                    &mut records.chroma_deblock_blocks,
+                    &mut records.tx_skip_records,
+                    &row.residual_blocks,
+                    context.sequence.general.chroma_format_idc,
+                )
             });
             parsed += 1;
             pending.push(match step {
@@ -928,6 +936,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
 
     /// Hands the frontier every deblock record of the finished parse.
     pub(in crate::prediction::inter::block) fn take_deblock_records(&self) -> Result<()> {
+        self.materialize_rows(self.recon.unit_count);
         if let Some(deblock) = self.frontier.lock().deblock.as_mut() {
             self.parse_progress
                 .take_deblock_records(deblock, self.recon.params.mi_rows)
@@ -963,7 +972,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         Ok(())
     }
 
-    /// Pulls published units into the scheduled row list, up to `units`.
+    /// Pulls published units into the scheduled row list, up to `units`,
+    /// and publishes their deblock records in unit order.
     ///
     /// The § 8.2 pass emits units in order, so a caller that has waited on
     /// the parse watermark for `units` finds exactly that prefix available,
@@ -975,9 +985,15 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             return;
         }
         while rows.len() < units {
-            let Some(row) = self.parse_progress.take_row(rows.len()) else {
+            let Some(mut row) = self.parse_progress.take_row(rows.len()) else {
                 break;
             };
+            if let Err(error) = self
+                .parse_progress
+                .publish_records(&mut row, self.recon.sequence.general.chroma_format_idc)
+            {
+                row.record_terminal_error(error);
+            }
             rows.push(TileReconRow::Unresolved { row, surface: None });
         }
     }

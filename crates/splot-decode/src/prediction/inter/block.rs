@@ -1137,10 +1137,7 @@ pub(super) struct BlockDecodeContext<'a, T: ReconSample> {
     pub(super) mv_grid: &'a mut NeighbourMvGrid,
     pub(super) y_smooth: &'a mut crate::prediction::intra_edge::TileYSmoothGrid,
     pub(super) chroma_smooth: &'a mut crate::prediction::intra_edge::TileChromaSmoothGrid,
-    pub(super) deblock_blocks: &'a mut Vec<crate::filters::deblock::DeblockBlock>,
-    pub(super) chroma_deblock_blocks: &'a mut crate::filters::deblock::ChromaDeblockRecords,
-    pub(super) tx_skip_records:
-        &'a mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
+    filter_records: &'a mut tile::TileFilterRecords,
     pub(super) arena: &'a mut crate::residual::pipeline::ResidualPlaneArena,
 }
 
@@ -1177,9 +1174,7 @@ fn decode_block<T: ReconSample>(
         ref mut mv_grid,
         ref mut y_smooth,
         ref mut chroma_smooth,
-        ref mut deblock_blocks,
-        ref mut chroma_deblock_blocks,
-        ref mut tx_skip_records,
+        ref mut filter_records,
         ref mut arena,
     } = *context;
     let tile::TileWalkParams {
@@ -1419,19 +1414,14 @@ fn decode_block<T: ReconSample>(
                     tile_offset,
                 )?)
             };
-            record_inter_deblock_geometry(
-                deblock_blocks,
-                chroma_deblock_blocks,
-                tx_skip_records,
+            filter_records.defer_inter_leaf(
                 frontier,
                 (n4w, n4h),
-                sequence.general.chroma_format_idc,
                 residual.as_ref(),
-                residual_blocks,
                 None,
                 block_qindex,
                 lossless,
-            )?;
+            );
             let precision = frame_mv_precision(core)?;
             mv_grid.record_flags(
                 mi_row,
@@ -1493,9 +1483,9 @@ fn decode_block<T: ReconSample>(
             is_cfl_ctx.resolve(),
             segment_id,
             coeff_ctx,
-            deblock_blocks,
-            chroma_deblock_blocks,
-            tx_skip_records,
+            &mut filter_records.deblock_blocks,
+            &mut filter_records.chroma_deblock_blocks,
+            &mut filter_records.tx_skip_records,
             arena,
             residual_arena,
             block_qindex,
@@ -1610,9 +1600,7 @@ fn decode_block<T: ReconSample>(
             &mut block_ctx,
             &neighbour_ctx,
             tip_ref_pair,
-            deblock_blocks,
-            chroma_deblock_blocks,
-            tx_skip_records,
+            filter_records,
             intrabc_state,
             ref_frame_idx,
             reference,
@@ -1678,9 +1666,7 @@ fn decode_block<T: ReconSample>(
             tip_ref_pair,
             &mut block_ctx,
             &neighbour_ctx,
-            deblock_blocks,
-            chroma_deblock_blocks,
-            tx_skip_records,
+            filter_records,
             intrabc_state,
             ref_frame_idx,
             reference,
@@ -1824,19 +1810,14 @@ fn decode_block<T: ReconSample>(
             )?;
             None
         };
-        record_inter_deblock_geometry(
-            deblock_blocks,
-            chroma_deblock_blocks,
-            tx_skip_records,
+        filter_records.defer_inter_leaf(
             frontier,
             (n4w, n4h),
-            sequence.general.chroma_format_idc,
             residual.as_ref(),
-            residual_blocks,
             None,
             block_qindex,
             current_residual_lossless(work_unit),
-        )?;
+        );
         intrabc_state.record_block(
             frontier.r,
             frontier.c,
@@ -2076,21 +2057,16 @@ fn decode_block<T: ReconSample>(
                 .as_ref()
                 .is_some_and(|tools| tools.enable_tip_refinemv),
         );
-    record_inter_deblock_geometry(
-        deblock_blocks,
-        chroma_deblock_blocks,
-        tx_skip_records,
+    filter_records.defer_inter_leaf(
         frontier,
         (n4w, n4h),
-        sequence.general.chroma_format_idc,
         residual.as_ref(),
-        residual_blocks,
         tip_ref.then_some(crate::filters::deblock::DeblockSubPuSize::square(
             if tip_uses_16x16_units { 16 } else { 8 },
         )),
         block_qindex,
         current_residual_lossless(work_unit),
-    )?;
+    );
     intrabc_state.record_block(
         frontier.r,
         frontier.c,
@@ -2198,7 +2174,6 @@ pub(super) mod tip;
 pub(crate) use tip::{TipOutputStages, TipSpares};
 mod warp;
 
-use self::filter_records::record_inter_deblock_geometry;
 use self::interintra::predict_interintra_planes;
 use self::prediction::placed_inter_geometry;
 use self::resolve::{

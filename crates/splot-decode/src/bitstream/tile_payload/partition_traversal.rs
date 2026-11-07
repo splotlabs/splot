@@ -494,6 +494,22 @@ impl DecodeBlockFrontier {
     pub(crate) const fn chroma_ref_geometry(&self) -> ChromaRefGeometry {
         self.chroma_ref
     }
+
+    /// A shared-tree leaf at `(r, c)` that carries its own chroma.
+    #[cfg(test)]
+    pub(crate) const fn shared_leaf(r: usize, c: usize, b_size: BlockSize) -> Self {
+        Self {
+            r,
+            c,
+            b_size,
+            has_chroma: true,
+            chroma_offset: false,
+            chroma_ref: ChromaRefGeometry::new(r, c, b_size),
+            part: DecodeBlockPart::Shared,
+            intra_region: false,
+            cfl_allowed_in_sdp: true,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -111,6 +111,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             mut temporal,
             mut flag_log,
             mut residual_planes,
+            mut filter_records,
             ..
         } = row;
         let shared = deferred_recon::ReconShared {
@@ -231,6 +232,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         residual_coeffs.clear();
         temporal.clear();
         flag_log.clear();
+        filter_records.clear();
         Ok(ReconRowBuffers {
             superblocks,
             residual_coeffs,
@@ -239,6 +241,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             temporal,
             flag_log,
             residual_planes,
+            filter_records,
         })
     })();
     if has_intra {
