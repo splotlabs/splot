@@ -994,7 +994,7 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 return final_filters::terminal_luma_wiener_direct_u8(
                     self.bit_depth,
                     frame_type,
-                    gdf_active,
+                    gdf_active && chain.lossless_grid.is_some(),
                     plane_blocks[index],
                     target,
                 );
@@ -1043,10 +1043,10 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
                 if let Some(post_lr_y) = frame.post_lr_y.as_mut() {
                     (
                         Some(&frame.cdef_y),
-                        post_lr_y.as_u16_mut().ok_or_else(lr_pipeline_state_error)?,
+                        gdf_luma(post_lr_y).ok_or_else(lr_pipeline_state_error)?,
                     )
                 } else {
-                    (None, &mut frame.cdef_y)
+                    (None, crate::filters::gdf::GdfLuma::U16(&mut frame.cdef_y))
                 };
             crate::filters::gdf::apply_stripe(
                 &self.core,
@@ -1173,6 +1173,26 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     /// Transfers terminal ownership to the exactly-once freeze job.
     pub(crate) fn owned_finish(setup: OwnedFilterShell<T>) -> OwnedFilterFinish<T> {
         OwnedFilterFinish { setup }
+    }
+}
+
+/// The post-LR luma rows GDF filters in place.
+fn gdf_luma(
+    plane: &mut crate::filters::source::StripeOutputPlane,
+) -> Option<crate::filters::gdf::GdfLuma<'_>> {
+    use crate::filters::source::StripeOutputPlane;
+    let (width, frame_height, origin_y) = (plane.width(), plane.frame_height(), plane.origin_y());
+    let rows = plane.end_y()?.checked_sub(origin_y)?;
+    match plane {
+        StripeOutputPlane::U16(plane) => Some(crate::filters::gdf::GdfLuma::U16(plane)),
+        StripeOutputPlane::DirectU8(target) => Some(crate::filters::gdf::GdfLuma::U8 {
+            stride: target.stride(),
+            samples: target.u8_samples_mut()?,
+            width,
+            frame_height,
+            origin_y,
+            rows,
+        }),
     }
 }
 

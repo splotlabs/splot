@@ -377,8 +377,14 @@ fn filter_run_matches_scalar_samples_with_band_classes() {
                 );
             }
         }
+        let mut bytes: Vec<u8> = base.iter().map(|&sample| sample as u8).collect();
         let mut actual = base;
         assert!(simd::filter_run(&source, ORIGIN, &block, &mut actual, &mut scratch).is_some());
         assert_eq!(actual, expected, "width {width}, height {height}");
+        if bit_depth == BitDepth::Eight {
+            assert!(simd::filter_run(&source, ORIGIN, &block, &mut bytes, &mut scratch).is_some());
+            let bytes: Vec<u16> = bytes.into_iter().map(u16::from).collect();
+            assert_eq!(bytes, expected, "u8 rows, width {width}, height {height}");
+        }
     }
 }

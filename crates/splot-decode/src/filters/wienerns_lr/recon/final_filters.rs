@@ -535,13 +535,13 @@ pub(crate) fn terminal_luma_wiener_covers(
 pub(crate) fn terminal_luma_wiener_direct_u8(
     bit_depth: BitDepth,
     frame_type: Option<FrameRestorationType>,
-    gdf_active: bool,
+    gdf_needs_u16: bool,
     blocks: &[WienerNsLrSourceBlock],
     target: &crate::pipeline::frame_progress::DirectPlaneTarget,
 ) -> bool {
     bit_depth == BitDepth::Eight
         && !target.is_u16()
-        && !gdf_active
+        && !gdf_needs_u16
         && frame_type.is_some_and(|frame_type| {
             matches!(
                 frame_type,
