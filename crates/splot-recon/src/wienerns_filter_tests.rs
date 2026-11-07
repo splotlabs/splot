@@ -1132,6 +1132,7 @@ fn eight_bit_byte_lanes_match_the_callback_reference() {
         state ^= state << 17;
         state % limit
     };
+    let mut scratch = WienerNsLumaScratch::default();
     for case in 0..40 {
         let classes = 1 + next(16) as usize;
         let coeffs: Vec<[i16; WIENER_NS_LUMA_COEFFS]> = (0..classes)
@@ -1170,7 +1171,6 @@ fn eight_bit_byte_lanes_match_the_callback_reference() {
         let source_at =
             |x: isize, y: isize| padded[((y + radius) as usize) * stride + (x + radius) as usize];
         let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
-        let mut scratch = WienerNsLumaScratch::default();
         for layout in 0..2 {
             let subclasses = (layout == 1).then_some(expanded.as_slice());
             let used = if layout == 1 {

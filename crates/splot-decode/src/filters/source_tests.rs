@@ -6,8 +6,8 @@
 #![allow(clippy::expect_used)]
 
 use super::{
-    DeblockedWindow, FramePlane, StripeOutputPlane, StripePlane, take_stripe_sample_buffer,
-    window_bounds,
+    DeblockedWindow, FramePlane, StripeOutputPlane, StripePlane, narrow_row,
+    take_stripe_sample_buffer, window_bounds,
 };
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneId,
@@ -448,4 +448,22 @@ fn invalid_direct_u8_geometry_drops_without_publication_and_releases_lease() {
     drop((target, lease));
     assert_eq!(progress.published_luma_rows(), 0);
     assert!(progress.direct_stripe(0).is_some(), "the lease is reusable");
+}
+
+#[test]
+fn narrow_row_stores_bytes_and_reports_wide_samples() {
+    for width in [1, 31, 32, 33, 64, 70] {
+        let staged: Vec<u16> = (0..width).map(|x| (x * 37 % 256) as u16).collect();
+        let mut bytes = vec![0u8; width];
+        assert!(narrow_row(&mut bytes, &staged) <= 255);
+        assert!(bytes.iter().zip(&staged).all(|(&b, &s)| u16::from(b) == s));
+        for wide in [0, width - 1, width / 2] {
+            let mut staged = staged.clone();
+            staged[wide] = 256;
+            assert!(
+                narrow_row(&mut bytes, &staged) > 255,
+                "width {width} at {wide}"
+            );
+        }
+    }
 }

@@ -599,18 +599,42 @@ impl StripeSamples {
         {
             return Err(StripeCopyError::Geometry);
         }
-        let mut discarded_high_bits = 0u16;
+        let mut samples_or = 0u16;
         let rows = unpublished_destination.chunks_exact_mut(stride);
         for (destination, staged) in rows.zip(staging.chunks_exact(width)) {
-            for (destination, &sample) in destination.iter_mut().zip(staged) {
-                discarded_high_bits |= sample & !u16::from(u8::MAX);
-                *destination = sample as u8;
-            }
+            let destination = destination
+                .get_mut(..width)
+                .ok_or(StripeCopyError::Geometry)?;
+            samples_or |= narrow_row(destination, staged);
         }
-        (discarded_high_bits == 0)
+        u8::try_from(samples_or)
+            .is_ok()
             .then_some(())
             .ok_or(StripeCopyError::Geometry)
     }
+}
+
+/// Stores `staged` as bytes into `destination`, which has its length, and
+/// returns the OR of the samples; any sample above 255 is stored as 255.
+fn narrow_row(destination: &mut [u8], staged: &[u16]) -> u16 {
+    use fearless_simd::{prelude::*, u16x16};
+    baseline_simd!(simd => {
+        let (chunks, tail) = staged.as_chunks::<32>();
+        let (destinations, destination_tail) = destination.as_chunks_mut::<32>();
+        let mut lanes_or = u16x16::splat(simd, 0);
+        for (destination, chunk) in destinations.iter_mut().zip(chunks) {
+            let (low, high) = chunk.split_at(16);
+            let (low, high) = (u16x16::from_slice(simd, low), u16x16::from_slice(simd, high));
+            lanes_or = lanes_or | low | high;
+            simd.saturating_narrow_u16x16(low, high).store_array(destination);
+        }
+        let mut samples_or = lanes_or.to_array().into_iter().fold(0, |or, lane| or | lane);
+        for (destination, &sample) in destination_tail.iter_mut().zip(tail) {
+            samples_or |= sample;
+            *destination = sample.min(u16::from(u8::MAX)) as u8;
+        }
+        samples_or
+    })
 }
 
 fn write_uninit_u16(
