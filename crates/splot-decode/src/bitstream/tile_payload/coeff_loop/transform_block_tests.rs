@@ -3,24 +3,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+use super::super::max_level::coeff_is_low_frequency;
 use super::*;
-
-#[test]
-fn nonzero_entries_round_trip_their_fields() {
-    for (pos, scan_index, level, tcq_q0, is_lf) in [
-        (0, 0, 1, 0, true),
-        (1023, 1023, 255, 1, false),
-        (37, 600, 8, 1, true),
-    ] {
-        let entry =
-            NonzeroEntry::from_raw(NonzeroEntry::new(pos, scan_index, level, tcq_q0, is_lf).0);
-        assert_eq!(entry.pos(), pos);
-        assert_eq!(entry.scan_index(), scan_index);
-        assert_eq!(entry.level(), level);
-        assert_eq!(entry.tcq_q0(), tcq_q0 == 1);
-        assert_eq!(entry.is_lf(), is_lf);
-    }
-}
 
 #[test]
 fn low_frequency_positions_are_a_scan_prefix() {
@@ -52,4 +36,36 @@ fn low_frequency_positions_are_a_scan_prefix() {
     check::<1, false>(TransformClass::Horizontal);
     check::<2, true>(TransformClass::Vertical);
     check::<2, false>(TransformClass::Vertical);
+}
+
+#[test]
+fn grid_scans_hold_each_shape_scan_with_its_grid_index() {
+    for (class, recon_class) in [
+        (CoeffTransformClass::TwoD, TransformClass::TwoD),
+        (CoeffTransformClass::Horizontal, TransformClass::Horizontal),
+        (CoeffTransformClass::Vertical, TransformClass::Vertical),
+    ] {
+        for width in [4, 8, 16, 32] {
+            for height in [4, 8, 16, 32] {
+                let scan = splot_recon::coefficient_scan_slice(width, height, recon_class).unwrap();
+                let grid = grid_scan(class, width, height, scan.len()).unwrap();
+                for (&pos, &entry) in scan.iter().zip(grid) {
+                    let pos = usize::from(pos);
+                    assert_eq!(entry >> 16, pos as u32);
+                    let expected = (pos / width) * LEVEL_STRIDE + pos % width;
+                    assert_eq!(entry_grid(entry), expected);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn grid_scan_rejects_bad_shapes_and_eobs() {
+    let class = CoeffTransformClass::TwoD;
+    assert!(grid_scan(class, 12, 4, 1).is_err());
+    assert!(grid_scan(class, 4, 64, 1).is_err());
+    assert!(grid_scan(class, 4, 4, 0).is_err());
+    assert!(grid_scan(class, 4, 4, 17).is_err());
+    assert_eq!(grid_scan(class, 4, 4, 16).unwrap().len(), 16);
 }

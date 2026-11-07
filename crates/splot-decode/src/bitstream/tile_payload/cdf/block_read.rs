@@ -50,7 +50,11 @@ impl TileCdfSubset {
     /// Reads `all_zero` (§ 8.3.2) through the trusted read of its
     /// decoder-owned row; any other selector takes
     /// [`Self::read_block_symbol_trace`].
-    #[inline]
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: the selector folds into the row read"
+    )]
+    #[inline(always)]
     pub(crate) fn read_all_zero(
         &mut self,
         selector: TileCdfSelector,

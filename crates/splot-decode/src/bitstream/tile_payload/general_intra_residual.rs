@@ -39,6 +39,7 @@ use super::coeff_loop::{
     AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffBlockStartInput,
     NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
 };
+#[cfg(test)]
 use super::coeff_state::TransformCoeffBlockState;
 use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
 use super::{BlockSize, DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
@@ -1161,8 +1162,13 @@ pub(crate) fn decode_general_intra_plane_coeffs(
 }
 
 /// The § 8.3.2 `all_zero` CDF of the transform block at `[x4, y4, w4, h4]` (plane 4x4 units).
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-#[inline]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::fn_params_excessive_bools,
+    clippy::inline_always,
+    reason = "measured: an out-of-line selector returns through memory"
+)]
+#[inline(always)]
 pub(crate) fn txb_skip_selector(
     context: &TileCoeffContextState,
     plane: usize,
@@ -1282,9 +1288,10 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     }
     let plane_tx_type =
         staged_transform_tool_plane_tx_type(geometry, is_inter, lossless, base_config)?;
-    let mut coeffs = TransformCoeffBlockState::empty();
+    let start_idx = arena.len();
+    let coeff_count = start.coeff_count();
     if use_fsc {
-        coeffs = apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
+        let coeffs = apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
             context,
             work_unit.cdf_mut().tile_cdfs_mut(),
             symbols,
@@ -1296,24 +1303,26 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             },
         )
         .map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
+        arena.extend_from_slice(coeffs.nonzero_quant());
     } else {
-        apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+        arena.resize(start_idx + coeff_count, 0);
+        let quant_end = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
             context,
             work_unit.cdf_mut().tile_cdfs_mut(),
             symbols,
             CoeffOrdinaryStagedLosslessNonZeroInput {
                 geometry,
                 start,
-                is_inter,
-                base_config,
+                plane_tx_type,
+                parity_hiding: base_config.parity_hiding,
+                use_tcq: base_config.use_tcq,
                 lossless,
             },
-            &mut coeffs,
-        )
-        .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
+            &mut arena[start_idx..],
+        );
+        arena.truncate(start_idx + quant_end.as_ref().map_or(0, |&end| end));
+        quant_end.map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
     }
-    let start_idx = arena.len();
-    arena.extend_from_slice(coeffs.nonzero_quant());
     LumaCoeffBlock {
         eob: eob as u16,
         intra_ist: metadata.intra_ist,
@@ -1321,7 +1330,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         use_tcq: base_config.use_tcq,
         ..LumaCoeffBlock::empty(plane_tx_type, lossless)
     }
-    .with_span(start_idx..arena.len(), coeffs.quant().len())
+    .with_span(start_idx..arena.len(), coeff_count)
     .ok_or_else(|| invalid_reconstruction_state_error("coefficient arena span"))
 }
 
