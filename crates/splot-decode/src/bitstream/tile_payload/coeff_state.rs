@@ -35,11 +35,13 @@ pub(crate) type LevelGrid = [u8; LEVEL_GRID_LEN];
 static ZERO_LEVEL_GRID: LevelGrid = [0; LEVEL_GRID_LEN];
 
 static ZERO_QUANT_SIGN: [i8; MAX_PADDED_COEFF_LEN] = [0; MAX_PADDED_COEFF_LEN];
-/// One entry per coefficient of the largest (32x32) coefficient block.
-pub(crate) const NONZERO_LIST_LEN: usize = MAX_ADJUSTED_TX_EXTENT * MAX_ADJUSTED_TX_EXTENT;
-/// A block's packed nonzero levels in decode order, written by the base pass.
-pub(crate) type NonzeroList = [u32; NONZERO_LIST_LEN];
-static EMPTY_NONZERO_LIST: NonzeroList = [0; NONZERO_LIST_LEN];
+/// Mask that keeps a block position of the ordinary coefficient pass's level
+/// grid below its padded words.
+pub(crate) const LEVEL_WORDS_MASK: usize = 2047;
+/// The ordinary coefficient pass's level grid: one word per position at
+/// [`LEVEL_STRIDE`], zero outside a block while no block is being decoded,
+/// with room past every masked position for the largest neighbour offset.
+pub(crate) type CoeffLevelWords = [u32; LEVEL_WORDS_MASK + 1 + 256];
 const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
 
 use core::cell::Cell;
@@ -62,7 +64,7 @@ fn zero_buffer<T: Default + Copy>(
 ///
 /// The two extents are one past the highest index the last block wrote, so
 /// the next block only re-zeroes that dirt instead of the whole arrays.
-type CoeffBlockBuffers = (Vec<u8>, usize, Vec<i8>, usize, Vec<i32>, usize, Vec<u32>);
+type CoeffBlockBuffers = (Vec<u8>, usize, Vec<i8>, usize, Vec<i32>, usize);
 
 std::thread_local! {
     /// One transform block's buffers, reused by the next block on this worker.
@@ -82,7 +84,6 @@ impl Drop for TransformCoeffBlockState {
                 self.sign_end,
                 core::mem::take(&mut self.quant),
                 self.quant_end,
-                core::mem::take(&mut self.nonzero),
             )));
         });
     }
@@ -98,9 +99,6 @@ pub(crate) struct TransformCoeffBlockState {
     level: Vec<u8>,
     quant_sign: Vec<i8>,
     quant: Vec<i32>,
-    /// [`NONZERO_LIST_LEN`] entries once allocated; only a prefix the base
-    /// pass reports is meaningful.
-    nonzero: Vec<u32>,
     /// One past the last nonzero entry of `quant`.
     quant_end: usize,
     /// One past the highest `quant_sign` index the block wrote.
@@ -108,22 +106,6 @@ pub(crate) struct TransformCoeffBlockState {
 }
 
 impl TransformCoeffBlockState {
-    /// An unallocated state, written over by the first block that fills it.
-    #[must_use]
-    pub(crate) fn empty() -> Self {
-        Self {
-            width: 0,
-            height: 0,
-            level_len: 0,
-            level: Vec::new(),
-            quant_sign: Vec::new(),
-            quant: Vec::new(),
-            nonzero: Vec::new(),
-            quant_end: 0,
-            sign_end: 0,
-        }
-    }
-
     pub(crate) fn allocation(width: usize, height: usize) -> Result<usize, TileCoeffStateError> {
         validate_adjusted_extent("width", width)?;
         validate_adjusted_extent("height", height)?;
@@ -138,11 +120,8 @@ impl TransformCoeffBlockState {
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, TileCoeffStateError> {
         let allocation = Self::allocation(width, height)?;
         let level_len = LEVEL_STRIDE * (height + LEVEL_GRID_PAD);
-        let (mut level, used_len, mut quant_sign, sign_end, mut quant, quant_end, mut nonzero) =
+        let (mut level, used_len, mut quant_sign, sign_end, mut quant, quant_end) =
             COEFF_BLOCK_BUFFERS.with(Cell::take).unwrap_or_default();
-        if nonzero.len() != NONZERO_LIST_LEN {
-            nonzero = zero_buffer(nonzero, NONZERO_LIST_LEN)?;
-        }
         if level.len() == LEVEL_GRID_LEN {
             if let Some(used) = level.get_mut(..used_len.max(level_len)) {
                 used.fill(0);
@@ -167,7 +146,6 @@ impl TransformCoeffBlockState {
             quant_sign,
             sign_end,
             quant,
-            nonzero,
             quant_end: 0,
         })
     }
@@ -202,28 +180,6 @@ impl TransformCoeffBlockState {
     #[inline]
     pub(crate) fn level(&self) -> &LevelGrid {
         self.level.first_chunk().unwrap_or(&ZERO_LEVEL_GRID)
-    }
-
-    /// The nonzero list with the quantised coefficients and their nonzero
-    /// end, for a pass that writes the coefficients directly.
-    #[inline]
-    pub(crate) fn nonzero_and_quant_mut(&mut self) -> (&NonzeroList, &mut [i32], &mut usize) {
-        (
-            self.nonzero.first_chunk().unwrap_or(&EMPTY_NONZERO_LIST),
-            &mut self.quant,
-            &mut self.quant_end,
-        )
-    }
-
-    /// The level grid and the nonzero list, for the pass that writes them.
-    #[inline]
-    pub(crate) fn level_grid_and_nonzero_mut(
-        &mut self,
-    ) -> Option<(&mut LevelGrid, &mut NonzeroList)> {
-        Some((
-            self.level.first_chunk_mut()?,
-            self.nonzero.first_chunk_mut()?,
-        ))
     }
 
     pub(crate) fn level_mut(&mut self) -> &mut [u8] {
@@ -261,6 +217,7 @@ impl TransformCoeffBlockState {
     /// Borrowed, not taken: the caller copies them into its row's arena and
     /// lets this state drop, which hands all three buffers to the next block
     /// parsed on this worker.
+    #[cfg(test)]
     pub(crate) fn quant(&self) -> &[i32] {
         &self.quant
     }
@@ -358,6 +315,7 @@ pub(crate) struct TileCoeffContextState {
     left_level: [Vec<u8>; PLANE_COUNT],
     above_dc: [Vec<u8>; PLANE_COUNT],
     left_dc: [Vec<u8>; PLANE_COUNT],
+    levels: Vec<u32>,
 }
 
 impl TileCoeffContextState {
@@ -432,6 +390,15 @@ impl TileCoeffContextState {
         zero_plane_lines(&mut self.left_level, plane_rows)?;
         zero_plane_lines(&mut self.above_dc, plane_cols)?;
         zero_plane_lines(&mut self.left_dc, plane_rows)?;
+        self.ensure_levels()?;
+        Ok(())
+    }
+
+    fn ensure_levels(&mut self) -> Result<(), TileCoeffStateError> {
+        const LEN: usize = core::mem::size_of::<CoeffLevelWords>() / 4;
+        if self.levels.len() != LEN {
+            self.levels = zero_buffer(core::mem::take(&mut self.levels), LEN)?;
+        }
         Ok(())
     }
 
@@ -449,6 +416,20 @@ impl TileCoeffContextState {
 
     pub(crate) fn left_dc(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
         Ok(&self.left_dc[validate_plane(plane)?])
+    }
+
+    /// The above and left DC-category lines of `plane` with the level grid
+    /// of the ordinary coefficient pass, allocated on first use.
+    pub(crate) fn dc_lines_and_levels(
+        &mut self,
+        plane: usize,
+    ) -> Result<(&[u8], &[u8], &mut CoeffLevelWords), TileCoeffStateError> {
+        let plane = validate_plane(plane)?;
+        self.ensure_levels()?;
+        let Some(levels) = self.levels.first_chunk_mut() else {
+            return Err(TileCoeffStateError::InvalidPlane { plane });
+        };
+        Ok((&self.above_dc[plane], &self.left_dc[plane], levels))
     }
 
     pub(crate) fn local_x4(&self, plane: usize, x4: usize) -> Result<usize, TileCoeffStateError> {

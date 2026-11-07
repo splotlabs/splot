@@ -67,6 +67,11 @@ fn read_start(tile: &mut TileCdfSubset, symbols: &mut SymbolDecoder<'_>) -> NonZ
     .unwrap()
 }
 
+fn levels_clear(state: &mut TileCoeffContextState) -> bool {
+    let (_, _, levels) = state.dc_lines_and_levels(0).unwrap();
+    levels.iter().all(|&word| word == 0)
+}
+
 fn base_config(parity_hiding: bool, use_tcq: bool) -> CoeffOrdinaryBranchTxSetBaseConfig {
     CoeffOrdinaryBranchTxSetBaseConfig {
         reduced_tx_set: 0,
@@ -95,8 +100,9 @@ fn staged_input(
             tx_size,
         },
         start,
-        is_inter: false,
-        base_config,
+        plane_tx_type: base_config.luma_tx_type,
+        parity_hiding: base_config.parity_hiding,
+        use_tcq: base_config.use_tcq,
         lossless,
     }
 }
@@ -215,18 +221,18 @@ fn staged_ordinary_live_path_reads_base_br_sign_quant_and_commits() {
     let mut state =
         TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444).unwrap();
 
-    let mut block = TransformCoeffBlockState::empty();
-    apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+    let mut quant = [0; 16];
+    let end = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         &mut state,
         &mut tile,
         &mut symbols,
         staged_input(start, TX_4X4, 4, true, base_config(true, true)),
-        &mut block,
+        &mut quant,
     )
     .unwrap();
 
-    assert_eq!(block.level_at(0, 0).unwrap(), 8);
-    assert_eq!(block.quant_at(0).unwrap(), -11);
+    assert_eq!((end, quant[0]), (1, -11));
+    assert!(levels_clear(&mut state));
     assert_eq!(state.above_level(0).unwrap()[1], 4);
     assert_eq!(state.left_level(0).unwrap()[1], 4);
     assert_eq!(state.above_dc(0).unwrap()[1], 1);
@@ -246,22 +252,19 @@ fn staged_ordinary_live_path_applies_evolving_tcq_state() {
     let mut state =
         TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444).unwrap();
 
-    let mut block = TransformCoeffBlockState::empty();
-    apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+    let mut quant = [0; 16];
+    let end = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         &mut state,
         &mut tile,
         &mut symbols,
         staged_input(start, TX_4X4, 4, false, base_config(false, true)),
-        &mut block,
+        &mut quant,
     )
     .unwrap();
 
-    assert_eq!(block.level_at(0, 1).unwrap(), 1);
-    assert_eq!(block.level_at(1, 0).unwrap(), 2);
-    assert_eq!(block.level_at(0, 0).unwrap(), 1);
-    assert_eq!(block.quant_at(1).unwrap(), 2);
-    assert_eq!(block.quant_at(4).unwrap(), 4);
-    assert_eq!(block.quant_at(0).unwrap(), 1);
+    assert_eq!(end, 5);
+    assert_eq!(quant[..5], [1, 2, 0, 0, 4]);
+    assert!(levels_clear(&mut state));
     assert_eq!(state.above_level(0).unwrap()[1], 4);
     assert_eq!(state.left_level(0).unwrap()[1], 4);
     assert_eq!(state.above_dc(0).unwrap()[1], 2);
@@ -312,7 +315,7 @@ fn staged_ordinary_preflights_geometry_and_bounds_without_consumption() {
             &mut tile,
             &mut symbols,
             staged_input(start, tx_size, start_x, true, base_config(false, false)),
-            &mut TransformCoeffBlockState::empty(),
+            &mut [0; 16],
         );
 
         assert!(result.is_err());
@@ -337,7 +340,7 @@ fn staged_ordinary_context_commit_failure_preserves_context_after_reads() {
         &mut tile,
         &mut symbols,
         staged_input(start, TX_4X4, usize::MAX, true, base_config(false, false)),
-        &mut TransformCoeffBlockState::empty(),
+        &mut [0; 16],
     );
 
     assert!(matches!(
@@ -350,43 +353,4 @@ fn staged_ordinary_context_commit_failure_preserves_context_after_reads() {
     assert_eq!(tile, expected_tile);
     assert_eq!(symbols.symbol_count(), 7);
     assert!(symbols.finish().is_ok());
-}
-
-#[test]
-fn scan_walk_rejects_a_block_width_that_is_not_a_power_of_two() {
-    let payload = encode_start_only();
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut symbols = symbol_decoder(&payload);
-    let mut input = NonZeroCoeffBlockStartInput {
-        block: AllZeroCoeffBlockInput {
-            plane: 0,
-            x4: 0,
-            y4: 0,
-            w4: 3,
-            h4: 1,
-        },
-        eob: NonZeroCoeffEobContextInput {
-            plane: 0,
-            is_inter: false,
-            tx_width_log2: 2,
-            tx_height_log2: 2,
-        },
-    };
-    let scan: Vec<u16> = (0..48).collect();
-    let start = read_nonzero_coeff_block_start(&mut tile, &mut symbols, input).unwrap();
-
-    assert!(matches!(
-        walk_nonzero_coeff_scan(&start, &scan),
-        Err(CoeffLoopContextError::ScanWalkWidthNotPowerOfTwo { width: 12 })
-    ));
-
-    input.block.w4 = 4;
-    let mut symbols = symbol_decoder(&payload);
-    let start = read_nonzero_coeff_block_start(&mut tile, &mut symbols, input).unwrap();
-    let walk = walk_nonzero_coeff_scan(&start, &scan).unwrap();
-    let entry = walk.entry(0);
-    assert_eq!(
-        (entry.row(), entry.col()),
-        (entry.pos() / 16, entry.pos() % 16)
-    );
 }

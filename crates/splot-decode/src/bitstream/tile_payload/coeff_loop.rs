@@ -34,6 +34,7 @@ pub(crate) mod quant_state;
 pub(crate) mod read_quant;
 pub(crate) mod scan_walk;
 pub(crate) mod sign_symbol;
+pub(crate) mod transform_block;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffParseErrorClass {
