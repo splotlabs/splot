@@ -97,6 +97,10 @@ static LEVEL_WORD: [u32; 16] = {
     out
 };
 
+/// The grid-word bit holding a TCQ level's `(tcqState >> 1) & 1`, above the
+/// bytes the neighbour sums read.
+const Q0_BIT: u32 = 24;
+
 /// The luma 2D high-frequency context offset of a grid position, by its
 /// diagonal `row + col` (§ 8.3.2).
 static HF_2D_OFFSET: [u8; LEVEL_WORDS_MASK + 1] = {
@@ -161,6 +165,17 @@ const fn scan_shape_offset(wi: usize, hi: usize) -> usize {
     offset
 }
 
+/// [`scan_shape_offset`] by `[wi][hi]`.
+static SCAN_SHAPE_OFFSETS: [[usize; SCAN_DIMS]; SCAN_DIMS] = {
+    let mut out = [[0; SCAN_DIMS]; SCAN_DIMS];
+    let mut i = 0;
+    while i < SCAN_DIMS * SCAN_DIMS {
+        out[i / SCAN_DIMS][i % SCAN_DIMS] = scan_shape_offset(i / SCAN_DIMS, i % SCAN_DIMS);
+        i += 1;
+    }
+    out
+};
+
 /// The § 5.20.7.30 scan of every block shape per transform class, each
 /// position as its level-grid index with the position itself above bit 16.
 static GRID_SCANS: [[u32; GRID_SCAN_LEN]; 3] = {
@@ -219,7 +234,7 @@ fn grid_scan(
     if eob > len {
         return Err(CoeffLoopContextError::ScanWalkEobOutOfRange { eob, scan_len: len }.into());
     }
-    let start = scan_shape_offset(wi, hi);
+    let start = SCAN_SHAPE_OFFSETS[wi][hi];
     let scans = &GRID_SCANS[tx_class_index(class)];
     Ok(scans.get(start..start + eob).unwrap_or_default())
 }
@@ -674,7 +689,8 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         grid: usize,
         level: u32,
     ) {
-        self.levels[grid & LEVEL_WORDS_MASK] = LEVEL_WORD[level as usize & 15];
+        let q0 = if TCQ { (self.tcq as u32 >> 1) & 1 } else { 0 };
+        self.levels[grid & LEVEL_WORDS_MASK] = LEVEL_WORD[level as usize & 15] | q0 << Q0_BIT;
         if TCQ {
             self.tcq_q0 = (self.tcq >> 2) & 1;
             self.tcq = tcq_next(self.tcq, level);
@@ -789,18 +805,14 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
         visible_max_level(true, plane),
     );
     let mut end = 0;
-    let mut tcq = 0;
     let mut run = symbols.bypass_run();
     let mut level_sum = 0u32;
     for (offset, &scan_entry) in scan.get(1..).unwrap_or_default().iter().enumerate().rev() {
         let scan_index = offset + 1;
         let (pos, grid) = ((scan_entry >> 16) as usize, entry_grid(scan_entry));
-        let level = levels[grid] >> 16;
+        let word = levels[grid];
         levels[grid] = 0;
-        let tcq_q0 = (tcq >> 1) & 1 != 0;
-        if TCQ {
-            tcq = tcq_next(tcq, level);
-        }
+        let (level, tcq_q0) = ((word >> 16) & 0xff, word >> Q0_BIT != 0);
         if level == 0 {
             continue;
         }
@@ -861,8 +873,9 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     let mut quant_state = quant_state.with_cul_level(level_sum);
 
     let (pos, grid) = ((scan[0] >> 16) as usize, entry_grid(scan[0]));
-    let level = levels[grid] >> 16;
+    let word = levels[grid];
     levels[grid] = 0;
+    let level = (word >> 16) & 0xff;
     if facts.is_hidden || level != 0 {
         let index = eob - 1;
         let entry = CoeffScanEntry::new(0, pos, pos >> wl, pos & col_mask);
@@ -890,7 +903,7 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
                 },
             )
             .map_err(CoeffQuantPassError::from)?;
-        quant_state.set_tcq_q0((tcq >> 1) & 1 != 0);
+        quant_state.set_tcq_q0(word >> Q0_BIT != 0);
         let write = quant_state
             .apply_entry(index, entry, sign.sign(), read)
             .map_err(CoeffQuantPassError::from)?;
