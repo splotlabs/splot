@@ -13,6 +13,7 @@ use crate::error::{ReconError, Result};
 use crate::format::{BitDepth, ReconSample};
 use crate::math::round2_i32;
 mod block;
+mod cell;
 mod copy;
 mod eight_bit;
 mod fullpel_u8;
@@ -396,6 +397,11 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
         let row = row.min(self.readable_rows - 1);
         let col = col.min(self.width - 1);
         i32::from(self.samples[row * self.stride + col].to_u16())
+    }
+
+    /// The samples from row `row` on, rows `stride` apart, and the stride.
+    pub(crate) fn rows_from(&self, row: usize) -> Option<(&'a [T], usize)> {
+        Some((self.samples.get(row * self.stride..)?, self.stride))
     }
 
     /// This view of eight-bit storage as `u8` samples.
@@ -865,6 +871,12 @@ fn compound_average<T: ReconSample, O: ReconSample>(
 ) -> bool {
     let (w, h) = (params[0].w, params[0].h);
     let forward = i32::from(cwp_weight);
+    if let (Some(first), Some(second)) = (references[0].as_u8(), references[1].as_u8())
+        && let Some(output) = O::u8_slice_mut(output)
+        && cell::compound([&first, &second], params, forward, output, output_stride)
+    {
+        return true;
+    }
     if block::small_compound(references, params, forward, scratch, output, output_stride) {
         return true;
     }

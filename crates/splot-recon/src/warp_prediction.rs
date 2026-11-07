@@ -244,6 +244,19 @@ impl PreparedWarpPrediction {
                 };
                 let section_w = (width - local_x).min(WARPED_BLOCK_SIZE);
                 let section_h = (height - local_y).min(WARPED_BLOCK_SIZE);
+                let start = local_y * stride + local_x;
+                if let (Some(view), Some(target)) = (
+                    reference.as_u8(),
+                    output.get_mut(start..).and_then(T::u8_slice_mut),
+                ) && put_u8_section(
+                    &view,
+                    &params,
+                    &self.shear,
+                    target,
+                    (stride, section_w, section_h),
+                )? {
+                    continue;
+                }
                 let store = |row: usize, rounded: i32x8<S>| {
                     if row >= section_h {
                         return Ok(());
@@ -739,6 +752,29 @@ fn warp_predict_block_prepared_into<T: ReconSample>(
             Ok(())
         })
     })
+}
+
+/// Predicts one interior 8-bit section of a single-reference block straight
+/// into its output rows; `false` without writing outside that subset.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn put_u8_section(
+    reference: &ReferencePlaneView<'_, u8>,
+    params: &WarpPredictBlockParams,
+    shear: &Shear,
+    output: &mut [u8],
+    size: (usize, usize, usize),
+) -> Result<bool> {
+    let projected = project_section_center(params)?;
+    let Some(origin) = interior_warp_source_origin(reference, params, &projected) else {
+        return Ok(false);
+    };
+    if shear.alpha == 0 && shear.beta == 0 && two_tap_phase(projected.sx4).is_some() {
+        return Ok(false);
+    }
+    Ok(eight_bit::put(
+        reference, shear, &projected, origin, output, size,
+    ))
 }
 
 /// Runs both § 7.13.3.19 passes for one 8x8 section and hands each rounded

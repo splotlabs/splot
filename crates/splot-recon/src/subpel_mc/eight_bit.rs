@@ -43,6 +43,26 @@ pub(super) fn predict<T: ReconSample>(
     false
 }
 
+/// Stores the `Clip1` single-reference prediction of `block` into `output`
+/// rows `stride` apart, or returns `false` without writing when the block is
+/// outside the byte-lane subset.
+pub(super) fn put(
+    block: &Block<'_, u8>,
+    stage: &mut [i16],
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = fearless_simd::Level::baseline().as_avx2()
+        && fits(block)
+    {
+        avx2::put(token, block, stage, output, stride);
+        return true;
+    }
+    let _ = (block, stage, output, stride);
+    false
+}
+
 /// Predicts both blocks of a compound cell of at most four groups and
 /// stores their COMPOUND_AVERAGE into `output`, or returns `false` without
 /// writing when a block is outside the byte-lane subset.
@@ -86,7 +106,7 @@ const fn width(w: usize) -> usize {
 }
 
 #[cfg(target_arch = "x86_64")]
-mod avx2 {
+pub(super) mod avx2 {
     use super::super::block::{Block, Sink, Taps};
     use core::arch::x86_64::*;
     use fearless_simd::{Avx2, SimdBase, SimdFrom, i16x8, i16x16, i32x4, i32x8, u8x16, u8x32};
@@ -163,13 +183,7 @@ mod avx2 {
         ) {
             let w = block.w;
             match sink {
-                Sink::Put { output, stride } => {
-                    let stride = *stride;
-                    passes(t, block, true, stage, &mut |width, row, strip, values| {
-                        let at = row * stride + strip * width;
-                        by_width!(width, store_bytes(t, output, at, stride, values));
-                    });
-                }
+                Sink::Put { output, stride } => put_rows(t, block, stage, output, *stride),
                 Sink::PutWide { output, stride, .. } => {
                     let stride = *stride;
                     passes(t, block, true, stage, &mut |width, row, strip, values| {
@@ -203,6 +217,35 @@ mod avx2 {
             }
         }
     );
+
+    fearless_simd::kernel!(
+        #[inline]
+        pub(super) fn put(
+            t: Avx2,
+            block: &Block<'_, u8>,
+            stage: &mut [i16],
+            output: &mut [u8],
+            stride: usize,
+        ) {
+            put_rows(t, block, stage, output, stride);
+        }
+    );
+
+    /// The `Clip1` single-reference prediction of `block` into `output`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn put_rows(
+        t: Avx2,
+        block: &Block<'_, u8>,
+        stage: &mut [i16],
+        output: &mut [u8],
+        stride: usize,
+    ) {
+        passes(t, block, true, stage, &mut |width, row, strip, values| {
+            let at = row * stride + strip * width;
+            by_width!(width, store_bytes(t, output, at, stride, values));
+        });
+    }
 
     fearless_simd::kernel!(
         #[inline]
@@ -291,7 +334,7 @@ mod avx2 {
     /// `Clip1`.
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn average(first: __m256i, second: __m256i, forward: i32) -> __m256i {
+    pub(in crate::subpel_mc) fn average(first: __m256i, second: __m256i, forward: i32) -> __m256i {
         if forward == 8 {
             return _mm256_mulhrs_epi16(
                 _mm256_add_epi16(first, second),
@@ -325,7 +368,7 @@ mod avx2 {
     /// holds the bytes its outputs read.
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn tap_bytes<const W: usize>(
+    pub(in crate::subpel_mc) fn tap_bytes<const W: usize>(
         t: Avx2,
         source: &[u8],
         starts: [usize; 4],
@@ -382,7 +425,7 @@ mod avx2 {
         [start(0), start(1), start(2), start(3)]
     }
 
-    struct Horizontal {
+    pub(in crate::subpel_mc) struct Horizontal {
         shuffles: [__m256i; 4],
         weights: [__m256i; 4],
     }
@@ -390,7 +433,10 @@ mod avx2 {
     impl Horizontal {
         #[inline]
         #[target_feature(enable = "avx2")]
-        fn new<const W: usize, const P: usize>(t: Avx2, taps: &Taps) -> Self {
+        pub(in crate::subpel_mc) fn new<const W: usize, const P: usize>(
+            t: Avx2,
+            taps: &Taps,
+        ) -> Self {
             let patterns = if W == 4 {
                 &HALF_SHUFFLES
             } else {
@@ -398,7 +444,7 @@ mod avx2 {
             };
             Self {
                 shuffles: core::array::from_fn(|pair| {
-                    u8x32::load_array_ref(t, &patterns[pair.min(P - 1)]).into()
+                    u8x32::load_array_ref(t, &patterns[pair.min(P.max(1) - 1)]).into()
                 }),
                 weights: byte_weights::<P>(taps),
             }
@@ -407,7 +453,7 @@ mod avx2 {
         /// The halved-tap sums of the 16 outputs of `bytes`.
         #[inline]
         #[target_feature(enable = "avx2")]
-        fn sums<const P: usize>(&self, bytes: __m256i) -> __m256i {
+        pub(in crate::subpel_mc) fn sums<const P: usize>(&self, bytes: __m256i) -> __m256i {
             let mut sums = _mm256_maddubs_epi16(
                 _mm256_shuffle_epi8(bytes, self.shuffles[0]),
                 self.weights[0],
@@ -428,7 +474,7 @@ mod avx2 {
     #[inline]
     #[target_feature(enable = "avx2")]
     fn byte_weights<const P: usize>(taps: &Taps) -> [__m256i; 4] {
-        core::array::from_fn(|pair| _mm256_set1_epi16(taps.bytes[pair.min(P - 1)]))
+        core::array::from_fn(|pair| _mm256_set1_epi16(taps.bytes[pair.min(P.max(1) - 1)]))
     }
 
     #[inline(never)]
@@ -610,7 +656,7 @@ mod avx2 {
         out: &mut impl FnMut(usize, usize, usize, __m256i),
     ) {
         let weights: [__m256i; 4] =
-            core::array::from_fn(|pair| _mm256_set1_epi32(taps.words[pair.min(P - 1)]));
+            core::array::from_fn(|pair| _mm256_set1_epi32(taps.words[pair.min(P.max(1) - 1)]));
         let (bias, shift) = if put { (1 << 9, 10) } else { (1 << 5, 6) };
         let (bias, shift) = (_mm256_set1_epi32(bias), _mm_cvtsi32_si128(shift));
         let span = (2 * P - 1) * W + 16;
@@ -762,7 +808,7 @@ mod avx2 {
     /// `Clip1` of the 16 values of a group into `output` from `at`.
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn store_bytes<const W: usize>(
+    pub(in crate::subpel_mc) fn store_bytes<const W: usize>(
         t: Avx2,
         output: &mut [u8],
         at: usize,
