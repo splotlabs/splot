@@ -378,6 +378,27 @@ fn filter_run_matches_scalar_samples_with_band_classes() {
             }
         }
         let mut bytes: Vec<u8> = base.iter().map(|&sample| sample as u8).collect();
+        let mut tiled_samples = vec![0; simd::TILE_STRIDE * (height + GDF_READ_RADIUS * 2)];
+        for (tiled, row) in tiled_samples
+            .chunks_exact_mut(simd::TILE_STRIDE)
+            .zip(samples.chunks_exact(stride))
+        {
+            tiled[..stride].copy_from_slice(row);
+        }
+        let tiled = GdfSource {
+            samples: &tiled_samples,
+            stride: simd::TILE_STRIDE,
+            ..source
+        };
+        scratch.errors = vec![0; 2 * simd::ClassScratch::error_row(width)];
+        let mut tiled_actual = base.clone();
+        assert!(
+            simd::filter_run(&tiled, ORIGIN, &block, &mut tiled_actual, &mut scratch).is_some()
+        );
+        assert_eq!(
+            tiled_actual, expected,
+            "tiled, width {width}, height {height}"
+        );
         let mut actual = base;
         assert!(simd::filter_run(&source, ORIGIN, &block, &mut actual, &mut scratch).is_some());
         assert_eq!(actual, expected, "width {width}, height {height}");

@@ -612,6 +612,8 @@ fn filter_run_tiles<T: ReconSample>(
     GdfSource::fill_stripe_tiles(&mut scratch.source, sources, bounds, run, area)?;
     let grads = 2 * ClassScratch::chunks(simd::TILE_COLS.min(run.width) >> 1);
     resize_overwrite_scratch(&mut scratch.class_scratch.grads, grads)?;
+    let errors = 2 * ClassScratch::error_row(simd::TILE_COLS.min(run.width));
+    resize_overwrite_scratch(&mut scratch.class_scratch.errors, errors)?;
     for (index, samples) in scratch.source.chunks_exact(area).enumerate() {
         let tile = tile(index);
         let source = GdfSource::tile(samples, &tile)?;
@@ -2122,6 +2124,7 @@ mod tests {
         let mut reused_classes = vec![GdfClass(i32::MAX); classes.len() + 4];
         let mut reused_class_scratch = ClassScratch {
             grads: vec![[[u16::MAX; 16]; 4]; class_scratch.grads.len() + 3],
+            errors: Vec::new(),
         };
         let reused_result = band_classes_from_source(
             &reused_source,
