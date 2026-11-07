@@ -147,10 +147,16 @@ fn cdef_direction_input<S: SimdToken, const STRIDE: usize, const AREA: usize>(
     pad: &[u16; AREA],
     coeff_shift: u32,
 ) -> [i16x8<S>; 8] {
-    core::array::from_fn(|i| {
+    let row = |i: usize| {
         let start = (i + 2) * STRIDE + 2;
-        (u16x8::from_slice(simd, &pad[start..start + 8]) >> coeff_shift).bitcast::<i16x8<S>>() - 128
-    })
+        u16x8::from_slice(simd, &pad[start..start + 8])
+    };
+    // 8-bit rows skip the shift: a register-count shift is two micro-ops.
+    if coeff_shift == 0 {
+        core::array::from_fn(|i| row(i).bitcast::<i16x8<S>>() - 128)
+    } else {
+        core::array::from_fn(|i| (row(i) >> coeff_shift).bitcast::<i16x8<S>>() - 128)
+    }
 }
 
 #[allow(clippy::inline_always, reason = "measured CDEF direction hot path")]
