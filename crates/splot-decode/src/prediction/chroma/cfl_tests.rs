@@ -142,12 +142,27 @@ fn analyse<T: ReconSample>(
     let mut edges = CflLumaEdges::default();
     let mut ac = Vec::new();
     let average = with_luma!(frame, filter, |luma| baseline_simd!(simd => {
-        edges.gather(simd, &luma, &planes, block).unwrap();
-        let average = edges.average_q3(block, neighbours).unwrap();
-        luma.fill_ac(simd, block, average, &mut ac).unwrap();
-        average
+        edges.gather_above(simd, &luma, &planes, block).unwrap();
+        let left = (block.x > 0).then_some(&mut edges.left[..block.height]);
+        luma.fill_luma(simd, block, left, &mut ac).unwrap();
+        edges.average_q3(block, neighbours).unwrap()
     }));
+    for luma in &mut ac {
+        *luma -= average;
+    }
     (edges, average, ac)
+}
+
+fn implicit_alpha<T: ReconSample>(
+    edges: &CflLumaEdges,
+    frame: &CurrentFrameWorkspace<T>,
+    block: CflBlock,
+) -> i32 {
+    let chroma = PlaneSamples::of(frame, PlaneId::U).unwrap();
+    edges
+        .chroma_model(&chroma, block, interior(), true)
+        .unwrap()
+        .1
 }
 
 fn explicit_prediction(
@@ -159,16 +174,8 @@ fn explicit_prediction(
 ) -> Vec<u16> {
     let mut prediction = vec![0u16; ac.len()];
     let max = i32::from(bit_depth.max_sample());
-    cfl_predict_block(
-        dc,
-        i32::from(alpha) * CFL_ALPHA_SCALE,
-        max,
-        ac,
-        width,
-        &mut prediction,
-        width,
-    )
-    .unwrap();
+    let model = [dc, i32::from(alpha) * CFL_ALPHA_SCALE, 0, max];
+    cfl_predict_block(model, ac, width, &mut prediction, width).unwrap();
     prediction
 }
 
@@ -282,9 +289,12 @@ fn cfl_420_simd_matches_scalar_at_block_and_frame_edges() {
             let block = cfl_block(x, y, width, height, 16, BitDepth::Ten);
             let mut actual = Vec::new();
             with_luma!(&frame, filter as u8, |luma| baseline_simd!(simd => {
-                luma.fill_ac(simd, block, average_q3, &mut actual)
+                luma.fill_luma(simd, block, None, &mut actual)
             }))
             .unwrap();
+            for luma in &mut actual {
+                *luma -= average_q3;
+            }
             let mut expected = Vec::with_capacity(width * height);
             for row in 0..height {
                 let luma_y = 2 * (y + row).min((plane_height - 1) >> 1);
@@ -396,12 +406,7 @@ fn cfl_left_average_uses_block_top_not_internal_64_pixel_boundaries() {
     let (edges, average, luma_ac) = analyse(&frame, block, 2, interior());
     assert_eq!(average, 816);
     assert_eq!(luma_ac[4 * 16], -16);
-    assert_eq!(
-        edges
-            .derive_alpha_q3(&frame, PlaneId::U, block, interior())
-            .unwrap(),
-        255
-    );
+    assert_eq!(implicit_alpha(&edges, &frame, block), 255);
     assert_eq!(
         explicit_prediction(508, -16, &luma_ac, 16, BitDepth::Ten)[4 * 16],
         512
@@ -432,12 +437,7 @@ fn cfl_derived_alpha_above_uses_transform_local_boundary() {
     assert_eq!(q3(&frame, 1, 32, 32, false, false, min_luma_ref_y), 900);
     let block = cfl_block(28, 33, 64, 16, 32, BitDepth::Ten);
     let (edges, _, _) = analyse(&frame, block, 1, interior());
-    assert_eq!(
-        edges
-            .derive_alpha_q3(&frame, PlaneId::U, block, interior())
-            .unwrap(),
-        255
-    );
+    assert_eq!(implicit_alpha(&edges, &frame, block), 255);
 }
 
 #[test]
@@ -699,10 +699,11 @@ fn cfl_predict_lanes_match_scalar_over_random_inputs() {
                 .map(|_| (lcg(&mut state) % (16 * max as usize + 1)) as i32 - 8 * max)
                 .collect();
             let mut actual = vec![0u16; len];
-            cfl_predict_block(dc, alpha_q3, max, &luma_ac, len, &mut actual, len).unwrap();
+            let model = [dc, alpha_q3, 0, max];
+            cfl_predict_block(model, &luma_ac, len, &mut actual, len).unwrap();
             let expected: Vec<u16> = luma_ac
                 .iter()
-                .map(|&ac| cfl_predict(dc, alpha_q3, max, ac) as u16)
+                .map(|&ac| cfl_predict(model, ac) as u16)
                 .collect();
             assert_eq!(actual, expected, "dc={dc} alpha={alpha_q3}");
         }
@@ -718,14 +719,13 @@ fn specialised_run<const F: usize>(
     min_luma_ref_y: Option<isize>,
     x0: usize,
     clamp_first: bool,
-    offset: i32,
     len: usize,
 ) -> Vec<i32> {
     let samples = frame.plane(PlaneId::Y).unwrap().samples();
     let luma = CflLuma::<_, F>::new(frame, samples, F).unwrap();
     let rows = luma.row(y - 1, clamp_y, min_luma_ref_y).unwrap();
     let mut run = vec![0; len];
-    baseline_simd!(simd => luma.q3_run(simd, &rows, x0, clamp_first, offset, &mut run));
+    baseline_simd!(simd => luma.q3_run(simd, &rows, x0, clamp_first, &mut run));
     run
 }
 
@@ -748,31 +748,22 @@ fn cfl_luma_runs_match_per_sample_q3_over_random_planes() {
                     let rows = luma.row(y - 1, clamp_y, min_luma_ref_y).unwrap();
                     let x0 = lcg(&mut state) % (width / 2);
                     let clamp_first = lcg(&mut state).is_multiple_of(2);
-                    let offset = (lcg(&mut state) % 100) as i32;
                     let mut run = vec![0; (width / 2 - x0).min(70)];
-                    baseline_simd!(simd => luma.q3_run(simd, &rows, x0, clamp_first, offset, &mut run));
+                    baseline_simd!(simd => luma.q3_run(simd, &rows, x0, clamp_first, &mut run));
                     for (i, &q3) in run.iter().enumerate() {
-                        let expected = luma.q3(&rows, x0 + i, clamp_first && i == 0) - offset;
+                        let expected = luma.q3(&rows, x0 + i, clamp_first && i == 0);
                         assert_eq!(q3, expected, "x0={x0} i={i}");
                     }
                     lane_runs += usize::from(x0 > 0 && run.len() > 8);
-                    let args = (
-                        y,
-                        clamp_y,
-                        min_luma_ref_y,
-                        x0,
-                        clamp_first,
-                        offset,
-                        run.len(),
-                    );
+                    let args = (y, clamp_y, min_luma_ref_y, x0, clamp_first, run.len());
                     let specialised = match filter {
                         0 => specialised_run::<0>,
                         1 => specialised_run::<1>,
                         _ => specialised_run::<2>,
                     };
-                    let (y, clamp_y, min, x0, clamp_first, offset, len) = args;
+                    let (y, clamp_y, min, x0, clamp_first, len) = args;
                     assert_eq!(
-                        specialised(&frame, y, clamp_y, min, x0, clamp_first, offset, len),
+                        specialised(&frame, y, clamp_y, min, x0, clamp_first, len),
                         run
                     );
                 }
@@ -780,4 +771,129 @@ fn cfl_luma_runs_match_per_sample_q3_over_random_planes() {
         }
     }
     assert!(lane_runs > 500, "{lane_runs}");
+}
+
+/// [`CflLuma::fill_luma`] of random blocks inside `frame` against per-sample
+/// [`CflLuma::q3`] with the 4:2:0 filter `F`.
+fn check_u8_block_luma<const F: usize>(frame: &CurrentFrameWorkspace<u8>, state: &mut u64) {
+    let samples = frame.plane(PlaneId::Y).unwrap().samples();
+    let luma = CflLuma::<u8, F>::new(frame, samples, F).unwrap();
+    let size = frame.plane(PlaneId::U).unwrap().storage_size();
+    let (width, height) = (size.width(), size.height());
+    for _ in 0..40 {
+        let log2 = |state: &mut u64, limit: usize| {
+            1usize << (2 + lcg(state) % 5).min(limit.ilog2() as usize)
+        };
+        let block_width = log2(state, width);
+        let block_height = log2(state, height);
+        let x = lcg(state) % (width - block_width + 1);
+        let y = lcg(state) % (height - block_height + 1);
+        let block = cfl_block(x, y, block_width, block_height, 16, BitDepth::Eight);
+        let mut left = [0; MAX_CFL_AXIS];
+        let mut actual = Vec::new();
+        baseline_simd!(simd => luma.fill_luma(
+            simd,
+            block,
+            (x > 0).then_some(&mut left[..block_height]),
+            &mut actual,
+        ))
+        .unwrap();
+        for row in 0..block_height {
+            let luma_y = 2 * (y + row);
+            let rows = luma
+                .row(y + row, row == 0 || luma_y.is_multiple_of(64), None)
+                .unwrap();
+            for col in 0..block_width {
+                let clamp_x = col == 0 || (2 * (x + col)).is_multiple_of(64);
+                assert_eq!(
+                    actual[row * block_width + col],
+                    luma.q3(&rows, x + col, clamp_x),
+                    "F={F} x={x} y={y} {block_width}x{block_height} row={row} col={col}"
+                );
+            }
+            if x > 0 {
+                let rows = luma.row(y + row, row == 0, None).unwrap();
+                assert_eq!(
+                    left[row],
+                    luma.q3(&rows, x - 1, false),
+                    "F={F} left row {row}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn cfl_420_u8_block_luma_matches_per_sample_q3() {
+    let mut state = 23;
+    for _ in 0..30 {
+        let width = 16 + 4 * (lcg(&mut state) % 60);
+        let height = 16 + 4 * (lcg(&mut state) % 40);
+        let mut frame = workspace_sized(PixelFormat::Yuv420, width, height);
+        for y in 0..height {
+            for x in 0..width {
+                let sample = (lcg(&mut state) % 256) as u8;
+                frame
+                    .set_reconstructed_sample(PlaneId::Y, x, y, sample)
+                    .unwrap();
+            }
+        }
+        check_u8_block_luma::<0>(&frame, &mut state);
+        check_u8_block_luma::<1>(&frame, &mut state);
+        check_u8_block_luma::<2>(&frame, &mut state);
+    }
+}
+
+/// [`CflLuma::block_luma_420`] with only first-row and first-column clamps
+/// (the § 7.13.6 MHCCP reference rows) against [`CflLuma::q3_run`].
+fn check_u8_reference_luma<const F: usize>(frame: &CurrentFrameWorkspace<u8>, state: &mut u64) {
+    let samples = frame.plane(PlaneId::Y).unwrap().samples();
+    let luma = CflLuma::<u8, F>::new(frame, samples, F).unwrap();
+    let size = frame.plane(PlaneId::U).unwrap().storage_size();
+    let (width, height) = (size.width(), size.height());
+    let mut fast_runs = 0;
+    for _ in 0..60 {
+        let block_width = 1 + lcg(state) % width.min(40);
+        let block_height = 1 + lcg(state) % height.min(20);
+        let x = lcg(state) % (width - block_width + 1);
+        let y = lcg(state) % (height - block_height + 1);
+        let (clamp_row0, clamp_col0) = (lcg(state).is_multiple_of(2), lcg(state).is_multiple_of(2));
+        let mut actual = vec![0; block_width * block_height];
+        let clamps = [false, clamp_row0, clamp_col0];
+        if !luma.block_luma_420(x, y, block_width, clamps, &mut None, &mut actual) {
+            continue;
+        }
+        fast_runs += 1;
+        for (row, actual) in actual.chunks_exact(block_width).enumerate() {
+            let rows = luma.row(y + row, clamp_row0 && row == 0, None).unwrap();
+            let mut expected = vec![0; block_width];
+            baseline_simd!(simd => luma.q3_run(simd, &rows, x, clamp_col0, &mut expected));
+            assert_eq!(
+                actual, expected,
+                "F={F} x={x} y={y} {block_width}x{block_height} row={row}"
+            );
+        }
+    }
+    assert!(fast_runs > 10, "{fast_runs}");
+}
+
+#[test]
+fn mhccp_420_u8_reference_luma_matches_q3_runs() {
+    let mut state = 29;
+    for _ in 0..20 {
+        let width = 64 + 4 * (lcg(&mut state) % 40);
+        let height = 32 + 4 * (lcg(&mut state) % 30);
+        let mut frame = workspace_sized(PixelFormat::Yuv420, width, height);
+        for y in 0..height {
+            for x in 0..width {
+                let sample = (lcg(&mut state) % 256) as u8;
+                frame
+                    .set_reconstructed_sample(PlaneId::Y, x, y, sample)
+                    .unwrap();
+            }
+        }
+        check_u8_reference_luma::<0>(&frame, &mut state);
+        check_u8_reference_luma::<1>(&frame, &mut state);
+        check_u8_reference_luma::<2>(&frame, &mut state);
+    }
 }
