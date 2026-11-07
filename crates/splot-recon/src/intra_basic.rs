@@ -198,10 +198,11 @@ fn paeth_rows<S: Simd, O: IntraLaneSample>(
     let top_left = i16x16::splat(simd, top_left as i16);
     let lane = |value: O| value.to_u16() as i16;
     if width < 16 {
-        let above = i16x16::from_fn(simd, |j| lane(above[j % width]));
-        let rows = 16 / width;
+        let log2_width = u32::from(size.log2_width());
+        let above = i16x16::from_fn(simd, |j| lane(above[j & (width - 1)]));
+        let rows = 16 >> log2_width;
         for row in (0..height).step_by(rows) {
-            let left = i16x16::from_fn(simd, |j| lane(left[row + j / width]));
+            let left = i16x16::from_fn(simd, |j| lane(left[row + (j >> log2_width)]));
             let mut values = [O::default(); 16];
             O::store16(
                 simd,

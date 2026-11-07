@@ -87,7 +87,11 @@ impl PaddedEdge {
 
     /// Filters `out.len()` samples from the window at `first`: `out[j] =
     /// Clip1(Round2(Σ taps[t] * edge[first + j + t], 7))`.
-    #[inline]
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: one call per line was the line cost"
+    )]
+    #[inline(always)]
     pub(super) fn line(
         &self,
         filter: LineFilter,
