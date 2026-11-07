@@ -898,12 +898,14 @@ pub(crate) enum TileCdfError {
         context_update_tile_id: u32,
         tile_count: u32,
     },
+    #[cfg(test)]
     #[error("{table} bSize={b_size} is outside 0..{max_exclusive}")]
     BlockSizeOutOfRange {
         table: &'static str,
         b_size: usize,
         max_exclusive: usize,
     },
+    #[cfg(test)]
     #[error("{array}[{plane_start}][{index}] is unavailable; length {len}")]
     PartitionNeighborOutOfRange {
         array: &'static str,

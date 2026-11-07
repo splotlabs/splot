@@ -975,8 +975,8 @@ impl IntraTileSyntax {
             mode = mode.with_uv_cfl(block_modes.is_cfl());
         }
         publish_intra_leaf_state::<core::convert::Infallible>(
-            self.frame,
-            leaf.call,
+            &self.frame,
+            &leaf.call,
             &leaf.frontier,
             mode,
             leaf.call.b_size,

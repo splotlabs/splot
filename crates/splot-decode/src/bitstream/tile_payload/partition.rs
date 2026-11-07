@@ -91,7 +91,7 @@ impl AllowedPartitions {
         self.bits.count_ones() as usize
     }
 
-    fn only(self) -> Option<PartitionType> {
+    pub(crate) fn only(self) -> Option<PartitionType> {
         if self.bits.is_power_of_two() {
             PartitionType::ALL
                 .get(self.bits.trailing_zeros() as usize)

@@ -7,19 +7,19 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::DecodeTileWorkUnit;
 use super::intra_joint_modes::{
-    IsCflContext, TileFscModeState, TileFscModeStateError, TileIntraJointModeState,
-    TileIntraJointModeStateError, TileLumaPaletteState, TileLumaPaletteStateError, TileUseDipState,
-    TileUseDipStateError, TileUsesMrlsState, TileUsesMrlsStateError, TileUvCflState,
-    TileUvCflStateError,
+    TileFscModeState, TileFscModeStateError, TileIntraJointModeState, TileIntraJointModeStateError,
+    TileLumaPaletteState, TileLumaPaletteStateError, TileUseDipState, TileUseDipStateError,
+    TileUsesMrlsState, TileUsesMrlsStateError, TileUvCflState, TileUvCflStateError,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition_allowed::PartitionFeatureFlags;
 pub(crate) use super::partition_traversal::GeneralIntraPartitionTreeOutput as GeneralIntraMultiblockOutput;
 use super::partition_traversal::{
     DecodeBlockFrontier, DecodedLeafPublication, GeneralIntraLeafMode,
-    GeneralIntraPartitionTreeCursor, GeneralIntraTreeWalkError, TilePartitionFrameFacts,
-    TilePartitionLoopRestorationFrameState, TilePartitionLoopRestorationPlaneTool,
-    TilePartitionLoopRestorationState, TilePartitionTraversalError, TileTraversalStorage,
+    GeneralIntraPartitionTreeCursor, GeneralIntraTreeWalkError, LeafCflContext,
+    TilePartitionFrameFacts, TilePartitionLoopRestorationFrameState,
+    TilePartitionLoopRestorationPlaneTool, TilePartitionLoopRestorationState,
+    TilePartitionTraversalError, TileTraversalStorage,
 };
 use crate::DecodeLimits;
 
@@ -135,7 +135,7 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
             &TileUseDipState,
             &TileFscModeState,
             &TileLumaPaletteState,
-            IsCflContext,
+            LeafCflContext<'_>,
         ) -> Result<(GeneralIntraLeafMode, C), E>,
         P: FnMut(DecodedLeafPublication, C),
     {

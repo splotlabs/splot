@@ -57,11 +57,10 @@ fn directional_both_neighbours_raise_context_to_two() {
 }
 
 #[test]
-fn non_intra_block_neighbours_read_as_dc_and_still_move_the_window() {
+fn unrecorded_block_neighbours_read_as_dc_and_a_reused_row_is_flagged() {
     let mut state = TileIntraJointModeState::new_for_tile(0..64, 0..64, SB_N4).unwrap();
     state.record_block(0, 0, 16, 16, joint_mode(36));
-    state.record_non_intra_block(16, 0);
-    state.record_non_intra_block(16, 16);
+    state.grid_mut().enter_row(16);
     assert_eq!(
         state.neighbour_joint_modes(32, 16, 16, 16),
         [IntraJointMode::DC; 2]
@@ -71,7 +70,7 @@ fn non_intra_block_neighbours_read_as_dc_and_still_move_the_window() {
         joint_mode(36)
     );
     assert!(!state.window_violated());
-    state.record_non_intra_block(48, 0);
+    state.grid_mut().enter_row(48);
     assert_eq!(
         state.neighbour_joint_modes(16, 0, 16, 16)[1],
         IntraJointMode::DC
