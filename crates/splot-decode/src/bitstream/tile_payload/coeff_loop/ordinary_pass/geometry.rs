@@ -11,14 +11,12 @@ use crate::bitstream::tile_payload::general_intra_residual::wide_angle_mapping;
 
 use super::super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::super::cdf::{TileCdfSelector, TileCdfSubset};
-use super::super::super::coeff_state::TileCoeffContextState;
+use super::super::super::coeff_state::{CoeffBlockLines, TileCoeffContextState};
 use super::super::base_level_pass::CoeffBaseDerivedLevelPassConfig;
 use super::super::branch::NonZeroCoeffBlockStart;
 use super::super::max_level::CoeffTransformClass;
-use super::{
-    CoeffOrdinaryBranchError, CoeffOrdinaryStateContextConfig, CoeffOrdinaryStateContextPassInput,
-    apply_nonzero_coeff_ordinary_pass_with_state_context,
-};
+use super::super::transform_block::{CoeffTransformBlockInput, decode_ordinary_transform_block};
+use super::CoeffOrdinaryBranchError;
 
 const TX_SIZES: usize = 25;
 const DCT_DCT: usize = 0;
@@ -51,10 +49,12 @@ const TX_TYPE_IN_SET_INTER: [[u8; 16]; 9] = [
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
 ];
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct CoeffOrdinaryStagedLosslessNonZeroInput {
     pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
     pub(crate) start: NonZeroCoeffBlockStart,
+    /// The block's context-line spans, checked by the caller.
+    pub(crate) lines: CoeffBlockLines,
     /// The block's `PlaneTxType`, derived by the caller.
     pub(crate) plane_tx_type: usize,
     pub(crate) parity_hiding: bool,
@@ -112,16 +112,14 @@ pub(crate) struct CoeffOrdinaryTxSizeGeometryConfig {
     pub(crate) tx_size: usize,
 }
 
-/// The adjusted width, height and width log2, the transform-size context
-/// and the 4x4 extent of one `TxSize`.
+/// The adjusted width, height and width log2 and the transform-size
+/// context of one `TxSize`.
 #[derive(Clone, Copy)]
 struct TxGeometry {
     width: u8,
     height: u8,
     width_log2: u8,
     size_ctx: u8,
-    w4: u8,
-    h4: u8,
 }
 
 /// [`TxGeometry`] of every `TxSize`: `Adjusted_Tx_Size` for the
@@ -133,8 +131,6 @@ static TX_GEOMETRY: [TxGeometry; TX_SIZES] = {
         height: 0,
         width_log2: 0,
         size_ctx: 0,
-        w4: 0,
-        h4: 0,
     }; TX_SIZES];
     let mut tx_size = 0;
     while tx_size < TX_SIZES {
@@ -144,8 +140,6 @@ static TX_GEOMETRY: [TxGeometry; TX_SIZES] = {
             height: TX_HEIGHT[adjusted] as u8,
             width_log2: TX_WIDTH_LOG2[adjusted] as u8,
             size_ctx: ((TX_SIZE_SQR[tx_size] + TX_SIZE_SQR_UP[tx_size] + 1) >> 1) as u8,
-            w4: (TX_WIDTH[tx_size] >> 2) as u8,
-            h4: (TX_HEIGHT[tx_size] >> 2) as u8,
         };
         tx_size += 1;
     }
@@ -166,9 +160,9 @@ pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         });
     };
     let lossy = !input.lossless;
-    let pass_input = CoeffOrdinaryStateContextPassInput {
+    let block = CoeffTransformBlockInput {
         start: input.start,
-        base_config: CoeffBaseDerivedLevelPassConfig {
+        config: CoeffBaseDerivedLevelPassConfig {
             tx_size_ctx: usize::from(tx.size_ctx),
             tx_width_log2: u32::from(tx.width_log2),
             tx_width: usize::from(tx.width),
@@ -178,15 +172,10 @@ pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
             parity_hiding: lossy && input.parity_hiding,
             use_tcq: lossy && input.use_tcq,
         },
-        state_context: CoeffOrdinaryStateContextConfig {
-            x4: geometry.start_x >> 2,
-            y4: geometry.start_y >> 2,
-            w4: usize::from(tx.w4),
-            h4: usize::from(tx.h4),
-        },
+        lines: input.lines,
         lossless: input.lossless,
     };
-    apply_nonzero_coeff_ordinary_pass_with_state_context(state, cdfs, symbols, pass_input, quant)
+    decode_ordinary_transform_block(state, cdfs, symbols, block, quant)
         .map_err(CoeffOrdinaryBranchError::from)
 }
 

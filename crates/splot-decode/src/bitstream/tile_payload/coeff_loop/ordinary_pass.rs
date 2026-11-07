@@ -3,34 +3,13 @@
 
 //! Ordinary non-FSC coefficient pass composition.
 
-use splot_core::symbol::SymbolDecoder;
-
-use super::super::cdf::TileCdfSubset;
-use super::super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
-use super::base_level_pass::{CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError};
-use super::branch::NonZeroCoeffBlockStart;
+use super::super::coeff_state::TileCoeffStateError;
+use super::CoeffLoopContextError;
+use super::base_level_pass::CoeffBaseDerivedLevelPassError;
 use super::quant_pass::CoeffQuantPassError;
 use super::sign_symbol::CoeffSignReadError;
-use super::transform_block::{CoeffTransformBlockInput, decode_ordinary_transform_block};
-use super::{AllZeroCoeffBlockInput, CoeffLoopContextError};
 
 pub(crate) mod geometry;
-
-#[derive(Clone, Copy)]
-pub(crate) struct CoeffOrdinaryStateContextPassInput {
-    pub(crate) start: NonZeroCoeffBlockStart,
-    pub(crate) base_config: CoeffBaseDerivedLevelPassConfig,
-    pub(crate) state_context: CoeffOrdinaryStateContextConfig,
-    pub(crate) lossless: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CoeffOrdinaryStateContextConfig {
-    pub(crate) x4: usize,
-    pub(crate) y4: usize,
-    pub(crate) w4: usize,
-    pub(crate) h4: usize,
-}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffOrdinaryPassError {
@@ -76,36 +55,6 @@ pub(crate) enum CoeffOrdinaryBranchError {
     DirectionalAngleOverflow { uv_mode: usize, angle_delta_uv: i32 },
     #[error("ordinary coefficient branch nonzero pass failed: {0}")]
     Ordinary(#[from] CoeffOrdinaryPassError),
-}
-
-/// Decodes an ordinary block's coefficients into `quant` and commits its
-/// contexts; returns one past its last nonzero `quant` entry.
-pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
-    state: &mut TileCoeffContextState,
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: CoeffOrdinaryStateContextPassInput,
-    quant: &mut [i32],
-) -> Result<usize, CoeffOrdinaryPassError> {
-    let context = input.state_context;
-    decode_ordinary_transform_block(
-        state,
-        cdfs,
-        symbols,
-        CoeffTransformBlockInput {
-            start: input.start,
-            config: input.base_config,
-            context: AllZeroCoeffBlockInput {
-                plane: input.base_config.plane,
-                x4: context.x4,
-                y4: context.y4,
-                w4: context.w4,
-                h4: context.h4,
-            },
-            lossless: input.lossless,
-        },
-        quant,
-    )
 }
 
 #[cfg(test)]
