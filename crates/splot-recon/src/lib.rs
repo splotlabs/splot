@@ -130,6 +130,7 @@ pub use intra_basic::{IntraPaethEdge, IntraPaethEdges, predict_intra_paeth_rect_
 pub use intra_dc_math::resolve_divisor;
 pub use intra_dc_subsampled::{
     predict_intra_dc_subsampled_rect_into, predict_intra_dc_subsampled_rect_value,
+    predict_intra_dc_value_from_edge_sums,
 };
 pub use intra_dip::{IntraDipEdge, IntraDipEdges, predict_intra_dip_rect_into};
 pub use intra_directional::{IntraCardinalDirection, predict_intra_cardinal_directional_rect_into};

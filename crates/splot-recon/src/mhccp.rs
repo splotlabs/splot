@@ -52,7 +52,6 @@ const UPPER_TRIANGLE: [(usize, usize); 6] = [(0, 0), (0, 1), (0, 2), (1, 1), (1,
 struct NormalEquations {
     ata: [[i32; MHCCP_PARAM_COUNT]; MHCCP_PARAM_COUNT],
     b: [i32; MHCCP_PARAM_COUNT],
-    samples: usize,
 }
 
 impl NormalEquations {
@@ -69,7 +68,6 @@ impl NormalEquations {
                 [0, 0, count.wrapping_mul(mid).wrapping_mul(mid)],
             ],
             b: [cross[0], cross[1], cross[2].wrapping_mul(mid)],
-            samples: luma.count,
         }
     }
 
@@ -111,41 +109,54 @@ pub fn derive_mhccp_params<const N: usize>(
         let stride = refs.width;
         let reference_width = refs.reference_width.min(refs.width);
         let reference_height = refs.reference_height.min(refs.height);
-        baseline_simd!(simd => {
-            for row in 1..reference_height.saturating_sub(1) {
-                let cols = if row < refs.above {
-                    reference_width.saturating_sub(1)
-                } else {
-                    refs.left.min(reference_width.saturating_sub(1))
-                };
-                if cols <= 1 {
-                    continue;
+        let rows = 1..reference_height.saturating_sub(1);
+        let linear_offset = |start: usize| match mh_dir {
+            0 => start + 1,
+            1 => start - stride + 1,
+            _ => start,
+        };
+        let cols = reference_width.saturating_sub(1);
+        if cols > 1 {
+            baseline_simd!(simd => {
+                for row in rows.start..rows.end.min(refs.above) {
+                    let start = row * stride;
+                    let linear_start = linear_offset(start);
+                    let linear = &refs.luma[linear_start..linear_start + cols - 1];
+                    let center = &refs.luma[start + 1..start + cols];
+                    let targets = chroma.map(|plane| &plane[start + 1..start + cols]);
+                    add_run(simd, &mut luma, &mut cross, linear, center, targets, bits);
                 }
+            });
+        }
+        if refs.left.min(cols) > 1 {
+            for row in rows.start.max(refs.above)..rows.end {
                 let start = row * stride;
-                let linear_start = match mh_dir {
-                    0 => start + 1,
-                    1 => start - stride + 1,
-                    _ => start,
-                };
-                let linear = &refs.luma[linear_start..linear_start + cols - 1];
-                let center = &refs.luma[start + 1..start + cols];
-                let targets = chroma.map(|plane| &plane[start + 1..start + cols]);
-                add_run(simd, &mut luma, &mut cross, linear, center, targets, bits);
+                let linear = refs.luma[linear_offset(start)];
+                let targets = chroma.map(|plane| plane[start + 1]);
+                add_sample(
+                    &mut luma,
+                    &mut cross,
+                    linear,
+                    refs.luma[start + 1],
+                    targets,
+                    bits,
+                );
             }
-        });
+        }
     }
     let mid = 1i32 << (bits - 1);
-    cross.map(|cross| {
+    if luma.count == 0 {
+        return [[0, 0, 1i32 << MHCCP_BITS]; N];
+    }
+    let matrix_shift = MHCCP_BITS as i32 + 6
+        - 2 * i32::from(bit_depth.bits())
+        - ceil_log2_usize(luma.count) as i32;
+    let equations = cross.map(|cross| {
         let mut equations = NormalEquations::from_sums(&luma, cross, mid);
-        if equations.samples == 0 {
-            return [0, 0, 1i32 << MHCCP_BITS];
-        }
-        let bit_depth_bits = i32::from(bit_depth.bits());
-        let matrix_shift =
-            MHCCP_BITS as i32 + 6 - 2 * bit_depth_bits - ceil_log2_usize(equations.samples) as i32;
         equations.apply_matrix_shift(matrix_shift);
-        solve_mhccp(equations, bit_depth)
-    })
+        equations
+    });
+    solve_mhccp(&equations, bit_depth)
 }
 
 /// Wrapping sums of the § 7.13.7 luma products `v0 * v0`, `v0 * v1`,
@@ -207,50 +218,96 @@ fn add_run<S: Simd, const N: usize>(
         luma.count += 8 * groups;
     }
     for i in 8 * groups..linear.len() {
-        let v0 = i32::from(linear[i]);
-        let center = i32::from(center[i]);
-        let v1 = round2_i32(center.wrapping_mul(center), bits);
-        for (sum, term) in luma.sums.iter_mut().zip([
-            v0.wrapping_mul(v0),
-            v0.wrapping_mul(v1),
-            v1.wrapping_mul(v1),
-            v0,
-            v1,
-        ]) {
+        let targets = targets.map(|target| target[i]);
+        add_sample(luma, cross, linear[i], center[i], targets, bits);
+    }
+}
+
+/// [`add_run`] for one sample.
+#[inline]
+fn add_sample<const N: usize>(
+    luma: &mut LumaSums,
+    cross: &mut [[i32; 3]; N],
+    linear: u16,
+    center: u16,
+    targets: [u16; N],
+    bits: u32,
+) {
+    let v0 = i32::from(linear);
+    let center = i32::from(center);
+    let v1 = round2_i32(center.wrapping_mul(center), bits);
+    for (sum, term) in luma.sums.iter_mut().zip([
+        v0.wrapping_mul(v0),
+        v0.wrapping_mul(v1),
+        v1.wrapping_mul(v1),
+        v0,
+        v1,
+    ]) {
+        *sum = sum.wrapping_add(term);
+    }
+    for (sums, target) in cross.iter_mut().zip(targets) {
+        let t = i32::from(target);
+        for (sum, term) in sums
+            .iter_mut()
+            .zip([v0.wrapping_mul(t), v1.wrapping_mul(t), t])
+        {
             *sum = sum.wrapping_add(term);
         }
-        for (sums, target) in cross.iter_mut().zip(targets) {
-            let t = i32::from(target[i]);
-            for (sum, term) in sums
-                .iter_mut()
-                .zip([v0.wrapping_mul(t), v1.wrapping_mul(t), t])
-            {
-                *sum = sum.wrapping_add(term);
+    }
+    luma.count += 1;
+}
+
+/// The § 7.13.8 Gaussian elimination of each plane's `equations`, which
+/// share their matrix: its eliminated rows are worked out once, and each
+/// plane's right-hand side follows the same steps.
+fn solve_mhccp<const N: usize>(
+    equations: &[NormalEquations; N],
+    bit_depth: BitDepth,
+) -> [[i32; MHCCP_PARAM_COUNT]; N] {
+    let Some(first) = equations.first() else {
+        return [[0; MHCCP_PARAM_COUNT]; N];
+    };
+    let mut c = [[0i32; MHCCP_PARAM_COUNT]; MHCCP_PARAM_COUNT];
+    for (row, values) in c.iter_mut().enumerate() {
+        for (col, value) in values.iter_mut().enumerate() {
+            *value = symmetric_equation_value(first, row, col);
+        }
+        values[row] = values[row].saturating_add(2i32 << (u32::from(bit_depth.bits()) - 8));
+    }
+    let mut b = equations.map(|equations| equations.b);
+    for i in 0..MHCCP_PARAM_COUNT {
+        let diag = c[i][i].unsigned_abs().max(1);
+        let (scale, shift) = mhccp_division_scale_shift(diag);
+        for value in c[i].iter_mut().skip(i + 1) {
+            *value = mul_fixed32_adapt(*value, scale, shift);
+        }
+        for b in &mut b {
+            b[i] = mul_fixed32_adapt(b[i], scale, shift);
+        }
+        let pivot = c[i];
+        for j in i + 1..MHCCP_PARAM_COUNT {
+            let factor = c[j][i];
+            for col in i + 1..MHCCP_PARAM_COUNT {
+                c[j][col] =
+                    c[j][col].saturating_sub(mul_fixed32_adapt(factor, pivot[col], MHCCP_BITS));
+            }
+            for b in &mut b {
+                b[j] = b[j].saturating_sub(mul_fixed32_adapt(factor, b[i], MHCCP_BITS));
             }
         }
-        luma.count += 1;
     }
-}
-
-fn solve_mhccp(equations: NormalEquations, bit_depth: BitDepth) -> [i32; MHCCP_PARAM_COUNT] {
-    let mut rows = augmented_rows(&equations, bit_depth);
-    forward_eliminate(&mut rows);
-    back_substitute(&rows)
-}
-
-fn augmented_rows(
-    equations: &NormalEquations,
-    bit_depth: BitDepth,
-) -> [[i32; MHCCP_PARAM_COUNT + 1]; MHCCP_PARAM_COUNT] {
-    let mut rows = [[0i32; MHCCP_PARAM_COUNT + 1]; MHCCP_PARAM_COUNT];
-    for (row_index, row) in rows.iter_mut().enumerate() {
-        for (col_index, value) in row.iter_mut().take(MHCCP_PARAM_COUNT).enumerate() {
-            *value = symmetric_equation_value(equations, row_index, col_index);
+    b.map(|b| {
+        let mut params = [0i32; MHCCP_PARAM_COUNT];
+        for row in (0..MHCCP_PARAM_COUNT).rev() {
+            let mut value = b[row];
+            for col in row + 1..MHCCP_PARAM_COUNT {
+                value =
+                    value.saturating_sub(mul_fixed32_adapt(c[row][col], params[col], MHCCP_BITS));
+            }
+            params[row] = value;
         }
-        row[row_index] = row[row_index].saturating_add(2i32 << (u32::from(bit_depth.bits()) - 8));
-        row[MHCCP_PARAM_COUNT] = equations.b[row_index];
-    }
-    rows
+        params
+    })
 }
 
 fn symmetric_equation_value(equations: &NormalEquations, row: usize, col: usize) -> i32 {
@@ -259,45 +316,6 @@ fn symmetric_equation_value(equations: &NormalEquations, row: usize, col: usize)
     } else {
         equations.ata[col][row]
     }
-}
-
-fn forward_eliminate(rows: &mut [[i32; MHCCP_PARAM_COUNT + 1]; MHCCP_PARAM_COUNT]) {
-    for i in 0..MHCCP_PARAM_COUNT {
-        let diag = rows[i][i].unsigned_abs().max(1);
-        let (scale, shift) = mhccp_division_scale_shift(diag);
-        for value in rows[i].iter_mut().skip(i + 1) {
-            *value = mul_fixed32_adapt(*value, scale, shift);
-        }
-        let pivot = rows[i];
-        for target in rows.iter_mut().skip(i + 1) {
-            eliminate_with_pivot(target, pivot, i);
-        }
-    }
-}
-
-fn eliminate_with_pivot(
-    target: &mut [i32; MHCCP_PARAM_COUNT + 1],
-    pivot: [i32; MHCCP_PARAM_COUNT + 1],
-    pivot_col: usize,
-) {
-    let factor = target[pivot_col];
-    for col in pivot_col + 1..=MHCCP_PARAM_COUNT {
-        let delta = mul_fixed32_adapt(factor, pivot[col], MHCCP_BITS);
-        target[col] = target[col].saturating_sub(delta);
-    }
-}
-
-fn back_substitute(rows: &[[i32; MHCCP_PARAM_COUNT + 1]; MHCCP_PARAM_COUNT]) -> [i32; 3] {
-    let mut params = [0i32; MHCCP_PARAM_COUNT];
-    for row in (0..MHCCP_PARAM_COUNT).rev() {
-        let mut value = rows[row][MHCCP_PARAM_COUNT];
-        for col in row + 1..MHCCP_PARAM_COUNT {
-            value =
-                value.saturating_sub(mul_fixed32_adapt(rows[row][col], params[col], MHCCP_BITS));
-        }
-        params[row] = value;
-    }
-    params
 }
 
 fn mhccp_division_scale_shift(denom: u32) -> (i32, u32) {
