@@ -810,7 +810,6 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
     carries: &mut [splot_recon::BilinearOverlapCarry<'a, T>; 2],
 ) -> Result<Option<MotionCell>> {
     const PREDICTION_SIZE: usize = TIP_PREDICTION_SIZE;
-    const CENTER_SIZE: usize = 8;
 
     let Some(distances) = block.optflow_distances else {
         return Ok(None);
@@ -826,6 +825,59 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
     let mut prediction_rect = block.rect;
     prediction_rect.luma_w = PREDICTION_SIZE;
     prediction_rect.luma_h = PREDICTION_SIZE;
+    let (dx, dy) = if T::u8_slice(&[]).is_some()
+        && let Some(offset) = tip_search_u8(luma, prediction_rect, candidates, predictions)?
+    {
+        offset
+    } else {
+        tip_search(luma, prediction_rect, candidates, predictions, carries)?
+    };
+    let [pred0, pred1] = predictions;
+    let bit_depth = luma[0].bit_depth();
+    let base_mvs = [
+        Mv {
+            row: candidates[0].row + dy * 8,
+            col: candidates[0].col + dx * 8,
+        },
+        Mv {
+            row: candidates[1].row - dy * 8,
+            col: candidates[1].col - dx * 8,
+        },
+    ];
+    let start0 = usize::try_from((4 + dy) * PREDICTION_SIZE as i32 + 4 + dx).map_err(|_| {
+        ReconError::ArithmeticOverflow {
+            context: "TIP optical-flow predictor 0 offset",
+        }
+    })?;
+    let start1 = usize::try_from((4 - dy) * PREDICTION_SIZE as i32 + 4 - dx).map_err(|_| {
+        ReconError::ArithmeticOverflow {
+            context: "TIP optical-flow predictor 1 offset",
+        }
+    })?;
+    super::optflow::tip_optflow_motion_cell_strided(
+        pred0,
+        start0,
+        pred1,
+        start1,
+        PREDICTION_SIZE,
+        bit_depth,
+        distances,
+        block.optflow_sad_threshold,
+        base_mvs,
+    )
+    .map(Some)
+}
+
+/// The search offset of a TIP unit from u16 predictions: the 12x12 centre
+/// first, the whole 16x16 area only when the search goes on.
+fn tip_search<'a, T: ReconSample>(
+    luma: &mut [super::optflow::LumaReference<'a, T>; 2],
+    prediction_rect: McBlockRect,
+    candidates: [Mv; 2],
+    predictions: &mut [[u16; TIP_PREDICTION_AREA]; 2],
+    carries: &mut [splot_recon::BilinearOverlapCarry<'a, T>; 2],
+) -> Result<(i32, i32)> {
+    const CENTER_SIZE: usize = 8;
     let search_mv = |candidate: Mv| Mv {
         row: candidate.row - SEARCH_PADDING,
         col: candidate.col - SEARCH_PADDING,
@@ -870,38 +922,57 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
         }
         search_tip_refinemv_offset(pred0, pred1, center_sad, bit_depth)
     };
-    let base_mvs = [
-        Mv {
-            row: candidates[0].row + dy * 8,
-            col: candidates[0].col + dx * 8,
-        },
-        Mv {
-            row: candidates[1].row - dy * 8,
-            col: candidates[1].col - dx * 8,
-        },
-    ];
-    let start0 = usize::try_from((4 + dy) * PREDICTION_SIZE as i32 + 4 + dx).map_err(|_| {
-        ReconError::ArithmeticOverflow {
-            context: "TIP optical-flow predictor 0 offset",
+    Ok((dx, dy))
+}
+
+/// The search offset of an eight-bit TIP unit from its byte 16x16 search
+/// windows, which then fill `predictions`, or `None` when the byte kernels do
+/// not cover a window.
+fn tip_search_u8<T: ReconSample>(
+    luma: &mut [super::optflow::LumaReference<'_, T>; 2],
+    prediction_rect: McBlockRect,
+    candidates: [Mv; 2],
+    predictions: &mut [[u16; TIP_PREDICTION_AREA]; 2],
+) -> Result<Option<(i32, i32)>> {
+    let mut windows = [[0u8; 24 * 24]; 2];
+    for ((luma, candidate), window) in luma.iter_mut().zip(candidates).zip(&mut windows) {
+        let search_mv = Mv {
+            row: candidate.row - SEARCH_PADDING,
+            col: candidate.col - SEARCH_PADDING,
+        };
+        let area = (candidate, 8, 8);
+        if !super::optflow::search_window_u8(luma, prediction_rect, search_mv, area, window)? {
+            return Ok(None);
         }
-    })?;
-    let start1 = usize::try_from((4 - dy) * PREDICTION_SIZE as i32 + 4 - dx).map_err(|_| {
-        ReconError::ArithmeticOverflow {
-            context: "TIP optical-flow predictor 1 offset",
+    }
+    let views = [&windows[0][..], &windows[1][..]];
+    let sad = |offsets: &[(i32, i32)], sads: &mut [u32]| {
+        splot_recon::refinemv_window_sads_u8(views, TIP_PREDICTION_SIZE, [12, 12], offsets, sads)
+    };
+    let mut center = [0];
+    if !sad(&[(0, 0)], &mut center) {
+        return Ok(None);
+    }
+    let mut best = (0, 0);
+    let mut best_sad = center[0] - (center[0] >> 3);
+    if best_sad >= 12 * 12 * 2 {
+        let mut sads = [0; SEARCH_NEIGHBORS.len()];
+        if !sad(&SEARCH_NEIGHBORS, &mut sads) {
+            return Ok(None);
         }
-    })?;
-    super::optflow::tip_optflow_motion_cell_strided(
-        pred0,
-        start0,
-        pred1,
-        start1,
-        PREDICTION_SIZE,
-        bit_depth,
-        distances,
-        block.optflow_sad_threshold,
-        base_mvs,
-    )
-    .map(Some)
+        for (&(dy, dx), &sad) in SEARCH_NEIGHBORS.iter().zip(&sads) {
+            if sad < best_sad {
+                best_sad = sad;
+                best = (dx, dy);
+            }
+        }
+    }
+    for (prediction, window) in predictions.iter_mut().zip(&windows) {
+        for (sample, &byte) in prediction.iter_mut().zip(window.iter()) {
+            *sample = u16::from(byte);
+        }
+    }
+    Ok(Some(best))
 }
 
 /// The § 7.13.3.6 neighbour search of a unit whose biased centre SAD
