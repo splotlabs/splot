@@ -5,7 +5,8 @@
 
 use splot_recon::math::round2_signed_i32;
 use splot_recon::{
-    BitDepth, PlaneId, ReconSample, inverse_transform_2d_outer, reconstruct_add_residual,
+    BitDepth, PlaneId, ReconSample, inverse_transform_2d_outer_with_scratch,
+    reconstruct_add_residual,
 };
 
 use super::reconstruct::{dequantize_coeff_block, reconstruct_block_setup};
@@ -106,15 +107,40 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
     with_residual_scratch(|scratch| {
         let u_dequant = &mut scratch.dequant[..u_setup.adjusted];
         let v_dequant = &mut scratch.dequant_pair[..v_setup.adjusted];
-        dequantize_coeff_block(u_block, &u_setup.params, u_dequant)?;
-        dequantize_coeff_block(v_block, &v_setup.params, v_dequant)?;
+        let u_coded = dequantize_coeff_block(u_block, &u_setup.params, u_dequant)?;
+        let v_coded = dequantize_coeff_block(v_block, &v_setup.params, v_dequant)?;
         apply_cross_chroma_transform(cctx_type, bit_depth, u_dequant, v_dequant)?;
-
-        let residual = &mut scratch.residual[..u_setup.samples];
-        inverse_transform_2d_outer(&u_setup.transform, u_dequant, residual)?;
-        reconstruct_add_residual(u_prediction, residual, bit_depth, u_out)?;
-        inverse_transform_2d_outer(&v_setup.transform, v_dequant, residual)?;
-        reconstruct_add_residual(v_prediction, residual, bit_depth, v_out)?;
+        let coded = u_coded.max(v_coded);
+        let pairs = [
+            (&u_setup, &*u_dequant, u_prediction, &mut *u_out),
+            (&v_setup, &*v_dequant, v_prediction, &mut *v_out),
+        ];
+        for (setup, dequant, prediction, out) in pairs {
+            if let Some((fused, _)) = setup.fused
+                && let (Some(pred), Some(samples)) =
+                    (T::u8_slice(prediction), T::u8_slice_mut(out))
+                && pred.len() == samples.len()
+            {
+                samples.copy_from_slice(pred); // splot-copy-ok: prediction under the fused add
+                if fused.add(
+                    &dequant[..coded],
+                    None,
+                    samples,
+                    1 << log2_width,
+                    &mut scratch.transform,
+                ) {
+                    continue;
+                }
+            }
+            let residual = &mut scratch.residual[..setup.samples];
+            inverse_transform_2d_outer_with_scratch(
+                &setup.transform()?,
+                dequant,
+                residual,
+                &mut scratch.transform,
+            )?;
+            reconstruct_add_residual(prediction, residual, bit_depth, out)?;
+        }
         Ok::<(), GeneralIntraResidualError>(())
     })?;
     Ok(())
