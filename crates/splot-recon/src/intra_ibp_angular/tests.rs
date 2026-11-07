@@ -103,8 +103,13 @@ fn ibp_blend_rejects_undersized_buffers() {
 #[test]
 fn ibp_u16_lane_blend_matches_the_scalar_blend() {
     for p_angle in (0..ZONE_3_INDEX_BASE).filter(|&p| ibp_blend_fires(p)) {
-        let weights = ibp_weight_table(enabled_weight_angle(p_angle).unwrap()).unwrap();
+        let [weights, transposed] =
+            ibp_weight_table(enabled_weight_angle(p_angle).unwrap()).unwrap();
         assert!(weights.iter().flatten().all(|&s| s <= IBP_WEIGHT_MAX));
+        assert!(
+            (0..IBP_WEIGHT_SIZE)
+                .all(|r| (0..IBP_WEIGHT_SIZE).all(|c| weights[r][c] == transposed[c][r]))
+        );
         for log2_width in 2..=6u8 {
             for log2_height in 2..=6u8 {
                 let size = rect(log2_width, log2_height);
