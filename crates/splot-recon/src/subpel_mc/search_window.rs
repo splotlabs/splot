@@ -216,73 +216,95 @@ mod avx2 {
             output: &mut [u8],
         ) {
             let [origin, stride, w, h] = geometry;
-            let [h_phase, v_phase] = phases;
-            let weights = _mm256_set1_epi16((h_phase << 8) | (16 - h_phase));
-            let (low_pairs, high_pairs): (__m256i, __m256i) = if w == 24 {
-                (
-                    u8x32::load_array(t, PAIRS_24_LOW).into(),
-                    u8x32::load_array(t, PAIRS_24_HIGH).into(),
-                )
-            } else {
-                (
-                    u8x32::load_array(t, PAIRS_16).into(),
-                    _mm256_setzero_si256(),
-                )
-            };
-            let horizontal = |row: usize| -> [__m256i; 2] {
-                let at = origin + row * stride;
-                let low = _mm256_broadcastsi128_si256(load16(t, source, at));
-                let low = _mm256_maddubs_epi16(_mm256_shuffle_epi8(low, low_pairs), weights);
-                if w != 24 {
-                    return [low, low];
-                }
-                let high = _mm256_broadcastsi128_si256(load16(t, source, at + 15));
-                [
-                    low,
-                    _mm256_maddubs_epi16(_mm256_shuffle_epi8(high, high_pairs), weights),
-                ]
-            };
-            let (top_weight, bottom_weight) =
-                (_mm256_set1_epi16(16 - v_phase), _mm256_set1_epi16(v_phase));
-            let bias = _mm256_set1_epi16(128);
-            let blend = |top: __m256i, bottom: __m256i| {
-                let sum = _mm256_add_epi16(
-                    _mm256_mullo_epi16(top, top_weight),
-                    _mm256_mullo_epi16(bottom, bottom_weight),
-                );
-                _mm256_srli_epi16::<8>(_mm256_add_epi16(sum, bias))
-            };
-            let mut write = |row: usize, top: [__m256i; 2], bottom: [__m256i; 2]| {
-                let low = blend(top[0], bottom[0]);
-                let at = row * w;
-                let high = if w == 24 {
-                    blend(top[1], bottom[1])
-                } else {
-                    low
-                };
-                let packed =
-                    _mm256_permute4x64_epi64::<0b1101_1000>(_mm256_packus_epi16(low, high));
-                if let Some(slot) = output.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<16>) {
-                    u8x16::<Avx2>::simd_from(t, _mm256_castsi256_si128(packed)).store_array(slot);
-                }
-                if w == 24
-                    && let Some(slot) = output
-                        .get_mut(at + 16..)
-                        .and_then(<[u8]>::first_chunk_mut::<8>)
-                {
-                    *slot = _mm_cvtsi128_si64(_mm256_extracti128_si256::<1>(packed)).to_le_bytes();
-                }
-            };
-            let mut top = horizontal(0);
-            write(0, top, top);
-            for row in 1..h - 1 {
-                let bottom = horizontal(row);
-                write(row, top, bottom);
-                top = bottom;
+            let at = [origin, stride];
+            match (w, h) {
+                (16, 16) => window_for::<16, 16, 256>(t, source, at, phases, output),
+                (16, _) => window_for::<16, 24, 384>(t, source, at, phases, output),
+                (_, 16) => window_for::<24, 16, 384>(t, source, at, phases, output),
+                _ => window_for::<24, 24, 576>(t, source, at, phases, output),
             }
-            write(h - 1, top, top);
         }
     );
+
+    /// [`window`] of a `W x H` window of `N` bytes, whose output rows sit at
+    /// fixed offsets.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn window_for<const W: usize, const H: usize, const N: usize>(
+        t: Avx2,
+        source: &[u8],
+        [origin, stride]: [usize; 2],
+        [h_phase, v_phase]: [i16; 2],
+        output: &mut [u8],
+    ) {
+        let Some(output) = output.first_chunk_mut::<N>() else {
+            return;
+        };
+        let weights = _mm256_set1_epi16((h_phase << 8) | (16 - h_phase));
+        let (low_pairs, high_pairs): (__m256i, __m256i) = if W == 24 {
+            (
+                u8x32::load_array(t, PAIRS_24_LOW).into(),
+                u8x32::load_array(t, PAIRS_24_HIGH).into(),
+            )
+        } else {
+            (
+                u8x32::load_array(t, PAIRS_16).into(),
+                _mm256_setzero_si256(),
+            )
+        };
+        let horizontal = |row: usize| -> [__m256i; 2] {
+            let at = origin + row * stride;
+            let low = _mm256_broadcastsi128_si256(load16(t, source, at));
+            let low = _mm256_maddubs_epi16(_mm256_shuffle_epi8(low, low_pairs), weights);
+            if W != 24 {
+                return [low, low];
+            }
+            let high = _mm256_broadcastsi128_si256(load16(t, source, at + 15));
+            [
+                low,
+                _mm256_maddubs_epi16(_mm256_shuffle_epi8(high, high_pairs), weights),
+            ]
+        };
+        let (top_weight, bottom_weight) =
+            (_mm256_set1_epi16(16 - v_phase), _mm256_set1_epi16(v_phase));
+        let bias = _mm256_set1_epi16(128);
+        let blend = |top: __m256i, bottom: __m256i| {
+            let sum = _mm256_add_epi16(
+                _mm256_mullo_epi16(top, top_weight),
+                _mm256_mullo_epi16(bottom, bottom_weight),
+            );
+            _mm256_srli_epi16::<8>(_mm256_add_epi16(sum, bias))
+        };
+        let rows = output.as_chunks_mut::<W>().0;
+        let mut write = |row: usize, top: [__m256i; 2], bottom: [__m256i; 2]| {
+            let low = blend(top[0], bottom[0]);
+            let high = if W == 24 {
+                blend(top[1], bottom[1])
+            } else {
+                low
+            };
+            let packed = _mm256_permute4x64_epi64::<0b1101_1000>(_mm256_packus_epi16(low, high));
+            let Some(slot) = rows.get_mut(row) else {
+                return;
+            };
+            if let Some(bytes) = slot.first_chunk_mut::<16>() {
+                u8x16::<Avx2>::simd_from(t, _mm256_castsi256_si128(packed)).store_array(bytes);
+            }
+            if W == 24
+                && let Some(bytes) = slot.last_chunk_mut::<8>()
+            {
+                *bytes = _mm_cvtsi128_si64(_mm256_extracti128_si256::<1>(packed)).to_le_bytes();
+            }
+        };
+        let mut top = horizontal(0);
+        write(0, top, top);
+        for row in 1..H - 1 {
+            let bottom = horizontal(row);
+            write(row, top, bottom);
+            top = bottom;
+        }
+        write(H - 1, top, top);
+    }
 
     /// The `(c, c + 1)` byte pairs of eight columns, in both lanes.
     const PAIRS_8: [u8; 32] = {

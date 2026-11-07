@@ -1073,6 +1073,11 @@ fn eight_bit_sections_with_full_shear_match_the_spec_trace() {
                     );
                 }
             }
+            let mut params = default_params(0, 0, ref_w as i32, ref_h as i32);
+            params.warp_params = warp_params;
+            for block in [[8, 8, 48, 16], [16, 24, 32, 24], [0, 40, 24, 8]] {
+                assert!(!block_matches_sections(&view, samples, &params, block));
+            }
         }
     }
 }
