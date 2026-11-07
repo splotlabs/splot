@@ -29,11 +29,17 @@ impl Noise {
 const POS: [usize; 5] = [1, 3, 4, 6, 8];
 const NEG: [usize; 6] = [1, 2, 3, 4, 6, 8];
 
-fn random_edge(noise: &mut Noise, max_sample: i32) -> DeblockEdge {
+/// A random edge whose `maxWidthPos` is at most `widest`.
+fn random_edge(noise: &mut Noise, max_sample: i32, widest: usize) -> DeblockEdge {
     if noise.below(8) == 0 {
         return DeblockEdge::NONE;
     }
-    let pos = POS[noise.below(5) as usize];
+    let pos = loop {
+        let pos = POS[noise.below(5) as usize];
+        if pos <= widest {
+            break pos;
+        }
+    };
     let neg = loop {
         let neg = NEG[noise.below(6) as usize];
         if neg <= pos {
@@ -121,10 +127,11 @@ fn reference(
 fn check_runs(bit_depth: BitDepth, seed: u64, widths: &mut [usize; REACH + 1]) {
     let max_sample = i32::from(bit_depth.max_sample());
     let mut noise = Noise(seed);
-    for edges_len in [1, 2, 3, 4, 5, 7, 8, 9] {
+    for edges_len in [1, 2, 3, 4, 5, 7, 8, 9, 12, 16, 17, 23] {
         for vertical in [true, false] {
+            let widest = POS[noise.below(5) as usize];
             let edges: Vec<_> = (0..edges_len)
-                .map(|_| random_edge(&mut noise, max_sample))
+                .map(|_| random_edge(&mut noise, max_sample, widest))
                 .collect();
             let (stride, rows) = if vertical {
                 (24 + noise.below(9) as usize, edges_len * LINES + 2)
@@ -160,7 +167,7 @@ fn check_runs(bit_depth: BitDepth, seed: u64, widths: &mut [usize; REACH + 1]) {
             if vertical {
                 let spread: Vec<_> = edges
                     .iter()
-                    .flat_map(|&edge| [edge, random_edge(&mut noise, max_sample), edge])
+                    .flat_map(|&edge| [edge, random_edge(&mut noise, max_sample, 8), edge])
                     .collect();
                 let mut column = original.clone();
                 let column_stride = NonZeroUsize::new(3).unwrap();
@@ -300,7 +307,7 @@ fn edges_from_lanes_match_their_constructor() {
 fn check_from_lanes<S: Simd>(simd: S) {
     let mut noise = Noise(0x5eed);
     for _ in 0..64 {
-        let edges: [DeblockEdge; 8] = core::array::from_fn(|_| random_edge(&mut noise, 1023));
+        let edges: [DeblockEdge; 8] = core::array::from_fn(|_| random_edge(&mut noise, 1023, 8));
         let low = edges.map(|edge| edge.q_thr() as u32 | (edge.side() as u32) << 16);
         let high = edges.map(|edge| {
             edge.max_width_pos() as u32
