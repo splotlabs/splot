@@ -19,12 +19,10 @@ mod grid;
 
 use edges::{PassEdges, PassGeometry};
 pub(crate) use grid::DeblockGridStorage;
-/// Mode-info rows above itself that a horizontal edge reads.
-const HORIZONTAL_EDGE_REACH_MI: usize = 2;
 
 #[cfg(test)]
 use grid::MiCell;
-use grid::{ChromaMiGridStorage, MiGrid, MiGridStorage, RowOrder};
+use grid::{ChromaMiGridStorage, MiGrid, MiGridStorage};
 
 use crate::pipeline::frame_progress::FrontierRows;
 
@@ -256,9 +254,8 @@ pub(crate) struct FrameDeblock {
     records: OwnedDeblockRecords,
     grid: MiGridStorage,
     chroma: [Option<ChromaMiGridStorage>; 2],
-    /// Luma and chroma record orders the per-advance grid windows are laid
-    /// out from.
-    order: [RowOrder; 2],
+    /// Whether the grids hold the frame's records yet.
+    filled: bool,
     mi_rows: usize,
     filter: DeblockingFilterParams,
     tile_info: Option<TileInfo>,
@@ -314,9 +311,13 @@ pub(crate) const DEBLOCK_PASS_1_REACH: usize = 8;
 const PASS_0_LEAD_MI_ROWS: usize = 4;
 
 impl FrameDeblock {
-    /// Builds the frame's mode-info grids while taking ownership of detached
-    /// deblock records.
+    /// Takes ownership of detached deblock records; the first advance lays
+    /// the frame's mode-info grids out from them.
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "callers keep preparation fallible across frame setup paths"
+    )]
     pub(crate) fn prepare_owned(
         mut records: OwnedDeblockRecords,
         mi_rows: usize,
@@ -330,19 +331,18 @@ impl FrameDeblock {
         if filter.apply_deblocking_filter == [false; 4] {
             return Ok(None);
         }
-        let (grid, chroma, order) = take_grids(
-            &records.blocks,
+        let (grid, chroma) = take_grids(
             &records.chroma,
-            (mi_rows, mi_cols),
+            mi_cols,
             filter,
             chroma_subsampling,
             &mut records.grids,
-        )?;
+        );
         Ok(Some(Self {
             records,
             grid,
             chroma,
-            order,
+            filled: false,
             mi_rows,
             filter,
             tile_info,
@@ -363,18 +363,8 @@ impl FrameDeblock {
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
         let (ranges, pass_0_end, pass_1_end) = self.next_ranges(mi_row_end);
-        let reach = |rows: &Range<usize>, back: usize| {
-            (!rows.is_empty()).then(|| rows.start.saturating_sub(back)..rows.end)
-        };
-        let window = [
-            reach(&ranges[0], 0),
-            reach(&ranges[1], HORIZONTAL_EDGE_REACH_MI),
-        ]
-        .into_iter()
-        .flatten()
-        .reduce(|a, b| a.start.min(b.start)..a.end.max(b.end));
-        if let Some(window) = window {
-            self.fill_grids(window)?;
+        if !self.filled && ranges.iter().any(|rows| !rows.is_empty()) {
+            self.fill_grids()?;
         }
         self.run_ranges_source(source, &ranges, bit_depth)?;
         self.next_pass_0_mi_row = pass_0_end;
@@ -552,40 +542,32 @@ impl FrameDeblock {
         self.mi_rows * MI_SIZE
     }
 
-    /// Lays every active plane's grid out over mode-info `rows`, widened to
-    /// whole chroma cell rows.
-    fn fill_grids(&mut self, rows: Range<usize>) -> Result<(), DeblockError> {
-        let rows = (rows.start & !1)..rows.end.saturating_add(rows.end & 1).min(self.mi_rows);
+    /// Lays every active plane's grid out over the whole frame.
+    fn fill_grids(&mut self) -> Result<(), DeblockError> {
         let blocks = &self.records.blocks;
-        self.grid
-            .fill(blocks, &self.order[0], self.mi_rows, &rows)?;
+        self.grid.fill(blocks, self.mi_rows)?;
         for (plane, slot) in self.chroma.iter_mut().enumerate() {
-            if let Some(chroma) = slot {
-                chroma.fill(
+            if let Some(grid) = slot {
+                grid.fill(
                     &self.grid,
-                    blocks,
-                    &self.records.chroma,
-                    &self.order[1],
+                    (blocks, &self.records.chroma),
                     plane,
                     self.mi_rows,
-                    &rows,
                 )?;
             }
         }
+        self.filled = true;
         Ok(())
     }
 
     /// Hands the grid vectors back for the next frame to lay out over.
     pub(crate) fn release_grids(&mut self, storage: &mut DeblockGridStorage) {
         storage.cells = core::mem::take(&mut self.grid.cells);
-        storage.facts = core::mem::take(&mut self.grid.facts);
-        storage.bases = core::mem::take(&mut self.grid.bases);
-        storage.order = core::mem::take(&mut self.order);
+        storage.plane = core::mem::take(&mut self.grid.plane);
         for (slot, storage) in self.chroma.iter_mut().zip(&mut storage.chroma) {
             if let Some(grid) = slot.as_mut() {
                 storage.0 = core::mem::take(&mut grid.cells);
-                storage.1 = core::mem::take(&mut grid.facts);
-                storage.2 = core::mem::take(&mut grid.bases);
+                storage.1 = core::mem::take(&mut grid.plane);
             }
         }
     }
@@ -640,24 +622,17 @@ impl FrameDeblock {
     }
 }
 
-type FrameGrids = (
-    MiGridStorage,
-    [Option<ChromaMiGridStorage>; 2],
-    [RowOrder; 2],
-);
+type FrameGrids = (MiGridStorage, [Option<ChromaMiGridStorage>; 2]);
 
-/// Takes the frame's grid vectors and orders its records by row; the grids
-/// stay empty until an advance lays a window out.
+/// Takes the frame's grid vectors; the grids stay empty until the first
+/// advance lays the records out.
 fn take_grids(
-    blocks: &[DeblockBlock],
     chroma_blocks: &ChromaDeblockRecords,
-    (mi_rows, mi_cols): (usize, usize),
+    mi_cols: usize,
     filter: DeblockingFilterParams,
     chroma_subsampling: (usize, usize),
     storage: &mut DeblockGridStorage,
-) -> Result<FrameGrids, DeblockError> {
-    let mut order = core::mem::take(&mut storage.order);
-    order[0].sort(blocks.iter().map(|block| (block, 0)), mi_rows)?;
+) -> FrameGrids {
     let mut chroma = [None, None];
     let v_shares_u = filter.apply_deblocking_filter[2..] == [true; 2] && chroma_blocks.uv_twins();
     for (plane, (slot, storage)) in chroma.iter_mut().zip(&mut storage.chroma).enumerate() {
@@ -669,16 +644,7 @@ fn take_grids(
             ));
         }
     }
-    if chroma.iter().any(Option::is_some) {
-        order[1].sort(
-            chroma_blocks
-                .blocks
-                .iter()
-                .map(|record| (&record.block, record.planes)),
-            mi_rows,
-        )?;
-    }
-    Ok((MiGridStorage::new(mi_cols, storage), chroma, order))
+    (MiGridStorage::new(mi_cols, storage), chroma)
 }
 
 /// Deblocks the TIP unit edges of a `TIP_FRAME_AS_OUTPUT` frame. Each unit
