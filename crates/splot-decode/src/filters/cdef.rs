@@ -7,10 +7,10 @@ use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
     BitDepth, CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT,
     CDEF_PAIR_STRIDE, CDEF_SEGMENT_BLOCKS, CDEF_UNAVAILABLE, CDEF_UV_DIR, CdefBlockFilter,
-    CdefLumaSegment, CdefPairSegment, CdefSampleTaps, CdefTap, PlaneId, PlaneRect, ReconSample,
-    cdef_direction_padded, cdef_direction_segment, cdef_filter_block_boundary_to_valid_stride,
-    cdef_filter_block_chroma_pair, cdef_filter_block_chroma_pair_segment,
-    cdef_filter_block_interior_to_valid_stride, cdef_filter_block_segment, cdef_filter_sample,
+    CdefLumaSegment, CdefPairSegment, CdefSampleTaps, CdefSegmentBlock, CdefStrengths, CdefTap,
+    PlaneId, PlaneRect, ReconSample, cdef_direction_padded,
+    cdef_filter_block_boundary_to_valid_stride, cdef_filter_block_chroma_pair,
+    cdef_filter_block_interior_to_valid_stride, cdef_filter_sample, cdef_filter_segment,
 };
 
 use super::source::{DeblockedPlanes, FramePlane, StripeInitialization, StripePlane};
@@ -186,6 +186,27 @@ impl CdefSkipGrid {
         Ok(after != before)
     }
 
+    /// [`CdefSkipGrid::all_skipped_8x8`] of the `CDEF_SEGMENT_BLOCKS` blocks
+    /// from `(mi_row, mi_col)` on, or `None` unless they all lie inside the
+    /// grid of a frame `mi_rows` by `mi_cols`.
+    fn segment_skipped(
+        &self,
+        mi_row: usize,
+        mi_col: usize,
+        mi_rows: usize,
+        mi_cols: usize,
+    ) -> Option<[bool; CDEF_SEGMENT_BLOCKS]> {
+        if (mi_rows, mi_cols) != (self.rows, self.cols)
+            || !mi_row.is_multiple_of(STEP4)
+            || !mi_col.is_multiple_of(STEP4)
+            || mi_col + SEGMENT_MI > mi_cols
+        {
+            return None;
+        }
+        let start = mi_row / STEP4 * mi_cols.div_ceil(STEP4) + mi_col / STEP4;
+        self.skipped_8x8.get(start..)?.first_chunk().copied()
+    }
+
     fn all_skipped_8x8(
         &self,
         mi_row: usize,
@@ -317,6 +338,34 @@ impl CdefBlockLookup<'_> {
         params: Option<CdefFrameParams>,
         (mi_row_start, mi_rows): (usize, usize),
     ) -> Result<Option<CdefBlockCtx>, CdefError> {
+        let Some(planes) = self.block_planes(r, c)? else {
+            return Ok(None);
+        };
+        let params = params.ok_or(CdefError::Geometry)?;
+        let (mi_col_start, mi_cols) = tile_span(self.tile_col_starts, c, self.mi_cols);
+        Ok(Some(CdefBlockCtx {
+            r,
+            c,
+            mi_row_start,
+            mi_col_start,
+            params,
+            coeff_shift: self.coeff_shift,
+            max_sample: self.max_sample,
+            mi_rows,
+            mi_cols,
+            sub_x: self.sub_x,
+            sub_y: self.sub_y,
+            luma_lossless: !planes.luma,
+            chroma_lossless: !planes.chroma,
+            fill_flat: self.fill_flat,
+        }))
+    }
+
+    /// The planes § 7.18.1 filters in the 8x8 block at `(r, c)`, or `None`
+    /// when it filters none of them.
+    #[allow(clippy::inline_always, reason = "measured CDEF per-block hot path")]
+    #[inline(always)]
+    fn block_planes(&self, r: usize, c: usize) -> Result<Option<CdefSegmentBlock>, CdefError> {
         if let Some(skip_grid) = self.skip_grid
             && skip_grid.all_skipped_8x8(r, c, self.mi_rows, self.mi_cols)?
         {
@@ -332,24 +381,64 @@ impl CdefBlockLookup<'_> {
         if luma_lossless && (!self.has_chroma || chroma_lossless) {
             return Ok(None);
         }
-        let params = params.ok_or(CdefError::Geometry)?;
-        let (mi_col_start, mi_cols) = tile_span(self.tile_col_starts, c, self.mi_cols);
-        Ok(Some(CdefBlockCtx {
-            r,
-            c,
-            mi_row_start,
-            mi_col_start,
-            params,
-            coeff_shift: self.coeff_shift,
-            max_sample: self.max_sample,
-            mi_rows,
-            mi_cols,
-            sub_x: self.sub_x,
-            sub_y: self.sub_y,
-            luma_lossless,
-            chroma_lossless,
-            fill_flat: self.fill_flat,
+        Ok(Some(CdefSegmentBlock {
+            luma: !luma_lossless,
+            chroma: !chroma_lossless,
         }))
+    }
+
+    /// [`CdefBlockLookup::block_planes`] of the blocks of the segment at
+    /// `(r, c)`, all skipped ones left with no plane; one skip-grid read
+    /// when the segment lies inside the grid and no block is lossless.
+    fn segment_planes(
+        &self,
+        r: usize,
+        c: usize,
+    ) -> Result<[CdefSegmentBlock; CDEF_SEGMENT_BLOCKS], CdefError> {
+        let filtered = CdefSegmentBlock {
+            luma: true,
+            chroma: true,
+        };
+        if self.lossless_grid.is_none() {
+            let skipped = match self.skip_grid {
+                None => Some([false; CDEF_SEGMENT_BLOCKS]),
+                Some(grid) => grid.segment_skipped(r, c, self.mi_rows, self.mi_cols),
+            };
+            if let Some(skipped) = skipped {
+                return Ok(skipped.map(|skipped| {
+                    if skipped {
+                        CdefSegmentBlock::default()
+                    } else {
+                        filtered
+                    }
+                }));
+            }
+        }
+        let mut blocks = [CdefSegmentBlock::default(); CDEF_SEGMENT_BLOCKS];
+        for (block, planes) in blocks.iter_mut().enumerate() {
+            if let Some(filtered) = self.block_planes(r, c + STEP4 * block)? {
+                *planes = filtered;
+            }
+        }
+        Ok(blocks)
+    }
+}
+
+/// The unit strengths `params` of a stream with `coeff_shift` and chroma
+/// subsampling `(sub_x, sub_y)`.
+fn cdef_strengths(
+    params: CdefFrameParams,
+    coeff_shift: u32,
+    (sub_x, sub_y): (usize, usize),
+) -> CdefStrengths {
+    CdefStrengths {
+        y_pri: params.y_pri,
+        y_sec: params.y_sec,
+        uv_pri: params.uv_pri,
+        uv_sec: params.uv_sec,
+        damping: params.damping,
+        coeff_shift,
+        uv_dir: CDEF_UV_DIR[sub_x][sub_y],
     }
 }
 
@@ -974,7 +1063,7 @@ fn cdef_segment<S: ReconSample>(
     }
     let (x0, y0) = origin;
     let luma_rows = plane_rows(&mut frame.filtered_y, (x0, y0), (width, 8))?;
-    let mut chroma_rows = match (chroma, frame.filtered_u.as_mut(), frame.filtered_v.as_mut()) {
+    let chroma_rows = match (chroma, frame.filtered_u.as_mut(), frame.filtered_v.as_mut()) {
         (Some(_), Some(u), Some(v)) => Some([
             plane_rows(u, (x0 >> 1, y0 >> 1), (width / 2, 4))?,
             plane_rows(v, (x0 >> 1, y0 >> 1), (width / 2, 4))?,
@@ -982,18 +1071,17 @@ fn cdef_segment<S: ReconSample>(
         (Some(_), _, _) => return Err(CdefError::Workspace),
         _ => None,
     };
-    let (luma_out, luma_stride) = luma_rows;
-    for block in 0..CDEF_SEGMENT_BLOCKS {
-        if let Some(ctx) = lookup.at(r, c + STEP4 * block, Some(params), row_span)? {
-            let luma = (&mut luma_out[8 * block..], luma_stride);
-            let chroma = chroma_rows.as_mut().map(|[(u, u_stride), (v, v_stride)]| {
-                [
-                    (&mut u[4 * block..], *u_stride),
-                    (&mut v[4 * block..], *v_stride),
-                ]
-            });
-            compute_cdef_segment_block(&ctx, block, scratch, luma, chroma)?;
-        }
+    let blocks = lookup.segment_planes(r, c)?;
+    let strengths = cdef_strengths(params, lookup.coeff_shift, (lookup.sub_x, lookup.sub_y));
+    let chroma = chroma_rows.map(|planes| (&scratch.pair, planes));
+    if !cdef_filter_segment(
+        &scratch.luma,
+        &strengths,
+        blocks,
+        lookup.fill_flat,
+        (luma_rows, chroma),
+    ) {
+        return Err(CdefError::Workspace);
     }
     Ok(true)
 }
@@ -1009,124 +1097,10 @@ fn plane_rows(
     plane.rect_mut(rect).ok_or(CdefError::Workspace)
 }
 
-/// Fills the first `side` samples of `side` rows of `rows` with `value`.
-fn fill_rows(
-    (rows, stride): (&mut [u16], usize),
-    side: usize,
-    value: u16,
-) -> Result<(), CdefError> {
-    for row in 0..side {
-        rows.get_mut(row * stride..)
-            .and_then(|row| row.get_mut(..side))
-            .ok_or(CdefError::Workspace)?
-            .fill(value);
-    }
-    Ok(())
-}
-
-/// [`compute_cdef_block`] for block `block` of a gathered interior segment,
-/// into the block's `luma` output rows and, when the segment's chroma pair
-/// is gathered, its `chroma` rows.
-#[allow(
-    clippy::inline_always,
-    reason = "measured: out of line it slowed 8-bit CDEF"
-)]
-#[inline(always)]
-fn compute_cdef_segment_block(
-    ctx: &CdefBlockCtx,
-    block: usize,
-    scratch: &CdefSegmentScratch,
-    (luma_out, luma_stride): (&mut [u16], usize),
-    chroma: Option<[(&mut [u16], usize); 2]>,
-) -> Result<(), CdefError> {
-    let luma = scratch.luma.block(block).ok_or(CdefError::Workspace)?;
-    let pri_base = ctx.params.y_pri << ctx.coeff_shift;
-    let uv_pri = ctx.params.uv_pri << ctx.coeff_shift;
-    let use_range = !ctx.luma_lossless && (ctx.params.y_sec != 0 || pri_base != 0);
-    let luma_flat = use_range
-        && scratch
-            .luma
-            .range(block)
-            .is_some_and(|[min, max]| min == max);
-    let (y_dir, var) = if (pri_base == 0 && uv_pri == 0) || luma_flat {
-        (0, 0)
-    } else {
-        cdef_direction_segment(luma, ctx.coeff_shift)
-    };
-    let [y_filter, uv_filter] = block_filters(ctx, y_dir, var);
-    if !((y_filter.pri_str == 0 && y_filter.sec_str == 0) || ctx.luma_lossless) {
-        if luma_flat {
-            if ctx.fill_flat[0] {
-                fill_rows((luma_out, luma_stride), 8, luma[0])?;
-            }
-        } else if !cdef_filter_block_segment(
-            &scratch.luma,
-            block,
-            &y_filter,
-            use_range,
-            luma_out,
-            luma_stride,
-        ) {
-            return Err(CdefError::Workspace);
-        }
-    }
-    let Some([u_rows, v_rows]) = chroma else {
-        return Ok(());
-    };
-    if (uv_filter.pri_str == 0 && uv_filter.sec_str == 0) || ctx.chroma_lossless {
-        return Ok(());
-    }
-    let pair = scratch.pair.block(block).ok_or(CdefError::Workspace)?;
-    let pair_range = scratch.pair.range(block).ok_or(CdefError::Workspace)?;
-    if pair_range == 0 {
-        let [u, v] = *pair.first_chunk().ok_or(CdefError::Workspace)?;
-        if ctx.fill_flat[1] {
-            fill_rows(u_rows, CHROMA_PAIR_SIDE, u)?;
-        }
-        if ctx.fill_flat[2] {
-            fill_rows(v_rows, CHROMA_PAIR_SIDE, v)?;
-        }
-        return Ok(());
-    }
-    let mut output = [0u16; CDEF_PAIR_OUTPUT];
-    if !cdef_filter_block_chroma_pair_segment(&scratch.pair, block, &uv_filter, &mut output) {
-        return Err(CdefError::Workspace);
-    }
-    publish_chroma_pair(&output, [u_rows, v_rows])
-}
-
 /// The § 7.18.1 luma and chroma filters of the block at `ctx`, given its
 /// § 7.18.2 direction and variance.
 fn block_filters(ctx: &CdefBlockCtx, y_dir: usize, var: i32) -> [CdefBlockFilter; 2] {
-    let shift = ctx.coeff_shift;
-    let pri_base = ctx.params.y_pri << shift;
-    let uv_pri = ctx.params.uv_pri << shift;
-    let var_str = (var >> 6).checked_ilog2().unwrap_or(0).min(12) as i32;
-    let damping = ctx.params.damping + shift as i32;
-    [
-        CdefBlockFilter {
-            pri_str: if var != 0 {
-                (pri_base * (4 + var_str) + 8) >> 4
-            } else {
-                0
-            },
-            sec_str: ctx.params.y_sec << shift,
-            damping,
-            dir: if pri_base == 0 { 0 } else { y_dir },
-            coeff_shift: shift,
-        },
-        CdefBlockFilter {
-            pri_str: uv_pri,
-            sec_str: ctx.params.uv_sec << shift,
-            damping: damping - 1,
-            dir: if uv_pri == 0 {
-                0
-            } else {
-                CDEF_UV_DIR[ctx.sub_x][ctx.sub_y][y_dir]
-            },
-            coeff_shift: shift,
-        },
-    ]
+    cdef_strengths(ctx.params, ctx.coeff_shift, (ctx.sub_x, ctx.sub_y)).filters(y_dir, var)
 }
 
 struct CdefBlockCtx {
