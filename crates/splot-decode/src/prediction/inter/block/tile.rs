@@ -357,6 +357,11 @@ impl<'payload> TileParser<'payload> {
         })
     }
 
+    /// Parses the next unit into `buffers`.
+    ///
+    /// Row units, the single-thread walk's, reserve the superblock bound up
+    /// front; scheduled units grow their slot's recycled lists instead, so a
+    /// frame in flight holds only what it parsed.
     fn next_unit<T: ReconSample>(
         &mut self,
         tile: &mut DecodeTileWorkUnit,
@@ -366,11 +371,15 @@ impl<'payload> TileParser<'payload> {
     ) -> ParserStep<ReconRow> {
         let tile_offset = tile.tile_byte_span().start;
         let mut buffers = buffers.unwrap_or_default();
-        let reservation = superblock_coefficient_capacity(
-            context.params.sb_h4,
-            context.sequence.general.chroma_format_idc,
-        )
-        .and_then(|capacity| buffers.reserve_unit(capacity));
+        let reservation = if row_units {
+            superblock_coefficient_capacity(
+                context.params.sb_h4,
+                context.sequence.general.chroma_format_idc,
+            )
+            .and_then(|capacity| buffers.reserve_unit(capacity))
+        } else {
+            Ok(())
+        };
         let ReconRowBuffers {
             superblocks,
             residual_coeffs,
@@ -378,21 +387,18 @@ impl<'payload> TileParser<'payload> {
             residual_blocks,
             temporal,
             mut flag_log,
-            filter_records,
             residual_planes,
         } = buffers;
         self.mv_grid.take_flag_log(&mut flag_log);
         self.residual_planes = residual_planes;
         let mut recon_row = ReconRow {
             ordinal: self.parser_ordinal,
-            residual_source: None,
             superblocks,
             residual_coeffs,
             entries,
             residual_blocks,
             temporal,
             flag_log,
-            filter_records,
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
             motion_folded: false,
             failure: ReconRowFailure::None,
@@ -805,130 +811,7 @@ fn push_recon_entry<Entry>(
     }
 }
 
-/// A parsed frame's units, packed in parse order.
-///
-/// Units wait here from parse to commit, a whole frame of them per frame in
-/// flight. Most hold a few entries, so one list per unit would hold a page
-/// for each; packed, the frame costs only what it parsed.
-#[derive(Default)]
-struct FrameResiduals {
-    coefficients: Vec<i32>,
-    planes: crate::residual::pipeline::ResidualPlaneArena,
-    entries: Vec<Option<ReconRowEntry>>,
-    blocks: Vec<InterResidualBlock>,
-    flags: Vec<NeighbourFlagRecord>,
-}
-
-pub(super) struct RowResiduals {
-    frame: Arc<Mutex<FrameResiduals>>,
-    planes: crate::residual::pipeline::ResidualPlaneSpan,
-    range: Range<usize>,
-    entries: Range<usize>,
-    blocks: Range<usize>,
-    flags: Range<usize>,
-    capacity: usize,
-}
-
-/// The working entry and block lists of one stage that loads parsed units.
-#[derive(Default)]
-pub(super) struct UnitLists {
-    entries: Vec<ReconRowEntry>,
-    blocks: Vec<InterResidualBlock>,
-    flags: Vec<NeighbourFlagRecord>,
-}
-
-impl UnitLists {
-    pub(super) fn swap_into(
-        &mut self,
-        entries: &mut Vec<ReconRowEntry>,
-        blocks: &mut Vec<InterResidualBlock>,
-    ) {
-        core::mem::swap(&mut self.entries, entries);
-        core::mem::swap(&mut self.blocks, blocks);
-    }
-}
-
-impl RowResiduals {
-    fn load(
-        &self,
-        entries: &mut Vec<ReconRowEntry>,
-        blocks: &mut Vec<InterResidualBlock>,
-    ) -> Result<()> {
-        entries.clear();
-        blocks.clear();
-        let mut frame = self.frame.lock();
-        let FrameResiduals {
-            entries: parsed,
-            blocks: parsed_blocks,
-            ..
-        } = &mut *frame;
-        let parsed = parsed
-            .get_mut(self.entries.clone())
-            .filter(|parsed| parsed.iter().all(Option::is_some))
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        let parsed_blocks = parsed_blocks
-            .get(self.blocks.clone())
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        let bound = self.capacity / 16;
-        if entries.capacity() < parsed.len() {
-            entries
-                .try_reserve_exact(bound.max(parsed.len()))
-                .map_err(|_| inter_allocation!("unit entries"))?;
-        }
-        if blocks.capacity() < parsed_blocks.len() {
-            blocks
-                .try_reserve_exact(bound.max(parsed_blocks.len()))
-                .map_err(|_| inter_allocation!("unit residual blocks"))?;
-        }
-        entries.extend(parsed.iter_mut().filter_map(Option::take));
-        blocks.extend_from_slice(parsed_blocks);
-        Ok(())
-    }
-
-    fn store(&self, entries: &mut Vec<ReconRowEntry>) {
-        let mut frame = self.frame.lock();
-        if let Some(parsed) = frame
-            .entries
-            .get_mut(self.entries.clone())
-            .filter(|parsed| parsed.len() == entries.len())
-        {
-            for (slot, entry) in parsed.iter_mut().zip(entries.drain(..)) {
-                *slot = Some(entry);
-            }
-        }
-        entries.clear();
-    }
-
-    pub(super) fn take_planes(
-        &self,
-        target: &mut crate::residual::pipeline::ResidualPlaneArena,
-    ) -> Result<()> {
-        self.frame
-            .lock()
-            .planes
-            .take_row(&self.planes, target, self.capacity / 16)
-    }
-
-    pub(super) fn copy_into(&self, target: &mut Vec<i32>) -> Result<()> {
-        target.clear();
-        target
-            .try_reserve(self.capacity)
-            .map_err(|_| inter_allocation!("coefficient row snapshot"))?;
-        let frame = self.frame.lock();
-        let samples = frame
-            .coefficients
-            .get(self.range.clone())
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        if samples.len() > self.capacity {
-            return Err(invalid_inter_tile_scheduling_state());
-        }
-        target.extend_from_slice(samples);
-        Ok(())
-    }
-}
-
 pub(super) struct ReconRow {
-    pub(super) residual_source: Option<RowResiduals>,
     pub(super) ordinal: usize,
     pub(super) superblocks: Vec<ReconSuperblock>,
     /// The coefficients this row's transform blocks index into.
@@ -939,7 +822,6 @@ pub(super) struct ReconRow {
     /// The unit's flag-plane publications, replayed by a resolve pass that runs
     /// on a grid of its own. Empty unless the parser was logging.
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
-    pub(super) filter_records: TileFilterRecords,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     /// Whether the prepass already folded this unit's records into the frame's
     /// motion field, which it does for a unit it reconstructed in full.
@@ -948,40 +830,9 @@ pub(super) struct ReconRow {
 }
 
 impl ReconRow {
-    /// Moves a published unit's entries and residual blocks out of the frame
-    /// into `lists`, which the row holds until [`Self::unload_parsed`].
-    pub(super) fn load_parsed(&mut self, lists: &mut UnitLists) {
-        let Some(source) = &self.residual_source else {
-            return;
-        };
-        lists.swap_into(&mut self.entries, &mut self.residual_blocks);
-        if let Err(error) = source.load(&mut self.entries, &mut self.residual_blocks) {
-            self.record_terminal_error(error);
-        }
-    }
-
-    /// Puts the entries back into the frame and returns the lists.
-    pub(super) fn unload_parsed(&mut self, lists: &mut UnitLists) {
-        let Some(source) = &self.residual_source else {
-            return;
-        };
-        source.store(&mut self.entries);
-        self.residual_blocks.clear();
-        lists.swap_into(&mut self.entries, &mut self.residual_blocks);
-    }
-
     /// Replays the unit's logged flag publications onto `grid`.
-    pub(super) fn replay_flags(&self, grid: &mut NeighbourMvGrid) -> Result<()> {
-        let Some(source) = &self.residual_source else {
-            grid.replay_flag_log(&self.flag_log);
-            return Ok(());
-        };
-        let frame = source.frame.lock();
-        let flags = (frame.flags)
-            .get(source.flags.clone())
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        grid.replay_flag_log(flags);
-        Ok(())
+    pub(super) fn replay_flags(&self, grid: &mut NeighbourMvGrid) {
+        grid.replay_flag_log(&self.flag_log);
     }
 
     fn has_terminal_error(&self) -> bool {
@@ -1062,7 +913,6 @@ pub(crate) struct ReconRowBuffers {
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
-    pub(super) filter_records: TileFilterRecords,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
 }
 
@@ -1352,160 +1202,142 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     residual_use_ddt: bool,
     bit_depth: BitDepth,
 ) -> ReconRow {
-    let mut coefficient_scratch = std::mem::take(&mut scratch.coefficients);
-    let row = (|| {
-        if row.has_terminal_error() {
-            return row;
-        }
-        let shared_coefficients = row.residual_source.is_some();
-        let mut coefficients_loaded = false;
-        let _quantizer_scopes = quantizer.install_frame();
-        let info = surface.info();
-        let temporal_capacity = row.entries.iter().fold(0usize, |capacity, entry| {
-            capacity.saturating_add(
-                entry
-                    .command()
-                    .map_or(0, ReconCommand::temporal_record_capacity),
-            )
-        });
-        let _ = row.temporal.try_reserve(temporal_capacity);
-        'superblocks: for superblock in &row.superblocks {
-            let entry_start = superblock.entries.start;
-            let Some(entries) = row.entries.get_mut(superblock.entries.clone()) else {
-                break;
-            };
-            let mut skipped_any = false;
-            for (offset, entry) in entries.iter_mut().enumerate() {
-                let safe = matches!(
-                    entry.command(),
-                    Some(ReconCommand::Inter(command))
-                        if !command.reads_current_frame()
-                            && (!skipped_any
-                                || (command.placed().luma_w >= 8
-                                    && command.placed().luma_h >= 8
-                                    && [
-                                        command.placed().chroma_luma_x,
-                                        command.placed().chroma_luma_y,
-                                        command.placed().chroma_luma_w,
-                                        command.placed().chroma_luma_h,
-                                    ] == [
-                                        command.placed().luma_x,
-                                        command.placed().luma_y,
-                                        command.placed().luma_w,
-                                        command.placed().luma_h,
-                                    ]))
-                            && command.prepass_write_is_contained(
-                                superblock.origin,
-                                sb_h4,
-                                info,
-                                &row.residual_blocks,
-                            )
-                );
-                if !safe {
-                    match entry.command_mut() {
-                        Some(ReconCommand::Inter(command)) => {
-                            let start = row.temporal.len();
-                            let result = scratch.derive_motion_logged(
-                                command,
-                                surface,
-                                &mut row.temporal,
-                                temporal_context,
-                                reference,
-                                ref_frame_idx,
-                                sequence,
-                                core,
-                                mi_rows,
-                                mi_cols,
-                                current_order_hint,
-                                luma_use_tcq,
-                                residual_use_ddt,
-                                bit_depth,
-                            );
-                            match result {
-                                Ok(()) => {
-                                    entry.temporal = start..row.temporal.len();
-                                }
-                                Err(error) => {
-                                    row.temporal.truncate(start);
-                                    row.record_precompute_error(entry_start + offset, error);
-                                    break 'superblocks;
-                                }
-                            }
-                        }
-                        _ => {
-                            if let Some(clear) =
-                                entry.temporal_clear_record(mi_rows, mi_cols, current_order_hint)
-                            {
-                                let start = row.temporal.len();
-                                row.temporal.push(clear);
+    if row.has_terminal_error() {
+        return row;
+    }
+    let _quantizer_scopes = quantizer.install_frame();
+    let info = surface.info();
+    let temporal_capacity = row.entries.iter().fold(0usize, |capacity, entry| {
+        capacity.saturating_add(
+            entry
+                .command()
+                .map_or(0, ReconCommand::temporal_record_capacity),
+        )
+    });
+    let _ = row.temporal.try_reserve(temporal_capacity);
+    'superblocks: for superblock in &row.superblocks {
+        let entry_start = superblock.entries.start;
+        let Some(entries) = row.entries.get_mut(superblock.entries.clone()) else {
+            break;
+        };
+        let mut skipped_any = false;
+        for (offset, entry) in entries.iter_mut().enumerate() {
+            let safe = matches!(
+                entry.command(),
+                Some(ReconCommand::Inter(command))
+                    if !command.reads_current_frame()
+                        && (!skipped_any
+                            || (command.placed().luma_w >= 8
+                                && command.placed().luma_h >= 8
+                                && [
+                                    command.placed().chroma_luma_x,
+                                    command.placed().chroma_luma_y,
+                                    command.placed().chroma_luma_w,
+                                    command.placed().chroma_luma_h,
+                                ] == [
+                                    command.placed().luma_x,
+                                    command.placed().luma_y,
+                                    command.placed().luma_w,
+                                    command.placed().luma_h,
+                                ]))
+                        && command.prepass_write_is_contained(
+                            superblock.origin,
+                            sb_h4,
+                            info,
+                            &row.residual_blocks,
+                        )
+            );
+            if !safe {
+                match entry.command_mut() {
+                    Some(ReconCommand::Inter(command)) => {
+                        let start = row.temporal.len();
+                        let result = scratch.derive_motion_logged(
+                            command,
+                            surface,
+                            &mut row.temporal,
+                            temporal_context,
+                            reference,
+                            ref_frame_idx,
+                            sequence,
+                            core,
+                            mi_rows,
+                            mi_cols,
+                            current_order_hint,
+                            luma_use_tcq,
+                            residual_use_ddt,
+                            bit_depth,
+                        );
+                        match result {
+                            Ok(()) => {
                                 entry.temporal = start..row.temporal.len();
                             }
+                            Err(error) => {
+                                row.temporal.truncate(start);
+                                row.record_precompute_error(entry_start + offset, error);
+                                break 'superblocks;
+                            }
                         }
                     }
-                    skipped_any = true;
-                    continue;
+                    _ => {
+                        if let Some(clear) =
+                            entry.temporal_clear_record(mi_rows, mi_cols, current_order_hint)
+                        {
+                            let start = row.temporal.len();
+                            row.temporal.push(clear);
+                            entry.temporal = start..row.temporal.len();
+                        }
+                    }
                 }
-                let Some(ReconCommand::Inter(command)) = entry.command_mut() else {
-                    skipped_any = true;
-                    continue;
-                };
-                if !coefficients_loaded && let Some(source) = &row.residual_source {
-                    if let Err(error) = source.copy_into(&mut coefficient_scratch) {
-                        row.record_precompute_error(entry_start + offset, error);
-                        break 'superblocks;
-                    }
-                    coefficients_loaded = true;
+                skipped_any = true;
+                continue;
+            }
+            let Some(ReconCommand::Inter(command)) = entry.command_mut() else {
+                skipped_any = true;
+                continue;
+            };
+            let start = row.temporal.len();
+            let result = {
+                scratch.reconstruct_logged(
+                    command,
+                    surface,
+                    block_decoded,
+                    &mut row.temporal,
+                    &row.residual_blocks,
+                    &row.residual_coeffs,
+                    temporal_context,
+                    reference,
+                    ref_frame_idx,
+                    sequence,
+                    core,
+                    mi_rows,
+                    mi_cols,
+                    current_order_hint,
+                    luma_use_tcq,
+                    residual_use_ddt,
+                    bit_depth,
+                )
+            };
+            entry.drop_command();
+            match result {
+                Ok(()) => {
+                    entry.temporal = start..row.temporal.len();
                 }
-                let start = row.temporal.len();
-                let result = {
-                    scratch.reconstruct_logged(
-                        command,
-                        surface,
-                        block_decoded,
-                        &mut row.temporal,
-                        &row.residual_blocks,
-                        if shared_coefficients {
-                            &coefficient_scratch
-                        } else {
-                            &row.residual_coeffs
-                        },
-                        temporal_context,
-                        reference,
-                        ref_frame_idx,
-                        sequence,
-                        core,
-                        mi_rows,
-                        mi_cols,
-                        current_order_hint,
-                        luma_use_tcq,
-                        residual_use_ddt,
-                        bit_depth,
-                    )
-                };
-                entry.drop_command();
-                match result {
-                    Ok(()) => {
-                        entry.temporal = start..row.temporal.len();
-                    }
-                    Err(error) => {
-                        row.temporal.truncate(start);
-                        row.record_precompute_error(entry_start + offset, error);
-                        break 'superblocks;
-                    }
+                Err(error) => {
+                    row.temporal.truncate(start);
+                    row.record_precompute_error(entry_start + offset, error);
+                    break 'superblocks;
                 }
             }
         }
-        row.motion_folded = matches!(row.failure, ReconRowFailure::None);
-        if row.motion_folded && !row.superblocks.is_empty() {
-            if let Err(error) = motion.fold_unit(row.ordinal, &row.temporal) {
-                row.record_terminal_error(error);
-            } else {
-                motion.unit_landed_for(row.ordinal);
-            }
+    }
+    row.motion_folded = matches!(row.failure, ReconRowFailure::None);
+    if row.motion_folded && !row.superblocks.is_empty() {
+        if let Err(error) = motion.fold_unit(row.ordinal, &row.temporal) {
+            row.record_terminal_error(error);
+        } else {
+            motion.unit_landed_for(row.ordinal);
         }
-        row
-    })();
-    scratch.coefficients = coefficient_scratch;
+    }
     row
 }
 
@@ -1587,11 +1419,6 @@ pub(crate) struct ParseProgress {
     row_buffers: Mutex<Vec<Option<ReconRowBuffers>>>,
     /// The decode's storage, whose per-unit capacities size the row buffers.
     buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
-    residuals: Arc<Mutex<FrameResiduals>>,
-    coefficient_scratch: Mutex<Vec<i32>>,
-    plane_scratch: Mutex<crate::residual::pipeline::ResidualPlaneArena>,
-    parse_lists: Mutex<UnitLists>,
-    resolve_lists: Mutex<UnitLists>,
     finished: splot_parallel::WatermarkCell,
     rows: Mutex<Vec<Option<ReconRow>>>,
     geometry: Mutex<GeometryState>,
@@ -1624,21 +1451,12 @@ impl ParseProgress {
         if !geometry_reusable {
             return false;
         }
-        let Some(residuals) = Arc::get_mut(&mut self.residuals) else {
-            return false;
-        };
         *geometry = match core::mem::take(geometry) {
             GeometryState::Published(geometry) | GeometryState::Spare(geometry) => {
                 GeometryState::Spare(geometry)
             }
             GeometryState::Unpublished => GeometryState::Unpublished,
         };
-        let residuals = residuals.get_mut();
-        residuals.coefficients.clear();
-        residuals.planes.clear();
-        residuals.entries.clear();
-        residuals.blocks.clear();
-        residuals.flags.clear();
         self.finished.reset();
         let records = self.records.get_mut();
         records.clear();
@@ -1652,16 +1470,14 @@ impl ParseProgress {
     /// The frame's § 7.17 and loop-restoration records leave the unit here, in
     /// parse order, because the scheduler claims units on its own schedule and
     /// the frame-level detach must not depend on when it does.
-    pub(super) fn publish_row(&self, mut row: ReconRow) -> TileFilterRecords {
-        pixel_commit::detach_row_filter_records(&mut row, &mut self.records.lock());
-        let records = std::mem::take(&mut row.filter_records);
+    pub(super) fn publish_row(&self, row: ReconRow, records: &mut TileFilterRecords) {
+        pixel_commit::append_row_filter_records(&mut self.records.lock(), records);
         let finished = {
             let mut rows = self.rows.lock();
             rows.push(Some(row));
             rows.len()
         };
         self.finished.publish(finished);
-        records
     }
 
     /// Takes the unit at `index`, which a caller may claim exactly once.
@@ -1708,35 +1524,12 @@ impl ParseProgress {
 
     /// Publishes the tile geometry, which the parser settles before its
     /// first unit.
-    pub(super) fn publish_geometry(
-        &self,
-        geometry: TileGeometry,
-        coefficients: usize,
-    ) -> Result<()> {
+    pub(super) fn publish_geometry(&self, geometry: TileGeometry) -> Result<()> {
         let slots = geometry.unit_count;
         let mut buffers = self.row_buffers.lock();
         if buffers.len() < slots {
             buffers.resize_with(slots, || Some(ReconRowBuffers::default()));
         }
-        let capacity = coefficients
-            .checked_mul(slots)
-            .ok_or(crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
-        let mut residuals = self.residuals.lock();
-        let additional = capacity.saturating_sub(residuals.coefficients.len());
-        residuals
-            .coefficients
-            .try_reserve(additional)
-            .map_err(|_| inter_allocation!("frame coefficients"))?;
-        residuals
-            .planes
-            .reserve_records(capacity / 16)
-            .map_err(|_| inter_allocation!("frame residual records"))?;
-        let FrameResiduals {
-            entries, blocks, ..
-        } = &mut *residuals;
-        let _ = entries.try_reserve_exact((capacity / 16).saturating_sub(entries.len()));
-        let _ = blocks.try_reserve_exact((capacity / 16).saturating_sub(blocks.len()));
-        drop(residuals);
         drop(buffers);
         let mut published = self.geometry.lock();
         let geometry = match core::mem::take(&mut *published) {
@@ -1813,7 +1606,6 @@ impl ParseProgress {
 pub(crate) fn publish_tile_geometry(
     tile: &DecodeTileWorkUnit,
     params: &TileWalkParams,
-    chroma: ChromaFormatIdc,
     parse_progress: &ParseProgress,
 ) -> Result<()> {
     let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
@@ -1826,16 +1618,12 @@ pub(crate) fn publish_tile_geometry(
         params.sb_h4,
     );
     parse_progress.reserve(capacity)?;
-    parse_progress.publish_geometry(
-        TileGeometry {
-            tile_offset: tile.tile_byte_span().start,
-            mi_rows,
-            mi_cols,
-            unit_count: capacity,
-        },
-        superblock_coefficient_capacity(params.sb_h4, chroma)?,
-    )?;
-    Ok(())
+    parse_progress.publish_geometry(TileGeometry {
+        tile_offset: tile.tile_byte_span().start,
+        mi_rows,
+        mi_cols,
+        unit_count: capacity,
+    })
 }
 
 impl<'payload> TileParser<'payload> {
@@ -1870,92 +1658,13 @@ impl<'payload> TileParser<'payload> {
         context: &TileDecodeContext<'_, T>,
         parse_progress: &ParseProgress,
     ) -> Result<bool> {
-        let mut row_set = parse_progress.take_row_buffers(self.parser_ordinal)?;
-        core::mem::swap(
-            &mut row_set.flag_log,
-            &mut parse_progress.parse_lists.lock().flags,
-        );
-        std::mem::swap(&mut row_set.filter_records, &mut self.filter_records);
-        std::mem::swap(
-            &mut row_set.residual_coeffs,
-            &mut *parse_progress.coefficient_scratch.lock(),
-        );
-        std::mem::swap(
-            &mut row_set.residual_planes,
-            &mut *parse_progress.plane_scratch.lock(),
-        );
-        parse_progress
-            .parse_lists
-            .lock()
-            .swap_into(&mut row_set.entries, &mut row_set.residual_blocks);
-        let capacity = superblock_coefficient_capacity(
-            context.params.sb_h4,
-            context.sequence.general.chroma_format_idc,
-        )?;
-        row_set
-            .residual_planes
-            .reserve_records(capacity / 16)
-            .map_err(|_| inter_allocation!("producer residual records"))?;
+        let row_set = parse_progress.take_row_buffers(self.parser_ordinal)?;
         let (mut row, last) = match self.next_unit(tile, context, Some(row_set), false) {
             ParserStep::More(row) => (row, false),
             ParserStep::Last(row) => (row, true),
         };
-        std::mem::swap(&mut row.filter_records, &mut self.filter_records);
-        let publication = (|| {
-            row.return_terminal_error()?;
-            let mut residuals = parse_progress.residuals.lock();
-            let start = residuals.coefficients.len();
-            residuals
-                .coefficients
-                .try_reserve(row.residual_coeffs.len())
-                .map_err(|_| inter_allocation!("frame coefficient publication"))?;
-            residuals
-                .coefficients
-                .extend_from_slice(&row.residual_coeffs);
-            let planes = residuals
-                .planes
-                .append_row(&mut row.residual_planes)
-                .map_err(|_| inter_allocation!("frame residual publication"))?;
-            let entries = residuals.entries.len();
-            let blocks = residuals.blocks.len();
-            let flags = residuals.flags.len();
-            residuals
-                .entries
-                .try_reserve(row.entries.len())
-                .and_then(|()| residuals.blocks.try_reserve(row.residual_blocks.len()))
-                .and_then(|()| residuals.flags.try_reserve(row.flag_log.len()))
-                .map_err(|_| inter_allocation!("frame unit publication"))?;
-            residuals.entries.extend(row.entries.drain(..).map(Some));
-            residuals.blocks.append(&mut row.residual_blocks);
-            residuals.flags.append(&mut row.flag_log);
-            row.residual_source = Some(RowResiduals {
-                frame: Arc::clone(&parse_progress.residuals),
-                range: start..residuals.coefficients.len(),
-                planes,
-                entries: entries..residuals.entries.len(),
-                blocks: blocks..residuals.blocks.len(),
-                flags: flags..residuals.flags.len(),
-                capacity,
-            });
-            Ok::<(), crate::DecodeError>(())
-        })();
-        if row.residual_source.is_some() {
-            let mut lists = parse_progress.parse_lists.lock();
-            lists.swap_into(&mut row.entries, &mut row.residual_blocks);
-            core::mem::swap(&mut row.flag_log, &mut lists.flags);
-        }
-        row.residual_coeffs.clear();
-        std::mem::swap(
-            &mut row.residual_coeffs,
-            &mut *parse_progress.coefficient_scratch.lock(),
-        );
-        row.residual_planes.clear();
-        std::mem::swap(
-            &mut row.residual_planes,
-            &mut *parse_progress.plane_scratch.lock(),
-        );
-        publication?;
-        self.filter_records = parse_progress.publish_row(row);
+        row.return_terminal_error()?;
+        parse_progress.publish_row(row, &mut self.filter_records);
         Ok(last)
     }
 
