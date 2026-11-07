@@ -906,7 +906,8 @@ impl<'a, T: ReconSample> LumaReference<'a, T> {
 
     /// The parameters of the bilinear refine-MV or optical-flow luma area
     /// `rect`, `INSET` samples in from each edge, and its published view.
-    #[inline]
+    #[allow(clippy::inline_always, reason = "per refine-MV and TIP unit")]
+    #[inline(always)]
     fn area_prediction<const INSET: usize>(
         &mut self,
         rect: McBlockRect,
