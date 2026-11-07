@@ -235,9 +235,6 @@ fn inter_tile_segment_id_error(error: &TileSegmentIdStateError) -> crate::Decode
 
 fn inter_tile_block_decoded_error(error: &TileBlockDecodedStateError) -> crate::DecodeError {
     match error {
-        TileBlockDecodedStateError::Allocation { .. } => {
-            inter_allocation!("inter block decoded state")
-        }
         TileBlockDecodedStateError::InvalidPlanes { .. }
         | TileBlockDecodedStateError::EmptySuperblock
         | TileBlockDecodedStateError::InvalidSubsampling { .. }
