@@ -11,7 +11,10 @@ use fearless_simd::{Level, Simd, SimdBase, dispatch, u8x32, u16x8, u16x16};
 
 use crate::intra_dc_math::{IntraLaneSample, validate_output_shape, validate_sample_type};
 use crate::math::round2_i32;
-use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
+use crate::{
+    BitDepth, CurrentFrameWorkspace, IntraBlockFrame, IntraRectBlockSize, PlaneId, ReconError,
+    ReconSample, Result,
+};
 
 const BLEND_WEIGHT_MAX: i32 = 32;
 
@@ -212,14 +215,34 @@ const fn side_table(far: bool) -> [[u16; LANE_LEN]; 5] {
     table
 }
 
+/// The weight tables of one block size.
+type SmoothTables = [[&'static [u16; LANE_LEN]; 3]; 2];
+
+/// [`smooth_tables`] of every block size, indexed `[log2(w) - 2][log2(h) - 2]`.
+static SMOOTH_TABLES: [[SmoothTables; 5]; 5] = {
+    let mut tables = [[[[&FAR[0]; 3]; 2]; 5]; 5];
+    let mut kw = 0;
+    while kw < 5 {
+        let mut kh = 0;
+        while kh < 5 {
+            let scale = (kw + kh + 2) >> 2;
+            tables[kw][kh] = [
+                [&FAR[kw], &NEAR[kw], &BLEND[scale][kw]],
+                [&FAR[kh], &NEAR[kh], &BLEND[scale][kh]],
+            ];
+            kh += 1;
+        }
+        kw += 1;
+    }
+    tables
+};
+
 /// The block's weight tables: `[FAR, NEAR, BLEND]` of its width, then of its
-/// height.
-fn smooth_tables(size: IntraRectBlockSize) -> [[&'static [u16; LANE_LEN]; 3]; 2] {
-    let scale = round2_i32(size.log2_width() as i32 + size.log2_height() as i32 - 4, 2) as usize;
-    [size.log2_width(), size.log2_height()].map(|log2| {
-        let k = usize::from(log2 - 2);
-        [&FAR[k], &NEAR[k], &BLEND[scale][k]]
-    })
+/// height, with the blend `scale = Round2(log2(w) + log2(h) - 4, 2)`.
+#[inline]
+fn smooth_tables(size: IntraRectBlockSize) -> SmoothTables {
+    let k = |log2: u8| usize::from(log2 - 2).min(4);
+    SMOOTH_TABLES[k(size.log2_width())][k(size.log2_height())]
 }
 
 /// One block's § 7.13.2.13 edges in the prediction kernel's lane layout:
@@ -272,6 +295,111 @@ impl<T: ReconSample> IntraSmoothLanes<T> {
     pub fn fill_above(&mut self, sample: T) {
         self.above.fill(sample);
     }
+}
+
+/// One § 7.13.2.13 block predicted in place from the frame, with the § 7.13.2.1
+/// availability of its edges.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IntraSmoothFrameRequest {
+    /// Block size.
+    pub size: IntraRectBlockSize,
+    /// Smooth variant.
+    pub mode: IntraSmoothMode,
+    /// Whether the above row is available.
+    pub above: bool,
+    /// Whether the left column is available.
+    pub left: bool,
+    /// Whether `AboveRow[w]` may read the above-right sample (`numPx4AboveRight > 0`).
+    pub above_right: bool,
+    /// Whether `LeftCol[h]` may read the below-left sample (`numPx4BelowLeft > 0`).
+    pub below_left: bool,
+    /// Active bit depth.
+    pub bit_depth: BitDepth,
+}
+
+impl<T: ReconSample> CurrentFrameWorkspace<T> {
+    /// Writes the § 7.13.2.13 prediction of one block in place, reading its
+    /// edges straight from the frame.
+    ///
+    /// Returns `Ok(false)` without writing when the block cannot be predicted
+    /// in place (see [`Self::with_intra_block_frame`]).
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for a sample type that cannot represent the bit
+    /// depth or an absent plane.
+    pub fn predict_intra_smooth_in_frame(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        request: IntraSmoothFrameRequest,
+    ) -> Result<bool> {
+        validate_sample_type::<T>(request.bit_depth)?;
+        let predicted = self.with_intra_block_frame(plane, x, y, request.size, |frame| {
+            let mut lanes = IntraSmoothLanes::new(request.size);
+            gather_frame_lanes(frame, request, &mut lanes);
+            let (output, stride) = frame.target();
+            predict_lanes(&lanes, request.mode, output, stride);
+            Ok::<_, ReconError>(())
+        })?;
+        Ok(predicted.is_some())
+    }
+}
+
+/// The § 7.13.2.13 edges of `request` with their § 7.13.2.1 fallbacks, read
+/// from the stored samples around the block.
+#[inline]
+fn gather_frame_lanes<T: ReconSample>(
+    frame: &IntraBlockFrame<'_, T>,
+    request: IntraSmoothFrameRequest,
+    lanes: &mut IntraSmoothLanes<T>,
+) {
+    let (width, height) = (request.size.width(), request.size.height());
+    let half = 1u16 << (request.bit_depth.bits() - 1);
+    let fallback = |value: u16| T::try_from_u16(value).unwrap_or_default();
+    let left_len = if request.left {
+        frame.left_column(&mut lanes.left[..=height])
+    } else {
+        0
+    };
+    let above = if request.above {
+        frame.above_row()
+    } else {
+        &[]
+    };
+    let have_left = left_len >= height;
+    let have_above = above.len() >= width;
+    if have_left && (left_len == height || !request.below_left) {
+        lanes.left[height] = lanes.left[height - 1];
+    }
+    let mut corners = [T::default(); 2];
+    if have_above {
+        lanes.set_above(above);
+        corners[0] = if request.above_right && above.len() > width {
+            above[width]
+        } else {
+            above[width - 1]
+        };
+    }
+    if !have_left {
+        let fill = if have_above {
+            above[0]
+        } else {
+            fallback(half + 1)
+        };
+        lanes.left[..=height].fill(fill);
+    }
+    corners[1] = lanes.left[height];
+    if !have_above {
+        let fill = if have_left {
+            lanes.left[0]
+        } else {
+            fallback(half - 1)
+        };
+        lanes.fill_above(fill);
+        corners[0] = fill;
+    }
+    lanes.corners = corners;
 }
 
 /// Writes the § 7.13.2.13 prediction of `lanes` into caller storage.
@@ -433,9 +561,17 @@ fn smooth_lanes<S: Simd, P: IntraLaneSample>(
     }
 }
 
+/// The scalar inputs of one 8-bit kernel call, small enough for one register.
+#[derive(Clone, Copy)]
+struct SmoothBlockU8 {
+    size: IntraRectBlockSize,
+    mode: IntraSmoothMode,
+    corners: [u8; 2],
+}
+
 /// 8-bit § 7.13.2.13, through the AVX2 rounding-multiply kernel when the
 /// baseline has it.
-#[inline(never)]
+#[inline]
 fn predict_smooth_u8(
     size: IntraRectBlockSize,
     mode: IntraSmoothMode,
@@ -453,7 +589,12 @@ fn predict_smooth_u8(
     };
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = Level::baseline().as_avx2() {
-        return smooth_u8_avx2(token, size, mode, [left, above], corners, output, stride);
+        let block = SmoothBlockU8 {
+            size,
+            mode,
+            corners,
+        };
+        return smooth_u8_avx2(token, block, left, above, output, stride);
     }
     let lanes = [left.map(u16::from), above.map(u16::from)];
     let corners = corners.map(u16::from);
@@ -469,10 +610,9 @@ fearless_simd::kernel!(
     #[inline]
     fn smooth_u8_avx2(
         token: Avx2,
-        size: IntraRectBlockSize,
-        mode: IntraSmoothMode,
-        lanes: [&[u8; LANE_LEN]; 2],
-        corners: [u8; 2],
+        block: SmoothBlockU8,
+        left: &[u8; LANE_LEN],
+        above: &[u8; LANE_LEN],
         output: &mut [u8],
         stride: usize,
     ) {
@@ -483,14 +623,18 @@ fearless_simd::kernel!(
             _mm256_shuffle_epi8, _mm256_sll_epi16, _mm256_slli_epi16, _mm256_sub_epi16,
         };
         use fearless_simd::{SimdFrom, u16x8};
+        let SmoothBlockU8 {
+            size,
+            mode,
+            corners,
+        } = block;
         let (width, height) = (size.width(), size.height());
         let [[h_far, _, h_blend], [v_far, _, v_blend]] = smooth_tables(size);
         let h_shift = _mm_cvtsi32_si128(15 - i32::from(size.log2_width()));
         let v_shift = _mm_cvtsi32_si128(15 - i32::from(size.log2_height()));
-        let [left, above] = lanes;
         let right = _mm256_set1_epi16(i16::from(corners[0]));
         let bottom = _mm256_set1_epi16(i16::from(corners[1]));
-        let rows_per_group = (16 / width).max(1);
+        let group_log2 = 4u8.saturating_sub(size.log2_width());
         let index: Option<__m256i> = match width {
             4 => Some(u8x32::from_slice(token, &ROW_INDEX_4).into()),
             8 => Some(u8x32::from_slice(token, &ROW_INDEX_8).into()),
@@ -535,7 +679,8 @@ fearless_simd::kernel!(
             let top_gap = _mm256_sub_epi16(top, bottom);
             let far = _mm256_sll_epi16(columns!(h_far), h_shift);
             let s_left = _mm256_slli_epi16::<9>(columns!(h_blend));
-            for row in (0..height).step_by(rows_per_group) {
+            for group in 0..height >> group_log2 {
+                let row = group << group_log2;
                 macro_rules! vertical {
                     () => {{
                         let v_far = _mm256_sll_epi16(rows!(v_far, row), v_shift);
