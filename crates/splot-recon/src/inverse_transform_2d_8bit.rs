@@ -473,14 +473,17 @@ impl InverseTransformAdd8 {
         }
         #[cfg(target_arch = "x86_64")]
         if let Some(token) = Level::baseline().as_avx2() {
-            avx2::transform(
-                token,
-                &self,
-                dequant,
-                coeffs,
-                avx2::Sink::Add { dst, stride },
-                scratch,
-            );
+            let small = self.w_log2 <= 3 && self.h_log2 <= 4;
+            if !(small && avx2::add_small_block(token, &self, dequant, coeffs, dst, stride)) {
+                avx2::transform(
+                    token,
+                    &self,
+                    dequant,
+                    coeffs,
+                    avx2::Sink::Add { dst, stride },
+                    scratch,
+                );
+            }
             return true;
         }
         let chunks_log2 = (w >= 8).then(|| (w / 8).trailing_zeros());
