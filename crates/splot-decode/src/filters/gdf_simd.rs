@@ -3,7 +3,7 @@
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{Avx2, kernel};
-use fearless_simd::{Level, Simd, dispatch, i16x16, i32x8, prelude::*, u16x16};
+use fearless_simd::{Level, Simd, dispatch, i16x16, i32x8, mask16x16, prelude::*, u16x16};
 
 use splot_core::tables::loop_restoration::{
     GDF_ALPHA, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
@@ -546,11 +546,11 @@ fn clipped_sum<S: Simd>(
         .bitcast()
 }
 
-/// `a` in the lanes where `select` is clear, `b` where it is all ones.
+/// `a` in the lanes where `select` is clear, `b` where it is set.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn pick<S: Simd>(a: u16x16<S>, b: u16x16<S>, select: u16x16<S>) -> u16x16<S> {
-    a ^ ((a ^ b) & select)
+fn pick<S: Simd>(a: u16x16<S>, b: u16x16<S>, select: mask16x16<S>) -> u16x16<S> {
+    select.select(b, a)
 }
 
 /// The clipped sums of taps `K` and `T`, whose candidate samples coincide:
@@ -564,7 +564,7 @@ fn paired_combs<S: Simd, const K: usize, const T: usize, const ROW: usize>(
     simd: S,
     window: &Window<'_>,
     centers: Centers<S>,
-    select: u16x16<S>,
+    select: mask16x16<S>,
     params: &GdfSymParams,
 ) -> [i16x16<S>; 2] {
     let (above, below) = tap_diffs::<S, K, ROW>(simd, window, centers);
@@ -601,7 +601,7 @@ fn cycle_combs<
     simd: S,
     window: &Window<'_>,
     centers: Centers<S>,
-    (transposed, mirrored): (u16x16<S>, u16x16<S>),
+    (transposed, mirrored): (mask16x16<S>, mask16x16<S>),
     params: &GdfSymParams,
 ) -> [i16x16<S>; 4] {
     let (a_above, a_below) = tap_diffs::<S, A, ROW>(simd, window, centers);
@@ -685,7 +685,7 @@ fn row_pairs<S: Simd, L: Lanes<S>, const ROW: usize>(
     simd: S,
     lanes: L,
     window: &Window<'_>,
-    masks: (u16x16<S>, u16x16<S>),
+    masks: (mask16x16<S>, mask16x16<S>),
     params: &GdfSymParams,
 ) -> RowPairs<S> {
     let center = samples(simd, window[TAP_REACH + ROW], TAP_REACH);
@@ -776,7 +776,7 @@ fn sym_rows_with<S: Simd, L: Lanes<S>>(
     let class = classes & 3;
     let class = (class | (class << 16)).bitcast::<u16x16<S>>();
     let zero = u16x16::splat(simd, 0);
-    let masks = (zero - (class & 1), zero - ((class >> 1) & 1));
+    let masks = ((class & 1).simd_ne(zero), (class & 2).simd_ne(zero));
     let pairs = row_pairs::<S, L, 0>(simd, lanes, window, masks, params);
     let pos = row_index(simd, lanes, &pairs, &init, params);
     add_residual(simd, &pos, top, block);
