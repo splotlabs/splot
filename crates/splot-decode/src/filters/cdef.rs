@@ -118,21 +118,24 @@ pub(crate) struct CdefSkipGrid {
     cols: usize,
     values: Vec<bool>,
     skipped_block_prefix: Vec<usize>,
+    /// Whether each 8x8 block, clipped to the grid, is all skipped.
+    skipped_8x8: Vec<bool>,
 }
 
 impl CdefSkipGrid {
     pub(crate) fn new(rows: usize, cols: usize, values: Vec<bool>) -> Result<Self, CdefError> {
         validate_grid_len(rows, cols, values.len())?;
         let mut skipped_block_prefix = Vec::with_capacity(rows.div_ceil(STEP4) + 1);
+        let mut skipped_8x8 = Vec::with_capacity(rows.div_ceil(STEP4) * cols.div_ceil(STEP4));
         skipped_block_prefix.push(0usize);
         for row in (0..rows).step_by(STEP4) {
             let mut skipped = 0usize;
             for col in (0..cols).step_by(STEP4) {
                 let row_end = row.saturating_add(STEP4).min(rows);
                 let col_end = col.saturating_add(STEP4).min(cols);
-                if (row..row_end).all(|row| (col..col_end).all(|col| values[row * cols + col])) {
-                    skipped += 1;
-                }
+                let all = (row..row_end).all(|row| (col..col_end).all(|col| values[row * cols + col]));
+                skipped += usize::from(all);
+                skipped_8x8.push(all);
             }
             skipped_block_prefix.push(
                 skipped_block_prefix
@@ -148,6 +151,7 @@ impl CdefSkipGrid {
             cols,
             values,
             skipped_block_prefix,
+            skipped_8x8,
         })
     }
 
@@ -188,6 +192,16 @@ impl CdefSkipGrid {
         mi_rows: usize,
         mi_cols: usize,
     ) -> Result<bool, CdefError> {
+        if (mi_rows, mi_cols) == (self.rows, self.cols)
+            && mi_row.is_multiple_of(STEP4)
+            && mi_col.is_multiple_of(STEP4)
+            && mi_col < mi_cols
+            && let Some(&skipped) = self
+                .skipped_8x8
+                .get(mi_row / STEP4 * mi_cols.div_ceil(STEP4) + mi_col / STEP4)
+        {
+            return Ok(skipped);
+        }
         let row_end = mi_row.saturating_add(STEP4).min(mi_rows);
         let col_end = mi_col.saturating_add(STEP4).min(mi_cols);
         if row_end <= mi_row || col_end <= mi_col {
