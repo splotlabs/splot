@@ -128,6 +128,11 @@ impl SbRowWindow {
         }
     }
 
+    /// The superblock height in mode-info rows, a power of two.
+    pub(crate) const fn sb_h4(&self) -> usize {
+        1 << self.sb_h4_log2
+    }
+
     pub(crate) const fn plane_rows(&self) -> usize {
         if self.windowed {
             (1 << self.sb_h4_log2) + SB_ROW_WINDOW_ABOVE_ROWS
@@ -180,6 +185,24 @@ impl SbRowWindow {
             .checked_sub(current << self.sb_h4_log2)
             .map(Some)
             .ok_or(OutsideSbRowWindow)
+    }
+
+    /// The tile rows `lo..hi` that [`Self::checked_plane_row`] maps to
+    /// `Ok(Some(row.wrapping_add(bias)))`, as `(lo, hi, bias)`.
+    pub(crate) fn readable_rows(&self) -> (usize, usize, usize) {
+        let Some(current) = self.current else {
+            return (0, 0, 0);
+        };
+        let top = current << self.sb_h4_log2;
+        let hi = self.rows.min(top.saturating_add(1 << self.sb_h4_log2));
+        if !self.windowed {
+            return (0, hi, 0);
+        }
+        (
+            top.saturating_sub(SB_ROW_WINDOW_ABOVE_ROWS),
+            hi,
+            SB_ROW_WINDOW_ABOVE_ROWS.wrapping_sub(top),
+        )
     }
 
     /// [`SbRowWindow::checked_plane_row`] for a caller with no error path:

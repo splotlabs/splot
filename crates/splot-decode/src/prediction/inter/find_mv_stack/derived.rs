@@ -3,7 +3,7 @@
 
 use super::{
     CWP_EQUAL, CompoundMvCandidate, CompoundMvStackEntry, FixedStack, MAX_PR_NUM,
-    MAX_REF_MV_STACK_SIZE, Mv, MvBlockContext, MvStackEntry, NeighbourCell, OrderHintMvContext,
+    MAX_REF_MV_STACK_SIZE, Mv, MvBlockContext, MvStackEntry, NeighbourFlags, OrderHintMvContext,
     TIP_REF_FRAME, TemporalMvContext, insert_compound_mv_stack_entry,
 };
 
@@ -219,18 +219,19 @@ impl<'a> DerivedMvState<'a> {
         block: &MvBlockContext,
         candidate_ref: i8,
         candidate_mv: Mv,
-        cell: &NeighbourCell,
+        flags: NeighbourFlags,
+        sub_mvs: [Mv; 2],
     ) {
         let source = if block.ref_frame0 == TIP_REF_FRAME {
-            let Some(ref_frame1) = cell.flags.ref_frame1 else {
+            let Some(ref_frame1) = flags.ref_frame1 else {
                 return;
             };
-            if candidate_ref != cell.flags.ref_frame0 || self.temporal.is_none() {
+            if candidate_ref != flags.ref_frame0 || self.temporal.is_none() {
                 return;
             }
             DerivedSource {
-                refs: [cell.flags.ref_frame0, ref_frame1],
-                mvs: [cell.motion.sub_mv, cell.motion.sub_mv1],
+                refs: [flags.ref_frame0, ref_frame1],
+                mvs: sub_mvs,
             }
         } else {
             if self.temporal.is_none() && self.order_hints.is_none() {
@@ -466,8 +467,9 @@ mod tests {
             col: (i - 1).max(0),
         });
         for mv in mvs {
-            deferred.add_spatial(&block, 1, mv, &cell);
-            eager.add_spatial(&block, 1, mv, &cell);
+            let sub_mvs = [cell.motion.sub_mv, cell.motion.sub_mv1];
+            deferred.add_spatial(&block, 1, mv, cell.flags, sub_mvs);
+            eager.add_spatial(&block, 1, mv, cell.flags, sub_mvs);
             eager.derive_pending(&block);
         }
         deferred.derive_pending(&block);
