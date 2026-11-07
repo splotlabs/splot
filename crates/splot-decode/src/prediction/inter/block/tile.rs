@@ -1669,6 +1669,22 @@ impl ParseProgress {
         self.rows.lock().get_mut(index).and_then(Option::take)
     }
 
+    /// Moves the deblock records published so far into `deblock`; every record
+    /// of the mode-info rows below `final_mi_rows` has been published.
+    pub(super) fn take_deblock_records(
+        &self,
+        deblock: &mut crate::filters::deblock::FrameDeblock,
+        final_mi_rows: usize,
+    ) -> core::result::Result<(), crate::filters::deblock::DeblockError> {
+        let mut records = self.records.lock();
+        let records = &mut *records;
+        deblock.append_records(
+            &mut records.deblock_blocks,
+            &mut records.chroma_deblock_blocks,
+            final_mi_rows,
+        )
+    }
+
     /// Moves the parsed records into the frame, keeping this slot's lists.
     pub(super) fn append_records(
         &self,

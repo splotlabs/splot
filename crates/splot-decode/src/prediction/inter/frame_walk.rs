@@ -361,6 +361,9 @@ pub(crate) struct InterWalkEarly<T: ReconSample> {
     pub(crate) params: block::TileWalkParams,
     pub(crate) prelude: block::TemporalPrelude,
     pub(crate) motion_field: super::find_mv_stack::TemporalMotionField,
+    /// The frame records' deblock storage, which the frontier fills from the
+    /// records the parse publishes.
+    pub(crate) deblock: Option<crate::filters::deblock::OwnedDeblockRecords>,
 }
 
 pub(crate) struct InterFrameStart<'payload, T: ReconSample> {
@@ -487,6 +490,10 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             params,
             prelude,
             motion_field,
+            deblock: core
+                .deblocking_filter_params
+                .is_some_and(|filter| filter.apply_deblocking_filter != [false; 4])
+                .then(|| crate::filters::deblock::OwnedDeblockRecords::take_storage(&mut records)),
         };
         let pending = PendingInterWalk {
             tile_plan,
@@ -630,6 +637,7 @@ impl<T: ReconSample> InterWalkEarly<T> {
             params,
             prelude,
             motion_field,
+            deblock,
         } = self;
         let _quantizer_scopes = quantizer.install_frame();
         let (reconstruction, pending) = block::prepare_scheduled_recon(
@@ -649,6 +657,7 @@ impl<T: ReconSample> InterWalkEarly<T> {
             &params,
             prelude,
             motion_field,
+            deblock,
         )?;
         Ok((reconstruction, pending))
     }

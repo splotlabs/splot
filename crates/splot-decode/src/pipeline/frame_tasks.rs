@@ -363,6 +363,15 @@ impl<T: SplitSample> SplitFrame<T> {
         Ok(())
     }
 
+    /// Whether frontier row `row` may run: its rows are committed, and the
+    /// final row, which releases the frame's last stripes, also has the
+    /// filter setup the finished parse attaches. Earlier rows deblock while
+    /// the parse runs.
+    fn frontier_ready(&self, row: usize) -> bool {
+        row < self.closed_rows.load(Ordering::Acquire)
+            && (row + 1 < self.stages[FRONTIER].rows() || self.attached.load(Ordering::Acquire))
+    }
+
     /// Resolves one temporal band; `false` when the parse has not reached
     /// every unit the band owes, so the row is claimed again later.
     fn resolve(&self, band: usize) -> Result<bool> {
@@ -473,17 +482,26 @@ impl<T: SplitSample> SplitFrame<T> {
 }
 
 impl<T: SplitSample> FrameWork for SplitFrame<T> {
+    /// The whole-tile parse: the next frame's parse waits for its CDFs.
+    fn claim_critical(&self) -> Option<Claim> {
+        if self.failed.load(Ordering::Acquire) {
+            return None;
+        }
+        let row = self.stages[PARSE].claim(|_| {
+            self.entropy
+                .get()
+                .is_none_or(inter::EntropyDependencies::is_settled)
+        })?;
+        Some(Claim { stage: PARSE, row })
+    }
+
     fn claim(&self) -> Option<Claim> {
         if self.failed.load(Ordering::Acquire) {
             return None;
         }
         let claim = |stage: usize, row: usize| Claim { stage, row };
-        if let Some(row) = self.stages[PARSE].claim(|_| {
-            self.entropy
-                .get()
-                .is_none_or(inter::EntropyDependencies::is_settled)
-        }) {
-            return Some(claim(PARSE, row));
+        if let Some(parse) = self.claim_critical() {
+            return Some(parse);
         }
         if let Some(row) = self.stages[PREPARE].claim(|_| {
             self.early_ready.load(Ordering::Acquire)
@@ -515,9 +533,7 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
         if let Some(row) = self.stages[COMMIT].claim(|batch| self.precompute.is_done(batch)) {
             return Some(claim(COMMIT, row));
         }
-        if let Some(row) = self.stages[FRONTIER].claim(|row| {
-            self.attached.load(Ordering::Acquire) && row < self.closed_rows.load(Ordering::Acquire)
-        }) {
+        if let Some(row) = self.stages[FRONTIER].claim(|row| self.frontier_ready(row)) {
             return Some(claim(FRONTIER, row));
         }
         if let Some(stripe) = self.filter.claim_ready() {
@@ -571,10 +587,7 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                     .claim(|batch| batch == claim.row)
                     .map(|row| Claim { stage: COMMIT, row }),
                 COMMIT => self.stages[FRONTIER]
-                    .claim(|row| {
-                        self.attached.load(Ordering::Acquire)
-                            && row < self.closed_rows.load(Ordering::Acquire)
-                    })
+                    .claim(|row| self.frontier_ready(row))
                     .map(|row| Claim {
                         stage: FRONTIER,
                         row,
@@ -876,12 +889,13 @@ impl<T: SplitSample> TipFrame<T> {
 }
 
 impl<T: SplitSample> FrameWork for TipFrame<T> {
-    fn claim(&self) -> Option<Claim> {
+    /// The init, which settles the CDFs the next frame's parse loads.
+    fn claim_critical(&self) -> Option<Claim> {
         if self.failed.load(Ordering::Acquire) {
             return None;
         }
         let (entropy, motion_deps) = (self.entropy.try_lock()?, self.motion_deps.try_lock()?);
-        if let Some(row) = self.stages[TIP_INIT].claim(|_| {
+        let row = self.stages[TIP_INIT].claim(|_| {
             entropy
                 .as_ref()
                 .is_none_or(inter::EntropyDependencies::is_settled)
@@ -890,11 +904,19 @@ impl<T: SplitSample> FrameWork for TipFrame<T> {
                         .flatten()
                         .all(inter::MotionFieldHandle::field_settled)
                 })
-        }) {
-            return Some(Claim {
-                stage: TIP_INIT,
-                row,
-            });
+        })?;
+        Some(Claim {
+            stage: TIP_INIT,
+            row,
+        })
+    }
+
+    fn claim(&self) -> Option<Claim> {
+        if let Some(init) = self.claim_critical() {
+            return Some(init);
+        }
+        if self.failed.load(Ordering::Acquire) {
+            return None;
         }
         let (Some(core), Some(bounds)) = (self.core.get(), self.band_bounds.get()) else {
             return None;

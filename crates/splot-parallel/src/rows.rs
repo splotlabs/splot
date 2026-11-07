@@ -45,6 +45,13 @@ pub trait FrameWork: Send + Sync {
     /// frame can run now. Several workers call it concurrently, so it must
     /// only read atomics and claim through [`Stage`] or [`ParallelStage`].
     fn claim(&self) -> Option<Claim>;
+    /// Picks a row on the decode's serial critical path, which workers try in
+    /// every frame before any [`FrameWork::claim`]: a frame's entropy pass
+    /// gates the next frame's, so it must not queue behind older frames'
+    /// parallel rows.
+    fn claim_critical(&self) -> Option<Claim> {
+        None
+    }
     /// Runs the claimed row off the lock, publishes its progress, and calls
     /// [`Stage::finish`] for it.
     fn run(&self, claim: Claim);
@@ -415,7 +422,14 @@ impl Core {
             let claimed = frames
                 .live
                 .iter()
-                .find_map(|frame| frame.claim().map(|claim| (Arc::clone(frame), claim)));
+                .find_map(|frame| frame.claim_critical().map(|claim| (frame, claim)))
+                .or_else(|| {
+                    frames
+                        .live
+                        .iter()
+                        .find_map(|frame| frame.claim().map(|claim| (frame, claim)))
+                })
+                .map(|(frame, claim)| (Arc::clone(frame), claim));
             let Some((frame, claim)) = claimed else {
                 let shutdown = frames.shutdown;
                 drop(frames);
