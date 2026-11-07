@@ -157,6 +157,25 @@ fn check_runs(bit_depth: BitDepth, seed: u64, widths: &mut [usize; REACH + 1]) {
                 wide, expected,
                 "u16 {bit_depth:?} vertical={vertical} n={edges_len}"
             );
+            if vertical {
+                let spread: Vec<_> = edges
+                    .iter()
+                    .flat_map(|&edge| [edge, random_edge(&mut noise, max_sample), edge])
+                    .collect();
+                let mut column = original.clone();
+                let column_stride = NonZeroUsize::new(3).unwrap();
+                let spread = &spread[..spread.len() - 2];
+                deblock_vertical_edge_column(
+                    &mut column,
+                    stride,
+                    first,
+                    spread,
+                    column_stride,
+                    bit_depth,
+                )
+                .unwrap();
+                assert_eq!(column, expected, "column {bit_depth:?} n={edges_len}");
+            }
             if bit_depth == BitDepth::Eight {
                 let filter = if vertical {
                     deblock_vertical_edges::<u8>
@@ -271,4 +290,40 @@ fn edge_runs_reject_spans_outside_their_rows_or_samples() {
     let mut ten = vec![0u16; 32 * 20];
     assert!(deblock_vertical_edges(&mut samples, 32, 8, &edge, BitDepth::Ten).is_err());
     assert!(deblock_vertical_edges(&mut ten, 32, 8, &edge, BitDepth::Ten).is_ok());
+}
+
+#[test]
+fn edges_from_lanes_match_their_constructor() {
+    dispatch!(Level::baseline(), simd => check_from_lanes(simd));
+}
+
+fn check_from_lanes<S: Simd>(simd: S) {
+    let mut noise = Noise(0x5eed);
+    for _ in 0..64 {
+        let edges: [DeblockEdge; 8] = core::array::from_fn(|_| random_edge(&mut noise, 1023));
+        let low = edges.map(|edge| edge.q_thr() as u32 | (edge.side() as u32) << 16);
+        let high = edges.map(|edge| {
+            edge.max_width_pos() as u32
+                | (edge.max_width_neg() as u32) << 8
+                | u32::from(edge.prev_lossless()) << 16
+                | u32::from(edge.curr_lossless()) << 17
+        });
+        let lanes = DeblockEdge::from_lanes(
+            simd,
+            u32x8::from_slice(simd, &low),
+            u32x8::from_slice(simd, &high),
+        );
+        assert_eq!(lanes, edges);
+    }
+    let over = u32x8::splat(simd, 0xffff_ffff);
+    let clamped = DeblockEdge::from_lanes(simd, over, over)[0];
+    assert_eq!(
+        (
+            clamped.q_thr(),
+            clamped.side(),
+            clamped.max_width_pos(),
+            clamped.max_width_neg()
+        ),
+        (700, 4095, 8, 8)
+    );
 }
