@@ -27,7 +27,7 @@ use crate::inverse_transform_2d::inverse_transform_2d;
 use crate::inverse_transform_2d::{
     InverseTransform2d, InverseTransform2dDim, inverse_transform_2d_with_scratch,
 };
-use crate::inverse_transform_2d_8bit::{FlatDequant, Transform8, inverse_transform_add_8bit};
+use crate::inverse_transform_2d_8bit::{FlatDequant, InverseTransformAdd8};
 use crate::transform_params::{TransformPass, get_transform_1d_type, transform_shift};
 use crate::{BitDepth, ReconError, Result};
 
@@ -377,35 +377,25 @@ pub fn inverse_transform_2d_outer_add_u8(
     let flat = match quantized {
         None => None,
         Some(dq) => {
-            if dq.qm.is_some() || !dq.dq_denom.is_power_of_two() || dq.bit_depth != BitDepth::Eight
-            {
+            if dq.qm.is_some() || dq.bit_depth != BitDepth::Eight {
                 return Ok(false);
             }
-            Some(FlatDequant {
-                dc: dq.dc_quant,
-                ac: dq.ac_quant,
-                denom_shift: dq.dq_denom.trailing_zeros(),
-                bound: 1 << (7 + u32::from(BitDepth::Eight.bits())),
-            })
+            let Some(flat) = FlatDequant::new(dq.dc_quant, dq.ac_quant, dq.dq_denom) else {
+                return Ok(false);
+            };
+            Some(flat)
         }
     };
-    let transform = Transform8 {
-        row: params.row_type,
-        col: params.col_type,
-        w: adj_w,
-        h: adj_h,
-        rescale: params.log2_width.abs_diff(params.log2_height) % 2 == 1,
-        row_shift: params.row_shift,
-        col_shift: params.col_shift,
-        dequant: flat,
+    let Some(fused) = InverseTransformAdd8::of(
+        params.row_type,
+        params.col_type,
+        (params.log2_width, params.log2_height),
+        (params.row_shift, params.col_shift),
+        params.log2_width.abs_diff(params.log2_height) % 2 == 1,
+    ) else {
+        return Ok(false);
     };
-    Ok(inverse_transform_add_8bit(
-        transform,
-        dequant,
-        dst,
-        stride,
-        transform_scratch,
-    ))
+    Ok(fused.add(dequant, flat, dst, stride, transform_scratch))
 }
 
 fn inverse_transform_2d_outer_adjusted_inner(

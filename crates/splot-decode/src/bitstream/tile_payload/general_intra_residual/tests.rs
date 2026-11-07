@@ -2132,3 +2132,40 @@ fn compact_coefficient_tails_restore_dense_values_and_validate_spans() {
         usize::from(u16::MAX)
     );
 }
+
+#[test]
+fn cached_quantizers_follow_the_installed_frame_deltas() {
+    let deltas = |offset: i32| QuantizerDeltas {
+        y_dc: offset,
+        u_dc: 2 * offset,
+        v_dc: -offset,
+        u_ac: 3 * offset,
+        v_ac: -2 * offset,
+    };
+    let expect = |plane, qindex, deltas| {
+        (
+            dc_quantizer(plane, qindex, deltas, BitDepth::Eight),
+            ac_quantizer(plane, qindex, deltas, BitDepth::Eight),
+        )
+    };
+    let _outer = FrameQuantizerDeltasScope::install(deltas(5));
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        assert_eq!(
+            current_quantizers(plane, 120, BitDepth::Eight),
+            expect(plane, 120, deltas(5))
+        );
+        {
+            let _inner = FrameQuantizerDeltasScope::install(deltas(-7));
+            for qindex in [120, 0, 255] {
+                assert_eq!(
+                    current_quantizers(plane, qindex, BitDepth::Eight),
+                    expect(plane, qindex, deltas(-7))
+                );
+            }
+        }
+        assert_eq!(
+            current_quantizers(plane, 120, BitDepth::Eight),
+            expect(plane, 120, deltas(5))
+        );
+    }
+}
