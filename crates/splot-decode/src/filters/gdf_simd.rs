@@ -71,7 +71,7 @@ type Window<'a> = [&'a [u16; 28]; WINDOW_ROWS];
 /// The most columns of one column tile of a run, whose source rows sit
 /// [`TILE_STRIDE`] apart: the tile's rows of a row pair window stay in L1, and
 /// every window row is a constant offset from the window's first sample.
-pub(super) const TILE_COLS: usize = 512;
+pub(super) const TILE_COLS: usize = 1024;
 pub(super) const TILE_STRIDE: usize = TILE_COLS + 32;
 const TILE_SPAN: usize = (WINDOW_ROWS - 1) * TILE_STRIDE + 28;
 const _: () =
@@ -995,27 +995,44 @@ fn gradients<S: Simd>(simd: S, rows: [&[u16; 18]; 3]) -> [i16x16<S>; 4] {
 fn gradient_row<S: Simd>(simd: S, rows: &[&[u16]; 4], out: &mut [GradChunk]) -> Option<()> {
     for (chunk, out) in out.iter_mut().enumerate() {
         let start = 16 * chunk;
-        let mut padded = [[0; 18]; 4];
-        let chunks = if rows.iter().all(|row| row.len() >= start + 18) {
-            let mut chunks = [&[0; 18]; 4];
-            for (chunk, row) in chunks.iter_mut().zip(rows) {
-                *chunk = row.get(start..)?.first_chunk::<18>()?;
-            }
-            chunks
+        let chunks = rows.map(|row| row.get(start..).and_then(<[u16]>::first_chunk::<18>));
+        if let [Some(a), Some(b), Some(c), Some(d)] = chunks {
+            pair_gradients(simd, [a, b, c, d], out);
         } else {
-            for (padded, row) in padded.iter_mut().zip(rows) {
-                let tail = row.get(start..).unwrap_or_default();
-                padded.get_mut(..tail.len())?.copy_from_slice(tail);
-            }
-            padded.each_ref()
-        };
-        let first = gradients(simd, [chunks[0], chunks[1], chunks[2]]);
-        let second = gradients(simd, [chunks[1], chunks[2], chunks[3]]);
-        for ((out, first), second) in out.iter_mut().zip(first).zip(second) {
-            (first + second).bitcast::<u16x16<S>>().store_array(out);
+            padded_gradients(simd, rows, start, out)?;
         }
     }
     Some(())
+}
+
+/// [`gradient_row`] for one chunk whose rows end before its reach, on
+/// zero-padded copies; out of line, so that the padding is only built here.
+#[inline(never)]
+fn padded_gradients<S: Simd>(
+    simd: S,
+    rows: &[&[u16]; 4],
+    start: usize,
+    out: &mut GradChunk,
+) -> Option<()> {
+    let mut padded = [[0; 18]; 4];
+    for (padded, row) in padded.iter_mut().zip(rows) {
+        let tail = row.get(start..).unwrap_or_default();
+        let tail = tail.get(..tail.len().min(18))?;
+        padded.get_mut(..tail.len())?.copy_from_slice(tail);
+    }
+    pair_gradients(simd, padded.each_ref(), out);
+    Some(())
+}
+
+/// The gradients of one chunk of a gradient row pair, summed over its rows.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn pair_gradients<S: Simd>(simd: S, chunks: [&[u16; 18]; 4], out: &mut GradChunk) {
+    let first = gradients(simd, [chunks[0], chunks[1], chunks[2]]);
+    let second = gradients(simd, [chunks[1], chunks[2], chunks[3]]);
+    for ((out, first), second) in out.iter_mut().zip(first).zip(second) {
+        (first + second).bitcast::<u16x16<S>>().store_array(out);
+    }
 }
 
 /// The direction gradients of a chunk summed over two gradient row pairs.
@@ -1144,12 +1161,14 @@ fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
         let (current, previous) = ((row_pair + 1) & 1, row_pair & 1);
         gradient_row(simd, &grad_rows(row_pair + 1)?, buffers[current])?;
         let (current, previous) = (&*buffers[current], &*buffers[previous]);
-        let window_rows = source_rows(
-            source,
-            (origin.0, origin.1 + 2 * row_pair),
-            run + 2 * TAP_REACH,
-        )
-        .ok()?;
+        let window_rows = || {
+            source_rows(
+                source,
+                (origin.0, origin.1 + 2 * row_pair),
+                run + 2 * TAP_REACH,
+            )
+            .ok()
+        };
         let tiled_base = (origin.1 + 2 * row_pair)
             .checked_sub(TAP_REACH)
             .zip(origin.0.checked_sub(TAP_REACH))
@@ -1179,7 +1198,7 @@ fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
                 let window = TiledWindow(span);
                 sym_rows_with(simd, lanes, &window, [top, bottom], classes, block, &params);
             } else if width == 16
-                && let Some(window) = window_at::<28>(&window_rows, x)
+                && let Some(window) = window_at::<28>(&window_rows()?, x)
             {
                 let top = top.get_mut(x..)?.first_chunk_mut::<16>()?;
                 let bottom = bottom.get_mut(x..)?.first_chunk_mut::<16>()?;
@@ -1187,7 +1206,7 @@ fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
             } else {
                 let classes = classes.to_array().map(GdfClass);
                 let output = [&mut top[x..], &mut bottom[x..]];
-                sym_rows_narrow(&window_rows, x, width, output, &classes, block, &params)?;
+                sym_rows_narrow(&window_rows()?, x, width, output, &classes, block, &params)?;
             }
         }
     }
