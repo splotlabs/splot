@@ -18,6 +18,7 @@ mod copy;
 mod eight_bit;
 mod fullpel_u8;
 mod portable;
+mod search_window;
 mod sixteen_bit;
 mod tip_overlap;
 use block::Sink;
@@ -28,6 +29,10 @@ pub use copy::{
 pub use fullpel_u8::{
     subpel_predict_block_compound_average_fullpel_strided_into_u8,
     subpel_predict_block_strided_into_u8,
+};
+pub use search_window::{
+    refinemv_window_sads_u8, subpel_predict_bilinear_8x8_u8,
+    subpel_predict_bilinear_search_window_u8,
 };
 pub use tip_overlap::{BilinearOverlapCarry, subpel_predict_12x12_bilinear_overlap_into};
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample
