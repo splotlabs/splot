@@ -88,7 +88,7 @@ pub(crate) struct SplitFrameInputs<T: SplitSample> {
     pub(crate) candidate: DecodePlannedObu,
     pub(crate) core: Arc<FrameHeaderCore>,
     pub(crate) sequence: Arc<SequenceHeader>,
-    pub(crate) reference: inter::InterReferenceState<T>,
+    pub(crate) reference: Box<inter::InterReferenceState<T>>,
     pub(crate) bit_depth: BitDepth,
     pub(crate) geometry: inter::FrameDecodeGeometry,
     pub(crate) motion: inter::MotionFieldHandle,

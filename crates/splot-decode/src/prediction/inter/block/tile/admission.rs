@@ -85,7 +85,6 @@ impl<T: ReconSample> TileCommit<T> {
                 &mut self.block_decoded,
                 &mut self.current_block_decoded_superblock,
                 motion,
-                &mut self.frame_filter_records,
                 temporal,
                 context.reference,
                 context.ref_frame_idx,
@@ -525,9 +524,7 @@ impl<T: ReconSample> TileRecon<T> {
                             .flatten();
                     }
                     scratch.with_installed(|scratch| {
-                        let mut lists = core::mem::take(&mut scratch.lists);
-                        ready.row.load_parsed(&mut lists);
-                        let mut ready = precompute_recon_row(
+                        precompute_recon_row(
                             ready,
                             scratch,
                             &self.prepass_block_decoded,
@@ -545,10 +542,7 @@ impl<T: ReconSample> TileRecon<T> {
                             self.params.luma_use_tcq,
                             self.params.residual_use_ddt,
                             self.params.bit_depth,
-                        );
-                        ready.row.unload_parsed(&mut lists);
-                        scratch.lists = lists;
-                        ready
+                        )
                     })
                 })
                 .collect()
@@ -853,10 +847,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             else {
                 break;
             };
-            row.replay_flags(&mut resolve.grid)?;
+            row.replay_flags(&mut resolve.grid);
             row.return_terminal_error()?;
-            let mut lists = self.parse_progress.resolve_lists.lock();
-            row.load_parsed(&mut lists);
             {
                 let ScheduledResolve { grid, state, .. } = &mut *resolve;
                 state.resolve_unit(
@@ -869,8 +861,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             }?;
             row.return_terminal_error()?;
             let bounds = row_gate.bounds_for_row(&row);
-            row.unload_parsed(&mut lists);
-            drop(lists);
             TileRecon::accept_resolved(
                 &mut rows,
                 next,

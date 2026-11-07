@@ -57,7 +57,6 @@ fn tile_symbol_exit_accepts_writer_output_and_reports_eof_as_malformed() {
 fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
     let offset = ByteOffset::new(43);
     let row = ReconRow {
-        residual_source: None,
         ordinal: 0,
         residual_coeffs: Vec::new(),
         superblocks: Vec::new(),
@@ -65,7 +64,6 @@ fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
         residual_blocks: Vec::new(),
         temporal: Vec::new(),
         flag_log: Vec::new(),
-        filter_records: TileFilterRecords::default(),
         residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
         motion_folded: false,
         failure: ReconRowFailure::Terminal(malformed_tile_error(offset)),
@@ -310,16 +308,7 @@ fn failed_frame_rows_left_unclaimed_do_not_pin_the_parse_slot() {
     let buffers = crate::support::decode_buffers::DecodeBuffers::new();
     let mut progress = ParseProgress::default();
     assert!(progress.reset(&buffers));
-    let row = |progress: &ParseProgress, ordinal| ReconRow {
-        residual_source: Some(RowResiduals {
-            frame: Arc::clone(&progress.residuals),
-            planes: crate::residual::pipeline::ResidualPlaneSpan::default(),
-            range: 0..0,
-            entries: 0..0,
-            blocks: 0..0,
-            flags: 0..0,
-            capacity: 0,
-        }),
+    let row = |ordinal| ReconRow {
         ordinal,
         residual_coeffs: Vec::new(),
         superblocks: Vec::new(),
@@ -327,17 +316,16 @@ fn failed_frame_rows_left_unclaimed_do_not_pin_the_parse_slot() {
         residual_blocks: Vec::new(),
         temporal: Vec::new(),
         flag_log: Vec::new(),
-        filter_records: TileFilterRecords::default(),
         residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
         motion_folded: false,
         failure: ReconRowFailure::None,
     };
-    progress.publish_row(row(&progress, 0));
-    progress.publish_row(row(&progress, 1));
+    let mut records = TileFilterRecords::default();
+    progress.publish_row(row(0), &mut records);
+    progress.publish_row(row(1), &mut records);
     let claimed = progress.take_row(0).expect("published row");
-    assert!(!progress.reset(&buffers));
-    drop(claimed);
     assert!(progress.reset(&buffers));
+    drop(claimed);
     assert!(progress.take_row(1).is_none());
 }
 
@@ -349,15 +337,12 @@ fn frame_geometry_waits_for_readers_then_reuses_hidden_backing() {
     let mut progress = super::ParseProgress::default();
     assert!(progress.reset(&buffers));
     progress
-        .publish_geometry(
-            super::tile::TileGeometry {
-                tile_offset: ByteOffset::new(3),
-                mi_rows: 0..2,
-                mi_cols: 0..3,
-                unit_count: 2,
-            },
-            0,
-        )
+        .publish_geometry(super::tile::TileGeometry {
+            tile_offset: ByteOffset::new(3),
+            mi_rows: 0..2,
+            mi_cols: 0..3,
+            unit_count: 2,
+        })
         .expect("first geometry publication");
     let held = progress.geometry().expect("published geometry");
     let identity = Arc::as_ptr(&held);
@@ -374,15 +359,12 @@ fn frame_geometry_waits_for_readers_then_reuses_hidden_backing() {
     assert!(progress.reset(&buffers));
     assert!(progress.geometry().is_none());
     progress
-        .publish_geometry(
-            super::tile::TileGeometry {
-                tile_offset: ByteOffset::new(9),
-                mi_rows: 1..5,
-                mi_cols: 2..7,
-                unit_count: 4,
-            },
-            0,
-        )
+        .publish_geometry(super::tile::TileGeometry {
+            tile_offset: ByteOffset::new(9),
+            mi_rows: 1..5,
+            mi_cols: 2..7,
+            unit_count: 4,
+        })
         .expect("reused geometry publication");
     let reused = progress.geometry().expect("republished geometry");
     assert_eq!(Arc::as_ptr(&reused), identity);
@@ -457,77 +439,6 @@ fn superblock_coefficients_reserve_plane_coverage_once() {
     assert!(superblock_coefficient_capacity(usize::MAX, ChromaFormatIdc::Yuv444).is_err());
 }
 
-#[cfg(test)]
-#[test]
-fn frame_coefficient_snapshots_release_the_lock_and_pin_retirement() {
-    let buffers = crate::support::decode_buffers::DecodeBuffers::new();
-    let mut progress = ParseProgress::default();
-    progress.residuals.lock().coefficients.reserve_exact(64);
-    let storage = progress.residuals.lock().coefficients.as_ptr();
-    let mut snapshot = Vec::new();
-    snapshot.reserve_exact(16);
-    let snapshot_storage = snapshot.as_ptr();
-    for cycle in 0..1200 {
-        assert!(progress.reset(&buffers));
-        progress
-            .residuals
-            .lock()
-            .coefficients
-            .extend_from_slice(&[1, cycle, 3, 4]);
-        let source = RowResiduals {
-            frame: Arc::clone(&progress.residuals),
-            planes: crate::residual::pipeline::ResidualPlaneSpan::default(),
-            range: 1..4,
-            entries: 0..0,
-            blocks: 0..0,
-            flags: 0..0,
-            capacity: 16,
-        };
-        source.copy_into(&mut snapshot).expect("snapshot");
-        assert_eq!(snapshot, [cycle, 3, 4]);
-        assert_eq!(snapshot.as_ptr(), snapshot_storage);
-        assert!(!progress.reset(&buffers));
-        source
-            .copy_into(&mut snapshot)
-            .expect("retained publication");
-        assert_eq!(snapshot, [cycle, 3, 4]);
-        assert!(progress.residuals.try_lock().is_some());
-        std::thread::scope(|scope| {
-            scope
-                .spawn(|| {
-                    progress
-                        .residuals
-                        .lock()
-                        .coefficients
-                        .extend_from_slice(&[9; 16]);
-                })
-                .join()
-                .expect("concurrent append");
-        });
-        assert_eq!(snapshot, [cycle, 3, 4]);
-        assert_eq!(progress.residuals.lock().coefficients.as_ptr(), storage);
-        drop(source);
-    }
-    let source = RowResiduals {
-        frame: Arc::clone(&progress.residuals),
-        planes: crate::residual::pipeline::ResidualPlaneSpan::default(),
-        range: 0..65,
-        entries: 0..0,
-        blocks: 0..0,
-        flags: 0..0,
-        capacity: 64,
-    };
-    assert!(source.copy_into(&mut snapshot).is_err());
-    let source = RowResiduals {
-        range: 0..4,
-        capacity: 3,
-        ..source
-    };
-    assert!(source.copy_into(&mut snapshot).is_err());
-    drop(source);
-    assert!(progress.reset(&buffers));
-}
-
 #[test]
 fn frame_filter_publication_returns_producer_capacity_before_row_replay() {
     let mut progress = ParseProgress::default();
@@ -550,7 +461,6 @@ fn frame_filter_publication_returns_producer_capacity_before_row_replay() {
             },
         );
         let row = ReconRow {
-            residual_source: None,
             ordinal: cycle,
             residual_coeffs: Vec::new(),
             superblocks: Vec::new(),
@@ -558,23 +468,16 @@ fn frame_filter_publication_returns_producer_capacity_before_row_replay() {
             residual_blocks: Vec::new(),
             temporal: Vec::new(),
             flag_log: Vec::new(),
-            filter_records: records,
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
             motion_folded: false,
             failure: ReconRowFailure::None,
         };
-        records = progress.publish_row(row);
+        progress.publish_row(row, &mut records);
         assert!(records.tx_skip_records.is_empty());
         assert_eq!(records.tx_skip_records.as_ptr(), storage);
         assert!(records.deblock_blocks.capacity() >= 32);
         assert!(records.chroma_deblock_blocks.capacity() >= 32);
-        let delayed_row = progress.take_row(0).expect("published row");
-        assert_eq!(delayed_row.filter_records.deblock_blocks.capacity(), 0);
-        assert_eq!(
-            delayed_row.filter_records.chroma_deblock_blocks.capacity(),
-            0
-        );
-        assert_eq!(delayed_row.filter_records.tx_skip_records.capacity(), 0);
+        let _delayed_row = progress.take_row(0).expect("published row");
         let frame = progress.records.lock();
         assert_eq!(frame.tx_skip_records.len(), 1);
         assert_eq!(frame.tx_skip_records[0].row, cycle);

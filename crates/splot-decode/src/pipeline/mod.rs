@@ -702,7 +702,7 @@ fn push_split_inter<T: SplitSample>(
             candidate: candidate.clone(),
             core: Arc::clone(&core),
             sequence: shared,
-            reference,
+            reference: Box::new(reference),
             bit_depth: T::BIT_DEPTH,
             geometry,
             motion: motion.clone(),

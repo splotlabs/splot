@@ -372,7 +372,7 @@ pub(crate) struct InterFrameStart<'payload, T: ReconSample> {
     pub(crate) core: Arc<FrameHeaderCore>,
     pub(crate) sequence: Arc<SequenceHeader>,
     pub(crate) options: &'payload DecodeOptions,
-    pub(crate) reference: InterReferenceState<T>,
+    pub(crate) reference: Box<InterReferenceState<T>>,
     pub(crate) bit_depth: BitDepth,
     pub(crate) geometry: FrameDecodeGeometry,
     pub(crate) motion: MotionFieldHandle,
@@ -459,14 +459,9 @@ impl<T: ReconSample> InterFrameStart<'_, T> {
             )?;
             motion.publish_metadata(block_setup.motion_field_metadata());
             let (parse_setup, params, prelude, motion_field) = block_setup.split();
-            block::publish_tile_geometry(
-                tile,
-                &params,
-                sequence.general.chroma_format_idc,
-                &parse_progress,
-            )?;
+            block::publish_tile_geometry(tile, &params, &parse_progress)?;
             let parser = InterFrameParser::new(parse_setup);
-            let identities = reusable.install_identities(core, reference)?;
+            let identities = reusable.install_identities(core, *reference)?;
             Ok((identities, parser, params, prelude, motion_field))
         })();
         let ((core, reference), parser, params, prelude, motion_field) = match prepared {

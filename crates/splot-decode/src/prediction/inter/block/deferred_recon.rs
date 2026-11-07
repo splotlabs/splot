@@ -51,9 +51,6 @@ pub(super) struct InterReconCommand {
 #[derive(Default)]
 #[repr(align(64))]
 pub(super) struct InterReconScratch<T: ReconSample> {
-    pub(super) coefficients: Vec<i32>,
-    pub(super) plane_records: crate::residual::pipeline::ResidualPlaneArena,
-    pub(super) lists: super::tile::UnitLists,
     general_intra: crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     tip: TipReconstructScratch<T>,
     pub(super) temporal: Vec<TemporalMotionBlock>,

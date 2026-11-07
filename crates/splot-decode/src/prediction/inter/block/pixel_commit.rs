@@ -9,8 +9,8 @@
 //! through. It reconstructs the row's entries — all of them on the serial and
 //! multi-tile paths, and the ones the parallel prepass left behind on its own
 //! out-of-order surface — folds the row's § 7.12 temporal motion records into
-//! the frame's motion field, appends its filter records, and advances the
-//! block-decoded availability grid.
+//! the frame's motion field, and advances the block-decoded availability
+//! grid.
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
@@ -25,7 +25,7 @@ use super::tile::{ReconRow, ReconRowBuffers, TileFilterRecords};
 use crate::Result;
 use crate::bitstream::tile_payload::{FrameQuantizerSnapshot, TileBlockDecodedState};
 
-fn append_row_filter_records(
+pub(super) fn append_row_filter_records(
     filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
     row_filter_records: &mut TileFilterRecords,
 ) {
@@ -65,18 +65,6 @@ pub(super) fn take_tile_filter_records(
     }
 }
 
-/// Moves one parsed row's filter geometry into the frame owner before that row
-/// enters the scheduled reconstruction graph.
-///
-/// The canonical replay then carries an empty row record owner, which makes
-/// the complete frame geometry immutable while row tasks still own commands.
-pub(super) fn detach_row_filter_records(
-    row: &mut ReconRow,
-    filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
-) {
-    append_row_filter_records(filter_records, &mut row.filter_records);
-}
-
 /// Commits one parsed row into the frame, in tile order.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn replay_recon_row<T: ReconSample>(
@@ -89,7 +77,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     block_decoded: &mut TileBlockDecodedState,
     current_superblock: &mut Option<[usize; 2]>,
     motion: &MotionFieldUnits,
-    filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
@@ -102,18 +89,13 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     residual_use_ddt: bool,
     bit_depth: BitDepth,
 ) -> Result<ReconRowBuffers> {
-    let mut coefficient_scratch = std::mem::take(&mut scratch.coefficients);
-    let mut plane_scratch = std::mem::take(&mut scratch.plane_records);
     let mut folded = std::mem::take(&mut scratch.temporal);
     folded.clear();
-    let mut lists = std::mem::take(&mut scratch.lists);
     let mut has_intra = false;
     let result = (|| {
         if row.ordinal != *expected_ordinal {
             return Err(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState.into());
         }
-        row.return_terminal_error()?;
-        row.load_parsed(&mut lists);
         row.return_terminal_error()?;
         let ordinal = row.ordinal;
         *expected_ordinal = expected_ordinal.saturating_add(1);
@@ -123,17 +105,14 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         let _quantizer_scopes = quantizer.install_frame();
         let ReconRow {
             mut superblocks,
-            residual_source,
             mut residual_coeffs,
             mut entries,
             mut residual_blocks,
             mut temporal,
             mut flag_log,
-            filter_records: mut row_filter_records,
             mut residual_planes,
             ..
         } = row;
-        let shared_coefficients = residual_source.is_some();
         let shared = deferred_recon::ReconShared {
             reference,
             ref_frame_idx,
@@ -147,12 +126,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             mi_cols,
             current_order_hint,
         };
-        if let Some(source) = residual_source
-            && entries.iter().any(|entry| entry.command().is_some())
-        {
-            source.copy_into(&mut coefficient_scratch)?;
-            source.take_planes(&mut plane_scratch)?;
-        }
         has_intra = entries
             .iter()
             .any(|entry| matches!(entry.command(), Some(ReconCommand::GeneralIntra(_))));
@@ -213,16 +186,8 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                             block_decoded,
                             &mut folded,
                             &mut LeafResiduals {
-                                planes: if shared_coefficients {
-                                    &mut plane_scratch
-                                } else {
-                                    &mut residual_planes
-                                },
-                                coefficients: if shared_coefficients {
-                                    &coefficient_scratch
-                                } else {
-                                    &residual_coeffs
-                                },
+                                planes: &mut residual_planes,
+                                coefficients: &residual_coeffs,
                                 blocks: &residual_blocks,
                             },
                             &shared,
@@ -258,7 +223,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         if motion_owed {
             motion.unit_landed_for(ordinal);
         }
-        append_row_filter_records(filter_records, &mut row_filter_records);
         *decoded_any |= row_has_entries;
         residual_planes.clear();
         superblocks.clear();
@@ -267,9 +231,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         residual_coeffs.clear();
         temporal.clear();
         flag_log.clear();
-        if shared_coefficients {
-            lists.swap_into(&mut entries, &mut residual_blocks);
-        }
         Ok(ReconRowBuffers {
             superblocks,
             residual_coeffs,
@@ -277,7 +238,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             residual_blocks,
             temporal,
             flag_log,
-            filter_records: row_filter_records,
             residual_planes,
         })
     })();
@@ -287,12 +247,8 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             workspace,
         );
     }
-    scratch.coefficients = coefficient_scratch;
     folded.clear();
     scratch.temporal = folded;
-    plane_scratch.clear();
-    scratch.plane_records = plane_scratch;
-    scratch.lists = lists;
     result
 }
 
