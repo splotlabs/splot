@@ -397,10 +397,13 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 pub struct IntraBlockFrame<'a, T: ReconSample> {
     samples: &'a mut [T],
     origin: usize,
+    /// Where the block's first row starts in `samples`.
+    row_start: usize,
     stride: usize,
     /// Stored samples of the row above, from the block's first column.
     above_len: usize,
-    /// Stored samples of the column to the left, from the block's first row.
+    /// Plane rows of the column to the left from the block's first row, stored
+    /// or not; none in the plane's first column.
     left_len: usize,
     /// Plane rows from the block's first row to the bottom storage edge.
     rows_below: usize,
@@ -425,10 +428,13 @@ impl<T: ReconSample> IntraBlockFrame<'_, T> {
     /// copied: none in the plane's first column.
     #[inline]
     pub fn left_column(&self, out: &mut [T]) -> usize {
-        let len = out.len().min(self.left_len);
+        let mut len = out.len().min(self.left_len);
         let Some(first) = self.origin.checked_sub(1) else {
             return 0;
         };
+        while len > 0 && self.row_start + len * self.stride > self.samples.len() {
+            len -= 1;
+        }
         let column = self.samples.get(first..).unwrap_or_default();
         for (i, slot) in out[..len].iter_mut().enumerate() {
             if let Some(&sample) = column.get(i * self.stride) {
@@ -498,16 +504,12 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         if y > 0 && local_y == 0 {
             return Ok(None);
         }
-        let stored_rows = target.samples.len() / stride.max(1);
         let mut frame = IntraBlockFrame {
             origin: local_y * stride + x,
+            row_start: local_y * stride,
             stride,
             above_len: if y > 0 { storage.width() - x } else { 0 },
-            left_len: if x > 0 {
-                (storage.height() - y).min(stored_rows - local_y)
-            } else {
-                0
-            },
+            left_len: if x > 0 { storage.height() - y } else { 0 },
             rows_below: storage.height() - y,
             samples: &mut target.samples,
         };

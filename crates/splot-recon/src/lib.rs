@@ -148,7 +148,7 @@ pub use intra_directional_angle::{
 pub use intra_ibp_angular::{apply_ibp_dr_blend_rect, ibp_blend_fires};
 pub use intra_ibp_dc::apply_intra_ibp_dc_rect;
 pub use intra_smooth::{
-    IntraSmoothEdge, IntraSmoothEdges, IntraSmoothLanes, IntraSmoothMode,
+    IntraSmoothEdge, IntraSmoothEdges, IntraSmoothFrameRequest, IntraSmoothLanes, IntraSmoothMode,
     predict_intra_smooth_lanes_into, predict_intra_smooth_rect_into,
 };
 pub use inverse_transform::{
