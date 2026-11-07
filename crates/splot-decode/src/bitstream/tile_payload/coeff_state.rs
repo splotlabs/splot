@@ -402,10 +402,12 @@ impl TileCoeffContextState {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn above_level(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
         Ok(&self.above_level[validate_plane(plane)?])
     }
 
+    #[cfg(test)]
     pub(crate) fn left_level(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
         Ok(&self.left_level[validate_plane(plane)?])
     }
@@ -499,44 +501,77 @@ impl TileCoeffContextState {
         &mut self,
         input: CoeffContextUpdate,
     ) -> Result<(), TileCoeffStateError> {
-        let plane = validate_plane(input.plane)?;
         validate_dc_category(input.dc_category)?;
-        if input.w4 == 0 {
+        let lines = self.block_lines(input.plane, [input.x4, input.y4, input.w4, input.h4])?;
+        self.commit_block(&lines, input.cul_level, input.dc_category);
+        Ok(())
+    }
+
+    /// The above and left context-line spans of the transform block at
+    /// `[x4, y4, w4, h4]` (plane 4x4 units), checked once so the block's
+    /// context reads and its commit need no further checks.
+    #[inline]
+    pub(crate) fn block_lines(
+        &self,
+        plane: usize,
+        [x4, y4, w4, h4]: [usize; 4],
+    ) -> Result<CoeffBlockLines, TileCoeffStateError> {
+        let plane = validate_plane(plane)?;
+        if w4 == 0 {
             return Err(TileCoeffStateError::EmptyContextRange { axis: "columns" });
         }
-        if input.h4 == 0 {
+        if h4 == 0 {
             return Err(TileCoeffStateError::EmptyContextRange { axis: "rows" });
         }
-        let above_start = local_context_coordinate(
-            "above",
-            input.x4,
-            self.plane_col_origins[plane],
-            self.plane_cols[plane],
-        )?;
-        let left_start = local_context_coordinate(
-            "left",
-            input.y4,
-            self.plane_row_origins[plane],
-            self.plane_rows[plane],
-        )?;
-        let above = edge_clamped_range("above", above_start, input.w4, self.plane_cols[plane])?;
-        let left = edge_clamped_range("left", left_start, input.h4, self.plane_rows[plane])?;
+        let (cols, rows) = (self.plane_cols[plane], self.plane_rows[plane]);
+        let x4 = local_context_coordinate("above", x4, self.plane_col_origins[plane], cols)?;
+        let y4 = local_context_coordinate("left", y4, self.plane_row_origins[plane], rows)?;
+        Ok(CoeffBlockLines {
+            plane,
+            above: edge_clamped_range("above", x4, w4, cols)?,
+            left: edge_clamped_range("left", y4, h4, rows)?,
+            x4,
+            y4,
+            w4,
+            h4,
+        })
+    }
 
-        fill_context_line(
-            &mut self.above_level[plane],
-            &mut self.above_dc[plane],
-            above,
-            input.cul_level,
-            input.dc_category,
-        )?;
-        fill_context_line(
-            &mut self.left_level[plane],
-            &mut self.left_dc[plane],
-            left,
-            input.cul_level,
-            input.dc_category,
-        )?;
-        Ok(())
+    /// The OR of the block's above and left levels, or with `DC` of its
+    /// above and left DC categories.
+    #[allow(clippy::inline_always, reason = "measured: per-block context read")]
+    #[inline(always)]
+    pub(crate) fn line_or<const DC: bool>(&self, lines: &CoeffBlockLines) -> [u8; 2] {
+        let plane = lines.plane.min(PLANE_COUNT - 1);
+        let (above, left) = if DC {
+            (&self.above_dc[plane], &self.left_dc[plane])
+        } else {
+            (&self.above_level[plane], &self.left_level[plane])
+        };
+        [
+            above
+                .get(lines.above.clone())
+                .map_or(0, crate::support::or_mi_run),
+            left.get(lines.left.clone())
+                .map_or(0, crate::support::or_mi_run),
+        ]
+    }
+
+    /// Records the block's `culLevel` and `dcCategory` in its spans.
+    #[allow(clippy::inline_always, reason = "measured: per-block context commit")]
+    #[inline(always)]
+    pub(crate) fn commit_block(&mut self, lines: &CoeffBlockLines, level: u8, dc_category: u8) {
+        let plane = lines.plane.min(PLANE_COUNT - 1);
+        for (line, range, value) in [
+            (&mut self.above_level[plane], &lines.above, level),
+            (&mut self.above_dc[plane], &lines.above, dc_category),
+            (&mut self.left_level[plane], &lines.left, level),
+            (&mut self.left_dc[plane], &lines.left, dc_category),
+        ] {
+            if let Some(run) = line.get_mut(range.clone()) {
+                crate::support::fill_mi_run(run, value);
+            }
+        }
     }
 
     pub(crate) fn reset_block_context_plane(
@@ -593,6 +628,19 @@ impl TileCoeffContextState {
         )?;
         Ok(())
     }
+}
+
+/// A transform block's checked spans of its plane's context lines, with
+/// its tile-local 4x4 origin and its 4x4 extent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CoeffBlockLines {
+    pub(crate) plane: usize,
+    above: Range<usize>,
+    left: Range<usize>,
+    pub(crate) x4: usize,
+    pub(crate) y4: usize,
+    pub(crate) w4: usize,
+    pub(crate) h4: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
