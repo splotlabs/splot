@@ -45,6 +45,36 @@ pub fn predict_intra_dc_subsampled_rect_value<T: ReconSample>(
     predict_intra_dc_subsampled_rect_value_from_sums(bit_depth, left, above)
 }
 
+/// The AV2 § 7.13.2.10 DC value of a block from the sums of its available
+/// edges, each edge summed over every `subsampled_step(len)`-th sample
+/// (§ 7.13.2.11 for an axis over 32).
+///
+/// # Errors
+/// Returns [`ReconError`] for an unsupported sample type or overflowing sums.
+pub fn predict_intra_dc_value_from_edge_sums<T: ReconSample>(
+    bit_depth: BitDepth,
+    size: IntraRectBlockSize,
+    left: Option<u32>,
+    above: Option<u32>,
+) -> Result<T> {
+    if size.width() <= 32 && size.height() <= 32 {
+        return crate::intra_dc_math::predict_intra_dc_rect_value_from_sums(
+            bit_depth, size, left, above,
+        );
+    }
+    let sampled = |sum: Option<u32>, len: usize| {
+        sum.map(|sum| DcEdgeSum {
+            sum,
+            count: (len / subsampled_step(len)) as u32,
+        })
+    };
+    predict_intra_dc_subsampled_rect_value_from_sums(
+        bit_depth,
+        sampled(left, size.height()),
+        sampled(above, size.width()),
+    )
+}
+
 pub(crate) fn predict_intra_dc_subsampled_rect_value_from_sums<T: ReconSample>(
     bit_depth: BitDepth,
     left: Option<DcEdgeSum>,
