@@ -11,6 +11,8 @@ use super::{CompoundOrderHint, Mv, mc::CWP_EQUAL};
 pub(crate) const MAX_REF_MV_STACK_SIZE: usize = 6;
 
 pub(crate) const MAX_WARP_REF_CANDIDATES: usize = 4;
+/// `need` of [`find_mv_stack_upto`] that builds the whole stack.
+pub(crate) const ALL_CANDIDATES: usize = usize::MAX;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FixedStack<T, const N: usize> {
@@ -180,6 +182,15 @@ impl RelativeProbe {
         grid.get(row, col).map(|cell| (cell, weight, delta_col))
     }
 
+    /// [`Self::stack_target`] of a probe whose column is already adjusted.
+    fn adjusted_target(self, block: &MvBlockContext) -> (i32, i32, i32) {
+        (
+            block.mi_row as i32 + self.delta_row,
+            block.mi_col as i32 + self.delta_col,
+            self.delta_col,
+        )
+    }
+
     fn stack_target(self, block: &MvBlockContext) -> (i32, i32, i32) {
         let row = block.mi_row as i32 + self.delta_row;
         let mut col = block.mi_col as i32 + self.delta_col;
@@ -244,11 +255,30 @@ fn warp_context_spatial_probes(block: &MvBlockContext) -> [Option<RelativeProbe>
     ]
 }
 
+/// The § 7.12.2.6 spatial probes with [`RelativeProbe::stack_target`]'s
+/// column adjustment applied, so [`RelativeProbe::adjusted_target`] reads them.
 fn mv_stack_spatial_probes(block: &MvBlockContext) -> [Option<RelativeProbe>; 7] {
     let bw4 = block.bw4 as i32;
     let bh4 = block.bh4 as i32;
     let is_sb_border_adj = i32::from(block.is_sb_border());
-    [
+    let odd_col = block.mi_col as i32 & is_sb_border_adj;
+    let above = |probe: Option<RelativeProbe>| {
+        probe.map(|probe| {
+            RelativeProbe::new(
+                -1,
+                ((odd_col + probe.delta_col) & !is_sb_border_adj) - odd_col,
+            )
+        })
+    };
+    let [
+        left_bottom,
+        above_right,
+        left_top,
+        above_left,
+        bottom_left,
+        top_right,
+        top_left,
+    ] = [
         Some(RelativeProbe::new(bh4 - 1, -1)),
         Some(RelativeProbe::new(-1, (bw4 - 1 - is_sb_border_adj).max(0))),
         optional_probe(bh4 >= 2, 0, -1),
@@ -264,6 +294,15 @@ fn mv_stack_spatial_probes(block: &MvBlockContext) -> [Option<RelativeProbe>; 7]
             },
         ),
         Some(RelativeProbe::new(-1, -1 - is_sb_border_adj)),
+    ];
+    [
+        left_bottom,
+        above(above_right),
+        left_top,
+        above(above_left),
+        bottom_left,
+        above(top_right),
+        above(top_left),
     ]
 }
 
@@ -1048,7 +1087,7 @@ impl RefMvBank {
         sb_size4: usize,
         seed_from_above: bool,
     ) {
-        let sb = (mi_row / sb_size4.max(1), mi_col / sb_size4.max(1));
+        let sb = superblock_of(mi_row, mi_col, sb_size4);
         if self.current_sb == Some(sb) {
             return;
         }
@@ -1302,6 +1341,18 @@ impl RefMvBank {
     }
 }
 
+/// The superblock `(row, col)` of a mode-info position; superblock sizes are
+/// powers of two, which turns the per-leaf divisions into shifts.
+#[inline]
+fn superblock_of(mi_row: usize, mi_col: usize, sb_size4: usize) -> (usize, usize) {
+    if sb_size4.is_power_of_two() {
+        let shift = sb_size4.trailing_zeros();
+        (mi_row >> shift, mi_col >> shift)
+    } else {
+        (mi_row / sb_size4.max(1), mi_col / sb_size4.max(1))
+    }
+}
+
 fn seed_walk_from_row_above(
     grid: &NeighbourMvGrid,
     sb_row: usize,
@@ -1396,6 +1447,7 @@ pub(crate) fn find_mv_stack(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn find_mv_stack_with_temporal(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
@@ -1408,6 +1460,40 @@ pub(crate) fn find_mv_stack_with_temporal(
     temporal: Option<&TemporalMvContext>,
     order_hints: Option<OrderHintMvContext<'_>>,
     use_temporal_first: bool,
+) -> MvStack {
+    find_mv_stack_upto(
+        grid,
+        block,
+        global_mv,
+        global_warp_params,
+        bank,
+        warp_bank,
+        derive_wrl,
+        drl_reorder,
+        temporal,
+        order_hints,
+        use_temporal_first,
+        ALL_CANDIDATES,
+    )
+}
+
+/// The § 7.12.2 stack up to index `need`, which is all a caller may read: the
+/// bank, derived and extra candidates only append after the sort, so they are
+/// skipped once the spatial and temporal scans alone reach `need`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn find_mv_stack_upto(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    global_mv: Mv,
+    global_warp_params: [i32; 6],
+    bank: Option<(&RefMvBank, usize)>,
+    warp_bank: &WarpParamBank,
+    derive_wrl: bool,
+    drl_reorder: DrlReorder,
+    temporal: Option<&TemporalMvContext>,
+    order_hints: Option<OrderHintMvContext<'_>>,
+    use_temporal_first: bool,
+    need: usize,
 ) -> MvStack {
     let mut entries = FixedStack::new();
     let mut prune_count = 0usize;
@@ -1476,12 +1562,14 @@ pub(crate) fn find_mv_stack_with_temporal(
             entries.swap_to_front(max_idx);
         }
     }
-    let max_ref_mv_count = bank.map_or(MAX_REF_MV_STACK_SIZE, |(_, count)| count);
-    if let Some((bank, _)) = bank {
-        bank.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);
+    if entries.len() <= need {
+        let max_ref_mv_count = bank.map_or(MAX_REF_MV_STACK_SIZE, |(_, count)| count);
+        if let Some((bank, _)) = bank {
+            bank.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);
+        }
+        derived.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);
+        extra_search(block, global_mv, &mut entries, &mut prune_count);
     }
-    derived.fill(block, &mut entries, max_ref_mv_count, &mut prune_count);
-    extra_search(block, global_mv, &mut entries, &mut prune_count);
     if let Some(warp) = warp.as_mut() {
         warp_bank.fill(block.ref_frame0, warp);
         warp.insert(global_warp_params);
@@ -1493,6 +1581,7 @@ pub(crate) fn find_mv_stack_with_temporal(
     let stack = FixedStack::from_entries(
         entries
             .iter()
+            .take(need.saturating_add(1))
             .map(|entry| (clamp_mv(block, entry.mv), entry.offsets)),
     );
 
@@ -1502,6 +1591,7 @@ pub(crate) fn find_mv_stack_with_temporal(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn find_compound_mv_stack_with_temporal(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
@@ -1509,6 +1599,27 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
     bank: Option<(&RefMvBank, usize)>,
     drl_reorder: DrlReorder,
     temporal: Option<&TemporalMvContext>,
+) -> CompoundMvStack {
+    find_compound_mv_stack_upto(
+        grid,
+        block,
+        global_mvs,
+        bank,
+        drl_reorder,
+        temporal,
+        ALL_CANDIDATES,
+    )
+}
+
+/// [`find_mv_stack_upto`] for a compound reference pair.
+pub(crate) fn find_compound_mv_stack_upto(
+    grid: &NeighbourMvGrid,
+    block: &MvBlockContext,
+    global_mvs: [Mv; 2],
+    bank: Option<(&RefMvBank, usize)>,
+    drl_reorder: DrlReorder,
+    temporal: Option<&TemporalMvContext>,
+    need: usize,
 ) -> CompoundMvStack {
     let mut state = CompoundScanState::new(global_mvs);
     let probes = mv_stack_spatial_probes(block);
@@ -1539,25 +1650,33 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
             state.entries.swap_to_front(max_idx);
         }
     }
-    let max_ref_mv_count = bank.map_or(MAX_REF_MV_STACK_SIZE, |(_, count)| count);
-    state
-        .derived
-        .fill(&mut state.entries, max_ref_mv_count, &mut state.prune_count);
-    if let Some((bank, _)) = bank {
-        bank.fill_compound(
+    if state.entries.len() <= need {
+        let max_ref_mv_count = bank.map_or(MAX_REF_MV_STACK_SIZE, |(_, count)| count);
+        state.derived.fill(
             block,
+            state.global_mvs,
+            temporal,
             &mut state.entries,
             max_ref_mv_count,
             &mut state.prune_count,
         );
+        if let Some((bank, _)) = bank {
+            bank.fill_compound(
+                block,
+                &mut state.entries,
+                max_ref_mv_count,
+                &mut state.prune_count,
+            );
+        }
+        compound_extra_search(
+            block,
+            global_mvs,
+            &mut state.entries,
+            &mut state.prune_count,
+        );
     }
-    compound_extra_search(
-        block,
-        global_mvs,
-        &mut state.entries,
-        &mut state.prune_count,
-    );
-    let stack = FixedStack::from_entries(state.entries.iter().map(|entry| CompoundMvCandidate {
+    let entries = state.entries.iter().take(need.saturating_add(1));
+    let stack = FixedStack::from_entries(entries.map(|entry| CompoundMvCandidate {
         mvs: [
             clamp_mv(block, entry.candidate.mvs[0]),
             clamp_mv(block, entry.candidate.mvs[1]),
@@ -1616,11 +1735,11 @@ fn scan_compound_mv_stack_probe(
     let Some(ref_frame1) = block.ref_frame1 else {
         return;
     };
-    let (row, col, delta_col) = probe.stack_target(block);
-    let Some(leaf) = grid.scan_leaf(row, col) else {
+    let (row, col, delta_col) = probe.adjusted_target(block);
+    let Some(leaf) = grid.probe(row, col) else {
         return;
     };
-    let flags = leaf.flags;
+    let flags = leaf.flags();
     if !flags.is_inter() {
         return;
     }
@@ -1633,10 +1752,10 @@ fn scan_compound_mv_stack_probe(
                 if leaf.is_global_mv(list) {
                     state.global_mvs[list]
                 } else {
-                    leaf.sub_mvs[list]
+                    leaf.sub_mv(list)
                 }
             }),
-            cwp_weight: leaf.cwp_weight,
+            cwp_weight: leaf.cwp_weight(),
         }
     } else if flags.ref_frame0 == TIP_REF_FRAME {
         let Some(temporal) = temporal else {
@@ -1661,11 +1780,12 @@ fn scan_compound_mv_stack_probe(
             cwp_weight: CWP_EQUAL,
         }
     } else {
+        let sub_mvs = leaf.sub_mvs();
         state.derived.add_spatial(
             block,
             [
-                Some((flags.ref_frame0, leaf.sub_mvs[0])),
-                flags.ref_frame1.map(|r| (r, leaf.sub_mvs[1])),
+                Some((flags.ref_frame0, sub_mvs[0])),
+                flags.ref_frame1.map(|r| (r, sub_mvs[1])),
             ],
             [leaf.is_global_mv(0), leaf.is_global_mv(1)],
             state.global_mvs,
@@ -1809,18 +1929,18 @@ fn scan_mv_stack_probe(
     derived: &mut DerivedMvState<'_>,
     warp: Option<&mut WarpParamStack>,
 ) {
-    let (row, col, adjusted_delta_col) = probe.stack_target(block);
-    let Some(leaf) = grid.scan_leaf(row, col) else {
+    let (row, col, adjusted_delta_col) = probe.adjusted_target(block);
+    let Some(leaf) = grid.probe(row, col) else {
         return;
     };
-    let flags = leaf.flags;
+    let flags = leaf.flags();
     if let Some(warp) = warp
         && flags.is_inter()
         && flags.is_warp()
         && flags.ref_frame0 == block.ref_frame0
-        && let Some(cell) = grid.get(row, col)
+        && let Some(params) = leaf.stored_warp()
     {
-        warp.add_scan_point(&cell, block);
+        warp.insert(params);
     }
 
     if entries.len() >= MAX_REF_MV_STACK_SIZE {
@@ -1841,16 +1961,17 @@ fn scan_mv_stack_probe(
         let Some(candidate_ref) = candidate_ref else {
             continue;
         };
-        let candidate_mv = leaf.sub_mvs[list];
         if candidate_ref == block.ref_frame0 {
             let candidate_mv = if leaf.is_global_mv(list) {
                 derived.global_mv()
             } else {
-                candidate_mv
+                leaf.sub_mv(list)
             };
             insert_mv_stack_entry(entries, prune_count, candidate_mv, weight, offsets);
         } else if candidate_ref >= 0 && candidate_ref != TIP_REF_FRAME {
-            derived.add_spatial(block, candidate_ref, candidate_mv, flags, leaf.sub_mvs);
+            derived.add_spatial(block, candidate_ref, leaf.sub_mv(list), flags, || {
+                leaf.sub_mvs()
+            });
         }
     }
 }
@@ -1877,13 +1998,9 @@ fn scan_tip_spatial_probe(
             if candidate_ref == block.ref_frame0 {
                 insert_mv_stack_entry(entries, prune_count, candidate_mv, weight, offsets);
             } else {
-                derived.add_spatial(
-                    block,
-                    candidate_ref,
-                    candidate_mv,
-                    cell.flags,
-                    [cell.motion.sub_mv, cell.motion.sub_mv1],
-                );
+                derived.add_spatial(block, candidate_ref, candidate_mv, cell.flags, || {
+                    [cell.motion.sub_mv, cell.motion.sub_mv1]
+                });
             }
         }
     }
@@ -2074,33 +2191,32 @@ fn warp_corner(
     if is_sb_border && delta_col == 0 && block.bw4 <= 2 {
         return;
     }
-    let Some(cell) = grid.get(mv_row, mv_col2) else {
+    let Some(leaf) = grid.probe(mv_row, mv_col2) else {
         return;
     };
-    if !cell.flags.is_inter() || *found >= 3 {
+    let flags = leaf.flags();
+    if !flags.is_inter() || *found >= 3 {
         return;
     }
     for ref_list in 0..2usize {
         let ref_matches = if ref_list == 0 {
-            cell.flags.ref_frame0 == block.ref_frame0
+            flags.ref_frame0 == block.ref_frame0
         } else {
-            cell.flags.ref_frame1 == Some(block.ref_frame0)
+            flags.ref_frame1 == Some(block.ref_frame0)
         };
         if !ref_matches {
             continue;
         }
-        let corner_mv = if cell.flags.is_warp() {
+        let corner_mv = if flags.is_warp() {
             if ref_list > 0 {
                 return;
             }
-            let Some(params) = cell.motion.warp_params() else {
+            let Some(params) = leaf.stored_warp() else {
                 return;
             };
             warp_motion_vector_at(params, block, mv_row + 1, mv_col + 1)
-        } else if ref_list == 0 {
-            cell.motion.sub_mv
         } else {
-            cell.motion.sub_mv1
+            leaf.sub_mv(ref_list)
         };
         pts[*found] = [(mv_row + 1) * 4, (mv_col + 1) * 4];
         mvs[*found] = [corner_mv.row, corner_mv.col];
