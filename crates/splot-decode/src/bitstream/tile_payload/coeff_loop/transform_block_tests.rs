@@ -61,6 +61,35 @@ fn grid_scans_hold_each_shape_scan_with_its_grid_index() {
 }
 
 #[test]
+fn scan_extent_bounds_every_scan_prefix() {
+    for (class, recon_class) in [
+        (CoeffTransformClass::TwoD, TransformClass::TwoD),
+        (CoeffTransformClass::Horizontal, TransformClass::Horizontal),
+        (CoeffTransformClass::Vertical, TransformClass::Vertical),
+    ] {
+        for width in [4, 8, 16, 32] {
+            for height in [4, 8, 16, 32] {
+                let scan = splot_recon::coefficient_scan_slice(width, height, recon_class).unwrap();
+                let mut extent = 0;
+                let log2 = (
+                    width.trailing_zeros() as usize,
+                    height.trailing_zeros() as usize,
+                );
+                for (eob, &pos) in (1..).zip(scan) {
+                    extent = extent.max(usize::from(pos) + 1);
+                    assert_eq!(scan_extent(class, log2, eob), extent);
+                }
+            }
+        }
+    }
+    let class = CoeffTransformClass::TwoD;
+    assert_eq!(scan_extent(class, (2, 2), 0), 16);
+    assert_eq!(scan_extent(class, (2, 2), 17), 16);
+    assert_eq!(scan_extent(class, (6, 6), 1), 1);
+    assert_eq!(scan_extent(class, (6, 6), 1025), 1024);
+}
+
+#[test]
 fn grid_scan_rejects_bad_shapes_and_eobs() {
     let class = CoeffTransformClass::TwoD;
     assert!(grid_scan(class, 12, 4, 1).is_err());

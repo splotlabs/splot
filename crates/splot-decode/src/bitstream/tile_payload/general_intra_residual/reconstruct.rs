@@ -100,7 +100,10 @@ pub(crate) fn resolve_secondary_inverse_transform(
     Ok(Some(SecondaryInverseTransform {
         w,
         h,
-        n,
+        n: match block.eob() {
+            0 => n,
+            eob => n.min(eob),
+        },
         kernel,
         sec_tx_type: ist.sec_tx_type.into(),
         primary_scan_class: tx_class(block.plane_tx_type()),
@@ -214,9 +217,17 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
             if let (Some((dst, stride)), Some(pred)) =
                 (rows.u8_samples_mut(), T::u8_slice(prediction))
             {
-                for (row, pred) in pred.chunks_exact(width).enumerate() {
-                    if let Some(out) = dst.get_mut(row * stride..row * stride + width) {
-                        out.copy_from_slice(pred); // splot-copy-ok: prediction row into the frame
+                match width {
+                    4 => put_rows::<4>(pred, dst, stride),
+                    8 => put_rows::<8>(pred, dst, stride),
+                    16 => put_rows::<16>(pred, dst, stride),
+                    32 => put_rows::<32>(pred, dst, stride),
+                    _ => {
+                        for (row, pred) in pred.chunks_exact(width).enumerate() {
+                            if let Some(out) = dst.get_mut(row * stride..row * stride + width) {
+                                out.copy_from_slice(pred); // splot-copy-ok: prediction row into the frame
+                            }
+                        }
                     }
                 }
                 if let Some((fused, flat)) = fused
@@ -250,6 +261,20 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
         })
     })?;
     Ok(written.is_some())
+}
+
+/// Writes the `N`-wide prediction rows `pred` into the frame rows of `dst`,
+/// `stride` apart, as fixed-size row moves.
+#[inline]
+fn put_rows<const N: usize>(pred: &[u8], dst: &mut [u8], stride: usize) {
+    for (row, pred) in pred.as_chunks::<N>().0.iter().enumerate() {
+        if let Some(out) = dst
+            .get_mut(row * stride..)
+            .and_then(<[u8]>::first_chunk_mut::<N>)
+        {
+            *out = *pred;
+        }
+    }
 }
 
 const fn reconstruct_error(source: splot_recon::ReconError) -> GeneralIntraResidualError {

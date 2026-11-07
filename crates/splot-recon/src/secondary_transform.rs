@@ -62,7 +62,8 @@ const STX_SCAN_ORDER_8X8: [usize; 64] = [
 /// `w >= 8 && h >= 8`), `bwl` (`Min(5, Tx_Width_Log2[txSz])`, i.e. `log2(w)`), and
 /// the output width are derived internally. `n` is the § 7.15.3 input
 /// coefficient count (`IST_4X4_HEIGHT`, `IST_8X8_HEIGHT`, or the reduced
-/// `IST_8X8_HEIGHT_RED`); `kernel` and `sec_tx_type` (`1..=3`) select the § 9.7
+/// `IST_8X8_HEIGHT_RED`), or a block's smaller end of block, past which the
+/// § 7.15.3 inputs are zero; `kernel` and `sec_tx_type` (`1..=3`) select the § 9.7
 /// IST kernel; `primary_scan_class` aligns the IST input support with the
 /// primary transform scan; `transpose` chooses the § 7.15.3 output layout;
 /// `bit_depth` bounds the `Clip3`.
@@ -244,7 +245,8 @@ pub(crate) fn secondary_inverse_transform_quant(
     if dq_denom.is_power_of_two() && scan.first() == Some(&0) {
         let shift = dq_denom.trailing_zeros();
         baseline_simd!(simd => {
-            for (k, chunk) in coefs.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+            let used = params.n.div_ceil(8);
+            for (k, chunk) in coefs.as_chunks_mut::<8>().0.iter_mut().take(used).enumerate() {
                 let first = if k == 0 { dc_quant } else { ac_quant };
                 let q2 = u32x8::load_array(simd, [first, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant]);
                 crate::dequant_process::dequant_lanes(simd, i32x8::from_slice(simd, chunk), q2, shift, bound)
@@ -331,7 +333,7 @@ fn transform_into(
     if !(large && len == 64 && w == 8) {
         dequant[..len].fill(0);
     }
-    let coefs = &coefs[..n];
+    let coefs = coefs.get(..n.div_ceil(2) * 2).unwrap_or(&coefs[..]);
     let stx = sec_tx_type - 1;
     let wide = bound > 1 << 15;
     if large {
@@ -344,8 +346,8 @@ fn transform_into(
             if let Some(pairs) = pairs {
                 accumulate_kernel_pairs(simd, pairs, coefs, wide, &mut sums);
             }
-            for (row, &t) in dequant[..len].chunks_mut(w).zip(&sums) {
-                if let Some(row) = row.first_chunk_mut::<8>() {
+            for (r, &t) in sums.iter().enumerate() {
+                if let Some(row) = dequant.get_mut(r * w..len).and_then(<[i32]>::first_chunk_mut::<8>) {
                     ((t + (1 << 6) + (t >> 31)) >> 7)
                         .max(i32x8::splat(simd, -bound))
                         .min(i32x8::splat(simd, bound - 1))
@@ -485,8 +487,8 @@ const fn pair_kernels<
 }
 
 /// Adds `coef * row` over the kernel rows of the nonzero input coefficients
-/// as `pmaddwd` pairs of adjacent rows, keeping the up to 48 sums in vector
-/// registers.
+/// (an even count, zero padded) as `pmaddwd` pairs of adjacent rows, keeping
+/// the up to 48 sums in vector registers.
 ///
 /// A coefficient inside `i16` (every 8-bit one) is one multiply-add operand;
 /// a `wide` coefficient `c` splits into `a = c >> 8` and `b = c & 255`, both
@@ -502,8 +504,7 @@ fn accumulate_kernel_pairs<S: Simd, const W2: usize, const N: usize>(
 ) {
     let operand =
         |a: i32, b: i32| i32x8::splat(simd, (a & 0xffff) | (b << 16)).bitcast::<i16x16<S>>();
-    for (pair, coefs) in pairs.iter().zip(coefs.chunks(2)) {
-        let (a, b) = (coefs[0], coefs.get(1).copied().unwrap_or(0));
+    for (pair, &[a, b]) in pairs.iter().zip(coefs.as_chunks::<2>().0) {
         if a | b == 0 {
             continue;
         }

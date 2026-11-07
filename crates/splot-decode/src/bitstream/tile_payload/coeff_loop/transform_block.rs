@@ -209,6 +209,61 @@ static GRID_SCANS: [[u32; GRID_SCAN_LEN]; 3] = {
     out
 };
 
+/// One past the largest raster position among the first `c + 1` entries of
+/// each [`GRID_SCANS`] scan, at the same index.
+static GRID_EXTENTS: [[u16; GRID_SCAN_LEN]; 3] = {
+    let mut out = [[0; GRID_SCAN_LEN]; 3];
+    let mut class = 0;
+    while class < 3 {
+        let mut wi = 0;
+        while wi < SCAN_DIMS {
+            let mut hi = 0;
+            while hi < SCAN_DIMS {
+                let base = scan_shape_offset(wi, hi);
+                let (mut c, mut extent) = (0, 0);
+                while c < (4 << wi) * (4 << hi) {
+                    let pos = (GRID_SCANS[class][base + c] >> 16) as u16;
+                    if pos >= extent {
+                        extent = pos + 1;
+                    }
+                    out[class][base + c] = extent;
+                    c += 1;
+                }
+                hi += 1;
+            }
+            wi += 1;
+        }
+        class += 1;
+    }
+    out
+};
+
+/// One past the largest raster position of the first `eob` scan positions
+/// of a block of `class` whose sides are `2^width_log2` and `2^height_log2`
+/// (each at most 32 after the § 7.13.3 adjustment): the coefficients of the
+/// block that can be nonzero lie below it. The whole block for an invalid
+/// shape or `eob`.
+#[allow(
+    clippy::inline_always,
+    reason = "measured: out of line it costs 30 instructions per block"
+)]
+#[inline(always)]
+pub(crate) fn scan_extent(
+    class: CoeffTransformClass,
+    (width_log2, height_log2): (usize, usize),
+    eob: usize,
+) -> usize {
+    let (wi, hi) = (width_log2.clamp(2, 5) - 2, height_log2.clamp(2, 5) - 2);
+    let len = 16 << (wi + hi);
+    if eob == 0 || eob > len {
+        return len;
+    }
+    let offset = SCAN_SHAPE_OFFSETS[wi.min(3)][hi.min(3)];
+    GRID_EXTENTS[tx_class_index(class)]
+        .get(offset + eob - 1)
+        .map_or(len, |&extent| usize::from(extent))
+}
+
 /// The scan of a `width` by `height` block of `class` up to `eob`.
 fn grid_scan(
     class: CoeffTransformClass,
@@ -278,8 +333,9 @@ pub(crate) struct CoeffTransformBlockInput {
 }
 
 /// Decodes the block's coefficients into `quant` (zero on entry, one entry
-/// per adjusted position), commits its above and left contexts, and returns
-/// one past its last nonzero entry.
+/// per adjusted position up to at least the [`scan_extent`] of the EOB),
+/// commits its above and left contexts, and returns one past its last
+/// nonzero entry.
 pub(crate) fn decode_ordinary_transform_block(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
@@ -358,8 +414,8 @@ fn preflight(
     if input.lossless && config.use_tcq {
         return Err(CoeffQuantPassError::InconsistentTcqConfig.into());
     }
-    if input.start.coeff_count() != quant_len
-        || config.tx_width.checked_mul(config.tx_height) != Some(quant_len)
+    let coeff_count = input.start.coeff_count();
+    if quant_len > coeff_count || config.tx_width.checked_mul(config.tx_height) != Some(coeff_count)
     {
         return Err(CoeffBaseDerivedLevelPassError::BlockGeometryMismatch {
             block_width: input.start.width(),
