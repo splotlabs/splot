@@ -803,33 +803,89 @@ fn dct16(v: &[__m256i], mask: u32, rnd: __m256i) -> [__m256i; 16] {
     butterfly::<8, 16>(&dct8(v, mask, rnd), &odd)
 }
 
-#[inline]
-#[target_feature(enable = "avx2")]
-fn dct32(v: &[__m256i], mask: u32, rnd: __m256i) -> [__m256i; 32] {
-    let odd = products(
-        v.get(8..).unwrap_or_default(),
-        mask >> 8,
-        &ODD32,
-        _mm256_setzero_si256(),
-    );
-    butterfly::<16, 32>(&dct16(v, mask, rnd), &odd)
+/// Where the column pass puts the shifted output rows of chunk `c`: as `i16`
+/// rows of the `W`-wide `tile` (two samples per word) with `ADD`, or clamped
+/// into `residual`.
+struct Put<'a, const W: usize, const ADD: bool> {
+    tile: &'a mut [i32; 512],
+    residual: &'a mut [i32],
+    round: Round,
+    c: usize,
 }
 
-/// The first `B` entries of `x`, zero past `A`.
+impl<const W: usize, const ADD: bool> Put<'_, W, ADD> {
+    /// Puts output rows `a` and `b` before their `Round2`.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn rows(&mut self, t: Avx2, (a, b): (usize, usize), va: __m256i, vb: __m256i) {
+        let shift = |v| _mm256_sra_epi32(v, self.round.shift);
+        let (va, vb) = (shift(va), shift(vb));
+        if !ADD {
+            put_residual::<W>(t, (a, b, self.c), va, vb, self.residual);
+            return;
+        }
+        let packed = _mm256_packs_epi32(va, vb);
+        if W >= 8 {
+            let packed = _mm256_permute4x64_epi64::<0xD8>(packed);
+            store4(
+                t,
+                self.tile,
+                (a * W + 8 * self.c) / 2,
+                _mm256_castsi256_si128(packed),
+            );
+            store4(
+                t,
+                self.tile,
+                (b * W + 8 * self.c) / 2,
+                _mm256_extracti128_si256::<1>(packed),
+            );
+        } else {
+            let low = _mm256_castsi256_si128(packed);
+            for (row, word) in [
+                (a, _mm_cvtsi128_si64(low)),
+                (b, _mm_extract_epi64::<1>(low)),
+            ] {
+                if let Some(out) = self.tile.get_mut(2 * row..2 * row + 2) {
+                    out.copy_from_slice(&[word as i32, (word >> 32) as i32]); // splot-copy-ok: one 4-sample row
+                }
+            }
+        }
+    }
+}
+
+/// Puts rows `n` and `2H - 1 - n` of a `DCT` column from its even half `e`
+/// and its odd inputs `v` on the odd pairs `k`.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn fit<const A: usize, const B: usize>(x: [__m256i; A]) -> [__m256i; B] {
-    let mut out = [_mm256_setzero_si256(); B];
-    for (out, x) in out.iter_mut().zip(x) {
-        *out = x;
+#[allow(
+    clippy::many_single_char_names,
+    reason = "even half e, odd inputs v, kernel k and odd sum o, as in § 7.15.2.1"
+)]
+fn odd_rows<const H: usize, const P: usize, const W: usize, const ADD: bool>(
+    t: Avx2,
+    e: &[__m256i; H],
+    v: &[__m256i],
+    k: &[[u32; H]; P],
+    put: &mut Put<'_, W, ADD>,
+) {
+    for (n, &e) in e.iter().enumerate() {
+        let mut o = _mm256_setzero_si256();
+        for (&v, k) in v.iter().zip(k) {
+            o = madd_splat(o, v, k[n]);
+        }
+        put.rows(
+            t,
+            (n, 2 * H - 1 - n),
+            _mm256_add_epi32(e, o),
+            _mm256_sub_epi32(e, o),
+        );
     }
-    out
 }
 
 /// The column pass of a `W`-wide, `M`-tall block (`HM = M / 2`) over the
 /// written pairs `mask` of `pairs` with the `KIND` transform on the pair
-/// kernel `k` or the identity `scale`, added to `dst` with `ADD` or stored in
-/// `residual`.
+/// kernel `k` or the identity `scale`, into `tile` with `ADD` or `residual`.
+/// Each output row is summed with its inputs in registers and put at once.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
 #[allow(
@@ -841,11 +897,18 @@ fn col_pass<const W: usize, const M: usize, const HM: usize, const KIND: u8, con
     (k, scale): (&[[u32; M]; HM], i32),
     pairs: &[i32; 16 * 32],
     (mask, shift): (u32, u32),
-    (dst, stride): (&mut [u8], usize),
+    tile: &mut [i32; 512],
     residual: &mut [i32],
 ) {
     let round = Round::new(shift);
+    let mut put = Put::<W, ADD> {
+        tile,
+        residual,
+        round,
+        c: 0,
+    };
     for c in 0..(W / 8).max(1) {
+        put.c = c;
         let mut v = [_mm256_setzero_si256(); HM];
         for (q, v) in v.iter_mut().enumerate() {
             if mask & (1 << q) != 0 {
@@ -856,30 +919,93 @@ fn col_pass<const W: usize, const M: usize, const HM: usize, const KIND: u8, con
                 };
             }
         }
-        let out: [__m256i; M] = match (KIND, M) {
+        match (KIND, M) {
             (IDENTITY, _) => {
-                let mut out = [round.rnd; M];
-                for (q, (&v, out)) in v.iter().zip(out.as_chunks_mut::<2>().0).enumerate() {
-                    if mask & (1 << q) != 0 {
-                        out[0] = madd_splat(out[0], v, scale as u32);
-                        out[1] = madd_splat(out[1], v, (scale as u32) << 16);
-                    }
+                for (q, &v) in v.iter().enumerate() {
+                    put.rows(
+                        t,
+                        (2 * q, 2 * q + 1),
+                        madd_splat(round.rnd, v, scale as u32),
+                        madd_splat(round.rnd, v, (scale as u32) << 16),
+                    );
                 }
-                out
             }
-            (SPLIT, 4) => fit(dct4(&v, mask, round.rnd)),
-            (SPLIT, 8) => fit(dct8(&v, mask, round.rnd)),
-            (SPLIT, 16) => fit(dct16(&v, mask, round.rnd)),
-            (SPLIT, _) => fit(dct32(&v, mask, round.rnd)),
-            _ => products(&v, mask, k, round.rnd),
+            (SPLIT, 4) => {
+                let e = dct4(&v, mask, round.rnd);
+                put.rows(t, (0, 3), e[0], e[3]);
+                put.rows(t, (1, 2), e[1], e[2]);
+            }
+            (SPLIT, 8) => odd_rows(
+                t,
+                &dct4(&v, mask, round.rnd),
+                v.get(2..4).unwrap_or_default(),
+                &ODD8,
+                &mut put,
+            ),
+            (SPLIT, 16) => odd_rows(
+                t,
+                &dct8(&v, mask, round.rnd),
+                v.get(4..8).unwrap_or_default(),
+                &ODD16,
+                &mut put,
+            ),
+            (SPLIT, _) => odd_rows(
+                t,
+                &dct16(&v, mask, round.rnd),
+                v.get(8..16).unwrap_or_default(),
+                &ODD32,
+                &mut put,
+            ),
+            _ => {
+                for m in 0..HM {
+                    let dot = |n: usize| {
+                        v.iter()
+                            .zip(k)
+                            .fold(round.rnd, |sum, (&v, k)| madd_splat(sum, v, k[n]))
+                    };
+                    put.rows(t, (2 * m, 2 * m + 1), dot(2 * m), dot(2 * m + 1));
+                }
+            }
+        }
+    }
+}
+
+/// Adds the `h` rows of the `W`-wide `i16` `tile` to the 8-bit block at the
+/// start of `dst` with the § 7.14.3 `Clip1`, one row at a time.
+#[inline(never)]
+#[target_feature(enable = "avx2")]
+fn add_tile<const W: usize>(t: Avx2, tile: &[i32; 512], h: usize, dst: &mut [u8], stride: usize) {
+    for r in 0..h.min(32) {
+        let at = r * stride;
+        let Some(row) = dst.get_mut(at..at + W) else {
+            return;
         };
-        let shift = |v| _mm256_sra_epi32(v, round.shift);
-        for (m, rows) in out.as_chunks::<2>().0.iter().enumerate() {
-            let (a, b) = (shift(rows[0]), shift(rows[1]));
-            if ADD {
-                put_add::<W>(dst, 2 * m * stride + 8 * c, stride, a, b);
-            } else {
-                put_residual::<W>(t, (2 * m, c), a, b, residual);
+        let words = r * W / 2;
+        if W == 4 {
+            let Some(row) = row.first_chunk_mut::<4>() else {
+                return;
+            };
+            let pred = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(i32::from_le_bytes(*row)));
+            let res = tile
+                .get(words..words + 2)
+                .map_or(0, |w| i64::from(w[0] as u32) | i64::from(w[1]) << 32);
+            let sum = _mm_adds_epi16(pred, _mm_cvtsi64_si128(res));
+            *row = _mm_cvtsi128_si32(_mm_packus_epi16(sum, sum)).to_le_bytes();
+        } else if W == 8 {
+            let Some(row) = row.first_chunk_mut::<8>() else {
+                return;
+            };
+            let pred = _mm_cvtepu8_epi16(_mm_cvtsi64_si128(i64::from_le_bytes(*row)));
+            let sum = _mm_adds_epi16(pred, load4(t, tile, words));
+            *row = _mm_cvtsi128_si64(_mm_packus_epi16(sum, sum)).to_le_bytes();
+        } else {
+            for (half, out) in row.as_chunks_mut::<16>().0.iter_mut().enumerate() {
+                let pred: __m128i = fearless_simd::u8x16::load_array_ref(t, out).into();
+                let sum =
+                    _mm256_adds_epi16(_mm256_cvtepu8_epi16(pred), load8(t, tile, words + 8 * half));
+                let sum = _mm256_permute4x64_epi64::<0x08>(_mm256_packus_epi16(sum, sum));
+                let sum: fearless_simd::u8x16<Avx2> = _mm256_castsi256_si128(sum).simd_into(t);
+                sum.store_array(out);
             }
         }
     }
@@ -927,13 +1053,13 @@ fn put_add<const W: usize>(dst: &mut [u8], at: usize, stride: usize, a: __m256i,
     }
 }
 
-/// Stores rows `m` and `m + 1` of the column `Clip3` outputs of the 8 (4
-/// when `W == 4`) columns from `8 * c`.
+/// Stores rows `a` and `b` of the column `Clip3` outputs of the 8 (4 when
+/// `W == 4`) columns from `8 * c`.
 #[inline]
 #[target_feature(enable = "avx2")]
 fn put_residual<const W: usize>(
     t: Avx2,
-    (m, c): (usize, usize),
+    (a, b, c): (usize, usize, usize),
     first: __m256i,
     second: __m256i,
     residual: &mut [i32],
@@ -942,11 +1068,11 @@ fn put_residual<const W: usize>(
     let first = _mm256_min_epi32(_mm256_max_epi32(first, low), high);
     let second = _mm256_min_epi32(_mm256_max_epi32(second, low), high);
     if W == 4 {
-        store4(t, residual, 4 * m, _mm256_castsi256_si128(first));
-        store4(t, residual, 4 * m + 4, _mm256_castsi256_si128(second));
+        store4(t, residual, 4 * a, _mm256_castsi256_si128(first));
+        store4(t, residual, 4 * b, _mm256_castsi256_si128(second));
     } else {
-        store8(t, residual, m * W + 8 * c, first);
-        store8(t, residual, (m + 1) * W + 8 * c, second);
+        store8(t, residual, a * W + 8 * c, first);
+        store8(t, residual, b * W + 8 * c, second);
     }
 }
 
@@ -967,7 +1093,7 @@ fn flat<const W: usize, const ADD: bool>(
             if ADD {
                 put_add::<W>(dst, m * stride + 8 * c, stride, v, v);
             } else {
-                put_residual::<W>(t, (m, c), v, v, residual);
+                put_residual::<W>(t, (m, m + 1, c), v, v, residual);
             }
         }
     }
@@ -1043,7 +1169,7 @@ fn cols<const ADD: bool>(
     shape: &InverseTransformAdd8,
     pairs: &[i32; 16 * 32],
     mask: u32,
-    out: (&mut [u8], usize),
+    out: &mut [i32; 512],
     residual: &mut [i32],
 ) {
     let passes = (mask, u32::from(shape.col_shift));
@@ -1164,9 +1290,19 @@ fearless_simd::kernel!(
             }
             return;
         }
-        match residual {
-            None => cols::<true>(t, shape, pairs, mask, (dst, stride), &mut empty),
-            Some(residual) => cols::<false>(t, shape, pairs, mask, (dst, 0), residual),
-        }
+        let Some(tile) = staged.first_chunk_mut::<512>() else {
+            return;
+        };
+        let Some(residual) = residual else {
+            cols::<true>(t, shape, pairs, mask, tile, &mut empty);
+            match shape.w_log2 {
+                2 => add_tile::<4>(t, tile, h, dst, stride),
+                3 => add_tile::<8>(t, tile, h, dst, stride),
+                4 => add_tile::<16>(t, tile, h, dst, stride),
+                _ => add_tile::<32>(t, tile, h, dst, stride),
+            }
+            return;
+        };
+        cols::<false>(t, shape, pairs, mask, tile, residual);
     }
 );
