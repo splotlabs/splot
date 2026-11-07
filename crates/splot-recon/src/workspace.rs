@@ -43,7 +43,7 @@ pub use workspace_interintra::{InterIntraMode, wedge_mask_plane_sample};
 pub use workspace_rows::{CurrentFrameRectRowsMut, WorkspaceRectRows};
 
 macro_rules! contiguous_rect_writer {
-    ($name:ident, $sample:ty, $slice_mut:expr, $offset:literal, $span:literal) => {
+    ($name:ident, $sample:ty, $slice_mut:expr) => {
         #[doc = concat!(
             "Runs a writer over contiguous `",
             stringify!($sample),
@@ -61,57 +61,13 @@ macro_rules! contiguous_rect_writer {
             rect: PlaneRect,
             write: impl FnOnce(&mut [$sample], usize) -> Result<R>,
         ) -> Result<Option<R>> {
-            let storage = self.plane_storage_size(plane)?;
-            let clipped = clamp_rect_to_storage(plane, storage, rect)?;
-            if clipped != rect {
+            let Some((samples, stride)) = self.contiguous_rect(plane, rect)? else {
                 return Ok(None);
-            }
-            let (samples, stride, local_x, local_y) = match self {
-                Self::Frame(workspace) => {
-                    let target = workspace.plane_mut(plane)?;
-                    let stride_samples = target.stride_samples();
-                    let local_y = target.band_row(rect.y(), rect.height())?;
-                    (&mut target.samples[..], stride_samples, rect.x(), local_y)
-                }
-                Self::Rect(surface) => {
-                    let target = surface.plane_mut(plane)?;
-                    target.ensure_rect(rect)?;
-                    let stride = target.stride();
-                    let local_y = rect.y() - target.rect.y();
-                    (&mut target.samples[..], stride, rect.x(), local_y)
-                }
-                Self::OwnedRect(surface) => {
-                    let target = surface.plane_mut(plane)?;
-                    target.ensure_rect(rect)?;
-                    let target_rect = target.rect();
-                    (
-                        target.into_samples_mut(),
-                        target_rect.width(),
-                        rect.x() - target_rect.x(),
-                        rect.y() - target_rect.y(),
-                    )
-                }
             };
             let Some(samples) = $slice_mut(samples) else {
                 return Ok(None);
             };
-            let base = local_y
-                .checked_mul(stride)
-                .and_then(|start| start.checked_add(local_x))
-                .ok_or(ReconError::ArithmeticOverflow { context: $offset })?;
-            let end = (rect.height() - 1)
-                .checked_mul(stride)
-                .and_then(|offset| base.checked_add(offset))
-                .and_then(|start| start.checked_add(rect.width()))
-                .ok_or(ReconError::ArithmeticOverflow { context: $span })?;
-            let available = samples.len();
-            let target = samples
-                .get_mut(base..end)
-                .ok_or(ReconError::BufferLengthMismatch {
-                    expected: end,
-                    actual: available,
-                })?;
-            write(target, stride).map(Some)
+            write(samples, stride).map(Some)
         }
     };
 }
@@ -595,27 +551,92 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         }
     }
 
-    contiguous_rect_writer!(
-        with_contiguous_rect_mut,
-        T,
-        Some,
-        "contiguous target offset",
-        "contiguous target span"
-    );
-    contiguous_rect_writer!(
-        with_contiguous_u16_rect_mut,
-        u16,
-        T::u16_slice_mut,
-        "contiguous u16 target offset",
-        "contiguous u16 target span"
-    );
-    contiguous_rect_writer!(
-        with_contiguous_u8_rect_mut,
-        u8,
-        T::u8_slice_mut,
-        "contiguous u8 target offset",
-        "contiguous u8 target span"
-    );
+    contiguous_rect_writer!(with_contiguous_rect_mut, T, Some);
+    contiguous_rect_writer!(with_contiguous_u16_rect_mut, u16, T::u16_slice_mut);
+    contiguous_rect_writer!(with_contiguous_u8_rect_mut, u8, T::u8_slice_mut);
+
+    /// The target [`Self::with_contiguous_u8_rect_mut`] runs its writer on,
+    /// or `None` wherever that returns `Ok(None)` or an error.
+    #[inline]
+    pub fn u8_rect_mut(&mut self, plane: PlaneId, rect: PlaneRect) -> Option<(&mut [u8], usize)> {
+        if let Self::Frame(workspace) = self {
+            let target = workspace.plane_mut(plane).ok()?;
+            let (stride, storage) = (target.stride, target.storage_size);
+            let (right, bottom) = (
+                rect.x().saturating_add(rect.width()),
+                rect.y().saturating_add(rect.height()),
+            );
+            let local_y = rect.y().checked_sub(target.origin_y)?;
+            let rows = (bottom - target.origin_y).saturating_mul(stride);
+            if right > storage.width() || bottom > storage.height() || rows > target.samples.len() {
+                return None;
+            }
+            let base = local_y * stride + rect.x();
+            let samples = T::u8_slice_mut(&mut target.samples[..])?;
+            return Some((samples.get_mut(base..rows - stride + right)?, stride));
+        }
+        let (samples, stride) = self.contiguous_rect(plane, rect).ok()??;
+        Some((T::u8_slice_mut(samples)?, stride))
+    }
+
+    /// The samples of the exact in-storage `rect` of `plane`, from its
+    /// top-left sample through its last row, and their row stride; `Ok(None)`
+    /// for a rectangle clipped at the frame edge.
+    #[inline]
+    fn contiguous_rect(
+        &mut self,
+        plane: PlaneId,
+        rect: PlaneRect,
+    ) -> Result<Option<(&mut [T], usize)>> {
+        let storage = self.plane_storage_size(plane)?;
+        if clamp_rect_to_storage(plane, storage, rect)? != rect {
+            return Ok(None);
+        }
+        let (samples, stride, local_x, local_y) = match self {
+            Self::Frame(workspace) => {
+                let target = workspace.plane_mut(plane)?;
+                let stride_samples = target.stride_samples();
+                let local_y = target.band_row(rect.y(), rect.height())?;
+                (&mut target.samples[..], stride_samples, rect.x(), local_y)
+            }
+            Self::Rect(surface) => {
+                let target = surface.plane_mut(plane)?;
+                target.ensure_rect(rect)?;
+                let stride = target.stride();
+                let local_y = rect.y() - target.rect.y();
+                (&mut target.samples[..], stride, rect.x(), local_y)
+            }
+            Self::OwnedRect(surface) => {
+                let target = surface.plane_mut(plane)?;
+                target.ensure_rect(rect)?;
+                let target_rect = target.rect();
+                (
+                    target.into_samples_mut(),
+                    target_rect.width(),
+                    rect.x() - target_rect.x(),
+                    rect.y() - target_rect.y(),
+                )
+            }
+        };
+        let (base, end) = local_y
+            .checked_mul(stride)
+            .and_then(|start| start.checked_add(local_x))
+            .and_then(|base| {
+                let last = base.checked_add((rect.height() - 1).checked_mul(stride)?)?;
+                Some((base, last.checked_add(rect.width())?))
+            })
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "contiguous target span",
+            })?;
+        let available = samples.len();
+        let target = samples
+            .get_mut(base..end)
+            .ok_or(ReconError::BufferLengthMismatch {
+                expected: end,
+                actual: available,
+            })?;
+        Ok(Some((target, stride)))
+    }
 
     /// Writes one contiguous rectangular prediction block.
     ///
