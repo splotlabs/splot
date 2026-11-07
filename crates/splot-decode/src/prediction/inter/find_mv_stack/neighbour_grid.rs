@@ -181,6 +181,21 @@ pub(super) struct NeighbourCell {
     pub(super) motion: NeighbourMotion,
 }
 
+/// [`NeighbourMvGrid::scan_leaf`].
+#[derive(Clone, Copy)]
+pub(super) struct ScanLeaf {
+    pub(super) flags: NeighbourFlags,
+    pub(super) sub_mvs: [Mv; 2],
+    pub(super) cwp_weight: i16,
+    global_lists: u8,
+}
+
+impl ScanLeaf {
+    pub(super) const fn is_global_mv(self, list: usize) -> bool {
+        self.global_lists & (1 << list) != 0
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BlockPrecisionRecord {
     pub(crate) use_most_probable_precision: bool,
@@ -382,6 +397,10 @@ pub(crate) struct NeighbourMvGrid {
     pub(super) mi_rows: usize,
     pub(super) mi_cols: usize,
     window: SbRowWindow,
+    /// [`SbRowWindow::readable_rows`] of `window`, in tile rows.
+    readable: (usize, usize, usize),
+    /// First grid row past the window's superblock row, zero before the first.
+    sb_row_end: usize,
     pub(super) planes: GridPlanes,
     /// Flag publications since the last [`NeighbourMvGrid::take_flag_log`],
     /// collected only while logging is on.
@@ -416,6 +435,8 @@ impl NeighbourMvGrid {
         self.mi_rows = rows;
         self.mi_cols = cols;
         self.window = SbRowWindow::new(rows, sb_h4);
+        self.readable = self.window.readable_rows();
+        self.sb_row_end = 0;
         reset_grid_planes(
             &mut self.planes,
             self.window.plane_rows() * cols,
@@ -510,21 +531,24 @@ impl NeighbourMvGrid {
             model_bits: 0,
             resolved: false,
         });
-        let last = rows.end - 1;
-        let first_row = self.plane_row(rows.start);
-        let contiguous = first_row
-            .zip(self.plane_row(last))
-            .is_some_and(|(first, end)| end.checked_sub(first) == Some(last - rows.start));
-        for rr in rows.clone() {
-            let span = if contiguous {
-                first_row.and_then(|first| self.plane_span(first + (rr - rows.start), &cols))
-            } else {
-                self.row_span(rr, &cols)
-            };
-            let Some(span) = span else {
-                continue;
-            };
-            if let Some(cells) = self.planes.cells.get_mut(span) {
+        let (width, stride, last) = (cols.len(), self.mi_cols, rows.end - 1);
+        if let (Some(first), Some(end)) = (
+            self.index_at(rows.start, cols.start),
+            self.index_at(last, cols.start),
+        ) && end == first + (last - rows.start) * stride
+            && let Some(region) = self.planes.cells.get_mut(first..end + width)
+        {
+            for run in region.chunks_mut(stride) {
+                if let Some(run) = run.get_mut(..width) {
+                    crate::support::fill_mi_run(run, Some(slot));
+                }
+            }
+            return;
+        }
+        for rr in rows {
+            if let Some(span) = self.row_span(rr, &cols)
+                && let Some(cells) = self.planes.cells.get_mut(span)
+            {
                 crate::support::fill_mi_run(cells, Some(slot));
             }
         }
@@ -548,8 +572,8 @@ impl NeighbourMvGrid {
             return;
         };
         let Some(leaf) = self
-            .row_span(rows.start, &cols)
-            .and_then(|span| *self.planes.cells.get(span.start)?)
+            .index_at(rows.start, cols.start)
+            .and_then(|index| *self.planes.cells.get(index)?)
             .map(|slot| slot.get() as usize - 1)
         else {
             return;
@@ -991,10 +1015,19 @@ impl NeighbourMvGrid {
 
     /// Moves the window down to the superblock row holding tile row `row`.
     pub(crate) fn enter_sb_row(&mut self, row: usize) {
-        let Some(slide) = self.window.enter(row.saturating_sub(self.origin_row)) else {
+        if row < self.sb_row_end {
             return;
-        };
-        slide.apply(&mut self.planes.cells, self.mi_cols, None);
+        }
+        let tile_row = row.saturating_sub(self.origin_row);
+        let slide = self.window.enter(tile_row);
+        let sb_h4 = self.window.sb_h4();
+        self.sb_row_end = (tile_row - tile_row % sb_h4)
+            .saturating_add(sb_h4)
+            .saturating_add(self.origin_row);
+        self.readable = self.window.readable_rows();
+        if let Some(slide) = slide {
+            slide.apply(&mut self.planes.cells, self.mi_cols, None);
+        }
     }
 
     /// Plane row of tile row `row`, `None` outside the readable window.
@@ -1036,15 +1069,35 @@ impl NeighbourMvGrid {
         Some(start..end)
     }
 
+    #[allow(clippy::inline_always, reason = "measured: every neighbour probe")]
+    #[inline(always)]
     fn index(&self, r: i32, c: i32) -> Option<usize> {
-        if r < 0 || c < 0 {
+        self.index_at(r as isize as usize, c as isize as usize)
+    }
+
+    /// [`Self::index`] of a position whose negative coordinates wrapped.
+    #[allow(clippy::inline_always, reason = "measured: every neighbour probe")]
+    #[inline(always)]
+    fn index_at(&self, r: usize, c: usize) -> Option<usize> {
+        let (lo, hi, bias) = self.readable;
+        let row = r.wrapping_sub(self.origin_row);
+        let col = c.wrapping_sub(self.origin_col);
+        if col >= self.mi_cols {
             return None;
         }
-        let r = self.plane_row(r as usize)?;
-        let c = (c as usize).checked_sub(self.origin_col)?;
-        if c >= self.mi_cols {
-            return None;
+        if row.wrapping_sub(lo) >= hi.wrapping_sub(lo) {
+            return self.index_outside_readable_rows(r, c);
         }
+        Some(row.wrapping_add(bias).wrapping_mul(self.mi_cols) + col)
+    }
+
+    /// [`Self::index`] of a row outside the readable rows, which reads as
+    /// unpublished and flags a row the window has reused.
+    #[cold]
+    #[inline(never)]
+    fn index_outside_readable_rows(&self, r: usize, c: usize) -> Option<usize> {
+        let r = self.plane_row(r)?;
+        let c = c.checked_sub(self.origin_col)?;
         r.checked_mul(self.mi_cols)?.checked_add(c)
     }
 
@@ -1106,6 +1159,65 @@ impl NeighbourMvGrid {
                 bh4: leaf.bh4,
             },
         })
+    }
+
+    /// The § 7.12.2.6 scan's view of [`Self::get`]: flags, sub-MVs at
+    /// `(r, c)`, and the GLOBALMV lists of a leaf without a stored warp model.
+    #[allow(clippy::inline_always, reason = "measured: every stack probe")]
+    #[inline(always)]
+    pub(super) fn scan_leaf(&self, r: i32, c: i32) -> Option<ScanLeaf> {
+        let leaf = self.leaf_at(r, c)?;
+        if !leaf.resolved {
+            return None;
+        }
+        let (stored, sub_mvs) = if leaf.model_bits == 0 {
+            (false, [leaf.mv, leaf.mv1])
+        } else {
+            self.warp_sub_mvs(leaf, r, c)
+        };
+        Some(ScanLeaf {
+            flags: leaf.flags,
+            sub_mvs,
+            cwp_weight: leaf.cwp_weight,
+            global_lists: if stored { 0 } else { leaf.global_mv_lists },
+        })
+    }
+
+    /// The stored-model fact and sub-MVs of [`Self::warp_motion`].
+    #[inline(never)]
+    fn warp_sub_mvs(&self, leaf: &LeafRecord, r: i32, c: i32) -> (bool, [Mv; 2]) {
+        let bits = leaf.model_bits;
+        let models = self
+            .planes
+            .models
+            .get(leaf.models as usize..)
+            .unwrap_or_default();
+        let splat0 = bits & LeafRecord::SPLAT0 != 0;
+        let splat1 = bits & LeafRecord::SPLAT1 != 0;
+        let at = |index: usize, mv: Mv| {
+            models.get(index).map_or(mv, |&params| {
+                warp_sub_mv_at(
+                    params,
+                    leaf.base_r as usize,
+                    leaf.base_c as usize,
+                    r as usize,
+                    c as usize,
+                )
+            })
+        };
+        let sub_mv0 = if splat0 { at(0, leaf.mv) } else { leaf.mv };
+        let sub_mv1 = if splat1 {
+            at(usize::from(splat0), leaf.mv1)
+        } else {
+            leaf.mv1
+        };
+        let stored = if bits & LeafRecord::STORED_IS_SPLAT0 != 0 {
+            splat0 && !models.is_empty()
+        } else {
+            bits & LeafRecord::STORED_OWN != 0
+                && models.len() > usize::from(splat0) + usize::from(splat1)
+        };
+        (stored, [sub_mv0, sub_mv1])
     }
 
     /// Warp-model half of [`Self::get`], out of line so the inlined

@@ -304,3 +304,24 @@ fn an_edge_imports_its_cells_leaves_and_models_into_another_grid() {
         Some(second)
     );
 }
+
+/// The direct index agrees with the window's own row mapping at every
+/// position around a windowed tile that starts away from the frame origin.
+#[test]
+fn the_direct_index_matches_the_window_row_mapping() {
+    let mut grid = NeighbourMvGrid::default();
+    grid.reset_for_tile(8..40, 4..9, 8).unwrap();
+    for sb_row in [8, 16, 24, 32] {
+        grid.enter_sb_row(sb_row);
+        for r in -2..44 {
+            for c in -2..12 {
+                let expected = usize::try_from(r)
+                    .ok()
+                    .and_then(|r| grid.plane_row(r))
+                    .zip(usize::try_from(c - 4).ok().filter(|&col| col < 5))
+                    .map(|(row, col)| row * 5 + col);
+                assert_eq!(grid.index(r, c), expected, "({r}, {c}) in row {sb_row}");
+            }
+        }
+    }
+}

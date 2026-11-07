@@ -3,6 +3,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use super::super::warp_sub_mv_at;
 use super::tip_field::TIP_AVERAGE_WEIGHTS;
 use super::*;
 use splot_parallel::{ThreadCount, WorkerPool};
@@ -98,10 +99,14 @@ fn compact_temporal_motion_preserves_every_warp_shape() {
         [Some(first), Some(second)],
     ] {
         let motion = TemporalBlockMotion::new(mvs, warp_params);
-        for list in 0..2 {
-            let expected =
-                warp_params[list].map_or(mvs[list], |params| warp_sub_mv_at(params, 4, 6, 8, 10));
-            assert_eq!(motion.mv_at(list, 4, 6, 8, 10), expected);
+        let mut walks = motion.cell_walks(4, 6, 2);
+        for col in [6, 8, 10] {
+            let walked = walks.each_mut().map(CellMvWalk::next);
+            for list in 0..2 {
+                let expected = warp_params[list]
+                    .map_or(mvs[list], |params| warp_sub_mv_at(params, 4, 6, 8, col));
+                assert_eq!(walked[list], expected);
+            }
         }
     }
 }
