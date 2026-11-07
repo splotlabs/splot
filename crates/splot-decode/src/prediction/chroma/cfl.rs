@@ -49,6 +49,9 @@ const CFL_DERIVED_ALPHA_SHIFT: u8 = 8;
 const NUM_REF_SAM_CFL: usize = 8;
 /// The widest CfL block axis.
 const MAX_CFL_AXIS: usize = 64;
+/// Samples past the MHCCP luma references, so the last row of the block
+/// fills a whole 8-lane prediction group.
+const MHCCP_ROW_PADDING: usize = 7;
 /// [`CflLuma`] filter selector for weights only known at run time.
 const RUNTIME_WEIGHTS: usize = 3;
 
@@ -838,7 +841,8 @@ impl MhccpGeometry {
     /// Captures the § 7.13.6 luma `CflRef[0]`. § 7.13.7 reads neither row 0
     /// nor column 0 of the edge as a centre: luma only as `v[0]` of
     /// direction 1 (row 0) or 2 (column 0), or as block samples when the
-    /// edge is absent.
+    /// edge is absent. The rows below the block, which read only its left
+    /// columns, share the block's pass when their taps are stored.
     fn gather_luma<S: Simd, P: CflLaneSample, const F: usize>(
         &self,
         simd: S,
@@ -850,34 +854,51 @@ impl MhccpGeometry {
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let (above, left, reference_width) = (self.above, self.left, self.reference_width);
         luma.clear();
-        luma.resize(self.ref_width * self.ref_height, 0);
+        luma.resize(self.ref_width * self.ref_height + MHCCP_ROW_PADDING, 0);
         let first_luma_row = usize::from(above > 0 && mh_dir != 1);
         let first_luma_col = usize::from(left > 0 && mh_dir != 2);
         let block_cols = left + block.width - first_luma_col;
-        let block_rows = above..above + block.height;
-        scratch.clear();
-        scratch.resize(block_cols * block.height, 0);
-        let in_block = block_rows.end <= self.reference_height
-            && left + block.width <= reference_width
-            && luma_plane.block_luma_420(
-                block.x - left + first_luma_col,
-                block.y,
-                block_cols,
-                [false, above == 0, first_luma_col == 0],
-                &mut None,
-                scratch,
-            );
-        if in_block {
-            for (row, q3) in block_rows.clone().zip(scratch.chunks_exact(block_cols)) {
-                let start = row * self.ref_width + first_luma_col;
-                for (dst, &sample) in luma[start..start + block_cols].iter_mut().zip(q3) {
-                    *dst = (sample >> 3) as u16;
+        let below = if left > first_luma_col {
+            self.reference_height.saturating_sub(above + block.height)
+        } else {
+            0
+        };
+        let mut covered = 0;
+        if above + block.height <= self.reference_height && left + block.width <= reference_width {
+            for rows in [block.height + below, block.height] {
+                scratch.clear();
+                scratch.resize(block_cols * rows, 0);
+                if luma_plane.block_luma_420(
+                    block.x - left + first_luma_col,
+                    block.y,
+                    block_cols,
+                    [false, above == 0, first_luma_col == 0],
+                    &mut None,
+                    scratch,
+                ) {
+                    covered = rows;
+                    break;
+                }
+                if below == 0 {
+                    break;
                 }
             }
         }
+        for (i, q3) in scratch.chunks_exact(block_cols).take(covered).enumerate() {
+            let cols = if i < block.height {
+                block_cols
+            } else {
+                left - first_luma_col
+            };
+            let start = (above + i) * self.ref_width + first_luma_col;
+            for (dst, &sample) in luma[start..start + cols].iter_mut().zip(q3) {
+                *dst = (sample >> 3) as u16;
+            }
+        }
+        let block_rows = above..above + covered;
         let mut q3 = [0i32; 128];
         for row in first_luma_row..self.reference_height {
-            if in_block && block_rows.contains(&row) {
+            if block_rows.contains(&row) {
                 continue;
             }
             let luma_cols = if row < above {

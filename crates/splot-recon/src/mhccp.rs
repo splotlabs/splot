@@ -429,29 +429,30 @@ impl MhccpPredictor {
         stride: usize,
     ) {
         let luma = refs.luma;
+        let lanes = width.next_multiple_of(8);
+        let run = |start: usize| &luma[start..(start + lanes).min(luma.len())];
         for row in 0..height {
             let out = &mut out[row * stride..row * stride + width];
             let center_start = (refs.above + row) * refs.width + refs.left;
-            let center = &luma[center_start..center_start + width];
+            let center = run(center_start);
             match mh_dir {
                 0 => self.row(simd, center, center, out),
                 1 => {
                     let top = (refs.above + row).saturating_sub(1) * refs.width + refs.left;
-                    self.row(simd, &luma[top..top + width], center, out);
+                    self.row(simd, run(top), center, out);
                 }
                 _ if refs.left == 0 => {
                     out[0] = P::from_clipped(i32::from(self.sample(center[0], center[0])));
-                    self.row(simd, &center[..width - 1], &center[1..], &mut out[1..]);
+                    self.row(simd, center, run(center_start + 1), &mut out[1..]);
                 }
-                _ => {
-                    let left = center_start - 1;
-                    self.row(simd, &luma[left..left + width], center, out);
-                }
+                _ => self.row(simd, run(center_start - 1), center, out),
             }
         }
     }
 
-    /// Predicts `out.len()` samples; `linear` and `center` must be as long.
+    /// Predicts `out.len()` samples; `linear` and `center` must be at least
+    /// as long, and their samples past `out.len()` let the last 8-lane group
+    /// run whole.
     #[inline]
     fn row<S: Simd, P: PredictedSample>(
         &self,
@@ -473,16 +474,25 @@ impl MhccpPredictor {
             let r = (x.abs() + half) >> MHCCP_BITS;
             x.simd_lt(zero).select(zero - r, r)
         };
-        let groups = out.len() / 8;
-        for group in 0..groups {
-            let at = 8 * group;
+        let lanes = linear.len().min(center.len());
+        let mut at = 0;
+        while at < out.len() && at + 8 <= lanes {
             let linear = widen_lanes(simd, &linear[at..]);
             let center = widen_lanes(simd, &center[at..]);
             let square = (center * center + square_half) >> self.bits;
             let t = round(linear * self.params[0]) + round(square * self.params[1]) + self.offset;
-            P::store8(simd, &mut out[at..at + 8], t.max(zero).min(self.max));
+            let t = t.max(zero).min(self.max);
+            if let Some(out) = out.get_mut(at..at + 8) {
+                P::store8(simd, out, t);
+            } else {
+                let mut group = [P::from_clipped(0); 8];
+                P::store8(simd, &mut group, t);
+                let out = &mut out[at..];
+                out.copy_from_slice(&group[..out.len()]); // splot-copy-ok: publish a short MHCCP row
+            }
+            at += 8;
         }
-        for ((out, &linear), &center) in out.iter_mut().zip(linear).zip(center).skip(8 * groups) {
+        for ((out, &linear), &center) in out.iter_mut().zip(linear).zip(center).skip(at) {
             let center = i32::from(center);
             let square = (center * center + square_half) >> self.bits;
             let t = round2_signed_i32(i32::from(linear) * self.params[0], MHCCP_BITS)
