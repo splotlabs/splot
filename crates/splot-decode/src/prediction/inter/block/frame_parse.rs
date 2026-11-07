@@ -37,7 +37,7 @@ pub(crate) struct InterFrameParse {
 
 /// Resumable entropy state; input bytes are borrowed, mutable tile state is not.
 pub(crate) struct InterFrameParser<'payload> {
-    parser: Option<tile::TileParser<'payload>>,
+    parser: Option<Box<tile::TileParser<'payload>>>,
     setup: super::InterParseSetup,
 }
 
@@ -70,7 +70,7 @@ impl<'payload> InterFrameParser<'payload> {
                 .filter_states
                 .take()
                 .ok_or_else(tile::invalid_inter_tile_scheduling_state)?;
-            self.parser = Some(tile::TileParser::scheduled(
+            self.parser = Some(Box::new(tile::TileParser::scheduled(
                 tile,
                 tile_bytes,
                 context,
@@ -78,7 +78,7 @@ impl<'payload> InterFrameParser<'payload> {
                 gdf_state,
                 ccso_state,
                 parse_progress,
-            )?);
+            )?));
         }
         self.parser
             .as_mut()
