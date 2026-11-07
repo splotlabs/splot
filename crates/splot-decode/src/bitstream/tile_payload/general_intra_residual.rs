@@ -16,7 +16,8 @@ use splot_core::tables::conversion::{
 use splot_recon::{
     BitDepth, DequantBlockParams, DpcmDirection, InverseTransform2dOuter, PlaneId, QM_OFFSET,
     QmDequant, QmFrameLevels, QmUserPlane, QuantizerDeltas, ReconError, ReconSample,
-    SecondaryInverseTransform, reconstruct_transform_block_residual_with_secondary, tx_size_index,
+    SecondaryInverseTransform, ac_quantizer, dc_quantizer,
+    reconstruct_transform_block_residual_with_secondary, tx_size_index,
 };
 
 use super::cdf::TileCdfSelector;
@@ -121,6 +122,8 @@ thread_local! {
     static FRAME_QM: core::cell::Cell<Option<QmFrameLevels>> = const { core::cell::Cell::new(None) };
     static FRAME_USER_QM: RefCell<Option<FrameUserQmLevels>> = const { RefCell::new(None) };
     static FRAME_QM_SEGMENT_ID: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+    static QUANTIZER_CACHE: [core::cell::Cell<[u32; 3]>; 3] =
+        const { [const { core::cell::Cell::new([0; 3]) }; 3] };
 }
 
 macro_rules! frame_cell_scope {
@@ -141,11 +144,52 @@ macro_rules! frame_cell_scope {
     };
 }
 
-frame_cell_scope!(
-    FrameQuantizerDeltasScope,
-    FRAME_QUANTIZER_DELTAS,
-    QuantizerDeltas
-);
+/// Installs the frame quantizer deltas, which also clears the quantizers
+/// cached against the previous ones.
+pub(crate) struct FrameQuantizerDeltasScope(QuantizerDeltas);
+
+impl FrameQuantizerDeltasScope {
+    pub(crate) fn install(value: QuantizerDeltas) -> Self {
+        clear_quantizer_cache();
+        Self(FRAME_QUANTIZER_DELTAS.with(|cell| cell.replace(value)))
+    }
+}
+
+impl Drop for FrameQuantizerDeltasScope {
+    fn drop(&mut self) {
+        clear_quantizer_cache();
+        FRAME_QUANTIZER_DELTAS.with(|cell| cell.set(self.0));
+    }
+}
+
+fn clear_quantizer_cache() {
+    QUANTIZER_CACHE.with(|cache| cache.iter().for_each(|slot| slot.set([0; 3])));
+}
+
+/// The § 7.14.2 `(get_dc_quant, get_ac_quant)` of `plane` at `qindex` under
+/// the installed frame deltas, cached per plane.
+pub(super) fn current_quantizers(plane: PlaneId, qindex: u32, bit_depth: BitDepth) -> (u32, u32) {
+    let key = qindex.wrapping_add(1) & 0xFF_FFFF | u32::from(bit_depth.bits()) << 24;
+    let index = match plane {
+        PlaneId::Y => 0,
+        PlaneId::U => 1,
+        PlaneId::V => 2,
+    };
+    QUANTIZER_CACHE.with(|cache| {
+        let slot = &cache[index];
+        let [cached, dc, ac] = slot.get();
+        if cached == key && qindex < 0xFF_FFFF {
+            return (dc, ac);
+        }
+        let deltas = current_quantizer_deltas();
+        let (dc, ac) = (
+            dc_quantizer(plane, qindex, deltas, bit_depth),
+            ac_quantizer(plane, qindex, deltas, bit_depth),
+        );
+        slot.set([key, dc, ac]);
+        (dc, ac)
+    })
+}
 frame_cell_scope!(FrameQmScope, FRAME_QM, Option<QmFrameLevels>);
 frame_cell_scope!(FrameQmSegmentScope, FRAME_QM_SEGMENT_ID, usize);
 
@@ -2108,7 +2152,7 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
             prediction,
             block.quant,
             &setup.params,
-            &setup.transform,
+            &setup.transform()?,
             secondary,
             dequant_scratch,
             residual_scratch,
@@ -2127,6 +2171,7 @@ struct ResidualScratch {
     dequant: [i32; MAX_ADJUSTED_COEFFS],
     dequant_pair: [i32; MAX_ADJUSTED_COEFFS],
     residual: [i32; MAX_ORIGINAL_SAMPLES],
+    transform: [i32; MAX_ADJUSTED_COEFFS],
 }
 
 thread_local! {
@@ -2141,6 +2186,7 @@ fn with_residual_scratch<R>(f: impl FnOnce(&mut ResidualScratch) -> R) -> R {
                 dequant: [0; MAX_ADJUSTED_COEFFS],
                 dequant_pair: [0; MAX_ADJUSTED_COEFFS],
                 residual: [0; MAX_ORIGINAL_SAMPLES],
+                transform: [0; MAX_ADJUSTED_COEFFS],
             })
         });
         let result = f(&mut scratch);
@@ -2223,7 +2269,10 @@ pub(crate) fn block_recon_params(
         None,
         bit_depth,
     )?;
-    Ok((setup.params, setup.transform))
+    let transform = setup
+        .transform()
+        .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
+    Ok((setup.params, transform))
 }
 
 /// The § 5.20.7.29 transform type of a lossy intra chroma block, which codes no

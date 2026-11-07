@@ -21,8 +21,6 @@ use fearless_simd::{
     i16x8, i16x16, i32x4, i32x8, u8x16, u8x32, u16x8, u32x8, u64x2,
 };
 
-#[cfg(target_arch = "x86_64")]
-use fearless_simd::Avx2;
 use splot_tables::tables::transform_1d::{
     ADST_KERNEL4, ADST_KERNEL8, ADST_KERNEL16, DCT_KERNEL4, DCT_KERNEL8, DCT_KERNEL16,
     DCT_KERNEL32, DDTX_KERNEL8, DDTX_KERNEL16, FDST_KERNEL4, FDST_KERNEL8, FDST_KERNEL16,
@@ -157,14 +155,31 @@ pub(crate) struct Transform8 {
     pub dequant: Option<FlatDequant>,
 }
 
-/// The § 7.14.4 `useQm == 0` dequantization with a power-of-two
-/// `dq_denom`, applied as the row pass loads its input.
-#[derive(Clone, Copy)]
-pub(crate) struct FlatDequant {
-    pub dc: u32,
-    pub ac: u32,
-    pub denom_shift: u32,
-    pub bound: i32,
+/// The § 7.14.4 `useQm == 0` dequantization of an 8-bit transform block with
+/// a power-of-two `dq_denom`, applied as the row pass loads its input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FlatDequant {
+    dc: u32,
+    ac: u32,
+    denom_shift: u32,
+    bound: i32,
+}
+
+impl FlatDequant {
+    /// The flat dequantization by the `dc_quant` and `ac_quant` quantizers
+    /// and `dq_denom`, or `None` when `dq_denom` is not a power of two.
+    #[must_use]
+    pub const fn new(dc_quant: u32, ac_quant: u32, dq_denom: u32) -> Option<Self> {
+        if !dq_denom.is_power_of_two() {
+            return None;
+        }
+        Some(Self {
+            dc: dc_quant,
+            ac: ac_quant,
+            denom_shift: dq_denom.trailing_zeros(),
+            bound: 1 << (7 + 8),
+        })
+    }
 }
 
 /// How the row pass loads its input: the optional rescale and the optional
@@ -300,6 +315,206 @@ fn add_u8x8<S: Simd>(simd: S, pred: u64, res: i32x8<S>) -> u64 {
     packed.bitcast::<u64x2<S>>().as_array()[0]
 }
 
+/// One transform shape and type that has the fused 8-bit form of the
+/// § 7.15.4 process: the § 7.15.4.1 transform added in place as the § 7.14.3
+/// `Clip1(prediction + Residual)`. A block resolves it with one table lookup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InverseTransformAdd8 {
+    row: InverseTransform2dDim,
+    col: InverseTransform2dDim,
+    w_log2: u8,
+    h_log2: u8,
+    row_shift: u8,
+    col_shift: u8,
+    rescale: bool,
+    /// Whether both passes are `DCT`, whose DC-only residual is constant.
+    flat: bool,
+    #[cfg(target_arch = "x86_64")]
+    passes: (avx2::Pass, avx2::Pass),
+}
+
+/// [`InverseTransformAdd8`] by `[log2W - 2][log2H - 2][PlaneTxType][useDdt]`
+/// for sides of 4 to 32 samples.
+static FUSED: [[[[Option<InverseTransformAdd8>; 2]; 16]; 4]; 4] = {
+    let mut out = [[[[None; 2]; 16]; 4]; 4];
+    let mut i = 0;
+    while i < 4 * 4 * 16 * 2 {
+        let (w, h, tx_type, ddt) = (i / 128, i / 32 % 4, i / 2 % 16, i % 2 == 1);
+        out[w][h][tx_type][ddt as usize] =
+            InverseTransformAdd8::resolve(tx_type, w as u32 + 2, h as u32 + 2, ddt);
+        i += 1;
+    }
+    out
+};
+
+impl InverseTransformAdd8 {
+    /// The fused form of `PlaneTxType` `plane_tx_type` on the original
+    /// `log2_width x log2_height` transform with the `use_ddt` substitution,
+    /// as [`InverseTransform2dOuter::resolve`] derives its transform, or
+    /// `None` for a 64-sample side or an invalid shape or type.
+    ///
+    /// [`InverseTransform2dOuter::resolve`]: crate::InverseTransform2dOuter::resolve
+    #[inline]
+    #[must_use]
+    pub fn new(plane_tx_type: usize, log2_width: u32, log2_height: u32, use_ddt: bool) -> Option<Self> {
+        *FUSED
+            .get(log2_width.wrapping_sub(2) as usize)?
+            .get(log2_height.wrapping_sub(2) as usize)?
+            .get(plane_tx_type)?
+            .get(usize::from(use_ddt))?
+    }
+
+    const fn resolve(plane_tx_type: usize, log2_width: u32, log2_height: u32, use_ddt: bool) -> Option<Self> {
+        let Ok(outer) = crate::InverseTransform2dOuter::resolve(
+            plane_tx_type,
+            log2_width,
+            log2_height,
+            use_ddt,
+            false,
+            crate::BitDepth::Eight,
+            None,
+        ) else {
+            return None;
+        };
+        Self::of(
+            outer.row_type,
+            outer.col_type,
+            (log2_width, log2_height),
+            (outer.row_shift, outer.col_shift),
+            log2_width.abs_diff(log2_height) % 2 == 1,
+        )
+    }
+
+    /// The fused form of the adjusted `log2W x log2H` transform with the
+    /// given passes and shifts, and with `rescale` the `Round2(x * 2896, 12)`
+    /// row input rescale.
+    pub(crate) const fn of(
+        row: InverseTransform2dDim,
+        col: InverseTransform2dDim,
+        (w_log2, h_log2): (u32, u32),
+        (row_shift, col_shift): (u8, u8),
+        rescale: bool,
+    ) -> Option<Self> {
+        let shifts_valid = row_shift >= 1 && row_shift <= 20 && col_shift >= 1 && col_shift <= 20;
+        if w_log2 < 2 || w_log2 > 5 || h_log2 < 2 || h_log2 > 5 || !shifts_valid {
+            return None;
+        }
+        #[cfg(target_arch = "x86_64")]
+        let (Some(row_pass), Some(col_pass)) = (
+            avx2::Pass::of(row, 1 << w_log2),
+            avx2::Pass::of(col, 1 << h_log2),
+        ) else {
+            return None;
+        };
+        Some(Self {
+            row,
+            col,
+            w_log2: w_log2 as u8,
+            h_log2: h_log2 as u8,
+            row_shift,
+            col_shift,
+            rescale,
+            flat: matches!((row, col), (InverseTransform2dDim::Kernel(InverseTransform1dType::Dct), InverseTransform2dDim::Kernel(InverseTransform1dType::Dct))),
+            #[cfg(target_arch = "x86_64")]
+            passes: (row_pass, col_pass),
+        })
+    }
+
+    /// The adjusted width.
+    const fn w(&self) -> usize {
+        1 << self.w_log2
+    }
+
+    /// The adjusted height.
+    const fn h(&self) -> usize {
+        1 << self.h_log2
+    }
+
+    /// Adds the transform of `coeffs` to the 8-bit block at the start of
+    /// `dst`, whose rows are `stride` apart.
+    ///
+    /// With `dequant`, `coeffs` holds the quantized coefficients in raster
+    /// order up to the last nonzero one, dequantized as they load; with
+    /// `None` it is an already dequantized prefix of the block. Returns
+    /// `false` with `dst` untouched when `coeffs` is longer than the block or
+    /// the block does not fit `dst`.
+    #[inline]
+    pub fn add(
+        self,
+        coeffs: &[i32],
+        dequant: Option<FlatDequant>,
+        dst: &mut [u8],
+        stride: usize,
+        scratch: &mut [i32; 32 * 32],
+    ) -> bool {
+        let (w, h) = (self.w(), self.h());
+        let fits = (h - 1)
+            .checked_mul(stride)
+            .and_then(|span| span.checked_add(w))
+            .is_some_and(|span| stride >= w && span <= dst.len());
+        if !fits || coeffs.len() > w * h {
+            return false;
+        }
+        #[cfg(target_arch = "x86_64")]
+        if let Some(token) = Level::baseline().as_avx2() {
+            avx2::transform(token, &self, dequant, coeffs, avx2::Sink::Add { dst, stride }, scratch);
+            return true;
+        }
+        let chunks_log2 = (w >= 8).then(|| (w / 8).trailing_zeros());
+        run(
+            self.transform8(dequant),
+            coeffs,
+            &mut AddU8 {
+                dst,
+                stride,
+                chunks_log2,
+            },
+            scratch,
+        )
+    }
+
+    #[cfg_attr(target_arch = "x86_64", allow(dead_code))]
+    const fn transform8(self, dequant: Option<FlatDequant>) -> Transform8 {
+        Transform8 {
+            row: self.row,
+            col: self.col,
+            w: self.w(),
+            h: self.h(),
+            rescale: self.rescale,
+            row_shift: self.row_shift,
+            col_shift: self.col_shift,
+            dequant,
+        }
+    }
+
+    /// The constant residual of a `DCT_DCT` block whose only nonzero
+    /// coefficient is the first of `coeffs` (as [`Self::add`] takes them), or
+    /// `None` when the block's residual is not constant.
+    #[inline]
+    #[must_use]
+    pub fn flat_residual(&self, coeffs: &[i32], dequant: Option<FlatDequant>) -> Option<i32> {
+        if !self.flat {
+            return None;
+        }
+        let (&dc, rest) = coeffs.split_first()?;
+        if rest.len() >= self.w() || rest.iter().any(|&coeff| coeff != 0) {
+            return None;
+        }
+        let dc = dequant.map_or(dc, |dq| {
+            dequant_coefficient(dc, dq.dc, 1 << dq.denom_shift, crate::BitDepth::Eight)
+        });
+        let round = |v: i32, shift: u8| (v + (1 << (shift - 1))) >> shift;
+        let dc = if self.rescale {
+            dc.wrapping_mul(2896).wrapping_add(1 << 11) >> 12
+        } else {
+            dc
+        };
+        let dc = dc.clamp(i16::MIN.into(), i16::MAX.into());
+        let row = round(dc * 64, self.row_shift).clamp(i16::MIN.into(), i16::MAX.into());
+        Some(round(row * 64, self.col_shift).clamp(-256, 255))
+    }
+}
+
 /// Runs the transform of `dequant` (a whole-row prefix of the `w * h` block)
 /// into the `w * h` `residual`, or returns `false` with nothing written when
 /// the shape or a shift has no paired form.
@@ -309,47 +524,26 @@ pub(crate) fn inverse_transform_2d_8bit(
     residual: &mut [i32],
     scratch: &mut [i32; 32 * 32],
 ) -> bool {
-    if residual.len() != t.w * t.h {
+    if residual.len() != t.w * t.h || dequant.len() > t.w * t.h {
         return false;
     }
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = Level::baseline().as_avx2() {
-        return run_avx2(token, t, dequant, avx2::Sink::Residual(residual), scratch);
+        let shape = InverseTransformAdd8::of(
+            t.row,
+            t.col,
+            (t.w.trailing_zeros(), t.h.trailing_zeros()),
+            (t.row_shift, t.col_shift),
+            t.rescale,
+        );
+        let Some(shape) = shape.filter(|s| s.w() == t.w && s.h() == t.h) else {
+            return false;
+        };
+        let sink = avx2::Sink::Residual(residual);
+        avx2::transform(token, &shape, t.dequant, dequant, sink, scratch);
+        return true;
     }
     run(t, dequant, residual, scratch)
-}
-
-/// [`inverse_transform_2d_8bit`] added in place to the `w * h` 8-bit block
-/// at the start of `dst`, whose rows are `stride` apart.
-pub(crate) fn inverse_transform_add_8bit(
-    t: Transform8,
-    dequant: &[i32],
-    dst: &mut [u8],
-    stride: usize,
-    scratch: &mut [i32; 32 * 32],
-) -> bool {
-    let fits = (t.h - 1)
-        .checked_mul(stride)
-        .and_then(|span| span.checked_add(t.w))
-        .is_some_and(|span| stride >= t.w && span <= dst.len());
-    if !fits || t.h < 2 {
-        return false;
-    }
-    #[cfg(target_arch = "x86_64")]
-    if let Some(token) = Level::baseline().as_avx2() {
-        return run_avx2(token, t, dequant, avx2::Sink::Add { dst, stride }, scratch);
-    }
-    let chunks_log2 = (t.w >= 8).then(|| (t.w / 8).trailing_zeros());
-    run(
-        t,
-        dequant,
-        &mut AddU8 {
-            dst,
-            stride,
-            chunks_log2,
-        },
-        scratch,
-    )
 }
 
 /// Whether `t` and `dequant` have a paired form.
@@ -372,66 +566,6 @@ fn dc_only(t: &Transform8, dequant: &[i32]) -> Option<i32> {
     })
 }
 
-#[cfg(target_arch = "x86_64")]
-fn run_avx2(
-    token: Avx2,
-    t: Transform8,
-    dequant: &[i32],
-    sink: avx2::Sink<'_>,
-    scratch: &mut [i32; 32 * 32],
-) -> bool {
-    use InverseTransform1dType::Dct;
-    if !valid(&t, dequant) {
-        return false;
-    }
-    let row = match t.row {
-        InverseTransform2dDim::Identity => avx2::Row::Identity(identity_scale(t.w)),
-        InverseTransform2dDim::Kernel(tx) if t.w >= 8 && (tx == Dct || t.w == 32) => avx2::Row::Dct,
-        InverseTransform2dDim::Kernel(tx) => match select(t.w, tx) {
-            Some(k) => avx2::Row::Dense(k),
-            None => return false,
-        },
-    };
-    let col = match t.col {
-        InverseTransform2dDim::Identity => avx2::Col::Identity(identity_scale(t.h)),
-        InverseTransform2dDim::Kernel(tx) if tx == Dct || t.h == 32 => avx2::Col::Dct,
-        InverseTransform2dDim::Kernel(tx) => match select(t.h, tx) {
-            Some(k) => avx2::Col::Dense(k),
-            None => return false,
-        },
-    };
-    let dct = InverseTransform2dDim::Kernel(Dct);
-    let flat = dc_only(&t, dequant)
-        .filter(|_| t.row == dct && t.col == dct)
-        .map(|dc| flat_residual(&t, dc));
-    let plan = avx2::Plan {
-        w: t.w,
-        h: t.h,
-        row,
-        col,
-        rescale: t.rescale,
-        row_shift: u32::from(t.row_shift),
-        col_shift: u32::from(t.col_shift),
-        dequant: t.dequant,
-        flat,
-    };
-    avx2::transform(token, &plan, dequant, sink, scratch);
-    true
-}
-
-/// The constant residual of a `DCT` block with only the dequantized `dc`.
-#[cfg(target_arch = "x86_64")]
-fn flat_residual(t: &Transform8, dc: i32) -> i32 {
-    let round = |v: i32, shift: u8| (v + (1 << (shift - 1))) >> shift;
-    let dc = if t.rescale {
-        dc.wrapping_mul(2896).wrapping_add(1 << 11) >> 12
-    } else {
-        dc
-    };
-    let dc = dc.clamp(i16::MIN.into(), i16::MAX.into());
-    let row = round(dc * 64, t.row_shift).clamp(i16::MIN.into(), i16::MAX.into());
-    round(row * 64, t.col_shift).clamp(-256, 255)
-}
 
 fn run<O: Output + ?Sized>(
     t: Transform8,

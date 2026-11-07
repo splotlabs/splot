@@ -24,45 +24,68 @@ use fearless_simd::{Avx2, SimdBase as _, SimdInto as _, i32x4, i32x8};
 use splot_tables::tables::transform_1d::{DCT_KERNEL4, DCT_KERNEL8, DCT_KERNEL16, DCT_KERNEL32};
 
 use super::{
-    DCT4, DCT8, DCT8_SPLIT, DCT16, DCT16_SPLIT, DCT32, DCT32_SPLIT, FlatDequant, PairKernel,
-    SPLIT_ORDER,
+    ADST4, ADST8, ADST16, DCT4, DCT8, DCT8_SPLIT, DCT16, DCT16_SPLIT, DCT32, DCT32_SPLIT, DDTX8,
+    DDTX16, FDDT8, FDDT16, FDST4, FDST8, FDST16, FlatDequant, InverseTransformAdd8, SPLIT_ORDER,
 };
+use crate::inverse_transform::InverseTransform1dType;
+use crate::inverse_transform_2d::InverseTransform2dDim;
 
-/// The row transform of one [`Plan`].
-#[derive(Clone, Copy)]
-pub(super) enum Row {
-    /// § 7.15.2.3 identity with its scale.
-    Identity(i32),
-    /// The split `DCT` of a row of 8, 16 or 32.
-    Dct,
-    /// A paired kernel product.
-    Dense(PairKernel),
+/// One pass of a fused transform: the § 7.15.2.3 identity or a § 7.15.2.1
+/// kernel at its length, with the paired kernel the scalar selection picks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Pass {
+    Identity4,
+    Identity8,
+    Identity16,
+    Identity32,
+    Dct4,
+    Adst4,
+    Fdst4,
+    Dct8,
+    Adst8,
+    Fdst8,
+    Ddtx8,
+    Fddt8,
+    Dct16,
+    Adst16,
+    Fdst16,
+    Ddtx16,
+    Fddt16,
+    Dct32,
 }
 
-/// The column transform of one [`Plan`].
-#[derive(Clone, Copy)]
-pub(super) enum Col {
-    /// § 7.15.2.3 identity with its scale.
-    Identity(i32),
-    /// The factored `DCT`.
-    Dct,
-    /// A paired kernel product.
-    Dense(PairKernel),
-}
+impl Pass {
+    /// The pass of `dim` at length `len`.
+    pub(super) const fn of(dim: InverseTransform2dDim, len: usize) -> Option<Self> {
+        use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
+        use InverseTransform2dDim::{Identity, Kernel};
+        Some(match (dim, len) {
+            (Identity, 4) => Self::Identity4,
+            (Identity, 8) => Self::Identity8,
+            (Identity, 16) => Self::Identity16,
+            (Identity, 32) => Self::Identity32,
+            (Kernel(Dct), 4) => Self::Dct4,
+            (Kernel(Adst), 4) => Self::Adst4,
+            (Kernel(Fdst | Ddtx | Fddt), 4) => Self::Fdst4,
+            (Kernel(Dct), 8) => Self::Dct8,
+            (Kernel(Adst), 8) => Self::Adst8,
+            (Kernel(Fdst), 8) => Self::Fdst8,
+            (Kernel(Ddtx), 8) => Self::Ddtx8,
+            (Kernel(Fddt), 8) => Self::Fddt8,
+            (Kernel(Dct), 16) => Self::Dct16,
+            (Kernel(Adst), 16) => Self::Adst16,
+            (Kernel(Fdst), 16) => Self::Fdst16,
+            (Kernel(Ddtx), 16) => Self::Ddtx16,
+            (Kernel(Fddt), 16) => Self::Fddt16,
+            (Kernel(_), 32) => Self::Dct32,
+            _ => return None,
+        })
+    }
 
-/// One validated 8-bit transform.
-#[derive(Clone, Copy)]
-pub(super) struct Plan {
-    pub w: usize,
-    pub h: usize,
-    pub row: Row,
-    pub col: Col,
-    pub rescale: bool,
-    pub row_shift: u32,
-    pub col_shift: u32,
-    pub dequant: Option<FlatDequant>,
-    /// The constant residual of a block whose transform is flat.
-    pub flat: Option<i32>,
+    /// Whether this is the factored `DCT` of a column pass.
+    const fn is_dct(self) -> bool {
+        matches!(self, Self::Dct4 | Self::Dct8 | Self::Dct16 | Self::Dct32)
+    }
 }
 
 /// Where the column pass goes.
@@ -911,21 +934,28 @@ fn put_residual(
     }
 }
 
-/// The row pairs of the column transform of `plan`.
-fn pairs_of(plan: &Plan) -> &'static [(u8, u8)] {
-    let pairs = match plan.col {
-        Col::Dct => &DCT_PAIRS[(plan.h.trailing_zeros() as usize).saturating_sub(2).min(3)],
-        Col::Identity(_) | Col::Dense(_) => &ADJACENT_PAIRS,
+/// The row pairs of the column pass `col` of an `h`-tall block.
+fn pairs_of(col: Pass, h: usize) -> &'static [(u8, u8)] {
+    let pairs = if col.is_dct() {
+        &DCT_PAIRS[(h.trailing_zeros() as usize).saturating_sub(2).min(3)]
+    } else {
+        &ADJACENT_PAIRS
     };
-    pairs.get(..plan.h / 2).unwrap_or_default()
+    pairs.get(..h / 2).unwrap_or_default()
 }
 
-/// The row pass of `plan` over its `staged` inputs, returning the written
+/// The row pass of `shape` over its `staged` inputs, returning the written
 /// column pairs.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn rows(t: Avx2, plan: &Plan, staged: &[i32], coded: usize, scratch: &mut [i32]) -> u32 {
-    let p = (pairs_of(plan), plan.row_shift);
+fn rows(
+    t: Avx2,
+    shape: &InverseTransformAdd8,
+    staged: &[i32],
+    coded: usize,
+    scratch: &mut [i32],
+) -> u32 {
+    let p = (pairs_of(shape.passes.1, shape.h()), u32::from(shape.row_shift));
     macro_rules! pass {
         ($n:literal, $h:literal, $kind:expr, $k:expr, $scale:expr) => {
             row_pass::<$n, $h, { $kind }>(
@@ -941,37 +971,95 @@ fn rows(t: Avx2, plan: &Plan, staged: &[i32], coded: usize, scratch: &mut [i32])
             )
         };
     }
-    match (plan.row, plan.w) {
-        (Row::Identity(s), 4) => pass!(4, 2, IDENTITY, &DCT4, s),
-        (Row::Identity(s), 8) => pass!(8, 4, IDENTITY, &DCT8, s),
-        (Row::Identity(s), 16) => pass!(16, 8, IDENTITY, &DCT16, s),
-        (Row::Identity(s), _) => pass!(32, 16, IDENTITY, &DCT32, s),
-        (Row::Dense(PairKernel::N4(k)), _) => pass!(4, 2, DENSE, k, 0),
-        (Row::Dense(PairKernel::N8(k)), _) => pass!(8, 4, DENSE, k, 0),
-        (Row::Dct, 8) => pass!(8, 4, SPLIT, &DCT8_SPLIT, 0),
-        (Row::Dense(PairKernel::N16(k)), _) => pass!(16, 8, DENSE, k, 0),
-        (Row::Dct, 16) => pass!(16, 8, SPLIT, &DCT16_SPLIT, 0),
-        (Row::Dct | Row::Dense(PairKernel::N32(_)), _) => pass!(32, 16, SPLIT, &DCT32_SPLIT, 0),
+    match shape.passes.0 {
+        Pass::Identity4 => pass!(4, 2, IDENTITY, &DCT4, 128),
+        Pass::Identity8 => pass!(8, 4, IDENTITY, &DCT8, 181),
+        Pass::Identity16 => pass!(16, 8, IDENTITY, &DCT16, 256),
+        Pass::Identity32 => pass!(32, 16, IDENTITY, &DCT32, 362),
+        Pass::Dct4 => pass!(4, 2, DENSE, &DCT4, 0),
+        Pass::Adst4 => pass!(4, 2, DENSE, &ADST4, 0),
+        Pass::Fdst4 => pass!(4, 2, DENSE, &FDST4, 0),
+        Pass::Dct8 => pass!(8, 4, SPLIT, &DCT8_SPLIT, 0),
+        Pass::Adst8 => pass!(8, 4, DENSE, &ADST8, 0),
+        Pass::Fdst8 => pass!(8, 4, DENSE, &FDST8, 0),
+        Pass::Ddtx8 => pass!(8, 4, DENSE, &DDTX8, 0),
+        Pass::Fddt8 => pass!(8, 4, DENSE, &FDDT8, 0),
+        Pass::Dct16 => pass!(16, 8, SPLIT, &DCT16_SPLIT, 0),
+        Pass::Adst16 => pass!(16, 8, DENSE, &ADST16, 0),
+        Pass::Fdst16 => pass!(16, 8, DENSE, &FDST16, 0),
+        Pass::Ddtx16 => pass!(16, 8, DENSE, &DDTX16, 0),
+        Pass::Fddt16 => pass!(16, 8, DENSE, &FDDT16, 0),
+        Pass::Dct32 => pass!(32, 16, SPLIT, &DCT32_SPLIT, 0),
+    }
+}
+
+/// The column pass of `shape` over the written `mask` pairs of `pairs`.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn cols<const ADD: bool>(
+    t: Avx2,
+    shape: &InverseTransformAdd8,
+    pairs: &[i32],
+    mask: u32,
+    out: (&mut [u8], usize),
+    residual: &mut [i32],
+) {
+    let (w, shift) = (shape.w(), u32::from(shape.col_shift));
+    macro_rules! pass {
+        ($m:literal, $hm:literal, $kind:expr, $k:expr, $scale:expr) => {
+            col_pass::<$m, $hm, { $kind }, ADD>(
+                t,
+                w,
+                ($k, $scale),
+                pairs,
+                mask,
+                shift,
+                out,
+                residual,
+            )
+        };
+    }
+    match shape.passes.1 {
+        Pass::Identity4 => pass!(4, 2, IDENTITY, &DCT4, 128),
+        Pass::Identity8 => pass!(8, 4, IDENTITY, &DCT8, 181),
+        Pass::Identity16 => pass!(16, 8, IDENTITY, &DCT16, 256),
+        Pass::Identity32 => pass!(32, 16, IDENTITY, &DCT32, 362),
+        Pass::Dct4 => pass!(4, 2, SPLIT, &DCT4, 0),
+        Pass::Adst4 => pass!(4, 2, DENSE, &ADST4, 0),
+        Pass::Fdst4 => pass!(4, 2, DENSE, &FDST4, 0),
+        Pass::Dct8 => pass!(8, 4, SPLIT, &DCT8, 0),
+        Pass::Adst8 => pass!(8, 4, DENSE, &ADST8, 0),
+        Pass::Fdst8 => pass!(8, 4, DENSE, &FDST8, 0),
+        Pass::Ddtx8 => pass!(8, 4, DENSE, &DDTX8, 0),
+        Pass::Fddt8 => pass!(8, 4, DENSE, &FDDT8, 0),
+        Pass::Dct16 => pass!(16, 8, SPLIT, &DCT16, 0),
+        Pass::Adst16 => pass!(16, 8, DENSE, &ADST16, 0),
+        Pass::Fdst16 => pass!(16, 8, DENSE, &FDST16, 0),
+        Pass::Ddtx16 => pass!(16, 8, DENSE, &DDTX16, 0),
+        Pass::Fddt16 => pass!(16, 8, DENSE, &FDDT16, 0),
+        Pass::Dct32 => pass!(32, 16, SPLIT, &DCT32, 0),
     }
 }
 
 fearless_simd::kernel!(
-    /// Runs `plan` over the whole-row or quantized prefix `coeffs` into
-    /// `sink`, with the 32x32 `scratch` holding the column pairs.
+    /// Runs `shape` over `coeffs` (dequantized by `dequant` as they load, or
+    /// already dequantized) into `sink`, with the 32x32 `scratch` holding the
+    /// column pairs.
     pub(super) fn transform(
         t: Avx2,
-        plan: &Plan,
+        shape: &InverseTransformAdd8,
+        dequant: Option<FlatDequant>,
         coeffs: &[i32],
         sink: Sink<'_>,
         scratch: &mut [i32; 32 * 32],
     ) {
-        let (w, h) = (plan.w, plan.h);
+        let (w, h) = (shape.w(), shape.h());
         let (dst, stride, mut residual) = match sink {
             Sink::Add { dst, stride } => (dst, stride, None),
             Sink::Residual(residual) => (&mut [][..], 0, Some(residual)),
         };
         let mut empty = [];
-        if let Some(value) = plan.flat {
+        if let Some(value) = shape.flat_residual(coeffs, dequant) {
             let v = _mm256_set1_epi32(value);
             match residual {
                 None => {
@@ -997,158 +1085,32 @@ fearless_simd::kernel!(
             }
             return;
         }
-        let dq = plan.dequant.unwrap_or(FlatDequant {
+        let coded = (coeffs.len() + w - 1) >> shape.w_log2;
+        let (pairs, staged) = scratch.split_at_mut(16 * 32);
+        let count = coded * w;
+        let none = FlatDequant {
             dc: 0,
             ac: 0,
             denom_shift: 0,
             bound: 0,
-        });
-        let coded = (coeffs.len() + w - 1) >> w.trailing_zeros();
-        let (pairs, staged) = scratch.split_at_mut(16 * 32);
-        let count = coded * w;
-        match (plan.dequant.is_some(), plan.rescale) {
-            (true, false) => stage::<true, false>(t, coeffs, &dq, count, staged),
-            (true, true) => stage::<true, true>(t, coeffs, &dq, count, staged),
-            (false, false) => stage::<false, false>(t, coeffs, &dq, count, staged),
-            (false, true) => stage::<false, true>(t, coeffs, &dq, count, staged),
+        };
+        let dq = dequant.as_ref().unwrap_or(&none);
+        match (dequant.is_some(), shape.rescale) {
+            (true, false) => stage::<true, false>(t, coeffs, dq, count, staged),
+            (true, true) => stage::<true, true>(t, coeffs, dq, count, staged),
+            (false, false) => stage::<false, false>(t, coeffs, dq, count, staged),
+            (false, true) => stage::<false, true>(t, coeffs, dq, count, staged),
         }
-        let mask = rows(t, plan, staged, coded, pairs);
+        let mask = rows(t, shape, staged, coded, pairs);
         if mask == 0 {
             if let Some(residual) = residual {
                 residual.fill(0);
             }
             return;
         }
-        let round = plan.col_shift;
-        macro_rules! cols {
-            ($add:literal, $out:expr, $residual:expr) => {
-                match (plan.col, h) {
-                    (Col::Identity(s), 4) => col_pass::<4, 2, IDENTITY, $add>(
-                        t,
-                        w,
-                        (&DCT4, s),
-                        pairs,
-                        mask,
-                        round,
-                        $out,
-                        $residual,
-                    ),
-                    (Col::Identity(s), 8) => col_pass::<8, 4, IDENTITY, $add>(
-                        t,
-                        w,
-                        (&DCT8, s),
-                        pairs,
-                        mask,
-                        round,
-                        $out,
-                        $residual,
-                    ),
-                    (Col::Identity(s), 16) => col_pass::<16, 8, IDENTITY, $add>(
-                        t,
-                        w,
-                        (&DCT16, s),
-                        pairs,
-                        mask,
-                        round,
-                        $out,
-                        $residual,
-                    ),
-                    (Col::Identity(s), _) => col_pass::<32, 16, IDENTITY, $add>(
-                        t,
-                        w,
-                        (&DCT32, s),
-                        pairs,
-                        mask,
-                        round,
-                        $out,
-                        $residual,
-                    ),
-                    (Col::Dct, 4) => col_pass::<4, 2, SPLIT, $add>(
-                        t,
-                        w,
-                        (&DCT4, 0),
-                        pairs,
-                        mask,
-                        round,
-                        $out,
-                        $residual,
-                    ),
-                    (Col::Dct, 8) => col_pass::<8, 4, SPLIT, $add>(
-                        t,
-                        w,
-                        (&DCT8, 0),
-                        pairs,
-                        mask,
-                        round,
-                        $out,
-                        $residual,
-                    ),
-                    (Col::Dct, 16) => col_pass::<16, 8, SPLIT, $add>(
-                        t,
-                        w,
-                        (&DCT16, 0),
-                        pairs,
-                        mask,
-                        round,
-                        $out,
-                        $residual,
-                    ),
-                    (Col::Dct, _) => col_pass::<32, 16, SPLIT, $add>(
-                        t,
-                        w,
-                        (&DCT32, 0),
-                        pairs,
-                        mask,
-                        round,
-                        $out,
-                        $residual,
-                    ),
-                    (Col::Dense(PairKernel::N4(k)), _) => col_pass::<4, 2, DENSE, $add>(
-                        t,
-                        w,
-                        (k, 0),
-                        pairs,
-                        mask,
-                        round,
-                        $out,
-                        $residual,
-                    ),
-                    (Col::Dense(PairKernel::N8(k)), _) => col_pass::<8, 4, DENSE, $add>(
-                        t,
-                        w,
-                        (k, 0),
-                        pairs,
-                        mask,
-                        round,
-                        $out,
-                        $residual,
-                    ),
-                    (Col::Dense(PairKernel::N16(k)), _) => col_pass::<16, 8, DENSE, $add>(
-                        t,
-                        w,
-                        (k, 0),
-                        pairs,
-                        mask,
-                        round,
-                        $out,
-                        $residual,
-                    ),
-                    (Col::Dense(PairKernel::N32(k)), _) => col_pass::<32, 16, DENSE, $add>(
-                        t,
-                        w,
-                        (k, 0),
-                        pairs,
-                        mask,
-                        round,
-                        $out,
-                        $residual,
-                    ),
-                }
-            };
-        }
         match residual {
-            None => cols!(true, (dst, stride), &mut empty),
-            Some(residual) => cols!(false, (dst, 0), residual),
+            None => cols::<true>(t, shape, pairs, mask, (dst, stride), &mut empty),
+            Some(residual) => cols::<false>(t, shape, pairs, mask, (dst, 0), residual),
         }
     }
 );
