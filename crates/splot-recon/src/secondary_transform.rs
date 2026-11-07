@@ -328,26 +328,36 @@ fn transform_into(
     let len = coded
         .max((output_rows * w).min(expected))
         .min(dequant.len());
-    dequant[..len].fill(0);
+    if !(large && len == 64 && w == 8) {
+        dequant[..len].fill(0);
+    }
     let coefs = &coefs[..n];
     let stx = sec_tx_type - 1;
     let wide = bound > 1 << 15;
-    let positions: &[u8] = if large {
-        OUTPUTS_8X8
+    if large {
+        let pairs = IST_8X8_RASTER
             .get(usize::from(transpose))
             .and_then(|sets| sets.get(kernel))
-            .and_then(|set| set.get(stx))
-            .map_or(&[], |positions| positions.as_slice())
-    } else {
-        &OUTPUTS_4X4[usize::from(transpose)]
-    };
-    let clipped: [i32; IST_8X8_WIDTH] = baseline_simd!(simd => {
-        let mut sums = [i32x8::splat(simd, 0); IST_8X8_WIDTH / 8];
-        if large {
-            if let Some(pairs) = IST_8X8_PAIRS.get(kernel).and_then(|set| set.get(stx)) {
+            .and_then(|set| set.get(stx));
+        baseline_simd!(simd => {
+            let mut sums = [i32x8::splat(simd, 0); 8];
+            if let Some(pairs) = pairs {
                 accumulate_kernel_pairs(simd, pairs, coefs, wide, &mut sums);
             }
-        } else if let Some(pairs) = IST_4X4_PAIRS.get(kernel).and_then(|set| set.get(stx)) {
+            for (row, &t) in dequant[..len].chunks_mut(w).zip(&sums) {
+                if let Some(row) = row.first_chunk_mut::<8>() {
+                    ((t + (1 << 6) + (t >> 31)) >> 7)
+                        .max(i32x8::splat(simd, -bound))
+                        .min(i32x8::splat(simd, bound - 1))
+                        .store_array(row);
+                }
+            }
+        });
+        return len;
+    }
+    let clipped: [i32; IST_8X8_WIDTH] = baseline_simd!(simd => {
+        let mut sums = [i32x8::splat(simd, 0); IST_8X8_WIDTH / 8];
+        if let Some(pairs) = IST_4X4_PAIRS.get(kernel).and_then(|set| set.get(stx)) {
             accumulate_kernel_pairs(simd, pairs, coefs, wide, &mut sums);
         }
         let mut clipped = [0i32; IST_8X8_WIDTH];
@@ -360,21 +370,15 @@ fn transform_into(
         clipped
     });
     let mut tile = [0i32; 64];
-    for (&value, &pos) in clipped.iter().zip(positions) {
+    for (&value, &pos) in clipped.iter().zip(&OUTPUTS_4X4[usize::from(transpose)]) {
         tile[usize::from(pos) & 63] = value;
     }
     for (row, tile) in dequant[..len]
         .chunks_mut(w)
         .zip(tile.as_chunks::<8>().0)
-        .take(output_rows)
+        .take(4)
     {
-        if large {
-            if let Some(row) = row.first_chunk_mut::<8>() {
-                *row = *tile;
-            }
-        } else if let (Some(row), Some(tile)) =
-            (row.first_chunk_mut::<4>(), tile.first_chunk::<4>())
-        {
+        if let (Some(row), Some(tile)) = (row.first_chunk_mut::<4>(), tile.first_chunk::<4>()) {
             *row = *tile;
         }
     }
@@ -403,6 +407,37 @@ static OUTPUTS_8X8: [[[[u8; IST_8X8_WIDTH]; STX_TYPES - 1]; IST_SET_SIZE_8X8]; 2
     out
 };
 
+/// The § 9.7 `Ist_8x8_Kernel` as interleaved byte pairs with each output
+/// moved to its [`OUTPUTS_8X8`] position of the 8x8 block (zero weights
+/// elsewhere), so the sums are the block's rows:
+/// `[transpose][set][kind][q][2 * pos + r]` is the weight of the output at
+/// `pos` in kernel row `2 * q + r`.
+static IST_8X8_RASTER: [[[[[i8; 128]; IST_8X8_HEIGHT / 2]; STX_TYPES - 1]; IST_SET_SIZE_8X8]; 2] = {
+    let mut out = [[[[[0i8; 128]; IST_8X8_HEIGHT / 2]; STX_TYPES - 1]; IST_SET_SIZE_8X8]; 2];
+    let mut index = 0;
+    while index < 2 * IST_SET_SIZE_8X8 * (STX_TYPES - 1) * IST_8X8_HEIGHT {
+        let (transpose, rest) = (
+            index / (IST_SET_SIZE_8X8 * (STX_TYPES - 1) * IST_8X8_HEIGHT),
+            index % (IST_SET_SIZE_8X8 * (STX_TYPES - 1) * IST_8X8_HEIGHT),
+        );
+        let (set, rest) = (
+            rest / ((STX_TYPES - 1) * IST_8X8_HEIGHT),
+            rest % ((STX_TYPES - 1) * IST_8X8_HEIGHT),
+        );
+        let (kind, row) = (rest / IST_8X8_HEIGHT, rest % IST_8X8_HEIGHT);
+        let mut i = 0;
+        while i < IST_8X8_WIDTH {
+            let pos = OUTPUTS_8X8[transpose][set][kind][i] as usize;
+            let weight = IST_8X8_KERNEL[set][kind][row][i];
+            assert!(weight == weight as i8 as i32);
+            out[transpose][set][kind][row / 2][2 * pos + row % 2] = weight as i8;
+            i += 1;
+        }
+        index += 1;
+    }
+    out
+};
+
 /// [`OUTPUTS_8X8`] of `Ist_4x4_Kernel`, from `Stx_Scan_Order_4x4[i]`
 /// (`y * 4 + x`).
 static OUTPUTS_4X4: [[u8; IST_4X4_WIDTH]; 2] = {
@@ -417,12 +452,10 @@ static OUTPUTS_4X4: [[u8; IST_4X4_WIDTH]; 2] = {
     out
 };
 
-/// The § 9.7 IST kernels as interleaved byte pairs: entry `[q][2 * i + r]`
-/// is the weight of output `i` in kernel row `2 * q + r`. Every weight is
-/// below 128 in magnitude, and the quarter-size tables keep the inverse
-/// transform's working set in cache.
-static IST_8X8_PAIRS: [[[[i8; 2 * IST_8X8_WIDTH]; IST_8X8_HEIGHT / 2]; STX_TYPES - 1];
-    IST_SET_SIZE_8X8] = pair_kernels(&IST_8X8_KERNEL);
+/// The § 9.7 `Ist_4x4_Kernel` as interleaved byte pairs: entry
+/// `[q][2 * i + r]` is the weight of output `i` in kernel row `2 * q + r`.
+/// Every weight is below 128 in magnitude, and the quarter-size tables keep
+/// the inverse transform's working set in cache.
 static IST_4X4_PAIRS: [[[[i8; 2 * IST_4X4_WIDTH]; IST_4X4_HEIGHT / 2]; STX_TYPES - 1];
     IST_SET_SIZE_4X4] = pair_kernels(&IST_4X4_KERNEL);
 
@@ -460,12 +493,12 @@ const fn pair_kernels<
 /// inside `i16`, and the row sum takes `256 * sum(k * a) + sum(k * b)`, the
 /// same `i32` value.
 #[inline]
-fn accumulate_kernel_pairs<S: Simd, const W2: usize>(
+fn accumulate_kernel_pairs<S: Simd, const W2: usize, const N: usize>(
     simd: S,
     pairs: &[[i8; W2]],
     coefs: &[i32],
     wide: bool,
-    sums: &mut [i32x8<S>; IST_8X8_WIDTH / 8],
+    sums: &mut [i32x8<S>; N],
 ) {
     let operand =
         |a: i32, b: i32| i32x8::splat(simd, (a & 0xffff) | (b << 16)).bitcast::<i16x16<S>>();
