@@ -19,7 +19,8 @@ fn build_mi_grid(
     storage: &mut DeblockGridStorage,
 ) -> Result<MiGridStorage, DeblockError> {
     let mut grid = MiGridStorage::new(mi_cols, storage);
-    grid.fill(blocks, mi_rows)?;
+    grid.reset(mi_rows)?;
+    grid.fill(blocks, 0, mi_rows)?;
     Ok(grid)
 }
 
@@ -35,7 +36,9 @@ fn overlay_mi_grid(
     storage: &mut grid::ChromaGridVecs,
 ) -> Result<ChromaMiGridStorage, DeblockError> {
     let mut grid = ChromaMiGridStorage::new(mi_cols, (sub_x, sub_y), storage);
-    grid.fill(base, (luma, blocks), plane, mi_rows)?;
+    grid.reset(plane, mi_rows)?;
+    grid.fill(mi_cols, blocks, (plane, 0), mi_rows)?;
+    grid.resolve(base, (luma, blocks), 0..mi_rows.div_ceil(1 << sub_y));
     Ok(grid)
 }
 
@@ -354,6 +357,70 @@ fn incremental_deblock_matches_whole_frame_across_superblock_rows_and_chroma() {
     }
 
     assert_eq!(plan.final_luma_rows(1), 128);
+    copy_rows_to_workspace(&mut source, &mut actual);
+    assert_workspace_samples_eq(&actual, &expected);
+}
+
+#[test]
+fn records_appended_per_superblock_row_deblock_like_the_whole_frame() {
+    let (mi_rows, mi_cols) = (32, 32);
+    let blocks = deblock_blocks(mi_rows, mi_cols);
+    let mut chroma = ChromaDeblockRecords::default();
+    let mut parts = [
+        ChromaDeblockRecords::default(),
+        ChromaDeblockRecords::default(),
+    ];
+    for (index, block) in blocks.iter().enumerate() {
+        let block = DeblockBlock {
+            qindex: 60 + 20 * (index % 4) as u32,
+            ..*block
+        };
+        let part = &mut parts[usize::from(block.r >= 16)];
+        for list in [&mut chroma, part] {
+            if index == 9 {
+                list.push(1, block);
+            } else {
+                list.push_both(block);
+            }
+        }
+    }
+    let params = filter([true; 4]);
+    let prepare = |blocks: &[DeblockBlock], chroma: &ChromaDeblockRecords| {
+        FrameDeblock::prepare(
+            blocks,
+            chroma,
+            mi_rows,
+            mi_cols,
+            params,
+            None,
+            false,
+            DeblockQuantDeltas::ZERO,
+            (1, 1),
+            &mut DeblockGridStorage::default(),
+        )
+        .unwrap()
+        .unwrap()
+    };
+    let mut expected = patterned_yuv420_workspace(128, 128);
+    let mut source = source_from_workspace(&mut expected);
+    prepare(&blocks, &chroma)
+        .advance_source(&mut source, mi_rows, BitDepth::Eight)
+        .unwrap();
+    copy_rows_to_workspace(&mut source, &mut expected);
+
+    let mut actual = patterned_yuv420_workspace(128, 128);
+    let mut source = source_from_workspace(&mut actual);
+    let mut plan = prepare(&[], &EMPTY_CHROMA_RECORDS);
+    let split = blocks.iter().position(|block| block.r >= 16).unwrap();
+    let luma = [blocks[..split].to_vec(), blocks[split..].to_vec()];
+    for ((mut luma, mut part), (final_rows, advance)) in
+        luma.into_iter().zip(parts).zip([(16, 10), (32, 32)])
+    {
+        plan.append_records(&mut luma, &mut part, final_rows)
+            .unwrap();
+        plan.advance_source(&mut source, advance, BitDepth::Eight)
+            .unwrap();
+    }
     copy_rows_to_workspace(&mut source, &mut actual);
     assert_workspace_samples_eq(&actual, &expected);
 }

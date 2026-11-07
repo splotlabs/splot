@@ -363,6 +363,15 @@ impl<T: SplitSample> SplitFrame<T> {
         Ok(())
     }
 
+    /// Whether frontier row `row` may run: its rows are committed, and the
+    /// final row, which releases the frame's last stripes, also has the
+    /// filter setup the finished parse attaches. Earlier rows deblock while
+    /// the parse runs.
+    fn frontier_ready(&self, row: usize) -> bool {
+        row < self.closed_rows.load(Ordering::Acquire)
+            && (row + 1 < self.stages[FRONTIER].rows() || self.attached.load(Ordering::Acquire))
+    }
+
     /// Resolves one temporal band; `false` when the parse has not reached
     /// every unit the band owes, so the row is claimed again later.
     fn resolve(&self, band: usize) -> Result<bool> {
@@ -524,9 +533,7 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
         if let Some(row) = self.stages[COMMIT].claim(|batch| self.precompute.is_done(batch)) {
             return Some(claim(COMMIT, row));
         }
-        if let Some(row) = self.stages[FRONTIER].claim(|row| {
-            self.attached.load(Ordering::Acquire) && row < self.closed_rows.load(Ordering::Acquire)
-        }) {
+        if let Some(row) = self.stages[FRONTIER].claim(|row| self.frontier_ready(row)) {
             return Some(claim(FRONTIER, row));
         }
         if let Some(stripe) = self.filter.claim_ready() {
@@ -580,10 +587,7 @@ impl<T: SplitSample> FrameWork for SplitFrame<T> {
                     .claim(|batch| batch == claim.row)
                     .map(|row| Claim { stage: COMMIT, row }),
                 COMMIT => self.stages[FRONTIER]
-                    .claim(|row| {
-                        self.attached.load(Ordering::Acquire)
-                            && row < self.closed_rows.load(Ordering::Acquire)
-                    })
+                    .claim(|row| self.frontier_ready(row))
                     .map(|row| Claim {
                         stage: FRONTIER,
                         row,

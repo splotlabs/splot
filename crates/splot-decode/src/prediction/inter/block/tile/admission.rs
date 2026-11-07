@@ -896,51 +896,79 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         TemporalBandPlan::fail(&self.recon.temporal);
     }
 
-    /// Hands the frontier its § 7.17 deblock records and final-filter setup.
+    /// Lays out the § 7.17 deblock the frontier advances over the deblock
+    /// records the parse publishes, before any of them exists.
+    pub(in crate::prediction::inter::block) fn arm_deblock(
+        &self,
+        storage: crate::filters::deblock::OwnedDeblockRecords,
+        quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
+    ) -> Result<()> {
+        let Some(filter) = self.recon.core.deblocking_filter_params else {
+            return Ok(());
+        };
+        let mut deblock = crate::filters::deblock::FrameDeblock::prepare_owned(
+            storage,
+            self.recon.params.mi_rows,
+            self.recon.params.mi_cols,
+            filter,
+            self.recon.core.tile_info.clone(),
+            self.recon
+                .sequence
+                .filter
+                .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
+            quant_deltas,
+            {
+                let (x, y) = crate::bitstream::tile_payload::chroma_subsampling(
+                    self.recon.sequence.general.chroma_format_idc,
+                );
+                (usize::from(x), usize::from(y))
+            },
+        )
+        .map_err(|error| crate::filters::wienerns_lr::recon::deblock_prepare_error(&error))?;
+        if let Some(deblock) = deblock.as_mut() {
+            self.parse_progress
+                .take_deblock_records(deblock, 0)
+                .map_err(|error| {
+                    crate::filters::wienerns_lr::recon::deblock_prepare_error(&error)
+                })?;
+        }
+        self.frontier.lock().deblock = deblock;
+        Ok(())
+    }
+
+    /// Hands the frontier every deblock record of the finished parse.
+    pub(in crate::prediction::inter::block) fn take_deblock_records(&self) -> Result<()> {
+        if let Some(deblock) = self.frontier.lock().deblock.as_mut() {
+            self.parse_progress
+                .take_deblock_records(deblock, self.recon.params.mi_rows)
+                .map_err(|error| {
+                    crate::filters::wienerns_lr::recon::deblock_prepare_error(&error)
+                })?;
+        }
+        Ok(())
+    }
+
+    /// Hands the frontier its final-filter setup.
     ///
-    /// Reconstruction never reads either, so they arrive once the § 8.2 pass
-    /// has settled the grids they are built from, after the scheduler is
-    /// already admitting precompute work.
+    /// Reconstruction and the deblock never read it, so it arrives once the
+    /// § 8.2 pass has settled the grids it is built from; until then the
+    /// frontier deblocks without releasing filter stripes.
     pub(in crate::prediction::inter::block) fn attach_filters(
         &self,
-        filter_setup: crate::filters::wienerns_lr::recon::OwnedFilterSetup<T>,
+        mut filter_setup: crate::filters::wienerns_lr::recon::OwnedFilterSetup<T>,
         mut filter_shell: crate::filters::wienerns_lr::recon::OwnedFilterShell<T>,
-        deblock_records: Option<crate::filters::deblock::OwnedDeblockRecords>,
-        deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
     ) -> Result<()> {
         if Arc::strong_count(&filter_shell) != 1 || filter_shell.as_ref().is_some() {
             return Err(crate::filters::wienerns_lr::recon::lr_pipeline_state_error());
         }
-        let deblock = deblock_records
-            .zip(self.recon.core.deblocking_filter_params)
-            .map(|(deblock_records, filter)| {
-                crate::filters::deblock::FrameDeblock::prepare_owned(
-                    deblock_records,
-                    self.recon.params.mi_rows,
-                    self.recon.params.mi_cols,
-                    filter,
-                    self.recon.core.tile_info.clone(),
-                    self.recon
-                        .sequence
-                        .filter
-                        .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
-                    deblock_quant_deltas,
-                    {
-                        let (x, y) = crate::bitstream::tile_payload::chroma_subsampling(
-                            self.recon.sequence.general.chroma_format_idc,
-                        );
-                        (usize::from(x), usize::from(y))
-                    },
-                )
-                .map_err(|error| crate::filters::wienerns_lr::recon::deblock_prepare_error(&error))
-            })
-            .transpose()?
-            .flatten();
+        let mut frontier = self.frontier.lock();
+        if let Some(deblock) = frontier.deblock.as_ref() {
+            let (blocks, chroma) = deblock.records();
+            filter_setup.set_lossless_grid(blocks, chroma)?;
+        }
         let shell = Arc::get_mut(&mut filter_shell)
             .ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)?;
         *shell = Some(filter_setup);
-        let mut frontier = self.frontier.lock();
-        frontier.deblock = deblock;
         frontier.filter = Some(filter_shell);
         Ok(())
     }
@@ -1017,6 +1045,17 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         let mut filters = core::mem::take(spare_filters);
         match deblock.as_mut() {
             Some(deblock) => {
+                let final_mi_rows = if terminal {
+                    self.recon.params.mi_rows
+                } else {
+                    (committed_units / self.recon.units_per_row.max(1))
+                        .saturating_mul(self.recon.params.sb_h4)
+                };
+                self.parse_progress
+                    .take_deblock_records(deblock, final_mi_rows)
+                    .map_err(|error| {
+                        crate::filters::wienerns_lr::recon::deblock_prepare_error(&error)
+                    })?;
                 if let Some(safe_mi_end) = safe_deblock_mi_end(
                     committed_units,
                     self.recon.units_per_row,
@@ -1041,7 +1080,15 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             None if !rows.publish_final_rows(*sealed_rows) => return Err(state()),
             None => {}
         }
-        let filter = filter.as_ref().ok_or_else(state)?;
+        let Some(filter) = filter.as_ref() else {
+            if terminal {
+                return Err(state());
+            }
+            return Ok(ScheduledFrameProgress {
+                filters,
+                output: None,
+            });
+        };
         let stripes = filter
             .as_ref()
             .as_ref()

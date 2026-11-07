@@ -364,32 +364,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     ) -> Result<OwnedFilterSetup<T>> {
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
-        if core
-            .lossless_info
-            .as_ref()
-            .is_some_and(|lossless| lossless.has_lossless_segment)
-        {
-            self.lossless_grid = Some(
-                crate::filters::lossless::LosslessBlockGrid::from_deblock_records(
-                    mi_rows,
-                    mi_cols,
-                    &self.filter_records.deblock_blocks,
-                    &self.filter_records.chroma_deblock_blocks,
-                )
-                .map_err(|error| match error {
-                    crate::filters::lossless::LosslessGridError::Allocation(plane) => {
-                        splot_recon::ReconError::WorkspaceAllocationFailed {
-                            plane,
-                            context: "lossless block grid",
-                        }
-                        .into()
-                    }
-                    crate::filters::lossless::LosslessGridError::Geometry => {
-                        lr_pipeline_state_error()
-                    }
-                })?,
-            );
-        }
+        self.lossless_grid = lossless_grid(
+            &core,
+            (mi_rows, mi_cols),
+            &self.filter_records.deblock_blocks,
+            &self.filter_records.chroma_deblock_blocks,
+        )?;
         if self.needs_lr_tx_skip_grid(&core) {
             self.ensure_tx_skip_grid(mi_rows, mi_cols)?;
         }
@@ -792,6 +772,18 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     }
 
     /// Restores the moved deblock vectors exactly once before terminal freeze.
+    /// Rebuilds the lossless grid from the deblock records of a frame whose
+    /// frontier took them before this setup was built.
+    pub(crate) fn set_lossless_grid(
+        &mut self,
+        blocks: &[crate::filters::deblock::DeblockBlock],
+        chroma: &crate::filters::deblock::ChromaDeblockRecords,
+    ) -> Result<()> {
+        self.lossless_grid =
+            lossless_grid(&self.core, (self.mi_rows, self.mi_cols), blocks, chroma)?;
+        Ok(())
+    }
+
     pub(crate) fn restore_deblock_records(
         &self,
         records: crate::filters::deblock::OwnedDeblockRecords,
@@ -1174,6 +1166,37 @@ impl<T: ReconSample> OwnedFilterSetup<T> {
     pub(crate) fn owned_finish(setup: OwnedFilterShell<T>) -> OwnedFilterFinish<T> {
         OwnedFilterFinish { setup }
     }
+}
+
+/// The lossless grid of a frame with a lossless segment, laid out from its
+/// deblock records.
+fn lossless_grid(
+    core: &splot_core::headers::frame::FrameHeaderCore,
+    (mi_rows, mi_cols): (usize, usize),
+    blocks: &[crate::filters::deblock::DeblockBlock],
+    chroma: &crate::filters::deblock::ChromaDeblockRecords,
+) -> Result<Option<crate::filters::lossless::LosslessBlockGrid>> {
+    if !core
+        .lossless_info
+        .as_ref()
+        .is_some_and(|lossless| lossless.has_lossless_segment)
+    {
+        return Ok(None);
+    }
+    crate::filters::lossless::LosslessBlockGrid::from_deblock_records(
+        mi_rows, mi_cols, blocks, chroma,
+    )
+    .map(Some)
+    .map_err(|error| match error {
+        crate::filters::lossless::LosslessGridError::Allocation(plane) => {
+            splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane,
+                context: "lossless block grid",
+            }
+            .into()
+        }
+        crate::filters::lossless::LosslessGridError::Geometry => lr_pipeline_state_error(),
+    })
 }
 
 /// How many plane rows past each end of a stripe the § 7.2 chain reads.

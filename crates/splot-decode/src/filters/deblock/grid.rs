@@ -276,19 +276,26 @@ impl MiGridStorage {
         }
     }
 
-    /// Lays every record out over the frame in record order, so that a later
-    /// record overwrites an earlier one.
+    /// Marks every cell of a `mi_rows`-row frame empty.
+    pub(super) fn reset(&mut self, mi_rows: usize) -> Result<(), DeblockError> {
+        let plane = splot_recon::PlaneId::Y;
+        let len = mi_rows
+            .checked_mul(self.mi_cols)
+            .ok_or(DeblockError::Workspace)?;
+        reset(&mut self.cells, len, MiCell::default(), plane)?;
+        self.plane.reset(len, plane)
+    }
+
+    /// Lays the records from `blocks[start]` on out over the frame in record
+    /// order, so that a later record overwrites an earlier one.
     pub(super) fn fill(
         &mut self,
         blocks: &[DeblockBlock],
+        start: usize,
         mi_rows: usize,
     ) -> Result<(), DeblockError> {
-        let plane = splot_recon::PlaneId::Y;
         let cols = self.mi_cols;
-        let len = mi_rows.checked_mul(cols).ok_or(DeblockError::Workspace)?;
-        reset(&mut self.cells, len, MiCell::default(), plane)?;
-        self.plane.reset(len, plane)?;
-        for (index, block) in blocks.iter().enumerate() {
+        for (index, block) in blocks.iter().enumerate().skip(start) {
             let mark = MiCell {
                 base: mi_block_index(index)? + 1,
             };
@@ -402,31 +409,36 @@ impl ChromaMiGridStorage {
         }
     }
 
-    /// Lays one chroma plane's overlay records out over the frame in record
-    /// order after the luma grid's own fill, then resolves every cell's
-    /// [`CellPlane`] entry.
-    pub(super) fn fill(
-        &mut self,
-        base: &MiGridStorage,
-        (blocks, records): (&[DeblockBlock], &ChromaDeblockRecords),
-        plane: usize,
-        mi_rows: usize,
-    ) -> Result<(), DeblockError> {
+    /// Marks every cell of a `mi_rows`-row frame empty for chroma plane
+    /// `plane` (0 for U).
+    pub(super) fn reset(&mut self, plane: usize, mi_rows: usize) -> Result<(), DeblockError> {
         let plane_id = match plane {
             0 => splot_recon::PlaneId::U,
             1 => splot_recon::PlaneId::V,
             _ => return Err(DeblockError::Workspace),
         };
-        let mask = [ChromaDeblockRecords::U, ChromaDeblockRecords::V][plane];
-        let (sub_x, sub_y, cols) = (self.sub_x, self.sub_y, self.cell_cols);
         let len = mi_rows
-            .div_ceil(1 << sub_y)
-            .checked_mul(cols)
+            .div_ceil(1 << self.sub_y)
+            .checked_mul(self.cell_cols)
             .ok_or(DeblockError::Workspace)?;
         reset(&mut self.cells, len, ChromaMiCell::default(), plane_id)?;
-        self.plane.reset(len, plane_id)?;
-        let extent = (mi_rows, base.mi_cols);
-        for (index, record) in records.blocks.iter().enumerate() {
+        self.plane.reset(len, plane_id)
+    }
+
+    /// Lays one chroma plane's overlay records from `records[start]` on out
+    /// over the frame in record order, after the luma grid's fill of the same
+    /// records.
+    pub(super) fn fill(
+        &mut self,
+        mi_cols: usize,
+        records: &ChromaDeblockRecords,
+        (plane, start): (usize, usize),
+        mi_rows: usize,
+    ) -> Result<(), DeblockError> {
+        let mask = [ChromaDeblockRecords::U, ChromaDeblockRecords::V][plane];
+        let (sub_x, sub_y, cols) = (self.sub_x, self.sub_y, self.cell_cols);
+        let extent = (mi_rows, mi_cols);
+        for (index, record) in records.blocks.iter().enumerate().skip(start) {
             if record.planes & mask == 0 {
                 continue;
             }
@@ -444,17 +456,16 @@ impl ChromaMiGridStorage {
                 }
             }
         }
-        self.resolve(base, blocks, records);
         Ok(())
     }
 
-    /// Resolves every chroma cell's [`CellPlane`] entry from its overlay
-    /// cells and the luma cell under it.
-    fn resolve(
+    /// Resolves the [`CellPlane`] entry of every chroma cell in cell rows
+    /// `rows` from its overlay cells and the luma cell under it.
+    pub(super) fn resolve(
         &mut self,
         base: &MiGridStorage,
-        blocks: &[DeblockBlock],
-        records: &ChromaDeblockRecords,
+        (blocks, records): (&[DeblockBlock], &ChromaDeblockRecords),
+        rows: core::ops::Range<usize>,
     ) {
         let (sub_x, sub_y, cols) = (self.sub_x, self.sub_y, self.cell_cols);
         let mut last = ((NO_BLOCK, NO_BLOCK, NO_BLOCK), None);
@@ -464,7 +475,9 @@ impl ChromaMiGridStorage {
             .chunks_exact(cols.max(1))
             .zip(plane.bases.chunks_exact_mut(cols.max(1)))
             .zip(plane.info.chunks_exact_mut(cols.max(1)))
-            .enumerate();
+            .enumerate()
+            .skip(rows.start)
+            .take(rows.len());
         for (row, ((cells, bases), info)) in rows {
             let luma = base
                 .cells

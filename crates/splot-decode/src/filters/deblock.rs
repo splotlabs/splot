@@ -155,6 +155,32 @@ impl ChromaDeblockRecords {
         self.blocks.is_empty()
     }
 
+    fn len(&self) -> usize {
+        self.blocks.len()
+    }
+
+    /// Pairs the U and V records from `cursors` on and returns whether every
+    /// pair matches with none left over, which is [`Self::uv_twins`] for a
+    /// list that grows: `cursors` keeps the next unpaired U and V record.
+    fn twins_through(&self, cursors: &mut [usize; 2]) -> bool {
+        let next = |from: usize, mask: u8| {
+            self.blocks
+                .iter()
+                .skip(from)
+                .position(|record| record.planes & mask != 0)
+                .map(|offset| from + offset)
+        };
+        loop {
+            match (next(cursors[0], Self::U), next(cursors[1], Self::V)) {
+                (None, None) => return true,
+                (Some(u), Some(v)) if self.blocks[u].block == self.blocks[v].block => {
+                    *cursors = [u + 1, v + 1];
+                }
+                _ => return false,
+            }
+        }
+    }
+
     fn get(&self, index: usize) -> Option<&DeblockBlock> {
         self.blocks.get(index).map(|record| &record.block)
     }
@@ -265,8 +291,16 @@ pub(crate) struct FrameDeblock {
     records: OwnedDeblockRecords,
     grid: MiGridStorage,
     chroma: [Option<ChromaMiGridStorage>; 2],
-    /// Whether the grids hold the frame's records yet.
-    filled: bool,
+    /// Whether the grids are sized and empty yet.
+    grids_reset: bool,
+    /// How many luma records, then U and V overlay records, the grids hold.
+    laid_out: [usize; 3],
+    /// The mode-info rows every record of which has arrived, and the rows
+    /// each chroma grid has resolved.
+    final_mi_rows: usize,
+    resolved_mi_rows: [usize; 2],
+    /// The next U and V record a frame whose V reads U's grid has not paired.
+    twin_cursors: [usize; 2],
     mi_rows: usize,
     filter: DeblockingFilterParams,
     tile_info: Option<TileInfo>,
@@ -291,6 +325,22 @@ pub(crate) struct OwnedDeblockRecords {
     pub(crate) grids: DeblockGridStorage,
     pub(crate) blocks: Vec<DeblockBlock>,
     pub(crate) chroma: ChromaDeblockRecords,
+}
+
+impl OwnedDeblockRecords {
+    /// Takes a frame's deblock storage with its record lists emptied.
+    pub(crate) fn take_storage(
+        records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+    ) -> Self {
+        let mut storage = Self {
+            grids: core::mem::take(&mut records.deblock_grids),
+            blocks: core::mem::take(&mut records.deblock_blocks),
+            chroma: core::mem::take(&mut records.chroma_deblock_blocks),
+        };
+        storage.blocks.clear();
+        storage.chroma.clear();
+        storage
+    }
 }
 
 /// The interior tile starts one pass filters across, or `None` when the frame
@@ -354,7 +404,11 @@ impl FrameDeblock {
             records,
             grid,
             chroma,
-            filled: false,
+            grids_reset: false,
+            laid_out: [0; 3],
+            final_mi_rows: mi_rows,
+            resolved_mi_rows: [0; 2],
+            twin_cursors: [0; 2],
             mi_rows,
             filter,
             tile_info,
@@ -375,8 +429,8 @@ impl FrameDeblock {
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
         let (ranges, pass_0_end, pass_1_end) = self.next_ranges(mi_row_end);
-        if !self.filled && ranges.iter().any(|rows| !rows.is_empty()) {
-            self.fill_grids()?;
+        if ranges.iter().any(|rows| !rows.is_empty()) {
+            self.lay_out()?;
         }
         self.run_ranges_source(source, &ranges, bit_depth)?;
         self.next_pass_0_mi_row = pass_0_end;
@@ -574,21 +628,81 @@ impl FrameDeblock {
         self.mi_rows * MI_SIZE
     }
 
-    /// Lays every active plane's grid out over the whole frame.
-    fn fill_grids(&mut self) -> Result<(), DeblockError> {
-        let blocks = &self.records.blocks;
-        self.grid.fill(blocks, self.mi_rows)?;
-        for (plane, slot) in self.chroma.iter_mut().enumerate() {
-            if let Some(grid) = slot {
-                grid.fill(
-                    &self.grid,
-                    (blocks, &self.records.chroma),
-                    plane,
-                    self.mi_rows,
-                )?;
-            }
+    /// The luma and chroma records taken so far.
+    pub(crate) fn records(&self) -> (&[DeblockBlock], &ChromaDeblockRecords) {
+        (&self.records.blocks, &self.records.chroma)
+    }
+
+    /// Takes the records a frame still being parsed has published since the
+    /// last call, in decode order; every record of the mode-info rows below
+    /// `final_mi_rows` has then arrived.
+    pub(crate) fn append_records(
+        &mut self,
+        blocks: &mut Vec<DeblockBlock>,
+        chroma: &mut ChromaDeblockRecords,
+        final_mi_rows: usize,
+    ) -> Result<(), DeblockError> {
+        self.records.blocks.append(blocks);
+        self.records.chroma.append(chroma);
+        self.final_mi_rows = final_mi_rows.min(self.mi_rows);
+        if self.chroma[1].is_some()
+            || !self.filter.apply_deblocking_filter[3]
+            || self.records.chroma.twins_through(&mut self.twin_cursors)
+        {
+            return Ok(());
         }
-        self.filled = true;
+        let Some(subsampling) = self.chroma[0].as_ref().map(|u| (u.sub_x, u.sub_y)) else {
+            return Ok(());
+        };
+        self.chroma[1] = Some(ChromaMiGridStorage::new(
+            self.grid.mi_cols,
+            subsampling,
+            &mut self.records.grids.chroma[1],
+        ));
+        self.laid_out[2] = 0;
+        self.resolved_mi_rows[1] = 0;
+        match self.chroma[1].as_mut() {
+            Some(grid) if self.grids_reset => grid.reset(1, self.mi_rows),
+            _ => Ok(()),
+        }
+    }
+
+    /// Lays the records that arrived since the last call out over every
+    /// active plane's grid, and resolves the chroma rows they completed.
+    fn lay_out(&mut self) -> Result<(), DeblockError> {
+        if !self.grids_reset {
+            self.grid.reset(self.mi_rows)?;
+            for (plane, slot) in self.chroma.iter_mut().enumerate() {
+                if let Some(grid) = slot {
+                    grid.reset(plane, self.mi_rows)?;
+                }
+            }
+            self.grids_reset = true;
+        }
+        let blocks = &self.records.blocks;
+        self.grid.fill(blocks, self.laid_out[0], self.mi_rows)?;
+        self.laid_out[0] = blocks.len();
+        let (mi_rows, final_rows) = (self.mi_rows, self.final_mi_rows);
+        for (plane, slot) in self.chroma.iter_mut().enumerate() {
+            let Some(grid) = slot else { continue };
+            grid.fill(
+                self.grid.mi_cols,
+                &self.records.chroma,
+                (plane, self.laid_out[plane + 1]),
+                mi_rows,
+            )?;
+            self.laid_out[plane + 1] = self.records.chroma.len();
+            let cell_rows = |mi: usize| {
+                if mi >= mi_rows {
+                    mi_rows.div_ceil(1 << grid.sub_y)
+                } else {
+                    mi >> grid.sub_y
+                }
+            };
+            let rows = cell_rows(self.resolved_mi_rows[plane])..cell_rows(final_rows);
+            grid.resolve(&self.grid, (blocks, &self.records.chroma), rows);
+            self.resolved_mi_rows[plane] = final_rows;
+        }
         Ok(())
     }
 
