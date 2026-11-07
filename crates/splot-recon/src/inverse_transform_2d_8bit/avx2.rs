@@ -635,68 +635,11 @@ fn row_wide<const N: usize, const H: usize>(
     out: &mut [i32],
 ) -> bool {
     let chunks = N / 8;
-    let mut outputs = [[_mm256_setzero_si256(); 4]; 2];
-    let mut any = false;
-    for (slot, r) in outputs.iter_mut().zip([a, b]) {
-        let mut pairs = [0u32; 16];
-        let mut nonzero = 0u32;
-        for (j, chunk) in pairs
-            .as_chunks_mut::<8>()
-            .0
-            .iter_mut()
-            .take(N / 16)
-            .enumerate()
-        {
-            let mut x = rows.x16(t, r, 16 * j);
-            if split {
-                x = _mm256_shuffle_epi8(x, bytes(t, &SPLIT_ORDER));
-            }
-            let zero = _mm256_cmpeq_epi32(x, _mm256_setzero_si256());
-            nonzero |= (!_mm256_movemask_ps(_mm256_castsi256_ps(zero)) as u32 & 0xff) << (8 * j);
-            let x: fearless_simd::u32x8<Avx2> = x.simd_into(t);
-            x.store_array(chunk);
-        }
-        if nonzero == 0 {
-            continue;
-        }
-        any = true;
-        let used = (u32::BITS - nonzero.leading_zeros()) as usize;
-        let (pairs, kernel) = (
-            pairs.get(..used).unwrap_or_default(),
-            kernel.get(..used).unwrap_or_default(),
-        );
-        if split {
-            let mut sums = [[round.rnd; 2], [_mm256_setzero_si256(); 2]];
-            for (p, (&pair, k)) in pairs.iter().zip(kernel).enumerate() {
-                let x = _mm256_set1_epi32(pair as i32);
-                for (c, sum) in sums[p % 2].iter_mut().take(chunks / 2).enumerate() {
-                    let k = k.get(8 * c..).unwrap_or_default();
-                    *sum = _mm256_add_epi32(*sum, _mm256_madd_epi16(x, weights(t, k)));
-                }
-            }
-            let [even, odd] = sums;
-            for c in 0..chunks / 2 {
-                slot[c] = _mm256_sra_epi32(_mm256_add_epi32(even[c], odd[c]), round.shift);
-                slot[chunks - 1 - c] =
-                    _mm256_sra_epi32(_mm256_sub_epi32(even[c], odd[c]), round.shift);
-            }
-        } else {
-            for (&pair, k) in pairs.iter().zip(kernel) {
-                let x = _mm256_set1_epi32(pair as i32);
-                for (c, sum) in slot.iter_mut().take(chunks).enumerate() {
-                    let k = k.get(8 * c..).unwrap_or_default();
-                    *sum = _mm256_add_epi32(*sum, _mm256_madd_epi16(x, weights(t, k)));
-                }
-            }
-            for sum in slot.iter_mut().take(chunks) {
-                *sum = round.apply(*sum);
-            }
-        }
-    }
-    if !any {
+    let (a, any_a) = wide_row::<N, H>(t, rows, a, kernel, split, round);
+    let (b, any_b) = wide_row::<N, H>(t, rows, b, kernel, split, round);
+    if !any_a && !any_b {
         return false;
     }
-    let [a, b] = outputs;
     for c in 0..chunks {
         let packed = if split && c >= chunks / 2 {
             let reversed = pair_columns(t, a[c], b[c], &INTERLEAVE_REVERSED);
@@ -707,6 +650,80 @@ fn row_wide<const N: usize, const H: usize>(
         store8(t, out, 8 * c, packed);
     }
     true
+}
+
+/// The shifted sums of row `r` in eight-output chunks (the second half
+/// reversed with `split`), and whether its input is nonzero.
+#[inline]
+#[target_feature(enable = "avx2")]
+fn wide_row<const N: usize, const H: usize>(
+    t: Avx2,
+    rows: Staged<'_, N>,
+    r: usize,
+    kernel: &[[u32; N]; H],
+    split: bool,
+    round: Round,
+) -> ([__m256i; 4], bool) {
+    let chunks = N / 8;
+    let mut out = [_mm256_setzero_si256(); 4];
+    let mut pairs = [0u32; 16];
+    let mut nonzero = 0u32;
+    for (j, chunk) in pairs
+        .as_chunks_mut::<8>()
+        .0
+        .iter_mut()
+        .take(N / 16)
+        .enumerate()
+    {
+        let mut x = rows.x16(t, r, 16 * j);
+        if split {
+            x = _mm256_shuffle_epi8(x, bytes(t, &SPLIT_ORDER));
+        }
+        let zero = _mm256_cmpeq_epi32(x, _mm256_setzero_si256());
+        nonzero |= (!_mm256_movemask_ps(_mm256_castsi256_ps(zero)) as u32 & 0xff) << (8 * j);
+        let x: fearless_simd::u32x8<Avx2> = x.simd_into(t);
+        x.store_array(chunk);
+    }
+    if nonzero == 0 {
+        return (out, false);
+    }
+    let used = ((u32::BITS - nonzero.leading_zeros()) as usize)
+        .next_multiple_of(2)
+        .min(H);
+    let (pairs, kernel) = (
+        pairs.get(..used).unwrap_or_default().as_chunks::<2>().0,
+        kernel.get(..used).unwrap_or_default().as_chunks::<2>().0,
+    );
+    let shift = |v| _mm256_sra_epi32(v, round.shift);
+    if split {
+        let (mut even, mut odd) = ([round.rnd; 2], [_mm256_setzero_si256(); 2]);
+        for (&[p0, p1], [k0, k1]) in pairs.iter().zip(kernel) {
+            let (x0, x1) = (_mm256_set1_epi32(p0 as i32), _mm256_set1_epi32(p1 as i32));
+            for c in 0..chunks / 2 {
+                let at = |k: &[u32; N]| weights(t, k.get(8 * c..).unwrap_or_default());
+                even[c] = _mm256_add_epi32(even[c], _mm256_madd_epi16(x0, at(k0)));
+                odd[c] = _mm256_add_epi32(odd[c], _mm256_madd_epi16(x1, at(k1)));
+            }
+        }
+        for c in 0..chunks / 2 {
+            out[c] = shift(_mm256_add_epi32(even[c], odd[c]));
+            out[chunks - 1 - c] = shift(_mm256_sub_epi32(even[c], odd[c]));
+        }
+    } else {
+        let mut sums = [round.rnd; 4];
+        for (&[p0, p1], [k0, k1]) in pairs.iter().zip(kernel) {
+            let (x0, x1) = (_mm256_set1_epi32(p0 as i32), _mm256_set1_epi32(p1 as i32));
+            for (c, sum) in sums.iter_mut().take(chunks).enumerate() {
+                let at = |k: &[u32; N]| weights(t, k.get(8 * c..).unwrap_or_default());
+                *sum = _mm256_add_epi32(*sum, _mm256_madd_epi16(x0, at(k0)));
+                *sum = _mm256_add_epi32(*sum, _mm256_madd_epi16(x1, at(k1)));
+            }
+        }
+        for (out, &sum) in out.iter_mut().zip(&sums).take(chunks) {
+            *out = shift(sum);
+        }
+    }
+    (out, true)
 }
 
 /// `sum[n] = init + Σ pair[p] * k[p][n]` over the pairs written in `mask`.
@@ -809,32 +826,33 @@ fn fit<const A: usize, const B: usize>(x: [__m256i; A]) -> [__m256i; B] {
     out
 }
 
-/// The column pass of a `w`-wide, `M`-tall block (`HM = M / 2`) over the
-/// written pairs `mask` of `scratch` with the `KIND` transform on the pair
+/// The column pass of a `W`-wide, `M`-tall block (`HM = M / 2`) over the
+/// written pairs `mask` of `pairs` with the `KIND` transform on the pair
 /// kernel `k` or the identity `scale`, added to `dst` with `ADD` or stored in
 /// `residual`.
 #[inline(never)]
 #[target_feature(enable = "avx2")]
-#[allow(clippy::too_many_arguments)]
-fn col_pass<const M: usize, const HM: usize, const KIND: u8, const ADD: bool>(
+#[allow(
+    clippy::many_single_char_names,
+    reason = "kernel k, column chunk c and output rows a and b, as in § 7.15.4.1"
+)]
+fn col_pass<const W: usize, const M: usize, const HM: usize, const KIND: u8, const ADD: bool>(
     t: Avx2,
-    w: usize,
     (k, scale): (&[[u32; M]; HM], i32),
-    scratch: &[i32],
-    mask: u32,
-    shift: u32,
+    pairs: &[i32; 16 * 32],
+    (mask, shift): (u32, u32),
     (dst, stride): (&mut [u8], usize),
     residual: &mut [i32],
 ) {
     let round = Round::new(shift);
-    for c in 0..(w / 8).max(1) {
+    for c in 0..(W / 8).max(1) {
         let mut v = [_mm256_setzero_si256(); HM];
         for (q, v) in v.iter_mut().enumerate() {
             if mask & (1 << q) != 0 {
-                *v = if w == 4 {
-                    _mm256_broadcastsi128_si256(load4(t, scratch, 4 * q))
+                *v = if W == 4 {
+                    _mm256_broadcastsi128_si256(load4(t, pairs, 4 * q))
                 } else {
-                    load8(t, scratch, q * w + 8 * c)
+                    load8(t, pairs, q * W + 8 * c)
                 };
             }
         }
@@ -856,47 +874,46 @@ fn col_pass<const M: usize, const HM: usize, const KIND: u8, const ADD: bool>(
             _ => products(&v, mask, k, round.rnd),
         };
         let shift = |v| _mm256_sra_epi32(v, round.shift);
-        if ADD {
-            let width = w.min(8);
-            for (m, rows) in out.as_chunks::<2>().0.iter().enumerate() {
-                let at = 2 * m * stride + 8 * c;
-                let Some((first, second)) = dst
-                    .get_mut(at..at + stride + width)
-                    .and_then(|span| span.split_at_mut_checked(stride))
-                else {
-                    break;
-                };
-                put_add(first, second, shift(rows[0]), shift(rows[1]));
-            }
-        } else {
-            for (m, rows) in out.as_chunks::<2>().0.iter().enumerate() {
-                put_residual(t, w, (2 * m, c), shift(rows[0]), shift(rows[1]), residual);
+        for (m, rows) in out.as_chunks::<2>().0.iter().enumerate() {
+            let (a, b) = (shift(rows[0]), shift(rows[1]));
+            if ADD {
+                put_add::<W>(dst, 2 * m * stride + 8 * c, stride, a, b);
+            } else {
+                put_residual::<W>(t, (2 * m, c), a, b, residual);
             }
         }
     }
 }
 
-/// Adds the rows `a` and `b` of 8 (4 when `w == 4`) columns to the samples
-/// `first` and `second` with the § 7.14.3 `Clip1`.
+/// Adds the rows `a` and `b` of 8 (4 when `W == 4`) columns to the samples
+/// at `at` and `at + stride` of `dst` with the § 7.14.3 `Clip1`.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn put_add(first: &mut [u8], second: &mut [u8], a: __m256i, b: __m256i) {
+fn put_add<const W: usize>(dst: &mut [u8], at: usize, stride: usize, a: __m256i, b: __m256i) {
     let packed = _mm256_packs_epi32(a, b);
-    if let (Some(first), Some(second)) =
-        (first.first_chunk_mut::<8>(), second.first_chunk_mut::<8>())
-    {
-        let pred = _mm_unpacklo_epi32(
-            _mm_cvtsi64_si128(i64::from_le_bytes(*first)),
-            _mm_cvtsi64_si128(i64::from_le_bytes(*second)),
-        );
-        let sum = _mm256_adds_epi16(_mm256_cvtepu8_epi16(pred), packed);
-        let sum = _mm256_packus_epi16(sum, sum);
-        let rows = _mm_unpacklo_epi32(
-            _mm256_castsi256_si128(sum),
-            _mm256_extracti128_si256::<1>(sum),
-        );
-        *first = _mm_cvtsi128_si64(rows).to_le_bytes();
-        *second = _mm_extract_epi64::<1>(rows).to_le_bytes();
+    let Some((first, second)) = dst
+        .get_mut(at..at + stride + W.min(8))
+        .and_then(|span| span.split_at_mut_checked(stride))
+    else {
+        return;
+    };
+    if W >= 8 {
+        if let (Some(first), Some(second)) =
+            (first.first_chunk_mut::<8>(), second.first_chunk_mut::<8>())
+        {
+            let pred = _mm_unpacklo_epi32(
+                _mm_cvtsi64_si128(i64::from_le_bytes(*first)),
+                _mm_cvtsi64_si128(i64::from_le_bytes(*second)),
+            );
+            let sum = _mm256_adds_epi16(_mm256_cvtepu8_epi16(pred), packed);
+            let sum = _mm256_packus_epi16(sum, sum);
+            let rows = _mm_unpacklo_epi32(
+                _mm256_castsi256_si128(sum),
+                _mm256_extracti128_si256::<1>(sum),
+            );
+            *first = _mm_cvtsi128_si64(rows).to_le_bytes();
+            *second = _mm_extract_epi64::<1>(rows).to_le_bytes();
+        }
     } else if let (Some(first), Some(second)) =
         (first.first_chunk_mut::<4>(), second.first_chunk_mut::<4>())
     {
@@ -911,12 +928,11 @@ fn put_add(first: &mut [u8], second: &mut [u8], a: __m256i, b: __m256i) {
 }
 
 /// Stores rows `m` and `m + 1` of the column `Clip3` outputs of the 8 (4
-/// when `w == 4`) columns from `8 * c`.
+/// when `W == 4`) columns from `8 * c`.
 #[inline]
 #[target_feature(enable = "avx2")]
-fn put_residual(
+fn put_residual<const W: usize>(
     t: Avx2,
-    w: usize,
     (m, c): (usize, usize),
     first: __m256i,
     second: __m256i,
@@ -925,12 +941,35 @@ fn put_residual(
     let (low, high) = (_mm256_set1_epi32(-256), _mm256_set1_epi32(255));
     let first = _mm256_min_epi32(_mm256_max_epi32(first, low), high);
     let second = _mm256_min_epi32(_mm256_max_epi32(second, low), high);
-    if w == 4 {
+    if W == 4 {
         store4(t, residual, 4 * m, _mm256_castsi256_si128(first));
         store4(t, residual, 4 * m + 4, _mm256_castsi256_si128(second));
     } else {
-        store8(t, residual, m * w + 8 * c, first);
-        store8(t, residual, (m + 1) * w + 8 * c, second);
+        store8(t, residual, m * W + 8 * c, first);
+        store8(t, residual, (m + 1) * W + 8 * c, second);
+    }
+}
+
+/// The constant residual `value` of a `W`-wide, `h`-tall block, added to
+/// `dst` with `ADD` or stored in `residual`.
+#[inline(never)]
+#[target_feature(enable = "avx2")]
+fn flat<const W: usize, const ADD: bool>(
+    t: Avx2,
+    value: i32,
+    h: usize,
+    (dst, stride): (&mut [u8], usize),
+    residual: &mut [i32],
+) {
+    let v = _mm256_set1_epi32(value);
+    for c in 0..(W / 8).max(1) {
+        for m in (0..h).step_by(2) {
+            if ADD {
+                put_add::<W>(dst, m * stride + 8 * c, stride, v, v);
+            } else {
+                put_residual::<W>(t, (m, c), v, v, residual);
+            }
+        }
     }
 }
 
@@ -955,7 +994,10 @@ fn rows(
     coded: usize,
     scratch: &mut [i32],
 ) -> u32 {
-    let p = (pairs_of(shape.passes.1, shape.h()), u32::from(shape.row_shift));
+    let p = (
+        pairs_of(shape.passes.1, shape.h()),
+        u32::from(shape.row_shift),
+    );
     macro_rules! pass {
         ($n:literal, $h:literal, $kind:expr, $k:expr, $scale:expr) => {
             row_pass::<$n, $h, { $kind }>(
@@ -999,24 +1041,48 @@ fn rows(
 fn cols<const ADD: bool>(
     t: Avx2,
     shape: &InverseTransformAdd8,
-    pairs: &[i32],
+    pairs: &[i32; 16 * 32],
     mask: u32,
     out: (&mut [u8], usize),
     residual: &mut [i32],
 ) {
-    let (w, shift) = (shape.w(), u32::from(shape.col_shift));
+    let passes = (mask, u32::from(shape.col_shift));
     macro_rules! pass {
         ($m:literal, $hm:literal, $kind:expr, $k:expr, $scale:expr) => {
-            col_pass::<$m, $hm, { $kind }, ADD>(
-                t,
-                w,
-                ($k, $scale),
-                pairs,
-                mask,
-                shift,
-                out,
-                residual,
-            )
+            match shape.w_log2 {
+                2 => col_pass::<4, $m, $hm, { $kind }, ADD>(
+                    t,
+                    ($k, $scale),
+                    pairs,
+                    passes,
+                    out,
+                    residual,
+                ),
+                3 => col_pass::<8, $m, $hm, { $kind }, ADD>(
+                    t,
+                    ($k, $scale),
+                    pairs,
+                    passes,
+                    out,
+                    residual,
+                ),
+                4 => col_pass::<16, $m, $hm, { $kind }, ADD>(
+                    t,
+                    ($k, $scale),
+                    pairs,
+                    passes,
+                    out,
+                    residual,
+                ),
+                _ => col_pass::<32, $m, $hm, { $kind }, ADD>(
+                    t,
+                    ($k, $scale),
+                    pairs,
+                    passes,
+                    out,
+                    residual,
+                ),
+            }
         };
     }
     match shape.passes.1 {
@@ -1054,39 +1120,29 @@ fearless_simd::kernel!(
         scratch: &mut [i32; 32 * 32],
     ) {
         let (w, h) = (shape.w(), shape.h());
-        let (dst, stride, mut residual) = match sink {
+        let (dst, stride, residual) = match sink {
             Sink::Add { dst, stride } => (dst, stride, None),
             Sink::Residual(residual) => (&mut [][..], 0, Some(residual)),
         };
         let mut empty = [];
         if let Some(value) = shape.flat_residual(coeffs, dequant) {
-            let v = _mm256_set1_epi32(value);
-            match residual {
-                None => {
-                    for c in 0..(w / 8).max(1) {
-                        for m in (0..h).step_by(2) {
-                            let at = m * stride + 8 * c;
-                            if let Some((first, second)) = dst
-                                .get_mut(at..at + stride + w.min(8))
-                                .and_then(|span| span.split_at_mut_checked(stride))
-                            {
-                                put_add(first, second, v, v);
-                            }
-                        }
-                    }
-                }
-                Some(ref mut residual) => {
-                    for c in 0..(w / 8).max(1) {
-                        for m in (0..h).step_by(2) {
-                            put_residual(t, w, (m, c), v, v, residual);
-                        }
-                    }
-                }
+            let out = (dst, stride);
+            match (residual, shape.w_log2) {
+                (None, 2) => flat::<4, true>(t, value, h, out, &mut empty),
+                (None, 3) => flat::<8, true>(t, value, h, out, &mut empty),
+                (None, 4) => flat::<16, true>(t, value, h, out, &mut empty),
+                (None, _) => flat::<32, true>(t, value, h, out, &mut empty),
+                (Some(residual), 2) => flat::<4, false>(t, value, h, out, residual),
+                (Some(residual), 3) => flat::<8, false>(t, value, h, out, residual),
+                (Some(residual), 4) => flat::<16, false>(t, value, h, out, residual),
+                (Some(residual), _) => flat::<32, false>(t, value, h, out, residual),
             }
             return;
         }
         let coded = (coeffs.len() + w - 1) >> shape.w_log2;
-        let (pairs, staged) = scratch.split_at_mut(16 * 32);
+        let Some((pairs, staged)) = scratch.split_first_chunk_mut::<{ 16 * 32 }>() else {
+            return;
+        };
         let count = coded * w;
         let none = FlatDequant {
             dc: 0,

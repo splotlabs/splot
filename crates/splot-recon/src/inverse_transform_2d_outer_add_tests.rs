@@ -27,88 +27,99 @@ impl Lcg {
 fn fused_add_matches_residual_path() {
     let mut rng = Lcg(7);
     let mut fused_any = false;
-    for log2_w in 2..=5 {
-        for log2_h in 2..=5 {
-            for tx_type in 0..16 {
-                let Ok(params) = InverseTransform2dOuter::resolve(
-                    tx_type,
-                    log2_w,
-                    log2_h,
-                    false,
-                    false,
-                    BitDepth::Eight,
-                    None,
-                ) else {
-                    continue;
+    for (log2_w, log2_h, tx_type, use_ddt) in (0..4 * 4 * 16 * 2).map(|i| {
+        (
+            2 + i / 128,
+            2 + i / 32 % 4,
+            (i / 2 % 16) as usize,
+            i % 2 == 1,
+        )
+    }) {
+        let Ok(params) = InverseTransform2dOuter::resolve(
+            tx_type,
+            log2_w,
+            log2_h,
+            use_ddt,
+            false,
+            BitDepth::Eight,
+            None,
+        ) else {
+            continue;
+        };
+        let (w, h) = (1usize << log2_w, 1usize << log2_h);
+        for trial in 0..6 {
+            let len = match trial {
+                0 => 1,
+                1 => 1 + rng.next(w as u32) as usize,
+                _ => 1 + rng.next((w * h) as u32) as usize,
+            };
+            let spread = if trial % 2 == 0 { 9 } else { 400 };
+            let mut quant: Vec<i32> = (0..len)
+                .map(|_| {
+                    if rng.next(3) == 0 {
+                        rng.next(2 * spread) - spread as i32
+                    } else {
+                        0
+                    }
+                })
+                .collect();
+            if let Some(last) = quant.last_mut() {
+                *last = 1 + rng.next(spread);
+            }
+            let dq = DequantBlockParams {
+                dc_quant: 4 + rng.next(900) as u32,
+                ac_quant: 4 + rng.next(900) as u32,
+                tx_width: w,
+                tx_height: h,
+                dq_denom: 1 << rng.next(2),
+                bit_depth: BitDepth::Eight,
+                qm: None,
+            };
+            let mut dequant = vec![0; w * h];
+            let coded = dequantize_block(&dq, &quant, &mut dequant).unwrap();
+            let mut residual = vec![0; w * h];
+            inverse_transform_2d_outer(&params, &dequant[..coded], &mut residual).unwrap();
+            let stride = w + 3;
+            let pred: Vec<u8> = (0..stride * h).map(|_| rng.next(256) as u8).collect();
+            let mut expected = pred.clone();
+            for (row, res) in residual.chunks_exact(w).enumerate() {
+                for (out, &r) in expected[row * stride..].iter_mut().zip(res) {
+                    *out = (i32::from(*out) + r).clamp(0, 255) as u8;
+                }
+            }
+            let mut scratch = [0; 32 * 32];
+            let table = InverseTransformAdd8::new(tx_type, log2_w, log2_h, use_ddt).unwrap();
+            let flat = FlatDequant::new(dq.dc_quant, dq.ac_quant, dq.dq_denom);
+            let mut dst = pred.clone();
+            assert!(table.add(&quant, flat, &mut dst, stride, &mut scratch));
+            assert_eq!(dst, expected, "{w}x{h} type {tx_type} ddt {use_ddt} table");
+            if let Some(value) = table.flat_residual(&quant, flat) {
+                assert!(tx_type == 0 && residual.iter().all(|&r| r == value));
+            }
+            for quantized in [true, false] {
+                let mut dst = pred.clone();
+                let (input, with) = if quantized {
+                    (&quant[..], Some(&dq))
+                } else {
+                    (&dequant[..coded], None)
                 };
-                let (w, h) = (1usize << log2_w, 1usize << log2_h);
-                for trial in 0..6 {
-                    let len = match trial {
-                        0 => 1,
-                        1 => 1 + rng.next(w as u32) as usize,
-                        _ => 1 + rng.next((w * h) as u32) as usize,
-                    };
-                    let spread = if trial % 2 == 0 { 9 } else { 400 };
-                    let mut quant: Vec<i32> = (0..len)
-                        .map(|_| {
-                            if rng.next(3) == 0 {
-                                rng.next(2 * spread) - spread as i32
-                            } else {
-                                0
-                            }
-                        })
-                        .collect();
-                    if let Some(last) = quant.last_mut() {
-                        *last = 1 + rng.next(spread);
-                    }
-                    let dq = DequantBlockParams {
-                        dc_quant: 4 + rng.next(900) as u32,
-                        ac_quant: 4 + rng.next(900) as u32,
-                        tx_width: w,
-                        tx_height: h,
-                        dq_denom: 1 << rng.next(2),
-                        bit_depth: BitDepth::Eight,
-                        qm: None,
-                    };
-                    let mut dequant = vec![0; w * h];
-                    let coded = dequantize_block(&dq, &quant, &mut dequant).unwrap();
-                    let mut residual = vec![0; w * h];
-                    inverse_transform_2d_outer(&params, &dequant[..coded], &mut residual).unwrap();
-                    let stride = w + 3;
-                    let pred: Vec<u8> = (0..stride * h).map(|_| rng.next(256) as u8).collect();
-                    let mut expected = pred.clone();
-                    for (row, res) in residual.chunks_exact(w).enumerate() {
-                        for (out, &r) in expected[row * stride..].iter_mut().zip(res) {
-                            *out = (i32::from(*out) + r).clamp(0, 255) as u8;
-                        }
-                    }
-                    let mut scratch = [0; 32 * 32];
-                    for quantized in [true, false] {
-                        let mut dst = pred.clone();
-                        let (input, with) = if quantized {
-                            (&quant[..], Some(&dq))
-                        } else {
-                            (&dequant[..coded], None)
-                        };
-                        let fused = inverse_transform_2d_outer_add_u8(
-                            &params,
-                            input,
-                            with,
-                            &mut dst,
-                            stride,
-                            &mut scratch,
-                        )
-                        .unwrap();
-                        if fused {
-                            fused_any = true;
-                            assert_eq!(
-                                dst, expected,
-                                "{w}x{h} type {tx_type} trial {trial} quantized {quantized}"
-                            );
-                        } else {
-                            assert_eq!(dst, pred);
-                        }
-                    }
+                let fused = inverse_transform_2d_outer_add_u8(
+                    &params,
+                    input,
+                    with,
+                    &mut dst,
+                    stride,
+                    &mut scratch,
+                )
+                .unwrap();
+                if fused {
+                    fused_any = true;
+                    assert_eq!(
+                        dst, expected,
+                        "{w}x{h} type {tx_type} trial {trial} quantized {quantized}"
+                    );
+                } else {
+                    assert_eq!(dst, pred);
                 }
             }
         }

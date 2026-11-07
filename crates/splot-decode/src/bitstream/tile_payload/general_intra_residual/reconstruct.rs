@@ -220,7 +220,13 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
                     }
                 }
                 if let Some((fused, flat)) = fused
-                    && fused.add(block.quant, Some(flat), dst, stride, &mut scratch.dequant_pair)
+                    && fused.add(
+                        block.quant,
+                        Some(flat),
+                        dst,
+                        stride,
+                        &mut scratch.dequant_pair,
+                    )
                 {
                     return Ok(());
                 }
@@ -232,12 +238,15 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
                 }
                 let residual = intra_residual(block, &setup, secondary.as_ref(), scratch)
                     .map_err(reconstruct_error)?;
-                return rows.add_block_residual(prediction, residual).map_err(reconstruct_error);
+                return rows
+                    .add_block_residual(prediction, residual)
+                    .map_err(reconstruct_error);
             }
             let (setup, secondary) = general()?;
             let residual = intra_residual(block, &setup, secondary.as_ref(), scratch)
                 .map_err(reconstruct_error)?;
-            rows.add_block_residual(prediction, residual).map_err(reconstruct_error)
+            rows.add_block_residual(prediction, residual)
+                .map_err(reconstruct_error)
         })
     })?;
     Ok(written.is_some())
@@ -450,11 +459,23 @@ fn add_residual_u8(
         return Ok(false);
     };
     let Some(secondary) = secondary else {
-        return Ok(fused.add(block.quant, Some(flat), dst, stride, &mut scratch.dequant_pair));
+        return Ok(fused.add(
+            block.quant,
+            Some(flat),
+            dst,
+            stride,
+            &mut scratch.dequant_pair,
+        ));
     };
     let dequant = &mut scratch.dequant[..setup.adjusted];
     let coded = dequantize_with_secondary(&setup.params, block.quant, Some(secondary), dequant)?;
-    Ok(fused.add(&dequant[..coded], None, dst, stride, &mut scratch.dequant_pair))
+    Ok(fused.add(
+        &dequant[..coded],
+        None,
+        dst,
+        stride,
+        &mut scratch.dequant_pair,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -492,7 +513,13 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
             sink.u8_residual_rect_mut(plane_id, x, y, block_size)
                 .map(|target| {
                     target.is_some_and(|(dst, stride)| {
-                        fused.add(block.quant, Some(flat), dst, stride, &mut scratch.dequant_pair)
+                        fused.add(
+                            block.quant,
+                            Some(flat),
+                            dst,
+                            stride,
+                            &mut scratch.dequant_pair,
+                        )
                     })
                 })
         })?;
@@ -525,7 +552,8 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
         let transform = setup
             .transform()
             .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
-        let residual = dct_dc_residual(block.quant.first().copied().unwrap_or(0), &setup, transform);
+        let residual =
+            dct_dc_residual(block.quant.first().copied().unwrap_or(0), &setup, transform);
         sink.add_constant_residual_rect_block(plane_id, x, y, block_size, residual)?;
         return Ok(());
     }
@@ -564,7 +592,11 @@ fn check_dense_len(
 }
 
 #[inline]
-fn dct_dc_residual(quant: i32, setup: &ReconstructBlockSetup, transform: InverseTransform2dOuter) -> i32 {
+fn dct_dc_residual(
+    quant: i32,
+    setup: &ReconstructBlockSetup,
+    transform: InverseTransform2dOuter,
+) -> i32 {
     let mut dc = dequant_coefficient(
         quant,
         setup.params.dc_quant,
@@ -716,8 +748,12 @@ mod tests {
                         let mut dequant = vec![0; setup.adjusted];
                         let mut residual = vec![0; setup.samples];
                         dequantize_block(&setup.params, &quant, &mut dequant).unwrap();
-                        inverse_transform_2d_outer(&setup.transform().unwrap(), &dequant, &mut residual)
-                            .unwrap();
+                        inverse_transform_2d_outer(
+                            &setup.transform().unwrap(),
+                            &dequant,
+                            &mut residual,
+                        )
+                        .unwrap();
                         let dc = dct_dc_residual(quant_dc, &setup, setup.transform().unwrap());
                         assert!(
                             residual.iter().all(|&value| value == dc),
