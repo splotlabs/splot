@@ -273,7 +273,7 @@ pub fn deblock_vertical_edge_column<T: ReconSample>(
     let max_sample = bit_depth.max_sample() as i16;
     let run_edges = (edges, edge_stride.get());
     if let Some(samples) = T::u8_slice_mut(samples) {
-        run::<u8, true>(samples, stride, first, run_edges, max_sample);
+        run_u8::<true>(samples, stride, first, run_edges, max_sample);
     } else if let Some(samples) = T::u16_slice_mut(samples) {
         run::<u16, true>(samples, stride, first, run_edges, max_sample);
     } else {
@@ -321,7 +321,7 @@ pub fn deblock_horizontal_edges<T: ReconSample>(
     }
     let max_sample = bit_depth.max_sample() as i16;
     if let Some(samples) = T::u8_slice_mut(samples) {
-        run::<u8, false>(samples, stride, first, (edges, 1), max_sample);
+        run_u8::<false>(samples, stride, first, (edges, 1), max_sample);
     } else if let Some(samples) = T::u16_slice_mut(samples) {
         run::<u16, false>(samples, stride, first, (edges, 1), max_sample);
     } else {
@@ -364,6 +364,22 @@ impl EdgeSample for u16 {
     fn from_i16(value: i16) -> Self {
         value as Self
     }
+}
+
+/// [`run`] over 8-bit samples, through the eight-segment kernels where the
+/// level has them.
+fn run_u8<const VERTICAL: bool>(
+    samples: &mut [u8],
+    stride: usize,
+    first: usize,
+    edges: (&[DeblockEdge], usize),
+    max_sample: i16,
+) {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(token) = Level::baseline().as_avx2() {
+        return avx2_u8::run::<VERTICAL>(token, samples, stride, first, edges);
+    }
+    run::<u8, VERTICAL>(samples, stride, first, edges, max_sample);
 }
 
 /// Runs the validated segments `edges.0[k * edges.1]` in chunks of
@@ -465,17 +481,6 @@ impl Chunk for u8 {
         edges: &[DeblockEdge; SEGMENTS],
         max_sample: i16,
     ) {
-        #[cfg(target_arch = "x86_64")]
-        if let Some(token) = Level::baseline().as_avx2() {
-            let packed = edges.map(|edge| edge.0 as i64);
-            let reach = chunk_reach(edges);
-            if VERTICAL {
-                avx2::vertical_bytes(token, samples, stride, first, packed, reach);
-            } else {
-                avx2::horizontal_u8(token, samples, stride, first, packed, reach, max_sample);
-            }
-            return;
-        }
         dispatch!(Level::baseline(), simd => portable_chunk::<_, Self, VERTICAL>(
             simd, samples, stride, first, edges, max_sample,
         ));
@@ -694,7 +699,7 @@ mod portable {
 mod avx2 {
     use core::arch::x86_64::*;
 
-    use fearless_simd::{SimdBase, SimdFrom, kernel, u8x16, u16x16};
+    use fearless_simd::{SimdBase, SimdFrom, kernel, u16x16};
 
     use super::{CLAMP, Q_FIRST, RAMP, REACH, ROWS};
 
@@ -961,99 +966,6 @@ mod avx2 {
     );
 
     kernel!(
-        /// One round of the byte network that transposes the 16x16 block of
-        /// the 16 lines of a vertical-edge chunk: vector `i` holds line `i`
-        /// in its low half and line `i + 8` in its high one. Each round
-        /// interleaves vector `i` with `i + 4`, which rotates the 7-bit
-        /// vector-and-byte address right by one, so three rounds leave
-        /// columns `2v` and `2v + 1` in vector `v` (lines `0..8` low,
-        /// `8..16` high) and four more restore the lines.
-        #[inline(always)]
-        fn byte_round(token: Avx2, v: &mut [__m256i; 8]) {
-            let source = *v;
-            for i in 0..4 {
-                v[2 * i] = _mm256_unpacklo_epi8(source[i], source[i + 4]);
-                v[2 * i + 1] = _mm256_unpackhi_epi8(source[i], source[i + 4]);
-            }
-        }
-    );
-
-    kernel!(
-        /// Filters the vertical edges of one `u8` chunk through the byte
-        /// network of [`byte_round`] rather than a 16-bit transpose.
-        #[inline(always)]
-        pub(super) fn vertical_bytes(
-            token: Avx2,
-            samples: &mut [u8],
-            stride: usize,
-            first: usize,
-            packed: [i64; 4],
-            reach: usize,
-        ) {
-            let origin = first - REACH;
-            let load =
-                |at: usize| -> __m128i { u8x16::from_slice(token, &samples[at..at + 16]).into() };
-            let mut bytes = [_mm256_setzero_si256(); 8];
-            for (line, vector) in bytes.iter_mut().enumerate() {
-                let low = load(origin + line * stride);
-                let high = load(origin + (line + 8) * stride);
-                *vector = _mm256_inserti128_si256::<1>(_mm256_castsi128_si256(low), high);
-            }
-            for _ in 0..3 {
-                byte_round(token, &mut bytes);
-            }
-            let zero = _mm256_setzero_si256();
-            let mut rows = [zero; ROWS];
-            for (pair, vector) in bytes.iter().enumerate() {
-                rows[2 * pair] = _mm256_unpacklo_epi8(*vector, zero);
-                rows[2 * pair + 1] = _mm256_unpackhi_epi8(*vector, zero);
-            }
-            let moved = match reach {
-                3 => filter_rows!(token, rows, packed, 3),
-                5 => filter_rows!(token, rows, packed, 5),
-                _ => filter_rows!(token, rows, packed, REACH),
-            };
-            if !moved {
-                return;
-            }
-            let writes = super::chunk_writes(reach);
-            for pair in (REACH - writes) / 2..(REACH + writes).div_ceil(2) {
-                bytes[pair] = _mm256_packus_epi16(rows[2 * pair], rows[2 * pair + 1]);
-            }
-            for _ in 0..4 {
-                byte_round(token, &mut bytes);
-            }
-            for (line, vector) in bytes.iter().enumerate() {
-                let halves = [
-                    _mm256_castsi256_si128(*vector),
-                    _mm256_extracti128_si256::<1>(*vector),
-                ];
-                for (half, value) in halves.into_iter().enumerate() {
-                    let at = origin + (line + 8 * half) * stride;
-                    u8x16::simd_from(token, value).store_slice(&mut samples[at..at + 16]);
-                }
-            }
-        }
-    );
-
-    kernel!(
-        #[inline(always)]
-        fn load_u8(token: Avx2, samples: &[u8], at: usize) -> __m256i {
-            _mm256_cvtepu8_epi16(u8x16::from_slice(token, &samples[at..at + 16]).into())
-        }
-    );
-
-    kernel!(
-        /// Stores the 16 lanes of `x`, which packing clips to `0..=255`.
-        #[inline(always)]
-        fn store_u8(token: Avx2, samples: &mut [u8], at: usize, x: __m256i, _max: __m256i) {
-            let packed =
-                _mm_packus_epi16(_mm256_castsi256_si128(x), _mm256_extracti128_si256::<1>(x));
-            u8x16::simd_from(token, packed).store_slice(&mut samples[at..at + 16]);
-        }
-    );
-
-    kernel!(
         #[inline(always)]
         fn load_u16(token: Avx2, samples: &[u16], at: usize) -> __m256i {
             u16x16::from_slice(token, &samples[at..at + 16]).into()
@@ -1143,9 +1055,12 @@ mod avx2 {
     }
 
     chunk_dispatch!(vertical_u16, u16, load_u16, store_u16, true);
-    chunk_dispatch!(horizontal_u8, u8, load_u8, store_u8, false);
     chunk_dispatch!(horizontal_u16, u16, load_u16, store_u16, false);
 }
+
+#[cfg(target_arch = "x86_64")]
+#[path = "edges_u8.rs"]
+mod avx2_u8;
 
 #[cfg(test)]
 #[path = "edges_tests.rs"]
