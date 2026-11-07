@@ -125,10 +125,12 @@ fn filter_intra_edge_lanes<T: ReconSample>(
 /// `samples` after [`PAD`] copies of its first sample, then its last sample to
 /// the end.
 fn clamped_copy<P: Copy + Default>(samples: &[P]) -> [P; MAX_LANE_EDGE] {
-    let mut source = [P::default(); MAX_LANE_EDGE];
+    let (Some(&first), Some(&last)) = (samples.first(), samples.last()) else {
+        return [P::default(); MAX_LANE_EDGE];
+    };
+    let mut source = [last; MAX_LANE_EDGE];
     source[PAD..PAD + samples.len()].copy_from_slice(samples); // splot-copy-ok: clamped edge copy the filter reads
-    source[..PAD].fill(samples[0]);
-    source[PAD + samples.len()..].fill(samples[samples.len() - 1]);
+    source[..PAD].fill(first);
     source
 }
 
@@ -146,6 +148,10 @@ fn filter_lanes<S: Simd, P: IntraLaneSample>(
             if let Some(window) = source[at + 1 + k..].first_chunk::<16>() {
                 sum += P::load16(simd, window) * tap as u16;
             }
+        }
+        if let Some(out) = out.get_mut(at..).and_then(<[P]>::first_chunk_mut::<16>) {
+            P::store16(simd, sum >> 4, out);
+            continue;
         }
         let mut values = [P::default(); 16];
         P::store16(simd, sum >> 4, &mut values);

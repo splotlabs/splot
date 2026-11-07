@@ -925,8 +925,10 @@ pub(super) fn gather_column_clamped<T: ReconSample>(
     let (copied, filled) = out.split_at_mut(height.min(out.len()));
     if let Some(column) = stored_run(workspace, plane_id, (x, first), (1, height)) {
         let stride = workspace.plane(plane_id)?.stride_samples();
-        for (slot, &sample) in copied.iter_mut().zip(column.iter().step_by(stride)) {
-            *slot = sample;
+        for (row, slot) in copied.iter_mut().enumerate() {
+            if let Some(&sample) = column.get(row * stride) {
+                *slot = sample;
+            }
         }
     } else {
         let rows = workspace.rect_rows(plane_id, PlaneRect::new(x, first, 1, height)?)?;

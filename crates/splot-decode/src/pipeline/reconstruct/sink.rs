@@ -83,7 +83,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     if bit_depth == workspace.info().bit_depth() {
-        let write_through = block.eob == 0;
+        let write_through = block.eob == 0 || residual_adds_in_place::<T>();
         let mut gathered = [[T::default(); MAX_INTRA_SIDE]; 2];
         let [left, above] = &mut gathered;
         let mut have = (false, false);
@@ -105,9 +105,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
             dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
             if write_through {
                 let (output, stride) = frame.target();
-                for row in output.chunks_mut(stride).take(height) {
-                    row[..width].fill(dc);
-                }
+                fill_block(output, stride, block_size, dc);
                 if ibp_dc {
                     apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, output, stride)?;
                 }
@@ -116,6 +114,21 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
         })?;
         if in_frame.is_some() {
             if write_through {
+                if block.eob != 0 {
+                    add_general_intra_coeff_block_residual_in_place(
+                        workspace,
+                        block,
+                        plane_id,
+                        x,
+                        y,
+                        block_size,
+                        qindex,
+                        use_tcq,
+                        luma_context,
+                        None,
+                        bit_depth,
+                    )?;
+                }
                 return Ok(());
             }
             let mut prediction = workspace.take_intra_prediction_buffer(
@@ -405,6 +418,33 @@ pub(crate) fn write_intra_prediction_block<T: ReconSample>(
     );
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
     result
+}
+
+/// Fills the `size` block of `output`, rows `stride` apart, with `value`,
+/// one fixed-width store per row.
+fn fill_block<T: Copy>(output: &mut [T], stride: usize, size: IntraRectBlockSize, value: T) {
+    fn rows<T: Copy, const N: usize>(output: &mut [T], stride: usize, height: usize, value: T) {
+        for row in output.chunks_mut(stride).take(height) {
+            if let Some(row) = row.first_chunk_mut::<N>() {
+                *row = [value; N];
+            }
+        }
+    }
+    let height = size.height();
+    match size.width() {
+        4 => rows::<T, 4>(output, stride, height, value),
+        8 => rows::<T, 8>(output, stride, height, value),
+        16 => rows::<T, 16>(output, stride, height, value),
+        32 => rows::<T, 32>(output, stride, height, value),
+        _ => rows::<T, 64>(output, stride, height, value),
+    }
+}
+
+/// Whether a coded in-frame block of `T` predicts in place and adds its
+/// residual there: the 8-bit in-place add is cheaper than staging the
+/// prediction, the wider one is not.
+pub(crate) const fn residual_adds_in_place<T: ReconSample>() -> bool {
+    T::MAX_VALUE <= u8::MAX as u16
 }
 
 /// Predicts an in-frame block straight into its frame rows, then adds any

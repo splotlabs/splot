@@ -12,8 +12,7 @@ use fearless_simd::{Level, Simd, SimdBase, dispatch, u8x32, u16x8, u16x16};
 use crate::intra_dc_math::{IntraLaneSample, validate_output_shape, validate_sample_type};
 use crate::math::round2_i32;
 use crate::{
-    BitDepth, CurrentFrameWorkspace, IntraBlockFrame, IntraRectBlockSize, PlaneId, ReconError,
-    ReconSample, Result,
+    BitDepth, CurrentFrameWorkspace, IntraRectBlockSize, PlaneId, ReconError, ReconSample, Result,
 };
 
 const BLEND_WEIGHT_MAX: i32 = 32;
@@ -126,12 +125,11 @@ pub fn predict_intra_smooth_rect_into<T: ReconSample>(
     )?;
 
     if bit_depth.max_sample() <= MAX_LANE_SAMPLE {
-        let mut lanes = IntraSmoothLanes::new(size);
+        let mut lanes = [T::default(); LANE_LEN];
         let (left, above) = (edges.left_samples(), edges.above_samples());
-        lanes.left[..size.height()].copy_from_slice(&left[..size.height()]); // splot-copy-ok: smooth left lanes
-        lanes.set_above(&above[..size.width()]);
-        lanes.corners = [above[size.width()], left[size.height()]];
-        predict_lanes(&lanes, mode, output, stride_samples);
+        lanes[..size.height()].copy_from_slice(&left[..size.height()]); // splot-copy-ok: smooth left lanes
+        let corners = [above[size.width()], left[size.height()]];
+        predict_edges(size, mode, &lanes, above, corners, output, stride_samples);
         return Ok(());
     }
     for row in 0..size.height() {
@@ -245,58 +243,6 @@ fn smooth_tables(size: IntraRectBlockSize) -> SmoothTables {
     SMOOTH_TABLES[k(size.log2_width())][k(size.log2_height())]
 }
 
-/// One block's § 7.13.2.13 edges in the prediction kernel's lane layout:
-/// `left[i]` is `LeftCol[i]`, `above[j]` is `AboveRow[j mod w]` (repeated for
-/// blocks narrower than 16), and `corners` is `[AboveRow[w], LeftCol[h]]`.
-///
-/// Every sample must lie within the bit depth of the prediction it feeds.
-#[derive(Clone, Copy, Debug)]
-pub struct IntraSmoothLanes<T: ReconSample> {
-    size: IntraRectBlockSize,
-    /// `LeftCol[0..h)`, from index 0.
-    pub left: [T; LANE_LEN],
-    above: [T; LANE_LEN],
-    /// `[AboveRow[w], LeftCol[h]]`.
-    pub corners: [T; 2],
-}
-
-impl<T: ReconSample> IntraSmoothLanes<T> {
-    /// Empty lanes for a block of `size`.
-    pub fn new(size: IntraRectBlockSize) -> Self {
-        Self {
-            size,
-            left: [T::default(); LANE_LEN],
-            above: [T::default(); LANE_LEN],
-            corners: [T::default(); 2],
-        }
-    }
-
-    /// Sets `AboveRow[0..w)` from the first `w` samples of `row`.
-    pub fn set_above(&mut self, row: &[T]) {
-        fn repeat<T: Copy, const N: usize>(row: &[T], lanes: &mut [T]) {
-            if let Some(row) = row.first_chunk::<N>() {
-                for lane in lanes.as_chunks_mut::<N>().0 {
-                    *lane = *row;
-                }
-            }
-        }
-        match self.size.width() {
-            4 => repeat::<T, 4>(row, &mut self.above[..16]),
-            8 => repeat::<T, 8>(row, &mut self.above[..16]),
-            width => {
-                if let Some(row) = row.get(..width) {
-                    self.above[..width].copy_from_slice(row); // splot-copy-ok: smooth above lanes
-                }
-            }
-        }
-    }
-
-    /// Sets every `AboveRow[0..w)` sample to `sample`.
-    pub fn fill_above(&mut self, sample: T) {
-        self.above.fill(sample);
-    }
-}
-
 /// One § 7.13.2.13 block predicted in place from the frame, with the § 7.13.2.1
 /// availability of its edges.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -336,131 +282,131 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     ) -> Result<bool> {
         validate_sample_type::<T>(request.bit_depth)?;
         let predicted = self.with_intra_block_frame(plane, x, y, request.size, |frame| {
-            let mut lanes = IntraSmoothLanes::new(request.size);
-            gather_frame_lanes(frame, request, &mut lanes);
-            let (output, stride) = frame.target();
-            predict_lanes(&lanes, request.mode, output, stride);
+            let mut left = [T::default(); LANE_LEN];
+            let mut fill = [T::default(); MAX_SMOOTH_SIDE];
+            let left_len = if request.left {
+                frame.left_column(&mut left[..=request.size.height()])
+            } else {
+                0
+            };
+            let (above, output, stride) = frame.above_row_and_target();
+            let above = if request.above { above } else { &[] };
+            let (above, corners) = frame_edges(request, &mut left, left_len, above, &mut fill);
+            predict_edges(
+                request.size,
+                request.mode,
+                &left,
+                above,
+                corners,
+                output,
+                stride,
+            );
             Ok::<_, ReconError>(())
         })?;
         Ok(predicted.is_some())
     }
 }
 
-/// The § 7.13.2.13 edges of `request` with their § 7.13.2.1 fallbacks, read
-/// from the stored samples around the block.
+/// Completes the § 7.13.2.13 edges of `request` with their § 7.13.2.1
+/// fallbacks: `left` holds the `left_len` stored samples of the left column
+/// and `above` the stored row above. Returns `AboveRow[0..w)`, from `above`
+/// or `fill`, and `[AboveRow[w], LeftCol[h]]`.
 #[inline]
-fn gather_frame_lanes<T: ReconSample>(
-    frame: &IntraBlockFrame<'_, T>,
+fn frame_edges<'a, T: ReconSample>(
     request: IntraSmoothFrameRequest,
-    lanes: &mut IntraSmoothLanes<T>,
-) {
+    left: &mut [T; LANE_LEN],
+    left_len: usize,
+    above: &'a [T],
+    fill: &'a mut [T; MAX_SMOOTH_SIDE],
+) -> (&'a [T], [T; 2]) {
     let (width, height) = (request.size.width(), request.size.height());
     let half = 1u16 << (request.bit_depth.bits() - 1);
     let fallback = |value: u16| T::try_from_u16(value).unwrap_or_default();
-    let left_len = if request.left {
-        frame.left_column(&mut lanes.left[..=height])
-    } else {
-        0
-    };
-    let above = if request.above {
-        frame.above_row()
-    } else {
-        &[]
-    };
     let have_left = left_len >= height;
-    let have_above = above.len() >= width;
     if have_left && (left_len == height || !request.below_left) {
-        lanes.left[height] = lanes.left[height - 1];
+        left[height] = left[height - 1];
     }
-    let mut corners = [T::default(); 2];
-    if have_above {
-        lanes.set_above(above);
-        corners[0] = if request.above_right && above.len() > width {
+    if above.len() >= width {
+        if !have_left {
+            left[..=height].fill(above[0]);
+        }
+        let right = if request.above_right && above.len() > width {
             above[width]
         } else {
             above[width - 1]
         };
+        return (above, [right, left[height]]);
     }
     if !have_left {
-        let fill = if have_above {
-            above[0]
-        } else {
-            fallback(half + 1)
-        };
-        lanes.left[..=height].fill(fill);
+        left[..=height].fill(fallback(half + 1));
     }
-    corners[1] = lanes.left[height];
-    if !have_above {
-        let fill = if have_left {
-            lanes.left[0]
-        } else {
-            fallback(half - 1)
-        };
-        lanes.fill_above(fill);
-        corners[0] = fill;
-    }
-    lanes.corners = corners;
+    let sample = if have_left {
+        left[0]
+    } else {
+        fallback(half - 1)
+    };
+    fill.fill(sample);
+    (fill, [sample, left[height]])
 }
 
-/// Writes the § 7.13.2.13 prediction of `lanes` into caller storage.
-///
-/// # Errors
-/// Returns [`ReconError`] for a sample type that cannot represent `bit_depth`,
-/// or a too-small stride or output buffer.
-pub fn predict_intra_smooth_lanes_into<T: ReconSample>(
-    bit_depth: BitDepth,
+/// Writes the § 7.13.2.13 prediction of a block from `LeftCol[0..h)` in
+/// `left`, `AboveRow[0..w)` in `above`, and `[AboveRow[w], LeftCol[h]]`, for
+/// samples of at most [`MAX_LANE_SAMPLE`].
+fn predict_edges<T: ReconSample>(
+    size: IntraRectBlockSize,
     mode: IntraSmoothMode,
-    lanes: &IntraSmoothLanes<T>,
-    output: &mut [T],
-    stride_samples: usize,
-) -> Result<()> {
-    validate_sample_type::<T>(bit_depth)?;
-    validate_output_shape(
-        lanes.size,
-        output.len(),
-        stride_samples,
-        "smooth intra prediction output buffer length",
-    )?;
-    predict_lanes(lanes, mode, output, stride_samples);
-    Ok(())
-}
-
-fn predict_lanes<T: ReconSample>(
-    lanes: &IntraSmoothLanes<T>,
-    mode: IntraSmoothMode,
+    left: &[T; LANE_LEN],
+    above: &[T],
+    [right, bottom]: [T; 2],
     output: &mut [T],
     stride: usize,
 ) {
-    if let (Some(left), Some(above), Some(corners), Some(target)) = (
-        T::u8_slice(&lanes.left),
-        T::u8_slice(&lanes.above),
-        T::u8_slice(&lanes.corners),
+    if let (Some(left), Some(above), Some(output)) = (
+        T::u8_slice(left).and_then(|left| <&[u8; LANE_LEN]>::try_from(left).ok()),
+        T::u8_slice(above),
         T::u8_slice_mut(output),
     ) {
-        predict_smooth_u8(
-            lanes.size,
+        let block = SmoothBlockU8 {
+            size,
             mode,
-            left,
-            above,
-            [corners[0], corners[1]],
-            target,
-            stride,
-        );
-    } else if let (Some(left), Some(above), Some(corners), Some(target)) = (
-        T::u16_slice(&lanes.left),
-        T::u16_slice(&lanes.above),
-        T::u16_slice(&lanes.corners),
+            corners: [right, bottom].map(|sample| sample.to_u16() as u8),
+        };
+        predict_smooth_u8(block, left, above, output, stride);
+    } else if let (Some(left), Some(above), Some(output)) = (
+        T::u16_slice(left),
+        T::u16_slice(above),
         T::u16_slice_mut(output),
     ) {
         predict_smooth_lanes(
-            lanes.size,
+            size,
             mode,
             left,
             above,
-            [corners[0], corners[1]],
-            target,
+            [right.to_u16(), bottom.to_u16()],
+            output,
             stride,
         );
+    }
+}
+
+/// Lays `AboveRow[0..w)` out as [`smooth_lanes`] reads it: `lanes[j]` is
+/// `AboveRow[j mod w]` over the first 16 lanes of blocks narrower than 16.
+fn above_lanes<T: Copy>(above: &[T], width: usize, lanes: &mut [T; LANE_LEN]) {
+    fn repeat<T: Copy, const N: usize>(row: &[T], lanes: &mut [T]) {
+        if let Some(row) = row.first_chunk::<N>() {
+            for lane in lanes.as_chunks_mut::<N>().0 {
+                *lane = *row;
+            }
+        }
+    }
+    match width {
+        4 => repeat::<T, 4>(above, &mut lanes[..16]),
+        8 => repeat::<T, 8>(above, &mut lanes[..16]),
+        _ => {
+            if let Some(row) = above.get(..width.min(LANE_LEN)) {
+                lanes[..row.len()].copy_from_slice(row); // splot-copy-ok: smooth above lanes
+            }
+        }
     }
 }
 
@@ -482,13 +428,11 @@ fn predict_smooth_lanes(
     output: &mut [u16],
     stride: usize,
 ) {
-    let (Ok(left), Ok(above)) = (
-        <&[u16; LANE_LEN]>::try_from(left),
-        <&[u16; LANE_LEN]>::try_from(above),
-    ) else {
+    let Ok(left) = <&[u16; LANE_LEN]>::try_from(left) else {
         return;
     };
-    let lanes = [*left, *above];
+    let mut lanes = [*left, [0; LANE_LEN]];
+    above_lanes(above, size.width(), &mut lanes[1]);
     dispatch!(Level::baseline(), simd => smooth_lanes(simd, size, mode, &lanes, corners, output, stride));
 }
 
@@ -551,11 +495,10 @@ fn smooth_lanes<S: Simd, P: IntraLaneSample>(
             }
             let mut lanes = [P::default(); 16];
             P::store16(simd, value, &mut lanes);
-            for (r, samples) in lanes.chunks_exact(width).enumerate() {
-                let start = start + r * stride;
-                if let Some(out) = output.get_mut(start..start + width) {
-                    out.copy_from_slice(samples); // splot-copy-ok: publish one smooth row
-                }
+            if width == 4 {
+                publish_rows::<P, 4>(&lanes, output, row, stride);
+            } else {
+                publish_rows::<P, 8>(&lanes, output, row, stride);
             }
         }
     }
@@ -569,34 +512,36 @@ struct SmoothBlockU8 {
     corners: [u8; 2],
 }
 
-/// 8-bit § 7.13.2.13, through the AVX2 rounding-multiply kernel when the
-/// baseline has it.
+/// 8-bit § 7.13.2.13 from `LeftCol[0..h)` in `left` and `AboveRow[0..w)` in
+/// the first `w` samples of `above`, through the AVX2 rounding-multiply kernel
+/// when the baseline has it.
 #[inline]
 fn predict_smooth_u8(
-    size: IntraRectBlockSize,
-    mode: IntraSmoothMode,
-    left: &[u8],
+    block: SmoothBlockU8,
+    left: &[u8; LANE_LEN],
     above: &[u8],
-    corners: [u8; 2],
     output: &mut [u8],
     stride: usize,
 ) {
-    let (Ok(left), Ok(above)) = (
-        <&[u8; LANE_LEN]>::try_from(left),
-        <&[u8; LANE_LEN]>::try_from(above),
-    ) else {
+    let SmoothBlockU8 {
+        size,
+        mode,
+        corners,
+    } = block;
+    let width = size.width();
+    let Some(above) = above.get(..width) else {
         return;
     };
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = Level::baseline().as_avx2() {
-        let block = SmoothBlockU8 {
-            size,
-            mode,
-            corners,
-        };
         return smooth_u8_avx2(token, block, left, above, output, stride);
     }
-    let lanes = [left.map(u16::from), above.map(u16::from)];
+    let mut lanes = [left.map(u16::from), [0; LANE_LEN]];
+    let mut row = [0u16; MAX_SMOOTH_SIDE];
+    for (lane, &sample) in row.iter_mut().zip(above) {
+        *lane = u16::from(sample);
+    }
+    above_lanes(&row, width, &mut lanes[1]);
     let corners = corners.map(u16::from);
     dispatch!(Level::baseline(), simd => smooth_lanes(simd, size, mode, &lanes, corners, output, stride));
 }
@@ -606,21 +551,23 @@ fearless_simd::kernel!(
     /// [`smooth_lanes`] for `u8` with `_mm256_mulhrs_epi16`: `mulhrs(d, f <<
     /// (15 - n))` is `Round2(d * f, n)` for `|d| <= 255` and `0 <= f < 2^n`, so
     /// each § 7.13.2.13 `x + Round2((y - x) * f, n)` stage is one rounding
-    /// multiply and one add.
+    /// multiply and one add. Blocks 4 and 8 wide predict `16 / w` rows per
+    /// group; wider blocks one 16-column run of one row.
     #[inline]
     fn smooth_u8_avx2(
         token: Avx2,
         block: SmoothBlockU8,
         left: &[u8; LANE_LEN],
-        above: &[u8; LANE_LEN],
+        above: &[u8],
         output: &mut [u8],
         stride: usize,
     ) {
         use core::arch::x86_64::{
-            __m256i, _mm_cvtepu8_epi16, _mm_cvtsi32_si128, _mm_packus_epi16, _mm256_add_epi16,
-            _mm256_avg_epu16, _mm256_broadcastsi128_si256, _mm256_castsi256_si128,
-            _mm256_cvtepu8_epi16, _mm256_extracti128_si256, _mm256_mulhrs_epi16, _mm256_set1_epi16,
-            _mm256_shuffle_epi8, _mm256_sll_epi16, _mm256_slli_epi16, _mm256_sub_epi16,
+            __m256i, _mm_cvtepu8_epi16, _mm_cvtsi32_si128, _mm_packus_epi16, _mm_set1_epi32,
+            _mm_set1_epi64x, _mm256_add_epi16, _mm256_avg_epu16, _mm256_broadcastsi128_si256,
+            _mm256_castsi256_si128, _mm256_cvtepu8_epi16, _mm256_extracti128_si256,
+            _mm256_mulhrs_epi16, _mm256_set1_epi16, _mm256_shuffle_epi8, _mm256_sll_epi16,
+            _mm256_slli_epi16, _mm256_sub_epi16,
         };
         use fearless_simd::{SimdFrom, u16x8};
         let SmoothBlockU8 {
@@ -628,119 +575,164 @@ fearless_simd::kernel!(
             mode,
             corners,
         } = block;
-        let (width, height) = (size.width(), size.height());
+        let width = size.width();
+        // At most 64 rows, so every row-term read below stays inside its table.
+        let height = size.height().min(MAX_SMOOTH_SIDE);
         let [[h_far, _, h_blend], [v_far, _, v_blend]] = smooth_tables(size);
         let h_shift = _mm_cvtsi32_si128(15 - i32::from(size.log2_width()));
         let v_shift = _mm_cvtsi32_si128(15 - i32::from(size.log2_height()));
         let right = _mm256_set1_epi16(i16::from(corners[0]));
         let bottom = _mm256_set1_epi16(i16::from(corners[1]));
-        let group_log2 = 4u8.saturating_sub(size.log2_width());
-        let index: Option<__m256i> = match width {
-            4 => Some(u8x32::from_slice(token, &ROW_INDEX_4).into()),
-            8 => Some(u8x32::from_slice(token, &ROW_INDEX_8).into()),
-            _ => None,
-        };
-        macro_rules! rows {
-            ($terms:expr, $row:expr) => {
-                match index {
-                    Some(index) => _mm256_shuffle_epi8(
-                        _mm256_broadcastsi128_si256(
-                            u16x8::from_slice(token, &$terms[$row..$row + 8]).into(),
-                        ),
-                        index,
-                    ),
-                    None => _mm256_set1_epi16($terms[$row] as i16),
-                }
-            };
+        macro_rules! columns {
+            ($terms:expr, $chunk:expr) => {{
+                let lanes: __m256i = u16x16::from_slice(token, &$terms[$chunk..$chunk + 16]).into();
+                lanes
+            }};
         }
-        macro_rules! left_rows {
-            ($row:expr) => {
-                match index {
-                    Some(index) => _mm256_shuffle_epi8(
-                        _mm256_broadcastsi128_si256(_mm_cvtepu8_epi16(
-                            u8x16::from_slice(token, &left[$row..$row + 16]).into(),
-                        )),
-                        index,
-                    ),
-                    None => _mm256_set1_epi16(i16::from(left[$row])),
-                }
-            };
+        macro_rules! vertical {
+            ($top:expr, $v_far:expr, $v_blend:expr) => {{
+                let top = $top;
+                let v_far = _mm256_sll_epi16($v_far, v_shift);
+                let pred = _mm256_add_epi16(
+                    bottom,
+                    _mm256_mulhrs_epi16(_mm256_sub_epi16(top, bottom), v_far),
+                );
+                let s_top = _mm256_slli_epi16::<9>($v_blend);
+                _mm256_add_epi16(
+                    pred,
+                    _mm256_mulhrs_epi16(_mm256_sub_epi16(top, pred), s_top),
+                )
+            }};
         }
-        for chunk in (0..width).step_by(16) {
-            macro_rules! columns {
-                ($terms:expr) => {{
-                    let lanes: __m256i =
-                        u16x16::from_slice(token, &$terms[chunk..chunk + 16]).into();
-                    lanes
-                }};
-            }
-            let top =
-                _mm256_cvtepu8_epi16(u8x16::from_slice(token, &above[chunk..chunk + 16]).into());
-            let top_gap = _mm256_sub_epi16(top, bottom);
-            let far = _mm256_sll_epi16(columns!(h_far), h_shift);
-            let s_left = _mm256_slli_epi16::<9>(columns!(h_blend));
-            for group in 0..height >> group_log2 {
-                let row = group << group_log2;
-                macro_rules! vertical {
-                    () => {{
-                        let v_far = _mm256_sll_epi16(rows!(v_far, row), v_shift);
-                        let pred = _mm256_add_epi16(bottom, _mm256_mulhrs_epi16(top_gap, v_far));
-                        let s_top = _mm256_slli_epi16::<9>(rows!(v_blend, row));
-                        _mm256_add_epi16(
-                            pred,
-                            _mm256_mulhrs_epi16(_mm256_sub_epi16(top, pred), s_top),
-                        )
-                    }};
-                }
-                macro_rules! horizontal {
-                    () => {{
-                        let left = left_rows!(row);
-                        let gap = _mm256_sub_epi16(left, right);
-                        let pred = _mm256_add_epi16(right, _mm256_mulhrs_epi16(gap, far));
-                        _mm256_add_epi16(
-                            pred,
-                            _mm256_mulhrs_epi16(_mm256_sub_epi16(left, pred), s_left),
-                        )
-                    }};
-                }
-                let value = match mode {
-                    IntraSmoothMode::SmoothVertical => vertical!(),
-                    IntraSmoothMode::SmoothHorizontal => horizontal!(),
-                    IntraSmoothMode::Smooth => _mm256_avg_epu16(vertical!(), horizontal!()),
-                };
-                let packed = u8x16::simd_from(
+        macro_rules! horizontal {
+            ($left:expr, $far:expr, $s_left:expr) => {{
+                let left = $left;
+                let pred = _mm256_add_epi16(
+                    right,
+                    _mm256_mulhrs_epi16(_mm256_sub_epi16(left, right), $far),
+                );
+                _mm256_add_epi16(
+                    pred,
+                    _mm256_mulhrs_epi16(_mm256_sub_epi16(left, pred), $s_left),
+                )
+            }};
+        }
+        macro_rules! pack {
+            ($value:expr) => {{
+                let value = $value;
+                u8x16::simd_from(
                     token,
                     _mm_packus_epi16(
                         _mm256_castsi256_si128(value),
                         _mm256_extracti128_si256::<1>(value),
                     ),
+                )
+            }};
+        }
+        if width >= 16 {
+            for chunk in (0..width.min(MAX_SMOOTH_SIDE)).step_by(16) {
+                let top = _mm256_cvtepu8_epi16(
+                    u8x16::from_slice(token, &above[chunk..chunk + 16]).into(),
                 );
-                let start = row * stride + chunk;
-                if width >= 16 {
-                    if let Some(out) = output.get_mut(start..start + 16) {
-                        packed.store_slice(out);
-                    }
-                    continue;
+                let far = _mm256_sll_epi16(columns!(h_far, chunk), h_shift);
+                let s_left = _mm256_slli_epi16::<9>(columns!(h_blend, chunk));
+                macro_rules! run {
+                    ($value:expr) => {
+                        for row in 0..height {
+                            let packed = pack!($value(row));
+                            if let Some(out) = output
+                                .get_mut(row * stride + chunk..)
+                                .and_then(<[u8]>::first_chunk_mut::<16>)
+                            {
+                                packed.store_slice(out);
+                            }
+                        }
+                    };
                 }
-                let lanes: [u8; 16] = packed.into();
-                let out = output.get_mut(start..).unwrap_or_default();
-                if width == 4 {
-                    publish_rows::<4>(&lanes, out, stride);
-                } else {
-                    publish_rows::<8>(&lanes, out, stride);
+                let v = |row: usize| {
+                    vertical!(
+                        top,
+                        _mm256_set1_epi16(v_far[row] as i16),
+                        _mm256_set1_epi16(v_blend[row] as i16)
+                    )
+                };
+                let h =
+                    |row: usize| horizontal!(_mm256_set1_epi16(i16::from(left[row])), far, s_left);
+                match mode {
+                    IntraSmoothMode::SmoothVertical => run!(v),
+                    IntraSmoothMode::SmoothHorizontal => run!(h),
+                    IntraSmoothMode::Smooth => run!(|row| _mm256_avg_epu16(v(row), h(row))),
                 }
             }
+            return;
+        }
+        let (index, top) = match (above.first_chunk::<4>(), above.first_chunk::<8>()) {
+            (_, Some(&row)) if width == 8 => {
+                (&ROW_INDEX_8, _mm_set1_epi64x(i64::from_le_bytes(row)))
+            }
+            (Some(&row), _) => (&ROW_INDEX_4, _mm_set1_epi32(i32::from_le_bytes(row))),
+            _ => return,
+        };
+        let index: __m256i = u8x32::from_slice(token, index).into();
+        let top = _mm256_cvtepu8_epi16(top);
+        let far = _mm256_sll_epi16(columns!(h_far, 0), h_shift);
+        let s_left = _mm256_slli_epi16::<9>(columns!(h_blend, 0));
+        let rows_per_group = 16 >> size.log2_width();
+        macro_rules! rows {
+            ($terms:expr, $row:expr) => {
+                _mm256_shuffle_epi8(
+                    _mm256_broadcastsi128_si256(
+                        u16x8::from_slice(token, &$terms[$row..$row + 8]).into(),
+                    ),
+                    index,
+                )
+            };
+        }
+        let v = |row: usize| vertical!(top, rows!(v_far, row), rows!(v_blend, row));
+        let h = |row: usize| {
+            let left = _mm256_shuffle_epi8(
+                _mm256_broadcastsi128_si256(_mm_cvtepu8_epi16(
+                    u8x16::from_slice(token, &left[row..row + 16]).into(),
+                )),
+                index,
+            );
+            horizontal!(left, far, s_left)
+        };
+        macro_rules! run {
+            ($value:expr) => {{
+                let mut row = 0;
+                while row < height {
+                    let lanes: [u8; 16] = pack!($value(row)).into();
+                    if width == 4 {
+                        publish_rows::<u8, 4>(&lanes, output, row, stride);
+                    } else {
+                        publish_rows::<u8, 8>(&lanes, output, row, stride);
+                    }
+                    row += rows_per_group;
+                }
+            }};
+        }
+        match mode {
+            IntraSmoothMode::SmoothVertical => run!(v),
+            IntraSmoothMode::SmoothHorizontal => run!(h),
+            IntraSmoothMode::Smooth => run!(|row| _mm256_avg_epu16(v(row), h(row))),
         }
     }
 );
 
-/// Writes the `16 / N` rows of `N` samples packed in `lanes`, `stride` apart.
+/// Writes the `16 / N` rows of `N` samples packed in `lanes` from row `row`
+/// of `output`, `stride` apart.
 #[inline]
-fn publish_rows<const N: usize>(lanes: &[u8; 16], output: &mut [u8], stride: usize) {
-    for (row, samples) in lanes.as_chunks::<N>().0.iter().enumerate() {
+fn publish_rows<T: Copy, const N: usize>(
+    lanes: &[T; 16],
+    output: &mut [T],
+    row: usize,
+    stride: usize,
+) {
+    for (r, samples) in lanes.as_chunks::<N>().0.iter().enumerate() {
         if let Some(out) = output
-            .get_mut(row * stride..)
-            .and_then(<[u8]>::first_chunk_mut::<N>)
+            .get_mut((row + r) * stride..)
+            .and_then(<[T]>::first_chunk_mut::<N>)
         {
             *out = *samples;
         }

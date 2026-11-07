@@ -454,21 +454,47 @@ fn interpolate_lanes<S: Simd, P: IntraLaneSample>(
     }
     if grid.step_y > 1 {
         let shift = u32::from(grid.up_log2_y);
+        let step = grid.step_y;
         for band in 0..grid.height {
-            let top = band * grid.step_y;
-            let (before, rest) = output.split_at_mut_checked(top * stride)?;
-            let p0 = if band == 0 {
-                above.get(..width)?
+            let top = band * step;
+            let last = (top + step - 1) * stride;
+            let first = top.checked_sub(1).map(|row| row * stride);
+            macro_rules! p0 {
+                ($column:expr) => {
+                    match first {
+                        Some(start) => output.get(start + $column..),
+                        None => above.get($column..),
+                    }
+                };
+            }
+            if width >= 16 {
+                for column in (0..width).step_by(16) {
+                    let a = P::load16(simd, p0!(column)?.first_chunk()?);
+                    let b = P::load16(simd, output.get(last + column..)?.first_chunk()?);
+                    for z in 1..step {
+                        let row = output.get_mut((top + z - 1) * stride + column..)?;
+                        let lerp = (a * (step - z) as u16 + b * z as u16) >> shift;
+                        P::store16(simd, lerp, row.first_chunk_mut()?);
+                    }
+                }
+            } else if width == 8 {
+                let a = P::load8(simd, p0!(0)?.first_chunk()?);
+                let b = P::load8(simd, output.get(last..)?.first_chunk()?);
+                for z in 1..step {
+                    let row = output.get_mut((top + z - 1) * stride..)?;
+                    let lerp = (a * (step - z) as u16 + b * z as u16) >> shift;
+                    P::store8(simd, lerp, row.first_chunk_mut()?);
+                }
             } else {
-                before.get((top - 1) * stride..)?.get(..width)?
-            };
-            let (between, last) = rest.split_at_mut_checked((grid.step_y - 1) * stride)?;
-            let p1 = last.get(..width)?;
-            for z in 0..grid.step_y - 1 {
-                let w0 = (grid.step_y - z - 1) as u16;
-                let w1 = z as u16 + 1;
-                let row = between.get_mut(z * stride..)?.get_mut(..width)?;
-                lerp_row(simd, p0, p1, [w0, w1], shift, row);
+                let a: [P; 4] = *p0!(0)?.first_chunk()?;
+                let b: [P; 4] = *output.get(last..)?.first_chunk()?;
+                for z in 1..step {
+                    let row = output.get_mut((top + z - 1) * stride..)?;
+                    for ((out, a), b) in row.iter_mut().zip(a).zip(b) {
+                        let (w0, w1) = ((step - z) as u16, z as u16);
+                        *out = P::from_lane((a.to_u16() * w0 + b.to_u16() * w1) >> shift);
+                    }
+                }
             }
         }
     }
@@ -498,47 +524,6 @@ static GRID_POINT_INDEX: [[[[u8; 32]; 2]; 4]; 3] = {
     }
     table
 };
-
-/// `(p0 * w0 + p1 * w1) >> shift` over a row.
-fn lerp_row<S: Simd, P: IntraLaneSample>(
-    simd: S,
-    p0: &[P],
-    p1: &[P],
-    [w0, w1]: [u16; 2],
-    shift: u32,
-    row: &mut [P],
-) {
-    let mut out = row.chunks_exact_mut(16);
-    let mut a = p0.chunks_exact(16);
-    let mut b = p1.chunks_exact(16);
-    for ((out, a), b) in out.by_ref().zip(a.by_ref()).zip(b.by_ref()) {
-        if let (Some(out), Some(a), Some(b)) =
-            (out.first_chunk_mut(), a.first_chunk(), b.first_chunk())
-        {
-            P::store16(
-                simd,
-                (P::load16(simd, a) * w0 + P::load16(simd, b) * w1) >> shift,
-                out,
-            );
-        }
-    }
-    let (out, a, b) = (out.into_remainder(), a.remainder(), b.remainder());
-    let done = if let (Some(out), Some(a), Some(b)) =
-        (out.first_chunk_mut(), a.first_chunk(), b.first_chunk())
-    {
-        P::store8(
-            simd,
-            (P::load8(simd, a) * w0 + P::load8(simd, b) * w1) >> shift,
-            out,
-        );
-        8
-    } else {
-        0
-    };
-    for ((out, &a), &b) in out.iter_mut().zip(a).zip(b).skip(done) {
-        *out = P::from_lane((a.to_u16() * w0 + b.to_u16() * w1) >> shift);
-    }
-}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]

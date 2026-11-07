@@ -14,10 +14,11 @@ use super::middle::middle_directional_angle;
 use super::one_sided::{gather_column_clamped, gather_row_clamped};
 use super::sink::{
     IntraEdgeAvailability, invalid_directional_edge_state, noneighbour_above, noneighbour_corner,
-    noneighbour_left, predict_intra_in_frame, write_intra_prediction_block,
+    noneighbour_left, predict_intra_in_frame, residual_adds_in_place, write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedDirectionalLumaMode,
+    add_general_intra_coeff_block_residual_in_place,
 };
 
 const MI_SIZE: usize = 4;
@@ -49,7 +50,7 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
     let mut above_buf = [T::default(); MAX_DIP_EDGE_SAMPLES];
     let mut left_buf = [T::default(); MAX_DIP_EDGE_SAMPLES];
     if bit_depth == workspace.info().bit_depth() {
-        let write_through = block.eob == 0;
+        let write_through = block.eob == 0 || residual_adds_in_place::<T>();
         let (above_len, left_len) = (width + (width >> 2), height + (height >> 2));
         let readable = (
             (width + num4_above_right * MI_SIZE).min(above_len),
@@ -80,6 +81,21 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
         })?;
         if let (Some(()), Some(top_left)) = (in_frame, top_left) {
             if write_through {
+                if block.eob != 0 {
+                    add_general_intra_coeff_block_residual_in_place(
+                        workspace,
+                        block,
+                        PlaneId::Y,
+                        x,
+                        y,
+                        block_size,
+                        qindex,
+                        use_tcq,
+                        Some(luma_context),
+                        None,
+                        bit_depth,
+                    )?;
+                }
                 return Ok(());
             }
             let mut prediction = workspace.take_intra_prediction_buffer(
@@ -277,8 +293,18 @@ fn gather_dip_edges<T: ReconSample>(
     [above, left]: [&mut [T]; 2],
 ) -> Option<T> {
     let row = frame.above_row();
-    let mut column = [T::default(); 1];
-    let first_left = (frame.left_column(&mut column) == 1).then_some(column[0]);
+    let first_left = if availability.left {
+        let readable = left_readable.min(left.len());
+        let copied = frame.left_column(&mut left[..readable]);
+        if copied < readable.min(frame.left_extent()) || copied == 0 {
+            return None;
+        }
+        let last = left[copied - 1];
+        left[copied..].fill(last);
+        Some(left[0])
+    } else {
+        None
+    };
     if availability.above {
         let copied = above_readable.min(row.len());
         let last = *row.get(copied.checked_sub(1)?)?;
@@ -289,18 +315,12 @@ fn gather_dip_edges<T: ReconSample>(
     } else {
         above.fill(noneighbour_above::<T>(bit_depth));
     }
-    if availability.left {
-        let readable = left_readable.min(left.len());
-        let copied = frame.left_column(&mut left[..readable]);
-        if copied < readable.min(frame.left_extent()) || copied == 0 {
-            return None;
-        }
-        let last = left[copied - 1];
-        left[copied..].fill(last);
-    } else if availability.above {
-        left.fill(*row.first()?);
-    } else {
-        left.fill(noneighbour_left::<T>(bit_depth));
+    if !availability.left {
+        left.fill(if availability.above {
+            *row.first()?
+        } else {
+            noneighbour_left::<T>(bit_depth)
+        });
     }
     match (availability.above, availability.left) {
         (true, true) => frame.top_left(),

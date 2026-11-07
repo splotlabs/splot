@@ -460,6 +460,23 @@ impl<T: ReconSample> IntraBlockFrame<'_, T> {
         self.samples.get(self.origin - self.stride - 1).copied()
     }
 
+    /// [`Self::above_row`] beside [`Self::target`], for a prediction that
+    /// reads its above edge straight from the frame while it writes.
+    #[inline]
+    pub fn above_row_and_target(&mut self) -> (&[T], &mut [T], usize) {
+        let (before, target) = self
+            .samples
+            .split_at_mut_checked(self.origin)
+            .unwrap_or_default();
+        let above = match self.origin.checked_sub(self.stride) {
+            Some(start) if self.above_len > 0 => before
+                .get(start..start + self.above_len)
+                .unwrap_or_default(),
+            _ => &[],
+        };
+        (above, target, self.stride)
+    }
+
     /// The block's first sample onwards and the row stride, for the
     /// prediction write.
     #[inline]
