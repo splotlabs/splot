@@ -97,6 +97,8 @@ struct ChromaDeblockBlock {
 #[derive(Clone)]
 pub(crate) struct ChromaDeblockRecords {
     blocks: Vec<ChromaDeblockBlock>,
+    /// Records that name only one of U and V.
+    single: usize,
 }
 
 impl Default for ChromaDeblockRecords {
@@ -110,11 +112,15 @@ impl ChromaDeblockRecords {
     const V: u8 = 2;
 
     pub(crate) const fn new() -> Self {
-        Self { blocks: Vec::new() }
+        Self {
+            blocks: Vec::new(),
+            single: 0,
+        }
     }
 
     pub(crate) fn push(&mut self, plane: usize, block: DeblockBlock) {
         let planes = [Self::U, Self::V][plane];
+        self.single += 1;
         self.blocks.push(ChromaDeblockBlock { block, planes });
     }
 
@@ -127,6 +133,7 @@ impl ChromaDeblockRecords {
 
     pub(crate) fn append(&mut self, other: &mut Self) {
         self.blocks.append(&mut other.blocks);
+        self.single += core::mem::take(&mut other.single);
     }
 
     /// The record capacity this list is holding.
@@ -141,6 +148,7 @@ impl ChromaDeblockRecords {
 
     pub(crate) fn clear(&mut self) {
         self.blocks.clear();
+        self.single = 0;
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -154,6 +162,9 @@ impl ChromaDeblockRecords {
     /// Whether the U and V record lists match record for record. Each plane's
     /// grid is then the same function of its list, so V can read U's grid.
     fn uv_twins(&self) -> bool {
+        if self.single == 0 {
+            return true;
+        }
         let plane = |mask: u8| {
             self.blocks
                 .iter()
@@ -263,8 +274,9 @@ pub(crate) struct FrameDeblock {
     quant_deltas: DeblockQuantDeltas,
     next_pass_0_mi_row: usize,
     next_pass_1_mi_row: usize,
-    /// The edge decisions of the plane pass being filtered.
-    edges: PassEdges,
+    /// The edge decisions of each pass of the plane being filtered, which a
+    /// V plane reading U's grid with U's strengths reuses.
+    edges: [PassEdges; 2],
 }
 
 /// One plane band's share of a deblock section: the rows it owns and the passes
@@ -350,7 +362,7 @@ impl FrameDeblock {
             quant_deltas,
             next_pass_0_mi_row: 0,
             next_pass_1_mi_row: 0,
-            edges: PassEdges::default(),
+            edges: Default::default(),
         }))
     }
 
@@ -403,6 +415,7 @@ impl FrameDeblock {
         }
         let pixel_format = source.info().pixel_format();
         let mut edges = core::mem::take(&mut self.edges);
+        let mut u_passes = [None; 2];
         let result = (0..3).try_for_each(|plane| {
             let plane_id = plane_index_to_id(plane);
             if plane != 0 && !self.filter.apply_deblocking_filter[plane + 1] {
@@ -426,9 +439,23 @@ impl FrameDeblock {
             if passes.iter().all(Option::is_none) {
                 return Ok(());
             }
+            let same = |u: Option<PlanePass>, v: Option<PlanePass>| match (u, v) {
+                (Some(u), Some(v)) => {
+                    (u.df_delta_q, u.quant_delta) == (v.df_delta_q, v.quant_delta)
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            let reuse = plane == 2
+                && self.chroma[1].is_none()
+                && same(u_passes[0], passes[0])
+                && same(u_passes[1], passes[1]);
             let Some((_, height)) = source.plane_size(plane_id) else {
                 return Ok(());
             };
+            if plane == 1 {
+                u_passes = passes;
+            }
             let (start, end) =
                 deblock_plane_row_bounds(passes, height).ok_or(DeblockError::Workspace)?;
             source
@@ -451,6 +478,7 @@ impl FrameDeblock {
                                 passes,
                             },
                             &mut edges,
+                            reuse,
                         )
                     },
                 )
@@ -466,7 +494,8 @@ impl FrameDeblock {
     fn run_plane_job<T: ReconSample>(
         &self,
         job: PlaneJob<'_, T>,
-        edges: &mut PassEdges,
+        edges: &mut [PassEdges; 2],
+        reuse: bool,
     ) -> Result<(), DeblockError> {
         let PlaneJob {
             mut band,
@@ -482,7 +511,10 @@ impl FrameDeblock {
                 width: band.width,
                 height: band.height,
             };
-            edges.build(&grid, &plane_pass, &geometry)?;
+            let edges = &mut edges[plane_pass.pass];
+            if !reuse {
+                edges.build(&grid, &plane_pass, &geometry)?;
+            }
             let mut ctx = PlaneCtx::new(&mut band)?;
             if plane_pass.pass == 0 {
                 edges.apply::<T, 0>(&mut ctx, plane_pass.bit_depth)?;

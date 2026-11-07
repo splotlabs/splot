@@ -3,7 +3,7 @@
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{Avx2, kernel};
-use fearless_simd::{Level, Simd, dispatch, i16x16, i32x8, mask16x16, prelude::*, u16x16};
+use fearless_simd::{Level, Simd, dispatch, i8x16, i16x16, i32x8, mask16x16, prelude::*, u16x16};
 
 use splot_core::tables::loop_restoration::{
     GDF_ALPHA, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
@@ -271,16 +271,17 @@ static GDF_INTER_ERROR_I8: [[[i8; 1024]; 6]; 5] = {
     table
 };
 
-/// The § 7.20.5 `err` of `block`'s table at each error index of `pos`.
+/// The § 7.20.5 `err` of `block`'s table at each error index of `pos`, as
+/// bytes: a byte lookup inserts straight from the table.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn errors(block: &GdfBlock, pos: &[u16; 16]) -> [i16; 16] {
+fn errors(block: &GdfBlock, pos: &[u16; 16]) -> [i8; 16] {
     #[allow(clippy::inline_always)]
     #[inline(always)]
-    fn lookup<const LEN: usize>(table: &[i8; LEN], pos: &[u16; 16]) -> [i16; 16] {
+    fn lookup<const LEN: usize>(table: &[i8; LEN], pos: &[u16; 16]) -> [i8; 16] {
         let mut errors = [0; 16];
         for (error, &pos) in errors.iter_mut().zip(pos) {
-            *error = i16::from(table[usize::from(pos) & (LEN - 1)]);
+            *error = table[usize::from(pos) & (LEN - 1)];
         }
         errors
     }
@@ -330,7 +331,7 @@ impl GdfSymParams {
             let digit = round2_signed_i32(bias * scale, 15).clamp(-scale, scale - 1);
             pos * 2 * scale + digit + scale
         });
-        let flat_error = errors(block, &[flat_pos as u16; 16])[0];
+        let flat_error = i16::from(errors(block, &[flat_pos as u16; 16])[0]);
         let rounding = 12 - u32::from(block.bit_depth.bits());
         Self {
             bounds: core::array::from_fn(|k| {
@@ -660,7 +661,8 @@ fn error_index<S: Simd, L: Lanes<S>>(
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn add_residual<S: Simd>(simd: S, pos: &[u16; 16], output: &mut [u16; 16], block: &GdfBlock) {
-    let error = i16x16::from_slice(simd, &errors(block, pos));
+    let (low, high) = simd.widen_i8x16(i8x16::from_slice(simd, &errors(block, pos)));
+    let error = simd.combine_i16x8(low, high);
     let scaled = error * block.pix_scale as i16;
     let rounding = 12 - u32::from(block.bit_depth.bits());
     let residual = if rounding == 0 {
