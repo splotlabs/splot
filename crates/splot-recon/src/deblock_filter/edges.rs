@@ -8,7 +8,9 @@
 //! § 7.17.7.2 width choice of every segment becomes lane masks and the
 //! § 7.17.7.1 ramp applies to all sixteen lines at once: no per-edge branch.
 
-use fearless_simd::{Level, Simd, SimdBase, SimdInto, dispatch, i16x16};
+use core::num::NonZeroUsize;
+
+use fearless_simd::{Bytes, Level, Simd, SimdBase, SimdInto, dispatch, i16x16, u32x8, u64x4};
 use splot_core::tables::conversion::{Q_FIRST, Q_THRESH_MULTS, W_MULT};
 
 use crate::intra_dc_math::validate_sample_type;
@@ -133,6 +135,30 @@ impl DeblockEdge {
         Self(self.0 & !(3 << 48) | flags << 48)
     }
 
+    /// The eight edges whose words are `low` (`qThr | sideThr << 16`) and
+    /// `high` (`maxWidthPos | maxWidthNeg << 8 | prev_lossless << 16 |
+    /// curr_lossless << 17`) lane by lane, each field clamped to the range
+    /// [`DeblockEdge::new`] accepts; an all-zero lane is [`DeblockEdge::NONE`].
+    #[inline]
+    pub fn from_lanes<S: Simd>(simd: S, low: u32x8<S>, high: u32x8<S>) -> [Self; 8] {
+        let q_thr = (low & 0xffff).min(u32x8::splat(simd, MAX_Q_THR as u32));
+        let side = (low >> 16).min(u32x8::splat(simd, MAX_SIDE as u32));
+        let pos = (high & 0xff).min(u32x8::splat(simd, REACH as u32));
+        let neg = ((high >> 8) & 0xff).min(pos);
+        let low = q_thr | side << 16;
+        let high = pos | neg << 8 | (high & 0x3_0000);
+        let (first, second) = simd.interleave_u32x8(low, high);
+        let first = first.bitcast::<u64x4<S>>().to_array();
+        let second = second.bitcast::<u64x4<S>>().to_array();
+        core::array::from_fn(|lane| {
+            Self(if lane < 4 {
+                first[lane]
+            } else {
+                second[lane - 4]
+            })
+        })
+    }
+
     /// Whether the edge filters nothing.
     pub const fn is_none(self) -> bool {
         self.0 == 0
@@ -211,6 +237,22 @@ pub fn deblock_vertical_edges<T: ReconSample>(
     edges: &[DeblockEdge],
     bit_depth: BitDepth,
 ) -> Result<()> {
+    deblock_vertical_edge_column(samples, stride, first, edges, NonZeroUsize::MIN, bit_depth)
+}
+
+/// [`deblock_vertical_edges`] over the segments `edges[k * edge_stride]`,
+/// so that a column can be read out of a row-major edge grid.
+///
+/// # Errors
+/// As [`deblock_vertical_edges`].
+pub fn deblock_vertical_edge_column<T: ReconSample>(
+    samples: &mut [T],
+    stride: usize,
+    first: usize,
+    edges: &[DeblockEdge],
+    edge_stride: NonZeroUsize,
+    bit_depth: BitDepth,
+) -> Result<()> {
     validate_sample_type::<T>(bit_depth)?;
     if stride < ROWS {
         return Err(ReconError::StrideTooSmall {
@@ -219,7 +261,7 @@ pub fn deblock_vertical_edges<T: ReconSample>(
         });
     }
     let column = first % stride;
-    let end = (edges.len() * LINES)
+    let end = (segments(edges, edge_stride.get()) * LINES)
         .checked_sub(1)
         .and_then(|last| last.checked_mul(stride))
         .and_then(|offset| first.checked_add(offset + REACH));
@@ -229,14 +271,23 @@ pub fn deblock_vertical_edges<T: ReconSample>(
         return Err(too_short(first, samples.len()));
     }
     let max_sample = bit_depth.max_sample() as i16;
+    let run_edges = (edges, edge_stride.get());
     if let Some(samples) = T::u8_slice_mut(samples) {
-        run::<u8, true>(samples, stride, first, edges, max_sample);
+        run::<u8, true>(samples, stride, first, run_edges, max_sample);
     } else if let Some(samples) = T::u16_slice_mut(samples) {
-        run::<u16, true>(samples, stride, first, edges, max_sample);
+        run::<u16, true>(samples, stride, first, run_edges, max_sample);
     } else {
         return Err(too_short(first, samples.len()));
     }
     Ok(())
+}
+
+/// How many segments `edges[k * edge_stride]` there are.
+const fn segments(edges: &[DeblockEdge], edge_stride: usize) -> usize {
+    match edges.len() {
+        0 => 0,
+        len => (len - 1) / edge_stride + 1,
+    }
 }
 
 /// Filters the horizontal edges (§ 7.17.1 pass 1) of `edges.len()` segments
@@ -270,9 +321,9 @@ pub fn deblock_horizontal_edges<T: ReconSample>(
     }
     let max_sample = bit_depth.max_sample() as i16;
     if let Some(samples) = T::u8_slice_mut(samples) {
-        run::<u8, false>(samples, stride, first, edges, max_sample);
+        run::<u8, false>(samples, stride, first, (edges, 1), max_sample);
     } else if let Some(samples) = T::u16_slice_mut(samples) {
-        run::<u16, false>(samples, stride, first, edges, max_sample);
+        run::<u16, false>(samples, stride, first, (edges, 1), max_sample);
     } else {
         return Err(too_short(first, samples.len()));
     }
@@ -315,30 +366,41 @@ impl EdgeSample for u16 {
     }
 }
 
-/// Runs the validated `edges` in chunks of [`SEGMENTS`]. A last partial chunk
-/// filters a copy of its window, so no load or store leaves the run.
+/// Runs the validated segments `edges.0[k * edges.1]` in chunks of
+/// [`SEGMENTS`]. A last partial chunk filters a copy of its window, so no
+/// load or store leaves the run.
 fn run<E: Chunk, const VERTICAL: bool>(
     samples: &mut [E],
     stride: usize,
     first: usize,
-    edges: &[DeblockEdge],
+    (edges, edge_stride): (&[DeblockEdge], usize),
     max_sample: i16,
 ) {
     let step = if VERTICAL { LANES * stride } else { LANES };
-    let (chunks, tail) = edges.as_chunks::<SEGMENTS>();
-    for (index, chunk) in chunks.iter().enumerate() {
+    let count = segments(edges, edge_stride);
+    let segment = |k: usize| edges.get(k * edge_stride).copied().unwrap_or_default();
+    let chunks = count / SEGMENTS;
+    for index in 0..chunks {
+        let chunk: [DeblockEdge; SEGMENTS] =
+            core::array::from_fn(|lane| segment(index * SEGMENTS + lane));
         if chunk.iter().all(|edge| edge.is_none()) {
             continue;
         }
-        E::chunk::<VERTICAL>(samples, stride, first + index * step, chunk, max_sample);
+        E::chunk::<VERTICAL>(samples, stride, first + index * step, &chunk, max_sample);
     }
-    if tail.iter().all(|edge| edge.is_none()) {
+    let tail = count % SEGMENTS;
+    let padded: [DeblockEdge; SEGMENTS] = core::array::from_fn(|lane| {
+        if lane < tail {
+            segment(chunks * SEGMENTS + lane)
+        } else {
+            DeblockEdge::NONE
+        }
+    });
+    if padded.iter().all(|edge| edge.is_none()) {
         return;
     }
-    let mut padded = [DeblockEdge::NONE; SEGMENTS];
-    padded[..tail.len()].copy_from_slice(tail); // splot-copy-ok: pad the last chunk's edges
-    let lines = tail.len() * LINES;
-    let origin = first + chunks.len() * step;
+    let lines = tail * LINES;
+    let origin = first + chunks * step;
     let mut window = [E::default(); ROWS * LANES];
     for (line, copy) in window.chunks_exact_mut(ROWS).enumerate() {
         let (start, len) = window_line::<VERTICAL>(origin, stride, line, lines);
