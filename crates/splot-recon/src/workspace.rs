@@ -701,6 +701,19 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         size: IntraRectBlockSize,
     ) -> Result<Option<(&mut [u8], usize)>> {
         let rect = block_rect(x, y, size)?;
+        if let Self::Frame(workspace) = self {
+            let target = workspace.plane_mut(plane)?;
+            if target.clamp_rect_to_storage(rect)? != rect {
+                return Ok(None);
+            }
+            let stride = target.stride;
+            let base = target.band_row(rect.y(), rect.height())? * stride + rect.x();
+            let end = base + (rect.height() - 1) * stride + rect.width();
+            let samples = T::u8_slice_mut(&mut target.samples[..]);
+            return Ok(samples
+                .and_then(|samples| samples.get_mut(base..end))
+                .map(|samples| (samples, stride)));
+        }
         let target = self.residual_rect_target(plane, rect)?;
         if target.rect != rect {
             return Ok(None);

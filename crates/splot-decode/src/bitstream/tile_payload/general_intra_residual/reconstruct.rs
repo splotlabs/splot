@@ -27,8 +27,6 @@ pub(super) struct ReconstructBlockSetup {
     /// The [`InverseTransform2dOuter::resolve`] inputs, resolved only off the
     /// fused path.
     resolve: (usize, u32, u32, bool, bool, Option<DpcmDirection>),
-    /// The fused 8-bit transform and add with its flat dequantization.
-    pub(super) fused: Option<(InverseTransformAdd8, FlatDequant)>,
 }
 
 impl ReconstructBlockSetup {
@@ -44,6 +42,19 @@ impl ReconstructBlockSetup {
             self.params.bit_depth,
             dpcm,
         )
+    }
+
+    /// The fused 8-bit transform and add of the block, when it has one.
+    pub(super) fn fused(&self) -> Option<InverseTransformAdd8> {
+        let (plane_tx_type, log2_width, log2_height, use_ddt, lossless, dpcm) = self.resolve;
+        if self.params.bit_depth != BitDepth::Eight
+            || lossless
+            || dpcm.is_some()
+            || self.params.qm.is_some()
+        {
+            return None;
+        }
+        InverseTransformAdd8::new(plane_tx_type, log2_width, log2_height, use_ddt)
     }
 }
 
@@ -241,12 +252,21 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSamp
                 {
                     return Ok(());
                 }
-                let (setup, secondary) = general()?;
-                if add_residual_u8(block, &setup, secondary.as_ref(), dst, stride, scratch)
-                    .map_err(reconstruct_error)?
+                if let Some(luma_context) = luma_context
+                    && bit_depth == BitDepth::Eight
+                    && has_secondary(block)
+                    && add_secondary_fused(
+                        block,
+                        (block_size, PlaneId::Y),
+                        (qindex, use_tcq && block.use_tcq, false),
+                        Some(luma_context),
+                        (dst, stride),
+                        scratch,
+                    )?
                 {
                     return Ok(());
                 }
+                let (setup, secondary) = general()?;
                 let residual = intra_residual(block, &setup, secondary.as_ref(), scratch)
                     .map_err(reconstruct_error)?;
                 return rows
@@ -325,10 +345,92 @@ fn fused_residual_setup(
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> Result<Option<(InverseTransformAdd8, FlatDequant)>, GeneralIntraResidualError> {
-    let secondary = block.intra_ist.is_some_and(|ist| ist.sec_tx_type != 0);
-    if bit_depth != BitDepth::Eight || block.lossless || dpcm.is_some() || secondary {
+    if bit_depth != BitDepth::Eight || block.lossless || dpcm.is_some() || has_secondary(block) {
         return Ok(None);
     }
+    let Some(fused) = fused_transform(block, block_size, plane_id, use_ddt)? else {
+        return Ok(None);
+    };
+    let plane_tx_type = block.plane_tx_type();
+    let (dc_quant, ac_quant) = current_quantizers(plane_id, qindex, bit_depth);
+    let dq_denom = dq_denom(block_size.sample_count(), use_tcq, plane_tx_type);
+    Ok(FlatDequant::new(dc_quant, ac_quant, dq_denom).map(|flat| (fused, flat)))
+}
+
+/// Whether `block` codes a secondary transform.
+#[inline]
+fn has_secondary(block: CoeffBlock<'_>) -> bool {
+    block.intra_ist.is_some_and(|ist| ist.sec_tx_type != 0)
+}
+
+/// Adds the residual of an 8-bit block of `plane_id` with a secondary
+/// transform onto the block at the start of `dst` through the fused
+/// transform, its coefficients dequantized through the secondary transform
+/// first; `luma_context` holds its intra luma context, `None` for an inter
+/// block. `false` with `dst` untouched sends the block down the general path.
+#[inline(never)]
+fn add_secondary_fused(
+    block: CoeffBlock<'_>,
+    (block_size, plane_id): (IntraRectBlockSize, PlaneId),
+    (qindex, use_tcq, use_ddt): (u32, bool, bool),
+    luma_context: Option<LumaTransformTypeContext>,
+    (dst, stride): (&mut [u8], usize),
+    scratch: &mut super::ResidualScratch,
+) -> Result<bool, GeneralIntraResidualError> {
+    let bit_depth = BitDepth::Eight;
+    if block.lossless || luma_context.is_some_and(|context| context.dpcm.is_some()) {
+        return Ok(false);
+    }
+    let Some(fused) = fused_transform(block, block_size, plane_id, use_ddt)? else {
+        return Ok(false);
+    };
+    let (log2_width, log2_height) = (
+        u32::from(block_size.log2_width()),
+        u32::from(block_size.log2_height()),
+    );
+    let Some(secondary) = resolve_secondary_inverse_transform(
+        block,
+        log2_width,
+        log2_height,
+        bit_depth,
+        luma_context,
+    )?
+    else {
+        return Ok(false);
+    };
+    let (dc_quant, ac_quant) = current_quantizers(plane_id, qindex, bit_depth);
+    let samples = block_size.sample_count();
+    let params = DequantBlockParams {
+        dc_quant,
+        ac_quant,
+        tx_width: block_size.width(),
+        tx_height: block_size.height(),
+        dq_denom: dq_denom(samples, use_tcq, block.plane_tx_type()),
+        bit_depth,
+        qm: None,
+    };
+    let dequant = &mut scratch.dequant[..samples];
+    let coded = dequantize_with_secondary(&params, block.quant, Some(&secondary), dequant)
+        .map_err(reconstruct_error)?;
+    Ok(fused.add(
+        &dequant[..coded],
+        None,
+        dst,
+        stride,
+        &mut scratch.dequant_pair,
+    ))
+}
+
+/// The fused 8-bit transform of a block of `plane_id`, after the length
+/// checks of [`reconstruct_block_setup`]; `None` for a shape it does not
+/// cover or a block weighted by a quantization matrix.
+#[inline]
+fn fused_transform(
+    block: CoeffBlock<'_>,
+    block_size: IntraRectBlockSize,
+    plane_id: PlaneId,
+    use_ddt: bool,
+) -> Result<Option<InverseTransformAdd8>, GeneralIntraResidualError> {
     let (log2_width, log2_height) = (
         u32::from(block_size.log2_width()),
         u32::from(block_size.log2_height()),
@@ -354,9 +456,7 @@ fn fused_residual_setup(
     if resolve_block_qm(plane_id, plane_tx_type, w, h, log2_width, log2_height).is_some() {
         return Ok(None);
     }
-    let (dc_quant, ac_quant) = current_quantizers(plane_id, qindex, bit_depth);
-    let dq_denom = dq_denom(w * h, use_tcq, plane_tx_type);
-    Ok(FlatDequant::new(dc_quant, ac_quant, dq_denom).map(|flat| (fused, flat)))
+    Ok(Some(fused))
 }
 
 /// The § 7.14.4 `dq_denom` of a block of `pels` samples.
@@ -420,15 +520,24 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place<T: ReconSample>(
         {
             return Ok(());
         }
-        let (setup, secondary) = general()?;
-        if let Some((dst, stride)) = surface
-            .u8_residual_rect_mut(plane_id, x, y, block_size)
-            .map_err(reconstruct_error)?
-            && add_residual_u8(block, &setup, secondary.as_ref(), dst, stride, scratch)
+        if let Some(luma_context) = luma_context
+            && bit_depth == BitDepth::Eight
+            && has_secondary(block)
+            && let Some(target) = surface
+                .u8_residual_rect_mut(plane_id, x, y, block_size)
                 .map_err(reconstruct_error)?
+            && add_secondary_fused(
+                block,
+                (block_size, PlaneId::Y),
+                (qindex, use_tcq && block.use_tcq, false),
+                Some(luma_context),
+                target,
+                scratch,
+            )?
         {
             return Ok(());
         }
+        let (setup, secondary) = general()?;
         let residual = intra_residual(block, &setup, secondary.as_ref(), scratch)
             .map_err(reconstruct_error)?;
         surface
@@ -502,39 +611,6 @@ fn intra_residual<'s>(
     Ok(residual)
 }
 
-/// Adds the residual of an 8-bit block onto `dst` through the fused inverse
-/// transform; `false` when it does not apply.
-fn add_residual_u8(
-    block: CoeffBlock<'_>,
-    setup: &ReconstructBlockSetup,
-    secondary: Option<&SecondaryInverseTransform>,
-    dst: &mut [u8],
-    stride: usize,
-    scratch: &mut super::ResidualScratch,
-) -> splot_recon::Result<bool> {
-    let Some((fused, flat)) = setup.fused else {
-        return Ok(false);
-    };
-    let Some(secondary) = secondary else {
-        return Ok(fused.add(
-            block.quant,
-            Some(flat),
-            dst,
-            stride,
-            &mut scratch.dequant_pair,
-        ));
-    };
-    let dequant = &mut scratch.dequant[..setup.adjusted];
-    let coded = dequantize_with_secondary(&setup.params, block.quant, Some(secondary), dequant)?;
-    Ok(fused.add(
-        &dequant[..coded],
-        None,
-        dst,
-        stride,
-        &mut scratch.dequant_pair,
-    ))
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
     sink: &mut CurrentFrameSurface<'_, '_, T>,
@@ -584,6 +660,24 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
             return Ok(());
         }
     }
+    if bit_depth == BitDepth::Eight
+        && has_secondary(block)
+        && super::with_residual_scratch(|scratch| {
+            match sink.u8_residual_rect_mut(plane_id, x, y, block_size)? {
+                Some(target) => add_secondary_fused(
+                    block,
+                    (block_size, plane_id),
+                    (qindex, use_block_tcq, use_ddt),
+                    None,
+                    target,
+                    scratch,
+                ),
+                None => Ok(false),
+            }
+        })?
+    {
+        return Ok(());
+    }
     let secondary =
         resolve_secondary_inverse_transform(block, log2_width, log2_height, bit_depth, None)?;
     let setup = reconstruct_block_setup(
@@ -615,11 +709,6 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
         return Ok(());
     }
     super::with_residual_scratch(|scratch| {
-        if let Some((dst, stride)) = sink.u8_residual_rect_mut(plane_id, x, y, block_size)?
-            && add_residual_u8(block, &setup, secondary.as_ref(), dst, stride, scratch)?
-        {
-            return Ok(());
-        }
         let dequant = &mut scratch.dequant[..setup.adjusted];
         let coded =
             dequantize_with_secondary(&setup.params, block.quant, secondary.as_ref(), dequant)?;
@@ -719,12 +808,6 @@ pub(super) fn reconstruct_block_setup(
         log2_width,
         log2_height,
     );
-    let fused = if bit_depth == BitDepth::Eight && !lossless && dpcm.is_none() && qm.is_none() {
-        InverseTransformAdd8::new(plane_tx_type, log2_width, log2_height, use_ddt)
-            .zip(FlatDequant::new(dc_quant, ac_quant, dq_denom))
-    } else {
-        None
-    };
     let params = DequantBlockParams {
         dc_quant,
         ac_quant,
@@ -746,7 +829,6 @@ pub(super) fn reconstruct_block_setup(
             lossless,
             dpcm,
         ),
-        fused,
     })
 }
 
