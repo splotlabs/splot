@@ -28,7 +28,7 @@ use super::find_mv_stack::{
     NeighbourMvGrid, TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
     TemporalProjectionConfig, TipReferencePair, ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx,
     find_compound_mv_stack_with_temporal, find_mode_ctx, find_mode_ctx_with_tip,
-    find_mv_stack_with_temporal, warp_predicted_mv,
+    find_mv_stack_with_temporal, mode_ctx_from_neighbours, warp_predicted_mv,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_QUARTER_PEL, MvReadConfig, apply_inter_mvd_signs,
@@ -1720,7 +1720,7 @@ fn decode_block<T: ReconSample>(
         SINGLE_REF_FRAME0
     };
     block_ctx.ref_frame0 = ref_frame0;
-    let mode_ctx = find_mode_ctx(mv_grid, &block_ctx);
+    let mode_ctx = mode_ctx_from_neighbours(mv_grid, &block_ctx, None, &neighbour_ctx);
     let force_integer_mv = effective_force_integer_mv(core);
     let warp_mode = if tip_ref || segment_forces_globalmv {
         None
