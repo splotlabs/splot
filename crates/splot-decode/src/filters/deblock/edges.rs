@@ -6,32 +6,35 @@
 //! kernels then filter whole columns (vertical edges) and rows (horizontal
 //! edges) of them.
 
+use core::num::NonZeroUsize;
+
 use splot_core::tables::conversion::{Q_THRESH_MULTS, W_MULT};
 use splot_recon::{
     BitDepth, DeblockEdge, DeblockSampleFilter, ReconSample, deblock_horizontal_edges,
-    deblock_vertical_edges,
+    deblock_vertical_edge_column, deblock_vertical_edges,
 };
 
-use fearless_simd::{prelude::*, u32x8};
+use fearless_simd::{Simd, prelude::*, u32x8};
 
-use super::grid::{CellFacts, MiGrid, UNCOVERED};
+use super::grid::{EDGE_H, EDGE_V, LOSSLESS, MiGrid, QINDEX_SHIFT, SKIP, UNCOVERED};
 use super::{
     DeblockError, EdgeContext, GATHER_HALF, MAX_WIDTHS, MI_SIZE, PerpLine, PlaneCtx, PlanePass,
-    SB_SIZE, StrengthCache, apply_edge_samples, choose_filter_width, combine_strengths,
-    edge_blocks, edge_decision, starts_tile,
+    SB_SIZE, StrengthCache, apply_edge_samples, choose_filter_width, edge_blocks, edge_decision,
+    starts_tile,
 };
 
-/// The edges of one plane pass over the mode-info rows it owes, by plane
-/// 4x4 cell: column-major for the vertical pass, so that one column's
-/// segments lie together, and row-major for the horizontal one.
+/// The edges of one plane pass over the mode-info rows it owes, row-major by
+/// plane 4x4 cell; a vertical-pass column is read at a stride of one row.
 #[derive(Default)]
 pub(crate) struct PassEdges {
     edges: Vec<DeblockEdge>,
     rows: usize,
     cols: usize,
     first_row: usize,
-    /// One cell row's transform edges, 64 cells per word.
-    words: Vec<u64>,
+    /// The vertical pass's per-column lane controls, then its per-column
+    /// filtered-edge marks.
+    controls: Vec<u32>,
+    marks: Vec<u32>,
     /// Whether each column (vertical pass) or row (horizontal pass) holds
     /// an edge to filter.
     live: Vec<bool>,
@@ -48,84 +51,131 @@ pub(super) struct PassGeometry<'a> {
     pub(super) height: usize,
 }
 
-/// [`deblock_filter_max_width`](splot_recon::deblock_filter_max_width) as
-/// edge shapes, by chroma plane, super-block edge and filter size.
-const SHAPES: [[[DeblockEdge; 65]; 2]; 2] = {
-    let mut table = [[[DeblockEdge::NONE; 65]; 2]; 2];
-    let mut entry = 0;
-    while entry < 4 * 65 {
-        let (chroma, sb_edge, size) = (entry / 130, entry / 65 % 2, entry % 65);
-        let (neg, pos) = MAX_WIDTHS[chroma][sb_edge][size];
-        if let Some(edge) = DeblockEdge::new(1, 1, neg as usize, pos as usize, false, false) {
-            table[chroma][sb_edge][size] = edge;
-        }
-        entry += 1;
-    }
-    table
-};
+/// Lane control bits past the 8-bit filter size limit: the edge is a
+/// § 7.17.2 `sbEdge`, or one no filtering crosses.
+const SB_EDGE: u32 = 1 << 8;
+const NO_FILTER: u32 = 1 << 9;
 
-/// The § 7.17.2 decision of the transform edge between `prev` and `curr`
-/// at plane sample position `at` across it, of strengths
-/// `(qThr, sideThr)`: filtered when the current side is coded or starts its
-/// prediction unit and either side's strengths are both nonzero.
-#[allow(clippy::inline_always, reason = "measured deblock hot path")]
-#[inline(always)]
-fn decide(
-    (curr, curr_strength): (CellFacts, (i32, i32)),
-    (prev, prev_strength): (CellFacts, (i32, i32)),
-    (at, pass): (usize, usize),
-    limit: u8,
-    shapes: &[DeblockEdge; 65],
-) -> DeblockEdge {
-    let coded = usize::from(curr.prediction[pass]) == at || curr.flags & CellFacts::SKIP == 0;
-    let strong = |(q_thr, side): (i32, i32)| q_thr != 0 && side != 0;
-    if !coded || !(strong(curr_strength) || strong(prev_strength)) {
-        return DeblockEdge::NONE;
-    }
-    let size = curr.tx_size[pass]
-        .min(prev.tx_size[pass])
-        .min(limit)
-        .min(64);
-    let (q_thr, side) = combine_strengths(
-        curr_strength.0,
-        prev_strength.0,
-        curr_strength.1,
-        prev_strength.1,
-    );
-    let threshold = |value: i32| value.clamp(0, i32::from(u16::MAX)) as u16;
-    shapes[usize::from(size)]
-        .with_lossless(
-            prev.flags & CellFacts::LOSSLESS != 0,
-            curr.flags & CellFacts::LOSSLESS != 0,
-        )
-        .with_thresholds(threshold(q_thr), threshold(side))
+/// One lane group's cells across an edge: transform bases, info words and
+/// the § 7.17.5 strengths as `qThr | side << 16`.
+#[derive(Clone, Copy)]
+struct Lanes<S: Simd> {
+    bases: u32x8<S>,
+    info: u32x8<S>,
+    strengths: u32x8<S>,
 }
 
-/// The bitmask of the cells of `curr` whose transform base differs from
-/// `prev`'s at the same index, 64 cells per word, with whether every cell
-/// of both rows is covered.
-fn transform_edges(curr: &[u32], prev: &[u32], words: &mut Vec<u64>) -> bool {
-    words.clear();
-    baseline_simd!(simd => {
-        let uncovered = u32x8::splat(simd, UNCOVERED);
-        let mut covered = true;
-        for (curr, prev) in curr.chunks(64).zip(prev.chunks(64)) {
-            let (curr_lanes, curr_tail) = curr.as_chunks::<8>();
-            let mut word = 0u64;
-            for (index, (curr, prev)) in curr_lanes.iter().zip(prev.chunks_exact(8)).enumerate() {
-                let (curr, prev) = (u32x8::from_slice(simd, curr), u32x8::from_slice(simd, prev));
-                word |= (!curr.simd_eq(prev).to_bitmask() & 0xff) << (8 * index);
-                covered &= !(curr.simd_eq(uncovered) | prev.simd_eq(uncovered)).any_true();
-            }
-            let tail = curr_lanes.len() * 8;
-            for (bit, (&curr, &prev)) in curr_tail.iter().zip(prev.get(tail..).unwrap_or_default()).enumerate() {
-                word |= u64::from(curr != prev) << (tail + bit);
-                covered &= curr != UNCOVERED && prev != UNCOVERED;
-            }
-            words.push(word);
+/// The packed § 7.17.5 strengths of the `qindex` of each lane's info word,
+/// remembering the last `qindex` met: a frame without delta-q costs one
+/// compare per lane group.
+struct Strengths<'a> {
+    cache: &'a StrengthCache,
+    last: (u32, u32),
+}
+
+impl Strengths<'_> {
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
+    fn of<S: Simd>(&mut self, simd: S, info: u32x8<S>) -> u32x8<S> {
+        let qindex = info >> QINDEX_SHIFT;
+        if qindex.simd_eq(u32x8::splat(simd, self.last.0)).all_true() {
+            return u32x8::splat(simd, self.last.1);
         }
-        covered
-    })
+        self.gather(simd, qindex)
+    }
+
+    #[inline(never)]
+    fn gather<S: Simd>(&mut self, simd: S, qindex: u32x8<S>) -> u32x8<S> {
+        let words = qindex.to_array().map(|qindex| {
+            if qindex != self.last.0 {
+                let (q_thr, side) = self.cache.get(qindex);
+                let word = q_thr.clamp(0, 0xffff) as u32 | (side.clamp(0, 0xffff) as u32) << 16;
+                self.last = (qindex, word);
+            }
+            self.last.1
+        });
+        u32x8::from_slice(simd, &words)
+    }
+}
+
+/// The eight cells from `at`.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn load<S: Simd>(simd: S, cells: &[u32], at: usize) -> u32x8<S> {
+    match cells.get(at..at + 8) {
+        Some(cells) => u32x8::from_slice(simd, cells),
+        None => pad(simd, cells, at),
+    }
+}
+
+/// The cells from `at` padded with zero past the row: a zero base on both
+/// sides of an edge is no transform edge.
+#[cold]
+fn pad<S: Simd>(simd: S, cells: &[u32], at: usize) -> u32x8<S> {
+    let mut lanes = [0; 8];
+    for (lane, &cell) in lanes.iter_mut().zip(cells.get(at..).unwrap_or_default()) {
+        *lane = cell;
+    }
+    u32x8::from_slice(simd, &lanes)
+}
+
+/// The § 7.17.2 decisions of eight edges between `prev` and `curr` cells,
+/// as the low and high words [`DeblockEdge::from_lanes`] packs, plus the
+/// lanes where either side is uncovered. An edge filters when it is a
+/// transform edge, its current side is coded or starts its prediction unit
+/// (`isBlockEdge || !skip`), and either side's strengths are both nonzero;
+/// its size is § 7.17.4 `filterSize` clipped by `control`, its widths
+/// § 7.17.3, and its thresholds the § 7.17.2 combination of both sides'.
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn decide_lanes<S: Simd, const PLANE: usize, const PASS: usize>(
+    simd: S,
+    curr: Lanes<S>,
+    prev: Lanes<S>,
+    control: u32x8<S>,
+) -> (u32x8<S>, u32x8<S>, bool) {
+    let splat = |value: u32| u32x8::splat(simd, value);
+    let chroma = PLANE != 0;
+    let zero = splat(0);
+    let set = |value: u32x8<S>, bit: u32| (value & bit).simd_eq(splat(bit));
+    let uncovered = curr.bases.simd_eq(splat(UNCOVERED)) | prev.bases.simd_eq(splat(UNCOVERED));
+    let block_edge = if PASS == 0 { EDGE_V } else { EDGE_H };
+    let skipped = (curr.info & (block_edge | SKIP)).simd_eq(splat(SKIP));
+    let strong = |strengths: u32x8<S>| {
+        !((strengths & 0xffff).simd_eq(zero) | (strengths >> 16).simd_eq(zero))
+    };
+    let apply = !(curr.bases.simd_eq(prev.bases) | skipped | set(control, NO_FILTER))
+        & (strong(curr.strengths) | strong(prev.strengths));
+    let size = ((curr.info >> (8 * PASS as u32)) & 0xff)
+        .min((prev.info >> (8 * PASS as u32)) & 0xff)
+        .min(control & 0xff);
+    let pick = |mask, yes: u32, no: u32x8<S>| simd.select_u32x8(mask, splat(yes), no);
+    let wide = pick(
+        size.simd_eq(splat(16)),
+        if chroma { 4 } else { 6 },
+        splat(if chroma { 4 } else { 8 }),
+    );
+    let pos = pick(
+        size.simd_le(splat(4)),
+        1,
+        pick(size.simd_eq(splat(8)), 3, wide),
+    );
+    let cap = pos.min(splat(if chroma { 2 } else { 6 }));
+    let neg = simd.select_u32x8(set(control, SB_EDGE), cap, pos);
+    let combine = |curr: u32x8<S>, prev: u32x8<S>| {
+        let both = !(curr.simd_eq(zero) | prev.simd_eq(zero));
+        simd.select_u32x8(both, (curr + prev + 1) >> 1, curr.max(prev))
+    };
+    let q_thr = combine(curr.strengths & 0xffff, prev.strengths & 0xffff);
+    let side = combine(curr.strengths >> 16, prev.strengths >> 16);
+    let lossless = |info: u32x8<S>| (info & LOSSLESS) >> 17;
+    let low = q_thr.min(splat(0xffff)) | side.min(splat(0xffff)) << 16;
+    let high = pos | neg << 8 | lossless(prev.info) << 16 | lossless(curr.info) << 17;
+    (
+        simd.select_u32x8(apply, low, zero),
+        simd.select_u32x8(apply, high, zero),
+        uncovered.any_true(),
+    )
 }
 
 impl PassEdges {
@@ -184,9 +234,8 @@ impl PassEdges {
             plane_pass.bit_depth,
         );
         if !plane_pass.allow_df_sub_pu {
-            return self.build_without_sub_pu::<PLANE, PASS>(
-                grid, plane_pass, geometry, first, &strengths,
-            );
+            return self
+                .build_from_cells::<PLANE, PASS>(grid, plane_pass, geometry, first, &strengths);
         }
         for row_index in 0..self.rows {
             let r = first + row_index * row_step;
@@ -200,12 +249,8 @@ impl PassEdges {
                     geometry,
                     &strengths,
                 )?;
-                let (line, slot) = if PASS == 0 {
-                    (col_index, col_index * self.rows + row_index)
-                } else {
-                    (row_index, row_index * self.cols + col_index)
-                };
-                self.edges[slot] = edge;
+                let line = if PASS == 0 { col_index } else { row_index };
+                self.edges[row_index * self.cols + col_index] = edge;
                 self.live[line] |= !edge.is_none();
             }
         }
@@ -214,102 +259,134 @@ impl PassEdges {
 
     /// [`Self::build_specialized`] for a frame without sub-PU edges, where an
     /// edge filters only across a transform edge and its decision reads only
-    /// the [`CellFacts`] of its two sides, which the grid resolved once per
-    /// cell. Each row finds its transform edges as a bitmask first, so the
-    /// decisions cost only where edges are.
-    fn build_without_sub_pu<const PLANE: usize, const PASS: usize>(
+    /// the grid's per-cell arrays of its two sides: eight edges at a time.
+    fn build_from_cells<const PLANE: usize, const PASS: usize>(
         &mut self,
         grid: &MiGrid<'_>,
         plane_pass: &PlanePass,
         geometry: &PassGeometry<'_>,
         first: usize,
-        strengths: &StrengthCache,
+        cache: &StrengthCache,
     ) -> Result<(), DeblockError> {
         let sub_x = plane_pass.plane_sub_x;
+        let mut strengths = Strengths {
+            cache,
+            last: (u32::MAX, 0),
+        };
         let (rows, cols) = (self.rows, self.cols);
         let reach = if PLANE == 0 { 16 } else { 8 };
-        let shapes = &SHAPES[usize::from(PLANE != 0)];
-        let mut last = (u16::MAX, (0, 0));
-        let mut strength = |qindex: u16| {
-            if qindex != last.0 {
-                last = (qindex, strengths.get(qindex.into()));
-            }
-            last.1
+        let disable = geometry.disable_loopfilters_across_tiles;
+        let control = |near: bool, sb_edge: bool, tile: bool| {
+            (if near { reach as u32 } else { 64 })
+                | if sb_edge || tile { SB_EDGE } else { 0 }
+                | if tile && disable { NO_FILTER } else { 0 }
         };
-        let mut words = core::mem::take(&mut self.words);
-        let result = (|| {
+        if PASS == 0 {
+            self.controls.clear();
+            self.controls.extend((0..cols).map(|col| {
+                let tile = starts_tile(geometry.tile_starts, col << sub_x);
+                control(col * MI_SIZE + reach > geometry.width, false, tile)
+            }));
+            self.marks.clear();
+            self.marks.resize(cols, 0);
+        }
+        let offset = usize::from(PASS == 0);
+        baseline_simd!(simd => {
             for row_index in 0..rows {
                 let cell_row = self.first_row + row_index;
                 let r = first + row_index * plane_pass.row_step;
-                let y_p = cell_row * MI_SIZE;
                 let uncovered = || DeblockError::UncoveredMi { row: r, col: 0 };
-                let row = |at: usize| {
-                    grid.facts_row(at)
-                        .and_then(|(bases, facts)| Some((bases.get(..cols)?, facts.get(..cols)?)))
-                        .ok_or_else(uncovered)
-                };
-                let (curr_bases, curr) = row(cell_row)?;
-                let ((curr_bases, curr_cells), (prev_bases, prev_cells)) = if PASS == 0 {
+                let row = |at: usize| grid.cell_row(at).ok_or_else(uncovered);
+                let (curr, prev) = if PASS == 0 {
+                    let cells = row(cell_row)?;
+                    let head = cols.saturating_sub(1);
                     (
-                        (&curr_bases[1..], &curr[1..]),
-                        (&curr_bases[..cols - 1], &curr[..cols - 1]),
+                        cells.map(|cells| cells.get(1..).unwrap_or_default()),
+                        cells.map(|cells| cells.get(..head).unwrap_or_default()),
                     )
                 } else {
-                    ((curr_bases, curr), row(cell_row - 1)?)
+                    (row(cell_row)?, row(cell_row - 1)?)
                 };
-                if !transform_edges(curr_bases, prev_bases, &mut words) {
-                    return Err(uncovered());
-                }
-                let tile_row = PASS == 1 && starts_tile(geometry.tile_starts, r);
-                if PASS == 1 && geometry.disable_loopfilters_across_tiles && tile_row {
-                    continue;
-                }
-                let sb_row = PASS == 1 && (r * MI_SIZE).is_multiple_of(SB_SIZE);
-                let row_limit = PASS == 1 && y_p + reach > geometry.height;
-                let mut row_live = false;
-                for (word_index, &word) in words.iter().enumerate() {
-                    let mut word = word;
-                    while word != 0 {
-                        let bit = word.trailing_zeros() as usize;
-                        word &= word - 1;
-                        let index = word_index * 64 + bit;
-                        let col = index + usize::from(PASS == 0);
-                        let (curr, prev) = (curr_cells[index], prev_cells[index]);
-                        let tile = PASS == 0 && starts_tile(geometry.tile_starts, col << sub_x);
-                        if tile && geometry.disable_loopfilters_across_tiles {
-                            continue;
+                let row_control = if PASS == 1 {
+                    let tile = starts_tile(geometry.tile_starts, r);
+                    control(
+                        cell_row * MI_SIZE + reach > geometry.height,
+                        (r * MI_SIZE).is_multiple_of(SB_SIZE),
+                        false,
+                    ) | if tile && disable { NO_FILTER } else { 0 }
+                } else {
+                    0
+                };
+                let row_control = u32x8::splat(simd, row_control);
+                let lanes = curr[0].len();
+                let out = row_index * cols + offset;
+                let mut row_marks = u32x8::splat(simd, 0);
+                for at in (0..lanes).step_by(8) {
+                    let control = if PASS == 0 {
+                        load(simd, self.controls.get(offset..).unwrap_or_default(), at)
+                    } else {
+                        row_control
+                    };
+                    let (curr_bases, prev_bases) = (load(simd, curr[0], at), load(simd, prev[0], at));
+                    if curr_bases.simd_eq(prev_bases).all_true() {
+                        if curr_bases.simd_eq(u32x8::splat(simd, UNCOVERED)).any_true() {
+                            return Err(uncovered());
                         }
-                        let at = if PASS == 0 { col * MI_SIZE } else { y_p };
-                        let near = row_limit || PASS == 0 && at + reach > geometry.width;
-                        let limit = if near { reach as u8 } else { 64 };
-                        let edge = decide(
-                            (curr, strength(curr.qindex)),
-                            (prev, strength(prev.qindex)),
-                            (at, PASS),
-                            limit,
-                            &shapes[usize::from(sb_row || tile)],
-                        );
-                        let (line, slot) = if PASS == 0 {
-                            (col, col * rows + row_index)
-                        } else {
-                            (row_index, row_index * cols + col)
-                        };
-                        self.edges[slot] = edge;
-                        if PASS == 0 {
-                            self.live[line] |= !edge.is_none();
-                        } else {
-                            row_live |= !edge.is_none();
+                        continue;
+                    }
+                    let (curr_info, prev_info) = (load(simd, curr[1], at), load(simd, prev[1], at));
+                    let curr = Lanes {
+                        bases: curr_bases,
+                        info: curr_info,
+                        strengths: strengths.of(simd, curr_info),
+                    };
+                    let prev = Lanes {
+                        bases: prev_bases,
+                        info: prev_info,
+                        strengths: strengths.of(simd, prev_info),
+                    };
+                    let (low, high, uncovered_lane) =
+                        decide_lanes::<_, PLANE, PASS>(simd, curr, prev, control);
+                    if uncovered_lane {
+                        return Err(uncovered());
+                    }
+                    let edges = DeblockEdge::from_lanes(simd, low, high);
+                    let count = (lanes - at).min(8);
+                    let out = self
+                        .edges
+                        .get_mut(out + at..out + at + count)
+                        .ok_or(DeblockError::Workspace)?;
+                    match out.first_chunk_mut::<8>() {
+                        Some(out) => *out = edges,
+                        None => out.copy_from_slice(&edges[..count]),
+                    }
+                    if PASS == 0 {
+                        let marks = self.marks.get_mut(offset..).unwrap_or_default();
+                        let merged = load(simd, marks, at) | low;
+                        match marks.get_mut(at..at + 8) {
+                            Some(marks) => merged.store_slice(marks),
+                            None => {
+                                for (mark, value) in marks.iter_mut().skip(at).zip(merged.to_array()) {
+                                    *mark = value;
+                                }
+                            }
                         }
+                    } else {
+                        row_marks |= low;
                     }
                 }
                 if PASS == 1 {
-                    self.live[row_index] |= row_live;
+                    self.live[row_index] = !row_marks.simd_eq(u32x8::splat(simd, 0)).all_true();
                 }
             }
-            Ok(())
-        })();
-        self.words = words;
-        result
+            Ok::<(), DeblockError>(())
+        })?;
+        if PASS == 0 {
+            for (live, &mark) in self.live.iter_mut().zip(&self.marks) {
+                *live = mark != 0;
+            }
+        }
+        Ok(())
     }
 
     /// Filters every decided edge: whole columns or rows through the batched
@@ -331,11 +408,19 @@ impl PassEdges {
         } else {
             (self.rows, self.cols)
         };
+        let cols = NonZeroUsize::new(self.cols).ok_or(DeblockError::Workspace)?;
         for line in 0..outer {
-            let edges = &self.edges[line * inner..(line + 1) * inner];
             if !self.live.get(line).copied().unwrap_or(true) {
                 continue;
             }
+            let edge_at = |k: usize| {
+                let index = if PASS == 0 {
+                    k * self.cols + line
+                } else {
+                    line * self.cols + k
+                };
+                self.edges.get(index).copied().unwrap_or_default()
+            };
             let (x_p, y_p) = if PASS == 0 {
                 (line * MI_SIZE, self.first_row * MI_SIZE)
             } else {
@@ -355,15 +440,25 @@ impl PassEdges {
             if full > 0 {
                 let (samples, stride) = ctx.rows.contiguous_mut();
                 let first = (y_p - y_origin) * stride + x_p;
-                let kernel = if PASS == 0 {
-                    deblock_vertical_edges::<T>
+                let filtered = if PASS == 0 {
+                    let column = self
+                        .edges
+                        .get(line..line + (full - 1) * self.cols + 1)
+                        .ok_or(DeblockError::Workspace)?;
+                    deblock_vertical_edge_column::<T>(
+                        samples, stride, first, column, cols, bit_depth,
+                    )
                 } else {
-                    deblock_horizontal_edges::<T>
+                    let row = self
+                        .edges
+                        .get(line * self.cols..line * self.cols + full)
+                        .ok_or(DeblockError::Workspace)?;
+                    deblock_horizontal_edges::<T>(samples, stride, first, row, bit_depth)
                 };
-                kernel(samples, stride, first, &edges[..full], bit_depth)
-                    .map_err(|_| DeblockError::SampleFilter)?;
+                filtered.map_err(|_| DeblockError::SampleFilter)?;
             }
-            for (k, &edge) in edges.iter().enumerate().skip(full) {
+            for k in full..inner {
+                let edge = edge_at(k);
                 if edge.is_none() {
                     continue;
                 }
