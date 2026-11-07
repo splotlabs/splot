@@ -12,8 +12,8 @@
 
 use super::super::compound::CompoundYMode;
 use super::super::find_mv_stack::{
-    GridCheckpoint, GridEdge, ModeContext, OrderHintMvContext, RefMvBank, WarpParamBank,
-    reference_order_hints,
+    ALL_CANDIDATES, GridCheckpoint, GridEdge, ModeContext, OrderHintMvContext, RefMvBank,
+    WarpParamBank, reference_order_hints,
 };
 use splot_core::headers::sequence::{SequencePartitionConfig, SuperblockSize};
 
@@ -548,7 +548,7 @@ impl EncoderInterTile {
             .collect();
         let temporal_first = !tip && self.temporal_first(ref_frame);
         let state = self.resolution_state(&block);
-        let stack = single_mv_stack(&block, tip, temporal_first, &state);
+        let stack = single_mv_stack(&block, tip, temporal_first, &state, ALL_CANDIDATES);
         let mv = |single: &SingleMotionSyntax| {
             single_mode_mv(single, &stack, (precision, false), &block, &state)
         };

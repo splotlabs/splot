@@ -181,18 +181,100 @@ pub(super) struct NeighbourCell {
     pub(super) motion: NeighbourMotion,
 }
 
-/// [`NeighbourMvGrid::scan_leaf`].
+/// A resolved leaf seen from one probed position, [`NeighbourMvGrid::probe`].
+///
+/// The warp-derived parts (sub-MVs of a splat model, the stored model) are
+/// only computed when a reader asks for them.
 #[derive(Clone, Copy)]
-pub(super) struct ScanLeaf {
-    pub(super) flags: NeighbourFlags,
-    pub(super) sub_mvs: [Mv; 2],
-    pub(super) cwp_weight: i16,
-    global_lists: u8,
+pub(super) struct ProbedLeaf<'g> {
+    leaf: &'g LeafRecord,
+    models: &'g [[i32; 6]],
+    r: i32,
+    c: i32,
 }
 
-impl ScanLeaf {
-    pub(super) const fn is_global_mv(self, list: usize) -> bool {
-        self.global_lists & (1 << list) != 0
+impl ProbedLeaf<'_> {
+    pub(super) const fn flags(&self) -> NeighbourFlags {
+        self.leaf.flags
+    }
+
+    pub(super) const fn cwp_weight(&self) -> i16 {
+        self.leaf.cwp_weight
+    }
+
+    fn model(&self, offset: usize) -> Option<[i32; 6]> {
+        self.models.get(self.leaf.models as usize + offset).copied()
+    }
+
+    fn splat(&self, list: usize) -> Option<[i32; 6]> {
+        let bits = self.leaf.model_bits;
+        match list {
+            0 if bits & LeafRecord::SPLAT0 != 0 => self.model(0),
+            1 if bits & LeafRecord::SPLAT1 != 0 => {
+                self.model(usize::from(bits & LeafRecord::SPLAT0 != 0))
+            }
+            _ => None,
+        }
+    }
+
+    /// The neighbour-facing warp model, `NeighbourMotion::warp_params`.
+    pub(super) fn stored_warp(&self) -> Option<[i32; 6]> {
+        let bits = self.leaf.model_bits;
+        if bits & LeafRecord::STORED_IS_SPLAT0 != 0 {
+            self.splat(0)
+        } else if bits & LeafRecord::STORED_OWN != 0 {
+            self.model(
+                usize::from(bits & LeafRecord::SPLAT0 != 0)
+                    + usize::from(bits & LeafRecord::SPLAT1 != 0),
+            )
+        } else {
+            None
+        }
+    }
+
+    /// The list's § 7.12.2.2 sub-MV at the probed position.
+    #[allow(clippy::inline_always, reason = "measured: every stack probe")]
+    #[inline(always)]
+    pub(super) fn sub_mv(&self, list: usize) -> Mv {
+        if self.leaf.model_bits & (LeafRecord::SPLAT0 << list) == 0 {
+            return if list == 0 {
+                self.leaf.mv
+            } else {
+                self.leaf.mv1
+            };
+        }
+        self.splat_sub_mv(list)
+    }
+
+    #[inline(never)]
+    fn splat_sub_mv(&self, list: usize) -> Mv {
+        let mv = if list == 0 {
+            self.leaf.mv
+        } else {
+            self.leaf.mv1
+        };
+        self.splat(list).map_or(mv, |params| {
+            warp_sub_mv_at(
+                params,
+                self.leaf.base_r as usize,
+                self.leaf.base_c as usize,
+                self.r as usize,
+                self.c as usize,
+            )
+        })
+    }
+
+    #[inline]
+    pub(super) fn sub_mvs(&self) -> [Mv; 2] {
+        [self.sub_mv(0), self.sub_mv(1)]
+    }
+
+    /// Whether the list is a GLOBALMV list of a leaf without a stored model.
+    #[inline]
+    pub(super) fn is_global_mv(&self, list: usize) -> bool {
+        self.leaf.global_mv_lists & (1 << list) != 0
+            && (self.leaf.model_bits & (LeafRecord::STORED_IS_SPLAT0 | LeafRecord::STORED_OWN) == 0
+                || self.stored_warp().is_none())
     }
 }
 
@@ -1014,10 +1096,15 @@ impl NeighbourMvGrid {
     }
 
     /// Moves the window down to the superblock row holding tile row `row`.
+    #[inline]
     pub(crate) fn enter_sb_row(&mut self, row: usize) {
-        if row < self.sb_row_end {
-            return;
+        if row >= self.sb_row_end {
+            self.slide_to_sb_row(row);
         }
+    }
+
+    #[inline(never)]
+    fn slide_to_sb_row(&mut self, row: usize) {
         let tile_row = row.saturating_sub(self.origin_row);
         let slide = self.window.enter(tile_row);
         let sb_h4 = self.window.sb_h4();
@@ -1161,63 +1248,17 @@ impl NeighbourMvGrid {
         })
     }
 
-    /// The § 7.12.2.6 scan's view of [`Self::get`]: flags, sub-MVs at
-    /// `(r, c)`, and the GLOBALMV lists of a leaf without a stored warp model.
+    /// The resolved leaf covering `(r, c)`, `None` like [`Self::get`].
     #[allow(clippy::inline_always, reason = "measured: every stack probe")]
     #[inline(always)]
-    pub(super) fn scan_leaf(&self, r: i32, c: i32) -> Option<ScanLeaf> {
+    pub(super) fn probe(&self, r: i32, c: i32) -> Option<ProbedLeaf<'_>> {
         let leaf = self.leaf_at(r, c)?;
-        if !leaf.resolved {
-            return None;
-        }
-        let (stored, sub_mvs) = if leaf.model_bits == 0 {
-            (false, [leaf.mv, leaf.mv1])
-        } else {
-            self.warp_sub_mvs(leaf, r, c)
-        };
-        Some(ScanLeaf {
-            flags: leaf.flags,
-            sub_mvs,
-            cwp_weight: leaf.cwp_weight,
-            global_lists: if stored { 0 } else { leaf.global_mv_lists },
+        leaf.resolved.then_some(ProbedLeaf {
+            leaf,
+            models: &self.planes.models,
+            r,
+            c,
         })
-    }
-
-    /// The stored-model fact and sub-MVs of [`Self::warp_motion`].
-    #[inline(never)]
-    fn warp_sub_mvs(&self, leaf: &LeafRecord, r: i32, c: i32) -> (bool, [Mv; 2]) {
-        let bits = leaf.model_bits;
-        let models = self
-            .planes
-            .models
-            .get(leaf.models as usize..)
-            .unwrap_or_default();
-        let splat0 = bits & LeafRecord::SPLAT0 != 0;
-        let splat1 = bits & LeafRecord::SPLAT1 != 0;
-        let at = |index: usize, mv: Mv| {
-            models.get(index).map_or(mv, |&params| {
-                warp_sub_mv_at(
-                    params,
-                    leaf.base_r as usize,
-                    leaf.base_c as usize,
-                    r as usize,
-                    c as usize,
-                )
-            })
-        };
-        let sub_mv0 = if splat0 { at(0, leaf.mv) } else { leaf.mv };
-        let sub_mv1 = if splat1 {
-            at(usize::from(splat0), leaf.mv1)
-        } else {
-            leaf.mv1
-        };
-        let stored = if bits & LeafRecord::STORED_IS_SPLAT0 != 0 {
-            splat0 && !models.is_empty()
-        } else {
-            bits & LeafRecord::STORED_OWN != 0
-                && models.len() > usize::from(splat0) + usize::from(splat1)
-        };
-        (stored, [sub_mv0, sub_mv1])
     }
 
     /// Warp-model half of [`Self::get`], out of line so the inlined
