@@ -3,7 +3,7 @@
 
 //! Shared DC intra prediction math.
 
-use fearless_simd::{Simd, SimdBase, u8x16, u16x8, u16x16};
+use fearless_simd::{Bytes as _, Simd, SimdBase, u8x16, u16x8, u16x16};
 
 use crate::intra::{IntraDcEdge, IntraRectBlockSize};
 use crate::{BitDepth, ReconError, ReconSample, Result};
@@ -72,6 +72,12 @@ pub(crate) trait IntraLaneSample: ReconSample {
 
     /// Stores sixteen in-range `u16` lanes.
     fn store16<S: Simd>(simd: S, values: u16x16<S>, output: &mut [Self; 16]);
+
+    /// Loads eight samples as `u16` lanes.
+    fn load8<S: Simd>(simd: S, samples: &[Self; 8]) -> u16x8<S>;
+
+    /// Stores eight in-range `u16` lanes.
+    fn store8<S: Simd>(simd: S, values: u16x8<S>, output: &mut [Self; 8]);
 }
 
 impl IntraLaneSample for u16 {
@@ -92,6 +98,16 @@ impl IntraLaneSample for u16 {
 
     #[inline]
     fn store16<S: Simd>(_simd: S, values: u16x16<S>, output: &mut [Self; 16]) {
+        values.store_slice(output);
+    }
+
+    #[inline]
+    fn load8<S: Simd>(simd: S, samples: &[Self; 8]) -> u16x8<S> {
+        u16x8::from_slice(simd, samples)
+    }
+
+    #[inline]
+    fn store8<S: Simd>(_simd: S, values: u16x8<S>, output: &mut [Self; 8]) {
         values.store_slice(output);
     }
 }
@@ -119,6 +135,18 @@ impl IntraLaneSample for u8 {
     fn store16<S: Simd>(simd: S, values: u16x16<S>, output: &mut [Self; 16]) {
         let (low, high): (u16x8<S>, u16x8<S>) = simd.split_u16x16(values);
         simd.relaxed_narrow_u16x8(low, high).store_slice(output);
+    }
+
+    #[inline]
+    fn load8<S: Simd>(simd: S, samples: &[Self; 8]) -> u16x8<S> {
+        let bytes = fearless_simd::u64x2::splat(simd, u64::from_le_bytes(*samples));
+        simd.widen_u8x16(bytes.bitcast()).0
+    }
+
+    #[inline]
+    fn store8<S: Simd>(simd: S, values: u16x8<S>, output: &mut [Self; 8]) {
+        let bytes: [u8; 16] = simd.relaxed_narrow_u16x8(values, values).into();
+        output.copy_from_slice(&bytes[..8]); // splot-copy-ok: publish eight intra lanes
     }
 }
 
