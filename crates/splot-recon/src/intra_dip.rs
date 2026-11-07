@@ -387,7 +387,8 @@ fn split_dip_scale_log2(log2_quarter_len: u8) -> (u8, u8) {
 /// interpolated from the left edge when the grid is coarser than the block,
 /// then fills the rows between sampled rows from the row or above edge before
 /// them. Every interpolated result is a convex combination of two samples with
-/// power-of-two weights, so it needs no clipping.
+/// power-of-two weights, so it needs no clipping, and a between row's
+/// `a * step + z * (b - a)` is a wrapping running sum that stays exact.
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn interpolate_lanes<S: Simd, P: IntraLaneSample>(
@@ -471,19 +472,27 @@ fn interpolate_lanes<S: Simd, P: IntraLaneSample>(
                 for column in (0..width).step_by(16) {
                     let a = P::load16(simd, p0!(column)?.first_chunk()?);
                     let b = P::load16(simd, output.get(last + column..)?.first_chunk()?);
-                    for z in 1..step {
-                        let row = output.get_mut((top + z - 1) * stride + column..)?;
-                        let lerp = (a * (step - z) as u16 + b * z as u16) >> shift;
-                        P::store16(simd, lerp, row.first_chunk_mut()?);
+                    let (mut lerp, delta) = (a << shift, b - a);
+                    for row in output
+                        .get_mut(top * stride + column..)?
+                        .chunks_mut(stride)
+                        .take(step - 1)
+                    {
+                        lerp += delta;
+                        P::store16(simd, lerp >> shift, row.first_chunk_mut()?);
                     }
                 }
             } else if width == 8 {
                 let a = P::load8(simd, p0!(0)?.first_chunk()?);
                 let b = P::load8(simd, output.get(last..)?.first_chunk()?);
-                for z in 1..step {
-                    let row = output.get_mut((top + z - 1) * stride..)?;
-                    let lerp = (a * (step - z) as u16 + b * z as u16) >> shift;
-                    P::store8(simd, lerp, row.first_chunk_mut()?);
+                let (mut lerp, delta) = (a << shift, b - a);
+                for row in output
+                    .get_mut(top * stride..)?
+                    .chunks_mut(stride)
+                    .take(step - 1)
+                {
+                    lerp += delta;
+                    P::store8(simd, lerp >> shift, row.first_chunk_mut()?);
                 }
             } else {
                 let a: [P; 4] = *p0!(0)?.first_chunk()?;

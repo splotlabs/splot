@@ -710,6 +710,45 @@ fn cfl_predict_lanes_match_scalar_over_random_inputs() {
     }
 }
 
+fn check_cfl_predict_block<T: ReconSample>(max: i32, state: &mut u64) {
+    let width = 4 << (lcg(state) % 5);
+    let height = 4 << (lcg(state) % 5);
+    let stride = width + lcg(state) % 9;
+    let sample = |state: &mut u64| (lcg(state) % (8 * max as usize + 1)) as i32;
+    let model = [
+        (lcg(state) % (max as usize + 1)) as i32,
+        (lcg(state) % 4095) as i32 - 2047,
+        sample(state),
+        max,
+    ];
+    let luma: Vec<i32> = (0..width * height).map(|_| sample(state)).collect();
+    let sentinel = T::try_from_u16(7).unwrap();
+    let mut out = vec![sentinel; (height - 1) * stride + width];
+    cfl_predict_block(model, &luma, width, &mut out, stride).unwrap();
+    for (i, &got) in out.iter().enumerate() {
+        let (row, col) = (i / stride, i % stride);
+        let expected = if col < width {
+            cfl_predict(model, luma[row * width + col]) as u16
+        } else {
+            7
+        };
+        assert_eq!(
+            got.to_u16(),
+            expected,
+            "{width}x{height} model={model:?} at {i}"
+        );
+    }
+}
+
+#[test]
+fn cfl_predict_blocks_match_scalar_for_pmulhrsw_alphas() {
+    let mut state = 11;
+    for _ in 0..300 {
+        check_cfl_predict_block::<u8>(255, &mut state);
+        check_cfl_predict_block::<u16>(1023, &mut state);
+    }
+}
+
 /// [`CflLuma::q3_run`] over chroma row `y - 1` with the 4:2:0 filter `F`.
 #[allow(clippy::too_many_arguments)]
 fn specialised_run<const F: usize>(
