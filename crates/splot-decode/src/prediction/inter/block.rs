@@ -27,8 +27,8 @@ use super::find_mv_stack::{
     MotionMode, MvBlockContext, NON_INTER_FLAG_SYNTAX, NeighbourFlagRecord, NeighbourFlagSyntax,
     NeighbourMvGrid, TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
     TemporalProjectionConfig, TipReferencePair, ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx,
-    find_compound_mv_stack_with_temporal, find_mode_ctx, find_mode_ctx_with_tip,
-    find_mv_stack_with_temporal, mode_ctx_from_neighbours, warp_predicted_mv,
+    find_compound_mv_stack_upto, find_mode_ctx, find_mode_ctx_with_tip, find_mv_stack_upto,
+    mode_ctx_from_neighbours, warp_predicted_mv,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_QUARTER_PEL, MvReadConfig, apply_inter_mvd_signs,
