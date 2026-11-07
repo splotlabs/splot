@@ -123,23 +123,13 @@ pub fn predict_intra_smooth_rect_into<T: ReconSample>(
     )?;
 
     if bit_depth.max_sample() <= MAX_LANE_SAMPLE {
+        let mut lanes = IntraSmoothLanes::new(size);
         let (left, above) = (edges.left_samples(), edges.above_samples());
-        if let (Some(left), Some(above), Some(target)) = (
-            T::u8_slice(left),
-            T::u8_slice(above),
-            T::u8_slice_mut(output),
-        ) {
-            predict_smooth_u8(size, mode, left, above, target, stride_samples);
-            return Ok(());
-        }
-        if let (Some(left), Some(above), Some(target)) = (
-            T::u16_slice(left),
-            T::u16_slice(above),
-            T::u16_slice_mut(output),
-        ) {
-            predict_smooth_lanes(size, mode, left, above, target, stride_samples);
-            return Ok(());
-        }
+        lanes.left[..size.height()].copy_from_slice(&left[..size.height()]); // splot-copy-ok: smooth left lanes
+        lanes.set_above(&above[..size.width()]);
+        lanes.corners = [above[size.width()], left[size.height()]];
+        predict_lanes(&lanes, mode, output, stride_samples);
+        return Ok(());
     }
     for row in 0..size.height() {
         let row_start = row
@@ -232,24 +222,118 @@ fn smooth_tables(size: IntraRectBlockSize) -> [[&'static [u16; LANE_LEN]; 3]; 2]
     })
 }
 
-/// The block's edges as lane rows: `left[i]` is `LeftCol[i]`, and `above[j]`
-/// is `AboveRow[j mod w]`, repeated for blocks narrower than 16.
-fn smooth_edge_lanes<P: Copy + Default>(
+/// One block's § 7.13.2.13 edges in the prediction kernel's lane layout:
+/// `left[i]` is `LeftCol[i]`, `above[j]` is `AboveRow[j mod w]` (repeated for
+/// blocks narrower than 16), and `corners` is `[AboveRow[w], LeftCol[h]]`.
+///
+/// Every sample must lie within the bit depth of the prediction it feeds.
+#[derive(Clone, Copy, Debug)]
+pub struct IntraSmoothLanes<T: ReconSample> {
     size: IntraRectBlockSize,
-    left: &[P],
-    above: &[P],
-) -> [[P; LANE_LEN]; 2] {
-    let (width, height) = (size.width(), size.height());
-    let mut lanes = [[P::default(); LANE_LEN]; 2];
-    lanes[0][..height].copy_from_slice(&left[..height]); // splot-copy-ok: smooth left lanes
-    if width >= 16 {
-        lanes[1][..width].copy_from_slice(&above[..width]); // splot-copy-ok: smooth above lanes
-    } else {
-        for lanes in lanes[1][..16].chunks_exact_mut(width) {
-            lanes.copy_from_slice(&above[..width]); // splot-copy-ok: repeat a narrow above row
+    /// `LeftCol[0..h)`, from index 0.
+    pub left: [T; LANE_LEN],
+    above: [T; LANE_LEN],
+    /// `[AboveRow[w], LeftCol[h]]`.
+    pub corners: [T; 2],
+}
+
+impl<T: ReconSample> IntraSmoothLanes<T> {
+    /// Empty lanes for a block of `size`.
+    pub fn new(size: IntraRectBlockSize) -> Self {
+        Self {
+            size,
+            left: [T::default(); LANE_LEN],
+            above: [T::default(); LANE_LEN],
+            corners: [T::default(); 2],
         }
     }
-    lanes
+
+    /// Sets `AboveRow[0..w)` from the first `w` samples of `row`.
+    pub fn set_above(&mut self, row: &[T]) {
+        fn repeat<T: Copy, const N: usize>(row: &[T], lanes: &mut [T]) {
+            if let Some(row) = row.first_chunk::<N>() {
+                for lane in lanes.as_chunks_mut::<N>().0 {
+                    *lane = *row;
+                }
+            }
+        }
+        match self.size.width() {
+            4 => repeat::<T, 4>(row, &mut self.above[..16]),
+            8 => repeat::<T, 8>(row, &mut self.above[..16]),
+            width => {
+                if let Some(row) = row.get(..width) {
+                    self.above[..width].copy_from_slice(row); // splot-copy-ok: smooth above lanes
+                }
+            }
+        }
+    }
+
+    /// Sets every `AboveRow[0..w)` sample to `sample`.
+    pub fn fill_above(&mut self, sample: T) {
+        self.above.fill(sample);
+    }
+}
+
+/// Writes the § 7.13.2.13 prediction of `lanes` into caller storage.
+///
+/// # Errors
+/// Returns [`ReconError`] for a sample type that cannot represent `bit_depth`,
+/// or a too-small stride or output buffer.
+pub fn predict_intra_smooth_lanes_into<T: ReconSample>(
+    bit_depth: BitDepth,
+    mode: IntraSmoothMode,
+    lanes: &IntraSmoothLanes<T>,
+    output: &mut [T],
+    stride_samples: usize,
+) -> Result<()> {
+    validate_sample_type::<T>(bit_depth)?;
+    validate_output_shape(
+        lanes.size,
+        output.len(),
+        stride_samples,
+        "smooth intra prediction output buffer length",
+    )?;
+    predict_lanes(lanes, mode, output, stride_samples);
+    Ok(())
+}
+
+fn predict_lanes<T: ReconSample>(
+    lanes: &IntraSmoothLanes<T>,
+    mode: IntraSmoothMode,
+    output: &mut [T],
+    stride: usize,
+) {
+    if let (Some(left), Some(above), Some(corners), Some(target)) = (
+        T::u8_slice(&lanes.left),
+        T::u8_slice(&lanes.above),
+        T::u8_slice(&lanes.corners),
+        T::u8_slice_mut(output),
+    ) {
+        predict_smooth_u8(
+            lanes.size,
+            mode,
+            left,
+            above,
+            [corners[0], corners[1]],
+            target,
+            stride,
+        );
+    } else if let (Some(left), Some(above), Some(corners), Some(target)) = (
+        T::u16_slice(&lanes.left),
+        T::u16_slice(&lanes.above),
+        T::u16_slice(&lanes.corners),
+        T::u16_slice_mut(output),
+    ) {
+        predict_smooth_lanes(
+            lanes.size,
+            mode,
+            left,
+            above,
+            [corners[0], corners[1]],
+            target,
+            stride,
+        );
+    }
 }
 
 /// Writes the whole § 7.13.2.13 prediction for samples of at most
@@ -266,11 +350,17 @@ fn predict_smooth_lanes(
     mode: IntraSmoothMode,
     left: &[u16],
     above: &[u16],
+    corners: [u16; 2],
     output: &mut [u16],
     stride: usize,
 ) {
-    let corners = [above[size.width()], left[size.height()]];
-    let lanes = smooth_edge_lanes(size, left, above);
+    let (Ok(left), Ok(above)) = (
+        <&[u16; LANE_LEN]>::try_from(left),
+        <&[u16; LANE_LEN]>::try_from(above),
+    ) else {
+        return;
+    };
+    let lanes = [*left, *above];
     dispatch!(Level::baseline(), simd => smooth_lanes(simd, size, mode, &lanes, corners, output, stride));
 }
 
@@ -351,16 +441,21 @@ fn predict_smooth_u8(
     mode: IntraSmoothMode,
     left: &[u8],
     above: &[u8],
+    corners: [u8; 2],
     output: &mut [u8],
     stride: usize,
 ) {
-    let corners = [above[size.width()], left[size.height()]];
+    let (Ok(left), Ok(above)) = (
+        <&[u8; LANE_LEN]>::try_from(left),
+        <&[u8; LANE_LEN]>::try_from(above),
+    ) else {
+        return;
+    };
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = Level::baseline().as_avx2() {
-        let lanes = smooth_edge_lanes(size, left, above);
-        return smooth_u8_avx2(token, size, mode, &lanes, corners, output, stride);
+        return smooth_u8_avx2(token, size, mode, [left, above], corners, output, stride);
     }
-    let lanes = smooth_edge_lanes(size, left, above).map(|lanes| lanes.map(u16::from));
+    let lanes = [left.map(u16::from), above.map(u16::from)];
     let corners = corners.map(u16::from);
     dispatch!(Level::baseline(), simd => smooth_lanes(simd, size, mode, &lanes, corners, output, stride));
 }
@@ -376,7 +471,7 @@ fearless_simd::kernel!(
         token: Avx2,
         size: IntraRectBlockSize,
         mode: IntraSmoothMode,
-        lanes: &[[u8; LANE_LEN]; 2],
+        lanes: [&[u8; LANE_LEN]; 2],
         corners: [u8; 2],
         output: &mut [u8],
         stride: usize,
@@ -483,16 +578,29 @@ fearless_simd::kernel!(
                     continue;
                 }
                 let lanes: [u8; 16] = packed.into();
-                for (r, samples) in lanes.chunks_exact(width).enumerate() {
-                    let start = start + r * stride;
-                    if let Some(out) = output.get_mut(start..start + width) {
-                        out.copy_from_slice(samples); // splot-copy-ok: publish one smooth row
-                    }
+                let out = output.get_mut(start..).unwrap_or_default();
+                if width == 4 {
+                    publish_rows::<4>(&lanes, out, stride);
+                } else {
+                    publish_rows::<8>(&lanes, out, stride);
                 }
             }
         }
     }
 );
+
+/// Writes the `16 / N` rows of `N` samples packed in `lanes`, `stride` apart.
+#[inline]
+fn publish_rows<const N: usize>(lanes: &[u8; 16], output: &mut [u8], stride: usize) {
+    for (row, samples) in lanes.as_chunks::<N>().0.iter().enumerate() {
+        if let Some(out) = output
+            .get_mut(row * stride..)
+            .and_then(<[u8]>::first_chunk_mut::<N>)
+        {
+            *out = *samples;
+        }
+    }
+}
 
 pub(crate) fn predict_smooth_sample<T: ReconSample>(
     bit_depth: BitDepth,
