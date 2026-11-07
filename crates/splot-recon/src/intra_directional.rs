@@ -80,22 +80,41 @@ pub fn predict_intra_cardinal_directional_rect_into<T: ReconSample>(
     };
     validate_directional_edge(edge_kind, edge, edge_len, bit_depth)?;
 
-    for row in 0..size.height() {
-        let row_start = row
-            .checked_mul(stride_samples)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "cardinal directional intra prediction output row offset",
-            })?;
-        for column in 0..size.width() {
-            let sample_index = match edge_kind {
-                IntraDirectionalAngleEdge::Left => row,
-                IntraDirectionalAngleEdge::Above => column,
-            };
-            output[row_start + column] = edge[sample_index];
+    let vertical = matches!(edge_kind, IntraDirectionalAngleEdge::Above);
+    let height = size.height();
+    match size.width() {
+        4 => write_cardinal_rows::<T, 4>(vertical, edge, output, stride_samples, height),
+        8 => write_cardinal_rows::<T, 8>(vertical, edge, output, stride_samples, height),
+        16 => write_cardinal_rows::<T, 16>(vertical, edge, output, stride_samples, height),
+        32 => write_cardinal_rows::<T, 32>(vertical, edge, output, stride_samples, height),
+        _ => write_cardinal_rows::<T, 64>(vertical, edge, output, stride_samples, height),
+    }
+    Ok(())
+}
+
+/// Writes `height` rows of `N` samples `stride` apart: each a copy of the
+/// above edge when `vertical`, else its row's left edge sample repeated.
+fn write_cardinal_rows<T: Copy, const N: usize>(
+    vertical: bool,
+    edge: &[T],
+    output: &mut [T],
+    stride: usize,
+    height: usize,
+) {
+    let rows = output.chunks_mut(stride).take(height);
+    if vertical {
+        if let Some(above) = edge.first_chunk::<N>() {
+            for row in rows.filter_map(<[T]>::first_chunk_mut::<N>) {
+                *row = *above;
+            }
+        }
+    } else {
+        for (row, &left) in rows.zip(edge) {
+            if let Some(row) = row.first_chunk_mut::<N>() {
+                *row = [left; N];
+            }
         }
     }
-
-    Ok(())
 }
 
 fn required_edge<T: ReconSample>(
