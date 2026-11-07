@@ -143,6 +143,11 @@ fn unclamped_8x8<T: ReconSample>(
     {
         return false;
     }
+    if let Some(output) = output.first_chunk_mut::<64>()
+        && splot_recon::subpel_predict_bilinear_8x8_u8(view, params, output)
+    {
+        return true;
+    }
     let (Some(output), Some(spans)) = (
         output.first_chunk_mut::<64>(),
         view.readable_spans::<9>(

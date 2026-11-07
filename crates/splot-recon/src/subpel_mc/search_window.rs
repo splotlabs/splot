@@ -55,6 +55,48 @@ pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
     false
 }
 
+/// Predicts an 8x8 bilinear block of eight-bit storage whose taps all lie
+/// inside its clip bounds and the plane into `output` at stride 8, or returns
+/// `false` without writing for any other block.
+#[must_use]
+pub fn subpel_predict_bilinear_8x8_u8<T: ReconSample>(
+    view: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16; 64],
+) -> bool {
+    let (x0, y0) = (
+        params.start_x >> SCALE_SUBPEL_BITS,
+        params.start_y >> SCALE_SUBPEL_BITS,
+    );
+    let Some(view) = view.as_u8() else {
+        return false;
+    };
+    if params.interp != InterpolationFilter::Bilinear
+        || (params.step_x, params.step_y, params.w, params.h)
+            != (1 << SCALE_SUBPEL_BITS, 1 << SCALE_SUBPEL_BITS, 8, 8)
+        || x0 < params.first_x.max(0)
+        || y0 < params.first_y.max(0)
+        || x0 + 8 > params.last_x.min(view.width as i32 - 1)
+        || y0 + 8 > params.last_y.min(view.readable_rows as i32 - 1)
+    {
+        return false;
+    }
+    let origin = y0 as usize * view.stride + x0 as usize;
+    if origin + 8 * view.stride + 16 > view.samples.len() {
+        return false;
+    }
+    #[cfg(target_arch = "x86_64")]
+    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
+        let phases = [
+            ((params.start_x >> 6) & SUBPEL_MASK) as i16,
+            ((params.start_y >> 6) & SUBPEL_MASK) as i16,
+        ];
+        avx2::block_8x8(t, view.samples, [origin, view.stride], phases, output);
+        return true;
+    }
+    false
+}
+
 /// The byte length of the largest refine-MV search window, 24 x 24.
 const WINDOW_LEN: usize = 24 * 24;
 
@@ -100,7 +142,7 @@ pub fn refinemv_window_sads_u8(
 #[cfg(target_arch = "x86_64")]
 mod avx2 {
     use core::arch::x86_64::*;
-    use fearless_simd::{Avx2, SimdBase, SimdFrom, u8x16, u8x32};
+    use fearless_simd::{Avx2, SimdBase, SimdFrom, u8x16, u8x32, u16x16};
 
     /// The `(left, right)` source index pairs of output columns `first..first
     /// + 16` of an `m`-sample row read from index `base`, both clamped to the
@@ -239,6 +281,57 @@ mod avx2 {
                 top = bottom;
             }
             write(h - 1, top, top);
+        }
+    );
+
+    /// The `(c, c + 1)` byte pairs of eight columns, in both lanes.
+    const PAIRS_8: [u8; 32] = {
+        let mut out = [0u8; 32];
+        let mut lane = 0;
+        while lane < 32 {
+            let column = (lane % 16) / 2;
+            out[lane] = (column + lane % 2) as u8;
+            lane += 1;
+        }
+        out
+    };
+
+    fearless_simd::kernel!(
+        #[inline]
+        pub(super) fn block_8x8(
+            t: Avx2,
+            source: &[u8],
+            geometry: [usize; 2],
+            phases: [i16; 2],
+            output: &mut [u16; 64],
+        ) {
+            let [origin, stride] = geometry;
+            let [h_phase, v_phase] = phases;
+            let weights = _mm256_set1_epi16(((h_phase << 8) | (16 - h_phase)) as i16);
+            let pairs: __m256i = u8x32::load_array(t, PAIRS_8).into();
+            let rows = |first: usize| {
+                let at = |row: usize| origin + row.min(8) * stride;
+                let bytes = _mm256_set_m128i(
+                    load16(t, source, at(first + 1)),
+                    load16(t, source, at(first)),
+                );
+                _mm256_maddubs_epi16(_mm256_shuffle_epi8(bytes, pairs), weights)
+            };
+            let (top_weight, bottom_weight) =
+                (_mm256_set1_epi16(16 - v_phase), _mm256_set1_epi16(v_phase));
+            let bias = _mm256_set1_epi16(128);
+            let mut top = rows(0);
+            for (pair, slot) in output.as_chunks_mut::<16>().0.iter_mut().enumerate() {
+                let next = rows(2 * pair + 2);
+                let bottom = _mm256_permute2x128_si256::<0x21>(top, next);
+                let sum = _mm256_add_epi16(
+                    _mm256_mullo_epi16(top, top_weight),
+                    _mm256_mullo_epi16(bottom, bottom_weight),
+                );
+                let values = _mm256_srli_epi16::<8>(_mm256_add_epi16(sum, bias));
+                u16x16::<Avx2>::simd_from(t, values).store_array(slot);
+                top = next;
+            }
         }
     );
 
