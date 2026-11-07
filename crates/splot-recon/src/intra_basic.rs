@@ -5,7 +5,7 @@
 //!
 //! Feature tracking: `RECON-INTRA-BASIC-PAETH-PREDICTION`.
 
-use fearless_simd::{Bytes as _, Level, Select as _, Simd, SimdBase, dispatch, i16x16};
+use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x16};
 
 use crate::intra_dc_math::{
     IntraEdgeError, IntraLaneSample, validate_intra_edge_samples, validate_output_shape,
@@ -181,7 +181,7 @@ fn predict_paeth_lanes<O: IntraLaneSample>(
     output: &mut [O],
     stride_samples: usize,
 ) {
-    dispatch!(Level::baseline(), simd => paeth_rows(simd, size, left, above, top_left, output, stride_samples));
+    baseline_simd!(simd => paeth_rows(simd, size, left, above, top_left, output, stride_samples));
 }
 
 #[inline]

@@ -15,7 +15,7 @@ use crate::intra_directional_angle::{
 };
 use crate::intra_ibp_dc::blend_ibp_lanes;
 use crate::{ReconError, ReconSample, Result};
-use fearless_simd::{Level, Simd, SimdBase, dispatch, u16x16};
+use fearless_simd::{Simd, SimdBase, u16x16};
 use std::sync::OnceLock;
 
 const IBP_WEIGHT_SIZE_LOG2: u32 = 4;
@@ -240,12 +240,18 @@ fn blend_rows_lanes<O: IntraLaneSample>(
     primary: &mut [O],
     second: &[O],
 ) {
-    dispatch!(Level::baseline(), simd => blend_rows(simd, weights, zone1, shifts, width, wide, primary, second));
+    if width <= 16 {
+        baseline_simd!(simd => blend_rows::<_, _, 16>(simd, weights, zone1, shifts, width, wide, primary, second));
+    } else {
+        baseline_simd!(simd => blend_rows::<_, _, 64>(simd, weights, zone1, shifts, width, wide, primary, second));
+    }
 }
 
+/// [`blend_rows_lanes`] for rows of at most `W` samples, whose weight rows
+/// expand into `W`-wide scratch.
 #[allow(clippy::too_many_arguments)]
 #[inline]
-fn blend_rows<S: Simd, O: IntraLaneSample>(
+fn blend_rows<S: Simd, O: IntraLaneSample, const W: usize>(
     simd: S,
     weights: &IbpWeights,
     zone1: bool,
@@ -255,9 +261,8 @@ fn blend_rows<S: Simd, O: IntraLaneSample>(
     primary: &mut [O],
     second: &[O],
 ) {
-    let rows_per_group = (16 / width).max(1);
     let height = primary.len() / width;
-    let mut expanded = [[0u16; 64]; IBP_WEIGHT_SIZE];
+    let mut expanded = [[0u16; W]; IBP_WEIGHT_SIZE];
     for (row_idx, row) in expanded
         .iter_mut()
         .enumerate()
@@ -287,12 +292,25 @@ fn blend_rows<S: Simd, O: IntraLaneSample>(
             let column = first % width;
             u16x16::from_slice(simd, &row_weights(row)[column..column + 16])
         } else {
-            for (r, lanes) in group
-                .chunks_exact_mut(width)
-                .enumerate()
-                .take(rows_per_group)
-            {
-                lanes.copy_from_slice(&row_weights(row + r)[..width]); // splot-copy-ok: expand IBP weights
+            fn expand<const N: usize>(group: &mut [u16; 16], row: impl Fn(usize) -> [u16; N]) {
+                for (r, lanes) in group.as_chunks_mut::<N>().0.iter_mut().enumerate() {
+                    *lanes = row(r);
+                }
+            }
+            if width == 4 {
+                expand::<4>(&mut group, |r| {
+                    row_weights(row + r)
+                        .first_chunk()
+                        .copied()
+                        .unwrap_or_default()
+                });
+            } else {
+                expand::<8>(&mut group, |r| {
+                    row_weights(row + r)
+                        .first_chunk()
+                        .copied()
+                        .unwrap_or_default()
+                });
             }
             u16x16::from_slice(simd, &group)
         };

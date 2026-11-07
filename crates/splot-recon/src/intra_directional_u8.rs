@@ -13,7 +13,7 @@
 //!
 //! Feature tracking: `RECON-INTRA-DIRECTIONAL-ANGLE`.
 
-use fearless_simd::{Level, Simd, SimdBase, dispatch, u8x16, u16x16};
+use fearless_simd::{Simd, SimdBase, u8x16, u16x16};
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{SimdFrom, u8x32};
 
@@ -109,7 +109,7 @@ impl PaddedEdge {
             return Ok(());
         };
         #[cfg(target_arch = "x86_64")]
-        if let Some(token) = Level::baseline().as_avx2() {
+        if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
             let pair = |low: i8, high: i8| i16::from_le_bytes([low as u8, high as u8]);
             line_avx2(
                 token,
@@ -120,7 +120,7 @@ impl PaddedEdge {
             );
             return Ok(());
         }
-        dispatch!(Level::baseline(), simd => line_lanes(simd, window, taps, out));
+        baseline_simd!(simd => line_lanes(simd, window, taps, out));
         Ok(())
     }
 }

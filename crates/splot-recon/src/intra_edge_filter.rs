@@ -5,7 +5,7 @@
 //!
 //! Feature tracking: `RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION`.
 
-use fearless_simd::{Level, Simd, SimdBase, dispatch, u16x16};
+use fearless_simd::{Simd, SimdBase, u16x16};
 
 use crate::intra_dc_math::IntraLaneSample;
 use crate::{ReconError, ReconSample, Result};
@@ -108,7 +108,7 @@ fn filter_intra_edge_lanes<T: ReconSample>(
     }
     if let Some(samples) = T::u8_slice_mut(&mut edge[..sz]) {
         let source = clamped_copy(samples);
-        dispatch!(Level::baseline(), simd => filter_lanes(simd, &source, kernel, &mut samples[1..]));
+        baseline_simd!(simd => filter_lanes(simd, &source, kernel, &mut samples[1..]));
         return true;
     }
     let Some(samples) = T::u16_slice_mut(&mut edge[..sz]) else {
@@ -118,7 +118,7 @@ fn filter_intra_edge_lanes<T: ReconSample>(
         return false;
     }
     let source = clamped_copy(samples);
-    dispatch!(Level::baseline(), simd => filter_lanes(simd, &source, kernel, &mut samples[1..]));
+    baseline_simd!(simd => filter_lanes(simd, &source, kernel, &mut samples[1..]));
     true
 }
 

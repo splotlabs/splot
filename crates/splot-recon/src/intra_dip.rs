@@ -185,17 +185,7 @@ fn predict_dip_samples<S: Simd, P: IntraLaneSample>(
     } = block;
     let mut values = [[0i32; 8]; DIP_GRID_SIDE];
     coarse_grid_rows(simd, features, rows, grid, max, &mut values);
-    let mut y = grid.step_y - 1;
-    for row_values in values.iter().take(grid.height) {
-        let row = output.get_mut(y * stride..)?;
-        let mut x = grid.step_x - 1;
-        for gx in 0..grid.width {
-            *row.get_mut(x)? = P::from_lane(row_values[gx * grid.down_x] as u16);
-            x += grid.step_x;
-        }
-        y += grid.step_y;
-    }
-    interpolate_lanes(simd, size, grid, left, above, output, stride)
+    interpolate_lanes(simd, size, grid, &values, left, above, output, stride)
 }
 
 fn validate_dip_mode(dip_mode: usize) -> Result<()> {
@@ -387,43 +377,48 @@ fn split_dip_scale_log2(log2_quarter_len: u8) -> (u8, u8) {
     }
 }
 
-/// Fills the samples between the coarse grid: each sampled row horizontally
-/// from the left edge, then the rows between sampled rows from the row or
-/// above edge before them. Every result is a convex combination of two
-/// samples with power-of-two weights, so it needs no clipping.
+/// Writes each sampled row from its coarse grid `values`, horizontally
+/// interpolated from the left edge when the grid is coarser than the block,
+/// then fills the rows between sampled rows from the row or above edge before
+/// them. Every interpolated result is a convex combination of two samples with
+/// power-of-two weights, so it needs no clipping.
+#[allow(clippy::too_many_arguments)]
 #[inline]
 fn interpolate_lanes<S: Simd, P: IntraLaneSample>(
     simd: S,
     size: IntraRectBlockSize,
     grid: DipGrid,
+    values: &[[i32; 8]; DIP_GRID_SIDE],
     left: &[P],
     above: &[P],
     output: &mut [P],
     stride: usize,
 ) -> Option<()> {
     let width = size.width();
-    if grid.step_x > 1 {
-        let up = u32::from(grid.up_log2_x);
-        let step = 1u16 << up;
-        let w1 = u16x16::from_fn(simd, |lane| (lane as u16 & (step - 1)) + 1);
-        let w0 = u16x16::splat(simd, step) - w1;
-        for band in 0..grid.height {
-            let y = band * grid.step_y + grid.step_y - 1;
-            let row = output.get_mut(y * stride..)?.get_mut(..width)?;
-            let mut points = [0u16; 16];
-            points[0] = left.get(y)?.to_u16();
-            for (gx, point) in points[1..=DIP_GRID_SIDE].iter_mut().enumerate() {
-                *point = row.get(gx * grid.step_x + grid.step_x - 1)?.to_u16();
+    let up = u32::from(grid.up_log2_x);
+    let step = 1u16 << up;
+    let w1 = u16x16::from_fn(simd, |lane| (lane as u16 & (step - 1)) + 1);
+    let w0 = u16x16::splat(simd, step) - w1;
+    for (band, row_values) in values.iter().enumerate().take(grid.height) {
+        let y = band * grid.step_y + grid.step_y - 1;
+        let row = output.get_mut(y * stride..)?.get_mut(..width)?;
+        if grid.step_x == 1 {
+            for (x, slot) in row.iter_mut().enumerate() {
+                *slot = P::from_lane(*row_values.get(x * grid.down_x)? as u16);
             }
-            let points = u16x16::from_slice(simd, &points);
-            for (k, out) in row.as_chunks_mut::<16>().0.iter_mut().enumerate() {
-                let index = GRID_POINT_INDEX
-                    .get(usize::from(grid.up_log2_x) - 1)?
-                    .get(k)?;
-                let near = points.swizzle_dyn(u8x32::from_slice(simd, &index[0]));
-                let far = points.swizzle_dyn(u8x32::from_slice(simd, &index[1]));
-                P::store16(simd, (near * w0 + far * w1) >> up, out);
-            }
+            continue;
+        }
+        let mut points = [0u16; 16];
+        points[0] = left.get(y)?.to_u16();
+        for (point, &value) in points[1..=DIP_GRID_SIDE].iter_mut().zip(row_values) {
+            *point = value as u16;
+        }
+        let points = u16x16::from_slice(simd, &points);
+        let index = GRID_POINT_INDEX.get(usize::from(grid.up_log2_x) - 1)?;
+        for (out, index) in row.as_chunks_mut::<16>().0.iter_mut().zip(index) {
+            let near = points.swizzle_dyn(u8x32::from_slice(simd, &index[0]));
+            let far = points.swizzle_dyn(u8x32::from_slice(simd, &index[1]));
+            P::store16(simd, (near * w0 + far * w1) >> up, out);
         }
     }
     if grid.step_y > 1 {
