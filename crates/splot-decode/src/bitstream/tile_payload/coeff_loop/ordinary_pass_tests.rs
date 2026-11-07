@@ -18,7 +18,6 @@ use super::geometry::{
     CoeffOrdinaryBranchTxSetBaseConfig, CoeffOrdinaryStagedLosslessNonZeroInput,
     CoeffOrdinaryTxSizeGeometryConfig, apply_staged_nonzero_coeff_ordinary_branch_from_lossless,
 };
-use super::*;
 
 const TX_4X4: usize = 0;
 
@@ -100,6 +99,10 @@ fn staged_input(
             tx_size,
         },
         start,
+        lines: TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444)
+            .unwrap()
+            .block_lines(0, [start_x >> 2, 1, 1, 1])
+            .unwrap(),
         plane_tx_type: base_config.luma_tx_type,
         parity_hiding: base_config.parity_hiding,
         use_tcq: base_config.use_tcq,
@@ -326,31 +329,12 @@ fn staged_ordinary_preflights_geometry_and_bounds_without_consumption() {
 }
 
 #[test]
-fn staged_ordinary_context_commit_failure_preserves_context_after_reads() {
-    let (payload, expected_tile) = encode_lossless_extended_quant();
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut symbols = symbol_decoder(&payload);
-    let start = read_start(&mut tile, &mut symbols);
-    let mut state =
+fn block_lines_reject_a_block_outside_the_tile() {
+    let state =
         TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444).unwrap();
-    let state_before = state.clone();
-
-    let result = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
-        &mut state,
-        &mut tile,
-        &mut symbols,
-        staged_input(start, TX_4X4, usize::MAX, true, base_config(false, false)),
-        &mut [0; 16],
-    );
-
-    assert!(matches!(
-        result,
-        Err(CoeffOrdinaryBranchError::Ordinary(
-            CoeffOrdinaryPassError::ContextUpdate(_)
-        ))
-    ));
-    assert_eq!(state, state_before);
-    assert_eq!(tile, expected_tile);
-    assert_eq!(symbols.symbol_count(), 7);
-    assert!(symbols.finish().is_ok());
+    assert!(state.block_lines(0, [usize::MAX >> 2, 1, 1, 1]).is_err());
+    assert!(state.block_lines(0, [4, 1, 1, 1]).is_err());
+    assert!(state.block_lines(0, [3, 1, 0, 1]).is_err());
+    assert!(state.block_lines(3, [1, 1, 1, 1]).is_err());
+    assert_eq!(state.block_lines(0, [3, 1, 4, 1]).unwrap().x4, 3);
 }

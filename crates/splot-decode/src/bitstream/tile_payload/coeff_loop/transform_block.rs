@@ -19,8 +19,10 @@ use super::super::cdf::coeff_context::{
 };
 use super::super::cdf::{CoeffCdfSelector, CoeffLevelRows, TileCdfSubset};
 use super::super::coeff_state::{
-    CoeffContextUpdate, CoeffLevelWords, LEVEL_STRIDE, LEVEL_WORDS_MASK, TileCoeffContextState,
+    CoeffBlockLines, CoeffLevelWords, LEVEL_STRIDE, LEVEL_WORDS_MASK, TileCoeffContextState,
+    TileCoeffStateError,
 };
+use super::CoeffLoopContextError;
 use super::base_level_pass::{
     CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError, tx_class_index,
 };
@@ -41,7 +43,6 @@ use super::sign_symbol::{
     CoeffSignReadSymbol, CoeffSignSourceDeriveConfig, derive_nonzero_coeff_sign_input,
     read_preflighted_nonzero_coeff_sign,
 };
-use super::{AllZeroCoeffBlockInput, CoeffLoopContextError};
 
 const PHTHRESH: u32 = 4;
 
@@ -254,12 +255,10 @@ pub(crate) const fn lf_scan_end<const CLASS: usize, const LUMA: bool>(
     }
 }
 
-#[derive(Clone, Copy)]
 pub(crate) struct CoeffTransformBlockInput {
     pub(crate) start: NonZeroCoeffBlockStart,
     pub(crate) config: CoeffBaseDerivedLevelPassConfig,
-    /// The block's context-line span, in plane 4x4 units.
-    pub(crate) context: AllZeroCoeffBlockInput,
+    pub(crate) lines: CoeffBlockLines,
     pub(crate) lossless: bool,
 }
 
@@ -274,7 +273,7 @@ pub(crate) fn decode_ordinary_transform_block(
     quant: &mut [i32],
 ) -> Result<usize, CoeffOrdinaryPassError> {
     let config = input.config;
-    preflight(input, quant.len())?;
+    preflight(&input, quant.len())?;
     let scan = grid_scan(
         config.tx_class,
         config.tx_width,
@@ -288,10 +287,8 @@ pub(crate) fn decode_ordinary_transform_block(
         }
         .into());
     }
-    let context = input.context;
+    let lines = input.lines;
     let plane = config.plane;
-    let x4 = state.local_x4(plane, context.x4)?;
-    let y4 = state.local_y4(plane, context.y4)?;
     let (above_dc, left_dc, levels) = state.dc_lines_and_levels(plane)?;
     let block = Block {
         scan,
@@ -304,10 +301,10 @@ pub(crate) fn decode_ordinary_transform_block(
             sum_abs1: 0,
             above_dc,
             left_dc,
-            x4,
-            y4,
-            w4: context.w4,
-            h4: context.h4,
+            x4: lines.x4,
+            y4: lines.y4,
+            w4: lines.w4,
+            h4: lines.h4,
         },
         lossless: input.lossless,
     };
@@ -316,20 +313,16 @@ pub(crate) fn decode_ordinary_transform_block(
     } else {
         dispatch::<false>(cdfs, symbols, levels, quant, &block)
     }?;
-    state.update_after_coeffs(CoeffContextUpdate {
-        plane,
-        x4: context.x4,
-        y4: context.y4,
-        w4: context.w4,
-        h4: context.h4,
-        cul_level: summary.state.cul_level(),
-        dc_category: summary.state.dc_category(),
-    })?;
+    state.commit_block(
+        &lines,
+        summary.state.cul_level(),
+        summary.state.dc_category(),
+    );
     Ok(summary.quant_end)
 }
 
 fn preflight(
-    input: CoeffTransformBlockInput,
+    input: &CoeffTransformBlockInput,
     quant_len: usize,
 ) -> Result<(), CoeffOrdinaryPassError> {
     let config = input.config;
@@ -340,6 +333,12 @@ fn preflight(
         || (config.use_tcq && config.tx_class != CoeffTransformClass::TwoD)
     {
         return Err(CoeffBaseDerivedLevelPassError::UnsupportedToolClass.into());
+    }
+    if input.lines.plane != config.plane {
+        return Err(TileCoeffStateError::InvalidPlane {
+            plane: input.lines.plane,
+        }
+        .into());
     }
     if input.lossless && config.use_tcq {
         return Err(CoeffQuantPassError::InconsistentTcqConfig.into());
@@ -791,7 +790,7 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     );
     let mut end = 0;
     let mut tcq = 0;
-    let mut hot = symbols.snapshot();
+    let mut run = symbols.bypass_run();
     let mut level_sum = 0u32;
     for (offset, &scan_entry) in scan.get(1..).unwrap_or_default().iter().enumerate().rev() {
         let scan_index = offset + 1;
@@ -814,12 +813,12 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
             };
         let sign = if axis_cdf {
             let input = derive_nonzero_coeff_sign_input(entry, level, sign_config);
-            symbols.restore(hot);
+            symbols.end_bypass_run(run);
             let sign = read_preflighted_nonzero_coeff_sign(cdfs, symbols, input)?.sign();
-            hot = symbols.snapshot();
+            run = symbols.bypass_run();
             sign
         } else {
-            hot.read_bool_trusted()
+            symbols.read_bool_in(&mut run)
         };
         let max_level = if scan_index < facts.lf_end {
             max_lf
@@ -835,7 +834,7 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
             }
         } else {
             let index = eob - scan_index - 1;
-            symbols.restore(hot);
+            symbols.end_bypass_run(run);
             let read = read_quant
                 .read_one(
                     symbols,
@@ -847,7 +846,7 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
                     },
                 )
                 .map_err(CoeffQuantPassError::from)?;
-            hot = symbols.snapshot();
+            run = symbols.bypass_run();
             level_sum = level_sum.saturating_add(read.quant);
             quant_state
                 .ac_magnitude(index, read.quant, tcq_q0)
@@ -858,7 +857,7 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
             end = end.max(pos + 1);
         }
     }
-    symbols.restore(hot);
+    symbols.end_bypass_run(run);
     let mut quant_state = quant_state.with_cul_level(level_sum);
 
     let (pos, grid) = ((scan[0] >> 16) as usize, entry_grid(scan[0]));

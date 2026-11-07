@@ -254,9 +254,11 @@ fearless_simd::kernel!(
 /// `3 + timeInterval + Para_Adjustment_List[ index ][ timeInterval ]`
 /// (§ 8.2.6) for every rate index and use count below 64, so a read takes
 /// the count-dependent part of its adaptation rate with one load. The rows
-/// past the list repeat row 0, so a masked index is always in bounds.
+/// past the list repeat row 0, so a masked index is always in bounds. A
+/// `const`, so each crate inlining a read addresses its own copy directly
+/// instead of through the global offset table.
 const RATE_ROWS: usize = PARA_ADJUSTMENT_LIST.len().next_power_of_two();
-static ADAPTATION_RATES: [[u8; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS] = {
+const ADAPTATION_RATES: [[u8; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS] = {
     let mut rates = [[0; 2 * MAX_CDF_COUNT as usize]; RATE_ROWS];
     let mut index = 0;
     while index < rates.len() {
@@ -509,6 +511,16 @@ pub struct SymbolDecoderSummary {
     pub trailing_bit_position: SymbolBitPosition,
     /// Relative `paddingEndPosition` inside the tile payload.
     pub padding_end_position: SymbolBitPosition,
+}
+
+/// The arithmetic registers of a [`SymbolDecoder`] during a run of bypass
+/// reads ([`SymbolDecoder::bypass_run`]).
+#[derive(Debug, Clone, Copy)]
+pub struct BypassRun {
+    dif: u64,
+    buffered: i32,
+    symbol_range: u32,
+    symbols: u64,
 }
 
 /// Snapshot of the AV2 § 8.2 arithmetic decoder state at a syntax boundary.
@@ -975,6 +987,54 @@ impl<'a> SymbolDecoder<'a> {
         self.advance_bypass(1, rest as u32);
         self.frame_symbol_count = self.frame_symbol_count.wrapping_add(1);
         one
+    }
+
+    /// The registers of a run of [`Self::read_bool_in`] reads, so a loop of
+    /// bypass bits keeps only them live; [`Self::end_bypass_run`] writes them
+    /// back before any other read.
+    #[must_use]
+    pub const fn bypass_run(&self) -> BypassRun {
+        BypassRun {
+            dif: self.dif,
+            buffered: self.buffered,
+            symbol_range: self.symbol_range,
+            symbols: 0,
+        }
+    }
+
+    /// Writes a [`Self::bypass_run`] back.
+    pub const fn end_bypass_run(&mut self, run: BypassRun) {
+        self.dif = run.dif;
+        self.buffered = run.buffered;
+        self.frame_symbol_count = self.frame_symbol_count.wrapping_add(run.symbols);
+    }
+
+    /// [`Self::read_bool_trusted`] on a [`Self::bypass_run`].
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    pub fn read_bool_in(&mut self, run: &mut BypassRun) -> bool {
+        if run.buffered < 1 {
+            *run = self.refill_run(*run);
+        }
+        let scaled = run.dif >> (SV_SHIFT - 1);
+        let split = u64::from(run.symbol_range);
+        let one = scaled < split;
+        let rest = if one { scaled } else { scaled - split };
+        run.dif = (rest << SV_SHIFT) | ((run.dif << 1) & ((1 << SV_SHIFT) - 1));
+        run.buffered -= 1;
+        run.symbols = run.symbols.wrapping_add(1);
+        one
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn refill_run(&mut self, run: BypassRun) -> BypassRun {
+        self.end_bypass_run(BypassRun { symbols: 0, ..run });
+        self.refill();
+        BypassRun {
+            symbols: run.symbols,
+            ..self.bypass_run()
+        }
     }
 
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
