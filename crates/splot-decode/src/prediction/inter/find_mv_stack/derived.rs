@@ -34,11 +34,23 @@ struct SingleMvCandidate {
     mv: Mv,
 }
 
+/// One compound probe's other-reference candidates, kept until
+/// [`CompoundDerivedMvState::fill`] shows the stack still has room.
+#[derive(Clone, Copy, Default)]
+struct CompoundDerivedSource {
+    candidates: [Option<(i8, Mv)>; 2],
+    global_mv: [bool; 2],
+}
+
+/// Spatial probes of one compound stack: six, the last one, and two columns.
+const COMPOUND_PENDING_SOURCES: usize = 9;
+
 pub(super) struct CompoundDerivedMvState {
     entries: FixedStack<[Mv; 2], MAX_DR_STACK_SIZE>,
     singles: FixedStack<SingleMvCandidate, MAX_DR_STACK_SIZE>,
     prune_count: usize,
     single_prune_count: usize,
+    pending: FixedStack<CompoundDerivedSource, COMPOUND_PENDING_SOURCES>,
 }
 
 pub(super) struct CompoundScanState {
@@ -66,10 +78,48 @@ impl CompoundDerivedMvState {
             singles: FixedStack::new(),
             prune_count: 0,
             single_prune_count: 0,
+            pending: FixedStack::new(),
         }
     }
 
+    /// Records a probe's candidates; [`Self::fill`] derives them in order.
     pub(super) fn add_spatial(
+        &mut self,
+        block: &MvBlockContext,
+        candidates: [Option<(i8, Mv)>; 2],
+        global_mv: [bool; 2],
+        global_mvs: [Mv; 2],
+        temporal: Option<&TemporalMvContext>,
+    ) {
+        let source = CompoundDerivedSource {
+            candidates,
+            global_mv,
+        };
+        if !self.pending.try_push(source) {
+            self.derive_pending(block, global_mvs, temporal);
+            self.derive(block, candidates, global_mv, global_mvs, temporal);
+        }
+    }
+
+    fn derive_pending(
+        &mut self,
+        block: &MvBlockContext,
+        global_mvs: [Mv; 2],
+        temporal: Option<&TemporalMvContext>,
+    ) {
+        let pending = core::mem::replace(&mut self.pending, FixedStack::new());
+        for source in pending.iter() {
+            self.derive(
+                block,
+                source.candidates,
+                source.global_mv,
+                global_mvs,
+                temporal,
+            );
+        }
+    }
+
+    fn derive(
         &mut self,
         block: &MvBlockContext,
         candidates: [Option<(i8, Mv)>; 2],
@@ -148,12 +198,20 @@ impl CompoundDerivedMvState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn fill(
-        &self,
+        &mut self,
+        block: &MvBlockContext,
+        global_mvs: [Mv; 2],
+        temporal: Option<&TemporalMvContext>,
         entries: &mut FixedStack<CompoundMvStackEntry, MAX_REF_MV_STACK_SIZE>,
         max_ref_mv_count: usize,
         prune_count: &mut usize,
     ) {
+        if entries.len() >= max_ref_mv_count {
+            return;
+        }
+        self.derive_pending(block, global_mvs, temporal);
         for &mvs in self.entries.iter() {
             if entries.len() >= max_ref_mv_count {
                 return;
@@ -213,14 +271,15 @@ impl<'a> DerivedMvState<'a> {
 
     /// Records a candidate on another reference; [`Self::fill`] derives it
     /// only when the stack still has room, which most blocks never reach.
-    #[inline]
+    #[allow(clippy::inline_always, reason = "measured: once per stack probe")]
+    #[inline(always)]
     pub(super) fn add_spatial(
         &mut self,
         block: &MvBlockContext,
         candidate_ref: i8,
         candidate_mv: Mv,
         flags: NeighbourFlags,
-        sub_mvs: [Mv; 2],
+        sub_mvs: impl FnOnce() -> [Mv; 2],
     ) {
         let source = if block.ref_frame0 == TIP_REF_FRAME {
             let Some(ref_frame1) = flags.ref_frame1 else {
@@ -231,7 +290,7 @@ impl<'a> DerivedMvState<'a> {
             }
             DerivedSource {
                 refs: [flags.ref_frame0, ref_frame1],
-                mvs: sub_mvs,
+                mvs: sub_mvs(),
             }
         } else {
             if self.temporal.is_none() && self.order_hints.is_none() {
@@ -468,8 +527,8 @@ mod tests {
         });
         for mv in mvs {
             let sub_mvs = [cell.motion.sub_mv, cell.motion.sub_mv1];
-            deferred.add_spatial(&block, 1, mv, cell.flags, sub_mvs);
-            eager.add_spatial(&block, 1, mv, cell.flags, sub_mvs);
+            deferred.add_spatial(&block, 1, mv, cell.flags, || sub_mvs);
+            eager.add_spatial(&block, 1, mv, cell.flags, || sub_mvs);
             eager.derive_pending(&block);
         }
         deferred.derive_pending(&block);

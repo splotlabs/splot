@@ -17,9 +17,9 @@
 
 use super::super::compound::{CompoundBlockSyntax, CompoundYMode};
 use super::super::find_mv_stack::{
-    CompoundMvCandidate, CompoundMvStack, INTRABC_REF_FRAME, MvStack, NeighbourFlagSyntax,
-    NeighbourMotionValues, OrderHintMvContext, RefMvBank, WarpParamBank, compound_motion_mode,
-    find_warp_samples, reduce_warp_model,
+    ALL_CANDIDATES, CompoundMvCandidate, CompoundMvStack, INTRABC_REF_FRAME, MvStack,
+    NeighbourFlagSyntax, NeighbourMotionValues, OrderHintMvContext, RefMvBank, WarpParamBank,
+    compound_motion_mode, find_warp_samples, reduce_warp_model,
 };
 use super::compound_path::{
     add_mv_clamped, compound_local_warp_models, project_joint_mvd, scale_joint_projected_mvd,
@@ -695,14 +695,29 @@ pub(super) fn resolve_single(
     state: &MvResolutionState<'_>,
 ) -> ResolvedInterBlock {
     let block = &syntax.block_ctx;
-    let stack = single_mv_stack(block, single.tip_ref, single.use_temporal_first, state);
-    let mv = single_mode_mv(
-        single,
-        &stack,
-        (syntax.precision, syntax.use_amvd),
-        block,
-        state,
-    );
+    let mv = if single.mode == SINGLE_MODE_GLOBALMV {
+        global_motion_mv(
+            state.core,
+            block.ref_frame0,
+            block,
+            syntax.precision.mv_precision,
+        )
+    } else {
+        let stack = single_mv_stack(
+            block,
+            single.tip_ref,
+            single.use_temporal_first,
+            state,
+            single.ref_mv_idx,
+        );
+        single_mode_mv(
+            single,
+            &stack,
+            (syntax.precision, syntax.use_amvd),
+            block,
+            state,
+        )
+    };
     ResolvedInterBlock {
         mv: [mv, Mv::ZERO],
         warp_params: [single.global_warp, None],
@@ -717,13 +732,14 @@ pub(super) fn single_mv_stack(
     tip_ref: bool,
     use_temporal_first: bool,
     state: &MvResolutionState<'_>,
+    need: usize,
 ) -> MvStack {
     let global_mv = if tip_ref {
         Mv::ZERO
     } else {
         global_motion_mv(state.core, block.ref_frame0, block, state.frame_precision)
     };
-    find_mv_stack_with_temporal(
+    find_mv_stack_upto(
         state.grid,
         block,
         global_mv,
@@ -735,6 +751,7 @@ pub(super) fn single_mv_stack(
         state.temporal,
         Some(state.order_hints),
         use_temporal_first,
+        need,
     )
 }
 
@@ -787,7 +804,7 @@ pub(super) fn warp_motion(
 ) -> Result<ResolvedInterBlock> {
     let block = &syntax.block_ctx;
     let global_mv = global_motion_mv(state.core, block.ref_frame0, block, state.frame_precision);
-    let stack = find_mv_stack_with_temporal(
+    let stack = find_mv_stack_upto(
         state.grid,
         block,
         global_mv,
@@ -799,6 +816,7 @@ pub(super) fn warp_motion(
         state.temporal,
         Some(state.order_hints),
         warp.use_temporal_first,
+        warp.ref_mv_idx,
     );
     let (mv, params) = match &warp.source {
         WarpModelSource::Candidate => {
@@ -925,13 +943,14 @@ pub(super) fn compound_motion(
         None
     };
     let paired = |idx: usize| {
-        find_compound_mv_stack_with_temporal(
+        find_compound_mv_stack_upto(
             state.grid,
             block,
             global_mvs,
             state.bank(),
             state.drl_reorder,
             paired_temporal,
+            idx,
         )
         .candidate(idx)
     };
@@ -1000,7 +1019,7 @@ fn single_list_candidate(
     idx: usize,
     use_temporal_first: bool,
 ) -> Mv {
-    single_list_stack(state, block, ref_frame, global_mv, use_temporal_first).candidate(idx)
+    single_list_stack(state, block, ref_frame, global_mv, use_temporal_first, idx).candidate(idx)
 }
 
 /// The single-reference stack of list reference `ref_frame` that
@@ -1011,11 +1030,12 @@ fn single_list_stack(
     ref_frame: i8,
     global_mv: Mv,
     use_temporal_first: bool,
+    need: usize,
 ) -> MvStack {
     let mut single = *block;
     single.ref_frame0 = ref_frame;
     single.ref_frame1 = None;
-    find_mv_stack_with_temporal(
+    find_mv_stack_upto(
         state.grid,
         &single,
         global_mv,
@@ -1027,6 +1047,7 @@ fn single_list_stack(
         state.temporal,
         Some(state.order_hints),
         use_temporal_first,
+        need,
     )
 }
 
@@ -1066,8 +1087,14 @@ pub(super) fn near_near_mvs(
                     .iter()
                     .position(|(seen, _)| *seen == key)
                     .unwrap_or_else(|| {
-                        let stack =
-                            single_list_stack(state, &block, key.1, global_mvs[list], key.2);
+                        let stack = single_list_stack(
+                            state,
+                            &block,
+                            key.1,
+                            global_mvs[list],
+                            key.2,
+                            ALL_CANDIDATES,
+                        );
                         lists.push((key, stack));
                         lists.len() - 1
                     });
@@ -1080,13 +1107,14 @@ pub(super) fn near_near_mvs(
                 .position(|(seen, _)| *seen == key)
                 .unwrap_or_else(|| {
                     let temporal = if key.1 { state.temporal } else { None };
-                    let stack = find_compound_mv_stack_with_temporal(
+                    let stack = find_compound_mv_stack_upto(
                         state.grid,
                         &block,
                         global_mvs,
                         state.bank(),
                         state.drl_reorder,
                         temporal,
+                        ALL_CANDIDATES,
                     );
                     paired.push((key, stack));
                     paired.len() - 1
