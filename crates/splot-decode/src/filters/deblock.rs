@@ -148,6 +148,12 @@ impl ChromaDeblockRecords {
         self.blocks.extend_from_slice(blocks);
     }
 
+    /// Sizes the emptied list to `typical` records; see
+    /// [`fit_list`](crate::support::decode_buffers::fit_list).
+    pub(crate) fn fit(&mut self, typical: usize) {
+        crate::support::decode_buffers::fit_list(&mut self.blocks, typical);
+    }
+
     /// The record capacity this list is holding.
     pub(crate) fn capacity(&self) -> usize {
         self.blocks.capacity()

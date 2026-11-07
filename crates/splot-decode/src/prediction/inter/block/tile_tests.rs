@@ -272,35 +272,27 @@ fn corrupted_multi_tile_payload_has_the_same_error_across_worker_widths() {
 }
 
 #[test]
-fn frame_slots_retain_their_row_payloads_across_reset() {
+fn committed_unit_buffers_return_to_the_decode_pool() {
     use crate::support::decode_buffers::DecodeBuffers;
 
-    let mut decoding = super::ParseProgress::default();
-    let other_decode = super::ParseProgress::default();
-    let mut retained = Vec::new();
-    for capacity in [4096, 8192] {
-        let mut spent = super::ReconRowBuffers::default();
-        spent.residual_coeffs.reserve(capacity);
-        retained.push(spent.residual_coeffs.as_ptr());
-        decoding.row_buffers.get_mut().push(Some(spent));
+    let buffers = DecodeBuffers::new();
+    let mut frames = [
+        super::ParseProgress::default(),
+        super::ParseProgress::default(),
+    ];
+    for frame in &mut frames {
+        assert!(frame.reset(&buffers));
     }
-    for _ in 0..128 {
-        decoding.reset(&DecodeBuffers::new());
-        assert!(other_decode.take_row_buffers(0).is_err());
-        assert!(decoding.take_row_buffers(2).is_err());
-        assert!(
-            decoding
-                .return_row_buffers(0, super::ReconRowBuffers::default())
-                .is_err()
-        );
-        for index in [1, 0] {
-            let payload = decoding.take_row_buffers(index).expect("retained row slot");
-            assert_eq!(payload.residual_coeffs.as_ptr(), retained[index]);
-            assert!(decoding.take_row_buffers(index).is_err());
-            decoding
-                .return_row_buffers(index, payload)
-                .expect("vacant row slot");
-        }
+    let mut spent = super::ReconRowBuffers::default();
+    spent.residual_coeffs.reserve_exact(1024);
+    let retained = spent.residual_coeffs.as_ptr();
+    frames[0].return_row_buffers(spent);
+    for cycle in 0..128 {
+        let frame = &frames[cycle % 2];
+        let unit = frame.take_row_buffers();
+        assert_eq!(unit.residual_coeffs.as_ptr(), retained);
+        assert!(buffers.take_unit_buffers().is_none());
+        frame.return_row_buffers(unit);
     }
 }
 

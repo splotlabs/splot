@@ -580,7 +580,6 @@ impl<T: ReconSample> TileRecon<T> {
         );
         let mut batch = batch;
         for ready in batch.drain(..) {
-            let ordinal = ready.row.ordinal;
             let spent = commit.replay(
                 ready,
                 &self.quantizer,
@@ -588,7 +587,7 @@ impl<T: ReconSample> TileRecon<T> {
                 &self.temporal,
                 &context,
             )?;
-            parse_progress.return_row_buffers(ordinal, spent)?;
+            parse_progress.return_row_buffers(spent);
         }
         *self
             .slots

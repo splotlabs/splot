@@ -9,6 +9,7 @@ use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
 use super::tile::TileFilterRecords;
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::support::decode_buffers::fit_list;
 
 /// One inter leaf's deblock and tx-skip geometry, which the parse queues and
 /// the in-order resolve expands, so the record building leaves the parse.
@@ -67,6 +68,12 @@ impl TileFilterRecords {
         chroma_format: ChromaFormatIdc,
     ) -> Result<()> {
         let marks = self.marks();
+        self.published = [
+            marks[0] as usize,
+            marks[1] as usize,
+            marks[2] as usize,
+            self.inter_leaves.len(),
+        ];
         let mut published = [0; 3];
         for leaf in &self.inter_leaves {
             self.copy_parsed(
@@ -117,6 +124,15 @@ impl TileFilterRecords {
         self.chroma_deblock_blocks.clear();
         self.tx_skip_records.clear();
         self.inter_leaves.clear();
+    }
+
+    /// Sizes the emptied lists to the decode's typical unit; see
+    /// [`fit_list`].
+    pub(super) fn fit(&mut self, [luma, chroma, tx_skip, leaves]: [usize; 4]) {
+        fit_list(&mut self.deblock_blocks, luma);
+        self.chroma_deblock_blocks.fit(chroma);
+        fit_list(&mut self.tx_skip_records, tx_skip);
+        fit_list(&mut self.inter_leaves, leaves);
     }
 
     fn copy_parsed(

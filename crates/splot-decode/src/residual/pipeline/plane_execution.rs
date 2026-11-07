@@ -50,6 +50,18 @@ impl ResidualPlaneArena {
         self.planes.clear();
         self.units.clear();
     }
+
+    /// The plane and transform-unit counts parsed into the arena.
+    pub(crate) fn lengths(&self) -> [usize; 2] {
+        [self.planes.len(), self.units.len()]
+    }
+
+    /// Sizes the emptied lists to the decode's typical unit; see
+    /// [`fit_list`](crate::support::decode_buffers::fit_list).
+    pub(crate) fn fit(&mut self, [planes, units]: [usize; 2]) {
+        crate::support::decode_buffers::fit_list(&mut self.planes, planes);
+        crate::support::decode_buffers::fit_list(&mut self.units, units);
+    }
 }
 
 pub(crate) struct ParsedResidualPlane {

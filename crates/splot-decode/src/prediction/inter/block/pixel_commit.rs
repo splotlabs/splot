@@ -225,6 +225,21 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             motion.unit_landed_for(ordinal);
         }
         *decoded_any |= row_has_entries;
+        let [luma, chroma, tx_skip, leaves] = filter_records.published;
+        let [planes, units] = residual_planes.lengths();
+        let lengths = [
+            residual_coeffs.len(),
+            entries.len(),
+            residual_blocks.len(),
+            temporal.len(),
+            flag_log.len(),
+            planes,
+            units,
+            luma,
+            chroma,
+            tx_skip,
+            leaves,
+        ];
         residual_planes.clear();
         superblocks.clear();
         entries.clear();
@@ -242,6 +257,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             flag_log,
             residual_planes,
             filter_records,
+            lengths,
         })
     })();
     if has_intra {

@@ -96,6 +96,8 @@ pub(super) struct TileFilterRecords {
     pub(super) chroma_deblock_blocks: crate::filters::deblock::ChromaDeblockRecords,
     pub(super) tx_skip_records: Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     pub(super) inter_leaves: Vec<super::filter_records::InterDeblockLeaf>,
+    /// The list lengths the last publication moved out.
+    pub(super) published: [usize; 4],
 }
 
 /// The frame-level facts every tile phase reads, all owned so a resolve pass
@@ -390,6 +392,7 @@ impl<'payload> TileParser<'payload> {
             mut flag_log,
             residual_planes,
             filter_records,
+            ..
         } = buffers;
         self.mv_grid.take_flag_log(&mut flag_log);
         self.residual_planes = residual_planes;
@@ -922,22 +925,35 @@ pub(crate) struct ReconRowBuffers {
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) residual_planes: crate::residual::pipeline::ResidualPlaneArena,
     pub(super) filter_records: TileFilterRecords,
+    /// The large lists' lengths in the unit these buffers last held.
+    pub(super) lengths: crate::support::decode_buffers::UnitLengths,
 }
 
 impl ReconRowBuffers {
-    fn capacities(&self) -> crate::support::decode_buffers::RowCapacities {
-        [
-            self.superblocks.capacity(),
-            self.temporal.capacity(),
-            self.flag_log.capacity(),
-        ]
-    }
-
-    fn reserve_to(&mut self, reached: crate::support::decode_buffers::RowCapacities) -> Result<()> {
-        let [superblocks, temporal, flag_log] = reached;
-        reserve_list(&mut self.superblocks, superblocks)?;
-        reserve_list(&mut self.temporal, temporal)?;
-        reserve_list(&mut self.flag_log, flag_log)
+    /// Sizes the emptied large lists to the decode's typical unit; see
+    /// [`fit_list`](crate::support::decode_buffers::fit_list).
+    fn fit(&mut self, typical: crate::support::decode_buffers::UnitLengths) {
+        use crate::support::decode_buffers::fit_list;
+        let [
+            coeffs,
+            entries,
+            blocks,
+            temporal,
+            flag_log,
+            planes,
+            units,
+            luma,
+            chroma,
+            tx_skip,
+            leaves,
+        ] = typical;
+        fit_list(&mut self.residual_coeffs, coeffs);
+        fit_list(&mut self.entries, entries);
+        fit_list(&mut self.residual_blocks, blocks);
+        fit_list(&mut self.temporal, temporal);
+        fit_list(&mut self.flag_log, flag_log);
+        self.residual_planes.fit([planes, units]);
+        self.filter_records.fit([luma, chroma, tx_skip, leaves]);
     }
 
     /// Sizes the unit's coefficient and block lists to a superblock's
@@ -1424,8 +1440,7 @@ pub(crate) struct TileGeometry {
 
 #[derive(Default)]
 pub(crate) struct ParseProgress {
-    row_buffers: Mutex<Vec<Option<ReconRowBuffers>>>,
-    /// The decode's storage, whose per-unit capacities size the row buffers.
+    /// The decode's storage, which lends the units their row buffers.
     buffers: Option<Arc<crate::support::decode_buffers::DecodeBuffers>>,
     finished: splot_parallel::WatermarkCell,
     rows: Mutex<Vec<Option<ReconRow>>>,
@@ -1550,12 +1565,6 @@ impl ParseProgress {
     /// Publishes the tile geometry, which the parser settles before its
     /// first unit.
     pub(super) fn publish_geometry(&self, geometry: TileGeometry) -> Result<()> {
-        let slots = geometry.unit_count;
-        let mut buffers = self.row_buffers.lock();
-        if buffers.len() < slots {
-            buffers.resize_with(slots, || Some(ReconRowBuffers::default()));
-        }
-        drop(buffers);
         let mut published = self.geometry.lock();
         let geometry = match core::mem::take(&mut *published) {
             GeometryState::Unpublished => Arc::new(geometry),
@@ -1589,32 +1598,25 @@ impl ParseProgress {
         self.finished.publish(splot_parallel::WatermarkCell::FAILED);
     }
 
-    fn take_row_buffers(&self, index: usize) -> Result<ReconRowBuffers> {
-        let mut row = self
-            .row_buffers
-            .lock()
-            .get_mut(index)
-            .and_then(Option::take)
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        if let Some(buffers) = &self.buffers {
-            row.reserve_to(buffers.row_capacities())?;
-        }
-        Ok(row)
+    /// Lends one unit the decode's spent row buffers, so the decode holds a
+    /// set per unit parsed and not yet committed rather than one per unit of
+    /// every frame in flight.
+    fn take_row_buffers(&self) -> ReconRowBuffers {
+        let Some(shared) = &self.buffers else {
+            return ReconRowBuffers::default();
+        };
+        shared.take_unit_buffers().unwrap_or_else(|| {
+            let mut cold = ReconRowBuffers::default();
+            cold.fit(shared.unit_lengths());
+            cold
+        })
     }
 
-    pub(super) fn return_row_buffers(&self, index: usize, buffers: ReconRowBuffers) -> Result<()> {
+    pub(super) fn return_row_buffers(&self, mut buffers: ReconRowBuffers) {
         if let Some(shared) = &self.buffers {
-            shared.note_row_capacities(buffers.capacities());
+            buffers.fit(shared.note_unit_lengths(buffers.lengths));
+            shared.give_unit_buffers(buffers);
         }
-        let mut rows = self.row_buffers.lock();
-        let slot = rows
-            .get_mut(index)
-            .ok_or_else(invalid_inter_tile_scheduling_state)?;
-        if slot.is_some() {
-            return Err(invalid_inter_tile_scheduling_state());
-        }
-        *slot = Some(buffers);
-        Ok(())
     }
 
     /// The cell a batch waits on for its own units.
@@ -1683,7 +1685,7 @@ impl<'payload> TileParser<'payload> {
         context: &TileDecodeContext<'_, T>,
         parse_progress: &ParseProgress,
     ) -> Result<bool> {
-        let row_set = parse_progress.take_row_buffers(self.parser_ordinal)?;
+        let row_set = parse_progress.take_row_buffers();
         let (mut row, last) = match self.next_unit(tile, context, Some(row_set), false) {
             ParserStep::More(row) => (row, false),
             ParserStep::Last(row) => (row, true),
