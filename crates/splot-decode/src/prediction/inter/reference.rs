@@ -145,6 +145,31 @@ impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
         last_row: i32,
         offset: ByteOffset,
     ) -> Result<ReferencePlaneView<'a, T>> {
+        match self.settled_plane_view(plane) {
+            Some(view) => Ok(view),
+            None => self.banded_plane_view(plane, last_row, offset),
+        }
+    }
+
+    /// [`Self::plane_view`] of a settled reference, which needs no row bound;
+    /// `None` for a publishing reference or a missing plane.
+    #[inline]
+    pub(crate) fn settled_plane_view(self, plane: PlaneId) -> Option<ReferencePlaneView<'a, T>> {
+        match (self.source, self.published) {
+            (SampleSource::Frozen(frame), None) => {
+                ReferencePlaneView::of_plane(frame.plane(plane)?)
+            }
+            _ => None,
+        }
+    }
+
+    /// [`Self::plane_view`] through the published-row check.
+    fn banded_plane_view(
+        self,
+        plane: PlaneId,
+        last_row: i32,
+        offset: ByteOffset,
+    ) -> Result<ReferencePlaneView<'a, T>> {
         let Some((samples, stride, size, readable_rows)) = self.plane_storage(plane) else {
             return Err(missing_plane(offset));
         };

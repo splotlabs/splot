@@ -28,7 +28,7 @@ pub use copy::{
 };
 pub use fullpel_u8::{
     subpel_predict_block_compound_average_fullpel_strided_into_u8,
-    subpel_predict_block_strided_into_u8,
+    subpel_predict_block_strided_into_u8, subpel_put_u8_in_place,
 };
 pub use search_window::{
     refinemv_window_sads_u8, subpel_predict_bilinear_8x8_u8,
@@ -336,6 +336,20 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
         readable_rows: usize,
     ) -> Result<Self> {
         Self::from_strided_rows(samples, stride, width, height, readable_rows)
+    }
+
+    /// The view of every row of a settled plane, `None` for a vacant one. A
+    /// [`crate::Plane`] holds `stride * height` samples with `stride >= width`.
+    #[inline]
+    pub fn of_plane(plane: &'a crate::Plane<T>) -> Option<Self> {
+        let size = plane.storage_size();
+        (size.width() != 0 && size.height() != 0).then(|| Self {
+            samples: plane.samples(),
+            stride: plane.stride_samples(),
+            width: size.width(),
+            height: size.height(),
+            readable_rows: size.height(),
+        })
     }
 
     fn from_strided_rows(

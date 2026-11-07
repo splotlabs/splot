@@ -32,6 +32,20 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
     Ok(())
 }
 
+/// [`subpel_predict_block_strided_into_u8`] of a block read in place from
+/// eight-bit storage, returning `false` without writing any other block.
+#[inline]
+pub fn subpel_put_u8_in_place<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u8],
+    output_stride: usize,
+) -> bool {
+    reference
+        .as_u8()
+        .is_some_and(|view| block::put_u8(&view, params, output, output_stride))
+}
+
 fn validate_subpel_u8_output(
     params: &SubpelPredictParams,
     output: &[u8],

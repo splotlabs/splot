@@ -72,6 +72,7 @@ impl<'a> Cell<'a> {
 
 /// Stores the `Clip1` single-reference prediction of a 4x4 or 8x8 block, or
 /// returns `false` without writing outside the subset.
+#[inline]
 pub(super) fn put(
     reference: &ReferencePlaneView<'_, u8>,
     params: &SubpelPredictParams,
@@ -232,13 +233,13 @@ mod avx2 {
             };
             let ([h0, v0], [h1, v1]) = (counts(cells[0]).into(), counts(cells[1]).into());
             if size == 4 {
-                let first = by_narrow_taps!(false, h0, v0, predict(t, cells[0]));
-                let second = by_narrow_taps!(false, h1, v1, predict(t, cells[1]));
+                let first = by_narrow_taps!(false, h0, v0, predicted(t, cells[0]));
+                let second = by_narrow_taps!(false, h1, v1, predicted(t, cells[1]));
                 store_bytes::<4>(t, output, 0, stride, average(first[0], second[0], forward));
                 return;
             }
-            let first = by_taps!(8, false, h0, v0, predict(t, cells[0]));
-            let second = by_taps!(8, false, h1, v1, predict(t, cells[1]));
+            let first = by_taps!(8, false, h0, v0, predicted(t, cells[0]));
+            let second = by_taps!(8, false, h1, v1, predicted(t, cells[1]));
             for (group, (&first, &second)) in first.iter().zip(&second).enumerate() {
                 let blended = average(first, second, forward);
                 store_bytes::<8>(t, output, 2 * group * stride, stride, blended);
@@ -252,20 +253,45 @@ mod avx2 {
             let h = cell.horizontal.map_or(0, |taps| taps.count);
             let v = cell.vertical.map_or(0, |taps| taps.count);
             if size == 4 {
-                let groups = by_narrow_taps!(true, h, v, predict(t, cell));
-                store_bytes::<4>(t, output, 0, stride, groups[0]);
-                return;
-            }
-            let groups = by_taps!(8, true, h, v, predict(t, cell));
-            for (group, &values) in groups.iter().enumerate() {
-                store_bytes::<8>(t, output, 2 * group * stride, stride, values);
+                by_narrow_taps!(true, h, v, put_cell(t, cell, output, stride));
+            } else {
+                by_taps!(8, true, h, v, put_cell(t, cell, output, stride));
             }
         }
     );
 
+    /// Stores the [`predict`] put of one cell.
+    #[inline(never)]
+    #[target_feature(enable = "avx2")]
+    fn put_cell<const W: usize, const H: usize, const V: usize, const PUT: bool>(
+        t: Avx2,
+        cell: &Cell<'_>,
+        output: &mut [u8],
+        stride: usize,
+    ) {
+        let groups = predict::<W, H, V, PUT>(t, cell);
+        if W == 4 {
+            store_bytes::<4>(t, output, 0, stride, groups[0]);
+            return;
+        }
+        for (group, &values) in groups.iter().enumerate() {
+            store_bytes::<8>(t, output, 2 * group * stride, stride, values);
+        }
+    }
+
+    /// [`predict`] out of line, for the two references of a compound cell.
+    #[inline(never)]
+    #[target_feature(enable = "avx2")]
+    fn predicted<const W: usize, const H: usize, const V: usize, const PUT: bool>(
+        t: Avx2,
+        cell: &Cell<'_>,
+    ) -> Groups {
+        predict::<W, H, V, PUT>(t, cell)
+    }
+
     /// The compound predictors of one `W`-square cell whose passes have `H`
     /// and `V` tap pairs, none for a skipped pass.
-    #[inline(never)]
+    #[inline]
     #[target_feature(enable = "avx2")]
     fn predict<const W: usize, const H: usize, const V: usize, const PUT: bool>(
         t: Avx2,
