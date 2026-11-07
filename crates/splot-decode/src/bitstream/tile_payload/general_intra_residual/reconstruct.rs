@@ -357,7 +357,7 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place<T: ReconSample>(
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> Result<(), GeneralIntraResidualError> {
-    let (setup, secondary) = intra_residual_setup(
+    let fused = fused_intra_setup(
         block,
         plane_id,
         block_size,
@@ -367,17 +367,49 @@ pub(crate) fn add_general_intra_coeff_block_residual_in_place<T: ReconSample>(
         dpcm,
         bit_depth,
     )?;
+    let general = || {
+        intra_residual_setup(
+            block,
+            plane_id,
+            block_size,
+            qindex,
+            use_tcq,
+            luma_context,
+            dpcm,
+            bit_depth,
+        )
+    };
     super::with_residual_scratch(|scratch| {
         let mut surface = splot_recon::CurrentFrameSurface::Frame(&mut *workspace);
-        if let Some((dst, stride)) = surface.u8_residual_rect_mut(plane_id, x, y, block_size)?
-            && add_residual_u8(block, &setup, secondary.as_ref(), dst, stride, scratch)?
+        if let Some((fused, flat)) = fused
+            && let Some((dst, stride)) = surface
+                .u8_residual_rect_mut(plane_id, x, y, block_size)
+                .map_err(reconstruct_error)?
+            && fused.add(
+                block.quant,
+                Some(flat),
+                dst,
+                stride,
+                &mut scratch.dequant_pair,
+            )
         {
             return Ok(());
         }
-        let residual = intra_residual(block, &setup, secondary.as_ref(), scratch)?;
-        surface.add_residual_rect_block(plane_id, x, y, block_size, residual)
+        let (setup, secondary) = general()?;
+        if let Some((dst, stride)) = surface
+            .u8_residual_rect_mut(plane_id, x, y, block_size)
+            .map_err(reconstruct_error)?
+            && add_residual_u8(block, &setup, secondary.as_ref(), dst, stride, scratch)
+                .map_err(reconstruct_error)?
+        {
+            return Ok(());
+        }
+        let residual = intra_residual(block, &setup, secondary.as_ref(), scratch)
+            .map_err(reconstruct_error)?;
+        surface
+            .add_residual_rect_block(plane_id, x, y, block_size, residual)
+            .map_err(reconstruct_error)
     })
-    .map_err(|source| GeneralIntraResidualError::Reconstruct { source })
 }
 
 #[allow(clippy::too_many_arguments)]

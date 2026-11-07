@@ -23,7 +23,10 @@
 use crate::dequant_process::{DequantBlockParams, dequantize_block};
 use crate::inverse_transform_2d_outer::{InverseTransform2dOuter, inverse_transform_2d_outer};
 use crate::reconstruct::reconstruct_add_residual;
-use crate::secondary_transform::{SecondaryInverseTransform, secondary_inverse_transform_prefix};
+use crate::secondary_transform::{
+    SecondaryInverseTransform, secondary_inverse_transform_prefix,
+    secondary_inverse_transform_quant,
+};
 use crate::{ReconSample, Result};
 
 /// Reconstructs one transform block from its decoded quantized coefficients,
@@ -115,10 +118,17 @@ pub fn dequantize_with_secondary(
     secondary: Option<&SecondaryInverseTransform>,
     dequant: &mut [i32],
 ) -> Result<usize> {
-    let coded = dequantize_block(params, quant, dequant)?;
     let Some(secondary) = secondary else {
-        return Ok(coded);
+        return dequantize_block(params, quant, dequant);
     };
+    if params.qm.is_none()
+        && (params.tx_width, params.tx_height) == (secondary.w, secondary.h)
+        && quant.len() <= dequant.len()
+    {
+        let quantizers = (params.dc_quant, params.ac_quant, params.dq_denom);
+        return secondary_inverse_transform_quant(quant, quantizers, secondary, dequant);
+    }
+    let coded = dequantize_block(params, quant, dequant)?;
     secondary_inverse_transform_prefix(dequant, coded, secondary)
 }
 
@@ -351,6 +361,44 @@ mod tests {
                     )
                     .unwrap();
                     assert_eq!(got, want, "{log2_w}x{log2_h} type {tx_type} last {last}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn secondary_from_quant_matches_dequantized_prefix() {
+        let mut seed = 0x9E37_79B9u32;
+        for (w, h, n) in [(4, 4, 8), (8, 8, 16), (16, 16, 32), (32, 8, 32), (4, 16, 8)] {
+            for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+                for (kernel, transpose) in [(0, false), (3, true)] {
+                    let mut params = dct_dequant_params(w, h, 180);
+                    params.bit_depth = bit_depth;
+                    params.dq_denom = 2;
+                    let secondary = SecondaryInverseTransform {
+                        w,
+                        h,
+                        n,
+                        kernel,
+                        sec_tx_type: 2,
+                        primary_scan_class: crate::TransformClass::TwoD,
+                        transpose,
+                        bit_depth,
+                    };
+                    let mut quant = vec![0i32; w * h];
+                    for value in &mut quant[..3 * w] {
+                        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                        *value = (seed >> 20) as i32 % 300 - 150;
+                    }
+                    let (mut fast, mut slow) = (vec![7; w * h], vec![0; w * h]);
+                    let len =
+                        dequantize_with_secondary(&params, &quant, Some(&secondary), &mut fast)
+                            .unwrap();
+                    let coded = dequantize_block(&params, &quant, &mut slow).unwrap();
+                    let slow_len =
+                        secondary_inverse_transform_prefix(&mut slow, coded, &secondary).unwrap();
+                    assert_eq!(fast[..len], slow[..len], "{w}x{h} {bit_depth:?}");
+                    assert!(slow[len..slow_len].iter().all(|&v| v == 0));
                 }
             }
         }
