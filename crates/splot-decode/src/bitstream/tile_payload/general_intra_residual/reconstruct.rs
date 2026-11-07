@@ -100,7 +100,10 @@ pub(crate) fn resolve_secondary_inverse_transform(
     Ok(Some(SecondaryInverseTransform {
         w,
         h,
-        n,
+        n: match block.eob() {
+            0 => n,
+            eob => n.min(eob),
+        },
         kernel,
         sec_tx_type: ist.sec_tx_type.into(),
         primary_scan_class: tx_class(block.plane_tx_type()),

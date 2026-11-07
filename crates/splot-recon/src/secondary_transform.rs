@@ -62,7 +62,8 @@ const STX_SCAN_ORDER_8X8: [usize; 64] = [
 /// `w >= 8 && h >= 8`), `bwl` (`Min(5, Tx_Width_Log2[txSz])`, i.e. `log2(w)`), and
 /// the output width are derived internally. `n` is the § 7.15.3 input
 /// coefficient count (`IST_4X4_HEIGHT`, `IST_8X8_HEIGHT`, or the reduced
-/// `IST_8X8_HEIGHT_RED`); `kernel` and `sec_tx_type` (`1..=3`) select the § 9.7
+/// `IST_8X8_HEIGHT_RED`), or a block's smaller end of block, past which the
+/// § 7.15.3 inputs are zero; `kernel` and `sec_tx_type` (`1..=3`) select the § 9.7
 /// IST kernel; `primary_scan_class` aligns the IST input support with the
 /// primary transform scan; `transpose` chooses the § 7.15.3 output layout;
 /// `bit_depth` bounds the `Clip3`.
