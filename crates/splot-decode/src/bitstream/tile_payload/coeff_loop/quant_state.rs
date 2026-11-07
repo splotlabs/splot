@@ -5,9 +5,8 @@
 //!
 //! Feature tracking: `DECODE-COEFF-QUANT-STATE-WRITE`.
 
-use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
+use super::super::coeff_state::TileCoeffStateError;
 use super::scan_walk::CoeffScanEntry;
-use super::sign_symbol::CoeffSignRead;
 
 const TCQ_STATES: usize = 8;
 pub(crate) const MAX_CONFORMING_QUANT_MAGNITUDE: u32 = 1 << 20;
@@ -118,6 +117,16 @@ impl CoeffQuantStateAccumulator {
     /// that skips zero levels and takes each entry's state from the base
     /// pass. [`Self::apply_entry`] reads only that bit before the next call
     /// sets it again.
+    /// The accumulator with `culLevel` taken from the sum of the levels so
+    /// far: `Min(4, culLevel + quant)` per level is `Min(4, sum)`.
+    #[must_use]
+    pub(crate) fn with_cul_level(self, level_sum: u32) -> Self {
+        Self {
+            cul_level: level_sum.min(4) as u8,
+            ..self
+        }
+    }
+
     #[inline]
     pub(crate) fn set_tcq_q0(&mut self, q0: bool) {
         self.tcq_state = usize::from(q0) << 1;
@@ -127,17 +136,6 @@ impl CoeffQuantStateAccumulator {
     /// neither the DC nor parity-hidden; returns its magnitude.
     /// [`Self::ac_magnitude`] of a level below `maxLevel - allowTcq`, which
     /// read no remainder and so cannot leave the conforming range.
-    #[allow(clippy::inline_always, reason = "measured: per-coefficient quant step")]
-    #[inline(always)]
-    pub(crate) fn small_ac_magnitude(&mut self, level: u32, tcq_q0: bool) -> u32 {
-        self.cul_level = 4.min(u32::from(self.cul_level) + level) as u8;
-        if !self.lossless && self.use_tcq && level > 0 {
-            2 * level - u32::from(tcq_q0)
-        } else {
-            level
-        }
-    }
-
     #[allow(clippy::inline_always, reason = "measured: per-coefficient quant step")]
     #[inline(always)]
     pub(crate) fn ac_magnitude(
@@ -199,24 +197,6 @@ impl CoeffQuantStateAccumulator {
             quant: if sign { -magnitude } else { magnitude },
         })
     }
-}
-
-#[allow(
-    clippy::inline_always,
-    reason = "measured: per-coefficient sign and quant step"
-)]
-#[inline(always)]
-pub(crate) fn apply_derived_nonzero_coeff_quant_state_step(
-    block: &mut TransformCoeffBlockState,
-    state: &mut CoeffQuantStateAccumulator,
-    index: usize,
-    entry: CoeffScanEntry,
-    sign: CoeffSignRead,
-    input: CoeffQuantReadInput,
-) -> Result<(), CoeffQuantStateWriteError> {
-    let write = state.apply_entry(index, entry, sign.sign(), input)?;
-    block.set_quant(write.entry().pos(), write.quant())?;
-    Ok(())
 }
 
 fn checked_mul_add(

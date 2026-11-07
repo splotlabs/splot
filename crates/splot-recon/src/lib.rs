@@ -93,7 +93,8 @@ pub use cdef_filter::{
     cdef_filter_block_segment, cdef_filter_sample,
 };
 pub use coefficient_scan::{
-    TransformClass, coefficient_scan_order, coefficient_scan_slice, tx_class,
+    TransformClass, coefficient_scan_order, coefficient_scan_position, coefficient_scan_slice,
+    tx_class,
 };
 pub use deblock_filter::{
     DeblockEdge, DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,
