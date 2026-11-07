@@ -4,10 +4,10 @@
 //! First-block, DIP, and Paeth intra entries with their edge helpers.
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraDipEdges, IntraMiddleDirectionalAngleEdges,
-    IntraPaethEdges, IntraPredictionScratchBuffer, IntraRectBlockSize, PlaneId, ReconSample,
-    predict_intra_dip_rect_into, predict_intra_middle_directional_angle_rect_into,
-    predict_intra_paeth_rect_into,
+    BitDepth, CurrentFrameWorkspace, IntraBlockFrame, IntraDipEdges,
+    IntraMiddleDirectionalAngleEdges, IntraPaethEdges, IntraPredictionScratchBuffer,
+    IntraRectBlockSize, PlaneId, ReconSample, predict_intra_dip_rect_into,
+    predict_intra_middle_directional_angle_rect_into, predict_intra_paeth_rect_into,
 };
 
 use super::middle::middle_directional_angle;
@@ -48,6 +48,71 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let mut above_buf = [T::default(); MAX_DIP_EDGE_SAMPLES];
     let mut left_buf = [T::default(); MAX_DIP_EDGE_SAMPLES];
+    if bit_depth == workspace.info().bit_depth() {
+        let write_through = block.eob == 0;
+        let (above_len, left_len) = (width + (width >> 2), height + (height >> 2));
+        let readable = (
+            (width + num4_above_right * MI_SIZE).min(above_len),
+            (height + num4_below_left * MI_SIZE).min(left_len),
+        );
+        let mut top_left = None;
+        let in_frame = workspace.with_intra_block_frame(PlaneId::Y, x, y, block_size, |frame| {
+            top_left = gather_dip_edges(
+                frame,
+                availability,
+                readable,
+                bit_depth,
+                [&mut above_buf[..above_len], &mut left_buf[..left_len]],
+            );
+            if let (true, Some(top_left)) = (write_through, top_left) {
+                let (output, stride) = frame.target();
+                predict_intra_dip_rect_into(
+                    bit_depth,
+                    block_size,
+                    usize::from(dip_mode),
+                    dip_transpose,
+                    IntraDipEdges::new(&left_buf[..left_len], &above_buf[..above_len], top_left),
+                    output,
+                    stride,
+                )?;
+            }
+            Ok::<_, GeneralIntraResidualError>(())
+        })?;
+        if let (Some(()), Some(top_left)) = (in_frame, top_left) {
+            if write_through {
+                return Ok(());
+            }
+            let mut prediction = workspace.take_intra_prediction_buffer(
+                IntraPredictionScratchBuffer::Primary,
+                PlaneId::Y,
+                width * height,
+                T::default(),
+            )?;
+            predict_intra_dip_rect_into(
+                bit_depth,
+                block_size,
+                usize::from(dip_mode),
+                dip_transpose,
+                IntraDipEdges::new(&left_buf[..left_len], &above_buf[..above_len], top_left),
+                &mut prediction,
+                width,
+            )?;
+            return write_intra_prediction_block(
+                workspace,
+                block,
+                prediction,
+                PlaneId::Y,
+                x,
+                y,
+                block_size,
+                qindex,
+                use_tcq,
+                Some(luma_context),
+                None,
+                bit_depth,
+            );
+        }
+    }
     let (left, above, top_left) = dip_reference_edges(
         workspace,
         x,
@@ -197,6 +262,52 @@ fn dip_reference_edges<'a, T: ReconSample>(
         (None, None) => noneighbour_corner::<T>(bit_depth),
     };
     Ok((left_slice, above_slice, top_left))
+}
+
+/// Gathers the § 7.13.2.3 DIP edges of an in-storage block straight from the
+/// frame, the counterpart of [`dip_reference_edges`]: each available edge
+/// reads its first `readable` samples, clamped at the storage edge, and
+/// repeats the last. Returns the top-left sample, or `None` when an edge the
+/// availability claims is not stored, which the checked path reports.
+fn gather_dip_edges<T: ReconSample>(
+    frame: &IntraBlockFrame<'_, T>,
+    availability: IntraEdgeAvailability,
+    (above_readable, left_readable): (usize, usize),
+    bit_depth: BitDepth,
+    [above, left]: [&mut [T]; 2],
+) -> Option<T> {
+    let row = frame.above_row();
+    let mut column = [T::default(); 1];
+    let first_left = (frame.left_column(&mut column) == 1).then_some(column[0]);
+    if availability.above {
+        let copied = above_readable.min(row.len());
+        let last = *row.get(copied.checked_sub(1)?)?;
+        above[..copied].copy_from_slice(&row[..copied]); // splot-copy-ok: DIP above edge from its frame row
+        above[copied..].fill(last);
+    } else if availability.left {
+        above.fill(first_left?);
+    } else {
+        above.fill(noneighbour_above::<T>(bit_depth));
+    }
+    if availability.left {
+        let readable = left_readable.min(left.len());
+        let copied = frame.left_column(&mut left[..readable]);
+        if copied < readable.min(frame.left_extent()) || copied == 0 {
+            return None;
+        }
+        let last = left[copied - 1];
+        left[copied..].fill(last);
+    } else if availability.above {
+        left.fill(*row.first()?);
+    } else {
+        left.fill(noneighbour_left::<T>(bit_depth));
+    }
+    match (availability.above, availability.left) {
+        (true, true) => frame.top_left(),
+        (true, false) => row.first().copied(),
+        (false, true) => first_left,
+        (false, false) => Some(noneighbour_corner::<T>(bit_depth)),
+    }
 }
 
 #[derive(Clone, Copy)]

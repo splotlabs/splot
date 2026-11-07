@@ -4,8 +4,9 @@
 //! Smooth intra prediction entries, edge assembly, and sentinel resolution.
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraPredictionScratchBuffer, IntraRectBlockSize,
-    IntraSmoothEdges, IntraSmoothMode, PlaneId, ReconSample, predict_intra_smooth_rect_into,
+    BitDepth, CurrentFrameWorkspace, IntraBlockFrame, IntraPredictionScratchBuffer,
+    IntraRectBlockSize, IntraSmoothEdges, IntraSmoothLanes, IntraSmoothMode, PlaneId, ReconSample,
+    predict_intra_smooth_lanes_into, predict_intra_smooth_rect_into,
 };
 
 use super::sink::{
@@ -97,6 +98,53 @@ pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: Reco
         num4_below_left,
         bit_depth,
     };
+    if let Some(edges) = in_frame_smooth_edges(request)
+        && bit_depth == workspace.info().bit_depth()
+    {
+        let mut lanes = IntraSmoothLanes::new(block_size);
+        let write_through = block.eob == 0;
+        let gathered = workspace.with_intra_block_frame(plane_id, x, y, block_size, |frame| {
+            gather_smooth_lanes(frame, request, edges, &mut lanes);
+            if write_through {
+                let (output, stride) = frame.target();
+                predict_intra_smooth_lanes_into(bit_depth, smooth_mode, &lanes, output, stride)?;
+            }
+            Ok::<_, GeneralIntraResidualError>(())
+        })?;
+        if gathered.is_some() {
+            if write_through {
+                return Ok(());
+            }
+            let width = block_size.width();
+            let mut prediction = workspace.take_intra_prediction_buffer(
+                IntraPredictionScratchBuffer::Primary,
+                plane_id,
+                width * block_size.height(),
+                T::default(),
+            )?;
+            predict_intra_smooth_lanes_into(
+                bit_depth,
+                smooth_mode,
+                &lanes,
+                &mut prediction,
+                width,
+            )?;
+            return write_intra_prediction_block(
+                workspace,
+                block,
+                prediction,
+                plane_id,
+                x,
+                y,
+                block_size,
+                qindex,
+                use_tcq,
+                luma_context,
+                None,
+                bit_depth,
+            );
+        }
+    }
     let edges = smooth_prediction_edges(workspace, request)?;
     if predict_intra_in_frame(
         workspace,
@@ -149,6 +197,70 @@ pub(crate) struct SmoothIntraPredictionRequest {
     pub(crate) num4_above_right: usize,
     pub(crate) num4_below_left: usize,
     pub(crate) bit_depth: BitDepth,
+}
+
+/// Which edges a block reads from the frame, when its sample limits are all
+/// or nothing.
+fn in_frame_smooth_edges(request: SmoothIntraPredictionRequest) -> Option<IntraEdgeAvailability> {
+    let wanted = |limit: Option<usize>| match limit {
+        None => Some(true),
+        Some(0) => Some(false),
+        Some(_) => None,
+    };
+    Some(IntraEdgeAvailability::new(
+        wanted(request.available_above_samples)?,
+        wanted(request.available_left_samples)?,
+    ))
+}
+
+/// Gathers the § 7.13.2.13 edges with their sentinels straight from the
+/// frame, the in-storage counterpart of [`smooth_prediction_edges`].
+fn gather_smooth_lanes<T: ReconSample>(
+    frame: &IntraBlockFrame<'_, T>,
+    request: SmoothIntraPredictionRequest,
+    wanted: IntraEdgeAvailability,
+    lanes: &mut IntraSmoothLanes<T>,
+) {
+    let (width, height) = (request.block_size.width(), request.block_size.height());
+    let left_len = if wanted.left {
+        frame.left_column(&mut lanes.left[..=height])
+    } else {
+        0
+    };
+    let above = if wanted.above { frame.above_row() } else { &[] };
+    let have_left = left_len >= height;
+    let have_above = above.len() >= width;
+    if have_left && (left_len == height || request.num4_below_left == 0) {
+        lanes.left[height] = lanes.left[height - 1];
+    }
+    let mut corners = [T::default(); 2];
+    if have_above {
+        lanes.set_above(above);
+        corners[0] = if request.num4_above_right > 0 && above.len() > width {
+            above[width]
+        } else {
+            above[width - 1]
+        };
+    }
+    if !have_left {
+        let fill = if have_above {
+            above[0]
+        } else {
+            noneighbour_left::<T>(request.bit_depth)
+        };
+        lanes.left[..=height].fill(fill);
+    }
+    corners[1] = lanes.left[height];
+    if !have_above {
+        let fill = if have_left {
+            lanes.left[0]
+        } else {
+            noneighbour_above::<T>(request.bit_depth)
+        };
+        lanes.fill_above(fill);
+        corners[0] = fill;
+    }
+    lanes.corners = corners;
 }
 
 pub(crate) fn predict_intra_smooth_over_available_edges_into<T: ReconSample>(
