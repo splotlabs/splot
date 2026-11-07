@@ -11,9 +11,7 @@ use std::ops::Range;
 use super::partition_size::{BlockSize, PartitionSizeError};
 use super::partition_traversal::TilePartitionContextState;
 use crate::support::reusable_scratch::{recycle_pooled_vec, take_pooled_vec};
-use crate::tile::SbRowWindow;
 
-const BLOCK_256X256_INDEX: u8 = 18;
 const PLANE_COUNT: usize = 2;
 const LUMA_PLANE: usize = 0;
 const CHROMA_PLANE: usize = 1;
@@ -27,25 +25,21 @@ const PARTITION_CONTEXT_LEFT: [u8; 29] = [
     60, 56, 63, 48, 62,
 ];
 
+/// The § 5.20.4.1 `LeftMiSizes` / `AboveMiSizes` lines of a tile, stored as
+/// partition-context bit masks (bit `k` set when the neighbour's log2 extent
+/// is at most `k`, in 4x4 units).
+///
+/// The § 8.3.2 square-split context reads `MiSizes[ 0 ][ r - 1 ][ c ]` and
+/// `MiSizes[ 0 ][ r ][ c - 1 ]`. The partition tree decodes the blocks
+/// covering one column top to bottom, and the blocks covering one row left
+/// to right, so those are the last blocks written to the lines.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileMiSizeState {
     origin_row: usize,
     origin_col: usize,
-    mi_rows: usize,
-    mi_cols: usize,
-    mi_size_stride: usize,
-    grid_len: usize,
     left_len: usize,
     above_len: usize,
-    /// The luma block-size grid holds only the rows of this window: the
-    /// § 5.20.4.1 square-split context reads one row above the block. Chroma
-    /// block sizes feed only the context lines, so they have no grid.
-    window: SbRowWindow,
-    /// Coalesced backing store for the luma block-size grid and the
-    /// left/above neighbour context lines, laid out as
-    /// `[mi_sizes L | left L | left C | above L | above C]`. Entries are
-    /// block-size indices (`< 29`) and partition-context values (`<= 63`),
-    /// which fit in a byte.
+    /// `[left L | left C | above L | above C]`.
     storage: Vec<u8>,
 }
 
@@ -60,16 +54,11 @@ impl TileMiSizeState {
         }
         let padded_rows = padded_dimension("rows", mi_rows, sb_size.num_4x4_high()?)?;
         let padded_cols = padded_dimension("cols", mi_cols, sb_size.num_4x4_wide()?)?;
-        let window_rows = SbRowWindow::new(mi_rows, sb_size.num_4x4_high()?).plane_rows();
-        let padded_grid_cells =
-            checked_mul_usize("window_rows * padded_mi_cols", window_rows, padded_cols)?;
         let lines = checked_add_usize("padded_rows + padded_cols", padded_rows, padded_cols)?;
-        let lines = checked_mul_usize("lines * planes", lines, PLANE_COUNT)?;
-        let entry_count = checked_add_usize("padded_grid_cells + lines", padded_grid_cells, lines)?;
+        let entry_count = checked_mul_usize("lines * planes", lines, PLANE_COUNT)?;
         Ok(TileMiSizeStateAllocation {
             padded_rows,
             padded_cols,
-            padded_grid_cells,
             entry_count,
         })
     }
@@ -82,34 +71,24 @@ impl TileMiSizeState {
         let mi_rows = row_range.end.saturating_sub(row_range.start);
         let mi_cols = col_range.end.saturating_sub(col_range.start);
         let allocation = Self::allocation(mi_rows, mi_cols, sb_size)?;
+        let mut storage = take_pooled_vec::<u8>(allocation.entry_count);
+        storage.try_reserve_exact(allocation.entry_count)?;
+        storage.resize(allocation.entry_count, CLEAR_PARTITION_CONTEXT);
         Ok(Self {
             origin_row: row_range.start,
             origin_col: col_range.start,
-            mi_rows,
-            mi_cols,
-            mi_size_stride: allocation.padded_cols,
-            grid_len: allocation.padded_grid_cells,
             left_len: allocation.padded_rows,
             above_len: allocation.padded_cols,
-            window: SbRowWindow::new(mi_rows, sb_size.num_4x4_high()?),
-            storage: coalesced_storage(allocation)?,
+            storage,
         })
     }
 
     const fn left_base(&self, plane: usize) -> usize {
-        self.grid_len + plane * self.left_len
+        plane * self.left_len
     }
 
     const fn above_base(&self, plane: usize) -> usize {
-        self.grid_len + 2 * self.left_len + plane * self.above_len
-    }
-
-    fn mi_sizes(&self) -> &[u8] {
-        &self.storage[..self.grid_len]
-    }
-
-    pub(crate) fn window_violated(&self) -> bool {
-        self.window.violated()
+        PLANE_COUNT * self.left_len + plane * self.above_len
     }
 
     fn left_plane(&self, plane: usize) -> &[u8] {
@@ -122,24 +101,13 @@ impl TileMiSizeState {
         &self.storage[base..base + self.above_len]
     }
 
-    /// Starts the superblock row at frame row `sb_row`: clears the left
-    /// context lines and moves the grid window down to it.
-    pub(crate) fn enter_sb_row(&mut self, sb_row: usize) {
-        let base = self.grid_len;
-        let end = base + 2 * self.left_len;
-        self.storage[base..end].fill(CLEAR_PARTITION_CONTEXT);
-        if let Some(slide) = self.window.enter(sb_row.saturating_sub(self.origin_row)) {
-            slide.apply(
-                &mut self.storage[..self.grid_len],
-                self.mi_size_stride,
-                BLOCK_256X256_INDEX,
-            );
-        }
+    /// Starts a superblock row: clears the left context lines.
+    pub(crate) fn enter_sb_row(&mut self, _sb_row: usize) {
+        self.storage[..PLANE_COUNT * self.left_len].fill(CLEAR_PARTITION_CONTEXT);
     }
 
-    /// Calls `visit` with the block sizes and both planes' partition contexts
-    /// over tile rows `rows` x columns `cols`, for the encoder facade's
-    /// rollback. A chroma block is keyed by luma 4x4 position, so it lies there too.
+    /// Calls `visit` with both planes' partition contexts over tile rows
+    /// `rows` x columns `cols`, for the encoder facade's rollback.
     pub(crate) fn visit_region(
         &mut self,
         rows: Range<usize>,
@@ -151,14 +119,8 @@ impl TileMiSizeState {
         };
         let (r, c) = (
             local(&rows, self.origin_row, self.left_len),
-            local(cols, self.origin_col, self.mi_size_stride),
+            local(cols, self.origin_col, self.above_len),
         );
-        for row in r.clone() {
-            if let Some(plane_row) = self.window.plane_row(row) {
-                let base = plane_row * self.mi_size_stride;
-                visit(&mut self.storage[base + c.start..base + c.end]);
-            }
-        }
         for plane in [LUMA_PLANE, CHROMA_PLANE] {
             let (left, above) = (self.left_base(plane), self.above_base(plane));
             visit(&mut self.storage[left + r.start..left + r.end]);
@@ -186,9 +148,6 @@ impl TileMiSizeState {
 
     pub(crate) fn context_state(&self) -> TilePartitionContextState<'_> {
         TilePartitionContextState::new_at(
-            self.mi_sizes(),
-            &self.window,
-            self.mi_size_stride,
             [self.left_plane(LUMA_PLANE), self.left_plane(CHROMA_PLANE)],
             [self.above_plane(LUMA_PLANE), self.above_plane(CHROMA_PLANE)],
             self.origin_row,
@@ -196,6 +155,7 @@ impl TileMiSizeState {
         )
     }
 
+    #[inline]
     fn update_plane_block(
         &mut self,
         plane: usize,
@@ -203,123 +163,31 @@ impl TileMiSizeState {
         c: usize,
         mi_size: BlockSize,
     ) -> Result<(), TileMiSizeStateError> {
-        let region = self.validated_region(plane, r, c, mi_size)?;
-        let mi_size_index = mi_size.index();
-        let above_partition_context = partition_context_above(mi_size_index)?;
-        let left_partition_context = partition_context_left(mi_size_index)?;
-        let mi_size_value = u8::try_from(mi_size_index).map_err(|_| {
-            TileMiSizeStateError::BlockSizeIndexTooLarge {
-                index: mi_size_index,
-            }
-        })?;
-        let col_start = region.c;
-        let col_end = region.col_end;
-        let stride = self.mi_size_stride;
-        let left_base = self.left_base(plane);
-        let above_base = self.above_base(plane);
-        crate::support::fill_mi_run(
-            &mut self.storage[left_base + region.r..left_base + region.row_end],
-            left_partition_context,
-        );
-        if plane == LUMA_PLANE {
-            let last = region.row_end - 1;
-            let first_plane_row = self.window.plane_row(region.r);
-            let contiguous = first_plane_row
-                .zip(self.window.plane_row(last))
-                .is_some_and(|(first, end)| end.checked_sub(first) == Some(last - region.r));
-            for row in region.r..region.row_end {
-                let plane_row = if contiguous {
-                    first_plane_row.map(|first| first + (row - region.r))
-                } else {
-                    self.window.plane_row(row)
-                };
-                if let Some(plane_row) = plane_row {
-                    let row_start = plane_row * stride;
-                    crate::support::fill_mi_run(
-                        &mut self.storage[row_start + col_start..row_start + col_end],
-                        mi_size_value,
-                    );
-                }
-            }
+        let index = mi_size.index();
+        let out_of_bounds = TileMiSizeStateError::BlockOutOfBounds { plane, r, c };
+        let (Some(local_r), Some(local_c), Some(&left), Some(&above)) = (
+            r.checked_sub(self.origin_row),
+            c.checked_sub(self.origin_col),
+            PARTITION_CONTEXT_LEFT.get(index),
+            PARTITION_CONTEXT_ABOVE.get(index),
+        ) else {
+            return Err(out_of_bounds);
+        };
+        let rows = local_r..local_r.saturating_add(mi_size.num_4x4_high()?);
+        let cols = local_c..local_c.saturating_add(mi_size.num_4x4_wide()?);
+        if rows.end > self.left_len || cols.end > self.above_len {
+            return Err(out_of_bounds);
         }
+        let (left_base, above_base) = (self.left_base(plane), self.above_base(plane));
         crate::support::fill_mi_run(
-            &mut self.storage[above_base + col_start..above_base + col_end],
-            above_partition_context,
+            &mut self.storage[left_base + rows.start..left_base + rows.end],
+            left,
+        );
+        crate::support::fill_mi_run(
+            &mut self.storage[above_base + cols.start..above_base + cols.end],
+            above,
         );
         Ok(())
-    }
-
-    fn validated_region(
-        &self,
-        plane: usize,
-        r: usize,
-        c: usize,
-        mi_size: BlockSize,
-    ) -> Result<TileMiSizeRegion, TileMiSizeStateError> {
-        let height = mi_size.num_4x4_high()?;
-        let width = mi_size.num_4x4_wide()?;
-        let absolute_row_end =
-            r.checked_add(height)
-                .ok_or(TileMiSizeStateError::CoordinateOverflow {
-                    coordinate: "row",
-                    base: r,
-                    offset: height,
-                })?;
-        let absolute_col_end =
-            c.checked_add(width)
-                .ok_or(TileMiSizeStateError::CoordinateOverflow {
-                    coordinate: "col",
-                    base: c,
-                    offset: width,
-                })?;
-        let Some(local_r) = r.checked_sub(self.origin_row) else {
-            return Err(TileMiSizeStateError::BlockStartOutOfBounds {
-                plane,
-                r,
-                c,
-                mi_rows: self.mi_rows,
-                mi_cols: self.mi_cols,
-            });
-        };
-        let Some(local_c) = c.checked_sub(self.origin_col) else {
-            return Err(TileMiSizeStateError::BlockStartOutOfBounds {
-                plane,
-                r,
-                c,
-                mi_rows: self.mi_rows,
-                mi_cols: self.mi_cols,
-            });
-        };
-        if local_r >= self.mi_rows || local_c >= self.mi_cols {
-            return Err(TileMiSizeStateError::BlockStartOutOfBounds {
-                plane,
-                r,
-                c,
-                mi_rows: self.mi_rows,
-                mi_cols: self.mi_cols,
-            });
-        }
-        let rows = self.left_len;
-        let cols = self.mi_size_stride;
-        let row_end = absolute_row_end.saturating_sub(self.origin_row);
-        let col_end = absolute_col_end.saturating_sub(self.origin_col);
-        if row_end > rows || col_end > cols {
-            return Err(TileMiSizeStateError::BlockOutOfBounds {
-                plane,
-                r,
-                c,
-                row_end,
-                col_end,
-                mi_rows: rows,
-                mi_cols: cols,
-            });
-        }
-        Ok(TileMiSizeRegion {
-            r: local_r,
-            c: local_c,
-            row_end,
-            col_end,
-        })
     }
 }
 
@@ -327,7 +195,6 @@ impl TileMiSizeState {
 pub(crate) struct TileMiSizeStateAllocation {
     padded_rows: usize,
     padded_cols: usize,
-    padded_grid_cells: usize,
     entry_count: usize,
 }
 
@@ -345,22 +212,10 @@ impl TileMiSizeStateAllocation {
     }
 
     #[must_use]
-    pub(crate) const fn padded_grid_cells(self) -> usize {
-        self.padded_grid_cells
-    }
-
-    #[must_use]
+    #[cfg(test)]
     pub(crate) const fn entry_count(self) -> usize {
         self.entry_count
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct TileMiSizeRegion {
-    r: usize,
-    c: usize,
-    row_end: usize,
-    col_end: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -377,42 +232,8 @@ pub(crate) enum TileMiSizeStateError {
     Allocation(#[from] TryReserveError),
     #[error("MI-size state block-size lookup failed: {0}")]
     Size(#[from] PartitionSizeError),
-    #[error("{table} block size {block_size} is outside 0..{max_exclusive}")]
-    PartitionContextBlockSizeOutOfRange {
-        table: &'static str,
-        block_size: usize,
-        max_exclusive: usize,
-    },
-    #[error("block-size index {index} does not fit in the mi-size grid element type")]
-    BlockSizeIndexTooLarge { index: usize },
-    #[error("{coordinate} coordinate overflow: {base} + {offset}")]
-    CoordinateOverflow {
-        coordinate: &'static str,
-        base: usize,
-        offset: usize,
-    },
-    #[error(
-        "MI-size state plane {plane} block ({r},{c})..({row_end},{col_end}) exceeds {mi_rows}x{mi_cols}"
-    )]
-    BlockOutOfBounds {
-        plane: usize,
-        r: usize,
-        c: usize,
-        row_end: usize,
-        col_end: usize,
-        mi_rows: usize,
-        mi_cols: usize,
-    },
-    #[error(
-        "MI-size state plane {plane} block start ({r},{c}) exceeds visible {mi_rows}x{mi_cols}"
-    )]
-    BlockStartOutOfBounds {
-        plane: usize,
-        r: usize,
-        c: usize,
-        mi_rows: usize,
-        mi_cols: usize,
-    },
+    #[error("MI-size state plane {plane} block at ({r},{c}) leaves the tile's padded extent")]
+    BlockOutOfBounds { plane: usize, r: usize, c: usize },
     #[error(
         "MI-size state padded {axis} dimension overflow: dimension {dimension}, superblock span {sb_span}"
     )]
@@ -479,52 +300,22 @@ fn checked_mul_usize(
         })
 }
 
-fn coalesced_storage(
-    allocation: TileMiSizeStateAllocation,
-) -> Result<Vec<u8>, TileMiSizeStateError> {
-    let mut storage = take_pooled_vec::<u8>(allocation.entry_count());
-    storage.try_reserve_exact(allocation.entry_count())?;
-    storage.resize(allocation.padded_grid_cells(), BLOCK_256X256_INDEX);
-    storage.resize(allocation.entry_count(), CLEAR_PARTITION_CONTEXT);
-    Ok(storage)
-}
-
-/// Returns the coalesced store to the per-thread MI-grid pool; the frontier
-/// cursor drops this state at the end of every tile.
+/// Returns the store to the per-thread MI-grid pool; the frontier cursor
+/// drops this state at the end of every tile.
 impl Drop for TileMiSizeState {
     fn drop(&mut self) {
         recycle_pooled_vec(core::mem::take(&mut self.storage));
     }
 }
 
-fn partition_context_above(mi_size_index: usize) -> Result<u8, TileMiSizeStateError> {
-    partition_context_value(
-        "PartitionContextAbove",
-        &PARTITION_CONTEXT_ABOVE,
-        mi_size_index,
-    )
+#[cfg(test)]
+fn partition_context_above(mi_size_index: usize) -> Option<u8> {
+    PARTITION_CONTEXT_ABOVE.get(mi_size_index).copied()
 }
 
-fn partition_context_left(mi_size_index: usize) -> Result<u8, TileMiSizeStateError> {
-    partition_context_value(
-        "PartitionContextLeft",
-        &PARTITION_CONTEXT_LEFT,
-        mi_size_index,
-    )
-}
-
-fn partition_context_value(
-    table: &'static str,
-    values: &'static [u8],
-    mi_size_index: usize,
-) -> Result<u8, TileMiSizeStateError> {
-    values.get(mi_size_index).copied().ok_or(
-        TileMiSizeStateError::PartitionContextBlockSizeOutOfRange {
-            table,
-            block_size: mi_size_index,
-            max_exclusive: values.len(),
-        },
-    )
+#[cfg(test)]
+fn partition_context_left(mi_size_index: usize) -> Option<u8> {
+    PARTITION_CONTEXT_LEFT.get(mi_size_index).copied()
 }
 
 #[cfg(test)]

@@ -21,7 +21,7 @@ fn allowed(partitions: &[PartitionType]) -> AllowedPartitions {
     AllowedPartitions::new(flags)
 }
 
-fn partition_context() -> PartitionContextInput<'static> {
+fn partition_context() -> PartitionContextInput {
     static LEFT0: [u8; 32] = [BLOCK_4X4; 32];
     static LEFT1: [u8; 32] = [BLOCK_4X4; 32];
     static ABOVE0: [u8; 32] = [BLOCK_4X4; 32];
@@ -29,9 +29,8 @@ fn partition_context() -> PartitionContextInput<'static> {
     PartitionContextInput::new(BLOCK_32X32, 0, 0, 0, [&LEFT0, &LEFT1], [&ABOVE0, &ABOVE1]).unwrap()
 }
 
-fn square_context() -> SquareSplitContextInput<'static> {
-    static GRID: [u8; 4] = [BLOCK_4X4; 4];
-    SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, false, false, &GRID, 2).unwrap()
+fn square_context() -> SquareSplitContextInput {
+    SquareSplitContextInput::new(BLOCK_16X16, None, None).unwrap()
 }
 
 fn input(
@@ -39,7 +38,7 @@ fn input(
     implied_partition: Option<PartitionType>,
     bru_active: bool,
     rect_type: Option<RectPartitionType>,
-) -> ReadPartitionDecisionInput<'static> {
+) -> ReadPartitionDecisionInput {
     ReadPartitionDecisionInput::new(
         allowed,
         implied_partition,
@@ -64,7 +63,7 @@ fn cdfs() -> TileCdfSubset {
 }
 
 fn decision(
-    input: ReadPartitionDecisionInput<'static>,
+    input: ReadPartitionDecisionInput,
     payload: &'static [u8],
 ) -> (
     Result<PartitionType, PartitionDecisionError>,
@@ -350,33 +349,6 @@ fn impossible_final_table_result_is_rejected() {
             partition: PartitionType::Horz
         }
     ));
-}
-
-#[test]
-fn cdf_selector_error_fails_before_symbol_consumption() {
-    static EMPTY: [u8; 0] = [];
-    let grid = vec![BLOCK_4X4; 4];
-    let input = ReadPartitionDecisionInput::new(
-        allowed(&[PartitionType::None, PartitionType::Horz]),
-        None,
-        true,
-        Some(RectPartitionType::Horz),
-        PartitionContextInput::new(BLOCK_32X32, 0, 1, 0, [&EMPTY, &EMPTY], [&EMPTY, &EMPTY])
-            .unwrap(),
-        SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, false, false, &grid, 2).unwrap(),
-    );
-    let mut cdfs = cdfs();
-    let before = cdfs.clone();
-    let mut symbols = decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
-
-    let err = read_partition_decision(input, &mut cdfs, &mut symbols).unwrap_err();
-
-    assert!(matches!(
-        err,
-        PartitionDecisionError::Cdf(TileCdfError::PartitionNeighborOutOfRange { .. })
-    ));
-    assert_eq!(symbols.symbol_count(), 0);
-    assert_eq!(cdfs, before);
 }
 
 #[test]

@@ -144,12 +144,6 @@ fn inter_tile_constructor_allocation_errors_stay_reconstruction_failures() {
         }),
         "inter segment id state",
     );
-    assert_workspace_allocation(
-        &inter_tile_block_decoded_error(&TileBlockDecodedStateError::Allocation {
-            source: allocation_error(),
-        }),
-        "inter block decoded state",
-    );
 }
 
 #[test]

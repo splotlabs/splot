@@ -59,12 +59,8 @@ use tree_walk::{
 pub(crate) const BLOCK_8X32: usize = 21;
 pub(crate) const BLOCK_32X8: usize = 22;
 
-#[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionContextState<'a> {
-    mi_sizes: &'a [u8],
-    mi_size_rows: &'a crate::tile::SbRowWindow,
-    mi_size_stride: usize,
     left_mi_sizes: [&'a [u8]; 2],
     above_mi_sizes: [&'a [u8]; 2],
     origin_row: usize,
@@ -74,18 +70,12 @@ pub(crate) struct TilePartitionContextState<'a> {
 impl<'a> TilePartitionContextState<'a> {
     #[must_use]
     pub(crate) const fn new_at(
-        mi_sizes: &'a [u8],
-        mi_size_rows: &'a crate::tile::SbRowWindow,
-        mi_size_stride: usize,
         left_mi_sizes: [&'a [u8]; 2],
         above_mi_sizes: [&'a [u8]; 2],
         origin_row: usize,
         origin_col: usize,
     ) -> Self {
         Self {
-            mi_sizes,
-            mi_size_rows,
-            mi_size_stride,
             left_mi_sizes,
             above_mi_sizes,
             origin_row,
