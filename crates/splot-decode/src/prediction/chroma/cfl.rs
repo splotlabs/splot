@@ -451,16 +451,28 @@ fn cfl_predict_rows<S: Simd, P: CflLaneSample>(
     const LANES: usize = 8;
     let [dc, alpha_q3, average_q3, max] = model;
     let zero = i32x8::splat(simd, 0);
+    let predict = |luma: &[i32]| {
+        let scaled = (i32x8::from_slice(simd, luma) - average_q3) * alpha_q3;
+        let rounded = (scaled.abs() + (1 << (CFL_ALPHA_SHIFT - 1))) >> CFL_ALPHA_SHIFT;
+        let signed = scaled.simd_lt(zero).select(zero - rounded, rounded);
+        (signed + dc).max(0).min(max)
+    };
+    if width == LANES / 2 && luma.len().is_multiple_of(LANES) {
+        for (pair, luma) in luma.chunks_exact(LANES).enumerate() {
+            let mut rows = [P::from_clipped(0); LANES];
+            P::store8(simd, &mut rows, predict(luma));
+            let start = 2 * pair * stride;
+            out[start..start + width].copy_from_slice(&rows[..width]); // splot-copy-ok: publish a 4-wide CfL row
+            out[start + stride..start + stride + width].copy_from_slice(&rows[width..]); // splot-copy-ok: publish a 4-wide CfL row
+        }
+        return;
+    }
     for (row, luma) in luma.chunks_exact(width).enumerate() {
         let out = &mut out[row * stride..row * stride + width];
         let mut groups = out.chunks_exact_mut(LANES);
         let mut lumas = luma.chunks_exact(LANES);
         for (out, luma) in groups.by_ref().zip(lumas.by_ref()) {
-            let scaled = (i32x8::from_slice(simd, luma) - average_q3) * alpha_q3;
-            let rounded = (scaled.abs() + (1 << (CFL_ALPHA_SHIFT - 1))) >> CFL_ALPHA_SHIFT;
-            let signed = scaled.simd_lt(zero).select(zero - rounded, rounded);
-            let predicted = (signed + dc).max(0).min(max);
-            P::store8(simd, out, predicted);
+            P::store8(simd, out, predict(luma));
         }
         for (slot, &luma) in groups.into_remainder().iter_mut().zip(lumas.remainder()) {
             *slot = P::from_clipped(cfl_predict(model, luma));
