@@ -14,7 +14,7 @@ use super::middle::middle_directional_angle;
 use super::one_sided::{gather_column_clamped, gather_row_clamped};
 use super::sink::{
     IntraEdgeAvailability, invalid_directional_edge_state, noneighbour_above, noneighbour_corner,
-    noneighbour_left, predict_intra_in_frame, residual_adds_in_place, write_intra_prediction_block,
+    noneighbour_left, predict_intra_in_frame, write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedDirectionalLumaMode,
@@ -50,7 +50,6 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
     let mut above_buf = [T::default(); MAX_DIP_EDGE_SAMPLES];
     let mut left_buf = [T::default(); MAX_DIP_EDGE_SAMPLES];
     if bit_depth == workspace.info().bit_depth() {
-        let write_through = block.eob == 0 || residual_adds_in_place::<T>();
         let (above_len, left_len) = (width + (width >> 2), height + (height >> 2));
         let readable = (
             (width + num4_above_right * MI_SIZE).min(above_len),
@@ -65,7 +64,7 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
                 bit_depth,
                 [&mut above_buf[..above_len], &mut left_buf[..left_len]],
             );
-            if let (true, Some(top_left)) = (write_through, top_left) {
+            if let Some(top_left) = top_left {
                 let (output, stride) = frame.target();
                 predict_intra_dip_rect_into(
                     bit_depth,
@@ -79,54 +78,23 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
             }
             Ok::<_, GeneralIntraResidualError>(())
         })?;
-        if let (Some(()), Some(top_left)) = (in_frame, top_left) {
-            if write_through {
-                if block.eob != 0 {
-                    add_general_intra_coeff_block_residual_in_place(
-                        workspace,
-                        block,
-                        PlaneId::Y,
-                        x,
-                        y,
-                        block_size,
-                        qindex,
-                        use_tcq,
-                        Some(luma_context),
-                        None,
-                        bit_depth,
-                    )?;
-                }
-                return Ok(());
+        if let (Some(()), Some(_)) = (in_frame, top_left) {
+            if block.eob != 0 {
+                add_general_intra_coeff_block_residual_in_place(
+                    workspace,
+                    block,
+                    PlaneId::Y,
+                    x,
+                    y,
+                    block_size,
+                    qindex,
+                    use_tcq,
+                    Some(luma_context),
+                    None,
+                    bit_depth,
+                )?;
             }
-            let mut prediction = workspace.take_intra_prediction_buffer(
-                IntraPredictionScratchBuffer::Primary,
-                PlaneId::Y,
-                width * height,
-                T::default(),
-            )?;
-            predict_intra_dip_rect_into(
-                bit_depth,
-                block_size,
-                usize::from(dip_mode),
-                dip_transpose,
-                IntraDipEdges::new(&left_buf[..left_len], &above_buf[..above_len], top_left),
-                &mut prediction,
-                width,
-            )?;
-            return write_intra_prediction_block(
-                workspace,
-                block,
-                prediction,
-                PlaneId::Y,
-                x,
-                y,
-                block_size,
-                qindex,
-                use_tcq,
-                Some(luma_context),
-                None,
-                bit_depth,
-            );
+            return Ok(());
         }
     }
     let (left, above, top_left) = dip_reference_edges(

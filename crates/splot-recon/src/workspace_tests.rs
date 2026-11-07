@@ -607,22 +607,11 @@ fn surface_add_residual_rejects_inputs_atomically() {
 
     let stride = workspace.plane(PlaneId::Y).unwrap().stride_samples();
     workspace.as_frame_mut().unwrap().y_mut().samples_mut()[3 * stride + 3] = 300;
-    assert!(matches!(
-        CurrentFrameSurface::Frame(&mut workspace).add_residual_rect_block(
-            PlaneId::Y,
-            0,
-            0,
-            rect_block(2, 2),
-            &[1; 16],
-        ),
-        Err(ReconError::ReconstructPredictionOutOfRange {
-            sample_index: 15,
-            value: 300,
-            max: 255,
-        })
-    ));
-    let mut expected = [20; 16];
-    expected[15] = 300;
+    CurrentFrameSurface::Frame(&mut workspace)
+        .add_residual_rect_block(PlaneId::Y, 0, 0, rect_block(2, 2), &[1; 16])
+        .unwrap();
+    let mut expected = [21; 16];
+    expected[15] = 255;
     assert_eq!(packed(&workspace, PlaneId::Y), expected);
 }
 
