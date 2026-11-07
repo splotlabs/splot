@@ -10,7 +10,7 @@ use crate::intra_dc_math::{
     IntraLaneSample, round2_u32, validate_dc_edge, validate_output_shape, validate_sample_type,
 };
 use crate::{BitDepth, ReconError, ReconSample, Result};
-use fearless_simd::{Level, Simd, SimdBase, dispatch, u16x16};
+use fearless_simd::{Simd, SimdBase, u16x16};
 use std::ops::Range;
 
 const IBP_WEIGHT_MAX: u16 = 128;
@@ -195,7 +195,7 @@ fn blend_ibp_dc_lanes<O: IntraLaneSample>(
             .map(|edge| (edge, above_start, above_weights)),
         left: left.map(|edge| (edge, left_start, left_weights)),
     };
-    dispatch!(Level::baseline(), simd => blend_ibp_dc_zones(simd, wide, size, zones, pred, stride));
+    baseline_simd!(simd => blend_ibp_dc_zones(simd, wide, size, zones, pred, stride));
     true
 }
 

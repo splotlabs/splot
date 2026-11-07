@@ -11,7 +11,7 @@ use crate::intra_dc_math::{
 };
 use crate::math::round2_i32;
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
-use fearless_simd::{Bytes as _, Level, Simd, SimdBase, dispatch, i16x16, i32x8, u16x8};
+use fearless_simd::{Bytes as _, Simd, SimdBase, i16x16, i32x8, u16x8};
 
 #[cfg(test)]
 use crate::intra_edge_filter::INTRA_EDGE_KERNEL;
@@ -975,6 +975,9 @@ fn required_middle_idif_mrl_above_len(size: IntraRectBlockSize, mrl_index: usize
         })
 }
 
+/// Checks every § 7.13.2.8 zone-2 reference against the edge lengths from each
+/// row's extremes: along a row the above bases grow and the left bases shrink
+/// with the column, so the first and last reference of each run bound it.
 fn validate_middle_index_bounds(
     size: IntraRectBlockSize,
     angle: IntraMiddleDirectionalAngle,
@@ -982,23 +985,24 @@ fn validate_middle_index_bounds(
     above_len: usize,
 ) -> Result<()> {
     let branch = angle.branch();
-    for row in 0..size.height() {
-        let mut walk = MiddleRowWalk::new(row, size.width(), branch, 0)?;
-        for _ in 0..size.width() {
-            let reference = walk.next();
-            let len = match reference.edge {
-                IntraDirectionalAngleEdge::Left => left_len,
-                IntraDirectionalAngleEdge::Above => above_len,
-            };
-            logical_edge_offset(reference.base, len)?;
-            let next_base =
-                reference
-                    .base
-                    .checked_add(1)
-                    .ok_or(ReconError::ArithmeticOverflow {
-                        context: "middle directional angle next edge base",
-                    })?;
-            logical_edge_offset(next_base, len)?;
+    let (dx, dy) = (i32::from(branch.dx), i32::from(branch.dy));
+    let width = size.width() as i32;
+    let covered = |low: i32, high: i32, len: usize| {
+        logical_edge_offset(low, len)?;
+        logical_edge_offset(high + 1, len).map(|_| ())
+    };
+    for row in 0..size.height() as i32 {
+        let first_above = (-(row + 1) * dx) >> 6;
+        let left_run = (-1 - first_above).clamp(0, width);
+        if left_run < width {
+            covered(first_above + left_run, first_above + width - 1, above_len)?;
+        }
+        if left_run > 0 {
+            covered(
+                (64 * row - left_run * dy) >> 6,
+                (64 * row - dy) >> 6,
+                left_len,
+            )?;
         }
     }
     Ok(())
@@ -1093,6 +1097,16 @@ fn write_prediction<T: ReconSample>(
     stride_samples: usize,
 ) -> Result<()> {
     let max_base = size.width() + size.height() - 1;
+    if size.width() * size.height() <= small::SMALL_BLOCK_SAMPLES {
+        if let (Some(edge), Some(output)) = (T::u8_slice(edge), T::u8_slice_mut(output)) {
+            small::write_one_sided(size, angle.branch(), edge, output, stride_samples);
+            return Ok(());
+        }
+        if let (Some(edge), Some(output)) = (T::u16_slice(edge), T::u16_slice_mut(output)) {
+            small::write_one_sided(size, angle.branch(), edge, output, stride_samples);
+            return Ok(());
+        }
+    }
     if let (Some(narrow), Some(output)) = (T::u8_slice(edge), T::u8_slice_mut(output))
         && let Some(padded) = u8_lines::PaddedEdge::new(narrow, 1)
         && let Some(&last) = narrow.get(max_base)
@@ -1250,7 +1264,7 @@ fn write_bilinear_line<O: IntraLaneSample, const CONTIGUOUS: bool>(
 /// below `1024 * 32` and fits `u16` lanes.
 #[inline]
 fn bilinear_lanes8(edge: &[u16], shift: u16) -> [u16; 8] {
-    dispatch!(Level::baseline(), simd => {
+    baseline_simd!(simd => {
         let near = u16x8::from_slice(simd, &edge[..8]);
         let far = u16x8::from_slice(simd, &edge[1..9]);
         ((near * (INTERP_SCALE - shift) + far * shift + 16) >> 5).into()
@@ -1726,7 +1740,7 @@ fn one_sided_idif_line_chunk8(
 /// Transposes an 8x8 block: three rounds of interleaving row `i` with row
 /// `i + 4` rotate each element's 6-bit (row, column) index by three bits.
 fn transpose_u16x8(rows: [[u16; 8]; 8]) -> [[u16; 8]; 8] {
-    dispatch!(Level::baseline(), simd => {
+    baseline_simd!(simd => {
         let mut rows = rows.map(|row| u16x8::from_slice(simd, &row));
         for _ in 0..3 {
             let mut next = rows;
@@ -1815,7 +1829,7 @@ fn idif_row_chunk8(
 ) -> [u16; 8] {
     let window = &edge[first..first + 8 + DR_INTERP_FILTER_TAPS - 1];
     let max = i32::from(bit_depth.max_sample());
-    dispatch!(Level::baseline(), simd => idif_lanes8(simd, window, pairs, max))
+    baseline_simd!(simd => idif_lanes8(simd, window, pairs, max))
 }
 
 #[inline]
@@ -1872,6 +1886,24 @@ fn write_middle_prediction<T: ReconSample>(
     output: &mut [T],
     stride_samples: usize,
 ) -> Result<()> {
+    if size.width() * size.height() <= small::SMALL_BLOCK_SAMPLES {
+        if let (Some(left), Some(above), Some(output)) = (
+            T::u8_slice(left),
+            T::u8_slice(above),
+            T::u8_slice_mut(output),
+        ) {
+            small::write_middle(size, angle.branch(), [left, above], output, stride_samples);
+            return Ok(());
+        }
+        if let (Some(left), Some(above), Some(output)) = (
+            T::u16_slice(left),
+            T::u16_slice(above),
+            T::u16_slice_mut(output),
+        ) {
+            small::write_middle(size, angle.branch(), [left, above], output, stride_samples);
+            return Ok(());
+        }
+    }
     if let (Some(left), Some(above), Some(output)) = (
         T::u8_slice(left),
         T::u8_slice(above),
@@ -2434,6 +2466,8 @@ fn bilinear<T: ReconSample>(a: T, b: T, shift: u16) -> u16 {
     round2_u32(weighted, 5) as u16
 }
 
+#[path = "intra_directional_small.rs"]
+mod small;
 #[path = "intra_directional_u8.rs"]
 mod u8_lines;
 

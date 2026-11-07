@@ -147,7 +147,8 @@ pub use intra_directional_angle::{
 pub use intra_ibp_angular::{apply_ibp_dr_blend_rect, ibp_blend_fires};
 pub use intra_ibp_dc::apply_intra_ibp_dc_rect;
 pub use intra_smooth::{
-    IntraSmoothEdge, IntraSmoothEdges, IntraSmoothMode, predict_intra_smooth_rect_into,
+    IntraSmoothEdge, IntraSmoothEdges, IntraSmoothLanes, IntraSmoothMode,
+    predict_intra_smooth_lanes_into, predict_intra_smooth_rect_into,
 };
 pub use inverse_transform::{
     InverseTransform1dType, inverse_identity_transform, inverse_transform_1d,
@@ -239,8 +240,8 @@ pub use wienerns_filter::{
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFramePlaneRect, CurrentFrameRect,
     CurrentFrameRectRowsMut, CurrentFrameSurface, CurrentFrameWorkspace, InterIntraMode,
-    IntraPredictionScratch, IntraPredictionScratchBuffer, OwnedFrameRect, OwnedFrameRectRows,
-    WorkspaceRectRows, wedge_mask_plane_sample,
+    IntraBlockFrame, IntraPredictionScratch, IntraPredictionScratchBuffer, OwnedFrameRect,
+    OwnedFrameRectRows, WorkspaceRectRows, wedge_mask_plane_sample,
 };
 pub use y4m::{
     Y4mChromaTag, Y4mError, Y4mFrameFormat, Y4mFrameHeader, Y4mFrameRate, Y4mResult,
