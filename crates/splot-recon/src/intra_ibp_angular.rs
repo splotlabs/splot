@@ -261,7 +261,8 @@ fn blend_rows<S: Simd, O: IntraLaneSample, const W: usize>(
     primary: &mut [O],
     second: &[O],
 ) {
-    let height = primary.len() / width;
+    let width_log2 = width.trailing_zeros();
+    let height = primary.len() >> width_log2;
     let mut expanded = [[0u16; W]; IBP_WEIGHT_SIZE];
     for (row_idx, row) in expanded
         .iter_mut()
@@ -287,9 +288,9 @@ fn blend_rows<S: Simd, O: IntraLaneSample, const W: usize>(
         .enumerate()
     {
         let first = index * 16;
-        let row = first / width;
+        let row = first >> width_log2;
         let weight = if width >= 16 {
-            let column = first % width;
+            let column = first & (width - 1);
             u16x16::from_slice(simd, &row_weights(row)[column..column + 16])
         } else {
             fn expand<const N: usize>(group: &mut [u16; 16], row: impl Fn(usize) -> [u16; N]) {
