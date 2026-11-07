@@ -869,6 +869,14 @@ pub(super) fn gather_row_clamped<T: ReconSample>(
     };
     let first = x.min(limit);
     let width = x.saturating_add(last).min(limit) - first + 1;
+    if let Some(row) = stored_run(workspace, plane_id, (first, y), (width, 1)) {
+        let (copied, filled) = out.split_at_mut(width.min(out.len()));
+        copied.copy_from_slice(&row[..copied.len()]); // splot-copy-ok: gather a bounded intra edge run
+        if let Some(&fill) = row.get(width - 1) {
+            filled.fill(fill);
+        }
+        return Ok(());
+    }
     for row in workspace.rect_rows(plane_id, PlaneRect::new(first, y, width, 1)?)? {
         let (copied, filled) = out.split_at_mut(width.min(out.len()));
         copied.copy_from_slice(&row[..copied.len()]); // splot-copy-ok: gather a bounded intra edge run
@@ -877,6 +885,26 @@ pub(super) fn gather_row_clamped<T: ReconSample>(
         }
     }
     Ok(())
+}
+
+/// The stored plane samples from `(x, y)` covering `width` columns of
+/// `height` rows, rows `stride` apart, when they all lie in plane storage.
+fn stored_run<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    plane_id: PlaneId,
+    (x, y): (usize, usize),
+    (width, height): (usize, usize),
+) -> Option<&[T]> {
+    let plane = workspace.plane(plane_id).ok()?;
+    let storage = plane.storage_size();
+    if x + width > storage.width() || y + height > storage.height() {
+        return None;
+    }
+    let stride = plane.stride_samples();
+    let start = y.checked_sub(plane.origin_y())? * stride + x;
+    plane
+        .samples()
+        .get(start..start + (height - 1) * stride + width)
 }
 
 /// Fills `out[i]` with the reconstructed sample at `(x, Min(y + i, limit))`,
@@ -894,10 +922,17 @@ pub(super) fn gather_column_clamped<T: ReconSample>(
     };
     let first = y.min(limit);
     let height = y.saturating_add(last).min(limit) - first + 1;
-    let rows = workspace.rect_rows(plane_id, PlaneRect::new(x, first, 1, height)?)?;
     let (copied, filled) = out.split_at_mut(height.min(out.len()));
-    for (slot, row) in copied.iter_mut().zip(rows) {
-        *slot = row[0];
+    if let Some(column) = stored_run(workspace, plane_id, (x, first), (1, height)) {
+        let stride = workspace.plane(plane_id)?.stride_samples();
+        for (slot, &sample) in copied.iter_mut().zip(column.iter().step_by(stride)) {
+            *slot = sample;
+        }
+    } else {
+        let rows = workspace.rect_rows(plane_id, PlaneRect::new(x, first, 1, height)?)?;
+        for (slot, row) in copied.iter_mut().zip(rows) {
+            *slot = row[0];
+        }
     }
     if let Some(&fill) = copied.last() {
         filled.fill(fill);

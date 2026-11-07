@@ -202,11 +202,11 @@ fn reconstruct_cfl_planes<T: ReconSample>(
         ..
     } = scratch;
     let mut models = [CflModel::Linear { alpha_q3: 0, dc: 0 }; 2];
-    let models = models.get_mut(..planes.len()).ok_or(
-        GeneralIntraResidualError::InvalidReconstructionState {
+    let Some(models) = models.get_mut(..planes.len()) else {
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
             context: "CfL plane count",
-        },
-    )?;
+        });
+    };
     let mut mhccp_geometry = None;
     {
         let luma_plane = workspace.plane(PlaneId::Y)?;
@@ -250,19 +250,19 @@ fn reconstruct_cfl_planes<T: ReconSample>(
     for (&(plane_id, coeffs, _), &model) in planes.iter().zip(models.iter()) {
         let predict = |out: &mut [T], stride: usize| match model {
             CflModel::Linear { alpha_q3, dc } => {
-                let ac = cfl_luma_ac.get(..width * height).ok_or(
-                    GeneralIntraResidualError::InvalidReconstructionState {
+                let Some(ac) = cfl_luma_ac.get(..width * height) else {
+                    return Err(GeneralIntraResidualError::InvalidReconstructionState {
                         context: "CfL luma AC length",
-                    },
-                )?;
+                    });
+                };
                 cfl_predict_block(dc, alpha_q3, max, ac, width, out, stride)
             }
             CflModel::Multi(predictor) => {
-                let (geometry, direction) = mhccp_geometry.ok_or(
-                    GeneralIntraResidualError::InvalidReconstructionState {
+                let Some((geometry, direction)) = mhccp_geometry else {
+                    return Err(GeneralIntraResidualError::InvalidReconstructionState {
                         context: "MHCCP references",
-                    },
-                )?;
+                    });
+                };
                 let refs = geometry.refs(&mhccp_refs[0]);
                 if predictor.predict_block(&refs, direction, width, height, out, stride) {
                     Ok(())
@@ -894,12 +894,17 @@ impl<'a, T> PlaneSamples<'a, T> {
             GeneralIntraResidualError::InvalidReconstructionState {
                 context: "CfL reference row",
             };
-        let local = y.checked_sub(self.origin_y).ok_or(UNSTORED)?;
+        let Some(local) = y.checked_sub(self.origin_y) else {
+            return Err(UNSTORED);
+        };
         if y >= self.height || local >= self.stored_rows {
             return Err(UNSTORED);
         }
         let start = local * self.stride;
-        self.samples.get(start..start + self.width).ok_or(UNSTORED)
+        match self.samples.get(start..start + self.width) {
+            Some(row) => Ok(row),
+            None => Err(UNSTORED),
+        }
     }
 }
 

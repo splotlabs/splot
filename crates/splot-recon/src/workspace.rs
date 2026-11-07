@@ -40,7 +40,7 @@ mod workspace_rows;
 pub use owned_rect::{OwnedFrameRect, OwnedFrameRectRows};
 pub use workspace_edges::CurrentFrameIntraEdges;
 pub use workspace_interintra::{InterIntraMode, wedge_mask_plane_sample};
-pub use workspace_rows::{CurrentFrameRectRowsMut, WorkspaceRectRows};
+pub use workspace_rows::{CurrentFrameRectRowsMut, IntraBlockFrame, WorkspaceRectRows};
 
 macro_rules! contiguous_rect_writer {
     ($name:ident, $sample:ty, $slice_mut:expr, $offset:literal, $span:literal) => {
