@@ -245,7 +245,8 @@ pub(crate) fn secondary_inverse_transform_quant(
     if dq_denom.is_power_of_two() && scan.first() == Some(&0) {
         let shift = dq_denom.trailing_zeros();
         baseline_simd!(simd => {
-            for (k, chunk) in coefs.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+            let used = params.n.div_ceil(8);
+            for (k, chunk) in coefs.as_chunks_mut::<8>().0.iter_mut().take(used).enumerate() {
                 let first = if k == 0 { dc_quant } else { ac_quant };
                 let q2 = u32x8::load_array(simd, [first, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant]);
                 crate::dequant_process::dequant_lanes(simd, i32x8::from_slice(simd, chunk), q2, shift, bound)
@@ -345,8 +346,8 @@ fn transform_into(
             if let Some(pairs) = pairs {
                 accumulate_kernel_pairs(simd, pairs, coefs, wide, &mut sums);
             }
-            for (row, &t) in dequant[..len].chunks_mut(w).zip(&sums) {
-                if let Some(row) = row.first_chunk_mut::<8>() {
+            for (r, &t) in sums.iter().enumerate() {
+                if let Some(row) = dequant.get_mut(r * w..len).and_then(<[i32]>::first_chunk_mut::<8>) {
                     ((t + (1 << 6) + (t >> 31)) >> 7)
                         .max(i32x8::splat(simd, -bound))
                         .min(i32x8::splat(simd, bound - 1))
