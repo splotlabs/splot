@@ -549,6 +549,7 @@ fn pair_segment_with<S: SimdToken, Q: QuadLanes<S>>(
 /// [`cdef_i8_diffs_fit`], the primary sum `2 * pair0 + pair1`, at most
 /// `6 * pri_str`, and the secondary sum `2 * family0 + family1`, at most
 /// `12 * sec_str`, fit `i8`.
+#[inline]
 fn cdef_wide8_fits(filter: &CdefBlockFilter) -> bool {
     cdef_i8_diffs_fit(filter) && filter.pri_str <= 21 && filter.sec_str <= 10
 }

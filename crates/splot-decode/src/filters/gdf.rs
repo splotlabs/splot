@@ -21,9 +21,9 @@ use crate::support::reusable_scratch::with_reusable_scratch;
 #[path = "gdf_simd.rs"]
 mod simd;
 
-use simd::{
-    ClassScratch, GdfSymParams, TAP_REACH, source_rows, sym_rows, sym_rows_narrow, window_at,
-};
+use simd::{ClassScratch, GdfSymParams, TAP_REACH, source_rows, sym_rows_narrow};
+#[cfg(test)]
+use simd::{sym_rows, window_at};
 
 const MI_SIZE: usize = 4;
 const GDF_TEST_STRIPE_OFF: usize = 8;
@@ -445,6 +445,19 @@ fn apply_stripe_config<T: ReconSample>(
                 let band_origin = source
                     .relative_position(run.start, y)
                     .ok_or_else(gdf_state_error)?;
+                if lossless_grid.is_none() {
+                    let grads = 2 * ClassScratch::chunks(run.len() >> 1);
+                    resize_overwrite_scratch(&mut scratch.class_scratch.grads, grads)?;
+                    simd::filter_run(
+                        &source,
+                        band_origin,
+                        &run_block,
+                        post_lr_luma.samples_mut(),
+                        &mut scratch.class_scratch,
+                    )
+                    .ok_or_else(gdf_state_error)?;
+                    continue;
+                }
                 band_classes_from_source(
                     &source,
                     band_origin,
@@ -452,17 +465,6 @@ fn apply_stripe_config<T: ReconSample>(
                     &mut scratch.classes,
                     &mut scratch.class_scratch,
                 )?;
-                if lossless_grid.is_none() {
-                    compute_enabled_segment(
-                        &source,
-                        post_lr_luma.samples_mut(),
-                        &scratch.classes,
-                        &run_block,
-                        band_origin,
-                        0..run.len(),
-                    )?;
-                    continue;
-                }
                 let class_cols = run.len() >> 1;
                 let params = GdfSymParams::new(&run_block);
                 for local_y in (0..height).step_by(MI_SIZE) {
@@ -578,6 +580,7 @@ fn base_row_pair<const W: usize>(
 }
 
 /// The `W` samples from column `x` of both output rows.
+#[cfg(test)]
 fn output_pair<'a, const W: usize>(
     top: &'a mut [u16],
     bottom: &'a mut [u16],
@@ -639,6 +642,7 @@ fn compute_block<T: ReconSample>(
     Ok(output)
 }
 
+#[cfg(test)]
 fn compute_enabled_segment(
     source: &GdfSource<'_>,
     base_luma: &mut [u16],
@@ -1140,7 +1144,7 @@ impl GdfClass {
         (self.0 & 3) as u8
     }
 
-    #[inline]
+    #[cfg(test)]
     fn gradient_bias(self) -> i32 {
         self.0 >> 2
     }
@@ -1215,7 +1219,7 @@ fn band_classes_from_source(
         .checked_mul(class_cols)
         .ok_or_else(gdf_state_error)?;
     resize_overwrite_scratch(classes, len)?;
-    resize_overwrite_scratch(&mut scratch.strengths, 4 * class_cols.div_ceil(8) * 8)?;
+    resize_overwrite_scratch(&mut scratch.grads, 2 * ClassScratch::chunks(class_cols))?;
     simd::band_classes(source, source_origin, block, classes, scratch).ok_or_else(gdf_state_error)
 }
 
@@ -1864,7 +1868,7 @@ mod tests {
 
         let mut reused_classes = vec![GdfClass(i32::MAX); classes.len() + 4];
         let mut reused_class_scratch = ClassScratch {
-            strengths: vec![u32::MAX; class_scratch.strengths.len() + 3],
+            grads: vec![[[u16::MAX; 16]; 4]; class_scratch.grads.len() + 3],
         };
         let reused_result = band_classes_from_source(
             &reused_source,
