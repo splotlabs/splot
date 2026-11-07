@@ -501,10 +501,6 @@ impl TileIntraJointModeState {
     ) {
         self.grid.record_owned_block((r, c), (n4w, n4h), joint_mode);
     }
-
-    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize) {
-        self.grid.record_default_block((r, c));
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -601,10 +597,6 @@ impl TileUseDipState {
     pub(crate) fn record_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, use_dip: u8) {
         self.grid
             .record_owned_block((r, c), (n4w, n4h), u8::from(use_dip != 0));
-    }
-
-    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize) {
-        self.grid.record_default_block((r, c));
     }
 }
 
@@ -943,10 +935,6 @@ impl TileFscModeState {
         fsc_mode: u8,
     ) {
         self.grid.record_owned_block((r, c), (n4w, n4h), fsc_mode);
-    }
-
-    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize) {
-        self.grid.record_default_block((r, c));
     }
 
     fn neighbour_fsc_modes(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> [u8; 2] {

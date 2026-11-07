@@ -219,17 +219,28 @@ fn rejects_coordinate_overflow_without_mutating_state() {
 }
 
 #[test]
-fn context_state_view_is_available_after_mutation() {
+fn partition_neighbours_read_both_planes_after_mutation() {
     let mut state = new_state(16, 16);
     state.update_luma_block(0, 0, block(BLOCK_64X64)).unwrap();
     state.update_chroma_block(4, 4, block(BLOCK_8X8)).unwrap();
 
-    let expected = TilePartitionContextState::new_at(
-        [state.left_plane(0), state.left_plane(1)],
-        [state.above_plane(0), state.above_plane(1)],
-        0,
-        0,
+    let luma = state.partition_neighbours(0, 0, 0, 8, 8).unwrap();
+    assert_eq!(luma.left, [state.left_plane(0)[0], state.left_plane(0)[8]]);
+    assert_eq!(
+        luma.above,
+        [state.above_plane(0)[0], state.above_plane(0)[8]]
     );
-
-    assert_eq!(state.context_state(), expected);
+    let chroma = state.partition_neighbours(1, 4, 4, 1, 1).unwrap();
+    assert_eq!(
+        chroma.left,
+        [state.left_plane(1)[4], state.left_plane(1)[5]]
+    );
+    assert_eq!(
+        chroma.above,
+        [state.above_plane(1)[4], state.above_plane(1)[5]]
+    );
+    assert_eq!(chroma.luma_left, state.left_plane(0)[4]);
+    assert_eq!(chroma.luma_above, state.above_plane(0)[4]);
+    assert_eq!(state.partition_neighbours(0, 0, 0, 16, 0), None);
+    assert_eq!(state.partition_neighbours(2, 0, 0, 0, 0), None);
 }

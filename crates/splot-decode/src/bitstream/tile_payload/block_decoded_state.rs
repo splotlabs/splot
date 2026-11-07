@@ -176,6 +176,41 @@ impl TileBlockDecodedState {
         }
     }
 
+    /// [`Self::set_block`] of a whole leaf over `planes`, with the chroma
+    /// planes, which share their geometry, written in one pass.
+    #[inline]
+    pub(crate) fn set_leaf(
+        &mut self,
+        planes: core::ops::Range<usize>,
+        sub_block_mi_row: usize,
+        sub_block_mi_col: usize,
+        width4: usize,
+        height4: usize,
+    ) {
+        if planes.start == 0 {
+            self.set_block(0, sub_block_mi_row, sub_block_mi_col, width4, height4);
+        }
+        let chroma = planes.start.max(1)..planes.end.min(self.num_planes);
+        if chroma.is_empty() {
+            return;
+        }
+        let x = sub_block_mi_col >> self.subsampling_x;
+        let y = sub_block_mi_row >> self.subsampling_y;
+        let width = (width4 >> self.subsampling_x)
+            .max(1)
+            .min(MAX_CELLS.saturating_sub(x));
+        let end_y = (y + (height4 >> self.subsampling_y).max(1)).min(self.plane_rows[1]);
+        if width == 0 || y >= end_y {
+            return;
+        }
+        let mask = (u64::MAX >> (MAX_CELLS - width)) << x;
+        for plane in chroma {
+            for row in &mut self.rows[plane][y..end_y] {
+                *row |= mask;
+            }
+        }
+    }
+
     pub(crate) fn set_luma_transform(&mut self, x: usize, y: usize, width4: usize, height4: usize) {
         let sb_mask = self.sb_size4.saturating_sub(1);
         self.set_block(0, (y >> 2) & sb_mask, (x >> 2) & sb_mask, width4, height4);

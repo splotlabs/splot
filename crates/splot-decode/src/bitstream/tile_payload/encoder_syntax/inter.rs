@@ -1478,8 +1478,8 @@ impl IntraTileSyntax {
         mode: super::super::partition_traversal::GeneralIntraLeafMode,
     ) -> Result<()> {
         super::super::partition_traversal::publish_intra_leaf_state::<core::convert::Infallible>(
-            self.frame,
-            leaf.call,
+            &self.frame,
+            &leaf.call,
             &leaf.frontier,
             mode,
             leaf.call.b_size,
