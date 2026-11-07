@@ -55,12 +55,15 @@ pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
     false
 }
 
+/// The byte length of the largest refine-MV search window, 24 x 24.
+const WINDOW_LEN: usize = 24 * 24;
+
 /// Writes into `sads` the § 7.13.3.6 SAD of two `stride`-wide search windows
 /// at each `(dy, dx)` of `offsets`: `Σ |w0 - w1|` over every other row of the
 /// `sad_w x sad_h` areas starting at `(2 + dy, 2 + dx)` in the first window
 /// and at `(2 - dy, 2 - dx)` in the second. Returns `false`, having written
-/// nothing, unless `stride` is `sad_w + 4`, `sad_w` and `sad_h` 12 or 20, every offset
-/// within `-2..=2` and the windows hold `stride x (sad_h + 4)` samples.
+/// nothing, unless `stride` is `sad_w + 4`, `sad_w` and `sad_h` are 12 or 20,
+/// every offset lies within `-2..=2` and each window holds 24 x 24 bytes.
 #[must_use]
 pub fn refinemv_window_sads_u8(
     windows: [&[u8]; 2],
@@ -69,11 +72,15 @@ pub fn refinemv_window_sads_u8(
     offsets: &[(i32, i32)],
     sads: &mut [u32],
 ) -> bool {
-    let area = stride * (sad_h + 4);
+    let (Some(first), Some(second)) = (
+        windows[0].first_chunk::<WINDOW_LEN>(),
+        windows[1].first_chunk::<WINDOW_LEN>(),
+    ) else {
+        return false;
+    };
     if !matches!(sad_w, 12 | 20)
         || !matches!(sad_h, 12 | 20)
         || stride != sad_w + 4
-        || windows.iter().any(|window| window.len() < area)
         || sads.len() < offsets.len()
         || offsets
             .iter()
@@ -83,10 +90,10 @@ pub fn refinemv_window_sads_u8(
     }
     #[cfg(target_arch = "x86_64")]
     if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        let windows = [&windows[0][..area], &windows[1][..area]];
-        avx2::sads(t, windows, stride, [sad_w, sad_h], offsets, sads);
+        avx2::sads(t, [first, second], [stride, sad_h], offsets, sads);
         return true;
     }
+    let _ = (first, second);
     false
 }
 
@@ -239,47 +246,63 @@ mod avx2 {
         #[inline]
         pub(super) fn sads(
             t: Avx2,
-            windows: [&[u8]; 2],
-            stride: usize,
-            area: [usize; 2],
+            windows: [&[u8; super::WINDOW_LEN]; 2],
+            geometry: [usize; 2],
             offsets: &[(i32, i32)],
             out: &mut [u32],
         ) {
-            let [sad_w, sad_h] = area;
-            let mask: __m256i = if sad_w == 12 {
-                u8x32::load_array(t, MASK_12).into()
-            } else {
-                u8x32::load_array(t, MASK_20).into()
-            };
-            let start = |dy: i32, dx: i32| ((2 + dy) as usize) * stride + (2 + dx) as usize;
-            for (&(dy, dx), out) in offsets.iter().zip(out.iter_mut()) {
-                let (left, right) = (start(dy, dx), start(-dy, -dx));
-                let mut sum = _mm256_setzero_si256();
-                for row in (0..sad_h).step_by(if sad_w == 12 { 4 } else { 2 }) {
-                    let load = |window: &[u8], at: usize| {
-                        if sad_w == 12 {
-                            _mm256_set_m128i(
-                                load16(t, window, at + 2 * stride),
-                                load16(t, window, at),
-                            )
-                        } else {
-                            load32(t, window, at)
-                        }
-                    };
-                    let (a, b) = (
-                        load(windows[0], left + row * stride),
-                        load(windows[1], right + row * stride),
-                    );
-                    let diff =
-                        _mm256_sad_epu8(_mm256_and_si256(a, mask), _mm256_and_si256(b, mask));
-                    sum = _mm256_add_epi64(sum, diff);
-                }
-                let folded = _mm_add_epi64(
-                    _mm256_castsi256_si128(sum),
-                    _mm256_extracti128_si256::<1>(sum),
-                );
-                *out = (_mm_cvtsi128_si64(folded) + _mm_extract_epi64::<1>(folded)) as u32;
+            match geometry {
+                [16, 12] => sads_for::<16, 12>(t, windows, offsets, out),
+                [16, _] => sads_for::<16, 20>(t, windows, offsets, out),
+                [_, 12] => sads_for::<24, 12>(t, windows, offsets, out),
+                _ => sads_for::<24, 20>(t, windows, offsets, out),
             }
         }
     );
+
+    /// [`sads`] of `STRIDE`-wide windows and `SAD_H`-row areas: two 12-byte
+    /// rows per vector at stride 16, one 20-byte row at stride 24.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn sads_for<const STRIDE: usize, const SAD_H: usize>(
+        t: Avx2,
+        windows: [&[u8; super::WINDOW_LEN]; 2],
+        offsets: &[(i32, i32)],
+        out: &mut [u32],
+    ) {
+        let mask: __m256i = if STRIDE == 16 {
+            u8x32::load_array(t, MASK_12).into()
+        } else {
+            u8x32::load_array(t, MASK_20).into()
+        };
+        let start = |dy: i32, dx: i32| {
+            (dy.clamp(-2, 2) + 2) as usize * STRIDE + (dx.clamp(-2, 2) + 2) as usize
+        };
+        let load = |window: &[u8; super::WINDOW_LEN], at: usize| {
+            if STRIDE == 16 {
+                _mm256_set_m128i(load16(t, window, at + 2 * STRIDE), load16(t, window, at))
+            } else {
+                load32(t, window, at)
+            }
+        };
+        for (&(dy, dx), out) in offsets.iter().zip(out.iter_mut()) {
+            let (left, right) = (start(dy, dx), start(-dy, -dx));
+            let mut sum = _mm256_setzero_si256();
+            let mut row = 0;
+            while row < SAD_H {
+                let (a, b) = (
+                    load(windows[0], left + row * STRIDE),
+                    load(windows[1], right + row * STRIDE),
+                );
+                let diff = _mm256_sad_epu8(_mm256_and_si256(a, mask), _mm256_and_si256(b, mask));
+                sum = _mm256_add_epi64(sum, diff);
+                row += if STRIDE == 16 { 4 } else { 2 };
+            }
+            let folded = _mm_add_epi64(
+                _mm256_castsi256_si128(sum),
+                _mm256_extracti128_si256::<1>(sum),
+            );
+            *out = (_mm_cvtsi128_si64(folded) + _mm_extract_epi64::<1>(folded)) as u32;
+        }
+    }
 }
