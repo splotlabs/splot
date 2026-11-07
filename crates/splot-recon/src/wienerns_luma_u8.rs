@@ -33,6 +33,12 @@ const LANES: usize = 32;
 const REACH: usize = LANES + 2 * WIENER_NS_LUMA_TAP_RADIUS;
 /// A subclass map indexes classes through 16-entry byte tables.
 const MAX_CLASSES: usize = 16;
+/// Bytes per staged row: the widest § 7.20 block, a last restoration unit
+/// of 1.5 times `RESTORATION_TILESIZE_MAX`, plus the tap reach. A fixed row
+/// size puts every tap of a vector group at a constant offset from one base.
+const STAGE_STRIDE: usize = 3 * 512 / 2 + 2 * WIENER_NS_LUMA_TAP_RADIUS;
+/// Source rows of one 4x4 cell row group.
+const GROUP_ROWS: usize = 12;
 
 /// A weight of [`unit_weights`]: coefficient `j`, or a group's center share.
 #[derive(Clone, Copy)]
@@ -99,9 +105,10 @@ pub(super) fn unit_weights(coeffs: &[i16; WIENER_NS_LUMA_COEFFS]) -> Option<Unit
 /// Byte rows and class weights of one block.
 #[derive(Debug, Default)]
 pub(super) struct EightBitLuma {
-    staged: Vec<u8>,
-    stride: usize,
+    staged: Vec<[u8; STAGE_STRIDE]>,
     classes: Vec<UnitWeights>,
+    /// The coefficients `classes` and `tables` were prepared from, when they all fit.
+    prepared: Vec<[i16; WIENER_NS_LUMA_COEFFS]>,
     /// Per unit, each class's first and second weight byte.
     tables: [[[u8; MAX_CLASSES]; 2]; UNITS],
     ready: bool,
@@ -119,25 +126,26 @@ impl EightBitLuma {
         self.ready = false;
         let padded_width = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
         let padded_rows = height + 2 * WIENER_NS_LUMA_TAP_RADIUS;
-        let Some(len) = padded_width.checked_mul(padded_rows) else {
-            return false;
-        };
-        if self
-            .staged
-            .try_reserve(len.saturating_sub(self.staged.len()))
-            .is_err()
+        let len = padded_rows + GROUP_ROWS;
+        if padded_width > STAGE_STRIDE
+            || self
+                .staged
+                .try_reserve(len.saturating_sub(self.staged.len()))
+                .is_err()
         {
             return false;
         }
-        self.staged.resize(len, 0);
-        self.stride = padded_width;
+        if self.staged.len() < len {
+            self.staged.resize(len, [0; STAGE_STRIDE]);
+        }
         self.staged
-            .chunks_exact_mut(padded_width)
+            .iter_mut()
+            .take(padded_rows)
             .enumerate()
             .all(|(index, staged)| {
                 rows(index)
                     .and_then(|row| row.get(..padded_width))
-                    .is_some_and(|row| narrow_row(staged, row))
+                    .is_some_and(|row| narrow_row(&mut staged[..padded_width], row))
             })
     }
 
@@ -150,7 +158,6 @@ impl EightBitLuma {
         layout: LumaSubclassLayout<'_>,
     ) -> bool {
         self.ready = false;
-        self.classes.clear();
         if !kernel_available()
             || width < LANES
             || coeffs_by_class.len() > MAX_CLASSES
@@ -158,8 +165,15 @@ impl EightBitLuma {
         {
             return false;
         }
+        if self.prepared == coeffs_by_class {
+            self.ready = true;
+            return true;
+        }
+        self.prepared.clear();
+        self.classes.clear();
         for coeffs in coeffs_by_class {
             let Some(weights) = unit_weights(coeffs) else {
+                self.classes.clear();
                 return false;
             };
             self.classes.push(weights);
@@ -171,6 +185,7 @@ impl EightBitLuma {
                 self.tables[unit][1][class] = pair[1] as u8;
             }
         }
+        self.prepared.extend_from_slice(coeffs_by_class); // splot-copy-ok: weight-cache key, not samples
         self.ready = true;
         true
     }
@@ -290,13 +305,12 @@ mod avx2 {
     use fearless_simd::{Avx2, SimdBase, SimdInto, u8x16, u8x32};
 
     use super::{
-        ByteLaneOutput, EightBitLuma, FlatChunks, LANES, LumaSubclassLayout, PAIR_UNITS, REACH,
-        UNITS, UnitWeights, WIENER_NS_LUMA_TAP_RADIUS,
+        ByteLaneOutput, EightBitLuma, FlatChunks, GROUP_ROWS, LANES, LumaSubclassLayout,
+        PAIR_UNITS, REACH, STAGE_STRIDE, UNITS, UnitWeights, WIENER_NS_LUMA_TAP_RADIUS,
     };
 
     const INTERLEAVED: usize = UNITS - PAIR_UNITS;
-    /// Source rows of one 4x4 cell row group.
-    const GROUP_ROWS: usize = 12;
+    type Row = [u8; STAGE_STRIDE];
 
     /// The weight vectors of one 32-column group: one per adjacent-tap unit,
     /// and per interleaved unit one for each unpack half.
@@ -332,8 +346,10 @@ mod avx2 {
     const CELL_PATTERNS: [[u8; LANES]; 6] = cell_patterns();
 
     #[inline]
-    fn at<const O: usize>(row: &[u8; REACH]) -> &[u8; LANES] {
-        row[O..].first_chunk::<LANES>().unwrap_or(&[0; LANES])
+    fn at<const O: usize>(row: &Row, x: usize) -> &[u8; LANES] {
+        row.get(x + O..)
+            .and_then(<[u8]>::first_chunk::<LANES>)
+            .unwrap_or(&[0; LANES])
     }
 
     fearless_simd::kernel!(
@@ -381,13 +397,15 @@ mod avx2 {
     );
 
     fearless_simd::kernel!(
-        /// One row of 32 outputs from the nine source rows `rows[dy + 4]`,
-        /// each starting four columns left of the first output.
+        /// One row of 32 outputs from columns `x..x + REACH` of the nine
+        /// source rows `rows[dy + 4]`, which start four columns left of the
+        /// first output; `x + REACH` is at most the row size.
         #[inline]
-        fn filter_row(t: Avx2, rows: &[&[u8; REACH]; 9], w: &Weights) -> __m256i {
+        fn filter_row(t: Avx2, rows: &[Row; 9], x: usize, w: &Weights) -> __m256i {
+            let x = x.min(STAGE_STRIDE - REACH);
             macro_rules! ld {
                 ($row:literal, $col:literal) => {
-                    __m256i::from(u8x32::load_array_ref(t, at::<$col>(rows[$row])))
+                    __m256i::from(u8x32::load_array_ref(t, at::<$col>(&rows[$row], x)))
                 };
             }
             let madd = |bytes: __m256i, weights: __m256i| _mm256_maddubs_epi16(bytes, weights);
@@ -481,8 +499,15 @@ mod avx2 {
         flat: &FlatChunks<WIENER_NS_LUMA_TAP_RADIUS>,
     ) -> usize {
         let classes = luma.classes.len();
+        let Some(group) = luma
+            .staged
+            .get(first..)
+            .and_then(<[Row]>::first_chunk::<GROUP_ROWS>)
+        else {
+            return 0;
+        };
         let mut x = 0;
-        while x + LANES <= width {
+        while x + LANES <= width && x + REACH <= STAGE_STRIDE {
             if let Some(value) = flat.chunk_value(x / LANES) {
                 let value = u8::try_from(value).unwrap_or(u8::MAX);
                 for r in first..end {
@@ -520,19 +545,8 @@ mod avx2 {
                 }
                 LumaSubclassLayout::Samples(_) => break,
             };
-            let mut window: [&[u8; REACH]; GROUP_ROWS] = [&[0; REACH]; GROUP_ROWS];
-            for (dy, slot) in window.iter_mut().enumerate().take(end - first + 8) {
-                match luma
-                    .staged
-                    .get((first + dy) * luma.stride + x..)
-                    .and_then(<[u8]>::first_chunk::<REACH>)
-                {
-                    Some(row) => *slot = row,
-                    None => return x,
-                }
-            }
             for r in first..end {
-                let Some(rows) = window.get(r - first..).and_then(<[_]>::first_chunk::<9>) else {
+                let Some(rows) = group.get(r - first..).and_then(<[Row]>::first_chunk::<9>) else {
                     return x;
                 };
                 let Some(target) = output
@@ -541,7 +555,7 @@ mod avx2 {
                 else {
                     return x;
                 };
-                let bytes: u8x32<Avx2> = filter_row(t, rows, &weights).simd_into(t);
+                let bytes: u8x32<Avx2> = filter_row(t, rows, x, &weights).simd_into(t);
                 O::store(bytes.into(), target);
             }
             x += LANES;
