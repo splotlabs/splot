@@ -151,6 +151,13 @@ pub(super) struct TileDecodeContext<'a, T: ReconSample> {
     params: TileWalkParams,
 }
 
+/// How far one [`TileParser::walk_leaves`] call parses.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum WalkSpan {
+    Superblock,
+    Row,
+}
+
 pub(super) struct TileParser<'payload> {
     walk: TileParserWalk<GeneralIntraMultiblockCursor<'payload>>,
     coeff_ctx: TileCoeffContextState,
@@ -395,14 +402,6 @@ impl<'payload> TileParser<'payload> {
             return ParserStep::Last(recon_row);
         }
         self.parser_ordinal = self.parser_ordinal.saturating_add(1);
-        let walk = match self.walk.active_mut() {
-            Ok(walk) => walk,
-            Err(error) => {
-                recon_row.record_terminal_error(error);
-                return ParserStep::Last(recon_row);
-            }
-        };
-        let sb_mask = walk.sb_mask();
         let decoded_row = {
             let ReconRow {
                 superblocks,
@@ -411,106 +410,139 @@ impl<'payload> TileParser<'payload> {
                 residual_coeffs,
                 ..
             } = &mut recon_row;
-            let mut block_context = super::BlockDecodeContext {
-                sequence: context.sequence,
-                core: context.core,
-                params: &context.params,
-                ref_frame_idx: context.ref_frame_idx,
-                reference: context.reference,
-                tile_offset,
-                coeff_ctx: &mut self.coeff_ctx,
-                residual_scratch: &mut self.residual_scratch,
+            self.walk_leaves(
+                tile,
+                context,
                 residual_blocks,
-                residual_arena: residual_coeffs,
-                gdf_state: &mut self.output.gdf_state,
-                cdef_state: &mut self.output.cdef_state,
-                ccso_state: &mut self.output.ccso_state,
-                delta_q_state: &mut self.delta_q_state,
-                intrabc_state: &mut self.intrabc_state,
-                segment_id_state: &mut self.output.segment_id_state,
-                mv_grid: &mut self.mv_grid,
-                y_smooth: &mut self.y_smooth,
-                chroma_smooth: &mut self.chroma_smooth,
-                deblock_blocks: &mut self.filter_records.deblock_blocks,
-                chroma_deblock_blocks: &mut self.filter_records.chroma_deblock_blocks,
-                tx_skip_records: &mut self.filter_records.tx_skip_records,
-                arena: &mut self.residual_planes,
-            };
-            let mut decode_leaf =
-                |work_unit: &mut DecodeTileWorkUnit,
-                 symbols: &mut SymbolDecoder<'_>,
-                 frontier: &DecodeBlockFrontier,
-                 joint_modes: &TileIntraJointModeState,
-                 uses_mrls: &TileUsesMrlsState,
-                 use_dip: &crate::bitstream::tile_payload::TileUseDipState,
-                 fsc_modes: &TileFscModeState,
-                 palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
-                 is_cfl_ctx: crate::bitstream::tile_payload::LeafCflContext<'_>| {
-                    let (leaf, resolve) = decode_block(
-                        work_unit,
-                        symbols,
-                        frontier,
-                        &mut block_context,
-                        joint_modes,
-                        uses_mrls,
-                        use_dip,
-                        fsc_modes,
-                        palette_state,
-                        is_cfl_ctx,
-                    )?;
-                    push_leaf_entry(
-                        superblocks,
-                        entries,
-                        DecodedLeafPublication::from_frontier(frontier, sb_mask),
-                        resolve,
-                    );
-                    Ok((leaf, ()))
-                };
-            let mut on_published = |_: DecodedLeafPublication, ()| {};
-            loop {
-                match walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published) {
-                    Ok(Some(_)) if row_units && !walk.at_row_start() => {}
-                    other => break other.map(|superblock| superblock.is_some()),
-                }
-            }
+                residual_coeffs,
+                if row_units {
+                    WalkSpan::Row
+                } else {
+                    WalkSpan::Superblock
+                },
+                |_, publication, resolve| {
+                    push_leaf_entry(superblocks, entries, publication, resolve);
+                    Ok(())
+                },
+            )
         };
         recon_row.residual_planes = core::mem::take(&mut self.residual_planes);
         self.mv_grid.take_flag_log(&mut recon_row.flag_log);
-        if decoded_row.is_ok()
-            && (walk.window_violated()
-                || self.mv_grid.window_violated()
-                || self.intrabc_state.window_violated()
-                || self.y_smooth.window_violated()
-                || self.chroma_smooth.window_violated())
-        {
-            recon_row.record_terminal_error(invalid_inter_tile_scheduling_state());
-            return ParserStep::Last(recon_row);
-        }
-        match decoded_row {
+        match decoded_row.and_then(|more| self.close_walk(more, tile_offset).map(|()| more)) {
             Ok(true) => ParserStep::More(recon_row),
+            Ok(false) => ParserStep::Last(recon_row),
             Err(error) => {
-                recon_row.record_terminal_error(map_inter_multiblock_error(error, tile_offset));
-                ParserStep::Last(recon_row)
-            }
-            Ok(false) => {
-                let walk = match self.walk.finish() {
-                    Ok(walk) => walk,
-                    Err(error) => {
-                        recon_row.record_terminal_error(error);
-                        return ParserStep::Last(recon_row);
-                    }
-                };
-                let crate::bitstream::tile_payload::GeneralIntraMultiblockOutput {
-                    symbols,
-                    storage,
-                } = walk.into_output();
-                if let Err(error) = finish_tile_symbols(symbols, tile_offset) {
-                    recon_row.record_terminal_error(error);
-                }
-                self.output.traversal = storage;
+                recon_row.record_terminal_error(error);
                 ParserStep::Last(recon_row)
             }
         }
+    }
+
+    /// Parses one superblock or one superblock row and hands every leaf's
+    /// parse record to `consume` in walk order.
+    ///
+    /// This is the split point between the passes: the consumer decides
+    /// whether a record is stored for the resolve and reconstruction stages
+    /// or acted on at once. Returns whether superblocks remain.
+    pub(super) fn walk_leaves<T: ReconSample>(
+        &mut self,
+        tile: &mut DecodeTileWorkUnit,
+        context: &TileDecodeContext<'_, T>,
+        residual_blocks: &mut Vec<InterResidualBlock>,
+        residual_arena: &mut Vec<i32>,
+        span: WalkSpan,
+        mut consume: impl FnMut(
+            &mut super::BlockDecodeContext<'_, T>,
+            DecodedLeafPublication,
+            LeafResolveRecord,
+        ) -> Result<()>,
+    ) -> Result<bool> {
+        let tile_offset = tile.tile_byte_span().start;
+        let walk = self.walk.active_mut()?;
+        let sb_mask = walk.sb_mask();
+        let mut block_context = super::BlockDecodeContext {
+            sequence: context.sequence,
+            core: context.core,
+            params: &context.params,
+            ref_frame_idx: context.ref_frame_idx,
+            reference: context.reference,
+            tile_offset,
+            coeff_ctx: &mut self.coeff_ctx,
+            residual_scratch: &mut self.residual_scratch,
+            residual_blocks,
+            residual_arena,
+            gdf_state: &mut self.output.gdf_state,
+            cdef_state: &mut self.output.cdef_state,
+            ccso_state: &mut self.output.ccso_state,
+            delta_q_state: &mut self.delta_q_state,
+            intrabc_state: &mut self.intrabc_state,
+            segment_id_state: &mut self.output.segment_id_state,
+            mv_grid: &mut self.mv_grid,
+            y_smooth: &mut self.y_smooth,
+            chroma_smooth: &mut self.chroma_smooth,
+            deblock_blocks: &mut self.filter_records.deblock_blocks,
+            chroma_deblock_blocks: &mut self.filter_records.chroma_deblock_blocks,
+            tx_skip_records: &mut self.filter_records.tx_skip_records,
+            arena: &mut self.residual_planes,
+        };
+        let mut decode_leaf =
+            |work_unit: &mut DecodeTileWorkUnit,
+             symbols: &mut SymbolDecoder<'_>,
+             frontier: &DecodeBlockFrontier,
+             joint_modes: &TileIntraJointModeState,
+             uses_mrls: &TileUsesMrlsState,
+             use_dip: &crate::bitstream::tile_payload::TileUseDipState,
+             fsc_modes: &TileFscModeState,
+             palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
+             is_cfl_ctx: crate::bitstream::tile_payload::LeafCflContext<'_>| {
+                let (leaf, resolve) = decode_block(
+                    work_unit,
+                    symbols,
+                    frontier,
+                    &mut block_context,
+                    joint_modes,
+                    uses_mrls,
+                    use_dip,
+                    fsc_modes,
+                    palette_state,
+                    is_cfl_ctx,
+                )?;
+                consume(
+                    &mut block_context,
+                    DecodedLeafPublication::from_frontier(frontier, sb_mask),
+                    resolve,
+                )?;
+                Ok((leaf, ()))
+            };
+        let mut on_published = |_: DecodedLeafPublication, ()| {};
+        loop {
+            match walk.decode_next_superblock(tile, &mut decode_leaf, &mut on_published) {
+                Ok(Some(_)) if span == WalkSpan::Row && !walk.at_row_start() => {}
+                Ok(next) => return Ok(next.is_some()),
+                Err(error) => return Err(map_inter_multiblock_error(error, tile_offset)),
+            }
+        }
+    }
+
+    /// Checks the neighbour windows after a walk and, once the tile has no
+    /// superblock left, retires the walk and its symbol decoder.
+    fn close_walk(&mut self, more: bool, tile_offset: ByteOffset) -> Result<()> {
+        let walk = self.walk.active_mut()?;
+        if walk.window_violated()
+            || self.mv_grid.window_violated()
+            || self.intrabc_state.window_violated()
+            || self.y_smooth.window_violated()
+            || self.chroma_smooth.window_violated()
+        {
+            return Err(invalid_inter_tile_scheduling_state());
+        }
+        if more {
+            return Ok(());
+        }
+        let crate::bitstream::tile_payload::GeneralIntraMultiblockOutput { symbols, storage } =
+            self.walk.finish()?.into_output();
+        self.output.traversal = storage;
+        finish_tile_symbols(symbols, tile_offset)
     }
 
     fn into_output(self) -> (TileParserOutput, TileParseState) {
@@ -693,19 +725,6 @@ impl ReconRowEntry {
     /// Marks the command consumed, as [`Self::take_command`] would.
     pub(super) fn drop_command(&mut self) {
         self.state = None;
-    }
-
-    pub(super) fn take_command(&mut self) -> Option<ReconCommand> {
-        self.command_mut()?;
-        match self.state.take()? {
-            ReconEntryState::Command(command)
-            | ReconEntryState::Resolve(
-                LeafResolveRecord::Reseed(command) | LeafResolveRecord::NonInter { command, .. },
-            ) => Some(command),
-            ReconEntryState::Resolve(
-                LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_),
-            ) => None,
-        }
     }
 
     /// The § 7.22 record a non-inter luma-tree leaf stores: every covered 8x8
