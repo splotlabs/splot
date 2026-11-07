@@ -14,7 +14,7 @@ use splot_recon::{
     subpel_predict_block_compound_average_strided_into_u8,
     subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
     subpel_predict_block_strided_into, subpel_predict_block_strided_into_u8,
-    wedge_mask_plane_sample,
+    subpel_put_u8_in_place, wedge_mask_plane_sample,
 };
 
 use super::Mv;
@@ -117,21 +117,20 @@ impl McBlockRect {
         sub_y: u32,
     ) -> (usize, usize, usize, usize) {
         let (x, y, width, height) = self.plane_luma_rect(plane);
-        let scale_x = 1usize << sub_x;
-        let scale_y = 1usize << sub_y;
         let plane_x = x >> sub_x;
         let plane_y = y >> sub_y;
         (
             plane_x,
             plane_y,
-            x.saturating_add(width)
-                .div_ceil(scale_x)
-                .saturating_sub(plane_x),
-            y.saturating_add(height)
-                .div_ceil(scale_y)
-                .saturating_sub(plane_y),
+            ceil_shift(x.saturating_add(width), sub_x).saturating_sub(plane_x),
+            ceil_shift(y.saturating_add(height), sub_y).saturating_sub(plane_y),
         )
     }
+}
+
+/// `value.div_ceil(1 << shift)` without a division by a variable.
+const fn ceil_shift(value: usize, shift: u32) -> usize {
+    (value >> shift) + (value & ((1 << shift) - 1) != 0) as usize
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CompoundBlend {
@@ -536,7 +535,7 @@ fn motion_compensate_inter_block<T: ReconSample>(
     predict_inter_block_from_grid(sink, block, motion, offset)
 }
 
-fn motion_compensate_single_block_into<T: ReconSample>(
+pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
     reference: ReferenceSamples<'_, T>,
     rect: McBlockRect,
@@ -579,16 +578,19 @@ fn motion_compensate_single_block_into<T: ReconSample>(
             step_y: 1 << 10,
             first_x: 0,
             first_y: 0,
-            last_x: (storage.width().div_ceil(1 << sub_x) - 1) as i32,
-            last_y: (storage.height().div_ceil(1 << sub_y) - 1) as i32,
+            last_x: (ceil_shift(storage.width(), sub_x) - 1) as i32,
+            last_y: (ceil_shift(storage.height(), sub_y) - 1) as i32,
             bit_depth: info.bit_depth(),
         };
-        let view = reference.plane_view(plane, subpel_last_reference_row(&params), offset)?;
-        let target = PlaneRect::new(x, y, w, h)?;
-        let direct = sink.with_contiguous_u8_rect_mut(plane, target, |output, stride| {
-            subpel_predict_block_strided_into_u8(&view, &params, output, stride)
-        })?;
-        if direct.is_none() {
+        let view = match reference.settled_plane_view(plane) {
+            Some(view) => view,
+            None => reference.plane_view(plane, subpel_last_reference_row(&params), offset)?,
+        };
+        let direct = PlaneRect::new(x, y, w, h)
+            .ok()
+            .and_then(|target| sink.u8_rect_mut(plane, target))
+            .is_some_and(|(output, stride)| subpel_put_u8_in_place(&view, &params, output, stride));
+        if !direct {
             predict_plane(
                 sink, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
             )?;

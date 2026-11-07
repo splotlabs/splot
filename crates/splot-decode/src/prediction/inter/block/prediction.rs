@@ -172,13 +172,12 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
         )?;
     }
     let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
-    let block_params = held
-        .block_params(placed, rect)?
-        .with_refinemv(use_refinemv)
-        .with_switchable_refinemv(refinemv_switchable);
-    let motion = mc::predict_inter_block_from_grid(
+    let motion = held.predict_into(
         &mut mc::WorkspaceSink::Frame(workspace),
-        block_params,
+        placed,
+        rect,
+        use_refinemv,
+        refinemv_switchable,
         motion,
         tile_offset,
     )?;
@@ -260,11 +259,15 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
     let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
-    let block_params = held
-        .block_params(placed, placed.motion_compensation_rect())?
-        .with_refinemv(use_refinemv)
-        .with_switchable_refinemv(refinemv_switchable);
-    let motion = mc::predict_inter_block_from_grid(sink, block_params, motion, tile_offset)?;
+    let motion = held.predict_into(
+        sink,
+        placed,
+        placed.motion_compensation_rect(),
+        use_refinemv,
+        refinemv_switchable,
+        motion,
+        tile_offset,
+    )?;
     drop(held);
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
