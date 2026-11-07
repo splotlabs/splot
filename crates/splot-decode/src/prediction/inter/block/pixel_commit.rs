@@ -134,6 +134,19 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             ..
         } = row;
         let shared_coefficients = residual_source.is_some();
+        let shared = deferred_recon::ReconShared {
+            reference,
+            ref_frame_idx,
+            temporal_context,
+            sequence,
+            core,
+            luma_use_tcq,
+            residual_use_ddt,
+            bit_depth,
+            mi_rows,
+            mi_cols,
+            current_order_hint,
+        };
         if let Some(source) = residual_source
             && entries.iter().any(|entry| entry.command().is_some())
         {
@@ -187,78 +200,42 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     folded.push(clear);
                 }
                 let temporal_records = entry.temporal.clone();
-                match entry.command_mut() {
-                    Some(ReconCommand::GeneralIntra(command)) => {
-                        command.reconstruct(
-                            if shared_coefficients {
-                                &mut plane_scratch
-                            } else {
-                                &mut residual_planes
-                            },
-                            if shared_coefficients {
-                                &coefficient_scratch
-                            } else {
-                                &residual_coeffs
-                            },
-                            scratch.general_intra_mut(),
+                let prederived_motion = match entry.command_mut() {
+                    Some(command) => {
+                        let prederived = matches!(
+                            command,
+                            ReconCommand::Inter(inter) if inter.has_derived_motion()
+                        );
+                        reconstruct_command(
+                            command,
+                            scratch,
                             workspace,
                             block_decoded,
-                        )?;
-                    }
-                    Some(ReconCommand::Intrabc(_)) => {
-                        if let Some(ReconCommand::Intrabc(command)) = entry.take_command() {
-                            scratch.reconstruct_intrabc(
-                                command,
-                                &residual_blocks,
-                                if shared_coefficients {
+                            &mut folded,
+                            &mut LeafResiduals {
+                                planes: if shared_coefficients {
+                                    &mut plane_scratch
+                                } else {
+                                    &mut residual_planes
+                                },
+                                coefficients: if shared_coefficients {
                                     &coefficient_scratch
                                 } else {
                                     &residual_coeffs
                                 },
-                                workspace,
-                            )?;
-                        }
-                    }
-                    Some(ReconCommand::Inter(command)) => {
-                        let prederived_motion = command.has_derived_motion();
-                        scratch.reconstruct(
-                            command,
-                            workspace,
-                            block_decoded,
-                            &mut folded,
-                            &residual_blocks,
-                            if shared_coefficients {
-                                &coefficient_scratch
-                            } else {
-                                &residual_coeffs
+                                blocks: &residual_blocks,
                             },
-                            temporal_context,
-                            reference,
-                            ref_frame_idx,
-                            sequence,
-                            core,
-                            mi_rows,
-                            mi_cols,
-                            current_order_hint,
-                            luma_use_tcq,
-                            residual_use_ddt,
-                            bit_depth,
+                            &shared,
                         )?;
-                        if prederived_motion && motion_owed {
-                            let records = temporal.get(temporal_records).ok_or(
-                                crate::DecodeHeaderStateError::InvalidInterTileSchedulingState,
-                            )?;
-                            folded.extend_from_slice(records);
-                        }
+                        prederived
                     }
-                    None => {
-                        let records = temporal.get(temporal_records).ok_or(
-                            crate::DecodeHeaderStateError::InvalidInterTileSchedulingState,
-                        )?;
-                        if motion_owed {
-                            folded.extend_from_slice(records);
-                        }
-                    }
+                    None => true,
+                };
+                if prederived_motion && motion_owed {
+                    let records = temporal
+                        .get(temporal_records)
+                        .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
+                    folded.extend_from_slice(records);
                 }
                 if superblock_needs_decoded {
                     entry
@@ -317,4 +294,48 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     scratch.plane_records = plane_scratch;
     scratch.lists = lists;
     result
+}
+
+/// The residual storage one leaf's command indexes into.
+pub(super) struct LeafResiduals<'a> {
+    pub(super) planes: &'a mut crate::residual::pipeline::ResidualPlaneArena,
+    pub(super) coefficients: &'a [i32],
+    pub(super) blocks: &'a [super::InterResidualBlock],
+}
+
+/// Reconstructs one leaf's resolved command into the frame, in walk order, and
+/// appends its § 7.22 temporal records to `folded`.
+pub(super) fn reconstruct_command<T: ReconSample>(
+    command: &mut ReconCommand,
+    scratch: &mut deferred_recon::InterReconScratch<T>,
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block_decoded: &mut TileBlockDecodedState,
+    folded: &mut Vec<super::TemporalMotionBlock>,
+    residuals: &mut LeafResiduals<'_>,
+    shared: &deferred_recon::ReconShared<'_, T>,
+) -> Result<()> {
+    match command {
+        ReconCommand::GeneralIntra(command) => command.reconstruct(
+            residuals.planes,
+            residuals.coefficients,
+            scratch.general_intra_mut(),
+            workspace,
+            block_decoded,
+        ),
+        ReconCommand::Intrabc(command) => scratch.reconstruct_intrabc(
+            command,
+            residuals.blocks,
+            residuals.coefficients,
+            workspace,
+        ),
+        ReconCommand::Inter(command) => scratch.reconstruct(
+            command,
+            workspace,
+            block_decoded,
+            folded,
+            residuals.blocks,
+            residuals.coefficients,
+            shared,
+        ),
+    }
 }
