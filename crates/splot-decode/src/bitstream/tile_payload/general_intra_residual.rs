@@ -41,7 +41,7 @@ use super::coeff_loop::{
 };
 #[cfg(test)]
 use super::coeff_state::TransformCoeffBlockState;
-use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
+use super::coeff_state::{CoeffBlockLines, TileCoeffContextState, TileCoeffStateError};
 use super::{BlockSize, DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 
 pub(crate) mod cctx;
@@ -656,39 +656,6 @@ pub(crate) enum GeneralIntraResidualError {
     InvalidDirectionalEdgeState,
 }
 
-#[inline]
-fn or_u8(line: &[u8], start: usize, len: usize) -> u8 {
-    let Some(slice) = start.checked_add(len).and_then(|end| line.get(start..end)) else {
-        return line.iter().skip(start).take(len).fold(0, |acc, &v| acc | v);
-    };
-    match len {
-        0 => 0,
-        1 => slice[0],
-        2 => slice[0] | slice[1],
-        4 => {
-            let val = u32::from_ne_bytes(slice.try_into().unwrap_or([0; 4]));
-            let v16 = (val | (val >> 16)) as u16;
-            (v16 | (v16 >> 8)) as u8
-        }
-        8 => {
-            let val = u64::from_ne_bytes(slice.try_into().unwrap_or([0; 8]));
-            let v32 = (val | (val >> 32)) as u32;
-            let v16 = (v32 | (v32 >> 16)) as u16;
-            (v16 | (v16 >> 8)) as u8
-        }
-        16 | 32 => {
-            let val = slice
-                .chunks_exact(8)
-                .map(|word| u64::from_ne_bytes(word.try_into().unwrap_or([0; 8])))
-                .fold(0, |acc, word| acc | word);
-            let v32 = (val | (val >> 32)) as u32;
-            let v16 = (v32 | (v32 >> 16)) as u16;
-            (v16 | (v16 >> 8)) as u8
-        }
-        _ => slice.iter().fold(0, |acc, &v| acc | v),
-    }
-}
-
 fn coeff_ctx_err(source: TileCoeffStateError) -> GeneralIntraResidualError {
     GeneralIntraResidualError::CoeffContextState { source }
 }
@@ -1087,29 +1054,29 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     transform_tool_residual_policy: TransformToolResidualPolicy,
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let frame_facts = work_unit.coeff_frame_facts();
-    let lossless = frame_facts
-        .lossless_for_segment(current_frame_qm_segment_id())
-        .unwrap_or(false);
+    let segment_lossless = frame_facts.lossless_for_segment(current_frame_qm_segment_id());
+    let lossless = segment_lossless.unwrap_or(false);
     let tx_size = if lossless && !is_inter && !fsc_mode {
         TX_4X4
     } else {
         tx_size
     };
-    let x4 = start_x >> 2;
-    let y4 = start_y >> 2;
     let w4 = usize::try_from(TX_WIDTH.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
     let h4 = usize::try_from(TX_HEIGHT.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
-    let selector = txb_skip_selector(
+    let lines = context
+        .block_lines(plane, [start_x >> 2, start_y >> 2, w4, h4])
+        .map_err(coeff_ctx_err)?;
+    let selector = txb_skip_selector_from_lines(
         context,
-        plane,
+        &lines,
         tx_size,
-        [x4, y4, w4, h4],
-        tx_fills_block,
-        eob_u_nonzero,
+        [
+            tx_fills_block,
+            eob_u_nonzero,
+            fsc_mode && frame_facts.enable_fsc(),
+        ],
         usize::from(is_inter || txb_skip_fsc_mode),
-        fsc_mode && frame_facts.enable_fsc(),
-    )
-    .map_err(coeff_ctx_err)?;
+    );
 
     let all_zero = work_unit
         .cdf_mut()
@@ -1117,17 +1084,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         .read_all_zero(selector, symbols)
         .map_err(|source| GeneralIntraResidualError::AllZeroRead { source })?;
     if all_zero {
-        context
-            .update_after_coeffs(CoeffContextUpdate {
-                plane,
-                x4,
-                y4,
-                w4,
-                h4,
-                cul_level: 0,
-                dc_category: 0,
-            })
-            .map_err(coeff_ctx_err)?;
+        context.commit_block(&lines, 0, 0);
         return Ok(if lossless {
             const { LumaCoeffBlock::empty(DCT_DCT, true) }
         } else {
@@ -1147,7 +1104,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         symbols,
         context,
         arena,
-        frame_facts,
+        (frame_facts, segment_lossless, lines),
         geometry,
         uv_mode,
         angle_delta_uv,
@@ -1161,51 +1118,69 @@ pub(crate) fn decode_general_intra_plane_coeffs(
 }
 
 /// The § 8.3.2 `all_zero` CDF of the transform block at `[x4, y4, w4, h4]` (plane 4x4 units).
-#[allow(
-    clippy::too_many_arguments,
-    clippy::fn_params_excessive_bools,
-    clippy::inline_always,
-    reason = "measured: an out-of-line selector returns through memory"
-)]
-#[inline(always)]
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub(crate) fn txb_skip_selector(
     context: &TileCoeffContextState,
     plane: usize,
     tx_size: usize,
-    [x4, y4, w4, h4]: [usize; 4],
+    block: [usize; 4],
     tx_fills_block: bool,
     eob_u_nonzero: bool,
     txb_skip_intra_inter: usize,
     fsc_active: bool,
 ) -> Result<TileCdfSelector, TileCoeffStateError> {
+    let lines = context.block_lines(plane, block)?;
+    Ok(txb_skip_selector_from_lines(
+        context,
+        &lines,
+        tx_size,
+        [tx_fills_block, eob_u_nonzero, fsc_active],
+        txb_skip_intra_inter,
+    ))
+}
+
+/// [`txb_skip_selector`] from the block's checked context spans.
+#[allow(
+    clippy::inline_always,
+    reason = "measured: an out-of-line selector returns through memory"
+)]
+#[inline(always)]
+fn txb_skip_selector_from_lines(
+    context: &TileCoeffContextState,
+    lines: &CoeffBlockLines,
+    tx_size: usize,
+    [tx_fills_block, eob_u_nonzero, fsc_active]: [bool; 3],
+    txb_skip_intra_inter: usize,
+) -> TileCdfSelector {
     let tx_size_ctx = txb_skip_tx_size_ctx(tx_size);
-    let local_x4 = context.local_x4(plane, x4)?;
-    let local_y4 = context.local_y4(plane, y4)?;
-    let above_level_or = u32::from(or_u8(context.above_level(plane)?, local_x4, w4));
-    let left_level_or = u32::from(or_u8(context.left_level(plane)?, local_y4, h4));
-    Ok(match plane {
-        1 | 2 => {
-            let above_nz =
-                above_level_or != 0 || or_u8(context.above_dc(plane)?, local_x4, w4) != 0;
-            let left_nz = left_level_or != 0 || or_u8(context.left_dc(plane)?, local_y4, h4) != 0;
-            if plane == 2 {
-                TileCdfSelector::VTxbSkip {
-                    ctx: v_txb_skip_ctx(above_nz, left_nz, !tx_fills_block, eob_u_nonzero),
-                }
-            } else {
-                TileCdfSelector::TxbSkip {
-                    plane_type: txb_skip_intra_inter,
-                    tx_size: tx_size_ctx,
-                    ctx: usize::from(above_nz) + usize::from(left_nz) + 6,
-                }
-            }
-        }
-        _ => TileCdfSelector::TxbSkip {
+    let [above_level_or, left_level_or] = context.line_or::<false>(lines);
+    let plane = lines.plane;
+    if plane == 0 {
+        return TileCdfSelector::TxbSkip {
             plane_type: txb_skip_intra_inter,
             tx_size: tx_size_ctx,
-            ctx: txb_skip_ctx_luma(above_level_or, left_level_or, tx_fills_block, fsc_active),
-        },
-    })
+            ctx: txb_skip_ctx_luma(
+                u32::from(above_level_or),
+                u32::from(left_level_or),
+                tx_fills_block,
+                fsc_active,
+            ),
+        };
+    }
+    let [above_dc_or, left_dc_or] = context.line_or::<true>(lines);
+    let above_nz = above_level_or | above_dc_or != 0;
+    let left_nz = left_level_or | left_dc_or != 0;
+    if plane == 2 {
+        TileCdfSelector::VTxbSkip {
+            ctx: v_txb_skip_ctx(above_nz, left_nz, !tx_fills_block, eob_u_nonzero),
+        }
+    } else {
+        TileCdfSelector::TxbSkip {
+            plane_type: txb_skip_intra_inter,
+            tx_size: tx_size_ctx,
+            ctx: usize::from(above_nz) + usize::from(left_nz) + 6,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
@@ -1214,7 +1189,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     symbols: &mut SymbolDecoder<'_>,
     context: &mut TileCoeffContextState,
     arena: &mut Vec<i32>,
-    frame_facts: TileCoeffFrameFacts,
+    (frame_facts, segment_lossless, lines): (TileCoeffFrameFacts, Option<bool>, CoeffBlockLines),
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
     uv_mode: usize,
     angle_delta_uv: i32,
@@ -1250,9 +1225,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     )
     .map_err(|source| GeneralIntraResidualError::NonZeroStart { source })?;
     let eob = start.eob_read().eob();
-    let segment_id = current_frame_qm_segment_id();
-    let lossless = frame_facts
-        .lossless_for_segment(segment_id)
+    let lossless = segment_lossless
         .ok_or_else(|| invalid_reconstruction_state_error("residual segment id"))?;
     let metadata = ensure_transform_tool_residual_handoff(
         work_unit.cdf_mut().tile_cdfs_mut(),
@@ -1312,6 +1285,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             CoeffOrdinaryStagedLosslessNonZeroInput {
                 geometry,
                 start,
+                lines,
                 plane_tx_type,
                 parity_hiding: base_config.parity_hiding,
                 use_tcq: base_config.use_tcq,
