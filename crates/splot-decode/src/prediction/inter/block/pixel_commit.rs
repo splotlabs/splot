@@ -232,9 +232,9 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     None => true,
                 };
                 if prederived_motion && motion_owed {
-                    let records = temporal.get(temporal_records).ok_or(
-                        crate::DecodeHeaderStateError::InvalidInterTileSchedulingState,
-                    )?;
+                    let records = temporal
+                        .get(temporal_records)
+                        .ok_or(crate::DecodeHeaderStateError::InvalidInterTileSchedulingState)?;
                     folded.extend_from_slice(records);
                 }
                 if superblock_needs_decoded {
