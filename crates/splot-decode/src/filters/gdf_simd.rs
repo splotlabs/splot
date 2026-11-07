@@ -3,9 +3,7 @@
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{Avx2, kernel};
-use fearless_simd::{
-    Level, Simd, dispatch, i8x16, i16x16, i32x8, mask16x16, prelude::*, u8x16, u16x16,
-};
+use fearless_simd::{Level, Simd, dispatch, i8x16, i16x16, i32x8, prelude::*, u8x16, u16x16};
 
 use splot_core::tables::loop_restoration::{
     GDF_ALPHA, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
@@ -474,22 +472,17 @@ kernel!(
 
 #[cfg(target_arch = "x86_64")]
 kernel!(
-    /// The sums clamp to `[-32768, 0x7000]`, the pack's own saturation range
-    /// with a positive cap past which every digit is `scale - 1`. `pmulhrsw` then
-    /// rounds `|v| * scale` by 15 bits; -32768 gives `-scale`.
+    /// The sums clamp to `[-32768, 0x7000]`: the pack saturates the lower
+    /// end, and past the positive cap every digit is `scale - 1`. `pmulhrsw`
+    /// then rounds `|v| * scale` by 15 bits; -32768 gives `-scale`.
     #[allow(clippy::inline_always)]
     #[inline(always)]
     fn packed_digits(t: Avx2, low: i32x8<Avx2>, high: i32x8<Avx2>, scale: i16) -> i16x16<Avx2> {
         use core::arch::x86_64::{
-            __m256i, _mm256_max_epi32, _mm256_min_epi32, _mm256_mulhrs_epi16, _mm256_packs_epi32,
-            _mm256_set1_epi16, _mm256_set1_epi32, _mm256_sign_epi16,
+            __m256i, _mm256_min_epi32, _mm256_mulhrs_epi16, _mm256_packs_epi32, _mm256_set1_epi16,
+            _mm256_set1_epi32, _mm256_sign_epi16,
         };
-        let clamp = |sums: __m256i| {
-            _mm256_min_epi32(
-                _mm256_max_epi32(sums, _mm256_set1_epi32(-32768)),
-                _mm256_set1_epi32(0x7000),
-            )
-        };
+        let clamp = |sums: __m256i| _mm256_min_epi32(sums, _mm256_set1_epi32(0x7000));
         let value = _mm256_packs_epi32(clamp(low.into()), clamp(high.into()));
         let signed_scale = _mm256_sign_epi16(_mm256_set1_epi16(scale), value);
         let magnitude = _mm256_mulhrs_epi16(signed_scale, value);
@@ -599,12 +592,18 @@ fn clipped_sum<S: Simd>(
         .bitcast()
 }
 
-/// `a` in the lanes where `select` is clear, `b` where it is set.
+/// `a` and `b` with the lanes where `select` (all ones or zero per lane) is
+/// set exchanged: two xors of one masked difference, four operations where
+/// two blends are six micro-ops.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn pick<S: Simd>(a: u16x16<S>, b: u16x16<S>, select: mask16x16<S>) -> u16x16<S> {
-    select.select(b, a)
+fn swap<S: Simd>(a: u16x16<S>, b: u16x16<S>, select: u16x16<S>) -> (u16x16<S>, u16x16<S>) {
+    let moved = (a ^ b) & select;
+    (a ^ moved, b ^ moved)
 }
+
+/// The class lane masks that transpose and mirror the taps.
+type Masks<S> = (u16x16<S>, u16x16<S>);
 
 /// The clipped sums of taps `K` and `T`, whose candidate samples coincide:
 /// each lane of one reads the tap its class moves `K` to, so the two combs
@@ -617,24 +616,16 @@ fn paired_combs<S: Simd, W: WindowRows, const K: usize, const T: usize, const RO
     simd: S,
     window: &W,
     centers: Centers<S>,
-    select: mask16x16<S>,
+    select: u16x16<S>,
     params: &GdfSymParams,
 ) -> [i16x16<S>; 2] {
     let (above, below) = tap_diffs::<S, W, K, ROW>(simd, window, centers);
     let (t_above, t_below) = tap_diffs::<S, W, T, ROW>(simd, window, centers);
+    let (above, t_above) = swap(above, t_above, select);
+    let (below, t_below) = swap(below, t_below, select);
     [
-        clipped_sum(
-            simd,
-            pick(above, t_above, select),
-            pick(below, t_below, select),
-            &params.bounds[K],
-        ),
-        clipped_sum(
-            simd,
-            pick(t_above, above, select),
-            pick(t_below, below, select),
-            &params.bounds[T],
-        ),
+        clipped_sum(simd, above, below, &params.bounds[K]),
+        clipped_sum(simd, t_above, t_below, &params.bounds[T]),
     ]
 }
 
@@ -655,7 +646,7 @@ fn cycle_combs<
     simd: S,
     window: &W,
     centers: Centers<S>,
-    (transposed, mirrored): (mask16x16<S>, mask16x16<S>),
+    (transposed, mirrored): Masks<S>,
     params: &GdfSymParams,
 ) -> [i16x16<S>; 4] {
     let (a_above, a_below) = tap_diffs::<S, W, A, ROW>(simd, window, centers);
@@ -663,14 +654,10 @@ fn cycle_combs<
     let (c_above, c_below) = tap_diffs::<S, W, C, ROW>(simd, window, centers);
     let (d_above, d_below) = tap_diffs::<S, W, D, ROW>(simd, window, centers);
     let select4 = |a: u16x16<S>, b: u16x16<S>, c: u16x16<S>, d: u16x16<S>| {
-        let (ab, ba) = (pick(a, b, mirrored), pick(b, a, mirrored));
-        let (cd, dc) = (pick(c, d, mirrored), pick(d, c, mirrored));
-        [
-            pick(ab, cd, transposed),
-            pick(ba, dc, transposed),
-            pick(cd, ab, transposed),
-            pick(dc, ba, transposed),
-        ]
+        let ((ab, ba), (cd, dc)) = (swap(a, b, mirrored), swap(c, d, mirrored));
+        let ((first, third), (second, fourth)) =
+            (swap(ab, cd, transposed), swap(ba, dc, transposed));
+        [first, second, third, fourth]
     };
     let above = select4(a_above, b_above, c_above, d_above);
     let below = select4(a_below, b_below, c_below, d_below);
@@ -795,7 +782,7 @@ fn row_pairs<S: Simd, L: Lanes<S>, W: WindowRows, const ROW: usize>(
     simd: S,
     lanes: L,
     window: &W,
-    masks: (mask16x16<S>, mask16x16<S>),
+    masks: Masks<S>,
     params: &GdfSymParams,
 ) -> RowPairs<S> {
     let center = samples(simd, window.row(TAP_REACH + ROW), TAP_REACH);
@@ -886,7 +873,7 @@ fn sym_rows_with<S: Simd, L: Lanes<S>, W: WindowRows, R: RowSink>(
     let class = classes & 3;
     let class = (class | (class << 16)).bitcast::<u16x16<S>>();
     let zero = u16x16::splat(simd, 0);
-    let masks = ((class & 1).simd_ne(zero), (class & 2).simd_ne(zero));
+    let masks = (zero - (class & 1), zero - ((class >> 1) & 1));
     let pairs = row_pairs::<S, L, W, 0>(simd, lanes, window, masks, params);
     let pos = row_index(simd, lanes, &pairs, &init, params);
     sink.row(simd, 0, &pos, block);

@@ -1346,9 +1346,15 @@ fn publish_chroma_pair(
         [simd.unzip_low_u16x16(low, high), simd.unzip_high_u16x16(low, high)].map(SimdBase::to_array)
     });
     for (lanes, (out, stride)) in lanes.iter().zip(planes) {
+        let span = stride
+            .checked_mul(CHROMA_PAIR_SIDE - 1)
+            .and_then(|rows| rows.checked_add(CHROMA_PAIR_SIDE));
+        let rows = span
+            .and_then(|span| out.get_mut(..span))
+            .ok_or(CdefError::Workspace)?;
         for (row, lanes) in lanes.chunks_exact(CHROMA_PAIR_SIDE).enumerate() {
-            out.get_mut(row * stride..)
-                .and_then(|row| row.get_mut(..CHROMA_PAIR_SIDE))
+            let start = row * stride;
+            rows.get_mut(start..start + CHROMA_PAIR_SIDE)
                 .ok_or(CdefError::Workspace)?
                 .copy_from_slice(lanes); // splot-copy-ok: publish the pair's deinterleaved samples
         }

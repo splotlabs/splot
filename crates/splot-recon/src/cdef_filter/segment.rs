@@ -564,6 +564,9 @@ trait QuadLanes<S: SimdToken>: Copy {
     fn narrow(self, simd: S, pairs: [i16x16<S>; 2]) -> i8x32<S>;
     /// The inverse of [`QuadLanes::narrow`] for lanes that fit `i8`.
     fn widen(self, simd: S, lanes: i8x32<S>) -> [i16x16<S>; 2];
+    /// `diff`, whose absolute value is `magnitude`, clamped to `-clip..=clip`
+    /// for a `clip` below 128.
+    fn clamp(self, simd: S, diff: i8x32<S>, magnitude: u8x32<S>, clip: u8x32<S>) -> i8x32<S>;
 }
 
 /// Rows in order: the first pair fills lanes `0..16`.
@@ -584,6 +587,13 @@ impl<S: SimdToken> QuadLanes<S> for Ordered {
     fn widen(self, simd: S, lanes: i8x32<S>) -> [i16x16<S>; 2] {
         let (low, high) = simd.widen_i8x32(lanes);
         [low, high]
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn clamp(self, _simd: S, diff: i8x32<S>, _magnitude: u8x32<S>, clip: u8x32<S>) -> i8x32<S> {
+        let clip = clip.bitcast::<i8x32<S>>();
+        diff.min(clip).max(-clip)
     }
 }
 
@@ -620,6 +630,22 @@ fearless_simd::kernel!(
 );
 
 #[cfg(target_arch = "x86_64")]
+fearless_simd::kernel!(
+    /// The smaller of `magnitude` and `clip` with the sign of `diff`.
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn signed_min(
+        t: Avx2,
+        diff: i8x32<Avx2>,
+        magnitude: u8x32<Avx2>,
+        clip: u8x32<Avx2>,
+    ) -> i8x32<Avx2> {
+        use core::arch::x86_64::{_mm256_min_epu8, _mm256_sign_epi8};
+        _mm256_sign_epi8(_mm256_min_epu8(magnitude.into(), clip.into()), diff.into()).simd_into(t)
+    }
+);
+
+#[cfg(target_arch = "x86_64")]
 impl QuadLanes<Avx2> for InLane {
     const ROWS: [usize; 4] = [0, 2, 1, 3];
 
@@ -633,6 +659,18 @@ impl QuadLanes<Avx2> for InLane {
     #[inline(always)]
     fn widen(self, simd: Avx2, lanes: i8x32<Avx2>) -> [i16x16<Avx2>; 2] {
         unpack_quad(simd, lanes)
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    fn clamp(
+        self,
+        simd: Avx2,
+        diff: i8x32<Avx2>,
+        magnitude: u8x32<Avx2>,
+        clip: u8x32<Avx2>,
+    ) -> i8x32<Avx2> {
+        signed_min(simd, diff, magnitude, clip)
     }
 }
 
@@ -653,13 +691,10 @@ impl<S: SimdToken> CdefConstrainWide<S> {
 
     #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
     #[inline(always)]
-    fn apply_diff(self, diff: i8x32<S>) -> i8x32<S> {
+    fn apply_diff<Q: QuadLanes<S>>(self, simd: S, quads: Q, diff: i8x32<S>) -> i8x32<S> {
         let magnitude = diff.abs().bitcast::<u8x32<S>>();
-        let clip = self
-            .threshold
-            .saturating_sub(magnitude >> self.shift)
-            .bitcast::<i8x32<S>>();
-        diff.min(clip).max(-clip)
+        let clip = self.threshold.saturating_sub(magnitude >> self.shift);
+        quads.clamp(simd, diff, magnitude, clip)
     }
 }
 
@@ -735,7 +770,7 @@ fn cdef_filter_rows_wide8<
                     min = min.min(diff);
                     max = max.max(diff);
                 }
-                $constrain.apply_diff(diff)
+                $constrain.apply_diff(simd, quads, diff)
             }};
         }
         let mut sum = [i16x16::splat(simd, 0); 2];
