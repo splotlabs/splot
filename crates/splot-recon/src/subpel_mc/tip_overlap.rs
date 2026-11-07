@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
-use fearless_simd::{Simd, SimdBase, SimdNarrow, SimdWiden, u16x8, u32x4};
+use fearless_simd::{Simd, SimdBase, SimdNarrow, SimdWiden, u8x16, u16x8, u32x4};
 
 /// Output columns 4..12 of the last block that
 /// [`subpel_predict_12x12_bilinear_overlap_into`] predicted, with the reference
@@ -147,6 +147,10 @@ fn bilinear_12x12_block<S: Simd, T: ReconSample, const REUSE: bool>(
 fn sample_lanes<S: Simd, T: ReconSample>(simd: S, line: &[T], col: usize) -> u16x8<S> {
     if let Some(lanes) = T::u16_slice(line).and_then(|line| line.get(col..)?.first_chunk::<8>()) {
         return u16x8::load_array_ref(simd, lanes);
+    }
+    if let Some(bytes) = T::u8_slice(line).and_then(|line| line.get(col..)?.first_chunk::<8>()) {
+        let bytes: [u8; 16] = core::array::from_fn(|lane| bytes.get(lane).copied().unwrap_or(0));
+        return u8x16::load_array(simd, bytes).widen().0;
     }
     u16x8::from_fn(simd, |lane| {
         line.get(col + lane).map_or(0, |sample| sample.to_u16())

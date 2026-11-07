@@ -346,6 +346,52 @@ pub(super) fn predict<T: ReconSample>(
     );
 }
 
+/// Stores the eight-bit single-reference prediction of an unscaled block
+/// whose window is read in place straight into `output`, or returns `false`
+/// without writing outside that subset. Admission implies every check of
+/// `validate_subpel_u8_output`.
+pub(super) fn put_u8(
+    view: &ReferencePlaneView<'_, u8>,
+    params: &SubpelPredictParams,
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
+    let (w, h) = (params.w, params.h);
+    let admitted = params.bit_depth == crate::format::BitDepth::Eight
+        && params.step_x == 1 << SCALE_SUBPEL_BITS
+        && params.step_y == 1 << SCALE_SUBPEL_BITS
+        && (1..=super::MAX_BLOCK_DIM).contains(&w)
+        && (1..=super::MAX_BLOCK_DIM).contains(&h)
+        && params.first_x <= params.last_x
+        && params.first_y <= params.last_y
+        && params
+            .start_x
+            .checked_add((w as i32 - 1) << SCALE_SUBPEL_BITS)
+            .is_some()
+        && stride >= w
+        && (h - 1)
+            .checked_mul(stride)
+            .and_then(|end| end.checked_add(w))
+            .is_some_and(|end| end <= output.len());
+    if !admitted {
+        return false;
+    }
+    if super::cell::put(view, params, output, stride) {
+        return true;
+    }
+    let params = plane_bounded(view, params);
+    let layout = Layout::new(&params);
+    let Some(block) = layout.in_place(view, &params) else {
+        return false;
+    };
+    match stage_len(layout.rows, w, layout.vertical) {
+        0 => super::eight_bit::put(&block, &mut [], output, stride),
+        len => with_subpel_intermediate(len, |stage| {
+            super::eight_bit::put(&block, stage, output, stride)
+        }),
+    }
+}
+
 /// The window of an unscaled block: its taps and the first source column
 /// and row each pass reads, with their counts.
 #[derive(Clone, Copy)]
