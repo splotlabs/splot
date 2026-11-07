@@ -1283,19 +1283,18 @@ fn write_chroma_pair(
     }
     let (u_out, u_stride) = stripe_rows_from(filtered_u, x0, y0).ok_or(CdefError::Workspace)?;
     let (v_out, v_stride) = stripe_rows_from(filtered_v, x0, y0).ok_or(CdefError::Workspace)?;
-    for (row, lanes) in output.chunks_exact(2 * CHROMA_PAIR_SIDE).enumerate() {
-        let u_lanes: [u16; CHROMA_PAIR_SIDE] = core::array::from_fn(|lane| lanes[2 * lane]);
-        let v_lanes: [u16; CHROMA_PAIR_SIDE] = core::array::from_fn(|lane| lanes[2 * lane + 1]);
-        u_out
-            .get_mut(row * u_stride..)
-            .and_then(|row| row.get_mut(..CHROMA_PAIR_SIDE))
-            .ok_or(CdefError::Workspace)?
-            .copy_from_slice(&u_lanes); // splot-copy-ok: publish the pair's U samples
-        v_out
-            .get_mut(row * v_stride..)
-            .and_then(|row| row.get_mut(..CHROMA_PAIR_SIDE))
-            .ok_or(CdefError::Workspace)?
-            .copy_from_slice(&v_lanes); // splot-copy-ok: publish the pair's V samples
+    let (low, high) = output.split_at(CDEF_PAIR_OUTPUT / 2);
+    let planes = baseline_simd!(simd => {
+        let (low, high) = (u16x16::from_slice(simd, low), u16x16::from_slice(simd, high));
+        [simd.unzip_low_u16x16(low, high), simd.unzip_high_u16x16(low, high)].map(|lanes| lanes.to_array())
+    });
+    for (plane, (out, stride)) in planes.iter().zip([(u_out, u_stride), (v_out, v_stride)]) {
+        for (row, lanes) in plane.chunks_exact(CHROMA_PAIR_SIDE).enumerate() {
+            out.get_mut(row * stride..)
+                .and_then(|row| row.get_mut(..CHROMA_PAIR_SIDE))
+                .ok_or(CdefError::Workspace)?
+                .copy_from_slice(lanes); // splot-copy-ok: publish the pair's deinterleaved samples
+        }
     }
     Ok(())
 }
