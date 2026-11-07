@@ -209,16 +209,7 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle)?;
-    let mut edges = splot_recon::CurrentFrameIntraEdges::default();
-    workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
-    let left_samples = availability.left.then(|| edges.left_samples()).flatten();
-    let above_samples = availability.above.then(|| edges.above_samples()).flatten();
-    if (availability.left && left_samples.is_none())
-        || (availability.above && above_samples.is_none())
-    {
-        return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
-    }
-    let (left_idif, above_idif) = if left_samples.is_some() && above_samples.is_some() {
+    let (left_idif, above_idif) = if availability.left && availability.above && x > 0 && y > 0 {
         let above_row = y
             .checked_sub(1)
             .ok_or_else(invalid_directional_edge_state)?;
@@ -240,6 +231,15 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         })?;
         (left_idif, above_idif)
     } else {
+        let mut edges = splot_recon::CurrentFrameIntraEdges::default();
+        workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
+        let left_samples = availability.left.then(|| edges.left_samples()).flatten();
+        let above_samples = availability.above.then(|| edges.above_samples()).flatten();
+        if (availability.left && left_samples.is_none())
+            || (availability.above && above_samples.is_none())
+        {
+            return Err(GeneralIntraResidualError::InvalidDirectionalEdgeState);
+        }
         let (left, above) = build_directional_middle_rect_edges(
             left_samples,
             above_samples,

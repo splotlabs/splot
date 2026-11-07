@@ -20,6 +20,9 @@ use crate::bitstream::tile_payload::{
     reconstruct_inter_coeff_block_residual_rect_into,
 };
 
+/// The widest intra prediction block side.
+const MAX_INTRA_SIDE: usize = 64;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntraEdgeAvailability {
     pub(crate) above: bool,
@@ -79,6 +82,71 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    if bit_depth == workspace.info().bit_depth() {
+        let write_through = block.eob == 0;
+        let mut gathered = [[T::default(); MAX_INTRA_SIDE]; 2];
+        let [left, above] = &mut gathered;
+        let mut have = (false, false);
+        let mut dc = T::default();
+        let in_frame = workspace.with_intra_block_frame(plane_id, x, y, block_size, |frame| {
+            have.0 = availability.left && frame.left_column(&mut left[..height]) == height;
+            if let Some(row) = frame
+                .above_row()
+                .get(..width)
+                .filter(|_| availability.above)
+            {
+                above[..width].copy_from_slice(row); // splot-copy-ok: DC above edge from its frame row
+                have.1 = true;
+            }
+            let dc_edges = IntraDcEdges::new(
+                have.0.then_some(&left[..height]),
+                have.1.then_some(&above[..width]),
+            );
+            dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
+            if write_through {
+                let (output, stride) = frame.target();
+                for row in output.chunks_mut(stride).take(height) {
+                    row[..width].fill(dc);
+                }
+                if ibp_dc {
+                    apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, output, stride)?;
+                }
+            }
+            Ok::<_, GeneralIntraResidualError>(())
+        })?;
+        if in_frame.is_some() {
+            if write_through {
+                return Ok(());
+            }
+            let mut prediction = workspace.take_intra_prediction_buffer(
+                IntraPredictionScratchBuffer::Primary,
+                plane_id,
+                width * height,
+                dc,
+            )?;
+            if ibp_dc {
+                let dc_edges = IntraDcEdges::new(
+                    have.0.then_some(&left[..height]),
+                    have.1.then_some(&above[..width]),
+                );
+                apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, &mut prediction, width)?;
+            }
+            return write_intra_prediction_block(
+                workspace,
+                block,
+                prediction,
+                plane_id,
+                x,
+                y,
+                block_size,
+                qindex,
+                use_tcq,
+                luma_context,
+                None,
+                bit_depth,
+            );
+        }
+    }
     let mut edges = splot_recon::CurrentFrameIntraEdges::default();
     workspace.intra_dc_edges_for_rect_into(plane_id, x, y, block_size, &mut edges)?;
     let dc_edges = IntraDcEdges::new(
