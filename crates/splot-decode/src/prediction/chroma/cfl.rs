@@ -23,7 +23,9 @@ use splot_recon::{
 };
 
 #[cfg(target_arch = "x86_64")]
-use super::cfl_luma::{Luma420Block, luma_420};
+use super::cfl_luma::{
+    Luma420Block, cfl_alpha_fits_i16, cfl_predict_u8, cfl_predict_u16, luma_420,
+};
 use crate::bitstream::tile_payload::{
     CflMultiDirection, CflParams, CoeffBlock, GeneralIntraResidualError,
 };
@@ -415,6 +417,22 @@ fn cfl_predict_block<T: ReconSample>(
         return Err(GeneralIntraResidualError::InvalidReconstructionState {
             context: "CfL prediction target",
         });
+    }
+    #[cfg(target_arch = "x86_64")]
+    if cfl_alpha_fits_i16(model[1])
+        && luma.len().is_multiple_of(16)
+        && let Some(token) = fearless_simd::Level::baseline().as_avx2()
+    {
+        if let Some(out) = T::u16_slice_mut(out) {
+            cfl_predict_u16(token, model, luma, width, out, stride);
+            return Ok(());
+        }
+        if model[3] == i32::from(u8::MAX)
+            && let Some(out) = T::u8_slice_mut(out)
+        {
+            cfl_predict_u8(token, model, luma, width, out, stride);
+            return Ok(());
+        }
     }
     if let Some(out) = T::u16_slice_mut(out) {
         baseline_simd!(simd => cfl_predict_rows(simd, model, luma, width, out, stride));

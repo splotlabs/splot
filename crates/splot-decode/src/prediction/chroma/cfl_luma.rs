@@ -3,7 +3,8 @@
 
 //! The AV2 § 7.13.5 4:2:0 8-bit CfL luma `L` of a whole block in one AVX2
 //! pass: `pmaddubsw` pairs the centre and right taps of each luma row, and
-//! the left tap where the filter has one.
+//! the left tap where the filter has one. Also the CfL prediction from `L`
+//! in 16-bit lanes.
 
 use super::cfl::CFL_FILTERS_420;
 
@@ -222,5 +223,138 @@ fearless_simd::kernel!(
                 }
             }
         }
+    }
+);
+
+/// Whether [`cfl_predict_u8`] and [`cfl_predict_u16`] cover a CfL `alpha`:
+/// `16 * |alpha|` must fit a `pmulhrsw` operand.
+pub(super) const fn cfl_alpha_fits_i16(alpha: i32) -> bool {
+    alpha.unsigned_abs() < 2048
+}
+
+/// Sixteen § 7.13.5 CfL samples `dc + Round2Signed(alpha * (L - lumaAvg), 11)`
+/// before `Clip1`, from the `L` of `luma[..16]`, in the qword order
+/// `0-3, 8-11, 4-7, 12-15` of `packssdw`. With `d = L - lumaAvg` signed by
+/// `alpha`, `pmulhrsw` of `|d|` by `16 * |alpha|` is
+/// `(16 * |alpha * d| + 2^14) >> 15 = Round2(|alpha * d|, 11)`.
+macro_rules! cfl_predict16 {
+    ($token:ident, $luma:expr, [$average:ident, $sign:ident, $scale:ident, $dc:ident]) => {{
+        let luma: &[i32] = $luma;
+        let low: __m256i = i32x8::from_slice($token, &luma[..8]).into();
+        let high: __m256i = i32x8::from_slice($token, &luma[8..16]).into();
+        let d = _mm256_sign_epi16(
+            _mm256_sub_epi16(_mm256_packs_epi32(low, high), $average),
+            $sign,
+        );
+        let scaled = _mm256_sign_epi16(_mm256_mulhrs_epi16(_mm256_abs_epi16(d), $scale), d);
+        _mm256_add_epi16(scaled, $dc)
+    }};
+}
+
+/// The broadcast `lumaAvg`, `alpha` sign, `16 * |alpha|` and `dc` of a
+/// `[dc, alpha, lumaAvg, max]` model.
+macro_rules! cfl_predict_constants {
+    ($model:expr) => {{
+        let [dc, alpha, average, _] = $model;
+        [
+            _mm256_set1_epi16(average as i16),
+            _mm256_set1_epi16(alpha.signum() as i16),
+            _mm256_set1_epi16((alpha.unsigned_abs() << 4) as i16),
+            _mm256_set1_epi16(dc as i16),
+        ]
+    }};
+}
+
+/// Writes the rows of a CfL block narrower than 16 samples: each group of
+/// sixteen `samples(luma)` covers `16 / $width` rows.
+macro_rules! cfl_narrow_rows {
+    ($width:literal, $luma:ident, $out:ident, $stride:ident, $samples:ident) => {
+        for (group, luma) in $luma.chunks_exact(16).enumerate() {
+            let samples = $samples(luma);
+            for (row, samples) in samples.chunks_exact($width).enumerate() {
+                let start = (group * (16 / $width) + row) * $stride;
+                $out[start..start + $width].copy_from_slice(samples); // splot-copy-ok: publish a narrow CfL row
+            }
+        }
+    };
+}
+
+/// [`cfl_narrow_rows`] for any CfL width: 4, 8, or a multiple of 16.
+macro_rules! cfl_rows {
+    ($width:ident, $luma:ident, $out:ident, $stride:ident, $samples:ident) => {
+        match $width {
+            4 => cfl_narrow_rows!(4, $luma, $out, $stride, $samples),
+            8 => cfl_narrow_rows!(8, $luma, $out, $stride, $samples),
+            _ => {
+                for (row, luma) in $luma.chunks_exact($width).enumerate() {
+                    let out = &mut $out[row * $stride..row * $stride + $width];
+                    for (out, luma) in out.chunks_exact_mut(16).zip(luma.chunks_exact(16)) {
+                        out.copy_from_slice(&$samples(luma)); // splot-copy-ok: publish sixteen CfL samples
+                    }
+                }
+            }
+        }
+    };
+}
+
+fearless_simd::kernel!(
+    /// The 8-bit § 7.13.5 CfL prediction `[dc, alpha, lumaAvg, max]` of `L`
+    /// (`luma`, rows `width` wide: 4, 8 or a multiple of 16, and a multiple
+    /// of 16 samples) into `out`, row `r` at `r * stride`, for an `alpha`
+    /// that [`cfl_alpha_fits_i16`]; `packuswb` is the 8-bit `Clip1`.
+    #[inline]
+    pub(super) fn cfl_predict_u8(
+        token: Avx2,
+        model: [i32; 4],
+        luma: &[i32],
+        width: usize,
+        out: &mut [u8],
+        stride: usize,
+    ) {
+        use core::arch::x86_64::{
+            __m256i, _mm256_abs_epi16, _mm256_add_epi16, _mm256_castsi256_si128,
+            _mm256_mulhrs_epi16, _mm256_packs_epi32, _mm256_packus_epi16,
+            _mm256_permutevar8x32_epi32, _mm256_set1_epi16, _mm256_setr_epi32, _mm256_sign_epi16,
+            _mm256_sub_epi16,
+        };
+        use fearless_simd::{SimdBase as _, SimdFrom as _, i32x8, u8x16};
+        let constants = cfl_predict_constants!(model);
+        let [average, sign, scale, dc] = constants;
+        let order = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
+        let samples = |luma: &[i32]| -> [u8; 16] {
+            let v = cfl_predict16!(token, luma, [average, sign, scale, dc]);
+            let packed = _mm256_permutevar8x32_epi32(_mm256_packus_epi16(v, v), order);
+            u8x16::simd_from(token, _mm256_castsi256_si128(packed)).into()
+        };
+        cfl_rows!(width, luma, out, stride, samples);
+    }
+);
+
+fearless_simd::kernel!(
+    /// [`cfl_predict_u8`] for samples up to `model[3]`, at most 10 bits.
+    #[inline]
+    pub(super) fn cfl_predict_u16(
+        token: Avx2,
+        model: [i32; 4],
+        luma: &[i32],
+        width: usize,
+        out: &mut [u16],
+        stride: usize,
+    ) {
+        use core::arch::x86_64::{
+            __m256i, _mm256_abs_epi16, _mm256_add_epi16, _mm256_max_epi16, _mm256_min_epi16,
+            _mm256_mulhrs_epi16, _mm256_packs_epi32, _mm256_permute4x64_epi64, _mm256_set1_epi16,
+            _mm256_setzero_si256, _mm256_sign_epi16, _mm256_sub_epi16,
+        };
+        use fearless_simd::{SimdBase as _, SimdFrom as _, i32x8, u16x16};
+        let [average, sign, scale, dc] = cfl_predict_constants!(model);
+        let max = _mm256_set1_epi16(model[3] as i16);
+        let zero = _mm256_setzero_si256();
+        let samples = |luma: &[i32]| -> [u16; 16] {
+            let v = cfl_predict16!(token, luma, [average, sign, scale, dc]);
+            let clipped = _mm256_min_epi16(_mm256_max_epi16(v, zero), max);
+            u16x16::simd_from(token, _mm256_permute4x64_epi64::<0xd8>(clipped)).into()
+        };
+        cfl_rows!(width, luma, out, stride, samples);
     }
 );
