@@ -404,6 +404,38 @@ impl<'payload> TileParser<'payload> {
         };
         let sb_mask = walk.sb_mask();
         let decoded_row = {
+            let ReconRow {
+                superblocks,
+                entries,
+                residual_blocks,
+                residual_coeffs,
+                ..
+            } = &mut recon_row;
+            let mut block_context = super::BlockDecodeContext {
+                sequence: context.sequence,
+                core: context.core,
+                params: &context.params,
+                ref_frame_idx: context.ref_frame_idx,
+                reference: context.reference,
+                tile_offset,
+                coeff_ctx: &mut self.coeff_ctx,
+                residual_scratch: &mut self.residual_scratch,
+                residual_blocks,
+                residual_arena: residual_coeffs,
+                gdf_state: &mut self.output.gdf_state,
+                cdef_state: &mut self.output.cdef_state,
+                ccso_state: &mut self.output.ccso_state,
+                delta_q_state: &mut self.delta_q_state,
+                intrabc_state: &mut self.intrabc_state,
+                segment_id_state: &mut self.output.segment_id_state,
+                mv_grid: &mut self.mv_grid,
+                y_smooth: &mut self.y_smooth,
+                chroma_smooth: &mut self.chroma_smooth,
+                deblock_blocks: &mut self.filter_records.deblock_blocks,
+                chroma_deblock_blocks: &mut self.filter_records.chroma_deblock_blocks,
+                tx_skip_records: &mut self.filter_records.tx_skip_records,
+                arena: &mut self.residual_planes,
+            };
             let mut decode_leaf =
                 |work_unit: &mut DecodeTileWorkUnit,
                  symbols: &mut SymbolDecoder<'_>,
@@ -413,44 +445,22 @@ impl<'payload> TileParser<'payload> {
                  use_dip: &crate::bitstream::tile_payload::TileUseDipState,
                  fsc_modes: &TileFscModeState,
                  palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
-                 is_cfl_ctx: IsCflContext| {
+                 is_cfl_ctx: crate::bitstream::tile_payload::LeafCflContext<'_>| {
                     let (leaf, resolve) = decode_block(
                         work_unit,
                         symbols,
                         frontier,
-                        context.sequence,
-                        context.core,
-                        &mut self.coeff_ctx,
-                        &mut self.residual_scratch,
-                        &mut recon_row.residual_blocks,
-                        &mut recon_row.residual_coeffs,
-                        &mut self.output.gdf_state,
-                        &mut self.output.cdef_state,
-                        &mut self.output.ccso_state,
-                        &mut self.delta_q_state,
-                        &mut self.intrabc_state,
-                        &mut self.output.segment_id_state,
-                        &mut self.mv_grid,
-                        &mut self.y_smooth,
-                        &mut self.chroma_smooth,
-                        &context.params,
+                        &mut block_context,
                         joint_modes,
                         uses_mrls,
                         use_dip,
                         fsc_modes,
                         palette_state,
                         is_cfl_ctx,
-                        &mut self.filter_records.deblock_blocks,
-                        &mut self.filter_records.chroma_deblock_blocks,
-                        &mut self.filter_records.tx_skip_records,
-                        &mut self.residual_planes,
-                        context.ref_frame_idx,
-                        context.reference,
-                        tile_offset,
                     )?;
                     push_leaf_entry(
-                        &mut recon_row.superblocks,
-                        &mut recon_row.entries,
+                        superblocks,
+                        entries,
                         DecodedLeafPublication::from_frontier(frontier, sb_mask),
                         resolve,
                     );

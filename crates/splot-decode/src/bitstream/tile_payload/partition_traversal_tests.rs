@@ -33,15 +33,18 @@ const BLOCK_128X128: usize = 15;
 const BLOCK_32X8: usize = 22;
 const PARTITION_CONTEXT_4X4_U8: u8 = 63;
 
-static ROW_CONTEXT_4X4: [u8; 64] = [PARTITION_CONTEXT_4X4_U8; 64];
+/// MI-size lines of a `size`-square tile at the origin reading as 4x4 blocks.
+fn context_of(size: usize, sb_size: usize) -> TileMiSizeState {
+    let mut state =
+        TileMiSizeState::new_for_tile(0..size, 0..size, BlockSize::new(sb_size).unwrap()).unwrap();
+    state.visit_region(0..size, &(0..size), |line| {
+        line.fill(PARTITION_CONTEXT_4X4_U8);
+    });
+    state
+}
 
-fn context() -> TilePartitionContextState<'static> {
-    TilePartitionContextState::new_at(
-        [&ROW_CONTEXT_4X4, &ROW_CONTEXT_4X4],
-        [&ROW_CONTEXT_4X4, &ROW_CONTEXT_4X4],
-        0,
-        0,
-    )
+fn context() -> TileMiSizeState {
+    context_of(64, BLOCK_64X64)
 }
 
 fn frame(sb_size: usize) -> TilePartitionFrameFacts {
@@ -299,11 +302,11 @@ fn assert_child_positions_for(
 fn child_positions_for(partition: PartitionType, b_size: usize) -> Vec<(usize, usize)> {
     let call = root_call(b_size);
     let sub_size = valid_subsize(partition, call.b_size).unwrap();
-    child_calls(call, partition, sub_size, frame(b_size), false)
+    child_calls(call, partition, sub_size, &frame(b_size), false)
         .unwrap()
         .as_slice()
         .iter()
-        .map(|child| (child.r, child.c))
+        .map(|child| (child.r(), child.c()))
         .collect()
 }
 
@@ -325,7 +328,7 @@ fn child_calls_thread_chroma_reference_to_chroma_offset_descendants() {
         call,
         PartitionType::Horz,
         sub_size,
-        frame(BLOCK_64X64),
+        &frame(BLOCK_64X64),
         true,
     )
     .unwrap();
@@ -374,7 +377,7 @@ fn shared_mixed_chroma_ref_size_mismatch_forces_inter() {
 
     let frontier = decode_block_frontier(
         call,
-        frame(BLOCK_64X64),
+        &frame(BLOCK_64X64),
         call.b_size,
         true,
         DecodeBlockPart::Shared,
@@ -390,12 +393,12 @@ fn sdp_cfl_allowed_state_tracks_top_luma_and_chroma_partitions() {
     let luma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::LumaPart);
     let chroma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::ChromaPart);
 
-    assert!(state.record_partition(frame, luma_root, PartitionType::Horz4A));
-    assert!(state.record_partition(frame, chroma_root, PartitionType::Horz));
+    assert!(state.record_partition(&frame, luma_root, PartitionType::Horz4A));
+    assert!(state.record_partition(&frame, chroma_root, PartitionType::Horz));
 
     let mut state = SdpPartitionState::default();
-    assert!(state.record_partition(frame, luma_root, PartitionType::Horz4A));
-    assert!(!state.record_partition(frame, chroma_root, PartitionType::Vert));
+    assert!(state.record_partition(&frame, luma_root, PartitionType::Horz4A));
+    assert!(!state.record_partition(&frame, chroma_root, PartitionType::Vert));
 }
 
 #[test]
@@ -406,9 +409,9 @@ fn sdp_chroma_partition_forced_from_luma_when_chroma_follows_luma() {
 
     for partition in [PartitionType::None, PartitionType::Horz] {
         let mut state = SdpPartitionState::default();
-        assert!(state.record_partition(frame, luma_root, partition));
+        assert!(state.record_partition(&frame, luma_root, partition));
         assert_eq!(
-            state.forced_chroma_partition(frame, chroma_root),
+            state.forced_chroma_partition(&frame, chroma_root),
             Some(partition)
         );
     }
@@ -421,15 +424,15 @@ fn sdp_chroma_partition_not_forced_when_trees_diverge_or_out_of_scope() {
     let chroma_root = root_call(BLOCK_64X64).with_tree_type(PartitionTreeType::ChromaPart);
 
     let mut state = SdpPartitionState::default();
-    state.record_partition(frame, luma_root, PartitionType::Split);
-    assert_eq!(state.forced_chroma_partition(frame, chroma_root), None);
+    state.record_partition(&frame, luma_root, PartitionType::Split);
+    assert_eq!(state.forced_chroma_partition(&frame, chroma_root), None);
 
     let mut state = SdpPartitionState::default();
-    state.record_partition(frame, luma_root, PartitionType::None);
-    assert_eq!(state.forced_chroma_partition(frame, luma_root), None);
+    state.record_partition(&frame, luma_root, PartitionType::None);
+    assert_eq!(state.forced_chroma_partition(&frame, luma_root), None);
 
     let chroma_128 = root_call(BLOCK_128X128).with_tree_type(PartitionTreeType::ChromaPart);
-    assert_eq!(state.forced_chroma_partition(frame, chroma_128), None);
+    assert_eq!(state.forced_chroma_partition(&frame, chroma_128), None);
 
     let inter_frame = TilePartitionFrameFacts::new(
         64,
@@ -448,7 +451,7 @@ fn sdp_chroma_partition_not_forced_when_trees_diverge_or_out_of_scope() {
     )
     .unwrap();
     assert_eq!(
-        state.forced_chroma_partition(inter_frame, chroma_root),
+        state.forced_chroma_partition(&inter_frame, chroma_root),
         None
     );
 }
@@ -461,13 +464,13 @@ fn sdp_cfl_allowed_state_propagates_to_chroma_children() {
         .with_cfl_allowed_in_sdp(false);
     let sub_size = valid_subsize(PartitionType::Vert, chroma_root.b_size).unwrap();
 
-    let children = child_calls(chroma_root, PartitionType::Vert, sub_size, frame, false).unwrap();
+    let children = child_calls(chroma_root, PartitionType::Vert, sub_size, &frame, false).unwrap();
 
     assert!(
         children
             .as_slice()
             .iter()
-            .all(|child| !child.cfl_allowed_in_sdp)
+            .all(|child| !child.cfl_allowed_in_sdp())
     );
 }
 
@@ -552,7 +555,7 @@ fn edge_implied_partition_consumes_no_symbol_before_first_child_frontier() {
         root_call(BLOCK_32X32),
         facts,
         TilePartitionBounds::from_work_unit(&work_unit),
-        context(),
+        &context(),
         None,
         &mut cdfs,
         &mut symbols,
@@ -588,9 +591,7 @@ fn non_origin_tile_start_availability_uses_tile_bounds() {
 
 #[test]
 fn non_origin_tile_square_split_does_not_read_neighbors_outside_tile() {
-    static LONG_ROW: [u8; 256] = [PARTITION_CONTEXT_4X4_U8; 256];
-    let sparse_context =
-        TilePartitionContextState::new_at([&LONG_ROW, &LONG_ROW], [&LONG_ROW, &LONG_ROW], 0, 0);
+    let sparse_context = context_of(256, BLOCK_128X128);
     let work_unit = make_work_unit_at(
         &[0xFF, 0x00, 0x80],
         CdfUpdateMode::Enabled,
@@ -613,7 +614,7 @@ fn non_origin_tile_square_split_does_not_read_neighbors_outside_tile() {
         TilePartitionCall::root(16, 16, BlockSize::new(BLOCK_128X128).unwrap(), true),
         facts,
         TilePartitionBounds::from_work_unit(&work_unit),
-        sparse_context,
+        &sparse_context,
         None,
         &mut cdfs,
         &mut symbols,
@@ -645,7 +646,7 @@ fn split_child_sdp_recognizes_nested_64x64_shared_roots() {
         root,
         PartitionType::Split,
         sub_size,
-        frame(BLOCK_128X128),
+        &frame(BLOCK_128X128),
         false,
     )
     .unwrap();
@@ -655,7 +656,7 @@ fn split_child_sdp_recognizes_nested_64x64_shared_roots() {
     let child = children.as_slice()[0];
 
     assert_eq!(child.b_size.index(), BLOCK_64X64);
-    assert!(is_intra_sdp_shared_root(facts, child));
+    assert!(is_intra_sdp_shared_root(&facts, child));
 }
 
 #[test]
@@ -665,12 +666,12 @@ fn extended_sdp_propagates_through_large_parent_to_eligible_child() {
     let mut facts = frame(BLOCK_128X128);
     facts.enable_extended_sdp = true;
     facts.frame_is_intra = false;
-    let children = child_calls(root, PartitionType::Split, sub_size, facts, false).unwrap();
+    let children = child_calls(root, PartitionType::Split, sub_size, &facts, false).unwrap();
     let child = children.as_slice()[0];
 
     assert_eq!(child.b_size.index(), BLOCK_64X64);
-    assert!(child.extended_sdp_allowed);
-    assert!(should_read_extended_sdp_region_type(facts, child, PartitionType::Horz).unwrap());
+    assert!(child.extended_sdp_allowed());
+    assert!(should_read_extended_sdp_region_type(&facts, child, PartitionType::Horz).unwrap());
 }
 
 #[test]
@@ -714,9 +715,10 @@ fn inter_extended_sdp_root_does_not_consume_region_type() {
     facts.enable_extended_sdp = true;
     facts.frame_is_intra = false;
 
-    let (call, using_extended_sdp) = read_extended_sdp_region_type(
-        facts,
-        root_call(BLOCK_32X32),
+    let mut call = root_call(BLOCK_32X32);
+    let using_extended_sdp = read_extended_sdp_region_type(
+        &facts,
+        &mut call,
         PartitionType::Horz,
         &mut cdfs,
         &mut symbols,
@@ -725,7 +727,7 @@ fn inter_extended_sdp_root_does_not_consume_region_type() {
 
     assert!(!using_extended_sdp);
     assert_eq!(call.tree_type(), PartitionTreeType::Shared);
-    assert!(!call.intra_region);
+    assert!(!call.intra_region());
     assert_eq!(symbols.symbol_count(), 0);
 }
 
@@ -742,7 +744,7 @@ fn inter_extended_sdp_mixed_child_consumes_region_type() {
     let mut facts = frame(BLOCK_64X64);
     facts.enable_extended_sdp = true;
     facts.frame_is_intra = false;
-    let call = TilePartitionCall::child(
+    let mut call = TilePartitionCall::child(
         0,
         0,
         BlockSize::new(BLOCK_32X32).unwrap(),
@@ -755,13 +757,18 @@ fn inter_extended_sdp_mixed_child_consumes_region_type() {
         false,
     );
 
-    let (call, using_extended_sdp) =
-        read_extended_sdp_region_type(facts, call, PartitionType::Horz, &mut cdfs, &mut symbols)
-            .unwrap();
+    let using_extended_sdp = read_extended_sdp_region_type(
+        &facts,
+        &mut call,
+        PartitionType::Horz,
+        &mut cdfs,
+        &mut symbols,
+    )
+    .unwrap();
 
     assert!(!using_extended_sdp);
     assert_eq!(call.tree_type(), PartitionTreeType::Shared);
-    assert!(!call.intra_region);
+    assert!(!call.intra_region());
     assert_eq!(symbols.symbol_count(), 1);
 }
 

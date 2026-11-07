@@ -180,3 +180,27 @@ fn tile_slot_reset_and_commit_copy_drop_stale_flags() {
         assert!(!commit.flag(0, 0, 0));
     }
 }
+
+#[test]
+fn set_leaf_matches_set_block_on_each_plane() {
+    for (sub_x, sub_y) in [(1, 1), (1, 0), (0, 0)] {
+        for planes in [0..3, 0..1, 1..3] {
+            for (r, c, w4, h4) in [(0, 0, 1, 1), (3, 5, 1, 2), (4, 8, 8, 4), (0, 12, 4, 16)] {
+                let mut leaf =
+                    TileBlockDecodedState::new(3, sub_x, sub_y, SB_SIZE4, 64, 64).unwrap();
+                let mut blocks = leaf.clone();
+                leaf.set_leaf(planes.clone(), r, c, w4, h4);
+                for plane in planes.clone() {
+                    blocks.set_block(
+                        plane,
+                        r,
+                        c,
+                        (w4 >> blocks.subsampling(plane).0).max(1),
+                        (h4 >> blocks.subsampling(plane).1).max(1),
+                    );
+                }
+                assert_eq!(leaf, blocks, "{sub_x} {sub_y} {planes:?} {r} {c} {w4} {h4}");
+            }
+        }
+    }
+}

@@ -9,7 +9,6 @@ use std::collections::TryReserveError;
 use std::ops::Range;
 
 use super::partition_size::{BlockSize, PartitionSizeError};
-use super::partition_traversal::TilePartitionContextState;
 use crate::support::reusable_scratch::{recycle_pooled_vec, take_pooled_vec};
 
 const PLANE_COUNT: usize = 2;
@@ -91,11 +90,13 @@ impl TileMiSizeState {
         PLANE_COUNT * self.left_len + plane * self.above_len
     }
 
+    #[cfg(test)]
     fn left_plane(&self, plane: usize) -> &[u8] {
         let base = self.left_base(plane);
         &self.storage[base..base + self.left_len]
     }
 
+    #[cfg(test)]
     fn above_plane(&self, plane: usize) -> &[u8] {
         let base = self.above_base(plane);
         &self.storage[base..base + self.above_len]
@@ -128,6 +129,7 @@ impl TileMiSizeState {
         }
     }
 
+    #[inline]
     pub(crate) fn update_luma_block(
         &mut self,
         r: usize,
@@ -137,6 +139,7 @@ impl TileMiSizeState {
         self.update_plane_block(LUMA_PLANE, r, c, mi_size)
     }
 
+    #[inline]
     pub(crate) fn update_chroma_block(
         &mut self,
         chroma_mi_row: usize,
@@ -146,16 +149,35 @@ impl TileMiSizeState {
         self.update_plane_block(CHROMA_PLANE, chroma_mi_row, chroma_mi_col, chroma_mi_size)
     }
 
-    pub(crate) fn context_state(&self) -> TilePartitionContextState<'_> {
-        TilePartitionContextState::new_at(
-            [self.left_plane(LUMA_PLANE), self.left_plane(CHROMA_PLANE)],
-            [self.above_plane(LUMA_PLANE), self.above_plane(CHROMA_PLANE)],
-            self.origin_row,
-            self.origin_col,
-        )
+    /// The § 8.3.2 partition-context entries of the block at tile position
+    /// (`r`, `c`): plane `plane` lines at `r`, `r + half_h`, `c` and
+    /// `c + half_w`, and the luma lines at `r` and `c`.
+    #[inline]
+    pub(crate) fn partition_neighbours(
+        &self,
+        plane: usize,
+        r: usize,
+        c: usize,
+        half_h: usize,
+        half_w: usize,
+    ) -> Option<PartitionNeighbours> {
+        let r = r.checked_sub(self.origin_row)?;
+        let c = c.checked_sub(self.origin_col)?;
+        if plane >= PLANE_COUNT || r + half_h >= self.left_len || c + half_w >= self.above_len {
+            return None;
+        }
+        let (left, above) = (self.left_base(plane) + r, self.above_base(plane) + c);
+        let at = |index: usize| self.storage.get(index).copied();
+        Some(PartitionNeighbours {
+            left: [at(left)?, at(left + half_h)?],
+            above: [at(above)?, at(above + half_w)?],
+            luma_left: at(self.left_base(LUMA_PLANE) + r)?,
+            luma_above: at(self.above_base(LUMA_PLANE) + c)?,
+        })
     }
 
-    #[inline]
+    #[allow(clippy::inline_always, reason = "measured: two calls per decoded leaf")]
+    #[inline(always)]
     fn update_plane_block(
         &mut self,
         plane: usize,
@@ -164,31 +186,42 @@ impl TileMiSizeState {
         mi_size: BlockSize,
     ) -> Result<(), TileMiSizeStateError> {
         let index = mi_size.index();
-        let out_of_bounds = TileMiSizeStateError::BlockOutOfBounds { plane, r, c };
         let (Some(local_r), Some(local_c), Some(&left), Some(&above)) = (
             r.checked_sub(self.origin_row),
             c.checked_sub(self.origin_col),
             PARTITION_CONTEXT_LEFT.get(index),
             PARTITION_CONTEXT_ABOVE.get(index),
         ) else {
-            return Err(out_of_bounds);
+            return Err(TileMiSizeStateError::BlockOutOfBounds { plane, r, c });
         };
-        let rows = local_r..local_r.saturating_add(mi_size.num_4x4_high()?);
-        let cols = local_c..local_c.saturating_add(mi_size.num_4x4_wide()?);
-        if rows.end > self.left_len || cols.end > self.above_len {
-            return Err(out_of_bounds);
+        let rows_end = local_r.saturating_add(mi_size.num_4x4_high()?);
+        let cols_end = local_c.saturating_add(mi_size.num_4x4_wide()?);
+        if rows_end > self.left_len || cols_end > self.above_len {
+            return Err(TileMiSizeStateError::BlockOutOfBounds { plane, r, c });
         }
         let (left_base, above_base) = (self.left_base(plane), self.above_base(plane));
-        crate::support::fill_mi_run(
-            &mut self.storage[left_base + rows.start..left_base + rows.end],
-            left,
-        );
-        crate::support::fill_mi_run(
-            &mut self.storage[above_base + cols.start..above_base + cols.end],
-            above,
-        );
+        if let Some(left_run) = self
+            .storage
+            .get_mut(left_base + local_r..left_base + rows_end)
+        {
+            crate::support::fill_mi_run(left_run, left);
+        }
+        if let Some(above_run) = self
+            .storage
+            .get_mut(above_base + local_c..above_base + cols_end)
+        {
+            crate::support::fill_mi_run(above_run, above);
+        }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PartitionNeighbours {
+    pub(crate) left: [u8; 2],
+    pub(crate) above: [u8; 2],
+    pub(crate) luma_left: u8,
+    pub(crate) luma_above: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

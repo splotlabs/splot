@@ -22,11 +22,11 @@ pub(crate) struct DecodedLeafPublication {
 
 impl DecodedLeafPublication {
     pub(crate) fn new(call: TilePartitionCall, sub_size: BlockSize, sb_mask: usize) -> Self {
-        let sub_block_origin = [call.r & sb_mask, call.c & sb_mask];
+        let sub_block_origin = [call.r() & sb_mask, call.c() & sb_mask];
         Self {
             superblock_origin: [
-                call.r.saturating_sub(sub_block_origin[0]),
-                call.c.saturating_sub(sub_block_origin[1]),
+                call.r().saturating_sub(sub_block_origin[0]),
+                call.c().saturating_sub(sub_block_origin[1]),
             ],
             sub_block_origin,
             block_size: sub_size,
@@ -89,30 +89,28 @@ impl DecodedLeafPublication {
         self,
         block_decoded: &mut TileBlockDecodedState,
     ) -> Result<(), TilePartitionTraversalError> {
-        let block_size4 = [
-            self.block_size.num_4x4_wide()?,
-            self.block_size.num_4x4_high()?,
-        ];
         let (plane_start, plane_end) =
             plane_range_for_tree_type(self.tree_type, block_decoded.num_planes());
-        for plane in plane_start..plane_end {
-            let (sub_x, sub_y) = block_decoded.subsampling(plane);
-            block_decoded.set_block(
-                plane,
-                self.sub_block_origin[0],
-                self.sub_block_origin[1],
-                (block_size4[0] >> sub_x).max(1),
-                (block_size4[1] >> sub_y).max(1),
-            );
-        }
+        block_decoded.set_leaf(
+            plane_start..plane_end,
+            self.sub_block_origin[0],
+            self.sub_block_origin[1],
+            self.block_size.num_4x4_wide()?,
+            self.block_size.num_4x4_high()?,
+        );
         Ok(())
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::inline_always,
+    reason = "measured: one call per decoded leaf"
+)]
+#[inline(always)]
 pub(crate) fn publish_intra_leaf_state<E>(
-    frame: TilePartitionFrameFacts,
-    call: TilePartitionCall,
+    frame: &TilePartitionFrameFacts,
+    call: &TilePartitionCall,
     frontier: &DecodeBlockFrontier,
     leaf_mode: GeneralIntraLeafMode,
     sub_size: BlockSize,
@@ -154,61 +152,71 @@ pub(crate) fn publish_intra_leaf_state<E>(
         if let Some(joint_mode) = leaf_mode.intra_joint_mode {
             let Some(y_mode) = leaf_mode.y_mode else {
                 return Err(TilePartitionTraversalError::MissingIntraLumaModeState {
-                    r: call.r,
-                    c: call.c,
+                    r: call.r(),
+                    c: call.c(),
                 }
                 .into());
             };
             let Some(angle_delta_y) = leaf_mode.angle_delta_y else {
                 return Err(TilePartitionTraversalError::MissingIntraLumaModeState {
-                    r: call.r,
-                    c: call.c,
+                    r: call.r(),
+                    c: call.c(),
                 }
                 .into());
             };
             let Some(mrl) = leaf_mode.mrl else {
                 return Err(TilePartitionTraversalError::MissingIntraUsesMrlsState {
-                    r: call.r,
-                    c: call.c,
+                    r: call.r(),
+                    c: call.c(),
                 }
                 .into());
             };
             let Some(fsc_mode) = leaf_mode.fsc_mode else {
                 return Err(TilePartitionTraversalError::MissingIntraFscModeState {
-                    r: call.r,
-                    c: call.c,
+                    r: call.r(),
+                    c: call.c(),
                 }
                 .into());
             };
             let Some(use_dip_value) = leaf_mode.use_dip else {
                 return Err(TilePartitionTraversalError::MissingIntraUseDipState {
-                    r: call.r,
-                    c: call.c,
+                    r: call.r(),
+                    c: call.c(),
                 }
                 .into());
             };
-            joint_modes.record_block(call.r, call.c, block_n4w, block_n4h, joint_mode);
-            fsc_modes.record_block(call.r, call.c, block_n4w, block_n4h, fsc_mode);
-            use_dip.record_block(call.r, call.c, block_n4w, block_n4h, use_dip_value);
-            uses_mrls.record_block(call.r, call.c, block_n4w, block_n4h, mrl);
-            palette_y.record_block(call.r, call.c, block_n4w, block_n4h, leaf_mode.palette_y);
-            y_modes.record_block(call.r, call.c, block_n4w, block_n4h, y_mode, angle_delta_y);
+            joint_modes.record_block(call.r(), call.c(), block_n4w, block_n4h, joint_mode);
+            fsc_modes.record_block(call.r(), call.c(), block_n4w, block_n4h, fsc_mode);
+            use_dip.record_block(call.r(), call.c(), block_n4w, block_n4h, use_dip_value);
+            uses_mrls.record_block(call.r(), call.c(), block_n4w, block_n4h, mrl);
+            palette_y.record_block(
+                call.r(),
+                call.c(),
+                block_n4w,
+                block_n4h,
+                leaf_mode.palette_y,
+            );
+            y_modes.record_block(
+                call.r(),
+                call.c(),
+                block_n4w,
+                block_n4h,
+                y_mode,
+                angle_delta_y,
+            );
         } else {
             if frame.frame_is_intra && !leaf_mode.is_intrabc() {
                 return Err(GeneralIntraTreeWalkError::Traversal(
                     TilePartitionTraversalError::MissingIntraLumaModeState {
-                        r: call.r,
-                        c: call.c,
+                        r: call.r(),
+                        c: call.c(),
                     },
                 ));
             }
-            joint_modes.record_non_intra_block(call.r, call.c);
-            fsc_modes.record_non_intra_block(call.r, call.c);
-            use_dip.record_non_intra_block(call.r, call.c);
             if leaf_mode.is_intrabc() {
                 y_modes.record_block(
-                    call.r,
-                    call.c,
+                    call.r(),
+                    call.c(),
                     block_n4w,
                     block_n4h,
                     IntraYMode::Dc, // § 5.20.5.3 AV2 intraBC mode = DC_PRED (decodemv.c); an SDP chroma-part reads this collocated luma mode
@@ -219,7 +227,7 @@ pub(crate) fn publish_intra_leaf_state<E>(
     }
     if tree_type != PartitionTreeType::ChromaPart {
         mi_size_state
-            .update_luma_block(call.r, call.c, sub_size)
+            .update_luma_block(call.r(), call.c(), sub_size)
             .map_err(GeneralIntraTreeWalkError::MiSize)?;
     }
     if frontier.has_chroma || tree_type == PartitionTreeType::ChromaPart {
