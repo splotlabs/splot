@@ -495,11 +495,10 @@ fn smooth_lanes<S: Simd, P: IntraLaneSample>(
             }
             let mut lanes = [P::default(); 16];
             P::store16(simd, value, &mut lanes);
-            for (r, samples) in lanes.chunks_exact(width).enumerate() {
-                let start = start + r * stride;
-                if let Some(out) = output.get_mut(start..start + width) {
-                    out.copy_from_slice(samples); // splot-copy-ok: publish one smooth row
-                }
+            if width == 4 {
+                publish_rows::<P, 4>(&lanes, output, row, stride);
+            } else {
+                publish_rows::<P, 8>(&lanes, output, row, stride);
             }
         }
     }
@@ -705,9 +704,9 @@ fearless_simd::kernel!(
                 while row < height {
                     let lanes: [u8; 16] = pack!($value(row)).into();
                     if width == 4 {
-                        publish_rows::<4>(&lanes, output, row, stride);
+                        publish_rows::<u8, 4>(&lanes, output, row, stride);
                     } else {
-                        publish_rows::<8>(&lanes, output, row, stride);
+                        publish_rows::<u8, 8>(&lanes, output, row, stride);
                     }
                     row += rows_per_group;
                 }
@@ -724,11 +723,16 @@ fearless_simd::kernel!(
 /// Writes the `16 / N` rows of `N` samples packed in `lanes` from row `row`
 /// of `output`, `stride` apart.
 #[inline]
-fn publish_rows<const N: usize>(lanes: &[u8; 16], output: &mut [u8], row: usize, stride: usize) {
+fn publish_rows<T: Copy, const N: usize>(
+    lanes: &[T; 16],
+    output: &mut [T],
+    row: usize,
+    stride: usize,
+) {
     for (r, samples) in lanes.as_chunks::<N>().0.iter().enumerate() {
         if let Some(out) = output
             .get_mut((row + r) * stride..)
-            .and_then(<[u8]>::first_chunk_mut::<N>)
+            .and_then(<[T]>::first_chunk_mut::<N>)
         {
             *out = *samples;
         }
