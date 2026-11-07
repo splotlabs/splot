@@ -416,7 +416,7 @@ impl<T: ReconSample> InterReconScratch<T> {
 
     pub(super) fn reconstruct_intrabc(
         &mut self,
-        command: super::intrabc::IntrabcReconCommand,
+        command: &super::intrabc::IntrabcReconCommand,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         workspace: &mut CurrentFrameWorkspace<T>,
@@ -527,7 +527,6 @@ impl<T: ReconSample> InterReconScratch<T> {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn reconstruct(
         &mut self,
         command: &mut InterReconCommand,
@@ -536,37 +535,28 @@ impl<T: ReconSample> InterReconScratch<T> {
         temporal: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
-        temporal_context: &TemporalMvContext,
-        reference: &InterReferenceState<T>,
-        ref_frame_idx: &[u32],
-        sequence: &SequenceHeader,
-        core: &FrameHeaderCore,
-        mi_rows: usize,
-        mi_cols: usize,
-        current_order_hint: u32,
-        luma_use_tcq: bool,
-        residual_use_ddt: bool,
-        bit_depth: BitDepth,
+        shared: &ReconShared<'_, T>,
     ) -> Result<()> {
-        self.reconstruct_logged(
-            command,
-            &mut WorkspaceSink::Frame(workspace),
-            block_decoded,
-            temporal,
-            residual_blocks,
-            residual_coeffs,
-            temporal_context,
-            reference,
-            ref_frame_idx,
-            sequence,
-            core,
-            mi_rows,
-            mi_cols,
-            current_order_hint,
-            luma_use_tcq,
-            residual_use_ddt,
-            bit_depth,
-        )
+        let Self {
+            tip,
+            interintra,
+            residual,
+            mc,
+            ..
+        } = self;
+        mc.with_installed(|| {
+            command.reconstruct_ordered(
+                &mut WorkspaceSink::Frame(workspace),
+                block_decoded,
+                temporal,
+                residual_blocks,
+                residual_coeffs,
+                shared,
+                tip,
+                interintra,
+                residual,
+            )
+        })
     }
 }
 
