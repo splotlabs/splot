@@ -217,7 +217,7 @@ mod avx2 {
         ) {
             let [origin, stride, w, h] = geometry;
             let [h_phase, v_phase] = phases;
-            let weights = _mm256_set1_epi16(((h_phase << 8) | (16 - h_phase)) as i16);
+            let weights = _mm256_set1_epi16((h_phase << 8) | (16 - h_phase));
             let (low_pairs, high_pairs): (__m256i, __m256i) = if w == 24 {
                 (
                     u8x32::load_array(t, PAIRS_24_LOW).into(),
@@ -307,7 +307,7 @@ mod avx2 {
         ) {
             let [origin, stride] = geometry;
             let [h_phase, v_phase] = phases;
-            let weights = _mm256_set1_epi16(((h_phase << 8) | (16 - h_phase)) as i16);
+            let weights = _mm256_set1_epi16((h_phase << 8) | (16 - h_phase));
             let pairs: __m256i = u8x32::load_array(t, PAIRS_8).into();
             let rows = |first: usize| {
                 let at = |row: usize| origin + row.min(8) * stride;
