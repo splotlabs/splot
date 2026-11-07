@@ -1884,10 +1884,15 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     /// `rows` rows from `y` are stored.
     #[inline]
     fn band_row(&self, y: usize, rows: usize) -> Result<usize> {
-        let stored = self.samples.len() / self.stride_samples().max(1);
+        let stride = self.stride_samples().max(1);
         let in_plane = y.saturating_add(rows) <= self.storage_size.height();
         match y.checked_sub(self.origin_y) {
-            Some(local) if in_plane && local.saturating_add(rows) <= stored => Ok(local),
+            Some(local)
+                if in_plane
+                    && local.saturating_add(rows).saturating_mul(stride) <= self.samples.len() =>
+            {
+                Ok(local)
+            }
             _ => Err(ReconError::WorkspaceRectOutOfBounds {
                 plane: self.plane,
                 storage: self.storage_size,
