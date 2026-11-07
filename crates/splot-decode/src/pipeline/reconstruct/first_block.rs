@@ -293,8 +293,18 @@ fn gather_dip_edges<T: ReconSample>(
     [above, left]: [&mut [T]; 2],
 ) -> Option<T> {
     let row = frame.above_row();
-    let mut column = [T::default(); 1];
-    let first_left = (frame.left_column(&mut column) == 1).then_some(column[0]);
+    let first_left = if availability.left {
+        let readable = left_readable.min(left.len());
+        let copied = frame.left_column(&mut left[..readable]);
+        if copied < readable.min(frame.left_extent()) || copied == 0 {
+            return None;
+        }
+        let last = left[copied - 1];
+        left[copied..].fill(last);
+        Some(left[0])
+    } else {
+        None
+    };
     if availability.above {
         let copied = above_readable.min(row.len());
         let last = *row.get(copied.checked_sub(1)?)?;
@@ -305,18 +315,12 @@ fn gather_dip_edges<T: ReconSample>(
     } else {
         above.fill(noneighbour_above::<T>(bit_depth));
     }
-    if availability.left {
-        let readable = left_readable.min(left.len());
-        let copied = frame.left_column(&mut left[..readable]);
-        if copied < readable.min(frame.left_extent()) || copied == 0 {
-            return None;
-        }
-        let last = left[copied - 1];
-        left[copied..].fill(last);
-    } else if availability.above {
-        left.fill(*row.first()?);
-    } else {
-        left.fill(noneighbour_left::<T>(bit_depth));
+    if !availability.left {
+        left.fill(if availability.above {
+            *row.first()?
+        } else {
+            noneighbour_left::<T>(bit_depth)
+        });
     }
     match (availability.above, availability.left) {
         (true, true) => frame.top_left(),
