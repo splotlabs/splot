@@ -7,8 +7,9 @@
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection,
-    IntraDirectionalAngleEdges, IntraPredictionScratchBuffer, IntraRectBlockSize, IntraSmoothMode,
-    PlaneId, ReconSample, predict_intra_cardinal_directional_rect_into,
+    IntraDirectionalAngleEdges, IntraPredictionScratchBuffer, IntraRectBlockSize,
+    IntraSmoothFrameRequest, IntraSmoothMode, PlaneId, ReconSample,
+    predict_intra_cardinal_directional_rect_into,
 };
 
 use crate::bitstream::tile_payload::{
@@ -346,6 +347,22 @@ fn reconstruct_general_intra_chroma_smooth_into<T: ReconSample>(
     availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let request = IntraSmoothFrameRequest {
+        size: IntraRectBlockSize::new(log2_w, log2_h)?,
+        mode: smooth_mode,
+        above: availability.above,
+        left: availability.left,
+        above_right: num4_above_right > 0,
+        below_left: num4_below_left > 0,
+        bit_depth,
+    };
+    if reconstruct_smooth_in_frame(
+        workspace, block, plane_id, x, y, request, qindex, false, None,
+    )? {
+        return Ok(());
+    }
     let (available_left_samples, available_above_samples) = availability.available_sample_limits();
     reconstruct_general_intra_smooth_over_available_edges_into(
         workspace,

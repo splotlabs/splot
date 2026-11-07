@@ -13,7 +13,7 @@
 //!
 //! Feature tracking: `RECON-INTRA-DIRECTIONAL-ANGLE`.
 
-use fearless_simd::{Simd, SimdBase, u8x16, u16x16};
+use fearless_simd::{Bytes as _, Simd, SimdBase, u8x16, u16x8, u16x16, u32x4};
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{SimdFrom, u8x32};
 
@@ -87,7 +87,11 @@ impl PaddedEdge {
 
     /// Filters `out.len()` samples from the window at `first`: `out[j] =
     /// Clip1(Round2(Σ taps[t] * edge[first + j + t], 7))`.
-    #[inline]
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: one call per line was the line cost"
+    )]
+    #[inline(always)]
     pub(super) fn line(
         &self,
         filter: LineFilter,
@@ -292,25 +296,105 @@ pub(super) fn write_one_sided(
                 samples[active..].fill(last);
             }
         }
-        for row in 0..height {
-            let out = &mut output[row * stride..row * stride + width];
-            for (slot, samples) in out.iter_mut().zip(columns.chunks_exact(height)) {
-                *slot = samples[row];
-            }
-        }
+        transpose_columns(width, height, columns, output, stride);
         Ok(())
     })
 }
 
-/// Runs `write` over a zeroed column-major scratch of at least `len` samples,
-/// sized to the block so small blocks clear little.
+/// Writes the first `width` columns of the column-major `columns` (column `c`
+/// at `c * height`) as the rows of a `height`-row block, in tiles of 4 or 8
+/// columns by 4 or 8 rows. `width` and `height` are multiples of the tile;
+/// `columns` holds [`COLUMN_SLACK`] bytes past its last column.
+fn transpose_columns(
+    width: usize,
+    height: usize,
+    columns: &[u8],
+    output: &mut [u8],
+    stride: usize,
+) {
+    baseline_simd!(simd => transpose_tiles(simd, width, height, columns, output, stride));
+}
+
+#[inline]
+fn transpose_tiles<S: Simd>(
+    simd: S,
+    width: usize,
+    height: usize,
+    columns: &[u8],
+    output: &mut [u8],
+    stride: usize,
+) {
+    let tile_width = if width >= 8 { 8 } else { 4 };
+    let tile_rows = if height >= 8 { 8 } else { 4 };
+    for c0 in (0..width).step_by(tile_width) {
+        for r0 in (0..height).step_by(tile_rows) {
+            let column = |c: usize| {
+                let at = (c0 + c) * height + r0;
+                columns
+                    .get(at..at + 16)
+                    .map_or(u8x16::splat(simd, 0), |lanes| {
+                        u8x16::from_slice(simd, lanes)
+                    })
+            };
+            let pairs = |a: usize| {
+                simd.zip_low_u8x16(column(a), column(a + 1))
+                    .bitcast::<u16x8<S>>()
+            };
+            let (t0, t1) = (pairs(0), pairs(2));
+            let low: [u8x16<S>; 2] = [
+                simd.zip_low_u16x8(t0, t1).bitcast(),
+                simd.zip_high_u16x8(t0, t1).bitcast(),
+            ];
+            let mut store = |row: usize, bytes: &[u8]| {
+                let start = (r0 + row) * stride + c0;
+                if let Some(out) = output.get_mut(start..start + bytes.len()) {
+                    out.copy_from_slice(bytes); // splot-copy-ok: publish one transposed tile row
+                }
+            };
+            if tile_width == 4 {
+                for (half, rows) in low.iter().enumerate().take(tile_rows / 4) {
+                    let bytes: [u8; 16] = (*rows).into();
+                    for (row, samples) in bytes.as_chunks::<4>().0.iter().enumerate() {
+                        store(4 * half + row, samples);
+                    }
+                }
+                continue;
+            }
+            let (t2, t3) = (pairs(4), pairs(6));
+            let high: [u8x16<S>; 2] = [
+                simd.zip_low_u16x8(t2, t3).bitcast(),
+                simd.zip_high_u16x8(t2, t3).bitcast(),
+            ];
+            for (half, (left, right)) in low.iter().zip(&high).enumerate().take(tile_rows / 4) {
+                let (left, right) = (left.bitcast::<u32x4<S>>(), right.bitcast::<u32x4<S>>());
+                for (pair, rows) in [
+                    simd.zip_low_u32x4(left, right),
+                    simd.zip_high_u32x4(left, right),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let bytes: [u8; 16] = rows.bitcast::<u8x16<S>>().into();
+                    store(4 * half + 2 * pair, &bytes[..8]);
+                    store(4 * half + 2 * pair + 1, &bytes[8..]);
+                }
+            }
+        }
+    }
+}
+
+/// Bytes past a block's columns that [`transpose_columns`] may read.
+const COLUMN_SLACK: usize = 16;
+
+/// Runs `write` over a zeroed column-major scratch of at least `len` samples
+/// plus [`COLUMN_SLACK`], sized to the block so small blocks clear little.
 fn with_columns<R>(len: usize, write: impl FnOnce(&mut [u8]) -> R) -> R {
     if len <= 256 {
-        write(&mut [0u8; 256])
+        write(&mut [0u8; 256 + COLUMN_SLACK])
     } else if len <= 1024 {
-        write(&mut [0u8; 1024])
+        write(&mut [0u8; 1024 + COLUMN_SLACK])
     } else {
-        write(&mut [0u8; MAX_SIDE * MAX_SIDE])
+        write(&mut [0u8; MAX_SIDE * MAX_SIDE + COLUMN_SLACK])
     }
 }
 
@@ -354,23 +438,12 @@ pub(super) fn write_middle(
         }
         Ok::<(), ReconError>(())
     };
+    let above_idx = |row: usize| -((row + 1 + mrl_index) as i32) * i32::from(branch.dx);
     let mut left_runs = [0u8; MAX_SIDE];
     for (row, slot) in left_runs.iter_mut().enumerate().take(height) {
-        let above_idx = -((row + 1 + mrl_index) as i32) * i32::from(branch.dx);
-        let left_run = usize::try_from(-1 - mrl_index as i32 - (above_idx >> 6))
+        *slot = usize::try_from(-1 - mrl_index as i32 - (above_idx(row) >> 6))
             .unwrap_or(0)
-            .min(width);
-        *slot = left_run as u8;
-        if left_run < width {
-            let line = middle_line(above_idx + 64 * left_run as i32, above_offset)?;
-            let start = row * stride;
-            run(
-                above,
-                line,
-                above_last,
-                &mut output[start + left_run..start + width],
-            )?;
-        }
+            .min(width) as u8;
     }
     let left_runs = &left_runs[..height];
     let left_columns = usize::from(left_runs.iter().copied().max().unwrap_or(0));
@@ -393,14 +466,30 @@ pub(super) fn write_middle(
         } else {
             for_each_middle_left_run(left_runs, dy, mrl_index, write)?;
         }
-        for (row, &left_run) in left_runs.iter().enumerate().take(height) {
-            let out = &mut output[row * stride..row * stride + usize::from(left_run)];
-            for (slot, samples) in out.iter_mut().zip(columns.chunks_exact(height)) {
-                *slot = samples[row];
-            }
+        let tile_width = if width >= 8 { 8 } else { 4 };
+        transpose_columns(
+            left_columns.next_multiple_of(tile_width).min(width),
+            height,
+            columns,
+            output,
+            stride,
+        );
+        Ok::<(), ReconError>(())
+    })?;
+    for (row, &left_run) in left_runs.iter().enumerate() {
+        let left_run = usize::from(left_run);
+        if left_run < width {
+            let line = middle_line(above_idx(row) + 64 * left_run as i32, above_offset)?;
+            let start = row * stride;
+            run(
+                above,
+                line,
+                above_last,
+                &mut output[start + left_run..start + width],
+            )?;
         }
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
 /// The padded window start of an IDIF tap-0 base on an edge whose `slice[0]`
