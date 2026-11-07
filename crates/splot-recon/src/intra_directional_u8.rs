@@ -277,7 +277,9 @@ pub(super) fn write_one_sided(
             let out = &mut output[row * stride..row * stride + width];
             let active = spec.active.min(width);
             edge.line(filter, spec.first, spec.shift, &mut out[..active])?;
-            out[active..].fill(last);
+            if active < width {
+                out[active..].fill(last);
+            }
         }
         return Ok(());
     }
@@ -286,7 +288,9 @@ pub(super) fn write_one_sided(
             let spec = line(column)?;
             let active = spec.active.min(height);
             edge.line(filter, spec.first, spec.shift, &mut samples[..active])?;
-            samples[active..].fill(last);
+            if active < height {
+                samples[active..].fill(last);
+            }
         }
         for row in 0..height {
             let out = &mut output[row * stride..row * stride + width];
@@ -343,7 +347,9 @@ pub(super) fn write_middle(
             end.saturating_sub(first).min(out.len())
         });
         edge.line(filter, first, shift, &mut out[..active])?;
-        if let Some((_, value)) = last {
+        if let Some((_, value)) = last
+            && active < out.len()
+        {
             out[active..].fill(value);
         }
         Ok::<(), ReconError>(())
