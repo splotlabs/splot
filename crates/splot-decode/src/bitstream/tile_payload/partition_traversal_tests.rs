@@ -4,7 +4,6 @@
 #![allow(clippy::unwrap_used)]
 
 use core::ops::Range;
-use std::sync::LazyLock;
 
 use super::super::cdf::{
     FrameCdfSubset, TileCdfPolicyInput, TileCdfSelector, TileCdfWorkUnitBoundary,
@@ -32,26 +31,12 @@ const BLOCK_32X32: usize = 9;
 const BLOCK_64X64: usize = 12;
 const BLOCK_128X128: usize = 15;
 const BLOCK_32X8: usize = 22;
-const BLOCK_4X4_U8: u8 = 0;
-const BLOCK_16X16_U8: u8 = 6;
 const PARTITION_CONTEXT_4X4_U8: u8 = 63;
 
-static ROW_4X4: [u8; 64] = [BLOCK_4X4_U8; 64];
-static ROW_16X16: [u8; 64] = [BLOCK_16X16_U8; 64];
 static ROW_CONTEXT_4X4: [u8; 64] = [PARTITION_CONTEXT_4X4_U8; 64];
-static GRID: LazyLock<Vec<u8>> =
-    LazyLock::new(|| [ROW_4X4.as_slice(), ROW_16X16.as_slice()].concat());
-static ROWS: LazyLock<crate::tile::SbRowWindow> = LazyLock::new(|| {
-    let mut rows = crate::tile::SbRowWindow::new(256, crate::tile::SbRowWindow::WHOLE_TILE_SB_H4);
-    rows.enter(0);
-    rows
-});
 
 fn context() -> TilePartitionContextState<'static> {
     TilePartitionContextState::new_at(
-        GRID.as_slice(),
-        &ROWS,
-        64,
         [&ROW_CONTEXT_4X4, &ROW_CONTEXT_4X4],
         [&ROW_CONTEXT_4X4, &ROW_CONTEXT_4X4],
         0,
@@ -604,15 +589,8 @@ fn non_origin_tile_start_availability_uses_tile_bounds() {
 #[test]
 fn non_origin_tile_square_split_does_not_read_neighbors_outside_tile() {
     static LONG_ROW: [u8; 256] = [PARTITION_CONTEXT_4X4_U8; 256];
-    let sparse_context = TilePartitionContextState::new_at(
-        &[],
-        &ROWS,
-        0,
-        [&LONG_ROW, &LONG_ROW],
-        [&LONG_ROW, &LONG_ROW],
-        0,
-        0,
-    );
+    let sparse_context =
+        TilePartitionContextState::new_at([&LONG_ROW, &LONG_ROW], [&LONG_ROW, &LONG_ROW], 0, 0);
     let work_unit = make_work_unit_at(
         &[0xFF, 0x00, 0x80],
         CdfUpdateMode::Enabled,

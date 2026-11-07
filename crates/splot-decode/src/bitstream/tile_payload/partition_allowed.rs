@@ -172,12 +172,12 @@ impl PartitionDecisionFacts {
         self.implied_partition
     }
 
-    pub(crate) fn read_partition_decision_input<'a>(
+    pub(crate) fn read_partition_decision_input(
         self,
         bru_active: bool,
-        partition_context: PartitionContextInput<'a>,
-        square_split_context: SquareSplitContextInput<'a>,
-    ) -> ReadPartitionDecisionInput<'a> {
+        partition_context: PartitionContextInput,
+        square_split_context: SquareSplitContextInput,
+    ) -> ReadPartitionDecisionInput {
         ReadPartitionDecisionInput::new(
             self.allowed,
             self.implied_partition,
@@ -256,9 +256,7 @@ impl PartitionDecisionMemo {
 
 impl PartitionDecisionFacts {
     fn packed(self) -> u16 {
-        let allowed = PartitionType::ALL.into_iter().fold(0, |bits, partition| {
-            bits | u16::from(self.allowed.contains(partition)) << partition.index()
-        });
+        let allowed = self.allowed.bits();
         let implied = self
             .implied_partition
             .map_or(PartitionType::ALL.len(), PartitionType::index) as u16;
@@ -275,7 +273,7 @@ impl PartitionDecisionFacts {
             implied_partition: PartitionType::ALL
                 .get(usize::from(bits >> 10 & 15))
                 .copied(),
-            allowed: AllowedPartitions::new(core::array::from_fn(|index| bits >> index & 1 != 0)),
+            allowed: AllowedPartitions::from_bits(bits),
             rect_type: match bits >> 14 {
                 1 => Some(RectPartitionType::Horz),
                 2 => Some(RectPartitionType::Vert),
