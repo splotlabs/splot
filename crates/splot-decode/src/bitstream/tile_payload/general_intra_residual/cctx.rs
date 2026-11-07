@@ -116,7 +116,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
             (&v_setup, &*v_dequant, v_prediction, &mut *v_out),
         ];
         for (setup, dequant, prediction, out) in pairs {
-            if let Some((fused, _)) = setup.fused
+            if let Some(fused) = setup.fused()
                 && let (Some(pred), Some(samples)) = (T::u8_slice(prediction), T::u8_slice_mut(out))
                 && pred.len() == samples.len()
             {

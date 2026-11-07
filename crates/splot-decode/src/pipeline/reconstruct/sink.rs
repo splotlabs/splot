@@ -83,11 +83,9 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     if bit_depth == workspace.info().bit_depth() {
-        let write_through = block.eob == 0 || residual_adds_in_place::<T>();
         let mut gathered = [[T::default(); MAX_INTRA_SIDE]; 2];
         let [left, above] = &mut gathered;
         let mut have = (false, false);
-        let mut dc = T::default();
         let in_frame = workspace.with_intra_block_frame(plane_id, x, y, block_size, |frame| {
             have.0 = availability.left && frame.left_column(&mut left[..height]) == height;
             if let Some(row) = frame
@@ -102,62 +100,31 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
                 have.0.then_some(&left[..height]),
                 have.1.then_some(&above[..width]),
             );
-            dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
-            if write_through {
-                let (output, stride) = frame.target();
-                fill_block(output, stride, block_size, dc);
-                if ibp_dc {
-                    apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, output, stride)?;
-                }
+            let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
+            let (output, stride) = frame.target();
+            fill_block(output, stride, block_size, dc);
+            if ibp_dc {
+                apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, output, stride)?;
             }
             Ok::<_, GeneralIntraResidualError>(())
         })?;
         if in_frame.is_some() {
-            if write_through {
-                if block.eob != 0 {
-                    add_general_intra_coeff_block_residual_in_place(
-                        workspace,
-                        block,
-                        plane_id,
-                        x,
-                        y,
-                        block_size,
-                        qindex,
-                        use_tcq,
-                        luma_context,
-                        None,
-                        bit_depth,
-                    )?;
-                }
-                return Ok(());
+            if block.eob != 0 {
+                add_general_intra_coeff_block_residual_in_place(
+                    workspace,
+                    block,
+                    plane_id,
+                    x,
+                    y,
+                    block_size,
+                    qindex,
+                    use_tcq,
+                    luma_context,
+                    None,
+                    bit_depth,
+                )?;
             }
-            let mut prediction = workspace.take_intra_prediction_buffer(
-                IntraPredictionScratchBuffer::Primary,
-                plane_id,
-                width * height,
-                dc,
-            )?;
-            if ibp_dc {
-                let dc_edges = IntraDcEdges::new(
-                    have.0.then_some(&left[..height]),
-                    have.1.then_some(&above[..width]),
-                );
-                apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, &mut prediction, width)?;
-            }
-            return write_intra_prediction_block(
-                workspace,
-                block,
-                prediction,
-                plane_id,
-                x,
-                y,
-                block_size,
-                qindex,
-                use_tcq,
-                luma_context,
-                None,
-                bit_depth,
-            );
+            return Ok(());
         }
     }
     let mut edges = splot_recon::CurrentFrameIntraEdges::default();
@@ -438,13 +405,6 @@ fn fill_block<T: Copy>(output: &mut [T], stride: usize, size: IntraRectBlockSize
         32 => rows::<T, 32>(output, stride, height, value),
         _ => rows::<T, 64>(output, stride, height, value),
     }
-}
-
-/// Whether a coded in-frame block of `T` predicts in place and adds its
-/// residual there: the 8-bit in-place add is cheaper than staging the
-/// prediction, the wider one is not.
-pub(crate) const fn residual_adds_in_place<T: ReconSample>() -> bool {
-    T::MAX_VALUE <= u8::MAX as u16
 }
 
 /// Predicts an in-frame block straight into its frame rows, then adds any

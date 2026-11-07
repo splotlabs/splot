@@ -657,14 +657,14 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
 
     /// Adds a contiguous signed residual block directly to reconstructed samples.
     ///
-    /// The complete source and target geometry and every prediction sample are
-    /// validated before the first sample is changed. Frame-edge overhang is
-    /// clipped, while row targets reject blocks crossing their exclusive band.
+    /// The complete source and target geometry is validated before the first
+    /// sample is changed; every written sample is `Clip1`-bounded, whatever the
+    /// stored prediction. Frame-edge overhang is clipped, while row targets
+    /// reject blocks crossing their exclusive band.
     ///
     /// # Errors
     /// Returns [`ReconError`] for an absent plane, invalid source or target
-    /// geometry, cross-band access, or an existing prediction sample outside
-    /// the active bit depth.
+    /// geometry, or cross-band access.
     #[inline]
     pub fn add_residual_rect_block(
         &mut self,
@@ -676,7 +676,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     ) -> Result<()> {
         let rect = checked_sample_block_rect(plane, x, y, size, residual.len())?;
         let source_stride = size.width();
-        let mut target = self.residual_rect_target(plane, rect, source_stride)?;
+        let mut target = self.residual_rect_target(plane, rect)?;
         let rows = residual
             .chunks_exact(source_stride)
             .take(target.rect.height());
@@ -701,7 +701,20 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         size: IntraRectBlockSize,
     ) -> Result<Option<(&mut [u8], usize)>> {
         let rect = block_rect(x, y, size)?;
-        let target = self.residual_rect_target(plane, rect, size.width())?;
+        if let Self::Frame(workspace) = self {
+            let target = workspace.plane_mut(plane)?;
+            if target.clamp_rect_to_storage(rect)? != rect {
+                return Ok(None);
+            }
+            let stride = target.stride;
+            let base = target.band_row(rect.y(), rect.height())? * stride + rect.x();
+            let end = base + (rect.height() - 1) * stride + rect.width();
+            let samples = T::u8_slice_mut(&mut target.samples[..]);
+            return Ok(samples
+                .and_then(|samples| samples.get_mut(base..end))
+                .map(|samples| (samples, stride)));
+        }
+        let target = self.residual_rect_target(plane, rect)?;
         if target.rect != rect {
             return Ok(None);
         }
@@ -714,16 +727,15 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     /// samples, applying the AV2 § 7.15.4 sample duplication for a 64-sample
     /// transform side while writing.
     ///
-    /// The complete adjusted source and original target geometry and every
-    /// prediction sample are validated before the first sample is changed.
-    /// Frame-edge overhang is clipped using the original block stride, while
-    /// row targets reject blocks crossing their exclusive band.
+    /// The complete adjusted source and original target geometry is validated
+    /// before the first sample is changed. Frame-edge overhang is clipped using
+    /// the original block stride, while row targets reject blocks crossing
+    /// their exclusive band.
     ///
     /// # Errors
     /// Returns [`ReconError`] for an absent plane, an adjusted source length
     /// other than `min(width, 32) * min(height, 32)`, invalid target geometry,
-    /// cross-band access, or an existing prediction sample outside the active
-    /// bit depth.
+    /// or cross-band access.
     #[inline]
     pub fn add_adjusted_residual_rect_block(
         &mut self,
@@ -749,8 +761,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
             });
         }
         let rect = block_rect(x, y, size)?;
-        let source_stride = size.width();
-        let mut target = self.residual_rect_target(plane, rect, source_stride)?;
+        let mut target = self.residual_rect_target(plane, rect)?;
         let mut duplicated = [0i32; 64];
         for row in 0..target.rect.height() {
             let source = &residual[(row >> height_shift) * adjusted_width..][..adjusted_width];
@@ -768,14 +779,13 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
 
     /// Adds one constant signed residual directly to a rectangular block.
     ///
-    /// Target geometry and every prediction sample are validated before the
-    /// first sample is changed. Frame-edge overhang is clipped, while row
-    /// targets reject blocks crossing their exclusive band.
+    /// Target geometry is validated before the first sample is changed.
+    /// Frame-edge overhang is clipped, while row targets reject blocks crossing
+    /// their exclusive band.
     ///
     /// # Errors
-    /// Returns [`ReconError`] for an absent plane, invalid target geometry,
-    /// cross-band access, or an existing prediction sample outside the active
-    /// bit depth.
+    /// Returns [`ReconError`] for an absent plane, invalid target geometry, or
+    /// cross-band access.
     #[inline]
     pub fn add_constant_residual_rect_block(
         &mut self,
@@ -786,7 +796,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         residual: i32,
     ) -> Result<()> {
         let rect = block_rect(x, y, size)?;
-        let mut target = self.residual_rect_target(plane, rect, size.width())?;
+        let mut target = self.residual_rect_target(plane, rect)?;
         let (base, stride, width) = (target.base, target.stride, target.rect.width());
         if target.max_sample == u16::from(u8::MAX)
             && let Some(samples) = T::u8_slice_mut(&mut *target.samples)
@@ -818,7 +828,6 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         &mut self,
         plane: PlaneId,
         rect: PlaneRect,
-        source_stride: usize,
     ) -> Result<CurrentFrameResidualTarget<'_, T>> {
         let max_sample = self.info().bit_depth().max_sample();
         let (target, target_stride, target_base, rect) = match self {
@@ -870,23 +879,6 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                 expected: last_target_end,
                 actual: target.len(),
             });
-        }
-        for row_index in (0..rect.height()).filter(|_| max_sample < T::MAX_VALUE) {
-            let target_start = target_base + row_index * target_stride;
-            let row = &target[target_start..target_start + rect.width()];
-            if !samples_exceed(row, max_sample) {
-                continue;
-            }
-            for (column, sample) in row.iter().enumerate() {
-                let value = sample.to_u16();
-                if value > max_sample {
-                    return Err(ReconError::ReconstructPredictionOutOfRange {
-                        sample_index: row_index * source_stride + column,
-                        value,
-                        max: max_sample,
-                    });
-                }
-            }
         }
         Ok(CurrentFrameResidualTarget {
             samples: target,
