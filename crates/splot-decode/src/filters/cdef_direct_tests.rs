@@ -106,6 +106,7 @@ fn direct_cdef_10bit(
         coeff_shift: 2,
         max_sample: 1023,
         fill_flat: [true; 3],
+        bytes_suffice: [false; 8],
     };
     let geometry = [
         Some(CdefPlaneGeometry {
@@ -698,10 +699,21 @@ fn run_segment(
         coeff_shift: 2,
         max_sample: 1023,
         fill_flat: [true; 3],
+        bytes_suffice: [false; 8],
     };
     if segment {
         let mut scratch = CdefSegmentScratch::default();
-        assert!(cdef_segment(&lookup, params, (2, c), (0, 6), &mut scratch, &mut frame).unwrap());
+        assert!(
+            cdef_segment(
+                &lookup,
+                (params, 0),
+                (2, c),
+                (0, 6),
+                &mut scratch,
+                &mut frame
+            )
+            .unwrap()
+        );
     } else {
         let mut pad = [0u16; CDEF_PADDED_AREA];
         for block in 0..CDEF_SEGMENT_BLOCKS {
@@ -785,6 +797,7 @@ fn edge_segment_falls_back_to_the_per_block_path() {
         coeff_shift: 2,
         max_sample: 1023,
         fill_flat: [true; 3],
+        bytes_suffice: [false; 8],
     };
     let mut frame = cdef_stripe(
         DeblockedPlanes::frame(&workspace).unwrap(),
@@ -805,12 +818,30 @@ fn edge_segment_falls_back_to_the_per_block_path() {
     let params = active_params()[0];
     for (r, c) in [(0, 16), (2, 0), (2, 8), (2, 32), (4, 16)] {
         assert!(
-            !cdef_segment(&lookup, params, (r, c), (0, 6), &mut scratch, &mut frame).unwrap(),
+            !cdef_segment(
+                &lookup,
+                (params, 0),
+                (r, c),
+                (0, 6),
+                &mut scratch,
+                &mut frame
+            )
+            .unwrap(),
             "({r}, {c})"
         );
     }
     assert_eq!(cdef_frame_samples(&frame), before);
-    assert!(cdef_segment(&lookup, params, (2, 16), (0, 6), &mut scratch, &mut frame).unwrap());
+    assert!(
+        cdef_segment(
+            &lookup,
+            (params, 0),
+            (2, 16),
+            (0, 6),
+            &mut scratch,
+            &mut frame
+        )
+        .unwrap()
+    );
     assert_ne!(cdef_frame_samples(&frame), before);
 }
 

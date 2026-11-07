@@ -282,6 +282,9 @@ struct CdefBlockLookup<'a> {
     /// Planes whose stripe does not yet hold the deblocked samples, so a flat
     /// block must still be written.
     fill_flat: [bool; 3],
+    /// Whether the luma filters of each of the first strength sets fit an
+    /// 8-bit bytes-only segment gather.
+    bytes_suffice: [bool; 8],
 }
 
 #[derive(Clone, Copy)]
@@ -616,6 +619,11 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
             coeff_shift,
             max_sample,
             fill_flat: [true; 3],
+            bytes_suffice: core::array::from_fn(|index| {
+                strengths.get(index).is_some_and(|&params| {
+                    cdef_strengths(params, coeff_shift, (sub_x, sub_y)).luma_bytes_suffice()
+                })
+            }),
         })
     } else {
         None
@@ -760,7 +768,14 @@ pub(crate) fn cdef_stripe_into<'a, T: ReconSample>(
                 while c < unit_end.min(mi_cols) {
                     if c.is_multiple_of(SEGMENT_MI)
                         && let Some(params) = params
-                        && cdef_segment(lookup, params, (r, c), row_span, &mut segment, &mut frame)?
+                        && cdef_segment(
+                            lookup,
+                            (params, strength_index),
+                            (r, c),
+                            row_span,
+                            &mut segment,
+                            &mut frame,
+                        )?
                     {
                         c += SEGMENT_MI;
                         continue;
@@ -984,7 +999,7 @@ struct CdefSegmentScratch {
 #[inline(never)]
 fn cdef_segment<S: ReconSample>(
     lookup: &CdefBlockLookup<'_>,
-    params: CdefFrameParams,
+    (params, strength_index): (CdefFrameParams, usize),
     (r, c): (usize, usize),
     row_span: (usize, usize),
     scratch: &mut CdefSegmentScratch,
@@ -1035,10 +1050,17 @@ fn cdef_segment<S: ReconSample>(
         left + CDEF_TAP_REACH,
         top + CDEF_TAP_REACH - y_plane.origin_y(),
     );
+    let strengths = cdef_strengths(params, lookup.coeff_shift, (lookup.sub_x, lookup.sub_y));
+    let luma_bytes = lookup
+        .bytes_suffice
+        .get(strength_index)
+        .copied()
+        .unwrap_or(false);
     if luma_used {
         let (width, stride) = (y_plane.width(), y_plane.stride());
         let gathered = match (S::u16_slice(y_samples), S::u8_slice(y_samples)) {
             (Some(y), _) => scratch.luma.gather(y, width, stride, luma_origin),
+            (_, Some(y)) if luma_bytes => scratch.luma.gather_bytes(y, width, stride, luma_origin),
             (_, Some(y)) => scratch.luma.gather(y, width, stride, luma_origin),
             _ => false,
         };
@@ -1072,7 +1094,6 @@ fn cdef_segment<S: ReconSample>(
         _ => None,
     };
     let blocks = lookup.segment_planes(r, c)?;
-    let strengths = cdef_strengths(params, lookup.coeff_shift, (lookup.sub_x, lookup.sub_y));
     let chroma = chroma_rows.map(|planes| (&scratch.pair, planes));
     if !cdef_filter_segment(
         &scratch.luma,
