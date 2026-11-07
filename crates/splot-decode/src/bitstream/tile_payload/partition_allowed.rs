@@ -172,6 +172,17 @@ impl PartitionDecisionFacts {
         self.implied_partition
     }
 
+    /// The partition `read_partition_decision` returns without a symbol read.
+    #[inline]
+    pub(crate) fn unread_partition(self) -> Option<PartitionType> {
+        if let Some(partition) = self.implied_partition
+            && self.allowed.contains(partition)
+        {
+            return Some(partition);
+        }
+        self.allowed.only()
+    }
+
     pub(crate) fn read_partition_decision_input(
         self,
         bru_active: bool,
@@ -218,40 +229,87 @@ pub(crate) fn partition_decision_facts(
 }
 
 const MEMO_SLOTS: usize = 29 * 3 * 8;
+const EDGE_MEMO_SLOTS: usize = 256;
 
-/// [`partition_decision_facts`] of blocks wholly inside the frame, keyed by
-/// size, tree type and the three chroma/region flags. Inside the frame the
-/// facts do not depend on the position, so one memo is valid while the other
-/// frame-level inputs stay fixed, which holds for one tile walk. A slot
-/// packs the facts into 16 bits; 0 marks an empty slot, because at least one
-/// partition is always allowed.
+/// [`partition_decision_facts`] keyed by size, tree type, the three
+/// chroma/region flags and the distances to the frame edge clamped to the
+/// block extent. The facts read the position only through `r + x < MiRows`
+/// and `c + x < MiCols` tests with `x` below the block extent, so the key
+/// determines them while the other frame-level inputs stay fixed, which holds
+/// for one tile walk. Blocks wholly inside the frame take a flat slot; blocks
+/// crossing an edge share a direct-mapped cache whose entries repeat along
+/// the edge. A slot packs the facts into 16 bits; 0 marks an empty slot,
+/// because at least one partition is always allowed.
 pub(crate) struct PartitionDecisionMemo {
     slots: [u16; MEMO_SLOTS],
+    edge_keys: [u32; EDGE_MEMO_SLOTS],
+    edge_facts: [u16; EDGE_MEMO_SLOTS],
 }
 
 impl Default for PartitionDecisionMemo {
     fn default() -> Self {
         Self {
             slots: [0; MEMO_SLOTS],
+            edge_keys: [0; EDGE_MEMO_SLOTS],
+            edge_facts: [0; EDGE_MEMO_SLOTS],
         }
     }
 }
 
 impl PartitionDecisionMemo {
+    #[cfg(test)]
     pub(crate) fn facts(
         &mut self,
         input: PartitionAllowedInput,
     ) -> Result<PartitionDecisionFacts, PartitionAllowedError> {
-        let Some(slot) = interior_memo_slot(input).and_then(|slot| self.slots.get_mut(slot)) else {
-            return partition_decision_facts(input);
-        };
-        if *slot != 0 {
-            return Ok(PartitionDecisionFacts::unpacked(*slot));
-        }
-        let facts = partition_decision_facts(input)?;
-        *slot = facts.packed();
-        Ok(facts)
+        self.facts_keyed(memo_key(input), || Ok(input))
     }
+
+    /// The facts under `key`, deriving them from `input` on a miss, so a hit
+    /// never builds the input.
+    #[inline]
+    pub(crate) fn facts_keyed<E: From<PartitionAllowedError>>(
+        &mut self,
+        key: Option<MemoKey>,
+        input: impl FnOnce() -> Result<PartitionAllowedInput, E>,
+    ) -> Result<PartitionDecisionFacts, E> {
+        match self.slot_mut(key) {
+            Some(slot) if *slot != 0 => Ok(PartitionDecisionFacts::unpacked(*slot)),
+            slot => derive_memo_facts(slot, input),
+        }
+    }
+
+    #[inline]
+    fn slot_mut(&mut self, key: Option<MemoKey>) -> Option<&mut u16> {
+        match key? {
+            MemoKey::Interior(slot) => self.slots.get_mut(slot),
+            MemoKey::Edge(key) => {
+                let index = (key.wrapping_mul(0x9E37_79B9) >> 24) as usize % EDGE_MEMO_SLOTS;
+                let (stored, slot) = (
+                    self.edge_keys.get_mut(index)?,
+                    self.edge_facts.get_mut(index)?,
+                );
+                if *stored != key {
+                    *stored = key;
+                    *slot = 0;
+                }
+                Some(slot)
+            }
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn derive_memo_facts<E: From<PartitionAllowedError>>(
+    slot: Option<&mut u16>,
+    input: impl FnOnce() -> Result<PartitionAllowedInput, E>,
+) -> Result<PartitionDecisionFacts, E> {
+    let facts = partition_decision_facts(input()?)?;
+    if let Some(slot) = slot {
+        *slot = facts.packed();
+    }
+    Ok(facts)
 }
 
 impl PartitionDecisionFacts {
@@ -283,21 +341,51 @@ impl PartitionDecisionFacts {
     }
 }
 
-fn interior_memo_slot(input: PartitionAllowedInput) -> Option<usize> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MemoKey {
+    Interior(usize),
+    /// Nonzero: the clamped edge distances are at least 1.
+    Edge(u32),
+}
+
+#[cfg(test)]
+fn memo_key(input: PartitionAllowedInput) -> Option<MemoKey> {
     if input.known_chroma_luma_partition.is_some() {
         return None;
     }
-    let geometry = BlockGeometry::new(input.b_size).ok()?;
-    if input.r.checked_add(geometry.high_4x4)? > input.mi_rows
-        || input.c.checked_add(geometry.wide_4x4)? > input.mi_cols
-    {
+    decision_memo_key(
+        input.b_size,
+        input.tree_type,
+        [input.has_chroma, input.chroma_offset, input.mixed_region],
+        input.mi_rows.checked_sub(input.r)?,
+        input.mi_cols.checked_sub(input.c)?,
+    )
+}
+
+/// The memo key of a block `rows_left` / `cols_left` 4x4 units from the
+/// bottom / right frame edge with `[HasChroma, chromaOffset, mixed region]`
+/// `flags`; `None` outside the frame.
+#[inline]
+pub(crate) fn decision_memo_key(
+    b_size: BlockSize,
+    tree_type: PartitionTreeType,
+    flags: [bool; 3],
+    rows_left: usize,
+    cols_left: usize,
+) -> Option<MemoKey> {
+    let high = b_size.num_4x4_high().ok()?;
+    let wide = b_size.num_4x4_wide().ok()?;
+    let rows = rows_left.min(high);
+    let cols = cols_left.min(wide);
+    if rows == 0 || cols == 0 {
         return None;
     }
-    let tree = input.tree_type as usize;
-    let flags = usize::from(input.has_chroma) << 2
-        | usize::from(input.chroma_offset) << 1
-        | usize::from(input.mixed_region);
-    Some((input.b_size.index() * 3 + tree) * 8 + flags)
+    let flags = usize::from(flags[0]) << 2 | usize::from(flags[1]) << 1 | usize::from(flags[2]);
+    let slot = (b_size.index() * 3 + tree_type as usize) * 8 + flags;
+    if rows == high && cols == wide {
+        return Some(MemoKey::Interior(slot));
+    }
+    Some(MemoKey::Edge((slot | rows << 10 | cols << 17) as u32))
 }
 
 pub(crate) fn get_plane_residual_size(
@@ -776,7 +864,9 @@ mod memo_tests {
             let mut memo = PartitionDecisionMemo::default();
             let mut seen = [false; MEMO_SLOTS];
             for far in slots(frame) {
-                let slot = interior_memo_slot(far).unwrap();
+                let Some(MemoKey::Interior(slot)) = memo_key(far) else {
+                    unreachable!("{far:?} is not an interior slot");
+                };
                 assert!(!seen[slot], "slot {slot} is shared");
                 seen[slot] = true;
                 let geometry = BlockGeometry::new(far.b_size).unwrap();
@@ -799,6 +889,29 @@ mod memo_tests {
                 }
             }
             assert!(seen.iter().all(|seen| *seen));
+        }
+    }
+
+    #[test]
+    fn edge_memo_matches_direct_facts_at_every_edge_distance() {
+        for frame in frame_keys().into_iter().step_by(7) {
+            let mut memo = PartitionDecisionMemo::default();
+            for pass in 0..2 {
+                for far in slots(frame) {
+                    let geometry = BlockGeometry::new(far.b_size).unwrap();
+                    for rows in 1..=geometry.high_4x4 {
+                        for cols in [1, geometry.wide_4x4 / 2 + 1, geometry.wide_4x4] {
+                            let input = PartitionAllowedInput {
+                                r: far.mi_rows - rows,
+                                c: far.mi_cols - cols,
+                                ..far
+                            };
+                            let direct = partition_decision_facts(input).ok();
+                            assert_eq!(memo.facts(input).ok(), direct, "{pass} {input:?}");
+                        }
+                    }
+                }
+            }
         }
     }
 

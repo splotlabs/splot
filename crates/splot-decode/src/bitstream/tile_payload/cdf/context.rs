@@ -3,11 +3,14 @@
 
 //! AV2 § 8.3.2 partition-entry CDF context derivation.
 
-use splot_core::tables::conversion::{
-    MI_HEIGHT_LOG2, MI_WIDTH_LOG2, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE,
-};
+use splot_core::tables::conversion::{MI_HEIGHT_LOG2, MI_WIDTH_LOG2};
+#[cfg(test)]
+use splot_core::tables::conversion::{NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE};
 
-use super::{DO_SPLIT_PLANE_CONTEXTS, TileCdfArray, TileCdfError, TileCdfSelector, checked_plane};
+use super::super::partition_size::BlockSize;
+use super::TileCdfSelector;
+#[cfg(test)]
+use super::{DO_SPLIT_PLANE_CONTEXTS, TileCdfArray, TileCdfError, checked_plane};
 
 const BLOCK_SIZES: usize = MI_WIDTH_LOG2.len();
 const BLOCK_256X256_INDEX: usize = 18;
@@ -43,6 +46,24 @@ pub(crate) struct PartitionContextInput {
 }
 
 impl PartitionContextInput {
+    /// The contexts of a block whose `LeftMiSizes[ PlaneStart ]` entries at
+    /// `r` and `r + bh4 / 2` are `left`, and `AboveMiSizes` likewise `above`.
+    #[inline]
+    pub(crate) const fn from_neighbours(
+        b_size: BlockSize,
+        plane_start: usize,
+        left: [u8; 2],
+        above: [u8; 2],
+    ) -> Self {
+        Self {
+            b_size: b_size.index(),
+            plane_start,
+            left,
+            above,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn new(
         b_size: usize,
         plane_start: usize,
@@ -140,6 +161,20 @@ pub(crate) struct SquareSplitContextInput {
 }
 
 impl SquareSplitContextInput {
+    #[inline]
+    pub(crate) const fn from_neighbours(
+        b_size: BlockSize,
+        above: Option<u8>,
+        left: Option<u8>,
+    ) -> Self {
+        Self {
+            b_size: b_size.index(),
+            above,
+            left,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn new(
         b_size: usize,
         above: Option<u8>,
@@ -165,6 +200,7 @@ impl SquareSplitContextInput {
     }
 }
 
+#[cfg(test)]
 fn checked_block_size(b_size: usize) -> Result<usize, TileCdfError> {
     if b_size >= BLOCK_SIZES {
         return Err(TileCdfError::BlockSizeOutOfRange {
@@ -176,6 +212,7 @@ fn checked_block_size(b_size: usize) -> Result<usize, TileCdfError> {
     Ok(b_size)
 }
 
+#[cfg(test)]
 fn neighbour(
     array: &'static str,
     line: &[u8],

@@ -156,13 +156,13 @@ impl PartitionNode {
     /// Luma row in 4x4 units.
     #[must_use]
     pub const fn row4(self) -> usize {
-        self.0.r
+        self.0.r()
     }
 
     /// Luma column in 4x4 units.
     #[must_use]
     pub const fn col4(self) -> usize {
-        self.0.c
+        self.0.c()
     }
 
     /// § 9.3 block-size index.
@@ -857,20 +857,20 @@ impl IntraTileSyntax {
     /// Starts coding the superblock of `root`; call once per superblock in raster order.
     pub fn begin_superblock(&mut self, root: PartitionNode) {
         self.journal.clear();
-        if root.0.c == self.tile.1.start {
-            self.mi_sizes.enter_sb_row(root.0.r);
+        if root.0.c() == self.tile.1.start {
+            self.mi_sizes.enter_sb_row(root.0.r());
         }
         self.recon
             .block_decoded
-            .clear_superblock(root.0.r, root.0.c);
-        self.enter_inter_superblock(root.0.r);
+            .clear_superblock(root.0.r(), root.0.c());
+        self.enter_inter_superblock(root.0.r());
         self.begin_delta_q();
     }
 
     /// Whether `node` starts inside the frame; nodes outside code nothing.
     #[must_use]
     pub const fn in_frame(&self, node: PartitionNode) -> bool {
-        call_in_frame(self.frame, node.0)
+        call_in_frame(&self.frame, node.0)
     }
 
     /// The `LUMA_PART` and `CHROMA_PART` roots that code `node` in turn when
@@ -878,7 +878,7 @@ impl IntraTileSyntax {
     /// (§ 5.20.3.1); `None` codes `node` as one tree.
     #[must_use]
     pub fn sdp_roots(&self, node: PartitionNode) -> Option<(PartitionNode, PartitionNode)> {
-        is_intra_sdp_shared_root(self.frame, node.0).then(|| {
+        is_intra_sdp_shared_root(&self.frame, node.0).then(|| {
             (
                 PartitionNode(node.0.with_tree_type(PartitionTreeType::LumaPart)),
                 PartitionNode(node.0.with_tree_type(PartitionTreeType::ChromaPart)),
@@ -892,9 +892,9 @@ impl IntraTileSyntax {
     /// # Errors
     /// Returns [`EncoderSyntaxError::Rule`] for an invalid node.
     pub fn partition_options(&self, node: PartitionNode) -> Result<PartitionOptions> {
-        let forced = self.sdp.forced_chroma_partition(self.frame, node.0);
+        let forced = self.sdp.forced_chroma_partition(&self.frame, node.0);
         let input =
-            partition_allowed_input(node.0, self.frame, forced).map_err(rule("partition"))?;
+            partition_allowed_input(node.0, &self.frame, forced).map_err(rule("partition"))?;
         partition_decision_facts(input)
             .map(PartitionOptions)
             .map_err(rule("partition"))
@@ -919,7 +919,7 @@ impl IntraTileSyntax {
             return Err(EncoderSyntaxError::Unsupported("partition not allowed"));
         }
         let (partition_context, square_context) =
-            partition_context_inputs(node.0, self.bounds, self.mi_sizes.context_state())
+            partition_context_inputs(node.0, self.bounds, &self.mi_sizes)
                 .map_err(rule("partition context"))?;
         let input =
             options
@@ -933,7 +933,7 @@ impl IntraTileSyntax {
         let coded = read_partition_decision(input, &mut self.cdfs, &mut writer)
             .map_err(rule("partition"))?;
         if coded == partition {
-            self.sdp.record_partition(self.frame, node.0, partition);
+            self.sdp.record_partition(&self.frame, node.0, partition);
             Ok(())
         } else {
             Err(EncoderSyntaxError::Unsupported(
@@ -953,9 +953,9 @@ impl IntraTileSyntax {
     ) -> Result<Vec<PartitionNode>> {
         let call = self.with_cfl_in_sdp(node.0, partition);
         let sub_size = valid_subsize(partition, call.b_size).map_err(rule("partition"))?;
-        let chroma_offset = updated_chroma_offset(call, partition, sub_size, self.frame)
+        let chroma_offset = updated_chroma_offset(call, partition, sub_size, &self.frame)
             .map_err(rule("partition"))?;
-        let calls = child_calls(call, partition, sub_size, self.frame, chroma_offset)
+        let calls = child_calls(call, partition, sub_size, &self.frame, chroma_offset)
             .map_err(rule("partition"))?;
         Ok(calls
             .as_slice()
@@ -971,17 +971,17 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError::Rule`] for an invalid node.
     pub fn leaf(&self, node: PartitionNode) -> Result<LeafBlock> {
         let call = self.with_cfl_in_sdp(node.0, Partition::None);
-        let chroma_offset = updated_chroma_offset(call, Partition::None, call.b_size, self.frame)
+        let chroma_offset = updated_chroma_offset(call, Partition::None, call.b_size, &self.frame)
             .map_err(rule("partition"))?;
         let part = decode_block_part(call, &self.y_modes).map_err(rule("partition"))?;
-        let frontier = decode_block_frontier(call, self.frame, call.b_size, chroma_offset, part);
+        let frontier = decode_block_frontier(call, &self.frame, call.b_size, chroma_offset, part);
         Ok(LeafBlock { call, frontier })
     }
 
     /// `call` with the `CflAllowedInSdp` that coding `partition` at it sets.
     fn with_cfl_in_sdp(&self, call: TilePartitionCall, partition: Partition) -> TilePartitionCall {
         let mut sdp = self.sdp;
-        call.with_cfl_allowed_in_sdp(sdp.record_partition(self.frame, call, partition))
+        call.with_cfl_allowed_in_sdp(sdp.record_partition(&self.frame, call, partition))
     }
 
     /// The `y_mode_set` CDF row.
