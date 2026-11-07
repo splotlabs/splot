@@ -251,17 +251,6 @@ fearless_simd::kernel!(
     }
 );
 
-#[cfg(target_arch = "x86_64")]
-fearless_simd::kernel!(
-    /// The smallest lane (`phminposuw`).
-    #[inline]
-    fn min_lane_avx2(token: Avx2, a: u16x8<Avx2>) -> u16 {
-        let _ = token;
-        core::arch::x86_64::_mm_extract_epi16::<0>(core::arch::x86_64::_mm_minpos_epu16(a.into()))
-            as u16
-    }
-);
-
 /// `3 + timeInterval + Para_Adjustment_List[ index ][ timeInterval ]`
 /// (§ 8.2.6) for every rate index and use count below 64, so a read takes
 /// the count-dependent part of its adaptation rate with one load. The rows
@@ -372,8 +361,9 @@ fn multi_symbol_search<T: CdfStorage, const N: usize>(
 }
 
 /// The lane search of [`multi_symbol_search`] in one register: the signed
-/// high-half multiply, the compare, and the two reductions through
-/// `phminposuw`. Returns the number of boundaries above the value.
+/// high-half multiply and the compare. The boundaries do not increase from
+/// lane to lane, so the symbol's two are the ones beside the last lane above
+/// the value, read back from memory. Returns the number of lanes above.
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
 #[inline(always)]
@@ -391,10 +381,14 @@ fn search_lanes_avx2(
     let pp4 = ((f >> EC_PROB_SHIFT) << 6) + u16x8::load_array(token, increments);
     let scaled = mul_high_avx2(token, i16x8::splat(token, range7 as i16), pp4.bitcast());
     let boundaries: u16x8<Avx2> = (scaled << 3).bitcast();
-    let above = scaled.simd_gt(i16x8::splat(token, threshold));
-    let cur = !min_lane_avx2(token, !above.select(u16x8::splat(token, 0), boundaries));
-    let prev = min_lane_avx2(token, above.select(boundaries, u16x8::splat(token, range)));
-    (above.to_bitmask().count_ones(), cur, prev)
+    let above = scaled
+        .simd_gt(i16x8::splat(token, threshold))
+        .to_bitmask()
+        .count_ones();
+    let mut lanes = [range; 9];
+    boundaries.store_slice(&mut lanes[1..]);
+    let symbol = above as usize & 7;
+    (above, lanes[symbol + 1], lanes[symbol])
 }
 
 /// Relative bit position inside the tile payload consumed by a symbol decoder.
