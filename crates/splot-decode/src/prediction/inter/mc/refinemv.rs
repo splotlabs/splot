@@ -1070,7 +1070,7 @@ fn sad_row_lanes<'a, S: Simd, const W: usize>(
         };
         for (vector, lanes) in lanes.iter_mut().enumerate().take(W.div_ceil(8)) {
             let (left, right) = (load(left, 8 * vector), load(right, 8 * vector));
-            *lanes = *lanes + (left.max(right) - left.min(right));
+            *lanes += left.max(right) - left.min(right);
         }
         if row % 16 == 15 {
             sad += flush(&mut lanes);
