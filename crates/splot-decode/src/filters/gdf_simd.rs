@@ -472,22 +472,17 @@ kernel!(
 
 #[cfg(target_arch = "x86_64")]
 kernel!(
-    /// The sums clamp to `[-32768, 0x7000]`, the pack's own saturation range
-    /// with a positive cap past which every digit is `scale - 1`. `pmulhrsw` then
-    /// rounds `|v| * scale` by 15 bits; -32768 gives `-scale`.
+    /// The sums clamp to `[-32768, 0x7000]`: the pack saturates the lower
+    /// end, and past the positive cap every digit is `scale - 1`. `pmulhrsw`
+    /// then rounds `|v| * scale` by 15 bits; -32768 gives `-scale`.
     #[allow(clippy::inline_always)]
     #[inline(always)]
     fn packed_digits(t: Avx2, low: i32x8<Avx2>, high: i32x8<Avx2>, scale: i16) -> i16x16<Avx2> {
         use core::arch::x86_64::{
-            __m256i, _mm256_max_epi32, _mm256_min_epi32, _mm256_mulhrs_epi16, _mm256_packs_epi32,
-            _mm256_set1_epi16, _mm256_set1_epi32, _mm256_sign_epi16,
+            __m256i, _mm256_min_epi32, _mm256_mulhrs_epi16, _mm256_packs_epi32, _mm256_set1_epi16,
+            _mm256_set1_epi32, _mm256_sign_epi16,
         };
-        let clamp = |sums: __m256i| {
-            _mm256_min_epi32(
-                _mm256_max_epi32(sums, _mm256_set1_epi32(-32768)),
-                _mm256_set1_epi32(0x7000),
-            )
-        };
+        let clamp = |sums: __m256i| _mm256_min_epi32(sums, _mm256_set1_epi32(0x7000));
         let value = _mm256_packs_epi32(clamp(low.into()), clamp(high.into()));
         let signed_scale = _mm256_sign_epi16(_mm256_set1_epi16(scale), value);
         let magnitude = _mm256_mulhrs_epi16(signed_scale, value);
