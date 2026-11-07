@@ -333,7 +333,7 @@ fn transform_into(
     if !(large && len == 64 && w == 8) {
         dequant[..len].fill(0);
     }
-    let coefs = &coefs[..n];
+    let coefs = coefs.get(..n.div_ceil(2) * 2).unwrap_or(&coefs[..]);
     let stx = sec_tx_type - 1;
     let wide = bound > 1 << 15;
     if large {
@@ -487,8 +487,8 @@ const fn pair_kernels<
 }
 
 /// Adds `coef * row` over the kernel rows of the nonzero input coefficients
-/// as `pmaddwd` pairs of adjacent rows, keeping the up to 48 sums in vector
-/// registers.
+/// (an even count, zero padded) as `pmaddwd` pairs of adjacent rows, keeping
+/// the up to 48 sums in vector registers.
 ///
 /// A coefficient inside `i16` (every 8-bit one) is one multiply-add operand;
 /// a `wide` coefficient `c` splits into `a = c >> 8` and `b = c & 255`, both
@@ -504,8 +504,7 @@ fn accumulate_kernel_pairs<S: Simd, const W2: usize, const N: usize>(
 ) {
     let operand =
         |a: i32, b: i32| i32x8::splat(simd, (a & 0xffff) | (b << 16)).bitcast::<i16x16<S>>();
-    for (pair, coefs) in pairs.iter().zip(coefs.chunks(2)) {
-        let (a, b) = (coefs[0], coefs.get(1).copied().unwrap_or(0));
+    for (pair, &[a, b]) in pairs.iter().zip(coefs.as_chunks::<2>().0) {
         if a | b == 0 {
             continue;
         }
