@@ -324,3 +324,61 @@ fn band_classes_match_reference_over_chunks_and_tail() {
         }
     }
 }
+
+#[test]
+fn filter_run_matches_scalar_samples_with_band_classes() {
+    let mut scratch = simd::ClassScratch::default();
+    for (width, height, bit_depth) in [
+        (38, 4, BitDepth::Eight),
+        (64, 6, BitDepth::Ten),
+        (6, 2, BitDepth::Ten),
+    ] {
+        let max_sample = bit_depth.max_sample();
+        let stride = width + GDF_READ_RADIUS * 2;
+        let samples: Vec<u16> = (0..stride * (height + GDF_READ_RADIUS * 2))
+            .map(|index| ((index * 73 + index / stride * 29) % 1024) as u16)
+            .collect();
+        let radius = GDF_READ_RADIUS as isize;
+        let source = GdfSource {
+            samples: &samples,
+            stride,
+            origin_x: -radius,
+            origin_y: -radius,
+        };
+        let block = GdfBlock {
+            height,
+            frame_height: height,
+            pix_scale: 3,
+            max_sample: i32::from(max_sample),
+            ..test_block(width, bit_depth, 1, 2)
+        };
+        let mut classes = Vec::new();
+        let classified =
+            band_classes_from_source(&source, ORIGIN, &block, &mut classes, &mut scratch);
+        assert!(classified.is_ok());
+        let base: Vec<u16> = (0..width * height)
+            .map(|index| ((index * 61) % (usize::from(max_sample) + 1)) as u16)
+            .collect();
+        let tap_offsets = gdf_tap_offsets(stride).expect("valid tap offsets");
+        let mut expected = base.clone();
+        for row in 0..height {
+            for col in 0..width {
+                let position = (ORIGIN.0 + col, ORIGIN.1 + row);
+                let class = classes[(row >> 1) * (width >> 1) + (col >> 1)];
+                expected[row * width + col] = gdf_sample(
+                    &base,
+                    &source,
+                    &tap_offsets,
+                    &block,
+                    row,
+                    col,
+                    position,
+                    class,
+                );
+            }
+        }
+        let mut actual = base;
+        assert!(simd::filter_run(&source, ORIGIN, &block, &mut actual, &mut scratch).is_some());
+        assert_eq!(actual, expected, "width {width}, height {height}");
+    }
+}

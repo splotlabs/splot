@@ -3,7 +3,7 @@
 
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{Avx2, kernel};
-use fearless_simd::{Level, Simd, dispatch, i16x16, i32x8, prelude::*, u16x16, u32x8};
+use fearless_simd::{Level, Simd, dispatch, i16x16, i32x8, mask16x16, prelude::*, u16x16};
 
 use splot_core::tables::loop_restoration::{
     GDF_ALPHA, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
@@ -197,6 +197,35 @@ const SYM_PAIRS: [(usize, usize, usize); 15] = [
 ];
 const CLASS0_ZERO_WEIGHTS: u64 = zero_weight_taps(0b0001);
 
+/// The distinct tap pairs of `SYM_PAIRS`, in the order [`row_pairs`] interleaves them.
+const COMB_PAIRS: [(usize, usize); 10] = [
+    (0, 1),
+    (12, 13),
+    (2, 3),
+    (14, 15),
+    (3, 15),
+    (4, 6),
+    (7, 11),
+    (8, 10),
+    (9, 17),
+    (5, 16),
+];
+
+/// The `COMB_PAIRS` slot of each `SYM_PAIRS` entry.
+const PAIR_SLOT: [usize; SYM_PAIRS.len()] = {
+    let mut slots = [0; SYM_PAIRS.len()];
+    let mut pair = 0;
+    while pair < SYM_PAIRS.len() {
+        let mut slot = 0;
+        while COMB_PAIRS[slot].0 != SYM_PAIRS[pair].0 || COMB_PAIRS[slot].1 != SYM_PAIRS[pair].1 {
+            slot += 1;
+        }
+        slots[pair] = slot;
+        pair += 1;
+    }
+    slots
+};
+
 /// `SYM_PAIRS` adds every class-0 weight that some table makes nonzero once.
 const _: () = {
     let mut bit = 0;
@@ -246,8 +275,14 @@ static GDF_INTER_ERROR_I8: [[[i8; 1024]; 6]; 5] = {
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn errors(block: &GdfBlock, pos: &[u16; 16]) -> [i16; 16] {
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
     fn lookup<const LEN: usize>(table: &[i8; LEN], pos: &[u16; 16]) -> [i16; 16] {
-        core::array::from_fn(|lane| i16::from(table[usize::from(pos[lane]) & (LEN - 1)]))
+        let mut errors = [0; 16];
+        for (error, &pos) in errors.iter_mut().zip(pos) {
+            *error = i16::from(table[usize::from(pos) & (LEN - 1)]);
+        }
+        errors
     }
     if block.ref_dst_idx == GDF_INTRA_REF_DST {
         lookup(&GDF_INTRA_ERROR_I8[block.qp_idx], pos)
@@ -517,11 +552,11 @@ fn clipped_sum<S: Simd>(
         .bitcast()
 }
 
-/// `a` in the lanes where `select` is clear, `b` where it is all ones.
+/// `a` in the lanes where `select` is clear, `b` where it is set.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn pick<S: Simd>(a: u16x16<S>, b: u16x16<S>, select: u16x16<S>) -> u16x16<S> {
-    a ^ ((a ^ b) & select)
+fn pick<S: Simd>(a: u16x16<S>, b: u16x16<S>, select: mask16x16<S>) -> u16x16<S> {
+    select.select(b, a)
 }
 
 /// The clipped sums of taps `K` and `T`, whose candidate samples coincide:
@@ -535,7 +570,7 @@ fn paired_combs<S: Simd, const K: usize, const T: usize, const ROW: usize>(
     simd: S,
     window: &Window<'_>,
     centers: Centers<S>,
-    select: u16x16<S>,
+    select: mask16x16<S>,
     params: &GdfSymParams,
 ) -> [i16x16<S>; 2] {
     let (above, below) = tap_diffs::<S, K, ROW>(simd, window, centers);
@@ -572,7 +607,7 @@ fn cycle_combs<
     simd: S,
     window: &Window<'_>,
     centers: Centers<S>,
-    (transposed, mirrored): (u16x16<S>, u16x16<S>),
+    (transposed, mirrored): (mask16x16<S>, mask16x16<S>),
     params: &GdfSymParams,
 ) -> [i16x16<S>; 4] {
     let (a_above, a_below) = tap_diffs::<S, A, ROW>(simd, window, centers);
@@ -601,24 +636,6 @@ fn cycle_combs<
 
 /// The three § 7.20.5 `gdfIdx` sums of a row, in the halves of [`Lanes`].
 type Sums<S> = [[i32x8<S>; 2]; 3];
-
-/// Subtracts the negated combs `a`/`b` of `SYM_PAIRS` entry `P`, weighted,
-/// from its sum.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn add_pair<S: Simd, L: Lanes<S>, const P: usize>(
-    simd: S,
-    lanes: L,
-    sums: &mut Sums<S>,
-    a: i16x16<S>,
-    b: i16x16<S>,
-    params: &GdfSymParams,
-) {
-    let weights = i16x16::from_slice(simd, &params.pair_weights[P]);
-    for (sum, half) in sums[SYM_PAIRS[P].2].iter_mut().zip(lanes.pairs(simd, a, b)) {
-        *sum -= simd.pairwise_dot_product_i16x16(half, weights);
-    }
-}
 
 /// The § 7.20.5 error index `pos` of the biased `gdfIdx` sums `sums`.
 #[allow(clippy::inline_always)]
@@ -659,50 +676,73 @@ fn add_residual<S: Simd>(simd: S, pos: &[u16; 16], output: &mut [u16; 16], block
         .store_slice(output);
 }
 
-/// The error indices of row `ROW` of 16 samples of any class mix. Not inlined:
-/// across both rows LLVM would hoist the weights out of the multiply-adds
-/// and spill them. Taps are grouped so that each group's combs share their
-/// candidate samples and selects: a tap and its transpose read mirrored
-/// offsets, and taps `4`, `6`, `7`, `11` form a cycle.
+/// The interleaved negated combs of one row for each `COMB_PAIRS` slot, in
+/// the halves of [`Lanes::pairs`].
+type RowPairs<S> = [[i16x16<S>; 2]; COMB_PAIRS.len()];
+
+/// The negated combs of row `ROW` of 16 samples of any class mix, paired
+/// for [`row_index`]. Taps are grouped so that each group's combs share
+/// their candidate samples and selects: a tap and its transpose read
+/// mirrored offsets, and taps `4`, `6`, `7`, `11` form a cycle. Kept apart
+/// from the multiply-adds, whose six sums would otherwise force LLVM to
+/// spill the combs.
 #[inline(never)]
-fn sym_row<S: Simd, L: Lanes<S>, const ROW: usize>(
+fn row_pairs<S: Simd, L: Lanes<S>, const ROW: usize>(
     simd: S,
     lanes: L,
     window: &Window<'_>,
-    masks: (u16x16<S>, u16x16<S>),
+    masks: (mask16x16<S>, mask16x16<S>),
+    params: &GdfSymParams,
+) -> RowPairs<S> {
+    let center = samples(simd, window[TAP_REACH + ROW], TAP_REACH);
+    let centers = (center + ABOVE_OFFSET, center + BELOW_OFFSET);
+    let (transposed, mirrored) = masks;
+    let mut out = [[i16x16::splat(simd, 0); 2]; COMB_PAIRS.len()];
+    let [tap0, tap12] = paired_combs::<S, 0, 12, ROW>(simd, window, centers, transposed, params);
+    let [tap1, tap13] = paired_combs::<S, 1, 13, ROW>(simd, window, centers, transposed, params);
+    out[0] = lanes.pairs(simd, tap0, tap1);
+    out[1] = lanes.pairs(simd, tap12, tap13);
+    let [tap2, tap14] = paired_combs::<S, 2, 14, ROW>(simd, window, centers, transposed, params);
+    let [tap3, tap15] = paired_combs::<S, 3, 15, ROW>(simd, window, centers, transposed, params);
+    out[2] = lanes.pairs(simd, tap2, tap3);
+    out[3] = lanes.pairs(simd, tap14, tap15);
+    out[4] = lanes.pairs(simd, tap3, tap15);
+    let [tap4, tap6, tap7, tap11] =
+        cycle_combs::<S, 4, 6, 7, 11, ROW>(simd, window, centers, masks, params);
+    out[5] = lanes.pairs(simd, tap4, tap6);
+    out[6] = lanes.pairs(simd, tap7, tap11);
+    let [tap8, tap10] = paired_combs::<S, 8, 10, ROW>(simd, window, centers, mirrored, params);
+    out[7] = lanes.pairs(simd, tap8, tap10);
+    let [tap9, tap17] = paired_combs::<S, 9, 17, ROW>(simd, window, centers, transposed, params);
+    out[8] = lanes.pairs(simd, tap9, tap17);
+    let [tap5, tap16] = paired_combs::<S, 5, 16, ROW>(simd, window, centers, transposed, params);
+    out[9] = lanes.pairs(simd, tap5, tap16);
+    out
+}
+
+/// The error indices of a row from its paired combs: each `SYM_PAIRS` entry
+/// subtracts its weighted combs from its sum.
+#[inline(never)]
+fn row_index<S: Simd, L: Lanes<S>>(
+    simd: S,
+    lanes: L,
+    pairs: &RowPairs<S>,
     init: &Sums<S>,
     params: &GdfSymParams,
 ) -> [u16; 16] {
-    let center = samples(simd, window[TAP_REACH + ROW], TAP_REACH);
-    let centers = (center + ABOVE_OFFSET, center + BELOW_OFFSET);
     let mut sums = *init;
-    let sums = &mut sums;
-    let (transposed, mirrored) = masks;
-    let [tap0, tap12] = paired_combs::<S, 0, 12, ROW>(simd, window, centers, transposed, params);
-    let [tap1, tap13] = paired_combs::<S, 1, 13, ROW>(simd, window, centers, transposed, params);
-    add_pair::<S, L, 0>(simd, lanes, sums, tap0, tap1, params);
-    add_pair::<S, L, 1>(simd, lanes, sums, tap12, tap13, params);
-    let [tap2, tap14] = paired_combs::<S, 2, 14, ROW>(simd, window, centers, transposed, params);
-    let [tap3, tap15] = paired_combs::<S, 3, 15, ROW>(simd, window, centers, transposed, params);
-    add_pair::<S, L, 2>(simd, lanes, sums, tap2, tap3, params);
-    add_pair::<S, L, 3>(simd, lanes, sums, tap14, tap15, params);
-    add_pair::<S, L, 4>(simd, lanes, sums, tap3, tap15, params);
-    let [tap4, tap6, tap7, tap11] =
-        cycle_combs::<S, 4, 6, 7, 11, ROW>(simd, window, centers, masks, params);
-    add_pair::<S, L, 5>(simd, lanes, sums, tap4, tap6, params);
-    add_pair::<S, L, 6>(simd, lanes, sums, tap7, tap11, params);
-    let [tap8, tap10] = paired_combs::<S, 8, 10, ROW>(simd, window, centers, mirrored, params);
-    add_pair::<S, L, 7>(simd, lanes, sums, tap8, tap10, params);
-    add_pair::<S, L, 8>(simd, lanes, sums, tap8, tap10, params);
-    let [tap9, tap17] = paired_combs::<S, 9, 17, ROW>(simd, window, centers, transposed, params);
-    add_pair::<S, L, 9>(simd, lanes, sums, tap9, tap17, params);
-    add_pair::<S, L, 10>(simd, lanes, sums, tap9, tap17, params);
-    add_pair::<S, L, 11>(simd, lanes, sums, tap9, tap17, params);
-    let [tap5, tap16] = paired_combs::<S, 5, 16, ROW>(simd, window, centers, transposed, params);
-    add_pair::<S, L, 12>(simd, lanes, sums, tap5, tap16, params);
-    add_pair::<S, L, 13>(simd, lanes, sums, tap5, tap16, params);
-    add_pair::<S, L, 14>(simd, lanes, sums, tap5, tap16, params);
-    error_index(simd, lanes, *sums, params)
+    macro_rules! add_pairs {
+        ($($pair:literal)*) => {$({
+            const PAIR: usize = $pair;
+            let weights = i16x16::from_slice(simd, &params.pair_weights[PAIR]);
+            let sum = &mut sums[SYM_PAIRS[PAIR].2];
+            for (sum, half) in sum.iter_mut().zip(pairs[PAIR_SLOT[PAIR]]) {
+                *sum -= simd.pairwise_dot_product_i16x16(half, weights);
+            }
+        })*};
+    }
+    add_pairs!(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14);
+    error_index(simd, lanes, sums, params)
 }
 
 /// Filters in place a row pair of 16 samples whose class changes every two
@@ -716,15 +756,14 @@ fn sym_rows_with<S: Simd, L: Lanes<S>>(
     lanes: L,
     window: &Window<'_>,
     [top, bottom]: [&mut [u16; 16]; 2],
-    classes: &[GdfClass; 8],
+    classes: i32x8<S>,
     block: &GdfBlock,
     params: &GdfSymParams,
 ) {
     let flat = window_is_flat(simd, window);
-    if flat && params.keeps_flat && classes.iter().all(|class| class.gradient_bias() == 0) {
+    if flat && params.keeps_flat && (classes >> 2).simd_eq(i32x8::splat(simd, 0)).all_true() {
         return;
     }
-    let classes = i32x8::from_slice(simd, &classes.map(|class| class.0));
     let biases = |bias: [i32; 3]| {
         [
             lanes.spread(simd, i32x8::splat(simd, bias[0])),
@@ -742,10 +781,12 @@ fn sym_rows_with<S: Simd, L: Lanes<S>>(
     let class = classes & 3;
     let class = (class | (class << 16)).bitcast::<u16x16<S>>();
     let zero = u16x16::splat(simd, 0);
-    let masks = (zero - (class & 1), zero - ((class >> 1) & 1));
-    let pos = sym_row::<S, L, 0>(simd, lanes, window, masks, &init, params);
+    let masks = ((class & 1).simd_ne(zero), (class & 2).simd_ne(zero));
+    let pairs = row_pairs::<S, L, 0>(simd, lanes, window, masks, params);
+    let pos = row_index(simd, lanes, &pairs, &init, params);
     add_residual(simd, &pos, top, block);
-    let pos = sym_row::<S, L, 1>(simd, lanes, window, masks, &init, params);
+    let pairs = row_pairs::<S, L, 1>(simd, lanes, window, masks, params);
+    let pos = row_index(simd, lanes, &pairs, &init, params);
     add_residual(simd, &pos, bottom, block);
 }
 
@@ -760,6 +801,7 @@ pub(super) fn sym_rows(
 ) {
     #[cfg(target_arch = "x86_64")]
     if let Some(avx2) = Level::baseline().as_avx2() {
+        let classes = i32x8::from_slice(avx2, &classes.map(|class| class.0));
         return sym_rows_with(avx2, InLane, window, output, classes, block, params);
     }
     sym_rows_interleaved(window, output, classes, block, params);
@@ -778,7 +820,7 @@ pub(super) fn sym_rows_interleaved(
         Interleaved,
         window,
         output,
-        classes,
+        i32x8::from_slice(simd, &classes.map(|class| class.0)),
         block,
         params,
     ));
@@ -822,11 +864,24 @@ pub(super) fn sym_rows_narrow(
     Some(())
 }
 
-/// Scratch of [`band_classes`]: the direction strengths of the last class
-/// row's gradient row pair, direction-major.
+/// Gradient sums of 16 columns, one row per direction.
+type GradChunk = [[u16; 16]; 4];
+
+/// Scratch of [`band_classes`]: for the last two gradient row pairs, the
+/// four direction gradients of each column summed over the pair's two rows,
+/// in 16-column chunks.
 #[derive(Default)]
 pub(super) struct ClassScratch {
-    pub(super) strengths: Vec<u32>,
+    pub(super) grads: Vec<GradChunk>,
+}
+
+impl ClassScratch {
+    /// The chunks of one gradient row pair for a run of `class_cols` class
+    /// columns: those its `2 * class_cols + 2` columns cover, plus one that a
+    /// class chunk reads past them.
+    pub(super) fn chunks(class_cols: usize) -> usize {
+        (2 * class_cols + 2).div_ceil(16) + 1
+    }
 }
 
 /// The four § 7.20.5 `grad` directions of the 16 columns from column 1 of
@@ -849,108 +904,194 @@ fn gradients<S: Simd>(simd: S, rows: [&[u16; 18]; 3]) -> [i16x16<S>; 4] {
     ]
 }
 
-/// The sums of horizontally adjacent gradient pairs over the two gradient
-/// rows between the four source rows, for the 16 gradient columns from
-/// column 1 of each row.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn pair_sums<S: Simd>(simd: S, rows: [&[u16; 18]; 4]) -> [u32x8<S>; 4] {
-    let first = gradients(simd, [rows[0], rows[1], rows[2]]);
-    let second = gradients(simd, [rows[1], rows[2], rows[3]]);
-    core::array::from_fn(|d| simd.pairwise_widening_add_u16x16((first[d] + second[d]).bitcast()))
-}
-
-/// The pair sums of chunk `chunk` (gradient columns from `16 * chunk`) of
-/// the four source rows; a chunk that reads past the rows reads zeros there.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn chunk_pair_sums<S: Simd>(simd: S, rows: &[&[u16]; 4], chunk: usize) -> Option<[u32x8<S>; 4]> {
-    let start = 16 * chunk;
-    let mut chunks = [&[0; 18]; 4];
-    let mut padded = [[0; 18]; 4];
-    if rows.iter().all(|row| row.len() >= start + 18) {
-        for (chunk, row) in chunks.iter_mut().zip(rows) {
-            *chunk = row.get(start..)?.first_chunk::<18>()?;
-        }
-        return Some(pair_sums(simd, chunks));
-    }
-    for (padded, row) in padded.iter_mut().zip(rows) {
-        let tail = row.get(start..)?;
-        padded.get_mut(..tail.len())?.copy_from_slice(tail);
-    }
-    Some(pair_sums(simd, padded.each_ref()))
-}
-
-/// The direction strengths of the `class_cols` class columns of one
-/// gradient row pair from its four source rows: each sums the gradients of
-/// four columns from `2j` over both rows. With `classes`, classifies the
-/// columns from these and the previous row pair's strengths in `strengths`,
-/// which then take the new ones.
-fn class_row<S: Simd>(
-    simd: S,
-    rows: [&[u16]; 4],
-    class_cols: usize,
-    strengths: &mut [u32],
-    mut classes: Option<&mut [GdfClass]>,
-    tables: &[(i16, i16); 4],
-) -> Option<()> {
-    let stride = strengths.len() / 4;
-    let pair_chunks = (class_cols + 1).div_ceil(8);
-    let mut current = chunk_pair_sums(simd, &rows, 0)?;
-    for chunk in 0..class_cols.div_ceil(8) {
-        let next = if chunk + 1 < pair_chunks {
-            chunk_pair_sums(simd, &rows, chunk + 1)?
+/// Fills `out` with the gradients of the gradient row pair between the four
+/// source rows, summed over its two rows, for the columns from column 1 of
+/// each row; a chunk that reads past the rows reads zeros there.
+fn gradient_row<S: Simd>(simd: S, rows: &[&[u16]; 4], out: &mut [GradChunk]) -> Option<()> {
+    for (chunk, out) in out.iter_mut().enumerate() {
+        let start = 16 * chunk;
+        let mut padded = [[0; 18]; 4];
+        let chunks = if rows.iter().all(|row| row.len() >= start + 18) {
+            let mut chunks = [&[0; 18]; 4];
+            for (chunk, row) in chunks.iter_mut().zip(rows) {
+                *chunk = row.get(start..)?.first_chunk::<18>()?;
+            }
+            chunks
         } else {
-            [u32x8::splat(simd, 0); 4]
+            for (padded, row) in padded.iter_mut().zip(rows) {
+                let tail = row.get(start..).unwrap_or_default();
+                padded.get_mut(..tail.len())?.copy_from_slice(tail);
+            }
+            padded.each_ref()
         };
-        let sums: [u32x8<S>; 4] =
-            core::array::from_fn(|d| current[d] + simd.slide_u32x8::<1>(current[d], next[d]));
-        let mut previous = [u32x8::splat(simd, 0); 4];
-        for (direction, (previous, sums)) in previous.iter_mut().zip(sums).enumerate() {
-            let slot = strengths
-                .get_mut(direction * stride + 8 * chunk..)?
-                .first_chunk_mut::<8>()?;
-            *previous = u32x8::from_slice(simd, slot);
-            sums.store_array(slot);
+        let first = gradients(simd, [chunks[0], chunks[1], chunks[2]]);
+        let second = gradients(simd, [chunks[1], chunks[2], chunks[3]]);
+        for ((out, first), second) in out.iter_mut().zip(first).zip(second) {
+            (first + second).bitcast::<u16x16<S>>().store_array(out);
         }
-        if let Some(classes) = classes.as_deref_mut() {
-            let classes = classes.get_mut(8 * chunk..)?;
-            let count = classes.len().min(8);
-            let eight = classify_eight(simd, previous, sums, tables);
-            classes
-                .get_mut(..count)?
-                .copy_from_slice(eight.get(..count)?);
-        }
-        current = next;
     }
     Some(())
 }
 
-/// The classes and gradient biases of 8 class columns from their direction
-/// strengths over two gradient row pairs; `tables` holds each direction's
-/// clip bound and weight.
+/// The direction gradients of a chunk summed over two gradient row pairs.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn classify_eight<S: Simd>(
+fn pair_sum<S: Simd>(simd: S, current: &GradChunk, previous: &GradChunk) -> [i16x16<S>; 4] {
+    core::array::from_fn(|d| {
+        (u16x16::from_slice(simd, &current[d]) + u16x16::from_slice(simd, &previous[d])).bitcast()
+    })
+}
+
+/// The classes and gradient biases of the 8 class columns of a chunk from
+/// the gradients `sums` of its columns and `next` of the next chunk over
+/// both gradient row pairs: each direction strength sums four columns from
+/// `2j`, at most `8 * 4092`, so it fits an `i16` multiply-add, which by 4096
+/// also moves `strength >> 4` to the upper half. `tables` holds the clip
+/// bounds and the weights of directions 0 and 1, then of 2 and 3, in
+/// alternating lanes.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn classify_chunk<S: Simd>(
     simd: S,
-    previous: [u32x8<S>; 4],
-    current: [u32x8<S>; 4],
-    tables: &[(i16, i16); 4],
-) -> [GdfClass; 8] {
-    let strengths: [u32x8<S>; 4] = core::array::from_fn(|d| previous[d] + current[d]);
-    let bit = |a: u32x8<S>, b: u32x8<S>, value: i32| {
+    sums: [i16x16<S>; 4],
+    next: [i16x16<S>; 4],
+    tables: &[[i16; 16]; 4],
+) -> i32x8<S> {
+    let strengths: [i32x8<S>; 4] = core::array::from_fn(|d| {
+        let columns = sums[d] + simd.slide_i16x16::<2>(sums[d], next[d]);
+        simd.pairwise_dot_product_i16x16(columns, i16x16::splat(simd, 4096))
+    });
+    let bit = |a: i32x8<S>, b: i32x8<S>, value: i32| {
         a.simd_le(b)
             .select(i32x8::splat(simd, value), i32x8::splat(simd, 0))
     };
     let index = bit(strengths[0], strengths[1], 1) | bit(strengths[2], strengths[3], 2);
-    let mut bias = i32x8::splat(simd, 0);
-    for (strength, &(alpha, weight)) in strengths.into_iter().zip(tables) {
-        let comb = (strength >> 4)
-            .min(u32x8::splat(simd, alpha as u32))
-            .bitcast::<i32x8<S>>();
-        bias += comb * i32::from(weight);
+    let high = i32x8::splat(simd, -65536);
+    let combs = |low: i32x8<S>, high_half: i32x8<S>, [alpha, weight]: [&[i16; 16]; 2]| {
+        let packed: i16x16<S> = ((low >> 16) | (high_half & high)).bitcast();
+        let alpha = i16x16::from_slice(simd, alpha);
+        simd.pairwise_dot_product_i16x16(packed.min(alpha), i16x16::from_slice(simd, weight))
+    };
+    let bias = combs(strengths[0], strengths[1], [&tables[0], &tables[1]])
+        + combs(strengths[2], strengths[3], [&tables[2], &tables[3]]);
+    (bias << 2) | index
+}
+
+/// The four source rows of gradient row pair `row_pair` of the run of
+/// `class_cols` class columns whose top-left sample sits at `origin`.
+fn gradient_source_rows<'a>(
+    source: &GdfSource<'a>,
+    origin: (usize, usize),
+    class_cols: usize,
+    row_pair: usize,
+) -> Option<[&'a [u16]; 4]> {
+    let first_row = (origin.1 + 2 * row_pair).checked_sub(2)?;
+    let first_col = origin.0.checked_sub(2)?;
+    let row = |index: usize| {
+        exact_slice(
+            source.samples,
+            (first_row + index) * source.stride + first_col,
+            2 * class_cols + 4,
+        )
+    };
+    Some([row(0)?, row(1)?, row(2)?, row(3)?])
+}
+
+/// The gradient-tap tables of [`classify_chunk`] for `block`'s GDF table.
+fn class_tables(block: &GdfBlock) -> [[i16; 16]; 4] {
+    let alpha = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx][GDF_COORDS.len()..];
+    let weight = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx][2][GDF_COORDS.len()..];
+    core::array::from_fn(|table| {
+        core::array::from_fn(|lane| {
+            let direction = (table & 2) + (lane & 1);
+            if table & 1 == 0 {
+                alpha[direction][0] as i16
+            } else {
+                weight[direction][0]
+            }
+        })
+    })
+}
+
+/// Filters in place the run `block` of the stripe rows `output` (rows
+/// `block.base_stride` apart, the run at column `block.x`) whose top-left
+/// source sample sits at `origin`: per row pair it fills the next gradient
+/// row pair, then classifies and filters each 16-column chunk in one pass.
+pub(super) fn filter_run(
+    source: &GdfSource<'_>,
+    origin: (usize, usize),
+    block: &GdfBlock,
+    output: &mut [u16],
+    scratch: &mut ClassScratch,
+) -> Option<()> {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(avx2) = Level::baseline().as_avx2() {
+        return filter_run_with(avx2, InLane, source, origin, block, output, scratch);
     }
-    ((bias << 2) | index).to_array().map(GdfClass)
+    dispatch!(Level::baseline(), simd => filter_run_with(
+        simd, Interleaved, source, origin, block, output, scratch,
+    ))
+}
+
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn filter_run_with<S: Simd, L: Lanes<S>>(
+    simd: S,
+    lanes: L,
+    source: &GdfSource<'_>,
+    origin: (usize, usize),
+    block: &GdfBlock,
+    output: &mut [u16],
+    scratch: &mut ClassScratch,
+) -> Option<()> {
+    let (run, class_cols) = (block.width, block.width >> 1);
+    if run == 0 || !run.is_multiple_of(2) || !block.height.is_multiple_of(2) {
+        return None;
+    }
+    let chunks = ClassScratch::chunks(class_cols);
+    let (first, second) = scratch.grads.get_mut(..2 * chunks)?.split_at_mut(chunks);
+    let buffers = [first, second];
+    let tables = class_tables(block);
+    let params = GdfSymParams::new(block);
+    let grad_rows = |row_pair: usize| gradient_source_rows(source, origin, class_cols, row_pair);
+    gradient_row(simd, &grad_rows(0)?, buffers[0])?;
+    for row_pair in 0..block.height / 2 {
+        let (current, previous) = ((row_pair + 1) & 1, row_pair & 1);
+        gradient_row(simd, &grad_rows(row_pair + 1)?, buffers[current])?;
+        let (current, previous) = (&*buffers[current], &*buffers[previous]);
+        let window_rows = source_rows(
+            source,
+            (origin.0, origin.1 + 2 * row_pair),
+            run + 2 * TAP_REACH,
+        )
+        .ok()?;
+        let start = (2 * row_pair * block.base_stride).checked_add(block.x)?;
+        let (top, bottom) = output
+            .get_mut(start..)?
+            .split_at_mut_checked(block.base_stride)?;
+        let (top, bottom) = (top.get_mut(..run)?, bottom.get_mut(..run)?);
+        let mut next = pair_sum(simd, current.first()?, previous.first()?);
+        let mut grads = current.iter().zip(previous).skip(1);
+        for x in (0..run).step_by(16) {
+            let (current, previous) = grads.next()?;
+            let sums = next;
+            next = pair_sum(simd, current, previous);
+            let classes = classify_chunk(simd, sums, next, &tables);
+            let width = (run - x).min(16);
+            if width == 16
+                && let Some(window) = window_at::<28>(&window_rows, x)
+            {
+                let top = top.get_mut(x..)?.first_chunk_mut::<16>()?;
+                let bottom = bottom.get_mut(x..)?.first_chunk_mut::<16>()?;
+                sym_rows_with(simd, lanes, &window, [top, bottom], classes, block, &params);
+            } else {
+                let classes = classes.to_array().map(GdfClass);
+                let output = [&mut top[x..], &mut bottom[x..]];
+                sym_rows_narrow(&window_rows, x, width, output, &classes, block, &params)?;
+            }
+        }
+    }
+    Some(())
 }
 
 /// The § 7.20.5 `gdfCls` and gradient bias of every 2x2 class block of
@@ -976,36 +1117,30 @@ fn band_classes_with<S: Simd>(
     scratch: &mut ClassScratch,
 ) -> Option<()> {
     let class_cols = block.width >> 1;
-    let strengths = scratch
-        .strengths
-        .get_mut(..4 * class_cols.div_ceil(8) * 8)?;
-    let row_len = 2 * class_cols + 4;
-    let first_col = origin.0.checked_sub(2)?;
-    let rows = |row_pair: usize| -> Option<[&[u16]; 4]> {
-        let first_row = (origin.1 + 2 * row_pair).checked_sub(2)?;
-        let row = |index: usize| {
-            exact_slice(
-                source.samples,
-                (first_row + index) * source.stride + first_col,
-                row_len,
-            )
-        };
-        Some([row(0)?, row(1)?, row(2)?, row(3)?])
-    };
-    let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx][GDF_COORDS.len()..];
-    let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx][2][GDF_COORDS.len()..];
-    let tables: [(i16, i16); 4] =
-        core::array::from_fn(|d| (alpha_table[d][0] as i16, weight_table[d][0]));
-    class_row(simd, rows(0)?, class_cols, strengths, None, &tables)?;
+    let chunks = ClassScratch::chunks(class_cols);
+    let (first, second) = scratch.grads.get_mut(..2 * chunks)?.split_at_mut(chunks);
+    let buffers = [first, second];
+    let rows = |row_pair: usize| gradient_source_rows(source, origin, class_cols, row_pair);
+    let tables = class_tables(block);
+    gradient_row(simd, &rows(0)?, buffers[0])?;
     for (row, classes) in classes.chunks_exact_mut(class_cols).enumerate() {
-        class_row(
-            simd,
-            rows(row + 1)?,
-            class_cols,
-            strengths,
-            Some(classes),
-            &tables,
-        )?;
+        let (current, previous) = ((row + 1) & 1, row & 1);
+        gradient_row(simd, &rows(row + 1)?, buffers[current])?;
+        let (current, previous) = (&*buffers[current], &*buffers[previous]);
+        let mut next = pair_sum(simd, current.first()?, previous.first()?);
+        let pairs = current.iter().zip(previous).skip(1);
+        for (classes, (current, previous)) in classes.chunks_mut(8).zip(pairs) {
+            let sums = next;
+            next = pair_sum(simd, current, previous);
+            let eight = classify_chunk(simd, sums, next, &tables)
+                .to_array()
+                .map(GdfClass);
+            if let Ok(classes) = <&mut [GdfClass; 8]>::try_from(&mut *classes) {
+                *classes = eight;
+            } else {
+                classes.copy_from_slice(eight.get(..classes.len())?);
+            }
+        }
     }
     Some(())
 }
