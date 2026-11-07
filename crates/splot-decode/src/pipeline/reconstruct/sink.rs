@@ -407,16 +407,11 @@ pub(crate) fn write_intra_prediction_block<T: ReconSample>(
     result
 }
 
-/// Whether coded blocks also predict in place and add their residual there.
-const RESIDUAL_ADDS_IN_PLACE: bool = false;
-
 /// Predicts an in-frame block straight into its frame rows, then adds any
 /// coded residual there, so no staging buffer is copied into the frame.
 ///
-/// Returns `false` without predicting when the block overhangs the frame edge,
-/// the workspace has another bit depth, or the block codes a residual: until
-/// the residual add runs in place in one pass, the write-through
-/// prediction-plus-residual add is cheaper for coded blocks.
+/// Returns `false` without predicting when the block overhangs the frame edge
+/// or the workspace has another bit depth.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn predict_intra_in_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -432,7 +427,7 @@ pub(crate) fn predict_intra_in_frame<T: ReconSample>(
     bit_depth: BitDepth,
     predict: impl FnOnce(&mut [T], usize) -> core::result::Result<(), GeneralIntraResidualError>,
 ) -> core::result::Result<bool, GeneralIntraResidualError> {
-    if block.eob != 0 && !RESIDUAL_ADDS_IN_PLACE || bit_depth != workspace.info().bit_depth() {
+    if bit_depth != workspace.info().bit_depth() {
         return Ok(false);
     }
     let predicted = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
