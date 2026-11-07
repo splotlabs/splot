@@ -14,7 +14,7 @@
 //! Feature tracking: `RECON-SECONDARY-INVERSE-TRANSFORM`.
 
 use fearless_simd::{
-    Bytes as _, Simd, SimdBase as _, SimdIntWiden as _, SimdWiden as _, i8x32, i16x16, i32x8,
+    Bytes as _, Simd, SimdBase as _, SimdIntWiden as _, SimdWiden as _, i8x32, i16x16, i32x8, u32x8,
 };
 
 use splot_tables::tables::secondary_transform::{IST_4X4_KERNEL, IST_8X8_KERNEL, STX_SCAN_MAP};
@@ -215,6 +215,58 @@ pub(crate) fn secondary_inverse_transform_prefix(
     coded: usize,
     params: &SecondaryInverseTransform,
 ) -> Result<usize> {
+    let (scan, bound) = validated(params, dequant.len(), coded)?;
+    let mut coefs = [0i32; IST_8X8_HEIGHT];
+    for (slot, &pos) in coefs[..params.n].iter_mut().zip(scan) {
+        if let Some(&coeff) = dequant[..coded].get(usize::from(pos)) {
+            *slot = coeff.clamp(-bound, bound - 1);
+        }
+    }
+    Ok(transform_into(&coefs, params, dequant, coded))
+}
+
+/// [`secondary_inverse_transform_prefix`] of the § 7.14.4 flat dequantization
+/// of the raster `quant` prefix by `(dc_quant, ac_quant, dq_denom)`: only the
+/// first `n` scan positions feed the transform and every other `Dequant`
+/// entry ends zero, so only those positions are dequantized. Writes the
+/// returned whole-row prefix of `dequant`.
+pub(crate) fn secondary_inverse_transform_quant(
+    quant: &[i32],
+    (dc_quant, ac_quant, dq_denom): (u32, u32, u32),
+    params: &SecondaryInverseTransform,
+    dequant: &mut [i32],
+) -> Result<usize> {
+    let (scan, bound) = validated(params, dequant.len(), quant.len())?;
+    let mut coefs = [0i32; IST_8X8_HEIGHT];
+    for (slot, &pos) in coefs[..params.n].iter_mut().zip(scan) {
+        *slot = quant.get(usize::from(pos)).copied().unwrap_or(0);
+    }
+    if dq_denom.is_power_of_two() && scan.first() == Some(&0) {
+        let shift = dq_denom.trailing_zeros();
+        baseline_simd!(simd => {
+            for (k, chunk) in coefs.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                let first = if k == 0 { dc_quant } else { ac_quant };
+                let q2 = u32x8::load_array(simd, [first, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant, ac_quant]);
+                crate::dequant_process::dequant_lanes(simd, i32x8::from_slice(simd, chunk), q2, shift, bound)
+                    .store_slice(chunk);
+            }
+        });
+    } else {
+        for (slot, &pos) in coefs[..params.n].iter_mut().zip(scan) {
+            let q2 = if pos == 0 { dc_quant } else { ac_quant };
+            *slot = crate::dequant_coefficient(*slot, q2, dq_denom, params.bit_depth);
+        }
+    }
+    Ok(transform_into(&coefs, params, dequant, 0))
+}
+
+/// The checked shape, parameters and buffer of `params` with the primary
+/// scan and the § 7.15.3 clamp bound.
+fn validated(
+    params: &SecondaryInverseTransform,
+    len: usize,
+    coded: usize,
+) -> Result<(&'static [u16], i32)> {
     let SecondaryInverseTransform {
         w,
         h,
@@ -222,14 +274,13 @@ pub(crate) fn secondary_inverse_transform_prefix(
         kernel,
         sec_tx_type,
         primary_scan_class,
-        transpose,
         bit_depth,
+        ..
     } = *params;
     if !is_valid_side(w) || !is_valid_side(h) {
         return Err(ReconError::SecondaryTransformInvalidShape { w, h });
     }
-    let large = w >= 8 && h >= 8;
-    let (set_size, kernel_height) = if large {
+    let (set_size, kernel_height) = if w >= 8 && h >= 8 {
         (IST_SET_SIZE_8X8, IST_8X8_HEIGHT)
     } else {
         (IST_SET_SIZE_4X4, IST_4X4_HEIGHT)
@@ -242,22 +293,41 @@ pub(crate) fn secondary_inverse_transform_prefix(
         });
     }
     let scan = crate::coefficient_scan_slice(w, h, primary_scan_class)?;
-    let expected = w * h;
-    if dequant.len() != expected || coded > expected {
+    if len != w * h || coded > len {
         return Err(ReconError::SecondaryTransformBufferMismatch {
-            expected,
-            actual: dequant.len(),
+            expected: w * h,
+            actual: len,
         });
     }
+    Ok((scan, 1i32 << (u32::from(bit_depth.bits()) + 7)))
+}
+
+/// Runs the kernel over the gathered `coefs` and writes `Dequant`: zero over
+/// its first `coded` entries and the output rows, with the outputs scattered
+/// into the top-left sub-block. Returns the written whole-row prefix.
+fn transform_into(
+    coefs: &[i32; IST_8X8_HEIGHT],
+    params: &SecondaryInverseTransform,
+    dequant: &mut [i32],
+    coded: usize,
+) -> usize {
+    let SecondaryInverseTransform {
+        w,
+        h,
+        n,
+        kernel,
+        sec_tx_type,
+        transpose,
+        bit_depth,
+        ..
+    } = *params;
     let bound = 1i32 << (u32::from(bit_depth.bits()) + 7);
-    let mut coefs = [0i32; IST_8X8_HEIGHT];
-    for (slot, &pos) in coefs[..n].iter_mut().zip(scan) {
-        if let Some(&coeff) = dequant[..coded].get(usize::from(pos)) {
-            *slot = coeff.clamp(-bound, bound - 1);
-        }
-    }
+    let expected = w * h;
+    let large = w >= 8 && h >= 8;
     let output_rows = if large { 8 } else { 4 };
-    let len = coded.max((output_rows * w).min(expected));
+    let len = coded
+        .max((output_rows * w).min(expected))
+        .min(dequant.len());
     dequant[..len].fill(0);
     let coefs = &coefs[..n];
     let stx = sec_tx_type - 1;
@@ -308,7 +378,7 @@ pub(crate) fn secondary_inverse_transform_prefix(
             *row = *tile;
         }
     }
-    Ok(len)
+    len
 }
 
 /// The output-block position, `row * 8 + column` with `[1]` transposed, of
