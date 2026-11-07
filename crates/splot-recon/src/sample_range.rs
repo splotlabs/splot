@@ -12,8 +12,13 @@ use crate::ReconSample;
 /// Reports whether any sample of any storage type exceeds the active bit depth.
 ///
 /// `u16` storage takes the lane-group scan; every other storage type keeps the
-/// scalar walk its own `to_u16` conversion needs.
+/// scalar walk its own `to_u16` conversion needs, unless no value of the type
+/// can exceed `max_sample`.
+#[inline]
 pub(crate) fn samples_exceed<T: ReconSample>(samples: &[T], max_sample: u16) -> bool {
+    if max_sample >= T::MAX_VALUE {
+        return false;
+    }
     T::u16_slice(samples).map_or_else(
         || samples.iter().any(|sample| sample.to_u16() > max_sample),
         |samples| u16_samples_exceed(samples, max_sample),

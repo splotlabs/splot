@@ -766,6 +766,25 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     ) -> Result<()> {
         let rect = block_rect(x, y, size)?;
         let mut target = self.residual_rect_target(plane, rect, size.width())?;
+        let (base, stride, width) = (target.base, target.stride, target.rect.width());
+        if target.max_sample == u16::from(u8::MAX)
+            && let Some(samples) = T::u8_slice_mut(&mut *target.samples)
+        {
+            let magnitude = residual.unsigned_abs().min(255) as u8;
+            for row in 0..target.rect.height() {
+                let start = base + row * stride;
+                if let Some(row) = samples.get_mut(start..start + width) {
+                    for sample in row {
+                        *sample = if residual < 0 {
+                            sample.saturating_sub(magnitude)
+                        } else {
+                            sample.saturating_add(magnitude)
+                        };
+                    }
+                }
+            }
+            return Ok(());
+        }
         let constant = [residual; 64];
         for row in 0..target.rect.height() {
             target.add_row(row, &constant)?;
@@ -831,7 +850,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                 actual: target.len(),
             });
         }
-        for row_index in 0..rect.height() {
+        for row_index in (0..rect.height()).filter(|_| max_sample < T::MAX_VALUE) {
             let target_start = target_base + row_index * target_stride;
             let row = &target[target_start..target_start + rect.width()];
             if !samples_exceed(row, max_sample) {
