@@ -550,21 +550,15 @@ impl CflLumaEdges {
         block: CflBlock,
         neighbours: NeighbourAvailability,
     ) -> core::result::Result<i32, GeneralIntraResidualError> {
-        let step_w = if block.width > 32 { 2 } else { 1 };
-        let step_h = if block.height > 32 { 2 } else { 1 };
         let mut sum = 0u32;
         let mut count = 0u32;
         if neighbours.has_above() && block.y > 0 {
-            for &q3 in self.above[..block.width].iter().step_by(step_w) {
-                sum = sum.saturating_add(q3 as u32);
-                count += 1;
-            }
+            sum += edge_sum(&self.above[..block.width], |q3| q3 as u32);
+            count += (block.width / dc_step(block.width)) as u32;
         }
         if neighbours.has_left() && block.x > 0 {
-            for &q3 in self.left[..block.height].iter().step_by(step_h) {
-                sum = sum.saturating_add(q3 as u32);
-                count += 1;
-            }
+            sum += edge_sum(&self.left[..block.height], |q3| q3 as u32);
+            count += (block.height / dc_step(block.height)) as u32;
         }
         let bits = block.bit_depth.bits();
         if count == 0 {
@@ -592,30 +586,38 @@ impl CflLumaEdges {
         } = block;
         let have_above = neighbours.has_above() && y > 0;
         let have_left = neighbours.has_left() && x > 0;
-        let (max_x, max_y) = (chroma.width - 1, chroma.height - 1);
-        let above = if have_above {
+        let above_row = if have_above {
             chroma.row_or_err(y - 1)?
         } else {
             &[]
         };
-        let above_at = |col: usize| i32::from(above[(x + col).min(max_x)].to_u16());
-        let left = if have_left {
-            let rows = height.min(chroma.height - y.min(max_y));
-            chroma.column(x - 1, y, rows)?
-        } else {
-            (&[][..], 0, 0)
+        let run = above_row.get(x..x + width);
+        let mut above = [0u16; MAX_CFL_AXIS];
+        if have_above && run.is_none() {
+            for (i, slot) in above[..width].iter_mut().enumerate() {
+                *slot = above_row[(x + i).min(chroma.width - 1)].to_u16();
+            }
+        }
+        let above_at = |col: usize| {
+            i32::from(match run {
+                Some(run) => run[col].to_u16(),
+                None => above[col],
+            })
         };
-        let left_at = |row: usize| {
-            let (samples, stride, rows) = left;
-            i32::from(samples[row.min(rows.saturating_sub(1)) * stride].to_u16())
-        };
-        let left_sum = have_left.then(|| every(height, dc_step(height), &left_at));
-        let above_sum = have_above.then(|| every(width, dc_step(width), &above_at));
+        let mut left = [0u16; MAX_CFL_AXIS];
+        if have_left {
+            chroma.gather_column(x - 1, y, &mut left[..height])?;
+        }
+        let above_sum = have_above.then(|| match run {
+            Some(run) => edge_sum(run, |sample| u32::from(sample.to_u16())),
+            None => edge_sum(&above[..width], u32::from),
+        });
+        let left_sum = have_left.then(|| edge_sum(&left[..height], u32::from));
         let dc: T = splot_recon::predict_intra_dc_value_from_edge_sums(
             block.bit_depth,
             block.size,
-            left_sum.map(|sum| sum as u32),
-            above_sum.map(|sum| sum as u32),
+            left_sum,
+            above_sum,
         )?;
         let dc = i32::from(dc.to_u16());
         if !derive {
@@ -654,7 +656,9 @@ impl CflLumaEdges {
         }
         let mut sums = [0i32; 5];
         add_alpha_samples(&mut sums, width, num_above, &self.above, above_at);
-        add_alpha_samples(&mut sums, height, num_left, &self.left, left_at);
+        add_alpha_samples(&mut sums, height, num_left, &self.left, |row| {
+            i32::from(left[row])
+        });
         let [sum_x, sum_y, sum_xy, sum_xx, count] = sums;
         let der = sum_xx - (sum_x * sum_x) / count;
         let nor = sum_xy - (sum_x * sum_y) / count;
@@ -675,7 +679,7 @@ fn add_alpha_samples(
     sums: &mut [i32; 5],
     len: usize,
     num: usize,
-    luma_q3: &[i32],
+    luma_q3: &[i32; MAX_CFL_AXIS],
     chroma_at: impl Fn(usize) -> i32,
 ) {
     if num == 0 {
@@ -683,7 +687,7 @@ fn add_alpha_samples(
     }
     let step = (len / num).max(1);
     let mut at = if step == 1 { 0 } else { step >> 1 };
-    while at < len {
+    while at < len.min(MAX_CFL_AXIS) {
         let (luma, chroma) = (luma_q3[at] >> 3, chroma_at(at));
         for (sum, term) in sums
             .iter_mut()
@@ -700,15 +704,15 @@ const fn dc_step(len: usize) -> usize {
     if len > 32 { 2 } else { 1 }
 }
 
-/// The sum of `at(i)` over `i` below `len` in steps of `step`.
+/// The sum of an edge's samples at its [`dc_step`]; every sample is at most
+/// `8 << 10`, so a 64-sample edge cannot overflow.
 #[inline]
-fn every(len: usize, step: usize, at: &impl Fn(usize) -> i32) -> i32 {
-    let (mut total, mut i) = (0, 0);
-    while i < len {
-        total += at(i);
-        i += step;
+fn edge_sum<V: Copy>(edge: &[V], value: impl Fn(V) -> u32) -> u32 {
+    if dc_step(edge.len()) == 1 {
+        edge.iter().map(|&sample| value(sample)).sum()
+    } else {
+        edge.iter().step_by(2).map(|&sample| value(sample)).sum()
     }
-    total
 }
 
 fn cfl_above_min_luma_ref_y(
@@ -1036,6 +1040,25 @@ impl<'a, T> PlaneSamples<'a, T> {
 }
 
 impl<'a, T: ReconSample> PlaneSamples<'a, T> {
+    /// Column `x` from row `y` into `out`, each sample past the plane's
+    /// bottom edge repeating its last.
+    #[inline]
+    fn gather_column(
+        &self,
+        x: usize,
+        y: usize,
+        out: &mut [u16],
+    ) -> core::result::Result<(), GeneralIntraResidualError> {
+        let rows = out.len().min(self.height - y.min(self.height - 1));
+        let (column, stride, rows) = self.column(x, y, rows)?;
+        let (stored, past) = out.split_at_mut(rows);
+        for (i, slot) in stored.iter_mut().enumerate() {
+            *slot = column[i * stride].to_u16();
+        }
+        past.fill(stored[rows - 1]);
+        Ok(())
+    }
+
     fn of(
         workspace: &'a CurrentFrameWorkspace<T>,
         plane_id: PlaneId,
