@@ -199,7 +199,8 @@ pub use splot_tables::tables::quantizer::QM_OFFSET;
 pub use subpel_mc::{
     BilinearOverlapCarry, InterpolationFilter, ReferencePlaneView, SUBPEL_FILTERS,
     SubpelPredictParams, blend_compound_average_equal, blend_compound_average_weighted,
-    blend_compound_average_weighted_sample, subpel_predict_12x12_bilinear_overlap_into,
+    blend_compound_average_weighted_sample, refinemv_window_sads_u8,
+    subpel_predict_12x12_bilinear_overlap_into, subpel_predict_bilinear_search_window_u8,
     subpel_predict_block, subpel_predict_block_compound_average_fast_pair_into,
     subpel_predict_block_compound_average_fast_validated_strided_into,
     subpel_predict_block_compound_average_fullpel_strided_into_u8,

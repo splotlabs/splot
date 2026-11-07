@@ -904,6 +904,57 @@ impl<'a, T: ReconSample> LumaReference<'a, T> {
         self.bit_depth
     }
 
+    /// The parameters of the bilinear refine-MV or optical-flow luma area
+    /// `rect`, `INSET` samples in from each edge, and its published view.
+    #[inline]
+    fn area_prediction<const INSET: usize>(
+        &mut self,
+        rect: McBlockRect,
+        mv: Mv,
+        interp: InterpolationFilter,
+        refinemv_area: Option<(Mv, usize, usize)>,
+    ) -> Result<(ReferencePlaneView<'a, T>, SubpelPredictParams)> {
+        let scaling =
+            self.scaling
+                .with_mv(rect.luma_x as i32, rect.luma_y as i32, mv.row, mv.col, 0, 0);
+        let bounds = refinemv_area.map(|(candidate, width, height)| {
+            if scaling.is_scaled() {
+                return super::refinemv::reference_area_bounds(
+                    rect.luma_x as i32,
+                    rect.luma_y as i32,
+                    width,
+                    height,
+                    candidate,
+                    0,
+                    0,
+                    &scaling,
+                );
+            }
+            super::refinemv::unscaled_area_bounds(
+                [(rect.luma_x as i32) << 4, (rect.luma_y as i32) << 4],
+                [width, height],
+                candidate,
+                [0, 0],
+                &scaling,
+            )
+        });
+        let params = SubpelPredictParams {
+            interp,
+            w: rect.luma_w.saturating_sub(2 * INSET),
+            h: rect.luma_h.saturating_sub(2 * INSET),
+            start_x: scaling.start_x + INSET as i32 * scaling.step_x,
+            start_y: scaling.start_y + INSET as i32 * scaling.step_y,
+            step_x: scaling.step_x,
+            step_y: scaling.step_y,
+            first_x: bounds.map_or(scaling.first_x, |bounds| bounds.first_x),
+            first_y: bounds.map_or(scaling.first_y, |bounds| bounds.first_y),
+            last_x: bounds.map_or(scaling.last_x, |bounds| bounds.last_x),
+            last_y: bounds.map_or(scaling.last_y, |bounds| bounds.last_y),
+            bit_depth: self.bit_depth,
+        };
+        Ok((self.view(subpel_last_reference_row(&params))?, params))
+    }
+
     /// The luma view, published down to `last_row`: the last fetched view
     /// when its published rows reach that row, else a new one (with the same
     /// errors as fetching it per unit).
@@ -932,45 +983,7 @@ pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
     tip_centre: Option<&mut BilinearOverlapCarry<'a, T>>,
     output: &mut [u16],
 ) -> Result<()> {
-    let scaling =
-        luma.scaling
-            .with_mv(rect.luma_x as i32, rect.luma_y as i32, mv.row, mv.col, 0, 0);
-    let bounds = refinemv_area.map(|(candidate, width, height)| {
-        if scaling.is_scaled() {
-            return super::refinemv::reference_area_bounds(
-                rect.luma_x as i32,
-                rect.luma_y as i32,
-                width,
-                height,
-                candidate,
-                0,
-                0,
-                &scaling,
-            );
-        }
-        super::refinemv::unscaled_area_bounds(
-            [(rect.luma_x as i32) << 4, (rect.luma_y as i32) << 4],
-            [width, height],
-            candidate,
-            [0, 0],
-            &scaling,
-        )
-    });
-    let params = SubpelPredictParams {
-        interp,
-        w: rect.luma_w.saturating_sub(2 * INSET),
-        h: rect.luma_h.saturating_sub(2 * INSET),
-        start_x: scaling.start_x + INSET as i32 * scaling.step_x,
-        start_y: scaling.start_y + INSET as i32 * scaling.step_y,
-        step_x: scaling.step_x,
-        step_y: scaling.step_y,
-        first_x: bounds.map_or(scaling.first_x, |bounds| bounds.first_x),
-        first_y: bounds.map_or(scaling.first_y, |bounds| bounds.first_y),
-        last_x: bounds.map_or(scaling.last_x, |bounds| bounds.last_x),
-        last_y: bounds.map_or(scaling.last_y, |bounds| bounds.last_y),
-        bit_depth: luma.bit_depth,
-    };
-    let view = luma.view(subpel_last_reference_row(&params))?;
+    let (view, params) = luma.area_prediction::<INSET>(rect, mv, interp, refinemv_area)?;
     let (first, available) = (INSET * rect.luma_w + INSET, output.len());
     let output = output
         .get_mut(first..)
@@ -987,6 +1000,23 @@ pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
         return Ok(());
     }
     subpel_predict_block_strided_into(&view, &params, output, rect.luma_w).map_err(Into::into)
+}
+
+/// Predicts the eight-bit bilinear § 7.13.3.6 search window of `rect` at
+/// `mv` into `output` as bytes, or returns `false` when the byte kernel does
+/// not cover it.
+pub(super) fn search_window_u8<T: ReconSample>(
+    luma: &mut LumaReference<'_, T>,
+    rect: McBlockRect,
+    mv: Mv,
+    refinemv_area: (Mv, usize, usize),
+    output: &mut [u8],
+) -> Result<bool> {
+    let (view, params) =
+        luma.area_prediction::<0>(rect, mv, InterpolationFilter::Bilinear, Some(refinemv_area))?;
+    Ok(splot_recon::subpel_predict_bilinear_search_window_u8(
+        &view, &params, output,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
