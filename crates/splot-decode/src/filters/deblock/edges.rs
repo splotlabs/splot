@@ -356,9 +356,12 @@ impl PassEdges {
                         .edges
                         .get_mut(out + at..out + at + count)
                         .ok_or(DeblockError::Workspace)?;
-                    match out.first_chunk_mut::<8>() {
-                        Some(out) => *out = edges,
-                        None => out.copy_from_slice(&edges[..count]),
+                    if let Ok(out) = <&mut [DeblockEdge; 8]>::try_from(&mut *out) {
+                        *out = edges;
+                    } else {
+                        for (out, &edge) in out.iter_mut().zip(&edges) {
+                            *out = edge;
+                        }
                     }
                     if PASS == 0 {
                         let marks = self.marks.get_mut(offset..).unwrap_or_default();
@@ -399,9 +402,7 @@ impl PassEdges {
     ) -> Result<(), DeblockError> {
         let (width, height, y_origin) = (ctx.width, ctx.height, ctx.y_origin);
         let lines = |count: usize, first: usize, limit: usize| {
-            (0..count)
-                .take_while(|&k| (first + k) * MI_SIZE + MI_SIZE <= limit)
-                .count()
+            count.min((limit / MI_SIZE).saturating_sub(first))
         };
         let (outer, inner) = if PASS == 0 {
             (self.cols, self.rows)
