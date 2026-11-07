@@ -532,45 +532,35 @@ pub(crate) fn partition_context_inputs(
     call: TilePartitionCall,
     tile_bounds: TilePartitionBounds,
     context: TilePartitionContextState<'_>,
-) -> Result<(PartitionContextInput<'_>, SquareSplitContextInput<'_>), TilePartitionTraversalError> {
-    let partition_plane = partition_cdf_plane(call.tree_type);
-    let Some(local_r) = call.r.checked_sub(context.origin_row) else {
+) -> Result<(PartitionContextInput, SquareSplitContextInput), TilePartitionTraversalError> {
+    let (Some(local_r), Some(local_c)) = (
+        call.r.checked_sub(context.origin_row),
+        call.c.checked_sub(context.origin_col),
+    ) else {
         return Err(TilePartitionTraversalError::CoordinateUnderflow {
-            coordinate: "tile-local partition row",
+            coordinate: "tile-local partition position",
             base: call.r,
             offset: context.origin_row,
         });
     };
-    let Some(local_c) = call.c.checked_sub(context.origin_col) else {
-        return Err(TilePartitionTraversalError::CoordinateUnderflow {
-            coordinate: "tile-local partition column",
-            base: call.c,
-            offset: context.origin_col,
-        });
-    };
     let partition_context = PartitionContextInput::new(
         call.b_size.index(),
-        partition_plane,
+        partition_cdf_plane(call.tree_type),
         local_r,
         local_c,
         context.left_mi_sizes,
         context.above_mi_sizes,
     )?;
-    let avail_u = tile_bounds.avail_u(call);
-    let avail_l = tile_bounds.avail_l(call);
-    let grid_r = context
-        .mi_size_rows
-        .plane_row(local_r)
-        .unwrap_or(usize::MAX);
+    let luma =
+        |line: &[u8], index: usize, avail: bool| avail.then(|| line.get(index).copied()).flatten();
     let square_context = SquareSplitContextInput::new(
         call.b_size.index(),
-        0,
-        grid_r,
-        local_c,
-        avail_u,
-        avail_l,
-        context.mi_sizes,
-        context.mi_size_stride,
+        luma(
+            context.above_mi_sizes[0],
+            local_c,
+            tile_bounds.avail_u(call),
+        ),
+        luma(context.left_mi_sizes[0], local_r, tile_bounds.avail_l(call)),
     )?;
     Ok((partition_context, square_context))
 }
