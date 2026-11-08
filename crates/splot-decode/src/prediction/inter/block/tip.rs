@@ -255,54 +255,12 @@ const fn tip_refinemv_offsets_allowed(past_offset: i32, future_offset: i32) -> b
     past_offset != 0 && past_offset == -future_offset
 }
 
-#[doc = "AV2 § 5.20.7.14 and § 5.20.7.17 reference gate for refine-MV search."]
-fn tip_refinemv_references_allowed(
-    frame_type: Option<FrameType>,
-    frame_size: Option<splot_core::headers::frame::FrameSize>,
-    ref_frame_idx: &[u32],
-    ref_order_hint: &[u32],
-    ref_frame_width: &[u32],
-    ref_frame_height: &[u32],
-    references: [(i8, i32); 2],
-) -> bool {
-    if !tip_refinemv_offsets_allowed(references[0].1, references[1].1) {
-        return false;
-    }
-    tip_references_unscaled(
-        frame_type,
-        frame_size,
-        ref_frame_idx,
-        ref_order_hint,
-        ref_frame_width,
-        ref_frame_height,
-        [references[0].0, references[1].0],
-    )
-}
-
 #[doc = "AV2 § 5.20.7.14 opposite-direction reference gate for optical flow."]
-fn tip_optflow_references_allowed(
-    frame_type: Option<FrameType>,
-    frame_size: Option<splot_core::headers::frame::FrameSize>,
-    ref_frame_idx: &[u32],
-    ref_order_hint: &[u32],
-    ref_frame_width: &[u32],
-    ref_frame_height: &[u32],
-    references: [(i8, i32); 2],
-) -> bool {
-    if (references[0].1 <= 0) == (references[1].1 <= 0) {
-        return false;
-    }
-    tip_references_unscaled(
-        frame_type,
-        frame_size,
-        ref_frame_idx,
-        ref_order_hint,
-        ref_frame_width,
-        ref_frame_height,
-        [references[0].0, references[1].0],
-    )
+const fn tip_optflow_offsets_allowed(past_offset: i32, future_offset: i32) -> bool {
+    (past_offset <= 0) != (future_offset <= 0)
 }
 
+#[doc = "AV2 § 5.20.7.14 and § 5.20.7.17 unscaled-reference gate of refine-MV search and optical flow."]
 fn tip_references_unscaled(
     frame_type: Option<FrameType>,
     frame_size: Option<splot_core::headers::frame::FrameSize>,
@@ -605,18 +563,14 @@ fn tip_block_plan<T: ReconSample>(
         .as_ref()
         .is_some_and(|tools| tools.enable_tip_refinemv);
     let output = mode == TipFrameMode::AsOutput;
-    let offsets = [
-        (references.past_ref, references.past_offset),
-        (references.future_ref, references.future_offset),
-    ];
-    let refined_references_allowed = tip_refinemv_references_allowed(
+    let unscaled = tip_references_unscaled(
         core.frame_type,
         core.frame_size,
         ref_frame_idx,
         &reference.ref_order_hint,
         &reference.ref_frame_width,
         &reference.ref_frame_height,
-        offsets,
+        [references.past_ref, references.future_ref],
     );
     let use_refinemv = sequence.inter.as_ref().is_some_and(|tools| {
         tip_uses_refinemv(
@@ -626,7 +580,9 @@ fn tip_block_plan<T: ReconSample>(
             weight,
         )
     });
-    let search_refinemv = use_refinemv && refined_references_allowed;
+    let search_refinemv = use_refinemv
+        && unscaled
+        && tip_refinemv_offsets_allowed(references.past_offset, references.future_offset);
     let interpolation_filter = if output {
         output_interpolation_filter(inter)?
     } else {
@@ -645,15 +601,8 @@ fn tip_block_plan<T: ReconSample>(
         && tip_optflow_weight_and_references_allowed(
             output,
             weight,
-            tip_optflow_references_allowed(
-                core.frame_type,
-                core.frame_size,
-                ref_frame_idx,
-                &reference.ref_order_hint,
-                &reference.ref_frame_width,
-                &reference.ref_frame_height,
-                offsets,
-            ),
+            unscaled
+                && tip_optflow_offsets_allowed(references.past_offset, references.future_offset),
         );
     let frame_size = info.storage_luma_size();
     let block_w = placed.luma_w.min(
@@ -1506,8 +1455,8 @@ mod tests {
     use super::{
         TipHeldReferences, TipReferencePlan, output_interpolation_filter,
         output_prediction_unit_size, prediction_unit_extent, prediction_unit_size,
-        tip_optflow_references_allowed, tip_optflow_weight_and_references_allowed,
-        tip_prediction_controls, tip_refinemv_offsets_allowed, tip_refinemv_references_allowed,
+        tip_optflow_offsets_allowed, tip_optflow_weight_and_references_allowed,
+        tip_prediction_controls, tip_references_unscaled, tip_refinemv_offsets_allowed,
         tip_uses_refinemv, tip_uses_two_references, tmvp_unit_size8,
     };
     use crate::prediction::inter::mc;
@@ -1774,29 +1723,21 @@ mod tests {
 
     #[test]
     fn tip_optflow_accepts_unequal_opposite_direction_references() {
-        let allowed = |offsets: (i32, i32)| {
-            tip_optflow_references_allowed(
+        let unscaled = |widths: &[u32]| {
+            tip_references_unscaled(
                 Some(FrameType::Inter),
                 Some(FrameSize::new(64, 64)),
                 &[0, 1],
                 &[1, 2],
+                widths,
                 &[64, 64],
-                &[64, 64],
-                [(0, offsets.0), (1, offsets.1)],
+                [0, 1],
             )
         };
 
-        assert!(allowed((1, -2)));
-        assert!(!allowed((1, 2)));
-        assert!(!tip_optflow_references_allowed(
-            Some(FrameType::Inter),
-            Some(FrameSize::new(64, 64)),
-            &[0, 1],
-            &[1, 2],
-            &[63, 64],
-            &[64, 64],
-            [(0, 1), (1, -2)],
-        ));
+        assert!(tip_optflow_offsets_allowed(1, -2) && unscaled(&[64, 64]));
+        assert!(!tip_optflow_offsets_allowed(1, 2));
+        assert!(!unscaled(&[63, 64]));
     }
 
     #[test]
@@ -1811,14 +1752,14 @@ mod tests {
     #[test]
     fn tip_refinemv_reference_gate_maps_slots_and_rejects_ineligible_state() {
         let allowed = |frame_type, frame_size, order_hints: &[u32], widths: &[u32]| {
-            tip_refinemv_references_allowed(
+            tip_references_unscaled(
                 frame_type,
                 frame_size,
                 &[2, 0],
                 order_hints,
                 widths,
                 &[352, 1, 352],
-                [(0, 4), (1, -4)],
+                [0, 1],
             )
         };
         let size = Some(FrameSize::new(352, 352));
@@ -1854,27 +1795,27 @@ mod tests {
             &[0, 0, 0],
             &[351, 1, 352]
         ));
-        assert!(!tip_refinemv_references_allowed(
+        assert!(!tip_references_unscaled(
             Some(FrameType::Inter),
             size,
             &[2],
             &[0, 0, 0],
             &[352, 1, 352],
             &[352, 1, 352],
-            [(0, 4), (1, -4)],
+            [0, 1],
         ));
     }
 
     #[test]
     fn tip_refinemv_scale_gate_uses_spec_rounding() {
-        assert!(tip_refinemv_references_allowed(
+        assert!(tip_references_unscaled(
             Some(FrameType::Inter),
             Some(FrameSize::new(65_536, 65_536)),
             &[0, 1],
             &[0, 0],
             &[65_535, 65_536],
             &[65_535, 65_536],
-            [(0, 4), (1, -4)],
+            [0, 1],
         ));
     }
 }
