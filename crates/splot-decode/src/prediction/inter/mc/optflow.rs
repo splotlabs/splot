@@ -1557,12 +1557,10 @@ pub(super) fn predict_motion_grid_compound_average_into<
         }
         run_cell_program(
             program,
-            &prediction.views,
+            [Some((&prediction.views, output, output_stride)), None],
             (&grid_block, block.interp, subblock_w),
             pred_scratch,
             intermediate_scratch,
-            output,
-            output_stride,
         )?;
         CELL_PROGRAM.set(Some(state));
         return predict_chroma_v_separately(
@@ -1672,20 +1670,16 @@ pub(super) fn predict_motion_grid_compound_average_into<
             }
         }
     }
-    for (views, output, stride) in [
-        (&prediction.views, output, output_stride),
-        (&second.views, second_output, second_stride),
-    ] {
-        run_cell_program(
-            program,
-            views,
-            (&grid_block, block.interp, subblock_w),
-            pred_scratch,
-            intermediate_scratch,
-            output,
-            stride,
-        )?;
-    }
+    run_cell_program(
+        program,
+        [
+            Some((&prediction.views, output, output_stride)),
+            Some((&second.views, second_output, second_stride)),
+        ],
+        (&grid_block, block.interp, subblock_w),
+        pred_scratch,
+        intermediate_scratch,
+    )?;
     CELL_PROGRAM.set(Some(state));
     predict_chroma_v_separately(
         info,
@@ -1698,51 +1692,54 @@ pub(super) fn predict_motion_grid_compound_average_into<
     )
 }
 
-/// Runs a program of the uniform cells of one grid plane into `output` and
-/// predicts each cell it declines through [`predict_grid_cell`].
+/// Runs a program of the uniform cells of a grid plane (or U and V) into
+/// each plane and predicts each cell it declines through [`predict_grid_cell`].
 fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
     program: &CompoundCells,
-    views: &[ReferencePlaneView<'_, T>; 2],
+    mut planes: [Option<(&[ReferencePlaneView<'_, T>; 2], &mut [O], usize)>; 2],
     (grid, interp, size): (&GridBlock<'_, '_, T>, InterpolationFilter, usize),
     pred_scratch: &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
     intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
-    output: &mut [O],
-    stride: usize,
 ) -> Result<()> {
     if program.is_empty() {
         return Ok(());
     }
-    let written = O::u8_slice_mut(output).map_or([0; 4], |output| {
-        splot_recon::subpel_compound_cells_u8(
-            [&views[0], &views[1]],
-            interp,
-            size,
-            program,
-            grid.cwp_weight,
-            output,
-            stride,
-        )
-    });
-    let stored = |index: usize| {
-        written
-            .get(index / 64)
-            .is_some_and(|bits| bits >> (index % 64) & 1 != 0)
-    };
-    for index in (0..program.len()).filter(|&index| !stored(index)) {
-        let Some(([row, col], placements)) = program.get(index) else {
+    let written = splot_recon::subpel_compound_cells_u8(
+        planes.each_mut().map(|plane| {
+            let (views, output, stride) = plane.as_mut()?;
+            Some((*views, O::u8_slice_mut(output)?, *stride))
+        }),
+        interp,
+        size,
+        program,
+        grid.cwp_weight,
+    );
+    for (plane, written) in planes.into_iter().zip(written) {
+        let Some((views, output, stride)) = plane else {
             continue;
         };
-        let params = placements
-            .map(|placement| unscaled_cell_params(placement, [size; 2], (grid.bit_depth, interp)));
-        predict_grid_cell(
-            views,
-            (&params, true, [col, row, size, size]),
-            grid,
-            pred_scratch,
-            intermediate_scratch,
-            &mut output[row * stride + col..],
-            stride,
-        )?;
+        let stored = |index: usize| {
+            written
+                .get(index / 64)
+                .is_some_and(|bits| bits >> (index % 64) & 1 != 0)
+        };
+        for index in (0..program.len()).filter(|&index| !stored(index)) {
+            let Some(([row, col], placements)) = program.get(index) else {
+                continue;
+            };
+            let params = placements.map(|placement| {
+                unscaled_cell_params(placement, [size; 2], (grid.bit_depth, interp))
+            });
+            predict_grid_cell(
+                views,
+                (&params, true, [col, row, size, size]),
+                grid,
+                pred_scratch,
+                intermediate_scratch,
+                &mut output[row * stride + col..],
+                stride,
+            )?;
+        }
     }
     Ok(())
 }

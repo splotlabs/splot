@@ -427,15 +427,13 @@ fn compound_cell_programs_match_the_placement_entry() {
             }
             let mut got = vec![0u8; 4 * size * stride];
             let written = subpel_compound_cells_u8(
-                [&view, &view],
+                [Some((&[view, view], &mut got[..], stride)), None],
                 interp,
                 size,
                 &program,
                 11,
-                &mut got,
-                stride,
             );
-            assert_eq!(written, [expected, 0, 0, 0], "{interp:?} {size}");
+            assert_eq!(written[0], [expected, 0, 0, 0], "{interp:?} {size}");
             assert!(
                 expected.count_ones() > 4 && expected.count_ones() < 19,
                 "{expected:b}"
