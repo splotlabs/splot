@@ -364,17 +364,16 @@ impl InterReconCommand {
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
         residual_scratch: &mut InterResidualReconScratch<T>,
     ) -> Result<()> {
-        let fresh_motion = !self.motion_derived;
-        let motion = if fresh_motion {
-            self.derive_motion(sink, temporal_records, shared, tip_scratch)?
-        } else {
+        let motion = if self.motion_derived {
             self.derived_motion.take().map(|grid| *grid)
+        } else {
+            self.derive_motion(sink, temporal_records, shared, tip_scratch)?
         };
         self.reconstruct_from_motion(
             sink,
             block_decoded,
             motion,
-            fresh_motion,
+            !self.motion_derived,
             residual_blocks,
             residual_coeffs,
             shared,

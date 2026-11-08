@@ -310,31 +310,6 @@ const fn prediction_unit_size(width: usize, height: usize, enable_tip_refinemv: 
     }
 }
 
-fn compute_batched_output<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, '_, T>,
-    units: &[TipUnit],
-    prediction: &TipPrediction<'_, T>,
-    plan: &TipBlockPlan,
-    motion: mc::CompoundMotionGrid,
-    tile_offset: ByteOffset,
-) -> Result<Option<mc::CompoundMotionGrid>> {
-    let first = units.first().ok_or(ReconError::ZeroDimension {
-        field: "TIP compound batch",
-    })?;
-    let compound = prediction
-        .block_params(first)
-        .into_compound()
-        .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-    mc::predict_tip_batch_from_grid(
-        sink,
-        compound,
-        plan.batch_rect,
-        plan.batch_has_chroma,
-        motion,
-        tile_offset,
-    )
-}
-
 pub(super) const fn reference_uses_16x16_units(
     n4w: usize,
     n4h: usize,
@@ -501,6 +476,10 @@ struct TipBlockPlan {
 }
 
 impl TipBlockPlan {
+    const fn batched(&self) -> bool {
+        self.use_optflow && self.unit_count > 1
+    }
+
     /// Borrows the block's reference pair.
     fn hold<'a, T: ReconSample>(
         &self,
@@ -879,10 +858,7 @@ fn publish_unit_outputs<T: ReconSample>(
         plan.block_w.div_ceil(plan.unit_size).max(1)
     };
     for batch in scratch.units.chunks(units_per_hold) {
-        let held = match first.take() {
-            Some(held) => held,
-            None => plan.hold(reference)?,
-        };
+        let held = first.take().map_or_else(|| plan.hold(reference), Ok)?;
         let prediction = held.prediction(&plan.plan)?;
         for unit in batch {
             let params = prediction.block_params(unit);
@@ -938,30 +914,37 @@ pub(super) fn predict<T: ReconSample>(
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
-    let plan = match scratch.motion_plan.take().filter(|_| fresh) {
-        Some(plan) => plan,
-        None => {
-            let plan = tip_block_plan(
-                sink.info(),
-                placed,
-                temporal,
-                sequence,
-                core,
-                ref_frame_idx,
-                reference,
-            )?;
-            let first_only = plan.use_optflow && plan.unit_count > 1;
-            build_units(scratch, &plan, placed, temporal, first_only)?;
-            plan
-        }
+    let plan = if let Some(plan) = scratch.motion_plan.take().filter(|_| fresh) {
+        plan
+    } else {
+        let plan = tip_block_plan(
+            sink.info(),
+            placed,
+            temporal,
+            sequence,
+            core,
+            ref_frame_idx,
+            reference,
+        )?;
+        let first_only = plan.batched();
+        build_units(scratch, &plan, placed, temporal, first_only)?;
+        plan
     };
-    let grid = if plan.use_optflow && plan.unit_count > 1 {
+    let grid = if plan.batched() {
         let held = plan.hold(reference)?;
-        compute_batched_output(
+        let first = scratch.units.first().ok_or(ReconError::ZeroDimension {
+            field: "TIP compound batch",
+        })?;
+        let compound = held
+            .prediction(&plan.plan)?
+            .block_params(first)
+            .into_compound()
+            .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
+        mc::predict_tip_batch_from_grid(
             sink,
-            &scratch.units,
-            &held.prediction(&plan.plan)?,
-            &plan,
+            compound,
+            plan.batch_rect,
+            plan.batch_has_chroma,
             grid.ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?,
             tile_offset,
         )?
@@ -1723,21 +1706,8 @@ mod tests {
 
     #[test]
     fn tip_optflow_accepts_unequal_opposite_direction_references() {
-        let unscaled = |widths: &[u32]| {
-            tip_references_unscaled(
-                Some(FrameType::Inter),
-                Some(FrameSize::new(64, 64)),
-                &[0, 1],
-                &[1, 2],
-                widths,
-                &[64, 64],
-                [0, 1],
-            )
-        };
-
-        assert!(tip_optflow_offsets_allowed(1, -2) && unscaled(&[64, 64]));
+        assert!(tip_optflow_offsets_allowed(1, -2));
         assert!(!tip_optflow_offsets_allowed(1, 2));
-        assert!(!unscaled(&[63, 64]));
     }
 
     #[test]

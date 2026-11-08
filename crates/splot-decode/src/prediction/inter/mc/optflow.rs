@@ -1692,11 +1692,13 @@ pub(super) fn predict_motion_grid_compound_average_into<
     )
 }
 
+type GridPlane<'a, 'b, T, O> = (&'a [ReferencePlaneView<'b, T>; 2], &'a mut [O], usize);
+
 /// Runs a program of the uniform cells of a grid plane (or U and V) into
 /// each plane and predicts each cell it declines through [`predict_grid_cell`].
 fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
     program: &CompoundCells,
-    mut planes: [Option<(&[ReferencePlaneView<'_, T>; 2], &mut [O], usize)>; 2],
+    mut planes: [Option<GridPlane<'_, '_, T, O>>; 2],
     (grid, interp, size): (&GridBlock<'_, '_, T>, InterpolationFilter, usize),
     pred_scratch: &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
     intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],

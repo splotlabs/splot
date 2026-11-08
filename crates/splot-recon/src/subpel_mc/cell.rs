@@ -340,6 +340,7 @@ static WINDOWS: [[i32; NUM_PHASES]; NUM_FILTER_TYPES] = {
     table
 };
 
+type CellPlane<'a, 'b, T> = (&'a [ReferencePlaneView<'b, T>; 2], &'a mut [u8], usize);
 type U8Plane<'a, 'b> = ([ReferencePlaneView<'b, u8>; 2], &'a mut [u8], usize);
 
 /// Runs a [`CompoundCells`] program of eight-bit `size`-square cells into
@@ -351,7 +352,7 @@ type U8Plane<'a, 'b> = ([ReferencePlaneView<'b, u8>; 2], &'a mut [u8], usize);
 #[doc(hidden)]
 #[inline]
 pub fn subpel_compound_cells_u8<T: ReconSample>(
-    planes: [Option<(&[ReferencePlaneView<'_, T>; 2], &mut [u8], usize)>; 2],
+    planes: [Option<CellPlane<'_, '_, T>>; 2],
     interp: InterpolationFilter,
     size: usize,
     cells: &CompoundCells,
