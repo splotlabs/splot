@@ -215,8 +215,7 @@ pub use subpel_mc::{
     subpel_predict_block_compound_average_unscaled_strided_into,
     subpel_predict_block_compound_intermediate, subpel_predict_block_compound_intermediate_into,
     subpel_predict_block_into, subpel_predict_block_strided_into,
-    subpel_predict_block_strided_into_u8, subpel_put_u8_block, subpel_put_u8_in_place,
-    subpel_put_u8_pair_in_place,
+    subpel_predict_block_strided_into_u8, subpel_put_u8_block,
 };
 pub use transform_params::{
     TransformPass, dpcm_direction, get_transform_1d_type, transform_shift, tx_size_index,

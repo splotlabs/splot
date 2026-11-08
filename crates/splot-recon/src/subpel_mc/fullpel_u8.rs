@@ -32,20 +32,6 @@ pub fn subpel_predict_block_strided_into_u8<T: ReconSample>(
     Ok(())
 }
 
-/// [`subpel_predict_block_strided_into_u8`] of a block read in place from
-/// eight-bit storage, returning `false` without writing any other block.
-#[inline]
-pub fn subpel_put_u8_in_place<T: ReconSample>(
-    reference: &ReferencePlaneView<'_, T>,
-    params: &SubpelPredictParams,
-    output: &mut [u8],
-    output_stride: usize,
-) -> bool {
-    reference
-        .as_u8()
-        .is_some_and(|view| block::put_u8(&view, params, output, output_stride))
-}
-
 /// One plane of an unscaled eight-bit single-reference block: its output
 /// rectangle and the § 7.13.3.18 1/1024-sample start `[startX, startY]` of
 /// its window, whose reads clip to reference columns `0..=last[0]` and rows
@@ -95,7 +81,8 @@ impl UnscaledPut {
 
 /// Stores the eight-bit single-reference prediction of a block's luma plane
 /// straight into `surface`, and with `chroma` that of both chroma planes,
-/// which share one geometry, as [`subpel_put_u8_in_place`] stores each.
+/// which share one geometry, as [`subpel_predict_block_strided_into_u8`]
+/// stores each.
 /// Returns, for luma and for chroma, whether it was stored; a part that was
 /// not is left unwritten for the caller.
 #[inline]
@@ -119,28 +106,12 @@ pub fn subpel_put_u8_block<T: ReconSample>(
         else {
             return false;
         };
-        (u.stride, u.width, u.readable_rows, u.samples.len())
-            == (v.stride, v.width, v.readable_rows, v.samples.len())
+        block::same_geometry(&u, &v)
             && surface
                 .u8_chroma_rects_mut(put.rect)
                 .is_some_and(|outputs| block::put_admitted([&u, &v], &params, outputs))
     });
     [luma_put, chroma_put]
-}
-
-/// [`subpel_put_u8_in_place`] of the two chroma planes of one block, which
-/// share `params`, into their outputs: `false` without writing either when
-/// the planes differ in geometry or the first would decline.
-#[inline]
-pub fn subpel_put_u8_pair_in_place<T: ReconSample>(
-    references: [&ReferencePlaneView<'_, T>; 2],
-    params: &SubpelPredictParams,
-    outputs: [(&mut [u8], usize); 2],
-) -> bool {
-    let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u8) else {
-        return false;
-    };
-    block::put_u8_planes([&first, &second], params, outputs)
 }
 
 fn validate_subpel_u8_output(

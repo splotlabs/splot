@@ -1507,8 +1507,9 @@ pub(super) fn predict_motion_grid_compound_average_into<
         run_cell_program(
             &program,
             &prediction.views,
-            (&grid_block, block.interp),
-            (&mut pred_scratch, &mut intermediate_scratch),
+            (&grid_block, block.interp, subblock_w),
+            &mut pred_scratch,
+            &mut intermediate_scratch,
             output,
             output_stride,
         )?;
@@ -1544,38 +1545,37 @@ pub(super) fn predict_motion_grid_compound_average_into<
             if skip == [true; 2] {
                 continue;
             }
-            let mut lean = |placements, size| {
-                skip == [false; 2] && programmed(size) && program.push([row, col], placements)
-                    || skip == [false; 2]
-                        && output
-                            .get_mut(col..)
-                            .and_then(O::u8_slice_mut)
-                            .is_some_and(|output| {
-                                splot_recon::subpel_compound_cell_u8(
-                                    [&prediction.views[0], &prediction.views[1]],
-                                    block.interp,
-                                    size,
-                                    placements,
-                                    cwp_weight,
-                                    output,
-                                    output_stride,
-                                )
-                            })
-                        && second_output
-                            .get_mut(col..)
-                            .and_then(O::u8_slice_mut)
-                            .is_some_and(|output| {
-                                splot_recon::subpel_compound_cell_u8(
-                                    [&second.views[0], &second.views[1]],
-                                    block.interp,
-                                    size,
-                                    placements,
-                                    cwp_weight,
-                                    output,
-                                    second_stride,
-                                )
-                            })
-            };
+            let mut lean =
+                |placements, size| {
+                    skip == [false; 2]
+                        && (programmed(size) && program.push([row, col], placements)
+                            || output.get_mut(col..).and_then(O::u8_slice_mut).is_some_and(
+                                |output| {
+                                    splot_recon::subpel_compound_cell_u8(
+                                        [&prediction.views[0], &prediction.views[1]],
+                                        block.interp,
+                                        size,
+                                        placements,
+                                        cwp_weight,
+                                        output,
+                                        output_stride,
+                                    )
+                                },
+                            ) && second_output
+                                .get_mut(col..)
+                                .and_then(O::u8_slice_mut)
+                                .is_some_and(|output| {
+                                    splot_recon::subpel_compound_cell_u8(
+                                        [&second.views[0], &second.views[1]],
+                                        block.interp,
+                                        size,
+                                        placements,
+                                        cwp_weight,
+                                        output,
+                                        second_stride,
+                                    )
+                                }))
+                };
             let (params, uniform, rect) =
                 cell_inputs!(cell_row, cell_col, [col, row, height], lean);
             let cell = (&params, uniform, rect);
@@ -1628,8 +1628,9 @@ pub(super) fn predict_motion_grid_compound_average_into<
         run_cell_program(
             &program,
             views,
-            (&grid_block, block.interp),
-            (&mut pred_scratch, &mut intermediate_scratch),
+            (&grid_block, block.interp, subblock_w),
+            &mut pred_scratch,
+            &mut intermediate_scratch,
             output,
             stride,
         )?;
@@ -1651,15 +1652,15 @@ pub(super) fn predict_motion_grid_compound_average_into<
 fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
     program: &CompoundCells,
     views: &[ReferencePlaneView<'_, T>; 2],
-    (grid, interp): (&GridBlock<'_, '_, T>, InterpolationFilter),
-    (pred_scratch, intermediate_scratch): GridScratch<'_>,
+    (grid, interp, size): (&GridBlock<'_, '_, T>, InterpolationFilter, usize),
+    pred_scratch: &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
+    intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
     output: &mut [O],
     stride: usize,
 ) -> Result<()> {
     if program.is_empty() {
         return Ok(());
     }
-    let size = (grid.motion.unit_size >> grid.sub.0).max(4);
     let written = O::u8_slice_mut(output).map_or(0, |output| {
         splot_recon::subpel_compound_cells_u8(
             [&views[0], &views[1]],
@@ -1689,12 +1690,6 @@ fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
     }
     Ok(())
 }
-
-/// The cell and intermediate scratch of one grid plane.
-type GridScratch<'a> = (
-    &'a mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
-    &'a mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
-);
 
 /// The placements of an unscaled cell whose refine-MV unit is the cell, and
 /// whether its weights are uniform: each start is its 1/16-sample position,

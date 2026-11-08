@@ -375,19 +375,6 @@ pub(super) fn put_u8_planes<const N: usize>(
                 .is_some_and(|end| end <= output.len())
     };
     let view = views[0];
-    let geometry = |other: &&ReferencePlaneView<'_, u8>| {
-        (
-            other.stride,
-            other.width,
-            other.readable_rows,
-            other.samples.len(),
-        ) == (
-            view.stride,
-            view.width,
-            view.readable_rows,
-            view.samples.len(),
-        )
-    };
     let admitted = params.bit_depth == crate::format::BitDepth::Eight
         && params.step_x == 1 << SCALE_SUBPEL_BITS
         && params.step_y == 1 << SCALE_SUBPEL_BITS
@@ -400,8 +387,18 @@ pub(super) fn put_u8_planes<const N: usize>(
             .checked_add((w as i32 - 1) << SCALE_SUBPEL_BITS)
             .is_some()
         && outputs.iter().all(fits)
-        && views.iter().all(geometry);
+        && views.iter().all(|other| same_geometry(view, other));
     admitted && put_admitted(views, params, outputs)
+}
+
+/// Whether two planes share stride, width, readable rows and storage.
+#[inline]
+pub(super) fn same_geometry(
+    a: &ReferencePlaneView<'_, u8>,
+    b: &ReferencePlaneView<'_, u8>,
+) -> bool {
+    (a.stride, a.width, a.readable_rows, a.samples.len())
+        == (b.stride, b.width, b.readable_rows, b.samples.len())
 }
 
 /// [`put_u8_planes`] of a block it admits.

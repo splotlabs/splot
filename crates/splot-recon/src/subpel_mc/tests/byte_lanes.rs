@@ -303,11 +303,11 @@ fn paired_put_matches_two_single_puts() {
         let single = views
             .iter()
             .zip(&mut want)
-            .all(|(view, out)| subpel_put_u8_in_place(view, &params, out, w));
+            .all(|(view, out)| block::put_u8(view, &params, out, w));
         let mut got = [vec![1u8; w * h], vec![1u8; w * h]];
         let [first, second] = &mut got;
         let paired =
-            subpel_put_u8_pair_in_place([&views[0], &views[1]], &params, [(first, w), (second, w)]);
+            block::put_u8_planes([&views[0], &views[1]], &params, [(first, w), (second, w)]);
         assert_eq!(paired, single, "{w}x{h} phase {phase}");
         if paired {
             assert_eq!(got, want, "{w}x{h} phase {phase}");
@@ -319,7 +319,7 @@ fn paired_put_matches_two_single_puts() {
     let params = full_pel_params(InterpolationFilter::EightTap, 8, 8, 0, 0, ref_w as i32, 16);
     let mut got = [vec![1u8; 64], vec![1u8; 64]];
     let [first, second] = &mut got;
-    assert!(!subpel_put_u8_pair_in_place(
+    assert!(!block::put_u8_planes(
         [&views[0], &narrow],
         &params,
         [(first, 8), (second, 8)]

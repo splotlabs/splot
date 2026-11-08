@@ -568,7 +568,7 @@ impl ImplicitMaskBlend {
                     1 + compound_inter_post_round(),
                 )
             });
-        super::blend::store_clamped_samples(output, self.max_sample, samples)
+        store_clamped_samples(output, self.max_sample, samples)
     }
 }
 

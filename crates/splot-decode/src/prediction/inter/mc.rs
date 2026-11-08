@@ -20,7 +20,8 @@ use splot_recon::{
 use super::Mv;
 use super::mv_scaling::{PlaneScaling, derive_plane_scaling};
 use super::reference::{
-    ReferenceSamples, compound_last_row, subpel_last_reference_row, warp_plane_last_row,
+    ReferenceSamples, compound_last_row, subpel_last_reference_row, subpel_last_row,
+    warp_plane_last_row,
 };
 use crate::Result;
 use splot_core::span::ByteOffset;
@@ -576,24 +577,31 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
     };
     let [_, (_, sub_x, sub_y), _] = mc_planes(info.pixel_format());
     let chroma = has_chroma
-        .then(|| plane_put(PlaneId::U, sub_x, sub_y))
-        .flatten()
-        .zip(
-            reference
-                .settled_plane_view(PlaneId::U)
-                .zip(reference.settled_plane_view(PlaneId::V)),
-        );
-    let [luma_put, chroma_put] = match (
-        plane_put(PlaneId::Y, 0, 0),
-        reference.settled_plane_view(PlaneId::Y),
-    ) {
-        (Some(luma), Some(view)) => subpel_put_u8_block(
-            sink,
-            interp,
-            (&view, luma),
-            chroma.as_ref().map(|(chroma, (u, v))| ([u, v], *chroma)),
-        ),
-        _ => [false; 2],
+        .then(|| {
+            let views = reference.settled_plane_view(PlaneId::U)?;
+            Some((
+                (views, reference.settled_plane_view(PlaneId::V)?),
+                plane_put(PlaneId::U, sub_x, sub_y)?,
+            ))
+        })
+        .flatten();
+    let [luma_put, chroma_put] = match plane_put(PlaneId::Y, 0, 0) {
+        Some(luma) => {
+            let view = if let Some(view) = reference.settled_plane_view(PlaneId::Y) {
+                view
+            } else {
+                let (h, last_y) = (luma.rect.height(), luma.last[1]);
+                let last_row = subpel_last_row(luma.start[1], 1 << 10, h, last_y);
+                reference.plane_view(PlaneId::Y, last_row, offset)?
+            };
+            subpel_put_u8_block(
+                sink,
+                interp,
+                (&view, luma),
+                chroma.as_ref().map(|((u, v), chroma)| ([u, v], *chroma)),
+            )
+        }
+        None => [false; 2],
     };
     if !luma_put {
         predict_plane(sink, reference, PlaneId::Y, rect, mv, interp, 0, 0, offset)?;

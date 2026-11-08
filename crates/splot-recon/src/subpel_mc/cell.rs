@@ -17,6 +17,7 @@ use super::{
     CellPlacement, InterpolationFilter, NUM_FILTER_TYPES, NUM_PHASES, ReferencePlaneView,
     SCALE_SUBPEL_BITS, SUBPEL_FILTERS, SUBPEL_MASK, SubpelPredictParams,
 };
+use crate::format::ReconSample;
 
 /// One reference of a cell: window row `r` starts at `origin + r * stride`,
 /// or, for a window that crosses its clip bounds, at the bounded row
@@ -315,15 +316,7 @@ impl CompoundCells {
     fn placement(&self, index: usize, reference: usize) -> CellPlacement {
         let field = |values: &[i32; PROGRAM_CELLS]| values.get(index).copied().unwrap_or(0);
         let (starts, bounds) = (&self.starts[reference & 1], &self.bounds[reference & 1]);
-        (
-            [field(&starts[0]), field(&starts[1])],
-            [
-                field(&bounds[0]),
-                field(&bounds[1]),
-                field(&bounds[2]),
-                field(&bounds[3]),
-            ],
-        )
+        (starts.each_ref().map(field), bounds.each_ref().map(field))
     }
 }
 
@@ -347,29 +340,42 @@ static WINDOWS: [[i32; NUM_PHASES]; NUM_FILTER_TYPES] = {
     table
 };
 
-/// Runs a [`CompoundCells`] program of `size`-square cells, 4 or 8, into
-/// `output` rows `stride` apart: each cell that [`compound_at`] admits and
-/// `output` holds gets its COMPOUND_AVERAGE and its bit in the returned
-/// mask; no other cell is written.
-pub(super) fn compound_program(
-    references: [&ReferencePlaneView<'_, u8>; 2],
+/// Runs a [`CompoundCells`] program of eight-bit `size`-square cells into
+/// `output` rows `stride` apart. Each cell that
+/// [`super::subpel_compound_cell_u8`] would store from its position and
+/// placements is stored the same way and sets its bit in the returned mask;
+/// every other cell is left unwritten for the caller to predict.
+#[doc(hidden)]
+#[inline]
+pub fn subpel_compound_cells_u8<T: ReconSample>(
+    references: [&ReferencePlaneView<'_, T>; 2],
     interp: InterpolationFilter,
     size: usize,
     cells: &CompoundCells,
-    forward: i32,
+    cwp_weight: i16,
     output: &mut [u8],
     stride: usize,
 ) -> u64 {
+    let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u8) else {
+        return 0;
+    };
     if (size != 4 && size != 8) || stride < size {
         return 0;
     }
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
         return avx2::program(
-            token, references, interp, size, cells, forward, output, stride,
+            token,
+            [&first, &second],
+            interp,
+            size,
+            cells,
+            i32::from(cwp_weight),
+            output,
+            stride,
         );
     }
-    let _ = (references, interp, cells, forward, output);
+    let _ = (first, second, interp, cells, cwp_weight, output);
     0
 }
 
@@ -575,6 +581,7 @@ mod avx2 {
     /// origins, tap phases per pass, the kernel class `5 * H + V` of their
     /// tap-pair counts, and a bit per cell whose window lies inside its clip
     /// bounds and storage and that the kernels of its size cover.
+    #[derive(Default)]
     struct Lanes {
         origin: [i32; 8],
         phases: [[i32; 8]; 2],
@@ -597,22 +604,16 @@ mod avx2 {
         batch: usize,
     ) -> Lanes {
         let zero = _mm256_setzero_si256();
-        let mut lanes = Lanes {
-            origin: [0; 8],
-            phases: [[0; 8]; 2],
-            classes: [0; 8],
-            inside: 0,
-        };
         let (Ok(len), Ok(stride), Ok(width), Ok(rows)) = (
             i32::try_from(view.samples.len()),
             i32::try_from(view.stride),
             i32::try_from(view.width),
             i32::try_from(view.readable_rows),
         ) else {
-            return lanes;
+            return Lanes::default();
         };
         if i64::from(rows) * i64::from(stride) + i64::from(width) + 16 > i64::from(i32::MAX) {
-            return lanes;
+            return Lanes::default();
         }
         let load = |values: &[i32; PROGRAM_CELLS]| -> __m256i {
             values
@@ -685,17 +686,19 @@ mod avx2 {
                 _mm256_cmpgt_epi32(end, _mm256_set1_epi32(len)),
             ),
         );
-        lanes.origin = array(_mm256_add_epi32(_mm256_mullo_epi32(row, stride), column));
-        lanes.phases = [array(phases[0]), array(phases[1])];
-        lanes.classes = array(_mm256_add_epi32(
-            _mm256_add_epi32(_mm256_slli_epi32::<2>(horizontal), horizontal),
-            vertical,
-        ));
-        lanes.inside = !(_mm256_movemask_ps(_mm256_castsi256_ps(outside)) as u32) & 0xff;
-        lanes
+        Lanes {
+            origin: array(_mm256_add_epi32(_mm256_mullo_epi32(row, stride), column)),
+            phases: [array(phases[0]), array(phases[1])],
+            classes: array(_mm256_add_epi32(
+                _mm256_add_epi32(_mm256_slli_epi32::<2>(horizontal), horizontal),
+                vertical,
+            )),
+            inside: !(_mm256_movemask_ps(_mm256_castsi256_ps(outside)) as u32) & 0xff,
+        }
     }
 
     fearless_simd::kernel!(
+        #[allow(clippy::too_many_arguments)]
         #[inline(never)]
         pub(super) fn program(
             t: Avx2,
