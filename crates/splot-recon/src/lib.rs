@@ -160,8 +160,7 @@ pub use inverse_transform_2d::{InverseTransform2d, InverseTransform2dDim, invers
 pub use inverse_transform_2d_8bit::{FlatDequant, InverseTransformAdd8};
 pub use inverse_transform_2d_outer::{
     DpcmDirection, InverseTransform2dOuter, inverse_transform_2d_outer,
-    inverse_transform_2d_outer_add_u8, inverse_transform_2d_outer_adjusted,
-    inverse_transform_2d_outer_with_scratch,
+    inverse_transform_2d_outer_adjusted, inverse_transform_2d_outer_with_scratch,
 };
 pub use loop_restoration::{
     LoopRestorationPlaneBounds, LoopRestorationSource, LoopRestorationSourceBounds,
