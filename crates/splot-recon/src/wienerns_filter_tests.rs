@@ -78,14 +78,20 @@ fn padded_u16_lane_groups_match_the_callback_reference() {
                 wiener_ns_filter_luma_block(&mut reference, &params, source_at).unwrap();
                 let mut actual = vec![0u16; width * height];
                 let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
-                wiener_ns_filter_luma_block_padded(&mut actual, &params, &source).unwrap();
+                wiener_ns_filter_luma_block_padded_into(
+                    &mut actual,
+                    &params,
+                    &source,
+                    &mut WienerNsLumaScratch::default(),
+                )
+                .unwrap();
                 assert_eq!(actual, reference, "{bit_depth:?} {width}x{height}");
             }
         }
     }
 }
 
-fn packed_and_strided_u16_luma_match<T: ReconSample>(
+fn packed_and_strided_luma_match<T: ReconSample>(
     bit_depth: BitDepth,
     width: usize,
     height: usize,
@@ -167,10 +173,11 @@ fn packed_and_strided_u16_luma_match<T: ReconSample>(
 
     let output_stride = width + 11;
     let direct_params = params(width, height, output_stride, bit_depth, &coeffs, None);
-    let mut direct = vec![u16::MAX; output_stride * height];
+    let sentinel = T::try_from_u16(0xa5).unwrap();
+    let mut direct = vec![sentinel; output_stride * height];
     let mut direct_scratch = WienerNsLumaScratch::default();
     if class_count == 1 {
-        wiener_ns_filter_luma_block_padded_u16_into(
+        wiener_ns_filter_luma_block_padded_into(
             &mut direct,
             &direct_params,
             &source,
@@ -178,7 +185,7 @@ fn packed_and_strided_u16_luma_match<T: ReconSample>(
         )
         .unwrap();
     } else {
-        wiener_ns_filter_luma_block_padded_cells_u16_into(
+        wiener_ns_filter_luma_block_padded_cells_into(
             &mut direct,
             &direct_params,
             &source,
@@ -189,25 +196,23 @@ fn packed_and_strided_u16_luma_match<T: ReconSample>(
     }
 
     for row in 0..height {
-        assert_eq!(
-            &direct[row * output_stride..row * output_stride + width],
-            &packed[row * width..(row + 1) * width]
+        let line = &direct[row * output_stride..(row + 1) * output_stride];
+        assert!(
+            line[..width]
                 .iter()
                 .map(|sample| sample.to_u16())
-                .collect::<Vec<_>>(),
+                .eq(packed[row * width..(row + 1) * width]
+                    .iter()
+                    .map(|sample| sample.to_u16())),
             "{} {bit_depth:?} {width}x{height} classes={class_count}",
             T::TYPE_NAME,
         );
-        assert!(
-            direct[row * output_stride + width..(row + 1) * output_stride]
-                .iter()
-                .all(|&sample| sample == u16::MAX)
-        );
+        assert!(line[width..].iter().all(|sample| sample.to_u16() == 0xa5));
     }
 }
 
 #[test]
-fn packed_and_strided_u16_luma_match_runtime_class_counts_and_shapes() {
+fn packed_and_strided_luma_match_runtime_class_counts_and_shapes() {
     let class_counts = [1, 2, 3, 4, 6, 8, 12, 16];
     let shapes = [
         (1, 1),
@@ -223,15 +228,15 @@ fn packed_and_strided_u16_luma_match_runtime_class_counts_and_shapes() {
     ];
     for class_count in class_counts {
         for &(width, height) in &shapes {
-            packed_and_strided_u16_luma_match::<u8>(BitDepth::Eight, width, height, class_count);
-            packed_and_strided_u16_luma_match::<u16>(BitDepth::Eight, width, height, class_count);
-            packed_and_strided_u16_luma_match::<u16>(BitDepth::Ten, width, height, class_count);
+            packed_and_strided_luma_match::<u8>(BitDepth::Eight, width, height, class_count);
+            packed_and_strided_luma_match::<u16>(BitDepth::Eight, width, height, class_count);
+            packed_and_strided_luma_match::<u16>(BitDepth::Ten, width, height, class_count);
         }
     }
 }
 
 #[test]
-fn direct_u8_and_u16_staging_match_runtime_class_counts_and_shapes() {
+fn direct_u8_output_matches_runtime_class_counts_and_shapes() {
     for class_count in [1, 2, 4, 8, 16] {
         for (width, height) in [(1, 1), (3, 3), (31, 8), (37, 63), (128, 56)] {
             let coeffs: Vec<_> = (0..class_count)
@@ -259,12 +264,12 @@ fn direct_u8_and_u16_staging_match_runtime_class_counts_and_shapes() {
                 .collect();
             let output_stride = width + 5;
             let params = params(width, height, output_stride, BitDepth::Eight, &coeffs, None);
-            let mut staged = vec![u16::MAX; output_stride * height];
+            let mut packed = vec![0xa5; output_stride * height];
             let mut direct = vec![0xa5; output_stride * height];
             let mut direct_from_u16 = vec![0xa5; output_stride * height];
             if class_count == 1 {
-                wiener_ns_filter_luma_block_padded_u16_into(
-                    &mut staged,
+                wiener_ns_filter_luma_block_padded_into(
+                    &mut packed,
                     &params,
                     &source,
                     &mut WienerNsLumaScratch::default(),
@@ -285,8 +290,8 @@ fn direct_u8_and_u16_staging_match_runtime_class_counts_and_shapes() {
                 )
                 .unwrap();
             } else {
-                wiener_ns_filter_luma_block_padded_cells_u16_into(
-                    &mut staged,
+                wiener_ns_filter_luma_block_padded_cells_into(
+                    &mut packed,
                     &params,
                     &source,
                     &cells,
@@ -310,15 +315,8 @@ fn direct_u8_and_u16_staging_match_runtime_class_counts_and_shapes() {
                 )
                 .unwrap();
             }
+            assert_eq!(direct, packed, "{width}x{height} classes={class_count}");
             for row in 0..height {
-                assert_eq!(
-                    &direct[row * output_stride..row * output_stride + width],
-                    &staged[row * output_stride..row * output_stride + width]
-                        .iter()
-                        .map(|&sample| sample as u8)
-                        .collect::<Vec<_>>(),
-                    "{width}x{height} classes={class_count}",
-                );
                 assert_eq!(
                     &direct_from_u16[row * output_stride..row * output_stride + width],
                     &direct[row * output_stride..row * output_stride + width],
@@ -340,7 +338,7 @@ fn direct_u8_and_u16_staging_match_runtime_class_counts_and_shapes() {
 }
 
 #[test]
-fn u8_source_strided_u16_simd_has_a_mutation_sensitive_oracle() {
+fn u8_source_strided_simd_has_a_mutation_sensitive_oracle() {
     let width = 32;
     let height = 1;
     let source_stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
@@ -354,20 +352,6 @@ fn u8_source_strided_u16_simd_has_a_mutation_sensitive_oracle() {
     let coeffs = [class];
     let output_stride = width + 7;
     let params = params(width, height, output_stride, BitDepth::Eight, &coeffs, None);
-    let mut output = vec![u16::MAX; output_stride];
-
-    wiener_ns_filter_luma_block_padded_u16_into(
-        &mut output,
-        &params,
-        &source,
-        &mut WienerNsLumaScratch::default(),
-    )
-    .unwrap();
-
-    assert_eq!(output[0], 101);
-    assert!(output[1..width].iter().all(|&sample| sample == 100));
-    assert!(output[width..].iter().all(|&sample| sample == u16::MAX));
-
     let mut direct = vec![0xa5; output_stride];
     wiener_ns_filter_luma_block_padded_u8_into(
         &mut direct,
@@ -382,7 +366,7 @@ fn u8_source_strided_u16_simd_has_a_mutation_sensitive_oracle() {
 }
 
 #[test]
-fn strided_u16_luma_validates_every_input_before_writing() {
+fn strided_u8_luma_validates_every_input_before_writing() {
     let width = 2;
     let height = 2;
     let source_stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
@@ -399,9 +383,9 @@ fn strided_u16_luma_validates_every_input_before_writing() {
     let coeffs = [ZERO];
     let short_cells: [u8; 0] = [];
 
-    let mut output = [77u16; 8];
+    let mut output = [77u8; 8];
     let invalid_stride_params = params(width, height, 1, BitDepth::Eight, &coeffs, None);
-    let error = wiener_ns_filter_luma_block_padded_cells_u16_into(
+    let error = wiener_ns_filter_luma_block_padded_cells_u8_into(
         &mut output,
         &invalid_stride_params,
         &short_source,
@@ -419,8 +403,8 @@ fn strided_u16_luma_validates_every_input_before_writing() {
     assert_eq!(output, [77; 8]);
 
     let params = params(width, height, 4, BitDepth::Eight, &coeffs, None);
-    let mut output = [77u16; 5];
-    let error = wiener_ns_filter_luma_block_padded_cells_u16_into(
+    let mut output = [77u8; 5];
+    let error = wiener_ns_filter_luma_block_padded_cells_u8_into(
         &mut output,
         &params,
         &short_source,
@@ -437,8 +421,8 @@ fn strided_u16_luma_validates_every_input_before_writing() {
     );
     assert_eq!(output, [77; 5]);
 
-    let mut output = [77u16; 8];
-    let error = wiener_ns_filter_luma_block_padded_cells_u16_into(
+    let mut output = [77u8; 8];
+    let error = wiener_ns_filter_luma_block_padded_cells_u8_into(
         &mut output,
         &params,
         &valid_source,
@@ -456,7 +440,7 @@ fn strided_u16_luma_validates_every_input_before_writing() {
     assert_eq!(output, [77; 8]);
 
     let cells = [0u8];
-    let error = wiener_ns_filter_luma_block_padded_cells_u16_into(
+    let error = wiener_ns_filter_luma_block_padded_cells_u8_into(
         &mut output,
         &params,
         &short_source,
@@ -488,7 +472,7 @@ fn strided_luma_u16_source_errors_are_fail_atomic() {
     let ten_bit_params = params(width, height, 4, BitDepth::Ten, &coeffs, None);
     let mut output = [77u16; 8];
 
-    let error = wiener_ns_filter_luma_block_padded_u16_into(
+    let error = wiener_ns_filter_luma_block_padded_into(
         &mut output,
         &ten_bit_params,
         &source,
@@ -580,7 +564,13 @@ fn padded_and_callback_filters_match_bit_exactly() {
 
     let mut padded_output = vec![0u16; (height - 1) * (width + 3) + width];
     let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
-    wiener_ns_filter_luma_block_padded(&mut padded_output, &params, &source).unwrap();
+    wiener_ns_filter_luma_block_padded_into(
+        &mut padded_output,
+        &params,
+        &source,
+        &mut WienerNsLumaScratch::default(),
+    )
+    .unwrap();
 
     assert_eq!(callback_output, padded_output);
 }
@@ -617,7 +607,13 @@ fn padded_and_callback_filters_match_bit_exactly_eight_bit_wide_block() {
 
     let mut padded_output = vec![0u8; width * height];
     let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
-    wiener_ns_filter_luma_block_padded(&mut padded_output, &params, &source).unwrap();
+    wiener_ns_filter_luma_block_padded_into(
+        &mut padded_output,
+        &params,
+        &source,
+        &mut WienerNsLumaScratch::default(),
+    )
+    .unwrap();
 
     assert_eq!(callback_output, padded_output);
 }
@@ -699,7 +695,13 @@ fn out_of_range_sample_in_unread_window_corner_still_filters() {
 
     let mut padded_output = vec![0u16; width * height];
     let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
-    wiener_ns_filter_luma_block_padded(&mut padded_output, &params, &source).unwrap();
+    wiener_ns_filter_luma_block_padded_into(
+        &mut padded_output,
+        &params,
+        &source,
+        &mut WienerNsLumaScratch::default(),
+    )
+    .unwrap();
 
     assert_eq!(expected, padded_output);
 }
@@ -864,7 +866,13 @@ fn padded_center_scale_outside_i16_matches_the_callback_reference() {
     wiener_ns_filter_luma_block(&mut reference, &params, source_at).unwrap();
     let mut actual = vec![0u16; width * height];
     let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
-    wiener_ns_filter_luma_block_padded(&mut actual, &params, &source).unwrap();
+    wiener_ns_filter_luma_block_padded_into(
+        &mut actual,
+        &params,
+        &source,
+        &mut WienerNsLumaScratch::default(),
+    )
+    .unwrap();
     assert_eq!(actual, reference);
 }
 

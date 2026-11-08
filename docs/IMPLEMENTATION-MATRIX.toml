@@ -21181,7 +21181,7 @@ tests = [
     "crates/splot-decode/src/filters/source_tests.rs::invalid_direct_u8_geometry_drops_without_publication_and_releases_lease",
     "crates/splot-decode/src/pipeline/frame_progress_tests.rs::direct_stripes_write_the_canonical_allocation_and_publish_out_of_order",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::owned_multi_stripe_u8_direct_output_matches_u16_storage_exactly",
-    "crates/splot-recon/src/wienerns_filter.rs::tests::direct_u8_and_u16_staging_match_runtime_class_counts_and_shapes",
+    "crates/splot-recon/src/wienerns_filter.rs::tests::direct_u8_output_matches_runtime_class_counts_and_shapes",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::terminal_luma_wiener_direct_u8_matches_u16_staging_for_class_layouts",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_direct_tests.rs::terminal_luma_direct_u8_eligibility_keeps_every_non_class_a_fallback",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_direct_tests.rs::direct_u8_poison_oracle_exposes_one_suppressed_lr_block_write",

@@ -1482,7 +1482,7 @@ fn compute_cdef_filter_plane<S: ReconSample>(
 }
 
 /// Gathers the `w`x`h` block plus a two-sample border from `snap` into `pad`, in the
-/// `CDEF_PADDED_SIDE`-wide layout [`cdef_filter_block_interior`] indexes. The caller
+/// `CDEF_PADDED_SIDE`-wide layout [`cdef_filter_block_interior_to`] indexes. The caller
 /// guarantees the bordered region is inside the filter region (interior block), so the
 /// gather covers exactly the samples the kernel reads and `pad` needs no re-zeroing.
 fn gather_interior_pad<S: ReconSample>(

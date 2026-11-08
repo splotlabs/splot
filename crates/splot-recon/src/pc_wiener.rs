@@ -202,7 +202,7 @@ impl Default for PcWienerClassifyScratch {
     }
 }
 
-/// § 7.20.2-pre-resolved source samples for [`pc_wiener_classify_grid_padded`].
+/// § 7.20.2-pre-resolved source samples for [`pc_wiener_classify_grid_padded_into`].
 ///
 /// A padded contiguous buffer covering the classified block extended on every
 /// side. `origin_x` and `origin_y` are the current-plane luma coordinates of
@@ -420,50 +420,18 @@ where
 }
 
 /// Row-major grid of four-sample-spaced PC-Wiener cells from a padded
-/// pre-resolved source.
+/// pre-resolved source, into reusable buffers.
 ///
 /// Identical classification math and output as [`pc_wiener_classify_grid`]; the
 /// § 7.20.2 source-sample process is resolved by the caller into `source`
 /// instead of a per-sample callback. The `tx_skip` grid lookup stays a callback.
-/// An up-front fits check proves the whole source region is in range, so the
-/// feature cache is built by pure index addition off the padded-window base.
-///
-/// # Errors
-/// Returns the same typed failures as [`pc_wiener_classify_grid`], plus a typed
-/// [`ReconError`] when the padded source cannot cover the classification region.
-#[inline]
-pub fn pc_wiener_classify_grid_padded<T, FT>(
-    params: &PcWienerClassifyParams,
-    cell_cols: usize,
-    cell_rows: usize,
-    source: &PcWienerClassifyPaddedSource<'_, T>,
-    tx_skip: FT,
-) -> Result<Vec<PcWienerClassification>>
-where
-    T: ReconSample,
-    FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
-{
-    let mut scratch = PcWienerClassifyScratch::default();
-    pc_wiener_classify_grid_padded_into(
-        params,
-        cell_cols,
-        cell_rows,
-        source,
-        tx_skip,
-        &mut scratch,
-    )?;
-    Ok(core::mem::take(&mut scratch.classifications))
-}
-
-/// Classifies a padded PC-Wiener grid into reusable buffers.
-///
 /// `scratch` retains its allocations between calls. The returned slice contains
 /// exactly `cell_cols * cell_rows` row-major classifications. Its internal
 /// output is cleared before validation and remains empty on error.
 ///
 /// # Errors
-///
-/// Returns the same errors as [`pc_wiener_classify_grid_padded`].
+/// Returns the same typed failures as [`pc_wiener_classify_grid`], plus a typed
+/// [`ReconError`] when the padded source cannot cover the classification region.
 #[inline]
 pub fn pc_wiener_classify_grid_padded_into<'a, T, FT>(
     params: &PcWienerClassifyParams,
@@ -1885,51 +1853,6 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
         }
     }
     Ok(())
-}
-
-/// Applies padded PC-Wiener filtering directly into strided `u16` storage.
-///
-/// Both supported source storage types use the same filter arithmetic and SIMD
-/// row kernel. Output geometry, source geometry, filter selection, subclasses,
-/// and every source sample reached by the filter are validated before the
-/// first destination write.
-///
-/// # Errors
-/// Returns the same parameter, source-range, output-shape, and subclass errors
-/// as [`pc_wiener_filter_block_padded`].
-#[inline]
-pub fn pc_wiener_filter_block_padded_u16_into<T: ReconSample>(
-    output: &mut [u16],
-    params: &PcWienerFilter<'_>,
-    source: &PcWienerPaddedSource<'_, T>,
-) -> Result<()> {
-    let setup = prepare_pc_wiener_padded_filter(output.len(), params, source)?;
-    if !setup.lanes {
-        let packed_params = PcWienerFilter {
-            output_stride: params.width,
-            ..*params
-        };
-        let mut staged = vec![T::default(); setup.sample_count];
-        pc_wiener_filter_block_padded(&mut staged, &packed_params, source)?;
-        for row in 0..params.height {
-            let source = &staged[row * params.width..(row + 1) * params.width];
-            let destination =
-                &mut output[row * params.output_stride..row * params.output_stride + params.width];
-            for (destination, source) in destination.iter_mut().zip(source) {
-                *destination = source.to_u16();
-            }
-        }
-        return Ok(());
-    }
-    if T::u16_slice(&[]).is_some() {
-        return filter_pc_wiener_padded_u16(output, params, source.rows, T::u16_slice, &setup);
-    }
-    if T::u8_slice(&[]).is_some() {
-        return filter_pc_wiener_padded_u16(output, params, source.rows, T::u8_slice, &setup);
-    }
-    Err(ReconError::PcWienerInvalidBounds {
-        field: "PC-Wiener sample storage",
-    })
 }
 
 /// Filters a cell row in column groups of up to four 4x4 cells, each lane with

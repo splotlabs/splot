@@ -33,27 +33,6 @@
 //!
 //! Feature tracking: `RECON-CDEF-FILTER`.
 
-/// Runs `$body` with `$simd` bound to the baseline SIMD token: the AVX2
-/// token directly where the baseline has it, since the closure `dispatch!`
-/// wraps its body in is not inlined, else through `dispatch!`.
-#[cfg(target_arch = "x86_64")]
-macro_rules! baseline_simd {
-    ($simd:ident => $body:expr) => {
-        match fearless_simd::Level::baseline().as_avx2() {
-            Some($simd) => $body,
-            None => fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body),
-        }
-    };
-}
-
-/// [`baseline_simd`] for targets without an AVX2 baseline.
-#[cfg(not(target_arch = "x86_64"))]
-macro_rules! baseline_simd {
-    ($simd:ident => $body:expr) => {
-        fearless_simd::dispatch!(fearless_simd::Level::baseline(), $simd => $body)
-    };
-}
-
 #[cfg(target_arch = "x86_64")]
 use fearless_simd::{Avx2, SimdInto, i32x8};
 use fearless_simd::{
@@ -474,7 +453,7 @@ pub fn cdef_filter_sample(
 }
 
 /// Side length of the padded per-block scratch consumed by
-/// [`cdef_filter_block_interior`]: an 8x8 block plus the § 7.18.3
+/// [`cdef_filter_block_interior_to`]: an 8x8 block plus the § 7.18.3
 /// `Cdef_Directions` tap reach of 2 on every side.
 pub const CDEF_PADDED_SIDE: usize = 12;
 
@@ -508,7 +487,7 @@ pub const CDEF_PAIR_SEGMENT_STRIDE: usize = 8 * CDEF_SEGMENT_BLOCKS + 8;
 /// [`CDEF_SEGMENT_BLOCK_AREA`] for the chroma-pair segment scratch.
 pub const CDEF_PAIR_SEGMENT_BLOCK_AREA: usize = u8::MAX as usize + 3 * CDEF_PAIR_SEGMENT_STRIDE + 8;
 
-/// Per-block § 7.18.3 filter constants for [`cdef_filter_block_interior`].
+/// Per-block § 7.18.3 filter constants for [`cdef_filter_block_interior_to`].
 #[derive(Clone, Copy, Debug)]
 pub struct CdefBlockFilter {
     /// Bit-depth-scaled (and, for luma, variance-adjusted) primary strength.
@@ -1281,7 +1260,7 @@ fn cdef_filter_block_rows<
 /// AV2 § 7.18.3 CDEF filter for one fully-interior block written to a strided output.
 ///
 /// Returns `false` when the output geometry cannot hold the 8- or 4-sample-wide
-/// CDEF block. The padded input layout matches [`cdef_filter_block_interior`].
+/// CDEF block. The padded input layout matches [`cdef_direction_padded`].
 pub fn cdef_filter_block_interior_to(
     pad: &[u16; CDEF_PADDED_AREA],
     w: usize,
@@ -1411,125 +1390,6 @@ pub use segment::{
     CdefLumaSegment, CdefPairSegment, CdefSegmentBlock, CdefSegmentOutput, CdefStrengths,
     cdef_filter_block_chroma_pair_segment, cdef_filter_block_segment, cdef_filter_segment,
 };
-
-/// AV2 § 7.18.3 CDEF filter for one fully-interior block over a padded scratch.
-///
-/// `pad` holds the `CDEF_PADDED_SIDE x CDEF_PADDED_SIDE` row-major
-/// neighbourhood in native `u16` sample storage, widened to `i32` per tap. Its
-/// `(w x h)` output block starts at row 2, column 2; the
-/// caller guarantees every tap position is inside the § 5.20.9.3 filter region
-/// (`CdefAvailable` everywhere), which is what makes the per-tap availability
-/// guard of [`cdef_filter_sample`] statically true. Bit-exact with calling
-/// [`cdef_filter_sample`] per sample on all-available taps.
-///
-/// Filtered samples are written in native `u16` storage to `out[i * w + j]`
-/// for `i in 0..h`, `j in 0..w`; `w` and `h` are clamped to 8. Every tap index
-/// provably stays inside the scratch: the center index is at least
-/// `2 * CDEF_PADDED_SIDE + 2` and the largest tap displacement is
-/// `2 * CDEF_PADDED_SIDE + 2` in either
-/// direction.
-pub fn cdef_filter_block_interior(
-    pad: &[u16; CDEF_PADDED_AREA],
-    w: usize,
-    h: usize,
-    filter: &CdefBlockFilter,
-    out: &mut [u16; 64],
-) {
-    let w = w.min(8);
-    let h = h.min(8);
-
-    let (pri_rel, sec_rel) = CDEF_RELATIVE_OFFSETS[filter.dir & 7];
-    if cdef_filter_block_padded_to_valid_stride::<false>(pad, w, h, filter, out, w) {
-        return;
-    }
-
-    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row];
-    let sec_taps = CDEF_SEC_TAPS[tap_row];
-    let pri_adj = constrain_damping_adj(filter.pri_str, filter.damping);
-    let sec_adj = constrain_damping_adj(filter.sec_str, filter.damping);
-
-    if filter.pri_str != 0 && filter.sec_str != 0 {
-        for i in 0..h {
-            for j in 0..w {
-                let center_index = (i + 2) * CDEF_PADDED_SIDE + (j + 2);
-                let center = i32::from(pad[center_index]);
-                let mut sum = 0i32;
-                let mut max = center;
-                let mut min = center;
-                for k in 0..2 {
-                    for sign_index in 0..2 {
-                        let p = i32::from(
-                            pad[center_index.wrapping_add_signed(pri_rel[k][sign_index])],
-                        );
-                        sum +=
-                            pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
-                        max = max.max(p);
-                        min = min.min(p);
-                        for dir_off_index in 0..2 {
-                            let s = i32::from(
-                                pad[center_index
-                                    .wrapping_add_signed(sec_rel[k][sign_index][dir_off_index])],
-                            );
-                            sum += sec_taps[k]
-                                * constrain_with_adj(s - center, filter.sec_str, sec_adj);
-                            max = max.max(s);
-                            min = min.min(s);
-                        }
-                    }
-                }
-                let rounded = center + ((8 + sum - i32::from(sum < 0)) >> 4);
-                out[i * w + j] = rounded.clamp(min, max) as u16;
-            }
-        }
-    // A lone tap family has weight 12, so rounding stays in range without clamping.
-    } else if filter.pri_str != 0 {
-        for i in 0..h {
-            for j in 0..w {
-                let center_index = (i + 2) * CDEF_PADDED_SIDE + (j + 2);
-                let center = i32::from(pad[center_index]);
-                let mut sum = 0i32;
-                for k in 0..2 {
-                    for sign_index in 0..2 {
-                        let p = i32::from(
-                            pad[center_index.wrapping_add_signed(pri_rel[k][sign_index])],
-                        );
-                        sum +=
-                            pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
-                    }
-                }
-                out[i * w + j] = (center + ((8 + sum - i32::from(sum < 0)) >> 4)) as u16;
-            }
-        }
-    } else if filter.sec_str != 0 {
-        for i in 0..h {
-            for j in 0..w {
-                let center_index = (i + 2) * CDEF_PADDED_SIDE + (j + 2);
-                let center = i32::from(pad[center_index]);
-                let mut sum = 0i32;
-                for k in 0..2 {
-                    for sign_index in 0..2 {
-                        for dir_off_index in 0..2 {
-                            let s = i32::from(
-                                pad[center_index
-                                    .wrapping_add_signed(sec_rel[k][sign_index][dir_off_index])],
-                            );
-                            sum += sec_taps[k]
-                                * constrain_with_adj(s - center, filter.sec_str, sec_adj);
-                        }
-                    }
-                }
-                out[i * w + j] = (center + ((8 + sum - i32::from(sum < 0)) >> 4)) as u16;
-            }
-        }
-    } else {
-        for i in 0..h {
-            for j in 0..w {
-                out[i * w + j] = pad[(i + 2) * CDEF_PADDED_SIDE + (j + 2)];
-            }
-        }
-    }
-}
 
 /// The `constrain` dampingAdj, which depends only on the per-call strengths
 /// and is therefore derived once per sample instead of once per tap.
@@ -1841,30 +1701,15 @@ mod tests {
                             dir,
                             coeff_shift,
                         };
-                        for (w, h) in [(8usize, 8usize), (4, 8), (4, 4), (5, 3)] {
-                            let mut out = [0u16; 64];
-                            cdef_filter_block_interior(&pad, w, h, &filter, &mut out);
-                            if w == 4 || w == 8 {
-                                let mut strided = [u16::MAX; 104];
-                                assert!(cdef_filter_block_interior_to(
-                                    &pad,
-                                    w,
-                                    h,
-                                    &filter,
-                                    &mut strided,
-                                    13,
-                                ));
-                                for i in 0..h {
-                                    assert_eq!(
-                                        &strided[i * 13..i * 13 + w],
-                                        &out[i * w..i * w + w]
-                                    );
-                                }
-                            }
+                        for (w, h) in [(8usize, 8usize), (4, 8), (4, 4)] {
+                            let mut out = [u16::MAX; 104];
+                            assert!(cdef_filter_block_interior_to(
+                                &pad, w, h, &filter, &mut out, 13,
+                            ));
                             for i in 0..h {
                                 for j in 0..w {
                                     assert_eq!(
-                                        i32::from(out[i * w + j]),
+                                        i32::from(out[i * 13 + j]),
                                         per_sample_reference(&pad, i, j, &filter),
                                         "shift={coeff_shift} dir={dir} pri={pri} sec={sec} \
                                          damping={damping_base} w={w} h={h} i={i} j={j}"
@@ -2315,7 +2160,6 @@ mod tests {
 
     #[test]
     fn uv_dir_table_is_the_spec_remap() {
-        // §7.18.1 Cdef_Uv_Dir: spot-check the 4:2:0 (subX=1, subY=1) row.
         assert_eq!(
             CDEF_UV_DIR[1][1],
             [0, 1, 2, 3, 4, 5, 6, 7],
