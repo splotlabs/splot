@@ -253,12 +253,22 @@ fn narrow_row(staged: &mut [u8], row: &[u16]) -> bool {
 #[inline]
 fn narrow_row_lanes<S: fearless_simd::Simd>(simd: S, staged: &mut [u8], row: &[u16]) -> bool {
     use fearless_simd::{prelude::*, u16x16};
-    let (chunks, tail) = row.as_chunks::<32>();
-    let (staged_chunks, staged_tail) = staged.as_chunks_mut::<32>();
+    let len = staged.len().min(row.len());
+    let (staged, row) = (&mut staged[..len], &row[..len]);
+    let Some(last) = len.checked_sub(32) else {
+        return row.iter().zip(staged).all(|(&sample, staged)| {
+            *staged = sample as u8;
+            sample <= 255
+        });
+    };
     let mut peak = u16x16::splat(simd, 0);
-    for (staged, chunk) in staged_chunks.iter_mut().zip(chunks) {
-        let (low, high) = chunk.split_at(16);
-        let (Some(low), Some(high)) = (low.first_chunk::<16>(), high.first_chunk::<16>()) else {
+    for chunk in 0..len.div_ceil(32) {
+        let at = (32 * chunk).min(last);
+        let (Some(low), Some(high), Some(staged)) = (
+            row.get(at..).and_then(<[u16]>::first_chunk::<16>),
+            row.get(at + 16..).and_then(<[u16]>::first_chunk::<16>),
+            staged.get_mut(at..).and_then(<[u8]>::first_chunk_mut::<32>),
+        ) else {
             return false;
         };
         let (low, high) = (
@@ -267,12 +277,6 @@ fn narrow_row_lanes<S: fearless_simd::Simd>(simd: S, staged: &mut [u8], row: &[u
         );
         peak = peak.max(low.max(high));
         low.narrow(high).store_array(staged);
-    }
-    for (staged, &sample) in staged_tail.iter_mut().zip(tail) {
-        let Ok(sample) = u8::try_from(sample) else {
-            return false;
-        };
-        *staged = sample;
     }
     peak.reduce_max() <= 255
 }

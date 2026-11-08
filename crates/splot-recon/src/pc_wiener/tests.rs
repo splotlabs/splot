@@ -973,6 +973,8 @@ fn rounded_lut_input_matches_spec_rounding_at_every_level_boundary() {
 
 #[test]
 fn classes_from_tx_skip_runs_match_per_lookup_classifications() {
+    let identity: &'static [u8; 256] =
+        Box::leak(Box::new(core::array::from_fn(|class| class as u8)));
     let mut params = params(BitDepth::Ten);
     params.x = 40;
     params.y = 24;
@@ -994,13 +996,16 @@ fn classes_from_tx_skip_runs_match_per_lookup_classifications() {
         .map(|i| ((i / 64 * 3 + i % 64) & 1) as u8)
         .collect();
     let runs = |run: PcWienerTxSkipRun| Ok(&tx_skip_grid[run.row * 64 + run.col..][..run.len]);
-    let classes = pc_wiener_classify_grid_padded_classes_into::<u16, _>(
+    let mut classes = Vec::new();
+    pc_wiener_classify_grid_padded_classes_into::<u16, _>(
         &params,
         cell_cols,
         cell_rows,
         &source,
         runs,
+        identity,
         &mut scratch,
+        &mut classes,
     )
     .unwrap();
     assert_eq!(classes, expected);
@@ -1011,9 +1016,12 @@ fn classes_from_tx_skip_runs_match_per_lookup_classifications() {
         cell_rows,
         &source,
         |run| Ok(&invalid[..run.len]),
+        identity,
         &mut scratch,
+        &mut classes,
     )
     .unwrap_err();
+    assert!(classes.is_empty());
     assert!(matches!(
         error,
         ReconError::PcWienerInvalidTxSkip { value: 2, .. }
@@ -1104,13 +1112,17 @@ fn tx_skip_sums_match_scalar_cells_at_every_clip() {
         )
         .unwrap();
         let mut scratch = PcWienerClassifyScratch::default();
+        let table = super::pc_wiener_subclass_table(PC_WIENER_FULL_CLASSES, 2).unwrap();
+        let mut output = Vec::new();
         let classes = pc_wiener_classify_grid_padded_classes_into::<u16, _>(
             &params,
             cols,
             rows,
             &source,
             |run| Ok(&tx_skip_grid[run.row * grid_cols + run.col..(run.row + 1) * grid_cols]),
+            table,
             &mut scratch,
+            &mut output,
         );
         let last_x = x + 4 * (cols as isize - 1);
         if x < 0
@@ -1124,7 +1136,10 @@ fn tx_skip_sums_match_scalar_cells_at_every_clip() {
             );
             continue;
         }
-        let expected: Vec<u8> = scalar(true).iter().map(|cell| cell.class).collect();
+        let expected: Vec<u8> = scalar(true)
+            .iter()
+            .map(|cell| table[usize::from(cell.class)])
+            .collect();
         assert_eq!(classes.unwrap(), expected, "{case}");
     }
 }

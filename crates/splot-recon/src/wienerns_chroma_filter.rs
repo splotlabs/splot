@@ -516,8 +516,8 @@ fn downsample_luma<T: ReconSample>(
     let radius = WIENER_NS_CHROMA_TAP_RADIUS as isize;
     let scale_x = 1isize << u32::from(params.subsampling_x);
     let scale_y = 1isize << u32::from(params.subsampling_y);
-    let filter_420 = (params.subsampling_x == 1 && params.subsampling_y == 1 && filter_index <= 1)
-        .then_some(filter_index);
+    let filter_420 = (params.subsampling_x == 1 && params.subsampling_y == 1)
+        .then_some(filter_index.min(PICK_420));
     let chroma_origin_x = checked_isize(params.x, "Wiener NS chroma padded luma origin x")?
         .checked_sub(radius)
         .ok_or(ReconError::ArithmeticOverflow {
@@ -580,6 +580,7 @@ fn downsample_luma<T: ReconSample>(
     }
 
     let step = scale_x as usize;
+    let blend_420 = filter_420.filter(|&index| index != PICK_420);
     let middle = usize::try_from(context.luma_last_x - luma_origin_x)
         .ok()
         .map(|last| {
@@ -672,7 +673,7 @@ fn downsample_luma<T: ReconSample>(
                     expected: top.saturating_add(1),
                     actual: source.len(),
                 })?;
-            let Some(filter_index) = filter_420 else {
+            let Some(filter_index) = blend_420 else {
                 *slot = top_left.to_u16();
                 continue;
             };
@@ -736,6 +737,10 @@ fn downsample_luma_unclipped<T: ReconSample>(
         let bottom = &source[(scale_y * row + 1) * source_stride..];
         for (col, slot) in output.iter_mut().enumerate() {
             let x = scale_x * col;
+            if filter_index == PICK_420 {
+                *slot = top[x].to_u16();
+                continue;
+            }
             let left = u32::from(top[x].to_u16()) + u32::from(bottom[x].to_u16());
             let sum = if filter_index == 1 {
                 left * 2
@@ -758,7 +763,10 @@ fn downsample_luma_420<T: ReconSample + LumaSimdSource>(
 ) {
     for (row, output) in output.chunks_exact_mut(output_stride).enumerate() {
         let top = &source[2 * row * source_stride..];
-        let bottom = &source[(2 * row + 1) * source_stride..];
+        let bottom = match filter_index {
+            PICK_420 => top,
+            _ => &source[(2 * row + 1) * source_stride..],
+        };
         downsample_420_lanes(output, top, bottom, filter_index);
     }
 }
@@ -798,6 +806,10 @@ fn downsample_420_lanes<S: ReconSample + LumaSimdSource>(
         .skip(col)
         .map(|(col, slot)| (2 * col, slot))
     {
+        if filter_index == PICK_420 {
+            *slot = top[x].to_u16();
+            continue;
+        }
         let left = u32::from(top[x].to_u16()) + u32::from(bottom[x].to_u16());
         let sum = if filter_index == 1 {
             left * 2
@@ -821,23 +833,37 @@ fn downsample_420_simd<S: Simd, T: LumaSimdSource>(
             .and_then(<[T]>::first_chunk::<16>)
             .map(|lanes| T::widen16(simd, lanes))
     };
-    let mut col = 0;
-    while let (Some(slot), Some(a), Some(b), Some(c), Some(d)) = (
-        output
-            .get_mut(col..)
-            .and_then(<[u16]>::first_chunk_mut::<16>),
-        load(top, 2 * col),
-        load(top, 2 * col + 16),
-        load(bottom, 2 * col),
-        load(bottom, 2 * col + 16),
-    ) {
+    let Some(last) = output.len().checked_sub(16) else {
+        return 0;
+    };
+    for chunk in 0..output.len().div_ceil(16) {
+        let col = (16 * chunk).min(last);
+        let (Some(slot), Some(a), Some(b)) = (
+            output
+                .get_mut(col..)
+                .and_then(<[u16]>::first_chunk_mut::<16>),
+            load(top, 2 * col),
+            load(top, 2 * col + 16),
+        ) else {
+            return col;
+        };
+        if filter_index == PICK_420 {
+            a.deinterleave(b).0.store_array(slot);
+            continue;
+        }
+        let (Some(c), Some(d)) = (load(bottom, 2 * col), load(bottom, 2 * col + 16)) else {
+            return col;
+        };
         let (even, odd) = (a + c).deinterleave(b + d);
         let pair = if filter_index == 1 { even } else { odd };
         ((even + pair) >> 2).store_array(slot);
-        col += 16;
     }
-    col
+    output.len()
 }
+
+/// The `filter_420` index of a 4:2:0 `get_luma_sample` that takes its
+/// top-left luma sample unfiltered (§ 7.20.3 `filterIdx > 1`).
+const PICK_420: usize = 2;
 
 const WIENER_NS_CONFIG_UV_PAIRS: [(isize, isize, usize); WIENER_NS_CHROMA_COEFF_SLOTS] = [
     (1, 0, 0),

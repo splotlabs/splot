@@ -13,9 +13,7 @@
 //!
 //! Feature tracking: `RECON-PC-WIENER-CLASSIFICATION`.
 
-use fearless_simd::{
-    Simd, SimdBase, i16x16, i32x4, i32x8, i64x2, prelude::*, u8x16, u16x8, u16x16,
-};
+use fearless_simd::{Simd, SimdBase, i16x16, i32x4, i32x8, i64x2, prelude::*, u16x8, u16x16};
 use splot_tables::tables::loop_restoration::{
     PC_WIENER_FILTERS, PC_WIENER_LUT_TO_CLASS, PC_WIENER_SUB_CLASSIFY, PC_WIENER_SUB_CLASSIFY2,
 };
@@ -184,8 +182,10 @@ pub struct PcWienerClassifyScratch {
     skip_sums: Vec<u8>,
     qval_cache_key: Option<(u32, BitDepth)>,
     qval_offsets: QvalOffsetsCache,
+    /// The two most recent subclass tables, each composed with
+    /// `Pc_Wiener_Lut_To_Class`; a frame uses at most two.
+    luts: [SubclassLut; 2],
     classifications: Vec<PcWienerClassification>,
-    classes: Vec<u8>,
 }
 
 impl Default for PcWienerClassifyScratch {
@@ -196,8 +196,8 @@ impl Default for PcWienerClassifyScratch {
             skip_sums: Vec::new(),
             qval_cache_key: None,
             qval_offsets: [[0; PC_WIENER_NUM_FEATURES]; QVAL_CACHE_LEN],
+            luts: [(None, [0; PC_WIENER_LUT_INPUTS]); 2],
             classifications: Vec::new(),
-            classes: Vec::new(),
         }
     }
 }
@@ -399,6 +399,7 @@ where
         &mut feature_rows,
         &mut skip_sums,
         &qval_offsets,
+        &PC_WIENER_LUT_TO_CLASS,
         &mut classifications,
         tx_skip_cells(tx_skip),
         false,
@@ -443,13 +444,14 @@ where
         &mut scratch.skip_sums,
         &mut scratch.qval_cache_key,
         &mut scratch.qval_offsets,
+        &PC_WIENER_LUT_TO_CLASS,
         &mut scratch.classifications,
         false,
     )
 }
 
-/// Compact runtime form of [`pc_wiener_classify_grid_padded_into`] that returns
-/// only the final class byte for each cell.
+/// Compact runtime form of [`pc_wiener_classify_grid_padded_into`] that writes
+/// only `subclasses[cls]` for each cell's class `cls` into `output`.
 ///
 /// `tx_skip(run)` answers a whole [`PcWienerTxSkipRun`] instead of one lookup
 /// at a time: it returns `LrTxSkip` row `run.row` from column `run.col`, at
@@ -463,6 +465,7 @@ where
 /// # Errors
 /// Returns the same errors as [`pc_wiener_classify_grid_padded_into`], and
 /// [`ReconError::PcWienerInvalidBounds`] for a span that breaks these rules.
+#[allow(clippy::too_many_arguments)]
 #[inline]
 pub fn pc_wiener_classify_grid_padded_classes_into<'a, 'g, T, FT>(
     params: &PcWienerClassifyParams,
@@ -470,12 +473,25 @@ pub fn pc_wiener_classify_grid_padded_classes_into<'a, 'g, T, FT>(
     cell_rows: usize,
     source: &PcWienerClassifyPaddedSource<'_, T>,
     mut tx_skip: FT,
-    scratch: &'a mut PcWienerClassifyScratch,
+    subclasses: &'static [u8; PC_WIENER_LUT_CLASSES],
+    scratch: &mut PcWienerClassifyScratch,
+    output: &'a mut Vec<u8>,
 ) -> Result<&'a [u8]>
 where
     T: ReconSample,
     FT: FnMut(PcWienerTxSkipRun) -> Result<&'g [u8]>,
 {
+    let cached = |lut: &SubclassLut| lut.0.is_some_and(|key| core::ptr::eq(key, subclasses));
+    if !cached(&scratch.luts[0]) {
+        scratch.luts.swap(0, 1);
+        if !cached(&scratch.luts[0]) {
+            let (key, lut) = &mut scratch.luts[0];
+            for (entry, &class) in lut.iter_mut().zip(&PC_WIENER_LUT_TO_CLASS) {
+                *entry = subclasses[usize::from(class)];
+            }
+            *key = Some(subclasses);
+        }
+    }
     classify_grid_padded_mapped_into(
         params,
         cell_cols,
@@ -487,7 +503,8 @@ where
         &mut scratch.skip_sums,
         &mut scratch.qval_cache_key,
         &mut scratch.qval_offsets,
-        &mut scratch.classes,
+        &scratch.luts[0].1,
+        output,
         true,
     )
 }
@@ -504,12 +521,13 @@ fn classify_grid_padded_mapped_into<'a, 'g, T, FT, O>(
     skip_sums: &mut Vec<u8>,
     qval_cache_key: &mut Option<(u32, BitDepth)>,
     qval_offsets: &mut QvalOffsetsCache,
+    lut: &[u8; PC_WIENER_LUT_INPUTS],
     output: &'a mut Vec<O>,
     split_blocks: bool,
 ) -> Result<&'a [O]>
 where
     T: ReconSample,
-    FT: FnMut(PcWienerTxSkipRun, &mut TxSkipCells) -> Result<Option<&'g [u8]>>,
+    FT: FnMut(PcWienerTxSkipRun, &mut Vec<u8>) -> Result<Option<&'g [u8]>>,
     O: ClassifiedCell,
 {
     source_scratch.clear();
@@ -554,6 +572,7 @@ where
         feature_rows,
         skip_sums,
         qval_offsets,
+        lut,
         output,
         tx_skip,
         split_blocks,
@@ -762,13 +781,14 @@ fn classify_grid_from_cache<'s, 'g, FR, FT, O>(
     feature_rows: &mut Vec<u16>,
     skip_sums: &mut Vec<u8>,
     offsets_cache: &QvalOffsetsCache,
+    lut: &[u8; PC_WIENER_LUT_INPUTS],
     output: &mut Vec<O>,
     mut tx_skip: FT,
     split_blocks: bool,
 ) -> Result<()>
 where
     FR: Fn(usize) -> Result<&'s [u16]>,
-    FT: FnMut(PcWienerTxSkipRun, &mut TxSkipCells) -> Result<Option<&'g [u8]>>,
+    FT: FnMut(PcWienerTxSkipRun, &mut Vec<u8>) -> Result<Option<&'g [u8]>>,
     O: ClassifiedCell,
 {
     let cell_count = checked_area(
@@ -783,13 +803,6 @@ where
             context: "PC-Wiener classification-grid",
         })?;
     output.resize(cell_count, O::default());
-    skip_sums
-        .try_reserve_exact(cell_count.saturating_sub(skip_sums.len()))
-        .map_err(|_| ReconError::WorkspaceAllocationFailed {
-            plane: PlaneId::Y,
-            context: "PC-Wiener tx-skip sums",
-        })?;
-    skip_sums.resize(cell_count, 0);
     let first_x = usize::try_from(params.x)
         .ok()
         .filter(|x| x.is_multiple_of(4));
@@ -803,39 +816,15 @@ where
             field: "PC-Wiener block span",
         });
     }
-    let mut first_col = 0;
-    while first_col < cell_cols {
-        let remaining = cell_cols - first_col;
-        let (lanes, bounds) = match first_x {
-            Some(x) if split_blocks => {
-                let x = x + 4 * first_col;
-                let start = (x >> 6) << 6;
-                let bounds = [start, params.block_end_x.min(start + 63)];
-                (remaining.min((start + 64 - x) / 4), bounds)
-            }
-            _ => (
-                remaining.min(TX_SKIP_LANES),
-                [params.block_start_x, params.block_end_x],
-            ),
-        };
-        let mut skips = TxSkipSums::new(params, first_col, lanes, bounds)?;
-        let mut carry = add_skips(skips.next(&mut tx_skip)?, skips.next(&mut tx_skip)?);
-        for row_sums in skip_sums[first_col..].chunks_mut(cell_cols).take(cell_rows) {
-            let near = add_skips(skips.next(&mut tx_skip)?, skips.next(&mut tx_skip)?);
-            let far = add_skips(skips.next(&mut tx_skip)?, skips.next(&mut tx_skip)?);
-            let sums = add_skips(add_skips(carry, near), far);
-            match row_sums.first_chunk_mut::<TX_SKIP_LANES>() {
-                Some(full) if lanes == TX_SKIP_LANES => *full = sums,
-                _ => {
-                    for (sum, lane) in row_sums[..lanes].iter_mut().zip(sums) {
-                        *sum = lane;
-                    }
-                }
-            }
-            carry = far;
-        }
-        first_col += lanes;
-    }
+    let skip_sums = tx_skip::window_sums(
+        params,
+        cell_cols,
+        cell_rows,
+        split_blocks,
+        &mut tx_skip,
+        skip_sums,
+    )?;
+    let skip_stride = tx_skip::sums_stride(cell_cols);
 
     let pooled_width = geo.feature_width / 2;
     let plane_width = 16 * cell_cols.div_ceil(8) + 2;
@@ -871,7 +860,7 @@ where
     build_row(feature_rows, 0)?;
     for (cell_row, (cells, row_sums)) in output
         .chunks_mut(cell_cols)
-        .zip(skip_sums.chunks(cell_cols))
+        .zip(skip_sums.chunks(skip_stride))
         .enumerate()
     {
         build_row(feature_rows, 2 * cell_row + 1)?;
@@ -889,7 +878,7 @@ where
             simd,
             planes,
             row_sums,
-            offsets_cache,
+            (offsets_cache, lut),
             params.bit_depth,
             cells,
         ))
@@ -907,7 +896,7 @@ fn classify_cells<S: Simd, O: ClassifiedCell>(
     simd: S,
     planes: [[&[u16]; 3]; 3],
     skips: &[u8],
-    cache: &QvalOffsetsCache,
+    tables: (&QvalOffsetsCache, &[u8; PC_WIENER_LUT_INPUTS]),
     bit_depth: BitDepth,
     cells: &mut [O],
 ) -> Option<()> {
@@ -927,161 +916,25 @@ fn classify_cells<S: Simd, O: ClassifiedCell>(
             *sum = simd.pairwise_dot_product_i16x16(pairs.bitcast(), ones)
                 + simd.pairwise_dot_product_i16x16(next.bitcast(), evens);
         }
-        let lanes = match skips.first_chunk::<8>() {
-            Some(full) => *full,
-            None => core::array::from_fn(|lane| skips.get(lane).copied().unwrap_or(0)),
-        };
-        O::finish_lanes(simd, sums, lanes, cache, bit_depth, cells);
+        O::finish_lanes(
+            simd,
+            sums,
+            *skips.first_chunk::<8>()?,
+            tables,
+            bit_depth,
+            cells,
+        );
     }
     Some(())
 }
 
-/// Lane-wise sum of two [`TxSkipSums`] rows.
-#[inline]
-fn add_skips(a: [u8; TX_SKIP_LANES], b: [u8; TX_SKIP_LANES]) -> [u8; TX_SKIP_LANES] {
-    crate::lr_madd::lr_simd!(simd => (u8x16::load_array(simd, a) + u8x16::load_array(simd, b)).into())
-}
+/// A subclass table and its `lutInput` composition.
+type SubclassLut = (
+    Option<&'static [u8; PC_WIENER_LUT_CLASSES]>,
+    [u8; PC_WIENER_LUT_INPUTS],
+);
 
-/// Cells per [`TxSkipSums`] chunk.
-const TX_SKIP_LANES: usize = 16;
-/// `LrTxSkip` columns one chunk row reads: its cells and one neighbor each side.
-const TX_SKIP_RUN_CELLS: usize = TX_SKIP_LANES + 2;
-/// Storage a per-lookup `tx_skip` fills for one [`PcWienerTxSkipRun`].
-type TxSkipCells = [u8; TX_SKIP_RUN_CELLS];
-
-/// Per-feature-row sums of the § 7.20.4 `get_tx_skip` values that the 6x6
-/// windows of up to sixteen adjacent cells read, one row down the grid at a
-/// time.
-///
-/// `get_tx_skip` clips x to `[BlockStartX, BlockEndX]` before `>> 2`, and the
-/// clip commutes with the shift, so the six feature columns of the cell at
-/// grid column `c` read columns `Clip3(lo, hi, c + k)` for `k` in `-1..=1`,
-/// weighted by `x & 3`. Each row takes the stripe clip, then the tile clip.
-/// Clipped rows never decrease down the grid, so only the last row is kept.
-struct TxSkipSums {
-    next_y: isize,
-    first: isize,
-    lanes: usize,
-    cols: [isize; 2],
-    stripe: [isize; 2],
-    tile: [usize; 2],
-    block_start_x: usize,
-    weights: [u8; 3],
-    cached: Option<(usize, [u8; TX_SKIP_LANES])>,
-}
-
-impl TxSkipSums {
-    fn new(
-        params: &PcWienerClassifyParams,
-        first_col: usize,
-        lanes: usize,
-        [block_start_x, block_end_x]: [usize; 2],
-    ) -> Result<Self> {
-        let bound = |value: usize| usize_to_isize(value, "PC-Wiener tx-skip bounds");
-        let phase = (params.x & 3) as u8;
-        let left = u8::from(phase == 0);
-        Ok(Self {
-            next_y: coordinate_add(params.y, -PC_WIENER_LEAD, "PC-Wiener tx-skip y")?,
-            first: coordinate_add(params.x >> 2, bound(first_col)?, "PC-Wiener tx-skip x")?,
-            lanes,
-            cols: [bound(block_start_x >> 2)?, bound(block_end_x >> 2)?],
-            stripe: [
-                bound(params.luma_stripe_start_y)?,
-                bound(params.luma_stripe_end_y)?,
-            ],
-            tile: [params.tile_start_y, params.tile_end_y],
-            block_start_x,
-            weights: [left, 5 - phase - left, phase + 1],
-            cached: None,
-        })
-    }
-
-    #[inline]
-    fn next<'g, FT>(&mut self, tx_skip: &mut FT) -> Result<[u8; TX_SKIP_LANES]>
-    where
-        FT: FnMut(PcWienerTxSkipRun, &mut TxSkipCells) -> Result<Option<&'g [u8]>>,
-    {
-        let y = (self.next_y.max(self.stripe[0]).min(self.stripe[1]) as usize)
-            .max(self.tile[0])
-            .min(self.tile[1]);
-        self.next_y = coordinate_add(self.next_y, 1, "PC-Wiener tx-skip y")?;
-        match self.cached {
-            Some((row, sums)) if row == y >> 2 => Ok(sums),
-            _ => self.fetch(y, tx_skip),
-        }
-    }
-
-    #[inline(never)]
-    fn fetch<'g, FT>(&mut self, y: usize, tx_skip: &mut FT) -> Result<[u8; TX_SKIP_LANES]>
-    where
-        FT: FnMut(PcWienerTxSkipRun, &mut TxSkipCells) -> Result<Option<&'g [u8]>>,
-    {
-        let row = y >> 2;
-        let [lo, hi] = self.cols;
-        let last = self.first + self.lanes as isize - 1;
-        let first_col = (self.first - 1).max(lo).min(hi);
-        let col = first_col as usize;
-        let len = ((last + 1).max(lo).min(hi) - first_col) as usize + 1;
-        let run = PcWienerTxSkipRun {
-            x: (4 * col).max(self.block_start_x),
-            y,
-            row,
-            col,
-            len,
-        };
-        let mut buffer = [0; TX_SKIP_RUN_CELLS];
-        let cells = tx_skip(run, &mut buffer)?.unwrap_or(&buffer);
-        if cells.len() < len {
-            return Err(ReconError::BufferLengthMismatch {
-                expected: len,
-                actual: cells.len(),
-            });
-        }
-        let [left_weight, center_weight, right_weight] = self.weights;
-        if cells[..len].iter().fold(0, |any, &cell| any | cell) > 1 {
-            check_tx_skip_cells(run, &cells[..len])?;
-        }
-        let sums = if self.first >= lo && last <= hi {
-            let mut short = [0; TX_SKIP_RUN_CELLS];
-            let wide = cells.first_chunk().unwrap_or_else(|| {
-                short[..cells.len()].copy_from_slice(cells); // splot-copy-ok: a zero-padded short run lets every lane load
-                &short
-            });
-            crate::lr_madd::lr_simd!(simd => {
-                let load = |offset: usize| u8x16::from_slice(simd, &wide[offset..offset + 16]);
-                let (left, center, mut right) = if self.first > lo {
-                    (load(0), load(1), load(2))
-                } else {
-                    let center = load(0);
-                    let left = simd.slide_u8x16::<15>(u8x16::splat(simd, wide[0]), center);
-                    (left, center, load(1))
-                };
-                if last == hi
-                    && let Some(lane) = self.lanes.checked_sub(1)
-                {
-                    const LANES: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-                    let at_edge = u8x16::from_slice(simd, &LANES).simd_eq(u8x16::splat(simd, lane as u8));
-                    right = at_edge.select(center, right);
-                }
-                let weigh = |cells: u8x16<_>, weight: u8| (u8x16::splat(simd, 0) - cells) & weight;
-                (weigh(left, left_weight) + weigh(center, center_weight) + weigh(right, right_weight))
-                    .into()
-            })
-        } else {
-            let mut sums = [0; TX_SKIP_LANES];
-            for (lane, sum) in sums.iter_mut().take(self.lanes).enumerate() {
-                let c = self.first + lane as isize;
-                let cell = |k: isize| cells[((c + k).max(lo).min(hi) - first_col) as usize];
-                *sum = left_weight * cell(-1) + center_weight * cell(0) + right_weight * cell(1);
-            }
-            sums
-        };
-        self.cached = Some((row, sums));
-        Ok(sums)
-    }
-}
-
-fn check_tx_skip_cells(run: PcWienerTxSkipRun, cells: &[u8]) -> Result<()> {
+pub(super) fn check_tx_skip_cells(run: PcWienerTxSkipRun, cells: &[u8]) -> Result<()> {
     match cells.iter().position(|&value| value > 1) {
         Some(index) => Err(ReconError::PcWienerInvalidTxSkip {
             x: run_x(run, index),
@@ -1265,13 +1118,25 @@ fn run_x(run: PcWienerTxSkipRun, index: usize) -> usize {
 /// same lookup order and with the same `0..=1` check.
 fn tx_skip_cells<'g, FT>(
     mut tx_skip: FT,
-) -> impl FnMut(PcWienerTxSkipRun, &mut TxSkipCells) -> Result<Option<&'g [u8]>>
+) -> impl FnMut(PcWienerTxSkipRun, &mut Vec<u8>) -> Result<Option<&'g [u8]>>
 where
     FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
 {
     move |run, cells| {
-        for (index, value) in cells.iter_mut().take(run.len).enumerate() {
-            *value = checked_tx_skip(&mut tx_skip, run_x(run, index), run.y, run.row)?;
+        cells.clear();
+        cells
+            .try_reserve(run.len)
+            .map_err(|_| ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "PC-Wiener tx-skip run",
+            })?;
+        for index in 0..run.len {
+            cells.push(checked_tx_skip(
+                &mut tx_skip,
+                run_x(run, index),
+                run.y,
+                run.row,
+            )?);
         }
         Ok(None)
     }
@@ -1365,12 +1230,12 @@ fn finish_pc_wiener_classification(
 /// and the [`QvalOffsetsCache`] entry of its tx-skip sum.
 trait ClassifiedCell: Copy + Default {
     /// Finishes `cells` (at most eight) from the window sums of features
-    /// `1..4` and the tx-skip sum of each lane.
+    /// `1..4` and the tx-skip sum of each lane; a class byte is `lut[lutInput]`.
     fn finish_lanes<S: Simd>(
         simd: S,
         sums: [i32x8<S>; 3],
         skips: [u8; 8],
-        cache: &QvalOffsetsCache,
+        tables: (&QvalOffsetsCache, &[u8; PC_WIENER_LUT_INPUTS]),
         bit_depth: BitDepth,
         cells: &mut [Self],
     );
@@ -1381,7 +1246,7 @@ impl ClassifiedCell for PcWienerClassification {
         _simd: S,
         sums: [i32x8<S>; 3],
         skips: [u8; 8],
-        cache: &QvalOffsetsCache,
+        (cache, _): (&QvalOffsetsCache, &[u8; PC_WIENER_LUT_INPUTS]),
         bit_depth: BitDepth,
         cells: &mut [Self],
     ) {
@@ -1411,7 +1276,7 @@ impl ClassifiedCell for u8 {
         simd: S,
         sums: [i32x8<S>; 3],
         skips: [u8; 8],
-        cache: &QvalOffsetsCache,
+        (cache, lut): (&QvalOffsetsCache, &[u8; PC_WIENER_LUT_INPUTS]),
         bit_depth: BitDepth,
         cells: &mut [Self],
     ) {
@@ -1433,7 +1298,7 @@ impl ClassifiedCell for u8 {
         let inputs: [i32; 8] = input.into();
         let mut classes = [0; 8];
         for (class, input) in classes.iter_mut().zip(inputs) {
-            *class = PC_WIENER_LUT_TO_CLASS[input as usize % PC_WIENER_LUT_INPUTS];
+            *class = lut[input as usize % PC_WIENER_LUT_INPUTS];
         }
         match cells.first_chunk_mut::<8>() {
             Some(full) => *full = classes,
@@ -1812,35 +1677,32 @@ fn filter_pc_wiener_padded_u16<'a, S, T: ReconSample + LumaSimdSource + 'a>(
                 (end, run) = flat.split(c0, params.width);
                 continue;
             }
-            let mut col = c0;
+            let full = (end - c0) / 16;
+            let tail = full > 0
+                && !(end - c0).is_multiple_of(16)
+                && end.is_multiple_of(PC_WIENER_BLOCK_SIZE);
             let mut weights = [[[0; 16]; 2]; 7];
-            let mut group16 = |col: usize| -> Result<()> {
+            for group_col in (0..full)
+                .map(|group| c0 + 16 * group)
+                .chain(tail.then(|| end - 16))
+            {
                 let cells = row_subclasses
-                    .get(col / PC_WIENER_BLOCK_SIZE..)
+                    .get(group_col / PC_WIENER_BLOCK_SIZE..)
                     .and_then(<[u8]>::first_chunk::<4>)
                     .ok_or_else(rows_error)?;
-                let lanes = chunk_rows::<_, 22, { PC_WIENER_BLOCK_SIZE + 2 * R }>(&window, col)
-                    .ok_or_else(rows_error)?;
+                let lanes =
+                    chunk_rows::<_, 22, { PC_WIENER_BLOCK_SIZE + 2 * R }>(&window, group_col)
+                        .ok_or_else(rows_error)?;
+                group_weights::<T>(&mut weights, setup.pairs, *cells);
                 filter_pc_wiener_group16::<T>(
-                    &mut destination[row * params.output_stride + col..],
+                    &mut destination[row * params.output_stride + group_col..],
                     (params.output_stride, group),
                     &lanes,
-                    {
-                        group_weights::<T>(&mut weights, setup.pairs, *cells);
-                        &weights
-                    },
+                    &weights,
                     setup.max_sample,
                 );
-                Ok(())
-            };
-            while col + 16 <= end {
-                group16(col)?;
-                col += 16;
             }
-            if col < end && end >= c0 + 16 && end.is_multiple_of(PC_WIENER_BLOCK_SIZE) {
-                group16(end - 16)?;
-                col = end;
-            }
+            let col = if tail { end } else { c0 + 16 * full };
             for row in group_rows.clone() {
                 let output = &mut destination[row * params.output_stride..][..params.width];
                 let rows = window[row % PC_WIENER_BLOCK_SIZE..]
@@ -2269,4 +2131,5 @@ fn checked_area(width: usize, height: usize, context: &'static str) -> Result<us
 mod tests;
 
 mod cells16;
+mod tx_skip;
 use cells16::{ClassPairs, PC_WIENER_PAIRS, chunk_rows, filter_pc_wiener_group16, group_weights};

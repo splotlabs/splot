@@ -440,13 +440,11 @@ fn for_each_wienerns_lr_tx_skip_record_row(
         });
     }
     let end_row = nominal_end_row.min(rows);
-    let end_col = nominal_end_col.min(cols);
-
-    for row in record.row..end_row {
-        visit(
-            wienerns_lr_tx_skip_grid_index(row, record.col, cols)?
-                ..wienerns_lr_tx_skip_grid_index(row, end_col, cols)?,
-        )?;
+    let width = nominal_end_col.min(cols) - record.col;
+    let mut start = wienerns_lr_tx_skip_grid_index(record.row, record.col, cols)?;
+    for _ in record.row..end_row {
+        visit(start..start + width)?;
+        start += cols;
     }
     Ok(())
 }
