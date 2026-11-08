@@ -22,13 +22,14 @@ mod search_window;
 mod sixteen_bit;
 mod tip_overlap;
 use block::Sink;
+pub use cell::{CompoundCells, subpel_compound_cells_u8};
 pub use copy::{
     blend_compound_average_equal, blend_compound_average_weighted,
     blend_compound_average_weighted_sample,
 };
 pub use fullpel_u8::{
-    subpel_predict_block_compound_average_fullpel_strided_into_u8,
-    subpel_predict_block_strided_into_u8, subpel_put_u8_in_place, subpel_put_u8_pair_in_place,
+    UnscaledPut, subpel_predict_block_compound_average_fullpel_strided_into_u8,
+    subpel_predict_block_strided_into_u8, subpel_put_u8_block,
 };
 pub use search_window::{
     refinemv_window_sads_u8, subpel_predict_bilinear_8x8_u8,

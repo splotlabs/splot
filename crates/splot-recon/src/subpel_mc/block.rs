@@ -164,7 +164,7 @@ pub(super) struct Taps {
 
 /// The first tap and the even tap count, 2, 4, 6 or 8, of a filter row's
 /// nonzero span, so a pass has a whole number of tap pairs.
-const fn even_tap_span(row: &[i32; NUM_TAPS]) -> (usize, usize) {
+pub(super) const fn even_tap_span(row: &[i32; NUM_TAPS]) -> (usize, usize) {
     let mut start = 0;
     while start < NUM_TAPS && row[start] == 0 {
         start += 1;
@@ -364,7 +364,7 @@ pub(super) fn put_u8(
 pub(super) fn put_u8_planes<const N: usize>(
     views: [&ReferencePlaneView<'_, u8>; N],
     params: &SubpelPredictParams,
-    mut outputs: [(&mut [u8], usize); N],
+    outputs: [(&mut [u8], usize); N],
 ) -> bool {
     let (w, h) = (params.w, params.h);
     let fits = |(output, stride): &(&mut [u8], usize)| {
@@ -375,19 +375,6 @@ pub(super) fn put_u8_planes<const N: usize>(
                 .is_some_and(|end| end <= output.len())
     };
     let view = views[0];
-    let geometry = |other: &&ReferencePlaneView<'_, u8>| {
-        (
-            other.stride,
-            other.width,
-            other.readable_rows,
-            other.samples.len(),
-        ) == (
-            view.stride,
-            view.width,
-            view.readable_rows,
-            view.samples.len(),
-        )
-    };
     let admitted = params.bit_depth == crate::format::BitDepth::Eight
         && params.step_x == 1 << SCALE_SUBPEL_BITS
         && params.step_y == 1 << SCALE_SUBPEL_BITS
@@ -400,10 +387,28 @@ pub(super) fn put_u8_planes<const N: usize>(
             .checked_add((w as i32 - 1) << SCALE_SUBPEL_BITS)
             .is_some()
         && outputs.iter().all(fits)
-        && views.iter().all(geometry);
-    if !admitted {
-        return false;
-    }
+        && views.iter().all(|other| same_geometry(view, other));
+    admitted && put_admitted(views, params, outputs)
+}
+
+/// Whether two planes share stride, width, readable rows and storage.
+#[inline]
+pub(super) fn same_geometry(
+    a: &ReferencePlaneView<'_, u8>,
+    b: &ReferencePlaneView<'_, u8>,
+) -> bool {
+    (a.stride, a.width, a.readable_rows, a.samples.len())
+        == (b.stride, b.width, b.readable_rows, b.samples.len())
+}
+
+/// [`put_u8_planes`] of a block it admits.
+#[inline]
+pub(super) fn put_admitted<const N: usize>(
+    views: [&ReferencePlaneView<'_, u8>; N],
+    params: &SubpelPredictParams,
+    mut outputs: [(&mut [u8], usize); N],
+) -> bool {
+    let (w, view) = (params.w, views[0]);
     if let Some(cell) = super::cell::put_cell(view, params) {
         for (view, (output, stride)) in views.into_iter().zip(&mut outputs) {
             cell.with_source(view.samples).put(w, output, *stride);
@@ -425,6 +430,7 @@ pub(super) fn put_u8_planes<const N: usize>(
     };
     match stage_len(layout.rows, w, layout.vertical) {
         0 => put(&mut []),
+        len if len <= PUT_STAGE => put(&mut [0; PUT_STAGE][..len]),
         len => with_subpel_intermediate(len, put),
     }
 }
@@ -594,6 +600,9 @@ pub(super) fn small_compound<T: ReconSample, O: ReconSample>(
 
 /// The stage of the tallest compound cell, 4x16.
 const CELL_STAGE: usize = 24 * 16;
+
+/// The stage of an eight-tap put of up to 16x16 samples.
+const PUT_STAGE: usize = 23 * 16 + 64;
 
 fn unscaled_block<T: Sample>(
     view: &ReferencePlaneView<'_, T>,

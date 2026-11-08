@@ -91,7 +91,7 @@ pub(super) fn blend_compound_average<T: ReconSample>(
         });
     }
 
-    optflow::blend_nonuniform_implicit_mask(
+    blend_nonuniform_implicit_mask(
         pred0,
         pred1,
         bit_depth,
@@ -445,4 +445,202 @@ fn difference_weight_matches_the_rounded_spec_formula_at_the_extremes() {
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn blend_nonuniform_implicit_mask<T: ReconSample>(
+    pred0: &[i32],
+    pred1: &[i32],
+    bit_depth: splot_recon::BitDepth,
+    width: usize,
+    height: usize,
+    motion: Option<&CompoundMotionGrid>,
+    plane_x: usize,
+    plane_y: usize,
+    scaling_templates: [PlaneScaling; 2],
+    frame_w: usize,
+    frame_h: usize,
+    sub_x: u32,
+    sub_y: u32,
+    output: &mut [T],
+    output_stride: usize,
+) -> splot_recon::Result<()> {
+    if output.is_empty() {
+        return Ok(());
+    }
+    let blend = ImplicitMaskBlend::new(bit_depth, frame_w, frame_h);
+    if let Some(motion) = motion {
+        return blend_implicit_mask_region(
+            [pred0, pred1],
+            width,
+            [0, 0, width, height],
+            motion,
+            (plane_x, plane_y),
+            scaling_templates,
+            blend,
+            (sub_x, sub_y),
+            output,
+            output_stride,
+        );
+    }
+    let reference_starts =
+        scaling_templates.map(|scaling| (scaling.start_x >> 10, scaling.start_y >> 10));
+    for (row, ((output, pred0), pred1)) in output
+        .chunks_mut(output_stride.max(1))
+        .zip(pred0.chunks(width))
+        .zip(pred1.chunks(width))
+        .enumerate()
+    {
+        let starts = reference_starts.map(|(x, y)| (x, y + row as i32));
+        blend.row(pred0, pred1, starts, &mut output[..width])?;
+    }
+    Ok(())
+}
+
+/// The implicit-mask weights: a reference whose sample position falls outside
+/// the frame yields its whole weight to the other reference.
+#[derive(Clone, Copy)]
+pub(super) struct ImplicitMaskBlend {
+    last: (i32, i32),
+    max_sample: i32,
+}
+
+impl ImplicitMaskBlend {
+    pub(super) fn new(bit_depth: splot_recon::BitDepth, frame_w: usize, frame_h: usize) -> Self {
+        Self {
+            last: (frame_w as i32 - 1, frame_h as i32 - 1),
+            max_sample: i32::from(bit_depth.max_sample()),
+        }
+    }
+
+    #[allow(
+        clippy::inline_always,
+        reason = "per-sample blend; must inline in every crate's copy of the decoder"
+    )]
+    #[inline(always)]
+    pub(super) fn sample<T: ReconSample>(
+        self,
+        left: i32,
+        right: i32,
+        starts: [(i32, i32); 2],
+    ) -> splot_recon::Result<T> {
+        let onscreen =
+            starts.map(|(x, y)| (0..=self.last.0).contains(&x) && (0..=self.last.1).contains(&y));
+        let mask = match onscreen {
+            [true, false] => 2,
+            [false, true] => 0,
+            _ => 1,
+        };
+        let sample = round2_i32(
+            mask * left + (2 - mask) * right,
+            1 + compound_inter_post_round(),
+        );
+        T::try_from_u16(sample.clamp(0, self.max_sample) as u16)
+    }
+
+    /// [`Self::sample`] over one row whose first sample reads the reference
+    /// positions `starts` and whose later samples step one column right.
+    #[allow(
+        clippy::inline_always,
+        reason = "per-row blend; the loop must vectorize in every caller"
+    )]
+    #[inline(always)]
+    fn row<T: ReconSample>(
+        self,
+        left: &[i32],
+        right: &[i32],
+        starts: [(i32, i32); 2],
+        output: &mut [T],
+    ) -> splot_recon::Result<()> {
+        let row_onscreen = starts.map(|(_, y)| (0..=self.last.1).contains(&y));
+        let samples = left
+            .iter()
+            .zip(right)
+            .enumerate()
+            .map(|(col, (&left, &right))| {
+                let onscreen = |reference: usize| {
+                    row_onscreen[reference]
+                        && (0..=self.last.0).contains(&(starts[reference].0 + col as i32))
+                };
+                let mask = 1 + i32::from(onscreen(0)) - i32::from(onscreen(1));
+                round2_i32(
+                    mask * left + (2 - mask) * right,
+                    1 + compound_inter_post_round(),
+                )
+            });
+        store_clamped_samples(output, self.max_sample, samples)
+    }
+}
+
+/// Blends the `[x, y, width, height]` region of a motion-grid plane, whose
+/// predictions and output are region-local with their own row strides, with
+/// each sample's implicit mask taken from its own motion-grid cell. With
+/// unscaled references a start is the sample position plus one per-cell
+/// offset, so only scaled references derive it per sample.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn blend_implicit_mask_region<T: ReconSample>(
+    preds: [&[i32]; 2],
+    pred_stride: usize,
+    [x, y, width, height]: [usize; 4],
+    motion: &CompoundMotionGrid,
+    (plane_x, plane_y): (usize, usize),
+    scaling_templates: [PlaneScaling; 2],
+    blend: ImplicitMaskBlend,
+    (sub_x, sub_y): (u32, u32),
+    output: &mut [T],
+    output_stride: usize,
+) -> splot_recon::Result<()> {
+    let unit_width = (motion.unit_size() >> sub_x).max(4);
+    let unit_height = (motion.unit_size() >> sub_y).max(4);
+    let unscaled = !scaling_templates.iter().any(|scaling| scaling.is_scaled());
+    for cell_y in (y..y + height).step_by(unit_height) {
+        for cell_x in (x..x + width).step_by(unit_width) {
+            let mvs = motion.at_luma_offset(cell_x << sub_x, cell_y << sub_y)?;
+            let start_at = |reference: usize, col: usize, row: usize| {
+                let scaling = scaling_templates[reference].with_prescaled_mv(
+                    (plane_x + col) as i32,
+                    (plane_y + row) as i32,
+                    mvs[reference][0],
+                    mvs[reference][1],
+                    sub_x,
+                    sub_y,
+                );
+                (scaling.start_x >> 10, scaling.start_y >> 10)
+            };
+            let offsets: [(i32, i32); 2] = core::array::from_fn(|reference| {
+                let (start_x, start_y) = start_at(reference, cell_x, cell_y);
+                (
+                    start_x - (plane_x + cell_x) as i32,
+                    start_y - (plane_y + cell_y) as i32,
+                )
+            });
+            let cols = cell_x - x..(cell_x + unit_width).min(x + width) - x;
+            for row in cell_y..(cell_y + unit_height).min(y + height) {
+                let source = (row - y) * pred_stride;
+                let destination = (row - y) * output_stride;
+                if unscaled {
+                    let starts = offsets.map(|(offset_x, offset_y)| {
+                        (
+                            (plane_x + x + cols.start) as i32 + offset_x,
+                            (plane_y + row) as i32 + offset_y,
+                        )
+                    });
+                    blend.row(
+                        &preds[0][source + cols.start..source + cols.end],
+                        &preds[1][source + cols.start..source + cols.end],
+                        starts,
+                        &mut output[destination + cols.start..destination + cols.end],
+                    )?;
+                    continue;
+                }
+                for col in cols.clone() {
+                    let starts =
+                        core::array::from_fn(|reference| start_at(reference, x + col, row));
+                    output[destination + col] =
+                        blend.sample(preds[0][source + col], preds[1][source + col], starts)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }

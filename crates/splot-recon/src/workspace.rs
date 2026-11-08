@@ -570,11 +570,21 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     /// a whole-frame surface, or `None` wherever either is `None`.
     #[inline]
     pub fn u8_chroma_rects_mut(&mut self, rect: PlaneRect) -> Option<[(&mut [u8], usize); 2]> {
+        let [(u, u_stride), (v, v_stride)] = self.chroma_rects_mut(rect)?;
+        Some([
+            (T::u8_slice_mut(u)?, u_stride),
+            (T::u8_slice_mut(v)?, v_stride),
+        ])
+    }
+
+    /// [`Self::u8_chroma_rects_mut`] of samples of any depth.
+    #[inline]
+    pub fn chroma_rects_mut(&mut self, rect: PlaneRect) -> Option<[(&mut [T], usize); 2]> {
         let Self::Frame(workspace) = self else {
             return None;
         };
         let (u, v) = (workspace.u.as_mut()?, workspace.v.as_mut()?);
-        Some([u.u8_rect_mut(rect)?, v.u8_rect_mut(rect)?])
+        Some([u.rect_mut(rect)?, v.rect_mut(rect)?])
     }
 
     /// The samples of the exact in-storage `rect` of `plane`, from its
@@ -1506,10 +1516,17 @@ pub struct CurrentFramePlane<T: ReconSample> {
 }
 
 impl<T: ReconSample> CurrentFramePlane<T> {
-    /// The in-storage `rect` of this plane from its top-left sample through
-    /// its last row, and their row stride, for eight-bit samples.
+    /// [`Self::rect_mut`] of eight-bit samples.
     #[inline]
     fn u8_rect_mut(&mut self, rect: PlaneRect) -> Option<(&mut [u8], usize)> {
+        let (samples, stride) = self.rect_mut(rect)?;
+        Some((T::u8_slice_mut(samples)?, stride))
+    }
+
+    /// The in-storage `rect` of this plane from its top-left sample through
+    /// its last row, and their row stride.
+    #[inline]
+    fn rect_mut(&mut self, rect: PlaneRect) -> Option<(&mut [T], usize)> {
         let (stride, storage) = (self.stride, self.storage_size);
         let (right, bottom) = (
             rect.x().saturating_add(rect.width()),
@@ -1521,8 +1538,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             return None;
         }
         let base = local_y * stride + rect.x();
-        let samples = T::u8_slice_mut(&mut self.samples[..])?;
-        Some((samples.get_mut(base..rows - stride + right)?, stride))
+        Some((self.samples.get_mut(base..rows - stride + right)?, stride))
     }
 }
 
