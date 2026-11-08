@@ -13,7 +13,10 @@
 //! block takes the general path.
 
 use super::block::{TAPS, Taps};
-use super::{ReferencePlaneView, SCALE_SUBPEL_BITS, SUBPEL_MASK, SubpelPredictParams};
+use super::{
+    CellPlacement, InterpolationFilter, ReferencePlaneView, SCALE_SUBPEL_BITS, SUBPEL_MASK,
+    SubpelPredictParams,
+};
 
 /// One reference of a cell: window row `r` starts at `origin + r * stride`,
 /// or, for a window that crosses its clip bounds, at the bounded row
@@ -39,9 +42,27 @@ impl<'a> Cell<'a> {
         params: &SubpelPredictParams,
         size: usize,
     ) -> Option<Self> {
-        let filters = &TAPS[params.interp.pass_index(size as u32) as usize];
+        Self::at(
+            view,
+            params.interp,
+            size,
+            ([params.start_x, params.start_y], params.bounds()),
+        )
+    }
+
+    /// [`Self::new`] of a cell at 1/1024-sample `[x, y]` with clip bounds
+    /// `[firstX, firstY, lastX, lastY]`.
+    #[allow(clippy::inline_always, reason = "measured compound cell hot path")]
+    #[inline(always)]
+    fn at(
+        view: &ReferencePlaneView<'a, u8>,
+        interp: InterpolationFilter,
+        size: usize,
+        ([start_x, start_y], bounds): CellPlacement,
+    ) -> Option<Self> {
+        let filters = &TAPS[interp.pass_index(size as u32) as usize];
         let taps = |start: i32| filters[((start >> 6) & SUBPEL_MASK) as usize].as_ref();
-        let (horizontal, vertical) = (taps(params.start_x), taps(params.start_y));
+        let (horizontal, vertical) = (taps(start_x), taps(start_y));
         let window = |start: i32, taps: Option<&Taps>| {
             let base = start >> SCALE_SUBPEL_BITS;
             taps.map_or((base, size as i32), |taps| {
@@ -51,14 +72,12 @@ impl<'a> Cell<'a> {
                 )
             })
         };
-        let ((column, columns), (row, rows)) = (
-            window(params.start_x, horizontal),
-            window(params.start_y, vertical),
-        );
+        let ((column, columns), (row, rows)) =
+            (window(start_x, horizontal), window(start_y, vertical));
         let bound = |value: i32, last: usize| value.max(0).min(last as i32 - 1);
         let (width, height) = (view.width, view.readable_rows);
-        let [first_x, last_x] = [bound(params.first_x, width), bound(params.last_x, width)];
-        let [first_y, last_y] = [bound(params.first_y, height), bound(params.last_y, height)];
+        let [first_x, last_x] = [bound(bounds[0], width), bound(bounds[2], width)];
+        let [first_y, last_y] = [bound(bounds[1], height), bound(bounds[3], height)];
         if first_x > last_x || first_y > last_y {
             return None;
         }
@@ -141,12 +160,36 @@ pub(super) fn compound(
     stride: usize,
 ) -> bool {
     let size = params[0].w;
-    if params[0].h != size || (size != 4 && size != 8) {
+    params[0].h == size
+        && compound_at(
+            references,
+            params[0].interp,
+            size,
+            params.map(|params| ([params.start_x, params.start_y], params.bounds())),
+            forward,
+            output,
+            stride,
+        )
+}
+
+/// [`compound`] of a `size`-square cell from each reference's
+/// [`CellPlacement`].
+#[inline]
+pub(super) fn compound_at(
+    references: [&ReferencePlaneView<'_, u8>; 2],
+    interp: InterpolationFilter,
+    size: usize,
+    placements: [CellPlacement; 2],
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
+    if size != 4 && size != 8 {
         return false;
     }
     let (Some(first), Some(second)) = (
-        Cell::new(references[0], params[0], size),
-        Cell::new(references[1], params[1], size),
+        Cell::at(references[0], interp, size, placements[0]),
+        Cell::at(references[1], interp, size, placements[1]),
     ) else {
         return false;
     };

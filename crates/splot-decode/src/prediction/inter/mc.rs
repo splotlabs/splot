@@ -4,9 +4,9 @@
 #[cfg(test)]
 use splot_recon::BitDepth;
 use splot_recon::{
-    CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrameInfo, InterpolationFilter,
-    OptflowScratch, PixelFormat, PlaneId, PlaneRect, PreparedWarpPrediction, ReconError,
-    ReconSample, ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE,
+    CellPlacement, CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrameInfo,
+    InterpolationFilter, OptflowScratch, PixelFormat, PlaneId, PlaneRect, PreparedWarpPrediction,
+    ReconError, ReconSample, ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE,
     WarpPredictBlockParams, blend_compound_average_weighted_sample, ext_warp_predict_unit,
     subpel_predict_12x12_bilinear_overlap_into,
     subpel_predict_block_compound_average_fast_validated_strided_into,

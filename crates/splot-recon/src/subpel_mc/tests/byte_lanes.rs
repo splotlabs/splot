@@ -326,3 +326,83 @@ fn paired_put_matches_two_single_puts() {
     ));
     assert!(got.iter().flatten().all(|&s| s == 1));
 }
+
+/// The placement entry of a compound cell stores what the validated
+/// compound entry stores for the same parameters, inside and across its
+/// clip bounds, and declines shapes outside the register cells.
+#[test]
+fn placed_compound_cells_match_the_compound_entry() {
+    let (ref_w, ref_h) = (40usize, 32usize);
+    let bytes = (0..ref_w * ref_h)
+        .map(|i| ((i * 73 + i / ref_w * 29) % 256) as u8)
+        .collect::<Vec<_>>();
+    let view = ReferencePlaneView::new(&bytes, ref_w, ref_h).unwrap();
+    let interp = InterpolationFilter::EightTapSharp;
+    for size in [4usize, 8] {
+        for (case, (x, y)) in [(12, 10), (9, 13), (16, 7), (1, 1)].into_iter().enumerate() {
+            let placement = |phase: i32| -> CellPlacement {
+                (
+                    [
+                        (x << 10) + ((phase % 16) << 6),
+                        (y << 10) + ((phase / 16) << 6),
+                    ],
+                    [
+                        10,
+                        9,
+                        10 + size as i32 + 4,
+                        9 + size as i32 + 3 * case as i32,
+                    ],
+                )
+            };
+            let placements = [placement(37), placement(200)];
+            let params =
+                placements.map(
+                    |([start_x, start_y], [fx, fy, lx, ly])| SubpelPredictParams {
+                        start_x,
+                        start_y,
+                        first_x: fx,
+                        first_y: fy,
+                        last_x: lx,
+                        last_y: ly,
+                        ..full_pel_params(interp, size, size, 0, 0, ref_w as i32, ref_h as i32)
+                    },
+                );
+            let mut want = vec![0u8; size * size];
+            subpel_predict_block_compound_average_unscaled_strided_into(
+                &view, &params[0], &view, &params[1], 11, &mut want, size,
+            )
+            .unwrap();
+            let mut got = vec![0u8; size * size];
+            assert!(subpel_compound_cell_u8(
+                [&view, &view],
+                interp,
+                size,
+                placements,
+                11,
+                &mut got,
+                size
+            ));
+            assert_eq!(got, want, "{size} at {x},{y}");
+        }
+    }
+    let placement = ([8 << 10, 8 << 10], [0, 0, 39, 31]);
+    let mut out = vec![0u8; 256];
+    assert!(!subpel_compound_cell_u8(
+        [&view, &view],
+        interp,
+        16,
+        [placement; 2],
+        8,
+        &mut out,
+        16
+    ));
+    assert!(!subpel_compound_cell_u8(
+        [&view, &view],
+        interp,
+        8,
+        [placement; 2],
+        8,
+        &mut out[..60],
+        8
+    ));
+}
