@@ -21,7 +21,8 @@ pub(crate) fn step_range(
 ///
 /// Runs are block widths in 4x4 units, at most 32. Two overlapping fixed-size
 /// stores cover every length from the store width to twice it.
-#[inline]
+#[allow(clippy::inline_always, reason = "measured: per-block grid write")]
+#[inline(always)]
 pub(crate) fn fill_mi_run<T: Copy>(run: &mut [T], value: T) {
     fn ends<T: Copy, const N: usize>(run: &mut [T], value: T) {
         let len = run.len();

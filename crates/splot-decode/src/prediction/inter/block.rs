@@ -1535,7 +1535,7 @@ fn decode_block<T: ReconSample>(
             &params.intra_tools,
             Some(chroma_smooth),
             intra_facts,
-            is_cfl_ctx.resolve(),
+            is_cfl_ctx,
             segment_id,
             coeff_ctx,
             &mut filter_records.deblock_blocks,

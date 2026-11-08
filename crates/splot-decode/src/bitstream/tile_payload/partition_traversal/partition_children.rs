@@ -3,6 +3,11 @@
 
 //! AV2 § 5.20.3.1 `decode_partition` child-call expansion.
 
+#![allow(
+    clippy::inline_always,
+    reason = "measured: the decoder walk recurses through each child push"
+)]
+
 use super::super::partition::PartitionType;
 use super::super::partition_size::{BlockSize, h_partition_midsize};
 use super::{
@@ -11,7 +16,7 @@ use super::{
 };
 
 /// The most child calls one § 5.20.3.1 partition makes.
-pub(crate) const MAX_CHILD_CALLS: usize = 4;
+const MAX_CHILD_CALLS: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionChildCalls {
@@ -43,10 +48,26 @@ impl TilePartitionChildCalls {
 
 /// Where a partition's child calls go, in syntax order.
 pub(crate) trait ChildCallSink {
-    fn push_call(&mut self, call: TilePartitionCall) -> Result<(), TilePartitionTraversalError>;
+    type Error: From<TilePartitionTraversalError>;
+
+    fn push_call(&mut self, call: TilePartitionCall) -> Result<(), Self::Error>;
+}
+
+/// Each child call goes straight to the closure, as the decoder walk recurses.
+impl<E: From<TilePartitionTraversalError>, F: FnMut(TilePartitionCall) -> Result<(), E>>
+    ChildCallSink for F
+{
+    type Error = E;
+
+    #[inline(always)]
+    fn push_call(&mut self, call: TilePartitionCall) -> Result<(), E> {
+        self(call)
+    }
 }
 
 impl ChildCallSink for TilePartitionChildCalls {
+    type Error = TilePartitionTraversalError;
+
     fn push_call(&mut self, call: TilePartitionCall) -> Result<(), TilePartitionTraversalError> {
         self.push(call)
     }
@@ -62,7 +83,7 @@ struct ChildCallBuilder<'s, S: ChildCallSink> {
 }
 
 impl<'s, S: ChildCallSink> ChildCallBuilder<'s, S> {
-    #[inline]
+    #[inline(always)]
     fn new(
         calls: &'s mut S,
         call: TilePartitionCall,
@@ -93,18 +114,18 @@ impl<'s, S: ChildCallSink> ChildCallBuilder<'s, S> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn push(
         &mut self,
         r: usize,
         c: usize,
         b_size: BlockSize,
         has_chroma: bool,
-    ) -> Result<(), TilePartitionTraversalError> {
+    ) -> Result<(), S::Error> {
         self.push_with_chroma_offset(r, c, b_size, self.chroma_offset, has_chroma)
     }
 
-    #[inline]
+    #[inline(always)]
     fn push_with_chroma_offset(
         &mut self,
         r: usize,
@@ -112,7 +133,7 @@ impl<'s, S: ChildCallSink> ChildCallBuilder<'s, S> {
         b_size: BlockSize,
         chroma_offset: bool,
         has_chroma: bool,
-    ) -> Result<(), TilePartitionTraversalError> {
+    ) -> Result<(), S::Error> {
         self.push_with_chroma_ref(
             r,
             c,
@@ -123,7 +144,7 @@ impl<'s, S: ChildCallSink> ChildCallBuilder<'s, S> {
         )
     }
 
-    #[inline]
+    #[inline(always)]
     fn push_with_chroma_ref(
         &mut self,
         r: usize,
@@ -132,7 +153,7 @@ impl<'s, S: ChildCallSink> ChildCallBuilder<'s, S> {
         chroma_offset: bool,
         has_chroma: bool,
         chroma_ref: ChromaRefGeometry,
-    ) -> Result<(), TilePartitionTraversalError> {
+    ) -> Result<(), S::Error> {
         let call = self
             .template
             .at_child(r, c, b_size, chroma_offset, has_chroma, chroma_ref);
@@ -175,6 +196,7 @@ fn middle_partition_size(
     Ok(midsize)
 }
 
+#[inline(always)]
 fn push_two_way_children<S: ChildCallSink>(
     children: &mut ChildCallBuilder<'_, S>,
     call: TilePartitionCall,
@@ -182,19 +204,20 @@ fn push_two_way_children<S: ChildCallSink>(
     axis: ChildAxis,
     step: usize,
     has_chroma_before_offset: bool,
-) -> Result<(), TilePartitionTraversalError> {
+) -> Result<(), S::Error> {
     children.push(call.r(), call.c(), sub_size, has_chroma_before_offset)?;
     let (r, c) = axis.offset(call, 1, step);
     children.push(r, c, sub_size, call.has_chroma())
 }
 
+#[inline(always)]
 fn push_split_children<S: ChildCallSink>(
     children: &mut ChildCallBuilder<'_, S>,
     call: TilePartitionCall,
     sub_size: BlockSize,
     half_w: usize,
     half_h: usize,
-) -> Result<(), TilePartitionTraversalError> {
+) -> Result<(), S::Error> {
     children.push_with_chroma_offset(call.r(), call.c(), sub_size, false, call.has_chroma())?;
     children.push_with_chroma_offset(
         call.r(),
@@ -220,6 +243,7 @@ fn push_split_children<S: ChildCallSink>(
     Ok(())
 }
 
+#[inline(always)]
 fn push_four_way_children<S: ChildCallSink>(
     children: &mut ChildCallBuilder<'_, S>,
     call: TilePartitionCall,
@@ -228,7 +252,7 @@ fn push_four_way_children<S: ChildCallSink>(
     a_layout: bool,
     step: usize,
     has_chroma_before_offset: bool,
-) -> Result<(), TilePartitionTraversalError> {
+) -> Result<(), S::Error> {
     let (_, partition) = axis.facts();
     let b_size_big = valid_subsize(partition, call.b_size)?;
     let b_size_med = valid_subsize(partition, b_size_big)?;
@@ -262,7 +286,7 @@ pub(crate) fn child_calls(
 }
 
 /// Pushes `call`'s § 5.20.3.1 child calls onto `sink` in syntax order.
-#[inline]
+#[inline(always)]
 pub(crate) fn child_calls_into<S: ChildCallSink>(
     sink: &mut S,
     call: TilePartitionCall,
@@ -270,9 +294,15 @@ pub(crate) fn child_calls_into<S: ChildCallSink>(
     sub_size: BlockSize,
     frame: &TilePartitionFrameFacts,
     chroma_offset: bool,
-) -> Result<(), TilePartitionTraversalError> {
-    let num4x4wide = call.b_size.num_4x4_wide()?;
-    let num4x4high = call.b_size.num_4x4_high()?;
+) -> Result<(), S::Error> {
+    let num4x4wide = call
+        .b_size
+        .num_4x4_wide()
+        .map_err(TilePartitionTraversalError::from)?;
+    let num4x4high = call
+        .b_size
+        .num_4x4_high()
+        .map_err(TilePartitionTraversalError::from)?;
     let half_w = num4x4wide >> 1;
     let half_h = num4x4high >> 1;
     let has_chroma_before_offset = call.has_chroma() && !chroma_offset;
