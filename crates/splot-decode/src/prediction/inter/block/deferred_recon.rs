@@ -28,9 +28,8 @@ pub(super) enum PendingKind {
     Single,
     Compound {
         syntax: CompoundBlockSyntax,
-        warp_params: [Option<[i32; 6]>; 2],
-        mi_row: usize,
-        mi_col: usize,
+        mi_row: u32,
+        mi_col: u32,
         use_refinemv: bool,
         refinemv_switchable: bool,
     },
@@ -41,7 +40,7 @@ pub(super) enum PendingKind {
 pub(super) struct InterReconCommand {
     placed: PlacedInterBlock,
     kind: PendingKind,
-    segment_id: usize,
+    segment_id: u8,
     qindex: u32,
     motion_derived: bool,
     derived_motion: Option<Box<mc::CompoundMotionGrid>>,
@@ -80,13 +79,14 @@ pub(super) const fn reads_current_frame(bawp: bool, interintra: bool) -> bool {
 }
 
 impl InterReconCommand {
-    /// `segment_id` is the § 7.14 quantizer-matrix segment in force while the
-    /// leaf was parsed, captured there because the resolve pass runs after the
-    /// leaf's segment scope has been dropped.
+    /// `segment_id` is the § 7.14 quantizer-matrix segment, below
+    /// `MAX_SEGMENTS`, in force while the leaf was parsed, captured there
+    /// because the resolve pass runs after the leaf's segment scope has been
+    /// dropped.
     pub(super) const fn new(
         placed: PlacedInterBlock,
         kind: PendingKind,
-        segment_id: usize,
+        segment_id: u8,
         qindex: u32,
         tile_offset: ByteOffset,
     ) -> Self {
@@ -122,17 +122,6 @@ impl InterReconCommand {
             self.placed.block.bawp.enabled,
             self.placed.block.interintra.is_some(),
         )
-    }
-
-    pub(super) fn temporal_record_capacity(&self) -> usize {
-        match self.kind {
-            PendingKind::Single => 1,
-            PendingKind::Compound { .. } | PendingKind::Tip => self
-                .placed
-                .luma_w
-                .div_ceil(8)
-                .saturating_mul(self.placed.luma_h.div_ceil(8)),
-        }
     }
 
     pub(super) fn prepass_write_is_contained(
@@ -242,7 +231,6 @@ impl InterReconCommand {
             }
             PendingKind::Compound {
                 syntax,
-                warp_params,
                 mi_row,
                 mi_col,
                 use_refinemv,
@@ -268,10 +256,10 @@ impl InterReconCommand {
                     shared.ref_frame_idx,
                     &self.placed,
                     syntax,
-                    warp_params,
+                    self.placed.block.warp_params,
                     grid.as_ref(),
-                    mi_row,
-                    mi_col,
+                    mi_row as usize,
+                    mi_col as usize,
                     shared.mi_rows,
                     shared.mi_cols,
                     shared.current_order_hint,
@@ -295,7 +283,7 @@ impl InterReconCommand {
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
         residual_scratch: &mut InterResidualReconScratch<T>,
     ) -> Result<Option<mc::CompoundMotionGrid>> {
-        let _segment_scope = FrameQmSegmentScope::install(self.segment_id);
+        let _segment_scope = FrameQmSegmentScope::install(usize::from(self.segment_id));
         if matches!(self.kind, PendingKind::Tip) {
             return tip::predict(
                 tip_scratch,
@@ -444,7 +432,7 @@ impl<T: ReconSample> InterReconScratch<T> {
     ) -> Result<()> {
         let Self { tip, mc, .. } = self;
         mc.with_installed(|| {
-            let _segment_scope = FrameQmSegmentScope::install(command.segment_id);
+            let _segment_scope = FrameQmSegmentScope::install(usize::from(command.segment_id));
             let grid = command.derive_motion(
                 sink,
                 temporal_records,

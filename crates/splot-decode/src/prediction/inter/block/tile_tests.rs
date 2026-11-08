@@ -61,6 +61,7 @@ fn terminal_parse_error_prevents_resolve_and_commit_side_effects() {
         residual_coeffs: Vec::new(),
         superblocks: Vec::new(),
         entries: Vec::new(),
+        slots: Vec::new(),
         residual_blocks: Vec::new(),
         temporal: Vec::new(),
         flag_log: Vec::new(),
@@ -306,6 +307,7 @@ fn failed_frame_rows_left_unclaimed_do_not_pin_the_parse_slot() {
         residual_coeffs: Vec::new(),
         superblocks: Vec::new(),
         entries: Vec::new(),
+        slots: Vec::new(),
         residual_blocks: Vec::new(),
         temporal: Vec::new(),
         flag_log: Vec::new(),
@@ -438,7 +440,7 @@ fn resolved_record_publication_keeps_the_unit_capacity() {
     let buffers = crate::support::decode_buffers::DecodeBuffers::new();
     let mut records = TileFilterRecords::default();
     records.deblock_blocks.reserve_exact(32);
-    records.chroma_deblock_blocks.reserve_records(32);
+    records.chroma_deblock_blocks.fit(16);
     records.tx_skip_records.reserve_exact(32);
     let storage = records.tx_skip_records.as_ptr();
     for cycle in 0..1200 {
@@ -458,6 +460,7 @@ fn resolved_record_publication_keeps_the_unit_capacity() {
             residual_coeffs: Vec::new(),
             superblocks: Vec::new(),
             entries: Vec::new(),
+            slots: Vec::new(),
             residual_blocks: Vec::new(),
             temporal: Vec::new(),
             flag_log: Vec::new(),

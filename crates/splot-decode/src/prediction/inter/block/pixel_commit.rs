@@ -18,10 +18,10 @@ use splot_recon::{BitDepth, CurrentFrameWorkspace, ReconSample};
 
 use super::super::InterReferenceState;
 use super::super::find_mv_stack::TemporalMvContext;
-use super::ReconCommand;
 use super::deferred_recon;
 use super::temporal::MotionFieldUnits;
 use super::tile::{ReconRow, ReconRowBuffers, TileFilterRecords};
+use super::{ReconCommandMut, ReconCommandRef};
 use crate::Result;
 use crate::bitstream::tile_payload::{FrameQuantizerSnapshot, TileBlockDecodedState};
 
@@ -107,6 +107,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             mut superblocks,
             mut residual_coeffs,
             mut entries,
+            mut slots,
             mut residual_blocks,
             mut temporal,
             mut flag_log,
@@ -129,7 +130,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         };
         has_intra = entries
             .iter()
-            .any(|entry| matches!(entry.command(), Some(ReconCommand::GeneralIntra(_))));
+            .any(|entry| matches!(entry.command(&slots), Some(ReconCommandRef::GeneralIntra)));
         if has_intra {
             crate::pipeline::general_intra::swap_general_intra_scratch(
                 scratch.general_intra_mut(),
@@ -145,13 +146,14 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     .iter()
                     .all(|entry| entry.publication.superblock_origin() == superblock.origin)
             );
-            let superblock_needs_decoded = superblock_entries.iter().any(|entry| {
-                matches!(entry.command(), Some(ReconCommand::GeneralIntra(_)))
-                    || matches!(
-                        entry.command(),
-                        Some(ReconCommand::Inter(c)) if c.reads_current_frame()
-                    )
-            });
+            let superblock_needs_decoded =
+                superblock_entries
+                    .iter()
+                    .any(|entry| match entry.command(&slots) {
+                        Some(ReconCommandRef::GeneralIntra) => true,
+                        Some(ReconCommandRef::Inter(c)) => c.reads_current_frame(),
+                        Some(ReconCommandRef::Intrabc) | None => false,
+                    });
             for (offset, entry) in superblock_entries.iter_mut().enumerate() {
                 if superblock_needs_decoded {
                     entry
@@ -166,19 +168,19 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     return Err(error);
                 }
                 let temporal_clear = if motion_owed {
-                    entry.temporal_clear_record(mi_rows, mi_cols, current_order_hint)
+                    entry.temporal_clear_record(&slots, mi_rows, mi_cols, current_order_hint)
                 } else {
                     None
                 };
                 if let Some(clear) = temporal_clear {
                     folded.push(clear);
                 }
-                let temporal_records = entry.temporal.clone();
-                let prederived_motion = match entry.command_mut() {
+                let temporal_records = entry.temporal();
+                let prederived_motion = match entry.command_mut(&mut slots) {
                     Some(command) => {
                         let prederived = matches!(
-                            command,
-                            ReconCommand::Inter(inter) if inter.has_derived_motion()
+                            &command,
+                            ReconCommandMut::Inter(inter) if inter.has_derived_motion()
                         );
                         reconstruct_command(
                             command,
@@ -230,6 +232,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         let lengths = [
             residual_coeffs.len(),
             entries.len(),
+            slots.len(),
             residual_blocks.len(),
             temporal.len(),
             flag_log.len(),
@@ -243,6 +246,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         residual_planes.clear();
         superblocks.clear();
         entries.clear();
+        slots.clear();
         residual_blocks.clear();
         residual_coeffs.clear();
         temporal.clear();
@@ -252,6 +256,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             superblocks,
             residual_coeffs,
             entries,
+            slots,
             residual_blocks,
             temporal,
             flag_log,
@@ -281,7 +286,7 @@ pub(super) struct LeafResiduals<'a> {
 /// Reconstructs one leaf's resolved command into the frame, in walk order, and
 /// appends its § 7.22 temporal records to `folded`.
 pub(super) fn reconstruct_command<T: ReconSample>(
-    command: &mut ReconCommand,
+    command: ReconCommandMut<'_>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &mut TileBlockDecodedState,
@@ -290,20 +295,20 @@ pub(super) fn reconstruct_command<T: ReconSample>(
     shared: &deferred_recon::ReconShared<'_, T>,
 ) -> Result<()> {
     match command {
-        ReconCommand::GeneralIntra(command) => command.reconstruct(
+        ReconCommandMut::GeneralIntra(command) => command.reconstruct(
             residuals.planes,
             residuals.coefficients,
             scratch.general_intra_mut(),
             workspace,
             block_decoded,
         ),
-        ReconCommand::Intrabc(command) => scratch.reconstruct_intrabc(
+        ReconCommandMut::Intrabc(command) => scratch.reconstruct_intrabc(
             command,
             residuals.blocks,
             residuals.coefficients,
             workspace,
         ),
-        ReconCommand::Inter(command) => scratch.reconstruct(
+        ReconCommandMut::Inter(command) => scratch.reconstruct(
             command,
             workspace,
             block_decoded,

@@ -60,7 +60,6 @@ fn resolve_without_neighbours(y_mode: CompoundYMode) -> ([Mv; 2], [Mv; 2], [Mv; 
         skip_mode: false,
         use_optflow: false,
         local_warp: false,
-        global_warp: [None, None],
         ref_mv_idx: 0,
         independent_idx: y_mode.has_second_drl().then_some([0, 0]),
         mvd: [Mv::ZERO; 2],

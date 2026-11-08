@@ -180,7 +180,7 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
             return bounds;
         }
         for entry in &row.entries {
-            if let Some(super::ReconCommand::Inter(command)) = entry.command() {
+            if let Some(super::ReconCommandRef::Inter(command)) = entry.command(&row.slots) {
                 self.note_block(command, &mut bounds);
             }
         }

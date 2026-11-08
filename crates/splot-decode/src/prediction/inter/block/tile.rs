@@ -387,6 +387,7 @@ impl<'payload> TileParser<'payload> {
             superblocks,
             residual_coeffs,
             entries,
+            slots,
             residual_blocks,
             temporal,
             mut flag_log,
@@ -401,6 +402,7 @@ impl<'payload> TileParser<'payload> {
             superblocks,
             residual_coeffs,
             entries,
+            slots,
             residual_blocks,
             temporal,
             flag_log,
@@ -418,6 +420,7 @@ impl<'payload> TileParser<'payload> {
             let ReconRow {
                 superblocks,
                 entries,
+                slots,
                 residual_blocks,
                 residual_coeffs,
                 filter_records,
@@ -435,7 +438,7 @@ impl<'payload> TileParser<'payload> {
                     WalkSpan::Superblock
                 },
                 |_, publication, resolve| {
-                    push_leaf_entry(superblocks, entries, publication, resolve);
+                    push_leaf_entry(superblocks, entries, slots, publication, resolve);
                     Ok(())
                 },
             )
@@ -619,6 +622,7 @@ impl TileResolveState {
     ) -> Result<()> {
         resolve_parsed_leaves(
             &mut row.entries,
+            &mut row.slots,
             &mut MvResolutionState {
                 grid,
                 ref_mv_bank: &mut self.ref_mv_bank,
@@ -664,94 +668,164 @@ fn resolve_parser_step(
 
 pub(super) struct ReconRowEntry {
     pub(super) publication: DecodedLeafPublication,
-    state: Option<ReconEntryState>,
-    reset: LeafReset,
-    pub(super) temporal: Range<usize>,
+    state: EntryState,
+    /// Whether the resolve pass still owes this leaf its [`LeafReset`].
+    reset_pending: bool,
+    temporal: [u32; 2],
 }
 
-enum ReconEntryState {
+/// A general-intra leaf, most of a typical row, keeps its small command
+/// inline; every other leaf keeps its record, then its command, in the row's
+/// [`LeafSlot`] list, so the inline entry stays small.
+enum EntryState {
+    /// The leaf's luma size in 4x4 units when it codes the luma tree.
+    Intra {
+        command: crate::pipeline::general_intra::GeneralIntraReconCommand,
+        size4: Option<[u8; 2]>,
+    },
+    Slot(u32),
+    Spent,
+}
+
+pub(super) enum LeafSlot {
     Resolve(LeafResolveRecord),
     Command(ReconCommand),
+    Spent,
 }
 
 impl ReconRowEntry {
-    pub(super) fn command(&self) -> Option<&ReconCommand> {
-        match self.state.as_ref()? {
-            ReconEntryState::Command(command)
-            | ReconEntryState::Resolve(
-                LeafResolveRecord::Reseed(command) | LeafResolveRecord::NonInter { command, .. },
-            ) => Some(command),
-            ReconEntryState::Resolve(
-                LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_),
-            ) => None,
+    fn slot<'a>(&self, slots: &'a [LeafSlot]) -> Option<&'a LeafSlot> {
+        match self.state {
+            EntryState::Slot(index) => slots.get(index as usize),
+            EntryState::Intra { .. } | EntryState::Spent => None,
         }
     }
 
-    pub(super) fn take_reset(&mut self) -> LeafReset {
-        core::mem::replace(&mut self.reset, LeafReset::None)
+    fn slot_mut<'a>(&self, slots: &'a mut [LeafSlot]) -> Option<&'a mut LeafSlot> {
+        match self.state {
+            EntryState::Slot(index) => slots.get_mut(index as usize),
+            EntryState::Intra { .. } | EntryState::Spent => None,
+        }
     }
 
-    pub(super) fn pending_resolve_mut(&mut self) -> Option<&mut LeafResolveRecord> {
-        match self.state.as_mut()? {
-            ReconEntryState::Resolve(
+    pub(super) fn command<'a>(&'a self, slots: &'a [LeafSlot]) -> Option<ReconCommandRef<'a>> {
+        if let EntryState::Intra { .. } = &self.state {
+            return Some(ReconCommandRef::GeneralIntra);
+        }
+        match self.slot(slots)? {
+            LeafSlot::Command(command)
+            | LeafSlot::Resolve(
+                LeafResolveRecord::Reseed(command) | LeafResolveRecord::NonInter { command, .. },
+            ) => Some(command.as_view()),
+            LeafSlot::Resolve(LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_))
+            | LeafSlot::Spent => None,
+        }
+    }
+
+    pub(super) fn take_reset(&mut self, slots: &[LeafSlot]) -> LeafReset {
+        if !core::mem::take(&mut self.reset_pending) {
+            return LeafReset::None;
+        }
+        let size4 = match (&self.state, self.slot(slots)) {
+            (EntryState::Intra { size4, .. }, _) => *size4,
+            (_, Some(LeafSlot::Resolve(LeafResolveRecord::Reseed(_)))) => None,
+            (_, Some(LeafSlot::Resolve(LeafResolveRecord::NonInter { n4w, n4h, .. }))) => {
+                Some([*n4w, *n4h])
+            }
+            _ => return LeafReset::None,
+        };
+        size4.map_or(LeafReset::Reseed, |[n4w, n4h]| LeafReset::NonInter {
+            n4w: usize::from(n4w),
+            n4h: usize::from(n4h),
+        })
+    }
+
+    /// The entry's § 7.22 records in its row's temporal list.
+    pub(super) fn temporal(&self) -> Range<usize> {
+        self.temporal[0] as usize..self.temporal[1] as usize
+    }
+
+    /// Row temporal lists hold a few records per leaf, far below `u32::MAX`.
+    pub(super) fn set_temporal(&mut self, records: Range<usize>) {
+        self.temporal = [records.start as u32, records.end as u32];
+    }
+
+    pub(super) fn pending_resolve_mut<'a>(
+        &self,
+        slots: &'a mut [LeafSlot],
+    ) -> Option<&'a mut LeafResolveRecord> {
+        match self.slot_mut(slots)? {
+            LeafSlot::Resolve(
                 resolve @ (LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_)),
             ) => Some(resolve),
-            ReconEntryState::Resolve(_) | ReconEntryState::Command(_) => None,
+            LeafSlot::Resolve(_) | LeafSlot::Command(_) | LeafSlot::Spent => None,
         }
     }
 
-    pub(super) fn has_pending_resolve(&self) -> bool {
+    pub(super) fn has_pending_resolve(&self, slots: &[LeafSlot]) -> bool {
         matches!(
-            self.state,
-            Some(ReconEntryState::Resolve(
+            self.slot(slots),
+            Some(LeafSlot::Resolve(
                 LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_)
             ))
         )
     }
 
-    pub(super) fn take_resolve(&mut self) -> Option<LeafResolveRecord> {
-        if !self.has_pending_resolve() {
+    pub(super) fn take_resolve(&self, slots: &mut [LeafSlot]) -> Option<LeafResolveRecord> {
+        if !self.has_pending_resolve(slots) {
             return None;
         }
-        match self.state.take()? {
-            ReconEntryState::Resolve(resolve) => Some(resolve),
-            ReconEntryState::Command(_) => None,
+        match core::mem::replace(self.slot_mut(slots)?, LeafSlot::Spent) {
+            LeafSlot::Resolve(resolve) => Some(resolve),
+            LeafSlot::Command(_) | LeafSlot::Spent => None,
         }
     }
 
-    pub(super) fn store_command(&mut self, command: ReconCommand) {
-        self.state = Some(ReconEntryState::Command(command));
+    pub(super) fn store_command(&self, slots: &mut [LeafSlot], command: ReconCommand) {
+        if let Some(slot) = self.slot_mut(slots) {
+            *slot = LeafSlot::Command(command);
+        }
     }
 
     /// The final command, for a pass that consumes it in place.
-    pub(super) fn command_mut(&mut self) -> Option<&mut ReconCommand> {
-        match self.state.as_mut()? {
-            ReconEntryState::Command(command)
-            | ReconEntryState::Resolve(
+    pub(super) fn command_mut<'a>(
+        &'a mut self,
+        slots: &'a mut [LeafSlot],
+    ) -> Option<ReconCommandMut<'a>> {
+        let slot = self.slot_mut(slots);
+        if let EntryState::Intra { command, .. } = &mut self.state {
+            return Some(ReconCommandMut::GeneralIntra(command));
+        }
+        match slot? {
+            LeafSlot::Command(command)
+            | LeafSlot::Resolve(
                 LeafResolveRecord::Reseed(command) | LeafResolveRecord::NonInter { command, .. },
-            ) => Some(command),
-            ReconEntryState::Resolve(
-                LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_),
-            ) => None,
+            ) => Some(command.as_view_mut()),
+            LeafSlot::Resolve(LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_))
+            | LeafSlot::Spent => None,
         }
     }
 
     /// Marks the command consumed, as [`Self::take_command`] would.
-    pub(super) fn drop_command(&mut self) {
-        self.state = None;
+    pub(super) fn drop_command(&mut self, slots: &mut [LeafSlot]) {
+        if let Some(slot) = self.slot_mut(slots) {
+            *slot = LeafSlot::Spent;
+        }
+        self.state = EntryState::Spent;
     }
 
     /// The § 7.22 record a non-inter luma-tree leaf stores: every covered 8x8
     /// cell is reset to "no reference", clearing earlier inter writes there.
     pub(super) fn temporal_clear_record(
         &self,
+        slots: &[LeafSlot],
         mi_rows: usize,
         mi_cols: usize,
         current_order_hint: u32,
     ) -> Option<TemporalMotionBlock> {
         if !matches!(
-            self.command(),
-            Some(ReconCommand::GeneralIntra(_) | ReconCommand::Intrabc(_))
+            self.command(slots),
+            Some(ReconCommandRef::GeneralIntra | ReconCommandRef::Intrabc)
         ) {
             return None;
         }
@@ -779,13 +853,28 @@ pub(super) struct ReconSuperblock {
 fn push_leaf_entry(
     superblocks: &mut Vec<ReconSuperblock>,
     entries: &mut Vec<ReconRowEntry>,
+    slots: &mut Vec<LeafSlot>,
     publication: DecodedLeafPublication,
     resolve: LeafResolveRecord,
 ) {
-    let reset = match resolve {
-        LeafResolveRecord::Reseed(_) => LeafReset::Reseed,
-        LeafResolveRecord::NonInter { n4w, n4h, .. } => LeafReset::NonInter { n4w, n4h },
-        LeafResolveRecord::Inter(_) | LeafResolveRecord::Intrabc(_) => LeafReset::None,
+    let state = match resolve {
+        LeafResolveRecord::NonInter {
+            command: ReconCommand::GeneralIntra(command),
+            n4w,
+            n4h,
+        } => EntryState::Intra {
+            command,
+            size4: Some([n4w, n4h]),
+        },
+        LeafResolveRecord::Reseed(ReconCommand::GeneralIntra(command)) => EntryState::Intra {
+            command,
+            size4: None,
+        },
+        resolve => {
+            let index = slots.len() as u32;
+            slots.push(LeafSlot::Resolve(resolve));
+            EntryState::Slot(index)
+        }
     };
     push_recon_entry(
         superblocks,
@@ -793,9 +882,9 @@ fn push_leaf_entry(
         publication.superblock_origin(),
         ReconRowEntry {
             publication,
-            state: Some(ReconEntryState::Resolve(resolve)),
-            reset,
-            temporal: 0..0,
+            state,
+            reset_pending: true,
+            temporal: [0, 0],
         },
     );
 }
@@ -825,6 +914,8 @@ pub(super) struct ReconRow {
     /// The coefficients this row's transform blocks index into.
     pub(super) residual_coeffs: Vec<i32>,
     pub(super) entries: Vec<ReconRowEntry>,
+    /// The non-intra leaves' records and commands, which entries index.
+    pub(super) slots: Vec<LeafSlot>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
     /// The unit's flag-plane publications, replayed by a resolve pass that runs
@@ -920,6 +1011,8 @@ pub(crate) struct ReconRowBuffers {
     /// The coefficients this row's transform blocks index into.
     pub(super) residual_coeffs: Vec<i32>,
     pub(super) entries: Vec<ReconRowEntry>,
+    /// The non-intra leaves' records and commands, which entries index.
+    pub(super) slots: Vec<LeafSlot>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
@@ -937,6 +1030,7 @@ impl ReconRowBuffers {
         let [
             coeffs,
             entries,
+            slots,
             blocks,
             temporal,
             flag_log,
@@ -949,6 +1043,7 @@ impl ReconRowBuffers {
         ] = typical;
         fit_list(&mut self.residual_coeffs, coeffs);
         fit_list(&mut self.entries, entries);
+        fit_list(&mut self.slots, slots);
         fit_list(&mut self.residual_blocks, blocks);
         fit_list(&mut self.temporal, temporal);
         fit_list(&mut self.flag_log, flag_log);
@@ -968,6 +1063,9 @@ impl ReconRowBuffers {
         let _ = self
             .entries
             .try_reserve_exact(blocks.saturating_sub(self.entries.len()));
+        let _ = self
+            .slots
+            .try_reserve_exact(blocks.saturating_sub(self.slots.len()));
         let _ = self
             .residual_blocks
             .try_reserve_exact(blocks.saturating_sub(self.residual_blocks.len()));
@@ -1231,14 +1329,6 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     }
     let _quantizer_scopes = quantizer.install_frame();
     let info = surface.info();
-    let temporal_capacity = row.entries.iter().fold(0usize, |capacity, entry| {
-        capacity.saturating_add(
-            entry
-                .command()
-                .map_or(0, ReconCommand::temporal_record_capacity),
-        )
-    });
-    let _ = row.temporal.try_reserve(temporal_capacity);
     'superblocks: for superblock in &row.superblocks {
         let entry_start = superblock.entries.start;
         let Some(entries) = row.entries.get_mut(superblock.entries.clone()) else {
@@ -1247,8 +1337,8 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
         let mut skipped_any = false;
         for (offset, entry) in entries.iter_mut().enumerate() {
             let safe = matches!(
-                entry.command(),
-                Some(ReconCommand::Inter(command))
+                entry.command(&row.slots),
+                Some(ReconCommandRef::Inter(command))
                     if !command.reads_current_frame()
                         && (!skipped_any
                             || (command.placed().luma_w >= 8
@@ -1272,8 +1362,8 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                         )
             );
             if !safe {
-                match entry.command_mut() {
-                    Some(ReconCommand::Inter(command)) => {
+                match entry.command_mut(&mut row.slots) {
+                    Some(ReconCommandMut::Inter(command)) => {
                         let start = row.temporal.len();
                         let result = scratch.derive_motion_logged(
                             command,
@@ -1293,7 +1383,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                         );
                         match result {
                             Ok(()) => {
-                                entry.temporal = start..row.temporal.len();
+                                entry.set_temporal(start..row.temporal.len());
                             }
                             Err(error) => {
                                 row.temporal.truncate(start);
@@ -1303,19 +1393,22 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                         }
                     }
                     _ => {
-                        if let Some(clear) =
-                            entry.temporal_clear_record(mi_rows, mi_cols, current_order_hint)
-                        {
+                        if let Some(clear) = entry.temporal_clear_record(
+                            &row.slots,
+                            mi_rows,
+                            mi_cols,
+                            current_order_hint,
+                        ) {
                             let start = row.temporal.len();
                             row.temporal.push(clear);
-                            entry.temporal = start..row.temporal.len();
+                            entry.set_temporal(start..row.temporal.len());
                         }
                     }
                 }
                 skipped_any = true;
                 continue;
             }
-            let Some(ReconCommand::Inter(command)) = entry.command_mut() else {
+            let Some(ReconCommandMut::Inter(command)) = entry.command_mut(&mut row.slots) else {
                 skipped_any = true;
                 continue;
             };
@@ -1341,10 +1434,10 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                     bit_depth,
                 )
             };
-            entry.drop_command();
+            entry.drop_command(&mut row.slots);
             match result {
                 Ok(()) => {
-                    entry.temporal = start..row.temporal.len();
+                    entry.set_temporal(start..row.temporal.len());
                 }
                 Err(error) => {
                     row.temporal.truncate(start);
@@ -1541,7 +1634,12 @@ impl ParseProgress {
         )
     }
 
-    /// Moves the parsed records into the frame, keeping this slot's lists.
+    /// Moves the parsed records into the frame.
+    ///
+    /// The frame-sized tx-skip list moves whole when the frame has none yet.
+    /// The frontier has drained the deblock lists by now, and their capacity
+    /// is freed: it only ever held records in transit, so a slot keeping it
+    /// would hold its worst frame's backlog for every frame after.
     pub(super) fn append_records(
         &self,
         target: &mut crate::filters::wienerns_lr::FrameFilterRecords,
@@ -1549,6 +1647,9 @@ impl ParseProgress {
         let mut records = self.records.lock();
         if let Some(buffers) = target.buffers.as_ref() {
             buffers.note_tile_record_capacities(records.capacities());
+        }
+        if target.tx_skip_records.is_empty() {
+            core::mem::swap(&mut target.tx_skip_records, &mut records.tx_skip_records);
         }
         target.append(&mut records);
     }

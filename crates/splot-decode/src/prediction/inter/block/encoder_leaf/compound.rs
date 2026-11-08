@@ -838,37 +838,21 @@ impl EncoderInterTile {
         )
     }
 
-    /// The parse record of `compound` at `frontier` and `block` without local
-    /// warp, as the decoder builds it, and its blend.
+    /// The parse record of `compound` at `frontier` without local warp, as the
+    /// decoder builds it, and its blend.
     pub(super) fn compound_syntax(
         &self,
         frontier: &DecodeBlockFrontier,
-        block: &MvBlockContext,
         compound: EncoderCompoundMotion,
     ) -> Result<(CompoundMotionSyntax, mc::CompoundBlend)> {
         let refinement = self.compound_refinement(frontier, compound)?;
         let (ref0, ref1) = compound.ref_frames;
-        let global = compound.y_mode == CompoundYMode::GlobalGlobal;
-        let warp = |ref_frame| {
-            global_motion_warp(
-                &self.core,
-                ref_frame,
-                effective_force_integer_mv(&self.core),
-                block.bw4,
-                block.bh4,
-            )
-        };
         let syntax = CompoundMotionSyntax {
             y_mode: compound.y_mode,
             ref_frame1: ref1,
             skip_mode: compound.skip_mode,
             use_optflow: refinement.use_optflow,
             local_warp: false,
-            global_warp: if global {
-                [warp(ref0), warp(ref1)]
-            } else {
-                [None, None]
-            },
             ref_mv_idx: compound.ref_mv_idx,
             independent_idx: compound.independent_idx,
             mvd: compound.mvd,
