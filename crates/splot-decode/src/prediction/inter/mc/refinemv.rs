@@ -105,8 +105,9 @@ pub(super) fn unscaled_area_bounds(
 }
 
 /// A refine-MV bilinear prediction that a one-pass kernel covers, written
-/// at stride `params.w`, or `false` without writing for any other block: an
-/// 8x8 block with no clamped tap, or the `N`x`N` § 7.13.3.6 search window
+/// at stride `params.w`, or `false` without writing for any other block: a
+/// block of whole eight-column groups with no clamped tap (eight-bit, or
+/// 8x8), or the `N`x`N` § 7.13.3.6 search window
 /// (`N` 16 or 24) whose clip bounds are its inner `N - 1` samples on each
 /// axis, where the clamped outer column and row read their inner neighbour
 /// twice. Every source row is filtered horizontally once and serves two
@@ -116,12 +117,14 @@ pub(super) fn bilinear_search_window<T: ReconSample>(
     params: &SubpelPredictParams,
     output: &mut [u16],
 ) -> bool {
-    match params.w {
-        8 => unclamped_8x8(view, params, output),
+    let window = match params.w {
         16 => search_window::<T, 16, 2, 15>(view, params, output),
         24 => search_window::<T, 24, 3, 23>(view, params, output),
         _ => false,
-    }
+    };
+    window
+        || splot_recon::subpel_predict_bilinear_u8(view, params, output, params.w)
+        || (params.w == 8 && unclamped_8x8(view, params, output))
 }
 
 /// An 8x8 bilinear block whose taps all lie inside its clip bounds and the
@@ -142,11 +145,6 @@ fn unclamped_8x8<T: ReconSample>(
         || y0 + 8 > params.last_y
     {
         return false;
-    }
-    if let Some(output) = output.first_chunk_mut::<64>()
-        && splot_recon::subpel_predict_bilinear_8x8_u8(view, params, output)
-    {
-        return true;
     }
     let (Some(output), Some(spans)) = (
         output.first_chunk_mut::<64>(),

@@ -55,15 +55,18 @@ pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
     false
 }
 
-/// Predicts an 8x8 bilinear block of eight-bit storage whose taps all lie
-/// inside its clip bounds and the plane into `output` at stride 8, or returns
-/// `false` without writing for any other block.
+/// Predicts a bilinear block of eight-bit storage, `w` a multiple of 8 and
+/// `h` even, whose taps all lie inside its clip bounds and the plane into
+/// `output` at `stride`, or returns `false` without writing for any other
+/// block.
 #[must_use]
-pub fn subpel_predict_bilinear_8x8_u8<T: ReconSample>(
+pub fn subpel_predict_bilinear_u8<T: ReconSample>(
     view: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
-    output: &mut [u16; 64],
+    output: &mut [u16],
+    stride: usize,
 ) -> bool {
+    let (w, h) = (params.w, params.h);
     let (x0, y0) = (
         params.start_x >> SCALE_SUBPEL_BITS,
         params.start_y >> SCALE_SUBPEL_BITS,
@@ -72,17 +75,22 @@ pub fn subpel_predict_bilinear_8x8_u8<T: ReconSample>(
         return false;
     };
     if params.interp != InterpolationFilter::Bilinear
-        || (params.step_x, params.step_y, params.w, params.h)
-            != (1 << SCALE_SUBPEL_BITS, 1 << SCALE_SUBPEL_BITS, 8, 8)
+        || (params.step_x, params.step_y) != (1 << SCALE_SUBPEL_BITS, 1 << SCALE_SUBPEL_BITS)
+        || w == 0
+        || !w.is_multiple_of(8)
+        || h == 0
+        || !h.is_multiple_of(2)
+        || stride < w
+        || output.len() < (h - 1) * stride + w
         || x0 < params.first_x.max(0)
         || y0 < params.first_y.max(0)
-        || x0 + 8 > params.last_x.min(view.width as i32 - 1)
-        || y0 + 8 > params.last_y.min(view.readable_rows as i32 - 1)
+        || x0 + w as i32 > params.last_x.min(view.width as i32 - 1)
+        || y0 + h as i32 > params.last_y.min(view.readable_rows as i32 - 1)
     {
         return false;
     }
     let origin = y0 as usize * view.stride + x0 as usize;
-    if origin + 8 * view.stride + 16 > view.samples.len() {
+    if origin + h * view.stride + w + 8 > view.samples.len() {
         return false;
     }
     #[cfg(target_arch = "x86_64")]
@@ -91,7 +99,14 @@ pub fn subpel_predict_bilinear_8x8_u8<T: ReconSample>(
             ((params.start_x >> 6) & SUBPEL_MASK) as i16,
             ((params.start_y >> 6) & SUBPEL_MASK) as i16,
         ];
-        avx2::block_8x8(t, view.samples, [origin, view.stride], phases, output);
+        avx2::block(
+            t,
+            view.samples,
+            [origin, view.stride, w, h],
+            phases,
+            output,
+            stride,
+        );
         return true;
     }
     false
@@ -366,42 +381,80 @@ mod avx2 {
 
     fearless_simd::kernel!(
         #[inline]
-        pub(super) fn block_8x8(
+        pub(super) fn block(
             t: Avx2,
             source: &[u8],
-            geometry: [usize; 2],
+            geometry: [usize; 4],
             phases: [i16; 2],
-            output: &mut [u16; 64],
+            output: &mut [u16],
+            stride: usize,
         ) {
-            let [origin, stride] = geometry;
-            let [h_phase, v_phase] = phases;
-            let weights = _mm256_set1_epi16((h_phase << 8) | (16 - h_phase));
-            let pairs: __m256i = u8x32::load_array(t, PAIRS_8).into();
+            let [origin, source_stride, w, h] = geometry;
+            if [w, h, stride] == [8; 3] {
+                block_rows::<8>(t, source, [origin, source_stride, 8, 8], phases, output, 8);
+            } else {
+                block_rows::<0>(
+                    t,
+                    source,
+                    [origin, source_stride, w, h],
+                    phases,
+                    output,
+                    stride,
+                );
+            }
+        }
+    );
+
+    /// [`block`] of a `w x h` block, or of an `N x N` one at stride `N`
+    /// when `N` is not zero.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn block_rows<const N: usize>(
+        t: Avx2,
+        source: &[u8],
+        [origin, source_stride, w, h]: [usize; 4],
+        [h_phase, v_phase]: [i16; 2],
+        output: &mut [u16],
+        stride: usize,
+    ) {
+        let (w, h, stride) = if N > 0 { (N, N, N) } else { (w, h, stride) };
+        let weights = _mm256_set1_epi16((h_phase << 8) | (16 - h_phase));
+        let pairs: __m256i = u8x32::load_array(t, PAIRS_8).into();
+        let (top_weight, bottom_weight) =
+            (_mm256_set1_epi16(16 - v_phase), _mm256_set1_epi16(v_phase));
+        let bias = _mm256_set1_epi16(128);
+        for column in (0..w).step_by(8) {
             let rows = |first: usize| {
-                let at = |row: usize| origin + row.min(8) * stride;
+                let at = |row: usize| origin + column + row.min(h) * source_stride;
                 let bytes = _mm256_set_m128i(
                     load16(t, source, at(first + 1)),
                     load16(t, source, at(first)),
                 );
                 _mm256_maddubs_epi16(_mm256_shuffle_epi8(bytes, pairs), weights)
             };
-            let (top_weight, bottom_weight) =
-                (_mm256_set1_epi16(16 - v_phase), _mm256_set1_epi16(v_phase));
-            let bias = _mm256_set1_epi16(128);
             let mut top = rows(0);
-            for (pair, slot) in output.as_chunks_mut::<16>().0.iter_mut().enumerate() {
+            for pair in 0..h / 2 {
                 let next = rows(2 * pair + 2);
                 let bottom = _mm256_permute2x128_si256::<0x21>(top, next);
                 let sum = _mm256_add_epi16(
                     _mm256_mullo_epi16(top, top_weight),
                     _mm256_mullo_epi16(bottom, bottom_weight),
                 );
-                let values = _mm256_srli_epi16::<8>(_mm256_add_epi16(sum, bias));
-                u16x16::<Avx2>::simd_from(t, values).store_array(slot);
+                let values: [u16; 16] = *u16x16::<Avx2>::simd_from(
+                    t,
+                    _mm256_srli_epi16::<8>(_mm256_add_epi16(sum, bias)),
+                );
+                for (half, values) in values.chunks_exact(8).enumerate() {
+                    let at = (2 * pair + half) * stride + column;
+                    if let Some(slot) = output.get_mut(at..).and_then(<[u16]>::first_chunk_mut::<8>)
+                    {
+                        slot.copy_from_slice(values);
+                    }
+                }
                 top = next;
             }
         }
-    );
+    }
 
     fearless_simd::kernel!(
         #[inline]

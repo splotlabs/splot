@@ -209,40 +209,49 @@ fn byte_search_window_and_sads_match_the_general_path() {
     );
 }
 
-/// The byte 8x8 bilinear kernel against the general prediction for every
-/// phase pair, and its refusal of a block whose taps would clamp.
+/// The byte bilinear kernel against the general prediction for every phase
+/// pair and several shapes and strides, and its refusal of a block whose
+/// taps would clamp.
 #[test]
-fn byte_bilinear_8x8_matches_the_general_path() {
-    let (ref_w, ref_h) = (40usize, 36usize);
+fn byte_bilinear_blocks_match_the_general_path() {
+    let (ref_w, ref_h) = (72usize, 60usize);
     let texture: Vec<u8> = (0..ref_w * ref_h)
         .map(|i| ((i * 7919 + i / ref_w * 104_729) % 256) as u8)
         .collect();
     let view = ReferencePlaneView::new(&texture, ref_w, ref_h).unwrap();
-    let params = |x0: i32, y0: i32, phase: i32| SubpelPredictParams {
+    let params = |x0: i32, y0: i32, phase: i32, [w, h]: [usize; 2]| SubpelPredictParams {
         start_x: (x0 << 10) + ((phase % 16) << 6),
         start_y: (y0 << 10) + ((phase / 16) << 6),
         first_x: x0 - 3,
         first_y: y0 - 3,
-        last_x: x0 + 11,
-        last_y: y0 + 11,
-        ..full_pel_params(InterpolationFilter::Bilinear, 8, 8, 0, 0, 1, 1)
+        last_x: x0 + w as i32 + 3,
+        last_y: y0 + h as i32 + 3,
+        ..full_pel_params(InterpolationFilter::Bilinear, w, h, 0, 0, 1, 1)
     };
-    for (x0, y0) in [(0, 0), (9, 4), (31, 26)] {
-        for phase in 0..256 {
-            let params = params(x0, y0, phase);
-            let mut expected = [0u16; 64];
-            subpel_predict_block_strided_into(&view, &params, &mut expected, 8).unwrap();
-            let mut actual = [0x5a5a; 64];
-            assert!(subpel_predict_bilinear_8x8_u8(&view, &params, &mut actual));
-            assert_eq!(actual, expected, "{x0},{y0} phase {phase}");
+    for size in [[8, 8], [16, 8], [8, 16], [32, 16], [24, 6]] {
+        let stride = size[0] + 8;
+        for (x0, y0) in [(0, 0), (9, 4), (ref_w as i32 - 1 - size[0] as i32, 26)] {
+            for phase in (0..256).step_by(7) {
+                let params = params(x0, y0, phase, size);
+                let mut expected = vec![0x5a5au16; stride * size[1]];
+                subpel_predict_block_strided_into(&view, &params, &mut expected, stride).unwrap();
+                let mut actual = vec![0x5a5au16; stride * size[1]];
+                assert!(subpel_predict_bilinear_u8(
+                    &view,
+                    &params,
+                    &mut actual,
+                    stride
+                ));
+                assert_eq!(actual, expected, "{size:?} at {x0},{y0} phase {phase}");
+            }
         }
     }
     let mut output = [0; 64];
-    assert!(!subpel_predict_bilinear_8x8_u8(
-        &view,
-        &params(32, 4, 7),
-        &mut output
-    ));
+    let clamped = SubpelPredictParams {
+        last_x: 39,
+        ..params(32, 4, 7, [8, 8])
+    };
+    assert!(!subpel_predict_bilinear_u8(&view, &clamped, &mut output, 8));
 }
 
 /// 4x4 and 8x8 put and compound cells whose windows cross tighter clip
