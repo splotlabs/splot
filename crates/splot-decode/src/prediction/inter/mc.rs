@@ -584,7 +584,7 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
     };
     let put = |sink: &mut WorkspaceSink<'_, '_, T>,
                plane: PlaneId,
-               (target, params): (Option<PlaneRect>, SubpelPredictParams)|
+               &(target, params): &(Option<PlaneRect>, SubpelPredictParams)|
      -> Result<bool> {
         let view = match reference.settled_plane_view(plane) {
             Some(view) => view,
@@ -594,7 +594,7 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
             .and_then(|target| sink.u8_rect_mut(plane, target))
             .is_some_and(|(output, stride)| subpel_put_u8_in_place(&view, &params, output, stride)))
     };
-    if !put(sink, PlaneId::Y, geometry(PlaneId::Y, 0, 0))? {
+    if !put(sink, PlaneId::Y, &geometry(PlaneId::Y, 0, 0))? {
         predict_plane(sink, reference, PlaneId::Y, rect, mv, interp, 0, 0, offset)?;
     }
     if !has_chroma {
@@ -613,7 +613,7 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
         return Ok(());
     }
     for plane in [PlaneId::U, PlaneId::V] {
-        if !put(sink, plane, chroma)? {
+        if !put(sink, plane, &chroma)? {
             predict_plane(
                 sink, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
             )?;
@@ -854,6 +854,14 @@ fn predict_plane<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "single-reference prediction sample count",
         })?;
+    if T::u8_slice(&[]).is_some() {
+        let mut staged = RecycledMcSamples::<T>::take();
+        staged.resize(len, T::default());
+        if let Some(output) = T::u8_slice_mut(&mut staged) {
+            subpel_predict_block_strided_into_u8(&view, &params, output, params.w)?;
+        }
+        return Ok(sink.write_rect(plane, target, &staged, params.w)?);
+    }
     SUBPEL_PREDICTION_BUFFER.with(|slot| {
         let mut predicted = slot.take().unwrap_or_default();
         predicted.resize(len, 0);

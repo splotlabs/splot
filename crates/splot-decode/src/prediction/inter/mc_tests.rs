@@ -590,7 +590,7 @@ fn single_reference_u8_frame_and_band_surfaces_match_across_chroma_formats_and_e
 }
 
 #[test]
-fn a_frame_edge_overhanging_block_stages_through_packed_u16_storage() {
+fn a_frame_edge_overhanging_eight_bit_block_stages_as_bytes() {
     let width = 17;
     let height = 15;
     let reference = patterned_frame_with_format(PixelFormat::Yuv420, width, height, 23);
@@ -613,8 +613,8 @@ fn a_frame_edge_overhanging_block_stages_through_packed_u16_storage() {
 
     SUBPEL_PREDICTION_BUFFER.with(|slot| {
         assert!(
-            slot.take().is_some(),
-            "a clipped rectangle skipped packed u16 storage"
+            slot.take().is_none(),
+            "a clipped eight-bit rectangle staged through u16 storage"
         );
     });
 }
