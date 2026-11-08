@@ -311,6 +311,8 @@ const fn dc_category(byte: u8) -> u8 {
 
 /// Net sign of the `len` DC categories of the context-line bytes from
 /// `start`; categories are random per block, so the sum is branchless.
+#[allow(clippy::inline_always, reason = "measured: out of line twice per DC")]
+#[inline(always)]
 fn dc_sign_votes(line: &[u8], start: usize, len: usize) -> i32 {
     let vote = |&byte: &u8| i32::from(dc_category(byte) == 2) - i32::from(dc_category(byte) == 1);
     let Some(slice) = start.checked_add(len).and_then(|end| line.get(start..end)) else {

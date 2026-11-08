@@ -14764,7 +14764,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs"
 change_id = "coeff-eob-size-context"
 owner = "decoder"
 risk = "medium"
-notes = "read_nonzero_coeff_eob_from_context derives EOB size/context from transform dimensions, plane, inter state, and quantizer context before ordinary or FSC decoding."
+notes = "read_nonzero_coeff_block_start derives EOB size/context from the TX_GEOMETRY entry, plane, inter state, and quantizer context before ordinary or FSC decoding."
 
 [feature.status]
 mapped = "done"
@@ -14806,7 +14806,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs"
 change_id = "coeff-eob-derived-symbol-read"
 owner = "decoder"
 risk = "medium"
-notes = "read_nonzero_coeff_eob_from_context composes checked transform facts with EOB syntax selection. Focused EOB and staged-coefficient tests cover the shared path."
+notes = "read_nonzero_coeff_block_start composes checked transform facts with EOB syntax selection. Focused EOB and staged-coefficient tests cover the shared path."
 
 [feature.status]
 mapped = "done"
@@ -18311,7 +18311,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.
 change_id = "coeff-use-fsc-branch-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "decode_staged_transform_tool_nonzero_coeffs selects the FSC or ordinary coefficient path from the shared transform-tool facts."
+notes = "decode_nonzero_plane_coeffs selects the FSC or ordinary coefficient path from the shared transform-tool facts."
 
 [feature.status]
 mapped = "done"
@@ -18350,7 +18350,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.
 change_id = "coeff-use-fsc-condition-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "decode_staged_transform_tool_nonzero_coeffs applies the FSC condition before selecting the coefficient branch."
+notes = "decode_nonzero_plane_coeffs applies the FSC condition before selecting the coefficient branch."
 
 [feature.status]
 mapped = "done"
@@ -18389,7 +18389,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.
 change_id = "coeff-use-fsc-shared-facts-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "The FSC and ordinary branches receive the same frame and transform-tool facts from decode_staged_transform_tool_nonzero_coeffs."
+notes = "The FSC and ordinary branches receive the same frame and transform-tool facts from decode_nonzero_plane_coeffs."
 
 [feature.status]
 mapped = "done"
@@ -18468,7 +18468,7 @@ module = "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.
 change_id = "coeff-frame-facts-handoff"
 owner = "decoder"
 risk = "medium"
-notes = "decode_staged_transform_tool_nonzero_coeffs reads frame coefficient facts directly from the tile work unit."
+notes = "decode_nonzero_plane_coeffs reads frame coefficient facts directly from the tile work unit."
 
 [feature.status]
 mapped = "done"

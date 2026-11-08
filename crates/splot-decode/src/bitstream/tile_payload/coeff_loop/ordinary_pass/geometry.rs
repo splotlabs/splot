@@ -2,10 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::symbol::SymbolDecoder;
-use splot_core::tables::conversion::{
-    ADJUSTED_TX_SIZE, MODE_TO_ANGLE, MODE_TO_TXFM, TX_HEIGHT, TX_SIZE_SQR, TX_SIZE_SQR_UP,
-    TX_WIDTH, TX_WIDTH_LOG2,
-};
+use splot_core::tables::conversion::{MODE_TO_ANGLE, MODE_TO_TXFM, TX_HEIGHT, TX_WIDTH};
 
 use crate::bitstream::tile_payload::general_intra_residual::wide_angle_mapping;
 
@@ -18,7 +15,6 @@ use super::super::max_level::CoeffTransformClass;
 use super::super::transform_block::{CoeffTransformBlockInput, decode_ordinary_transform_block};
 use super::CoeffOrdinaryBranchError;
 
-const TX_SIZES: usize = 25;
 const DCT_DCT: usize = 0;
 const IDTX: usize = 9;
 const TX_4X4: usize = 0;
@@ -49,12 +45,12 @@ const TX_TYPE_IN_SET_INTER: [[u8; 16]; 9] = [
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
 ];
 
-#[derive(Clone)]
-pub(crate) struct CoeffOrdinaryStagedLosslessNonZeroInput {
-    pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
+#[derive(Clone, Copy)]
+pub(crate) struct CoeffOrdinaryStagedLosslessNonZeroInput<'l> {
+    pub(crate) plane: usize,
     pub(crate) start: NonZeroCoeffBlockStart,
     /// The block's context-line spans, checked by the caller.
-    pub(crate) lines: CoeffBlockLines,
+    pub(crate) lines: &'l CoeffBlockLines,
     /// The block's `PlaneTxType`, derived by the caller.
     pub(crate) plane_tx_type: usize,
     pub(crate) parity_hiding: bool,
@@ -76,7 +72,6 @@ pub(crate) struct CoeffOrdinaryBranchModeToTxfmBaseConfig {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryBranchTxSetBaseConfig {
-    pub(crate) reduced_tx_set: usize,
     pub(crate) enable_chroma_dctonly: bool,
     pub(crate) uv_mode: usize,
     pub(crate) angle_delta_uv: i32,
@@ -107,58 +102,19 @@ pub(crate) fn read_lossless_inter_plane_tx_type(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryTxSizeGeometryConfig {
     pub(crate) plane: usize,
-    pub(crate) start_x: usize,
-    pub(crate) start_y: usize,
     pub(crate) tx_size: usize,
 }
 
-/// The adjusted width, height and width log2 and the transform-size
-/// context of one `TxSize`.
-#[derive(Clone, Copy)]
-struct TxGeometry {
-    width: u8,
-    height: u8,
-    width_log2: u8,
-    size_ctx: u8,
-}
-
-/// [`TxGeometry`] of every `TxSize`: `Adjusted_Tx_Size` for the
-/// coefficient extent and `(Tx_Size_Sqr + Tx_Size_Sqr_Up + 1) >> 1` for the
-/// context (§ 5.20.7.27).
-static TX_GEOMETRY: [TxGeometry; TX_SIZES] = {
-    let mut out = [TxGeometry {
-        width: 0,
-        height: 0,
-        width_log2: 0,
-        size_ctx: 0,
-    }; TX_SIZES];
-    let mut tx_size = 0;
-    while tx_size < TX_SIZES {
-        let adjusted = ADJUSTED_TX_SIZE[tx_size] as usize;
-        out[tx_size] = TxGeometry {
-            width: TX_WIDTH[adjusted] as u8,
-            height: TX_HEIGHT[adjusted] as u8,
-            width_log2: TX_WIDTH_LOG2[adjusted] as u8,
-            size_ctx: ((TX_SIZE_SQR[tx_size] + TX_SIZE_SQR_UP[tx_size] + 1) >> 1) as u8,
-        };
-        tx_size += 1;
-    }
-    out
-};
-
+#[allow(clippy::inline_always, reason = "measured: once per nonzero block")]
+#[inline(always)]
 pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    input: CoeffOrdinaryStagedLosslessNonZeroInput,
+    input: CoeffOrdinaryStagedLosslessNonZeroInput<'_>,
     quant: &mut [i32],
 ) -> Result<usize, CoeffOrdinaryBranchError> {
-    let geometry = input.geometry;
-    let Some(tx) = TX_GEOMETRY.get(geometry.tx_size) else {
-        return Err(CoeffOrdinaryBranchError::InvalidTransformSize {
-            tx_size: geometry.tx_size,
-        });
-    };
+    let tx = input.start.tx();
     let lossy = !input.lossless;
     let block = CoeffTransformBlockInput {
         start: input.start,
@@ -167,7 +123,7 @@ pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
             tx_width_log2: u32::from(tx.width_log2),
             tx_width: usize::from(tx.width),
             tx_height: usize::from(tx.height),
-            plane: geometry.plane,
+            plane: input.plane,
             tx_class: CoeffTransformClass::from_plane_tx_type(input.plane_tx_type),
             parity_hiding: lossy && input.parity_hiding,
             use_tcq: lossy && input.use_tcq,

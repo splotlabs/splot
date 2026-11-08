@@ -126,3 +126,18 @@ fn scan_entry_context_classes_give_the_luma_2d_base_contexts() {
         }
     }
 }
+
+#[test]
+fn tx_geometry_spot_checks() {
+    use super::super::super::cdf::EobPtSize;
+    use super::super::TX_GEOMETRY;
+
+    let tx = |tx_size: usize| {
+        let tx = TX_GEOMETRY[tx_size];
+        (tx.w4, tx.h4, tx.width, tx.height, tx.size_ctx, tx.eob_size)
+    };
+    assert_eq!(tx(0), (1, 1, 4, 4, 0, EobPtSize::Pt16));
+    assert_eq!(tx(4), (16, 16, 32, 32, 4, EobPtSize::Pt1024));
+    assert_eq!(tx(6), (2, 1, 8, 4, 1, EobPtSize::Pt32));
+    assert_eq!(tx(18), (16, 4, 32, 16, 3, EobPtSize::Pt512));
+}

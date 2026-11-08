@@ -9,14 +9,12 @@ use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConf
 use splot_core::symbol_encoder::SymbolEncoder;
 
 use super::super::super::cdf::{CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
-use super::super::super::coeff_state::TileCoeffContextState;
-use super::super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
-use super::super::{
-    AllZeroCoeffBlockInput, NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
-};
+use super::super::super::coeff_state::{CoeffBlockLines, TileCoeffContextState};
+use super::super::branch::NonZeroCoeffBlockStart;
+use super::super::{TX_GEOMETRY, read_nonzero_coeff_block_start};
 use super::geometry::{
     CoeffOrdinaryBranchTxSetBaseConfig, CoeffOrdinaryStagedLosslessNonZeroInput,
-    CoeffOrdinaryTxSizeGeometryConfig, apply_staged_nonzero_coeff_ordinary_branch_from_lossless,
+    apply_staged_nonzero_coeff_ordinary_branch_from_lossless,
 };
 
 const TX_4X4: usize = 0;
@@ -44,26 +42,7 @@ fn write_symbol(
 }
 
 fn read_start(tile: &mut TileCdfSubset, symbols: &mut SymbolDecoder<'_>) -> NonZeroCoeffBlockStart {
-    read_nonzero_coeff_block_start(
-        tile,
-        symbols,
-        NonZeroCoeffBlockStartInput {
-            block: AllZeroCoeffBlockInput {
-                plane: 0,
-                x4: 1,
-                y4: 1,
-                w4: 1,
-                h4: 1,
-            },
-            eob: NonZeroCoeffEobContextInput {
-                plane: 0,
-                is_inter: false,
-                tx_width_log2: 2,
-                tx_height_log2: 2,
-            },
-        },
-    )
-    .unwrap()
+    read_nonzero_coeff_block_start(tile, symbols, &TX_GEOMETRY[TX_4X4], 0, false).unwrap()
 }
 
 fn levels_clear(state: &mut TileCoeffContextState) -> bool {
@@ -73,7 +52,6 @@ fn levels_clear(state: &mut TileCoeffContextState) -> bool {
 
 fn base_config(parity_hiding: bool, use_tcq: bool) -> CoeffOrdinaryBranchTxSetBaseConfig {
     CoeffOrdinaryBranchTxSetBaseConfig {
-        reduced_tx_set: 0,
         enable_chroma_dctonly: false,
         uv_mode: 0,
         angle_delta_uv: 0,
@@ -85,24 +63,15 @@ fn base_config(parity_hiding: bool, use_tcq: bool) -> CoeffOrdinaryBranchTxSetBa
 }
 
 fn staged_input(
+    lines: &CoeffBlockLines,
     start: NonZeroCoeffBlockStart,
-    tx_size: usize,
-    start_x: usize,
     lossless: bool,
     base_config: CoeffOrdinaryBranchTxSetBaseConfig,
-) -> CoeffOrdinaryStagedLosslessNonZeroInput {
+) -> CoeffOrdinaryStagedLosslessNonZeroInput<'_> {
     CoeffOrdinaryStagedLosslessNonZeroInput {
-        geometry: CoeffOrdinaryTxSizeGeometryConfig {
-            plane: 0,
-            start_x,
-            start_y: 4,
-            tx_size,
-        },
+        plane: 0,
         start,
-        lines: TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444)
-            .unwrap()
-            .block_lines(0, [start_x >> 2, 1, 1, 1])
-            .unwrap(),
+        lines,
         plane_tx_type: base_config.luma_tx_type,
         parity_hiding: base_config.parity_hiding,
         use_tcq: base_config.use_tcq,
@@ -225,11 +194,12 @@ fn staged_ordinary_live_path_reads_base_br_sign_quant_and_commits() {
         TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444).unwrap();
 
     let mut quant = [0; 16];
+    let lines = state.block_lines(0, [1, 1, 1, 1]).unwrap();
     let end = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         &mut state,
         &mut tile,
         &mut symbols,
-        staged_input(start, TX_4X4, 4, true, base_config(true, true)),
+        staged_input(&lines, start, true, base_config(true, true)),
         &mut quant,
     )
     .unwrap();
@@ -256,11 +226,12 @@ fn staged_ordinary_live_path_applies_evolving_tcq_state() {
         TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444).unwrap();
 
     let mut quant = [0; 16];
+    let lines = state.block_lines(0, [1, 1, 1, 1]).unwrap();
     let end = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         &mut state,
         &mut tile,
         &mut symbols,
-        staged_input(start, TX_4X4, 4, false, base_config(false, true)),
+        staged_input(&lines, start, false, base_config(false, true)),
         &mut quant,
     )
     .unwrap();
@@ -300,8 +271,8 @@ fn staged_ordinary_live_path_applies_evolving_tcq_state() {
 }
 
 #[test]
-fn staged_ordinary_preflights_geometry_and_bounds_without_consumption() {
-    for (tx_size, start_x) in [(usize::MAX, 4), (1, 4)] {
+fn staged_ordinary_preflights_plane_and_bounds_without_consumption() {
+    for (plane, quant_len) in [(1, 16), (0, 17)] {
         let payload = encode_start_only();
         let mut tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&payload);
@@ -312,13 +283,14 @@ fn staged_ordinary_preflights_geometry_and_bounds_without_consumption() {
             TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444)
                 .unwrap();
         let state_before = state.clone();
+        let lines = state.block_lines(plane, [1, 1, 1, 1]).unwrap();
 
         let result = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
             &mut state,
             &mut tile,
             &mut symbols,
-            staged_input(start, tx_size, start_x, true, base_config(false, false)),
-            &mut [0; 16],
+            staged_input(&lines, start, true, base_config(false, false)),
+            &mut vec![0; quant_len],
         );
 
         assert!(result.is_err());

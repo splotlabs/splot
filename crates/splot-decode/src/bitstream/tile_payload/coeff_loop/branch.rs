@@ -8,23 +8,16 @@ use splot_core::symbol::SymbolDecoder;
 use super::super::cdf::TileCdfSubset;
 use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
 use super::{
-    AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffEob, NonZeroCoeffEobContextInput,
-    adjusted_coeff_extent, read_nonzero_coeff_eob_from_context,
+    CoeffLoopContextError, NonZeroCoeffEob, NonZeroCoeffEobSymbolInput, TxGeometry, eob_context,
+    read_nonzero_coeff_eob,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct NonZeroCoeffBlockStartInput {
-    pub(crate) block: AllZeroCoeffBlockInput,
-    pub(crate) eob: NonZeroCoeffEobContextInput,
-}
-
-/// The EOB of a nonzero block with its validated coefficient extent; the
-/// block state is created by the pass that fills it, so this stays small.
+/// The EOB of a nonzero block with its transform geometry; the block state
+/// is created by the pass that fills it, so this stays small.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffBlockStart {
     eob_read: NonZeroCoeffEob,
-    width: usize,
-    height: usize,
+    tx: &'static TxGeometry,
 }
 
 impl NonZeroCoeffBlockStart {
@@ -34,13 +27,18 @@ impl NonZeroCoeffBlockStart {
     }
 
     #[must_use]
+    pub(crate) const fn tx(&self) -> &'static TxGeometry {
+        self.tx
+    }
+
+    #[must_use]
     pub(crate) const fn width(&self) -> usize {
-        self.width
+        self.tx.width as usize
     }
 
     #[must_use]
     pub(crate) const fn coeff_count(&self) -> usize {
-        self.width * self.height
+        self.tx.width as usize * self.tx.height as usize
     }
 
     #[allow(
@@ -53,24 +51,27 @@ impl NonZeroCoeffBlockStart {
     ) -> Result<(NonZeroCoeffEob, TransformCoeffBlockState), TileCoeffStateError> {
         Ok((
             self.eob_read,
-            TransformCoeffBlockState::new(self.width, self.height)?,
+            TransformCoeffBlockState::new(self.width(), usize::from(self.tx.height))?,
         ))
     }
 }
 
+/// Reads the EOB of a nonzero block of plane `plane` with geometry `tx`.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "measured: the block start keeps the table entry, a copy costs 0.1%"
+)]
 pub(crate) fn read_nonzero_coeff_block_start(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    input: NonZeroCoeffBlockStartInput,
+    tx: &'static TxGeometry,
+    plane: usize,
+    is_inter: bool,
 ) -> Result<NonZeroCoeffBlockStart, CoeffLoopContextError> {
-    let width = adjusted_coeff_extent(input.block.w4);
-    let height = adjusted_coeff_extent(input.block.h4);
-    TransformCoeffBlockState::allocation(width, height)?;
-    let eob_read = read_nonzero_coeff_eob_from_context(cdfs, symbols, input.eob)?;
-
-    Ok(NonZeroCoeffBlockStart {
-        eob_read,
-        width,
-        height,
-    })
+    let input = NonZeroCoeffEobSymbolInput {
+        size: tx.eob_size,
+        eob_ctx: eob_context(plane, is_inter),
+    };
+    let eob_read = read_nonzero_coeff_eob(cdfs, symbols, input)?;
+    Ok(NonZeroCoeffBlockStart { eob_read, tx })
 }

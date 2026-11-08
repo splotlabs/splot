@@ -228,6 +228,10 @@ pub(crate) struct CoeffLevelRows<'a> {
     pub(crate) br: &'a mut CoeffBrCdfRows,
     pub(crate) br_lf: &'a mut CoeffBrLfCdfRows,
     pub(crate) br_uv: &'a mut CoeffBrUvCdfRows,
+    pub(crate) base_eob: &'a mut [[u16; COEFF_BASE_EOB_ROW_LEN]; COEFF_BASE_EOB_CONTEXTS],
+    pub(crate) base_lf_eob: &'a mut [[u16; COEFF_BASE_LF_EOB_ROW_LEN]; COEFF_BASE_EOB_CONTEXTS],
+    pub(crate) base_eob_uv: &'a mut CoeffBaseEobUvCdfRows,
+    pub(crate) base_lf_eob_uv: &'a mut CoeffBaseLfEobUvCdfRows,
 }
 
 impl CoeffLevelRows<'_> {
@@ -243,6 +247,10 @@ impl CoeffLevelRows<'_> {
             br: self.br,
             br_lf: self.br_lf,
             br_uv: self.br_uv,
+            base_eob: self.base_eob,
+            base_lf_eob: self.base_lf_eob,
+            base_eob_uv: self.base_eob_uv,
+            base_lf_eob_uv: self.base_lf_eob_uv,
         }
     }
 }
@@ -335,6 +343,10 @@ impl CoeffCdfRows {
             br: &mut self.coeff_br,
             br_lf: &mut self.coeff_br_lf,
             br_uv: &mut self.coeff_br_uv,
+            base_eob: &mut self.coeff_base_eob[tx_size],
+            base_lf_eob: &mut self.coeff_base_lf_eob[tx_size],
+            base_eob_uv: &mut self.coeff_base_eob_uv,
+            base_lf_eob_uv: &mut self.coeff_base_lf_eob_uv,
         })
     }
 

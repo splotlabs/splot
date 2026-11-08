@@ -79,17 +79,11 @@ impl CoeffBaseFirstPassSummary {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffBaseDerivedLevelPassError {
-    #[error(
-        "coefficient base/level config geometry {config_width}x{config_height} does not match block {block_width}x{block_height}"
-    )]
-    BlockGeometryMismatch {
-        block_width: usize,
-        block_height: usize,
-        config_width: usize,
-        config_height: usize,
+    #[error("coefficient quant length {quant_len} exceeds the block's {coeff_count} coefficients")]
+    QuantLenExceedsBlock {
+        quant_len: usize,
+        coeff_count: usize,
     },
-    #[error("coefficient base/level tx_width_log2 {tx_width_log2} does not match width {tx_width}")]
-    TxWidthLog2Mismatch { tx_width_log2: u32, tx_width: usize },
     #[error("coefficient base/level config cannot enable parity hiding and TCQ together")]
     InconsistentParityAndTcq,
     #[error(
