@@ -213,3 +213,68 @@ fn byte_bilinear_8x8_matches_the_general_path() {
         &mut output
     ));
 }
+
+/// 4x4 and 8x8 put and compound cells whose windows cross tighter clip
+/// bounds on each side against the § 7.13.3.18 oracle.
+#[test]
+fn clamped_cells_match_the_oracle() {
+    let (ref_w, ref_h) = (40usize, 32usize);
+    let texture = (0..ref_w * ref_h)
+        .map(|i| ((i * 73 + i / ref_w * 29) % 256) as u16)
+        .collect::<Vec<_>>();
+    let bytes = texture.iter().map(|&s| s as u8).collect::<Vec<_>>();
+    let view = ReferencePlaneView::new(&bytes, ref_w, ref_h).unwrap();
+    for size in [4usize, 8] {
+        for (dx, dy) in [(-3, 0), (4, 0), (0, -2), (0, 5), (-1, 3), (2, -4)] {
+            for phase in [0, 5, 8, 80, 133, 255] {
+                let interp = [
+                    InterpolationFilter::EightTap,
+                    InterpolationFilter::EightTapSharp,
+                ][phase % 2];
+                let (x, y) = (12 + dx, 10 + dy);
+                let params = SubpelPredictParams {
+                    interp,
+                    start_x: (x << 10) + ((phase as i32 % 16) << 6),
+                    start_y: (y << 10) + ((phase as i32 / 16) << 6),
+                    first_x: 12 - 3,
+                    first_y: 10 - 3,
+                    last_x: 12 + size as i32 + 3,
+                    last_y: 10 + size as i32 + 3,
+                    ..full_pel_params(interp, size, size, 0, 0, ref_w as i32, ref_h as i32)
+                };
+                let label = format!("{size} at {dx},{dy} phase {phase}");
+                let put = reference_subpel(&texture, ref_w, ref_h, &params);
+                let mut actual = vec![0u8; size * size];
+                subpel_predict_block_strided_into_u8(&view, &params, &mut actual, size).unwrap();
+                assert!(actual.iter().map(|&s| u16::from(s)).eq(put), "put {label}");
+                let other = SubpelPredictParams {
+                    start_x: params.start_y,
+                    start_y: params.start_x,
+                    ..params
+                };
+                let [pred0, pred1] = [&params, &other]
+                    .map(|params| reference_subpel_compound(&texture, ref_w, ref_h, params));
+                let mut actual = vec![0u8; size * size];
+                assert_eq!(
+                    subpel_predict_block_compound_average_unscaled_strided_into(
+                        &view,
+                        &params,
+                        &view,
+                        &other,
+                        8,
+                        &mut actual,
+                        size,
+                    ),
+                    Ok(true)
+                );
+                let want = pred0.iter().zip(&pred1).map(|(&a, &b)| {
+                    blend_compound_average_weighted_sample(a, b, BitDepth::Eight, 8)
+                });
+                assert!(
+                    actual.iter().map(|&s| u16::from(s)).eq(want),
+                    "average {label}"
+                );
+            }
+        }
+    }
+}
