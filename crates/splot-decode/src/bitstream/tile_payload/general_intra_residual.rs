@@ -1457,6 +1457,8 @@ pub(crate) const fn is_cctx_geometry_allowed(
     is_420 || plane_width < 32 || plane_height < 32
 }
 
+#[allow(clippy::inline_always, reason = "measured: once per nonzero block")]
+#[inline(always)]
 fn ensure_transform_tool_residual_handoff(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,

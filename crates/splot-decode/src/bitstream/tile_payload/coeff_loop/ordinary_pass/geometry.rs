@@ -107,6 +107,8 @@ pub(crate) struct CoeffOrdinaryTxSizeGeometryConfig {
     pub(crate) tx_size: usize,
 }
 
+#[allow(clippy::inline_always, reason = "measured: once per nonzero block")]
+#[inline(always)]
 pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
