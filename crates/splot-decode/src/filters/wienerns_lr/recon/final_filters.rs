@@ -1933,23 +1933,6 @@ impl StripeChain<'_> {
             .map_err(|_| super::lr_pipeline_state_error())?;
         let tile_end_y = mi_to_luma_end_recon(block.tile_mi_row_end, "luma LR tile end y")
             .map_err(|_| super::lr_pipeline_state_error())?;
-        let cell_count = cell_cols
-            .checked_mul(cell_rows)
-            .ok_or_else(super::lr_pipeline_state_error)?;
-        if cell_count > cell_subclasses.len() {
-            let additional = cell_count - cell_subclasses.len();
-            if cell_subclasses.try_reserve_exact(additional).is_err() {
-                cell_subclasses.clear();
-                return Err(ReconError::WorkspaceAllocationFailed {
-                    plane: PlaneId::Y,
-                    context: "PC-Wiener cell subclasses",
-                }
-                .into());
-            }
-            cell_subclasses.resize(cell_count, 0);
-        } else {
-            cell_subclasses.truncate(cell_count);
-        }
         let subclass_table =
             pc_wiener_subclass_table(num_classes, filter_set_index).map_err(lr_window_error)?;
         let padded_source = PcWienerClassifyPaddedSource::from_rows(
@@ -1982,22 +1965,18 @@ impl StripeChain<'_> {
             tile_end_y,
         };
         with_reusable_scratch(&PC_WIENER_CLASSIFY_SCRATCH, |scratch| {
-            let classes = pc_wiener_classify_grid_padded_classes_into::<u16, _>(
+            pc_wiener_classify_grid_padded_classes_into::<u16, _>(
                 &params,
                 cell_cols,
                 cell_rows,
                 &padded_source,
                 |run| tx_skip_grid.run(run.row, run.col, run.len),
+                subclass_table,
                 scratch,
+                cell_subclasses,
             )
-            .map_err(lr_window_error)?;
-            if classes.len() != cell_subclasses.len() {
-                return Err(super::lr_pipeline_state_error());
-            }
-            for (cell, &class) in cell_subclasses.iter_mut().zip(classes) {
-                *cell = subclass_table[usize::from(class)];
-            }
-            Ok(())
+            .map(drop)
+            .map_err(lr_window_error)
         })?;
 
         Ok(cell_subclasses)
