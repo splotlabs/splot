@@ -734,7 +734,7 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
     };
     mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
     Ok((
-        non_intra_leaf_mode(frontier),
+        GeneralIntraLeafMode::no_luma_mode(),
         pending_inter_leaf(
             syntax,
             PlacedInterGeometry {

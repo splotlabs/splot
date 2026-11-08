@@ -39,7 +39,7 @@ use super::super::general_intra_residual::{LumaTransformTypeContext, intra_chrom
 use super::super::intra_joint_modes::{IntraNeighbours, LumaPalette};
 use super::super::partition_traversal::{
     DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
-    is_cfl_context_for_chroma_ref, publish_intra_leaf_state,
+    publish_intra_leaf_state,
 };
 use super::super::tile_frontier::chroma_subsampling;
 use super::palette::{Palette, PlannedPalette, unit_map};
@@ -49,12 +49,11 @@ use super::{
 };
 use crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc;
 use crate::pipeline::general_intra::{
-    GeneralIntraReconScratch, chroma_edge_smoothness, general_intra_block_ctx,
-    general_intra_chroma_tools, inherited_chroma_angle_delta, luma_transform_type_context,
-    record_chroma_smooth, rect_chroma_plan, rect_luma_plan, sequence_cfl_ds_filter_index,
+    GeneralIntraReconScratch, general_intra_block_ctx, general_intra_chroma_tools,
+    inherited_chroma_angle_delta, luma_transform_type_context, rect_chroma_plan, rect_luma_plan,
+    sequence_cfl_ds_filter_index,
 };
-use crate::prediction::inter::chroma_smooth_tile_ranges;
-use crate::prediction::intra_edge::{IntraEdgeCtx, TileSmoothGrid};
+use crate::prediction::intra_edge::IntraEdgeCtx;
 use crate::residual::pipeline::GeneralIntraResidualPlan;
 use crate::tile::block_context::BlockCtx;
 
@@ -348,7 +347,6 @@ pub(super) struct Recon {
     pub(super) workspace: CurrentFrameWorkspace<u16>,
     scratch: GeneralIntraReconScratch<u16>,
     pub(super) block_decoded: TileBlockDecodedState,
-    pub(super) chroma_smooth: TileSmoothGrid,
     pub(super) leaf: Option<PlannedLeaf>,
     /// The `plan_index` and `units` buffers of the leaf planned before, reused.
     spare_units: (Vec<usize>, Vec<TransformBlock>),
@@ -396,20 +394,10 @@ impl Recon {
                 rows.end,
             )
             .map_err(rule("BlockDecoded state"))?;
-        let grid = |(rows, cols): (Range<usize>, Range<usize>), sb_h4: usize| {
-            let mut grid = TileSmoothGrid::default();
-            grid.reset_for_tile(rows, cols, sb_h4)
-                .map(|()| grid)
-                .map_err(|_| EncoderSyntaxError::Unsupported("smooth grid size"))
-        };
         Ok(Self {
             workspace,
             scratch: GeneralIntraReconScratch::default(),
             block_decoded,
-            chroma_smooth: grid(
-                chroma_smooth_tile_ranges(rows, cols, chroma),
-                sb_size4 >> usize::from(sub_y),
-            )?,
             leaf: None,
             spare_units: (Vec::new(), Vec::new()),
         })
@@ -604,12 +592,11 @@ impl IntraTileSyntax {
     ) -> Result<()> {
         let is_cfl = !matches!(modes.uv_mode, ChromaMode::Intra(_));
         if self.cfl_allowed(leaf) {
-            let ctx = is_cfl_context_for_chroma_ref(
-                &self.uv_cfls,
-                self.bounds,
-                leaf.frontier.chroma_ref_geometry(),
-            )
-            .get();
+            let chroma_ref = leaf.frontier.chroma_ref_geometry();
+            let ctx = self
+                .mi_sizes
+                .uv_edges(chroma_ref.row(), chroma_ref.col())
+                .cfl_ctx();
             self.put(symbols, TileCdfSelector::IsCfl { ctx }, usize::from(is_cfl))?;
         } else if is_cfl {
             return Err(EncoderSyntaxError::Unsupported("CFL in this block"));
@@ -740,8 +727,11 @@ impl IntraTileSyntax {
             units.push(unit);
         }
         let (above_smooth, left_smooth) = self.intra_neighbours(leaf)?.smoothness();
-        let (chroma_above_smooth, chroma_left_smooth) =
-            chroma_edge_smoothness(Some(&self.recon.chroma_smooth), block_ctx);
+        let chroma_ref = leaf.frontier.chroma_ref_geometry();
+        let (chroma_above_smooth, chroma_left_smooth) = self
+            .mi_sizes
+            .uv_edges(chroma_ref.row(), chroma_ref.col())
+            .smoothness();
         let planned = units.clone();
         let replaced = self.recon.leaf.replace(PlannedLeaf {
             plan,
@@ -957,12 +947,10 @@ impl IntraTileSyntax {
             .transpose()?;
         let block_modes = block_modes(leaf, modes, joint, mrl, palette)?;
         let fsc = u8::from(modes.fsc);
-        let mut mode = GeneralIntraLeafMode::luma(joint, modes.y_mode, modes.angle_delta, fsc, mrl)
+        let mode = GeneralIntraLeafMode::luma(joint, modes.y_mode, modes.angle_delta, fsc, mrl)
             .with_use_dip(modes.dip.is_some().into())
-            .with_palette_y(palette);
-        if leaf.frontier.has_chroma {
-            mode = mode.with_uv_cfl(block_modes.is_cfl());
-        }
+            .with_palette_y(palette)
+            .with_uv(block_modes.uv_bits());
         publish_intra_leaf_state::<core::convert::Infallible>(
             &self.frame,
             &leaf.call,
@@ -970,7 +958,6 @@ impl IntraTileSyntax {
             mode,
             leaf.call.b_size,
             &mut self.intra_facts,
-            &mut self.uv_cfls,
             &mut self.mi_sizes,
         )
         .map_err(|error| match error {
@@ -978,14 +965,6 @@ impl IntraTileSyntax {
             GeneralIntraTreeWalkError::MiSize(source) => rule("leaf publication")(source),
             GeneralIntraTreeWalkError::Leaf(never) => match never {},
         })?;
-        if leaf.frontier.has_chroma {
-            let (block_ctx, _) = self.block_ctx(leaf);
-            record_chroma_smooth(
-                Some(&mut self.recon.chroma_smooth),
-                block_ctx,
-                block_modes.supported_chroma_mode(),
-            );
-        }
         DecodedLeafPublication::new(leaf.call, leaf.call.b_size, self.sb_size4 - 1)
             .publish_block_decoded(&mut self.recon.block_decoded)
             .map_err(rule("BlockDecoded update"))?;
@@ -1348,8 +1327,8 @@ impl IntraTileSyntax {
     pub(super) fn intra_neighbours(&self, leaf: &LeafBlock) -> Result<IntraNeighbours> {
         let (n4w, n4h) = leaf_size4(leaf)?;
         Ok(self
-            .intra_facts
-            .neighbours(leaf.frontier.r, leaf.frontier.c, n4w, n4h))
+            .mi_sizes
+            .intra_neighbours(leaf.frontier.r, leaf.frontier.c, n4w, n4h))
     }
 }
 

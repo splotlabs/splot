@@ -10,8 +10,7 @@ use super::cdf::block_context::{IntraJointMode, IntraYMode, MrlSelection};
 use super::cdf::context::{PartitionContextInput, SquareSplitContextInput};
 use super::cdf::{self, TileCdfError};
 use super::intra_joint_modes::{
-    IntraFacts, IsCflContext, LumaPalette, TileIntraFactsState, TileIntraFactsStateError,
-    TileUvCflState,
+    IntraFacts, LumaPalette, TileIntraFactsState, TileIntraFactsStateError,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::{self, PartitionDecisionError, PartitionType};
@@ -42,9 +41,9 @@ use tree_walk::extended_sdp_allowed_for_child;
 pub(crate) use tree_walk::valid_subsize;
 pub(crate) use tree_walk::{
     GeneralIntraPartitionTreeCursor, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError,
-    LeafCflContext, SdpPartitionState, TileTraversalStorage, decode_block_frontier,
-    decode_block_part, is_cfl_context_for_chroma_ref, is_intra_sdp_shared_root,
-    partition_allowed_input, partition_context_inputs, updated_chroma_offset,
+    LeafNeighbours, SdpPartitionState, TileTraversalStorage, decode_block_frontier,
+    decode_block_part, is_intra_sdp_shared_root, partition_allowed_input, partition_context_inputs,
+    updated_chroma_offset,
 };
 #[cfg(test)]
 use tree_walk::{
@@ -399,23 +398,6 @@ impl TilePartitionBounds {
         }
     }
 
-    const fn is_inside(self, r: usize, c: usize) -> bool {
-        self.mi_col_start <= c
-            && c < self.mi_col_end
-            && self.mi_row_start <= r
-            && r < self.mi_row_end
-    }
-
-    fn avail_u_at(self, r: usize, c: usize) -> bool {
-        r.checked_sub(1)
-            .is_some_and(|candidate_r| self.is_inside(candidate_r, c))
-    }
-
-    fn avail_l_at(self, r: usize, c: usize) -> bool {
-        c.checked_sub(1)
-            .is_some_and(|candidate_c| self.is_inside(r, candidate_c))
-    }
-
     /// `AvailU` of a call inside the tile, whose row above is in the tile
     /// exactly when the call is below the tile's first row.
     const fn avail_u(self, call: TilePartitionCall) -> bool {
@@ -512,7 +494,8 @@ impl DecodeBlockFrontier {
 pub(crate) struct GeneralIntraLeafMode {
     luma: Option<IntraFacts>,
     palette_y: Option<LumaPalette>,
-    uv_cfl: Option<bool>,
+    /// The `UVCfls` / `UVSmooth` bits of a leaf with chroma.
+    uv: u8,
     intrabc: bool,
 }
 
@@ -534,7 +517,7 @@ impl GeneralIntraLeafMode {
                 mrl,
             )),
             palette_y: None,
-            uv_cfl: None,
+            uv: 0,
             intrabc: false,
         }
     }
@@ -544,7 +527,7 @@ impl GeneralIntraLeafMode {
         Self {
             luma: None,
             palette_y: None,
-            uv_cfl: None,
+            uv: 0,
             intrabc: false,
         }
     }
@@ -561,8 +544,8 @@ impl GeneralIntraLeafMode {
     }
 
     #[must_use]
-    pub(crate) const fn chroma(uv_cfl: bool) -> Self {
-        Self::no_luma_mode().with_uv_cfl(uv_cfl)
+    pub(crate) const fn chroma(uv: u8) -> Self {
+        Self::no_luma_mode().with_uv(uv)
     }
 
     #[must_use]
@@ -580,8 +563,8 @@ impl GeneralIntraLeafMode {
     }
 
     #[must_use]
-    pub(crate) const fn with_uv_cfl(mut self, uv_cfl: bool) -> Self {
-        self.uv_cfl = Some(uv_cfl);
+    pub(crate) const fn with_uv(mut self, uv: u8) -> Self {
+        self.uv = uv;
         self
     }
 }

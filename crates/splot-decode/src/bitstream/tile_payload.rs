@@ -91,10 +91,8 @@ pub(crate) use input::{
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCandidateTileMalformed,
     TileGroupPositionFacts, plan_derived_tile_payload_boundary_with_scratch,
 };
-pub(crate) use intra_joint_modes::IsCflContext;
 pub(crate) use intra_joint_modes::{
-    FrameSegmentIdMap, LumaPalette, MiGrid, TileIntraFactsState, TileSegmentIdState,
-    TileSegmentIdStateError, neg_deinterleave,
+    FrameSegmentIdMap, LumaPalette, TileSegmentIdState, TileSegmentIdStateError, neg_deinterleave,
 };
 #[cfg(test)]
 pub(crate) use partition::PartitionDecisionError;
@@ -106,7 +104,7 @@ pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;
 pub(crate) use partition_traversal::{
     DecodeBlockFrontier, DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode,
-    GeneralIntraTreeWalkError, LeafCflContext, TileTraversalStorage,
+    GeneralIntraTreeWalkError, LeafNeighbours, TileTraversalStorage,
 };
 pub(crate) use partition_traversal::{
     TilePartitionTraversalError, WienerNsLrSourceBlock, WienerNsLrUnitFilter,

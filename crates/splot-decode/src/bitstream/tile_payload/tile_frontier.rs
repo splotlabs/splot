@@ -6,13 +6,12 @@ use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader, SuperblockS
 use splot_core::symbol::SymbolDecoder;
 
 use super::DecodeTileWorkUnit;
-use super::intra_joint_modes::{TileIntraFactsState, TileUvCflState, TileUvCflStateError};
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition_allowed::PartitionFeatureFlags;
 pub(crate) use super::partition_traversal::GeneralIntraPartitionTreeOutput as GeneralIntraMultiblockOutput;
 use super::partition_traversal::{
     DecodeBlockFrontier, DecodedLeafPublication, GeneralIntraLeafMode,
-    GeneralIntraPartitionTreeCursor, GeneralIntraTreeWalkError, LeafCflContext,
+    GeneralIntraPartitionTreeCursor, GeneralIntraTreeWalkError, LeafNeighbours,
     TilePartitionFrameFacts, TilePartitionLoopRestorationFrameState,
     TilePartitionLoopRestorationPlaneTool, TilePartitionLoopRestorationState,
     TilePartitionTraversalError, TileTraversalStorage,
@@ -31,8 +30,6 @@ pub(crate) enum TilePartitionFrontierError {
     Traversal(#[from] TilePartitionTraversalError),
     #[error("MI-size state failed: {0}")]
     MiSizeState(#[from] TileMiSizeStateError),
-    #[error("intra UVCfls state failed: {0}")]
-    UvCflState(#[from] TileUvCflStateError),
     #[error("partition frontier mismatch: {reason}")]
     UnexpectedFrontier { reason: &'static str },
 }
@@ -48,7 +45,6 @@ pub(crate) enum GeneralIntraMultiblockError<E> {
 pub(crate) struct GeneralIntraMultiblockCursor<'payload> {
     tree: GeneralIntraPartitionTreeCursor<'payload>,
     mi_size_state: TileMiSizeState,
-    uv_cfls: TileUvCflState,
 }
 
 impl<'payload> GeneralIntraMultiblockCursor<'payload> {
@@ -68,20 +64,12 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
             ..(work_unit.mi_col_range().end as usize).min(mi_cols);
         let mi_size_state =
             TileMiSizeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), frame.sb_size())?;
-        let sb_size4 = frame
-            .sb_size()
-            .num_4x4_wide()
-            .map_err(TilePartitionTraversalError::from)?
-            .max(1);
-        let uv_cfls = TileUvCflState::new(tile_rows.len(), tile_cols.len(), sb_size4)?
-            .with_origin(tile_rows.start, tile_cols.start);
         let tree = GeneralIntraPartitionTreeCursor::new_with_bytes(
             work_unit, tile_bytes, frame, limits, lr_records,
         )?;
         Ok(Self {
             tree,
             mi_size_state,
-            uv_cfls,
         })
     }
 
@@ -96,24 +84,18 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
             &mut DecodeTileWorkUnit,
             &mut SymbolDecoder<'payload>,
             &DecodeBlockFrontier,
-            &TileIntraFactsState,
-            LeafCflContext<'_>,
+            LeafNeighbours<'_>,
         ) -> Result<(GeneralIntraLeafMode, C), E>,
         P: FnMut(DecodedLeafPublication, C),
     {
-        let Self {
-            tree,
-            mi_size_state,
-            uv_cfls,
-        } = self;
-        tree.decode_next_superblock_with_publication(
-            work_unit,
-            mi_size_state,
-            uv_cfls,
-            on_leaf,
-            on_published,
-        )
-        .map_err(GeneralIntraMultiblockError::Walk)
+        self.tree
+            .decode_next_superblock_with_publication(
+                work_unit,
+                &mut self.mi_size_state,
+                on_leaf,
+                on_published,
+            )
+            .map_err(GeneralIntraMultiblockError::Walk)
     }
 
     pub(crate) const fn sb_mask(&self) -> usize {
@@ -127,17 +109,11 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
 
     /// Whether a neighbour grid touched a row its window had already reused.
     pub(crate) fn window_violated(&self) -> bool {
-        self.tree.window_violated() || self.uv_cfls.window_violated()
+        self.tree.window_violated()
     }
 
     pub(crate) fn into_output(self) -> GeneralIntraMultiblockOutput<'payload> {
-        let Self {
-            tree,
-            mi_size_state: _,
-            uv_cfls,
-        } = self;
-        uv_cfls.recycle();
-        tree.into_output()
+        self.tree.into_output()
     }
 }
 

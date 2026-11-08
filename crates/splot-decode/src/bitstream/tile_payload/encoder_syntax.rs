@@ -41,7 +41,7 @@ use super::coeff_state::{
     CoeffContextUpdate, LevelGrid, TileCoeffContextState, TransformCoeffBlockState,
 };
 use super::general_intra_residual::{block_recon_params, txb_skip_selector, txb_skip_tx_size_ctx};
-use super::intra_joint_modes::{TileIntraFactsState, TileUvCflState};
+use super::intra_joint_modes::TileIntraFactsState;
 use super::mi_size_state::TileMiSizeState;
 pub use super::partition::PartitionType as Partition;
 use super::partition::{PartitionDecisionError, PartitionSymbols, read_partition_decision};
@@ -680,7 +680,6 @@ pub struct IntraTileSyntax {
     coeff: TileCoeffContextState,
     mi_sizes: TileMiSizeState,
     intra_facts: TileIntraFactsState,
-    uv_cfls: TileUvCflState,
     y_mode_table: intra::YModeTable,
     inter: Option<inter::InterLeafState>,
     journal: CdfJournal,
@@ -769,15 +768,8 @@ impl IntraTileSyntax {
             coeff,
             mi_sizes: TileMiSizeState::new_for_tile(rows.clone(), cols.clone(), frame.sb_size())
                 .map_err(rule("MI-size state"))?,
-            intra_facts: neighbour(TileIntraFactsState::new_for_tile(
-                rows.clone(),
-                cols.clone(),
-                sb_size4,
-            ))?,
-            uv_cfls: neighbour(
-                TileUvCflState::new(rows.len(), cols.len(), sb_size4)
-                    .map(|state| state.with_origin(rows.start, cols.start)),
-            )?,
+            intra_facts: TileIntraFactsState::new_for_tile(rows.clone(), cols.clone(), sb_size4)
+                .map_err(rule("neighbour state"))?,
             y_mode_table: intra::YModeTable::default(),
             inter,
             journal,
@@ -1212,12 +1204,6 @@ fn hidden_base_selection(context: CoeffBaseContext, level: &LevelGrid) -> CoeffB
         ..context
     }
     .select(level)
-}
-
-fn neighbour<T, E: std::error::Error + Send + Sync + 'static>(
-    state: core::result::Result<T, E>,
-) -> Result<T> {
-    state.map_err(rule("neighbour state"))
 }
 
 /// The `(Tx_Width_Log2, Tx_Height_Log2)` of a § 9.3 transform size.

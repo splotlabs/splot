@@ -835,26 +835,6 @@ fn derived_tip_reference_pair(
 
 pub(super) use crate::tile::frame_superblock_h4;
 
-pub(crate) fn chroma_smooth_tile_ranges(
-    mi_rows: core::ops::Range<usize>,
-    mi_cols: core::ops::Range<usize>,
-    chroma: splot_core::headers::sequence::ChromaFormatIdc,
-) -> (core::ops::Range<usize>, core::ops::Range<usize>) {
-    let (sub_x, sub_y) = chroma_subsampling(chroma);
-    (
-        (mi_rows.start >> usize::from(sub_y))..if sub_y {
-            mi_rows.end.div_ceil(2)
-        } else {
-            mi_rows.end
-        },
-        (mi_cols.start >> usize::from(sub_x))..if sub_x {
-            mi_cols.end.div_ceil(2)
-        } else {
-            mi_cols.end
-        },
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
 fn read_segment_id(
     work_unit: &mut DecodeTileWorkUnit,
@@ -1206,7 +1186,6 @@ pub(super) struct BlockDecodeContext<'a, T: ReconSample> {
     pub(super) intrabc_state: &'a mut TileIntrabcPreludeState,
     pub(super) segment_id_state: &'a mut TileSegmentIdState,
     pub(super) mv_grid: &'a mut NeighbourMvGrid,
-    pub(super) chroma_smooth: &'a mut crate::prediction::intra_edge::TileChromaSmoothGrid,
     filter_records: &'a mut tile::TileFilterRecords,
     pub(super) arena: &'a mut crate::residual::pipeline::ResidualPlaneArena,
 }
@@ -1217,8 +1196,7 @@ fn decode_block<T: ReconSample>(
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
     context: &mut BlockDecodeContext<'_, T>,
-    intra_facts: &crate::bitstream::tile_payload::TileIntraFactsState,
-    is_cfl_ctx: crate::bitstream::tile_payload::LeafCflContext<'_>,
+    neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>,
 ) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
     let BlockDecodeContext {
         sequence,
@@ -1238,7 +1216,6 @@ fn decode_block<T: ReconSample>(
         ref mut intrabc_state,
         ref mut segment_id_state,
         ref mut mv_grid,
-        ref mut chroma_smooth,
         ref mut filter_records,
         ref mut arena,
     } = *context;
@@ -1501,7 +1478,7 @@ fn decode_block<T: ReconSample>(
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
             let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
             return Ok((
-                non_intra_leaf_mode(frontier).mark_intrabc(),
+                GeneralIntraLeafMode::no_luma_mode().mark_intrabc(),
                 pending_intrabc_leaf(PendingIntrabcBlock {
                     frontier: *frontier,
                     n4w,
@@ -1529,27 +1506,27 @@ fn decode_block<T: ReconSample>(
             delta_q_state.qindex_u32(),
         );
         let (leaf, command) = crate::pipeline::general_intra::decode_one_general_intra_block(
-            work_unit,
-            symbols,
+            &mut crate::pipeline::general_intra::GeneralIntraLeafParse {
+                work_unit,
+                symbols,
+                coeff_ctx,
+                deblock_blocks: &mut filter_records.deblock_blocks,
+                chroma_deblock_blocks: &mut filter_records.chroma_deblock_blocks,
+                tx_skip_records: &mut filter_records.tx_skip_records,
+                arena,
+                coeffs_arena: residual_arena,
+                qindex: block_qindex,
+                segment_id,
+                luma_use_tcq,
+                policy: residual_tool_policy,
+                mi_cols,
+                mi_rows,
+                bit_depth,
+                tile_offset,
+            },
             frontier,
             &params.intra_tools,
-            Some(chroma_smooth),
-            intra_facts,
-            is_cfl_ctx,
-            segment_id,
-            coeff_ctx,
-            &mut filter_records.deblock_blocks,
-            &mut filter_records.chroma_deblock_blocks,
-            &mut filter_records.tx_skip_records,
-            arena,
-            residual_arena,
-            block_qindex,
-            luma_use_tcq,
-            residual_tool_policy,
-            mi_cols,
-            mi_rows,
-            bit_depth,
-            tile_offset,
+            neighbours,
         )?;
         let luma_tree = !frontier.is_chroma_part();
         if luma_tree {
@@ -1915,7 +1892,7 @@ fn decode_block<T: ReconSample>(
         };
         mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
         return Ok((
-            non_intra_leaf_mode(frontier),
+            GeneralIntraLeafMode::no_luma_mode(),
             pending_inter_leaf(
                 syntax,
                 placed_inter_geometry(frontier, work_unit, (n4w, n4h), chroma_planes)?,
@@ -2165,7 +2142,7 @@ fn decode_block<T: ReconSample>(
     };
     mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
     Ok((
-        non_intra_leaf_mode(frontier),
+        GeneralIntraLeafMode::no_luma_mode(),
         pending_inter_leaf(
             syntax,
             placed_inter_geometry(frontier, work_unit, (n4w, n4h), chroma_planes)?,
@@ -2177,14 +2154,6 @@ fn decode_block<T: ReconSample>(
 
 const fn inter_skip_txfm_ctx(neighbour_skip_ctx: usize, skip_mode: bool) -> usize {
     neighbour_skip_ctx + if skip_mode { 3 } else { 0 }
-}
-
-pub(crate) fn non_intra_leaf_mode(frontier: &DecodeBlockFrontier) -> GeneralIntraLeafMode {
-    let leaf = GeneralIntraLeafMode::no_luma_mode();
-    if frontier.has_chroma {
-        return leaf.with_uv_cfl(false);
-    }
-    leaf
 }
 
 pub(crate) fn is_comp_ref_allowed(n4w: usize, n4h: usize) -> bool {
@@ -2367,7 +2336,6 @@ fn map_inter_multiblock_error(
         GeneralIntraMultiblockError::Setup(
             TilePartitionFrontierError::MissingFact { .. }
             | TilePartitionFrontierError::MiSizeState(_)
-            | TilePartitionFrontierError::UvCflState(_)
             | TilePartitionFrontierError::UnexpectedFrontier { .. },
         )
         | GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::MiSize(_)) => {

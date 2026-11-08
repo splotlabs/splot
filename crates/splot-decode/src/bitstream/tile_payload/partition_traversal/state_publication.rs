@@ -8,7 +8,7 @@ use super::tree_walk::GeneralIntraTreeWalkError;
 use super::{
     BlockSize, DecodeBlockFrontier, GeneralIntraLeafMode, IntraFacts, PartitionTreeType,
     TileIntraFactsState, TileMiSizeState, TilePartitionCall, TilePartitionFrameFacts,
-    TilePartitionTraversalError, TileUvCflState, plane_range_for_tree_type,
+    TilePartitionTraversalError, plane_range_for_tree_type,
 };
 
 /// Mode-info positions are below `MiRows`/`MiCols`, which a `u32` frame size
@@ -130,44 +130,14 @@ pub(crate) fn publish_intra_leaf_state<E>(
     leaf_mode: GeneralIntraLeafMode,
     sub_size: BlockSize,
     intra_facts: &mut TileIntraFactsState,
-    uv_cfls: &mut TileUvCflState,
     mi_size_state: &mut TileMiSizeState,
 ) -> Result<(), GeneralIntraTreeWalkError<E>> {
     let tree_type = frontier.tree_type();
-    let block_n4w = sub_size
-        .num_4x4_wide()
-        .map_err(TilePartitionTraversalError::from)?;
-    let block_n4h = sub_size
-        .num_4x4_high()
-        .map_err(TilePartitionTraversalError::from)?;
-    if let Some(uv_cfl) = leaf_mode.uv_cfl {
-        let chroma_ref = frontier.chroma_ref_geometry();
-        let chroma_n4w = chroma_ref
-            .size()
-            .num_4x4_wide()
-            .map_err(TilePartitionTraversalError::from)?;
-        let chroma_n4h = chroma_ref
-            .size()
-            .num_4x4_high()
-            .map_err(TilePartitionTraversalError::from)?;
-        uv_cfls.record_block(
-            chroma_ref.row(),
-            chroma_ref.col(),
-            chroma_n4w,
-            chroma_n4h,
-            uv_cfl,
-        );
-    }
     if tree_type != PartitionTreeType::ChromaPart {
-        if let Some(facts) = leaf_mode.luma {
-            intra_facts.record_leaf(
-                (call.r(), call.c()),
-                (block_n4w, block_n4h),
-                facts,
-                leaf_mode.palette_y,
-            );
-        } else {
-            if frame.frame_is_intra && !leaf_mode.is_intrabc() {
+        let facts = match leaf_mode.luma {
+            Some(facts) => Some(facts),
+            None if leaf_mode.is_intrabc() => Some(IntraFacts::intrabc()),
+            None if frame.frame_is_intra => {
                 return Err(GeneralIntraTreeWalkError::Traversal(
                     TilePartitionTraversalError::MissingIntraLumaModeState {
                         r: call.r(),
@@ -175,23 +145,34 @@ pub(crate) fn publish_intra_leaf_state<E>(
                     },
                 ));
             }
-            if leaf_mode.is_intrabc() {
-                intra_facts.record_leaf(
-                    (call.r(), call.c()),
-                    (block_n4w, block_n4h),
-                    IntraFacts::intrabc(),
-                    None,
-                );
-            }
+            None => None,
+        };
+        if let Some(facts) = facts.filter(|_| tree_type == PartitionTreeType::LumaPart) {
+            let extent = (
+                sub_size
+                    .num_4x4_wide()
+                    .map_err(TilePartitionTraversalError::from)?,
+                sub_size
+                    .num_4x4_high()
+                    .map_err(TilePartitionTraversalError::from)?,
+            );
+            intra_facts
+                .grid_mut()
+                .record_block((call.r(), call.c()), extent, facts);
         }
         mi_size_state
-            .update_luma_block(call.r(), call.c(), sub_size)
+            .update_luma_block(call.r(), call.c(), sub_size, facts, leaf_mode.palette_y)
             .map_err(GeneralIntraTreeWalkError::MiSize)?;
     }
     if frontier.has_chroma || tree_type == PartitionTreeType::ChromaPart {
         let chroma_ref = call.chroma_ref_geometry();
         mi_size_state
-            .update_chroma_block(chroma_ref.row(), chroma_ref.col(), chroma_ref.size())
+            .update_chroma_block(
+                chroma_ref.row(),
+                chroma_ref.col(),
+                chroma_ref.size(),
+                leaf_mode.uv,
+            )
             .map_err(GeneralIntraTreeWalkError::MiSize)?;
     }
     Ok(())

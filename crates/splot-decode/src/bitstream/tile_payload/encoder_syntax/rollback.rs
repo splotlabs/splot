@@ -202,7 +202,6 @@ const STALE: EncoderSyntaxError =
 #[derive(Default)]
 struct Cells {
     bytes: Vec<u8>,
-    flags: Vec<bool>,
     intra_facts: Vec<IntraFacts>,
 }
 
@@ -264,8 +263,6 @@ struct WholeState {
     coeff: super::TileCoeffContextState,
     mi_sizes: super::TileMiSizeState,
     intra_facts: super::TileIntraFactsState,
-    uv_cfls: super::TileUvCflState,
-    chroma_smooth: crate::prediction::intra_edge::TileSmoothGrid,
     ref_mv_bank: Option<crate::prediction::inter::RefMvBank>,
     tip_records: Vec<crate::prediction::inter::TemporalMotionBlock>,
     warp: Option<(
@@ -317,9 +314,7 @@ impl IntraTileSyntax {
         if !self.visit_cells(&snapshot.rows, &snapshot.cols, None, &snapshot.cells) {
             return Err(STALE);
         }
-        self.intra_facts
-            .palettes_mut()
-            .clone_from(&snapshot.palettes);
+        self.mi_sizes.palettes_mut().clone_from(&snapshot.palettes);
         self.recon.block_decoded.clone_from(&snapshot.block_decoded);
         self.sdp = snapshot.sdp;
         self.recon.restore_samples(&snapshot.samples)?;
@@ -370,7 +365,7 @@ impl IntraTileSyntax {
             node.row4().min(chroma.row()) & !sub_y..(node.row4() + h / 4).max(chroma.row() + n4h);
         let cols =
             node.col4().min(chroma.col()) & !sub_x..(node.col4() + w / 4).max(chroma.col() + n4w);
-        self.enter_rows(rows.start);
+        self.intra_facts.grid_mut().enter_row(rows.start);
         let mut cells = Cells::default();
         self.visit_cells(&rows, &cols, Some(&mut cells), &Cells::default());
         Ok(SyntaxSnapshot {
@@ -380,7 +375,7 @@ impl IntraTileSyntax {
             rows,
             cols,
             cells,
-            palettes: self.intra_facts.palettes_mut().clone(),
+            palettes: self.mi_sizes.palettes_mut().clone(),
             block_decoded: self.recon.block_decoded.clone(),
             sdp: self.sdp,
             samples: self.recon.save_samples((x, y, w, h), (sub_x, sub_y))?,
@@ -396,13 +391,6 @@ impl IntraTileSyntax {
         (usize::from(x), usize::from(y))
     }
 
-    fn enter_rows(&mut self, row: usize) {
-        self.intra_facts.grid_mut().enter_row(row);
-        self.uv_cfls.grid_mut().enter_row(row);
-        let chroma_row = row >> self.subsampling().1;
-        self.recon.chroma_smooth.grid_mut().enter_row(chroma_row);
-    }
-
     /// Copies the cells of luma rows `rows` x columns `cols` into `save`, or
     /// back from `saved` without it; `false` when `saved` does not fit.
     fn visit_cells(
@@ -412,37 +400,21 @@ impl IntraTileSyntax {
         save: Option<&mut Cells>,
         saved: &Cells,
     ) -> bool {
-        let (sub_x, sub_y) = self.subsampling();
-        let (chroma_rows, chroma_cols) = (
-            rows.start >> sub_y..rows.end.div_ceil(1 << sub_y),
-            cols.start >> sub_x..cols.end.div_ceil(1 << sub_x),
-        );
-        let (bytes, flags, intra_facts) = match save {
-            Some(c) => (
-                Some(&mut c.bytes),
-                Some(&mut c.flags),
-                Some(&mut c.intra_facts),
-            ),
-            None => (None, None, None),
-        };
+        let (bytes, intra_facts) = save.map(|c| (&mut c.bytes, &mut c.intra_facts)).unzip();
         let mut bytes = Pass::new(bytes, &saved.bytes);
-        self.mi_sizes
-            .visit_region(rows.clone(), cols, |c| bytes.visit(c));
-        self.coeff
-            .visit_region(rows, cols, (sub_x, sub_y), |c| bytes.visit(c));
-        self.uv_cfls
-            .grid_mut()
-            .visit_cells(rows.clone(), cols, |c| bytes.visit(c));
-        let mut flags = Pass::new(flags, &saved.flags);
-        self.recon
-            .chroma_smooth
-            .grid_mut()
-            .visit_cells(chroma_rows, &chroma_cols, |c| flags.visit(c));
         let mut intra_facts = Pass::new(intra_facts, &saved.intra_facts);
+        self.mi_sizes.visit_region(
+            rows.clone(),
+            cols,
+            |c| bytes.visit(c),
+            |c| intra_facts.visit(c),
+        );
+        self.coeff
+            .visit_region(rows, cols, self.subsampling(), |c| bytes.visit(c));
         self.intra_facts
             .grid_mut()
             .visit_cells(rows.clone(), cols, |c| intra_facts.visit(c));
-        bytes.done() && flags.done() && intra_facts.done()
+        bytes.done() && intra_facts.done()
     }
 
     #[cfg(debug_assertions)]
@@ -452,8 +424,6 @@ impl IntraTileSyntax {
             coeff: self.coeff.clone(),
             mi_sizes: self.mi_sizes.clone(),
             intra_facts: self.intra_facts.clone(),
-            uv_cfls: self.uv_cfls.clone(),
-            chroma_smooth: self.recon.chroma_smooth.clone(),
             ref_mv_bank: self
                 .inter
                 .as_ref()
@@ -534,7 +504,7 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError::Unsupported`] when the edge does not fit
     /// this facade's row windows.
     pub fn import_edge(&mut self, edge: &SuperblockEdge) -> Result<()> {
-        self.enter_rows(edge.rows.end);
+        self.intra_facts.grid_mut().enter_row(edge.rows.end);
         if !self.visit_cells(&edge.rows, &edge.cols, None, &edge.cells) {
             return Err(EncoderSyntaxError::Unsupported(
                 "a superblock edge outside the row windows",

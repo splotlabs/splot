@@ -30,7 +30,9 @@ use super::super::cdf::{
 use super::super::general_intra_residual::{
     inter_chroma_plane_tx_type, luma_transform_records_for_partition,
 };
-use super::super::partition_traversal::{DecodedLeafPublication, GeneralIntraTreeWalkError};
+use super::super::partition_traversal::{
+    DecodedLeafPublication, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
+};
 use super::compound::InterPrediction;
 use super::{
     EncoderSyntaxError, FrameStart, IntraTileSyntax, LeafBlock, Result, TileEnd, TransformBlock,
@@ -46,7 +48,7 @@ use crate::prediction::inter::{
     EncoderSingleMotion, EncoderSingleMvs, FrameCdfHandle, InterIntraPrediction,
     InterReferenceState, MotionFieldHandle, Mv, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV,
     SINGLE_MODE_NEWMV, TIP_REF_FRAME, TemporalMvContext, chroma_inter_tx_type,
-    encoder_motion_field, encoder_temporal_context, inter_residual_units, non_intra_leaf_mode,
+    encoder_motion_field, encoder_temporal_context, inter_residual_units,
     resolve_initial_frame_cdfs,
 };
 use crate::reference::buffer::RuntimeReferenceBuffer;
@@ -1468,14 +1470,14 @@ impl IntraTileSyntax {
     }
 
     fn publish_non_intra_modes(&mut self, leaf: &LeafBlock) -> Result<()> {
-        self.publish_leaf_modes(leaf, non_intra_leaf_mode(&leaf.frontier))
+        self.publish_leaf_modes(leaf, GeneralIntraLeafMode::no_luma_mode())
     }
 
     /// Publishes the leaf modes `mode` of the non-intra leaf `leaf`.
     pub(super) fn publish_leaf_modes(
         &mut self,
         leaf: &LeafBlock,
-        mode: super::super::partition_traversal::GeneralIntraLeafMode,
+        mode: GeneralIntraLeafMode,
     ) -> Result<()> {
         super::super::partition_traversal::publish_intra_leaf_state::<core::convert::Infallible>(
             &self.frame,
@@ -1484,7 +1486,6 @@ impl IntraTileSyntax {
             mode,
             leaf.call.b_size,
             &mut self.intra_facts,
-            &mut self.uv_cfls,
             &mut self.mi_sizes,
         )
         .map_err(|error| match error {
