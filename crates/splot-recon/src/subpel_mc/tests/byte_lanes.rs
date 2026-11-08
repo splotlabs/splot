@@ -278,3 +278,51 @@ fn clamped_cells_match_the_oracle() {
         }
     }
 }
+
+/// The paired chroma put writes what two single puts write, for cell,
+/// staged and copied shapes, and declines planes of differing geometry.
+#[test]
+fn paired_put_matches_two_single_puts() {
+    let (ref_w, ref_h) = (40usize, 32usize);
+    let planes = [3usize, 11].map(|seed| {
+        (0..ref_w * ref_h)
+            .map(|i| ((i * 73 + i / ref_w * 29 + seed * 17) % 256) as u8)
+            .collect::<Vec<_>>()
+    });
+    let views = planes
+        .each_ref()
+        .map(|plane| ReferencePlaneView::new(plane, ref_w, ref_h).unwrap());
+    for (w, h, phase) in [(4, 4, 37), (8, 8, 0), (8, 8, 133), (16, 8, 90), (2, 4, 5)] {
+        let interp = InterpolationFilter::EightTap;
+        let params = SubpelPredictParams {
+            start_x: (9 << 10) + ((phase % 16) << 6),
+            start_y: (7 << 10) + ((phase / 16) << 6),
+            ..full_pel_params(interp, w, h, 0, 0, ref_w as i32, ref_h as i32)
+        };
+        let mut want = [vec![0u8; w * h], vec![0u8; w * h]];
+        let single = views
+            .iter()
+            .zip(&mut want)
+            .all(|(view, out)| subpel_put_u8_in_place(view, &params, out, w));
+        let mut got = [vec![1u8; w * h], vec![1u8; w * h]];
+        let [first, second] = &mut got;
+        let paired =
+            subpel_put_u8_pair_in_place([&views[0], &views[1]], &params, [(first, w), (second, w)]);
+        assert_eq!(paired, single, "{w}x{h} phase {phase}");
+        if paired {
+            assert_eq!(got, want, "{w}x{h} phase {phase}");
+        } else {
+            assert!(got.iter().flatten().all(|&s| s == 1));
+        }
+    }
+    let narrow = ReferencePlaneView::new(&planes[1][..ref_w * 16], ref_w, 16).unwrap();
+    let params = full_pel_params(InterpolationFilter::EightTap, 8, 8, 0, 0, ref_w as i32, 16);
+    let mut got = [vec![1u8; 64], vec![1u8; 64]];
+    let [first, second] = &mut got;
+    assert!(!subpel_put_u8_pair_in_place(
+        [&views[0], &narrow],
+        &params,
+        [(first, 8), (second, 8)]
+    ));
+    assert!(got.iter().flatten().all(|&s| s == 1));
+}

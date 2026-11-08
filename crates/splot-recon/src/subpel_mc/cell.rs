@@ -19,6 +19,7 @@ use super::{ReferencePlaneView, SCALE_SUBPEL_BITS, SUBPEL_MASK, SubpelPredictPar
 /// or, for a window that crosses its clip bounds, at the bounded row
 /// `Clip3(clamped[1], clamped[2], clamped[0] + r)` and window column `c`
 /// at `Clip3(0, clamped[4], c + clamped[3])` from `origin`.
+#[derive(Clone, Copy)]
 pub(super) struct Cell<'a> {
     source: &'a [u8],
     origin: usize,
@@ -82,37 +83,52 @@ impl<'a> Cell<'a> {
         }
         let base = column.max(first_x).min(last_x);
         let columns = [(column - base).max(-16), (last_x - base).min(15)];
-        fits((row + rows - 1).max(first_y).min(last_y), base)
-            .then(|| cell(base as usize, Some([row, first_y, last_y, columns[0], columns[1]])))
+        fits((row + rows - 1).max(first_y).min(last_y), base).then(|| {
+            cell(
+                base as usize,
+                Some([row, first_y, last_y, columns[0], columns[1]]),
+            )
+        })
     }
 }
 
-/// Stores the `Clip1` single-reference prediction of a 4x4 or 8x8 block, or
-/// returns `false` without writing outside the subset.
+/// The cell of a 4x4 or 8x8 single-reference block that [`Cell::put`]
+/// stores, or `None` outside that subset.
 #[inline]
-pub(super) fn put(
-    reference: &ReferencePlaneView<'_, u8>,
+pub(super) fn put_cell<'a>(
+    reference: &ReferencePlaneView<'a, u8>,
     params: &SubpelPredictParams,
-    output: &mut [u8],
-    stride: usize,
-) -> bool {
+) -> Option<Cell<'a>> {
     let size = params.w;
     if params.h != size || (size != 4 && size != 8) {
-        return false;
+        return None;
     }
-    let Some(cell) = Cell::new(reference, params, size) else {
-        return false;
-    };
+    let cell = Cell::new(reference, params, size)?;
     if size == 4 && cell.horizontal.is_some_and(|taps| taps.count > 2) {
-        return false;
+        return None;
     }
     #[cfg(target_arch = "x86_64")]
-    if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
-        avx2::put(token, &cell, size, output, stride);
-        return true;
+    if fearless_simd::Level::baseline().as_avx2().is_some() {
+        return Some(cell);
     }
-    let _ = (cell, output, stride);
-    false
+    None
+}
+
+impl<'a> Cell<'a> {
+    /// This cell read from `source`, storage of the same geometry.
+    pub(super) fn with_source(&self, source: &'a [u8]) -> Self {
+        Self { source, ..*self }
+    }
+
+    /// Stores the `Clip1` single-reference prediction of this `size`-square
+    /// cell of [`put_cell`].
+    pub(super) fn put(&self, size: usize, output: &mut [u8], stride: usize) {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
+            avx2::put(token, self, size, output, stride);
+        }
+        let _ = (size, output, stride);
+    }
 }
 
 /// Predicts both references of a 4x4 or 8x8 cell and stores their
@@ -396,7 +412,13 @@ mod avx2 {
                     _mm_set1_epi8(bounds[3] as i8),
                 );
                 let limit = _mm_set1_epi8(bounds[4] as i8);
-                (bounds, Some(_mm_min_epi8(_mm_max_epi8(lanes, _mm_setzero_si128()), limit)))
+                (
+                    bounds,
+                    Some(_mm_min_epi8(
+                        _mm_max_epi8(lanes, _mm_setzero_si128()),
+                        limit,
+                    )),
+                )
             }
             None => ([0; 5], None),
         };

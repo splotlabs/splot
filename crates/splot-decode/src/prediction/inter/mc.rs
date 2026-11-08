@@ -14,7 +14,7 @@ use splot_recon::{
     subpel_predict_block_compound_average_strided_into_u8,
     subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
     subpel_predict_block_strided_into, subpel_predict_block_strided_into_u8,
-    subpel_put_u8_in_place, wedge_mask_plane_sample,
+    subpel_put_u8_in_place, subpel_put_u8_pair_in_place, wedge_mask_plane_sample,
 };
 
 use super::Mv;
@@ -561,8 +561,9 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
         });
     }
     let storage = reference_info.storage_luma_size();
+    let mut paired = false;
     for (plane, sub_x, sub_y) in mc_planes(info.pixel_format()) {
-        if plane != PlaneId::Y && !has_chroma {
+        if plane != PlaneId::Y && !has_chroma || paired {
             continue;
         }
         let (x, y, w, h) = rect.plane_rect(plane, sub_x, sub_y);
@@ -586,10 +587,22 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
             Some(view) => view,
             None => reference.plane_view(plane, subpel_last_reference_row(&params), offset)?,
         };
-        let direct = PlaneRect::new(x, y, w, h)
-            .ok()
-            .and_then(|target| sink.u8_rect_mut(plane, target))
-            .is_some_and(|(output, stride)| subpel_put_u8_in_place(&view, &params, output, stride));
+        let target = PlaneRect::new(x, y, w, h).ok();
+        paired = plane == PlaneId::U
+            && target.is_some_and(|target| {
+                reference
+                    .settled_plane_view(PlaneId::V)
+                    .zip(sink.u8_chroma_rects_mut(target))
+                    .is_some_and(|(other, outputs)| {
+                        subpel_put_u8_pair_in_place([&view, &other], &params, outputs)
+                    })
+            });
+        let direct = paired
+            || target
+                .and_then(|target| sink.u8_rect_mut(plane, target))
+                .is_some_and(|(output, stride)| {
+                    subpel_put_u8_in_place(&view, &params, output, stride)
+                });
         if !direct {
             predict_plane(
                 sink, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
