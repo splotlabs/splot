@@ -1037,6 +1037,7 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline(never)]
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
     scratch: &mut InterResidualReconScratch<T>,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
