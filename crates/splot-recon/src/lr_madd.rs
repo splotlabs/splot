@@ -63,13 +63,11 @@ pub(crate) fn arrange_into<T: LumaSimdSource>(weights: &mut MaddWeights, cells: 
     } else {
         cells
     };
-    let concat = |low: &MaddPattern, high: &MaddPattern| -> [i16; 16] {
-        let mut half = [0; 16];
-        half[..8].copy_from_slice(low); // splot-copy-ok: one cell's weights into its vector half
-        half[8..].copy_from_slice(high); // splot-copy-ok: one cell's weights into its vector half
-        half
-    };
-    *weights = [concat(a, b), concat(c, d)];
+    for (half, [low, high]) in weights.iter_mut().zip([[a, b], [c, d]]) {
+        let (first, second) = half.split_at_mut(8);
+        first.copy_from_slice(low); // splot-copy-ok: one cell's weights into its vector half
+        second.copy_from_slice(high); // splot-copy-ok: one cell's weights into its vector half
+    }
 }
 
 /// The weights of one pair shared by all four cells.
