@@ -428,8 +428,12 @@ impl<T: ReconSample> IntraBlockFrame<'_, T> {
     /// copied: none in the plane's first column.
     #[inline]
     pub fn left_column(&self, out: &mut [T]) -> usize {
-        let stored_rows = self.samples.len().saturating_sub(self.row_start) / self.stride.max(1);
-        let len = out.len().min(self.left_len).min(stored_rows);
+        let len = out.len().min(self.left_len);
+        let len = if self.row_start + len * self.stride <= self.samples.len() {
+            len
+        } else {
+            self.samples.len().saturating_sub(self.row_start) / self.stride.max(1)
+        };
         let column = match (self.origin.checked_sub(1), len.checked_sub(1)) {
             (Some(first), Some(last)) => self.samples.get(first..first + last * self.stride + 1),
             _ => None,
@@ -509,7 +513,56 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     where
         E: From<ReconError>,
     {
-        let target = self.plane_mut(plane)?;
+        match IntraBlockFrame::of(self.plane_mut(plane)?, x, y, size)? {
+            Some(mut frame) => predict(&mut frame).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// [`Self::with_intra_block_frame`] over the U and V blocks at the same
+    /// position at once.
+    ///
+    /// # Errors
+    /// Returns the caller's error type for a monochrome workspace, a block
+    /// origin outside plane storage, or any failure `predict` raises.
+    #[inline]
+    pub fn with_intra_chroma_frames<R, E>(
+        &mut self,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        predict: impl FnOnce(&mut [IntraBlockFrame<'_, T>; 2]) -> core::result::Result<R, E>,
+    ) -> core::result::Result<Option<R>, E>
+    where
+        E: From<ReconError>,
+    {
+        let (Some(u), Some(v)) = (self.u.as_mut(), self.v.as_mut()) else {
+            return Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U }.into());
+        };
+        match (
+            IntraBlockFrame::of(u, x, y, size)?,
+            IntraBlockFrame::of(v, x, y, size)?,
+        ) {
+            (Some(u), Some(v)) => predict(&mut [u, v]).map(Some),
+            _ => Ok(None),
+        }
+    }
+}
+
+impl<'a, T: ReconSample> IntraBlockFrame<'a, T> {
+    /// The block of `target` at `(x, y)`, or `None` when it overhangs plane
+    /// storage or its above row lies outside a band.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: keeps the intra glue as lean as before"
+    )]
+    #[inline(always)]
+    fn of(
+        target: &'a mut CurrentFramePlane<T>,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+    ) -> Result<Option<Self>> {
         let storage = target.storage_size;
         let (width, height) = (size.width(), size.height());
         if x + width > storage.width() || y + height > storage.height() {
@@ -520,7 +573,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         if y > 0 && local_y == 0 {
             return Ok(None);
         }
-        let mut frame = IntraBlockFrame {
+        Ok(Some(Self {
             origin: local_y * stride + x,
             row_start: local_y * stride,
             stride,
@@ -528,8 +581,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             left_len: if x > 0 { storage.height() - y } else { 0 },
             rows_below: storage.height() - y,
             samples: &mut target.samples,
-        };
-        predict(&mut frame).map(Some)
+        }))
     }
 }
 

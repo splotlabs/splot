@@ -338,6 +338,11 @@ fn frame_edges<'a, T: ReconSample>(
 /// Writes the § 7.13.2.13 prediction of a block from `LeftCol[0..h)` in
 /// `left`, `AboveRow[0..w)` in `above`, and `[AboveRow[w], LeftCol[h]]`, for
 /// samples of at most [`MAX_LANE_SAMPLE`].
+#[allow(
+    clippy::inline_always,
+    reason = "measured: the call costs more than its body saves"
+)]
+#[inline(always)]
 fn predict_edges<T: ReconSample>(
     size: IntraRectBlockSize,
     mode: IntraSmoothMode,
@@ -457,6 +462,7 @@ fn smooth_lanes<S: Simd, P: IntraLaneSample>(
         };
         let (top, far, s_left) = (columns(above), columns(h_far), columns(h_blend));
         let right_near = columns(h_near) * right + round_h;
+        let mut rest = &mut *output;
         for row in (0..height).step_by(rows_per_group) {
             let vertical = || {
                 let bottom_near = rows(v_near, row) * bottom + round_v;
@@ -472,20 +478,22 @@ fn smooth_lanes<S: Simd, P: IntraLaneSample>(
                 IntraSmoothMode::SmoothHorizontal => horizontal(),
                 IntraSmoothMode::Smooth => (vertical() + horizontal() + 1) >> 1,
             };
-            let start = row * stride + chunk;
             if width >= 16 {
-                if let Some(out) = output.get_mut(start..).and_then(<[P]>::first_chunk_mut) {
+                if let Some(out) = rest.get_mut(chunk..).and_then(<[P]>::first_chunk_mut) {
                     P::store16(simd, value, out);
                 }
+                rest = core::mem::take(&mut rest)
+                    .get_mut(stride..)
+                    .unwrap_or_default();
                 continue;
             }
             let mut lanes = [P::default(); 16];
             P::store16(simd, value, &mut lanes);
-            if width == 4 {
-                publish_rows::<P, 4>(&lanes, output, row, stride);
+            rest = if width == 4 {
+                publish_rows::<P, 4>(&lanes, rest, stride)
             } else {
-                publish_rows::<P, 8>(&lanes, output, row, stride);
-            }
+                publish_rows::<P, 8>(&lanes, rest, stride)
+            };
         }
     }
 }
@@ -686,14 +694,15 @@ fearless_simd::kernel!(
         };
         macro_rules! run {
             ($value:expr) => {{
+                let mut rest = &mut *output;
                 let mut row = 0;
                 while row < height {
                     let lanes: [u8; 16] = pack!($value(row)).into();
-                    if width == 4 {
-                        publish_rows::<u8, 4>(&lanes, output, row, stride);
+                    rest = if width == 4 {
+                        publish_rows::<u8, 4>(&lanes, rest, stride)
                     } else {
-                        publish_rows::<u8, 8>(&lanes, output, row, stride);
-                    }
+                        publish_rows::<u8, 8>(&lanes, rest, stride)
+                    };
                     row += rows_per_group;
                 }
             }};
@@ -706,23 +715,23 @@ fearless_simd::kernel!(
     }
 );
 
-/// Writes the `16 / N` rows of `N` samples packed in `lanes` from row `row`
-/// of `output`, `stride` apart.
+/// Writes the `16 / N` rows of `N` samples packed in `lanes` at the start of
+/// `rows`, `stride` apart, and returns the rows after them.
 #[inline]
-fn publish_rows<T: Copy, const N: usize>(
+fn publish_rows<'a, T: Copy, const N: usize>(
     lanes: &[T; 16],
-    output: &mut [T],
-    row: usize,
+    mut rows: &'a mut [T],
     stride: usize,
-) {
-    for (r, samples) in lanes.as_chunks::<N>().0.iter().enumerate() {
-        if let Some(out) = output
-            .get_mut((row + r) * stride..)
-            .and_then(<[T]>::first_chunk_mut::<N>)
-        {
+) -> &'a mut [T] {
+    for samples in lanes.as_chunks::<N>().0 {
+        if let Some(out) = rows.first_chunk_mut::<N>() {
             *out = *samples;
         }
+        rows = core::mem::take(&mut rows)
+            .get_mut(stride..)
+            .unwrap_or_default();
     }
+    rows
 }
 
 #[cfg(test)]
