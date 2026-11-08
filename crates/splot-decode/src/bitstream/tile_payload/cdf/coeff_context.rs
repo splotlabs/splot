@@ -281,6 +281,8 @@ impl CoeffBaseContext {
 
 /// The `dc_sign` context (§ 8.3.2) from the above and left context lines
 /// (see `coeff_state::DC_CATEGORY_SHIFT`) of a block at `x4, y4` of `w4` by `h4`.
+#[allow(clippy::inline_always, reason = "measured: once per coded DC")]
+#[inline(always)]
 pub(crate) fn dc_sign_ctx(
     above: &[u8],
     left: &[u8],
@@ -297,48 +299,32 @@ pub(crate) fn dc_sign_ctx(
     }
 }
 
-/// The number of zero bytes in `word`; padding bytes past a short slice
-/// are zero before the category xor, so they never count.
-const fn zero_bytes(word: u64) -> i32 {
-    const LOW7: u64 = 0x7f7f_7f7f_7f7f_7f7f;
-    (!((word & LOW7).wrapping_add(LOW7) | word | LOW7)).count_ones() as i32
+/// `dcCategory` 2 and 1 of a context-line byte are its high and low
+/// category bit, so a run's net sign is the difference of two popcounts.
+const DC_POSITIVE: u64 = 0x0202_0202_0202_0202 << DC_CATEGORY_SHIFT;
+const DC_NEGATIVE: u64 = 0x0101_0101_0101_0101 << DC_CATEGORY_SHIFT;
+
+const fn dc_votes(word: u64) -> i32 {
+    (word & DC_POSITIVE).count_ones() as i32 - (word & DC_NEGATIVE).count_ones() as i32
 }
 
-/// The `dcCategory` of a context-line byte.
-const fn dc_category(byte: u8) -> u8 {
-    byte >> DC_CATEGORY_SHIFT
-}
-
-/// Net sign of the `len` DC categories of the context-line bytes from
-/// `start`; categories are random per block, so the sum is branchless.
-#[allow(clippy::inline_always, reason = "measured: out of line twice per DC")]
+/// Net sign of the DC categories of the `len` context-line bytes from
+/// `start`, clamped to the line.
+#[allow(clippy::inline_always, reason = "measured: twice per coded DC")]
 #[inline(always)]
 fn dc_sign_votes(line: &[u8], start: usize, len: usize) -> i32 {
-    let vote = |&byte: &u8| i32::from(dc_category(byte) == 2) - i32::from(dc_category(byte) == 1);
-    let Some(slice) = start.checked_add(len).and_then(|end| line.get(start..end)) else {
-        return line
-            .get(start..)
-            .unwrap_or_default()
-            .iter()
-            .take(len)
-            .map(vote)
-            .sum();
-    };
-    match len {
-        0 => 0,
-        1 => vote(&slice[0]),
-        2 => vote(&slice[0]) + vote(&slice[1]),
-        4 | 8 | 16 | 32 => slice
-            .chunks_exact(len.min(8))
-            .map(|word| {
-                let mut bytes = [0u8; 8];
-                bytes[..word.len()].copy_from_slice(word);
-                let word = (u64::from_ne_bytes(bytes) >> DC_CATEGORY_SHIFT) & 0x0303_0303_0303_0303;
-                zero_bytes(word ^ 0x0202_0202_0202_0202) - zero_bytes(word ^ 0x0101_0101_0101_0101)
-            })
-            .sum(),
-        _ => slice.iter().map(vote).sum(),
+    let run = line.get(start..).unwrap_or_default();
+    let len = len.min(run.len());
+    if (1..=8).contains(&len)
+        && let Some(bytes) = run.first_chunk::<8>()
+    {
+        return dc_votes(u64::from_le_bytes(*bytes) & (u64::MAX >> (64 - 8 * len)));
     }
+    run.get(..len)
+        .unwrap_or_default()
+        .iter()
+        .map(|&byte| dc_votes(u64::from(byte)))
+        .sum()
 }
 
 #[inline]
