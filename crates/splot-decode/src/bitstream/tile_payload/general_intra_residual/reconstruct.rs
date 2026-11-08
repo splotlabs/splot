@@ -400,25 +400,16 @@ fn add_secondary_fused(
     };
     let (dc_quant, ac_quant) = current_quantizers(plane_id, qindex, bit_depth);
     let samples = block_size.sample_count();
-    let params = DequantBlockParams {
-        dc_quant,
-        ac_quant,
-        tx_width: block_size.width(),
-        tx_height: block_size.height(),
-        dq_denom: dq_denom(samples, use_tcq, block.plane_tx_type()),
-        bit_depth,
-        qm: None,
-    };
-    let dequant = &mut scratch.dequant[..samples];
-    let coded = dequantize_with_secondary(&params, block.quant, Some(&secondary), dequant)
-        .map_err(reconstruct_error)?;
-    Ok(fused.add(
-        &dequant[..coded],
-        None,
-        dst,
-        stride,
-        &mut scratch.dequant_pair,
-    ))
+    let dq_denom = dq_denom(samples, use_tcq, block.plane_tx_type());
+    fused
+        .add_secondary(
+            ((dc_quant, ac_quant, dq_denom), &secondary),
+            block.quant,
+            &mut scratch.dequant[..samples],
+            (dst, stride),
+            &mut scratch.dequant_pair,
+        )
+        .map_err(reconstruct_error)
 }
 
 /// The fused 8-bit transform of a block of `plane_id`, after the length

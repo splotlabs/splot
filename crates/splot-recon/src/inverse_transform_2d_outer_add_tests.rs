@@ -105,3 +105,75 @@ fn fused_add_matches_residual_path() {
         }
     }
 }
+
+/// The secondary-transform add, which for a block at least 16 wide stages
+/// only the 8 columns the secondary transform writes, must match the
+/// dequantized-prefix add for every kernel, type, transpose and input count.
+#[test]
+fn secondary_add_matches_dequantized_prefix() {
+    use crate::coefficient_scan::TransformClass;
+    use crate::{SecondaryInverseTransform, dequantize_with_secondary};
+    let mut rng = Lcg(11);
+    for (log2_w, log2_h, tx_type) in [(4, 2, 0), (4, 3, 0), (4, 4, 0), (4, 5, 0), (5, 3, 0)]
+        .into_iter()
+        .chain([
+            (5, 4, 0),
+            (5, 5, 0),
+            (4, 4, 5),
+            (4, 3, 5),
+            (5, 2, 0),
+            (3, 3, 0),
+            (3, 4, 5),
+        ])
+    {
+        let (w, h) = (1usize << log2_w, 1usize << log2_h);
+        let large = h >= 8;
+        for trial in 0..24 {
+            let secondary = SecondaryInverseTransform {
+                w,
+                h,
+                n: 1 + rng.next(if large { 32 } else { 8 }) as usize,
+                kernel: rng.next(if large { 11 } else { 14 }) as usize,
+                sec_tx_type: 1 + rng.next(3) as usize,
+                primary_scan_class: TransformClass::TwoD,
+                transpose: trial % 2 == 1,
+                bit_depth: BitDepth::Eight,
+            };
+            let len = 1 + rng.next((w * h) as u32) as usize;
+            let spread = if trial % 3 == 0 { 2000 } else { 40 };
+            let quant: Vec<i32> = (0..len)
+                .map(|_| rng.next(2 * spread) - spread as i32)
+                .collect();
+            let dq = DequantBlockParams {
+                dc_quant: 4 + rng.next(900) as u32,
+                ac_quant: 4 + rng.next(900) as u32,
+                tx_width: w,
+                tx_height: h,
+                dq_denom: 1 << rng.next(2),
+                bit_depth: BitDepth::Eight,
+                qm: None,
+            };
+            let table = InverseTransformAdd8::new(tx_type, log2_w, log2_h, false).unwrap();
+            let stride = w + 5;
+            let pred: Vec<u8> = (0..stride * h).map(|_| rng.next(256) as u8).collect();
+            let mut dequant = vec![0; w * h];
+            let mut scratch = [0; 32 * 32];
+            let coded =
+                dequantize_with_secondary(&dq, &quant, Some(&secondary), &mut dequant).unwrap();
+            let mut expected = pred.clone();
+            assert!(table.add(&dequant[..coded], None, &mut expected, stride, &mut scratch));
+            let mut dst = pred.clone();
+            let added = table
+                .add_secondary(
+                    ((dq.dc_quant, dq.ac_quant, dq.dq_denom), &secondary),
+                    &quant,
+                    &mut dequant,
+                    (&mut dst, stride),
+                    &mut scratch,
+                )
+                .unwrap();
+            assert!(added);
+            assert_eq!(dst, expected, "{w}x{h} type {tx_type} trial {trial}");
+        }
+    }
+}
