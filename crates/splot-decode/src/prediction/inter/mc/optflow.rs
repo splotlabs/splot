@@ -1449,17 +1449,20 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 continue;
             }
             let mut lean = |placements, size| {
-                O::u8_slice_mut(&mut output[col..]).is_some_and(|output| {
-                    splot_recon::subpel_compound_cell_u8(
-                        [&prediction.views[0], &prediction.views[1]],
-                        block.interp,
-                        size,
-                        placements,
-                        cwp_weight,
-                        output,
-                        output_stride,
-                    )
-                })
+                output
+                    .get_mut(col..)
+                    .and_then(O::u8_slice_mut)
+                    .is_some_and(|output| {
+                        splot_recon::subpel_compound_cell_u8(
+                            [&prediction.views[0], &prediction.views[1]],
+                            block.interp,
+                            size,
+                            placements,
+                            cwp_weight,
+                            output,
+                            output_stride,
+                        )
+                    })
             };
             let (params, uniform, rect) =
                 cell_inputs!(cell_row, cell_col, [col, row, height], lean);
@@ -1518,28 +1521,34 @@ pub(super) fn predict_motion_grid_compound_average_into<
             }
             let mut lean = |placements, size| {
                 skip == [false; 2]
-                    && O::u8_slice_mut(&mut output[col..]).is_some_and(|output| {
-                        splot_recon::subpel_compound_cell_u8(
-                            [&prediction.views[0], &prediction.views[1]],
-                            block.interp,
-                            size,
-                            placements,
-                            cwp_weight,
-                            output,
-                            output_stride,
-                        )
-                    })
-                    && O::u8_slice_mut(&mut second_output[col..]).is_some_and(|output| {
-                        splot_recon::subpel_compound_cell_u8(
-                            [&second.views[0], &second.views[1]],
-                            block.interp,
-                            size,
-                            placements,
-                            cwp_weight,
-                            output,
-                            second.block_w,
-                        )
-                    })
+                    && output
+                        .get_mut(col..)
+                        .and_then(O::u8_slice_mut)
+                        .is_some_and(|output| {
+                            splot_recon::subpel_compound_cell_u8(
+                                [&prediction.views[0], &prediction.views[1]],
+                                block.interp,
+                                size,
+                                placements,
+                                cwp_weight,
+                                output,
+                                output_stride,
+                            )
+                        })
+                    && second_output
+                        .get_mut(col..)
+                        .and_then(O::u8_slice_mut)
+                        .is_some_and(|output| {
+                            splot_recon::subpel_compound_cell_u8(
+                                [&second.views[0], &second.views[1]],
+                                block.interp,
+                                size,
+                                placements,
+                                cwp_weight,
+                                output,
+                                second.block_w,
+                            )
+                        })
             };
             let (params, uniform, rect) =
                 cell_inputs!(cell_row, cell_col, [col, row, height], lean);
@@ -1634,13 +1643,14 @@ fn placements_inside(
     [width, height]: [usize; 2],
     (frame_w, frame_h): (usize, usize),
 ) -> bool {
-    placements.iter().all(|([x, y], _)| {
+    let inside = |([x, y], _): &CellPlacement| {
         let (x, y) = (x >> 10, y >> 10);
         x >= 0
             && y >= 0
             && x + width as i32 <= frame_w as i32
             && y + height as i32 <= frame_h as i32
-    })
+    };
+    inside(&placements[0]) && inside(&placements[1])
 }
 
 /// The unscaled 1/1024-sample start of a prescaled MV from a cell's
