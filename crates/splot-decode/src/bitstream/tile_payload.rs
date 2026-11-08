@@ -91,7 +91,6 @@ pub(crate) use input::{
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCandidateTileMalformed,
     TileGroupPositionFacts, plan_derived_tile_payload_boundary_with_scratch,
 };
-pub(crate) use intra_joint_modes::IsCflContext;
 pub(crate) use intra_joint_modes::{
     FrameSegmentIdMap, LumaPalette, MiGrid, TileIntraFactsState, TileSegmentIdState,
     TileSegmentIdStateError, neg_deinterleave,
