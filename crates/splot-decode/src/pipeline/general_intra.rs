@@ -414,18 +414,13 @@ pub(crate) fn decode_one_general_intra_block(
         .lossless_for_segment(usize::from(segment_id))
         .unwrap_or(false);
     let chroma_tools = tools.chroma_tools.with_lossless(lossless);
-    let cfl_ds_filter_index = tools.cfl_ds_filter_index;
-    let sb_mib = tools.sb_mib;
 
     if let crate::bitstream::tile_payload::DecodeBlockPart::ChromaPart {
         y_mode,
         angle_delta_y,
     } = frontier.part()
     {
-        let lossless_luma_fsc = lossless
-            && intra_facts
-                .fsc_mode_at(frontier.r, frontier.c)
-                .is_some_and(|mode| mode != 0);
+        let lossless_luma_fsc = lossless && intra_facts.uses_fsc_at(frontier.r, frontier.c);
         return parse_one_general_intra_chroma_part_block(
             intra_edge,
             work_unit,
@@ -436,8 +431,8 @@ pub(crate) fn decode_one_general_intra_block(
             lossless_luma_fsc,
             chroma_tools,
             is_cfl_ctx,
-            cfl_ds_filter_index,
-            sb_mib,
+            tools.cfl_ds_filter_index,
+            tools.sb_mib,
             lossless,
             coeff_ctx,
             deblock_blocks,
@@ -462,7 +457,7 @@ pub(crate) fn decode_one_general_intra_block(
                 work_unit,
                 symbols,
                 chroma_tools,
-                &neighbours,
+                neighbours,
                 use_neighbor_fsc_context,
                 frontier.b_size,
                 n4w,
@@ -488,7 +483,7 @@ pub(crate) fn decode_one_general_intra_block(
                 work_unit,
                 symbols,
                 chroma_tools,
-                &neighbours,
+                neighbours,
                 luma.y_mode,
                 palette_y,
                 n4w,
@@ -504,7 +499,7 @@ pub(crate) fn decode_one_general_intra_block(
             symbols,
             chroma_tools,
             intra_facts,
-            &neighbours,
+            neighbours,
             use_neighbor_fsc_context,
             is_cfl_ctx.get(),
             frontier.b_size,
@@ -545,8 +540,8 @@ pub(crate) fn decode_one_general_intra_block(
         transform_tool_residual_policy,
         luma_tx_partition_context(tools.tx_mode, frontier.b_size, lossless),
         block_ctx,
-        cfl_ds_filter_index,
-        sb_mib,
+        tools.cfl_ds_filter_index,
+        tools.sb_mib,
         segment_id,
         tile_offset,
     )?;

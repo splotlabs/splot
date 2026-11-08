@@ -159,53 +159,11 @@ pub(crate) fn publish_intra_leaf_state<E>(
         );
     }
     if tree_type != PartitionTreeType::ChromaPart {
-        if let Some(joint_mode) = leaf_mode.intra_joint_mode {
-            let Some(y_mode) = leaf_mode.y_mode else {
-                return Err(TilePartitionTraversalError::MissingIntraLumaModeState {
-                    r: call.r(),
-                    c: call.c(),
-                }
-                .into());
-            };
-            let Some(angle_delta_y) = leaf_mode.angle_delta_y else {
-                return Err(TilePartitionTraversalError::MissingIntraLumaModeState {
-                    r: call.r(),
-                    c: call.c(),
-                }
-                .into());
-            };
-            let Some(mrl) = leaf_mode.mrl else {
-                return Err(TilePartitionTraversalError::MissingIntraUsesMrlsState {
-                    r: call.r(),
-                    c: call.c(),
-                }
-                .into());
-            };
-            let Some(fsc_mode) = leaf_mode.fsc_mode else {
-                return Err(TilePartitionTraversalError::MissingIntraFscModeState {
-                    r: call.r(),
-                    c: call.c(),
-                }
-                .into());
-            };
-            let Some(use_dip_value) = leaf_mode.use_dip else {
-                return Err(TilePartitionTraversalError::MissingIntraUseDipState {
-                    r: call.r(),
-                    c: call.c(),
-                }
-                .into());
-            };
+        if let Some(facts) = leaf_mode.luma {
             intra_facts.record_leaf(
                 (call.r(), call.c()),
                 (block_n4w, block_n4h),
-                IntraFacts::luma(
-                    joint_mode,
-                    y_mode,
-                    angle_delta_y,
-                    fsc_mode,
-                    use_dip_value,
-                    mrl,
-                ),
+                facts,
                 leaf_mode.palette_y,
             );
         } else {
@@ -226,8 +184,6 @@ pub(crate) fn publish_intra_leaf_state<E>(
                 );
             }
         }
-    }
-    if tree_type != PartitionTreeType::ChromaPart {
         mi_size_state
             .update_luma_block(call.r(), call.c(), sub_size)
             .map_err(GeneralIntraTreeWalkError::MiSize)?;

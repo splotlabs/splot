@@ -48,7 +48,6 @@ use super::partition::{PartitionDecisionError, PartitionSymbols, read_partition_
 use super::partition_allowed::{
     PartitionDecisionFacts, PartitionTreeType, partition_decision_facts,
 };
-use super::partition_size::BlockSize;
 use super::partition_traversal::{
     DecodeBlockFrontier, ROOT_HAS_CHROMA, SdpPartitionState, TilePartitionBounds,
     TilePartitionCall, TilePartitionFrameFacts, call_in_frame, child_calls, decode_block_frontier,
@@ -1194,13 +1193,7 @@ impl IntraTileSyntax {
     }
 
     fn y_mode_ctx(&self, leaf: &LeafBlock) -> Result<usize> {
-        let b_size: BlockSize = leaf.frontier.b_size;
-        let n4w = b_size.num_4x4_wide().map_err(rule("block size"))?;
-        let n4h = b_size.num_4x4_high().map_err(rule("block size"))?;
-        Ok(self
-            .intra_facts
-            .neighbours(leaf.frontier.r, leaf.frontier.c, n4w, n4h)
-            .y_mode_index_ctx())
+        Ok(self.intra_neighbours(leaf)?.y_mode_index_ctx())
     }
 
     fn tile_row(&mut self, selector: TileCdfSelector) -> Result<&mut [u16]> {

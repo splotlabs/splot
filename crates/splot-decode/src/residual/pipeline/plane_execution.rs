@@ -157,15 +157,11 @@ impl ResidualPlaneArena {
         self.planned_since(start)
     }
 
-    fn planned_planes(&self, planned: &PlannedGeneralIntraResidual) -> &[Option<ParsedResidualPlane>] {
+    /// The transform size of the planned block's first U plane.
+    pub(crate) fn chroma_tx(&self, planned: &PlannedGeneralIntraResidual) -> Option<usize> {
         self.planes
             .get(planned.0.start as usize..planned.0.end as usize)
             .unwrap_or_default()
-    }
-
-    /// The transform size of the planned block's first U plane.
-    pub(crate) fn chroma_tx(&self, planned: &PlannedGeneralIntraResidual) -> Option<usize> {
-        self.planned_planes(planned)
             .iter()
             .flatten()
             .find(|parsed| parsed.plane.plane_id == PlaneId::U)
@@ -191,7 +187,12 @@ impl ResidualPlaneArena {
         let mut pending_u = false;
         let Self { planes, units } = self;
         let range = planned.0.start as usize..planned.0.end as usize;
-        for parsed in planes.get_mut(range).unwrap_or_default().iter_mut().flatten() {
+        for parsed in planes
+            .get_mut(range)
+            .unwrap_or_default()
+            .iter_mut()
+            .flatten()
+        {
             let ParsedResidualPlane {
                 plane,
                 kind,

@@ -260,32 +260,6 @@ macro_rules! mi_grid_new_for_tile {
     };
 }
 
-macro_rules! impl_grid_window_violated {
-    ($($state:ty),+ $(,)?) => {
-        $(
-            impl $state {
-                /// Whether an access touched a row the window had already reused.
-                pub(crate) fn window_violated(&self) -> bool {
-                    self.grid.window_violated()
-                }
-            }
-        )+
-    };
-}
-
-macro_rules! impl_grid_mut {
-    ($($state:ty: $cell:ty),+ $(,)?) => {
-        $(
-            impl $state {
-                /// The neighbour grid, for the encoder facade's rollback.
-                pub(crate) fn grid_mut(&mut self) -> &mut MiGrid<$cell> {
-                    &mut self.grid
-                }
-            }
-        )+
-    };
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LumaPalette {
     size: u8,
@@ -359,7 +333,6 @@ impl IntraFacts {
         y_mode: IntraYMode,
         angle_delta_y: i8,
         fsc_mode: u8,
-        use_dip: u8,
         mrl: MrlSelection,
     ) -> Self {
         let flag = |set: bool, bit: u8| if set { bit } else { 0 };
@@ -371,10 +344,15 @@ impl IntraFacts {
             bits: Self::HAS_Y_MODE
                 | flag(y_mode.is_smooth(), Self::SMOOTH)
                 | flag(fsc_mode != 0, Self::FSC)
-                | flag(use_dip != 0, Self::DIP)
                 | flag(mrl.is_active(), Self::MRL)
                 | flag(mrl.is_secondary(), Self::MRL_SECONDARY),
         }
+    }
+
+    #[must_use]
+    pub(crate) const fn with_dip(mut self, use_dip: bool) -> Self {
+        self.bits = self.bits & !Self::DIP | if use_dip { Self::DIP } else { 0 };
+        self
     }
 
     /// An intra block copy leaf: § 5.20.5.3 `DC_PRED`, which an SDP
@@ -395,10 +373,6 @@ impl IntraFacts {
             angle_delta_y: self.angle_delta_y,
         })
     }
-
-    const fn bit(self, bit: u8) -> usize {
-        (self.bits & bit != 0) as usize
-    }
 }
 
 /// The neighbour facts one luma leaf's mode syntax reads: the § 8.3.2
@@ -414,36 +388,36 @@ pub(crate) struct IntraNeighbours {
 }
 
 impl IntraNeighbours {
-    pub(crate) const fn joint_modes(&self) -> [IntraJointMode; 2] {
+    pub(crate) const fn joint_modes(self) -> [IntraJointMode; 2] {
         self.joint
     }
 
-    pub(crate) const fn y_mode_index_ctx(&self) -> usize {
+    pub(crate) const fn y_mode_index_ctx(self) -> usize {
         self.joint[0].is_directional() as usize + self.joint[1].is_directional() as usize
     }
 
-    const fn npos_sum(&self, bit: u8) -> usize {
+    const fn npos_sum(self, bit: u8) -> usize {
         (self.npos_any & bit != 0) as usize + (self.npos_both & bit != 0) as usize
     }
 
-    pub(crate) const fn fsc_mode_ctx(&self) -> usize {
+    pub(crate) const fn fsc_mode_ctx(self) -> usize {
         self.npos_sum(IntraFacts::FSC)
     }
 
-    pub(crate) const fn use_dip_ctx(&self) -> usize {
+    pub(crate) const fn use_dip_ctx(self) -> usize {
         self.npos_sum(IntraFacts::DIP)
     }
 
-    pub(crate) const fn mrl_index_ctx(&self) -> usize {
+    pub(crate) const fn mrl_index_ctx(self) -> usize {
         self.npos_sum(IntraFacts::MRL)
     }
 
-    pub(crate) const fn mrl_sec_index_ctx(&self) -> usize {
+    pub(crate) const fn mrl_sec_index_ctx(self) -> usize {
         self.npos_sum(IntraFacts::MRL_SECONDARY)
     }
 
     /// `(above, left)` smoothness of the luma neighbours.
-    pub(crate) const fn smoothness(&self) -> (bool, bool) {
+    pub(crate) const fn smoothness(self) -> (bool, bool) {
         (
             self.above_left_bits[0] & IntraFacts::SMOOTH != 0,
             self.above_left_bits[1] & IntraFacts::SMOOTH != 0,
@@ -531,17 +505,17 @@ impl TileIntraFactsState {
             self.palettes.push(palette);
             Some(index)
         });
-        self.grid.record_owned_block((r, c), extent, facts);
+        self.grid.record_block((r, c), extent, facts);
     }
 
     pub(crate) fn y_mode_facts_at(&self, r: usize, c: usize) -> Option<TileIntraYModeFacts> {
         self.grid.cell(r, c).and_then(IntraFacts::y_mode_facts)
     }
 
-    pub(crate) fn fsc_mode_at(&self, r: usize, c: usize) -> Option<u8> {
+    pub(crate) fn uses_fsc_at(&self, r: usize, c: usize) -> bool {
         self.grid
             .cell(r, c)
-            .map(|facts| facts.bit(IntraFacts::FSC) as u8)
+            .is_some_and(|facts| facts.bits & IntraFacts::FSC != 0)
     }
 
     pub(crate) fn palette_cache(&self, r: usize, c: usize) -> ([u16; 2 * PALETTE_MAX_SIZE], usize) {
@@ -578,6 +552,16 @@ impl TileIntraFactsState {
     /// The palette list the grid indexes, for the encoder facade's rollback.
     pub(crate) fn palettes_mut(&mut self) -> &mut Vec<LumaPalette> {
         &mut self.palettes
+    }
+
+    /// Whether an access touched a row the window had already reused.
+    pub(crate) fn window_violated(&self) -> bool {
+        self.grid.window_violated()
+    }
+
+    /// The neighbour grid, for the encoder facade's rollback.
+    pub(crate) fn grid_mut(&mut self) -> &mut MiGrid<IntraFacts> {
+        &mut self.grid
     }
 
     pub(crate) fn recycle(self) {
@@ -934,6 +918,16 @@ impl TileUvCflState {
         recycle_pooled_vec(self.grid.into_cells());
     }
 
+    /// Whether an access touched a row the window had already reused.
+    pub(crate) fn window_violated(&self) -> bool {
+        self.grid.window_violated()
+    }
+
+    /// The neighbour grid, for the encoder facade's rollback.
+    pub(crate) fn grid_mut(&mut self) -> &mut MiGrid<u8> {
+        &mut self.grid
+    }
+
     pub(crate) fn is_cfl_ctx(&self, r: usize, c: usize, avail_u: bool, avail_l: bool) -> usize {
         let is_cfl = |available: bool, row: Option<usize>, col: Option<usize>| {
             available
@@ -1008,9 +1002,6 @@ pub(crate) struct TileIntraYModeFacts {
     pub(crate) y_mode: IntraYMode,
     pub(crate) angle_delta_y: i8,
 }
-
-impl_grid_window_violated!(TileIntraFactsState, TileUvCflState);
-impl_grid_mut!(TileIntraFactsState: IntraFacts, TileUvCflState: u8);
 
 #[cfg(test)]
 #[path = "intra_joint_modes_tests.rs"]

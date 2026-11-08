@@ -93,8 +93,8 @@ pub(crate) use input::{
 };
 pub(crate) use intra_joint_modes::IsCflContext;
 pub(crate) use intra_joint_modes::{
-    FrameSegmentIdMap, LumaPalette, MiGrid, TileIntraFactsState,
-    TileSegmentIdState, TileSegmentIdStateError, neg_deinterleave,
+    FrameSegmentIdMap, LumaPalette, MiGrid, TileIntraFactsState, TileSegmentIdState,
+    TileSegmentIdStateError, neg_deinterleave,
 };
 #[cfg(test)]
 pub(crate) use partition::PartitionDecisionError;

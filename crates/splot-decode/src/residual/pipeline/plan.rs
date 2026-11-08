@@ -21,38 +21,11 @@ const MAX_RESIDUAL_CHUNKS: usize = MAX_RESIDUAL_CHUNKS_PER_AXIS * MAX_RESIDUAL_C
 pub(super) const MAX_DEFERRED_CHROMA_PLANES: usize = MAX_RESIDUAL_CHUNKS * CHROMA_PLANES.len();
 pub(super) const MAX_RESIDUAL_PLANES: usize = MAX_RESIDUAL_CHUNKS + MAX_DEFERRED_CHROMA_PLANES;
 
-std::thread_local! {
-    static RESIDUAL_PLANE_PLANS: std::cell::RefCell<Vec<Vec<ResidualPlanePlan>>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-const MAX_RECYCLED_LISTS: usize = 16;
-
-impl Drop for GeneralIntraResidualPlan {
-    fn drop(&mut self) {
-        let mut planes = core::mem::take(&mut self.planes);
-        planes.clear();
-        if planes.capacity() == 0 {
-            return;
-        }
-        RESIDUAL_PLANE_PLANS.with(|pool| {
-            if let Ok(mut pool) = pool.try_borrow_mut()
-                && pool.len() < MAX_RECYCLED_LISTS
-            {
-                pool.push(planes);
-            }
-        });
-    }
-}
-
 impl GeneralIntraResidualPlan {
     pub(super) fn take(
         capacity: usize,
     ) -> core::result::Result<Self, std::collections::TryReserveError> {
-        let mut planes = RESIDUAL_PLANE_PLANS
-            .with(|pool| pool.try_borrow_mut().ok().and_then(|mut pool| pool.pop()))
-            .unwrap_or_default();
-        planes.clear();
+        let mut planes = Vec::new();
         planes.try_reserve(capacity)?;
         Ok(Self { planes })
     }
@@ -110,35 +83,6 @@ impl GeneralIntraResidualPlan {
             )
         })
     }
-
-    #[cfg(test)]
-    pub(crate) fn chroma_tx(&self) -> Option<usize> {
-        self.planes
-            .iter()
-            .find(|plane| plane.plane_id == PlaneId::U)
-            .map(|plane| plane.tx_size)
-    }
-}
-
-/// [`GeneralIntraResidualPlan::rect`] into `sink`, in syntax order.
-pub(super) fn plan_rect(
-    sink: &mut impl FnMut(ResidualPlanePlan),
-    block_ctx: BlockCtx,
-    luma_plan: RectLumaPlan,
-    chroma_plan: Option<RectChromaPlan>,
-    luma_fsc_mode: bool,
-    luma_lossless_tx_size: Option<usize>,
-    lossless: bool,
-) -> core::result::Result<(), ResidualPlanError> {
-    push_ordered_planes(
-        sink,
-        block_ctx,
-        ResidualReconstructionPlan::Luma(luma_plan),
-        chroma_plan.map(chroma_reconstruction),
-        luma_fsc_mode,
-        luma_lossless_tx_size,
-        lossless,
-    )
 }
 
 /// [`GeneralIntraResidualPlan::chroma`] into `sink`, in syntax order.
@@ -235,15 +179,18 @@ impl ResidualPlanePlan {
     }
 }
 
-fn push_ordered_planes(
+/// [`GeneralIntraResidualPlan::rect`] into `planes`, in syntax order.
+pub(super) fn plan_rect(
     planes: &mut impl FnMut(ResidualPlanePlan),
     block_ctx: BlockCtx,
-    luma_reconstruction: ResidualReconstructionPlan,
-    chroma_reconstruction: Option<ResidualReconstructionPlan>,
+    luma_plan: RectLumaPlan,
+    chroma_plan: Option<RectChromaPlan>,
     luma_fsc_mode: bool,
     luma_lossless_tx_size: Option<usize>,
     lossless: bool,
 ) -> core::result::Result<(), ResidualPlanError> {
+    let luma_reconstruction = ResidualReconstructionPlan::Luma(luma_plan);
+    let chroma_reconstruction = chroma_plan.map(chroma_reconstruction);
     let block = block_ctx.block();
     let width_chunks = (block.width4() >> 4).max(1);
     let height_chunks = (block.height4() >> 4).max(1);
@@ -445,6 +392,8 @@ pub(super) const fn coeff_plane(plane_id: PlaneId) -> usize {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
     use crate::tile::block_context::ChromaSampling;
     use splot_recon::BitDepth;

@@ -51,9 +51,9 @@ use crate::bitstream::tile_payload::{
     TileBlockDecodedState, TileBlockDecodedStateError, TileCdfSelector, TileCdfSubset,
     TileCoeffContextState, TileCoeffStateError, TilePartitionFrontierError,
     TilePartitionTraversalError, TilePartitionTraversalUnsupported, TileSegmentIdState,
-    TileSegmentIdStateError, TransformToolResidualPolicy,
-    chroma_subsampling, current_frame_qm_segment_id, decode_general_intra_plane_coeffs,
-    get_plane_residual_size, is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
+    TileSegmentIdStateError, TransformToolResidualPolicy, chroma_subsampling,
+    current_frame_qm_segment_id, decode_general_intra_plane_coeffs, get_plane_residual_size,
+    is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
@@ -1580,8 +1580,9 @@ fn decode_block<T: ReconSample>(
             },
         ));
     }
-    let neighbour_ctx =
-        neighbour_ctx.unwrap_or_else(|| block_neighbour_ctx(mv_grid, &block_ctx));
+    let Some(neighbour_ctx) = neighbour_ctx else {
+        return Err(crate::DecodeHeaderStateError::InvalidInterPartitionState.into());
+    };
     if num_total_refs == 0 {
         return Err(crate::pipeline::malformed_tile_payload(
             tile_offset,
@@ -2419,10 +2420,7 @@ fn map_inter_partition_traversal_error(
         | TilePartitionTraversalError::InvalidPartitionSubsize { .. }
         | TilePartitionTraversalError::InvalidRegionType { .. }
         | TilePartitionTraversalError::TooManyChildCalls
-        | TilePartitionTraversalError::MissingIntraLumaModeState { .. }
-        | TilePartitionTraversalError::MissingIntraUsesMrlsState { .. }
-        | TilePartitionTraversalError::MissingIntraFscModeState { .. }
-        | TilePartitionTraversalError::MissingIntraUseDipState { .. } => {
+        | TilePartitionTraversalError::MissingIntraLumaModeState { .. } => {
             crate::DecodeHeaderStateError::InvalidInterPartitionState.into()
         }
         TilePartitionTraversalError::Symbol(error) => {

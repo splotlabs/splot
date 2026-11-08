@@ -150,7 +150,6 @@ fn omits_chroma_plans_for_luma_only_blocks() {
     .expect("rect luma plan");
     assert!(plan.plane_plan(PlaneId::U).is_none());
     assert!(plan.plane_plan(PlaneId::V).is_none());
-    assert_eq!(plan.chroma_tx(), None);
 }
 
 #[test]
@@ -659,7 +658,7 @@ fn every_av2_block_shape_maps_to_valid_luma_and_chroma_chunk_tx_sizes() {
 }
 
 #[test]
-fn max_residual_plan_capacity_reuses_storage_after_invalid_geometry() {
+fn max_residual_plan_fills_its_bound_and_rejects_a_wider_block() {
     let plan = |width4, height4| {
         let block = BlockRect::new(0, 0, width4, height4);
         let tx = TxShape::from_luma_4x4(width4.min(64), height4.min(64))
@@ -684,15 +683,9 @@ fn max_residual_plan_capacity_reuses_storage_after_invalid_geometry() {
 
     let max_plan = plan(64, 64).expect("maximum AV2 block plan");
     assert_eq!(max_plan.planes.len(), MAX_RESIDUAL_PLANES);
-    let storage = max_plan.planes.as_ptr();
-    drop(max_plan);
 
     let error = plan(65, 64).expect_err("first out-of-table width must exceed the plan bound");
     assert_eq!(error, ResidualPlanError::InvalidGeometry);
-
-    let after_error = plan(64, 64).expect("bound error must leave plan storage reusable");
-    assert_eq!(after_error.planes.len(), MAX_RESIDUAL_PLANES);
-    assert_eq!(after_error.planes.as_ptr(), storage);
 }
 
 #[test]

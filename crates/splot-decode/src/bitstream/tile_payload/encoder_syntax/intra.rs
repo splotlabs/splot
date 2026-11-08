@@ -1345,7 +1345,7 @@ fn uv_mode_symbol(y_mode: IntraMode, uv_mode: IntraMode) -> Result<u8> {
 
 impl IntraTileSyntax {
     /// The intra neighbour facts the mode syntax of `leaf` reads.
-    fn intra_neighbours(&self, leaf: &LeafBlock) -> Result<IntraNeighbours> {
+    pub(super) fn intra_neighbours(&self, leaf: &LeafBlock) -> Result<IntraNeighbours> {
         let (n4w, n4h) = leaf_size4(leaf)?;
         Ok(self
             .intra_facts

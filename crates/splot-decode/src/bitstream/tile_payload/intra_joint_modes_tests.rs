@@ -26,7 +26,7 @@ fn state(rows: usize, cols: usize, sb_size4: usize) -> TileIntraFactsState {
 }
 
 fn luma(joint: IntraJointMode, fsc: u8, use_dip: u8, mrl: MrlSelection) -> IntraFacts {
-    IntraFacts::luma(joint, IntraYMode::Dc, 0, fsc, use_dip, mrl)
+    IntraFacts::luma(joint, IntraYMode::Dc, 0, fsc, mrl).with_dip(use_dip != 0)
 }
 
 fn record(state: &mut TileIntraFactsState, (r, c): (usize, usize), n4: usize, facts: IntraFacts) {
@@ -34,7 +34,12 @@ fn record(state: &mut TileIntraFactsState, (r, c): (usize, usize), n4: usize, fa
 }
 
 fn record_joint(state: &mut TileIntraFactsState, pos: (usize, usize), n4: usize, value: usize) {
-    record(state, pos, n4, luma(joint_mode(value), 0, 0, MrlSelection::Disabled));
+    record(
+        state,
+        pos,
+        n4,
+        luma(joint_mode(value), 0, 0, MrlSelection::Disabled),
+    );
 }
 
 fn record_mrl(state: &mut TileIntraFactsState, pos: (usize, usize), mrl: MrlSelection) {
@@ -77,7 +82,7 @@ fn unrecorded_block_neighbours_read_as_dc_and_a_reused_row_is_flagged() {
 }
 
 #[test]
-fn an_inter_leaf_records_nothing_but_still_moves_the_window() {
+fn an_inter_leaf_reads_as_dc_and_still_moves_the_window() {
     let mut state = state(64, 64, SB_N4);
     record_joint(&mut state, (0, 0), 16, 36);
     record(&mut state, (16, 0), 16, IntraFacts::NONE);
@@ -200,21 +205,32 @@ fn npos_uses_fallback_positions() {
 fn fsc_and_use_dip_neighbours_select_context_sum() {
     let mut state = state(32, 32, SB_N4);
     for pos in [(7, 11), (11, 7)] {
-        record(&mut state, pos, 1, luma(IntraJointMode::DC, 1, 1, MrlSelection::Disabled));
+        record(
+            &mut state,
+            pos,
+            1,
+            luma(IntraJointMode::DC, 1, 1, MrlSelection::Disabled),
+        );
     }
 
     let neighbours = state.neighbours(8, 8, 4, 4);
     assert_eq!(neighbours.fsc_mode_ctx(), 2);
     assert_eq!(neighbours.use_dip_ctx(), 2);
-    assert_eq!(state.fsc_mode_at(7, 11), Some(1));
-    assert_eq!(state.fsc_mode_at(0, 0), Some(0));
-    assert_eq!(state.fsc_mode_at(32, 0), None);
+    assert!(state.uses_fsc_at(7, 11));
+    assert!(!state.uses_fsc_at(0, 0));
+    assert!(!state.uses_fsc_at(32, 0));
 }
 
 #[test]
 fn y_mode_facts_record_clip_and_read_back_intrabc_as_dc() {
     let mut state = state(4, 4, WHOLE_TILE);
-    let facts = IntraFacts::luma(IntraJointMode::DC, IntraYMode::Dc, -3, 0, 0, MrlSelection::Disabled);
+    let facts = IntraFacts::luma(
+        IntraJointMode::DC,
+        IntraYMode::Dc,
+        -3,
+        0,
+        MrlSelection::Disabled,
+    );
     record(&mut state, (2, 2), 16, facts);
     record(&mut state, (0, 2), 1, IntraFacts::intrabc());
 
@@ -238,7 +254,13 @@ fn y_mode_facts_record_clip_and_read_back_intrabc_as_dc() {
 #[test]
 fn smoothness_reads_the_above_and_left_luma_modes() {
     let mut state = state(8, 8, WHOLE_TILE);
-    let smooth = IntraFacts::luma(IntraJointMode::DC, IntraYMode::Smooth, 0, 0, 0, MrlSelection::Disabled);
+    let smooth = IntraFacts::luma(
+        IntraJointMode::DC,
+        IntraYMode::Smooth,
+        0,
+        0,
+        MrlSelection::Disabled,
+    );
     record(&mut state, (0, 4), 4, smooth);
     record(&mut state, (4, 0), 4, IntraFacts::intrabc());
     assert_eq!(state.neighbours(4, 4, 4, 4).smoothness(), (true, false));

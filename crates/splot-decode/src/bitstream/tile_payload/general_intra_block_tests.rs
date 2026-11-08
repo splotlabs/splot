@@ -68,12 +68,17 @@ fn empty_facts() -> TileIntraFactsState {
     TileIntraFactsState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4), SB_N4).unwrap()
 }
 
-fn record_luma(facts: &mut TileIntraFactsState, (r, c): (usize, usize), n4: usize, luma: IntraFacts) {
+fn record_luma(
+    facts: &mut TileIntraFactsState,
+    (r, c): (usize, usize),
+    n4: usize,
+    luma: IntraFacts,
+) {
     facts.record_leaf((r, c), (n4, n4), luma, None);
 }
 
 fn luma_facts(joint: IntraJointMode, fsc: u8, use_dip: u8, mrl: MrlSelection) -> IntraFacts {
-    IntraFacts::luma(joint, IntraYMode::Dc, 0, fsc, use_dip, mrl)
+    IntraFacts::luma(joint, IntraYMode::Dc, 0, fsc, mrl).with_dip(use_dip != 0)
 }
 
 fn block_size(index: usize) -> BlockSize {
@@ -147,7 +152,7 @@ fn decode_general_intra_luma_block_mode(
         work_unit,
         symbols,
         chroma_tools,
-        &facts.neighbours(block_r, block_c, block_n4w, block_n4h),
+        facts.neighbours(block_r, block_c, block_n4w, block_n4h),
         true,
         block_size(block_size_index),
         block_n4w,
@@ -174,7 +179,7 @@ fn decode_general_intra_block_modes(
         symbols,
         chroma_tools,
         facts,
-        &facts.neighbours(block_r, block_c, block_n4w, block_n4h),
+        facts.neighbours(block_r, block_c, block_n4w, block_n4h),
         true,
         is_cfl_ctx,
         block_size(block_size_index),
@@ -245,7 +250,12 @@ fn non_directional_left_neighbour_keeps_ctx_zero_and_decodes() {
     let mut work_unit = make_work_unit(&PAYLOAD);
     let mut symbols = symbols_at_block_start(&work_unit);
     let mut facts = empty_facts();
-    record_luma(&mut facts, (0, 0), SB_N4, luma_facts(joint_mode(2), 0, 0, MrlSelection::Disabled));
+    record_luma(
+        &mut facts,
+        (0, 0),
+        SB_N4,
+        luma_facts(joint_mode(2), 0, 0, MrlSelection::Disabled),
+    );
 
     let modes = decode_general_intra_block_modes(
         &mut work_unit,
@@ -270,7 +280,12 @@ fn directional_neighbour_ctx_reads_with_the_real_context() {
     let mut symbols = symbols_at_block_start(&work_unit);
     let symbol_count_before = symbols.symbol_count();
     let mut facts = empty_facts();
-    record_luma(&mut facts, (0, 0), SB_N4, luma_facts(joint_mode(36), 0, 0, MrlSelection::Disabled));
+    record_luma(
+        &mut facts,
+        (0, 0),
+        SB_N4,
+        luma_facts(joint_mode(36), 0, 0, MrlSelection::Disabled),
+    );
 
     let modes = decode_general_intra_block_modes(
         &mut work_unit,
@@ -447,14 +462,19 @@ fn mixed_region_fsc_mode_uses_inter_context() {
     let mut symbols = symbol_decoder(&payload);
     let mut facts = empty_facts();
     for pos in [(7, 11), (11, 7)] {
-        record_luma(&mut facts, pos, 1, luma_facts(IntraJointMode::DC, 1, 0, MrlSelection::Disabled));
+        record_luma(
+            &mut facts,
+            pos,
+            1,
+            luma_facts(IntraJointMode::DC, 1, 0, MrlSelection::Disabled),
+        );
     }
 
     let luma = decode_general_intra_luma_block_mode_with_fsc_context(
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::disabled().with_enable_idtx_intra(true),
-        &facts.neighbours(8, 8, 4, 4),
+        facts.neighbours(8, 8, 4, 4),
         false,
         block_size(BLOCK_16X16),
         4,
@@ -591,7 +611,12 @@ fn active_dip_mode_info_reads_flag_transpose_and_mode_after_palette() {
     let mut symbols = symbol_decoder(&payload);
     let mut facts = empty_facts();
     for pos in [(7, 11), (11, 7)] {
-        record_luma(&mut facts, pos, 1, luma_facts(IntraJointMode::DC, 0, 1, MrlSelection::Disabled));
+        record_luma(
+            &mut facts,
+            pos,
+            1,
+            luma_facts(IntraJointMode::DC, 0, 1, MrlSelection::Disabled),
+        );
     }
 
     let modes = decode_general_intra_block_modes_with_fsc_context(
@@ -599,7 +624,7 @@ fn active_dip_mode_info_reads_flag_transpose_and_mode_after_palette() {
         &mut symbols,
         GeneralIntraChromaToolConfig::disabled().with_enable_dip(true),
         &facts,
-        &facts.neighbours(8, 8, 4, 4),
+        facts.neighbours(8, 8, 4, 4),
         true,
         0,
         block_size(BLOCK_16X16),
@@ -632,8 +657,18 @@ fn mrl_symbols_use_retained_neighbour_contexts() {
     let mut work_unit = make_work_unit(&payload);
     let mut symbols = symbol_decoder(&payload);
     let mut facts = empty_facts();
-    record_luma(&mut facts, (7, 11), 1, luma_facts(IntraJointMode::DC, 0, 0, mrl(1, 1)));
-    record_luma(&mut facts, (11, 7), 1, luma_facts(IntraJointMode::DC, 0, 0, mrl(1, 0)));
+    record_luma(
+        &mut facts,
+        (7, 11),
+        1,
+        luma_facts(IntraJointMode::DC, 0, 0, mrl(1, 1)),
+    );
+    record_luma(
+        &mut facts,
+        (11, 7),
+        1,
+        luma_facts(IntraJointMode::DC, 0, 0, mrl(1, 0)),
+    );
 
     let luma = decode_general_intra_luma_block_mode(
         &mut work_unit,
@@ -768,7 +803,7 @@ fn shared_chroma_mhccp_dir_uses_luma_syntax_block_size() {
         &mut symbols,
         GeneralIntraChromaToolConfig::new(false, true),
         &facts,
-        &facts.neighbours(0, 15, 1, 4),
+        facts.neighbours(0, 15, 1, 4),
         true,
         0,
         block_size(BLOCK_4X16),
