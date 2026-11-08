@@ -101,6 +101,9 @@ static LEVEL_WORD: [u32; 16] = {
 /// bytes the neighbour sums read.
 const Q0_BIT: u32 = 24;
 
+/// The level byte of a grid word.
+const LEVEL_BYTE: u32 = 0xff << 16;
+
 /// Where a [`GRID_SCANS`] entry keeps its luma 2D `coeff_base` context
 /// class (§ 8.3.2), above the grid index: for a low-frequency position
 /// (`row + col < 4`) its `LF_2D_CONTEXT_CAP_AND_OFFSET` bucket, otherwise its
@@ -888,67 +891,74 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     let mut end = 0;
     let mut run = symbols.bypass_run();
     let mut level_sum = 0u32;
-    for (offset, &scan_entry) in scan.get(1..).unwrap_or_default().iter().enumerate().rev() {
-        let scan_index = offset + 1;
-        let (pos, grid) = ((scan_entry >> 16) as usize, entry_grid(scan_entry));
-        let word = levels[grid];
-        levels[grid] = 0;
-        let (level, tcq_q0) = ((word >> 16) & 0xff, word >> Q0_BIT != 0);
-        if level == 0 {
-            continue;
-        }
-        let entry = CoeffScanEntry::new(scan_index, pos, pos >> wl, pos & col_mask);
-        let axis_cdf = LUMA
-            && match CLASS {
-                1 => entry.col() == 0,
-                2 => entry.row() == 0,
-                _ => false,
-            };
-        let sign = if axis_cdf {
-            let input = derive_nonzero_coeff_sign_input(entry, level, sign_config);
-            symbols.end_bypass_run(run);
-            let sign = read_preflighted_nonzero_coeff_sign(cdfs, symbols, input)?.sign();
-            run = symbols.bypass_run();
-            sign
-        } else {
-            symbols.read_bool_in(&mut run)
-        };
-        let max_level = if scan_index < facts.lf_end {
-            max_lf
-        } else {
-            max_hf
-        };
-        let magnitude = if level + u32::from(TCQ) < max_level {
-            level_sum += level;
-            if TCQ {
-                2 * level - u32::from(tcq_q0)
-            } else {
-                level
+    // One scan index; the high- and low-frequency loops differ in maxLevel.
+    macro_rules! sign_step {
+        ($scan_index:expr, $max_level:expr) => {{
+            let (scan_index, max_level) = ($scan_index, $max_level);
+            let scan_entry = scan[scan_index];
+            let grid = entry_grid(scan_entry);
+            let word = levels[grid];
+            levels[grid] = 0;
+            if word & LEVEL_BYTE == 0 {
+                continue;
             }
-        } else {
-            let index = eob - scan_index - 1;
-            symbols.end_bypass_run(run);
-            let read = read_quant
-                .read_one(
-                    symbols,
-                    index,
-                    CoeffReadQuantInput {
-                        entry,
-                        level,
-                        max_level,
-                    },
-                )
-                .map_err(CoeffQuantPassError::from)?;
-            run = symbols.bypass_run();
-            level_sum = level_sum.saturating_add(read.quant);
-            quant_state
-                .ac_magnitude(index, read.quant, tcq_q0)
-                .map_err(CoeffQuantPassError::from)?
-        } as i32;
-        if let Some(slot) = quant.get_mut(pos) {
-            *slot = if sign { -magnitude } else { magnitude };
-            end = end.max(pos + 1);
-        }
+            let pos = (scan_entry >> 16) as usize;
+            let (level, tcq_q0) = ((word >> 16) & 0xff, word >> Q0_BIT != 0);
+            let entry = CoeffScanEntry::new(scan_index, pos, pos >> wl, pos & col_mask);
+            let axis_cdf = LUMA
+                && match CLASS {
+                    1 => entry.col() == 0,
+                    2 => entry.row() == 0,
+                    _ => false,
+                };
+            let sign = if axis_cdf {
+                let input = derive_nonzero_coeff_sign_input(entry, level, sign_config);
+                symbols.end_bypass_run(run);
+                let sign = read_preflighted_nonzero_coeff_sign(cdfs, symbols, input)?.sign();
+                run = symbols.bypass_run();
+                sign
+            } else {
+                symbols.read_bool_in(&mut run)
+            };
+            let magnitude = if level + u32::from(TCQ) < max_level {
+                level_sum += level;
+                if TCQ {
+                    2 * level - u32::from(tcq_q0)
+                } else {
+                    level
+                }
+            } else {
+                let index = eob - scan_index - 1;
+                symbols.end_bypass_run(run);
+                let read = read_quant
+                    .read_one(
+                        symbols,
+                        index,
+                        CoeffReadQuantInput {
+                            entry,
+                            level,
+                            max_level,
+                        },
+                    )
+                    .map_err(CoeffQuantPassError::from)?;
+                run = symbols.bypass_run();
+                level_sum = level_sum.saturating_add(read.quant);
+                quant_state
+                    .ac_magnitude(index, read.quant, tcq_q0)
+                    .map_err(CoeffQuantPassError::from)?
+            } as i32;
+            if let Some(slot) = quant.get_mut(pos) {
+                *slot = if sign { -magnitude } else { magnitude };
+                end = end.max(pos + 1);
+            }
+        }};
+    }
+    let lf_end = facts.lf_end.min(eob);
+    for scan_index in (lf_end..eob).rev() {
+        sign_step!(scan_index, max_hf);
+    }
+    for scan_index in (1..lf_end).rev() {
+        sign_step!(scan_index, max_lf);
     }
     symbols.end_bypass_run(run);
     let mut quant_state = quant_state.with_cul_level(level_sum);
