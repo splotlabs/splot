@@ -316,23 +316,14 @@ pub(crate) fn mode_ctx_from_neighbours(
     tip_ref_pair: Option<(i8, i8)>,
     neighbours: &BlockNeighbourContext,
 ) -> ModeContext {
-    let mut new_mv_count = 0usize;
-    let mut warp_mv_count = 0usize;
-    let mut found = [false; 4];
-    let immediate = neighbours.immediate;
-
-    for (slot, &cell) in found.iter_mut().zip(immediate.iter()) {
-        let Some(is_newmv) = mode_ctx_match_newmv(cell, block, tip_ref_pair) else {
-            continue;
-        };
-        if is_newmv {
-            new_mv_count = (new_mv_count + 1).min(3);
+    let mut cells = neighbours.immediate;
+    let (mut found, mut newmv) = (0u32, false);
+    for (index, &cell) in cells.iter().enumerate() {
+        if let Some(is_newmv) = mode_ctx_match_newmv(cell, block, tip_ref_pair) {
+            found |= 1 << index;
+            newmv |= is_newmv;
         }
-        *slot = true;
     }
-    let mut warp_sample_found = false;
-    let mut warp_sample_found1 = false;
-    let mut extend_delta = (0, 0);
     let is_sb_border = block.is_sb_border();
     let (bw4, bh4) = (block.bw4 as i32, block.bh4 as i32);
     let odd_col = (block.mi_col & 1) as i32;
@@ -347,53 +338,35 @@ pub(crate) fn mode_ctx_from_neighbours(
         (0, -1),
         (-1, above_left_col),
     ];
-    let above_left = bw4 >= if is_sb_border { 4 } else { 2 };
-    let cells = if is_sb_border {
-        let up = block.mi_row.wrapping_sub(1);
+    if is_sb_border {
         let column = |delta: i32| block.mi_col.wrapping_add_signed(delta as isize);
-        let [above_right_cell, above_left_cell] = grid.sb_border_flags(
+        [cells[1], cells[3]] = grid.sb_border_flags(
             block.mi_col,
-            up,
+            block.mi_row.wrapping_sub(1),
             [column(above_right_col), column(above_left_col)],
         );
-        [
-            immediate[0],
-            above_right_cell,
-            immediate[2],
-            above_left_cell,
-        ]
-    } else {
-        immediate
-    };
-    for (index, cell) in cells.into_iter().enumerate() {
-        if index == 3 && !above_left {
-            continue;
-        }
-        if matches_block_ref(cell, block) {
-            if !warp_sample_found {
-                extend_delta = deltas[index];
-            }
-            warp_sample_found = true;
-            if cell.is_warp() {
-                warp_mv_count = (warp_mv_count + 1).min(4);
-            }
-        }
-        if let Some(ref1) = block.ref_frame1
-            && neighbour_matches_ref(cell, ref1)
-        {
-            warp_sample_found1 = true;
-        }
     }
-
-    let [left_a, above_a, left_b, above_b] = found;
-    let nearest_match = usize::from(above_a || above_b) + usize::from(left_a || left_b);
-    let new_mv_context = nearest_match + if new_mv_count > 0 { 2 } else { 0 };
+    let probed = 3 + usize::from(bw4 >= if is_sb_border { 4 } else { 2 });
+    let (mut samples, mut warp_mv_count, mut warp_sample_found1) = (0u32, 0, false);
+    for (index, &cell) in cells.iter().enumerate().take(probed) {
+        if matches_block_ref(cell, block) {
+            samples |= 1 << index;
+            warp_mv_count += usize::from(cell.is_warp());
+        }
+        warp_sample_found1 |= block
+            .ref_frame1
+            .is_some_and(|ref1| neighbour_matches_ref(cell, ref1));
+    }
+    let nearest_match = usize::from(found & 0b1010 != 0) + usize::from(found & 0b0101 != 0);
     ModeContext {
-        new_mv_context,
+        new_mv_context: nearest_match + 2 * usize::from(newmv),
         warp_mv_count,
-        warp_sample_found,
+        warp_sample_found: samples != 0,
         warp_sample_found1,
-        extend_delta,
+        extend_delta: deltas
+            .get(samples.trailing_zeros() as usize)
+            .copied()
+            .unwrap_or((0, 0)),
     }
 }
 
