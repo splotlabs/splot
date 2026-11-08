@@ -36,7 +36,7 @@ use super::super::general_intra_block::{
     INTER_FSC_MODE_CONTEXT, allow_fsc_intra, dip_mode_info_allowed, fsc_bsize_group,
 };
 use super::super::general_intra_residual::{LumaTransformTypeContext, intra_chroma_plane_tx_type};
-use super::super::intra_joint_modes::LumaPalette;
+use super::super::intra_joint_modes::{IntraNeighbours, LumaPalette};
 use super::super::partition_traversal::{
     DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
     is_cfl_context_for_chroma_ref, publish_intra_leaf_state,
@@ -348,7 +348,6 @@ pub(super) struct Recon {
     pub(super) workspace: CurrentFrameWorkspace<u16>,
     scratch: GeneralIntraReconScratch<u16>,
     pub(super) block_decoded: TileBlockDecodedState,
-    pub(super) y_smooth: TileSmoothGrid,
     pub(super) chroma_smooth: TileSmoothGrid,
     pub(super) leaf: Option<PlannedLeaf>,
     /// The `plan_index` and `units` buffers of the leaf planned before, reused.
@@ -407,7 +406,6 @@ impl Recon {
             workspace,
             scratch: GeneralIntraReconScratch::default(),
             block_decoded,
-            y_smooth: grid((rows.clone(), cols.clone()), sb_size4)?,
             chroma_smooth: grid(
                 chroma_smooth_tile_ranges(rows, cols, chroma),
                 sb_size4 >> usize::from(sub_y),
@@ -505,10 +503,7 @@ impl IntraTileSyntax {
                 None => Ok(()),
             };
         }
-        let (n4w, n4h) = leaf_size4(leaf)?;
-        let ctx = self
-            .use_dip
-            .use_dip_ctx(leaf.frontier.r, leaf.frontier.c, n4w, n4h);
+        let ctx = self.intra_neighbours(leaf)?.use_dip_ctx();
         self.put(
             symbols,
             TileCdfSelector::UseDip { ctx },
@@ -572,10 +567,8 @@ impl IntraTileSyntax {
             literal(symbols, second % SECOND_MODE_COUNT, Y_SECOND_MODE_BITS)?;
         }
         if self.fsc_allowed(leaf) {
-            let (n4w, n4h) = leaf_size4(leaf)?;
             let ctx = if !self.inter_frame() || !leaf.frontier.is_mixed_region() {
-                self.fsc_modes
-                    .fsc_mode_ctx(leaf.frontier.r, leaf.frontier.c, n4w, n4h)
+                self.intra_neighbours(leaf)?.fsc_mode_ctx()
             } else {
                 INTER_FSC_MODE_CONTEXT
             };
@@ -587,16 +580,15 @@ impl IntraTileSyntax {
         }
         self.mrl_selection(modes)?;
         if self.tools.enable_mrls && modes.y_mode.is_directional() {
-            let (n4w, n4h) = leaf_size4(leaf)?;
-            let (r, c) = (leaf.frontier.r, leaf.frontier.c);
-            let ctx = self.uses_mrls.mrl_index_ctx(r, c, n4w, n4h);
+            let neighbours = self.intra_neighbours(leaf)?;
+            let ctx = neighbours.mrl_index_ctx();
             self.put(
                 symbols,
                 TileCdfSelector::MrlIndex { ctx },
                 modes.mrl.index.into(),
             )?;
             if modes.mrl.index > 0 {
-                let ctx = self.uses_mrls.mrl_sec_index_ctx(r, c, n4w, n4h);
+                let ctx = neighbours.mrl_sec_index_ctx();
                 let secondary = modes.mrl.secondary.into();
                 self.put(symbols, TileCdfSelector::MrlSecIndex { ctx }, secondary)?;
             }
@@ -747,10 +739,7 @@ impl IntraTileSyntax {
             plan_index.push(index);
             units.push(unit);
         }
-        let (above_smooth, left_smooth) = self
-            .recon
-            .y_smooth
-            .block_smoothness(leaf.frontier.c, leaf.frontier.r);
+        let (above_smooth, left_smooth) = self.intra_neighbours(leaf)?.smoothness();
         let (chroma_above_smooth, chroma_left_smooth) =
             chroma_edge_smoothness(Some(&self.recon.chroma_smooth), block_ctx);
         let planned = units.clone();
@@ -980,13 +969,8 @@ impl IntraTileSyntax {
             &leaf.frontier,
             mode,
             leaf.call.b_size,
-            &mut self.joint_modes,
-            &mut self.fsc_modes,
-            &mut self.use_dip,
-            &mut self.uses_mrls,
-            &mut self.palette_y,
+            &mut self.intra_facts,
             &mut self.uv_cfls,
-            &mut self.y_modes,
             &mut self.mi_sizes,
         )
         .map_err(|error| match error {
@@ -994,16 +978,6 @@ impl IntraTileSyntax {
             GeneralIntraTreeWalkError::MiSize(source) => rule("leaf publication")(source),
             GeneralIntraTreeWalkError::Leaf(never) => match never {},
         })?;
-        let (n4w, n4h) = leaf_size4(leaf)?;
-        if !leaf.is_chroma_part() {
-            self.recon.y_smooth.record(
-                leaf.frontier.r,
-                leaf.frontier.c,
-                n4w,
-                n4h,
-                mode.y_mode_is_smooth(),
-            );
-        }
         if leaf.frontier.has_chroma {
             let (block_ctx, _) = self.block_ctx(leaf);
             record_chroma_smooth(
@@ -1211,9 +1185,8 @@ impl IntraTileSyntax {
         modes: IntraModes,
     ) -> Result<(usize, IntraJointMode)> {
         let (n4w, n4h) = leaf_size4(leaf)?;
-        let (r, c) = (leaf.frontier.r, leaf.frontier.c);
         let top_left = self.y_mode_ctx(leaf)? == 0;
-        let neighbours = self.joint_modes.neighbour_joint_modes(r, c, n4w, n4h);
+        let neighbours = self.intra_neighbours(leaf)?.joint_modes();
         let key = (top_left, neighbours, n4w, n4h);
         let table = &mut self.y_mode_table;
         if table.key != Some(key) {
@@ -1368,6 +1341,16 @@ fn uv_mode_symbol(y_mode: IntraMode, uv_mode: IntraMode) -> Result<u8> {
         .map_while(|symbol| get_intra_uv_mode_set(y_mode, symbol).map(|mode| (symbol, mode)))
         .find_map(|(symbol, mode)| (mode == uv_mode as u8).then_some(symbol))
         .ok_or(EncoderSyntaxError::Unsupported("chroma mode"))
+}
+
+impl IntraTileSyntax {
+    /// The intra neighbour facts the mode syntax of `leaf` reads.
+    pub(super) fn intra_neighbours(&self, leaf: &LeafBlock) -> Result<IntraNeighbours> {
+        let (n4w, n4h) = leaf_size4(leaf)?;
+        Ok(self
+            .intra_facts
+            .neighbours(leaf.frontier.r, leaf.frontier.c, n4w, n4h))
+    }
 }
 
 fn leaf_size4(leaf: &LeafBlock) -> Result<(usize, usize)> {

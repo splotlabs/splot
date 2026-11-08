@@ -184,21 +184,9 @@ fn run_first_superblock<'payload>(
         ..(work_unit.mi_row_range().end as usize).min(frame.mi_rows);
     let tile_cols = work_unit.mi_col_range().start as usize
         ..(work_unit.mi_col_range().end as usize).min(frame.mi_cols);
-    let sb_size4 = frame.sb_size().num_4x4_wide().unwrap().max(1);
     let mut mi_sizes =
         TileMiSizeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), frame.sb_size())
             .unwrap();
-    let mut joint_modes =
-        TileIntraJointModeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), WHOLE_TILE)
-            .unwrap();
-    let mut uses_mrls =
-        TileUsesMrlsState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4).unwrap();
-    let mut use_dip =
-        TileUseDipState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4).unwrap();
-    let mut fsc_modes =
-        TileFscModeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4).unwrap();
-    let mut palette_y =
-        TileLumaPaletteState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4).unwrap();
     let mut uv_cfls = TileUvCflState::new(tile_rows.len(), tile_cols.len(), WHOLE_TILE)
         .unwrap()
         .with_origin(tile_rows.start, tile_cols.start);
@@ -212,13 +200,8 @@ fn run_first_superblock<'payload>(
     cursor.decode_next_superblock_with_publication(
         work_unit,
         &mut mi_sizes,
-        &mut joint_modes,
-        &mut uses_mrls,
-        &mut use_dip,
-        &mut fsc_modes,
-        &mut palette_y,
         &mut uv_cfls,
-        &mut |_, symbols, frontier, _, _, _, _, _, _| {
+        &mut |_, symbols, frontier, _, _| {
             frontiers.push(CapturedLeaf {
                 frontier: *frontier,
                 symbol_count: symbols.symbol_count(),

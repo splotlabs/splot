@@ -10,9 +10,7 @@ use super::cdf::block_context::{IntraJointMode, IntraYMode, MrlSelection};
 use super::cdf::context::{PartitionContextInput, SquareSplitContextInput};
 use super::cdf::{self, TileCdfError};
 use super::intra_joint_modes::{
-    IsCflContext, LumaPalette, TileFscModeState, TileFscModeStateError, TileIntraJointModeState,
-    TileIntraYModeState, TileIntraYModeStateError, TileLumaPaletteState, TileLumaPaletteStateError,
-    TileUseDipState, TileUseDipStateError, TileUsesMrlsState, TileUsesMrlsStateError,
+    IntraFacts, IsCflContext, LumaPalette, TileIntraFactsState, TileIntraFactsStateError,
     TileUvCflState,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
@@ -514,24 +512,15 @@ impl DecodeBlockFrontier {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraLeafMode {
-    intra_joint_mode: Option<IntraJointMode>,
-    y_mode: Option<IntraYMode>,
-    angle_delta_y: Option<i8>,
-    fsc_mode: Option<u8>,
-    mrl: Option<MrlSelection>,
-    use_dip: Option<u8>,
+    luma: Option<IntraFacts>,
     palette_y: Option<LumaPalette>,
     uv_cfl: Option<bool>,
     intrabc: bool,
 }
 
 impl GeneralIntraLeafMode {
-    pub(crate) fn y_mode_is_smooth(&self) -> bool {
-        self.y_mode.is_some_and(IntraYMode::is_smooth)
-    }
-
     #[must_use]
-    pub(crate) const fn luma(
+    pub(crate) fn luma(
         intra_joint_mode: IntraJointMode,
         y_mode: IntraYMode,
         angle_delta_y: i8,
@@ -539,12 +528,13 @@ impl GeneralIntraLeafMode {
         mrl: MrlSelection,
     ) -> Self {
         Self {
-            intra_joint_mode: Some(intra_joint_mode),
-            y_mode: Some(y_mode),
-            angle_delta_y: Some(angle_delta_y),
-            fsc_mode: Some(fsc_mode),
-            mrl: Some(mrl),
-            use_dip: Some(0),
+            luma: Some(IntraFacts::luma(
+                intra_joint_mode,
+                y_mode,
+                angle_delta_y,
+                fsc_mode,
+                mrl,
+            )),
             palette_y: None,
             uv_cfl: None,
             intrabc: false,
@@ -554,12 +544,7 @@ impl GeneralIntraLeafMode {
     #[must_use]
     pub(crate) const fn no_luma_mode() -> Self {
         Self {
-            intra_joint_mode: None,
-            y_mode: None,
-            angle_delta_y: None,
-            fsc_mode: None,
-            mrl: None,
-            use_dip: None,
+            luma: None,
             palette_y: None,
             uv_cfl: None,
             intrabc: false,
@@ -590,7 +575,9 @@ impl GeneralIntraLeafMode {
 
     #[must_use]
     pub(crate) const fn with_use_dip(mut self, use_dip: u8) -> Self {
-        self.use_dip = Some(use_dip);
+        if let Some(luma) = self.luma {
+            self.luma = Some(luma.with_dip(use_dip != 0));
+        }
         self
     }
 
@@ -609,16 +596,8 @@ pub(crate) enum TilePartitionTraversalError {
     Limit(#[from] DecodeLimitError),
     #[error("partition traversal block-decoded state failed: {0}")]
     BlockDecoded(#[from] super::block_decoded_state::TileBlockDecodedStateError),
-    #[error("partition traversal intra YMode state failed: {0}")]
-    IntraYModeState(#[from] TileIntraYModeStateError),
-    #[error("partition traversal intra UsesMrls state failed: {0}")]
-    UsesMrlsState(#[from] TileUsesMrlsStateError),
-    #[error("partition traversal intra UseDip state failed: {0}")]
-    UseDipState(#[from] TileUseDipStateError),
-    #[error("partition traversal intra FscModes state failed: {0}")]
-    FscModeState(#[from] TileFscModeStateError),
-    #[error("partition traversal luma palette state failed: {0}")]
-    LumaPaletteState(#[from] TileLumaPaletteStateError),
+    #[error("partition traversal intra mode facts state failed: {0}")]
+    IntraFactsState(#[from] TileIntraFactsStateError),
     #[error("partition traversal size lookup failed: {0}")]
     Size(#[from] PartitionSizeError),
     #[error("partition traversal allowed-set derivation failed: {0}")]
@@ -666,12 +645,6 @@ pub(crate) enum TilePartitionTraversalError {
     MissingIntraLumaModeState { r: usize, c: usize },
     #[error("partition traversal missing collocated SDP luma mode state at ({r}, {c})")]
     MissingSdpLumaModeState { r: usize, c: usize },
-    #[error("partition traversal missing intra UsesMrls state at ({r}, {c})")]
-    MissingIntraUsesMrlsState { r: usize, c: usize },
-    #[error("partition traversal missing intra FscModes state at ({r}, {c})")]
-    MissingIntraFscModeState { r: usize, c: usize },
-    #[error("partition traversal missing intra UseDip state at ({r}, {c})")]
-    MissingIntraUseDipState { r: usize, c: usize },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

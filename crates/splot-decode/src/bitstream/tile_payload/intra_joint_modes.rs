@@ -13,36 +13,7 @@ use super::cdf::block_context::{IntraJointMode, IntraYMode, MrlSelection};
 use crate::support::reusable_scratch::{recycle_pooled_vec, take_pooled_vec};
 use crate::tile::SbRowWindow;
 
-const NO_FSC: u8 = 0;
-const NO_DIP: u8 = 0;
 pub(crate) const PALETTE_MAX_SIZE: usize = 8;
-const JOINT_NEIGHBOUR_SAMPLES: [NeighbourSample; 2] =
-    [NeighbourSample::LeftBottom, NeighbourSample::AboveRight];
-const NPOS_NEIGHBOUR_SAMPLES: [NeighbourSample; 4] = [
-    NeighbourSample::LeftBottom,
-    NeighbourSample::AboveRight,
-    NeighbourSample::LeftTop,
-    NeighbourSample::AboveLeft,
-];
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum NeighbourSample {
-    LeftBottom,
-    AboveRight,
-    LeftTop,
-    AboveLeft,
-}
-
-impl NeighbourSample {
-    fn position(self, r: usize, c: usize, n4w: usize, n4h: usize) -> Option<(usize, usize)> {
-        match self {
-            Self::LeftBottom => Some((r.saturating_add(n4h.saturating_sub(1)), c.checked_sub(1)?)),
-            Self::AboveRight => Some((r.checked_sub(1)?, c.saturating_add(n4w.saturating_sub(1)))),
-            Self::LeftTop => Some((r, c.checked_sub(1)?)),
-            Self::AboveLeft => Some((r.checked_sub(1)?, c)),
-        }
-    }
-}
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct MiGrid<T> {
@@ -289,62 +260,6 @@ macro_rules! mi_grid_new_for_tile {
     };
 }
 
-macro_rules! impl_grid_origin {
-    ($($state:ty),+ $(,)?) => {
-        $(
-            impl $state {
-                pub(crate) fn with_origin(mut self, row: usize, col: usize) -> Self {
-                    self.grid = self.grid.with_origin(row, col);
-                    self
-                }
-            }
-        )+
-    };
-}
-
-macro_rules! impl_grid_window_violated {
-    ($($state:ty),+ $(,)?) => {
-        $(
-            impl $state {
-                /// Whether an access touched a row the window had already reused.
-                pub(crate) fn window_violated(&self) -> bool {
-                    self.grid.window_violated()
-                }
-            }
-        )+
-    };
-}
-
-macro_rules! impl_grid_mut {
-    ($($state:ty: $cell:ty),+ $(,)?) => {
-        $(
-            impl $state {
-                /// The neighbour grid, for the encoder facade's rollback.
-                pub(crate) fn grid_mut(&mut self) -> &mut MiGrid<$cell> {
-                    &mut self.grid
-                }
-            }
-        )+
-    };
-}
-
-macro_rules! impl_grid_recycle {
-    ($($state:ty),+ $(,)?) => {
-        $(
-            impl $state {
-                pub(crate) fn recycle(self) {
-                    recycle_pooled_vec(self.grid.into_cells());
-                }
-            }
-        )+
-    };
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TileIntraJointModeState {
-    grid: MiGrid<IntraJointMode>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LumaPalette {
     size: u8,
@@ -374,37 +289,233 @@ impl LumaPalette {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TileLumaPaletteState {
-    /// One `u32` index per mode-info unit, not a `usize`: the index addresses
-    /// this tile's palette list, which is bounded by its block count.
-    grid: MiGrid<Option<NonZeroU32>>,
-    palettes: Vec<LumaPalette>,
+/// The § 5.20.4.1 intra arrays of one mode-info position (`YModes` with its
+/// angle, the joint mode, `FscModes`, `UseDip`, `UsesMrls`, the luma palette
+/// and the § 7.11.2 smoothness of `YModes`), so a leaf fills one grid.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct IntraFacts {
+    palette: Option<NonZeroU32>,
+    joint_mode: IntraJointMode,
+    y_mode: IntraYMode,
+    angle_delta_y: i8,
+    bits: u8,
 }
 
-impl TileLumaPaletteState {
-    /// The palette list the grid indexes, for the encoder facade's rollback.
-    pub(crate) fn palettes_mut(&mut self) -> &mut Vec<LumaPalette> {
-        &mut self.palettes
+const _: () = assert!(size_of::<IntraFacts>() == 8);
+
+impl IntraFacts {
+    const HAS_Y_MODE: u8 = 1;
+    const SMOOTH: u8 = 1 << 1;
+    const FSC: u8 = 1 << 2;
+    const DIP: u8 = 1 << 3;
+    const MRL: u8 = 1 << 4;
+    const MRL_SECONDARY: u8 = 1 << 5;
+    /// Marks [`Self::ABSENT`], which no flag test reads as set.
+    const ABSENT_BIT: u8 = 1 << 7;
+
+    /// A position no intra leaf has published.
+    pub(crate) const NONE: Self = Self {
+        palette: None,
+        joint_mode: IntraJointMode::DC,
+        y_mode: IntraYMode::Dc,
+        angle_delta_y: 0,
+        bits: 0,
+    };
+
+    /// A position outside the tile.
+    const ABSENT: Self = Self {
+        bits: Self::ABSENT_BIT,
+        ..Self::NONE
+    };
+
+    pub(crate) fn luma(
+        joint_mode: IntraJointMode,
+        y_mode: IntraYMode,
+        angle_delta_y: i8,
+        fsc_mode: u8,
+        mrl: MrlSelection,
+    ) -> Self {
+        let flag = |set: bool, bit: u8| if set { bit } else { 0 };
+        Self {
+            palette: None,
+            joint_mode,
+            y_mode,
+            angle_delta_y,
+            bits: Self::HAS_Y_MODE
+                | flag(y_mode.is_smooth(), Self::SMOOTH)
+                | flag(fsc_mode != 0, Self::FSC)
+                | flag(mrl.is_active(), Self::MRL)
+                | flag(mrl.is_secondary(), Self::MRL_SECONDARY),
+        }
     }
 
+    #[must_use]
+    pub(crate) const fn with_dip(mut self, use_dip: bool) -> Self {
+        self.bits = self.bits & !Self::DIP | if use_dip { Self::DIP } else { 0 };
+        self
+    }
+
+    /// An intra block copy leaf: § 5.20.5.3 `DC_PRED`, which an SDP
+    /// chroma-part leaf reads as its collocated luma mode.
+    pub(crate) const fn intrabc() -> Self {
+        Self {
+            bits: Self::HAS_Y_MODE,
+            ..Self::NONE
+        }
+    }
+
+    pub(crate) const fn y_mode_facts(self) -> Option<TileIntraYModeFacts> {
+        if self.bits & Self::HAS_Y_MODE == 0 {
+            return None;
+        }
+        Some(TileIntraYModeFacts {
+            y_mode: self.y_mode,
+            angle_delta_y: self.angle_delta_y,
+        })
+    }
+}
+
+/// The neighbour facts one luma leaf's mode syntax reads: the § 8.3.2
+/// `get_joint_mode` probes, the first two `NPos` positions, and the above
+/// and left positions of the § 7.11.2 smoothness.
+#[derive(Clone, Copy)]
+pub(crate) struct IntraNeighbours {
+    joint: [IntraJointMode; 2],
+    /// The OR and the AND of the flag bits at the first two `NPos` positions.
+    npos_any: u8,
+    npos_both: u8,
+    above_left_bits: [u8; 2],
+}
+
+impl IntraNeighbours {
+    pub(crate) const fn joint_modes(self) -> [IntraJointMode; 2] {
+        self.joint
+    }
+
+    pub(crate) const fn y_mode_index_ctx(self) -> usize {
+        self.joint[0].is_directional() as usize + self.joint[1].is_directional() as usize
+    }
+
+    const fn npos_sum(self, bit: u8) -> usize {
+        (self.npos_any & bit != 0) as usize + (self.npos_both & bit != 0) as usize
+    }
+
+    pub(crate) const fn fsc_mode_ctx(self) -> usize {
+        self.npos_sum(IntraFacts::FSC)
+    }
+
+    pub(crate) const fn use_dip_ctx(self) -> usize {
+        self.npos_sum(IntraFacts::DIP)
+    }
+
+    pub(crate) const fn mrl_index_ctx(self) -> usize {
+        self.npos_sum(IntraFacts::MRL)
+    }
+
+    pub(crate) const fn mrl_sec_index_ctx(self) -> usize {
+        self.npos_sum(IntraFacts::MRL_SECONDARY)
+    }
+
+    /// `(above, left)` smoothness of the luma neighbours.
+    pub(crate) const fn smoothness(self) -> (bool, bool) {
+        (
+            self.above_left_bits[0] & IntraFacts::SMOOTH != 0,
+            self.above_left_bits[1] & IntraFacts::SMOOTH != 0,
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TileIntraFactsState {
+    /// The palette field indexes `palettes` from 1.
+    grid: MiGrid<IntraFacts>,
+    palettes: Vec<LumaPalette>,
+    sb_size4: usize,
+}
+
+impl TileIntraFactsState {
     pub(crate) fn new_for_tile(
         row_range: Range<usize>,
         col_range: Range<usize>,
         sb_size4: usize,
-    ) -> Result<Self, TileLumaPaletteStateError> {
+    ) -> Result<Self, TileIntraFactsStateError> {
         let grid = mi_grid_new_for_tile!(
-            TileLumaPaletteStateError,
-            None::<NonZeroU32>,
+            TileIntraFactsStateError,
+            IntraFacts::NONE,
             row_range,
             col_range,
             sb_size4,
-            require_nonzero(sb_size4, TileLumaPaletteStateError::EmptySuperblockSize),
+            require_nonzero(sb_size4, TileIntraFactsStateError::EmptySuperblockSize),
         )?;
         Ok(Self {
             grid,
             palettes: take_pooled_vec(0),
+            sb_size4,
         })
+    }
+
+    /// Reads the four neighbour positions of the block at `(r, c)` once.
+    #[allow(clippy::inline_always, reason = "measured: once per intra luma leaf")]
+    #[inline(always)]
+    pub(crate) fn neighbours(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> IntraNeighbours {
+        let bottom = r.saturating_add(n4h.saturating_sub(1));
+        let right = c.saturating_add(n4w.saturating_sub(1));
+        let at = |row: Option<usize>, col: Option<usize>| {
+            row.zip(col)
+                .and_then(|(row, col)| self.grid.cell(row, col))
+                .unwrap_or(IntraFacts::ABSENT)
+        };
+        let (left, above) = (c.checked_sub(1), r.checked_sub(1));
+        let left_bottom = at(Some(bottom), left);
+        let above_right = at(above, Some(right));
+        let left_top = at(Some(r), left);
+        let above_left = at(above, Some(c));
+        let same_row = |row: usize| crate::tile::same_superblock_row(r, row, self.sb_size4);
+        let above_in_row = above.is_some_and(same_row);
+        let (mut npos_any, mut npos_both, mut len) = (0, 0, 0);
+        for (facts, in_row) in [
+            (left_bottom, same_row(bottom)),
+            (above_right, above_in_row),
+            (left_top, true),
+            (above_left, above_in_row),
+        ] {
+            if in_row && facts.bits & IntraFacts::ABSENT_BIT == 0 && len < 2 {
+                npos_both = npos_any & facts.bits;
+                npos_any |= facts.bits;
+                len += 1;
+            }
+        }
+        IntraNeighbours {
+            joint: [left_bottom.joint_mode, above_right.joint_mode],
+            npos_any,
+            npos_both,
+            above_left_bits: [above_left.bits, left_top.bits],
+        }
+    }
+
+    pub(crate) fn record_leaf(
+        &mut self,
+        (r, c): (usize, usize),
+        extent: (usize, usize),
+        mut facts: IntraFacts,
+        palette: Option<LumaPalette>,
+    ) {
+        facts.palette = palette.and_then(|palette| {
+            let index = NonZeroU32::new(u32::try_from(self.palettes.len().checked_add(1)?).ok()?)?;
+            self.palettes.push(palette);
+            Some(index)
+        });
+        self.grid.record_block((r, c), extent, facts);
+    }
+
+    pub(crate) fn y_mode_facts_at(&self, r: usize, c: usize) -> Option<TileIntraYModeFacts> {
+        self.grid.cell(r, c).and_then(IntraFacts::y_mode_facts)
+    }
+
+    pub(crate) fn uses_fsc_at(&self, r: usize, c: usize) -> bool {
+        self.grid
+            .cell(r, c)
+            .is_some_and(|facts| facts.bits & IntraFacts::FSC != 0)
     }
 
     pub(crate) fn palette_cache(&self, r: usize, c: usize) -> ([u16; 2 * PALETTE_MAX_SIZE], usize) {
@@ -433,25 +544,24 @@ impl TileLumaPaletteState {
         (cache, len)
     }
 
-    pub(crate) fn record_block(
-        &mut self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-        palette: Option<LumaPalette>,
-    ) {
-        let palette = palette.and_then(|palette| {
-            let index = NonZeroU32::new(u32::try_from(self.palettes.len().checked_add(1)?).ok()?)?;
-            self.palettes.push(palette);
-            Some(index)
-        });
-        self.grid.record_owned_block((r, c), (n4w, n4h), palette);
+    fn palette_at(&self, row: usize, col: usize) -> Option<LumaPalette> {
+        let index = usize::try_from(self.grid.cell(row, col)?.palette?.get() - 1).ok()?;
+        self.palettes.get(index).copied()
     }
 
-    fn palette_at(&self, row: usize, col: usize) -> Option<LumaPalette> {
-        let index = usize::try_from(self.grid.cell(row, col).flatten()?.get() - 1).ok()?;
-        self.palettes.get(index).copied()
+    /// The palette list the grid indexes, for the encoder facade's rollback.
+    pub(crate) fn palettes_mut(&mut self) -> &mut Vec<LumaPalette> {
+        &mut self.palettes
+    }
+
+    /// Whether an access touched a row the window had already reused.
+    pub(crate) fn window_violated(&self) -> bool {
+        self.grid.window_violated()
+    }
+
+    /// The neighbour grid, for the encoder facade's rollback.
+    pub(crate) fn grid_mut(&mut self) -> &mut MiGrid<IntraFacts> {
+        &mut self.grid
     }
 
     pub(crate) fn recycle(self) {
@@ -464,168 +574,6 @@ fn push_palette_cache(cache: &mut [u16; 2 * PALETTE_MAX_SIZE], len: &mut usize, 
     if *len < cache.len() {
         cache[*len] = value;
         *len += 1;
-    }
-}
-
-impl TileIntraJointModeState {
-    pub(crate) fn new_for_tile(
-        row_range: Range<usize>,
-        col_range: Range<usize>,
-        sb_size4: usize,
-    ) -> Result<Self, TileIntraJointModeStateError> {
-        let grid = mi_grid_new_for_tile!(
-            TileIntraJointModeStateError,
-            IntraJointMode::DC,
-            row_range,
-            col_range,
-            sb_size4,
-            Ok(()),
-        )?;
-        Ok(Self { grid })
-    }
-
-    fn get_joint_mode(
-        &self,
-        dir: usize,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-    ) -> IntraJointMode {
-        let sample = JOINT_NEIGHBOUR_SAMPLES[usize::from(dir == 1)];
-        neighbour_value_or(
-            sample,
-            IntraJointMode::DC,
-            (r, c),
-            (n4w, n4h),
-            |row, col| self.grid.cell(row, col),
-        )
-    }
-
-    pub(crate) fn y_mode_index_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
-        let [left, above] = self.neighbour_joint_modes(r, c, n4w, n4h);
-        left.is_directional() as usize + above.is_directional() as usize
-    }
-
-    pub(crate) fn neighbour_joint_modes(
-        &self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-    ) -> [IntraJointMode; 2] {
-        [
-            self.get_joint_mode(0, r, c, n4w, n4h),
-            self.get_joint_mode(1, r, c, n4w, n4h),
-        ]
-    }
-
-    pub(crate) fn record_block(
-        &mut self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-        joint_mode: IntraJointMode,
-    ) {
-        self.grid.record_owned_block((r, c), (n4w, n4h), joint_mode);
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TileUsesMrlsState {
-    grid: MiGrid<MrlSelection>,
-    sb_size4: usize,
-}
-
-impl TileUsesMrlsState {
-    pub(crate) fn new_for_tile(
-        row_range: Range<usize>,
-        col_range: Range<usize>,
-        sb_size4: usize,
-    ) -> Result<Self, TileUsesMrlsStateError> {
-        let grid = mi_grid_new_for_tile!(
-            TileUsesMrlsStateError,
-            MrlSelection::Disabled,
-            row_range,
-            col_range,
-            sb_size4,
-            require_nonzero(sb_size4, TileUsesMrlsStateError::EmptySuperblockSize),
-        )?;
-        Ok(Self { grid, sb_size4 })
-    }
-
-    pub(crate) fn mrl_index_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
-        let [first, second] = self.neighbour_uses_mrls(r, c, n4w, n4h);
-        first.is_active() as usize + second.is_active() as usize
-    }
-
-    pub(crate) fn mrl_sec_index_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
-        let [first, second] = self.neighbour_uses_mrls(r, c, n4w, n4h);
-        first.is_secondary() as usize + second.is_secondary() as usize
-    }
-
-    pub(crate) fn neighbour_uses_mrls(
-        &self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-    ) -> [MrlSelection; 2] {
-        npos_grid_values(
-            MrlSelection::Disabled,
-            &self.grid,
-            r,
-            c,
-            n4w,
-            n4h,
-            self.sb_size4,
-        )
-    }
-
-    pub(crate) fn record_block(
-        &mut self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-        selection: MrlSelection,
-    ) {
-        self.grid.record_owned_block((r, c), (n4w, n4h), selection);
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TileUseDipState {
-    grid: MiGrid<u8>,
-    sb_size4: usize,
-}
-
-impl TileUseDipState {
-    pub(crate) fn new_for_tile(
-        row_range: Range<usize>,
-        col_range: Range<usize>,
-        sb_size4: usize,
-    ) -> Result<Self, TileUseDipStateError> {
-        let grid = mi_grid_new_for_tile!(
-            TileUseDipStateError,
-            NO_DIP,
-            row_range,
-            col_range,
-            sb_size4,
-            require_nonzero(sb_size4, TileUseDipStateError::EmptySuperblockSize),
-        )?;
-        Ok(Self { grid, sb_size4 })
-    }
-
-    pub(crate) fn use_dip_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
-        let [first, second] = npos_grid_values(NO_DIP, &self.grid, r, c, n4w, n4h, self.sb_size4);
-        usize::from(first != 0) + usize::from(second != 0)
-    }
-
-    pub(crate) fn record_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, use_dip: u8) {
-        self.grid
-            .record_owned_block((r, c), (n4w, n4h), u8::from(use_dip != 0));
     }
 }
 
@@ -924,131 +872,6 @@ pub(crate) fn neg_deinterleave(diff: i32, reference: i32, max: i32) -> i32 {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TileFscModeState {
-    grid: MiGrid<u8>,
-    sb_size4: usize,
-}
-
-impl TileFscModeState {
-    pub(crate) fn new_for_tile(
-        row_range: Range<usize>,
-        col_range: Range<usize>,
-        sb_size4: usize,
-    ) -> Result<Self, TileFscModeStateError> {
-        let grid = mi_grid_new_for_tile!(
-            TileFscModeStateError,
-            NO_FSC,
-            row_range,
-            col_range,
-            sb_size4,
-            require_nonzero(sb_size4, TileFscModeStateError::EmptySuperblockSize),
-        )?;
-        Ok(Self { grid, sb_size4 })
-    }
-
-    pub(crate) fn fsc_mode_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
-        let [first, second] = self.neighbour_fsc_modes(r, c, n4w, n4h);
-        usize::from(first) + usize::from(second)
-    }
-
-    pub(crate) fn fsc_mode_at(&self, r: usize, c: usize) -> Option<u8> {
-        self.grid.cell(r, c)
-    }
-
-    pub(crate) fn record_block(
-        &mut self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-        fsc_mode: u8,
-    ) {
-        self.grid.record_owned_block((r, c), (n4w, n4h), fsc_mode);
-    }
-
-    fn neighbour_fsc_modes(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> [u8; 2] {
-        npos_grid_values(NO_FSC, &self.grid, r, c, n4w, n4h, self.sb_size4)
-    }
-}
-
-fn npos_grid_values<T: Copy>(
-    default: T,
-    grid: &MiGrid<T>,
-    r: usize,
-    c: usize,
-    n4w: usize,
-    n4h: usize,
-    sb_size4: usize,
-) -> [T; 2] {
-    npos_neighbour_values(default, (r, c), (n4w, n4h), r, sb_size4, |row, col| {
-        grid.cell(row, col)
-    })
-}
-
-fn neighbour_value_or<T: Copy>(
-    sample: NeighbourSample,
-    default: T,
-    pos: (usize, usize),
-    extent: (usize, usize),
-    mut cell: impl FnMut(usize, usize) -> Option<T>,
-) -> T {
-    let (r, c) = pos;
-    let (n4w, n4h) = extent;
-    sample
-        .position(r, c, n4w, n4h)
-        .and_then(|(row, col)| cell(row, col))
-        .unwrap_or(default)
-}
-
-fn gated_neighbour_values<T: Copy, const N: usize>(
-    samples: [(NeighbourSample, bool); N],
-    default: T,
-    pos: (usize, usize),
-    mut cell: impl FnMut(usize, usize) -> Option<T>,
-) -> [T; N] {
-    let mut values = [default; N];
-    let (r, c) = pos;
-    for (index, (sample, is_available)) in samples.into_iter().enumerate() {
-        if is_available && let Some((row, col)) = sample.position(r, c, 1, 1) {
-            values[index] = cell(row, col).unwrap_or(default);
-        }
-    }
-    values
-}
-
-fn npos_neighbour_values<T: Copy>(
-    default: T,
-    pos: (usize, usize),
-    extent: (usize, usize),
-    current_row: usize,
-    sb_size4: usize,
-    mut cell: impl FnMut(usize, usize) -> Option<T>,
-) -> [T; 2] {
-    let mut values = [default; 2];
-    let mut len = 0;
-    let (r, c) = pos;
-    let (n4w, n4h) = extent;
-
-    for sample in NPOS_NEIGHBOUR_SAMPLES {
-        if len >= values.len() {
-            break;
-        }
-        let Some((row, col)) = sample.position(r, c, n4w, n4h) else {
-            continue;
-        };
-        if !crate::tile::same_superblock_row(current_row, row, sb_size4) {
-            continue;
-        }
-        if let Some(value) = cell(row, col) {
-            values[len] = value;
-            len += 1;
-        }
-    }
-
-    values
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IsCflContext(usize);
 
@@ -1086,17 +909,35 @@ impl TileUvCflState {
         Ok(Self { grid })
     }
 
+    pub(crate) fn with_origin(mut self, row: usize, col: usize) -> Self {
+        self.grid = self.grid.with_origin(row, col);
+        self
+    }
+
+    pub(crate) fn recycle(self) {
+        recycle_pooled_vec(self.grid.into_cells());
+    }
+
+    /// Whether an access touched a row the window had already reused.
+    pub(crate) fn window_violated(&self) -> bool {
+        self.grid.window_violated()
+    }
+
+    /// The neighbour grid, for the encoder facade's rollback.
+    pub(crate) fn grid_mut(&mut self) -> &mut MiGrid<u8> {
+        &mut self.grid
+    }
+
     pub(crate) fn is_cfl_ctx(&self, r: usize, c: usize, avail_u: bool, avail_l: bool) -> usize {
-        let [above, left] = gated_neighbour_values(
-            [
-                (NeighbourSample::AboveLeft, avail_u),
-                (NeighbourSample::LeftTop, avail_l),
-            ],
-            0,
-            (r, c),
-            |row, col| self.grid.cell(row, col),
-        );
-        usize::from(above != 0) + usize::from(left != 0)
+        let is_cfl = |available: bool, row: Option<usize>, col: Option<usize>| {
+            available
+                && row
+                    .zip(col)
+                    .and_then(|(row, col)| self.grid.cell(row, col))
+                    .is_some_and(|is_cfl| is_cfl != 0)
+        };
+        usize::from(is_cfl(avail_u, r.checked_sub(1), Some(c)))
+            + usize::from(is_cfl(avail_l, Some(r), c.checked_sub(1)))
     }
 
     pub(crate) fn record_block(
@@ -1127,70 +968,6 @@ pub(crate) enum TileUvCflStateError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum TileFscModeStateError {
-    #[error("intra FscModes state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
-    EmptyDimensions { mi_rows: usize, mi_cols: usize },
-    #[error("intra FscModes state requires non-empty superblock size")]
-    EmptySuperblockSize,
-    #[error("intra FscModes state arithmetic overflow in {operation}: {left} * {right}")]
-    ArithmeticOverflow {
-        operation: &'static str,
-        left: usize,
-        right: usize,
-    },
-    #[error("intra FscModes state allocation failed: {source}")]
-    Allocation { source: TryReserveError },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum TileLumaPaletteStateError {
-    #[error("intra luma palette state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
-    EmptyDimensions { mi_rows: usize, mi_cols: usize },
-    #[error("intra luma palette state requires non-empty superblock size")]
-    EmptySuperblockSize,
-    #[error("intra luma palette state arithmetic overflow in {operation}: {left} * {right}")]
-    ArithmeticOverflow {
-        operation: &'static str,
-        left: usize,
-        right: usize,
-    },
-    #[error("intra luma palette state allocation failed: {source}")]
-    Allocation { source: TryReserveError },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum TileUsesMrlsStateError {
-    #[error("intra UsesMrls state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
-    EmptyDimensions { mi_rows: usize, mi_cols: usize },
-    #[error("intra UsesMrls state requires non-empty superblock size")]
-    EmptySuperblockSize,
-    #[error("intra UsesMrls state arithmetic overflow in {operation}: {left} * {right}")]
-    ArithmeticOverflow {
-        operation: &'static str,
-        left: usize,
-        right: usize,
-    },
-    #[error("intra UsesMrls state allocation failed: {source}")]
-    Allocation { source: TryReserveError },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum TileUseDipStateError {
-    #[error("intra UseDip state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
-    EmptyDimensions { mi_rows: usize, mi_cols: usize },
-    #[error("intra UseDip state requires non-empty superblock size")]
-    EmptySuperblockSize,
-    #[error("intra UseDip state arithmetic overflow in {operation}: {left} * {right}")]
-    ArithmeticOverflow {
-        operation: &'static str,
-        left: usize,
-        right: usize,
-    },
-    #[error("intra UseDip state allocation failed: {source}")]
-    Allocation { source: TryReserveError },
-}
-
-#[derive(Debug, thiserror::Error)]
 pub(crate) enum TileSegmentIdStateError {
     #[error("intra SegmentIds state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
     EmptyDimensions { mi_rows: usize, mi_cols: usize },
@@ -1205,16 +982,18 @@ pub(crate) enum TileSegmentIdStateError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum TileIntraJointModeStateError {
-    #[error("intra joint-mode state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
+pub(crate) enum TileIntraFactsStateError {
+    #[error("intra mode facts state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
     EmptyDimensions { mi_rows: usize, mi_cols: usize },
-    #[error("intra joint-mode state arithmetic overflow in {operation}: {left} * {right}")]
+    #[error("intra mode facts state requires non-empty superblock size")]
+    EmptySuperblockSize,
+    #[error("intra mode facts state arithmetic overflow in {operation}: {left} * {right}")]
     ArithmeticOverflow {
         operation: &'static str,
         left: usize,
         right: usize,
     },
-    #[error("intra joint-mode state allocation failed: {source}")]
+    #[error("intra mode facts state allocation failed: {source}")]
     Allocation { source: TryReserveError },
 }
 
@@ -1222,94 +1001,6 @@ pub(crate) enum TileIntraJointModeStateError {
 pub(crate) struct TileIntraYModeFacts {
     pub(crate) y_mode: IntraYMode,
     pub(crate) angle_delta_y: i8,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TileIntraYModeState {
-    grid: MiGrid<Option<TileIntraYModeFacts>>,
-}
-
-impl TileIntraYModeState {
-    pub(crate) fn new(
-        mi_rows: usize,
-        mi_cols: usize,
-        sb_size4: usize,
-    ) -> Result<Self, TileIntraYModeStateError> {
-        let grid = mi_grid_new_for_tile!(
-            TileIntraYModeStateError,
-            None::<TileIntraYModeFacts>,
-            0..mi_rows,
-            0..mi_cols,
-            sb_size4,
-            Ok(())
-        )?;
-        Ok(Self { grid })
-    }
-
-    pub(crate) fn record_block(
-        &mut self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-        y_mode: IntraYMode,
-        angle_delta_y: i8,
-    ) {
-        self.grid.record_block(
-            (r, c),
-            (n4w, n4h),
-            Some(TileIntraYModeFacts {
-                y_mode,
-                angle_delta_y,
-            }),
-        );
-    }
-
-    pub(crate) fn y_mode_facts_at(&self, row: usize, col: usize) -> Option<TileIntraYModeFacts> {
-        self.grid.cell(row, col).flatten()
-    }
-}
-
-impl_grid_origin!(TileUvCflState, TileIntraYModeState);
-impl_grid_window_violated!(
-    TileIntraJointModeState,
-    TileUsesMrlsState,
-    TileUseDipState,
-    TileFscModeState,
-    TileLumaPaletteState,
-    TileUvCflState,
-    TileIntraYModeState,
-);
-impl_grid_mut!(
-    TileIntraJointModeState: IntraJointMode,
-    TileUsesMrlsState: MrlSelection,
-    TileUseDipState: u8,
-    TileFscModeState: u8,
-    TileLumaPaletteState: Option<NonZeroU32>,
-    TileUvCflState: u8,
-    TileIntraYModeState: Option<TileIntraYModeFacts>,
-);
-impl_grid_recycle!(
-    TileIntraJointModeState,
-    TileUsesMrlsState,
-    TileUseDipState,
-    TileFscModeState,
-    TileUvCflState,
-    TileIntraYModeState,
-);
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum TileIntraYModeStateError {
-    #[error("intra YMode state requires non-empty MI dimensions, got {mi_rows}x{mi_cols}")]
-    EmptyDimensions { mi_rows: usize, mi_cols: usize },
-    #[error("intra YMode state arithmetic overflow in {operation}: {left} * {right}")]
-    ArithmeticOverflow {
-        operation: &'static str,
-        left: usize,
-        right: usize,
-    },
-    #[error("intra YMode state allocation failed: {source}")]
-    Allocation { source: TryReserveError },
 }
 
 #[cfg(test)]

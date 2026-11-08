@@ -15,8 +15,7 @@ use crate::bitstream::tile_payload::{
     TransformToolResidualPolicy, classify_coeff_parse_error, read_lossless_luma_tx_size,
 };
 use crate::residual::pipeline::{
-    GeneralIntraResidualPlan, ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan,
-    ResidualPlanError,
+    ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan, ResidualPlanError,
 };
 use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
 
@@ -326,20 +325,46 @@ pub(crate) fn record_chroma_smooth(
     );
 }
 
+/// The frame facts every general-intra leaf of a frame reads, derived once.
+#[derive(Clone, Copy)]
+pub(crate) struct GeneralIntraFrameTools {
+    chroma_tools: GeneralIntraChromaToolConfig,
+    chroma_format: splot_core::headers::sequence::ChromaFormatIdc,
+    frame_is_intra: bool,
+    enable_ibp: bool,
+    enable_intra_edge_filter: bool,
+    cfl_ds_filter_index: u8,
+    sb_mib: usize,
+    tx_mode: Option<TxMode>,
+}
+
+impl GeneralIntraFrameTools {
+    pub(crate) fn new(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Self {
+        let frame_is_intra = core.frame_is_intra == Some(true);
+        let intra = sequence.intra.as_ref();
+        Self {
+            chroma_tools: general_intra_chroma_tools(sequence, core),
+            chroma_format: sequence.general.chroma_format_idc,
+            frame_is_intra,
+            enable_ibp: intra.is_some_and(|intra| intra.enable_ibp),
+            enable_intra_edge_filter: intra.is_some_and(|intra| intra.enable_intra_edge_filter),
+            cfl_ds_filter_index: sequence_cfl_ds_filter_index(sequence),
+            sb_mib: sequence.partition.as_ref().map_or(16, |partition| {
+                crate::tile::frame_superblock_h4(partition.seq_sb_size(), frame_is_intra)
+            }),
+            tx_mode: frame_tx_mode(core),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_one_general_intra_block(
     work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
-    sequence: &SequenceHeader,
-    y_smooth: Option<&crate::prediction::intra_edge::TileYSmoothGrid>,
+    tools: &GeneralIntraFrameTools,
     mut chroma_smooth: Option<&mut crate::prediction::intra_edge::TileChromaSmoothGrid>,
-    core: &FrameHeaderCore,
-    joint_modes: &crate::bitstream::tile_payload::TileIntraJointModeState,
-    uses_mrls: &crate::bitstream::tile_payload::TileUsesMrlsState,
-    use_dip: &crate::bitstream::tile_payload::TileUseDipState,
-    fsc_modes: &crate::bitstream::tile_payload::TileFscModeState,
-    palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
+    intra_facts: &crate::bitstream::tile_payload::TileIntraFactsState,
     is_cfl_ctx: IsCflContext,
     segment_id: u8,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
@@ -362,7 +387,7 @@ pub(crate) fn decode_one_general_intra_block(
     let mi_col_range = work_unit.mi_col_range();
     let (block_ctx, chroma_mode_geometry) = general_intra_block_ctx(
         frontier,
-        sequence.general.chroma_format_idc,
+        tools.chroma_format,
         (
             mi_row_range.start as usize,
             mi_col_range.start as usize..mi_col_range.end as usize,
@@ -372,20 +397,13 @@ pub(crate) fn decode_one_general_intra_block(
     );
     let n4w = block_ctx.block().width4();
     let n4h = block_ctx.block().height4();
-    let (above_smooth, left_smooth) = y_smooth.map_or((false, false), |grid| {
-        grid.block_smoothness(frontier.c, frontier.r)
-    });
+    let neighbours = intra_facts.neighbours(frontier.r, frontier.c, n4w, n4h);
+    let (above_smooth, left_smooth) = neighbours.smoothness();
     let (chroma_above_smooth, chroma_left_smooth) =
         chroma_edge_smoothness(chroma_smooth.as_deref(), block_ctx);
     let intra_edge = crate::prediction::intra_edge::IntraEdgeCtx {
-        enable_ibp: sequence
-            .intra
-            .as_ref()
-            .is_some_and(|intra| intra.enable_ibp),
-        enable_intra_edge_filter: sequence
-            .intra
-            .as_ref()
-            .is_some_and(|intra| intra.enable_intra_edge_filter),
+        enable_ibp: tools.enable_ibp,
+        enable_intra_edge_filter: tools.enable_intra_edge_filter,
         above_smooth,
         left_smooth,
         chroma_above_smooth,
@@ -395,21 +413,14 @@ pub(crate) fn decode_one_general_intra_block(
         .coeff_frame_facts()
         .lossless_for_segment(usize::from(segment_id))
         .unwrap_or(false);
-    let chroma_tools = general_intra_chroma_tools(sequence, core).with_lossless(lossless);
-    let cfl_ds_filter_index = sequence_cfl_ds_filter_index(sequence);
-    let sb_mib = sequence.partition.as_ref().map_or(16, |partition| {
-        crate::tile::frame_superblock_h4(partition.seq_sb_size(), core.frame_is_intra == Some(true))
-    });
+    let chroma_tools = tools.chroma_tools.with_lossless(lossless);
 
     if let crate::bitstream::tile_payload::DecodeBlockPart::ChromaPart {
         y_mode,
         angle_delta_y,
     } = frontier.part()
     {
-        let lossless_luma_fsc = lossless
-            && fsc_modes
-                .fsc_mode_at(frontier.r, frontier.c)
-                .is_some_and(|mode| mode != 0);
+        let lossless_luma_fsc = lossless && intra_facts.uses_fsc_at(frontier.r, frontier.c);
         return parse_one_general_intra_chroma_part_block(
             intra_edge,
             work_unit,
@@ -420,8 +431,8 @@ pub(crate) fn decode_one_general_intra_block(
             lossless_luma_fsc,
             chroma_tools,
             is_cfl_ctx,
-            cfl_ds_filter_index,
-            sb_mib,
+            tools.cfl_ds_filter_index,
+            tools.sb_mib,
             lossless,
             coeff_ctx,
             deblock_blocks,
@@ -439,20 +450,16 @@ pub(crate) fn decode_one_general_intra_block(
     }
 
     let luma_only = frontier.is_luma_part() || !frontier.has_chroma;
-    let use_neighbor_fsc_context = core.frame_is_intra == Some(true) || !frontier.is_mixed_region();
+    let use_neighbor_fsc_context = tools.frame_is_intra || !frontier.is_mixed_region();
     let modes = if luma_only {
         let luma =
             crate::bitstream::tile_payload::decode_general_intra_luma_block_mode_with_fsc_context(
                 work_unit,
                 symbols,
                 chroma_tools,
-                joint_modes,
-                uses_mrls,
-                fsc_modes,
+                neighbours,
                 use_neighbor_fsc_context,
                 frontier.b_size,
-                frontier.r,
-                frontier.c,
                 n4w,
                 n4h,
             )
@@ -461,7 +468,7 @@ pub(crate) fn decode_one_general_intra_block(
             work_unit,
             symbols,
             chroma_tools,
-            palette_state,
+            intra_facts,
             luma.y_mode,
             frontier.b_size.index(),
             frontier.r,
@@ -476,11 +483,9 @@ pub(crate) fn decode_one_general_intra_block(
                 work_unit,
                 symbols,
                 chroma_tools,
-                use_dip,
+                neighbours,
                 luma.y_mode,
                 palette_y,
-                frontier.r,
-                frontier.c,
                 n4w,
                 n4h,
             )
@@ -493,12 +498,9 @@ pub(crate) fn decode_one_general_intra_block(
             work_unit,
             symbols,
             chroma_tools,
-            joint_modes,
-            uses_mrls,
-            use_dip,
-            fsc_modes,
+            intra_facts,
+            neighbours,
             use_neighbor_fsc_context,
-            palette_state,
             is_cfl_ctx.get(),
             frontier.b_size,
             frontier.r,
@@ -536,10 +538,10 @@ pub(crate) fn decode_one_general_intra_block(
         lossless,
         luma_lossless_tx_size,
         transform_tool_residual_policy,
-        luma_tx_partition_context(frame_tx_mode(core), frontier.b_size, lossless),
+        luma_tx_partition_context(tools.tx_mode, frontier.b_size, lossless),
         block_ctx,
-        cfl_ds_filter_index,
-        sb_mib,
+        tools.cfl_ds_filter_index,
+        tools.sb_mib,
         segment_id,
         tile_offset,
     )?;
@@ -630,10 +632,11 @@ fn parse_one_general_intra_chroma_part_block(
     .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
     let chroma_plan =
         chroma_plan_for_parts(chroma, y_mode, angle_delta_y, cfl_ds_filter_index, sb_mib);
-    let residual_plan = GeneralIntraResidualPlan::chroma(block_ctx, chroma_plan, lossless_luma_fsc)
+    let residual_plan = arena
+        .plan_chroma(block_ctx, chroma_plan, lossless_luma_fsc)
         .map_err(general_intra_residual_plan_error)?;
     let command = parse_general_intra_residual_plan(
-        &residual_plan,
+        residual_plan,
         work_unit,
         symbols,
         coeff_ctx,
@@ -684,17 +687,18 @@ fn parse_one_general_intra_rect_block(
     let luma_plan = rect_luma_plan(modes, block_ctx, luma_use_tcq, sb_mib)?;
     let chroma_plan = rect_chroma_plan(modes, cfl_ds_filter_index, sb_mib);
 
-    let residual_plan = GeneralIntraResidualPlan::rect(
-        block_ctx,
-        luma_plan,
-        chroma_plan,
-        modes.uses_active_fsc(),
-        luma_lossless_tx_size,
-        lossless,
-    )
-    .map_err(general_intra_residual_plan_error)?;
+    let residual_plan = arena
+        .plan_rect(
+            block_ctx,
+            luma_plan,
+            chroma_plan,
+            modes.uses_active_fsc(),
+            luma_lossless_tx_size,
+            lossless,
+        )
+        .map_err(general_intra_residual_plan_error)?;
     let command = parse_general_intra_residual_plan(
-        &residual_plan,
+        residual_plan,
         work_unit,
         symbols,
         coeff_ctx,
@@ -1020,7 +1024,7 @@ pub(crate) fn wide_angle_mapped_p_angle(width: usize, height: usize, p_angle: i3
 
 #[allow(clippy::too_many_arguments)]
 fn parse_general_intra_residual_plan(
-    residual_plan: &GeneralIntraResidualPlan,
+    residual_plan: crate::residual::pipeline::PlannedGeneralIntraResidual,
     work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
@@ -1047,13 +1051,14 @@ fn parse_general_intra_residual_plan(
         tx_skip_records,
         block_r: block.row4(),
         block_c: block.col4(),
-        chroma_tx: residual_plan.chroma_tx(),
+        chroma_tx: arena.chroma_tx(&residual_plan),
         chroma_subsampling: block_ctx.chroma().subsampling(PlaneId::U),
         qindex,
         lossless,
     };
-    let residual = residual_plan
+    let residual = arena
         .parse(
+            residual_plan,
             work_unit,
             symbols,
             coeff_ctx,
@@ -1062,7 +1067,6 @@ fn parse_general_intra_residual_plan(
             luma_tx_partition_context,
             transform_tool_residual_policy,
             &mut deblock,
-            arena,
             coeffs_arena,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
