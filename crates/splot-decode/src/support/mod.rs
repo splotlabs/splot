@@ -8,6 +8,15 @@ pub(crate) mod decode_buffers;
 pub(crate) mod pipeline_limits;
 pub(crate) mod reusable_scratch;
 
+/// `range.step_by(step)` by addition: `step_by` divides by a runtime step.
+pub(crate) fn step_range(
+    range: core::ops::Range<usize>,
+    step: usize,
+) -> impl Iterator<Item = usize> + Clone {
+    core::iter::successors(Some(range.start), move |at| at.checked_add(step.max(1)))
+        .take_while(move |&at| at < range.end)
+}
+
 /// Fills one short per-block run of a mode-info grid without a `memset` call.
 ///
 /// Runs are block widths in 4x4 units, at most 32. Two overlapping fixed-size

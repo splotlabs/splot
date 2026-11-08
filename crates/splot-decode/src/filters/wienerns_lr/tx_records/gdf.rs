@@ -147,6 +147,7 @@ impl GdfState {
         }
     }
 
+    #[inline]
     pub(crate) fn read_for_block(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit,
@@ -154,9 +155,20 @@ impl GdfState {
         frontier: &DecodeBlockFrontier,
         tile_offset: ByteOffset,
     ) -> Result<()> {
-        let Some((unit_row, unit_col)) = self.unit_for(frontier) else {
-            return Ok(());
-        };
+        match self.unit_for(frontier) {
+            Some(unit) => self.read_unit(work_unit, symbols, unit, tile_offset),
+            None => Ok(()),
+        }
+    }
+
+    #[inline(never)]
+    fn read_unit(
+        &mut self,
+        work_unit: &mut DecodeTileWorkUnit,
+        symbols: &mut SymbolDecoder<'_>,
+        (unit_row, unit_col): (usize, usize),
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
         let index = self.index(unit_row, unit_col).ok_or_else(gdf_state_error)?;
         self.values[index] =
             read_use_gdf(work_unit.cdf_mut().tile_cdfs_mut(), symbols, tile_offset)?;
@@ -165,12 +177,11 @@ impl GdfState {
 
     /// The `(row, col)` of the GDF unit whose `use_gdf` the block at
     /// `frontier` codes (§ 5.20.10.3), if any.
+    #[inline]
     pub(crate) fn unit_for(&self, frontier: &DecodeBlockFrontier) -> Option<(usize, usize)> {
-        if !self.active
-            || frontier.is_chroma_part()
-            || !frontier.r.is_multiple_of(self.sb_size4)
-            || !frontier.c.is_multiple_of(self.sb_size4)
-        {
+        // `sb_size4` is a power of two, so the mask tests divisibility.
+        let sb_mask = self.sb_size4.wrapping_sub(1);
+        if !self.active || frontier.is_chroma_part() || (frontier.r | frontier.c) & sb_mask != 0 {
             return None;
         }
         let sb_row = frontier.r / self.sb_size4;

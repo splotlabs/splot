@@ -21,6 +21,12 @@ pub(crate) const fn frame_superblock_h4(
     }
 }
 
+/// Whether mode-info rows `a` and `b` lie in one superblock row of `sb_h4`
+/// rows, which § 5.4 makes a power of two: a shift, not a division.
+pub(crate) const fn same_superblock_row(a: usize, b: usize, sb_h4: usize) -> bool {
+    (a ^ b).wrapping_shr(sb_h4.trailing_zeros()) == 0
+}
+
 pub(crate) fn local_grid_index(
     row: usize,
     col: usize,

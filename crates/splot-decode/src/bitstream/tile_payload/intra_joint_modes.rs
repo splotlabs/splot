@@ -1038,7 +1038,7 @@ fn npos_neighbour_values<T: Copy>(
         let Some((row, col)) = sample.position(r, c, n4w, n4h) else {
             continue;
         };
-        if current_row / sb_size4 != row / sb_size4 {
+        if !crate::tile::same_superblock_row(current_row, row, sb_size4) {
             continue;
         }
         if let Some(value) = cell(row, col) {

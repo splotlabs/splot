@@ -231,7 +231,8 @@ impl DeltaQState {
     }
 
     const fn superblock(&self, frontier: &DecodeBlockFrontier) -> (usize, usize) {
-        (frontier.r / self.sb_size4, frontier.c / self.sb_size4)
+        let log2 = self.sb_size4.trailing_zeros();
+        (frontier.r.wrapping_shr(log2), frontier.c.wrapping_shr(log2))
     }
 
     pub(crate) fn qindex_u32(&self) -> u32 {
@@ -302,7 +303,10 @@ impl CdefState {
         })
     }
 
+    /// Reads the block's CDEF unit index unless the unit already has one, which
+    /// only an earlier read of the same frame's parameters can have set.
     #[allow(clippy::too_many_arguments)]
+    #[inline]
     pub(crate) fn read_for_block(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit,
@@ -314,9 +318,36 @@ impl CdefState {
         skip_txfm: bool,
         tile_offset: ByteOffset,
     ) -> Result<()> {
-        if frontier.is_chroma_part() {
+        if frontier.is_chroma_part()
+            || matches!(
+                self.index(frontier.r / CDEF_UNIT_MI, frontier.c / CDEF_UNIT_MI),
+                Ok(index) if self.values[index].is_some()
+            )
+        {
             return Ok(());
         }
+        self.read_unit(
+            work_unit,
+            symbols,
+            core,
+            frontier,
+            (n4w, n4h),
+            skip_txfm,
+            tile_offset,
+        )
+    }
+
+    #[inline(never)]
+    fn read_unit(
+        &mut self,
+        work_unit: &mut DecodeTileWorkUnit,
+        symbols: &mut SymbolDecoder<'_>,
+        core: &FrameHeaderCore,
+        frontier: &DecodeBlockFrontier,
+        (n4w, n4h): (usize, usize),
+        skip_txfm: bool,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
         let Some(cdef) = core.cdef_params.as_ref() else {
             return Err(selectable_state_error());
         };
@@ -398,7 +429,7 @@ impl CdefState {
         }
         if let Some(above_row) = mi_row.checked_sub(CDEF_UNIT_MI)
             && above_row >= tile_row_start
-            && mi_row / self.sb_size4 == above_row / self.sb_size4
+            && crate::tile::same_superblock_row(mi_row, above_row, self.sb_size4)
         {
             if self.value(unit_row - 1, unit_col)? == Some(0) {
                 ctx += 1;
@@ -726,8 +757,8 @@ pub(crate) fn derive_inter_luma_tx_records_for_block(
                 .c
                 .checked_add(extent.cols)
                 .ok_or_else(selectable_state_error)?;
-            for row in (frontier.r..row_end).step_by(tx_h4) {
-                for col in (frontier.c..col_end).step_by(tx_w4) {
+            for row in crate::support::step_range(frontier.r..row_end, tx_h4) {
+                for col in crate::support::step_range(frontier.c..col_end, tx_w4) {
                     let reduced_tx_part_set = work_unit.coeff_frame_facts().reduced_tx_part_set();
                     let Some(tx_partition) = read_tx_partition_symbols(
                         work_unit,
