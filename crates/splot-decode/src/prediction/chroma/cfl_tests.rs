@@ -160,7 +160,7 @@ fn implicit_alpha<T: ReconSample>(
 ) -> i32 {
     let chroma = PlaneSamples::of(frame, PlaneId::U).unwrap();
     edges
-        .chroma_model(&chroma, block, interior(), true)
+        .plane_chroma_model(&chroma, block, interior(), true)
         .unwrap()
         .1
 }
