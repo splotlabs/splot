@@ -10,32 +10,7 @@ const REFINEMV_UNIT_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_AREA: usize = TIP_PREDICTION_SIZE * TIP_PREDICTION_SIZE;
 pub(super) const SEARCH_PADDING: i32 = 4 * 8;
-const SEARCH_NEIGHBORS: [(i32, i32); 24] = [
-    (-2, -2),
-    (-2, -1),
-    (-2, 0),
-    (-2, 1),
-    (-2, 2),
-    (-1, -2),
-    (-1, -1),
-    (-1, 0),
-    (-1, 1),
-    (-1, 2),
-    (0, -2),
-    (0, -1),
-    (0, 1),
-    (0, 2),
-    (1, -2),
-    (1, -1),
-    (1, 0),
-    (1, 1),
-    (1, 2),
-    (2, -2),
-    (2, -1),
-    (2, 0),
-    (2, 1),
-    (2, 2),
-];
+use splot_recon::REFINEMV_NEIGHBORS as SEARCH_NEIGHBORS;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ReferenceAreaBounds {
@@ -389,11 +364,18 @@ fn search_refinemv<T: ReconSample>(
     let mut luma = super::optflow::LumaReference::pair(sink.info(), &block, offset);
     // AV2 § 7.13.3.6: `allowCentre = tipPred || !is_switchable_refinemv()`.
     let allow_center = !block.refinemv_switchable;
-    if T::u8_slice(&[]).is_some()
-        && let Some((dx, dy)) =
-            search_refinemv_u8(&mut luma, prediction_rect, candidates, allow_center)?
-    {
-        return Ok(refined_mvs(candidates, dx, dy));
+    if T::u8_slice(&[]).is_some() {
+        let mut windows = [[0u8; 24 * 24]; 2];
+        if super::optflow::search_windows_u8(&mut luma, prediction_rect, candidates, &mut windows)?
+            && let Some((dx, dy)) = splot_recon::refinemv_search_u8(
+                [&windows[0], &windows[1]],
+                prediction_rect.luma_w,
+                prediction_rect.luma_h - 4,
+                allow_center,
+            )
+        {
+            return Ok(refined_mvs(candidates, dx, dy));
+        }
     }
     let mut predict = |center_only: bool, pred0: &mut [u16], pred1: &mut [u16]| {
         for ((luma, candidate), prediction) in luma.iter_mut().zip(candidates).zip([pred0, pred1]) {
@@ -467,29 +449,6 @@ fn refined_mvs(candidates: [Mv; 2], dx: i32, dy: i32) -> [Mv; 2] {
             col: candidates[1].col - dx * 8,
         },
     ]
-}
-
-/// The § 7.13.3.6 search offset of an eight-bit unit from byte search
-/// windows, or `None` when the byte kernels do not cover a window.
-fn search_refinemv_u8<T: ReconSample>(
-    luma: &mut [super::optflow::LumaReference<'_, T>; 2],
-    prediction_rect: McBlockRect,
-    candidates: [Mv; 2],
-    allow_center: bool,
-) -> Result<Option<(i32, i32)>> {
-    const MAX_WINDOW: usize = 24 * 24;
-    let mut windows = [[0u8; MAX_WINDOW]; 2];
-    for ((luma, candidate), window) in luma.iter_mut().zip(candidates).zip(&mut windows) {
-        if !super::optflow::search_window_u8(luma, prediction_rect, candidate, window)? {
-            return Ok(None);
-        }
-    }
-    Ok(splot_recon::refinemv_search_u8(
-        [&windows[0], &windows[1]],
-        prediction_rect.luma_w,
-        prediction_rect.luma_h - 4,
-        allow_center,
-    ))
 }
 
 /// Writes the cell of every full-pel TIP unit from unit `first` on whose
@@ -797,7 +756,7 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
     prediction_rect.luma_h = PREDICTION_SIZE;
     if T::u8_slice(&[]).is_some() {
         let mut windows = [[0u8; TIP_PREDICTION_AREA]; 2];
-        if tip_windows_u8(luma, prediction_rect, candidates, &mut windows)?
+        if super::optflow::search_windows_u8(luma, prediction_rect, candidates, &mut windows)?
             && let Some((dx, dy)) = splot_recon::refinemv_search_u8(
                 [&windows[0], &windows[1]],
                 PREDICTION_SIZE,
@@ -897,22 +856,6 @@ fn tip_search<'a, T: ReconSample>(
         search_tip_refinemv_offset(pred0, pred1, center_sad, bit_depth)
     };
     Ok((dx, dy))
-}
-
-/// Predicts both byte 16x16 search windows of an eight-bit TIP unit, or
-/// returns `false` when the byte kernel does not cover one.
-fn tip_windows_u8<T: ReconSample>(
-    luma: &mut [super::optflow::LumaReference<'_, T>; 2],
-    prediction_rect: McBlockRect,
-    candidates: [Mv; 2],
-    windows: &mut [[u8; TIP_PREDICTION_AREA]; 2],
-) -> Result<bool> {
-    for ((luma, candidate), window) in luma.iter_mut().zip(candidates).zip(windows) {
-        if !super::optflow::search_window_u8(luma, prediction_rect, candidate, window)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
 }
 
 /// The § 7.13.3.6 neighbour search of a unit whose biased centre SAD

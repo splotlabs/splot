@@ -32,7 +32,8 @@ pub use fullpel_u8::{
     subpel_predict_block_strided_into_u8, subpel_put_u8_block,
 };
 pub use search_window::{
-    refinemv_search_u8, subpel_predict_bilinear_search_window_u8, subpel_predict_bilinear_u8,
+    REFINEMV_NEIGHBORS, refinemv_search_u8, subpel_predict_bilinear_search_window_u8,
+    subpel_predict_bilinear_u8,
 };
 pub use tip_overlap::{BilinearOverlapCarry, subpel_predict_12x12_bilinear_overlap_into};
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample

@@ -113,7 +113,7 @@ pub fn subpel_predict_bilinear_u8<T: ReconSample>(
 }
 
 /// The § 7.13.3.6 search positions `(dy, dx)` in `Refinemv_Neighbors` order.
-const NEIGHBORS: [(i32, i32); 24] = {
+pub const REFINEMV_NEIGHBORS: [(i32, i32); 24] = {
     let mut out = [(0, 0); 24];
     let mut index = 0;
     let mut position = 0;
@@ -167,14 +167,15 @@ pub fn refinemv_search_u8(
     };
     Some(best_offset(
         || sad(0, 0),
-        || NEIGHBORS.map(|(dy, dx)| sad(dy, dx)),
+        || REFINEMV_NEIGHBORS.map(|(dy, dx)| sad(dy, dx)),
         (2 * (stride - 4) * sad_h) as u32,
         allow_center,
     ))
 }
 
 /// The § 7.13.3.6 search over the biased `center` SAD, kept when below
-/// `threshold`, and the SADs of the 24 neighbours in [`NEIGHBORS`] order.
+/// `threshold`, and the SADs of the 24 neighbours in [`REFINEMV_NEIGHBORS`] order.
+#[allow(clippy::inline_always, reason = "per refine-MV unit search")]
 #[inline(always)]
 fn best_offset(
     center: impl FnOnce() -> u32,
@@ -191,7 +192,7 @@ fn best_offset(
             return best;
         }
     }
-    for ((dy, dx), sad) in NEIGHBORS.into_iter().zip(neighbours()) {
+    for ((dy, dx), sad) in REFINEMV_NEIGHBORS.into_iter().zip(neighbours()) {
         if sad < best_sad {
             best_sad = sad;
             best = (dx, dy);
@@ -444,11 +445,11 @@ mod avx2 {
                     t,
                     _mm256_srli_epi16::<8>(_mm256_add_epi16(sum, bias)),
                 );
-                for (half, values) in values.chunks_exact(8).enumerate() {
+                for (half, values) in values.as_chunks::<8>().0.iter().enumerate() {
                     let at = (2 * pair + half) * stride + column;
                     if let Some(slot) = output.get_mut(at..).and_then(<[u16]>::first_chunk_mut::<8>)
                     {
-                        slot.copy_from_slice(values);
+                        *slot = *values;
                     }
                 }
                 top = next;

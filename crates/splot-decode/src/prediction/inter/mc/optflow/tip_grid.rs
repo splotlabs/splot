@@ -113,14 +113,13 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
             return Ok(false);
         }
         let second = if plane == PlaneId::U {
-            let views = super::super::compound_plane_views(
+            Some(super::super::compound_plane_views(
                 self.block,
                 PlaneId::V,
                 prediction.scalings,
                 prediction.block_h,
                 self.offset,
-            )?;
-            Some(views)
+            )?)
         } else {
             None
         };
@@ -184,8 +183,29 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                         frame,
                     );
                     if !uniform {
-                        let cell = (placements, [col, row, size]);
-                        self.mixed_cell(&views, &grid, cell, (pred, intermediate), &mut outputs)?;
+                        let params = placements.map(|placement| {
+                            unscaled_cell_params(
+                                placement,
+                                [size; 2],
+                                (grid.bit_depth, self.block.interp),
+                            )
+                        });
+                        for (views, (output, stride)) in views.iter().zip(outputs.iter_mut()) {
+                            let (Some(views), Some(output)) =
+                                (views, output.get_mut(row * *stride + col..))
+                            else {
+                                continue;
+                            };
+                            predict_grid_cell(
+                                views,
+                                (&params, false, [col, row, size, size]),
+                                &grid,
+                                pred,
+                                intermediate,
+                                output,
+                                *stride,
+                            )?;
+                        }
                     } else if !program.push([row, col], placements) {
                         run(program, &mut outputs, pred, intermediate)?;
                         program.push([row, col], placements);
@@ -197,35 +217,5 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
         let result = predict();
         CELL_PROGRAM.set(Some(state));
         result.map(|()| true)
-    }
-
-    /// Predicts one cell whose § 7.13.3.15 weights are not uniform into
-    /// each output.
-    fn mixed_cell(
-        &self,
-        views: &[Option<[ReferencePlaneView<'_, T>; 2]>; 2],
-        grid: &GridBlock<'_, '_, T>,
-        (placements, [col, row, size]): ([CellPlacement; 2], [usize; 3]),
-        (pred, intermediate): (&mut Pred, &mut Intermediate),
-        outputs: &mut [(&mut [u8], usize); 2],
-    ) -> Result<()> {
-        let params = placements.map(|placement| {
-            unscaled_cell_params(placement, [size; 2], (grid.bit_depth, self.block.interp))
-        });
-        for (views, (output, stride)) in views.iter().zip(outputs.iter_mut()) {
-            let (Some(views), Some(output)) = (views, output.get_mut(row * *stride + col..)) else {
-                continue;
-            };
-            predict_grid_cell(
-                views,
-                (&params, false, [col, row, size, size]),
-                grid,
-                pred,
-                intermediate,
-                output,
-                *stride,
-            )?;
-        }
-        Ok(())
     }
 }
