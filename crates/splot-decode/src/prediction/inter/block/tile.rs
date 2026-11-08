@@ -126,6 +126,7 @@ pub(crate) struct TileWalkParams {
     /// AV2 § 7.12.2 TIP reference pair, derived from the reference order hints
     /// alone so the entropy pass never reads the projected temporal field.
     pub(super) tip_ref_pair: Option<(i8, i8)>,
+    pub(super) intra_tools: crate::pipeline::general_intra::GeneralIntraFrameTools,
 }
 
 impl TileWalkParams {

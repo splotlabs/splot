@@ -474,6 +474,7 @@ pub(crate) fn derive_inter_block_setup<T: ReconSample>(
             num_total_refs,
         ),
         tip_ref_pair: expected_tip_pair.map(|pair| (pair.past_ref, pair.future_ref)),
+        intra_tools: crate::pipeline::general_intra::GeneralIntraFrameTools::new(sequence, core),
     };
     Ok(InterBlockSetup {
         params,
@@ -1531,9 +1532,8 @@ fn decode_block<T: ReconSample>(
             work_unit,
             symbols,
             frontier,
-            sequence,
+            &params.intra_tools,
             Some(chroma_smooth),
-            core,
             intra_facts,
             is_cfl_ctx.resolve(),
             segment_id,
