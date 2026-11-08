@@ -24,7 +24,7 @@ fn new_state(mi_rows: usize, mi_cols: usize) -> TileMiSizeState {
 
 impl TileMiSizeState {
     fn left_mi_size_at(&self, plane: usize, row: usize) -> usize {
-        usize::from(self.left_plane(plane)[row])
+        usize::from(self.left_at(plane, row))
     }
 
     fn above_mi_size_at(&self, plane: usize, col: usize) -> usize {
@@ -50,7 +50,6 @@ fn initializes_both_planes_with_clear_context_sentinel() {
             );
         }
     }
-    assert_eq!(state.left_plane(0).len(), 16);
     assert_eq!(state.above_plane(0).len(), 16);
 }
 
@@ -60,7 +59,7 @@ fn allocation_accounting_includes_superblock_padding_and_neighbor_lines() {
 
     assert_eq!(allocation.padded_rows(), 32);
     assert_eq!(allocation.padded_cols(), 32);
-    assert_eq!(allocation.entry_count(), 2 * (32 + 32));
+    assert_eq!(allocation.entry_count(), 2 * 32);
 }
 
 #[test]
@@ -225,21 +224,18 @@ fn partition_neighbours_read_both_planes_after_mutation() {
     state.update_chroma_block(4, 4, block(BLOCK_8X8)).unwrap();
 
     let luma = state.partition_neighbours(0, 0, 0, 8, 8).unwrap();
-    assert_eq!(luma.left, [state.left_plane(0)[0], state.left_plane(0)[8]]);
+    assert_eq!(luma.left, [state.left_at(0, 0), state.left_at(0, 8)]);
     assert_eq!(
         luma.above,
         [state.above_plane(0)[0], state.above_plane(0)[8]]
     );
     let chroma = state.partition_neighbours(1, 4, 4, 1, 1).unwrap();
-    assert_eq!(
-        chroma.left,
-        [state.left_plane(1)[4], state.left_plane(1)[5]]
-    );
+    assert_eq!(chroma.left, [state.left_at(1, 4), state.left_at(1, 5)]);
     assert_eq!(
         chroma.above,
         [state.above_plane(1)[4], state.above_plane(1)[5]]
     );
-    assert_eq!(chroma.luma_left, state.left_plane(0)[4]);
+    assert_eq!(chroma.luma_left, state.left_at(0, 4));
     assert_eq!(chroma.luma_above, state.above_plane(0)[4]);
     assert_eq!(state.partition_neighbours(0, 0, 0, 16, 0), None);
     assert_eq!(state.partition_neighbours(2, 0, 0, 0, 0), None);

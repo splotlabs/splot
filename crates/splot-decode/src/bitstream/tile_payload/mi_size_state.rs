@@ -32,15 +32,23 @@ const PARTITION_CONTEXT_LEFT: [u8; 29] = [
 /// `MiSizes[ 0 ][ r ][ c - 1 ]`. The partition tree decodes the blocks
 /// covering one column top to bottom, and the blocks covering one row left
 /// to right, so those are the last blocks written to the lines.
+///
+/// Every read and write stays inside the current superblock row, which each
+/// row start clears, so the left lines hold one superblock row indexed by the
+/// row modulo `SB_ROW_SPAN`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileMiSizeState {
     origin_row: usize,
     origin_col: usize,
-    left_len: usize,
+    rows: usize,
     above_len: usize,
-    /// `[left L | left C | above L | above C]`.
-    storage: Vec<u8>,
+    left: [[u8; SB_ROW_SPAN]; PLANE_COUNT],
+    /// `[above L | above C]`.
+    above: Vec<u8>,
 }
+
+/// The tallest superblock in 4x4 units; every superblock height divides it.
+const SB_ROW_SPAN: usize = 64;
 
 impl TileMiSizeState {
     pub(crate) fn allocation(
@@ -53,8 +61,7 @@ impl TileMiSizeState {
         }
         let padded_rows = padded_dimension("rows", mi_rows, sb_size.num_4x4_high()?)?;
         let padded_cols = padded_dimension("cols", mi_cols, sb_size.num_4x4_wide()?)?;
-        let lines = checked_add_usize("padded_rows + padded_cols", padded_rows, padded_cols)?;
-        let entry_count = checked_mul_usize("lines * planes", lines, PLANE_COUNT)?;
+        let entry_count = checked_mul_usize("padded_cols * planes", padded_cols, PLANE_COUNT)?;
         Ok(TileMiSizeStateAllocation {
             padded_rows,
             padded_cols,
@@ -70,41 +77,37 @@ impl TileMiSizeState {
         let mi_rows = row_range.end.saturating_sub(row_range.start);
         let mi_cols = col_range.end.saturating_sub(col_range.start);
         let allocation = Self::allocation(mi_rows, mi_cols, sb_size)?;
-        let mut storage = take_pooled_vec::<u8>(allocation.entry_count);
-        storage.try_reserve_exact(allocation.entry_count)?;
-        storage.resize(allocation.entry_count, CLEAR_PARTITION_CONTEXT);
+        let mut above = take_pooled_vec::<u8>(allocation.entry_count);
+        above.try_reserve_exact(allocation.entry_count)?;
+        above.resize(allocation.entry_count, CLEAR_PARTITION_CONTEXT);
         Ok(Self {
             origin_row: row_range.start,
             origin_col: col_range.start,
-            left_len: allocation.padded_rows,
+            rows: allocation.padded_rows,
             above_len: allocation.padded_cols,
-            storage,
+            left: [[CLEAR_PARTITION_CONTEXT; SB_ROW_SPAN]; PLANE_COUNT],
+            above,
         })
     }
 
-    const fn left_base(&self, plane: usize) -> usize {
-        plane * self.left_len
-    }
-
     const fn above_base(&self, plane: usize) -> usize {
-        PLANE_COUNT * self.left_len + plane * self.above_len
+        plane * self.above_len
     }
 
     #[cfg(test)]
-    fn left_plane(&self, plane: usize) -> &[u8] {
-        let base = self.left_base(plane);
-        &self.storage[base..base + self.left_len]
+    fn left_at(&self, plane: usize, row: usize) -> u8 {
+        self.left[plane][row % SB_ROW_SPAN]
     }
 
     #[cfg(test)]
     fn above_plane(&self, plane: usize) -> &[u8] {
         let base = self.above_base(plane);
-        &self.storage[base..base + self.above_len]
+        &self.above[base..base + self.above_len]
     }
 
     /// Starts a superblock row: clears the left context lines.
     pub(crate) fn enter_sb_row(&mut self, _sb_row: usize) {
-        self.storage[..PLANE_COUNT * self.left_len].fill(CLEAR_PARTITION_CONTEXT);
+        self.left = [[CLEAR_PARTITION_CONTEXT; SB_ROW_SPAN]; PLANE_COUNT];
     }
 
     /// Calls `visit` with both planes' partition contexts over tile rows
@@ -119,13 +122,15 @@ impl TileMiSizeState {
             range.start.saturating_sub(origin).min(len)..range.end.saturating_sub(origin).min(len)
         };
         let (r, c) = (
-            local(&rows, self.origin_row, self.left_len),
+            local(&rows, self.origin_row, self.rows),
             local(cols, self.origin_col, self.above_len),
         );
+        let start = (self.origin_row + r.start) % SB_ROW_SPAN;
+        let r = start..(start + r.len()).min(SB_ROW_SPAN);
         for plane in [LUMA_PLANE, CHROMA_PLANE] {
-            let (left, above) = (self.left_base(plane), self.above_base(plane));
-            visit(&mut self.storage[left + r.start..left + r.end]);
-            visit(&mut self.storage[above + c.start..above + c.end]);
+            let above = self.above_base(plane);
+            visit(&mut self.left[plane][r.clone()]);
+            visit(&mut self.above[above + c.start..above + c.end]);
         }
     }
 
@@ -161,18 +166,22 @@ impl TileMiSizeState {
         half_h: usize,
         half_w: usize,
     ) -> Option<PartitionNeighbours> {
-        let r = r.checked_sub(self.origin_row)?;
-        let c = c.checked_sub(self.origin_col)?;
-        if plane >= PLANE_COUNT || r + half_h >= self.left_len || c + half_w >= self.above_len {
+        let local_r = r.checked_sub(self.origin_row)?;
+        let local_c = c.checked_sub(self.origin_col)?;
+        if plane >= PLANE_COUNT
+            || local_r + half_h >= self.rows
+            || local_c + half_w >= self.above_len
+        {
             return None;
         }
-        let (left, above) = (self.left_base(plane) + r, self.above_base(plane) + c);
-        let at = |index: usize| self.storage.get(index).copied();
+        let (left, luma_left) = (&self.left[plane & 1], &self.left[LUMA_PLANE]);
+        let row = r % SB_ROW_SPAN;
+        let above = self.above.get(self.above_base(plane) + local_c..)?;
         Some(PartitionNeighbours {
-            left: [at(left)?, at(left + half_h)?],
-            above: [at(above)?, at(above + half_w)?],
-            luma_left: at(self.left_base(LUMA_PLANE) + r)?,
-            luma_above: at(self.above_base(LUMA_PLANE) + c)?,
+            left: [left[row], left[(row + half_h) % SB_ROW_SPAN]],
+            above: [*above.first()?, *above.get(half_w)?],
+            luma_left: luma_left[row],
+            luma_above: *self.above.get(local_c)?,
         })
     }
 
@@ -196,18 +205,16 @@ impl TileMiSizeState {
         };
         let rows_end = local_r.saturating_add(mi_size.num_4x4_high()?);
         let cols_end = local_c.saturating_add(mi_size.num_4x4_wide()?);
-        if rows_end > self.left_len || cols_end > self.above_len {
+        if rows_end > self.rows || cols_end > self.above_len {
             return Err(TileMiSizeStateError::BlockOutOfBounds { plane, r, c });
         }
-        let (left_base, above_base) = (self.left_base(plane), self.above_base(plane));
-        if let Some(left_run) = self
-            .storage
-            .get_mut(left_base + local_r..left_base + rows_end)
-        {
+        let row = r % SB_ROW_SPAN;
+        if let Some(left_run) = self.left[plane & 1].get_mut(row..row + (rows_end - local_r)) {
             crate::support::fill_mi_run(left_run, left);
         }
+        let above_base = self.above_base(plane);
         if let Some(above_run) = self
-            .storage
+            .above
             .get_mut(above_base + local_c..above_base + cols_end)
         {
             crate::support::fill_mi_run(above_run, above);
@@ -307,19 +314,6 @@ fn padded_dimension(
         })
 }
 
-fn checked_add_usize(
-    operation: &'static str,
-    left: usize,
-    right: usize,
-) -> Result<usize, TileMiSizeStateError> {
-    left.checked_add(right)
-        .ok_or(TileMiSizeStateError::ArithmeticOverflow {
-            operation,
-            left,
-            right,
-        })
-}
-
 fn checked_mul_usize(
     operation: &'static str,
     left: usize,
@@ -337,7 +331,7 @@ fn checked_mul_usize(
 /// drops this state at the end of every tile.
 impl Drop for TileMiSizeState {
     fn drop(&mut self) {
-        recycle_pooled_vec(core::mem::take(&mut self.storage));
+        recycle_pooled_vec(core::mem::take(&mut self.above));
     }
 }
 

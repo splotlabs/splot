@@ -3,24 +3,27 @@
 
 //! AV2 § 8.3.2 partition-entry CDF context derivation.
 
-use splot_core::tables::conversion::{MI_HEIGHT_LOG2, MI_WIDTH_LOG2};
 #[cfg(test)]
-use splot_core::tables::conversion::{NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE};
+use splot_core::tables::conversion::{MI_WIDTH_LOG2, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE};
 
 use super::super::partition_size::BlockSize;
 use super::TileCdfSelector;
 #[cfg(test)]
 use super::{DO_SPLIT_PLANE_CONTEXTS, TileCdfArray, TileCdfError, checked_plane};
 
+#[cfg(test)]
 const BLOCK_SIZES: usize = MI_WIDTH_LOG2.len();
 const BLOCK_256X256_INDEX: usize = 18;
 
-const PARTITION_SIZE_ADJUST: [usize; BLOCK_SIZES] = [
-    0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0, 0, 0, 0,
+/// Padded to 32 entries so a masked [`BlockSize`] index reads it unchecked.
+const PARTITION_SIZE_ADJUST: [u8; 32] = [
+    0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 0, 0, 0, 0, 0,
+    0, 0,
 ];
 
-const PARTITION_SIZE_ADJUST_RECT_TYPE: [usize; BLOCK_SIZES] = [
+const PARTITION_SIZE_ADJUST_RECT_TYPE: [u8; 32] = [
     0, 0, 0, 0, 1, 2, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 13, 14, 13, 14, 0, 0, 0, 0,
+    0, 0, 0,
 ];
 
 /// § 5.20.3.2 `rect_type` direction.
@@ -37,8 +40,8 @@ pub enum RectPartitionType {
 /// masks: bit `k` is set when the neighbour's log2 extent is at most `k`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PartitionContextInput {
-    b_size: usize,
-    plane_start: usize,
+    b_size: BlockSize,
+    plane_start: u8,
     /// `LeftMiSizes[ PlaneStart ]` at `r` and `r + bh4 / 2`.
     left: [u8; 2],
     /// `AboveMiSizes[ PlaneStart ]` at `c` and `c + bw4 / 2`.
@@ -56,8 +59,8 @@ impl PartitionContextInput {
         above: [u8; 2],
     ) -> Self {
         Self {
-            b_size: b_size.index(),
-            plane_start,
+            b_size,
+            plane_start: plane_start as u8,
             left,
             above,
         }
@@ -73,13 +76,14 @@ impl PartitionContextInput {
         above_mi_sizes: [&[u8]; DO_SPLIT_PLANE_CONTEXTS],
     ) -> Result<Self, TileCdfError> {
         let b_size = checked_block_size(b_size)?;
+        let b_index = b_size.index();
         let plane_start = checked_plane(TileCdfArray::DoSplit, plane_start)?;
-        let half_h = NUM_4X4_BLOCKS_HIGH[b_size] as usize >> 1;
-        let half_w = NUM_4X4_BLOCKS_WIDE[b_size] as usize >> 1;
+        let half_h = NUM_4X4_BLOCKS_HIGH[b_index] as usize >> 1;
+        let half_w = NUM_4X4_BLOCKS_WIDE[b_index] as usize >> 1;
         let (left, above) = (left_mi_sizes[plane_start], above_mi_sizes[plane_start]);
         Ok(Self {
             b_size,
-            plane_start,
+            plane_start: plane_start as u8,
             left: [
                 neighbour("LeftMiSizes", left, plane_start, r)?,
                 neighbour("LeftMiSizes", left, plane_start, r + half_h)?,
@@ -94,7 +98,7 @@ impl PartitionContextInput {
     #[inline]
     pub(crate) fn do_split_selector(self) -> TileCdfSelector {
         TileCdfSelector::DoSplit {
-            plane_start: self.plane_start,
+            plane_start: usize::from(self.plane_start),
             ctx: self.neighbour_context(&PARTITION_SIZE_ADJUST),
         }
     }
@@ -102,7 +106,7 @@ impl PartitionContextInput {
     #[inline]
     pub(crate) fn rect_type_selector(self) -> TileCdfSelector {
         TileCdfSelector::RectType {
-            plane_start: self.plane_start,
+            plane_start: usize::from(self.plane_start),
             ctx: self.neighbour_context(&PARTITION_SIZE_ADJUST_RECT_TYPE),
         }
     }
@@ -110,7 +114,7 @@ impl PartitionContextInput {
     #[inline]
     pub(crate) fn do_ext_partition_selector(self, rect_type: RectPartitionType) -> TileCdfSelector {
         TileCdfSelector::DoExtPartition {
-            plane_start: self.plane_start,
+            plane_start: usize::from(self.plane_start),
             ctx: self.extended_context(rect_type),
         }
     }
@@ -121,16 +125,16 @@ impl PartitionContextInput {
         rect_type: RectPartitionType,
     ) -> TileCdfSelector {
         TileCdfSelector::DoUneven4WayPartition {
-            plane_start: self.plane_start,
+            plane_start: usize::from(self.plane_start),
             ctx: self.extended_context(rect_type),
         }
     }
 
-    fn neighbour_context(self, size_adjustments: &[usize; BLOCK_SIZES]) -> usize {
-        let bsw = (MI_WIDTH_LOG2[self.b_size] as usize).max(1);
-        let bsh = (MI_HEIGHT_LOG2[self.b_size] as usize).max(1);
+    fn neighbour_context(self, size_adjustments: &[u8; 32]) -> usize {
+        let bsw = log2_wide(self.b_size).max(1);
+        let bsh = log2_high(self.b_size).max(1);
         partition_context(
-            size_adjustments[self.b_size],
+            usize::from(size_adjustments[self.b_size.index() & 31]),
             smaller(self.left[0], bsh),
             smaller(self.above[0], bsw),
         )
@@ -138,12 +142,12 @@ impl PartitionContextInput {
 
     fn extended_context(self, rect_type: RectPartitionType) -> usize {
         let (line, log2) = match rect_type {
-            RectPartitionType::Horz => (self.left, MI_HEIGHT_LOG2[self.b_size]),
-            RectPartitionType::Vert => (self.above, MI_WIDTH_LOG2[self.b_size]),
+            RectPartitionType::Horz => (self.left, log2_high(self.b_size)),
+            RectPartitionType::Vert => (self.above, log2_wide(self.b_size)),
         };
-        let threshold = (log2 as usize).saturating_sub(1).max(1);
+        let threshold = log2.saturating_sub(1).max(1);
         partition_context(
-            PARTITION_SIZE_ADJUST[self.b_size],
+            usize::from(PARTITION_SIZE_ADJUST[self.b_size.index() & 31]),
             smaller(line[0], threshold),
             smaller(line[1], threshold),
         )
@@ -155,7 +159,7 @@ impl PartitionContextInput {
 /// `LeftMiSizes` lines (see `TileMiSizeState`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SquareSplitContextInput {
-    b_size: usize,
+    b_size: BlockSize,
     above: Option<u8>,
     left: Option<u8>,
 }
@@ -168,7 +172,7 @@ impl SquareSplitContextInput {
         left: Option<u8>,
     ) -> Self {
         Self {
-            b_size: b_size.index(),
+            b_size,
             above,
             left,
         }
@@ -189,27 +193,28 @@ impl SquareSplitContextInput {
 
     #[inline]
     pub(crate) fn do_square_split_selector(self) -> TileCdfSelector {
-        let bsw = MI_WIDTH_LOG2[self.b_size] as usize;
-        let bsh = MI_HEIGHT_LOG2[self.b_size] as usize;
+        let bsw = log2_wide(self.b_size);
+        let bsh = log2_high(self.b_size);
         let above = self.above.map_or(0, |above| smaller(above, bsw));
         let left = self.left.map_or(0, |left| smaller(left, bsh));
         TileCdfSelector::DoSquareSplit {
             plane_start: 0,
-            ctx: partition_context(usize::from(self.b_size == BLOCK_256X256_INDEX), left, above),
+            ctx: partition_context(
+                usize::from(self.b_size.index() == BLOCK_256X256_INDEX),
+                left,
+                above,
+            ),
         }
     }
 }
 
 #[cfg(test)]
-fn checked_block_size(b_size: usize) -> Result<usize, TileCdfError> {
-    if b_size >= BLOCK_SIZES {
-        return Err(TileCdfError::BlockSizeOutOfRange {
-            table: "bSize",
-            b_size,
-            max_exclusive: BLOCK_SIZES,
-        });
-    }
-    Ok(b_size)
+fn checked_block_size(b_size: usize) -> Result<BlockSize, TileCdfError> {
+    BlockSize::new(b_size).map_err(|_| TileCdfError::BlockSizeOutOfRange {
+        table: "bSize",
+        b_size,
+        max_exclusive: BLOCK_SIZES,
+    })
 }
 
 #[cfg(test)]
@@ -227,6 +232,14 @@ fn neighbour(
             index,
             len: line.len(),
         })
+}
+
+fn log2_wide(b_size: BlockSize) -> usize {
+    b_size.mi_width_log2().unwrap_or(0)
+}
+
+fn log2_high(b_size: BlockSize) -> usize {
+    b_size.mi_height_log2().unwrap_or(0)
 }
 
 /// Whether the neighbour coded in `context` has a log2 extent below `log2`.

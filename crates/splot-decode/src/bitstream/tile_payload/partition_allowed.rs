@@ -156,44 +156,73 @@ impl PartitionAllowedInput {
     }
 }
 
+/// The § 5.20.3.2 allowed set, implied partition and implied `rectType` of a
+/// block, packed as allowed bits 0..10, implied partition 10..14 (10 for
+/// none) and rect type 14..16 (0 none, 1 horizontal, 2 vertical). Nonzero,
+/// because at least one partition is always allowed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PartitionDecisionFacts {
-    implied_partition: Option<PartitionType>,
-    allowed: AllowedPartitions,
-    rect_type: Option<RectPartitionType>,
-}
+pub(crate) struct PartitionDecisionFacts(u16);
 
 impl PartitionDecisionFacts {
+    pub(crate) fn new(
+        implied_partition: Option<PartitionType>,
+        allowed: AllowedPartitions,
+        rect_type: Option<RectPartitionType>,
+    ) -> Self {
+        let implied = implied_partition.map_or(PartitionType::ALL.len(), PartitionType::index);
+        let rect = match rect_type {
+            None => 0,
+            Some(RectPartitionType::Horz) => 1,
+            Some(RectPartitionType::Vert) => 2,
+        };
+        Self(allowed.bits() | (implied as u16) << 10 | rect << 14)
+    }
+
     pub(crate) const fn allowed(self) -> AllowedPartitions {
-        self.allowed
+        AllowedPartitions::from_bits(self.0)
     }
 
     pub(crate) const fn implied(self) -> Option<PartitionType> {
-        self.implied_partition
+        let index = (self.0 >> 10 & 15) as usize;
+        if index < PartitionType::ALL.len() {
+            Some(PartitionType::ALL[index])
+        } else {
+            None
+        }
+    }
+
+    pub(crate) const fn rect_type(self) -> Option<RectPartitionType> {
+        match self.0 >> 14 {
+            1 => Some(RectPartitionType::Horz),
+            2 => Some(RectPartitionType::Vert),
+            _ => None,
+        }
     }
 
     /// The partition `read_partition_decision` returns without a symbol read.
     #[inline]
     pub(crate) fn unread_partition(self) -> Option<PartitionType> {
-        if let Some(partition) = self.implied_partition
-            && self.allowed.contains(partition)
-        {
-            return Some(partition);
-        }
-        self.allowed.only()
+        let allowed = self.0 & 0x3ff;
+        let implied = u32::from(self.0 >> 10 & 15);
+        let index = if allowed >> implied & 1 != 0 {
+            implied
+        } else if allowed.is_power_of_two() {
+            allowed.trailing_zeros()
+        } else {
+            return None;
+        };
+        PartitionType::ALL.get(index as usize).copied()
     }
 
-    pub(crate) fn read_partition_decision_input(
+    pub(crate) const fn read_partition_decision_input(
         self,
         bru_active: bool,
         partition_context: PartitionContextInput,
         square_split_context: SquareSplitContextInput,
     ) -> ReadPartitionDecisionInput {
-        ReadPartitionDecisionInput::new(
-            self.allowed,
-            self.implied_partition,
+        ReadPartitionDecisionInput::from_facts(
+            self,
             bru_active,
-            self.rect_type,
             partition_context,
             square_split_context,
         )
@@ -221,11 +250,11 @@ pub(crate) enum PartitionAllowedError {
 pub(crate) fn partition_decision_facts(
     input: PartitionAllowedInput,
 ) -> Result<PartitionDecisionFacts, PartitionAllowedError> {
-    Ok(PartitionDecisionFacts {
-        implied_partition: partition_implied(input)?,
-        allowed: init_allowed_partitions(input)?,
-        rect_type: rect_type_implied_by_bsize(input.b_size, input.tree_type),
-    })
+    Ok(PartitionDecisionFacts::new(
+        partition_implied(input)?,
+        init_allowed_partitions(input)?,
+        rect_type_implied_by_bsize(input.b_size, input.tree_type),
+    ))
 }
 
 const MEMO_SLOTS: usize = 29 * 3 * 8;
@@ -238,8 +267,7 @@ const EDGE_MEMO_SLOTS: usize = 256;
 /// determines them while the other frame-level inputs stay fixed, which holds
 /// for one tile walk. Blocks wholly inside the frame take a flat slot; blocks
 /// crossing an edge share a direct-mapped cache whose entries repeat along
-/// the edge. A slot packs the facts into 16 bits; 0 marks an empty slot,
-/// because at least one partition is always allowed.
+/// the edge. A slot holds the packed facts; 0 marks an empty slot.
 pub(crate) struct PartitionDecisionMemo {
     slots: [u16; MEMO_SLOTS],
     edge_keys: [u32; EDGE_MEMO_SLOTS],
@@ -274,7 +302,7 @@ impl PartitionDecisionMemo {
         input: impl FnOnce() -> Result<PartitionAllowedInput, E>,
     ) -> Result<PartitionDecisionFacts, E> {
         match self.slot_mut(key) {
-            Some(slot) if *slot != 0 => Ok(PartitionDecisionFacts::unpacked(*slot)),
+            Some(slot) if *slot != 0 => Ok(PartitionDecisionFacts(*slot)),
             slot => derive_memo_facts(slot, input),
         }
     }
@@ -307,38 +335,9 @@ fn derive_memo_facts<E: From<PartitionAllowedError>>(
 ) -> Result<PartitionDecisionFacts, E> {
     let facts = partition_decision_facts(input()?)?;
     if let Some(slot) = slot {
-        *slot = facts.packed();
+        *slot = facts.0;
     }
     Ok(facts)
-}
-
-impl PartitionDecisionFacts {
-    fn packed(self) -> u16 {
-        let allowed = self.allowed.bits();
-        let implied = self
-            .implied_partition
-            .map_or(PartitionType::ALL.len(), PartitionType::index) as u16;
-        let rect = match self.rect_type {
-            None => 0,
-            Some(RectPartitionType::Horz) => 1,
-            Some(RectPartitionType::Vert) => 2,
-        };
-        allowed | implied << 10 | rect << 14
-    }
-
-    fn unpacked(bits: u16) -> Self {
-        Self {
-            implied_partition: PartitionType::ALL
-                .get(usize::from(bits >> 10 & 15))
-                .copied(),
-            allowed: AllowedPartitions::from_bits(bits),
-            rect_type: match bits >> 14 {
-                1 => Some(RectPartitionType::Horz),
-                2 => Some(RectPartitionType::Vert),
-                _ => None,
-            },
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -929,7 +928,7 @@ mod memo_tests {
         let inside = memo.facts(interior).unwrap();
         let at_edge = memo.facts(edge).unwrap();
         assert_eq!(at_edge, partition_decision_facts(edge).unwrap());
-        assert_eq!(at_edge.implied_partition, Some(PartitionType::Horz));
+        assert_eq!(at_edge.implied(), Some(PartitionType::Horz));
         assert_ne!(at_edge, inside);
 
         let chroma = PartitionAllowedInput {
@@ -940,9 +939,9 @@ mod memo_tests {
             known_chroma_luma_partition: Some(PartitionType::Vert),
             ..chroma
         };
-        assert_eq!(memo.facts(chroma).unwrap().implied_partition, None);
+        assert_eq!(memo.facts(chroma).unwrap().implied(), None);
         assert_eq!(
-            memo.facts(forced).unwrap().implied_partition,
+            memo.facts(forced).unwrap().implied(),
             Some(PartitionType::Vert)
         );
     }
