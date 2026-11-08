@@ -87,11 +87,10 @@ fn copy(block: &Block<'_, u8>, output: &mut [u8], stride: usize) -> bool {
     }) else {
         return false;
     };
-    let source_stride = block.stride;
     macro_rules! copy_lines {
         ($n:literal) => {
             for row in 0..h {
-                let (from, to) = (row * source_stride, row * stride);
+                let (from, to) = (row * block.stride, row * stride);
                 if let (Some(source), Some(target)) = (
                     source.get(from..).and_then(<[u8]>::first_chunk::<$n>),
                     output.get_mut(to..).and_then(<[u8]>::first_chunk_mut::<$n>),
@@ -110,7 +109,7 @@ fn copy(block: &Block<'_, u8>, output: &mut [u8], stride: usize) -> bool {
         128 => copy_lines!(128),
         _ => {
             let lines = source
-                .chunks(source_stride)
+                .chunks(block.stride)
                 .zip(output.chunks_mut(stride))
                 .take(h);
             for (source, target) in lines {

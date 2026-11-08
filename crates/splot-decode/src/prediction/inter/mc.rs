@@ -859,8 +859,8 @@ fn predict_plane<T: ReconSample>(
         staged.resize(len, T::default());
         if let Some(output) = T::u8_slice_mut(&mut staged) {
             subpel_predict_block_strided_into_u8(&view, &params, output, params.w)?;
+            return Ok(sink.write_rect(plane, target, &staged, params.w)?);
         }
-        return Ok(sink.write_rect(plane, target, &staged, params.w)?);
     }
     SUBPEL_PREDICTION_BUFFER.with(|slot| {
         let mut predicted = slot.take().unwrap_or_default();
