@@ -1679,7 +1679,7 @@ fn single_ref_ctx_no_neighbour_is_one() {
     let block0 = block_at(0, 0);
     let nctx = block_neighbour_ctx(&grid, &block0);
     assert_eq!(
-        nctx.single_ref_ctx(0, 2),
+        nctx.single_ref_ctxs(2).map(|contexts| contexts[0]),
         Some(1),
         "no-neighbour single_ref context is 1 (both count_refs are 0)"
     );
@@ -1691,7 +1691,7 @@ fn single_ref_ctx_counts_a_ref0_neighbour() {
     let block1 = block_at(0, N4_32);
     let nctx = block_neighbour_ctx(&grid, &block1);
     assert_eq!(
-        nctx.single_ref_ctx(0, 2),
+        nctx.single_ref_ctxs(2).map(|contexts| contexts[0]),
         Some(2),
         "a ref-0 neighbour makes thisRefCount > nextRefsCount -> ctx 2"
     );
@@ -1705,12 +1705,12 @@ fn single_ref_ctx_counts_refs_above_two() {
     let nctx = block_neighbour_ctx(&grid, &block);
 
     assert_eq!(
-        nctx.single_ref_ctx(0, 3),
+        nctx.single_ref_ctxs(3).map(|contexts| contexts[0]),
         Some(0),
         "ref-2 neighbour makes ref-0 count lower than later refs"
     );
     assert_eq!(
-        nctx.single_ref_ctx(1, 3),
+        nctx.single_ref_ctxs(3).map(|contexts| contexts[1]),
         Some(0),
         "ref-2 neighbour makes ref-1 count lower than later refs"
     );
@@ -1722,15 +1722,13 @@ fn single_ref_ctx_is_total_for_every_admitted_reference_count() {
     let nctx = block_neighbour_ctx(&grid, &block_at(0, 0));
 
     for num_total_refs in 2..=BlockNeighbourContext::MAX_NEIGHBOUR_REFS {
-        for ref_idx in 0..num_total_refs - 1 {
-            assert!(
-                nctx.single_ref_ctx(ref_idx, num_total_refs).is_some(),
-                "ref_idx {ref_idx} must be valid for {num_total_refs} references"
-            );
-        }
+        assert!(
+            nctx.single_ref_ctxs(num_total_refs).is_some(),
+            "every ref_idx must be valid for {num_total_refs} references"
+        );
     }
     assert_eq!(
-        nctx.single_ref_ctx(0, BlockNeighbourContext::MAX_NEIGHBOUR_REFS + 1),
+        nctx.single_ref_ctxs(BlockNeighbourContext::MAX_NEIGHBOUR_REFS + 1),
         None,
         "the guard remains load-bearing outside the admitted reference domain"
     );

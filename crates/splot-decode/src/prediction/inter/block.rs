@@ -1731,13 +1731,9 @@ fn decode_block<T: ReconSample>(
     } else if tip_ref {
         TIP_REF_FRAME
     } else if num_total_refs >= 2 {
-        let decisions = num_total_refs - 1;
-        let mut contexts = [0usize; 6];
-        for (ref_idx, ctx) in contexts.iter_mut().take(decisions).enumerate() {
-            *ctx = neighbour_ctx
-                .single_ref_ctx(ref_idx, num_total_refs)
-                .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
-        }
+        let contexts = neighbour_ctx
+            .single_ref_ctxs(num_total_refs)
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
         let selected = super::single_ref::read_single_ref(cdfs, symbols, num_total_refs, &contexts)
             .map_err(|error| single_ref_read_error(error, tile_offset))?;
         selected as i8

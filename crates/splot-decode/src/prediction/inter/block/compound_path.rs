@@ -1426,13 +1426,9 @@ pub(super) fn compound_ref_contexts(
     neighbour_ctx: &BlockNeighbourContext,
     num_total_refs: usize,
 ) -> Result<[usize; 7]> {
-    let mut contexts = [0usize; 7];
-    for (ref_idx, ctx) in contexts.iter_mut().take(num_total_refs).enumerate() {
-        *ctx = neighbour_ctx
-            .single_ref_ctx(ref_idx, num_total_refs)
-            .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
-    }
-    Ok(contexts)
+    neighbour_ctx
+        .single_ref_ctxs(num_total_refs)
+        .ok_or_else(|| crate::DecodeHeaderStateError::InvalidInterReferenceMap.into())
 }
 
 #[allow(

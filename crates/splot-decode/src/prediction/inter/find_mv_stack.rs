@@ -375,7 +375,8 @@ pub(crate) struct BlockNeighbourContext {
     pub(crate) is_inter_ctx: usize,
     pub(crate) skip_mode_ctx: usize,
     pub(crate) skip_ctx: usize,
-    ref_counts: [u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS],
+    /// Per-reference use counts, a nibble per reference.
+    ref_counts: u32,
     cells: [NeighbourFlags; 2],
     cell_count: usize,
     npos_cells: [NeighbourFlags; 2],
@@ -387,23 +388,23 @@ pub(crate) struct BlockNeighbourContext {
 impl BlockNeighbourContext {
     const MAX_NEIGHBOUR_REFS: usize = 7;
 
-    pub(crate) fn single_ref_ctx(&self, ref_idx: usize, num_total_refs: usize) -> Option<usize> {
-        let this_count = u32::from(*self.ref_counts.get(ref_idx)?);
-        let next_start = ref_idx.checked_add(1)?;
-        let next_count = if next_start >= num_total_refs {
-            0
-        } else {
-            self.ref_counts
-                .get(next_start..num_total_refs)?
-                .iter()
-                .map(|&count| u32::from(count))
-                .sum()
-        };
-        Some(match this_count.cmp(&next_count) {
-            core::cmp::Ordering::Equal => 1,
-            core::cmp::Ordering::Less => 0,
-            core::cmp::Ordering::Greater => 2,
-        })
+    /// The single-reference contexts of references `0..num_total_refs`.
+    pub(crate) fn single_ref_ctxs(
+        &self,
+        num_total_refs: usize,
+    ) -> Option<[usize; Self::MAX_NEIGHBOUR_REFS]> {
+        if num_total_refs > Self::MAX_NEIGHBOUR_REFS {
+            return None;
+        }
+        let mut contexts = [0; Self::MAX_NEIGHBOUR_REFS];
+        let mut next =
+            (self.ref_counts & ((1 << (4 * num_total_refs)) - 1)).wrapping_mul(0x1111_1111) >> 28;
+        for (ref_idx, ctx) in contexts.iter_mut().take(num_total_refs).enumerate() {
+            let this = (self.ref_counts >> (4 * ref_idx)) & 0xf;
+            next -= this;
+            *ctx = usize::from(this >= next) + usize::from(this > next);
+        }
+        Some(contexts)
     }
 
     pub(crate) fn skip_mode_ref_pair(
@@ -632,17 +633,11 @@ pub(crate) fn block_neighbour_ctx(
         2 * usize::from(n_intra_0)
     };
 
-    let mut ref_counts = [0u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS];
-    for cell in buf {
-        if !cell.is_inter() {
-            continue;
-        }
-        for ref_frame in [Some(cell.ref_frame0()), cell.ref_frame1()] {
-            if let Some(slot) = ref_frame
-                .and_then(|ref_frame| usize::try_from(ref_frame).ok())
-                .and_then(|ref_frame| ref_counts.get_mut(ref_frame))
-            {
-                *slot += 1;
+    let mut ref_counts = 0u32;
+    for cell in buf.iter().filter(|cell| cell.is_inter()) {
+        for ref_frame in [cell.ref_frame0(), cell.ref_frame1().unwrap_or(-1)] {
+            if (ref_frame as u8 as usize) < BlockNeighbourContext::MAX_NEIGHBOUR_REFS {
+                ref_counts += 1 << (4 * ref_frame as u8);
             }
         }
     }
