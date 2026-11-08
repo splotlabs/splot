@@ -265,25 +265,20 @@ pub(crate) fn read_nonzero_coeff_eob(
     symbols: &mut SymbolDecoder<'_>,
     input: NonZeroCoeffEobSymbolInput,
 ) -> Result<NonZeroCoeffEob, CoeffLoopContextError> {
-    let eob_pt_symbol = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::EobPt {
-                size: input.size,
-                eob_ctx: input.eob_ctx,
-            },
-            symbols,
-        )?
-        .get();
+    let eob_pt_symbol = cdfs.read_trusted_symbol(
+        TileCdfSelector::EobPt {
+            size: input.size,
+            eob_ctx: input.eob_ctx,
+        },
+        symbols,
+    )?;
     let eob_pt_extra_width = eob_pt_extra_width(input.size, eob_pt_symbol);
     let eob_pt_extra = read_eob_literal(symbols, eob_pt_extra_width, "eob_pt_extra")?;
     let eob_pt =
         checked_resolved_eob_pt(input.size, eob_pt_symbol, eob_pt_extra_width, eob_pt_extra)?;
 
     let (eob_extra, eob_extra_bits) = if eob_pt >= 3 {
-        let eob_extra = cdfs
-            .read_block_symbol_trace(TileCdfSelector::EobExtra {}, symbols)?
-            .get()
-            != 0;
+        let eob_extra = cdfs.read_trusted_symbol(TileCdfSelector::EobExtra {}, symbols)? != 0;
         let width = eob_extra_bits_width(eob_pt)? as u32;
         (
             eob_extra,

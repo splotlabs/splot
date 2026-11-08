@@ -169,9 +169,7 @@ pub(crate) fn read_preflighted_nonzero_coeff_sign(
     let (symbol, sign) = match input.source {
         CoeffSignReadSource::None => (CoeffSignReadSymbol::None, false),
         CoeffSignReadSource::Cdf(selector) => {
-            let symbol = cdfs
-                .read_block_symbol_trace(selector.tile_selector(), symbols)?
-                .get();
+            let symbol = cdfs.read_trusted_symbol(selector.tile_selector(), symbols)?;
             (CoeffSignReadSymbol::Cdf, symbol != 0)
         }
         CoeffSignReadSource::SignBit => {

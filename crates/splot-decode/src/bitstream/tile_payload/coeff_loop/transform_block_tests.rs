@@ -98,3 +98,31 @@ fn grid_scan_rejects_bad_shapes_and_eobs() {
     assert!(grid_scan(class, 4, 4, 17).is_err());
     assert_eq!(grid_scan(class, 4, 4, 16).unwrap().len(), 16);
 }
+
+#[test]
+fn scan_entry_context_classes_give_the_luma_2d_base_contexts() {
+    for width in [4, 8, 16, 32] {
+        for height in [4, 8, 16, 32] {
+            let len = width * height;
+            let scan = grid_scan(CoeffTransformClass::TwoD, width, height, len).unwrap();
+            for (scan_index, &entry) in scan.iter().enumerate().skip(1) {
+                let pos = (entry >> 16) as usize;
+                let diagonal = pos / width + pos % width;
+                let class = ctx_class_of(entry);
+                let (hf, lf) = (&CTX_2D[0][class], &CTX_2D[1][class]);
+                for (mag, (&hf, &lf)) in hf.iter().zip(lf).enumerate() {
+                    let half = (mag + 1) >> 1;
+                    if scan_index < lf_scan_end::<0, true>(width, height) {
+                        let (cap, offset) =
+                            LF_2D_CONTEXT_CAP_AND_OFFSET[1 + usize::from(diagonal >= 2)];
+                        assert_eq!(usize::from(lf), half.min(cap) + offset);
+                    } else {
+                        let bucket = usize::from(diagonal >= 6) + usize::from(diagonal >= 8);
+                        let ctx = half.min(4) + HF_2D_CONTEXT_OFFSET[bucket];
+                        assert_eq!(usize::from(hf), 2 * ctx);
+                    }
+                }
+            }
+        }
+    }
+}

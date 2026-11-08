@@ -15,9 +15,9 @@ use super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::cdf::coeff_context::{
     CHROMA_2D_PLANE_CONTEXT_OFFSET, HF_2D_CONTEXT_OFFSET, LF_2D_CONTEXT_CAP_AND_OFFSET,
     LF_SIG_COEF_CONTEXTS_2D_UV, MAG_REF_OFFSET_WITH_TX_CLASS, MAX_BASE_BR_RANGE, SIG_OFFSETS,
-    coeff_base_eob_ctx,
+    coeff_base_eob_ctx, dc_sign_ctx,
 };
-use super::super::cdf::{CoeffCdfSelector, CoeffLevelRows, TileCdfSubset};
+use super::super::cdf::{CoeffCdfSelector, CoeffLevelRows, TileCdfSelector, TileCdfSubset};
 use super::super::coeff_state::{
     CoeffBlockLines, CoeffLevelWords, LEVEL_STRIDE, LEVEL_WORDS_MASK, TileCoeffContextState,
     TileCoeffStateError,
@@ -40,8 +40,8 @@ use super::quant_state::{
 use super::read_quant::{CoeffReadQuantConfig, CoeffReadQuantInput, CoeffReadQuantState};
 use super::scan_walk::CoeffScanEntry;
 use super::sign_symbol::{
-    CoeffSignReadSymbol, CoeffSignSourceDeriveConfig, derive_nonzero_coeff_sign_input,
-    read_preflighted_nonzero_coeff_sign,
+    CoeffSignReadError, CoeffSignReadSymbol, CoeffSignSourceDeriveConfig,
+    derive_nonzero_coeff_sign_input, read_preflighted_nonzero_coeff_sign,
 };
 
 const PHTHRESH: u32 = 4;
@@ -101,19 +101,49 @@ static LEVEL_WORD: [u32; 16] = {
 /// bytes the neighbour sums read.
 const Q0_BIT: u32 = 24;
 
-/// The luma 2D high-frequency context offset of a grid position, by its
-/// diagonal `row + col` (§ 8.3.2).
-static HF_2D_OFFSET: [u8; LEVEL_WORDS_MASK + 1] = {
-    let mut out = [0; LEVEL_WORDS_MASK + 1];
-    let mut grid = 0;
-    while grid <= LEVEL_WORDS_MASK {
-        let diagonal = grid / LEVEL_STRIDE + grid % LEVEL_STRIDE;
-        let class = (diagonal >= 6) as usize + (diagonal >= 8) as usize;
-        out[grid] = HF_2D_CONTEXT_OFFSET[class] as u8;
-        grid += 1;
+/// Where a [`GRID_SCANS`] entry keeps its luma 2D `coeff_base` context
+/// class (§ 8.3.2), above the grid index: for a low-frequency position
+/// (`row + col < 4`) its `LF_2D_CONTEXT_CAP_AND_OFFSET` bucket, otherwise its
+/// `HF_2D_CONTEXT_OFFSET` bucket.
+const CTX_CLASS_SHIFT: u32 = 11;
+
+const fn ctx_class(row: usize, col: usize) -> usize {
+    let diagonal = row + col;
+    if diagonal == 0 {
+        0
+    } else if diagonal < 2 {
+        1
+    } else if diagonal < 4 {
+        2
+    } else {
+        (diagonal >= 6) as usize + (diagonal >= 8) as usize
+    }
+}
+
+/// `CTX_2D[lf][class][mag]`: the luma 2D `coeff_base` context of a
+/// neighbour sum `mag` in a context class (§ 8.3.2), `lf` for the
+/// low-frequency rows. A high-frequency context is stored doubled, the index
+/// of its first TCQ row in the flattened rows.
+static CTX_2D: [[[u8; 32]; 4]; 2] = {
+    let mut out = [[[0; 32]; 4]; 2];
+    let mut class = 0;
+    while class < 3 {
+        let mut mag = 0;
+        while mag < 32 {
+            let half = (mag + 1) >> 1;
+            out[0][class][mag] = (2 * (min(half, 4) + HF_2D_CONTEXT_OFFSET[class])) as u8;
+            let (cap, offset) = LF_2D_CONTEXT_CAP_AND_OFFSET[class];
+            out[1][class][mag] = (min(half, cap) + offset) as u8;
+            mag += 1;
+        }
+        class += 1;
     }
     out
 };
+
+const fn min(a: usize, b: usize) -> usize {
+    if a < b { a } else { b }
+}
 
 /// `HALF_CAPPED[cap][mag]` is `min((mag + 1) >> 1, cap)`, the capped
 /// context of a neighbour sum, as a load instead of a data-dependent branch.
@@ -177,7 +207,8 @@ static SCAN_SHAPE_OFFSETS: [[usize; SCAN_DIMS]; SCAN_DIMS] = {
 };
 
 /// The § 5.20.7.30 scan of every block shape per transform class, each
-/// position as its level-grid index with the position itself above bit 16.
+/// position as its level-grid index, its context class at
+/// [`CTX_CLASS_SHIFT`] and the position itself above bit 16.
 static GRID_SCANS: [[u32; GRID_SCAN_LEN]; 3] = {
     let classes = [
         TransformClass::TwoD,
@@ -196,8 +227,10 @@ static GRID_SCANS: [[u32; GRID_SCAN_LEN]; 3] = {
                 let mut c = 0;
                 while c < (4 << wi) * (4 << hi) {
                     let pos = coefficient_scan_position(wi, hi, classes[class], c) as usize;
-                    let grid = (pos >> width_log2) * LEVEL_STRIDE + (pos & ((1 << width_log2) - 1));
-                    out[class][base + c] = (grid | (pos << 16)) as u32;
+                    let (row, col) = (pos >> width_log2, pos & ((1 << width_log2) - 1));
+                    let grid = row * LEVEL_STRIDE + col;
+                    let context = ctx_class(row, col) << CTX_CLASS_SHIFT;
+                    out[class][base + c] = (grid | context | (pos << 16)) as u32;
                     c += 1;
                 }
                 hi += 1;
@@ -553,6 +586,12 @@ const fn entry_grid(entry: u32) -> usize {
     entry as usize & LEVEL_WORDS_MASK
 }
 
+#[allow(clippy::inline_always, reason = "measured: per-coefficient index")]
+#[inline(always)]
+const fn ctx_class_of(entry: u32) -> usize {
+    (entry >> CTX_CLASS_SHIFT) as usize & 3
+}
+
 /// The base and range pass state: an owned decoder whose reads skip every
 /// per-symbol check (the coefficient rows are decoder-owned), the level
 /// grid, and the CDF rows of the block's transform-size context.
@@ -564,7 +603,8 @@ struct LevelPass<'a, 'r, const UPD: bool> {
     plane: usize,
     tcq: usize,
     /// `(tcqState >> 1) & 1` of the next coefficient, taken from the state
-    /// before the previous update so it does not wait on the last symbol.
+    /// before the previous update (`Tcq_Next_State` moves bit 2 to bit 1) so
+    /// it does not wait on the last symbol.
     tcq_q0: usize,
     /// Bit 0 the `sumAbs1` parity, the bits above the nonzero count.
     ph: u32,
@@ -674,9 +714,9 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
     #[inline(always)]
     fn read_lf_base<const CLASS: usize, const LUMA: bool, const DC: bool>(
         &mut self,
-        grid: usize,
-        pos: usize,
+        entry: u32,
     ) -> u32 {
+        let (grid, pos) = (entry_grid(entry), (entry >> 16) as usize);
         let mag = if CLASS == 0 {
             self.base_mag::<CLASS, LUMA, true, true>(grid)
         } else {
@@ -688,14 +728,12 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
             return self.symbols.read_trusted::<7, UPD>(row);
         }
         let ctx = if CLASS == 0 {
-            let (cap, offset) = if DC {
-                LF_2D_CONTEXT_CAP_AND_OFFSET[0]
-            } else if grid < 2 || grid == LEVEL_STRIDE {
-                LF_2D_CONTEXT_CAP_AND_OFFSET[1]
+            if DC {
+                let (cap, offset) = LF_2D_CONTEXT_CAP_AND_OFFSET[0];
+                half_capped(mag, cap) + offset
             } else {
-                LF_2D_CONTEXT_CAP_AND_OFFSET[2]
-            };
-            half_capped(mag, cap) + offset
+                usize::from(CTX_2D[1][ctx_class_of(entry)][mag as usize & 31]) & 31
+            }
         } else {
             let line = if CLASS == 1 {
                 pos & ((1usize << self.width_log2) - 1)
@@ -719,20 +757,20 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         reason = "measured: per-coefficient symbol read"
     )]
     #[inline(always)]
-    fn read_hf_base<const CLASS: usize, const LUMA: bool>(&mut self, grid: usize) -> u32 {
-        let mag = self.base_mag::<CLASS, LUMA, false, false>(grid);
+    fn read_hf_base<const CLASS: usize, const LUMA: bool>(&mut self, entry: u32) -> u32 {
+        let mag = self.base_mag::<CLASS, LUMA, false, false>(entry_grid(entry));
         if !LUMA {
             let ctx = self.uv_ctx::<CLASS>(mag);
             let row = row_at(self.rows.base_uv, ctx);
             return self.symbols.read_trusted::<5, UPD>(row);
         }
-        let offset = if CLASS == 0 {
-            usize::from(HF_2D_OFFSET[grid & LEVEL_WORDS_MASK])
-        } else {
-            15
-        };
         let q0 = self.tcq_q0 & 1;
-        let row = &mut row_at(self.rows.base, half_capped(mag, 4) + offset)[q0];
+        let row = if CLASS == 0 {
+            let first = usize::from(CTX_2D[0][ctx_class_of(entry)][mag as usize & 31]);
+            &mut self.rows.base.as_flattened_mut()[(first | q0) & 31]
+        } else {
+            &mut row_at(self.rows.base, half_capped(mag, 4) + 15)[q0]
+        };
         self.symbols.read_trusted::<5, UPD>(row)
     }
 
@@ -745,7 +783,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         grid: usize,
         level: u32,
     ) {
-        let q0 = if TCQ { (self.tcq as u32 >> 1) & 1 } else { 0 };
+        let q0 = if TCQ { self.tcq_q0 as u32 & 1 } else { 0 };
         self.levels[grid & LEVEL_WORDS_MASK] = LEVEL_WORD[level as usize & 15] | q0 << Q0_BIT;
         if TCQ {
             self.tcq_q0 = (self.tcq >> 2) & 1;
@@ -784,14 +822,14 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
         let hf = scan.get(lf_end..eob_index).unwrap_or_default();
         for (offset, &entry) in hf.iter().enumerate().rev() {
             let grid = entry_grid(entry);
-            let level = self.read_hf_base::<CLASS, LUMA>(grid);
+            let level = self.read_hf_base::<CLASS, LUMA>(entry);
             let level = self.add_range::<CLASS, LUMA, false>(grid, false, level);
             self.finish::<TCQ, PH>(lf_end + offset, grid, level);
         }
         let lf = scan.get(1..lf_end.min(eob_index)).unwrap_or_default();
         for (offset, &entry) in lf.iter().enumerate().rev() {
-            let (pos, grid) = ((entry >> 16) as usize, entry_grid(entry));
-            let level = self.read_lf_base::<CLASS, LUMA, false>(grid, pos);
+            let grid = entry_grid(entry);
+            let level = self.read_lf_base::<CLASS, LUMA, false>(entry);
             let level = self.add_range::<CLASS, LUMA, true>(grid, false, level);
             self.finish::<TCQ, PH>(1 + offset, grid, level);
         }
@@ -801,7 +839,7 @@ impl<const UPD: bool> LevelPass<'_, '_, UPD> {
             let row = row_at(self.rows.base_ph, half_capped(mag, 4));
             self.symbols.read_trusted::<5, UPD>(row)
         } else {
-            let level = self.read_lf_base::<CLASS, LUMA, true>(dc_grid, 0);
+            let level = self.read_lf_base::<CLASS, LUMA, true>(scan[0]);
             self.add_range::<CLASS, LUMA, true>(dc_grid, true, level)
         };
         self.finish::<TCQ, PH>(0, dc_grid, level);
@@ -932,7 +970,43 @@ fn sign_pass<const CLASS: usize, const LUMA: bool, const TCQ: bool>(
     let word = levels[grid];
     levels[grid] = 0;
     let level = (word >> 16) & 0xff;
-    if facts.is_hidden || level != 0 {
+    if !facts.is_hidden && level != 0 {
+        let sign = if LUMA {
+            let dc = &block.dc;
+            let ctx = dc_sign_ctx(dc.above_dc, dc.left_dc, dc.x4, dc.y4, dc.w4, dc.h4);
+            let selector = TileCdfSelector::DcSign {
+                plane_type: 0,
+                group: 0,
+                ctx,
+            };
+            cdfs.read_trusted_symbol(selector, symbols)
+                .map_err(CoeffSignReadError::from)?
+                != 0
+        } else {
+            symbols.read_bool_trusted()
+        };
+        let index = eob - 1;
+        let dc_quant = if level + u32::from(TCQ) < max_lf {
+            level
+        } else {
+            let entry = CoeffScanEntry::new(0, pos, pos >> wl, pos & col_mask);
+            let input = CoeffReadQuantInput {
+                entry,
+                level,
+                max_level: max_lf,
+            };
+            let read = read_quant.read_one(symbols, index, input);
+            read.map_err(CoeffQuantPassError::from)?.quant
+        };
+        quant_state.set_dc_sign(sign);
+        let magnitude = quant_state
+            .ac_magnitude(index, dc_quant, word >> Q0_BIT != 0)
+            .map_err(CoeffQuantPassError::from)? as i32;
+        if let Some(slot) = quant.get_mut(pos) {
+            *slot = if sign { -magnitude } else { magnitude };
+            end = end.max(pos + 1);
+        }
+    } else if facts.is_hidden {
         let index = eob - 1;
         let entry = CoeffScanEntry::new(0, pos, pos >> wl, pos & col_mask);
         let sign_input = derive_nonzero_coeff_sign_input(entry, level, sign_config);
