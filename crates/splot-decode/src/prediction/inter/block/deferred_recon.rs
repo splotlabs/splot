@@ -51,7 +51,7 @@ pub(super) struct InterReconCommand {
 #[repr(align(64))]
 pub(super) struct InterReconScratch<T: ReconSample> {
     general_intra: crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
-    tip: TipReconstructScratch<T>,
+    tip: TipReconstructScratch,
     pub(super) temporal: Vec<TemporalMotionBlock>,
     interintra: super::interintra::InterIntraScratch<T>,
     residual: InterResidualReconScratch<T>,
@@ -204,7 +204,7 @@ impl InterReconCommand {
         sink: &WorkspaceSink<'_, '_, T>,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         shared: &ReconShared<'_, T>,
-        tip_scratch: &mut TipReconstructScratch<T>,
+        tip_scratch: &mut TipReconstructScratch,
     ) -> Result<Option<mc::CompoundMotionGrid>> {
         match self.kind {
             PendingKind::Tip => tip::motion(
@@ -276,10 +276,11 @@ impl InterReconCommand {
         sink: &mut WorkspaceSink<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
         motion: Option<mc::CompoundMotionGrid>,
+        fresh_motion: bool,
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         shared: &ReconShared<'_, T>,
-        tip_scratch: &mut TipReconstructScratch<T>,
+        tip_scratch: &mut TipReconstructScratch,
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
         residual_scratch: &mut InterResidualReconScratch<T>,
     ) -> Result<Option<mc::CompoundMotionGrid>> {
@@ -290,6 +291,7 @@ impl InterReconCommand {
                 residual_scratch,
                 sink,
                 motion,
+                fresh_motion,
                 &self.placed,
                 residual_blocks,
                 residual_coeffs,
@@ -358,19 +360,21 @@ impl InterReconCommand {
         residual_blocks: &[InterResidualBlock],
         residual_coeffs: &[i32],
         shared: &ReconShared<'_, T>,
-        tip_scratch: &mut TipReconstructScratch<T>,
+        tip_scratch: &mut TipReconstructScratch,
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
         residual_scratch: &mut InterResidualReconScratch<T>,
     ) -> Result<()> {
-        let motion = if self.motion_derived {
-            self.derived_motion.take().map(|grid| *grid)
-        } else {
+        let fresh_motion = !self.motion_derived;
+        let motion = if fresh_motion {
             self.derive_motion(sink, temporal_records, shared, tip_scratch)?
+        } else {
+            self.derived_motion.take().map(|grid| *grid)
         };
         self.reconstruct_from_motion(
             sink,
             block_decoded,
             motion,
+            fresh_motion,
             residual_blocks,
             residual_coeffs,
             shared,

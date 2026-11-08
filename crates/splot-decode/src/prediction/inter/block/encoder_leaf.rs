@@ -198,7 +198,7 @@ pub(crate) struct EncoderInterTile {
     tip_records: Vec<TemporalMotionBlock>,
     /// The unit records a TIP trial derives and drops, kept for reuse.
     tip_trial_records: Vec<TemporalMotionBlock>,
-    tip_scratch: super::tip::TipReconstructScratch<u16>,
+    tip_scratch: super::tip::TipReconstructScratch,
     /// The intra block copy state of an intra frame with `allow_intrabc`;
     /// `None` in an inter frame.
     intrabc: Option<TileIntrabcPreludeState>,
@@ -817,6 +817,7 @@ impl EncoderInterTile {
                 &mut self.residual_scratch,
                 &mut sink,
                 grid,
+                true,
                 placed,
                 &[],
                 &[],
