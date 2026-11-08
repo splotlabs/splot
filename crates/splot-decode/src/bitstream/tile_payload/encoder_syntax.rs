@@ -36,7 +36,7 @@ use super::coeff_loop::scan_walk::CoeffScanEntry;
 use super::coeff_loop::sign_symbol::{
     CoeffSignReadSource, CoeffSignSourceDeriveConfig, derive_nonzero_coeff_sign_input,
 };
-use super::coeff_loop::{NonZeroCoeffEobContextInput, nonzero_coeff_eob_symbol_input};
+use super::coeff_loop::{TX_GEOMETRY, eob_context};
 use super::coeff_state::{
     CoeffContextUpdate, LevelGrid, TileCoeffContextState, TransformCoeffBlockState,
 };
@@ -1047,19 +1047,14 @@ impl IntraTileSyntax {
     /// The `eob_pt_*` CDF row of a transform block of the planned leaf.
     ///
     /// # Errors
-    /// Returns [`EncoderSyntaxError::Rule`] for an invalid transform size.
+    /// Returns [`EncoderSyntaxError::Unsupported`] for an invalid transform size.
     pub fn eob_pt_cdf(&mut self, plane: usize, tx_size: usize) -> Result<&mut [u16]> {
-        let (log2_w, log2_h) = tx_log2(tx_size)?;
-        let input = nonzero_coeff_eob_symbol_input(NonZeroCoeffEobContextInput {
-            plane,
-            is_inter: self.leaf_is_inter(),
-            tx_width_log2: log2_w as usize,
-            tx_height_log2: log2_h as usize,
-        })
-        .map_err(rule("eob context"))?;
+        let tx = TX_GEOMETRY
+            .get(tx_size)
+            .ok_or(EncoderSyntaxError::Unsupported("transform size"))?;
         self.tile_row(TileCdfSelector::EobPt {
-            size: input.size,
-            eob_ctx: input.eob_ctx,
+            size: tx.eob_size,
+            eob_ctx: eob_context(plane, self.leaf_is_inter()),
         })
     }
 

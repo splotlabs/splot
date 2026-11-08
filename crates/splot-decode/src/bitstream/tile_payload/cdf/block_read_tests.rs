@@ -194,12 +194,12 @@ fn trusted_transform_symbol_reads_match_the_checked_reads() {
         for mode in [CdfUpdateMode::Enabled, CdfUpdateMode::Disabled] {
             for selector in selectors {
                 let config = SymbolDecoderConfig::new().with_cdf_update_mode(mode);
-                let decoder = || {
+                let symbols = || {
                     SymbolDecoder::with_base_and_config(payload, ByteOffset::new(0), config)
                         .unwrap()
                 };
                 let (mut checked_tile, mut trusted_tile) = (frame.tile_copy(), frame.tile_copy());
-                let (mut checked, mut trusted) = (decoder(), decoder());
+                let (mut checked, mut trusted) = (symbols(), symbols());
                 for _ in 0..4 {
                     let expected = checked_tile
                         .read_block_symbol_trace(selector, &mut checked)

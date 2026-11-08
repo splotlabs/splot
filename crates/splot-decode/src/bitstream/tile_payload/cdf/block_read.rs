@@ -66,8 +66,7 @@ impl TileCdfSubset {
     /// Reads the `all_zero`, `eob_pt_*`, `eob_extra`, `dc_sign`, intra
     /// transform-type, `sec_tx_type`, `most_probable_stx_set` and
     /// `cctx_type` symbols through the trusted read of their decoder-owned
-    /// rows; any other
-    /// selector, or a context outside the rows, takes
+    /// rows; any other selector, or a context outside the rows, takes
     /// [`Self::read_block_symbol_trace`].
     #[allow(
         clippy::inline_always,

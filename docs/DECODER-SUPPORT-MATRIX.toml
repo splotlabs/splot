@@ -909,7 +909,7 @@ status = "partial"
 self_contained_tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop_tests.rs::live_eob_read_uses_selected_cdfs_and_literal_refinement", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
 diagnostics = ["decode/unsupported-feature"]
 local_reference_evidence = []
-notes = "Current live EOB size/context derivation through read_nonzero_coeff_eob_from_context from real transform log2, plane, inter, and q-context facts before either staged branch."
+notes = "Current live EOB size/context derivation through read_nonzero_coeff_block_start from the TX_GEOMETRY entry, plane, inter, and q-context facts before either staged branch."
 
 [[row]]
 id = "coeff-eob-derived-symbol-read"
@@ -923,7 +923,7 @@ status = "partial"
 self_contained_tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_loop_tests.rs::live_eob_read_uses_selected_cdfs_and_literal_refinement", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass_tests.rs::staged_ordinary_live_path_reads_base_br_sign_quant_and_commits", "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/fsc_quant_pass_tests.rs::staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits", "cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
 diagnostics = ["decode/unsupported-feature"]
 local_reference_evidence = []
-notes = "Current live composition from transform facts to selected EOB syntax through read_nonzero_coeff_eob_from_context; focused EOB and staged branch tests protect the surviving path."
+notes = "Current live composition from transform facts to selected EOB syntax through read_nonzero_coeff_block_start; focused EOB and staged branch tests protect the surviving path."
 
 [[row]]
 id = "coeff-eob-branch-handoff"

@@ -57,6 +57,10 @@ impl NonZeroCoeffBlockStart {
 }
 
 /// Reads the EOB of a nonzero block of plane `plane` with geometry `tx`.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "measured: the block start keeps the table entry, a copy costs 0.1%"
+)]
 pub(crate) fn read_nonzero_coeff_block_start(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,

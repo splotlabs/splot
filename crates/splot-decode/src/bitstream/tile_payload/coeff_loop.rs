@@ -14,8 +14,6 @@ use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{EobPtSize, TileCdfSelector, TileCdfSubset};
 use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
 
-const MIN_EOB_TX_LOG2: usize = 2;
-const EOB_MULTISIZE_LOG2_CAP: usize = 5;
 const EOB_MULTISIZE_OFFSET: usize = 4;
 const MIN_NONZERO_EOB_PT: usize = 1;
 const MAX_NONZERO_EOB_PT: usize = 11;
@@ -196,14 +194,6 @@ pub(crate) struct NonZeroCoeffEobSymbolInput {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct NonZeroCoeffEobContextInput {
-    pub(crate) plane: usize,
-    pub(crate) is_inter: bool,
-    pub(crate) tx_width_log2: usize,
-    pub(crate) tx_height_log2: usize,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffEob {
     eob: usize,
 }
@@ -247,14 +237,6 @@ pub(crate) enum CoeffLoopContextError {
     },
     #[error("coefficient EOB Pt512 extra value {eob_pt_extra} is reserved by AV2")]
     InvalidPt512EobExtra { eob_pt_extra: u32 },
-    #[error(
-        "coefficient EOB transform {axis} log2 value {value} is below the AV2 minimum {minimum}"
-    )]
-    InvalidEobTransformLog2 {
-        axis: &'static str,
-        value: usize,
-        minimum: usize,
-    },
     #[error("coefficient scan walk requires nonzero EOB, got {eob}")]
     InvalidScanWalkEob { eob: usize },
     #[error("coefficient scan walk EOB {eob} exceeds scan length {scan_len}")]
@@ -348,28 +330,6 @@ pub(crate) fn read_nonzero_coeff_eob(
     Ok(eob)
 }
 
-pub(crate) fn nonzero_coeff_eob_symbol_input(
-    input: NonZeroCoeffEobContextInput,
-) -> Result<NonZeroCoeffEobSymbolInput, CoeffLoopContextError> {
-    Ok(NonZeroCoeffEobSymbolInput {
-        size: eob_pt_size_from_tx_log2(input.tx_width_log2, input.tx_height_log2)?,
-        eob_ctx: eob_context(input.plane, input.is_inter),
-    })
-}
-
-fn eob_pt_size_from_tx_log2(
-    tx_width_log2: usize,
-    tx_height_log2: usize,
-) -> Result<EobPtSize, CoeffLoopContextError> {
-    checked_eob_tx_log2("width", tx_width_log2)?;
-    checked_eob_tx_log2("height", tx_height_log2)?;
-
-    Ok(eob_pt_size(
-        tx_width_log2.min(EOB_MULTISIZE_LOG2_CAP) + tx_height_log2.min(EOB_MULTISIZE_LOG2_CAP)
-            - EOB_MULTISIZE_OFFSET,
-    ))
-}
-
 const fn eob_pt_size(eob_multisize: usize) -> EobPtSize {
     match eob_multisize {
         0 => EobPtSize::Pt16,
@@ -382,18 +342,7 @@ const fn eob_pt_size(eob_multisize: usize) -> EobPtSize {
     }
 }
 
-fn checked_eob_tx_log2(axis: &'static str, value: usize) -> Result<(), CoeffLoopContextError> {
-    if value < MIN_EOB_TX_LOG2 {
-        return Err(CoeffLoopContextError::InvalidEobTransformLog2 {
-            axis,
-            value,
-            minimum: MIN_EOB_TX_LOG2,
-        });
-    }
-    Ok(())
-}
-
-fn eob_context(plane: usize, is_inter: bool) -> usize {
+pub(crate) fn eob_context(plane: usize, is_inter: bool) -> usize {
     if plane > 0 { 2 } else { usize::from(is_inter) }
 }
 

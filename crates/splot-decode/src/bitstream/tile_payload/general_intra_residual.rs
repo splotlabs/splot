@@ -1249,12 +1249,7 @@ fn decode_nonzero_plane_coeffs(
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let frame_facts = *work_unit.coeff_frame_facts();
     let plane = block.plane;
-    let geometry = CoeffOrdinaryTxSizeGeometryConfig {
-        plane,
-        start_x: block.x,
-        start_y: block.y,
-        tx_size,
-    };
+    let geometry = CoeffOrdinaryTxSizeGeometryConfig { plane, tx_size };
     let start = read_nonzero_coeff_block_start(
         work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
@@ -1344,7 +1339,7 @@ fn decode_nonzero_plane_coeffs(
             work_unit.cdf_mut().tile_cdfs_mut(),
             symbols,
             CoeffOrdinaryStagedLosslessNonZeroInput {
-                geometry,
+                plane,
                 start,
                 lines,
                 plane_tx_type,
@@ -1388,7 +1383,6 @@ fn staged_transform_tool_lossless_base_config(
         && luma_transform_block
         && luma_tx_class == CoeffTransformClass::TwoD;
     CoeffOrdinaryBranchTxSetBaseConfig {
-        reduced_tx_set: frame_facts.reduced_tx_set(),
         enable_chroma_dctonly: frame_facts.enable_chroma_dctonly(),
         uv_mode,
         angle_delta_uv,
@@ -2299,17 +2293,11 @@ pub(crate) fn intra_chroma_plane_tx_type(
     enable_chroma_dctonly: bool,
 ) -> Result<usize, GeneralIntraResidualError> {
     staged_transform_tool_plane_tx_type(
-        CoeffOrdinaryTxSizeGeometryConfig {
-            plane,
-            start_x: 0,
-            start_y: 0,
-            tx_size,
-        },
+        CoeffOrdinaryTxSizeGeometryConfig { plane, tx_size },
         false,
         false,
         transform_set_from_flags(0, enable_chroma_dctonly, plane, tx_size, false)?,
         CoeffOrdinaryBranchTxSetBaseConfig {
-            reduced_tx_set: 0,
             enable_chroma_dctonly,
             uv_mode,
             angle_delta_uv,
@@ -2330,17 +2318,11 @@ pub(crate) fn inter_chroma_plane_tx_type(
     enable_chroma_dctonly: bool,
 ) -> Result<usize, GeneralIntraResidualError> {
     staged_transform_tool_plane_tx_type(
-        CoeffOrdinaryTxSizeGeometryConfig {
-            plane,
-            start_x: 0,
-            start_y: 0,
-            tx_size,
-        },
+        CoeffOrdinaryTxSizeGeometryConfig { plane, tx_size },
         true,
         false,
         transform_set_from_flags(0, enable_chroma_dctonly, plane, tx_size, true)?,
         CoeffOrdinaryBranchTxSetBaseConfig {
-            reduced_tx_set: 0,
             enable_chroma_dctonly,
             uv_mode: 0,
             angle_delta_uv: 0,
@@ -2435,9 +2417,9 @@ pub(crate) fn inter_tx_type_symbols(
 }
 
 pub(crate) fn txb_skip_tx_size_ctx(tx_size: usize) -> usize {
-    let sqr = TX_SIZE_SQR.get(tx_size).copied().unwrap_or(0);
-    let sqr_up = TX_SIZE_SQR_UP.get(tx_size).copied().unwrap_or(0);
-    (((sqr + sqr_up + 1) >> 1).max(0)) as usize
+    TX_GEOMETRY
+        .get(tx_size)
+        .map_or(0, |tx| usize::from(tx.size_ctx))
 }
 
 #[cfg(test)]

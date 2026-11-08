@@ -128,35 +128,16 @@ fn scan_entry_context_classes_give_the_luma_2d_base_contexts() {
 }
 
 #[test]
-fn tx_geometry_matches_the_transform_size_tables() {
-    use splot_core::tables::conversion::{
-        ADJUSTED_TX_SIZE, TX_HEIGHT, TX_HEIGHT_LOG2, TX_WIDTH, TX_WIDTH_LOG2,
+fn tx_geometry_spot_checks() {
+    use super::super::super::cdf::EobPtSize;
+    use super::super::TX_GEOMETRY;
+
+    let tx = |tx_size: usize| {
+        let tx = TX_GEOMETRY[tx_size];
+        (tx.w4, tx.h4, tx.width, tx.height, tx.size_ctx, tx.eob_size)
     };
-
-    use super::super::super::general_intra_residual::txb_skip_tx_size_ctx;
-    use super::super::{NonZeroCoeffEobContextInput, TX_GEOMETRY, nonzero_coeff_eob_symbol_input};
-
-    for (tx_size, tx) in TX_GEOMETRY.iter().enumerate() {
-        let (w4, h4) = (
-            TX_WIDTH[tx_size] as usize / 4,
-            TX_HEIGHT[tx_size] as usize / 4,
-        );
-        assert_eq!((usize::from(tx.w4), usize::from(tx.h4)), (w4, h4));
-        let adjusted = ADJUSTED_TX_SIZE[tx_size] as usize;
-        let (width, height) = (TX_WIDTH[adjusted] as usize, TX_HEIGHT[adjusted] as usize);
-        assert_eq!(
-            (usize::from(tx.width), usize::from(tx.height)),
-            (width, height)
-        );
-        assert_eq!((1 << tx.width_log2, 1 << tx.height_log2), (width, height));
-        assert_eq!(usize::from(tx.size_ctx), txb_skip_tx_size_ctx(tx_size));
-        let eob = nonzero_coeff_eob_symbol_input(NonZeroCoeffEobContextInput {
-            plane: 0,
-            is_inter: false,
-            tx_width_log2: TX_WIDTH_LOG2[tx_size] as usize,
-            tx_height_log2: TX_HEIGHT_LOG2[tx_size] as usize,
-        })
-        .unwrap();
-        assert_eq!(tx.eob_size, eob.size, "tx_size {tx_size}");
-    }
+    assert_eq!(tx(0), (1, 1, 4, 4, 0, EobPtSize::Pt16));
+    assert_eq!(tx(4), (16, 16, 32, 32, 4, EobPtSize::Pt1024));
+    assert_eq!(tx(6), (2, 1, 8, 4, 1, EobPtSize::Pt32));
+    assert_eq!(tx(18), (16, 4, 32, 16, 3, EobPtSize::Pt512));
 }

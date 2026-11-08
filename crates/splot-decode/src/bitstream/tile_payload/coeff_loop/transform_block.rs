@@ -361,6 +361,7 @@ pub(crate) const fn lf_scan_end<const CLASS: usize, const LUMA: bool>(
     }
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct CoeffTransformBlockInput<'l> {
     pub(crate) start: NonZeroCoeffBlockStart,
     pub(crate) config: CoeffBaseDerivedLevelPassConfig,
@@ -445,11 +446,9 @@ fn preflight(
     }
     let coeff_count = input.start.coeff_count();
     if quant_len > coeff_count {
-        return Err(CoeffBaseDerivedLevelPassError::BlockGeometryMismatch {
-            block_width: input.start.width(),
-            block_height: coeff_count / input.start.width().max(1),
-            config_width: config.tx_width,
-            config_height: config.tx_height,
+        return Err(CoeffBaseDerivedLevelPassError::QuantLenExceedsBlock {
+            quant_len,
+            coeff_count,
         }
         .into());
     }

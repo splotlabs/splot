@@ -14,7 +14,7 @@ use super::super::branch::NonZeroCoeffBlockStart;
 use super::super::{TX_GEOMETRY, read_nonzero_coeff_block_start};
 use super::geometry::{
     CoeffOrdinaryBranchTxSetBaseConfig, CoeffOrdinaryStagedLosslessNonZeroInput,
-    CoeffOrdinaryTxSizeGeometryConfig, apply_staged_nonzero_coeff_ordinary_branch_from_lossless,
+    apply_staged_nonzero_coeff_ordinary_branch_from_lossless,
 };
 
 const TX_4X4: usize = 0;
@@ -52,7 +52,6 @@ fn levels_clear(state: &mut TileCoeffContextState) -> bool {
 
 fn base_config(parity_hiding: bool, use_tcq: bool) -> CoeffOrdinaryBranchTxSetBaseConfig {
     CoeffOrdinaryBranchTxSetBaseConfig {
-        reduced_tx_set: 0,
         enable_chroma_dctonly: false,
         uv_mode: 0,
         angle_delta_uv: 0,
@@ -63,21 +62,14 @@ fn base_config(parity_hiding: bool, use_tcq: bool) -> CoeffOrdinaryBranchTxSetBa
     }
 }
 
-fn staged_input<'l>(
-    lines: &'l CoeffBlockLines,
+fn staged_input(
+    lines: &CoeffBlockLines,
     start: NonZeroCoeffBlockStart,
-    tx_size: usize,
-    start_x: usize,
     lossless: bool,
     base_config: CoeffOrdinaryBranchTxSetBaseConfig,
-) -> CoeffOrdinaryStagedLosslessNonZeroInput<'l> {
+) -> CoeffOrdinaryStagedLosslessNonZeroInput<'_> {
     CoeffOrdinaryStagedLosslessNonZeroInput {
-        geometry: CoeffOrdinaryTxSizeGeometryConfig {
-            plane: 0,
-            start_x,
-            start_y: 4,
-            tx_size,
-        },
+        plane: 0,
         start,
         lines,
         plane_tx_type: base_config.luma_tx_type,
@@ -207,7 +199,7 @@ fn staged_ordinary_live_path_reads_base_br_sign_quant_and_commits() {
         &mut state,
         &mut tile,
         &mut symbols,
-        staged_input(&lines, start, TX_4X4, 4, true, base_config(true, true)),
+        staged_input(&lines, start, true, base_config(true, true)),
         &mut quant,
     )
     .unwrap();
@@ -239,7 +231,7 @@ fn staged_ordinary_live_path_applies_evolving_tcq_state() {
         &mut state,
         &mut tile,
         &mut symbols,
-        staged_input(&lines, start, TX_4X4, 4, false, base_config(false, true)),
+        staged_input(&lines, start, false, base_config(false, true)),
         &mut quant,
     )
     .unwrap();
@@ -297,7 +289,7 @@ fn staged_ordinary_preflights_plane_and_bounds_without_consumption() {
             &mut state,
             &mut tile,
             &mut symbols,
-            staged_input(&lines, start, TX_4X4, 4, true, base_config(false, false)),
+            staged_input(&lines, start, true, base_config(false, false)),
             &mut vec![0; quant_len],
         );
 

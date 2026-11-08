@@ -1434,8 +1434,6 @@ fn luma_txtype_residual_staged_base_config_uses_retained_luma_tx_type() {
 fn lossless_fsc_staged_plane_tx_type_remains_idtx() {
     let geometry = CoeffOrdinaryTxSizeGeometryConfig {
         plane: 0,
-        start_x: 0,
-        start_y: 0,
         tx_size: TX_8X4,
     };
     let base_config = staged_transform_tool_lossless_base_config(
@@ -1461,8 +1459,6 @@ fn lossless_fsc_staged_plane_tx_type_remains_idtx() {
 fn lossless_inter_staged_plane_tx_type_remains_idtx() {
     let geometry = CoeffOrdinaryTxSizeGeometryConfig {
         plane: 0,
-        start_x: 0,
-        start_y: 0,
         tx_size: TX_4X4,
     };
     let base_config = staged_transform_tool_lossless_base_config(
@@ -1488,8 +1484,6 @@ fn lossless_inter_staged_plane_tx_type_remains_idtx() {
 fn lossless_inter_chroma_staged_plane_tx_type_uses_colocated_luma_tx_type() {
     let geometry = CoeffOrdinaryTxSizeGeometryConfig {
         plane: 1,
-        start_x: 0,
-        start_y: 0,
         tx_size: TX_4X4,
     };
     let base_config = staged_transform_tool_lossless_base_config(

@@ -45,8 +45,9 @@ const TX_TYPE_IN_SET_INTER: [[u8; 16]; 9] = [
     [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
 ];
 
+#[derive(Clone, Copy)]
 pub(crate) struct CoeffOrdinaryStagedLosslessNonZeroInput<'l> {
-    pub(crate) geometry: CoeffOrdinaryTxSizeGeometryConfig,
+    pub(crate) plane: usize,
     pub(crate) start: NonZeroCoeffBlockStart,
     /// The block's context-line spans, checked by the caller.
     pub(crate) lines: &'l CoeffBlockLines,
@@ -71,7 +72,6 @@ pub(crate) struct CoeffOrdinaryBranchModeToTxfmBaseConfig {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryBranchTxSetBaseConfig {
-    pub(crate) reduced_tx_set: usize,
     pub(crate) enable_chroma_dctonly: bool,
     pub(crate) uv_mode: usize,
     pub(crate) angle_delta_uv: i32,
@@ -102,8 +102,6 @@ pub(crate) fn read_lossless_inter_plane_tx_type(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffOrdinaryTxSizeGeometryConfig {
     pub(crate) plane: usize,
-    pub(crate) start_x: usize,
-    pub(crate) start_y: usize,
     pub(crate) tx_size: usize,
 }
 
@@ -125,7 +123,7 @@ pub(crate) fn apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
             tx_width_log2: u32::from(tx.width_log2),
             tx_width: usize::from(tx.width),
             tx_height: usize::from(tx.height),
-            plane: input.geometry.plane,
+            plane: input.plane,
             tx_class: CoeffTransformClass::from_plane_tx_type(input.plane_tx_type),
             parity_hiding: lossy && input.parity_hiding,
             use_tcq: lossy && input.use_tcq,

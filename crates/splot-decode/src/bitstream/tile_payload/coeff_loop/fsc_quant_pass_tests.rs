@@ -10,9 +10,8 @@ use splot_core::symbol_encoder::SymbolEncoder;
 
 use super::super::super::cdf::{CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
 use super::super::super::coeff_state::TileCoeffContextState;
-use super::super::AllZeroCoeffBlockInput;
 use super::super::branch::NonZeroCoeffBlockStart;
-use super::super::{TX_GEOMETRY, read_nonzero_coeff_block_start};
+use super::super::{AllZeroCoeffBlockInput, TX_GEOMETRY, read_nonzero_coeff_block_start};
 use super::*;
 
 const TX_4X4: usize = 0;
