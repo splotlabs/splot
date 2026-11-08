@@ -63,8 +63,10 @@ impl TileCdfSubset {
         Ok(self.read_trusted_symbol(selector, symbols)? != 0)
     }
 
-    /// Reads the `all_zero`, `eob_pt_*`, `eob_extra` and `dc_sign` symbols
-    /// through the trusted read of their decoder-owned rows; any other
+    /// Reads the `all_zero`, `eob_pt_*`, `eob_extra`, `dc_sign`, intra
+    /// transform-type, `sec_tx_type`, `most_probable_stx_set` and
+    /// `cctx_type` symbols through the trusted read of their decoder-owned
+    /// rows; any other
     /// selector, or a context outside the rows, takes
     /// [`Self::read_block_symbol_trace`].
     #[allow(
@@ -118,6 +120,25 @@ impl TileCdfSubset {
                     .and_then(|rows| rows.get_mut(group))
                     .and_then(|rows| rows.get_mut(ctx))
             ),
+            TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr } => {
+                read!(rows.intra_tx_type_set1.get_mut(tx_size_sqr));
+            }
+            TileCdfSelector::IntraTxTypeSet2 { tx_size_sqr } => {
+                read!(rows.intra_tx_type_set2.get_mut(tx_size_sqr));
+            }
+            TileCdfSelector::SecTxType {
+                is_inter,
+                tx_size_sqr,
+            } => read!(
+                rows.sec_tx_type
+                    .get_mut(is_inter)
+                    .and_then(|rows| rows.get_mut(tx_size_sqr))
+            ),
+            TileCdfSelector::MostProbableStxSet => read!(Some(&mut rows.most_probable_stx_set)),
+            TileCdfSelector::MostProbableStxSetAdst => {
+                read!(Some(&mut rows.most_probable_stx_set_adst));
+            }
+            TileCdfSelector::CctxType => read!(Some(&mut rows.cctx_type)),
             _ => {}
         }
         Ok(self.read_block_symbol_trace(selector, symbols)?.get())

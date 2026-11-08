@@ -1481,9 +1481,8 @@ fn ensure_transform_tool_residual_handoff(
         && (is_inter || eob != 1)
     {
         let cctx_type = usize::from(
-            cdfs.read_block_symbol_trace(TileCdfSelector::CctxType, symbols)
-                .map_err(|source| GeneralIntraResidualError::CctxTypeRead { source })?
-                .get(),
+            cdfs.read_trusted_symbol(TileCdfSelector::CctxType, symbols)
+                .map_err(|source| GeneralIntraResidualError::CctxTypeRead { source })?,
         );
         metadata.cctx_type = Some(cctx_type);
     }
@@ -1936,9 +1935,8 @@ fn read_transform_symbol(
     selector: TileCdfSelector,
 ) -> Result<usize, GeneralIntraResidualError> {
     Ok(usize::from(
-        cdfs.read_block_symbol_trace(selector, symbols)
-            .map_err(|source| GeneralIntraResidualError::TransformTypeRead { source })?
-            .get(),
+        cdfs.read_trusted_symbol(selector, symbols)
+            .map_err(|source| GeneralIntraResidualError::TransformTypeRead { source })?,
     ))
 }
 
