@@ -1219,6 +1219,26 @@ pub(super) fn predict_uniform_motion_compound_average_into<
         prediction.block_w,
         prediction.block_h,
     );
+    if let Some(output) = O::u8_slice_mut(output)
+        && prediction.block_w == prediction.block_h
+        && !prediction.scalings.into_iter().any(PlaneScaling::is_scaled)
+        && splot_recon::subpel_compound_cell_u8(
+            [&prediction.views[0], &prediction.views[1]],
+            block.interp,
+            prediction.block_w,
+            params.map(|params| {
+                (
+                    [params.start_x, params.start_y],
+                    [params.first_x, params.first_y, params.last_x, params.last_y],
+                )
+            }),
+            cwp_weight,
+            output,
+            output_stride,
+        )
+    {
+        return Ok(true);
+    }
     let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
     let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
     super::predict_compound_average_into(
