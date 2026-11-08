@@ -69,10 +69,11 @@ pub struct IntraDipEdges<'a, T: ReconSample> {
 impl<'a, T: ReconSample> IntraDipEdges<'a, T> {
     /// Creates a prepared DIP edge set.
     ///
-    /// `left` must contain `height + height / 4` samples and `above` must
-    /// contain `width + width / 4` samples. Availability and fallback
-    /// preparation remain outside this type and are owned by the broader AV2
-    /// §7.13.2.1 intra process.
+    /// `left` holds `height` to `height + height / 4` samples and `above`
+    /// `width` to `width + width / 4`; the samples a shorter edge lacks repeat
+    /// its last, as the AV2 §7.13.2.1 edge preparation extends an edge past
+    /// its available samples. Availability and fallback preparation remain
+    /// outside this type and are owned by that broader intra process.
     pub const fn new(left: &'a [T], above: &'a [T], top_left: T) -> Self {
         Self {
             left,
@@ -204,16 +205,17 @@ fn validate_dip_edges<T: ReconSample>(
     size: IntraRectBlockSize,
     edges: IntraDipEdges<'_, T>,
 ) -> Result<()> {
+    let extended = |edge: &[T], len: usize| edge.len().clamp(len, len + (len >> 2));
     validate_intra_edge_samples(
         IntraDipEdge::Left,
         edges.left,
-        size.height() + (size.height() >> 2),
+        extended(edges.left, size.height()),
         bit_depth,
     )?;
     validate_intra_edge_samples(
         IntraDipEdge::Above,
         edges.above,
-        size.width() + (size.width() >> 2),
+        extended(edges.above, size.width()),
         bit_depth,
     )?;
     validate_intra_edge_samples(
@@ -252,12 +254,20 @@ fn dip_features<T: ReconSample>(
 }
 
 fn dip_averages<T: ReconSample>(samples: &[T], block_len: usize, log2_len: u8) -> [i32; 5] {
-    /// The sums of the first five `N`-sample groups of `samples`.
+    /// The sums of the first five `N`-sample groups of `samples`, which
+    /// holds four to five groups; the samples it lacks repeat its last.
     #[inline]
     fn group_sums<T: ReconSample, const N: usize>(samples: &[T]) -> [i32; 5] {
+        let value = |sample: &T| i32::from(sample.to_u16());
         let mut sums = [0i32; 5];
-        for (sum, group) in sums.iter_mut().zip(samples.as_chunks::<N>().0) {
-            *sum = group.iter().map(|&sample| i32::from(sample.to_u16())).sum();
+        let (groups, rest) = samples.as_chunks::<N>();
+        for (sum, group) in sums.iter_mut().zip(groups) {
+            *sum = group.iter().map(value).sum();
+        }
+        if groups.len() < 5
+            && let Some(last) = samples.last()
+        {
+            sums[4] = rest.iter().map(value).sum::<i32>() + (N - rest.len()) as i32 * value(last);
         }
         sums
     }
@@ -456,46 +466,43 @@ fn interpolate_lanes<S: Simd, P: IntraLaneSample>(
     if grid.step_y > 1 {
         let shift = u32::from(grid.up_log2_y);
         let step = grid.step_y;
-        for band in 0..grid.height {
-            let top = band * step;
-            let last = (top + step - 1) * stride;
-            let first = top.checked_sub(1).map(|row| row * stride);
-            macro_rules! p0 {
-                ($column:expr) => {
-                    match first {
-                        Some(start) => output.get(start + $column..),
-                        None => above.get($column..),
-                    }
-                };
-            }
-            if width >= 16 {
-                for column in (0..width).step_by(16) {
-                    let a = P::load16(simd, p0!(column)?.first_chunk()?);
-                    let b = P::load16(simd, output.get(last + column..)?.first_chunk()?);
-                    let (mut lerp, delta) = (a << shift, b - a);
-                    for row in output
-                        .get_mut(top * stride + column..)?
-                        .chunks_mut(stride)
-                        .take(step - 1)
-                    {
-                        lerp += delta;
-                        P::store16(simd, lerp >> shift, row.first_chunk_mut()?);
+        macro_rules! lerp_columns {
+            ($load:ident, $store:ident, $columns:expr) => {
+                for column in $columns {
+                    let mut a = P::$load(simd, above.get(column..)?.first_chunk()?);
+                    let mut at = column;
+                    for _ in 0..grid.height {
+                        let last = output.get(at + (step - 1) * stride..)?;
+                        let b = P::$load(simd, last.first_chunk()?);
+                        let (mut lerp, delta) = (a << shift, b - a);
+                        for _ in 1..step {
+                            lerp += delta;
+                            P::$store(
+                                simd,
+                                lerp >> shift,
+                                output.get_mut(at..)?.first_chunk_mut()?,
+                            );
+                            at += stride;
+                        }
+                        at += stride;
+                        a = b;
                     }
                 }
-            } else if width == 8 {
-                let a = P::load8(simd, p0!(0)?.first_chunk()?);
-                let b = P::load8(simd, output.get(last..)?.first_chunk()?);
-                let (mut lerp, delta) = (a << shift, b - a);
-                for row in output
-                    .get_mut(top * stride..)?
-                    .chunks_mut(stride)
-                    .take(step - 1)
-                {
-                    lerp += delta;
-                    P::store8(simd, lerp >> shift, row.first_chunk_mut()?);
-                }
-            } else {
-                let a: [P; 4] = *p0!(0)?.first_chunk()?;
+            };
+        }
+        if width >= 16 {
+            lerp_columns!(load16, store16, (0..width).step_by(16));
+        } else if width == 8 {
+            lerp_columns!(load8, store8, [0]);
+        } else {
+            for band in 0..grid.height {
+                let top = band * step;
+                let last = (top + step - 1) * stride;
+                let a: [P; 4] = *match top.checked_sub(1) {
+                    Some(row) => output.get(row * stride..),
+                    None => above.get(..),
+                }?
+                .first_chunk()?;
                 let b: [P; 4] = *output.get(last..)?.first_chunk()?;
                 for z in 1..step {
                     let row = output.get_mut((top + z - 1) * stride..)?;
@@ -617,7 +624,7 @@ mod tests {
             rect_size(3, 3),
             0,
             false,
-            IntraDipEdges::new(&[128u8; 9], &[128u8; 10], 128),
+            IntraDipEdges::new(&[128u8; 7], &[128u8; 10], 128),
             &mut [0u8; 64],
             8,
         )
@@ -626,9 +633,63 @@ mod tests {
             err,
             ReconError::IntraDipEdgeLengthMismatch {
                 edge: IntraDipEdge::Left,
-                expected: 10,
-                actual: 9,
+                expected: 8,
+                actual: 7,
             }
         );
+    }
+
+    #[test]
+    fn short_edges_repeat_their_last_sample() {
+        for (log2_width, log2_height) in [(2, 2), (3, 4), (4, 3), (5, 5), (6, 4)] {
+            let size = rect_size(log2_width, log2_height);
+            let (width, height) = (size.width(), size.height());
+            let left: Vec<u8> = (0..height + height / 4)
+                .map(|i| (37 * i % 251) as u8)
+                .collect();
+            let above: Vec<u8> = (0..width + width / 4)
+                .map(|i| (53 * i % 241) as u8)
+                .collect();
+            let partial = (height + (height / 4).min(1), width + (width / 4).min(3));
+            for (left_len, above_len) in [(height, width), partial] {
+                let extend = |edge: &[u8], len: usize| -> Vec<u8> {
+                    let last = edge[len - 1];
+                    (0..edge.len())
+                        .map(|i| if i < len { edge[i] } else { last })
+                        .collect()
+                };
+                let (full_left, full_above) = (extend(&left, left_len), extend(&above, above_len));
+                for mode in [0, 3, 5] {
+                    let mut short = vec![0u8; width * height];
+                    let mut full = vec![0u8; width * height];
+                    let edges = IntraDipEdges::new(&left[..left_len], &above[..above_len], 90);
+                    predict_intra_dip_rect_into(
+                        BitDepth::Eight,
+                        size,
+                        mode,
+                        true,
+                        edges,
+                        &mut short,
+                        width,
+                    )
+                    .unwrap();
+                    let edges = IntraDipEdges::new(&full_left, &full_above, 90);
+                    predict_intra_dip_rect_into(
+                        BitDepth::Eight,
+                        size,
+                        mode,
+                        true,
+                        edges,
+                        &mut full,
+                        width,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        short, full,
+                        "{width}x{height} {left_len}/{above_len} mode {mode}"
+                    );
+                }
+            }
+        }
     }
 }
