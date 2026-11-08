@@ -52,6 +52,9 @@ pub(super) fn put(
     output: &mut [u8],
     stride: usize,
 ) -> bool {
+    if block.horizontal.is_none() && block.vertical.is_none() && copy(block, output, stride) {
+        return true;
+    }
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = fearless_simd::Level::baseline().as_avx2()
         && fits(block)
@@ -61,6 +64,59 @@ pub(super) fn put(
     }
     let _ = (block, stage, output, stride);
     false
+}
+
+/// Stores a zero-phase block (no filter pass) whose rows lie inside their
+/// clip bounds and whose columns are read in place: its prediction is its
+/// samples. `false` without writing for any other block or one whose rows
+/// leave the storage of `block` or `output`.
+#[inline(never)]
+fn copy(block: &Block<'_, u8>, output: &mut [u8], stride: usize) -> bool {
+    let (w, h) = (block.w, block.h);
+    let rows = block.rows[0]..=block.rows[1];
+    if block.remap.is_some()
+        || !rows.contains(&block.top)
+        || !rows.contains(&(block.top + h as isize - 1))
+    {
+        return false;
+    }
+    let fits = |len: usize, start: usize, stride: usize| (h - 1) * stride + w + start <= len;
+    let first = block.start(0);
+    let Some(source) = block.source.get(first..).filter(|source| {
+        stride >= w && fits(source.len(), 0, block.stride) && fits(output.len(), 0, stride)
+    }) else {
+        return false;
+    };
+    let lines = source
+        .chunks(block.stride)
+        .zip(output.chunks_mut(stride))
+        .take(h);
+    macro_rules! copy_lines {
+        ($n:literal) => {
+            for (source, target) in lines {
+                if let (Some(source), Some(target)) =
+                    (source.first_chunk::<$n>(), target.first_chunk_mut::<$n>())
+                {
+                    *target = *source;
+                }
+            }
+        };
+    }
+    match w {
+        8 => copy_lines!(8),
+        16 => copy_lines!(16),
+        32 => copy_lines!(32),
+        64 => copy_lines!(64),
+        _ => {
+            for (source, target) in lines {
+                if let (Some(source), Some(target)) = (source.get(..w), target.get_mut(..w)) {
+                    // splot-copy-ok: a zero-phase prediction is its reference samples
+                    target.copy_from_slice(source);
+                }
+            }
+        }
+    }
+    true
 }
 
 /// Predicts both blocks of a compound cell of at most four groups and
