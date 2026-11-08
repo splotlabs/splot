@@ -1006,18 +1006,48 @@ pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
     subpel_predict_block_strided_into(&view, &params, output, rect.luma_w).map_err(Into::into)
 }
 
-/// Predicts the eight-bit bilinear § 7.13.3.6 search window of `rect` at
-/// `mv` into `output` as bytes, or returns `false` when the byte kernel does
-/// not cover it.
+/// Predicts the eight-bit bilinear § 7.13.3.6 search window of the
+/// `width` x `height` refine-MV unit at `rect`'s origin, four samples out
+/// from `candidate` on each side, into `output` as bytes, or returns `false`
+/// when the byte kernel does not cover it: a scaled reference, or a unit
+/// whose § 7.13.3.5 reference area the plane clamps.
 pub(super) fn search_window_u8<T: ReconSample>(
     luma: &mut LumaReference<'_, T>,
     rect: McBlockRect,
-    mv: Mv,
-    refinemv_area: (Mv, usize, usize),
+    candidate: Mv,
+    [width, height]: [usize; 2],
     output: &mut [u8],
 ) -> Result<bool> {
-    let (view, params) =
-        luma.area_prediction::<0>(rect, mv, InterpolationFilter::Bilinear, Some(refinemv_area))?;
+    let scaling = luma.scaling;
+    let (x, y) = (
+        rect.luma_x as i32 + (candidate.col >> 3),
+        rect.luma_y as i32 + (candidate.row >> 3),
+    );
+    if scaling.is_scaled()
+        || !matches!((width, height), (8 | 16, 8 | 16))
+        || x < 3
+        || y < 3
+        || x + width as i32 + 3 > scaling.last_x
+        || y + height as i32 + 3 > scaling.last_y
+    {
+        return Ok(false);
+    }
+    let start = |position: usize, mv: i32| ((position as i32) << 10) + ((mv - 32) << 7) + 32;
+    let params = SubpelPredictParams {
+        interp: InterpolationFilter::Bilinear,
+        w: width + 8,
+        h: height + 8,
+        start_x: start(rect.luma_x, candidate.col),
+        start_y: start(rect.luma_y, candidate.row),
+        step_x: 1 << 10,
+        step_y: 1 << 10,
+        first_x: x - 3,
+        first_y: y - 3,
+        last_x: x + width as i32 + 3,
+        last_y: y + height as i32 + 3,
+        bit_depth: luma.bit_depth,
+    };
+    let view = luma.view(params.last_y)?;
     Ok(splot_recon::subpel_predict_bilinear_search_window_u8(
         &view, &params, output,
     ))

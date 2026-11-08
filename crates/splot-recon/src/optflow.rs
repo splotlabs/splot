@@ -362,6 +362,237 @@ fn strided_sample_out_of_range(
     }
 }
 
+/// The § 7.13.3.8 refinement of an eight-bit 8x8 optical-flow unit whose two
+/// predictions are the eight-sample rows of `preds` from `starts` at
+/// `stride`: `None` when their SAD is below `sad_threshold`, else the
+/// § 7.13.3.12 delta of [`derive_optflow_mv_delta_8x8_strided_into`].
+///
+/// # Errors
+///
+/// Returns [`ReconError::BufferLengthMismatch`] when either prediction does
+/// not hold its 8x8 rows, or the arithmetic errors of the solve.
+#[doc(hidden)]
+pub fn optflow_unit_8x8_u8(
+    preds: [&[u8]; 2],
+    starts: [usize; 2],
+    stride: usize,
+    distances: [i32; 2],
+    sad_threshold: Option<u32>,
+) -> Result<Option<[[i32; 2]; 2]>> {
+    let mut rows = [[0u64; 8]; 2];
+    for ((rows, pred), start) in rows.iter_mut().zip(preds).zip(starts) {
+        let end = stride
+            .checked_mul(7)
+            .and_then(|span| span.checked_add(start + 8))
+            .filter(|&end| stride >= 8 && end <= pred.len())
+            .ok_or(ReconError::BufferLengthMismatch {
+                expected: start.saturating_add(stride.saturating_mul(7)) + 8,
+                actual: pred.len(),
+            })?;
+        for (row, bytes) in rows.iter_mut().zip(pred[start..end].chunks(stride)) {
+            if let Some(bytes) = bytes.first_chunk::<8>() {
+                *row = u64::from_le_bytes(*bytes);
+            }
+        }
+    }
+    let threshold = sad_threshold.unwrap_or(0);
+    let reduced = if distances.contains(&0) {
+        [0; 2]
+    } else {
+        reduce_distances(distances)
+    };
+    #[cfg(target_arch = "x86_64")]
+    if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
+        let Some(sums) = avx2::unit_8x8(t, &rows, reduced, threshold) else {
+            return Ok(None);
+        };
+        if reduced == [0; 2] {
+            return Ok(Some([[0; 2]; 2]));
+        }
+        return solve_sums(unit_sums(sums, 64), reduced).map(Some);
+    }
+    let samples = rows.map(|rows| {
+        let mut samples = [0u16; 64];
+        for (lanes, row) in samples.chunks_exact_mut(8).zip(rows) {
+            for (lane, byte) in lanes.iter_mut().zip(row.to_le_bytes()) {
+                *lane = u16::from(byte);
+            }
+        }
+        samples
+    });
+    let sad = samples[0]
+        .iter()
+        .zip(&samples[1])
+        .map(|(&a, &b)| u32::from(a.abs_diff(b)))
+        .sum::<u32>();
+    if sad < threshold {
+        return Ok(None);
+    }
+    derive_optflow_mv_delta_8x8_strided_into(
+        &samples[0],
+        0,
+        &samples[1],
+        0,
+        8,
+        BitDepth::Eight,
+        distances,
+    )
+    .map(Some)
+}
+
+#[cfg(target_arch = "x86_64")]
+mod avx2 {
+    use core::arch::x86_64::*;
+    use fearless_simd::{Avx2, SimdBase, u8x32};
+
+    /// `pshufb` bytes picking, for every `i16` lane of an eight-lane row,
+    /// the lane `OFFSET` away clamped to the row.
+    const fn neighbours<const OFFSET: i32>() -> [u8; 32] {
+        let mut out = [0u8; 32];
+        let mut lane = 0;
+        while lane < 16 {
+            let mut source = (lane % 8) as i32 + OFFSET;
+            if source < 0 {
+                source = 0;
+            }
+            if source > 7 {
+                source = 7;
+            }
+            out[2 * lane] = 2 * source as u8;
+            out[2 * lane + 1] = 2 * source as u8 + 1;
+            lane += 1;
+        }
+        out
+    }
+
+    const NEXT: [u8; 32] = neighbours::<1>();
+    const PREV: [u8; 32] = neighbours::<-1>();
+    const NEXT2: [u8; 32] = neighbours::<2>();
+    const PREV2: [u8; 32] = neighbours::<-2>();
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn bytes(t: Avx2, bytes: [u8; 32]) -> __m256i {
+        u8x32::load_array(t, bytes).into()
+    }
+
+    /// `Round2Signed(42 * (next - prev) - 5 * (next2 - prev2), 7)` of `i16`
+    /// lanes, the edge lanes doubled first: the magnitude rounds unsigned as
+    /// `(m + add) * mul >> 16`, with `(add, mul)` `(64, 512)` for `>> 7` and
+    /// `(32, 1024)` for the doubled `>> 6`, and takes its sign back after.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn gradient(taps: [__m256i; 4], add: __m256i, mul: __m256i) -> __m256i {
+        let [next, prev, next2, prev2] = taps;
+        let near = _mm256_mullo_epi16(_mm256_sub_epi16(next, prev), _mm256_set1_epi16(42));
+        let far = _mm256_mullo_epi16(_mm256_sub_epi16(next2, prev2), _mm256_set1_epi16(5));
+        let magnitude = _mm256_sub_epi16(_mm256_max_epi16(near, far), _mm256_min_epi16(near, far));
+        let rounded = _mm256_mulhi_epu16(_mm256_add_epi16(magnitude, add), mul);
+        let sign = _mm256_cmpgt_epi16(far, near);
+        _mm256_sub_epi16(_mm256_xor_si256(rounded, sign), sign)
+    }
+
+    fearless_simd::kernel!(
+        /// The 8x8 SAD test and raw `[su2, sv2, suv, suw, svw]` sums of two
+        /// predictions held as eight-byte rows, row pairs `(2j, 2j + 1)` in
+        /// the two lanes of one `i16` vector.
+        #[inline]
+        pub(super) fn unit_8x8(
+            t: Avx2,
+            rows: &[[u64; 8]; 2],
+            distances: [i32; 2],
+            sad_threshold: u32,
+        ) -> Option<[i32; 5]> {
+            let pairs = |rows: &[u64; 8]| -> [__m128i; 4] {
+                core::array::from_fn(|j| _mm_set_epi64x(rows[2 * j + 1] as i64, rows[2 * j] as i64))
+            };
+            let (first, second) = (pairs(&rows[0]), pairs(&rows[1]));
+            let mut sad = _mm_setzero_si128();
+            for (&a, &b) in first.iter().zip(&second) {
+                sad = _mm_add_epi64(sad, _mm_sad_epu8(a, b));
+            }
+            if ((_mm_cvtsi128_si64(sad) + _mm_extract_epi64::<1>(sad)) as u32) < sad_threshold {
+                return None;
+            }
+            let [near, far] = distances.map(|distance| _mm256_set1_epi16(distance as i16));
+            let mut weighted = [_mm256_setzero_si256(); 4];
+            let mut difference = weighted;
+            for j in 0..4 {
+                let (a, b) = (
+                    _mm256_cvtepu8_epi16(first[j]),
+                    _mm256_cvtepu8_epi16(second[j]),
+                );
+                weighted[j] =
+                    _mm256_sub_epi16(_mm256_mullo_epi16(a, near), _mm256_mullo_epi16(b, far));
+                difference[j] = _mm256_sub_epi16(a, b);
+            }
+            let edge = |lanes: __m256i, edge: i16, inner: i16| {
+                _mm256_blendv_epi8(_mm256_set1_epi16(inner), _mm256_set1_epi16(edge), lanes)
+            };
+            let row_edges = _mm256_setr_epi16(-1, 0, 0, 0, 0, 0, 0, -1, -1, 0, 0, 0, 0, 0, 0, -1);
+            let (h_add, h_mul) = (edge(row_edges, 32, 64), edge(row_edges, 1024, 512));
+            let top = _mm256_permute2x128_si256::<0x00>(weighted[0], weighted[0]);
+            let bottom = _mm256_permute2x128_si256::<0x11>(weighted[3], weighted[3]);
+            let middle: [__m256i; 3] = core::array::from_fn(|j| {
+                _mm256_permute2x128_si256::<0x21>(weighted[j], weighted[j + 1])
+            });
+            let (inner_add, inner_mul) = (_mm256_set1_epi16(64), _mm256_set1_epi16(512));
+            let first_rows =
+                _mm256_setr_epi16(-1, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0);
+            let last_rows =
+                _mm256_setr_epi16(0, 0, 0, 0, 0, 0, 0, 0, -1, -1, -1, -1, -1, -1, -1, -1);
+            let mut sums = [_mm256_setzero_si256(); 5];
+            for j in 0..4 {
+                let row = weighted[j];
+                let shuffle = |pattern: [u8; 32]| _mm256_shuffle_epi8(row, bytes(t, pattern));
+                let u = gradient(
+                    [shuffle(NEXT), shuffle(PREV), shuffle(NEXT2), shuffle(PREV2)],
+                    h_add,
+                    h_mul,
+                );
+                let taps = [
+                    if j < 3 { middle[j] } else { bottom },
+                    if j > 0 { middle[j - 1] } else { top },
+                    if j < 3 { weighted[j + 1] } else { bottom },
+                    if j > 0 { weighted[j - 1] } else { top },
+                ];
+                let v = match j {
+                    0 => gradient(taps, edge(first_rows, 32, 64), edge(first_rows, 1024, 512)),
+                    3 => gradient(taps, edge(last_rows, 32, 64), edge(last_rows, 1024, 512)),
+                    _ => gradient(taps, inner_add, inner_mul),
+                };
+                let w = difference[j];
+                sums[0] = _mm256_add_epi32(sums[0], _mm256_madd_epi16(u, u));
+                sums[1] = _mm256_add_epi32(sums[1], _mm256_madd_epi16(v, v));
+                sums[2] = _mm256_add_epi32(sums[2], _mm256_madd_epi16(u, v));
+                sums[3] = _mm256_add_epi32(sums[3], _mm256_madd_epi16(u, w));
+                sums[4] = _mm256_add_epi32(sums[4], _mm256_madd_epi16(v, w));
+            }
+            let quad = _mm256_hadd_epi32(
+                _mm256_hadd_epi32(sums[0], sums[1]),
+                _mm256_hadd_epi32(sums[2], sums[3]),
+            );
+            let quad = _mm_add_epi32(
+                _mm256_castsi256_si128(quad),
+                _mm256_extracti128_si256::<1>(quad),
+            );
+            let last = _mm_add_epi32(
+                _mm256_castsi256_si128(sums[4]),
+                _mm256_extracti128_si256::<1>(sums[4]),
+            );
+            let last = _mm_hadd_epi32(last, last);
+            let last = _mm_hadd_epi32(last, last);
+            Some([
+                _mm_cvtsi128_si32(quad),
+                _mm_extract_epi32::<1>(quad),
+                _mm_extract_epi32::<2>(quad),
+                _mm_extract_epi32::<3>(quad),
+                _mm_cvtsi128_si32(last),
+            ])
+        }
+    );
+}
+
 /// The § 7.13.3.9 `weighted` and `difference` rows of eight predictor sample
 /// pairs, in `i16` lanes.
 ///
@@ -963,6 +1194,70 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    /// The byte unit matches the `u16` strided derivation for every distance
+    /// pair over textured, extreme-contrast and flat predictions, and skips
+    /// the refinement exactly when the SAD is below the threshold.
+    #[test]
+    fn byte_8x8_units_match_the_strided_derivation() {
+        let distance_pairs = [1i32, -1, 3, -4, 0]
+            .into_iter()
+            .flat_map(|near| [1, -1, 2, -3].map(|far| [near, far]));
+        let stride = 13;
+        let fills: [fn(usize) -> u8; 4] = [
+            |i| ((i * 73 + i / 13 * 29 + (i * i) % 7) % 256) as u8,
+            |i| if (i + i / 13) % 3 == 0 { 255 } else { 0 },
+            |i| ((i * 7919) % 256) as u8,
+            |_| 90,
+        ];
+        for distances in distance_pairs {
+            for (first, second) in [(0, 1), (1, 2), (2, 0), (3, 3), (0, 3)] {
+                let preds: [Vec<u8>; 2] = [
+                    (0..stride * 9 + 2).map(fills[first]).collect(),
+                    (0..stride * 9 + 2).map(|i| fills[second](i + 5)).collect(),
+                ];
+                let starts = [1, stride + 2];
+                let widened = |pred: &[u8], start: usize| -> Vec<u16> {
+                    (0..64)
+                        .map(|i| u16::from(pred[start + i / 8 * stride + i % 8]))
+                        .collect()
+                };
+                let (a, b) = (widened(&preds[0], starts[0]), widened(&preds[1], starts[1]));
+                let sad: u32 = a
+                    .iter()
+                    .zip(&b)
+                    .map(|(&x, &y)| u32::from(x.abs_diff(y)))
+                    .sum();
+                let delta = derive_optflow_mv_delta_8x8_strided_into(
+                    &a,
+                    0,
+                    &b,
+                    0,
+                    8,
+                    BitDepth::Eight,
+                    distances,
+                )
+                .unwrap();
+                for threshold in [None, Some(sad), Some(sad + 1)] {
+                    let expected =
+                        (threshold.is_none_or(|threshold| sad >= threshold)).then_some(delta);
+                    let actual = optflow_unit_8x8_u8(
+                        [&preds[0], &preds[1]],
+                        starts,
+                        stride,
+                        distances,
+                        threshold,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        actual, expected,
+                        "{distances:?} {first}/{second} {threshold:?}"
+                    );
+                }
+            }
+        }
+        assert!(optflow_unit_8x8_u8([&[0; 64], &[0; 63]], [0, 0], 8, [1, 1], None).is_err());
+    }
 
     /// The `i16` lane sums match the stored `i32`-rounded gradient planes for
     /// every reduced distance pair over in-range samples, including the

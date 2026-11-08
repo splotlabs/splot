@@ -145,37 +145,68 @@ fn byte_search_window_and_sads_match_the_general_path() {
             }
         }
     }
-    let windows: [Vec<u8>; 2] = [
-        (0..576).map(|i| ((i * 37 + i / 5) % 256) as u8).collect(),
-        (0..576).map(|i| ((i * 91 + 13) % 256) as u8).collect(),
-    ];
     let offsets: Vec<(i32, i32)> = (-2..=2)
         .flat_map(|dy| (-2..=2).map(move |dx| (dy, dx)))
+        .filter(|&offset| offset != (0, 0))
         .collect();
-    for (sad_w, sad_h) in [(12, 12), (12, 20), (20, 12), (20, 20)] {
-        let stride = sad_w + 4;
-        let mut sads = vec![0; offsets.len()];
-        assert!(refinemv_window_sads_u8(
-            [&windows[0], &windows[1]],
-            stride,
-            [sad_w, sad_h],
-            &offsets,
-            &mut sads
-        ));
-        for (&(dy, dx), &sad) in offsets.iter().zip(&sads) {
-            let at = |sign: i32, row: usize, col: usize| {
-                ((2 + sign * dy) as usize + row) * stride + (2 + sign * dx) as usize + col
-            };
-            let expected: u32 = (0..sad_h)
-                .step_by(2)
-                .flat_map(|row| (0..sad_w).map(move |col| (row, col)))
-                .map(|(row, col)| {
-                    u32::from(windows[0][at(1, row, col)].abs_diff(windows[1][at(-1, row, col)]))
+    for seed in 0..12usize {
+        let noise = |i: usize, salt: usize| ((i * 37 + i / 5 + seed * salt) % 256) as u8;
+        let windows: [Vec<u8>; 2] = [
+            (0..576).map(|i| noise(i, 11)).collect(),
+            (0..576)
+                .map(|i| {
+                    if seed % 3 == 0 {
+                        noise(i, 11) / 2 + 3
+                    } else {
+                        noise(i * 91 + 13, 7)
+                    }
                 })
-                .sum();
-            assert_eq!(sad, expected, "{sad_w}x{sad_h} offset {dy},{dx}");
+                .collect(),
+        ];
+        for (sad_w, sad_h) in [(12, 12), (12, 20), (20, 12), (20, 20)] {
+            let stride = sad_w + 4;
+            let sad = |dy: i32, dx: i32| -> u32 {
+                let at = |sign: i32, row: usize, col: usize| {
+                    ((2 + sign * dy) as usize + row) * stride + (2 + sign * dx) as usize + col
+                };
+                (0..sad_h)
+                    .step_by(2)
+                    .flat_map(|row| (0..sad_w).map(move |col| (row, col)))
+                    .map(|(row, col)| {
+                        u32::from(
+                            windows[0][at(1, row, col)].abs_diff(windows[1][at(-1, row, col)]),
+                        )
+                    })
+                    .sum()
+            };
+            for allow_center in [false, true] {
+                let center = sad(0, 0);
+                let mut best = (0, 0);
+                let mut best_sad = if allow_center {
+                    center - (center >> 3)
+                } else {
+                    u32::MAX
+                };
+                if !allow_center || best_sad >= (2 * sad_w * sad_h) as u32 {
+                    for &(dy, dx) in &offsets {
+                        if sad(dy, dx) < best_sad {
+                            best_sad = sad(dy, dx);
+                            best = (dx, dy);
+                        }
+                    }
+                }
+                assert_eq!(
+                    refinemv_search_u8([&windows[0], &windows[1]], stride, sad_h, allow_center),
+                    Some(best),
+                    "{sad_w}x{sad_h} seed {seed} centre {allow_center}"
+                );
+            }
         }
     }
+    assert_eq!(
+        refinemv_search_u8([&[0; 576], &[0; 575]], 24, 20, true),
+        None
+    );
 }
 
 /// The byte 8x8 bilinear kernel against the general prediction for every
