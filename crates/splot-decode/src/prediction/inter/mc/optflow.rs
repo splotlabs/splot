@@ -2251,6 +2251,9 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
     })
 }
 
+mod tip_grid;
+pub(super) use tip_grid::predict_tip_grid_u8;
+
 #[cfg(test)]
 #[path = "optflow_run_tests.rs"]
 mod run_tests;

@@ -690,6 +690,15 @@ pub(super) fn predict_compound_into<T: ReconSample>(
     motion: Option<CompoundMotionGrid>,
     offset: ByteOffset,
 ) -> Result<CompoundBlockMetadata> {
+    if let Some(grid) = motion.as_ref()
+        && optflow::predict_tip_grid_u8(sink, block, grid, offset)?
+    {
+        return Ok(CompoundBlockMetadata {
+            rect: block.rect,
+            has_chroma: block.has_chroma,
+            motion,
+        });
+    }
     let info = sink.info();
     let mut luma_diff_weighted_mask = None;
     let shares_chroma_grid = motion
