@@ -214,6 +214,14 @@ pub(crate) fn current_frame_qm_segment_id() -> usize {
     FRAME_QM_SEGMENT_ID.with(core::cell::Cell::get)
 }
 
+/// The § 5.9.12 `LosslessArray` entry of the current block's segment, `None`
+/// for a segment outside it.
+pub(crate) fn current_segment_lossless(work_unit: &DecodeTileWorkUnit) -> Option<bool> {
+    work_unit
+        .coeff_frame_facts()
+        .lossless_for_segment(current_frame_qm_segment_id())
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct FrameQuantizerSnapshot {
     deltas: QuantizerDeltas,
@@ -737,9 +745,7 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
         reduced_tx_part_set,
     )?;
     let record_count = records.len();
-    let segment_lossless = work_unit
-        .coeff_frame_facts()
-        .lossless_for_segment(current_frame_qm_segment_id());
+    let segment_lossless = current_segment_lossless(work_unit);
     records.try_filter_map(|record| {
         if !luma_transform_record_starts_in_frame(&record, frame_width, frame_height) {
             return Ok(None);

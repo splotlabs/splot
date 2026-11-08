@@ -12,8 +12,8 @@ use crate::bitstream::tile_payload::{
     CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock,
     LumaTransformPartitionContext, LumaTransformPartitionUnits, LumaTransformTypeContext,
     PlaneCoeffBlock, PositionedLumaCoeffBlock, TileBlockDecodedState, TileCoeffContextState,
-    TransformToolResidualPolicy, decode_general_intra_luma_partition_coeffs,
-    current_frame_qm_segment_id, decode_general_intra_plane_coeffs,
+    TransformToolResidualPolicy, current_segment_lossless,
+    decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
 };
 use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 
@@ -200,9 +200,7 @@ impl ResidualPlaneArena {
             luma_transform_type_context,
             luma_tx_partition_context,
             policy: transform_tool_residual_policy,
-            segment_lossless: work_unit
-                .coeff_frame_facts()
-                .lossless_for_segment(current_frame_qm_segment_id()),
+            segment_lossless: current_segment_lossless(work_unit),
         };
         let Self { planes, units } = self;
         let range = planned.0.start as usize..planned.0.end as usize;
@@ -280,7 +278,8 @@ impl ResidualPlanePlan {
         let tx_partition_context = (self.plane_id == PlaneId::Y)
             .then_some(luma_tx_partition_context)
             .flatten();
-        let policy = transform_tool_policy_for_plane(policy, self.plane_id, luma_transform_type_context);
+        let policy =
+            transform_tool_policy_for_plane(policy, self.plane_id, luma_transform_type_context);
         let angle_delta_uv =
             chroma_angle_delta_uv(self.plane_id, uv_mode, luma_transform_type_context);
         let palette_color_map = self.read_palette_color_map(work_unit, symbols)?;

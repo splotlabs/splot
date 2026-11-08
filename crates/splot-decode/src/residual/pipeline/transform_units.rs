@@ -9,8 +9,8 @@ use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock,
     LumaTransformTypeContext, LumaTxPartition, PositionedLumaCoeffBlock, TileBlockDecodedState,
-    luma_partition_record_fills_block,
-    luma_transform_record_starts_in_frame, luma_transform_records_for_partition,
+    luma_partition_record_fills_block, luma_transform_record_starts_in_frame,
+    luma_transform_records_for_partition,
 };
 use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
 
@@ -231,8 +231,7 @@ impl ResidualPlanePlan {
         &self,
         segment_lossless: Option<bool>,
     ) -> Option<usize> {
-        if segment_lossless != Some(true) || (!self.fsc_mode && self.tx_size == TX_4X4)
-        {
+        if segment_lossless != Some(true) || (!self.fsc_mode && self.tx_size == TX_4X4) {
             return None;
         }
         if !self.fsc_mode {

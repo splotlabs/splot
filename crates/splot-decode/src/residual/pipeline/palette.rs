@@ -9,10 +9,8 @@ use crate::bitstream::tile_payload::{
     DecodeTileWorkUnit, GeneralIntraResidualError, PositionedLumaCoeffBlock, TileCdfSelector,
 };
 
-use super::{LumaPalette, RectLumaPlan};
 use super::transform_units::tx_size_log2;
-
-use super::{ResidualPlanePlan, ResidualReconstructionPlan};
+use super::{LumaPalette, RectLumaPlan, ResidualPlanePlan, ResidualReconstructionPlan};
 
 const PALETTE_MAX_SIZE: usize = 8;
 const PALETTE_COLOR_CONTEXTS: usize = 5;
