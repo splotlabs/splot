@@ -1642,7 +1642,12 @@ impl ParseProgress {
         )
     }
 
-    /// Moves the parsed records into the frame, keeping this slot's lists.
+    /// Moves the parsed records into the frame.
+    ///
+    /// The frame-sized tx-skip list moves whole when the frame has none yet.
+    /// The frontier has drained the deblock lists by now, and their capacity
+    /// is freed: it only ever held records in transit, so a slot keeping it
+    /// would hold its worst frame's backlog for every frame after.
     pub(super) fn append_records(
         &self,
         target: &mut crate::filters::wienerns_lr::FrameFilterRecords,
@@ -1650,6 +1655,9 @@ impl ParseProgress {
         let mut records = self.records.lock();
         if let Some(buffers) = target.buffers.as_ref() {
             buffers.note_tile_record_capacities(records.capacities());
+        }
+        if target.tx_skip_records.is_empty() {
+            core::mem::swap(&mut target.tx_skip_records, &mut records.tx_skip_records);
         }
         target.append(&mut records);
     }

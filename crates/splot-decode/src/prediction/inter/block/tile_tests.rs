@@ -440,7 +440,7 @@ fn resolved_record_publication_keeps_the_unit_capacity() {
     let buffers = crate::support::decode_buffers::DecodeBuffers::new();
     let mut records = TileFilterRecords::default();
     records.deblock_blocks.reserve_exact(32);
-    records.chroma_deblock_blocks.reserve_records(32);
+    records.chroma_deblock_blocks.fit(16);
     records.tx_skip_records.reserve_exact(32);
     let storage = records.tx_skip_records.as_ptr();
     for cycle in 0..1200 {
