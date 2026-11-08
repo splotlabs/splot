@@ -1212,21 +1212,9 @@ impl NeighbourMvGrid {
         &self,
         positions: [(usize, usize); N],
     ) -> [Option<NeighbourFlags>; N] {
-        let (lo, hi, bias) = self.readable;
-        let (origin_row, origin_col, mi_cols) = (self.origin_row, self.origin_col, self.mi_cols);
         let (cells, leaves) = (self.planes.cells.as_slice(), self.planes.leaves.as_slice());
         positions.map(|(r, c)| {
-            let row = r.wrapping_sub(origin_row);
-            let col = c.wrapping_sub(origin_col);
-            if col >= mi_cols {
-                return None;
-            }
-            let index = if row.wrapping_sub(lo) < hi.wrapping_sub(lo) {
-                row.wrapping_add(bias).wrapping_mul(mi_cols) + col
-            } else {
-                self.index_outside_readable_rows(r, c)?
-            };
-            let slot = (*cells.get(index)?)?;
+            let slot = (*cells.get(self.index_at(r, c)?)?)?;
             leaves.get(slot.get() as usize - 1).map(|leaf| leaf.flags)
         })
     }

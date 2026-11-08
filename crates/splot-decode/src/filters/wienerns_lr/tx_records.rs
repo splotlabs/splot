@@ -231,8 +231,7 @@ impl DeltaQState {
     }
 
     const fn superblock(&self, frontier: &DecodeBlockFrontier) -> (usize, usize) {
-        let log2 = self.sb_size4.trailing_zeros();
-        (frontier.r.wrapping_shr(log2), frontier.c.wrapping_shr(log2))
+        crate::tile::superblock_of(frontier.r, frontier.c, self.sb_size4)
     }
 
     pub(crate) fn qindex_u32(&self) -> u32 {
@@ -320,8 +319,8 @@ impl CdefState {
     ) -> Result<()> {
         if frontier.is_chroma_part()
             || matches!(
-                self.index(frontier.r / CDEF_UNIT_MI, frontier.c / CDEF_UNIT_MI),
-                Ok(index) if self.values[index].is_some()
+                self.value(frontier.r / CDEF_UNIT_MI, frontier.c / CDEF_UNIT_MI),
+                Ok(Some(_))
             )
         {
             return Ok(());
@@ -337,6 +336,7 @@ impl CdefState {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     fn read_unit(
         &mut self,
@@ -370,9 +370,6 @@ impl CdefState {
             || unit_col >= self.col_start + self.cols
         {
             return Err(selectable_state_error());
-        }
-        if self.value(unit_row, unit_col)?.is_some() {
-            return Ok(());
         }
 
         let strength = if strengths == 1 {

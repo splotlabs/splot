@@ -1030,15 +1030,7 @@ impl<'a> SymbolDecoder<'a> {
     #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
     #[inline(always)]
     pub fn read_trusted<const L: usize, const UPDATE: bool>(&mut self, cdf: &mut [u16; L]) -> u32 {
-        match L {
-            3 => self.read_trusted_arity::<2>(cdf, UPDATE),
-            4 => self.read_trusted_arity::<3>(cdf, UPDATE),
-            5 => self.read_trusted_arity::<4>(cdf, UPDATE),
-            6 => self.read_trusted_arity::<5>(cdf, UPDATE),
-            7 => self.read_trusted_arity::<6>(cdf, UPDATE),
-            8 => self.read_trusted_arity::<7>(cdf, UPDATE),
-            _ => self.read_trusted_arity::<8>(cdf, UPDATE),
-        }
+        self.read_trusted_len(cdf, UPDATE).unwrap_or(0)
     }
 
     /// [`Self::read_trusted`] of a slice row in the configured update mode.
@@ -1050,7 +1042,12 @@ impl<'a> SymbolDecoder<'a> {
         if self.config.cdf_validation == CdfValidationMode::Validated {
             return None;
         }
-        let update = self.config.cdf_update == CdfUpdateMode::Enabled;
+        self.read_trusted_len(cdf, self.config.cdf_update == CdfUpdateMode::Enabled)
+    }
+
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    fn read_trusted_len(&mut self, cdf: &mut [u16], update: bool) -> Option<u32> {
         Some(match cdf.len() {
             3 => self.read_trusted_arity::<2>(cdf, update),
             4 => self.read_trusted_arity::<3>(cdf, update),

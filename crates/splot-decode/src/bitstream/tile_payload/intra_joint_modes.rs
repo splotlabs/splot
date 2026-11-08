@@ -113,21 +113,26 @@ impl<T: Copy> MiGrid<T> {
         if row >= self.rows || col >= self.cols {
             return None;
         }
+        Some(self.plane_row(row).map_or(self.default, |plane_row| {
+            self.cells[plane_row * self.cols + col]
+        }))
+    }
+
+    /// [`SbRowWindow::plane_row`] of tile row `row`, the readable rows inline.
+    #[allow(clippy::inline_always, reason = "measured: per-block neighbour reads")]
+    #[inline(always)]
+    fn plane_row(&self, row: usize) -> Option<usize> {
         let (lo, hi, bias) = self.readable;
         if row.wrapping_sub(lo) < hi.wrapping_sub(lo) {
-            return Some(self.cells[row.wrapping_add(bias) * self.cols + col]);
+            return Some(row.wrapping_add(bias));
         }
-        Some(self.cell_outside_readable_rows(row, col))
+        self.plane_row_outside_readable_rows(row)
     }
 
     #[cold]
     #[inline(never)]
-    fn cell_outside_readable_rows(&self, row: usize, col: usize) -> T {
-        self.window
-            .plane_row(row)
-            .map_or(self.default, |plane_row| {
-                self.cells[plane_row * self.cols + col]
-            })
+    fn plane_row_outside_readable_rows(&self, row: usize) -> Option<usize> {
+        self.window.plane_row(row)
     }
 
     fn with_origin(mut self, origin_row: usize, origin_col: usize) -> Self {
@@ -143,14 +148,8 @@ impl<T: Copy> MiGrid<T> {
         };
         let row_end = r.saturating_add(n4h).min(self.rows);
         let col_end = c.saturating_add(n4w).min(self.cols);
-        let (lo, hi, bias) = self.readable;
         for row in r..row_end {
-            let plane_row = if row >= lo && row < hi {
-                Some(row.wrapping_add(bias))
-            } else {
-                self.window.plane_row(row)
-            };
-            if let Some(plane_row) = plane_row {
+            if let Some(plane_row) = self.plane_row(row) {
                 let start = plane_row * self.cols;
                 crate::support::fill_mi_run(&mut self.cells[start + c..start + col_end], value);
             }

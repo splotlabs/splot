@@ -7,6 +7,7 @@ use splot_recon::math::round2_signed;
 
 use super::block::{WARP_PARAM_REDUCE_BITS, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP};
 use super::{CompoundOrderHint, Mv, mc::CWP_EQUAL};
+use crate::tile::superblock_of;
 
 pub(crate) const MAX_REF_MV_STACK_SIZE: usize = 6;
 
@@ -646,14 +647,9 @@ pub(crate) fn block_neighbour_ctx(
 ) -> BlockNeighbourContext {
     let immediate = immediate_flags(grid, block);
     let cells = immediate.map(|cell| cell.unwrap_or(EMPTY_NEIGHBOUR_FLAGS));
-    let present = immediate
-        .iter()
-        .enumerate()
-        .fold(0u32, |mask, (index, cell)| {
-            mask | u32::from(cell.is_some()) << index
-        });
-    // The first two published probes, and the first two not above a
-    // superblock-row boundary; an absent one reads as the empty flags.
+    let present = (0..4).fold(0u32, |mask, i| {
+        mask | u32::from(immediate[i].is_some()) << i
+    });
     let first_two = |mask: u32| {
         let rest = mask & mask.wrapping_sub(1);
         let pick = |m: u32| {
@@ -1292,18 +1288,6 @@ impl RefMvBank {
                 return;
             }
         }
-    }
-}
-
-/// The superblock `(row, col)` of a mode-info position; superblock sizes are
-/// powers of two, which turns the per-leaf divisions into shifts.
-#[inline]
-fn superblock_of(mi_row: usize, mi_col: usize, sb_size4: usize) -> (usize, usize) {
-    if sb_size4.is_power_of_two() {
-        let shift = sb_size4.trailing_zeros();
-        (mi_row >> shift, mi_col >> shift)
-    } else {
-        (mi_row / sb_size4.max(1), mi_col / sb_size4.max(1))
     }
 }
 

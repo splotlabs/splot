@@ -12,7 +12,7 @@ pub(crate) mod reusable_scratch;
 pub(crate) fn step_range(
     range: core::ops::Range<usize>,
     step: usize,
-) -> impl Iterator<Item = usize> + Clone {
+) -> impl Iterator<Item = usize> {
     core::iter::successors(Some(range.start), move |at| at.checked_add(step.max(1)))
         .take_while(move |&at| at < range.end)
 }

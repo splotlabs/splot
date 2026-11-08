@@ -155,10 +155,9 @@ impl GdfState {
         frontier: &DecodeBlockFrontier,
         tile_offset: ByteOffset,
     ) -> Result<()> {
-        match self.unit_for(frontier) {
-            Some(unit) => self.read_unit(work_unit, symbols, unit, tile_offset),
-            None => Ok(()),
-        }
+        self.unit_for(frontier).map_or(Ok(()), |unit| {
+            self.read_unit(work_unit, symbols, unit, tile_offset)
+        })
     }
 
     #[inline(never)]
@@ -179,13 +178,11 @@ impl GdfState {
     /// `frontier` codes (§ 5.20.10.3), if any.
     #[inline]
     pub(crate) fn unit_for(&self, frontier: &DecodeBlockFrontier) -> Option<(usize, usize)> {
-        // `sb_size4` is a power of two, so the mask tests divisibility.
         let sb_mask = self.sb_size4.wrapping_sub(1);
         if !self.active || frontier.is_chroma_part() || (frontier.r | frontier.c) & sb_mask != 0 {
             return None;
         }
-        let sb_row = frontier.r / self.sb_size4;
-        let sb_col = frontier.c / self.sb_size4;
+        let (sb_row, sb_col) = crate::tile::superblock_of(frontier.r, frontier.c, self.sb_size4);
         if !sb_row.is_multiple_of(self.sb_per_gdf) || !sb_col.is_multiple_of(self.sb_per_gdf) {
             return None;
         }
