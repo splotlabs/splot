@@ -365,7 +365,7 @@ pub(crate) fn decode_one_general_intra_block(
     tools: &GeneralIntraFrameTools,
     mut chroma_smooth: Option<&mut crate::prediction::intra_edge::TileChromaSmoothGrid>,
     intra_facts: &crate::bitstream::tile_payload::TileIntraFactsState,
-    is_cfl_ctx: IsCflContext,
+    is_cfl_ctx: crate::bitstream::tile_payload::LeafCflContext<'_>,
     segment_id: u8,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
@@ -400,7 +400,11 @@ pub(crate) fn decode_one_general_intra_block(
     let neighbours = intra_facts.neighbours(frontier.r, frontier.c, n4w, n4h);
     let (above_smooth, left_smooth) = neighbours.smoothness();
     let (chroma_above_smooth, chroma_left_smooth) =
-        chroma_edge_smoothness(chroma_smooth.as_deref(), block_ctx);
+        if frontier.has_chroma || frontier.is_chroma_part() {
+            chroma_edge_smoothness(chroma_smooth.as_deref(), block_ctx)
+        } else {
+            (false, false)
+        };
     let intra_edge = crate::prediction::intra_edge::IntraEdgeCtx {
         enable_ibp: tools.enable_ibp,
         enable_intra_edge_filter: tools.enable_intra_edge_filter,
@@ -430,7 +434,7 @@ pub(crate) fn decode_one_general_intra_block(
             angle_delta_y,
             lossless_luma_fsc,
             chroma_tools,
-            is_cfl_ctx,
+            is_cfl_ctx.resolve(),
             tools.cfl_ds_filter_index,
             tools.sb_mib,
             lossless,
@@ -501,7 +505,7 @@ pub(crate) fn decode_one_general_intra_block(
             intra_facts,
             neighbours,
             use_neighbor_fsc_context,
-            is_cfl_ctx.get(),
+            is_cfl_ctx.resolve().get(),
             frontier.b_size,
             frontier.r,
             frontier.c,
