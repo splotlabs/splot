@@ -1129,8 +1129,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     arena: &mut Vec<i32>,
     block: &PlaneCoeffBlock,
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
-    let segment_lossless = block.segment_lossless;
-    let lossless = segment_lossless.unwrap_or(false);
+    let lossless = block.segment_lossless.unwrap_or(false);
     let tx_size = if lossless && !block.is_inter && !block.fsc_mode {
         TX_4X4
     } else {
@@ -1175,7 +1174,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         context,
         arena,
         block,
-        (tx, tx_size, segment_lossless, &lines),
+        (tx, tx_size, block.segment_lossless, &lines),
     )
 }
 

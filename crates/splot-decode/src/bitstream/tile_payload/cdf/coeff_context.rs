@@ -320,9 +320,8 @@ fn dc_sign_votes(line: &[u8], start: usize, len: usize) -> i32 {
     {
         return dc_votes(u64::from_le_bytes(*bytes) & (u64::MAX >> (64 - 8 * len)));
     }
-    run.get(..len)
-        .unwrap_or_default()
-        .iter()
+    run.iter()
+        .take(len)
         .map(|&byte| dc_votes(u64::from(byte)))
         .sum()
 }

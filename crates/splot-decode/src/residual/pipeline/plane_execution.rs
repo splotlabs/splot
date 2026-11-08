@@ -97,16 +97,6 @@ pub(super) enum CctxRole {
     PairV,
 }
 
-/// The facts every plane of one block parses with.
-#[derive(Clone, Copy)]
-struct PlaneParseFacts {
-    uv_mode: usize,
-    luma_transform_type_context: LumaTransformTypeContext,
-    luma_tx_partition_context: Option<LumaTransformPartitionContext>,
-    policy: TransformToolResidualPolicy,
-    segment_lossless: Option<bool>,
-}
-
 /// A block's planned planes, a range of the row's arena.
 pub(crate) struct PlannedGeneralIntraResidual(core::ops::Range<u32>);
 
@@ -195,13 +185,7 @@ impl ResidualPlaneArena {
     ) -> core::result::Result<ParsedGeneralIntraResidual, GeneralIntraResidualError> {
         let mut u_nonzero = false;
         let mut pending_u = false;
-        let facts = PlaneParseFacts {
-            uv_mode,
-            luma_transform_type_context,
-            luma_tx_partition_context,
-            policy: transform_tool_residual_policy,
-            segment_lossless: current_segment_lossless(work_unit),
-        };
+        let segment_lossless = current_segment_lossless(work_unit);
         let Self { planes, units } = self;
         let range = planned.0.start as usize..planned.0.end as usize;
         for parsed in planes
@@ -217,7 +201,7 @@ impl ResidualPlaneArena {
             } = parsed;
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
             let (role, pass_eob_u_nonzero) =
-                if chroma_pair::can_hold_for_cctx_pair(plane, facts.segment_lossless) {
+                if chroma_pair::can_hold_for_cctx_pair(plane, segment_lossless) {
                     (CctxRole::HoldU, false)
                 } else if plane.plane_id == PlaneId::V && !plane.defer_reconstruction && pending_u {
                     (CctxRole::PairV, eob_u_nonzero)
@@ -228,7 +212,11 @@ impl ResidualPlaneArena {
                 work_unit,
                 symbols,
                 coeff_ctx,
-                &facts,
+                uv_mode,
+                luma_transform_type_context,
+                luma_tx_partition_context,
+                transform_tool_residual_policy,
+                segment_lossless,
                 pass_eob_u_nonzero,
                 deblock,
                 coeffs_arena,
@@ -262,24 +250,24 @@ impl ResidualPlanePlan {
         work_unit: &mut DecodeTileWorkUnit,
         symbols: &mut SymbolDecoder<'_>,
         coeff_ctx: &mut TileCoeffContextState,
-        facts: &PlaneParseFacts,
+        uv_mode: usize,
+        luma_transform_type_context: LumaTransformTypeContext,
+        luma_tx_partition_context: Option<LumaTransformPartitionContext>,
+        transform_tool_residual_policy: TransformToolResidualPolicy,
+        segment_lossless: Option<bool>,
         eob_u_nonzero: bool,
         deblock: &mut DeblockRecorder<'_>,
         coeffs_arena: &mut Vec<i32>,
         units: &mut Vec<Option<ParsedTransformUnit>>,
     ) -> core::result::Result<ParsedResidualPlaneKind, GeneralIntraResidualError> {
-        let PlaneParseFacts {
-            uv_mode,
-            luma_transform_type_context,
-            luma_tx_partition_context,
-            policy,
-            segment_lossless,
-        } = *facts;
         let tx_partition_context = (self.plane_id == PlaneId::Y)
             .then_some(luma_tx_partition_context)
             .flatten();
-        let policy =
-            transform_tool_policy_for_plane(policy, self.plane_id, luma_transform_type_context);
+        let policy = transform_tool_policy_for_plane(
+            transform_tool_residual_policy,
+            self.plane_id,
+            luma_transform_type_context,
+        );
         let angle_delta_uv =
             chroma_angle_delta_uv(self.plane_id, uv_mode, luma_transform_type_context);
         let palette_color_map = self.read_palette_color_map(work_unit, symbols)?;
