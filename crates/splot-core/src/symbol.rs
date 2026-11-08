@@ -558,7 +558,8 @@ impl Default for SymbolDecoderConfig {
 pub struct SymbolDecoderSummary {
     /// Number of bits consumed after advancing to `paddingEndPosition`.
     pub consumed_bits: SymbolBitPosition,
-    /// Number of frame symbols counted by `read_literal`, `read_unary`, and `read_symbol`.
+    /// Number of frame symbols counted by `read_literal`, `read_unary`, and
+    /// `read_symbol`; see [`SymbolDecoder::symbol_count`].
     pub symbol_count: u64,
     /// Relative `trailingBitPosition` inside the tile payload.
     pub trailing_bit_position: SymbolBitPosition,
@@ -590,7 +591,8 @@ const BYPASS_RUN_CHUNK_BITS: u32 = 32;
 pub struct SymbolDecoderCheckpoint {
     /// Number of bits consumed from the tile payload.
     pub consumed_bits: SymbolBitPosition,
-    /// Number of frame symbols counted by `read_literal`, `read_unary`, and `read_symbol`.
+    /// Number of frame symbols counted by `read_literal`, `read_unary`, and
+    /// `read_symbol`; see [`SymbolDecoder::symbol_count`].
     pub symbol_count: u64,
     /// Current signed `SymbolMaxBits` value.
     pub symbol_max_bits: i64,
@@ -720,10 +722,20 @@ impl<'a> SymbolDecoder<'a> {
         self.payload_bits - self.fed_bits as i64 + self.buffered as i64
     }
 
-    /// Returns the number of counted frame symbols so far.
+    /// Returns the number of counted frame symbols so far. Only builds with
+    /// debug assertions count; the hot decode loops skip the counter, so
+    /// other builds return 0.
     #[must_use]
     pub const fn symbol_count(&self) -> u64 {
         self.frame_symbol_count
+    }
+
+    #[allow(clippy::inline_always, reason = "measured symbol-decode hot path")]
+    #[inline(always)]
+    const fn count_symbols(&mut self, n: u64) {
+        if cfg!(debug_assertions) {
+            self.frame_symbol_count = self.frame_symbol_count.wrapping_add(n);
+        }
     }
 
     /// Copies the decoder state by value, for hot loops that keep the
@@ -806,7 +818,7 @@ impl<'a> SymbolDecoder<'a> {
             );
         }
 
-        self.frame_symbol_count = self.frame_symbol_count.saturating_add(u64::from(n));
+        self.count_symbols(u64::from(n));
         Ok(self.read_bypass_bits(n))
     }
 
@@ -853,7 +865,7 @@ impl<'a> SymbolDecoder<'a> {
         let symbol_value = u32::try_from(normalized)
             .map_err(|_| self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange))?;
         self.advance_bypass(consumed, symbol_value);
-        self.frame_symbol_count = self.frame_symbol_count.saturating_add(u64::from(consumed));
+        self.count_symbols(u64::from(consumed));
 
         Ok(value)
     }
@@ -1050,7 +1062,7 @@ impl<'a> SymbolDecoder<'a> {
         let one = scaled < split;
         let rest = if one { scaled } else { scaled - split };
         self.advance_bypass(1, rest as u32);
-        self.frame_symbol_count = self.frame_symbol_count.wrapping_add(1);
+        self.count_symbols(1);
         one
     }
 
@@ -1081,7 +1093,7 @@ impl<'a> SymbolDecoder<'a> {
         let rest = dividend.wrapping_sub(quotient.wrapping_mul(self.symbol_range as u64));
         self.dif = (rest << SV_SHIFT) | ((self.dif << bits) & ((1 << SV_SHIFT) - 1));
         self.buffered -= bits as i32;
-        self.frame_symbol_count = self.frame_symbol_count.wrapping_add(bits as u64);
+        self.count_symbols(bits as u64);
     }
 
     /// [`Self::read_bool_trusted`] on a [`Self::bypass_run`].
@@ -1179,7 +1191,7 @@ impl<'a> SymbolDecoder<'a> {
         self.symbol_range = new_range << bits;
         self.dif = self.dif.wrapping_sub(u64::from(cur) << SV_SHIFT) << bits;
         self.buffered -= bits as i32;
-        self.frame_symbol_count = self.frame_symbol_count.wrapping_add(1);
+        self.count_symbols(1);
     }
 
     /// Validates AV2 § 8.2.4 `exit_symbol()` and returns the final decoder summary.
