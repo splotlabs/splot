@@ -274,15 +274,6 @@ enum ReconCommandRef<'a> {
     Inter(&'a deferred_recon::InterReconCommand),
 }
 
-impl ReconCommandRef<'_> {
-    fn temporal_record_capacity(&self) -> usize {
-        match self {
-            Self::Inter(command) => command.temporal_record_capacity(),
-            Self::GeneralIntra | Self::Intrabc => 1,
-        }
-    }
-}
-
 /// [`ReconCommandRef`] for a pass that consumes the command in place.
 enum ReconCommandMut<'a> {
     GeneralIntra(&'a mut crate::pipeline::general_intra::GeneralIntraReconCommand),

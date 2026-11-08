@@ -1329,14 +1329,6 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     }
     let _quantizer_scopes = quantizer.install_frame();
     let info = surface.info();
-    let temporal_capacity = row.entries.iter().fold(0usize, |capacity, entry| {
-        capacity.saturating_add(
-            entry
-                .command(&row.slots)
-                .map_or(0, |command| command.temporal_record_capacity()),
-        )
-    });
-    let _ = row.temporal.try_reserve(temporal_capacity);
     'superblocks: for superblock in &row.superblocks {
         let entry_start = superblock.entries.start;
         let Some(entries) = row.entries.get_mut(superblock.entries.clone()) else {

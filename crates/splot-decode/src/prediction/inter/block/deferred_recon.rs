@@ -124,17 +124,6 @@ impl InterReconCommand {
         )
     }
 
-    pub(super) fn temporal_record_capacity(&self) -> usize {
-        match self.kind {
-            PendingKind::Single => 1,
-            PendingKind::Compound { .. } | PendingKind::Tip => self
-                .placed
-                .luma_w
-                .div_ceil(8)
-                .saturating_mul(self.placed.luma_h.div_ceil(8)),
-        }
-    }
-
     pub(super) fn prepass_write_is_contained(
         &self,
         superblock_origin: [usize; 2],
