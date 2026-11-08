@@ -2124,7 +2124,7 @@ mod tests {
         let mut reused_classes = vec![GdfClass(i32::MAX); classes.len() + 4];
         let mut reused_class_scratch = ClassScratch {
             grads: vec![[[u16::MAX; 16]; 4]; class_scratch.grads.len() + 3],
-            errors: Vec::new(),
+            ..ClassScratch::default()
         };
         let reused_result = band_classes_from_source(
             &reused_source,

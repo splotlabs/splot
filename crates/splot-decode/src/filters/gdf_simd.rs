@@ -908,14 +908,18 @@ impl<O: GdfSample> RowSink for [&mut [O; 16]; 2] {
 /// Stores the pair's `err` bytes for [`add_errors`]: each is a scalar load
 /// and store, independent of the others, where inserting them into one
 /// vector chains every lookup on the one before.
-struct ErrorRows<'a>([&'a mut [i8; 16]; 2]);
+/// The table is the block's error table from index 0, so that any `u16`
+/// index reads it without a mask or bounds check.
+struct ErrorRows<'a>([&'a mut [i8; 16]; 2], &'a [i8; 1 << 16]);
 
 impl RowSink for ErrorRows<'_> {
     #[allow(clippy::inline_always)]
     #[inline(always)]
-    fn row<S: Simd>(&mut self, _simd: S, row: usize, pos: &[u16; 16], block: &GdfBlock) {
+    fn row<S: Simd>(&mut self, _simd: S, row: usize, pos: &[u16; 16], _block: &GdfBlock) {
         if let Some(errors) = self.0.get_mut(row) {
-            store_errors(block, pos, errors);
+            for (error, &pos) in errors.iter_mut().zip(pos) {
+                *error = self.1[usize::from(pos)];
+            }
         }
     }
 
@@ -1025,6 +1029,8 @@ pub(super) struct ClassScratch {
     /// A row pair's `err` bytes, two rows of [`ClassScratch::error_row`]
     /// each, for [`add_errors`].
     pub(super) errors: Vec<i8>,
+    /// [`ErrorRows`]' error table.
+    pub(super) table: Vec<i8>,
 }
 
 impl ClassScratch {
@@ -1229,8 +1235,19 @@ fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
     let mut errors = scratch.errors.get_mut(..2 * error_row);
     let tables = class_tables(block);
     let params = GdfSymParams::new(block);
+    let table: &[i8] = if block.ref_dst_idx == GDF_INTRA_REF_DST {
+        GDF_INTRA_ERROR_I8.get(block.qp_idx)?
+    } else {
+        GDF_INTER_ERROR_I8
+            .get(block.ref_dst_idx - 1)?
+            .get(block.qp_idx)?
+    };
+    scratch.table.resize(1 << 16, 0);
+    scratch.table.get_mut(..table.len())?.copy_from_slice(table); // splot-copy-ok: index the table by any u16
+    let table = scratch.table.first_chunk()?;
     let grad_rows = |row_pair: usize| gradient_source_rows(source, origin, class_cols, row_pair);
     gradient_row(simd, &grad_rows(0)?, buffers[0])?;
+    let mut chunk_classes = [[0; 8]; TILE_COLS / 16];
     for row_pair in 0..block.height / 2 {
         let (current, previous) = ((row_pair + 1) & 1, row_pair & 1);
         gradient_row(simd, &grad_rows(row_pair + 1)?, buffers[current])?;
@@ -1253,48 +1270,42 @@ fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
             .get_mut(start..)?
             .split_at_mut_checked(block.base_stride)?;
         let (top, bottom) = (top.get_mut(..run)?, bottom.get_mut(..run)?);
+        let chunk_classes = chunk_classes.get_mut(..run.div_ceil(16))?;
         let mut next = pair_sum(simd, current.first()?, previous.first()?);
-        let mut grads = current.iter().zip(previous).skip(1);
+        let grads = current.iter().zip(previous).skip(1);
+        for (classes, (current, previous)) in chunk_classes.iter_mut().zip(grads) {
+            let sums = next;
+            next = pair_sum(simd, current, previous);
+            *classes = classify_chunk(simd, sums, next, &tables).to_array();
+        }
         let mut deferred = errors
             .as_deref_mut()
             .map(|errors| errors.split_at_mut(error_row));
-        let mut deferred_end = 0;
-        for x in (0..run).step_by(16) {
-            let (current, previous) = grads.next()?;
-            let sums = next;
-            next = pair_sum(simd, current, previous);
-            let classes = classify_chunk(simd, sums, next, &tables);
+        let mut done = 0;
+        if let (Some(base), Some((top_errors, bottom_errors))) = (tiled_base, deferred.as_mut()) {
+            let span = source.samples.get(base..).unwrap_or_default();
+            let (top_errors, _) = top_errors.as_chunks_mut::<16>();
+            let (bottom_errors, _) = bottom_errors.as_chunks_mut::<16>();
+            let errors = top_errors.iter_mut().zip(bottom_errors);
+            for (classes, (top, bottom)) in chunk_classes.iter().take(run / 16).zip(errors) {
+                let Some(window) = span
+                    .get(16 * done..)
+                    .and_then(<[u16]>::first_chunk::<TILE_SPAN>)
+                else {
+                    break;
+                };
+                let (window, classes) = (TiledWindow(window), i32x8::from_slice(simd, classes));
+                let sink = ErrorRows([top, bottom], table);
+                sym_rows_with(simd, lanes, &window, sink, classes, block, &params);
+                done += 1;
+            }
+        }
+        for (x, classes) in (0..run).step_by(16).zip(&*chunk_classes).skip(done) {
+            let classes = i32x8::from_slice(simd, classes);
             let width = (run - x).min(16);
             let tiled = tiled_base
                 .and_then(|base| source.samples.get(base + x..))
                 .and_then(<[u16]>::first_chunk::<TILE_SPAN>);
-            let deferred = deferred
-                .as_mut()
-                .filter(|_| width == 16)
-                .and_then(|(top, bottom)| {
-                    deferred_end = x + 16;
-                    Some([
-                        top.get_mut(x..)?.first_chunk_mut::<16>()?,
-                        bottom.get_mut(x..)?.first_chunk_mut::<16>()?,
-                    ])
-                });
-            match (tiled, deferred) {
-                (Some(span), Some(errors)) => {
-                    let sink = ErrorRows(errors);
-                    sym_rows_with(
-                        simd,
-                        lanes,
-                        &TiledWindow(span),
-                        sink,
-                        classes,
-                        block,
-                        &params,
-                    );
-                    continue;
-                }
-                (None, Some(errors)) => ErrorRows(errors).keep(simd),
-                (_, None) => {}
-            }
             if width == 16
                 && let Some(span) = tiled
             {
@@ -1315,7 +1326,7 @@ fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
             }
         }
         if let Some((top_errors, bottom_errors)) = deferred {
-            let end = deferred_end;
+            let end = 16 * done;
             add_errors(simd, top_errors.get(..end)?, top.get_mut(..end)?, block);
             add_errors(
                 simd,
