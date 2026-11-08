@@ -136,18 +136,19 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
             cwp_weight: self.cwp_weight,
         };
         let views = [Some(prediction.views), second];
-        let mut scratch = (
-            [[0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
-            [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
-        );
-        let mut program = CELL_PROGRAM.take().unwrap_or_default();
+        let mut state = CELL_PROGRAM.take().unwrap_or_default();
+        let GridProgram {
+            cells: program,
+            pred,
+            intermediate,
+        } = &mut *state;
         program.clear();
+        type Pred = [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
+        type Intermediate = [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
         let run = |program: &mut CompoundCells,
                    outputs: &mut [(&mut [u8], usize); 2],
-                   (pred, intermediate): &mut (
-            [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
-            [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
-        )|
+                   pred: &mut Pred,
+                   intermediate: &mut Intermediate|
          -> Result<()> {
             for (views, (output, stride)) in views.iter().zip(outputs.iter_mut()) {
                 if let Some(views) = views {
@@ -179,7 +180,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
             );
             if uniform {
                 if !program.push([row, col], placements) {
-                    result = run(&mut program, &mut outputs, &mut scratch);
+                    result = run(program, &mut outputs, pred, intermediate);
                     program.push([row, col], placements);
                 }
             } else {
@@ -187,7 +188,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
                     &views,
                     &grid,
                     (placements, [col, row, size]),
-                    &mut scratch,
+                    (pred, intermediate),
                     &mut outputs,
                 );
             }
@@ -196,9 +197,9 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
             }
         }
         if result.is_ok() {
-            result = run(&mut program, &mut outputs, &mut scratch);
+            result = run(program, &mut outputs, pred, intermediate);
         }
-        CELL_PROGRAM.set(Some(program));
+        CELL_PROGRAM.set(Some(state));
         result.map(|()| true)
     }
 
@@ -209,9 +210,9 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
         views: &[Option<[ReferencePlaneView<'_, T>; 2]>; 2],
         grid: &GridBlock<'_, '_, T>,
         (placements, [col, row, size]): ([CellPlacement; 2], [usize; 3]),
-        (pred, intermediate): &mut (
-            [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
-            [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
+        (pred, intermediate): (
+            &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
+            &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
         ),
         outputs: &mut [(&mut [u8], usize); 2],
     ) -> Result<()> {

@@ -198,8 +198,26 @@ std::thread_local! {
         const { std::cell::Cell::new(None) };
     static OPTFLOW_MOTION_CELLS: std::cell::RefCell<[Option<Vec<MotionCell>>; 2]> =
         const { std::cell::RefCell::new([None, None]) };
-    static CELL_PROGRAM: std::cell::Cell<Option<Box<CompoundCells>>> =
+    static CELL_PROGRAM: std::cell::Cell<Option<Box<GridProgram>>> =
         const { std::cell::Cell::new(None) };
+}
+
+/// A grid plane's cell program and the scratch of the cells it declines,
+/// recycled per thread so that a plane neither zeroes nor allocates them.
+struct GridProgram {
+    cells: CompoundCells,
+    pred: [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
+    intermediate: [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
+}
+
+impl Default for GridProgram {
+    fn default() -> Self {
+        Self {
+            cells: CompoundCells::default(),
+            pred: [[0; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
+            intermediate: [0; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
+        }
+    }
 }
 
 pub(super) fn take_motion_cells(len: usize, value: MotionCell) -> Vec<MotionCell> {
@@ -1539,9 +1557,12 @@ pub(super) fn predict_motion_grid_compound_average_into<
         }
         Ok(())
     };
-    let mut pred_scratch = [[0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
-    let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
-    let mut program = CELL_PROGRAM.take().unwrap_or_default();
+    let mut state = CELL_PROGRAM.take().unwrap_or_default();
+    let GridProgram {
+        cells: program,
+        pred: pred_scratch,
+        intermediate: intermediate_scratch,
+    } = &mut *state;
     program.clear();
     let Some((second, second_output, second_stride)) = second else {
         for (cell_row, row) in (0..prediction.block_h).step_by(subblock_h).enumerate() {
@@ -1549,21 +1570,21 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 cell_row,
                 row,
                 &mut output[row * output_stride..],
-                &mut pred_scratch,
-                &mut intermediate_scratch,
-                &mut program,
+                &mut *pred_scratch,
+                &mut *intermediate_scratch,
+                &mut *program,
             )?;
         }
         run_cell_program(
-            &program,
+            &*program,
             &prediction.views,
             (&grid_block, block.interp, subblock_w),
-            &mut pred_scratch,
-            &mut intermediate_scratch,
+            &mut *pred_scratch,
+            &mut *intermediate_scratch,
             output,
             output_stride,
         )?;
-        CELL_PROGRAM.set(Some(program));
+        CELL_PROGRAM.set(Some(state));
         return predict_chroma_v_separately(
             info,
             block,
@@ -1581,7 +1602,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
         let [mut merged, mut second_merged] = fullpel_runs(
             cell_row,
             [row, height],
-            &mut intermediate_scratch,
+            &mut intermediate_scratch[..],
             output,
             output_stride,
             Some((&second.views, &mut *second_output, second_stride)),
@@ -1652,8 +1673,8 @@ pub(super) fn predict_motion_grid_compound_average_into<
                     &prediction.views,
                     cell,
                     &grid_block,
-                    &mut pred_scratch,
-                    &mut intermediate_scratch,
+                    &mut *pred_scratch,
+                    &mut *intermediate_scratch,
                     &mut output[col..],
                     output_stride,
                 )?;
@@ -1663,8 +1684,8 @@ pub(super) fn predict_motion_grid_compound_average_into<
                     &second.views,
                     cell,
                     &grid_block,
-                    &mut pred_scratch,
-                    &mut intermediate_scratch,
+                    &mut *pred_scratch,
+                    &mut *intermediate_scratch,
                     &mut second_output[col..],
                     second_stride,
                 )?;
@@ -1676,16 +1697,16 @@ pub(super) fn predict_motion_grid_compound_average_into<
         (&second.views, second_output, second_stride),
     ] {
         run_cell_program(
-            &program,
+            &*program,
             views,
             (&grid_block, block.interp, subblock_w),
-            &mut pred_scratch,
-            &mut intermediate_scratch,
+            &mut *pred_scratch,
+            &mut *intermediate_scratch,
             output,
             stride,
         )?;
     }
-    CELL_PROGRAM.set(Some(program));
+    CELL_PROGRAM.set(Some(state));
     predict_chroma_v_separately(
         info,
         block,
