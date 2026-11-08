@@ -6,7 +6,7 @@
 use splot_core::coefficient::{COEFF_BASE_RANGE, LF_SIG_COEF_CONTEXTS_2D, SIG_REF_DIFF_OFFSET_NUM};
 use splot_core::tables::conversion::SIG_REF_DIFF_OFFSET;
 
-use super::super::coeff_state::{LEVEL_INDEX_MASK, LevelGrid};
+use super::super::coeff_state::{DC_CATEGORY_SHIFT, LEVEL_INDEX_MASK, LevelGrid};
 
 const SIG_COEF_CONTEXTS_EOB: usize = 4;
 
@@ -279,15 +279,17 @@ impl CoeffBaseContext {
     }
 }
 
+/// The `dc_sign` context (§ 8.3.2) from the above and left context lines
+/// (see `coeff_state::DC_CATEGORY_SHIFT`) of a block at `x4, y4` of `w4` by `h4`.
 pub(crate) fn dc_sign_ctx(
-    above_dc: &[u8],
-    left_dc: &[u8],
+    above: &[u8],
+    left: &[u8],
     x4: usize,
     y4: usize,
     w4: usize,
     h4: usize,
 ) -> usize {
-    let dc_sign = dc_sign_votes(above_dc, x4, w4) + dc_sign_votes(left_dc, y4, h4);
+    let dc_sign = dc_sign_votes(above, x4, w4) + dc_sign_votes(left, y4, h4);
     match dc_sign.cmp(&0) {
         core::cmp::Ordering::Less => 1,
         core::cmp::Ordering::Greater => 2,
@@ -302,38 +304,38 @@ const fn zero_bytes(word: u64) -> i32 {
     (!((word & LOW7).wrapping_add(LOW7) | word | LOW7)).count_ones() as i32
 }
 
-/// Net sign of the `len` DC categories from `start`; categories are random
-/// per block, so the sum is branchless.
+/// The `dcCategory` of a context-line byte.
+const fn dc_category(byte: u8) -> u8 {
+    byte >> DC_CATEGORY_SHIFT
+}
+
+/// Net sign of the `len` DC categories of the context-line bytes from
+/// `start`; categories are random per block, so the sum is branchless.
 fn dc_sign_votes(line: &[u8], start: usize, len: usize) -> i32 {
+    let vote = |&byte: &u8| i32::from(dc_category(byte) == 2) - i32::from(dc_category(byte) == 1);
     let Some(slice) = start.checked_add(len).and_then(|end| line.get(start..end)) else {
         return line
             .get(start..)
             .unwrap_or_default()
             .iter()
             .take(len)
-            .map(|&category| i32::from(category == 2) - i32::from(category == 1))
+            .map(vote)
             .sum();
     };
     match len {
         0 => 0,
-        1 => i32::from(slice[0] == 2) - i32::from(slice[0] == 1),
-        2 => {
-            (i32::from(slice[0] == 2) - i32::from(slice[0] == 1))
-                + (i32::from(slice[1] == 2) - i32::from(slice[1] == 1))
-        }
+        1 => vote(&slice[0]),
+        2 => vote(&slice[0]) + vote(&slice[1]),
         4 | 8 | 16 | 32 => slice
             .chunks_exact(len.min(8))
             .map(|word| {
                 let mut bytes = [0u8; 8];
                 bytes[..word.len()].copy_from_slice(word);
-                let word = u64::from_ne_bytes(bytes);
+                let word = (u64::from_ne_bytes(bytes) >> DC_CATEGORY_SHIFT) & 0x0303_0303_0303_0303;
                 zero_bytes(word ^ 0x0202_0202_0202_0202) - zero_bytes(word ^ 0x0101_0101_0101_0101)
             })
             .sum(),
-        _ => slice
-            .iter()
-            .map(|&category| i32::from(category == 2) - i32::from(category == 1))
-            .sum(),
+        _ => slice.iter().map(vote).sum(),
     }
 }
 
