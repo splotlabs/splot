@@ -189,6 +189,9 @@ macro_rules! for_chunks {
                 .get($start..)
                 .and_then(<[DeblockEdge]>::first_chunk::<SEGMENTS>)
                 .map_or([0; SEGMENTS], |run| run.map(|edge| edge.0 as i64));
+            if lanes.iter().fold(0, |any, lane| any | lane) == 0 {
+                continue;
+            }
             let ($low, $high, $widest) = pack($token, lanes, done as i32);
             if $widest != 0 $body
         }
@@ -424,19 +427,12 @@ kernel!(
                     let origin = first - $reach * stride;
                     let span = (2 * $reach - 1) * stride;
                     if let Some(band) = samples.get_mut(origin..origin + span + LINES) {
-                        let (head, last) = band.split_at_mut(span);
-                        let (vectors, tail) =
-                            rows[REACH - $reach..REACH + $reach].split_at_mut(2 * $reach - 1);
-                        let mut lines = head.chunks_exact_mut(stride);
-                        for $vector in vectors {
-                            if let Some($row) = lines.next() {
-                                let $row = &mut $row[..LINES];
+                        let vectors = &mut rows[REACH - $reach..REACH + $reach];
+                        for (line, $vector) in vectors.iter_mut().enumerate() {
+                            let at = line * stride;
+                            if let Some($row) = band.get_mut(at..at + LINES) {
                                 $body
                             }
-                        }
-                        if let Some($vector) = tail.first_mut() {
-                            let $row = &mut last[..LINES];
-                            $body
                         }
                     }
                 }};
