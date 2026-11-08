@@ -862,6 +862,88 @@ fn check_u8_block_luma<const F: usize>(frame: &CurrentFrameWorkspace<u8>, state:
     }
 }
 
+/// [`CflLumaEdges::gather`] of random blocks inside `frame`, whose one-pass
+/// form starts with the above row, against per-sample [`CflLuma::q3`].
+fn check_u8_gathered_edges<const F: usize>(frame: &CurrentFrameWorkspace<u8>, state: &mut u64) {
+    let samples = frame.plane(PlaneId::Y).unwrap().samples();
+    let luma = CflLuma::<u8, F>::new(frame, samples, F).unwrap();
+    let size = frame.plane(PlaneId::U).unwrap().storage_size();
+    let (width, height) = (size.width(), size.height());
+    let coeffs = zero_block();
+    let planes = [(PlaneId::U, coeffs.view(&[]), interior())];
+    let mut folded = 0;
+    for _ in 0..40 {
+        let side = |state: &mut u64, limit: usize| {
+            4usize << (lcg(state) % 4).min(limit.ilog2() as usize - 2)
+        };
+        let (block_width, block_height) = (side(state, width), side(state, height));
+        let x = 4 * (lcg(state) % ((width - block_width) / 4 + 1));
+        let y = 4 * (lcg(state) % ((height - block_height) / 4 + 1));
+        let sb_mib = [2, 8, 16][lcg(state) % 3];
+        let block = cfl_block(x, y, block_width, block_height, sb_mib, BitDepth::Eight);
+        let mut edges = CflLumaEdges::default();
+        let mut ac = Vec::new();
+        let start =
+            baseline_simd!(simd => edges.gather(simd, &luma, &planes, block, &mut ac)).unwrap();
+        folded += usize::from(start > 0);
+        if y > 0 {
+            let min_y = cfl_above_min_luma_ref_y(y, sb_mib, PixelFormat::Yuv420);
+            let rows = luma.row(y - 1, false, min_y).unwrap();
+            for col in 0..block_width {
+                assert_eq!(
+                    i32::from(edges.above[col]),
+                    luma.q3(&rows, x + col, col == 0),
+                    "F={F} above x={x} y={y} {block_width}x{block_height} sb={sb_mib} col={col}"
+                );
+            }
+        }
+        for row in 0..block_height {
+            let luma_y = 2 * (y + row);
+            let rows = luma
+                .row(y + row, row == 0 || luma_y.is_multiple_of(64), None)
+                .unwrap();
+            for col in 0..block_width {
+                let clamp_x = col == 0 || (2 * (x + col)).is_multiple_of(64);
+                assert_eq!(
+                    i32::from(ac[start + row * block_width + col]),
+                    luma.q3(&rows, x + col, clamp_x),
+                    "F={F} x={x} y={y} {block_width}x{block_height} row={row} col={col}"
+                );
+            }
+            if x > 0 {
+                let rows = luma.row(y + row, row == 0, None).unwrap();
+                assert_eq!(
+                    i32::from(edges.left[row]),
+                    luma.q3(&rows, x - 1, false),
+                    "F={F} left row {row}"
+                );
+            }
+        }
+    }
+    assert!(folded > 5, "{folded}");
+}
+
+#[test]
+fn cfl_420_u8_gathered_edges_match_per_sample_q3() {
+    let mut state = 31;
+    for _ in 0..30 {
+        let width = 32 + 4 * (lcg(&mut state) % 60);
+        let height = 32 + 4 * (lcg(&mut state) % 40);
+        let mut frame = workspace_sized(PixelFormat::Yuv420, width, height);
+        for y in 0..height {
+            for x in 0..width {
+                let sample = (lcg(&mut state) % 256) as u8;
+                frame
+                    .set_reconstructed_sample(PlaneId::Y, x, y, sample)
+                    .unwrap();
+            }
+        }
+        check_u8_gathered_edges::<0>(&frame, &mut state);
+        check_u8_gathered_edges::<1>(&frame, &mut state);
+        check_u8_gathered_edges::<2>(&frame, &mut state);
+    }
+}
+
 #[test]
 fn cfl_420_u8_block_luma_matches_per_sample_q3() {
     let mut state = 23;
@@ -899,7 +981,7 @@ fn check_u8_reference_luma<const F: usize>(frame: &CurrentFrameWorkspace<u8>, st
         let (clamp_row0, clamp_col0) = (lcg(state).is_multiple_of(2), lcg(state).is_multiple_of(2));
         let mut actual = vec![0; block_width * block_height];
         let clamps = [false, clamp_row0, clamp_col0];
-        if !luma.block_luma_420(x, y, block_width, clamps, &mut None, &mut actual) {
+        if !luma.block_luma_420(x, y, block_width, clamps, None, &mut None, &mut actual) {
             continue;
         }
         fast_runs += 1;

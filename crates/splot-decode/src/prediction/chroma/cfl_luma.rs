@@ -26,30 +26,54 @@ pub(super) struct Luma420Block {
     pub(super) periodic: bool,
     pub(super) clamp_row0: bool,
     pub(super) clamp_col0: bool,
+    /// The top, centre and bottom tap rows (as indices of luma column
+    /// `2 * x`) of an extra first output row, which takes no row clamp: the
+    /// § 7.13.5 `lumaAbove` row above the block. Its left sample is not
+    /// written.
+    pub(super) above: Option<[usize; 3]>,
 }
 
 impl Luma420Block {
-    /// Whether every load of a `height`-row block stays inside `len` samples.
+    /// Whether every load of a block of `height` rows below any
+    /// [`Self::above`] row stays inside `len` samples.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: out of line it costs more than its body"
+    )]
+    #[inline(always)]
     pub(super) fn fits(&self, height: usize, len: usize) -> bool {
         let row_reach = if self.width <= 8 {
             16
         } else {
             2 * self.width.next_multiple_of(16)
         };
+        self.luma_x >= 2
+            && self.first_tap_row().is_some_and(|first| first >= 3)
+            && self.origin + (2 * height - 1) * self.stride + row_reach <= len
+    }
+
+    /// The first luma row any tap reads.
+    fn first_tap_row(&self) -> Option<usize> {
         let first = if self.clamp_row0 {
             Some(self.origin)
         } else {
             self.origin.checked_sub(self.stride)
         };
-        self.luma_x >= 2
-            && first.is_some_and(|first| first >= 3)
-            && self.origin + (2 * height - 1) * self.stride + row_reach <= len
+        match self.above {
+            Some([top, ..]) => first.map(|first| first.min(top)),
+            None => first,
+        }
     }
 }
 
-/// The luma rows of tap rows top, centre and bottom of chroma row `r`.
+/// The luma rows of tap rows top, centre and bottom of output row `r`.
 #[inline]
 fn tap_rows(block: &Luma420Block, r: usize) -> [usize; 3] {
+    let r = match block.above {
+        Some(rows) if r == 0 => return rows,
+        Some(_) => r - 1,
+        None => r,
+    };
     let mid = block.origin + 2 * r * block.stride;
     let clamp = (r == 0 && block.clamp_row0)
         || (block.periodic && (block.luma_y + 2 * r).is_multiple_of(64));
@@ -170,21 +194,43 @@ pub(super) fn luma_420<const F: usize>(
         }
         lone_columns = false;
     }
-    let first_row = block
-        .origin
-        .checked_sub(if block.clamp_row0 { 0 } else { block.stride });
-    let lane_left =
-        width <= 8 && luma_x >= 4 && first_row.is_some_and(|row| row >= 17) && left.is_some();
+    let lane_left = width <= 8
+        && luma_x >= 4
+        && block.first_tap_row().is_some_and(|row| row >= 17)
+        && left.is_some();
     let top_taps = weights[0] != [0; 3];
-    let lane_out = if lane_left { left.as_deref_mut() } else { None };
-    match F {
-        0 => luma_420_rows_f0(token, clamp_groups, luma, block, lane_out, out),
-        1 => luma_420_rows_f1(token, clamp_groups, luma, block, lane_out, out),
-        _ => luma_420_rows_f2(token, clamp_groups, luma, block, lane_out, out),
+    let stride = block.stride;
+    let first_mid = tap_rows(&block, 0)[1];
+    let paired = !top_taps
+        && lane_left
+        && stride >= 64
+        && block.above.is_none_or(|[_, mid, bottom]| {
+            mid + 2 * stride == block.origin && bottom == mid + stride
+        });
+    let pairs = first_mid
+        .checked_sub(17)
+        .and_then(|start| luma.get(start..))
+        .filter(|rows| paired && rows.len() >= 2 * stride * (out.len() >> width.trailing_zeros()));
+    match (F, pairs, left.as_deref_mut()) {
+        (0, Some(rows), Some(left)) => {
+            luma_420_pairs_f0(token, clamp_groups, rows, block, left, out);
+        }
+        (1, Some(rows), Some(left)) => {
+            luma_420_pairs_f1(token, clamp_groups, rows, block, left, out);
+        }
+        (_, _, left) => {
+            let lane_out = if lane_left { left } else { None };
+            match F {
+                0 => luma_420_rows_f0(token, clamp_groups, luma, block, lane_out, out),
+                1 => luma_420_rows_f1(token, clamp_groups, luma, block, lane_out, out),
+                _ => luma_420_rows_f2(token, clamp_groups, luma, block, lane_out, out),
+            }
+        }
     }
     if !lone_columns && (left.is_none() || (lane_left && !top_taps)) {
         return true;
     }
+    let first = usize::from(block.above.is_some());
     for (r, out) in out.chunks_exact_mut(width).enumerate() {
         let rows = tap_rows(&block, r);
         if lone_columns {
@@ -194,11 +240,14 @@ pub(super) fn luma_420<const F: usize>(
                 j += 32;
             }
         }
-        if let Some(left) = left.as_deref_mut() {
+        if let Some(slot) = left
+            .as_deref_mut()
+            .and_then(|left| left.get_mut(r.wrapping_sub(first)))
+        {
             let [lane_top, mid, bottom] = rows;
-            let top = if r == 0 { mid } else { mid - block.stride };
+            let top = if r == first { mid } else { mid - block.stride };
             if !lane_left || (top_taps && top != lane_top) {
-                left[r] = tap_sum(
+                *slot = tap_sum(
                     luma,
                     &weights,
                     [top, mid, bottom].map(|row| row - 2),
@@ -243,6 +292,7 @@ macro_rules! luma_420_rows {
                 let [[plain_centre, plain_left], ..] = taps;
                 let used = |pair: &[[i16; 16]; 3], row: usize| pair[row][1] != 0;
                 let first = usize::from(clamp_groups & 1);
+                let skip = usize::from(block.above.is_some());
                 for (r, out) in out.chunks_exact_mut(width).enumerate() {
                     let rows = tap_rows(&block, r);
                     if width > 8 {
@@ -299,7 +349,9 @@ macro_rules! luma_420_rows {
                                 );
                             }
                         }
-                        left[r] = _mm256_extract_epi16::<7>(acc) as i16;
+                        if let Some(slot) = left.get_mut(r.wrapping_sub(skip)) {
+                            *slot = _mm256_extract_epi16::<7>(acc) as i16;
+                        }
                         store_row8(token, _mm256_extracti128_si256::<1>(acc), out);
                     } else {
                         let clamped = first;
@@ -338,6 +390,79 @@ macro_rules! luma_420_rows {
 luma_420_rows!(luma_420_rows_f0, 0);
 luma_420_rows!(luma_420_rows_f1, 1);
 luma_420_rows!(luma_420_rows_f2, 2);
+
+/// Defines the paired-row narrow part of [`luma_420`] for one filter without
+/// top taps.
+macro_rules! luma_420_pairs {
+    ($name:ident, $filter:literal) => {
+        fearless_simd::kernel!(
+            /// The narrow, left-lane part of [`luma_420_rows_f0`] for a filter
+            /// without top taps, whose output row `r` reads only the luma rows
+            /// `2 * r` and `2 * r + 1` after the first: `rows` starts 17
+            /// samples before the first row's centre column and holds two whole
+            /// rows of `block.stride` (at least 64) per output row, so each row
+            /// pair is split off once and its loads need no bounds checks.
+            #[inline]
+            fn $name(
+                token: Avx2,
+                clamp_groups: u8,
+                rows: &[u8],
+                block: Luma420Block,
+                left: &mut [i16],
+                out: &mut [i16],
+            ) {
+                use core::arch::x86_64::{
+                    __m256i, _mm256_add_epi16, _mm256_extract_epi16, _mm256_extracti128_si256,
+                    _mm256_maddubs_epi16,
+                };
+                use fearless_simd::{SimdBase as _, i16x16, u8x32};
+                let stride = block.stride;
+                if stride < 64 {
+                    return;
+                }
+                let taps = &LANE_TAPS[$filter][2 * usize::from(clamp_groups & 1)];
+                let lanes = |pair: usize, row: usize| -> __m256i {
+                    i16x16::from_slice(token, &taps[pair][row]).into()
+                };
+                let left_taps = taps[1][1] != [0; 16];
+                let (mid_c, mid_l, bottom_c, bottom_l) =
+                    (lanes(0, 1), lanes(1, 1), lanes(0, 2), lanes(1, 2));
+                let skip = usize::from(block.above.is_some());
+                let mut rest = rows;
+                for (r, out) in out.chunks_exact_mut(block.width).enumerate() {
+                    let Some((pair, tail)) = rest.split_at_checked(2 * stride) else {
+                        return;
+                    };
+                    rest = tail;
+                    let (mid, bottom) = pair.split_at(stride);
+                    let (Some(mid), Some(bottom)) =
+                        (mid.first_chunk::<33>(), bottom.first_chunk::<33>())
+                    else {
+                        return;
+                    };
+                    let taps = |row: &[u8; 33], centre: __m256i, left: __m256i| {
+                        let bytes: __m256i = u8x32::from_slice(token, &row[1..]).into();
+                        let acc = _mm256_maddubs_epi16(bytes, centre);
+                        if left_taps {
+                            let bytes: __m256i = u8x32::from_slice(token, &row[..32]).into();
+                            _mm256_add_epi16(acc, _mm256_maddubs_epi16(bytes, left))
+                        } else {
+                            acc
+                        }
+                    };
+                    let acc =
+                        _mm256_add_epi16(taps(mid, mid_c, mid_l), taps(bottom, bottom_c, bottom_l));
+                    if let Some(slot) = left.get_mut(r.wrapping_sub(skip)) {
+                        *slot = _mm256_extract_epi16::<7>(acc) as i16;
+                    }
+                    store_row8(token, _mm256_extracti128_si256::<1>(acc), out);
+                }
+            }
+        );
+    };
+}
+luma_420_pairs!(luma_420_pairs_f0, 0);
+luma_420_pairs!(luma_420_pairs_f1, 1);
 
 /// Stores the first `out.len()` (at most 8) lanes of `row`.
 #[inline]
@@ -392,11 +517,16 @@ macro_rules! cfl_predict_constants {
 /// sixteen `samples(luma)` covers `16 / $width` rows.
 macro_rules! cfl_narrow_rows {
     ($width:literal, $luma:ident, $out:ident, $stride:ident, $samples:ident) => {
-        for (group, luma) in $luma.chunks_exact(16).enumerate() {
+        let mut rest = &mut *$out;
+        for luma in $luma.chunks_exact(16) {
             let samples = $samples(luma);
-            for (row, samples) in samples.chunks_exact($width).enumerate() {
-                let start = (group * (16 / $width) + row) * $stride;
-                $out[start..start + $width].copy_from_slice(samples); // splot-copy-ok: publish a narrow CfL row
+            for samples in samples.as_chunks::<$width>().0 {
+                if let Some(out) = rest.first_chunk_mut::<$width>() {
+                    *out = *samples;
+                }
+                rest = core::mem::take(&mut rest)
+                    .get_mut($stride..)
+                    .unwrap_or_default();
             }
         }
     };
@@ -406,14 +536,27 @@ macro_rules! cfl_narrow_rows {
 macro_rules! cfl_rows {
     ($width:ident, $luma:ident, $out:ident, $stride:ident, $samples:ident) => {
         match $width {
-            4 => cfl_narrow_rows!(4, $luma, $out, $stride, $samples),
-            8 => cfl_narrow_rows!(8, $luma, $out, $stride, $samples),
+            4 => {
+                cfl_narrow_rows!(4, $luma, $out, $stride, $samples);
+            }
+            8 => {
+                cfl_narrow_rows!(8, $luma, $out, $stride, $samples);
+            }
             _ => {
-                for (row, luma) in $luma.chunks_exact($width).enumerate() {
-                    let out = &mut $out[row * $stride..row * $stride + $width];
-                    for (out, luma) in out.chunks_exact_mut(16).zip(luma.chunks_exact(16)) {
-                        out.copy_from_slice(&$samples(luma)); // splot-copy-ok: publish sixteen CfL samples
+                let mut rest = &mut *$out;
+                for luma in $luma.chunks_exact($width) {
+                    let out = rest.get_mut(..$width).unwrap_or_default();
+                    for (out, luma) in out
+                        .as_chunks_mut::<16>()
+                        .0
+                        .iter_mut()
+                        .zip(luma.chunks_exact(16))
+                    {
+                        *out = $samples(luma);
                     }
+                    rest = core::mem::take(&mut rest)
+                        .get_mut($stride..)
+                        .unwrap_or_default();
                 }
             }
         }
