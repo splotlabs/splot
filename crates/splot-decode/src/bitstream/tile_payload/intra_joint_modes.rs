@@ -51,6 +51,8 @@ pub(crate) struct MiGrid<T> {
     rows: usize,
     cols: usize,
     window: SbRowWindow,
+    /// [`SbRowWindow::readable_rows`] of `window`.
+    readable: (usize, usize, usize),
     default: T,
     cells: Vec<T>,
 }
@@ -88,6 +90,7 @@ impl<T: Copy> MiGrid<T> {
             rows,
             cols,
             window,
+            readable: (0, 0, 0),
             default,
             cells,
         })
@@ -102,19 +105,29 @@ impl<T: Copy> MiGrid<T> {
     }
 
     /// A tile cell outside the window reads as the default value.
+    #[allow(clippy::inline_always, reason = "measured: per-block neighbour reads")]
+    #[inline(always)]
     pub(crate) fn cell(&self, row: usize, col: usize) -> Option<T> {
-        let row = row.checked_sub(self.origin_row)?;
-        let col = col.checked_sub(self.origin_col)?;
+        let row = row.wrapping_sub(self.origin_row);
+        let col = col.wrapping_sub(self.origin_col);
         if row >= self.rows || col >= self.cols {
             return None;
         }
-        Some(
-            self.window
-                .plane_row(row)
-                .map_or(self.default, |plane_row| {
-                    self.cells[plane_row * self.cols + col]
-                }),
-        )
+        let (lo, hi, bias) = self.readable;
+        if row.wrapping_sub(lo) < hi.wrapping_sub(lo) {
+            return Some(self.cells[row.wrapping_add(bias) * self.cols + col]);
+        }
+        Some(self.cell_outside_readable_rows(row, col))
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn cell_outside_readable_rows(&self, row: usize, col: usize) -> T {
+        self.window
+            .plane_row(row)
+            .map_or(self.default, |plane_row| {
+                self.cells[plane_row * self.cols + col]
+            })
     }
 
     fn with_origin(mut self, origin_row: usize, origin_col: usize) -> Self {
@@ -130,8 +143,14 @@ impl<T: Copy> MiGrid<T> {
         };
         let row_end = r.saturating_add(n4h).min(self.rows);
         let col_end = c.saturating_add(n4w).min(self.cols);
+        let (lo, hi, bias) = self.readable;
         for row in r..row_end {
-            if let Some(plane_row) = self.window.plane_row(row) {
+            let plane_row = if row >= lo && row < hi {
+                Some(row.wrapping_add(bias))
+            } else {
+                self.window.plane_row(row)
+            };
+            if let Some(plane_row) = plane_row {
                 let start = plane_row * self.cols;
                 crate::support::fill_mi_run(&mut self.cells[start + c..start + col_end], value);
             }
@@ -195,16 +214,27 @@ impl<T: Copy> MiGrid<T> {
 
     /// Moves the window to a block at tile position `pos` and returns it
     /// tile-relative, or `None` outside the tile.
+    #[allow(clippy::inline_always, reason = "measured: once per recorded block")]
+    #[inline(always)]
     fn enter_block(&mut self, (r, c): (usize, usize)) -> Option<(usize, usize)> {
         let r = r.checked_sub(self.origin_row)?;
         let c = c.checked_sub(self.origin_col)?;
         if r >= self.rows || c >= self.cols {
             return None;
         }
+        if r >= self.readable.1 {
+            self.enter_row_of(r);
+        }
+        Some((r, c))
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn enter_row_of(&mut self, r: usize) {
         if let Some(slide) = self.window.enter(r) {
             slide.apply(&mut self.cells, self.cols, self.default);
         }
-        Some((r, c))
+        self.readable = self.window.readable_rows();
     }
 }
 
@@ -649,6 +679,7 @@ impl TileSegmentIdState {
             rows: 0,
             cols: 0,
             window: SbRowWindow::new(0, SbRowWindow::WHOLE_TILE_SB_H4),
+            readable: (0, 0, 0),
             default: 0,
             cells: Vec::new(),
         };
