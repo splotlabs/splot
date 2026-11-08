@@ -9,7 +9,7 @@ use fearless_simd::{Simd, SimdBase, SimdNarrow, SimdWiden, u16x8, u16x16, u32x4,
 const REFINEMV_UNIT_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_AREA: usize = TIP_PREDICTION_SIZE * TIP_PREDICTION_SIZE;
-const SEARCH_PADDING: i32 = 4 * 8;
+pub(super) const SEARCH_PADDING: i32 = 4 * 8;
 const SEARCH_NEIGHBORS: [(i32, i32); 24] = [
     (-2, -2),
     (-2, -1),
@@ -478,23 +478,16 @@ fn search_refinemv_u8<T: ReconSample>(
     allow_center: bool,
 ) -> Result<Option<(i32, i32)>> {
     const MAX_WINDOW: usize = 24 * 24;
-    let (width, height) = (prediction_rect.luma_w - 8, prediction_rect.luma_h - 8);
     let mut windows = [[0u8; MAX_WINDOW]; 2];
     for ((luma, candidate), window) in luma.iter_mut().zip(candidates).zip(&mut windows) {
-        if !super::optflow::search_window_u8(
-            luma,
-            prediction_rect,
-            candidate,
-            [width, height],
-            window,
-        )? {
+        if !super::optflow::search_window_u8(luma, prediction_rect, candidate, window)? {
             return Ok(None);
         }
     }
     Ok(splot_recon::refinemv_search_u8(
         [&windows[0], &windows[1]],
         prediction_rect.luma_w,
-        height + 4,
+        prediction_rect.luma_h - 4,
         allow_center,
     ))
 }
@@ -813,10 +806,9 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
             )
         {
             let base_mvs = refined_mvs(candidates, dx, dy);
-            let start = |dx: i32, dy: i32| ((4 + dy) * PREDICTION_SIZE as i32 + 4 + dx) as usize;
             let delta = splot_recon::optflow_unit_8x8_u8(
                 [&windows[0], &windows[1]],
-                [start(dx, dy), start(-dx, -dy)],
+                [unit_start(dx, dy), unit_start(-dx, -dy)],
                 distances,
                 block.optflow_sad_threshold,
             )?;
@@ -830,21 +822,11 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
     let [pred0, pred1] = predictions;
     let bit_depth = luma[0].bit_depth();
     let base_mvs = refined_mvs(candidates, dx, dy);
-    let start0 = usize::try_from((4 + dy) * PREDICTION_SIZE as i32 + 4 + dx).map_err(|_| {
-        ReconError::ArithmeticOverflow {
-            context: "TIP optical-flow predictor 0 offset",
-        }
-    })?;
-    let start1 = usize::try_from((4 - dy) * PREDICTION_SIZE as i32 + 4 - dx).map_err(|_| {
-        ReconError::ArithmeticOverflow {
-            context: "TIP optical-flow predictor 1 offset",
-        }
-    })?;
     super::optflow::tip_optflow_motion_cell_strided(
         pred0,
-        start0,
+        unit_start(dx, dy),
         pred1,
-        start1,
+        unit_start(-dx, -dy),
         PREDICTION_SIZE,
         bit_depth,
         distances,
@@ -852,6 +834,12 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
         base_mvs,
     )
     .map(Some)
+}
+
+/// The start of the 8x8 unit that the search offset `(dx, dy)`, each in
+/// `-2..=2`, moves to in a 16x16 TIP prediction.
+const fn unit_start(dx: i32, dy: i32) -> usize {
+    ((4 + dy) * TIP_PREDICTION_SIZE as i32 + 4 + dx) as usize
 }
 
 /// The search offset of a TIP unit from u16 predictions: the 12x12 centre
@@ -920,7 +908,7 @@ fn tip_windows_u8<T: ReconSample>(
     windows: &mut [[u8; TIP_PREDICTION_AREA]; 2],
 ) -> Result<bool> {
     for ((luma, candidate), window) in luma.iter_mut().zip(candidates).zip(windows) {
-        if !super::optflow::search_window_u8(luma, prediction_rect, candidate, [8, 8], window)? {
+        if !super::optflow::search_window_u8(luma, prediction_rect, candidate, window)? {
             return Ok(false);
         }
     }

@@ -7,6 +7,9 @@
 
 use super::*;
 
+type Pred = [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
+type Intermediate = [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
+
 /// Predicts luma and both 4:2:0 chroma planes of `block` from a TIP grid of
 /// 8x8 units with per-unit refine-MV candidates, or returns `false` for any
 /// other block, a scaled reference, or a plane the frame edge clips. A
@@ -30,8 +33,7 @@ pub(in crate::prediction::inter::mc) fn predict_tip_grid_u8<T: ReconSample>(
     };
     let info = sink.info();
     let planes = super::super::mc_planes(info.pixel_format());
-    if T::u8_slice(&[]).is_none()
-        || motion.unit_size != 8
+    if motion.unit_size != 8
         || block.sub8x8_chroma
         || block.warp_params.iter().any(Option::is_some)
         || planes[1..]
@@ -143,8 +145,6 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
             intermediate,
         } = &mut *state;
         program.clear();
-        type Pred = [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2];
-        type Intermediate = [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
         let run = |program: &mut CompoundCells,
                    outputs: &mut [(&mut [u8], usize); 2],
                    pred: &mut Pred,
@@ -166,39 +166,35 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
             program.clear();
             Ok(())
         };
-        let mut result = Ok(());
-        for (index, (&cell, &candidates)) in cells.iter().zip(candidates).enumerate() {
-            let (row, col) = (index / columns * size, index % columns * size);
-            let (placements, uniform) = unscaled_cell_placements(
-                &prediction,
-                cell,
-                candidates,
-                [col, row, size, size],
-                (sub, sub),
-                self.check_uniform,
-                frame,
-            );
-            if uniform {
-                if !program.push([row, col], placements) {
-                    result = run(program, &mut outputs, pred, intermediate);
-                    program.push([row, col], placements);
+        let rows = cells
+            .chunks_exact(columns)
+            .zip(candidates.chunks_exact(columns));
+        let predict = || -> Result<()> {
+            for (row, (cells, candidates)) in rows.enumerate() {
+                let row = row * size;
+                for (col, (&cell, &candidates)) in cells.iter().zip(candidates).enumerate() {
+                    let col = col * size;
+                    let (placements, uniform) = unscaled_cell_placements(
+                        &prediction,
+                        cell,
+                        candidates,
+                        [col, row, size, size],
+                        (sub, sub),
+                        self.check_uniform,
+                        frame,
+                    );
+                    if !uniform {
+                        let cell = (placements, [col, row, size]);
+                        self.mixed_cell(&views, &grid, cell, (pred, intermediate), &mut outputs)?;
+                    } else if !program.push([row, col], placements) {
+                        run(program, &mut outputs, pred, intermediate)?;
+                        program.push([row, col], placements);
+                    }
                 }
-            } else {
-                result = self.mixed_cell(
-                    &views,
-                    &grid,
-                    (placements, [col, row, size]),
-                    (pred, intermediate),
-                    &mut outputs,
-                );
             }
-            if result.is_err() {
-                break;
-            }
-        }
-        if result.is_ok() {
-            result = run(program, &mut outputs, pred, intermediate);
-        }
+            run(program, &mut outputs, pred, intermediate)
+        };
+        let result = predict();
         CELL_PROGRAM.set(Some(state));
         result.map(|()| true)
     }
@@ -210,10 +206,7 @@ impl<T: ReconSample> GridPass<'_, '_, T> {
         views: &[Option<[ReferencePlaneView<'_, T>; 2]>; 2],
         grid: &GridBlock<'_, '_, T>,
         (placements, [col, row, size]): ([CellPlacement; 2], [usize; 3]),
-        (pred, intermediate): (
-            &mut [[i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES]; 2],
-            &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE],
-        ),
+        (pred, intermediate): (&mut Pred, &mut Intermediate),
         outputs: &mut [(&mut [u8], usize); 2],
     ) -> Result<()> {
         let params = placements.map(|placement| {

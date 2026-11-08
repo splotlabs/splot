@@ -1024,47 +1024,34 @@ pub(super) fn initial_luma_prediction<'a, T: ReconSample, const INSET: usize>(
     subpel_predict_block_strided_into(&view, &params, output, rect.luma_w).map_err(Into::into)
 }
 
-/// Predicts the eight-bit bilinear § 7.13.3.6 search window of the
-/// `width` x `height` refine-MV unit at `rect`'s origin, four samples out
-/// from `candidate` on each side, into `output` as bytes, or returns `false`
-/// when the byte kernel does not cover it: a scaled reference, or a unit
-/// whose § 7.13.3.5 reference area the plane clamps.
+/// Predicts the eight-bit bilinear § 7.13.3.6 search window `rect` of the
+/// refine-MV unit four samples in from each edge, around `candidate`, into
+/// `output` as bytes, or returns `false` when the byte kernel does not
+/// cover it: a scaled reference, or a unit whose § 7.13.3.5 reference area
+/// the plane clamps.
 pub(super) fn search_window_u8<T: ReconSample>(
     luma: &mut LumaReference<'_, T>,
     rect: McBlockRect,
     candidate: Mv,
-    [width, height]: [usize; 2],
     output: &mut [u8],
 ) -> Result<bool> {
     let scaling = luma.scaling;
-    let (x, y) = (
-        rect.luma_x as i32 + (candidate.col >> 3),
-        rect.luma_y as i32 + (candidate.row >> 3),
-    );
-    if scaling.is_scaled()
-        || !matches!((width, height), (8 | 16, 8 | 16))
-        || x < 3
-        || y < 3
-        || x + width as i32 + 3 > scaling.last_x
-        || y + height as i32 + 3 > scaling.last_y
-    {
+    let unit = [rect.luma_w.saturating_sub(8), rect.luma_h.saturating_sub(8)];
+    if scaling.is_scaled() || !matches!(unit, [8 | 16, 8 | 16]) {
         return Ok(false);
     }
-    let start = |position: usize, mv: i32| ((position as i32) << 10) + ((mv - 32) << 7) + 32;
-    let params = SubpelPredictParams {
-        interp: InterpolationFilter::Bilinear,
-        w: width + 8,
-        h: height + 8,
-        start_x: start(rect.luma_x, candidate.col),
-        start_y: start(rect.luma_y, candidate.row),
-        step_x: 1 << 10,
-        step_y: 1 << 10,
-        first_x: x - 3,
-        first_y: y - 3,
-        last_x: x + width as i32 + 3,
-        last_y: y + height as i32 + 3,
-        bit_depth: luma.bit_depth,
-    };
+    let origin = [(rect.luma_x as i32) << 4, (rect.luma_y as i32) << 4];
+    let bounds = super::refinemv::unscaled_area_bounds(origin, unit, candidate, [0, 0], &scaling);
+    let padding = super::refinemv::SEARCH_PADDING;
+    let mv = [2 * (candidate.row - padding), 2 * (candidate.col - padding)];
+    let params = unscaled_cell_params(
+        (
+            unscaled_cell_start(origin, mv, (0, 0)),
+            [bounds.first_x, bounds.first_y, bounds.last_x, bounds.last_y],
+        ),
+        [rect.luma_w, rect.luma_h],
+        (luma.bit_depth, InterpolationFilter::Bilinear),
+    );
     let view = luma.view(params.last_y)?;
     Ok(splot_recon::subpel_predict_bilinear_search_window_u8(
         &view, &params, output,
@@ -1570,17 +1557,17 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 cell_row,
                 row,
                 &mut output[row * output_stride..],
-                &mut *pred_scratch,
-                &mut *intermediate_scratch,
-                &mut *program,
+                pred_scratch,
+                intermediate_scratch,
+                program,
             )?;
         }
         run_cell_program(
-            &*program,
+            program,
             &prediction.views,
             (&grid_block, block.interp, subblock_w),
-            &mut *pred_scratch,
-            &mut *intermediate_scratch,
+            pred_scratch,
+            intermediate_scratch,
             output,
             output_stride,
         )?;
@@ -1673,8 +1660,8 @@ pub(super) fn predict_motion_grid_compound_average_into<
                     &prediction.views,
                     cell,
                     &grid_block,
-                    &mut *pred_scratch,
-                    &mut *intermediate_scratch,
+                    pred_scratch,
+                    intermediate_scratch,
                     &mut output[col..],
                     output_stride,
                 )?;
@@ -1684,8 +1671,8 @@ pub(super) fn predict_motion_grid_compound_average_into<
                     &second.views,
                     cell,
                     &grid_block,
-                    &mut *pred_scratch,
-                    &mut *intermediate_scratch,
+                    pred_scratch,
+                    intermediate_scratch,
                     &mut second_output[col..],
                     second_stride,
                 )?;
@@ -1697,11 +1684,11 @@ pub(super) fn predict_motion_grid_compound_average_into<
         (&second.views, second_output, second_stride),
     ] {
         run_cell_program(
-            &*program,
+            program,
             views,
             (&grid_block, block.interp, subblock_w),
-            &mut *pred_scratch,
-            &mut *intermediate_scratch,
+            pred_scratch,
+            intermediate_scratch,
             output,
             stride,
         )?;
@@ -1945,13 +1932,13 @@ fn predict_grid_cell<T: ReconSample, O: CompoundAverageOutput>(
 ) -> Result<()> {
     let prediction = block.prediction;
     if !uniform {
-        let [pred0, pred1] = &mut *pred_scratch;
+        let [pred0, pred1] = pred_scratch;
         let preds = views.iter().zip([&mut *pred0, &mut *pred1]);
         for ((view, pred), params) in preds.zip(params) {
             subpel_predict_block_compound_intermediate_into(
                 view,
                 params,
-                Some(&mut *intermediate_scratch),
+                Some(intermediate_scratch),
                 &mut pred[..width * height],
                 width,
             )?;

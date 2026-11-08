@@ -465,29 +465,24 @@ mod avx2 {
             allow_center: bool,
         ) -> (i32, i32) {
             match geometry {
-                [16, 12] => search_for::<16, 12, 256, 176>(t, windows, allow_center),
-                [16, _] => search_for::<16, 20, 384, 304>(t, windows, allow_center),
-                [_, 12] => search_for::<24, 12, 384, 272>(t, windows, allow_center),
-                _ => search_for::<24, 20, 576, 464>(t, windows, allow_center),
+                [16, 12] => search_for::<16, 12, 176>(t, windows, allow_center),
+                [16, _] => search_for::<16, 20, 304>(t, windows, allow_center),
+                [_, 12] => search_for::<24, 12, 272>(t, windows, allow_center),
+                _ => search_for::<24, 20, 464>(t, windows, allow_center),
             }
         }
     );
 
-    /// [`search`] of `STRIDE`-wide windows of `N` bytes and `SAD_H`-row
-    /// areas, each read as one `SPAN`-byte run: one masked 12-byte row per
+    /// [`search`] of `STRIDE`-wide windows and `SAD_H`-row areas, each
+    /// read as one `SPAN`-byte run: one masked 12-byte row per
     /// `xmm` at stride 16, one masked 20-byte row per `ymm` at stride 24.
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn search_for<const STRIDE: usize, const SAD_H: usize, const N: usize, const SPAN: usize>(
+    fn search_for<const STRIDE: usize, const SAD_H: usize, const SPAN: usize>(
         t: Avx2,
-        windows: [&[u8]; 2],
+        [first, second]: [&[u8]; 2],
         allow_center: bool,
     ) -> (i32, i32) {
-        let (Some(first), Some(second)) =
-            (windows[0].first_chunk::<N>(), windows[1].first_chunk::<N>())
-        else {
-            return (0, 0);
-        };
         let mask: __m256i = if STRIDE == 16 {
             u8x32::load_array(t, MASK_12).into()
         } else {
