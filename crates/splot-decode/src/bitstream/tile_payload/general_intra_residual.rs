@@ -1104,6 +1104,11 @@ pub(crate) struct PlaneCoeffBlock {
 }
 
 /// Reads `all_zero` and, for a nonzero block, its coefficients into `arena`.
+#[allow(
+    clippy::inline_always,
+    reason = "measured: the caller's descriptor stays in its frame"
+)]
+#[inline(always)]
 pub(crate) fn decode_general_intra_plane_coeffs(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
