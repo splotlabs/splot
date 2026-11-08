@@ -204,10 +204,8 @@ impl Default for PcWienerClassifyScratch {
 
 /// § 7.20.2-pre-resolved source samples for [`pc_wiener_classify_grid_padded_into`].
 ///
-/// A padded contiguous buffer covering the classified block extended on every
-/// side. `origin_x` and `origin_y` are the current-plane luma coordinates of
-/// buffer index `0`; a sample at absolute `(x, y)` is
-/// `samples[(y - origin_y) * stride + (x - origin_x)]`.
+/// Padded rows covering the classified block extended on every side, whose
+/// first sample is current-plane luma coordinate `(origin_x, origin_y)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PcWienerClassifyPaddedSource<'a, T> {
     rows: PaddedRows<'a, T>,
@@ -216,20 +214,9 @@ pub struct PcWienerClassifyPaddedSource<'a, T> {
 }
 
 impl<'a, T: ReconSample> PcWienerClassifyPaddedSource<'a, T> {
-    /// Wraps a padded source buffer whose index `0` is current-plane luma
-    /// coordinate `(origin_x, origin_y)` and whose rows are `stride` apart.
-    #[must_use]
-    pub fn new(samples: &'a [T], stride: usize, origin_x: isize, origin_y: isize) -> Self {
-        Self {
-            rows: PaddedRows::Strided { samples, stride },
-            origin_x,
-            origin_y,
-        }
-    }
-
     /// Wraps padded rows: row `i` starts at column `col` of `rows[i]`, and its
     /// first sample is current-plane luma coordinate `(origin_x, origin_y + i)`.
-    /// Classification checks the sample range as for [`Self::new`].
+    /// Classification checks the sample range.
     ///
     /// # Errors
     /// Returns [`ReconError`] if the sample storage cannot represent
@@ -732,50 +719,13 @@ fn padded_source_region<'a, T: ReconSample>(
         .ok_or(ReconError::PcWienerInvalidBounds {
             field: "PC-Wiener padded source row",
         })?;
-    let PaddedRows::Strided { samples, stride } = source.rows else {
-        return source
-            .rows
-            .offset(region_row, region_col)
-            .filter(|region| region.covers(geo.source_height, geo.source_width))
-            .ok_or(ReconError::PcWienerInvalidBounds {
-                field: "PC-Wiener padded source rows",
-            });
-    };
-    let row_span =
-        region_col
-            .checked_add(geo.source_width)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "PC-Wiener padded source row span",
-            })?;
-    if row_span > stride {
-        return Err(ReconError::PcWienerInvalidBounds {
-            field: "PC-Wiener padded source width",
-        });
-    }
-    let required = region_row
-        .checked_add(geo.source_height)
-        .and_then(|rows| rows.checked_sub(1))
-        .and_then(|last_row| last_row.checked_mul(stride))
-        .and_then(|prefix| prefix.checked_add(row_span))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "PC-Wiener padded source length",
-        })?;
-    if samples.len() < required {
-        return Err(ReconError::BufferLengthMismatch {
-            expected: required,
-            actual: samples.len(),
-        });
-    }
-    let start = region_row
-        .checked_mul(stride)
-        .and_then(|prefix| prefix.checked_add(region_col))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "PC-Wiener padded source start",
-        })?;
-    Ok(PaddedRows::Strided {
-        samples: &samples[start..required],
-        stride,
-    })
+    source
+        .rows
+        .offset(region_row, region_col)
+        .filter(|region| region.covers(geo.source_height, geo.source_width))
+        .ok_or(ReconError::PcWienerInvalidBounds {
+            field: "PC-Wiener padded source rows",
+        })
 }
 
 fn validate_padded_u16_source<T: ReconSample>(
@@ -1672,54 +1622,17 @@ where
 
 /// § 7.20.2-pre-resolved source samples for [`pc_wiener_filter_block_padded`].
 ///
-/// Row-major samples covering the output block extended by
-/// [`PC_WIENER_FILTER_TAP_RADIUS`] on every side: index `0` is the sample at
-/// block-relative `(-PC_WIENER_FILTER_TAP_RADIUS, -PC_WIENER_FILTER_TAP_RADIUS)`.
+/// Rows covering the output block extended by [`PC_WIENER_FILTER_TAP_RADIUS`]
+/// on every side: sample `0` of row `0` is at block-relative
+/// `(-PC_WIENER_FILTER_TAP_RADIUS, -PC_WIENER_FILTER_TAP_RADIUS)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PcWienerPaddedSource<'a, T> {
     rows: PaddedRows<'a, T>,
 }
 
 impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
-    /// Wraps a padded source buffer for a `width` x `height` output block.
-    ///
-    /// `stride` is the distance in samples between adjacent padded rows.
-    ///
-    /// # Errors
-    /// Returns typed [`ReconError`] values when the stride or length cannot
-    /// cover the block plus the § 7.20.4 filter tap reach.
-    pub fn new(samples: &'a [T], stride: usize, width: usize, height: usize) -> Result<Self> {
-        let padded_width = width.checked_add(2 * PC_WIENER_FILTER_TAP_RADIUS).ok_or(
-            ReconError::ArithmeticOverflow {
-                context: "PC-Wiener padded source width",
-            },
-        )?;
-        if stride < padded_width {
-            return Err(ReconError::PcWienerInvalidBounds {
-                field: "PC-Wiener padded source stride",
-            });
-        }
-        let required = height
-            .checked_add(2 * PC_WIENER_FILTER_TAP_RADIUS)
-            .and_then(|rows| rows.checked_sub(1))
-            .and_then(|prefix_rows| prefix_rows.checked_mul(stride))
-            .and_then(|prefix| prefix.checked_add(padded_width))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "PC-Wiener padded source length",
-            })?;
-        if samples.len() < required {
-            return Err(ReconError::BufferLengthMismatch {
-                expected: required,
-                actual: samples.len(),
-            });
-        }
-        Ok(Self {
-            rows: PaddedRows::Strided { samples, stride },
-        })
-    }
-
     /// Wraps padded rows: padded row `i` starts at column `col` of
-    /// `rows[i]`. Filtering checks the sample range as for [`Self::new`].
+    /// `rows[i]`. Filtering checks the sample range.
     ///
     /// # Errors
     /// Returns a typed error when a row cannot cover the block plus the
@@ -1742,12 +1655,7 @@ impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
     }
 
     fn validate_cover(&self, width: usize, height: usize) -> Result<()> {
-        match self.rows {
-            PaddedRows::Strided { samples, stride } => {
-                Self::new(samples, stride, width, height).map(drop)
-            }
-            rows @ PaddedRows::Table { .. } => Self::check_table(rows, width, height).map(drop),
-        }
+        Self::check_table(self.rows, width, height).map(drop)
     }
 
     fn sample(&self, x: isize, y: isize, width: usize) -> Result<T> {
@@ -1818,7 +1726,7 @@ fn prepare_pc_wiener_padded_filter<T: ReconSample>(
 ///
 /// Identical filter math and output as [`pc_wiener_filter_block`]; the § 7.20.2
 /// source-sample process is resolved by the caller into `source` instead of a
-/// per-tap callback. The up-front [`PcWienerPaddedSource::new`] fits check
+/// per-tap callback. The up-front [`PcWienerPaddedSource::from_rows`] fits check
 /// proves every tap read in range, so the tap loop is pure index addition off
 /// each output sample's padded-window base.
 ///

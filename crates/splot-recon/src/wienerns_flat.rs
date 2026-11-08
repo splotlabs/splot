@@ -302,7 +302,9 @@ mod tests {
                 let at = |x: isize, y: isize| {
                     padded[(y + R as isize) as usize * stride + (x + R as isize) as usize]
                 };
-                let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
+                let source_lines: Vec<_> = padded.chunks(stride).collect();
+                let source =
+                    WienerNsLumaPaddedSource::from_rows(&source_lines, 0, width, height).unwrap();
                 let params = WienerNsLumaFilter {
                     width,
                     height,

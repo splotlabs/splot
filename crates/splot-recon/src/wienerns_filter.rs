@@ -236,55 +236,17 @@ where
 
 /// § 7.20.2-pre-resolved source samples for [`wiener_ns_filter_luma_block_padded_into`].
 ///
-/// Row-major samples covering the output block extended by
-/// [`WIENER_NS_LUMA_TAP_RADIUS`] on every side: index `0` is the sample at
-/// block-relative `(-WIENER_NS_LUMA_TAP_RADIUS, -WIENER_NS_LUMA_TAP_RADIUS)`.
+/// Rows covering the output block extended by [`WIENER_NS_LUMA_TAP_RADIUS`]
+/// on every side: sample `0` of row `0` is at block-relative
+/// `(-WIENER_NS_LUMA_TAP_RADIUS, -WIENER_NS_LUMA_TAP_RADIUS)`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WienerNsLumaPaddedSource<'a, T> {
     rows: PaddedRows<'a, T>,
 }
 
 impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
-    /// Wraps a padded source buffer for a `width` x `height` output block.
-    ///
-    /// `stride` is the distance in samples between adjacent padded rows.
-    ///
-    /// # Errors
-    /// Returns typed [`ReconError`] values when the stride or length cannot
-    /// cover the block plus the § 7.20.3 luma tap reach.
-    pub fn new(samples: &'a [T], stride: usize, width: usize, height: usize) -> Result<Self> {
-        let padded_width = width.checked_add(2 * WIENER_NS_LUMA_TAP_RADIUS).ok_or(
-            ReconError::ArithmeticOverflow {
-                context: "Wiener NS padded source width",
-            },
-        )?;
-        if stride < padded_width {
-            return Err(ReconError::WienerNsFilterOutputStrideTooSmall {
-                stride_samples: stride,
-                width: padded_width,
-            });
-        }
-        let required = height
-            .checked_add(2 * WIENER_NS_LUMA_TAP_RADIUS)
-            .and_then(|rows| rows.checked_sub(1))
-            .and_then(|prefix_rows| prefix_rows.checked_mul(stride))
-            .and_then(|prefix| prefix.checked_add(padded_width))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "Wiener NS padded source length",
-            })?;
-        if samples.len() < required {
-            return Err(ReconError::WienerNsFilterOutputTooSmall {
-                expected: required,
-                actual: samples.len(),
-            });
-        }
-        Ok(Self {
-            rows: PaddedRows::Strided { samples, stride },
-        })
-    }
-
     /// Wraps padded rows: padded row `i` starts at column `col` of
-    /// `rows[i]`. Filtering checks the sample range as for [`Self::new`].
+    /// `rows[i]`. Filtering checks the sample range.
     ///
     /// # Errors
     /// Returns a typed error when a row cannot cover the block plus the
@@ -311,12 +273,7 @@ impl<'a, T: ReconSample> WienerNsLumaPaddedSource<'a, T> {
     }
 
     fn validate_cover(&self, width: usize, height: usize) -> Result<()> {
-        match self.rows {
-            PaddedRows::Strided { samples, stride } => {
-                Self::new(samples, stride, width, height).map(drop)
-            }
-            rows @ PaddedRows::Table { .. } => Self::check_table(rows, width, height).map(drop),
-        }
+        Self::check_table(self.rows, width, height).map(drop)
     }
 }
 
