@@ -323,37 +323,33 @@ fn edge_runs_reject_spans_outside_their_rows_or_samples() {
 }
 
 #[test]
-fn edges_from_lanes_match_their_constructor() {
-    dispatch!(Level::baseline(), simd => check_from_lanes(simd));
+fn edges_from_words_match_their_constructor() {
+    dispatch!(Level::baseline(), simd => check_from_words(simd));
 }
 
-fn check_from_lanes<S: Simd>(simd: S) {
+fn check_from_words<S: Simd>(simd: S) {
     let mut noise = Noise(0x5eed);
     for _ in 0..64 {
-        let edges: [DeblockEdge; 8] = core::array::from_fn(|_| random_edge(&mut noise, 1023, 8));
-        let low = edges.map(|edge| edge.q_thr() as u32 | (edge.side() as u32) << 16);
-        let high = edges.map(|edge| {
-            edge.max_width_pos() as u32
-                | (edge.max_width_neg() as u32) << 8
-                | u32::from(edge.prev_lossless()) << 16
-                | u32::from(edge.curr_lossless()) << 17
-        });
-        let lanes = DeblockEdge::from_lanes(
-            simd,
-            u32x8::from_slice(simd, &low),
-            u32x8::from_slice(simd, &high),
-        );
-        assert_eq!(lanes, edges);
+        let edges: [DeblockEdge; 16] = core::array::from_fn(|_| random_edge(&mut noise, 1023, 8));
+        let field = |word: fn(DeblockEdge) -> u16| u16x16::from_slice(simd, &edges.map(word));
+        let words = [
+            field(|edge| edge.q_thr() as u16),
+            field(|edge| edge.side() as u16),
+            field(|edge| (edge.max_width_pos() | edge.max_width_neg() << 8) as u16),
+            field(|edge| u16::from(edge.prev_lossless()) | u16::from(edge.curr_lossless()) << 1),
+        ];
+        assert_eq!(DeblockEdge::from_words(simd, words), edges);
     }
-    let over = u32x8::splat(simd, 0xffff_ffff);
-    let clamped = DeblockEdge::from_lanes(simd, over, over)[0];
+    let over = u16x16::splat(simd, 0xffff);
+    let clamped = DeblockEdge::from_words(simd, [over, over, u16x16::splat(simd, 0x0808), over])[0];
     assert_eq!(
         (
             clamped.q_thr(),
             clamped.side(),
             clamped.max_width_pos(),
-            clamped.max_width_neg()
+            clamped.max_width_neg(),
+            clamped.prev_lossless() && clamped.curr_lossless(),
         ),
-        (700, 4095, 8, 8)
+        (700, 4095, 8, 8, true)
     );
 }

@@ -24,22 +24,41 @@ fn build_mi_grid(
     Ok(grid)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn overlay_mi_grid(
-    (base, luma): (&MiGridStorage, &[DeblockBlock]),
     blocks: &ChromaDeblockRecords,
     plane: usize,
-    mi_rows: usize,
-    mi_cols: usize,
-    sub_x: usize,
-    sub_y: usize,
-    storage: &mut grid::ChromaGridVecs,
+    (mi_rows, mi_cols): (usize, usize),
+    (sub_x, sub_y): (usize, usize),
+    storage: &mut Vec<grid::ChromaMiCell>,
 ) -> Result<ChromaMiGridStorage, DeblockError> {
     let mut grid = ChromaMiGridStorage::new(mi_cols, (sub_x, sub_y), storage);
     grid.reset(plane, mi_rows)?;
     grid.fill(mi_cols, blocks, (plane, 0), mi_rows)?;
-    grid.resolve(base, (luma, blocks), 0..mi_rows.div_ceil(1 << sub_y));
     Ok(grid)
+}
+
+/// The cell facts of luma, or with `chroma` of chroma plane `plane`, painted
+/// from the records the frame deblock lays out.
+fn plane_facts(
+    luma: &[DeblockBlock],
+    chroma: Option<(&ChromaDeblockRecords, usize)>,
+    (mi_rows, mi_cols): (usize, usize),
+) -> PlaneFacts {
+    let mut facts = PlaneFacts::default();
+    let extent = (mi_rows, mi_cols);
+    match chroma {
+        None => {
+            facts.reset(extent, PlaneId::Y).unwrap();
+            facts.paint_luma(luma, extent);
+        }
+        Some((records, plane)) => {
+            let cells = (mi_rows.div_ceil(2), mi_cols.div_ceil(2));
+            facts.reset(cells, PlaneId::U).unwrap();
+            facts.paint_chroma_from_luma(luma, extent, (1, 1));
+            facts.paint_overlays(records, (plane, 0), extent, (1, 1));
+        }
+    }
+    facts
 }
 
 pub(super) const fn prediction(r: usize, c: usize, tx: usize) -> DeblockPredictionUnit {
@@ -413,11 +432,8 @@ fn records_appended_per_superblock_row_deblock_like_the_whole_frame() {
     let mut plan = prepare(&[], &EMPTY_CHROMA_RECORDS);
     let split = blocks.iter().position(|block| block.r >= 16).unwrap();
     let luma = [blocks[..split].to_vec(), blocks[split..].to_vec()];
-    for ((mut luma, mut part), (final_rows, advance)) in
-        luma.into_iter().zip(parts).zip([(16, 10), (32, 32)])
-    {
-        plan.append_records(&mut luma, &mut part, final_rows)
-            .unwrap();
+    for ((mut luma, mut part), advance) in luma.into_iter().zip(parts).zip([10, 32]) {
+        plan.append_records(&mut luma, &mut part).unwrap();
         plan.advance_source(&mut source, advance, BitDepth::Eight)
             .unwrap();
     }
@@ -561,11 +577,14 @@ fn owned_deblock_records_return_on_finish_and_keep_their_storage() {
     let addresses = |storage: &DeblockGridStorage| {
         (
             storage.cells.as_ptr(),
-            storage.plane.info.as_ptr(),
-            storage
-                .chroma
-                .each_ref()
-                .map(|(cells, plane)| (cells.as_ptr(), plane.info.as_ptr(), plane.bases.as_ptr())),
+            storage.chroma.each_ref().map(Vec::as_ptr),
+            storage.facts.each_ref().map(|facts| {
+                (
+                    facts.keys.as_ptr(),
+                    facts.info.as_ptr(),
+                    facts.qindex.as_ptr(),
+                )
+            }),
         )
     };
     let original = addresses(&records.grids);
@@ -948,11 +967,7 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
     let mut cells = vec![MiCell::default(); 4 * 16];
     cells[4].base = 1;
     cells[5].base = 2;
-    let storage = Box::leak(Box::new(MiGridStorage {
-        mi_cols: 16,
-        cells,
-        plane: super::grid::CellPlane::default(),
-    }));
+    let storage = Box::leak(Box::new(MiGridStorage { mi_cols: 16, cells }));
     MiGrid::new(storage, None, blocks, &EMPTY_CHROMA_RECORDS)
 }
 
@@ -978,17 +993,7 @@ fn twin_chroma_record_lists_give_v_the_grid_of_u() {
     let whole = build_mi_grid(&luma, mi_rows, mi_cols, &mut DeblockGridStorage::default()).unwrap();
     let overlays = [0, 1].map(|plane| {
         let storage = &mut DeblockGridStorage::default().chroma[0];
-        overlay_mi_grid(
-            (&whole, &luma),
-            &chroma,
-            plane,
-            mi_rows,
-            mi_cols,
-            1,
-            1,
-            storage,
-        )
-        .unwrap()
+        overlay_mi_grid(&chroma, plane, (mi_rows, mi_cols), (1, 1), storage).unwrap()
     });
     let edges = |plane: usize| {
         let grid = MiGrid::new(&whole, Some(&overlays[plane]), &luma, &chroma);
@@ -1050,7 +1055,11 @@ fn batched_passes_match_every_edge_alone_in_spec_order() {
         &mut DeblockGridStorage::default(),
     )
     .unwrap();
-    let grid = MiGrid::new(&storage, None, &blocks, &EMPTY_CHROMA_RECORDS);
+    let facts = plane_facts(&blocks, None, (mi_rows, mi_cols));
+    let grid = MiGrid {
+        facts: Some(&facts),
+        ..MiGrid::new(&storage, None, &blocks, &EMPTY_CHROMA_RECORDS)
+    };
     assert_walk_matches_every_edge(&grid, 0, (64, 64), (mi_rows, mi_cols));
 }
 
@@ -1118,7 +1127,11 @@ fn batched_passes_match_every_edge_alone_across_frame_edges_and_chroma() {
     )
     .unwrap();
     let frame = (4 * mi_cols - 2, 4 * mi_rows - 2);
-    let grid = MiGrid::new(&storage, None, &blocks, &EMPTY_CHROMA_RECORDS);
+    let facts = plane_facts(&blocks, None, (mi_rows, mi_cols));
+    let grid = MiGrid {
+        facts: Some(&facts),
+        ..MiGrid::new(&storage, None, &blocks, &EMPTY_CHROMA_RECORDS)
+    };
     assert_walk_matches_every_edge(&grid, 0, frame, (mi_rows, mi_cols));
 
     let mut chroma = ChromaDeblockRecords::default();
@@ -1127,17 +1140,18 @@ fn batched_passes_match_every_edge_alone_across_frame_edges_and_chroma() {
     transform.chroma_transform_only = true;
     chroma.push_both(transform);
     let overlay = overlay_mi_grid(
-        (&storage, &blocks),
         &chroma,
         0,
-        mi_rows,
-        mi_cols,
-        1,
-        1,
+        (mi_rows, mi_cols),
+        (1, 1),
         &mut DeblockGridStorage::default().chroma[0],
     )
     .unwrap();
-    let grid = MiGrid::new(&storage, Some(&overlay), &blocks, &chroma);
+    let facts = plane_facts(&blocks, Some((&chroma, 0)), (mi_rows, mi_cols));
+    let grid = MiGrid {
+        facts: Some(&facts),
+        ..MiGrid::new(&storage, Some(&overlay), &blocks, &chroma)
+    };
     assert_walk_matches_every_edge(&grid, 1, frame, (mi_rows, mi_cols));
 }
 
@@ -1857,13 +1871,10 @@ fn inherited_chroma_residual_transform_retains_prediction_metadata() {
     chroma.push(0, metadata);
     chroma.push(0, transform);
     let storage = overlay_mi_grid(
-        (&base, &luma),
         &chroma,
         0,
-        8,
-        8,
-        1,
-        1,
+        (8, 8),
+        (1, 1),
         &mut DeblockGridStorage::default().chroma[0],
     )
     .unwrap();
@@ -1921,13 +1932,10 @@ fn ordinary_chroma_overlay_replaces_full_block_metadata() {
     let mut chroma = ChromaDeblockRecords::default();
     chroma.push(0, ordinary);
     let storage = overlay_mi_grid(
-        (&base, &luma),
         &chroma,
         0,
-        8,
-        8,
-        1,
-        1,
+        (8, 8),
+        (1, 1),
         &mut DeblockGridStorage::default().chroma[0],
     )
     .unwrap();
@@ -1978,13 +1986,10 @@ fn ordinary_chroma_transform_record_keeps_scaled_prediction_origin() {
     let mut chroma = ChromaDeblockRecords::default();
     chroma.push(0, record);
     let storage = overlay_mi_grid(
-        (&base, &luma),
         &chroma,
         0,
-        16,
-        16,
-        1,
-        1,
+        (16, 16),
+        (1, 1),
         &mut DeblockGridStorage::default().chroma[0],
     )
     .unwrap();
