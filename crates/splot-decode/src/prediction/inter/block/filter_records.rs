@@ -272,6 +272,7 @@ pub(crate) fn record_inter_deblock_geometry(
     let blocks = residual
         .blocks(residual_blocks)
         .ok_or(DecodeHeaderStateError::InvalidInterResidualReconstruction)?;
+    let mut v_twin = None;
     for block in blocks {
         let (log2_width, log2_height) = super::super::inter_residual_log2(block)
             .map_err(|_| super::residual::residual_geometry_error())?;
@@ -331,7 +332,7 @@ pub(crate) fn record_inter_deblock_geometry(
                         sub_pu_size,
                         inherited_chroma_metadata,
                     );
-                    chroma_deblock_blocks.push(plane_index, record);
+                    chroma_deblock_blocks.push_paired(plane_index, &mut v_twin, record);
                 }
             }
         }

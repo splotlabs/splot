@@ -924,7 +924,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         .map_err(|error| crate::filters::wienerns_lr::recon::deblock_prepare_error(&error))?;
         if let Some(deblock) = deblock.as_mut() {
             self.parse_progress
-                .take_deblock_records(deblock, 0)
+                .take_deblock_records(deblock)
                 .map_err(|error| {
                     crate::filters::wienerns_lr::recon::deblock_prepare_error(&error)
                 })?;
@@ -938,7 +938,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         self.materialize_rows(self.recon.unit_count);
         if let Some(deblock) = self.frontier.lock().deblock.as_mut() {
             self.parse_progress
-                .take_deblock_records(deblock, self.recon.params.mi_rows)
+                .take_deblock_records(deblock)
                 .map_err(|error| {
                     crate::filters::wienerns_lr::recon::deblock_prepare_error(&error)
                 })?;
@@ -1050,14 +1050,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         let mut filters = core::mem::take(spare_filters);
         match deblock.as_mut() {
             Some(deblock) => {
-                let final_mi_rows = if terminal {
-                    self.recon.params.mi_rows
-                } else {
-                    (committed_units / self.recon.units_per_row.max(1))
-                        .saturating_mul(self.recon.params.sb_h4)
-                };
                 self.parse_progress
-                    .take_deblock_records(deblock, final_mi_rows)
+                    .take_deblock_records(deblock)
                     .map_err(|error| {
                         crate::filters::wienerns_lr::recon::deblock_prepare_error(&error)
                     })?;

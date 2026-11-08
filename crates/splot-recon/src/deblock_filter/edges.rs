@@ -8,7 +8,7 @@
 //! § 7.17.7.2 width choice of every segment becomes lane masks and the
 //! § 7.17.7.1 ramp applies to all sixteen lines at once: no per-edge branch.
 
-use fearless_simd::{Bytes, Level, Simd, SimdBase, SimdInto, dispatch, i16x16, u32x8, u64x4};
+use fearless_simd::{Bytes, Level, Simd, SimdBase, SimdInto, dispatch, i16x16, u16x16, u64x4};
 use splot_core::tables::conversion::{Q_FIRST, Q_THRESH_MULTS, W_MULT};
 
 use crate::intra_dc_math::validate_sample_type;
@@ -133,28 +133,29 @@ impl DeblockEdge {
         Self(self.0 & !(3 << 48) | flags << 48)
     }
 
-    /// The eight edges whose words are `low` (`qThr | sideThr << 16`) and
-    /// `high` (`maxWidthPos | maxWidthNeg << 8 | prev_lossless << 16 |
-    /// curr_lossless << 17`) lane by lane, each field clamped to the range
-    /// [`DeblockEdge::new`] accepts; an all-zero lane is [`DeblockEdge::NONE`].
+    /// The sixteen edges whose `qThr`, `sideThr`, `maxWidthPos |
+    /// maxWidthNeg << 8` and lossless flags (`prev | curr << 1`) are the lanes
+    /// of `words`, the thresholds capped at the largest values
+    /// [`DeblockEdge::new`] accepts and the widths taken as § 7.17.3 gives
+    /// them.
     #[inline]
-    pub fn from_lanes<S: Simd>(simd: S, low: u32x8<S>, high: u32x8<S>) -> [Self; 8] {
-        let q_thr = (low & 0xffff).min(u32x8::splat(simd, MAX_Q_THR as u32));
-        let side = (low >> 16).min(u32x8::splat(simd, MAX_SIDE as u32));
-        let pos = (high & 0xff).min(u32x8::splat(simd, REACH as u32));
-        let neg = ((high >> 8) & 0xff).min(pos);
-        let low = q_thr | side << 16;
-        let high = pos | neg << 8 | (high & 0x3_0000);
-        let (first, second) = simd.interleave_u32x8(low, high);
-        let first = first.bitcast::<u64x4<S>>().to_array();
-        let second = second.bitcast::<u64x4<S>>().to_array();
-        core::array::from_fn(|lane| {
-            Self(if lane < 4 {
-                first[lane]
-            } else {
-                second[lane - 4]
-            })
-        })
+    pub fn from_words<S: Simd>(simd: S, words: [u16x16<S>; 4]) -> [Self; 16] {
+        let [q_thr, side, widths, flags] = words;
+        let q_thr = q_thr.min(u16x16::splat(simd, MAX_Q_THR as u16));
+        let side = side.min(u16x16::splat(simd, MAX_SIDE as u16));
+        let (low, low_high) = simd.interleave_u16x16(q_thr, side);
+        let (high, high_high) = simd.interleave_u16x16(widths, flags & 3);
+        let edges = |low: u16x16<S>, high: u16x16<S>| {
+            let (first, second) = simd.interleave_u32x8(low.bitcast(), high.bitcast());
+            (
+                first.bitcast::<u64x4<S>>().to_array(),
+                second.bitcast::<u64x4<S>>().to_array(),
+            )
+        };
+        let (a, b) = edges(low, high);
+        let (c, d) = edges(low_high, high_high);
+        let quads = [a, b, c, d];
+        core::array::from_fn(|lane| Self(quads[lane / 4][lane % 4]))
     }
 
     /// Whether the edge filters nothing.
