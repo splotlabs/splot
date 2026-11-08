@@ -55,15 +55,18 @@ pub fn subpel_predict_bilinear_search_window_u8<T: ReconSample>(
     false
 }
 
-/// Predicts an 8x8 bilinear block of eight-bit storage whose taps all lie
-/// inside its clip bounds and the plane into `output` at stride 8, or returns
-/// `false` without writing for any other block.
+/// Predicts a bilinear block of eight-bit storage, `w` a multiple of 8 and
+/// `h` even, whose taps all lie inside its clip bounds and the plane into
+/// `output` at `stride`, or returns `false` without writing for any other
+/// block.
 #[must_use]
-pub fn subpel_predict_bilinear_8x8_u8<T: ReconSample>(
+pub fn subpel_predict_bilinear_u8<T: ReconSample>(
     view: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
-    output: &mut [u16; 64],
+    output: &mut [u16],
+    stride: usize,
 ) -> bool {
+    let (w, h) = (params.w, params.h);
     let (x0, y0) = (
         params.start_x >> SCALE_SUBPEL_BITS,
         params.start_y >> SCALE_SUBPEL_BITS,
@@ -72,17 +75,22 @@ pub fn subpel_predict_bilinear_8x8_u8<T: ReconSample>(
         return false;
     };
     if params.interp != InterpolationFilter::Bilinear
-        || (params.step_x, params.step_y, params.w, params.h)
-            != (1 << SCALE_SUBPEL_BITS, 1 << SCALE_SUBPEL_BITS, 8, 8)
+        || (params.step_x, params.step_y) != (1 << SCALE_SUBPEL_BITS, 1 << SCALE_SUBPEL_BITS)
+        || w == 0
+        || !w.is_multiple_of(8)
+        || h == 0
+        || !h.is_multiple_of(2)
+        || stride < w
+        || output.len() < (h - 1) * stride + w
         || x0 < params.first_x.max(0)
         || y0 < params.first_y.max(0)
-        || x0 + 8 > params.last_x.min(view.width as i32 - 1)
-        || y0 + 8 > params.last_y.min(view.readable_rows as i32 - 1)
+        || x0 + w as i32 > params.last_x.min(view.width as i32 - 1)
+        || y0 + h as i32 > params.last_y.min(view.readable_rows as i32 - 1)
     {
         return false;
     }
     let origin = y0 as usize * view.stride + x0 as usize;
-    if origin + 8 * view.stride + 16 > view.samples.len() {
+    if origin + h * view.stride + w + 8 > view.samples.len() {
         return false;
     }
     #[cfg(target_arch = "x86_64")]
@@ -91,52 +99,106 @@ pub fn subpel_predict_bilinear_8x8_u8<T: ReconSample>(
             ((params.start_x >> 6) & SUBPEL_MASK) as i16,
             ((params.start_y >> 6) & SUBPEL_MASK) as i16,
         ];
-        avx2::block_8x8(t, view.samples, [origin, view.stride], phases, output);
+        avx2::block(
+            t,
+            view.samples,
+            [origin, view.stride, w, h],
+            phases,
+            output,
+            stride,
+        );
         return true;
     }
     false
 }
 
-/// The byte length of the largest refine-MV search window, 24 x 24.
-const WINDOW_LEN: usize = 24 * 24;
+/// The § 7.13.3.6 search positions `(dy, dx)` in `Refinemv_Neighbors` order.
+pub const REFINEMV_NEIGHBORS: [(i32, i32); 24] = {
+    let mut out = [(0, 0); 24];
+    let mut index = 0;
+    let mut position = 0;
+    while position < 25 {
+        if position != 12 {
+            out[index] = (position / 5 - 2, position % 5 - 2);
+            index += 1;
+        }
+        position += 1;
+    }
+    out
+};
 
-/// Writes into `sads` the § 7.13.3.6 SAD of two `stride`-wide search windows
-/// at each `(dy, dx)` of `offsets`: `Σ |w0 - w1|` over every other row of the
-/// `sad_w x sad_h` areas starting at `(2 + dy, 2 + dx)` in the first window
-/// and at `(2 - dy, 2 - dx)` in the second. Returns `false`, having written
-/// nothing, unless `stride` is `sad_w + 4`, `sad_w` and `sad_h` are 12 or 20,
-/// every offset lies within `-2..=2` and each window holds 24 x 24 bytes.
+/// The § 7.13.3.6 search offset `(dx, dy)` of two `stride`-wide eight-bit
+/// search windows: the biased centre SAD when `allow_center` keeps it, else
+/// the best of the 24 neighbours, each `Σ |w0 - w1|` over every other row of
+/// the `(stride - 4) x sad_h` areas at `(2 + dy, 2 + dx)` in the first window
+/// and at `(2 - dy, 2 - dx)` in the second. Returns `None` unless `stride` is
+/// 16 or 24, `sad_h` is 12 or 20 and each window holds its
+/// `stride x (sad_h + 4)` bytes.
 #[must_use]
-pub fn refinemv_window_sads_u8(
+pub fn refinemv_search_u8(
     windows: [&[u8]; 2],
     stride: usize,
-    [sad_w, sad_h]: [usize; 2],
-    offsets: &[(i32, i32)],
-    sads: &mut [u32],
-) -> bool {
-    let (Some(first), Some(second)) = (
-        windows[0].first_chunk::<WINDOW_LEN>(),
-        windows[1].first_chunk::<WINDOW_LEN>(),
-    ) else {
-        return false;
-    };
-    if !matches!(sad_w, 12 | 20)
+    sad_h: usize,
+    allow_center: bool,
+) -> Option<(i32, i32)> {
+    if !matches!(stride, 16 | 24)
         || !matches!(sad_h, 12 | 20)
-        || stride != sad_w + 4
-        || sads.len() < offsets.len()
-        || offsets
+        || windows
             .iter()
-            .any(|&(dy, dx)| !(-2..=2).contains(&dy) || !(-2..=2).contains(&dx))
+            .any(|window| window.len() < stride * (sad_h + 4))
     {
-        return false;
+        return None;
     }
     #[cfg(target_arch = "x86_64")]
     if let Some(t) = fearless_simd::Level::baseline().as_avx2() {
-        avx2::sads(t, [first, second], [stride, sad_h], offsets, sads);
-        return true;
+        return Some(avx2::search(t, windows, [stride, sad_h], allow_center));
     }
-    let _ = (first, second);
-    false
+    let sad = |dy: i32, dx: i32| {
+        let at = |sign: i32, row: usize, col: usize| {
+            ((2 + sign * dy) as usize + row) * stride + (2 + sign * dx) as usize + col
+        };
+        (0..sad_h)
+            .step_by(2)
+            .flat_map(|row| (0..stride - 4).map(move |col| (row, col)))
+            .map(|(row, col)| {
+                u32::from(windows[0][at(1, row, col)].abs_diff(windows[1][at(-1, row, col)]))
+            })
+            .sum::<u32>()
+    };
+    Some(best_offset(
+        || sad(0, 0),
+        || REFINEMV_NEIGHBORS.map(|(dy, dx)| sad(dy, dx)),
+        (2 * (stride - 4) * sad_h) as u32,
+        allow_center,
+    ))
+}
+
+/// The § 7.13.3.6 search over the biased `center` SAD, kept when below
+/// `threshold`, and the SADs of the 24 neighbours in [`REFINEMV_NEIGHBORS`] order.
+#[allow(clippy::inline_always, reason = "per refine-MV unit search")]
+#[inline(always)]
+fn best_offset(
+    center: impl FnOnce() -> u32,
+    neighbours: impl FnOnce() -> [u32; 24],
+    threshold: u32,
+    allow_center: bool,
+) -> (i32, i32) {
+    let mut best = (0, 0);
+    let mut best_sad = u32::MAX;
+    if allow_center {
+        let center = center();
+        best_sad = center - (center >> 3);
+        if best_sad < threshold {
+            return best;
+        }
+    }
+    for ((dy, dx), sad) in REFINEMV_NEIGHBORS.into_iter().zip(neighbours()) {
+        if sad < best_sad {
+            best_sad = sad;
+            best = (dx, dy);
+        }
+    }
+    best
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -320,104 +382,188 @@ mod avx2 {
 
     fearless_simd::kernel!(
         #[inline]
-        pub(super) fn block_8x8(
+        pub(super) fn block(
             t: Avx2,
             source: &[u8],
-            geometry: [usize; 2],
+            geometry: [usize; 4],
             phases: [i16; 2],
-            output: &mut [u16; 64],
+            output: &mut [u16],
+            stride: usize,
         ) {
-            let [origin, stride] = geometry;
-            let [h_phase, v_phase] = phases;
-            let weights = _mm256_set1_epi16((h_phase << 8) | (16 - h_phase));
-            let pairs: __m256i = u8x32::load_array(t, PAIRS_8).into();
+            let [origin, source_stride, w, h] = geometry;
+            if [w, h, stride] == [8; 3] {
+                block_rows::<8>(t, source, [origin, source_stride, 8, 8], phases, output, 8);
+            } else {
+                block_rows::<0>(
+                    t,
+                    source,
+                    [origin, source_stride, w, h],
+                    phases,
+                    output,
+                    stride,
+                );
+            }
+        }
+    );
+
+    /// [`block`] of a `w x h` block, or of an `N x N` one at stride `N`
+    /// when `N` is not zero.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn block_rows<const N: usize>(
+        t: Avx2,
+        source: &[u8],
+        [origin, source_stride, w, h]: [usize; 4],
+        [h_phase, v_phase]: [i16; 2],
+        output: &mut [u16],
+        stride: usize,
+    ) {
+        let (w, h, stride) = if N > 0 { (N, N, N) } else { (w, h, stride) };
+        let weights = _mm256_set1_epi16((h_phase << 8) | (16 - h_phase));
+        let pairs: __m256i = u8x32::load_array(t, PAIRS_8).into();
+        let (top_weight, bottom_weight) =
+            (_mm256_set1_epi16(16 - v_phase), _mm256_set1_epi16(v_phase));
+        let bias = _mm256_set1_epi16(128);
+        for column in (0..w).step_by(8) {
             let rows = |first: usize| {
-                let at = |row: usize| origin + row.min(8) * stride;
+                let at = |row: usize| origin + column + row.min(h) * source_stride;
                 let bytes = _mm256_set_m128i(
                     load16(t, source, at(first + 1)),
                     load16(t, source, at(first)),
                 );
                 _mm256_maddubs_epi16(_mm256_shuffle_epi8(bytes, pairs), weights)
             };
-            let (top_weight, bottom_weight) =
-                (_mm256_set1_epi16(16 - v_phase), _mm256_set1_epi16(v_phase));
-            let bias = _mm256_set1_epi16(128);
             let mut top = rows(0);
-            for (pair, slot) in output.as_chunks_mut::<16>().0.iter_mut().enumerate() {
+            for pair in 0..h / 2 {
                 let next = rows(2 * pair + 2);
                 let bottom = _mm256_permute2x128_si256::<0x21>(top, next);
                 let sum = _mm256_add_epi16(
                     _mm256_mullo_epi16(top, top_weight),
                     _mm256_mullo_epi16(bottom, bottom_weight),
                 );
-                let values = _mm256_srli_epi16::<8>(_mm256_add_epi16(sum, bias));
-                u16x16::<Avx2>::simd_from(t, values).store_array(slot);
+                let values: [u16; 16] = *u16x16::<Avx2>::simd_from(
+                    t,
+                    _mm256_srli_epi16::<8>(_mm256_add_epi16(sum, bias)),
+                );
+                for (half, values) in values.as_chunks::<8>().0.iter().enumerate() {
+                    let at = (2 * pair + half) * stride + column;
+                    if let Some(slot) = output.get_mut(at..).and_then(<[u16]>::first_chunk_mut::<8>)
+                    {
+                        *slot = *values;
+                    }
+                }
                 top = next;
             }
         }
-    );
+    }
 
     fearless_simd::kernel!(
         #[inline]
-        pub(super) fn sads(
+        pub(super) fn search(
             t: Avx2,
-            windows: [&[u8; super::WINDOW_LEN]; 2],
+            windows: [&[u8]; 2],
             geometry: [usize; 2],
-            offsets: &[(i32, i32)],
-            out: &mut [u32],
-        ) {
+            allow_center: bool,
+        ) -> (i32, i32) {
             match geometry {
-                [16, 12] => sads_for::<16, 12>(t, windows, offsets, out),
-                [16, _] => sads_for::<16, 20>(t, windows, offsets, out),
-                [_, 12] => sads_for::<24, 12>(t, windows, offsets, out),
-                _ => sads_for::<24, 20>(t, windows, offsets, out),
+                [16, 12] => search_for::<16, 12, 176>(t, windows, allow_center),
+                [16, _] => search_for::<16, 20, 304>(t, windows, allow_center),
+                [_, 12] => search_for::<24, 12, 272>(t, windows, allow_center),
+                _ => search_for::<24, 20, 464>(t, windows, allow_center),
             }
         }
     );
 
-    /// [`sads`] of `STRIDE`-wide windows and `SAD_H`-row areas: two 12-byte
-    /// rows per vector at stride 16, one 20-byte row at stride 24.
+    /// [`search`] of `STRIDE`-wide windows and `SAD_H`-row areas, each
+    /// read as one `SPAN`-byte run: one masked 12-byte row per
+    /// `xmm` at stride 16, one masked 20-byte row per `ymm` at stride 24.
     #[inline]
     #[target_feature(enable = "avx2")]
-    fn sads_for<const STRIDE: usize, const SAD_H: usize>(
+    fn search_for<const STRIDE: usize, const SAD_H: usize, const SPAN: usize>(
         t: Avx2,
-        windows: [&[u8; super::WINDOW_LEN]; 2],
-        offsets: &[(i32, i32)],
-        out: &mut [u32],
-    ) {
+        [first, second]: [&[u8]; 2],
+        allow_center: bool,
+    ) -> (i32, i32) {
         let mask: __m256i = if STRIDE == 16 {
             u8x32::load_array(t, MASK_12).into()
         } else {
             u8x32::load_array(t, MASK_20).into()
         };
-        let start = |dy: i32, dx: i32| {
-            (dy.clamp(-2, 2) + 2) as usize * STRIDE + (dx.clamp(-2, 2) + 2) as usize
-        };
-        let load = |window: &[u8; super::WINDOW_LEN], at: usize| {
-            if STRIDE == 16 {
-                _mm256_set_m128i(load16(t, window, at + 2 * STRIDE), load16(t, window, at))
-            } else {
-                load32(t, window, at)
-            }
-        };
-        for (&(dy, dx), out) in offsets.iter().zip(out.iter_mut()) {
-            let (left, right) = (start(dy, dx), start(-dy, -dx));
-            let mut sum = _mm256_setzero_si256();
-            let mut row = 0;
-            while row < SAD_H {
-                let (a, b) = (
-                    load(windows[0], left + row * STRIDE),
-                    load(windows[1], right + row * STRIDE),
-                );
-                let diff = _mm256_sad_epu8(_mm256_and_si256(a, mask), _mm256_and_si256(b, mask));
-                sum = _mm256_add_epi64(sum, diff);
-                row += if STRIDE == 16 { 4 } else { 2 };
-            }
-            let folded = _mm_add_epi64(
-                _mm256_castsi256_si128(sum),
-                _mm256_extracti128_si256::<1>(sum),
-            );
-            *out = (_mm_cvtsi128_si64(folded) + _mm_extract_epi64::<1>(folded)) as u32;
+        macro_rules! sad {
+            ($dy:expr, $dx:expr) => {{
+                let start = |dy: i32, dx: i32| ((2 + dy) * STRIDE as i32 + 2 + dx) as usize;
+                match (
+                    first
+                        .get(start($dy, $dx)..)
+                        .and_then(<[u8]>::first_chunk::<SPAN>),
+                    second
+                        .get(start(-$dy, -$dx)..)
+                        .and_then(<[u8]>::first_chunk::<SPAN>),
+                ) {
+                    (Some(left), Some(right)) if STRIDE == 16 => {
+                        let mask = _mm256_castsi256_si128(mask);
+                        let mut sum = _mm_setzero_si128();
+                        for row in (0..SAD_H).step_by(2) {
+                            let a = _mm_and_si128(load16(t, left, row * STRIDE), mask);
+                            let b = _mm_and_si128(load16(t, right, row * STRIDE), mask);
+                            sum = _mm_add_epi64(sum, _mm_sad_epu8(a, b));
+                        }
+                        (_mm_cvtsi128_si64(sum) + _mm_extract_epi64::<1>(sum)) as u32
+                    }
+                    (Some(left), Some(right)) => {
+                        let mut sum = _mm256_setzero_si256();
+                        for row in (0..SAD_H).step_by(2) {
+                            let a = _mm256_and_si256(load32(t, left, row * STRIDE), mask);
+                            let b = _mm256_and_si256(load32(t, right, row * STRIDE), mask);
+                            sum = _mm256_add_epi64(sum, _mm256_sad_epu8(a, b));
+                        }
+                        let folded = _mm_add_epi64(
+                            _mm256_castsi256_si128(sum),
+                            _mm256_extracti128_si256::<1>(sum),
+                        );
+                        (_mm_cvtsi128_si64(folded) + _mm_extract_epi64::<1>(folded)) as u32
+                    }
+                    _ => u32::MAX,
+                }
+            }};
         }
+        macro_rules! neighbours {
+            ($(($dy:literal, $dx:literal)),*) => {
+                [$(sad!($dy, $dx)),*]
+            };
+        }
+        super::best_offset(
+            || sad!(0, 0),
+            || {
+                neighbours!(
+                    (-2, -2),
+                    (-2, -1),
+                    (-2, 0),
+                    (-2, 1),
+                    (-2, 2),
+                    (-1, -2),
+                    (-1, -1),
+                    (-1, 0),
+                    (-1, 1),
+                    (-1, 2),
+                    (0, -2),
+                    (0, -1),
+                    (0, 1),
+                    (0, 2),
+                    (1, -2),
+                    (1, -1),
+                    (1, 0),
+                    (1, 1),
+                    (1, 2),
+                    (2, -2),
+                    (2, -1),
+                    (2, 0),
+                    (2, 1),
+                    (2, 2)
+                )
+            },
+            (2 * (STRIDE - 4) * SAD_H) as u32,
+            allow_center,
+        )
     }
 }

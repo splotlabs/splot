@@ -9,33 +9,8 @@ use fearless_simd::{Simd, SimdBase, SimdNarrow, SimdWiden, u16x8, u16x16, u32x4,
 const REFINEMV_UNIT_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_AREA: usize = TIP_PREDICTION_SIZE * TIP_PREDICTION_SIZE;
-const SEARCH_PADDING: i32 = 4 * 8;
-const SEARCH_NEIGHBORS: [(i32, i32); 24] = [
-    (-2, -2),
-    (-2, -1),
-    (-2, 0),
-    (-2, 1),
-    (-2, 2),
-    (-1, -2),
-    (-1, -1),
-    (-1, 0),
-    (-1, 1),
-    (-1, 2),
-    (0, -2),
-    (0, -1),
-    (0, 1),
-    (0, 2),
-    (1, -2),
-    (1, -1),
-    (1, 0),
-    (1, 1),
-    (1, 2),
-    (2, -2),
-    (2, -1),
-    (2, 0),
-    (2, 1),
-    (2, 2),
-];
+pub(super) const SEARCH_PADDING: i32 = 4 * 8;
+use splot_recon::REFINEMV_NEIGHBORS as SEARCH_NEIGHBORS;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ReferenceAreaBounds {
@@ -105,8 +80,9 @@ pub(super) fn unscaled_area_bounds(
 }
 
 /// A refine-MV bilinear prediction that a one-pass kernel covers, written
-/// at stride `params.w`, or `false` without writing for any other block: an
-/// 8x8 block with no clamped tap, or the `N`x`N` § 7.13.3.6 search window
+/// at stride `params.w`, or `false` without writing for any other block: a
+/// block of whole eight-column groups with no clamped tap (eight-bit, or
+/// 8x8), or the `N`x`N` § 7.13.3.6 search window
 /// (`N` 16 or 24) whose clip bounds are its inner `N - 1` samples on each
 /// axis, where the clamped outer column and row read their inner neighbour
 /// twice. Every source row is filtered horizontally once and serves two
@@ -116,12 +92,14 @@ pub(super) fn bilinear_search_window<T: ReconSample>(
     params: &SubpelPredictParams,
     output: &mut [u16],
 ) -> bool {
-    match params.w {
-        8 => unclamped_8x8(view, params, output),
+    let window = match params.w {
         16 => search_window::<T, 16, 2, 15>(view, params, output),
         24 => search_window::<T, 24, 3, 23>(view, params, output),
         _ => false,
-    }
+    };
+    window
+        || splot_recon::subpel_predict_bilinear_u8(view, params, output, params.w)
+        || (params.w == 8 && unclamped_8x8(view, params, output))
 }
 
 /// An 8x8 bilinear block whose taps all lie inside its clip bounds and the
@@ -142,11 +120,6 @@ fn unclamped_8x8<T: ReconSample>(
         || y0 + 8 > params.last_y
     {
         return false;
-    }
-    if let Some(output) = output.first_chunk_mut::<64>()
-        && splot_recon::subpel_predict_bilinear_8x8_u8(view, params, output)
-    {
-        return true;
     }
     let (Some(output), Some(spans)) = (
         output.first_chunk_mut::<64>(),
@@ -391,11 +364,18 @@ fn search_refinemv<T: ReconSample>(
     let mut luma = super::optflow::LumaReference::pair(sink.info(), &block, offset);
     // AV2 § 7.13.3.6: `allowCentre = tipPred || !is_switchable_refinemv()`.
     let allow_center = !block.refinemv_switchable;
-    if T::u8_slice(&[]).is_some()
-        && let Some((dx, dy)) =
-            search_refinemv_u8(&mut luma, prediction_rect, candidates, allow_center)?
-    {
-        return Ok(refined_mvs(candidates, dx, dy));
+    if T::u8_slice(&[]).is_some() {
+        let mut windows = [[0u8; 24 * 24]; 2];
+        if super::optflow::search_windows_u8(&mut luma, prediction_rect, candidates, &mut windows)?
+            && let Some((dx, dy)) = splot_recon::refinemv_search_u8(
+                [&windows[0], &windows[1]],
+                prediction_rect.luma_w,
+                prediction_rect.luma_h - 4,
+                allow_center,
+            )
+        {
+            return Ok(refined_mvs(candidates, dx, dy));
+        }
     }
     let mut predict = |center_only: bool, pred0: &mut [u16], pred1: &mut [u16]| {
         for ((luma, candidate), prediction) in luma.iter_mut().zip(candidates).zip([pred0, pred1]) {
@@ -469,62 +449,6 @@ fn refined_mvs(candidates: [Mv; 2], dx: i32, dy: i32) -> [Mv; 2] {
             col: candidates[1].col - dx * 8,
         },
     ]
-}
-
-/// The § 7.13.3.6 search offset of an eight-bit unit from byte search
-/// windows, or `None` when the byte kernels do not cover a window.
-fn search_refinemv_u8<T: ReconSample>(
-    luma: &mut [super::optflow::LumaReference<'_, T>; 2],
-    prediction_rect: McBlockRect,
-    candidates: [Mv; 2],
-    allow_center: bool,
-) -> Result<Option<(i32, i32)>> {
-    const MAX_WINDOW: usize = 24 * 24;
-    let (width, height) = (prediction_rect.luma_w - 8, prediction_rect.luma_h - 8);
-    let mut windows = [[0u8; MAX_WINDOW]; 2];
-    for ((luma, candidate), window) in luma.iter_mut().zip(candidates).zip(&mut windows) {
-        let search_mv = Mv {
-            row: candidate.row - SEARCH_PADDING,
-            col: candidate.col - SEARCH_PADDING,
-        };
-        let area = (candidate, width, height);
-        if !super::optflow::search_window_u8(luma, prediction_rect, search_mv, area, window)? {
-            return Ok(None);
-        }
-    }
-    let stride = prediction_rect.luma_w;
-    let windows = [&windows[0][..], &windows[1][..]];
-    let sad_area = [width + 4, height + 4];
-    let mut best = (0, 0);
-    let mut best_sad = u32::MAX;
-    if allow_center {
-        let mut center = [0];
-        if !splot_recon::refinemv_window_sads_u8(windows, stride, sad_area, &[(0, 0)], &mut center)
-        {
-            return Ok(None);
-        }
-        best_sad = center[0] - (center[0] >> 3);
-        if best_sad < (2 * sad_area[0] * sad_area[1]) as u32 {
-            return Ok(Some(best));
-        }
-    }
-    let mut sads = [0; SEARCH_NEIGHBORS.len()];
-    if !splot_recon::refinemv_window_sads_u8(
-        windows,
-        stride,
-        sad_area,
-        &SEARCH_NEIGHBORS,
-        &mut sads,
-    ) {
-        return Ok(None);
-    }
-    for (&(dy, dx), &sad) in SEARCH_NEIGHBORS.iter().zip(&sads) {
-        if sad < best_sad {
-            best_sad = sad;
-            best = (dx, dy);
-        }
-    }
-    Ok(Some(best))
 }
 
 /// Writes the cell of every full-pel TIP unit from unit `first` on whose
@@ -830,40 +754,38 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
     let mut prediction_rect = block.rect;
     prediction_rect.luma_w = PREDICTION_SIZE;
     prediction_rect.luma_h = PREDICTION_SIZE;
-    let (dx, dy) = if T::u8_slice(&[]).is_some()
-        && let Some(offset) = tip_search_u8(luma, prediction_rect, candidates, predictions)?
-    {
-        offset
-    } else {
-        tip_search(luma, prediction_rect, candidates, predictions, carries)?
-    };
+    if T::u8_slice(&[]).is_some() {
+        let mut windows = [[0u8; TIP_PREDICTION_AREA]; 2];
+        if super::optflow::search_windows_u8(luma, prediction_rect, candidates, &mut windows)?
+            && let Some((dx, dy)) = splot_recon::refinemv_search_u8(
+                [&windows[0], &windows[1]],
+                PREDICTION_SIZE,
+                12,
+                true,
+            )
+        {
+            let base_mvs = refined_mvs(candidates, dx, dy);
+            let delta = splot_recon::optflow_unit_8x8_u8(
+                [&windows[0], &windows[1]],
+                [unit_start(dx, dy), unit_start(-dx, -dy)],
+                distances,
+                block.optflow_sad_threshold,
+            )?;
+            return Ok(Some(delta.map_or_else(
+                || MotionCell::from_refinemv(base_mvs),
+                |delta| MotionCell::from_optflow(base_mvs, delta),
+            )));
+        }
+    }
+    let (dx, dy) = tip_search(luma, prediction_rect, candidates, predictions, carries)?;
     let [pred0, pred1] = predictions;
     let bit_depth = luma[0].bit_depth();
-    let base_mvs = [
-        Mv {
-            row: candidates[0].row + dy * 8,
-            col: candidates[0].col + dx * 8,
-        },
-        Mv {
-            row: candidates[1].row - dy * 8,
-            col: candidates[1].col - dx * 8,
-        },
-    ];
-    let start0 = usize::try_from((4 + dy) * PREDICTION_SIZE as i32 + 4 + dx).map_err(|_| {
-        ReconError::ArithmeticOverflow {
-            context: "TIP optical-flow predictor 0 offset",
-        }
-    })?;
-    let start1 = usize::try_from((4 - dy) * PREDICTION_SIZE as i32 + 4 - dx).map_err(|_| {
-        ReconError::ArithmeticOverflow {
-            context: "TIP optical-flow predictor 1 offset",
-        }
-    })?;
+    let base_mvs = refined_mvs(candidates, dx, dy);
     super::optflow::tip_optflow_motion_cell_strided(
         pred0,
-        start0,
+        unit_start(dx, dy),
         pred1,
-        start1,
+        unit_start(-dx, -dy),
         PREDICTION_SIZE,
         bit_depth,
         distances,
@@ -871,6 +793,12 @@ pub(super) fn tip_refinemv_optflow_motion_cell<'a, T: ReconSample>(
         base_mvs,
     )
     .map(Some)
+}
+
+/// The start of the 8x8 unit that the search offset `(dx, dy)`, each in
+/// `-2..=2`, moves to in a 16x16 TIP prediction.
+const fn unit_start(dx: i32, dy: i32) -> usize {
+    ((4 + dy) * TIP_PREDICTION_SIZE as i32 + 4 + dx) as usize
 }
 
 /// The search offset of a TIP unit from u16 predictions: the 12x12 centre
@@ -928,56 +856,6 @@ fn tip_search<'a, T: ReconSample>(
         search_tip_refinemv_offset(pred0, pred1, center_sad, bit_depth)
     };
     Ok((dx, dy))
-}
-
-/// The search offset of an eight-bit TIP unit from its byte 16x16 search
-/// windows, which then fill `predictions`, or `None` when the byte kernels do
-/// not cover a window.
-fn tip_search_u8<T: ReconSample>(
-    luma: &mut [super::optflow::LumaReference<'_, T>; 2],
-    prediction_rect: McBlockRect,
-    candidates: [Mv; 2],
-    predictions: &mut [[u16; TIP_PREDICTION_AREA]; 2],
-) -> Result<Option<(i32, i32)>> {
-    let mut windows = [[0u8; 24 * 24]; 2];
-    for ((luma, candidate), window) in luma.iter_mut().zip(candidates).zip(&mut windows) {
-        let search_mv = Mv {
-            row: candidate.row - SEARCH_PADDING,
-            col: candidate.col - SEARCH_PADDING,
-        };
-        let area = (candidate, 8, 8);
-        if !super::optflow::search_window_u8(luma, prediction_rect, search_mv, area, window)? {
-            return Ok(None);
-        }
-    }
-    let views = [&windows[0][..], &windows[1][..]];
-    let sad = |offsets: &[(i32, i32)], sads: &mut [u32]| {
-        splot_recon::refinemv_window_sads_u8(views, TIP_PREDICTION_SIZE, [12, 12], offsets, sads)
-    };
-    let mut center = [0];
-    if !sad(&[(0, 0)], &mut center) {
-        return Ok(None);
-    }
-    let mut best = (0, 0);
-    let mut best_sad = center[0] - (center[0] >> 3);
-    if best_sad >= 12 * 12 * 2 {
-        let mut sads = [0; SEARCH_NEIGHBORS.len()];
-        if !sad(&SEARCH_NEIGHBORS, &mut sads) {
-            return Ok(None);
-        }
-        for (&(dy, dx), &sad) in SEARCH_NEIGHBORS.iter().zip(&sads) {
-            if sad < best_sad {
-                best_sad = sad;
-                best = (dx, dy);
-            }
-        }
-    }
-    for (prediction, window) in predictions.iter_mut().zip(&windows) {
-        for (sample, &byte) in prediction.iter_mut().zip(window.iter()) {
-            *sample = u16::from(byte);
-        }
-    }
-    Ok(Some(best))
 }
 
 /// The § 7.13.3.6 neighbour search of a unit whose biased centre SAD

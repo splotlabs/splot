@@ -168,7 +168,7 @@ pub use loop_restoration::{
 };
 pub use optflow::{
     OptflowScratch, derive_optflow_mv_delta_8x8_strided_into, derive_optflow_mv_deltas,
-    derive_optflow_mv_deltas_into,
+    derive_optflow_mv_deltas_into, optflow_unit_8x8_u8,
 };
 pub use pc_wiener::{
     PC_WIENER_CLASSIFY_READ_RADIUS, PC_WIENER_FEATURE_WINDOW_SIDE, PC_WIENER_FILTER_TAP_RADIUS,
@@ -199,12 +199,12 @@ pub use secondary_transform::{
 /// `splot-tables` directly.
 pub use splot_tables::tables::quantizer::QM_OFFSET;
 pub use subpel_mc::{
-    BilinearOverlapCarry, CellPlacement, CompoundCells, InterpolationFilter, ReferencePlaneView,
-    SUBPEL_FILTERS, SubpelPredictParams, UnscaledPut, blend_compound_average_equal,
-    blend_compound_average_weighted, blend_compound_average_weighted_sample,
-    refinemv_window_sads_u8, subpel_compound_cell_u8, subpel_compound_cells_u8,
-    subpel_predict_12x12_bilinear_overlap_into, subpel_predict_bilinear_8x8_u8,
-    subpel_predict_bilinear_search_window_u8, subpel_predict_block,
+    BilinearOverlapCarry, CellPlacement, CompoundCells, InterpolationFilter, REFINEMV_NEIGHBORS,
+    ReferencePlaneView, SUBPEL_FILTERS, SubpelPredictParams, UnscaledPut,
+    blend_compound_average_equal, blend_compound_average_weighted,
+    blend_compound_average_weighted_sample, refinemv_search_u8, subpel_compound_cell_u8,
+    subpel_compound_cells_u8, subpel_predict_12x12_bilinear_overlap_into,
+    subpel_predict_bilinear_search_window_u8, subpel_predict_bilinear_u8, subpel_predict_block,
     subpel_predict_block_compound_average_fast_pair_into,
     subpel_predict_block_compound_average_fast_validated_strided_into,
     subpel_predict_block_compound_average_fullpel_strided_into_u8,

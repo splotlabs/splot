@@ -869,9 +869,9 @@ pub(super) fn motion<T: ReconSample>(
     Ok(grid)
 }
 
-/// Builds the optical-flow motion grid the block's units share; `None` for a
-/// one-unit block whose two predictions are close enough that § 7.13.3.8
-/// skips the refinement.
+/// Builds the optical-flow motion grid the block's units share; `None` for an
+/// unsearched one-unit block whose two predictions are close enough that
+/// § 7.13.3.8 skips the refinement.
 fn tip_motion_grid<T: ReconSample>(
     scratch: &mut TipReconstructScratch<T>,
     plan: &TipBlockPlan,
@@ -888,7 +888,7 @@ fn tip_motion_grid<T: ReconSample>(
         .block_params(first)
         .into_compound()
         .ok_or(DecodeHeaderStateError::InvalidInterTipPredictionState)?;
-    if scratch.units.len() == 1 {
+    if scratch.units.len() == 1 && !plan.plan.search_refinemv {
         return mc::compound_block_motion_grid(sink, compound, Some(8), tile_offset);
     }
     mc::tip_batch_motion_grid(
