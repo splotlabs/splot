@@ -95,7 +95,7 @@ impl<T: Send + 'static> Drop for RecycledIntraSamples<T> {
 pub(crate) struct GeneralIntraReconScratch<T: ReconSample> {
     intra_prediction: IntraPredictionScratch<T>,
     hot_vectors: HotIntraVectors,
-    pub(crate) cfl_luma_ac: Vec<i32>,
+    pub(crate) cfl_luma_ac: Vec<i16>,
     pub(crate) cfl_prediction: Vec<T>,
     pub(crate) mhccp_refs: [Vec<u16>; 3],
     pub(crate) paeth_edges: [Vec<T>; 2],

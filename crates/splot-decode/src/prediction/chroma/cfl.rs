@@ -14,7 +14,7 @@
 //! `DECODE-GENERAL-INTRA-CFL-NON-420`,
 //! `DECODE-MHCCP-FRAME-EDGE-REFERENCE-EXTENT`.
 
-use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i32x8, u16x16, u32x8};
+use fearless_simd::{Bytes as _, Select as _, Simd, SimdBase, i16x8, i32x8, u16x16, u32x8};
 
 use splot_recon::math::{approx_divide, resolve_division, round2_signed_i32};
 use splot_recon::mhccp::{MhccpPredictor, MhccpRefs, derive_mhccp_params};
@@ -339,7 +339,7 @@ fn analyse_cfl_block<T: ReconSample, P: CflLaneSample, const F: usize>(
     block: CflBlock,
     cfl_params: CflParams,
     multi: Option<CflMultiDirection>,
-    luma_ac: &mut Vec<i32>,
+    luma_ac: &mut Vec<i16>,
     mhccp_refs: &mut [Vec<u16>; 3],
     models: &mut [CflModel],
     mhccp_geometry: &mut Option<(MhccpGeometry, u8)>,
@@ -410,7 +410,7 @@ fn analyse_cfl_block<T: ReconSample, P: CflLaneSample, const F: usize>(
 /// `width`-wide block of luma `L` into `out`, row `r` at `out[r * stride..]`.
 fn cfl_predict_block<T: ReconSample>(
     model: [i32; 4],
-    luma: &[i32],
+    luma: &[i16],
     width: usize,
     out: &mut [T],
     stride: usize,
@@ -464,7 +464,7 @@ fn cfl_predict([dc, alpha_q3, average_q3, max]: [i32; 4], luma: i32) -> i32 {
 fn cfl_predict_rows<S: Simd, P: CflLaneSample>(
     simd: S,
     model: [i32; 4],
-    luma: &[i32],
+    luma: &[i16],
     width: usize,
     out: &mut [P],
     stride: usize,
@@ -472,8 +472,9 @@ fn cfl_predict_rows<S: Simd, P: CflLaneSample>(
     const LANES: usize = 8;
     let [dc, alpha_q3, average_q3, max] = model;
     let zero = i32x8::splat(simd, 0);
-    let predict = |luma: &[i32]| {
-        let scaled = (i32x8::from_slice(simd, luma) - average_q3) * alpha_q3;
+    let predict = |luma: &[i16]| {
+        let (low, high) = simd.widen_i16x8(i16x8::from_slice(simd, &luma[..LANES]));
+        let scaled = (simd.combine_i32x4(low, high) - average_q3) * alpha_q3;
         let rounded = (scaled.abs() + (1 << (CFL_ALPHA_SHIFT - 1))) >> CFL_ALPHA_SHIFT;
         let signed = scaled.simd_lt(zero).select(zero - rounded, rounded);
         (signed + dc).max(0).min(max)
@@ -496,7 +497,7 @@ fn cfl_predict_rows<S: Simd, P: CflLaneSample>(
             P::store8(simd, out, predict(luma));
         }
         for (slot, &luma) in groups.into_remainder().iter_mut().zip(lumas.remainder()) {
-            *slot = P::from_clipped(cfl_predict(model, luma));
+            *slot = P::from_clipped(cfl_predict(model, i32::from(luma)));
         }
     }
 }
@@ -504,8 +505,8 @@ fn cfl_predict_rows<S: Simd, P: CflLaneSample>(
 /// The § 7.13.5 downsampled luma above and left of a CfL block (`t`, in
 /// Q3), each sample gathered once for `lumaAvg` and `implicitAlpha`.
 struct CflLumaEdges {
-    above: [i32; MAX_CFL_AXIS],
-    left: [i32; MAX_CFL_AXIS],
+    above: [i16; MAX_CFL_AXIS],
+    left: [i16; MAX_CFL_AXIS],
 }
 
 impl Default for CflLumaEdges {
@@ -682,7 +683,7 @@ fn add_alpha_samples(
     sums: &mut [i32; 5],
     len: usize,
     num: usize,
-    luma_q3: &[i32; MAX_CFL_AXIS],
+    luma_q3: &[i16; MAX_CFL_AXIS],
     chroma_at: impl Fn(usize) -> i32,
 ) {
     if num == 0 {
@@ -691,7 +692,7 @@ fn add_alpha_samples(
     let step = (len / num).max(1);
     let mut at = if step == 1 { 0 } else { step >> 1 };
     while at < len.min(MAX_CFL_AXIS) {
-        let (luma, chroma) = (luma_q3[at] >> 3, chroma_at(at));
+        let (luma, chroma) = (i32::from(luma_q3[at] >> 3), chroma_at(at));
         for (sum, term) in sums
             .iter_mut()
             .zip([luma, chroma, luma * chroma, luma * luma, 1])
@@ -850,7 +851,7 @@ impl MhccpGeometry {
         block: CflBlock,
         mh_dir: u8,
         luma: &mut Vec<u16>,
-        scratch: &mut Vec<i32>,
+        scratch: &mut Vec<i16>,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let (above, left, reference_width) = (self.above, self.left, self.reference_width);
         luma.clear();
@@ -896,7 +897,7 @@ impl MhccpGeometry {
             }
         }
         let block_rows = above..above + covered;
-        let mut q3 = [0i32; 128];
+        let mut q3 = [0i16; 128];
         for row in first_luma_row..self.reference_height {
             if block_rows.contains(&row) {
                 continue;
@@ -1201,14 +1202,14 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
         rows: &[&[P]; 3],
         chroma_x0: usize,
         clamp_first: bool,
-        out: &mut [i32],
+        out: &mut [i16],
     ) {
         let done = self.q3_lanes(simd, rows, chroma_x0, out);
         for (i, slot) in out.iter_mut().enumerate().skip(done) {
-            *slot = self.q3(rows, chroma_x0 + i, clamp_first && i == 0);
+            *slot = self.q3(rows, chroma_x0 + i, clamp_first && i == 0) as i16;
         }
         if clamp_first && done > 0 {
-            out[0] = self.q3(rows, chroma_x0, true);
+            out[0] = self.q3(rows, chroma_x0, true) as i16;
         }
     }
 
@@ -1220,7 +1221,7 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
         simd: S,
         rows: &[&[P]; 3],
         chroma_x0: usize,
-        out: &mut [i32],
+        out: &mut [i16],
     ) -> usize {
         const LANES: usize = 8;
         if self.sub_x != 1 || chroma_x0 == 0 {
@@ -1234,10 +1235,12 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
                 + cfl_420_row_taps(simd, rows[1], luma_x, weights[1])
                 + cfl_420_row_taps(simd, rows[2], luma_x, weights[2]);
             let take = (out.len() - done).min(LANES);
+            let (low, high) = simd.split_i32x8(acc);
+            let acc = simd.relaxed_narrow_i32x4(low, high);
             if take == LANES {
                 acc.store_slice(&mut out[done..done + LANES]);
             } else {
-                let lanes: [i32; LANES] = acc.into();
+                let lanes: [i16; LANES] = acc.into();
                 out[done..done + take].copy_from_slice(&lanes[..take]); // splot-copy-ok: publish CfL luma samples
             }
             done += take;
@@ -1256,8 +1259,8 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
         y: usize,
         width: usize,
         clamps: [bool; 3],
-        left: &mut Option<&mut [i32]>,
-        out: &mut [i32],
+        left: &mut Option<&mut [i16]>,
+        out: &mut [i16],
     ) -> bool {
         let height = out.len() / width.max(1);
         #[cfg(target_arch = "x86_64")]
@@ -1296,8 +1299,8 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
         &self,
         simd: S,
         block: CflBlock,
-        mut left: Option<&mut [i32]>,
-        luma: &mut Vec<i32>,
+        mut left: Option<&mut [i16]>,
+        luma: &mut Vec<i16>,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let CflBlock {
             x,
@@ -1327,17 +1330,17 @@ impl<'a, P: CflLaneSample, const F: usize> CflLuma<'a, P, F> {
                     self.q3(&self.row(chroma_y, false, None)?, x - 1, false)
                 } else {
                     self.q3(&rows, x - 1, false)
-                };
+                } as i16;
             }
             self.q3_run(simd, &rows, x, true, out);
             let mut chroma_x = (x / period + 1) * period;
             while chroma_x < x + width && chroma_x <= edge {
-                out[chroma_x - x] = self.q3(&rows, chroma_x, true);
+                out[chroma_x - x] = self.q3(&rows, chroma_x, true) as i16;
                 chroma_x += period;
             }
             if edge_clamps {
                 for chroma_x in (edge + 1).max(x + 1)..x + width {
-                    out[chroma_x - x] = self.q3(&rows, chroma_x, true);
+                    out[chroma_x - x] = self.q3(&rows, chroma_x, true) as i16;
                 }
             }
         }

@@ -136,7 +136,7 @@ fn analyse<T: ReconSample>(
     block: CflBlock,
     filter: u8,
     neighbours: NeighbourAvailability,
-) -> (CflLumaEdges, i32, Vec<i32>) {
+) -> (CflLumaEdges, i32, Vec<i16>) {
     let coeffs = zero_block();
     let planes = [(PlaneId::U, coeffs.view(&[]), neighbours)];
     let mut edges = CflLumaEdges::default();
@@ -148,7 +148,7 @@ fn analyse<T: ReconSample>(
         edges.average_q3(block, neighbours).unwrap()
     }));
     for luma in &mut ac {
-        *luma -= average;
+        *luma -= average as i16;
     }
     (edges, average, ac)
 }
@@ -168,7 +168,7 @@ fn implicit_alpha<T: ReconSample>(
 fn explicit_prediction(
     dc: i32,
     alpha: i8,
-    ac: &[i32],
+    ac: &[i16],
     width: usize,
     bit_depth: BitDepth,
 ) -> Vec<u16> {
@@ -293,7 +293,7 @@ fn cfl_420_simd_matches_scalar_at_block_and_frame_edges() {
             }))
             .unwrap();
             for luma in &mut actual {
-                *luma -= average_q3;
+                *luma -= average_q3 as i16;
             }
             let mut expected = Vec::with_capacity(width * height);
             for row in 0..height {
@@ -319,7 +319,7 @@ fn cfl_420_simd_matches_scalar_at_block_and_frame_edges() {
                             total += weight * i32::from(luma[tap_row * plane_width + tap_col]);
                         }
                     }
-                    expected.push(total);
+                    expected.push(total as i16);
                 }
             }
             assert_eq!(
@@ -695,15 +695,15 @@ fn cfl_predict_lanes_match_scalar_over_random_inputs() {
             let len = 1 + lcg(&mut state) % 70;
             let dc = (lcg(&mut state) % (max as usize + 1)) as i32;
             let alpha_q3 = (lcg(&mut state) % 65_536) as i32 - 32_768;
-            let luma_ac: Vec<i32> = (0..len)
-                .map(|_| (lcg(&mut state) % (16 * max as usize + 1)) as i32 - 8 * max)
+            let luma_ac: Vec<i16> = (0..len)
+                .map(|_| ((lcg(&mut state) % (16 * max as usize + 1)) as i32 - 8 * max) as i16)
                 .collect();
             let mut actual = vec![0u16; len];
             let model = [dc, alpha_q3, 0, max];
             cfl_predict_block(model, &luma_ac, len, &mut actual, len).unwrap();
             let expected: Vec<u16> = luma_ac
                 .iter()
-                .map(|&ac| cfl_predict(model, ac) as u16)
+                .map(|&ac| cfl_predict(model, i32::from(ac)) as u16)
                 .collect();
             assert_eq!(actual, expected, "dc={dc} alpha={alpha_q3}");
         }
@@ -721,14 +721,14 @@ fn check_cfl_predict_block<T: ReconSample>(max: i32, state: &mut u64) {
         sample(state),
         max,
     ];
-    let luma: Vec<i32> = (0..width * height).map(|_| sample(state)).collect();
+    let luma: Vec<i16> = (0..width * height).map(|_| sample(state) as i16).collect();
     let sentinel = T::try_from_u16(7).unwrap();
     let mut out = vec![sentinel; (height - 1) * stride + width];
     cfl_predict_block(model, &luma, width, &mut out, stride).unwrap();
     for (i, &got) in out.iter().enumerate() {
         let (row, col) = (i / stride, i % stride);
         let expected = if col < width {
-            cfl_predict(model, luma[row * width + col]) as u16
+            cfl_predict(model, i32::from(luma[row * width + col])) as u16
         } else {
             7
         };
@@ -759,7 +759,7 @@ fn specialised_run<const F: usize>(
     x0: usize,
     clamp_first: bool,
     len: usize,
-) -> Vec<i32> {
+) -> Vec<i16> {
     let samples = frame.plane(PlaneId::Y).unwrap().samples();
     let luma = CflLuma::<_, F>::new(frame, samples, F).unwrap();
     let rows = luma.row(y - 1, clamp_y, min_luma_ref_y).unwrap();
@@ -791,7 +791,7 @@ fn cfl_luma_runs_match_per_sample_q3_over_random_planes() {
                     baseline_simd!(simd => luma.q3_run(simd, &rows, x0, clamp_first, &mut run));
                     for (i, &q3) in run.iter().enumerate() {
                         let expected = luma.q3(&rows, x0 + i, clamp_first && i == 0);
-                        assert_eq!(q3, expected, "x0={x0} i={i}");
+                        assert_eq!(i32::from(q3), expected, "x0={x0} i={i}");
                     }
                     lane_runs += usize::from(x0 > 0 && run.len() > 8);
                     let args = (y, clamp_y, min_luma_ref_y, x0, clamp_first, run.len());
@@ -845,7 +845,7 @@ fn check_u8_block_luma<const F: usize>(frame: &CurrentFrameWorkspace<u8>, state:
             for col in 0..block_width {
                 let clamp_x = col == 0 || (2 * (x + col)).is_multiple_of(64);
                 assert_eq!(
-                    actual[row * block_width + col],
+                    i32::from(actual[row * block_width + col]),
                     luma.q3(&rows, x + col, clamp_x),
                     "F={F} x={x} y={y} {block_width}x{block_height} row={row} col={col}"
                 );
@@ -853,7 +853,7 @@ fn check_u8_block_luma<const F: usize>(frame: &CurrentFrameWorkspace<u8>, state:
             if x > 0 {
                 let rows = luma.row(y + row, row == 0, None).unwrap();
                 assert_eq!(
-                    left[row],
+                    i32::from(left[row]),
                     luma.q3(&rows, x - 1, false),
                     "F={F} left row {row}"
                 );
