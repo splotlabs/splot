@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_core::tables::conversion::{TX_HEIGHT, TX_WIDTH};
+use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 
 use super::{ChromaDeblockRecords, DeblockBlock, DeblockError, EdgeBlock, MI_SIZE};
 
@@ -36,8 +36,9 @@ pub(super) const UNCOVERED: u32 = u32::MAX;
 
 /// The § 7.17.2 inputs of one plane's 4x4 cells, laid out as the spec's
 /// per-cell arrays: the transform base (`TxRowBase << 16 | TxColBase`) and an
-/// info word of `Tx_Width | Tx_Height << 8`, the [`SKIP`] to [`EDGE_H`] bits
-/// and the record's `qindex` from bit [`QINDEX_SHIFT`].
+/// info word of the size codes (`log2 - 1`) of `Tx_Width | Tx_Height << 8`, the
+/// [`SKIP`] to [`EDGE_H`] bits and the record's `qindex` from bit
+/// [`QINDEX_SHIFT`].
 #[derive(Default)]
 pub(super) struct CellPlane {
     pub(super) bases: Vec<u32>,
@@ -110,14 +111,18 @@ impl Facts {
         let (tx_row, tx_col) = cell.tx_base(plane);
         let prediction = cell.prediction(plane);
         let tx = cell.tx(plane);
-        let dimension = |table: &[i32]| table.get(tx).map_or(0, |&size| size.clamp(0, 255) as u32);
+        let dimension = |table: &[i32]| {
+            table
+                .get(tx)
+                .map_or(0, |&log| (log - 1).clamp(0, 255) as u32)
+        };
         let block = cell.block;
         let base = (tx_row as u32) << 16 | (tx_col as u32 & 0xffff);
         let origin = |base: u32, sub: usize| usize::from(((base as usize * MI_SIZE) >> sub) as u16);
         Self {
             base: base.min(UNCOVERED - 1),
-            info: dimension(&TX_WIDTH)
-                | dimension(&TX_HEIGHT) << 8
+            info: dimension(&TX_WIDTH_LOG2)
+                | dimension(&TX_HEIGHT_LOG2) << 8
                 | if block.skip { SKIP } else { 0 }
                 | if block.lossless { LOSSLESS } else { 0 }
                 | block.qindex.min(0xfff) << QINDEX_SHIFT,

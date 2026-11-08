@@ -6,15 +6,13 @@
 //! kernels then filter whole columns (vertical edges) and rows (horizontal
 //! edges) of them.
 
-use core::num::NonZeroUsize;
-
 use splot_core::tables::conversion::{Q_THRESH_MULTS, W_MULT};
 use splot_recon::{
-    BitDepth, DeblockEdge, DeblockSampleFilter, ReconSample, deblock_horizontal_edges,
-    deblock_vertical_edge_column, deblock_vertical_edges,
+    BitDepth, DeblockEdge, DeblockSampleFilter, ReconSample, deblock_filter_max_width,
+    deblock_horizontal_edges, deblock_vertical_edge_band, deblock_vertical_edges,
 };
 
-use fearless_simd::{Simd, prelude::*, u32x8};
+use fearless_simd::{Simd, prelude::*, u8x32, u16x16, u32x8};
 
 use super::grid::{EDGE_H, EDGE_V, LOSSLESS, MiGrid, QINDEX_SHIFT, SKIP, UNCOVERED};
 use super::{
@@ -69,7 +67,9 @@ struct Lanes<S: Simd> {
 
 /// The packed § 7.17.5 strengths of the `qindex` of each lane's info word,
 /// remembering the last `qindex` met: a frame without delta-q costs one
-/// compare per lane group.
+/// compare per lane group. Each is kept to 15 bits, so that the 16-bit sum
+/// of two sides cannot wrap; [`DeblockEdge::from_lanes`] caps both far
+/// below that.
 struct Strengths<'a> {
     cache: &'a StrengthCache,
     last: (u32, u32),
@@ -86,12 +86,13 @@ impl Strengths<'_> {
         self.gather(simd, qindex)
     }
 
+    #[cold]
     #[inline(never)]
     fn gather<S: Simd>(&mut self, simd: S, qindex: u32x8<S>) -> u32x8<S> {
         let words = qindex.to_array().map(|qindex| {
             if qindex != self.last.0 {
                 let (q_thr, side) = self.cache.get(qindex);
-                let word = q_thr.clamp(0, 0xffff) as u32 | (side.clamp(0, 0xffff) as u32) << 16;
+                let word = q_thr.clamp(0, 0x7fff) as u32 | (side.clamp(0, 0x7fff) as u32) << 16;
                 self.last = (qindex, word);
             }
             self.last.1
@@ -134,47 +135,66 @@ fn decide_lanes<S: Simd, const PLANE: usize, const PASS: usize>(
     control: u32x8<S>,
 ) -> (u32x8<S>, u32x8<S>, bool) {
     let splat = |value: u32| u32x8::splat(simd, value);
-    let chroma = PLANE != 0;
     let zero = splat(0);
     let set = |value: u32x8<S>, bit: u32| (value & bit).simd_eq(splat(bit));
     let uncovered = curr.bases.simd_eq(splat(UNCOVERED)) | prev.bases.simd_eq(splat(UNCOVERED));
     let block_edge = if PASS == 0 { EDGE_V } else { EDGE_H };
     let skipped = (curr.info & (block_edge | SKIP)).simd_eq(splat(SKIP));
-    let strong = |strengths: u32x8<S>| {
-        !((strengths & 0xffff).simd_eq(zero) | (strengths >> 16).simd_eq(zero))
+    let (curr_q, prev_q) = (
+        curr.strengths.bitcast::<u16x16<S>>(),
+        prev.strengths.bitcast::<u16x16<S>>(),
+    );
+    let zero16 = u16x16::splat(simd, 0);
+    let strong = |strengths: u16x16<S>| {
+        let weak = simd.to_vector_mask16x16(strengths.simd_eq(zero16));
+        weak.bitcast::<u32x8<S>>().simd_eq(zero)
     };
     let apply = !(curr.bases.simd_eq(prev.bases) | skipped | set(control, NO_FILTER))
-        & (strong(curr.strengths) | strong(prev.strengths));
-    let size = ((curr.info >> (8 * PASS as u32)) & 0xff)
-        .min((prev.info >> (8 * PASS as u32)) & 0xff)
-        .min(control & 0xff);
-    let pick = |mask, yes: u32, no: u32x8<S>| simd.select_u32x8(mask, splat(yes), no);
-    let wide = pick(
-        size.simd_eq(splat(16)),
-        if chroma { 4 } else { 6 },
-        splat(if chroma { 4 } else { 8 }),
-    );
-    let pos = pick(
-        size.simd_le(splat(4)),
-        1,
-        pick(size.simd_eq(splat(8)), 3, wide),
-    );
-    let cap = pos.min(splat(if chroma { 2 } else { 6 }));
-    let neg = simd.select_u32x8(set(control, SB_EDGE), cap, pos);
-    let combine = |curr: u32x8<S>, prev: u32x8<S>| {
-        let both = !(curr.simd_eq(zero) | prev.simd_eq(zero));
-        simd.select_u32x8(both, (curr + prev + 1) >> 1, curr.max(prev))
-    };
-    let q_thr = combine(curr.strengths & 0xffff, prev.strengths & 0xffff);
-    let side = combine(curr.strengths >> 16, prev.strengths >> 16);
+        & (strong(curr_q) | strong(prev_q));
+    let code = |info: u32x8<S>| (info >> (8 * PASS as u32)) & 0xff;
+    let size = code(curr.info).min(code(prev.info)).min(control & 0xff);
+    let table = u8x32::from_slice(simd, &WIDTHS[usize::from(PLANE != 0)]);
+    let index = size * 0x0101 + ((control & SB_EDGE) << 3);
+    let widths = simd.swizzle_dyn_within_blocks_u8x32(table, index.bitcast::<u8x32<S>>());
+    let sum = curr_q + prev_q;
+    let either_zero = curr_q.min(prev_q).simd_eq(zero16);
+    let low = simd.select_u16x16(either_zero, sum, (sum + 1) >> 1);
     let lossless = |info: u32x8<S>| (info & LOSSLESS) >> 17;
-    let low = q_thr.min(splat(0xffff)) | side.min(splat(0xffff)) << 16;
-    let high = pos | neg << 8 | lossless(prev.info) << 16 | lossless(curr.info) << 17;
+    let high = (widths.bitcast::<u32x8<S>>() & 0xffff)
+        | lossless(prev.info) << 16
+        | lossless(curr.info) << 17;
     (
-        simd.select_u32x8(apply, low, zero),
+        simd.select_u32x8(apply, low.bitcast::<u32x8<S>>(), zero),
         simd.select_u32x8(apply, high, zero),
         uncovered.any_true(),
     )
+}
+
+/// § 7.17.3 `maxWidthPos` then `maxWidthNeg` on a superblock edge, by luma
+/// or chroma and [`size_code`] filter size, as a lookup on 16-byte lanes:
+/// bytes `0..8` by code, bytes `8..16` the superblock-edge negative widths.
+const WIDTHS: [[u8; 32]; 2] = {
+    let mut tables = [[0; 32]; 2];
+    let mut entry = 0;
+    while entry < 2 * 16 {
+        let (chroma, byte): (usize, usize) = (entry / 16, entry % 16);
+        let size = 4 << (byte % 8).saturating_sub(1);
+        let (neg, pos) = deblock_filter_max_width(size, chroma == 1, true);
+        let width = if byte < 8 { pos } else { neg };
+        tables[chroma][byte] = width as u8;
+        tables[chroma][byte + 16] = width as u8;
+        entry += 1;
+    }
+    tables
+};
+
+/// The filter size code of a transform or clipped dimension: `log2(size) - 1`
+/// for the § 7.17.4 sizes 4 to 64, which [`WIDTHS`] maps.
+const fn size_code(size: u32) -> u32 {
+    match size.checked_ilog2() {
+        Some(log) => log.saturating_sub(1),
+        None => 0,
+    }
 }
 
 impl PassEdges {
@@ -276,7 +296,7 @@ impl PassEdges {
         let reach = if PLANE == 0 { 16 } else { 8 };
         let disable = geometry.disable_loopfilters_across_tiles;
         let control = |near: bool, sb_edge: bool, tile: bool| {
-            (if near { reach as u32 } else { 64 })
+            size_code(if near { reach as u32 } else { 64 })
                 | if sb_edge || tile { SB_EDGE } else { 0 }
                 | if tile && disable { NO_FILTER } else { 0 }
         };
@@ -380,9 +400,10 @@ impl PassEdges {
         Ok(())
     }
 
-    /// Filters every decided edge: whole columns or rows through the batched
-    /// kernels where their samples 8 either side of the edge lie in the
-    /// band, and the rest one by one.
+    /// Filters every decided edge in § 7.17.1 order: whole columns or rows
+    /// through the batched kernels where their samples 8 either side of the
+    /// edge lie in the band, and the rest in runs of [`LONE_RUN`] through
+    /// padded copies of their samples, or one by one.
     pub(super) fn apply<T: ReconSample, const PASS: usize>(
         &self,
         ctx: &mut PlaneCtx<'_, '_, T>,
@@ -397,8 +418,36 @@ impl PassEdges {
         } else {
             (self.rows, self.cols)
         };
-        let cols = NonZeroUsize::new(self.cols).ok_or(DeblockError::Workspace)?;
+        let band = if PASS == 0 {
+            let columns = (GATHER_HALF / MI_SIZE).min(outer)
+                ..(width.saturating_sub(GATHER_HALF) / MI_SIZE + 1).min(outer);
+            let full = lines(inner, self.first_row, height);
+            (if full == 0 { 0..0 } else { columns }, full)
+        } else {
+            (0..0, 0)
+        };
         for line in 0..outer {
+            if PASS == 0 && line == band.0.start && !band.0.is_empty() {
+                let columns = band.0.clone();
+                let (samples, stride) = ctx.rows.contiguous_mut();
+                let first =
+                    (self.first_row * MI_SIZE - y_origin) * stride + columns.start * MI_SIZE;
+                let edges = self
+                    .edges
+                    .get(columns.start..)
+                    .ok_or(DeblockError::Workspace)?;
+                let live = self.live.get(columns).ok_or(DeblockError::Workspace)?;
+                deblock_vertical_edge_band::<T>(
+                    samples,
+                    stride,
+                    first,
+                    edges,
+                    (band.1, self.cols),
+                    live,
+                    bit_depth,
+                )
+                .map_err(|_| DeblockError::SampleFilter)?;
+            }
             if !self.live.get(line).copied().unwrap_or(true) {
                 continue;
             }
@@ -416,47 +465,52 @@ impl PassEdges {
                 (0, (self.first_row + line) * MI_SIZE)
             };
             let full = if PASS == 0 {
-                let fits = x_p >= GATHER_HALF && x_p + GATHER_HALF <= width;
-                if fits {
-                    lines(inner, self.first_row, height)
-                } else {
-                    0
-                }
+                if band.0.contains(&line) { band.1 } else { 0 }
             } else {
                 let fits = y_p >= y_origin + GATHER_HALF && y_p + GATHER_HALF <= height;
-                if fits { lines(inner, 0, width) } else { 0 }
-            };
-            if full > 0 {
-                let (samples, stride) = ctx.rows.contiguous_mut();
-                let first = (y_p - y_origin) * stride + x_p;
-                let filtered = if PASS == 0 {
-                    let column = self
-                        .edges
-                        .get(line..line + (full - 1) * self.cols + 1)
-                        .ok_or(DeblockError::Workspace)?;
-                    deblock_vertical_edge_column::<T>(
-                        samples, stride, first, column, cols, bit_depth,
-                    )
-                } else {
+                let full = if fits { lines(inner, 0, width) } else { 0 };
+                if full > 0 {
+                    let (samples, stride) = ctx.rows.contiguous_mut();
+                    let first = (y_p - y_origin) * stride + x_p;
                     let row = self
                         .edges
                         .get(line * self.cols..line * self.cols + full)
                         .ok_or(DeblockError::Workspace)?;
                     deblock_horizontal_edges::<T>(samples, stride, first, row, bit_depth)
-                };
-                filtered.map_err(|_| DeblockError::SampleFilter)?;
-            }
-            for k in full..inner {
-                let edge = edge_at(k);
-                if edge.is_none() {
-                    continue;
+                        .map_err(|_| DeblockError::SampleFilter)?;
                 }
-                let (x_p, y_p) = if PASS == 0 {
+                full
+            };
+            let at = |k: usize| {
+                if PASS == 0 {
                     (x_p, y_p + k * MI_SIZE)
                 } else {
                     (k * MI_SIZE, y_p)
+                }
+            };
+            for start in (full..inner).step_by(LONE_RUN) {
+                let mut run = [DeblockEdge::NONE; LONE_RUN];
+                let count = (inner - start).min(LONE_RUN);
+                for (k, edge) in run.iter_mut().take(count).enumerate() {
+                    *edge = edge_at(start + k);
+                }
+                let run = &run[..count];
+                if run.iter().all(|edge| edge.is_none()) {
+                    continue;
+                }
+                let (x_p, y_p) = at(start);
+                let lone = LoneRun {
+                    x_p,
+                    y_p,
+                    edges: run,
                 };
-                LoneEdge { x_p, y_p, edge }.filter::<T, PASS>(ctx, bit_depth)?;
+                if count > 1 && lone.filter::<T, PASS>(ctx, bit_depth)? {
+                    continue;
+                }
+                for (k, &edge) in run.iter().enumerate().filter(|(_, edge)| !edge.is_none()) {
+                    let (x_p, y_p) = at(start + k);
+                    LoneEdge { x_p, y_p, edge }.filter::<T, PASS>(ctx, bit_depth)?;
+                }
             }
         }
         Ok(())
@@ -521,8 +575,22 @@ pub(super) struct LoneEdge {
     pub(super) edge: DeblockEdge,
 }
 
-/// Samples a lone edge's window holds: its four lines of `2 * GATHER_HALF`.
-const WINDOW: usize = MI_SIZE * 2 * GATHER_HALF;
+/// Edges one [`LoneRun`] window holds.
+pub(super) const LONE_RUN: usize = 8;
+
+/// Samples a [`LoneRun`] window holds: four lines of `2 * GATHER_HALF` per
+/// edge.
+const WINDOW: usize = LONE_RUN * MI_SIZE * 2 * GATHER_HALF;
+
+/// Up to [`LONE_RUN`] edges along one line of edge segments from plane
+/// position (`x_p`, `y_p`): side by side for horizontal edges, stacked for
+/// vertical ones.
+#[derive(Clone, Copy)]
+pub(super) struct LoneRun<'a> {
+    pub(super) x_p: usize,
+    pub(super) y_p: usize,
+    pub(super) edges: &'a [DeblockEdge],
+}
 
 impl LoneEdge {
     /// Chooses the filter width from the plane's own samples, then filters.
@@ -531,7 +599,12 @@ impl LoneEdge {
         plane_ctx: &mut PlaneCtx<'_, '_, T>,
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
-        if self.filter_window::<T, PASS>(plane_ctx, bit_depth)? {
+        let run = LoneRun {
+            x_p: self.x_p,
+            y_p: self.y_p,
+            edges: &[self.edge],
+        };
+        if run.filter::<T, PASS>(plane_ctx, bit_depth)? {
             return Ok(());
         }
         self.filter_lines::<T, PASS>(plane_ctx, bit_depth)
@@ -582,65 +655,34 @@ impl LoneEdge {
             sample_params,
         )
     }
+}
 
-    /// Filters the edge with the batched kernel on a copy of its four
-    /// lines whose samples past the plane or band repeat its last ones, as
-    /// the per-line path gathers them, then writes the copy back. Returns
-    /// `false`, having written nothing, when the edge has fewer than four
-    /// lines in the plane or a line outside the band. A changed sample
-    /// outside the plane or band is the error the per-line path gives.
-    fn filter_window<T: ReconSample, const PASS: usize>(
+impl LoneRun<'_> {
+    /// Filters the run with the batched kernel on a copy of its lines whose
+    /// samples past the plane or band repeat its last ones, as the per-line
+    /// path gathers them, then writes the copy back. Returns `false`, having
+    /// written nothing, when the run has a line outside the plane or band,
+    /// or more than [`LONE_RUN`] edges. A changed sample outside the plane or
+    /// band is the error the per-line path gives.
+    pub(super) fn filter<T: ReconSample, const PASS: usize>(
         self,
         ctx: &mut PlaneCtx<'_, '_, T>,
         bit_depth: BitDepth,
     ) -> Result<bool, DeblockError> {
-        let (x, y) = (self.x_p, self.y_p);
+        let (x, y, count) = (self.x_p, self.y_p, self.edges.len());
         let band_end = ctx.y_origin + ctx.band_rows;
         let fits = if PASS == 0 {
-            y >= ctx.y_origin && y + MI_SIZE <= ctx.height.min(band_end)
+            y >= ctx.y_origin && y + count * MI_SIZE <= ctx.height.min(band_end)
         } else {
-            x + MI_SIZE <= ctx.width && ctx.band_rows > 0
+            x + count * MI_SIZE <= ctx.width && ctx.band_rows > 0
         };
-        if !fits || ctx.width == 0 {
+        if !fits || ctx.width == 0 || count == 0 || count > LONE_RUN {
             return Ok(false);
         }
-        let mut window = [T::default(); WINDOW];
+        let mut storage = [T::default(); WINDOW];
         let line = 2 * GATHER_HALF;
-        let across = |i: usize, base: usize, low: usize, high: usize| {
-            (base + i).saturating_sub(GATHER_HALF).clamp(low, high - 1)
-        };
-        if PASS == 0 {
-            for (lane, samples) in window.chunks_exact_mut(line).enumerate() {
-                let row = ctx
-                    .rows
-                    .row(y + lane - ctx.y_origin)
-                    .ok_or(DeblockError::Workspace)?;
-                for (i, sample) in samples.iter_mut().enumerate() {
-                    *sample = *row
-                        .get(across(i, x, 0, ctx.width))
-                        .ok_or(DeblockError::Workspace)?;
-                }
-            }
-        } else {
-            for (i, samples) in window.chunks_exact_mut(MI_SIZE).enumerate() {
-                let row = across(i, y, ctx.y_origin, band_end) - ctx.y_origin;
-                let row = ctx.rows.row(row).ok_or(DeblockError::Workspace)?;
-                samples.copy_from_slice(row.get(x..x + MI_SIZE).ok_or(DeblockError::Workspace)?);
-            }
-        }
-        let original = window;
-        let filtered = if PASS == 0 {
-            deblock_vertical_edges(&mut window, line, GATHER_HALF, &[self.edge], bit_depth)
-        } else {
-            deblock_horizontal_edges(
-                &mut window,
-                MI_SIZE,
-                GATHER_HALF * MI_SIZE,
-                &[self.edge],
-                bit_depth,
-            )
-        };
-        filtered.map_err(|_| DeblockError::SampleFilter)?;
+        let lines = count * MI_SIZE;
+        let window = &mut storage[..lines * line];
         let (low, high) = if PASS == 0 {
             (0, ctx.width)
         } else {
@@ -649,13 +691,55 @@ impl LoneEdge {
         let base = if PASS == 0 { x } else { y };
         let first = (low + GATHER_HALF).saturating_sub(base).min(line);
         let end = (high + GATHER_HALF).saturating_sub(base).clamp(first, line);
-        let outside = |i: usize| i < first || i >= end;
-        let across_index = |k: usize| if PASS == 0 { k % line } else { k / MI_SIZE };
-        let changed_outside = window
-            .iter()
-            .zip(&original)
-            .enumerate()
-            .any(|(k, (new, old))| outside(across_index(k)) && new.to_u16() != old.to_u16());
+        if first == end {
+            return Ok(false);
+        }
+        if PASS == 0 {
+            let start = base + first - GATHER_HALF;
+            for (lane, samples) in window.chunks_exact_mut(line).enumerate() {
+                let row = ctx
+                    .rows
+                    .row(y + lane - ctx.y_origin)
+                    .and_then(|row| row.get(start..start + end - first))
+                    .ok_or(DeblockError::Workspace)?;
+                let (head, rest) = samples.split_at_mut(first);
+                let (middle, tail) = rest.split_at_mut(end - first);
+                middle.copy_from_slice(row); // splot-copy-ok: stage a lone run's window
+                head.fill(middle[0]);
+                tail.fill(middle[middle.len() - 1]);
+            }
+        } else {
+            for (i, samples) in window.chunks_exact_mut(lines).enumerate() {
+                let row = base + i.clamp(first, end - 1) - GATHER_HALF - ctx.y_origin;
+                let row = ctx.rows.row(row).ok_or(DeblockError::Workspace)?;
+                samples.copy_from_slice(row.get(x..x + lines).ok_or(DeblockError::Workspace)?);
+            }
+        }
+        let mut original = [T::default(); WINDOW];
+        let original = &mut original[..lines * line];
+        original.copy_from_slice(window); // splot-copy-ok: keep the gathered window to check
+        let filtered = if PASS == 0 {
+            deblock_vertical_edges(window, line, GATHER_HALF, self.edges, bit_depth)
+        } else {
+            deblock_horizontal_edges(window, lines, GATHER_HALF * lines, self.edges, bit_depth)
+        };
+        filtered.map_err(|_| DeblockError::SampleFilter)?;
+        let changed = |range: core::ops::Range<usize>| {
+            let (new, old) = (window.get(range.clone()), original.get(range));
+            new.zip(old).is_some_and(|(new, old)| {
+                new.iter()
+                    .zip(old)
+                    .any(|(new, old)| new.to_u16() != old.to_u16())
+            })
+        };
+        let changed_outside = if PASS == 0 {
+            (0..lines).any(|lane| {
+                changed(lane * line..lane * line + first)
+                    || changed(lane * line + end..(lane + 1) * line)
+            })
+        } else {
+            changed(0..first * lines) || changed(end * lines..line * lines)
+        };
         if changed_outside {
             return Err(DeblockError::Workspace);
         }
@@ -671,17 +755,12 @@ impl LoneEdge {
                     .copy_from_slice(&samples[first..end]);
             }
         } else {
-            for (i, samples) in window
-                .chunks_exact(MI_SIZE)
-                .enumerate()
-                .take(end)
-                .skip(first)
-            {
+            for (i, samples) in window.chunks_exact(lines).enumerate().take(end).skip(first) {
                 let row = ctx
                     .rows
                     .row_mut(base + i - GATHER_HALF - ctx.y_origin)
                     .ok_or(DeblockError::Workspace)?;
-                row.get_mut(x..x + MI_SIZE)
+                row.get_mut(x..x + lines)
                     .ok_or(DeblockError::Workspace)?
                     .copy_from_slice(samples);
             }

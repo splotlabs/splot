@@ -165,23 +165,46 @@ fn check_runs(bit_depth: BitDepth, seed: u64, widths: &mut [usize; REACH + 1]) {
                 "u16 {bit_depth:?} vertical={vertical} n={edges_len}"
             );
             if vertical {
-                let spread: Vec<_> = edges
-                    .iter()
-                    .flat_map(|&edge| [edge, random_edge(&mut noise, max_sample, 8), edge])
+                let edge_stride = 4;
+                let grid: Vec<_> = (0..edges_len * edge_stride)
+                    .map(|at| match at % edge_stride {
+                        0 => edges[at / edge_stride],
+                        3 => DeblockEdge::NONE,
+                        _ => random_edge(&mut noise, max_sample, 8),
+                    })
                     .collect();
-                let mut column = original.clone();
-                let column_stride = NonZeroUsize::new(3).unwrap();
-                let spread = &spread[..spread.len() - 2];
-                deblock_vertical_edge_column(
-                    &mut column,
-                    stride,
-                    first,
-                    spread,
-                    column_stride,
-                    bit_depth,
+                let room = (stride - REACH - first % stride) / LINES + 1;
+                let live = &[true, false, true][..room.min(3)];
+                let mut reference_band = original.clone();
+                for k in 0..edges_len {
+                    for (column, _) in live.iter().enumerate().filter(|(_, live)| **live) {
+                        let q0 = first + LINES * column + k * LINES * stride;
+                        let edge = grid[column + k * edge_stride];
+                        reference(&mut reference_band, q0, 1, stride, edge, bit_depth);
+                    }
+                }
+                let (runs, band_runs) = (&grid, (edges_len, edge_stride));
+                let mut band = original.clone();
+                deblock_vertical_edge_band(
+                    &mut band, stride, first, runs, band_runs, live, bit_depth,
                 )
                 .unwrap();
-                assert_eq!(column, expected, "column {bit_depth:?} n={edges_len}");
+                if bit_depth == BitDepth::Eight {
+                    let mut narrow: Vec<u8> = original.iter().map(|&v| v as u8).collect();
+                    deblock_vertical_edge_band(
+                        &mut narrow,
+                        stride,
+                        first,
+                        runs,
+                        band_runs,
+                        live,
+                        bit_depth,
+                    )
+                    .unwrap();
+                    let narrow: Vec<u16> = narrow.into_iter().map(u16::from).collect();
+                    assert_eq!(narrow, reference_band, "u8 band n={edges_len}");
+                }
+                assert_eq!(band, reference_band, "band {bit_depth:?} n={edges_len}");
             }
             if bit_depth == BitDepth::Eight {
                 let filter = if vertical {

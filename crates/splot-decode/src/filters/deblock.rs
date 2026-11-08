@@ -187,7 +187,7 @@ impl ChromaDeblockRecords {
         loop {
             match (next(cursors[0], Self::U), next(cursors[1], Self::V)) {
                 (None, None) => return true,
-                (Some(u), Some(v)) if self.blocks[u].block == self.blocks[v].block => {
+                (Some(u), Some(v)) if u == v || self.blocks[u].block == self.blocks[v].block => {
                     *cursors = [u + 1, v + 1];
                 }
                 _ => return false,
@@ -211,7 +211,14 @@ impl ChromaDeblockRecords {
                 .filter(move |record| record.planes & mask != 0)
                 .map(|record| &record.block)
         };
-        plane(Self::U).eq(plane(Self::V))
+        let (mut u, mut v) = (plane(Self::U), plane(Self::V));
+        loop {
+            match (u.next(), v.next()) {
+                (None, None) => return true,
+                (Some(u), Some(v)) if core::ptr::eq(u, v) || u == v => {}
+                _ => return false,
+            }
+        }
     }
 
     pub(crate) fn iter_plane(&self, plane: usize) -> impl Iterator<Item = (usize, &DeblockBlock)> {
