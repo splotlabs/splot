@@ -21,143 +21,123 @@ fn secondary_mrl() -> MrlSelection {
     MrlSelection::from_symbols(1, Some(1)).expect("secondary MRL")
 }
 
-#[test]
-fn out_of_frame_neighbours_give_context_zero() {
-    let state = TileIntraJointModeState::new_for_tile(0..16, 0..16, WHOLE_TILE).unwrap();
-    assert_eq!(state.y_mode_index_ctx(0, 0, 16, 16), 0);
+fn state(rows: usize, cols: usize, sb_size4: usize) -> TileIntraFactsState {
+    TileIntraFactsState::new_for_tile(0..rows, 0..cols, sb_size4).unwrap()
+}
+
+fn luma(joint: IntraJointMode, fsc: u8, use_dip: u8, mrl: MrlSelection) -> IntraFacts {
+    IntraFacts::luma(joint, IntraYMode::Dc, 0, fsc, use_dip, mrl)
+}
+
+fn record(state: &mut TileIntraFactsState, (r, c): (usize, usize), n4: usize, facts: IntraFacts) {
+    state.record_leaf((r, c), (n4, n4), facts, None);
+}
+
+fn record_joint(state: &mut TileIntraFactsState, pos: (usize, usize), n4: usize, value: usize) {
+    record(state, pos, n4, luma(joint_mode(value), 0, 0, MrlSelection::Disabled));
+}
+
+fn record_mrl(state: &mut TileIntraFactsState, pos: (usize, usize), mrl: MrlSelection) {
+    record(state, pos, 1, luma(IntraJointMode::DC, 0, 0, mrl));
+}
+
+fn joint_modes(state: &TileIntraFactsState, r: usize, c: usize, n4: usize) -> [IntraJointMode; 2] {
+    state.neighbours(r, c, n4, n4).joint_modes()
 }
 
 #[test]
-fn non_directional_neighbour_keeps_context_zero() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32, WHOLE_TILE).unwrap();
-    state.record_block(0, 0, 16, 16, joint_mode(2));
-    assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 0);
-}
-
-#[test]
-fn directional_left_neighbour_raises_context_to_one() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32, WHOLE_TILE).unwrap();
-    state.record_block(0, 0, 16, 16, joint_mode(36));
-    assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 1);
-}
-
-#[test]
-fn directional_above_neighbour_raises_context_to_one() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..32, 0..16, WHOLE_TILE).unwrap();
-    state.record_block(0, 0, 16, 16, joint_mode(36));
-    assert_eq!(state.y_mode_index_ctx(16, 0, 16, 16), 1);
-}
-
-#[test]
-fn directional_both_neighbours_raise_context_to_two() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..32, 0..32, WHOLE_TILE).unwrap();
-    state.record_block(0, 16, 16, 16, joint_mode(36));
-    state.record_block(16, 0, 16, 16, joint_mode(36));
-    assert_eq!(state.y_mode_index_ctx(16, 16, 16, 16), 2);
+fn joint_mode_context_counts_directional_neighbours() {
+    let empty = state(16, 16, WHOLE_TILE);
+    assert_eq!(empty.neighbours(0, 0, 16, 16).y_mode_index_ctx(), 0);
+    for (value, ctx) in [(2, 0), (4, 0), (36, 1)] {
+        let mut left = state(16, 32, WHOLE_TILE);
+        record_joint(&mut left, (0, 0), 16, value);
+        assert_eq!(left.neighbours(0, 16, 16, 16).y_mode_index_ctx(), ctx);
+    }
+    let mut above = state(32, 16, WHOLE_TILE);
+    record_joint(&mut above, (0, 0), 16, 36);
+    assert_eq!(above.neighbours(16, 0, 16, 16).y_mode_index_ctx(), 1);
+    let mut both = state(32, 32, WHOLE_TILE);
+    record_joint(&mut both, (0, 16), 16, 36);
+    record_joint(&mut both, (16, 0), 16, 36);
+    assert_eq!(both.neighbours(16, 16, 16, 16).y_mode_index_ctx(), 2);
 }
 
 #[test]
 fn unrecorded_block_neighbours_read_as_dc_and_a_reused_row_is_flagged() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..64, 0..64, SB_N4).unwrap();
-    state.record_block(0, 0, 16, 16, joint_mode(36));
+    let mut state = state(64, 64, SB_N4);
+    record_joint(&mut state, (0, 0), 16, 36);
     state.grid_mut().enter_row(16);
-    assert_eq!(
-        state.neighbour_joint_modes(32, 16, 16, 16),
-        [IntraJointMode::DC; 2]
-    );
-    assert_eq!(
-        state.neighbour_joint_modes(16, 0, 16, 16)[1],
-        joint_mode(36)
-    );
+    assert_eq!(joint_modes(&state, 32, 16, 16), [IntraJointMode::DC; 2]);
+    assert_eq!(joint_modes(&state, 16, 0, 16)[1], joint_mode(36));
     assert!(!state.window_violated());
     state.grid_mut().enter_row(48);
-    assert_eq!(
-        state.neighbour_joint_modes(16, 0, 16, 16)[1],
-        IntraJointMode::DC
-    );
+    assert_eq!(joint_modes(&state, 16, 0, 16)[1], IntraJointMode::DC);
     assert!(state.window_violated());
 }
 
 #[test]
-fn default_joint_mode_block_reads_as_dc_and_still_moves_the_window() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..64, 0..64, SB_N4).unwrap();
-    state.record_block(0, 0, 16, 16, joint_mode(36));
-    state.record_block(16, 0, 16, 16, IntraJointMode::DC);
-    assert_eq!(
-        state.neighbour_joint_modes(32, 0, 16, 16)[1],
-        IntraJointMode::DC
-    );
-    assert_eq!(
-        state.neighbour_joint_modes(16, 0, 16, 16)[1],
-        joint_mode(36)
-    );
-    state.record_block(48, 0, 16, 16, IntraJointMode::DC);
-    assert_eq!(
-        state.neighbour_joint_modes(16, 0, 16, 16)[1],
-        IntraJointMode::DC
-    );
+fn an_inter_leaf_records_nothing_but_still_moves_the_window() {
+    let mut state = state(64, 64, SB_N4);
+    record_joint(&mut state, (0, 0), 16, 36);
+    record(&mut state, (16, 0), 16, IntraFacts::NONE);
+    assert_eq!(joint_modes(&state, 32, 0, 16)[1], IntraJointMode::DC);
+    assert_eq!(joint_modes(&state, 16, 0, 16)[1], joint_mode(36));
+    record(&mut state, (48, 0), 16, IntraFacts::NONE);
+    assert_eq!(joint_modes(&state, 16, 0, 16)[1], IntraJointMode::DC);
     assert!(state.window_violated());
 }
 
 #[test]
-fn get_joint_mode_uses_the_spec_neighbour_positions() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..8, 0..8, WHOLE_TILE).unwrap();
-    state.record_block(3, 1, 1, 1, joint_mode(36));
-    assert_eq!(state.get_joint_mode(0, 2, 2, 2, 2), joint_mode(36));
-    state.record_block(1, 3, 1, 1, joint_mode(36));
-    assert_eq!(state.get_joint_mode(1, 2, 2, 2, 2), joint_mode(36));
+fn get_joint_mode_uses_the_spec_neighbour_positions_and_clips_records() {
+    let mut state = state(8, 8, WHOLE_TILE);
+    record_joint(&mut state, (3, 1), 1, 36);
+    assert_eq!(joint_modes(&state, 2, 2, 2)[0], joint_mode(36));
+    record_joint(&mut state, (1, 3), 1, 36);
+    assert_eq!(joint_modes(&state, 2, 2, 2)[1], joint_mode(36));
+    let mut clipped = self::state(4, 4, WHOLE_TILE);
+    record_joint(&mut clipped, (2, 2), 16, 36);
+    assert_eq!(joint_modes(&clipped, 3, 3, 1), [joint_mode(36); 2]);
 }
 
 #[test]
-fn last_non_directional_mode_does_not_raise_the_context() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32, WHOLE_TILE).unwrap();
-    state.record_block(0, 0, 16, 16, joint_mode(4));
-    assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 0);
-}
-
-#[test]
-fn empty_dimensions_are_rejected() {
+fn empty_dimensions_and_superblock_are_rejected() {
+    for (rows, cols, sb_size4) in [(0, 4, SB_N4), (4, 0, SB_N4)] {
+        assert!(matches!(
+            TileIntraFactsState::new_for_tile(0..rows, 0..cols, sb_size4),
+            Err(TileIntraFactsStateError::EmptyDimensions { .. })
+        ));
+    }
     assert!(matches!(
-        TileIntraJointModeState::new_for_tile(0..0, 0..4, WHOLE_TILE),
-        Err(TileIntraJointModeStateError::EmptyDimensions { .. })
+        TileIntraFactsState::new_for_tile(0..4, 0..4, 0),
+        Err(TileIntraFactsStateError::EmptySuperblockSize)
     ));
-    assert!(matches!(
-        TileIntraJointModeState::new_for_tile(0..4, 0..0, WHOLE_TILE),
-        Err(TileIntraJointModeStateError::EmptyDimensions { .. })
-    ));
-}
-
-#[test]
-fn record_block_clips_to_the_grid() {
-    let mut state = TileIntraJointModeState::new_for_tile(0..4, 0..4, WHOLE_TILE).unwrap();
-    state.record_block(2, 2, 16, 16, joint_mode(36));
-    assert_eq!(state.get_joint_mode(0, 2, 3, 1, 1), joint_mode(36));
 }
 
 #[test]
 fn palette_cache_interleaves_neighbors_preserves_repeats_and_keeps_tail() {
-    let mut state = TileLumaPaletteState::new_for_tile(0..4, 0..4, SB_N4).unwrap();
+    let mut state = state(4, 4, SB_N4);
     let above = LumaPalette::from_size_symbol(Symbol::new(2), [7, 11, 19, 23, 0, 0, 0, 0]);
     let left = LumaPalette::from_size_symbol(Symbol::new(0), [11, 17, 0, 0, 0, 0, 0, 0]);
-    state.record_block(0, 1, 1, 1, Some(above));
-    state.record_block(1, 0, 1, 1, Some(left));
+    let facts = luma(IntraJointMode::DC, 0, 0, MrlSelection::Disabled);
+    state.record_leaf((0, 1), (1, 1), facts, Some(above));
+    state.record_leaf((1, 0), (1, 1), facts, Some(left));
     let (cache, len) = state.palette_cache(1, 1);
     assert_eq!(&cache[..len], &[7, 11, 11, 17, 19, 23]);
 }
 
 #[test]
 fn luma_palette_grid_stores_one_palette_per_block() {
-    let mut state = TileLumaPaletteState::new_for_tile(0..4, 0..4, SB_N4).unwrap();
+    let mut state = state(4, 4, SB_N4);
     let palette = LumaPalette::from_size_symbol(Symbol::new(1), [7, 11, 19, 0, 0, 0, 0, 0]);
+    let facts = luma(IntraJointMode::DC, 0, 0, MrlSelection::Disabled);
 
-    state.record_block(1, 0, 2, 2, Some(palette));
+    state.record_leaf((1, 0), (2, 2), facts, Some(palette));
 
     assert_eq!(state.palettes, [palette]);
     assert_eq!(state.palette_at(1, 0), Some(palette));
     assert_eq!(state.palette_at(2, 1), Some(palette));
     assert_eq!(state.palette_at(0, 0), None);
-    assert_eq!(size_of::<Option<NonZeroU32>>(), size_of::<u32>());
-    assert!(size_of::<Option<NonZeroU32>>() < size_of::<Option<LumaPalette>>());
 }
 
 #[test]
@@ -174,149 +154,69 @@ fn grid_origin_keeps_only_tile_cells() {
 }
 
 #[test]
-fn uses_mrls_out_of_frame_neighbours_give_context_zero() {
-    let state = TileUsesMrlsState::new_for_tile(0..16, 0..16, SB_N4).unwrap();
-
-    assert_eq!(state.mrl_index_ctx(0, 0, 16, 16), 0);
-    assert_eq!(state.mrl_sec_index_ctx(0, 0, 16, 16), 0);
-}
-
-#[test]
 fn uses_mrls_neighbours_select_index_and_secondary_contexts() {
-    let mut state = TileUsesMrlsState::new_for_tile(0..32, 0..32, SB_N4).unwrap();
-    state.record_block(7, 11, 1, 1, secondary_mrl());
-    state.record_block(11, 7, 1, 1, primary_mrl());
+    let empty = state(16, 16, SB_N4).neighbours(0, 0, 16, 16);
+    assert_eq!((empty.mrl_index_ctx(), empty.mrl_sec_index_ctx()), (0, 0));
+    let mut state = state(32, 32, SB_N4);
+    record_mrl(&mut state, (7, 11), secondary_mrl());
+    record_mrl(&mut state, (11, 7), primary_mrl());
 
-    assert_eq!(
-        state.neighbour_uses_mrls(8, 8, 4, 4),
-        [primary_mrl(), secondary_mrl()]
-    );
-    assert_eq!(state.mrl_index_ctx(8, 8, 4, 4), 2);
-    assert_eq!(state.mrl_sec_index_ctx(8, 8, 4, 4), 1);
+    let neighbours = state.neighbours(8, 8, 4, 4);
+    assert_eq!(neighbours.mrl_index_ctx(), 2);
+    assert_eq!(neighbours.mrl_sec_index_ctx(), 1);
 }
 
 #[test]
-fn uses_mrls_npos_excludes_above_superblock_row_neighbours() {
-    let mut state = TileUsesMrlsState::new_for_tile(0..32, 0..32, SB_N4).unwrap();
-    state.record_block(31, 15, 1, 1, primary_mrl());
-    state.record_block(15, 31, 1, 1, secondary_mrl());
-    state.record_block(15, 16, 1, 1, secondary_mrl());
+fn npos_excludes_above_superblock_row_neighbours() {
+    let mut state = state(32, 32, SB_N4);
+    for pos in [(31, 15), (15, 31), (15, 16)] {
+        let mrl = if pos == (31, 15) {
+            primary_mrl()
+        } else {
+            secondary_mrl()
+        };
+        record(&mut state, pos, 1, luma(IntraJointMode::DC, 1, 1, mrl));
+    }
 
-    assert_eq!(
-        state.neighbour_uses_mrls(16, 16, 16, 16),
-        [primary_mrl(), MrlSelection::Disabled]
-    );
-    assert_eq!(state.mrl_index_ctx(16, 16, 16, 16), 1);
-    assert_eq!(state.mrl_sec_index_ctx(16, 16, 16, 16), 0);
+    let neighbours = state.neighbours(16, 16, 16, 16);
+    assert_eq!(neighbours.mrl_index_ctx(), 1);
+    assert_eq!(neighbours.mrl_sec_index_ctx(), 0);
+    assert_eq!(neighbours.fsc_mode_ctx(), 1);
+    assert_eq!(neighbours.use_dip_ctx(), 1);
 }
 
 #[test]
-fn uses_mrls_npos_uses_fallback_positions() {
-    let mut state = TileUsesMrlsState::new_for_tile(0..16, 0..16, SB_N4).unwrap();
-    state.record_block(7, 3, 1, 1, primary_mrl());
-    state.record_block(7, 0, 1, 1, secondary_mrl());
+fn npos_uses_fallback_positions() {
+    let mut state = state(16, 16, SB_N4);
+    record_mrl(&mut state, (7, 3), primary_mrl());
+    record_mrl(&mut state, (7, 0), secondary_mrl());
 
-    assert_eq!(
-        state.neighbour_uses_mrls(8, 0, 4, 4),
-        [primary_mrl(), secondary_mrl()]
-    );
-    assert_eq!(state.mrl_index_ctx(8, 0, 4, 4), 2);
-    assert_eq!(state.mrl_sec_index_ctx(8, 0, 4, 4), 1);
-}
-
-#[test]
-fn uses_mrls_record_block_clips_to_the_grid() {
-    let mut state = TileUsesMrlsState::new_for_tile(0..4, 0..4, SB_N4).unwrap();
-    state.record_block(2, 2, 16, 16, secondary_mrl());
-
-    assert_eq!(
-        state.neighbour_uses_mrls(2, 3, 1, 1),
-        [secondary_mrl(), MrlSelection::Disabled]
-    );
-    assert_eq!(state.mrl_index_ctx(0, 0, 1, 1), 0);
-}
-
-#[test]
-fn uses_mrls_empty_dimensions_are_rejected() {
-    assert!(matches!(
-        TileUsesMrlsState::new_for_tile(0..0, 0..4, SB_N4),
-        Err(TileUsesMrlsStateError::EmptyDimensions { .. })
-    ));
-    assert!(matches!(
-        TileUsesMrlsState::new_for_tile(0..4, 0..0, SB_N4),
-        Err(TileUsesMrlsStateError::EmptyDimensions { .. })
-    ));
-    assert!(matches!(
-        TileUsesMrlsState::new_for_tile(0..4, 0..4, 0),
-        Err(TileUsesMrlsStateError::EmptySuperblockSize)
-    ));
-}
-
-fn record_fsc_and_use_dip(
-    fsc: &mut TileFscModeState,
-    use_dip: &mut TileUseDipState,
-    block_r: usize,
-    block_c: usize,
-) {
-    fsc.record_block(block_r, block_c, 1, 1, 1);
-    use_dip.record_block(block_r, block_c, 1, 1, 1);
+    let neighbours = state.neighbours(8, 0, 4, 4);
+    assert_eq!(neighbours.mrl_index_ctx(), 2);
+    assert_eq!(neighbours.mrl_sec_index_ctx(), 1);
 }
 
 #[test]
 fn fsc_and_use_dip_neighbours_select_context_sum() {
-    let mut state = TileFscModeState::new_for_tile(0..32, 0..32, SB_N4).unwrap();
-    let mut use_dip = TileUseDipState::new_for_tile(0..32, 0..32, SB_N4).unwrap();
-    record_fsc_and_use_dip(&mut state, &mut use_dip, 7, 11);
-    record_fsc_and_use_dip(&mut state, &mut use_dip, 11, 7);
+    let mut state = state(32, 32, SB_N4);
+    for pos in [(7, 11), (11, 7)] {
+        record(&mut state, pos, 1, luma(IntraJointMode::DC, 1, 1, MrlSelection::Disabled));
+    }
 
-    assert_eq!(state.fsc_mode_ctx(8, 8, 4, 4), 2);
-    assert_eq!(use_dip.use_dip_ctx(8, 8, 4, 4), 2);
+    let neighbours = state.neighbours(8, 8, 4, 4);
+    assert_eq!(neighbours.fsc_mode_ctx(), 2);
+    assert_eq!(neighbours.use_dip_ctx(), 2);
+    assert_eq!(state.fsc_mode_at(7, 11), Some(1));
+    assert_eq!(state.fsc_mode_at(0, 0), Some(0));
+    assert_eq!(state.fsc_mode_at(32, 0), None);
 }
 
 #[test]
-fn fsc_and_use_dip_npos_excludes_above_superblock_row_neighbours() {
-    let mut state = TileFscModeState::new_for_tile(0..32, 0..32, SB_N4).unwrap();
-    let mut use_dip = TileUseDipState::new_for_tile(0..32, 0..32, SB_N4).unwrap();
-    record_fsc_and_use_dip(&mut state, &mut use_dip, 31, 15);
-    record_fsc_and_use_dip(&mut state, &mut use_dip, 15, 31);
-    record_fsc_and_use_dip(&mut state, &mut use_dip, 15, 16);
-
-    assert_eq!(state.fsc_mode_ctx(16, 16, 16, 16), 1);
-    assert_eq!(use_dip.use_dip_ctx(16, 16, 16, 16), 1);
-}
-
-#[test]
-fn fsc_and_use_dip_empty_dimensions_are_rejected() {
-    assert!(matches!(
-        TileFscModeState::new_for_tile(0..0, 0..4, SB_N4),
-        Err(TileFscModeStateError::EmptyDimensions { .. })
-    ));
-    assert!(matches!(
-        TileUseDipState::new_for_tile(0..0, 0..4, SB_N4),
-        Err(TileUseDipStateError::EmptyDimensions { .. })
-    ));
-    assert!(matches!(
-        TileFscModeState::new_for_tile(0..4, 0..0, SB_N4),
-        Err(TileFscModeStateError::EmptyDimensions { .. })
-    ));
-    assert!(matches!(
-        TileUseDipState::new_for_tile(0..4, 0..0, SB_N4),
-        Err(TileUseDipStateError::EmptyDimensions { .. })
-    ));
-    assert!(matches!(
-        TileFscModeState::new_for_tile(0..4, 0..4, 0),
-        Err(TileFscModeStateError::EmptySuperblockSize)
-    ));
-    assert!(matches!(
-        TileUseDipState::new_for_tile(0..4, 0..4, 0),
-        Err(TileUseDipStateError::EmptySuperblockSize)
-    ));
-}
-
-#[test]
-fn y_mode_state_records_and_clips_blocks() {
-    let mut state = TileIntraYModeState::new(4, 4, WHOLE_TILE).unwrap();
-    state.record_block(2, 2, 16, 16, IntraYMode::Dc, -3);
+fn y_mode_facts_record_clip_and_read_back_intrabc_as_dc() {
+    let mut state = state(4, 4, WHOLE_TILE);
+    let facts = IntraFacts::luma(IntraJointMode::DC, IntraYMode::Dc, -3, 0, 0, MrlSelection::Disabled);
+    record(&mut state, (2, 2), 16, facts);
+    record(&mut state, (0, 2), 1, IntraFacts::intrabc());
 
     let expected = Some(TileIntraYModeFacts {
         y_mode: IntraYMode::Dc,
@@ -326,6 +226,23 @@ fn y_mode_state_records_and_clips_blocks() {
     assert_eq!(state.y_mode_facts_at(3, 3), expected);
     assert_eq!(state.y_mode_facts_at(0, 0), None);
     assert_eq!(state.y_mode_facts_at(4, 4), None);
+    assert_eq!(
+        state.y_mode_facts_at(0, 2),
+        Some(TileIntraYModeFacts {
+            y_mode: IntraYMode::Dc,
+            angle_delta_y: 0,
+        })
+    );
+}
+
+#[test]
+fn smoothness_reads_the_above_and_left_luma_modes() {
+    let mut state = state(8, 8, WHOLE_TILE);
+    let smooth = IntraFacts::luma(IntraJointMode::DC, IntraYMode::Smooth, 0, 0, 0, MrlSelection::Disabled);
+    record(&mut state, (0, 4), 4, smooth);
+    record(&mut state, (4, 0), 4, IntraFacts::intrabc());
+    assert_eq!(state.neighbours(4, 4, 4, 4).smoothness(), (true, false));
+    assert_eq!(state.neighbours(0, 0, 4, 4).smoothness(), (false, false));
 }
 
 #[test]

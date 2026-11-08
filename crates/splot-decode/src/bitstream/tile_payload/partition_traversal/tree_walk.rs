@@ -11,10 +11,9 @@ use super::{
     DecodeBlockFrontier, DecodeBlockPart, DecodeLimitName, DecodeLimits, DecodeTileWorkUnit,
     GeneralIntraLeafMode, IsCflContext, MAX_CHILD_CALLS, PartitionAllowedInput,
     PartitionContextInput, PartitionDecisionMemo, PartitionTreeType, PartitionType,
-    ROOT_HAS_CHROMA, SquareSplitContextInput, SymbolDecoder, TileFscModeState,
-    TileIntraJointModeState, TileIntraYModeState, TileLumaPaletteState, TileMiSizeState,
-    TileMiSizeStateError, TilePartitionBounds, TilePartitionCall, TilePartitionFrameFacts,
-    TilePartitionTraversalError, TileUseDipState, TileUsesMrlsState, TileUvCflState, call_in_frame,
+    ROOT_HAS_CHROMA, SquareSplitContextInput, SymbolDecoder, TileIntraFactsState,
+    TileMiSizeState, TileMiSizeStateError, TilePartitionBounds, TilePartitionCall,
+    TilePartitionFrameFacts, TilePartitionTraversalError, TileUvCflState, call_in_frame,
     checked_mul, child_calls_into, decision_memo_key, ensure_supported_traversal_frame,
     h_partition_midsize, partition_subsize, symbol_decoder_for_work_unit,
 };
@@ -78,13 +77,13 @@ pub(crate) fn decode_block_frontier(
 
 pub(crate) fn decode_block_part(
     call: TilePartitionCall,
-    y_modes: &TileIntraYModeState,
+    intra_facts: &TileIntraFactsState,
 ) -> Result<DecodeBlockPart, TilePartitionTraversalError> {
     match call.tree_type {
         PartitionTreeType::Shared => Ok(DecodeBlockPart::Shared),
         PartitionTreeType::LumaPart => Ok(DecodeBlockPart::LumaPart),
         PartitionTreeType::ChromaPart => {
-            let Some(facts) = y_modes.y_mode_facts_at(call.r(), call.c()) else {
+            let Some(facts) = intra_facts.y_mode_facts_at(call.r(), call.c()) else {
                 return Err(TilePartitionTraversalError::MissingSdpLumaModeState {
                     r: call.r(),
                     c: call.c(),
@@ -193,7 +192,7 @@ pub(crate) struct GeneralIntraPartitionTreeCursor<'payload> {
     symbols: SymbolDecoder<'payload>,
     lr_activity: WienerNsLrUnitActivity,
     tile_bounds: TilePartitionBounds,
-    y_modes: TileIntraYModeState,
+    intra_facts: TileIntraFactsState,
     sb_size4: usize,
     sb_mask: usize,
     next_sb_row: usize,
@@ -213,9 +212,9 @@ pub(crate) struct TileTraversalStorage {
 }
 
 impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
-    /// Whether the SDP luma-mode grid touched a row its window had reused.
+    /// Whether the intra facts grid touched a row its window had reused.
     pub(crate) fn window_violated(&self) -> bool {
-        self.y_modes.window_violated()
+        self.intra_facts.window_violated()
     }
 
     /// Whether the next superblock starts a new superblock row.
@@ -264,15 +263,14 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         let tile_cols = work_unit.mi_col_range().start as usize
             ..(work_unit.mi_col_range().end as usize).min(frame.mi_cols);
         let sb_size4 = frame.sb_size.num_4x4_wide()?.max(1);
-        let y_modes = TileIntraYModeState::new(tile_rows.len(), tile_cols.len(), sb_size4)?
-            .with_origin(tile_rows.start, tile_cols.start);
+        let intra_facts = TileIntraFactsState::new_for_tile(tile_rows, tile_cols, sb_size4)?;
         let next_sb_row = work_unit.mi_row_range().start as usize;
         Ok(Self {
             frame,
             symbols,
             lr_activity,
             tile_bounds,
-            y_modes,
+            intra_facts,
             sb_size4,
             sb_mask: sb_size4.saturating_sub(1),
             next_sb_row,
@@ -295,11 +293,6 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         &mut self,
         work_unit: &mut DecodeTileWorkUnit,
         mi_size_state: &mut TileMiSizeState,
-        joint_modes: &mut TileIntraJointModeState,
-        uses_mrls: &mut TileUsesMrlsState,
-        use_dip: &mut TileUseDipState,
-        fsc_modes: &mut TileFscModeState,
-        palette_y: &mut TileLumaPaletteState,
         uv_cfls: &mut TileUvCflState,
         on_leaf: &mut F,
         on_published: &mut P,
@@ -309,11 +302,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             &mut DecodeTileWorkUnit,
             &mut SymbolDecoder<'payload>,
             &DecodeBlockFrontier,
-            &TileIntraJointModeState,
-            &TileUsesMrlsState,
-            &TileUseDipState,
-            &TileFscModeState,
-            &TileLumaPaletteState,
+            &TileIntraFactsState,
             LeafCflContext<'_>,
         ) -> Result<(GeneralIntraLeafMode, C), E>,
         P: FnMut(DecodedLeafPublication, C),
@@ -389,7 +378,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                 }
                 (call, sub_size, chroma_offset)
             };
-            let part = decode_block_part(call, &self.y_modes)?;
+            let part = decode_block_part(call, &self.intra_facts)?;
             let frontier = decode_block_frontier(call, &self.frame, sub_size, chroma_offset, part);
             let is_cfl_ctx = LeafCflContext {
                 uv_cfls,
@@ -401,11 +390,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                 work_unit,
                 &mut self.symbols,
                 &frontier,
-                joint_modes,
-                uses_mrls,
-                use_dip,
-                fsc_modes,
-                palette_y,
+                &self.intra_facts,
                 is_cfl_ctx,
             )
             .map_err(GeneralIntraTreeWalkError::Leaf)?;
@@ -415,13 +400,8 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                 &frontier,
                 leaf_mode,
                 sub_size,
-                joint_modes,
-                fsc_modes,
-                use_dip,
-                uses_mrls,
-                palette_y,
+                &mut self.intra_facts,
                 uv_cfls,
-                &mut self.y_modes,
                 mi_size_state,
             )?;
             on_published(decoded_leaf, command);
@@ -489,10 +469,10 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         let Self {
             symbols,
             lr_activity,
-            y_modes,
+            intra_facts,
             ..
         } = self;
-        y_modes.recycle();
+        intra_facts.recycle();
         GeneralIntraPartitionTreeOutput {
             symbols,
             storage: TileTraversalStorage {
@@ -651,15 +631,7 @@ mod row_cursor_tests {
     use super::*;
     use crate::bitstream::tile_payload::make_test_work_unit;
 
-    type ParserStates = (
-        TileMiSizeState,
-        TileIntraJointModeState,
-        TileUsesMrlsState,
-        TileUseDipState,
-        TileFscModeState,
-        TileLumaPaletteState,
-        TileUvCflState,
-    );
+    type ParserStates = (TileMiSizeState, TileUvCflState);
 
     fn frame() -> TilePartitionFrameFacts {
         TilePartitionFrameFacts::new(
@@ -700,16 +672,8 @@ mod row_cursor_tests {
     }
 
     fn parser_states(frame: TilePartitionFrameFacts) -> ParserStates {
-        let sb_size4 = frame.sb_size.num_4x4_wide().unwrap();
         (
             TileMiSizeState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols, frame.sb_size)
-                .unwrap(),
-            TileIntraJointModeState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols, WHOLE_TILE)
-                .unwrap(),
-            TileUsesMrlsState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols, sb_size4).unwrap(),
-            TileUseDipState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols, sb_size4).unwrap(),
-            TileFscModeState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols, sb_size4).unwrap(),
-            TileLumaPaletteState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols, sb_size4)
                 .unwrap(),
             TileUvCflState::new(frame.mi_rows, frame.mi_cols, WHOLE_TILE).unwrap(),
         )
@@ -744,12 +708,7 @@ mod row_cursor_tests {
                         &mut work,
                         &mut states.0,
                         &mut states.1,
-                        &mut states.2,
-                        &mut states.3,
-                        &mut states.4,
-                        &mut states.5,
-                        &mut states.6,
-                        &mut |_, _, _, _, _, _, _, _, _| Ok::<_, ()>((leaf_mode(), ())),
+                        &mut |_, _, _, _, _| Ok::<_, ()>((leaf_mode(), ())),
                         &mut |_, ()| {},
                     )
                     .unwrap();
@@ -788,12 +747,7 @@ mod row_cursor_tests {
                 &mut work,
                 &mut states.0,
                 &mut states.1,
-                &mut states.2,
-                &mut states.3,
-                &mut states.4,
-                &mut states.5,
-                &mut states.6,
-                &mut |_, _, _, _, _, _, _, _, _| {
+                &mut |_, _, _, _, _| {
                     calls += 1;
                     if calls == 2 {
                         Err("malformed second leaf")
@@ -834,12 +788,7 @@ mod row_cursor_tests {
                 &mut work,
                 &mut states.0,
                 &mut states.1,
-                &mut states.2,
-                &mut states.3,
-                &mut states.4,
-                &mut states.5,
-                &mut states.6,
-                &mut |_, _, frontier, _, _, _, _, _, _| {
+                &mut |_, _, frontier, _, _| {
                     parts.push(frontier.part());
                     let leaf = if frontier.is_chroma_part() {
                         GeneralIntraLeafMode::chroma(false)
@@ -891,12 +840,7 @@ mod row_cursor_tests {
                 &mut work,
                 &mut states.0,
                 &mut states.1,
-                &mut states.2,
-                &mut states.3,
-                &mut states.4,
-                &mut states.5,
-                &mut states.6,
-                &mut |_, _, frontier, _, _, _, _, _, _| {
+                &mut |_, _, frontier, _, _| {
                     parts.push(frontier.part());
                     let leaf = if frontier.is_chroma_part() {
                         GeneralIntraLeafMode::chroma(false)
@@ -941,12 +885,7 @@ mod row_cursor_tests {
             &mut work,
             &mut states.0,
             &mut states.1,
-            &mut states.2,
-            &mut states.3,
-            &mut states.4,
-            &mut states.5,
-            &mut states.6,
-            &mut |_, _, frontier, _, _, _, _, _, _| {
+            &mut |_, _, frontier, _, _| {
                 leaf_calls += 1;
                 assert!(frontier.is_luma_part());
                 Err::<(GeneralIntraLeafMode, ()), _>("luma decode failed")
@@ -957,18 +896,18 @@ mod row_cursor_tests {
         assert!(matches!(result, Err(GeneralIntraTreeWalkError::Leaf(_))));
         assert_eq!(leaf_calls, 1);
         assert_eq!(published, 0);
-        assert_eq!(cursor.y_modes.y_mode_facts_at(0, 0), None);
+        assert_eq!(cursor.intra_facts.y_mode_facts_at(0, 0), None);
     }
 
     #[test]
     fn missing_chroma_collocation_is_a_typed_construction_error() {
-        let y_modes = TileIntraYModeState::new(16, 16, WHOLE_TILE).unwrap();
+        let intra_facts = TileIntraFactsState::new_for_tile(0..16, 0..16, WHOLE_TILE).unwrap();
         let call =
             TilePartitionCall::root(7, 11, BlockSize::new(BLOCK_64X64).unwrap(), ROOT_HAS_CHROMA)
                 .with_tree_type(PartitionTreeType::ChromaPart);
 
         assert!(matches!(
-            decode_block_part(call, &y_modes),
+            decode_block_part(call, &intra_facts),
             Err(TilePartitionTraversalError::MissingSdpLumaModeState { r: 7, c: 11 })
         ));
     }

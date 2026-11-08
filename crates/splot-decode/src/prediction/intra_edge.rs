@@ -21,8 +21,6 @@ pub(crate) struct TileSmoothGrid {
     grid: MiGrid<bool>,
 }
 
-pub(crate) type TileYSmoothGrid = TileSmoothGrid;
-
 pub(crate) type TileChromaSmoothGrid = TileSmoothGrid;
 
 impl TileSmoothGrid {

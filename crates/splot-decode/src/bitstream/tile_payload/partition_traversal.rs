@@ -10,9 +10,7 @@ use super::cdf::block_context::{IntraJointMode, IntraYMode, MrlSelection};
 use super::cdf::context::{PartitionContextInput, SquareSplitContextInput};
 use super::cdf::{self, TileCdfError};
 use super::intra_joint_modes::{
-    IsCflContext, LumaPalette, TileFscModeState, TileFscModeStateError, TileIntraJointModeState,
-    TileIntraYModeState, TileIntraYModeStateError, TileLumaPaletteState, TileLumaPaletteStateError,
-    TileUseDipState, TileUseDipStateError, TileUsesMrlsState, TileUsesMrlsStateError,
+    IntraFacts, IsCflContext, LumaPalette, TileIntraFactsState, TileIntraFactsStateError,
     TileUvCflState,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
@@ -526,10 +524,6 @@ pub(crate) struct GeneralIntraLeafMode {
 }
 
 impl GeneralIntraLeafMode {
-    pub(crate) fn y_mode_is_smooth(&self) -> bool {
-        self.y_mode.is_some_and(IntraYMode::is_smooth)
-    }
-
     #[must_use]
     pub(crate) const fn luma(
         intra_joint_mode: IntraJointMode,
@@ -609,16 +603,8 @@ pub(crate) enum TilePartitionTraversalError {
     Limit(#[from] DecodeLimitError),
     #[error("partition traversal block-decoded state failed: {0}")]
     BlockDecoded(#[from] super::block_decoded_state::TileBlockDecodedStateError),
-    #[error("partition traversal intra YMode state failed: {0}")]
-    IntraYModeState(#[from] TileIntraYModeStateError),
-    #[error("partition traversal intra UsesMrls state failed: {0}")]
-    UsesMrlsState(#[from] TileUsesMrlsStateError),
-    #[error("partition traversal intra UseDip state failed: {0}")]
-    UseDipState(#[from] TileUseDipStateError),
-    #[error("partition traversal intra FscModes state failed: {0}")]
-    FscModeState(#[from] TileFscModeStateError),
-    #[error("partition traversal luma palette state failed: {0}")]
-    LumaPaletteState(#[from] TileLumaPaletteStateError),
+    #[error("partition traversal intra mode facts state failed: {0}")]
+    IntraFactsState(#[from] TileIntraFactsStateError),
     #[error("partition traversal size lookup failed: {0}")]
     Size(#[from] PartitionSizeError),
     #[error("partition traversal allowed-set derivation failed: {0}")]

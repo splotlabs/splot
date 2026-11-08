@@ -49,9 +49,9 @@ use crate::bitstream::tile_payload::{
     FrameQuantizerSnapshot, FrameSegmentIdMap, GeneralIntraLeafMode, GeneralIntraMultiblockCursor,
     GeneralIntraMultiblockError, GeneralIntraTreeWalkError, LumaCoeffBlock, PlaneCoeffBlock,
     TileBlockDecodedState, TileBlockDecodedStateError, TileCdfSelector, TileCdfSubset,
-    TileCoeffContextState, TileCoeffStateError, TileFscModeState, TileIntraJointModeState,
-    TilePartitionFrontierError, TilePartitionTraversalError, TilePartitionTraversalUnsupported,
-    TileSegmentIdState, TileSegmentIdStateError, TileUsesMrlsState, TransformToolResidualPolicy,
+    TileCoeffContextState, TileCoeffStateError, TilePartitionFrontierError,
+    TilePartitionTraversalError, TilePartitionTraversalUnsupported, TileSegmentIdState,
+    TileSegmentIdStateError, TransformToolResidualPolicy,
     chroma_subsampling, current_frame_qm_segment_id, decode_general_intra_plane_coeffs,
     get_plane_residual_size, is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
 };
@@ -1205,7 +1205,6 @@ pub(super) struct BlockDecodeContext<'a, T: ReconSample> {
     pub(super) intrabc_state: &'a mut TileIntrabcPreludeState,
     pub(super) segment_id_state: &'a mut TileSegmentIdState,
     pub(super) mv_grid: &'a mut NeighbourMvGrid,
-    pub(super) y_smooth: &'a mut crate::prediction::intra_edge::TileYSmoothGrid,
     pub(super) chroma_smooth: &'a mut crate::prediction::intra_edge::TileChromaSmoothGrid,
     filter_records: &'a mut tile::TileFilterRecords,
     pub(super) arena: &'a mut crate::residual::pipeline::ResidualPlaneArena,
@@ -1217,11 +1216,7 @@ fn decode_block<T: ReconSample>(
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
     context: &mut BlockDecodeContext<'_, T>,
-    joint_modes: &TileIntraJointModeState,
-    uses_mrls: &TileUsesMrlsState,
-    use_dip: &crate::bitstream::tile_payload::TileUseDipState,
-    fsc_modes: &TileFscModeState,
-    palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
+    intra_facts: &crate::bitstream::tile_payload::TileIntraFactsState,
     is_cfl_ctx: crate::bitstream::tile_payload::LeafCflContext<'_>,
 ) -> Result<(GeneralIntraLeafMode, LeafResolveRecord)> {
     let BlockDecodeContext {
@@ -1242,7 +1237,6 @@ fn decode_block<T: ReconSample>(
         ref mut intrabc_state,
         ref mut segment_id_state,
         ref mut mv_grid,
-        ref mut y_smooth,
         ref mut chroma_smooth,
         ref mut filter_records,
         ref mut arena,
@@ -1537,14 +1531,9 @@ fn decode_block<T: ReconSample>(
             symbols,
             frontier,
             sequence,
-            Some(*y_smooth),
             Some(chroma_smooth),
             core,
-            joint_modes,
-            uses_mrls,
-            use_dip,
-            fsc_modes,
-            palette_state,
+            intra_facts,
             is_cfl_ctx.resolve(),
             segment_id,
             coeff_ctx,
@@ -1563,7 +1552,6 @@ fn decode_block<T: ReconSample>(
         )?;
         let luma_tree = !frontier.is_chroma_part();
         if luma_tree {
-            y_smooth.record(mi_row, mi_col, n4w, n4h, leaf.y_mode_is_smooth());
             mv_grid.record_flags(
                 mi_row,
                 mi_col,
@@ -2375,11 +2363,6 @@ fn map_inter_multiblock_error(
         GeneralIntraMultiblockError::Setup(
             TilePartitionFrontierError::MissingFact { .. }
             | TilePartitionFrontierError::MiSizeState(_)
-            | TilePartitionFrontierError::IntraJointModeState(_)
-            | TilePartitionFrontierError::UsesMrlsState(_)
-            | TilePartitionFrontierError::UseDipState(_)
-            | TilePartitionFrontierError::FscModeState(_)
-            | TilePartitionFrontierError::LumaPaletteState(_)
             | TilePartitionFrontierError::UvCflState(_)
             | TilePartitionFrontierError::UnexpectedFrontier { .. },
         )
@@ -2421,11 +2404,7 @@ fn map_inter_partition_traversal_error(
             splot_core::Error::InvalidSymbolCdf { .. },
         )
         | TilePartitionTraversalError::BlockDecoded(_)
-        | TilePartitionTraversalError::IntraYModeState(_)
-        | TilePartitionTraversalError::UsesMrlsState(_)
-        | TilePartitionTraversalError::UseDipState(_)
-        | TilePartitionTraversalError::FscModeState(_)
-        | TilePartitionTraversalError::LumaPaletteState(_)
+        | TilePartitionTraversalError::IntraFactsState(_)
         | TilePartitionTraversalError::Size(_)
         | TilePartitionTraversalError::Allowed(_)
         | TilePartitionTraversalError::Decision(_)

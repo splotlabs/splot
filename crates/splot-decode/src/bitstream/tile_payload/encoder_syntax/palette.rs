@@ -154,7 +154,7 @@ impl IntraTileSyntax {
         palette.luma(bits)?;
         let colors = palette.colors();
         self.put(symbols, TileCdfSelector::PaletteYSize, colors.len() - 2)?;
-        let (cache, cache_len) = self.palette_y.palette_cache(leaf.row4(), leaf.col4());
+        let (cache, cache_len) = self.intra_facts.palette_cache(leaf.row4(), leaf.col4());
         let mut taken = [false; PALETTE_COLORS];
         let mut count = 0;
         for &cached in &cache[..cache_len] {

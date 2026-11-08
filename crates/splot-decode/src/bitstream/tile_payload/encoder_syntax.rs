@@ -41,10 +41,7 @@ use super::coeff_state::{
     CoeffContextUpdate, LevelGrid, TileCoeffContextState, TransformCoeffBlockState,
 };
 use super::general_intra_residual::{block_recon_params, txb_skip_selector, txb_skip_tx_size_ctx};
-use super::intra_joint_modes::{
-    TileFscModeState, TileIntraJointModeState, TileIntraYModeState, TileLumaPaletteState,
-    TileUseDipState, TileUsesMrlsState, TileUvCflState,
-};
+use super::intra_joint_modes::{TileIntraFactsState, TileUvCflState};
 use super::mi_size_state::TileMiSizeState;
 pub use super::partition::PartitionType as Partition;
 use super::partition::{PartitionDecisionError, PartitionSymbols, read_partition_decision};
@@ -683,13 +680,8 @@ pub struct IntraTileSyntax {
     cdfs: TileCdfSubset,
     coeff: TileCoeffContextState,
     mi_sizes: TileMiSizeState,
-    joint_modes: TileIntraJointModeState,
-    uses_mrls: TileUsesMrlsState,
-    use_dip: TileUseDipState,
-    fsc_modes: TileFscModeState,
-    palette_y: TileLumaPaletteState,
+    intra_facts: TileIntraFactsState,
     uv_cfls: TileUvCflState,
-    y_modes: TileIntraYModeState,
     y_mode_table: intra::YModeTable,
     inter: Option<inter::InterLeafState>,
     journal: CdfJournal,
@@ -778,37 +770,13 @@ impl IntraTileSyntax {
             coeff,
             mi_sizes: TileMiSizeState::new_for_tile(rows.clone(), cols.clone(), frame.sb_size())
                 .map_err(rule("MI-size state"))?,
-            joint_modes: neighbour(TileIntraJointModeState::new_for_tile(
-                rows.clone(),
-                cols.clone(),
-                sb_size4,
-            ))?,
-            uses_mrls: neighbour(TileUsesMrlsState::new_for_tile(
-                rows.clone(),
-                cols.clone(),
-                sb_size4,
-            ))?,
-            use_dip: neighbour(TileUseDipState::new_for_tile(
-                rows.clone(),
-                cols.clone(),
-                sb_size4,
-            ))?,
-            fsc_modes: neighbour(TileFscModeState::new_for_tile(
-                rows.clone(),
-                cols.clone(),
-                sb_size4,
-            ))?,
-            palette_y: neighbour(TileLumaPaletteState::new_for_tile(
+            intra_facts: neighbour(TileIntraFactsState::new_for_tile(
                 rows.clone(),
                 cols.clone(),
                 sb_size4,
             ))?,
             uv_cfls: neighbour(
                 TileUvCflState::new(rows.len(), cols.len(), sb_size4)
-                    .map(|state| state.with_origin(rows.start, cols.start)),
-            )?,
-            y_modes: neighbour(
-                TileIntraYModeState::new(rows.len(), cols.len(), sb_size4)
                     .map(|state| state.with_origin(rows.start, cols.start)),
             )?,
             y_mode_table: intra::YModeTable::default(),
@@ -973,7 +941,7 @@ impl IntraTileSyntax {
         let call = self.with_cfl_in_sdp(node.0, Partition::None);
         let chroma_offset = updated_chroma_offset(call, Partition::None, call.b_size, &self.frame)
             .map_err(rule("partition"))?;
-        let part = decode_block_part(call, &self.y_modes).map_err(rule("partition"))?;
+        let part = decode_block_part(call, &self.intra_facts).map_err(rule("partition"))?;
         let frontier = decode_block_frontier(call, &self.frame, call.b_size, chroma_offset, part);
         Ok(LeafBlock { call, frontier })
     }
@@ -1230,8 +1198,9 @@ impl IntraTileSyntax {
         let n4w = b_size.num_4x4_wide().map_err(rule("block size"))?;
         let n4h = b_size.num_4x4_high().map_err(rule("block size"))?;
         Ok(self
-            .joint_modes
-            .y_mode_index_ctx(leaf.frontier.r, leaf.frontier.c, n4w, n4h))
+            .intra_facts
+            .neighbours(leaf.frontier.r, leaf.frontier.c, n4w, n4h)
+            .y_mode_index_ctx())
     }
 
     fn tile_row(&mut self, selector: TileCdfSelector) -> Result<&mut [u16]> {

@@ -332,14 +332,9 @@ pub(crate) fn decode_one_general_intra_block(
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
     sequence: &SequenceHeader,
-    y_smooth: Option<&crate::prediction::intra_edge::TileYSmoothGrid>,
     mut chroma_smooth: Option<&mut crate::prediction::intra_edge::TileChromaSmoothGrid>,
     core: &FrameHeaderCore,
-    joint_modes: &crate::bitstream::tile_payload::TileIntraJointModeState,
-    uses_mrls: &crate::bitstream::tile_payload::TileUsesMrlsState,
-    use_dip: &crate::bitstream::tile_payload::TileUseDipState,
-    fsc_modes: &crate::bitstream::tile_payload::TileFscModeState,
-    palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
+    intra_facts: &crate::bitstream::tile_payload::TileIntraFactsState,
     is_cfl_ctx: IsCflContext,
     segment_id: u8,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
@@ -372,9 +367,8 @@ pub(crate) fn decode_one_general_intra_block(
     );
     let n4w = block_ctx.block().width4();
     let n4h = block_ctx.block().height4();
-    let (above_smooth, left_smooth) = y_smooth.map_or((false, false), |grid| {
-        grid.block_smoothness(frontier.c, frontier.r)
-    });
+    let neighbours = intra_facts.neighbours(frontier.r, frontier.c, n4w, n4h);
+    let (above_smooth, left_smooth) = neighbours.smoothness();
     let (chroma_above_smooth, chroma_left_smooth) =
         chroma_edge_smoothness(chroma_smooth.as_deref(), block_ctx);
     let intra_edge = crate::prediction::intra_edge::IntraEdgeCtx {
@@ -407,7 +401,7 @@ pub(crate) fn decode_one_general_intra_block(
     } = frontier.part()
     {
         let lossless_luma_fsc = lossless
-            && fsc_modes
+            && intra_facts
                 .fsc_mode_at(frontier.r, frontier.c)
                 .is_some_and(|mode| mode != 0);
         return parse_one_general_intra_chroma_part_block(
@@ -446,13 +440,9 @@ pub(crate) fn decode_one_general_intra_block(
                 work_unit,
                 symbols,
                 chroma_tools,
-                joint_modes,
-                uses_mrls,
-                fsc_modes,
+                &neighbours,
                 use_neighbor_fsc_context,
                 frontier.b_size,
-                frontier.r,
-                frontier.c,
                 n4w,
                 n4h,
             )
@@ -461,7 +451,7 @@ pub(crate) fn decode_one_general_intra_block(
             work_unit,
             symbols,
             chroma_tools,
-            palette_state,
+            intra_facts,
             luma.y_mode,
             frontier.b_size.index(),
             frontier.r,
@@ -476,11 +466,9 @@ pub(crate) fn decode_one_general_intra_block(
                 work_unit,
                 symbols,
                 chroma_tools,
-                use_dip,
+                &neighbours,
                 luma.y_mode,
                 palette_y,
-                frontier.r,
-                frontier.c,
                 n4w,
                 n4h,
             )
@@ -493,12 +481,9 @@ pub(crate) fn decode_one_general_intra_block(
             work_unit,
             symbols,
             chroma_tools,
-            joint_modes,
-            uses_mrls,
-            use_dip,
-            fsc_modes,
+            intra_facts,
+            &neighbours,
             use_neighbor_fsc_context,
-            palette_state,
             is_cfl_ctx.get(),
             frontier.b_size,
             frontier.r,

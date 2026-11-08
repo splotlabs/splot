@@ -6,10 +6,9 @@
 use super::super::block_decoded_state::TileBlockDecodedState;
 use super::tree_walk::GeneralIntraTreeWalkError;
 use super::{
-    BlockSize, DecodeBlockFrontier, GeneralIntraLeafMode, IntraYMode, PartitionTreeType,
-    TileFscModeState, TileIntraJointModeState, TileIntraYModeState, TileLumaPaletteState,
-    TileMiSizeState, TilePartitionCall, TilePartitionFrameFacts, TilePartitionTraversalError,
-    TileUseDipState, TileUsesMrlsState, TileUvCflState, plane_range_for_tree_type,
+    BlockSize, DecodeBlockFrontier, GeneralIntraLeafMode, IntraFacts, PartitionTreeType,
+    TileIntraFactsState, TileMiSizeState, TilePartitionCall, TilePartitionFrameFacts,
+    TilePartitionTraversalError, TileUvCflState, plane_range_for_tree_type,
 };
 
 /// Mode-info positions are below `MiRows`/`MiCols`, which a `u32` frame size
@@ -130,13 +129,8 @@ pub(crate) fn publish_intra_leaf_state<E>(
     frontier: &DecodeBlockFrontier,
     leaf_mode: GeneralIntraLeafMode,
     sub_size: BlockSize,
-    joint_modes: &mut TileIntraJointModeState,
-    fsc_modes: &mut TileFscModeState,
-    use_dip: &mut TileUseDipState,
-    uses_mrls: &mut TileUsesMrlsState,
-    palette_y: &mut TileLumaPaletteState,
+    intra_facts: &mut TileIntraFactsState,
     uv_cfls: &mut TileUvCflState,
-    y_modes: &mut TileIntraYModeState,
     mi_size_state: &mut TileMiSizeState,
 ) -> Result<(), GeneralIntraTreeWalkError<E>> {
     let tree_type = frontier.tree_type();
@@ -201,24 +195,18 @@ pub(crate) fn publish_intra_leaf_state<E>(
                 }
                 .into());
             };
-            joint_modes.record_block(call.r(), call.c(), block_n4w, block_n4h, joint_mode);
-            fsc_modes.record_block(call.r(), call.c(), block_n4w, block_n4h, fsc_mode);
-            use_dip.record_block(call.r(), call.c(), block_n4w, block_n4h, use_dip_value);
-            uses_mrls.record_block(call.r(), call.c(), block_n4w, block_n4h, mrl);
-            palette_y.record_block(
-                call.r(),
-                call.c(),
-                block_n4w,
-                block_n4h,
+            intra_facts.record_leaf(
+                (call.r(), call.c()),
+                (block_n4w, block_n4h),
+                IntraFacts::luma(
+                    joint_mode,
+                    y_mode,
+                    angle_delta_y,
+                    fsc_mode,
+                    use_dip_value,
+                    mrl,
+                ),
                 leaf_mode.palette_y,
-            );
-            y_modes.record_block(
-                call.r(),
-                call.c(),
-                block_n4w,
-                block_n4h,
-                y_mode,
-                angle_delta_y,
             );
         } else {
             if frame.frame_is_intra && !leaf_mode.is_intrabc() {
@@ -230,13 +218,11 @@ pub(crate) fn publish_intra_leaf_state<E>(
                 ));
             }
             if leaf_mode.is_intrabc() {
-                y_modes.record_block(
-                    call.r(),
-                    call.c(),
-                    block_n4w,
-                    block_n4h,
-                    IntraYMode::Dc, // § 5.20.5.3 AV2 intraBC mode = DC_PRED (decodemv.c); an SDP chroma-part reads this collocated luma mode
-                    0,
+                intra_facts.record_leaf(
+                    (call.r(), call.c()),
+                    (block_n4w, block_n4h),
+                    IntraFacts::intrabc(),
+                    None,
                 );
             }
         }

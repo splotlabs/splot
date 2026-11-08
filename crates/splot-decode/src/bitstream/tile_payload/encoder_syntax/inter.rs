@@ -1483,13 +1483,8 @@ impl IntraTileSyntax {
             &leaf.frontier,
             mode,
             leaf.call.b_size,
-            &mut self.joint_modes,
-            &mut self.fsc_modes,
-            &mut self.use_dip,
-            &mut self.uses_mrls,
-            &mut self.palette_y,
+            &mut self.intra_facts,
             &mut self.uv_cfls,
-            &mut self.y_modes,
             &mut self.mi_sizes,
         )
         .map_err(|error| match error {
