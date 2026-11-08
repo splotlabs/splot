@@ -3,8 +3,6 @@
 
 //! AV2 § 5.20.3.1 partition-tree syntax walk.
 
-use core::marker::PhantomData;
-
 use super::lr_records::{WienerNsLrSourceBlock, WienerNsLrUnitActivity, WienerNsLrUnitFilter};
 use super::lr_syntax::read_loop_restoration_for_call;
 use super::state_publication::{DecodedLeafPublication, publish_intra_leaf_state};
@@ -19,7 +17,6 @@ use super::{
     decision_memo_key, ensure_supported_traversal_frame, h_partition_midsize, partition_subsize,
     symbol_decoder_for_work_unit,
 };
-use crate::DecodeLimitThreshold;
 
 const BLOCK_64X64: usize = 12;
 const INTER_SDP_MAX_BLOCK_SIZE: usize = 64;
@@ -199,10 +196,10 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         let sb_size4 = frame.sb_size.num_4x4_wide()?.max(1);
         let intra_facts = TileIntraFactsState::new_for_tile(tile_rows, tile_cols, sb_size4)?;
         let next_sb_row = work_unit.mi_row_range().start as usize;
-        let step_max = match limits.threshold(DecodeLimitName::MaxTilePartitionSteps) {
-            DecodeLimitThreshold::Unlimited => u64::MAX,
-            DecodeLimitThreshold::Max(maximum) => maximum,
-        };
+        let step_max = limits
+            .threshold(DecodeLimitName::MaxTilePartitionSteps)
+            .max_value()
+            .unwrap_or(u64::MAX);
         Ok(Self {
             frame,
             walker: TreeWalker {
@@ -352,12 +349,7 @@ where
         let chroma_offset = updated_chroma_offset(call, partition, sub_size, frame)?;
         if partition != PartitionType::None {
             return visit_partition_children(
-                &mut ChildWalk {
-                    frame,
-                    walker,
-                    hooks,
-                    _leaf: PhantomData,
-                },
+                &mut |child| walk_call(frame, walker, hooks, child),
                 call,
                 partition,
                 sub_size,
@@ -419,34 +411,6 @@ fn visit_partition_children<S: ChildCallSink>(
         sink.push_call(extended_sdp_chroma_call(call))?;
     }
     Ok(())
-}
-
-/// Walks each child call as `child_calls_into` produces it, so the children
-/// of a partition are decoded in syntax order without being queued.
-struct ChildWalk<'w, 'h, 'payload, E, C, F, P> {
-    frame: &'w TilePartitionFrameFacts,
-    walker: &'w mut TreeWalker<'payload>,
-    hooks: &'w mut LeafHooks<'h, F, P>,
-    _leaf: PhantomData<fn() -> (E, C)>,
-}
-
-impl<'payload, E, C, F, P> ChildCallSink for ChildWalk<'_, '_, 'payload, E, C, F, P>
-where
-    F: FnMut(
-        &mut DecodeTileWorkUnit,
-        &mut SymbolDecoder<'payload>,
-        &DecodeBlockFrontier,
-        &TileIntraFactsState,
-        LeafCflContext<'_>,
-    ) -> Result<(GeneralIntraLeafMode, C), E>,
-    P: FnMut(DecodedLeafPublication, C),
-{
-    type Error = GeneralIntraTreeWalkError<E>;
-
-    #[inline]
-    fn push_call(&mut self, call: TilePartitionCall) -> Result<(), Self::Error> {
-        walk_call(self.frame, self.walker, self.hooks, call)
-    }
 }
 
 impl TreeWalker<'_> {
@@ -908,17 +872,6 @@ mod row_cursor_tests {
         ));
     }
 
-    struct CollectCalls(Vec<TilePartitionCall>);
-
-    impl ChildCallSink for CollectCalls {
-        type Error = TilePartitionTraversalError;
-
-        fn push_call(&mut self, call: TilePartitionCall) -> Result<(), Self::Error> {
-            self.0.push(call);
-            Ok(())
-        }
-    }
-
     #[test]
     fn extended_sdp_visits_luma_children_before_collocated_chroma() {
         let frame = sdp_frame();
@@ -931,10 +884,13 @@ mod row_cursor_tests {
             super::super::child_calls(luma_call, PartitionType::Horz, sub_size, &frame, false)
                 .unwrap();
         let chroma_call = extended_sdp_chroma_call(luma_call);
-        let mut visited = CollectCalls(Vec::new());
+        let mut visited = Vec::new();
 
         visit_partition_children(
-            &mut visited,
+            &mut |call| {
+                visited.push(call);
+                Ok::<_, TilePartitionTraversalError>(())
+            },
             luma_call,
             PartitionType::Horz,
             sub_size,
@@ -946,7 +902,7 @@ mod row_cursor_tests {
 
         assert!(chroma_call.is_extended_sdp_chroma_block());
         assert_eq!(
-            visited.0,
+            visited,
             [children.as_slice()[0], children.as_slice()[1], chroma_call]
         );
     }

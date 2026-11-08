@@ -39,14 +39,8 @@ fn input(
     bru_active: bool,
     rect_type: Option<RectPartitionType>,
 ) -> ReadPartitionDecisionInput {
-    ReadPartitionDecisionInput::new(
-        allowed,
-        implied_partition,
-        bru_active,
-        rect_type,
-        partition_context(),
-        square_context(),
-    )
+    PartitionDecisionFacts::new(implied_partition, allowed, rect_type)
+        .read_partition_decision_input(bru_active, partition_context(), square_context())
 }
 
 fn decoder(payload: &'static [u8], update_mode: CdfUpdateMode) -> SymbolDecoder<'static> {

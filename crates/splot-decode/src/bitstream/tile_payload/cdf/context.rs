@@ -134,7 +134,7 @@ impl PartitionContextInput {
         let bsw = log2_wide(self.b_size).max(1);
         let bsh = log2_high(self.b_size).max(1);
         partition_context(
-            usize::from(size_adjustments[self.b_size.index() & 31]),
+            self.b_size.entry(size_adjustments),
             smaller(self.left[0], bsh),
             smaller(self.above[0], bsw),
         )
@@ -147,7 +147,7 @@ impl PartitionContextInput {
         };
         let threshold = log2.saturating_sub(1).max(1);
         partition_context(
-            usize::from(PARTITION_SIZE_ADJUST[self.b_size.index() & 31]),
+            self.b_size.entry(&PARTITION_SIZE_ADJUST),
             smaller(line[0], threshold),
             smaller(line[1], threshold),
         )

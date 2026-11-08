@@ -163,6 +163,9 @@ impl PartitionAllowedInput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PartitionDecisionFacts(u16);
 
+const IMPLIED_SHIFT: u16 = 10;
+const RECT_SHIFT: u16 = 14;
+
 impl PartitionDecisionFacts {
     pub(crate) fn new(
         implied_partition: Option<PartitionType>,
@@ -175,7 +178,7 @@ impl PartitionDecisionFacts {
             Some(RectPartitionType::Horz) => 1,
             Some(RectPartitionType::Vert) => 2,
         };
-        Self(allowed.bits() | (implied as u16) << 10 | rect << 14)
+        Self(allowed.bits() | (implied as u16) << IMPLIED_SHIFT | rect << RECT_SHIFT)
     }
 
     pub(crate) const fn allowed(self) -> AllowedPartitions {
@@ -183,7 +186,7 @@ impl PartitionDecisionFacts {
     }
 
     pub(crate) const fn implied(self) -> Option<PartitionType> {
-        let index = (self.0 >> 10 & 15) as usize;
+        let index = (self.0 >> IMPLIED_SHIFT & 15) as usize;
         if index < PartitionType::ALL.len() {
             Some(PartitionType::ALL[index])
         } else {
@@ -192,7 +195,7 @@ impl PartitionDecisionFacts {
     }
 
     pub(crate) const fn rect_type(self) -> Option<RectPartitionType> {
-        match self.0 >> 14 {
+        match self.0 >> RECT_SHIFT {
             1 => Some(RectPartitionType::Horz),
             2 => Some(RectPartitionType::Vert),
             _ => None,
@@ -202,8 +205,8 @@ impl PartitionDecisionFacts {
     /// The partition `read_partition_decision` returns without a symbol read.
     #[inline]
     pub(crate) fn unread_partition(self) -> Option<PartitionType> {
-        let allowed = self.0 & 0x3ff;
-        let implied = u32::from(self.0 >> 10 & 15);
+        let allowed = self.allowed().bits();
+        let implied = u32::from(self.0 >> IMPLIED_SHIFT & 15);
         let index = if allowed >> implied & 1 != 0 {
             implied
         } else if allowed.is_power_of_two() {
@@ -220,12 +223,12 @@ impl PartitionDecisionFacts {
         partition_context: PartitionContextInput,
         square_split_context: SquareSplitContextInput,
     ) -> ReadPartitionDecisionInput {
-        ReadPartitionDecisionInput::from_facts(
-            self,
+        ReadPartitionDecisionInput {
+            facts: self,
             bru_active,
             partition_context,
             square_split_context,
-        )
+        }
     }
 }
 

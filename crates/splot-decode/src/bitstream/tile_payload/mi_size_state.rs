@@ -176,12 +176,13 @@ impl TileMiSizeState {
         }
         let (left, luma_left) = (&self.left[plane & 1], &self.left[LUMA_PLANE]);
         let row = r % SB_ROW_SPAN;
-        let above = self.above.get(self.above_base(plane) + local_c..)?;
+        let base = self.above_base(plane) + local_c;
+        let above = self.above.get(base..=base + half_w)?;
         Some(PartitionNeighbours {
             left: [left[row], left[(row + half_h) % SB_ROW_SPAN]],
-            above: [*above.first()?, *above.get(half_w)?],
+            above: [*above.first()?, *above.last()?],
             luma_left: luma_left[row],
-            luma_above: *self.above.get(local_c)?,
+            luma_above: *self.above.get(self.above_base(LUMA_PLANE) + local_c)?,
         })
     }
 

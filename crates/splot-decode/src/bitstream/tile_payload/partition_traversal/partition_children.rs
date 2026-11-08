@@ -53,6 +53,18 @@ pub(crate) trait ChildCallSink {
     fn push_call(&mut self, call: TilePartitionCall) -> Result<(), Self::Error>;
 }
 
+/// Each child call goes straight to the closure, as the decoder walk recurses.
+impl<E: From<TilePartitionTraversalError>, F: FnMut(TilePartitionCall) -> Result<(), E>>
+    ChildCallSink for F
+{
+    type Error = E;
+
+    #[inline(always)]
+    fn push_call(&mut self, call: TilePartitionCall) -> Result<(), E> {
+        self(call)
+    }
+}
+
 impl ChildCallSink for TilePartitionChildCalls {
     type Error = TilePartitionTraversalError;
 

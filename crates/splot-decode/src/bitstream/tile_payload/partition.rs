@@ -153,44 +153,10 @@ impl RectPartitionFamily {
 /// registers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ReadPartitionDecisionInput {
-    facts: PartitionDecisionFacts,
-    bru_active: bool,
-    partition_context: PartitionContextInput,
-    square_split_context: SquareSplitContextInput,
-}
-
-impl ReadPartitionDecisionInput {
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn new(
-        allowed: AllowedPartitions,
-        implied_partition: Option<PartitionType>,
-        bru_active: bool,
-        rect_type: Option<RectPartitionType>,
-        partition_context: PartitionContextInput,
-        square_split_context: SquareSplitContextInput,
-    ) -> Self {
-        Self::from_facts(
-            PartitionDecisionFacts::new(implied_partition, allowed, rect_type),
-            bru_active,
-            partition_context,
-            square_split_context,
-        )
-    }
-
-    pub(crate) const fn from_facts(
-        facts: PartitionDecisionFacts,
-        bru_active: bool,
-        partition_context: PartitionContextInput,
-        square_split_context: SquareSplitContextInput,
-    ) -> Self {
-        Self {
-            facts,
-            bru_active,
-            partition_context,
-            square_split_context,
-        }
-    }
+    pub(super) facts: PartitionDecisionFacts,
+    pub(super) bru_active: bool,
+    pub(super) partition_context: PartitionContextInput,
+    pub(super) square_split_context: SquareSplitContextInput,
 }
 
 #[derive(Debug, thiserror::Error)]

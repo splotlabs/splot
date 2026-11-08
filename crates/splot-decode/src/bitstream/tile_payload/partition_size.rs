@@ -65,7 +65,7 @@ impl BlockSize {
     }
 
     #[inline]
-    const fn entry(self, table: &[u8; 32]) -> usize {
+    pub(crate) const fn entry(self, table: &[u8; 32]) -> usize {
         table[self.0 as usize & 31] as usize
     }
 
