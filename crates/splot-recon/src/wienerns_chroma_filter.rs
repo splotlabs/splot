@@ -517,7 +517,7 @@ fn downsample_luma<T: ReconSample>(
     let scale_x = 1isize << u32::from(params.subsampling_x);
     let scale_y = 1isize << u32::from(params.subsampling_y);
     let filter_420 = (params.subsampling_x == 1 && params.subsampling_y == 1)
-        .then_some(usize::from(filter_index).min(PICK_420));
+        .then_some(filter_index.min(PICK_420));
     let chroma_origin_x = checked_isize(params.x, "Wiener NS chroma padded luma origin x")?
         .checked_sub(radius)
         .ok_or(ReconError::ArithmeticOverflow {
@@ -580,6 +580,7 @@ fn downsample_luma<T: ReconSample>(
     }
 
     let step = scale_x as usize;
+    let blend_420 = filter_420.filter(|&index| index != PICK_420);
     let middle = usize::try_from(context.luma_last_x - luma_origin_x)
         .ok()
         .map(|last| {
@@ -672,7 +673,7 @@ fn downsample_luma<T: ReconSample>(
                     expected: top.saturating_add(1),
                     actual: source.len(),
                 })?;
-            let Some(filter_index) = filter_420.filter(|&index| index != PICK_420) else {
+            let Some(filter_index) = blend_420 else {
                 *slot = top_left.to_u16();
                 continue;
             };
@@ -762,7 +763,10 @@ fn downsample_luma_420<T: ReconSample + LumaSimdSource>(
 ) {
     for (row, output) in output.chunks_exact_mut(output_stride).enumerate() {
         let top = &source[2 * row * source_stride..];
-        let bottom = source.get((2 * row + 1) * source_stride..).unwrap_or(top);
+        let bottom = match filter_index {
+            PICK_420 => top,
+            _ => &source[(2 * row + 1) * source_stride..],
+        };
         downsample_420_lanes(output, top, bottom, filter_index);
     }
 }

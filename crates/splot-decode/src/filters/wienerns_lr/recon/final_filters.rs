@@ -1975,11 +1975,8 @@ impl StripeChain<'_> {
                 scratch,
                 cell_subclasses,
             )
-            .map(drop)
             .map_err(lr_window_error)
-        })?;
-
-        Ok(cell_subclasses)
+        })
     }
 }
 

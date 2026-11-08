@@ -182,8 +182,9 @@ pub struct PcWienerClassifyScratch {
     skip_sums: Vec<u8>,
     qval_cache_key: Option<(u32, BitDepth)>,
     qval_offsets: QvalOffsetsCache,
-    lut_key: Option<&'static [u8; PC_WIENER_LUT_CLASSES]>,
-    lut: [u8; PC_WIENER_LUT_INPUTS],
+    /// The two most recent subclass tables, each composed with
+    /// `Pc_Wiener_Lut_To_Class`; a frame uses at most two.
+    luts: [SubclassLut; 2],
     classifications: Vec<PcWienerClassification>,
 }
 
@@ -195,8 +196,7 @@ impl Default for PcWienerClassifyScratch {
             skip_sums: Vec::new(),
             qval_cache_key: None,
             qval_offsets: [[0; PC_WIENER_NUM_FEATURES]; QVAL_CACHE_LEN],
-            lut_key: None,
-            lut: [0; PC_WIENER_LUT_INPUTS],
+            luts: [(None, [0; PC_WIENER_LUT_INPUTS]); 2],
             classifications: Vec::new(),
         }
     }
@@ -481,13 +481,16 @@ where
     T: ReconSample,
     FT: FnMut(PcWienerTxSkipRun) -> Result<&'g [u8]>,
 {
-    if scratch
-        .lut_key
-        .is_none_or(|key| !core::ptr::eq(key, subclasses))
-    {
-        scratch.lut_key = None;
-        scratch.lut = PC_WIENER_LUT_TO_CLASS.map(|class| subclasses[usize::from(class)]);
-        scratch.lut_key = Some(subclasses);
+    let cached = |lut: &SubclassLut| lut.0.is_some_and(|key| core::ptr::eq(key, subclasses));
+    if !cached(&scratch.luts[0]) {
+        scratch.luts.swap(0, 1);
+        if !cached(&scratch.luts[0]) {
+            let (key, lut) = &mut scratch.luts[0];
+            for (entry, &class) in lut.iter_mut().zip(&PC_WIENER_LUT_TO_CLASS) {
+                *entry = subclasses[usize::from(class)];
+            }
+            *key = Some(subclasses);
+        }
     }
     classify_grid_padded_mapped_into(
         params,
@@ -500,7 +503,7 @@ where
         &mut scratch.skip_sums,
         &mut scratch.qval_cache_key,
         &mut scratch.qval_offsets,
-        &scratch.lut,
+        &scratch.luts[0].1,
         output,
         true,
     )
@@ -524,7 +527,7 @@ fn classify_grid_padded_mapped_into<'a, 'g, T, FT, O>(
 ) -> Result<&'a [O]>
 where
     T: ReconSample,
-    FT: FnMut(PcWienerTxSkipRun, &mut TxSkipCells) -> Result<Option<&'g [u8]>>,
+    FT: FnMut(PcWienerTxSkipRun, &mut Vec<u8>) -> Result<Option<&'g [u8]>>,
     O: ClassifiedCell,
 {
     source_scratch.clear();
@@ -785,7 +788,7 @@ fn classify_grid_from_cache<'s, 'g, FR, FT, O>(
 ) -> Result<()>
 where
     FR: Fn(usize) -> Result<&'s [u16]>,
-    FT: FnMut(PcWienerTxSkipRun, &mut TxSkipCells) -> Result<Option<&'g [u8]>>,
+    FT: FnMut(PcWienerTxSkipRun, &mut Vec<u8>) -> Result<Option<&'g [u8]>>,
     O: ClassifiedCell,
 {
     let cell_count = checked_area(
@@ -813,7 +816,7 @@ where
             field: "PC-Wiener block span",
         });
     }
-    let sums_start = tx_skip::window_sums(
+    let skip_sums = tx_skip::window_sums(
         params,
         cell_cols,
         cell_rows,
@@ -822,7 +825,6 @@ where
         skip_sums,
     )?;
     let skip_stride = tx_skip::sums_stride(cell_cols);
-    let skip_sums = &skip_sums[sums_start..];
 
     let pooled_width = geo.feature_width / 2;
     let plane_width = 16 * cell_cols.div_ceil(8) + 2;
@@ -926,8 +928,11 @@ fn classify_cells<S: Simd, O: ClassifiedCell>(
     Some(())
 }
 
-/// Storage a per-lookup `tx_skip` fills for one [`PcWienerTxSkipRun`].
-type TxSkipCells = Vec<u8>;
+/// A subclass table and its `lutInput` composition.
+type SubclassLut = (
+    Option<&'static [u8; PC_WIENER_LUT_CLASSES]>,
+    [u8; PC_WIENER_LUT_INPUTS],
+);
 
 pub(super) fn check_tx_skip_cells(run: PcWienerTxSkipRun, cells: &[u8]) -> Result<()> {
     match cells.iter().position(|&value| value > 1) {
@@ -1113,12 +1118,18 @@ fn run_x(run: PcWienerTxSkipRun, index: usize) -> usize {
 /// same lookup order and with the same `0..=1` check.
 fn tx_skip_cells<'g, FT>(
     mut tx_skip: FT,
-) -> impl FnMut(PcWienerTxSkipRun, &mut TxSkipCells) -> Result<Option<&'g [u8]>>
+) -> impl FnMut(PcWienerTxSkipRun, &mut Vec<u8>) -> Result<Option<&'g [u8]>>
 where
     FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
 {
     move |run, cells| {
         cells.clear();
+        cells
+            .try_reserve(run.len)
+            .map_err(|_| ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "PC-Wiener tx-skip run",
+            })?;
         for index in 0..run.len {
             cells.push(checked_tx_skip(
                 &mut tx_skip,
@@ -1666,35 +1677,32 @@ fn filter_pc_wiener_padded_u16<'a, S, T: ReconSample + LumaSimdSource + 'a>(
                 (end, run) = flat.split(c0, params.width);
                 continue;
             }
-            let mut col = c0;
+            let full = (end - c0) / 16;
+            let tail = full > 0
+                && !(end - c0).is_multiple_of(16)
+                && end.is_multiple_of(PC_WIENER_BLOCK_SIZE);
             let mut weights = [[[0; 16]; 2]; 7];
-            let mut group16 = |col: usize| -> Result<()> {
+            for group_col in (0..full)
+                .map(|group| c0 + 16 * group)
+                .chain(tail.then(|| end - 16))
+            {
                 let cells = row_subclasses
-                    .get(col / PC_WIENER_BLOCK_SIZE..)
+                    .get(group_col / PC_WIENER_BLOCK_SIZE..)
                     .and_then(<[u8]>::first_chunk::<4>)
                     .ok_or_else(rows_error)?;
-                let lanes = chunk_rows::<_, 22, { PC_WIENER_BLOCK_SIZE + 2 * R }>(&window, col)
-                    .ok_or_else(rows_error)?;
+                let lanes =
+                    chunk_rows::<_, 22, { PC_WIENER_BLOCK_SIZE + 2 * R }>(&window, group_col)
+                        .ok_or_else(rows_error)?;
+                group_weights::<T>(&mut weights, setup.pairs, *cells);
                 filter_pc_wiener_group16::<T>(
-                    &mut destination[row * params.output_stride + col..],
+                    &mut destination[row * params.output_stride + group_col..],
                     (params.output_stride, group),
                     &lanes,
-                    {
-                        group_weights::<T>(&mut weights, setup.pairs, *cells);
-                        &weights
-                    },
+                    &weights,
                     setup.max_sample,
                 );
-                Ok(())
-            };
-            while col + 16 <= end {
-                group16(col)?;
-                col += 16;
             }
-            if col < end && end >= c0 + 16 && end.is_multiple_of(PC_WIENER_BLOCK_SIZE) {
-                group16(end - 16)?;
-                col = end;
-            }
+            let col = if tail { end } else { c0 + 16 * full };
             for row in group_rows.clone() {
                 let output = &mut destination[row * params.output_stride..][..params.width];
                 let rows = window[row % PC_WIENER_BLOCK_SIZE..]

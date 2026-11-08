@@ -973,6 +973,8 @@ fn rounded_lut_input_matches_spec_rounding_at_every_level_boundary() {
 
 #[test]
 fn classes_from_tx_skip_runs_match_per_lookup_classifications() {
+    let identity: &'static [u8; 256] =
+        Box::leak(Box::new(core::array::from_fn(|class| class as u8)));
     let mut params = params(BitDepth::Ten);
     params.x = 40;
     params.y = 24;
@@ -1001,7 +1003,7 @@ fn classes_from_tx_skip_runs_match_per_lookup_classifications() {
         cell_rows,
         &source,
         runs,
-        &IDENTITY_CLASSES,
+        identity,
         &mut scratch,
         &mut classes,
     )
@@ -1014,7 +1016,7 @@ fn classes_from_tx_skip_runs_match_per_lookup_classifications() {
         cell_rows,
         &source,
         |run| Ok(&invalid[..run.len]),
-        &IDENTITY_CLASSES,
+        identity,
         &mut scratch,
         &mut classes,
     )
@@ -1110,6 +1112,7 @@ fn tx_skip_sums_match_scalar_cells_at_every_clip() {
         )
         .unwrap();
         let mut scratch = PcWienerClassifyScratch::default();
+        let table = super::pc_wiener_subclass_table(PC_WIENER_FULL_CLASSES, 2).unwrap();
         let mut output = Vec::new();
         let classes = pc_wiener_classify_grid_padded_classes_into::<u16, _>(
             &params,
@@ -1117,7 +1120,7 @@ fn tx_skip_sums_match_scalar_cells_at_every_clip() {
             rows,
             &source,
             |run| Ok(&tx_skip_grid[run.row * grid_cols + run.col..(run.row + 1) * grid_cols]),
-            &IDENTITY_CLASSES,
+            table,
             &mut scratch,
             &mut output,
         );
@@ -1133,39 +1136,13 @@ fn tx_skip_sums_match_scalar_cells_at_every_clip() {
             );
             continue;
         }
-        let expected: Vec<u8> = scalar(true).iter().map(|cell| cell.class).collect();
-        assert_eq!(classes.unwrap(), expected, "{case}");
-        let table = super::pc_wiener_subclass_table(PC_WIENER_FULL_CLASSES, 2).unwrap();
-        let mut subclasses = Vec::new();
-        pc_wiener_classify_grid_padded_classes_into::<u16, _>(
-            &params,
-            cols,
-            rows,
-            &source,
-            |run| Ok(&tx_skip_grid[run.row * grid_cols + run.col..(run.row + 1) * grid_cols]),
-            table,
-            &mut scratch,
-            &mut subclasses,
-        )
-        .unwrap();
-        let mapped: Vec<u8> = expected
+        let expected: Vec<u8> = scalar(true)
             .iter()
-            .map(|&class| table[usize::from(class)])
+            .map(|cell| table[usize::from(cell.class)])
             .collect();
-        assert_eq!(subclasses, mapped, "{case}");
+        assert_eq!(classes.unwrap(), expected, "{case}");
     }
 }
-
-/// A subclass table that keeps each class.
-static IDENTITY_CLASSES: [u8; 256] = {
-    let mut table = [0; 256];
-    let mut class = 0;
-    while class < 256 {
-        table[class] = class as u8;
-        class += 1;
-    }
-    table
-};
 
 fn padded_classify_fixture(params: &PcWienerClassifyParams) -> (Vec<u16>, usize, isize, isize) {
     let origin_x = params.x - PC_WIENER_CLASSIFY_READ_RADIUS as isize;
