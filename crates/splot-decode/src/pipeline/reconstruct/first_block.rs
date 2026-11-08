@@ -5,16 +5,16 @@
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, IntraBlockFrame, IntraDipEdges,
-    IntraMiddleDirectionalAngleEdges, IntraPaethEdges, IntraPredictionScratchBuffer,
-    IntraRectBlockSize, PlaneId, ReconSample, predict_intra_dip_rect_into,
-    predict_intra_middle_directional_angle_rect_into, predict_intra_paeth_rect_into,
+    IntraMiddleDirectionalAngleEdges, IntraPaethEdges, IntraRectBlockSize, PlaneId, ReconSample,
+    predict_intra_dip_rect_into, predict_intra_middle_directional_angle_rect_into,
+    predict_intra_paeth_rect_into,
 };
 
 use super::middle::middle_directional_angle;
 use super::one_sided::{gather_column_clamped, gather_row_clamped};
 use super::sink::{
     IntraEdgeAvailability, invalid_directional_edge_state, noneighbour_above, noneighbour_corner,
-    noneighbour_left, predict_intra_in_frame, write_intra_prediction_block,
+    noneighbour_left, predict_intra_block,
 };
 use crate::bitstream::tile_payload::{
     CoeffBlock, GeneralIntraResidualError, LumaTransformTypeContext, SupportedDirectionalLumaMode,
@@ -122,7 +122,7 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
         )
         .map_err(Into::into)
     };
-    if predict_intra_in_frame(
+    predict_intra_block(
         workspace,
         block,
         PlaneId::Y,
@@ -135,29 +135,6 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
         None,
         bit_depth,
         predict,
-    )? {
-        return Ok(());
-    }
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        PlaneId::Y,
-        width * height,
-        T::default(),
-    )?;
-    predict(&mut prediction, width)?;
-    write_intra_prediction_block(
-        workspace,
-        block,
-        prediction,
-        PlaneId::Y,
-        x,
-        y,
-        block_size,
-        qindex,
-        use_tcq,
-        Some(luma_context),
-        None,
-        bit_depth,
     )
 }
 
@@ -482,22 +459,9 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
             )
             .map_err(Into::into)
         };
-        if predict_intra_in_frame(
+        predict_intra_block(
             workspace, block, plane_id, x, y, block_size, qindex, use_tcq, None, None, bit_depth,
             predict,
-        )? {
-            return Ok(());
-        }
-        let mut prediction = workspace.take_intra_prediction_buffer(
-            IntraPredictionScratchBuffer::Primary,
-            plane_id,
-            width * height,
-            T::default(),
-        )?;
-        predict(&mut prediction, width)?;
-        write_intra_prediction_block(
-            workspace, block, prediction, plane_id, x, y, block_size, qindex, use_tcq, None, None,
-            bit_depth,
         )
     }
 }

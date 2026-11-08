@@ -124,26 +124,12 @@ pub fn predict_intra_smooth_rect_into<T: ReconSample>(
         "smooth intra prediction output buffer length",
     )?;
 
-    if bit_depth.max_sample() <= MAX_LANE_SAMPLE {
-        let mut lanes = [T::default(); LANE_LEN];
-        let (left, above) = (edges.left_samples(), edges.above_samples());
-        lanes[..size.height()].copy_from_slice(&left[..size.height()]); // splot-copy-ok: smooth left lanes
-        let corners = [above[size.width()], left[size.height()]];
-        predict_edges(size, mode, &lanes, above, corners, output, stride_samples);
-        return Ok(());
-    }
-    for row in 0..size.height() {
-        let row_start = row
-            .checked_mul(stride_samples)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "smooth intra prediction output row offset",
-            })?;
-        for column in 0..size.width() {
-            output[row_start + column] =
-                predict_smooth_sample(bit_depth, size, mode, edges, row, column)?;
-        }
-    }
-
+    debug_assert!(bit_depth.max_sample() <= MAX_LANE_SAMPLE);
+    let mut lanes = [T::default(); LANE_LEN];
+    let (left, above) = (edges.left_samples(), edges.above_samples());
+    lanes[..size.height()].copy_from_slice(&left[..size.height()]); // splot-copy-ok: smooth left lanes
+    let corners = [above[size.width()], left[size.height()]];
+    predict_edges(size, mode, &lanes, above, corners, output, stride_samples);
     Ok(())
 }
 
@@ -739,6 +725,7 @@ fn publish_rows<T: Copy, const N: usize>(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn predict_smooth_sample<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
