@@ -118,12 +118,7 @@ fn inter_tile_grid_mapper_exhaustively_separates_state_from_allocation() {
         assert_invalid_tile_state(&inter_tile_grid_error(&error, "unused"));
     }
 
-    for context in [
-        "inter parser MV grid",
-        "inter luma smooth grid",
-        "inter chroma smooth grid",
-        "inter admission MV grid",
-    ] {
+    for context in ["inter parser MV grid", "inter admission MV grid"] {
         assert_workspace_allocation(
             &inter_tile_grid_error(&TileGridConstructionError::Allocation, context),
             context,

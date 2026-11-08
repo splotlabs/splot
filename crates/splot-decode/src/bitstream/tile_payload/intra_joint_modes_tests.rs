@@ -14,7 +14,7 @@ fn state(rows: usize, cols: usize, sb_size4: usize) -> TileIntraFactsState {
 }
 
 fn record(state: &mut TileIntraFactsState, (r, c): (usize, usize), n4: usize, facts: IntraFacts) {
-    state.record_leaf((r, c), (n4, n4), facts);
+    state.grid_mut().record_block((r, c), (n4, n4), facts);
 }
 
 #[test]

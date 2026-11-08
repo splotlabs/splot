@@ -257,14 +257,19 @@ impl GeneralIntraChromaBlockMode {
         }
     }
 
-    pub(crate) const fn is_cfl(self) -> bool {
-        matches!(self, Self::Cfl(_))
-    }
-
     pub(crate) const fn supported_chroma_mode(self) -> Option<SupportedChromaMode> {
         match self {
             Self::Prediction { mode, .. } => Some(mode),
             Self::Cfl(_) => None,
+        }
+    }
+
+    /// The § 5.20.5.3 `UVCfls` / `UVSmooth` bits of this mode.
+    pub(crate) fn uv_bits(self) -> u8 {
+        match self.supported_chroma_mode() {
+            Some(mode) if mode.is_smooth() => super::mi_size_state::UV_SMOOTH,
+            Some(_) => 0,
+            None => super::mi_size_state::UV_CFL,
         }
     }
 }
@@ -379,17 +384,19 @@ impl GeneralIntraBlockModes {
         self
     }
 
-    pub(crate) const fn is_cfl(&self) -> bool {
-        matches!(self.chroma, Some(GeneralIntraChromaBlockMode::Cfl(_)))
-    }
-
     pub(crate) const fn chroma(&self) -> Option<GeneralIntraChromaBlockMode> {
         self.chroma
     }
 
+    #[cfg(test)]
     pub(crate) fn supported_chroma_mode(&self) -> Option<SupportedChromaMode> {
         self.chroma
             .and_then(GeneralIntraChromaBlockMode::supported_chroma_mode)
+    }
+
+    /// The `UVCfls` / `UVSmooth` bits of the chroma mode, 0 without one.
+    pub(crate) fn uv_bits(&self) -> u8 {
+        self.chroma.map_or(0, GeneralIntraChromaBlockMode::uv_bits)
     }
 
     pub(crate) const fn coeff_uv_mode(&self) -> usize {

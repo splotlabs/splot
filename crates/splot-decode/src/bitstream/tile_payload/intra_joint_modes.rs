@@ -15,7 +15,7 @@ use crate::tile::SbRowWindow;
 
 pub(crate) const PALETTE_MAX_SIZE: usize = 8;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MiGrid<T> {
     origin_row: usize,
     origin_col: usize,
@@ -29,44 +29,6 @@ pub(crate) struct MiGrid<T> {
 }
 
 impl<T: Copy> MiGrid<T> {
-    #[expect(clippy::too_many_arguments)]
-    pub(crate) fn build<E>(
-        row_range: Range<usize>,
-        col_range: Range<usize>,
-        sb_h4: usize,
-        default: T,
-        mut cells: Vec<T>,
-        empty_dimensions: impl FnOnce(usize, usize) -> E,
-        arithmetic_overflow: impl FnOnce(&'static str, usize, usize) -> E,
-        allocation: impl FnOnce(TryReserveError) -> E,
-        preallocate_check: Result<(), E>,
-    ) -> Result<Self, E> {
-        let rows = row_range.end.saturating_sub(row_range.start);
-        let cols = col_range.end.saturating_sub(col_range.start);
-        if rows == 0 || cols == 0 {
-            return Err(empty_dimensions(rows, cols));
-        }
-        preallocate_check?;
-        let window = SbRowWindow::new(rows, sb_h4);
-        let len = window
-            .plane_rows()
-            .checked_mul(cols)
-            .ok_or_else(|| arithmetic_overflow("mi_rows * mi_cols", rows, cols))?;
-        cells.clear();
-        cells.try_reserve_exact(len).map_err(allocation)?;
-        cells.resize(len, default);
-        Ok(Self {
-            origin_row: row_range.start,
-            origin_col: col_range.start,
-            rows,
-            cols,
-            window,
-            readable: (0, 0, 0),
-            default,
-            cells,
-        })
-    }
-
     pub(crate) fn into_cells(self) -> Vec<T> {
         self.cells
     }
@@ -188,20 +150,31 @@ impl<T: Copy + Send + 'static> MiGrid<T> {
         allocation: impl FnOnce(TryReserveError) -> E,
         preallocate_check: Result<(), E>,
     ) -> Result<Self, E> {
-        let cells = SbRowWindow::new(row_range.len(), sb_h4)
+        let rows = row_range.end.saturating_sub(row_range.start);
+        let cols = col_range.end.saturating_sub(col_range.start);
+        if rows == 0 || cols == 0 {
+            return Err(empty_dimensions(rows, cols));
+        }
+        preallocate_check?;
+        let window = SbRowWindow::new(rows, sb_h4);
+        let len = window
             .plane_rows()
-            .saturating_mul(col_range.len());
-        Self::build(
-            row_range,
-            col_range,
-            sb_h4,
+            .checked_mul(cols)
+            .ok_or_else(|| arithmetic_overflow("mi_rows * mi_cols", rows, cols))?;
+        let mut cells = take_pooled_vec::<T>(len);
+        cells.clear();
+        cells.try_reserve_exact(len).map_err(allocation)?;
+        cells.resize(len, default);
+        Ok(Self {
+            origin_row: row_range.start,
+            origin_col: col_range.start,
+            rows,
+            cols,
+            window,
+            readable: (0, 0, 0),
             default,
-            take_pooled_vec::<T>(cells),
-            empty_dimensions,
-            arithmetic_overflow,
-            allocation,
-            preallocate_check,
-        )
+            cells,
+        })
     }
 }
 
@@ -259,10 +232,10 @@ impl LumaPalette {
 
 /// The § 5.20.4.1 intra arrays of one mode-info position (`YModes` with its
 /// angle, the joint mode, `FscModes`, `UseDip`, `UsesMrls`, the luma palette
-/// and the § 7.11.2 smoothness of `YModes`), so a leaf fills one grid.
+/// and the § 7.11.2 smoothness of `YModes`), so a leaf writes one cell.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntraFacts {
-    palette: Option<NonZeroU32>,
+    pub(super) palette: Option<NonZeroU32>,
     joint_mode: IntraJointMode,
     y_mode: IntraYMode,
     angle_delta_y: i8,
@@ -317,17 +290,6 @@ impl IntraFacts {
         }
     }
 
-    /// These facts with palette list index `palette`.
-    #[must_use]
-    pub(super) const fn with_palette(mut self, palette: Option<NonZeroU32>) -> Self {
-        self.palette = palette;
-        self
-    }
-
-    pub(super) const fn palette(self) -> Option<NonZeroU32> {
-        self.palette
-    }
-
     #[must_use]
     pub(crate) const fn with_dip(mut self, use_dip: bool) -> Self {
         self.bits = self.bits & !Self::DIP | if use_dip { Self::DIP } else { 0 };
@@ -368,18 +330,15 @@ pub(crate) struct IntraNeighbours {
 
 impl IntraNeighbours {
     /// The facts at the left-bottom, above-right, left-top and above-left
-    /// probes; `in_row` is whether the left-bottom and the above rows are in
-    /// the block's superblock row, as the `NPos` selection requires.
+    /// probes; `above_in_row` is whether the row above is in the block's
+    /// superblock row, as the `NPos` selection requires (the left column is).
     #[allow(clippy::inline_always, reason = "measured: once per intra luma leaf")]
     #[inline(always)]
-    pub(super) fn from_probes(
-        probes: [IntraFacts; 4],
-        [bottom_in_row, above_in_row]: [bool; 2],
-    ) -> Self {
+    pub(super) fn from_probes(probes: [IntraFacts; 4], above_in_row: bool) -> Self {
         let [left_bottom, above_right, left_top, above_left] = probes;
         let (mut npos_any, mut npos_both, mut len) = (0, 0, 0);
         for (facts, in_row) in [
-            (left_bottom, bottom_in_row),
+            (left_bottom, true),
             (above_right, above_in_row),
             (left_top, true),
             (above_left, above_in_row),
@@ -460,16 +419,6 @@ impl TileIntraFactsState {
         Ok(Self { grid })
     }
 
-    /// Records the facts of an SDP luma-part leaf.
-    pub(crate) fn record_leaf(
-        &mut self,
-        pos: (usize, usize),
-        extent: (usize, usize),
-        facts: IntraFacts,
-    ) {
-        self.grid.record_block(pos, extent, facts);
-    }
-
     pub(crate) fn y_mode_facts_at(&self, r: usize, c: usize) -> Option<TileIntraYModeFacts> {
         self.grid.cell(r, c).and_then(IntraFacts::y_mode_facts)
     }
@@ -485,7 +434,7 @@ impl TileIntraFactsState {
         self.grid.window_violated()
     }
 
-    /// The grid, for the encoder facade's rollback.
+    /// The grid.
     pub(crate) fn grid_mut(&mut self) -> &mut MiGrid<IntraFacts> {
         &mut self.grid
     }
@@ -787,21 +736,6 @@ pub(crate) fn neg_deinterleave(diff: i32, reference: i32, max: i32) -> i32 {
         }
     } else {
         max - (diff + 1)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct IsCflContext(usize);
-
-impl IsCflContext {
-    #[must_use]
-    pub(crate) const fn new(ctx: usize) -> Self {
-        Self(ctx)
-    }
-
-    #[must_use]
-    pub(crate) const fn get(self) -> usize {
-        self.0
     }
 }
 

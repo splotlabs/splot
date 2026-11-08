@@ -768,11 +768,8 @@ impl IntraTileSyntax {
             coeff,
             mi_sizes: TileMiSizeState::new_for_tile(rows.clone(), cols.clone(), frame.sb_size())
                 .map_err(rule("MI-size state"))?,
-            intra_facts: neighbour(TileIntraFactsState::new_for_tile(
-                rows.clone(),
-                cols.clone(),
-                sb_size4,
-            ))?,
+            intra_facts: TileIntraFactsState::new_for_tile(rows.clone(), cols.clone(), sb_size4)
+                .map_err(rule("neighbour state"))?,
             y_mode_table: intra::YModeTable::default(),
             inter,
             journal,
@@ -1207,12 +1204,6 @@ fn hidden_base_selection(context: CoeffBaseContext, level: &LevelGrid) -> CoeffB
         ..context
     }
     .select(level)
-}
-
-fn neighbour<T, E: std::error::Error + Send + Sync + 'static>(
-    state: core::result::Result<T, E>,
-) -> Result<T> {
-    state.map_err(rule("neighbour state"))
 }
 
 /// The `(Tx_Width_Log2, Tx_Height_Log2)` of a § 9.3 transform size.

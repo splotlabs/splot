@@ -365,7 +365,7 @@ impl IntraTileSyntax {
             node.row4().min(chroma.row()) & !sub_y..(node.row4() + h / 4).max(chroma.row() + n4h);
         let cols =
             node.col4().min(chroma.col()) & !sub_x..(node.col4() + w / 4).max(chroma.col() + n4w);
-        self.enter_rows(rows.start);
+        self.intra_facts.grid_mut().enter_row(rows.start);
         let mut cells = Cells::default();
         self.visit_cells(&rows, &cols, Some(&mut cells), &Cells::default());
         Ok(SyntaxSnapshot {
@@ -391,10 +391,6 @@ impl IntraTileSyntax {
         (usize::from(x), usize::from(y))
     }
 
-    fn enter_rows(&mut self, row: usize) {
-        self.intra_facts.grid_mut().enter_row(row);
-    }
-
     /// Copies the cells of luma rows `rows` x columns `cols` into `save`, or
     /// back from `saved` without it; `false` when `saved` does not fit.
     fn visit_cells(
@@ -404,10 +400,7 @@ impl IntraTileSyntax {
         save: Option<&mut Cells>,
         saved: &Cells,
     ) -> bool {
-        let (bytes, intra_facts) = match save {
-            Some(c) => (Some(&mut c.bytes), Some(&mut c.intra_facts)),
-            None => (None, None),
-        };
+        let (bytes, intra_facts) = save.map(|c| (&mut c.bytes, &mut c.intra_facts)).unzip();
         let mut bytes = Pass::new(bytes, &saved.bytes);
         let mut intra_facts = Pass::new(intra_facts, &saved.intra_facts);
         self.mi_sizes.visit_region(
@@ -511,7 +504,7 @@ impl IntraTileSyntax {
     /// Returns [`EncoderSyntaxError::Unsupported`] when the edge does not fit
     /// this facade's row windows.
     pub fn import_edge(&mut self, edge: &SuperblockEdge) -> Result<()> {
-        self.enter_rows(edge.rows.end);
+        self.intra_facts.grid_mut().enter_row(edge.rows.end);
         if !self.visit_cells(&edge.rows, &edge.cols, None, &edge.cells) {
             return Err(EncoderSyntaxError::Unsupported(
                 "a superblock edge outside the row windows",

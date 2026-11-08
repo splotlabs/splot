@@ -495,7 +495,7 @@ pub(crate) struct GeneralIntraLeafMode {
     luma: Option<IntraFacts>,
     palette_y: Option<LumaPalette>,
     /// The `UVCfls` / `UVSmooth` bits of a leaf with chroma.
-    uv: Option<u8>,
+    uv: u8,
     intrabc: bool,
 }
 
@@ -517,7 +517,7 @@ impl GeneralIntraLeafMode {
                 mrl,
             )),
             palette_y: None,
-            uv: None,
+            uv: 0,
             intrabc: false,
         }
     }
@@ -527,7 +527,7 @@ impl GeneralIntraLeafMode {
         Self {
             luma: None,
             palette_y: None,
-            uv: None,
+            uv: 0,
             intrabc: false,
         }
     }
@@ -544,8 +544,8 @@ impl GeneralIntraLeafMode {
     }
 
     #[must_use]
-    pub(crate) const fn chroma(is_cfl: bool, smooth: bool) -> Self {
-        Self::no_luma_mode().with_uv(is_cfl, smooth)
+    pub(crate) const fn chroma(uv: u8) -> Self {
+        Self::no_luma_mode().with_uv(uv)
     }
 
     #[must_use]
@@ -563,18 +563,8 @@ impl GeneralIntraLeafMode {
     }
 
     #[must_use]
-    pub(crate) const fn with_uv(mut self, is_cfl: bool, smooth: bool) -> Self {
-        self.uv = Some(
-            if is_cfl {
-                super::mi_size_state::UV_CFL
-            } else {
-                0
-            } | if smooth {
-                super::mi_size_state::UV_SMOOTH
-            } else {
-                0
-            },
-        );
+    pub(crate) const fn with_uv(mut self, uv: u8) -> Self {
+        self.uv = uv;
         self
     }
 }

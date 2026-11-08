@@ -610,7 +610,7 @@ mod row_cursor_tests {
             0,
             super::super::MrlSelection::Disabled,
         )
-        .with_uv(false, false)
+        .with_uv(0)
     }
 
     #[test]
@@ -711,7 +711,7 @@ mod row_cursor_tests {
                 &mut |_, _, frontier, _| {
                     parts.push(frontier.part());
                     let leaf = if frontier.is_chroma_part() {
-                        GeneralIntraLeafMode::chroma(false, false)
+                        GeneralIntraLeafMode::chroma(0)
                     } else {
                         GeneralIntraLeafMode::luma(
                             super::super::IntraJointMode::DC,
@@ -762,7 +762,7 @@ mod row_cursor_tests {
                 &mut |_, _, frontier, _| {
                     parts.push(frontier.part());
                     let leaf = if frontier.is_chroma_part() {
-                        GeneralIntraLeafMode::chroma(false, false)
+                        GeneralIntraLeafMode::chroma(0)
                     } else {
                         GeneralIntraLeafMode::no_luma_mode().mark_intrabc()
                     };

@@ -88,17 +88,14 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
         ) -> Result<(GeneralIntraLeafMode, C), E>,
         P: FnMut(DecodedLeafPublication, C),
     {
-        let Self {
-            tree,
-            mi_size_state,
-        } = self;
-        tree.decode_next_superblock_with_publication(
-            work_unit,
-            mi_size_state,
-            on_leaf,
-            on_published,
-        )
-        .map_err(GeneralIntraMultiblockError::Walk)
+        self.tree
+            .decode_next_superblock_with_publication(
+                work_unit,
+                &mut self.mi_size_state,
+                on_leaf,
+                on_published,
+            )
+            .map_err(GeneralIntraMultiblockError::Walk)
     }
 
     pub(crate) const fn sb_mask(&self) -> usize {

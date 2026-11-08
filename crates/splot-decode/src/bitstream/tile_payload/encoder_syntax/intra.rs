@@ -50,8 +50,8 @@ use super::{
 use crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc;
 use crate::pipeline::general_intra::{
     GeneralIntraReconScratch, general_intra_block_ctx, general_intra_chroma_tools,
-    inherited_chroma_angle_delta, is_smooth, luma_transform_type_context, rect_chroma_plan,
-    rect_luma_plan, sequence_cfl_ds_filter_index,
+    inherited_chroma_angle_delta, luma_transform_type_context, rect_chroma_plan, rect_luma_plan,
+    sequence_cfl_ds_filter_index,
 };
 use crate::prediction::intra_edge::IntraEdgeCtx;
 use crate::residual::pipeline::GeneralIntraResidualPlan;
@@ -595,8 +595,8 @@ impl IntraTileSyntax {
             let chroma_ref = leaf.frontier.chroma_ref_geometry();
             let ctx = self
                 .mi_sizes
-                .uv_cfl_ctx(chroma_ref.row(), chroma_ref.col())
-                .get();
+                .uv_edges(chroma_ref.row(), chroma_ref.col())
+                .cfl_ctx();
             self.put(symbols, TileCdfSelector::IsCfl { ctx }, usize::from(is_cfl))?;
         } else if is_cfl {
             return Err(EncoderSyntaxError::Unsupported("CFL in this block"));
@@ -730,7 +730,8 @@ impl IntraTileSyntax {
         let chroma_ref = leaf.frontier.chroma_ref_geometry();
         let (chroma_above_smooth, chroma_left_smooth) = self
             .mi_sizes
-            .uv_smoothness(chroma_ref.row(), chroma_ref.col());
+            .uv_edges(chroma_ref.row(), chroma_ref.col())
+            .smoothness();
         let planned = units.clone();
         let replaced = self.recon.leaf.replace(PlannedLeaf {
             plan,
@@ -946,15 +947,10 @@ impl IntraTileSyntax {
             .transpose()?;
         let block_modes = block_modes(leaf, modes, joint, mrl, palette)?;
         let fsc = u8::from(modes.fsc);
-        let mut mode = GeneralIntraLeafMode::luma(joint, modes.y_mode, modes.angle_delta, fsc, mrl)
+        let mode = GeneralIntraLeafMode::luma(joint, modes.y_mode, modes.angle_delta, fsc, mrl)
             .with_use_dip(modes.dip.is_some().into())
-            .with_palette_y(palette);
-        if leaf.frontier.has_chroma {
-            mode = mode.with_uv(
-                block_modes.is_cfl(),
-                is_smooth(block_modes.supported_chroma_mode()),
-            );
-        }
+            .with_palette_y(palette)
+            .with_uv(block_modes.uv_bits());
         publish_intra_leaf_state::<core::convert::Infallible>(
             &self.frame,
             &leaf.call,

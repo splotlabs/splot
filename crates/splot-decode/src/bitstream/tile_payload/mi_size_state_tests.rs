@@ -264,12 +264,6 @@ fn square(n4: usize) -> BlockSize {
     })
 }
 
-fn edges(rows: usize, cols: usize, sb_size: usize) -> TileMiSizeState {
-    let mut state = TileMiSizeState::new_for_tile(0..rows, 0..cols, block(sb_size)).unwrap();
-    state.enter_sb_row(0);
-    state
-}
-
 fn joint(value: usize) -> IntraJointMode {
     IntraJointMode::try_new(value).unwrap()
 }
@@ -304,14 +298,14 @@ fn mrl(secondary: u8) -> MrlSelection {
 
 #[test]
 fn joint_modes_read_the_left_bottom_and_above_right_probes() {
-    let mut state = edges(32, 32, BLOCK_256X256);
+    let mut state = TileMiSizeState::new_for_tile(0..32, 0..32, block(BLOCK_256X256)).unwrap();
     assert_eq!(state.intra_neighbours(0, 0, 16, 16).y_mode_index_ctx(), 0);
     record_joint(&mut state, (0, 16), 16, 36);
     record_joint(&mut state, (16, 0), 16, 36);
     let both = state.intra_neighbours(16, 16, 16, 16);
     assert_eq!(both.joint_modes(), [joint(36); 2]);
     assert_eq!(both.y_mode_index_ctx(), 2);
-    let mut small = edges(8, 8, BLOCK_256X256);
+    let mut small = TileMiSizeState::new_for_tile(0..8, 0..8, block(BLOCK_256X256)).unwrap();
     record_joint(&mut small, (3, 1), 1, 36);
     record_joint(&mut small, (1, 3), 1, 4);
     assert_eq!(
@@ -322,7 +316,7 @@ fn joint_modes_read_the_left_bottom_and_above_right_probes() {
 
 #[test]
 fn an_inter_leaf_reads_as_dc_and_a_new_row_clears_the_left_line() {
-    let mut state = edges(64, 64, BLOCK_64X64);
+    let mut state = new_state(64, 64);
     record_joint(&mut state, (0, 0), 16, 36);
     assert_eq!(
         state.intra_neighbours(0, 16, 16, 16).joint_modes()[0],
@@ -340,7 +334,7 @@ fn an_inter_leaf_reads_as_dc_and_a_new_row_clears_the_left_line() {
 
 #[test]
 fn probes_past_the_tile_read_as_absent() {
-    let mut state = edges(6, 6, BLOCK_64X64);
+    let mut state = new_state(6, 6);
     let plain = facts(IntraJointMode::DC, 0, false, MrlSelection::Disabled);
     let fsc = facts(IntraJointMode::DC, 1, false, MrlSelection::Disabled);
     assert_eq!(state.intra_neighbours(0, 0, 4, 4).fsc_mode_ctx(), 0);
@@ -355,41 +349,19 @@ fn probes_past_the_tile_read_as_absent() {
 
 #[test]
 fn npos_takes_the_first_two_probes_of_the_superblock_row() {
-    let mut state = edges(32, 32, BLOCK_64X64);
-    record(
-        &mut state,
-        (15, 16),
-        1,
-        Some(facts(IntraJointMode::DC, 1, true, mrl(1))),
-    );
-    record(
-        &mut state,
-        (15, 31),
-        1,
-        Some(facts(IntraJointMode::DC, 1, true, mrl(1))),
-    );
-    record(
-        &mut state,
-        (31, 15),
-        1,
-        Some(facts(IntraJointMode::DC, 1, true, mrl(0))),
-    );
+    let mut state = new_state(32, 32);
+    for (pos, secondary) in [((15, 16), 1), ((15, 31), 1), ((31, 15), 0)] {
+        let leaf = facts(IntraJointMode::DC, 1, true, mrl(secondary));
+        record(&mut state, pos, 1, Some(leaf));
+    }
     let across = state.intra_neighbours(16, 16, 16, 16);
     assert_eq!((across.mrl_index_ctx(), across.mrl_sec_index_ctx()), (1, 0));
     assert_eq!((across.fsc_mode_ctx(), across.use_dip_ctx()), (1, 1));
-    let mut state = edges(16, 16, BLOCK_64X64);
-    record(
-        &mut state,
-        (7, 3),
-        1,
-        Some(facts(IntraJointMode::DC, 0, false, mrl(0))),
-    );
-    record(
-        &mut state,
-        (7, 0),
-        1,
-        Some(facts(IntraJointMode::DC, 0, false, mrl(1))),
-    );
+    let mut state = new_state(16, 16);
+    for (pos, secondary) in [((7, 3), 0), ((7, 0), 1)] {
+        let leaf = facts(IntraJointMode::DC, 0, false, mrl(secondary));
+        record(&mut state, pos, 1, Some(leaf));
+    }
     let fallback = state.intra_neighbours(8, 0, 4, 4);
     assert_eq!(
         (fallback.mrl_index_ctx(), fallback.mrl_sec_index_ctx()),
@@ -399,7 +371,7 @@ fn npos_takes_the_first_two_probes_of_the_superblock_row() {
 
 #[test]
 fn smoothness_reads_the_above_and_left_luma_modes() {
-    let mut state = edges(8, 8, BLOCK_64X64);
+    let mut state = new_state(8, 8);
     assert_eq!(
         state.intra_neighbours(0, 0, 4, 4).smoothness(),
         (false, false)
@@ -421,7 +393,7 @@ fn smoothness_reads_the_above_and_left_luma_modes() {
 
 #[test]
 fn palette_cache_interleaves_neighbours_and_skips_a_64_row_boundary() {
-    let mut state = edges(32, 32, BLOCK_64X64);
+    let mut state = new_state(32, 32);
     let above = LumaPalette::from_size_symbol(Symbol::new(2), [7, 11, 19, 23, 0, 0, 0, 0]);
     let left = LumaPalette::from_size_symbol(Symbol::new(0), [11, 17, 0, 0, 0, 0, 0, 0]);
     let leaf = Some(facts(IntraJointMode::DC, 0, false, MrlSelection::Disabled));
@@ -442,22 +414,22 @@ fn palette_cache_interleaves_neighbours_and_skips_a_64_row_boundary() {
 
 #[test]
 fn uv_bits_ride_on_the_chroma_entries() {
-    let mut state = edges(32, 32, BLOCK_64X64);
-    assert_eq!(state.uv_cfl_ctx(0, 0).get(), 0);
+    let mut state = new_state(32, 32);
+    assert_eq!(state.uv_edges(0, 0).cfl_ctx(), 0);
     state.update_chroma_block(0, 0, square(4), UV_CFL).unwrap();
-    assert_eq!(state.uv_cfl_ctx(0, 4).get(), 1);
+    assert_eq!(state.uv_edges(0, 4).cfl_ctx(), 1);
     state
         .update_chroma_block(0, 4, square(4), UV_SMOOTH)
         .unwrap();
     state
         .update_chroma_block(4, 0, square(4), UV_CFL | UV_SMOOTH)
         .unwrap();
-    assert_eq!(state.uv_cfl_ctx(4, 4).get(), 1);
-    assert_eq!(state.uv_smoothness(4, 4), (true, true));
+    assert_eq!(state.uv_edges(4, 4).cfl_ctx(), 1);
+    assert_eq!(state.uv_edges(4, 4).smoothness(), (true, true));
     assert_eq!(
         state.left_at(1, 4) & !(UV_CFL | UV_SMOOTH),
         PARTITION_CONTEXT_LEFT[6]
     );
     state.enter_sb_row(0);
-    assert_eq!(state.uv_cfl_ctx(4, 4).get(), 0);
+    assert_eq!(state.uv_edges(4, 4).cfl_ctx(), 0);
 }

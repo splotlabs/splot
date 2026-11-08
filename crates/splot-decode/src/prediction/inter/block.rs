@@ -1478,7 +1478,7 @@ fn decode_block<T: ReconSample>(
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
             let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
             return Ok((
-                non_intra_leaf_mode(frontier).mark_intrabc(),
+                GeneralIntraLeafMode::no_luma_mode().mark_intrabc(),
                 pending_intrabc_leaf(PendingIntrabcBlock {
                     frontier: *frontier,
                     n4w,
@@ -1892,7 +1892,7 @@ fn decode_block<T: ReconSample>(
         };
         mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
         return Ok((
-            non_intra_leaf_mode(frontier),
+            GeneralIntraLeafMode::no_luma_mode(),
             pending_inter_leaf(
                 syntax,
                 placed_inter_geometry(frontier, work_unit, (n4w, n4h), chroma_planes)?,
@@ -2142,7 +2142,7 @@ fn decode_block<T: ReconSample>(
     };
     mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
     Ok((
-        non_intra_leaf_mode(frontier),
+        GeneralIntraLeafMode::no_luma_mode(),
         pending_inter_leaf(
             syntax,
             placed_inter_geometry(frontier, work_unit, (n4w, n4h), chroma_planes)?,
@@ -2154,14 +2154,6 @@ fn decode_block<T: ReconSample>(
 
 const fn inter_skip_txfm_ctx(neighbour_skip_ctx: usize, skip_mode: bool) -> usize {
     neighbour_skip_ctx + if skip_mode { 3 } else { 0 }
-}
-
-pub(crate) fn non_intra_leaf_mode(frontier: &DecodeBlockFrontier) -> GeneralIntraLeafMode {
-    let leaf = GeneralIntraLeafMode::no_luma_mode();
-    if frontier.has_chroma {
-        return leaf.with_uv(false, false);
-    }
-    leaf
 }
 
 pub(crate) fn is_comp_ref_allowed(n4w: usize, n4h: usize) -> bool {

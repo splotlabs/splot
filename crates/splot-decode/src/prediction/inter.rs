@@ -2208,7 +2208,6 @@ pub(crate) use block::encoder_leaf::{
     encoder_temporal_context,
 };
 pub(crate) use block::inter_residual_units;
-pub(crate) use block::non_intra_leaf_mode;
 pub(crate) use block::{
     InterBlockDecodeOutput, InterBlockFacts, InterDecodeScratch, InterFilterInputs,
     InterFrameParse, InterFrameParser, InterReconScratchPool, PendingFilterAttach,

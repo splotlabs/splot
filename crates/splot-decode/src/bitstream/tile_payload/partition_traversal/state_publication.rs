@@ -156,7 +156,9 @@ pub(crate) fn publish_intra_leaf_state<E>(
                     .num_4x4_high()
                     .map_err(TilePartitionTraversalError::from)?,
             );
-            intra_facts.record_leaf((call.r(), call.c()), extent, facts);
+            intra_facts
+                .grid_mut()
+                .record_block((call.r(), call.c()), extent, facts);
         }
         mi_size_state
             .update_luma_block(call.r(), call.c(), sub_size, facts, leaf_mode.palette_y)
@@ -169,7 +171,7 @@ pub(crate) fn publish_intra_leaf_state<E>(
                 chroma_ref.row(),
                 chroma_ref.col(),
                 chroma_ref.size(),
-                leaf_mode.uv.unwrap_or(0),
+                leaf_mode.uv,
             )
             .map_err(GeneralIntraTreeWalkError::MiSize)?;
     }

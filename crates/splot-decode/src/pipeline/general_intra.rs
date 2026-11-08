@@ -386,12 +386,8 @@ pub(crate) fn decode_one_general_intra_block(
     let intra_neighbours = edges.intra_neighbours(frontier.r, frontier.c, n4w, n4h);
     let (above_smooth, left_smooth) = intra_neighbours.smoothness();
     let chroma_ref = frontier.chroma_ref_geometry();
-    let (chroma_above_smooth, chroma_left_smooth) =
-        if frontier.has_chroma || frontier.is_chroma_part() {
-            edges.uv_smoothness(chroma_ref.row(), chroma_ref.col())
-        } else {
-            (false, false)
-        };
+    let uv_edges = edges.uv_edges(chroma_ref.row(), chroma_ref.col());
+    let (chroma_above_smooth, chroma_left_smooth) = uv_edges.smoothness();
     let intra_edge = crate::prediction::intra_edge::IntraEdgeCtx {
         enable_ibp: tools.enable_ibp,
         enable_intra_edge_filter: tools.enable_intra_edge_filter,
@@ -419,7 +415,7 @@ pub(crate) fn decode_one_general_intra_block(
             chroma_tools,
             GeneralIntraChromaModeContext::sdp_chroma_part(
                 frontier.cfl_allowed_in_sdp(),
-                edges.uv_cfl_ctx(chroma_ref.row(), chroma_ref.col()).get(),
+                uv_edges.cfl_ctx(),
             ),
             y_mode,
             frontier.b_size,
@@ -452,13 +448,7 @@ pub(crate) fn decode_one_general_intra_block(
                 luma_tx_partition_context: None,
             },
         )?;
-        return Ok((
-            GeneralIntraLeafMode::chroma(
-                chroma.is_cfl(),
-                is_smooth(chroma.supported_chroma_mode()),
-            ),
-            command,
-        ));
+        return Ok((GeneralIntraLeafMode::chroma(chroma.uv_bits()), command));
     }
 
     let luma_only = frontier.is_luma_part() || !frontier.has_chroma;
@@ -514,7 +504,7 @@ pub(crate) fn decode_one_general_intra_block(
             edges,
             intra_neighbours,
             use_neighbor_fsc_context,
-            edges.uv_cfl_ctx(chroma_ref.row(), chroma_ref.col()).get(),
+            uv_edges.cfl_ctx(),
             frontier.b_size,
             frontier.r,
             frontier.c,
@@ -564,7 +554,17 @@ pub(crate) fn decode_one_general_intra_block(
             ),
         },
     )?;
-    Ok((leaf_mode_for_block(&modes), command))
+    let leaf = GeneralIntraLeafMode::luma(
+        modes.intra_joint_mode,
+        modes.y_mode,
+        modes.angle_delta_y,
+        modes.fsc_mode,
+        modes.mrl,
+    )
+    .with_palette_y(modes.palette_y())
+    .with_use_dip(modes.use_dip)
+    .with_uv(modes.uv_bits());
+    Ok((leaf, command))
 }
 
 /// The block context of `frontier` and, with chroma, its chroma 4x4 extent.
@@ -603,35 +603,6 @@ pub(crate) fn general_intra_block_ctx(
         chroma_tx_shape,
     );
     (block_ctx, Some((chroma_n4w, chroma_n4h)))
-}
-
-#[inline]
-fn leaf_mode(modes: &GeneralIntraBlockModes) -> GeneralIntraLeafMode {
-    GeneralIntraLeafMode::luma(
-        modes.intra_joint_mode,
-        modes.y_mode,
-        modes.angle_delta_y,
-        modes.fsc_mode,
-        modes.mrl,
-    )
-    .with_palette_y(modes.palette_y())
-    .with_use_dip(modes.use_dip)
-}
-
-/// Whether a chroma mode sets § 5.20.5 `UVSmooth`.
-pub(crate) fn is_smooth(mode: Option<SupportedChromaMode>) -> bool {
-    mode.is_some_and(SupportedChromaMode::is_smooth)
-}
-
-#[allow(clippy::inline_always, reason = "measured: outlined at #[inline]")]
-#[inline(always)]
-fn leaf_mode_for_block(modes: &GeneralIntraBlockModes) -> GeneralIntraLeafMode {
-    let leaf = leaf_mode(modes);
-    if modes.chroma().is_some() {
-        leaf.with_uv(modes.is_cfl(), is_smooth(modes.supported_chroma_mode()))
-    } else {
-        leaf
-    }
 }
 
 pub(crate) fn luma_transform_type_context(

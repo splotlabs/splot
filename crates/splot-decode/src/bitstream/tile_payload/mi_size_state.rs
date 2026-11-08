@@ -9,9 +9,7 @@
 use std::collections::TryReserveError;
 use std::ops::Range;
 
-use super::intra_joint_modes::{
-    IntraFacts, IntraNeighbours, IsCflContext, LumaPalette, PALETTE_MAX_SIZE,
-};
+use super::intra_joint_modes::{IntraFacts, IntraNeighbours, LumaPalette, PALETTE_MAX_SIZE};
 use super::partition_size::{BlockSize, PartitionSizeError};
 use crate::support::reusable_scratch::{recycle_pooled_vec, take_pooled_vec};
 
@@ -34,6 +32,34 @@ const INTRA_FACTS: u8 = 1 << 6;
 /// Bits 6 and 7 of a chroma entry: § 5.20.5.3 `UVCfls` and `UVSmooth`.
 pub(crate) const UV_CFL: u8 = 1 << 6;
 pub(crate) const UV_SMOOTH: u8 = 1 << 7;
+const _: () = {
+    let mut i = 0;
+    while i < PARTITION_CONTEXT_ABOVE.len() {
+        assert!(
+            PARTITION_CONTEXT_ABOVE[i] < INTRA_FACTS && PARTITION_CONTEXT_LEFT[i] < INTRA_FACTS
+        );
+        i += 1;
+    }
+};
+
+/// The chroma entries above and left of a chroma reference block.
+#[derive(Clone, Copy)]
+pub(crate) struct UvEdges {
+    above: u8,
+    left: u8,
+}
+
+impl UvEdges {
+    /// The § 8.3.2 `is_cfl` context.
+    pub(crate) const fn cfl_ctx(self) -> usize {
+        (self.above & UV_CFL != 0) as usize + (self.left & UV_CFL != 0) as usize
+    }
+
+    /// `(above, left)` § 7.13.2.15/16 `UVSmooth`.
+    pub(crate) const fn smoothness(self) -> (bool, bool) {
+        (self.above & UV_SMOOTH != 0, self.left & UV_SMOOTH != 0)
+    }
+}
 
 /// The § 5.20.4.1 `LeftMiSizes` / `AboveMiSizes` lines of a tile, stored as
 /// partition-context bit masks (bit `k` set when the neighbour's log2 extent
@@ -43,14 +69,11 @@ pub(crate) const UV_SMOOTH: u8 = 1 << 7;
 /// The § 8.3.2 square-split context reads `MiSizes[ 0 ][ r - 1 ][ c ]` and
 /// `MiSizes[ 0 ][ r ][ c - 1 ]`. The partition tree decodes the blocks
 /// covering one column top to bottom, and the blocks covering one row left
-/// to right, so those are the last blocks written to the lines. The same
-/// holds for every other neighbour the mode syntax reads: the § 8.3.2
-/// `get_joint_mode` / `NPos` probes and palette cache, the § 8.3.2 `is_cfl`
-/// context and the § 7.13.2.15/16 smoothness all sit on the column left of
-/// a block or the row above it. So a leaf writes them with its MiSizes: the
-/// chroma entries carry `UVCfls` and `UVSmooth` (§ 5.20.5.3 writes both for
-/// every `HasChroma` leaf), and an intra luma entry flags the [`IntraFacts`]
-/// its leaf writes to the facts lines.
+/// to right, so those are the last blocks written to the lines. The same holds
+/// for the § 8.3.2 `get_joint_mode` / `NPos` probes, palette cache and `is_cfl`
+/// context and the § 7.13.2.15/16 smoothness, so a leaf writes them with its
+/// MiSizes: chroma entries carry `UVCfls` / `UVSmooth`, and an intra luma entry
+/// flags the [`IntraFacts`] on the facts lines.
 ///
 /// Every read and write stays inside the current superblock row, which each
 /// row start clears, so the left lines hold one superblock row indexed by the
@@ -145,25 +168,27 @@ impl TileMiSizeState {
     /// Starts a superblock row: clears the left context lines.
     pub(crate) fn enter_sb_row(&mut self, _sb_row: usize) {
         self.left = [[CLEAR_PARTITION_CONTEXT; SB_ROW_SPAN]; PLANE_COUNT];
+        self.palettes.clear();
     }
 
-    /// The tile-relative `(row, col)` of `(r, c)`, which a reader of a block
-    /// inside the tile gets back unchanged.
+    /// The facts of the luma leaf on the left line at row `r`, `NONE` for an
+    /// inter leaf or a row the superblock row has not written.
     #[allow(clippy::inline_always, reason = "measured: per-leaf edge reads")]
     #[inline(always)]
-    const fn local(&self, r: usize, c: usize) -> (usize, usize) {
-        (
-            r.wrapping_sub(self.origin_row),
-            c.wrapping_sub(self.origin_col),
-        )
+    fn left_luma(&self, r: usize) -> IntraFacts {
+        let i = r % SB_ROW_SPAN;
+        if self.left[LUMA_PLANE][i] & INTRA_FACTS != 0 {
+            self.left_facts[i]
+        } else {
+            IntraFacts::NONE
+        }
     }
 
-    /// The facts of the luma leaf on line entry `index` of `line`, `NONE`
-    /// for an inter leaf.
+    /// [`Self::left_luma`] on the above line at tile column `col`.
     #[allow(clippy::inline_always, reason = "measured: per-leaf edge reads")]
     #[inline(always)]
-    fn facts_at(entry: Option<&u8>, facts: Option<&IntraFacts>) -> IntraFacts {
-        match (entry, facts) {
+    fn above_luma(&self, col: usize) -> IntraFacts {
+        match (self.above.get(col), self.above_facts.get(col)) {
             (Some(entry), Some(&facts)) if entry & INTRA_FACTS != 0 => facts,
             _ => IntraFacts::NONE,
         }
@@ -181,97 +206,61 @@ impl TileMiSizeState {
         n4w: usize,
         n4h: usize,
     ) -> IntraNeighbours {
-        let (row, col) = self.local(r, c);
-        let has_up = row.wrapping_sub(1) < self.tile_rows;
-        let has_left = col.wrapping_sub(1) < self.tile_cols;
-        let bottom = r + n4h.saturating_sub(1);
-        let right = col + n4w.saturating_sub(1);
-        let left = |r: usize| {
-            let i = r % SB_ROW_SPAN;
-            Self::facts_at(self.left[LUMA_PLANE].get(i), self.left_facts.get(i))
-        };
-        let above = |col: usize| Self::facts_at(self.above.get(col), self.above_facts.get(col));
-        let left_bottom = if has_left && row + n4h.saturating_sub(1) < self.tile_rows {
-            left(bottom)
-        } else {
-            IntraFacts::ABSENT
-        };
-        let above_right = if has_up && right < self.tile_cols {
-            above(right)
-        } else {
-            IntraFacts::ABSENT
-        };
-        let left_top = if has_left {
-            left(r)
-        } else {
-            IntraFacts::ABSENT
-        };
-        let above_left = if has_up {
-            above(col)
-        } else {
-            IntraFacts::ABSENT
-        };
-        let same_row = |row: usize| crate::tile::same_superblock_row(r, row, self.sb_size4);
+        let row = r.wrapping_sub(self.origin_row);
+        let col = c.wrapping_sub(self.origin_col);
+        let (has_up, has_left) = (row != 0, col != 0);
+        let (bottom, right) = (n4h.saturating_sub(1), col + n4w.saturating_sub(1));
+        let absent = IntraFacts::ABSENT;
         IntraNeighbours::from_probes(
-            [left_bottom, above_right, left_top, above_left],
-            [same_row(bottom), r.checked_sub(1).is_some_and(same_row)],
+            [
+                if has_left && row + bottom < self.tile_rows {
+                    self.left_luma(r + bottom)
+                } else {
+                    absent
+                },
+                if has_up && right < self.tile_cols {
+                    self.above_luma(right)
+                } else {
+                    absent
+                },
+                if has_left { self.left_luma(r) } else { absent },
+                if has_up { self.above_luma(col) } else { absent },
+            ],
+            has_up && !r.is_multiple_of(self.sb_size4),
         )
     }
 
     /// The chroma entries above and left of the chroma reference block at
-    /// `(r, c)`; a line outside the tile reads clear.
-    fn uv_edges(&self, r: usize, c: usize) -> (u8, u8) {
-        let (_, col) = self.local(r, c);
-        (
-            self.above
-                .get(self.above_base(CHROMA_PLANE) + col)
+    /// `(r, c)`, which the tile and superblock-row starts clear.
+    pub(crate) fn uv_edges(&self, r: usize, c: usize) -> UvEdges {
+        UvEdges {
+            above: self
+                .above
+                .get(self.above_base(CHROMA_PLANE) + c.wrapping_sub(self.origin_col))
                 .copied()
                 .unwrap_or(0),
-            self.left[CHROMA_PLANE][r % SB_ROW_SPAN],
-        )
-    }
-
-    /// The § 8.3.2 `is_cfl` context of the chroma reference block at `(r, c)`.
-    pub(crate) fn uv_cfl_ctx(&self, r: usize, c: usize) -> IsCflContext {
-        let (above, left) = self.uv_edges(r, c);
-        IsCflContext::new(usize::from(above & UV_CFL != 0) + usize::from(left & UV_CFL != 0))
-    }
-
-    /// `(above, left)` § 7.13.2.15/16 `UVSmooth` of the chroma reference block
-    /// at `(r, c)`.
-    pub(crate) fn uv_smoothness(&self, r: usize, c: usize) -> (bool, bool) {
-        let (above, left) = self.uv_edges(r, c);
-        (above & UV_SMOOTH != 0, left & UV_SMOOTH != 0)
+            left: self.left[CHROMA_PLANE][r % SB_ROW_SPAN],
+        }
     }
 
     /// The § 5.20.5.8 palette cache of the luma block at `(r, c)`.
     pub(crate) fn palette_cache(&self, r: usize, c: usize) -> ([u16; 2 * PALETTE_MAX_SIZE], usize) {
         const MIN_SB_SIZE4: usize = 16;
 
-        let (row, col) = self.local(r, c);
         let palette = |facts: IntraFacts| {
-            let index = usize::try_from(facts.palette()?.get() - 1).ok()?;
+            let index = usize::try_from(facts.palette?.get() - 1).ok()?;
             self.palettes.get(index).copied()
         };
-        let above = (row.wrapping_sub(1) < self.tile_rows && !r.is_multiple_of(MIN_SB_SIZE4))
-            .then(|| Self::facts_at(self.above.get(col), self.above_facts.get(col)))
+        let above = (!r.is_multiple_of(MIN_SB_SIZE4))
+            .then(|| self.above_luma(c.wrapping_sub(self.origin_col)))
             .and_then(palette);
-        let left = (col.wrapping_sub(1) < self.tile_cols)
-            .then(|| {
-                let i = r % SB_ROW_SPAN;
-                Self::facts_at(self.left[LUMA_PLANE].get(i), self.left_facts.get(i))
-            })
-            .and_then(palette);
+        let left = palette(self.left_luma(r));
         let mut cache = [0u16; 2 * PALETTE_MAX_SIZE];
-        let mut len = 0usize;
-        let above_len = above.map_or(0, LumaPalette::size);
-        let left_len = left.map_or(0, LumaPalette::size);
-        let above_colors = above.map_or([0; PALETTE_MAX_SIZE], LumaPalette::colors);
-        let left_colors = left.map_or([0; PALETTE_MAX_SIZE], LumaPalette::colors);
-        for index in 0..above_len.max(left_len) {
-            for (colors, colors_len) in [(above_colors, above_len), (left_colors, left_len)] {
-                if index < colors_len && len < cache.len() {
-                    cache[len] = colors[index];
+        let mut len = 0;
+        for index in 0..PALETTE_MAX_SIZE {
+            for palette in [above, left].into_iter().flatten() {
+                if index < palette.size() && len < cache.len() {
+                    cache[len] = palette.colors()[index];
                     len += 1;
                 }
             }
@@ -325,13 +314,12 @@ impl TileMiSizeState {
     ) -> Result<(), TileMiSizeStateError> {
         let flag = if facts.is_some() { INTRA_FACTS } else { 0 };
         let (left, above) = self.update_plane_block(LUMA_PLANE, r, c, mi_size, flag)?;
-        if let Some(facts) = facts {
-            let index = palette.and_then(|palette| {
+        if let Some(mut facts) = facts {
+            facts.palette = palette.and_then(|palette| {
                 let index = u32::try_from(self.palettes.len().checked_add(1)?).ok()?;
                 self.palettes.push(palette);
                 core::num::NonZeroU32::new(index)
             });
-            let facts = facts.with_palette(index);
             if let (Some(left), Some(above)) = (
                 self.left_facts.get_mut(left),
                 self.above_facts.get_mut(above),
