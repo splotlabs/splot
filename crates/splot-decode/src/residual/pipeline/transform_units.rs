@@ -7,9 +7,9 @@ use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 
 use crate::bitstream::tile_payload::{
-    CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock,
+    CoeffBlock, GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock,
     LumaTransformTypeContext, LumaTxPartition, PositionedLumaCoeffBlock, TileBlockDecodedState,
-    current_frame_qm_segment_id, luma_partition_record_fills_block,
+    luma_partition_record_fills_block,
     luma_transform_record_starts_in_frame, luma_transform_records_for_partition,
 };
 use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
@@ -229,13 +229,9 @@ impl ResidualReconstructionPlan {
 impl ResidualPlanePlan {
     pub(super) fn lossless_transform_unit_tx_size(
         &self,
-        work_unit: &DecodeTileWorkUnit,
+        segment_lossless: Option<bool>,
     ) -> Option<usize> {
-        if work_unit
-            .coeff_frame_facts()
-            .lossless_for_segment(current_frame_qm_segment_id())
-            != Some(true)
-            || (!self.fsc_mode && self.tx_size == TX_4X4)
+        if segment_lossless != Some(true) || (!self.fsc_mode && self.tx_size == TX_4X4)
         {
             return None;
         }

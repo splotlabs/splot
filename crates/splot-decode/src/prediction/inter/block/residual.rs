@@ -798,6 +798,9 @@ fn read_inter_residual_plane(
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<LumaCoeffBlock> {
+    let segment_lossless = work_unit
+        .coeff_frame_facts()
+        .lossless_for_segment(current_frame_qm_segment_id());
     decode_general_intra_plane_coeffs(
         work_unit,
         symbols,
@@ -818,6 +821,7 @@ fn read_inter_residual_plane(
             txb_skip_fsc_mode: false,
             cctx_allowed,
             policy: residual_tool_policy,
+            segment_lossless,
         },
     )
     .map_err(|error| residual_plane_read_error(&error, tile_offset))
