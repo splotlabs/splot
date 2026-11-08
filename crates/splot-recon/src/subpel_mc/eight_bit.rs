@@ -87,27 +87,31 @@ fn copy(block: &Block<'_, u8>, output: &mut [u8], stride: usize) -> bool {
     }) else {
         return false;
     };
-    let lines = source
-        .chunks(block.stride)
-        .zip(output.chunks_mut(stride))
-        .take(h);
     macro_rules! copy_lines {
         ($n:literal) => {
-            for (source, target) in lines {
-                if let (Some(source), Some(target)) =
-                    (source.first_chunk::<$n>(), target.first_chunk_mut::<$n>())
-                {
+            for row in 0..h {
+                let (from, to) = (row * block.stride, row * stride);
+                if let (Some(source), Some(target)) = (
+                    source.get(from..).and_then(<[u8]>::first_chunk::<$n>),
+                    output.get_mut(to..).and_then(<[u8]>::first_chunk_mut::<$n>),
+                ) {
                     *target = *source;
                 }
             }
         };
     }
     match w {
+        4 => copy_lines!(4),
         8 => copy_lines!(8),
         16 => copy_lines!(16),
         32 => copy_lines!(32),
         64 => copy_lines!(64),
+        128 => copy_lines!(128),
         _ => {
+            let lines = source
+                .chunks(block.stride)
+                .zip(output.chunks_mut(stride))
+                .take(h);
             for (source, target) in lines {
                 if let (Some(source), Some(target)) = (source.get(..w), target.get_mut(..w)) {
                     // splot-copy-ok: a zero-phase prediction is its reference samples

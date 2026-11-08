@@ -561,11 +561,8 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
         });
     }
     let storage = reference_info.storage_luma_size();
-    let mut paired = false;
-    for (plane, sub_x, sub_y) in mc_planes(info.pixel_format()) {
-        if plane != PlaneId::Y && !has_chroma || paired {
-            continue;
-        }
+    let bit_depth = info.bit_depth();
+    let geometry = |plane: PlaneId, sub_x: u32, sub_y: u32| {
         let (x, y, w, h) = rect.plane_rect(plane, sub_x, sub_y);
         let start =
             |pos: usize, mv: i32, sub: u32| ((((pos as i32) << 4) + ((2 * mv) >> sub)) << 6) + 32;
@@ -581,29 +578,42 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
             first_y: 0,
             last_x: (ceil_shift(storage.width(), sub_x) - 1) as i32,
             last_y: (ceil_shift(storage.height(), sub_y) - 1) as i32,
-            bit_depth: info.bit_depth(),
+            bit_depth,
         };
+        (PlaneRect::new(x, y, w, h).ok(), params)
+    };
+    let put = |sink: &mut WorkspaceSink<'_, '_, T>,
+               plane: PlaneId,
+               &(target, params): &(Option<PlaneRect>, SubpelPredictParams)|
+     -> Result<bool> {
         let view = match reference.settled_plane_view(plane) {
             Some(view) => view,
             None => reference.plane_view(plane, subpel_last_reference_row(&params), offset)?,
         };
-        let target = PlaneRect::new(x, y, w, h).ok();
-        paired = plane == PlaneId::U
-            && target.is_some_and(|target| {
-                reference
-                    .settled_plane_view(PlaneId::V)
-                    .zip(sink.u8_chroma_rects_mut(target))
-                    .is_some_and(|(other, outputs)| {
-                        subpel_put_u8_pair_in_place([&view, &other], &params, outputs)
-                    })
-            });
-        let direct = paired
-            || target
-                .and_then(|target| sink.u8_rect_mut(plane, target))
-                .is_some_and(|(output, stride)| {
-                    subpel_put_u8_in_place(&view, &params, output, stride)
-                });
-        if !direct {
+        Ok(target
+            .and_then(|target| sink.u8_rect_mut(plane, target))
+            .is_some_and(|(output, stride)| subpel_put_u8_in_place(&view, &params, output, stride)))
+    };
+    if !put(sink, PlaneId::Y, &geometry(PlaneId::Y, 0, 0))? {
+        predict_plane(sink, reference, PlaneId::Y, rect, mv, interp, 0, 0, offset)?;
+    }
+    if !has_chroma {
+        return Ok(());
+    }
+    let [_, (_, sub_x, sub_y), _] = mc_planes(info.pixel_format());
+    let chroma = geometry(PlaneId::U, sub_x, sub_y);
+    if let (Some(target), Some(u), Some(v)) = (
+        chroma.0,
+        reference.settled_plane_view(PlaneId::U),
+        reference.settled_plane_view(PlaneId::V),
+    ) && sink
+        .u8_chroma_rects_mut(target)
+        .is_some_and(|outputs| subpel_put_u8_pair_in_place([&u, &v], &chroma.1, outputs))
+    {
+        return Ok(());
+    }
+    for plane in [PlaneId::U, PlaneId::V] {
+        if !put(sink, plane, &chroma)? {
             predict_plane(
                 sink, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
             )?;
@@ -844,6 +854,14 @@ fn predict_plane<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "single-reference prediction sample count",
         })?;
+    if T::u8_slice(&[]).is_some() {
+        let mut staged = RecycledMcSamples::<T>::take();
+        staged.resize(len, T::default());
+        if let Some(output) = T::u8_slice_mut(&mut staged) {
+            subpel_predict_block_strided_into_u8(&view, &params, output, params.w)?;
+            return Ok(sink.write_rect(plane, target, &staged, params.w)?);
+        }
+    }
     SUBPEL_PREDICTION_BUFFER.with(|slot| {
         let mut predicted = slot.take().unwrap_or_default();
         predicted.resize(len, 0);
