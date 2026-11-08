@@ -207,6 +207,28 @@ proptest! {
         }
     }
 
+    /// A bypass run must read the bits and leave the state of one-bit literal
+    /// reads, across chunk boundaries and runs split by symbol reads.
+    #[test]
+    fn bypass_run_matches_read_literal(
+        data in proptest::collection::vec(any::<u8>(), 2..40),
+        runs in proptest::collection::vec(0usize..70, 1..5),
+    ) {
+        let mut checked = SymbolDecoder::new(&data).unwrap();
+        let mut bulk = SymbolDecoder::new(&data).unwrap();
+        let (mut checked_row, mut bulk_row) = ([12000u16, 0, 0], [12000u16, 0, 0]);
+        for len in runs {
+            checked.read_symbol_u16(&mut checked_row).unwrap();
+            bulk.read_symbol_u16(&mut bulk_row).unwrap();
+            let mut run = bulk.bypass_run();
+            for _ in 0..len {
+                prop_assert_eq!(checked.read_literal(1).unwrap() != 0, bulk.read_bool_in(&mut run));
+            }
+            bulk.end_bypass_run(run);
+            prop_assert_eq!(checked.checkpoint(), bulk.checkpoint());
+        }
+    }
+
     /// `read_trusted` must stay panic-free on arbitrary row contents.
     #[test]
     fn read_trusted_never_panics_on_hostile_rows(

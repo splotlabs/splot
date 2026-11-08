@@ -127,6 +127,12 @@ impl CoeffQuantStateAccumulator {
         }
     }
 
+    /// The `dcCategory` of a nonzero DC coefficient with `sign`.
+    #[inline]
+    pub(crate) fn set_dc_sign(&mut self, sign: bool) {
+        self.dc_category = if sign { 1 } else { 2 };
+    }
+
     #[inline]
     pub(crate) fn set_tcq_q0(&mut self, q0: bool) {
         self.tcq_state = usize::from(q0) << 1;

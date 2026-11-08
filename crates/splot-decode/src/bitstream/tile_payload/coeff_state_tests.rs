@@ -461,10 +461,8 @@ fn reset_block_context_plane_clamps_bottom_and_right_edge_overhang() {
     let mut state =
         TileCoeffContextState::new_for_tile_chroma(0..mi_rows, 0..mi_cols, ChromaFormatIdc::Yuv444)
             .unwrap();
-    state.above_level[0].fill(7);
-    state.above_dc[0].fill(3);
-    state.left_level[0].fill(7);
-    state.left_dc[0].fill(3);
+    state.above[0].fill(7 | 3 << DC_CATEGORY_SHIFT);
+    state.left[0].fill(7 | 3 << DC_CATEGORY_SHIFT);
 
     state
         .reset_block_context_plane(reset(0, 0, 256, 16, 16, 0, 0))
@@ -491,8 +489,7 @@ fn reset_block_context_plane_clamps_right_edge_only() {
     let mut state =
         TileCoeffContextState::new_for_tile_chroma(0..mi_rows, 0..mi_cols, ChromaFormatIdc::Yuv444)
             .unwrap();
-    state.above_level[0].fill(5);
-    state.above_dc[0].fill(1);
+    state.above[0].fill(5 | 1 << DC_CATEGORY_SHIFT);
 
     state
         .reset_block_context_plane(reset(0, 6, 0, 4, 1, 0, 0))

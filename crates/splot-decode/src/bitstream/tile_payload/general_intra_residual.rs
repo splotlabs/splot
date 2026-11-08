@@ -43,7 +43,9 @@ use super::coeff_loop::{
 };
 #[cfg(test)]
 use super::coeff_state::TransformCoeffBlockState;
-use super::coeff_state::{CoeffBlockLines, TileCoeffContextState, TileCoeffStateError};
+use super::coeff_state::{
+    CUL_LEVEL_MASK, CoeffBlockLines, TileCoeffContextState, TileCoeffStateError,
+};
 use super::{BlockSize, DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 
 pub(crate) mod cctx;
@@ -1099,8 +1101,9 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     cctx_allowed: bool,
     transform_tool_residual_policy: TransformToolResidualPolicy,
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
-    let frame_facts = work_unit.coeff_frame_facts();
-    let segment_lossless = frame_facts.lossless_for_segment(current_frame_qm_segment_id());
+    let segment_lossless = work_unit
+        .coeff_frame_facts()
+        .lossless_for_segment(current_frame_qm_segment_id());
     let lossless = segment_lossless.unwrap_or(false);
     let tx_size = if lossless && !is_inter && !fsc_mode {
         TX_4X4
@@ -1119,7 +1122,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         [
             tx_fills_block,
             eob_u_nonzero,
-            fsc_mode && frame_facts.enable_fsc(),
+            fsc_mode && work_unit.coeff_frame_facts().enable_fsc(),
         ],
         usize::from(is_inter || txb_skip_fsc_mode),
     );
@@ -1138,6 +1141,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         });
     }
 
+    let frame_facts = work_unit.coeff_frame_facts();
     let geometry = CoeffOrdinaryTxSizeGeometryConfig {
         plane,
         start_x,
@@ -1199,23 +1203,21 @@ fn txb_skip_selector_from_lines(
     txb_skip_intra_inter: usize,
 ) -> TileCdfSelector {
     let tx_size_ctx = txb_skip_tx_size_ctx(tx_size);
-    let [above_level_or, left_level_or] = context.line_or::<false>(lines);
+    let [above_or, left_or] = context.line_or(lines);
     let plane = lines.plane;
     if plane == 0 {
         return TileCdfSelector::TxbSkip {
             plane_type: txb_skip_intra_inter,
             tx_size: tx_size_ctx,
             ctx: txb_skip_ctx_luma(
-                u32::from(above_level_or),
-                u32::from(left_level_or),
+                u32::from(above_or & CUL_LEVEL_MASK),
+                u32::from(left_or & CUL_LEVEL_MASK),
                 tx_fills_block,
                 fsc_active,
             ),
         };
     }
-    let [above_dc_or, left_dc_or] = context.line_or::<true>(lines);
-    let above_nz = above_level_or | above_dc_or != 0;
-    let left_nz = left_level_or | left_dc_or != 0;
+    let (above_nz, left_nz) = (above_or != 0, left_or != 0);
     if plane == 2 {
         TileCdfSelector::VTxbSkip {
             ctx: v_txb_skip_ctx(above_nz, left_nz, !tx_fills_block, eob_u_nonzero),

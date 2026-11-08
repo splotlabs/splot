@@ -1195,8 +1195,8 @@ impl IntraTileSyntax {
         let mut config = levels.sign_config(plane);
         let [x4, y4, w4, h4] = tx_area4(tx)?;
         let context = |error| rule("sign context")(error);
-        config.above_dc = self.coeff.above_dc(plane).map_err(context)?;
-        config.left_dc = self.coeff.left_dc(plane).map_err(context)?;
+        config.above_dc = self.coeff.above_line(plane).map_err(context)?;
+        config.left_dc = self.coeff.left_line(plane).map_err(context)?;
         config.x4 = self.coeff.local_x4(plane, x4).map_err(context)?;
         config.y4 = self.coeff.local_y4(plane, y4).map_err(context)?;
         (config.w4, config.h4) = (w4, h4);

@@ -2,7 +2,13 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
-use crate::bitstream::tile_payload::coeff_state::LEVEL_GRID_LEN;
+use crate::bitstream::tile_payload::coeff_state::{DC_CATEGORY_SHIFT, LEVEL_GRID_LEN};
+
+/// Context-line bytes of `categories`, with a nonzero culLevel beside each
+/// so the votes must mask it off.
+fn dc_line<const N: usize>(categories: [u8; N]) -> [u8; N] {
+    categories.map(|category| (category << DC_CATEGORY_SHIFT) | 3)
+}
 
 const PAD: usize = super::super::super::coeff_state::LEVEL_GRID_PAD;
 
@@ -331,13 +337,13 @@ fn coeff_base_is_total_for_low_grid_entries_and_pathological_geometry() {
 
 #[test]
 fn dc_sign_ctx_nets_above_and_left_votes() {
-    let above = [2u8, 2];
-    let left = [1u8, 1];
+    let above = dc_line([2, 2]);
+    let left = dc_line([1, 1]);
     assert_eq!(dc_sign_ctx(&above, &left, 0, 0, 2, 2), 0);
-    let above_neg = [1u8, 0];
-    let z2 = [0u8, 0];
+    let above_neg = dc_line([1, 0]);
+    let z2 = dc_line([0, 0]);
     assert_eq!(dc_sign_ctx(&above_neg, &z2, 0, 0, 2, 2), 1);
-    let pos = [2u8, 2];
+    let pos = dc_line([2, 2]);
     assert_eq!(dc_sign_ctx(&z2, &pos, 0, 0, 2, 2), 2);
     let zeros = [0u8, 0];
     assert_eq!(dc_sign_ctx(&zeros, &zeros, 0, 0, 2, 2), 0);
@@ -345,17 +351,17 @@ fn dc_sign_ctx_nets_above_and_left_votes() {
 
 #[test]
 fn dc_sign_ctx_honours_the_position_offset_and_max_bounds() {
-    let above = [1u8, 2, 2]; // index 0 = -1 (skipped), 1,2 = +1 each
+    let above = dc_line([1, 2, 2]); // index 0 = -1 (skipped), 1,2 = +1 each
     let z = [0u8; LEVEL_GRID_LEN];
     assert_eq!(dc_sign_ctx(&above, &z, 1, 0, 2, 0), 2); // +1+1 = +2 -> ctx 2
-    let short = [2u8]; // only index 0 in range
+    let short = dc_line([2]); // only index 0 in range
     assert_eq!(dc_sign_ctx(&short, &z, 0, 0, 4, 0), 2); // only above[0]=+1 -> ctx 2
 }
 
 #[test]
 fn dc_sign_ctx_is_total_for_pathological_geometry() {
-    let a = [2u8; 4];
-    let l = [1u8; 4];
+    let a = dc_line([2; 4]);
+    let l = dc_line([1; 4]);
     let _ = dc_sign_ctx(&a, &l, usize::MAX, usize::MAX, usize::MAX, usize::MAX);
     assert_eq!(dc_sign_ctx(&a, &l, usize::MAX, usize::MAX, 4, 4), 0); // all out of range -> 0
 }
@@ -405,12 +411,17 @@ fn idtx_sign_ctx_is_total_for_short_slices_and_pathological_geometry() {
 
 #[test]
 fn dc_sign_votes_match_the_per_category_count() {
-    let line: Vec<u8> = (0..80u32)
+    let categories: Vec<u8> = (0..80u32)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8 % 5)
+        .collect();
+    let line: Vec<u8> = categories
+        .iter()
+        .zip(0u8..)
+        .map(|(&category, level)| (category << DC_CATEGORY_SHIFT) | (level % 5))
         .collect();
     for len in [0, 1, 2, 4, 8, 16, 32, 5] {
         for start in [0, 3, 40, 70] {
-            let want: i32 = line
+            let want: i32 = categories
                 .iter()
                 .skip(start)
                 .take(len)
