@@ -11,7 +11,7 @@ use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 use crate::bitstream::tile_payload::{
     CoeffBlock, DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock,
     LumaTransformPartitionContext, LumaTransformPartitionUnits, LumaTransformTypeContext,
-    PositionedLumaCoeffBlock, TileBlockDecodedState, TileCoeffContextState,
+    PlaneCoeffBlock, PositionedLumaCoeffBlock, TileBlockDecodedState, TileCoeffContextState,
     TransformToolResidualPolicy, decode_general_intra_luma_partition_coeffs,
     decode_general_intra_plane_coeffs,
 };
@@ -186,16 +186,29 @@ impl ResidualPlanePlan {
         let angle_delta_uv =
             chroma_angle_delta_uv(self.plane_id, uv_mode, luma_transform_type_context);
         let palette_color_map = self.read_palette_color_map(work_unit, symbols)?;
+        let coeff_block = PlaneCoeffBlock {
+            plane: usize::from(self.coeff_plane),
+            tx_size: self.tx_size,
+            x: self.x,
+            y: self.y,
+            tx_fills_block: self.tx_fills_residual_block(),
+            eob_u_nonzero,
+            uv_mode,
+            angle_delta_uv,
+            chroma_inter_tx_type: DCT_DCT,
+            is_inter: false,
+            fsc_mode: self.fsc_mode,
+            txb_skip_fsc_mode: self.txb_skip_fsc_mode,
+            cctx_allowed: chroma_pair::cctx_allowed(self),
+            policy,
+        };
         if let Some(unit_tx_size) = self.lossless_transform_unit_tx_size(work_unit) {
             let parsed = self.parse_lossless_transform_units(
                 unit_tx_size,
                 work_unit,
                 symbols,
                 coeff_ctx,
-                uv_mode,
-                angle_delta_uv,
-                policy,
-                eob_u_nonzero,
+                &coeff_block,
                 palette_color_map.as_deref(),
                 deblock,
                 coeffs_arena,
@@ -223,25 +236,12 @@ impl ResidualPlanePlan {
             arena.planes.push(Some(parsed?.with_cctx_role(cctx_role)));
             return Ok(());
         }
-        let mut coeffs = crate::bitstream::tile_payload::decode_general_intra_plane_coeffs(
+        let mut coeffs = decode_general_intra_plane_coeffs(
             work_unit,
             symbols,
             coeff_ctx,
             coeffs_arena,
-            usize::from(self.coeff_plane),
-            self.tx_size,
-            self.x,
-            self.y,
-            self.tx_fills_residual_block(),
-            eob_u_nonzero,
-            uv_mode,
-            angle_delta_uv,
-            DCT_DCT,
-            false,
-            self.fsc_mode,
-            self.txb_skip_fsc_mode,
-            chroma_pair::cctx_allowed(self),
-            policy,
+            &coeff_block,
         )?;
         self.apply_reconstruction_tx_type(&mut coeffs);
         if self.plane_id == PlaneId::Y {
@@ -277,10 +277,7 @@ impl ResidualPlanePlan {
         work_unit: &mut DecodeTileWorkUnit,
         symbols: &mut SymbolDecoder<'_>,
         coeff_ctx: &mut TileCoeffContextState,
-        uv_mode: usize,
-        angle_delta_uv: i32,
-        policy: TransformToolResidualPolicy,
-        eob_u_nonzero: bool,
+        coeff_block: &PlaneCoeffBlock,
         palette_color_map: Option<&[u8]>,
         deblock: &mut DeblockRecorder<'_>,
         coeffs_arena: &mut Vec<i32>,
@@ -302,20 +299,13 @@ impl ResidualPlanePlan {
                     symbols,
                     coeff_ctx,
                     coeffs_arena,
-                    usize::from(self.coeff_plane),
-                    unit_tx_size,
-                    x,
-                    y,
-                    false,
-                    eob_u_nonzero,
-                    uv_mode,
-                    angle_delta_uv,
-                    DCT_DCT,
-                    false,
-                    self.fsc_mode,
-                    self.txb_skip_fsc_mode,
-                    chroma_pair::cctx_allowed(self),
-                    policy,
+                    &PlaneCoeffBlock {
+                        tx_size: unit_tx_size,
+                        x,
+                        y,
+                        tx_fills_block: false,
+                        ..*coeff_block
+                    },
                 )?;
                 self.apply_reconstruction_tx_type(&mut coeffs);
                 let block = PositionedLumaCoeffBlock {

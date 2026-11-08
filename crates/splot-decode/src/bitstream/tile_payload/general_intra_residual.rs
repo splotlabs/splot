@@ -10,8 +10,8 @@ use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{
     MD_IDX_TO_TYPE, MODE_TO_ANGLE, NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, SIZE_CLASS,
     SIZE_TO_TX_PART_GROUP_LOOKUP, SIZE_TO_TX_TYPE_GROUP_VERT_AND_HORZ,
-    SIZE_TO_TX_TYPE_GROUP_VERT_OR_HORZ, TX_HEIGHT, TX_HEIGHT_LOG2, TX_SIZE_SQR, TX_SIZE_SQR_UP,
-    TX_WIDTH, TX_WIDTH_LOG2,
+    SIZE_TO_TX_TYPE_GROUP_VERT_OR_HORZ, TX_HEIGHT, TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_WIDTH,
+    TX_WIDTH_LOG2,
 };
 use splot_recon::{
     BitDepth, DequantBlockParams, DpcmDirection, InverseTransform2dOuter, PlaneId, QM_OFFSET,
@@ -38,8 +38,8 @@ use super::coeff_loop::ordinary_pass::geometry::{
 };
 use super::coeff_loop::transform_block::scan_extent;
 use super::coeff_loop::{
-    AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffBlockStartInput,
-    NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
+    AllZeroCoeffBlockInput, CoeffLoopContextError, TX_GEOMETRY, TxGeometry,
+    read_nonzero_coeff_block_start,
 };
 #[cfg(test)]
 use super::coeff_state::TransformCoeffBlockState;
@@ -753,20 +753,22 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
             symbols,
             context,
             arena,
-            0,
-            record.tx_size,
-            record.x,
-            record.y,
-            record_fills_block,
-            false,
-            uv_mode,
-            angle_delta_uv,
-            DCT_DCT,
-            false,
-            fsc_mode,
-            fsc_mode,
-            false,
-            transform_tool_residual_policy,
+            &PlaneCoeffBlock {
+                plane: 0,
+                tx_size: record.tx_size,
+                x: record.x,
+                y: record.y,
+                tx_fills_block: record_fills_block,
+                eob_u_nonzero: false,
+                uv_mode,
+                angle_delta_uv,
+                chroma_inter_tx_type: DCT_DCT,
+                is_inter: false,
+                fsc_mode,
+                txb_skip_fsc_mode: fsc_mode,
+                cctx_allowed: false,
+                policy: transform_tool_residual_policy,
+            },
         )?;
         Ok(Some(PositionedLumaCoeffBlock {
             x: record.x,
@@ -1080,53 +1082,64 @@ pub(crate) fn block_size_table_usize(
     })
 }
 
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+/// One transform block of a plane residual (§ 5.20.7.27), at plane sample
+/// position `(x, y)`.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PlaneCoeffBlock {
+    pub(crate) plane: usize,
+    pub(crate) tx_size: usize,
+    pub(crate) x: usize,
+    pub(crate) y: usize,
+    pub(crate) tx_fills_block: bool,
+    pub(crate) eob_u_nonzero: bool,
+    pub(crate) uv_mode: usize,
+    pub(crate) angle_delta_uv: i32,
+    pub(crate) chroma_inter_tx_type: usize,
+    pub(crate) is_inter: bool,
+    pub(crate) fsc_mode: bool,
+    pub(crate) txb_skip_fsc_mode: bool,
+    pub(crate) cctx_allowed: bool,
+    pub(crate) policy: TransformToolResidualPolicy,
+}
+
+/// Reads `all_zero` and, for a nonzero block, its coefficients into `arena`.
 pub(crate) fn decode_general_intra_plane_coeffs(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     context: &mut TileCoeffContextState,
     arena: &mut Vec<i32>,
-    plane: usize,
-    tx_size: usize,
-    start_x: usize,
-    start_y: usize,
-    tx_fills_block: bool,
-    eob_u_nonzero: bool,
-    uv_mode: usize,
-    angle_delta_uv: i32,
-    chroma_inter_tx_type: usize,
-    is_inter: bool,
-    fsc_mode: bool,
-    txb_skip_fsc_mode: bool,
-    cctx_allowed: bool,
-    transform_tool_residual_policy: TransformToolResidualPolicy,
+    block: &PlaneCoeffBlock,
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let segment_lossless = work_unit
         .coeff_frame_facts()
         .lossless_for_segment(current_frame_qm_segment_id());
     let lossless = segment_lossless.unwrap_or(false);
-    let tx_size = if lossless && !is_inter && !fsc_mode {
+    let tx_size = if lossless && !block.is_inter && !block.fsc_mode {
         TX_4X4
     } else {
-        tx_size
+        block.tx_size
     };
-    let w4 = usize::try_from(TX_WIDTH.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
-    let h4 = usize::try_from(TX_HEIGHT.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
+    let Some(tx) = TX_GEOMETRY.get(tx_size) else {
+        return Err(invalid_reconstruction_state_error("transform size"));
+    };
     let lines = context
-        .block_lines(plane, [start_x >> 2, start_y >> 2, w4, h4])
+        .block_lines(
+            block.plane,
+            [block.x >> 2, block.y >> 2, tx.w4.into(), tx.h4.into()],
+        )
         .map_err(coeff_ctx_err)?;
     let selector = txb_skip_selector_from_lines(
         context,
         &lines,
-        tx_size,
+        usize::from(tx.size_ctx),
         [
-            tx_fills_block,
-            eob_u_nonzero,
-            fsc_mode && work_unit.coeff_frame_facts().enable_fsc(),
+            block.tx_fills_block,
+            block.eob_u_nonzero,
+            block.fsc_mode && work_unit.coeff_frame_facts().enable_fsc(),
         ],
-        usize::from(is_inter || txb_skip_fsc_mode),
+        usize::from(block.is_inter || block.txb_skip_fsc_mode),
     );
-
     let all_zero = work_unit
         .cdf_mut()
         .tile_cdfs_mut()
@@ -1140,30 +1153,13 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             const { LumaCoeffBlock::empty(DCT_DCT, false) }
         });
     }
-
-    let frame_facts = work_unit.coeff_frame_facts();
-    let geometry = CoeffOrdinaryTxSizeGeometryConfig {
-        plane,
-        start_x,
-        start_y,
-        tx_size,
-    };
-    let TransformToolResidualPolicy { luma } = transform_tool_residual_policy;
-    decode_staged_transform_tool_nonzero_coeffs(
+    decode_nonzero_plane_coeffs(
         work_unit,
         symbols,
         context,
         arena,
-        (frame_facts, segment_lossless, lines),
-        geometry,
-        uv_mode,
-        angle_delta_uv,
-        chroma_inter_tx_type,
-        is_inter,
-        fsc_mode,
-        txb_skip_fsc_mode,
-        cctx_allowed,
-        luma,
+        block,
+        (tx, tx_size, segment_lossless, &lines),
     )
 }
 
@@ -1183,7 +1179,7 @@ pub(crate) fn txb_skip_selector(
     Ok(txb_skip_selector_from_lines(
         context,
         &lines,
-        tx_size,
+        txb_skip_tx_size_ctx(tx_size),
         [tx_fills_block, eob_u_nonzero, fsc_active],
         txb_skip_intra_inter,
     ))
@@ -1198,11 +1194,10 @@ pub(crate) fn txb_skip_selector(
 fn txb_skip_selector_from_lines(
     context: &TileCoeffContextState,
     lines: &CoeffBlockLines,
-    tx_size: usize,
+    tx_size_ctx: usize,
     [tx_fills_block, eob_u_nonzero, fsc_active]: [bool; 3],
     txb_skip_intra_inter: usize,
 ) -> TileCdfSelector {
-    let tx_size_ctx = txb_skip_tx_size_ctx(tx_size);
     let [above_or, left_or] = context.line_or(lines);
     let plane = lines.plane;
     if plane == 0 {
@@ -1231,83 +1226,85 @@ fn txb_skip_selector_from_lines(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-fn decode_staged_transform_tool_nonzero_coeffs(
+/// The nonzero path of [`decode_general_intra_plane_coeffs`], out of line so
+/// an `all_zero` block skips its frame.
+#[inline(never)]
+fn decode_nonzero_plane_coeffs(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     context: &mut TileCoeffContextState,
     arena: &mut Vec<i32>,
-    (frame_facts, segment_lossless, lines): (TileCoeffFrameFacts, Option<bool>, CoeffBlockLines),
-    geometry: CoeffOrdinaryTxSizeGeometryConfig,
-    uv_mode: usize,
-    angle_delta_uv: i32,
-    chroma_inter_tx_type: usize,
-    is_inter: bool,
-    fsc_mode: bool,
-    txb_skip_fsc_mode: bool,
-    cctx_allowed: bool,
-    luma_transform_type_context: Option<LumaTransformTypeContext>,
+    block: &PlaneCoeffBlock,
+    (tx, tx_size, segment_lossless, lines): (
+        &'static TxGeometry,
+        usize,
+        Option<bool>,
+        &CoeffBlockLines,
+    ),
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
-    let tx_width_log2 = tx_size_table_usize(&TX_WIDTH_LOG2, "Tx_Width_Log2", geometry.tx_size)?;
-    let tx_height_log2 = tx_size_table_usize(&TX_HEIGHT_LOG2, "Tx_Height_Log2", geometry.tx_size)?;
-    let (tx_width, tx_height) = tx_size_dimensions(geometry.tx_size)?;
-    let block = AllZeroCoeffBlockInput {
-        plane: geometry.plane,
-        x4: geometry.start_x >> 2,
-        y4: geometry.start_y >> 2,
-        w4: tx_width >> 2,
-        h4: tx_height >> 2,
+    let frame_facts = *work_unit.coeff_frame_facts();
+    let plane = block.plane;
+    let geometry = CoeffOrdinaryTxSizeGeometryConfig {
+        plane,
+        start_x: block.x,
+        start_y: block.y,
+        tx_size,
     };
     let start = read_nonzero_coeff_block_start(
         work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
-        NonZeroCoeffBlockStartInput {
-            block,
-            eob: NonZeroCoeffEobContextInput {
-                plane: geometry.plane,
-                is_inter,
-                tx_width_log2,
-                tx_height_log2,
-            },
-        },
+        tx,
+        plane,
+        block.is_inter,
     )
     .map_err(|source| GeneralIntraResidualError::NonZeroStart { source })?;
     let eob = start.eob_read().eob();
     let lossless = segment_lossless
         .ok_or_else(|| invalid_reconstruction_state_error("residual segment id"))?;
+    let tx_set = if lossless {
+        0
+    } else {
+        transform_set(frame_facts, plane, tx_size, block.is_inter)?
+    };
     let metadata = ensure_transform_tool_residual_handoff(
         work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
         TransformToolResidualInput {
-            frame_facts,
-            plane: geometry.plane,
-            tx_size: geometry.tx_size,
-            is_inter,
+            frame_facts: &frame_facts,
+            plane,
+            tx_size,
+            tx_set,
+            is_inter: block.is_inter,
             lossless,
-            fsc_mode: fsc_mode || (geometry.plane > 0 && txb_skip_fsc_mode),
+            fsc_mode: block.fsc_mode || (plane > 0 && block.txb_skip_fsc_mode),
             eob,
-            cctx_allowed,
-            luma_transform_type_context,
+            cctx_allowed: block.cctx_allowed,
+            luma_transform_type_context: block.policy.luma,
         },
     )?;
     let use_fsc = frame_facts.enable_fsc()
         && metadata.luma_tx_type == IDTX
-        && geometry.plane == 0
-        && (fsc_mode || is_inter);
+        && plane == 0
+        && (block.fsc_mode || block.is_inter);
     let mut base_config = staged_transform_tool_lossless_base_config(
         frame_facts,
-        geometry.plane,
-        uv_mode,
-        angle_delta_uv,
-        chroma_inter_tx_type,
+        plane,
+        block.uv_mode,
+        block.angle_delta_uv,
+        block.chroma_inter_tx_type,
         lossless,
         metadata,
     );
     if use_fsc {
         base_config.use_tcq = false;
     }
-    let plane_tx_type =
-        staged_transform_tool_plane_tx_type(geometry, is_inter, lossless, base_config)?;
+    let plane_tx_type = staged_transform_tool_plane_tx_type(
+        geometry,
+        block.is_inter,
+        lossless,
+        tx_set,
+        base_config,
+    )?;
     let start_idx = arena.len();
     let coeff_count = start.coeff_count();
     if use_fsc {
@@ -1316,9 +1313,15 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             work_unit.cdf_mut().tile_cdfs_mut(),
             symbols,
             CoeffFscStagedTxSizeNonZeroInput {
-                block,
+                block: AllZeroCoeffBlockInput {
+                    plane,
+                    x4: block.x >> 2,
+                    y4: block.y >> 2,
+                    w4: tx.w4.into(),
+                    h4: tx.h4.into(),
+                },
                 start,
-                tx_size: geometry.tx_size,
+                tx_size,
                 plane_tx_type: metadata.luma_tx_type,
             },
         )
@@ -1327,7 +1330,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     } else {
         let extent = scan_extent(
             CoeffTransformClass::from_plane_tx_type(plane_tx_type),
-            (tx_width_log2, tx_height_log2),
+            (usize::from(tx.width_log2), usize::from(tx.height_log2)),
             eob,
         );
         arena.resize(start_idx + extent, 0);
@@ -1391,23 +1394,19 @@ fn staged_transform_tool_lossless_base_config(
     }
 }
 
+#[inline]
 fn staged_transform_tool_plane_tx_type(
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
     is_inter: bool,
     lossless: bool,
+    tx_set: usize,
     base_config: CoeffOrdinaryBranchTxSetBaseConfig,
 ) -> Result<usize, GeneralIntraResidualError> {
     if lossless {
         return Ok(lossless_plane_tx_type(geometry, is_inter, base_config));
     }
     let mode_to_txfm = CoeffOrdinaryBranchModeToTxfmBaseConfig {
-        tx_set: transform_set_from_flags(
-            base_config.reduced_tx_set,
-            base_config.enable_chroma_dctonly,
-            geometry.plane,
-            geometry.tx_size,
-            is_inter,
-        )?,
+        tx_set,
         uv_mode: base_config.uv_mode,
         angle_delta_uv: base_config.angle_delta_uv,
         luma_tx_type: base_config.luma_tx_type,
@@ -1428,10 +1427,12 @@ struct TransformToolResidualMetadata {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct TransformToolResidualInput {
-    frame_facts: TileCoeffFrameFacts,
+struct TransformToolResidualInput<'f> {
+    frame_facts: &'f TileCoeffFrameFacts,
     plane: usize,
     tx_size: usize,
+    /// The block's transform set; unused for a lossless block.
+    tx_set: usize,
     is_inter: bool,
     lossless: bool,
     fsc_mode: bool,
@@ -1454,7 +1455,7 @@ pub(crate) const fn is_cctx_geometry_allowed(
 fn ensure_transform_tool_residual_handoff(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    input: TransformToolResidualInput,
+    input: TransformToolResidualInput<'_>,
 ) -> Result<TransformToolResidualMetadata, GeneralIntraResidualError> {
     let frame_facts = input.frame_facts;
     let plane = input.plane;
@@ -1488,7 +1489,7 @@ fn ensure_transform_tool_residual_handoff(
         }
         return Ok(metadata);
     }
-    let tx_set = transform_set(frame_facts, plane, tx_size, is_inter)?;
+    let tx_set = input.tx_set;
     let dct_forced = dct_forced(
         is_inter,
         plane,
@@ -2301,6 +2302,7 @@ pub(crate) fn intra_chroma_plane_tx_type(
         },
         false,
         false,
+        transform_set_from_flags(0, enable_chroma_dctonly, plane, tx_size, false)?,
         CoeffOrdinaryBranchTxSetBaseConfig {
             reduced_tx_set: 0,
             enable_chroma_dctonly,
@@ -2331,6 +2333,7 @@ pub(crate) fn inter_chroma_plane_tx_type(
         },
         true,
         false,
+        transform_set_from_flags(0, enable_chroma_dctonly, plane, tx_size, true)?,
         CoeffOrdinaryBranchTxSetBaseConfig {
             reduced_tx_set: 0,
             enable_chroma_dctonly,

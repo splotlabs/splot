@@ -785,9 +785,10 @@ fn assert_missing_luma_context_is_atomic(
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: facts,
+            frame_facts: &facts,
             plane: 0,
             tx_size,
+            tx_set: transform_set(facts, 0, tx_size, false).unwrap_or(0),
             is_inter: false,
             lossless: false,
             fsc_mode: false,
@@ -845,9 +846,10 @@ fn ensure_with_test_payload_fsc_and_policy(
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: facts,
+            frame_facts: &facts,
             plane,
             tx_size,
+            tx_set: transform_set(facts, plane, tx_size, is_inter).unwrap_or(0),
             is_inter,
             lossless: facts
                 .lossless_for_segment(current_frame_qm_segment_id())
@@ -876,9 +878,10 @@ fn lossless_intra_transform_handoff_forces_dct_without_tx_type_or_ist_reads() {
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: lossless_frame_facts(),
+            frame_facts: &lossless_frame_facts(),
             plane: 0,
             tx_size: TX_8X8,
+            tx_set: 0,
             is_inter: false,
             lossless: true,
             fsc_mode: false,
@@ -904,9 +907,10 @@ fn lossless_fsc_luma_transform_handoff_retains_idtx_without_tx_type_read() {
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: lossless_frame_facts(),
+            frame_facts: &lossless_frame_facts(),
             plane: 0,
             tx_size: TX_8X8,
+            tx_set: 0,
             is_inter: false,
             lossless: true,
             fsc_mode: true,
@@ -931,9 +935,10 @@ fn lossless_fsc_chroma_transform_handoff_follows_luma_idtx() {
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: lossless_frame_facts(),
+            frame_facts: &lossless_frame_facts(),
             plane: 1,
             tx_size: TX_4X4,
+            tx_set: 0,
             is_inter: false,
             lossless: true,
             fsc_mode: true,
@@ -1447,7 +1452,7 @@ fn lossless_fsc_staged_plane_tx_type_remains_idtx() {
     );
 
     assert_eq!(
-        staged_transform_tool_plane_tx_type(geometry, false, true, base_config).unwrap(),
+        staged_transform_tool_plane_tx_type(geometry, false, true, 0, base_config).unwrap(),
         IDTX
     );
 }
@@ -1474,7 +1479,7 @@ fn lossless_inter_staged_plane_tx_type_remains_idtx() {
     );
 
     assert_eq!(
-        staged_transform_tool_plane_tx_type(geometry, true, true, base_config).unwrap(),
+        staged_transform_tool_plane_tx_type(geometry, true, true, 0, base_config).unwrap(),
         IDTX
     );
 }
@@ -1498,7 +1503,7 @@ fn lossless_inter_chroma_staged_plane_tx_type_uses_colocated_luma_tx_type() {
     );
 
     assert_eq!(
-        staged_transform_tool_plane_tx_type(geometry, true, true, base_config).unwrap(),
+        staged_transform_tool_plane_tx_type(geometry, true, true, 0, base_config).unwrap(),
         IDTX
     );
 }
@@ -1542,9 +1547,10 @@ fn lossless_chroma_transform_handoff_skips_cctx_read() {
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: facts,
+            frame_facts: &facts,
             plane: 1,
             tx_size: TX_8X8,
+            tx_set: 0,
             is_inter: false,
             lossless: true,
             fsc_mode: false,
@@ -1574,9 +1580,10 @@ fn chroma_transform_handoff_skips_cctx_read_when_geometry_disallows() {
                 &mut cdfs,
                 &mut symbols,
                 TransformToolResidualInput {
-                    frame_facts: facts,
+                    frame_facts: &facts,
                     plane: 1,
                     tx_size: TX_32X32,
+                    tx_set: transform_set(facts, 1, TX_32X32, is_inter).unwrap_or(0),
                     is_inter,
                     lossless: false,
                     fsc_mode: false,
@@ -1616,9 +1623,10 @@ fn lossless_inter_luma_transform_handoff_reads_tx_type_metadata() {
             &mut cdfs,
             &mut symbols,
             TransformToolResidualInput {
-                frame_facts: facts,
+                frame_facts: &facts,
                 plane: 0,
                 tx_size: TX_4X4,
+                tx_set: 0,
                 is_inter: true,
                 lossless: true,
                 fsc_mode: false,
@@ -1644,9 +1652,10 @@ fn lossless_inter_luma_transform_handoff_large_tx_implies_idtx_without_symbol() 
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: facts,
+            frame_facts: &facts,
             plane: 0,
             tx_size: TX_8X8,
+            tx_set: 0,
             is_inter: true,
             lossless: true,
             fsc_mode: false,
@@ -1672,9 +1681,10 @@ fn lossless_inter_chroma_transform_handoff_skips_tx_type_metadata() {
         &mut cdfs,
         &mut symbols,
         TransformToolResidualInput {
-            frame_facts: facts,
+            frame_facts: &facts,
             plane: 1,
             tx_size: TX_4X4,
+            tx_set: 0,
             is_inter: true,
             lossless: true,
             fsc_mode: false,

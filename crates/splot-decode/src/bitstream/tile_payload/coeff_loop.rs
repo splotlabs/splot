@@ -5,13 +5,15 @@
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
+use splot_core::tables::conversion::{
+    ADJUSTED_TX_SIZE, TX_HEIGHT, TX_HEIGHT_LOG2, TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_WIDTH,
+    TX_WIDTH_LOG2,
+};
 
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{EobPtSize, TileCdfSelector, TileCdfSubset};
 use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
 
-const COEFFS_PER_4X4: usize = 4;
-const MAX_ADJUSTED_COEFF_EXTENT: usize = 32;
 const MIN_EOB_TX_LOG2: usize = 2;
 const EOB_MULTISIZE_LOG2_CAP: usize = 5;
 const EOB_MULTISIZE_OFFSET: usize = 4;
@@ -20,10 +22,60 @@ const MAX_NONZERO_EOB_PT: usize = 11;
 const EOB_GROUP_START: [usize; MAX_NONZERO_EOB_PT + 1] =
     [0, 1, 2, 3, 5, 9, 17, 33, 65, 129, 257, 513];
 const EOB_OFFSET_BITS: [usize; MAX_NONZERO_EOB_PT + 1] = [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+const TX_SIZES: usize = 25;
+
+/// The coefficient geometry of one `TxSize`: its 4x4 extent, the
+/// `Adjusted_Tx_Size` coefficient extent (§ 7.13.3), the `all_zero` and
+/// level transform-size context `(Tx_Size_Sqr + Tx_Size_Sqr_Up + 1) >> 1`
+/// and the EOB symbol size (§ 5.20.7.27).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TxGeometry {
+    pub(crate) w4: u8,
+    pub(crate) h4: u8,
+    pub(crate) width: u8,
+    pub(crate) height: u8,
+    pub(crate) width_log2: u8,
+    pub(crate) height_log2: u8,
+    pub(crate) size_ctx: u8,
+    pub(crate) eob_size: EobPtSize,
+}
+
+/// [`TxGeometry`] by `TxSize`.
+pub(crate) static TX_GEOMETRY: [TxGeometry; TX_SIZES] = {
+    let mut out = [TxGeometry {
+        w4: 0,
+        h4: 0,
+        width: 0,
+        height: 0,
+        width_log2: 0,
+        height_log2: 0,
+        size_ctx: 0,
+        eob_size: EobPtSize::Pt16,
+    }; TX_SIZES];
+    let mut tx_size = 0;
+    while tx_size < TX_SIZES {
+        let adjusted = ADJUSTED_TX_SIZE[tx_size] as usize;
+        let (width_log2, height_log2) = (TX_WIDTH_LOG2[adjusted], TX_HEIGHT_LOG2[adjusted]);
+        out[tx_size] = TxGeometry {
+            w4: (TX_WIDTH[tx_size] >> 2) as u8,
+            h4: (TX_HEIGHT[tx_size] >> 2) as u8,
+            width: TX_WIDTH[adjusted] as u8,
+            height: TX_HEIGHT[adjusted] as u8,
+            width_log2: width_log2 as u8,
+            height_log2: height_log2 as u8,
+            size_ctx: ((TX_SIZE_SQR[tx_size] + TX_SIZE_SQR_UP[tx_size] + 1) >> 1) as u8,
+            eob_size: eob_pt_size(
+                width_log2 as usize + height_log2 as usize - EOB_MULTISIZE_OFFSET,
+            ),
+        };
+        tx_size += 1;
+    }
+    out
+};
 pub(crate) mod base_level_pass;
 pub(crate) mod base_symbol;
 mod branch;
-pub(crate) use branch::{NonZeroCoeffBlockStartInput, read_nonzero_coeff_block_start};
+pub(crate) use branch::read_nonzero_coeff_block_start;
 pub(crate) mod fsc_level_pass;
 pub(crate) mod fsc_quant_pass;
 pub(crate) mod fsc_sign_pass;
@@ -296,15 +348,6 @@ pub(crate) fn read_nonzero_coeff_eob(
     Ok(eob)
 }
 
-pub(crate) fn read_nonzero_coeff_eob_from_context(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: NonZeroCoeffEobContextInput,
-) -> Result<NonZeroCoeffEob, CoeffLoopContextError> {
-    let input = nonzero_coeff_eob_symbol_input(input)?;
-    read_nonzero_coeff_eob(cdfs, symbols, input)
-}
-
 pub(crate) fn nonzero_coeff_eob_symbol_input(
     input: NonZeroCoeffEobContextInput,
 ) -> Result<NonZeroCoeffEobSymbolInput, CoeffLoopContextError> {
@@ -321,10 +364,14 @@ fn eob_pt_size_from_tx_log2(
     checked_eob_tx_log2("width", tx_width_log2)?;
     checked_eob_tx_log2("height", tx_height_log2)?;
 
-    let eob_multisize = tx_width_log2.min(EOB_MULTISIZE_LOG2_CAP)
-        + tx_height_log2.min(EOB_MULTISIZE_LOG2_CAP)
-        - EOB_MULTISIZE_OFFSET;
-    Ok(match eob_multisize {
+    Ok(eob_pt_size(
+        tx_width_log2.min(EOB_MULTISIZE_LOG2_CAP) + tx_height_log2.min(EOB_MULTISIZE_LOG2_CAP)
+            - EOB_MULTISIZE_OFFSET,
+    ))
+}
+
+const fn eob_pt_size(eob_multisize: usize) -> EobPtSize {
+    match eob_multisize {
         0 => EobPtSize::Pt16,
         1 => EobPtSize::Pt32,
         2 => EobPtSize::Pt64,
@@ -332,7 +379,7 @@ fn eob_pt_size_from_tx_log2(
         4 => EobPtSize::Pt256,
         5 => EobPtSize::Pt512,
         _ => EobPtSize::Pt1024,
-    })
+    }
 }
 
 fn checked_eob_tx_log2(axis: &'static str, value: usize) -> Result<(), CoeffLoopContextError> {
@@ -389,6 +436,7 @@ fn eob_extra_bits_width(eob_pt: usize) -> Result<usize, CoeffLoopContextError> {
     Ok(width.saturating_sub(1))
 }
 
+#[inline]
 fn read_eob_literal(
     symbols: &mut SymbolDecoder<'_>,
     width: u32,
@@ -403,11 +451,6 @@ fn read_eob_literal(
     Ok(value)
 }
 
-fn adjusted_coeff_extent(size4: usize) -> usize {
-    size4
-        .saturating_mul(COEFFS_PER_4X4)
-        .min(MAX_ADJUSTED_COEFF_EXTENT)
-}
 #[cfg(test)]
 #[path = "coeff_loop_tests.rs"]
 mod tests;

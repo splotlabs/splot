@@ -17,7 +17,7 @@ use super::super::cdf::coeff_context::{
     LF_SIG_COEF_CONTEXTS_2D_UV, MAG_REF_OFFSET_WITH_TX_CLASS, MAX_BASE_BR_RANGE, SIG_OFFSETS,
     coeff_base_eob_ctx, dc_sign_ctx,
 };
-use super::super::cdf::{CoeffCdfSelector, CoeffLevelRows, TileCdfSelector, TileCdfSubset};
+use super::super::cdf::{CoeffLevelRows, TileCdfSelector, TileCdfSubset};
 use super::super::coeff_state::{
     CoeffBlockLines, CoeffLevelWords, LEVEL_STRIDE, LEVEL_WORDS_MASK, TileCoeffContextState,
     TileCoeffStateError,
@@ -26,7 +26,7 @@ use super::CoeffLoopContextError;
 use super::base_level_pass::{
     CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError, tx_class_index,
 };
-use super::base_symbol::{CoeffBaseSymbolReadError, read_coeff_symbol};
+use super::base_symbol::CoeffBaseSymbolReadError;
 use super::branch::NonZeroCoeffBlockStart;
 use super::max_level::{
     COEFF_BASE_RANGE, CoeffMaxLevelConfig, CoeffTransformClass, LF_NUM_BASE_LEVELS,
@@ -358,10 +358,10 @@ pub(crate) const fn lf_scan_end<const CLASS: usize, const LUMA: bool>(
     }
 }
 
-pub(crate) struct CoeffTransformBlockInput {
+pub(crate) struct CoeffTransformBlockInput<'l> {
     pub(crate) start: NonZeroCoeffBlockStart,
     pub(crate) config: CoeffBaseDerivedLevelPassConfig,
-    pub(crate) lines: CoeffBlockLines,
+    pub(crate) lines: &'l CoeffBlockLines,
     pub(crate) lossless: bool,
 }
 
@@ -373,7 +373,7 @@ pub(crate) fn decode_ordinary_transform_block(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    input: CoeffTransformBlockInput,
+    input: CoeffTransformBlockInput<'_>,
     quant: &mut [i32],
 ) -> Result<usize, CoeffOrdinaryPassError> {
     let config = input.config;
@@ -384,13 +384,6 @@ pub(crate) fn decode_ordinary_transform_block(
         config.tx_height,
         input.start.eob_read().eob(),
     )?;
-    if 1usize.checked_shl(config.tx_width_log2) != Some(config.tx_width) {
-        return Err(CoeffBaseDerivedLevelPassError::TxWidthLog2Mismatch {
-            tx_width_log2: config.tx_width_log2,
-            tx_width: config.tx_width,
-        }
-        .into());
-    }
     let lines = input.lines;
     let plane = config.plane;
     let (above_dc, left_dc, levels) = state.dc_lines_and_levels(plane)?;
@@ -418,7 +411,7 @@ pub(crate) fn decode_ordinary_transform_block(
         dispatch::<false>(cdfs, symbols, levels, quant, &block)
     }?;
     state.commit_block(
-        &lines,
+        lines,
         summary.state.cul_level(),
         summary.state.dc_category(),
     );
@@ -426,7 +419,7 @@ pub(crate) fn decode_ordinary_transform_block(
 }
 
 fn preflight(
-    input: &CoeffTransformBlockInput,
+    input: &CoeffTransformBlockInput<'_>,
     quant_len: usize,
 ) -> Result<(), CoeffOrdinaryPassError> {
     let config = input.config;
@@ -448,11 +441,10 @@ fn preflight(
         return Err(CoeffQuantPassError::InconsistentTcqConfig.into());
     }
     let coeff_count = input.start.coeff_count();
-    if quant_len > coeff_count || config.tx_width.checked_mul(config.tx_height) != Some(coeff_count)
-    {
+    if quant_len > coeff_count {
         return Err(CoeffBaseDerivedLevelPassError::BlockGeometryMismatch {
             block_width: input.start.width(),
-            block_height: input.start.coeff_count() / input.start.width().max(1),
+            block_height: coeff_count / input.start.width().max(1),
             config_width: config.tx_width,
             config_height: config.tx_height,
         }
@@ -526,15 +518,13 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
     };
     let lf_end = lf_scan_end::<CLASS, LUMA>(config.tx_width, config.tx_height).max(1);
     let eob_index = scan.len() - 1;
-    let selector = base_eob_selector::<LUMA>(eob_index, eob_index < lf_end, config);
-    let eob_level = u32::from(
-        read_coeff_symbol(cdfs, symbols, selector).map_err(CoeffBaseDerivedLevelPassError::from)?,
-    ) + 1;
-    let rows = cdfs
+    let mut rows = cdfs
         .coeff_rows_mut()
         .level_rows(config.tx_size_ctx)
         .map_err(|error| CoeffBaseSymbolReadError::from(BlockSymbolTraceReadError::from(error)))
         .map_err(CoeffBaseDerivedLevelPassError::from)?;
+    let eob_ctx = coeff_base_eob_ctx(eob_index, config.tx_width_log2, config.tx_height);
+    let eob_level = read_eob_base::<LUMA, UPD>(symbols, &mut rows, eob_ctx, eob_index < lf_end) + 1;
     let mut pass = LevelPass::<UPD> {
         symbols: symbols.snapshot(),
         levels: &mut *levels,
@@ -560,23 +550,20 @@ fn run<const CLASS: usize, const LUMA: bool, const TCQ: bool, const PH: bool, co
     result
 }
 
-fn base_eob_selector<const LUMA: bool>(
-    scan_index: usize,
-    is_lf: bool,
-    config: CoeffBaseDerivedLevelPassConfig,
-) -> CoeffCdfSelector {
-    let ctx = coeff_base_eob_ctx(scan_index, config.tx_width_log2, config.tx_height);
-    match (LUMA, is_lf) {
-        (false, true) => CoeffCdfSelector::BaseLfEobUv { ctx },
-        (false, false) => CoeffCdfSelector::BaseEobUv { ctx },
-        (true, true) => CoeffCdfSelector::BaseLfEob {
-            tx_size: config.tx_size_ctx,
-            ctx,
-        },
-        (true, false) => CoeffCdfSelector::BaseEob {
-            tx_size: config.tx_size_ctx,
-            ctx,
-        },
+/// Reads the `coeff_base_eob` symbol of context `ctx` (§ 8.3.2).
+#[allow(clippy::inline_always, reason = "measured: per-block symbol read")]
+#[inline(always)]
+fn read_eob_base<const LUMA: bool, const UPD: bool>(
+    symbols: &mut SymbolDecoder<'_>,
+    rows: &mut CoeffLevelRows<'_>,
+    ctx: usize,
+    lf: bool,
+) -> u32 {
+    match (LUMA, lf) {
+        (true, true) => symbols.read_trusted::<6, UPD>(row_at(rows.base_lf_eob, ctx)),
+        (true, false) => symbols.read_trusted::<4, UPD>(row_at(rows.base_eob, ctx)),
+        (false, true) => symbols.read_trusted::<6, UPD>(row_at(rows.base_lf_eob_uv, ctx)),
+        (false, false) => symbols.read_trusted::<4, UPD>(row_at(rows.base_eob_uv, ctx)),
     }
 }
 

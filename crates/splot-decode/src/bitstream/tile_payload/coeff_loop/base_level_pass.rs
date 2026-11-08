@@ -88,8 +88,6 @@ pub(crate) enum CoeffBaseDerivedLevelPassError {
         config_width: usize,
         config_height: usize,
     },
-    #[error("coefficient base/level tx_width_log2 {tx_width_log2} does not match width {tx_width}")]
-    TxWidthLog2Mismatch { tx_width_log2: u32, tx_width: usize },
     #[error("coefficient base/level config cannot enable parity hiding and TCQ together")]
     InconsistentParityAndTcq,
     #[error(

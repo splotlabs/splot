@@ -73,7 +73,7 @@ pub(crate) use general_intra_residual::{
     CoeffBlock, FrameQmScope, FrameQmSegmentScope, FrameQuantizerDeltasScope,
     FrameQuantizerSnapshot, FrameUserQmLevel, FrameUserQmLevels, FrameUserQmScope,
     GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext,
-    LumaTransformPartitionUnits, LumaTransformTypeContext, LumaTxPartition,
+    LumaTransformPartitionUnits, LumaTransformTypeContext, LumaTxPartition, PlaneCoeffBlock,
     PositionedLumaCoeffBlock, TransformToolResidualPolicy,
     add_general_intra_coeff_block_residual_in_place, current_frame_qm_segment_id,
     decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
@@ -311,7 +311,7 @@ impl TileCoeffFrameFacts {
     }
 
     #[must_use]
-    pub(crate) const fn lossless_for_segment(self, segment_id: usize) -> Option<bool> {
+    pub(crate) const fn lossless_for_segment(&self, segment_id: usize) -> Option<bool> {
         if segment_id < self.lossless_array.len() {
             Some(self.lossless_array[segment_id])
         } else {
@@ -533,8 +533,8 @@ impl DecodeTileWorkUnit {
     }
 
     #[must_use]
-    pub(crate) const fn coeff_frame_facts(&self) -> TileCoeffFrameFacts {
-        self.coeff_frame_facts
+    pub(crate) const fn coeff_frame_facts(&self) -> &TileCoeffFrameFacts {
+        &self.coeff_frame_facts
     }
 
     #[must_use]

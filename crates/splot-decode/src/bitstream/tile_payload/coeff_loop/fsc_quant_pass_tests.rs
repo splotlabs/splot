@@ -10,10 +10,9 @@ use splot_core::symbol_encoder::SymbolEncoder;
 
 use super::super::super::cdf::{CoeffCdfSelector, FrameCdfSubset, TileCdfSelector, TileCdfSubset};
 use super::super::super::coeff_state::TileCoeffContextState;
-use super::super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
-use super::super::{
-    AllZeroCoeffBlockInput, NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
-};
+use super::super::AllZeroCoeffBlockInput;
+use super::super::branch::NonZeroCoeffBlockStart;
+use super::super::{TX_GEOMETRY, read_nonzero_coeff_block_start};
 use super::*;
 
 const TX_4X4: usize = 0;
@@ -40,32 +39,8 @@ fn write_symbol(
     .unwrap();
 }
 
-fn read_start(
-    tile: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    x4: usize,
-    y4: usize,
-) -> NonZeroCoeffBlockStart {
-    read_nonzero_coeff_block_start(
-        tile,
-        symbols,
-        NonZeroCoeffBlockStartInput {
-            block: AllZeroCoeffBlockInput {
-                plane: 0,
-                x4,
-                y4,
-                w4: 1,
-                h4: 1,
-            },
-            eob: NonZeroCoeffEobContextInput {
-                plane: 0,
-                is_inter: false,
-                tx_width_log2: 2,
-                tx_height_log2: 2,
-            },
-        },
-    )
-    .unwrap()
+fn read_start(tile: &mut TileCdfSubset, symbols: &mut SymbolDecoder<'_>) -> NonZeroCoeffBlockStart {
+    read_nonzero_coeff_block_start(tile, symbols, &TX_GEOMETRY[TX_4X4], 0, false).unwrap()
 }
 
 fn staged_input(
@@ -177,7 +152,7 @@ fn staged_fsc_live_path_reads_bob_idtx_br_sign_quant_and_commits() {
     let (payload, mut expected_tile) = encode_fsc_two_coefficients();
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
-    let start = read_start(&mut tile, &mut symbols, 1, 1);
+    let start = read_start(&mut tile, &mut symbols);
     let eob = start.eob_read().eob();
     let mut state =
         TileCoeffContextState::new_for_tile_chroma(0..4, 0..4, ChromaFormatIdc::Yuv444).unwrap();
@@ -262,7 +237,7 @@ fn staged_fsc_preflights_selector_geometry_and_plane_without_consumption() {
         let payload = encode_start_only();
         let mut tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut symbols = symbol_decoder(&payload);
-        let start = read_start(&mut tile, &mut symbols, 1, 1);
+        let start = read_start(&mut tile, &mut symbols);
         let tile_before = tile.clone();
         let checkpoint = symbols.checkpoint();
         let mut state =
@@ -289,7 +264,7 @@ fn staged_fsc_context_commit_failure_preserves_context() {
     let (payload, expected_tile) = encode_fsc_two_coefficients();
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut symbols = symbol_decoder(&payload);
-    let start = read_start(&mut tile, &mut symbols, 2, 2);
+    let start = read_start(&mut tile, &mut symbols);
     let mut state =
         TileCoeffContextState::new_for_tile_chroma(0..1, 0..1, ChromaFormatIdc::Yuv444).unwrap();
     let state_before = state.clone();
