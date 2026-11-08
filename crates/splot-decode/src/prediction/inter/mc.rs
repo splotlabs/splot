@@ -704,6 +704,7 @@ pub(super) fn predict_compound_into<T: ReconSample>(
         && matches!(block.blend, CompoundBlend::Average { .. })
         && block.warp_params.iter().all(Option::is_none);
     let mut staged_v: Option<RecycledMcSamples<T>> = None;
+    let mut v_written = false;
     for (plane, sub_x, sub_y) in mc_planes(info.pixel_format()) {
         if plane != PlaneId::Y && !block.has_chroma {
             continue;
@@ -724,11 +725,33 @@ pub(super) fn predict_compound_into<T: ReconSample>(
         }
         let (plane_x, plane_y, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
         let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
+        if plane == PlaneId::V && v_written {
+            continue;
+        }
         if plane == PlaneId::V
             && let Some(staged) = staged_v.take()
             && let Some(samples) = staged.get(..block_w * block_h)
         {
             sink.write_rect(plane, rect, samples, block_w)?;
+            continue;
+        }
+        if plane == PlaneId::U
+            && shares_chroma_grid
+            && let Some([(u, u_stride), v]) = sink.chroma_rects_mut(rect)
+        {
+            v_written = predict_compound_plane_output(
+                info,
+                block,
+                plane,
+                sub_x,
+                sub_y,
+                &mut luma_diff_weighted_mask,
+                motion.as_ref(),
+                offset,
+                u,
+                u_stride,
+                Some(v),
+            )?;
             continue;
         }
         let mut chroma_v = (plane == PlaneId::U && shares_chroma_grid).then(|| {
@@ -750,7 +773,7 @@ pub(super) fn predict_compound_into<T: ReconSample>(
                 offset,
                 output,
                 stride,
-                chroma_v.as_deref_mut().map(Vec::as_mut_slice),
+                chroma_v.as_deref_mut().map(|v| (v.as_mut_slice(), block_w)),
             )
         };
         let shared = if let Some(predicted) =
@@ -1105,7 +1128,7 @@ fn predict_compound_plane_output<T: ReconSample>(
     offset: ByteOffset,
     samples: &mut [T],
     stride: usize,
-    mut chroma_v: Option<&mut [T]>,
+    mut chroma_v: Option<(&mut [T], usize)>,
 ) -> Result<bool> {
     let storage_luma_size = info.storage_luma_size();
     let frame_w = storage_luma_size.width().div_ceil(1 << sub_x);
@@ -1144,7 +1167,9 @@ fn predict_compound_plane_output<T: ReconSample>(
                 offset,
                 output,
                 stride,
-                chroma_v.as_deref_mut().and_then(T::u8_slice_mut),
+                chroma_v
+                    .as_mut()
+                    .and_then(|(v, stride)| Some((T::u8_slice_mut(v)?, *stride))),
             )?
         {
             return Ok(shared);
@@ -1162,7 +1187,7 @@ fn predict_compound_plane_output<T: ReconSample>(
                 offset,
                 output,
                 stride,
-                chroma_v.and_then(T::u16_slice_mut),
+                chroma_v.and_then(|(v, stride)| Some((T::u16_slice_mut(v)?, stride))),
             )?
         {
             return Ok(shared);
@@ -1265,7 +1290,7 @@ fn predict_motion_compound_average_into<T: ReconSample, O: CompoundAverageOutput
     offset: ByteOffset,
     output: &mut [O],
     stride: usize,
-    chroma_v: Option<&mut [O]>,
+    chroma_v: Option<(&mut [O], usize)>,
 ) -> Result<(bool, bool)> {
     if optflow::predict_uniform_motion_compound_average_into(
         info,

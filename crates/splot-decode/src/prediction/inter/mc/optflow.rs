@@ -1204,8 +1204,8 @@ pub(super) fn predict_uniform_motion_compound_average_into<
 }
 
 /// Predicts a multi-cell grid plane and returns whether it did. With
-/// `chroma_v` while `plane` is U, the V plane goes into that packed
-/// `block_w`-stride output too, from the same per-cell parameters: U and V share
+/// `chroma_v` while `plane` is U, the V plane goes into that output and row
+/// stride too, from the same per-cell parameters: U and V share
 /// the plane geometry, scalings and motion, and only the reference views differ.
 /// Unscaled cells whose refine-MV unit is the cell itself (TIP) derive their
 /// scalings and bounds from integer positions.
@@ -1225,7 +1225,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
     offset: ByteOffset,
     output: &mut [O],
     output_stride: usize,
-    chroma_v: Option<&mut [O]>,
+    chroma_v: Option<(&mut [O], usize)>,
 ) -> Result<bool> {
     if motion.cells.as_slice().len() == 1 {
         return Ok(false);
@@ -1233,8 +1233,10 @@ pub(super) fn predict_motion_grid_compound_average_into<
     let prediction = super::compound_subpel_plane(info, block, plane, sub_x, sub_y, offset)?;
     let mut chroma_v = chroma_v;
     let mut second = None;
-    if let Some(v_output) = chroma_v.take_if(|_| plane == PlaneId::U) {
-        if v_output.len() >= prediction.block_w * prediction.block_h {
+    if let Some((v_output, v_stride)) = chroma_v.take_if(|_| plane == PlaneId::U) {
+        if v_stride >= prediction.block_w
+            && (prediction.block_h - 1) * v_stride + prediction.block_w <= v_output.len()
+        {
             let views = super::compound_plane_views(
                 block,
                 PlaneId::V,
@@ -1250,9 +1252,9 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 block_h: prediction.block_h,
                 scalings: prediction.scalings,
             };
-            second = Some((v, v_output));
+            second = Some((v, v_output, v_stride));
         } else {
-            chroma_v = Some(v_output);
+            chroma_v = Some((v_output, v_stride));
         }
     }
     let sample_count = (prediction.block_h.saturating_sub(1))
@@ -1491,7 +1493,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
     let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
     let mut program = CELL_PROGRAM.take().unwrap_or_default();
     program.clear();
-    let Some((second, second_output)) = second else {
+    let Some((second, second_output, second_stride)) = second else {
         for (cell_row, row) in (0..prediction.block_h).step_by(subblock_h).enumerate() {
             process_row(
                 cell_row,
@@ -1524,14 +1526,14 @@ pub(super) fn predict_motion_grid_compound_average_into<
     for (cell_row, row) in (0..prediction.block_h).step_by(subblock_h).enumerate() {
         let height = subblock_h.min(prediction.block_h - row);
         let output = &mut output[row * output_stride..];
-        let second_output = &mut second_output[row * second.block_w..];
+        let second_output = &mut second_output[row * second_stride..];
         let [mut merged, mut second_merged] = fullpel_runs(
             cell_row,
             [row, height],
             &mut intermediate_scratch,
             output,
             output_stride,
-            Some((&second.views, &mut *second_output, second.block_w)),
+            Some((&second.views, &mut *second_output, second_stride)),
         )?;
         for (cell_col, col) in
             (0..prediction.block_w.div_ceil(subblock_w)).map(|c| (c, c * subblock_w))
@@ -1570,7 +1572,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
                                     placements,
                                     cwp_weight,
                                     output,
-                                    second.block_w,
+                                    second_stride,
                                 )
                             })
             };
@@ -1589,7 +1591,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
                     (
                         [&second.views[0], &second.views[1]],
                         &mut second_output[col..],
-                        second.block_w,
+                        second_stride,
                     ),
                 )?
             } else {
@@ -1614,14 +1616,14 @@ pub(super) fn predict_motion_grid_compound_average_into<
                     &mut pred_scratch,
                     &mut intermediate_scratch,
                     &mut second_output[col..],
-                    second.block_w,
+                    second_stride,
                 )?;
             }
         }
     }
     for (views, output, stride) in [
         (&prediction.views, output, output_stride),
-        (&second.views, second_output, second.block_w),
+        (&second.views, second_output, second_stride),
     ] {
         run_cell_program(
             &program,
@@ -1814,7 +1816,7 @@ fn round2_signed_sub(mv: i32, sub: u32) -> i32 {
     (mv + (((1 << sub) >> 1) & !(mv >> 31))) >> sub
 }
 
-/// Predicts the V plane into a packed `chroma_v` output that the shared U pass
+/// Predicts the V plane into a `chroma_v` output that the shared U pass
 /// declined, so that a grid prediction always fills `chroma_v` when given one.
 fn predict_chroma_v_separately<T: ReconSample, O: CompoundAverageOutput + Send>(
     info: DecodedFrameInfo,
@@ -1823,10 +1825,9 @@ fn predict_chroma_v_separately<T: ReconSample, O: CompoundAverageOutput + Send>(
     motion: &CompoundMotionGrid,
     (implicit_mask, cwp_weight): (bool, i16),
     offset: ByteOffset,
-    chroma_v: Option<&mut [O]>,
+    chroma_v: Option<(&mut [O], usize)>,
 ) -> Result<bool> {
-    if let Some(v_output) = chroma_v {
-        let (_, _, block_w, _) = block.rect.plane_rect(PlaneId::V, sub_x, sub_y);
+    if let Some((v_output, v_stride)) = chroma_v {
         predict_motion_grid_compound_average_into(
             info,
             block,
@@ -1838,7 +1839,7 @@ fn predict_chroma_v_separately<T: ReconSample, O: CompoundAverageOutput + Send>(
             cwp_weight,
             offset,
             v_output,
-            block_w,
+            v_stride,
             None,
         )?;
     }
