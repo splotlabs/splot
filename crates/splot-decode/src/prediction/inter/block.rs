@@ -910,8 +910,53 @@ fn read_segment_id(
     validate_segment_id(segment_id, seg.last_active_seg_id, tile_offset)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// [`read_enabled_segment_id`], zero without a call when segmentation is off.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::inline_always,
+    reason = "measured: per block"
+)]
+#[inline(always)]
 fn read_inter_segment_id(
+    work_unit: &mut DecodeTileWorkUnit,
+    symbols: &mut SymbolDecoder<'_>,
+    segment_id_state: &mut TileSegmentIdState,
+    previous_segment_ids: Option<&FrameSegmentIdMap>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    frontier: &DecodeBlockFrontier,
+    n4w: usize,
+    n4h: usize,
+    pre_skip: bool,
+    skip_flag: bool,
+    tile_offset: ByteOffset,
+) -> Result<u8> {
+    if !core
+        .segmentation_params
+        .as_ref()
+        .is_some_and(|seg| seg.segmentation_enabled)
+    {
+        return Ok(0);
+    }
+    read_enabled_segment_id(
+        work_unit,
+        symbols,
+        segment_id_state,
+        previous_segment_ids,
+        sequence,
+        core,
+        frontier,
+        n4w,
+        n4h,
+        pre_skip,
+        skip_flag,
+        tile_offset,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn read_enabled_segment_id(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     segment_id_state: &mut TileSegmentIdState,
@@ -1240,12 +1285,7 @@ fn decode_block<T: ReconSample>(
         .map_err(|_| crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
     let mi_row = frontier.r;
     let mi_col = frontier.c;
-    let placed_geometry = placed_inter_geometry(
-        frontier,
-        work_unit,
-        (n4w, n4h),
-        sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
-    )?;
+    let chroma_planes = sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome;
     let mut block_ctx = MvBlockContext {
         mi_row,
         mi_col,
@@ -1594,6 +1634,7 @@ fn decode_block<T: ReconSample>(
         segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
     }
     let _segment_scope = FrameQmSegmentScope::install(usize::from(segment_id));
+    let lossless = current_residual_lossless(work_unit);
 
     gdf_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
     cdef_state.read_for_block(
@@ -1824,7 +1865,7 @@ fn decode_block<T: ReconSample>(
                 n4h,
                 mi_rows,
                 mi_cols,
-                current_residual_lossless(work_unit),
+                lossless,
                 InterResidualLumaTxSizeMode::Inter,
                 residual_tool_policy,
                 tile_offset,
@@ -1845,7 +1886,7 @@ fn decode_block<T: ReconSample>(
             residual.as_ref(),
             None,
             block_qindex,
-            current_residual_lossless(work_unit),
+            lossless,
         );
         intrabc_state.record_block(
             frontier.r,
@@ -1885,7 +1926,7 @@ fn decode_block<T: ReconSample>(
             non_intra_leaf_mode(frontier),
             pending_inter_leaf(
                 syntax,
-                placed_geometry,
+                placed_inter_geometry(frontier, work_unit, (n4w, n4h), chroma_planes)?,
                 block_qindex,
                 frame_mv_precision(core)?,
             ),
@@ -2062,7 +2103,7 @@ fn decode_block<T: ReconSample>(
             n4h,
             mi_rows,
             mi_cols,
-            current_residual_lossless(work_unit),
+            lossless,
             InterResidualLumaTxSizeMode::Inter,
             residual_tool_policy,
             tile_offset,
@@ -2094,7 +2135,7 @@ fn decode_block<T: ReconSample>(
             if tip_uses_16x16_units { 16 } else { 8 },
         )),
         block_qindex,
-        current_residual_lossless(work_unit),
+        lossless,
     );
     intrabc_state.record_block(
         frontier.r,
@@ -2135,7 +2176,7 @@ fn decode_block<T: ReconSample>(
         non_intra_leaf_mode(frontier),
         pending_inter_leaf(
             syntax,
-            placed_geometry,
+            placed_inter_geometry(frontier, work_unit, (n4w, n4h), chroma_planes)?,
             block_qindex,
             frame_mv_precision(core)?,
         ),
