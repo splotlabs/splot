@@ -1661,7 +1661,7 @@ fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
     if program.is_empty() {
         return Ok(());
     }
-    let written = O::u8_slice_mut(output).map_or(0, |output| {
+    let written = O::u8_slice_mut(output).map_or([0; 4], |output| {
         splot_recon::subpel_compound_cells_u8(
             [&views[0], &views[1]],
             interp,
@@ -1672,7 +1672,12 @@ fn run_cell_program<T: ReconSample, O: CompoundAverageOutput>(
             stride,
         )
     });
-    for index in (0..program.len()).filter(|index| written >> index & 1 == 0) {
+    let stored = |index: usize| {
+        written
+            .get(index / 64)
+            .is_some_and(|bits| bits >> (index % 64) & 1 != 0)
+    };
+    for index in (0..program.len()).filter(|&index| !stored(index)) {
         let Some(([row, col], placements)) = program.get(index) else {
             continue;
         };

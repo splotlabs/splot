@@ -235,7 +235,7 @@ fn compound_cells(
 }
 
 /// The most cells one [`CompoundCells`] program holds.
-const PROGRAM_CELLS: usize = 64;
+const PROGRAM_CELLS: usize = 256;
 
 /// A program of unscaled compound cells of one grid plane that share a
 /// size and filter: each cell's `[row, col]` output position and both
@@ -343,7 +343,8 @@ static WINDOWS: [[i32; NUM_PHASES]; NUM_FILTER_TYPES] = {
 /// Runs a [`CompoundCells`] program of eight-bit `size`-square cells into
 /// `output` rows `stride` apart. Each cell that
 /// [`super::subpel_compound_cell_u8`] would store from its position and
-/// placements is stored the same way and sets its bit in the returned mask;
+/// placements is stored the same way and sets bit `index % 64` of word
+/// `index / 64` of the returned mask;
 /// every other cell is left unwritten for the caller to predict.
 #[doc(hidden)]
 #[inline]
@@ -355,12 +356,13 @@ pub fn subpel_compound_cells_u8<T: ReconSample>(
     cwp_weight: i16,
     output: &mut [u8],
     stride: usize,
-) -> u64 {
+) -> [u64; PROGRAM_CELLS / 64] {
+    let none = [0; PROGRAM_CELLS / 64];
     let [Some(first), Some(second)] = references.map(ReferencePlaneView::as_u8) else {
-        return 0;
+        return none;
     };
     if (size != 4 && size != 8) || stride < size {
-        return 0;
+        return none;
     }
     #[cfg(target_arch = "x86_64")]
     if let Some(token) = fearless_simd::Level::baseline().as_avx2() {
@@ -376,7 +378,7 @@ pub fn subpel_compound_cells_u8<T: ReconSample>(
         );
     }
     let _ = (first, second, interp, cells, cwp_weight, output);
-    0
+    none
 }
 
 /// [`compound_at`] of program cell `index`, out of the program's loop.
@@ -709,7 +711,7 @@ mod avx2 {
             forward: i32,
             output: &mut [u8],
             stride: usize,
-        ) -> u64 {
+        ) -> [u64; PROGRAM_CELLS / 64] {
             let filter = interp.pass_index(size as u32) as usize;
             let (filters, windows) = (&TAPS[filter], &WINDOWS[filter]);
             let half = |half: usize| -> __m256i {
@@ -722,7 +724,7 @@ mod avx2 {
             };
             let windows = [half(0), half(1)];
             let len = cells.len.min(PROGRAM_CELLS);
-            let mut written = 0u64;
+            let mut written = [0u64; PROGRAM_CELLS / 64];
             for batch in (0..len).step_by(8) {
                 let lanes = [0, 1].map(|reference| {
                     lanes(t, views[reference], windows, size, cells, reference, batch)
@@ -742,7 +744,7 @@ mod avx2 {
                         let stored = super::program_cell(
                             views, interp, size, cells, index, forward, output, stride,
                         );
-                        written |= u64::from(stored) << index;
+                        written[index / 64 % 4] |= u64::from(stored) << (index % 64);
                         continue;
                     }
                     let cell = |reference: usize| {
@@ -778,7 +780,7 @@ mod avx2 {
                             store_bytes::<8>(t, output, 2 * group * stride, stride, blended);
                         }
                     }
-                    written |= 1 << index;
+                    written[index / 64 % 4] |= 1 << (index % 64);
                 }
             }
             written

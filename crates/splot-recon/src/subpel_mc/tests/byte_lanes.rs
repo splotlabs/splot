@@ -395,7 +395,7 @@ fn compound_cell_programs_match_the_placement_entry() {
                 &mut got,
                 stride,
             );
-            assert_eq!(written, expected, "{interp:?} {size}");
+            assert_eq!(written, [expected, 0, 0, 0], "{interp:?} {size}");
             assert!(
                 expected.count_ones() > 4 && expected.count_ones() < 19,
                 "{expected:b}"
@@ -405,7 +405,7 @@ fn compound_cell_programs_match_the_placement_entry() {
     }
     let mut full = CompoundCells::default();
     while full.push([0, 0], [([0; 2], [0; 4]); 2]) {}
-    assert_eq!(full.len(), 64);
+    assert_eq!(full.len(), 256);
 }
 
 /// The placement entry of a compound cell stores what the validated
