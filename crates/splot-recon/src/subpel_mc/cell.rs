@@ -161,19 +161,20 @@ pub(super) fn compound(
 ) -> bool {
     let size = params[0].w;
     params[0].h == size
-        && compound_at(
-            references,
-            params[0].interp,
-            size,
-            params.map(|params| ([params.start_x, params.start_y], params.bounds())),
-            forward,
-            output,
-            stride,
-        )
+        && (size == 4 || size == 8)
+        && match (
+            Cell::new(references[0], params[0], size),
+            Cell::new(references[1], params[1], size),
+        ) {
+            (Some(first), Some(second)) => {
+                compound_cells([first, second], size, forward, output, stride)
+            }
+            _ => false,
+        }
 }
 
-/// [`compound`] of a `size`-square cell from each reference's
-/// [`CellPlacement`].
+/// [`compound`] of a `size`-square cell whose references share `interp`,
+/// from each reference's [`CellPlacement`].
 #[inline]
 pub(super) fn compound_at(
     references: [&ReferencePlaneView<'_, u8>; 2],
@@ -184,15 +185,28 @@ pub(super) fn compound_at(
     output: &mut [u8],
     stride: usize,
 ) -> bool {
-    if size != 4 && size != 8 {
-        return false;
-    }
-    let (Some(first), Some(second)) = (
-        Cell::at(references[0], interp, size, placements[0]),
-        Cell::at(references[1], interp, size, placements[1]),
-    ) else {
-        return false;
-    };
+    (size == 4 || size == 8)
+        && match (
+            Cell::at(references[0], interp, size, placements[0]),
+            Cell::at(references[1], interp, size, placements[1]),
+        ) {
+            (Some(first), Some(second)) => {
+                compound_cells([first, second], size, forward, output, stride)
+            }
+            _ => false,
+        }
+}
+
+/// Stores the COMPOUND_AVERAGE of two `size`-square cells, or returns
+/// `false` without writing for a 4x4 cell outside the narrow kernel.
+#[inline]
+fn compound_cells(
+    [first, second]: [Cell<'_>; 2],
+    size: usize,
+    forward: i32,
+    output: &mut [u8],
+    stride: usize,
+) -> bool {
     if size == 4
         && [&first, &second]
             .iter()
