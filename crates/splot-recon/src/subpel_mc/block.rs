@@ -364,7 +364,7 @@ pub(super) fn put_u8(
 pub(super) fn put_u8_planes<const N: usize>(
     views: [&ReferencePlaneView<'_, u8>; N],
     params: &SubpelPredictParams,
-    mut outputs: [(&mut [u8], usize); N],
+    outputs: [(&mut [u8], usize); N],
 ) -> bool {
     let (w, h) = (params.w, params.h);
     let fits = |(output, stride): &(&mut [u8], usize)| {
@@ -401,9 +401,17 @@ pub(super) fn put_u8_planes<const N: usize>(
             .is_some()
         && outputs.iter().all(fits)
         && views.iter().all(geometry);
-    if !admitted {
-        return false;
-    }
+    admitted && put_admitted(views, params, outputs)
+}
+
+/// [`put_u8_planes`] of a block it admits.
+#[inline]
+pub(super) fn put_admitted<const N: usize>(
+    views: [&ReferencePlaneView<'_, u8>; N],
+    params: &SubpelPredictParams,
+    mut outputs: [(&mut [u8], usize); N],
+) -> bool {
+    let (w, view) = (params.w, views[0]);
     if let Some(cell) = super::cell::put_cell(view, params) {
         for (view, (output, stride)) in views.into_iter().zip(&mut outputs) {
             cell.with_source(view.samples).put(w, output, *stride);
@@ -425,6 +433,7 @@ pub(super) fn put_u8_planes<const N: usize>(
     };
     match stage_len(layout.rows, w, layout.vertical) {
         0 => put(&mut []),
+        len if len <= PUT_STAGE => put(&mut [0; PUT_STAGE][..len]),
         len => with_subpel_intermediate(len, put),
     }
 }
@@ -594,6 +603,9 @@ pub(super) fn small_compound<T: ReconSample, O: ReconSample>(
 
 /// The stage of the tallest compound cell, 4x16.
 const CELL_STAGE: usize = 24 * 16;
+
+/// The stage of an eight-tap put of up to 16x16 samples.
+const PUT_STAGE: usize = 23 * 16 + 64;
 
 fn unscaled_block<T: Sample>(
     view: &ReferencePlaneView<'_, T>,

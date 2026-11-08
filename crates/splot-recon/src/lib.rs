@@ -202,7 +202,7 @@ pub use secondary_transform::{
 pub use splot_tables::tables::quantizer::QM_OFFSET;
 pub use subpel_mc::{
     BilinearOverlapCarry, CellPlacement, CompoundCells, InterpolationFilter, ReferencePlaneView,
-    SUBPEL_FILTERS, SubpelPredictParams, blend_compound_average_equal,
+    SUBPEL_FILTERS, SubpelPredictParams, UnscaledPut, blend_compound_average_equal,
     blend_compound_average_weighted, blend_compound_average_weighted_sample,
     refinemv_window_sads_u8, subpel_compound_cell_u8, subpel_compound_cells_u8,
     subpel_predict_12x12_bilinear_overlap_into, subpel_predict_bilinear_8x8_u8,
@@ -215,7 +215,8 @@ pub use subpel_mc::{
     subpel_predict_block_compound_average_unscaled_strided_into,
     subpel_predict_block_compound_intermediate, subpel_predict_block_compound_intermediate_into,
     subpel_predict_block_into, subpel_predict_block_strided_into,
-    subpel_predict_block_strided_into_u8, subpel_put_u8_in_place, subpel_put_u8_pair_in_place,
+    subpel_predict_block_strided_into_u8, subpel_put_u8_block, subpel_put_u8_in_place,
+    subpel_put_u8_pair_in_place,
 };
 pub use transform_params::{
     TransformPass, dpcm_direction, get_transform_1d_type, transform_shift, tx_size_index,

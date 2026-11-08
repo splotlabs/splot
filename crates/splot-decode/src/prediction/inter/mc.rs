@@ -6,15 +6,15 @@ use splot_recon::BitDepth;
 use splot_recon::{
     CellPlacement, CurrentFrameSurface, CurrentFrameWorkspace, DecodedFrameInfo,
     InterpolationFilter, OptflowScratch, PixelFormat, PlaneId, PlaneRect, PreparedWarpPrediction,
-    ReconError, ReconSample, ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE,
-    WarpPredictBlockParams, blend_compound_average_weighted_sample, ext_warp_predict_unit,
-    subpel_predict_12x12_bilinear_overlap_into,
+    ReconError, ReconSample, ReferencePlaneView, SubpelPredictParams, UnscaledPut,
+    WARPED_BLOCK_SIZE, WarpPredictBlockParams, blend_compound_average_weighted_sample,
+    ext_warp_predict_unit, subpel_predict_12x12_bilinear_overlap_into,
     subpel_predict_block_compound_average_fast_validated_strided_into,
     subpel_predict_block_compound_average_strided_into,
     subpel_predict_block_compound_average_strided_into_u8,
     subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
-    subpel_predict_block_strided_into, subpel_predict_block_strided_into_u8,
-    subpel_put_u8_in_place, subpel_put_u8_pair_in_place, wedge_mask_plane_sample,
+    subpel_predict_block_strided_into, subpel_predict_block_strided_into_u8, subpel_put_u8_block,
+    wedge_mask_plane_sample,
 };
 
 use super::Mv;
@@ -561,59 +561,45 @@ pub(crate) fn motion_compensate_single_block_into<T: ReconSample>(
         });
     }
     let storage = reference_info.storage_luma_size();
-    let bit_depth = info.bit_depth();
-    let geometry = |plane: PlaneId, sub_x: u32, sub_y: u32| {
+    let plane_put = |plane: PlaneId, sub_x: u32, sub_y: u32| {
         let (x, y, w, h) = rect.plane_rect(plane, sub_x, sub_y);
         let start =
             |pos: usize, mv: i32, sub: u32| ((((pos as i32) << 4) + ((2 * mv) >> sub)) << 6) + 32;
-        let params = SubpelPredictParams {
+        Some(UnscaledPut {
+            rect: PlaneRect::new(x, y, w, h).ok()?,
+            start: [start(x, mv.col, sub_x), start(y, mv.row, sub_y)],
+            last: [
+                (ceil_shift(storage.width(), sub_x) - 1) as i32,
+                (ceil_shift(storage.height(), sub_y) - 1) as i32,
+            ],
+        })
+    };
+    let [_, (_, sub_x, sub_y), _] = mc_planes(info.pixel_format());
+    let chroma = has_chroma
+        .then(|| plane_put(PlaneId::U, sub_x, sub_y))
+        .flatten()
+        .zip(
+            reference
+                .settled_plane_view(PlaneId::U)
+                .zip(reference.settled_plane_view(PlaneId::V)),
+        );
+    let [luma_put, chroma_put] = match (
+        plane_put(PlaneId::Y, 0, 0),
+        reference.settled_plane_view(PlaneId::Y),
+    ) {
+        (Some(luma), Some(view)) => subpel_put_u8_block(
+            sink,
             interp,
-            w,
-            h,
-            start_x: start(x, mv.col, sub_x),
-            start_y: start(y, mv.row, sub_y),
-            step_x: 1 << 10,
-            step_y: 1 << 10,
-            first_x: 0,
-            first_y: 0,
-            last_x: (ceil_shift(storage.width(), sub_x) - 1) as i32,
-            last_y: (ceil_shift(storage.height(), sub_y) - 1) as i32,
-            bit_depth,
-        };
-        (PlaneRect::new(x, y, w, h).ok(), params)
+            (&view, luma),
+            chroma.as_ref().map(|(chroma, (u, v))| ([u, v], *chroma)),
+        ),
+        _ => [false; 2],
     };
-    let put = |sink: &mut WorkspaceSink<'_, '_, T>,
-               plane: PlaneId,
-               &(target, params): &(Option<PlaneRect>, SubpelPredictParams)|
-     -> Result<bool> {
-        let view = match reference.settled_plane_view(plane) {
-            Some(view) => view,
-            None => reference.plane_view(plane, subpel_last_reference_row(&params), offset)?,
-        };
-        Ok(target
-            .and_then(|target| sink.u8_rect_mut(plane, target))
-            .is_some_and(|(output, stride)| subpel_put_u8_in_place(&view, &params, output, stride)))
-    };
-    if !put(sink, PlaneId::Y, &geometry(PlaneId::Y, 0, 0))? {
+    if !luma_put {
         predict_plane(sink, reference, PlaneId::Y, rect, mv, interp, 0, 0, offset)?;
     }
-    if !has_chroma {
-        return Ok(());
-    }
-    let [_, (_, sub_x, sub_y), _] = mc_planes(info.pixel_format());
-    let chroma = geometry(PlaneId::U, sub_x, sub_y);
-    if let (Some(target), Some(u), Some(v)) = (
-        chroma.0,
-        reference.settled_plane_view(PlaneId::U),
-        reference.settled_plane_view(PlaneId::V),
-    ) && sink
-        .u8_chroma_rects_mut(target)
-        .is_some_and(|outputs| subpel_put_u8_pair_in_place([&u, &v], &chroma.1, outputs))
-    {
-        return Ok(());
-    }
-    for plane in [PlaneId::U, PlaneId::V] {
-        if !put(sink, plane, &chroma)? {
+    if has_chroma && !chroma_put {
+        for plane in [PlaneId::U, PlaneId::V] {
             predict_plane(
                 sink, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
             )?;

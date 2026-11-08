@@ -46,6 +46,88 @@ pub fn subpel_put_u8_in_place<T: ReconSample>(
         .is_some_and(|view| block::put_u8(&view, params, output, output_stride))
 }
 
+/// One plane of an unscaled eight-bit single-reference block: its output
+/// rectangle and the § 7.13.3.18 1/1024-sample start `[startX, startY]` of
+/// its window, whose reads clip to reference columns `0..=last[0]` and rows
+/// `0..=last[1]`.
+#[derive(Clone, Copy, Debug)]
+pub struct UnscaledPut {
+    /// The output rectangle.
+    pub rect: crate::PlaneRect,
+    /// `[startX, startY]`.
+    pub start: [i32; 2],
+    /// `[lastX, lastY]`.
+    pub last: [i32; 2],
+}
+
+impl UnscaledPut {
+    /// The parameters of this plane, or `None` for a side above 256
+    /// samples, a negative last sample or a start whose last column
+    /// overflows.
+    #[inline]
+    fn params(&self, interp: InterpolationFilter) -> Option<SubpelPredictParams> {
+        let (w, h) = (self.rect.width(), self.rect.height());
+        let [start_x, start_y] = self.start;
+        let [last_x, last_y] = self.last;
+        (w <= MAX_BLOCK_DIM
+            && h <= MAX_BLOCK_DIM
+            && last_x >= 0
+            && last_y >= 0
+            && start_x
+                .checked_add((w as i32 - 1) << SCALE_SUBPEL_BITS)
+                .is_some())
+        .then_some(SubpelPredictParams {
+            interp,
+            w,
+            h,
+            start_x,
+            start_y,
+            step_x: 1 << SCALE_SUBPEL_BITS,
+            step_y: 1 << SCALE_SUBPEL_BITS,
+            first_x: 0,
+            first_y: 0,
+            last_x,
+            last_y,
+            bit_depth: BitDepth::Eight,
+        })
+    }
+}
+
+/// Stores the eight-bit single-reference prediction of a block's luma plane
+/// straight into `surface`, and with `chroma` that of both chroma planes,
+/// which share one geometry, as [`subpel_put_u8_in_place`] stores each.
+/// Returns, for luma and for chroma, whether it was stored; a part that was
+/// not is left unwritten for the caller.
+#[inline]
+pub fn subpel_put_u8_block<T: ReconSample>(
+    surface: &mut crate::CurrentFrameSurface<'_, '_, T>,
+    interp: InterpolationFilter,
+    (view, luma): (&ReferencePlaneView<'_, T>, UnscaledPut),
+    chroma: Option<([&ReferencePlaneView<'_, T>; 2], UnscaledPut)>,
+) -> [bool; 2] {
+    let luma_put = luma
+        .params(interp)
+        .zip(view.as_u8())
+        .is_some_and(|(params, view)| {
+            surface
+                .u8_rect_mut(crate::PlaneId::Y, luma.rect)
+                .is_some_and(|output| block::put_admitted([&view], &params, [output]))
+        });
+    let chroma_put = chroma.is_some_and(|(views, put)| {
+        let (Some(params), [Some(u), Some(v)]) =
+            (put.params(interp), views.map(ReferencePlaneView::as_u8))
+        else {
+            return false;
+        };
+        (u.stride, u.width, u.readable_rows, u.samples.len())
+            == (v.stride, v.width, v.readable_rows, v.samples.len())
+            && surface
+                .u8_chroma_rects_mut(put.rect)
+                .is_some_and(|outputs| block::put_admitted([&u, &v], &params, outputs))
+    });
+    [luma_put, chroma_put]
+}
+
 /// [`subpel_put_u8_in_place`] of the two chroma planes of one block, which
 /// share `params`, into their outputs: `false` without writing either when
 /// the planes differ in geometry or the first would decline.

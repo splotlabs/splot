@@ -28,8 +28,9 @@ pub use copy::{
     blend_compound_average_weighted_sample,
 };
 pub use fullpel_u8::{
-    subpel_predict_block_compound_average_fullpel_strided_into_u8,
-    subpel_predict_block_strided_into_u8, subpel_put_u8_in_place, subpel_put_u8_pair_in_place,
+    UnscaledPut, subpel_predict_block_compound_average_fullpel_strided_into_u8,
+    subpel_predict_block_strided_into_u8, subpel_put_u8_block, subpel_put_u8_in_place,
+    subpel_put_u8_pair_in_place,
 };
 pub use search_window::{
     refinemv_window_sads_u8, subpel_predict_bilinear_8x8_u8,
