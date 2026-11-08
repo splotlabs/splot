@@ -28,7 +28,7 @@ pub(crate) struct DecodeBuffers {
 }
 
 /// The lengths of a superblock unit's large row lists.
-pub(crate) type UnitLengths = [usize; 11];
+pub(crate) type UnitLengths = [usize; 12];
 
 impl DecodeBuffers {
     /// Opens the storage for one decode.

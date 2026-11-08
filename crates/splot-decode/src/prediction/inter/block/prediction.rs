@@ -4,16 +4,11 @@
 use super::*;
 use crate::pipeline::reconstruct::IntraEdgeAvailability;
 
+/// Positions in luma samples, which a `u32` frame size bounds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PlacedInterGeometry {
-    pub(super) luma_x: usize,
-    pub(super) luma_y: usize,
-    pub(super) luma_w: usize,
-    pub(super) luma_h: usize,
-    pub(super) chroma_luma_x: usize,
-    pub(super) chroma_luma_y: usize,
-    pub(super) chroma_luma_w: usize,
-    pub(super) chroma_luma_h: usize,
+    pub(super) luma: [u32; 4],
+    pub(super) chroma_luma: [u32; 4],
     pub(super) predict_chroma: bool,
     pub(super) sub8x8_chroma: bool,
     pub(super) interintra_chroma: bool,
@@ -22,16 +17,19 @@ pub(super) struct PlacedInterGeometry {
 
 impl PlacedInterGeometry {
     /// `block` placed at this geometry.
-    pub(super) const fn place(self, block: InterBlock) -> PlacedInterBlock {
+    pub(super) fn place(self, block: InterBlock) -> PlacedInterBlock {
+        let [luma_x, luma_y, luma_w, luma_h] = self.luma.map(|v| v as usize);
+        let [chroma_luma_x, chroma_luma_y, chroma_luma_w, chroma_luma_h] =
+            self.chroma_luma.map(|v| v as usize);
         PlacedInterBlock {
-            luma_x: self.luma_x,
-            luma_y: self.luma_y,
-            luma_w: self.luma_w,
-            luma_h: self.luma_h,
-            chroma_luma_x: self.chroma_luma_x,
-            chroma_luma_y: self.chroma_luma_y,
-            chroma_luma_w: self.chroma_luma_w,
-            chroma_luma_h: self.chroma_luma_h,
+            luma_x,
+            luma_y,
+            luma_w,
+            luma_h,
+            chroma_luma_x,
+            chroma_luma_y,
+            chroma_luma_w,
+            chroma_luma_h,
             predict_chroma: self.predict_chroma,
             sub8x8_chroma: self.sub8x8_chroma,
             interintra_chroma: self.interintra_chroma,
@@ -122,14 +120,8 @@ pub(super) fn placed_inter_geometry_at(
         ),
     ];
     Ok(PlacedInterGeometry {
-        luma_x,
-        luma_y,
-        luma_w,
-        luma_h,
-        chroma_luma_x,
-        chroma_luma_y,
-        chroma_luma_w,
-        chroma_luma_h,
+        luma: [luma_x, luma_y, luma_w, luma_h].map(|v| v as u32),
+        chroma_luma: [chroma_luma_x, chroma_luma_y, chroma_luma_w, chroma_luma_h].map(|v| v as u32),
         predict_chroma,
         sub8x8_chroma: predict_chroma
             && sub8x8_chroma_disables_compound(frontier.b_size, chroma_ref.size()),

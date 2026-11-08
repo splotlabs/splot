@@ -26,7 +26,7 @@ use super::compound_path::{
     select_near_near_candidates,
 };
 use super::prediction::PlacedInterGeometry;
-use super::tile::ReconRowEntry;
+use super::tile::{LeafSlot, ReconRowEntry};
 use super::warp::{
     ExtendWarpContext, apply_warp_delta, extend_warp_estimation, set_warp_translation,
 };
@@ -41,11 +41,13 @@ pub(super) enum LeafResolveRecord {
     /// copy leaves.
     NonInter {
         command: ReconCommand,
-        n4w: usize,
-        n4h: usize,
+        n4w: u8,
+        n4h: u8,
     },
     Inter(PendingInterBlock),
-    Intrabc(PendingIntrabcBlock),
+    /// Boxed: only screen-content intra frames carry these, and inline they
+    /// would set the size of every entry.
+    Intrabc(Box<PendingIntrabcBlock>),
 }
 
 /// The bank and motion-plane work of a leaf whose command is already final,
@@ -66,7 +68,7 @@ pub(super) enum LeafReset {
 pub(super) struct PendingInterBlock {
     syntax: InterBlockSyntax,
     geometry: PlacedInterGeometry,
-    segment_id: usize,
+    segment_id: u8,
     qindex: u32,
     frame_precision: u8,
 }
@@ -92,7 +94,7 @@ pub(super) struct PendingIntrabcBlock {
 }
 
 pub(super) fn pending_intrabc_leaf(pending: PendingIntrabcBlock) -> LeafResolveRecord {
-    LeafResolveRecord::Intrabc(pending)
+    LeafResolveRecord::Intrabc(Box::new(pending))
 }
 
 /// Packages one parsed inter leaf for the resolve pass that completes its
@@ -106,7 +108,7 @@ pub(super) fn pending_inter_leaf(
     LeafResolveRecord::Inter(PendingInterBlock {
         syntax,
         geometry,
-        segment_id: current_frame_qm_segment_id(),
+        segment_id: current_frame_qm_segment_id() as u8,
         qindex,
         frame_precision,
     })
@@ -118,13 +120,14 @@ pub(super) fn pending_inter_leaf(
 /// skew while a row is parsed, admitted, resolved, or recycled.
 pub(super) fn resolve_parsed_leaves(
     entries: &mut [ReconRowEntry],
+    slots: &mut [LeafSlot],
     state: &mut MvResolutionState<'_>,
     sb_h4: usize,
 ) -> Result<()> {
     let intrabc_sb_h4 = effective_intrabc_sb_h4(sb_h4, state.core.frame_is_intra == Some(true));
     for entry in entries {
-        let reset = entry.take_reset();
-        let pending = entry.has_pending_resolve();
+        let reset = entry.take_reset(slots);
+        let pending = entry.has_pending_resolve(slots);
         if reset == LeafReset::None && !pending {
             continue;
         }
@@ -149,12 +152,12 @@ pub(super) fn resolve_parsed_leaves(
                 bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, intrabc_sb_h4);
             }
         }
-        if let Some(LeafResolveRecord::Inter(block)) = entry.pending_resolve_mut() {
+        if let Some(LeafResolveRecord::Inter(block)) = entry.pending_resolve_mut(slots) {
             let command = resolve_pending_inter(block, state)?;
-            entry.store_command(ReconCommand::Inter(command));
+            entry.store_command(slots, ReconCommand::Inter(command));
             continue;
         }
-        let Some(resolve) = entry.take_resolve() else {
+        let Some(resolve) = entry.take_resolve(slots) else {
             continue;
         };
         match resolve {
@@ -164,11 +167,10 @@ pub(super) fn resolve_parsed_leaves(
                 return Err(invalid_inter_tile_scheduling_state());
             }
             LeafResolveRecord::Intrabc(block) => {
-                entry.store_command(ReconCommand::Intrabc(resolve_pending_intrabc(
-                    block,
-                    state,
-                    intrabc_sb_h4,
-                )?));
+                entry.store_command(
+                    slots,
+                    ReconCommand::Intrabc(resolve_pending_intrabc(*block, state, intrabc_sb_h4)?),
+                );
             }
         }
     }
@@ -348,9 +350,8 @@ fn resolve_pending_inter(
                         mv0: resolved.mv[0],
                         mv1: resolved.mv[1],
                     },
-                    warp_params: resolved.warp_params,
-                    mi_row,
-                    mi_col,
+                    mi_row: mi_row as u32,
+                    mi_col: mi_col as u32,
                     use_refinemv: compound.use_refinemv,
                     refinemv_switchable: compound.refinemv_switchable,
                 },
@@ -470,8 +471,6 @@ pub(super) struct CompoundMotionSyntax {
     pub(super) skip_mode: bool,
     pub(super) use_optflow: bool,
     pub(super) local_warp: bool,
-    /// § 7.13.3.22 GLOBAL_GLOBALMV warp models, absent for every other mode.
-    pub(super) global_warp: [Option<[i32; 6]>; 2],
     pub(super) ref_mv_idx: usize,
     pub(super) independent_idx: Option<[usize; 2]>,
     pub(super) mvd: [Mv; 2],
@@ -1000,7 +999,16 @@ pub(super) fn compound_motion(
             block.bh4,
         )?
     } else if compound.is_global() {
-        compound.global_warp
+        let force_integer_mv = effective_force_integer_mv(state.core);
+        [block.ref_frame0, compound.ref_frame1].map(|ref_frame| {
+            global_motion_warp(
+                state.core,
+                ref_frame,
+                force_integer_mv,
+                block.bw4,
+                block.bh4,
+            )
+        })
     } else {
         [None, None]
     };

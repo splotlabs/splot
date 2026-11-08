@@ -12,51 +12,65 @@ use super::{
     TileUseDipState, TileUsesMrlsState, TileUvCflState, plane_range_for_tree_type,
 };
 
+/// Mode-info positions are below `MiRows`/`MiCols`, which a `u32` frame size
+/// bounds, and a position inside a superblock is below 64.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DecodedLeafPublication {
-    superblock_origin: [usize; 2],
-    sub_block_origin: [usize; 2],
+    superblock_origin: [u32; 2],
+    sub_block_origin: [u8; 2],
     block_size: BlockSize,
     tree_type: PartitionTreeType,
 }
 
 impl DecodedLeafPublication {
     pub(crate) fn new(call: TilePartitionCall, sub_size: BlockSize, sb_mask: usize) -> Self {
-        let sub_block_origin = [call.r() & sb_mask, call.c() & sb_mask];
-        Self {
-            superblock_origin: [
-                call.r().saturating_sub(sub_block_origin[0]),
-                call.c().saturating_sub(sub_block_origin[1]),
-            ],
-            sub_block_origin,
-            block_size: sub_size,
-            tree_type: call.tree_type,
-        }
+        Self::at(call.r(), call.c(), sb_mask, sub_size, call.tree_type)
     }
 
     /// The publication the walk makes for `frontier`'s leaf.
     pub(crate) const fn from_frontier(frontier: &DecodeBlockFrontier, sb_mask: usize) -> Self {
-        let sub_block_origin = [frontier.r & sb_mask, frontier.c & sb_mask];
+        Self::at(
+            frontier.r,
+            frontier.c,
+            sb_mask,
+            frontier.b_size,
+            frontier.tree_type(),
+        )
+    }
+
+    const fn at(
+        r: usize,
+        c: usize,
+        sb_mask: usize,
+        block_size: BlockSize,
+        tree_type: PartitionTreeType,
+    ) -> Self {
+        let sub = [r & sb_mask, c & sb_mask];
         Self {
-            superblock_origin: [
-                frontier.r - sub_block_origin[0],
-                frontier.c - sub_block_origin[1],
-            ],
-            sub_block_origin,
-            block_size: frontier.b_size,
-            tree_type: frontier.tree_type(),
+            superblock_origin: [(r - sub[0]) as u32, (c - sub[1]) as u32],
+            sub_block_origin: [sub[0] as u8, sub[1] as u8],
+            block_size,
+            tree_type,
         }
     }
 
     pub(crate) const fn superblock_origin(self) -> [usize; 2] {
-        self.superblock_origin
+        [
+            self.superblock_origin[0] as usize,
+            self.superblock_origin[1] as usize,
+        ]
+    }
+
+    const fn sub_block_origin(self) -> [usize; 2] {
+        [
+            self.sub_block_origin[0] as usize,
+            self.sub_block_origin[1] as usize,
+        ]
     }
 
     pub(crate) const fn block_origin(self) -> [usize; 2] {
-        [
-            self.superblock_origin[0] + self.sub_block_origin[0],
-            self.superblock_origin[1] + self.sub_block_origin[1],
-        ]
+        let ([r, c], [sr, sc]) = (self.superblock_origin(), self.sub_block_origin());
+        [r + sr, c + sc]
     }
 
     /// The leaf's position and size in 4x4 units when it codes the luma plane —
@@ -65,9 +79,10 @@ impl DecodedLeafPublication {
         if matches!(self.tree_type, PartitionTreeType::ChromaPart) {
             return None;
         }
+        let [mi_row, mi_col] = self.block_origin();
         Some((
-            self.superblock_origin[0] + self.sub_block_origin[0],
-            self.superblock_origin[1] + self.sub_block_origin[1],
+            mi_row,
+            mi_col,
             self.block_size.num_4x4_wide().ok()?,
             self.block_size.num_4x4_high().ok()?,
         ))
@@ -78,11 +93,12 @@ impl DecodedLeafPublication {
         block_decoded: &mut TileBlockDecodedState,
         current_superblock: &mut Option<[usize; 2]>,
     ) {
-        if *current_superblock == Some(self.superblock_origin) {
+        let origin = self.superblock_origin();
+        if *current_superblock == Some(origin) {
             return;
         }
-        block_decoded.clear_superblock(self.superblock_origin[0], self.superblock_origin[1]);
-        *current_superblock = Some(self.superblock_origin);
+        block_decoded.clear_superblock(origin[0], origin[1]);
+        *current_superblock = Some(origin);
     }
 
     pub(crate) fn publish_block_decoded(
@@ -93,8 +109,8 @@ impl DecodedLeafPublication {
             plane_range_for_tree_type(self.tree_type, block_decoded.num_planes());
         block_decoded.set_leaf(
             plane_start..plane_end,
-            self.sub_block_origin[0],
-            self.sub_block_origin[1],
+            self.sub_block_origin()[0],
+            self.sub_block_origin()[1],
             self.block_size.num_4x4_wide()?,
             self.block_size.num_4x4_high()?,
         );

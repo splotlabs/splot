@@ -355,7 +355,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true),
         tile_offset,
     )?;
-    let force_integer_mv = effective_force_integer_mv(core);
     let temporal_allowed = compound.ref_frame0 != compound.ref_frame1;
     let temporal_first = |ref_frame| {
         temporal_first_frame
@@ -390,14 +389,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 skip_mode: false,
                 use_optflow: compound.use_optflow,
                 local_warp,
-                global_warp: if compound.y_mode == CompoundYMode::GlobalGlobal {
-                    [
-                        global_motion_warp(core, compound.ref_frame0, force_integer_mv, n4w, n4h),
-                        global_motion_warp(core, compound.ref_frame1, force_integer_mv, n4w, n4h),
-                    ]
-                } else {
-                    [None, None]
-                },
                 ref_mv_idx,
                 independent_idx: compound_reads_second_drl(compound)
                     .then_some([ref_mv_idx0, ref_mv_idx1]),
@@ -1049,7 +1040,6 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
                 skip_mode: true,
                 use_optflow: false,
                 local_warp: false,
-                global_warp: [None, None],
                 ref_mv_idx,
                 independent_idx: None,
                 mvd: [Mv::ZERO; 2],

@@ -957,7 +957,7 @@ impl EncoderInterTile {
             ),
             EncoderMotion::Compound(compound) => {
                 let syntax;
-                (syntax, blend) = self.compound_syntax(frontier, &block, compound)?;
+                (syntax, blend) = self.compound_syntax(frontier, compound)?;
                 let distances = super::compound_path::compound_optflow_distances(
                     &self.core,
                     &self.reference,

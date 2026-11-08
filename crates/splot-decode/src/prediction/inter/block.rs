@@ -250,12 +250,44 @@ enum ReconCommand {
 }
 
 impl ReconCommand {
+    const fn as_view(&self) -> ReconCommandRef<'_> {
+        match self {
+            Self::GeneralIntra(_) => ReconCommandRef::GeneralIntra,
+            Self::Intrabc(_) => ReconCommandRef::Intrabc,
+            Self::Inter(command) => ReconCommandRef::Inter(command),
+        }
+    }
+
+    const fn as_view_mut(&mut self) -> ReconCommandMut<'_> {
+        match self {
+            Self::GeneralIntra(command) => ReconCommandMut::GeneralIntra(command),
+            Self::Intrabc(command) => ReconCommandMut::Intrabc(command),
+            Self::Inter(command) => ReconCommandMut::Inter(command),
+        }
+    }
+}
+
+/// A [`ReconCommand`] a row entry holds inline or in its row's slot list.
+enum ReconCommandRef<'a> {
+    GeneralIntra,
+    Intrabc,
+    Inter(&'a deferred_recon::InterReconCommand),
+}
+
+impl ReconCommandRef<'_> {
     fn temporal_record_capacity(&self) -> usize {
         match self {
             Self::Inter(command) => command.temporal_record_capacity(),
-            Self::GeneralIntra(_) | Self::Intrabc(_) => 1,
+            Self::GeneralIntra | Self::Intrabc => 1,
         }
     }
+}
+
+/// [`ReconCommandRef`] for a pass that consumes the command in place.
+enum ReconCommandMut<'a> {
+    GeneralIntra(&'a mut crate::pipeline::general_intra::GeneralIntraReconCommand),
+    Intrabc(&'a mut intrabc::IntrabcReconCommand),
+    Inter(&'a mut deferred_recon::InterReconCommand),
 }
 
 /// The frame-level facts one inter walk derives from its header and tile plan
@@ -1518,7 +1550,11 @@ fn decode_block<T: ReconSample>(
         return Ok((
             leaf,
             if luma_tree {
-                LeafResolveRecord::NonInter { command, n4w, n4h }
+                LeafResolveRecord::NonInter {
+                    command,
+                    n4w: n4w as u8,
+                    n4h: n4h as u8,
+                }
             } else {
                 LeafResolveRecord::Reseed(command)
             },
