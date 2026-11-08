@@ -1408,8 +1408,8 @@ pub fn cdef_filter_block_chroma_pair(
 
 mod segment;
 pub use segment::{
-    CdefLumaSegment, CdefPairSegment, cdef_filter_block_chroma_pair_segment,
-    cdef_filter_block_segment,
+    CdefLumaSegment, CdefPairSegment, CdefSegmentBlock, CdefSegmentOutput, CdefStrengths,
+    cdef_filter_block_chroma_pair_segment, cdef_filter_block_segment, cdef_filter_segment,
 };
 
 /// AV2 § 7.18.3 CDEF filter for one fully-interior block over a padded scratch.
