@@ -177,15 +177,11 @@ pub(super) fn luma_420<const F: usize>(
         width <= 8 && luma_x >= 4 && first_row.is_some_and(|row| row >= 17) && left.is_some();
     let top_taps = weights[0] != [0; 3];
     let lane_out = if lane_left { left.as_deref_mut() } else { None };
-    luma_420_rows_avx2(
-        token,
-        &LANE_TAPS[F],
-        clamp_groups,
-        luma,
-        block,
-        lane_out,
-        out,
-    );
+    match F {
+        0 => luma_420_rows_f0(token, clamp_groups, luma, block, lane_out, out),
+        1 => luma_420_rows_f1(token, clamp_groups, luma, block, lane_out, out),
+        _ => luma_420_rows_f2(token, clamp_groups, luma, block, lane_out, out),
+    }
     if !lone_columns && (left.is_none() || (lane_left && !top_taps)) {
         return true;
     }
@@ -214,118 +210,134 @@ pub(super) fn luma_420<const F: usize>(
     true
 }
 
-fearless_simd::kernel!(
-    /// The `pmaddubsw` part of [`luma_420`]: the first sample of the
-    /// 16-lane groups set in `clamp_groups` (bit `g / 16`; bit 0 alone for
-    /// blocks up to 8 wide) with its left tap clamped. With `left`, blocks up
-    /// to 8 wide run 16 lanes from 8 samples before the block, and lane 7 is
-    /// the sample left of each row, with that row's taps.
-    #[inline]
-    fn luma_420_rows_avx2(
-        token: Avx2,
-        taps: &[[[[i16; 16]; 3]; 2]; 3],
-        clamp_groups: u8,
-        luma: &[u8],
-        block: Luma420Block,
-        left: Option<&mut [i16]>,
-        out: &mut [i16],
-    ) {
-        let mut left = left;
-        use core::arch::x86_64::{
-            __m128i, __m256i, _mm_add_epi16, _mm_maddubs_epi16, _mm256_add_epi16,
-            _mm256_castsi256_si128, _mm256_extract_epi16, _mm256_extracti128_si256,
-            _mm256_maddubs_epi16, _mm256_setzero_si256,
-        };
-        use fearless_simd::{SimdBase as _, SimdFrom as _, i16x16, u8x16, u8x32};
-        let width = block.width;
-        let lanes = |clamped: usize, pair: usize, row: usize| -> __m256i {
-            i16x16::from_slice(token, &taps[clamped][pair][row]).into()
-        };
-        let [[plain_centre, plain_left], ..] = taps;
-        let used = |pair: &[[i16; 16]; 3], row: usize| pair[row][1] != 0;
-        let first = usize::from(clamp_groups & 1);
-        for (r, out) in out.chunks_exact_mut(width).enumerate() {
-            let rows = tap_rows(&block, r);
-            if width > 8 {
-                for g in (0..width).step_by(16) {
-                    let clamped = usize::from(clamp_groups >> (g / 16) & 1);
-                    let mut acc = _mm256_setzero_si256();
-                    for (i, &row) in rows.iter().enumerate() {
-                        let at = row + 2 * g;
-                        if used(plain_centre, i) {
-                            let bytes: __m256i =
-                                u8x32::from_slice(token, &luma[at..at + 32]).into();
-                            acc = _mm256_add_epi16(
-                                acc,
-                                _mm256_maddubs_epi16(bytes, lanes(clamped, 0, i)),
-                            );
+/// Defines the `pmaddubsw` part of [`luma_420`] for one constant filter.
+macro_rules! luma_420_rows {
+    ($name:ident, $filter:literal) => {
+        fearless_simd::kernel!(
+            /// The `pmaddubsw` part of [`luma_420`]: the first sample of the
+            /// 16-lane groups set in `clamp_groups` (bit `g / 16`; bit 0 alone for
+            /// blocks up to 8 wide) with its left tap clamped. With `left`, blocks up
+            /// to 8 wide run 16 lanes from 8 samples before the block, and lane 7 is
+            /// the sample left of each row, with that row's taps.
+            #[inline]
+            fn $name(
+                token: Avx2,
+                clamp_groups: u8,
+                luma: &[u8],
+                block: Luma420Block,
+                left: Option<&mut [i16]>,
+                out: &mut [i16],
+            ) {
+                let mut left = left;
+                let taps = &LANE_TAPS[$filter];
+                use core::arch::x86_64::{
+                    __m128i, __m256i, _mm_add_epi16, _mm_maddubs_epi16, _mm256_add_epi16,
+                    _mm256_castsi256_si128, _mm256_extract_epi16, _mm256_extracti128_si256,
+                    _mm256_maddubs_epi16, _mm256_setzero_si256,
+                };
+                use fearless_simd::{SimdBase as _, SimdFrom as _, i16x16, u8x16, u8x32};
+                let width = block.width;
+                let lanes = |clamped: usize, pair: usize, row: usize| -> __m256i {
+                    i16x16::from_slice(token, &taps[clamped][pair][row]).into()
+                };
+                let [[plain_centre, plain_left], ..] = taps;
+                let used = |pair: &[[i16; 16]; 3], row: usize| pair[row][1] != 0;
+                let first = usize::from(clamp_groups & 1);
+                for (r, out) in out.chunks_exact_mut(width).enumerate() {
+                    let rows = tap_rows(&block, r);
+                    if width > 8 {
+                        for g in (0..width).step_by(16) {
+                            let clamped = usize::from(clamp_groups >> (g / 16) & 1);
+                            let mut acc = _mm256_setzero_si256();
+                            for (i, &row) in rows.iter().enumerate() {
+                                let at = row + 2 * g;
+                                if used(plain_centre, i) {
+                                    let bytes: __m256i =
+                                        u8x32::from_slice(token, &luma[at..at + 32]).into();
+                                    acc = _mm256_add_epi16(
+                                        acc,
+                                        _mm256_maddubs_epi16(bytes, lanes(clamped, 0, i)),
+                                    );
+                                }
+                                if used(plain_left, i) {
+                                    let bytes: __m256i =
+                                        u8x32::from_slice(token, &luma[at - 1..at + 31]).into();
+                                    acc = _mm256_add_epi16(
+                                        acc,
+                                        _mm256_maddubs_epi16(bytes, lanes(clamped, 1, i)),
+                                    );
+                                }
+                            }
+                            let acc = i16x16::simd_from(token, acc);
+                            if let Some(out) = out.get_mut(g..g + 16) {
+                                acc.store_slice(out);
+                            } else {
+                                for (slot, &lane) in out[g..].iter_mut().zip(acc.as_slice()) {
+                                    *slot = lane;
+                                }
+                            }
                         }
-                        if used(plain_left, i) {
-                            let bytes: __m256i =
-                                u8x32::from_slice(token, &luma[at - 1..at + 31]).into();
-                            acc = _mm256_add_epi16(
-                                acc,
-                                _mm256_maddubs_epi16(bytes, lanes(clamped, 1, i)),
-                            );
+                    } else if let Some(left) = left.as_deref_mut() {
+                        let clamped = 2 * first;
+                        let mut acc = _mm256_setzero_si256();
+                        for (i, &row) in rows.iter().enumerate() {
+                            let at = row - 16;
+                            if used(plain_centre, i) {
+                                let bytes: __m256i =
+                                    u8x32::from_slice(token, &luma[at..at + 32]).into();
+                                acc = _mm256_add_epi16(
+                                    acc,
+                                    _mm256_maddubs_epi16(bytes, lanes(clamped, 0, i)),
+                                );
+                            }
+                            if used(plain_left, i) {
+                                let bytes: __m256i =
+                                    u8x32::from_slice(token, &luma[at - 1..at + 31]).into();
+                                acc = _mm256_add_epi16(
+                                    acc,
+                                    _mm256_maddubs_epi16(bytes, lanes(clamped, 1, i)),
+                                );
+                            }
                         }
-                    }
-                    let acc = i16x16::simd_from(token, acc);
-                    if let Some(out) = out.get_mut(g..g + 16) {
-                        acc.store_slice(out);
+                        left[r] = _mm256_extract_epi16::<7>(acc) as i16;
+                        store_row8(token, _mm256_extracti128_si256::<1>(acc), out);
                     } else {
-                        for (slot, &lane) in out[g..].iter_mut().zip(acc.as_slice()) {
-                            *slot = lane;
+                        let clamped = first;
+                        let mut acc: __m128i = u8x16::splat(token, 0).into();
+                        for (i, &row) in rows.iter().enumerate() {
+                            if used(plain_centre, i) {
+                                let bytes: __m128i =
+                                    u8x16::from_slice(token, &luma[row..row + 16]).into();
+                                acc = _mm_add_epi16(
+                                    acc,
+                                    _mm_maddubs_epi16(
+                                        bytes,
+                                        _mm256_castsi256_si128(lanes(clamped, 0, i)),
+                                    ),
+                                );
+                            }
+                            if used(plain_left, i) {
+                                let bytes: __m128i =
+                                    u8x16::from_slice(token, &luma[row - 1..row + 15]).into();
+                                acc = _mm_add_epi16(
+                                    acc,
+                                    _mm_maddubs_epi16(
+                                        bytes,
+                                        _mm256_castsi256_si128(lanes(clamped, 1, i)),
+                                    ),
+                                );
+                            }
                         }
+                        store_row8(token, acc, out);
                     }
                 }
-            } else if let Some(left) = left.as_deref_mut() {
-                let clamped = 2 * first;
-                let mut acc = _mm256_setzero_si256();
-                for (i, &row) in rows.iter().enumerate() {
-                    let at = row - 16;
-                    if used(plain_centre, i) {
-                        let bytes: __m256i = u8x32::from_slice(token, &luma[at..at + 32]).into();
-                        acc = _mm256_add_epi16(
-                            acc,
-                            _mm256_maddubs_epi16(bytes, lanes(clamped, 0, i)),
-                        );
-                    }
-                    if used(plain_left, i) {
-                        let bytes: __m256i =
-                            u8x32::from_slice(token, &luma[at - 1..at + 31]).into();
-                        acc = _mm256_add_epi16(
-                            acc,
-                            _mm256_maddubs_epi16(bytes, lanes(clamped, 1, i)),
-                        );
-                    }
-                }
-                left[r] = _mm256_extract_epi16::<7>(acc) as i16;
-                store_row8(token, _mm256_extracti128_si256::<1>(acc), out);
-            } else {
-                let clamped = first;
-                let mut acc: __m128i = u8x16::splat(token, 0).into();
-                for (i, &row) in rows.iter().enumerate() {
-                    if used(plain_centre, i) {
-                        let bytes: __m128i = u8x16::from_slice(token, &luma[row..row + 16]).into();
-                        acc = _mm_add_epi16(
-                            acc,
-                            _mm_maddubs_epi16(bytes, _mm256_castsi256_si128(lanes(clamped, 0, i))),
-                        );
-                    }
-                    if used(plain_left, i) {
-                        let bytes: __m128i =
-                            u8x16::from_slice(token, &luma[row - 1..row + 15]).into();
-                        acc = _mm_add_epi16(
-                            acc,
-                            _mm_maddubs_epi16(bytes, _mm256_castsi256_si128(lanes(clamped, 1, i))),
-                        );
-                    }
-                }
-                store_row8(token, acc, out);
             }
-        }
-    }
-);
+        );
+    };
+}
+luma_420_rows!(luma_420_rows_f0, 0);
+luma_420_rows!(luma_420_rows_f1, 1);
+luma_420_rows!(luma_420_rows_f2, 2);
 
 /// Stores the first `out.len()` (at most 8) lanes of `row`.
 #[inline]
