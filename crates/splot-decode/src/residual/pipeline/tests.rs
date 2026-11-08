@@ -1047,9 +1047,13 @@ fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_
     };
 
     let mut units = Vec::new();
-    let mut parsed = plane
-        .retain_partitioned_luma(visible, None, &mut deblock, &mut units)
-        .expect("visible transform unit has valid geometry");
+    let mut parsed = ParsedResidualPlane {
+        plane,
+        kind: plane
+            .retain_partitioned_luma(visible, None, &mut deblock, &mut units)
+            .expect("visible transform unit has valid geometry"),
+        cctx_role: CctxRole::None,
+    };
     assert_eq!(deblock_blocks.len(), 1);
     assert_eq!(
         (

@@ -15,8 +15,7 @@ use crate::bitstream::tile_payload::{
     TransformToolResidualPolicy, classify_coeff_parse_error, read_lossless_luma_tx_size,
 };
 use crate::residual::pipeline::{
-    GeneralIntraResidualPlan, ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan,
-    ResidualPlanError,
+    ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan, ResidualPlanError,
 };
 use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
 
@@ -615,10 +614,11 @@ fn parse_one_general_intra_chroma_part_block(
     .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
     let chroma_plan =
         chroma_plan_for_parts(chroma, y_mode, angle_delta_y, cfl_ds_filter_index, sb_mib);
-    let residual_plan = GeneralIntraResidualPlan::chroma(block_ctx, chroma_plan, lossless_luma_fsc)
+    let residual_plan = arena
+        .plan_chroma(block_ctx, chroma_plan, lossless_luma_fsc)
         .map_err(general_intra_residual_plan_error)?;
     let command = parse_general_intra_residual_plan(
-        &residual_plan,
+        residual_plan,
         work_unit,
         symbols,
         coeff_ctx,
@@ -669,17 +669,18 @@ fn parse_one_general_intra_rect_block(
     let luma_plan = rect_luma_plan(modes, block_ctx, luma_use_tcq, sb_mib)?;
     let chroma_plan = rect_chroma_plan(modes, cfl_ds_filter_index, sb_mib);
 
-    let residual_plan = GeneralIntraResidualPlan::rect(
-        block_ctx,
-        luma_plan,
-        chroma_plan,
-        modes.uses_active_fsc(),
-        luma_lossless_tx_size,
-        lossless,
-    )
-    .map_err(general_intra_residual_plan_error)?;
+    let residual_plan = arena
+        .plan_rect(
+            block_ctx,
+            luma_plan,
+            chroma_plan,
+            modes.uses_active_fsc(),
+            luma_lossless_tx_size,
+            lossless,
+        )
+        .map_err(general_intra_residual_plan_error)?;
     let command = parse_general_intra_residual_plan(
-        &residual_plan,
+        residual_plan,
         work_unit,
         symbols,
         coeff_ctx,
@@ -1005,7 +1006,7 @@ pub(crate) fn wide_angle_mapped_p_angle(width: usize, height: usize, p_angle: i3
 
 #[allow(clippy::too_many_arguments)]
 fn parse_general_intra_residual_plan(
-    residual_plan: &GeneralIntraResidualPlan,
+    residual_plan: crate::residual::pipeline::PlannedGeneralIntraResidual,
     work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
@@ -1032,13 +1033,14 @@ fn parse_general_intra_residual_plan(
         tx_skip_records,
         block_r: block.row4(),
         block_c: block.col4(),
-        chroma_tx: residual_plan.chroma_tx(),
+        chroma_tx: arena.chroma_tx(&residual_plan),
         chroma_subsampling: block_ctx.chroma().subsampling(PlaneId::U),
         qindex,
         lossless,
     };
-    let residual = residual_plan
+    let residual = arena
         .parse(
+            residual_plan,
             work_unit,
             symbols,
             coeff_ctx,
@@ -1047,7 +1049,6 @@ fn parse_general_intra_residual_plan(
             luma_tx_partition_context,
             transform_tool_residual_policy,
             &mut deblock,
-            arena,
             coeffs_arena,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
