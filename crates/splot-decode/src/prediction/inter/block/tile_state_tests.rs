@@ -106,7 +106,6 @@ fn inter_tile_constructors_accept_nonempty_boundary_geometry() {
     assert!(TileBlockDecodedState::new(1, 1, 1, 1, 1, 1).is_ok());
     assert!(TileBlockDecodedState::new(3, 1, 1, 32, 32, 32).is_ok());
     assert!(NeighbourMvGrid::new_for_tile(7..8, 9..10).is_ok());
-    assert!(crate::prediction::intra_edge::TileSmoothGrid::new_for_tile(7..8, 9..10).is_ok());
 }
 
 #[test]

@@ -3,7 +3,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use super::super::cdf::block_context::{IntraJointMode, IntraYMode, MrlSelection};
 use super::*;
+use splot_core::symbol::Symbol;
 
 const BLOCK_4X4: usize = 0;
 const BLOCK_8X8: usize = 3;
@@ -84,7 +86,9 @@ fn rejects_empty_dimensions() {
 fn updates_luma_footprint_and_neighbor_lines() {
     let mut state = new_state(6, 6);
 
-    state.update_luma_block(1, 2, block(BLOCK_16X8)).unwrap();
+    state
+        .update_luma_block(1, 2, block(BLOCK_16X8), None, None)
+        .unwrap();
 
     for row in 1..3 {
         assert_eq!(
@@ -112,7 +116,9 @@ fn updates_luma_footprint_and_neighbor_lines() {
 fn updates_chroma_footprint_without_touching_luma() {
     let mut state = new_state(4, 4);
 
-    state.update_chroma_block(1, 1, block(BLOCK_8X8)).unwrap();
+    state
+        .update_chroma_block(1, 1, block(BLOCK_8X8), 0)
+        .unwrap();
 
     for row in 1..3 {
         assert_eq!(
@@ -141,7 +147,9 @@ fn accepts_edge_block_footprint_inside_padded_superblock_extent() {
     let mut state = new_state(18, 18);
 
     state.enter_sb_row(16);
-    state.update_luma_block(16, 16, block(BLOCK_64X64)).unwrap();
+    state
+        .update_luma_block(16, 16, block(BLOCK_64X64), None, None)
+        .unwrap();
 
     for row in 16..32 {
         assert_eq!(
@@ -163,7 +171,7 @@ fn rejects_start_before_tile_origin_without_mutating_state() {
     let before = state.clone();
 
     let err = state
-        .update_luma_block(0, 16, block(BLOCK_4X4))
+        .update_luma_block(0, 16, block(BLOCK_4X4), None, None)
         .unwrap_err();
 
     assert!(matches!(
@@ -183,7 +191,7 @@ fn rejects_footprint_outside_padded_extent_without_mutating_state() {
     let before = state.clone();
 
     let err = state
-        .update_luma_block(0, 0, block(BLOCK_256X256))
+        .update_luma_block(0, 0, block(BLOCK_256X256), None, None)
         .unwrap_err();
 
     assert!(matches!(
@@ -203,7 +211,7 @@ fn rejects_coordinate_overflow_without_mutating_state() {
     let before = state.clone();
 
     let err = state
-        .update_chroma_block(usize::MAX, 0, block(BLOCK_4X4))
+        .update_chroma_block(usize::MAX, 0, block(BLOCK_4X4), 0)
         .unwrap_err();
 
     assert!(matches!(
@@ -220,8 +228,12 @@ fn rejects_coordinate_overflow_without_mutating_state() {
 #[test]
 fn partition_neighbours_read_both_planes_after_mutation() {
     let mut state = new_state(16, 16);
-    state.update_luma_block(0, 0, block(BLOCK_64X64)).unwrap();
-    state.update_chroma_block(4, 4, block(BLOCK_8X8)).unwrap();
+    state
+        .update_luma_block(0, 0, block(BLOCK_64X64), None, None)
+        .unwrap();
+    state
+        .update_chroma_block(4, 4, block(BLOCK_8X8), 0)
+        .unwrap();
 
     let luma = state.partition_neighbours(0, 0, 0, 8, 8).unwrap();
     assert_eq!(luma.left, [state.left_at(0, 0), state.left_at(0, 8)]);
@@ -239,4 +251,213 @@ fn partition_neighbours_read_both_planes_after_mutation() {
     assert_eq!(chroma.luma_above, state.above_plane(0)[4]);
     assert_eq!(state.partition_neighbours(0, 0, 0, 16, 0), None);
     assert_eq!(state.partition_neighbours(2, 0, 0, 0, 0), None);
+}
+
+fn square(n4: usize) -> BlockSize {
+    block(match n4 {
+        1 => BLOCK_4X4,
+        2 => BLOCK_8X8,
+        4 => 6,
+        8 => 9,
+        16 => BLOCK_64X64,
+        _ => BLOCK_256X256,
+    })
+}
+
+fn edges(rows: usize, cols: usize, sb_size: usize) -> TileMiSizeState {
+    let mut state = TileMiSizeState::new_for_tile(0..rows, 0..cols, block(sb_size)).unwrap();
+    state.enter_sb_row(0);
+    state
+}
+
+fn joint(value: usize) -> IntraJointMode {
+    IntraJointMode::try_new(value).unwrap()
+}
+
+fn facts(joint: IntraJointMode, fsc: u8, use_dip: bool, mrl: MrlSelection) -> IntraFacts {
+    IntraFacts::luma(joint, IntraYMode::Dc, 0, fsc, mrl).with_dip(use_dip)
+}
+
+fn record(
+    state: &mut TileMiSizeState,
+    (r, c): (usize, usize),
+    n4: usize,
+    leaf: Option<IntraFacts>,
+) {
+    state
+        .update_luma_block(r, c, square(n4), leaf, None)
+        .unwrap();
+}
+
+fn record_joint(state: &mut TileMiSizeState, pos: (usize, usize), n4: usize, value: usize) {
+    record(
+        state,
+        pos,
+        n4,
+        Some(facts(joint(value), 0, false, MrlSelection::Disabled)),
+    );
+}
+
+fn mrl(secondary: u8) -> MrlSelection {
+    MrlSelection::from_symbols(1, Some(secondary)).unwrap()
+}
+
+#[test]
+fn joint_modes_read_the_left_bottom_and_above_right_probes() {
+    let mut state = edges(32, 32, BLOCK_256X256);
+    assert_eq!(state.intra_neighbours(0, 0, 16, 16).y_mode_index_ctx(), 0);
+    record_joint(&mut state, (0, 16), 16, 36);
+    record_joint(&mut state, (16, 0), 16, 36);
+    let both = state.intra_neighbours(16, 16, 16, 16);
+    assert_eq!(both.joint_modes(), [joint(36); 2]);
+    assert_eq!(both.y_mode_index_ctx(), 2);
+    let mut small = edges(8, 8, BLOCK_256X256);
+    record_joint(&mut small, (3, 1), 1, 36);
+    record_joint(&mut small, (1, 3), 1, 4);
+    assert_eq!(
+        small.intra_neighbours(2, 2, 2, 2).joint_modes(),
+        [joint(36), joint(4)]
+    );
+}
+
+#[test]
+fn an_inter_leaf_reads_as_dc_and_a_new_row_clears_the_left_line() {
+    let mut state = edges(64, 64, BLOCK_64X64);
+    record_joint(&mut state, (0, 0), 16, 36);
+    assert_eq!(
+        state.intra_neighbours(0, 16, 16, 16).joint_modes()[0],
+        joint(36)
+    );
+    record(&mut state, (16, 0), 16, None);
+    let below_inter = state.intra_neighbours(32, 0, 16, 16);
+    assert_eq!(below_inter.joint_modes(), [IntraJointMode::DC; 2]);
+    state.enter_sb_row(16);
+    assert_eq!(
+        state.intra_neighbours(16, 16, 16, 16).joint_modes()[0],
+        IntraJointMode::DC
+    );
+}
+
+#[test]
+fn probes_past_the_tile_read_as_absent() {
+    let mut state = edges(6, 6, BLOCK_64X64);
+    let plain = facts(IntraJointMode::DC, 0, false, MrlSelection::Disabled);
+    let fsc = facts(IntraJointMode::DC, 1, false, MrlSelection::Disabled);
+    assert_eq!(state.intra_neighbours(0, 0, 4, 4).fsc_mode_ctx(), 0);
+    record(&mut state, (0, 4), 4, Some(plain));
+    record(&mut state, (4, 0), 4, Some(plain));
+    record(&mut state, (7, 3), 1, Some(fsc));
+    record(&mut state, (3, 7), 1, Some(fsc));
+    assert_eq!(state.intra_neighbours(4, 4, 4, 4).fsc_mode_ctx(), 0);
+    record(&mut state, (4, 3), 1, Some(fsc));
+    assert_eq!(state.intra_neighbours(4, 4, 4, 4).fsc_mode_ctx(), 1);
+}
+
+#[test]
+fn npos_takes_the_first_two_probes_of_the_superblock_row() {
+    let mut state = edges(32, 32, BLOCK_64X64);
+    record(
+        &mut state,
+        (15, 16),
+        1,
+        Some(facts(IntraJointMode::DC, 1, true, mrl(1))),
+    );
+    record(
+        &mut state,
+        (15, 31),
+        1,
+        Some(facts(IntraJointMode::DC, 1, true, mrl(1))),
+    );
+    record(
+        &mut state,
+        (31, 15),
+        1,
+        Some(facts(IntraJointMode::DC, 1, true, mrl(0))),
+    );
+    let across = state.intra_neighbours(16, 16, 16, 16);
+    assert_eq!((across.mrl_index_ctx(), across.mrl_sec_index_ctx()), (1, 0));
+    assert_eq!((across.fsc_mode_ctx(), across.use_dip_ctx()), (1, 1));
+    let mut state = edges(16, 16, BLOCK_64X64);
+    record(
+        &mut state,
+        (7, 3),
+        1,
+        Some(facts(IntraJointMode::DC, 0, false, mrl(0))),
+    );
+    record(
+        &mut state,
+        (7, 0),
+        1,
+        Some(facts(IntraJointMode::DC, 0, false, mrl(1))),
+    );
+    let fallback = state.intra_neighbours(8, 0, 4, 4);
+    assert_eq!(
+        (fallback.mrl_index_ctx(), fallback.mrl_sec_index_ctx()),
+        (2, 1)
+    );
+}
+
+#[test]
+fn smoothness_reads_the_above_and_left_luma_modes() {
+    let mut state = edges(8, 8, BLOCK_64X64);
+    assert_eq!(
+        state.intra_neighbours(0, 0, 4, 4).smoothness(),
+        (false, false)
+    );
+    let smooth = IntraFacts::luma(
+        IntraJointMode::DC,
+        IntraYMode::Smooth,
+        0,
+        0,
+        MrlSelection::Disabled,
+    );
+    record(&mut state, (0, 4), 4, Some(smooth));
+    record(&mut state, (4, 0), 4, Some(IntraFacts::intrabc()));
+    assert_eq!(
+        state.intra_neighbours(4, 4, 4, 4).smoothness(),
+        (true, false)
+    );
+}
+
+#[test]
+fn palette_cache_interleaves_neighbours_and_skips_a_64_row_boundary() {
+    let mut state = edges(32, 32, BLOCK_64X64);
+    let above = LumaPalette::from_size_symbol(Symbol::new(2), [7, 11, 19, 23, 0, 0, 0, 0]);
+    let left = LumaPalette::from_size_symbol(Symbol::new(0), [11, 17, 0, 0, 0, 0, 0, 0]);
+    let leaf = Some(facts(IntraJointMode::DC, 0, false, MrlSelection::Disabled));
+    state
+        .update_luma_block(0, 1, square(1), leaf, Some(above))
+        .unwrap();
+    state
+        .update_luma_block(1, 0, square(1), leaf, Some(left))
+        .unwrap();
+    let (cache, len) = state.palette_cache(1, 1);
+    assert_eq!(&cache[..len], &[7, 11, 11, 17, 19, 23]);
+    state
+        .update_luma_block(15, 4, square(1), leaf, Some(above))
+        .unwrap();
+    assert_eq!(state.palette_cache(16, 4).1, 0);
+    assert_eq!(state.palettes, [above, left, above]);
+}
+
+#[test]
+fn uv_bits_ride_on_the_chroma_entries() {
+    let mut state = edges(32, 32, BLOCK_64X64);
+    assert_eq!(state.uv_cfl_ctx(0, 0).get(), 0);
+    state.update_chroma_block(0, 0, square(4), UV_CFL).unwrap();
+    assert_eq!(state.uv_cfl_ctx(0, 4).get(), 1);
+    state
+        .update_chroma_block(0, 4, square(4), UV_SMOOTH)
+        .unwrap();
+    state
+        .update_chroma_block(4, 0, square(4), UV_CFL | UV_SMOOTH)
+        .unwrap();
+    assert_eq!(state.uv_cfl_ctx(4, 4).get(), 1);
+    assert_eq!(state.uv_smoothness(4, 4), (true, true));
+    assert_eq!(
+        state.left_at(1, 4) & !(UV_CFL | UV_SMOOTH),
+        PARTITION_CONTEXT_LEFT[6]
+    );
+    state.enter_sb_row(0);
+    assert_eq!(state.uv_cfl_ctx(4, 4).get(), 0);
 }

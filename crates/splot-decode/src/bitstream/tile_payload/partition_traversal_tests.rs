@@ -22,11 +22,8 @@ use splot_core::symbol::{
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::DEFAULT_Y_MODE_SET_CDF;
 
-const WHOLE_TILE: usize = crate::tile::SbRowWindow::WHOLE_TILE_SB_H4;
-
 const BLOCK_4X4: usize = 0;
 const BLOCK_4X8: usize = 1;
-const BLOCK_16X16: usize = 6;
 const BLOCK_32X32: usize = 9;
 const BLOCK_64X64: usize = 12;
 const BLOCK_128X128: usize = 15;
@@ -37,9 +34,12 @@ const PARTITION_CONTEXT_4X4_U8: u8 = 63;
 fn context_of(size: usize, sb_size: usize) -> TileMiSizeState {
     let mut state =
         TileMiSizeState::new_for_tile(0..size, 0..size, BlockSize::new(sb_size).unwrap()).unwrap();
-    state.visit_region(0..size, &(0..size), |line| {
-        line.fill(PARTITION_CONTEXT_4X4_U8);
-    });
+    state.visit_region(
+        0..size,
+        &(0..size),
+        |line| line.fill(PARTITION_CONTEXT_4X4_U8),
+        |_| {},
+    );
     state
 }
 
@@ -187,9 +187,6 @@ fn run_first_superblock<'payload>(
     let mut mi_sizes =
         TileMiSizeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), frame.sb_size())
             .unwrap();
-    let mut uv_cfls = TileUvCflState::new(tile_rows.len(), tile_cols.len(), WHOLE_TILE)
-        .unwrap()
-        .with_origin(tile_rows.start, tile_cols.start);
     let mut cursor = GeneralIntraPartitionTreeCursor::new(
         work_unit,
         frame,
@@ -200,15 +197,14 @@ fn run_first_superblock<'payload>(
     cursor.decode_next_superblock_with_publication(
         work_unit,
         &mut mi_sizes,
-        &mut uv_cfls,
-        &mut |_, symbols, frontier, _, _| {
+        &mut |_, symbols, frontier, _| {
             frontiers.push(CapturedLeaf {
                 frontier: *frontier,
                 symbol_count: symbols.symbol_count(),
                 symbol_checkpoint: symbols.checkpoint(),
             });
             let leaf = if frontier.is_chroma_part() {
-                GeneralIntraLeafMode::chroma(false)
+                GeneralIntraLeafMode::chroma(false, false)
             } else {
                 GeneralIntraLeafMode::luma(
                     IntraJointMode::DC,
@@ -217,7 +213,7 @@ fn run_first_superblock<'payload>(
                     0,
                     MrlSelection::Disabled,
                 )
-                .with_uv_cfl(false)
+                .with_uv(false, false)
             };
             Ok((leaf, ()))
         },
@@ -323,23 +319,6 @@ fn child_calls_thread_chroma_reference_to_chroma_offset_descendants() {
             "chroma-offset child must reference the parent §5.20.4.1 chroma geometry"
         );
     }
-}
-
-#[test]
-fn uv_cfl_context_uses_chroma_reference_base_for_offset_blocks() {
-    let mut uv_cfls = TileUvCflState::new(16, 16, WHOLE_TILE).unwrap();
-    uv_cfls.record_block(0, 4, 4, 4, true);
-    let bounds = TilePartitionBounds {
-        mi_row_start: 0,
-        mi_row_end: 16,
-        mi_col_start: 0,
-        mi_col_end: 16,
-    };
-    let chroma_ref = ChromaRefGeometry::new(0, 8, BlockSize::new(BLOCK_16X16).unwrap());
-
-    let ctx = is_cfl_context_for_chroma_ref(&uv_cfls, bounds, chroma_ref);
-
-    assert_eq!(ctx.get(), 1);
 }
 
 #[test]

@@ -9,13 +9,12 @@ use super::state_publication::{DecodedLeafPublication, publish_intra_leaf_state}
 use super::{
     BLOCK_8X32, BlockSize, CALL_CFL_ALLOWED_IN_SDP, ChildCallSink, ChromaRefGeometry,
     DecodeBlockFrontier, DecodeBlockPart, DecodeLimitName, DecodeLimits, DecodeTileWorkUnit,
-    GeneralIntraLeafMode, IsCflContext, PartitionAllowedInput, PartitionContextInput,
-    PartitionDecisionMemo, PartitionTreeType, PartitionType, ROOT_HAS_CHROMA,
-    SquareSplitContextInput, SymbolDecoder, TileIntraFactsState, TileMiSizeState,
-    TileMiSizeStateError, TilePartitionBounds, TilePartitionCall, TilePartitionFrameFacts,
-    TilePartitionTraversalError, TileUvCflState, call_in_frame, checked_mul, child_calls_into,
-    decision_memo_key, ensure_supported_traversal_frame, h_partition_midsize, partition_subsize,
-    symbol_decoder_for_work_unit,
+    GeneralIntraLeafMode, PartitionAllowedInput, PartitionContextInput, PartitionDecisionMemo,
+    PartitionTreeType, PartitionType, ROOT_HAS_CHROMA, SquareSplitContextInput, SymbolDecoder,
+    TileIntraFactsState, TileMiSizeState, TileMiSizeStateError, TilePartitionBounds,
+    TilePartitionCall, TilePartitionFrameFacts, TilePartitionTraversalError, call_in_frame,
+    checked_mul, child_calls_into, decision_memo_key, ensure_supported_traversal_frame,
+    h_partition_midsize, partition_subsize, symbol_decoder_for_work_unit,
 };
 
 const BLOCK_64X64: usize = 12;
@@ -23,34 +22,13 @@ const INTER_SDP_MAX_BLOCK_SIZE: usize = 64;
 const INTRA_REGION: u8 = 0;
 pub(super) const MIXED_REGION: u8 = 1;
 
-pub(crate) fn is_cfl_context_for_chroma_ref(
-    uv_cfls: &TileUvCflState,
-    tile_bounds: TilePartitionBounds,
-    chroma_ref: ChromaRefGeometry,
-) -> IsCflContext {
-    let row = chroma_ref.row();
-    let col = chroma_ref.col();
-    IsCflContext::new(uv_cfls.is_cfl_ctx(
-        row,
-        col,
-        tile_bounds.avail_u_at(row, col),
-        tile_bounds.avail_l_at(row, col),
-    ))
-}
-
-/// The `is_cfl` context of a leaf's chroma reference block, derived only when
-/// the leaf's chroma mode syntax reads it.
+/// The neighbour state a leaf's mode syntax reads.
 #[derive(Clone, Copy)]
-pub(crate) struct LeafCflContext<'a> {
-    uv_cfls: &'a TileUvCflState,
-    tile_bounds: TilePartitionBounds,
-    chroma_ref: ChromaRefGeometry,
-}
-
-impl LeafCflContext<'_> {
-    pub(crate) fn resolve(self) -> IsCflContext {
-        is_cfl_context_for_chroma_ref(self.uv_cfls, self.tile_bounds, self.chroma_ref)
-    }
+pub(crate) struct LeafNeighbours<'a> {
+    /// The tile's edge lines.
+    pub(crate) edges: &'a TileMiSizeState,
+    /// The luma facts an SDP chroma part reads at its own position.
+    pub(crate) collocated: &'a TileIntraFactsState,
 }
 
 pub(crate) fn decode_block_frontier(
@@ -130,7 +108,6 @@ struct TreeWalker<'payload> {
 struct LeafHooks<'h, F, P> {
     work_unit: &'h mut DecodeTileWorkUnit,
     mi_size_state: &'h mut TileMiSizeState,
-    uv_cfls: &'h mut TileUvCflState,
     on_leaf: &'h mut F,
     on_published: &'h mut P,
 }
@@ -224,7 +201,6 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         &mut self,
         work_unit: &mut DecodeTileWorkUnit,
         mi_size_state: &mut TileMiSizeState,
-        uv_cfls: &mut TileUvCflState,
         on_leaf: &mut F,
         on_published: &mut P,
     ) -> Result<Option<[usize; 2]>, GeneralIntraTreeWalkError<E>>
@@ -233,8 +209,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             &mut DecodeTileWorkUnit,
             &mut SymbolDecoder<'payload>,
             &DecodeBlockFrontier,
-            &TileIntraFactsState,
-            LeafCflContext<'_>,
+            LeafNeighbours<'_>,
         ) -> Result<(GeneralIntraLeafMode, C), E>,
         P: FnMut(DecodedLeafPublication, C),
     {
@@ -250,7 +225,6 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         let mut hooks = LeafHooks {
             work_unit,
             mi_size_state,
-            uv_cfls,
             on_leaf,
             on_published,
         };
@@ -295,8 +269,7 @@ where
         &mut DecodeTileWorkUnit,
         &mut SymbolDecoder<'payload>,
         &DecodeBlockFrontier,
-        &TileIntraFactsState,
-        LeafCflContext<'_>,
+        LeafNeighbours<'_>,
     ) -> Result<(GeneralIntraLeafMode, C), E>,
     P: FnMut(DecodedLeafPublication, C),
 {
@@ -362,18 +335,15 @@ where
     };
     let part = decode_block_part(call, &walker.intra_facts)?;
     let frontier = decode_block_frontier(call, frame, sub_size, chroma_offset, part);
-    let is_cfl_ctx = LeafCflContext {
-        uv_cfls: hooks.uv_cfls,
-        tile_bounds: walker.tile_bounds,
-        chroma_ref: frontier.chroma_ref_geometry(),
-    };
     let decoded_leaf = DecodedLeafPublication::new(call, sub_size, walker.sb_mask);
     let (leaf_mode, command) = (hooks.on_leaf)(
         hooks.work_unit,
         &mut walker.symbols,
         &frontier,
-        &walker.intra_facts,
-        is_cfl_ctx,
+        LeafNeighbours {
+            edges: hooks.mi_size_state,
+            collocated: &walker.intra_facts,
+        },
     )
     .map_err(GeneralIntraTreeWalkError::Leaf)?;
     publish_intra_leaf_state(
@@ -383,7 +353,6 @@ where
         leaf_mode,
         sub_size,
         &mut walker.intra_facts,
-        hooks.uv_cfls,
         hooks.mi_size_state,
     )?;
     (hooks.on_published)(decoded_leaf, command);
@@ -591,8 +560,6 @@ mod row_cursor_tests {
     use super::*;
     use crate::bitstream::tile_payload::make_test_work_unit;
 
-    type ParserStates = (TileMiSizeState, TileUvCflState);
-
     fn frame() -> TilePartitionFrameFacts {
         TilePartitionFrameFacts::new(
             64,
@@ -631,12 +598,8 @@ mod row_cursor_tests {
         .unwrap()
     }
 
-    fn parser_states(frame: TilePartitionFrameFacts) -> ParserStates {
-        (
-            TileMiSizeState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols, frame.sb_size)
-                .unwrap(),
-            TileUvCflState::new(frame.mi_rows, frame.mi_cols, WHOLE_TILE).unwrap(),
-        )
+    fn parser_states(frame: TilePartitionFrameFacts) -> TileMiSizeState {
+        TileMiSizeState::new_for_tile(0..frame.mi_rows, 0..frame.mi_cols, frame.sb_size).unwrap()
     }
 
     fn leaf_mode() -> GeneralIntraLeafMode {
@@ -647,7 +610,7 @@ mod row_cursor_tests {
             0,
             super::super::MrlSelection::Disabled,
         )
-        .with_uv_cfl(false)
+        .with_uv(false, false)
     }
 
     #[test]
@@ -666,9 +629,8 @@ mod row_cursor_tests {
                 let superblock = cursor
                     .decode_next_superblock_with_publication(
                         &mut work,
-                        &mut states.0,
-                        &mut states.1,
-                        &mut |_, _, _, _, _| Ok::<_, ()>((leaf_mode(), ())),
+                        &mut states,
+                        &mut |_, _, _, _| Ok::<_, ()>((leaf_mode(), ())),
                         &mut |_, ()| {},
                     )
                     .unwrap();
@@ -705,9 +667,8 @@ mod row_cursor_tests {
         let result = loop {
             let result = cursor.decode_next_superblock_with_publication(
                 &mut work,
-                &mut states.0,
-                &mut states.1,
-                &mut |_, _, _, _, _| {
+                &mut states,
+                &mut |_, _, _, _| {
                     calls += 1;
                     if calls == 2 {
                         Err("malformed second leaf")
@@ -746,12 +707,11 @@ mod row_cursor_tests {
         cursor
             .decode_next_superblock_with_publication(
                 &mut work,
-                &mut states.0,
-                &mut states.1,
-                &mut |_, _, frontier, _, _| {
+                &mut states,
+                &mut |_, _, frontier, _| {
                     parts.push(frontier.part());
                     let leaf = if frontier.is_chroma_part() {
-                        GeneralIntraLeafMode::chroma(false)
+                        GeneralIntraLeafMode::chroma(false, false)
                     } else {
                         GeneralIntraLeafMode::luma(
                             super::super::IntraJointMode::DC,
@@ -798,12 +758,11 @@ mod row_cursor_tests {
         cursor
             .decode_next_superblock_with_publication(
                 &mut work,
-                &mut states.0,
-                &mut states.1,
-                &mut |_, _, frontier, _, _| {
+                &mut states,
+                &mut |_, _, frontier, _| {
                     parts.push(frontier.part());
                     let leaf = if frontier.is_chroma_part() {
-                        GeneralIntraLeafMode::chroma(false)
+                        GeneralIntraLeafMode::chroma(false, false)
                     } else {
                         GeneralIntraLeafMode::no_luma_mode().mark_intrabc()
                     };
@@ -843,9 +802,8 @@ mod row_cursor_tests {
 
         let result = cursor.decode_next_superblock_with_publication(
             &mut work,
-            &mut states.0,
-            &mut states.1,
-            &mut |_, _, frontier, _, _| {
+            &mut states,
+            &mut |_, _, frontier, _| {
                 leaf_calls += 1;
                 assert!(frontier.is_luma_part());
                 Err::<(GeneralIntraLeafMode, ()), _>("luma decode failed")

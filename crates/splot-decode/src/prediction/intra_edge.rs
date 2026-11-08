@@ -7,93 +7,12 @@
 //! grids (`wienerns_lr/recon/edge_filter.rs`, DEFER-on-uncovered semantics);
 //! this module serves the production per-unit path, where every prior block
 //! is reconstructed, so availability comes from frame geometry and the
-//! §7.13.2.15/16 neighbour smoothness comes from a tile-wide per-MI grid.
+//! §7.13.2.15/16 neighbour smoothness from the parse's intra edge lines.
 
 use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
-use std::ops::Range;
 
-use crate::bitstream::tile_payload::{GeneralIntraResidualError, MiGrid};
+use crate::bitstream::tile_payload::GeneralIntraResidualError;
 use crate::pipeline::reconstruct::{OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters};
-use crate::prediction::{TileGridConstructionError, tile_grid_dimensions};
-
-#[derive(Clone, Default, PartialEq)]
-pub(crate) struct TileSmoothGrid {
-    grid: MiGrid<bool>,
-}
-
-pub(crate) type TileChromaSmoothGrid = TileSmoothGrid;
-
-impl TileSmoothGrid {
-    /// A grid laid out for one tile, for tests that want a fresh one.
-    #[cfg(test)]
-    pub(crate) fn new_for_tile(
-        mi_rows: Range<usize>,
-        mi_cols: Range<usize>,
-    ) -> Result<Self, TileGridConstructionError> {
-        let mut grid = Self::default();
-        grid.reset_for_tile(mi_rows, mi_cols, crate::tile::SbRowWindow::WHOLE_TILE_SB_H4)?;
-        Ok(grid)
-    }
-
-    /// Lays this grid out for another tile, keeping its cells.
-    ///
-    /// The decoder holds one grid per plane group for the life of the stream,
-    /// so a steady-state tile clears the cells the last one left rather than
-    /// sizing new ones.
-    pub(crate) fn reset_for_tile(
-        &mut self,
-        mi_rows: Range<usize>,
-        mi_cols: Range<usize>,
-        sb_h4: usize,
-    ) -> Result<(), TileGridConstructionError> {
-        tile_grid_dimensions(&mi_rows, &mi_cols)?;
-        self.grid = MiGrid::build(
-            mi_rows,
-            mi_cols,
-            sb_h4,
-            false,
-            core::mem::take(&mut self.grid).into_cells(),
-            |_, _| TileGridConstructionError::EmptyDimensions,
-            |_, _, _| TileGridConstructionError::AreaOverflow,
-            |_| TileGridConstructionError::Allocation,
-            Ok(()),
-        )?;
-        Ok(())
-    }
-
-    /// Records one intra block. A cell holds `false` until its last writer in
-    /// the tile records it; the only earlier writer is the `false` write of a
-    /// luma-part leaf, which comes before the chroma-part write of the same
-    /// region. So a non-smooth block only moves the window.
-    pub(crate) fn record(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, smooth: bool) {
-        self.grid.record_owned_block((r, c), (n4w, n4h), smooth);
-    }
-
-    /// Whether an access touched a row the window had already reused.
-    pub(crate) fn window_violated(&self) -> bool {
-        self.grid.window_violated()
-    }
-
-    /// The smoothness grid, for the encoder facade's rollback.
-    pub(crate) fn grid_mut(&mut self) -> &mut MiGrid<bool> {
-        &mut self.grid
-    }
-
-    pub(crate) fn block_smoothness(&self, mi_col: usize, mi_row: usize) -> (bool, bool) {
-        (
-            mi_row
-                .checked_sub(1)
-                .is_some_and(|row| self.at(mi_col, row)),
-            mi_col
-                .checked_sub(1)
-                .is_some_and(|col| self.at(col, mi_row)),
-        )
-    }
-
-    fn at(&self, col: usize, row: usize) -> bool {
-        self.grid.cell(row, col).unwrap_or(false)
-    }
-}
 
 #[derive(Clone, Copy)]
 pub(crate) struct IntraEdgeCtx {

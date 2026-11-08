@@ -41,7 +41,7 @@ use super::coeff_state::{
     CoeffContextUpdate, LevelGrid, TileCoeffContextState, TransformCoeffBlockState,
 };
 use super::general_intra_residual::{block_recon_params, txb_skip_selector, txb_skip_tx_size_ctx};
-use super::intra_joint_modes::{TileIntraFactsState, TileUvCflState};
+use super::intra_joint_modes::TileIntraFactsState;
 use super::mi_size_state::TileMiSizeState;
 pub use super::partition::PartitionType as Partition;
 use super::partition::{PartitionDecisionError, PartitionSymbols, read_partition_decision};
@@ -680,7 +680,6 @@ pub struct IntraTileSyntax {
     coeff: TileCoeffContextState,
     mi_sizes: TileMiSizeState,
     intra_facts: TileIntraFactsState,
-    uv_cfls: TileUvCflState,
     y_mode_table: intra::YModeTable,
     inter: Option<inter::InterLeafState>,
     journal: CdfJournal,
@@ -774,10 +773,6 @@ impl IntraTileSyntax {
                 cols.clone(),
                 sb_size4,
             ))?,
-            uv_cfls: neighbour(
-                TileUvCflState::new(rows.len(), cols.len(), sb_size4)
-                    .map(|state| state.with_origin(rows.start, cols.start)),
-            )?,
             y_mode_table: intra::YModeTable::default(),
             inter,
             journal,

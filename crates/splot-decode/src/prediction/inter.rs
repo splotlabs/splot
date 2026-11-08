@@ -2213,8 +2213,7 @@ pub(crate) use block::{
     InterBlockDecodeOutput, InterBlockFacts, InterDecodeScratch, InterFilterInputs,
     InterFrameParse, InterFrameParser, InterReconScratchPool, PendingFilterAttach,
     RowReferenceBounds, ScheduledTileRecon, ScheduledTileWorkspace, TipOutputStages, TipSpares,
-    bounds_satisfied, chroma_smooth_tile_ranges, decode_inter_blocks,
-    invalid_inter_tile_scheduling_state,
+    bounds_satisfied, decode_inter_blocks, invalid_inter_tile_scheduling_state,
 };
 pub(crate) use compound::CompoundYMode;
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};

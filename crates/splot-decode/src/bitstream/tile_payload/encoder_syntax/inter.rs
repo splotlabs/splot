@@ -1484,7 +1484,6 @@ impl IntraTileSyntax {
             mode,
             leaf.call.b_size,
             &mut self.intra_facts,
-            &mut self.uv_cfls,
             &mut self.mi_sizes,
         )
         .map_err(|error| match error {

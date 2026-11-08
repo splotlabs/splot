@@ -64,17 +64,22 @@ fn mrl(index: u8, secondary: u8) -> MrlSelection {
     MrlSelection::from_symbols(index, Some(secondary)).expect("test MRL")
 }
 
-fn empty_facts() -> TileIntraFactsState {
-    TileIntraFactsState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4), SB_N4).unwrap()
+fn empty_facts() -> TileMiSizeState {
+    let mut edges = TileMiSizeState::new_for_tile(
+        0..(2 * SB_N4),
+        0..(2 * SB_N4),
+        BlockSize::new(BLOCK_64X64).unwrap(),
+    )
+    .unwrap();
+    edges.enter_sb_row(0);
+    edges
 }
 
-fn record_luma(
-    facts: &mut TileIntraFactsState,
-    (r, c): (usize, usize),
-    n4: usize,
-    luma: IntraFacts,
-) {
-    facts.record_leaf((r, c), (n4, n4), luma, None);
+fn record_luma(facts: &mut TileMiSizeState, (r, c): (usize, usize), n4: usize, luma: IntraFacts) {
+    let size = if n4 == 1 { 0 } else { BLOCK_64X64 };
+    facts
+        .update_luma_block(r, c, BlockSize::new(size).unwrap(), Some(luma), None)
+        .unwrap();
 }
 
 fn luma_facts(joint: IntraJointMode, fsc: u8, use_dip: u8, mrl: MrlSelection) -> IntraFacts {
@@ -141,7 +146,7 @@ fn decode_general_intra_luma_block_mode(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
-    facts: &TileIntraFactsState,
+    facts: &TileMiSizeState,
     block_size_index: usize,
     block_r: usize,
     block_c: usize,
@@ -152,7 +157,7 @@ fn decode_general_intra_luma_block_mode(
         work_unit,
         symbols,
         chroma_tools,
-        facts.neighbours(block_r, block_c, block_n4w, block_n4h),
+        facts.intra_neighbours(block_r, block_c, block_n4w, block_n4h),
         true,
         block_size(block_size_index),
         block_n4w,
@@ -165,7 +170,7 @@ fn decode_general_intra_block_modes(
     work_unit: &mut DecodeTileWorkUnit,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
-    facts: &TileIntraFactsState,
+    facts: &TileMiSizeState,
     is_cfl_ctx: usize,
     block_size_index: usize,
     block_r: usize,
@@ -179,7 +184,7 @@ fn decode_general_intra_block_modes(
         symbols,
         chroma_tools,
         facts,
-        facts.neighbours(block_r, block_c, block_n4w, block_n4h),
+        facts.intra_neighbours(block_r, block_c, block_n4w, block_n4h),
         true,
         is_cfl_ctx,
         block_size(block_size_index),
@@ -474,7 +479,7 @@ fn mixed_region_fsc_mode_uses_inter_context() {
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::disabled().with_enable_idtx_intra(true),
-        facts.neighbours(8, 8, 4, 4),
+        facts.intra_neighbours(8, 8, 4, 4),
         false,
         block_size(BLOCK_16X16),
         4,
@@ -624,7 +629,7 @@ fn active_dip_mode_info_reads_flag_transpose_and_mode_after_palette() {
         &mut symbols,
         GeneralIntraChromaToolConfig::disabled().with_enable_dip(true),
         &facts,
-        facts.neighbours(8, 8, 4, 4),
+        facts.intra_neighbours(8, 8, 4, 4),
         true,
         0,
         block_size(BLOCK_16X16),
@@ -803,7 +808,7 @@ fn shared_chroma_mhccp_dir_uses_luma_syntax_block_size() {
         &mut symbols,
         GeneralIntraChromaToolConfig::new(false, true),
         &facts,
-        facts.neighbours(0, 15, 1, 4),
+        facts.intra_neighbours(0, 15, 1, 4),
         true,
         0,
         block_size(BLOCK_4X16),

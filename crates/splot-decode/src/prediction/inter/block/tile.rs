@@ -169,7 +169,6 @@ pub(super) struct TileParser<'payload> {
     delta_q_state: DeltaQState,
     intrabc_state: TileIntrabcPreludeState,
     mv_grid: NeighbourMvGrid,
-    chroma_smooth: crate::prediction::intra_edge::TileChromaSmoothGrid,
     filter_records: TileFilterRecords,
     /// The planes this row's general-intra blocks have parsed.
     residual_planes: crate::residual::pipeline::ResidualPlaneArena,
@@ -313,13 +312,6 @@ impl<'payload> TileParser<'payload> {
             .mv_grid
             .reset_for_tile(tile_rows.clone(), tile_cols.clone(), context.params.sb_h4)
             .map_err(|error| inter_tile_grid_error(&error, "inter parser MV grid"))?;
-        let (chroma_rows, chroma_cols) =
-            super::chroma_smooth_tile_ranges(tile_rows, tile_cols, chroma);
-        let chroma_sb_h4 = context.params.sb_h4 >> usize::from(chroma_subsampling(chroma).1);
-        parse
-            .chroma_smooth
-            .reset_for_tile(chroma_rows, chroma_cols, chroma_sb_h4)
-            .map_err(|error| inter_tile_grid_error(&error, "inter chroma smooth grid"))?;
         let walk = GeneralIntraMultiblockCursor::new(
             tile,
             tile_bytes,
@@ -341,7 +333,6 @@ impl<'payload> TileParser<'payload> {
             delta_q_state,
             intrabc_state: parse.intrabc_state,
             mv_grid: parse.mv_grid,
-            chroma_smooth: parse.chroma_smooth,
             filter_records: parse.filter_records,
             residual_planes: crate::residual::pipeline::ResidualPlaneArena::new(),
             output: TileParserOutput {
@@ -492,7 +483,6 @@ impl<'payload> TileParser<'payload> {
             intrabc_state: &mut self.intrabc_state,
             segment_id_state: &mut self.output.segment_id_state,
             mv_grid: &mut self.mv_grid,
-            chroma_smooth: &mut self.chroma_smooth,
             filter_records,
             arena: &mut self.residual_planes,
         };
@@ -500,16 +490,9 @@ impl<'payload> TileParser<'payload> {
             |work_unit: &mut DecodeTileWorkUnit,
              symbols: &mut SymbolDecoder<'_>,
              frontier: &DecodeBlockFrontier,
-             intra_facts: &crate::bitstream::tile_payload::TileIntraFactsState,
-             is_cfl_ctx: crate::bitstream::tile_payload::LeafCflContext<'_>| {
-                let (leaf, resolve) = decode_block(
-                    work_unit,
-                    symbols,
-                    frontier,
-                    &mut block_context,
-                    intra_facts,
-                    is_cfl_ctx,
-                )?;
+             neighbours: crate::bitstream::tile_payload::LeafNeighbours<'_>| {
+                let (leaf, resolve) =
+                    decode_block(work_unit, symbols, frontier, &mut block_context, neighbours)?;
                 consume(
                     &mut block_context,
                     DecodedLeafPublication::from_frontier(frontier, sb_mask),
@@ -534,7 +517,6 @@ impl<'payload> TileParser<'payload> {
         if walk.window_violated()
             || self.mv_grid.window_violated()
             || self.intrabc_state.window_violated()
-            || self.chroma_smooth.window_violated()
         {
             return Err(invalid_inter_tile_scheduling_state());
         }
@@ -556,7 +538,6 @@ impl<'payload> TileParser<'payload> {
                 coeff_ctx: self.coeff_ctx,
                 residual_scratch: self.residual_scratch,
                 intrabc_state: self.intrabc_state,
-                chroma_smooth: self.chroma_smooth,
                 row_buffers: ReconRowBufferPool::default(),
                 traversal: crate::bitstream::tile_payload::TileTraversalStorage::default(),
                 commit_block_decoded: TileBlockDecodedState::default(),
@@ -1173,8 +1154,6 @@ pub(in crate::prediction::inter) struct TileParseState {
     traversal: crate::bitstream::tile_payload::TileTraversalStorage,
     /// The row buffer sets this tile's units are parsed and replayed through.
     row_buffers: ReconRowBufferPool,
-    /// The chroma smooth-mode grid this tile's intra edges are recorded in.
-    chroma_smooth: crate::prediction::intra_edge::TileChromaSmoothGrid,
     /// The block-decoded grid the commit spine reads.
     commit_block_decoded: TileBlockDecodedState,
     /// The CDEF, GDF and CCSO tile states the last tile merged, whose grids
