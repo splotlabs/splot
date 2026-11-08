@@ -116,33 +116,46 @@ pub fn derive_mhccp_params<const N: usize>(
             _ => start,
         };
         let cols = reference_width.saturating_sub(1);
-        if cols > 1 {
-            baseline_simd!(simd => {
+        let left_rows = rows.start.max(refs.above)..rows.end;
+        baseline_simd!(simd => {
+            let mut lanes = LaneSums::new(simd);
+            if cols > 1 {
                 for row in rows.start..rows.end.min(refs.above) {
                     let start = row * stride;
                     let linear_start = linear_offset(start);
                     let linear = &refs.luma[linear_start..linear_start + cols - 1];
                     let center = &refs.luma[start + 1..start + cols];
                     let targets = chroma.map(|plane| &plane[start + 1..start + cols]);
-                    add_run(simd, &mut luma, &mut cross, linear, center, targets, bits);
+                    lanes.add_run(simd, &mut luma, &mut cross, linear, center, targets, bits);
                 }
-            });
-        }
-        if refs.left.min(cols) > 1 {
-            for row in rows.start.max(refs.above)..rows.end {
-                let start = row * stride;
-                let linear = refs.luma[linear_offset(start)];
-                let targets = chroma.map(|plane| plane[start + 1]);
-                add_sample(
-                    &mut luma,
-                    &mut cross,
-                    linear,
-                    refs.luma[start + 1],
-                    targets,
-                    bits,
-                );
             }
-        }
+            if refs.left.min(cols) > 1 {
+                let mut first = left_rows.start;
+                while first + 8 <= left_rows.end {
+                    let at = |k: usize| (first + k) * stride;
+                    let gather = |samples: &[u16], offset: usize| {
+                        i32x8::from_fn(simd, |k| i32::from(samples[at(k) + offset]))
+                    };
+                    let v0 = i32x8::from_fn(simd, |k| i32::from(refs.luma[linear_offset(at(k))]));
+                    lanes.add(v0, gather(refs.luma, 1), chroma.map(|plane| gather(plane, 1)), bits);
+                    first += 8;
+                }
+                for row in first..left_rows.end {
+                    let start = row * stride;
+                    let linear = refs.luma[linear_offset(start)];
+                    let targets = chroma.map(|plane| plane[start + 1]);
+                    add_sample(
+                        &mut luma,
+                        &mut cross,
+                        linear,
+                        refs.luma[start + 1],
+                        targets,
+                        bits,
+                    );
+                }
+            }
+            lanes.reduce_into(&mut luma, &mut cross);
+        });
     }
     let mid = 1i32 << (bits - 1);
     if luma.count == 0 {
@@ -167,39 +180,79 @@ struct LumaSums {
     count: usize,
 }
 
-/// Adds one row run of `v[0]` (`linear`) and centre luma, and of each plane's
-/// target chroma, to the luma sums and each plane's `v0 * t`, `v1 * t`, `t`
-/// sums.
-#[inline]
-fn add_run<S: Simd, const N: usize>(
-    simd: S,
-    luma: &mut LumaSums,
-    cross: &mut [[i32; 3]; N],
-    linear: &[u16],
-    center: &[u16],
-    targets: [&[u16]; N],
-    bits: u32,
-) {
-    let groups = linear.len() / 8;
-    if groups > 0 {
-        let half = 1i32 << (bits - 1);
+/// The § 7.13.7 sums of [`LumaSums`] and the per-plane `v0 * t`, `v1 * t`,
+/// `t` sums, eight samples per lane, wrapping like the scalar sums.
+struct LaneSums<S: Simd, const N: usize> {
+    luma: [i32x8<S>; 5],
+    cross: [[i32x8<S>; 3]; N],
+    groups: usize,
+}
+
+impl<S: Simd, const N: usize> LaneSums<S, N> {
+    #[inline]
+    fn new(simd: S) -> Self {
         let zero = i32x8::splat(simd, 0);
-        let mut luma_acc = [zero; 5];
-        let mut cross_acc = [[zero; 3]; N];
-        for group in 0..groups {
-            let at = 8 * group;
-            let v0 = widen_lanes(simd, &linear[at..]);
-            let c = widen_lanes(simd, &center[at..]);
-            let v1 = (c * c + half) >> bits;
-            for (acc, term) in luma_acc.iter_mut().zip([v0 * v0, v0 * v1, v1 * v1, v0, v1]) {
+        Self {
+            luma: [zero; 5],
+            cross: [[zero; 3]; N],
+            groups: 0,
+        }
+    }
+
+    /// Adds eight samples of `v[0]`, centre luma and each plane's target.
+    #[inline]
+    fn add(&mut self, v0: i32x8<S>, center: i32x8<S>, targets: [i32x8<S>; N], bits: u32) {
+        let v1 = (center * center + (1i32 << (bits - 1))) >> bits;
+        for (acc, term) in self
+            .luma
+            .iter_mut()
+            .zip([v0 * v0, v0 * v1, v1 * v1, v0, v1])
+        {
+            *acc += term;
+        }
+        for (acc, t) in self.cross.iter_mut().zip(targets) {
+            for (acc, term) in acc.iter_mut().zip([v0 * t, v1 * t, t]) {
                 *acc += term;
             }
-            for (acc, target) in cross_acc.iter_mut().zip(targets) {
-                let t = widen_lanes(simd, &target[at..]);
-                for (acc, term) in acc.iter_mut().zip([v0 * t, v1 * t, t]) {
-                    *acc += term;
-                }
-            }
+        }
+        self.groups += 1;
+    }
+
+    /// Adds one row run of `v[0]` (`linear`), centre luma and each plane's
+    /// target chroma: whole 8-lane groups here, the rest to `luma` and
+    /// `cross`.
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    fn add_run(
+        &mut self,
+        simd: S,
+        luma: &mut LumaSums,
+        cross: &mut [[i32; 3]; N],
+        linear: &[u16],
+        center: &[u16],
+        targets: [&[u16]; N],
+        bits: u32,
+    ) {
+        let groups = linear.len() / 8;
+        for group in 0..groups {
+            let at = 8 * group;
+            self.add(
+                widen_lanes(simd, &linear[at..]),
+                widen_lanes(simd, &center[at..]),
+                targets.map(|target| widen_lanes(simd, &target[at..])),
+                bits,
+            );
+        }
+        for i in 8 * groups..linear.len() {
+            let targets = targets.map(|target| target[i]);
+            add_sample(luma, cross, linear[i], center[i], targets, bits);
+        }
+    }
+
+    #[inline]
+    fn reduce_into(self, luma: &mut LumaSums, cross: &mut [[i32; 3]; N]) {
+        if self.groups == 0 {
+            return;
         }
         let reduce = |lanes: i32x8<S>| {
             lanes
@@ -207,23 +260,19 @@ fn add_run<S: Simd, const N: usize>(
                 .iter()
                 .fold(0i32, |sum, &lane| sum.wrapping_add(lane))
         };
-        for (sum, acc) in luma.sums.iter_mut().zip(luma_acc) {
+        for (sum, acc) in luma.sums.iter_mut().zip(self.luma) {
             *sum = sum.wrapping_add(reduce(acc));
         }
-        for (sums, acc) in cross.iter_mut().zip(cross_acc) {
+        for (sums, acc) in cross.iter_mut().zip(self.cross) {
             for (sum, acc) in sums.iter_mut().zip(acc) {
                 *sum = sum.wrapping_add(reduce(acc));
             }
         }
-        luma.count += 8 * groups;
-    }
-    for i in 8 * groups..linear.len() {
-        let targets = targets.map(|target| target[i]);
-        add_sample(luma, cross, linear[i], center[i], targets, bits);
+        luma.count += 8 * self.groups;
     }
 }
 
-/// [`add_run`] for one sample.
+/// [`LaneSums::add_run`] for one sample.
 #[inline]
 fn add_sample<const N: usize>(
     luma: &mut LumaSums,
@@ -431,7 +480,32 @@ impl MhccpPredictor {
         let luma = refs.luma;
         let lanes = width.next_multiple_of(8);
         let run = |start: usize| &luma[start..(start + lanes).min(luma.len())];
-        for row in 0..height {
+        let taps = |row: usize| {
+            let center = (refs.above + row) * refs.width + refs.left;
+            match mh_dir {
+                0 => center,
+                1 => (refs.above + row).saturating_sub(1) * refs.width + refs.left,
+                _ => center - 1,
+            }
+        };
+        let mut row = 0;
+        if width == 4 && self.narrow && (mh_dir != 2 || refs.left > 0) {
+            while row + 1 < height {
+                let mut linear = [0u16; 8];
+                let mut center = [0u16; 8];
+                for (half, row) in [row, row + 1].into_iter().enumerate() {
+                    let at = (refs.above + row) * refs.width + refs.left;
+                    linear[4 * half..4 * half + 4].copy_from_slice(&luma[taps(row)..taps(row) + 4]); // splot-copy-ok: pack two 4-wide MHCCP rows
+                    center[4 * half..4 * half + 4].copy_from_slice(&luma[at..at + 4]); // splot-copy-ok: pack two 4-wide MHCCP rows
+                }
+                let mut pair = [P::from_clipped(0); 8];
+                self.row(simd, &linear, &center, &mut pair);
+                out[row * stride..row * stride + 4].copy_from_slice(&pair[..4]); // splot-copy-ok: publish a 4-wide MHCCP row
+                out[(row + 1) * stride..(row + 1) * stride + 4].copy_from_slice(&pair[4..]); // splot-copy-ok: publish a 4-wide MHCCP row
+                row += 2;
+            }
+        }
+        for row in row..height {
             let out = &mut out[row * stride..row * stride + width];
             let center_start = (refs.above + row) * refs.width + refs.left;
             let center = run(center_start);
