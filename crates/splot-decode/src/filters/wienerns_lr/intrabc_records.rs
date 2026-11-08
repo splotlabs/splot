@@ -586,7 +586,7 @@ impl TileIntrabcPreludeState {
             {
                 continue;
             }
-            if same_sb_row && r / self.sb_size4 != row / self.sb_size4 {
+            if same_sb_row && !crate::tile::same_superblock_row(r, row, self.sb_size4) {
                 continue;
             }
             visit(r, c)?;

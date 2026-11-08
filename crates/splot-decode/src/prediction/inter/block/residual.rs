@@ -644,14 +644,10 @@ impl InterChromaGroup {
     /// The 4x4 offsets `(x4, y4)` from `base` of the group's transform
     /// blocks, in raster order.
     fn units(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
-        let (x0, y0) = self.start;
-        (y0..y0 + self.extent.1)
-            .step_by(self.step.1)
-            .flat_map(move |y4| {
-                (x0..x0 + self.extent.0)
-                    .step_by(self.step.0)
-                    .map(move |x4| (x4, y4))
-            })
+        use crate::support::step_range;
+        let ((x0, y0), (w4, h4), (step_x, step_y)) = (self.start, self.extent, self.step);
+        step_range(y0..y0 + h4, step_y)
+            .flat_map(move |y4| step_range(x0..x0 + w4, step_x).map(move |x4| (x4, y4)))
     }
 }
 

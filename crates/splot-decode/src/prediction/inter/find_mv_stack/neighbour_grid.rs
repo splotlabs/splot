@@ -1201,6 +1201,24 @@ impl NeighbourMvGrid {
         self.planes.leaves.get(slot.get() as usize - 1)
     }
 
+    /// [`Self::flags_at`] of each position, negative coordinates wrapped, with
+    /// the grid layout read once for all of them.
+    #[allow(
+        clippy::inline_always,
+        reason = "measured: per-block neighbour contexts"
+    )]
+    #[inline(always)]
+    pub(super) fn flags_at_each<const N: usize>(
+        &self,
+        positions: [(usize, usize); N],
+    ) -> [Option<NeighbourFlags>; N] {
+        let (cells, leaves) = (self.planes.cells.as_slice(), self.planes.leaves.as_slice());
+        positions.map(|(r, c)| {
+            let slot = (*cells.get(self.index_at(r, c)?)?)?;
+            leaves.get(slot.get() as usize - 1).map(|leaf| leaf.flags)
+        })
+    }
+
     /// Reads the flag half only, published or not resolved yet.
     pub(super) fn flags_at(&self, r: i32, c: i32) -> Option<NeighbourFlags> {
         self.leaf_at(r, c).map(|leaf| leaf.flags)

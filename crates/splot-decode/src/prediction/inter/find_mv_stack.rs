@@ -7,6 +7,7 @@ use splot_recon::math::round2_signed;
 
 use super::block::{WARP_PARAM_REDUCE_BITS, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP};
 use super::{CompoundOrderHint, Mv, mc::CWP_EQUAL};
+use crate::tile::superblock_of;
 
 pub(crate) const MAX_REF_MV_STACK_SIZE: usize = 6;
 
@@ -160,12 +161,6 @@ impl RelativeProbe {
         }
     }
 
-    fn flags(self, grid: &NeighbourMvGrid, block: &MvBlockContext) -> Option<NeighbourFlags> {
-        let row = block.mi_row as i32 + self.delta_row;
-        let col = block.mi_col as i32 + self.delta_col;
-        grid.flags_at(row, col)
-    }
-
     #[allow(
         clippy::inline_always,
         reason = "measured: keeps the probed cell in registers"
@@ -203,56 +198,19 @@ impl RelativeProbe {
 
         (row, col, delta_col)
     }
-
-    fn warp_context_flags(
-        self,
-        grid: &NeighbourMvGrid,
-        block: &MvBlockContext,
-    ) -> Option<NeighbourFlags> {
-        let (delta_row, delta_col) = self.warp_context_delta(block);
-        grid.flags_at(
-            block.mi_row as i32 + delta_row,
-            block.mi_col as i32 + delta_col,
-        )
-    }
-
-    fn warp_context_delta(self, block: &MvBlockContext) -> (i32, i32) {
-        let mut delta_col = self.delta_col;
-        if self.delta_row < 0 && block.is_sb_border() {
-            delta_col -= (block.mi_col & 1) as i32;
-        }
-        (self.delta_row, delta_col)
-    }
 }
 
-fn immediate_spatial_probes(block: &MvBlockContext) -> [RelativeProbe; 4] {
-    let bw4 = block.bw4 as i32;
-    let bh4 = block.bh4 as i32;
-    [
-        RelativeProbe::new(bh4 - 1, -1),
-        RelativeProbe::new(-1, bw4 - 1),
-        RelativeProbe::new(0, -1),
-        RelativeProbe::new(-1, 0),
-    ]
-}
-
-fn warp_context_spatial_probes(block: &MvBlockContext) -> [Option<RelativeProbe>; 4] {
-    let bw4 = block.bw4 as i32;
-    let bh4 = block.bh4 as i32;
-    let is_sb_border = block.is_sb_border();
-    [
-        Some(RelativeProbe::new(bh4 - 1, -1)),
-        Some(RelativeProbe::new(
-            -1,
-            if is_sb_border {
-                (bw4 - 2).max(0)
-            } else {
-                bw4 - 1
-            },
-        )),
-        Some(RelativeProbe::new(0, -1)),
-        (bw4 >= if is_sb_border { 4 } else { 2 }).then_some(RelativeProbe::new(-1, 0)),
-    ]
+/// The flags at the four immediate spatial probes: left-bottom, above-right,
+/// left-top and above-left, negative coordinates wrapped.
+fn immediate_flags(grid: &NeighbourMvGrid, block: &MvBlockContext) -> [Option<NeighbourFlags>; 4] {
+    let (r, c) = (block.mi_row, block.mi_col);
+    let (up, left) = (r.wrapping_sub(1), c.wrapping_sub(1));
+    grid.flags_at_each([
+        (r + block.bh4 - 1, left),
+        (up, c + block.bw4 - 1),
+        (r, left),
+        (up, c),
+    ])
 }
 
 /// The § 7.12.2.6 spatial probes with [`RelativeProbe::stack_target`]'s
@@ -398,22 +356,41 @@ pub(crate) fn mode_ctx_from_neighbours(
     let mut warp_sample_found1 = false;
     let mut extend_delta = (0, 0);
     let is_sb_border = block.is_sb_border();
-    let probes = warp_context_spatial_probes(block);
-    for index in 0..4 {
-        let Some(probe) = probes[index] else {
-            continue;
-        };
-        let cell = if index & 1 == 0 || !is_sb_border {
-            immediate[index]
-        } else {
-            probe.warp_context_flags(grid, block)
-        };
-        let Some(cell) = cell else {
+    let (bw4, bh4) = (block.bw4 as i32, block.bh4 as i32);
+    let odd_col = (block.mi_col & 1) as i32;
+    let (above_right_col, above_left_col) = if is_sb_border {
+        ((bw4 - 2).max(0) - odd_col, -odd_col)
+    } else {
+        (bw4 - 1, 0)
+    };
+    let deltas = [
+        (bh4 - 1, -1),
+        (-1, above_right_col),
+        (0, -1),
+        (-1, above_left_col),
+    ];
+    let above_left = bw4 >= if is_sb_border { 4 } else { 2 };
+    let cells = if is_sb_border {
+        let up = block.mi_row.wrapping_sub(1);
+        let column = |delta: i32| block.mi_col.wrapping_add_signed(delta as isize);
+        let [above_right_cell, above_left_cell] =
+            grid.flags_at_each([(up, column(above_right_col)), (up, column(above_left_col))]);
+        [
+            immediate[0],
+            above_right_cell,
+            immediate[2],
+            above_left_cell,
+        ]
+    } else {
+        immediate
+    };
+    for (index, cell) in cells.into_iter().enumerate() {
+        let Some(cell) = cell.filter(|_| index != 3 || above_left) else {
             continue;
         };
         if matches_block_ref(cell, block) {
             if !warp_sample_found {
-                extend_delta = probe.warp_context_delta(block);
+                extend_delta = deltas[index];
             }
             warp_sample_found = true;
             if cell.is_warp() {
@@ -449,7 +426,7 @@ pub(crate) struct BlockNeighbourContext {
     cell_count: usize,
     npos_cells: [NeighbourFlags; 2],
     npos_count: usize,
-    /// Flags at the four `immediate_spatial_probes`.
+    /// Flags at the four [`immediate_flags`] probes.
     immediate: [Option<NeighbourFlags>; 4],
 }
 
@@ -668,8 +645,31 @@ pub(crate) fn block_neighbour_ctx(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
 ) -> BlockNeighbourContext {
-    let lists = collect_neighbour_context_cells(grid, block);
-    let (buf, num_buf) = (lists.buf, lists.buf_len);
+    let immediate = immediate_flags(grid, block);
+    let cells = immediate.map(|cell| cell.unwrap_or(EMPTY_NEIGHBOUR_FLAGS));
+    let present = (0..4).fold(0u32, |mask, i| {
+        mask | u32::from(immediate[i].is_some()) << i
+    });
+    let first_two = |mask: u32| {
+        let rest = mask & mask.wrapping_sub(1);
+        let pick = |m: u32| {
+            if m == 0 {
+                EMPTY_NEIGHBOUR_FLAGS
+            } else {
+                cells[m.trailing_zeros() as usize & 3]
+            }
+        };
+        (
+            [pick(mask), pick(rest)],
+            (mask.count_ones() as usize).min(2),
+        )
+    };
+    let (buf, num_buf) = first_two(present);
+    let (npos_cells, npos_count) = first_two(if block.is_sb_border() {
+        present & 0b0101
+    } else {
+        present
+    });
 
     let n_intra_0 = num_buf >= 1 && !buf[0].is_inter();
     let n_intra_1 = num_buf >= 2 && !buf[1].is_inter();
@@ -679,44 +679,35 @@ pub(crate) fn block_neighbour_ctx(
         } else {
             usize::from(n_intra_0 || n_intra_1)
         }
-    } else if num_buf == 1 {
-        2 * usize::from(n_intra_0)
     } else {
-        0
+        2 * usize::from(n_intra_0)
     };
 
-    let mut skip_ctx = 0usize;
-    let mut skip_mode_ctx = 0usize;
-    for cell in buf.iter().take(num_buf) {
-        skip_ctx += usize::from(cell.skip());
-        skip_mode_ctx += usize::from(cell.skip_mode());
-    }
-
     let mut ref_counts = [0u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS];
-    for cell in buf.iter().take(num_buf) {
+    for cell in buf {
         if !cell.is_inter() {
             continue;
         }
         for ref_frame in [Some(cell.ref_frame0), cell.ref_frame1] {
-            let Some(ref_frame) = ref_frame.filter(|&ref_frame| ref_frame >= 0) else {
-                continue;
-            };
-            if let Some(slot) = ref_counts.get_mut(ref_frame as usize) {
-                *slot = slot.saturating_add(1);
+            if let Some(slot) = ref_frame
+                .and_then(|ref_frame| usize::try_from(ref_frame).ok())
+                .and_then(|ref_frame| ref_counts.get_mut(ref_frame))
+            {
+                *slot += 1;
             }
         }
     }
 
     BlockNeighbourContext {
         is_inter_ctx,
-        skip_mode_ctx,
-        skip_ctx,
+        skip_mode_ctx: buf.iter().map(|cell| usize::from(cell.skip_mode())).sum(),
+        skip_ctx: buf.iter().map(|cell| usize::from(cell.skip())).sum(),
         ref_counts,
         cells: buf,
         cell_count: num_buf,
-        npos_cells: lists.npos,
-        npos_count: lists.npos_len,
-        immediate: lists.immediate,
+        npos_cells,
+        npos_count,
+        immediate,
     }
 }
 
@@ -739,47 +730,6 @@ fn is_backward_ref_frame(
         return false;
     };
     CompoundOrderHint::reference(order_hint).frame_distance_from(current_order_hint) < 0
-}
-
-struct NeighbourContextLists {
-    buf: [NeighbourFlags; 2],
-    buf_len: usize,
-    npos: [NeighbourFlags; 2],
-    npos_len: usize,
-    immediate: [Option<NeighbourFlags>; 4],
-}
-
-fn collect_neighbour_context_cells(
-    grid: &NeighbourMvGrid,
-    block: &MvBlockContext,
-) -> NeighbourContextLists {
-    let mut lists = NeighbourContextLists {
-        buf: [EMPTY_NEIGHBOUR_FLAGS; 2],
-        buf_len: 0,
-        npos: [EMPTY_NEIGHBOUR_FLAGS; 2],
-        npos_len: 0,
-        immediate: [None; 4],
-    };
-
-    let probes = immediate_spatial_probes(block);
-    let is_sb_border = block.is_sb_border();
-    for (index, probe) in probes.iter().enumerate() {
-        let Some(cell) = probe.flags(grid, block) else {
-            continue;
-        };
-        lists.immediate[index] = Some(cell);
-        if lists.buf_len < 2 {
-            lists.buf[lists.buf_len] = cell;
-            lists.buf_len += 1;
-        }
-        let above_sb_boundary = probe.delta_row < 0 && is_sb_border;
-        if !above_sb_boundary && lists.npos_len < 2 {
-            lists.npos[lists.npos_len] = cell;
-            lists.npos_len += 1;
-        }
-    }
-
-    lists
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1338,18 +1288,6 @@ impl RefMvBank {
                 return;
             }
         }
-    }
-}
-
-/// The superblock `(row, col)` of a mode-info position; superblock sizes are
-/// powers of two, which turns the per-leaf divisions into shifts.
-#[inline]
-fn superblock_of(mi_row: usize, mi_col: usize, sb_size4: usize) -> (usize, usize) {
-    if sb_size4.is_power_of_two() {
-        let shift = sb_size4.trailing_zeros();
-        (mi_row >> shift, mi_col >> shift)
-    } else {
-        (mi_row / sb_size4.max(1), mi_col / sb_size4.max(1))
     }
 }
 

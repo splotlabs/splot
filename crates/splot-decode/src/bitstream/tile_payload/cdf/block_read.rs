@@ -30,7 +30,10 @@ impl TileCdfSubset {
         symbol_decoder: &mut SymbolDecoder<'_>,
     ) -> Result<Symbol, BlockSymbolTraceReadError> {
         let row = self.rows.row_mut(selector)?;
-        Ok(symbol_decoder.read_symbol_u16(row)?)
+        match symbol_decoder.read_trusted_row(row) {
+            Some(symbol) => Ok(Symbol::new(symbol as u8)),
+            None => Ok(symbol_decoder.read_symbol_u16(row)?),
+        }
     }
 
     /// Reads a coefficient symbol from the coefficient rows directly,
