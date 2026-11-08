@@ -8,11 +8,11 @@
 
 use splot_core::tables::conversion::{Q_THRESH_MULTS, W_MULT};
 use splot_recon::{
-    BitDepth, DeblockEdge, DeblockSampleFilter, ReconSample, deblock_horizontal_edges,
-    deblock_vertical_edge_band, deblock_vertical_edges,
+    BitDepth, DeblockEdge, DeblockSampleFilter, ReconSample, deblock_filter_max_width,
+    deblock_horizontal_edges, deblock_vertical_edge_band, deblock_vertical_edges,
 };
 
-use fearless_simd::{Simd, prelude::*, u32x8};
+use fearless_simd::{Simd, prelude::*, u8x32, u16x16, u32x8};
 
 use super::grid::{EDGE_H, EDGE_V, LOSSLESS, MiGrid, QINDEX_SHIFT, SKIP, UNCOVERED};
 use super::{
@@ -67,7 +67,9 @@ struct Lanes<S: Simd> {
 
 /// The packed § 7.17.5 strengths of the `qindex` of each lane's info word,
 /// remembering the last `qindex` met: a frame without delta-q costs one
-/// compare per lane group.
+/// compare per lane group. Each is kept to 15 bits, so that the 16-bit sum
+/// of two sides cannot wrap; [`DeblockEdge::from_lanes`] caps both far
+/// below that.
 struct Strengths<'a> {
     cache: &'a StrengthCache,
     last: (u32, u32),
@@ -84,12 +86,13 @@ impl Strengths<'_> {
         self.gather(simd, qindex)
     }
 
+    #[cold]
     #[inline(never)]
     fn gather<S: Simd>(&mut self, simd: S, qindex: u32x8<S>) -> u32x8<S> {
         let words = qindex.to_array().map(|qindex| {
             if qindex != self.last.0 {
                 let (q_thr, side) = self.cache.get(qindex);
-                let word = q_thr.clamp(0, 0xffff) as u32 | (side.clamp(0, 0xffff) as u32) << 16;
+                let word = q_thr.clamp(0, 0x7fff) as u32 | (side.clamp(0, 0x7fff) as u32) << 16;
                 self.last = (qindex, word);
             }
             self.last.1
@@ -132,47 +135,66 @@ fn decide_lanes<S: Simd, const PLANE: usize, const PASS: usize>(
     control: u32x8<S>,
 ) -> (u32x8<S>, u32x8<S>, bool) {
     let splat = |value: u32| u32x8::splat(simd, value);
-    let chroma = PLANE != 0;
     let zero = splat(0);
     let set = |value: u32x8<S>, bit: u32| (value & bit).simd_eq(splat(bit));
     let uncovered = curr.bases.simd_eq(splat(UNCOVERED)) | prev.bases.simd_eq(splat(UNCOVERED));
     let block_edge = if PASS == 0 { EDGE_V } else { EDGE_H };
     let skipped = (curr.info & (block_edge | SKIP)).simd_eq(splat(SKIP));
-    let strong = |strengths: u32x8<S>| {
-        !((strengths & 0xffff).simd_eq(zero) | (strengths >> 16).simd_eq(zero))
+    let (curr_q, prev_q) = (
+        curr.strengths.bitcast::<u16x16<S>>(),
+        prev.strengths.bitcast::<u16x16<S>>(),
+    );
+    let zero16 = u16x16::splat(simd, 0);
+    let strong = |strengths: u16x16<S>| {
+        let weak = simd.to_vector_mask16x16(strengths.simd_eq(zero16));
+        weak.bitcast::<u32x8<S>>().simd_eq(zero)
     };
     let apply = !(curr.bases.simd_eq(prev.bases) | skipped | set(control, NO_FILTER))
-        & (strong(curr.strengths) | strong(prev.strengths));
-    let size = ((curr.info >> (8 * PASS as u32)) & 0xff)
-        .min((prev.info >> (8 * PASS as u32)) & 0xff)
-        .min(control & 0xff);
-    let pick = |mask, yes: u32, no: u32x8<S>| simd.select_u32x8(mask, splat(yes), no);
-    let wide = pick(
-        size.simd_eq(splat(16)),
-        if chroma { 4 } else { 6 },
-        splat(if chroma { 4 } else { 8 }),
-    );
-    let pos = pick(
-        size.simd_le(splat(4)),
-        1,
-        pick(size.simd_eq(splat(8)), 3, wide),
-    );
-    let cap = pos.min(splat(if chroma { 2 } else { 6 }));
-    let neg = simd.select_u32x8(set(control, SB_EDGE), cap, pos);
-    let combine = |curr: u32x8<S>, prev: u32x8<S>| {
-        let both = !(curr.simd_eq(zero) | prev.simd_eq(zero));
-        simd.select_u32x8(both, (curr + prev + 1) >> 1, curr.max(prev))
-    };
-    let q_thr = combine(curr.strengths & 0xffff, prev.strengths & 0xffff);
-    let side = combine(curr.strengths >> 16, prev.strengths >> 16);
+        & (strong(curr_q) | strong(prev_q));
+    let code = |info: u32x8<S>| (info >> (8 * PASS as u32)) & 0xff;
+    let size = code(curr.info).min(code(prev.info)).min(control & 0xff);
+    let table = u8x32::from_slice(simd, &WIDTHS[usize::from(PLANE != 0)]);
+    let index = size * 0x0101 + ((control & SB_EDGE) << 3);
+    let widths = simd.swizzle_dyn_within_blocks_u8x32(table, index.bitcast::<u8x32<S>>());
+    let sum = curr_q + prev_q;
+    let either_zero = curr_q.min(prev_q).simd_eq(zero16);
+    let low = simd.select_u16x16(either_zero, sum, (sum + 1) >> 1);
     let lossless = |info: u32x8<S>| (info & LOSSLESS) >> 17;
-    let low = q_thr.min(splat(0xffff)) | side.min(splat(0xffff)) << 16;
-    let high = pos | neg << 8 | lossless(prev.info) << 16 | lossless(curr.info) << 17;
+    let high = (widths.bitcast::<u32x8<S>>() & 0xffff)
+        | lossless(prev.info) << 16
+        | lossless(curr.info) << 17;
     (
-        simd.select_u32x8(apply, low, zero),
+        simd.select_u32x8(apply, low.bitcast::<u32x8<S>>(), zero),
         simd.select_u32x8(apply, high, zero),
         uncovered.any_true(),
     )
+}
+
+/// § 7.17.3 `maxWidthPos` then `maxWidthNeg` on a superblock edge, by luma
+/// or chroma and [`size_code`] filter size, as a lookup on 16-byte lanes:
+/// bytes `0..8` by code, bytes `8..16` the superblock-edge negative widths.
+const WIDTHS: [[u8; 32]; 2] = {
+    let mut tables = [[0; 32]; 2];
+    let mut entry = 0;
+    while entry < 2 * 16 {
+        let (chroma, byte): (usize, usize) = (entry / 16, entry % 16);
+        let size = 4 << (byte % 8).saturating_sub(1);
+        let (neg, pos) = deblock_filter_max_width(size, chroma == 1, true);
+        let width = if byte < 8 { pos } else { neg };
+        tables[chroma][byte] = width as u8;
+        tables[chroma][byte + 16] = width as u8;
+        entry += 1;
+    }
+    tables
+};
+
+/// The filter size code of a transform or clipped dimension: `log2(size) - 1`
+/// for the § 7.17.4 sizes 4 to 64, which [`WIDTHS`] maps.
+const fn size_code(size: u32) -> u32 {
+    match size.checked_ilog2() {
+        Some(log) => log.saturating_sub(1),
+        None => 0,
+    }
 }
 
 impl PassEdges {
@@ -274,7 +296,7 @@ impl PassEdges {
         let reach = if PLANE == 0 { 16 } else { 8 };
         let disable = geometry.disable_loopfilters_across_tiles;
         let control = |near: bool, sb_edge: bool, tile: bool| {
-            (if near { reach as u32 } else { 64 })
+            size_code(if near { reach as u32 } else { 64 })
                 | if sb_edge || tile { SB_EDGE } else { 0 }
                 | if tile && disable { NO_FILTER } else { 0 }
         };
