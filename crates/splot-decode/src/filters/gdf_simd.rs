@@ -8,6 +8,7 @@ use fearless_simd::{Level, Simd, dispatch, i8x16, i16x16, i32x8, prelude::*, u8x
 use splot_core::tables::loop_restoration::{
     GDF_ALPHA, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
 };
+use splot_recon::BitDepth;
 use splot_recon::math::round2_signed_i32;
 
 use crate::Result;
@@ -312,30 +313,25 @@ static GDF_INTER_ERROR_I8: [[[i8; 1024]; 6]; 5] = {
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn errors(block: &GdfBlock, pos: &[u16; 16]) -> [i8; 16] {
-    let mut errors = [0; 16];
-    store_errors(block, pos, &mut errors);
-    errors
+    let table = error_table(block).unwrap_or_default();
+    pos.map(|pos| {
+        table
+            .get(usize::from(pos) & (table.len() - 1))
+            .copied()
+            .unwrap_or(0)
+    })
 }
 
-/// [`errors`] into `errors`.
-#[allow(clippy::inline_always)]
-#[inline(always)]
-fn store_errors(block: &GdfBlock, pos: &[u16; 16], errors: &mut [i8; 16]) {
-    #[allow(clippy::inline_always)]
-    #[inline(always)]
-    fn lookup<const LEN: usize>(table: &[i8; LEN], pos: &[u16; 16], errors: &mut [i8; 16]) {
-        for (error, &pos) in errors.iter_mut().zip(pos) {
-            *error = table[usize::from(pos) & (LEN - 1)];
-        }
-    }
+/// `block`'s § 7.20.5 error table, a power of two long.
+fn error_table(block: &GdfBlock) -> Option<&'static [i8]> {
     if block.ref_dst_idx == GDF_INTRA_REF_DST {
-        lookup(&GDF_INTRA_ERROR_I8[block.qp_idx], pos, errors);
+        Some(GDF_INTRA_ERROR_I8.get(block.qp_idx)?)
     } else {
-        lookup(
-            &GDF_INTER_ERROR_I8[block.ref_dst_idx - 1][block.qp_idx],
-            pos,
-            errors,
-        );
+        Some(
+            GDF_INTER_ERROR_I8
+                .get(block.ref_dst_idx - 1)?
+                .get(block.qp_idx)?,
+        )
     }
 }
 
@@ -701,25 +697,32 @@ fn add_residual<S: Simd, O: GdfSample>(
     block: &GdfBlock,
 ) {
     let (low, high) = simd.widen_i8x16(i8x16::from_slice(simd, &errors(block, pos)));
-    apply_errors(simd, simd.combine_i16x8(low, high), output, block);
+    let residual = residuals(simd.combine_i16x8(low, high), block);
+    apply_residuals(simd, residual, output, block);
 }
 
-/// Adds the residuals of the `err` lanes `error` to `output`.
+/// The § 7.20.5 residuals of the `err` lanes `error`.
 #[allow(clippy::inline_always)]
 #[inline(always)]
-fn apply_errors<S: Simd, O: GdfSample>(
-    simd: S,
-    error: i16x16<S>,
-    output: &mut [O; 16],
-    block: &GdfBlock,
-) {
+fn residuals<S: Simd>(error: i16x16<S>, block: &GdfBlock) -> i16x16<S> {
     let scaled = error * block.pix_scale as i16;
     let rounding = 12 - u32::from(block.bit_depth.bits());
-    let residual = if rounding == 0 {
+    if rounding == 0 {
         scaled
     } else {
         (scaled + (1 << (rounding - 1)) + (scaled >> 15)) >> rounding
-    };
+    }
+}
+
+/// Adds `residual` to `output`.
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn apply_residuals<S: Simd, O: GdfSample>(
+    simd: S,
+    residual: i16x16<S>,
+    output: &mut [O; 16],
+    block: &GdfBlock,
+) {
     let base = O::load(simd, output);
     let filtered = (base + residual)
         .max(i16x16::splat(simd, 0))
@@ -905,11 +908,12 @@ impl<O: GdfSample> RowSink for [&mut [O; 16]; 2] {
     fn keep<S: Simd>(&mut self, _simd: S) {}
 }
 
-/// Stores the pair's `err` bytes for [`add_errors`]: each is a scalar load
-/// and store, independent of the others, where inserting them into one
-/// vector chains every lookup on the one before.
-/// The table is the block's error table from index 0, so that any `u16`
-/// index reads it without a mask or bounds check.
+/// Stores the pair's residual bytes for [`add_residuals`]: each is a scalar
+/// load and store, independent of the others, where inserting them into one
+/// vector chains every lookup on the one before. The table holds the
+/// residual of each entry of the block's error table from index 0, so that
+/// any `u16` index reads it without a mask or bounds check; every residual
+/// fits a byte, as `err` does and `GdfPixScale <= 1 << (12 - BitDepth)`.
 struct ErrorRows<'a>([&'a mut [i8; 16]; 2], &'a [i8; 1 << 16]);
 
 impl RowSink for ErrorRows<'_> {
@@ -932,14 +936,19 @@ impl RowSink for ErrorRows<'_> {
     }
 }
 
-/// Adds to each sample of `output` the § 7.20.5 residual of its `err` in
-/// `errors`, 16 samples at a time.
-fn add_errors<S: Simd, O: GdfSample>(simd: S, errors: &[i8], output: &mut [O], block: &GdfBlock) {
-    let (errors, _) = errors.as_chunks::<16>();
+/// Adds to each sample of `output` its § 7.20.5 residual in `residuals`, 16
+/// samples at a time.
+fn add_residuals<S: Simd, O: GdfSample>(
+    simd: S,
+    residuals: &[i8],
+    output: &mut [O],
+    block: &GdfBlock,
+) {
+    let (residuals, _) = residuals.as_chunks::<16>();
     let (output, _) = output.as_chunks_mut::<16>();
-    for (errors, output) in errors.iter().zip(output) {
-        let (low, high) = simd.widen_i8x16(i8x16::from_slice(simd, errors));
-        apply_errors(simd, simd.combine_i16x8(low, high), output, block);
+    for (residuals, output) in residuals.iter().zip(output) {
+        let (low, high) = simd.widen_i8x16(i8x16::from_slice(simd, residuals));
+        apply_residuals(simd, simd.combine_i16x8(low, high), output, block);
     }
 }
 
@@ -1026,11 +1035,12 @@ type GradChunk = [[u16; 16]; 4];
 #[derive(Default)]
 pub(super) struct ClassScratch {
     pub(super) grads: Vec<GradChunk>,
-    /// A row pair's `err` bytes, two rows of [`ClassScratch::error_row`]
-    /// each, for [`add_errors`].
+    /// A row pair's residual bytes, two rows of [`ClassScratch::error_row`]
+    /// each, for [`add_residuals`].
     pub(super) errors: Vec<i8>,
-    /// [`ErrorRows`]' error table.
+    /// [`ErrorRows`]' table, and the block facts it was built for.
     pub(super) table: Vec<i8>,
+    pub(super) table_key: Option<(usize, usize, i32, BitDepth)>,
 }
 
 impl ClassScratch {
@@ -1235,19 +1245,30 @@ fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
     let mut errors = scratch.errors.get_mut(..2 * error_row);
     let tables = class_tables(block);
     let params = GdfSymParams::new(block);
-    let table: &[i8] = if block.ref_dst_idx == GDF_INTRA_REF_DST {
-        GDF_INTRA_ERROR_I8.get(block.qp_idx)?
-    } else {
-        GDF_INTER_ERROR_I8
-            .get(block.ref_dst_idx - 1)?
-            .get(block.qp_idx)?
-    };
-    scratch.table.resize(1 << 16, 0);
-    scratch.table.get_mut(..table.len())?.copy_from_slice(table); // splot-copy-ok: index the table by any u16
+    let key = (
+        block.ref_dst_idx,
+        block.qp_idx,
+        block.pix_scale,
+        block.bit_depth,
+    );
+    if scratch.table_key != Some(key) {
+        scratch.table.resize(1 << 16, 0);
+        let (entries, _) = scratch.table.as_chunks_mut::<16>();
+        for (entries, errors) in entries
+            .iter_mut()
+            .zip(error_table(block)?.as_chunks::<16>().0)
+        {
+            let (low, high) = simd.widen_i8x16(i8x16::from_slice(simd, errors));
+            let (low, high) = simd.split_i16x16(residuals(simd.combine_i16x8(low, high), block));
+            simd.saturating_narrow_i16x8(low, high).store_slice(entries);
+        }
+        scratch.table_key = Some(key);
+    }
     let table = scratch.table.first_chunk()?;
     let grad_rows = |row_pair: usize| gradient_source_rows(source, origin, class_cols, row_pair);
     gradient_row(simd, &grad_rows(0)?, buffers[0])?;
     let mut chunk_classes = [[0; 8]; TILE_COLS / 16];
+    let chunk_classes = chunk_classes.get_mut(..run.div_ceil(16))?;
     for row_pair in 0..block.height / 2 {
         let (current, previous) = ((row_pair + 1) & 1, row_pair & 1);
         gradient_row(simd, &grad_rows(row_pair + 1)?, buffers[current])?;
@@ -1270,7 +1291,6 @@ fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
             .get_mut(start..)?
             .split_at_mut_checked(block.base_stride)?;
         let (top, bottom) = (top.get_mut(..run)?, bottom.get_mut(..run)?);
-        let chunk_classes = chunk_classes.get_mut(..run.div_ceil(16))?;
         let mut next = pair_sum(simd, current.first()?, previous.first()?);
         let grads = current.iter().zip(previous).skip(1);
         for (classes, (current, previous)) in chunk_classes.iter_mut().zip(grads) {
@@ -1300,7 +1320,7 @@ fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
                 done += 1;
             }
         }
-        for (x, classes) in (0..run).step_by(16).zip(&*chunk_classes).skip(done) {
+        for (x, classes) in (16 * done..run).step_by(16).zip(&chunk_classes[done..]) {
             let classes = i32x8::from_slice(simd, classes);
             let width = (run - x).min(16);
             let tiled = tiled_base
@@ -1327,8 +1347,8 @@ fn filter_run_with<S: Simd, L: Lanes<S>, O: GdfSample>(
         }
         if let Some((top_errors, bottom_errors)) = deferred {
             let end = 16 * done;
-            add_errors(simd, top_errors.get(..end)?, top.get_mut(..end)?, block);
-            add_errors(
+            add_residuals(simd, top_errors.get(..end)?, top.get_mut(..end)?, block);
+            add_residuals(
                 simd,
                 bottom_errors.get(..end)?,
                 bottom.get_mut(..end)?,
